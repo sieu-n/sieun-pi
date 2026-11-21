@@ -8,7 +8,7 @@ import { after, before, describe as suite, test } from "node:test";
 import type { SearchHit, SearchPlace, SearchResult } from "../../web/src/lib/api/types.ts";
 import { FIXTURE_AGENTS as agents, FIXTURE_IDS as ids } from "../../server/fixture/seed.ts";
 import { and, eq, holds, not, type EntryDoc, type PostDoc } from "../../server/search-engine.ts";
-import { hitLink, parseQuery, SEARCH_PLACES, threadTitle } from "../../server/search.ts";
+import { hitLink, parseHas, parseQuery, SEARCH_PLACES, threadTitle } from "../../server/search.ts";
 import { describe, indexedAuthor } from "../../server/search-snippet.ts";
 import { start, type Running } from "./helpers.ts";
 
@@ -158,6 +158,42 @@ suite("search filters", () => {
     assert.equal((await s.get<SearchResult>("/api/search?q=zanzibar&where=root")).total, 0);
   });
 
+  test("a filter with no words lists every message it keeps, newest first, and no filter and no words list nothing", async () => {
+    const vent = await s.get<SearchResult>(`/api/search?q=&from=${agents.vent}&limit=100`);
+    assert.ok(vent.total > 0 && vent.hits.length > 0);
+    assert.ok(vent.hits.every(hit => hit.author.id !== "owner"));
+    assert.deepEqual(vent.hits.map(hit => hit.at), [...vent.hits.map(hit => hit.at)].sort((a, b) => b - a), "newest first");
+    const room = await s.get<SearchResult>(`/api/search?in=${ids.cutoverChannel}&sort=relevance&limit=100`);
+    assert.ok(room.total > 0 && room.hits.every(hit => hit.conversation.id === ids.cutoverChannel));
+    assert.deepEqual(await s.get<SearchResult>("/api/search?q=&limit=100"), { hits: [], total: 0 });
+  });
+
+  test("has keeps room posts with a link, a reaction or a save, AND-ed, and no thread entry", async () => {
+    const send = async (text: string, requestId: string) => {
+      const sent = await s.send<{ item: { id: string } }>("POST", `/api/c/${ids.cutoverChannel}/send`, { text, requestId });
+      assert.equal(sent.status, 200, JSON.stringify(sent.body));
+      return s.app.agentStore.postsOf(ids.cutoverChannel).find(post => post.requestId === requestId)!;
+    };
+    const linked = await send("the wombat notes are at https://example.com/wombat", "has-link");
+    const reacted = await send("wombat with a reaction", "has-reaction");
+    await send("wombat with nothing", "has-none");
+    assert.equal((await s.send("POST", `/api/c/${ids.cutoverChannel}/posts/${reacted.id}/reactions`, { emoji: "+1" })).status, 200);
+    assert.equal((await s.send("POST", "/api/later", { room: ids.cutoverChannel, post: linked.id })).status, 200);
+    assert.equal((await s.send("POST", `/api/c/${ids.cutoverChannel}/posts/${reacted.id}/pin`, { pinned: true })).status, 200);
+    // The fixture's agents answer in the channel with the words of the post, so only the owner's posts are counted.
+    const posts = (query: string) => s.get<SearchResult>(`/api/search?${query}&from=owner&limit=100`).then(result => result.hits.map(hit => hit.messageId).sort());
+    assert.deepEqual(await posts("q=wombat&has=link"), [linked.id]);
+    assert.deepEqual(await posts("q=wombat%20has:reaction"), [reacted.id]);
+    assert.deepEqual(await posts("q=wombat&has=saved"), [linked.id]);
+    assert.deepEqual(await posts("q=wombat%20is:saved%20has:link"), [linked.id]);
+    assert.deepEqual(await posts("q=wombat&has=saved,reaction"), []);
+    assert.deepEqual(await posts("q=wombat%20is:pinned"), [reacted.id]);
+    assert.equal((await s.send("POST", `/api/c/${ids.cutoverChannel}/posts/${reacted.id}/pin`, { pinned: false })).status, 200);
+    assert.deepEqual(await posts("q=wombat&has=pin"), [], "an un-pinned post leaves has:pin");
+    assert.ok((await s.get<SearchResult>("/api/search?has=link&limit=100")).hits.every(hit => hit.kind === "post"), "a filter with no words");
+    assert.equal((await s.send("GET", "/api/search?q=wombat&has=file")).status, 400);
+  });
+
   test("a duty push the chat typed as the owner's turn is no word of his, and from=agents leaves it out too", async () => {
     const pushed = await s.send("POST", `/api/c/${ids.solo}/send`, { text: "[d9 push 2026-10-23T04:07Z] quokka found in your chat", requestId: "filters-push" });
     assert.equal(pushed.status, 200, JSON.stringify(pushed.body));
@@ -174,7 +210,7 @@ suite("search filters", () => {
 });
 
 suite("the pieces filters are built from", () => {
-  const reply = { id: "p_ch_p9", source: "post", kind: "room.reply", text: "x", reactions: "", at: 1, tier: 0, author: "owner", room: "ch", post: "p9", dm: false, listed: true, ownerPost: true } satisfies PostDoc;
+  const reply = { id: "p_ch_p9", source: "post", kind: "room.reply", text: "x", reactions: "", at: 1, tier: 0, author: "owner", room: "ch", post: "p9", dm: false, listed: true, ownerPost: true, has: ["link"] } satisfies PostDoc;
   const entry = { id: "e1_x", source: "entry", text: "x", at: 1, tier: 0, kind: "pi.user", author: "owner", entry: 1, threads: ["t"], convs: ["t:1"], keys: ["t:1"], channelCopy: false } satisfies EntryDoc;
 
   test("a pending document meets the where filter in memory as Meilisearch reads it", () => {
@@ -184,6 +220,14 @@ suite("the pieces filters are built from", () => {
     const { kind: _kind, ...bare } = reply;
     assert.ok(holds(not(eq("kind", "room.reply")), bare as unknown as PostDoc));
     assert.ok(holds(not(eq("kind", "room.reply")), entry));
+  });
+
+  test("has: and is: tokens become marks, and is:thread the Threads place", () => {
+    const parsed = parseQuery({ q: "relay has:link is:saved is:thread has:reaction,pin" });
+    assert.deepEqual([parsed.q, parsed.has, parsed.place], ["relay", ["link", "saved", "reaction", "pin"], ["threads"]]);
+    assert.deepEqual([...parseHas(["Links", "pinned", "reactions", "saved"])], ["link", "pin", "reaction", "saved"]);
+    assert.throws(() => parseHas(["file"]), /No has value "file"/);
+    assert.ok(holds(eq("has", "link"), reply) && !holds(eq("has", "pin"), reply));
   });
 
   test("from: tokens add values, and explicit params win", () => {

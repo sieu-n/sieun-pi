@@ -37,7 +37,7 @@ import { markPin, pinInput, pinnedPosts } from "./pins.ts";
 import { Rooms } from "./rooms.ts";
 import { applyPrefs, withPrefs } from "./sidebar-prefs.ts";
 import { Unfurler } from "./unfurl.ts";
-import { POST_KINDS, Search } from "./search.ts";
+import { POST_KINDS, postHas, Search } from "./search.ts";
 import { likeRegex, postDocId, SEARCH_DOC_VERSION, SearchEngine, SqliteEntries, type EntrySource, type PostDoc } from "./search-engine.ts";
 import { Meili, startOwnMeili, type OwnMeili } from "./meili.ts";
 import type { FixtureHost } from "./host/fixture.ts";
@@ -295,6 +295,7 @@ export class App {
       this.search.boxes = () => routing.list().filter(b => b.box !== config.box).map(b => ({ box: b.box, link: () => routing.link(b.box) }));
     }
     this.search.testSends = () => this.rooms.allTestSends();
+    this.search.saved = () => this.later.items("owner").filter(item => item.state === "open" && !item.unread).map(item => postDocId(item.room, item.post));
     // Search leaves out every comm thread and every thread of a walk's test agent.
     this.search.commThreads = () => [
       ...this.agents.list().flatMap(record => Object.values(record.comm ?? {})),
@@ -417,7 +418,7 @@ export class App {
     const principal = (id: string) => this.threads.principal(id);
     const base = {
       id: postDocId(room, post.id), source: "post", kind: post.threadRoot ? POST_KINDS.reply : POST_KINDS.root, text: post.text, reactions: reactionList(principal, post),
-      at: post.at, tier: 0, author: post.author, room, post: post.id,
+      at: post.at, tier: 0, author: post.author, room, post: post.id, has: postHas(post, principal),
     } as const;
     const record = this.agents.record(room);
     if (record?.room === room) return { ...base, dm: true, listed: this.rooms.searchListed(record, post), ownerPost: post.author === "owner" && !post.testSend };

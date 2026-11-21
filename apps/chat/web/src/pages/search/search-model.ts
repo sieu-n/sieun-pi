@@ -5,8 +5,8 @@
 import { avatarOf } from "../channel/present.ts";
 import { author, locationText, shortDay, what, type Hit } from "./hit-view.ts";
 import { leadIn, matchName, snippetPieces, type Piece } from "./match.ts";
-import { dateLabel, hasFilters, PLACES, type Filters } from "./filters.ts";
-import { datePresets, prompt, searchText, type Operator } from "./operators.ts";
+import { dateLabel, hasFilters, MARKS, NO_FILTERS, PLACES, type Filters } from "./filters.ts";
+import { datePresets, DURING_CHOICES, duringRange, MARK_CHOICES, markOperator, prompt, searchText, type Operator } from "./operators.ts";
 import { pagePlace } from "../wiki/wiki-pages.ts";
 import type { WikiPageRow } from "../../lib/api/types.ts";
 
@@ -31,6 +31,8 @@ export type Person = {
   detail?: string | undefined;
   /** Other names the picker matches, such as "owner" and "me" for the owner. */
   aliases?: readonly string[] | undefined;
+  /** An archived agent, which the pickers list after the live ones so a search can still name it. */
+  archived?: boolean | undefined;
 };
 
 export type Sort = "relevance" | "recent";
@@ -59,6 +61,8 @@ export type Action =
   | { type: "scope"; conversation: string }
   | { type: "operator"; operator: Operator }
   | { type: "more" }
+  /** Puts other filters in place, such as none after a search with no hits. */
+  | { type: "filters"; filters: Filters }
   /** Opens a wiki page in the viewer; `pages` opens the Wiki view with every page that matches. */
   | { type: "wiki"; path: string }
   | { type: "pages"; q: string }
@@ -67,7 +71,7 @@ export type Action =
   /** Opens the full results page for what is typed. */
   | { type: "page" };
 
-export type Icon = "chat" | "channel" | "calendar" | "search" | "more" | "page" | "recent";
+export type Icon = "chat" | "channel" | "calendar" | "search" | "more" | "page" | "recent" | "link" | "smile" | "pin" | "bookmark" | "thread" | "filter";
 export type Row = {
   key: string;
   label: string;
@@ -104,7 +108,7 @@ export type SearchInput = {
 /** A search the owner ran: its words and filters, as the full results page's address holds them. */
 export type RecentSearch = { q: string; filters: Filters };
 /** One key per distinct search, so running it again moves it to the top instead of listing it twice. */
-export const recentKey = (search: RecentSearch): string => JSON.stringify([search.q.trim().toLowerCase(), search.filters.from, search.filters.place, search.filters.in ?? "", search.filters.after ?? "", search.filters.before ?? ""]);
+export const recentKey = (search: RecentSearch): string => JSON.stringify([search.q.trim().toLowerCase(), search.filters.from, search.filters.place, search.filters.in ?? "", search.filters.after ?? "", search.filters.before ?? "", search.filters.has]);
 export const RECENT_SEARCHES = "Recent searches";
 const RECENT_SEARCH_ROWS = 5;
 
@@ -117,6 +121,7 @@ function filterWords(filters: Filters, input: SearchInput): string {
     filters.in ? `in ${place ? (place.kind === "channel" ? `#${place.name.replace(/^#/, "")}` : place.name) : filters.in}` : undefined,
     ...filters.place.map(id => PLACES.find(one => one.id === id)?.label),
     dateLabel(filters, input.now),
+    ...filters.has.map(id => MARKS.find(one => one.id === id)?.label),
   ]
     .filter(Boolean)
     .join(" · ");
@@ -217,10 +222,14 @@ function messageRows(input: SearchInput): Row[] {
   return rows;
 }
 
-/** The first row once something is typed: Enter on it, the default, opens the full results page. */
+/**
+ * The first row once something is typed or filtered: Enter on it, the default, opens the full results page. A search with no hits leads
+ * with the ways to widen it instead, as Slack's does: search everywhere, then without the other filters.
+ */
 function seeAll(input: SearchInput): Group {
   const q = searchText(input.text);
   const total = input.messages.state === "ready" ? input.messages.total : undefined;
+  if (total === 0 && input.messages.state === "ready" && !input.messages.hits.length) return { label: "Widen the search", hideLabel: true, rows: widenRows(input.filters) };
   const count = total === undefined ? undefined : `${total.toLocaleString("en-US")} ${total === 1 ? "result" : "results"}`;
   return {
     label: "All results",
@@ -235,42 +244,120 @@ function seeAll(input: SearchInput): Group {
   };
 }
 
+/** What a search with no hits can drop: the conversation it is in, and the other filters. */
+export function widenRows(filters: Filters): Row[] {
+  const { in: scope, ...rest } = filters;
+  const others = hasFilters({ ...rest, in: undefined });
+  return [
+    ...(scope ? [{ key: "widen:in", label: "Search everywhere", detail: "Every conversation, with the other filters kept", icon: "search" as const, action: { type: "filters" as const, filters: { ...filters, in: undefined } } }] : []),
+    ...(others ? [{ key: "widen:filters", label: "Remove filters", detail: scope ? "Keep only this conversation" : "Search with no filters", icon: "filter" as const, action: { type: "filters" as const, filters: { ...NO_FILTERS, in: scope } } }] : []),
+  ];
+}
+
+/** The line under a search with no hits, as Slack's: what to check, and what the rows above it drop. */
+export const NO_HITS = "No messages match. Check the spelling, or try fewer or other words.";
+
 function messageEmpty(input: SearchInput, hasText: boolean): string | undefined {
   const messages = input.messages;
   if (messages.state === "loading") return "Searching messages…";
   if (messages.state === "error") return "Message search is unavailable.";
-  if (!hasText) return input.filters.in ? "Type to search messages in this conversation." : "Type to search messages.";
-  return "No matching messages in accessible conversations.";
+  if (!hasText && !hasFilters(input.filters)) return "Type to search messages.";
+  return hasText ? NO_HITS : "No messages match these filters.";
+}
+
+const liveFirst = <T extends { archived?: boolean | undefined }>(rows: readonly T[]): T[] => [...rows].sort((a, b) => Number(!!a.archived) - Number(!!b.archived));
+
+/**
+ * The results page's Channels tab: the channels and Solo rooms whose name matches, live before archived, then by how well the name
+ * matches and by activity; every one of them by activity when nothing is typed.
+ */
+export function channelMatches(conversations: readonly Conversation[], text: string): Conversation[] {
+  const rooms = conversations.filter(conversation => conversation.kind === "channel" || conversation.kind === "solo");
+  const byActivity = (a: Conversation, b: Conversation) => activity(b) - activity(a);
+  return liveFirst(text ? ranked(rooms, conversation => conversation.name.replace(/^#/, ""), text, byActivity) : [...rooms].sort(byActivity));
+}
+
+/** The results page's People tab: the agents whose name matches, live before archived; every agent by name when nothing is typed. */
+export function peopleMatches(people: readonly Person[], text: string): Person[] {
+  const agents = people.filter(person => person.kind === "agent");
+  const byName = (a: Person, b: Person) => a.name.localeCompare(b.name);
+  return liveFirst(text ? ranked(agents, person => [person.name, ...(person.aliases ?? [])], text, byName) : [...agents].sort(byName));
 }
 
 /** Global search lists "Messages"; a search in one conversation names its sort, which it can change. */
 export const messageGroupLabel = (sort: Sort, scoped = false) => (!scoped ? "Messages" : sort === "recent" ? "Most recent" : "Most relevant");
 
+const nonEmpty = (group: Group): Group[] => (group.rows.length ? [group] : []);
+
 export function buildGroups(input: SearchInput): Group[] {
   const open = prompt(input.text);
   const needle = open?.needle.replace(/^[@#]/, "") ?? "";
 
-  if (open?.kind === "from") {
-    const choices = needle ? ranked(input.people, person => [person.name, ...(person.aliases ?? [])], needle, (a, b) => a.name.localeCompare(b.name)) : [...input.people];
-    const row = (person: Person) => personRow(person, needle, { type: "operator", operator: { kind: "from", id: person.id } }, person.kind === "owner" ? "You" : "Agent");
+  if (open?.kind === "from" || open?.kind === "to" || open?.kind === "with") {
+    const kind = open.kind;
+    // `to:` and `with:` name an agent by its DM, so they list the agents that have one.
+    const named = kind === "from" ? input.people : input.people.filter(person => person.kind === "agent" && person.conversationId);
+    const choices = needle ? ranked(named, person => [person.name, ...(person.aliases ?? [])], needle, (a, b) => a.name.localeCompare(b.name)) : [...named];
+    const row = (person: Person) =>
+      personRow(person, needle, { type: "operator", operator: { kind, id: kind === "from" ? person.id : person.conversationId! } }, person.kind === "owner" ? "You" : person.archived ? "Archived agent" : "Agent");
+    const agents = choices.filter(person => person.kind === "agent");
     return [
-      { label: "People", rows: choices.filter(person => person.kind === "owner").map(row), empty: choices.length ? undefined : "No matching people. Try a different name." },
-      { label: "Agents", rows: choices.filter(person => person.kind === "agent").slice(0, 12).map(row) },
+      ...(kind === "from" ? [{ label: "People", rows: choices.filter(person => person.kind === "owner").map(row) }] : []),
+      { label: "Agents", rows: agents.filter(person => !person.archived).slice(0, 12).map(row), empty: choices.length ? undefined : "No matching people. Try a different name." },
+      ...nonEmpty({ label: "Archived agents", rows: agents.filter(person => person.archived).slice(0, 6).map(row) }),
     ];
   }
   if (open?.kind === "in") {
-    const live = input.conversations.filter(conversation => !conversation.archived);
-    const choices = needle ? ranked(live, conversation => conversation.name, needle, (a, b) => activity(b) - activity(a)) : [...live].sort((a, b) => activity(b) - activity(a));
+    const byActivity = (list: readonly Conversation[]) =>
+      needle ? ranked(list, conversation => conversation.name, needle, (a, b) => activity(b) - activity(a)) : [...list].sort((a, b) => activity(b) - activity(a));
+    const row = (conversation: Conversation): Row => ({ ...conversationRow(conversation, needle), action: { type: "operator", operator: { kind: "in", id: conversation.id } } });
+    const live = byActivity(input.conversations.filter(conversation => !conversation.archived)).slice(0, 12);
+    // Archived conversations stay searchable, as Slack's archived channels do, so they list after the live ones.
+    const archived = byActivity(input.conversations.filter(conversation => conversation.archived)).slice(0, needle ? 6 : 3);
     return [
-      {
-        label: "Conversations",
-        rows: choices.slice(0, 12).map(conversation => ({
-          ...conversationRow(conversation, needle),
-          action: { type: "operator", operator: { kind: "in", id: conversation.id } },
-        })),
-        empty: "No matching conversations.",
-      },
+      { label: "Conversations", rows: live.map(row), empty: live.length || archived.length ? undefined : "No matching conversations." },
+      ...nonEmpty({ label: "Archived", rows: archived.map(row) }),
     ];
+  }
+  if (open?.kind === "has" || open?.kind === "is") {
+    const kind = open.kind;
+    const choices = MARK_CHOICES[kind].filter(choice => choice.value.startsWith(open.needle.toLowerCase()));
+    const icon = (value: string): Icon => (value === "link" ? "link" : value === "reaction" ? "smile" : value === "pin" ? "pin" : value === "saved" ? "bookmark" : "thread");
+    return [{
+      label: "Filters",
+      rows: choices.flatMap(choice => {
+        const operator = markOperator(kind, choice.value);
+        return operator ? [{ key: `mark:${kind}:${choice.value}`, label: `${kind}:${choice.value}`, detail: choice.detail, icon: icon(choice.value), action: { type: "operator" as const, operator } }] : [];
+      }),
+      empty: `No ${kind}: filter starts with “${open.needle}”.`,
+    }];
+  }
+  if (open?.kind === "during") {
+    const typed = open.needle.toLowerCase();
+    const listed = DURING_CHOICES.filter(choice => choice.value.startsWith(typed) || choice.label.toLowerCase().startsWith(typed));
+    // A month, a year or YYYY-MM typed in full is a choice of its own, such as "during:nov" for November.
+    const own = !listed.length && duringRange(typed, input.now) ? [{ value: typed, label: typed.replace(/^\w/, c => c.toUpperCase()) }] : [];
+    const choices = [...listed, ...own];
+    return [{
+      label: "Dates",
+      rows: choices.flatMap(choice => {
+        const range = duringRange(choice.value, input.now);
+        return range ? [{ key: `during:${choice.value}`, label: choice.label, detail: `during:${choice.value}`, icon: "calendar" as const, action: { type: "operator" as const, operator: range } }] : [];
+      }),
+      empty: "Type a month, such as during:november, or a year.",
+    }];
+  }
+  if (open?.kind === "on" && !/^\d{4}-\d{2}-\d{2}$/.test(open.needle)) {
+    return [{
+      label: "Dates",
+      rows: datePresets(input.now).slice(0, 2).map(preset => ({
+        key: `on:${preset.label}`,
+        label: preset.label,
+        detail: preset.date,
+        icon: "calendar",
+        action: { type: "operator", operator: { kind: "on", date: preset.date } },
+      })),
+    }];
   }
   if ((open?.kind === "after" || open?.kind === "before") && !/^\d{4}-\d{2}-\d{2}$/.test(open.needle)) {
     const kind = open.kind;
@@ -291,13 +378,13 @@ export function buildGroups(input: SearchInput): Group[] {
   const text = searchText(input.text);
   const filtered = hasFilters(input.filters);
   const messages: Group = {
-    label: messageGroupLabel(input.sort, !!input.filters.in),
+    label: messageGroupLabel(text ? input.sort : "recent", !!input.filters.in),
     rows: messageRows(input),
     empty: messageEmpty(input, !!text),
-    count: input.messages.state === "ready" && text ? input.messages.total : undefined,
+    count: input.messages.state === "ready" && (text || filtered) ? input.messages.total : undefined,
   };
-  // The server matches words, so filters with no words wait for them under one Messages group.
-  if (input.filters.in || (filtered && !text)) return text ? [seeAll(input), messages] : [messages];
+  // Filters with no words list every message they keep, newest first, as Slack's `from:@vent` alone does.
+  if (input.filters.in || (filtered && !text)) return [seeAll(input), messages];
 
   const current = input.current ? input.conversations.find(conversation => conversation.id === input.current) : undefined;
   // One slim row with no heading, under See all results when something is typed.
@@ -339,7 +426,7 @@ export function buildGroups(input: SearchInput): Group[] {
     .map(person => ({
       row: personRow(person, text, { type: "open", conversation: person.conversationId! }, person.detail ?? "Agent"),
       name: person.name,
-      archived: false,
+      archived: !!person.archived,
       at: lastAt.get(person.conversationId!) ?? 0,
     }));
   const named = ranked([...listed, ...agents], one => one.name, text, (a, b) => b.at - a.at)

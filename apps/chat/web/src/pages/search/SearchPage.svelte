@@ -1,8 +1,13 @@
 <script lang="ts">
   import { tick, untrack } from "svelte";
   import { SvelteMap, SvelteSet } from "svelte/reactivity";
-  import { api, type SearchHit, type SearchMissing } from "$lib/api";
-  import { hrefFor, router } from "$lib/router.svelte";
+  import { agents, api, conversations, type SearchHit, type SearchMissing } from "$lib/api";
+  import { conversationHref, hrefFor, router } from "$lib/router.svelte";
+  import Avatar from "$lib/ui/Avatar.svelte";
+  import CardGroup from "$lib/ui/CardGroup.svelte";
+  import EmptyState from "$lib/ui/EmptyState.svelte";
+  import NavItem from "$lib/ui/NavItem.svelte";
+  import Tabs from "$lib/ui/Tabs.svelte";
   import { search as searchDialog } from "$lib/shell/search.svelte";
   import Button from "$lib/ui/Button.svelte";
   import Icon from "$lib/ui/Icon.svelte";
@@ -16,7 +21,8 @@
   import { hasFilters, NO_FILTERS } from "./filters";
   import { recentSearches } from "./recent-searches.svelte";
   import ResultCard from "./ResultCard.svelte";
-  import { readResults, resultCount, resultParams, searchParams, type Results } from "./results-model";
+  import { readResults, resultCount, resultParams, searchable, searchParams, type Results, type ResultTab } from "./results-model";
+  import { channelMatches, NO_HITS, peopleMatches, widenRows, type Person } from "./search-model";
   import { composing } from "$lib/ui/keyboard";
 
   const PAGE = 20;
@@ -60,7 +66,7 @@
       for (const id of place?.expanded ?? []) expanded.add(id);
       for (const [id, lines] of place?.contexts ?? []) contexts.set(id, lines);
       now = new Date();
-      status = place ? { state: "ready" } : params.q ? { state: "loading" } : { state: "idle" };
+      status = place ? { state: "ready" } : searchable(results) ? { state: "loading" } : { state: "idle" };
       if (params.q) recentSearches.add({ q: params.q, filters: results.filters });
     });
     const keep = () => {
@@ -70,7 +76,7 @@
       void tick().then(() => showPlace(place));
       return keep;
     }
-    if (!params.q) return;
+    if (!searchable(results)) return;
     const controller = new AbortController();
     api.search({ ...params, limit: PAGE }, { signal: controller.signal }).then(
       result => {
@@ -199,7 +205,20 @@
     if (focusedIndex >= hits.length - 3) void loadMore();
   }
 
+  // Tabs: the messages, then the channels and the agents whose name matches what is typed, as Slack's results page lists them.
+  const tab = $derived<ResultTab>(results.tab ?? "messages");
+  const people = $derived<Person[]>(agents.list.map(agent => ({ id: agent.id, name: agent.name, kind: "agent", conversationId: agents.room(agent.id), archived: !!agent.archived, detail: agent.archived ? "Archived agent" : agent.status === "working" ? "Agent · working now" : "Agent" })));
+  const channels = $derived(channelMatches(conversations.list, results.q));
+  const peopleFound = $derived(peopleMatches(people, results.q));
+  const tabs = $derived([
+    { id: "messages" as const, label: "Messages", badge: status.state === "ready" ? total : null },
+    { id: "channels" as const, label: "Channels", badge: channels.length },
+    { id: "people" as const, label: "People", badge: peopleFound.length },
+  ]);
+  const widen = $derived(widenRows(results.filters));
+
   function onkeydown(e: KeyboardEvent) {
+    if (tab !== "messages") return;
     if (searchDialog.isOpen || e.metaKey || e.ctrlKey || e.altKey || composing(e)) return;
     const target = e.target as HTMLElement | null;
     if (target?.closest("input, textarea, [contenteditable=true], [role=menu], [role=dialog], [role=listbox]")) return;
@@ -225,30 +244,69 @@
     <header class="header" data-search-page>
       <div class="title-row">
         <h1 class="title">
-          {#if results.q}Results for: <span class="query" data-testid="results-query">{results.q}</span>{:else}Search{/if}
+          {#if results.q}Results for: <span class="query" data-testid="results-query">{results.q}</span>{:else if anyFilter}Search results{:else}Search{/if}
         </h1>
         <div class="field">
           <SearchField bind:value={draft} placeholder="Search messages" label="Search messages" onkeydown={submit} maxlength={256} />
         </div>
       </div>
-      <FilterBar filters={results.filters} {now} onchange={filters => go({ filters })}>
-        {#snippet trailing()}
-          {#if anyFilter}<Button variant="ghost" size="sm" onclick={() => go({ filters: NO_FILTERS })}>Clear filters</Button>{/if}
-        {/snippet}
-      </FilterBar>
-      <div class="summary">
-        <span class="sort">
-          Sorted by
-          <button type="button" class="sort-button" bind:this={sortAnchor} onclick={() => (sortOpen = !sortOpen)} aria-haspopup="menu" aria-expanded={sortOpen}>
-            {results.sort === "recent" ? "Most recent" : "Most relevant (default)"}<Icon name="chevron-down" size={14} />
-          </button>
-        </span>
-        <Menu bind:open={sortOpen} anchor={sortAnchor} items={sortItems} label="Sort results" />
-        {#if status.state === "ready"}<span class="count" data-testid="results-count">{resultCount(total)}</span>{/if}
-      </div>
+      <Tabs items={tabs} value={tab} variant="underline" size="sm" label="Result types" onchange={next => go({ tab: next })} />
+      {#if tab === "messages"}
+        <FilterBar filters={results.filters} {now} onchange={filters => go({ filters })}>
+          {#snippet trailing()}
+            {#if anyFilter}<Button variant="ghost" size="sm" onclick={() => go({ filters: NO_FILTERS })}>Clear filters</Button>{/if}
+          {/snippet}
+        </FilterBar>
+        <div class="summary">
+          <span class="sort">
+            Sorted by
+            {#if results.q}
+              <button type="button" class="sort-button" bind:this={sortAnchor} onclick={() => (sortOpen = !sortOpen)} aria-haspopup="menu" aria-expanded={sortOpen}>
+                {results.sort === "recent" ? "Most recent" : "Most relevant (default)"}<Icon name="chevron-down" size={14} />
+              </button>
+            {:else}
+              <span class="sort-fixed" title="A search with no words lists the newest first">Most recent</span>
+            {/if}
+          </span>
+          <Menu bind:open={sortOpen} anchor={sortAnchor} items={sortItems} label="Sort results" />
+          {#if status.state === "ready"}<span class="count" data-testid="results-count">{resultCount(total)}</span>{/if}
+        </div>
+      {/if}
     </header>
   {/snippet}
 
+  {#if tab === "channels"}
+    <section class="names" aria-label="Channels" data-search-channels>
+      {#if channels.length}
+        <CardGroup>
+          {#each channels as channel (channel.id)}
+            <NavItem
+              variant="card"
+              href={conversationHref(channel.id)}
+              icon={channel.archived ? "archive" : channel.kind === "channel" ? "hash" : "chat"}
+              label={channel.kind === "channel" ? channel.name.replace(/^#/, "") : channel.name}
+              detail={[channel.archived ? "Archived" : channel.kind === "channel" ? "Channel" : "Solo room", channel.preview].filter(Boolean).join(" · ")}
+            />
+          {/each}
+        </CardGroup>
+      {:else}
+        <EmptyState icon="hash" title={`No channels match “${results.q}”`} description="Check the spelling, or look in Messages for what was said." />
+      {/if}
+    </section>
+  {:else if tab === "people"}
+    <section class="names" aria-label="People" data-search-people>
+      {#if peopleFound.length}
+        <CardGroup>
+          {#each peopleFound as person (person.id)}
+            {#snippet face()}<Avatar name={person.name} kind="agent" seed={person.id} size={24} />{/snippet}
+            <NavItem variant="card" href={person.conversationId ? conversationHref(person.conversationId) : undefined} leading={face} label={person.name} detail={person.detail} />
+          {/each}
+        </CardGroup>
+      {:else}
+        <EmptyState icon="users" title={`No agents match “${results.q}”`} description="Check the spelling, or look in Messages for what was said." />
+      {/if}
+    </section>
+  {:else}
   <section class="results" aria-label="Search results" bind:this={list} data-search-results>
     {#if status.state === "ready"}
       {#each missing as box (box.box)}<p class="missing" data-testid="search-missing">{box.note}</p>{/each}
@@ -263,7 +321,16 @@
         <Button variant="outline" size="sm" onclick={() => (attempt += 1)}>Retry</Button>
       </div>
     {:else if !hits.length}
-      <p class="note">No results for “{results.q}”{anyFilter ? " with these filters" : ""}.</p>
+      <EmptyState icon="search" title={results.q ? `No results for “${results.q}”` : "No messages match these filters"} description={results.q ? NO_HITS : "Try other filters, or remove some."}>
+        {#snippet action()}
+          {#each widen as row (row.key)}
+            {#if row.action.type === "filters"}
+              {@const filters = row.action.filters}
+              <Button variant={row.key === widen[0]?.key ? "primary" : "outline"} size="sm" onclick={() => go({ filters })}>{row.label}</Button>
+            {/if}
+          {/each}
+        {/snippet}
+      </EmptyState>
     {:else}
       {#each hits as hit, index (hit.id)}
         <ResultCard
@@ -285,6 +352,7 @@
       {/if}
     {/if}
   </section>
+  {/if}
 </Page>
 
 <style>
@@ -347,6 +415,11 @@
   }
   .count {
     font-variant-numeric: tabular-nums;
+  }
+  .sort-fixed {
+    padding: 2px 4px;
+    color: var(--text-standard);
+    font-weight: 500;
   }
   .results {
     display: flex;

@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { snippetPieces } from "../../web/src/pages/search/match.ts";
 import { NO_FILTERS } from "../../web/src/pages/search/filters.ts";
 import { shortAge } from "../../web/src/pages/search/hit-view.ts";
+import { channelMatches, NO_HITS, peopleMatches } from "../../web/src/pages/search/search-model.ts";
 import { answered, buildGroups, RECENT_SEARCHES, recentKey, SEE_ALL, type Conversation, type Hit, type Person, type RecentSearch, type SearchInput } from "../../web/src/pages/search/search-model.ts";
 
 const conversations: Conversation[] = [
@@ -102,9 +103,41 @@ test("filters ask for messages only, and each row says who said it, where and wh
 });
 
 test("scoped search shows only messages, with a Show more row", () => {
-  const groups = buildGroups({ ...base, filters: { ...NO_FILTERS, in: "c-cut" }, sort: "recent", text: "x", messages: { state: "ready", hits: [], total: 0, more: true, loadingMore: false } });
+  const groups = buildGroups({ ...base, filters: { ...NO_FILTERS, in: "c-cut" }, sort: "recent", text: "x", messages: { state: "ready", hits: [], total: 25, more: true, loadingMore: false } });
   assert.deepEqual(groups.map(group => group.label), ["All results", "Most recent"]);
   assert.equal(groups[1]!.rows.at(-1)!.key, "more-messages");
+});
+
+test("a search with no hits leads with the ways to widen it, and says what to check", () => {
+  const none = { state: "ready" as const, hits: [], total: 0, more: false, loadingMore: false };
+  const scoped = buildGroups({ ...base, text: "zz", filters: { ...NO_FILTERS, in: "c-cut", from: ["owner"] }, messages: none });
+  assert.deepEqual(scoped[0]!.rows.map(row => row.label), ["Search everywhere", "Remove filters"]);
+  assert.deepEqual(scoped[0]!.rows.map(row => row.action), [
+    { type: "filters", filters: { ...NO_FILTERS, from: ["owner"], in: undefined } },
+    { type: "filters", filters: { ...NO_FILTERS, in: "c-cut" } },
+  ]);
+  assert.equal(scoped.at(-1)!.empty, NO_HITS);
+  assert.deepEqual(buildGroups({ ...base, text: "zz", messages: none }).flatMap(group => group.rows.map(row => row.key)), [], "nothing to widen");
+});
+
+test("has:, is:, during: and to: prompt their choices, and in: and from: list archived ones last", () => {
+  assert.deepEqual(buildGroups({ ...base, text: "x has:" })[0]!.rows.map(row => row.label), ["has:link", "has:reaction", "has:pin"]);
+  assert.deepEqual(buildGroups({ ...base, text: "is:s" })[0]!.rows.map(row => row.action), [{ type: "operator", operator: { kind: "has", has: "saved" } }]);
+  assert.deepEqual(buildGroups({ ...base, text: "during:nov" })[0]!.rows.map(row => row.label), ["Nov"]);
+  assert.equal(buildGroups({ ...base, text: "during:" })[0]!.rows[0]!.label, "Today");
+  const archived = { ...base, conversations: [...base.conversations, { id: "c-old", kind: "channel" as const, name: "#old-cut", archived: true }] };
+  assert.deepEqual(buildGroups({ ...archived, text: "in:cut" }).map(group => [group.label, group.rows.map(row => row.label)]), [["Conversations", ["pi-cutover"]], ["Archived", ["old-cut"]]]);
+});
+
+test("the results page's Channels and People tabs list name matches, live before archived", () => {
+  const rooms = [
+    { id: "a", kind: "channel" as const, name: "#cut-old", archived: true, lastActivityAt: 9 },
+    { id: "b", kind: "channel" as const, name: "#pi-cutover", lastActivityAt: 1 },
+    { id: "c", kind: "dm" as const, name: "cut bot" },
+  ];
+  assert.deepEqual(channelMatches(rooms, "cut").map(one => one.id), ["b", "a"]);
+  const people = [{ id: "x", name: "Vent", kind: "agent" as const, archived: true }, { id: "y", name: "Venture", kind: "agent" as const }, { id: "owner", name: "Sieun", kind: "owner" as const }];
+  assert.deepEqual(peopleMatches(people, "ven").map(one => one.id), ["y", "x"]);
 });
 
 test("global search always reads Messages, whatever the scoped sort was", () => {
@@ -142,9 +175,10 @@ test("a snippet reads as plain text, with Markdown's marks taken out and its mat
   assert.equal(read("a &amp; b &lt;tag&gt; ~~gone~~ #vent-dev"), "a & b <tag> gone #vent-dev");
 });
 
-test("filters with no words wait for words under one Messages group, and a hit with a link opens through it", () => {
-  const filtered = buildGroups({ ...base, filters: { ...NO_FILTERS, place: ["tools"] } });
-  assert.deepEqual(filtered.map(group => [group.label, group.empty]), [["Messages", "Type to search messages."]]);
+test("filters with no words list their messages under See all results, and a hit with a link opens through it", () => {
+  const filtered = buildGroups({ ...base, filters: { ...NO_FILTERS, place: ["tools"] }, messages: { state: "ready", hits: [hit("t")], total: 7, more: false, loadingMore: false } });
+  assert.deepEqual(filtered.map(group => [group.label, group.count]), [["All results", undefined], ["Messages", 7]]);
+  assert.deepEqual(filtered[0]!.rows.map(row => [row.label, row.detail]), [["See all results", "7 results"]]);
   const link = "#/c/ch_cut?thread=p1&m=p4";
   const groups = buildGroups({ ...base, text: "x", messages: { state: "ready", total: 1, more: false, loadingMore: false, hits: [{ ...hit("r"), where: "thread", thread: { root: "p1", title: "what blocks" }, link }] } });
   assert.deepEqual(groups.at(-1)!.rows[0]!.action, { type: "open", conversation: "c-cut", messageId: "m-r", link });
@@ -185,14 +219,14 @@ test("the rows of a page of hits read their days with kept formatters, never one
 
 test("an empty field lists up to 5 recent searches, with their filters in words, between the search-here row and recent activity", () => {
   const recent: RecentSearch[] = [
-    { q: "relay", filters: { from: ["c-vent"], place: ["threads"], in: "c-cut" } },
-    { q: "", filters: { from: ["owner"], place: [] } },
+    { q: "relay", filters: { from: ["c-vent"], place: ["threads"], in: "c-cut", has: [] } },
+    { q: "", filters: { from: ["owner"], place: [], has: ["link"] } },
     ...["a", "b", "c", "d"].map(q => ({ q, filters: NO_FILTERS })),
   ];
   const groups = buildGroups({ ...base, current: "c-cut", recent });
   assert.deepEqual(groups.map(group => group.label), ["This conversation", RECENT_SEARCHES, "Recent activity"]);
   const rows = groups[1]!.rows;
-  assert.deepEqual(rows.map(row => [row.label, row.detail]), [["relay", "from Vent · in #pi-cutover · Threads"], ["from you", undefined], ["a", undefined], ["b", undefined], ["c", undefined]]);
+  assert.deepEqual(rows.map(row => [row.label, row.detail]), [["relay", "from Vent · in #pi-cutover · Threads"], ["from you · Has a link", undefined], ["a", undefined], ["b", undefined], ["c", undefined]]);
   assert.deepEqual(rows[0]!.action, { type: "recall", search: recent[0] });
   assert.equal(recentKey({ q: " Relay ", filters: NO_FILTERS }), recentKey({ q: "relay", filters: NO_FILTERS }));
   assert.deepEqual(labels({ recent: [] }).map(line => line.split(":")[0]), ["Recent activity"]);

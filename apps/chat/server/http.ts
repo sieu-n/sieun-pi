@@ -319,11 +319,11 @@ export function routes(app: App): Route[] {
     }),
     route("POST", "/api/dms", async (_r, _p, _q, body) => app.openDm(((await body()) as { agent: string }).agent)),
     route("GET", "/api/dms", async () => app.rooms.summaries()),
-    // `from`, `where` and `place` take comma lists and repeated params alike; a value search cannot read is the caller's error.
+    // `from`, `where`, `place` and `has` take comma lists and repeated params alike; a value search cannot read is the caller's error.
     route("GET", "/api/search", async (_r, _p, q) => app.search.run({
       q: q.get("q") ?? "", from: listValues(q.getAll("from")), where: listValues(q.getAll("where")), place: listValues(q.getAll("place")), in: str(q.get("in")), after: str(q.get("after")),
       before: str(q.get("before")), sort: q.get("sort") === "recent" ? "recent" : "relevance", limit: num(q.get("limit")), cursor: str(q.get("cursor")),
-      brief: q.get("brief") === "1",
+      brief: q.get("brief") === "1", has: listValues(q.getAll("has")),
     }).catch((error: unknown) => {
       throw error instanceof SearchFilterError ? new BadRequest(error.message) : error;
     })),

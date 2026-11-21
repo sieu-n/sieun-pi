@@ -5,9 +5,9 @@
  * (owner p126, msg mwqfy6v3: "아니 Where하고 이 카테고리하고 합쳐서,dropdown 말고 그냥 아이템들 list되어있는 pill들로"). The server's contract is
  * GET /api/search with `from` and `place` as lists that it ORs (~/work/search-in-category/contract.md).
  */
-import type { SearchPlace } from "../../lib/api/types.ts";
+import type { SearchHas, SearchPlace } from "../../lib/api/types.ts";
 import { shortDay, type Hit } from "./hit-view.ts";
-import { dayString } from "./operators.ts";
+import { dayString, nextDay } from "./operators.ts";
 
 /** The place pills in the order the row shows them; every hit sits in exactly one place (server/search.ts SEARCH_PLACES). */
 export const PLACES: readonly { id: SearchPlace; label: string; detail: string; icon: string }[] = [
@@ -19,15 +19,35 @@ export const PLACES: readonly { id: SearchPlace; label: string; detail: string; 
   { id: "tools", label: "Tool calls", detail: "Tool output", icon: "terminal" },
 ];
 
+/** The Has chip's choices, in the order its menu lists them, with the typed operator each one stands for. */
+export const MARKS: readonly { id: SearchHas; label: string; short: string; typed: string }[] = [
+  { id: "link", label: "Has a link", short: "Link", typed: "has:link" },
+  { id: "reaction", label: "Has a reaction", short: "Reaction", typed: "has:reaction" },
+  { id: "pin", label: "Pinned", short: "Pinned", typed: "has:pin" },
+  { id: "saved", label: "Saved for later", short: "Saved", typed: "is:saved" },
+];
+
 /**
  * `from` holds `owner`, `agents` (anyone but the owner) or agent ids, OR-ed. `place` holds the lit pills in the row's order, OR-ed, and is
  * empty for every place. `in` is a conversation id; `after` and `before` are YYYY-MM-DD days in KST.
  */
-export type Filters = { from: readonly string[]; place: readonly SearchPlace[]; in?: string | undefined; after?: string | undefined; before?: string | undefined };
+export type Filters = {
+  from: readonly string[]; place: readonly SearchPlace[]; in?: string | undefined; after?: string | undefined; before?: string | undefined;
+  /** The Has chip's marks in MARKS order, AND-ed. */
+  has: readonly SearchHas[];
+};
 
-export const NO_FILTERS: Filters = { from: [], place: [] };
+export const NO_FILTERS: Filters = { from: [], place: [], has: [] };
 
-export const hasFilters = (filters: Filters): boolean => !!(filters.from.length || filters.place.length || filters.in || filters.after || filters.before);
+export const hasFilters = (filters: Filters): boolean => !!(filters.from.length || filters.place.length || filters.in || filters.after || filters.before || filters.has.length);
+
+const MARK_ORDER: readonly SearchHas[] = MARKS.map(mark => mark.id);
+const isMark = (value: string): value is SearchHas => (MARK_ORDER as readonly string[]).includes(value);
+
+export function toggleMark(filters: Filters, mark: SearchHas): Filters {
+  const next = filters.has.includes(mark) ? filters.has.filter(one => one !== mark) : [...filters.has, mark];
+  return { ...filters, has: MARK_ORDER.filter(one => next.includes(one)) };
+}
 
 const PLACE_ORDER: readonly SearchPlace[] = PLACES.map(place => place.id);
 const isPlace = (value: string): value is SearchPlace => (PLACE_ORDER as readonly string[]).includes(value);
@@ -50,8 +70,9 @@ export function hitPlace(hit: Pick<Hit, "where" | "kind" | "conversation">): Sea
   return hit.conversation.kind === "channel" ? "channels" : hit.conversation.kind === "dm" ? "dms" : "solo";
 }
 
-/** The filter Backspace at the start of an empty field takes back, rightmost first in the bar's order: places, From, In, Date. */
+/** The filter Backspace at the start of an empty field takes back, rightmost first in the bar's order: places, From, In, Date, Has. */
 export function withoutLast(filters: Filters): Filters {
+  if (filters.has.length) return { ...filters, has: filters.has.slice(0, -1) };
   if (filters.after || filters.before) return { ...filters, after: undefined, before: undefined };
   if (filters.in) return { ...filters, in: undefined };
   if (filters.from.length) return { ...filters, from: filters.from.slice(0, -1) };
@@ -63,8 +84,8 @@ const DAY = /^\d{4}-\d{2}-\d{2}$/;
 const list = (value: string | undefined): string[] => [...new Set((value ?? "").split(",").map(one => one.trim()).filter(Boolean))];
 
 /**
- * The filters an address holds, `from=owner,ag_vent&place=jobs,threads&in=&after=&before=`; an unknown place or a malformed day is
- * dropped. An old `where=` address reads as the places it covers.
+ * The filters an address holds, `from=owner,ag_vent&place=jobs,threads&in=&after=&before=&has=link,saved`; an unknown place or mark or a
+ * malformed day is dropped. An old `where=` address reads as the places it covers.
  */
 export function readFilters(params: Readonly<Record<string, string | undefined>>): Filters {
   const covered = list(params.where).flatMap(one => WHERE_PLACES[one] ?? []);
@@ -72,6 +93,7 @@ export function readFilters(params: Readonly<Record<string, string | undefined>>
   return {
     from: list(params.from),
     place: PLACE_ORDER.filter(one => named.includes(one)),
+    has: MARK_ORDER.filter(one => list(params.has).filter(isMark).includes(one)),
     ...(params.in ? { in: params.in } : {}),
     ...(params.after && DAY.test(params.after) ? { after: params.after } : {}),
     ...(params.before && DAY.test(params.before) ? { before: params.before } : {}),
@@ -79,24 +101,26 @@ export function readFilters(params: Readonly<Record<string, string | undefined>>
 }
 
 /** The address and request params of the filters, as comma lists, with unset ones left out. */
-export function filterParams(filters: Filters): { from?: string; place?: string; in?: string; after?: string; before?: string } {
+export function filterParams(filters: Filters): { from?: string; place?: string; in?: string; after?: string; before?: string; has?: string } {
   return {
     ...(filters.from.length ? { from: filters.from.join(",") } : {}),
     ...(filters.place.length ? { place: filters.place.join(",") } : {}),
     ...(filters.in ? { in: filters.in } : {}),
     ...(filters.after ? { after: filters.after } : {}),
     ...(filters.before ? { before: filters.before } : {}),
+    ...(filters.has.length ? { has: filters.has.join(",") } : {}),
   };
 }
 
 /** The filters as GET /api/search takes them: lists for `from` and `place`, which the client sends as comma lists. */
-export function filterQuery(filters: Filters): { from?: string[]; place?: SearchPlace[]; in?: string; after?: string; before?: string } {
+export function filterQuery(filters: Filters): { from?: string[]; place?: SearchPlace[]; in?: string; after?: string; before?: string; has?: SearchHas[] } {
   return {
     ...(filters.from.length ? { from: [...filters.from] } : {}),
     ...(filters.place.length ? { place: [...filters.place] } : {}),
     ...(filters.in ? { in: filters.in } : {}),
     ...(filters.after ? { after: filters.after } : {}),
     ...(filters.before ? { before: filters.before } : {}),
+    ...(filters.has.length ? { has: [...filters.has] } : {}),
   };
 }
 
@@ -107,9 +131,10 @@ const kstDayStart = (day: string): number => Date.parse(`${day}T00:00:00Z`) - KS
 /**
  * Whether the page can tell for itself that a hit passes the filters, so the Cmd K keystroke rows (local-index.ts) show only hits the
  * server's answer could hold. It cannot tell for an agent in `from`, whose work the server matches through its threads too
- * (server/search.ts), so such a hit reads as not passing and the server's answer brings it.
+ * (server/search.ts), or for a mark in `has`, which a hit does not carry, so such a hit reads as not passing and the server's answer brings it.
  */
 export function passes(hit: Hit, filters: Filters): boolean {
+  if (filters.has.length) return false;
   if (filters.in && hit.conversation.id !== filters.in) return false;
   if (filters.after && hit.at < kstDayStart(filters.after)) return false;
   if (filters.before && hit.at >= kstDayStart(filters.before)) return false;
@@ -139,6 +164,15 @@ export function dateRanges(now: Date): DateRange[] {
   ];
 }
 
+const MONTH = new Intl.DateTimeFormat("en-US", { month: "long" });
+const MONTH_YEAR = new Intl.DateTimeFormat("en-US", { month: "long", year: "numeric" });
+
+/** The month a range spans when it runs from a month's first day to the next month's, as `during:november` sets it. */
+function monthOf(after: string, before: string): Date | undefined {
+  const [year, month, date] = after.split("-").map(Number) as [number, number, number];
+  return date === 1 && before === dayString(new Date(year, month, 1)) ? new Date(year, month - 1, 1) : undefined;
+}
+
 const dayOf = (day: string, now: Date): string => {
   const [year, month, date] = day.split("-").map(Number) as [number, number, number];
   return shortDay(new Date(year, month - 1, date), now);
@@ -148,6 +182,9 @@ const dayOf = (day: string, now: Date): string => {
 export function dateLabel({ after, before }: Pick<Filters, "after" | "before">, now: Date): string | undefined {
   const preset = dateRanges(now).find(range => range.id !== "any" && range.after === after && range.before === before);
   if (preset) return preset.label;
+  if (after && before && before === nextDay(after)) return `On ${dayOf(after, now)}`;
+  const month = after && before ? monthOf(after, before) : undefined;
+  if (month) return month.getFullYear() === now.getFullYear() ? MONTH.format(month) : MONTH_YEAR.format(month);
   if (after && before) return `${dayOf(after, now)} to ${dayOf(before, now)}`;
   if (after) return `On or after ${dayOf(after, now)}`;
   return before ? `Before ${dayOf(before, now)}` : undefined;

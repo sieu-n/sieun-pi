@@ -32,24 +32,25 @@ test("each hit sits in the one place the server files it under", () => {
 });
 
 test("the address holds the filters as comma lists and reads back the same filters", () => {
-  const filters: Filters = { from: ["owner", "ag_vent"], place: ["threads", "jobs"], in: "ch_cut", after: "2026-11-01", before: "2026-11-20" };
+  const filters: Filters = { from: ["owner", "ag_vent"], place: ["threads", "jobs"], in: "ch_cut", after: "2026-11-01", before: "2026-11-20", has: ["link", "saved"] };
   const params = filterParams(filters);
-  assert.deepEqual(params, { from: "owner,ag_vent", place: "threads,jobs", in: "ch_cut", after: "2026-11-01", before: "2026-11-20" });
+  assert.deepEqual(params, { from: "owner,ag_vent", place: "threads,jobs", in: "ch_cut", after: "2026-11-01", before: "2026-11-20", has: "link,saved" });
   assert.deepEqual(readFilters(params), filters);
-  assert.deepEqual(readFilters({ place: "jobs,nowhere,channels", after: "yesterday", from: "a,,a" }), { from: ["a"], place: ["channels", "jobs"] });
+  assert.deepEqual(readFilters({ place: "jobs,nowhere,channels", after: "yesterday", from: "a,,a", has: "saved,file,link" }), { from: ["a"], place: ["channels", "jobs"], has: ["link", "saved"] });
   assert.deepEqual(readFilters({ where: "tool" }).place, ["jobs", "tools"], "an old where= link");
   assert.deepEqual(readFilters({ where: "tool,root,thread" }).place, []);
   assert.deepEqual(filterParams(NO_FILTERS), {});
 });
 
-test("Backspace takes back the rightmost filter first: Date, In, the last person in From, then the last lit place", () => {
-  let filters: Filters = { from: ["owner", "ag_vent"], place: ["threads", "jobs"], in: "c1", after: "2026-11-01" };
+test("Backspace takes back the rightmost filter first: Has, Date, In, the last person in From, then the last lit place", () => {
+  let filters: Filters = { from: ["owner", "ag_vent"], place: ["threads", "jobs"], in: "c1", after: "2026-11-01", has: ["link"] };
   const steps: string[] = [];
   while (hasFilters(filters)) {
     filters = withoutLast(filters);
     steps.push(JSON.stringify(filterParams(filters)));
   }
   assert.deepEqual(steps, [
+    '{"from":"owner,ag_vent","place":"threads,jobs","in":"c1","after":"2026-11-01"}',
     '{"from":"owner,ag_vent","place":"threads,jobs","in":"c1"}',
     '{"from":"owner,ag_vent","place":"threads,jobs"}',
     '{"from":"owner","place":"threads,jobs"}',

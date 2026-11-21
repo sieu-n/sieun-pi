@@ -4,7 +4,7 @@ import type { Item, TimelinePage } from "../../web/src/lib/api/types.ts";
 import { contextOf, replyContextOf } from "../../web/src/pages/search/context.ts";
 import { author, location, locationText, longStamp, shortAge, what, type Hit } from "../../web/src/pages/search/hit-view.ts";
 import { NO_FILTERS } from "../../web/src/pages/search/filters.ts";
-import { readResults, resultCount, resultParams, searchParams } from "../../web/src/pages/search/results-model.ts";
+import { readResults, resultCount, resultParams, searchable, searchParams } from "../../web/src/pages/search/results-model.ts";
 
 const hit = (over: Partial<Hit> = {}): Hit => ({
   id: "c1/e5", conversation: { id: "c1", kind: "solo", name: "Vent" }, messageId: "e5", author: { id: "c1", name: "Vent", kind: "agent" },
@@ -44,7 +44,11 @@ test("the results address keeps only set filters and reads back the same search"
   assert.deepEqual(Object.fromEntries(Object.entries(params).filter(([, v]) => v)), { q: "relay", from: "owner,ag_vent", place: "channels,threads" });
   assert.deepEqual(readResults({ ...params, q: " relay " } as Record<string, string>), results);
   const read = readResults({ q: "relay", from: "agents", sort: "recent", after: "2026-10-22", before: "bad", place: "x" });
-  assert.deepEqual(read, { q: "relay", sort: "recent", filters: { from: ["agents"], place: [], after: "2026-10-22" } });
+  assert.deepEqual(read, { q: "relay", sort: "recent", filters: { from: ["agents"], place: [], has: [], after: "2026-10-22" } });
+  assert.deepEqual(searchParams(readResults({ from: "ag_vent", sort: "relevance" })), { q: "", sort: "recent", from: ["ag_vent"] }, "filters with no words list newest first");
+  assert.equal(searchable(readResults({ has: "link" })), true);
+  assert.equal(searchable(readResults({})), false);
+  assert.deepEqual([readResults({ q: "x", tab: "people" }).tab, resultParams({ ...read, tab: "channels" }).tab, readResults({ tab: "files" }).tab], ["people", "channels", undefined]);
   assert.deepEqual(readResults({ q: "relay", where: "thread,root,tool" }).filters.place, []);
   assert.deepEqual(searchParams(readResults({ q: "relay", place: "tools,jobs" })), { q: "relay", sort: "relevance", place: ["jobs", "tools"] });
   assert.deepEqual(searchParams(read), { q: "relay", sort: "recent", from: ["agents"], after: "2026-10-22" });

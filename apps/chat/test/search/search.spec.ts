@@ -147,7 +147,7 @@ test("the conversation menu scopes search to this conversation, sorts, and the s
   await field(page).fill("relay");
   await expect(count(page)).toHaveText(messages(await total(page, { q: "relay", in: "ch_cutover" })));
   expect(await groupNames(page)).toEqual(["All results", "Most relevant"]);
-  await page.getByRole("button", { name: "Sort messages" }).click();
+  await palette(page).locator("[data-search-sort]").click();
   await page.getByRole("menuitemradio", { name: "Most recent" }).click();
   expect(await groupNames(page)).toEqual(["All results", "Most recent"]);
   await expect(chips(page).locator("[data-chip=in]")).toHaveText("In: #pi-cutover");

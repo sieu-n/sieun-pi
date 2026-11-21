@@ -7,7 +7,7 @@
  * posts instead, so a hit opens the DM at the post. Channel and Solo room posts are searched as posts of their room (phase 5).
 
  */
-import type { ConversationKind, ConversationSummary, SearchHit, SearchMissing, SearchPlace, SearchResult, SearchWhere } from "../web/src/lib/api/types.ts";
+import type { ConversationKind, ConversationSummary, Principal, SearchHit, SearchMissing, SearchPlace, SearchResult, SearchWhere } from "../web/src/lib/api/types.ts";
 import { CHANNEL_COPY_LIKE, type GroupRooms } from "./group-rooms.ts";
 import { describe, fullText, searchTerms, snippet, SYSTEM_AUTHOR } from "./search-snippet.ts";
 import { safeSnippet } from "./search-snippet.ts";
@@ -16,8 +16,8 @@ import type { SearchHit as HostHit } from "./host/types.ts";
 import { conversationIdOf, parseConversationId, type Threads } from "./threads.ts";
 import type { AgentRecord, RoomPost } from "./agent-store.ts";
 import { isAgentId, isRoomId } from "./agents.ts";
-import { reactionsLine } from "./reactions.ts";
-import { and, eq, isIn, not, or, type BoxIndexState, type Cond, type EntryDoc, type PostDoc, type SearchDoc, type SearchEngine } from "./search-engine.ts";
+import { reactionList, reactionsLine } from "./reactions.ts";
+import { and, eq, isIn, not, or, type BoxIndexState, type Cond, type EntryDoc, type PostDoc, type PostHas, type SearchDoc, type SearchEngine } from "./search-engine.ts";
 
 /** The owner reads dates in KST. */
 export const OWNER_ZONE_OFFSET_MS = 9 * 3600_000;
@@ -29,6 +29,8 @@ export const OWNER_ZONE_OFFSET_MS = 9 * 3600_000;
  */
 export interface SearchParams {
   q: string; from?: readonly string[]; in?: string; where?: readonly string[]; place?: readonly string[]; after?: string; before?: string; sort?: "relevance" | "recent"; limit?: number; cursor?: string;
+  /** `link`, `reaction`, `pin` and `saved`, AND-ed as Slack's `has:` and `is:saved` are; each keeps room posts only. */
+  has?: readonly string[];
   /** Leaves each hit's longer `text` out: the Cmd K rows show only the snippet, and the 20 hits of "kimchi" were 52.0 KB with it on 11-19. */
   brief?: boolean;
 }
@@ -71,6 +73,35 @@ const PLACE_NAMES: Readonly<Record<string, SearchPlace>> = {
 /** The places each `where` value covers, so `where` and `place` together keep the places both name. */
 const WHERE_PLACES: Readonly<Record<SearchWhere, readonly SearchPlace[]>> = { root: ["channels", "dms", "solo"], thread: ["threads"], tool: ["jobs", "tools"] };
 
+/** What `has` reads: a post's marks in the index (app.ts `postDoc`), and `saved` for the owner's open Later items. */
+export type SearchHas = PostHas | "saved";
+const HAS_NAMES: Readonly<Record<string, SearchHas>> = {
+  link: "link", links: "link", reaction: "reaction", reactions: "reaction", pin: "pin", pins: "pin", pinned: "pin", saved: "saved", save: "saved",
+};
+
+/** A bare web address or a markdown link, as a post's text holds a link. */
+const LINK_RE = /\bhttps?:\/\/\S|\bwww\.\S+\.\S|\]\([^)\s]+\)/i;
+
+/** The marks of a post's search document: a link in its text, a reaction under it, and the owner's pin. */
+export function postHas(post: RoomPost, principal: (id: string) => Principal): PostHas[] {
+  return [
+    ...(LINK_RE.test(post.text) ? ["link" as const] : []),
+    ...(reactionList(principal, post) ? ["reaction" as const] : []),
+    ...(post.pinned?.pinned ? ["pin" as const] : []),
+  ];
+}
+
+/** The `has` values, singular and plural forms read alike; an unknown value is refused by name. */
+export function parseHas(values: readonly string[] | undefined): Set<SearchHas> {
+  const out = new Set<SearchHas>();
+  for (const value of values ?? []) {
+    const has = HAS_NAMES[value.trim().toLowerCase()];
+    if (!has) throw new SearchFilterError(`No has value "${value}"; use link, reaction, pin or saved.`);
+    out.add(has);
+  }
+  return out;
+}
+
 /** A filter value search cannot read, such as an unknown agent name; the API answers 400 with its message. */
 export class SearchFilterError extends Error {}
 
@@ -81,15 +112,21 @@ export class SearchFilterError extends Error {}
 export function parseQuery(params: SearchParams): Required<Pick<SearchParams, "q">> & Omit<SearchParams, "q"> {
   const out: SearchParams = { ...params, q: "" };
   const words: string[] = [];
-  const lists = { from: [] as string[], place: [] as string[] };
+  const lists = { from: [] as string[], place: [] as string[], has: [] as string[] };
   for (const token of params.q.match(/"[^"]*"|\S+/g) ?? []) {
-    const match = /^(from|place|in|after|before):(.+)$/.exec(token);
+    const match = /^(from|place|has|is|in|after|before):(.+)$/.exec(token);
     if (!match) words.push(token);
-    else if (match[1] === "from" || match[1] === "place") lists[match[1]].push(...listValues([match[2]!.replace(/^"|"$/g, "")]));
+    else if (match[1] === "is") {
+      // `is:thread` is the Threads place; `is:saved` and `is:pinned` are marks, as `has:` reads them.
+      const value = match[2]!.toLowerCase();
+      if (value === "thread") lists.place.push("threads");
+      else lists.has.push(value);
+    } else if (match[1] === "from" || match[1] === "place" || match[1] === "has") lists[match[1]].push(...listValues([match[2]!.replace(/^"|"$/g, "")]));
     else out[match[1] as "in" | "after" | "before"] ??= match[2]!.replace(/^"|"$/g, "");
   }
   if (!out.from?.length && lists.from.length) out.from = lists.from;
   if (!out.place?.length && lists.place.length) out.place = lists.place;
+  if (!out.has?.length && lists.has.length) out.has = lists.has;
   out.q = words.join(" ");
   return out as Required<Pick<SearchParams, "q">> & Omit<SearchParams, "q">;
 }
@@ -210,6 +247,8 @@ export class Search {
   testSends: () => TestSendEntry[] = () => [];
   /** Every agent's comm threads and every thread of a walk's test agent, whose entries search leaves out. */
   commThreads: () => string[] = () => [];
+  /** The search documents of the posts the owner has open in Later, for `has` saved. Set by the app. */
+  saved: () => string[] = () => [];
   /** The other boxes agents run on. Set by the app when it runs over several boxes. */
   boxes: () => SearchBox[] = () => [];
 
@@ -218,11 +257,14 @@ export class Search {
   async run(params: SearchParams): Promise<SearchResult> {
     const query = parseQuery(params);
     const words = terms(query.q);
-    if (!words.length) return { hits: [], total: 0 };
+    const has = parseHas(query.has);
+    // A filter with no words lists every message it keeps, newest first, as Slack's `from:@vent` alone does.
+    const filtered = !!(query.from?.length || query.in || query.where?.length || query.place?.length || query.after || query.before || has.size);
+    if (!words.length && !filtered) return { hits: [], total: 0 };
     const marks = searchTerms(query.q);
     const after = query.after ? dayStart(query.after) : undefined;
     const before = query.before ? dayStart(query.before) : undefined;
-    const sort = query.sort ?? "relevance";
+    const sort = words.length ? query.sort ?? "relevance" : "recent";
     const offset = Number(query.cursor ?? 0) || 0;
     const limit = Math.min(Math.max(query.limit ?? 20, 1), 100);
     const range: Cond[] = [...(after === undefined ? [] : [{ op: "gte", field: "at", value: after } as Cond]), ...(before === undefined ? [] : [{ op: "lt", field: "at", value: before } as Cond])];
@@ -247,7 +289,9 @@ export class Search {
     const groupPosts = postRooms([...(places.has("channels") ? channels : []), ...(places.has("solo") ? solos : [])], places.has("threads") ? [...channels, ...solos] : []);
     const dmPosts = postRooms(places.has("dms") ? dms : [], places.has("threads") ? dms : []);
     const anyOf = (conds: Cond[]): Cond[] => (from.length ? [or(...conds)] : []);
-    if (!inChannel && entryWhere) {
+    // Only room posts carry marks, so a `has` search keeps no thread entry.
+    const marked: Cond[] = [...has].map(one => (one === "saved" ? isIn("id", this.saved()) : eq("has", one)));
+    if (!inChannel && entryWhere && !has.size) {
       parts.push(and(
         eq("source", "entry"), eq("channelCopy", false), ...range, ...entryWhere,
         ...(scope ? [eq("convs", `${scope.thread}:${scope.conversation}`)] : comms.length ? [not(isIn("threads", comms))] : []),
@@ -258,18 +302,18 @@ export class Search {
     }
     if ((!inId || inChannel) && groupPosts) {
       parts.push(and(
-        eq("source", "post"), eq("dm", false), ...range, groupPosts,
+        eq("source", "post"), eq("dm", false), ...range, ...marked, groupPosts,
         ...anyOf(from.map(f => f.kind === "owner" ? eq("author", "owner") : f.kind === "agents" ? not(eq("author", "owner")) : isIn("author", f.authors))),
       ));
     }
     if ((!inId || inRoom) && dmPosts) {
       parts.push(and(
-        eq("source", "post"), eq("dm", true), eq("listed", true), ...range, dmPosts,
+        eq("source", "post"), eq("dm", true), eq("listed", true), ...range, ...marked, dmPosts,
         ...anyOf(from.map(f => f.kind === "owner" ? eq("ownerPost", true) : f.kind === "agents" ? eq("ownerPost", false) : isIn("author", f.authors))),
       ));
     }
 
-    const mine = parts.length ? await this.engine.search(query.q, or(...parts), { sort, limit: offset + limit }) : { docs: [], total: 0 };
+    const mine = parts.length ? await this.engine.search(words.length ? query.q : "", or(...parts), { sort, limit: offset + limit }) : { docs: [], total: 0 };
     // Only the page's hits need their conversation's summary; every conversation's summaries took tens of ms to build on us-metal02.
     const known = new Map<string, ConversationSummary | undefined>();
     const summaries = { get: (id: string) => (known.has(id) ? known.get(id) : known.set(id, this.threads.conversation(id)).get(id)) };

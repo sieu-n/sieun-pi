@@ -11,7 +11,7 @@
   import Popover from "$lib/ui/Popover.svelte";
   import type { MenuEntry } from "$lib/ui/menu";
   import type { PickerItem } from "$lib/ui/types";
-  import { dateLabel, dateRanges, PLACES, toggleFrom, togglePlace, type Filters } from "./filters";
+  import { dateLabel, dateRanges, MARKS, PLACES, toggleFrom, toggleMark, togglePlace, type Filters } from "./filters";
 
   /**
    * The search filters under the Cmd K field and on the full results page, so both filter the same way: one toggle pill per place, always
@@ -22,7 +22,7 @@
   type Props = { filters: Filters; onchange: (next: Filters) => void; now: Date; trailing?: Snippet };
   let { filters, onchange, now, trailing }: Props = $props();
 
-  type Open = "from" | "in" | "date" | "range" | undefined;
+  type Open = "from" | "in" | "date" | "range" | "has" | undefined;
   let open = $state<Open>();
   let fromChip = $state<HTMLSpanElement>();
   let inChip = $state<HTMLSpanElement>();
@@ -48,9 +48,10 @@
   const fromItems = $derived<PickerItem[]>([
     { id: "owner", label: owner?.name ?? "You", detail: owner && owner.name !== "You" ? "You" : undefined, avatar: { name: owner?.name ?? "You", kind: "person", seed: "owner" }, keywords: ["me", "owner"] },
     { id: "agents", label: "Any agent", detail: "Everyone but you", icon: "robot" },
-    ...agents.list
-      .filter(agent => !agent.archived)
-      .map(agent => ({ id: agent.id, label: agent.name, group: "Agents", avatar: { name: agent.name, kind: "agent" as const, seed: agent.id } })),
+    // Archived agents stay searchable, after the live ones, as Slack keeps archived channels searchable.
+    ...[...agents.list]
+      .sort((a, b) => Number(!!a.archived) - Number(!!b.archived))
+      .map(agent => ({ id: agent.id, label: agent.name, group: agent.archived ? "Archived agents" : "Agents", avatar: { name: agent.name, kind: "agent" as const, seed: agent.id } })),
   ]);
 
   const inConversation = $derived(filters.in ? conversations.byId(filters.in) : undefined);
@@ -58,15 +59,21 @@
   const inItems = $derived<PickerItem[]>([
     { id: "", label: "Anywhere", icon: "search" },
     ...[...conversations.list]
-      .filter(c => !c.archived)
-      .sort((a, b) => b.lastActivityAt - a.lastActivityAt)
+      .sort((a, b) => Number(!!a.archived) - Number(!!b.archived) || b.lastActivityAt - a.lastActivityAt)
       .map(c => ({
         id: c.id,
         label: c.kind === "channel" ? `#${c.name.replace(/^#/, "")}` : c.name,
-        group: c.kind === "channel" ? "Channels" : c.kind === "job" ? "Jobs" : "Conversations",
-        icon: c.kind === "channel" ? "hash" : c.kind === "job" ? "robot" : "chat",
+        group: c.archived ? "Archived" : c.kind === "channel" ? "Channels" : c.kind === "job" ? "Jobs" : "Conversations",
+        icon: c.archived ? "archive" : c.kind === "channel" ? "hash" : c.kind === "job" ? "robot" : "chat",
       })),
   ]);
+
+  let hasChip = $state<HTMLSpanElement>();
+  const marked = $derived(MARKS.filter(mark => filters.has.includes(mark.id)));
+  const hasLabel = $derived(marked.length ? `${marked[0]!.short}${marked.length > 1 ? ` +${marked.length - 1}` : ""}` : "Has");
+  const hasItems = $derived<MenuEntry[]>(
+    MARKS.map(mark => ({ type: "checkbox" as const, id: mark.id, label: mark.label, detail: mark.typed, checked: filters.has.includes(mark.id), onselect: () => onchange(toggleMark(filters, mark.id)) })),
+  );
 
   const ranges = $derived(dateRanges(now));
   const dateText = $derived(dateLabel(filters, now));
@@ -171,6 +178,16 @@
       >
         <span class="value" data-chip="date">{dateText ?? "Date"}</span>
       </Chip>
+      <Chip
+        bind:element={hasChip}
+        selected={!!marked.length}
+        popup={{ kind: "menu", open: open === "has" }}
+        onclick={() => toggle("has")}
+        onremove={marked.length ? () => onchange({ ...filters, has: [] }) : undefined}
+        removeLabel="Remove the Has filter"
+      >
+        <span class="value" data-chip="has">{hasLabel}</span>
+      </Chip>
     </span>
   </div>
   {#if trailing}<div class="trailing">{@render trailing()}</div>{/if}
@@ -198,6 +215,7 @@
   onselect={id => onchange({ ...filters, in: id || undefined })}
 />
 <Menu bind:open={() => open === "date", on => set("date", on)} anchor={dateChip} items={dateItems} label="Date" />
+<Menu bind:open={() => open === "has", on => set("has", on)} anchor={hasChip} items={hasItems} label="Has" />
 <Popover bind:open={() => open === "range", on => set("range", on)} anchor={dateChip} surface="solid" width={280} padding={12} label="Custom date range">
   <form class="range" onsubmit={applyRange}>
     <Field label="On or after" id="search-range-after"><Input id="search-range-after" type="date" size="sm" bind:value={rangeAfter} max={rangeBefore || undefined} data-autofocus /></Field>

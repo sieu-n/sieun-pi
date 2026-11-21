@@ -490,6 +490,8 @@ export type SearchWhere = "root" | "thread" | "tool";
  * (`solo` also holds a root chat's own words), replies in any room's threads, the entries of agents' jobs and work threads, and tool output.
  */
 export type SearchPlace = "channels" | "dms" | "solo" | "threads" | "jobs" | "tools";
+/** What GET /api/search's `has` keeps, as Slack's `has:link`, `has:reaction`, `has:pin` and `is:saved` do. */
+export type SearchHas = "link" | "reaction" | "pin" | "saved";
 
 export interface SearchHit {
   id: string;
@@ -550,6 +552,8 @@ export interface WikiShare { room: string; post: string; threadRoot?: string; au
 export interface SearchQuery {
   q: string; from?: string | string[]; in?: string; where?: SearchWhere | SearchWhere[]; place?: SearchPlace | readonly SearchPlace[]; after?: string; before?: string; sort?: "relevance" | "recent";
   limit?: number; cursor?: string;
+  /** Room posts with a link, a reaction, the owner's pin or an open save in Later, AND-ed; a search with no words but a filter lists newest first. */
+  has?: readonly SearchHas[];
   /** Leaves each hit's `text` out, for rows that show only the snippet. */
   brief?: boolean;
 }

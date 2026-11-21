@@ -22,7 +22,7 @@ export const SEARCH_DOC_VERSION = 1;
 /** `sort` comes first so a `recent` search is newest first; tool output (tier 1) ranks after every message by relevance. */
 export const SEARCH_SETTINGS = {
   searchableAttributes: ["text", "reactions"],
-  filterableAttributes: ["id", "source", "kind", "author", "at", "tier", "threads", "convs", "keys", "channelCopy", "room", "dm", "listed", "ownerPost"],
+  filterableAttributes: ["id", "source", "kind", "author", "at", "tier", "threads", "convs", "keys", "channelCopy", "room", "dm", "listed", "ownerPost", "has"],
   sortableAttributes: ["at"],
   rankingRules: ["sort", "tier:asc", "words", "typo", "proximity", "attribute", "exactness"],
   // Meilisearch counts hits only up to maxTotalHits (1,000 by default); "d" alone matched 48,594 entries on 11-03, and the count stays exact (c191).
@@ -77,7 +77,11 @@ export interface PostDoc {
    * sends every post again, so a post Meilisearch holds without it gains it then, and `pending` answers for it meanwhile.
    */
   kind: "room.post" | "room.reply";
+  /** The marks `has` filters on (search.ts `parseHas`). Every start sends every post again, so a post indexed without them gains them then. */
+  has: PostHas[];
 }
+/** A post's marks: it holds a link, it has a reaction, or the owner pinned it. */
+export type PostHas = "link" | "reaction" | "pin";
 export type SearchDoc = EntryDoc | PostDoc;
 
 /** A filter as data: Meilisearch reads its string form, and `pending` documents are tested against it in memory. */

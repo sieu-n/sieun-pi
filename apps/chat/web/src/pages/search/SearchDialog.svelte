@@ -34,7 +34,7 @@
   let { open, scope, query, onclose }: Props = $props();
 
   const PAGE = 20;
-  const icons: Record<Icon, string> = { chat: "chat", channel: "hash", calendar: "clock", search: "search", more: "more", page: "file", recent: "clock" };
+  const icons: Record<Icon, string> = { chat: "chat", channel: "hash", calendar: "clock", search: "search", more: "more", page: "file", recent: "clock", link: "link", smile: "smile", pin: "pin", bookmark: "bookmark", thread: "thread", filter: "filter" };
 
   let text = $state("");
   /** The one filter state: the chips under the field set it, and so do typed operators such as `from:vent` (operators.ts `absorb`). */
@@ -46,7 +46,7 @@
   let missing = $state<SearchMissing[]>([]);
   let active = $state<string | undefined>();
   let input = $state<HTMLInputElement>();
-  let sortButton = $state<HTMLButtonElement>();
+  let sortButton = $state<HTMLElement>();
   let sortOpen = $state(false);
   let list = $state<HTMLDivElement>();
   let now = $state(new Date());
@@ -122,15 +122,15 @@
   const owner = $derived(me.value?.owner);
   const people = $derived<Person[]>([
     ...(owner ? [{ id: "owner", name: owner.name, kind: "owner" as const, aliases: ["owner", "me", "you"] }] : []),
-    ...agents.list
-      .filter(agent => !agent.archived)
-      .map(agent => ({
-        id: agent.id,
-        name: agent.name,
-        kind: "agent" as const,
-        conversationId: agents.room(agent.id),
-        detail: agent.status === "working" ? "Agent · working now" : "Agent",
-      })),
+    // Archived agents stay nameable in from:, to: and with:, after the live ones.
+    ...agents.list.map(agent => ({
+      id: agent.id,
+      name: agent.name,
+      kind: "agent" as const,
+      conversationId: agents.room(agent.id),
+      detail: agent.archived ? "Archived agent" : agent.status === "working" ? "Agent · working now" : "Agent",
+      archived: !!agent.archived,
+    })),
   ]);
 
   function resolveNamed(kind: NamedOperator["kind"], value: string): string | undefined {
@@ -139,6 +139,10 @@
       if (needle === "owner" || needle === "me" || needle === "agents") return needle === "agents" ? "agents" : "owner";
       const found = people.filter(person => person.id.toLowerCase() === needle || person.name.toLowerCase() === needle);
       return found.length === 1 ? found[0]!.id : undefined;
+    }
+    if (kind === "to" || kind === "with") {
+      const found = people.filter(person => person.kind === "agent" && person.conversationId && (person.id.toLowerCase() === needle || person.name.toLowerCase() === needle));
+      return found.length === 1 ? found[0]!.conversationId : undefined;
     }
     const found = conversations.list.filter(c => c.id.toLowerCase() === needle || c.name.replace(/^#/, "").toLowerCase() === needle);
     return found.length === 1 ? found[0]!.id : undefined;
@@ -150,10 +154,10 @@
     filters = next.filters;
   }
 
-  /** The server matches words, so a search asks only once some are typed; the filters narrow them. */
+  /** A search asks once words or a filter are in, and not while an operator is half typed; filters with no words list newest first. */
   const request = $derived.by(() => {
     const q = searchText(text);
-    return q && !prompt(text)?.kind ? { q, ...filterQuery(filters), sort } : undefined;
+    return (q || hasFilters(filters)) && !prompt(text)?.kind ? { q, ...filterQuery(filters), sort: q ? sort : ("recent" as const) } : undefined;
   });
   const requestKey = $derived(request ? JSON.stringify(request) : "");
 
@@ -228,7 +232,9 @@
     }),
   );
   const rows = $derived(groups.flatMap(group => group.rows));
-  const messageLabel = $derived(messageGroupLabel(sort, !!filters.in));
+  /** A search with no words is newest first whatever the sort says, so the sort control and the group name say so too. */
+  const shownSort = $derived<Sort>(searchText(text) ? sort : "recent");
+  const messageLabel = $derived(messageGroupLabel(shownSort, !!filters.in));
   /** Shift Cmd 1 to 9 pick the conversations and messages, past "See all results" and the search-here row. */
   const numbered = $derived(rows.filter(row => row.key !== SEE_ALL && row.action.type !== "scope" && row.action.type !== "recall"));
   const hasQuery = $derived(!!text.trim() || hasFilters(filters));
@@ -310,6 +316,10 @@
       }
       case "more":
         void loadMore();
+        focusInput();
+        return;
+      case "filters":
+        filters = action.filters;
         focusInput();
         return;
       case "recall":
@@ -420,7 +430,18 @@
     <div class="filters">
       <FilterBar {filters} {now} onchange={next => (filters = next)}>
         {#snippet trailing()}
-          <IconButton bind:element={sortButton} icon="sort" label="Sort messages" size="sm" pressed={sortOpen} onclick={() => (sortOpen = !sortOpen)} />
+          <Button
+            bind:element={sortButton}
+            variant="ghost"
+            size="sm"
+            trailingIcon="chevron-down"
+            aria-haspopup="menu"
+            aria-expanded={sortOpen}
+            disabled={!searchText(text)}
+            title={searchText(text) ? undefined : "A search with no words lists the newest first"}
+            data-search-sort
+            onclick={() => (sortOpen = !sortOpen)}>{shownSort === "recent" ? "Most recent" : "Most relevant"}</Button
+          >
           <Menu bind:open={sortOpen} anchor={sortButton} items={sortItems} placement="bottom-end" label="Sort messages" />
         {/snippet}
       </FilterBar>
