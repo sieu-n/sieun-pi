@@ -62,6 +62,7 @@ export const ICONS = {
   "unarchive": `<rect x="3.5" y="4" width="13" height="3.5" rx="1"/><path d="M4.5 7.5v7.5a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1V7.5M10 14.5v-4.5M8 12l2-2 2 2"/>`,
   "edit": `<path d="M12.5 4.5 15.5 7.5 7.5 15.5H4.5v-3z"/><path d="m11 6 3 3"/>`,
   "reply": `<path d="M8 5 3.5 9.5 8 14"/><path d="M3.5 9.5H11a5 5 0 0 1 5 5v1"/>`,
+  "forward": `<path d="M12 5l4.5 4.5L12 14"/><path d="M16.5 9.5H9a5 5 0 0 0-5 5v1"/>`,
   "thread": `<path d="M4 4.5h12M4 8.5h8"/><path d="M6.5 12v2a2 2 0 0 0 2 2H16"/>`,
   "filter": `<path d="M3.5 5h13M6 10h8M8.5 15h3"/>`,
   "sort": `<path d="M6 4v12M3 13l3 3 3-3M14 16V4M11 7l3-3 3 3"/>`,

@@ -13,6 +13,7 @@
   import { skillView } from "$pages/skills/skill-view.svelte";
   import { boardHref } from "$pages/board/chips";
   import ThreadPane from "$pages/channel/ThreadPane.svelte";
+  import ForwardDialog from "$pages/channel/ForwardDialog.svelte";
   import { directory } from "$pages/channel/directory.svelte";
   import { mentionContext } from "$pages/channel/present";
   import { closeView, currentView, openArtifactTarget, openView, viewedBlock, type View } from "./viewer.svelte";
@@ -40,6 +41,8 @@
   let frameStyled = $state(false);
   let unstyle: (() => void) | null = null;
   const wikiPath = $derived(view?.kind === "wiki" ? view.path : null);
+  /** A canvas's Share: the dialog that posts the page on screen into a channel or a DM. */
+  let sharing = $state(false);
   $effect(() => {
     void wikiPath;
     frameTitle = "";
@@ -206,10 +209,13 @@
     <Button size="sm" variant="ghost" icon="copy" onclick={copyBlock}>Copy</Button>
   {:else}
   {#if view?.kind === "thread" || view?.kind === "board"}<Button size="sm" variant="ghost" icon="arrow-right" onclick={goThere}>Go to {view?.kind === "board" ? "board" : "conversation"}</Button>{/if}
+  {#if view?.kind === "wiki"}<Button size="sm" variant="ghost" icon="forward" onclick={() => (sharing = true)} data-share-page>Share</Button>{/if}
   <IconButton icon="link" label="Copy link" size="sm" onclick={copyLink} />
   <Button size="sm" variant="ghost" icon="external" href={tabHref} target="_blank">Open in new tab</Button>
   {/if}
 {/snippet}
+
+{#if sharing && wikiPath}<ForwardDialog subject={{ kind: "wiki", path: framePath ?? wikiPath, title }} onclose={() => (sharing = false)} />{/if}
 
 <Dialog open={view !== null} {title} {description} presentation="sheet" {headerActions} onclose={closeView}>
   {#if view}

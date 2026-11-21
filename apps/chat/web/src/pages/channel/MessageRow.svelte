@@ -27,6 +27,8 @@
   import StepLine from "./StepLine.svelte";
   import ThreadPill from "./ThreadPill.svelte";
   import DeletePostDialog from "./DeletePostDialog.svelte";
+  import ForwardCard from "./ForwardCard.svelte";
+  import ForwardDialog from "./ForwardDialog.svelte";
   import PostEditor from "./PostEditor.svelte";
   import { setPin } from "./pins";
   import { offlineText } from "$pages/agents/host-badge";
@@ -98,7 +100,7 @@
   const sent = $derived(turn?.sent ?? null);
   const pictures = $derived(item.images.filter((image) => image.mimeType.startsWith("image/")));
   const files = $derived(item.images.filter((image) => !image.mimeType.startsWith("image/")));
-  const hasBubble = $derived(!!item.text || (turn ? turn.steps.length > 0 || live : item.images.length === 0));
+  const hasBubble = $derived(!!item.text || (turn ? turn.steps.length > 0 || live : item.images.length === 0 && !message?.forward));
   const toolNow = $derived(turn ? runningTool(turn.steps) : null);
   const stepLabel = $derived(liveLabel ?? (toolNow ? `Running ${toolNow}` : null));
   const waits = $derived(placeText(message?.queue ?? queue));
@@ -204,6 +206,8 @@
   /** Slack's Save for later: the hover bar's bookmark, the menu item and the label over a saved post (lib/later.svelte.ts). */
   const saved = $derived(reactable && room ? later.saved(room, reactable) : false);
   let customRemind = $state(false);
+  /** Slack's Forward message, from the hover bar: the dialog that posts this one with its quote card into another room. */
+  let forwarding = $state(false);
 
   /** Remind me about this: saves the post for later with the reminder, or clears the reminder and keeps the save. */
   async function remind(at: number | null) {
@@ -303,6 +307,7 @@
     {/if}
     {#if canReply}<IconButton icon="reply" label="Reply in thread" shortcut="T" size="sm" onclick={() => onthread(replyKey)} />{/if}
     {#if reactable && room}
+      <IconButton icon="forward" label="Forward message" size="sm" onclick={() => (forwarding = true)} data-forward-message />
       <IconButton icon={saved ? "bookmark-filled" : "bookmark"} label={saved ? "Remove from Later" : "Save for later"} shortcut="A" size="sm" pressed={saved} onclick={() => room && reactable && later.toggle(room, reactable)} data-save-later />
     {/if}
     <IconButton icon="more" label="More actions" size="sm" aria-haspopup="menu" aria-expanded={menuOpen} bind:element={moreButton} onclick={() => (menuOpen = !menuOpen)} data-message-menu />
@@ -321,6 +326,7 @@
 {/snippet}
 
 {#snippet images()}
+  {#if message?.forward && !deleted}<ForwardCard forward={message.forward} {context} {onmention} {onartifact} />{/if}
   {#if pictures.length}
     <div class="images">
       {#each pictures as image, index (image.url + index)}
@@ -551,6 +557,7 @@
 
 <Lightbox src={lightbox} onclose={() => (lightbox = null)} />
 {#if editable && room}<DeletePostDialog bind:open={deleting} {room} post={item.id} text={item.text} />{/if}
+{#if forwarding && reactable && room}<ForwardDialog subject={{ kind: "post", room, item: reactable }} onclose={() => ((forwarding = false), dropBar())} />{/if}
 
 <style>
   /* "(edited)" sits at the end of the post's last paragraph, as in Slack; after a list, a table or a code block it takes a line of its own. */
