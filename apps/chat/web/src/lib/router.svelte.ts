@@ -12,7 +12,8 @@
  *   #/c/wiki?q=                             Messages, Wiki: favorite and recent wiki pages, and a search by title (pages/wiki)
  *   #/c/unreads                             Messages, All unreads: the new posts of every unread room in one scroll (Cmd+Shift+A)
  *   #/c/drafts                              Messages, Drafts: every unsent draft in this browser (lib/drafts.svelte.ts)
- *   #/settings/<section>                    Settings, one section: usage, hosts, accounts or skills, opened from the Settings button
+ *   #/settings/<section>                    Settings, one section: preferences, notifications, keyboard, usage, hosts, accounts or skills;
+ *                                           the Settings button opens usage
  *   #/settings/accounts/<provider>?thread=<id>   Settings > Accounts, the pi-pool accounts of claude or codex, optionally for one thread
  *   #/search?q=&from=&in=&after=&before=&sort=&where=   Full search results, opened with Enter in the Cmd K search
  *   #/ui                                    The lib/ui gallery, not in the top bar

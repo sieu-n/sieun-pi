@@ -1,11 +1,16 @@
 <script lang="ts">
-  import { SHORTCUT_GROUPS, keyCaps } from "$lib/shortcuts";
+  import { SHORTCUT_GROUPS, keyCaps, type ShortcutGroup } from "$lib/shortcuts";
 
   /** Every shortcut in lib/shortcuts.ts, grouped by area, for the Cmd+/ sheet and Settings > Keyboard. */
+  type Props = {
+    /** The groups to show, all of them unless Settings > Keyboard passes its search's matches. */
+    groups?: readonly ShortcutGroup[];
+  };
+  let { groups = SHORTCUT_GROUPS }: Props = $props();
 </script>
 
 <div class="groups" data-testid="shortcut-list">
-  {#each SHORTCUT_GROUPS as group (group.id)}
+  {#each groups as group (group.id)}
     <section aria-labelledby="shortcuts-{group.id}">
       <h3 id="shortcuts-{group.id}" class="t-label-sm">{group.label}</h3>
       <dl>

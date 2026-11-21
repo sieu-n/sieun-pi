@@ -1,14 +1,23 @@
 import { router } from "$lib/router.svelte";
 
-/** Settings: the admin pages behind the Settings button and the avatar menu, one row each in the Settings sidebar, each at #/settings/<id>. */
+/**
+ * Settings: one row each in the Settings sidebar, each at #/settings/<id>. The first group is this browser's own settings, kept in
+ * localStorage; the second is the admin pages over the boxes and accounts. The Settings button and Cmd+, open Usage.
+ */
 export const SETTINGS_SECTIONS = [
-  { id: "usage", label: "Usage", icon: "chart-bar" },
-  { id: "hosts", label: "Hosts", icon: "server" },
-  { id: "accounts", label: "Accounts", icon: "users" },
-  { id: "skills", label: "Skills", icon: "spark" },
+  { id: "preferences", label: "Preferences", icon: "sun", group: "device" },
+  { id: "notifications", label: "Notifications", icon: "bell", group: "device" },
+  { id: "keyboard", label: "Keyboard", icon: "command", group: "device" },
+  { id: "usage", label: "Usage", icon: "chart-bar", group: "admin" },
+  { id: "hosts", label: "Hosts", icon: "server", group: "admin" },
+  { id: "accounts", label: "Accounts", icon: "users", group: "admin" },
+  { id: "skills", label: "Skills", icon: "spark", group: "admin" },
 ] as const;
 
 export type SettingsSectionId = (typeof SETTINGS_SECTIONS)[number]["id"];
+export type SettingsGroup = (typeof SETTINGS_SECTIONS)[number]["group"];
+
+export const SETTINGS_GROUPS: readonly SettingsGroup[] = ["device", "admin"];
 
 /** The open section, Usage when the address names none or an unknown one. */
 export function openSection(): SettingsSectionId {
