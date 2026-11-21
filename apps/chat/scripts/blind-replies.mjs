@@ -89,7 +89,11 @@ async function call(method, path, body) {
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 const TABLE = /^[ \t]*\|?.*\|.*\n[ \t]*\|?[ \t]*:?-{3,}:?[ \t]*(?:\|[ \t]*:?-{3,}:?[ \t]*)*\|?[ \t]*$/m;
-const words = text => text.replace(/\]\([^)]*\)/g, "]").split(/\s+/).filter(Boolean).length;
+/**
+ * A text's words as tell_owner's long check counts them (reply-lint.ts `longReply`), with no list or task marker counted: on 11-21 four
+ * replies of the lists and checklist sets held 72 to 78 words and failed the 80-word check only on their `- ` and `- [x] ` markers.
+ */
+const words = text => text.replace(/\]\([^)]*\)/g, "]").replace(/^[ \t]*(?:[-*+]|\d+[.)])[ \t]+(?:\[[ xX]\][ \t]+)?/gm, "").split(/\s+/).filter(Boolean).length;
 /** A post's sentences; a line break ends one too, since a bullet line seldom ends on a period and 3 bullets read as one 40-word sentence on 11-20. */
 const sentences = text => text.replace(/\]\([^)]*\)/g, "]").split(/(?<=[.!?])\s+|\n+/).filter(line => line.trim());
 

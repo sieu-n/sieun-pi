@@ -25,6 +25,7 @@ The owner said so on 11-20: "no this is not Chat. this is Slack."
 5. An ask that takes several checks or steps first gets its checks as one post of `- [ ]` items under their topics, under the short answer when the agent knows one, and the agent edits that post with `edit_message` as items finish, so the last edit carries the answer and no new post goes out for progress.
    Every edit keeps the shape of rule 4, the last one too, so an edit never flattens the topic groups into one list or puts three sentences on top.
    Every version of the checklist stays within 80 words, the last edit too, and a nested detail line stays only when it adds a fact the top line and its item lack.
+   The 80 words count the text only, never the `- ` and `- [x] ` markers, in tell_owner's long check (`longReply`) and in `blind-replies.mjs` alike, since on 11-21 four list replies of 72 to 78 words failed the blind check only on their markers.
    A finished or blocked item says so in its own line, such as `- [ ] Mac links, unreachable while it sleeps`, with no sub-bullets that repeat the top line or promise a later check.
 6. Lowercase and a fitting emoji are fine, and labels, bold and headings are out.
 7. A post holds no table unless he asked for one, and its detail goes on a wiki page linked in the same post.
