@@ -36,7 +36,7 @@ The owner, 2026-10-19 about 13:40Z, after the AI harness chat's goal "Every duty
 3. "things like "i need to keep X working" should NOT be registered as a zombie plan. ALL PLANS SHOULD BE EPHEMERAL, and the Chat (and Chat-check-in) MUST BE DESIGNED SO THAT IT ACTIVELY PERSUES AND CLEARS ALL THE TASKS."
 4. "Duties are similar, but a flexible, sensible agent-centric way of keeping something in good shape. The goal should be really well aligned with human intent, and agent essentially acts as an engineer. What can be automated via script -> automate. however check and analyze observability that and make SENSIBLE decisions is the only goal. if a rule is unsensible -> change rule. no nitpicking, should have real impact, and the system in question error prone."
 
-The owner, 2026-10-19 about 15:32Z, on how crawler-v3's plans should look (msg mvfe8foz, then mvfe930k):
+The owner, 2026-10-19 about 15:12Z, on how crawler-v3's plans should look (msg mvfe8foz, then mvfe930k):
 
 1. "for example of instagram crawling workers, i think set it NOW to <plans>: they aren't achieved yet p1- achieve 10k profiles/min throughput instagram profile consistently for 6h + p2- nothing is backlogging ... p3- confidently discover and index ALL instagram creators (1000follower+)in the world (initial crawl) should be 200M + p4- make a system where all profiles are updated at least once every 2 week p5- make the crawler durable ... actually simulate this. p6- setup an ALerting system where alerts come DIRECTLY to that crawler VP thread"
 2. "<duties>: ... Keep crawler running actively - Check the Observability and Metrics - Geonode mbps >=100mbps always - (when p1, p2,p4 is achieved, withinnitial stability 6h+ check, they now should come to duty.)"
@@ -45,7 +45,7 @@ The owner, 2026-10-19 about 15:32Z, on how crawler-v3's plans should look (msg m
 
 ## The main example, the Crawler VP's Instagram board
 
-The owner set this plan for the Crawler VP's Instagram crawling on 10-19. It has six measured goals, and none of them is met yet. The done lines are the checks he named.
+The owner set this plan for the Crawler VP's Instagram crawling on 10-19. It has six measured goals, and none of them was met on 10-19. The done lines are the checks he named. By 11-21 the Crawler VP had closed p1, p2, p5 and p6 as its goals p826, p827, p830 and p831. p3 is its goal p828, blocked until the owner picks a proxy. p4 is its goal p829, dropped on 10-26 after the owner's answer to t65 replaced it with p683, which re-reads every 10k+ account weekly and every other read account monthly.
 
 | Goal | Done when |
 |---|---|
@@ -111,7 +111,7 @@ The duties hold the upkeep in his words.
 ## How a duty run works
 
 1. The run acts like the engineer who owns the system, with the owner's intent as its goal.
-2. It scripts every check a script can do, in the duty's precheck under `legacy/prime/user-history/scripts/duties/`.
+2. It scripts every check a script can do, in the duty's precheck under `legacy/prime/user-history/scripts/duties/`, or under `apps/chat/scripts/duties/` for a duty whose precheck runs from the apps/chat release, such as agent factory's four duties.
 3. It reads the monitoring the owner would read, such as his dashboard, the live page or the real logs, and decides from what it sees.
 4. It changes or drops a duty rule or metric that does not make sense, by editing the duty JSON or check script and running `add.ts` again, or `remove.ts` for a whole duty, and says why in its report.
 5. It skips nitpicks and spends effort only where a miss has real impact on a system that breaks easily.
