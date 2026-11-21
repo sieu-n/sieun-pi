@@ -20,9 +20,11 @@
     empty?: string;
     /** True when the block has no rows, so `empty` shows. */
     isEmpty?: boolean;
+    /** The one action under `empty`, drawn as a "+" row, as Slack's empty section shows "Add channels". */
+    emptyAction?: { label: string; onclick: () => void };
     children?: Snippet;
   };
-  let { id, label, count, folded = false, ontoggle, actions, empty, isEmpty = false, children }: Props = $props();
+  let { id, label, count, folded = false, ontoggle, actions, empty, isEmpty = false, emptyAction, children }: Props = $props();
 </script>
 
 <section class="section" data-section={id} aria-label={label}>
@@ -43,6 +45,9 @@
   <div class="rows">
     {@render children?.()}
     {#if isEmpty && !folded && empty}<p class="empty">{empty}</p>{/if}
+    {#if isEmpty && !folded && emptyAction}
+      <button type="button" class="add" onclick={emptyAction.onclick}><span class="plus"><Icon name="plus" size={14} /></span>{emptyAction.label}</button>
+    {/if}
   </div>
 </section>
 
@@ -130,5 +135,32 @@
     padding: 4px 8px;
     font: var(--text-caption);
     color: var(--text-metadata);
+  }
+  .add {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 28px;
+    padding: 0 8px;
+    border: 0;
+    border-radius: var(--radius-row);
+    background: transparent;
+    color: var(--text-subtle);
+    font: var(--text-body-sm);
+    text-align: left;
+    cursor: pointer;
+  }
+  .add:hover {
+    background: var(--affordance-sidebar-hover);
+    color: var(--text-sidebar-hover);
+  }
+  .plus {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border-radius: var(--radius-icon-button);
+    background: var(--affordance-sidebar-hover);
   }
 </style>

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy } from "svelte";
+  import { onDestroy, tick } from "svelte";
   import { agents, api, boardStore, expectCall, isSoloRoom, jobs, me, prefetchThread, reads, timeline, view, type Item } from "$lib/api";
   import BoardPanel from "$pages/board/BoardPanel.svelte";
   import { boardHref, boardTitles, rememberTitles } from "$pages/board/chips";
@@ -8,7 +8,7 @@
   import { roomActions } from "$lib/shell/room-actions.svelte";
   import { renameDialog } from "$lib/shell/rename-dialog.svelte";
   import { channelDetails } from "$lib/shell/channel-details.svelte";
-  import { archiveChannel as archiveRoom, unarchiveChannel as unarchiveRoom } from "$lib/shell/room-actions.svelte";
+  import { archiveChannel as archiveRoom, setSoloClosed, unarchiveChannel as unarchiveRoom } from "$lib/shell/room-actions.svelte";
   import { search } from "$lib/shell/search.svelte";
   import { sidePanel } from "$lib/shell/side-panel.svelte";
   import { openArtifactTarget, openView } from "$lib/shell/viewer.svelte";
@@ -19,6 +19,7 @@
   import Icon from "$lib/ui/Icon.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
   import Tabs from "$lib/ui/Tabs.svelte";
+  import TextArea from "$lib/ui/TextArea.svelte";
   import { stampLabel } from "$lib/ui/datetime";
   import Menu from "$lib/ui/Menu.svelte";
   import PanelHeader from "$lib/ui/PanelHeader.svelte";
@@ -247,12 +248,49 @@
   const fail = (error: unknown) => toast.error(error instanceof Error ? error.message : "That did not work");
 
   async function setClosed(closed: boolean) {
+    if (await setSoloClosed(id, name, closed)) await store.refreshHeader();
+  }
+
+  /** The agenda bar's in-place edit, as Slack edits a topic: Enter saves, Shift+Enter adds a line, and Esc or a click away drops it. */
+  let agendaDraft = $state<string | null>(null);
+  let agendaSaving = $state(false);
+  let agendaField = $state<HTMLTextAreaElement>();
+
+  async function editAgenda() {
+    agendaDraft = header?.agenda ?? "";
+    await tick();
+    agendaField?.focus();
+    agendaField?.setSelectionRange(agendaDraft.length, agendaDraft.length);
+  }
+
+  async function saveAgenda() {
+    if (agendaDraft === null || agendaSaving) return;
+    const text = agendaDraft.trim();
+    if (!text || text === (header?.agenda ?? "").trim()) {
+      agendaDraft = null;
+      return;
+    }
+    agendaSaving = true;
     try {
-      await api.updateRoom(id, { closed });
+      await api.updateRoom(id, { agenda: text });
       await store.refreshHeader();
-      toast.show(closed ? "Room closed" : "Room reopened");
+      agendaDraft = null;
+      toast.show("Agenda updated");
     } catch (error) {
       fail(error);
+    } finally {
+      agendaSaving = false;
+    }
+  }
+
+  function agendaKey(e: KeyboardEvent) {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      void saveAgenda();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      agendaDraft = null;
     }
   }
 
@@ -323,9 +361,14 @@
           ]
       : []),
     ...(isSolo && header
-      ? [closedAt
-          ? { id: "reopen", label: "Reopen room", icon: "refresh", onselect: () => void setClosed(false) }
-          : { id: "close", label: "Close room", icon: "check", onselect: () => void setClosed(true) }]
+      ? [
+          { type: "separator" as const },
+          { id: "rename", label: "Rename room", icon: "edit", disabled: !!closedAt, onselect: () => renameDialog.open(id, name, "solo") },
+          { id: "agenda", label: "Edit agenda", icon: "pin", disabled: !!closedAt, onselect: () => void editAgenda() },
+          closedAt
+            ? { id: "reopen", label: "Reopen room", icon: "refresh", onselect: () => void setClosed(false) }
+            : { id: "close", label: "Close room", icon: "check", onselect: () => void setClosed(true) },
+        ]
       : []),
     ...(isDm && roomActions(id).length ? [{ type: "separator" as const }, ...roomActions(id)] : []),
     ...(working ? [{ type: "separator" as const }, { id: "stop", label: "Stop", icon: "stop", onselect: stop }] : []),
@@ -499,9 +542,30 @@
     <div class="solo-bar" data-testid="solo-agenda">
       <div class="agenda">
         <Icon name="pin" size={14} />
-        <p class="agenda-text" class:open={agendaOpen} data-testid="solo-agenda-text">{header.agenda ?? ""}</p>
-        {#if (header.agenda ?? "").length > 140 || (header.agenda ?? "").includes("\n")}
-          <button type="button" class="agenda-more t-caption" aria-expanded={agendaOpen} onclick={() => (agendaOpen = !agendaOpen)}>{agendaOpen ? "Less" : "More"}</button>
+        {#if agendaDraft !== null}
+          <div class="agenda-edit">
+            <TextArea
+              bind:element={agendaField}
+              bind:value={agendaDraft}
+              rows={1}
+              maxRows={8}
+              aria-label="Agenda"
+              placeholder="What should this room get done?"
+              disabled={agendaSaving}
+              onkeydown={agendaKey}
+              onblur={() => {
+                if (!agendaSaving) agendaDraft = null;
+              }}
+              data-testid="solo-agenda-field"
+            />
+            <span class="agenda-hint t-caption">Enter to save, Shift+Enter for a new line, Esc to cancel</span>
+          </div>
+        {:else}
+          <p class="agenda-text" class:open={agendaOpen} data-testid="solo-agenda-text">{header.agenda ?? ""}</p>
+          {#if (header.agenda ?? "").length > 140 || (header.agenda ?? "").includes("\n")}
+            <button type="button" class="agenda-more t-caption" aria-expanded={agendaOpen} onclick={() => (agendaOpen = !agendaOpen)}>{agendaOpen ? "Less" : "More"}</button>
+          {/if}
+          {#if !closedAt}<span class="agenda-pen"><IconButton icon="edit" label="Edit agenda" size="xs" onclick={() => void editAgenda()} /></span>{/if}
         {/if}
       </div>
       <div class="roster" data-testid="solo-members" aria-label="Members">
@@ -776,6 +840,25 @@
   }
   .agenda-more:hover {
     color: var(--text-standard);
+  }
+  .agenda-pen {
+    flex: none;
+    margin: -3px 0;
+    opacity: 0;
+  }
+  .agenda:hover .agenda-pen,
+  .agenda-pen:focus-within {
+    opacity: 1;
+  }
+  .agenda-edit {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+  }
+  .agenda-hint {
+    color: var(--text-subtle);
   }
   .roster {
     display: flex;

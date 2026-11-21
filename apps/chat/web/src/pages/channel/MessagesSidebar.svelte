@@ -55,6 +55,7 @@
     visibleRows(rows, folded(id), (row) => row.id === current || rowUnread(row).unread > 0 || rowUnread(row).fresh);
   const rowsOf = (id: string): ConversationSummary[] => groups.sections.find((s) => s.section.id === id)?.rows ?? [];
   const newChannel = () => router.navigate(hrefFor("messages", ["new"], { kind: "channel" }));
+  const newSolo = () => router.navigate(hrefFor("messages", ["new"], { kind: "solo" }));
 
   /** The one open sidebar menu: a channel row's, a section header's or the Channels header's, keyed so its "..." shows as pressed. */
   let menu = $state<{ key: string; anchor: Anchor; items: MenuEntry[] } | null>(null);
@@ -150,7 +151,8 @@
   }
 
   function soloMenu(row: ConversationSummary): MenuEntry[] {
-    return [...rowMenu(row), { type: "separator" }, ...roomActions(row.id)];
+    const rename: MenuEntry = { id: "rename", label: "Rename room", icon: "edit", onselect: () => renameDialog.open(row.id, row.name, "solo") };
+    return [...rowMenu(row), { type: "separator" }, rename, { type: "separator" }, ...roomActions(row.id)];
   }
 
   function channelMenu(row: ConversationSummary): MenuEntry[] {
@@ -288,23 +290,19 @@
     </SidebarSection>
   {/if}
 
-  {#if sidebar.data.solo.length}
-    <SidebarSection id="solo" label="Solo" folded={folded("solo")} ontoggle={() => sidebarSections.toggle("solo")}>
-      {#snippet actions()}<IconButton icon="plus" label="New Solo room" size="xs" onclick={() => router.navigate(hrefFor("messages", ["new"], { kind: "solo" }))} />{/snippet}
-      {#each shown(solo.open, "solo") as row (row.id)}{@render soloRow(row, "users")}{/each}
-      {#if folded("solo")}
-        {#each shown(solo.done, "solo") as row (row.id)}{@render soloRow(row, "check")}{/each}
-      {:else if solo.done.length}
-        <SidebarSection id="done" label="Done" count={solo.done.length} folded={!sidebar.doneOpen} ontoggle={() => (sidebar.doneOpen = !sidebar.doneOpen)}>
-          {#if sidebar.doneOpen}
-            <div class="done" data-group="done">
-              {#each solo.done as row (row.id)}{@render soloRow(row, "check")}{/each}
-            </div>
-          {/if}
-        </SidebarSection>
-      {/if}
-    </SidebarSection>
-  {/if}
+  <SidebarSection id="solo" label="Solo" folded={folded("solo")} ontoggle={() => sidebarSections.toggle("solo")} empty="Group chats with agents around one agenda." isEmpty={!solo.open.length && !solo.done.length} emptyAction={{ label: "New Solo room", onclick: newSolo }}>
+    {#snippet actions()}<IconButton icon="plus" label="New Solo room" size="xs" onclick={newSolo} />{/snippet}
+    {#each shown(solo.open, "solo") as row (row.id)}{@render soloRow(row, "users")}{/each}
+    {#if folded("solo")}
+      {#each shown(solo.done, "solo") as row (row.id)}{@render soloRow(row, "check")}{/each}
+    {:else if solo.done.length}
+      <SidebarSection id="done" label="Done" count={solo.done.length} folded={!sidebar.doneOpen} ontoggle={() => (sidebar.doneOpen = !sidebar.doneOpen)}>
+        <div class="done" data-group="done">
+          {#each sidebar.doneOpen ? solo.done : solo.done.filter((row) => row.id === current) as row (row.id)}{@render soloRow(row, "check")}{/each}
+        </div>
+      </SidebarSection>
+    {/if}
+  </SidebarSection>
 
   {#each groups.sections as { section, rows } (section.id)}
     <div
@@ -327,7 +325,7 @@
   {/each}
 
   <div class="drop" data-section-id="channels" use:dropZone={{ types: roomTypes("channels"), ondrop: (d) => sidebarSections.move(d.id, null) }}>
-    <SidebarSection id="channels" label="Channels" folded={folded("channels")} ontoggle={() => sidebarSections.toggle("channels")} empty="No channels yet." isEmpty={!sidebar.data.channels.length}>
+    <SidebarSection id="channels" label="Channels" folded={folded("channels")} ontoggle={() => sidebarSections.toggle("channels")} empty="No channels yet." isEmpty={!sidebar.data.channels.length} emptyAction={{ label: "Create channel", onclick: newChannel }}>
       {#snippet actions()}
         {@render more("channels", "Channels options", () => [
           readAllItem(groups.channels),
