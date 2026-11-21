@@ -340,6 +340,12 @@ export function jarReader(key: string, fetcher: typeof fetch = fetch): ReadJar {
       const error = (() => { try { return JSON.parse(body) as { error_type?: string; error?: string }; } catch { return {}; } })();
       if (error.error_type === "proxy_required") return { username, held: `the crawler holds its jar, browser-jar answered 503 proxy_required (${error.error ?? "no reason"})` };
     }
+    // Since 11-20 the crawler parks box-bound accounts under c229 (status_reason "c229: box-bound account parked") and then
+    // serves no jar at all, so browser-jar answers 404 not_found. That is the same wait for a paid proxy, not a broken measure.
+    if (response.status === 404) {
+      const error = (() => { try { return (JSON.parse(body) as { error?: { code?: string; message?: string } }).error ?? {}; } catch { return {}; } })();
+      if (error.code === "not_found") return { username, held: `the crawler serves no jar of it, browser-jar answered 404 not_found (parked, as c229 parks box-bound accounts until a paid proxy)` };
+    }
     if (!response.ok) throw new Error(`browser-jar @${username} answered ${response.status}: ${body.slice(0, 300)}`);
     const jar = (JSON.parse(body) as { data: BrowserJar | null }).data;
     if (!jar) throw new Error(`no crawler world holds @${username}`);

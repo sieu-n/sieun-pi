@@ -163,6 +163,7 @@ test("a 503 proxy_required from browser-jar reads as no residential exit with no
     caiyiting8674: new Response(JSON.stringify({ error: "c229: engage route on server address 64.34.205.244 refused; it waits for a proxy", error_type: "proxy_required" }), { status: 503 }),
     gimnayeon1396: new Response(JSON.stringify({ ok: true, data: { world: "prod", username: "gimnayeon1396", ig_user_id: "2", cookies: [], user_agent: "ua", valid: true, proxy_url: "http://u:p@gw.example:12001" } })),
     down: new Response(JSON.stringify({ error: "supply down", error_type: "provider_down" }), { status: 503 }),
+    parked: new Response(JSON.stringify({ ok: false, error: { code: "not_found", message: "neither world holds a serving jar of @parked" } }), { status: 404 }),
     broken: new Response("oops", { status: 500 }),
   };
   const read = jarReader("key", (async (url: string) => answers[new URL(url).searchParams.get("username") ?? ""]) as typeof fetch);
@@ -173,6 +174,8 @@ test("a 503 proxy_required from browser-jar reads as no residential exit with no
     const slices = report({ now: NOW, accounts: out.accounts, boxed: out.boxed, errors: [] }, METRICS).flagged ?? [];
     assert.ok(slices.some(s => s.kind === "exit_down" && s.excerpt.startsWith("no residential exit: sender @caiyiting8674: the crawler holds its jar")));
     assert.ok(!slices.some(s => s.kind === "source_error"));
+    const parked = await read("parked");
+    assert.ok("held" in parked && /404 not_found \(parked/.test(parked.held));
     await assert.rejects(read("down"), /browser-jar @down answered 503/);
     await assert.rejects(read("broken"), /browser-jar @broken answered 500/);
   } finally {
