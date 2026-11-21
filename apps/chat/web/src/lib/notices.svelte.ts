@@ -12,14 +12,11 @@ import { notificationsPaused, notifyPermission, notifyPrefs } from "./notify-pre
 import { askNotifyPermission, notifyOnce, notifySystem, readNotifyPermission, setDockBadge, setWindowTitle } from "./remind-notify";
 import { conversationHref, PAGES, router } from "./router.svelte";
 import { inDesktopShell } from "./shell/desktop";
+import { rowUnread } from "./shell/room-actions.svelte";
 import { toast } from "./ui/toast.svelte";
 
 const APP = "sw factory";
 const ASKED = "chat.notify.asked";
-
-/** The sidebar row fields the row menus set (Mute, Close, Leave); read loosely, since a row without them reads as unmuted and shown. */
-type RowPrefs = { muted?: true; hidden?: "closed" | "left" };
-const prefsOf = (row: ConversationSummary | undefined): RowPrefs => (row ?? {}) as RowPrefs;
 
 export function openNotice(notice: Pick<Notice, "room" | "post" | "threadRoot">): void {
   router.navigate(conversationHref(notice.room, notice.threadRoot ? { thread: notice.threadRoot, messageId: notice.post } : { messageId: notice.post }));
@@ -33,9 +30,9 @@ function inView(notice: Notice): boolean {
 
 export function wantsNotice(notice: Notice, now = Date.now()): boolean {
   if (notifyPrefs.level === "off" || notificationsPaused(now)) return false;
-  const row = prefsOf(conversations.byId(notice.room));
-  if (row.hidden === "left") return false;
-  if (row.muted) return notice.reason === "mention";
+  const row = conversations.byId(notice.room);
+  if (row?.hidden === "left") return false;
+  if (row?.muted) return notice.reason === "mention";
   return notifyPrefs.level === "all" || notice.reason !== "post";
 }
 
@@ -52,15 +49,9 @@ function onNotice(notice: Notice): void {
   notifyOnce(tag, () => void notifySystem(noticeTitle(notice), body, tag, () => openNotice(notice)));
 }
 
-/** The unread count Slack's Dock badge shows: DMs, Solo rooms and mentions, leaving out muted DMs and rooms he closed or left. */
+/** The unread count Slack's Dock badge shows: the sum of the sidebar's counts (DMs, Solo rooms and mentions), less channels he left. */
 export function unreadCount(rows: readonly ConversationSummary[]): number {
-  let count = 0;
-  for (const row of rows) {
-    const prefs = prefsOf(row);
-    if (row.archived || prefs.hidden === "left" || (prefs.muted && row.kind !== "channel")) continue;
-    count += row.unread;
-  }
-  return count;
+  return rows.reduce((sum, row) => (row.archived || row.hidden === "left" ? sum : sum + rowUnread(row).unread), 0);
 }
 
 const VIEW_LABELS: Record<string, string> = { new: "New message", "for-you": "For you", later: "Later" };

@@ -38,10 +38,14 @@ async function testAgent(page: Page): Promise<{ id: string; name: string; room: 
   return { ...((await res.json()) as { id: string; room: string }), name };
 }
 
+/** Puts the window in the background after load, since a dev build reads as stale and reloads on load in an unfocused window (reload.ts). */
+const unfocus = (page: Page) => page.evaluate(() => (document.hasFocus = () => false));
+
 test("an agent's DM reply raises a system notification while the window is in the background", async ({ page }) => {
-  await stubBrowser(page, false);
+  await stubBrowser(page, true);
   const agent = await testAgent(page);
   await open(page, `#/c/${agent.room}`);
+  await unfocus(page);
   await page.request.post(`/api/c/${agent.room}/send`, { data: { text: "ping for a notice", requestId: crypto.randomUUID() } });
   await expect.poll(() => shown(page), { timeout: 15_000 }).toContainEqual(expect.objectContaining({ title: agent.name }) as unknown as Shown);
   const note = (await shown(page)).find((n) => n.title === agent.name)!;
@@ -57,12 +61,10 @@ test("the open DM in a focused window raises no notification, and Off in the set
   await page.waitForTimeout(3000);
   expect(await shown(page)).toEqual([]);
 
-  await page.evaluate(() => {
-    localStorage.setItem("chat.notify", JSON.stringify({ level: "off", badge: true }));
-    document.hasFocus = () => false;
-  });
+  await page.evaluate(() => localStorage.setItem("chat.notify", JSON.stringify({ level: "off", badge: true })));
   await page.reload();
-  await page.evaluate(() => (document.hasFocus = () => false));
+  await page.getByTestId("timeline").first().waitFor();
+  await unfocus(page);
   await page.request.post(`/api/c/${agent.room}/send`, { data: { text: "while off", requestId: crypto.randomUUID() } });
   await page.waitForTimeout(3000);
   expect(await shown(page)).toEqual([]);
