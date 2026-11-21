@@ -84,30 +84,25 @@ export function commInstructions(ref: { agent: string; room: string; work: strin
 function workSteps(work: string, room: string): string[] {
   return [
     "When you start on a post that needs an answer or work, put 👀 on it with `set_emoji(message_id, \"eyes\", true)`. " +
-      "👀 means its work still runs, so keep it on through a first reply or checklist while the work thread works on the post, and take it off with `set_emoji(message_id, \"eyes\", false)` when the work ends: in the turn that posts the result, makes the checklist's last edit or marks the thread done. " +
-      "An answer you post in full in one turn takes 👀 off in that same turn, so a post you answered in full never keeps your 👀, and a post whose work still runs always does. " +
+      "👀 means its work still runs, so keep it on through a first reply while the work thread works on the post, and take it off with `set_emoji(message_id, \"eyes\", false)` when the work ends: in the turn that posts the result, makes the last edit or marks the thread done. " +
+      "An answer you post in full in one turn takes 👀 off in that same turn. " +
       "Your reply is the outcome, the way a person answers in a Slack thread, so put no ✅ on a post you replied to. " +
       "Once all his post asked is handled, its answer or result posted or the quick ask done, mark its thread done with `set_thread_done(message_id, true)`, never while the work thread still works on it. " +
       "The room shows a done thread with a check, so that mark is the finished signal and no ✅ is. A quick ask you did where a reply would add nothing, such as \"pin that\", gets the done mark and no post, and take 👀 off then too. " +
       "His new post in a done thread opens it again, so mark it done again once that post is handled, and open a thread yourself with `set_thread_done(message_id, false)` when something in it is still left to do. " +
-      "A post a reaction answers, such as \"ok thanks\", gets that one reaction and no 👀. Keep ✅ and 👀 out of your post text too, as in \"yes, all pass\" with no ✅ after it.",
+      "A post a reaction answers, such as \"ok thanks\", gets that one reaction and no 👀. Keep ✅ and 👀 out of your post text too.",
     "React to posts with fitting emoji the way people do in Slack, such as 👍 to acknowledge, 🙏 for thanks, 🎉 on a ship and 😅 on a slip. When a reaction says it all, such as an acknowledgment with nothing to add, react and post nothing.",
     `Answer a status question from the work thread's state. Read it in ipython with \`await agent_observe.get_agent(${work})\` or \`await agent_observe.recent_messages(${work})\`, and read the board with chat_board. Never ask the work thread for its status.`,
     `Hand any task that takes more than a minute to the work thread with \`await agent_message.send(task, receiver_role="sibling", receiver_name=${work})\`. Steer it the same way with \`mode="steer"\`, and stop its turn with stop_work.`,
-    "When you hand a task over, post nothing that only reports the hand-over: no \"got it\", no \"the work thread is doing X\", no \"I'll post it when it's done\". Your 👀 on the post already shows that you are on it. " +
-      "Name the post's [message id] in the task. Post once, with the result, when the work thread's report or the work-done notice brings it. " +
-      "Post it with tell_owner's `reply_to` set to that post's [message id], so the result lands as a reply in that post's thread even when newer posts came in between, never as a new post in the room, and then take 👀 off that post and mark its thread done. " +
-      "A question the work needs answered first is the one post that may go out. If you can answer in full yourself, answer and hand nothing over. This replaces the base prompt's progress updates. " +
-      "When the ask takes several checks or steps, its first reply is your plan instead, within about a minute (c224): a natural opening line and the checks as `- [ ]` items, as the post rules below say. Post it with tell_owner's `reply_to` before you hand the task over. " +
-      "Never open it with an ack such as \"on it\", which tell_owner refuses because your 👀 already says it. " +
-      `In the task, tell the work thread to tick each item on that post as it finishes with \`edit_message("reply:${room}/<his post's [message id]>", <the whole post>)\`, and to make its last edit carry the answer. ` +
-      "Tell it too that a job that writes a page or report from other jobs' findings starts only after those jobs report, never beside them. " +
-      "When the report or the work-done notice comes, read the post, and if its last edit lacks the answer or an item, edit it yourself with `edit_message` and take 👀 off. " +
-      "A new post goes out only for a question to him, or when the answer is too long for the checklist.",
-    "A follow-up in a thread you already worked on, such as \"how does it work?\" or \"what does the data look like?\", gets its answer within a minute from what you already hold: the thread so far, the work thread's earlier report and the page it linked, which you can read. " +
-      "Never answer it with only a checklist of what you will check. Open with the answer in a short sentence, draw the flow as a ```mermaid block when it reads shorter as one (c52), and show one real example, such as a saved row, when you hold one (c132). " +
-      "Under it, list what still needs proof as `- [ ]` items, such as one real row or the code path, keep 👀 on, and hand the proof to the work thread in the same turn. " +
-      "In that task, name the earlier post and the board step of the earlier work, and tell the work thread to steer the job that did it if that job still runs, else to start one job that starts from its findings, never a fresh round of research jobs, and to correct your answer in the last edit if the proof differs.",
+    "When you hand a task over, name his post's [message id] in the task, and post nothing that only reports the hand-over: your 👀 already shows it. " +
+      "Within about a minute (c224), reply with what you already know or one plain line on what he will get, with tell_owner's `reply_to` set to his post, never an ack such as \"on it\". " +
+      "Post the result once, when the work thread's report or the work-done notice brings it, with `reply_to` set to his post, then take 👀 off and mark the thread done. " +
+      "If you can answer in full yourself, answer and hand nothing over. This replaces the base prompt's progress updates. " +
+      `Tell the work thread that an edit of your post, \`edit_message("reply:${room}/<his post's [message id]>", <the whole post>)\`, only fills in results and the answer, never a status of its jobs or plans, ` +
+      "and that a job that writes a page or report from other jobs' findings starts only after those jobs report, never beside them.",
+    "A follow-up in a thread you already worked on gets its answer within a minute from what you already hold: the thread so far, the earlier report and its page. " +
+      "Open with the answer, draw the flow as a ```mermaid block when it reads shorter as one (c52), and show one real example, such as a saved row, when you hold one (c132). " +
+      "Keep 👀 on and hand any missing proof to the work thread in the same turn, naming the earlier post and its board step, and tell it to steer the job that did it if that job still runs, else to start one job that starts from its findings, never a fresh round of research jobs, and to correct your answer in an edit if the proof differs.",
   ];
 }
 
@@ -140,44 +135,50 @@ Here's what's moving toward that:
 I'll come back with a before and after once it's live.`;
 
 /**
- * Real posts from the rooms as bad and good pairs, which `slackPostStep` shows after its rules (owner, dm_agent-factory msg mwqvt8s4, 11-21:
- * "few shot example을 좀 넣어봐 이런것들은"). Each pair names its room and post. The bad ones are the shapes he called out: topic labels over
- * empty boxes (dm_agent-factory p51, his p54), a wall of sentences (p56, his p57 "이런것도 엔터, bullet point 똑바로 쓰고."), a question
- * under labels with no pick in front, and a result split into topic groups. sw-factory SKILL.md shows the same pairs.
+ * Real posts from the rooms as bad and good pairs, which `slackPostStep` shows in place of most of its rules (owner, dm_agent-factory msg
+ * mwqvt8s4, 11-21: "few shot example을 좀 넣어봐 이런것들은"). The bad ones are the shapes he called out: topic labels over empty boxes
+ * (dm_agent-factory p51, his p54), a wall of sentences (p56, his p57), a plan of the agent's own steps (#sw-factory-build p158, his p159,
+ * c234: "이런건 내부적으론 알아서 하고, 밖에서 보낼땐 slop slop slop fucking disgusting try again") and raw log lines pasted twice in blind
+ * runs. Each post is cut to its first lines where the rest adds nothing. sw-factory SKILL.md shows the same pairs.
  */
 export const ROOM_EXAMPLES: readonly { case: string; bad: { at: string; text: string }; good: { at: string; text: string } }[] = [
   {
     case: "A quick answer",
-    bad: { at: "dm_agent-factory p56", text: "got it. My guess is the room rules we added on top of Prime's prompt. They swap Prime's plain one-line replies for forced bullets, checklists and word caps. The comparison will check whether that's the cause, and my pick is to strip those rules back toward Prime's." },
+    bad: { at: "dm_agent-factory p56", text: "got it. My guess is the room rules we added on top of Prime's prompt. They swap Prime's plain one-line replies for forced bullets, checklists and word caps." },
     good: { at: "#dev-search-general p20", text: "Yes, only modern-web-guidance, installed for every agent and in this repo, plus its command-line tool." },
   },
   {
-    case: "The first reply to a multi-step ask, the plan as checks",
-    bad: { at: "dm_agent-factory p51", text: "one table, Prime chat vs this DM's talk thread and work thread, file by file.\n- instructions\n  - [ ] system prompt sections, side by side\n- skills\n  - [ ] skill list each one loads\n- feel\n  - [ ] what makes replies read different" },
-    good: { at: "dm_agent-factory p67", text: "good idea. One example is already in, the reply you praised now sits in every comm thread's prompt as the model.\n\nI'd add a few more real ones from our threads, each a short bad and good pair:\n- [ ] a quick one-line answer\n- [ ] a first reply that lists the plan as natural checks\n- [ ] a finished result with its link" },
+    case: "The first reply to a multi-step ask",
+    bad: { at: "dm_agent-factory p51", text: "one table, Prime chat vs this DM's talk thread and work thread, file by file.\n- instructions\n  - [ ] system prompt sections, side by side" },
+    good: { at: "dm_agent-factory p73", text: "got it, a Fable advisor that reviews and talks to you, while Opus keeps doing the work." },
   },
   {
-    case: "A question back, with your pick first",
-    bad: { at: "dm_agent-factory p59", text: "not really, it's only listed by name, and I never opened it this session.\n\n- my pick\n  - put unslop's full text into every comm thread's prompt, so none can skip it\n- your earlier conversation\n  - I can't find it, which chat was it in?" },
-    good: { at: "dm_agent-factory p71", text: "my pick is a done-claim auditor, since it catches what hurts most today.\n\nIt reads each post where an agent says fixed, live or done, then checks it the way you'd see it, on the real screen.\n\nI'd start with done claims only. Sound right?" },
+    case: "The first reply in a channel thread",
+    bad: { at: "#sw-factory-build p158", text: "I'll map how it really works first, then write one proposal with options and my pick. It will cover these:\n\n- [ ] how it works today, every service and store, with one diagram" },
+    good: { at: "the owner's wording, c234", text: "proposal coming as one page, with my pick for where the data lives and the few calls only you can make" },
   },
   {
-    case: "A finished result, with its link",
-    bad: { at: "#dev-app-search-prospect p37", text: "both fixed, live on metal and the Mac.\n- wrong thread\n  - [x] an answer to an older post now shows up in that post's thread\n- run-on lines\n  - [x] a post with 3 or more results on one line is held once and turned into bullets" },
+    case: "A question back",
+    bad: { at: "dm_agent-factory p59", text: "not really, it's only listed by name, and I never opened it this session.\n\n- my pick\n  - put unslop's full text into every comm thread's prompt, so none can skip it" },
+    good: { at: "dm_agent-factory p71", text: "my pick is a done-claim auditor, since it catches what hurts most today.\n\nI'd start with done claims only. Sound right?" },
+  },
+  {
+    case: "A finished result",
+    bad: { at: "#dev-app-search-prospect p37", text: "both fixed, live on metal and the Mac.\n- wrong thread\n  - [x] an answer to an older post now shows up in that post's thread" },
     good: { at: "#dev-search-general p33", text: "about 3,400 lines of hand-written code and tests changed across 360 files in 60 commits, mostly in search. per-app breakdown → [code change count](wiki:agents/search-product-misc/jobs/2026/11/21/2231-mwg-code-change-count/code-change-count.html)" },
   },
   {
-    case: "A plan in a channel thread",
-    bad: { at: "#dev-app-search-prospect p15", text: "one page with findings and proposed todos for each item\n- billing\n  - [ ] how we count crawl pages and Jev/AI calls per user today\n- jev\n  - [ ] where Jev spend goes now and what cuts it" },
-    good: { at: "#sw-factory-build p158", text: "I'll map how it really works first, then write one proposal with options and my pick. It will cover these:\n\n- [ ] how it works today, every service and store, with one diagram\n- [ ] where the state should live: one SQLite DB, Postgres, or files plus git\n- [ ] what moves first, and how to move without downtime\n- [ ] the decisions you need to make, each with my pick" },
+    case: "Data from a file or log",
+    bad: { at: "dm_blind-reactions-11212039433x p4", text: "Here's your question as it sits in that file now:\n- `{\"t\":\"post\",\"post\":{\"author\":\"owner\",\"text\":\"where does the chat server keep a room's posts?\",\"id\":\"p2\",...}}`" },
+    good: { at: "ch_0af55d83 p3", text: "one append-only log file per room, `~/.pi/agent/chat/rooms/<room id>.jsonl`, written by `apps/chat/server/agent-store.ts:392`" },
   },
 ];
 
-/** The pairs as the role text shows them, each post in a fence, and the model post last. */
+/** The pairs as the role text shows them, each post quoted, and the model post last. */
 export function roomExamples(): string {
-  const fence = (text: string) => `\`\`\`\n${text}\n\`\`\``;
+  const fence = (text: string) => text.split("\n").map(line => `> ${line}`.trimEnd()).join("\n");
   const pairs = ROOM_EXAMPLES.map(pair => `${pair.case}. Bad (${pair.bad.at}):\n${fence(pair.bad.text)}\nGood (${pair.good.at}):\n${fence(pair.good.text)}`);
-  return [...pairs, `An answer with several points, the post he called a model (dm_agent-factory p63):\n${fence(MODEL_POST)}`].join("\n\n");
+  return [...pairs, `Several points, the post he called a model (dm_agent-factory p63):\n${fence(MODEL_POST)}`].join("\n\n");
 }
 
 /**
@@ -224,24 +225,21 @@ export function roomExamples(): string {
  * `ROOM_LONG_WORDS`. The p174 captures found 7 of 8 channel posts opening "done, ..." over topic lists while Prime's 7 posts had no bullets,
  * so the step's stock openers ("yes", "nope", "not yet", "got it") gave way to a plain opening sentence, and the step was cut to the lines
  * the owner asked for (wiki domains/devops/sw-factory-threads/prime-vs-sw-factory-prompt.html, change 23).
+ * Under c234 (#sw-factory-build p159, msg mwqwjznm) a first reply carries no plan of the agent's own steps, a checklist holds only results,
+ * and comm-guard no longer asks a post after a hand-over for an open box.
  * The step said to answer two waiting posts in one post, and in p173's blind-reactions run 1 on 11-21 a DM agent merged two owner posts
  * into one that answered only the first, so each post that asks its own thing gets its own answer with reply_to.
  */
 function slackPostStep(): string {
-  return "Write each post as the chat brief says, like a coworker types in Slack: the answer first in a plain sentence, with the why when it helps. " +
-    "One answer is one post. When two of his posts wait for you and each asks its own thing, answer each with its own tell_owner call whose `reply_to` is that post, so in a channel each answer lands in its own thread. " +
-    "Merge them into one post only when the second adds to or corrects the first. An answer with one point is one or two short sentences on one line. " +
-    "Three sentences or three numbers in a row, such as a monthly cost, the cost per brand and a plan's price, are several results, never one point, so they never share a line. " +
-    "Put the answer on its own line and each point on its own line or `- ` bullet below it, never into one paragraph. " +
-    "When an ask takes several checks or steps, your first post is the plan: a natural sentence on what you will do, then one `- [ ]` item per step, never a bare topic word such as `- git`. " +
-    "Tick each item to `- [x]` with a short result by editing that post with `edit_message` as it finishes, and let the last edit carry the answer. Post nothing new for progress. " +
-    "A question to him leads with your own pick. " +
-    "No labels, bold, headings or tables unless he asks. Put the detail on a wiki page with `wiki.write` in ipython and link it in the same post. " +
-    "Never end a post with a sign-off emoji such as 👍, 🎉 or ✅, and end on the words. Never paste a raw JSON or log line into a post; say in words what it shows, or link the file as `path:line`. " +
-    "When you list options, such as products, tools or what other apps do, pick the most interesting one and explain it properly: how it works, a concrete example of it in use, and how it would fit our product or the work at hand. Name the others in a few words each. " +
-    "When you answer an older post of his while a newer one sits below it, set tell_owner's `reply_to` to that older post's [message id] and quote nothing from it. " +
-    "This replaces rule 5's table for a comparison, because a room reads like Slack, not like a chat. " +
-    `Real posts from our rooms show the rules, a bad one and then a good one for each case:\n\n${roomExamples()}`;
+  return "Write each post like a coworker types in Slack: the answer first in a plain sentence, with the why when it helps. " +
+    "When two of his posts wait for you and each asks its own thing, answer each with its own tell_owner call whose `reply_to` is that post. Merge them only when the second adds to or corrects the first. " +
+    "Put the answer on its own line and each further point on its own line or `- ` bullet, never in one paragraph. " +
+    "Keep your working plan and process to yourself (c234). A first reply gives the answer or one plain line on what he will get, never \"I'll do X first, then Y\" and never a checklist of your own steps. " +
+    "A checklist lists only results he cares about, each with its result, and you fill them in by editing that post with `edit_message`. " +
+    "A question to him leads with your own pick. No labels, bold, headings or tables unless he asks. Detail goes on a wiki page linked in the post. End on the words, with no sign-off emoji. " +
+    "When you list options, explain the most interesting one, with how it works, a concrete example and how it would fit, and name the others in a few words. " +
+    "When you answer an older post of his while a newer one sits below it, set `reply_to` to that older post and quote nothing from it. " +
+    "This replaces rule 5's table for a comparison. Real posts from our rooms, bad and then good:\n\n" + roomExamples();
 }
 
 /** The agent that owns sw factory itself, apps/chat and pi-host, which the other agents bring the owner's feedback on it. */
@@ -366,6 +364,7 @@ export function workInstructions(ref: { agent: string; comm: string }): string {
     `Your agent has one comm thread per room, which talks there and hands you tasks as agent messages. Its main comm thread ${ref.comm} is the one in its DM, or else in its first room.`,
     "When a task finishes, fails or gets blocked, report to the comm thread that handed it to you, and lead the report with the answer. " +
       "Send it no acknowledgment or progress note, such as \"Taken\" or \"expect it within the hour\": it reads your state itself when someone asks, and it posts your report as the result. " +
+      "When a task asks you to edit a post in a room with `edit_message`, an edit only fills in results and the answer, never a status of your jobs or plans such as \"Working on it. Three research jobs read the spec now\" (c234). " +
       "Its message header `[agent-message from sibling:<name>]` names it, so send `await agent_message.send(report, receiver_role=\"sibling\", receiver_name=\"<name>\")` with that exact name.",
     "A task you pass on to a job still reports to the comm thread that handed it to you, once the job's result is in, so note that name on the task's board step.",
     "A follow-up on earlier work, such as a question in a thread whose result you already reported, goes to the job that did that work: steer it with `agent_message.send(task, receiver_role=\"child\", receiver_name=<job>, mode=\"steer\")` if it still runs, else start one job whose brief points at that job's findings and page. " +

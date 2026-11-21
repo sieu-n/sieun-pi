@@ -209,10 +209,10 @@ test("tell_owner sends on the owner's turn, refuses a call with no why on a chec
   assert.ok(calls.some(call => call.method === "GET" && call.path === "/api/threads/tell/board"), "the check read the thread's board");
 });
 
-test("in a comm thread, a post after the turn's hand-over and a relay line are refused, and a question and a result go out", async () => {
+test("in a comm thread, a relay of the turn's hand-over is refused, and a question and a result go out", async () => {
   const steps: (Record<string, string> | null)[] = [
-    { text: "Makes sense, Accounts moves into a tab under Settings and leaves the top bar." },
-    { tool: SEND_MESSAGE_TOOL, text: "Makes sense, Accounts moves into a tab under Settings and leaves the top bar." },
+    { text: "Got it, the vent thread is now listing every panel." },
+    { tool: SEND_MESSAGE_TOOL, text: "Got it, the vent thread is now listing every panel." },
     { text: "Which repo should the panel list cover, auto-sns-agent only or every repo?" },
     null,
     { text: "The work thread is reading threads.ts now, the last of the 20 files." },
@@ -244,10 +244,10 @@ test("in a comm thread, a post after the turn's hand-over and a relay line are r
   await harness.close(context);
   const sent = all.find(result => result.name === SEND_MESSAGE_TOOL)!;
   assert.equal(sent.isError, true);
-  assert.match(sent.text, /Not sent: you handed this to your work thread in this turn/, "send_message gets the same check");
+  assert.match(sent.text, /reports the hand-over you made in this turn/, "send_message gets the same check");
   assert.equal(told.length, 6);
   assert.equal(told[0]!.isError, true);
-  assert.match(told[0]!.text, /Not sent: you handed this to your work thread in this turn/);
+  assert.match(told[0]!.text, /reports the hand-over you made in this turn/);
   assert.equal(told[1]!.text, "told the owner", "a question goes out after the hand-over");
   assert.equal(told[2]!.text, "told the owner", "progress answers the owner's own status question");
   assert.match(told[3]!.text, /Not sent: "I'll post the wiki link here once" announces a hand-over/);
@@ -416,9 +416,9 @@ test("edit_message posts the agent's edit of its own post as the thread, returns
   ]);
 });
 
-test("edit_message's own text tells the agent to keep a checklist in one post and edit it as items finish", () => {
-  assert.match(EDIT_MESSAGE_DESCRIPTION, /edit that same post as each item finishes, change `- \[ \]` to `- \[x\]` with a short result/);
-  assert.match(EDIT_MESSAGE_DESCRIPTION, /put the answer in the last edit/);
+test("edit_message's own text says to correct or complete a post with results, never a status of jobs or plans (c234)", () => {
+  assert.match(EDIT_MESSAGE_DESCRIPTION, /Use it to correct or complete a post instead of posting again, such as filling in each result on a list of findings he asked for/);
+  assert.match(EDIT_MESSAGE_DESCRIPTION, /so the last edit carries the answer\. An edit adds results and the answer, never a status of jobs or plans/);
   assert.match(EDIT_MESSAGE_DESCRIPTION, /You can edit only your own posts/);
 });
 

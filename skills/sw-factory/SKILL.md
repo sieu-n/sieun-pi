@@ -24,21 +24,23 @@ The owner said so on 11-20: "no this is not Chat. this is Slack."
    On 11-20 Search product, misc. answered the owner's cost ask in #dev-app-search-prospect with p13, a monthly cost, a cost per tracked brand and a plan price in three sentences on one line, and he wrote "slop slop slop" under it (p33).
    On 11-21 agent factory answered him in four sentences on one line (dm_agent-factory p56), and he wrote "이런것도 엔터, bullet point 똑바로 쓰고." (p57, msg mwqtjlth, c233).
    tell_owner holds once a post with a line outside its list of 3 or more sentences or 3 or more clauses with a number (`crammedLine` in `packages/pi-host/src/durable/comm-guard.ts`), and the same text sent again goes out.
-5. An ask that takes several checks or steps first gets one post that the agent edits with `edit_message` as items finish, so the last edit carries the answer and no new post goes out for progress.
-   A checklist post opens with a natural sentence that fits the place (conversational in a DM, a natural channel post in a channel), and its items are short plain sentences with no bare one-word topic labels.
-   A follow-up question is fine but always carries the agent's primary suggestion, such as "I'd diff the live prompts, unless you want last week's too?".
-   It never opens with an ack such as "on it", which tell_owner's relay check refuses.
+5. An agent keeps its working plan and process to itself, and a first reply gives the answer or one plain line on what he will get, such as "proposal coming as one page, with my pick for where the data lives and the few calls only you can make".
+   It never says "I'll do X first, then Y" and never posts a checklist of its own steps, since the owner wrote under #sw-factory-build p158, a plan of five process boxes: "이런건 내부적으론 알아서 하고, 밖에서 보낼땐 slop slop slop fucking disgusting try again" (p159, msg mwqwjznm, c234).
+   A checklist lists only results he cares about, such as findings or items he asked for, each item with its result, filled in by editing that post with `edit_message`, and an edit never adds a status of jobs or plans.
+   Such a list opens with a natural sentence that fits the place (conversational in a DM, a natural channel post in a channel), and its items are short plain sentences with no bare one-word topic labels (p54).
+   A follow-up question is fine but always carries the agent's primary suggestion.
+   comm-guard no longer asks a post after a hand-over for a question or an open `- [ ]` item, so the plain line goes out, and a post with relay words is still refused.
 6. A post stays within 120 words, counted without list markers, which tell_owner and `edit_message` hold once in a room and let through when the same text is sent again (`ROOM_LONG` in `packages/pi-host/src/durable/room-post.ts`, c98).
    A Prime chat's 80-word cap held the owner's model post below, at 92 words, and 14 of 1,315 agent room posts ran over 120 on 11-21.
 7. Lowercase and a fitting emoji are fine, and labels, bold and headings are out.
 8. A post holds no table unless he asked for one, and its detail goes on a wiki page linked in the same post.
 9. When a reaction says it all, the agent reacts and posts nothing.
-10. A post ends on its words with no sign-off emoji such as 👍 or 🎉, and it says what a JSON or log line shows instead of pasting it.
+10. A post ends on its words with no sign-off emoji such as 👍 or 🎉, and it says what a JSON or log line shows instead of pasting it, as the last pair below shows.
 11. A list of options, such as products, tools or what other apps do, explains its most interesting one properly, with how it works, a concrete example and how it would fit us, and names the rest in a few words each.
 
 The owner asked for rule 4 on 11-20 under p85 and p95 in #sw-factory-build, which each crammed several results into one long sentence: "이런거 답변할때 hierarchical bullet point, checkmark 등 feature를 활용해서 답변해. like multiple todoes, points, …" (p101).
 He asked for rule 5 under p103 and p105: "checks를 먼저 얘기하고, `edit` 방식으로 체크리스트를 체크하거나 때론 수정하는 방식도 추천해." (p106).
-When a comm thread hands such an ask to its work thread, it posts the checklist first, and the work thread ticks the items with `edit_message("reply:<room>/<his post id>", <whole post>)`.
+Under c234 that checklist holds only results, and the work thread fills them in with `edit_message("reply:<room>/<his post id>", <whole post>)`.
 The checklist then grew topic bullets of a word or two and a 20-word cap on its top line, and on 11-21 dm_agent-factory p51 opened with "one table: Prime chat vs ..., file by file." over bare topic labels with empty boxes, which read like a form.
 He wrote under it: "그리고 이럴때 todo를 리스트하는건 좋은데, 자연스럽게 해야지 메시지면 메시지 context에 맞게, channel 도중이면 channel message concept에 맞게. 그리고 follow-up question 물어도 돼 괜찮아 대신 primary suggestion은 꼭 두고" (p54, msg mwqt6ry1).
 Prime's tell_owner text and the chat brief's tell_owner line still asked for one point in one or two sentences with no bullets, so a comm thread gets both without their shape rules (`room-post.ts`), and the comm role text is the one place for how a post looks ([Prime vs sw factory prompt](wiki:domains/devops/sw-factory-threads/prime-vs-sw-factory-prompt.html)).
@@ -58,89 +60,78 @@ I'll come back with a before and after once it's live.
 ```
 
 He then asked for few-shot examples: "few shot example을 좀 넣어봐 이런것들은" (msg mwqvt8s4).
-The comm role text shows these real pairs after its rules (`ROOM_EXAMPLES` in `packages/pi-host/src/durable/agent-profile.ts`), a bad post and then a good one for each case, and the model post above last.
+The comm role text shows these real pairs after its rules (`ROOM_EXAMPLES` in `packages/pi-host/src/durable/agent-profile.ts`), a bad post and then a good one for each case, each cut to its first lines, and the model post above last. The good post for a channel's first reply is the owner's own wording from c234, since no real post fit.
 
 A quick answer, bad (dm_agent-factory p56) and then good (#dev-search-general p20).
 
 ```markdown
-got it. My guess is the room rules we added on top of Prime's prompt. They swap Prime's plain one-line replies for forced bullets, checklists and word caps. The comparison will check whether that's the cause, and my pick is to strip those rules back toward Prime's.
+got it. My guess is the room rules we added on top of Prime's prompt. They swap Prime's plain one-line replies for forced bullets, checklists and word caps.
 ```
 
 ```markdown
 Yes, only modern-web-guidance, installed for every agent and in this repo, plus its command-line tool.
 ```
 
-The first reply to a multi-step ask, the plan as checks, bad (dm_agent-factory p51) and then good (dm_agent-factory p67).
+The first reply to a multi-step ask, bad (dm_agent-factory p51) and then good (dm_agent-factory p73).
 
 ```markdown
 one table, Prime chat vs this DM's talk thread and work thread, file by file.
 - instructions
   - [ ] system prompt sections, side by side
-- skills
-  - [ ] skill list each one loads
-- feel
-  - [ ] what makes replies read different
 ```
 
 ```markdown
-good idea. One example is already in, the reply you praised now sits in every comm thread's prompt as the model.
-
-I'd add a few more real ones from our threads, each a short bad and good pair:
-- [ ] a quick one-line answer
-- [ ] a first reply that lists the plan as natural checks
-- [ ] a finished result with its link
+got it, a Fable advisor that reviews and talks to you, while Opus keeps doing the work.
 ```
 
-A question back, with your pick first, bad (dm_agent-factory p59) and then good (dm_agent-factory p71).
+The first reply in a channel thread, bad (#sw-factory-build p158) and then good (the owner's wording, c234).
+
+```markdown
+I'll map how it really works first, then write one proposal with options and my pick. It will cover these:
+
+- [ ] how it works today, every service and store, with one diagram
+```
+
+```markdown
+proposal coming as one page, with my pick for where the data lives and the few calls only you can make
+```
+
+A question back, bad (dm_agent-factory p59) and then good (dm_agent-factory p71).
 
 ```markdown
 not really, it's only listed by name, and I never opened it this session.
 
 - my pick
   - put unslop's full text into every comm thread's prompt, so none can skip it
-- your earlier conversation
-  - I can't find it, which chat was it in?
 ```
 
 ```markdown
 my pick is a done-claim auditor, since it catches what hurts most today.
 
-It reads each post where an agent says fixed, live or done, then checks it the way you'd see it, on the real screen.
-
 I'd start with done claims only. Sound right?
 ```
 
-A finished result, with its link, bad (#dev-app-search-prospect p37) and then good (#dev-search-general p33).
+A finished result, bad (#dev-app-search-prospect p37) and then good (#dev-search-general p33).
 
 ```markdown
 both fixed, live on metal and the Mac.
 - wrong thread
   - [x] an answer to an older post now shows up in that post's thread
-- run-on lines
-  - [x] a post with 3 or more results on one line is held once and turned into bullets
 ```
 
 ```markdown
 about 3,400 lines of hand-written code and tests changed across 360 files in 60 commits, mostly in search. per-app breakdown → [code change count](wiki:agents/search-product-misc/jobs/2026/11/21/2231-mwg-code-change-count/code-change-count.html)
 ```
 
-A plan in a channel thread, bad (#dev-app-search-prospect p15) and then good (#sw-factory-build p158).
+Data from a file or log, bad (dm_blind-reactions-11212039433x p4) and then good (ch_0af55d83 p3).
 
 ```markdown
-one page with findings and proposed todos for each item
-- billing
-  - [ ] how we count crawl pages and Jev/AI calls per user today
-- jev
-  - [ ] where Jev spend goes now and what cuts it
+Here's your question as it sits in that file now:
+- `{"t":"post","post":{"author":"owner","text":"where does the chat server keep a room's posts?","id":"p2",...}}`
 ```
 
 ```markdown
-I'll map how it really works first, then write one proposal with options and my pick. It will cover these:
-
-- [ ] how it works today, every service and store, with one diagram
-- [ ] where the state should live: one SQLite DB, Postgres, or files plus git
-- [ ] what moves first, and how to move without downtime
-- [ ] the decisions you need to make, each with my pick
+one append-only log file per room, `~/.pi/agent/chat/rooms/<room id>.jsonl`, written by `apps/chat/server/agent-store.ts:392`
 ```
 
 The owner asked for rule 11 on 11-20 in #sw-factory-build, after agent factory listed Hey, Superhuman, Gmail and Linear in one line each: "Superhuman's "remind me if no reply" intereseting can you elaborate? 이런거 말할떄는 가장 흥미로운거 하나는 제대로 설명해야지^^" (p97).
@@ -171,7 +162,7 @@ He drew the line in p110: a request about one product or scope goes to that agen
 
 The owner wrote on 11-20 in #sw-factory-build: "시작하면서 눈까리 붙였으면 끝났을 떄 떼야지 / 체크도 남발하지 마 제발 the final outcome should ALWAYS act like a Slack thread".
 
-1. An agent puts 👀 on a post when it starts on it and keeps it on while that post's work runs, through a first reply or checklist, and takes it off in the turn that posts the result, makes the checklist's last edit or marks the thread done.
+1. An agent puts 👀 on a post when it starts on it and keeps it on while that post's work runs, through a first reply, and takes it off in the turn that posts the result, makes the last edit or marks the thread done.
    An answer posted in full in one turn takes 👀 off in that same turn.
    Until 11-21, 👀 came off with the first reply, and in the owner's p128 trace his #dev-app-search-prospect p14 then showed no mark for 27 min while the work ran ([message flow example](wiki:domains/devops/sw-factory-threads/message-flow-example.html)).
    His p75 words, "끝났을 떄 떼야지", ask for 👀 to come off when the work ends, so it now stays until then.
@@ -185,7 +176,7 @@ The owner wrote on 11-20 in #sw-factory-build: "시작하면서 눈까리 붙였
    On 11-21 in #dev-app-search-prospect the comm thread answered his p9 "is our API serving?" after his newer cost ask p11, opened with "> is our API serving?" as the role text then said, and set no `reply_to`, so the answer sat under p11 and he wrote "slop slop slop" (p33).
    A post with no `reply_to` now goes to the post its round's closing calls name, such as `set_emoji` taking 👀 off, `mark_message` completed or `set_thread_done` true, and a resend after a refused post goes where the refused one was aimed (`closedPost` in `apps/chat/server/rooms.ts`).
 7. A follow-up in a thread the agent already worked on, such as "how does it work?", gets its answer within a minute from what the comm thread holds, the thread so far and the earlier report and page, with a mermaid diagram when the flow fits one and a real example such as a saved row (c52, c132).
-   The proof still to check follows as `- [ ]` items, 👀 stays on, and the last edit confirms or corrects the answer.
+   The work thread checks what still needs proof, 👀 stays on, and an edit confirms or corrects the answer, with no list of the checks (c234).
    In the trace, p16 "데이터가 & flow가 정확하게 어떤식으로 구성되어있어?" got only a checklist, and its first finding came 5.6 min later.
 8. The work thread steers the job that did the earlier work when it still runs, and otherwise starts one job seeded from that job's findings, never a fresh round of research jobs, because p16 started 3 new jobs that read again what p14's jobs had found.
 9. A job that writes a page from other jobs' findings starts after those jobs report, because p14's writer started beside the researchers, sat idle and exited with no reply.
@@ -226,7 +217,7 @@ A new param on an agent tool gets the same check: its tool and param text say wh
    For 👀 until the work ends, a follow-up answered within a minute and the jobs a follow-up starts, run `node apps/chat/scripts/blind-follow-up.mjs --out ~/work/<job>/blind-runs.jsonl`.
    For the thread done flag, run `node apps/chat/scripts/blind-thread-done.mjs --out ~/work/<job>/blind-runs.jsonl`, which checks the root reads done after the answer, open after an owner follow-up and done again after its answer.
 4. The script makes a `test: true` agent and channel, posts the asks as the owner with no hint about format, and checks each answer for one post, no table, no labels, for a plain reply the room's lengths (120 words, no sentence over 35), and with `--set lists` for a one-line answer over a task list, and for one short line.
-   With `--set checklist` it checks for open tasks in the first version, an edit after it, ticked tasks and a one-line answer on top.
+   With `--set checklist` it checks for open tasks in the first version, an edit after it, ticked tasks and a one-line answer on top, which c234 retired for a first reply, so read its fails on open tasks against rule 5.
 5. Read every reply yourself against the pairs, because tone is a judgment the script cannot make, and take a shot of the thread pane.
 6. Record each run's pass or fail with its replies in the job's wiki folder.
 7. On a fail, change the code defaults or the tool text and run again with a new agent, until a run passes.

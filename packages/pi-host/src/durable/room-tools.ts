@@ -12,8 +12,8 @@
  * `set_room_member` (`room-members.ts`) adds an agent to a channel or Solo room or removes it.
  *
  * `edit_message` replaces the text of one of the agent's own posts, as Slack's `chat.update` does, through apps/chat's edit of the owner's
- * posts (app.ts `rewrite`): the room shows it with (edited) at once and no new post. An agent posts a checklist of what it will check and
- * edits that same post as items finish, instead of a new post per step (owner p106, c207).
+ * posts (app.ts `rewrite`): the room shows it with (edited) at once and no new post. An agent fills in results and the answer on its own
+ * post instead of a new post per step (owner p106, c207), and never edits in a status of its jobs or plans (c234).
  * An edit that runs long by tell_owner's check is held once with a note, and the same text sent again goes out (`longEdit`, c98).
  *
  * `list_for_me_messages` and `mark_message` (`for-me.ts`) read the agent's For list and mark its items, and `save_message`, `remind_me` and
@@ -44,10 +44,9 @@ export const SET_EMOJI_DESCRIPTION =
 
 export const EDIT_MESSAGE_DESCRIPTION =
   "Replace the text of one of your own posts, as Slack's edit does. The post keeps its place, its thread and its reactions, and the room shows " +
-  "it with (edited) at once, with no new post and no notification. Use it to keep one post current instead of posting again: when your reply " +
-  "is a checklist of what you will check or do, edit that same post as each item finishes, change `- [ ]` to `- [x]` with a short result " +
-  "after the item, add or reword items when the plan changes, and put the answer in the last edit. You can edit only your own posts. " +
-  "The result names the post, such as p14, so a later edit can use that id.";
+  "it with (edited) at once, with no new post and no notification. Use it to correct or complete a post instead of posting again, such as " +
+  "filling in each result on a list of findings he asked for, so the last edit carries the answer. An edit adds results and the answer, " +
+  "never a status of jobs or plans. You can edit only your own posts. The result names the post, such as p14, so a later edit can use that id.";
 
 export interface EditMessageArgs { message_id: string; text: string }
 

@@ -3,13 +3,13 @@
  * its own work. tell_owner runs this check in a comm thread before Prime's guard (`prime-chat.ts`), and a refusal comes back as the tool's
  * error, so the model reads why and ends the turn.
  *
- * 1. A post in the turn that handed the work thread a task (`CommHandedDoc`, written by `threads.ts` `sendRoot`) is refused, unless it asks a
- *    question or is a checklist with an open `- [ ]` item, and has no relay words. The agent's 👀 on the post shows it is on it, and the
- *    result comes once, from the work thread's report or the work-done notice, or as the last edit of that checklist. On 11-20 the owner
- *    asked for the checklist (#sw-factory-build p106): "checks를 먼저 얘기하고, `edit` 방식으로 체크리스트를 체크하거나 때론 수정하는 방식도
- *    추천해." On 11-03 vent's comm thread handed the panel list over and then posted "The vent thread is now listing every panel,
- *    ...", and the agent factory comm thread answered the owner's complaint about that line with "Got it, ..." and "The agent factory work
- *    thread is building all five now, ...", both after its hand-over in the same turn.
+ * 1. A post with relay words in the turn that handed the work thread a task (`CommHandedDoc`, written by `threads.ts` `sendRoot`) is refused.
+ *    The agent's 👀 on the post shows it is on it, and the result comes once, from the work thread's report or the work-done notice. On
+ *    11-03 vent's comm thread handed the panel list over and then posted "The vent thread is now listing every panel, ...", and the agent
+ *    factory comm thread answered the owner's complaint about that line with "Got it, ..." and "The agent factory work thread is building
+ *    all five now, ...", both after its hand-over in the same turn. Until 11-21 the rule also refused any such post with no question and
+ *    no open `- [ ]` item, which pushed agents to post a checklist of their own steps, and the owner called one (#sw-factory-build p158)
+ *    "slop slop slop" (p159, c234). Now a plain line on what he will get goes out.
  * 2. A post with hand-over words (`relay-line.ts`) is refused on any turn.
  * 3. A post with progress words is refused unless the owner started the turn with a question (`asks`), which the progress may answer. On
  *    11-03 chrome extension answered the owner's "proxy가 아니라 근데 Client browser에서" with "... A job is testing whether that can be
@@ -61,19 +61,15 @@ const TABLE = /^[ \t]*\|?.*\|.*\n[ \t]*\|?[ \t]*:?-{3,}:?[ \t]*(?:\|[ \t]*:?-{3,
 /** Whether a post holds a markdown table. */
 export const hasTable = (text: string): boolean => TABLE.test(text);
 
-/** Whether a post holds an open task item, `- [ ] ...`, as the checklist a comm thread posts when it hands over a multi-step ask. */
-export const hasOpenTask = (text: string): boolean => /^[ \t]*[-*+] \[ \] \S/m.test(text);
-
 /** Whether the owner's post asks for a table, in English or in the Korean he writes ("표로", "표 형식"). */
 export const asksTable = (text: string): boolean => /\btables?\b|\btabular\b|표로|표를|표 ?형식|표 ?형태/iu.test(text);
 
 /** Why a comm thread's post must not go out, or undefined when it may. */
 export function commPostRefusal(text: string, turn: CommPostTurn): string | undefined {
   const relay = relayWords(text);
-  if (turn.handed && (relay || !(text.includes("?") || hasOpenTask(text)))) {
-    return "Not sent: you handed this to your work thread in this turn. Your 👀 on the post already shows that you are on it, so post nothing " +
-      "about the hand-over and end the turn now. Post the result once, when the work thread's report or the [work-done ...] notice brings it. " +
-      "Only a question the owner must answer before the work can go on, or the checklist of a multi-step ask with its `- [ ]` items, goes out now.";
+  if (turn.handed && relay) {
+    return `Not sent: "${relay.words}" reports the hand-over you made in this turn, and your 👀 on the post already shows that you are on it. ` +
+      "Post what you already know or one plain line on what he will get, and the result once the work thread's report or the [work-done ...] notice brings it.";
   }
   if (relay?.kind === "handoff") {
     return `Not sent: "${relay.words}" announces a hand-over or a result to come. Your 👀 on the post already shows that the work runs, so post ` +
