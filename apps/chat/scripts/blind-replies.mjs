@@ -10,8 +10,8 @@
  * `{text, expect, wait}`, where `expect` is "reply" (one short Slack post), "list" (a one-line answer, then nested bullets and a task list,
  * as the owner asked under p85 and p95 in #sw-factory-build on 11-20, p101), "options" (names several apps and explains one in 20 words or
  * more, with an example and how it fits the asker's product, p97), "checklist" (one post of open `- [ ]` checks that edits tick off, p106), "natural" (a
- * checklist post that opens with a natural sentence, holds no bare topic labels, states a pick before any question, p54, and puts its answer
- * on its own first line with no 3-sentence wall, p57), "line" (one short line with
+ * post that opens with a natural sentence, then bullets with no bare topic labels, ticks any open task by an edit, states a pick before any
+ * question, p54, and puts its answer on its own first line with no 3-sentence wall, p57; natural-checks.mjs), "line" (one short line with
  * no bullets) or "reaction" (no post). An ask with `room: "dm"` goes to the agent's DM as a root post instead of the channel. `wait: false` sends the next ask at
  * once, so the agent answers both together, as when the owner sent p14 and p15 7 s apart on 11-20. The agent and the room are `test: true`, so no
  * owner list shows them. Each line of --out is one ask with its replies, its checks and pass or fail; the last line is the run's summary.
@@ -24,6 +24,7 @@ import { appendFileSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
+import { naturalChecks, words } from "./natural-checks.mjs";
 
 const { values } = parseArgs({ options: { asks: { type: "string" }, set: { type: "string" }, cwd: { type: "string" }, host: { type: "string" }, out: { type: "string" }, server: { type: "string" }, "no-reaction": { type: "boolean" } } });
 const server = values.server ?? "http://127.0.0.1:5184";
@@ -32,6 +33,11 @@ const QUIET_MS = 60_000;
 const POLL_MS = 3_000;
 /** A checklist post's edits come as the work thread finishes items, minutes apart, so its answer counts as whole only after this long with no edit. */
 const CHECKLIST_QUIET_MS = 5 * 60_000;
+/**
+ * A post that still holds an open `- [ ]` waits this long with no edit instead: in both DM runs of the natural set at 19:43Z on 11-21 the work
+ * thread edited the checklist again after a 5 min gap, so the jsonl missed the edits that ticked it.
+ */
+const OPEN_QUIET_MS = 15 * 60_000;
 
 /** The owner's kinds of asks from #dev-search-general and #sw-factory-build on 11-20. */
 const DEFAULT_ASKS = [
@@ -106,41 +112,11 @@ async function call(method, path, body) {
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 const TABLE = /^[ \t]*\|?.*\|.*\n[ \t]*\|?[ \t]*:?-{3,}:?[ \t]*(?:\|[ \t]*:?-{3,}:?[ \t]*)*\|?[ \t]*$/m;
-/**
- * A text's words as tell_owner's long check counts them (reply-lint.ts `longReply`), with no list or task marker counted: on 11-21 four
- * replies of the lists and checklist sets held 72 to 78 words and failed the 80-word check only on their `- ` and `- [x] ` markers.
- */
-const words = text => text.replace(/\]\([^)]*\)/g, "]").replace(/^[ \t]*(?:[-*+]|\d+[.)])[ \t]+(?:\[[ xX]\][ \t]+)?/gm, "").split(/\s+/).filter(Boolean).length;
 /** A post's sentences; a line break ends one too, since a bullet line seldom ends on a period and 3 bullets read as one 40-word sentence on 11-20. */
 const sentences = text => text.replace(/\]\([^)]*\)/g, "]").split(/(?<=[.!?])\s+|\n+/).filter(line => line.trim());
 
 const BULLET = /^\s*[-*+] /;
 const TASK = /^\s*[-*+] \[[ xX]\] /m;
-
-/** A word that makes a line a sentence: a pronoun, an auxiliary, a common verb, or a word ending in -ed or -ing. */
-const VERB = /\b(i|i'll|i'm|i've|i'd|we|we'll|we're|we'd|you|you'd|it|it's|they|here's|there's|let's|let me|is|are|was|were|be|been|has|have|had|do|does|did|can|can't|could|will|won't|would|should|need|needs|check|look|pull|read|reads|diff|compare|run|runs|ran|find|found|work|works|go|goes|start|dig|see|map|trace|test|write|pass|passes|fail|fails|pick|picks|keep|keeps|use|uses|handle|handles|get|gets|got|show|shows|take|takes|make|makes|stay|stays|lives|sits|holds|\w+ed|\w+ing)\b/i;
-/** A bullet's text with no list or task marker. */
-const item = line => line.replace(/^[ \t]*[-*+][ \t]+(?:\[[ xX]\][ \t]*)?/, "").trim();
-/** A bullet that is a bare topic label, such as `- git` or `- instructions`: one to three words, no verb; an empty task box counts too. */
-const bareLabel = line => BULLET.test(line) && (() => { const t = item(line).replace(/[:.]$/, ""); return !t || (t.split(/\s+/).length <= 3 && !VERB.test(t)); })();
-/** A natural opening line for the place: five words or more with a verb, no `label:` opener and no ack such as "on it". */
-const naturalLine = line => !BULLET.test(line) && words(line) >= 5 && VERB.test(line) && !/^[^:\n]{1,25}:\s*\S/.test(line) && !/^\W*on it\b/i.test(line);
-/**
- * The sentences of each line of a text, with code and link targets left out: a wall of text, such as dm_agent-factory p55 on 11-21, a
- * paragraph of the guess, the cause, the plan and the pick, holds 3 or more on one line, and the owner asked for "엔터, bullet point 똑바로" (p57).
- */
-const lineSentences = text => text.replace(/```[\s\S]*?```/g, "").replace(/`[^`\n]*`|\]\([^)]*\)/g, "x").split("\n").filter(line => line.trim())
-  .map(line => item(line).split(/(?<=[.!?])\s+/).filter(part => /\w/.test(part)).length);
-/** Words that state the agent's own pick, as the owner asked in p54: "primary suggestion은 꼭 두고". */
-const PICK = /\b(i'd (go|pick|start|use|lean|suggest|recommend|keep|stay|move|adapt|write|run)|my pick|i'll|i'm going|i suggest|suggest|recommend|unless you'd rather|i lean|lean toward|my vote|going with|default to)\b/i;
-/** Whether every question in a text comes with a pick in or before the paragraph that asks it; code, links and URLs hold no question. */
-const pickFirst = text => {
-  const clean = text.replace(/```[\s\S]*?```|`[^`\n]*`|\]\([^)]*\)|https?:\/\/\S+/g, " ");
-  const at = clean.indexOf("?");
-  if (at < 0) return true;
-  const end = clean.indexOf("\n\n", at);
-  return PICK.test(clean.slice(0, end < 0 ? clean.length : end));
-};
 
 /** Apps with a snooze or remind-later feature, mail and chat apps and the todo apps OPTIONS_ASKS asks about, which an answer names. */
 const APPS = ["Slack", "Superhuman", "Gmail", "Outlook", "Linear", "Discord", "Teams", "Spark", "Hey", "Front", "Missive", "Todoist", "Notion", "Telegram", "WhatsApp", "Apple Mail", "Shortwave", "Boomerang",
@@ -190,25 +166,7 @@ function checks(ask, posts, asked, versions = new Map()) {
       ["no line over 35 words", lines.every(line => words(line) <= 35)],
     ];
   }
-  if (ask.expect === "natural") {
-    const all = posts.flatMap(p => versions.get(p.id) ?? [p.text]);
-    const firstPost = posts[0] ? (versions.get(posts[0].id) ?? [posts[0].text]) : [];
-    const firstLine = (firstPost[0] ?? "").split("\n").find(line => line.trim()) ?? "";
-    return [
-      ...plain,
-      ["the first post opens with a natural sentence", naturalLine(firstLine.trim())],
-      ["no version holds a bare topic label bullet", all.every(t => !t.split("\n").some(bareLabel))],
-      ["the first post lists its steps as open tasks", (firstPost[0]?.match(/^\s*[-*+] \[ \] \S/gm) ?? []).length >= 2],
-      ["a later edit of the first post ticks tasks", firstPost.slice(1).some(t => /^\s*[-*+] \[[xX]\] /m.test(t))],
-      ["every question comes with the agent's pick", all.every(pickFirst)],
-      ["no line of any version holds 3 or more sentences", all.every(t => lineSentences(t).every(n => n < 3))],
-      ["the last version's answer sits alone on its first line", (() => {
-        const last = posts.at(-1) ? (versions.get(posts.at(-1).id) ?? [posts.at(-1).text]).at(-1) : "";
-        const counts = lineSentences(last);
-        return counts.length > 1 && counts[0] <= 2 && words(last.split("\n")[0]) <= 25;
-      })()],
-    ];
-  }
+  if (ask.expect === "natural") return [...plain, ...naturalChecks(posts.map(p => versions.get(p.id) ?? [p.text]))];
   if (ask.expect === "list") {
     return [
       ...plain,
@@ -267,7 +225,8 @@ for (const [index, ask] of asks.entries()) {
     }
     posts = now;
     const reacted = [thread.root, ...thread.items].find(i => i?.id === ask.id)?.reactions?.some(r => r.by.some(b => b.id === agent.id));
-    if (posts.length && Date.now() - lastNew > quiet) break;
+    const open = edited && posts.some(post => /^\s*[-*+] \[ \] /m.test(post.text));
+    if (posts.length && Date.now() - lastNew > (open ? OPEN_QUIET_MS : quiet)) break;
     if (!posts.length && ask.expect === "reaction" && reacted && Date.now() - started > QUIET_MS) break;
     if (Date.now() - started > (edited ? 2 * FIRST_MS : FIRST_MS)) break;
   }
