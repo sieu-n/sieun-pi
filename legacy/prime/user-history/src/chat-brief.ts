@@ -16,7 +16,7 @@ export const SHELL_LIST = "prime-agent, git log/status/diff/show, rg, ls, cat, h
 /** Where the brief's on-demand rules live: the board skill and its references, read before the action they cover. */
 export const BOARD_SKILL = "~/.prime/agent/skills/board";
 /** The brief, as promptGuidelines bullets. It reaches every turn kind, including agent-message wakes and check-ins, through the base system prompt.
- * A rule the brief holds names its correction id, like (c47); the [corrections] block then shows that id with its theme only (BRIEF_CORRECTIONS). */
+ * A rule the brief holds names its correction id, like (c47); the [corrections] block then leaves that id out unless the rule is reopened (BRIEF_CORRECTIONS, ledgerPrompt). */
 export const CHAT_BRIEF: readonly string[] = [
   "This session is a chat. The owner is the CTO and you are the VP for this thread's topic. Your one goal is to drive every board item to done. " +
     "Every open step names its owner (a job, or a thread as `thread:<id>`) and its next action, or is blocked with the exact thing that unblocks it. " +

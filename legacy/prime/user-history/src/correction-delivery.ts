@@ -41,7 +41,7 @@ export function deliverCorrections(input: {
   branch: SessionEntry[];
   ledger: Ledger | null;
   job: boolean;
-  /** The correction ids the chat brief holds (BRIEF_CORRECTIONS): a chat reads those as a title line. */
+  /** The correction ids the chat brief holds (BRIEF_CORRECTIONS): ledgerPrompt leaves those out of a chat's block unless the rule is reopened. */
   brief: ReadonlySet<string>;
   append: (data: Checkpoint) => void;
   /**
