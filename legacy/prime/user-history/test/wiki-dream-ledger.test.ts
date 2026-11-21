@@ -24,19 +24,32 @@ test("a trailer commit newer than the class's last opening reads as fixed, an ol
   const ledger: Ledger = {
     classes: {
       page_states_unlanded_commit: { status: "open", firstSeen: "2026-11-08T16:33Z", recurred: [] },
-      fix_before_found: { status: "open", firstSeen: "2026-11-08T12:00Z" },
+      fix_before_found: { status: "open", firstSeen: "2026-11-07T12:00Z" },
       back_after_old_fix: { status: "reopened", firstSeen: "2026-11-01T10:00Z", recurred: ["2026-11-08T09:00:00Z"] },
     },
   };
   const fixes = new Map<string, TrailerFix>([
     ["page_states_unlanded_commit", { repo: "sieun-pi", sha: "bddf1d97aa00000000000000000000000000000", at: at("2026-11-08T16:34:16Z") }],
-    ["fix_before_found", { repo: "sieun-pi", sha: "1111111111", at: at("2026-11-08T11:00:00Z") }],
+    ["fix_before_found", { repo: "sieun-pi", sha: "1111111111", at: at("2026-11-07T11:00:00Z") }],
     ["back_after_old_fix", { repo: "auto-sns-agent", sha: "2222222222", at: at("2026-11-02T10:00:00Z") }],
   ]);
   const states = classStates(ledger, at("2026-11-08T17:00:00Z"), at("2026-11-08T16:40:00Z"), fixes);
   assert.deepEqual(states.landed.map(([slug]) => slug), ["page_states_unlanded_commit"]);
   assert.deepEqual(states.due.map(([slug]) => slug), ["fix_before_found", "back_after_old_fix"]);
   assert.equal(states.open.length, 3);
+});
+
+test("a class counts in open_mistakes a day after it was found, not at the next push run", () => {
+  const ledger: Ledger = {
+    classes: {
+      shipped_without_real_e2e_flow: { status: "open", firstSeen: "2026-11-21T11:29:40Z" },
+      older: { status: "open", firstSeen: "2026-11-20T11:00:00Z" },
+    },
+  };
+  const states = classStates(ledger, at("2026-11-21T11:57:15Z"), at("2026-11-21T11:42:00Z"));
+  assert.deepEqual(states.due.map(([slug]) => slug), ["older"]);
+  const nextDay = classStates(ledger, at("2026-11-22T11:45:00Z"), at("2026-11-22T11:30:00Z"));
+  assert.deepEqual(nextDay.due.map(([slug]) => slug), ["shipped_without_real_e2e_flow", "older"]);
 });
 
 test("open_mistakes leaves out a landed fix and the flagged list names it once for the next run to copy in", async () => {

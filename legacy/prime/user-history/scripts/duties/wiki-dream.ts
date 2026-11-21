@@ -191,8 +191,10 @@ export function currentFix(row: LedgerClass, trailer?: TrailerFix): { at: number
  * (its firstSeen or newest recurrence) fixed while the ledger row stayed open (`landed`); the other open ones the last run already had (first
  * seen before `since`, or with no date), which open_mistakes counts (`due`); classes with a recurrence in the last 7 days (`recurred`); and of
  * those, the ones whose recurrence came after the class's current fix (`back`, or any recurrence when the class has neither a fixedAt nor a
- * trailer commit), where `fixes` holds the `Dream-class` trailer commits (currentFix). A class the last run found gets one daily run to land its
- * fix, because a rule takes a CI probe: the 10-13 rules took 22 h from draft (10-13 17:47Z) to land (68d53dd86d, 10-14 16:07Z). On 10-18
+ * trailer commit), where `fixes` holds the `Dream-class` trailer commits (currentFix). A class gets a day to land its fix, counted from its
+ * firstSeen, because a rule takes a CI probe: the 10-13 rules took 22 h from draft (10-13 17:47Z) to land (68d53dd86d, 10-14 16:07Z). The cutoff
+ * was the last run alone while d4 ran daily; push runs come every 15 min, so on 11-21 shipped_without_real_e2e_flow, found at 11:29Z with its
+ * fix job (slack green p258) started that minute, counted at 11:57Z. On 10-18
  * slop_in_replies_and_pages recurred at 05:39Z and 06:55Z and got a new fix at 07:01Z, and owner_mac_and_machines recurred at 05:20Z and got
  * a new fix at 06:39Z, so counting every recurrence kept mistakes_back at 2 for 7 days whatever the new fixes did. Rows nobody closed after
  * their fix landed hid or counted: dream_write_clobber sat at "fixing", which open_mistakes did not count, from 11-05 to 11-09 though 76bd7a2f
@@ -215,7 +217,7 @@ export function classStates(ledger: Ledger, now: number, since = now, fixes: Rea
   return {
     open,
     landed,
-    due: open.filter(([slug, row]) => !fixed.has(slug) && !(ms(row.firstSeen) >= since)),
+    due: open.filter(([slug, row]) => !fixed.has(slug) && !(ms(row.firstSeen) >= Math.min(since, now - DAY))),
     recurred,
     back: recurred.filter(([slug, row]) => { const fix = currentFix(row, fixes.get(slug)); return recent(row).some(at => !(ms(at) <= fix.at)); }),
   };

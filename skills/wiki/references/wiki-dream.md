@@ -170,6 +170,7 @@ Log hits are keyword matches, and logs mention CI and git in normal work, so rea
 16. On 2026-11-04 sieun-pi 76bd7a2f fixed dream_second_writes at 18:16Z with no dream run alive to copy it into the ledger, and mistakes_back read 1 for 3 runs until a run fixed the row by hand.
 17. The precheck counts every class status but `fixed` as open, and it reads an open class whose newest trailer commit is newer than its `firstSeen` or newest recurrence as fixed, so it leaves that class out of open_mistakes and flags it once as "fixed by <commit>, ledger row still open" for you to copy into the row.
 18. Before that change, dream_write_clobber sat at "fixing" from 11-05 to 11-09, which open_mistakes did not count, and page_states_unlanded_commit kept open_mistakes at 1 at 11-08 17:00Z though its fix bddf1d97 had landed at 16:34Z.
+19. A class counts in open_mistakes only a day after its `firstSeen`, because push runs come every 15 min and a fix that takes a CI probe needs most of a day; on 11-21 shipped_without_real_e2e_flow counted 28 min after it was found though its fix job had started that minute.
 
 ## Memory moves
 
