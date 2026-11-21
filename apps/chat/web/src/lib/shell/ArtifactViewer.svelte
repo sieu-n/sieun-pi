@@ -22,6 +22,10 @@
   import { search } from "./search.svelte";
   import { sidePanel } from "./side-panel.svelte";
   import { styleWikiFrame } from "./wiki-embed";
+  import { createPage, editable, loadStored, runsScript, sharesOf, shortError, showShares, startEditing, titleFromPath, wikiHref, writePage, type Editing } from "./wiki-page";
+  import EmptyState from "$lib/ui/EmptyState.svelte";
+  import { stampLabel } from "$lib/ui/datetime";
+  import type { WikiShare } from "$lib/api/types";
   import { roomDraftKey } from "$lib/drafts.svelte";
 
   /**
@@ -42,6 +46,8 @@
   let frameTitle = $state("");
   let framePath = $state<string | null>(null);
   let frameFailed = $state(false);
+  /** The wiki has no page at the pane's path, so the pane offers a search and a new page instead of the wiki's 404. */
+  let frameMissing = $state(false);
   /** The frame shows only once the app's look is in it, so a dark app never flashes the wiki's white page. */
   let frameStyled = $state(false);
   let unstyle: (() => void) | null = null;
@@ -49,7 +55,7 @@
   const wikiPath = $derived(view?.kind === "wiki" ? view.path : null);
   /** A canvas's Share: the dialog that posts the page on screen into a channel or a DM. */
   let sharing = $state(false);
-  const wikiTitle = $derived(wikiPath ? frameTitle || lastSegment(wikiPath) : "");
+  const wikiTitle = $derived(wikiPath ? (frameMissing ? "" : frameTitle) || lastSegment(wikiPath) : "");
   let frame = $state<HTMLIFrameElement>();
   /** The frame's first address, set when the pane opens and kept, since a new `src` on a loaded frame would push a history entry. */
   let frameStart = $state("");
@@ -84,6 +90,7 @@
     const key = sidePanel.content?.key;
     if (shown && key && key !== WIKI_PANE) {
       shown = false;
+      if (untrack(() => editing?.dirty())) void untrack(() => saveEdit({ reload: false }));
       if (untrack(() => wikiPath)) router.setParams({ view: null }, { replace: true });
     }
   });
@@ -98,8 +105,112 @@
     unstyle = null;
   });
 
+  /**
+   * The in-place edit of the page on screen (wiki-page.ts), null while the page reads. `editDirty` follows its input. Saving and closing
+   * the pane with changes both store them, as a Slack canvas keeps what was typed.
+   */
+  let editing = $state<Editing | null>(null);
+  let editDirty = $state(false);
+  let saving = $state(false);
+  /** Edit the page once the frame has loaded it, after Create page. */
+  let editOnLoad = false;
+  let frameDoc: Document | null = null;
+
+  async function startEdit() {
+    const path = framePath ?? wikiPath;
+    if (!path || !frameDoc || editing) return;
+    const doc = frameDoc;
+    const page = await loadStored(path);
+    if (!page) return void toast.error("Could not read this page to edit it");
+    if (runsScript(page.body)) {
+      toast.show("This page runs scripts, so it edits in the wiki's own editor", { action: { label: "Open editor", run: () => window.open(wikiHref(`edit/${page.path}`), "_blank", "noopener") } });
+      return;
+    }
+    if (doc !== frameDoc) return;
+    editing = startEditing(doc, page, { save: () => void saveEdit(), cancel: cancelEdit, change: () => (editDirty = editing?.dirty() ?? false) });
+    editDirty = false;
+  }
+
+  function reloadFrame() {
+    frame?.contentWindow?.location.replace(frameSrc(framePath ?? wikiPath ?? ""));
+  }
+
+  function cancelEdit() {
+    const wasDirty = editing?.dirty();
+    editing = null;
+    editDirty = false;
+    if (wasDirty !== undefined) reloadFrame();
+  }
+
+  /** Store the edit and show the page as the wiki renders it, with Undo in the toast that writes the page as it was. */
+  async function saveEdit(opts: { reload?: boolean } = {}) {
+    const edit = editing;
+    if (!edit || saving) return;
+    if (!edit.dirty()) return cancelEdit();
+    const { page } = edit;
+    const content = edit.content();
+    saving = true;
+    const saved = await writePage(page.path, content, page.version);
+    saving = false;
+    if (!saved.ok) {
+      const why = saved.status === 409 ? "Someone changed this page while you edited it" : shortError(saved.error);
+      toast.error(`Page not saved. ${why}`, { duration: 0, action: { label: "Copy my text", run: () => void navigator.clipboard.writeText(content) } });
+      return;
+    }
+    if (editing === edit) {
+      editing = null;
+      editDirty = false;
+      if (opts.reload !== false) reloadFrame();
+    }
+    const before = page.raw;
+    toast.success("Page saved", {
+      action: {
+        label: "Undo",
+        run: () => void writePage(page.path, before, saved.version).then((back) => {
+          if (!back.ok) return void toast.error(`Could not undo. ${shortError(back.error)}`);
+          toast.show("Edit undone");
+          if (currentView()?.kind === "wiki") reloadFrame();
+        }),
+      },
+    });
+  }
+
+  async function createMissing() {
+    const path = wikiPath;
+    if (!path) return;
+    const made = await createPage(path);
+    if (!made.ok) return void toast.error(`Could not create the page. ${shortError(made.error)}`);
+    editOnLoad = true;
+    frameTarget = made.path;
+    frame?.contentWindow?.location.replace(frameSrc(made.path));
+  }
+
+  /** The "Shared in" card in the page's side rail: each post that links the page, with its place, author and time. */
+  let shares = $state<{ doc: Document; list: WikiShare[] } | null>(null);
+  async function loadShares(doc: Document, path: string) {
+    const list = await sharesOf(path);
+    if (doc === frameDoc) shares = { doc, list };
+  }
+  // Drawn again when the room and agent names load, which can come after the shares.
+  $effect(() => {
+    if (!shares || shares.doc !== frameDoc) return;
+    showShares(shares.doc, shares.list.map((share) => ({
+      href: appHref(conversationHref(share.room, { thread: share.threadRoot ?? null, messageId: share.post })),
+      place: `${placeOf(share.room)} · ${share.author === "owner" ? "You" : (agents.byId(share.author)?.name ?? share.author)} · ${stampLabel(share.at)}`,
+      detail: share.snippet,
+    })));
+  });
+
+  function placeOf(room: string): string {
+    const dm = agents.list.find((agent) => agents.room(agent.id) === room);
+    if (dm) return dm.name;
+    const row = directory.room(room);
+    return row ? `${row.kind === "channel" ? "#" : ""}${row.name}` : room;
+  }
+
   /** Close the wiki pane, unless the view already left the address and the pane is closing after it. */
   function closeWiki() {
+    if (editing?.dirty()) void saveEdit({ reload: false });
     if (currentView()?.kind === "wiki") closeView();
   }
 
@@ -180,6 +291,10 @@
     }
     const win = frame.contentWindow;
     frameStyled = true;
+    editing = null;
+    editDirty = false;
+    frameMissing = false;
+    frameDoc = doc;
     if (!doc || !win) return;
     unstyle?.();
     unstyle = styleWikiFrame(doc);
@@ -193,6 +308,16 @@
     frameTarget = framePath ?? frameTarget;
     if (framePath && framePath !== wikiPath && parseView(`wiki:${framePath}`)) router.setParams({ view: `wiki:${framePath}` }, { replace: true });
     new MutationObserver(read).observe(doc.head, { childList: true, subtree: true, characterData: true });
+    const here = framePath ?? wikiPath;
+    if (frameFailed && here) {
+      void fetch(wikiHref(here, "?format=md&lines=1-1")).then((res) => {
+        if (doc === frameDoc) frameMissing = res.status === 404;
+      });
+    } else if (here) {
+      void loadShares(doc, here);
+      if (editOnLoad) void startEdit();
+    }
+    editOnLoad = false;
     // Keys typed in the frame never reach this document, so Esc is caught in the frame too. Cmd K opens this app's search, before the
     // wiki's own page opener sees it (owner, p124: "llm-wiki opener is super unnatural. Cmd K should be the search").
     win.addEventListener("keydown", (event) => {
@@ -219,7 +344,7 @@
       // The frame's nodes belong to its own window, so `instanceof Element` of this window is false for them.
       const { Element: FrameElement } = win as Window & typeof globalThis;
       const link = event.target instanceof FrameElement ? event.target.closest<HTMLAnchorElement>("a[href]") : null;
-      if (!link || event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
+      if (!link || link.isContentEditable || event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
       let url: URL;
       try {
         url = new URL(link.href, win.location.href);
@@ -272,9 +397,15 @@
     <Button size="sm" variant="ghost" icon="copy" onclick={copyBlock}>Copy</Button>
   {:else}
   {#if view?.kind === "thread" || view?.kind === "board"}<Button size="sm" variant="ghost" icon="arrow-right" onclick={goThere}>Go to {view?.kind === "board" ? "board" : "conversation"}</Button>{/if}
+  {#if view?.kind === "wiki" && editing}
+    <Button size="sm" variant="ghost" onclick={cancelEdit} disabled={saving}>{editDirty ? "Discard" : "Done"}</Button>
+    <Button size="sm" variant="primary" onclick={() => void saveEdit()} loading={saving} disabled={!editDirty} title="Save (⌘S)" data-wiki-save>Save</Button>
+  {:else}
+  {#if view?.kind === "wiki" && !frameFailed && editable(framePath ?? wikiPath ?? "")}<IconButton icon="edit" label="Edit" size="sm" onclick={() => void startEdit()} data-wiki-edit />{/if}
   {#if view?.kind === "wiki"}<IconButton icon="forward" label="Share" size="sm" onclick={() => (sharing = true)} data-share-page />{/if}
   <IconButton icon="link" label="Copy link" size="sm" onclick={copyLink} />
   {#if view?.kind === "wiki"}<IconButton icon="external" label="Open in new tab" size="sm" href={tabHref} target="_blank" />{:else}<Button size="sm" variant="ghost" icon="external" href={tabHref} target="_blank">Open in new tab</Button>{/if}
+  {/if}
   {/if}
 {/snippet}
 
@@ -291,7 +422,17 @@
 {#snippet wikiBody()}
   <div class="viewer in-panel" data-testid="artifact-viewer" data-view="wiki">
     <iframe bind:this={frame} class="wiki-frame" class:styled={frameStyled} src={frameStart} title={wikiTitle} onload={onFrameLoad}></iframe>
-    {#if frameFailed}<p class="frame-note t-body-sm">The wiki did not show a page for {wikiPath}. Open in new tab shows what the wiki answered.</p>{/if}
+    {#if frameMissing && wikiPath}
+      {@const name = titleFromPath(wikiPath)}
+      <div class="missing" data-wiki-missing>
+        <EmptyState icon="file" title="This page doesn't exist" description={`Nothing is at ${wikiPath}. It may have moved, or nobody has written it yet.`}>
+          {#snippet action()}
+            <Button size="sm" variant="outline" icon="search" onclick={() => search.open({ kind: "global" }, name)}>Search for “{name}”</Button>
+            <Button size="sm" variant="primary" icon="edit" onclick={() => void createMissing()}>Create page</Button>
+          {/snippet}
+        </EmptyState>
+      </div>
+    {:else if frameFailed}<p class="frame-note t-body-sm">The wiki did not show a page for {wikiPath}. Open in new tab shows what the wiki answered.</p>{/if}
   </div>
 {/snippet}
 
@@ -346,6 +487,13 @@
   .wiki-frame.styled {
     opacity: 1;
     transition: opacity var(--duration-base) var(--ease-standard);
+  }
+  .missing {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    background: var(--surface-panel);
   }
   .frame-note {
     position: absolute;
