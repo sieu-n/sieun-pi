@@ -625,14 +625,15 @@ export class Rooms {
   /**
    * The DM's side of the feed: a turn a channel post started in the work thread before phase 5 speaks to that channel, so it posts nothing here.
    * A post with no `reply_to` answers its turn's owner post, and in a turn no owner post started, such as one a work thread's report woke, the
-   * newest owner post sent here that no post of the agent answers yet and whose thread is not done. On 11-21 a blind run's comm thread answered
-   * the owner's quick question in the turn the work thread's report woke, with no reply_to, and the answer named no post.
+   * newest owner post sent here that no post of the agent answers yet. On 11-21 a blind run's comm thread answered the owner's quick question
+   * in the turn the work thread's report woke, with no reply_to, and the answer named no post. In the next run it marked that question's thread
+   * done in the step whose post tell_owner held as long, so a default that skipped done threads named the older task instead.
    */
   private dmSide(record: AgentRecord, thread: string): FeedSide {
     const posts = () => this.store.postsOf(record.room);
     const sentHere = (d: RoomDelivery | undefined): boolean => d !== undefined && (d.thread ?? (d.state === "delivered" ? record.workThread : thread)) === thread;
     const open = (all: readonly RoomPost[]): RoomPost | undefined =>
-      all.findLast(p => p.author === "owner" && sentHere(p.delivery) && !p.done?.done && !all.some(q => q.author === record.id && q.answers === p.id));
+      all.findLast(p => p.author === "owner" && sentHere(p.delivery) && !all.some(q => q.author === record.id && q.answers === p.id));
     return {
       room: record.room,
       turn: entry => {

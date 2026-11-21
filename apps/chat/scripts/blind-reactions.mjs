@@ -12,7 +12,9 @@
  *    that post's thread), and at the end neither keeps the agent's 👀 or a ✅.
  * 2. "ok thanks" gets one reaction from the agent and no post.
  * 3. In the channel no agent post is a root post.
- * 4. No agent post has ✅ or 👀 in its text outside code, ends on a sign-off emoji, or pastes a raw JSON or log line.
+ * 4. No agent post has ✅ or 👀 in its text outside code, unless it names the reaction ("my 👀 reaction on p1"), ends on a sign-off emoji, or
+ *    pastes a raw JSON or log line. On 11-21 a fresh agent, asked where a room's posts live, gave "a `set` line patches a post later, like my
+ *    👀 reaction on p1" as its example, which uses no emoji as a status mark.
  * 👀 counts as seen when a poll saw it on the post or the agent's comm thread called set_emoji with eyes on it, since a fast answer can put
  * it on and take it off between two polls.
  *
@@ -170,7 +172,7 @@ async function runRoom(kind) {
     ["ok thanks got no post", afterThanks.length === 0],
     ...(kind === "channel" ? [["no agent post is a root post", posts.every(p => p.author?.id !== agent.id || p.threadRoot)]] : []),
     ["no ✅ by the agent anywhere", posts.every(p => !mine(p, CHECK))],
-    ["no ✅ or 👀 in the agent's post text", posts.every(p => p.author?.id !== agent.id || !/[✅👀]/u.test(p.text.replace(/```[\s\S]*?```|`[^`\n]*`/g, "")))],
+    ["no ✅ or 👀 in the agent's post text", posts.every(p => p.author?.id !== agent.id || !/[✅👀](?!\s*(?:reactions?|emoji)\b)/u.test(p.text.replace(/```[\s\S]*?```|`[^`\n]*`/g, "")))],
     ["no agent post ends with a sign-off emoji", posts.every(p => p.author?.id !== agent.id || !SIGN_OFF.test(p.text))],
     ["no agent post pastes a raw JSON or log line", posts.every(p => p.author?.id !== agent.id || !RAW_LINE.test(p.text))],
   ];

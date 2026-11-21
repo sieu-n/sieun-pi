@@ -139,6 +139,8 @@ describe("owner posts and the feed", () => {
     const task = await s.send("POST", `/api/c/${ROOM}/send`, { text: `quiet, run the tests ${Date.now()}`, requestId: "open-1" });
     const question = await s.send("POST", `/api/c/${ROOM}/send`, { text: `quiet, where do posts live? ${Date.now()}`, requestId: "open-2" });
     await until(() => posts(s), page => page.find(p => p.id === question.body.item.id)?.deliveries[0]?.state === "delivered");
+    // The next run marked the question's thread done in the step whose post tell_owner held as long, before the answer went out.
+    await s.send("POST", `/api/c/${ROOM}/posts/${question.body.item.id}/done`, { done: true });
     host.append(thread(), 1, { kind: "agent.message", model: [{ role: "user", content: [{ type: "text", text: "tests pass" }], timestamp: Date.now() }], data: { from: ids.vent, via: "agent" } });
     assistant([
       { type: "toolCall", id: "c_open1", name: "tell_owner", arguments: { text: "in one file per room", why: "answer", about: "posts" } },
