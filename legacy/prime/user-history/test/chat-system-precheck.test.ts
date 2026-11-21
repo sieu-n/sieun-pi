@@ -1,7 +1,7 @@
 // Guards the Chat system duty's precheck (d9), built 10-19 for the owner's rule that a plan holds only tasks that finish (msg mvfb7zt0).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { agingSince, chatSystemOutput, failingTurns, fixNotMoving, fixWorkUnread, leadHold, unreadFixes, manualSelection, goalsWithNoJob, downRoutes, jobPushRecords, jobPushTells, jobsByChat, ownerMessages, planUpkeep, pushedFile, pushList, pushReached, pushRecords, pushSettled, pushesSince, pushTells, spotAuditLines, spotPick, spread, unknownOwners, waitsOnStep, withCatalogOwners, withoutWorkingRuns } from "../scripts/duties/chat-system.ts";
+import { agingSince, chatSystemOutput, failingTurns, fixNotMoving, fixWorkUnread, leadHold, unreadFixes, manualSelection, goalsWithNoJob, downRoutes, jobPushRecords, jobPushTells, jobsByChat, ownerMessages, planUpkeep, pushedFile, pushList, pushReached, pushRecords, pushSettled, pushesSince, pushTells, spotAuditLines, spotCandidates, spotPick, spread, unknownOwners, waitsOnStep, withCatalogOwners, withoutWorkingRuns } from "../scripts/duties/chat-system.ts";
 import { type PlanInputs, planCounts } from "../scripts/duties/whole-system.ts";
 import type { MetricStreak } from "../src/shared/duty-streak.ts";
 import type { DutyRunRecord } from "../src/shared/chat-duties.ts";
@@ -413,6 +413,13 @@ test("the spot audit picks a chat not audited this cycle, so the chat audited lo
   assert.equal(spotPick(["a", "b"], [{ at: 1, chat: "a" }, { at: 2, chat: "gone" }, { at: 3, chat: "gone" }], last), "b");
   assert.deepEqual(new Set([0, 0.5, 0.999].map(n => spotPick(["a", "b", "c"], [{ at: 1, chat: "a" }, { at: 2, chat: "b" }, { at: 3, chat: "c" }], () => n))), new Set(["a", "b", "c"]));
   assert.equal(spotPick(["a", "b"], [], first), "a");
+});
+
+test("the spot audit skips a moved copy and a chat whose check-in the owner paused with no open step, and keeps a paused chat that still has one", () => {
+  const board = (status: "todo" | "done") => ({ plan: [{ id: "p1", text: "step", status, children: [] }] }) as unknown as ChatBoard;
+  const boards = new Map<string, ChatBoard | null>([["seo", board("done")], ["design", board("todo")], ["ci", board("done")], ["gone", null]]);
+  assert.deepEqual(spotCandidates(["seo", "design", "ci", "gone", "vent"], new Set(["vent"]), new Set(["seo", "design", "gone"]), boards), ["design", "ci"]);
+  assert.deepEqual(spotCandidates(["seo", "vent"], new Set(["vent"]), new Set(["seo"]), boards), ["seo"]);
 });
 
 test("a down chat's stuck step whose job is a root session is pushed to that job straight, tagged and recorded, and the chat still gets none", async () => {

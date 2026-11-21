@@ -825,6 +825,18 @@ const SPOT_PICKS_FILE = join(homedir(), "work/plan-audit/spot-picks.jsonl");
  * joins the open cycle. Until 10-26 it picked from all of `ids` each run, and the 10-25 21:40Z, 10-26 04:2xZ and 06:24Z runs all audited
  * "spec and monitoring system", whose plan was done and whose one duty was green, about 10 of 58 audits since 10-20.
  */
+/**
+ * The chats the spot audit picks from: `ids` without the moved Prime copies and without a dormant chat, one whose check-in the owner paused
+ * and whose plan holds no open step. SEO guy (goals handed to :5184 seo on 10-30, both duties and the check-in paused) drew 5 of the audits
+ * from 10-30 to 11-21 and each found nothing; designer bro, metal-management and spec and monitoring system read the same way on 11-21.
+ * Falls back to every unmoved chat when all are dormant.
+ */
+export function spotCandidates(ids: readonly string[], moved: ReadonlySet<string>, paused: ReadonlySet<string>, boards: ReadonlyMap<string, ChatBoard | null>): string[] {
+  const live = ids.filter(id => !moved.has(id));
+  const awake = live.filter(id => !paused.has(id) || planHasOpenStep(boards.get(id) ?? null));
+  return awake.length ? awake : live;
+}
+
 export function spotPick(ids: readonly string[], picks: readonly { at: number; chat: string }[], random: () => number = Math.random): string {
   const open = new Set<string>();
   for (const pick of [...picks].sort((a, b) => a.at - b.at)) {
@@ -1121,7 +1133,8 @@ async function main(): Promise<void> {
   const picks = (await readFile(SPOT_PICKS_FILE, "utf8").catch(() => "")).split("\n").flatMap(line => {
     try { const pick = JSON.parse(line) as { at: number; chat: string }; return typeof pick.at === "number" && typeof pick.chat === "string" ? [pick] : []; } catch { return []; }
   });
-  const spot = spotPick(ids.filter(id => !moved.has(id)), picks);
+  const dormant = new Set(standings.filter(standing => standing.state === "paused").map(standing => standing.chat));
+  const spot = spotPick(spotCandidates(ids, moved, dormant, plan.boards), picks);
   const session = localCopy(listed.get(spot)?.file);
   const asks = session ? ownerMessages(await tail(session.file, TRANSCRIPT_TAIL_BYTES), OWNER_MESSAGES) : [];
   const log = join(homedir(), "work/plan-audit/spot", `${today(now)}.md`);
