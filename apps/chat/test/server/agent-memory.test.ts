@@ -42,6 +42,13 @@ test("a turn that failed with no answer ends with its error", () => {
   assert.deepEqual(finishedReply([ask, { kind: "turn", live: false, text: "", stop: "aborted" }]), { reply: "", error: "turn aborted" });
 });
 
+test("a turn whose run sleeps on a pool slot or works is not over, even on the slot's retry error", () => {
+  const slotOpen = { kind: "turn", live: false, text: "", stop: "error", error: "pi-pool: the account slot is open; the service is temporarily unavailable until the retry sends the request" };
+  assert.equal(finishedReply([ask, slotOpen], "sleeping"), null);
+  assert.equal(finishedReply([ask, slotOpen], "working"), null);
+  assert.deepEqual(finishedReply([ask, { kind: "turn", live: false, text: "1. No." }], "idle"), { reply: "1. No." });
+});
+
 test("a turn that answered before it stopped keeps its answer", () => {
   assert.deepEqual(finishedReply([ask, { kind: "turn", live: false, text: "1. No.", stop: "aborted" }]), { reply: "1. No." });
 });
@@ -69,7 +76,7 @@ test("a wip title is session state only as a label or with a plan step", () => {
 });
 
 /** A stub of :5184 for recall agents: `send` and `items` act as each test sets, and every call is logged. */
-function stub(opts: { send?: number; items?: () => unknown[]; agents?: { id: string; name: string; thread: string; archived?: boolean; createdAt?: number }[] }) {
+function stub(opts: { send?: number; items?: () => unknown[]; status?: () => string; agents?: { id: string; name: string; thread: string; archived?: boolean; createdAt?: number }[] }) {
   const calls: string[] = [];
   const agents = opts.agents ?? [];
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
@@ -86,6 +93,7 @@ function stub(opts: { send?: number; items?: () => unknown[]; agents?: { id: str
     if (req.method === "GET" && req.url === "/api/agents?test=1") return reply(200, agents);
     if (req.method === "POST" && req.url?.endsWith("/send")) return reply(opts.send ?? 200, {});
     if (req.method === "GET" && req.url?.endsWith("/items")) return reply(200, { items: opts.items?.() ?? [] });
+    if (req.method === "GET" && req.url?.startsWith("/api/c/")) return reply(200, { summary: { status: opts.status?.() ?? "idle" } });
     if (req.method === "PATCH") {
       const agent = agents.find(a => `/api/c/${a.thread}` === req.url);
       if (agent) agent.archived = true;
@@ -121,6 +129,23 @@ for (const [label, opts, error] of [
     }
   });
 }
+
+test("a recall waits past the pool slot's retry error for the answer", async () => {
+  const agentsDir = mkdtempSync(join(root, "agents-"));
+  let polls = 0;
+  const slotOpen = { kind: "turn", live: false, text: "", stop: "error", error: "pi-pool: the account slot is open; the service is temporarily unavailable until the retry sends the request" };
+  const server = await stub({
+    items: () => (++polls < 3 ? [slotOpen] : [{ kind: "turn", live: false, text: "1. No." }]),
+    status: () => (polls < 3 ? "sleeping" : "idle"),
+  });
+  try {
+    const result = await recall(server.url, agentsDir, record, questions, "s1", { waitMs: 5000, pollMs: 10 });
+    assert.equal(result.error, undefined);
+    assert.equal(result.reply, "1. No.");
+  } finally {
+    server.close();
+  }
+});
 
 test("the sweep cleans this run's and a dead run's recall agents and keeps a live run's", async () => {
   const agentsDir = mkdtempSync(join(root, "agents-"));

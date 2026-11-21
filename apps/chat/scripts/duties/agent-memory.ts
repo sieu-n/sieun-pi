@@ -32,8 +32,11 @@ import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
 const DAY_MS = 86_400_000;
-/** How long a recall session gets for its first answer; on 11-20 a fresh seo session answered one question in 49 s. */
-const ANSWER_WAIT_MS = 15 * 60_000;
+/**
+ * How long a recall session gets for its first answer. On 11-20 a fresh seo session answered in 49 s. On 11-22 every Opus account was at its
+ * limit until 22:44Z and 22:46Z, so pi-pool parked the seo and vent sessions for 754 s and 874 s, and vent answered 898 s after its send.
+ */
+const ANSWER_WAIT_MS = 20 * 60_000;
 const POLL_MS = 5_000;
 
 interface AgentRecord { id: string; slug: string; name: string; workThread: string; home?: string; archived?: boolean; test?: boolean; agentsDir?: string; comm?: Record<string, string> }
@@ -156,14 +159,20 @@ export function splitAnswers(text: string, count: number): string[] {
 }
 
 interface TurnItem { kind: string; live?: boolean; text?: string; sent?: string[]; stop?: string; error?: string; usage?: { cost?: number } }
+/** The thread's run status as GET /api/c/<thread> reads it: "sleeping" while pi-pool parks its model call for an account slot. */
+type RunStatus = "working" | "idle" | "sleeping" | "failed";
 
 /**
  * The reply of a recall session's newest turn once it is over, or null while it runs. A turn is over when it is not live and holds an
  * answer, a stop or an error. `live` alone is not enough: without a watcher it comes from the server's cached thread status, and a fresh test
  * thread can read idle while its run works. On 11-20 at 05:43Z, right after a pi-host restart, 4 of 7 sessions read as an empty, not-live
  * turn at cost 0 within 18 to 48 s and their real answers landed in the same turn moments later.
+ * A thread that is working or sleeping is not over either. A pi-pool slot wait parks the run as sleeping, which reads as not live, and ends
+ * with a model call that fails with "the account slot is open" and is sent again a few seconds later. On 11-22 the vent session was graded
+ * on that error at 877 s and its answer landed at 898 s.
  */
-export function finishedReply(items: readonly TurnItem[]): { reply: string; cost?: number; error?: string } | null {
+export function finishedReply(items: readonly TurnItem[], status?: RunStatus): { reply: string; cost?: number; error?: string } | null {
+  if (status === "working" || status === "sleeping") return null;
   const turn = items.findLast(item => item.kind === "turn");
   if (!turn || turn.live !== false) return null;
   const reply = [turn.text ?? "", ...(turn.sent ?? []).filter(post => post !== turn.text)].join("\n");
@@ -232,8 +241,11 @@ export async function recall(server: string, agentsDir: string, record: AgentRec
     await call(server, "POST", `/api/c/${made.thread}/send`, { text, requestId: `memory-recall-${record.slug}-${stamp}` });
     for (;;) {
       await sleep(timing.pollMs);
-      const { items } = await call(server, "GET", `/api/c/${made.thread}/items`) as { items: TurnItem[] };
-      const done = finishedReply(items);
+      const [{ items }, header] = await Promise.all([
+        call(server, "GET", `/api/c/${made.thread}/items`) as Promise<{ items: TurnItem[] }>,
+        call(server, "GET", `/api/c/${made.thread}`) as Promise<{ summary: { status: RunStatus } }>,
+      ]);
+      const done = finishedReply(items, header.summary.status);
       if (done) return { ...done, seconds: Math.round((Date.now() - started) / 1000), thread: made.thread };
       if (Date.now() - started > timing.waitMs) {
         return { reply: "", seconds: Math.round((Date.now() - started) / 1000), thread: made.thread, error: `no answer within ${Math.round(timing.waitMs / 1000)} s` };
