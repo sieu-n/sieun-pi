@@ -18,7 +18,9 @@ test("a thread draws every message as a bubble, the owner's on the right in the 
   await expect(answer.locator(".byline")).toContainText("Vent");
 });
 
-test("day dividers split the days, and the timeline column is at most 52rem", async ({ page }) => {
+test("day dividers split the days, and the timeline column is at most 52rem", async ({ page, request }) => {
+  const { items } = (await (await request.get(`/api/c/${VENT}/items`)).json()) as { items: { at: number }[] };
+  await page.clock.setSystemTime(Math.max(...items.map((item) => item.at)) + 60_000);
   await open(page, `#/c/${VENT}`);
   await expect(conversation(page).getByRole("separator", { name: "Today" })).toBeVisible();
   expect(await conversation(page).getByRole("separator").count()).toBeGreaterThanOrEqual(3);
