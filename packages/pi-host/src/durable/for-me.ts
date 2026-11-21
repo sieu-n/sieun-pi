@@ -10,7 +10,7 @@
  * child conversation drops them with it.
  */
 import { Type } from "@earendil-works/pi-ai";
-import { defineTool, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import { defineTool, ROOT_CONVERSATION_ID, type ToolControl } from "@earendil-works/pi-durable";
 import type { ForMeItem, ForMeList, ForMeStatus, Principal } from "../../../../apps/chat/web/src/lib/api/types.ts";
 import { threadAgent } from "./agent-profile.ts";
 import type { ChatApp } from "./chat-app.ts";
@@ -72,16 +72,9 @@ export function listText(list: ForMeList, status: ForMeFilter): string {
   return [`${counts} ${shown}`, ...list.items.map(itemText)].join("\n\n");
 }
 
-/**
- * The answer to mark_message. In a comm thread, the mark that clears the list ends the turn, so it says to end with no text: on 11-21 three
- * fresh channel agents (blind runs on live :5184) ended 6 of 11 turns with a summary right after this call, which no room shows, while their
- * role text said to end with no text.
- */
-export function markedText(item: Pick<ForMeItem, "id" | "status">, pending: number, comm: boolean): string {
-  const line = `Marked ${item.id} ${item.status}. ${pending} pending.`;
-  return comm && item.status === "completed" && pending === 0
-    ? `${line} Your list is clear, so end the turn now with no text: the room shows only your posts, and a closing summary goes nowhere.`
-    : line;
+/** The answer to mark_message: the mark and how many items stay pending. */
+export function markedText(item: Pick<ForMeItem, "id" | "status">, pending: number): string {
+  return `Marked ${item.id} ${item.status}. ${pending} pending.`;
 }
 
 /** Whether the tool runs in a comm thread; a registry with no chat.doc (a test's) reads as no comm thread. */
@@ -91,6 +84,17 @@ async function isCommThread(api: Parameters<typeof threadAgent>[0], context: Par
   } catch {
     return false;
   }
+}
+
+/**
+ * The control a comm thread's closing call returns: `terminate`, so a round made only of closing calls ends the turn with no further model
+ * request. The closing calls are mark_message that leaves no item pending, set_thread_done(true) and set_emoji taking 👀 off, the ones the
+ * comm role text puts after the post. On 11-21 fresh channel agents in blind runs on live :5184 ended 9 of 20 turns with a summary no
+ * room shows, 8 of them right after such a round, while their role text and then mark_message's answer said to end with no text. A round
+ * with any other call, such as tell_owner, runs on as before.
+ */
+export async function closingControl(closing: boolean, api: Parameters<typeof threadAgent>[0], context: Parameters<typeof threadAgent>[1]): Promise<{ control?: ToolControl }> {
+  return closing && (await isCommThread(api, context)) ? { control: { terminate: true } } : {};
 }
 
 const text = (value: string) => [{ type: "text" as const, text: value }];
@@ -134,7 +138,8 @@ export function forMeTools(app: ChatApp, thread: string) {
         if (api.conversationId !== ROOT_CONVERSATION_ID) return { output: ROOT_ONLY(MARK_MESSAGE_TOOL), isError: true };
         try {
           const answer = await app.markForMe(thread, { messageId: args.message_id, completed: args.completed }, context.abortSignal);
-          return { output: text(markedText(answer.item, answer.pending, await isCommThread(api, context))) };
+          const closing = answer.item.status === "completed" && answer.pending === 0;
+          return { output: text(markedText(answer.item, answer.pending)), ...await closingControl(closing, api, context) };
         } catch (error) {
           if (context.abortSignal?.aborted) throw error;
           return { output: text(error instanceof Error ? error.message : String(error)), isError: true };

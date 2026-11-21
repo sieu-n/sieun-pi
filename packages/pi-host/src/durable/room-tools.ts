@@ -19,7 +19,7 @@
 import { Type } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool, ROOT_CONVERSATION_ID, type Extension } from "@earendil-works/pi-durable";
 import type { ChatApp } from "./chat-app.ts";
-import { forMeTools } from "./for-me.ts";
+import { closingControl, forMeTools } from "./for-me.ts";
 import { laterTools } from "./later.ts";
 import { searchTools } from "./search-messages.ts";
 import { threadDoneTools } from "./thread-done.ts";
@@ -52,6 +52,9 @@ export interface SetEmojiArgs { message_id: string; emoji: string; on: boolean }
 
 const text = (value: string) => [{ type: "text" as const, text: value }];
 
+/** Whether a set_emoji call names 👀, by its Slack name or the emoji itself. */
+const isEyes = (emoji: string): boolean => ["eyes", ":eyes:", "👀"].includes(emoji.trim());
+
 /** The room tools of one thread, which call apps/chat as that thread. */
 export function roomTools(app: ChatApp, thread: string): Extension {
   return defineExtension({
@@ -75,7 +78,7 @@ export function roomTools(app: ChatApp, thread: string): Extension {
           if (api.conversationId !== ROOT_CONVERSATION_ID) return { output: text("set_emoji works only in your agent's own thread, not in a job."), isError: true };
           try {
             const answer = await app.react(thread, { message: args.message_id, emoji: args.emoji, on: args.on }, context.abortSignal);
-            return { output: text(answer.text) };
+            return { output: text(answer.text), ...await closingControl(!args.on && isEyes(args.emoji), api, context) };
           } catch (error) {
             if (context.abortSignal?.aborted) throw error;
             return { output: text(error instanceof Error ? error.message : String(error)), isError: true };

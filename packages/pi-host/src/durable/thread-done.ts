@@ -13,6 +13,7 @@
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import type { ChatApp } from "./chat-app.ts";
+import { closingControl } from "./for-me.ts";
 
 export const SET_THREAD_DONE_TOOL = "set_thread_done";
 
@@ -42,7 +43,8 @@ export function threadDoneTools(app: ChatApp, thread: string) {
         // A job made before its conversation dropped this extension still lists it, so the call refuses there.
         if (api.conversationId !== ROOT_CONVERSATION_ID) return { output: text(`${SET_THREAD_DONE_TOOL} works only in your agent's own thread, not in a job.`), isError: true };
         try {
-          return { output: text((await app.threadDone(thread, { message: args.message_id, done: args.done }, context.abortSignal)).text) };
+          const answer = await app.threadDone(thread, { message: args.message_id, done: args.done }, context.abortSignal);
+          return { output: text(answer.text), ...await closingControl(args.done, api, context) };
         } catch (error) {
           if (context.abortSignal?.aborted) throw error;
           return { output: text(error instanceof Error ? error.message : String(error)), isError: true };

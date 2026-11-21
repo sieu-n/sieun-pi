@@ -12,12 +12,13 @@ import { after, before, test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall, type Message } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { createRegistry, Harness, type EntryRecord } from "@earendil-works/pi-durable";
+import { createRegistry, Harness, ROOT_CONVERSATION_ID, type EntryRecord } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import type { ForMeItem, ForMeList, Principal } from "../../../../apps/chat/web/src/lib/api/types.ts";
-import { commInstructions } from "../../src/durable/agent-profile.ts";
+import { AGENT_REF_DOC, commInstructions } from "../../src/durable/agent-profile.ts";
 import { ChatApp } from "../../src/durable/chat-app.ts";
-import { itemText, LIST_FOR_ME_TOOL, listText, MARK_MESSAGE_TOOL, markedText } from "../../src/durable/for-me.ts";
+import { itemText, LIST_FOR_ME_TOOL, listText, MARK_MESSAGE_TOOL } from "../../src/durable/for-me.ts";
+import { ChatDoc } from "../../src/durable/registry.ts";
 import { roomTools } from "../../src/durable/room-tools.ts";
 import { MODEL, textOf } from "./crash-scenario.ts";
 
@@ -43,6 +44,8 @@ const items: ForMeItem[] = [
 ];
 
 interface Call { method: string; path: string; body: unknown }
+/** Each run's closing assistant text, by thread; a run that ended on a tool round has none. */
+const finalTexts = new Map<string, string>();
 const calls: Call[] = [];
 let server: Server;
 let app: ChatApp;
@@ -73,7 +76,7 @@ before(async () => {
 });
 after(() => new Promise<void>(resolve => server.close(() => resolve())));
 
-async function run(thread: string, plan: { name: string; args: Record<string, string | boolean> }[]) {
+async function run(thread: string, plan: { name: string; args: Record<string, string | boolean> }[], ref?: Record<string, string>) {
   const file = join(dir, `${thread}.sqlite`);
   const models = createModels();
   const faux = fauxProvider({ provider: MODEL.provider, models: [{ id: MODEL.modelId }], tokensPerSecond: 0 });
@@ -87,9 +90,13 @@ async function run(thread: string, plan: { name: string; args: Record<string, st
   registry.install(roomTools(app, thread));
   const harness = await Harness.open(await openNodeSqliteStorage(file), { models, registry }, context);
   const root = await harness.root(context, { agent: { model: MODEL, thinkingLevel: "off" } });
+  if (ref) await harness.commit(async tx => { (await tx.doc(ChatDoc, ROOT_CONVERSATION_ID, AGENT_REF_DOC, null)).value = ref; }, context);
   await (await root.submit({ type: "input", content: "Work your list." }, context)).wait(context);
   const entries: EntryRecord[] = [...(await root.entries({ order: "ascending" }, 1000, undefined, context)).items];
   await harness.close(context);
+  const last = entries.map(entry => entry.model?.[0] as Message | undefined).findLast(message => message?.role === "assistant");
+  const said = last?.role === "assistant" ? textOf(last.content.filter(part => part.type === "text")) : "";
+  if (said) finalTexts.set(thread, said);
   return entries.flatMap(entry => {
     const message = entry.model?.[0] as Message | undefined;
     return message?.role === "toolResult" ? [{ name: message.toolName, text: textOf(message.content), isError: message.isError }] : [];
@@ -132,12 +139,15 @@ test("mark_message posts the mark as the thread and answers one line, and an err
   ]);
 });
 
-test("in a comm thread, the mark that clears the list says to end the turn with no text, and any other mark or thread answers the one line", () => {
-  const item = { id: "ch_1a2b3c4d/p12", status: "completed" as const };
-  assert.equal(markedText(item, 0, true), "Marked ch_1a2b3c4d/p12 completed. 0 pending. Your list is clear, so end the turn now with no text: the room shows only your posts, and a closing summary goes nowhere.");
-  assert.equal(markedText(item, 0, false), "Marked ch_1a2b3c4d/p12 completed. 0 pending.");
-  assert.equal(markedText(item, 2, true), "Marked ch_1a2b3c4d/p12 completed. 2 pending.");
-  assert.equal(markedText({ ...item, status: "pending" }, 1, true), "Marked ch_1a2b3c4d/p12 pending. 1 pending.");
+test("in a comm thread, the mark that leaves no item pending ends the turn with no further model request, and elsewhere the turn runs on", async () => {
+  const comm = { agent: "ag_vent", dir: dir, role: "comm", room: "ch_1a2b3c4d", work: "w1" };
+  const closing = await run("th_close", [{ name: MARK_MESSAGE_TOOL, args: { message_id: "ch_1a2b3c4d/p12", completed: true } }], comm);
+  assert.deepEqual(closing.map(r => [r.text, r.isError]), [["Marked ch_1a2b3c4d/p12 completed. 0 pending.", false]]);
+  assert.equal(finalTexts.get("th_close"), undefined, "the turn ended after the mark, with no closing text");
+  await run("th_open", [{ name: MARK_MESSAGE_TOOL, args: { message_id: "ch_1a2b3c4d/p12", completed: false } }], comm);
+  assert.equal(finalTexts.get("th_open"), "done", "a mark that leaves an item pending runs on");
+  await run("th_plain", [{ name: MARK_MESSAGE_TOOL, args: { message_id: "ch_1a2b3c4d/p12", completed: true } }]);
+  assert.equal(finalTexts.get("th_plain"), "done", "a thread that is not a comm thread runs on");
 });
 
 test("both comm texts ask the thread to read its pending list at a turn's start, handle its own room's items and mark each one handled", () => {
