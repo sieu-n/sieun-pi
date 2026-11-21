@@ -534,6 +534,11 @@ export interface SearchMissing { box: string; note: string }
  * and count are still to come, so `total` is not final until the same request without `local=1` answers.
  */
 export interface SearchResult { hits: SearchHit[]; total: number; nextCursor?: string; missing?: SearchMissing[] }
+
+/** A wiki page as GET /api/pages lists it (server/wiki/pages.ts); `path` opens it in the viewer as `wiki:<path>`. */
+export interface WikiPageRow { path: string; title: string; description: string | null; updated: string }
+/** With `q`, `pages` are the matches with a title match first and `favorites` is empty; without it, the favorites and the pages updated last. */
+export interface WikiPages { query: string; favorites: WikiPageRow[]; pages: WikiPageRow[] }
 /**
  * `from` takes many values, each `owner`, `agents` (anyone but the owner), an agent id or an agent name; `where` takes many of `root`,
  * `thread` and `tool`, all three when absent, and `place` many of the six SearchPlace values, all six when absent. Many values of one filter

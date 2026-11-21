@@ -1,0 +1,164 @@
+<script lang="ts">
+  import { untrack } from "svelte";
+  import { api, type WikiPageRow, type WikiPages } from "$lib/api";
+  import { hrefFor, router } from "$lib/router.svelte";
+  import { openView } from "$lib/shell/viewer.svelte";
+  import { Button, EmptyState, Icon, LoadingText, PanelHeader, SearchField } from "$lib/ui";
+  import { shortAge } from "$pages/search/hit-view";
+  import { pagePlace, WIKI_HOME, withoutFavorites } from "./wiki-pages";
+
+  /**
+   * The Wiki view at `#/c/wiki`, Slack's Canvases list for this app's wiki: the favorites and the pages updated last, and a field that finds a
+   * page by its title or words (`?q=`, so Back and a reload keep the search). A row opens the page in the viewer beside this list.
+   */
+  const LIMIT = 50;
+  type Load = { state: "loading"; last: WikiPages | null } | { state: "ready"; pages: WikiPages } | { state: "error"; message: string };
+
+  const q = $derived(router.route.params.q ?? "");
+  let text = $state(untrack(() => router.route.params.q ?? ""));
+  let load = $state<Load>({ state: "loading", last: null });
+  let attempt = $state(0);
+  let field = $state<HTMLInputElement>();
+
+  // An address that brings new words, such as Cmd K's "See all pages", puts them in the field; typing a space keeps what is typed.
+  $effect(() => {
+    const words = q;
+    if (untrack(() => text.trim()) !== words) text = words;
+  });
+
+  $effect(() => {
+    const words = q;
+    void attempt;
+    const controller = new AbortController();
+    const before = untrack(() => load);
+    load = { state: "loading", last: before.state === "ready" ? before.pages : before.state === "loading" ? before.last : null };
+    api.pages(words ? { q: words, limit: LIMIT } : { limit: LIMIT }, { signal: controller.signal }).then(
+      pages => (load = { state: "ready", pages }),
+      (error: unknown) => {
+        if (!controller.signal.aborted) load = { state: "error", message: error instanceof Error ? error.message : String(error) };
+      },
+    );
+    return () => controller.abort();
+  });
+
+  const shown = $derived(load.state === "ready" ? load.pages : load.state === "loading" ? load.last : null);
+  /** The rows match what is typed only once the answer for those words is in; until then the last answer stays, dimmed. */
+  const stale = $derived(load.state === "loading" && !!shown);
+  const sections = $derived.by(() => {
+    if (!shown) return [];
+    if (shown.query) return [{ id: "matches", label: `${shown.pages.length === LIMIT ? `${LIMIT}+` : shown.pages.length} ${shown.pages.length === 1 ? "page" : "pages"}`, rows: shown.pages }];
+    return [
+      ...(shown.favorites.length ? [{ id: "favorites", label: "Favorites", rows: shown.favorites }] : []),
+      { id: "recent", label: "Recently updated", rows: withoutFavorites(shown.pages, shown.favorites) },
+    ];
+  });
+  const empty = $derived(!!shown && sections.every(section => !section.rows.length));
+
+  function setText(value: string) {
+    text = value;
+    router.setParams({ q: value.trim() || null }, { replace: true });
+  }
+
+  const viewHref = (path: string) => hrefFor("messages", ["wiki"], { ...router.route.params, view: `wiki:${path}` });
+
+  /** A plain click opens the page in the viewer over this list; Cmd or Ctrl click keeps the link's own new tab. */
+  function open(e: MouseEvent, path: string) {
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+    e.preventDefault();
+    openView({ kind: "wiki", path });
+  }
+
+  /** ArrowDown in the field moves to the first page, and the arrows move between pages, as in Slack's lists. */
+  function onkeydown(e: KeyboardEvent) {
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    const links = [...document.querySelectorAll<HTMLAnchorElement>("[data-wiki-page-row]")];
+    if (!links.length) return;
+    const at = links.indexOf(document.activeElement as HTMLAnchorElement);
+    if (at < 0 && e.key === "ArrowUp") return;
+    e.preventDefault();
+    if (at === 0 && e.key === "ArrowUp") return field?.focus();
+    links[Math.min(links.length - 1, at < 0 ? 0 : at + (e.key === "ArrowDown" ? 1 : -1))]?.focus();
+  }
+
+  /** When the page last changed, as Cmd K stamps a hit: "3h", "Yesterday", "Mon", "Sep 2". */
+  const updated = (row: WikiPageRow) => {
+    const at = Date.parse(row.updated);
+    return Number.isFinite(at) ? `Updated ${shortAge(at, new Date())}` : "";
+  };
+</script>
+
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="page" data-testid="wiki-page" {onkeydown}>
+  <PanelHeader title="Wiki" icon="file" level={1}>
+    {#snippet actions()}
+      <Button size="sm" variant="ghost" onclick={() => openView({ kind: "wiki", path: WIKI_HOME })}>Wiki home</Button>
+    {/snippet}
+  </PanelHeader>
+  <div class="field" role="search">
+    <SearchField placeholder="Search pages by title or words" label="Search pages" bind:value={() => text, setText} bind:element={field} maxlength={256} />
+  </div>
+  <div class="scroll">
+    {#if load.state === "error"}
+      <div class="notice" role="alert">
+        <p class="t-body">The wiki did not answer: {load.message}</p>
+        <Button size="sm" onclick={() => (attempt += 1)}>Try again</Button>
+      </div>
+    {:else if !shown}
+      <div class="notice"><LoadingText text="Loading pages…" /></div>
+    {:else if empty}
+      <div class="empty" role="status">
+        {#if shown.query}
+          <EmptyState icon="search" title={`No pages match “${shown.query}”`} description="Try fewer or other words, or browse every folder from the wiki home.">
+            {#snippet action()}<Button size="sm" onclick={() => openView({ kind: "wiki", path: WIKI_HOME })}>Open wiki home</Button>{/snippet}
+          </EmptyState>
+        {:else}
+          <EmptyState icon="file" title="No wiki pages yet" description="Pages that agents write and links in posts show up here." />
+        {/if}
+      </div>
+    {:else}
+      <div class="sections" class:stale aria-busy={stale}>
+        {#each sections as section (section.id)}
+          {#if section.rows.length}
+            <section aria-labelledby="wiki-{section.id}">
+              <h2 id="wiki-{section.id}" class="heading t-caption" data-wiki-section={section.id}>{section.label}</h2>
+              <ul class="rows">
+                {#each section.rows as row (row.path)}
+                  <li>
+                    <a class="row" href={viewHref(row.path)} onclick={e => open(e, row.path)} data-wiki-page-row={row.path}>
+                      <span class="icon"><Icon name="file" size={18} /></span>
+                      <span class="main">
+                        <span class="title t-label-sm">{row.title}</span>
+                        {#if row.description}<span class="desc t-body-sm">{row.description}</span>{/if}
+                        <span class="meta t-caption">{[pagePlace(row.path), updated(row)].filter(Boolean).join(" · ")}</span>
+                      </span>
+                    </a>
+                  </li>
+                {/each}
+              </ul>
+            </section>
+          {/if}
+        {/each}
+      </div>
+    {/if}
+  </div>
+</div>
+
+<style>
+  .page { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+  .field { flex: none; padding: var(--space-2) var(--space-panel-inset) var(--space-3); border-bottom: 1px solid var(--border-standard); }
+  .scroll { flex: 1; min-height: 0; overflow: auto; }
+  .notice { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); padding: var(--space-3) var(--space-panel-inset); }
+  .notice p { margin: 0; }
+  .empty { display: grid; place-items: center; min-height: 60%; padding: var(--space-page-section-gap) var(--space-panel-inset); }
+  .sections { padding: var(--space-1) var(--space-1-5) var(--space-panel-inset); transition: opacity 120ms; }
+  .sections.stale { opacity: 0.6; }
+  .heading { margin: 0; padding: var(--space-3) var(--space-3) var(--space-1); color: var(--text-subtle); font-weight: 600; }
+  .rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+  .row { display: grid; grid-template-columns: 32px minmax(0, 1fr); gap: var(--space-3); padding: 10px var(--space-3); color: inherit; text-decoration: none; border-radius: var(--radius-row); }
+  .row:hover, .row:focus-visible { background: var(--neutral-3); }
+  .icon { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 8px; background: var(--neutral-3); color: var(--text-subtle); }
+  .main { display: grid; gap: 2px; min-width: 0; }
+  .title { color: var(--text-standard); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .desc { display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; max-inline-size: 80ch; color: var(--text-standard); }
+  .meta { color: var(--text-metadata); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+</style>

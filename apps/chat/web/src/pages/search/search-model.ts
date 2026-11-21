@@ -7,6 +7,8 @@ import { author, locationText, shortDay, what, type Hit } from "./hit-view.ts";
 import { leadIn, matchName, snippetPieces, type Piece } from "./match.ts";
 import { dateLabel, hasFilters, PLACES, type Filters } from "./filters.ts";
 import { datePresets, prompt, searchText, type Operator } from "./operators.ts";
+import { pagePlace } from "../wiki/wiki-pages.ts";
+import type { WikiPageRow } from "../../lib/api/types.ts";
 
 export type { Hit } from "./hit-view.ts";
 
@@ -57,12 +59,15 @@ export type Action =
   | { type: "scope"; conversation: string }
   | { type: "operator"; operator: Operator }
   | { type: "more" }
+  /** Opens a wiki page in the viewer; `pages` opens the Wiki view with every page that matches. */
+  | { type: "wiki"; path: string }
+  | { type: "pages"; q: string }
   /** Puts a recent search back in the field and the chips. */
   | { type: "recall"; search: RecentSearch }
   /** Opens the full results page for what is typed. */
   | { type: "page" };
 
-export type Icon = "chat" | "channel" | "calendar" | "search" | "more" | "recent";
+export type Icon = "chat" | "channel" | "calendar" | "search" | "more" | "page" | "recent";
 export type Row = {
   key: string;
   label: string;
@@ -90,6 +95,8 @@ export type SearchInput = {
   people: readonly Person[];
   messages: Messages;
   now: Date;
+  /** The wiki pages that match what is typed, a title match first (GET /api/pages); empty until they are in. */
+  pages?: readonly WikiPageRow[] | undefined;
   /** Past searches, newest first, which an empty field lists above the recent activity (recent-searches.svelte.ts). */
   recent?: readonly RecentSearch[] | undefined;
 };
@@ -131,6 +138,27 @@ function recentSearchRows(input: SearchInput): Row[] {
 /** At most 3 name matches across chats, agents and channels, so the messages show without a scroll; the full results page holds every message. */
 const NAMED_ROWS = 3;
 const RECENT_ROWS = 4;
+/** At most 3 pages, so the messages still show; "See all N pages" opens the Wiki view with every match. */
+const PAGE_ROWS = 3;
+/** The pages the palette asks GET /api/pages for, which the "See all" row counts up to. */
+export const PAGES_ASKED = 20;
+
+/** The Pages group: the wiki pages whose title or words match, as Slack lists the canvases a search finds above its messages. */
+function pagesGroup(input: SearchInput, text: string): Group[] {
+  const pages = input.pages ?? [];
+  if (!pages.length) return [];
+  const rows: Row[] = pages.slice(0, PAGE_ROWS).map(page => ({
+    key: `page:${page.path}`,
+    label: page.title,
+    positions: matchName(page.title, text)?.positions,
+    detail: pagePlace(page.path) || "Wiki",
+    icon: "page",
+    action: { type: "wiki", path: page.path },
+  }));
+  if (pages.length > PAGE_ROWS)
+    rows.push({ key: "all-pages", label: `See all ${pages.length >= PAGES_ASKED ? `${PAGES_ASKED}+` : pages.length} pages`, icon: "more", action: { type: "pages", q: text } });
+  return [{ label: "Pages", rows }];
+}
 
 const activity = (conversation: Conversation) => conversation.lastActivityAt ?? 0;
 const kindDetail: Record<ConversationKind, string> = { solo: "Chat", channel: "Channel", dm: "Direct message", job: "Job" };
@@ -318,5 +346,5 @@ export function buildGroups(input: SearchInput): Group[] {
     .sort((a, b) => Number(a.archived) - Number(b.archived))
     .slice(0, NAMED_ROWS)
     .map(one => one.row);
-  return [seeAll(input), ...thisConversation, ...(named.length ? [{ label: "Conversations", rows: named }] : []), messages];
+  return [seeAll(input), ...thisConversation, ...(named.length ? [{ label: "Conversations", rows: named }] : []), ...pagesGroup(input, text), messages];
 }

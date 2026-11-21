@@ -26,6 +26,8 @@ import { decideBody, ReviewRefused, SkillsReview, undoBody } from "./skills-revi
 import { type ClientVia, clientTimings, LoopStalls, RequestLog } from "./request-log.ts";
 import { accountRoutes, PoolError } from "./accounts.ts";
 import { serveWiki } from "./wiki/routes.ts";
+import { WikiEngine } from "./wiki/engine.ts";
+import { wikiPages } from "./wiki/pages.ts";
 import { WORKSPACE_ROUTE } from "./wiki/workspaces.ts";
 import { compressibleFile, sendCompressed, sendFileCompressed } from "./compress.ts";
 
@@ -325,6 +327,7 @@ export function routes(app: App): Route[] {
       throw error instanceof SearchFilterError ? new BadRequest(error.message) : error;
     })),
     route("GET", "/api/search/recent", async (_r, _p, q) => app.search.recent({ after: num(q.get("after")), limit: num(q.get("limit")) })),
+    route("GET", "/api/pages", async (_r, _p, q) => wikiPages(new WikiEngine(app.config.wikiEngine), q.get("q") ?? "", num(q.get("limit")))),
     // An agent's board, duties, check-in and jobs by agent id. The thread routes take a thread id and resolve it to its agent through the
     // aliases, because pi-host's chat_board tool and the duty briefs name the thread.
     ...(["agents", "threads"] as const).flatMap(scope => [

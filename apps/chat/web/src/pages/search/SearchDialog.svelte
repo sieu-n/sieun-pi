@@ -2,6 +2,9 @@
   import { onMount, tick, untrack } from "svelte";
   import { agents, api, conversations, listedAhead, me, type SearchMissing, type SearchResult } from "$lib/api";
   import { hrefFor, router } from "$lib/router.svelte";
+  import { openView } from "$lib/shell/viewer.svelte";
+  import type { WikiPageRow } from "$lib/api";
+  import { wikiHref } from "$pages/wiki/wiki-pages";
   import type { SearchScope } from "$lib/shell/search.svelte";
   import Avatar from "$lib/ui/Avatar.svelte";
   import Button from "$lib/ui/Button.svelte";
@@ -20,6 +23,7 @@
   import { shortAge } from "./hit-view";
   import { localHits } from "./local-index";
   import { pieces } from "./match";
+  import { PAGES_ASKED } from "./search-model";
   import { recentMessages } from "./recent";
   import { recentSearches } from "./recent-searches.svelte";
   import { readResults, resultParams } from "./results-model";
@@ -30,7 +34,7 @@
   let { open, scope, query, onclose }: Props = $props();
 
   const PAGE = 20;
-  const icons: Record<Icon, string> = { chat: "chat", channel: "hash", calendar: "clock", search: "search", more: "more", recent: "clock" };
+  const icons: Record<Icon, string> = { chat: "chat", channel: "hash", calendar: "clock", search: "search", more: "more", page: "file", recent: "clock" };
 
   let text = $state("");
   /** The one filter state: the chips under the field set it, and so do typed operators such as `from:vent` (operators.ts `absorb`). */
@@ -85,6 +89,31 @@
   onMount(() => {
     const idle = globalThis.requestIdleCallback ?? ((run: () => void) => setTimeout(run, 1));
     idle(() => recentMessages.refresh());
+  });
+
+  /** The wiki pages that match what is typed (GET /api/pages), asked beside the messages; a search with filters or in one conversation lists none. */
+  let pages = $state<readonly WikiPageRow[]>([]);
+  const pagesQuery = $derived(open && !hasFilters(filters) && !prompt(text)?.kind ? searchText(text) : "");
+  $effect.pre(() => {
+    const q = pagesQuery;
+    if (!q) {
+      pages = [];
+      return;
+    }
+    // The wiki engine took 0.31 to 0.65 s a search on 11-22 (3 GETs of /api/agent/search), so a keystroke within 150 ms of the next asks nothing.
+    const controller = new AbortController();
+    const wait = setTimeout(() => {
+      api.pages({ q, limit: PAGES_ASKED }, { signal: controller.signal }).then(
+        answer => (pages = answer.pages),
+        () => {
+          if (!controller.signal.aborted) pages = [];
+        },
+      );
+    }, 150);
+    return () => {
+      clearTimeout(wait);
+      controller.abort();
+    };
   });
 
   /** The server's first page for each request of this opening, so a key taken back or typed again shows its answer with no request. */
@@ -194,6 +223,7 @@
       people,
       messages,
       now,
+      pages,
       recent: recentSearches.items,
     }),
   );
@@ -286,6 +316,18 @@
         text = action.search.q;
         filters = action.search.filters;
         focusInput();
+        return;
+      case "wiki":
+        recentSearches.add({ q: searchText(text), filters });
+        close();
+        forgetDraft();
+        openView({ kind: "wiki", path: action.path });
+        return;
+      case "pages":
+        recentSearches.add({ q: searchText(text), filters });
+        close();
+        forgetDraft();
+        router.navigate(wikiHref(action.q));
         return;
       case "page":
         close();

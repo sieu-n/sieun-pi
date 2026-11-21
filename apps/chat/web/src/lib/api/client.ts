@@ -4,7 +4,7 @@
  */
 import type {
   AgentConfig, AgentFolder, AgentHostList, AgentId, AgentSummary, BoardOp, BoardRow, BoardView, CheckInPatch, CheckInView, ChatAgent, ConversationHeader, ConversationId,
-  ConversationPatch, ConversationSummary, DutyAction, DutyRow, ForMeItem, ForMeList, ForMeStatus, ForYouItem, HarnessEntryView, HostsReport, ImageRef, Item, JobNode, Me, MemoryInput, ModelCatalog, OpenedPage, ProjectList, SearchQuery, SearchResult, SendRequest,
+  ConversationPatch, ConversationSummary, DutyAction, DutyRow, ForMeItem, ForMeList, ForMeStatus, ForYouItem, HarnessEntryView, HostsReport, ImageRef, Item, JobNode, Me, MemoryInput, ModelCatalog, OpenedPage, ProjectList, SearchQuery, SearchResult, SendRequest, WikiPages,
   LaterItem, LaterList, LaterPatch, LaterRequest, LaterState, ReactionRequest, ReadAllRequest, ReadPoint, Room, RoomInput, RoomPatch, SendResult, Sidebar, StepOutputRef, ThinkingLevel, ThreadDoneRequest, TimelinePage, UsageBucket, UsageRange, UsageReport, AccountsView,
 } from "./types.ts";
 import type { SkillDoc, SkillScan, SkillsReport } from "./shared/skills.ts";
@@ -505,6 +505,9 @@ export const api = {
     call<SearchResult>("GET", `/api/search${query({ ...params, brief: params.brief ? 1 : undefined })}`, undefined, options.signal),
   /** The recent messages the Cmd K search matches in the page (pages/search/recent.ts), only those after `after` when given. */
   searchRecent: (params: { after?: number } = {}) => call<SearchResult>("GET", `/api/search/recent${query(params)}`, undefined, undefined, { background: "ahead" }),
+  /** Wiki pages by title and words, or with no `q` the favorites and the pages updated last (server/wiki/pages.ts). */
+  pages: (params: { q?: string; limit?: number } = {}, options: { signal?: AbortSignal } = {}) =>
+    call<WikiPages>("GET", `/api/pages${query(params)}`, undefined, options.signal),
 
   boardOps: (chat: string, ops: BoardOp[]) => call<BoardView>("POST", `${boardBase(chat)}/board`, { ops }),
   /** Copies a Prime chat's board, duties and check-in interval into the thread it moved to. */

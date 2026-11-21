@@ -2,6 +2,8 @@ import type { Stats } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import path from 'node:path';
 import type { WikiPageSummary } from './wiki';
+import { metaDescription } from './wiki-frontmatter';
+import { extractHtmlTitle, parseHtmlMeta } from './wiki-html';
 
 /**
  * content/ holds about 117k indexable files, and all but about 3.6k are session artifacts: the files
@@ -79,13 +81,13 @@ Object.freeze(NONE);
 const NO_META = Object.freeze({ apps: NONE, tags: NONE });
 
 /**
- * A session artifact as the index holds it: found by path and filename, never read. `readPage`
- * summarizes the file when it is opened.
+ * A session artifact as the index holds it: found by path and filename, and for an HTML page also by the title and description its
+ * head names (`artifactHead`), so a search for a job page's own title finds it. `readPage` summarizes the file when it is opened.
  */
-export function artifactStub(wikiPath: string, fileStat: Stats): WikiPageSummary {
+export function artifactStub(wikiPath: string, fileStat: Stats, head: ArtifactHead | null = null): WikiPageSummary {
 	return {
 		path: wikiPath,
-		title: deriveTitleFromPath(wikiPath),
+		title: head?.title ?? deriveTitleFromPath(wikiPath),
 		kind: path.extname(wikiPath).slice(1).toLowerCase() || 'text',
 		size: fileStat.size,
 		updated: fileStat.mtime.toISOString(),
@@ -93,8 +95,23 @@ export function artifactStub(wikiPath: string, fileStat: Stats): WikiPageSummary
 		links: NONE,
 		excerpt: '',
 		searchText: '',
-		meta: NO_META,
+		meta: head?.description ? { ...NO_META, description: head.description } : NO_META,
 	};
+}
+
+/**
+ * The bytes of an HTML artifact read for its head. A page's `<!--wiki {...}-->` comment and its `<h1>` sit in the first 1 to 2 KB.
+ * content/ held about 12k HTML artifacts against 97k markdown ones on 11-22, so only HTML is read, about 48 MB once per start.
+ */
+export const ARTIFACT_HEAD_BYTES = 4096;
+
+export type ArtifactHead = { title: string | null; description: string | null };
+
+/** The title and description an HTML artifact's head names, as new strings that keep no part of the read alive. */
+export function artifactHead(head: string): ArtifactHead {
+	const meta = parseHtmlMeta(head);
+	const title = meta.title ?? extractHtmlTitle(head);
+	return JSON.parse(JSON.stringify({ title: title || null, description: metaDescription(meta) })) as ArtifactHead;
 }
 
 /** Title-case a filename (sans extension) — the fallback when a page has no H1. */

@@ -18,6 +18,7 @@
   import { CHANNEL_DRAG_TYPE, channelDrop, groupChannels, sidebarSections, visibleRows, type BuiltinSection, type SectionId } from "$lib/shell/sidebar-sections.svelte";
   import { forYouHref } from "$pages/board/chips";
   import { later, laterHref } from "$lib/later.svelte";
+  import { wikiHref } from "$pages/wiki/wiki-pages";
   import { drafts, draftsHref } from "$lib/drafts.svelte";
   import Badge from "$lib/ui/Badge.svelte";
   import { roomActions, rowUnread, starredRows, unstarred } from "$lib/shell/room-actions.svelte";
@@ -215,6 +216,7 @@
       {/snippet}
     </SidebarRow>
     <SidebarRow href={forYouHref()} label="For you" icon="inbox" selected={forYouSelected} unread={sidebar.data.forYou} />
+    <SidebarRow href={wikiHref()} label="Wiki" icon="file" selected={router.messagesView === "wiki"} />
     <SidebarRow href={unreadsHref()} label="All unreads" icon="messages" selected={router.messagesView === "unreads"} fresh={unreadRooms().length > 0} />
   </div>
 

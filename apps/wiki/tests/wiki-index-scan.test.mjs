@@ -230,6 +230,31 @@ for (const stage of ['stat', 'open', 'directory']) {
 	});
 }
 
+// On 11-22 a Cmd K search in sw factory for a job page's exact title, "Ideal Slack replies in sw factory rooms", found nothing,
+// because the index named the artifact "Ideal Replies" after its file name.
+test('an HTML session artifact is indexed under the title and description its head names, a markdown one by its path', async () => {
+	const session = 'sessions/2026/11/20/1139-slack-style-replies';
+	await withIndex(
+		{
+			[`${session}/index.html`]: '<h1>slack style replies</h1>',
+			[`${session}/ideal-replies.html`]:
+				'<!--wiki\n{ "title": "Ideal Slack replies in sw factory rooms", "summary": "Seventeen pairs." }\n-->\n<h1>Other</h1>',
+			[`${session}/plain-page.html`]: '<p>intro</p><h1>A page with only an h1</h1>',
+			[`${session}/notes.md`]: '# Notes heading',
+		},
+		async (wiki) => {
+			const index = await indexWith(wiki, `${session}/notes.md`);
+			const ideal = index.byPath.get(`${session}/ideal-replies.html`);
+			assert.equal(ideal.title, 'Ideal Slack replies in sw factory rooms');
+			assert.equal(ideal.meta.description, 'Seventeen pairs.');
+			assert.equal(index.byPath.get(`${session}/plain-page.html`).title, 'A page with only an h1');
+			assert.equal(index.byPath.get(`${session}/notes.md`).title, 'Notes');
+			const hits = await wiki.searchPages('Ideal Slack replies in sw factory rooms', 3, { includeSessions: true });
+			assert.equal(hits[0]?.path, `${session}/ideal-replies.html`);
+		},
+	);
+});
+
 // On 2026-10-18 jobs had copied repo trees into their session folders, and sessions/ held 1.1M files.
 test('a repo copy in a session folder (a .git or pnpm-workspace.yaml in it) is never walked or indexed', async () => {
 	const session = 'sessions/2026/10/18/1408-demo';

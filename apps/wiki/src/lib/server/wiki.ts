@@ -3,7 +3,7 @@ import { lstat, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { CODE_PREFIX, getMirrorFiles, inspectWikiFile, readWikiFile, type MirrorFile } from './wiki-mirror';
 import { metaDescription, type WikiMeta } from './wiki-frontmatter';
-import { artifactStub, isSessionArtifact, isSessionPath, listSessionLogs } from './session-artifact-index';
+import { ARTIFACT_HEAD_BYTES, artifactHead, artifactStub, isSessionArtifact, isSessionPath, listSessionLogs } from './session-artifact-index';
 import { diskPath, mounts, wikiPathOf } from './wiki-mounts';
 import { wikiConfig } from '../wiki-config.mjs';
 import { PAGE_READ_CAP } from '../../../scripts/read-cap.mjs';
@@ -446,7 +446,7 @@ function refreshWikiIndex(): Promise<WikiIndex> {
  * content/ holds about 117k indexable files in 61k folders, and all but about 3.5k are session
  * artifacts: the files agents leave next to a session log. A full scan reads the curated pages and the
  * session logs, and lists sessions/ only to the depth of a log. The artifacts are walked afterwards in
- * the background and indexed from path and stat alone (see `artifactStub`). Reading them all held about
+ * the background and indexed from path and stat, plus the title an HTML one names in its head (see `artifactStub`). Reading them all held about
  * 1 GB of search tokens, and the walk took 100-140 s on a loaded Mac before the first page could load.
  *
  * The full scan runs once at start, and again only when the watcher reports no file name or fails.
@@ -797,7 +797,7 @@ async function walkContent(root: string, prune?: string, files: string[] = []): 
  * A full scan would otherwise re-read and re-parse ~93 MB from disk. The summary for an
  * unchanged file is reused, so only changed files pay the parse. The same object comes back,
  * which is how the store sees that a page did not change. Session artifacts skip the memo:
- * a stub is made from path, size and mtime alone, so the stored stub is its own memo.
+ * a stub is made from path, size, mtime and an HTML one's head, so the stored stub is its own memo.
  */
 const summaryCache = new Map<string, { mtimeMs: number; size: number; summary: WikiPageSummary }>();
 
@@ -806,7 +806,9 @@ async function readSummary(wikiPath: string): Promise<WikiPageSummary> {
 	if (isSessionArtifact(wikiPath)) {
 		const stored = store.byPath.get(wikiPath);
 		if (stored?.size === fileStat.size && stored.updated === fileStat.mtime.toISOString()) return stored;
-		return artifactStub(wikiPath, fileStat);
+		if (!/\.html?$/i.test(wikiPath)) return artifactStub(wikiPath, fileStat);
+		const { bytes } = await readWikiFile({ wikiPath, contentRoot: CONTENT_ROOT, maxBytes: ARTIFACT_HEAD_BYTES });
+		return artifactStub(wikiPath, fileStat, artifactHead(bytes.toString('utf8')));
 	}
 	const cached = summaryCache.get(wikiPath);
 	if (cached && cached.mtimeMs === fileStat.mtimeMs && cached.size === fileStat.size) return cached.summary;
