@@ -9,7 +9,7 @@
  * The first ask is the channel's root post and every later one a reply in its thread, as the owner asks in a channel. An ask is
  * `{text, expect, wait}`, where `expect` is "reply" (one short Slack post), "list" (a one-line answer, then nested bullets and a task list,
  * as the owner asked under p85 and p95 in #sw-factory-build on 11-20, p101), "options" (names several apps and explains one in 20 words or
- * more, with an example and how it fits the asker's product, p97), "checklist" (one post of open `- [ ]` checks that edits tick off, p106), "natural" (a
+ * more, with an example and how it fits the asker's product, p97), "checklist" (one post whose first version is the answer or one plain line with no open `- [ ]` steps, c234, which a later edit may fill in), "natural" (a
  * post that opens with a natural sentence, then bullets with no bare topic labels, ticks any open task by an edit, states a pick before any
  * question, p54, and puts its answer on its own first line with no 3-sentence wall, p57; natural-checks.mjs), "line" (one short line with
  * no bullets) or "reaction" (no post). An ask with `room: "dm"` goes to the agent's DM as a root post instead of the channel. `wait: false` sends the next ask at
@@ -24,7 +24,7 @@ import { appendFileSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import { naturalChecks, words } from "./natural-checks.mjs";
+import { hasOpenItem, naturalChecks, naturalLine, narrates, words } from "./natural-checks.mjs";
 
 const { values } = parseArgs({ options: { asks: { type: "string" }, set: { type: "string" }, cwd: { type: "string" }, host: { type: "string" }, out: { type: "string" }, server: { type: "string" }, "no-reaction": { type: "boolean" } } });
 const server = values.server ?? "http://127.0.0.1:5184";
@@ -62,8 +62,9 @@ const OPTIONS_ASKS = [
   { text: "ok thanks", expect: "reaction" },
 ];
 /**
- * A multi-step ask that should get one checklist post the agent then edits to done, as the owner asked under p103 and p105 in
- * #sw-factory-build on 11-20 (p106), and a yes/no question that should stay one line; run with `--cwd` at this repo.
+ * A multi-step ask and a yes/no question that should stay one line; run with `--cwd` at this repo. The owner asked for a checklist post
+ * edited to done under p103 and p105 in #sw-factory-build on 11-20 (p106), and retired the open process checklist in p159 on 11-21 (c234),
+ * so the first reply is now the answer or one plain line on what he will get.
  */
 const CHECKLIST_ASKS = [
   { text: "before i ship, can you check: is local main in sync with origin/main, how many files are uncommitted, does pi-host's comm-guard test pass, and is any TODO left in packages/pi-host/src/durable?", expect: "checklist" },
@@ -160,10 +161,12 @@ function checks(ask, posts, asked, versions = new Map()) {
     const first = posts[0] ? (versions.get(posts[0].id) ?? [posts[0].text])[0] : "";
     return [
       ...plain,
-      ["the first version lists the checks as open tasks", (first.match(/^\s*[-*+] \[ \] /gm) ?? []).length >= 2],
-      ["the post was edited after it went out", (versions.get(posts[0]?.id) ?? []).length > 1],
-      ["the last version ticks tasks done", /^\s*[-*+] \[[xX]\] /m.test(text)],
-      ["the last version opens with a one-line answer", lines.length > 1 && !BULLET.test(lines[0]) && words(lines[0]) <= 25],
+      // Since c234 (p159 on 11-21) the first version is the answer or one plain line on what he will get, never open process steps; a later
+      // edit may fill in results, so no edit is required.
+      ["the first version opens with a natural sentence", naturalLine((first.split("\n").find(line => line.trim()) ?? "").trim())],
+      ["the first version narrates no plan of the agent's own", !narrates(first)],
+      ["the first version holds no open - [ ] item", !hasOpenItem(first)],
+      ["the last version opens with a one-line answer", lines.length > 0 && !BULLET.test(lines[0]) && words(lines[0]) <= 25],
       ["no line over 35 words", lines.every(line => words(line) <= 35)],
     ];
   }

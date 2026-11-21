@@ -46,6 +46,11 @@ const OPEN = /^\s*[-*+] \[ \] /m;
  */
 const NARRATION = /\b(?:i'll\b[^.\n]*\bfirst\b|first,? i(?:'ll| will)\b|(?:then|next|after that),? i(?:'ll| will)\b|here's what i(?:'m| am|'ll| will)\b|what i'm (?:checking|doing|looking at)|it will cover|will cover these|i'm going to|i(?:'ll| will) (?:check|look|read|dig|map|trace|go through|start|confirm|verify|research|run|investigate|explore)\b|let me (?:check|look|start|first)|my plan is)/i;
 
+/** Whether a first reply narrates the agent's own plan, with code spans left out. */
+export const narrates = text => NARRATION.test(text.replace(/```[\s\S]*?```|`[^`\n]*`/g, " "));
+/** Whether a text holds an open `- [ ]` item, a process step with no result yet. */
+export const hasOpenItem = text => OPEN.test(text);
+
 /**
  * The natural checks for an ask's answer posts, given each post's versions in order (`[[first, ...edits], ...]`). The first version gives
  * the answer or says in one plain line what the owner will get, with no plan of the agent's own and no open `- [ ]` process items (c234);
@@ -59,8 +64,8 @@ export function naturalChecks(postVersions) {
   const counts = lineSentences(last);
   return [
     ["the first post opens with a natural sentence", naturalLine(firstLine)],
-    ["the first version narrates no plan of the agent's own", !NARRATION.test((first[0] ?? "").replace(/```[\s\S]*?```|`[^`\n]*`/g, " "))],
-    ["the first version holds no open - [ ] item", !OPEN.test(first[0] ?? "")],
+    ["the first version narrates no plan of the agent's own", !narrates(first[0] ?? "")],
+    ["the first version holds no open - [ ] item", !hasOpenItem(first[0] ?? "")],
     ["no version holds a bare topic label bullet", all.every(text => !text.split("\n").some(bareLabel))],
     ["every question comes with the agent's pick", all.every(pickFirst)],
     ["no line of any version holds 3 or more sentences", all.every(text => lineSentences(text).every(n => n < 3))],
