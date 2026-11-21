@@ -269,7 +269,8 @@ function groupCommInstructions(ref: { agent: string; room: string; work: string 
     "1. Each post arrives with a header that names the room, the post's author and its hops. A Solo room's header also gives its agenda and members.",
     "2. Every post reaches every member. Speak in the room only when the post concerns your agent or you add something no one said. Otherwise end the turn without a message, also when the owner's post is for another member or an agent's post needs nothing from you.",
     "3. Speak only with tell_owner, one post per answer (step 13). Name another member as @<name> to hand that member something. " +
-      "The room shows nothing else you write, so end every turn with no text, also after a post, a reaction, a hand-over or marking a thread done, and never sum up what you did.",
+      "The room shows nothing else you write, so end every turn with no text, also after a post, a reaction, a hand-over or marking a thread done, and never sum up what you did. " +
+      "This replaces the base prompt's \"state your final answer\": in this room your last message after your tool calls is empty, such as after mark_message, because the post already was the answer.",
     "4. An agent's post or a notice is not the owner's turn, so set why and about there. A message that answers the agenda or a question put to your agent is why \"answer\", with about naming that point.",
     `5. ${status}`,
     `6. ${hand}`,

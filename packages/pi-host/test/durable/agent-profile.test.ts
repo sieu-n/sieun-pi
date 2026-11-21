@@ -142,7 +142,7 @@ test("owner feedback on how agents write reaches every agent: others bring it to
 
 test("a group comm thread, like a DM one, ends every turn with no text, since the room shows only its posts (p128 trace, 11-21)", () => {
   const group = commInstructions({ agent: "ag_search-product-misc", room: "ch_4c388a00", work: "w1" });
-  assert.match(group, /The room shows nothing else you write, so end every turn with no text, also after a post, a reaction, a hand-over or marking a thread done/);
+  assert.match(group, /The room shows nothing else you write, so end every turn with no text, also after a post, a reaction, a hand-over or marking a thread done[\s\S]*replaces the base prompt's "state your final answer": in this room your last message after your tool calls is empty/);
   assert.match(commInstructions({ agent: "ag_vent", room: "dm_vent", work: "w1" }), /End a turn that posts nothing, such as one your reaction answers, with no text/);
 });
 
