@@ -4,7 +4,7 @@
  * `rooms/`. The server (`agents.ts`, `rooms.ts`) and the migration (`migrate.ts`) both read and write them through this file only.
  */
 import { join } from "node:path";
-import type { AgentId, ImageRef, Ms } from "../web/src/lib/api/types.ts";
+import type { AgentId, ForwardedPost, ImageRef, Ms } from "../web/src/lib/api/types.ts";
 import { appendLater, readLatest, writeJsonLater, written } from "./disk.ts";
 import { readJson, writeJson } from "./store.ts";
 import { fileImageSize, withSize } from "./image-size.ts";
@@ -119,6 +119,8 @@ export interface RoomPost {
   done?: StoredDone;
   /** Whether the owner pinned the post to its room, and when he last pinned or un-pinned it (pins.ts). */
   pinned?: StoredPin;
+  /** The post this one forwards, as it read then (forward.ts). */
+  forward?: ForwardedPost;
 }
 
 /** The pin flag on a post; un-pinning keeps the row with `pinned: false`, as `done` does. */

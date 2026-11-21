@@ -35,6 +35,8 @@ import { boxCwd, projectCwd, projectList } from "./projects.ts";
 import { agentPost, react, ReactionError, reactionInput, reactionList, reactionsOf, reactionText } from "./reactions.ts";
 import { doneInput, doneText, markDone, threadRootOf } from "./thread-done.ts";
 import { markPin, pinInput, pinnedPosts } from "./pins.ts";
+import { forwardInput, forwardOf } from "./forward.ts";
+import type { ForwardedPost } from "../web/src/lib/api/types.ts";
 import { Rooms } from "./rooms.ts";
 import { applyPrefs, withPrefs } from "./sidebar-prefs.ts";
 import { parseLayout } from "../web/src/lib/api/shared/sidebar-layout.ts";
@@ -622,18 +624,20 @@ export class App {
    * send: on 11-03 a send that carried a 318 KB screenshot took 7.9 s to read off the owner's link.
    */
   async send(id: ConversationId, request: SendRequest): Promise<SendResult> {
-    if (!request.text?.trim() && !request.images?.length) throw new Error("A message needs text or an image.");
+    if (!request.text?.trim() && !request.images?.length && !request.forward) throw new Error("A message needs text, an image or a forwarded post.");
     if (!request.requestId) throw new Error("A send needs a requestId, so a retry lands once.");
+    const forward = request.forward ? this.forwarded(request.forward) : undefined;
+    if (forward && !isRoomId(id) && !this.isGroup(id)) throw new Error("A post forwards into a DM, a channel or a Solo room.");
     if (isRoomId(id)) {
       const record = this.roomAgent(id);
-      const result = this.rooms.post(record, request);
+      const result = this.rooms.post(record, request, forward);
       this.answeredKeptUnread(record.room, request.requestId);
       if (request.mentions?.length) void this.deliverMentions({ requestId: request.requestId, conversation: id, text: request.text ?? "", mentions: request.mentions });
       await this.agentStore.written(record.room);
       return result;
     }
     if (this.isGroup(id)) {
-      const result = this.groups.post(id, request);
+      const result = this.groups.post(id, request, forward);
       this.answeredKeptUnread(id, request.requestId);
       await this.agentStore.written(id);
       return result;
@@ -651,6 +655,18 @@ export class App {
     this.store.saveState();
     await this.outbox.written();
     return { item, deliveries: item.kind === "message" ? item.deliveries : [] };
+  }
+
+  /** The post a send forwards, copied as it reads now (forward.ts). */
+  private forwarded(input: unknown): ForwardedPost {
+    const ref = forwardInput(input);
+    const group = this.groups.row(ref.room);
+    const record = group ? undefined : isRoomId(ref.room) ? this.roomAgent(ref.room) : undefined;
+    const room = group?.id ?? record?.room;
+    if (!room) throw new NotFound(`No room ${ref.room}; a forward quotes a post of a DM, a channel or a Solo room.`);
+    const post = this.agentStore.postsOf(room).find(p => p.id === ref.post);
+    if (!post) throw new NotFound(`No post ${ref.post} in ${ref.room}.`);
+    return forwardOf(post, group?.name ?? record!.name, id => this.threads.principal(id));
   }
 
   /** A thread in a DM, a channel or a Solo room: its root post and every reply, oldest first. */

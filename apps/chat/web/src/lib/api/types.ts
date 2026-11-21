@@ -390,6 +390,8 @@ export type Item =
       done?: ThreadDone;
       /** Room posts the owner pinned to the room (server/pins.ts); absent while the post is not pinned. */
       pinned?: PostPin;
+      /** Room posts that forward another post, as Slack's Forward message does: its quote card goes under the text. */
+      forward?: ForwardedPost;
     }
   | {
       kind: "turn"; id: string; at: Ms; author: Principal; text: string; live: boolean; steps: Step[]; images: ImageRef[]; jobs: JobRef[];
@@ -476,6 +478,17 @@ export interface SendRequest {
   requestId: string;
   /** For a busy thread: steer the running turn (default) or wait for it to end. */
   whenBusy?: "steer" | "followUp";
+  /** Slack's Forward message: the post this send quotes under its text, which may then be empty. */
+  forward?: PostRef;
+}
+/** One room post: its room and its `p<seq>` id. */
+export interface PostRef { room: ConversationId; post: string }
+/**
+ * A forwarded post as it read when forwarded, drawn as a quote card under the forward: its room and that room's name then, its author, text
+ * and images, and its thread root when it was a thread reply, so View message opens the thread.
+ */
+export interface ForwardedPost {
+  room: ConversationId; roomName: string; post: string; threadRoot?: string; author: Principal; text: string; images: ImageRef[]; at: Ms;
 }
 export interface SendResult { item: Item; deliveries: Delivery[]; queue?: TurnPlace | null }
 /** `POST /api/c/:id/posts/:post/reactions`: the owner adds (`on`, the default) or takes off his own `emoji` on a room post. */

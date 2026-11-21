@@ -32,6 +32,8 @@ import { laterLine, reminderPost } from "./later-agents.ts";
 import { namedPost, reactionsLine, reactionsOf, repliedPost } from "./reactions.ts";
 import { doneOf, reopens } from "./thread-done.ts";
 import { pinOf } from "./pins.ts";
+import { forwardPart, withForward } from "./forward.ts";
+import type { ForwardedPost } from "../web/src/lib/api/types.ts";
 import { agedPost, agentPostParts, CONTEXT_CLIP, CONTEXT_POSTS, queuedNote, readFeedThread, type FeedSide, type Spoken } from "./rooms.ts";
 import { readMark, type Store } from "./store.ts";
 import { OWNER, type Threads } from "./threads.ts";
@@ -385,7 +387,7 @@ export class GroupRooms {
   // Owner posts
 
   /** Writes the owner's post and starts its deliveries; the same requestId again answers the first post and retries its failed deliveries. */
-  post(id: string, request: SendRequest): SendResult {
+  post(id: string, request: SendRequest, forward?: ForwardedPost): SendResult {
     const row = this.require(id);
     const existing = this.store.byRequestId(row.id, request.requestId);
     if (existing) return existing.deliveries?.some(d => d.state === "failed") ? this.retry(row.id, existing.requestId) : this.result(row, existing);
@@ -401,14 +403,17 @@ export class GroupRooms {
     }))];
     const images = (request.images ?? []).map(image => this.deps.uploaded(image));
     return this.ownerPost(row, {
-      text: request.text ?? "", requestId: request.requestId, images, mentions,
+      text: request.text ?? "", requestId: request.requestId, images, mentions, ...(forward ? { forward } : {}),
       ...(request.threadRoot ? { threadRoot: request.threadRoot, ...(request.alsoInChannel ? { alsoInChannel: true as const } : {}) } : {}),
     });
   }
 
-  private ownerPost(row: GroupRoom, input: { text: string; requestId: string; images?: ImageRef[]; mentions?: AgentId[]; threadRoot?: string; alsoInChannel?: true }): SendResult {
+  private ownerPost(
+    row: GroupRoom, input: { text: string; requestId: string; images?: ImageRef[]; mentions?: AgentId[]; threadRoot?: string; alsoInChannel?: true; forward?: ForwardedPost },
+  ): SendResult {
     const post = this.write(row, {
       author: "owner", text: input.text, images: input.images ?? [], at: Date.now(), requestId: input.requestId, hops: 0, mentions: input.mentions ?? [],
+      ...(input.forward ? { forward: input.forward } : {}),
       ...(input.threadRoot ? { threadRoot: input.threadRoot } : {}), ...(input.alsoInChannel ? { alsoInChannel: true as const } : {}),
     });
     this.deps.state.state.reads[row.id] = { at: post.at, seq: post.seq };
@@ -657,7 +662,7 @@ export class GroupRooms {
     const label = row.kind === "channel"
       ? `#${row.name}`
       : `Solo "${row.name}" (${row.id}): ${row.agenda.length > AGENDA_CLIP ? `${row.agenda.slice(0, AGENDA_CLIP)}…` : row.agenda} · with ${row.members.map(m => this.deps.threads.principal(m.agent).name).join(", ")}`;
-    const lines = [`[${label.replace(/\n+/g, " ")} · post ${post.seq} from ${author.name}${author.kind === "owner" ? " (owner)" : ""} · hops ${post.hops ?? 0}]`, "", post.text];
+    const lines = [`[${label.replace(/\n+/g, " ")} · post ${post.seq} from ${author.name}${author.kind === "owner" ? " (owner)" : ""} · hops ${post.hops ?? 0}]`, "", withForward(post.text, post.forward)];
     const context = (p: RoomPost) => {
       const images = p.images.length ? ` [${p.images.length} image${p.images.length > 1 ? "s" : ""} attached]` : "";
       const reactions = reactionsLine(id => this.deps.threads.principal(id), p);
@@ -833,6 +838,7 @@ export class GroupRooms {
       ...(replies.length ? { thread: { replies: replies.length, lastAt: replies.at(-1)!.at, lastSeq: replies.at(-1)!.seq, authors } } : {}),
       deliveries: (post.deliveries ?? []).map(d => this.publicDelivery(row, post, d, all)), ...reactionsOf(id => this.deps.threads.principal(id), post),
       ...doneOf(id => this.deps.threads.principal(id), post), ...pinOf(id => this.deps.threads.principal(id), post), ...postState(post), ...this.laterOf(post),
+      ...forwardPart(post),
     };
   }
 

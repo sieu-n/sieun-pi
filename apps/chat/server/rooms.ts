@@ -24,6 +24,8 @@ import { postState } from "./post-edits.ts";
 import { namedPost, reactionsOf, repliedPost } from "./reactions.ts";
 import { doneOf, reopens } from "./thread-done.ts";
 import { pinOf } from "./pins.ts";
+import { forwardPart, withForward } from "./forward.ts";
+import type { ForwardedPost } from "../web/src/lib/api/types.ts";
 import { readMark, type Store } from "./store.ts";
 import { OWNER, type Threads } from "./threads.ts";
 import { isInput, sentMessage } from "./timeline.ts";
@@ -736,7 +738,7 @@ export class Rooms {
       ...(post.threadRoot ? { threadRoot: post.threadRoot } : {}),
       ...(replies.length ? { thread: { replies: replies.length, lastAt: replies.at(-1)!.at, lastSeq: replies.at(-1)!.seq, authors } } : {}),
       ...reactionsOf(id => this.deps.threads.principal(id), post), ...doneOf(id => this.deps.threads.principal(id), post),
-      ...pinOf(id => this.deps.threads.principal(id), post), ...postState(post), ...this.laterOf(post),
+      ...pinOf(id => this.deps.threads.principal(id), post), ...postState(post), ...this.laterOf(post), ...forwardPart(post),
     };
     if (post.author === "owner") {
       const d = post.delivery;
