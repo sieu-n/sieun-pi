@@ -84,10 +84,15 @@
     channels.filter((c) => !c.archived).map((c) => ({ id: c.id, name: c.name, kind: "channel", detail: c.agenda || `${c.members.length} members`, target: { id: c.id, name: c.name, kind: "channel" } })),
   );
   const matches = $derived(query?.trigger === "@" || query?.trigger === "#" ? matchCandidates(query.trigger === "@" ? agentCandidates : channelCandidates, query.text, 8) : []);
+  /** The name Slack shows for an emoji row: the one the typed letters match, so :thu reads :thumbsup: and not :+1:. */
+  const shownName = (names: readonly string[], typed: string): string => {
+    const q = typed.toLowerCase();
+    return names.find((n) => n.startsWith(q)) ?? names.find((n) => n.includes(q)) ?? names[0] ?? "";
+  };
   const commandMatches = $derived(query?.trigger === "/" ? commands.filter((c) => c.name.startsWith(query!.text.toLowerCase())) : []);
   const pickerItems = $derived<PickerItem[]>(
     query?.trigger === ":"
-      ? searchEmoji(query.text, 8).map((e) => ({ id: e.char, label: `:${e.names[0]}:`, glyph: e.char }))
+      ? searchEmoji(query.text, 8).map((e) => ({ id: e.char, label: `:${shownName(e.names, query!.text)}:`, glyph: e.char }))
       : query?.trigger === "/"
         ? commandMatches.map((c) => ({ id: c.name, label: `/${c.name}`, detail: c.description, ...(c.args ? { trailing: c.args } : {}) }))
         : matches.map((m) => ({

@@ -3,12 +3,17 @@ import { composerInput, conversation, FRONTEND, open, tag } from "./helpers";
 
 /** The composer's emoji button, its `:name` list and its `/` commands (Composer.svelte, typeahead.ts). */
 
+// The notification offer (lib/notices.svelte.ts) is a toast that stays until dismissed and sits over the composer.
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem("chat.notify.asked", "1"));
+});
+
 test(":thu opens the emoji list, a pick puts the emoji in the draft, and a whole :name: turns into its emoji", async ({ page }) => {
   await open(page, `#/c/${FRONTEND}`);
   const input = composerInput(conversation(page));
   await input.click();
   await page.keyboard.type("nice :thu");
-  const option = page.getByRole("option", { name: /:thumbsup:/ });
+  const option = page.getByRole("option", { name: /:thumbsup:/ }).first();
   await expect(option).toBeVisible();
   await page.keyboard.press("Enter");
   await expect(option).toBeHidden();
@@ -23,6 +28,8 @@ test("the emoji button opens the picker and its pick lands at the caret", async 
   await open(page, `#/c/${FRONTEND}`);
   const input = composerInput(conversation(page));
   await input.click();
+  // The dev rig's "A new version of the chat is out" toast sits over the composer's left tools while other files change.
+  await page.addStyleTag({ content: ".toaster { display: none !important; }" });
   await page.keyboard.type("ab");
   await page.keyboard.press("ArrowLeft");
   await conversation(page).getByTestId("composer-emoji").click();
