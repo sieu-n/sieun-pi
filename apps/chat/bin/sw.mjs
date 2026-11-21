@@ -143,7 +143,9 @@ async function main(argv) {
   }
 }
 
-main(process.argv.slice(2)).then(code => process.exit(code ?? 0), error => {
+main(process.argv.slice(2)).then(code => {
+  process.exitCode = code ?? 0;
+}, error => {
   console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
+  process.exitCode = 1;
 });
