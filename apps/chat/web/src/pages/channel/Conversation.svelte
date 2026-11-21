@@ -132,7 +132,7 @@
     }
     if (key) {
       paneKey = `thread:${key}`;
-      sidePanel.open({ key: paneKey, title, icon: postThread ? "thread" : "robot", body: pane, header: layout === "slack" ? threadHeader : undefined, onclose: () => {
+      sidePanel.open({ key: paneKey, title, icon: postThread ? "thread" : "robot", body: pane, header: layout === "slack" || postThread ? threadHeader : undefined, onclose: () => {
         if (!leaving) router.setParams({ thread: null });
       } });
     } else if (board) {
