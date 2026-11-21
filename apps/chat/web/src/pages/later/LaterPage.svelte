@@ -6,12 +6,9 @@
   import { Avatar, Button, EmptyState, Icon, IconButton, LoadingText, PanelHeader, Tabs, stampLabel } from "$lib/ui";
   import { previewText } from "$pages/agents/agents-model";
   import { avatarOf } from "$pages/channel/present";
-  import { api } from "$lib/api";
   import Menu from "$lib/ui/Menu.svelte";
   import RemindDialog from "$lib/RemindDialog.svelte";
-  import { dueFirst, dueLabel, isOverdue, remindedText, remindMenu } from "$lib/remind";
-  import { askNotifyPermission } from "$lib/remind-notify";
-  import { toast } from "$lib/ui/toast.svelte";
+  import { dueFirst, dueLabel, isOverdue, remindMenu } from "$lib/remind";
 
   later.start();
   let now = $state(Date.now());
@@ -45,23 +42,12 @@
   let remindRow = $state<LaterRow | null>(null);
   let remindAnchor = $state<HTMLElement | null>(null);
   let customRow = $state<LaterRow | null>(null);
-  const remindItems = $derived(remindRow ? remindMenu({ remindAt: remindRow.remindAt, set: (at) => remindRow && remind(remindRow, at), custom: () => (customRow = remindRow), clear: () => remindRow && remind(remindRow, null) }).items : []);
+  const remindItems = $derived(remindRow ? remindMenu({ remindAt: remindRow.remindAt, kept: !!remindRow.unread, set: (at) => remindRow && later.remind(remindRow, at), custom: () => (customRow = remindRow), clear: () => remindRow && later.remind(remindRow, null) }).items : []);
 
   function openRemind(row: LaterRow, e: MouseEvent) {
     remindRow = row;
     remindAnchor = e.currentTarget as HTMLElement;
     remindOpen = true;
-  }
-
-  /** Sets, snoozes or clears a row's reminder; the live later event re-reads the list. */
-  async function remind(row: LaterRow, at: number | null) {
-    try {
-      if (at !== null) void askNotifyPermission();
-      await api.patchLater(row.id, { remindAt: at });
-      toast.show(at === null ? "Reminder removed" : remindedText(at));
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not change the reminder");
-    }
   }
   const roomIcon = (row: LaterRow) => (row.roomKind === "dm" ? "user" : row.roomKind === "solo" ? "chat" : null);
 </script>
@@ -106,7 +92,7 @@
                     <time class="t-caption" datetime={new Date(row.at).toISOString()} title={stampLabel(row.at, now)}>{stampLabel(row.at, now)}</time>
                   </span>
                   {#if row.state === "open" && row.remindAt !== undefined}
-                    <span class="due t-caption" class:overdue data-later-due><Icon name="clock" size={12} />{dueLabel(row.remindAt, now).text}</span>
+                    <span class="due t-caption" class:overdue data-later-due><Icon name={row.unread ? "dot" : "clock"} size={12} />{dueLabel(row.remindAt, now, !!row.unread).text}</span>
                   {/if}
                   {#if row.gone}
                     <span class="preview t-body gone">This message was deleted.</span>
@@ -118,7 +104,7 @@
               <span class="row-actions">
                 {#if row.state === "open"}
                   <IconButton size="sm" icon="check" label="Mark complete" onclick={() => later.setState(row, "done")} data-later-done />
-                  <IconButton size="sm" icon="clock" label={overdue ? "Snooze" : row.remindAt !== undefined ? "Change reminder" : "Remind me"} aria-haspopup="menu" onclick={(e: MouseEvent) => openRemind(row, e)} data-later-remind />
+                  <IconButton size="sm" icon="clock" label={row.unread && row.remindAt !== undefined ? "Change when it comes back" : overdue ? "Snooze" : row.remindAt !== undefined ? "Change reminder" : "Remind me"} aria-haspopup="menu" onclick={(e: MouseEvent) => openRemind(row, e)} data-later-remind />
                 {:else}
                   <IconButton size="sm" icon="refresh" label="Move to In progress" onclick={() => later.setState(row, "open")} data-later-reopen />
                 {/if}
@@ -131,8 +117,8 @@
     {/if}
   </div>
 </div>
-{#if remindOpen}<Menu bind:open={remindOpen} anchor={remindAnchor} items={remindItems} placement="bottom-end" label={remindRow && isOverdue(remindRow, now) ? "Snooze" : "Remind me"} />{/if}
-{#if customRow}<RemindDialog title="Remind me" at={customRow.remindAt} onpick={(at) => (customRow ? remind(customRow, at) : undefined)} onclose={() => (customRow = null)} />{/if}
+{#if remindOpen}<Menu bind:open={remindOpen} anchor={remindAnchor} items={remindItems} placement="bottom-end" label={remindRow?.unread ? "Change when it comes back" : remindRow && isOverdue(remindRow, now) ? "Snooze" : "Remind me"} />{/if}
+{#if customRow}<RemindDialog title="Remind me" at={customRow.remindAt} onpick={(at) => (customRow ? later.remind(customRow, at) : undefined)} onclose={() => (customRow = null)} />{/if}
 
 <style>
   .page { display: flex; flex-direction: column; height: 100%; min-height: 0; }

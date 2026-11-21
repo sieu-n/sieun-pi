@@ -471,6 +471,8 @@ export const api = {
   patchLater: (id: string, patch: LaterPatch) => call<{ item: LaterItem }>("PATCH", `/api/later/${enc(id)}`, patch),
   /** Unsaves a post; unsaving one that is gone answers `{item: null}`. */
   unsaveLater: (id: string) => call<{ item: LaterItem | null }>("DELETE", `/api/later/${enc(id)}`),
+  /** Undo of an unsave: puts the item `unsaveLater` answered back as it was. */
+  restoreLater: (item: LaterItem) => call<{ item: LaterItem }>("PUT", `/api/later/${enc(item.id)}`, item),
   /** Slack's Edit message on the owner's own room post. */
   editPost: (id: ConversationId, post: string, text: string) => call<{ item: Item }>("PATCH", `/api/c/${enc(id)}/posts/${enc(post)}`, { text }),
   /** Slack's Delete message on the owner's own room post. */

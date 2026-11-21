@@ -4,8 +4,11 @@
  */
 import { live } from "./api/live.svelte";
 import type { LaterRow } from "./api/types";
+import { later } from "./later.svelte";
+import { remindPresets } from "./remind";
 import { conversationHref, router } from "./router.svelte";
-import { notifySystem } from "./remind-notify";
+import { notifyOnce, notifySystem } from "./remind-notify";
+import type { MenuEntry } from "./ui/menu";
 import { toast } from "./ui/toast.svelte";
 
 const SNIPPET = 140;
@@ -28,15 +31,17 @@ export function laterDue(row: LaterRow): void {
   // A post he marked unread and has not handled comes back each morning (server/keep-unread.ts).
   const title = row.unread ? `Still unread: ${from}` : `Reminder: ${from}`;
   const body = snippet(row);
-  toast.show(`${title}: ${body}`, { duration: 0, action: { label: "View", run: () => openReminded(row) } });
-  const fire = () => void notifySystem(title, body, `later:${row.id}:${row.remindAt ?? 0}`, () => openReminded(row));
-  if (navigator.locks) void navigator.locks.request(`later-due:${row.id}:${row.remindAt ?? 0}`, { ifAvailable: true }, async lock => {
-    if (!lock) return;
-    fire();
-    // Holds the lock past the other tabs' copies of the event, which come within a frame of this one.
-    await new Promise(resolve => setTimeout(resolve, 5000));
+  // Slack's reminder message: Mark as complete and a Snooze menu sit on it, so neither needs a trip to Later.
+  const snooze = (): MenuEntry[] => remindPresets().map((p): MenuEntry => ({ id: `snooze-${p.id}`, label: p.label, onselect: () => void later.remind(row, p.at) }));
+  toast.show(`${title}: ${body}`, {
+    duration: 0,
+    actions: [
+      { label: "View", run: () => openReminded(row) },
+      { label: "Mark complete", run: () => void later.setState(row, "done") },
+      { label: "Snooze", menu: snooze },
+    ],
   });
-  else fire();
+  notifyOnce(`later-due:${row.id}:${row.remindAt ?? 0}`, () => void notifySystem(title, body, `later:${row.id}:${row.remindAt ?? 0}`, () => openReminded(row)));
 }
 
 /** Listens for due reminders for the life of the page. */

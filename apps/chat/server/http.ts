@@ -258,6 +258,7 @@ export function routes(app: App): Route[] {
       return { item: app.later.update("owner", p.id!, { ...(state !== undefined ? { state } : {}), ...(remindAt !== undefined ? { remindAt } : {}) } as LaterPatch) };
     }),
     route("DELETE", "/api/later/:id", async (_r, p) => ({ item: app.later.remove("owner", p.id!) ?? null })),
+    route("PUT", "/api/later/:id", async (_r, p, _q, body) => ({ item: app.restoreLater(p.id!, ((await body()) ?? {}) as Record<string, unknown>) })),
     route("POST", "/api/c/:id/abort", async (_r, p) => {
       await app.abort(p.id!);
       return { ok: true };

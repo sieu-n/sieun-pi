@@ -91,6 +91,17 @@ test("the toast and the submenu word a reminder as Slack does", () => {
   assert.deepEqual(set.items.map((e: MenuEntry) => ("label" in e ? e.label : "-")), ["Due 3:40 PM", "In 20 minutes", "In 1 hour", "In 3 hours", "Tomorrow", "Next week", "-", "Custom…", "Remove reminder"]);
 });
 
+test("a post kept unread reads as coming back unread, never as a reminder he set", () => {
+  const now = new Date(2026, 10, 18, 14, 30).getTime();
+  const morning = new Date(2026, 10, 19, 9, 0).getTime();
+  assert.deepEqual(dueLabel(morning, now, true), { text: "Comes back unread tomorrow at 9:00 AM", due: false });
+  assert.deepEqual(dueLabel(new Date(2026, 10, 18, 9, 0).getTime(), now, true), { text: "Still unread · 9:00 AM", due: true });
+  assert.equal(remindedText(new Date(2026, 10, 18, 15, 30).getTime(), now, true), "It comes back unread at 3:30 PM");
+  const kept = remindMenu({ remindAt: morning, kept: true, set: () => {}, custom: () => {}, clear: () => {}, now });
+  assert.equal(kept.label, "Change when it comes back");
+  assert.deepEqual(kept.items.map((e: MenuEntry) => ("label" in e ? e.label : "-")), ["Comes back unread tomorrow at 9:00 AM", "In 20 minutes", "In 1 hour", "In 3 hours", "Tomorrow", "Next week", "-", "Custom…", "Don't bring it back"]);
+});
+
 test("the Custom picker names the day in words", () => {
   const now = new Date(2026, 10, 18, 14, 30).getTime();
   assert.equal(pickedLabel(new Date(2026, 10, 18, 14, 44).getTime(), now), "Today at 2:44 PM");

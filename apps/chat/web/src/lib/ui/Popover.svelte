@@ -51,6 +51,11 @@
   let fit = $state(Infinity);
   let measured = $state(false);
   let returnFocus: HTMLElement | null = null;
+  /**
+   * A popover anchored inside a top-layer surface, such as a toast's Snooze menu, joins the top layer itself, so the surface and the toasts
+   * stacked over it never cover it.
+   */
+  const topLayer = $derived(anchor instanceof HTMLElement && !!anchor.closest(":popover-open"));
 
   function close() {
     open = false;
@@ -78,6 +83,7 @@
     const focused = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null;
     returnFocus = focused ?? (anchor instanceof HTMLElement ? anchor : null);
     void tick().then(() => {
+      if (topLayer && element?.showPopover && !element.matches(":popover-open")) element.showPopover();
       reposition();
       if (autofocus && element && !element.contains(document.activeElement)) {
         const target = element.querySelector<HTMLElement>("[data-autofocus], input, [role=menuitem], [role=menuitemradio], [role=menuitemcheckbox], [role=option], button");
@@ -145,6 +151,7 @@
     {role}
     aria-label={label}
     tabindex="-1"
+    popover={topLayer ? "manual" : undefined}
   >
     {@render children()}
   </div>
@@ -160,6 +167,11 @@
     box-shadow: var(--shadow-float);
     color: var(--text-standard);
     opacity: 0;
+  }
+  .popover[popover] {
+    inset: 0 auto auto 0;
+    margin: 0;
+    border: 0;
   }
   .popover.measured {
     opacity: 1;

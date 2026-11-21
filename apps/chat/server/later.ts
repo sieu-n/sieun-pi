@@ -175,8 +175,31 @@ export class Later {
     return old;
   }
 
+  /**
+   * Undo of an unsave: puts the item `remove` answered back as it was, with its state, reminder, Keep unread mark and save time, which is
+   * its place in the list. It replaces a save of the post made since.
+   */
+  restore(by: string, id: string, input: Record<string, unknown>): LaterItem {
+    const who = principalOf(by);
+    const cut = id.indexOf(":");
+    const room = id.slice(0, cut) as RoomId;
+    const post = id.slice(cut + 1);
+    if (cut < 1 || !this.deps.store.postsOf(room).some(p => p.id === post)) throw new LaterError(404, `No post ${id} to put back in Later.`);
+    if (input.state !== "open" && input.state !== "done") throw new LaterError(400, "A Later state is open or done.");
+    const savedAt = timeOf(input.savedAt, "savedAt");
+    if (savedAt === undefined) throw new LaterError(400, "An item put back names its savedAt, the time in ms it was first saved.");
+    const doneAt = input.state === "done" ? timeOf(input.doneAt, "doneAt") ?? Date.now() : undefined;
+    const remindAt = timeOf(input.remindAt, "remindAt");
+    const notifiedAt = remindAt !== undefined ? timeOf(input.notifiedAt, "notifiedAt") : undefined;
+    return this.write(who, {
+      id: laterId(room, post), by: who, room, post, savedAt, state: input.state,
+      ...(doneAt !== undefined ? { doneAt } : {}), ...(remindAt !== undefined ? { remindAt } : {}), ...(notifiedAt !== undefined ? { notifiedAt } : {}),
+      ...(input.unread === true ? { unread: true as const } : {}),
+    }, false);
+  }
+
   private reopened(item: LaterItem): LaterItem {
-    const { doneAt: _d, ...rest } = item;
+    const { doneAt: _d, archivedAt: _a, ...rest } = item;
     return { ...rest, state: "open" };
   }
 

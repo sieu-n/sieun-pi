@@ -1,6 +1,8 @@
 <script lang="ts">
   import Icon from "./Icon.svelte";
-  import { toast } from "./toast.svelte";
+  import Menu from "./Menu.svelte";
+  import type { MenuEntry } from "./menu";
+  import { toast, type ToastAction } from "./toast.svelte";
 
   let toaster = $state<HTMLDivElement>();
   /**
@@ -13,6 +15,20 @@
     if (toaster.matches(":popover-open")) toaster.hidePopover();
     toaster.showPopover();
   });
+
+  /** The toast whose button menu is open, such as a reminder's Snooze, with the button it opens above. */
+  let menu = $state<{ toast: number; label: string; items: MenuEntry[]; anchor: HTMLElement } | null>(null);
+  let menuOpen = $state(false);
+
+  function press(id: number, action: ToastAction, e: MouseEvent) {
+    if ("menu" in action) {
+      menu = { toast: id, label: action.label, items: action.menu(), anchor: e.currentTarget as HTMLElement };
+      menuOpen = true;
+      return;
+    }
+    action.run();
+    toast.dismiss(id);
+  }
 </script>
 
 <div bind:this={toaster} popover="manual" class="toaster" role="region" aria-label="Notifications" aria-live="polite">
@@ -20,21 +36,17 @@
     <div class="toast {t.tone}" role={t.tone === "danger" ? "alert" : "status"}>
       {#if t.tone === "success"}<Icon name="check" size={16} />{:else if t.tone === "danger"}<Icon name="warning" size={16} />{/if}
       <span class="text">{t.text}</span>
-      {#if t.action}
-        {@const action = t.action}
-        <button
-          type="button"
-          class="action"
-          onclick={() => {
-            action.run();
-            toast.dismiss(t.id);
-          }}>{action.label}</button
-        >
-      {/if}
+      {#each t.actions as action (action.label)}
+        <button type="button" class="action" aria-haspopup={"menu" in action ? "menu" : undefined} onclick={(e) => press(t.id, action, e)}>{action.label}</button>
+      {/each}
       <button type="button" class="close" aria-label="Dismiss" onclick={() => toast.dismiss(t.id)}><Icon name="close" size={14} /></button>
     </div>
   {/each}
 </div>
+{#if menu && menuOpen}
+  {@const id = menu.toast}
+  <Menu bind:open={menuOpen} anchor={menu.anchor} items={menu.items} placement="top-end" label={menu.label} onpick={() => toast.dismiss(id)} />
+{/if}
 
 <style>
   .toaster {

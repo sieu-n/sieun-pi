@@ -1,10 +1,14 @@
+import type { MenuEntry } from "./menu";
+
 export type ToastTone = "neutral" | "success" | "danger";
+/** A toast button: `run` on click, or a `menu` that opens above it, such as a reminder's Snooze times; a pick closes the toast. */
+export type ToastAction = { label: string; run: () => void } | { label: string; menu: () => MenuEntry[] };
 export type ToastItem = {
   id: number;
   text: string;
   tone: ToastTone;
-  /** Optional one button, for example Undo or Retry. */
-  action?: { label: string; run: () => void };
+  /** Its buttons, for example Undo or Retry, or a reminder's View, Mark complete and Snooze. */
+  actions: ToastAction[];
   /** Milliseconds before it hides. 0 keeps it until dismissed. */
   duration: number;
 };
@@ -13,10 +17,11 @@ class Toasts {
   items = $state<ToastItem[]>([]);
   private next = 1;
 
-  show(text: string, opts: { tone?: ToastTone; action?: ToastItem["action"]; duration?: number } = {}): number {
+  /** `action` is one button; `actions` is several, in order. */
+  show(text: string, opts: { tone?: ToastTone; action?: ToastAction; actions?: ToastAction[]; duration?: number } = {}): number {
     const id = this.next++;
-    const item: ToastItem = { id, text, tone: opts.tone ?? "neutral", duration: opts.duration ?? (opts.tone === "danger" ? 8000 : 4000) };
-    if (opts.action) item.action = opts.action;
+    const actions = opts.actions ?? (opts.action ? [opts.action] : []);
+    const item: ToastItem = { id, text, tone: opts.tone ?? "neutral", actions, duration: opts.duration ?? (opts.tone === "danger" ? 8000 : 4000) };
     this.items = [...this.items, item].slice(-4);
     if (item.duration > 0) setTimeout(() => this.dismiss(id), item.duration);
     return id;

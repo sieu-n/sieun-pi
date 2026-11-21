@@ -57,14 +57,26 @@ export function whenLabel(at: number, now = Date.now()): string {
 const WEEKDAY = new Intl.DateTimeFormat("en-US", { weekday: "long" });
 const DATE = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" });
 
-/** The toast after a pick: "We'll remind you at 3:40 PM", "… tomorrow at 9:00 AM", "… on Monday at 9:00 AM", "… on Dec 2 at 9:00 AM". */
-export function remindedText(at: number, now = Date.now()): string {
-  const when = sameDay(at, now) ? "" : sameDay(at, morningAfter(now, 1)) ? "tomorrow " : at - now < 6 * 24 * HOUR ? `on ${WEEKDAY.format(at)} ` : `on ${DATE.format(at)} `;
-  return `We'll remind you ${when}at ${TIME.format(at)}`;
+/** A time as the end of a sentence: "at 3:40 PM", "tomorrow at 9:00 AM", "on Monday at 9:00 AM", "on Dec 2 at 9:00 AM". */
+function whenPhrase(at: number, now: number): string {
+  const when = sameDay(at, now) ? "" : sameDay(at, morningAfter(now, 1)) ? "tomorrow " : at > now && at - now < 6 * 24 * HOUR ? `on ${WEEKDAY.format(at)} ` : `on ${DATE.format(at)} `;
+  return `${when}at ${TIME.format(at)}`;
 }
 
-/** A Later row's reminder line: "Due 3:40 PM" before the time, "Overdue" once it passed, as Slack's Later list words it. */
-export function dueLabel(at: number, now = Date.now()): { text: string; due: boolean } {
+/**
+ * The toast after a pick: "We'll remind you at 3:40 PM", "… tomorrow at 9:00 AM", "… on Monday at 9:00 AM", "… on Dec 2 at 9:00 AM".
+ * On a post kept unread the time is when it comes back unread (server/keep-unread.ts), which is no reminder he set.
+ */
+export function remindedText(at: number, now = Date.now(), kept = false): string {
+  return kept ? `It comes back unread ${whenPhrase(at, now)}` : `We'll remind you ${whenPhrase(at, now)}`;
+}
+
+/**
+ * A Later row's reminder line: "Due 3:40 PM" before the time, "Overdue" once it passed, as Slack's Later list words it. A post kept unread
+ * has no due time of his; its line says when it comes back unread, and "Still unread" once it did.
+ */
+export function dueLabel(at: number, now = Date.now(), kept = false): { text: string; due: boolean } {
+  if (kept) return at <= now ? { text: `Still unread · ${whenLabel(at, now)}`, due: true } : { text: `Comes back unread ${whenPhrase(at, now)}`, due: false };
   return at <= now ? { text: `Overdue · ${whenLabel(at, now)}`, due: true } : { text: `Due ${whenLabel(at, now)}`, due: false };
 }
 
@@ -86,11 +98,13 @@ export function fromPicker(date: string, time: string): number | null {
 
 /**
  * The Remind me submenu of a message or a Later row: the presets, Custom…, and, when a reminder is set, its time and Remove reminder.
- * `label` is "Remind me about this" on a message and "Remind me" on a Later row, as Slack words them.
+ * `label` is "Remind me about this" on a message and "Remind me" on a Later row, as Slack words them. On a post kept unread (`kept`) the
+ * time is its morning return, so the menu names that, a pick moves it and the last item stops it.
  */
 export function remindMenu(opts: {
   label?: string;
   remindAt?: number;
+  kept?: boolean;
   set: (at: number) => void;
   custom: () => void;
   clear: () => void;
@@ -98,17 +112,18 @@ export function remindMenu(opts: {
 }): MenuSubmenu {
   const now = opts.now ?? Date.now();
   const set = opts.remindAt !== undefined;
+  const kept = !!opts.kept && set;
   return {
     type: "submenu",
     id: "remind",
-    label: opts.label ?? "Remind me about this",
+    label: kept ? "Change when it comes back" : opts.label ?? "Remind me about this",
     icon: "clock",
     items: [
-      ...(set ? [{ type: "label", label: dueLabel(opts.remindAt!, now).text } satisfies MenuEntry] : []),
+      ...(set ? [{ type: "label", label: dueLabel(opts.remindAt!, now, kept).text } satisfies MenuEntry] : []),
       ...remindPresets(now).map((p): MenuEntry => ({ id: `remind-${p.id}`, label: p.label, onselect: () => opts.set(p.at) })),
       { type: "separator" },
       { id: "remind-custom", label: "Custom…", onselect: opts.custom },
-      ...(set ? [{ id: "remind-clear", label: "Remove reminder", tone: "danger", onselect: opts.clear } satisfies MenuEntry] : []),
+      ...(set ? [{ id: "remind-clear", label: kept ? "Don't bring it back" : "Remove reminder", tone: "danger", onselect: opts.clear } satisfies MenuEntry] : []),
     ],
   };
 }

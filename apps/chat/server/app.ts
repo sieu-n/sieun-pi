@@ -654,6 +654,13 @@ export class App {
     this.later.keepUnread("owner", room, post, nextMorning(Date.now()));
   }
 
+  /** Undo of an unsave from Later (later.ts `restore`): the item comes back as it was, and a post kept unread makes its room unread from it again. */
+  restoreLater(id: string, input: Record<string, unknown>): LaterItem {
+    const item = this.later.restore("owner", id, input);
+    if (item.unread && item.state === "open") this.roomUnreadFrom(item.room, item.post);
+    return item;
+  }
+
   private roomUnreadFrom(room: RoomId, post: string): void {
     if (this.isGroup(room)) this.groups.markRead(room, undefined, post);
     else this.rooms.markRead(this.roomAgent(room), undefined, post);

@@ -4,10 +4,11 @@
  * click and the post the server sends back, so the bookmark fills at once.
  */
 import { SvelteMap } from "svelte/reactivity";
-import { api, type Item, type LaterList, type LaterRow, type LaterState } from "$lib/api";
+import { api, type Item, type LaterItem, type LaterList, type LaterRow, type LaterState } from "$lib/api";
 import { live } from "$lib/api/live.svelte";
 import { hrefFor, router } from "$lib/router.svelte";
-import { isOverdue } from "$lib/remind";
+import { isOverdue, remindedText } from "$lib/remind";
+import { askNotifyPermission } from "$lib/remind-notify";
 import type { MenuEntry } from "$lib/ui/menu";
 import { toast } from "$lib/ui/toast.svelte";
 
@@ -88,15 +89,38 @@ class LaterStore {
     }
   }
 
+  /** Unsaves the post; its toast's Undo puts the item back as it was, with its reminder, Keep unread mark, state and place in the list. */
   async unsave(room: string, post: string): Promise<void> {
     this.optimistic.set(key(room, post), false);
     try {
-      await api.unsaveLater(key(room, post));
-      this.note("Removed from Later", { label: "Undo", run: () => void this.save(room, post) });
+      const { item } = await api.unsaveLater(key(room, post));
+      this.note("Removed from Later", { label: "Undo", run: () => void (item ? this.restore(item) : this.save(room, post)) });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not remove the message from Later");
     } finally {
       this.optimistic.delete(key(room, post));
+    }
+  }
+
+  private async restore(item: LaterItem): Promise<void> {
+    this.optimistic.set(key(item.room, item.post), true);
+    try {
+      await api.restoreLater(item);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not put the message back in Later");
+    } finally {
+      this.optimistic.delete(key(item.room, item.post));
+    }
+  }
+
+  /** Sets, snoozes or clears (`null`) a row's reminder, or on a post kept unread moves or stops its return; the live later event re-reads the list. */
+  async remind(row: Pick<LaterRow, "id" | "unread">, at: number | null): Promise<void> {
+    try {
+      if (at !== null) void askNotifyPermission();
+      await api.patchLater(row.id, { remindAt: at });
+      toast.show(at === null ? (row.unread ? "It won't come back unread" : "Reminder removed") : remindedText(at, Date.now(), !!row.unread));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not change the reminder");
     }
   }
 

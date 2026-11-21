@@ -90,4 +90,19 @@ describe("save for later on the fixture server", () => {
     assert.deepEqual(file.items.map(i => i.id), items.slice(1).map(i => i.id));
     assert.throws(() => s.app.later.list("../etc"), /names nobody/);
   });
+
+  test("Undo of an unsave puts the item back as it was, reminder and Keep unread included", async () => {
+    const post = (await posts("ch_cutover")).at(-2)!;
+    const id = `ch_cutover:${post.id}`;
+    const remindAt = Date.now() + 3_600_000;
+    await save({ room: "ch_cutover", post: post.id, remindAt });
+    const kept = s.app.later.keepUnread("owner", "ch_cutover", post.id, remindAt + 60_000);
+    const removed = (await s.send<{ item: LaterItem }>("DELETE", `/api/later/${encodeURIComponent(id)}`)).body.item;
+    const back = await s.send<{ item: LaterItem; error?: string }>("PUT", `/api/later/${encodeURIComponent(id)}`, removed);
+    assert.equal(back.status, 200, back.body.error);
+    assert.deepEqual(back.body.item, kept, "the item comes back with its save time, reminder and unread mark");
+    assert.equal((await posts("ch_cutover")).find(p => p.id === post.id)?.later?.remindAt, remindAt);
+    assert.equal((await s.send("PUT", `/api/later/${encodeURIComponent("ch_cutover:p999999")}`, removed)).status, 404);
+    assert.equal((await s.send("PUT", `/api/later/${encodeURIComponent(id)}`, { ...removed, state: "gone" })).status, 400);
+  });
 });
