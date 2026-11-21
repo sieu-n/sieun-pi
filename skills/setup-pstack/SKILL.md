@@ -9,7 +9,7 @@ Write `~/.prime/agent/pstack-models.json`. Every pstack skill reads its `roles` 
 A skill with no entry for its role uses its own default.
 
 The `policy` block in that file is the only model policy.
-It holds the default (`inherit-parent`), the allowed models, per-task recommendations such as `frontend`, and the banned models.
+It holds the default model and thinking level (`policy.default`), the allowed models, per-task recommendations such as `frontend`, and the banned models.
 Never write a banned model into `roles`, even when `rlm.find_models` lists it.
 Write a model outside `allowed` only when the user names it for a role.
 
@@ -24,7 +24,7 @@ model = entries[0]["model"]                        # "provider/model" selector
 thinking = entries[0].get("thinking")              # off|minimal|low|medium|high|xhigh|max
 ```
 
-A panel role (`how critics`, `architect runners`, `cross-judge pool`) has one entry per subagent, so the list length sets the fan-out.
+A panel role (`how critics`, `architect runners`, `interrogate reviewers`) has one entry per subagent, so the list length sets the fan-out.
 For an entry of `{"model": "inherit-parent"}`, omit `model=` in `rlm.spawn(...)`. It still counts toward the fan-out.
 
 ## Steps
@@ -32,13 +32,13 @@ For an entry of `{"model": "inherit-parent"}`, omit `model=` in `rlm.spawn(...)`
 ### 1. Find reachable models
 
 ```python
-models = await rlm.find_models("claude", limit=20)   # limit must be 1-20
+models = await rlm.find_models("claude", limit=20)   # the prime-agent CLI refuses a limit outside 1-20
 for m in models:
     print(m.selector)
 ```
 
 `rlm.find_models` returns only models with live credentials in this session.
-One call returns at most 20 entries, so run several queries (`""`, `"claude"`, `"gpt"`, `"codex"`, provider names) and take the union.
+One call returns at most 20 entries in a `prime-agent` CLI session and at most 50 in a pi-host chat thread or job, so run several queries (`""`, `"claude"`, `"gpt"`, `"codex"`, provider names) and take the union.
 Never write a selector you have not seen in that output. `inherit-parent` is an alias and is always valid.
 
 A listed model can still fail on the first request because of no balance, an expired key, or a region block.
@@ -62,7 +62,7 @@ Show every role with its current model. Mark each selector that failed step 1 as
 Ask in chat whether to keep the config or change specific roles. Give a short numbered list of the reachable models plus `inherit-parent`, and mark the default.
 
 `swarm workers` is the model for every worker unless a race or comparison sets a model per arm.
-Phase B of the architect skill picks one entry from `cross-judge pool`, from a model family other than the parent's when it can.
+Phase B of the architect skill spawns one judge from `cross-judge pool`, or on the parent's model when that role is missing. It does not choose a model family, so put a model from another family in the pool when the user wants a cross-family judge.
 
 ### 4. Validate
 
@@ -91,7 +91,7 @@ Overwrite the whole file, so a re-run gives the same result.
 Copy the `policy` block over unchanged unless the user changes the policy. Do not copy it into AGENTS.md or a skill.
 
 Use these role labels exactly:
-`feature, refactoring`, `bug-fix`, `perf-issue`, `hillclimb`, `judgment and prose`, `hardest tasks`, `how explorer`, `how explainer`, `how critics`, `why investigators`, `why synthesizer`, `cross-judge pool`, `swarm workers`, `architect runners`, `frontend`.
+`feature, refactoring`, `bug-fix`, `perf-issue`, `hillclimb`, `judgment and prose`, `hardest tasks`, `how explorer`, `how explainer`, `how critics`, `why investigators`, `why synthesizer`, `cross-judge pool`, `swarm workers`, `architect runners`, `interrogate reviewers`, `frontend`.
 
 ### 6. Confirm
 

@@ -11,9 +11,9 @@ handle = await rlm.spawn(brief, name="critic-1")
 
 - `rlm.spawn` returns when the child is admitted. It never returns the child's answer.
 - Take `model=` and `thinking=` from the role in `~/.prime/agent/pstack-models.json` (see `../SKILL.md`), and omit both for `inherit-parent`.
-- `thinking` must be one of `off, minimal, low, medium, high, xhigh, max`, or the spawn fails.
+- `thinking` must be one of `off, minimal, low, medium, high, xhigh, max`. The `prime-agent` CLI refuses any other value at spawn, and pi-host does not check it at spawn.
 - Every child is a general-purpose Prime Agent, so the brief carries the role. A persona such as `poteto-agent` is a skill body you paste into the brief.
-- Every child runs locally in the background with the parent's filesystem. For another branch, make a git worktree first and name its path in the brief.
+- Every child runs locally in the background with the parent's filesystem. Never give a child a git worktree or a local clone, because the repo copy guard in `packages/sieun-rules/src/repo-copy.ts` refuses both in every repo (owner rule c193). The child works in the existing checkout, or writes its output in a folder under your scratch folder that the brief names.
 - For a read-only child, write "read and report only; do not edit any file." in the brief.
 
 To fan out, call `rlm.spawn` once per worker in one IPython cell. All workers start before any finishes.
@@ -52,7 +52,7 @@ Check the depth before you spawn:
 import os; print(os.environ.get("RLM_DEPTH"), os.environ.get("RLM_MAX_DEPTH"))
 ```
 
-At the ceiling, `rlm.spawn` raises `RuntimeError: RLM recursion depth limit reached`.
+At the ceiling, `rlm.spawn` raises `RuntimeError`. In a pi-host chat thread or job the message is `rlm.spawn refused: this session is at depth N and RLM_MAX_DEPTH is M`, and in a `prime-agent` CLI session it is `RLM recursion depth limit reached (RLM_DEPTH=N, RLM_MAX_DEPTH=M)`.
 Run the workflow inline, or ask the parent session to fan out.
 
 ## Invocation
