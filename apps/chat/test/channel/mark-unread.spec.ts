@@ -76,7 +76,12 @@ test("a send takes the New line away, and the room reopens with the line in view
 });
 
 test("a menu mark in a DM never scrolls past where it settles", async ({ page }) => {
-  await open(page, "#/c/dm_vent");
+  // A test agent's DM of quiet sends, which get no answer. In the seeded Vent DM the New line already sits under the last own post at the
+  // feed's bottom, where no scroll can hold the post, and check-in answers land at any time and pull the stuck feed down.
+  const agent = (await (await page.request.post("/api/agents", { data: { kind: "chat", name: `unread dm ${tag()}`, test: true } })).json()) as { room: string };
+  const note = (n: number) => [`quiet note ${n}`, "The relay answered.", "The canary is fine.", "Nothing to send.", "The board has no open step.", "The next check is in two hours."].join("\n\n");
+  for (let n = 1; n <= 6; n++) await page.request.post(`/api/c/${agent.room}/send`, { data: { text: note(n), requestId: crypto.randomUUID() } });
+  await open(page, `#/c/${agent.room}`);
   const feed = page.getByTestId("timeline").first();
   const own = page.locator("section.conversation [data-own-post]").last();
   await own.scrollIntoViewIfNeeded();
@@ -96,7 +101,6 @@ test("a menu mark in a DM never scrolls past where it settles", async ({ page })
   const tops = await page.evaluate(() => (window as unknown as { tops: number[] }).tops);
   const last = await feed.evaluate((el) => el.scrollTop);
   expect(Math.max(last, ...tops) - last).toBeLessThan(2);
-  await page.request.post("/api/c/dm_vent/read", { data: {} });
 });
 
 test("U marks the hovered post unread, the menu names U, and the hover bar drops after a menu pick", async ({ page }) => {
