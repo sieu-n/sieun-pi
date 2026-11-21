@@ -218,6 +218,8 @@ export class AgentStore {
   private readonly posts = new Map<RoomId, RoomPost[]>();
   /** Hears each post added or changed, after it is written; search indexes it. */
   onPost: (post: RoomPost) => void = () => {};
+  /** Hears each new post once, after `onPost`; the owner's notices read it (notices.ts). */
+  onAppend: (post: RoomPost) => void = () => {};
 
   constructor(readonly dir: string) {
     this.agents = readJson<AgentsFile>(join(dir, "agents.json"), { v: 1, agents: [], aliases: {} });
@@ -371,6 +373,7 @@ export class AgentStore {
     list.push(post);
     appendLater(this.logFile(input.room), `${JSON.stringify({ t: "post", post } satisfies LogLine)}\n`);
     this.onPost(post);
+    this.onAppend(post);
     return { post, created: true };
   }
 

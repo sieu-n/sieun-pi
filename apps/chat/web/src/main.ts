@@ -3,6 +3,7 @@ import "./styles/index.css";
 import App from "./App.svelte";
 import { restorePages } from "$lib/api";
 import { watchReminders } from "$lib/remind-live";
+import { watchNotices } from "$lib/notices.svelte";
 import { later } from "$lib/later.svelte";
 
 const target = document.getElementById("app");
@@ -14,4 +15,5 @@ await restorePages();
 // (~/work/p155-readahead/lane-summary.md).
 later.start();
 watchReminders();
+watchNotices();
 export default mount(App, { target });

@@ -44,6 +44,7 @@ import { modelRef, OWNER, parseConversationId, Threads } from "./threads.ts";
 import { QueueWatch, waitingPlace } from "./queue.ts";
 import { webEntry } from "./web-entry.ts";
 import { fileImageSize, imageSize, withSize } from "./image-size.ts";
+import { noticeOf, noticeReason } from "./notices.ts";
 
 /** An image as a page from before 11-03 15:01Z sends it: its base64 bytes inline (see `App.uploaded`). */
 type LegacyImage = { data: string; mimeType: string };
@@ -297,6 +298,8 @@ export class App {
       ...Object.keys(this.agentStore.agents.aliases).filter(thread => this.agentStore.isTest(thread)),
     ];
     this.agentStore.onPost = post => this.searchEngine.postChanged(postDocId(post.room, post.id), this.postDoc(post.room, post));
+    // The drafts set a post's deliveries and fields in the same append, so the notice reads them after it settles.
+    this.agentStore.onAppend = post => queueMicrotask(() => this.notice(post));
     this.queues = new QueueWatch(host, this.threads, (conversation, place) => {
       this.toWatchers(conversation, { type: "queue", conversation, place });
       const record = this.agents.ofWorkThread(conversation) ?? this.agents.ofComm(conversation)?.record;
@@ -1270,6 +1273,17 @@ export class App {
       : event.type === "conversation" ? event.conversation.agent ?? event.conversation.id : event.type === "room" ? event.room.id
       : event.type === "status" ? event.conversation : event.type === "jobs" ? event.thread : event.type === "board" || event.type === "duties" ? event.chatId : undefined;
     return id !== undefined && this.agentStore.isTest(id);
+  }
+
+  /** Sends a new post's notice to every page; a test room's goes only to the pages that watch it, so a walk can see its own. */
+  private notice(post: RoomPost): void {
+    const row = this.agentStore.groupRoom(post.room) ?? this.agentStore.rooms.rooms.find(r => r.id === post.room);
+    if (!row) return;
+    const reason = noticeReason(row, post, this.agentStore.postsOf(row.id), Date.now());
+    if (!reason) return;
+    const event: LiveEvent = { type: "notice", notice: noticeOf(row, post, reason, this.threads.principal(post.author), id => this.threads.principal(id).name) };
+    if (this.agentStore.isTest(row.id)) this.toWatchers(row.id, event);
+    else this.broadcast(event);
   }
 
   private toWatchers(conversation: ConversationId, event: LiveEvent): void {

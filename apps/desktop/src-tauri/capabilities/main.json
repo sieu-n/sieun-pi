@@ -1,6 +1,6 @@
 {
   "identifier": "main",
-  "description": "The chat page on the box may drag the window by its top row, zoom it on a double click, and show Remind me notifications.",
+  "description": "The chat page on the box may drag the window by its top row, zoom it on a double click, show reminder and message notifications, put the unread count on the Dock icon and name the window.",
   "windows": [
     "main"
   ],
@@ -12,6 +12,8 @@
   "permissions": [
     "core:window:allow-start-dragging",
     "core:window:allow-internal-toggle-maximize",
+    "core:window:allow-set-badge-count",
+    "core:window:allow-set-title",
     "notification:default"
   ]
 }

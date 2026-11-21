@@ -236,6 +236,26 @@ export interface LaterRow extends LaterItem {
   /** A post in a `test: true` room. */
   test?: true;
 }
+/**
+ * Why a new post is for the owner (server/notices.ts): `dm` in a DM or Solo room, and in a channel `mention` (it names him), `reply` (it
+ * answers his post), `thread` (it replies in a thread he wrote in) or `post` (any other).
+ */
+export type NoticeReason = "dm" | "mention" | "reply" | "thread" | "post";
+/** A new post someone else wrote, for the page's system notification. */
+export interface Notice {
+  room: ConversationId;
+  roomKind: "dm" | "channel" | "solo";
+  /** `#name` for a channel, the Solo room's name, or the agent's name for its DM. */
+  roomName: string;
+  post: string;
+  threadRoot?: string;
+  author: Principal;
+  /** The post's text on one line, cut to 300 characters. */
+  text: string;
+  images: number;
+  reason: NoticeReason;
+  at: Ms;
+}
 /** `GET /api/later?state=open|done`: the owner's rows, newest first, with the counts of both tabs. */
 export interface LaterList { items: LaterRow[]; open: number; done: number }
 /** What a room post shows its reader about the reader's own save; absent when the reader has no open save of it. */
@@ -691,6 +711,8 @@ export type LiveEvent =
   | { type: "room"; room: Room }
   /** A principal's Later list changed (server/later.ts): `by` is owner or an agent id, `open` its In progress count. */
   | { type: "later"; by: string; open: number }
+  /** Someone else wrote a new post in a room the owner sees (server/notices.ts); one tab raises a system notification if his setting asks. */
+  | { type: "notice"; notice: Notice }
   /** The owner's reminder on a saved post fell due (server/later-due.ts); every tab shows it and one of them notifies. */
   | { type: "later_due"; row: LaterRow }
   /** The skills scanner started or ended (server/skills.ts); an end comes after its inventory is parsed, so a page reads it at once. */
