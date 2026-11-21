@@ -641,7 +641,8 @@ export class SkillsReview {
     for (const row of rows) {
       const action = want.get(row.id)?.action ?? "keep";
       const op = record.ops[row.id];
-      if (live(op) && op!.action === action && op!.how !== "place") out.set(row.id, { how: op!.how, repo: op!.repo, rel: op!.rel, note: op!.note });
+      const how = op?.how;
+      if (live(op) && op!.action === action && how && how !== "place") out.set(row.id, { how, repo: op!.repo, rel: op!.rel, note: op!.note });
       else if (action === "keep") out.set(row.id, { how: "none", repo: null, rel: null, note: null });
       else if (action === "fold") out.set(row.id, { how: "fold-job", repo: null, rel: null, note: null });
       else if (harnessRef(row)) out.set(row.id, { how: "harness", repo: null, rel: null, note: null });
