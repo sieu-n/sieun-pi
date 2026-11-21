@@ -22,7 +22,7 @@ The owner said so on 11-20: "no this is not Chat. this is Slack."
    Every other fact goes into an item, never into more sentences on the top line or a paragraph after the list.
    Each item is one short line of at most about 25 words, and its detail, such as file names or counts, goes in a bullet nested under it.
    Items sit under topic bullets of a word or two, such as `- git` or `- tests`, indented two spaces.
-5. An ask that takes several checks or steps first gets its checks as one post of `- [ ]` items under their topics, under the short answer when the agent knows one, and the agent edits that post with `edit_message` as items finish, so the last edit carries the answer and no new post goes out for progress.
+5. An ask that takes several checks or steps first gets its checks as one post of `- [ ]` items under their topics, under the short answer when the agent knows one or a line on what the checks cover, never an ack such as "on it", which tell_owner's relay check refuses (on 11-21, 5 of 5 blind follow-up runs lost a first try to it), and the agent edits that post with `edit_message` as items finish, so the last edit carries the answer and no new post goes out for progress.
    Every edit keeps the shape of rule 4, the last one too, so an edit never flattens the topic groups into one list or puts three sentences on top.
    Every version of the checklist stays within 80 words, the last edit too, and a nested detail line stays only when it adds a fact the top line and its item lack.
    The 80 words count the text only, never the `- ` and `- [x] ` markers, in tell_owner's long check (`longReply`) and in `blind-replies.mjs` alike, since on 11-21 four list replies of 72 to 78 words failed the blind check only on their markers.
