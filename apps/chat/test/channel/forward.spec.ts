@@ -44,7 +44,31 @@ test("the owner forwards a channel post into a DM with a note, and the DM shows 
   const card = page.locator(`[data-forward="${ROOM}:${id}"]`).last();
   await expect(card).toContainText(`relay is up ${word}`);
   await expect(card).toContainText("Posted in #pi-cutover");
-  await expect(page.getByText(`see this ${word}`)).toBeVisible();
+  await expect(page.getByText(`see this ${word}`, { exact: true })).toBeVisible();
   await card.locator("[data-forward-view]").click();
   await expect(page).toHaveURL(new RegExp(`#/c/${ROOM}\\?m=${id}`));
+});
+
+test("a post forwards into its own room when the sidebar does not list it, such as a test channel", async ({ page, request }) => {
+  const word = tag();
+  const room = (await (await request.post("/api/rooms", { data: { kind: "channel", name: `fwd-${word}`, agenda: "forward", members: [], test: true } })).json()) as { id: string; name: string };
+  const id = await post(request, `keep this ${word}`, room.id);
+  await open(page, `#/c/${room.id}`);
+  const source = row(page, id);
+  const dialog = page.locator("[data-forward-dialog]");
+  await expect(async () => {
+    if (await dialog.isVisible()) return;
+    await page.keyboard.press("Escape");
+    await source.hover();
+    await source.locator("[data-forward-message]").click({ timeout: 5_000 });
+  }).toPass({ timeout: 30_000 });
+  const to = page.getByRole("combobox", { name: "To:" });
+  await to.fill(room.name);
+  await expect(page.getByRole("option", { name: room.name })).toBeVisible();
+  await to.press("Enter");
+  await expect(dialog.getByRole("button", { name: `Remove ${room.name}` })).toBeVisible();
+  await page.locator("[data-forward-send]").click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator(`main [data-forward="${room.id}:${id}"]`)).toBeVisible();
+  await request.patch(`/api/rooms/${room.id}`, { data: { archived: true } });
 });

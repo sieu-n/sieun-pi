@@ -45,13 +45,22 @@
         ? { id: row.id, label: row.name, avatar: { name: row.name, kind: "agent", seed: row.agent ?? row.id } }
         : { id: row.id, label: row.name, icon: "users" };
 
-  /** A room's name from what the page holds: the sidebar, the open conversations, the room list or its agent. */
+  /** Names read from the room's header, for a room the page holds no row of, such as a test channel. */
+  let headerNames = $state<Record<string, string>>({});
+  /** A room's name from what the page holds: the sidebar, the open conversations, the room list, its agent or its header. */
   const nameOf = (id: string): string =>
     [...sidebar.data.channels, ...sidebar.data.dms, ...sidebar.data.solo].find((row) => row.id === id)?.name ??
     conversations.byId(id)?.name ??
     directory.room(id)?.name ??
     agents.list.find((agent) => agents.room(agent.id) === id)?.name ??
+    headerNames[id] ??
     id;
+  const here = $derived(subject.kind === "post" ? subject.room : router.conversationId && /^(dm|ch|so)_/.test(router.conversationId) ? router.conversationId : null);
+  $effect(() => {
+    const id = here;
+    if (!id || nameOf(id) !== id) return;
+    void api.header(id).then((header) => (headerNames = { ...headerNames, [id]: header.summary.name }), () => undefined);
+  });
 
   /** Slack's order, with the room you are in first when the sidebar does not list it, such as a test room: the sidebar's rooms by their last post under Recent, then the other channels, then the agents with no DM in the sidebar. */
   const items = $derived.by((): PickerItem[] => {
@@ -62,7 +71,6 @@
     const dms = agents.list
       .filter((agent) => agent.id.startsWith("ag_") && !agent.archived && !listed.has(agents.room(agent.id)))
       .sort((a, b) => a.name.localeCompare(b.name));
-    const here = subject.kind === "post" ? subject.room : router.conversationId && /^(dm|ch|so)_/.test(router.conversationId) ? router.conversationId : null;
     const hereRow = here && !listed.has(here) && !channels.some((room) => room.id === here) ? [{ id: here, name: nameOf(here), agent: agents.list.find((a) => agents.room(a.id) === here)?.id }] : [];
     const all = [
       ...[...hereRow, ...rows].map((row) => ({ ...rowItem(row), group: "Recent" })),
