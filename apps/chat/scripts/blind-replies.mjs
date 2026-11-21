@@ -10,7 +10,8 @@
  * `{text, expect, wait}`, where `expect` is "reply" (one short Slack post), "list" (a one-line answer, then nested bullets and a task list,
  * as the owner asked under p85 and p95 in #sw-factory-build on 11-20, p101), "options" (names several apps and explains one in 20 words or
  * more, with an example and how it fits the asker's product, p97), "checklist" (one post of open `- [ ]` checks that edits tick off, p106), "natural" (a
- * checklist post that opens with a natural sentence, holds no bare topic labels and states a pick before any question, p54), "line" (one short line with
+ * checklist post that opens with a natural sentence, holds no bare topic labels, states a pick before any question, p54, and puts its answer
+ * on its own first line with no 3-sentence wall, p57), "line" (one short line with
  * no bullets) or "reaction" (no post). An ask with `room: "dm"` goes to the agent's DM as a root post instead of the channel. `wait: false` sends the next ask at
  * once, so the agent answers both together, as when the owner sent p14 and p15 7 s apart on 11-20. The agent and the room are `test: true`, so no
  * owner list shows them. Each line of --out is one ask with its replies, its checks and pass or fail; the last line is the run's summary.
@@ -124,6 +125,12 @@ const item = line => line.replace(/^[ \t]*[-*+][ \t]+(?:\[[ xX]\][ \t]*)?/, "").
 const bareLabel = line => BULLET.test(line) && (() => { const t = item(line).replace(/[:.]$/, ""); return !t || (t.split(/\s+/).length <= 3 && !VERB.test(t)); })();
 /** A natural opening line for the place: five words or more with a verb, no `label:` opener and no ack such as "on it". */
 const naturalLine = line => !BULLET.test(line) && words(line) >= 5 && VERB.test(line) && !/^[^:\n]{1,25}:\s*\S/.test(line) && !/^\W*on it\b/i.test(line);
+/**
+ * The sentences of each line of a text, with code and link targets left out: a wall of text, such as dm_agent-factory p55 on 11-21, a
+ * paragraph of the guess, the cause, the plan and the pick, holds 3 or more on one line, and the owner asked for "엔터, bullet point 똑바로" (p57).
+ */
+const lineSentences = text => text.replace(/```[\s\S]*?```/g, "").replace(/`[^`\n]*`|\]\([^)]*\)/g, "x").split("\n").filter(line => line.trim())
+  .map(line => item(line).split(/(?<=[.!?])\s+/).filter(part => /\w/.test(part)).length);
 /** Words that state the agent's own pick, as the owner asked in p54: "primary suggestion은 꼭 두고". */
 const PICK = /\b(i'd (go|pick|start|use|lean|suggest|recommend|keep|stay|move|adapt|write|run)|my pick|i'll|i'm going|i suggest|suggest|recommend|unless you'd rather|i lean|lean toward|my vote|going with|default to)\b/i;
 /** Whether every question in a text comes with a pick in or before the paragraph that asks it; code, links and URLs hold no question. */
@@ -194,6 +201,12 @@ function checks(ask, posts, asked, versions = new Map()) {
       ["the first post lists its steps as open tasks", (firstPost[0]?.match(/^\s*[-*+] \[ \] \S/gm) ?? []).length >= 2],
       ["a later edit of the first post ticks tasks", firstPost.slice(1).some(t => /^\s*[-*+] \[[xX]\] /m.test(t))],
       ["every question comes with the agent's pick", all.every(pickFirst)],
+      ["no line of any version holds 3 or more sentences", all.every(t => lineSentences(t).every(n => n < 3))],
+      ["the last version's answer sits alone on its first line", (() => {
+        const last = posts.at(-1) ? (versions.get(posts.at(-1).id) ?? [posts.at(-1).text]).at(-1) : "";
+        const counts = lineSentences(last);
+        return counts.length > 1 && counts[0] <= 2 && words(last.split("\n")[0]) <= 25;
+      })()],
     ];
   }
   if (ask.expect === "list") {
