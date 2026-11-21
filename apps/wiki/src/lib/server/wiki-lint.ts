@@ -47,6 +47,9 @@ const CURATED_PREFIXES = ['apps/', 'domains/', 'projects/', 'experiments/'];
 const HOME = 'index.html';
 const RETIRED_STATUSES = new Set(['superseded', 'deprecated', 'archived', 'retired']);
 const SESSION_LOG = /^sessions\/\d{4}\/\d{2}\/\d{2}\/[^/]+\/index\.html$/;
+// A pi-host job folder agents/<slug>/jobs/YYYY/MM/DD/hhmm-job/ is a session folder, and its index.html is the job's log.
+const JOB_FOLDER = /^agents\/[^/]+\/jobs\//;
+const JOB_LOG = /^agents\/[^/]+\/jobs\/\d{4}\/\d{2}\/\d{2}\/[^/]+\/index\.html$/;
 const HUB_FILE = /^(index|README)\.html$/;
 
 export async function getLintReport(): Promise<LintReport> {
@@ -73,7 +76,7 @@ export async function getLintReport(): Promise<LintReport> {
 
 		if (isCuratedPage(page) || page.path === HOME) {
 			for (const target of curated.get(page.path)?.links ?? []) {
-				if (target.startsWith('sessions/') && !SESSION_LOG.test(target))
+				if ((target.startsWith('sessions/') && !SESSION_LOG.test(target)) || (JOB_FOLDER.test(target) && !JOB_LOG.test(target)))
 					add('sessionLinks', page, `links into session folder "${target}"`, { target });
 				const linked = index.byPath.get(target);
 				// Links into archive/ are history links; the defect is a retired page still listed as current.

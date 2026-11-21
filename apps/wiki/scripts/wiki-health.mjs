@@ -780,6 +780,18 @@ export function engineReports(root, repo = REPO, rel = SNAPSHOT_REL) {
 	return JSON.parse(String(out));
 }
 
+/**
+ * The broken links of the engine report that are dead links of curated pages. The report runs on the snapshot with no agents/
+ * mount, so a link into agents/ is dead only when its target is missing from the real mount `agentsDir`; on 2026-11-21 a link
+ * from projects/symphony-orchestration/adoption.html to a job log that answered 200 read as dead. Session folders stay out of
+ * the snapshot, and links into them are not counted here.
+ */
+export function deadLinksOf(brokenLinks, isCuratedSource, agentsDir = wikiConfig().mounts.agents) {
+	const inAgents = (target) =>
+		Boolean(agentsDir) && target.startsWith('agents/') && existsSync(path.join(agentsDir, target.slice('agents/'.length)));
+	return brokenLinks.filter((f) => isCuratedSource(f.path) && !f.target.startsWith('sessions/') && !inAgents(f.target));
+}
+
 function walkHtml(dir, rel, out) {
 	for (const entry of readdirSync(dir, { withFileTypes: true })) {
 		if (entry.name.startsWith('.') || entry.isSymbolicLink()) continue;
@@ -897,7 +909,7 @@ async function measure(args, root, rel) {
 		errors.push(`prose-lint: ${error.message}`);
 	}
 
-	const deadLinks = lint.brokenLinks.filter((f) => isCuratedSource(f.path) && !f.target.startsWith('sessions/'));
+	const deadLinks = deadLinksOf(lint.brokenLinks, isCuratedSource);
 
 	const lintReasons = new Map();
 	const addReason = (p, reason) => lintReasons.set(p, [...(lintReasons.get(p) ?? []), reason]);
