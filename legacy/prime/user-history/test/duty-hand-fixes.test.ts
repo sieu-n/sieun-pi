@@ -489,6 +489,14 @@ test("a write that cites the owner's todo answer as 'owner t74' is exempt", asyn
   assert.equal(verdict.kind, "exempt");
 });
 
+// Prod audit 43478 and staging 25391 (11-20) wrote the owner's t112 proxy stop and read as undesigned hand fixes.
+test("a write that says the owner did something on a todo is exempt", async () => {
+  const reg = await registry();
+  const verdict = classifyConfig({ actor: "api-key", writer: "ops-api", keys: ["proxy.provider_stopped_by_owner", "proxy.provider_stopped_by_owner.owner", "proxy.provider_stopped_by_owner.expires_at"],
+    text: "c230: the owner stopped all crawling on t112 (2026-11-20) until he picks a new proxy; GeoNode account 86360ddcefdc lapsed 11-09" }, reg);
+  assert.equal(verdict.kind, "exempt");
+});
+
 const SETTINGS = `from src.control.tuning import CENSUS_CRAWL_SLOTS_MAX
 _WORKER_TASKS: int = 40
 _STAGING_CONTROL_DEFAULTS: tuple[tuple[str, int], ...] = (
