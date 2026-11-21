@@ -47,15 +47,27 @@ test("All unreads lists each unread room's new posts, and Mark as read on one ro
   await expect(page).toHaveURL(new RegExp(`#/c/${a.room}$`));
 });
 
-test("Mark all as read empties All unreads, and its Undo brings every room back", async ({ page }) => {
+test("Mark all as read sends every listed room, and its Undo brings them back", async ({ page }) => {
   const a = await channel(page, 2, 2);
+  // Other specs share the fixture, so the call reads only this spec's room after checking that the page asked for all of them.
+  let asked: string[] = [];
+  await page.route("**/api/read", async (route) => {
+    const body = route.request().postDataJSON() as { rooms?: string[]; restore?: unknown };
+    if (!body.rooms) return route.continue();
+    asked = body.rooms;
+    return route.continue({ postData: JSON.stringify({ rooms: [a.room] }) });
+  });
   await page.goto("/#/c/unreads");
-  await expect(page.locator(`[data-unread-room="${a.room}"]`)).toBeVisible();
+  const section = page.locator(`[data-unread-room="${a.room}"]`);
+  await expect(section).toBeVisible();
   await page.getByTestId("unreads-mark-all").click();
-  await expect(page.getByText("You're all caught up")).toBeVisible();
-  const toast = page.getByRole("status").filter({ hasText: /Marked .* as read/ });
+  const toast = page.getByRole("status").filter({ hasText: /Marked \d+ conversations as read/ });
+  await expect(toast).toBeVisible();
+  expect(asked).toContain(a.room);
+  expect(asked.length, "the button reads every unread room, not only this spec's").toBeGreaterThan(1);
+  await expect(section).toHaveCount(0);
   await toast.getByRole("button", { name: "Undo" }).click();
-  await expect(page.locator(`[data-unread-room="${a.room}"] [data-message-id]`)).toHaveCount(1);
+  await expect(section.locator("[data-message-id]")).toHaveCount(1);
 });
 
 test("a section's menu marks only its rooms read", async ({ page }) => {

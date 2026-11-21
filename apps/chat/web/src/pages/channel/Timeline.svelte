@@ -264,13 +264,12 @@
     return !!row && !!scroller && row.getBoundingClientRect().bottom > scroller.getBoundingClientRect().top;
   }
 
-  /** The bar's count and time: the posts from the New line down that others wrote, and when the first of them came. */
+  /** The bar's count and time: the posts from the New line down, and when the first of them came. */
   const fresh = $derived.by(() => {
     if (!newLine || !onmarkread || loading) return null;
     const from = shown.findIndex((item) => item.id === newLine);
     if (from < 0) return null;
-    const count = shown.slice(from).filter((item) => item.kind !== "system" && item.author.id !== "owner").length;
-    return { count: Math.max(count, 1), at: shown[from]!.at };
+    return { count: shown.slice(from).filter((item) => item.kind !== "system").length, at: shown[from]!.at };
   });
 
   function toNewLine() {
@@ -351,6 +350,15 @@
 <svelte:window onkeydown={postKeys} />
 
 <div class="timeline" class:compact bind:this={root}>
+  {#if fresh && onmarkread}
+    <div class="fresh" role="status" data-testid="new-messages-bar">
+      <button type="button" class="fresh-jump" onclick={toNewLine} title="Jump to the first new message">
+        <Icon name="arrow-up" size={14} />
+        <span>{fresh.count} new {fresh.count === 1 ? "message" : "messages"} since {stampLabel(fresh.at)}</span>
+      </button>
+      <button type="button" class="fresh-read" onclick={onmarkread} title="Mark as read (Esc)">Mark as read</button>
+    </div>
+  {/if}
   <div class="feed" bind:this={scroller} {onscroll} data-testid="timeline">
     {#if loading}
       <div class="state"><LoadingText text="Loading messages…" /></div>
@@ -438,15 +446,6 @@
       </div>
     {/if}
   </div>
-  {#if fresh && onmarkread}
-    <div class="fresh" role="status" data-testid="new-messages-bar">
-      <button type="button" class="fresh-jump" onclick={toNewLine} title="Jump to the first new message">
-        <Icon name="arrow-up" size={14} />
-        <span>{fresh.count} new {fresh.count === 1 ? "message" : "messages"} since {stampLabel(fresh.at)}</span>
-      </button>
-      <button type="button" class="fresh-read" onclick={onmarkread} title="Mark as read (Esc)">Mark as read</button>
-    </div>
-  {/if}
   <div class="jump" class:visible={showJump}>
     <Button variant="outline" size="sm" icon="arrow-down" onclick={jump} tabindex={showJump ? 0 : -1}>Jump to latest</Button>
   </div>
@@ -612,21 +611,19 @@
   }
   /* Slack's New messages bar: the count since the first new post, which jumps to the New line, and Mark as read. */
   .fresh {
-    position: absolute;
-    top: 8px;
-    left: 50%;
-    z-index: 3;
     display: flex;
+    flex: none;
     align-items: center;
-    max-width: calc(100% - 32px);
-    border-radius: var(--radius-capsule);
+    justify-content: space-between;
+    width: min(calc(100% - 2 * var(--space-panel-inset)), var(--timeline-measure, 52rem));
+    margin: 8px auto 0;
+    border-radius: var(--radius-container);
     background: var(--affordance-prominent);
     color: var(--text-on-prominent);
     box-shadow: var(--shadow-sm);
     font: var(--text-caption);
     font-weight: 600;
     letter-spacing: var(--tracking-caption);
-    transform: translateX(-50%);
     overflow: hidden;
   }
   .fresh button {

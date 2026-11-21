@@ -1,10 +1,18 @@
 import { api, type ConversationSummary } from "$lib/api";
 import { hrefFor } from "$lib/router.svelte";
+import { rowUnread } from "$lib/shell/room-actions.svelte";
 import { sidebar } from "$lib/shell/sidebar.svelte";
 import { toast } from "$lib/ui/toast.svelte";
 
-/** A room with posts past the owner's read point, or with a post that names him: its sidebar row is bold. */
-export const isUnread = (row: ConversationSummary): boolean => row.unread > 0 || row.hasNew;
+/**
+ * A room whose sidebar row is bold or counted: posts past the owner's read point, or a post that names him. A closed DM or a left channel
+ * is out, and a muted room counts only its mentions, as in Slack (room-actions.svelte.ts `rowUnread`).
+ */
+export function isUnread(row: ConversationSummary): boolean {
+  if (row.hidden) return false;
+  const { unread, fresh } = rowUnread(row);
+  return unread > 0 || fresh;
+}
 
 /** The rooms with something new, in sidebar order: open Solo rooms, channels, then DMs. All unreads lists them and Shift+Esc reads them all. */
 export function unreadRooms(): ConversationSummary[] {
