@@ -343,6 +343,22 @@ function call<T>(method: string, path: string, body?: unknown, signal?: AbortSig
   return waited(() => send<T>(method, path, body, signal, wait));
 }
 
+/**
+ * Whether the calls the owner waits on can take a connection of their own. A fetch with credentials "omit" goes on its own HTTP/2
+ * connection in Chrome, and the app reads no cookie, so his calls never queue behind the bytes of a read ahead or refresh that are already
+ * on their way: the lane can stop such a call, but its answer, written into the server's socket, still arrives first. On 11-21 at 21:38:42
+ * UTC his search, a 16 ms handler, came 145 ms after a read ahead of dm_agent-factory, a two round trip answer, and took 292 ms on the
+ * network (requests/2026-11-21.jsonl). In a walk at a 200 ms round trip (~/work/p190-search-queue), a small call 120 ms after a 47 KB
+ * answer took 507 ms on the page's connection and 204 ms on its own. A new connection costs two round trips, so the page opens it with
+ * one small call at boot and sends his calls on it once that call answered.
+ */
+let ownConnection = false;
+if (typeof window !== "undefined") {
+  void fetch("/api/me", { credentials: "omit" }).then(response => response.text()).then(() => {
+    ownConnection = true;
+  }, () => undefined);
+}
+
 async function send<T>(method: string, path: string, body: unknown, signal: AbortSignal | undefined, wait: Wait | undefined, asked?: number): Promise<T> {
   const started = performance.now();
   if (wait) wait.sent = started;
@@ -356,6 +372,7 @@ async function send<T>(method: string, path: string, body: unknown, signal: Abor
       ...(body === undefined ? {} : { body: blob ? body : JSON.stringify(body) }),
       ...(signal ? { signal } : {}),
       ...(wait?.background && method === "GET" && !(wait.background === "shown" && wait.first) ? { priority: "low" as const } : {}),
+      ...(ownConnection && !wait?.background ? { credentials: "omit" as const } : {}),
     });
     text = await response.text();
   } catch (error) {
