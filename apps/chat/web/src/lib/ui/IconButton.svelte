@@ -15,6 +15,9 @@
     tip?: boolean;
     /** Keyboard hint shown in the tooltip, for example "⌘K". */
     shortcut?: string;
+    /** Render as a link, for example Open in new tab with `target="_blank"`. */
+    href?: string;
+    target?: string;
     element?: HTMLButtonElement | undefined;
   };
   let {
@@ -26,6 +29,8 @@
     pressed,
     tip = true,
     shortcut,
+    href,
+    target,
     disabled = false,
     type = "button",
     class: className = "",
@@ -36,6 +41,18 @@
   const iconPx = $derived(size === "xs" ? 14 : size === "lg" ? 20 : 18);
 </script>
 
+{#if href}
+  <a
+    class="icon-btn {variant} {className}"
+    style:width="{px}px"
+    style:height="{px}px"
+    {href}
+    {target}
+    rel={target === "_blank" ? "noopener noreferrer" : undefined}
+    aria-label={label}
+    use:tooltip={tip ? { text: label, shortcut } : null}
+  ><Icon name={icon} size={iconPx} /></a>
+{:else}
 <button
   bind:this={element}
   class="icon-btn {variant} {className}"
@@ -50,6 +67,7 @@
 >
   {#if loading}<Spinner size={iconPx - 4} />{:else}<Icon name={icon} size={iconPx} />{/if}
 </button>
+{/if}
 
 <style>
   .icon-btn {

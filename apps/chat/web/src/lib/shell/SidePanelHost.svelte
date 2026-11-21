@@ -1,7 +1,7 @@
 <script lang="ts">
   import PanelHeader from "$lib/ui/PanelHeader.svelte";
   import ResizeHandle from "$lib/ui/ResizeHandle.svelte";
-  import { SIDE_PANEL_DEFAULT, SIDE_PANEL_MIN, sidePanel } from "./side-panel.svelte";
+  import { SIDE_PANEL_MIN, sidePanel } from "./side-panel.svelte";
 
   type Props = {
     maxWidth: number;
@@ -53,7 +53,7 @@
       label="Resize side panel"
       onresize={(px) => (sidePanel.width = px)}
       oncommit={(px) => sidePanel.setWidth(px)}
-      ondoubleclick={() => sidePanel.setWidth(SIDE_PANEL_DEFAULT)}
+      ondoubleclick={() => sidePanel.setWidth(sidePanel.defaultWidth)}
     />{/if}
     {#if content.header}
       {@render content.header()}

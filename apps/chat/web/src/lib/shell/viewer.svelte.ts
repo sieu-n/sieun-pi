@@ -4,9 +4,10 @@ import { setArtifactOpener, setBlockOpener, type BlockContent } from "$lib/ui/ar
 import { hashString } from "$lib/ui/hash";
 
 /**
- * The artifact viewer: one popup over any page that shows a wiki page, a conversation or a chat's board, so a link in a message opens
- * here instead of a new tab or another page. What is open lives in the `view` param of the current route, so Back closes it, a reload
- * keeps it, and the page under it keeps its scroll and its draft.
+ * The artifact viewer: a wiki page in the side panel beside the page, or a popup over it for a conversation, a chat's board, a skill or a
+ * post's block, so a link in a message opens here instead of a new tab or another page. What is open lives in the `view` param of the
+ * current route, so Back closes it or returns to the wiki page a link left, a reload keeps it, and the page under it keeps its scroll and
+ * its draft.
  *
  *   ?view=wiki:<path>            the wiki page at /wiki/<path>, in a frame
  *   ?view=thread:<id>            a conversation's timeline with its composer
@@ -52,29 +53,70 @@ export function parseView(value: string | null | undefined): View | null {
 }
 
 /**
- * The entry `openView` pushed: its hash and the history length then. Closing goes back to the page while both still hold; once a frame
- * in the view has pushed entries of its own, Back would step the frame, so the close drops the param in place instead.
+ * The history.state the viewer writes on each entry it pushes. `step` counts the wiki pages followed inside the view before this entry,
+ * `opened` says whether the view's first entry was pushed by `openView` (false for a view that came with the address), and `length` is
+ * history.length when the entry was pushed. A close steps back past every viewer entry while `length` still holds; once a frame in the
+ * view pushed entries of its own, or forward entries remain, Back would land elsewhere, so the close drops the param in place instead.
  */
-let openedFrom: { at: string; length: number } | null = null;
+type ViewerEntry = { viewerStep: number; viewerOpened: boolean; viewerLength: number };
+
+function entryOf(state: unknown): ViewerEntry | null {
+  const entry = state as Partial<ViewerEntry> | null;
+  return typeof entry?.viewerStep === "number" && typeof entry.viewerLength === "number" ? { viewerStep: entry.viewerStep, viewerOpened: !!entry.viewerOpened, viewerLength: entry.viewerLength } : null;
+}
+
+const tag = (step: number, opened: boolean): void =>
+  history.replaceState({ ...(history.state as object | null), viewerStep: step, viewerOpened: opened, viewerLength: history.length } satisfies ViewerEntry, "", location.href);
 
 export const currentView = (): View | null => parseView(router.route.params.view);
 
-/** Open a view. A view opened from inside another one replaces it, so one close always returns to the page. */
-export function openView(view: View): void {
-  const replace = currentView() !== null;
-  router.setParams({ view: encodeView(view) }, { replace });
-  if (!replace) openedFrom = { at: location.hash, length: history.length };
-  else if (openedFrom) openedFrom.at = location.hash;
+/** How many pages the open view followed before this one, read again on each route change; Back in the view's header shows above 0. */
+export function viewerStep(): number {
+  void router.route;
+  return entryOf(history.state)?.viewerStep ?? 0;
 }
 
-/** Close the open view: back to the entry it was opened from, or drop the param in place for a view that came with the address. */
-export function closeView(): void {
-  if (openedFrom && openedFrom.at === location.hash && openedFrom.length === history.length) {
-    openedFrom = null;
-    history.back();
+/** Push `view` as a new entry and tag it, unless the address already shows it. */
+function push(view: View, step: number, opened: boolean, patch: Record<string, null> = {}): void {
+  const before = location.hash;
+  router.setParams({ view: encodeView(view), ...patch });
+  if (location.hash !== before) tag(step, opened);
+}
+
+/**
+ * Open a view. A view opened from inside another one replaces it, so one close always returns to the page. A wiki page shows in the side
+ * panel, which holds one pane, so opening one drops the conversation's thread or board pane from the address.
+ */
+export function openView(view: View): void {
+  const panes: Record<string, null> = view.kind === "wiki" ? { thread: null, board: null } : {};
+  if (currentView() !== null) {
+    router.setParams({ view: encodeView(view), ...panes }, { replace: true });
     return;
   }
-  openedFrom = null;
+  push(view, 0, true, panes);
+}
+
+/** Follow a link inside an open wiki page to another one: a new entry, so Back and the header's back arrow return to the page before. */
+export function followWikiPage(path: string): void {
+  if (currentView()?.kind !== "wiki") return openView({ kind: "wiki", path });
+  let entry = entryOf(history.state);
+  if (!entry) {
+    tag(0, false);
+    entry = entryOf(history.state)!;
+  }
+  push({ kind: "wiki", path }, entry.viewerStep + 1, entry.viewerOpened);
+}
+
+/** Close the open view: back past the entries the view pushed, or drop the param in place when Back would land elsewhere. */
+export function closeView(): void {
+  const entry = entryOf(history.state);
+  const back = entry && entry.viewerLength === history.length ? entry.viewerStep + (entry.viewerOpened ? 1 : 0) : 0;
+  if (back > 0) {
+    // A view that came with the address has no entry of its own to go back to, so after stepping back to its first page the param goes.
+    if (!entry?.viewerOpened) window.addEventListener("hashchange", () => router.setParams({ view: null }, { replace: true }), { once: true });
+    history.go(-back);
+    return;
+  }
   if (router.route.params.view) router.setParams({ view: null }, { replace: true });
 }
 

@@ -1,13 +1,13 @@
 /**
  * The look of a wiki page shown in the artifact viewer's frame. The wiki (apps/wiki) has one light theme and its own top bar, page tree
  * and page header, so the viewer hides those and maps the wiki's colour variables to this app's tokens, read from this document, so the
- * page follows the app's light or dark mode. The popup's own header carries the title and the actions.
+ * page follows the app's light or dark mode. The side panel's own header carries the title and the actions.
  */
 
 /** The wiki's colour variables (apps/wiki/src/app.css) and the app token each one takes. */
 const PALETTE: Record<string, string> = {
-  "--bg": "--surface-popover",
-  "--surface": "--surface-popover",
+  "--bg": "--surface-panel",
+  "--surface": "--surface-panel",
   "--surface-alt": "--surface-inset",
   "--ink": "--text-standard",
   "--ink-soft": "--text-subtle",
@@ -18,7 +18,7 @@ const PALETTE: Record<string, string> = {
   "--border-soft": "--border-standard",
 };
 
-/** The frame hides the wiki's own chrome and the page header that repeats the popup's title. */
+/** The frame hides the wiki's own chrome and the page header that repeats the side panel's title. */
 const LAYOUT = `
 .topbar, .browse-btn, .rail-tab, .tree-rail, .page-head { display: none !important; }
 .body { grid-template-columns: minmax(0, 1fr) !important; }

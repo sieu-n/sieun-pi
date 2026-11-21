@@ -1,10 +1,10 @@
 import { expect, test, type Page } from "@playwright/test";
 
 /**
- * The artifact viewer is a panel inside the window at every window and interface size, in the browser and in the Mac app (apps/desktop),
- * whose window buttons sit in the top bar. The owner saw it run past the window's top and bottom edges in the Mac app, because the sheet
- * was 100vh tall and the interface size's root zoom multiplies vh. A wiki page in it shows no wiki chrome or page header of its own and
- * takes the app's colours.
+ * A wiki page opens in the side panel beside the conversation, inside the window at every window and interface size, in the browser and in
+ * the Mac app (apps/desktop), whose window buttons sit in the top bar. The owner saw the old sheet run past the window's top and bottom edges
+ * in the Mac app, because it was 100vh tall and the interface size's root zoom multiplies vh. A wiki page shows no wiki chrome or page header
+ * of its own and takes the app's colours.
  */
 const WINDOWS = [
   { width: 1512, height: 945 },
@@ -29,9 +29,9 @@ async function open(page: Page, scale: number, mode: "light" | "dark", desktop: 
     localStorage.setItem("chat.colorMode", colorMode);
     if (mac) Object.assign(window, { __TAURI_INTERNALS__: {} });
   }, [scale, mode, desktop] as const);
-  await page.route("**/wiki/**", (route) => route.fulfill({ contentType: "text/html", body: PAGE }));
+  await page.route((url) => url.pathname.startsWith("/wiki/"), (route) => route.fulfill({ contentType: "text/html", body: PAGE }));
   await page.goto(`/#/c/ch_general?view=${encodeURIComponent(`wiki:${WIKI}`)}`);
-  const dialog = page.getByRole("dialog").filter({ has: page.getByTestId("artifact-viewer") });
+  const dialog = page.getByTestId("side-panel").filter({ has: page.getByTestId("artifact-viewer") });
   await expect(dialog).toBeVisible({ timeout: 15_000 });
   await dialog.evaluate((el) => Promise.all(el.getAnimations().map((a) => a.finished)));
   return dialog;
@@ -40,7 +40,7 @@ async function open(page: Page, scale: number, mode: "light" | "dark", desktop: 
 for (const size of WINDOWS) {
   for (const scale of SCALES) {
     for (const desktop of [false, true]) {
-      test(`${size.width}x${size.height} at ${Math.round(scale * 100)}%${desktop ? " in the Mac app" : ""}: the viewer sits inside the window under the top bar`, async ({ page }) => {
+      test(`${size.width}x${size.height} at ${Math.round(scale * 100)}%${desktop ? " in the Mac app" : ""}: the wiki panel sits inside the window under the top bar`, async ({ page }) => {
         await page.setViewportSize(size);
         const dialog = await open(page, scale, "light", desktop);
         const box = (await dialog.boundingBox())!;
@@ -51,17 +51,17 @@ for (const size of WINDOWS) {
         expect(box.y + box.height).toBeLessThanOrEqual(size.height - 8);
         // The Mac app's window buttons cover x 20 to 80 and y 16 to 40, which the viewer stays clear of.
         if (desktop) expect(box.y).toBeGreaterThanOrEqual(40);
-        const close = (await dialog.getByRole("button", { name: "Close" }).boundingBox())!;
+        const close = (await dialog.getByRole("button", { name: "Close page" }).boundingBox())!;
         expect(close.x + close.width).toBeLessThanOrEqual(box.x + box.width);
       });
     }
   }
 }
 
-test("the viewer has one header with the page title and no path line, and the page drops its own header", async ({ page }) => {
+test("the wiki panel has one header with the page title and no path line, and the page drops its own header", async ({ page }) => {
   const dialog = await open(page, 1, "light", false);
   await expect(dialog.getByRole("heading", { name: "Viewer fit" })).toBeVisible();
-  await expect(dialog.locator(".dialog-header p")).toHaveCount(0);
+  await expect(dialog.locator(".panel-header p")).toHaveCount(0);
   const frame = dialog.locator("iframe.wiki-frame").contentFrame();
   await expect(frame.locator(".prose")).toBeVisible();
   for (const hidden of [".page-head", ".topbar", ".tree-rail"]) await expect(frame.locator(hidden)).toBeHidden();
@@ -79,23 +79,30 @@ test("a wiki page in the viewer takes the app's colours and follows a change of 
         page: getComputedStyle(doc.body).backgroundColor,
         text: getComputedStyle(doc.querySelector(".prose")!).color,
         scheme: getComputedStyle(doc.documentElement).colorScheme,
-        app: app.getPropertyValue("--surface-popover").trim(),
+        app: app.getPropertyValue("--surface-panel").trim(),
       };
     });
-  await expect.poll(colours).toEqual({ page: "rgb(40, 40, 40)", text: "rgb(255, 255, 255)", scheme: "dark", app: "#282828" });
+  await expect.poll(colours).toEqual({ page: "rgb(26, 26, 26)", text: "rgb(255, 255, 255)", scheme: "dark", app: "#1a1a1a" });
   await page.evaluate(() => (document.documentElement.dataset.colorMode = "light"));
   await expect.poll(colours).toEqual({ page: "rgb(255, 255, 255)", text: "rgb(15, 15, 15)", scheme: "light", app: "#ffffff" });
 });
 
-test("Esc and a click outside the viewer close it", async ({ page }) => {
+test("Esc in the page closes the panel, and the conversation's composer takes clicks and typing while it is open", async ({ page }) => {
   await page.setViewportSize({ width: 1512, height: 945 });
   let dialog = await open(page, 1.2, "light", true);
+  const frame = dialog.locator("iframe.wiki-frame").contentFrame();
+  await frame.locator(".prose").click();
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
   await expect(page).not.toHaveURL(/view=/);
   dialog = await open(page, 1.2, "light", true);
-  await page.mouse.click(8, 600);
-  await expect(dialog).toBeHidden();
+  const input = page.getByTestId("main-panel").getByTestId("composer-input");
+  await input.click();
+  await page.keyboard.type("typed beside the page");
+  await expect(input).toContainText("typed beside the page");
+  await expect(dialog).toBeVisible();
+  const [panel, main] = await Promise.all([dialog.boundingBox(), page.getByTestId("main-panel").boundingBox()]);
+  expect(panel!.x).toBeGreaterThanOrEqual(main!.x + main!.width);
 });
 
 test("Cmd K in a wiki page opens this app's search, not the wiki's page opener, and Cmd F stays the browser's find", async ({ page }) => {

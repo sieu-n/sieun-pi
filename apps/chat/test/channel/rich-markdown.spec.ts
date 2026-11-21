@@ -122,46 +122,87 @@ test("internal links render as pills and GitHub links as cards, and the pills na
   await expect(viewer).toHaveCount(0);
 });
 
-test("a wiki link opens the page in the viewer popup over the chat, and Esc or Back returns to the chat", async ({ page }) => {
+test("a wiki link opens the page in the side panel beside the chat, and its close button or Back returns to the chat", async ({ page }) => {
   await open(page, `#/c/${CRAWLER}`);
   const before = page.url();
   const link = rich(page).locator(".artifact-link.wiki-link");
   await link.click();
-  const dialog = page.getByRole("dialog").filter({ has: page.getByTestId("artifact-viewer") });
-  const frame = dialog.locator("iframe.wiki-frame");
+  const panel = page.getByTestId("side-panel").filter({ has: page.getByTestId("artifact-viewer") });
+  const frame = panel.locator("iframe.wiki-frame");
   await expect(frame).toHaveAttribute("src", "/wiki/sessions/2026/10/28/board-panel.md");
   await expect(page).toHaveURL(/[?&]view=wiki%3Asessions%2F2026%2F10%2F28%2Fboard-panel\.md/);
-  await expect(dialog.getByRole("link", { name: "Open in new tab" })).toHaveAttribute("href", /\/sessions\/2026\/10\/28\/board-panel\.md$/);
-  await expect(dialog.getByRole("link", { name: "Open in new tab" })).toHaveAttribute("target", "_blank");
-  await page.keyboard.press("Escape");
-  await expect(dialog).toBeHidden();
+  await expect(panel.getByRole("link", { name: "Open in new tab" })).toHaveAttribute("href", /\/sessions\/2026\/10\/28\/board-panel\.md$/);
+  await expect(panel.getByRole("link", { name: "Open in new tab" })).toHaveAttribute("target", "_blank");
+  await expect(composerInput(conversation(page))).toBeVisible();
+  await panel.getByRole("button", { name: "Close page" }).click();
+  await expect(panel).toBeHidden();
   await expect(page).toHaveURL(before);
   await link.click();
   await expect(frame).toBeVisible();
   await page.goBack();
-  await expect(dialog).toBeHidden();
+  await expect(panel).toBeHidden();
   await expect(page).toHaveURL(before);
   await expect(composerInput(conversation(page))).toBeVisible();
-  // A wiki link clicked inside the frame loads in place, so Back still closes the popup.
-  await link.click();
-  await expect.poll(() => page.frames().length).toBeGreaterThan(1);
+});
+
+/** A wiki page shaped like apps/wiki's, titled by its path, with a link to apps/index.html. */
+const wikiPage = (path: string): string =>
+  `<!doctype html><html><head><title>${path} · llm-wiki</title></head><body><article class="page"><div class="prose"><p><a id="walk-link" href="/wiki/apps/index.html">apps</a></p></div></article></body></html>`;
+
+test("a wiki link inside the page is a new entry: the back arrow, Back, Forward and a reload follow it, and one close returns to the chat", async ({ page }) => {
+  await page.route((url) => url.pathname.startsWith("/wiki/") && !url.pathname.startsWith("/wiki/api/") && !url.search, (route) =>
+    route.fulfill({ contentType: "text/html", body: wikiPage(new URL(route.request().url()).pathname.slice(6)) }),
+  );
+  await open(page, `#/c/${CRAWLER}`);
+  const before = page.url();
+  await rich(page).locator(".artifact-link.wiki-link").click();
+  const panel = page.getByTestId("side-panel").filter({ has: page.getByTestId("artifact-viewer") });
+  const frame = panel.locator("iframe.wiki-frame");
+  await expect(frame).toBeVisible();
+  const framePath = () => frame.contentFrame().locator("body").evaluate(() => location.pathname);
+  await expect.poll(framePath).toBe("/wiki/sessions/2026/10/28/board-panel.md");
+  await expect(panel.getByRole("button", { name: "Back" })).toHaveCount(0);
+  await expect(panel.getByRole("heading", { name: "sessions/2026/10/28/board-panel.md" })).toBeVisible();
   const length = await page.evaluate(() => history.length);
-  const inner = frame.contentFrame();
-  await inner.locator("body").evaluate((body) => body.insertAdjacentHTML("afterbegin", '<a id="walk-link" href="/wiki/apps/index.html">apps</a>'));
-  await inner.locator("#walk-link").click();
-  await expect.poll(() => inner.locator("body").evaluate(() => location.pathname)).toBe("/wiki/apps/index.html");
-  expect(await page.evaluate(() => history.length)).toBe(length);
-  await page.goBack();
-  await expect(dialog).toBeHidden();
+  await frame.contentFrame().locator("#walk-link").click();
+  await expect(panel.getByRole("heading", { name: "apps/index.html" })).toBeVisible();
+  await expect(page).toHaveURL(/[?&]view=wiki%3Aapps%2Findex\.html/);
+  await expect.poll(framePath).toBe("/wiki/apps/index.html");
+  expect(await page.evaluate(() => history.length)).toBe(length + 1);
+  await panel.getByRole("button", { name: "Back" }).click();
+  await expect(page).toHaveURL(/[?&]view=wiki%3Asessions%2F2026%2F10%2F28%2Fboard-panel\.md/);
+  await expect.poll(framePath).toBe("/wiki/sessions/2026/10/28/board-panel.md");
+  await expect(panel.getByRole("button", { name: "Back" })).toHaveCount(0);
+  await page.goForward();
+  await expect.poll(framePath).toBe("/wiki/apps/index.html");
+  await page.reload();
+  await expect.poll(framePath).toBe("/wiki/apps/index.html");
+  await expect(panel.getByRole("button", { name: "Back" })).toBeVisible();
+  await panel.getByRole("button", { name: "Close page" }).click();
+  await expect(panel).toBeHidden();
   await expect(page).toHaveURL(before);
   // An entry the page in the frame pushes does not turn Esc into a step back inside the frame.
-  await link.click();
+  await rich(page).locator(".artifact-link.wiki-link").click();
   await expect(frame).toBeVisible();
   await expect.poll(() => page.frames().length).toBeGreaterThan(1);
   await frame.contentFrame().locator("body").evaluate(() => history.pushState({}, "", `${location.pathname}?step`));
-  await page.keyboard.press("Escape");
-  await expect(dialog).toBeHidden();
+  await frame.contentFrame().locator("body").press("Escape");
+  await expect(panel).toBeHidden();
   await expect(page).not.toHaveURL(/view=/);
+});
+
+test("opening a thread over the wiki page takes the side panel, and Back brings the page again", async ({ page }) => {
+  await open(page, `#/c/${CRAWLER}`);
+  await rich(page).locator(".artifact-link.wiki-link").click();
+  const panel = page.getByTestId("side-panel");
+  await expect(panel.getByTestId("artifact-viewer")).toBeVisible();
+  const url = page.url();
+  await page.evaluate(() => (location.hash = `${location.hash}&thread=p1`));
+  await expect(panel.getByTestId("artifact-viewer")).toHaveCount(0);
+  await expect(page).not.toHaveURL(/view=/);
+  await page.goBack();
+  await expect(page).toHaveURL(url);
+  await expect(panel.getByTestId("artifact-viewer")).toBeVisible();
 });
 
 test("the screenshot loads from the box through /api/local-image and opens in the lightbox", async ({ page }) => {

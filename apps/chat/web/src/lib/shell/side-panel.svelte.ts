@@ -2,7 +2,7 @@ import type { Snippet } from "svelte";
 
 /**
  * The one side panel host. A page opens its pane here and the shell draws it at the right of the main panel,
- * 420 px by default and resizable. Opening a new pane replaces the old one.
+ * 420 px by default, 640 px for a `wide` pane, and resizable. Opening a new pane replaces the old one.
  *
  *   sidePanel.open({ key: `thread:${jobId}`, title: "Thread", body: threadPane, onclose: () => router.setParams({ thread: null }) });
  *
@@ -19,25 +19,45 @@ export type SidePanelContent = {
   actions?: Snippet;
   /** Replace the default PanelHeader. */
   header?: Snippet;
+  /** `wide` for a page to read, such as a wiki page, which opens at 640 px and keeps its own width when resized. */
+  size?: SidePanelSize;
   onclose?: () => void;
 };
 
-const WIDTH_KEY = "chat.sidePanelWidth";
-export const SIDE_PANEL_DEFAULT = 420;
+export type SidePanelSize = "default" | "wide";
+
+const SIZES: Record<SidePanelSize, { key: string; initial: number }> = {
+  default: { key: "chat.sidePanelWidth", initial: 420 },
+  wide: { key: "chat.sidePanelWideWidth", initial: 640 },
+};
 export const SIDE_PANEL_MIN = 300;
 
-function savedWidth(): number {
+function savedWidth(size: SidePanelSize): number {
+  const { key, initial } = SIZES[size];
   try {
-    const n = Number(localStorage.getItem(WIDTH_KEY));
-    return Number.isFinite(n) && n >= SIDE_PANEL_MIN ? n : SIDE_PANEL_DEFAULT;
+    const n = Number(localStorage.getItem(key));
+    return Number.isFinite(n) && n >= SIDE_PANEL_MIN ? n : initial;
   } catch {
-    return SIDE_PANEL_DEFAULT;
+    return initial;
   }
 }
 
 class SidePanel {
   content = $state<SidePanelContent | null>(null);
-  width = $state(savedWidth());
+  private widths = $state<Record<SidePanelSize, number>>({ default: savedWidth("default"), wide: savedWidth("wide") });
+  private readonly size = $derived<SidePanelSize>(this.content?.size ?? "default");
+
+  /** The width of the open pane's size, which a drag sets live and `setWidth` saves. */
+  get width(): number {
+    return this.widths[this.size];
+  }
+  set width(px: number) {
+    this.widths[this.size] = px;
+  }
+
+  get defaultWidth(): number {
+    return SIZES[this.size].initial;
+  }
 
   get isOpen(): boolean {
     return this.content !== null;
@@ -58,7 +78,7 @@ class SidePanel {
   setWidth(px: number): void {
     this.width = Math.max(SIDE_PANEL_MIN, Math.round(px));
     try {
-      localStorage.setItem(WIDTH_KEY, String(this.width));
+      localStorage.setItem(SIZES[this.size].key, String(this.width));
     } catch {}
   }
 }
