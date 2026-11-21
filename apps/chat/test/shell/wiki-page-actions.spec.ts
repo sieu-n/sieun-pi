@@ -124,6 +124,8 @@ test("a page the wiki lacks offers a search by its name and Create page, which w
   expect(wiki.writes[0]).toMatchObject({ method: "POST", path: `${MISSING}.html` });
   const frame = pane.locator("iframe.wiki-frame").contentFrame();
   await expect(frame.locator(".prose[contenteditable=true] h1")).toHaveText("Not written yet");
+  await p.keyboard.type("First words");
+  await expect(frame.locator(".prose[contenteditable=true] p")).toHaveText("First words");
   await expect(missing).toHaveCount(0);
 });
 

@@ -116,7 +116,7 @@
   let editOnLoad = false;
   let frameDoc: Document | null = null;
 
-  async function startEdit() {
+  async function startEdit(caret: "start" | "end" = "start") {
     const path = framePath ?? wikiPath;
     if (!path || !frameDoc || editing) return;
     const doc = frameDoc;
@@ -127,7 +127,7 @@
       return;
     }
     if (doc !== frameDoc) return;
-    editing = startEditing(doc, page, { save: () => void saveEdit(), cancel: cancelEdit, change: () => (editDirty = editing?.dirty() ?? false) });
+    editing = startEditing(doc, page, { save: () => void saveEdit(), cancel: cancelEdit, change: () => (editDirty = editing?.dirty() ?? false) }, caret);
     editDirty = false;
   }
 
@@ -315,7 +315,7 @@
       });
     } else if (here) {
       void loadShares(doc, here);
-      if (editOnLoad) void startEdit();
+      if (editOnLoad) void startEdit("end");
     }
     editOnLoad = false;
     // Keys typed in the frame never reach this document, so Esc is caught in the frame too. Cmd K opens this app's search, before the

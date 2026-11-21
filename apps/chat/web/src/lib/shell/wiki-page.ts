@@ -88,7 +88,7 @@ export function titleFromPath(path: string): string {
 export async function createPage(path: string): Promise<SaveResult & { path: string }> {
   const target = /\.html?$/i.test(path) ? path : `${path.replace(/\/+$/, "")}.html`;
   const title = titleFromPath(target);
-  const content = `<!--wiki\n${JSON.stringify({ title })}\n-->\n<h1>${title.replace(/[&<>]/g, (c) => `&${({ "&": "amp", "<": "lt", ">": "gt" } as Record<string, string>)[c]};`)}</h1>\n<p></p>\n`;
+  const content = `<!--wiki\n${JSON.stringify({ title })}\n-->\n<h1>${title.replace(/[&<>]/g, (c) => `&${({ "&": "amp", "<": "lt", ">": "gt" } as Record<string, string>)[c]};`)}</h1>\n<p><br></p>\n`;
   return { ...(await writePage(target, content, null, "POST")), path: target };
 }
 
@@ -105,12 +105,14 @@ export type Editing = {
  * and Cmd Enter save, Esc leaves an unchanged page, and a paste comes in as plain text so another page's styles stay out. Reloading the
  * frame ends the edit.
  */
-export function startEditing(doc: Document, page: StoredPage, on: { save: () => void; cancel: () => void; change: () => void }): Editing | null {
+export function startEditing(doc: Document, page: StoredPage, on: { save: () => void; cancel: () => void; change: () => void }, caret: "start" | "end" = "start"): Editing | null {
   const prose = doc.querySelector<HTMLElement>(".page-grid .prose, .prose");
   if (!prose) return null;
   prose.innerHTML = page.body;
   const baseline = prose.innerHTML;
   prose.contentEditable = "true";
+  // Enter starts a <p>, as the stored pages write paragraphs, where Chrome would start a <div>.
+  doc.execCommand("defaultParagraphSeparator", false, "p");
   prose.spellcheck = true;
   doc.documentElement.dataset.chatEditing = "";
   const dirty = () => prose.innerHTML !== baseline;
@@ -132,6 +134,9 @@ export function startEditing(doc: Document, page: StoredPage, on: { save: () => 
     }
   });
   prose.focus();
+  // A new page opens with the caret in its empty first paragraph, under the title.
+  if (caret === "end") doc.getSelection()?.selectAllChildren(prose.lastElementChild ?? prose);
+  if (caret === "end") doc.getSelection()?.collapseToEnd();
   return {
     page,
     dirty,
