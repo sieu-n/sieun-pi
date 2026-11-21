@@ -10,6 +10,7 @@ import type { Principal, Reaction } from "../web/src/lib/api/types.ts";
 import { emojiOf } from "../web/src/lib/api/shared/emoji.ts";
 import type { AgentRecord, RoomId, RoomPost, StoredReaction } from "./agent-store.ts";
 import { doneLine } from "./thread-done.ts";
+import { pinLine } from "./pins.ts";
 
 /** A reaction request the server refuses: 400 for a bad emoji or message id, 404 for a room or post that is not there. */
 export class ReactionError extends Error {
@@ -40,7 +41,7 @@ export function reactionList(principal: (id: string) => Principal, post: RoomPos
  */
 export function reactionsLine(principal: (id: string) => Principal, post: RoomPost): string {
   const list = reactionList(principal, post);
-  return [list ? `[reactions: ${list}]` : "", doneLine(principal, post)].filter(Boolean).join(" ");
+  return [list ? `[reactions: ${list}]` : "", doneLine(principal, post), pinLine(post)].filter(Boolean).join(" ");
 }
 
 /** The emoji and direction of a reaction request: a Slack name (`eyes`, `:eyes:`) or the emoji itself, and `on`, true unless given. */

@@ -7,7 +7,8 @@ import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
 import type { ConversationHeader, Item, Principal, TimelinePage } from "../../web/src/lib/api/types.ts";
 import type { RoomPost } from "../../server/agent-store.ts";
-import { markPin, pinInput, pinnedPosts, pinOf } from "../../server/pins.ts";
+import { markPin, pinInput, pinLine, pinnedPosts, pinnedSection, pinOf } from "../../server/pins.ts";
+import { reactionsLine } from "../../server/reactions.ts";
 import { start, type Running } from "./helpers.ts";
 
 type Message = Extract<Item, { kind: "message" }>;
@@ -42,6 +43,14 @@ describe("the pin model", () => {
     assert.deepEqual(pinnedPosts(posts).map(p => p.id), ["p2", "p1"]);
     assert.deepEqual(pinOf(() => owner, posts[0]!), { pinned: { by: owner, at: 10 } });
     assert.deepEqual(pinOf(() => owner, posts[3]!), {}, "a deleted post reads unpinned");
+  });
+
+  test("agents read a pinned post's flag after its reactions, and the room's pins under the post they answer", () => {
+    const posts = [post(1, { pinned: { pinned: true, by: "owner", at: 10 }, reactions: [{ emoji: "👍", by: "owner", at: 1 }] }), post(2)];
+    assert.equal(pinLine(posts[0]!), "[pinned by Sieun (owner)]");
+    assert.equal(reactionsLine(() => owner, posts[0]!), "[reactions: 👍 Sieun (owner)] [pinned by Sieun (owner)]");
+    assert.deepEqual(pinnedSection(posts, p => `${p.seq} ${p.text}`), ["", "(pinned in this room)", "1 post 1"]);
+    assert.deepEqual(pinnedSection([post(2)], p => p.text), [], "no section while nothing is pinned");
   });
 });
 
@@ -78,6 +87,10 @@ describe("pins on the fixture server", () => {
     const off = await pin(CH, root.id, false);
     assert.equal(off.body.item.pinned, undefined);
     assert.deepEqual((await header(CH)).pins?.map(i => i.id), [reply.id]);
+    const pinnedNow = s.app.agentStore.postsOf(CH).find(p => p.id === reply.id)!;
+    const row = s.app.groups.row(CH)!;
+    const envelope = s.app.groups.envelope(row, { ...pinnedNow, id: "p99999", seq: 99999, threadRoot: undefined, pinned: undefined });
+    assert.match(envelope, new RegExp(`\\(pinned in this room\\)\\n${pinnedNow.seq} .*\\[pinned by Sieun \\(owner\\)\\]$`), "a member's input lists the room's pins");
     await pin(CH, reply.id, false);
     assert.equal((await pin(CH, root.id, "yes")).status, 400);
     assert.equal((await pin(CH, "p999999", true)).status, 404);

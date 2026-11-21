@@ -32,7 +32,7 @@ import { postState } from "./post-edits.ts";
 import { laterLine, reminderPost } from "./later-agents.ts";
 import { namedPost, reactionsLine, reactionsOf, repliedPost } from "./reactions.ts";
 import { doneOf, reopens } from "./thread-done.ts";
-import { pinOf } from "./pins.ts";
+import { pinnedSection, pinOf } from "./pins.ts";
 import { forwardPart, withForward } from "./forward.ts";
 import type { ForwardedPost } from "../web/src/lib/api/types.ts";
 import { agedPost, agentPostParts, CONTEXT_CLIP, CONTEXT_POSTS, queuedNote, readFeedThread, type FeedSide, type Spoken } from "./rooms.ts";
@@ -684,6 +684,7 @@ export class GroupRooms {
       const thread = this.store.postsOf(row.id).filter(p => (p.id === rootId || p.threadRoot === rootId) && p.seq < post.seq && p.deletedAt === undefined).slice(-CONTEXT_POSTS);
       if (thread.length) lines.push("", "(thread so far)", ...thread.map(context));
     }
+    lines.push(...pinnedSection(this.store.postsOf(row.id), context));
     return lines.join("\n");
   }
 

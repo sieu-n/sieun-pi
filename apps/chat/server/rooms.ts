@@ -23,7 +23,7 @@ import { refusedForGood, retryWait } from "./outbox.ts";
 import { postState } from "./post-edits.ts";
 import { namedPost, reactionsOf, repliedPost } from "./reactions.ts";
 import { doneOf, reopens } from "./thread-done.ts";
-import { pinOf } from "./pins.ts";
+import { pinnedSection, pinOf } from "./pins.ts";
 import { forwardPart, withForward } from "./forward.ts";
 import type { ForwardedPost } from "../web/src/lib/api/types.ts";
 import { readMark, type Store } from "./store.ts";
@@ -408,12 +408,13 @@ export class Rooms {
    */
   private inputText(post: RoomPost): string {
     const rootId = post.threadRoot;
-    if (!rootId) return withForward(post.text, post.forward);
     const posts = this.store.postsOf(post.room);
+    const line = (p: RoomPost) => `${p.seq} ${this.deps.threads.principal(p.author).name}: ${p.text.slice(0, CONTEXT_CLIP)}`;
+    const pinned = pinnedSection(posts, line);
+    if (!rootId) return [withForward(post.text, post.forward), ...pinned].join("\n");
     const root = posts.find(p => p.id === rootId);
     const thread = posts.filter(p => (p.id === rootId || p.threadRoot === rootId) && p.seq < post.seq && p.deletedAt === undefined).slice(-CONTEXT_POSTS);
-    const line = (p: RoomPost) => `${p.seq} ${this.deps.threads.principal(p.author).name}: ${p.text.slice(0, CONTEXT_CLIP)}`;
-    return [`[a reply in the thread of post ${root?.seq ?? rootId} in your DM; your answer goes in that thread]`, "", withForward(post.text, post.forward), "", "(thread so far)", ...thread.map(line)].join("\n");
+    return [`[a reply in the thread of post ${root?.seq ?? rootId} in your DM; your answer goes in that thread]`, "", withForward(post.text, post.forward), "", "(thread so far)", ...thread.map(line), ...pinned].join("\n");
   }
 
   /** The posts a bundle names, oldest first; a member the log lacks drops out. */

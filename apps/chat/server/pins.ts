@@ -27,6 +27,20 @@ export function pinOf(principal: (id: string) => Principal, post: RoomPost): { p
   return post.pinned?.pinned && post.deletedAt === undefined ? { pinned: { by: principal(post.pinned.by), at: post.pinned.at } } : {};
 }
 
+/** The one form every agent-facing surface shows the flag in, `[pinned by Sieun (owner)]`, or "" while the post is not pinned. */
+export function pinLine(post: RoomPost): string {
+  return post.pinned?.pinned && post.deletedAt === undefined ? "[pinned by Sieun (owner)]" : "";
+}
+
+/**
+ * The room's pinned posts as an agent reads them under the post it answers, `(pinned in this room)` and one `line` each, so "what is pinned
+ * here?" reads from its own input, as the header shows the owner; no lines while nothing is pinned.
+ */
+export function pinnedSection(posts: readonly RoomPost[], line: (post: RoomPost) => string): string[] {
+  const pins = pinnedPosts(posts);
+  return pins.length ? ["", "(pinned in this room)", ...pins.map(line)] : [];
+}
+
 /** The room's pinned posts, newest pin first, as Slack's Pinned list orders them. */
 export function pinnedPosts(posts: readonly RoomPost[]): RoomPost[] {
   return posts.filter(p => p.pinned?.pinned && p.deletedAt === undefined).sort((a, b) => (b.pinned?.at ?? 0) - (a.pinned?.at ?? 0));
