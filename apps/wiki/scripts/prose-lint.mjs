@@ -216,7 +216,7 @@ if (json) {
 	process.stdout.write(JSON.stringify({ standard: STANDARD_FILE, results }, null, 2) + '\n');
 } else {
 	for (const r of results) {
-		if (r.skipped) process.stdout.write(`\n${show(r.file)}  skipped (session log, requests.html or archive)\n`);
+		if (r.skipped) process.stdout.write(`\n${show(r.file)}  skipped (${r.file.endsWith('.html') ? 'session log, requests.html or archive' : 'not an .html page; the lint reads HTML only'})\n`);
 		else printFindings(r.file, r.findings);
 	}
 	const byRule = new Map();

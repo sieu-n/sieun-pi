@@ -1,8 +1,8 @@
-// Prose lint for llm-wiki HTML pages against `.agents/skills/apps/llm-wiki/references/writing.md` and unslop.
+// Prose lint for llm-wiki HTML pages against sieun-pi `skills/wiki/references/writing.md` and unslop.
 // Pure module; the write API, scripts/prose-lint.mjs and scripts/repo/agent/commit.mjs call it.
 
 /** The standard a finding points the writer to. */
-export const STANDARD_FILE = '.agents/skills/apps/llm-wiki/references/writing.md';
+export const STANDARD_FILE = 'skills/wiki/references/writing.md in sieun-pi (~/.prime/agent/skills/wiki/references/writing.md)';
 
 export const LIMITS = Object.freeze({
 	/** A bullet longer than this is stuffed clauses. */
