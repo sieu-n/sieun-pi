@@ -1,6 +1,6 @@
 # Architect runner prompt
 
-The orchestrator passes this file to every candidate runner in Phase B. It adds the task, the Phase A grounding artifacts, the runner's own working directory, and the output path. Each runner gets its own git worktree when one is available, otherwise its own subdirectory of the sketch directory.
+The orchestrator passes this file to every candidate runner in Phase B. It adds the task, the Phase A grounding artifacts, the runner's own working directory, and the output path. Each runner gets its own subdirectory of the sketch directory. It reads the repo in its existing checkout and writes only in that subdirectory, because the repo copy guard refuses a git worktree or a clone of the local checkout (owner rule c193).
 
 You are writing one candidate design. Read the [architect](../SKILL.md) skill in full first. Write a design package with a type sketch, function signatures, a module map, and a rationale shaped per [`rationale-template.md`](rationale-template.md).
 
