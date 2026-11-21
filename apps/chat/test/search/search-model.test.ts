@@ -143,7 +143,7 @@ test("a snippet reads as plain text, with Markdown's marks taken out and its mat
 });
 
 test("filters with no words wait for words under one Messages group, and a hit with a link opens through it", () => {
-  const filtered = buildGroups({ ...base, filters: { ...NO_FILTERS, where: ["tool"] } });
+  const filtered = buildGroups({ ...base, filters: { ...NO_FILTERS, place: ["tools"] } });
   assert.deepEqual(filtered.map(group => [group.label, group.empty]), [["Messages", "Type to search messages."]]);
   const link = "#/c/ch_cut?thread=p1&m=p4";
   const groups = buildGroups({ ...base, text: "x", messages: { state: "ready", total: 1, more: false, loadingMore: false, hits: [{ ...hit("r"), where: "thread", thread: { root: "p1", title: "what blocks" }, link }] } });

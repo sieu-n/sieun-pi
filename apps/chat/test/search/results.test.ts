@@ -39,14 +39,14 @@ test("times read like Slack's: Today at, Yesterday at, Oct 12th at, and short ag
 });
 
 test("the results address keeps only set filters and reads back the same search", () => {
-  const results = { q: "relay", sort: "relevance" as const, filters: { ...NO_FILTERS, from: ["owner", "ag_vent"], where: ["root" as const, "thread" as const] } };
+  const results = { q: "relay", sort: "relevance" as const, filters: { ...NO_FILTERS, from: ["owner", "ag_vent"], place: ["channels" as const, "threads" as const] } };
   const params = resultParams(results);
-  assert.deepEqual(Object.fromEntries(Object.entries(params).filter(([, v]) => v)), { q: "relay", from: "owner,ag_vent", where: "root,thread" });
+  assert.deepEqual(Object.fromEntries(Object.entries(params).filter(([, v]) => v)), { q: "relay", from: "owner,ag_vent", place: "channels,threads" });
   assert.deepEqual(readResults({ ...params, q: " relay " } as Record<string, string>), results);
-  const read = readResults({ q: "relay", from: "agents", sort: "recent", after: "2026-10-22", before: "bad", where: "x" });
-  assert.deepEqual(read, { q: "relay", sort: "recent", filters: { from: ["agents"], where: [], after: "2026-10-22" } });
-  assert.deepEqual(readResults({ q: "relay", where: "thread,root,tool" }).filters.where, []);
-  assert.deepEqual(searchParams(readResults({ q: "relay", where: "tool,root" })), { q: "relay", sort: "relevance", where: ["root", "tool"] });
+  const read = readResults({ q: "relay", from: "agents", sort: "recent", after: "2026-10-22", before: "bad", place: "x" });
+  assert.deepEqual(read, { q: "relay", sort: "recent", filters: { from: ["agents"], place: [], after: "2026-10-22" } });
+  assert.deepEqual(readResults({ q: "relay", where: "thread,root,tool" }).filters.place, []);
+  assert.deepEqual(searchParams(readResults({ q: "relay", place: "tools,jobs" })), { q: "relay", sort: "relevance", place: ["jobs", "tools"] });
   assert.deepEqual(searchParams(read), { q: "relay", sort: "recent", from: ["agents"], after: "2026-10-22" });
   assert.equal(resultCount(1), "1 result");
   assert.equal(resultCount(6391), "6,391 results");

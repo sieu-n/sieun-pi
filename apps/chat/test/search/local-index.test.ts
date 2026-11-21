@@ -94,8 +94,9 @@ test("with filters set, the keystroke rows keep only hits the page can tell pass
   );
   const ids = (filters: Partial<Filters>) => localHits([], feed, { q: "relay", filters: { ...NO_FILTERS, ...filters }, sort: "recent", limit: 20 }).map(h => h.id);
   assert.deepEqual(ids({}), ["root", "reply", "tool", "old"]);
-  assert.deepEqual(ids({ where: ["tool"] }), ["tool"]);
-  assert.deepEqual(ids({ where: ["root", "thread"] }), ["root", "reply", "old"]);
+  assert.deepEqual(ids({ place: ["tools"] }), ["tool"]);
+  assert.deepEqual(ids({ place: ["channels", "threads"] }), ["root", "reply", "old"]);
+  assert.deepEqual(ids({ place: ["jobs", "dms"] }), []);
   assert.deepEqual(ids({ from: ["owner"] }), ["root"]);
   assert.deepEqual(ids({ from: ["agents"] }), ["reply", "tool", "old"]);
   assert.deepEqual(ids({ from: ["ag_vent"] }), []);

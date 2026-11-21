@@ -28,7 +28,7 @@ test("a typed from: adds a person to the From chip, and in:, after: and before: 
   let filters = withOperator({ ...NO_FILTERS, from: ["a"], in: "c1" }, { kind: "from", id: "b" });
   filters = withOperator(filters, { kind: "from", id: "a" });
   filters = withOperator(filters, { kind: "in", id: "c2" });
-  assert.deepEqual(filters, { from: ["a", "b"], where: [], in: "c2" });
+  assert.deepEqual(filters, { from: ["a", "b"], place: [], in: "c2" });
   assert.equal(searchText("rate limit from:a"), "rate limit");
   assert.equal(searchText("  two   words "), "two words");
 });

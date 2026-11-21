@@ -3,40 +3,58 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { dateLabel, dateRanges, filterParams, hasFilters, NO_FILTERS, readFilters, toggleFrom, toggleWhere, withoutLast, type Filters } from "../../web/src/pages/search/filters.ts";
+import type { Hit } from "../../web/src/pages/search/hit-view.ts";
+import { dateLabel, dateRanges, filterParams, hasFilters, hitPlace, NO_FILTERS, PLACES, readFilters, toggleFrom, togglePlace, withoutLast, type Filters } from "../../web/src/pages/search/filters.ts";
 
-test("From and Where are multi-select, and picking every place reads as no Where filter", () => {
+test("From and the place pills are multi-select, kept in the row's order, and all six stay lit", () => {
   let filters = toggleFrom(toggleFrom(NO_FILTERS, "owner"), "ag_vent");
   assert.deepEqual(filters.from, ["owner", "ag_vent"]);
   assert.deepEqual(toggleFrom(filters, "owner").from, ["ag_vent"]);
-  filters = toggleWhere(toggleWhere(filters, "tool"), "root");
-  assert.deepEqual(filters.where, ["root", "tool"]);
-  assert.deepEqual(toggleWhere(filters, "thread").where, []);
+  filters = togglePlace(togglePlace(filters, "jobs"), "threads");
+  assert.deepEqual(filters.place, ["threads", "jobs"]);
+  assert.deepEqual(togglePlace(filters, "jobs").place, ["threads"]);
+  const all = PLACES.reduce((next, place) => togglePlace(next, place.id), NO_FILTERS);
+  assert.deepEqual(all.place, ["channels", "dms", "solo", "threads", "jobs", "tools"]);
+  assert.deepEqual(PLACES.map(place => place.label), ["Channels", "DMs", "Solo", "Threads", "Jobs", "Tool calls"]);
   assert.equal(hasFilters(NO_FILTERS), false);
   assert.equal(hasFilters(filters), true);
 });
 
+test("each hit sits in the one place the server files it under", () => {
+  const hit = (over: Partial<Hit>) => ({ where: "root", kind: "post", conversation: { id: "c", kind: "channel", name: "c" }, ...over }) as Hit;
+  assert.equal(hitPlace(hit({})), "channels");
+  assert.equal(hitPlace(hit({ conversation: { id: "dm_vent", kind: "dm", name: "Vent" } })), "dms");
+  assert.equal(hitPlace(hit({ conversation: { id: "so_1", kind: "solo", name: "Relay" } })), "solo");
+  assert.equal(hitPlace(hit({ kind: "message", conversation: { id: "t:1", kind: "solo", name: "chat" } })), "solo");
+  assert.equal(hitPlace(hit({ where: "thread", conversation: { id: "dm_vent", kind: "dm", name: "Vent" } })), "threads");
+  assert.equal(hitPlace(hit({ where: "tool", kind: "turn", conversation: { id: "t:4", kind: "job", name: "job" } })), "jobs");
+  assert.equal(hitPlace(hit({ where: "tool", kind: "tool", conversation: { id: "t:1", kind: "solo", name: "chat" } })), "tools");
+});
+
 test("the address holds the filters as comma lists and reads back the same filters", () => {
-  const filters = { from: ["owner", "ag_vent"], where: ["thread" as const, "tool" as const], in: "ch_cut", after: "2026-11-01", before: "2026-11-20" };
+  const filters: Filters = { from: ["owner", "ag_vent"], place: ["threads", "jobs"], in: "ch_cut", after: "2026-11-01", before: "2026-11-20" };
   const params = filterParams(filters);
-  assert.deepEqual(params, { from: "owner,ag_vent", where: "thread,tool", in: "ch_cut", after: "2026-11-01", before: "2026-11-20" });
+  assert.deepEqual(params, { from: "owner,ag_vent", place: "threads,jobs", in: "ch_cut", after: "2026-11-01", before: "2026-11-20" });
   assert.deepEqual(readFilters(params), filters);
-  assert.deepEqual(readFilters({ where: "tool,nowhere,root,thread", after: "yesterday", from: "a,,a" }), { from: ["a"], where: [] });
+  assert.deepEqual(readFilters({ place: "jobs,nowhere,channels", after: "yesterday", from: "a,,a" }), { from: ["a"], place: ["channels", "jobs"] });
+  assert.deepEqual(readFilters({ where: "tool" }).place, ["jobs", "tools"], "an old where= link");
+  assert.deepEqual(readFilters({ where: "tool,root,thread" }).place, []);
   assert.deepEqual(filterParams(NO_FILTERS), {});
 });
 
-test("Backspace takes back the rightmost chip first: Date, Where, In, then the last person in From", () => {
-  let filters: Filters = { from: ["owner", "ag_vent"], where: ["tool"], in: "c1", after: "2026-11-01" };
+test("Backspace takes back the rightmost filter first: Date, In, the last person in From, then the last lit place", () => {
+  let filters: Filters = { from: ["owner", "ag_vent"], place: ["threads", "jobs"], in: "c1", after: "2026-11-01" };
   const steps: string[] = [];
   while (hasFilters(filters)) {
     filters = withoutLast(filters);
     steps.push(JSON.stringify(filterParams(filters)));
   }
   assert.deepEqual(steps, [
-    '{"from":"owner,ag_vent","where":"tool","in":"c1"}',
-    '{"from":"owner,ag_vent","in":"c1"}',
-    '{"from":"owner,ag_vent"}',
-    '{"from":"owner"}',
+    '{"from":"owner,ag_vent","place":"threads,jobs","in":"c1"}',
+    '{"from":"owner,ag_vent","place":"threads,jobs"}',
+    '{"from":"owner","place":"threads,jobs"}',
+    '{"place":"threads,jobs"}',
+    '{"place":"threads"}',
     "{}",
   ]);
 });

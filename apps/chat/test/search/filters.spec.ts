@@ -1,9 +1,10 @@
 import { expect, test, type Page } from "@playwright/test";
 
 /**
- * The filter chips under the Cmd K field (owner p115, msg mwomrz5y: "search에서 filter 직관적으로 할수 있어야됨 ... 일단 큰 소스 (by which
- * agent/user), in root message, in thread, diggen in some internal tool call"): From, In, Where and Date work by keyboard and pointer,
- * each change asks the server with the filters, and the count is the server's exact total for them.
+ * The filters under the Cmd K field (owner p115, msg mwomrz5y: "search에서 filter 직관적으로 할수 있어야됨 ... 일단 큰 소스 (by which
+ * agent/user), in root message, in thread, diggen in some internal tool call"; p126, msg mwqfy6v3: "Where하고 이 카테고리하고 합쳐서,dropdown
+ * 말고 그냥 아이템들 list되어있는 pill들로"): the place pills, From, In and Date work by keyboard and pointer, each change asks the server with
+ * the filters, and the count is the server's exact total for them.
  */
 const mod = process.platform === "darwin" ? "Meta" : "Control";
 
@@ -34,9 +35,27 @@ test.beforeEach(async ({ page }) => {
   await expect(count(page)).toHaveText(messages(await total(page, { q: "relay" })));
 });
 
-test("two people in From, then Inside work, by keyboard: the request carries both and the count follows", async ({ page }) => {
-  // Tab leaves the field for the chip row, which is one stop that starts at From.
+test("Jobs, then Threads, then two people in From, by keyboard: the request carries them all and the count follows", async ({ page }) => {
+  // Tab leaves the field for the filter row, which is one stop that starts at the first place pill.
   await page.keyboard.press("Tab");
+  const pill = (name: string) => bar(page).locator("[data-search-places]").getByRole("button", { name, exact: true });
+  await expect(pill("Channels")).toBeFocused();
+  for (let i = 0; i < 4; i += 1) await page.keyboard.press("ArrowRight");
+  await expect(pill("Jobs")).toBeFocused();
+  let sent = asked(page, params => params.get("place") === "jobs");
+  await page.keyboard.press("Space");
+  await sent;
+  await expect(pill("Jobs")).toHaveAttribute("aria-pressed", "true");
+  await expect(count(page)).toHaveText(messages(await total(page, { q: "relay", place: "jobs" })));
+  await page.keyboard.press("ArrowLeft");
+  sent = asked(page, params => params.get("place") === "threads,jobs");
+  await page.keyboard.press("Enter");
+  await sent;
+  await expect(pill("Threads")).toHaveAttribute("aria-pressed", "true");
+  await expect(count(page)).toHaveText(messages(await total(page, { q: "relay", place: "threads,jobs" })));
+
+  // The arrows go on past the last pill to From.
+  for (let i = 0; i < 3; i += 1) await page.keyboard.press("ArrowRight");
   const from = bar(page).getByRole("button", { name: "From", exact: true });
   await expect(from).toBeFocused();
   await expect(from).toHaveAttribute("aria-haspopup", "dialog");
@@ -44,7 +63,7 @@ test("two people in From, then Inside work, by keyboard: the request carries bot
   const picker = page.getByRole("dialog", { name: "From" });
   await expect(picker).toBeVisible();
   await page.keyboard.type("vent");
-  let sent = asked(page, params => params.get("from") === "ag_vent");
+  sent = asked(page, params => params.get("from") === "ag_vent" && params.get("place") === "threads,jobs");
   await page.keyboard.press("Enter");
   await sent;
   await page.keyboard.press(`${mod}+a`);
@@ -59,30 +78,11 @@ test("two people in From, then Inside work, by keyboard: the request carries bot
   await expect(palette(page)).toBeVisible();
   const fromChip = bar(page).locator("[data-chip=from]");
   await expect(fromChip).toHaveText("From: Vent, You");
-  await expect(count(page)).toHaveText(messages(await total(page, { q: "relay", from: "ag_vent,owner" })));
-
-  // The arrows move along the row: the From chip's x, In, then Where.
-  for (let i = 0; i < 3; i += 1) await page.keyboard.press("ArrowRight");
-  await expect(bar(page).getByRole("button", { name: "Where" })).toBeFocused();
-  await page.keyboard.press("Space");
-  const inside = page.getByRole("menuitemcheckbox", { name: /Inside work/ });
-  await expect(page.getByRole("menuitemcheckbox").first()).toBeFocused();
-  await page.keyboard.press("ArrowDown");
-  await page.keyboard.press("ArrowDown");
-  await expect(inside).toBeFocused();
-  sent = asked(page, params => params.get("where") === "tool" && params.get("from") === "ag_vent,owner");
-  await page.keyboard.press("Space");
-  await sent;
-  await expect(inside).toHaveAttribute("aria-checked", "true");
-  await page.keyboard.press("Escape");
-  await expect(palette(page)).toBeVisible();
-  await expect(bar(page).locator("[data-chip=where]")).toHaveText("Inside work");
-  const filtered = await total(page, { q: "relay", from: "ag_vent,owner", where: "tool" });
-  await expect(count(page)).toHaveText(messages(filtered));
-  // Every row says it sits inside work.
+  await expect(count(page)).toHaveText(messages(await total(page, { q: "relay", from: "ag_vent,owner", place: "threads,jobs" })));
+  // Every row sits in a thread or inside a job.
   const places = palette(page).locator("[role=group][aria-label='Messages'] [data-search-result] [data-hit-place]");
   await expect(places.first()).toBeVisible();
-  for (const where of await places.evaluateAll(list => list.map(place => place.getAttribute("data-where")))) expect(where).toBe("tool");
+  for (const where of await places.evaluateAll(list => list.map(place => place.getAttribute("data-where")))) expect(["thread", "tool"]).toContain(where);
 });
 
 test("a chip's x removes its filter, and a date preset narrows the count", async ({ page }) => {

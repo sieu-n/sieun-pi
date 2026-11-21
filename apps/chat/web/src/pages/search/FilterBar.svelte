@@ -11,21 +11,21 @@
   import Popover from "$lib/ui/Popover.svelte";
   import type { MenuEntry } from "$lib/ui/menu";
   import type { PickerItem } from "$lib/ui/types";
-  import { dateLabel, dateRanges, toggleFrom, toggleWhere, WHERES, type Filters } from "./filters";
+  import { dateLabel, dateRanges, PLACES, toggleFrom, togglePlace, type Filters } from "./filters";
 
   /**
-   * The search filter chips, From, In, Where and Date, under the Cmd K field and on the full results page, so both filter the same way.
-   * The row is one toolbar stop: Tab enters it, arrows move between chips, Enter or Space opens a chip's dropdown, and Esc closes the
-   * dropdown and leaves the dialog open (the dropdown's Popover takes the key first).
+   * The search filters under the Cmd K field and on the full results page, so both filter the same way: one toggle pill per place, always
+   * shown and lit together as the owner likes (p126, msg mwqfy6v3), then the From, In and Date chips with their dropdowns. The row is one
+   * toolbar stop: Tab enters it, arrows move between pills and chips, Enter or Space toggles a pill or opens a chip's dropdown, and Esc
+   * closes the dropdown and leaves the dialog open (the dropdown's Popover takes the key first).
    */
   type Props = { filters: Filters; onchange: (next: Filters) => void; now: Date; trailing?: Snippet };
   let { filters, onchange, now, trailing }: Props = $props();
 
-  type Open = "from" | "in" | "where" | "date" | "range" | undefined;
+  type Open = "from" | "in" | "date" | "range" | undefined;
   let open = $state<Open>();
   let fromChip = $state<HTMLSpanElement>();
   let inChip = $state<HTMLSpanElement>();
-  let whereChip = $state<HTMLSpanElement>();
   let dateChip = $state<HTMLSpanElement>();
   const toggle = (name: Exclude<Open, undefined>) => (open = open === name ? undefined : name);
   const set = (name: Exclude<Open, undefined>, on: boolean) => {
@@ -67,11 +67,6 @@
         icon: c.kind === "channel" ? "hash" : c.kind === "job" ? "robot" : "chat",
       })),
   ]);
-
-  const whereLabel = $derived(filters.where.length ? WHERES.filter(w => filters.where.includes(w.id)).map(w => w.label).join(", ") : "Where");
-  const whereItems = $derived<MenuEntry[]>(
-    WHERES.map(w => ({ type: "checkbox" as const, id: w.id, label: w.label, detail: w.detail, checked: filters.where.includes(w.id), onselect: () => onchange(toggleWhere(filters, w.id)) })),
-  );
 
   const ranges = $derived(dateRanges(now));
   const dateText = $derived(dateLabel(filters, now));
@@ -133,53 +128,50 @@
 
 <div class="bar" role="toolbar" tabindex="-1" aria-label="Search filters" aria-orientation="horizontal" data-search-filters bind:this={bar} {onfocusin} {onkeydown}>
   <div class="chips">
-    <Chip
-      bind:element={fromChip}
-      selected={!!picked.length}
-      popup={{ kind: "dialog", open: open === "from" }}
-      onclick={() => toggle("from")}
-      onremove={picked.length ? () => onchange({ ...filters, from: [] }) : undefined}
-      removeLabel="Remove the From filter"
-    >
-      {#if picked.length}
-        <span class="faces" aria-hidden="true">
-          {#each picked.slice(0, 3) as one (one.id)}
-            <Avatar name={one.name} kind={one.kind === "person" ? "person" : "agent"} seed={one.id} size={16} ring />
-          {/each}
-        </span>
-      {/if}
-      <span class="value" data-chip="from">{fromLabel}</span>
-    </Chip>
-    <Chip
-      bind:element={inChip}
-      selected={!!filters.in}
-      popup={{ kind: "dialog", open: open === "in" }}
-      onclick={() => toggle("in")}
-      onremove={filters.in ? () => onchange({ ...filters, in: undefined }) : undefined}
-      removeLabel="Remove the In filter"
-    >
-      <span class="value" data-chip="in">{filters.in ? `In: ${inName}` : "In"}</span>
-    </Chip>
-    <Chip
-      bind:element={whereChip}
-      selected={!!filters.where.length}
-      popup={{ kind: "menu", open: open === "where" }}
-      onclick={() => toggle("where")}
-      onremove={filters.where.length ? () => onchange({ ...filters, where: [] }) : undefined}
-      removeLabel="Remove the Where filter"
-    >
-      <span class="value" data-chip="where">{whereLabel}</span>
-    </Chip>
-    <Chip
-      bind:element={dateChip}
-      selected={!!dateText}
-      popup={{ kind: "menu", open: open === "date" || open === "range" }}
-      onclick={() => toggle("date")}
-      onremove={dateText ? () => onchange({ ...filters, after: undefined, before: undefined }) : undefined}
-      removeLabel="Remove the Date filter"
-    >
-      <span class="value" data-chip="date">{dateText ?? "Date"}</span>
-    </Chip>
+    <span class="places" role="group" aria-label="Places" data-search-places>
+      {#each PLACES as place (place.id)}
+        <Chip icon={place.icon} label={place.label} selected={filters.place.includes(place.id)} onclick={() => onchange(togglePlace(filters, place.id))} />
+      {/each}
+    </span>
+    <span class="pickers">
+      <Chip
+        bind:element={fromChip}
+        selected={!!picked.length}
+        popup={{ kind: "dialog", open: open === "from" }}
+        onclick={() => toggle("from")}
+        onremove={picked.length ? () => onchange({ ...filters, from: [] }) : undefined}
+        removeLabel="Remove the From filter"
+      >
+        {#if picked.length}
+          <span class="faces" aria-hidden="true">
+            {#each picked.slice(0, 3) as one (one.id)}
+              <Avatar name={one.name} kind={one.kind === "person" ? "person" : "agent"} seed={one.id} size={16} ring />
+            {/each}
+          </span>
+        {/if}
+        <span class="value" data-chip="from">{fromLabel}</span>
+      </Chip>
+      <Chip
+        bind:element={inChip}
+        selected={!!filters.in}
+        popup={{ kind: "dialog", open: open === "in" }}
+        onclick={() => toggle("in")}
+        onremove={filters.in ? () => onchange({ ...filters, in: undefined }) : undefined}
+        removeLabel="Remove the In filter"
+      >
+        <span class="value" data-chip="in">{filters.in ? `In: ${inName}` : "In"}</span>
+      </Chip>
+      <Chip
+        bind:element={dateChip}
+        selected={!!dateText}
+        popup={{ kind: "menu", open: open === "date" || open === "range" }}
+        onclick={() => toggle("date")}
+        onremove={dateText ? () => onchange({ ...filters, after: undefined, before: undefined }) : undefined}
+        removeLabel="Remove the Date filter"
+      >
+        <span class="value" data-chip="date">{dateText ?? "Date"}</span>
+      </Chip>
+    </span>
   </div>
   {#if trailing}<div class="trailing">{@render trailing()}</div>{/if}
 </div>
@@ -205,7 +197,6 @@
   placeholder="Find a conversation"
   onselect={id => onchange({ ...filters, in: id || undefined })}
 />
-<Menu bind:open={() => open === "where", on => set("where", on)} anchor={whereChip} items={whereItems} label="Where" />
 <Menu bind:open={() => open === "date", on => set("date", on)} anchor={dateChip} items={dateItems} label="Date" />
 <Popover bind:open={() => open === "range", on => set("range", on)} anchor={dateChip} surface="solid" width={280} padding={12} label="Custom date range">
   <form class="range" onsubmit={applyRange}>
@@ -233,6 +224,14 @@
     flex-wrap: wrap;
     align-items: center;
     gap: 6px;
+    min-width: 0;
+  }
+  .places,
+  .pickers {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 14px;
     min-width: 0;
   }
   .value {

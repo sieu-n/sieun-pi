@@ -8,7 +8,7 @@ const mod = process.platform === "darwin" ? "Meta" : "Control";
 
 const palette = (page: Page) => page.locator("[data-search-palette]");
 const field = (page: Page) => palette(page).getByRole("combobox");
-const groupNames = (page: Page) => palette(page).locator("[role=group]").evaluateAll(groups => groups.map(g => g.getAttribute("aria-label")));
+const groupNames = (page: Page) => palette(page).locator("[role=group]:not([data-search-places])").evaluateAll(groups => groups.map(g => g.getAttribute("aria-label")));
 const count = (page: Page) => palette(page).getByTestId("search-count");
 const chips = (page: Page) => palette(page).locator("[data-search-filters]");
 

@@ -93,19 +93,19 @@ test("the same filter chips as Cmd K narrow the results through the address, and
 
   await filters(page).getByRole("button", { name: "Remove the From filter" }).click();
   await expect(page).not.toHaveURL(/from=/);
-  await filters(page).getByRole("button", { name: "Where" }).click();
-  await page.getByRole("menuitemcheckbox", { name: /Inside work/ }).click();
-  await expect(page).toHaveURL(/where=tool/);
-  await page.keyboard.press("Escape");
-  const tools = await search(page, { q: "relay", where: "tool" });
-  expect(tools.total).toBeGreaterThan(0);
-  await expect(count(page)).toHaveText(results(tools.total));
-  await expect(filters(page).locator("[data-chip=where]")).toHaveText("Inside work");
+  const jobsPill = filters(page).locator("[data-search-places]").getByRole("button", { name: "Jobs" });
+  await expect(jobsPill).toHaveAttribute("aria-pressed", "false");
+  await jobsPill.click();
+  await expect(page).toHaveURL(/place=jobs/);
+  await expect(jobsPill).toHaveAttribute("aria-pressed", "true");
+  const jobs = await search(page, { q: "relay", place: "jobs" });
+  expect(jobs.total).toBeGreaterThan(0);
+  await expect(count(page)).toHaveText(results(jobs.total));
   await expect(cards(page).first()).toBeVisible();
   for (const where of await cards(page).locator("[data-hit-place]").evaluateAll(list => list.map(place => place.getAttribute("data-where")))) expect(where).toBe("tool");
 
   await page.goBack();
-  await expect(page).not.toHaveURL(/where=/);
+  await expect(page).not.toHaveURL(/place=/);
   await expect(count(page)).toHaveText(results(all.total));
   await page.goBack();
   await expect(page).toHaveURL(/from=owner/);
