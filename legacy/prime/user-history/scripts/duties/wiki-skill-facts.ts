@@ -2,20 +2,22 @@ import { spawn } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join, posix, relative } from "node:path";
-import { pathToFileURL } from "node:url";
+import { dirname, join, posix, relative } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { isSettledStatus } from "../../../../../apps/wiki/scripts/read-cap.mjs";
 import { wikiContentDir } from "../../src/chat-wiki.ts";
+import { piCheckout } from "./wiki-dream.ts";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 
 /**
  * The Wiki and skill facts duty's precheck (`node --import tsx scripts/duties/wiki-skill-facts.ts`), for the knowledge manager's ask "make llm-wiki
- * info and, skills always up to date" (2026-11-20). It lists each curated wiki page (apps/, domains/) and each repo skill (auto-sns-agent
- * `.agents/skills/**.md` and `.claude/rules/app-*.md`) that names a code fact which auto-sns-agent commits took away after the doc's own date.
+ * info and, skills always up to date" (2026-11-20). It lists each curated wiki page (apps/, domains/, projects/) and each repo skill (auto-sns-agent
+ * `.agents/skills/**.md` and `.claude/rules/app-*.md`) that names a code fact which auto-sns-agent commits took away after the doc's own date, and
+ * each Prime agent skill whose source is in sieun-pi (`isPrimeSkillFile`) that names a code fact which sieun-pi commits took away after its own.
  * A fact is read from the doc's code spans: a repo path, a `file::name` definition, an env or constant name, a `pnpm <script>` and a `--flag`
  * of a script the span runs. A fact counts when it held at the doc's date and does not hold at HEAD, so a placeholder or an example that never
  * existed never counts. A page's date is its `updated` (or `last_verified`, the newer), a bare day read from 00:00 KST, and a skill's is the
- * first-parent commit that last touched it. A sentence that says a thing was removed, renamed or replaced is history and is not read, and so are
+ * first-parent commit of its own repo that last touched it. A sentence that says a thing was removed, renamed or replaced is history and is not read, and so are
  * experiment, incident and postmortem pages and the skills a vendor wrote (`vendorSkillDirs`).
  * The Wiki dream duty (wiki-dream.ts) already counts a page whose `<code>` path under apps, convex, packages, scripts or ops is missing, and every
  * `source_refs` change, so a page's path facts under those folders are left to it. A file that only changed counts in info `docs_with_changed_files`
@@ -33,7 +35,7 @@ const NAME = /^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/;
 const SCRIPT_FILE = /\.(?:mjs|cjs|js|ts|py|sh)$/;
 const PNPM = /\bpnpm\s+(?:(?:-C|--dir|--filter|-F)\s+(\S+)\s+)?(?:run\s+)?([a-z][\w:.-]*)/g;
 
-export type DocKind = "page" | "skill";
+export type DocKind = "page" | "skill" | "prime_skill";
 export type Fact =
   | { kind: "path"; ref: string }
   | { kind: "symbol"; ref: string; file: string; name: string }
@@ -47,9 +49,11 @@ export interface Drift { fact: Fact; detail: string }
 export type Run = (file: string, args: readonly string[], options: { cwd: string; input?: string; okCodes?: number[] }) => Promise<Buffer>;
 export interface FactsDeps {
   run: Run;
-  /** The auto-sns-agent checkout whose HEAD the facts are judged at. */
+  /** The auto-sns-agent checkout whose HEAD the pages' and repo skills' facts are judged at. */
   repo: string;
-  /** The wiki content root; its apps/ and domains/ pages are read from disk, where the page API writes. */
+  /** The sieun-pi checkout whose HEAD the Prime skills' facts are judged at. */
+  piRepo: string;
+  /** The wiki content root; its apps/, domains/ and projects/ pages are read from disk, where the page API writes. */
   content: string;
   readText: (path: string) => Promise<string>;
   /** The curated page paths under `content`, relative to it. */
@@ -147,7 +151,7 @@ export function docApps(kind: DocKind, path: string, header: Record<string, unkn
 /** The repo paths a cited path may name: itself, under each of the doc's apps, and for a skill under its own folder. */
 export function candidates(doc: Pick<Doc, "kind" | "path" | "apps">, ref: string): string[] {
   const out = [ref, ...doc.apps.filter(() => !ref.startsWith("apps/")).map(app => `apps/${app}/${ref}`)];
-  if (doc.kind === "skill") out.push(posix.normalize(posix.join(posix.dirname(doc.path), ref)));
+  if (doc.kind !== "page") out.push(posix.normalize(posix.join(posix.dirname(doc.path), ref)));
   return [...new Set(out)];
 }
 
@@ -257,10 +261,10 @@ export async function judgeDocs(docs: readonly Doc[], revOf: (doc: Doc) => strin
 /** Whether a page fact is the Wiki dream's to count: a path under the folders its stale check reads. */
 export const dreamOwns = (doc: Pick<Doc, "kind">, fact: Fact): boolean => doc.kind === "page" && fact.kind === "path" && DREAM_PREFIX.test(fact.ref);
 
-/** The curated pages under `content/apps` and `content/domains`, with no dot, data or assets folder, as wiki-health.mjs walks them. */
+/** The curated pages under `content/apps`, `content/domains` and `content/projects`, with no dot, data or assets folder, as wiki-health.mjs walks them. */
 export async function listCuratedPages(content: string): Promise<string[]> {
   const files: string[] = [];
-  for (const space of ["apps", "domains"]) {
+  for (const space of ["apps", "domains", "projects"]) {
     const entries = await readdir(join(content, space), { recursive: true, withFileTypes: true });
     for (const entry of entries) {
       if (!entry.isFile() || !entry.name.endsWith(".html") || entry.name.startsWith(".")) continue;
@@ -288,44 +292,60 @@ export function vendorSkillDirs(skills: ReadonlyMap<string, string>): string[] {
 }
 
 const isSkillFile = (path: string): boolean => (path.startsWith(".agents/skills/") && path.endsWith(".md")) || /^\.claude\/rules\/app-[^/]+\.md$/.test(path);
+/**
+ * A Prime agent skill's markdown in sieun-pi: under a skill folder of skills/ or legacy/prime/skills/, which ~/.prime/agent/skills links to, or
+ * of a package's skills/ (pi-rlm, pi-harness, pi-host), which Prime ships; a test fixture is no skill.
+ */
+export const isPrimeSkillFile = (path: string): boolean =>
+  path.endsWith(".md") && /^(?:skills|legacy\/prime\/skills|packages\/[^/]+\/skills)\/[^/]+\//.test(path) && !/\/(?:tests?|fixtures)\//.test(path);
 
-/** Measures every page and skill and builds the precheck output; an input that fails adds a source_error item and 999999 for the headline. */
+/** Measures every page, repo skill and Prime skill and builds the precheck output; an input that fails adds a source_error item and 999999 for the headline. */
 export async function measureFacts(deps: FactsDeps): Promise<PrecheckOutput & { info: Record<string, number> }> {
   const errors: FlaggedSlice[] = [];
   const fail = (source: string, error: unknown): undefined => {
     errors.push({ kind: "source_error", item: source, excerpt: clip(`${source}: ${error instanceof Error ? error.message : String(error)}`) });
     return undefined;
   };
-  const git = (args: readonly string[], input?: string, okCodes?: number[]) => deps.run("git", ["-C", deps.repo, ...args], { cwd: deps.repo, ...input === undefined ? {} : { input }, ...okCodes ? { okCodes } : {} });
-  const catFile = async (names: readonly string[], mode: "--batch" | "--batch-check" | "--batch-check=%(objectname)"): Promise<Map<string, string | null>> => {
-    if (!names.length) return new Map();
-    const out = await git(["cat-file", mode], names.join("\n") + "\n");
-    if (mode !== "--batch-check=%(objectname)") return parseCatFile(out, names, mode === "--batch");
-    const lines = out.toString("utf8").split("\n");
-    return new Map(names.map((name, index) => [name, /^[0-9a-f]+$/.test(lines[index] ?? "") ? lines[index]! : null]));
-  };
-
-  const commits = await git(["log", "--first-parent", "--format=%H %ct", "HEAD"]).then(out => parseCommits(out.toString("utf8"))).catch(error => fail("git log", error));
-  const skillPaths = await git(["ls-tree", "-r", "--name-only", "HEAD", "--", ".agents/skills", ".claude/rules"])
-    .then(out => out.toString("utf8").split("\n").filter(isSkillFile)).catch(error => fail("git ls-tree skills", error));
-  const pagePaths = await deps.listPages().catch(error => fail("wiki pages", error));
-
-  const docs: Doc[] = [];
-  const revs = new Map<Doc, string>();
   let skipped = 0;
-  if (skillPaths) {
-    const texts = await catFile(skillPaths.map(path => `HEAD:${path}`), "--batch").catch(error => fail("git cat-file skills", error));
-    const vendor = vendorSkillDirs(new Map(skillPaths.map(path => [path, texts?.get(`HEAD:${path}`) ?? ""])));
-    for (const path of skillPaths) {
-      const text = texts?.get(`HEAD:${path}`);
+
+  /** One checkout's docs, each with the commit its facts are judged at; `broken` when a read the judge needs failed. */
+  const source = (repo: string, label: string) => {
+    const git = (args: readonly string[], input?: string, okCodes?: number[]) => deps.run("git", ["-C", repo, ...args], { cwd: repo, ...input === undefined ? {} : { input }, ...okCodes ? { okCodes } : {} });
+    const catFile = async (names: readonly string[], mode: "--batch" | "--batch-check" | "--batch-check=%(objectname)"): Promise<Map<string, string | null>> => {
+      if (!names.length) return new Map();
+      const out = await git(["cat-file", mode], names.join("\n") + "\n");
+      if (mode !== "--batch-check=%(objectname)") return parseCatFile(out, names, mode === "--batch");
+      const lines = out.toString("utf8").split("\n");
+      return new Map(names.map((name, index) => [name, /^[0-9a-f]+$/.test(lines[index] ?? "") ? lines[index]! : null]));
+    };
+    return { repo, label, git, catFile, docs: [] as Doc[], revs: new Map<Doc, string>(), broken: false };
+  };
+  type Source = ReturnType<typeof source>;
+
+  const readSkills = async (from: Source, kind: "skill" | "prime_skill", roots: string[], keep: (path: string) => boolean): Promise<void> => {
+    const paths = await from.git(["ls-tree", "-r", "--name-only", "HEAD", "--", ...roots])
+      .then(out => out.toString("utf8").split("\n").filter(keep)).catch(error => fail(`${from.label} git ls-tree skills`, error));
+    const texts = paths && await from.catFile(paths.map(path => `HEAD:${path}`), "--batch").catch(error => fail(`${from.label} git cat-file skills`, error));
+    if (!paths || !texts) { from.broken = true; return; }
+    const vendor = vendorSkillDirs(new Map(paths.map(path => [path, texts.get(`HEAD:${path}`) ?? ""])));
+    for (const path of paths) {
+      const text = texts.get(`HEAD:${path}`);
       if (!text) continue;
       if (vendor.some(dir => path.startsWith(dir))) { skipped += 1; continue; }
-      const last = await git(["log", "-1", "--first-parent", "--format=%H %ct", "HEAD", "--", path]).then(out => parseCommits(out.toString("utf8"))[0]).catch(error => fail(`git log ${path}`, error));
+      const last = await from.git(["log", "-1", "--first-parent", "--format=%H %ct", "HEAD", "--", path]).then(out => parseCommits(out.toString("utf8"))[0])
+        .catch(error => fail(`${from.label} git log ${path}`, error));
       if (!last) continue;
-      const doc: Doc = { kind: "skill", path, at: last.at, apps: docApps("skill", path), facts: readFacts("skill", text) };
-      docs.push(doc); revs.set(doc, last.sha);
+      const doc: Doc = { kind, path, at: last.at, apps: docApps(kind, path), facts: readFacts(kind, text) };
+      from.docs.push(doc); from.revs.set(doc, last.sha);
     }
-  }
+  };
+
+  const auto = source(deps.repo, "auto-sns-agent"), pi = source(deps.piRepo, "sieun-pi");
+  const commits = await auto.git(["log", "--first-parent", "--format=%H %ct", "HEAD"]).then(out => parseCommits(out.toString("utf8"))).catch(error => fail("auto-sns-agent git log", error));
+  if (!commits) auto.broken = true;
+  await readSkills(auto, "skill", [".agents/skills", ".claude/rules"], isSkillFile);
+  await readSkills(pi, "prime_skill", ["skills", "legacy/prime/skills", "packages"], isPrimeSkillFile);
+  const pagePaths = await deps.listPages().catch(error => fail("wiki pages", error));
   for (const path of pagePaths ?? []) {
     const html = await deps.readText(join(deps.content, path)).catch(error => fail(`read ${path}`, error));
     if (html === undefined) continue;
@@ -336,43 +356,52 @@ export async function measureFacts(deps: FactsDeps): Promise<PrecheckOutput & { 
     if (!rev) { skipped += 1; continue; }
     const apps = docApps("page", path, header);
     const doc: Doc = { kind: "page", path, at, apps, facts: readFacts("page", html).filter(fact => !dreamOwns({ kind: "page" }, fact)) };
-    docs.push(doc); revs.set(doc, rev);
+    auto.docs.push(doc); auto.revs.set(doc, rev);
   }
 
-  const names = [...new Set(docs.flatMap(doc => doc.facts.filter(fact => fact.kind === "name").map(fact => fact.ref)))].sort();
-  // rg over the checkout reads HEAD plus other jobs' uncommitted edits, which can only keep a name present; git grep -f over a whole tree is
-  // refused by the repo guard (one with 1,117 names ran 63 min on 2026-10-24), and rg's one pass took 3 s for 1,300 names on 2026-11-20.
-  const namesAtHead = names.length ? await deps.run("rg", ["--hidden", "--no-filename", "--no-line-number", "-I", "-o", "-w", "-F", "-f", "-",
-    "--glob", "!.git", "--glob", "!*.md", "--glob", "!apps/llm-wiki/content", "."], { cwd: deps.repo, input: names.join("\n") + "\n", okCodes: [1] })
-    .then(out => new Set(out.toString("utf8").split("\n").filter(Boolean))).catch(error => fail("rg names", error)) : new Set<string>();
+  const judgeSource = async (from: Source): Promise<Awaited<ReturnType<typeof judgeDocs>> | undefined> => {
+    if (from.broken) return undefined;
+    const names = [...new Set(from.docs.flatMap(doc => doc.facts.filter(fact => fact.kind === "name").map(fact => fact.ref)))].sort();
+    // rg over the checkout reads HEAD plus other jobs' uncommitted edits, which can only keep a name present; git grep -f over a whole tree is
+    // refused by the repo guard (one with 1,117 names ran 63 min on 2026-10-24), and rg's one pass took 3 s for 1,300 names on 2026-11-20.
+    const namesAtHead = names.length ? await deps.run("rg", ["--hidden", "--no-filename", "--no-line-number", "-I", "-o", "-w", "-F", "-f", "-",
+      "--glob", "!.git", "--glob", "!*.md", "--glob", "!apps/llm-wiki/content", "."], { cwd: from.repo, input: names.join("\n") + "\n", okCodes: [1] })
+      .then(out => new Set(out.toString("utf8").split("\n").filter(Boolean))).catch(error => fail(`${from.label} rg names`, error)) : new Set<string>();
+    if (!namesAtHead) return undefined;
+    return judgeDocs(from.docs, doc => from.revs.get(doc), {
+      objects: list => from.catFile(list, "--batch-check"),
+      blobs: list => from.catFile(list, "--batch-check=%(objectname)"),
+      contents: list => from.catFile(list, "--batch"),
+      namesAtHead,
+      namesAt: (rev, list) => from.git(["grep", "-I", "-o", "-h", "-w", "-F", ...list.flatMap(name => ["-e", name]), rev, "--", ".", ":!*.md", ":!apps/llm-wiki/content"], undefined, [1])
+        .then(out => new Set(out.toString("utf8").split("\n").map(line => line.replace(/^[^:]*:/, "")).filter(Boolean))),
+    }).catch(error => fail(`${from.label} judge`, error));
+  };
+  const autoJudged = await judgeSource(auto);
+  const piJudged = await judgeSource(pi);
 
-  const judged = commits && namesAtHead && !errors.some(slice => /^git (?:cat-file|ls-tree)/.test(slice.item ?? "")) ? await judgeDocs(docs, doc => revs.get(doc), {
-    objects: list => catFile(list, "--batch-check"),
-    blobs: list => catFile(list, "--batch-check=%(objectname)"),
-    contents: list => catFile(list, "--batch"),
-    namesAtHead,
-    namesAt: (rev, list) => git(["grep", "-I", "-o", "-h", "-w", "-F", ...list.flatMap(name => ["-e", name]), rev, "--", ".", ":!*.md", ":!apps/llm-wiki/content"], undefined, [1])
-      .then(out => new Set(out.toString("utf8").split("\n").map(line => line.replace(/^[^:]*:/, "")).filter(Boolean))),
-  }).catch(error => fail("judge", error)) : undefined;
-
-  const stale = judged ? [...judged.drifts.entries()] : [];
-  const pages = stale.filter(([doc]) => doc.kind === "page").length;
-  const skills = stale.filter(([doc]) => doc.kind === "skill").length;
+  const docs = [...auto.docs, ...pi.docs];
+  const stale = [...autoJudged?.drifts ?? [], ...piJudged?.drifts ?? []];
+  const count = (kind: DocKind): number => stale.filter(([doc]) => doc.kind === kind).length;
+  const measured = autoJudged !== undefined && piJudged !== undefined;
   const metrics: Record<string, number> = {
-    docs_with_stale_facts: judged ? pages + skills : UNMEASURED,
-    pages_with_stale_facts: judged ? pages : UNMEASURED,
-    skills_with_stale_facts: judged ? skills : UNMEASURED,
+    docs_with_stale_facts: measured ? stale.length : UNMEASURED,
+    pages_with_stale_facts: autoJudged ? count("page") : UNMEASURED,
+    skills_with_stale_facts: autoJudged ? count("skill") : UNMEASURED,
+    prime_skills_with_stale_facts: piJudged ? count("prime_skill") : UNMEASURED,
     source_errors: errors.length,
   };
   const info: Record<string, number> = {
-    pages_read: docs.filter(doc => doc.kind === "page").length, skills_read: docs.filter(doc => doc.kind === "skill").length, docs_skipped: skipped,
+    pages_read: docs.filter(doc => doc.kind === "page").length, skills_read: docs.filter(doc => doc.kind === "skill").length,
+    prime_skills_read: docs.filter(doc => doc.kind === "prime_skill").length, docs_skipped: skipped,
     facts_read: docs.reduce((sum, doc) => sum + doc.facts.length, 0), stale_facts: stale.reduce((sum, [, list]) => sum + list.length, 0),
-    docs_with_changed_files: judged ? judged.changed.size : UNMEASURED,
+    docs_with_changed_files: measured ? autoJudged.changed.size + piJudged.changed.size : UNMEASURED,
   };
-  const order = (doc: Doc): number => doc.kind === "skill" ? 0 : 1;
+  const order = (doc: Doc): number => doc.kind === "page" ? 1 : 0;
+  const label = { page: "page", skill: "skill", prime_skill: "Prime skill" } as const;
   const flagged: FlaggedSlice[] = [...errors, ...stale.sort(([a], [b]) => order(a) - order(b) || a.at - b.at).map(([doc, list]): FlaggedSlice => ({
-    kind: doc.kind === "page" ? "stale_page" : "stale_skill", item: doc.path, handOff: true, sig: String(doc.at),
-    excerpt: clip(`${doc.kind === "page" ? "page" : "skill"} dated ${day(doc.at)}: ${list.map(drift => drift.detail).join("; ")}`, 600),
+    kind: `stale_${doc.kind}`, item: doc.kind === "prime_skill" ? `sieun-pi:${doc.path}` : doc.path, handOff: true, sig: String(doc.at),
+    excerpt: clip(`${label[doc.kind]} dated ${day(doc.at)}: ${list.map(drift => drift.detail).join("; ")}`, 600),
   }))];
   return { metrics, flagged, info };
 }
@@ -396,7 +425,7 @@ async function main(): Promise<void> {
   if (!output) { process.stderr.write("wiki-skill-facts: OUTPUT_FILE is not set\n"); process.exit(2); }
   const content = wikiContentDir();
   const result = await measureFacts({
-    run: runNoShell, repo: process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto-sns-agent"), content,
+    run: runNoShell, repo: process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto-sns-agent"), piRepo: piCheckout(dirname(fileURLToPath(import.meta.url))), content,
     readText: path => readFile(path, "utf8"), listPages: () => listCuratedPages(content),
   });
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");

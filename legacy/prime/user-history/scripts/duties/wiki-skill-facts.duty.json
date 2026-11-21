@@ -1,7 +1,7 @@
 {
   "name": "Wiki and skill facts",
   "ownerWords": "knowledge manager (make llm-wiki info and, skills always up to date)",
-  "goal": "Every curated wiki page (apps/, domains/) and every repo skill (.agents/skills, .claude/rules/app-*.md) names only code facts that still hold: no repo path, file::name, env or constant name, pnpm script or script flag it cites was taken away by an auto-sns-agent commit after the page's updated date or the skill's last commit. The target is 0 because the owner asked for them 'always up to date'. Missing page paths under apps, convex, packages, scripts and ops stay with the Wiki dream duty. The first run on 2026-11-20 took 179 s on us-metal02 under load, so the soft target is 600 s.",
+  "goal": "Every curated wiki page (apps/, domains/, projects/) and every repo skill (.agents/skills, .claude/rules/app-*.md) names only code facts that still hold: no repo path, file::name, env or constant name, pnpm script or script flag it cites was taken away by an auto-sns-agent commit after the page's updated date or the skill's last commit. Every Prime agent skill whose source is in sieun-pi (skills/, legacy/prime/skills/, packages/*/skills/) holds the same against sieun-pi's commits after its last commit. The target is 0 because the owner asked for them 'always up to date'. Missing page paths under apps, convex, packages, scripts and ops stay with the Wiki dream duty. The first run on 2026-11-20 took 179 s on us-metal02 under load, so the soft target is 600 s.",
   "metrics": [
     {
       "key": "docs_with_stale_facts",
@@ -18,7 +18,13 @@
     },
     {
       "key": "skills_with_stale_facts",
-      "label": "Skills that name a code fact a later commit took away",
+      "label": "Repo skills that name a code fact a later commit took away",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "prime_skills_with_stale_facts",
+      "label": "Prime skills that name a sieun-pi code fact a later commit took away",
       "op": "<=",
       "target": 0
     },
@@ -39,5 +45,5 @@
     "cwd": "../..",
     "timeoutMs": 600000
   },
-  "onMiss": "Fix every flagged page and skill this run, one subagent per page or skill, until docs_with_stale_facts is 0. Each subagent reads the flagged facts, finds the commit that took each one away in ~/Documents/Github/auto-sns-agent, reads the code at HEAD and rewrites the doc so every fact it states is true now. A page changes only through the wiki page API (the sieun-pi wiki module, wiki.write), with its updated date bumped. A skill or app rule changes by a commit with `node scripts/repo/agent/commit.mjs -m \"docs(skills): ...\" <files>` from that checkout, read first with `node scripts/skills/read-skill.mjs <skill>`; never push dev/sieun. Then rerun the precheck (scripts/duties/wiki-skill-facts.ts in sieun-pi legacy/prime/user-history) and go again. A false count, such as a fact the doc names as history or a vendor's setting, gets a fix in wiki-skill-facts.ts with a case in test/duty-wiki-skill-facts.test.ts. Report the count before and after with the pages and commits; a quiet day sends nothing."
+  "onMiss": "Fix every flagged page and skill this run, one subagent per page or skill, until docs_with_stale_facts is 0. Each subagent reads the flagged facts, finds the commit that took each one away, reads the code at HEAD and rewrites the doc so every fact it states is true now. A page changes only through the wiki page API (the sieun-pi wiki module, wiki.write), with its updated date bumped. A repo skill or app rule changes by a commit in ~/Documents/Github/auto-sns-agent with `node scripts/repo/agent/commit.mjs -m \"docs(skills): ...\" <files>`, read first with `node scripts/skills/read-skill.mjs <skill>`; never push dev/sieun. A Prime skill (item `sieun-pi:<path>`) changes by a sieun-pi commit in ~/src/sieun-pi, as the refine-harness skill says for a SKILL.md edit: commit only that skill's files, push main, and end the change with its blind fresh-session check, where a fresh session given a task the skill covers acts on the fixed fact. Then rerun the precheck (scripts/duties/wiki-skill-facts.ts in sieun-pi legacy/prime/user-history) and go again. A false count, such as a fact the doc names as history or a vendor's setting, gets a fix in wiki-skill-facts.ts with a case in test/duty-wiki-skill-facts.test.ts. Report the count before and after with the pages and commits; a quiet day sends nothing."
 }
