@@ -10,7 +10,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
-import type { ConversationHeader, Item, Room, Sidebar, TimelinePage } from "../../web/src/lib/api/types.ts";
+import type { ConversationHeader, Item, LiveEvent, Room, Sidebar, TimelinePage } from "../../web/src/lib/api/types.ts";
 import { MAX_HOPS } from "../../server/group-rooms.ts";
 import { FIXTURE_AGENTS as agents, FIXTURE_IDS as ids, seedFixture } from "../../server/fixture/seed.ts";
 import { FixtureHost } from "../../server/host/fixture.ts";
@@ -260,6 +260,26 @@ describe("a channel on rooms", () => {
     assert.equal(answerOf(first.body.item.id), a1!.id);
     assert.equal(answerOf(second.body.item.id), a2!.id);
     assert.equal(thread.items.find(i => i.id === a2!.id)!.answers, second.body.item.id, "the page gets the post it answers");
+    host.beforeSubmit = undefined;
+  });
+
+  test("an answer's live event carries the post it answers, whose delivery now reads as answered", async () => {
+    const submits: { thread: string; input: SubmitInput }[] = [];
+    host.beforeSubmit = (thread, input) => void submits.push({ thread, input });
+    const live = await s.live();
+    live.watch(ids.cutoverChannel);
+    const root = await s.send("POST", `/api/c/${ids.cutoverChannel}/send`, { text: "quiet answer event root", requestId: "ev-root" });
+    const comm = commOf(s, agents.crawler, ids.cutoverChannel)!;
+    const toComm = () => submits.filter(x => x.thread === comm).length;
+    await until(async () => toComm(), n => n === 1);
+    const asked = await s.send("POST", `/api/c/${ids.cutoverChannel}/send`, { text: "quiet, which port?", threadRoot: root.body.item.id, requestId: "ev-asked" });
+    await until(async () => toComm(), n => n === 2);
+    told(host, comm, "ev-a", "the new one, quiet.");
+    await s.app.groups.feed(comm);
+    const answered = (event: LiveEvent) => event.type === "items" && event.conversation === ids.cutoverChannel &&
+      event.items.some(item => item.id === asked.body.item.id && item.kind === "message" && item.deliveries.some(d => d.target === agents.crawler && d.state === "answered"));
+    await live.waitFor(answered, 5_000);
+    live.close();
     host.beforeSubmit = undefined;
   });
 

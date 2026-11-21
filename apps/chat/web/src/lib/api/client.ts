@@ -150,7 +150,8 @@ export function reportNotDelivered(conversation: ConversationId, status: number,
  * The lane that every read ahead (`Wait.background` "ahead") and every refresh behind a shown page ("shown") goes through, so neither
  * delays a call the owner waits on. On 11-21 at 06:30 KST his page fired about 90 reads ahead at each load, and his POST /read, a 4 ms
  * handler, waited 1.1 to 4.7 s behind them, his GET /api/later up to 1.2 s (d2 findings, requests/2026-11-20.jsonl). While a call he
- * waits on is on its way, the lane starts nothing, and it stops the calls on their way and sends them again once his calls end. Refreshes
+ * waits on is on its way, the lane starts nothing but the refresh of the page he opened, and it stops the other calls on their way and
+ * sends them again once his calls end. Refreshes
  * go before reads ahead and stop the reads ahead on their way; a read ahead goes only when no refresh is on its way, what he looks at now
  * (`Wait.first`) before the rest, and at most `AHEAD_LANE` at once. Every call in the lane goes at fetch priority low.
  *
@@ -178,18 +179,22 @@ const flying = new Set<Ticket>();
 let busy = 0;
 
 const refresh = (ticket: Ticket): boolean => ticket.wait.background === "shown";
+/** The refresh of the room or thread he opened (`Wait.first`), which is as much his as the calls he waits on. */
+const pageRefresh = (ticket: Ticket): boolean => refresh(ticket) && !!ticket.wait.first;
 
 /**
- * The queued call to send next, or -1. The refresh of the page he looks at (`Wait.first`) goes first, the other refreshes, such as a
- * panel's, once it ended, and a read ahead once no refresh is on its way and the lane has room. On 11-21 in the walk of
- * lane-summary.md, a board refresh (42 KB) sent beside the room's refresh was still arriving when the room's read mark went 26 ms after
- * the room's answer, and held the mark 375 ms.
+ * The queued call to send next, or -1. The refresh of the page he looks at goes first, also while one of his calls is on its way, the
+ * other refreshes, such as a panel's, once it ended and none of his calls is on its way, and a read ahead once no refresh is on its way and
+ * the lane has room. On 11-21 in the walk of lane-summary.md, a board refresh (42 KB) sent beside the room's refresh was still arriving
+ * when the room's read mark went 26 ms after the room's answer, and held the mark 375 ms. On 11-21 at 21:47 UTC the refresh of the work
+ * thread he opened waited 218 ms behind the Hosts page's 2 s poll of GET /api/hosts and then changed the screen, a wait of 431 ms where
+ * the network took 213 (requests/2026-11-21.jsonl).
  */
 function next(): number {
   const sent = [...flying];
-  const page = queued.findIndex(ticket => refresh(ticket) && ticket.wait.first);
+  const page = queued.findIndex(pageRefresh);
   if (page >= 0) return page;
-  if (expected || sent.some(ticket => refresh(ticket) && ticket.wait.first)) return -1;
+  if (busy || expected || sent.some(pageRefresh)) return -1;
   const shown = queued.findIndex(refresh);
   if (shown >= 0 || !queued.length) return shown;
   if (sent.some(refresh) || sent.length >= AHEAD_LANE) return -1;
@@ -232,7 +237,7 @@ function pump(): void {
 }
 
 function drain(): void {
-  for (let at = busy ? -1 : next(); at >= 0; at = next()) {
+  for (let at = next(); at >= 0; at = next()) {
     const [ticket] = queued.splice(at, 1);
     if (refresh(ticket!)) stop(ticket => !refresh(ticket));
     const controller = new AbortController();
@@ -264,7 +269,7 @@ function settle(ticket: Ticket): void {
 
 async function waited<T>(send: () => Promise<T>): Promise<T> {
   busy += 1;
-  stop(() => true);
+  stop(ticket => !pageRefresh(ticket));
   try {
     return await send();
   } finally {
@@ -318,7 +323,7 @@ export function takeOver(wait: Wait, background: Wait["background"]): void {
     ticket.state = { kind: "taken" };
     busy += 1;
   }
-  stop(() => true);
+  stop(ticket => !pageRefresh(ticket));
   for (const ticket of unsent) ticket.send(undefined);
 }
 
@@ -350,7 +355,7 @@ async function send<T>(method: string, path: string, body: unknown, signal: Abor
       headers: body === undefined ? {} : { "content-type": blob ? body.type || "application/octet-stream" : "application/json" },
       ...(body === undefined ? {} : { body: blob ? body : JSON.stringify(body) }),
       ...(signal ? { signal } : {}),
-      ...(wait?.background && method === "GET" ? { priority: "low" as const } : {}),
+      ...(wait?.background && method === "GET" && !(wait.background === "shown" && wait.first) ? { priority: "low" as const } : {}),
     });
     text = await response.text();
   } catch (error) {

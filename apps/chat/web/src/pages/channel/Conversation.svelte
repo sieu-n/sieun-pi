@@ -210,7 +210,7 @@
   }
 
   function openThread(key: string) {
-    if (key !== threadParam) prefetchThread(isPostThread(key) ? id : null, key);
+    if (key !== threadParam) prefetchThread(isPostThread(key) ? id : null, key, store.items.find((item) => item.id === key));
     router.setParams({ thread: key, board: null });
   }
 

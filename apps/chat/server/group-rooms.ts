@@ -810,11 +810,18 @@ export class GroupRooms {
 
   // Reading
 
-  /** Sends the posts, with the roots of the replies among them, to the room's watchers, and the room's row to the sidebar. */
+  /**
+   * Sends the posts, with the roots of the replies among them and the posts they answer, to the room's watchers, and the room's row to the
+   * sidebar. A post's delivery reads as answered once its answer exists (`publicDelivery`), so the asked post changes with its answer: on
+   * 11-21 a thread the page kept without that change showed the delivery as delivered until its open's read brought "answered".
+   */
   emit(row: GroupRoom, posts: RoomPost[]): void {
     const all = this.store.postsOf(row.id);
     const ids = new Set(posts.map(p => p.id));
-    for (const post of posts) if (post.threadRoot && !ids.has(post.threadRoot)) ids.add(post.threadRoot);
+    for (const post of posts) {
+      if (post.threadRoot) ids.add(post.threadRoot);
+      if (post.answers) ids.add(post.answers);
+    }
     const items = all.filter(p => ids.has(p.id)).map(p => this.item(row, p, all));
     this.deps.events.items(row.id, items);
     this.deps.events.conversations([this.summary(row)]);

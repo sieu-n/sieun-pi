@@ -388,10 +388,12 @@ class Global {
         case "agent":
           this.agents = upsert(this.agents, event.agent);
           boardsAhead(this.agents);
+          roomsAhead();
           break;
         case "agent_removed":
           this.agents = this.agents.filter(a => a.id !== event.id);
           boardsAhead(this.agents);
+          roomsAhead();
           break;
         case "job":
           this.jobs = upsert(this.jobs, event.job);
@@ -653,8 +655,9 @@ const readTimeline = async (id: ConversationId, around?: string, wait?: Wait, li
  * to 306 ms, for each room past the 20th (work/p107-opens/before-f8cf70a.json).
  */
 const ROOMS_AHEAD = 40;
+const WORK_AHEAD = 20;
 const JOBS_AHEAD = 20;
-const timelinePages = new PageCache<TimelineRead, TimelineShown>("timeline", ROOMS_AHEAD + JOBS_AHEAD);
+const timelinePages = new PageCache<TimelineRead, TimelineShown>("timeline", ROOMS_AHEAD + WORK_AHEAD + JOBS_AHEAD);
 
 /** A channel thread reply that shows only in its thread, not one also sent to the channel. */
 const threadOnly = (item: Item): boolean => item.kind === "message" && !!item.threadRoot && !item.alsoInChannel;
@@ -679,7 +682,14 @@ type RepliesShown = { root: Item | null; items: Item[] };
  */
 const aroundPages = new PageCache<TimelineRead, TimelineShown>("around", 40, false);
 const aroundKey = (id: ConversationId, message: string) => `${id}\u0000${message}`;
-const repliesPages = new PageCache<RepliesRead, RepliesShown>("replies", 20);
+/**
+ * How many threads of each room are read ahead, the newest first, and how many threads the cache keeps in all. With one cache of 20 for
+ * every room, on 11-21 at 21:33 UTC the 18 threads of #sw-factory-build that its open read pushed out the threads of the room he opened
+ * next, whose p34 then waited 208 ms (requests/2026-11-21.jsonl). The newest 20 threads of each of his 22 rooms came to 38 threads and
+ * 224 KB of JSON that evening, 4.1 KB at the median, so 200 kept threads hold about 1 MB.
+ */
+const THREADS_AHEAD = 20;
+const repliesPages = new PageCache<RepliesRead, RepliesShown>("replies", 200);
 
 /** Brings back the pages the last page load kept, before the first view mounts (main.ts). */
 export async function restorePages(): Promise<void> {
@@ -694,9 +704,14 @@ const repliesKey = (channel: ConversationId, root: string) => `${channel}\u0000$
  * Starts reading a side thread on the click that opens it, so the read runs while the router, the side panel and the pane mount: a
  * channel post's replies with `channel`, else the job's or thread's newest page and header.
  */
-export function prefetchThread(channel: ConversationId | null, key: string): void {
+export function prefetchThread(channel: ConversationId | null, key: string, root?: Item): void {
   if (channel) {
-    if (!repliesPages.has(repliesKey(channel, key))) repliesPages.prefetch(repliesKey(channel, key), () => api.replies(channel, key));
+    const thread = repliesKey(channel, key);
+    if (repliesPages.has(thread)) return;
+    // A post with no replies yet opens its thread with the root alone, which is all its read would bring: on 11-21 his first replies to
+    // three posts each waited one round trip, 207 to 216 ms, for an empty thread (requests/2026-11-21.jsonl).
+    if (root?.kind === "message" && !root.thread?.replies) repliesPages.remember(thread, { root, items: [] });
+    else repliesPages.prefetch(thread, () => api.replies(channel, key));
   } else if (!timelinePages.has(key)) timelinePages.prefetch(key, () => readTimeline(key));
 }
 
@@ -813,19 +828,29 @@ function boardsAhead(agents: readonly AgentSummary[] = global.agents): void {
   panelsAhead("boards", [...chats, ...homes].slice(0, BOARDS_AHEAD).map(chat => ({ ...chat, reads: boardReads(chat.id) })));
 }
 
-/** The sidebar's rooms: unread ones first, then the newest, `ROOMS_AHEAD` of them. */
+/**
+ * The sidebar's rooms, unread ones first, then the newest, `ROOMS_AHEAD` of them, and after them the work threads of the chat agents, the
+ * one that worked last first. No list read a work thread ahead, so on 11-21 each of his 5 opens of one waited 267 to 516 ms
+ * (requests/2026-11-21.jsonl); the agent factory's, at 7.7 KB as brotli the largest of 11, works nearly all day.
+ */
 const rooms = new ReadAhead(warmTimeline(), viewingTimeline);
-function roomsAhead(sidebar: Sidebar): void {
+function roomsAhead(sidebar: Sidebar | null = global.sidebar): void {
+  if (!sidebar) return;
   const unread = (room: ConversationSummary) => Number(room.unread > 0 || room.hasNew);
   const list = [...sidebar.solo, ...sidebar.channels, ...sidebar.dms]
-    .sort((a, b) => unread(b) - unread(a) || b.lastActivityAt - a.lastActivityAt).slice(0, ROOMS_AHEAD);
-  rooms.want(list.map(room => ({ id: room.id, at: room.lastActivityAt, working: room.status === "working" })));
-  followRooms(list.map(room => room.id));
+    .sort((a, b) => unread(b) - unread(a) || b.lastActivityAt - a.lastActivityAt).slice(0, ROOMS_AHEAD)
+    .map(room => ({ id: room.id, at: room.lastActivityAt, working: room.status === "working" }));
+  const work = global.agents.filter(agent => agent.kind === "chat" && !agent.archived && agent.conversation === 1)
+    .sort((a, b) => b.updatedAt - a.updatedAt).slice(0, WORK_AHEAD)
+    .map(agent => ({ id: agent.thread, at: agent.updatedAt, working: agent.status === "working" }));
+  const wanted = [...list, ...work.filter(thread => !list.some(room => room.id === thread.id))];
+  rooms.want(wanted);
+  followRooms(wanted.map(room => room.id));
 }
 
 /**
- * The sidebar rooms read ahead, each watched on the socket for as long as it is in that list, so the page kept for each one and for each
- * kept thread of a channel takes every post and reply as it lands, and an open shows them in the first frame. On 11-20 the owner's opens
+ * The sidebar rooms and work threads read ahead, each watched on the socket for as long as it is in that list, so the page kept for each
+ * one and for each kept thread of a channel takes every post and reply as it lands, and an open shows them in the first frame. On 11-20 the owner's opens
  * of rooms that got posts after the page last read them waited one round trip, 197 to 259 ms, for those posts (requests/2026-11-20.jsonl):
  * a room an agent works in is not read ahead again until it goes idle. A watch also brings the posts after the newest one the kept page
  * holds, so a page load catches up a kept room before it opens.
@@ -917,7 +942,7 @@ const warmedThreads = new Map<string, string>();
  * newest threads the cache keeps: the replies handler took 1.2 ms on 11-19, and on one HTTP/2 connection they share the round trip.
  */
 function warmReplies(channel: ConversationId, items: readonly Item[]): void {
-  const threads = items.filter(item => threadMark(item) !== undefined).slice(-repliesPages.keep);
+  const threads = items.filter(item => threadMark(item) !== undefined).slice(-THREADS_AHEAD);
   for (const item of threads) {
     const mark = threadMark(item)!;
     const key = repliesKey(channel, item.id);
@@ -1050,14 +1075,22 @@ export class Timeline {
       sawHeader(header);
       this.status = header.summary.status;
       this.queue = header.queue ?? null;
+      // The kept page may hold more than the read's page: the posts the socket brought since, or older pages he scrolled up to. Only an item
+      // inside the read's page that the read lacks is gone, and the older ones stay with the kept page's cursor. On 11-21 every open of
+      // dm_agent-factory after its agent posted counted its oldest kept post as gone and waited a round trip (work/p157-opens).
+      let older = page.older;
       if (last) {
         const kept = new Set(page.items.map(item => item.id));
-        const gone = new Set(last.items.map(item => item.id).filter(itemId => !kept.has(itemId)));
+        const oldest = page.items[0];
+        const joined = last.items.some(item => kept.has(item.id));
+        const above = (item: Item) => !!page.older && !!oldest && joined && byTime(item, oldest) < 0;
+        const gone = new Set(last.items.filter(item => !kept.has(item.id) && !above(item)).map(item => item.id));
+        if (last.items.some(above)) older = last.older;
         if (gone.size || brought(this.items, shownItems(this.id, page.items))) wait.background = undefined;
         this.items = this.items.filter(item => !gone.has(item.id));
       }
       this.upsert(page.items);
-      this.older = page.older;
+      this.older = older;
       this.focus = page.focus;
       this.stopWatch = live.watch(this.id, () => this.items.findLast(i => !isPending(i))?.id);
     } catch (error) {
