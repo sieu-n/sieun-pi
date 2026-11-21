@@ -27,7 +27,7 @@ test("the chart comes first, and its total, the figures and every token kind equ
   const data = await report(page, "7d", "&bucket=day");
   test.skip(!data.rows.length, "no usage in the last 7 days on this server");
   const total = sums(data.rows);
-  const exact = `$${total.cost.total.toFixed(4)}`;
+  const exact = `$${total.cost.total.toLocaleString("en-US", { minimumFractionDigits: 4, maximumFractionDigits: 4 })}`;
   await expect(page.getByTestId("usage-cost")).toHaveText(dollars(total.cost.total));
   await expect(page.getByTestId("usage-kind-total")).toContainText(`${whole(total.turns)} turn`);
   for (const kind of KINDS) {

@@ -129,7 +129,7 @@
     {/if}
   </div>
   {#key hovered}
-  <Popover open={hovered !== null && cursor !== null} anchor={cursor} placement="right-start" gap={12} autofocus={false} role="tooltip" padding={10} class="usage-tip" onclose={() => (hovered = null)}>
+  <Popover open={hovered !== null && cursor !== null} anchor={cursor} placement="right-start" gap={12} surface="solid" autofocus={false} role="tooltip" padding={10} class="usage-tip" onclose={() => (hovered = null)}>
     {#if hovered !== null && buckets[hovered]}
       {@const entry = buckets[hovered]!}
       {@const hit = tipHit(entry)}

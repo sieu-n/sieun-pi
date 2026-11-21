@@ -7,7 +7,8 @@ const whole = new Intl.NumberFormat("en-US");
 /** USD to the cent, and a nonzero amount under a cent as such. */
 export const cost = (usd: number): string => (usd > 0 && usd < 0.005 ? "<$0.01" : dollars.format(usd));
 /** USD to a hundredth of a cent, for a hover that must show what a cent hides. */
-export const exactCost = (usd: number): string => `$${usd.toFixed(4)}`;
+const exact = new Intl.NumberFormat("en-US", { minimumFractionDigits: 4, maximumFractionDigits: 4 });
+export const exactCost = (usd: number): string => `$${exact.format(usd)}`;
 export const percent = (share: number): string => `${Math.round(share * 100)}%`;
 /** A count in short form, 12.4M, with `noun` pluralized. */
 export function count(value: number, noun?: string): string {
