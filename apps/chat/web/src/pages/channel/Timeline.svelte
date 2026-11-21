@@ -1,6 +1,6 @@
 <script lang="ts">
   import { tick } from "svelte";
-  import type { Item, TurnPlace } from "$lib/api";
+  import { newestReply, type Item, type TurnPlace } from "$lib/api";
   import Avatar from "$lib/ui/Avatar.svelte";
   import Button from "$lib/ui/Button.svelte";
   import DayDivider from "$lib/ui/DayDivider.svelte";
@@ -88,7 +88,8 @@
 
   const lastKey = $derived.by(() => {
     const last = items.at(-1);
-    return last ? `${items.length}:${last.id}:${last.kind === "system" ? "" : last.text.length}:${last.kind === "turn" ? last.steps.length : 0}` : "";
+    // A new reply in a thread whose pill shows counts too, so a feed at its bottom reads it (Conversation `markRead`).
+    return last ? `${items.length}:${last.id}:${last.kind === "system" ? "" : last.text.length}:${last.kind === "turn" ? last.steps.length : 0}:${newestReply(items)}` : "";
   });
 
   /** A new row scrolls in the frame's own layout, which the rows' ResizeObserver also reads, rather than forcing a layout of every row in the render task. */

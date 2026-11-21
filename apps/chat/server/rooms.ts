@@ -22,13 +22,16 @@ import { isHostAway, type ContentBlock, type EntryRecord, type Host, type Messag
 import { refusedForGood, retryWait } from "./outbox.ts";
 import { postState } from "./post-edits.ts";
 import { namedPost, reactionsOf, repliedPost } from "./reactions.ts";
-import { doneOf } from "./thread-done.ts";
+import { doneOf, reopens } from "./thread-done.ts";
 import { pinOf } from "./pins.ts";
 import { readMark, type Store } from "./store.ts";
 import { OWNER, type Threads } from "./threads.ts";
 import { isInput, sentMessage } from "./timeline.ts";
 
 const PAGE = 40;
+/** How many earlier posts of a thread a reply's input carries, and how much of each; group-rooms.ts `envelope` reads them too. */
+export const CONTEXT_POSTS = 5;
+export const CONTEXT_CLIP = 2048;
 /** Entries the feed reads per pi-host call. */
 const FEED_PAGE = 200;
 
@@ -339,13 +342,22 @@ export class Rooms {
 
   // Owner posts
 
-  /** Writes the owner's post, shows it, and starts its delivery; the same requestId again answers the first post. */
-  post(record: AgentRecord, request: SendRequest): SendResult {
+  /**
+   * Writes the owner's post, shows it, and starts its delivery; the same requestId again answers the first post. With `threadRoot` it is a
+   * reply in the thread of that root post, as in a channel, and his reply in a done thread reopens it.
+   */
+  post(record: AgentRecord, request: SendRequest, forward?: ForwardedPost): SendResult {
     const existing = this.store.byRequestId(record.room, request.requestId);
     if (existing) return existing.delivery?.state === "failed" ? this.retry(record, existing.requestId) : this.result(existing);
+    const root = request.threadRoot ? this.store.postsOf(record.room).find(p => p.id === request.threadRoot && !p.threadRoot) : undefined;
+    if (request.threadRoot && !root) throw new Error(`No thread ${request.threadRoot} in ${record.room}.`);
     const images = (request.images ?? []).map(image => this.deps.uploaded(image));
-    const { post } = this.store.append({ room: record.room, author: "owner", text: request.text ?? "", images, at: Date.now(), requestId: request.requestId });
+    const { post } = this.store.append({
+      room: record.room, author: "owner", text: request.text ?? "", images, at: Date.now(), requestId: request.requestId, ...(root ? { threadRoot: root.id } : {}),
+      ...(forward ? { forward } : {}),
+    });
     this.store.set(post, { delivery: this.newDelivery(post, record) });
+    if (root && reopens(root, post)) this.store.set(root, { done: { done: false, by: "owner", at: post.at } });
     this.deps.state.state.reads[record.room] = { at: post.at, seq: post.seq };
     this.deps.state.saveState();
     this.changed(record, [post]);
@@ -386,6 +398,20 @@ export class Rooms {
     this.timers.set(key, setTimeout(() => void this.deliver(post), delay));
   }
 
+  /**
+   * What the agent reads for an owner post: the post, and for a reply in a thread a line that names the thread and the thread's earlier posts,
+   * as a channel reply's envelope carries them (group-rooms.ts), so a short "and the second one?" reads in its thread.
+   */
+  private inputText(post: RoomPost): string {
+    const rootId = post.threadRoot;
+    if (!rootId) return withForward(post.text, post.forward);
+    const posts = this.store.postsOf(post.room);
+    const root = posts.find(p => p.id === rootId);
+    const thread = posts.filter(p => (p.id === rootId || p.threadRoot === rootId) && p.seq < post.seq && p.deletedAt === undefined).slice(-CONTEXT_POSTS);
+    const line = (p: RoomPost) => `${p.seq} ${this.deps.threads.principal(p.author).name}: ${p.text.slice(0, CONTEXT_CLIP)}`;
+    return [`[a reply in the thread of post ${root?.seq ?? rootId} in your DM; your answer goes in that thread]`, "", withForward(post.text, post.forward), "", "(thread so far)", ...thread.map(line)].join("\n");
+  }
+
   /** The posts a bundle names, oldest first; a member the log lacks drops out. */
   private members(post: RoomPost): RoomPost[] {
     const bundle = post.delivery?.bundle;
@@ -418,7 +444,8 @@ export class Rooms {
       const asTest = post.testSend;
       const from = asTest ? { entry: { kind: "agent.message" as const, data: { from: asTest.by, via: TEST_SEND_VIA } } } : { ownerTurn: true };
       const now = Date.now();
-      const text = bundle ? bundlePosts(members, record.host, now) : delivery.waited ? agedPost(post.text, post.at, record.host, now) : post.text;
+      const posts = members.map(p => ({ at: p.at, text: this.deps.fileNotes(this.inputText(p), p.images) }));
+      const text = bundle ? bundlePosts(posts, record.host, now) : delivery.waited ? agedPost(posts[0]!.text, post.at, record.host, now) : posts[0]!.text;
       const result = await this.deps.host.submit(thread, {
         text, ...(images.length ? { images } : {}), requestId: bundle?.requestId ?? delivery.requestId, whenBusy: "steer", ...from,
       });
@@ -594,9 +621,11 @@ export class Rooms {
       : post.source?.thread === comm;
   }
 
-  /** Sends the posts to the room's watchers and its row to the sidebar. */
+  /** Sends the posts, with the roots of the thread replies among them, to the room's watchers, and the room's row to the sidebar. */
   changed(record: AgentRecord, posts: RoomPost[]): void {
-    this.deps.events.items(record.room, posts.map(post => this.item(post)));
+    const all = this.store.postsOf(record.room);
+    const ids = new Set(posts.flatMap(p => (p.threadRoot ? [p.id, p.threadRoot] : [p.id])));
+    this.deps.events.items(record.room, all.filter(p => ids.has(p.id)).map(post => this.item(post, all)));
     this.deps.events.changed();
   }
 
@@ -678,9 +707,14 @@ export class Rooms {
       aimedHere: () => false,
       post: ({ replyTo, named, ...spoken }, turn) => {
         const all = posts();
+        const asked = turn?.post ? all.find(p => p.id === turn.post) : undefined;
         const answered = repliedPost(all, record, thread, record.room, replyTo) ?? namedPost(all, record, thread, record.room, named) ??
-          (turn?.post ? all.find(p => p.id === turn.post) : replyTo?.trim() ? undefined : open(all));
-        return this.store.append({ room: record.room, author: record.id, images: [], ...spoken, ...(answered?.author === "owner" ? { answers: answered.id } : {}) }).post;
+          (turn?.post ? asked : replyTo?.trim() ? undefined : open(all));
+        // An answer to a reply in a thread goes in that thread, as does one whose reply_to names the root of the thread the turn's post is in.
+        const threadRoot = answered?.threadRoot ?? (answered && asked?.threadRoot === answered.id ? answered.id : undefined);
+        return this.store.append({
+          room: record.room, author: record.id, images: [], ...spoken, ...(threadRoot ? { threadRoot } : {}), ...(answered?.author === "owner" ? { answers: answered.id } : {}),
+        }).post;
       },
     };
   }
@@ -693,10 +727,14 @@ export class Rooms {
     return later ? { later } : {};
   }
 
-  item(post: RoomPost): Item {
+  item(post: RoomPost, all = this.store.postsOf(post.room)): Item {
     const record = this.deps.agents.record(post.room);
+    const replies = post.threadRoot ? [] : all.filter(p => p.threadRoot === post.id && p.deletedAt === undefined);
+    const authors = [...new Set(replies.map(r => r.author))].slice(0, 3).map(a => this.deps.threads.principal(a));
     const base = {
       kind: "message" as const, id: post.id, seq: post.seq, at: post.at, text: post.text, images: post.images, mentions: [],
+      ...(post.threadRoot ? { threadRoot: post.threadRoot } : {}),
+      ...(replies.length ? { thread: { replies: replies.length, lastAt: replies.at(-1)!.at, lastSeq: replies.at(-1)!.seq, authors } } : {}),
       ...reactionsOf(id => this.deps.threads.principal(id), post), ...doneOf(id => this.deps.threads.principal(id), post),
       ...pinOf(id => this.deps.threads.principal(id), post), ...postState(post), ...this.laterOf(post),
     };
@@ -716,9 +754,10 @@ export class Rooms {
     };
   }
 
-  /** A page of the room's posts, oldest first; `before`, `after` and `around` are post ids. */
+  /** A page of the room's root posts, oldest first; `before`, `after` and `around` are post ids, and `around` a thread reply opens its root. */
   timeline(record: AgentRecord, opts: { before?: string; after?: string; around?: string; limit?: number }): TimelinePage {
-    const posts = this.store.postsOf(record.room);
+    const all = this.store.postsOf(record.room);
+    const posts = all.filter(p => !p.threadRoot);
     const limit = Math.min(Math.max(opts.limit ?? PAGE, 1), 200);
     const index = (id: string) => {
       const at = posts.findIndex(p => p.id === id);
@@ -729,10 +768,11 @@ export class Rooms {
     let end: number;
     let focus: string | undefined;
     if (opts.around) {
-      const at = index(opts.around);
+      const target = all.find(p => p.id === opts.around);
+      focus = target?.threadRoot ?? opts.around;
+      const at = index(focus);
       start = Math.max(0, at - Math.ceil(limit / 2));
       end = Math.min(posts.length, at + Math.floor(limit / 2) + 1);
-      focus = opts.around;
     } else if (opts.after) {
       start = index(opts.after) + 1;
       end = Math.min(posts.length, start + limit);
@@ -742,11 +782,19 @@ export class Rooms {
     }
     const page = posts.slice(start, end);
     return {
-      items: page.map(post => this.item(post)),
+      items: page.map(post => this.item(post, all)),
       ...(start > 0 && page[0] ? { older: page[0].id } : {}),
       ...(end < posts.length && page.at(-1) ? { newer: page.at(-1)!.id } : {}),
       ...(focus ? { focus } : {}),
     };
+  }
+
+  /** A thread in the DM: the root post and every reply, oldest first. */
+  replies(record: AgentRecord, root: string): { root: Item; items: Item[] } {
+    const all = this.store.postsOf(record.room);
+    const rootPost = all.find(p => p.id === root && !p.threadRoot);
+    if (!rootPost) throw new Error(`No post ${root} in ${record.room}.`);
+    return { root: this.item(rootPost, all), items: all.filter(p => p.threadRoot === root).map(p => this.item(p, all)) };
   }
 
   /** The DM's row: `status` is the agent's or working while the comm thread answers, and `commStatus` the comm thread's own. */

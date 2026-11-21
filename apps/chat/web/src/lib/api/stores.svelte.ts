@@ -36,6 +36,8 @@ const LAND_SLACK_MS = 60_000;
 const isPending = (item: Item): boolean => item.id.startsWith("r:");
 /** A DM room (`dm_<slug>`): its items are stored posts, and an owner post's delivery to the agent's work thread is its send line. */
 const isRoom = (id: ConversationId): boolean => id.startsWith("dm_");
+/** A channel or a DM, whose posts start threads: its timeline shows root posts, and each reply lives in its root's thread. */
+const threaded = (id: ConversationId): boolean => id.startsWith("ch_") || isRoom(id);
 const sameText = (a: string, b: string): boolean => a.trim() === b.trim();
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -66,6 +68,9 @@ function roomPost(item: Item): Item {
     ...(delivery?.queue ? { queue: delivery.queue } : {}),
   };
 }
+
+/** A post as a thread pane of conversation `id` shows it: a DM owner post with its send line. */
+const threadPost = (id: ConversationId, item: Item): Item => (isRoom(id) ? roomPost(item) : item);
 
 /**
  * The preview of each image of a send that landed from this page, by the url the server gave it. The landed message draws the bytes the
@@ -658,7 +663,7 @@ const brought = (shown: readonly Item[], fresh: readonly Item[]): boolean => {
 };
 
 const shownItems = (id: ConversationId, items: readonly Item[]): Item[] => {
-  const visible = id.startsWith("ch_") ? items.filter(item => !(item.kind === "message" && item.threadRoot)) : items;
+  const visible = threaded(id) ? items.filter(item => !(item.kind === "message" && item.threadRoot)) : items;
   return merge([], isRoom(id) ? visible.map(roomPost) : visible, new Set());
 };
 
@@ -842,13 +847,14 @@ function followRooms(ids: readonly ConversationId[]): void {
 function keepArrived(id: ConversationId, items: readonly Item[], removed: readonly string[]): void {
   const page = timelinePages.viewing(id) ? undefined : timelinePages.last(id);
   if (page) timelinePages.remember(id, { ...page, items: merge(page.items, shownItems(id, items), new Set(), removed) });
-  if (!id.startsWith("ch_")) return;
+  if (!threaded(id)) return;
   for (const item of items) {
     if (item.kind !== "message") continue;
     const key = repliesKey(id, item.threadRoot ?? item.id);
     const thread = repliesPages.viewing(key) ? undefined : repliesPages.last(key);
     if (!thread) continue;
-    repliesPages.remember(key, item.threadRoot ? { ...thread, items: merge(thread.items, [item], new Set()) } : { ...thread, root: item });
+    const shown = threadPost(id, item);
+    repliesPages.remember(key, item.threadRoot ? { ...thread, items: merge(thread.items, [shown], new Set()) } : { ...thread, root: shown });
   }
 }
 
@@ -894,6 +900,10 @@ function jobsAhead(items: readonly Item[]): void {
   jobPills.want(refs.reverse().slice(0, JOBS_AHEAD).map(job => ({ id: job.conversation, at: job.lastAt, working: job.status === "working" })));
 }
 
+/** The seq of the newest thread reply that the root posts among `items` show in their pills, or -1 when they show none. */
+export const newestReply = (items: readonly Item[]): number =>
+  items.reduce((max, item) => (item.kind === "message" && item.thread?.lastSeq !== undefined ? Math.max(max, item.thread.lastSeq) : max), -1);
+
 /** A channel root post's thread as its pill shows it; a change means the kept replies are old. */
 const threadMark = (item: Item): string | undefined => (item.kind === "message" && item.thread?.replies ? `${item.thread.replies}:${item.thread.lastAt}` : undefined);
 const warmedThreads = new Map<string, string>();
@@ -909,7 +919,8 @@ function warmReplies(channel: ConversationId, items: readonly Item[]): void {
     const key = repliesKey(channel, item.id);
     if (warmedThreads.get(key) === mark || repliesPages.viewing(key)) continue;
     warmedThreads.set(key, mark);
-    void repliesPages.warm(key, wait => api.replies(channel, item.id, wait), page => ({ root: page.root, items: merge([], page.items, new Set()) }), { first: true });
+    const shown = (one: Item) => threadPost(channel, one);
+    void repliesPages.warm(key, wait => api.replies(channel, item.id, wait), page => ({ root: shown(page.root), items: merge([], page.items.map(shown), new Set()) }), { first: true });
   }
 }
 
@@ -976,6 +987,8 @@ export class Timeline {
   private readonly deliveredAt = new Map<string, number>();
   /** The newest item when the page last posted /read. */
   private marked: Item | undefined;
+  /** The newest thread reply's seq when the page last posted /read. */
+  private markedReply = -1;
   /** The first post after the read point this view opened at, which the New line marks, as Slack's does, for as long as the view is open. */
   openedUnread = $state<string | undefined>(undefined);
   /** Ends when the view's own read of the room lands, so the first /read cannot move the read point before the view saw where it was. */
@@ -1022,8 +1035,8 @@ export class Timeline {
       this.limit = last?.limit;
       const taken = pages.take(key, asked, () => readTimeline(this.id, around, asked, last?.limit));
       // The threads and jobs of the kept page queue now, behind this read, not one round trip later when its refresh lands.
-      if (last && this.isChannel) warmReplies(this.id, last.items);
-      else if (last) jobsAhead(last.items);
+      if (last && threaded(this.id)) warmReplies(this.id, last.items);
+      if (last && !this.isChannel) jobsAhead(last.items);
       const { wait } = taken;
       const { page, header } = await taken.read;
       const readSeq = header.readSeq;
@@ -1062,9 +1075,9 @@ export class Timeline {
 
   /** Adds or replaces items by id and drops `removed`. A pending send drops when the real message it became lands. */
   upsert(incoming: Item[], removed: string[] = []): void {
-    const shown = incoming.filter(item => !(this.isChannel && item.kind === "message" && item.threadRoot));
-    if (this.isChannel) warmReplies(this.id, shown);
-    else jobsAhead(this.items.concat(shown));
+    const shown = threaded(this.id) ? incoming.filter(item => !(item.kind === "message" && item.threadRoot)) : incoming;
+    if (threaded(this.id)) warmReplies(this.id, shown);
+    if (!this.isChannel) jobsAhead(this.items.concat(shown));
     this.sends.merge(this.isRoom ? shown.filter(item => this.newest(item)).map(roomPost) : shown, removed);
   }
 
@@ -1154,12 +1167,18 @@ export class Timeline {
     }
     const newest = this.items.at(-1);
     const own = newest?.kind === "message" && newest.author.id === "owner";
-    if (!newest || newest === this.marked || (own && this.marked)) return Promise.resolve();
+    // The newest reply of a thread whose pill shows counts as read too, so an agent's answer in a DM thread clears the DM's unread count.
+    const replySeq = newestReply(this.items);
+    const newReply = replySeq > this.markedReply;
+    if (!newest || (!newReply && (newest === this.marked || (own && this.marked)))) return Promise.resolve();
     this.marked = newest;
+    this.markedReply = replySeq;
     this.openedFrom = undefined;
-    const seq = this.items.findLast(i => i.kind === "message" && i.seq !== undefined);
-    return api.read(this.id, seq?.kind === "message" ? seq.seq : undefined).catch(error => {
+    const last = this.items.findLast(i => i.kind === "message" && i.seq !== undefined);
+    const seq = last?.kind === "message" ? Math.max(last.seq!, replySeq) : replySeq >= 0 ? replySeq : undefined;
+    return api.read(this.id, seq).catch(error => {
       if (this.marked === newest) this.marked = undefined;
+      this.markedReply = -1;
       throw error;
     });
   }
@@ -1210,8 +1229,8 @@ export class Replies {
     this.stopListen = live.on(event => {
       if (event.type !== "items" || event.conversation !== channel) return;
       const root = event.items.find(item => item.id === rootId);
-      if (root) this.root = root;
-      this.sends.merge(event.items.filter(item => item.kind === "message" && item.threadRoot === rootId), event.removed ?? []);
+      if (root) this.root = threadPost(channel, root);
+      this.merge(event.items.filter(item => item.kind === "message" && item.threadRoot === rootId), event.removed ?? []);
     });
     this.stopWatch = live.watch(channel);
     const key = repliesKey(channel, rootId);
@@ -1227,12 +1246,12 @@ export class Replies {
     const { read, wait } = repliesPages.take(key, asked, () => api.replies(channel, rootId, asked));
     void read.then(page => {
       if (last && (brought(this.items, page.items) || this.items.some(item => !isPending(item) && !page.items.some(fresh => fresh.id === item.id)))) wait.background = undefined;
-      this.root = page.root;
+      this.root = threadPost(channel, page.root);
       if (last) {
         const kept = new Set(page.items.map(item => item.id));
         this.items = this.items.filter(item => isPending(item) || kept.has(item.id) || !last.items.some(old => old.id === item.id));
       }
-      this.sends.merge(page.items);
+      this.merge(page.items);
     }).catch(error => (this.error = message(error))).finally(() => {
       this.loading = false;
     });
@@ -1242,15 +1261,19 @@ export class Replies {
   send(text: string, opts: { images?: Attached[]; mentions?: AgentId[] } = {}): Promise<void> {
     const request: SendDraft = { text, requestId: crypto.randomUUID(), threadRoot: this.rootId, ...opts };
     void this.sends.send(request).then(result => {
-      if (result) this.sends.merge([result.item]);
+      if (result) this.merge([result.item]);
     });
     return Promise.resolve();
   }
 
   retrySend(id: string): void {
     void this.sends.retry(id).then(result => {
-      if (result) this.sends.merge([result.item]);
+      if (result) this.merge([result.item]);
     });
+  }
+
+  private merge(items: readonly Item[], removed: readonly string[] = []): void {
+    this.sends.merge(items.map(item => threadPost(this.channel, item)), removed);
   }
 
   discardSend(id: string): void {

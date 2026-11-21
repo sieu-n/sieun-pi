@@ -297,7 +297,8 @@ export type Item =
       /** Agent posts in a DM, a channel or a Solo room: the owner post this one answers, which the page draws apart from the agent's other answers. */
       answers?: string;
       /** Channel root posts: the thread's size and last reply. */
-      thread?: { replies: number; lastAt: Ms; authors: Principal[] };
+      /** A root post's thread: `lastSeq` is its newest reply's seq, which a read of the room covers (stores.svelte.ts `markRead`). */
+      thread?: { replies: number; lastAt: Ms; lastSeq?: number; authors: Principal[] };
       deliveries: Delivery[];
       /** An owner send `r:<requestId>` that has not shown as an entry yet. */
       pending?: boolean;

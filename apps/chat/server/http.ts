@@ -210,7 +210,7 @@ export function routes(app: App): Route[] {
       if (!output) throw new NotFound(`No tool result ${entry} in ${p.id}.`);
       return output;
     }),
-    route("GET", "/api/c/:id/replies/:root", async (_r, p) => app.groups.replies(p.id!, p.root!)),
+    route("GET", "/api/c/:id/replies/:root", async (_r, p) => app.replies(p.id!, p.root!)),
     route("POST", "/api/uploads", async req => app.upload(req.headers["content-type"] ?? "", await readBytes(req))),
     route("POST", "/api/c/:id/send", async (_r, p, _q, body) => app.send(p.id!, (await body()) as SendRequest)),
     route("POST", "/api/c/:id/send/:requestId/retry", async (_r, p) => app.retrySend(p.id!, p.requestId!)),

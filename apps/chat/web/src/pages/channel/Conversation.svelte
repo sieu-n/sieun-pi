@@ -95,12 +95,15 @@
   }
 
   const threadParam = $derived(router.route.params.thread ?? null);
+  /** A thread key that names a root post (`p<seq>`) in a channel or a DM; in a DM any other key is a job's conversation. */
+  const isPostThread = (key: string): boolean => isChannel || (isDm && /^p\d+$/.test(key));
+  const postThread = $derived(!!threadParam && isPostThread(threadParam));
   /** `?thread=<root>&m=<reply>` names a reply: the thread pane flashes it, and the room only scrolls to its root, as in Slack. */
-  const replyFocus = $derived(isChannel && threadParam && around && around !== threadParam ? around : undefined);
+  const replyFocus = $derived(postThread && threadParam && around && around !== threadParam ? around : undefined);
   let paneKey: string | null = null;
   const threadTitle = $derived.by(() => {
     if (!threadParam) return "";
-    if (isChannel) return "Thread";
+    if (postThread) return "Thread";
     for (const item of store.items) for (const job of jobsOf(item)) if (job.conversation === threadParam) return job.name;
     return jobs.byId(threadParam)?.name ?? "Thread";
   });
@@ -120,7 +123,7 @@
     }
     if (key) {
       paneKey = `thread:${key}`;
-      sidePanel.open({ key: paneKey, title, icon: isChannel ? "thread" : "robot", body: pane, header: layout === "slack" ? threadHeader : undefined, onclose: () => {
+      sidePanel.open({ key: paneKey, title, icon: postThread ? "thread" : "robot", body: pane, header: layout === "slack" ? threadHeader : undefined, onclose: () => {
         if (!leaving) router.setParams({ thread: null });
       } });
     } else if (board) {
@@ -187,7 +190,8 @@
   }
 
   function linkFor(item: Item, conversation = id): string {
-    return `${location.origin}${location.pathname}${conversationHref(conversation, { messageId: item.id })}`;
+    const thread = item.kind === "message" && item.threadRoot && conversation === id ? item.threadRoot : null;
+    return `${location.origin}${location.pathname}${conversationHref(conversation, { thread, messageId: item.id })}`;
   }
   function copyLink(item: Item, conversation = id) {
     void navigator.clipboard.writeText(linkFor(item, conversation)).then(
@@ -197,7 +201,7 @@
   }
 
   function openThread(key: string) {
-    if (key !== threadParam) prefetchThread(isChannel ? id : null, key);
+    if (key !== threadParam) prefetchThread(isPostThread(key) ? id : null, key);
     router.setParams({ thread: key, board: null });
   }
 
@@ -303,7 +307,7 @@
   {#if threadParam}
     {#key threadParam}
       <ThreadPane
-        channel={isChannel ? id : null}
+        channel={postThread ? id : null}
         threadKey={threadParam}
         draftKey={threadDraftKey(id, threadParam)}
         focus={replyFocus}
@@ -338,7 +342,7 @@
 {/snippet}
 
 {#snippet threadHeader()}
-  <PanelHeader icon={isChannel ? "thread" : "robot"} closeLabel="Close {threadTitle.toLowerCase()}" onclose={() => sidePanel.close()}>
+  <PanelHeader icon={postThread ? "thread" : "robot"} closeLabel="Close {threadTitle.toLowerCase()}" onclose={() => sidePanel.close()}>
     {#snippet titleContent()}
       <h2 class="t-label-sm">{threadTitle}</h2>
       <span class="thread-room" data-testid="thread-room">{isChannel ? `#${name}` : name}</span>
@@ -439,7 +443,7 @@
     {liveLabel}
     queue={store.queue}
     openThread={threadParam}
-    canReply={isChannel}
+    canReply={isChannel || isDm}
     {statusOf}
     onretry={() => location.reload()}
     onretrysend={(item) => store.retrySend(item.id)}

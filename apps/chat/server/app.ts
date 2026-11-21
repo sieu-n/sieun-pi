@@ -624,6 +624,11 @@ export class App {
     return { item, deliveries: item.kind === "message" ? item.deliveries : [] };
   }
 
+  /** A thread in a DM, a channel or a Solo room: its root post and every reply, oldest first. */
+  replies(id: ConversationId, root: string): { root: Item; items: Item[] } {
+    return isRoomId(id) ? this.rooms.replies(this.roomAgent(id), root) : this.groups.replies(id, root);
+  }
+
   /** Tries a failed or waiting send again now. */
   retrySend(id: ConversationId, requestId: string): SendResult {
     if (isRoomId(id)) return this.rooms.retry(this.roomAgent(id), requestId);

@@ -32,14 +32,12 @@ import { laterLine, reminderPost } from "./later-agents.ts";
 import { namedPost, reactionsLine, reactionsOf, repliedPost } from "./reactions.ts";
 import { doneOf, reopens } from "./thread-done.ts";
 import { pinOf } from "./pins.ts";
-import { agedPost, agentPostParts, queuedNote, readFeedThread, type FeedSide, type Spoken } from "./rooms.ts";
+import { agedPost, agentPostParts, CONTEXT_CLIP, CONTEXT_POSTS, queuedNote, readFeedThread, type FeedSide, type Spoken } from "./rooms.ts";
 import { readMark, type Store } from "./store.ts";
 import { OWNER, type Threads } from "./threads.ts";
 
 /** Hard: money, an agent loop runs paid model turns nobody reads (channels.md 4.3). */
 export const MAX_HOPS = 6;
-const CONTEXT_POSTS = 5;
-const CONTEXT_CLIP = 2048;
 const AGENDA_CLIP = 300;
 const PAGE = 50;
 
@@ -824,7 +822,7 @@ export class GroupRooms {
       kind: "message", id: post.id, seq: post.seq, at: post.at, author: this.deps.threads.principal(post.author), text: post.text, images: post.images,
       mentions: (post.mentions ?? []) as AgentId[], ...(post.threadRoot ? { threadRoot: post.threadRoot } : {}), ...(post.answers ? { answers: post.answers } : {}),
       ...(post.author === "owner" ? { requestId: post.requestId } : agentPostParts(this.deps.threads, post)),
-      ...(replies.length ? { thread: { replies: replies.length, lastAt: replies.at(-1)!.at, authors } } : {}),
+      ...(replies.length ? { thread: { replies: replies.length, lastAt: replies.at(-1)!.at, lastSeq: replies.at(-1)!.seq, authors } } : {}),
       deliveries: (post.deliveries ?? []).map(d => this.publicDelivery(row, post, d, all)), ...reactionsOf(id => this.deps.threads.principal(id), post),
       ...doneOf(id => this.deps.threads.principal(id), post), ...pinOf(id => this.deps.threads.principal(id), post), ...postState(post), ...this.laterOf(post),
     };
