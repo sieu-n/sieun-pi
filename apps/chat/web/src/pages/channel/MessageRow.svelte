@@ -188,7 +188,7 @@
       separator,
     ] : []),
     ...(doneable ? [{ id: "done", label: done ? "Reopen thread" : "Mark thread done", icon: "check", onselect: afterPick(toggleDone) }] : []),
-    ...(reactable ? [{ id: "pin", label: pinned ? `Un-pin from ${pinPlace}` : `Pin to ${pinPlace}`, icon: "pin", onselect: afterPick(togglePin) }] : []),
+    ...(reactable ? [{ id: "pin", label: pinned ? `Un-pin from ${pinPlace}` : `Pin to ${pinPlace}`, icon: "pin", shortcut: "P", onselect: afterPick(togglePin) }] : []),
     ...(workHref && !why ? [{ id: "work", label: "Show work", icon: "robot", onselect: afterPick(() => workHref && router.navigate(workHref)) }] : []),
     { id: "copy-link", label: "Copy link", icon: "link", onselect: afterPick(() => oncopylink(item)) },
     { id: "copy-text", label: "Copy text", icon: "copy", onselect: afterPick(copyText) },
@@ -258,6 +258,7 @@
       : key === "r" && reactable ? () => reactButton && reactions?.pick(reactButton)
       : key === "t" && thread ? () => onthread(thread)
       : key === "e" && editable && !editing ? () => (editing = true)
+      : key === "p" && reactable ? togglePin
       : key === "Delete" && editable ? () => (deleting = true)
       : null;
     if (!act) return;

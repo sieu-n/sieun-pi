@@ -54,6 +54,7 @@ export const SHORTCUT_GROUPS = [
       { id: "newline", label: "New line", keys: ["shift", "enter"], scope: "in the message box" },
       { id: "edit-last", label: "Edit your last message", keys: ["arrowup"], scope: "in an empty message box" },
       { id: "mark-unread", label: "Mark unread", keys: ["u"], scope: "on a hovered message" },
+      { id: "pin", label: "Pin or un-pin", keys: ["p"], scope: "on a hovered message" },
       { id: "mark-read", label: "Mark the conversation read", keys: ["escape"], scope: "in a conversation with new messages" },
       { id: "mark-all-read", label: "Mark all as read", keys: ["shift", "escape"] },
     ],

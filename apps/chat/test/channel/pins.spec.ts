@@ -66,3 +66,17 @@ test("a pick in the Pinned list jumps to the post", async ({ page }) => {
   await expect(page.getByTestId("pins-list")).toBeHidden();
   await expect(row(page, posts[1]!)).toBeInViewport();
 });
+
+test("P on a hovered post pins it and pressed again un-pins it, as in Slack", async ({ page }) => {
+  const { room, posts } = await channel(page);
+  await open(page, `#/c/${room}`);
+  const post = row(page, posts[2]!);
+  await post.evaluate((el) => el.scrollIntoView({ block: "center" }));
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await post.hover();
+  await page.keyboard.press("p");
+  await expect(post.locator("[data-pinned-label]")).toHaveText("Pinned by you");
+  await page.keyboard.press("p");
+  await expect(post.locator("[data-pinned-label]")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Undo" })).toBeVisible();
+});

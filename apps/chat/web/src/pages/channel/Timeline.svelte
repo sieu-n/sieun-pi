@@ -289,7 +289,7 @@
   }
 
   const POSTS = "li[data-message-id][data-kind]";
-  const POST_KEYS = new Set(["e", "r", "t", "a", "m", "u", "Delete"]);
+  const POST_KEYS = new Set(["e", "r", "t", "a", "m", "u", "p", "Delete"]);
   /** The post keyboard focus was on last, which Shift+Tab from the composer goes back to. */
   let lastFocused: HTMLElement | null = null;
   let root = $state<HTMLElement>();
