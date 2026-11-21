@@ -8,7 +8,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { openIndexReadOnly, readUsageRows, type UsageRead, type UsageRow as IndexUsageRow } from "../../../packages/pi-host/src/durable/index-db.ts";
 import { BUCKET_MS, bucketFor, isRange, RANGE_BUCKETS, RANGE_MS, USAGE_RANGES } from "../web/src/lib/api/shared/usage-range.ts";
-import type { AgentRelayLink, HostsReport, HostView, MachineView, UsageBucket, UsageBucketSum, UsageRange, UsageReport, UsageRow } from "../web/src/lib/api/types.ts";
+import type { AgentRelayLink, HostsReport, HostView, MachineView, UsageBucket, UsageBucketSum, UsageLive, UsageRange, UsageReport, UsageRow } from "../web/src/lib/api/types.ts";
 import { MultiHost } from "./host/multi-host.ts";
 import type { RelayHost } from "./host/relay-host.ts";
 import type { Host, Ping, UsageRange as HostUsageRange, UsageTotal } from "./host/types.ts";
@@ -127,11 +127,23 @@ const HOUR_MS = BUCKET_MS.hour;
 /** How far back the kept sums go: the longest range and one more bucket, since a range ends with the bucket that holds now. */
 const HOURS_KEPT_MS = Math.max(...USAGE_RANGES.map(range => RANGE_MS[range] + Math.max(...RANGE_BUCKETS[range].map(bucket => BUCKET_MS[bucket]))));
 const MINUTES_KEPT_MS = Math.max(...USAGE_RANGES.filter(range => RANGE_BUCKETS[range].includes("minute")).map(range => RANGE_MS[range])) + BUCKET_MS.minute;
+/** The live rate's grain: Prime's per-second card reads LGTM's 10 s export interval (user-history lgtm.ts SPARK_S). */
+export const LIVE_TICK_MS = 10_000;
+/** The live spark's span, 10 min as Prime's card draws it; its first point looks back one more minute. */
+const LIVE_SPAN_MS = 600_000;
+const TICKS_KEPT_MS = LIVE_SPAN_MS + BUCKET_MS.minute + LIVE_TICK_MS;
 /** The kept rows are read again this often, as often as `Threads` reads the thread list, so the page is never further behind than the sidebar. */
 export const USAGE_PULL_MS = 2_000;
 
 type Sum = UsageTotal & { start: number };
-type BoxUsage = { cursor?: string; read: boolean; hours: Map<string, Sum>; minutes: Map<string, Sum> };
+type BoxUsage = { cursor?: string; read: boolean; hours: Map<string, Sum>; minutes: Map<string, Sum>; ticks: Map<string, Sum> };
+type Grain = { ms: number; kept: number; sums: (box: BoxUsage) => Map<string, Sum> };
+/** The kept sums by grain, coarsest first: a range reads the coarsest one its bounds and buckets fall on whole steps of. */
+const GRAINS: readonly Grain[] = [
+  { ms: HOUR_MS, kept: HOURS_KEPT_MS, sums: box => box.hours },
+  { ms: BUCKET_MS.minute, kept: MINUTES_KEPT_MS, sums: box => box.minutes },
+  { ms: LIVE_TICK_MS, kept: TICKS_KEPT_MS, sums: box => box.ticks },
+];
 
 function addTo(sums: Map<string, Sum>, start: number, row: IndexUsageRow): void {
   const key = `${start}\u0000${row.thread}\u0000${row.model}`;
@@ -175,17 +187,19 @@ export class KeptUsage implements Pick<Host, "usage"> {
     for (const source of this.sources()) {
       if (!source.up()) continue;
       let box = this.boxes.get(source.box);
-      if (!box) this.boxes.set(source.box, box = { read: false, hours: new Map(), minutes: new Map() });
+      if (!box) this.boxes.set(source.box, box = { read: false, hours: new Map(), minutes: new Map(), ticks: new Map() });
       try {
         for (;;) {
           const page = await source.read(box.cursor, now - HOURS_KEPT_MS);
           if (page.restart) {
             box.hours.clear();
             box.minutes.clear();
+            box.ticks.clear();
           }
           for (const row of page.rows) {
             addTo(box.hours, Math.floor(row.at / HOUR_MS) * HOUR_MS, row);
             if (row.at >= now - MINUTES_KEPT_MS) addTo(box.minutes, Math.floor(row.at / BUCKET_MS.minute) * BUCKET_MS.minute, row);
+            if (row.at >= now - TICKS_KEPT_MS) addTo(box.ticks, Math.floor(row.at / LIVE_TICK_MS) * LIVE_TICK_MS, row);
           }
           box.cursor = page.cursor;
           if (!page.more) break;
@@ -197,21 +211,24 @@ export class KeptUsage implements Pick<Host, "usage"> {
       }
       for (const [key, sum] of box.hours) if (sum.start < now - HOURS_KEPT_MS) box.hours.delete(key);
       for (const [key, sum] of box.minutes) if (sum.start < now - MINUTES_KEPT_MS) box.minutes.delete(key);
+      for (const [key, sum] of box.ticks) if (sum.start < now - TICKS_KEPT_MS) box.ticks.delete(key);
     }
   }
 
-  /** The range's sums per bucket, thread and model, each row naming its box, as `durable_usage` gives them; on whole hours from the hourly sums. */
+  /**
+   * The range's sums per bucket, thread and model, each row naming its box, as `durable_usage` gives them, from the coarsest kept sums whose
+   * steps the range's bounds and buckets fall on. A range off every grain reads the boxes, since a kept sum would land whole in one bucket.
+   */
   async usage(range: HostUsageRange): Promise<UsageTotal[]> {
     const { since, until, bucketMs } = range;
-    const hours = since !== undefined && until !== undefined && since % HOUR_MS === 0 && until % HOUR_MS === 0 && (bucketMs ?? 0) % HOUR_MS === 0;
-    const kept = this.now() - (hours ? HOURS_KEPT_MS : MINUTES_KEPT_MS);
+    const grain = since === undefined || until === undefined || !bucketMs ? undefined : GRAINS.find(g => since % g.ms === 0 && until % g.ms === 0 && bucketMs % g.ms === 0);
     const ready = this.sources().every(source => !source.up() || this.boxes.get(source.box)?.read);
-    if (!ready || since === undefined || until === undefined || !bucketMs || since < kept) return this.fallback.usage(range);
+    if (!ready || !grain || since === undefined || until === undefined || !bucketMs || since < this.now() - grain.kept) return this.fallback.usage(range);
     const only = range.threads?.length ? new Set(range.threads) : undefined;
     const out: UsageTotal[] = [];
     for (const [name, box] of this.boxes) {
       const rows = new Map<string, UsageTotal>();
-      for (const sum of (hours ? box.hours : box.minutes).values()) {
+      for (const sum of grain.sums(box).values()) {
         if (sum.start < since || sum.start >= until || (only && !only.has(sum.thread))) continue;
         const bucket = since + Math.floor((sum.start - since) / bucketMs) * bucketMs;
         const key = `${bucket}\u0000${sum.thread}\u0000${sum.model}`;
@@ -224,6 +241,34 @@ export class KeptUsage implements Pick<Host, "usage"> {
     }
     return out;
   }
+}
+
+/**
+ * Prime's per-second card (user-history lgtm.ts `summary`): the tokens of the last 60 s over 60, for output and for all four kinds, and that
+ * same rate every 10 s over the last 10 min, 61 points ending with the live one. The minute ends on the 10 s tick before now, as LGTM's
+ * 10 s export does, so the kept 10 s sums answer it with no call to any box.
+ */
+export async function usageLive(host: Pick<Host, "usage">, box: string, opts: { thread?: string; host?: string }, now = Date.now()): Promise<UsageLive> {
+  const at = Math.floor(now / LIVE_TICK_MS) * LIVE_TICK_MS;
+  const window = BUCKET_MS.minute / LIVE_TICK_MS;
+  const points = LIVE_SPAN_MS / LIVE_TICK_MS + 1;
+  const count = points - 1 + window;
+  const since = at - count * LIVE_TICK_MS;
+  const scope = opts.thread ? { threads: [opts.thread] } : {};
+  const keep = (row: UsageTotal): boolean => !opts.host || (row.host ?? box) === opts.host;
+  const answer = (await host.usage({ since, until: at, bucketMs: LIVE_TICK_MS, ...scope })).filter(keep);
+  const rows = answer.every(row => row.bucket !== undefined) ? answer : await byCalls(host, since, LIVE_TICK_MS, count, scope, keep);
+  const ticks = { output: new Array<number>(count).fill(0), total: new Array<number>(count).fill(0) };
+  for (const row of rows) {
+    const index = Math.round((row.bucket! - since) / LIVE_TICK_MS);
+    if (index < 0 || index >= count) continue;
+    ticks.output[index]! += row.output;
+    ticks.total[index]! += row.input + row.output + row.cacheRead + row.cacheWrite;
+  }
+  const seconds = BUCKET_MS.minute / 1000;
+  const rate = (values: number[]) => Array.from({ length: points }, (_, i) => values.slice(i, i + window).reduce((sum, value) => sum + value, 0) / seconds);
+  const spark = { output: rate(ticks.output), total: rate(ticks.total) };
+  return { at, perSecond: { output: spark.output[points - 1]!, total: spark.total[points - 1]! }, spark };
 }
 
 interface RegistryHost { name: string; address: string; relayPort?: number; token?: string }

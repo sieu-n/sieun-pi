@@ -659,6 +659,11 @@ export interface UsageBucketSum {
 }
 /** `buckets` holds every bucket of the range, empty ones too, and its sums equal the sums of `rows` (c191). */
 export interface UsageReport { at: Ms; since: Ms; until: Ms; range: UsageRange; bucket: UsageBucket; rows: UsageRow[]; buckets: UsageBucketSum[] }
+/**
+ * `GET /api/usage/live`: tokens per second over the minute that ends at `at` (a 10 s tick), for output and for all four kinds, and that rate
+ * every 10 s over the 10 min before, 61 points oldest first, the last one `perSecond`, as Prime's chat usage card reads it.
+ */
+export interface UsageLive { at: Ms; perSecond: { output: number; total: number }; spark: { output: number[]; total: number[] } }
 
 /** `test` marks a thread of a walk's test agent or test room (agent-store.ts `isTest`), which the Hosts page leaves out unless asked. */
 export interface HostThread { id: string; name: string; status: RunStatus; model: string | null; updatedAt: Ms; children: number; test?: true }

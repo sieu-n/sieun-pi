@@ -4,6 +4,7 @@
   import { hrefFor, router } from "$lib/router.svelte";
   import { Avatar, Button, CardGroup, EmptyState, IconButton, LoadingText, Page, PageHeader, PanelHeader, Select, Tabs } from "$lib/ui";
   import PoolCard from "./PoolCard.svelte";
+  import TpsCard from "./TpsCard.svelte";
   import UsageChart from "./UsageChart.svelte";
   import { chartFormat, cost, count, exactCost, full, percent, type TipRow } from "./format";
   import { bucketValue, cacheHit, cellsOf, KIND_LABEL, KINDS, METRIC_LABEL, modelName, modelsByCost, seriesOf, summarize, tokenSum, type Measure, type Metric, type Unit } from "./stats";
@@ -169,6 +170,7 @@
       <section class="section" aria-label="{format.label} per {report.bucket}" aria-busy={loading}>
         <UsageChart buckets={report.buckets} {series} bucket={report.bucket} {cells} {format} total={chartTotal} tip={tipRows} />
       </section>
+      <TpsCard {report} {series} {metric} thread={thread === ALL ? undefined : thread} host={host === ALL ? undefined : host} />
 
       <CardGroup title="Cost by token kind" description="Each kind at its own rate, so the shared prompt read from cache never counts as fresh input.">
         <div class="kind head" aria-hidden="true"><span>Kind</span><span class="num">Tokens</span><span class="num">Share of cost</span><span class="num">Cost</span></div>

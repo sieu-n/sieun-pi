@@ -552,6 +552,7 @@ export const api = {
     call<{ changed: string[]; pending: number }>("POST", `/api/agents/${enc(agent)}/for-me`, { messageIds, completed }),
 
   usage: (opts: { range: UsageRange; bucket: UsageBucket; thread?: string; host?: string }) => call<UsageReport>("GET", `/api/usage${query(opts)}`),
+  usageLive: (opts: { thread?: string; host?: string }) => call<import("./types.ts").UsageLive>("GET", `/api/usage/live${query(opts)}`, undefined, undefined, { background: "shown" }),
   pool: () => call<AccountsView>("GET", "/api/pool"),
   hosts: () => call<HostsReport>("GET", "/api/hosts"),
   /** The consoles table from auto-sns-agent's consoles.json, read as the file is now. */
