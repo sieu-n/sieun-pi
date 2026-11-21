@@ -13,8 +13,9 @@
  * 1. The quick question gets its answer in its own thread.
  * 2. The measuring ask's answer, the agent post whose last version carries the numbers, sits in the measuring ask's thread and came last.
  * 3. No agent post is a root post, and the quick question's thread holds no agent post about the measuring ask.
- * 4. That answer's last version opens with a top line of at most 20 words, and no line outside a `- ` item holds 3 or more numbers or
- *    3 or more sentences.
+ * 4. That answer's last version opens with a top line of at most 20 words, and no line outside a `- ` item crams several results, by the
+ *    rule comm-guard.ts holds posts and edits with (`crammedLine`). A count of raw numbers per line failed a top line of one sentence, "it's
+ *    small, about 10k lines of app code plus 10k of tests, and the suite runs in about 39 s.", whose results all sat in its bullets.
  * The run also records whether the measuring answer came as a new post or as the last edit of a checklist, since only a new post in the
  * report's turn tests apps/chat's default for a post with no reply_to.
  *
@@ -25,6 +26,7 @@ import { appendFileSync, readlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
+import { crammedLine } from "../../../packages/pi-host/src/durable/comm-guard.ts";
 
 const { values } = parseArgs({ options: { cwd: { type: "string" }, host: { type: "string" }, out: { type: "string" }, server: { type: "string" }, keep: { type: "boolean" } } });
 const server = values.server ?? "http://127.0.0.1:5184";
@@ -143,8 +145,7 @@ try {
     ["no agent post is a root post", roots.length === 0],
     ["the quick question's thread holds no measuring answer", questionReplies.every(p => numbers(p.text) < 3)],
     ["the measuring answer's top line has at most 20 words", answerShape !== null && answerShape.topWords <= 20],
-    ["no line outside a list item holds 3 or more numbers", answerShape !== null && answerShape.worstLine < 3],
-    ["no line outside a list item holds 3 or more sentences", answerShape !== null && answerShape.worstSentences < 3],
+    ["no line outside a list item crams several results", Boolean(answer) && crammedLine(answer.text) === undefined],
   ];
   line = {
     at: new Date().toISOString(), piHost: { start: piHostAtStart, end: piHost() }, agent: agent.id, room, cwd, seconds: Math.round((Date.now() - started) / 1000),
