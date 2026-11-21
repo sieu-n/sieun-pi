@@ -11,13 +11,15 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
 
 /**
  * The Wiki and skill facts duty's precheck (`node --import tsx scripts/duties/wiki-skill-facts.ts`), for the knowledge manager's ask "make llm-wiki
- * info and, skills always up to date" (2026-11-20). It lists each curated wiki page (apps/, domains/, projects/) and each repo skill (auto-sns-agent
- * `.agents/skills/**.md` and `.claude/rules/app-*.md`) that names a code fact which auto-sns-agent commits took away after the doc's own date, and
+ * info and, skills always up to date" (2026-11-20). It lists each curated wiki page (apps/, domains/, projects/), each repo skill (auto-sns-agent
+ * `.agents/skills/**.md`) and each rule file (`.claude/rules/*.md`, root `CLAUDE.md` and `AGENTS.md`) that names a code fact which auto-sns-agent
+ * commits took away after the doc's own date, and
  * each Prime agent skill whose source is in sieun-pi (`isPrimeSkillFile`) that names a code fact which sieun-pi commits took away after its own.
  * A fact is read from the doc's code spans: a repo path, a `file::name` definition, an env or constant name, a `pnpm <script>` and a `--flag`
  * of a script the span runs. A fact counts when it held at the doc's date and does not hold at HEAD, so a placeholder or an example that never
- * existed never counts. A page's date is its `updated` (or `last_verified`, the newer), a bare day read from 00:00 KST, and a skill's is the
- * first-parent commit of its own repo that last touched it. A sentence that says a thing was removed, renamed or replaced is history and is not read, and so are
+ * existed never counts. A page's date is its `updated` (or `last_verified`, the newer), a bare day read from 00:00 KST, and a skill's or rule
+ * file's is the first-parent commit of its own repo that last touched it. Rule files count in `skills_with_stale_facts`, which keeps the duty at
+ * its metric shape, and their own count is the part `skills_with_stale_facts_rules`. A sentence that says a thing was removed, renamed or replaced is history and is not read, and so are
  * experiment, incident and postmortem pages and the skills a vendor wrote (`vendorSkillDirs`).
  * The Wiki dream duty (wiki-dream.ts) already counts a page whose `<code>` path under apps, convex, packages, scripts or ops is missing, and every
  * `source_refs` change, so a page's path facts under those folders are left to it. A file that only changed counts in info `docs_with_changed_files`
@@ -35,7 +37,7 @@ const NAME = /^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/;
 const SCRIPT_FILE = /\.(?:mjs|cjs|js|ts|py|sh)$/;
 const PNPM = /\bpnpm\s+(?:(?:-C|--dir|--filter|-F)\s+(\S+)\s+)?(?:run\s+)?([a-z][\w:.-]*)/g;
 
-export type DocKind = "page" | "skill" | "prime_skill";
+export type DocKind = "page" | "skill" | "rule" | "prime_skill";
 export type Fact =
   | { kind: "path"; ref: string }
   | { kind: "symbol"; ref: string; file: string; name: string }
@@ -290,7 +292,9 @@ export function vendorSkillDirs(skills: ReadonlyMap<string, string>): string[] {
     .map(([path]) => posix.dirname(path) + "/");
 }
 
-const isSkillFile = (path: string): boolean => (path.startsWith(".agents/skills/") && path.endsWith(".md")) || /^\.claude\/rules\/app-[^/]+\.md$/.test(path);
+const isSkillFile = (path: string): boolean => path.startsWith(".agents/skills/") && path.endsWith(".md");
+/** A rule file every agent in auto-sns-agent loads: a `.claude/rules/*.md` file or a root contract (p7, 2026-11-21: d1 read only app-*.md). */
+const isRuleFile = (path: string): boolean => /^\.claude\/rules\/[^/]+\.md$/.test(path) || path === "CLAUDE.md" || path === "AGENTS.md";
 /**
  * A Prime agent skill's markdown in sieun-pi: under a skill folder of skills/ or legacy/prime/skills/, which ~/.prime/agent/skills links to, or
  * of a package's skills/ (pi-rlm, pi-harness, pi-host), which Prime ships; a test fixture is no skill.
@@ -321,7 +325,7 @@ export async function measureFacts(deps: FactsDeps): Promise<PrecheckOutput & { 
   };
   type Source = ReturnType<typeof source>;
 
-  const readSkills = async (from: Source, kind: "skill" | "prime_skill", roots: string[], keep: (path: string) => boolean): Promise<void> => {
+  const readSkills = async (from: Source, kind: Exclude<DocKind, "page">, roots: string[], keep: (path: string) => boolean): Promise<void> => {
     const paths = await from.git(["ls-tree", "-r", "--name-only", "HEAD", "--", ...roots])
       .then(out => out.toString("utf8").split("\n").filter(keep)).catch(error => fail(`${from.label} git ls-tree skills`, error));
     const texts = paths && await from.catFile(paths.map(path => `HEAD:${path}`), "--batch").catch(error => fail(`${from.label} git cat-file skills`, error));
@@ -342,7 +346,8 @@ export async function measureFacts(deps: FactsDeps): Promise<PrecheckOutput & { 
   const auto = source(deps.repo, "auto-sns-agent"), pi = source(deps.piRepo, "sieun-pi");
   const commits = await auto.git(["log", "--first-parent", "--format=%H %ct", "HEAD"]).then(out => parseCommits(out.toString("utf8"))).catch(error => fail("auto-sns-agent git log", error));
   if (!commits) auto.broken = true;
-  await readSkills(auto, "skill", [".agents/skills", ".claude/rules"], isSkillFile);
+  await readSkills(auto, "skill", [".agents/skills"], isSkillFile);
+  await readSkills(auto, "rule", [".claude/rules", "CLAUDE.md", "AGENTS.md"], isRuleFile);
   await readSkills(pi, "prime_skill", ["skills", "legacy/prime/skills", "packages"], isPrimeSkillFile);
   const pagePaths = await deps.listPages().catch(error => fail("wiki pages", error));
   for (const path of pagePaths ?? []) {
@@ -416,18 +421,20 @@ export async function measureFacts(deps: FactsDeps): Promise<PrecheckOutput & { 
   const metrics: Record<string, number> = {
     docs_with_stale_facts: measured ? stale.length : UNMEASURED,
     pages_with_stale_facts: autoJudged ? count("page") : UNMEASURED,
-    skills_with_stale_facts: autoJudged ? count("skill") : UNMEASURED,
+    skills_with_stale_facts: autoJudged ? count("skill") + count("rule") : UNMEASURED,
+    skills_with_stale_facts_rules: autoJudged ? count("rule") : UNMEASURED,
     prime_skills_with_stale_facts: piJudged ? count("prime_skill") : UNMEASURED,
     source_errors: errors.length,
   };
   const info: Record<string, number> = {
     pages_read: docs.filter(doc => doc.kind === "page").length, skills_read: docs.filter(doc => doc.kind === "skill").length,
+    rules_read: docs.filter(doc => doc.kind === "rule").length,
     prime_skills_read: docs.filter(doc => doc.kind === "prime_skill").length, docs_skipped: skipped,
     facts_read: docs.reduce((sum, doc) => sum + doc.facts.length, 0), stale_facts: stale.reduce((sum, [, list]) => sum + list.length, 0),
     docs_with_changed_files: measured ? autoJudged.changed.size + piJudged.changed.size : UNMEASURED,
   };
   const order = (doc: Doc): number => doc.kind === "page" ? 1 : 0;
-  const label = { page: "page", skill: "skill", prime_skill: "Prime skill" } as const;
+  const label = { page: "page", skill: "skill", rule: "rule file", prime_skill: "Prime skill" } as const;
   const flagged: FlaggedSlice[] = [...errors, ...stale.sort(([a], [b]) => order(a) - order(b) || a.at - b.at).map(([doc, list]): FlaggedSlice => ({
     kind: `stale_${doc.kind}`, item: doc.kind === "prime_skill" ? `sieun-pi:${doc.path}` : doc.path, handOff: true, sig: String(doc.at),
     excerpt: clip(`${label[doc.kind]} dated ${day(doc.at)}: ${list.map(drift => drift.detail).join("; ")}`, 600),

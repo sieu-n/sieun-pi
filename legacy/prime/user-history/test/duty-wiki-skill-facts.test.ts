@@ -11,7 +11,7 @@ import { codeSpans, listCuratedPages, measureFacts, readFacts, runNoShell } from
 
 const DUTY = JSON.parse(readFileSync(new URL("../scripts/duties/wiki-skill-facts.duty.json", import.meta.url), "utf8")) as { metrics: DutyMetric[] };
 
-function world(): { repo: string; piRepo: string; content: string; done: () => void } {
+function world(extra: Record<string, string> = {}): { repo: string; piRepo: string; content: string; done: () => void } {
   const root = mkdtempSync(join(tmpdir(), "wiki-skill-facts-"));
   const repo = join(root, "repo"), piRepo = join(root, "sieun-pi"), content = join(root, "content");
   const write = (base: string, path: string, text: string): void => { mkdirSync(dirname(join(base, path)), { recursive: true }); writeFileSync(join(base, path), text); };
@@ -38,6 +38,7 @@ function world(): { repo: string; piRepo: string; content: string; done: () => v
   write(repo, "package.json", JSON.stringify({ scripts: { "dev:old": "x", dev: "y" } }));
   write(repo, ".agents/skills/repo/tool/SKILL.md", "---\nname: tool\n---\nRun `node scripts/tool.mjs --old` with `OLD_LIMIT` set, then `ops/gone.sh` and `pnpm dev:old`.\nAn example path is `scripts/never-there.mjs`.\n");
   write(repo, ".agents/skills/stack/vendor/SKILL.md", "---\nname: vendor\nmetadata:\n  author: Vendor Inc\n---\nSet `OLD_LIMIT`.\n");
+  for (const [path, text] of Object.entries(extra)) write(repo, path, text);
   git(["add", "-A"], "2026-11-01T00:00:00Z");
   git(["commit", "-q", "-m", "one"], "2026-11-01T00:00:00Z");
   write(repo, "scripts/tool.mjs", "if (process.argv.includes('--new')) run();\n");
@@ -90,6 +91,26 @@ test("a Prime skill counts when a sieun-pi fact it names is gone at sieun-pi's H
     assert.equal(skill.item, "sieun-pi:skills/board/references/git.md");
     for (const part of ["scripts/release-chat.mjs has no --fast", "PI_HOLD is in no code", "legacy/x/gone.ts is gone"]) assert.match(skill.excerpt, new RegExp(part));
     assert.doesNotMatch(skill.excerpt, /scripts\/tool\.mjs/, "an auto-sns-agent path never held in sieun-pi");
+  } finally { done(); }
+});
+
+test("a rule file or a root contract counts in skills_with_stale_facts and its rules part when a fact it names is gone at HEAD", async () => {
+  // p7 (2026-11-21): d1 read only .claude/rules/app-*.md, so code-quality.md, verification.md, CLAUDE.md and AGENTS.md could drift unseen.
+  const { repo, piRepo, content, done } = world({
+    ".claude/rules/verification.md": "Run `node scripts/tool.mjs --old` before a commit.\n",
+    "CLAUDE.md": "Set `OLD_LIMIT` and run `ops/gone.sh`.\n",
+    "AGENTS.md": "Commit with `scripts/tool.mjs`.\n",
+  });
+  try {
+    const result = await measureFacts({ run: runNoShell, repo, piRepo, content, readText: path => Promise.resolve(readFileSync(path, "utf8")), listPages: async () => [] });
+    assert.equal(result.metrics.source_errors, 0, JSON.stringify(result.flagged));
+    assert.equal(result.info.rules_read, 3);
+    assert.equal(result.metrics.skills_with_stale_facts_rules, 2, "AGENTS.md names only a file that still exists");
+    assert.equal(result.metrics.skills_with_stale_facts, 3, "the repo skill and the two rule files");
+    const rules = result.flagged!.filter(slice => slice.kind === "stale_rule");
+    assert.deepEqual(rules.map(slice => slice.item).sort(), [".claude/rules/verification.md", "CLAUDE.md"]);
+    assert.match(rules.find(slice => slice.item === "CLAUDE.md")!.excerpt, /^rule file dated .*OLD_LIMIT is in no code.*ops\/gone\.sh is gone/);
+    assert.match(rules.find(slice => slice.item === ".claude/rules/verification.md")!.excerpt, /scripts\/tool\.mjs has no --old/);
   } finally { done(); }
 });
 
