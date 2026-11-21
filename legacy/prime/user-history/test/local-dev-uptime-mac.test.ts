@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { WatchLine } from "../src/mac-usable-watch.ts";
 import { hostAwayOf, judge, type DutyMetric, type FlaggedSlice } from "../src/shared/chat-duties.ts";
-import { convexCommand, convexPushStale, LOCAL_CONVEX_COMMAND, MAC_COMMAND, measureLocalConvex, MAC_RETRY_MS, MAC_WINDOW_MS, macDown, macUnusableMinutes, measureMac, measureStoreBox, parseConvexReading, parseMacReading, parseStoreBox, STORE_BOX, STORE_COMMAND, STORE_VM_IO_FULL_PCT } from "../scripts/duties/local-dev-uptime.ts";
+import { convexCommand, convexPushStale, crawlerHeld, LOCAL_CONVEX_COMMAND, MAC_COMMAND, measureLocalConvex, MAC_RETRY_MS, MAC_WINDOW_MS, macDown, macUnusableMinutes, measureMac, measureStoreBox, parseConvexReading, parseMacReading, parseStoreBox, STORE_BOX, STORE_COMMAND, STORE_VM_IO_FULL_PCT } from "../scripts/duties/local-dev-uptime.ts";
 
 const push = (outcome: string, at: string, lastGoodAt: string | null) =>
   `convex-push {  "count": 1,  "watchers": [],  "push": {    "outcome": "${outcome}",    "at": "${at}",    "reason": ${outcome === "failed" ? '"schema eval timed out (1s)"' : "null"},    "lastGoodAt": ${lastGoodAt ? `"${lastGoodAt}"` : "null"}  }}\n`;
@@ -211,4 +211,24 @@ test("a Mac that answers a tailscale ping but not ssh gets no host_away, so its 
   const result = await measureMac({ platform: "linux", exec: async () => { throw asleep; }, watch: async () => [], wait: async () => {}, macAway: async () => undefined }, 0);
   assert.equal(hostAwayOf({ metrics: result.metrics, flagged: result.flagged }), undefined);
   assert.deepEqual(result.flagged.map(item => item.kind), ["mac_read", "mac_unreachable"]);
+});
+
+// 11-20 10:48:51Z: a job ran `docker compose stop crawler-v3` on the store box under c230, and each d1 run after it read :8787 as a down server.
+test("a crawler API whose store box container was stopped on purpose is no miss, and a crashed or restarting one still is", async () => {
+  const box = (line: string) => `${store("1457.62", 1)}${line}\n`;
+  assert.match(STORE_COMMAND, /docker inspect -f 'crawler-v3 \{\{\.State\.Status\}\} \{\{\.State\.ExitCode\}\} \{\{\.RestartCount\}\}/);
+  const stopped = parseStoreBox(box("crawler-v3 exited 0 0 2026-11-20T10:48:51.585814716Z"));
+  assert.deepEqual(stopped.crawler, { status: "exited", exitCode: 0, restarts: 0, finishedAt: "2026-11-20T10:48:51.585814716Z" });
+  assert.equal(stopped.top.length, 3);
+  const mac = (crawler: string) => measureMac({ platform: "linux", exec: async () => reading("4.5", 44, ["200", "200", "200", "000"]), watch: async () => [], wait: async () => {} }, 0,
+    measureStoreBox({ exec: async () => box(crawler) }, 0).then(result => result.crawler));
+  const held = await mac("crawler-v3 exited 0 0 2026-11-20T10:48:51.585814716Z");
+  assert.equal(held.metrics.mac_servers_not_answering, 0);
+  assert.match(held.flagged.find(item => item.kind === "crawler_stopped")!.excerpt, /stopped on purpose \(exited 0 at 2026-11-20T10:48:51/);
+  for (const line of ["crawler-v3 exited 1 0 2026-10-27T17:51:00Z", "crawler-v3 restarting 1 4116 2026-11-10T03:00:00Z", "crawler-v3 exited 137 0 2026-11-04T00:00:00Z", ""]) {
+    const down = await mac(line);
+    assert.equal(down.metrics.mac_servers_not_answering, 1, line);
+    assert.ok(!down.flagged.some(item => item.kind === "crawler_stopped"), line);
+  }
+  assert.equal(crawlerHeld("502", stopped.crawler), false);
 });

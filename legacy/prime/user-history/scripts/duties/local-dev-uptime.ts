@@ -26,6 +26,7 @@ import { macSilent } from "./mac-reach.ts";
  * Vent and its tiers dropped CRAWLER_API_URL on 11-04 (auto-sns-agent b4497e1a57). When that file points a service away from this machine
  * (`pnpm dev:crawler staging`), the local one is off by design and does not count as down.
  * It also reads the owner's Mac: mac_servers_not_answering counts which of its search app, design demo, Vent, crawler API and Convex forward gave no 200 over ssh,
+ * less a crawler API whose store box container was stopped on purpose (exited 0), which the run detail names as crawler_stopped instead,
  * mac_convex_push_stale is 1 when its Convex watcher's newest push failed and no push succeeded after the newest convex/ change, mac_unusable_min
  * counts the minutes of the last 24 h that the Mac usable watch read unusable (src/mac-usable-watch.ts USABLE, the same line d7 judges a minute
  * by), and mac_unreachable is 1 when ssh cannot reach it (asleep), which fails no check.
@@ -56,6 +57,9 @@ export const MAC_HOST = "mac";
  * read it. :3210 is the Mac's socat forward to local Convex on the store box. The socat accepts every connect, so only an HTTP answer from
  * /version shows Convex is up: on 11-03 from about 15:32Z its requests took up to 385 s while the store box's Docker VM read 37-63% full
  * IO pressure, and 5174 pages that read Convex never painted.
+ * A :8787 with no answer while the store box's crawler-v3 container reads exited with code 0 is a crawler someone stopped on purpose and does
+ * not count (crawlerHeld): on 11-20 at 10:48:51Z a job ran `docker compose stop crawler-v3` there under owner rule c230 ("NEVER EVER FUCKING
+ * RUN WITHOUT PROXY JUST STOP FOR NOW"), and every d1 run after it read :8787 as a down server.
  */
 export const MAC_PORTS = [{ port: 5174, name: "search app", path: "/" }, { port: 5180, name: "design demo", path: "/" },
   { port: 8791, name: "Vent", path: "/healthz" }, { port: 8787, name: "crawler API", path: "/health" },
@@ -110,17 +114,32 @@ export const STORE_SWAP_MB = 6000;
 export const STORE_VM_IO_FULL_PCT = 40;
 /**
  * Swap use and the macOS memory pressure level (1 normal, 2 warn, 4 critical), then the three processes with the most memory, swapped and
- * compressed pages included, then the Docker VM's own IO pressure and swap from a throwaway container, whose /proc shows the VM kernel's.
+ * compressed pages included, then the Docker VM's own IO pressure and swap from a throwaway container, whose /proc shows the VM kernel's, then
+ * the compose crawler-v3 container's state, exit code, restart count and stop time, which the box gives no line for when it holds no such container.
  */
 export const STORE_COMMAND = "sysctl -n vm.swapusage kern.memorystatus_vm_pressure_level; top -l 1 -o mem -n 3 -stats command,mem,cmprs | tail -3; "
-  + "/usr/local/bin/docker run --rm alpine:latest cat /proc/pressure/io /proc/meminfo | sed -n 's/^full /vm-io-full /p; s/^SwapTotal:/vm-swap-total:/p; s/^SwapFree:/vm-swap-free:/p'";
+  + "/usr/local/bin/docker run --rm alpine:latest cat /proc/pressure/io /proc/meminfo | sed -n 's/^full /vm-io-full /p; s/^SwapTotal:/vm-swap-total:/p; s/^SwapFree:/vm-swap-free:/p'; "
+  + "/usr/local/bin/docker inspect -f 'crawler-v3 {{.State.Status}} {{.State.ExitCode}} {{.RestartCount}} {{.State.FinishedAt}}' "
+  + "$(/usr/local/bin/docker ps -aq --filter label=com.docker.compose.service=crawler-v3) 2>/dev/null || true";
 export const PRESSURE_NAMES: Record<number, string> = { 1: "normal", 2: "warn", 4: "critical" };
+
+/** The store box's crawler-v3 container as `docker inspect` gives it: `exited`, `running`, `restarting` and so on. */
+export interface CrawlerState { status: string; exitCode: number; restarts: number; finishedAt: string }
+
+/**
+ * Whether the Mac's :8787 gave no answer because someone stopped the crawler: its container exited with code 0, which `docker compose stop`
+ * gives and a crash does not. A nonzero exit, a restarting container or an unread state stays a down server, as in the 4,116 restarts of 11-10 (p807).
+ */
+export function crawlerHeld(code: string | undefined, crawler: CrawlerState | undefined): crawler is CrawlerState {
+  return code === "000" && crawler?.status === "exited" && crawler.exitCode === 0;
+}
 
 /**
  * Parses STORE_COMMAND's output: `total = 9216.00M  used = 8525.44M  free = 690.56M  (encrypted)`, the pressure level, the top lines, then the
- * VM's `vm-io-full avg10=.. avg60=..` and `vm-swap-total:`/`vm-swap-free:` kB lines, which stay unset when the VM gave no reading.
+ * VM's `vm-io-full avg10=.. avg60=..` and `vm-swap-total:`/`vm-swap-free:` kB lines, which stay unset when the VM gave no reading, and the
+ * `crawler-v3 <status> <exit code> <restarts> <finished at>` line, which stays unset when the box gave none.
  */
-export function parseStoreBox(text: string): { swapUsedMb: number; pressureLevel: number; top: string[]; vmIoFullPct?: number; vmSwapUsedMb?: number } {
+export function parseStoreBox(text: string): { swapUsedMb: number; pressureLevel: number; top: string[]; vmIoFullPct?: number; vmSwapUsedMb?: number; crawler?: CrawlerState } {
   const lines = text.trim().split("\n");
   const swapUsedMb = Number(/used = ([\d.]+)M/.exec(lines[0] ?? "")?.[1]);
   const pressureLevel = Number(lines[1]?.trim());
@@ -128,14 +147,16 @@ export function parseStoreBox(text: string): { swapUsedMb: number; pressureLevel
   const ioFull = /^vm-io-full avg10=[\d.]+ avg60=([\d.]+)/m.exec(text)?.[1];
   const swapTotal = /^vm-swap-total:\s*(\d+) kB/m.exec(text)?.[1];
   const swapFree = /^vm-swap-free:\s*(\d+) kB/m.exec(text)?.[1];
+  const crawler = /^crawler-v3 (\S+) (-?\d+) (\d+) (\S+)\s*$/m.exec(text);
   return { swapUsedMb: Math.round(swapUsedMb), pressureLevel,
-    top: lines.slice(2).filter(line => !line.startsWith("vm-")).map(line => line.trim().replace(/\s+/g, " ")).filter(Boolean),
+    top: lines.slice(2).filter(line => !line.startsWith("vm-") && !line.startsWith("crawler-v3 ")).map(line => line.trim().replace(/\s+/g, " ")).filter(Boolean),
+    ...crawler ? { crawler: { status: crawler[1]!, exitCode: Number(crawler[2]), restarts: Number(crawler[3]), finishedAt: crawler[4]! } } : {},
     ...ioFull ? { vmIoFullPct: Number(ioFull) } : {},
     ...swapTotal && swapFree ? { vmSwapUsedMb: Math.round((Number(swapTotal) - Number(swapFree)) / 1024) } : {} };
 }
 
 /** Reads the store box over ssh. ssh exit 255 means it could not reach the box, which leaves store_box_swap_used_mb unmeasured. */
-export async function measureStoreBox(deps: Pick<UptimeDeps, "exec">, at: number): Promise<{ metrics: Record<string, number>; flagged: FlaggedSlice[] }> {
+export async function measureStoreBox(deps: Pick<UptimeDeps, "exec">, at: number): Promise<{ metrics: Record<string, number>; flagged: FlaggedSlice[]; crawler?: CrawlerState }> {
   let reading: ReturnType<typeof parseStoreBox>;
   try {
     reading = parseStoreBox(await deps.exec("ssh", ["-o", "BatchMode=yes", STORE_BOX, STORE_COMMAND]));
@@ -149,7 +170,8 @@ export async function measureStoreBox(deps: Pick<UptimeDeps, "exec">, at: number
   const pressure = PRESSURE_NAMES[reading.pressureLevel] ?? `level ${reading.pressureLevel}`;
   const vm = reading.vmIoFullPct === undefined ? "Docker VM unread"
     : `Docker VM IO full avg60 ${reading.vmIoFullPct}%${ioOver ? `, over the ${STORE_VM_IO_FULL_PCT}% line where local Convex stalled on 11-03` : ""}, VM swap ${reading.vmSwapUsedMb ?? "unread"} MB`;
-  return { metrics: { store_box_swap_used_mb: reading.swapUsedMb, ...reading.vmIoFullPct !== undefined ? { store_box_vm_io_full_pct: reading.vmIoFullPct } : {} },
+  return { ...reading.crawler ? { crawler: reading.crawler } : {},
+    metrics: { store_box_swap_used_mb: reading.swapUsedMb, ...reading.vmIoFullPct !== undefined ? { store_box_vm_io_full_pct: reading.vmIoFullPct } : {} },
     flagged: [{ at, kind: ioOver ? "store_box_vm_io" : over ? "store_box_swap" : "store_box", excerpt: `Store box: ${vm}; ${reading.swapUsedMb} MB host swap used${over ? `, over the ${STORE_SWAP_MB} MB line where local Convex schema evals start to pass 1 s` : ""}, memory pressure ${pressure}, top ${reading.top.join("; ")}`.slice(0, 300) }] };
 }
 
@@ -222,9 +244,9 @@ export async function measureLocalConvex(deps: Pick<UptimeDeps, "exec" | "platfo
   return { metrics: { convex_push_stale: convex.stale ? 1 : 0 }, flagged: [{ at, kind: convex.stale ? "convex_stale" : "convex", excerpt: `Local ${convex.detail}`.slice(0, 300) }] };
 }
 
-/** Each Mac dev server that gave no 200, in plain words. */
-export function macDown(reading: MacReading): string[] {
-  return MAC_PORTS.filter(({ port }) => reading.ports[port] !== "200")
+/** Each Mac dev server that gave no 200, in plain words, less a crawler API stopped on purpose (crawlerHeld). */
+export function macDown(reading: MacReading, crawler?: CrawlerState): string[] {
+  return MAC_PORTS.filter(({ port }) => reading.ports[port] !== "200" && !(port === 8787 && crawlerHeld(reading.ports[port], crawler)))
     .map(({ port, name }) => `${name} :${port} gave ${reading.ports[port] === "000" || !reading.ports[port] ? "no answer" : `HTTP ${reading.ports[port]}`}`);
 }
 
@@ -289,8 +311,10 @@ export interface MacResult extends Pick<PrecheckOutput, "lastEventAt" | "windowM
  * When the Mac also answers no tailscale ping, the run flags it `host_away`, so the runner holds the run and reruns it once the Mac is back. Since
  * c97f586c (11-02) a run that leaves a counted metric unmeasured reads error, and ops guy's d1 left mac_servers_not_answering unmeasured on
  * every run the Mac slept through with no host_away item, so those runs read error with no host-back rerun.
+ * `crawler` is the store box's crawler-v3 state from measureStoreBox, which tells a stopped crawler from a down one.
  */
-export async function measureMac(deps: Pick<UptimeDeps, "exec" | "platform" | "watch" | "wait" | "macAway">, at: number): Promise<MacResult> {
+export async function measureMac(deps: Pick<UptimeDeps, "exec" | "platform" | "watch" | "wait" | "macAway">, at: number,
+  crawler: Promise<CrawlerState | undefined> = Promise.resolve(undefined)): Promise<MacResult> {
   const day = macUnusableMinutes(await deps.watch().catch(() => []));
   const windows: Pick<MacResult, "lastEventAt" | "windowMs"> = day.read
     ? { windowMs: { mac_unusable_min: MAC_WINDOW_MS }, ...day.lastAt === undefined ? {} : { lastEventAt: { mac_unusable_min: day.lastAt } } } : {};
@@ -300,9 +324,11 @@ export async function measureMac(deps: Pick<UptimeDeps, "exec" | "platform" | "w
   const watched = day.read ? { mac_unusable_min: day.unusable } : {};
   const read = () => deps.platform === "darwin" ? deps.exec("sh", ["-c", MAC_COMMAND]) : deps.exec("ssh", [MAC_HOST, MAC_COMMAND]);
   let text: string;
+  let held: CrawlerState | undefined;
   try {
     text = await read();
-    if (macDown(parseMacReading(text)).length) {
+    held = await crawler;
+    if (macDown(parseMacReading(text), held).length) {
       await deps.wait(MAC_RETRY_MS);
       text = await read();
     }
@@ -316,14 +342,16 @@ export async function measureMac(deps: Pick<UptimeDeps, "exec" | "platform" | "w
     return { ...windows, metrics: watched, flagged: [usable, { at, kind: "mac_read", excerpt: `Mac: read failed: ${message}`.slice(0, 300) }] };
   }
   const reading = parseMacReading(text);
-  const down = macDown(reading);
+  const down = macDown(reading, held);
+  const stopped: FlaggedSlice[] = crawlerHeld(reading.ports[8787], held)
+    ? [{ at, kind: "crawler_stopped", excerpt: `Mac: crawler API :8787 gave no answer because its crawler-v3 container on the store box was stopped on purpose (exited 0 at ${held.finishedAt}, ${held.restarts} restarts), so it is not counted down` }] : [];
   const summary = `load ${reading.load1}, ${reading.freePct}% memory free, ${MAC_PORTS.map(({ port }) => `:${port} ${reading.ports[port] ?? "unread"}`).join(", ")}`;
   const convex = convexPushStale(reading);
   const convexFlag: FlaggedSlice = convex
     ? { at, kind: convex.stale ? "mac_convex_stale" : "mac_convex", excerpt: convex.detail.slice(0, 300) }
     : { at, kind: "mac_read", excerpt: `Mac: no Convex watcher push state or convex/ mtime in the read: ${(/^convex-(push|src).*$/gm.exec(text)?.[0] ?? "no convex lines").slice(0, 200)}` };
   return { ...windows, metrics: { ...watched, mac_servers_not_answering: down.length, mac_unreachable: 0, ...(convex ? { mac_convex_push_stale: convex.stale ? 1 : 0 } : {}) },
-    flagged: [usable, { at, kind: down.length ? "mac_down" : "mac_answer", excerpt: (down.length ? `Mac dev servers not answering 200: ${down.join(", ")} (${summary})` : `Mac dev servers answer: ${summary}`).slice(0, 300) }, convexFlag] };
+    flagged: [usable, { at, kind: down.length ? "mac_down" : "mac_answer", excerpt: (down.length ? `Mac dev servers not answering 200: ${down.join(", ")} (${summary})` : `Mac dev servers answer: ${summary}`).slice(0, 300) }, ...stopped, convexFlag] };
 }
 
 /** pm2 processes whose restarts the duty counts. The wiki counts here only where pm2 runs it. */
@@ -478,9 +506,9 @@ export async function measureUptime(deps: UptimeDeps, previous: UptimeState | un
   const flagged: FlaggedSlice[] = [];
   const metrics: Record<string, number> & { servers_not_answering: number; restarts: number } = { servers_not_answering: 0, restarts: 0 };
   const at = deps.now();
-  const mac = measureMac(deps, at).catch((error: unknown): Awaited<ReturnType<typeof measureMac>> =>
-    ({ metrics: {}, flagged: [{ at, kind: "mac_read", excerpt: `Mac: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300) }] }));
   const store = measureStoreBox(deps, at);
+  const mac = measureMac(deps, at, store.then(result => result.crawler, () => undefined)).catch((error: unknown): Awaited<ReturnType<typeof measureMac>> =>
+    ({ metrics: {}, flagged: [{ at, kind: "mac_read", excerpt: `Mac: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300) }] }));
   const localConvex = measureLocalConvex(deps, at);
   const answers = await Promise.all([{ key: "wiki", url: deps.wiki + "/" }, ...SERVICES].map(async (service): Promise<FlaggedSlice> => {
     const where = target(service, deps.env);
