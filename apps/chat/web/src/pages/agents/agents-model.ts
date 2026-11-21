@@ -35,13 +35,11 @@ const groupOf = (status: RunStatus): AgentGroup => (status === "working" || stat
 export const dotOf = (status: RunStatus): "online" | "away" | "busy" | null =>
   status === "working" ? "online" : status === "sleeping" ? "away" : status === "failed" ? "busy" : null;
 
-/** The Agents page's two lists: live agents, and the archived ones Unarchive brings back. */
-export type AgentsFilter = "active" | "archived";
-export const agentsFilterFromParams = (params: Record<string, string>): AgentsFilter => (params.show === "archived" ? "archived" : "active");
+export type CardAction = "open" | "model" | "stop" | "archive";
 
-/** The agents a filter shows, by newest activity. */
-export function agentsShown(agents: readonly AgentSummary[], filter: AgentsFilter = "active"): AgentSummary[] {
-  return agents.filter((agent) => !!agent.archived === (filter === "archived")).sort((a, b) => b.updatedAt - a.updatedAt || a.name.localeCompare(b.name));
+/** Live agents by newest activity. */
+export function agentsShown(agents: readonly AgentSummary[]): AgentSummary[] {
+  return agents.filter((agent) => !agent.archived).sort((a, b) => b.updatedAt - a.updatedAt || a.name.localeCompare(b.name));
 }
 
 export const STATUS_LABEL: Record<RunStatus, string> = {
@@ -51,32 +49,19 @@ export const STATUS_LABEL: Record<RunStatus, string> = {
   idle: "Idle",
 };
 
-export type AgentAction = "open" | "model" | "rename" | "stop" | "archive" | "unarchive";
-
-/**
- * The one menu of an agent or a job, on its card, its page's header and its sidebar row. `model` adds Change model where a picker sits
- * beside the menu, and `message: false` drops Message where a Message button sits beside it. Stop shows only while it runs or waits for a
- * slot, and an archived one offers Unarchive.
- */
-export function actionsFor(agent: Pick<AgentSummary, "status" | "archived" | "conversation">, opts: { model?: boolean; message?: boolean } = {}): AgentAction[] {
-  const rename: AgentAction[] = canRename(agent) ? ["rename"] : [];
-  if (agent.archived) return ["unarchive", ...rename];
-  const actions: AgentAction[] = [];
-  if (opts.message !== false) actions.push("open");
-  if (opts.model) actions.push("model");
-  actions.push(...rename);
+/** Stop shows only while the agent runs or waits for a slot. */
+export function actionsFor(agent: AgentSummary): CardAction[] {
+  const actions: CardAction[] = ["open", "model"];
   if (agent.status === "working" || agent.status === "sleeping") actions.push("stop");
   actions.push("archive");
   return actions;
 }
 
-export const ACTION_LABEL: Record<AgentAction, string> = {
+export const ACTION_LABEL: Record<CardAction, string> = {
   open: "Message",
   model: "Change model",
-  rename: "Rename",
   stop: "Stop",
   archive: "Archive",
-  unarchive: "Unarchive",
 };
 
 /**
@@ -123,8 +108,8 @@ export function levelsFor(catalog: ModelCatalog | null, key: string): string[] {
   return catalog?.models.find((model) => modelKey(model) === key)?.levels ?? [];
 }
 
-/** pi-host names root threads only, so an agent or a root job takes a new name and a job inside a thread keeps its thread's. */
-export const canRename = (agent: Pick<AgentSummary, "conversation">): boolean => agent.conversation === 1;
+/** Archive takes a root thread; a job inside a thread goes with its thread. */
+export const canArchive = (agent: AgentSummary): boolean => agent.conversation === 1;
 
 /** The tabs of an agent's page, as apps/chat/docs/agent-model.md names them. */
 export type ConfigSection = "overview" | "for" | "work" | "jobs" | "board" | "memory" | "instructions";

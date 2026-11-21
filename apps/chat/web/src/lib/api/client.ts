@@ -400,8 +400,6 @@ export const get = <T>(of: Read<T>, wait?: Wait): Promise<T> => call<T>("GET", o
 /** The reads of the panels the owner opens: the Agents page, an agent's page, and a chat's board with its duties, check-in and jobs. */
 export const reads = {
   agents: () => read<AgentSummary[]>("/api/agents"),
-  /** Live and archived agents, for the Agents page's Archived tab. */
-  allAgents: () => read<AgentSummary[]>("/api/agents?archived=1"),
   models: () => read<ModelCatalog>("/api/models"),
   /** Channels and Solo rooms; a DM is listed by agent, never here. */
   rooms: () => read<Room[]>("/api/rooms"),
@@ -442,7 +440,6 @@ export const api = {
     call<ConversationHeader>("PATCH", `/api/c/${enc(roomOf(id))}`, { model, ...(thinkingLevel ? { thinkingLevel } : {}) }),
   stopAgent: (id: AgentId) => call<{ ok: true }>("POST", `/api/c/${enc(roomOf(id))}/abort`),
   archiveAgent: (id: AgentId, archived = true) => call<ConversationHeader>("PATCH", `/api/c/${enc(roomOf(id))}`, { archived }),
-  renameAgent: (id: AgentId, name: string) => call<ConversationHeader>("PATCH", `/api/c/${enc(roomOf(id))}`, { name }),
 
   header: (id: ConversationId, wait?: Wait) => call<ConversationHeader>("GET", `/api/c/${enc(id)}`, undefined, undefined, wait),
   items: (id: ConversationId, opts: { before?: string; after?: string; around?: string; limit?: number } = {}, wait?: Wait) =>

@@ -11,8 +11,6 @@
   type Props = {
     /** The channel a channel thread lives in. */
     channel?: string | null;
-    /** That channel's name, for the reply box's "Also send to #channel". */
-    channelName?: string | null;
     /** A job's conversation id, or a channel root post id when `channel` is set. */
     threadKey: string;
     /** The reply box's draft key in lib/drafts, which names the conversation too, since post ids repeat across rooms. */
@@ -29,7 +27,7 @@
     /** The reply a link names, such as a saved reply on the Later page: the pane scrolls to it and flashes it. */
     focus?: string;
   };
-  let { channel = null, channelName = null, threadKey, draftKey, focus, context, statusOf, oncopylink, onthread, onmention, onboardid, onartifact, layout = "bubble" }: Props = $props();
+  let { channel = null, threadKey, draftKey, focus, context, statusOf, oncopylink, onthread, onmention, onboardid, onartifact, layout = "bubble" }: Props = $props();
 
   // svelte-ignore state_referenced_locally
   const job = channel ? null : timeline(threadKey);
@@ -62,7 +60,7 @@
     if (job) return job.send(out.text, { images: out.images, mentions: out.mentions });
     // A reply answers the reply he marked unread here, so its New line goes with it.
     if (markKey) markedUnread.delete(markKey);
-    return posts?.send(out.text, { images: out.images, mentions: out.mentions, ...(out.alsoInChannel ? { alsoInChannel: true } : {}) }) ?? Promise.resolve();
+    return posts?.send(out.text, { images: out.images, mentions: out.mentions }) ?? Promise.resolve();
   }
 
   function retrySend(item: Item) {
@@ -108,7 +106,6 @@
     agents={directory.agents}
     channels={directory.channels}
     room={channelRoom}
-    alsoSend={channel && channelName ? `Also send to #${channelName}` : null}
     working={job?.status === "working"}
     {draftKey}
     compact

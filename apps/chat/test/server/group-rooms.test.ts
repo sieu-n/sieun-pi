@@ -220,23 +220,6 @@ describe("a channel on rooms", () => {
     host.beforeSubmit = undefined;
   });
 
-  test("a thread reply sent with alsoInChannel shows in the channel with its root's first line, and a plain reply stays in its thread", async () => {
-    const root = await s.send("POST", `/api/c/${ids.cutoverChannel}/send`, { text: "quiet relay root\nsecond line", requestId: "also-root" });
-    const plain = await s.send("POST", `/api/c/${ids.cutoverChannel}/send`, { text: "quiet, thread only", threadRoot: root.body.item.id, requestId: "also-plain" });
-    const also = await s.send("POST", `/api/c/${ids.cutoverChannel}/send`, { text: "quiet, to the channel too", threadRoot: root.body.item.id, alsoInChannel: true, requestId: "also-both" });
-    assert.deepEqual((also.body.item as Message).alsoInChannel, { rootText: "quiet relay root" });
-    const channel = await posts(s, ids.cutoverChannel);
-    assert.equal(channel.some(p => p.id === plain.body.item.id), false, "a plain reply stays out of the channel");
-    const shown = channel.find(p => p.id === also.body.item.id);
-    assert.equal(shown?.threadRoot, root.body.item.id);
-    assert.deepEqual(shown?.alsoInChannel, { rootText: "quiet relay root" });
-    const thread = await s.get<{ root: Message; items: Message[] }>(`/api/c/${ids.cutoverChannel}/replies/${root.body.item.id}`);
-    assert.deepEqual(thread.items.map(i => [i.id, !!i.alsoInChannel]), [[plain.body.item.id, false], [also.body.item.id, true]]);
-    assert.equal(thread.root.thread?.replies, 2, "the root counts both replies");
-    const root2 = await s.send("POST", `/api/c/${ids.cutoverChannel}/send`, { text: "quiet, no thread", alsoInChannel: true, requestId: "also-top" });
-    assert.equal("alsoInChannel" in root2.body.item, false, "a top-level post ignores the flag");
-  });
-
   test("an agent's answers to two owner posts in one thread each record the post they answer, and each delivery reads as answered by its own", async () => {
     // #dev-search-general on 11-20: p15 came as a steer after the turn of p14 posted, and p15's delivery read as answered by the p14 answer.
     const submits: { thread: string; input: SubmitInput }[] = [];

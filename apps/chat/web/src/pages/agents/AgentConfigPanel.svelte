@@ -3,14 +3,13 @@
   import { Avatar, Badge, Button, Chip, EmptyState, IconButton, LoadingText, Markdown, Menu, Meter, ModelPicker, PanelHeader, StatusDot, Tabs, TypingDots, stampLabel, toast, type MenuEntry } from "$lib/ui";
   import { conversationHref, hrefFor, router } from "$lib/router.svelte";
   import {
-    JOB_KIND_LABEL, SECTIONS, STATUS_LABEL, bytesLabel, canRename, everyLabel, forLabel, hasForList, levelsFor, modelKey, modelOptions, shortPath, type ConfigSection,
+    JOB_KIND_LABEL, SECTIONS, STATUS_LABEL, bytesLabel, canArchive, everyLabel, forLabel, hasForList, levelsFor, modelKey, modelOptions, shortPath, type ConfigSection,
   } from "./agents-model";
   import AccountChip from "$pages/accounts/AccountChip.svelte";
   import AgentBrief from "./AgentBrief.svelte";
   import AgentForMe from "./AgentForMe.svelte";
   import AgentMemory from "./AgentMemory.svelte";
   import ProjectPicker from "./ProjectPicker.svelte";
-  import { agentMenu, renameAgent, unarchiveAgent } from "./agent-actions.svelte";
 
   type Props = {
     agentId: string;
@@ -21,8 +20,10 @@
     onsection: (section: ConfigSection) => void;
     onmessage: (agent: AgentSummary) => void;
     onmodel: (agent: AgentSummary, model: string, level: ThinkingLevel | undefined) => void;
+    onstop: (agent: AgentSummary) => void;
+    onarchive: (agent: AgentSummary) => void;
   };
-  let { agentId, agent: liveAgent, catalog, section, onsection, onmessage, onmodel }: Props = $props();
+  let { agentId, agent: liveAgent, catalog, section, onsection, onmessage, onmodel, onstop, onarchive }: Props = $props();
 
   /** The agent's configuration, from the page's kept answer when it holds one and read again behind it. */
   const answer = view(() => reads.agentConfig(agentId));
@@ -80,11 +81,18 @@
   const boardHref = $derived(config?.board ? hrefFor("board", [config.board.chat]) : null);
   let menuOpen = $state(false);
   let menuAnchor = $state<HTMLButtonElement>();
-  /** The header's "..." menu, the agent's one menu (`agentMenu`) after Open board; Message and the model sit in the header itself. */
+  /** The header's "..." menu: Message and the model sit in the header itself. */
   const menuItems = $derived.by((): MenuEntry[] => {
     if (!agent) return [];
-    const board: MenuEntry[] = boardHref ? [{ id: "board", label: "Open board", icon: "board", onselect: () => router.navigate(boardHref) }] : [];
-    return [...board, ...agentMenu(agent, { message: false })];
+    const item = agent;
+    const items: MenuEntry[] = [];
+    if (boardHref) items.push({ id: "board", label: "Open board", icon: "board", onselect: () => router.navigate(boardHref) });
+    if (running) items.push({ id: "stop", label: "Stop", icon: "stop", onselect: () => onstop(item) });
+    if (canArchive(item) && !item.archived) {
+      if (items.length) items.push({ type: "separator" });
+      items.push({ id: "archive", label: "Archive", icon: "trash", tone: "danger", onselect: () => onarchive(item) });
+    }
+    return items;
   });
   const forList = $derived(hasForList(agentId));
   const forName = $derived(agent?.name ?? config?.agent.name ?? "");
@@ -155,9 +163,7 @@
       {#snippet titleContent()}
         <span class="identity">
           <Avatar name={agent.name} kind="agent" seed={agent.id} size={24} status={agent.status === "idle" ? null : dotOf(agent.status)} />
-          <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-          <h1 class="t-label-sm name" title={canRename(agent) ? `${agent.name} · double-click to rename` : agent.name} ondblclick={() => canRename(agent) && renameAgent(agent)}>{agent.name}</h1>
-          {#if agent.archived}<Badge>Archived</Badge>{/if}
+          <h1 class="t-label-sm name">{agent.name}</h1>
           <span class="t-caption line" data-status={agent.status}>
             {#if running}<TypingDots mode={agent.status === "working" ? "working" : "waiting"} size={4} />{/if}
             <span>{STATUS_LABEL[agent.status]}</span>
@@ -177,11 +183,7 @@
               <span class="t-caption">No model yet</span>
             {/if}
           </span>
-          {#if agent.archived}
-            <Button size="sm" variant="primary" icon="unarchive" onclick={() => void unarchiveAgent(agent)}>Unarchive</Button>
-          {:else}
-            <Button size="sm" variant="primary" icon="chat" onclick={() => onmessage(agent)}>Message</Button>
-          {/if}
+          <Button size="sm" variant="primary" icon="chat" onclick={() => onmessage(agent)}>Message</Button>
           {#if menuItems.length}<IconButton icon="more" label="Actions for {agent.name}" size="sm" bind:element={menuAnchor} onclick={() => (menuOpen = !menuOpen)} />{/if}
         </span>
       {/snippet}

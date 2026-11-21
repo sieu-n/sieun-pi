@@ -1,13 +1,9 @@
-/**
- * The rename dialog's target, a channel, a Solo room or an agent. A room's header menu, a sidebar row's menu and an agent's menu open it; App mounts
- * the dialog once.
- */
-export type RenameKind = "channel" | "solo" | "agent";
+/** The channel rename dialog's target. The channel header menu and a sidebar row's menu open it; App mounts the dialog once. */
 class RenameDialog {
-  target = $state<{ id: string; name: string; kind: RenameKind } | null>(null);
+  target = $state<{ id: string; name: string } | null>(null);
 
-  open(id: string, name: string, kind: RenameKind = "channel"): void {
-    this.target = { id, name, kind };
+  open(id: string, name: string): void {
+    this.target = { id, name };
   }
 
   close(): void {

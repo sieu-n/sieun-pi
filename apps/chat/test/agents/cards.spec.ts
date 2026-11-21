@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { agentPage, agentsFilter, card, grid, listAgents, listJobs, newAgentButton, openAgents, roomOf } from "./helpers.ts";
+import { agentPage, card, grid, listAgents, listJobs, newAgentButton, openAgents, roomOf } from "./helpers.ts";
 
 // Chrome drops in-flight dev-server loads with ERR_NETWORK_CHANGED when the box's interfaces change, so one rerun covers that.
 test.describe.configure({ retries: 1 });
@@ -44,7 +44,7 @@ test("the grid has Buzz's measures: a 768 px column, 192 px tracks, 244 px cards
   expect(box.height).toBeGreaterThanOrEqual(244);
   expect(box.width).toBeGreaterThanOrEqual(192);
   expect(await first.evaluate((el) => getComputedStyle(el).borderTopLeftRadius)).toBe("24px");
-  const toolbar = (await agentsFilter(page).boundingBox())!;
+  const toolbar = (await page.getByRole("heading", { name: "Your agents" }).boundingBox())!;
   const button = (await newAgentButton(page).boundingBox())!;
   expect(Math.round(button.x + button.width - toolbar.x)).toBe(720);
 });
@@ -77,7 +77,7 @@ test("the ... button and a right click open the same menu, with Stop only while 
     const cell = card(page, agent);
     await cell.getByRole("button", { name: `Actions for ${agent.name}` }).click();
     const menu = page.getByRole("menu");
-    const expected = ["Message", "Change model", "Rename", ...(agent.status === "working" || agent.status === "sleeping" ? ["Stop"] : []), "Archive"];
+    const expected = ["Message", "Change model", ...(agent.status === "working" || agent.status === "sleeping" ? ["Stop"] : []), "Archive"];
     await expect(menu.getByRole("menuitem")).toHaveText(expected);
     await page.keyboard.press("Escape");
     await expect(menu).toHaveCount(0);

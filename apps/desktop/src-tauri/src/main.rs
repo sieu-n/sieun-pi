@@ -39,6 +39,8 @@ fn menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     let app_menu = Submenu::with_items(app, &name, true, &[
         &PredefinedMenuItem::about(app, None, None)?,
         &PredefinedMenuItem::separator(app)?,
+        &MenuItem::with_id(app, "settings", "Settings…", true, Some("CmdOrCtrl+,"))?,
+        &PredefinedMenuItem::separator(app)?,
         &PredefinedMenuItem::services(app, None)?,
         &PredefinedMenuItem::separator(app)?,
         &PredefinedMenuItem::hide(app, None)?,
@@ -74,7 +76,10 @@ fn menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         &PredefinedMenuItem::separator(app)?,
         &PredefinedMenuItem::close_window(app, None)?,
     ])?;
-    Menu::with_items(app, &[&app_menu, &edit, &view, &window])
+    let help = Submenu::with_items(app, "Help", true, &[
+        &MenuItem::with_id(app, "shortcuts", "Keyboard Shortcuts", true, Some("CmdOrCtrl+/"))?,
+    ])?;
+    Menu::with_items(app, &[&app_menu, &edit, &view, &window, &help])
 }
 
 fn main() {
@@ -88,6 +93,11 @@ fn main() {
             #[cfg(target_os = "macos")]
             if let Some(action) = find::Action::from_menu_id(event.id().as_ref()) {
                 find::perform(&window, action);
+                return;
+            }
+            // These items stand for a key of the chat's shortcut table (apps/chat/web/src/lib/shortcuts.ts), and App.svelte runs it.
+            if let id @ ("settings" | "shortcuts") = event.id().as_ref() {
+                let _ = window.eval(&format!("window.dispatchEvent(new CustomEvent('swfactory:menu', {{ detail: '{id}' }}))"));
                 return;
             }
             if event.id() != "reload" {

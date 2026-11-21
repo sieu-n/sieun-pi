@@ -81,10 +81,6 @@ export interface GroupDeps {
 
 type Draft = Omit<RoomPost, "id" | "seq" | "room" | "deliveries"> & { hops: number };
 
-/** A post the channel itself shows: a root post, or a thread reply also sent to the channel. */
-const inChannel = (post: RoomPost): boolean => !post.threadRoot || post.alsoInChannel === true;
-/** The root a reply also sent to the channel names in its "replied to a thread" line: its first line, empty once it is deleted or gone. */
-const rootText = (root: RoomPost | undefined): string => (root && root.deletedAt === undefined ? root.text.trim().split("\n")[0]!.slice(0, 200) : "");
 const channelName = (name: string): string => name.trim().replace(/^#/, "").toLowerCase().replace(/[^a-z0-9-_]+/g, "-").replace(/^-+|-+$/g, "");
 const WAKE_ON: readonly WakeOn[] = ["all", "none"];
 
@@ -401,16 +397,13 @@ export class GroupRooms {
       return record ? [record.id] : [];
     }))];
     const images = (request.images ?? []).map(image => this.deps.uploaded(image));
-    return this.ownerPost(row, {
-      text: request.text ?? "", requestId: request.requestId, images, mentions,
-      ...(request.threadRoot ? { threadRoot: request.threadRoot, ...(request.alsoInChannel ? { alsoInChannel: true as const } : {}) } : {}),
-    });
+    return this.ownerPost(row, { text: request.text ?? "", requestId: request.requestId, images, mentions, ...(request.threadRoot ? { threadRoot: request.threadRoot } : {}) });
   }
 
-  private ownerPost(row: GroupRoom, input: { text: string; requestId: string; images?: ImageRef[]; mentions?: AgentId[]; threadRoot?: string; alsoInChannel?: true }): SendResult {
+  private ownerPost(row: GroupRoom, input: { text: string; requestId: string; images?: ImageRef[]; mentions?: AgentId[]; threadRoot?: string }): SendResult {
     const post = this.write(row, {
       author: "owner", text: input.text, images: input.images ?? [], at: Date.now(), requestId: input.requestId, hops: 0, mentions: input.mentions ?? [],
-      ...(input.threadRoot ? { threadRoot: input.threadRoot } : {}), ...(input.alsoInChannel ? { alsoInChannel: true as const } : {}),
+      ...(input.threadRoot ? { threadRoot: input.threadRoot } : {}),
     });
     this.deps.state.state.reads[row.id] = { at: post.at, seq: post.seq };
     this.deps.state.saveState();
@@ -642,7 +635,7 @@ export class GroupRooms {
    */
   private missed(row: GroupRoom, post: RoomPost, target: AgentId): RoomPost[] {
     if (row.kind !== "channel" || post.threadRoot) return [];
-    const roots = this.store.postsOf(row.id).filter(p => inChannel(p) && p.seq < post.seq && p.deletedAt === undefined);
+    const roots = this.store.postsOf(row.id).filter(p => !p.threadRoot && p.seq < post.seq && p.deletedAt === undefined);
     const last = roots.findLastIndex(p => p.author === target || p.deliveries?.some(d => d.target === target));
     return roots.slice(last + 1).slice(-CONTEXT_POSTS);
   }
@@ -829,7 +822,6 @@ export class GroupRooms {
     return {
       kind: "message", id: post.id, seq: post.seq, at: post.at, author: this.deps.threads.principal(post.author), text: post.text, images: post.images,
       mentions: (post.mentions ?? []) as AgentId[], ...(post.threadRoot ? { threadRoot: post.threadRoot } : {}), ...(post.answers ? { answers: post.answers } : {}),
-      ...(post.threadRoot && post.alsoInChannel ? { alsoInChannel: { rootText: rootText(all.find(p => p.id === post.threadRoot)) } } : {}),
       ...(post.author === "owner" ? { requestId: post.requestId } : agentPostParts(this.deps.threads, post)),
       ...(replies.length ? { thread: { replies: replies.length, lastAt: replies.at(-1)!.at, authors } } : {}),
       deliveries: (post.deliveries ?? []).map(d => this.publicDelivery(row, post, d, all)), ...reactionsOf(id => this.deps.threads.principal(id), post),
@@ -843,14 +835,11 @@ export class GroupRooms {
     return later ? { later } : {};
   }
 
-  /**
-   * A page of the room's root posts and the thread replies also sent to the channel, oldest first; `before`, `after` and `around` are post
-   * ids, and `around` a reply opens its root.
-   */
+  /** A page of the room's root posts, oldest first; `before`, `after` and `around` are post ids, and `around` a reply opens its root. */
   timeline(id: string, opts: { before?: string; after?: string; around?: string; limit?: number }): TimelinePage {
     const row = this.require(id);
     const all = this.store.postsOf(row.id);
-    const roots = all.filter(inChannel);
+    const roots = all.filter(p => !p.threadRoot);
     const limit = Math.min(Math.max(opts.limit ?? PAGE, 1), 200);
     let start: number;
     let end: number;

@@ -70,8 +70,7 @@ export const avatarOf = (principal: Who): { id: string; name: string; kind: "per
 });
 
 /** What a composer hands its page on send. */
-/** `alsoInChannel`: the thread composer's "Also send to #channel" box was checked. */
-export type Outgoing = { text: string; mentions: string[]; images: Attached[]; alsoInChannel?: boolean };
+export type Outgoing = { text: string; mentions: string[]; images: Attached[] };
 
 /** A waiting run's place in pi-pool's turn queue as words, or null when it does not wait. */
 export function placeText(place: TurnPlace | null | undefined): string | null {

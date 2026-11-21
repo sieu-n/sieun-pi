@@ -58,17 +58,10 @@
     onartifact?: (target: string, e: MouseEvent) => void;
     /** The post this one answers, when it is not the row right above (rows.ts `replyTo`): a slack row names it in one line over the text. */
     replyTo?: Item | null;
-    /**
-     * A thread reply also sent to the channel: in the channel it opens with Slack's "replied to a thread" line, and in its thread it ends with
-     * "Also sent to the channel".
-     */
-    alsoIn?: "channel" | "thread" | null;
   };
-  let { item, first, last, layout = "bubble", fullTime = false, replyTo = null, alsoIn = null, context: roomContext, liveLabel = null, queue = null, flash = false, openThread = null, canReply = false, statusOf, onretrysend, ondiscardsend, onthread, oncopylink, onmention, onboardid, onartifact }: Props = $props();
+  let { item, first, last, layout = "bubble", fullTime = false, replyTo = null, context: roomContext, liveLabel = null, queue = null, flash = false, openThread = null, canReply = false, statusOf, onretrysend, ondiscardsend, onthread, oncopylink, onmention, onboardid, onartifact }: Props = $props();
 
   const own = $derived(isOwn(item));
-  /** Reply in thread opens the post's own thread, or for a reply also sent to the channel, the thread it is in. */
-  const replyKey = $derived(item.kind === "message" && item.alsoInChannel && item.threadRoot ? item.threadRoot : item.id);
   /** Board ids and job names in a post chip against its author's board and jobs, so p12 in vent's post is vent's p12. */
   const context = $derived(withAuthor(roomContext, item.author.id));
   const slack = $derived(layout === "slack");
@@ -223,7 +216,7 @@
       <IconButton icon="emoji-add" label="Add reaction" size="sm" bind:element={reactButton} onclick={() => reactButton && reactions?.pick(reactButton)} data-add-reaction />
       <span class="divider" aria-hidden="true"></span>
     {/if}
-    {#if canReply}<IconButton icon="reply" label="Reply in thread" size="sm" onclick={() => onthread(replyKey)} />{/if}
+    {#if canReply}<IconButton icon="reply" label="Reply in thread" size="sm" onclick={() => onthread(item.id)} />{/if}
     {#if doneable}<IconButton icon="check" label={done ? "Reopen thread" : "Mark thread done"} size="sm" pressed={!!done} onclick={toggleDone} data-thread-done-toggle />{/if}
     {#if workHref && !why}<IconButton icon="robot" label="Show work" size="sm" onclick={() => workHref && router.navigate(workHref)} data-show-work />{/if}
     <IconButton icon="link" label="Copy link" size="sm" onclick={() => oncopylink(item)} />
@@ -293,7 +286,6 @@
     <p class="note danger" role="status">{turn.stop === "aborted" ? "Response stopped" : turn.error || "The answer failed"}</p>
   {/if}
   {#each notes as note, index (index)}<p class="note" data-note>{note}</p>{/each}
-  {#if alsoIn === "thread"}<p class="note" data-also-in="thread">Also sent to the channel</p>{/if}
   {#if why}
     <p class="meta" data-post-meta>
       <span class="why" data-why={message?.why}>{why}</span>
@@ -353,11 +345,6 @@
         <p class="reply-to" data-reply-to={replyTo.id} title={replyTo.text}>
           <Icon name="reply" size={12} /><span class="reply-author">{replyTo.author.name}</span><span class="reply-text">{replyTo.text}</span>
         </p>
-      {/if}
-      {#if alsoIn === "channel" && message?.alsoInChannel}
-        <button type="button" class="reply-to also-in" title="Open the thread" onclick={() => onthread(replyKey)} data-also-in="channel">
-          <Icon name="thread" size={12} /><span class="reply-author">replied to a thread:</span><span class="reply-text">{message.alsoInChannel.rootText || "a deleted message"}</span>
-        </button>
       {/if}
       {#if turn && sent}
         {#if turn.steps.length || live}
@@ -839,19 +826,6 @@
     letter-spacing: var(--tracking-caption);
     color: var(--text-metadata);
     white-space: nowrap;
-  }
-  .also-in {
-    max-inline-size: 100%;
-    background: none;
-    border-top: 0;
-    border-right: 0;
-    border-bottom: 0;
-    padding-block: 0;
-    cursor: pointer;
-  }
-  .also-in:hover .reply-text {
-    color: var(--text-standard);
-    text-decoration: underline;
   }
   .reply-author {
     flex: none;

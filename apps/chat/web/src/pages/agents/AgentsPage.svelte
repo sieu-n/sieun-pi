@@ -1,14 +1,13 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { agents, api, connection, jobs, kept, panelsAhead, reads, view, type AgentSummary, type ThinkingLevel } from "$lib/api";
-  import { Button, EmptyState, Menu, PanelHeader, Skeleton, Tabs, renderMarkdown, toast, type Anchor, type MenuEntry } from "$lib/ui";
+  import { Button, EmptyState, Menu, PanelHeader, Skeleton, renderMarkdown, toast, type Anchor, type MenuEntry } from "$lib/ui";
   import { router, hrefFor } from "$lib/router.svelte";
   import AgentCard from "./AgentCard.svelte";
   import AgentConfigPanel from "./AgentConfigPanel.svelte";
   import CreateAgentDialog from "./CreateAgentDialog.svelte";
   import NewAgentTile from "./NewAgentTile.svelte";
-  import { agentFromRoute, agentsFilterFromParams, agentsShown, hasForList, jobCounts, jobsLabel, renamedSection, sectionFromParams, type AgentsFilter, type ConfigSection } from "./agents-model";
-  import { agentMenu, messageAgent, onAgentsChanged } from "./agent-actions.svelte";
+  import { ACTION_LABEL, actionsFor, agentFromRoute, agentsShown, hasForList, jobCounts, jobsLabel, openTarget, renamedSection, sectionFromParams, type ConfigSection } from "./agents-model";
   import { createAgent } from "./create-agent.svelte";
 
   /** `#/agents/<id>` opens that agent's page in place of the grid, or a job's, which its agent's Jobs tab links to. */
@@ -20,11 +19,6 @@
   const listed = view(() => reads.agents());
   const fetched = $derived(listed.value);
   const loadError = $derived(agents.ready ? "" : (listed.error ?? ""));
-  const filter = $derived(agentsFilterFromParams(router.route.params));
-  /** Live and archived agents, read for the Archived tab and its count, and again after an archive, an unarchive or a rename. */
-  const withArchived = view(() => reads.allAgents());
-  const archived = $derived((withArchived.value ?? []).filter((agent) => agent.archived));
-  onMount(() => onAgentsChanged(() => void Promise.all([withArchived.refresh(), listed.refresh()])));
   let menu = $state<{ agent: AgentSummary; anchor: Anchor } | null>(null);
   let focused = $state<string | null>(null);
   let now = $state(Date.now());
@@ -34,16 +28,9 @@
 
   const ready = $derived(agents.ready || fetched !== null);
   const all = $derived(agents.ready ? agents.list : (fetched ?? []));
-  const configAgent = $derived(configId ? (all.find((agent) => agent.id === configId) ?? archived.find((agent) => agent.id === configId) ?? jobs.byId(configId) ?? null) : null);
+  const configAgent = $derived(configId ? (all.find((agent) => agent.id === configId) ?? jobs.byId(configId) ?? null) : null);
   /** One card per registered agent; its jobs show only as the count on its card and in its Jobs tab. */
-  const shown = $derived(filter === "archived" ? agentsShown(archived, "archived") : agentsShown(all));
-  const filters = $derived([
-    { id: "active" as const, label: "Active", badge: agentsShown(all).length },
-    { id: "archived" as const, label: "Archived", ...(archived.length ? { badge: archived.length } : {}) },
-  ]);
-  function setFilter(next: AgentsFilter) {
-    router.setParams({ show: next === "archived" ? "archived" : null }, { replace: true });
-  }
+  const shown = $derived(agentsShown(all));
   const jobsOf = $derived(jobCounts(jobs.list));
 
   const load = () => listed.refresh();
@@ -86,6 +73,10 @@
   function setSection(next: ConfigSection) {
     router.setParams({ section: next === "overview" ? null : next }, { replace: true });
   }
+  function open(agent: AgentSummary) {
+    const target = openTarget(agent, (id) => agents.room(id));
+    router.openConversation(target.id, target.thread ? { thread: target.thread } : {});
+  }
   async function run(label: string, action: () => Promise<unknown>, done: string) {
     try {
       await action();
@@ -98,11 +89,26 @@
     const label = catalog?.models.find((m) => `${m.provider}/${m.id}` === model)?.label ?? model;
     void run("Change model", () => api.setAgentModel(agent.id, model, level), `${agent.name} now runs ${label}${level ? ` · ${level}` : ""}`);
   }
+  function archive(agent: AgentSummary) {
+    void run("Archive", () => api.archiveAgent(agent.id), `Archived ${agent.name}`).then(() => {
+      if (fetched) listed.set(fetched.map((a) => (a.id === agent.id ? { ...a, archived: true } : a)));
+      if (configId === agent.id) router.navigate(hrefFor("agents", []));
+    });
+  }
+  function stop(agent: AgentSummary) {
+    void run("Stop", () => api.stopAgent(agent.id), `Stopped ${agent.name}`);
+  }
 
   const menuItems = $derived.by((): MenuEntry[] => {
     if (!menu) return [];
     const agent = menu.agent;
-    return agentMenu(agent, { model: () => requestAnimationFrame(() => cards[agent.id]?.openModelPicker()) });
+    return actionsFor(agent).flatMap((action): MenuEntry[] => {
+      const item = { id: action, label: ACTION_LABEL[action] };
+      if (action === "open") return [{ ...item, icon: "chat", onselect: () => open(agent) }];
+      if (action === "model") return [{ ...item, icon: "cpu", onselect: () => requestAnimationFrame(() => cards[agent.id]?.openModelPicker()) }];
+      if (action === "stop") return [{ ...item, icon: "stop", onselect: () => stop(agent) }];
+      return [{ type: "separator" }, { ...item, icon: "trash", tone: "danger", onselect: () => archive(agent) }];
+    });
   });
 
   /** Arrow keys move between cards in reading order, Up and Down by one row. */
@@ -132,15 +138,17 @@
     {catalog}
     {section}
     onsection={setSection}
-    onmessage={messageAgent}
+    onmessage={open}
     onmodel={setModel}
+    onstop={stop}
+    onarchive={archive}
   />
 {:else}
   <PanelHeader title="Agents" icon="robot" level={1} divider />
   <div class="inventory">
     <div class="content">
       <div class="toolbar">
-        <Tabs items={filters} value={filter} size="sm" label="Agents to show" onchange={setFilter} />
+        <h2 class="heading t-label">Your agents</h2>
         <Button variant="primary" size="sm" icon="plus" onclick={() => createAgent.open()}>New agent</Button>
       </div>
       <div>
@@ -152,16 +160,12 @@
           <div class="grid" aria-busy="true" aria-label="Loading agents">
             {#each { length: 6 } as _, i (i)}<div class="skeleton"><Skeleton width="100%" height="244px" radius="var(--radius-container)" /></div>{/each}
           </div>
-        {:else if shown.length === 0 && filter === "archived"}
-          <EmptyState icon="archive" title="No archived agents" description="Archive an agent from its menu to hide it here. Unarchive brings it back.">
-            {#snippet action()}<Button size="sm" onclick={() => setFilter("active")}>Show active agents</Button>{/snippet}
-          </EmptyState>
         {:else if shown.length === 0}
           <div class="starts">
             <NewAgentTile label="Create your first agent" onclick={() => createAgent.open()} />
           </div>
         {:else}
-          <div bind:this={grid} class="grid" role="grid" aria-label={filter === "archived" ? "Archived agents" : "Your agents"} tabindex="-1" onkeydown={onGridKey}>
+          <div bind:this={grid} class="grid" role="grid" aria-label="Your agents" tabindex="-1" onkeydown={onGridKey}>
             <div role="row" class="row">
               {#each shown as agent (agent.id)}
                 <AgentCard
@@ -229,6 +233,10 @@
   }
   .row {
     display: contents;
+  }
+  .heading {
+    margin: 0;
+    color: var(--text-standard);
   }
   .starts {
     display: grid;

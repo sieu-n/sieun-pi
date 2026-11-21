@@ -6,7 +6,8 @@
   import Avatar from "$lib/ui/Avatar.svelte";
   import { OWNER_ID, OWNER_NAME } from "$lib/owner";
   import type { MenuEntry } from "$lib/ui/menu";
-  import { isMac } from "$lib/ui/keyboard";
+  import { shortcutLabel } from "$lib/shortcuts";
+  import { shortcutsSheet } from "./shortcuts-sheet.svelte";
   import { tooltip } from "$lib/ui/tooltip";
   import { PAGES, hrefFor, router, type PageId } from "$lib/router.svelte";
   import { sidebar } from "./sidebar.svelte";
@@ -27,26 +28,27 @@
   const tabs = $derived(PAGES.map((p) => ({ id: p.id, label: p.label, icon: p.icon, href: router.tabHref(p.id) })));
 
   const newItems: MenuEntry[] = [
-    { id: "dm", label: "New DM", icon: "messages", shortcut: isMac ? "⌘N" : "Ctrl N", onselect: () => router.navigate(hrefFor("messages", ["new"], { kind: "dm" })) },
+    { id: "dm", label: "New DM", icon: "messages", shortcut: shortcutLabel("new-dm"), onselect: () => router.navigate(hrefFor("messages", ["new"], { kind: "dm" })) },
     { id: "solo", label: "New Solo room", icon: "users", onselect: () => soloDialog.open() },
     { id: "channel", label: "New channel", icon: "hash", onselect: () => router.navigate(hrefFor("messages", ["new"], { kind: "channel" })) },
   ];
   const profileItems: MenuEntry[] = $derived([
-    { id: "settings", label: "Settings", icon: "settings", onselect: () => router.navigate(hrefFor("settings", ["usage"])) },
+    { id: "settings", label: "Settings", icon: "settings", shortcut: shortcutLabel("settings"), onselect: () => router.navigate(hrefFor("settings", ["usage"])) },
+    { id: "shortcuts", label: "Keyboard shortcuts", icon: "command", shortcut: shortcutLabel("shortcuts"), onselect: () => shortcutsSheet.open() },
     { type: "separator" },
     { type: "label", label: "Appearance" },
     { type: "radio", id: "light", group: "mode", label: "Light", checked: theme.mode === "light", onselect: () => theme.set("light") },
     { type: "radio", id: "dark", group: "mode", label: "Dark", checked: theme.mode === "dark", onselect: () => theme.set("dark") },
     { type: "radio", id: "system", group: "mode", label: "System", checked: theme.mode === "system", onselect: () => theme.set("system") },
   ]);
-  const searchKey = isMac ? "⌘K" : "Ctrl K";
+  const searchKey = shortcutLabel("search");
 </script>
 
 <header class="topbar" class:desktop={inDesktopShell} data-tauri-drag-region={inDesktopShell ? "deep" : undefined}>
   <div class="left">
-    {#if hasSidebar}<IconButton icon="sidebar" label={sidebar.collapsed ? "Show sidebar" : "Hide sidebar"} onclick={() => sidebar.toggle()} />{/if}
-    <IconButton icon="arrow-left" label="Back" shortcut={isMac ? "⌘[" : "Alt ←"} onclick={() => history.back()} />
-    <IconButton icon="arrow-right" label="Forward" shortcut={isMac ? "⌘]" : "Alt →"} onclick={() => history.forward()} />
+    {#if hasSidebar}<IconButton icon="sidebar" label={sidebar.collapsed ? "Show sidebar" : "Hide sidebar"} shortcut={shortcutLabel("sidebar")} onclick={() => sidebar.toggle()} />{/if}
+    <IconButton icon="arrow-left" label="Back" shortcut={shortcutLabel("back")} onclick={() => history.back()} />
+    <IconButton icon="arrow-right" label="Forward" shortcut={shortcutLabel("forward")} onclick={() => history.forward()} />
   </div>
 
   <div class="capsule" data-testid="nav-capsule">
@@ -62,7 +64,7 @@
   </div>
 
   <div class="right">
-    <IconButton icon="settings" label="Settings" pressed={router.route.page === "settings"} onclick={() => router.navigate(hrefFor("settings", ["usage"]))} />
+    <IconButton icon="settings" label="Settings" shortcut={shortcutLabel("settings")} pressed={router.route.page === "settings"} onclick={() => router.navigate(hrefFor("settings", ["usage"]))} />
     <button bind:this={profileAnchor} class="profile" type="button" aria-label="Profile, appearance and settings" onclick={() => (profileOpen = !profileOpen)}>
       <Avatar name={ownerName} kind="person" seed={OWNER_ID} size={28} status="online" />
     </button>
