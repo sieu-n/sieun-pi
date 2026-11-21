@@ -288,7 +288,6 @@ export class App {
       ...this.agents.list().flatMap(record => Object.values(record.comm ?? {})),
       ...Object.keys(this.agentStore.agents.aliases).filter(thread => this.agentStore.isTest(thread)),
     ];
-    this.search.testRooms = () => [...this.groups.rows().filter(row => row.test).map(row => row.id), ...this.agents.list().filter(record => record.test).map(record => record.room)];
     this.agentStore.onPost = post => this.searchEngine.postChanged(postDocId(post.room, post.id), this.postDoc(post.room, post));
     this.queues = new QueueWatch(host, this.threads, (conversation, place) => {
       this.toWatchers(conversation, { type: "queue", conversation, place });
