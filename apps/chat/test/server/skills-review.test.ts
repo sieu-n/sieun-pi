@@ -188,6 +188,40 @@ test("a fold on a set other than live logs to folds.jsonl and messages no agent;
   await assert.rejects(review.decide({ set: "t", id: "skill:release-steps", action: "approve", overrides: { nope: { action: "delete" } } }), /No copy nope/);
 });
 
+const sshLocal = (() => {
+  try {
+    execFileSync("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "localhost", "true"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
+test("the Mac queue runs its steps over ssh, here against localhost, and undo brings the folder back the same way", { skip: !sshLocal && "no ssh to localhost" }, async t => {
+  const { set, base } = rig(t);
+  writeFileSync(set.setFile, JSON.stringify({ ...JSON.parse(readFileSync(set.setFile, "utf8")), macHost: "localhost" }));
+  const review = new SkillsReview({ dir: join(base, "review-dir"), fixture: false, macHost: null }, new Skills({ inventory: join(base, "none.json"), scanner: null }, "us-metal02"), "us-metal02", {
+    log: () => {}, broadcast: () => {}, fold: async () => {},
+  });
+  t.after(() => review.stop());
+  const dir = join(set.root, "mac/Users/owner/.claude/skills/screen-notes");
+  const settled = async (state: string) => {
+    for (let i = 0; i < 100 && (await review.item("t", "skill:screen-notes")).copyRows[0]!.state !== state; i++) await new Promise(done => setTimeout(done, 100));
+    return review.item("t", "skill:screen-notes");
+  };
+  await review.decide({ set: "t", id: "skill:screen-notes", action: "approve" });
+  const applied = await settled("applied");
+  assert.equal(applied.copyRows[0]!.state, "applied");
+  assert.ok(!existsSync(dir));
+  const report = await review.report("t");
+  assert.equal(report.mac.online, true);
+  assert.equal(report.mac.queued, 0);
+  await review.undo({ set: "t", id: "skill:screen-notes" });
+  const undone = await settled("undone");
+  assert.equal(undone.copyRows[0]!.state, "undone");
+  assert.match(readFileSync(join(dir, "SKILL.md"), "utf8"), /screen recording/);
+});
+
 test("unifiedDiff gives hunks with context and nothing for the same text", () => {
   assert.equal(unifiedDiff("a\nb\n", "a\nb\n", "x", "y"), "");
   const diff = unifiedDiff("1\n2\n3\n4\n5\n6\n7\n8\n9\n", "1\n2\n3\n4\nfive\n6\n7\n8\n9\n", "x", "y");
