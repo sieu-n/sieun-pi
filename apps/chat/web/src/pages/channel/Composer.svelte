@@ -133,8 +133,7 @@
     if (autofocus) requestAnimationFrame(() => box?.isConnected && focusEnd());
     const onSelection = () => {
       if (document.activeElement !== box) return;
-      const selection = document.getSelection();
-      if (selection?.rangeCount && box?.contains(selection.getRangeAt(0).startContainer)) lastRange = selection.getRangeAt(0).cloneRange();
+      saveCaret();
       updateQuery();
       formats = activeFormats(box!);
     };
@@ -159,6 +158,7 @@
 
   function sync() {
     if (!box) return;
+    if (document.activeElement === box) saveCaret();
     const draft = readDraft(box);
     empty = draft.text.trim() === "";
     structured = !!box.querySelector(STRUCTURE);
@@ -212,6 +212,12 @@
       }
     }
     sync();
+  }
+
+  /** Keeps the caret's place; selectionchange comes late in WebKit, so input and a press on the emoji button save it too. */
+  function saveCaret() {
+    const selection = document.getSelection();
+    if (box && selection?.rangeCount && box.contains(selection.getRangeAt(0).startContainer)) lastRange = selection.getRangeAt(0).cloneRange();
   }
 
   function caretBack() {
@@ -438,7 +444,7 @@
         <AvatarStack members={recipients.map((r) => ({ id: r.id, name: r.name, kind: "agent" }))} size={28} max={4} />
       </span>
     {/if}
-    <IconButton icon="smile" label="Emoji" size="sm" bind:element={emojiButton} pressed={emojiOpen} onclick={() => (emojiOpen = !emojiOpen)} data-testid="composer-emoji" />
+    <IconButton icon="smile" label="Emoji" size="sm" bind:element={emojiButton} pressed={emojiOpen} onpointerdown={saveCaret} onclick={() => (emojiOpen = !emojiOpen)} data-testid="composer-emoji" />
     <IconButton icon="at" label="Mention an agent" size="sm" onclick={mentionButton} />
     <IconButton icon="paperclip" label="Attach files" size="sm" onclick={() => fileInput?.click()} />
     <input bind:this={fileInput} type="file" multiple hidden onchange={(e) => {

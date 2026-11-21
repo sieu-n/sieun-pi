@@ -411,7 +411,7 @@
     ...((isChannel && !archived) || (isSolo && !closedAt)
       ? [
           { name: "invite", args: "[@agent]", description: "Add agents to this room", run: ({ mentions }: { mentions: string[] }) => inviteAgents(mentions) },
-          { name: "remove", args: "[@agent]", description: "Remove an agent from this room", run: ({ mentions }: { mentions: string[] }) => removeAgents(mentions) },
+          { name: "remove", args: "[@agent]", description: "Remove an agent from this room", run: ({ args, mentions }: { args: string; mentions: string[] }) => removeAgents(args, mentions) },
         ]
       : []),
     ...(isChannel && header && !archived ? [{ name: "archive", description: "Archive this channel", run: () => archiveRoom(id, name) }] : []),
@@ -430,9 +430,11 @@
       await addMembership({ room: id, roomName: name, agent: agentId, agentName: memberName(agentId) }, { refresh: refreshHeader });
   }
 
-  async function removeAgents(mentions: string[]) {
-    const members = others.filter((m) => mentions.includes(m.principal.id));
-    if (!members.length) throw new Error(mentions.length ? "That agent is not in this room" : "Name the agent after /remove, such as /remove @Vent");
+  /** A member named by its chip, or by its name typed after /remove when the @ list was skipped. */
+  async function removeAgents(args: string, mentions: string[]) {
+    const typed = args.replace(/^@/, "").trim().toLowerCase();
+    const members = others.filter((m) => mentions.includes(m.principal.id) || (!mentions.length && typed && m.principal.name.toLowerCase() === typed));
+    if (!members.length) throw new Error(mentions.length || typed ? "That agent is not in this room" : "Name the agent after /remove, such as /remove @Vent");
     for (const m of members)
       await removeMembership({ room: id, roomName: name, agent: m.principal.id, agentName: m.principal.name }, { wakeOn: m.wakeOn, refresh: refreshHeader });
   }
