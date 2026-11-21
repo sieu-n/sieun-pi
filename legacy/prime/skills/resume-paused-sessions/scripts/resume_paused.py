@@ -829,6 +829,8 @@ class JobRecordError(RecordError):
 
 # The chat service's files that say who stopped a run on purpose. They live on the chat host of hosts.json; another box's copy stopped when
 # the chat moved (us-metal02, 10-18 04:19Z), so a pass on the Mac that read its own deleted-jobs.json could resume a job the owner deleted.
+# clean-room-chats.json, chats.json and threads.json are here for the watchdog (components/watchdog/wd_common.py chat_text), which reads them
+# through chat_file_text.
 CHAT_FILES = {"deleted-jobs.json": "api/agent/deleted-jobs", "archived-chats.json": "api/agent/archived-chats", "unloaded.json": "api/agent/unloaded",
               "job-cancels.json": "api/agent/job-cancels", "service-archives.json": "api/agent/service-archives",
               "clean-room-chats.json": "api/agent/clean-room-chats", "chats.json": "api/agent/chats", "threads.json": "api/agent/threads"}
