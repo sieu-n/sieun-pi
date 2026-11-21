@@ -145,7 +145,7 @@ export class App {
       item: (row, post) => (row.kind === "dm" ? this.rooms.item(post) : this.groups.item(row, post)),
     });
     this.later.onChange(({ by, item }) => {
-      this.broadcast({ type: "later", by, open: this.later.items(by).filter(i => i.state === "open").length });
+      this.broadcast({ type: "later", by, open: this.later.openCount(by) });
       const post = by === "owner" ? this.agentStore.postsOf(item.room).find(p => p.id === item.post) : undefined;
       if (post) this.emitPosts(item.room, [post]);
     });
@@ -170,8 +170,8 @@ export class App {
     this.later.onChange(({ by, item, removed }) => {
       if (by !== "owner") return;
       this.laterDue.arm();
-      // Checking a Keep unread item off, or unsaving it, handles the post, so its room stops reading unread from it.
-      if (item.unread && (removed || item.state === "done") && this.store.state.reads[item.room]?.from === item.post) this.markRead(item.room);
+      // Checking a Keep unread item off, archiving it or unsaving it handles the post, so its room stops reading unread from it.
+      if (item.unread && (removed || item.state !== "open") && this.store.state.reads[item.room]?.from === item.post) this.markRead(item.room);
     });
     const linkOf = routing ? (box: string) => routing.link(box).state : undefined;
     const fileNotes = (text: string, refs: readonly ImageRef[]) => withFileNotes(text, refs, config.box, ref => this.uploadPath(ref));

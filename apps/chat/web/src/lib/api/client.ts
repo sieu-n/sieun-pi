@@ -487,8 +487,8 @@ export const api = {
   /** Pins a room post to its room, or with `pinned` false un-pins it (server/pins.ts). */
   pin: (id: ConversationId, post: string, pinned: boolean) =>
     call<{ item: Item }>("POST", `/api/c/${enc(id)}/posts/${enc(post)}/pin`, { pinned } satisfies PinRequest),
-  /** The owner's Save for later rows in one tab, newest first, with both tabs' counts (server/later.ts). */
-  later: (state?: LaterState) => call<LaterList>("GET", `/api/later${query({ state })}`),
+  /** The owner's Save for later rows in one tab, newest first, with each tab's count (server/later.ts); `test` keeps posts in walks' test rooms. */
+  later: (state?: LaterState, test = false) => call<LaterList>("GET", `/api/later${query({ state, test: test ? 1 : undefined })}`),
   /** Saves a room post for later; saving a saved post keeps its one item and opens it again when it was done. */
   saveLater: (room: ConversationId, post: string, remindAt?: number) =>
     call<{ item: LaterItem }>("POST", "/api/later", { room, post, ...(remindAt !== undefined ? { remindAt } : {}) } satisfies LaterRequest),

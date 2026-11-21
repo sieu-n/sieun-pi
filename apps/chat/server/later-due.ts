@@ -9,7 +9,7 @@
 export interface DueItem {
   id: string;
   by: string;
-  state: "open" | "done";
+  state: "open" | "archived" | "done";
   remindAt?: number;
   notifiedAt?: number;
 }

@@ -261,8 +261,8 @@ export interface ForMeItem {
 /** `GET /api/agents/:id/for-me`: the agent's items, newest activity first, and its counts. */
 export interface ForMeList { agent: AgentId; items: ForMeItem[]; pending: number; completed: number }
 
-/** Save for later (server/later.ts): Slack's In progress is `open`, its Completed is `done`. */
-export type LaterState = "open" | "done";
+/** Save for later (server/later.ts): Slack's In progress is `open`, its Archived is `archived` and its Completed is `done`. */
+export type LaterState = "open" | "archived" | "done";
 /** One room post a principal saved for later, the owner or an agent (`by`), stored in `<data dir>/later/<by>.json`. */
 export interface LaterItem {
   /** `<room id>:<post id>`, such as `ch_1a2b3c4d:p12`: one item per saved post. */
@@ -272,8 +272,10 @@ export interface LaterItem {
   post: string;
   savedAt: Ms;
   state: LaterState;
-  /** When it was checked off; absent while open. */
+  /** When it was checked off; present only while done. */
   doneAt?: Ms;
+  /** When it was put away in Archived; present only while archived. */
+  archivedAt?: Ms;
   /** Remind me: when the reminder is due, and when it fired. A new `remindAt` clears `notifiedAt`. */
   remindAt?: Ms;
   notifiedAt?: Ms;
@@ -320,13 +322,13 @@ export interface Notice {
   reason: NoticeReason;
   at: Ms;
 }
-/** `GET /api/later?state=open|done`: the owner's rows, newest first, with the counts of both tabs. */
-export interface LaterList { items: LaterRow[]; open: number; done: number }
+/** `GET /api/later?state=open|archived|done&test=1`: the owner's rows, newest first, with each tab's count; `test=1` keeps posts in test rooms. */
+export interface LaterList { items: LaterRow[]; open: number; archived: number; done: number }
 /** What a room post shows its reader about the reader's own save; absent when the reader has no open save of it. */
 export interface LaterMark { saved: boolean; remindAt?: Ms; /** Kept unread: the owner marked it unread and has not handled it. */ unread?: true }
 /** `POST /api/later`. Saving a saved post keeps its one item. */
 export interface LaterRequest { room: RoomId; post: string; remindAt?: Ms }
-/** `PATCH /api/later/:id`: check off or reopen, and set or clear (`null`) the reminder. */
+/** `PATCH /api/later/:id`: check off, archive or reopen, and set or clear (`null`) the reminder. */
 export interface LaterPatch { state?: LaterState; remindAt?: Ms | null }
 
 /** A job a turn spawned, drawn as a thread pill under that turn. */

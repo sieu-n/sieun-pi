@@ -2,8 +2,11 @@
  * Slack's Save for later, for the owner and for agents: each principal keeps its own list of saved room posts, one item per post, in
  * `<data dir>/later/<by>.json`, where `by` is `owner` or an agent id (/home/sieun/work/later-and-unread/contract.md).
  *
- * An item is `open` (Slack's In progress) until its principal checks it off as `done` (Completed), and saving a done post opens it again.
- * Unsaving deletes the item. `remindAt` and `notifiedAt` belong to Remind me (later-due.ts): a new `remindAt` clears `notifiedAt`, so a
+ * An item is `open` (Slack's In progress) until its principal checks it off as `done` (Completed) or puts it away as `archived` (Archived),
+ * and saving a done or archived post opens it again. Unsaving deletes the item. The owner's lists leave out posts in walks' test rooms, as
+ * every owner list does (agent-store.ts `isTest`), unless a walk asks for them.
+ *
+ * `remindAt` and `notifiedAt` belong to Remind me (later-due.ts): a new `remindAt` clears `notifiedAt`, so a
  * snoozed reminder fires again. Each write reaches every `onChange` listener, which the app turns into a live `later` event and a re-sent
  * post, and Remind me into a re-armed timer.
  */
@@ -39,6 +42,8 @@ const PRINCIPAL = /^(owner|ag_[\w.-]+)$/;
 
 /** The one item id of a saved post: `<room id>:<post id>`, such as `ch_1a2b3c4d:p12`. */
 export const laterId = (room: RoomId, post: string): string => `${room}:${post}`;
+
+const LATER_STATES: readonly unknown[] = ["open", "archived", "done"] satisfies LaterState[];
 
 function principalOf(by: string): string {
   if (!PRINCIPAL.test(by)) throw new LaterError(400, `${JSON.stringify(by)} names nobody who saves posts; pass owner or an agent id such as ag_vent.`);
@@ -82,13 +87,24 @@ export class Later {
     return this.load(principalOf(by));
   }
 
-  /** The principal's items in `state`, or all, newest first, as rows that show each post. */
-  list(by: string, state?: LaterState): LaterList {
-    const all = this.load(principalOf(by));
-    const open = all.filter(i => i.state === "open").length;
+  /** The principal's items in `state`, or all, newest first, as rows that show each post, with each tab's count. */
+  list(by: string, state?: LaterState, opts: { test?: boolean } = {}): LaterList {
+    const all = this.listed(principalOf(by), opts.test === true);
+    const count = (s: LaterState) => all.filter(i => i.state === s).length;
     const shown = state ? all.filter(i => i.state === state) : all;
-    const when = (i: LaterItem) => (i.state === "done" ? i.doneAt ?? i.savedAt : i.savedAt);
-    return { items: [...shown].sort((a, b) => when(b) - when(a)).map(i => this.row(i)), open, done: all.length - open };
+    const when = (i: LaterItem) => (i.state === "done" ? i.doneAt : i.state === "archived" ? i.archivedAt : undefined) ?? i.savedAt;
+    return { items: [...shown].sort((a, b) => when(b) - when(a)).map(i => this.row(i)), open: count("open"), archived: count("archived"), done: count("done") };
+  }
+
+  /** The principal's In progress count, as its Later list shows it. */
+  openCount(by: string): number {
+    return this.listed(principalOf(by), false).filter(i => i.state === "open").length;
+  }
+
+  /** The items a list shows: the owner's leave out posts in test rooms unless `test` asks for them. */
+  private listed(by: string, test: boolean): LaterItem[] {
+    const all = this.load(by);
+    return by !== "owner" || test ? all : all.filter(i => !this.deps.store.isTest(i.room));
   }
 
   get(by: string, id: string): LaterItem | undefined {
@@ -140,17 +156,22 @@ export class Later {
     return this.write(who, next, next.remindAt !== old.remindAt);
   }
 
-  /** Checks the item off (`done`) or opens it again (`open`), and sets or clears (`null`) its reminder. A patch that changes nothing writes nothing. */
+  /**
+   * Checks the item off (`done`), puts it away (`archived`) or opens it again (`open`), and sets or clears (`null`) its reminder. A patch
+   * that changes nothing writes nothing.
+   */
   update(by: string, id: string, patch: LaterPatch & { notifiedAt?: Ms }): LaterItem {
     const who = principalOf(by);
     const old = this.get(who, id);
     if (!old) throw new LaterError(404, `${who} has no saved post ${id}.`);
-    if (patch.state !== undefined && patch.state !== "open" && patch.state !== "done") throw new LaterError(400, "A Later state is open or done.");
+    if (patch.state !== undefined && !LATER_STATES.includes(patch.state)) throw new LaterError(400, "A Later state is open, archived or done.");
     const remindAt = patch.remindAt === null ? null : timeOf(patch.remindAt, "remindAt");
     const notifiedAt = timeOf(patch.notifiedAt, "notifiedAt");
     let next: LaterItem = old;
-    if (patch.state === "done" && old.state === "open") next = { ...next, state: "done", doneAt: Date.now() };
-    if (patch.state === "open" && old.state === "done") next = this.reopened(next);
+    if (patch.state !== undefined && patch.state !== old.state) {
+      const rest = this.reopened(old);
+      next = patch.state === "done" ? { ...rest, state: "done", doneAt: Date.now() } : patch.state === "archived" ? { ...rest, state: "archived", archivedAt: Date.now() } : rest;
+    }
     let remindChanged = false;
     if (remindAt === null && next.remindAt !== undefined) {
       const { remindAt: _r, notifiedAt: _n, ...rest } = next;
@@ -185,21 +206,22 @@ export class Later {
     const room = id.slice(0, cut) as RoomId;
     const post = id.slice(cut + 1);
     if (cut < 1 || !this.deps.store.postsOf(room).some(p => p.id === post)) throw new LaterError(404, `No post ${id} to put back in Later.`);
-    if (input.state !== "open" && input.state !== "done") throw new LaterError(400, "A Later state is open or done.");
+    if (input.state !== "open" && input.state !== "archived" && input.state !== "done") throw new LaterError(400, "A Later state is open, archived or done.");
     const savedAt = timeOf(input.savedAt, "savedAt");
     if (savedAt === undefined) throw new LaterError(400, "An item put back names its savedAt, the time in ms it was first saved.");
     const doneAt = input.state === "done" ? timeOf(input.doneAt, "doneAt") ?? Date.now() : undefined;
+    const archivedAt = input.state === "archived" ? timeOf(input.archivedAt, "archivedAt") ?? Date.now() : undefined;
     const remindAt = timeOf(input.remindAt, "remindAt");
     const notifiedAt = remindAt !== undefined ? timeOf(input.notifiedAt, "notifiedAt") : undefined;
     return this.write(who, {
       id: laterId(room, post), by: who, room, post, savedAt, state: input.state,
-      ...(doneAt !== undefined ? { doneAt } : {}), ...(remindAt !== undefined ? { remindAt } : {}), ...(notifiedAt !== undefined ? { notifiedAt } : {}),
+      ...(doneAt !== undefined ? { doneAt } : {}), ...(archivedAt !== undefined ? { archivedAt } : {}), ...(remindAt !== undefined ? { remindAt } : {}), ...(notifiedAt !== undefined ? { notifiedAt } : {}),
       ...(input.unread === true ? { unread: true as const } : {}),
     }, false);
   }
 
   private reopened(item: LaterItem): LaterItem {
-    const { doneAt: _d, ...rest } = item;
+    const { doneAt: _d, archivedAt: _a, ...rest } = item;
     return { ...rest, state: "open" };
   }
 

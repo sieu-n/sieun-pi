@@ -278,8 +278,8 @@ export function routes(app: App): Route[] {
     // The owner's Save for later list (later.ts); pi-host's agent tools use the /api/threads/:id/later routes.
     route("GET", "/api/later", async (_r, _p, q) => {
       const state = q.get("state");
-      if (state !== null && state !== "open" && state !== "done") throw new BadRequest("A Later list's state is open or done.");
-      return app.later.list("owner", state ?? undefined);
+      if (state !== null && state !== "open" && state !== "archived" && state !== "done") throw new BadRequest("A Later list's state is open, archived or done.");
+      return app.later.list("owner", state ?? undefined, { test: q.get("test") === "1" });
     }),
     route("POST", "/api/later", async (_r, _p, _q, body) => ({ item: app.later.save("owner", ((await body()) ?? {}) as Record<string, unknown>) })),
     route("PATCH", "/api/later/:id", async (_r, p, _q, body) => {

@@ -18,10 +18,13 @@ const key = (room: string, post: string): string => `${room}:${post}`;
 
 class LaterStore {
   /** Each tab's rows, newest first, once read. */
-  lists = $state<Record<LaterState, LaterRow[] | null>>({ open: null, done: null });
+  lists = $state<Record<LaterState, LaterRow[] | null>>({ open: null, archived: null, done: null });
   open = $state(0);
+  archived = $state(0);
   done = $state(0);
   error = $state<string | null>(null);
+  /** Whether the last read kept test-room posts, for `#/c/later?test=1`. */
+  withTest = $state(false);
   /** Saves and unsaves on their way, by `<room>:<post>`, which the bookmark shows before the server's answer. */
   readonly optimistic = new SvelteMap<string, boolean>();
   private started = false;
@@ -48,22 +51,28 @@ class LaterStore {
     void this.refresh();
   }
 
-  /** Reads both tabs; only the newest read writes. */
+  /**
+   * Reads every tab; only the newest read writes. A walk opens `#/c/later?test=1` to see the posts it saved in its test rooms, which the
+   * owner's Later leaves out.
+   */
   async refresh(): Promise<void> {
     const mine = ++this.latest;
+    const test = router.route.params.test === "1";
+    this.withTest = test;
     try {
-      const [open, done] = await Promise.all([api.later("open"), api.later("done")]);
+      const [open, archived, done] = await Promise.all([api.later("open", test), api.later("archived", test), api.later("done", test)]);
       if (mine !== this.latest) return;
-      this.set(open, done);
+      this.set(open, archived, done);
       this.error = null;
     } catch (error) {
       if (mine === this.latest) this.error = error instanceof Error ? error.message : "Could not read Later.";
     }
   }
 
-  private set(open: LaterList, done: LaterList): void {
-    this.lists = { open: open.items, done: done.items };
+  private set(open: LaterList, archived: LaterList, done: LaterList): void {
+    this.lists = { open: open.items, archived: archived.items, done: done.items };
     this.open = open.open;
+    this.archived = open.archived;
     this.done = open.done;
   }
 
@@ -148,13 +157,14 @@ class LaterStore {
     return this.saved(room, message) ? this.unsave(room, message.id) : this.save(room, message.id);
   }
 
-  /** Checks a row off, or moves a done row back to In progress; the row leaves its tab at once. */
+  /** Checks a row off, archives it, or moves it back to In progress; the row leaves its tab at once, and the toast's Undo moves it back. */
   async setState(row: LaterRow, state: LaterState): Promise<void> {
     const from = row.state;
     this.move(row, state);
     try {
       await api.patchLater(row.id, { state });
-      if (state === "done") this.note("Marked complete", { label: "Undo", run: () => void this.setState({ ...row, state: "done" }, "open") });
+      const moved = state === "done" ? "Marked complete" : state === "archived" ? "Archived" : from === "archived" ? "Moved out of Archived" : "Moved to In progress";
+      if (from !== state) this.note(moved, { label: "Undo", run: () => void this.setState({ ...row, state }, from) });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not change the item");
     }
@@ -169,18 +179,18 @@ class LaterStore {
 
   private move(row: LaterRow, state: LaterState): void {
     const without = (list: LaterRow[] | null) => list?.filter((r) => r.id !== row.id) ?? null;
-    this.lists = { open: without(this.lists.open), done: without(this.lists.done) };
+    this.lists = { open: without(this.lists.open), archived: without(this.lists.archived), done: without(this.lists.done) };
     if (row.state !== state) {
-      this.open += state === "open" ? 1 : -1;
-      this.done += state === "done" ? 1 : -1;
+      this[row.state] -= 1;
+      this[state] += 1;
     }
   }
 }
 
 export const later = new LaterStore();
 
-/** Later is a Messages view: `#/c/later` is In progress and `#/c/later/done` Completed. */
-export const laterHref = (done = false): string => hrefFor("messages", done ? ["later", "done"] : ["later"]);
+/** Later is a Messages view: `#/c/later` is In progress, `#/c/later/archived` Archived and `#/c/later/done` Completed. */
+export const laterHref = (state: LaterState = "open"): string => hrefFor("messages", state === "open" ? ["later"] : ["later", state]);
 
 /** The message menu's Save for later item, or Remove from Later on a saved post. */
 export function laterMenuItem(room: string, message: Pick<Message, "id" | "later">): MenuEntry {
