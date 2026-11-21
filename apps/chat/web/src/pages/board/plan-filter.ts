@@ -22,10 +22,13 @@ export interface FilterContext {
   ownerOf: (step: Step) => string | null;
 }
 
-/** Every word of the query, in any case, is in the step's text, id, note or owner. */
+/**
+ * Every word of the query, in any case, is in the step's text, id, wait or owner, which its row shows. Notes stay out: on 11-21 "release"
+ * matched 144 of agent factory's 197 steps through their notes and 3 through their text, and the panel shows no notes.
+ */
 function matchesQuery(step: Step, words: readonly string[], owner: string | null): boolean {
   if (!words.length) return true;
-  const hay = [step.id, step.text, step.note ?? "", step.waitFor ?? "", owner ?? ""].join("\n").toLowerCase();
+  const hay = [step.id, step.text, step.waitFor ?? "", owner ?? ""].join("\n").toLowerCase();
   return words.every(word => hay.includes(word));
 }
 

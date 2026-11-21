@@ -30,8 +30,9 @@ test("a word match keeps the step and the path above it, and drops its siblings"
   assert.deepEqual(pathIds(out.plan), ["p1"]);
 });
 
-test("every word must match, in the text, the id, the note or the owner", () => {
-  assert.deepEqual([...filterPlan(plan, filter({ query: "owner proxy" }), context).matches], ["p4"]);
+test("every word must match, in the text, the id or the owner, and a note does not count", () => {
+  assert.deepEqual([...filterPlan(plan, filter({ query: "vendor proxy" }), context).matches], ["p4"]);
+  assert.deepEqual(filterPlan(plan, filter({ query: "owner" }), context).plan, []);
   assert.deepEqual([...filterPlan(plan, filter({ query: "p5" }), context).matches], ["p5"]);
   assert.deepEqual([...filterPlan(plan, filter({ query: "relay-tests" }), context).matches], ["p2"]);
   assert.deepEqual(filterPlan(plan, filter({ query: "proxy cutover" }), context).plan, []);
