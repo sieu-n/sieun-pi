@@ -13,16 +13,19 @@ test("the control shows the pool's value and default, and a choice sets it throu
   await openAccounts(page);
   const setting = page.getByTestId("no-model-room");
   await expect(setting.getByText(LABEL, { exact: true })).toBeVisible();
-  await expect(setting.getByText("This applies to sw factory agents. Prime chats keep their own setting.")).toBeVisible();
+
   const select = setting.getByRole("combobox", { name: LABEL });
   await expect(select).toHaveValue("wait");
   await expect(select.locator("option")).toHaveText(["Wait for an account", "Switch to a model the account has", "Fail the turn"]);
-  await expect(setting.getByTestId("no-model-room-by")).toHaveText("pi-pool's default.");
+  await setting.getByTestId("no-model-room-hint").hover();
+  await expect(page.getByRole("tooltip")).toHaveText("This applies to sw factory agents. Prime chats keep their own setting. pi-pool's default.");
 
   const fail = await postedAction<{ value: string }, NoModelRoomSetting>(page, PATH, async () => { await select.selectOption({ label: "Fail the turn" }); });
   expect(fail.body).toEqual({ value: "fail" });
   expect(fail.status).toBe(200);
-  await expect(setting.getByTestId("no-model-room-by")).toHaveText(/^Set by the Settings pane, /);
+  await page.mouse.move(0, 0);
+  await setting.getByTestId("no-model-room-hint").hover();
+  await expect(page.getByRole("tooltip")).toContainText("Set by the Settings pane, ");
   expect(((await (await request.get(PATH)).json()) as NoModelRoomSetting).value).toBe("fail");
 
   await page.reload();

@@ -283,22 +283,42 @@
   {/snippet}
 
   {#if error && !view}
-    <EmptyState icon="warning" title="Accounts unavailable" description={error}>
-      {#snippet action()}<Button variant="outline" size="sm" {loading} onclick={() => void load(true)}>Retry</Button>{/snippet}
-    </EmptyState>
+    <div title={error}>
+      <EmptyState icon="warning" title="Accounts unavailable" description="The pool did not answer.">
+        {#snippet action()}<Button variant="outline" size="sm" {loading} onclick={() => void load(true)}>Retry</Button>{/snippet}
+      </EmptyState>
+    </div>
   {:else if !view || !current}
     <LoadingText text="Loading accounts" delay={300} spinner />
   {:else}
     <div class="body" data-testid="accounts-page">
-      <Tabs items={providerTabs} value={current.provider} variant="underline" size="sm" label="Account providers" />
-      <PoolMeters {view} {now} />
+      <div class="toolbar">
+        <Tabs items={providerTabs} value={current.provider} variant="underline" size="sm" label="Account providers" />
+        <span class="spacer"></span>
+        {#if current.provider === "anthropic"}
+          <span use:tooltip={"Read every Claude account's banked usage-limit resets. Spends nothing."}>
+            <Button size="sm" variant="ghost" disabled={acting !== null} loading={acting === "resets"} onclick={() => void run({ action: "resets", provider: current.provider }, "resets")}>
+              {acting === "resets" ? "Checking resets" : "Check resets"}
+            </Button>
+          </span>
+        {/if}
+        <span use:tooltip={`Read usage for every ${PROVIDER_LABEL[current.provider]} account now`}>
+          <Button size="sm" variant="ghost" icon={refreshing ? undefined : "refresh"} loading={refreshing} disabled={refreshing} data-testid="refresh-all"
+            onclick={() => void startRefresh(current.provider, null)}>
+            {refreshing ? (refresh?.accounts.length ? `Reading ${settled(refresh)} of ${refresh.accounts.length}` : "Reading") : "Refresh all"}
+          </Button>
+        </span>
+        <Button size="sm" variant="outline" icon="plus" disabled={running(login)} aria-label="Add {PROVIDER_LABEL[current.provider]} account"
+          onclick={() => void startLogin(current.provider, null)}>Add account</Button>
+      </div>
 
-      <div class="uses" class:warning={waiting} data-testid="accounts-thread">
-        {#if thread}
-          <div class="sentence">
-            <span class="for">For {threadInfo?.name ?? thread}</span>
-            <span data-testid="resolution">{resolutionSentence(current, now)}</span>
-          </div>
+      <PoolMeters {view} provider={current} {now} />
+
+      {#if thread}
+        <div class="thread" class:warning={waiting} data-testid="accounts-thread">
+          <span class="for">{threadInfo?.name ?? thread}</span>
+          <span class="sentence" data-testid="resolution">{resolutionSentence(current, now)}</span>
+          <span class="spacer"></span>
           {#if view.priority}
             <span use:tooltip={POOL_PRIORITY_HINT}>
               <Button bind:element={priorityAnchor} size="sm" variant="ghost" trailingIcon="chevron-down" loading={acting === "priority"}
@@ -310,28 +330,8 @@
             {current.poolPin ? "Auto (pool override active)" : "Auto"}
           </Button>
           <IconButton icon="close" label="Show the whole pool" size="sm" onclick={() => router.setParams({ thread: null })} />
-        {:else}
-          <span class="sentence">No thread is chosen. A new thread starts on the account marked Next request.</span>
-        {/if}
-      </div>
-
-      <div class="bar">
-        <span class="spacer"></span>
-        <Button size="sm" variant="outline" icon="plus" disabled={running(login)} onclick={() => void startLogin(current.provider, null)}>Add {PROVIDER_LABEL[current.provider]} account</Button>
-        {#if current.provider === "anthropic"}
-          <span use:tooltip={"Read every Claude account's banked usage-limit resets. Spends nothing."}>
-            <Button size="sm" variant="outline" disabled={acting !== null} loading={acting === "resets"} onclick={() => void run({ action: "resets", provider: current.provider }, "resets")}>
-              {acting === "resets" ? "Checking resets" : "Check resets"}
-            </Button>
-          </span>
-        {/if}
-        <span use:tooltip={`Read usage for every ${PROVIDER_LABEL[current.provider]} account now`}>
-          <Button size="sm" variant="outline" icon={refreshing ? undefined : "refresh"} loading={refreshing} disabled={refreshing} data-testid="refresh-all"
-            onclick={() => void startRefresh(current.provider, null)}>
-            {refreshing ? (refresh?.accounts.length ? `Reading ${settled(refresh)} of ${refresh.accounts.length}` : "Reading") : "Refresh all"}
-          </Button>
-        </span>
-      </div>
+        </div>
+      {/if}
 
       {#if shownLogin}
         <div bind:this={loginCard}>
@@ -340,12 +340,10 @@
         </div>
       {/if}
 
-      {#if shownRefresh}
+      {#if shownRefresh && shownRefresh.status !== "running"}
         <div class="notice" class:failed={shownRefresh.status === "failed"} role="status" aria-live="polite" data-testid="refresh-summary">
           <span>{refreshSummary(shownRefresh)}</span>
-          {#if shownRefresh.status !== "running"}
-            <IconButton icon="close" label="Dismiss" size="xs" onclick={() => (watchedRefreshes = watchedRefreshes.filter(id => id !== shownRefresh?.id))} />
-          {/if}
+          <IconButton icon="close" label="Dismiss" size="xs" onclick={() => (watchedRefreshes = watchedRefreshes.filter(id => id !== shownRefresh?.id))} />
         </div>
       {/if}
       {#if notice}
@@ -354,36 +352,42 @@
           <IconButton icon="close" label="Dismiss" size="xs" onclick={() => (notice = null)} />
         </div>
       {/if}
-      {#if error}<div class="notice failed">{error}</div>{/if}
+      {#if error}<div class="notice failed" title={error}><span>The last read of the pool failed, so the table may be old.</span></div>{/if}
 
       {#if current.error && !current.rows.length}
-        <div class="notice failed">{current.error}</div>
+        <p class="problem" title={current.error}>The {PROVIDER_LABEL[current.provider]} pool did not answer.</p>
       {:else if !current.rows.length}
-        <EmptyState icon="users" size="sm" title="No {PROVIDER_LABEL[current.provider]} accounts yet" description="Add one with the button above." />
+        <EmptyState icon="users" size="sm" title="No {PROVIDER_LABEL[current.provider]} accounts yet" />
       {:else}
-        <div class="table" role="table" aria-label="{PROVIDER_LABEL[current.provider]} accounts" style:--windows={columns.length} class:busy={loading}>
-          <div class="head" role="row">
-            <span role="columnheader">Account</span>
-            {#each columns as column (column)}<span role="columnheader">{column}</span>{/each}
-            <span role="columnheader" class="sr-only">Actions</span>
+        <div class="frame">
+          <div class="table" role="table" aria-label="{PROVIDER_LABEL[current.provider]} accounts" style:--windows={columns.length} class:busy={loading}
+            class:no-threads={!current.rows.some(row => row.sessions)}>
+            <div class="head" role="row">
+              <span role="columnheader">Account</span>
+              <span role="columnheader" class="plan">Plan</span>
+              <span role="columnheader" class="threads">Threads</span>
+              {#each columns as column (column)}<span role="columnheader">{column}</span>{/each}
+              <span role="columnheader">Status</span>
+              <span role="columnheader" class="sr-only">Actions</span>
+            </div>
+            {#each rows as row (row.id)}
+              <AccountRow {row} provider={current} {columns} {now} {thread} read={shownRefresh?.accounts.find(entry => entry.id === row.id)} {refreshing}
+                busy={acting === row.id} locked={acting !== null} loginRunning={running(login)} poolConfig={view.poolConfig} menuOpen={menuOpen && menu?.row.id === row.id}
+                onuse={() => useForThread(row)} onrefresh={() => void startRefresh(current.provider, row.id)} onreset={() => askReset(row)}
+                onenable={() => void run({ action: "enable", provider: current.provider, account: row.id }, row.id)}
+                onlogin={() => void startLogin(current.provider, row.id)}
+                onmore={anchor => {
+                  const same = menuOpen && menu?.row.id === row.id;
+                  menu = { row, anchor };
+                  menuOpen = !same;
+                }} />
+            {/each}
           </div>
-          {#each rows as row (row.id)}
-            <AccountRow {row} provider={current} {columns} {now} {thread} read={shownRefresh?.accounts.find(entry => entry.id === row.id)} {refreshing}
-              busy={acting === row.id} locked={acting !== null} loginRunning={running(login)} poolConfig={view.poolConfig} menuOpen={menuOpen && menu?.row.id === row.id}
-              onuse={() => useForThread(row)} onrefresh={() => void startRefresh(current.provider, row.id)} onreset={() => askReset(row)}
-              onenable={() => void run({ action: "enable", provider: current.provider, account: row.id }, row.id)}
-              onlogin={() => void startLogin(current.provider, row.id)}
-              onmore={anchor => {
-                const same = menuOpen && menu?.row.id === row.id;
-                menu = { row, anchor };
-                menuOpen = !same;
-              }} />
-          {/each}
         </div>
       {/if}
+      <NoModelRoom />
     </div>
   {/if}
-  <NoModelRoom />
 </Page>
 
 <Menu bind:open={menuOpen} anchor={menu?.anchor} items={menuItems} placement="bottom-end" width={220} label={menu ? `Actions for ${menu.row.label}` : "Actions"} />
@@ -413,27 +417,47 @@
 </Dialog>
 
 <style>
-  .body { display: flex; flex-direction: column; gap: var(--space-4); padding-bottom: var(--space-8); }
-  .uses { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-3); color: var(--text-standard); font: var(--text-body); }
-  .sentence { display: flex; flex: 1 1 20rem; flex-direction: column; min-width: 0; }
-  .for { color: var(--text-subtle); font: var(--text-caption); }
-  .uses.warning .sentence { color: var(--text-danger); }
-  .bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); border-bottom: 1px solid var(--border-standard); }
+  .body { display: flex; flex-direction: column; gap: var(--space-3); padding-bottom: var(--space-8); }
+  .toolbar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--space-1); border-bottom: 1px solid var(--border-standard); }
+  .toolbar :global(.tabs.underline) { border-bottom: 0; }
+  .toolbar > :global(:not(.tabs)) { margin-bottom: var(--space-1); }
   .spacer { flex: 1; }
+  .thread { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1) var(--space-2); color: var(--text-standard); font: var(--text-body-sm); }
+  .for { color: var(--text-subtle); }
+  .for::after { content: "·"; margin-left: var(--space-2); }
+  .sentence { min-width: 0; }
+  .thread.warning .sentence { color: var(--text-danger); }
   .notice {
-    display: flex; align-items: flex-start; gap: var(--space-2); padding: var(--space-2) var(--space-2) var(--space-2) var(--space-4);
+    display: flex; align-items: center; gap: var(--space-2); min-height: 32px; padding: 0 var(--space-1) 0 var(--space-3);
     border-radius: var(--radius-row); background: var(--surface-inset); color: var(--text-subtle); font: var(--text-body-sm);
   }
-  .notice span { flex: 1; padding-top: 2px; overflow-wrap: anywhere; }
-  .notice.failed { background: var(--surface-danger); color: var(--text-danger); }
-  .table { display: grid; grid-template-columns: minmax(14rem, 1fr) repeat(var(--windows), minmax(6rem, 9rem)) auto; }
+  .notice span { flex: 1; overflow-wrap: anywhere; }
+  .notice.failed, .problem { color: var(--text-danger); }
+  .problem { margin: var(--space-4) 0; font: var(--text-body-sm); }
+  .frame { container-type: inline-size; }
+  .table {
+    --cols: minmax(11rem, 3fr) auto auto repeat(var(--windows), minmax(6.5rem, 1fr)) minmax(6rem, auto) auto;
+    display: grid; grid-template-columns: var(--cols); column-gap: var(--space-4);
+  }
+  .table.no-threads { --cols: minmax(11rem, 3fr) auto repeat(var(--windows), minmax(6.5rem, 1fr)) minmax(6rem, auto) auto; }
+  .table.no-threads .threads, .table.no-threads :global(.row > .threads) { display: none; }
   .table.busy { opacity: 0.7; }
   .head {
-    display: grid; grid-template-columns: subgrid; grid-column: 1 / -1; column-gap: var(--space-4); padding: 0 var(--space-3) var(--space-1-5);
-    color: var(--text-metadata, var(--text-subtle)); font: var(--text-caption);
+    display: grid; grid-template-columns: subgrid; grid-column: 1 / -1; align-items: end; column-gap: inherit; padding: 0 var(--space-2) var(--space-1-5) var(--space-3);
+    color: var(--text-subtle); font: var(--text-caption);
+  }
+  /* Narrow: plan and threads go, and each meter stacks its percent, bar and time left so no number is cut. */
+  @container (max-width: 46rem) {
+    .table, .table.no-threads { --cols: minmax(8rem, 2fr) repeat(var(--windows), minmax(3.5rem, 1fr)) auto auto; column-gap: var(--space-3); }
+    .head .plan, .head .threads, .table :global(.row > .plan), .table :global(.row > .threads) { display: none; }
+    .table :global(.row .nums) { display: contents; }
+    .table :global(.row .cell) { padding: var(--space-1-5) 0; }
+    .table :global(.row .cell .meter) { order: 1; }
+    .table :global(.row .cell .reset) { order: 2; }
+    .table :global(.row .actions > :not(:last-child)) { display: none; }
   }
   .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
-  .confirm { display: flex; flex-direction: column; gap: var(--space-3); }
+    .confirm { display: flex; flex-direction: column; gap: var(--space-3); }
   .confirm p { margin: 0; color: var(--text-subtle); font: var(--text-body); }
   .typed { display: flex; flex-direction: column; gap: var(--space-1-5); color: var(--text-subtle); font: var(--text-body-sm); }
   .typed strong { color: var(--text-standard); font-weight: 500; overflow-wrap: anywhere; }

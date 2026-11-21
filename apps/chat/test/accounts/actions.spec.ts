@@ -136,7 +136,6 @@ test("14 15 19 Refresh all counts its progress on the button, marks each row, th
   await page.getByRole("button", { name: "Refresh all" }).click();
   expect(JSON.parse((await asked).postData()!)).toEqual({ provider: "anthropic", account: null });
   await expect(page.getByRole("button", { name: /Reading 1 of 3/ })).toBeDisabled();
-  await expect(page.getByRole("status").filter({ hasText: "Reading usage: 1 of 3 done." })).toBeVisible();
   await expect(accountRow(page, rows[1]!).getByText("Reading")).toBeVisible();
   await expect(accountRow(page, rows[2]!).getByText("Queued", { exact: true })).toBeVisible();
   current = done;
@@ -145,7 +144,8 @@ test("14 15 19 Refresh all counts its progress on the button, marks each row, th
   await expect(summary).toContainText(`Not read: ${rows[2]!.label}.`);
   await expect(accountRow(page, rows[0]!).getByText("Updated", { exact: true })).toBeVisible();
   await expect(accountRow(page, rows[2]!).getByText("Not read", { exact: true })).toBeVisible();
-  await expect(accountRow(page, rows[2]!)).toContainText("Not read: usage endpoint answered 500.");
+  await accountRow(page, rows[2]!).getByText("Not read", { exact: true }).hover();
+  await expect(page.getByRole("tooltip")).toContainText("Not read: usage endpoint answered 500.");
   await expect(page.getByRole("button", { name: "Refresh all" })).toBeEnabled();
   await summary.getByRole("button", { name: "Dismiss" }).click();
   await expect(summary).toHaveCount(0);
@@ -301,7 +301,8 @@ test("26 Sign in again starts a login for that account, from the row and from th
   expect(row, "the fake seeds a Claude account whose sign-in expired").toBeTruthy();
   await openAccounts(page);
   const line = accountRow(page, row!);
-  await expect(line).toContainText("The sign-in expired.");
+  await line.getByTestId("account-status").hover();
+  await expect(page.getByRole("tooltip")).toContainText("The sign-in expired.");
   const start = await postedAction(page, LOGIN, () => line.getByRole("button", { name: "Sign in again" }).click());
   expect(start.body).toEqual({ provider: "anthropic", account: row!.id });
   const card = loginCard(page, `Sign in again as ${row!.label}`);
@@ -325,7 +326,8 @@ test("27 Turn off takes an account out of Auto, and Turn on brings it back", asy
   expect(providerOf(await readView(request), "anthropic").rows.find(entry => entry.id === row.id)?.disabled).toBe(true);
   const line = accountRow(page, row);
   await expect(line.getByText("Off", { exact: true })).toBeVisible();
-  await expect(line).toContainText("Off excludes this account from Auto. Manual can still use it.");
+  await line.getByTestId("account-status").hover();
+  await expect(page.getByRole("tooltip")).toContainText("Off excludes this account from Auto. Manual can still use it.");
   const on = await postedAction(page, ACCOUNTS, () => line.getByRole("button", { name: "Turn on" }).click());
   expect(on.body).toEqual({ action: "enable", provider: "anthropic", account: row.id });
   expect(providerOf(await readView(request), "anthropic").rows.find(entry => entry.id === row.id)?.disabled).toBe(false);

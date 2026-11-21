@@ -64,12 +64,12 @@ test("3 each usage window has a column with its percent, a toned bar and when it
       const line = accountRow(page, row);
       for (const window of row.windows) {
         await expect(line).toContainText(`${Math.round(window.pct)}%`);
-        // The meter's caption is its reset time, and its title names the window, as in "5h: 42% used, resets in 3h 4m".
+        // The cell shows the percent, the bar and the time left, and the bar's title names the window, as in "5h: 42% used, resets in 3h 4m".
         const meter = line.locator(`[role="meter"][title^="${windowLabel(window)}:"]`);
         await expect(meter).toHaveAttribute("aria-valuenow", String(window.pct));
         await expect(meter).toHaveClass(TONE_CLASS[meterTone(window.pct)]);
         if (meterTone(window.pct) !== "low") toned++;
-        if (window.resetsAt && window.resetsAt > Date.now()) await expect(line).toContainText("resets in ");
+        if (window.resetsAt && window.resetsAt > Date.now()) await expect(meter).toHaveAttribute("title", /resets in /);
       }
     }
   }
@@ -104,7 +104,8 @@ test("5 a row used by threads shows the count with a hint that names the window"
   test.skip(!row, "the fake seeds no Claude account with threads");
   const text = threadsText(row!, view.poolConfig)!;
   await openAccounts(page);
-  const count = accountRow(page, row!).getByText(text.label, { exact: true });
+  const count = accountRow(page, row!).getByLabel(text.label, { exact: true });
+  await expect(count).toHaveText(String(row!.sessions));
   await expect(count).toBeVisible();
   await count.hover();
   await expect(page.getByRole("tooltip")).toContainText(text.hint);
@@ -134,7 +135,8 @@ test("7 with no thread the account the pool picks next says Next request", async
   await openAccounts(page);
   await expect(accountRow(page, next!).getByText(badge, { exact: true })).toBeVisible();
   await expect(page.getByRole("row").getByText(badge, { exact: true })).toHaveCount(1);
-  await expect(page.getByText("No thread is chosen. A new thread starts on the account marked Next request.")).toBeVisible();
+  await accountRow(page, next!).getByText(badge, { exact: true }).hover();
+  await expect(page.getByRole("tooltip")).toContainText(badge === "Manual" ? "This thread stays on this account." : "A new thread starts on this account.");
   await expect(page.getByRole("row").getByText("Auto", { exact: true })).toHaveCount(0);
 });
 
@@ -150,7 +152,7 @@ test("8 rows sort in use first, then pinned, ready, spent, refused, needs login 
   }
 });
 
-test("9 each row shows its plain-words notes", async ({ page }) => {
+test("9 each row's status cell carries its plain-words notes as its tooltip", async ({ page }) => {
   // Every row and window of both providers, so this walk takes longer than one action.
   test.slow();
   const view = await frozen(page);
@@ -162,7 +164,8 @@ test("9 each row shows its plain-words notes", async ({ page }) => {
       for (const note of rowNotes(row)) {
         // Countdowns in a note move with the clock, so the spec matches the words before the first number.
         const head = note.split(/\d/)[0]!.trim();
-        await expect(accountRow(page, row).getByText(head).first(), `${row.label}: ${note}`).toBeVisible();
+        await accountRow(page, row).getByTestId("account-status").hover();
+        await expect(page.getByRole("tooltip"), `${row.label}: ${note}`).toContainText(head);
         notes++;
       }
     }
@@ -179,9 +182,9 @@ test("10 countdowns tick every 30 seconds", async ({ page }) => {
   await openAccounts(page);
   await showProvider(page, "anthropic");
   const line = accountRow(page, row);
-  await expect(line).toContainText("resets in 3h 4m");
+  await expect(line).toContainText("3h 4m");
   await page.clock.runFor(31_000);
-  await expect(line).toContainText("resets in 3h 3m");
+  await expect(line).toContainText("3h 3m");
 });
 
 test("11 the page shows loading, then Accounts unavailable with Retry, and Retry reads again", async ({ page }) => {
@@ -200,7 +203,8 @@ test("11 the page shows loading, then Accounts unavailable with Retry, and Retry
   await expect(page.getByText("Loading accounts")).toBeVisible({ timeout: 15_000 });
   release();
   await expect(page.getByText(/Accounts unavailable/)).toBeVisible();
-  await expect(page.getByText(/pi-pool snapshot timed out/)).toBeVisible();
+  await expect(page.getByText("The pool did not answer.")).toBeVisible();
+  await expect(page.locator('[title="pi-pool snapshot timed out"]')).toHaveCount(1);
   fail = false;
   await page.getByRole("button", { name: "Retry", exact: true }).click();
   await expect(providerTab(page, "anthropic")).toBeVisible();
@@ -216,20 +220,21 @@ test("11 a provider with no accounts says so, and a provider error shows the poo
   view = withProvider(base, "anthropic", { rows: [], resolution: null, error: "pi-pool ls exited 2: config unreadable" });
   await page.reload();
   await showProvider(page, "anthropic");
-  await expect(page.getByText("pi-pool ls exited 2: config unreadable")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("The Claude pool did not answer.")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("The Claude pool did not answer.")).toHaveAttribute("title", "pi-pool ls exited 2: config unreadable");
 });
 
-test("18 the pool meters show each provider's spent share and how many accounts take a new thread", async ({ page }) => {
+test("18 the pool line shows the open provider's spent share and how many accounts take a new thread", async ({ page }) => {
   const view = await frozen(page);
   await openAccounts(page);
   for (const provider of view.providers.filter(entry => entry.rows.length)) {
+    await showProvider(page, provider.provider);
     const summary = poolSummary(provider, poolCaps(view.poolConfig, view.priority));
     const card = page.getByTestId(`pool-meter-${provider.provider}`);
-    await expect(card).toContainText(PROVIDER_LABEL[provider.provider]);
-    await expect(card).toContainText(`${summary.usable}/${summary.total}`);
+    await expect(card).toContainText(`${summary.usable} of ${summary.total} take a new thread`);
     for (const meter of summary.meters) {
       const label = meter.key === "week" ? "Week" : meter.key;
-      await expect(card.getByRole("meter", { name: label, exact: true })).toBeVisible();
+      await expect(card.getByRole("meter", { name: new RegExp(`^${label}: `) })).toBeVisible();
       await expect(card).toContainText(`${Math.round(meter.pct)}%`);
     }
   }
