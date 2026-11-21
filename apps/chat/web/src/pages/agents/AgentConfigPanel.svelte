@@ -11,6 +11,8 @@
   import AgentForMe from "./AgentForMe.svelte";
   import AgentMemory from "./AgentMemory.svelte";
   import ProjectPicker from "./ProjectPicker.svelte";
+  import MemberPicker from "$pages/channel/MemberPicker.svelte";
+  import { removeMembership } from "$pages/channel/membership";
   import { agentMenu, renameAgent, unarchiveAgent } from "./agent-actions.svelte";
 
   type Props = {
@@ -33,6 +35,8 @@
   const dutyRows = view(() => (dutyChat ? reads.duties(dutyChat) : null));
   const error = $derived(answer.error ?? "");
   let moving = $state(false);
+  let addingRoom = $state(false);
+  let roomAnchor = $state<HTMLElement>();
   let projects = $state<ProjectList | null>(null);
   let nextCwd = $state("");
   let saving = $state(false);
@@ -306,11 +310,29 @@
         <h3 class="t-caption heading">Channels and Solo rooms</h3>
         <div class="chips">
           {#each config.swarm.rooms as room (room.id)}
-            <a class="channel" href={conversationHref(room.id)}><Chip size="sm" icon={room.kind === "solo" ? "chat" : "hash"} label={room.name} /></a>
+            {@const place = room.kind === "solo" ? room.name : `#${room.name}`}
+            <Chip
+              size="sm"
+              icon={room.kind === "solo" ? "chat" : "hash"}
+              label={room.name}
+              onclick={() => router.openConversation(room.id)}
+              removeLabel="Remove {config.agent.name} from {place}"
+              onremove={() => void removeMembership({ room: room.id, roomName: room.name, agent: agentId, agentName: config.agent.name }, { refresh: load })}
+            />
           {:else}
             <span class="t-caption meta">In no channel or Solo room.</span>
           {/each}
+          {#if agentId.startsWith("ag_")}
+            <Button variant="ghost" size="sm" icon="plus" bind:element={roomAnchor} onclick={() => (addingRoom = true)} data-testid="add-to-channel">Add to channel</Button>
+          {/if}
         </div>
+        <MemberPicker
+          bind:open={addingRoom}
+          anchor={roomAnchor}
+          target={{ kind: "agent", agent: agentId, name: config.agent.name, rooms: config.swarm.rooms.map((room) => room.id) }}
+          refresh={load}
+          placement="bottom-start"
+        />
       </section>
       <h3 class="t-caption heading">Where it runs</h3>
       <dl class="facts">
@@ -725,9 +747,6 @@
     display: flex;
     flex-wrap: wrap;
     gap: var(--space-1);
-  }
-  .channel {
-    text-decoration: none;
   }
   .comm {
     display: inline-flex;

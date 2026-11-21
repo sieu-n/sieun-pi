@@ -15,7 +15,6 @@
   import Chip from "$lib/ui/Chip.svelte";
   import Icon from "$lib/ui/Icon.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
-  import Picker from "$lib/ui/Picker.svelte";
   import Tabs from "$lib/ui/Tabs.svelte";
   import { stampLabel } from "$lib/ui/datetime";
   import Menu from "$lib/ui/Menu.svelte";
@@ -29,12 +28,14 @@
   import HostBadge from "$pages/agents/HostBadge.svelte";
   import Composer from "./Composer.svelte";
   import ChannelMembers from "./ChannelMembers.svelte";
+  import MemberPicker from "./MemberPicker.svelte";
+  import { removeMembership } from "./membership";
   import ThreadPane from "./ThreadPane.svelte";
   import { roomDraftKey, threadDraftKey } from "$lib/drafts.svelte";
   import Timeline from "./Timeline.svelte";
   import { directory } from "./directory.svelte";
   import { AuthorBoards } from "./author-boards.svelte";
-  import { agentPickerItems, avatarOf, mentionContext, placeText, type Outgoing } from "./present";
+  import { avatarOf, mentionContext, placeText, type Outgoing } from "./present";
 
   type Props = { id: string; around?: string };
   let { id, around }: Props = $props();
@@ -242,27 +243,11 @@
     }
   }
 
+  let channelMembers = $state<ChannelMembers>();
   let inviteOpen = $state(false);
   let inviteAnchor = $state<HTMLElement>();
-  const inviteItems = $derived(agentPickerItems(agents.list).filter((item) => !others.some((m) => m.principal.id === item.id)));
-
-  async function addMember(agentId: string) {
-    try {
-      await api.addMembers(id, [agentId]);
-      await store.refreshHeader();
-    } catch (error) {
-      fail(error);
-    }
-  }
-
-  async function removeMember(agentId: string) {
-    try {
-      await api.removeMember(id, agentId);
-      await store.refreshHeader();
-    } catch (error) {
-      fail(error);
-    }
-  }
+  /** A test room sends no live room event, so a member change reads the header again itself. */
+  const refreshHeader = () => store.refreshHeader();
 
   let agendaOpen = $state(false);
 
@@ -289,7 +274,12 @@
           { id: "board-page", label: "Open board page", icon: "external", onselect: () => router.navigate(boardHref(paneBoard)) },
         ]
       : []),
-    ...(isChannel && header ? [{ id: "rename", label: "Rename channel", icon: "edit", onselect: () => renameDialog.open(id, name) }] : []),
+    ...(isChannel && header
+      ? [
+          { id: "add-people", label: "Add people", icon: "plus", onselect: () => channelMembers?.openAdd() },
+          { id: "rename", label: "Rename channel", icon: "edit", onselect: () => renameDialog.open(id, name) },
+        ]
+      : []),
     ...(isSolo && header
       ? [closedAt
           ? { id: "reopen", label: "Reopen room", icon: "refresh", onselect: () => void setClosed(false) }
@@ -374,7 +364,16 @@
     <AccountChip thread={id} model={header.model} />
   {/if}
   {#if isChannel && header}
-    <ChannelMembers members={header.members} onopen={(agentId) => router.openConversation(agents.room(agentId))} />
+    <ChannelMembers
+      bind:this={channelMembers}
+      room={id}
+      members={header.members}
+      channel={name}
+      test={header.test === true}
+      {statusOf}
+      onopen={(agentId) => router.openConversation(agents.room(agentId))}
+      refresh={refreshHeader}
+    />
   {:else if others.length}
     <span class="members" title={others.map((m) => m.principal.name).join(", ")}>
       <AvatarStack members={others.map((m) => avatarOf(m.principal))} size={20} max={3} />
@@ -408,7 +407,12 @@
       </div>
       <div class="roster" data-testid="solo-members" aria-label="Members">
         {#each others as member (member.principal.id)}
-          <Chip size="sm" label={member.principal.name} removeLabel="Remove {member.principal.name}" onremove={() => void removeMember(member.principal.id)}>
+          <Chip
+            size="sm"
+            label={member.principal.name}
+            removeLabel="Remove {member.principal.name}"
+            onremove={() => void removeMembership({ room: id, roomName: name, agent: member.principal.id, agentName: member.principal.name }, { wakeOn: member.wakeOn, refresh: refreshHeader })}
+          >
             {#snippet leading()}<Avatar name={member.principal.name} kind="agent" seed={member.principal.id} size={16} status={statusOf(member.principal.id)} />{/snippet}
           </Chip>
         {/each}
@@ -480,7 +484,13 @@
 
 <Menu bind:open={menuOpen} anchor={menuAnchor} items={menuItems} placement="bottom-end" />
 {#if isSolo}
-  <Picker bind:open={inviteOpen} anchor={inviteAnchor} items={inviteItems} searchable label="Add agents" emptyText="Every agent is in this room" onselect={(agentId) => void addMember(agentId)} />
+  <MemberPicker
+    bind:open={inviteOpen}
+    anchor={inviteAnchor}
+    target={{ kind: "room", room: id, name, members: others.map((m) => m.principal.id), test: header?.test === true }}
+    refresh={refreshHeader}
+    placement="bottom-start"
+  />
 {/if}
 
 <style>

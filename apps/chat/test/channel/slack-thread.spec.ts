@@ -35,12 +35,12 @@ test("the channel header shows the purpose and a member button whose list names 
   await expect(button.locator(".avatar")).toHaveCount(3);
   await expect(button.locator(".count")).toHaveText("4");
   await button.click();
-  const list = page.getByRole("dialog", { name: "Members" });
-  await expect(list.getByRole("option")).toHaveCount(4);
-  await expect(list.getByRole("option", { name: /Crawler VP/ })).toBeVisible();
-  await expect(list.getByRole("option", { name: /AI harness developer environment VP.*Working now/ })).toBeVisible();
-  await expect(list.getByRole("option", { name: /You/ })).toBeVisible();
-  await list.getByRole("option", { name: /frontend bro/ }).click();
+  const list = page.getByRole("dialog", { name: "Members of #pi-cutover" });
+  await expect(list.locator("[data-member]")).toHaveCount(4);
+  await expect(list.getByRole("button", { name: /Crawler VP/ }).first()).toBeVisible();
+  await expect(list.getByRole("button", { name: /AI harness developer environment VP.*Working now/ })).toBeVisible();
+  await expect(list.locator('[data-member="owner"]')).toHaveText(/You/);
+  await list.getByRole("button", { name: /^frontend bro/ }).click();
   await expect(page).toHaveURL(/#\/c\/dm_/);
 });
 

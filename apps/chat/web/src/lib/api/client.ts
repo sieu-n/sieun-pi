@@ -399,7 +399,8 @@ export const get = <T>(of: Read<T>, wait?: Wait): Promise<T> => call<T>("GET", o
 
 /** The reads of the panels the owner opens: the Agents page, an agent's page, and a chat's board with its duties, check-in and jobs. */
 export const reads = {
-  agents: () => read<AgentSummary[]>("/api/agents"),
+  /** `test` adds the test agents of walks, for a test room's member picker. */
+  agents: (opts: { test?: boolean } = {}) => read<AgentSummary[]>(opts.test ? "/api/agents?test=1" : "/api/agents"),
   models: () => read<ModelCatalog>("/api/models"),
   /** Channels and Solo rooms; a DM is listed by agent, never here. */
   rooms: () => read<Room[]>("/api/rooms"),
