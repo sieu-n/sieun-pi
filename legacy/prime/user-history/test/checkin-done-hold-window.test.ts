@@ -40,3 +40,13 @@ test("a named window holds the item longer, and a new miss restarts the hold", (
   assert.ok(done([10.86, ...Array<number>(49).fill(0.4)], "Done when d7 reads it under 5 GB on every run for 24 h."));
   assert.equal(done([10.86, ...Array<number>(12).fill(0.4), 7, 0.4]), null);
 });
+
+// p224 11-21: d3 read sending_available met, then its newest run had no value, and the check-in still called the step done.
+test("a metric the newest run left unmeasured is unknown, so its item is not done", () => {
+  const held = runs([10.86, ...Array<number>(13).fill(0.4)]);
+  const unmeasured = { ...held[0]!, at: held[0]!.at + 30 * 60_000, verdict: "error", metrics: {} } as DutyRunRecord;
+  assert.ok(looksDone(p717, { metrics: metricFacts(held), prs: new Map() }));
+  assert.equal(metricFacts([unmeasured, ...held]).get("d7/quiet_agent_gb"), undefined);
+  assert.equal(looksDone(p717, { metrics: metricFacts([unmeasured, ...held]), prs: new Map() }), null);
+  assert.ok(metricFacts([{ ...unmeasured, verdict: "skipped" }, ...held]).get("d7/quiet_agent_gb")?.met, "a skipped run measured nothing");
+});

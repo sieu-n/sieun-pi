@@ -67,14 +67,24 @@ export const NO_FACTS: DoneFacts = { metrics: new Map(), prs: new Map() };
  * streak after that miss.
  */
 export interface MetricFact { met: boolean; at: number; value?: number; target?: number; op?: ">=" | "<="; missedAt?: number; metSince?: number }
-/** Each duty metric's verdict on the newest measured run of its duty that has it (`effectiveRun`), from runs newest first, with its newest miss. */
+/**
+ * Each duty metric's verdict on the newest measured run of its duty that has it (`effectiveRun`), from runs newest first, with its newest miss.
+ * A metric the duty's newest met, missed or error run left unmeasured has no fact, because its older verdict is no reading of now. On 11-21
+ * api portal vp's d3 read sending_available 1 at 11-19 21:59Z and had no value at 11-20 21:59Z, and the 02:39Z check-in called p224 done while
+ * a live precheck read 0.
+ */
 export function metricFacts(runs: readonly DutyRunRecord[]): Map<string, MetricFact> {
   const facts = new Map<string, MetricFact>();
+  const measuredNow = new Map<string, ReadonlySet<string>>();
   for (const run of runs) {
     const judged = effectiveRun(run);
-    if (judged.verdict !== "met" && judged.verdict !== "missed") continue;
     // A metric's parts (`metricParts`) are facts too: p717 reads d7/quiet_agent_gb_us_metal02.
-    for (const [key, result] of Object.entries({ ...judged.parts, ...judged.metrics })) {
+    const results = { ...judged.parts, ...judged.metrics };
+    if (judged.verdict === "skipped") continue;
+    if (!measuredNow.has(run.duty)) measuredNow.set(run.duty, new Set(Object.keys(results)));
+    if (judged.verdict !== "met" && judged.verdict !== "missed") continue;
+    for (const [key, result] of Object.entries(results)) {
+      if (!measuredNow.get(run.duty)!.has(key)) continue;
       const link = `${run.duty}/${key}`;
       if (!facts.has(link)) facts.set(link, { met: result.met, at: run.after?.at ?? run.at, value: result.value, target: result.target, op: result.op });
       const fact = facts.get(link)!;
