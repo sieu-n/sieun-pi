@@ -7,7 +7,6 @@ dependencies = [
   "httpx",
   "Pillow",
   "websearch",
-  "linear-ticket",
   "aside-browser",
   "board",
   "wiki",
@@ -18,7 +17,6 @@ package = false
 
 [tool.uv.sources]
 websearch = { path = "skills/websearch", editable = true }
-linear-ticket = { path = "skills/linear-ticket", editable = true }
 aside-browser = { path = "skills/aside-browser", editable = true }
 board = { path = "skills/board", editable = true }
 wiki = { path = "skills/wiki", editable = true }

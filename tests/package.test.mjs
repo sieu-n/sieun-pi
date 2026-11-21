@@ -45,7 +45,6 @@ test("packed production install, native reload, update, rollback and uninstall",
       "NOTICE", "LICENSES/pstack-MIT.txt", "LICENSES/tokenmaxxing-MIT.txt", "LICENSES/prime-agent-MIT.txt",
       "docs/attribution-pstack.json", "skills/poteto-mode/scripts/check-source-paths.test.mjs"]) assert(paths.includes(path), path);
     for (const path of ["skills/aside-browser/references/repl-api.md",
-      "skills/linear-ticket/references/example-vir-371.md", "skills/linear-ticket/references/example-after-openapi.json",
       "skills/spec-report/references/approved-email-editor-spec.md"]) assert(!paths.includes(path), path);
     const metadata = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
     assert.equal(metadata.private, undefined);

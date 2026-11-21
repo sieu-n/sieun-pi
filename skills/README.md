@@ -23,11 +23,11 @@ It does not check Markdown prose, browser behavior, service access, or Prime Age
 Bun validates its lockfile and TypeScript source separately.
 
 `uv run python -m unittest discover -s tests -p test_skills.py -v` tests the checker and profile path controls.
-All test writes use temporary directories. The tests do not run session recovery, publish tickets, or call live services.
+All test writes use temporary directories. The tests do not run session recovery or call live services.
 
 ## Python packages
 
-Each of `websearch`, `linear-ticket`, `aside-browser`, and `board` has its own `pyproject.toml` and `uv.lock`.
+Each of `websearch`, `aside-browser`, and `board` has its own `pyproject.toml` and `uv.lock`.
 For example, these commands build and import the packaged websearch module without a Prime Agent runtime.
 
 ```sh
@@ -36,12 +36,9 @@ uv build --project skills/websearch --out-dir skills/websearch/dist
 uv run --project skills/websearch --no-sync python -I -c 'import websearch; print(websearch.__file__)'
 ```
 
-The other module names are `linear_ticket`, `aside_browser`, and `board`.
+The other module names are `aside_browser` and `board`.
 The `-I` import checks the installed package, without the checkout or `PYTHONPATH` on the import path.
-The root environment installs all four packages as editable dependencies.
-
-`uv run python -m unittest discover -s skills/linear-ticket/tests -v` runs the local ticket checks and HTML rendering tests.
-No test uploads assets or changes a Linear issue.
+The root environment installs these packages and `wiki` as editable dependencies.
 
 ## Bun and shell source
 
@@ -80,7 +77,6 @@ Both scripts use `PRIME_AGENT_CODING_AGENT_DIR`, then `PI_CODING_AGENT_DIR`, the
 | Component | Requirement for operational calls |
 | --- | --- |
 | `websearch` | Virev credentials and network access. Its console entrypoint also needs Prime Agent's `rlm.skill`. |
-| `linear-ticket` | Prime Agent's `linear` skill for publishing. Diagram capture needs `aside_browser`, the Aside browser, and its MCP connection. The console entrypoint needs `rlm.skill`. |
 | `aside-browser` | Prime Agent's `rlm.mcp` and an Aside MCP server. Its existing CLI fallback needs the Aside executable, selected through `ASIDE_CLI` or `PATH`. |
 | Session recovery and fleet health | A compatible Prime Agent CLI and daemon. Fleet repair can abort, resume, and message sessions. No operational method runs during source checks. |
 | `watch-pr` and `orch frontier` | GitHub CLI or Graphite CLI, credentials, and the target repository. Local tests do not prove those live integrations. |

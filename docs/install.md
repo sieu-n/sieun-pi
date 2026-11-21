@@ -255,7 +255,7 @@ Then remove the `anthropic` and `openai-codex` entries whose `apiKey` names `pi-
 
 ## What apply installs
 
-- Each skill root and the auxiliary `legacy/prime/skills/skills` directory go under `~/.prime/agent/skills`.
+- Each skill root in `install-manifest.json` goes under `~/.prime/agent/skills`.
 - `config/AGENTS.md` and `config/pstack-models.json` go under `~/.prime/agent`.
 - One global entry links `~/.prime/agent/extensions/global-rules.ts` to `packages/sieun-rules/src/index.ts`. It refuses history rewrites in the sieun-pi checkout and outside sends without the owner's ok.
 - One global entry links `~/.prime/agent/extensions/claude-rules.ts` to `packages/pi-claude-rules/src/pi/index.ts`. It loads the `.claude/rules` files of the repo a session works in.

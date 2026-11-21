@@ -25,7 +25,6 @@ Private runtime data
 | Pool patcher and updater | Change the installed Prime bundle. The updater uses a generated runtime copy outside the source checkout. Review it separately from source-link installation. |
 | `aside-browser` | Controls the real logged-in browser. Page contents, screenshots, downloads, and actions can expose or change account data. |
 | Saved history and agent chat | Exposes selected private sessions to Aside over random loopback URLs. Chat can send native prompts. Do not share the URL. Local processes and browser-managed copies are outside that protection. |
-| `linear-ticket` | Uploads supplied assets and changes the selected Linear issue when publishing is called. Local checks do not publish. |
 | Session recovery and fleet health | Read private session data. Operational repair can resume, message, or abort sessions. These are not harmless health probes. |
 | Poteto's `watch-pr` and `orch` | Use the operator's GitHub or Graphite credentials for repository work. Local tests use fixtures instead. |
 

@@ -13,8 +13,8 @@ pstack
   personas. Local changes adapt Cursor instructions to Prime Agent, update
   model selection, and add the owner's workflow and writing rules.
   The pstack-derived writing rules also inform the global-rules writing
-  rules and the linear-ticket writing checks. The notice does not claim pstack authorship
-  of those local implementations.
+  rules. The notice does not claim pstack authorship of those local
+  implementations.
 
 Prime Agent and Pi
   Copyright (c) 2025 Mario Zechner

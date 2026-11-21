@@ -52,21 +52,24 @@
       "upstream_path": "pstack/skills/create-verification-skill/SKILL.md",
       "upstream_sha256": "644f2551403c1bca01a2855b34611b6e7be0ce0dc5b204514c376c0f6a6e6ac4",
       "import_sha256": "caf52094efe56bbf3570fb44b048ee8ed0d3e8e4dd331e7701694012f0510aa2",
-      "unchanged_at_comparison": false
+      "unchanged_at_comparison": false,
+      "deleted_on": "2026-11-21"
     },
     {
       "path": "skills/create-verification-skill/references/feature-map-example/README.md",
       "upstream_path": "pstack/skills/create-verification-skill/references/feature-map-example/README.md",
       "upstream_sha256": "cb7bd782cf89968a4ba3d58a5151db837430db92d19a6f52a906973b77b516ba",
       "import_sha256": "cb7bd782cf89968a4ba3d58a5151db837430db92d19a6f52a906973b77b516ba",
-      "unchanged_at_comparison": true
+      "unchanged_at_comparison": true,
+      "deleted_on": "2026-11-21"
     },
     {
       "path": "skills/create-verification-skill/references/feature-map-example/create-note.md",
       "upstream_path": "pstack/skills/create-verification-skill/references/feature-map-example/create-note.md",
       "upstream_sha256": "644a44c74f35d38c2feb7cd05a0121fdebbb623e8dc376c185b565a581d1ccf7",
       "import_sha256": "644a44c74f35d38c2feb7cd05a0121fdebbb623e8dc376c185b565a581d1ccf7",
-      "unchanged_at_comparison": true
+      "unchanged_at_comparison": true,
+      "deleted_on": "2026-11-21"
     },
     {
       "path": "skills/figure-it-out/SKILL.md",
@@ -129,35 +132,40 @@
       "upstream_path": "pstack/skills/interrogate/SKILL.md",
       "upstream_sha256": "2867910309e81411123ae4edca68ffca5795e66521d3f3bc0876f6213b542fb9",
       "import_sha256": "50803cb264c9f200e103c8e2d729f9f171afdd1037f2fe45e4c5154074e6022d",
-      "unchanged_at_comparison": false
+      "unchanged_at_comparison": false,
+      "deleted_on": "2026-11-21"
     },
     {
       "path": "skills/interrogate/references/code-quality-review.md",
       "upstream_path": "pstack/skills/interrogate/references/code-quality-review.md",
       "upstream_sha256": "623d3d8122d075c303b562783b471a732992e84166b318f85ab6d6c118b13304",
       "import_sha256": "2462f1347b99b412b04fcb0577b96d8744c801f792f2651746f9409fd4465dc9",
-      "unchanged_at_comparison": false
+      "unchanged_at_comparison": false,
+      "deleted_on": "2026-11-21"
     },
     {
       "path": "skills/interrogate/references/lead-judgment.md",
       "upstream_path": "pstack/skills/interrogate/references/lead-judgment.md",
       "upstream_sha256": "6e5bdf5670eb34017692e9b6c546f36ac7552e6bb9f3f2f3429164fcc46a9361",
       "import_sha256": "d2cea6cc308758201c6b8b82baf780947645f1ab752707ddf97fab374bf473f9",
-      "unchanged_at_comparison": false
+      "unchanged_at_comparison": false,
+      "deleted_on": "2026-11-21"
     },
     {
       "path": "skills/interrogate/references/reviewer-prompt.md",
       "upstream_path": "pstack/skills/interrogate/references/reviewer-prompt.md",
       "upstream_sha256": "a397cc61102add709803d917fb23d726920525bf23e7c06dc4ed0b5cbeb00e54",
       "import_sha256": "a397cc61102add709803d917fb23d726920525bf23e7c06dc4ed0b5cbeb00e54",
-      "unchanged_at_comparison": true
+      "unchanged_at_comparison": true,
+      "deleted_on": "2026-11-21"
     },
     {
       "path": "skills/interrogate/references/rubric.md",
       "upstream_path": "pstack/skills/interrogate/references/rubric.md",
       "upstream_sha256": "59e9b7cc4556e735e1b859a7dd1f7637b013a2426a84825ac1c51979942c158a",
       "import_sha256": "a67bf02426f88714634ff481d667db821d4b2cea7b335bcd165fe3126e427fb5",
-      "unchanged_at_comparison": false
+      "unchanged_at_comparison": false,
+      "deleted_on": "2026-11-21"
     },
     {
       "path": "skills/no-comments/SKILL.md",
@@ -516,7 +524,8 @@
       "upstream_path": "pstack/skills/principle-minimize-reader-load/SKILL.md",
       "upstream_sha256": "42551c5dc74cd578163c148da552db3ff67d29b78600ef216bfd311fb828fe69",
       "import_sha256": "480f4ddec29e7e3058a8f17eb97c0cec4a2c8b4b33ba6401e960167c1fc95a81",
-      "unchanged_at_comparison": false
+      "unchanged_at_comparison": false,
+      "deleted_on": "2026-11-21"
     },
     {
       "path": "skills/principle-model-the-domain/SKILL.md",

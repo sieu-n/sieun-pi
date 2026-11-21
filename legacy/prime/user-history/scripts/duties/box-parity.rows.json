@@ -180,15 +180,6 @@
   ]
  },
  {
-  "id": "skill-skills",
-  "tool": "skill skills",
-  "probes": [
-   {
-    "path": "~/.prime/agent/skills/skills/SKILL.md"
-   }
-  ]
- },
- {
   "id": "skill-swarm",
   "tool": "skill swarm",
   "probes": [

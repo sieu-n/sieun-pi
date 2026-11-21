@@ -81,21 +81,6 @@ wheels = [
 ]
 
 [[package]]
-name = "linear-ticket"
-version = "0.1.0"
-source = { editable = "skills/linear-ticket" }
-dependencies = [
-    { name = "httpx" },
-    { name = "pillow" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "httpx" },
-    { name = "pillow" },
-]
-
-[[package]]
 name = "pillow"
 version = "12.3.0"
 source = { registry = "https://pypi.org/simple" }
@@ -243,7 +228,6 @@ dependencies = [
     { name = "aside-browser" },
     { name = "board" },
     { name = "httpx" },
-    { name = "linear-ticket" },
     { name = "pillow" },
     { name = "pyyaml" },
     { name = "websearch" },
@@ -255,7 +239,6 @@ requires-dist = [
     { name = "aside-browser", editable = "skills/aside-browser" },
     { name = "board", editable = "skills/board" },
     { name = "httpx" },
-    { name = "linear-ticket", editable = "skills/linear-ticket" },
     { name = "pillow" },
     { name = "pyyaml", specifier = ">=6" },
     { name = "websearch", editable = "skills/websearch" },

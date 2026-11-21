@@ -5,7 +5,6 @@
   "unslop": "writing and docs",
   "wiki": "writing and docs",
   "no-comments": "writing and docs",
-  "linear-ticket": "writing and docs",
   "board": "board and jobs",
   "resume-paused-sessions": "board and jobs",
   "skills": "board and jobs",
@@ -30,9 +29,6 @@
   "show-me-your-work": "poteto workflow",
   "why": "poteto workflow",
   "setup-pstack": "poteto workflow",
-  "figure-it-out": "poteto workflow",
-  "interrogate": "poteto workflow",
-  "create-verification-skill": "poteto workflow",
   "typescript-best-practices": "poteto workflow",
   "typescript": "poteto workflow",
   "principle-boundary-discipline": "poteto principles",
@@ -40,7 +36,6 @@
   "principle-fix-root-causes": "poteto principles",
   "principle-laziness-protocol": "poteto principles",
   "principle-make-operations-idempotent": "poteto principles",
-  "principle-minimize-reader-load": "poteto principles",
   "principle-model-the-domain": "poteto principles",
   "principle-prove-it-works": "poteto principles",
   "principle-separate-before-serializing-shared-state": "poteto principles",
@@ -210,43 +205,6 @@
    "reason": "One principle that typescript-best-practices already states, and almost no session read it.",
    "pathContains": "src/sieun-pi/skills/principle-boundary-discipline",
    "mergeInto": "typescript-best-practices"
-  },
-  {
-   "name": "figure-it-out",
-   "verdict": "remove",
-   "reason": "Commit 7ff9d62e moved it into a poteto-mode playbook, but the folder stayed.",
-   "pathContains": "src/sieun-pi/skills/figure-it-out"
-  },
-  {
-   "name": "interrogate",
-   "verdict": "remove",
-   "reason": "Unlinked since 10-14 for lack of use, and no session read it in 30 days.",
-   "pathContains": "src/sieun-pi/skills/interrogate"
-  },
-  {
-   "name": "create-verification-skill",
-   "verdict": "remove",
-   "reason": "Unlinked since 10-18, no session read it in 30 days, and repos keep their own verify skills.",
-   "pathContains": "src/sieun-pi/skills/create-verification-skill"
-  },
-  {
-   "name": "linear-ticket",
-   "verdict": "remove",
-   "reason": "Unlinked since 10-18, and the Linear module it imports is not installed.",
-   "pathContains": "src/sieun-pi/skills/linear-ticket"
-  },
-  {
-   "name": "principle-minimize-reader-load",
-   "verdict": "remove",
-   "reason": "An unlinked one-rule skill that principle-laziness-protocol already states.",
-   "pathContains": "src/sieun-pi/skills/principle-minimize-reader-load"
-  },
-  {
-   "name": "skills",
-   "verdict": "remove",
-   "reason": "The link points at the fleet_health Python package, which has no SKILL.md.",
-   "pathContains": "legacy/prime/skills/skills",
-   "kind": "pointer"
   },
   {
    "name": "typescript",

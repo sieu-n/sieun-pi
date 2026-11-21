@@ -25,7 +25,7 @@ Owner's custom setup         Public upstream source
 | Source group | Repository paths | Evidence and rights |
 | --- | --- | --- |
 | pstack skills and personas | Listed in `docs/attribution-pstack.json` | MIT, copyright 2026 Lauren Tan. Upstream source and license verified below. |
-| Owner's Prime adaptations and custom skills | Local additions in `skills/`; `aside-browser`, `linear-ticket`, `resume-paused-sessions`, `websearch`, and auxiliary `legacy/prime/skills/skills` | Imported from the owner's setup. The copied Aside manual was excluded from the public source; the wrapper remains owner-authored material. |
+| Owner's Prime adaptations and custom skills | Local additions in `skills/`; `aside-browser`, `resume-paused-sessions`, `websearch`, and auxiliary `legacy/prime/skills/skills` | Imported from the owner's setup. The copied Aside manual was excluded from the public source; the wrapper remains owner-authored material. |
 | Global guards | `packages/sieun-rules/src/` | Imported from the owner's `auto-sns-agent` repository. Its history credits Sieun Park. |
 | Owner's account pool | `packages/pi-pool/` and `legacy/prime/pi-pool-extension/` | Imported from the owner's maintained pool source. Tokenmaxxing-derived behavior and Prime bundle excerpts retain separate notices below. |
 | Saved history and agent chat | `legacy/prime/user-history/` | Imported from the owner's `prime-agent-user-history` baseline `289feca4885bbb0f92939a3ae5523007f00128ed`, with the UI update from `a069eb63da99b02ab13c3ccd2875dac0e1d20163` and a canonical saved-image display fix. Local history credits Sieun Park. See the component's `SOURCE.md`. |

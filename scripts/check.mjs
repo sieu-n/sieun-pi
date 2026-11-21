@@ -45,7 +45,6 @@ try {
   for (const suite of poolTests) {
     python("-m", "unittest", "discover", "-s", "packages/pi-pool/test", "-p", suite);
   }
-  python("-m", "unittest", "discover", "-s", "skills/linear-ticket/tests");
   python("-m", "unittest", "discover", "-s", "skills/aside-browser/tests");
   python("-m", "unittest", "discover", "-s", "legacy/prime/usage-feed/tests");
   python("-m", "unittest", "discover", "-s", "legacy/prime/tests", "-p", "test_*.py");

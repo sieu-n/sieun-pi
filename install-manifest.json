@@ -139,13 +139,6 @@
       "target": ".prime/agent/skills/show-me-your-work"
     },
     {
-      "id": "skill:skills",
-      "kind": "link",
-      "source": "legacy/prime/skills/skills",
-      "scope": "home",
-      "target": ".prime/agent/skills/skills"
-    },
-    {
       "id": "skill:refine-harness",
       "kind": "link",
       "source": "skills/refine-harness",
