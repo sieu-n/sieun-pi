@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { Snippet } from "svelte";
   import Icon from "./Icon.svelte";
   import Menu from "./Menu.svelte";
   import Popover from "./Popover.svelte";
@@ -18,8 +19,10 @@
     nested?: boolean;
     /** Set by a parent menu so a pick inside this submenu closes the whole menu. */
     onpick?: () => void;
+    /** Content above the rows that is no row itself, such as the profile menu's name and status. */
+    header?: Snippet;
   };
-  let { open = $bindable(), anchor, items, placement = "bottom-start", width = "auto", label, onclose, nested = false, onpick }: Props = $props();
+  let { open = $bindable(), anchor, items, placement = "bottom-start", width = "auto", label, onclose, nested = false, onpick, header }: Props = $props();
 
   let element = $state<HTMLDivElement>();
   let subOpen = $state<string | null>(null);
@@ -88,6 +91,7 @@
 
 <Popover bind:open bind:element {anchor} {placement} {width} role="menu" {label} onclose={close} padding={6}>
   <div class="menu" role="none" onkeydown={onKeydown}>
+    {#if header}<div class="header">{@render header()}</div>{/if}
     {#each items as entry, i (i)}
       {#if entry.type === "separator"}
         <div class="sep" role="separator"></div>
@@ -146,6 +150,9 @@
     flex-direction: column;
     gap: 2px;
     min-width: 200px;
+  }
+  .header {
+    padding: 6px 10px 8px;
   }
   .row {
     display: flex;

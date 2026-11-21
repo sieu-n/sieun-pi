@@ -68,6 +68,10 @@ fn menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     let view = Submenu::with_items(app, "View", true, &[
         &MenuItem::with_id(app, "reload", "Reload", true, Some("CmdOrCtrl+R"))?,
         &PredefinedMenuItem::separator(app)?,
+        &MenuItem::with_id(app, "zoom-reset", "Actual Size", true, Some("CmdOrCtrl+0"))?,
+        &MenuItem::with_id(app, "zoom-in", "Zoom In", true, Some("CmdOrCtrl+="))?,
+        &MenuItem::with_id(app, "zoom-out", "Zoom Out", true, Some("CmdOrCtrl+-"))?,
+        &PredefinedMenuItem::separator(app)?,
         &PredefinedMenuItem::fullscreen(app, None)?,
     ])?;
     let window = Submenu::with_items(app, "Window", true, &[
@@ -96,7 +100,7 @@ fn main() {
                 return;
             }
             // These items stand for a key of the chat's shortcut table (apps/chat/web/src/lib/shortcuts.ts), and App.svelte runs it.
-            if let id @ ("settings" | "shortcuts") = event.id().as_ref() {
+            if let id @ ("settings" | "shortcuts" | "zoom-in" | "zoom-out" | "zoom-reset") = event.id().as_ref() {
                 let _ = window.eval(&format!("window.dispatchEvent(new CustomEvent('swfactory:menu', {{ detail: '{id}' }}))"));
                 return;
             }

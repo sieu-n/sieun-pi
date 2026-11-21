@@ -16,7 +16,8 @@
   import { renameDialog } from "$lib/shell/rename-dialog.svelte";
   import { profileCard } from "$lib/shell/profile-card.svelte";
   import "$lib/shell/theme.svelte";
-  import { initZoom, stepZoom } from "$lib/shell/zoom";
+  import { initZoom, stepZoom } from "$lib/shell/zoom.svelte";
+  import { navHistory } from "$lib/shell/nav-history.svelte";
   import ChannelPage from "$pages/channel/ChannelPage.svelte";
   import CreateSoloDialog from "$pages/channel/CreateSoloDialog.svelte";
   import RenameChannelDialog from "$pages/channel/RenameChannelDialog.svelte";
@@ -67,8 +68,8 @@
     agents: () => router.navigate(router.tabHref("agents")),
     board: () => router.navigate(router.tabHref("board")),
     settings: () => router.navigate(hrefFor("settings", ["usage"])),
-    back: () => history.back(),
-    forward: () => history.forward(),
+    back: () => navHistory.back(),
+    forward: () => navHistory.forward(),
     "new-dm": () => router.navigate(hrefFor("messages", ["new"], { kind: "dm" })),
     sidebar: () => sidebar.toggle(),
     "zoom-in": () => stepZoom(0.1),
