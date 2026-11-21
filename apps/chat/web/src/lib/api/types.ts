@@ -51,6 +51,8 @@ export interface ModelCatalog { models: ModelInfo[]; default: { model: string; t
 /** One card on the Agents page and one row of the @ typeahead. */
 export interface AgentSummary {
   id: AgentId;
+  /** A walk's test agent, which only `GET /api/agents?test=1` lists. */
+  test?: true;
   kind: "chat" | "job";
   name: string;
   avatar: Principal["avatar"];
@@ -517,6 +519,8 @@ export interface PinRequest { pinned: boolean }
 export interface Room {
   id: RoomId; kind: "channel" | "solo"; name: string; agenda: string; homeChat?: string; createdAt: Ms; archived: boolean; closedAt?: Ms;
   members: Member[]; lastSeq: number;
+  /** A walk's throwaway room, which only `GET /api/rooms?test=1` lists. */
+  test?: true;
 }
 /** `POST /api/rooms`. A Solo room needs an agenda and at least one agent, and its name defaults to the agenda's start; a channel needs a name. */
 export interface RoomInput {

@@ -46,6 +46,7 @@ test("an agent row shows Remove on hover and keyboard focus, removes at once and
   await page.keyboard.press("Enter");
   await expect(count(page)).toHaveAttribute("aria-label", "Members, 2 members");
   await expect(list.locator('[data-member="ag_frontend-bro"] .main')).toBeFocused();
+  await expect(page.locator("section.conversation").getByText("You removed Crawler VP")).toBeVisible();
   await page.getByRole("button", { name: "Undo" }).click();
   await expect(count(page)).toHaveAttribute("aria-label", "Members, 3 members");
 
@@ -82,22 +83,26 @@ test("a test channel's picker lists test agents", async ({ page }) => {
   await expect(count(page)).toHaveAttribute("aria-label", "Members, 2 members");
 });
 
-test("an agent's Work tab adds it to a channel from the same picker and removes it with Undo", async ({ page }) => {
+test("a test agent's Work tab adds it to a test channel from the same picker and removes it with Undo", async ({ page }) => {
   const agent = (await (await page.request.post("/api/agents", { data: { name: `work tab agent ${tag()}`, test: true } })).json()) as { id: string; name: string };
+  const room = await channel(page, []);
   await page.goto(`/#/agents/${agent.id}?section=work`);
   const rooms = page.getByRole("region", { name: "Rooms" });
   await expect(rooms).toContainText("In no channel or Solo room.");
   await page.getByTestId("add-to-channel").click();
   const picker = page.getByRole("dialog", { name: `Add ${agent.name} to a channel` });
-  await picker.getByRole("option", { name: /^general/ }).click();
-  const chip = rooms.getByRole("button", { name: "general", exact: true });
+  await expect(picker.getByRole("option", { name: /^general/ })).toHaveCount(0);
+  await picker.getByRole("searchbox").fill("no such channel");
+  await expect(picker).toContainText("No channel matches");
+  await picker.getByRole("searchbox").fill(room.name);
+  await picker.getByRole("option", { name: new RegExp(`^${room.name}`) }).click();
+  const chip = rooms.getByRole("button", { name: room.name, exact: true });
   await expect(chip).toBeVisible();
-  await expect(page.getByText(`Added ${agent.name} to #general`)).toBeVisible();
-  await rooms.getByRole("button", { name: `Remove ${agent.name} from #general` }).click();
+  await expect(page.getByText(`Added ${agent.name} to #${room.name}`)).toBeVisible();
+  await rooms.getByRole("button", { name: `Remove ${agent.name} from #${room.name}` }).click();
   await expect(chip).toHaveCount(0);
   await page.getByRole("button", { name: "Undo" }).click();
   await expect(chip).toBeVisible();
   await chip.click();
-  await expect(page).toHaveURL(/#\/c\/ch_general/);
-  await page.request.delete(`/api/rooms/ch_general/members/${agent.id}`);
+  await expect(page).toHaveURL(new RegExp(`#/c/${room.id}`));
 });

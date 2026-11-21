@@ -191,7 +191,7 @@ export class GroupRooms {
     return {
       id: row.id, kind: row.kind, name: row.name, agenda: row.kind === "solo" ? row.agenda : row.purpose, ...(row.kind === "channel" && row.homeChat ? { homeChat: row.homeChat } : {}),
       createdAt: row.createdAt, archived: row.archived, ...(row.kind === "solo" && row.closedAt !== undefined ? { closedAt: row.closedAt } : {}),
-      members: this.members(row), lastSeq: this.store.postsOf(row.id).at(-1)?.seq ?? 0,
+      members: this.members(row), lastSeq: this.store.postsOf(row.id).at(-1)?.seq ?? 0, ...(row.test ? { test: true as const } : {}),
     };
   }
 

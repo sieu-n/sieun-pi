@@ -297,8 +297,14 @@
   let channelMembers = $state<ChannelMembers>();
   let inviteOpen = $state(false);
   let inviteAnchor = $state<HTMLElement>();
-  /** A test room sends no live room event, so a member change reads the header again itself. */
-  const refreshHeader = () => store.refreshHeader();
+  /**
+   * A test room sends no live room event, and on 11-21 a remove's system line reached the open room only with the next post, so a member
+   * change reads the header and the newest items again itself.
+   */
+  const refreshHeader = async () => {
+    const [page] = await Promise.all([api.items(id, { limit: 20 }), store.refreshHeader()]);
+    store.upsert(page.items);
+  };
 
   let agendaOpen = $state(false);
 

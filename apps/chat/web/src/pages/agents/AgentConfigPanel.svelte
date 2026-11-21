@@ -354,7 +354,7 @@
         <MemberPicker
           bind:open={addingRoom}
           anchor={roomAnchor}
-          target={{ kind: "agent", agent: agentId, name: config.agent.name, rooms: config.swarm.rooms.map((room) => room.id) }}
+          target={{ kind: "agent", agent: agentId, name: config.agent.name, rooms: config.swarm.rooms.map((room) => room.id), test: config.agent.test === true }}
           refresh={load}
           placement="bottom-start"
         />

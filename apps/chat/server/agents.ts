@@ -71,6 +71,7 @@ export function agentSummary(record: AgentRecord, rows: AgentRows, extra: { mode
     preview: row?.preview.split("\n").find(line => line.trim()) ?? "", rooms: extra.rooms, host: record.host, room: record.room, home: record.home,
     ...(rows.comm?.length ? { comm: rows.comm.map(c => ({ room: c.room, thread: c.thread, status: runStatus(c.row) })) } : {}),
     ...(extra.hostState ? { hostState: extra.hostState } : {}),
+    ...(record.test ? { test: true as const } : {}),
   };
 }
 

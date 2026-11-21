@@ -10,11 +10,11 @@ export type MembershipOpts = { wakeOn?: Member["wakeOn"]; refresh: () => Promise
 
 /**
  * What the one add picker (MemberPicker.svelte) adds to. From a room it lists the agents not in it, test agents too in a walk's test room;
- * from an agent it lists the channels it is not in.
+ * from an agent it lists the channels it is not in, only test channels for a test agent.
  */
 export type MemberTarget =
   | { kind: "room"; room: RoomId; name: string; members: readonly AgentId[]; test: boolean }
-  | { kind: "agent"; agent: AgentId; name: string; rooms: readonly RoomId[] };
+  | { kind: "agent"; agent: AgentId; name: string; rooms: readonly RoomId[]; test: boolean };
 
 const where = (m: Membership): string => (m.room.startsWith("ch_") ? `#${m.roomName}` : m.roomName);
 const failed = (error: unknown): false => {

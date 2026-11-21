@@ -419,6 +419,8 @@ export const get = <T>(of: Read<T>, wait?: Wait): Promise<T> => call<T>("GET", o
 export const reads = {
   /** `test` adds the test agents of walks, for a test room's member picker. */
   agents: (opts: { test?: boolean } = {}) => read<AgentSummary[]>(opts.test ? "/api/agents?test=1" : "/api/agents"),
+  /** Every open room with walks' test rooms, for a test agent's channel picker. */
+  testRooms: () => read<Room[]>("/api/rooms?test=1"),
   /** Live and archived agents, for the Agents page's Archived tab. */
   allAgents: () => read<AgentSummary[]>("/api/agents?archived=1"),
   models: () => read<ModelCatalog>("/api/models"),

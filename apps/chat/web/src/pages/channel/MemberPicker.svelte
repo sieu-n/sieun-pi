@@ -21,6 +21,7 @@
 
   const statusText: Record<RunStatus, string> = { working: "Working now", idle: "Idle", sleeping: "Waiting for a model slot", failed: "Last run failed" };
   const testAgents = view(() => (open && target.kind === "room" && target.test ? reads.agents({ test: true }) : null));
+  const testRooms = view(() => (open && target.kind === "agent" && target.test ? reads.testRooms() : null));
   const where = $derived(target.kind === "room" && target.room.startsWith("ch_") ? `#${target.name}` : target.name);
 
   const items = $derived.by((): PickerItem[] => {
@@ -35,9 +36,17 @@
         });
     }
     const rooms = target.rooms;
-    return directory.channels
+    const channels = target.test ? (testRooms.value ?? []).filter((room) => room.kind === "channel" && room.test) : directory.channels;
+    return channels
       .filter((room) => !room.archived && !rooms.includes(room.id))
       .map((room) => ({ id: room.id, label: room.name, icon: "hash", ...(room.agenda ? { detail: room.agenda } : {}) }));
+  });
+
+  /** A search that matches nothing says so; only an empty list means the agent or the room already has every member it could. */
+  const emptyText = $derived.by(() => {
+    if (target.kind === "room") return testAgents.loading && !testAgents.value ? "Loading agents" : items.length ? "No agent matches" : `Every agent is in ${where}`;
+    if (testRooms.loading && !testRooms.value) return "Loading channels";
+    return items.length ? "No channel matches" : `${target.name} is in every ${target.test ? "test channel" : "channel"}`;
   });
 
   function membership(id: string, item: PickerItem): Membership {
@@ -54,7 +63,7 @@
   searchable
   label={target.kind === "room" ? `Add people to ${where}` : `Add ${target.name} to a channel`}
   placeholder={target.kind === "room" ? "Search agents" : "Search channels"}
-  emptyText={target.kind === "room" ? (testAgents.loading ? "Loading agents" : `Every agent is in ${where}`) : `${target.name} is in every channel`}
+  {emptyText}
   {placement}
   width={340}
   onselect={(id, item) => {
