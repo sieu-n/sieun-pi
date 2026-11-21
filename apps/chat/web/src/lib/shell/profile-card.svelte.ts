@@ -1,3 +1,4 @@
+import { kept, reads } from "$lib/api";
 import type { Anchor } from "$lib/ui/floating";
 
 /**
@@ -14,6 +15,14 @@ class ProfileCard {
 
   close(): void {
     this.target = null;
+  }
+
+  /**
+   * Reads the agent's config while the pointer is on its name or avatar, so the card opens with its job counts. On 11-21 agent factory's
+   * config was 370 KB and took 0.3 to 2.8 s to read from :5184, and the card showed "…" for that long when the read started on the click.
+   */
+  warm(agent: string): void {
+    void kept(reads.agentConfig(agent)).ahead();
   }
 }
 

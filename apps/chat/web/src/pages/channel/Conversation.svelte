@@ -481,7 +481,7 @@
     </h1>
   {:else if isDm && agent}
     <h1 class="title t-label-sm" data-testid="conversation-title">
-      <button type="button" class="title-button" aria-haspopup="dialog" onclick={(e) => profileCard.toggle(agent.id, name, e.currentTarget)} data-testid="dm-title-button">
+      <button type="button" class="title-button" aria-haspopup="dialog" onclick={(e) => profileCard.toggle(agent.id, name, e.currentTarget)} onpointerenter={() => profileCard.warm(agent.id)} data-testid="dm-title-button">
         <Avatar {name} kind="agent" seed={agent.id} size={20} status={statusOf(agent.id)} /><span class="title-name">{name}</span><Icon name="chevron-down" size={12} />
       </button>
     </h1>

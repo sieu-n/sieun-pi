@@ -419,7 +419,7 @@
 
 {#snippet authorName()}
   {#if profiled}
-    <button type="button" class="author author-button" aria-haspopup="dialog" onclick={openProfile} data-author-button>{item.author.name}</button>
+    <button type="button" class="author author-button" aria-haspopup="dialog" onclick={openProfile} onpointerenter={() => profileCard.warm(item.author.id)} data-author-button>{item.author.name}</button>
   {:else}
     <span class="author">{item.author.name}</span>
   {/if}
@@ -427,7 +427,7 @@
 
 {#snippet authorAvatar(size: number)}
   {#if profiled}
-    <button type="button" class="avatar-button" aria-label="Open {item.author.name}'s profile" aria-haspopup="dialog" tabindex="-1" onclick={openProfile} data-author-avatar>
+    <button type="button" class="avatar-button" aria-label="Open {item.author.name}'s profile" aria-haspopup="dialog" tabindex="-1" onclick={openProfile} onpointerenter={() => profileCard.warm(item.author.id)} data-author-avatar>
       <Avatar name={avatarOf(item.author).name} kind={avatarKind(item.author)} seed={item.author.id} {size} status={statusOf?.(item.author.id) ?? null} />
     </button>
   {:else}
