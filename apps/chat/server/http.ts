@@ -28,6 +28,7 @@ import { accountRoutes, PoolError } from "./accounts.ts";
 import { serveWiki } from "./wiki/routes.ts";
 import { WikiEngine } from "./wiki/engine.ts";
 import { wikiPages } from "./wiki/pages.ts";
+import { sharedIn } from "./wiki/shared.ts";
 import { WORKSPACE_ROUTE } from "./wiki/workspaces.ts";
 import { compressibleFile, sendCompressed, sendFileCompressed } from "./compress.ts";
 
@@ -328,6 +329,10 @@ export function routes(app: App): Route[] {
     })),
     route("GET", "/api/search/recent", async (_r, _p, q) => app.search.recent({ after: num(q.get("after")), limit: num(q.get("limit")) })),
     route("GET", "/api/pages", async (_r, _p, q) => wikiPages(new WikiEngine(app.config.wikiEngine), q.get("q") ?? "", num(q.get("limit")))),
+    route("GET", "/api/pages/shared", async (_r, _p, q) => sharedIn({
+      rooms: () => [...app.groups.rows().map(row => row.id), ...app.agents.list().map(record => record.room)],
+      postsOf: room => app.agentStore.postsOf(room), isTest: room => app.agentStore.isTest(room),
+    }, q.get("path") ?? "")),
     // An agent's board, duties, check-in and jobs by agent id. The thread routes take a thread id and resolve it to its agent through the
     // aliases, because pi-host's chat_board tool and the duty briefs name the thread.
     ...(["agents", "threads"] as const).flatMap(scope => [

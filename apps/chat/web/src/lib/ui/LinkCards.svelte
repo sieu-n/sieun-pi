@@ -1,8 +1,9 @@
 <script lang="ts" module>
   import type { LinkPreview } from "../api/types";
 
-  type PageMeta = { title: string; summary: string } | null;
-  /** Each wiki page's title and summary, read once per page load: null while it loads or when the page is gone. */
+  /** A page's title and summary, "missing" when the wiki has no page at the path, or null when the wiki did not answer. */
+  type PageMeta = { title: string; summary: string } | "missing" | null;
+  /** Each wiki page's title and summary, read once per page load. */
   const metas = new Map<string, Promise<PageMeta>>();
   /** Each web page's preview from the chat server's `GET /api/unfurl`, read once per page load: null when the page states none. */
   const unfurls = new Map<string, Promise<LinkPreview | null>>();
@@ -13,6 +14,7 @@
     if (!hit) {
       hit = fetch(`/wiki/${path.split("/").map(encodeURIComponent).join("/")}?format=md&lines=1-1`)
         .then(async (res) => {
+          if (res.status === 404) return "missing";
           if (!res.ok) return null;
           const head: Record<string, unknown> = {};
           for (const line of (/^---\n([\s\S]*?)\n---/.exec(await res.text())?.[1] ?? "").split("\n")) {
@@ -106,11 +108,17 @@
     {#each links as link (key(link))}
       {#if link.kind === "wiki"}
         {@const page = pages[link.path]}
-        <a class="link-card" href={wikiUrl(link.path)} target="_blank" rel="noopener noreferrer" title={`wiki:${link.path}`} data-wiki-card={link.path} onclick={(e) => open(link.path, e)}>
+        {@const meta = page === "missing" ? null : page}
+        <a class="link-card" class:missing={page === "missing"} href={wikiUrl(link.path)} target="_blank" rel="noopener noreferrer" title={`wiki:${link.path}`} data-wiki-card={link.path} onclick={(e) => open(link.path, e)}>
           <span class="mark"><Icon name="file" size={16} /></span>
           <span class="text">
-            <span class="title">{page?.title || fileName(link.path)}</span>
-            <span class="summary">{page?.summary || link.path}</span>
+            {#if page === "missing"}
+              <span class="title">Page not found</span>
+              <span class="summary">Nothing is at {link.path}</span>
+            {:else}
+              <span class="title">{meta?.title || fileName(link.path)}</span>
+              <span class="summary">{meta?.summary || link.path}</span>
+            {/if}
           </span>
         </a>
       {:else if webs[link.url]}
@@ -151,6 +159,15 @@
   }
   .link-card:hover {
     box-shadow: inset 0 0 0 1px var(--border-prominent);
+  }
+  /* A link to a page the wiki does not have reads as unavailable before it is opened, as Slack draws a deleted canvas. */
+  .link-card.missing {
+    background: var(--surface-inset);
+    box-shadow: inset 0 0 0 1px var(--border-standard);
+    color: var(--text-subtle);
+  }
+  .link-card.missing .mark {
+    color: var(--text-metadata);
   }
   .mark {
     display: flex;

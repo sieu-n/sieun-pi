@@ -13,6 +13,7 @@ export const CONVERSATION_HEADER = "x-pi-conversation";
 
 export type Caller =
   | { known: true; author: string; agent: AgentRecord; conversation: string; thread: string; n: number }
+  | { known: "owner"; author: "owner" }
   | { known: false; author: string; warning: string; conversation?: string };
 
 const ID = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:[:-](\d+))?$/i;
@@ -43,7 +44,12 @@ export async function resolveConversation(app: App, id: string | undefined): Pro
   return { known: true, author: `${agent.slug} (${found.conversation})`, agent, ...found };
 }
 
+/**
+ * A write with no conversation that this app's page sent is the owner's, such as a save in the wiki pane: a browser marks a request it
+ * sends from this origin `sec-fetch-site: same-origin`, which an agent's curl or fetch does not send.
+ */
 export function callerOf(app: App, req: IncomingMessage): Promise<Caller> {
   const value = req.headers[CONVERSATION_HEADER];
+  if (!value && req.headers["sec-fetch-site"] === "same-origin") return Promise.resolve({ known: "owner", author: "owner" });
   return resolveConversation(app, Array.isArray(value) ? value[0] : value);
 }

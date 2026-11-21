@@ -24,6 +24,11 @@ const LAYOUT = `
 .body { grid-template-columns: minmax(0, 1fr) !important; }
 .page { padding-top: 24px !important; }
 .rail { top: 16px !important; }
+/* While the pane edits the page in place (wiki-page.ts), the side rail folds away and the page takes the width. */
+[data-chat-editing] .rail, [data-chat-editing] .toc-dock { display: none !important; }
+[data-chat-editing] .page-grid { grid-template-columns: minmax(0, 1fr) !important; }
+[data-chat-editing] .prose { min-height: 60vh; outline: none; caret-color: var(--accent); }
+[data-chat-editing] .prose pre.mermaid { white-space: pre-wrap; }
 `;
 
 /**
