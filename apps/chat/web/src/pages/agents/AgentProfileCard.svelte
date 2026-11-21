@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { agents, jobs, me, reads, view } from "$lib/api";
+  import { agents, me, reads, view } from "$lib/api";
   import { hrefFor, router } from "$lib/router.svelte";
   import Avatar from "$lib/ui/Avatar.svelte";
   import Button from "$lib/ui/Button.svelte";
@@ -20,17 +20,16 @@
   let { agent: agentId, name, anchor, onclose }: Props = $props();
 
   let open = $state(true);
-  /** A test agent is not in the live list, so its card reads the agent's config instead. */
-  const listed = $derived(agents.byId(agentId) ?? null);
-  const config = view(() => (listed ? null : reads.agentConfig(agentId)));
-  const agent = $derived(listed ?? config.value?.agent ?? null);
+  /** The agent's config, the one its page reads: it names a test agent the live list leaves out, and the jobs its Jobs tab lists. */
+  const config = view(() => reads.agentConfig(agentId));
+  const agent = $derived(agents.byId(agentId) ?? config.value?.agent ?? null);
   const shownName = $derived(agent?.name ?? name);
   const dot = $derived<Status | null>(agent?.status === "working" ? "online" : agent?.status === "sleeping" ? "away" : agent?.status === "failed" ? "busy" : null);
   const statusText = $derived(!agent ? "" : agent.archived ? "Archived" : agent.status === "idle" ? `Idle · ${ageLabel(agent.updatedAt)}` : STATUS_LABEL[agent.status]);
   /** The counts its Jobs tab shows on its Active and Finished filters, which the line links to. */
-  const jobCount = $derived(jobFilterCounts(jobs.of(agentId), ""));
+  const jobCount = $derived(config.value ? jobFilterCounts(config.value.swarm.jobs, "") : null);
   const jobsText = $derived(
-    [jobCount.active && `${jobCount.active} active`, jobCount.finished && `${jobCount.finished} finished`].filter(Boolean).join(", ") || "No jobs yet",
+    !jobCount ? "…" : [jobCount.active && `${jobCount.active} active`, jobCount.finished && `${jobCount.finished} finished`].filter(Boolean).join(", ") || "No jobs yet",
   );
   const model = $derived(agent?.model ? `${agent.model.label}${agent.thinkingLevel ? ` · ${agent.thinkingLevel}` : ""}` : null);
 
