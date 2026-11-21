@@ -503,7 +503,7 @@ test('a path::name ref reads one pinned commit while HEAD moves during the repor
 	const real = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
 	writeFileSync(
 		path.join(bin, 'git'),
-		`#!/bin/sh\ncase " $* " in *" --format=%ct %H %P"*)\n  if [ -f '${mark}' ]; then\n    out=$('${real}' "$@"); status=$?\n    rm -f '${mark}'\n    '${real}' -C '${w.dir}' update-ref HEAD ${moved}\n    printf '%s\\n' "$out"; exit $status\n  fi;;\nesac\nexec '${real}' "$@"\n`,
+		`#!/bin/sh\ncase " $* " in *" --format=%x1e%ct %H %P"*)\n  if [ -f '${mark}' ]; then\n    out=$('${real}' "$@"); status=$?\n    rm -f '${mark}'\n    '${real}' -C '${w.dir}' update-ref HEAD ${moved}\n    printf '%s\\n' "$out"; exit $status\n  fi;;\nesac\nexec '${real}' "$@"\n`,
 		{ mode: 0o755 },
 	);
 	const saved = process.env.PATH;
@@ -966,6 +966,31 @@ test('a commit whose Wiki-Checked trailer names a page is the page check of the 
 	w.commit('2026-10-20T05:00:00Z', 'code alone');
 	rows = w.refsByPage();
 	assert.deepEqual(rows['apps/vouched.html'], [{ ref: 'a.py', ...at('05') }], 'a later commit with no trailer counts');
+});
+
+// 2026-11-21: auto-sns-agent 402a6b2851 held its two Wiki-Checked lines in two paragraphs, and 81457681d0 and 4a4278b3d7
+// held theirs above a Session-Id block. Git reads trailers only from the last paragraph, so it read 1, 0 and 0 of 2, 5 and 1
+// lines, and apps/crawler-v3/identity-model.html read as behind 402a6b2851 at 15:34Z.
+test('a Wiki-Checked line anywhere in the message vouches for its page', (t) => {
+	const w = fixture(t);
+	w.write('a.py', 'A = 1\n');
+	w.page('first.html', ['a.py']);
+	w.page('second.html', ['a.py']);
+	w.page('third.html', ['a.py']);
+	w.page('other.html', ['a.py']);
+	w.init();
+	w.commit('2026-10-20T01:00:00Z', 'pages');
+	w.write('a.py', 'A = 2\n');
+	w.commit(
+		'2026-10-20T04:00:00Z',
+		'fix: code\n\nWiki-Checked: apps/first.html\n\nMore notes.\n\nWiki-Checked: apps/second.html\nwiki-checked: apps/third.html\n\nSession-Id: s1\nProbe: none',
+	);
+
+	const rows = w.refsByPage();
+	assert.equal(rows['apps/first.html'], undefined, 'a line in an earlier paragraph counts');
+	assert.equal(rows['apps/second.html'], undefined, 'a line above the last trailer block counts');
+	assert.equal(rows['apps/third.html'], undefined, 'the key matches in any case, as git reads trailer keys');
+	assert.deepEqual(rows['apps/other.html'], [{ ref: 'a.py', ...at('04') }], 'a page no line names counts');
 });
 
 // 2026-10-30: db8e5529c5 (02:24:16Z) changed code apps/convex/schema.html cites and 5c9e190769 (02:24:44Z) wrote the page with

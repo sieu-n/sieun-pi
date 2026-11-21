@@ -74,12 +74,12 @@ test('commit.mjs warns on a code commit until a Wiki-Checked trailer names each 
 
 	const one = 'fix: code\n\nWiki-Checked: apps/complete.html\nSession-Id: s1';
 	assert.deepEqual(behindPages(w.dir, base, staged, one).map((row) => row.page), ['apps/jobs.html'], 'each page needs its own line');
-	const body = 'fix: code\n\nWiki-Checked: apps/complete.html in the body is no trailer\n\nSession-Id: s1';
-	assert.equal(behindPages(w.dir, base, staged, body).length, 2, 'only the trailer block counts, as git and the stale report read it');
+	const body = 'fix: code\n\nWiki-Checked: apps/complete.html above the trailer block\n\nSession-Id: s1';
+	assert.deepEqual(behindPages(w.dir, base, staged, body).map((row) => row.page), ['apps/jobs.html'], 'a line outside the trailer block counts');
 	const both = `${one}\nWiki-Checked: apps/jobs.html (no stated fact changed)`;
 	assert.equal(behindWarning(w.dir, base, staged, both), null);
 
-	const vouched = w.commit(both);
+	const vouched = w.commit(`${body}\nWiki-Checked: apps/jobs.html`);
 	assert.equal(behindWarning(w.dir, base, vouched), null, 'land-object.mjs reads the trailers of the stack it lands');
 	w.write('routes.py', routes(3, 1));
 	const next = w.commit('fix: more code');

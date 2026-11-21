@@ -43,19 +43,27 @@ export function verifiedAt(lastVerified, pageCommits = []) {
  */
 export const CHECKED_TRAILER = 'Wiki-Checked';
 
-/** The `git log --format` field that lists a commit's CHECKED_TRAILER values, split by %x1d. */
-export const CHECKED_FORMAT = `%(trailers:key=${CHECKED_TRAILER},valueonly,separator=%x1d)`;
+/**
+ * The `git log --format` field that holds a commit's whole message between %x02 and %x03, for checkedPages. Git's
+ * `%(trailers)` reads only the last paragraph, so a CHECKED_TRAILER line in an earlier paragraph or above a Session-Id block
+ * was lost: of the 12 auto-sns-agent first-parent commits since 2026-11-07 with such lines, git read 1 of 2 in 402a6b2851, 0 of
+ * 5 in 81457681d0 and 0 of 1 in 4a4278b3d7, and apps/crawler-v3/identity-model.html read as behind 402a6b2851 on 2026-11-21.
+ */
+export const CHECKED_FORMAT = '%x02%B%x03';
 
 /**
- * The content paths of the pages one `Wiki-Checked` value or a %x1d-joined list of them names. A value is the page's wiki path,
- * with or without a leading `/wiki/`, `wiki:` or the old `apps/llm-wiki/content/`, and may go on with a note after a space.
- * @param {string} values
+ * The content paths of the pages that the CHECKED_TRAILER lines of `message` name, one or more messages in CHECKED_FORMAT or as
+ * written. A line counts wherever it stands in the message, and its key matches in any case, as git reads a trailer key. Its
+ * value is the page's wiki path, with or without a leading `/wiki/`, `wiki:` or the old `apps/llm-wiki/content/`, and may go
+ * on with a note after a space.
+ * @param {string} message
  * @returns {string[]}
  */
-export const checkedPages = (values) =>
-	values
-		.split('\x1d')
-		.map((value) => value.trim().split(/\s+/)[0] ?? '')
+export const checkedPages = (message) =>
+	message
+		.split(/[\n\x02\x03]/)
+		.filter((line) => line.toLowerCase().startsWith(`${CHECKED_TRAILER.toLowerCase()}:`))
+		.map((line) => line.slice(CHECKED_TRAILER.length + 1).trim().split(/\s+/)[0] ?? '')
 		.map((page) => page.replace(/^(?:wiki:|\/?wiki\/|\/)/, '').replace(/^apps\/llm-wiki\/content\//, ''))
 		.filter((page) => page.endsWith('.html'));
 

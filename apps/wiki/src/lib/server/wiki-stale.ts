@@ -103,9 +103,10 @@ type StaleState = {
  * `--since-as-filter`, never `--since`, for a date-limited walk that must list every commit: `--since` stops at the first commit
  * dated before the cutoff, and parallel lands leave the auto-sns-agent tip dated out of order, so on 2026-11-04
  * `--since=13:12:40Z` stopped at addbbf5329 (13:12:35Z) and missed afc3ff7332 (13:13:02Z) below it.
- * Version 2 drops a held list read with `--since`. Version 3 adds each commit's `Wiki-Checked` pages.
+ * Version 2 drops a held list read with `--since`. Version 3 adds each commit's `Wiki-Checked` pages. Version 4 reads them from
+ * every line of the message (CHECKED_FORMAT), since git's trailer field lost the lines outside the last paragraph.
  */
-const STATE_VERSION = 3;
+const STATE_VERSION = 4;
 const states = new Map<string, StaleState>();
 
 async function statePath(root: string): Promise<string> {
@@ -147,11 +148,11 @@ async function firstParentChanges(
 ): Promise<{ changes: Change[]; touched: Set<string> | null; since: number | null }> {
 	const parse = (text: string) =>
 		text
-			.split('\n')
-			.map((line) => {
-				const [head = '', checked = ''] = line.split('\x1f');
-				const [stamp, sha, parent] = head.trim().split(' ');
-				return { stamp, sha, parent, checked };
+			.split('\x1e')
+			.map((record) => {
+				const split = record.indexOf('\x1f');
+				const [stamp, sha, parent] = record.slice(0, split < 0 ? undefined : split).trim().split(' ');
+				return { stamp, sha, parent, checked: split < 0 ? '' : record.slice(split + 1) };
 			})
 			.filter(({ stamp, sha }) => stamp && sha)
 			.map(({ stamp, sha, parent, checked }) => ({
@@ -161,7 +162,7 @@ async function firstParentChanges(
 				files: [] as string[],
 				checked: checkedPages(checked),
 			}));
-	const format = `--format=%ct %H %P%x1f${CHECKED_FORMAT}`;
+	const format = `--format=%x1e%ct %H %P%x1f${CHECKED_FORMAT}`;
 	let listed: Change[] | null = null;
 	let reach = since;
 	if (held && coversSince(held.since, since)) {

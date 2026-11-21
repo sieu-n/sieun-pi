@@ -180,22 +180,14 @@ export function followRefusal(root, before, after, siblings = siblingRepos()) {
 }
 
 /**
- * The pages a commit vouches for in `Wiki-Checked` trailers (CHECKED_TRAILER): those of `message` as git reads its trailer block,
+ * The pages a commit vouches for in `Wiki-Checked` lines (CHECKED_TRAILER), read anywhere in the message by checkedPages: those of `message`,
  * or with no message, those of every commit in `before..after` when both are commits, as land-object.mjs lands a stack.
  */
 export function vouchedPages(root, before, after, message) {
-	if (typeof message === 'string') {
-		const run = spawnSync('git', ['interpret-trailers', '--parse', '--no-divider'], { input: message, maxBuffer: Infinity });
-		const prefix = `${CHECKED_TRAILER.toLowerCase()}:`;
-		const values = String(run.stdout)
-			.split('\n')
-			.filter((line) => line.toLowerCase().startsWith(prefix))
-			.map((line) => line.slice(prefix.length));
-		return new Set(checkedPages(values.join('\x1d')));
-	}
+	if (typeof message === 'string') return new Set(checkedPages(message));
 	const commit = (rev) => git(root, ['cat-file', '-t', rev]).trim() === 'commit';
 	if (!commit(before) || !commit(after)) return new Set();
-	return new Set(checkedPages(git(root, ['log', `--format=${CHECKED_FORMAT}`, `${before}..${after}`]).replace(/\n/g, '\x1d')));
+	return new Set(checkedPages(git(root, ['log', `--format=${CHECKED_FORMAT}`, `${before}..${after}`])));
 }
 
 /**

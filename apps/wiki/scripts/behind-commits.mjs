@@ -123,12 +123,13 @@ export function commitsBehind(root, rev, page, html, checked, until = Infinity) 
 	const since = `--since-as-filter=${Math.floor(checked / 1000)}`;
 	const commits = git(root, ['log', '--first-parent', `--format=%x1e%ct %H%x1f${CHECKED_FORMAT}`, '--name-only', since, rev, '--', ...files, pageFile])
 		.split('\x1e')
-		.map((block) => block.trim().split('\n'))
-		.filter(([head]) => head)
-		.map(([head, ...changed]) => {
-			const [stamp, sha] = head.split('\x1f')[0].split(' ');
-			const vouched = checkedPages(head.split('\x1f')[1] ?? '').includes(page);
-			return { sha, at: Number(stamp) * 1000, vouched, files: changed.map((file) => file.trim()).filter(Boolean) };
+		.filter((block) => block.includes('\x1f'))
+		.map((block) => {
+			const [stamp, sha] = block.slice(0, block.indexOf('\x1f')).trim().split(' ');
+			const end = block.lastIndexOf('\x03');
+			const vouched = checkedPages(block.slice(0, end)).includes(page);
+			const files = block.slice(end + 1).split('\n').map((file) => file.trim()).filter(Boolean);
+			return { sha, at: Number(stamp) * 1000, vouched, files };
 		})
 		.filter(({ at }) => at > checked && at <= until)
 		.reverse();
