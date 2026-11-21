@@ -93,10 +93,10 @@ export function useRows(machine: MachineView): UseRow[] {
   return rows;
 }
 
-/** A polyline through the last readings, 0 to 100, right-aligned in a 100 by 32 box. */
+/** A polyline through the readings since the page opened, up to the last `length`, 0 to 100, across a 100 by 32 box. */
 export function sparkPoints(values: readonly number[], length: number): string {
-  if (values.length < 2) return "";
-  const step = 100 / (length - 1);
-  const start = 100 - step * (values.length - 1);
-  return values.map((value, index) => `${(start + step * index).toFixed(2)},${(31 - (Math.min(100, Math.max(0, value)) / 100) * 30).toFixed(2)}`).join(" ");
+  const shown = values.slice(-length);
+  if (shown.length < 2) return "";
+  const step = 100 / (shown.length - 1);
+  return shown.map((value, index) => `${(step * index).toFixed(2)},${(31 - (Math.min(100, Math.max(0, value)) / 100) * 30).toFixed(2)}`).join(" ");
 }

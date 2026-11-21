@@ -80,7 +80,9 @@
           {#each view.hosts as host (host.name)}
             {@const state = hostState(host)}
             {@const machine = host.machine}
-            {@const working = host.threads.filter(thread => thread.status === "working").length}
+            {@const real = host.threads.filter(thread => !thread.test)}
+            {@const tests = host.threads.length - real.length}
+            {@const working = real.filter(thread => thread.status === "working").length}
             {@const line = spark(host.name)}
             <button
               type="button"
@@ -108,7 +110,7 @@
               <span class="count right">
                 {#if host.piHost.state === "absent"}<span class="of">No pi-host</span>
                 {:else if machine && state.text}<span class="problem" use:tooltip={state.tip}>{state.text}</span>
-                {:else}<span class="num">{host.threads.length}</span>{#if working}<span class="of working">· {working} working</span>{/if}{/if}
+                {:else}<span class="num" use:tooltip={tests ? `Plus ${tests} test ${tests === 1 ? "thread" : "threads"}` : null}>{real.length}</span>{#if working}<span class="of working">· {working} working</span>{/if}{/if}
               </span>
             </button>
           {/each}
@@ -116,7 +118,7 @@
       </div>
       {#if selected}
         <div role="tabpanel" aria-label={selected.name}>
-          {#key selected.name}<HostDetail host={selected} now={view.checkedAt} />{/key}
+          {#key selected.name}<HostDetail host={selected} now={view.checkedAt} onrefresh={() => void load()} />{/key}
         </div>
       {/if}
     </div>

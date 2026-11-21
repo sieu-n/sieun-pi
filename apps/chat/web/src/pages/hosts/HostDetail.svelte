@@ -1,11 +1,11 @@
 <script lang="ts">
   import type { HostView } from "$lib/api";
   import { conversationHref } from "$lib/router.svelte";
-  import { ageLabel, Disclosure, StatusDot, Tabs, tooltip } from "$lib/ui";
+  import { ageLabel, Checkbox, Disclosure, IconButton, Menu, StatusDot, Tabs, toast, tooltip, type MenuEntry } from "$lib/ui";
   import { agentRelayLine, gb, machineRelayLine, piHostLine, RUN_DOT, RUN_LABEL, shownThreads, threadTabs, useRows, type ThreadFilter } from "./hosts";
 
   /** The selected box: its memory and CPU by group, its services and the threads its pi-host holds. */
-  let { host, now }: { host: HostView; now: number } = $props();
+  let { host, now, onrefresh }: { host: HostView; now: number; onrefresh: () => void } = $props();
 
   const machine = $derived(host.machine);
   const rows = $derived(machine ? useRows(machine) : []);
@@ -28,15 +28,29 @@
   );
 
   let filter = $state<ThreadFilter>("working");
-  const tabs = $derived(threadTabs(host.threads));
-  const threads = $derived(shownThreads(host.threads, filter));
+  let showTests = $state(false);
+  const testCount = $derived(host.threads.filter(thread => thread.test).length);
+  const pool = $derived(showTests ? host.threads : host.threads.filter(thread => !thread.test));
+  const tabs = $derived(threadTabs(pool));
+  const threads = $derived(shownThreads(pool, filter));
+
+  let menuOpen = $state(false);
+  let menuAnchor = $state<HTMLElement | null>(null);
+  const copy = (text: string, done: string) => void navigator.clipboard.writeText(text).then(() => toast.show(done), () => toast.show("Copy failed"));
+  const menuItems = $derived<MenuEntry[]>([
+    { id: "refresh", label: "Refresh", icon: "refresh", onselect: onrefresh },
+    { id: "address", label: "Copy address", detail: host.address, onselect: () => copy(host.address, "Address copied") },
+    ...(host.piHost.state === "answering" && host.piHost.socket ? [{ id: "socket", label: "Copy pi-host socket", detail: host.piHost.socket, onselect: () => copy(host.piHost.state === "answering" ? (host.piHost.socket ?? "") : "", "Socket path copied") }] : []),
+  ]);
 </script>
 
 <section class="detail" data-testid="host-{host.name}" aria-label={host.name}>
   <header class="head">
     <h2>{host.name}</h2>
-    <span class="facts">{facts.join(" · ")}{#if pressure}<span class="warn"> · {pressure}</span>{/if}</span>
+    <span class="facts">{facts.join(" · ")}{#if pressure}<span class="warn">{` · ${pressure}`}</span>{/if}</span>
+    <span class="more" bind:this={menuAnchor}><IconButton icon="more" label="Host actions" size="sm" pressed={menuOpen} onclick={() => (menuOpen = !menuOpen)} /></span>
   </header>
+  {#if menuOpen}<Menu bind:open={menuOpen} anchor={menuAnchor} items={menuItems} placement="bottom-end" label="Host actions" />{/if}
   {#if consequence}<p class="consequence" role="status">{consequence}</p>{/if}
 
   <div class="grid" class:solo={!machine}>
@@ -77,7 +91,10 @@
     <div class="threads">
       <div class="threads-head">
         <h3>Threads</h3>
-        <Tabs items={tabs.map(tab => ({ id: tab.id, label: tab.label }))} bind:value={filter} size="sm" label="Show threads" />
+        <div class="filters">
+          {#if testCount}<Checkbox bind:checked={showTests} label="Show {testCount} test {testCount === 1 ? 'thread' : 'threads'}" />{/if}
+          <Tabs items={tabs.map(tab => ({ id: tab.id, label: tab.label }))} bind:value={filter} size="sm" label="Show threads" />
+        </div>
       </div>
       {#if threads.length}
         <ul class="list">
@@ -103,6 +120,9 @@
 <style>
   .detail { display: flex; flex-direction: column; gap: var(--space-4); container-type: inline-size; }
   .head { display: flex; align-items: baseline; flex-wrap: wrap; gap: var(--space-1) var(--space-3); }
+  .more { align-self: center; margin-left: auto; }
+  .filters { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-4); }
+  .filters :global(.checkbox) { color: var(--text-subtle); font: var(--text-caption); }
   h2 { margin: 0; font: var(--text-label); }
   h3 { margin: 0; font: var(--text-label-sm); }
   .facts { color: var(--text-subtle); font: var(--text-caption); letter-spacing: var(--tracking-caption); font-variant-numeric: tabular-nums; }

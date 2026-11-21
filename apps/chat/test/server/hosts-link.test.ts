@@ -87,3 +87,12 @@ test("the Mac reads up with its last pong, the hello's pi-host and the feed curs
   assert.ok(back.agentRelay!.since >= away.agentRelay!.since);
   assert.equal(back.agentRelay!.feedCursor, 1);
 });
+
+test("a walk's test agent's threads carry test, and other threads do not", async () => {
+  const made = (await (await fetch(`${base}/api/agents`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "hosts walk", test: true }) })).json()) as { workThread?: string; thread?: string };
+  const id = made.workThread ?? made.thread;
+  assert.ok(id, "the new agent names its work thread");
+  const self = await until(async () => ((await (await fetch(`${base}/api/hosts`)).json()) as HostsReport).hosts[0]!, h => h.threads.some(t => t.id === id));
+  assert.equal(self.threads.find(t => t.id === id)!.test, true);
+  assert.ok(self.threads.some(t => t.id !== id && t.test === undefined), "a thread of no test agent has no test flag");
+});

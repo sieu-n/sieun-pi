@@ -631,7 +631,8 @@ export interface UsageBucketSum {
 /** `buckets` holds every bucket of the range, empty ones too, and its sums equal the sums of `rows` (c191). */
 export interface UsageReport { at: Ms; since: Ms; until: Ms; range: UsageRange; bucket: UsageBucket; rows: UsageRow[]; buckets: UsageBucketSum[] }
 
-export interface HostThread { id: string; name: string; status: RunStatus; model: string | null; updatedAt: Ms; children: number }
+/** `test` marks a thread of a walk's test agent or test room (agent-store.ts `isTest`), which the Hosts page leaves out unless asked. */
+export interface HostThread { id: string; name: string; status: RunStatus; model: string | null; updatedAt: Ms; children: number; test?: true }
 /**
  * The chat server's link to a box's agent relay (`/v2/agents`), as its `RelayHost` holds it in memory: up or away since when, the last pong
  * to its 15 s liveness ping, what the relay's last `hello` said, and the feed cursor the server saved for the box.

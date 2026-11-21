@@ -205,7 +205,10 @@ export async function hostsReport(host: Host, threads: Threads, box: string, soc
       name, address: entry?.address ?? (self ? "127.0.0.1" : "unknown"), self, relay: machineRelay, piHost,
       agentRelay, machine,
       threads: piHost.state === "absent" ? [] : rows.filter(t => (t.box ?? box) === name)
-        .map(t => ({ id: t.id, name: t.name, status: statusOf(t.status), model: `${t.provider}/${t.modelId}`, updatedAt: t.updatedAt, children: t.children })),
+        .map(t => ({
+          id: t.id, name: t.name, status: statusOf(t.status), model: `${t.provider}/${t.modelId}`, updatedAt: t.updatedAt, children: t.children,
+          ...(threads.agentRecords?.store.isTest(t.id) ? { test: true as const } : {}),
+        })),
     };
   }));
   return { checkedAt: Date.now(), registryError, hosts: views };

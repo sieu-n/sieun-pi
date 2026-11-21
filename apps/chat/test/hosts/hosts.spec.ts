@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-type Thread = { id: string; name: string; status: string; model?: string | null; updatedAt?: number; children?: number };
+type Thread = { id: string; name: string; status: string; model?: string | null; updatedAt?: number; children?: number; test?: true };
 type Host = {
   name: string; address: string; self: boolean;
   relay: { state: "up"; pingMs: number } | { state: "unreachable"; error: string };
@@ -45,21 +45,49 @@ test("every box has a row with its figures, the picked box shows its services an
   await expect(page).toHaveURL(new RegExp(`#/c/${first.id}$`));
 });
 
-test("the thread list shows working threads first, with an exact count on every status tab", async ({ page }) => {
+test("the thread list shows working threads first with an exact count on every status tab, and test threads only when asked", async ({ page }) => {
   const statuses = ["working", "working", "failed", "idle", "idle", "idle"];
   await withHosts(page, data => {
     const [first, ...rest] = data.hosts;
-    const threads = statuses.map((status, index) => ({ id: `t-${index}`, name: `thread ${index}`, status, model: null, updatedAt: data.checkedAt - index * 1000, children: 0 }));
+    const threads: Thread[] = statuses.map((status, index) => ({ id: `t-${index}`, name: `thread ${index}`, status, model: null, updatedAt: data.checkedAt - index * 1000, children: 0 }));
+    threads.push({ id: "t-walk-1", name: "walk 1", status: "working", model: null, updatedAt: data.checkedAt, children: 0, test: true });
+    threads.push({ id: "t-walk-2", name: "walk 2", status: "idle", model: null, updatedAt: data.checkedAt, children: 0, test: true });
     return { ...data, hosts: [{ ...first!, self: true, piHost: { state: "answering", version: "0.1.0" }, threads }, ...rest.map(host => ({ ...host, self: false }))] };
   });
   await page.goto("/#/settings/hosts");
+  const row = page.locator('[data-testid^="host-row-"]').first();
+  await expect(row).toContainText("6");
+  await expect(row).toContainText("2 working");
   const detail = page.locator('[data-testid^="host-"][aria-label]').first();
   for (const name of ["Working 2", "Failed 1", "Idle 3", "All 6"]) await expect(detail.getByRole("tab", { name, exact: true })).toBeVisible();
   await expect(detail.getByRole("tab", { name: /^Sleeping/ })).toHaveCount(0);
   await expect(detail.locator('[data-testid^="host-thread-"]')).toHaveCount(2);
   await detail.getByRole("tab", { name: "All 6", exact: true }).click();
   await expect(detail.locator('[data-testid^="host-thread-"]')).toHaveCount(6);
+  await expect(detail.getByTestId("host-thread-t-walk-1")).toHaveCount(0);
+  await detail.getByText("Show 2 test threads").click();
+  await expect(detail.getByRole("tab", { name: "All 8", exact: true })).toBeVisible();
+  await expect(detail.getByRole("tab", { name: "Working 3", exact: true })).toBeVisible();
+  await expect(detail.getByTestId("host-thread-t-walk-1")).toBeVisible();
   await page.unrouteAll({ behavior: "ignoreErrors" });
+});
+
+test("a box's actions menu refreshes it and copies its address", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.goto("/#/settings/hosts");
+  const detail = page.locator('[data-testid^="host-"][aria-label]').first();
+  await detail.getByRole("button", { name: "Host actions" }).click();
+  const menu = page.getByRole("menu", { name: "Host actions" });
+  await expect(menu.getByRole("menuitem", { name: /Refresh/ })).toBeVisible();
+  const reread = page.waitForRequest(request => request.url().endsWith("/api/hosts"));
+  await menu.getByRole("menuitem", { name: /Refresh/ }).click();
+  await reread;
+  await detail.getByRole("button", { name: "Host actions" }).click();
+  await page.getByRole("menu", { name: "Host actions" }).getByRole("menuitem", { name: /Copy address/ }).click();
+  await expect(page.getByText("Address copied")).toBeVisible();
+  const data = (await (await page.request.get("/api/hosts")).json()) as Report;
+  const self = data.hosts.find(host => host.self) ?? data.hosts[0]!;
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(self.address);
 });
 
 test("the page reads the hosts again every 2 seconds", async ({ page }) => {
