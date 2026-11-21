@@ -160,7 +160,7 @@ export class App {
             log(`later: ${item.id} kept unread, but its room or post is gone: ${error instanceof Error ? error.message : String(error)}`);
           }
         }
-        const row = this.later.list("owner", "open").items.find(r => r.id === item.id);
+        const row = this.later.list("owner", "open", { test: true }).items.find(r => r.id === item.id);
         // A walk's reminder in a test room toasts and notifies only on the pages that have that room open, never in the owner's own windows.
         if (row?.test) this.toWatchers(row.room, { type: "later_due", row });
         else if (row) this.broadcast({ type: "later_due", row });
