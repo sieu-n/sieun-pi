@@ -35,7 +35,8 @@ Pages call the server through `web/src/lib/api` (`import { api, timeline, agents
 
 | Call | Endpoint | Returns |
 |---|---|---|
-| `api.sidebar()` | `GET /api/sidebar` | `Sidebar`: `solo`, `channels`, `dms` and the open For you count. |
+| `api.sidebar()` | `GET /api/sidebar` | `Sidebar`: `solo`, `channels`, `dms` and the open For you count, plus `layout` once the owner sets sections. |
+| `api.saveSidebarLayout(layout)` | `PUT /api/sidebar/layout` | `SavedLayout`: replaces the owner's sidebar sections, placements, sorts and folds with `layout`, adds 1 to `rev` and sends `sidebar` to every tab. `GET /api/sidebar` carries it as `layout` once set. |
 | `api.conversations({archived})` | `GET /api/conversations?archived=1` | `ConversationSummary[]` for every solo thread, DM, job, channel and Solo room. |
 | `api.directory()` | `GET /api/directory` | `{agents, jobs, rooms}` for the @ and # typeahead: `agents` as `GET /api/agents`, `jobs` as `GET /api/jobs`, `rooms` as `GET /api/rooms`. |
 | `api.header(id)` | `GET /api/c/:id` | `ConversationHeader`: summary, members, model and the agent; a channel's purpose and home chat; a Solo room's agenda and `closedAt`; and for both, `boards`, the member agents whose boards the side panel shows. |

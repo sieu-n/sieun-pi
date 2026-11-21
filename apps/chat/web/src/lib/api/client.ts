@@ -9,6 +9,7 @@ import type {
 } from "./types.ts";
 import type { SkillDoc, SkillScan, SkillsReport } from "./shared/skills.ts";
 import type { PinRequest } from "./types.ts";
+import type { SavedLayout, SidebarLayout } from "./types.ts";
 import type { ConversationPrefs, PrefsPatch } from "./types.ts";
 import { shrink } from "./shrink.ts";
 
@@ -420,6 +421,8 @@ export const reads = {
 export const api = {
   me: () => call<Me>("GET", "/api/me"),
   sidebar: () => call<Sidebar>("GET", "/api/sidebar"),
+  /** Saves the whole sidebar layout; the answer carries its new `rev`, and every browser gets it in the next `sidebar` event. */
+  saveSidebarLayout: (layout: SidebarLayout) => call<SavedLayout>("PUT", "/api/sidebar/layout", layout),
   conversations: (opts: { archived?: boolean } = {}) => call<ConversationSummary[]>("GET", `/api/conversations${query({ archived: opts.archived ? 1 : undefined })}`),
 
   jobs: (opts: { archived?: boolean } = {}) => call<AgentSummary[]>("GET", `/api/jobs${query({ archived: opts.archived ? 1 : undefined })}`),

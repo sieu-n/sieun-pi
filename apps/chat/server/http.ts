@@ -159,6 +159,11 @@ export function routes(app: App): Route[] {
     route("GET", "/api/ready", async () => ({ ready: true })),
     route("GET", "/api/me", async () => app.me()),
     route("GET", "/api/sidebar", async () => app.sidebar()),
+    route("PUT", "/api/sidebar/layout", async (_r, _p, _q, body) => {
+      const layout = await body();
+      if (!layout || typeof layout !== "object" || Array.isArray(layout)) throw new BadRequest("A sidebar layout is an object with sections, placement, collapsed, sort and order.");
+      return app.setSidebarLayout(layout);
+    }),
     route("GET", "/api/conversations", async (_r, _p, q) => app.threads.conversations().filter(c => q.get("archived") === "1" || !c.archived)),
     route("GET", "/api/directory", async () => ({ agents: app.threads.agents(), jobs: app.threads.jobList(), rooms: app.groups.list() })),
     route("GET", "/api/models", async () => MODELS),

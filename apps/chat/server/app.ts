@@ -26,6 +26,7 @@ import { answers, nextMorning } from "./keep-unread.ts";
 import { AgentLater } from "./later-agents.ts";
 import type { ForMeItem, ForMeList, ForMeStatus, LaterItem } from "../web/src/lib/api/types.ts";
 import type { ConversationPrefs, PrefsPatch } from "../web/src/lib/api/types.ts";
+import type { SavedLayout } from "../web/src/lib/api/types.ts";
 import { DEFAULT_MODEL, DEFAULT_THINKING, type Config } from "./config.ts";
 import { MultiHost } from "./host/multi-host.ts";
 import type { Host } from "./host/types.ts";
@@ -36,6 +37,7 @@ import { doneInput, doneText, markDone, threadRootOf } from "./thread-done.ts";
 import { markPin, pinInput, pinnedPosts } from "./pins.ts";
 import { Rooms } from "./rooms.ts";
 import { applyPrefs, withPrefs } from "./sidebar-prefs.ts";
+import { parseLayout } from "../web/src/lib/api/shared/sidebar-layout.ts";
 import { Unfurler } from "./unfurl.ts";
 import { POST_KINDS, postHas, Search } from "./search.ts";
 import { likeRegex, postDocId, SEARCH_DOC_VERSION, SearchEngine, SqliteEntries, type EntrySource, type PostDoc } from "./search-engine.ts";
@@ -449,7 +451,17 @@ export class App {
       channels: groups.filter(c => c.kind === "channel").sort((a, b) => a.name.localeCompare(b.name)),
       dms: this.rooms.summaries().filter(c => !c.archived && !this.agentStore.isTest(c.id)).map(mark).sort(byNew),
       forYou: await this.boards.forYouCount().catch(() => 0),
+      ...(this.store.state.sidebarLayout ? { layout: this.store.state.sidebarLayout } : {}),
     };
+  }
+
+  /** Saves the owner's whole sidebar layout from one browser and sends the sidebar to every other one. */
+  setSidebarLayout(body: unknown): SavedLayout {
+    const saved: SavedLayout = { ...parseLayout(body), rev: (this.store.state.sidebarLayout?.rev ?? 0) + 1 };
+    this.store.state.sidebarLayout = saved;
+    this.store.saveState();
+    this.sidebarSoon();
+    return saved;
   }
 
   private conversationsChanged(changed: ConversationSummary[]): void {

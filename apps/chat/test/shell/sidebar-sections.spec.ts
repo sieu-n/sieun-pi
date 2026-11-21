@@ -1,10 +1,22 @@
 import { expect, test, type Page } from "@playwright/test";
 
+// The layout lives on the one fixture server, so these tests take turns and leave it empty.
+test.describe.configure({ mode: "serial" });
+const resetLayout = (page: Page) => page.request.put("/api/sidebar/layout", { data: {} });
+
 const sidebar = (page: Page) => page.getByRole("navigation", { name: "Conversations" });
 const block = (page: Page, id: string) => sidebar(page).locator(`[data-section-id="${id}"]`);
 const section = (page: Page, name: string) => sidebar(page).locator("[data-section-id^=sec_]").filter({ has: page.getByRole("heading", { name, exact: true }) });
 const fold = (page: Page, name: string) => sidebar(page).getByRole("button", { name, exact: true });
-const IDS: Record<string, string> = { general: "ch_general", "pi-cutover": "ch_cutover", vent: "dm_vent" };
+const IDS: Record<string, string> = { general: "ch_general", "pi-cutover": "ch_cutover", vent: "dm_vent", "frontend-bro": "dm_frontend-bro" };
+const order = (page: Page, name: string) => section(page, name).locator("a[data-sidebar-row]").evaluateAll((rows) => rows.map((r) => r.getAttribute("href")));
+const sectionNames = (page: Page) => sidebar(page).locator("[data-section-id^=sec_] [data-fold]").allInnerTexts();
+
+async function sectionMenu(page: Page, name: string, item: string) {
+  await section(page, name).getByRole("heading", { name }).hover();
+  await sidebar(page).getByRole("button", { name: `${name} options` }).click();
+  await page.getByRole("menuitem", { name: item }).click();
+}
 const link = (name: string) => `a[href="#/c/${IDS[name]}"]`;
 const channel = (page: Page, name: string) => sidebar(page).locator(link(name));
 
@@ -20,9 +32,14 @@ async function nameSection(page: Page, title: string, name: string) {
   await expect(dialog).toHaveCount(0);
 }
 
+test.afterAll(async ({ request }) => {
+  await request.put("/api/sidebar/layout", { data: {} });
+});
+
 test.beforeEach(async ({ page }) => {
   await page.goto("/#/c/ch_general");
   await page.evaluate(() => localStorage.clear());
+  expect((await resetLayout(page)).ok()).toBe(true);
   await page.reload();
   await expect(channel(page, "general")).toBeVisible({ timeout: 15_000 });
 });
@@ -129,21 +146,76 @@ test("the row's context menu renames the channel, makes a section for it, refuse
   await expect(section(page, "Ops")).toBeVisible();
 });
 
-test("a bad saved value or a placement naming a missing section leaves the channels under Channels", async ({ page }) => {
-  await page.evaluate(() =>
-    localStorage.setItem(
-      "chat.sidebarSections",
-      JSON.stringify({ sections: [{ id: "sec_a", name: "Kept" }, { id: 3 }, { id: "sec_b", name: " " }], placement: { ch_general: "sec_gone", ch_missing: "sec_a" }, collapsed: { dms: "yes" } }),
-    ),
-  );
+test("the server keeps only well-formed sections and placements naming one, and drops bad folds and sorts", async ({ page }) => {
+  const res = await page.request.put("/api/sidebar/layout", {
+    data: {
+      sections: [{ id: "sec_a", name: "Kept", sort: "sideways" }, { id: 3 }, { id: "sec_b", name: " " }],
+      placement: { ch_general: "sec_gone", ch_missing: "sec_a" },
+      collapsed: { dms: "yes" },
+      sort: { channels: "upside" },
+    },
+  });
+  const saved = await res.json();
+  expect(saved.sections).toEqual([{ id: "sec_a", name: "Kept", collapsed: false, sort: "name" }]);
+  expect(saved.sort).toEqual({ channels: "name", dms: "recent" });
   await page.reload();
   await expect(section(page, "Kept")).toBeVisible({ timeout: 15_000 });
   await expect(sidebar(page).locator("[data-section-id^=sec_]")).toHaveCount(1);
+  await expect(section(page, "Kept")).toContainText("Drag a channel or DM here.");
   await expect(block(page, "channels").locator(link("general"))).toBeVisible();
   await expect(fold(page, "Direct messages")).toHaveAttribute("aria-expanded", "true");
-  await page.evaluate(() => localStorage.setItem("chat.sidebarSections", "{not json"));
-  await page.reload();
-  await expect(block(page, "channels").locator(link("general"))).toBeVisible({ timeout: 15_000 });
+  expect((await page.request.put("/api/sidebar/layout", { data: [] })).status()).toBe(400);
+});
+
+test("a DM goes into a section, rows reorder by drag and Sort, sections reorder by drag, a second browser shows the same, and Delete has Undo", async ({ page, browser, baseURL }) => {
+  test.slow();
+  await block(page, "channels").getByRole("heading", { name: "Channels" }).hover();
+  await sidebar(page).getByRole("button", { name: "Channels options" }).click();
+  await page.getByRole("menuitem", { name: "New section" }).click();
+  await nameSection(page, "New section", "Work");
+
+  await channel(page, "vent").click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Move to" }).click();
+  await expect(page.getByRole("menuitem", { name: "Direct messages", exact: true })).toHaveCount(0);
+  await page.getByRole("menuitem", { name: "Work" }).click();
+  await rowMenu(page, "general");
+  await page.getByRole("menuitem", { name: "Move to" }).click();
+  await page.getByRole("menuitem", { name: "Work" }).click();
+  await expect(block(page, "dms").locator(link("vent"))).toHaveCount(0);
+  await expect.poll(() => order(page, "Work")).toEqual([`#/c/ch_general`, `#/c/dm_vent`]);
+
+  await channel(page, "frontend-bro").dragTo(section(page, "Work").locator(link("general")), { targetPosition: { x: 30, y: 3 } });
+  await expect.poll(() => order(page, "Work")).toEqual([`#/c/dm_frontend-bro`, `#/c/ch_general`, `#/c/dm_vent`]);
+  await channel(page, "vent").dragTo(section(page, "Work").locator(link("general")), { targetPosition: { x: 30, y: 3 } });
+  await expect.poll(() => order(page, "Work")).toEqual([`#/c/dm_frontend-bro`, `#/c/dm_vent`, `#/c/ch_general`]);
+  await sectionMenu(page, "Work", "Sort");
+  await expect(page.getByRole("menuitemradio", { name: /Custom order/ })).toHaveAttribute("aria-checked", "true");
+  await page.getByRole("menuitemradio", { name: "Alphabetically" }).click();
+  await expect.poll(() => order(page, "Work")).toEqual([`#/c/dm_frontend-bro`, `#/c/ch_general`, `#/c/dm_vent`]);
+
+  await block(page, "channels").getByRole("heading", { name: "Channels" }).hover();
+  await sidebar(page).getByRole("button", { name: "Channels options" }).click();
+  await page.getByRole("menuitem", { name: "New section" }).click();
+  await nameSection(page, "New section", "Ops");
+  await expect.poll(() => sectionNames(page)).toEqual(["Work", "Ops"]);
+  await section(page, "Ops").getByRole("heading", { name: "Ops" }).dragTo(section(page, "Work").getByRole("heading", { name: "Work" }), { targetPosition: { x: 30, y: 2 } });
+  await expect.poll(() => sectionNames(page)).toEqual(["Ops", "Work"]);
+
+  const other = await browser.newContext({ baseURL });
+  const second = await other.newPage();
+  await second.goto("/#/c/ch_general");
+  await expect.poll(() => sectionNames(second), { timeout: 15_000 }).toEqual(["Ops", "Work"]);
+  await expect.poll(() => order(second, "Work")).toEqual([`#/c/dm_frontend-bro`, `#/c/ch_general`, `#/c/dm_vent`]);
+  await other.close();
+
+  await sectionMenu(page, "Work", "Delete section");
+  const confirm = page.getByRole("dialog", { name: "Delete Work?" });
+  await expect(confirm).toContainText("Its 3 conversations move back to Channels and Direct messages.");
+  await confirm.getByRole("button", { name: "Delete section" }).click();
+  await expect(section(page, "Work")).toHaveCount(0);
+  await expect(block(page, "dms").locator(link("vent"))).toBeVisible();
+  await page.getByRole("button", { name: "Undo" }).click();
+  await expect.poll(() => order(page, "Work")).toEqual([`#/c/dm_frontend-bro`, `#/c/ch_general`, `#/c/dm_vent`]);
 });
 
 test("every row's menu copies its link and offers Mark as read only when unread, a DM's opens its agent, and Move to leaves out the channel's own section", async ({ page }) => {
@@ -155,9 +227,10 @@ test("every row's menu copies its link and offers Mark as read only when unread,
   await page.getByRole("menuitem", { name: "Open agent" }).click();
   await expect(page).toHaveURL(/#\/agents\/ag_vent/);
   await page.goto("/#/c/ch_general");
+  await expect(channel(page, "general")).not.toHaveAttribute("data-unread", /.*/, { timeout: 15_000 });
 
   await rowMenu(page, "general");
-  await expect(page.getByRole("menuitem", { name: "Mark as read" })).toHaveCount(0);
+  await expect(page.getByRole("menuitem", { name: "Mark as read" })).toBeDisabled();
   await page.getByRole("menuitem", { name: "Move to" }).click();
   await expect(page.getByRole("menuitem", { name: "Channels", exact: true })).toHaveCount(0);
   await expect(page.getByRole("menuitem", { name: "New section…" })).toBeVisible();

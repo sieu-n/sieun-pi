@@ -14,7 +14,20 @@
   import SectionDialog from "$lib/shell/SectionDialog.svelte";
   import { sidebar, soloGroups } from "$lib/shell/sidebar.svelte";
   import { renameDialog } from "$lib/shell/rename-dialog.svelte";
-  import { CHANNEL_DRAG_TYPE, channelDrop, groupChannels, sidebarSections, visibleRows, type BuiltinSection, type SectionId } from "$lib/shell/sidebar-sections.svelte";
+  import {
+    SECTION_DRAG_TYPE,
+    dragRoom,
+    dragSection,
+    dropZone,
+    groupRows,
+    roomTypes,
+    sidebarSections,
+    visibleRows,
+    type BuiltinSection,
+    type SectionId,
+    type SectionKey,
+    type SectionSort,
+  } from "$lib/shell/sidebar-sections.svelte";
   import { forYouHref } from "$pages/board/chips";
   import { later, laterHref } from "$lib/later.svelte";
   import { wikiHref } from "$pages/wiki/wiki-pages";
@@ -32,12 +45,13 @@
   const solo = $derived(soloGroups(unstarred(sidebar.data.solo, current)));
   const forYouSelected = $derived(router.messagesView === "for-you");
   later.start();
-  const channels = $derived(groupChannels(unstarred(sidebar.data.channels, current), sidebarSections.model));
+  const groups = $derived(groupRows(unstarred(sidebar.data.channels, current), unstarred(sidebar.data.dms, current), sidebarSections.model));
+  $effect(() => sidebarSections.migrate());
   const folded = (id: BuiltinSection | SectionId): boolean => sidebarSections.isFolded(id);
   /** A folded section still shows the open conversation and every unread one, as Slack does. */
   const shown = (rows: readonly ConversationSummary[], id: BuiltinSection | SectionId): ConversationSummary[] =>
     visibleRows(rows, folded(id), (row) => row.id === current || rowUnread(row).unread > 0 || rowUnread(row).fresh);
-  const channelCount = (id: string): number => channels.sections.find((s) => s.section.id === id)?.rows.length ?? 0;
+  const rowsOf = (id: string): ConversationSummary[] => groups.sections.find((s) => s.section.id === id)?.rows ?? [];
   const newChannel = () => router.navigate(hrefFor("messages", ["new"], { kind: "channel" }));
 
   /** The one open sidebar menu: a channel row's, a section header's or the Channels header's, keyed so its "..." shows as pressed. */
@@ -74,7 +88,55 @@
   function dmMenu(row: ConversationSummary): MenuEntry[] {
     const agent = row.agent;
     const open: MenuEntry[] = agent ? [{ type: "separator" }, { id: "agent", label: "Open agent", icon: "robot", onselect: () => router.navigate(hrefFor("agents", [agent])) }] : [];
-    return [...rowMenu(row), ...open, { type: "separator" }, ...roomActions(row.id)];
+    return [...rowMenu(row), ...open, { type: "separator" }, moveMenu(row, "Direct messages"), { type: "separator" }, ...roomActions(row.id)];
+  }
+
+  /** A channel's or DM's Move to: each custom section, its home section and a new section, leaving out the one it sits in. */
+  function moveMenu(row: ConversationSummary, home: string): MenuEntry {
+    const at = sidebarSections.sectionOf(row.id);
+    const to = (id: SectionId | null, label: string): MenuAction => ({ id: id ?? "home", label, onselect: () => sidebarSections.move(row.id, id) });
+    const targets = [...sidebarSections.sections.map((s) => to(s.id, s.name)), to(null, home)].filter((entry) => entry.id !== (at ?? "home"));
+    return {
+      type: "submenu",
+      id: "move",
+      label: "Move to",
+      icon: "folder",
+      items: [
+        ...targets,
+        ...(targets.length ? [{ type: "separator" } as const] : []),
+        { id: "new-section", label: "New section…", icon: "plus", onselect: () => (sidebarSections.dialog = { kind: "new", roomId: row.id }) },
+      ],
+    };
+  }
+
+  /** A section's Sort, as Slack's section menu has it; dragging a row sets Custom order. */
+  function sortMenu(key: SectionKey): MenuEntry {
+    const pick = (sort: SectionSort, label: string): MenuEntry => ({
+      type: "radio",
+      id: `sort-${sort}`,
+      label,
+      group: `sort-${key}`,
+      checked: sidebarSections.sortOf(key) === sort,
+      ...(sort === "custom" ? { detail: "Drag to reorder" } : {}),
+      onselect: () => sidebarSections.setSort(key, sort),
+    });
+    return { type: "submenu", id: "sort", label: "Sort", icon: "sort", items: [pick("name", "Alphabetically"), pick("recent", "By recent activity"), pick("custom", "Custom order")] };
+  }
+
+  /** Drops a dragged row before or after `target` in section `key`, whose rows as drawn are `rows`. */
+  function dropRow(id: string, key: SectionKey, rows: readonly ConversationSummary[], target: string, after: boolean): void {
+    if (id === target) return;
+    const rest = rows.map((r) => r.id).filter((r) => r !== id);
+    const before = after ? (rest[rest.indexOf(target) + 1] ?? null) : target;
+    sidebarSections.place(id, key, rest, before);
+  }
+
+  /** Drops a dragged custom section before or after section `target`. */
+  function dropSection(id: string, target: SectionId, after: boolean): void {
+    if (id === target) return;
+    const rest = sidebarSections.sections.map((s) => s.id).filter((s) => s !== id);
+    const before = after ? (rest[rest.indexOf(target) + 1] ?? null) : target;
+    sidebarSections.moveSection(id as SectionId, before);
   }
 
   function soloMenu(row: ConversationSummary): MenuEntry[] {
@@ -82,24 +144,11 @@
   }
 
   function channelMenu(row: ConversationSummary): MenuEntry[] {
-    const at = sidebarSections.sectionOf(row.id);
-    const to = (id: SectionId | null, label: string): MenuAction => ({ id: id ?? "channels", label, onselect: () => sidebarSections.move(row.id, id) });
-    const targets = [...sidebarSections.sections.map((s) => to(s.id, s.name)), to(null, "Channels")].filter((entry) => entry.id !== (at ?? "channels"));
     return [
       ...rowMenu(row),
       { type: "separator" },
       { id: "rename", label: "Rename channel", icon: "edit", onselect: () => renameDialog.open(row.id, row.name) },
-      {
-        type: "submenu",
-        id: "move",
-        label: "Move to",
-        icon: "folder",
-        items: [
-          ...targets,
-          ...(targets.length ? [{ type: "separator" } as const] : []),
-          { id: "new-section", label: "New section…", icon: "plus", onselect: () => (sidebarSections.dialog = { kind: "new", channelId: row.id }) },
-        ],
-      },
+      moveMenu(row, "Channels"),
       { type: "separator" },
       ...roomActions(row.id),
     ];
@@ -113,23 +162,18 @@
 
   function sectionMenu(id: SectionId): MenuEntry[] {
     return [
-      readAllItem(channels.sections.find((s) => s.section.id === id)?.rows ?? []),
+      readAllItem(rowsOf(id)),
       { type: "separator" },
+      sortMenu(id),
       { id: "rename", label: "Rename section", icon: "edit", onselect: () => (sidebarSections.dialog = { kind: "rename", id }) },
       {
         id: "delete",
         label: "Delete section",
         icon: "trash",
         tone: "danger",
-        onselect: () => (channelCount(id) ? (sidebarSections.dialog = { kind: "delete", id }) : sidebarSections.remove(id)),
+        onselect: () => (rowsOf(id).length ? (sidebarSections.dialog = { kind: "delete", id }) : sidebarSections.remove(id)),
       },
     ];
-  }
-
-  function dragChannel(e: DragEvent, id: string): void {
-    if (!e.dataTransfer) return;
-    e.dataTransfer.setData(CHANNEL_DRAG_TYPE, id);
-    e.dataTransfer.effectAllowed = "move";
   }
 </script>
 
@@ -148,7 +192,7 @@
     muted={row.muted}
     working={names(row)}
     draft={hasDraft(row)}
-    ondragstart={(e) => dragChannel(e, row.id)}
+    ondragstart={(e) => dragRoom(e, row)}
     oncontextmenu={(e) => contextMenu(e, row.id, channelMenu(row))}
   >
     {#snippet actions()}{@render more(row.id, `${row.name} options`, () => channelMenu(row))}{/snippet}
@@ -184,6 +228,7 @@
     muted={row.muted}
     working={names(row)}
     draft={hasDraft(row)}
+    ondragstart={(e) => dragRoom(e, row)}
     oncontextmenu={(e) => contextMenu(e, row.id, dmMenu(row))}
   >
     {#snippet actions()}{@render more(row.id, `${row.name} options`, () => dmMenu(row))}{/snippet}
@@ -195,6 +240,12 @@
       {#if agent}<HostBadge {agent} self={me.value?.host} />{/if}
     {/snippet}
   </SidebarRow>
+{/snippet}
+
+{#snippet slot(row: ConversationSummary, key: SectionKey, rows: readonly ConversationSummary[])}
+  <div class="slot" use:dropZone={{ types: roomTypes(key), edges: roomTypes(key), inner: true, ondrop: (d) => dropRow(d.id, key, rows, row.id, d.after) }}>
+    {#if row.kind === "dm"}{@render dmRow(row)}{:else}{@render channelRow(row)}{/if}
+  </div>
 {/snippet}
 
 <SidebarFrame title="Messages" root="messages" label="Conversations" state={sidebar.state} loadingText="Loading your sidebar…" offlineText="Offline · Showing saved conversations.">
@@ -245,42 +296,59 @@
     </SidebarSection>
   {/if}
 
-  {#each channels.sections as { section, rows } (section.id)}
-    <div class="drop" data-section-id={section.id} use:channelDrop={(id) => sidebarSections.move(id, section.id)}>
-      <SidebarSection id={section.id} label={section.name} folded={folded(section.id)} ontoggle={() => sidebarSections.toggle(section.id)}>
+  {#each groups.sections as { section, rows } (section.id)}
+    <div
+      class="drop"
+      data-section-id={section.id}
+      role="group"
+      draggable="true"
+      ondragstart={(e) => dragSection(e, section.id)}
+      use:dropZone={{
+        types: [...roomTypes(section.id), SECTION_DRAG_TYPE],
+        edges: [SECTION_DRAG_TYPE],
+        ondrop: (d) => (d.type === SECTION_DRAG_TYPE ? dropSection(d.id, section.id, d.after) : sidebarSections.move(d.id, section.id)),
+      }}
+    >
+      <SidebarSection id={section.id} label={section.name} folded={folded(section.id)} ontoggle={() => sidebarSections.toggle(section.id)} empty="Drag a channel or DM here." isEmpty={!rows.length}>
         {#snippet actions()}{@render more(section.id, `${section.name} options`, () => sectionMenu(section.id))}{/snippet}
-        {#each shown(rows, section.id) as row (row.id)}{@render channelRow(row)}{/each}
+        {#each shown(rows, section.id) as row (row.id)}{@render slot(row, section.id, rows)}{/each}
       </SidebarSection>
     </div>
   {/each}
 
-  <div class="drop" data-section-id="channels" use:channelDrop={(id) => sidebarSections.move(id, null)}>
+  <div class="drop" data-section-id="channels" use:dropZone={{ types: roomTypes("channels"), ondrop: (d) => sidebarSections.move(d.id, null) }}>
     <SidebarSection id="channels" label="Channels" folded={folded("channels")} ontoggle={() => sidebarSections.toggle("channels")} empty="No channels yet." isEmpty={!sidebar.data.channels.length}>
       {#snippet actions()}
         {@render more("channels", "Channels options", () => [
-          readAllItem(channels.rest),
+          readAllItem(groups.channels),
           { type: "separator" },
+          sortMenu("channels"),
           { id: "new-section", label: "New section", icon: "plus", onselect: () => (sidebarSections.dialog = { kind: "new" }) },
         ])}
         <IconButton icon="plus" label="Create channel" size="xs" onclick={newChannel} />
       {/snippet}
-      {#each shown(channels.rest, "channels") as row (row.id)}{@render channelRow(row)}{/each}
+      {#each shown(groups.channels, "channels") as row (row.id)}{@render slot(row, "channels", groups.channels)}{/each}
     </SidebarSection>
   </div>
 
-  <SidebarSection id="dms" label="Direct messages" folded={folded("dms")} ontoggle={() => sidebarSections.toggle("dms")}>
-    {#snippet actions()}
-      {@render more("dms", "Direct messages options", () => [readAllItem(sidebar.data.dms)])}
-      <IconButton icon="plus" label="New message" size="xs" onclick={() => router.navigate(hrefFor("messages", ["new"], { kind: "dm" }))} />
-    {/snippet}
-    {#each shown(unstarred(sidebar.data.dms, current), "dms") as row (row.id)}
-      {@render dmRow(row)}
-    {/each}
-  </SidebarSection>
+  <div class="drop" data-section-id="dms" use:dropZone={{ types: roomTypes("dms"), ondrop: (d) => sidebarSections.move(d.id, null) }}>
+    <SidebarSection id="dms" label="Direct messages" folded={folded("dms")} ontoggle={() => sidebarSections.toggle("dms")}>
+      {#snippet actions()}
+        {@render more("dms", "Direct messages options", () => [
+          readAllItem(groups.dms),
+          { type: "separator" },
+          sortMenu("dms"),
+          { id: "new-section", label: "New section", icon: "plus", onselect: () => (sidebarSections.dialog = { kind: "new" }) },
+        ])}
+        <IconButton icon="plus" label="New message" size="xs" onclick={() => router.navigate(hrefFor("messages", ["new"], { kind: "dm" }))} />
+      {/snippet}
+      {#each shown(groups.dms, "dms") as row (row.id)}{@render slot(row, "dms", groups.dms)}{/each}
+    </SidebarSection>
+  </div>
 </SidebarFrame>
 
 <Menu open={menu !== null} anchor={menu?.anchor} items={menu?.items ?? []} onclose={() => (menu = null)} />
-<SectionDialog {channelCount} />
+<SectionDialog {rowsOf} />
 
 <style>
   .rows,
@@ -301,8 +369,32 @@
     border-radius: var(--radius-row);
     transition: background-color var(--duration-fast) var(--ease-standard);
   }
-  .drop:global([data-drop]) {
+  .drop:global([data-drop=""]) {
     background: var(--affordance-sidebar-hover);
     box-shadow: inset 0 0 0 2px var(--affordance-accent-prominent);
+  }
+  .drop,
+  .slot {
+    position: relative;
+  }
+  .drop:global([data-drop="before"])::before,
+  .drop:global([data-drop="after"])::after,
+  .slot:global([data-drop="before"])::before,
+  .slot:global([data-drop="after"])::after {
+    content: "";
+    position: absolute;
+    inset-inline: 4px;
+    height: 2px;
+    border-radius: 1px;
+    background: var(--affordance-accent-prominent);
+    pointer-events: none;
+  }
+  .drop::before,
+  .slot::before {
+    top: -2px;
+  }
+  .drop::after,
+  .slot::after {
+    bottom: -2px;
   }
 </style>

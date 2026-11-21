@@ -3,11 +3,21 @@
   import Dialog from "$lib/ui/Dialog.svelte";
   import Field from "$lib/ui/Field.svelte";
   import Input from "$lib/ui/Input.svelte";
+  import type { ConversationSummary } from "$lib/api";
   import { sidebarSections } from "./sidebar-sections.svelte";
 
-  /** The sidebar's section dialogs: name a new section, rename one, or confirm deleting one that still holds channels. */
-  type Props = { channelCount: (id: string) => number };
-  let { channelCount }: Props = $props();
+  /** The sidebar's section dialogs: name a new section, rename one, or confirm deleting one that still holds channels or DMs. */
+  type Props = { rowsOf: (id: string) => ConversationSummary[] };
+  let { rowsOf }: Props = $props();
+
+  /** Where a deleted section's rows go, by kind: channels to Channels and DMs to Direct messages. */
+  function goesBack(rows: readonly ConversationSummary[]): string {
+    const dms = rows.filter((r) => r.kind === "dm").length;
+    const n = rows.length;
+    if (!dms) return n === 1 ? "Its channel moves back to Channels." : `Its ${n} channels move back to Channels.`;
+    if (dms === n) return n === 1 ? "Its DM moves back to Direct messages." : `Its ${n} DMs move back to Direct messages.`;
+    return `Its ${n} conversations move back to Channels and Direct messages.`;
+  }
 
   let name = $state("");
   let error = $state<string | null>(null);
@@ -32,7 +42,7 @@
     error = sidebarSections.nameError(name, target.kind === "rename" ? target.id : undefined);
     if (error) return;
     if (target.kind === "rename") sidebarSections.rename(target.id, name);
-    else sidebarSections.create(name, target.channelId);
+    else sidebarSections.create(name, target.roomId);
     close();
   }
 
@@ -43,9 +53,8 @@
 </script>
 
 {#if target?.kind === "delete"}
-  {@const count = channelCount(target.id)}
   <Dialog open title="Delete {section?.name ?? 'section'}?" width={420} onclose={close}>
-    <p class="t-body-sm">{count === 1 ? "Its channel moves" : `Its ${count} channels move`} back to Channels.</p>
+    <p class="t-body-sm">{goesBack(rowsOf(target.id))}</p>
     {#snippet actions()}
       <Button variant="ghost" onclick={close}>Cancel</Button>
       <Button variant="danger" onclick={remove}>Delete section</Button>

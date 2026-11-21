@@ -158,7 +158,41 @@ export interface Sidebar {
   dms: ConversationSummary[];
   /** Open For you todos across every chat. */
   forYou: number;
+  /** The owner's sections, placements, sorts and folds, the same in every browser; absent until he sets one (PUT /api/sidebar/layout, app.ts `setSidebarLayout`). */
+  layout?: SavedLayout;
 }
+
+/** The sidebar's built-in sections, each of which folds on its own. */
+export type BuiltinSection = "starred" | "solo" | "channels" | "dms";
+/** A section the owner made, `sec_<id>`. */
+export type SectionId = `sec_${string}`;
+/** The sections whose rows the owner can sort and drag: his own, Channels and Direct messages. */
+export type SectionKey = SectionId | "channels" | "dms";
+/** How a section orders its rows, as Slack's section menu sets it: by name, newest activity first, or the order he dragged them into. */
+export type SectionSort = "name" | "recent" | "custom";
+
+/** A section the owner made, holding the channels and DMs he moves there. */
+export interface CustomSection {
+  id: SectionId;
+  name: string;
+  collapsed: boolean;
+  sort: SectionSort;
+}
+
+/** Everything the owner set about sidebar sections, which the server keeps in state.json under `sidebarLayout`. */
+export interface SidebarLayout {
+  /** His sections in the order the sidebar draws them, above Channels. */
+  sections: CustomSection[];
+  /** A channel or DM id to the section it sits in; a room with no entry sits in Channels or Direct messages. */
+  placement: Record<ConversationId, SectionId>;
+  collapsed: Record<BuiltinSection, boolean>;
+  sort: { channels: SectionSort; dms: SectionSort };
+  /** Each section's dragged order of room ids, used while its sort is `custom`; a room missing from it follows by name. */
+  order: Partial<Record<SectionKey, ConversationId[]>>;
+}
+
+/** The layout as the server keeps and sends it; `rev` counts its saves, so a browser tells a newer one from its own edit in flight. */
+export type SavedLayout = SidebarLayout & { rev: number };
 
 export interface ImageRef { url: string; mimeType: string; width?: number; height?: number }
 

@@ -5,7 +5,7 @@ import { draftsHref } from "$lib/drafts.svelte";
 import { forYouHref } from "$pages/board/chips";
 import { sidebar, soloGroups } from "./sidebar.svelte";
 import { rowUnread, starredRows, unstarred } from "./room-actions.svelte";
-import { groupChannels, sidebarSections, visibleRows, type BuiltinSection, type SectionId } from "./sidebar-sections.svelte";
+import { groupRows, sidebarSections, visibleRows, type BuiltinSection, type SectionId } from "./sidebar-sections.svelte";
 
 /** One row of the Messages sidebar that Alt+Up and Alt+Down step through. `conversation` is null for Later, Drafts and For you. */
 export type SidebarStop = { key: string; href: string; conversation: ConversationSummary | null };
@@ -23,15 +23,15 @@ export function sidebarStops(asShown: boolean): SidebarStop[] {
   const shown = (rows: readonly ConversationSummary[], id: BuiltinSection | SectionId): ConversationSummary[] =>
     visibleRows(rows, asShown && sidebarSections.isFolded(id), (row) => row.id === current || isUnread(row));
   const solo = soloGroups(unstarred(sidebar.data.solo, current));
-  const channels = groupChannels(unstarred(sidebar.data.channels, current), sidebarSections.model);
+  const groups = groupRows(unstarred(sidebar.data.channels, current), unstarred(sidebar.data.dms, current), sidebarSections.model);
   const done = !asShown ? solo.done : sidebarSections.isFolded("solo") ? shown(solo.done, "solo") : sidebar.doneOpen ? solo.done : [];
   const rows = [
     ...shown(starredRows(current), "starred"),
     ...shown(solo.open, "solo"),
     ...done,
-    ...channels.sections.flatMap(({ section, rows }) => shown(rows, section.id)),
-    ...shown(channels.rest, "channels"),
-    ...shown(unstarred(sidebar.data.dms, current), "dms"),
+    ...groups.sections.flatMap(({ section, rows }) => shown(rows, section.id)),
+    ...shown(groups.channels, "channels"),
+    ...shown(groups.dms, "dms"),
   ];
   return [
     { key: "later", href: laterHref(), conversation: null },

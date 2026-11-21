@@ -5,7 +5,7 @@
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { readLatest, writeJsonLater } from "./disk.ts";
-import type { AgentId, ConversationId, ConversationPrefs, ThinkingLevel } from "../web/src/lib/api/types.ts";
+import type { AgentId, ConversationId, ConversationPrefs, SavedLayout, ThinkingLevel } from "../web/src/lib/api/types.ts";
 
 export interface ThreadMeta { kind: "chat" | "job"; parent?: AgentId }
 /**
@@ -40,6 +40,8 @@ export interface StateFile {
   archivedJobs?: Record<ConversationId, number>;
   /** The owner's star, mute and close or leave per room (sidebar-prefs.ts). */
   sidebar?: Record<ConversationId, ConversationPrefs>;
+  /** The owner's sidebar sections, placements, sorts and folds, so every browser and the desktop app show the same sidebar. */
+  sidebarLayout?: SavedLayout;
 }
 
 export function writeJson(path: string, value: unknown): void {
