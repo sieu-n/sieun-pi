@@ -11,8 +11,6 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "../../../..");
 
 const CLEAN_ROOM = "legacy/prime/user-history/scripts/clean-room";
 
-// legacy/prime/scripts/prove_runtime.mjs is left out: it serializes a payload offline with no network, and since 7b0977f5 (11-19) it names
-// anthropic/claude-fable-5, the one Anthropic model in Prime 0.9.8's catalog, so no chat, job or subagent runs on that pick.
 /** The files that hold a default, fallback or fixed model pick. Each one must name at least one model, so a move or rename fails here. */
 const NAMED_FILES = [
   "legacy/prime/user-history/src/client/ModelMenu.svelte",
@@ -21,6 +19,7 @@ const NAMED_FILES = [
   `${CLEAN_ROOM}/clean-room.ts`,
   `${CLEAN_ROOM}/resume-model.ts`,
   `${CLEAN_ROOM}/waiting-session.ts`,
+  "legacy/prime/scripts/prove_runtime.mjs",
   "apps/chat/server/app.ts",
   "apps/chat/server/config.ts",
 ];

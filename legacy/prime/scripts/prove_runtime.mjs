@@ -26,7 +26,7 @@ const primeRoot = values["prime-root"] ? realpathSync(values["prime-root"])
   : dirname(dirname(fileURLToPath(import.meta.resolve("prime-agent"))));
 const primePackage = JSON.parse(readFileSync(join(primeRoot, "package.json"), "utf8"));
 assert.equal(primePackage.version, lockedPrimeVersion(fileURLToPath(new URL("../../..", import.meta.url))));
-const { DefaultResourceLoader, SettingsManager } = await import(pathToFileURL(join(primeRoot, "dist", "index.js")).href);
+const { AuthStorage, DefaultResourceLoader, ModelRegistry, SettingsManager } = await import(pathToFileURL(join(primeRoot, "dist", "index.js")).href);
 const loader = new DefaultResourceLoader({
   cwd,
   agentDir: process.env.PRIME_AGENT_CODING_AGENT_DIR,
@@ -44,9 +44,10 @@ const expectedSkills = JSON.parse(readFileSync(join(source, "install-manifest.js
 const aiEntry = execFileSync(process.execPath, ["--input-type=module", "-e",
   'process.stdout.write(import.meta.resolve("@earendil-works/pi-ai"))'],
   { cwd: primeRoot, encoding: "utf8" });
-const { getModel, streamSimple } = await import(aiEntry);
-const model = getModel("anthropic", "claude-fable-5");
-assert(model, "The native catalog must include the chosen serialization model");
+const { streamSimple } = await import(aiEntry);
+const [provider, modelId] = "anthropic/claude-opus-5-5".split("/");
+const model = ModelRegistry.inMemory(AuthStorage.inMemory()).find(provider, modelId);
+assert(model, "Prime's offline catalog must include the default model, anthropic/claude-opus-5-5 (owner rule c31)");
 const noNetwork = new Error("offline provider payload capture");
 let fetchCalls = 0;
 globalThis.fetch = async () => { fetchCalls++; throw new Error("Network forbidden in runtime proof"); };
@@ -134,7 +135,7 @@ for (let pass = 1; pass <= 2; pass++) {
     assert.deepEqual(payload3.system, payload1.system);
     assert.deepEqual(historicalMessages(payload2.messages.slice(0, payload1.messages.length)), historicalMessages(payload1.messages));
     assert.deepEqual(historicalMessages(payload3.messages.slice(0, payload2.messages.length)), historicalMessages(payload2.messages));
-    report = { host: primePackage.name, version: primePackage.version, passes: pass,
+    report = { host: primePackage.name, version: primePackage.version, passes: pass, model: `${model.provider}/${model.id}`,
       skills: actualSkills.length, extensionPaths, commands,
       checks: { retiredCommandsAbsent: true, guardBlocked: true, readAllowed: true,
         providerHistoryStable: true,

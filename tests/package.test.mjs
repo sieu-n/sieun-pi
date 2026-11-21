@@ -117,6 +117,7 @@ test("packed production install, native reload, update, rollback and uninstall",
     const proof = JSON.parse(run(process.execPath, [join(roots[0], "legacy/prime/scripts/prove_runtime.mjs"), "--home", home,
       "--cwd", cwd], { env }));
     assert.equal(proof.passes, 2);
+    assert.equal(proof.model, "anthropic/claude-opus-5-5");
     for (const name of ["what-did-i-say", "agent-chat"]) {
       assert.equal(proof.commands.filter(command => command === name).length, 1, name);
     }
