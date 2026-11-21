@@ -8,27 +8,41 @@ import { conversation, open, tag } from "./helpers";
  */
 const held = /\/api\/c\/[^/]+(\/items|\/replies\/[^/]+)?(\?.*)?$/;
 
-/** Whether IndexedDB (page-db.ts) holds #general's timeline and the replies of a thread in it, as a reload restores them. */
+/** The pages IndexedDB holds for the next page load (page-db.ts), each with its value as JSON. */
 const keptPages = (page: Page) =>
   page.evaluate(
     () =>
-      new Promise<{ timeline: boolean; replies: boolean }>((resolve, reject) => {
+      new Promise<{ cache: string; key: string; json: string }[]>((resolve, reject) => {
         const request = indexedDB.open("chat.pages");
         request.onerror = () => reject(request.error);
         request.onsuccess = () => {
           const all = request.result.transaction("pages").objectStore("pages").getAll();
           all.onerror = () => reject(all.error);
           all.onsuccess = () => {
-            const pages = all.result as { cache: string; key: string; value: { items?: unknown[]; root?: unknown } }[];
             request.result.close();
-            resolve({
-              timeline: pages.some((kept) => kept.cache === "timeline" && kept.key === "ch_general" && Boolean(kept.value.items?.length)),
-              replies: pages.some((kept) => kept.cache === "replies" && kept.key.startsWith("ch_general\u0000") && Boolean(kept.value.root)),
-            });
+            resolve((all.result as { cache: string; key: string; value: unknown }[]).map((kept) => ({ cache: kept.cache, key: kept.key, json: JSON.stringify(kept.value) })));
           };
         };
       }),
   );
+
+/** Whether IndexedDB holds the page of `cache` under a key `key` accepts, with `text` in it. */
+const keeps = async (page: Page, cache: string, key: (key: string) => boolean, text: string) =>
+  (await keptPages(page)).some((kept) => kept.cache === cache && key(kept.key) && kept.json.includes(text));
+
+type Sample = { p: string; bg?: string };
+
+/** The timing lines the page posts from now on; the spec turns `sendBeacon` off, so each batch is a fetch. */
+const timings = (page: Page): Sample[] => {
+  const samples: Sample[] = [];
+  page.on("request", (r) => {
+    if (r.url().endsWith("/api/timings")) samples.push(...(r.postDataJSON() as { samples: Sample[] }).samples);
+  });
+  return samples;
+};
+
+/** Sends the page's batch of timing lines, as it does when the page goes away. */
+const flush = (page: Page) => page.evaluate(() => dispatchEvent(new Event("pagehide")));
 
 test("a reload shows the room and its open thread from the pages the last load kept, and logs their reads as refreshes", async ({ page }) => {
   await page.addInitScript(() => {
@@ -44,7 +58,8 @@ test("a reload shows the room and its open thread from the pages the last load k
   const pane = page.getByTestId("thread-pane");
   await expect(pane.locator("[data-message-id]").nth(1)).toBeVisible();
   await read;
-  await expect.poll(() => keptPages(page)).toEqual({ timeline: true, replies: true });
+  await expect.poll(() => keeps(page, "timeline", (key) => key === "ch_general", '"kind":"message"')).toBe(true);
+  await expect.poll(() => keeps(page, "replies", (key) => key.startsWith("ch_general\u0000"), '"root":{')).toBe(true);
 
   // Every read of a conversation hangs for a moment after the reload, so only the kept pages can fill the screen.
   let release = (): void => undefined;
@@ -67,16 +82,13 @@ test("a reload shows the room and its open thread from the pages the last load k
     page.waitForResponse((r) => r.url().includes("/api/c/ch_general/items")),
     page.waitForResponse((r) => r.url().includes("/api/c/ch_general/replies/")),
   ]);
-  const samples: { p: string; bg?: string }[] = [];
-  page.on("request", (r) => {
-    if (r.url().endsWith("/api/timings")) samples.push(...(r.postDataJSON() as { samples: { p: string; bg?: string }[] }).samples);
-  });
+  const samples = timings(page);
   release();
   await refreshed;
   const logged = (path: (p: string) => boolean) => samples.some((s) => path(s.p));
   await expect
     .poll(async () => {
-      await page.evaluate(() => dispatchEvent(new Event("pagehide")));
+      await flush(page);
       return ["/api/c/ch_general/items", "/api/c/ch_general"].every((path) => logged((p) => p === path)) && logged((p) => p.startsWith("/api/c/ch_general/replies/"));
     })
     .toBe(true);
@@ -174,15 +186,16 @@ test("a reload after live posts shows them from the page it kept, so the reads b
     page.waitForResponse((r) => r.url().includes(`/api/c/${room.id}/items`)),
     page.waitForResponse((r) => r.url().includes(`/api/c/${room.id}/replies/${root}`)),
   ]);
+  const samples = timings(page);
   release();
   await refreshed;
-  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 50)));
-  const batch = page.waitForRequest((r) => r.url().endsWith("/api/timings"));
-  await page.evaluate(() => dispatchEvent(new Event("pagehide")));
-  const samples = ((await batch).postDataJSON() as { samples: { p: string; bg?: string }[] }).samples;
   const of = (path: string) => samples.filter((s) => s.p === path).map((s) => s.bg ?? "waited");
-  expect(of(`/api/c/${room.id}/items`)).toEqual(["shown"]);
-  expect(of(`/api/c/${room.id}/replies/${root}`)).toEqual(["shown"]);
+  await expect
+    .poll(async () => {
+      await flush(page);
+      return [of(`/api/c/${room.id}/items`), of(`/api/c/${room.id}/replies/${root}`)];
+    })
+    .toEqual([["shown"], ["shown"]]);
 });
 
 test("a room and a thread that got posts while the owner was elsewhere open with those posts, kept from the socket", async ({ page, request }) => {
@@ -198,8 +211,6 @@ test("a room and a thread that got posts while the owner was elsewhere open with
   await send(`root ${word}`);
   const root = ((await (await request.get(`/api/c/${room.id}/items`)).json()) as { items: { id: string }[] }).items[0]!.id;
   await send(`first reply ${word}`, root);
-  const frames: string[] = [];
-  page.on("websocket", (socket) => socket.on("framereceived", (frame) => frames.push(String(frame.payload))));
   await open(page, `#/c/${room.id}?thread=${root}`);
   const pane = page.getByTestId("thread-pane");
   await expect(pane.getByText(`first reply ${word}`)).toBeVisible();
@@ -209,8 +220,8 @@ test("a room and a thread that got posts while the owner was elsewhere open with
   // Agents post in the room and its thread while he reads another one.
   await send(`later post ${word}`);
   await send(`later reply ${word}`, root);
-  await expect.poll(() => frames.some((f) => f.includes(`later post ${word}`)) && frames.some((f) => f.includes(`later reply ${word}`))).toBe(true);
-  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 50)));
+  await expect.poll(() => keeps(page, "timeline", (key) => key === room.id, `later post ${word}`)).toBe(true);
+  await expect.poll(() => keeps(page, "replies", (key) => key === `${room.id}\u0000${root}`, `later reply ${word}`)).toBe(true);
 
   let release = (): void => undefined;
   const gate = new Promise<void>((resolve) => (release = resolve));
@@ -227,15 +238,16 @@ test("a room and a thread that got posts while the owner was elsewhere open with
   await expect(conversation(page).getByText(`later post ${word}`)).toBeVisible();
   await expect(pane.getByText(`later reply ${word}`)).toBeVisible();
 
+  const samples = timings(page);
   release();
   await refreshed;
-  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 50)));
-  const batch = page.waitForRequest((r) => r.url().endsWith("/api/timings"));
-  await page.evaluate(() => dispatchEvent(new Event("pagehide")));
-  const samples = ((await batch).postDataJSON() as { samples: { p: string; bg?: string }[] }).samples;
-  const of = (path: string) => samples.filter((s) => s.p === path).map((s) => s.bg ?? "waited");
-  expect(of(`/api/c/${room.id}/items`).at(-1)).toBe("shown");
-  expect(of(`/api/c/${room.id}/replies/${root}`).at(-1)).toBe("shown");
+  const last = (path: string) => samples.filter((s) => s.p === path).map((s) => s.bg ?? "waited").at(-1);
+  await expect
+    .poll(async () => {
+      await flush(page);
+      return [last(`/api/c/${room.id}/items`), last(`/api/c/${room.id}/replies/${root}`)];
+    })
+    .toEqual(["shown", "shown"]);
 });
 
 test("a channel he just made opens from the page its create call sent, with no read in front of it", async ({ page }) => {
@@ -262,11 +274,13 @@ test("a channel he just made opens from the page its create call sent, with no r
   await expect(page.getByTestId("channel-intro")).toContainText("A fresh room");
 
   const refreshed = page.waitForResponse((r) => r.url().includes(`/api/c/${id}/items`));
+  const samples = timings(page);
   release();
   await refreshed;
-  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 50)));
-  const batch = page.waitForRequest((r) => r.url().endsWith("/api/timings"));
-  await page.evaluate(() => dispatchEvent(new Event("pagehide")));
-  const samples = ((await batch).postDataJSON() as { samples: { p: string; bg?: string }[] }).samples;
-  expect(samples.filter((s) => s.p === `/api/c/${id}/items`).map((s) => s.bg ?? "waited")).toEqual(["shown"]);
+  await expect
+    .poll(async () => {
+      await flush(page);
+      return samples.filter((s) => s.p === `/api/c/${id}/items`).map((s) => s.bg ?? "waited");
+    })
+    .toEqual(["shown"]);
 });
