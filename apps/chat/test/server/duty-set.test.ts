@@ -78,6 +78,18 @@ test("the tick runs the set duty when its schedule comes due, and not before", a
   assert.equal(ran!.runs[0]!.verdict, "met");
 });
 
+test("the owner's goal and schedule actions rewrite the duty and keep its runs, and a blank goal is refused", async () => {
+  const before = (await duties())[0]!;
+  const goal = await s.send<{ duties: DutyRow[] }>("POST", `/api/agents/${agent}/duties`, { action: "goal", duty: "d1", goal: "  the probe answers in 1 s  " });
+  assert.equal(goal.status, 200, JSON.stringify(goal.body));
+  assert.equal(goal.body.duties[0]!.duty.goal, "the probe answers in 1 s");
+  const schedule = await s.send<{ duties: DutyRow[] }>("POST", `/api/agents/${agent}/duties`, { action: "schedule", duty: "d1", schedule: { kind: "daily", at: "06:30" } });
+  assert.deepEqual(schedule.body.duties[0]!.schedule, { kind: "daily", at: "06:30" });
+  assert.deepEqual(schedule.body.duties[0]!.runs.map(run => run.at), before.runs.map(run => run.at));
+  assert.equal((await s.send("POST", `/api/agents/${agent}/duties`, { action: "goal", duty: "d1", goal: " " })).status, 400);
+  assert.equal((await s.send("POST", `/api/agents/${agent}/duties`, { action: "goal", duty: "d9", goal: "x" })).status, 400);
+});
+
 test("a remove deletes the duty with its runs and precheck state, and a second remove changes nothing", async () => {
   const stateDir = join(s.app.boards.dir(agent), "duties");
   assert.ok(readdirSync(stateDir).some(name => name.startsWith("d1")));

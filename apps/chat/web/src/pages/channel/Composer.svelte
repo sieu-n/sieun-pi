@@ -3,6 +3,7 @@
   import { attach, type AgentSummary, type Attached, type Room } from "$lib/api";
   import { holdReload, releaseReload } from "$lib/api/reload";
   import AvatarStack from "$lib/ui/AvatarStack.svelte";
+  import Checkbox from "$lib/ui/Checkbox.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
   import Picker from "$lib/ui/Picker.svelte";
   import { toast } from "$lib/ui/toast.svelte";
@@ -27,11 +28,13 @@
     draftKey?: string;
     autofocus?: boolean;
     compact?: boolean;
+    /** A channel thread's composer: the label of Slack's "Also send to #channel" box, whose check sends the reply to the channel too. */
+    alsoSend?: string | null;
     /** Takes the message and returns at once; the page shows it as sending. A rejection puts the text back in an empty box. */
     onsend: (out: Outgoing) => Promise<void>;
     onstop?: () => void;
   };
-  let { placeholder, agents, channels, room = null, working = false, draftKey, autofocus = false, compact = false, onsend, onstop }: Props = $props();
+  let { placeholder, agents, channels, room = null, working = false, draftKey, autofocus = false, compact = false, alsoSend = null, onsend, onstop }: Props = $props();
 
   /** An attached image, whose upload starts as it is attached (`attach`). */
   type Attachment = { file: File; image: Attached };
@@ -48,6 +51,8 @@
   $effect(() => () => releaseReload(reloadHold));
   let query = $state<Query | null>(null);
   let dragging = $state(false);
+  /** The "Also send to #channel" box, cleared after each send as Slack clears it. */
+  let alsoChecked = $state(false);
   let fileInput = $state<HTMLInputElement>();
   /** Where the query Escape closed starts, so it stays closed while that query goes on and a new @ opens the card again. */
   let dismissedAt: number | null = null;
@@ -211,12 +216,15 @@
     const draft = readDraft(box);
     if (!draft.text.trim() && !attachments.length) return;
     const images: Outgoing["images"] = attachments.map((a) => a.image);
+    const alsoInChannel = !!alsoSend && alsoChecked;
     box.replaceChildren();
     attachments = [];
+    alsoChecked = false;
     sync();
-    onsend({ text: draft.text, mentions: draft.mentions, images }).catch((error: unknown) => {
+    onsend({ text: draft.text, mentions: draft.mentions, images, ...(alsoInChannel ? { alsoInChannel } : {}) }).catch((error: unknown) => {
       if (box && !readDraft(box).text) {
         box.textContent = draft.text;
+        alsoChecked = alsoInChannel;
         sync();
       }
       toast.error(error instanceof Error ? error.message : "Could not send the message");
@@ -287,6 +295,7 @@
       if (input.files) addFiles(input.files);
       input.value = "";
     }} />
+    {#if alsoSend}<span class="also-send"><Checkbox bind:checked={alsoChecked} label={alsoSend} data-testid="also-send" /></span>{/if}
     <span class="spacer"></span>
     {#if working && onstop}
       <IconButton icon="stop" label="Stop" size="md" variant="outline" onclick={onstop} data-testid="stop" />
@@ -364,6 +373,20 @@
   }
   .spacer {
     flex: 1;
+  }
+  .also-send {
+    display: flex;
+    min-width: 0;
+    margin-left: 8px;
+    color: var(--text-metadata);
+  }
+  .also-send :global(.checkbox) {
+    min-width: 0;
+  }
+  .also-send :global(.label) {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .attachments {
     display: flex;

@@ -18,6 +18,20 @@ export function whenLabel(at: number, now: number): string {
   return `${new Date(at).toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${time}`;
 }
 
+/** A schedule as the duty dialog picks it; `auto` leaves a new duty's daily time to the server's morning band. */
+export type ScheduleDraft = { kind: "daily"; at: string } | { kind: "every"; minutes: number } | { kind: "auto" };
+
+/** "Daily at 06:53" or "Every 30 min". */
+export const scheduleLabel = (schedule: { kind: "daily"; at: string } | { kind: "every"; minutes: number }): string =>
+  schedule.kind === "daily" ? `Daily at ${schedule.at}` : `Every ${schedule.minutes} min`;
+
+/** The schedule in the words of the owner's ask to his agent: "daily at 07:00", "every 30 minutes" or "every morning, at a time you pick". */
+export function scheduleWords(draft: ScheduleDraft): string {
+  if (draft.kind === "daily") return `daily at ${draft.at}`;
+  if (draft.kind === "every") return `every ${draft.minutes} ${draft.minutes === 1 ? "minute" : "minutes"}`;
+  return "every morning, at a time you pick";
+}
+
 export type Verdict = "met" | "missed" | "error" | "skipped";
 
 /** The owner's words for a verdict (p256): a run short of its numbers is "off target", and "missed" is only a slot that did not run. */

@@ -100,7 +100,7 @@ function memoryInput(body: unknown): MemoryInput {
 
 /** A duties POST body: `set` with a duty definition, which upsertDuty checks, or another action with the duty's id. */
 function dutyAction(body: unknown): DutyAction {
-  const { action, duty, schedule } = (body ?? {}) as Record<string, unknown>;
+  const { action, duty, schedule, goal } = (body ?? {}) as Record<string, unknown>;
   if (action === "set") {
     if (typeof duty !== "object" || duty === null) throw new BadRequest("A set takes the duty definition as duty.");
     return { action, duty };
@@ -110,7 +110,11 @@ function dutyAction(body: unknown): DutyAction {
   if (action === "schedule") {
     try { return { action, duty, schedule: parseSchedule(schedule) }; } catch (error) { throw new BadRequest(error instanceof Error ? error.message : String(error)); }
   }
-  throw new BadRequest("A duty action is set, run, pause, resume, schedule or remove.");
+  if (action === "goal") {
+    if (typeof goal !== "string" || !goal.trim()) throw new BadRequest("A goal action takes the new goal, a string that is not blank.");
+    return { action, duty, goal: goal.trim() };
+  }
+  throw new BadRequest("A duty action is set, run, pause, resume, schedule, goal or remove.");
 }
 
 /** `?kind=` of a harness entry, memory when absent. */

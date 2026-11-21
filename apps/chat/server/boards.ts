@@ -406,6 +406,7 @@ export class Boards {
     if (action.action === "pause") duty.status = "paused";
     else if (action.action === "resume") duty.status = "active";
     else if (action.action === "schedule") duty.schedule = action.schedule;
+    else if (action.action === "goal") duty.goal = action.goal;
     duty.updatedAt = Date.now();
     this.save(chat, file);
     if (action.action === "run") void this.runDuty(chat, duty, "owner");

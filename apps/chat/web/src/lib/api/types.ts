@@ -292,6 +292,8 @@ export type Item =
       seq?: number;
       /** Channel posts: the root of the Buzz-style thread this reply is in. */
       threadRoot?: string;
+      /** A thread reply also sent to the channel: the channel shows it with a "replied to a thread" line naming the root's first line. */
+      alsoInChannel?: { rootText: string };
       /** Agent posts in a DM, a channel or a Solo room: the owner post this one answers, which the page draws apart from the agent's other answers. */
       answers?: string;
       /** Channel root posts: the thread's size and last reply. */
@@ -403,6 +405,8 @@ export interface SendRequest {
   mentions?: AgentId[];
   /** Channel thread replies. */
   threadRoot?: string;
+  /** A channel thread reply that shows in the channel too, from the thread composer's "Also send to #channel" box. */
+  alsoInChannel?: boolean;
   /** A retried send with the same id lands once. */
   requestId: string;
   /** For a busy thread: steer the running turn (default) or wait for it to end. */
@@ -520,11 +524,12 @@ export interface BoardRow {
 }
 /**
  * A change to a board's duties. `set` takes a whole duty definition, Prime's duty JSON, and adds it or updates the duty with the same name;
- * `remove` deletes a duty with its runs and precheck state; the rest name a duty by id.
+ * `remove` deletes a duty with its runs and precheck state; `goal` rewrites what good means; the rest name a duty by id.
  */
 export type DutyAction =
   | { action: "run" | "pause" | "resume" | "remove"; duty: string }
   | { action: "schedule"; duty: string; schedule: DutySchedule }
+  | { action: "goal"; duty: string; goal: string }
   | { action: "set"; duty: unknown };
 export interface CheckInPatch { everyMs?: number; pause?: CheckInPause | null }
 
