@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
-  import { agents, api, boardStore, isSoloRoom, jobs, me, prefetchThread, reads, timeline, view, type Item } from "$lib/api";
+  import { agents, api, boardStore, expectCall, isSoloRoom, jobs, me, prefetchThread, reads, timeline, view, type Item } from "$lib/api";
   import BoardPanel from "$pages/board/BoardPanel.svelte";
   import { boardHref, boardTitles, rememberTitles } from "$pages/board/chips";
   import { conversationHref, router } from "$lib/router.svelte";
@@ -42,6 +42,8 @@
   let leaving = false;
   onDestroy(() => {
     leaving = true;
+    readExpected?.();
+    readExpected = undefined;
     store.close();
     if (paneKey) sidePanel.close(paneKey);
   });
@@ -162,15 +164,21 @@
   let menuAnchor = $state<HTMLButtonElement>();
   let readTimer: ReturnType<typeof setTimeout> | undefined;
   let readByUser = false;
+  /** The read mark about to go holds the page's other refreshes and reads ahead until it went (client.ts `expectCall`). */
+  let readExpected: (() => void) | undefined;
 
   /** `byUser` when the owner himself scrolled to the bottom, which reads past a post he marked unread. */
   function markRead(byUser: boolean) {
     clearTimeout(readTimer);
     readByUser ||= byUser;
+    readExpected ??= expectCall();
     readTimer = setTimeout(() => {
       const user = readByUser;
       readByUser = false;
-      if (document.visibilityState === "visible") void store.markRead(user).catch(() => undefined);
+      const went = readExpected;
+      readExpected = undefined;
+      if (document.visibilityState === "visible") void store.markRead(user).catch(() => undefined).finally(went);
+      else went?.();
     }, 400);
   }
 

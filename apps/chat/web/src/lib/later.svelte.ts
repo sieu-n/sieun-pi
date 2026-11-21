@@ -44,7 +44,7 @@ class LaterStore {
         this.timer = setTimeout(() => void this.refresh(), 80);
       }
     });
-    queueMicrotask(() => void this.refresh());
+    void this.refresh();
   }
 
   /** Reads both tabs; only the newest read writes. */

@@ -7,7 +7,7 @@
  * upload ends, and the post names the uploaded ref.
  */
 import { AHEAD_LANE, api, ApiError, attach, dropAhead, reads, reportNotDelivered, roomOf, takeOver, type Attached, type Read, type Wait } from "./client.ts";
-import { kept, type Kept } from "./kept.svelte.ts";
+import { kept, restoreKept, type Kept } from "./kept.svelte.ts";
 import { heldImages } from "./held-images.ts";
 import { pageDb, type KeptPage } from "./page-db.ts";
 import { heldSends, type HeldSend } from "./held-sends.ts";
@@ -571,6 +571,7 @@ class PageCache<Raw, Shown> {
     this.reads.delete(key);
     if (!prefetched || (!prefetched.wait && Date.now() - prefetched.at >= 2_000)) return { read: read(), wait };
     // A read ahead a view takes over counts as that view's read: a wait, or a refresh behind the page it already shows.
+    if (prefetched.wait?.background === "ahead" && wait.first) prefetched.wait.first = true;
     if (prefetched.wait) takeOver(prefetched.wait, wait.background);
     return { read: prefetched.read, wait: prefetched.wait ?? wait };
   }
@@ -676,6 +677,7 @@ export async function restorePages(): Promise<void> {
   const pages = await pageDb.all();
   timelinePages.restore(pages);
   repliesPages.restore(pages);
+  restoreKept(pages);
 }
 const repliesKey = (channel: ConversationId, root: string) => `${channel}\u0000${root}`;
 
@@ -1016,7 +1018,7 @@ export class Timeline {
     }
     try {
       // With the kept page on the screen, this read is a refresh behind it, unless it changes what the screen shows.
-      const asked: Wait = last ? { background: "shown" } : {};
+      const asked: Wait = last ? { background: "shown", first: true } : {};
       this.limit = last?.limit;
       const taken = pages.take(key, asked, () => readTimeline(this.id, around, asked, last?.limit));
       // The threads and jobs of the kept page queue now, behind this read, not one round trip later when its refresh lands.
@@ -1221,7 +1223,7 @@ export class Replies {
       this.loading = false;
     }
     // With the kept replies on the screen, this read is a refresh behind them, unless it changes what the screen shows.
-    const asked: Wait = last ? { background: "shown" } : {};
+    const asked: Wait = last ? { background: "shown", first: true } : {};
     const { read, wait } = repliesPages.take(key, asked, () => api.replies(channel, rootId, asked));
     void read.then(page => {
       if (last && (brought(this.items, page.items) || this.items.some(item => !isPending(item) && !page.items.some(fresh => fresh.id === item.id)))) wait.background = undefined;

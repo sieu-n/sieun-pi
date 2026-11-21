@@ -58,3 +58,24 @@ test("a panel read ahead and its unchanged refresh are logged as background", as
   const samples = ((await batch).postDataJSON() as { samples: { p: string; bg?: string }[] }).samples;
   for (const path of reads) expect(samples.filter((s) => s.p === path).map((s) => s.bg ?? "waited"), path).toEqual(["ahead", "shown"]);
 });
+
+test("a reload shows the board, its duties and check-in from the answers the last load kept, while their reads hang", async ({ page }) => {
+  const board = `#/board/${HARNESS_AGENT}`;
+  const read = Promise.all(panelReads.filter((path) => !path.endsWith("/config")).map((path) => page.waitForResponse((r) => new URL(r.url()).pathname === path, { timeout: 20_000 })));
+  await page.goto(`/${board}`);
+  await read;
+  await expect(page.getByRole("region", { name: "Check-in" })).toContainText("Check-in every");
+  // The answers are in; one more turn of the page's loop writes them to IndexedDB.
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 200)));
+
+  const asked: string[] = [];
+  await page.route(held, (route) => {
+    if (route.request().method() !== "GET") return route.fallback();
+    asked.push(new URL(route.request().url()).pathname);
+  });
+  await page.reload();
+  await expect(page.getByRole("region", { name: "For you" })).toContainText("Pick the day for the production cutover.");
+  await expect(page.getByRole("region", { name: "Duties" })).toContainText("Relay uptime");
+  await expect(page.getByRole("region", { name: "Check-in" })).toContainText("Check-in every");
+  await expect.poll(() => asked).toContain(`${AGENT}/board`);
+});

@@ -49,8 +49,8 @@ type Timing = { m: string; p: string; s: number; ms: number; net?: number; enc?:
 export type Wait = {
   background?: "ahead" | "shown";
   /**
-   * A read ahead of what the owner looks at now, such as the rows Cmd K lists or the thread and job pills of the open room: the lane sends
-   * it before the sidebar's reads ahead.
+   * What the owner looks at now: a read ahead of the rows Cmd K lists or the thread and job pills of the open room, which the lane sends
+   * before the sidebar's reads ahead, or the refresh behind the room or thread he opened, which it sends before a panel's refresh.
    */
   first?: true;
   /**
@@ -101,8 +101,11 @@ function networkMs(path: string, started: number): number | undefined {
   return entry && entry.responseEnd > 0 ? Math.round(entry.responseEnd - entry.startTime) : undefined;
 }
 
-/** Records one call; a failed call names its error and goes out at once, so the server log holds it beside the request it failed on. */
-function recordTiming(m: string, path: string, s: number, started: number, err?: string, wait?: Wait): void {
+/**
+ * Records one call; a failed call names its error and goes out at once, so the server log holds it beside the request it failed on. A call
+ * a view asked for counts from `asked`, so a refresh that waited in the lane and then changed the screen counts that wait too.
+ */
+function recordTiming(m: string, path: string, s: number, started: number, err?: string, wait?: Wait, asked?: number): void {
   if (typeof window === "undefined") return;
   const net = networkMs(path, started);
   if (net !== undefined && s > 0) {
@@ -111,7 +114,7 @@ function recordTiming(m: string, path: string, s: number, started: number, err?:
   }
   const now = performance.now();
   timings.push({
-    m, p: path.split("?")[0]!, s, ms: Math.round(wait?.shownMs ?? now - (wait?.since ?? started)), ...(net === undefined ? {} : { net }),
+    m, p: path.split("?")[0]!, s, ms: Math.round(wait?.shownMs ?? now - (wait?.since ?? (wait?.background === "ahead" ? started : asked ?? started))), ...(net === undefined ? {} : { net }),
     ...(wait?.encodeMs === undefined ? {} : { enc: wait.encodeMs }), ...(wait?.since === undefined ? {} : { stored: Math.round(now - wait.since) }),
     ...(err ? { err } : {}), ...(wait ? { wait } : {}),
   });
@@ -132,11 +135,12 @@ export function reportNotDelivered(conversation: ConversationId, status: number,
 }
 
 /**
- * The lane every read ahead (`Wait.background` "ahead") goes through, so it never delays a call the owner waits on. On 11-21 at 06:30
- * KST his page fired about 90 reads ahead at each load, and his POST /read, a 4 ms handler, waited 1.1 to 4.7 s behind them, his GET
- * /api/later up to 1.2 s (d2 findings, requests/2026-11-20.jsonl). While any other call is on its way, his own or a refresh behind a
- * shown page, the lane starts no read ahead, and it stops the ones on their way and sends them again once his calls end. A read ahead
- * goes at fetch priority low, what he looks at now (`Wait.first`) before the rest, and at most `AHEAD_LANE` at once.
+ * The lane that every read ahead (`Wait.background` "ahead") and every refresh behind a shown page ("shown") goes through, so neither
+ * delays a call the owner waits on. On 11-21 at 06:30 KST his page fired about 90 reads ahead at each load, and his POST /read, a 4 ms
+ * handler, waited 1.1 to 4.7 s behind them, his GET /api/later up to 1.2 s (d2 findings, requests/2026-11-20.jsonl). While a call he
+ * waits on is on its way, the lane starts nothing, and it stops the calls on their way and sends them again once his calls end. Refreshes
+ * go before reads ahead and stop the reads ahead on their way; a read ahead goes only when no refresh is on its way, what he looks at now
+ * (`Wait.first`) before the rest, and at most `AHEAD_LANE` at once. Every call in the lane goes at fetch priority low.
  *
  * A stopped read ahead's bytes already in the pipe still arrive before his answer, so fewer at once serve him better. In a walk of live
  * data over HTTP/2 and TLS at a 200 ms round trip, MTU 1280 and TCP slow start after idle (~/work/p155-readahead/lane-summary.md, 12 page
@@ -145,19 +149,80 @@ export function reportNotDelivered(conversation: ConversationId, status: number,
  */
 export const AHEAD_LANE = 2;
 
-/** One read ahead's place in the lane: waiting, on its way and stoppable, taken over by a view and so his, or settled. */
+/** One call's place in the lane: waiting, on its way and stoppable, taken over by a view that waits on it and so his, or settled. */
 type TicketState = { kind: "queued" } | { kind: "flying"; controller: AbortController } | { kind: "taken" } | { kind: "settled" };
-type Ticket = { readonly wait: Wait; state: TicketState; readonly send: (signal: AbortSignal | undefined) => void; readonly drop: () => void };
+type Ticket = {
+  readonly wait: Wait;
+  state: TicketState;
+  /** When a view asked for the answer, from which a refresh that changed the screen counts his wait; unset for a read ahead. */
+  asked: number | undefined;
+  readonly send: (signal: AbortSignal | undefined) => void;
+  readonly drop: () => void;
+};
 
 const queued: Ticket[] = [];
 const flying = new Set<Ticket>();
-/** The calls on their way that the owner waits on, a read ahead a view took over included. */
+/** The calls on their way that the owner waits on, a read ahead or refresh a view took over included. */
 let busy = 0;
 
+const refresh = (ticket: Ticket): boolean => ticket.wait.background === "shown";
+
+/**
+ * The queued call to send next, or -1. The refresh of the page he looks at (`Wait.first`) goes first, the other refreshes, such as a
+ * panel's, once it ended, and a read ahead once no refresh is on its way and the lane has room. On 11-21 in the walk of
+ * lane-summary.md, a board refresh (42 KB) sent beside the room's refresh was still arriving when the room's read mark went 26 ms after
+ * the room's answer, and held the mark 375 ms.
+ */
+function next(): number {
+  const sent = [...flying];
+  const page = queued.findIndex(ticket => refresh(ticket) && ticket.wait.first);
+  if (page >= 0) return page;
+  if (expected || sent.some(ticket => refresh(ticket) && ticket.wait.first)) return -1;
+  const shown = queued.findIndex(refresh);
+  if (shown >= 0 || !queued.length) return shown;
+  if (sent.some(refresh) || sent.length >= AHEAD_LANE) return -1;
+  return Math.max(queued.findIndex(ticket => ticket.wait.first), 0);
+}
+
+/**
+ * The calls he is about to make, such as the read mark a room posts 400 ms after he reaches its bottom (Conversation.svelte). Until they
+ * go, only the refresh of the page he looks at leaves the lane, which the read mark waits on.
+ */
+let expected = 0;
+
+/** Holds the lane for a call he is about to make; the returned function, called once the call went or will not go, lets it go on. */
+export function expectCall(): () => void {
+  expected += 1;
+  let done = false;
+  return () => {
+    if (done) return;
+    done = true;
+    expected -= 1;
+    pump();
+  };
+}
+
+let pumping = false;
+
+/**
+ * Sends what the lane lets go, after the next paint: the calls a render starts, such as the read mark a room posts once its refresh shows,
+ * are then his calls on their way, which the lane waits behind.
+ */
 function pump(): void {
-  while (!busy && flying.size < AHEAD_LANE && queued.length) {
-    const first = queued.findIndex(ticket => ticket.wait.first);
-    const [ticket] = queued.splice(Math.max(first, 0), 1);
+  if (pumping) return;
+  pumping = true;
+  const run = () => {
+    pumping = false;
+    drain();
+  };
+  if (typeof requestAnimationFrame === "function" && typeof document !== "undefined" && !document.hidden) requestAnimationFrame(() => setTimeout(run));
+  else setTimeout(run);
+}
+
+function drain(): void {
+  for (let at = busy ? -1 : next(); at >= 0; at = next()) {
+    const [ticket] = queued.splice(at, 1);
+    if (refresh(ticket!)) stop(ticket => !refresh(ticket));
     const controller = new AbortController();
     ticket!.state = { kind: "flying", controller };
     flying.add(ticket!);
@@ -165,11 +230,11 @@ function pump(): void {
   }
 }
 
-/** A call he waits on starts: every read ahead on its way stops and goes back to the front of the queue, in its order. */
-function yieldLane(): void {
-  const stopped = [...flying];
-  flying.clear();
+/** Stops the calls on their way that `which` picks and puts them back at the front of the queue, in their order. */
+function stop(which: (ticket: Ticket) => boolean): void {
+  const stopped = [...flying].filter(which);
   for (const ticket of stopped) {
+    flying.delete(ticket);
     if (ticket.state.kind === "flying") ticket.state.controller.abort();
     ticket.state = { kind: "queued" };
   }
@@ -187,7 +252,7 @@ function settle(ticket: Ticket): void {
 
 async function waited<T>(send: () => Promise<T>): Promise<T> {
   busy += 1;
-  yieldLane();
+  stop(() => true);
   try {
     return await send();
   } finally {
@@ -196,13 +261,14 @@ async function waited<T>(send: () => Promise<T>): Promise<T> {
   }
 }
 
-/** A read ahead's call, sent when the lane has room; one the lane stopped is sent again from the start, and its stop is no error. */
-function ahead<T>(wait: Wait, attempt: (signal: AbortSignal | undefined) => Promise<T>): Promise<T> {
+/** A call sent when the lane lets it; one the lane stopped is sent again from the start, and its stop is no error. */
+function laned<T>(wait: Wait, attempt: (signal: AbortSignal | undefined, asked: number | undefined) => Promise<T>): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const ticket: Ticket = {
       wait,
       state: { kind: "queued" },
-      send: signal => void attempt(signal).then(value => {
+      asked: wait.background === "shown" ? performance.now() : undefined,
+      send: signal => void attempt(signal, ticket.asked).then(value => {
         if (ticket.state.kind === "settled") return;
         settle(ticket);
         resolve(value);
@@ -222,13 +288,16 @@ function ahead<T>(wait: Wait, attempt: (signal: AbortSignal | undefined) => Prom
 }
 
 /**
- * A view starts to wait on a read ahead, or shows its answer behind a page it shows (`background`). Its calls leave the lane at once: a
- * queued one is sent now and one on its way is never stopped, and each counts as his call until it ends.
+ * A view takes over a read ahead: it shows the answer behind a page it already shows (`background` "shown"), and then the read waits in
+ * the lane as a refresh, or it waits on it, and then its calls leave the lane at once: a queued one is sent now and one on its way is
+ * never stopped, and each counts as his call until it ends.
  */
 export function takeOver(wait: Wait, background: Wait["background"]): void {
   wait.background = background;
   if (background === "ahead") return;
   const mine = [...queued, ...flying].filter(ticket => ticket.wait === wait);
+  for (const ticket of mine) ticket.asked ??= performance.now();
+  if (background === "shown") return pump();
   if (!mine.length) return;
   const unsent = mine.filter(ticket => ticket.state.kind === "queued");
   for (const ticket of mine) {
@@ -237,7 +306,7 @@ export function takeOver(wait: Wait, background: Wait["background"]): void {
     ticket.state = { kind: "taken" };
     busy += 1;
   }
-  yieldLane();
+  stop(() => true);
   for (const ticket of unsent) ticket.send(undefined);
 }
 
@@ -246,16 +315,18 @@ export function dropAhead(wait: Wait): void {
   for (const ticket of queued.filter(ticket => ticket.wait === wait)) ticket.drop();
 }
 
+
 /**
  * A Blob body goes as its own bytes with its own type, any other body as JSON. A call that fails, refused by the server or never reaching
  * it, posts its error with its timing (`recordTiming`), so the server's log holds every failure the page shows, such as a Not delivered send.
+ * A GET read ahead or refresh goes through the lane; every other call is one he waits on.
  */
 function call<T>(method: string, path: string, body?: unknown, signal?: AbortSignal, wait?: Wait): Promise<T> {
-  if (wait?.background === "ahead" && !signal) return ahead(wait, own => send<T>(method, path, body, own, wait));
+  if (wait?.background && method === "GET" && !signal) return laned(wait, (own, asked) => send<T>(method, path, body, own, wait, asked));
   return waited(() => send<T>(method, path, body, signal, wait));
 }
 
-async function send<T>(method: string, path: string, body: unknown, signal: AbortSignal | undefined, wait: Wait | undefined): Promise<T> {
+async function send<T>(method: string, path: string, body: unknown, signal: AbortSignal | undefined, wait: Wait | undefined, asked?: number): Promise<T> {
   const started = performance.now();
   const blob = body instanceof Blob;
   let response: Response;
@@ -266,11 +337,11 @@ async function send<T>(method: string, path: string, body: unknown, signal: Abor
       headers: body === undefined ? {} : { "content-type": blob ? body.type || "application/octet-stream" : "application/json" },
       ...(body === undefined ? {} : { body: blob ? body : JSON.stringify(body) }),
       ...(signal ? { signal } : {}),
-      ...(wait?.background === "ahead" ? { priority: "low" as const } : {}),
+      ...(wait?.background && method === "GET" ? { priority: "low" as const } : {}),
     });
     text = await response.text();
   } catch (error) {
-    if (!signal?.aborted) recordTiming(method, path, 0, started, error instanceof Error ? `${error.name}: ${error.message}` : String(error), wait);
+    if (!signal?.aborted) recordTiming(method, path, 0, started, error instanceof Error ? `${error.name}: ${error.message}` : String(error), wait, asked);
     throw error;
   }
   let value: unknown;
@@ -281,7 +352,7 @@ async function send<T>(method: string, path: string, body: unknown, signal: Abor
     error = `${method} ${path} answered ${response.status} with a body that is not JSON`;
   }
   const failure = response.ok ? error : (value as { error?: string } | undefined)?.error ?? error ?? `${method} ${path} failed with ${response.status}`;
-  recordTiming(method, path, response.status, started, failure, wait);
+  recordTiming(method, path, response.status, started, failure, wait, asked);
   if (failure !== undefined) throw response.ok ? new Error(failure) : new ApiError(response.status, failure);
   return value as T;
 }

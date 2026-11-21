@@ -1,6 +1,9 @@
 /**
- * The answers of the panel reads (`reads` in client.ts), kept by path for as long as the page lives. A panel shows the kept answer the
- * moment it opens and reads it again behind, and `ahead` fills it before the first open. The owner reads :5184 from Korea: in the 24 h to
+ * The answers of the panel reads (`reads` in client.ts), kept by path for as long as the page lives and in IndexedDB for the next page
+ * load (page-db.ts). A panel shows the kept answer the moment it opens and reads it again behind, and `ahead` fills it before the first
+ * open. A page load used to wait on the open room's board pane: on 11-21 its board read, 42 KB, held GET /api/later about 575 ms on a
+ * connection whose window had gone back to slow start (~/work/p155-readahead/lane-summary.md); a kept board makes that read a refresh,
+ * which waits in the lane behind his calls (client.ts). The owner reads :5184 from Korea: in the 24 h to
  * 11-20 09:03 KST his board and duties calls took 203 and 213 ms at p50 and up to 1,040 and 947 ms (requests/2026-11-19.jsonl), while the
  * server answered them in 2 to 7 ms, and each panel stayed empty for that long on every open.
  *
@@ -9,6 +12,10 @@
  */
 import { get, reads, takeOver, type Read, type Wait } from "./client.ts";
 import { live } from "./live.svelte.ts";
+import { pageDb, type KeptPage } from "./page-db.ts";
+
+/** The page-db.ts cache the answers go to, so a page load shows them at once and its first read of each is a refresh behind them. */
+const STORED = "kept";
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 const same = (a: unknown, b: unknown): boolean => a === b || JSON.stringify(a) === JSON.stringify(b);
@@ -72,10 +79,11 @@ export class Kept<T> {
     return flight.read;
   }
 
-  /** The answer a write returned or a live event carried. */
+  /** The answer a read, a write or a live event brought; it is kept for the next page load too. */
   set(value: T): void {
     this.value = value;
     this.error = null;
+    void pageDb.put(STORED, this.of.path, value);
   }
 
   /** A panel shows this answer until the returned function runs: it reads it again now and after each time the socket comes back. */
@@ -98,7 +106,17 @@ export class Kept<T> {
  */
 const KEEP = 100;
 const entries = new Map<string, Kept<unknown>>();
+/** The answers an earlier page load kept, by path, each taken by the first `kept` of its read. */
+const restored = new Map<string, unknown>();
 let listening = false;
+
+/** Takes the answers the last page load kept (page-db.ts), the newest `KEEP`, before the first view mounts. */
+export function restoreKept(pages: readonly KeptPage[]): void {
+  const mine = pages.filter(page => page.cache === STORED);
+  const extra = Math.max(0, mine.length - KEEP);
+  for (const page of mine.slice(0, extra)) void pageDb.drop(STORED, page.key);
+  for (const page of mine.slice(extra)) if (!entries.has(page.key)) restored.set(page.key, page.value);
+}
 
 const known = <T>(of: Read<T>): Kept<T> | undefined => entries.get(of.path) as Kept<T> | undefined;
 
@@ -114,11 +132,17 @@ export function kept<T>(of: Read<T>): Kept<T> {
   }
   let entry = known(of);
   entries.delete(of.path);
-  entry ??= new Kept(of);
+  if (!entry) {
+    entry = new Kept(of);
+    if (restored.has(of.path)) entry.value = restored.get(of.path) as T;
+    restored.delete(of.path);
+  }
   entries.set(of.path, entry as Kept<unknown>);
   for (const [path, oldest] of entries) {
-    if (entries.size <= KEEP) break;
-    if (oldest.idle) entries.delete(path);
+    if (entries.size + restored.size <= KEEP) break;
+    if (!oldest.idle) continue;
+    entries.delete(path);
+    void pageDb.drop(STORED, path);
   }
   return entry;
 }
