@@ -56,7 +56,7 @@ If the work differs from a row, fix the row.
 
 ## Cross-model review
 
-Before you hand back, spawn a reviewer on a different model family than the one that did the work. Pick its model from the `allowed` list in `~/.prime/agent/pstack-models.json` (repo default `config/pstack-models.json`). The reviewer reads the log and the transcript and flags what the user should check:
+Before you hand back, spawn a reviewer on a different model family than the one that did the work. Pick its model from the `policy.allowed` list in `~/.prime/agent/pstack-models.json`, which links to `config/pstack-models.json` in the sieun-pi checkout or its installed runtime. The reviewer reads the log and the transcript and flags what the user should check:
 
 - It flags decisions with weak or missing evidence.
 - It flags verification steps that the transcript does not show.
