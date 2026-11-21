@@ -16,6 +16,7 @@ export interface HeldSend {
   uploading?: number;
   mentions?: string[];
   threadRoot?: string;
+  alsoInChannel?: boolean;
   whenBusy?: "steer" | "followUp";
   at: number;
   error?: string;
@@ -36,6 +37,7 @@ function parse(value: unknown): HeldSend | null {
     ...(typeof v.uploading === "number" && v.uploading > 0 ? { uploading: v.uploading } : {}),
     ...(Array.isArray(v.mentions) && v.mentions.every(m => typeof m === "string") ? { mentions: v.mentions } : {}),
     ...(typeof v.threadRoot === "string" ? { threadRoot: v.threadRoot } : {}),
+    ...(v.alsoInChannel === true ? { alsoInChannel: true } : {}),
     ...(v.whenBusy === "steer" || v.whenBusy === "followUp" ? { whenBusy: v.whenBusy } : {}),
     ...(typeof v.error === "string" ? { error: v.error } : {}),
   };

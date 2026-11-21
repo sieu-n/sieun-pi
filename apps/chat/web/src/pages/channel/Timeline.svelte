@@ -366,7 +366,8 @@
                     queue={row.item.id === waitingId ? queue : null}
                     flash={flashId === row.item.id}
                     {openThread}
-                    canReply={canReply && row.item.kind === "message" && !row.item.threadRoot}
+                    canReply={canReply && row.item.kind === "message" && (!row.item.threadRoot || !!row.item.alsoInChannel)}
+                    alsoIn={row.item.kind === "message" && row.item.alsoInChannel ? (replyCount !== null ? "thread" : "channel") : null}
                     {statusOf}
                     {onretrysend}
                     {ondiscardsend}

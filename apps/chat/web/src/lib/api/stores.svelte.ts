@@ -48,7 +48,7 @@ function optimistic(request: SendDraft, failed?: { at: number; error: string }):
     text: request.text, images: (request.images ?? []).filter(image => image.preview).map(image => ({ url: image.preview, mimeType: image.mimeType })),
     mentions: request.mentions ?? [], deliveries: [], pending: true, requestId: request.requestId,
     ...(failed ? { send: "failed" as const, sendError: failed.error } : { send: "sending" as const }),
-    ...(request.threadRoot ? { threadRoot: request.threadRoot } : {}),
+    ...(request.threadRoot ? { threadRoot: request.threadRoot, ...(request.alsoInChannel ? { alsoInChannel: { rootText: "" } } : {}) } : {}),
   };
 }
 
@@ -181,6 +181,7 @@ const draftOf = (held: HeldSend, files: Promise<Blob[] | undefined>): SendDraft 
     ? Array.from({ length: held.uploading }, (_, index) => heldImage(files, index))
     : held.images.map(ref => ({ preview: ref.url, mimeType: ref.mimeType, file: new Blob(), ref: () => Promise.resolve(ref) })),
   ...(held.mentions ? { mentions: held.mentions } : {}), ...(held.threadRoot ? { threadRoot: held.threadRoot } : {}),
+  ...(held.alsoInChannel ? { alsoInChannel: true } : {}),
   ...(held.whenBusy ? { whenBusy: held.whenBusy } : {}),
 });
 
@@ -655,7 +656,10 @@ const ROOMS_AHEAD = 40;
 const JOBS_AHEAD = 20;
 const timelinePages = new PageCache<TimelineRead, TimelineShown>("timeline", ROOMS_AHEAD + JOBS_AHEAD);
 
-/** A page's items as a timeline of `id` shows them: a channel without its thread replies, a DM's owner posts with their send line. */
+/** A channel thread reply that shows only in its thread, not one also sent to the channel. */
+const threadOnly = (item: Item): boolean => item.kind === "message" && !!item.threadRoot && !item.alsoInChannel;
+
+/** A page's items as a timeline of `id` shows them: a channel without its thread-only replies, a DM's owner posts with their send line. */
 /** Whether `fresh` holds an item the screen's `shown` lacks or shows differently, so the owner waited for the read that brought it. */
 const brought = (shown: readonly Item[], fresh: readonly Item[]): boolean => {
   const old = new Map(shown.map(item => [item.id, item]));
@@ -663,7 +667,7 @@ const brought = (shown: readonly Item[], fresh: readonly Item[]): boolean => {
 };
 
 const shownItems = (id: ConversationId, items: readonly Item[]): Item[] => {
-  const visible = threaded(id) ? items.filter(item => !(item.kind === "message" && item.threadRoot)) : items;
+  const visible = threaded(id) ? items.filter(item => !threadOnly(item)) : items;
   return merge([], isRoom(id) ? visible.map(roomPost) : visible, new Set());
 };
 
@@ -1075,7 +1079,7 @@ export class Timeline {
 
   /** Adds or replaces items by id and drops `removed`. A pending send drops when the real message it became lands. */
   upsert(incoming: Item[], removed: string[] = []): void {
-    const shown = threaded(this.id) ? incoming.filter(item => !(item.kind === "message" && item.threadRoot)) : incoming;
+    const shown = threaded(this.id) ? incoming.filter(item => !threadOnly(item)) : incoming;
     if (threaded(this.id)) warmReplies(this.id, shown);
     if (!this.isChannel) jobsAhead(this.items.concat(shown));
     this.sends.merge(this.isRoom ? shown.filter(item => this.newest(item)).map(roomPost) : shown, removed);
@@ -1267,7 +1271,7 @@ export class Replies {
     for (const id of this.sends.restore()) this.retrySend(id);
   }
 
-  send(text: string, opts: { images?: Attached[]; mentions?: AgentId[] } = {}): Promise<void> {
+  send(text: string, opts: { images?: Attached[]; mentions?: AgentId[]; alsoInChannel?: boolean } = {}): Promise<void> {
     const request: SendDraft = { text, requestId: crypto.randomUUID(), threadRoot: this.rootId, ...opts };
     void this.sends.send(request).then(result => {
       if (result) this.merge([result.item]);
