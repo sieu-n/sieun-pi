@@ -77,6 +77,9 @@ test("a first checklist with open items and a mark in one round runs on to the h
     "a hand-over that failed does not count");
   const ticked = round({ name: "edit_message", arguments: { message_id: "reply:ch_1/p1", text: "ready to ship\n- git\n  - [x] main vs origin" } }, eyesOff, done);
   assert.equal(roundEndsTurn([input("[agent-message from sibling:w]"), ticked.message], ticked.ids[0]!), true, "a checklist with every item ticked ends it");
+  const blocked = round({ name: "edit_message", arguments: { message_id: "reply:ch_1/p1", text: "not ready to ship\n- git\n  - [x] main vs origin\n  - [ ] 9 uncommitted files" } }, eyesOff, done, mark);
+  assert.equal(roundEndsTurn([input("[agent-message from sibling:w]"), blocked.message], blocked.ids[3]!), true,
+    "a last edit with an open item belongs to work handed over earlier, so it ends the turn (blind run 5, 11-21)");
 });
 
 test("a post with set_thread_done(false), which reopens the thread, runs on", () => {

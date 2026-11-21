@@ -38,9 +38,11 @@ function wentOut(result: Message, call: Call): boolean {
   return result.content.some(part => part.type === "text" && part.text.trim() === TOLD);
 }
 
-/** A post whose text still has open `- [ ]` items, such as the checklist a comm thread posts before it hands the work over. */
-const opensChecklist = (call: Omit<Call, "id">): boolean =>
-  (call.name === "tell_owner" || call.name === "edit_message") && /^\s*[-*] \[ \]/m.test(String(call.arguments.text ?? ""));
+/**
+ * A new post whose text still has open `- [ ]` items, the checklist a comm thread posts before it hands the work over. An edit with an
+ * open item is a later version of a checklist whose work was handed over before, such as a last edit with one blocked item.
+ */
+const opensChecklist = (call: Omit<Call, "id">): boolean => call.name === "tell_owner" && /^\s*[-*] \[ \]/m.test(String(call.arguments.text ?? ""));
 
 /** A hand-over to the work thread: the agent_message tool, or agent_message.send in a Python call. */
 const handsOver = (call: Omit<Call, "id">): boolean =>
