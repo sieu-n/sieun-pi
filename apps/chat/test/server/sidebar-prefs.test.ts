@@ -65,4 +65,17 @@ describe("sidebar prefs", () => {
     assert.equal((await s.send("PUT", `/api/c/${ids.cutoverChannel}/prefs`, { starred: 1 })).status, 400);
     assert.equal((await s.send("PUT", `/api/c/dm_nobody/prefs`, { starred: true })).status, 404);
   });
+
+  test("a walk's room turns into a test room afterwards and leaves the sidebar and the archived list", async () => {
+    const made = await s.send("POST", "/api/rooms", { kind: "channel", name: `walk-${Date.now().toString(36)}`, members: [] });
+    assert.equal(made.status, 200, JSON.stringify(made.body));
+    const id = (made.body as { id: string }).id;
+    assert.ok(row(await s.get<Sidebar>("/api/sidebar"), id));
+    assert.equal((await s.send("PATCH", `/api/rooms/${id}`, { archived: true, test: true })).status, 200);
+    assert.equal(row(await s.get<Sidebar>("/api/sidebar"), id), undefined);
+    const archived = await s.get<{ id: string }[] | { rooms: { id: string }[] }>("/api/rooms?archived=1");
+    const list = Array.isArray(archived) ? archived : archived.rooms;
+    assert.equal(list.some(r => r.id === id), false);
+    assert.equal((await s.send("PATCH", `/api/rooms/${id}`, { test: false })).status, 400);
+  });
 });

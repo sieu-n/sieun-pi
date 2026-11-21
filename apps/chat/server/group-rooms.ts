@@ -307,6 +307,10 @@ export class GroupRooms {
       throw new Error(`A channel named #${row.name} is open; rename one of them before you unarchive this one.`);
     }
     if (patch.archived !== undefined) row.archived = patch.archived;
+    if (patch.test !== undefined) {
+      if (patch.test !== true) throw new Error("A room only turns into a test room; test is true when given.");
+      row.test = true;
+    }
     if (patch.homeChat !== undefined) {
       if (row.kind !== "channel") throw new Error("A Solo room shows its members' boards; only a channel has a home chat.");
       if (patch.homeChat === null) delete row.homeChat;

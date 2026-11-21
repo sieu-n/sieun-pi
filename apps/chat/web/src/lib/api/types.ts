@@ -533,8 +533,8 @@ export interface RoomInput {
   /** A walk's throwaway room: no owner list, live event or badge shows it; `GET /api/rooms?test=1` lists it. */
   test?: boolean;
 }
-/** `PATCH /api/rooms/:id`. `closed` closes or reopens a Solo room. */
-export interface RoomPatch { name?: string; agenda?: string; closed?: boolean; archived?: boolean; homeChat?: string | null }
+/** `PATCH /api/rooms/:id`. `closed` closes or reopens a Solo room, and `test: true` makes a walk's room a test room for good, out of every owner list. */
+export interface RoomPatch { name?: string; agenda?: string; closed?: boolean; archived?: boolean; homeChat?: string | null; test?: true }
 
 /** `cwd` moves a root thread to another project folder; its next request runs there. */
 export interface ConversationPatch { name?: string; archived?: boolean; model?: string; thinkingLevel?: ThinkingLevel; cwd?: string }
