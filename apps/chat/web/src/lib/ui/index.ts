@@ -1,4 +1,5 @@
 /** The shared component set (owner rule c78). Pages import parts from here or from the file itself. */
+export { default as ActionBar } from "./ActionBar.svelte";
 export { default as Avatar } from "./Avatar.svelte";
 export { default as AvatarStack } from "./AvatarStack.svelte";
 export { default as Badge } from "./Badge.svelte";

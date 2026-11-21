@@ -1,5 +1,18 @@
 <script lang="ts">
+  import { api, markUnread } from "$lib/api";
+  import { later } from "$lib/later.svelte";
+  import RemindDialog from "$lib/RemindDialog.svelte";
+  import { remindMenu } from "$lib/remind";
+  import { conversationHref, router } from "$lib/router.svelte";
+  import ActionBar from "$lib/ui/ActionBar.svelte";
   import Icon from "$lib/ui/Icon.svelte";
+  import IconButton from "$lib/ui/IconButton.svelte";
+  import Menu from "$lib/ui/Menu.svelte";
+  import type { MenuEntry } from "$lib/ui/menu";
+  import Popover from "$lib/ui/Popover.svelte";
+  import { toast } from "$lib/ui/toast.svelte";
+  import EmojiPicker from "$pages/channel/EmojiPicker.svelte";
+  import { frequentEmoji } from "$pages/channel/frequent-emoji.svelte";
   import type { ContextLine, HitContext } from "./context";
   import Highlight from "./Highlight.svelte";
   import HitAvatar from "./HitAvatar.svelte";
@@ -24,9 +37,94 @@
   const showContext = $derived(expanded || focused);
   const lines = $derived(typeof context === "object" ? context : undefined);
   const where = $derived(location(hit.conversation));
+
+  /**
+   * Slack's actions on a search result. A post in a DM, channel or Solo room takes a reaction, Save for later, Mark unread and a reminder,
+   * as it does in its room; a thread reply or a channel post also opens its thread to reply; every hit copies its link.
+   */
+  const room = $derived(/^(dm|ch|so)_/.test(hit.conversation.id) && /^p\d+$/.test(hit.messageId) ? hit.conversation.id : null);
+  const threadKey = $derived(room ? (hit.thread?.root ?? (hit.conversation.kind === "channel" || hit.conversation.kind === "dm" ? hit.messageId : null)) : null);
+  const mark = $derived(room ? later.mark(room, hit.messageId) : undefined);
+  const post = $derived({ id: hit.messageId, later: mark });
+  const saved = $derived(room ? later.saved(room, post) : false);
+
+  let menuOpen = $state(false);
+  let menuAnchor = $state<HTMLElement | { x: number; y: number } | null>(null);
+  let moreButton = $state<HTMLButtonElement>();
+  let reactButton = $state<HTMLButtonElement>();
+  let picking = $state(false);
+  let customRemind = $state(false);
+  /** The right-click menu holds every action; More actions holds the ones the bar has no button for. */
+  let full = $state(false);
+
+  function copyLink() {
+    void navigator.clipboard.writeText(`${window.location.origin}${window.location.pathname}${hit.link}`).then(
+      () => toast.show("Link copied"),
+      () => toast.error("Could not copy the link"),
+    );
+  }
+
+  function reply() {
+    if (room && threadKey) router.navigate(conversationHref(room, { thread: threadKey, messageId: hit.messageId }));
+  }
+
+  function react(emoji: string) {
+    if (!room) return;
+    frequentEmoji.use(emoji);
+    api.react(room, hit.messageId, emoji, true).then(
+      () => toast.show(`Reacted with ${emoji}`, { action: { label: "Undo", run: () => void api.react(room!, hit.messageId, emoji, false) } }),
+      (error: unknown) => toast.error(error instanceof Error ? error.message : "Could not react"),
+    );
+  }
+
+  function unread() {
+    if (!room) return;
+    markUnread(room, hit.messageId, hit.thread?.root).then(
+      () => toast.show("Marked as unread. It stays in Later until you reply, react or check it off."),
+      () => toast.error("Could not mark the message unread"),
+    );
+  }
+
+  const moreItems = $derived<MenuEntry[]>([
+    { id: "link", label: "Copy link", icon: "link", onselect: copyLink },
+    ...(room
+      ? [
+          { id: "unread", label: "Mark unread", icon: "dot", onselect: unread } satisfies MenuEntry,
+          remindMenu({ remindAt: mark?.remindAt, set: (at) => void later.remindPost(room!, hit.messageId, at), custom: () => (customRemind = true), clear: () => void later.remindPost(room!, hit.messageId, null) }),
+        ]
+      : []),
+  ]);
+  const menuItems = $derived<MenuEntry[]>(
+    full
+      ? [
+          ...(threadKey ? [{ id: "reply", label: "Reply in thread", icon: "reply", onselect: reply } satisfies MenuEntry] : []),
+          ...(room
+            ? [{ id: "later", label: saved ? "Remove from Later" : "Save for later", icon: saved ? "bookmark-filled" : "bookmark", onselect: () => void later.toggle(room!, post) } satisfies MenuEntry]
+            : []),
+          ...moreItems,
+        ]
+      : moreItems,
+  );
+
+  function openMore() {
+    full = false;
+    menuAnchor = moreButton ?? null;
+    menuOpen = !menuOpen;
+  }
+
+  /** A right-click on the card opens every action at the pointer, as Slack's message menu does; a right-click on a link inside keeps the browser's. */
+  function oncontextmenu(e: MouseEvent) {
+    if ((e.target as Element).closest("[data-action-bar], .context")) return;
+    e.preventDefault();
+    onfocus();
+    full = true;
+    menuAnchor = { x: e.clientX, y: e.clientY };
+    menuOpen = true;
+  }
 </script>
 
-<article class="card" class:focused class:expanded data-result-card data-hit-id={hit.id} data-role={hit.role ?? ""} data-kind={hit.kind} aria-current={focused || undefined}>
+<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+<article class="card" class:focused class:expanded data-result-card data-action-host data-hit-id={hit.id} data-role={hit.role ?? ""} data-kind={hit.kind} aria-current={focused || undefined} {oncontextmenu}>
   {#if hit.thread}
     <p class="thread" data-thread-label>
       <Icon name="thread" size={14} />
@@ -46,7 +144,7 @@
         <time class="stamp" datetime={new Date(hit.at).toISOString()}>{longStamp(hit.at, now)}</time>
       </div>
       <!-- The link covers the card, so a click anywhere opens the conversation at the message, and it opens in a new tab too. -->
-      <a class="open" {href} onfocus={onfocus} data-result-open>
+      <a class="open" {href} onfocus={onfocus} onclick={onfocus} data-result-open>
         <p class="snippet" class:clamped={!expanded} class:tool={hit.role === "tool"} data-result-snippet><Highlight {pieces} /></p>
       </a>
       <div class="actions">
@@ -58,7 +156,32 @@
   </div>
   {#if showContext && lines?.after}{@render line(lines.after, "after")}{/if}
   {#if showContext && context === "loading"}<p class="context-note">Loading the messages around it…</p>{/if}
+  <ActionBar label="Message actions" open={menuOpen || picking}>
+    {#if room}
+      <IconButton icon="emoji-add" label="Add reaction" size="sm" bind:element={reactButton} onclick={() => (picking = true)} data-add-reaction />
+    {/if}
+    {#if threadKey}<IconButton icon="reply" label="Reply in thread" size="sm" onclick={reply} data-result-reply />{/if}
+    {#if room}
+      <IconButton icon={saved ? "bookmark-filled" : "bookmark"} label={saved ? "Remove from Later" : "Save for later"} size="sm" pressed={saved} onclick={() => room && void later.toggle(room, post)} data-save-later />
+    {/if}
+    <IconButton icon="link" label="Copy link" size="sm" onclick={copyLink} data-result-copy-link />
+    {#if room}
+      <IconButton icon="more" label="More actions" size="sm" aria-haspopup="menu" aria-expanded={menuOpen && !full} bind:element={moreButton} onclick={openMore} data-message-menu />
+    {/if}
+  </ActionBar>
 </article>
+{#if menuOpen}<Menu bind:open={menuOpen} anchor={menuAnchor} items={menuItems} placement={full ? "bottom-start" : "bottom-end"} label="Message actions" />{/if}
+{#if picking}
+  <Popover bind:open={picking} anchor={reactButton} placement="top-start" label="Add reaction" padding={0} radius="row">
+    <EmojiPicker
+      onpick={(emoji, keepOpen) => {
+        if (!keepOpen) picking = false;
+        react(emoji);
+      }}
+    />
+  </Popover>
+{/if}
+{#if customRemind && room}<RemindDialog at={mark?.remindAt} onpick={(at) => later.remindPost(room!, hit.messageId, at)} onclose={() => (customRemind = false)} />{/if}
 
 {#snippet line(entry: ContextLine, side: "before" | "after")}
   <div class="context {side}" data-context={side}>

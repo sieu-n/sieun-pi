@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { untrack } from "svelte";
+  import { tick, untrack } from "svelte";
   import { SvelteMap, SvelteSet } from "svelte/reactivity";
   import { api, type SearchHit, type SearchMissing } from "$lib/api";
   import { hrefFor, router } from "$lib/router.svelte";
@@ -11,6 +11,7 @@
   import Page from "$lib/ui/Page.svelte";
   import SearchField from "$lib/ui/SearchField.svelte";
   import { contextOf, replyContextOf, type HitContext } from "./context";
+  import { entryId, keepPlace, placeOf, type Place } from "./back-place";
   import FilterBar from "./FilterBar.svelte";
   import { hasFilters, NO_FILTERS } from "./filters";
   import ResultCard from "./ResultCard.svelte";
@@ -42,17 +43,31 @@
     void attempt;
     const params = searchParams(results);
     const mine = ++generation;
+    const searched = key;
+    const entry = entryId();
+    // Back or Forward to an entry shows what it showed; Retry reads anew.
+    const place = attempt === placedAttempt ? placeOf(entry, searched) : undefined;
+    placedAttempt = attempt;
     untrack(() => {
       draft = params.q;
-      hits = [];
-      total = 0;
-      missing = [];
-      cursor = undefined;
-      focusedIndex = 0;
+      hits = place?.hits ?? [];
+      total = place?.total ?? 0;
+      missing = place?.missing ?? [];
+      cursor = place?.cursor;
+      focusedIndex = place?.focusedIndex ?? 0;
       expanded.clear();
+      for (const id of place?.expanded ?? []) expanded.add(id);
+      for (const [id, lines] of place?.contexts ?? []) contexts.set(id, lines);
       now = new Date();
-      status = params.q ? { state: "loading" } : { state: "idle" };
+      status = place ? { state: "ready" } : params.q ? { state: "loading" } : { state: "idle" };
     });
+    const keep = () => {
+      if (status.state === "ready") keepPlace(entry, placeNow(searched));
+    };
+    if (place) {
+      void tick().then(() => showPlace(place));
+      return keep;
+    }
     if (!params.q) return;
     const controller = new AbortController();
     api.search({ ...params, limit: PAGE }, { signal: controller.signal }).then(
@@ -68,8 +83,35 @@
         if (mine === generation && !controller.signal.aborted) status = { state: "error", message: error instanceof Error ? error.message : String(error) };
       },
     );
-    return () => controller.abort();
+    return () => {
+      keep();
+      controller.abort();
+    };
   });
+
+  let placedAttempt = 0;
+  /** The results scroll, read as he scrolls, since the page is gone by the time a Back from a result could read it. */
+  let scrollTop = 0;
+  const scroller = (): HTMLElement | null | undefined => list?.closest<HTMLElement>(".scroll");
+  $effect(() => {
+    const element = scroller();
+    if (!element) return;
+    const onscroll = () => (scrollTop = element.scrollTop);
+    element.addEventListener("scroll", onscroll, { passive: true });
+    return () => element.removeEventListener("scroll", onscroll);
+  });
+
+  function placeNow(searched: string): Place {
+    const settled = [...contexts].filter((entry): entry is [string, HitContext | "error"] => entry[1] !== "loading");
+    return { key: searched, hits, total, missing, cursor, focusedIndex, scrollTop, expanded: [...expanded], contexts: settled };
+  }
+
+  /** Puts the scroll and the picked card back, with the keyboard on that card. */
+  function showPlace(place: Place) {
+    const element = scroller();
+    if (element) element.scrollTop = place.scrollTop;
+    list?.querySelectorAll<HTMLElement>("[data-result-card]")[place.focusedIndex]?.querySelector<HTMLElement>("[data-result-open]")?.focus({ preventScroll: true });
+  }
 
   async function loadMore() {
     if (!cursor || loadingMore || status.state !== "ready") return;

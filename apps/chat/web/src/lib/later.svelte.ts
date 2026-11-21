@@ -4,7 +4,7 @@
  * click and the post the server sends back, so the bookmark fills at once.
  */
 import { SvelteMap } from "svelte/reactivity";
-import { api, type Item, type LaterItem, type LaterList, type LaterRow, type LaterState } from "$lib/api";
+import { api, type Item, type LaterItem, type LaterList, type LaterMark, type LaterRow, type LaterState } from "$lib/api";
 import { live } from "$lib/api/live.svelte";
 import { hrefFor, router } from "$lib/router.svelte";
 import { isOverdue, remindedText } from "$lib/remind";
@@ -75,6 +75,26 @@ class LaterStore {
   /** Whether the post reads as saved: his click on its way, else the post's own mark. */
   saved(room: string, message: Pick<Message, "id" | "later">): boolean {
     return this.optimistic.get(key(room, message.id)) ?? !!message.later?.saved;
+  }
+
+  /** A post's save and reminder read from the open list, for a place that holds no post of its own to carry a `later` mark, such as a search result. */
+  mark(room: string, post: string): LaterMark | undefined {
+    const row = this.lists.open?.find((r) => r.room === room && r.post === post);
+    return row ? { saved: true, ...(row.remindAt !== undefined ? { remindAt: row.remindAt } : {}) } : undefined;
+  }
+
+  /** Remind me about this on a post: saves it for later with the reminder, or clears the reminder and keeps the save. */
+  async remindPost(room: string, post: string, at: number | null): Promise<void> {
+    try {
+      if (at === null) await api.patchLater(key(room, post), { remindAt: null });
+      else {
+        void askNotifyPermission();
+        await api.saveLater(room, post, at);
+        toast.show(remindedText(at));
+      }
+    } catch {
+      toast.error(at === null ? "Could not remove the reminder" : "Could not set the reminder");
+    }
   }
 
   async save(room: string, post: string): Promise<void> {
