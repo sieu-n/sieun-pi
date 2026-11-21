@@ -100,6 +100,8 @@ export interface RoomPost {
   hops?: number;
   /** Channels: the root post of the Buzz-style thread this reply is in. */
   threadRoot?: string;
+  /** A thread reply that also shows in the channel, as Slack's "Also send to #channel" box sends it. */
+  alsoInChannel?: true;
   /** An agent post: the owner post it answers, its turn's or the one its call's reply_to names, so its delivery reads as answered and the page draws it apart. */
   answers?: string;
   imported?: boolean;

@@ -305,6 +305,7 @@
     {#key threadParam}
       <ThreadPane
         channel={isChannel ? id : null}
+        channelName={isChannel ? name : null}
         threadKey={threadParam}
         draftKey={threadDraftKey(id, threadParam)}
         focus={replyFocus}
