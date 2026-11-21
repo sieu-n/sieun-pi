@@ -335,11 +335,10 @@ function extraParts(input: PrimePromptInput, tools: readonly string[], { skills,
   const ledger = input.skip?.has("corrections") ? undefined : readLedger(input.ledgerDir ?? chatDataDir(input.agentDir));
   const corrections = ledger === undefined ? undefined : input.comm ? commLedgerPrompt(ledger) : input.depth === 0 ? ledger && ledgerPrompt(ledger, BRIEF_CORRECTIONS) : jobLedgerPrompt(ledger);
   if (corrections) out.push({ key: "corrections", text: corrections, source: "chat-corrections.ts ledgerPrompt or jobLedgerPrompt (Prime: [corrections] message)" });
-  return out;
   if (writing && !input.skip?.has("writing")) out.push({ key: "writing", text: writingSection(writing), source: "the unslop skill's SKILL.md without its frontmatter (Prime: only its name and description in the skills list)" });
+  return out;
 }
 
-function readLedger(dir: string): Ledger | null {
 /** The skill every thread gets in full in its `writing` section. */
 export const WRITING_SKILL = "unslop";
 
@@ -365,6 +364,7 @@ export function writingSection(file: ContextFile): string {
   return `# Writing standard\n\nThe ${WRITING_SKILL} skill (${file.path}) is loaded here in full, so you need not open it. Follow it in every line a person reads.\n\n${file.content}`;
 }
 
+function readLedger(dir: string): Ledger | null {
   try {
     return parseLedger(JSON.parse(readFileSync(join(dir, "corrections.json"), "utf8")));
   } catch {
