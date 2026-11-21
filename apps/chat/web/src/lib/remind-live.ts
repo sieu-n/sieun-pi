@@ -7,7 +7,7 @@ import type { LaterRow } from "./api/types";
 import { later } from "./later.svelte";
 import { remindPresets } from "./remind";
 import { conversationHref, router } from "./router.svelte";
-import { notifyOnce, notifySystem } from "./remind-notify";
+import { notifyOnce, notifySystem, onNotifyAction } from "./remind-notify";
 import type { MenuEntry } from "./ui/menu";
 import { toast } from "./ui/toast.svelte";
 
@@ -41,11 +41,32 @@ export function laterDue(row: LaterRow): void {
       { label: "Snooze", menu: snooze },
     ],
   });
-  notifyOnce(`later-due:${row.id}:${row.remindAt ?? 0}`, () => void notifySystem(title, body, `later:${row.id}:${row.remindAt ?? 0}`, () => openReminded(row)));
+  notifyOnce(`later-due:${row.id}:${row.remindAt ?? 0}`, () => void notifySystem(title, body, `later:${row.id}:${row.remindAt ?? 0}`, () => openReminded(row), { type: REMINDER, extra: { row } }));
+}
+
+/** The Mac app notification's buttons for a due reminder; Snooze 20 minutes leads, since a click on macOS's Options button picks the first. */
+const REMINDER = "reminder";
+const NATIVE: { id: string; title: string; preset?: "20m" | "1h" | "tomorrow" }[] = [
+  { id: "snooze-20m", title: "Snooze 20 minutes", preset: "20m" },
+  { id: "snooze-1h", title: "Snooze 1 hour", preset: "1h" },
+  { id: "snooze-tomorrow", title: "Snooze until tomorrow", preset: "tomorrow" },
+  { id: "complete", title: "Mark complete" },
+];
+
+/** A click on the Mac app's reminder notification: on the notification it opens the post, and on a button it snoozes or completes it. */
+function nativeAction(actionId: string, extra: Record<string, unknown>): void {
+  const row = extra.row as LaterRow | undefined;
+  if (!row?.id) return;
+  if (actionId === "tap") return openReminded(row);
+  if (actionId === "complete") return void later.setState(row, "done");
+  const preset = NATIVE.find((a) => a.id === actionId)?.preset;
+  const at = remindPresets().find((p) => p.id === preset)?.at;
+  if (at !== undefined) void later.remind(row, at);
 }
 
 /** Listens for due reminders for the life of the page. */
 export function watchReminders(): () => void {
+  void onNotifyAction(REMINDER, NATIVE.map(({ id, title }) => ({ id, title })), nativeAction);
   return live.on(event => {
     if (event.type === "later_due") laterDue(event.row);
   });

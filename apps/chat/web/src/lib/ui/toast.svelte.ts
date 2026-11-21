@@ -22,7 +22,11 @@ class Toasts {
     const id = this.next++;
     const actions = opts.actions ?? (opts.action ? [opts.action] : []);
     const item: ToastItem = { id, text, tone: opts.tone ?? "neutral", actions, duration: opts.duration ?? (opts.tone === "danger" ? 8000 : 4000) };
-    this.items = [...this.items, item].slice(-4);
+    // Four show at once. A fifth pushes out the oldest toast that hides by itself, so a toast that waits for him, such as a due reminder,
+    // stays until he acts on it.
+    const items = [...this.items, item];
+    while (items.length > 4) items.splice(Math.max(0, items.findIndex((t) => t.duration > 0)), 1);
+    this.items = items;
     if (item.duration > 0) setTimeout(() => this.dismiss(id), item.duration);
     return id;
   }

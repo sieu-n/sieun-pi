@@ -7,10 +7,50 @@ import { notifyPermission } from "./notify-prefs.svelte";
 import { inDesktopShell } from "./shell/desktop";
 
 type Invoke = (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
+type Internals = { invoke?: Invoke; transformCallback?: (callback: (raw: unknown) => void, once?: boolean) => number };
+
+function internals(): Internals | undefined {
+  return inDesktopShell ? (window as unknown as { __TAURI_INTERNALS__?: Internals }).__TAURI_INTERNALS__ : undefined;
+}
 
 function tauri(): Invoke | null {
-  const internals = (window as unknown as { __TAURI_INTERNALS__?: { invoke?: Invoke } }).__TAURI_INTERNALS__;
-  return inDesktopShell && typeof internals?.invoke === "function" ? internals.invoke : null;
+  const invoke = internals()?.invoke;
+  return typeof invoke === "function" ? invoke : null;
+}
+
+/** A button of a Mac app notification. macOS puts two or more in an Options menu, and a click on Options itself picks the first. */
+export type NotifyAction = { id: string; title: string };
+/** What a notification of an action type carries back when he clicks it (`tap`) or one of its buttons. */
+type ActionHandler = (actionId: string, extra: Record<string, unknown>) => void;
+const actionHandlers = new Map<string, ActionHandler>();
+let listening = false;
+
+/**
+ * Gives the Mac app's notifications of action type `type` the buttons `actions`, and runs `handler` on a click on one of them or on the
+ * notification itself (`tap`). tauri-plugin-notification 2.6 and later reports these on desktop, and only for notifications shown while a
+ * listener exists, so the page registers at start. A browser tab has no notification buttons, and a Mac app built before 2.6 refuses the
+ * commands; both show the notification without buttons.
+ */
+export async function onNotifyAction(type: string, actions: NotifyAction[], handler: ActionHandler): Promise<void> {
+  actionHandlers.set(type, handler);
+  const shell = internals();
+  const invoke = tauri();
+  if (!invoke || typeof shell?.transformCallback !== "function") return;
+  try {
+    await invoke("plugin:notification|register_action_types", { types: [{ id: type, actions }] });
+    if (listening) return;
+    listening = true;
+    // The plugin's Channel: Rust sends `{message, index}` to this callback id, and `{end}` when it drops the listener.
+    const channel = shell.transformCallback((raw) => {
+      const message = (raw as { message?: { actionId?: unknown; notification?: { actionTypeId?: unknown; extra?: unknown } | null } }).message;
+      if (typeof message?.actionId !== "string") return;
+      const run = actionHandlers.get(String(message.notification?.actionTypeId ?? ""));
+      run?.(message.actionId, (message.notification?.extra ?? {}) as Record<string, unknown>);
+    });
+    await invoke("plugin:notification|register_listener", { event: "actionPerformed", handler: `__CHANNEL__:${channel}` });
+  } catch {
+    listening = false;
+  }
 }
 
 /**
@@ -70,13 +110,16 @@ export function setWindowTitle(title: string): void {
   void tauri()?.("plugin:window|set_title", { label: "main", value: title }).catch(() => {});
 }
 
-/** Shows the system notification; `onclick` runs when the owner clicks it in a browser (the Mac app brings its window up by itself). */
-export async function notifySystem(title: string, body: string, tag: string, onclick: () => void): Promise<boolean> {
+/**
+ * Shows the system notification; `onclick` runs when the owner clicks it in a browser (the Mac app brings its window up by itself). In the
+ * Mac app, `action` names an action type registered with `onNotifyAction`, whose buttons it shows and whose handler gets `extra` back.
+ */
+export async function notifySystem(title: string, body: string, tag: string, onclick: () => void, action?: { type: string; extra: Record<string, unknown> }): Promise<boolean> {
   const invoke = tauri();
   try {
     if (invoke) {
       if (!(await invoke("plugin:notification|is_permission_granted"))) return false;
-      await invoke("plugin:notification|notify", { options: { title, body } });
+      await invoke("plugin:notification|notify", { options: { title, body, ...(action ? { actionTypeId: action.type, extra: action.extra } : {}) } });
       return true;
     }
     if (typeof Notification === "undefined" || Notification.permission !== "granted") return false;
