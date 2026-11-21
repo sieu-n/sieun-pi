@@ -1,15 +1,13 @@
-import { THREAD_KINDS, type CopyRole, type SkillCopy, type SkillEntry, type SkillSight, type SkillSource, type SkillThresholds, type SkillVerdictRow, type ThreadKind, type VerdictRule } from "../../../../lib/api/shared/skills.ts";
+import { COUNT_RULES, THREAD_KINDS, type CopyRole, type SkillCopy, type SkillEntry, type SkillSight, type SkillSource, type SkillThresholds, type SkillVerdictRow, type ThreadKind, type VerdictRule } from "../../../../lib/api/shared/skills.ts";
 
-export const PROBLEMS = ["duplicated", "outdated", "bloated"] as const;
-export type Problem = (typeof PROBLEMS)[number];
+export type Problem = keyof typeof COUNT_RULES;
+export const PROBLEMS: readonly Problem[] = ["duplicated", "outdated", "bloated"];
 
 export type Extra = "broken" | "name-clash";
 export type GroupKind = Problem | Extra;
 
 const RULES = {
-  duplicated: ["duplicate", "near-duplicate"],
-  outdated: ["outdated", "stale-clone"],
-  bloated: ["bloated"],
+  ...COUNT_RULES,
   broken: ["broken"],
   "name-clash": ["name-clash"],
 } as const satisfies Record<GroupKind, readonly VerdictRule[]>;

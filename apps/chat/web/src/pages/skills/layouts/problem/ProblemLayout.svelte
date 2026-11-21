@@ -20,6 +20,9 @@
   let only = $state<Problem | null>(null);
   const opened = new SvelteSet<string>();
   const toggler = (key: string) => () => (opened.has(key) ? opened.delete(key) : opened.add(key));
+  const FOLD = 12;
+  const unfolded = new SvelteSet<string>();
+  const firstOf = <T,>(key: string, list: readonly T[]): readonly T[] => (unfolded.has(key) || text ? list : list.slice(0, FOLD));
   let text = $state("");
   let busy = $state<string | null>(null);
 
@@ -141,6 +144,12 @@
   };
 </script>
 
+{#snippet more(key: string, total: number)}
+  {#if total > FOLD && !text}
+    <button type="button" class="more" onclick={() => (unfolded.has(key) ? unfolded.delete(key) : unfolded.add(key))}>{unfolded.has(key) ? "Show fewer" : `Show all ${total}`}</button>
+  {/if}
+{/snippet}
+
 <div class="layout" data-testid="skills-layout-problem">
   {#each view.boxes.filter(box => box.state !== "ok") as box (box.box)}
     <p class="offline" role="status" use:tooltip={box.error ?? ""}>
@@ -177,7 +186,8 @@
         <p>{GROUP_TEXT[group.kind].description}</p>
       </header>
       <div class="list">
-        {#each group.skills as skill (skill.id)}<SkillRow {skill} kind={group.kind} limits={view.thresholds} {nameOf} {busy} {act} open={opened.has(`${group.kind}:${skill.id}`)} ontoggle={toggler(`${group.kind}:${skill.id}`)} />{/each}
+        {#each firstOf(group.kind, group.skills) as skill (skill.id)}<SkillRow {skill} kind={group.kind} limits={view.thresholds} {nameOf} {busy} {act} open={opened.has(`${group.kind}:${skill.id}`)} ontoggle={toggler(`${group.kind}:${skill.id}`)} />{/each}
+        {@render more(group.kind, group.skills.length)}
       </div>
     </section>
   {/each}
@@ -189,7 +199,8 @@
         <p>No duplicate, drift or bloat. Most used in 30 days first.</p>
       </header>
       <div class="list">
-        {#each used as skill (skill.id)}<SkillRow {skill} kind={null} limits={view.thresholds} {nameOf} {busy} {act} open={opened.has(`healthy:${skill.id}`)} ontoggle={toggler(`healthy:${skill.id}`)} />{/each}
+        {#each firstOf("used", used) as skill (skill.id)}<SkillRow {skill} kind={null} limits={view.thresholds} {nameOf} {busy} {act} open={opened.has(`healthy:${skill.id}`)} ontoggle={toggler(`healthy:${skill.id}`)} />{/each}
+        {@render more("used", used.length)}
       </div>
     </section>
   {/if}
@@ -201,7 +212,8 @@
         <p>No session opened or called these in 30 days. A weak description may be why, so the ones we wrote say to review it before any removal.</p>
       </header>
       <div class="list">
-        {#each unused as skill (skill.id)}<SkillRow {skill} kind={null} limits={view.thresholds} {nameOf} {busy} {act} open={opened.has(`healthy:${skill.id}`)} ontoggle={toggler(`healthy:${skill.id}`)} />{/each}
+        {#each firstOf("unused", unused) as skill (skill.id)}<SkillRow {skill} kind={null} limits={view.thresholds} {nameOf} {busy} {act} open={opened.has(`healthy:${skill.id}`)} ontoggle={toggler(`healthy:${skill.id}`)} />{/each}
+        {@render more("unused", unused.length)}
       </div>
     </section>
   {/if}
@@ -259,6 +271,9 @@
   .k { color: var(--text-metadata); font-variant-numeric: tabular-nums; }
   .group p { margin: 0; color: var(--text-subtle); font: var(--text-body-sm); }
   .list { display: flex; flex-direction: column; padding: var(--space-1); border-radius: 12px; box-shadow: inset 0 0 0 1px var(--border-standard); }
+  .more { align-self: flex-start; min-height: 32px; margin: 2px 0 0; padding: 0 var(--space-3); border: 0; border-radius: 8px; background: transparent; color: var(--text-subtle); font: var(--text-label-sm); cursor: pointer; }
+  .more:hover { background: var(--affordance-ghost-hover); color: var(--text-standard); }
+  .more:focus-visible { outline: 2px solid var(--border-focus); outline-offset: -2px; }
   .form { display: flex; flex-direction: column; gap: var(--space-4); }
   .pair { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-3); }
   .from { margin: 0; color: var(--text-subtle); font: var(--text-body-sm); }
