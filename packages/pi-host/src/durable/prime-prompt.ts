@@ -24,6 +24,7 @@ import { defineExtension, GenerationTask, hook, LiveDoc, ROOT_CONVERSATION_ID, s
 import { BRIEF_CORRECTIONS, CHAT_BRIEF, jobReplyGuideline, personaGuideline } from "../../../../legacy/prime/user-history/src/chat-brief.ts";
 import { commLedgerPrompt, jobLedgerPrompt, ledgerPrompt, parseLedger, type Ledger } from "../../../../legacy/prime/user-history/src/chat-corrections.ts";
 import { SessionRules } from "../../../pi-claude-rules/src/core/rules.ts";
+import { COMM_BRIEF } from "./room-post.ts";
 import { agentHarnessDir, agentName, briefFile, conversationHarnessDir, threadAgent } from "./agent-profile.ts";
 import { withFolderFiles, type ContextFile } from "./context-files.ts";
 import { goalObjective } from "./goal.ts";
@@ -420,9 +421,9 @@ export function primePrompt(options: PrimePromptOptions): Extension {
       ...(query ? { query } : {}),
       ...(brief ? { agentBrief: brief } : {}),
       depth,
-      ...(comm ? { comm } : {}),
+      ...(comm ? { comm, brief: COMM_BRIEF } : {}),
       tools: options.tools ?? "prime",
-      skip: new Set([...PINNED_SECTIONS].filter(key => (input.shown[key] !== undefined && !(comm && key === "corrections")) || (key === "harness" && depth === 0))),
+      skip: new Set([...PINNED_SECTIONS].filter(key => (input.shown[key] !== undefined && !(comm && COMM_REBUILT.has(key))) || (key === "harness" && depth === 0))),
       ...(options.bundledSkillsDir ? { bundledSkillsDir: options.bundledSkillsDir } : {}),
       ...(options.ledgerDir ? { ledgerDir: options.ledgerDir } : {}),
     });
@@ -439,7 +440,7 @@ export function primePrompt(options: PrimePromptOptions): Extension {
   };
   const render = (key: PromptKey) => async (input: PromptInput, context: Context): Promise<string | undefined> => {
     if (key === "harness" && input.conversationId === ROOT_CONVERSATION_ID) return undefined;
-    if (PINNED_SECTIONS.has(key) && input.shown[key] !== undefined && !(key === "corrections" && await commRoot(input, context))) return input.shown[key];
+    if (PINNED_SECTIONS.has(key) && input.shown[key] !== undefined && !(COMM_REBUILT.has(key) && await commRoot(input, context))) return input.shown[key];
     return (await build(input, context)).get(key);
   };
   return defineExtension({
@@ -470,6 +471,11 @@ async function commRoot(input: PromptInput, context: Context): Promise<boolean> 
   return input.conversationId === ROOT_CONVERSATION_ID && (await threadAgent(input.read, context))?.role === "comm";
 }
 const CLAUDE_MD = /(^|\/)CLAUDE\.md$/i;
+/**
+ * The pinned sections a comm thread's root rebuilds at each request: its short corrections block, and its brief (`COMM_BRIEF`), whose
+ * tell_owner line leaves how a post reads to the role text, so a thread that showed the chat's brief moves to it.
+ */
+const COMM_REBUILT: ReadonlySet<PromptKey> = new Set(["corrections", "guidance"]);
 
 /** The text of a conversation's first input, a job's task, or undefined when it has none yet. */
 async function firstInput(harness: Harness | undefined, conversationId: ConversationId, context: Context): Promise<string | undefined> {

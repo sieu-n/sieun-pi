@@ -9,6 +9,8 @@
  *
  * `set_thread_done` (`thread-done.ts`) marks a thread done or open again with the flag on its root post, which the room shows with a check.
  *
+ * `set_room_member` (`room-members.ts`) adds an agent to a channel or Solo room or removes it.
+ *
  * `edit_message` replaces the text of one of the agent's own posts, as Slack's `chat.update` does, through apps/chat's edit of the owner's
  * posts (app.ts `rewrite`): the room shows it with (edited) at once and no new post. An agent posts a checklist of what it will check and
  * edits that same post as items finish, instead of a new post per step (owner p106, c207).
@@ -23,8 +25,10 @@ import type { ChatApp } from "./chat-app.ts";
 import { crammedEdit } from "./comm-guard.ts";
 import { closingControl, forMeTools } from "./for-me.ts";
 import { longReply } from "../../../../legacy/prime/user-history/src/shared/reply-lint.ts";
+import { ROOM_LONG_WORDS } from "./room-post.ts";
 import { laterTools } from "./later.ts";
 import { searchTools } from "./search-messages.ts";
+import { roomMemberTools } from "./room-members.ts";
 import { threadDoneTools } from "./thread-done.ts";
 
 export const ROOM_TOOLS_EXTENSION = "room-tools";
@@ -42,11 +46,7 @@ export const EDIT_MESSAGE_DESCRIPTION =
   "Replace the text of one of your own posts, as Slack's edit does. The post keeps its place, its thread and its reactions, and the room shows " +
   "it with (edited) at once, with no new post and no notification. Use it to keep one post current instead of posting again: when your reply " +
   "is a checklist of what you will check or do, edit that same post as each item finishes, change `- [ ]` to `- [x]` with a short result " +
-  "after the item, add or reword items when the plan changes, and put the answer in the last edit. " +
-  "Keep the post's shape in every edit, the last one too: the topic bullets with their items nested under them, each item one short line " +
-  "with any detail as a bullet nested under it, and the answer on top as one short sentence of at most 20 words. " +
-  "Keep every edit of a checklist within 80 words, the last one too: nest a detail line only when it adds a fact the top line and its item lack, " +
-  "and let a finished or blocked item say so in its own line with no sub-bullets. You can edit only your own posts. " +
+  "after the item, add or reword items when the plan changes, and put the answer in the last edit. You can edit only your own posts. " +
   "The result names the post, such as p14, so a later edit can use that id.";
 
 export interface EditMessageArgs { message_id: string; text: string }
@@ -54,17 +54,17 @@ export interface EditMessageArgs { message_id: string; text: string }
 export const LONG_EDIT_MARK = "Not edited, it runs long";
 
 /**
- * The note for an edit that runs long by tell_owner's check (`longReply`: a sentence over 35 words or over 80 words in all, list markers not
+ * The note for an edit that runs long by tell_owner's check in a room (`longReply`: a sentence over 35 words or over `ROOM_LONG_WORDS` in all, list markers not
  * counted), or undefined when it does not. The same text sent again goes out, so the check is a soft cap (c98). On 11-21 a blind run's work
  * thread grew a checklist over its edits from 54 to 78 to 86 words, as the d4 run of 11-20 saw it grow from 63 to 95, and edit_message had no check.
  */
 export function longEdit(edit: string, held: Set<string>): string | undefined {
   if (held.has(edit)) return undefined;
-  const long = longReply(edit);
+  const long = longReply(edit, ROOM_LONG_WORDS);
   if (!long.length) return undefined;
   held.add(edit);
-  return `${LONG_EDIT_MARK}, with ${long.join(" and ")}. Keep the post within 80 words: the answer on top in one short sentence, short items, ` +
-    "and a nested detail only for a fact the item lacks, with the rest on a wiki page you link. Sending the very same text again edits it as it is (c104, c98).";
+  return `${LONG_EDIT_MARK}, with ${long.join(" and ")}. Keep the post within ${ROOM_LONG_WORDS} words: the answer on its own line, short ` +
+    "items, a nested detail only for a fact its item lacks, and the rest on a wiki page you link. Sending the very same text again edits it as it is (c98).";
 }
 
 export interface SetEmojiArgs { message_id: string; emoji: string; on: boolean }
@@ -135,6 +135,7 @@ export function roomTools(app: ChatApp, thread: string): Extension {
         },
       }),
       ...threadDoneTools(app, thread),
+      ...roomMemberTools(app, thread),
       ...forMeTools(app, thread),
       ...laterTools(app, thread),
       ...searchTools(app),

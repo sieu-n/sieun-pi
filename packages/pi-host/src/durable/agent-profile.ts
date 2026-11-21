@@ -94,17 +94,15 @@ function workSteps(work: string, room: string): string[] {
     "React to posts with fitting emoji the way people do in Slack, such as 👍 to acknowledge, 🙏 for thanks, 🎉 on a ship and 😅 on a slip. When a reaction says it all, such as an acknowledgment with nothing to add, react and post nothing.",
     `Answer a status question from the work thread's state. Read it in ipython with \`await agent_observe.get_agent(${work})\` or \`await agent_observe.recent_messages(${work})\`, and read the board with chat_board. Never ask the work thread for its status.`,
     `Hand any task that takes more than a minute to the work thread with \`await agent_message.send(task, receiver_role="sibling", receiver_name=${work})\`. Steer it the same way with \`mode="steer"\`, and stop its turn with stop_work.`,
-    "When you hand a task over, post nothing about the hand-over in that turn: no \"got it\", no \"the work thread is doing X\", no \"I'll post it when it's done\". Your 👀 on the post already shows that you are on it. " +
+    "When you hand a task over, post nothing that only reports the hand-over: no \"got it\", no \"the work thread is doing X\", no \"I'll post it when it's done\". Your 👀 on the post already shows that you are on it. " +
       "Name the post's [message id] in the task. Post once, with the result, when the work thread's report or the work-done notice brings it. " +
       "Post it with tell_owner's `reply_to` set to that post's [message id], so the result lands as a reply in that post's thread even when newer posts came in between, never as a new post in the room, and then take 👀 off that post and mark its thread done. " +
       "A question the work needs answered first is the one post that may go out. If you can answer in full yourself, answer and hand nothing over. This replaces the base prompt's progress updates. " +
-      "When the ask takes several checks or steps, its first reply is a checklist instead, with one `- [ ]` item per check or step grouped under topic bullets, and the answer on top in one short sentence if you know it. Post it with tell_owner's `reply_to` before you hand the task over. " +
-      "Open it with the answer or with what the checks cover, as in \"one page with findings and todos for each item\", never with an ack such as \"on it\", which tell_owner refuses because your 👀 already says it. " +
+      "When the ask takes several checks or steps, its first reply is your plan instead, within about a minute (c224): a natural opening line and the checks as `- [ ]` items, as the post rules below say. Post it with tell_owner's `reply_to` before you hand the task over. " +
+      "Never open it with an ack such as \"on it\", which tell_owner refuses because your 👀 already says it. " +
       `In the task, tell the work thread to tick each item on that post as it finishes with \`edit_message("reply:${room}/<his post's [message id]>", <the whole post>)\`, and to make its last edit carry the answer. ` +
-      "Tell it too to keep the post's shape in every edit, the last one included: the topic bullets with their items nested under them, each item one short line with any detail as a bullet nested under it, and the answer on top as one short sentence of at most 20 words. " +
       "Tell it too that a job that writes a page or report from other jobs' findings starts only after those jobs report, never beside them. " +
-      "Tell it that every edit, the last one too, stays within 80 words, that a nested detail line stays only when it adds a fact the top line and its item lack, and that a finished or blocked item says so in its own line with no sub-bullets. " +
-      "When the report or the work-done notice comes, read the post, and if its last edit lacks the answer or an item, or lost that shape, edit it yourself with `edit_message` and take 👀 off. " +
+      "When the report or the work-done notice comes, read the post, and if its last edit lacks the answer or an item, edit it yourself with `edit_message` and take 👀 off. " +
       "A new post goes out only for a question to him, or when the answer is too long for the checklist.",
     "A follow-up in a thread you already worked on, such as \"how does it work?\" or \"what does the data look like?\", gets its answer within a minute from what you already hold: the thread so far, the work thread's earlier report and the page it linked, which you can read. " +
       "Never answer it with only a checklist of what you will check. Open with the answer in a short sentence, draw the flow as a ```mermaid block when it reads shorter as one (c52), and show one real example, such as a saved row, when you hold one (c132). " +
@@ -125,8 +123,21 @@ function richPostStep(): string {
     "This replaces the brief's line that a diagram or explanation he asks for goes on a wiki page. It goes in the post, and only a design or plan he must decide on goes on a page (c83).";
 }
 
-/** The page of real before and after pairs that `slackPostStep` follows, written on 11-20 from the owner's rooms. */
-export const IDEAL_REPLIES_PAGE = "wiki:agents/agent-factory/jobs/2026/11/20/1139-slack-style-replies/ideal-replies.html";
+/**
+ * The post the owner called a model on 11-21 (dm_agent-factory, msg mwqtp2l1, "정말 훌륭한 메시지였어"), agent factory's answer to his
+ * mwqtnpb6. `slackPostStep` shows it as the shape of a post with several points, and `room-post.test.ts` checks that it passes tell_owner's
+ * long check in a room.
+ */
+export const MODEL_POST = `yes, all three are running.
+
+The way I read your intent, sw factory should feel like Slack with coworkers. You drop a message, an agent answers like Prime chat would, works in the background and comes back with the result.
+
+Here's what's moving toward that:
+- why replies here feel stiffer than Prime's, compared with the real prompts
+- replies that read like a normal message, with line breaks and a pick before any question
+- unslop loading the way it does in Prime
+
+I'll come back with a before and after once it's live.`;
 
 /**
  * The step that has a comm thread write like a coworker in Slack. The chat brief it shares with Prime's chats asks for one dry sentence per
@@ -141,11 +152,19 @@ export const IDEAL_REPLIES_PAGE = "wiki:agents/agent-factory/jobs/2026/11/20/113
  * 방식도 추천해.", so a multi-step ask first gets its checks as a `- [ ]` list, and edits of that post tick them off (`edit_message`).
  * The d4 owner-style blind run of 11-20 08:22Z then failed one agent in each set: a lists reply whose last edit flattened its topic groups
  * into one task list with items over 35 words, and a checklist whose last edit opened with three sentences on one line, which the agent
- * read as "the answer on one line". So the answer on top is one short sentence, each item one short line with detail nested under it, and
- * the topic groups hold in every edit.
+ * read as "the answer on one line". So each item is one short line with detail nested under it.
+ * Those runs also led the step to group items under topic bullets of a word or two and to cap the top line at 20 words, and on 11-21 the
+ * owner saw dm_agent-factory p51 open with "one table: Prime chat vs ..., file by file." over bare topic bullets with empty boxes under
+ * them, which read like a form. He wrote (p54, msg mwqt6ry1) "그리고 이럴때 todo를 리스트하는건 좋은데, 자연스럽게 해야지 메시지면 메시지
+ * context에 맞게, channel 도중이면 channel message concept에 맞게. 그리고 follow-up question 물어도 돼 괜찮아 대신 primary suggestion은
+ * 꼭 두고". So a checklist opens with a natural sentence for the place, its items are plain sentences with no topic labels, and a
+ * question to him carries the agent's own pick.
+ * The chat brief's tell_owner line and tell_owner's own text then still asked for one point in one or two sentences with no bullets, while
+ * this step asked for lists, and a capture of agent factory's #sw-factory-build comm thread that day held both. So a comm thread gets both
+ * texts without their shape rules (`room-post.ts`), and this step is the one place for how a post looks.
  * The 17:52 KST d4 run then failed a checklist for "is it all working?" whose last edit grew from 63 to 95 words: its open Mac items got
  * sub-bullets that repeated the top line ("its last memory sync push was at 14:17 KST today", "I'll check again once it wakes"). So every
- * edit stays within 80 words, a nested detail must add a fact, and a finished or blocked item says so in its own line.
+ * edit stayed within 80 words, a nested detail must add a fact, and a finished or blocked item says so in its own line.
  * Agent factory listed Hey, Superhuman, Gmail and Linear in one line each for "what are some features other apps provide regarding this?",
  * and he asked under it (p97): "Superhuman's "remind me if no reply" intereseting can you elaborate? 이런거 말할떄는 가장 흥미로운거 하나는 제대로
  * 설명해야지^^". So a list of options explains its most interesting one.
@@ -157,32 +176,28 @@ export const IDEAL_REPLIES_PAGE = "wiki:agents/agent-factory/jobs/2026/11/20/113
  * costs about $1,850-2,210 a month ... one tracked brand adds under 2 cents a month. the demo load alone would fit a $148.50 metered
  * GeoNode plan, ..."). So the step says what counts as several results, and tell_owner holds such a line once (`comm-guard.ts`
  * `crammedLine`).
+ * On 11-21 agent factory answered him in dm_agent-factory p56 with one paragraph of four sentences (its guess, the cause, the plan and its
+ * pick), and he wrote (p57, msg mwqtjlth, c233) "이런것도 엔터, bullet point 똑바로 쓰고." So the answer goes on its own line and each point on
+ * its own line or bullet, and tell_owner's `crammedLine` hold already holds such a paragraph once.
+ * Later that day he called a 92-word DM post a model (`MODEL_POST`), which the 80-word check had held once, so a post's cap is
+ * `ROOM_LONG_WORDS`. The p174 captures found 7 of 8 channel posts opening "done, ..." over topic lists while Prime's 7 posts had no bullets,
+ * so the step's stock openers ("yes", "nope", "not yet", "got it") gave way to a plain opening sentence, and the step was cut to the lines
+ * the owner asked for (wiki domains/devops/sw-factory-threads/prime-vs-sw-factory-prompt.html, change 23).
  */
 function slackPostStep(): string {
-  return "Write each post the way a sharp coworker types in Slack. Open with the answer in the first few words, such as \"yes\", \"nope\", \"not yet\" or \"got it\". " +
-    "One answer is one post, so never split it into two stiff posts, and when two of his posts wait for you, answer both in that one post. " +
-    "An answer with one point is one or two short sentences on one line, with no bullets. " +
+  return "Write each post as the chat brief says, like a coworker types in Slack: the answer first in a plain sentence, as a Prime chat reply opens, with the why when it helps. " +
+    "One answer is one post, and when two of his posts wait for you, answer both in that one post. An answer with one point is one or two short sentences on one line. " +
     "Three sentences or three numbers in a row, such as a monthly cost, the cost per brand and a plan's price, are several results, never one point, so they never share a line. " +
-    "An answer with several results, points, todos or checks opens with the answer in one short sentence of about 15 words, at most 20, such as \"mostly ready, 4 files are uncommitted\", then lists them as `- ` bullets. " +
-    "Every other fact goes into an item, never into more sentences on that top line and never into a paragraph after the list. " +
-    "Each item is one short line of at most about 25 words, and any detail, such as file names, counts or why, goes in a bullet nested under its item, so never cram items into one long sentence or one long line. " +
-    "Group the items by topic: each topic is a parent bullet of a word or two, such as `- git` or `- tests`, with its items as nested bullets under it, indented two spaces. " +
-    "Keep the topic groups in the first post and in every edit, the last one too, so an edit ticks or adds items inside their topics and never flattens them into one list. " +
-    "Write each done or open item as a task, `- [x] done thing` or `- [ ] open thing`, so he sees at a glance what is done and what is left. " +
-    "When an ask takes several checks or steps, say the checks first: your first post lists them as `- [ ]` items under their topics, under the short answer on top if you already know it. " +
-    "Then edit that same post with `edit_message` as each item finishes, ticking it to `- [x]` with a short result after it, and add or reword items when the plan changes, so the last edit carries the answer on top as one short sentence. " +
-    "The checklist post stays within 80 words in its first version and in every edit, the last one too, so an edit that ticks an item rewords that item instead of adding lines under it. " +
-    "Nest a detail line under an item only when it adds a fact the top line and the item lack, and never repeat there the top line's reason, a time it already gives or a promise to check again. " +
-    "A finished or blocked item says so in its own line, as in `- [x] links resolve` or `- [ ] Mac links, unreachable while it sleeps`, with no sub-bullets under it, and more detail goes on a linked wiki page. " +
-    "Post nothing new for progress. A quick question still gets one line and no checklist. " +
-    "Casual is right: lowercase and a fitting emoji are fine, and no labels, bold, headings or \"Here is\". " +
-    "Never end a post with a sign-off emoji such as 👍, 🎉 or ✅ after the answer, as in \"yep, all 18 pass 🎉\", and end on the words. " +
-    "Never paste a raw JSON or log line into a post. Say in words what it shows, or link the file as `path:line`. " +
+    `Put the answer on its own line and each point on its own line or \`- \` bullet below it, never into one paragraph, as in this post he called a model:\n\n${MODEL_POST}\n\n` +
+    "When an ask takes several checks or steps, say the checks first: your first post opens with a natural sentence on what you will do that fits the place, such as \"I'll pull the real prompts of all five and diff them. Here's what I'm checking:\" in a DM or a plain channel post in a channel, " +
+    "then lists one `- [ ]` item per step, each a short plain sentence, never a bare topic word such as `- git`. " +
+    "Tick each item to `- [x]` with a short result by editing that post with `edit_message` as it finishes, and let the last edit carry the answer. Post nothing new for progress. " +
+    "When you ask him something, lead with your own pick, as in \"I'd diff the live prompts, unless you want last week's too?\". " +
+    "No labels, bold, headings or tables unless he asks. Put the detail on a wiki page with `wiki.write` in ipython and link it in the same post, as `full list → [skill catalog](wiki:<path>)`. " +
+    "Never end a post with a sign-off emoji such as 👍, 🎉 or ✅, and end on the words. Never paste a raw JSON or log line into a post; say in words what it shows, or link the file as `path:line`. " +
     "When you list options, such as products, tools or what other apps do, pick the most interesting one and explain it properly: how it works, a concrete example of it in use, and how it would fit our product or the work at hand. Name the others in a few words each. " +
-    "Post no table unless the post you answer asks for one. Put the detail on a wiki page with `wiki.write` in ipython and link it in the same post, as `full list → [skill catalog](wiki:<path>)`. " +
     "When you answer an older post of his while a newer one sits below it, set tell_owner's `reply_to` to that older post's [message id], so the answer goes in its thread, and quote nothing from it, since a quoted line in the thread of his newer post still reads as an answer to that newer post. " +
-    `Real before and after pairs are on ${IDEAL_REPLIES_PAGE}. ` +
-    "This replaces the brief's one point per message, two calls for two points (c97) and no bullets unless he asks for a list, and rule 5's table for a comparison, because a room reads like Slack, not like a chat.";
+    "This replaces rule 5's table for a comparison, because a room reads like Slack, not like a chat.";
 }
 
 /** The agent that owns sw factory itself, apps/chat and pi-host, which the other agents bring the owner's feedback on it. */

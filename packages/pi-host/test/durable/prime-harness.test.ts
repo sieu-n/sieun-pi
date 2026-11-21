@@ -19,6 +19,7 @@ import type { ContextView, EntryRecord } from "@earendil-works/pi-durable";
 import { messageIdNote } from "../../../../legacy/prime/user-history/src/shared/chat-feed.ts";
 import { digestFlags, mergedHarnessState, nextDelivery, placeDeliveries, threadHarnessDir, withDigests, type DigestDelivery } from "../../src/durable/prime-harness.ts";
 import { withTurnWrappers } from "../../src/durable/prime-chat.ts";
+import { roomIdNote } from "../../src/durable/room-post.ts";
 import { DurableThreads } from "../../src/durable/threads.ts";
 import { HARNESS_DIGEST_DELTA_PREFIX, HARNESS_DIGEST_DELTA_SUFFIX, HARNESS_DIGEST_PREFIX, HARNESS_DIGEST_SUFFIX } from "../../src/durable/vendor/prime-harness.ts";
 import { MODEL, textOf } from "./crash-scenario.ts";
@@ -119,7 +120,7 @@ test("the turn wrappers leave a digest message alone, as Prime's custom digest m
   const view = viewOf([{ id: 1, kind: "pi.user", message: user("first", 10) }]);
   const shaped = withTurnWrappers(withDigests(view.messages, view, [delivery(0, "[harness-digest]\n\nD")])!, view);
   assert.deepEqual(shaped[0], { role: "user", content: [{ type: "text", text: "[harness-digest]\n\nD" }] });
-  assert.deepEqual((shaped[1]!.content as { text: string }[]).map(part => part.text), ["first", messageIdNote(10)]);
+  assert.deepEqual((shaped[1]!.content as { text: string }[]).map(part => part.text), ["first", roomIdNote(messageIdNote(10))]);
 });
 
 test("a thread gets the digest as a message before its first input, then only an update when an entry changes, and the prefix stays", async () => {

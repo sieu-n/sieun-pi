@@ -103,7 +103,7 @@ On 2026-10-28 at 18:35 UTC `scripts/prompt-parity.mjs` compared every tool of Pr
 |---|---|---|---|
 | `search_history` | user-history tool | the same tool, the extension's own execute (pi-history's socket) | identical definition (484 bytes); replay-safe |
 | `chat_board` | user-history tool | the same tool on apps/chat's board, check-in and agents API for the thread | identical definition (182 bytes); output in Prime's words |
-| `tell_owner` | user-history tool | the same tool with Prime's live guard | identical definition (3,445 bytes); replay-safe |
+| `tell_owner` | user-history tool | the same tool with Prime's live guard | Prime's description and `reply_to` text without their rules on how a message reads, which the room role text holds (`room-post.ts`); replay-safe |
 | `correction_add` | user-history tool | the same tool, the extension's own execute, on the shared ledger | identical definition (160 bytes) |
 | `poteto_mode` | user-history tool that carries a guideline | the same tool | identical definition (38 bytes) |
 | `job_reply` | user-history tool of a chat's job | none; a child conversation gets its guideline in `guidance` | missing tool, text identical |
@@ -156,7 +156,7 @@ A host without the chat extension (`PI_HOST_PRIME_CHAT=0`, or a failed load, whi
 ### Turn wrappers
 
 The extension's context hook runs as a pi-durable `beforeRequest` hook of the root conversation, with Prime's own `withMessageIds` and `withWakeNotes`, in that order.
-The hook reads the conversation's entries to tell who sent each input: a `pi.user` entry and an `agent.message` from `owner` are the owner's and get `[message id: <id>; reply_to it only after he sends a newer message]`; any other `agent.message` (a check-in, a wake, a duty report, another agent, a channel post by an agent) is Prime's `agent_message` and gets the `[not from the owner: ...]` note.
+The hook reads the conversation's entries to tell who sent each input: a `pi.user` entry and an `agent.message` from `owner` are the owner's and get `[message id: <id>]`, Prime's note without its rule on when to set reply_to, which the room role text gives (`roomIdNote` in `room-post.ts`); any other `agent.message` (a check-in, a wake, a duty report, another agent, a channel post by an agent) is Prime's `agent_message` and gets the `[not from the owner: ...]` note.
 The notes go only into the request; the entries keep the raw text, and each note depends only on its message, so the cached prefix holds.
 
 | Wrapper | Source | pi now |
@@ -288,6 +288,7 @@ Each update stays in the history, so a long-lived thread carries every old copy 
 The first request after the 1 h cache lapsed writes its whole prefix anyway, so `packages/pi-host/src/durable/cache-shape.ts` folds every update before that point into the leading system message, and later requests find the same point from the assistant timestamps and read the cache.
 pi-ai puts the conversation's breakpoint on the last block of the last message, and Anthropic writes no cache on a `tool_addition` or `tool_removal` block, so on 11-21 each of 24 tool updates in comm threads sent the whole history as fresh input; `cache-shape.ts` moves that breakpoint to the block before it.
 A comm thread's root conversation goes without the parts that guide coding, its repo's claude-rules and each CLAUDE.md, and gets a short corrections block of a job's rules and the rules on how its posts read in place of the chat's (`commRoot` in `prime-prompt.ts`, `commLedgerPrompt`).
+Its brief is the chat brief with the shape rules of the tell_owner line left out (`COMM_BRIEF` in `room-post.ts`), so its role text is the one place for how a post looks.
 
 ## Remaining gaps and decisions
 

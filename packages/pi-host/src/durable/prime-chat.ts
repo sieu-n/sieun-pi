@@ -62,6 +62,7 @@ import { ChatApp } from "./chat-app.ts";
 import { CommHandedDoc } from "./comm.ts";
 import { commPostRefusal, crammedResent, tableResent, turnAsked, turnAskedTable, turnStartedAt, type CommPostTurn } from "./comm-guard.ts";
 import { unpostedReply, unpostedReplyRequest } from "./comm-reply.ts";
+import { ROOM_LONG, ROOM_TELL_OWNER_DESCRIPTION, ROOM_TELL_OWNER_PARAMETERS, roomIdNote } from "./room-post.ts";
 import { durableTool, loadPiExtension, piContext, type LoadedPiExtension, type PiSession, type PiTool, type PiToolResult } from "./pi-extensions.ts";
 
 export const PRIME_CHAT_EXTENSION = "prime-chat";
@@ -164,16 +165,23 @@ function fromPrime(message: { role: string; customType?: unknown }): Message {
 }
 
 /**
- * The model's view with Prime's turn wrappers: `[message id: ...]` after each owner message (`withMessageIds`) and the `[not from the owner: ...]`
- * note after each wake (`withWakeNotes`), the order Prime's context hook applies them in. Each note depends only on its own message, so the
- * cached prefix holds. Without a view of the entries, every user message counts as the owner's.
+ * The model's view with Prime's turn wrappers: `[message id: ...]` after each owner message (`withMessageIds`, with the id alone as a room
+ * reads it, `roomIdNote`) and the `[not from the owner: ...]` note after each wake (`withWakeNotes`), the order Prime's context hook applies
+ * them in. Each note depends only on its own message, so the cached prefix holds. Without a view of the entries, every user message counts
+ * as the owner's.
  */
 export function withTurnWrappers(messages: readonly Message[], view: ContextView | undefined): Message[] {
   const by = view ? origins(view) : new Map<string, Origin>();
   const shaped = messages.map(message => toPrime(message, by.get(keyOf(message))));
   let out = withMessageIds(shaped as never[]) ?? shaped;
   out = withWakeNotes(out as never[]) ?? out;
-  return (out as { role: string }[]).map(fromPrime);
+  return (out as { role: string }[]).map(fromPrime).map(roomIds);
+}
+
+/** A user message with each Prime message id note as a room's (`roomIdNote`). */
+function roomIds(message: Message): Message {
+  if (message.role !== "user" || !Array.isArray(message.content)) return message;
+  return { ...message, content: message.content.map(part => part.type === "text" ? { ...part, text: roomIdNote(part.text) } : part) };
 }
 
 /** The conversation as Prime's session branch reads to tell_owner's guard, up to and with the assistant message that made `callId`. */
@@ -313,7 +321,8 @@ async function tellOwner(chat: PrimeChat, thread: ChatThread, params: unknown, a
     if (board) turn = { ...turn, asked: asked(board.todos, turn.startedAt), plan: board.plan };
     if (why === "decision" || why === "blocker") turn = { ...turn, others: await chat.app.otherAsks(thread.id, context.abortSignal) };
   } catch { /* no board read, so no todo holds the message */ }
-  const result = guard.tellOwner(params as TellInput, turn);
+  // A room post's cap and note on length (`room-post.ts`), which a guard from before them leaves at a Prime chat's.
+  const result = guard.tellOwner(params as TellInput, { ...turn, long: ROOM_LONG });
   if (result.kind === "refused") throw new Error(result.text);
   return text([result.text]);
 }
@@ -322,10 +331,14 @@ const REPLAY: Record<string, "safe" | "unsafe"> = {
   [SEARCH_HISTORY_TOOL]: "safe", [CHAT_BOARD_TOOL]: "unsafe", [TELL_OWNER_TOOL]: "safe", [CORRECTION_TOOL]: "unsafe", [PERSONA_TOOL]: "safe",
 };
 
-/** The extension's tools for one thread: the definitions it registered, each with its binding. */
+/**
+ * The extension's tools for one thread: the definitions it registered, each with its binding. tell_owner posts in an apps/chat room here, so
+ * it gets the room's text (`room-post.ts`), which leaves how a post reads to the role text.
+ */
 export function primeChatTools(chat: PrimeChat, thread: ChatThread): ToolRegistration[] {
   const session = (): PiSession => ({ id: thread.id, name: thread.name(), file: thread.file, cwd: thread.cwd, depth: 0 });
-  return chat.tools.map(tool => durableTool(tool, {
+  const roomTool = (tool: PiTool): PiTool => tool.name === TELL_OWNER_TOOL ? { ...tool, description: ROOM_TELL_OWNER_DESCRIPTION, parameters: ROOM_TELL_OWNER_PARAMETERS } : tool;
+  return chat.tools.map(roomTool).map(tool => durableTool(tool, {
     replay: REPLAY[tool.name] ?? "unsafe",
     session,
     ...(tool.name === CHAT_BOARD_TOOL ? { execute: (params: unknown, _api: ToolExecutionApi, context: Context) => chatBoard(chat, thread, params, context.abortSignal) } : {}),

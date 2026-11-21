@@ -165,7 +165,7 @@ test("a thread sends Prime's prompt, keeps it across turns, and sends only a cha
   await harness.close(context);
 });
 
-test("a comm thread's root goes without claude-rules, CLAUDE.md and the chat's long corrections block, and a thread that showed them drops them", async () => {
+test("a comm thread's root goes without claude-rules, CLAUDE.md, the chat's long corrections block and the brief's shape rules, and a thread that showed them drops them", async () => {
   const f = fixture("comm");
   writeFileSync(join(f.cwd, "CLAUDE.md"), "# Coding guide\n\nIndent with two spaces.\n");
   const folder = join(dir, "comm", "agents", "vent");
@@ -199,6 +199,7 @@ test("a comm thread's root goes without claude-rules, CLAUDE.md and the chat's l
     assert.match(before, /Always name the file you changed\./, "a thread with no role gets its repo's claude-rules");
     assert.match(before, /Indent with two spaces\./, "and the CLAUDE.md beside the repo's AGENTS.md");
     assert.match(before, /\[corrections\] The owner's corrections in force/, "and the chat's corrections block");
+    assert.match(before, /Two points are two calls \(c97\)/, "and the chat brief's tell_owner line with its shape rules");
 
     await threads.docPut(id, "agent.ref", { agent: "ag_vent", dir: folder, role: "comm", room: "dm_vent", work: "w-1" });
     await ask(id, "second");
@@ -208,6 +209,8 @@ test("a comm thread's root goes without claude-rules, CLAUDE.md and the chat's l
     assert.match(comm, /Run npm test before a commit\./, "the repo's AGENTS.md stays, as Prime's loader gives it");
     assert.match(comm, /\[corrections\] The owner's corrections that bind your posts and hand-overs/, "the comm thread gets the short block of its rules");
     assert.doesNotMatch(comm, /\[corrections\] The owner's corrections in force/);
+    assert.doesNotMatch(comm, /Two points are two calls \(c97\)/, "the pinned brief moves to the comm brief, which leaves shape to the role text");
+    assert.match(comm, /Other text shows only in the fold he opens\. How a post reads, from one short line to a short list or a checklist you edit, is in your role steps\./);
   } finally {
     await threads.shutdown();
   }

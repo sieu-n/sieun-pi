@@ -179,7 +179,8 @@ function checks(ask, posts, asked, versions = new Map()) {
   }
   return [
     ...plain,
-    ["at most 80 words, as config/AGENTS.md rule 5", words(text) <= 80 * asked],
+    // A room's cap (pi-host room-post.ts ROOM_LONG_WORDS), which the owner's 92-word model post (msg mwqtp2l1) fits.
+    ["at most 120 words, as a room's tell_owner check", words(text) <= 120 * asked],
     ["no sentence over 35 words", sentences(text).every(s => words(s) <= 35)],
   ];
 }

@@ -165,20 +165,31 @@ test("a list of options explains its most interesting one with an example and ho
   }
 });
 
-test("a multi-point post and its checklist edits keep a one-sentence answer, short items with nested detail, and their topic groups (owner, #sw-factory-build p101, p106)", () => {
+test("a room post opens with a plain answer and breaks into lines like the post he called a model (owner, #sw-factory-build p101, p106; dm_agent-factory p57, msg mwqtp2l1)", () => {
   for (const room of ["dm_vent", "ch_1a2b3c4d"]) {
     const text = commInstructions({ agent: "ag_vent", room, work: "w1" });
-    assert.match(text, /opens with the answer in one short sentence of about 15 words, at most 20/);
-    assert.match(text, /Every other fact goes into an item, never into more sentences on that top line and never into a paragraph after the list/);
-    assert.match(text, /Each item is one short line of at most about 25 words, and any detail[\s\S]*goes in a bullet nested under its item/);
-    assert.match(text, /Keep the topic groups in the first post and in every edit, the last one too[\s\S]*never flattens them into one list/);
-    assert.match(text, /the last edit carries the answer on top as one short sentence/);
-    assert.match(text, /Tell it too to keep the post's shape in every edit, the last one included: the topic bullets[\s\S]*one short sentence of at most 20 words/);
-    assert.match(text, /lost that shape, edit it yourself with `edit_message`/);
-    assert.doesNotMatch(text, /answer on one line/);
+    assert.match(text, /Write each post as the chat brief says, like a coworker types in Slack: the answer first in a plain sentence/);
+    assert.doesNotMatch(text, /in the first few words/);
+    assert.match(text, /Put the answer on its own line and each point on its own line or `- ` bullet below it, never into one paragraph, as in this post he called a model:\n\nyes, all three are running\.\n\nThe way I read your intent/);
+    assert.match(text, /let the last edit carry the answer\. Post nothing new for progress/);
+    assert.match(text, /if its last edit lacks the answer or an item, edit it yourself with `edit_message`/);
     assert.match(text, /Never end a post with a sign-off emoji[\s\S]*Never paste a raw JSON or log line/);
     assert.match(text, /Keep ✅ and 👀 out of your post text too/);
+    assert.doesNotMatch(text, /\b80 words|\b120 words|Nest a detail line|sub-bullets/, "the room's cap lives in tell_owner's and edit_message's checks, not the role text");
   }
+});
+
+test("a checklist opens with a natural sentence for the place, has no topic labels, and a question carries the agent's pick (owner, dm_agent-factory p54, msg mwqt6ry1)", () => {
+  for (const room of ["dm_vent", "ch_1a2b3c4d"]) {
+    const text = commInstructions({ agent: "ag_vent", room, work: "w1" });
+    assert.match(text, /your first post opens with a natural sentence on what you will do that fits the place[\s\S]*Here's what I'm checking:\" in a DM or a plain channel post in a channel/);
+    assert.match(text, /lists one `- \[ \]` item per step, each a short plain sentence, never a bare topic word such as `- git`/);
+    assert.match(text, /When you ask him something, lead with your own pick/);
+    assert.match(text, /its first reply is your plan instead, within about a minute \(c224\)/);
+    assert.doesNotMatch(text, /topic bullets|topic groups|under their topics|at most 20|about 25 words/);
+  }
+  assert.doesNotMatch(EDIT_MESSAGE_DESCRIPTION, /topic|at most 20|\b80 words/);
+  assert.match(EDIT_MESSAGE_DESCRIPTION, /change `- \[ \]` to `- \[x\]` with a short result[\s\S]*put the answer in the last edit\. You can edit only your own posts/);
 });
 
 test("an answer to an older post names it with reply_to and quotes nothing (owner, #dev-app-search-prospect p33, 11-21)", () => {
@@ -189,18 +200,6 @@ test("an answer to an older post names it with reply_to and quotes nothing (owne
   }
 });
 
-test("every edit of a checklist stays within 80 words, with nested detail only for a new fact (d4 blind run, 11-20 17:52 KST)", () => {
-  for (const room of ["dm_vent", "ch_1a2b3c4d"]) {
-    const text = commInstructions({ agent: "ag_vent", room, work: "w1" });
-    assert.match(text, /The checklist post stays within 80 words in its first version and in every edit, the last one too/);
-    assert.match(text, /Nest a detail line under an item only when it adds a fact the top line and the item lack/);
-    assert.match(text, /A finished or blocked item says so in its own line[\s\S]*with no sub-bullets under it/);
-    assert.match(text, /Tell it that every edit, the last one too, stays within 80 words/);
-    assert.match(text, /Never end a post with a sign-off emoji[\s\S]*Never paste a raw JSON or log line/);
-    assert.match(text, /Keep ✅ and 👀 out of your post text too/);
-  }
-  assert.match(EDIT_MESSAGE_DESCRIPTION, /Keep every edit of a checklist within 80 words, the last one too: nest a detail line only when it adds a fact/);
-});
 
 test("an agent thread gets Prime's preamble first, the brief after the AGENTS.md files, and the agent's memory in its digest", async () => {
   const f = fixture("first");

@@ -34,8 +34,10 @@ import { SEARCH_MESSAGES_TOOL } from "../../src/durable/search-messages.ts";
 import { loadPrimeChat, PRIME_CHAT_TOOLS, withTurnWrappers, type ChatThread, type PrimeChat } from "../../src/durable/prime-chat.ts";
 import { guidelines } from "../../src/durable/prime-prompt.ts";
 import { ChatDoc, threadRegistry } from "../../src/durable/registry.ts";
+import { ROOM_TELL_OWNER_DESCRIPTION, ROOM_TELL_OWNER_PARAMETERS, roomIdNote } from "../../src/durable/room-post.ts";
 import { EDIT_MESSAGE_DESCRIPTION, EDIT_MESSAGE_TOOL, SET_EMOJI_TOOL } from "../../src/durable/room-tools.ts";
 import { SEND_MESSAGE_TOOL } from "../../src/durable/send-message.ts";
+import { SET_ROOM_MEMBER_TOOL } from "../../src/durable/room-members.ts";
 import { SET_THREAD_DONE_TOOL } from "../../src/durable/thread-done.ts";
 import { MODEL, textOf } from "./crash-scenario.ts";
 
@@ -138,7 +140,7 @@ test("the extension registers a Prime chat's tools, and their guidelines are the
   assert.ok(chat.loaded.skipped.has("registerCommand"));
 });
 
-test("a durable chat thread offers the extension's tools with its exact definitions, after the coding tools, subagent and send_message", async () => {
+test("a durable chat thread offers the extension's tools with its exact definitions, tell_owner with the room's, after the coding tools, subagent and send_message", async () => {
   let tools: ReturnType<typeof offered> = [];
   const { harness, root } = await open("offers", ({ messages }) => {
     tools = offered(messages);
@@ -146,9 +148,9 @@ test("a durable chat thread offers the extension's tools with its exact definiti
   });
   await (await root.submit({ type: "input", content: "hi" }, context)).wait(context);
   await harness.close(context);
-  assert.deepEqual(tools.map(tool => tool.name), ["read", "write", "edit", "bash", "subagent", SEND_MESSAGE_TOOL, ...PRIME_CHAT_TOOLS, SET_EMOJI_TOOL, EDIT_MESSAGE_TOOL, SET_THREAD_DONE_TOOL, LIST_FOR_ME_TOOL, MARK_MESSAGE_TOOL, SAVE_MESSAGE_TOOL, REMIND_ME_TOOL, LIST_SAVED_TOOL, SEARCH_MESSAGES_TOOL]);
+  assert.deepEqual(tools.map(tool => tool.name), ["read", "write", "edit", "bash", "subagent", SEND_MESSAGE_TOOL, ...PRIME_CHAT_TOOLS, SET_EMOJI_TOOL, EDIT_MESSAGE_TOOL, SET_THREAD_DONE_TOOL, SET_ROOM_MEMBER_TOOL, LIST_FOR_ME_TOOL, MARK_MESSAGE_TOOL, SAVE_MESSAGE_TOOL, REMIND_ME_TOOL, LIST_SAVED_TOOL, SEARCH_MESSAGES_TOOL]);
   for (const name of PRIME_CHAT_TOOLS) {
-    const registered = chat.loaded.tools.get(name)!;
+    const registered = name === "tell_owner" ? { description: ROOM_TELL_OWNER_DESCRIPTION, parameters: ROOM_TELL_OWNER_PARAMETERS } : chat.loaded.tools.get(name)!;
     assert.deepEqual(tools.find(tool => tool.name === name), toToolDeclaration({ name, description: registered.description, parameters: registered.parameters as never }), name);
   }
 });
@@ -165,7 +167,8 @@ test("an owner input reaches the model with Prime's message id, another sender's
   await harness.close(context);
   const owner = entries.find(entry => entry.kind === "pi.user")!.model![0] as Message & { timestamp: number };
   assert.equal(textOf(owner.content), "How is the relay?");
-  assert.deepEqual((seen[0]!.content as { text: string }[]).map(part => part.text), ["How is the relay?", messageIdNote(owner.timestamp)]);
+  assert.deepEqual((seen[0]!.content as { text: string }[]).map(part => part.text), ["How is the relay?", roomIdNote(messageIdNote(owner.timestamp))]);
+  assert.match(roomIdNote(messageIdNote(owner.timestamp)), /^\[message id: [0-9a-z]+\]$/, "a room's id note is the id alone, with no rule on when to reply_to it");
   assert.deepEqual((seen[1]!.content as { text: string }[]).map(part => part.text), ["Check-in: read the board.", WAKE_NOTE]);
   assert.equal(seen[1]!.role, "user");
   const stored = entries.find(entry => entry.kind === "agent.message")!.model![0] as Message;
@@ -183,7 +186,7 @@ test("an imported Prime message keeps its custom type, so only Prime's wake type
   const view = { head: undefined, entries: rows.map(([kind, data], index) => ({ id: index + 1, conversationId: 1, kind, data })), contributions: rows.map(([, , message]) => [message]),
     messages: rows.map(([, , message]) => message) } as unknown as ContextView;
   const out = withTurnWrappers(view.messages, view).map(message => (message.content as { text: string }[]).map(part => part.text));
-  assert.deepEqual(out, [["Heartbeat: check the relay.", WAKE_NOTE], ["Your task: count to three."], ["The conversation history before this point was compacted."], ["And now?", messageIdNote(4)]]);
+  assert.deepEqual(out, [["Heartbeat: check the relay.", WAKE_NOTE], ["Your task: count to three."], ["The conversation history before this point was compacted."], ["And now?", roomIdNote(messageIdNote(4))]]);
 });
 
 test("tell_owner sends on the owner's turn, refuses a call with no why on a check-in and holds an update there, as Prime's guard does", async () => {
@@ -416,7 +419,6 @@ test("edit_message posts the agent's edit of its own post as the thread, returns
 test("edit_message's own text tells the agent to keep a checklist in one post and edit it as items finish", () => {
   assert.match(EDIT_MESSAGE_DESCRIPTION, /edit that same post as each item finishes, change `- \[ \]` to `- \[x\]` with a short result/);
   assert.match(EDIT_MESSAGE_DESCRIPTION, /put the answer in the last edit/);
-  assert.match(EDIT_MESSAGE_DESCRIPTION, /Keep the post's shape in every edit, the last one too: the topic bullets[\s\S]*one short sentence of at most 20 words/);
   assert.match(EDIT_MESSAGE_DESCRIPTION, /You can edit only your own posts/);
 });
 

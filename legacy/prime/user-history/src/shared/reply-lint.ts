@@ -326,15 +326,16 @@ export function unfoldedProse(text: string): string {
 
 /**
  * What makes a tell_owner text long, as short phrases with the start of the sentence in question; empty when it is not long. Table rows and
- * `<details>` folds do not count (`unfoldedProse`).
+ * `<details>` folds do not count (`unfoldedProse`). `words` is the cap for the whole text, LONG_MESSAGE in a Prime chat; a sw factory room
+ * passes its own (pi-host `room-post.ts`).
  */
-export function longReply(text: string): string[] {
+export function longReply(text: string, words = LONG_MESSAGE): string[] {
   const sentences = proseLines(unfoldedProse(text)).flatMap(line => line.words.replace(LIST_MARK, "").split(SENTENCE)).map(sentence => sentence.trim().split(/\s+/).filter(Boolean)).filter(words => words.length);
   const found: string[] = [];
   const longest = sentences.reduce<string[]>((best, words) => words.length > best.length ? words : best, []);
   if (longest.length > LONG_SENTENCE) found.push(`a ${longest.length}-word sentence ("${clipQuote(longest.join(" "))}")`);
   const total = sentences.reduce((sum, words) => sum + words.length, 0);
-  if (total > LONG_MESSAGE) found.push(`${total} words in all`);
+  if (total > words) found.push(`${total} words in all`);
   return found;
 }
 

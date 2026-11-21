@@ -162,12 +162,12 @@ test("an agent.ref sets the root's tools and instructions for its role in its co
     assert.ok(tools.includes(STOP_WORK_TOOL) && tools.includes("read"), tools.join(", "));
     assert.match(commInstructions(comm), /comm thread in room dm_vent[\s\S]*receiver_name="w-1"[\s\S]*stop_work[\s\S]*c117[\s\S]*tell_owner/);
     for (const room of ["dm_vent", "so_1a2b3c4d", "ch_1a2b3c4d"]) {
-      assert.match(commInstructions({ ...comm, room }), /When you hand a task over, post nothing about the hand-over in that turn[\s\S]*Post once, with the result[\s\S]*replaces the base prompt's progress updates/, room);
+      assert.match(commInstructions({ ...comm, room }), /When you hand a task over, post nothing that only reports the hand-over[\s\S]*Post once, with the result[\s\S]*replaces the base prompt's progress updates/, room);
       assert.match(commInstructions({ ...comm, room }), /put 👀 on it with `set_emoji\(message_id, "eyes", true\)`\. 👀 means its work still runs, so keep it on through a first reply or checklist[\s\S]*take it off with `set_emoji\(message_id, "eyes", false\)` when the work ends[\s\S]*An answer you post in full in one turn takes 👀 off in that same turn/, room);
       assert.doesNotMatch(commInstructions({ ...comm, room }), /also when more work goes on after the reply/, room);
       assert.match(commInstructions({ ...comm, room }), /A follow-up in a thread you already worked on[\s\S]*within a minute from what you already hold[\s\S]*Never answer it with only a checklist[\s\S]*```mermaid block[\s\S]*`- \[ \]` items[\s\S]*keep 👀 on[\s\S]*steer the job that did it if that job still runs, else to start one job that starts from its findings, never a fresh round of research jobs/, room);
       assert.match(commInstructions({ ...comm, room }), /a job that writes a page or report from other jobs' findings starts only after those jobs report, never beside them/, room);
-      assert.match(commInstructions({ ...comm, room }), /Open it with the answer or with what the checks cover[\s\S]*never with an ack such as "on it"/, room);
+      assert.match(commInstructions({ ...comm, room }), /Never open it with an ack such as "on it", which tell_owner refuses/, room);
       assert.match(commInstructions({ ...comm, room }), /put no ✅ on a post you replied to\. Once all his post asked is handled[\s\S]*mark its thread done with `set_thread_done\(message_id, true\)`, never while the work thread still works on it/, room);
       assert.match(commInstructions({ ...comm, room }), /that mark is the finished signal and no ✅ is\. A quick ask[\s\S]*gets the done mark and no post/, room);
       assert.match(commInstructions({ ...comm, room }), /His new post in a done thread opens it again, so mark it done again once that post is handled[\s\S]*`set_thread_done\(message_id, false\)`/, room);
@@ -181,13 +181,13 @@ test("an agent.ref sets the root's tools and instructions for its role in its co
       assert.doesNotMatch(commInstructions({ ...comm, room }), /in progress/, room);
       assert.match(commInstructions({ ...comm, room }), /rule 5[\s\S]*asks for a diagram[\s\S]*draw it yourself as a ```mermaid block in your post[\s\S]*replaces the brief's line/, room);
       assert.doesNotMatch(commInstructions({ ...comm, room }), /short plain sentences/, room);
-      assert.match(commInstructions({ ...comm, room }), /coworker types in Slack[\s\S]*answer in the first few words[\s\S]*One answer is one post[\s\S]*answer both in that one post[\s\S]*no table unless[\s\S]*wiki\.write[\s\S]*ideal-replies\.html[\s\S]*replaces the brief's one point per message/, room);
+      assert.match(commInstructions({ ...comm, room }), /coworker types in Slack[\s\S]*the answer first in a plain sentence[\s\S]*One answer is one post[\s\S]*answer both in that one post[\s\S]*tables unless he asks[\s\S]*wiki\.write[\s\S]*replaces rule 5's table for a comparison/, room);
       assert.doesNotMatch(commInstructions({ ...comm, room }), /tables, links|diagram, table or link/, room);
-      assert.match(commInstructions({ ...comm, room }), /one point is one or two short sentences on one line, with no bullets[\s\S]*several results, points, todos or checks opens with the answer in one short sentence of about 15 words, at most 20[\s\S]*then lists them as `- ` bullets[\s\S]*nested bullets[\s\S]*`- \[x\] done thing` or `- \[ \] open thing`[\s\S]*no bullets unless he asks for a list/, room);
+      assert.match(commInstructions({ ...comm, room }), /An answer with one point is one or two short sentences on one line\. Three sentences or three numbers in a row[\s\S]*each point on its own line or `- ` bullet[\s\S]*`- \[ \]` item per step/, room);
       assert.doesNotMatch(commInstructions({ ...comm, room }), /bullet reports/, room);
-      assert.match(commInstructions({ ...comm, room }), /with no bullets\. Three sentences or three numbers in a row[\s\S]*are several results, never one point, so they never share a line/, room);
-      assert.match(commInstructions({ ...comm, room }), /several checks or steps, say the checks first[\s\S]*`- \[ \]` items[\s\S]*edit that same post with `edit_message`[\s\S]*Post nothing new for progress\. A quick question still gets one line and no checklist/, room);
-      assert.match(commInstructions({ ...comm, room }), new RegExp(`its first reply is a checklist instead[\\s\\S]*Post it with tell_owner's \`reply_to\` before you hand the task over[\\s\\S]*edit_message\\("reply:${room}/<his post's \\[message id\\]>"`), room);
+      assert.match(commInstructions({ ...comm, room }), /on one line\. Three sentences or three numbers in a row[\s\S]*are several results, never one point, so they never share a line/, room);
+      assert.match(commInstructions({ ...comm, room }), /several checks or steps, say the checks first[\s\S]*`- \[ \]` item per step[\s\S]*editing that post with `edit_message`[\s\S]*Post nothing new for progress\./, room);
+      assert.match(commInstructions({ ...comm, room }), new RegExp(`its first reply is your plan instead, within about a minute \\(c224\\)[\\s\\S]*Post it with tell_owner's \`reply_to\` before you hand the task over[\\s\\S]*edit_message\\("reply:${room}/<his post's \\[message id\\]>"`), room);
     }
     for (const room of ["so_1a2b3c4d", "ch_1a2b3c4d"]) {
       const group = commInstructions({ ...comm, room });

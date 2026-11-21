@@ -199,7 +199,9 @@ export interface TellInput { text?: unknown; why?: unknown; about?: unknown; rep
 export interface TellTurn { owner: boolean; ownerIds: ReadonlySet<string>; byOwner?: boolean; tells?: number; ownerText?: string; resent?: ReadonlySet<string>; done?: readonly string[]; startedAt?: number; asked?: ReadonlySet<string>; looked?: boolean;
   others?: readonly OtherAsk[]; lastSent?: SentTell; dropped?: readonly DroppedTodo[]; plan?: readonly PlanItem[]; unfinished?: string;
   /** The 5180 versions, by variant key, that the chat's sent messages linked since his last message. */
-  versions?: ReadonlyMap<string, ReadonlySet<string>> }
+  versions?: ReadonlyMap<string, ReadonlySet<string>>;
+  /** A sw factory room's word cap and the note on a post over it (pi-host `room-post.ts`); a Prime chat leaves it out for LONG_MESSAGE and the DM note. */
+  long?: { words: number; note: string } }
 /**
  * A For you todo the chat added, then removed or checked itself with no answer from the owner: an ask it took back. `swappedFor` holds the
  * todos the same call added. A call in the running step has no result yet, so `swappedAfter` holds the highest todo number the chat had
@@ -752,10 +754,10 @@ export function tellOwner(input: TellInput, turn: TellTurn, now = Date.now(), pa
     const talk = turn.resent?.has(told) ? [] : shopTalk(told, turn.ownerText);
     if (talk.length) return { kind: "refused", text: `${SHOP_TALK_MARK} ${talk.join(", ")}. Write it the way a person texts in Slack, with what ` +
       "he would see or can do now in plain words, and call tell_owner again. Sending the very same text again sends it as it is (c18, c98)." };
-    const long = turn.resent?.has(told) ? [] : longReply(told);
-    if (long.length) return { kind: "refused", text: `${LONG_REPLY_MARK}, with ${long.join(" and ")}. Text him like a Slack DM, one point in ` +
+    const long = turn.resent?.has(told) ? [] : longReply(told, turn.long?.words);
+    if (long.length) return { kind: "refused", text: `${LONG_REPLY_MARK}, with ${long.join(" and ")}. ${turn.long?.note ?? "Text him like a Slack DM, one point in " +
       "one or two short sentences of one fact each. Send what matters most and put the rest on the board or a wiki page with its link, " +
-      "never more clauses in one sentence. Sending the very same text again sends it as it is (c18, c104, c98)." };
+      "never more clauses in one sentence. Sending the very same text again sends it as it is (c18, c104, c98)."}` };
     if (turn.looked === false && !turn.resent?.has(told) && UI_HANDOFF.test(told)) return { kind: "refused", text: `${UNLOOKED_MARK}. ` +
       "Before you hand him a 5180 link or screenshots, open each screenshot of what it shows with attach_image and compare it with the " +
       "accepted Staging app it should match, its page frame, title, filter row, row icons and spacing. A screen that looks unlike the accepted " +
