@@ -27,7 +27,7 @@ after(async () => {
 });
 
 const upload = async (bytes: Buffer, type: string, name: string): Promise<ImageRef> => {
-  const res = await fetch(`${s.base}/api/uploads?name=${encodeURIComponent(name)}`, { method: "POST", headers: { "content-type": type }, body: bytes });
+  const res = await fetch(`${s.base}/api/uploads?name=${encodeURIComponent(name)}`, { method: "POST", headers: { "content-type": type }, body: new Uint8Array(bytes) });
   assert.equal(res.status, 200);
   return await res.json() as ImageRef;
 };
@@ -60,7 +60,7 @@ describe("attached files", () => {
     const ref = await upload(Buffer.from("a,b\n1,2\n"), "text/csv", "numbers.csv");
     const inputs: { text: string; images: number }[] = [];
     host.beforeSubmit = async (_thread, input) => {
-      inputs.push({ text: input.text, images: input.images?.length ?? 0 });
+      inputs.push({ text: input.text ?? "", images: input.images?.length ?? 0 });
     };
     const channel = (await s.send("POST", "/api/rooms", { kind: "channel", name: `files-${Date.now()}`, members: [agents.vent] })).body.id as string;
     try {
