@@ -3,17 +3,20 @@ import { conversationHref, router } from "$lib/router.svelte";
 import { laterHref } from "$lib/later.svelte";
 import { draftsHref } from "$lib/drafts.svelte";
 import { forYouHref } from "$pages/board/chips";
+import { wikiHref } from "$pages/wiki/wiki-pages";
+import { unreadsHref } from "$lib/unreads.svelte";
+import type { MessagesView } from "$lib/router.svelte";
 import { sidebar, soloGroups } from "./sidebar.svelte";
 import { rowUnread, starredRows, unstarred } from "./room-actions.svelte";
 import { groupRows, sidebarSections, visibleRows, type BuiltinSection, type SectionId } from "./sidebar-sections.svelte";
 
-/** One row of the Messages sidebar that Alt+Up and Alt+Down step through. `conversation` is null for Later, Drafts and For you. */
+/** One row of the Messages sidebar that Alt+Up and Alt+Down step through. `conversation` is null for a view row such as Later. */
 export type SidebarStop = { key: string; href: string; conversation: ConversationSummary | null };
 
 const isUnread = (row: ConversationSummary): boolean => rowUnread(row).unread > 0 || rowUnread(row).fresh;
 
 /**
- * The Messages sidebar's rows top to bottom, in the order pages/channel/MessagesSidebar.svelte draws them: Later, Drafts, For you, Starred, open
+ * The Messages sidebar's rows top to bottom, in the order pages/channel/MessagesSidebar.svelte draws them: the view rows, Starred, open
  * Solo rooms, the Done fold, each custom section, Channels, then Direct messages. With `asShown`, a folded section keeps only the open and the
  * unread rows, as on the screen; without it every conversation counts, for the next-unread keys. test/shell/conversation-keys.spec.ts
  * checks this order against the drawn rows.
@@ -34,17 +37,24 @@ export function sidebarStops(asShown: boolean): SidebarStop[] {
     ...shown(groups.dms, "dms"),
   ];
   return [
-    { key: "later", href: laterHref(), conversation: null },
-    { key: "drafts", href: draftsHref(), conversation: null },
-    { key: "for-you", href: forYouHref(), conversation: null },
+    ...VIEW_ROWS.map(([key, href]) => ({ key, href: href(), conversation: null })),
     ...rows.map((row) => ({ key: row.id, href: conversationHref(row.id), conversation: row })),
   ];
 }
 
+/** The view rows at the top of the Messages sidebar, in its order. */
+const VIEW_ROWS: readonly (readonly [MessagesView, () => string])[] = [
+  ["later", laterHref],
+  ["drafts", draftsHref],
+  ["for-you", () => forYouHref()],
+  ["wiki", wikiHref],
+  ["unreads", unreadsHref],
+];
+
 /** The sidebar row the page shows now, or null on a page that is no row, such as Agents or a new message. */
 function currentKey(): string | null {
   const view = router.messagesView;
-  if (view === "later" || view === "drafts" || view === "for-you") return view;
+  if (view && VIEW_ROWS.some(([key]) => key === view)) return view;
   return router.conversationId;
 }
 

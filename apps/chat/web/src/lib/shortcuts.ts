@@ -53,8 +53,16 @@ export const SHORTCUT_GROUPS = [
       { id: "send", label: "Send", keys: ["enter"], scope: "in the message box" },
       { id: "newline", label: "New line", keys: ["shift", "enter"], scope: "in the message box" },
       { id: "edit-last", label: "Edit your last message", keys: ["arrowup"], scope: "in an empty message box" },
-      { id: "mark-unread", label: "Mark unread", keys: ["u"], scope: "on a hovered message" },
-      { id: "pin", label: "Pin or un-pin", keys: ["p"], scope: "on a hovered message" },
+      { id: "focus-posts", label: "Move from the message box to the messages", keys: ["shift", "tab"], scope: "in the message box" },
+      { id: "move-posts", label: "Previous or next message", keys: ["arrowup"], also: [["arrowdown"]], scope: "on a focused message" },
+      { id: "edit-post", label: "Edit", keys: ["e"], scope: "on a focused or hovered message" },
+      { id: "react", label: "Add a reaction", keys: ["r"], scope: "on a focused or hovered message" },
+      { id: "reply", label: "Reply in thread", keys: ["t"], scope: "on a focused or hovered message" },
+      { id: "save-later", label: "Save for later", keys: ["a"], scope: "on a focused or hovered message" },
+      { id: "remind", label: "Remind me", keys: ["m"], scope: "on a focused or hovered message" },
+      { id: "mark-unread", label: "Mark unread", keys: ["u"], scope: "on a focused or hovered message" },
+      { id: "pin", label: "Pin or un-pin", keys: ["p"], scope: "on a focused or hovered message" },
+      { id: "delete-post", label: "Delete", keys: ["delete"], scope: "on a focused or hovered message" },
       { id: "mark-read", label: "Mark the conversation read", keys: ["escape"], scope: "in a conversation with new messages" },
       { id: "mark-all-read", label: "Mark all as read", keys: ["shift", "escape"] },
     ],
@@ -64,6 +72,7 @@ export const SHORTCUT_GROUPS = [
     label: "View",
     shortcuts: [
       { id: "sidebar", label: "Show or hide the sidebar", keys: ["mod", "shift", "d"] },
+      { id: "close-pane", label: "Close the thread or side pane", keys: ["mod", "."], also: [["escape"]], scope: "with a pane open" },
       { id: "zoom-in", label: "Zoom in", keys: ["mod", "="], also: [["mod", "+"], ["mod", "shift", "+"]] },
       { id: "zoom-out", label: "Zoom out", keys: ["mod", "-"] },
       { id: "zoom-reset", label: "Actual size", keys: ["mod", "0"] },
@@ -80,8 +89,8 @@ export function shortcut(id: ShortcutId): Shortcut {
   return byId.get(id)!;
 }
 
-const MAC: Record<string, string> = { mod: "⌘", shift: "⇧", alt: "⌥", arrowup: "↑", arrowdown: "↓", enter: "↩" };
-const OTHER: Record<string, string> = { mod: "Ctrl", shift: "Shift", alt: "Alt", arrowup: "↑", arrowdown: "↓", enter: "Enter" };
+const MAC: Record<string, string> = { mod: "⌘", shift: "⇧", alt: "⌥", arrowup: "↑", arrowdown: "↓", enter: "↩", escape: "Esc", tab: "⇥", delete: "⌦" };
+const OTHER: Record<string, string> = { mod: "Ctrl", shift: "Shift", alt: "Alt", arrowup: "↑", arrowdown: "↓", enter: "Enter", escape: "Esc", tab: "Tab", delete: "Delete" };
 
 /** Each key's label in order, ⌘ ⇧ K on a Mac and Ctrl Shift K elsewhere, for a row of <kbd>. */
 export function keyCaps(keys: Keys, mac = isMac): string[] {

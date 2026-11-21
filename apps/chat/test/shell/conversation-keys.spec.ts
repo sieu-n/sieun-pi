@@ -39,7 +39,7 @@ test("Alt+Down works from the message box", async ({ page }) => {
 
 test("Alt+Shift+Down jumps to the next unread conversation, or says there is none", async ({ page }) => {
   const list = await sidebarHrefs(page);
-  const unread = list.filter((r) => r.unread && r.href.startsWith("#/c/") && !["#/c/later", "#/c/for-you"].includes(r.href));
+  const unread = list.filter((r) => r.unread && /^#\/c\/[a-z]+_/.test(r.href));
   await page.keyboard.press("Alt+Shift+ArrowDown");
   if (unread.length) await expect.poll(() => hash(page)).toBe(unread[0]!.href);
   else await expect(page.getByText("No unread conversations")).toBeVisible();
@@ -50,7 +50,7 @@ test("Cmd+/ opens the shortcuts sheet, and Esc closes it", async ({ page }) => {
   const sheet = page.getByRole("dialog", { name: "Keyboard shortcuts" });
   await expect(sheet).toBeVisible();
   await expect(sheet.locator('[data-shortcut="next-unread"]')).toContainText("Next unread conversation");
-  await expect(sheet.locator('[data-shortcut="mark-unread"]')).toContainText("on a hovered message");
+  await expect(sheet.locator('[data-shortcut="mark-unread"]')).toContainText("on a focused or hovered message");
   await page.keyboard.press("Alt+ArrowDown");
   expect(await hash(page)).toBe("#/c/later");
   await page.keyboard.press("Escape");
