@@ -31,6 +31,7 @@
   import MemberPicker from "./MemberPicker.svelte";
   import { removeMembership } from "./membership";
   import ThreadPane from "./ThreadPane.svelte";
+  import PinnedButton from "./PinnedButton.svelte";
   import { roomDraftKey, threadDraftKey } from "$lib/drafts.svelte";
   import Timeline from "./Timeline.svelte";
   import { directory } from "./directory.svelte";
@@ -381,6 +382,9 @@
   {/if}
   {#if workThread}
     <span class="work-thread" data-work-thread title="Open work thread"><Button variant="ghost" size="sm" icon="robot" href={conversationHref(workThread)}>Open work thread</Button></span>
+  {/if}
+  {#if header?.pins}
+    <PinnedButton room={id} pins={header.pins} {items} refresh={() => void store.refreshHeader()} />
   {/if}
   {#if working}
     <IconButton icon="stop" label="Stop" size="sm" onclick={stop} data-testid="header-stop" />

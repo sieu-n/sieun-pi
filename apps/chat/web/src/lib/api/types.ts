@@ -327,6 +327,8 @@ export type Item =
       deleted?: true;
       /** A thread's root post the owner or an agent marked done (server/thread-done.ts); absent while the thread is open. */
       done?: ThreadDone;
+      /** Room posts the owner pinned to the room (server/pins.ts); absent while the post is not pinned. */
+      pinned?: PostPin;
     }
   | {
       kind: "turn"; id: string; at: Ms; author: Principal; text: string; live: boolean; steps: Step[]; images: ImageRef[]; jobs: JobRef[];
@@ -392,6 +394,8 @@ export interface ConversationHeader {
   /** Channels and Solo rooms: the member agents whose boards the side panel shows. */
   boards?: AgentId[];
   readSeq?: number;
+  /** DMs, channels and Solo rooms: the pinned posts, newest pin first, which the header's Pinned button lists (server/pins.ts). */
+  pins?: Item[];
   /** A walk's throwaway room (`POST /api/rooms {test: true}`), whose member picker lists test agents too. */
   test?: true;
 }
@@ -419,6 +423,10 @@ export interface ReactionRequest { emoji: string; on?: boolean }
 export interface ThreadDone { by: Principal; at: Ms }
 /** `POST /api/c/:id/posts/:post/done`: the owner marks the thread of a post done, or reopens it. */
 export interface ThreadDoneRequest { done: boolean }
+/** Who pinned a room post and when. */
+export interface PostPin { by: Principal; at: Ms }
+/** `POST /api/c/:id/posts/:post/pin`: the owner pins a room post, or with `pinned` false un-pins it. */
+export interface PinRequest { pinned: boolean }
 
 /**
  * A channel (`ch_<id>`) or a Solo room (`so_<id>`), as `/api/rooms` returns it (agent-model.md phase 5). `agenda` is a Solo room's agenda

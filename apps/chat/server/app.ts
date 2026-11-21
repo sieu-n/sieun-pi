@@ -32,6 +32,7 @@ import { Outbox, type OutboxRow } from "./outbox.ts";
 import { boxCwd, projectCwd, projectList } from "./projects.ts";
 import { agentPost, react, ReactionError, reactionInput, reactionList, reactionsOf, reactionText } from "./reactions.ts";
 import { doneInput, doneText, markDone, threadRootOf } from "./thread-done.ts";
+import { markPin, pinInput, pinnedPosts } from "./pins.ts";
 import { Rooms } from "./rooms.ts";
 import { Unfurler } from "./unfurl.ts";
 import { POST_KINDS, Search } from "./search.ts";
@@ -553,8 +554,10 @@ export class App {
     const group = this.groups.row(id);
     if (group) {
       const readSeq = this.groups.readSeq(group);
+      const posts = this.agentStore.postsOf(group.id);
       return {
         summary: this.groups.summary(group), members: this.groups.members(group), model: null, thinkingLevel: null,
+        pins: pinnedPosts(posts).map(p => this.groups.item(group, p, posts)),
         boards: group.members.filter(m => this.agents.record(m.agent)).map(m => m.agent),
         ...(group.kind === "channel"
           ? { purpose: group.purpose, ...(group.homeChat ? { homeChat: group.homeChat } : {}) }
@@ -570,6 +573,7 @@ export class App {
       return {
         summary: this.rooms.summary(record), members: this.members(agent), model: agent.model, thinkingLevel: agent.thinkingLevel, agent,
         queue: this.queues.place(this.agents.roomThread(record)), workThread: record.workThread, ...(readSeq !== undefined ? { readSeq } : {}),
+        pins: pinnedPosts(this.agentStore.postsOf(record.room)).map(p => this.rooms.item(p)),
       };
     }
     const summary = this.threads.conversation(id);
@@ -871,6 +875,20 @@ export class App {
     const root = threadRootOf(posts, post);
     this.setThreadDone(room, root, "owner", doneInput(input));
     return { item: this.postItem(room, root) };
+  }
+
+  /** The owner pins a room post or un-pins it (pins.ts); the room's watchers get the post at once and re-read the header's Pinned list. */
+  pin(id: ConversationId, postId: string, input: { pinned?: unknown }): { item: Item } {
+    const room = isRoomId(id) ? this.roomAgent(id).room : this.groups.row(id)?.id;
+    if (!room) throw new NotFound(`No room ${id}; a post is pinned in a DM, a channel or a Solo room.`);
+    const post = this.agentStore.postsOf(room).find(p => p.id === postId);
+    if (!post) throw new NotFound(`No post ${postId} in ${id}.`);
+    const flag = markPin(post, pinInput(input));
+    if (flag) {
+      this.agentStore.set(post, { pinned: flag });
+      this.emitPosts(room, [post]);
+    }
+    return { item: this.postItem(room, post) };
   }
 
   /** An agent's set_thread_done: `message` names any post of the thread as set_emoji names a post, and the flag goes on its root. */

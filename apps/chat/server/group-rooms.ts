@@ -31,6 +31,7 @@ import { postState } from "./post-edits.ts";
 import { laterLine, reminderPost } from "./later-agents.ts";
 import { namedPost, reactionsLine, reactionsOf, repliedPost } from "./reactions.ts";
 import { doneOf, reopens } from "./thread-done.ts";
+import { pinOf } from "./pins.ts";
 import { agedPost, agentPostParts, queuedNote, readFeedThread, type FeedSide, type Spoken } from "./rooms.ts";
 import { readMark, type Store } from "./store.ts";
 import { OWNER, type Threads } from "./threads.ts";
@@ -825,7 +826,7 @@ export class GroupRooms {
       ...(post.author === "owner" ? { requestId: post.requestId } : agentPostParts(this.deps.threads, post)),
       ...(replies.length ? { thread: { replies: replies.length, lastAt: replies.at(-1)!.at, authors } } : {}),
       deliveries: (post.deliveries ?? []).map(d => this.publicDelivery(row, post, d, all)), ...reactionsOf(id => this.deps.threads.principal(id), post),
-      ...doneOf(id => this.deps.threads.principal(id), post), ...postState(post), ...this.laterOf(post),
+      ...doneOf(id => this.deps.threads.principal(id), post), ...pinOf(id => this.deps.threads.principal(id), post), ...postState(post), ...this.laterOf(post),
     };
   }
 

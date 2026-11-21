@@ -238,6 +238,8 @@ export function routes(app: App): Route[] {
     }),
     // A thread's done flag (thread-done.ts): the owner's from the page and an agent's set_thread_done, through the one app.ts setThreadDone.
     route("POST", "/api/c/:id/posts/:post/done", async (_r, p, _q, body) => app.threadDone(p.id!, p.post!, ((await body()) ?? {}) as { done?: unknown })),
+    // A post's pin flag (pins.ts), the owner's from the page.
+    route("POST", "/api/c/:id/posts/:post/pin", async (_r, p, _q, body) => app.pin(p.id!, p.post!, ((await body()) ?? {}) as { pinned?: unknown })),
     route("POST", "/api/threads/:id/done", async (_r, p, _q, body) => {
       return app.threadDoneAsAgent(p.id!, ((await body()) ?? {}) as { message?: unknown; done?: unknown });
     }),

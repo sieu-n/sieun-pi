@@ -27,6 +27,7 @@
   import ThreadPill from "./ThreadPill.svelte";
   import DeletePostDialog from "./DeletePostDialog.svelte";
   import PostEditor from "./PostEditor.svelte";
+  import { setPin } from "./pins";
   import { offlineText } from "$pages/agents/host-badge";
   import { avatarKind, avatarOf, deliveryText, isOwn, placeText, QUIET_TURN, runningTool } from "./present";
 
@@ -145,6 +146,15 @@
     api.threadDone(room, doneable.id, !done).catch(() => toast.error(done ? "Could not reopen the thread" : "Could not mark the thread done"));
   }
 
+  /** Slack's Pin to channel, in a DM Pin to this conversation: the post shows who pinned it, and the header's Pinned list holds it (server/pins.ts). */
+  const pinned = $derived(message?.pinned ?? null);
+  const pinPlace = $derived(room?.startsWith("ch_") ? "channel" : "this conversation");
+  const pinnedLabel = $derived(pinned ? `Pinned by ${pinned.by.kind === "owner" ? "you" : pinned.by.name}` : "");
+
+  function togglePin() {
+    if (reactable && room) setPin(room, reactable.id, !pinned);
+  }
+
   /** The message menu behind the hover bar's More actions; every message action that is not a hover bar button goes in this one list. */
   let menuOpen = $state(false);
   let moreButton = $state<HTMLButtonElement>();
@@ -153,6 +163,7 @@
       { id: "unread", label: "Mark unread", icon: "dot", shortcut: "U", onselect: unread },
       remindMenu({ remindAt: reactable.later?.remindAt, kept: !!reactable.later?.unread, set: remind, custom: () => (customRemind = true), clear: () => remind(null) }),
       ...(doneable ? [{ id: "done", label: done ? "Reopen thread" : "Mark thread done", icon: "check", onselect: toggleDone }] : []),
+      { id: "pin", label: pinned ? `Un-pin from ${pinPlace}` : `Pin to ${pinPlace}`, icon: "pin", onselect: togglePin },
       ...(room ? [laterMenuItem(room, reactable)] : []),
     ] : [],
   );
@@ -238,6 +249,10 @@
   </div>
   {#if menuOpen}<Menu bind:open={menuOpen} anchor={moreButton} items={menuItems} placement="bottom-end" label="Message actions" />{/if}
   {#if customRemind}<RemindDialog at={reactable?.later?.remindAt} onpick={remind} onclose={() => (customRemind = false)} />{/if}
+{/snippet}
+
+{#snippet pinLabel()}
+  <p class="pinned-label" title={pinned ? stampLabel(pinned.at) : undefined} data-pinned-label><Icon name="pin" size={12} />{pinnedLabel}</p>
 {/snippet}
 
 {#snippet savedLabel()}
@@ -345,7 +360,7 @@
 {/snippet}
 
 {#if slack}
-  <li bind:this={rowEl} class="row slack" class:own class:first class:done={!!done} class:pending class:picking={picking || menuOpen} data-own-post={editable ? "" : undefined} data-message-id={item.id} data-kind={item.kind} data-flash={flash ? "" : undefined} data-live={live || undefined} onpointerenter={activate} onfocusin={activate} onclickcapture={altClick}>
+  <li bind:this={rowEl} class="row slack" class:pinned={!!pinned} class:own class:first class:done={!!done} class:pending class:picking={picking || menuOpen} data-own-post={editable ? "" : undefined} data-message-id={item.id} data-kind={item.kind} data-flash={flash ? "" : undefined} data-live={live || undefined} onpointerenter={activate} onfocusin={activate} onclickcapture={altClick}>
     <div class="gutter">
       {#if first}
         {@render authorAvatar(36)}
@@ -355,6 +370,7 @@
       {/if}
     </div>
     <div class="body">
+      {#if pinned}{@render pinLabel()}{/if}
       {#if saved}{@render savedLabel()}{/if}
       {#if first}
         <div class="head">
@@ -421,6 +437,7 @@
       </div>
       <div class="stack">
         {#if done && !first}{@render doneMark()}{/if}
+        {#if pinned}{@render pinLabel()}{/if}
         {#if saved}{@render savedLabel()}{/if}
         {#if turn && sent}
           {#if turn.steps.length || live}
@@ -836,6 +853,18 @@
   .slack.done:not(:hover) .gutter .clock,
   .slack:hover .gutter .done-mark {
     display: none;
+  }
+  .slack.pinned {
+    background: rgb(242 199 68 / 10%);
+  }
+  .pinned-label {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin: 0 0 2px;
+    font: var(--text-caption);
+    letter-spacing: var(--tracking-caption);
+    color: var(--text-metadata);
   }
   .saved-label {
     display: flex;

@@ -115,7 +115,12 @@ export interface RoomPost {
   deletedAt?: Ms;
   /** A thread's root post: whether its thread is done, who set that last and when (thread-done.ts). */
   done?: StoredDone;
+  /** Whether the owner pinned the post to its room, and when he last pinned or un-pinned it (pins.ts). */
+  pinned?: StoredPin;
 }
+
+/** The pin flag on a post; un-pinning keeps the row with `pinned: false`, as `done` does. */
+export interface StoredPin { pinned: boolean; by: "owner"; at: Ms }
 
 /** The done flag on a thread's root post; reopening keeps the row with `done: false`, so the log records who reopened it. */
 export interface StoredDone { done: boolean; by: "owner" | AgentId; at: Ms }
@@ -130,7 +135,7 @@ export interface StoredReaction { emoji: string; by: "owner" | AgentId; at: Ms }
  */
 export interface TestSend { by: string; reason: string; at: Ms; entry?: number; notice?: Ms }
 
-export type PostPatch = Partial<Pick<RoomPost, "delivery" | "deliveries" | "jobs" | "text" | "testSend" | "reactions" | "images" | "editedAt" | "editedFrom" | "deletedAt" | "done">>;
+export type PostPatch = Partial<Pick<RoomPost, "delivery" | "deliveries" | "jobs" | "text" | "testSend" | "reactions" | "images" | "editedAt" | "editedFrom" | "deletedAt" | "done" | "pinned">>;
 type LogLine = { t: "post"; post: RoomPost } | { t: "set"; post: string; patch: PostPatch };
 
 /**

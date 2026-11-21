@@ -8,6 +8,7 @@ import type {
   LaterItem, LaterList, LaterPatch, LaterRequest, LaterState, ReactionRequest, Room, RoomInput, RoomPatch, SendResult, Sidebar, StepOutputRef, ThinkingLevel, ThreadDoneRequest, TimelinePage, UsageBucket, UsageRange, UsageReport, AccountsView,
 } from "./types.ts";
 import type { SkillDoc, SkillScan, SkillsReport } from "./shared/skills.ts";
+import type { PinRequest } from "./types.ts";
 import { shrink } from "./shrink.ts";
 
 export class ApiError extends Error {
@@ -463,6 +464,9 @@ export const api = {
   /** Marks the thread of a room post done, or with `done` false reopens it; the flag sits on the thread's root (server/thread-done.ts). */
   threadDone: (id: ConversationId, post: string, done: boolean) =>
     call<{ item: Item }>("POST", `/api/c/${enc(id)}/posts/${enc(post)}/done`, { done } satisfies ThreadDoneRequest),
+  /** Pins a room post to its room, or with `pinned` false un-pins it (server/pins.ts). */
+  pin: (id: ConversationId, post: string, pinned: boolean) =>
+    call<{ item: Item }>("POST", `/api/c/${enc(id)}/posts/${enc(post)}/pin`, { pinned } satisfies PinRequest),
   /** The owner's Save for later rows in one tab, newest first, with both tabs' counts (server/later.ts). */
   later: (state?: LaterState) => call<LaterList>("GET", `/api/later${query({ state })}`),
   /** Saves a room post for later; saving a saved post keeps its one item and opens it again when it was done. */
