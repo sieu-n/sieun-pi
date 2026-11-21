@@ -105,10 +105,10 @@ test("on the wire, each request's system, tools and messages start with the prev
       system({ sections: { context: "C3" }, toolsRemoved: [{ name: "a" }, { name: "b" }], toolsAdded: [tool("a", "a3"), tool("b")] }, cold + 4 * MIN), user("four", cold + 5 * MIN)],
   ];
   const clocks = [cold, cold + 2 * MIN, cold + 5 * MIN];
-  const bodies = [];
+  const bodies: { system: unknown; tools: unknown; messages: unknown[] }[] = [];
   for (const [index, messages] of turns.entries()) bodies.push(bare(await wire(withCacheShape(inner, () => clocks[index]!), messages)));
   for (let index = 1; index < bodies.length; index++) {
-    const [was, now] = [bodies[index - 1], bodies[index]];
+    const [was, now] = [bodies[index - 1]!, bodies[index]!];
     assert.deepEqual(now.system, was.system, `request ${index + 1} keeps the system prompt`);
     assert.deepEqual(now.tools, was.tools, `request ${index + 1} keeps the tool list`);
     const last = was.messages.length - 1;

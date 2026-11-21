@@ -384,6 +384,17 @@ export function jobLedgerPrompt(ledger: Ledger | null, brief: string = ""): stri
     ...(ledger ? liveRules(ledger).filter(entry => JOB_RULES.has(entry.id)).map(shortLine) : []), ...lines].join("\n");
 }
 
+/**
+ * The rules a sw factory comm thread reads as short lines: a job's rules plus the ones about how a reply to the owner reads and when it goes
+ * out, since a comm thread writes in rooms and hands all other work to its work thread (pi-host `prime-prompt.ts` `commRoot`). On 11-21 the
+ * chat's full block was 28k characters, about 10.5k tokens, and a pass over its 135 lines found 26 to 37 about rooms or owner-facing posts.
+ */
+export const COMM_RULES: ReadonlySet<string> = new Set([...JOB_RULES, "c97", "c104", "c117", "c132", "c135", "c137", "c138", "c159", "c207", "c210", "c224"]);
+export function commLedgerPrompt(ledger: Ledger | null): string {
+  return [`[corrections] The owner's corrections that bind your posts and hand-overs, live from the ledger; every other correction holds too. ${OUTSIDE_ACTION_RULE} ${READ_RULE}`,
+    ...(ledger ? liveRules(ledger).filter(entry => COMM_RULES.has(entry.id)).map(shortLine) : [])].join("\n");
+}
+
 /** A brief that asks for what model calls cost: a cost, price or spend word near a model, token or LLM word. */
 const COST_WORD = /\b(?:costs?|pric(?:e|es|ed|ing)|spend(?:s|ing)?|spent|budget|bill(?:s|ed|ing)?|usd|expenses?|dollars?|how much|run us)\b|\$\s?\d|비용|얼마|요금/iu;
 const MODEL_WORD = /\b(?:tokens?|llms?|model calls?|gpt[- ]?\w*|claude|opus|sonnet|haiku|gemini|deepseek|jev|luna|openrouter|per 1M)\b|\/1M\b|토큰/iu;

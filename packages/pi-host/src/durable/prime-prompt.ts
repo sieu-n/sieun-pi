@@ -21,7 +21,7 @@ import { dirname, join, resolve } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import { defineExtension, GenerationTask, hook, LiveDoc, ROOT_CONVERSATION_ID, section, type ConversationId, type Extension, type Harness, type PromptInput } from "@earendil-works/pi-durable";
 import { BRIEF_CORRECTIONS, CHAT_BRIEF, jobReplyGuideline, personaGuideline } from "../../../../legacy/prime/user-history/src/chat-brief.ts";
-import { jobLedgerPrompt, ledgerPrompt, parseLedger, type Ledger } from "../../../../legacy/prime/user-history/src/chat-corrections.ts";
+import { commLedgerPrompt, jobLedgerPrompt, ledgerPrompt, parseLedger, type Ledger } from "../../../../legacy/prime/user-history/src/chat-corrections.ts";
 import { SessionRules } from "../../../pi-claude-rules/src/core/rules.ts";
 import { agentHarnessDir, agentName, briefFile, conversationHarnessDir, threadAgent } from "./agent-profile.ts";
 import { withFolderFiles, type ContextFile } from "./context-files.ts";
@@ -332,7 +332,7 @@ function extraParts(input: PrimePromptInput, tools: readonly string[], skills: r
   // The legacy chat's corrections block, which its context hook puts in once per context.
   if (input.skip?.has("corrections")) return out;
   const ledger = readLedger(input.ledgerDir ?? chatDataDir(input.agentDir));
-  const corrections = input.depth === 0 && !input.comm ? ledger && ledgerPrompt(ledger, BRIEF_CORRECTIONS) : jobLedgerPrompt(ledger);
+  const corrections = input.comm ? commLedgerPrompt(ledger) : input.depth === 0 ? ledger && ledgerPrompt(ledger, BRIEF_CORRECTIONS) : jobLedgerPrompt(ledger);
   if (corrections) out.push({ key: "corrections", text: corrections, source: "chat-corrections.ts ledgerPrompt or jobLedgerPrompt (Prime: [corrections] message)" });
   return out;
 }
@@ -435,8 +435,8 @@ export function primePrompt(options: PrimePromptOptions): Extension {
 /**
  * Whether the request is a comm thread's root conversation. A comm thread talks in its room and hands each task to its work thread, with no
  * tool that edits files (`agent-profile.ts`), so it goes without the parts that guide coding: the claude-rules of its cwd repo and each
- * CLAUDE.md beside an AGENTS.md. In place of the chat's corrections block it gets the short one a chat's job gets, rebuilt at each request
- * rather than pinned, so a thread that showed the long one moves to it. On 11-21 those three parts were 72k, 44k and 28k of the 238k
+ * CLAUDE.md beside an AGENTS.md. In place of the chat's corrections block it gets a short one of a job's rules and the rules on how its posts
+ * read (`commLedgerPrompt`), rebuilt at each request rather than pinned, so a thread that showed the long one moves to it. On 11-21 those three parts were 72k, 44k and 28k of the 238k
  * characters of prompt and tools that comm thread 5d50e997 sent with each request.
  */
 async function commRoot(input: PromptInput, context: Context): Promise<boolean> {

@@ -206,8 +206,7 @@ test("a comm thread's root goes without claude-rules, CLAUDE.md and the chat's l
     assert.doesNotMatch(comm, /Always name the file you changed\./);
     assert.doesNotMatch(comm, /Indent with two spaces\./);
     assert.match(comm, /Run npm test before a commit\./, "the repo's AGENTS.md stays, as Prime's loader gives it");
-    const job = (await primePromptParts({ agentDir: f.agentDir, cwd: f.cwd, depth: 1, bundledSkillsDir: f.bundled, ledgerDir: f.ledgerDir })).find(part => part.key === "corrections")!.text;
-    assert.ok(comm.includes(job), "the comm thread gets the short block a chat's job gets");
+    assert.match(comm, /\[corrections\] The owner's corrections that bind your posts and hand-overs/, "the comm thread gets the short block of its rules");
     assert.doesNotMatch(comm, /\[corrections\] The owner's corrections in force/);
   } finally {
     await threads.shutdown();
