@@ -14,7 +14,7 @@ When a question needs both, run How first and use its file paths and symbols as 
 
 Read `~/.prime/agent/skills/setup-pstack/references/prime-agent-runtime.md` before the first spawn, for how to spawn children, collect their reports, and handle the depth limit.
 
-- Take each role's model from its entry in `~/.prime/agent/pstack-models.json`, and omit `model=` and `thinking=` for an `inherit-parent` entry.
+- Take each role's `model=` and `thinking=` from its entry in `~/.prime/agent/pstack-models.json`, and omit both for an `inherit-parent` entry.
 - Put "read and report only; do not edit any file" in every brief, because Prime Agent has no read-only child mode.
 - End every brief with `await agent_message.send(<report>, receiver_role="parent")`.
 - At the `RLM_MAX_DEPTH` ceiling, play each role inline from the same template.
