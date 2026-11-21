@@ -587,7 +587,7 @@ export class App {
       const readSeq = this.groups.readSeq(group);
       const posts = this.agentStore.postsOf(group.id);
       return {
-        summary: this.groups.summary(group), members: this.groups.members(group), model: null, thinkingLevel: null,
+        summary: this.groups.summary(group), members: this.groups.members(group), model: null, thinkingLevel: null, createdAt: group.createdAt,
         pins: pinnedPosts(posts).map(p => this.groups.item(group, p, posts)),
         boards: group.members.filter(m => this.agents.record(m.agent)).map(m => m.agent),
         ...(group.kind === "channel"

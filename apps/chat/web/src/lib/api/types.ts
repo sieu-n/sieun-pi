@@ -450,6 +450,8 @@ export interface ConversationHeader {
   /** Channels: the chat whose board the side panel shows. */
   homeChat?: string;
   purpose?: string;
+  /** Channels and Solo rooms: when the owner made the room, which channel details shows. */
+  createdAt?: Ms;
   /** Solo rooms: the agenda, pinned on top. */
   agenda?: string;
   /** A closed Solo room: it takes no posts until the owner reopens it. */

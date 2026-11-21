@@ -407,6 +407,8 @@ export const reads = {
   models: () => read<ModelCatalog>("/api/models"),
   /** Channels and Solo rooms; a DM is listed by agent, never here. */
   rooms: () => read<Room[]>("/api/rooms"),
+  /** Archived channels and Solo rooms, newest first, for the sidebar's Archived channels list. */
+  archivedRooms: () => read<Room[]>("/api/rooms?archived=1"),
   boards: () => read<BoardRow[]>("/api/boards"),
   /** One agent as a role: purpose, where it runs, its board, memory, instructions and swarm (API.md, Agents). */
   agentConfig: (id: AgentId) => read<AgentConfig>(`/api/agents/${enc(id)}/config`),

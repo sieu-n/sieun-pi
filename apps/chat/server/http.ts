@@ -313,7 +313,7 @@ export function routes(app: App): Route[] {
       return { before: app.markAllRead(input.rooms as string[]) };
     }),
     route("GET", "/api/threads/:id/jobs", async (_r, p) => app.threads.jobs(p.id!)),
-    route("GET", "/api/rooms", async (_r, _p, q) => app.groups.list({ test: q.get("test") === "1" })),
+    route("GET", "/api/rooms", async (_r, _p, q) => app.groups.list({ test: q.get("test") === "1", archived: q.get("archived") === "1" })),
     route("POST", "/api/rooms", async (_r, _p, _q, body) => {
       const room = await app.groups.create((await body()) as RoomInput);
       return { ...room, opened: await app.opened(room.id) };

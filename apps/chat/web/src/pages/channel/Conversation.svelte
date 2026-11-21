@@ -7,6 +7,8 @@
   import { profileCard } from "$lib/shell/profile-card.svelte";
   import { roomActions } from "$lib/shell/room-actions.svelte";
   import { renameDialog } from "$lib/shell/rename-dialog.svelte";
+  import { channelDetails } from "$lib/shell/channel-details.svelte";
+  import { archiveChannel as archiveRoom, unarchiveChannel as unarchiveRoom } from "$lib/shell/room-actions.svelte";
   import { search } from "$lib/shell/search.svelte";
   import { sidePanel } from "$lib/shell/side-panel.svelte";
   import { openArtifactTarget, openView } from "$lib/shell/viewer.svelte";
@@ -29,6 +31,7 @@
   import HostBadge from "$pages/agents/HostBadge.svelte";
   import Composer from "./Composer.svelte";
   import ChannelMembers from "./ChannelMembers.svelte";
+  import ChannelDetailsDialog from "./ChannelDetailsDialog.svelte";
   import MemberPicker from "./MemberPicker.svelte";
   import { removeMembership } from "./membership";
   import ThreadPane from "./ThreadPane.svelte";
@@ -52,6 +55,7 @@
     readExpected = undefined;
     store.close();
     if (paneKey) sidePanel.close(paneKey);
+    if (channelDetails.target?.id === id) channelDetails.close();
   });
 
   const header = $derived(store.header);
@@ -64,6 +68,8 @@
   /** Channels and Solo rooms read like Slack; DMs and other chats keep the bubbles. */
   const layout = $derived<"bubble" | "slack">(isChannel || isSolo ? "slack" : "bubble");
   const closedAt = $derived(header?.closedAt ?? null);
+  /** An archived channel opens read-only, with Unarchive in its banner, as in Slack. */
+  const archived = $derived(isChannel && summary?.archived === true);
   /** A DM's agent works in its work thread, which `Open work thread` shows as today's transcript. */
   const workThread = $derived(header?.workThread ?? null);
   const name = $derived(summary?.name ?? "");
@@ -258,6 +264,31 @@
 
   let agendaOpen = $state(false);
 
+  /** Saves the description from channel details; resolves false after the error's toast, so the field stays open. */
+  async function savePurpose(text: string): Promise<boolean> {
+    try {
+      await api.updateRoom(id, { agenda: text });
+      await store.refreshHeader();
+      toast.success(text ? "Channel description updated" : "Channel description removed");
+      return true;
+    } catch (error) {
+      fail(error);
+      return false;
+    }
+  }
+
+  /** Brings an archived channel back; the header is read again because a test room sends no live room event. */
+  const unarchive = () => void unarchiveRoom(id, name).then(() => store.refreshHeader());
+
+  const details = $derived(isChannel && header && channelDetails.target?.id === id ? channelDetails.target : null);
+  /** A rename started from channel details reads the header again when its dialog closes, since a test room sends no live room event. */
+  let renamingFromDetails = false;
+  $effect(() => {
+    if (renameDialog.target || !renamingFromDetails) return;
+    renamingFromDetails = false;
+    void store.refreshHeader();
+  });
+
   function stop() {
     void store.stop().then(
       () => toast.show("Stopping"),
@@ -273,6 +304,7 @@
           { type: "separator" as const },
         ]
       : []),
+    ...(isChannel && header ? [{ id: "details", label: "Channel details", icon: "info", onselect: () => channelDetails.open(id) }] : []),
     { id: "search", label: "Search in this conversation", icon: "search", onselect: () => search.open({ kind: "conversation", id }) },
     { id: "link", label: "Copy link", icon: "link", onselect: () => void navigator.clipboard.writeText(`${location.origin}${location.pathname}${conversationHref(id)}`).then(() => toast.show("Link copied")) },
     ...(paneBoard
@@ -282,10 +314,13 @@
         ]
       : []),
     ...(isChannel && header
-      ? [
-          { id: "add-people", label: "Add people", icon: "plus", onselect: () => channelMembers?.openAdd() },
-          { id: "rename", label: "Rename channel", icon: "edit", onselect: () => renameDialog.open(id, name) },
-        ]
+      ? archived
+        ? [{ id: "unarchive", label: "Unarchive channel", icon: "refresh", onselect: unarchive }]
+        : [
+            { id: "add-people", label: "Add people", icon: "plus", onselect: () => channelMembers?.openAdd() },
+            { id: "rename", label: "Rename channel", icon: "edit", onselect: () => renameDialog.open(id, name) },
+            ...(roomActions(id).length ? [{ type: "separator" as const }, ...roomActions(id)] : []),
+          ]
       : []),
     ...(isSolo && header
       ? [closedAt
@@ -389,8 +424,19 @@
   </PanelHeader>
 {/snippet}
 
+{#snippet channelIntroActions()}
+  {#if !header?.purpose}<Button variant="outline" size="sm" icon="edit" onclick={() => channelDetails.open(id, { editDescription: true })}>Add description</Button>{/if}
+  <Button variant="outline" size="sm" icon="plus" onclick={() => channelMembers?.openAdd()}>Add people</Button>
+{/snippet}
+
 {#snippet titleContent()}
-  {#if isDm && agent}
+  {#if isChannel && header}
+    <h1 class="title t-label-sm" data-testid="conversation-title">
+      <button type="button" class="title-button" aria-haspopup="dialog" title="Channel details" onclick={() => channelDetails.open(id)} data-testid="channel-title-button">
+        <span class="title-name">{name}</span><Icon name="chevron-down" size={12} />
+      </button>
+    </h1>
+  {:else if isDm && agent}
     <h1 class="title t-label-sm" data-testid="conversation-title">
       <button type="button" class="title-button" aria-haspopup="dialog" onclick={(e) => profileCard.toggle(agent.id, name, e.currentTarget)} data-testid="dm-title-button">
         <Avatar {name} kind="agent" seed={agent.id} size={20} status={statusOf(agent.id)} /><span class="title-name">{name}</span><Icon name="chevron-down" size={12} />
@@ -400,7 +446,9 @@
   <h1 class="title t-label-sm" data-testid="conversation-title">{name}</h1>
   {/if}
   {#if isDm && liveAgent}<span class="host"><HostBadge agent={liveAgent} self={me.value?.host} /></span>{/if}
-  {#if header?.purpose}<span class="purpose" title={header.purpose} data-testid="channel-purpose">{header.purpose}</span>{/if}
+  {#if isChannel && header && !archived}
+    <button type="button" class="purpose" title={header.purpose || undefined} onclick={() => channelDetails.open(id, { editDescription: true })} data-testid="channel-purpose">{header.purpose || "Add a description"}</button>
+  {:else if header?.purpose}<span class="purpose" title={header.purpose} data-testid="channel-purpose">{header.purpose}</span>{/if}
 {/snippet}
 
 {#snippet actions()}
@@ -475,6 +523,7 @@
     {items}
     {layout}
     beginning={layout === "slack" && header ? { name, purpose: header.purpose ?? null, kind: isSolo ? "solo" : "channel" } : isDm && agent ? { kind: "dm", name, agent: agent.id } : null}
+    introActions={isChannel && header && !archived ? channelIntroActions : undefined}
     loading={store.loading}
     error={store.error}
     hasOlder={!!store.older}
@@ -518,6 +567,12 @@
       <span title="Closed {stampLabel(closedAt)}">You closed this room. Agents get no posts until you reopen it.</span>
       <Button variant="outline" size="sm" onclick={() => void setClosed(false)} data-testid="solo-reopen">Reopen</Button>
     </div>
+  {:else if archived}
+    <div class="closed" role="status" data-testid="archived-banner">
+      <Icon name="archive" size={16} />
+      <span>You are viewing <strong>#{name}</strong>, an archived channel. Agents get no posts here until you unarchive it.</span>
+      <Button variant="outline" size="sm" onclick={unarchive} data-testid="unarchive">Unarchive</Button>
+    </div>
   {:else}
   <Composer
     bind:this={composer}
@@ -536,6 +591,35 @@
 </section>
 
 <Menu bind:open={menuOpen} anchor={menuAnchor} items={menuItems} placement="bottom-end" />
+{#if details && header}
+  {#key details}
+    <ChannelDetailsDialog
+      {id}
+      {name}
+      purpose={header.purpose ?? ""}
+      createdAt={header.createdAt ?? null}
+      {archived}
+      members={header.members}
+      tab={details.tab}
+      editDescription={details.editDescription}
+      onsavepurpose={savePurpose}
+      onrename={() => {
+        renamingFromDetails = true;
+        renameDialog.open(id, name);
+      }}
+      onaddpeople={() => {
+        channelDetails.close();
+        channelMembers?.openAdd();
+      }}
+      onarchive={() => {
+        channelDetails.close();
+        void archiveRoom(id, name);
+      }}
+      onunarchive={unarchive}
+      onclose={() => channelDetails.close()}
+    />
+  {/key}
+{/if}
 {#if isSolo}
   <MemberPicker
     bind:open={inviteOpen}
@@ -624,6 +708,20 @@
     white-space: nowrap;
     color: var(--text-subtle);
     font: var(--text-caption);
+  }
+  button.purpose {
+    flex: 0 1 auto;
+    margin-left: 4px;
+    padding: 2px 6px;
+    border: 0;
+    border-radius: var(--radius-control);
+    background: transparent;
+    text-align: left;
+    cursor: pointer;
+  }
+  button.purpose:hover {
+    background: var(--affordance-ghost-hover);
+    color: var(--text-standard);
   }
   .thread-room {
     margin-left: 8px;

@@ -3,9 +3,11 @@
   import IconButton from "$lib/ui/IconButton.svelte";
   import Avatar from "$lib/ui/Avatar.svelte";
   import Menu from "$lib/ui/Menu.svelte";
+  import Picker from "$lib/ui/Picker.svelte";
+  import type { PickerItem } from "$lib/ui/types";
   import type { Anchor } from "$lib/ui/floating";
   import type { MenuAction, MenuEntry } from "$lib/ui/menu";
-  import { agents, api, me, type ConversationSummary } from "$lib/api";
+  import { agents, api, me, reads, view, type ConversationSummary } from "$lib/api";
   import { toast } from "$lib/ui/toast.svelte";
   import { conversationHref, hrefFor, router } from "$lib/router.svelte";
   import SidebarFrame from "$lib/shell/SidebarFrame.svelte";
@@ -56,6 +58,14 @@
 
   /** The one open sidebar menu: a channel row's, a section header's or the Channels header's, keyed so its "..." shows as pressed. */
   let menu = $state<{ key: string; anchor: Anchor; items: MenuEntry[] } | null>(null);
+
+  /** The Channels menu's Archived channels list: picking one opens it read-only, with Unarchive in its banner. */
+  let archivedOpen = $state(false);
+  let archivedAnchor = $state<Anchor | null>(null);
+  const archivedRooms = view(() => (archivedOpen ? reads.archivedRooms() : null));
+  const archivedItems = $derived<PickerItem[]>(
+    (archivedRooms.value ?? []).filter((room) => room.kind === "channel").map((room) => ({ id: room.id, label: room.name, icon: "hash", ...(room.agenda ? { detail: room.agenda } : {}) })),
+  );
 
   function openMenu(key: string, anchor: Anchor, items: MenuEntry[]): void {
     menu = { key, anchor, items };
@@ -324,6 +334,7 @@
           { type: "separator" },
           sortMenu("channels"),
           { id: "new-section", label: "New section", icon: "plus", onselect: () => (sidebarSections.dialog = { kind: "new" }) },
+          { id: "archived", label: "Archived channels", icon: "archive", onselect: () => ((archivedAnchor = menu?.anchor ?? null), (archivedOpen = true)) },
         ])}
         <IconButton icon="plus" label="Create channel" size="xs" onclick={newChannel} />
       {/snippet}
@@ -349,6 +360,17 @@
 
 <Menu open={menu !== null} anchor={menu?.anchor} items={menu?.items ?? []} onclose={() => (menu = null)} />
 <SectionDialog {rowsOf} />
+<Picker
+  bind:open={archivedOpen}
+  anchor={archivedAnchor}
+  items={archivedItems}
+  searchable
+  label="Archived channels"
+  placeholder="Find an archived channel"
+  emptyText={archivedRooms.loading ? "Loading archived channels" : "No archived channels"}
+  width={320}
+  onselect={(id) => router.openConversation(id)}
+/>
 
 <style>
   .rows,

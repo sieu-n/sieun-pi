@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { tick } from "svelte";
+  import { tick, type Snippet } from "svelte";
   import { newestReply, type Item, type TurnPlace } from "$lib/api";
   import Avatar from "$lib/ui/Avatar.svelte";
   import Button from "$lib/ui/Button.svelte";
@@ -41,6 +41,8 @@
      * and in a DM, as in Slack, the agent's avatar and name with a link to its page.
      */
     beginning?: { name: string; purpose?: string | null; kind?: "channel" | "solo" } | { kind: "dm"; name: string; agent: string } | null;
+    /** Buttons under a channel's or Solo room's intro, such as Slack's Add description and Add people. */
+    introActions?: Snippet;
     /** In a thread pane, the replies under the root; Timeline draws an "N replies" divider after the first row. */
     replyCount?: number | null;
     statusOf?: (id: string) => Status | null;
@@ -62,7 +64,7 @@
   };
   let {
     items, loading, error, hasOlder, loadingOlder, loadOlder, focus, flashFocus = true, context, liveLabel = null, queue = null, openThread = null, canReply = false, compact = false,
-    layout = "bubble", beginning = null, replyCount = null, newLine = null,
+    layout = "bubble", beginning = null, introActions, replyCount = null, newLine = null,
     statusOf, onretry, onretrysend, ondiscardsend, onthread, oncopylink, onmention, onboardid, onartifact, onbottom, onmarkread,
   }: Props = $props();
 
@@ -392,6 +394,7 @@
           <h2 class="intro-name">{introName}</h2>
           <p>This is the very beginning of the <span class="intro-channel">{introName}</span> {intro.kind === "solo" ? "room" : "channel"}.</p>
           {#if intro.purpose}<p class="intro-purpose">{intro.purpose}</p>{/if}
+          {#if introActions}<div class="intro-actions">{@render introActions()}</div>{/if}
         </div>
       {/if}
       <div class="rows" bind:this={rowsEl}>
@@ -557,6 +560,12 @@
   }
   .intro-purpose {
     margin-top: 4px;
+  }
+  .intro-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 12px;
   }
   .replies {
     display: flex;

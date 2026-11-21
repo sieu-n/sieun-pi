@@ -178,9 +178,10 @@ export class GroupRooms {
     return row;
   }
 
-  /** The open rooms; a walk's test rooms only with `test`. */
-  list(opts: { test?: boolean } = {}): Room[] {
-    return this.rows().filter(r => !r.archived && (opts.test || !r.test)).map(r => this.view(r));
+  /** The open rooms, or with `archived` the archived ones, newest first; a walk's test rooms only with `test`. */
+  list(opts: { test?: boolean; archived?: boolean } = {}): Room[] {
+    const rows = this.rows().filter(r => r.archived === !!opts.archived && (opts.test || !r.test));
+    return (opts.archived ? rows.reverse() : rows).map(r => this.view(r));
   }
 
   view(row: GroupRoom): Room {
