@@ -12,6 +12,7 @@
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import type { ForMeItem, ForMeList, ForMeStatus, Principal } from "../../../../apps/chat/web/src/lib/api/types.ts";
+import { threadAgent } from "./agent-profile.ts";
 import type { ChatApp } from "./chat-app.ts";
 
 export const LIST_FOR_ME_TOOL = "list_for_me_messages";
@@ -71,6 +72,27 @@ export function listText(list: ForMeList, status: ForMeFilter): string {
   return [`${counts} ${shown}`, ...list.items.map(itemText)].join("\n\n");
 }
 
+/**
+ * The answer to mark_message. In a comm thread, the mark that clears the list ends the turn, so it says to end with no text: on 11-21 three
+ * fresh channel agents (blind runs on live :5184) ended 6 of 11 turns with a summary right after this call, which no room shows, while their
+ * role text said to end with no text.
+ */
+export function markedText(item: Pick<ForMeItem, "id" | "status">, pending: number, comm: boolean): string {
+  const line = `Marked ${item.id} ${item.status}. ${pending} pending.`;
+  return comm && item.status === "completed" && pending === 0
+    ? `${line} Your list is clear, so end the turn now with no text: the room shows only your posts, and a closing summary goes nowhere.`
+    : line;
+}
+
+/** Whether the tool runs in a comm thread; a registry with no chat.doc (a test's) reads as no comm thread. */
+async function isCommThread(api: Parameters<typeof threadAgent>[0], context: Parameters<typeof threadAgent>[1]): Promise<boolean> {
+  try {
+    return (await threadAgent(api, context))?.role === "comm";
+  } catch {
+    return false;
+  }
+}
+
 const text = (value: string) => [{ type: "text" as const, text: value }];
 const ROOT_ONLY = (name: string) => text(`${name} works only in your agent's own thread, not in a job.`);
 
@@ -112,7 +134,7 @@ export function forMeTools(app: ChatApp, thread: string) {
         if (api.conversationId !== ROOT_CONVERSATION_ID) return { output: ROOT_ONLY(MARK_MESSAGE_TOOL), isError: true };
         try {
           const answer = await app.markForMe(thread, { messageId: args.message_id, completed: args.completed }, context.abortSignal);
-          return { output: text(`Marked ${answer.item.id} ${answer.item.status}. ${answer.pending} pending.`) };
+          return { output: text(markedText(answer.item, answer.pending, await isCommThread(api, context))) };
         } catch (error) {
           if (context.abortSignal?.aborted) throw error;
           return { output: text(error instanceof Error ? error.message : String(error)), isError: true };

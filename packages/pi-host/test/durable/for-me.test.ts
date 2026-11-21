@@ -17,7 +17,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import type { ForMeItem, ForMeList, Principal } from "../../../../apps/chat/web/src/lib/api/types.ts";
 import { commInstructions } from "../../src/durable/agent-profile.ts";
 import { ChatApp } from "../../src/durable/chat-app.ts";
-import { itemText, LIST_FOR_ME_TOOL, listText, MARK_MESSAGE_TOOL } from "../../src/durable/for-me.ts";
+import { itemText, LIST_FOR_ME_TOOL, listText, MARK_MESSAGE_TOOL, markedText } from "../../src/durable/for-me.ts";
 import { roomTools } from "../../src/durable/room-tools.ts";
 import { MODEL, textOf } from "./crash-scenario.ts";
 
@@ -130,6 +130,14 @@ test("mark_message posts the mark as the thread and answers one line, and an err
     ["Marked ch_1a2b3c4d/p12 pending. 1 pending.", false],
     ["dm_vent/p404 is not on vent's For list. Pass an id from list_for_me_messages, such as dm_vent/p41.", true],
   ]);
+});
+
+test("in a comm thread, the mark that clears the list says to end the turn with no text, and any other mark or thread answers the one line", () => {
+  const item = { id: "ch_1a2b3c4d/p12", status: "completed" as const };
+  assert.equal(markedText(item, 0, true), "Marked ch_1a2b3c4d/p12 completed. 0 pending. Your list is clear, so end the turn now with no text: the room shows only your posts, and a closing summary goes nowhere.");
+  assert.equal(markedText(item, 0, false), "Marked ch_1a2b3c4d/p12 completed. 0 pending.");
+  assert.equal(markedText(item, 2, true), "Marked ch_1a2b3c4d/p12 completed. 2 pending.");
+  assert.equal(markedText({ ...item, status: "pending" }, 1, true), "Marked ch_1a2b3c4d/p12 pending. 1 pending.");
 });
 
 test("both comm texts ask the thread to read its pending list at a turn's start, handle its own room's items and mark each one handled", () => {
