@@ -93,6 +93,7 @@
     hovered = index >= 0 && index < buckets.length ? index : null;
   }
   let cursor = $state<HTMLElement | null>(null);
+  const tipOf = (value: number) => (format.tip ?? format.short)(value);
 </script>
 
 <div class="chart">
@@ -146,10 +147,10 @@
         {#if stacked}
           {#each series as line, position (line.key)}
             {@const value = cells[hovered]?.[position] ?? 0}
-            <span class="tip-row"><span class="swatch" style:background={line.color}></span>{line.label}<span class="num" title={format.exact(value)}>{format.short(value)}</span></span>
+            <span class="tip-row"><span class="swatch" style:background={line.color}></span>{line.label}<span class="num" title={format.exact(value)}>{tipOf(value)}</span></span>
           {/each}
         {/if}
-        <span class="tip-row strong">{stacked ? "Total" : format.label}<span class="num" title={format.exact(totals[hovered] ?? 0)}>{format.short(totals[hovered] ?? 0)}</span></span>
+        <span class="tip-row strong">{stacked ? "Total" : format.label}<span class="num" title={format.exact(totals[hovered] ?? 0)}>{tipOf(totals[hovered] ?? 0)}</span></span>
         {#each tip?.(hovered) ?? [] as row (row.label)}
           <span class="tip-row muted">{row.label}<span class="num" title={row.title}>{row.value}</span></span>
         {/each}

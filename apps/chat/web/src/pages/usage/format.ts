@@ -45,6 +45,8 @@ export interface ChartFormat {
   short(value: number): string;
   exact(value: number): string;
   tick(value: number): string;
+  /** A tip figure, `short` when absent: tokens show every digit there, since the tip is the hover. */
+  tip?(value: number): string;
 }
 /** A muted tip row a chart's caller adds under the bucket's split. */
 export interface TipRow {
@@ -59,4 +61,4 @@ const dollarTick = (value: number): string => (value === 0 ? "$0" : `$${value < 
 export const chartFormat = (measure: Measure): ChartFormat =>
   measure.unit === "usd"
     ? { label: "Cost", short: cost, exact: exactCost, tick: dollarTick }
-    : { label: measure.metric === "output" ? "Output tokens" : "Tokens", short: value => count(value), exact: full, tick: value => count(value) };
+    : { label: measure.metric === "output" ? "Output tokens" : "Tokens", short: value => count(value), exact: full, tick: value => count(value), tip: full };
