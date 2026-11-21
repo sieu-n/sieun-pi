@@ -48,17 +48,19 @@ export const LIMITS = Object.freeze({
 
 
 const SESSION_LOG = /^sessions\/\d{4}\/\d{2}\/\d{2}\/[^/]+\/index\.html$/;
+/** A pi-host job folder's index.html is the job's log, API-managed like a session log. */
+const JOB_LOG = /^agents\/[^/]+\/jobs\/\d{4}\/\d{2}\/\d{2}\/[^/]+\/index\.html$/;
 
 /**
- * True when a content-relative path is a page this lint judges. Session logs are API-managed,
+ * True when a content-relative path is a page this lint judges. Session and job logs are API-managed,
  * requests.html holds verbatim asks, and archive/ is frozen history moved in as it was.
- * @param {string} relPath path relative to apps/llm-wiki/content (a repo-relative path also works)
+ * @param {string} relPath path relative to the wiki content root
  */
 export function isLintedPath(relPath) {
 	const rel = contentRel(relPath);
 	if (!rel.endsWith('.html')) return false;
 	if (rel === 'requests.html' || rel.endsWith('/requests.html')) return false;
-	if (SESSION_LOG.test(rel)) return false;
+	if (SESSION_LOG.test(rel) || JOB_LOG.test(rel)) return false;
 	if (rel.startsWith('archive/') || rel.startsWith('@code/')) return false;
 	return true;
 }

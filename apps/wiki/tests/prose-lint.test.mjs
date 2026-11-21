@@ -7,7 +7,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { lintHtml, parsePage, ratchet, savedLintAnswer } from '../src/lib/prose-lint.mjs';
+import { isLintedPath, lintHtml, parsePage, ratchet, savedLintAnswer } from '../src/lib/prose-lint.mjs';
 
 const fixture = (name) => readFileSync(fileURLToPath(new URL(`fixtures/prose-lint/${name}`, import.meta.url)), 'utf8');
 /** Error rule ids for a snippet. */
@@ -114,6 +114,14 @@ test('the CLI lints a page by wiki path and --recent from the content root', () 
 		rmSync(root, { recursive: true, force: true });
 		rmSync(elsewhere, { recursive: true, force: true });
 	}
+});
+
+test('the lint skips API-managed session and job logs but judges other pages in their folders', () => {
+	// 2026-11-21: job logs under agents/<slug>/jobs/ were linted while session logs were skipped.
+	assert.equal(isLintedPath('sessions/2026/11/21/0101-x/index.html'), false);
+	assert.equal(isLintedPath('agents/km/jobs/2026/11/21/0101-x/index.html'), false);
+	assert.equal(isLintedPath('agents/km/jobs/2026/11/21/0101-x/report.html'), true);
+	assert.equal(isLintedPath('apps/search/index.html'), true);
 });
 
 test('a write the ratchet lets through answers with the warnings it kept, so the writer fixes them without a lint run', () => {

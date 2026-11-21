@@ -13,12 +13,12 @@ import { escapeAttr, escapeHtml } from './wiki-html';
  *   <wiki-children>                            the folder of the page that holds the tag
  *   <wiki-children path="apps">                another folder, page-relative like <wiki-gallery dir>
  *   <wiki-children exclude="old.html,x/">      hide named pages or folders (page-relative, comma list)
- *   <wiki-children as="list">                  an <ol> of "title · description" lines instead of a table
+ *   <wiki-children as="list">                  an <ol> of "title · summary" lines instead of a table
  *   <wiki-children headers="Page,Covers">      the table's two column headers
  *
  * The second cell is the child's one-line frontmatter `summary`, never its long `description`. A child with
  * no summary gets an empty cell marked `data-missing-summary`, which wiki-health counts.
- * Hidden: status superseded, deprecated or archived, and archive/, sessions/ and @code/ pages.
+ * Hidden: status superseded, deprecated or archived, and archive/, sessions/, agents/ and @code/ pages.
  * Order: an optional numeric frontmatter `order` (lower first, pages without one last), then title.
  */
 
