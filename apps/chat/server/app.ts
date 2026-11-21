@@ -1114,8 +1114,8 @@ export class App {
       ...(patch.cwd !== undefined ? { cwd: projectCwd(this.config, patch.cwd) } : {}),
       ...(patch.model !== undefined ? { model: patch.model } : {}), ...(patch.thinkingLevel !== undefined ? { thinkingLevel: patch.thinkingLevel } : {}),
     };
-    if (Object.keys(set).length) await this.host.set(thread, set);
-    await this.threads.refresh();
+    if (Object.keys(set).length) this.threads.put(await this.host.set(thread, set));
+    else void this.threads.poll();
     return this.header(id);
   }
 
@@ -1193,12 +1193,9 @@ export class App {
       }
       record = this.agents.add(thread, agentsDir, input.test === true);
     });
-    if (!record) {
-      await this.threads.refresh();
-      return this.threads.agent(created.id)!;
-    }
+    this.threads.put(created);
+    if (!record) return this.threads.agent(created.id)!;
     if (input.brief?.trim()) await this.folders.writeBrief(record, input.brief.trim());
-    await this.threads.refresh();
     this.roomsChanged();
     return this.threads.agent(record.id)!;
   }

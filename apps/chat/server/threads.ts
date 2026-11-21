@@ -137,7 +137,7 @@ export class Threads {
   }
 
   /** One refresh at a time: while pi-host restarts, a read waits up to 30 s, and the 2 s poll must not stack more behind it. */
-  private poll(): Promise<void> {
+  poll(): Promise<void> {
     this.refreshing ??= this.refresh()
       .catch(error => this.log(`thread refresh failed: ${String(error)}`))
       .finally(() => { this.refreshing = undefined; });
@@ -165,13 +165,29 @@ export class Threads {
     }
   }
 
+  /**
+   * A row pi-host answered a create or a change with, in the list at once, and the next poll sends what changed. A change used to wait for a
+   * whole thread list read: on 11-21 the owner's model change on his agent's DM took 590 to 1830 ms in the handler, since the read lists 979
+   * threads (467 KB from the box's pi-host, 50 to 530 ms) and waits for the Mac's relay as well.
+   */
+  put(row: DurableThread): void {
+    this.list.set(row.id, row);
+    this.names = undefined;
+    this.agentRecords?.follow(this.list);
+    void this.poll();
+  }
+
   /** Reads the thread list, and the tree of every thread whose file changed, and sends what changed. */
   async refresh(): Promise<void> {
     // A box link that went up or down reads in hostState before the list does.
     this.summaries.clear();
     const read = await this.host.threads();
-    // A thread new to this read may be one a create in flight has not claimed yet; the next read lists it.
-    const threads = this.creating ? read.filter(t => this.list.has(t.id)) : read;
+    // A thread new to this read may be one a create in flight has not claimed yet; the next read lists it. A row `put` after this read
+    // started is newer than the read's, so it stays.
+    const threads = (this.creating ? read.filter(t => this.list.has(t.id)) : read).map(t => {
+      const known = this.list.get(t.id);
+      return known && known.updatedAt > t.updatedAt ? known : t;
+    });
     const next = new Map(threads.map(t => [t.id, t]));
     for (const thread of threads) {
       const tree = this.trees.get(thread.id);
