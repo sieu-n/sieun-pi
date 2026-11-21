@@ -3,7 +3,7 @@
  * thread is named by any sw factory id: a conversation id, an agent id `ag_<slug>` or a DM room `dm_<slug>`, which the server reads as the
  * agent's work thread.
  */
-import type { AccountAction, AccountLogin, AccountsView, NoModelRoom, NoModelRoomSetting, PoolPriority, UsageRefresh } from "$lib/api/shared/types.ts";
+import type { AccountAction, AccountLogin, AccountsView, AccountThread, NoModelRoom, NoModelRoomSetting, PoolPriority, UsageRefresh } from "$lib/api/shared/types.ts";
 
 export type Provider = "anthropic" | "openai-codex";
 
@@ -37,6 +37,11 @@ export const accountsApi = {
   cancelLogin: (id: string) => call<AccountLogin>("POST", "/api/accounts/login/cancel", { id }),
   refreshes: () => call<UsageRefresh[]>("GET", "/api/accounts/refresh"),
   startRefresh: (provider: Provider, account: string | null) => call<UsageRefresh>("POST", "/api/accounts/refresh", { provider, account }),
+  /** Sets the name sw factory shows for an account, or clears it with null; answers the pool's view with every name. */
+  rename: (provider: Provider, account: string, name: string | null) => call<AccountsView>("POST", "/api/accounts/name", { provider, account, name }),
+  /** The threads whose last request went to the account within the pool's active window, newest first. */
+  threads: (provider: Provider, account: string) =>
+    call<{ threads: AccountThread[] }>("GET", "/api/accounts/threads" + query({ provider, account })).then(answer => answer.threads),
   noModelRoom: () => call<NoModelRoomSetting>("GET", "/api/accounts/no-model-room"),
   setNoModelRoom: (value: NoModelRoom) => call<NoModelRoomSetting>("POST", "/api/accounts/no-model-room", { value }),
 };

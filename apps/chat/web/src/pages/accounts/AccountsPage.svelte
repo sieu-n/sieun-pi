@@ -4,22 +4,24 @@
   import { POOL_PRIORITIES } from "$lib/api/shared/types.ts";
   import { tick } from "svelte";
   import { hrefFor, router } from "$lib/router.svelte";
-  import { Button, Dialog, EmptyState, IconButton, Input, LoadingText, Menu, Page, PanelHeader, Picker, Tabs, toast, tooltip, type MenuEntry, type PickerItem } from "$lib/ui";
+  import { Button, Dialog, EmptyState, Icon, IconButton, Input, LoadingText, Menu, Page, PanelHeader, Picker, SearchField, Select, Tabs, toast, tooltip, type MenuEntry, type PickerItem } from "$lib/ui";
+  import AccountDetail from "./AccountDetail.svelte";
   import AccountLogin from "./AccountLogin.svelte";
   import AccountRow from "./AccountRow.svelte";
   import NoModelRoom from "./NoModelRoom.svelte";
   import PoolMeters from "./PoolMeters.svelte";
   import { accountsApi } from "./api";
   import {
-    accountState, isManualAccount, pendingReset, POOL_PRIORITY_HINT, POOL_PRIORITY_LABEL, PROVIDER_LABEL, PROVIDER_SLUG, providerFromSlug, resetConfirm, resolutionSentence, sortedRows,
-    threadProvider, usableGrant, windowColumns, type ProviderId,
+    accountState, isManualAccount, NO_QUERY, pendingReset, plansOf, POOL_PRIORITY_HINT, POOL_PRIORITY_LABEL, PROVIDER_LABEL, PROVIDER_SLUG, providerFromSlug, queryRows,
+    REMOVE_UNDO_MS, resetConfirm, resolutionSentence, shownName, sortedRows, STATE_FILTERS, threadProvider, usableGrant, windowColumns, type ProviderId, type RowQuery,
+    type SortKey, type StateFilter,
   } from "./model";
 
   /**
    * Settings > Accounts: pi-pool's Claude and Codex accounts with every action the old Prime chat had (legacy AccountsSettings.svelte).
    * `#/settings/accounts?thread=<id>` opens it for one thread: its sentence, its pool class, Auto, and Use in this thread on each row.
    */
-  type Confirm = { title: string; body: string; label: string; action: AccountAction; danger?: boolean; typed?: string };
+  type Confirm = { title: string; body: string; label: string; action: AccountAction; danger?: boolean; typed?: string; offInstead?: AccountAction };
 
   const thread = $derived(router.route.params.thread || null);
   /** The thread's name and model, from the agent, job or DM that holds it. */
@@ -206,9 +208,83 @@
   const shownRefresh = $derived(refresh && watchedRefreshes.includes(refresh.id) ? refresh : null);
   const shownLogin = $derived(login && (running(login) || login.id === watched) ? login : null);
   const columns = $derived(current ? windowColumns(current.rows) : []);
-  const rows = $derived(current ? sortedRows(current) : []);
+  /** Removals that wait out their Undo, by `<provider>:<account>`: the row hides at once and the pool hears of it when the timer ends. */
+  let removals = $state<Record<string, ReturnType<typeof setTimeout>>>({});
+  const removing = (provider: ProviderId, account: string): boolean => `${provider}:${account}` in removals;
+  let query = $state<RowQuery>({ ...NO_QUERY });
+  const plans = $derived(current ? plansOf(current.rows) : []);
+  const planOptions = $derived([{ value: "", label: "Any plan" }, ...plans.map(plan => ({ value: plan, label: plan }))]);
+  /** The query as this provider can answer it: a plan the other provider had reads as any plan. */
+  const shownQuery = $derived<RowQuery>({ ...query, plan: plans.includes(query.plan) ? query.plan : "" });
+  const kept = $derived(current ? sortedRows(current).filter(row => !removing(current.provider, row.id)) : []);
+  const rows = $derived(queryRows(kept, shownQuery));
+  const filtered = $derived(Boolean(shownQuery.text.trim() || shownQuery.state !== "all" || shownQuery.plan));
   /** One tab per provider, each counting its accounts. */
-  const providerTabs = $derived((view?.providers ?? []).map(entry => ({ id: entry.provider, label: PROVIDER_LABEL[entry.provider], badge: entry.rows.length, href: providerHref(entry.provider) })));
+  const providerTabs = $derived((view?.providers ?? []).map(entry => ({
+    id: entry.provider, label: PROVIDER_LABEL[entry.provider], badge: entry.rows.filter(row => !removing(entry.provider, row.id)).length, href: providerHref(entry.provider),
+  })));
+  /** A header's click: the first sorts names A to Z and numbers high to low, the second flips it, the third goes back to the pool's order. */
+  function sortBy(key: SortKey): void {
+    const first = key !== "name";
+    if (query.sort !== key) query = { ...query, sort: key, descending: first };
+    else if (query.descending === first) query = { ...query, descending: !first };
+    else query = { ...query, sort: "pool", descending: false };
+  }
+  const sortState = (key: SortKey): "ascending" | "descending" | "none" => (query.sort === key ? (query.descending ? "descending" : "ascending") : "none");
+
+  let detail = $state<{ provider: ProviderId; account: string } | null>(null);
+  let detailOpen = $state(false);
+  const detailRow = $derived(detail && view ? view.providers.find(entry => entry.provider === detail!.provider)?.rows.find(row => row.id === detail!.account) : undefined);
+  const detailProvider = $derived(detail && view ? view.providers.find(entry => entry.provider === detail!.provider) : undefined);
+  function openDetail(row: PoolAccount): void {
+    if (!current) return;
+    detail = { provider: current.provider, account: row.id };
+    detailOpen = true;
+  }
+  async function rename(provider: ProviderId, row: PoolAccount, name: string | null): Promise<void> {
+    try {
+      await accountsApi.rename(provider, row.id, name);
+      await load(false, true);
+    } catch (caught) {
+      toast.error(message(caught));
+    }
+  }
+
+  /** Hides the row and gives Undo a window before the pool removes the account and its sign-in. */
+  function removeLater(action: Extract<AccountAction, { action: "remove" }>, label: string): void {
+    const key = `${action.provider}:${action.account}`;
+    const send = () => {
+      const { [key]: _, ...rest } = removals;
+      removals = rest;
+      void run(action, action.account);
+    };
+    removals = { ...removals, [key]: setTimeout(send, REMOVE_UNDO_MS) };
+    toast.show(`Removed ${label}.`, {
+      duration: REMOVE_UNDO_MS,
+      action: { label: "Undo", run: () => {
+        clearTimeout(removals[key]);
+        const { [key]: _, ...rest } = removals;
+        removals = rest;
+      } },
+    });
+  }
+  /** Leaving the page or closing the tab sends every waiting removal now, since the person confirmed it and saw no Undo after. */
+  function flushRemovals(): void {
+    for (const [key, timer] of Object.entries(removals)) {
+      clearTimeout(timer);
+      const [provider, ...account] = key.split(":");
+      void fetch("/api/accounts", { method: "POST", keepalive: true, headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "remove", provider, account: account.join(":") }) });
+    }
+    removals = {};
+  }
+  $effect(() => {
+    window.addEventListener("pagehide", flushRemovals);
+    return () => {
+      window.removeEventListener("pagehide", flushRemovals);
+      flushRemovals();
+    };
+  });
   const priorityItems: PickerItem[] = POOL_PRIORITIES.map(level => ({ id: level, label: POOL_PRIORITY_LABEL[level] }));
   const waiting = $derived(Boolean(thread && current && (current.wait || !resolution?.email)));
 
@@ -227,8 +303,11 @@
     body: `${row.cooldownReason ? `${row.label} was refused: ${row.cooldownReason.replace(/\.$/, "")}. ` : ""}The pool sends one free request per Claude account, and a one-token message to an account that needs terms. An account the API accepts again returns to the pool. One it refuses cools down for 24 hours.`,
   });
   const askRemove = (provider: ProviderId, row: PoolAccount) => ask({
-    title: `Remove ${row.label}?`, label: "Remove", danger: true, typed: row.label, action: { action: "remove", provider, account: row.id },
-    body: "This deletes its sign-in and drops its pins. To use it again, add it again.",
+    title: `Remove ${shownName(row)}?`, label: "Remove", danger: true, typed: row.label, action: { action: "remove", provider, account: row.id },
+    body: row.disabled
+      ? "This deletes its sign-in and drops its pins. To use it again, add it again."
+      : "This deletes its sign-in and drops its pins. To use it again, add it again. Turn off keeps the sign-in and takes it out of Auto.",
+    ...(row.disabled ? {} : { offInstead: { action: "disable", provider, account: row.id } as AccountAction }),
   });
   function askReset(row: PoolAccount): void {
     const text = resetConfirm(row, now);
@@ -242,7 +321,12 @@
   const confirmReady = $derived(Boolean(confirm && (!confirm.typed || typed.trim() === confirm.typed)));
   function submitConfirm(event: SubmitEvent): void {
     event.preventDefault();
-    if (confirm && confirmReady) void run(confirm.action, actionKey(confirm.action));
+    if (!confirm || !confirmReady) return;
+    if (confirm.action.action === "remove") {
+      confirmOpen = false;
+      const row = view?.providers.flatMap(entry => entry.rows).find(entry => "account" in confirm!.action && entry.id === confirm!.action.account);
+      removeLater(confirm.action, row ? shownName(row) : confirm.action.account);
+    } else void run(confirm.action, actionKey(confirm.action));
   }
 
   /** The More menu of one row: actions 19 to 28 of FEATURES.md and Use in this thread. */
@@ -255,6 +339,7 @@
     const resetable = claude && !row.disabled && (pendingReset(row.resets, now) || usableGrant(row.resets, now));
     const items: (MenuEntry | false)[] = [
       pickable(row) && { id: "use", label: "Use in this thread", onselect: () => useForThread(row) },
+      { id: "open", label: "Details and name", onselect: () => openDetail(row) },
       { id: "refresh", label: "Refresh usage", icon: "refresh", disabled: refreshing, onselect: () => void startRefresh(provider, row.id) },
       current.poolPin === row.id
         ? { id: "unpin", label: "Unpin for all sessions", icon: "pin", onselect: () => askUnpin(provider) }
@@ -312,7 +397,17 @@
           onclick={() => void startLogin(current.provider, null)}>Add account</Button>
       </div>
 
-      <PoolMeters {view} provider={current} {now} />
+      <div class="filters">
+        <PoolMeters {view} provider={current} {now} />
+        <span class="spacer"></span>
+        {#if current.rows.length}
+          <span class="search"><SearchField bind:value={query.text} placeholder="Search accounts" label="Search accounts" /></span>
+          <Select label="State" size="sm" options={STATE_FILTERS} value={query.state} onchange={(next: StateFilter) => (query = { ...query, state: next })} />
+          {#if plans.length > 1}
+            <Select label="Plan" size="sm" options={planOptions} value={shownQuery.plan} onchange={(next: string) => (query = { ...query, plan: next })} />
+          {/if}
+        {/if}
+      </div>
 
       {#if thread}
         <div class="thread" class:warning={waiting} data-testid="accounts-thread">
@@ -362,20 +457,28 @@
         <div class="frame">
           <div class="table" role="table" aria-label="{PROVIDER_LABEL[current.provider]} accounts" style:--windows={columns.length} class:busy={loading}
             class:no-threads={!current.rows.some(row => row.sessions)}>
+            {#if rows.length}
             <div class="head" role="row">
-              <span role="columnheader">Account</span>
+              {#snippet sorter(key: SortKey, text: string)}
+                <button type="button" class="sort" class:on={query.sort === key} onclick={() => sortBy(key)}>
+                  {text}{#if query.sort === key}<Icon name={query.descending ? "chevron-down" : "chevron-up"} size={12} />{/if}
+                </button>
+              {/snippet}
+              <span role="columnheader" aria-sort={sortState("name")}>{@render sorter("name", "Account")}</span>
               <span role="columnheader" class="plan">Plan</span>
-              <span role="columnheader" class="threads">Threads</span>
-              {#each columns as column (column)}<span role="columnheader">{column}</span>{/each}
+              <span role="columnheader" class="threads" aria-sort={sortState("threads")}>{@render sorter("threads", "Threads")}</span>
+              {#each columns as column (column)}<span role="columnheader" aria-sort={sortState(`window:${column}`)}>{@render sorter(`window:${column}`, column)}</span>{/each}
               <span role="columnheader">Status</span>
               <span role="columnheader" class="sr-only">Actions</span>
             </div>
+            {/if}
             {#each rows as row (row.id)}
               <AccountRow {row} provider={current} {columns} {now} {thread} read={shownRefresh?.accounts.find(entry => entry.id === row.id)} {refreshing}
                 busy={acting === row.id} locked={acting !== null} loginRunning={running(login)} poolConfig={view.poolConfig} menuOpen={menuOpen && menu?.row.id === row.id}
                 onuse={() => useForThread(row)} onrefresh={() => void startRefresh(current.provider, row.id)} onreset={() => askReset(row)}
                 onenable={() => void run({ action: "enable", provider: current.provider, account: row.id }, row.id)}
                 onlogin={() => void startLogin(current.provider, row.id)}
+                onopen={() => openDetail(row)}
                 onmore={anchor => {
                   const same = menuOpen && menu?.row.id === row.id;
                   menu = { row, anchor };
@@ -383,6 +486,9 @@
                 }} />
             {/each}
           </div>
+          {#if !rows.length && filtered}
+            <p class="none">No account matches. <Button size="sm" variant="ghost" onclick={() => (query = { ...NO_QUERY })}>Clear filters</Button></p>
+          {/if}
         </div>
       {/if}
       <NoModelRoom />
@@ -398,6 +504,17 @@
     void setPriority(id as PoolPriority);
   }} />
 
+{#if detailRow && detailProvider && view}
+  <AccountDetail bind:open={detailOpen} row={detailRow} provider={detailProvider} {now} poolConfig={view.poolConfig} refreshing={refreshing} locked={acting !== null}
+    onrename={name => rename(detailProvider.provider, detailRow, name)}
+    onrefresh={() => void startRefresh(detailProvider.provider, detailRow.id)}
+    ontoggle={() => void run({ action: detailRow.disabled ? "enable" : "disable", provider: detailProvider.provider, account: detailRow.id }, detailRow.id)}
+    onremove={() => {
+      detailOpen = false;
+      askRemove(detailProvider.provider, detailRow);
+    }} />
+{/if}
+
 <Dialog bind:open={confirmOpen} title={confirm?.title} width={440} dirty={typed !== ""}>
   {#if confirm}
     <form id="account-confirm" class="confirm" onsubmit={submitConfirm}>
@@ -412,6 +529,9 @@
   {/if}
   {#snippet actions()}
     <Button variant="outline" size="sm" onclick={() => (confirmOpen = false)}>Cancel</Button>
+    {#if confirm?.offInstead}
+      <Button variant="outline" size="sm" onclick={() => confirm?.offInstead && void run(confirm.offInstead, actionKey(confirm.offInstead))}>Turn off instead</Button>
+    {/if}
     <Button type="submit" form="account-confirm" variant={confirm?.danger ? "danger" : "primary"} size="sm" disabled={!confirmReady}>{confirm?.label}</Button>
   {/snippet}
 </Dialog>
@@ -456,6 +576,11 @@
     .table :global(.row .cell .reset) { order: 2; }
     .table :global(.row .actions > :not(:last-child)) { display: none; }
   }
+  .filters { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+  .search { width: 12rem; }
+  .sort { display: inline-flex; align-items: center; gap: 2px; padding: 0; border: 0; background: none; color: inherit; font: inherit; cursor: pointer; }
+  .sort:hover, .sort.on { color: var(--text-standard); }
+  .none { display: flex; align-items: center; gap: var(--space-2); margin: var(--space-3) var(--space-3); color: var(--text-subtle); font: var(--text-body-sm); }
   .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
     .confirm { display: flex; flex-direction: column; gap: var(--space-3); }
   .confirm p { margin: 0; color: var(--text-subtle); font: var(--text-body); }

@@ -4,11 +4,14 @@
  * A thread is any sw factory id: a conversation id, an agent id `ag_<slug>` or a DM room `dm_<slug>`. pi-pool knows it as the tree of its
  * root thread, `pi-durable:<root thread id>`, or for a comm thread its agent's work thread's (packages/pi-host/src/durable/pool-labels.ts).
  */
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import type { IncomingMessage } from "node:http";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import {
   AccountLogins, forgetAccountReadings, listAccounts, PoolError, readNoModelRoom, runAccountAction, setNoModelRoom, setPoolPriority, UsageRefreshes,
 } from "../../../legacy/prime/user-history/src/chat-pool.ts";
-import { NO_MODEL_ROOM, POOL_PRIORITIES, type AccountAction, type AccountsView, type NoModelRoom, type PoolPriority } from "../web/src/lib/api/shared/types.ts";
+import { NO_MODEL_ROOM, POOL_PRIORITIES, type AccountAction, type AccountsView, type AccountThread, type NoModelRoom, type PoolPriority } from "../web/src/lib/api/shared/types.ts";
 import type { App } from "./app.ts";
 import { fakePoolState, reseedFakePool, useFakePool } from "./fixture/pool.ts";
 import { parseConversationId } from "./threads.ts";
@@ -79,10 +82,77 @@ const asPoolError = (error: unknown): PoolError =>
   error instanceof PoolError ? error : new PoolError(400, error instanceof Error ? error.message : String(error));
 
 /**
+ * The names people give accounts in sw factory, keyed `<provider>:<account id>` in `<dataDir>/account-names.json`. pi-pool keeps no name of
+ * its own (an account's label is its email), so a rename never touches the pool's files.
+ */
+export class AccountNames {
+  private names: Record<string, string>;
+  constructor(private readonly file: string) {
+    this.names = existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")) as Record<string, string>) : {};
+  }
+
+  get(provider: string, account: string): string | null {
+    return this.names[`${provider}:${account}`] ?? null;
+  }
+
+  /** Sets the name, or clears it with null or an empty string. */
+  set(provider: string, account: string, name: string | null): void {
+    const key = `${provider}:${account}`;
+    if (name?.trim()) this.names[key] = name.trim();
+    else delete this.names[key];
+    mkdirSync(dirname(this.file), { recursive: true });
+    writeFileSync(this.file + ".tmp", JSON.stringify(this.names, null, 2) + "\n");
+    renameSync(this.file + ".tmp", this.file);
+  }
+
+  /** Drops every name, for the fixture's reset. */
+  clear(): void {
+    this.names = {};
+    if (existsSync(this.file)) writeFileSync(this.file, "{}\n");
+  }
+
+  /** The view with each row's `name`. */
+  apply(view: AccountsView): AccountsView {
+    return { ...view, providers: view.providers.map(entry => ({ ...entry, rows: entry.rows.map(row => ({ ...row, name: this.get(entry.provider, row.id) })) })) };
+  }
+}
+
+/** pi-pool's state file, read-only: `$PI_POOL_DIR/state.json`, else `~/.config/pi-pool/state.json`, as pool/base.py finds it. */
+const poolStateFile = (): string => join(process.env.PI_POOL_DIR || join(homedir(), ".config", "pi-pool"), "state.json");
+
+interface PoolVend { account_id?: string; at?: number; from?: number; n?: number }
+
+/**
+ * The threads whose last request on `provider` went to `account` within `windowSec`, newest first, from the `vends` of pi-pool's session
+ * records. This is the same rule pi-pool's sched.in_use_counts uses for a row's thread count. A `pi-durable:<thread>` tree opens in sw factory:
+ * an agent's work thread as its DM, any other thread as its conversation. Any other tree is a Prime session.
+ */
+export function accountThreads(app: App, provider: string, account: string, windowSec: number, now = Date.now() / 1000): AccountThread[] {
+  const file = poolStateFile();
+  if (!existsSync(file)) return [];
+  const sessions = (JSON.parse(readFileSync(file, "utf8")) as { sessions?: Record<string, { vends?: Record<string, PoolVend> }> }).sessions ?? {};
+  const out: AccountThread[] = [];
+  for (const [tree, record] of Object.entries(sessions)) {
+    const vend = record.vends?.[provider];
+    if (vend?.account_id !== account || !vend.at || now - vend.at > windowSec) continue;
+    const thread = tree.startsWith("pi-durable:") ? tree.slice("pi-durable:".length) : null;
+    const agent = thread ? app.threads.registered(thread) : undefined;
+    const row = thread ? app.threads.thread(thread) : undefined;
+    out.push({
+      tree,
+      name: agent?.name ?? row?.name ?? (thread ? `Thread ${thread.slice(0, 8)}` : `Prime session ${tree.slice(0, 8)}`),
+      href: agent ? `#/c/${agent.room}` : thread ? `#/c/${thread}` : null,
+      at: vend.at * 1000, since: vend.from ? vend.from * 1000 : null, requests: vend.n ?? null,
+    });
+  }
+  return out.sort((a, b) => b.at - a.at);
+}
+
+/**
  * The view of a tree, or of no tree. A tree with no record yet reads as the pool with no thread, with a sentence that says why, since pi-pool
  * answers every read of it with an error.
  */
-async function accountsView(tree: string | null, model: string | null, fresh: boolean): Promise<AccountsView> {
+async function poolView(tree: string | null, model: string | null, fresh: boolean): Promise<AccountsView> {
   const view = await listAccounts(tree, model, { fresh });
   if (!tree || !hasNoRecord(view)) return view;
   const pool = await listAccounts(null, model, { fresh });
@@ -123,11 +193,29 @@ export function accountRoutes<R>(app: App, route: (method: string, path: string,
   if (app.config.fixture) useFakePool(app.config.dataDir, app.threads.threadsList().map(thread => thread.id));
   const logins = new AccountLogins();
   const refreshes = new UsageRefreshes();
+  const names = new AccountNames(join(app.config.dataDir, "account-names.json"));
+  const accountsView = async (tree: string | null, model: string | null, fresh: boolean): Promise<AccountsView> => names.apply(await poolView(tree, model, fresh));
   return [
-    route("GET", "/api/pool", handled(async () => listAccounts(null))),
+    route("GET", "/api/pool", handled(async () => names.apply(await listAccounts(null)))),
     route("GET", "/api/accounts", handled(async (_r, _p, q) => {
       const thread = q.get("thread");
       return accountsView(thread ? poolTree(app, thread) : null, optional(q.get("model") || null, "model", 256), q.get("fresh") === "1");
+    })),
+    route("POST", "/api/accounts/name", handled(async (req, _p, _q, body) => {
+      const input = await object(body);
+      const provider = text(input.provider, "provider", 64);
+      const account = text(input.account, "account", 256);
+      const name = input.name === null || input.name === "" ? null : text(input.name, "name", 80);
+      const view = await listAccounts(null);
+      if (!view.providers.some(entry => entry.provider === provider && entry.rows.some(row => row.id === account))) throw new PoolError(404, "No such account.");
+      names.set(provider, account, name);
+      app.log(`accounts: name ${account} (${provider}) ${name === null ? "cleared" : "set"} ${caller(req)}`);
+      return names.apply(view);
+    })),
+    route("GET", "/api/accounts/threads", handled(async (_r, _p, q) => {
+      const view = await listAccounts(null);
+      const windowSec = Number(view.poolConfig?.["active_session_sec"] ?? 3600);
+      return { threads: accountThreads(app, text(q.get("provider"), "provider", 64), text(q.get("account"), "account", 256), windowSec) };
     })),
     route("POST", "/api/accounts", handled(async (req, _p, _q, body) => {
       const action = parseAction(await object(body));
@@ -181,6 +269,7 @@ export function accountRoutes<R>(app: App, route: (method: string, path: string,
       route("GET", "/api/fixture/pi-pool", async () => fakePoolState()),
       route("POST", "/api/fixture/pi-pool/reset", async () => {
         reseedFakePool();
+        names.clear();
         forgetAccountReadings();
         return fakePoolState();
       }),

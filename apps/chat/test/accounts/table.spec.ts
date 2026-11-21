@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import {
-  accountState, isManualAccount, meterTone, pendingReset, planText, rowNotes, sortedRows, STATE_LABEL, threadsText, usableGrant, windowColumns, windowLabel,
+  accountState, isManualAccount, meterTone, NO_QUERY, pendingReset, planText, queryRows, rowNotes, sortedRows, STATE_LABEL, threadsText, usableGrant, windowColumns,
+  windowLabel,
 } from "../../web/src/pages/accounts/model.ts";
 // The old chat's pool meter rule, so the tab is checked against the math the owner already used.
 import { poolCaps, poolSummary } from "../../../../legacy/prime/user-history/src/client/pool-meter.ts";
@@ -238,4 +239,73 @@ test("18 the pool line shows the open provider's spent share and how many accoun
       await expect(card).toContainText(`${Math.round(meter.pct)}%`);
     }
   }
+});
+
+test("40 search and the state filter narrow the rows, and Clear filters brings them all back", async ({ page }) => {
+  const view = await frozen(page);
+  const claude = sortedRows(providerOf(view, "anthropic"));
+  await openAccounts(page);
+  await showProvider(page, "anthropic");
+  const search = page.getByRole("searchbox", { name: "Search accounts" });
+  await search.fill("refused");
+  const found = queryRows(claude, { ...NO_QUERY, text: "refused" });
+  expect(found.length).toBeGreaterThan(0);
+  await expect(tableRows(page)).toHaveCount(found.length);
+  await search.fill("");
+  await page.getByRole("combobox", { name: "State" }).selectOption({ label: "Off" });
+  const off = queryRows(claude, { ...NO_QUERY, state: "off" });
+  expect(off.length).toBeGreaterThan(0);
+  expect((await tableRows(page).allInnerTexts()).map(text => text.split("\n")[0])).toEqual(off.map(row => row.label));
+  await search.fill("no account has this text");
+  await expect(page.getByText("No account matches.")).toBeVisible();
+  await page.getByRole("button", { name: "Clear filters" }).click();
+  await expect(tableRows(page)).toHaveCount(claude.length);
+});
+
+test("41 a column header sorts by it, a second click flips it and a third goes back to the pool's order", async ({ page }) => {
+  const view = await frozen(page);
+  const claude = sortedRows(providerOf(view, "anthropic"));
+  const labels = (rows: { label: string }[]) => rows.map(row => row.label);
+  const shown = async () => (await tableRows(page).allInnerTexts()).map(text => text.split("\n")[0]);
+  await openAccounts(page);
+  await showProvider(page, "anthropic");
+  const week = page.getByRole("columnheader", { name: "Week" });
+  await week.getByRole("button").click();
+  await expect(week).toHaveAttribute("aria-sort", "descending");
+  expect(await shown()).toEqual(labels(queryRows(claude, { ...NO_QUERY, sort: "window:Week", descending: true })));
+  await week.getByRole("button").click();
+  await expect(week).toHaveAttribute("aria-sort", "ascending");
+  expect(await shown()).toEqual(labels(queryRows(claude, { ...NO_QUERY, sort: "window:Week", descending: false })));
+  await week.getByRole("button").click();
+  await expect(week).toHaveAttribute("aria-sort", "none");
+  expect(await shown()).toEqual(labels(claude));
+});
+
+test("42 a row opens its detail with every window's share and reset time, and the threads on it open their conversations", async ({ page }) => {
+  const view = await frozen(page);
+  const row = providerOf(view, "anthropic").rows.find(entry => entry.sessions > 1 && entry.windows.length)!;
+  await openAccounts(page);
+  await showProvider(page, "anthropic");
+  await accountRow(page, row).getByRole("cell").nth(1).click();
+  const detail = page.getByRole("dialog");
+  await expect(detail.getByRole("heading", { name: row.label })).toBeVisible();
+  for (const window of row.windows) {
+    const line = detail.getByRole("row", { name: new RegExp(`^${windowLabel(window)} `) });
+    await expect(line).toContainText(`${Number.isInteger(window.pct) ? window.pct : window.pct.toFixed(1)}%`);
+    if (window.resetsAt) await expect(line).toContainText(", in ");
+  }
+  const links = detail.getByTestId("account-threads").getByRole("link");
+  await expect(links).toHaveCount(row.sessions);
+  await expect(links.first()).toHaveAttribute("href", /^#\/c\//);
+  const href = await links.first().getAttribute("href");
+  await links.first().click();
+  await expect(page).toHaveURL(new RegExp(href!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "$"));
+});
+
+test("42 the thread count opens the same detail", async ({ page }) => {
+  const view = await frozen(page);
+  const row = providerOf(view, "anthropic").rows.find(entry => entry.sessions > 0)!;
+  await openAccounts(page);
+  await accountRow(page, row).getByLabel(threadsText(row, view.poolConfig)!.label, { exact: true }).click();
+  await expect(page.getByRole("dialog").getByTestId("account-threads")).toBeVisible();
 });

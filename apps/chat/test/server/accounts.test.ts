@@ -4,7 +4,7 @@
  */
 import assert from "node:assert/strict";
 import { after, before, beforeEach, test } from "node:test";
-import type { AccountLogin, AccountsView, NoModelRoomSetting, UsageRefresh } from "../../web/src/lib/api/shared/types.ts";
+import type { AccountLogin, AccountsView, AccountThread, NoModelRoomSetting, UsageRefresh } from "../../web/src/lib/api/shared/types.ts";
 import { parseNoModelRoom } from "../../../../legacy/prime/user-history/src/chat-pool.ts";
 import { actionLine } from "../../server/accounts.ts";
 import { FIXTURE_IDS } from "../../server/fixture/seed.ts";
@@ -237,4 +237,35 @@ test("the log line names the action, the account, the thread and the caller", ()
   const req = { headers: { "user-agent": "Mozilla/5.0" }, socket: { remoteAddress: "127.0.0.1" } } as never;
   assert.equal(actionLine({ action: "use", provider: "anthropic", account: "claude-ready", id: "ag_vent" }, "pi-durable:abc", req),
     "accounts: use claude-ready (anthropic) on ag_vent (pi-durable:abc) from 127.0.0.1 (Mozilla/5.0)");
+});
+
+test("a name shows on the account in every view, an empty name clears it, and the fixture's reset drops it", async () => {
+  const named = (await s.send<AccountsView>("POST", "/api/accounts/name", { provider: "anthropic", account: "claude-ready", name: "  Main seat  " })).body;
+  assert.equal(row(named, "claude-ready")!.name, "Main seat");
+  assert.equal(row(named, "claude-ready")!.label, "claude-ready@example.test");
+  assert.equal(row(await s.get<AccountsView>(`/api/accounts?thread=${FIXTURE_IDS.harness}`), "claude-ready")!.name, "Main seat");
+  assert.equal(row(await s.get<AccountsView>("/api/pool"), "claude-pinned")!.name, null);
+  const cleared = (await s.send<AccountsView>("POST", "/api/accounts/name", { provider: "anthropic", account: "claude-ready", name: "" })).body;
+  assert.equal(row(cleared, "claude-ready")!.name, null);
+  await s.send("POST", "/api/accounts/name", { provider: "anthropic", account: "claude-ready", name: "Main seat" });
+  await s.send("POST", "/api/fixture/pi-pool/reset");
+  assert.equal(row(await s.get<AccountsView>("/api/accounts"), "claude-ready")!.name, null);
+  const missing = await s.send<{ error?: string }>("POST", "/api/accounts/name", { provider: "anthropic", account: "nobody", name: "x" });
+  assert.equal(missing.status, 404);
+  assert.match(missing.body.error ?? "", /No such account/);
+});
+
+test("GET /api/accounts/threads lists the threads an account counts, newest first, each linked to its conversation", async () => {
+  const view = await s.get<AccountsView>("/api/pool");
+  const ready = row(view, "claude-ready")!;
+  const { threads } = await s.get<{ threads: AccountThread[] }>("/api/accounts/threads?provider=anthropic&account=claude-ready");
+  assert.equal(threads.length, ready.sessions);
+  assert.deepEqual(threads.map(entry => entry.at), [...threads.map(entry => entry.at)].sort((a, b) => b - a));
+  for (const entry of threads) {
+    assert.ok(entry.tree.startsWith("pi-durable:"));
+    assert.match(entry.href ?? "", /^#\/c\//);
+    assert.ok(entry.name);
+  }
+  const off = await s.get<{ threads: AccountThread[] }>("/api/accounts/threads?provider=anthropic&account=claude-off");
+  assert.deepEqual(off.threads, []);
 });

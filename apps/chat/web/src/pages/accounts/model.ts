@@ -242,3 +242,54 @@ export function resetConfirm(row: PoolAccount, now = Date.now()): { title: strin
       + (usage ? `; usage is ${usage}.` : ".") + weekSoon + " A spent reset cannot be given back.",
   };
 }
+
+/** What a row shows as its name: the name a person gave it, else pi-pool's label. */
+export const shownName = (row: PoolAccount): string => row.name || row.label;
+
+/** The state filter on the Accounts table. Each group joins the states a person handles the same way. */
+export type StateFilter = "all" | "ready" | "busy" | "spent" | "refused" | "needs-login" | "off";
+export const STATE_FILTERS: { value: StateFilter; label: string }[] = [
+  { value: "all", label: "Any state" },
+  { value: "ready", label: "Ready" },
+  { value: "busy", label: "Has threads" },
+  { value: "spent", label: "Limited or depleted" },
+  { value: "refused", label: "Refused or cooldown" },
+  { value: "needs-login", label: "Needs login" },
+  { value: "off", label: "Off" },
+];
+const STATE_GROUP: Record<AccountState | "ready", StateFilter> = {
+  ready: "ready", pinned: "ready", limited: "spent", depleted: "spent", refused: "refused", cooldown: "refused", "needs-terms": "refused", "needs-login": "needs-login", off: "off",
+};
+
+/** The table's sort: pi-pool's own order, the name, the thread count, or a usage window by its column label. */
+export type SortKey = "pool" | "name" | "threads" | `window:${string}`;
+export interface RowQuery { text: string; state: StateFilter; plan: string; sort: SortKey; descending: boolean }
+export const NO_QUERY: RowQuery = { text: "", state: "all", plan: "", sort: "pool", descending: false };
+
+const windowPct = (row: PoolAccount, label: string): number => row.windows.find(window => windowLabel(window) === label)?.pct ?? -1;
+
+/** The rows a query keeps, in its order. `rows` comes in pool order (sortedRows), which ties keep. */
+export function queryRows(rows: readonly PoolAccount[], query: RowQuery): PoolAccount[] {
+  const words = query.text.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const kept = rows.filter(row => {
+    const hay = [row.name, row.label, row.email, row.id, planText(row)].filter(Boolean).join(" ").toLowerCase();
+    if (words.some(word => !hay.includes(word))) return false;
+    if (query.plan && planText(row) !== query.plan) return false;
+    if (query.state === "busy") return row.sessions > 0;
+    return query.state === "all" || STATE_GROUP[accountState(row) ?? "ready"] === query.state;
+  });
+  if (query.sort === "pool") return kept;
+  const sign = query.descending ? -1 : 1;
+  const value = (row: PoolAccount): number | string =>
+    query.sort === "name" ? shownName(row).toLowerCase() : query.sort === "threads" ? row.sessions : windowPct(row, query.sort.slice("window:".length));
+  return [...kept].sort((a, b) => {
+    const x = value(a), y = value(b);
+    return (x < y ? -1 : x > y ? 1 : 0) * sign;
+  });
+}
+
+/** The plans the rows have, for the plan filter. */
+export const plansOf = (rows: readonly PoolAccount[]): string[] => [...new Set(rows.map(planText).filter((plan): plan is string => Boolean(plan)))].sort();
+
+/** How long Remove waits for Undo before it runs. Gmail's undo send defaults to 5 s and goes up to 30 s; this sits inside that range. */
+export const REMOVE_UNDO_MS = 10_000;

@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { PoolAccount, PoolConfig, PoolProvider, UsageRefreshAccount } from "$lib/api/shared/types.ts";
   import { Button, IconButton, Meter, Spinner, tooltip } from "$lib/ui";
-  import { accountState, isManualAccount, pendingReset, planText, resetText, rowNotes, span, STATE_LABEL, staleText, threadsText, usableGrant, windowLabel } from "./model";
+  import { accountState, isManualAccount, pendingReset, planText, resetText, rowNotes, shownName, span, STATE_LABEL, staleText, threadsText, usableGrant, windowLabel } from "./model";
 
   /**
    * One account on one line: label, plan, threads, a meter per usage window, a status cell and the row actions.
@@ -9,7 +9,7 @@
    */
   let {
     row, provider, columns, now, thread, read, refreshing, busy, locked, loginRunning, poolConfig, menuOpen,
-    onuse, onrefresh, onreset, onenable, onlogin, onmore,
+    onuse, onrefresh, onreset, onenable, onlogin, onmore, onopen,
   }: {
     row: PoolAccount;
     provider: PoolProvider;
@@ -33,7 +33,15 @@
     onenable: () => void;
     onlogin: () => void;
     onmore: (anchor: HTMLElement) => void;
+    /** Opens the account's detail with its full numbers and threads. */
+    onopen: () => void;
   } = $props();
+
+  /** A click on the row's empty space opens the detail; a click on one of its controls does its own thing. */
+  function rowClick(event: MouseEvent): void {
+    if (!(event.target instanceof Element) || event.target.closest("button, a, input, select")) return;
+    onopen();
+  }
 
   const status = $derived(accountState(row));
   const manual = $derived(isManualAccount(provider, row.id));
@@ -52,11 +60,16 @@
   let more = $state<HTMLButtonElement>();
 </script>
 
-<div class="row" role="row" class:in-use={inUse} class:off={row.disabled} class:dead={status === "needs-login"} class:busy data-testid="account-row" data-account={row.id}>
-  <div class="who" role="cell"><span class="label" title={row.email}>{row.label}</span></div>
+<!-- The row's click is a mouse shortcut; the name button opens the same detail from the keyboard. -->
+<!-- svelte-ignore a11y_click_events_have_key_events -->
+<div class="row" role="row" tabindex="-1" class:in-use={inUse} class:off={row.disabled} class:dead={status === "needs-login"} class:busy data-testid="account-row" data-account={row.id}
+  onclick={rowClick}>
+  <div class="who" role="cell">
+    <button type="button" class="label" title={row.name ? `${row.name}, ${row.label}` : row.email} aria-haspopup="dialog" onclick={onopen}>{shownName(row)}</button>
+  </div>
   <div class="plan" role="cell">{planText(row) ?? ""}</div>
   <div class="threads" role="cell">
-    {#if threads}<span use:tooltip={threads.hint} aria-label={threads.label}>{row.sessions}</span>{/if}
+    {#if threads}<button type="button" class="count" use:tooltip={threads.hint} aria-label={threads.label} aria-haspopup="dialog" onclick={onopen}>{row.sessions}</button>{/if}
   </div>
   {#each columns as column (column)}
     {@const window = row.windows.find(entry => windowLabel(entry) === column)}
@@ -117,9 +130,12 @@
   .row.off > :not(.actions, .status), .row.dead > :not(.actions, .status) { opacity: 0.5; }
   .row.busy { opacity: 0.7; }
   .who { min-width: 0; }
-  .label { display: block; overflow: hidden; color: var(--text-standard); font: var(--text-body-sm); text-overflow: ellipsis; white-space: nowrap; }
+  .row { cursor: pointer; }
+  .label { display: block; max-width: 100%; padding: 0; border: 0; background: none; overflow: hidden; color: var(--text-standard); font: var(--text-body-sm); text-align: left; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+  .label:hover { text-decoration: underline; text-decoration-color: var(--border-standard); }
+  .count { padding: 0 var(--space-1); margin-left: calc(-1 * var(--space-1)); border: 0; border-radius: var(--radius-chip, 4px); background: none; color: inherit; font: inherit; cursor: pointer; }
+  .count:hover { background: var(--affordance-ghost-hover); color: var(--text-standard); }
   .plan, .threads { overflow: hidden; color: var(--text-subtle); font: var(--text-body-sm); white-space: nowrap; font-variant-numeric: tabular-nums; }
-  .threads span { cursor: default; }
   .cell { display: flex; flex-direction: column; gap: 3px; min-width: 0; font-variant-numeric: tabular-nums; }
   .nums { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-2); }
   .pct { color: var(--text-standard); font: var(--text-caption); font-weight: 500; }

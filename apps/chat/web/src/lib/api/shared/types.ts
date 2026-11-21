@@ -444,7 +444,14 @@ export interface PoolAccount {
   sessions: number;
   /** Claude only: the last read of the account's banked usage-limit resets; null when never read. */
   resets?: AccountResets | null;
+  /** The name a person gave the account in sw factory (apps/chat server/accounts.ts AccountNames), null when none; pi-pool keeps no name. */
+  name?: string | null;
 }
+/**
+ * A thread whose last request through the pool went to one account within `active_session_sec` (GET /api/accounts/threads). `href` opens it in
+ * sw factory and is null for a Prime session. `at` and `since` are epoch ms; `requests` counts the requests since `since`.
+ */
+export interface AccountThread { tree: string; name: string; href: string | null; at: number; since: number | null; requests: number | null }
 /** One banked reset grant. Times are epoch ms. */
 export interface ResetGrant {
   id: string; label: string; resetsTotal: number; resetsLeft: number; startsAt: number | null; endsAt: number | null;

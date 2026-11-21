@@ -71,6 +71,26 @@ function seed(now = Date.now() / 1000) {
   return { providers: { anthropic: { pin: "claude-pinned" }, "openai-codex": { pin: null } }, accounts, trees, added: 0, config: {}, set_by: {} };
 }
 
+/**
+ * The real pool's `state.json` with one session record per thread an account counts in `sessions`, so GET /api/accounts/threads lists them.
+ * Fixture trees fill the counts in seed order, and a Prime session id fills what the fixture's threads do not cover.
+ */
+function writeSessions(state, now = Date.now() / 1000) {
+  const trees = Object.keys(state.trees);
+  const sessions = {};
+  let next = 0;
+  for (const account of state.accounts) {
+    for (let i = 0; i < account.sessions; i++) {
+      const tree = trees[next++] ?? `01a2b3c4-0000-7000-8000-${String(next).padStart(12, "0")}`;
+      const record = sessions[tree] ?? (sessions[tree] = { vends: {} });
+      record.vends[account.provider] = { account_id: account.id, email: account.email, at: now - (i + 1) * 4 * MIN, from: now - 3 * HOUR, n: 40 + i * 7 };
+    }
+  }
+  const out = join(dir, "state.json");
+  writeFileSync(out + ".tmp", JSON.stringify({ version: 2, providers: {}, sessions }));
+  renameSync(out + ".tmp", out);
+}
+
 function noGrant(now) {
   return { checked_at: now - HOUR, status: { eligible: false, ineligible_reason: "no_grant", at_limit: false, grants: [], next_grant_id: null, cooldown_until: null } };
 }
@@ -357,7 +377,7 @@ async function login(f) {
 async function main(argv) {
   const [command, ...rest] = argv;
   const f = flags(rest);
-  if (command === "fake-seed") { save(seed()); return 0; }
+  if (command === "fake-seed") { const state = seed(); save(state); writeSessions(state); return 0; }
   if (command === "refresh") return refresh(f);
   if (command === "login") { await login(f); return null; }
   const state = load();

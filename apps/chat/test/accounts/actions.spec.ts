@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { accountState, pendingReset, POOL_PRIORITY_LABEL, resetConfirm, usableGrant } from "../../web/src/pages/accounts/model.ts";
+import { accountState, pendingReset, POOL_PRIORITY_LABEL, REMOVE_UNDO_MS, resetConfirm, usableGrant } from "../../web/src/pages/accounts/model.ts";
 import {
   AGENT, DM, accountChip, accountRow, escape, openConversation, dialog, openAccounts, openMenu, poolState, postedAction, providerOf, providerTab, readView, resetPool, rowIn, showProvider,
   type AccountLogin, type PoolAccount, type UsageRefresh,
@@ -352,7 +352,12 @@ test("28 remove needs the typed label", async ({ page, request }) => {
   await expect(ask).toBeVisible();
   await field.fill(row.label);
   await expect(remove).toBeEnabled();
-  const gone = await postedAction(page, ACCOUNTS, () => remove.click());
+  // The pool hears of the removal once the toast's Undo window ends, and the row hides at once.
+  const gone = await postedAction(page, ACCOUNTS, async () => {
+    await remove.click();
+    await expect(accountRow(page, row)).toHaveCount(0);
+    await expect(page.getByText(`Removed ${row.label}.`)).toBeVisible();
+  });
   expect(gone.body).toEqual({ action: "remove", provider: "anthropic", account: row.id });
   const after = providerOf(await readView(request), "anthropic").rows;
   expect(after.some(entry => entry.id === row.id)).toBe(false);
@@ -363,13 +368,65 @@ test("28 remove needs the typed label", async ({ page, request }) => {
   await expect(providerTab(page, "anthropic")).toContainText(String(after.length));
 });
 
+test("28 Undo after Remove brings the row back, and the pool never hears of it", async ({ page, request }) => {
+  const row = spare(providerOf(await readView(request), "anthropic").rows)!;
+  const removes: string[] = [];
+  page.on("request", req => { if (new URL(req.url()).pathname === ACCOUNTS && req.method() === "POST" && req.postData()?.includes('"remove"')) removes.push(req.postData()!); });
+  await openAccounts(page);
+  await (await openMenu(page, row)).getByRole("menuitem", { name: "Remove" }).click();
+  await dialog(page).getByRole("textbox").fill(row.label);
+  await dialog(page).getByRole("button", { name: "Remove", exact: true }).click();
+  await expect(accountRow(page, row)).toHaveCount(0);
+  await page.getByRole("button", { name: "Undo" }).click();
+  await expect(accountRow(page, row)).toBeVisible();
+  await page.waitForTimeout(REMOVE_UNDO_MS + 1000);
+  expect(removes).toEqual([]);
+  expect(providerOf(await readView(request), "anthropic").rows.some(entry => entry.id === row.id)).toBe(true);
+});
+
+test("28 the Remove dialog offers Turn off instead, which keeps the sign-in", async ({ page, request }) => {
+  const row = spare(providerOf(await readView(request), "anthropic").rows)!;
+  await openAccounts(page);
+  await (await openMenu(page, row)).getByRole("menuitem", { name: "Remove" }).click();
+  await expect(dialog(page)).toContainText("Turn off keeps the sign-in");
+  const off = await postedAction(page, ACCOUNTS, () => dialog(page).getByRole("button", { name: "Turn off instead" }).click());
+  expect(off.body).toEqual({ action: "disable", provider: "anthropic", account: row.id });
+  await expect(dialog(page)).toHaveCount(0);
+  const after = providerOf(await readView(request), "anthropic").rows.find(entry => entry.id === row.id);
+  expect(after?.disabled).toBe(true);
+  await expect(accountRow(page, row).getByText("Off", { exact: true })).toBeVisible();
+});
+
+test("39 a name set in the detail shows on the row, and clearing it brings the label back", async ({ page, request }) => {
+  const row = spare(providerOf(await readView(request), "anthropic").rows)!;
+  await openAccounts(page);
+  await accountRow(page, row).getByRole("button", { name: row.label, exact: true }).click();
+  const detail = dialog(page);
+  await expect(detail.getByRole("heading", { name: row.label })).toBeVisible();
+  await detail.getByRole("textbox", { name: "Name" }).fill("Main seat");
+  const named = await postedAction<{ provider: string; account: string; name: string | null }>(page, "/api/accounts/name", () => detail.getByRole("button", { name: "Save" }).click());
+  expect(named.body).toEqual({ provider: "anthropic", account: row.id, name: "Main seat" });
+  await expect(detail.getByRole("heading", { name: "Main seat" })).toBeVisible();
+  await expect(detail).toContainText(row.label);
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("row").filter({ has: page.getByRole("button", { name: "Main seat", exact: true }) })).toHaveCount(1);
+  expect(providerOf(await readView(request), "anthropic").rows.find(entry => entry.id === row.id)?.name).toBe("Main seat");
+
+  await page.getByRole("button", { name: "Main seat", exact: true }).click();
+  await dialog(page).getByRole("textbox", { name: "Name" }).fill("");
+  const cleared = await postedAction<{ name: string | null }>(page, "/api/accounts/name", () => dialog(page).getByRole("button", { name: "Clear name" }).click());
+  expect(cleared.body.name).toBeNull();
+  await page.keyboard.press("Escape");
+  await expect(accountRow(page, row)).toHaveCount(1);
+});
+
 test("29 the More menu holds every row action, and Use in this thread only with a thread", async ({ page, request }) => {
   const view = await readView(request);
   const row = spare(providerOf(view, "anthropic").rows, [providerOf(view, "anthropic").resolution?.account])!;
   await openAccounts(page);
   let menu = await openMenu(page, row);
   const reset = pendingReset(row.resets) ? ["Retry the reset"] : usableGrant(row.resets) ? ["Use a reset"] : [];
-  await expect(menu.getByRole("menuitem")).toHaveText(["Refresh usage", "Pin for all sessions", ...reset, "Check resets", "Sign in again", "Turn off", "Remove"]);
+  await expect(menu.getByRole("menuitem")).toHaveText(["Details and name", "Refresh usage", "Pin for all sessions", ...reset, "Check resets", "Sign in again", "Turn off", "Remove"]);
   await page.keyboard.press("Escape");
   await expect(menu).toHaveCount(0);
 
