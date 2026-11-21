@@ -177,20 +177,22 @@ class SidebarSections {
     });
   }
 
-  /** Uploads this browser's old localStorage sections once, when the server holds no layout yet, so the owner keeps what he set up. */
+  /**
+   * Uploads this browser's old localStorage sections once, while the server holds no sections yet, so the owner keeps what he set up.
+   * A copy that comes too late, after another browser uploaded its own, stays in localStorage untouched.
+   */
   migrate(): void {
     if (this.migrated || sidebar.state !== "ready") return;
     this.migrated = true;
     const old = read();
     if (!old) return;
-    if (!sidebar.data.layout) {
-      let data: unknown = null;
-      try {
-        data = JSON.parse(old);
-      } catch {}
-      const layout = parseLayout(data);
-      if (layout.sections.length || Object.values(layout.collapsed).some(Boolean)) this.change((l) => Object.assign(l, layout));
-    }
+    let data: unknown = null;
+    try {
+      data = JSON.parse(old);
+    } catch {}
+    const layout = parseLayout(data);
+    if (layout.sections.length && this.model.sections.length) return;
+    if (layout.sections.length) this.change((l) => Object.assign(l, layout));
     try {
       localStorage.removeItem(OLD_KEY);
     } catch {}

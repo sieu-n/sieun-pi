@@ -167,6 +167,23 @@ test("the server keeps only well-formed sections and placements naming one, and 
   expect((await page.request.put("/api/sidebar/layout", { data: [] })).status()).toBe(400);
 });
 
+test("a browser's old localStorage sections move to the server once, while the server has none", async ({ page }) => {
+  const old = { sections: [{ id: "sec_old", name: "Old", collapsed: false }], placement: { ch_general: "sec_old" }, collapsed: {} };
+  await page.evaluate((v) => localStorage.setItem("chat.sidebarSections", JSON.stringify(v)), old);
+  await page.reload();
+  await expect(section(page, "Old").locator(link("general"))).toBeVisible({ timeout: 15_000 });
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("chat.sidebarSections"))).toBeNull();
+  const saved = await (await page.request.get("/api/sidebar")).json();
+  expect(saved.layout.placement).toEqual({ ch_general: "sec_old" });
+
+  const late = { sections: [{ id: "sec_late", name: "Late", collapsed: false }], placement: {}, collapsed: {} };
+  await page.evaluate((v) => localStorage.setItem("chat.sidebarSections", JSON.stringify(v)), late);
+  await page.reload();
+  await expect(section(page, "Old")).toBeVisible({ timeout: 15_000 });
+  await expect(section(page, "Late")).toHaveCount(0);
+  expect(await page.evaluate(() => localStorage.getItem("chat.sidebarSections"))).not.toBeNull();
+});
+
 test("a DM goes into a section, rows reorder by drag and Sort, sections reorder by drag, a second browser shows the same, and Delete has Undo", async ({ page, browser, baseURL }) => {
   test.slow();
   await block(page, "channels").getByRole("heading", { name: "Channels" }).hover();
