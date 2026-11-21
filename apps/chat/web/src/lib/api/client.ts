@@ -373,23 +373,34 @@ const query = (params: Record<string, string | number | boolean | readonly strin
 export const requestId = (): string => (globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`);
 
 /**
- * An image the owner attached. Its bytes, a PNG as a smaller WebP when that pays (`shrink`), go to POST /api/uploads the moment it is
+ * A file the owner attached, an image or any other file. Its bytes, a PNG as a smaller WebP when that pays (`shrink`), go to POST /api/uploads the moment it is
  * attached, while he types, so the send names only the ref. `preview` shows it before the upload ends, `file` is what he attached, and
  * `ref()` is that upload, started again after a failure. The thumbnail and the sent message show without the upload, so its line is
  * background (`Wait`).
  */
-export interface Attached { preview: string; mimeType: string; file: Blob; ref: () => Promise<ImageRef> }
+export interface Attached { preview: string; mimeType: string; file: Blob; ref: () => Promise<ImageRef>; name?: string; size?: number }
+
+/** The ref a send shows before its upload lands: an image's preview, or a file's preview with its name and size for its card. */
+export const shownRef = (url: string, a: Pick<Attached, "mimeType" | "name" | "size">): ImageRef =>
+  a.name === undefined ? { url, mimeType: a.mimeType } : { url, mimeType: a.mimeType, name: a.name, size: a.size ?? 0 };
+
+/** What `attach` takes a Blob's type, name and size as: a File with no type is a file, a Blob with none a pasted image. */
+export function attachedFacts(file: Blob): Pick<Attached, "mimeType" | "name" | "size"> {
+  const mimeType = file.type || (file instanceof File ? "application/octet-stream" : "image/png");
+  return mimeType.startsWith("image/") ? { mimeType } : { mimeType, name: file instanceof File ? file.name : "file", size: file.size };
+}
 
 export function attach(file: Blob): Attached {
   const smaller = shrink(file, roundTripMs());
+  const facts = attachedFacts(file);
   let upload: Promise<ImageRef> | undefined;
   const ref = (): Promise<ImageRef> => (upload ??= smaller.then(({ blob, encodeMs }) =>
-    api.upload(blob, { background: "shown", ...(encodeMs === undefined ? {} : { encodeMs }) })).catch((error: unknown) => {
+    api.upload(blob, { background: "shown", ...(encodeMs === undefined ? {} : { encodeMs }) }, facts.name)).catch((error: unknown) => {
     upload = undefined;
     throw error;
   }));
   void ref().catch(() => undefined);
-  return { preview: URL.createObjectURL(file), mimeType: file.type || "image/png", file, ref };
+  return { preview: URL.createObjectURL(file), file, ref, ...facts };
 }
 
 /**
@@ -459,8 +470,8 @@ export const api = {
     call<{ root: Item; items: Item[] }>("GET", `/api/c/${enc(id)}/replies/${enc(root)}`, undefined, undefined, wait),
   /** A tool step's output, which a page leaves out until the owner opens it. */
   stepOutput: (ref: StepOutputRef) => call<{ output: string }>("GET", `/api/c/${enc(ref.conversation)}/output/${ref.entry}`),
-  /** Keeps an image's bytes on the server; a send names the ref it answers (`attach`). */
-  upload: (file: Blob, wait?: Wait) => call<ImageRef>("POST", "/api/uploads", file, undefined, wait),
+  /** Keeps an attached file's bytes on the server; a send names the ref it answers (`attach`). A file that is not an image passes its `name`. */
+  upload: (file: Blob, wait?: Wait, name?: string) => call<ImageRef>("POST", `/api/uploads${query({ name })}`, file, undefined, wait),
   send: (id: ConversationId, request: SendRequest, wait?: Wait) => call<SendResult>("POST", `/api/c/${enc(id)}/send`, request, undefined, wait),
   /** Tries a pending send that failed again now. */
   retrySend: (id: ConversationId, requestId: string) => call<SendResult>("POST", `/api/c/${enc(id)}/send/${enc(requestId)}/retry`),

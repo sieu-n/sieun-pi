@@ -59,6 +59,8 @@ export interface RoomDeps {
   /** A send's image ref, checked against the files POST /api/uploads kept. */
   uploaded(ref: ImageRef): ImageRef;
   readUpload(ref: ImageRef): { data: string; mimeType: string } | undefined;
+  /** A post's text with a line for each attached file that is not an image, naming its path (server/files.ts). */
+  fileNotes(text: string, refs: readonly ImageRef[]): string;
   log(line: string): void;
   /** Whether the server has a live link to a box; absent on a server with one box, whose box is always up. */
   linkOf?(box: string): "up" | "away";
@@ -446,7 +448,7 @@ export class Rooms {
       const asTest = post.testSend;
       const from = asTest ? { entry: { kind: "agent.message" as const, data: { from: asTest.by, via: TEST_SEND_VIA } } } : { ownerTurn: true };
       const now = Date.now();
-      const posts = members.map(p => ({ at: p.at, text: this.inputText(p) }));
+      const posts = members.map(p => ({ at: p.at, text: this.deps.fileNotes(this.inputText(p), p.images) }));
       const text = bundle ? bundlePosts(posts, record.host, now) : delivery.waited ? agedPost(posts[0]!.text, post.at, record.host, now) : posts[0]!.text;
       const result = await this.deps.host.submit(thread, {
         text, ...(images.length ? { images } : {}), requestId: bundle?.requestId ?? delivery.requestId, whenBusy: "steer", ...from,

@@ -6,7 +6,7 @@
  * lands; nothing waits on the network before the composer takes the next message. An attached image shows from its preview while its
  * upload ends, and the post names the uploaded ref.
  */
-import { AHEAD_LANE, api, ApiError, attach, dropAhead, reads, reportNotDelivered, roomOf, takeOver, type Attached, type Read, type Wait } from "./client.ts";
+import { AHEAD_LANE, api, ApiError, attach, attachedFacts, dropAhead, reads, reportNotDelivered, roomOf, shownRef, takeOver, type Attached, type Read, type Wait } from "./client.ts";
 import { kept, restoreKept, type Kept } from "./kept.svelte.ts";
 import { heldImages } from "./held-images.ts";
 import { pageDb, type KeptPage } from "./page-db.ts";
@@ -45,7 +45,7 @@ const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 function optimistic(request: SendDraft, failed?: { at: number; error: string }): Item {
   return {
     kind: "message", id: `r:${request.requestId}`, at: failed?.at ?? Date.now(), author: global.me?.owner ?? { id: "owner", kind: "owner", name: "You", avatar: { initials: "Me", hue: 210 } },
-    text: request.text, images: (request.images ?? []).filter(image => image.preview).map(image => ({ url: image.preview, mimeType: image.mimeType })),
+    text: request.text, images: (request.images ?? []).filter(image => image.preview).map(image => shownRef(image.preview, image)),
     mentions: request.mentions ?? [], deliveries: [], pending: true, requestId: request.requestId,
     ...(failed ? { send: "failed" as const, sendError: failed.error } : { send: "sending" as const }),
     ...(request.threadRoot ? { threadRoot: request.threadRoot, ...(request.alsoInChannel ? { alsoInChannel: { rootText: "" } } : {}) } : {}),
@@ -105,7 +105,7 @@ function merge(items: readonly Item[], incoming: readonly Item[], landed: Set<st
       if (pending >= 0) {
         const sent = next[pending]!;
         if (sent.kind === "message" && sent.images.length === real.images.length) {
-          for (const [i, image] of real.images.entries()) if (sent.images[i]!.url.startsWith("blob:")) previews.set(image.url, sent.images[i]!.url);
+          for (const [i, image] of real.images.entries()) if (sent.images[i]!.url.startsWith("blob:") && image.mimeType.startsWith("image/")) previews.set(image.url, sent.images[i]!.url);
           item = withPreviews(real);
         }
         landed.add(sent.id);
@@ -179,7 +179,7 @@ const draftOf = (held: HeldSend, files: Promise<Blob[] | undefined>): SendDraft 
   text: held.text, requestId: held.requestId,
   images: held.uploading
     ? Array.from({ length: held.uploading }, (_, index) => heldImage(files, index))
-    : held.images.map(ref => ({ preview: ref.url, mimeType: ref.mimeType, file: new Blob(), ref: () => Promise.resolve(ref) })),
+    : held.images.map(ref => ({ preview: ref.url, mimeType: ref.mimeType, file: new Blob(), ref: () => Promise.resolve(ref), ...(ref.name === undefined ? {} : { name: ref.name, size: ref.size ?? 0 }) })),
   ...(held.mentions ? { mentions: held.mentions } : {}), ...(held.threadRoot ? { threadRoot: held.threadRoot } : {}),
   ...(held.alsoInChannel ? { alsoInChannel: true } : {}),
   ...(held.whenBusy ? { whenBusy: held.whenBusy } : {}),
@@ -217,7 +217,7 @@ class Sends {
       this.requests.set(held.requestId, draft);
       this.merge([optimistic(draft, { at: held.at, error: held.error ?? "Not sent before the page reloaded" })]);
       void files.then(list => {
-        if (list) this.patch(`r:${held.requestId}`, { images: list.map(file => ({ url: URL.createObjectURL(file), mimeType: file.type || "image/png" })) });
+        if (list) this.patch(`r:${held.requestId}`, { images: list.map(file => shownRef(URL.createObjectURL(file), attachedFacts(file))) });
       });
       if (held.error === undefined) resend.push(`r:${held.requestId}`);
     }

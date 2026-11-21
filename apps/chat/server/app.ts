@@ -1,7 +1,7 @@
 /**
  * Wires the host seam, the chat server's store and the services, and holds the one live hub every page connects to over /api/live.
  */
-import { existsSync, mkdirSync, readFileSync, watch, writeFileSync, type FSWatcher } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -50,6 +50,7 @@ import { readJson, Store, writeJson } from "./store.ts";
 import { modelRef, OWNER, parseConversationId, Threads } from "./threads.ts";
 import { QueueWatch, waitingPlace } from "./queue.ts";
 import { webEntry } from "./web-entry.ts";
+import { isImage, uploadExtension, withFileNotes } from "./files.ts";
 import { fileImageSize, imageSize, withSize } from "./image-size.ts";
 import { noticeOf, noticeReason } from "./notices.ts";
 
@@ -173,6 +174,7 @@ export class App {
       if (item.unread && (removed || item.state === "done") && this.store.state.reads[item.room]?.from === item.post) this.markRead(item.room);
     });
     const linkOf = routing ? (box: string) => routing.link(box).state : undefined;
+    const fileNotes = (text: string, refs: readonly ImageRef[]) => withFileNotes(text, refs, config.box, ref => this.uploadPath(ref));
     this.threads = new Threads(host, this.store, {
       agents: (changed, removed) => {
         for (const agent of changed) this.broadcast({ type: "agent", agent });
@@ -222,7 +224,7 @@ export class App {
         thread: (record, thread) => this.watchRoomThread(record.room, thread),
         submitted: (thread, result) => this.queues.follow(thread, result.ticket?.place ?? null),
       },
-      uploaded: ref => this.uploaded(ref), readUpload: ref => this.readUpload(ref), log, ...(linkOf ? { linkOf } : {}),
+      uploaded: ref => this.uploaded(ref), readUpload: ref => this.readUpload(ref), fileNotes, log, ...(linkOf ? { linkOf } : {}),
       laterMark: post => this.later.mark("owner", post.room, post.id),
     });
     this.threads.roomSummaries = () => this.rooms.summaries().filter(c => !this.agentStore.isTest(c.id));
@@ -246,7 +248,7 @@ export class App {
         thread: (room, thread) => this.watchRoomThread(room, thread),
         submitted: (thread, result) => this.queues.follow(thread, result.ticket?.place ?? null),
       },
-      uploaded: ref => this.uploaded(ref), readUpload: ref => this.readUpload(ref), log, ...(linkOf ? { linkOf } : {}),
+      uploaded: ref => this.uploaded(ref), readUpload: ref => this.readUpload(ref), fileNotes, log, ...(linkOf ? { linkOf } : {}),
       laterMark: post => this.later.mark("owner", post.room, post.id),
       agentLaterMark: (agent, post) => this.later.mark(agent, post.room, post.id),
     });
@@ -319,6 +321,7 @@ export class App {
       mentions: row => this.deliverMentions(row),
       changed: (conversation, items, removed) => this.toWatchers(conversation, { type: "items", conversation, items, ...(removed.length ? { removed } : {}) }),
       image: ref => this.readUpload(ref),
+      fileNotes,
       log,
     });
     this.wss.on("connection", socket => this.connect(socket));
@@ -1026,14 +1029,17 @@ export class App {
     return pending.length ? { ...page, items: [...page.items, ...pending] } : page;
   }
 
-  /** POST /api/uploads: an image's bytes, kept under a fresh name; a send names the ref it returns. */
-  async upload(contentType: string, bytes: Buffer): Promise<ImageRef> {
-    const mimeType = contentType.split(";")[0]!.trim().toLowerCase();
-    if (!mimeType.startsWith("image/")) throw new Error("An upload is an image; post its bytes with its image/* content-type.");
-    if (!bytes.length) throw new Error("An upload needs the image's bytes.");
-    const name = `${randomUUID()}.${mimeType.split("/")[1]!.replace(/[^a-z0-9]/g, "") || "bin"}`;
+  /**
+   * POST /api/uploads: an attached file's bytes, kept under a fresh name; a send names the ref it returns. An image answers its size in
+   * pixels; any other file (server/files.ts) answers the `name` the page passed and its size in bytes.
+   */
+  async upload(contentType: string, bytes: Buffer, fileName?: string): Promise<ImageRef> {
+    const mimeType = contentType.split(";")[0]!.trim().toLowerCase() || "application/octet-stream";
+    if (!bytes.length) throw new Error("An upload needs the file's bytes.");
+    const name = `${randomUUID()}.${uploadExtension(mimeType, isImage({ mimeType }) ? undefined : fileName)}`;
     await writeFile(this.store.imagePath(name), bytes);
-    return { url: `/api/uploads/${name}`, mimeType, ...imageSize(bytes) };
+    if (isImage({ mimeType })) return { url: `/api/uploads/${name}`, mimeType, ...imageSize(bytes) };
+    return { url: `/api/uploads/${name}`, mimeType, name: fileName?.trim().slice(0, 255) || "file", size: bytes.length };
   }
 
   /**
@@ -1057,12 +1063,22 @@ export class App {
     if (!name || !existsSync(this.store.imagePath(name))) {
       throw new Error(`No upload ${String(ref?.url)}; post the image to POST /api/uploads first and send the {url, mimeType} it answers.`);
     }
+    if (!isImage(ref)) {
+      const label = typeof ref.name === "string" && ref.name.trim() ? ref.name.trim().slice(0, 255) : "file";
+      return { url: `/api/uploads/${name}`, mimeType: ref.mimeType, name: label, size: statSync(this.store.imagePath(name)).size };
+    }
     return withSize({ url: `/api/uploads/${name}`, mimeType: ref.mimeType }, () => fileImageSize(this.store.imagePath(name)));
   }
 
+  /** Where an upload's bytes sit on this box, which an agent reads a file that is not an image from (server/files.ts). */
+  uploadPath(ref: ImageRef): string {
+    return this.store.imagePath(ref.url.slice("/api/uploads/".length).replace(/[^\w.-]/g, ""));
+  }
+
+  /** An attached image's bytes for a model; a file that is not an image reaches the agent as a line with its path instead. */
   private readUpload(ref: ImageRef): { data: string; mimeType: string } | undefined {
     const name = ref.url.startsWith("/api/uploads/") ? ref.url.slice("/api/uploads/".length).replace(/[^\w.-]/g, "") : "";
-    if (!name) return undefined;
+    if (!name || !isImage(ref)) return undefined;
     try {
       return { data: readFileSync(this.store.imagePath(name)).toString("base64"), mimeType: ref.mimeType };
     } catch {

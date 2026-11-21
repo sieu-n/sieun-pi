@@ -5,6 +5,7 @@
   import Icon from "$lib/ui/Icon.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
   import Lightbox from "$lib/ui/Lightbox.svelte";
+  import FileCard from "$lib/ui/FileCard.svelte";
   import Menu from "$lib/ui/Menu.svelte";
   import type { MenuEntry } from "$lib/ui/menu";
   import { toast } from "$lib/ui/toast.svelte";
@@ -95,6 +96,8 @@
   const why = $derived(message?.why ? `${message.why.charAt(0).toUpperCase()}${message.why.slice(1)}` : null);
   /** A turn of an agent that talks through send_message: one bubble per sent message, and its fold on a row of its own. */
   const sent = $derived(turn?.sent ?? null);
+  const pictures = $derived(item.images.filter((image) => image.mimeType.startsWith("image/")));
+  const files = $derived(item.images.filter((image) => !image.mimeType.startsWith("image/")));
   const hasBubble = $derived(!!item.text || (turn ? turn.steps.length > 0 || live : item.images.length === 0));
   const toolNow = $derived(turn ? runningTool(turn.steps) : null);
   const stepLabel = $derived(liveLabel ?? (toolNow ? `Running ${toolNow}` : null));
@@ -318,9 +321,9 @@
 {/snippet}
 
 {#snippet images()}
-  {#if item.images.length}
+  {#if pictures.length}
     <div class="images">
-      {#each item.images as image, index (image.url + index)}
+      {#each pictures as image, index (image.url + index)}
         <button type="button" class="image" aria-label="View image {index + 1}" onclick={() => (lightbox = image.url)}>
           {#if image.width && image.height}
             <img class="sized" src={image.url} alt="Attached image {index + 1}" loading="lazy" width={image.width} height={image.height} style:--w={image.width} style:--h={image.height} />
@@ -338,6 +341,13 @@
 
 {#snippet doneMark()}
   <span class="done-mark" title={doneLabel} data-thread-done><Icon name="check" size={12} /><span class="sr-only">{doneLabel}</span></span>
+  {#if files.length}
+    <div class="files">
+      {#each files as file, index (file.url + index)}
+        <FileCard name={file.name ?? "file"} mimeType={file.mimeType} size={file.size} href={file.url.startsWith("/api/uploads/") ? file.url : undefined} />
+      {/each}
+    </div>
+  {/if}
 {/snippet}
 
 {#snippet tail()}
@@ -673,7 +683,8 @@
     display: inline-flex;
     padding: 6px 0;
   }
-  .images {
+  .images,
+  .files {
     display: flex;
     flex-wrap: wrap;
     gap: 6px;
@@ -686,6 +697,9 @@
     overflow: hidden;
     background: var(--surface-inset);
     cursor: zoom-in;
+  .files {
+    margin-top: 4px;
+  }
   }
   .image img {
     --cap: 280px;

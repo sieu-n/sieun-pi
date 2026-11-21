@@ -12,6 +12,7 @@ import { EntryExists, EntryMissing, HARNESS_KINDS, type HarnessKind } from "./ag
 import { parseItemId } from "./for-me.ts";
 import type { AgentRecord, WakeOn } from "./agent-store.ts";
 import { App, MODELS, NotFound } from "./app.ts";
+import { uploadHeaders } from "./files.ts";
 import { LocalImageError, readLocalImage } from "./local-image.ts";
 import { ReactionError } from "./reactions.ts";
 import { parsePrefsPatch } from "./sidebar-prefs.ts";
@@ -234,7 +235,7 @@ export function routes(app: App): Route[] {
       return output;
     }),
     route("GET", "/api/c/:id/replies/:root", async (_r, p) => app.replies(p.id!, p.root!)),
-    route("POST", "/api/uploads", async req => app.upload(req.headers["content-type"] ?? "", await readBytes(req))),
+    route("POST", "/api/uploads", async (req, _p, q) => app.upload(req.headers["content-type"] ?? "", await readBytes(req), str(q.get("name")))),
     route("POST", "/api/c/:id/send", async (_r, p, _q, body) => app.send(p.id!, (await body()) as SendRequest)),
     route("POST", "/api/c/:id/send/:requestId/retry", async (_r, p) => app.retrySend(p.id!, p.requestId!)),
     route("DELETE", "/api/c/:id/send/:requestId", async (_r, p) => {
@@ -494,7 +495,7 @@ async function handle(app: App, table: Route[], req: IncomingMessage, res: Serve
   try {
     if (await serveWiki(app, req, res, url)) return;
     if (path.startsWith("/api/images/")) return await serveEntryImage(app, path, res);
-    if (path.startsWith("/api/uploads/")) return await serveFile(res, app.store.imagePath(path.slice("/api/uploads/".length).replace(/[^\w.-]/g, "")), true);
+    if (path.startsWith("/api/uploads/")) return await serveUpload(res, app.store.imagePath(path.slice("/api/uploads/".length).replace(/[^\w.-]/g, "")), url.searchParams);
     if (path === "/api/local-image" && req.method === "GET") return await serveLocalImage(url.searchParams.get("path") ?? "", res);
     if (path.startsWith("/api/")) {
       for (const r of table) {
@@ -576,6 +577,16 @@ async function serveLocalImage(path: string, res: ServerResponse): Promise<void>
   if (image.mimeType === "image/svg+xml") res.setHeader("content-security-policy", "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox");
   res.writeHead(200, { "content-type": image.mimeType, "content-length": image.bytes.length, "cache-control": "private, max-age=60", "x-content-type-options": "nosniff" });
   res.end(image.bytes);
+}
+
+/** An upload: an image as any served file, and any other file inline or as a download under the name it was attached with (files.ts). */
+function serveUpload(res: ServerResponse, file: string, query: URLSearchParams): void | Promise<void> {
+  const ext = extname(file).slice(1).toLowerCase();
+  if (TYPES[`.${ext}`]?.startsWith("image/")) return serveFile(res, file, true);
+  const stat = existsSync(file) ? statSync(file) : undefined;
+  if (!stat?.isFile()) throw new NotFound("Not found.");
+  res.writeHead(200, { ...uploadHeaders(ext, query.get("name"), query.get("download") === "1"), "content-length": stat.size, "cache-control": "private, max-age=31536000, immutable" });
+  createReadStream(file).pipe(res);
 }
 
 function serveFile(res: ServerResponse, file: string, immutable = false): void | Promise<void> {

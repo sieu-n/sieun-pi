@@ -12,6 +12,7 @@
  */
 import type { ImageRef, Item, JobRef, Principal, RunStatus, Step } from "../web/src/lib/api/types.ts";
 import type { ContentBlock, EntryRecord, Message, TreeNode } from "./host/types.ts";
+import { withFileCards } from "./files.ts";
 import { imageSize, type ImageSize } from "./image-size.ts";
 import { TELL_OWNER_HELD, TELL_OWNER_TOOL } from "../web/src/lib/api/shared/chat-feed.ts";
 
@@ -259,8 +260,9 @@ function inputItem(entry: EntryRecord, ctx: TimelineContext, first: boolean): It
   const test = entry.kind === "pi.user" ? ctx.testSends?.get(entry.id) : undefined;
   const testSend = test ? { by: ctx.principal(test.by), reason: test.reason } : undefined;
   const author = testSend?.by ?? (entry.kind === "agent.message" && data.from ? ctx.principal(data.from) : first && ctx.parent ? ctx.parent : ctx.principal("owner"));
+  const { text, images } = withFileCards(textOf(message), imageRefs(ctx.thread, entry));
   return {
-    kind: "message", id: entryKey(entry.id), at: message?.timestamp ?? 0, author, text: textOf(message), images: imageRefs(ctx.thread, entry), mentions: [], deliveries: [],
+    kind: "message", id: entryKey(entry.id), at: message?.timestamp ?? 0, author, text, images, mentions: [], deliveries: [],
     ...(testSend ? { testSend } : {}),
   };
 }

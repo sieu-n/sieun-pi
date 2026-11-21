@@ -5,6 +5,7 @@
   import { emojiOf, searchEmoji } from "$lib/api/shared/emoji";
   import AvatarStack from "$lib/ui/AvatarStack.svelte";
   import Checkbox from "$lib/ui/Checkbox.svelte";
+  import FileCard, { fileSize } from "$lib/ui/FileCard.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
   import Picker from "$lib/ui/Picker.svelte";
   import Popover from "$lib/ui/Popover.svelte";
@@ -42,7 +43,7 @@
   };
   let { placeholder, agents, channels, room = null, working = false, draftKey, autofocus = false, compact = false, alsoSend = null, onsend, onstop, commands = [] }: Props = $props();
 
-  /** An attached image, whose upload starts as it is attached (`attach`). */
+  /** An attached image or other file, whose upload starts as it is attached (`attach`). */
   type Attachment = { file: File; image: Attached };
   let box = $state<HTMLDivElement>();
   let empty = $state(true);
@@ -56,6 +57,7 @@
   });
   $effect(() => () => releaseReload(reloadHold));
   let query = $state<Query | null>(null);
+  const MAX_UPLOAD = 40 * 1024 * 1024;
   let dragging = $state(false);
   /** The "Also send to #channel" box, cleared after each send as Slack clears it. */
   let alsoChecked = $state(false);
@@ -243,8 +245,9 @@
 
   function addFiles(files: Iterable<File>) {
     for (const file of files) {
-      if (!file.type.startsWith("image/")) {
-        toast.error(`${file.name} is not an image. Only images attach for now.`);
+      // The chat server refuses a request body over 40 MB (MAX_BODY in server/http.ts), so a bigger file is refused here before its upload.
+      if (file.size > MAX_UPLOAD) {
+        toast.error(`${file.name} is ${fileSize(file.size)}; a file can be up to 40 MB.`);
         continue;
       }
       attachments = [...attachments, { file, image: attach(file) }];
@@ -260,9 +263,10 @@
   function onpaste(e: ClipboardEvent) {
     if (!box || !e.clipboardData) return;
     e.preventDefault();
-    const files = [...e.clipboardData.files].filter((f) => f.type.startsWith("image/"));
+    const files = [...e.clipboardData.files];
     if (files.length) addFiles(files);
-    const text = e.clipboardData.getData("text/plain");
+    // A file copied in Finder pastes its name as text too; an image copied from a page or app keeps its text, as before.
+    const text = files.some((f) => !f.type.startsWith("image/")) ? "" : e.clipboardData.getData("text/plain");
     if (text) insertPlainText(box, text);
     sync();
   }
@@ -362,10 +366,14 @@
   {#if attachments.length}
     <div class="attachments">
       {#each attachments as a, index (a.image.preview)}
-        <div class="thumb">
-          <img src={a.image.preview} alt={a.file.name} />
-          <span class="remove"><IconButton icon="close" label="Remove {a.file.name}" size="xs" variant="glass" onclick={() => removeAttachment(index)} /></span>
-        </div>
+        {#if a.image.mimeType.startsWith("image/")}
+          <div class="thumb">
+            <img src={a.image.preview} alt={a.file.name} />
+            <span class="remove"><IconButton icon="close" label="Remove {a.file.name}" size="xs" variant="glass" onclick={() => removeAttachment(index)} /></span>
+          </div>
+        {:else}
+          <FileCard name={a.file.name} mimeType={a.image.mimeType} size={a.file.size} onremove={() => removeAttachment(index)} />
+        {/if}
       {/each}
     </div>
   {/if}
@@ -377,8 +385,8 @@
     {/if}
     <IconButton icon="smile" label="Emoji" size="sm" bind:element={emojiButton} pressed={emojiOpen} onclick={() => (emojiOpen = !emojiOpen)} data-testid="composer-emoji" />
     <IconButton icon="at" label="Mention an agent" size="sm" onclick={mentionButton} />
-    <IconButton icon="paperclip" label="Attach images" size="sm" onclick={() => fileInput?.click()} />
-    <input bind:this={fileInput} type="file" accept="image/*" multiple hidden onchange={(e) => {
+    <IconButton icon="paperclip" label="Attach files" size="sm" onclick={() => fileInput?.click()} />
+    <input bind:this={fileInput} type="file" multiple hidden onchange={(e) => {
       const input = e.currentTarget as HTMLInputElement;
       if (input.files) addFiles(input.files);
       input.value = "";

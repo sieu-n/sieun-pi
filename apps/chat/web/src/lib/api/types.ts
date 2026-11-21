@@ -194,7 +194,11 @@ export interface SidebarLayout {
 /** The layout as the server keeps and sends it; `rev` counts its saves, so a browser tells a newer one from its own edit in flight. */
 export type SavedLayout = SidebarLayout & { rev: number };
 
-export interface ImageRef { url: string; mimeType: string; width?: number; height?: number }
+/**
+ * An attached file as POST /api/uploads answered it. An image/* type draws as an image; any other type is a file the post shows as a card
+ * with its `name` and `size` in bytes (server/files.ts).
+ */
+export interface ImageRef { url: string; mimeType: string; width?: number; height?: number; name?: string; size?: number }
 
 /**
  * Where a conversation's run stands in pi-pool's turn queue: working (kind owner, ahead, slot and so on), queued at a position, marked as

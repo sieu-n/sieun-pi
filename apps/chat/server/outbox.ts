@@ -12,6 +12,7 @@ import { join } from "node:path";
 import type { AgentId, ConversationId, Delivery, ImageRef, Item, SendState } from "../web/src/lib/api/types.ts";
 import type { EntryRecord, Host, Submitted } from "./host/types.ts";
 import { appendLater, readLatest, replaceLater, written } from "./disk.ts";
+import { withFileCards } from "./files.ts";
 import { isInput } from "./timeline.ts";
 import { OWNER, parseConversationId } from "./threads.ts";
 
@@ -62,6 +63,8 @@ export interface OutboxDeps {
   changed(conversation: ConversationId, items: Item[], removed: string[]): void;
   /** Reads an upload back for a send to pi-host. */
   image(ref: ImageRef): { data: string; mimeType: string } | undefined;
+  /** A send's text with a line for each attached file that is not an image, naming its path (server/files.ts). */
+  fileNotes(text: string, refs: readonly ImageRef[]): string;
   log(line: string): void;
 }
 
@@ -254,7 +257,7 @@ export class Outbox {
     const images = row.images.map(ref => this.deps.image(ref)).filter((image): image is { data: string; mimeType: string } => !!image);
     try {
       const result = await this.deps.host.submit(thread, {
-        ...(conversation === 1 ? {} : { conversation }), text: row.text, ...(images.length ? { images } : {}),
+        ...(conversation === 1 ? {} : { conversation }), text: this.deps.fileNotes(row.text, row.images), ...(images.length ? { images } : {}),
         requestId: row.requestId, whenBusy: row.whenBusy, ownerTurn: true,
       });
       // The input can land, and drop the row, before pi-host's answer comes back; its place and mentions still go out.
@@ -317,7 +320,7 @@ export class Outbox {
           const newest = entries.at(-1)?.id;
           if (newest !== undefined) this.swept.set(id, Math.max(cursor ?? 0, newest));
           const open = rows.filter(r => this.rows.has(r.requestId)).sort((a, b) => a.at - b.at);
-          this.land(id, open, entries.filter(ownerInput).map(e => ({ id: `e${e.id}`, text: entryText(e), at: e.model?.[0]?.timestamp ?? 0 })));
+          this.land(id, open, entries.filter(ownerInput).map(e => ({ id: `e${e.id}`, text: withFileCards(entryText(e), []).text, at: e.model?.[0]?.timestamp ?? 0 })));
         } catch {
           // pi-host is away; the next sweep tries again.
         }

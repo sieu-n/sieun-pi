@@ -26,6 +26,7 @@ import type {
 import { type AgentRecord, type AgentStore, type FeedCursor, type GroupRoom, type MemberChange, type RoomDelivery, type RoomId, type RoomMember, type RoomPost, type WakeOn } from "./agent-store.ts";
 import type { Agents } from "./agents.ts";
 import { isHostAway, type EntryRecord, type Host, type Submitted } from "./host/types.ts";
+import { isImage } from "./files.ts";
 import { refusedForGood, retryWait } from "./outbox.ts";
 import { postState } from "./post-edits.ts";
 import { laterLine, reminderPost } from "./later-agents.ts";
@@ -71,6 +72,8 @@ export interface GroupDeps {
   /** A send's image ref, checked against the files POST /api/uploads kept. */
   uploaded(ref: ImageRef): ImageRef;
   readUpload(ref: ImageRef): { data: string; mimeType: string } | undefined;
+  /** A post's text with a line for each attached file that is not an image, naming its path (server/files.ts). */
+  fileNotes(text: string, refs: readonly ImageRef[]): string;
   log(line: string): void;
   /** Whether the server has a live link to a box; absent on a server with one box. */
   linkOf?(box: string): "up" | "away";
@@ -663,9 +666,10 @@ export class GroupRooms {
     const label = row.kind === "channel"
       ? `#${row.name}`
       : `Solo "${row.name}" (${row.id}): ${row.agenda.length > AGENDA_CLIP ? `${row.agenda.slice(0, AGENDA_CLIP)}…` : row.agenda} · with ${row.members.map(m => this.deps.threads.principal(m.agent).name).join(", ")}`;
-    const lines = [`[${label.replace(/\n+/g, " ")} · post ${post.seq} from ${author.name}${author.kind === "owner" ? " (owner)" : ""} · hops ${post.hops ?? 0}]`, "", withForward(post.text, post.forward)];
+    const lines = [`[${label.replace(/\n+/g, " ")} · post ${post.seq} from ${author.name}${author.kind === "owner" ? " (owner)" : ""} · hops ${post.hops ?? 0}]`, "", this.deps.fileNotes(withForward(post.text, post.forward), post.images)];
     const context = (p: RoomPost) => {
-      const images = p.images.length ? ` [${p.images.length} image${p.images.length > 1 ? "s" : ""} attached]` : "";
+      const shown = p.images.filter(isImage).length;
+      const images = `${shown ? ` [${shown} image${shown > 1 ? "s" : ""} attached]` : ""}${shown < p.images.length ? ` ${this.deps.fileNotes("", p.images).replace(/\n+/g, " ")}` : ""}`;
       const reactions = reactionsLine(id => this.deps.threads.principal(id), p);
       const saved = reader ? laterLine(this.deps.agentLaterMark?.(reader, p)) : "";
       return `${p.seq} ${this.deps.threads.principal(p.author).name}: ${p.text.slice(0, CONTEXT_CLIP)}${images}${reactions ? ` ${reactions}` : ""}${saved ? ` ${saved}` : ""}`;
