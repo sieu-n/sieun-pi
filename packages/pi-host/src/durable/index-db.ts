@@ -166,6 +166,9 @@ CREATE TABLE IF NOT EXISTS outbox_calls (
   text TEXT NOT NULL, to_room TEXT, why TEXT, PRIMARY KEY (thread, tool_call_id)
 );
 CREATE TABLE IF NOT EXISTS outbox_meta (id INTEGER PRIMARY KEY CHECK (id = 1), since INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS usage_drops (id INTEGER PRIMARY KEY CHECK (id = 1), count INTEGER NOT NULL);
+INSERT OR IGNORE INTO usage_drops (id, count) VALUES (1, 0);
+CREATE TRIGGER IF NOT EXISTS usage_drops_count AFTER DELETE ON usage BEGIN UPDATE usage_drops SET count = count + 1 WHERE id = 1; END;
 `;
 
 type Row = Record<string, string | number | bigint | null | Uint8Array>;
@@ -327,6 +330,43 @@ export function readIndexRows(db: DatabaseSync, cursor: string | undefined, maxB
     });
   }
   return { rows, cursor: String(top), more: false };
+}
+
+/** Usage rows after a cursor, as `durable_usage_read` gives them: the chat keeps every box's rows in memory (apps/chat/server/usage.ts). */
+export interface UsageRead { rows: UsageRow[]; cursor: string; more: boolean; restart: boolean }
+
+/** A usage row's JSON is under 500 bytes, so a page stays under `INDEX_READ_BYTES` of the relay's frame. */
+export const USAGE_READ_ROWS = INDEX_READ_BYTES / 500;
+
+/**
+ * The usage rows after `cursor` whose time is at or after `since`, a page at a time. The cursor is `<drops>:<rowid>`: a row deleted since
+ * the cursor was given (`resetEntries`, a rebuild) changes the drop count, and the read starts again from the first row with `restart`.
+ */
+export function readUsageRows(db: DatabaseSync, cursor: string | undefined, since = 0, limit = USAGE_READ_ROWS): UsageRead {
+  db.exec("BEGIN");
+  try {
+    const drops = Number((db.prepare("SELECT count FROM usage_drops WHERE id = 1").get() as { count: number } | undefined)?.count ?? 0);
+    const top = Number((db.prepare("SELECT rowid AS top FROM usage ORDER BY rowid DESC LIMIT 1").get() as { top: number } | undefined)?.top ?? 0);
+    const [kept, mark] = (cursor ?? "").split(":");
+    let after = Number(mark) || 0;
+    const restart = cursor === undefined || Number(kept) !== drops || top < after;
+    if (restart) after = 0;
+    const rows = (db.prepare(`SELECT rowid AS id, thread, conversation, entry_id, model, at, input, output, cache_read, cache_write, cost, cost_input, cost_output,
+      cost_cache_read, cost_cache_write FROM usage WHERE rowid > ? AND rowid <= ? AND at >= ? ORDER BY rowid LIMIT ?`).all(after, top, since, limit + 1) as Row[]);
+    const more = rows.length > limit;
+    const page = more ? rows.slice(0, limit) : rows;
+    const last = more ? Number(page.at(-1)!.id) : top;
+    return {
+      rows: page.map(row => ({
+        thread: String(row.thread), conversation: Number(row.conversation), entryId: Number(row.entry_id), model: String(row.model), at: Number(row.at),
+        input: Number(row.input), output: Number(row.output), cacheRead: Number(row.cache_read), cacheWrite: Number(row.cache_write), cost: Number(row.cost),
+        costInput: Number(row.cost_input), costOutput: Number(row.cost_output), costCacheRead: Number(row.cost_cache_read), costCacheWrite: Number(row.cost_cache_write),
+      })),
+      cursor: `${drops}:${last}`, more, restart,
+    };
+  } finally {
+    db.exec("COMMIT");
+  }
 }
 
 /**
@@ -551,6 +591,11 @@ export class ThreadIndex {
   /** `durable_index_read`: the rows after `cursor`, a page at a time. */
   read(cursor: string | undefined): IndexRead {
     return readIndexRows(this.db, cursor);
+  }
+
+  /** `durable_usage_read`: the usage rows after `cursor` from `since` on, a page at a time. */
+  readUsage(cursor: string | undefined, since?: number): UsageRead {
+    return readUsageRows(this.db, cursor, since);
   }
 
   /**

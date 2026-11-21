@@ -13,7 +13,7 @@ import type { DurableThreads, SubmitInput } from "./threads.ts";
 export const DURABLE_COMMANDS = new Set([
   "durable_threads", "durable_create", "durable_submit", "durable_wait", "durable_watch", "durable_unwatch", "durable_abort", "durable_tree",
   "durable_entries", "durable_search", "durable_usage", "durable_doc_get", "durable_doc_put", "durable_set", "durable_import", "durable_ticket",
-  "durable_feed", "durable_feed_stop", "durable_feed_read", "durable_index_read",
+  "durable_feed", "durable_feed_stop", "durable_feed_read", "durable_index_read", "durable_usage_read",
 ]);
 
 type Command = { id?: string; type: string; [key: string]: unknown };
@@ -147,6 +147,8 @@ export class DurableCommands {
           }));
         case "durable_index_read":
           return done(this.threads.indexRead(optStr(command, "cursor")));
+        case "durable_usage_read":
+          return done(this.threads.usageRead(optStr(command, "cursor"), optNum(command, "since")));
         case "durable_search":
           return done(this.threads.search({
             q: str(command, "q"),

@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { ThreadIndex } from "../../src/durable/index.ts";
-import { readIndexRows, snippetOf, snippetTerms } from "../../src/durable/index-db.ts";
+import { readIndexRows, readUsageRows, snippetOf, snippetTerms } from "../../src/durable/index-db.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "pi-host-index-"));
 after(() => rmSync(dir, { recursive: true, force: true }));
@@ -152,6 +152,42 @@ test("durable_index_read gives the rows after a cursor a page at a time, and rea
   }
   assert.deepEqual(pages, [[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11]]);
   assert.deepEqual(readIndexRows(db, "999").rows.length, 11, "a cursor past the last row means the index was rebuilt");
+  db.close();
+});
+
+test("durable_usage_read gives the usage rows after a cursor from a time on, and starts again from the first row once a row is deleted", () => {
+  const index = new ThreadIndex(join(dir, "usage-read.sqlite"));
+  index.insertThread({ id: "u1", name: "usage", provider: "anthropic", modelId: "claude-opus-5-5", thinkingLevel: "high", cwd: "/", createdAt: 1, updatedAt: 1 });
+  const usage = (entryId: number, at: number) => ({ thread: "u1", conversation: 1, entryId, model: "anthropic/claude-opus-5-5", at, input: 1, output: 2, cacheRead: 3,
+    cacheWrite: 4, cost: 1.5, costInput: 0.1, costOutput: 0.2, costCacheRead: 0.3, costCacheWrite: 0.9 });
+  index.addEntries("u1", [], [usage(1, 100), usage(2, 5000), usage(3, 6000)]);
+  const first = index.readUsage(undefined, 1000);
+  assert.equal(first.restart, true);
+  assert.equal(first.more, false);
+  assert.deepEqual(first.rows.map(row => row.entryId), [2, 3], "a row older than since is left out");
+  assert.deepEqual(first.rows[0], usage(2, 5000));
+  const quiet = index.readUsage(first.cursor, 1000);
+  assert.deepEqual([quiet.rows, quiet.restart, quiet.cursor], [[], false, first.cursor]);
+  index.addEntries("u1", [], [usage(4, 7000)]);
+  assert.deepEqual(index.readUsage(first.cursor, 1000).rows.map(row => row.entryId), [4]);
+  const before = index.readUsage(undefined).cursor;
+  index.resetEntries("u1");
+  index.addEntries("u1", [], [usage(1, 100), usage(2, 5000)]);
+  const again = index.readUsage(before);
+  assert.equal(again.restart, true, "the delete changed the drop count, so the rows read from the first one");
+  assert.deepEqual(again.rows.map(row => row.entryId), [1, 2]);
+  index.close();
+
+  const db = new DatabaseSync(join(dir, "usage-read.sqlite"), { readOnly: true });
+  const pages: number[][] = [];
+  let cursor: string | undefined;
+  for (;;) {
+    const page = readUsageRows(db, cursor, 0, 1);
+    pages.push(page.rows.map(row => row.entryId));
+    cursor = page.cursor;
+    if (!page.more) break;
+  }
+  assert.deepEqual(pages, [[1], [2]]);
   db.close();
 });
 

@@ -11,7 +11,7 @@
  *    `ack` sent, so a crash in between replays the row and the room feed's own dedup keeps one post.
  * 5. A thread on the box reaches this server's HTTP API through the relay as a `chat_http` call, which this client forwards to 127.0.0.1.
  */
-import type { IndexRead } from "../../../../packages/pi-host/src/durable/index-db.ts";
+import type { IndexRead, UsageRead } from "../../../../packages/pi-host/src/durable/index-db.ts";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import WebSocket from "ws";
@@ -420,6 +420,10 @@ export class RelayHost implements Host {
   }
   async usage(range: UsageRange): Promise<UsageTotal[]> {
     return ((await this.call("durable_usage", range)) as { usage: UsageTotal[] }).usage;
+  }
+  /** The box's usage rows after `cursor` from `since` on, a page at a time, which the chat keeps in memory (server/usage.ts `KeptUsage`). */
+  async usageRead(cursor: string | undefined, since: number): Promise<UsageRead> {
+    return (await this.call("durable_usage_read", { ...(cursor === undefined ? {} : { cursor }), since })) as UsageRead;
   }
   async docGet(thread: string, name: string): Promise<unknown> {
     return ((await this.call("durable_doc_get", { thread, name })) as { value: unknown }).value;

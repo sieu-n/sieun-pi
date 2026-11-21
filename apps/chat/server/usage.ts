@@ -2,14 +2,16 @@
  * Usage and hosts. Usage sums pi-host's `durable_usage` rows; hosts reads the hosts registry and each box's relay. The pool's
  * accounts are server/accounts.ts.
  */
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import type { DatabaseSync } from "node:sqlite";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { BUCKET_MS, bucketFor, isRange, RANGE_MS } from "../web/src/lib/api/shared/usage-range.ts";
+import { openIndexReadOnly, readUsageRows, type UsageRead, type UsageRow as IndexUsageRow } from "../../../packages/pi-host/src/durable/index-db.ts";
+import { BUCKET_MS, bucketFor, isRange, RANGE_BUCKETS, RANGE_MS, USAGE_RANGES } from "../web/src/lib/api/shared/usage-range.ts";
 import type { AgentRelayLink, HostsReport, HostView, MachineView, UsageBucket, UsageBucketSum, UsageRange, UsageReport, UsageRow } from "../web/src/lib/api/types.ts";
 import { MultiHost } from "./host/multi-host.ts";
 import type { RelayHost } from "./host/relay-host.ts";
-import type { Host, Ping, UsageTotal } from "./host/types.ts";
+import type { Host, Ping, UsageRange as HostUsageRange, UsageTotal } from "./host/types.ts";
 import { OWNER_ZONE_OFFSET_MS } from "./search.ts";
 import { statusOf, type Threads } from "./threads.ts";
 
@@ -22,7 +24,8 @@ const DAY = 86_400_000;
 export const localDayStart = (at: number): number => Math.floor((at + OWNER_ZONE_OFFSET_MS) / DAY) * DAY - OWNER_ZONE_OFFSET_MS;
 
 type UsageFold = { totals: UsageTotal[]; buckets: UsageBucketSum[] };
-const SUMS = ["turns", "input", "output", "cacheRead", "cacheWrite", "cost", "costInput", "costOutput", "costCacheRead", "costCacheWrite"] as const;
+const ROW_SUMS = ["input", "output", "cacheRead", "cacheWrite", "cost", "costInput", "costOutput", "costCacheRead", "costCacheWrite"] as const;
+const SUMS = ["turns", ...ROW_SUMS] as const;
 
 /** The range's totals per thread and model, and each bucket's sums, from one bucketed answer whose every row names its bucket. */
 function fold(rows: readonly UsageTotal[], since: number, step: number, count: number): UsageFold {
@@ -53,7 +56,7 @@ function fold(rows: readonly UsageTotal[], since: number, step: number, count: n
 }
 
 /** For a pi-host without `bucketMs`: one call per bucket, sent in one round, each answer named with its bucket and folded the same way. */
-async function byCalls(host: Host, since: number, step: number, count: number, scope: { threads?: string[] }, keep: (row: UsageTotal) => boolean): Promise<UsageTotal[]> {
+async function byCalls(host: Pick<Host, "usage">, since: number, step: number, count: number, scope: { threads?: string[] }, keep: (row: UsageTotal) => boolean): Promise<UsageTotal[]> {
   const answers = await Promise.all(Array.from({ length: count }, async (_, i) => {
     const start = since + i * step;
     return (await host.usage({ since: start, until: start + step, ...scope })).filter(keep).map(row => ({ ...row, bucket: start }));
@@ -68,7 +71,7 @@ export const bucketStart = (bucket: UsageBucket, at: number): number => (bucket 
  * The range as whole buckets that end with the one holding now, as Prime's chat Usage page draws it: 24 hours for 24h by hour, 1,440 minutes
  * for 24h by minute. A range or bucket the page does not offer reads as 24h and the range's default bucket.
  */
-export async function usageReport(host: Host, threads: Threads, box: string, opts: { range?: string; bucket?: string; thread?: string; host?: string }, now = Date.now()): Promise<UsageReport> {
+export async function usageReport(host: Pick<Host, "usage">, threads: Threads, box: string, opts: { range?: string; bucket?: string; thread?: string; host?: string }, now = Date.now()): Promise<UsageReport> {
   const range: UsageRange = isRange(opts.range) ? opts.range : "24h";
   const bucket = bucketFor(range, opts.bucket);
   const step = BUCKET_MS[bucket];
@@ -88,6 +91,134 @@ export async function usageReport(host: Host, threads: Threads, box: string, opt
     tokens: { input: t.input, output: t.output, cacheRead: t.cacheRead, cacheWrite: t.cacheWrite }, cost: costOf(t),
   }));
   return { at: now, since, until, range, bucket, rows, buckets };
+}
+
+/** One box's usage rows: this box's index.sqlite on a read-only connection, or another box's through its relay's `durable_usage_read`. */
+export interface UsageSource {
+  box: string;
+  up(): boolean;
+  read(cursor: string | undefined, since: number): UsageRead | Promise<UsageRead>;
+}
+
+/** This box's pi-host index.sqlite, read as pi-host's `durable_usage_read` reads it. */
+export class SqliteUsage implements UsageSource {
+  private db?: DatabaseSync;
+  constructor(readonly box: string, private readonly path: string) {}
+  up(): boolean {
+    return true;
+  }
+  read(cursor: string | undefined, since: number): UsageRead {
+    if (!this.db && !existsSync(this.path)) return { rows: [], cursor: cursor ?? "0:0", more: false, restart: cursor === undefined };
+    this.db ??= openIndexReadOnly(this.path);
+    return readUsageRows(this.db, cursor, since);
+  }
+  close(): void {
+    this.db?.close();
+    this.db = undefined;
+  }
+}
+
+const HOUR_MS = BUCKET_MS.hour;
+/** How far back the kept sums go: the longest range and one more bucket, since a range ends with the bucket that holds now. */
+const HOURS_KEPT_MS = Math.max(...USAGE_RANGES.map(range => RANGE_MS[range] + Math.max(...RANGE_BUCKETS[range].map(bucket => BUCKET_MS[bucket]))));
+const MINUTES_KEPT_MS = Math.max(...USAGE_RANGES.filter(range => RANGE_BUCKETS[range].includes("minute")).map(range => RANGE_MS[range])) + BUCKET_MS.minute;
+/** The kept rows are read again this often, as often as `Threads` reads the thread list, so the page is never further behind than the sidebar. */
+export const USAGE_PULL_MS = 2_000;
+
+type Sum = UsageTotal & { start: number };
+type BoxUsage = { cursor?: string; read: boolean; hours: Map<string, Sum>; minutes: Map<string, Sum> };
+
+function addTo(sums: Map<string, Sum>, start: number, row: IndexUsageRow): void {
+  const key = `${start}\u0000${row.thread}\u0000${row.model}`;
+  let sum = sums.get(key);
+  if (!sum) sums.set(key, sum = { start, thread: row.thread, model: row.model, turns: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, costInput: 0,
+    costOutput: 0, costCacheRead: 0, costCacheWrite: 0 });
+  sum.turns += 1;
+  for (const name of ROW_SUMS) sum[name] += row[name];
+}
+
+/**
+ * Every box's usage, summed by hour and by minute in memory, so api/usage answers with no call to any box. Each pull reads only the rows
+ * after the last cursor. On 11-21 api/usage took 205 to 220 ms a call, since every call waited for the Mac's pi-host across the relay.
+ * Until every box whose link is up has been read through once, a range reads the boxes as before (`fallback`).
+ */
+export class KeptUsage implements Pick<Host, "usage"> {
+  private readonly boxes = new Map<string, BoxUsage>();
+  private pulling?: Promise<void>;
+  private timer?: NodeJS.Timeout;
+
+  constructor(private readonly sources: () => UsageSource[], private readonly fallback: Pick<Host, "usage">, private readonly log: (line: string) => void = () => {},
+    private readonly now: () => number = Date.now) {}
+
+  start(ms = USAGE_PULL_MS): void {
+    void this.pull();
+    this.timer = setInterval(() => void this.pull(), ms);
+  }
+
+  stop(): void {
+    clearInterval(this.timer);
+  }
+
+  /** Reads each box's new rows; a pull while one runs waits for that one. */
+  pull(): Promise<void> {
+    this.pulling ??= this.pullAll().finally(() => { this.pulling = undefined; });
+    return this.pulling;
+  }
+
+  private async pullAll(): Promise<void> {
+    const now = this.now();
+    for (const source of this.sources()) {
+      if (!source.up()) continue;
+      let box = this.boxes.get(source.box);
+      if (!box) this.boxes.set(source.box, box = { read: false, hours: new Map(), minutes: new Map() });
+      try {
+        for (;;) {
+          const page = await source.read(box.cursor, now - HOURS_KEPT_MS);
+          if (page.restart) {
+            box.hours.clear();
+            box.minutes.clear();
+          }
+          for (const row of page.rows) {
+            addTo(box.hours, Math.floor(row.at / HOUR_MS) * HOUR_MS, row);
+            if (row.at >= now - MINUTES_KEPT_MS) addTo(box.minutes, Math.floor(row.at / BUCKET_MS.minute) * BUCKET_MS.minute, row);
+          }
+          box.cursor = page.cursor;
+          if (!page.more) break;
+          await new Promise(resolve => setImmediate(resolve));
+        }
+        box.read = true;
+      } catch (error) {
+        this.log(`usage: reading ${source.box} failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      for (const [key, sum] of box.hours) if (sum.start < now - HOURS_KEPT_MS) box.hours.delete(key);
+      for (const [key, sum] of box.minutes) if (sum.start < now - MINUTES_KEPT_MS) box.minutes.delete(key);
+    }
+  }
+
+  /** The range's sums per bucket, thread and model, each row naming its box, as `durable_usage` gives them; on whole hours from the hourly sums. */
+  async usage(range: HostUsageRange): Promise<UsageTotal[]> {
+    const { since, until, bucketMs } = range;
+    const hours = since !== undefined && until !== undefined && since % HOUR_MS === 0 && until % HOUR_MS === 0 && (bucketMs ?? 0) % HOUR_MS === 0;
+    const kept = this.now() - (hours ? HOURS_KEPT_MS : MINUTES_KEPT_MS);
+    const ready = this.sources().every(source => !source.up() || this.boxes.get(source.box)?.read);
+    if (!ready || since === undefined || until === undefined || !bucketMs || since < kept) return this.fallback.usage(range);
+    const only = range.threads?.length ? new Set(range.threads) : undefined;
+    const out: UsageTotal[] = [];
+    for (const [name, box] of this.boxes) {
+      const rows = new Map<string, UsageTotal>();
+      for (const sum of (hours ? box.hours : box.minutes).values()) {
+        if (sum.start < since || sum.start >= until || (only && !only.has(sum.thread))) continue;
+        const bucket = since + Math.floor((sum.start - since) / bucketMs) * bucketMs;
+        const key = `${bucket}\u0000${sum.thread}\u0000${sum.model}`;
+        const { start: _start, ...sums } = sum;
+        const row = rows.get(key);
+        if (!row) rows.set(key, { ...sums, bucket, host: name });
+        else for (const field of SUMS) row[field] += sum[field];
+      }
+      out.push(...[...rows.values()].sort((a, b) => a.bucket! - b.bucket! || a.thread.localeCompare(b.thread) || a.model.localeCompare(b.model)));
+    }
+    return out;
+  }
 }
 
 interface RegistryHost { name: string; address: string; relayPort?: number; token?: string }

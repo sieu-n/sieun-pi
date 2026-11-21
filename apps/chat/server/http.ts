@@ -403,7 +403,7 @@ export function routes(app: App): Route[] {
     }),
     route("GET", "/api/for-you", async () => ({ items: await app.boards.forYou() })),
     route("GET", "/api/boards", async () => app.boards.index()),
-    route("GET", "/api/usage", async (_r, _p, q) => usageReport(app.host, app.threads, app.config.box, { range: str(q.get("range")), bucket: str(q.get("bucket")), thread: str(q.get("thread")), host: str(q.get("host")) })),
+    route("GET", "/api/usage", async (_r, _p, q) => usageReport(app.usage, app.threads, app.config.box, { range: str(q.get("range")), bucket: str(q.get("bucket")), thread: str(q.get("thread")), host: str(q.get("host")) })),
     ...accountRoutes(app, route),
     route("GET", "/api/hosts", async () => hostsReport(app.host, app.threads, app.config.box, app.config.socket, app.config.hostsFile)),
     route("GET", "/api/consoles", async () => consolesReport(app.config.consoles)),

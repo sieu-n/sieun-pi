@@ -43,6 +43,7 @@ import { parseLayout } from "../web/src/lib/api/shared/sidebar-layout.ts";
 import { Unfurler } from "./unfurl.ts";
 import { POST_KINDS, postHas, Search } from "./search.ts";
 import { likeRegex, postDocId, SEARCH_DOC_VERSION, SearchEngine, SqliteEntries, type EntrySource, type PostDoc } from "./search-engine.ts";
+import { KeptUsage, SqliteUsage, type UsageSource } from "./usage.ts";
 import { Meili, startOwnMeili, type OwnMeili } from "./meili.ts";
 import type { FixtureHost } from "./host/fixture.ts";
 import { drained } from "./disk.ts";
@@ -96,6 +97,10 @@ export class App {
   readonly queues: QueueWatch;
   readonly searchEngine: SearchEngine;
   private searchStop: () => void = () => {};
+  /** api/usage's sums, every box's usage rows kept in memory; reads go to the host itself when this box has no pi-host index. */
+  readonly usage: Pick<Host, "usage">;
+  private readonly keptUsage?: KeptUsage;
+  private keptUsageClose: () => void = () => {};
   readonly outbox: Outbox;
   /** The boxes agents run on, when the host is a `MultiHost` (server/host/multi-host.ts); a fixture or test host has one box. */
   readonly routing?: MultiHost;
@@ -296,6 +301,16 @@ export class App {
       if (name === "chat.board") this.boards.docChanged(thread, value);
     };
     this.searchEngine = this.newSearchEngine(routing?.list()[0]!.host ?? host, routing);
+    if (config.durableIndex) {
+      const own = new SqliteUsage(config.box, config.durableIndex);
+      const sources = (): UsageSource[] => [own, ...(routing?.list() ?? []).flatMap(({ box }): UsageSource[] => {
+        const relay = box === config.box ? undefined : routing!.relay(box);
+        return relay ? [{ box, up: () => routing!.link(box).state === "up", read: (cursor, since) => relay.usageRead(cursor, since) }] : [];
+      })];
+      this.keptUsage = new KeptUsage(sources, host, log);
+      this.keptUsageClose = () => own.close();
+    }
+    this.usage = this.keptUsage ?? host;
     this.search = new Search(this.threads, this.groups, this.searchEngine, room => this.agentStore.postsOf(room));
     if (routing) {
       this.search.boxes = () => routing.list().filter(b => b.box !== config.box).map(b => ({ box: b.box, link: () => routing.link(b.box) }));
@@ -338,6 +353,7 @@ export class App {
     this.boards.start();
     this.outbox.start();
     this.laterDue.arm();
+    this.keptUsage?.start();
     if (this.config.meili) void this.searchEngine.refresh().catch(error => this.log(`search: ${String(error)}`));
   }
 
@@ -355,6 +371,8 @@ export class App {
     await this.threads.stop();
     for (const client of this.clients) client.socket.close();
     this.searchStop();
+    this.keptUsage?.stop();
+    this.keptUsageClose();
     await drained();
   }
 
