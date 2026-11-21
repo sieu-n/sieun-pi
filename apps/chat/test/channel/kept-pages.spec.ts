@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { conversation, open, tag } from "./helpers";
 
 /**
@@ -7,6 +7,28 @@ import { conversation, open, tag } from "./helpers";
  * The page now keeps its pages in IndexedDB (page-db.ts), so a load shows them at once, and it reads ahead the rooms Cmd K lists.
  */
 const held = /\/api\/c\/[^/]+(\/items|\/replies\/[^/]+)?(\?.*)?$/;
+
+/** Whether IndexedDB (page-db.ts) holds #general's timeline and the replies of a thread in it, as a reload restores them. */
+const keptPages = (page: Page) =>
+  page.evaluate(
+    () =>
+      new Promise<{ timeline: boolean; replies: boolean }>((resolve, reject) => {
+        const request = indexedDB.open("chat.pages");
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => {
+          const all = request.result.transaction("pages").objectStore("pages").getAll();
+          all.onerror = () => reject(all.error);
+          all.onsuccess = () => {
+            const pages = all.result as { cache: string; key: string; value: { items?: unknown[]; root?: unknown } }[];
+            request.result.close();
+            resolve({
+              timeline: pages.some((kept) => kept.cache === "timeline" && kept.key === "ch_general" && Boolean(kept.value.items?.length)),
+              replies: pages.some((kept) => kept.cache === "replies" && kept.key.startsWith("ch_general\u0000") && Boolean(kept.value.root)),
+            });
+          };
+        };
+      }),
+  );
 
 test("a reload shows the room and its open thread from the pages the last load kept, and logs their reads as refreshes", async ({ page }) => {
   await page.addInitScript(() => {
@@ -22,8 +44,7 @@ test("a reload shows the room and its open thread from the pages the last load k
   const pane = page.getByTestId("thread-pane");
   await expect(pane.locator("[data-message-id]").nth(1)).toBeVisible();
   await read;
-  // The answers are in; one more turn of the page's loop keeps them.
-  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 200)));
+  await expect.poll(() => keptPages(page)).toEqual({ timeline: true, replies: true });
 
   // Every read of a conversation hangs for a moment after the reload, so only the kept pages can fill the screen.
   let release = (): void => undefined;
@@ -38,19 +59,27 @@ test("a reload shows the room and its open thread from the pages the last load k
   await page.reload();
   await expect(conversation(page).locator("[data-message-id]").first()).toBeVisible();
   await expect(pane.locator("[data-message-id]").nth(1)).toBeVisible();
-  expect(asked).toContain("/api/c/ch_general/items");
-  expect(asked.some((path) => path.startsWith("/api/c/ch_general/replies/"))).toBe(true);
+  // The page asks for Later and the read mark first, so the refreshes may leave just after the kept pages show.
+  await expect.poll(() => asked).toContain("/api/c/ch_general/items");
+  await expect.poll(() => asked.some((path) => path.startsWith("/api/c/ch_general/replies/"))).toBe(true);
 
   const refreshed = Promise.all([
     page.waitForResponse((r) => r.url().includes("/api/c/ch_general/items")),
     page.waitForResponse((r) => r.url().includes("/api/c/ch_general/replies/")),
   ]);
+  const samples: { p: string; bg?: string }[] = [];
+  page.on("request", (r) => {
+    if (r.url().endsWith("/api/timings")) samples.push(...(r.postDataJSON() as { samples: { p: string; bg?: string }[] }).samples);
+  });
   release();
   await refreshed;
-  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 50)));
-  const batch = page.waitForRequest((r) => r.url().endsWith("/api/timings"));
-  await page.evaluate(() => dispatchEvent(new Event("pagehide")));
-  const samples = ((await batch).postDataJSON() as { samples: { p: string; bg?: string }[] }).samples;
+  const logged = (path: (p: string) => boolean) => samples.some((s) => path(s.p));
+  await expect
+    .poll(async () => {
+      await page.evaluate(() => dispatchEvent(new Event("pagehide")));
+      return ["/api/c/ch_general/items", "/api/c/ch_general"].every((path) => logged((p) => p === path)) && logged((p) => p.startsWith("/api/c/ch_general/replies/"));
+    })
+    .toBe(true);
   const of = (match: (path: string) => boolean) => samples.filter((s) => match(s.p)).map((s) => s.bg ?? "waited");
   expect(of((path) => path === "/api/c/ch_general/items")).toEqual(["shown"]);
   expect(of((path) => path.startsWith("/api/c/ch_general/replies/"))).toContain("shown");
