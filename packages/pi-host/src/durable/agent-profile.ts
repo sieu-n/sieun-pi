@@ -23,8 +23,8 @@ import { getLocalHarnessStateDir } from "./vendor/prime-harness.ts";
 
 /**
  * An `agent.ref` value: the agent's id, its folder on this box, and what the thread is to it. `work` is the agent's work thread, with `comm`
- * the id of its DM comm thread once the agent is split; `job` is a job filed under it; `comm` speaks for the agent in room `room` (a DM
- * `dm_<slug>`, a channel `ch_` or a Solo room `so_`) and hands work to the work thread `work`.
+ * the id of its main comm thread once it has one, its DM's or else its first room's; `job` is a job filed under it; `comm` speaks for the
+ * agent in room `room` (a DM `dm_<slug>`, a channel `ch_` or a Solo room `so_`) and hands work to the work thread `work`.
  */
 export type AgentRef =
   | { agent: string; dir: string; role: "work"; comm?: string }
@@ -256,7 +256,8 @@ function groupCommInstructions(ref: { agent: string; room: string; work: string 
     "",
     "1. Each post arrives with a header that names the room, the post's author and its hops. A Solo room's header also gives its agenda and members.",
     "2. Every post reaches every member. Speak in the room only when the post concerns your agent or you add something no one said. Otherwise end the turn without a message, also when the owner's post is for another member or an agent's post needs nothing from you.",
-    "3. Speak only with tell_owner, one post per answer (step 13). Name another member as @<name> to hand that member something.",
+    "3. Speak only with tell_owner, one post per answer (step 13). Name another member as @<name> to hand that member something. " +
+      "The room shows nothing else you write, so end every turn with no text, also after a post, a reaction, a hand-over or marking a thread done, and never sum up what you did.",
     "4. An agent's post or a notice is not the owner's turn, so set why and about there. A message that answers the agenda or a question put to your agent is why \"answer\", with about naming that point.",
     `5. ${status}`,
     `6. ${hand}`,
@@ -271,16 +272,16 @@ function groupCommInstructions(ref: { agent: string; room: string; work: string 
   ], platformFeedbackStep(ref)), memoryStep(ref)).join("\n");
 }
 
-/** The root conversation's instructions for a work thread whose agent has a comm thread; `comm` is the DM comm thread. */
+/** The root conversation's instructions for a work thread whose agent has a comm thread; `comm` is its DM's or else its first room's. */
 export function workInstructions(ref: { agent: string; comm: string }): string {
   return [
     `You are agent ${ref.agent}'s work thread. You do not talk with people, so you have no tell_owner tool.`,
-    `Your agent has one comm thread per room, which talks there and hands you tasks as agent messages. The DM comm thread ${ref.comm} talks with the owner.`,
+    `Your agent has one comm thread per room, which talks there and hands you tasks as agent messages. Its main comm thread ${ref.comm} is the one in its DM, or else in its first room.`,
     "When a task finishes, fails or gets blocked, report to the comm thread that handed it to you, and lead the report with the answer. " +
       "Send it no acknowledgment or progress note, such as \"Taken\" or \"expect it within the hour\": it reads your state itself when someone asks, and it posts your report as the result. " +
       "Its message header `[agent-message from sibling:<name>]` names it, so send `await agent_message.send(report, receiver_role=\"sibling\", receiver_name=\"<name>\")` with that exact name.",
     "A task you pass on to a job still reports to the comm thread that handed it to you, once the job's result is in, so note that name on the task's board step.",
-    `Send a report no comm thread asked for to the DM comm thread with \`await agent_message.send(report, receiver_role="sibling", receiver_name=${JSON.stringify(ref.comm)})\`.`,
+    `Send a report no comm thread asked for to the main comm thread with \`await agent_message.send(report, receiver_role="sibling", receiver_name=${JSON.stringify(ref.comm)})\`.`,
     "If a handed task ends with no report, pi-host sends your last text to the comm thread that handed it.",
     ...ref.agent === PLATFORM_AGENT.id ? [
       `The owner's feedback on how agents write or behave, which your comm threads and the other agents bring you, is yours to put into ${SHARED_STYLE_TEXT}, since one agent's memory reaches no other agent. ` +

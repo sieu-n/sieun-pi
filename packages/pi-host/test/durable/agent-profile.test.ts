@@ -16,7 +16,7 @@ import { AgentDoc, ROOT_CONVERSATION_ID, type AgentState, type EntryRecord } fro
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { PRIME_BASE_PROMPT } from "@sieun-pi/pi-family/preamble";
 import { CHAT_BRIEF } from "../../../../legacy/prime/user-history/src/chat-brief.ts";
-import { agentHarnessDir, AgentRoleDoc, briefFile, commInstructions, conversationHarnessDir, parseAgentRef, SHARED_STYLE_TEXT, workInstructions, type AppliedRole } from "../../src/durable/agent-profile.ts";
+import { agentHarnessDir, AgentRoleDoc, briefFile, commInstructions, conversationHarnessDir, parseAgentRef, roleFields, SHARED_STYLE_TEXT, workInstructions, type AppliedRole } from "../../src/durable/agent-profile.ts";
 import { threadHarnessDir } from "../../src/durable/prime-harness.ts";
 import { EDIT_MESSAGE_DESCRIPTION } from "../../src/durable/room-tools.ts";
 import { primeModules, primePromptParts, primeResources } from "../../src/durable/prime-prompt.ts";
@@ -138,6 +138,23 @@ test("owner feedback on how agents write reaches every agent: others bring it to
   }
   assert.match(workInstructions({ agent: "ag_agent-factory", comm: "c-1" }), /yours to put into the sw-factory skill[\s\S]*agent-profile\.ts[\s\S]*blind fresh session[\s\S]*p110/);
   assert.doesNotMatch(workInstructions({ agent: "ag_vent", comm: "c-1" }), /sw-factory skill/);
+});
+
+test("a group comm thread, like a DM one, ends every turn with no text, since the room shows only its posts (p128 trace, 11-21)", () => {
+  const group = commInstructions({ agent: "ag_search-product-misc", room: "ch_4c388a00", work: "w1" });
+  assert.match(group, /The room shows nothing else you write, so end every turn with no text, also after a post, a reaction, a hand-over or marking a thread done/);
+  assert.match(commInstructions({ agent: "ag_vent", room: "dm_vent", work: "w1" }), /End a turn that posts nothing, such as one your reaction answers, with no text/);
+});
+
+test("a work thread names a channel comm thread as its main one when its agent has no DM comm thread, and keeps no tell_owner (p128 trace, 11-21)", () => {
+  const ref = { agent: "ag_search-product-misc", dir: "/a/search-product-misc", role: "work" as const, comm: "5d50e997" };
+  const fields = roleFields(ref);
+  assert.deepEqual(fields.tools, { remove: ["tell_owner"] });
+  assert.match(fields.instructions ?? "", /no tell_owner tool/);
+  assert.match(fields.instructions ?? "", /Send it no acknowledgment or progress note/);
+  assert.match(fields.instructions ?? "", /main comm thread 5d50e997 is the one in its DM, or else in its first room[\s\S]*to the main comm thread with `await agent_message\.send\(report, receiver_role="sibling", receiver_name="5d50e997"\)`/);
+  assert.doesNotMatch(fields.instructions ?? "", /DM comm thread/);
+  assert.deepEqual(roleFields({ agent: "ag_vent", dir: "/a/vent", role: "work" }), {}, "an agent with no comm thread at all keeps tell_owner");
 });
 
 test("a list of options explains its most interesting one with an example and how it fits (owner, #sw-factory-build p97)", () => {
