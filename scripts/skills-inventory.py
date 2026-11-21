@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Inventory every agent skill copy on us-metal02 and the Mac, with usage counts and health flags.
 
-Writes ~/work/skills-health/inventory.json, the data behind the sw factory Skills view.
-Verdicts, upstream origins and groups come from config/skills-health.json next to this script.
+Writes ~/work/skills-health/inventory.json, the facts behind the sw factory skills DB: apps/chat's server/skills-db.ts ingests
+its `copies`, `usage` and box `settings` into chat.sqlite and gives verdicts by rule. Upstream origins and groups for the older
+`skills` rows come from config/skills-health.json next to this script.
 
     python3 scripts/skills-inventory.py [--out PATH] [--no-mac] [--no-usage]
 
@@ -28,9 +29,10 @@ from pathlib import Path
 
 HOME = Path.home()
 SKIP_DIRS = {"node_modules", ".venv", "dist", ".git", "__pycache__", ".trash"}
-REPO_PARENTS = ("src", "Documents/Github", "Documents")
+REPO_PARENTS = ("src", "Documents/Github", "Documents", "code")
+SOURCE_REPO = "sieun-pi"
+SOURCE_SKILL_DIRS = ("skills", "legacy/prime/skills")
 REPO_SKILL_DIRS = (".agents/skills", ".claude/skills", ".codex/skills", ".cursor/skills", ".pi/skills")
-REPO_RULE_DIRS = (".claude/rules", ".cursor/rules")
 USER_SKILL_DIRS = (
     (".claude/skills", "claude", "~/.claude/skills"),
     (".codex/skills", "codex", "~/.codex/skills"),
@@ -75,6 +77,7 @@ def dir_size(path: Path) -> tuple[int, int]:
 
 
 _toplevels: dict[str, str | None] = {}
+_checkouts: dict[str, dict] = {}
 
 
 def git_last_change(path: Path) -> dict | None:
@@ -95,6 +98,35 @@ def git_last_change(path: Path) -> dict | None:
     return {"repo": top, "sha": sha, "at": at, "author": author, "subject": subject}
 
 
+def toplevel(folder: Path) -> str | None:
+    parent = str(folder)
+    if parent not in _toplevels:
+        r = subprocess.run(["git", "-C", parent, "rev-parse", "--show-toplevel"], capture_output=True, text=True)
+        _toplevels[parent] = r.stdout.strip() if r.returncode == 0 else None
+    return _toplevels[parent]
+
+
+def checkout_of(path: Path) -> dict | None:
+    """The git checkout a folder or link sits in, with its remote, branch, last commit time and whether git tracks the path."""
+    top = toplevel(path.parent) if path.parent.is_dir() else None
+    if not top:
+        return None
+    if top not in _checkouts:
+        def out(*args: str) -> str | None:
+            r = subprocess.run(["git", "-C", top, *args], capture_output=True, text=True)
+            return r.stdout.strip() or None if r.returncode == 0 else None
+        files = subprocess.run(["git", "-C", top, "ls-files", "-z"], capture_output=True)
+        _checkouts[top] = {
+            "info": {"root": top, "remote": out("remote", "get-url", "origin"), "branch": out("branch", "--show-current"), "headAt": out("log", "-1", "--format=%cI"),
+                     "upstreamAt": out("log", "-1", "--format=%cI", "@{u}"), "behind": int(out("rev-list", "--count", "HEAD..@{u}") or 0)},
+            "files": set(files.stdout.decode(errors="replace").split("\0")) if files.returncode == 0 else set(),
+        }
+    known = _checkouts[top]
+    rel = os.path.relpath(path, top)
+    tracked = rel in known["files"] or any(f.startswith(rel + "/") for f in known["files"]) if path.is_dir() and not path.is_symlink() else rel in known["files"]
+    return dict(known["info"], tracked=tracked)
+
+
 def find_skill_dirs(root: Path, depth: int = 3) -> list[Path]:
     found = []
     if not root.is_dir():
@@ -107,6 +139,7 @@ def find_skill_dirs(root: Path, depth: int = 3) -> list[Path]:
             if (here / d).is_symlink():
                 found.append(here / d)
                 dirs.remove(d)
+        found.extend(here / n for n in sorted(names) if (here / n).is_symlink() and not (here / n).exists())
         if "SKILL.md" in names and here != root:
             found.append(here)
             dirs[:] = []
@@ -123,7 +156,7 @@ def prime_release_skills() -> Path | None:
     return skills if skills.is_dir() else None
 
 
-def scan_entry(path: Path, box: str, how: str, runtimes: list[str], source: str) -> dict:
+def scan_entry(path: Path, box: str, how: str, runtimes: list[str], source: str, root: Path) -> dict:
     is_link = path.is_symlink()
     target = os.readlink(path) if is_link else None
     real = path.resolve()
@@ -136,7 +169,10 @@ def scan_entry(path: Path, box: str, how: str, runtimes: list[str], source: str)
         "how": how,
         "runtimes": runtimes,
         "source": source,
+        "root": str(root),
         "exists": skill_md.is_file(),
+        "checkout": checkout_of(path),
+        "disableModelInvocation": False,
     }
     if not row["exists"]:
         row["name"] = path.name.removesuffix(".md")
@@ -151,10 +187,12 @@ def scan_entry(path: Path, box: str, how: str, runtimes: list[str], source: str)
         "name": fm.get("name") or (path.name if real.is_dir() else path.stem),
         "dirName": path.name,
         "description": fm.get("description", ""),
+        "disableModelInvocation": fm.get("disable-model-invocation", "").lower() == "true",
         "pythonImport": fm.get("python_import") or (fm.get("metadata") and None),
         "skillMd": str(skill_md),
         "hash": sha256(skill_md),
         "sizeBytes": size,
+        "skillMdBytes": skill_md.stat().st_size,
         "files": files,
         "lines": text.count("\n") + 1,
         "mtime": datetime.fromtimestamp(skill_md.stat().st_mtime, timezone.utc).isoformat(),
@@ -168,42 +206,34 @@ def scan_entry(path: Path, box: str, how: str, runtimes: list[str], source: str)
 def discover(box: str) -> list[dict]:
     rows: list[dict] = []
     jobs: list[tuple] = []
+
+    def add(root: Path, paths, how: str, runtimes: list[str], source: str) -> None:
+        jobs.extend((p, box, how, runtimes, source, root) for p in paths)
+
     links = HOME / ".prime/agent/skills"
     if links.is_dir():
-        for p in sorted(links.iterdir()):
-            jobs.append((p, box, "prime-sync link ~/.prime/agent/skills", ["prime", "pi-host"], "prime-links"))
+        add(links, sorted(links.iterdir()), "prime-sync link ~/.prime/agent/skills", ["prime", "pi-host"], "prime-links")
     release = prime_release_skills()
     if release:
-        for p in sorted(release.iterdir()):
-            if (p / "SKILL.md").exists():
-                jobs.append((p, box, "prime-agent release bundle", ["prime", "pi-host"], "prime-release"))
-    checkout = HOME / "src/sieun-pi"
-    if box == "us-metal02" and checkout.is_dir():
-        for sub in ("skills", "legacy/prime/skills"):
-            for p in sorted((checkout / sub).iterdir()):
-                if (p / "SKILL.md").exists():
-                    jobs.append((p, box, "sieun-pi source", [], "sieun-pi"))
-        for p in sorted((checkout / "config/claude-rules").glob("*.md")):
-            jobs.append((p, box, "pi-claude-rules extension", ["prime", "pi-host"], "sieun-pi-rules"))
-        for p in sorted((checkout / "packages").glob("*/skills/*")):
-            if (p / "SKILL.md").exists():
-                jobs.append((p, box, f"sieun-pi package {p.parent.parent.name}", ["pi-host"], "sieun-pi-package"))
-    plugins = HOME / ".claude/plugins/cache"
-    if plugins.is_dir():
-        for p in sorted(plugins.glob("*/*/*/skills/*")):
-            if (p / "SKILL.md").exists():
-                jobs.append((p, box, f"Claude Code plugin {p.parent.parent.parent.name}", ["claude"], "claude-plugin"))
-    codex_plugins = HOME / ".codex/plugins/cache"
-    if codex_plugins.is_dir():
-        for p in sorted(codex_plugins.glob("*/*/*/skills/*")):
-            if (p / "SKILL.md").exists():
-                jobs.append((p, box, f"Codex plugin {p.parent.parent.parent.name}", ["codex"], "codex-plugin"))
-    for rel, runtime, how in USER_SKILL_DIRS:
-        for p in find_skill_dirs(HOME / rel):
-            jobs.append((p, box, how, [runtime], "user-dir"))
-    for rules in (HOME / ".claude/rules",):
-        for p in sorted(rules.glob("*.md")) if rules.is_dir() else []:
-            jobs.append((p, box, "~/.claude/rules", ["claude"], "user-rules"))
+        add(release, [p for p in sorted(release.iterdir()) if (p / "SKILL.md").exists()], "prime-agent release bundle", ["prime", "pi-host"], "prime-release")
+    pihost = HOME / ".local/share/pi-host/current/packages"
+    for skills in sorted(pihost.glob("*/skills")) if pihost.is_dir() else []:
+        add(skills, [p for p in sorted(skills.iterdir()) if (p / "SKILL.md").exists()], f"pi-host release {skills.parent.name}", ["pi-host"], "pi-host-release")
+    runtime = HOME / ".local/share/sieun-pi-runtime/current/skills"
+    if runtime.is_dir():
+        add(runtime, [p for p in sorted(runtime.iterdir()) if (p / "SKILL.md").exists()], "sieun-pi runtime copy", [], "sieun-pi-runtime")
+    pi_links = HOME / ".pi/agent/skills"
+    if pi_links.is_dir():
+        add(pi_links, sorted(pi_links.iterdir()), "~/.pi/agent/skills (pi CLI)", ["pi"], "pi-links")
+    for plugins, runtime_name, label, source in ((HOME / ".claude/plugins/cache", "claude", "Claude Code plugin", "claude-plugin"),
+                                                 (HOME / ".codex/plugins/cache", "codex", "Codex plugin", "codex-plugin")):
+        for skills in sorted(plugins.glob("*/*/*/skills")) if plugins.is_dir() else []:
+            add(skills, find_skill_dirs(skills, depth=6), f"{label} {skills.parent.parent.name}", [runtime_name], source)
+    for rel, runtime_name, how in USER_SKILL_DIRS:
+        add(HOME / rel, find_skill_dirs(HOME / rel), how, [runtime_name], "user-dir")
+    rules = HOME / ".claude/rules"
+    if rules.is_dir():
+        add(rules, sorted(rules.glob("*.md")), "~/.claude/rules", ["claude"], "user-rules")
     state = HOME / ".prime/agent/harness/harness_state.json"
     if box == "us-metal02" and state.is_file():
         entries = json.loads(state.read_text()).get("entries", {})
@@ -213,6 +243,7 @@ def discover(box: str) -> list[dict]:
                 rows.append({
                     "box": box, "path": f"harness:{kind}:{entry_id}", "realPath": f"harness:{kind}:{entry_id}", "linkTarget": None,
                     "how": "Prime continual harness (global)", "runtimes": ["prime", "pi-host"], "source": f"harness-{kind}", "exists": True,
+                    "root": str(state), "checkout": None, "disableModelInvocation": False,
                     "name": entry_id, "dirName": entry_id, "description": entry.get("title", ""), "pythonImport": None,
                     "skillMd": f"harness:{kind}:{entry_id}", "hash": hashlib.sha256(text.encode()).hexdigest(), "sizeBytes": len(text.encode()),
                     "files": 1, "lines": text.count("\n") + 1, "mtime": entry.get("updated_at"),
@@ -228,17 +259,40 @@ def discover(box: str) -> list[dict]:
             if not repo.is_dir() or repo.is_symlink() or repo.resolve() in seen_repos:
                 continue
             seen_repos.add(repo.resolve())
+            if repo.name == SOURCE_REPO:
+                for sub in SOURCE_SKILL_DIRS:
+                    folder = repo / sub
+                    add(folder, [p for p in sorted(folder.iterdir()) if (p / "SKILL.md").exists()] if folder.is_dir() else [], "sieun-pi source", [], "sieun-pi")
+                for folder in sorted(repo.glob("packages/*/skills")):
+                    add(folder, [p for p in sorted(folder.iterdir()) if (p / "SKILL.md").exists()], f"sieun-pi package {folder.parent.name}", ["pi-host"], "sieun-pi-package")
+                add(repo / "config/claude-rules", sorted((repo / "config/claude-rules").glob("*.md")), "pi-claude-rules extension", ["prime", "pi-host"], "sieun-pi-rules")
             for rel in REPO_SKILL_DIRS:
-                for p in find_skill_dirs(repo / rel):
-                    jobs.append((p, box, f"repo {rel} ({repo.name})", ["claude", "codex"], f"repo:{repo.name}"))
-            for rel in REPO_RULE_DIRS:
-                rdir = repo / rel
-                if rdir.is_dir():
-                    for p in sorted(rdir.glob("*.md*")):
-                        jobs.append((p, box, f"repo {rel} ({repo.name})", ["claude"], f"repo-rules:{repo.name}"))
+                add(repo / rel, find_skill_dirs(repo / rel), f"repo {rel} ({repo.name})", ["claude", "codex"], f"repo:{repo.name}")
     with ThreadPoolExecutor(8) as pool:
         rows.extend(pool.map(lambda job: scan_entry(*job), jobs))
     return rows
+
+
+def box_settings() -> dict:
+    """The settings that filter which skills a runtime lists: Prime's skills and bundledSkills, Claude Code's plugins, each repo's Prime filter."""
+    prime = (lambda d: d if isinstance(d, dict) else {})(load_json(HOME / ".prime/agent/settings.json"))
+    claude = (lambda d: d if isinstance(d, dict) else {})(load_json(HOME / ".claude/settings.json"))
+    repos = {}
+    for parent in REPO_PARENTS:
+        base = HOME / parent
+        for repo in sorted(base.iterdir()) if base.is_dir() else []:
+            settings = load_json(repo / ".prime/agent/settings.json")
+            if isinstance(settings, dict) and isinstance(settings.get("skills"), list):
+                repos[str(repo.resolve())] = settings["skills"]
+    return {"primeSkills": prime.get("skills"), "primeBundledSkills": prime.get("bundledSkills"),
+            "claudeEnabledPlugins": claude.get("enabledPlugins"), "repos": repos}
+
+
+def load_json(path: Path):
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
 
 
 def count_usage(now: datetime, box: str) -> dict:
@@ -253,6 +307,7 @@ def scan_box(box: str, usage: bool) -> dict:
     now = datetime.now(timezone.utc)
     out = {"box": box, "scannedAt": now.isoformat(), "ok": True, "error": None}
     out["rows"] = discover(box)
+    out["settings"] = box_settings()
     trash = HOME / ".claude/skills/.trash"
     wt = subprocess.run(["git", "-C", str(HOME / "src/sieun-pi"), "worktree", "list", "--porcelain"], capture_output=True, text=True)
     out["extras"] = {
@@ -330,31 +385,19 @@ def family(row: dict) -> str:
     return src
 
 
-def match_verdict(row: dict, verdicts: list[dict]) -> dict | None:
-    best = None
-    for v in verdicts:
-        if v.get("name") not in (None, row["name"]):
-            continue
-        if v.get("pathContains") and v["pathContains"] not in row["path"] and v["pathContains"] not in row["realPath"]:
-            continue
-        if v.get("box") and v["box"] != row["box"]:
-            continue
-        score = (v.get("name") is not None) + bool(v.get("pathContains")) * 2 + bool(v.get("box"))
-        if best is None or score > best[0]:
-            best = (score, v)
-    return best[1] if best else None
-
-
 def merge_usage(scans: list[dict]) -> dict:
     merged: dict[str, dict] = {}
     for scan in scans:
         usage = scan.get("usage") or {}
         for name, u in (usage.get("skills") or {}).items():
-            m = merged.setdefault(name, {"uses7d": 0, "uses30d": 0, "sessions7d": 0, "sessions30d": 0, "agents": set(), "uses": []})
-            for k in ("uses7d", "uses30d", "sessions7d", "sessions30d"):
+            m = merged.setdefault(name, {"uses7d": 0, "uses30d": 0, "sessions7d": 0, "sessions30d": 0, "cliUnverified": 0, "agents": set(), "uses": [],
+                                         "byKind": {}, "lastUse": None})
+            for k in ("uses7d", "uses30d", "sessions7d", "sessions30d", "cliUnverified"):
                 m[k] += u.get(k, 0)
             m["agents"].update(a for a in u.get("agents", []) if a)
             m["uses"].extend(u.get("uses", []))
+            add_kinds(m["byKind"], u.get("byKind") or {})
+            m["lastUse"] = max(filter(None, (m["lastUse"], u.get("lastUse"))), default=None)
     for m in merged.values():
         m["agentsCount"] = len(m["agents"])
         m["agents"] = sorted(m["agents"])[:20]
@@ -362,12 +405,23 @@ def merge_usage(scans: list[dict]) -> dict:
     return merged
 
 
+def add_kinds(into: dict, more: dict) -> None:
+    for kind, tally in more.items():
+        cur = into.setdefault(kind, {"uses": 0, "sessions": 0})
+        cur["uses"] += tally.get("uses", 0)
+        cur["sessions"] += tally.get("sessions", 0)
+
+
 def usage_for(row: dict, usage: dict) -> dict:
     keys = {row["name"], row.get("dirName")} | {Path(link).name for link in row.get("links", [])}
     found = [usage[k] for k in sorted(k for k in keys if k) if k in usage]
     if len(found) <= 1:
         return found[0] if found else {}
-    out = {k: sum(f.get(k, 0) for f in found) for k in ("uses7d", "uses30d", "sessions7d", "sessions30d", "agentsCount")}
+    out = {k: sum(f.get(k, 0) for f in found) for k in ("uses7d", "uses30d", "sessions7d", "sessions30d", "agentsCount", "cliUnverified")}
+    out["byKind"] = {}
+    for f in found:
+        add_kinds(out["byKind"], f.get("byKind") or {})
+    out["lastUse"] = max((f["lastUse"] for f in found if f.get("lastUse")), default=None)
     out["agents"] = sorted({a for f in found for a in f.get("agents", [])})[:20]
     out["uses"] = sorted((u for f in found for u in f.get("uses", [])), key=lambda u: u.get("at") or "", reverse=True)[:10]
     return out
@@ -378,8 +432,6 @@ def build(scans: list[dict], config: dict) -> dict:
     harness_rules = {h["id"]: h for h in config.get("harnessRules", [])}
     for scan in scans:
         for row in scan["rows"]:
-            if row["source"].startswith("repo-rules:") and not (match_verdict(row, config.get("verdicts", [])) or {}).get("pathContains"):
-                continue
             if row.get("harnessKind"):
                 rule = harness_rules.get(row["name"])
                 if row["harnessKind"] in ("skill", "subagent"):
@@ -406,7 +458,6 @@ def build(scans: list[dict], config: dict) -> dict:
     usage = merge_usage(scans)
     upstreams = config.get("upstreams", {})
     groups = config.get("groups", {})
-    verdicts = config.get("verdicts", [])
     by_name: dict[str, list[dict]] = {}
     by_hash: dict[str, list[dict]] = {}
     for row in rows:
@@ -451,17 +502,7 @@ def build(scans: list[dict], config: dict) -> dict:
         if row.get("kindOverride"):
             kind = row["kindOverride"]
             flags = [f for f in flags if f["kind"] != "duplicate"]
-        v = match_verdict(row, verdicts) or {}
-        if row.get("entryId"):
-            v = dict(harness_rules[row["entryId"]], group="harness notes")
-            if v.get("verdict") in ("remove", "merge"):
-                flags.append({"kind": "rule-repeats-skill", "detail": v.get("reason", "")})
-        if v.get("kind"):
-            kind = v["kind"]
-        if v.get("unrequested"):
-            flags.append({"kind": "unrequested", "detail": v.get("unrequested") if isinstance(v.get("unrequested"), str) else "Installed without an ask."})
-        if v.get("rulerepeats"):
-            flags.append({"kind": "rule-repeats-skill", "detail": v["rulerepeats"]})
+        v = {"group": "harness notes"} if row.get("entryId") else {}
         u = usage_for(row, usage)
         if not u.get("uses30d") and kind not in ("rule",) and any(s.get("usage") for s in scans):
             flags.append({"kind": "unused", "detail": "No session read or called it in the last 30 days."})
@@ -481,12 +522,15 @@ def build(scans: list[dict], config: dict) -> dict:
             "upstream": ({"url": up.get("url"), "status": "drift" if kind == "fork" else ("same" if up.get("sha256") else "unknown")} if up else None),
             "duplicateOf": [r["id"] for r in dups],
             "flags": flags,
-            "useful": {"verdict": v.get("verdict"), "reason": v.get("reason"), "mergeInto": v.get("mergeInto"), "action": bool(v.get("verdict") in ("merge", "remove") and not v.get("noAction"))},
+            "useful": {"verdict": None, "reason": None, "mergeInto": None, "action": False},
             "loadedBy": {"how": row["how"] if loaded else ["not loaded"], "agents": u.get("agents", []), "agentsCount": u.get("agentsCount", 0), "sessions30d": u.get("sessions30d", 0)},
             "uses7d": u.get("uses7d", 0),
             "uses30d": u.get("uses30d", 0),
             "sessions7d": u.get("sessions7d", 0),
             "uses": u.get("uses", []),
+            "byKind": u.get("byKind", {}),
+            "lastUse": u.get("lastUse"),
+            "cliUnverified": u.get("cliUnverified", 0),
             "hash": row.get("hash"),
             "sizeBytes": row.get("sizeBytes"),
             "files": row.get("files"),
@@ -498,23 +542,22 @@ def build(scans: list[dict], config: dict) -> dict:
         })
     out_rows.sort(key=lambda r: (r["group"], r["name"], r["box"], r["path"]))
     names = {r["name"] for r in out_rows}
-    skill_verdict = {}
-    for r in out_rows:
-        if r["useful"]["verdict"]:
-            skill_verdict.setdefault(r["name"], set()).add(r["useful"]["verdict"])
     counts = {
         "skills": len(names),
         "copies": len(out_rows),
         "copiesByKind": dict(sorted(collections_counter(r["kind"] for r in out_rows).items())),
-        "copiesByVerdict": dict(sorted(collections_counter(r["useful"]["verdict"] or "unscored" for r in out_rows).items())),
     }
     return {
         "generatedAt": datetime.now(timezone.utc).isoformat(),
         "definition": config.get("definition"),
         "boxes": [{"box": s["box"], "scannedAt": s["scannedAt"], "ok": s["ok"], "error": s["error"], "seconds": s.get("seconds"),
-                   "usageStores": (s.get("usage") or {}).get("stores", []), "extras": s.get("extras")} for s in scans],
+                   "usageStores": (s.get("usage") or {}).get("stores", []), "extras": s.get("extras"), "settings": s.get("settings")} for s in scans],
         "counts": counts,
         "skills": out_rows,
+        "copies": [{k: v for k, v in row.items() if k != "lastChange"} for s in scans for row in s["rows"]
+                   if row.get("harnessKind") in (None, "skill", "subagent")],
+        "usage": {name: {k: u[k] for k in ("uses30d", "sessions30d", "byKind", "lastUse", "cliUnverified")} for name, u in usage.items()},
+        "usageCounted": any(s.get("usage") for s in scans),
     }
 
 

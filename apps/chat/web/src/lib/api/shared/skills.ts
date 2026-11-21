@@ -209,13 +209,17 @@ export type SkillCopy = {
   path: string;
   role: CopyRole;
   installId: string | null;
-  /** Where a symlink points, else null. */
+  /** Where a symlink points as readlink gives it, else null. */
   link: string | null;
+  /** The folder the path resolves to, through every link on the way, such as a release folder behind `current`. */
+  realPath: string;
   /** False for a link whose target is gone. */
   exists: boolean;
   hash: string | null;
   lines: number | null;
+  /** The SKILL.md's own bytes, which the bloat rule measures; `folderBytes` counts the whole folder with its scripts and references. */
   bytes: number | null;
+  folderBytes: number | null;
   files: number | null;
   mtime: string | null;
   /** The tools that read the folder this copy sits in. */
@@ -254,10 +258,12 @@ export type ThreadKind = (typeof THREAD_KINDS)[number];
 
 /**
  * How one thread kind sees a skill. `listed` puts its name and description in the prompt, `imported` lists it and pre-imports its Python
- * module, `hidden` keeps it out (with `why`, such as disable-model-invocation), and `cwd` lists it only when the thread's folder is `repo`.
+ * module, `inlined` puts its whole SKILL.md in the prompt (pi-host's `writing` section, named by WRITING_SKILL in the installed release's
+ * prime-prompt.ts), `hidden` keeps it out (with `why`, such as disable-model-invocation), and `cwd` lists it only when the thread's folder is `repo`.
  */
 export type SkillSight =
   | { kind: ThreadKind; how: "listed" | "imported"; copyId: string }
+  | { kind: ThreadKind; how: "inlined"; copyId: string }
   | { kind: ThreadKind; how: "cwd"; repo: string; copyId: string }
   | { kind: ThreadKind; how: "hidden"; why: string };
 
@@ -316,6 +322,16 @@ export type SkillThresholds = {
   source: string;
 };
 
+/**
+ * Which verdict rules each headline count and layout group takes: a skill counts in a group when any of its verdicts has one of the rules,
+ * however many of its copies match. name-clash and broken are groups of their own with no headline count.
+ */
+export const COUNT_RULES = {
+  duplicated: ["duplicate", "near-duplicate"],
+  outdated: ["outdated", "stale-clone"],
+  bloated: ["bloated"],
+} as const satisfies Record<string, readonly VerdictRule[]>;
+
 /** The headline counts over every skill. A skill counts once per rule however many of its copies match. */
 export type SkillCounts = {
   skills: number;
@@ -336,6 +352,8 @@ export type SkillsView = {
   thresholds: SkillThresholds;
   boxes: SkillBoxState[];
   skills: SkillEntry[];
+  /** Folders whose source has no row yet, and links no install names; `sw skills adopt` or `remove` settles each. */
+  unowned: SkillCopy[];
   scan: SkillScan;
 };
 
@@ -351,12 +369,12 @@ export type DriftItem =
 
 export type SkillsCheck = { at: string; items: DriftItem[]; offline: BoxName[] };
 
-/** One step `sw skills apply` takes or would take, and how it went. */
+/** One disk step a change took or `sw skills apply` would take, and how it went; `installId` is empty for a step no install names. */
 export type ApplyStep = {
   installId: string;
   box: BoxName;
   path: string;
-  step: "create" | "relink" | "refresh";
+  step: "create" | "relink" | "refresh" | "delete" | "fold" | "restore";
   result: "done" | "planned" | "queued" | "failed";
   note: string | null;
 };

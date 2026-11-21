@@ -26,7 +26,7 @@ import tokenize
 
 DAY_MS = 86400000
 # Bump when the matcher or an event changes shape, so old cached events are dropped.
-CACHE_VERSION = 4
+CACHE_VERSION = 6
 HOW_READ = "read SKILL.md"
 HOW_PY = "python call"
 HOW_CLI = "cli"
@@ -40,8 +40,6 @@ DEFAULT_IMPORTS = {
 }
 SKILL_MD = re.compile(r"skills/(?:[\w.-]+/)*?([A-Za-z0-9][\w.-]*)/SKILL\.md")
 READ_SKILL = re.compile(r"read-skill\.mjs\s+['\"]?([\w./-]+)")
-READ_VERBS = re.compile(r"open\(|read_text|read_bytes|\bcat\b|\bsed\b|\bhead\b|\btail\b|\bless\b|\bbat\b|\brg\b|\bgrep\b|\bawk\b|\bnl\b")
-WRITE_MARKS = re.compile(r"write|\bedit\(|>\s*\S*SKILL\.md|\btee\b|sed\s+-i|\bcp\b|\bmv\b|\brm\b|apply_patch")
 BASH_CALL = re.compile(r"""\bbash\(\s*[rRfFbBuU]{0,2}('''|\"\"\"|'|")(.*?)\1""", re.S)
 SEGMENT_SPLIT = re.compile(r"\n|;|&&|\|\||\||\$\(|`|\(|\)")
 WRAPPERS = {"sudo", "env", "nice", "ionice", "time", "command", "exec", "nohup", "stdbuf", "uv", "run", "uvx", "heavy", "timeout"}
@@ -89,6 +87,36 @@ def skill_index():
     return sorted(names), imports, cli
 
 
+OPEN_OPS = re.compile(r"open\(|read_text\(|read_bytes\(|\bread\(|\bcat\s|\bhead\s|\btail\s|sed\s+-n|\bnl\s|\bless\s|\bbat\s|\brg\s|\bgrep\s|"
+                      r"\bawk\s|\bjq\s|read-skill\.mjs|\bwiki\.read|\bPath\(|print\(.*SKILL\.md|\b\w{1,6}\(\s*f?['\"][^'\"\n]*SKILL\.md['\"]")
+NOT_OPEN = re.compile(r"\bgit\s+(-C\s+\S+\s+)?(log|show|diff|add|commit|status|blame|rev-list|ls-files|mv|rm|checkout|restore|grep|cat-file)\b|"
+                      r"\bls\s|\bstat\s|\bwc\s|\bfind\s|\btest\s+-[ef]|\[\s*-[ef]\s|\bcp\s|\bmv\s|\brm\s|\bln\s|sed\s+-i|\bdiff\s|\bsha256sum\s|"
+                      r"\bmd5sum\s|os\.path\.(exists|getsize|getmtime|isfile|islink|realpath)|\.exists\(\)|\.stat\(\)|\.is_file\(\)|readlink")
+WRITE_OPS = re.compile(r"write_text\(|open\([^)]*['\"][wa]\+?['\"]|\bedit\(|>\s*\S*SKILL\.md|\btee\s|apply_patch")
+# A string longer than this that names the path is a brief or message for another session, not a read: the hand rule in
+# ~/work/skills-tab/skills-use/count.py (`open_kind`), checked against 18,816 pi-host tool calls on 11-21.
+BRIEF_CHARS = 400
+
+
+def opened(text, name):
+    """Whether code or a shell command opened the skill's SKILL.md, also through a list, a variable or a helper such as rd('...')."""
+    needles = [m.group(0) for m in SKILL_MD.finditer(text) if m.group(1) == name]
+    if not needles:
+        return False
+    bare = text
+    for lit in STRING_LITERAL.finditer(text):
+        if len(lit.group(0)) > BRIEF_CHARS and any(n in lit.group(0) for n in needles):
+            bare = bare.replace(lit.group(0), '""')
+    if not any(n in bare for n in needles):
+        return False
+    if WRITE_OPS.search(bare) and not OPEN_OPS.search(bare):
+        return False
+    if not OPEN_OPS.search(bare):
+        return False
+    lines = [line for line in bare.splitlines() if any(n in line for n in needles)]
+    return not all(NOT_OPEN.search(line) and not OPEN_OPS.search(line) for line in lines)
+
+
 class Matcher:
     """Finds skill uses in one tool call's name and arguments."""
 
@@ -108,9 +136,10 @@ class Matcher:
         return {m.group(1) for m in SKILL_MD.finditer(text) if "<" not in m.group(1)}
 
     def shell(self, text, out):
-        if "SKILL.md" in text and not WRITE_MARKS.search(text):
+        if "SKILL.md" in text:
             for name in self.skill_reads(text):
-                out.add((name, HOW_READ))
+                if opened(text, name):
+                    out.add((name, HOW_READ))
         for m in READ_SKILL.finditer(text):
             parts = [part for part in m.group(1).split("/") if part and part != "SKILL.md"]
             if parts:
@@ -145,9 +174,9 @@ class Matcher:
 
     def python(self, code, out):
         self.python_calls(code, out)
-        for line in code.splitlines():
-            if "SKILL.md" in line and READ_VERBS.search(line) and not WRITE_MARKS.search(line):
-                for name in self.skill_reads(line):
+        if "SKILL.md" in code:
+            for name in self.skill_reads(code):
+                if opened(code, name):
                     out.add((name, HOW_READ))
         for m in BASH_CALL.finditer(code):
             self.shell(m.group(2), out)
@@ -587,6 +616,71 @@ def scan_small(box, kind, folder, now_ms, matcher, use_cache, fn):
     return files, states
 
 
+
+# Thread kinds -------------------------------------------------------------------------------------------------------------------------
+
+UUID_PART = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+DUTY_NAME = re.compile(r"\d\d:\d\d$")
+
+
+def load_json(path, default):
+    try:
+        with open(path) as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return default
+
+
+class Kinds:
+    """The thread kind of a use, from the browser chat's chat lists (Prime) and sw factory's agents and threads (pi-host), as count.py does."""
+
+    def __init__(self):
+        chat = os.path.join(home(), ".prime", "agent", "browser-chat")
+        self.chats = set()
+        for name in ("chats.json", "archived-chats.json", "threads.json"):
+            raw = load_json(os.path.join(chat, name), {})
+            self.chats |= set(raw.get("ids", [])) if isinstance(raw, dict) else set()
+        self.jobs = (load_json(os.path.join(chat, "chat-jobs.json"), {}) or {}).get("jobs", {})
+        store = os.path.join(home(), ".pi", "agent", "chat")
+        agents = (load_json(os.path.join(store, "agents.json"), {}) or {}).get("agents", [])
+        self.roles = {}
+        for agent in agents:
+            if agent.get("workThread"):
+                self.roles[agent["workThread"]] = "work"
+            for thread in (agent.get("comm") or {}).values():
+                self.roles[thread] = "comm"
+        for thread in ((load_json(os.path.join(store, "state.json"), {}) or {}).get("threads") or {}):
+            self.roles.setdefault(thread, "job")
+
+    def prime(self, path, names):
+        """A Prime transcript's kind from its root session and its depth under session-artifacts."""
+        parts = path.split("/.prime/agent/", 1)[-1].split("/")
+        depth, root = 0, TRANSCRIPT_NAME.match(os.path.basename(path)).group(1)
+        marks = [i for i, part in enumerate(parts) if part == "session-artifacts" and i + 1 < len(parts) and UUID_PART.match(parts[i + 1])]
+        if parts[0] not in ("sessions", "pi-sessions") and marks:
+            root = parts[marks[-1] + 1]
+            depth = sum(1 for part in parts[marks[-1] + 2:] if part.startswith("sub-"))
+        name = names.get(root) or ""
+        if root in self.chats:
+            return "prime-chat" if depth == 0 else "prime-job" if depth == 1 else "prime-subagent"
+        if DUTY_NAME.search(name.strip()):
+            return "prime-duty"
+        return "prime-job" if depth == 0 else "prime-subagent"
+
+    def pihost(self, thread, conversation, owners, name):
+        depth, current = 0, conversation
+        while owners.get(current) is not None and depth < 50:
+            current, depth = owners[current], depth + 1
+        role = self.roles.get(thread)
+        if " duty " in (name or "") and role in (None, "job"):
+            return "sw-duty" if depth == 0 else "sw-subagent"
+        if role == "comm":
+            return "sw-comm" if depth == 0 else "sw-job"
+        if role == "work":
+            return "sw-work" if depth == 0 else "sw-job" if depth == 1 else "sw-subagent"
+        return "sw-job" if depth == 0 else "sw-subagent"
+
+
 # Assembly ----------------------------------------------------------------------------------------------------------------------------
 
 
@@ -599,6 +693,7 @@ def count_usage(now, box, prime=True, use_cache=True, workers=None, exclude_agen
     names, imports, cli = skill_index()
     matcher = Matcher(imports, cli)
     stores, events = [], []
+    kinds = Kinds()
 
     started = time.time()
     files, states, threads = scan_pihost(box, now_ms, matcher, use_cache, workers)
@@ -622,16 +717,18 @@ def count_usage(now, box, prime=True, use_cache=True, workers=None, exclude_agen
                 label = threads.get(thread) or thread
                 labels[key] = None if excluded else (label + " / " + own if own else label)
             if (thread, conversation) in labels and labels[key] is not None:
-                events.append(("pi-host", thread, event, labels[key]))
+                events.append(("pi-host", thread, event, labels[key], kinds.pihost(thread, conversation, owners, threads.get(thread))))
     stores.append({"path": os.path.join(home(), ".prime/agent/pi-host/durable/threads"), "kind": "pi-host", "files": len(files),
                    "bytes": sum(size for _p, _s, size in files), "seconds": round(time.time() - started, 2)})
 
     if prime:
         started = time.time()
         files, states, errors = scan_prime(box, now_ms, matcher, use_cache, workers)
-        for state in states.values():
+        roots = {state["sid"]: state.get("name") for state in states.values()}
+        for path, state in states.items():
+            kind = kinds.prime(path, roots)
             for event in state["events"]:
-                events.append(("prime", event[3], event, state.get("name")))
+                events.append(("prime", event[3], event, state.get("name"), kind))
         stores.append({"path": os.path.join(home(), ".prime/agent/{sessions,pi-sessions,session-artifacts}"), "kind": "prime",
                        "files": len(files), "bytes": sum(st.st_size for _p, st in files), "seconds": round(time.time() - started, 2),
                        "unreadFiles": len(errors), "firstError": next(iter(errors.values()), None)})
@@ -642,7 +739,7 @@ def count_usage(now, box, prime=True, use_cache=True, workers=None, exclude_agen
         files, states = scan_small(box, kind, folder, now_ms, matcher, use_cache, fn)
         for state in states.values():
             for event in state["events"]:
-                events.append((kind, event[3], event, event[7] if len(event) > 7 else None))
+                events.append((kind, event[3], event, event[7] if len(event) > 7 else None, kind))
         stores.append({"path": folder, "kind": kind, "files": len(files), "bytes": sum(st.st_size for _p, st in files),
                        "seconds": round(time.time() - started, 2)})
 
@@ -652,20 +749,31 @@ def count_usage(now, box, prime=True, use_cache=True, workers=None, exclude_agen
 def aggregate(events, names, now_ms, box):
     since30, since7 = now_ms - 30 * DAY_MS, now_ms - 7 * DAY_MS
     first = {}
-    for runtime, session, event, agent in events:
+    cli = {}
+    for runtime, session, event, agent, kind in events:
         at, skill, how, session_key, turn = event[0], event[1], event[2], event[3], event[4]
         if at < since30 or at > now_ms + DAY_MS:
             continue
+        if how == HOW_CLI:
+            cli[skill] = cli.get(skill, 0) + 1
+            continue
         key = (runtime, session_key, turn, skill, how)
         if key not in first or at < first[key][0]:
-            first[key] = (at, runtime, session, event, agent)
-    skills = {name: {"uses7d": 0, "uses30d": 0, "sessions7d": 0, "sessions30d": 0, "agents": [], "uses": []} for name in names}
+            first[key] = (at, runtime, session, event, agent, kind)
+    empty = lambda: {"uses7d": 0, "uses30d": 0, "sessions7d": 0, "sessions30d": 0, "agents": [], "uses": [], "byKind": {}, "lastUse": None,
+                     "cliUnverified": 0}
+    skills = {name: empty() for name in names}
     sessions = {}
-    for (runtime, session_key, _turn, skill, how), (at, _r, session, event, agent) in first.items():
-        entry = skills.setdefault(skill, {"uses7d": 0, "uses30d": 0, "sessions7d": 0, "sessions30d": 0, "agents": [], "uses": []})
-        per = sessions.setdefault(skill, {"s7": set(), "s30": set(), "agents": set(), "uses": []})
+    for (runtime, session_key, _turn, skill, how), (at, _r, session, event, agent, kind) in first.items():
+        entry = skills.setdefault(skill, empty())
+        per = sessions.setdefault(skill, {"s7": set(), "s30": set(), "agents": set(), "uses": [], "kinds": {}})
         entry["uses30d"] += 1
         per["s30"].add((runtime, session_key))
+        tally = per["kinds"].setdefault(kind, [0, set()])
+        tally[0] += 1
+        tally[1].add((runtime, session_key))
+        if entry["lastUse"] is None or iso(at) > entry["lastUse"]:
+            entry["lastUse"] = iso(at)
         if at >= since7:
             entry["uses7d"] += 1
             per["s7"].add((runtime, session_key))
@@ -683,6 +791,9 @@ def aggregate(events, names, now_ms, box):
         entry["sessions7d"], entry["sessions30d"] = len(per["s7"]), len(per["s30"])
         entry["agents"] = sorted(per["agents"])
         entry["uses"] = [use for _at, use in sorted(per["uses"], key=lambda pair: -pair[0])[:10]]
+        entry["byKind"] = {kind: {"uses": n, "sessions": len(seen)} for kind, (n, seen) in sorted(per["kinds"].items())}
+    for skill, n in cli.items():
+        skills.setdefault(skill, empty())["cliUnverified"] = n
     return dict(sorted(skills.items(), key=lambda pair: (-pair[1]["uses30d"], pair[0])))
 
 

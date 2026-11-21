@@ -14,11 +14,12 @@
  * inventory with ~/work/skills-review; any other set is registered as `<review dir>/sets/<name>.json` and may only touch paths under its root.
  */
 import { execFile } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { appendFile, cp, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, writeFileSync } from "node:fs";
+import { appendFile, cp, mkdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { NotFound } from "./app.ts";
+import type { DiskResult, DiskStep, DiskSteps } from "./skills-db.ts";
 import { Skills } from "./skills.ts";
 import { writeFixtureSet } from "./skills-review-fixture.ts";
 import { globalHarnessDir, KINDS, readState, updateState, type HarnessEntry, type Kind } from "../../../packages/pi-harness/src/core/store.ts";
@@ -66,15 +67,18 @@ type Row = {
   item: string; title: string; unit: "skill" | "plugin";
 };
 
+/** How a step runs: a review's ways, plus `place`, which makes a link or copy for the skills DB (server/skills-db.ts). */
+type OpHow = ReviewHow | "place";
+
 /** One copy's step: what Approve did to it, enough to undo it with no inventory row. */
 type Op = {
-  row: Row; how: ReviewHow; action: ReviewAction; foldInto: string | null; state: CopyState; note: string | null; at: string;
+  row: Row; how: OpHow; action: ReviewAction; place?: { mode: "link" | "copy"; from: string }; foldInto: string | null; state: CopyState; note: string | null; at: string;
   backup: string | null; repo: string | null; rel: string | null; commit: string | null;
 };
 
 type ItemRecord = { status: ItemStatus; decision: ReviewDecision | null; stamp: string | null; ops: Record<string, Op> };
 type SetState = { items: Record<string, ItemRecord> };
-type MacStep = { item: string; copy: string; kind: "apply" | "undo"; dir: string; backup: string; at: string };
+type MacStep = { item: string; copy: string; kind: "apply" | "undo"; dir: string; backup: string; at: string; place?: { mode: "link" | "copy"; from: string } };
 type MacQueue = { queue: MacStep[]; online: boolean | null; checkedAt: string | null };
 
 type Loaded = { set: ReviewSet; skills: Skills };
@@ -99,6 +103,17 @@ const str = (value: unknown): string | null => (typeof value === "string" && val
 const num = (value: unknown): number | null => (typeof value === "number" && Number.isFinite(value) ? value : null);
 const obj = (value: unknown): Record<string, unknown> => (typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : {});
 const now = () => new Date().toISOString();
+/** Whether anything sits at `path`, a link whose target is gone included, which existsSync misses. */
+const present = (path: string): boolean => {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+};
+/** The items of the skills DB's moves, which the review list leaves out. */
+const DB_ITEM = "sw:";
 const live = (op: Op | undefined): boolean => op?.state === "applied" || op?.state === "queued";
 const message = (error: unknown): string => {
   const e = error as { stderr?: unknown; message?: unknown };
@@ -359,6 +374,65 @@ export class SkillsReview {
     return this.result(loaded, body.id);
   }
 
+  /**
+   * The skills DB's disk steps (server/skills-db.ts), run as one item of a set with the review's backups, Mac queue and moves.jsonl log, so
+   * removing, placing and merging a skill share one path with the cleanup the owner approves here. The item stays out of the review list.
+   */
+  diskSteps(setName: string): DiskSteps {
+    return { run: (item, steps) => this.runSteps(setName, item, steps), undo: item => this.undoSteps(setName, item) };
+  }
+
+  private async runSteps(setName: string, item: string, steps: DiskStep[]): Promise<DiskResult[]> {
+    const loaded = this.load(setName);
+    const out = await this.serial(loaded.set, async () => {
+      const state = await this.state(loaded.set);
+      const record = (state.items[item] ??= { status: "approved", decision: { at: now(), action: "approve", overrides: {} }, stamp: now().replace(/[:.]/g, "-"), ops: {} });
+      const rows = steps.map((step, index) => stepRow(item, step, index));
+      const want = new Map(rows.map((row, i) => [row.id, { action: (steps[i]!.kind === "fold" ? "fold" : "delete") as ReviewAction }]));
+      const plans = await this.plan(loaded.set, rows.filter((_, i) => steps[i]!.kind === "delete"), want, record);
+      const results: DiskResult[] = [];
+      for (const [i, step] of steps.entries()) {
+        const row = rows[i]!;
+        const plan = plans.get(row.id);
+        const how: OpHow = step.kind === "place" ? "place" : step.kind === "fold" ? "fold-job" : plan?.how ?? "trash";
+        const op: Op = {
+          row, how, action: step.kind === "fold" ? "fold" : "delete", foldInto: step.kind === "fold" ? step.into : null, state: "pending", note: null, at: now(),
+          backup: null, repo: plan?.repo ?? null, rel: plan?.rel ?? null, commit: null, ...(step.kind === "place" ? { place: { mode: step.mode, from: step.from } } : {}),
+        };
+        if (how === "follows-git") op.commit = record.ops[plan?.follows ?? ""]?.commit ?? null;
+        record.ops[row.id] = op;
+        await this.apply(loaded.set, item, record, op);
+        await this.saveState(loaded.set, state);
+        results.push({ box: step.box, path: step.path, state: diskState(op.state), note: op.note });
+      }
+      return results;
+    });
+    this.kickMac(loaded.set);
+    return out;
+  }
+
+  /** Reverses an item's steps, newest first, so a link placed over a removed one goes before the removed one comes back. */
+  private async undoSteps(setName: string, item: string): Promise<DiskResult[]> {
+    const loaded = this.load(setName);
+    const out = await this.serial(loaded.set, async () => {
+      const state = await this.state(loaded.set);
+      const record = state.items[item];
+      if (!record) return [];
+      const results: DiskResult[] = [];
+      for (const copy of Object.keys(record.ops).reverse()) {
+        const op = record.ops[copy]!;
+        if (live(op)) await this.reverse(loaded.set, item, record, copy);
+        await this.saveState(loaded.set, state);
+        results.push({ box: op.row.box, path: op.row.dir, state: diskState(op.state), note: op.note });
+      }
+      record.status = "undone";
+      await this.saveState(loaded.set, state);
+      return results;
+    });
+    this.kickMac(loaded.set);
+    return out;
+  }
+
   /** Stops the Mac queue's timers, for a test server's close. */
   stop(): void {
     for (const timer of this.timers.values()) clearTimeout(timer);
@@ -445,12 +519,13 @@ export class SkillsReview {
     const byItem = new Map<string, Row[]>();
     for (const row of rows) byItem.set(row.item, [...(byItem.get(row.item) ?? []), row]);
     const out: [string, Row[]][] = [];
+    if (state.items) for (const id of Object.keys(state.items)) if (id.startsWith(DB_ITEM)) byItem.delete(id);
     for (const [id, list] of byItem) {
       const record = state.items[id];
       if (!list.some(row => row.verdict === "remove" || row.verdict === "merge") && !record) continue;
       out.push([id, this.withSteps(list, record)]);
     }
-    for (const [id, record] of Object.entries(state.items)) if (!byItem.has(id)) out.push([id, this.withSteps([], record)]);
+    for (const [id, record] of Object.entries(state.items)) if (!byItem.has(id) && !id.startsWith(DB_ITEM)) out.push([id, this.withSteps([], record)]);
     return out;
   }
 
@@ -517,7 +592,7 @@ export class SkillsReview {
         id: row.id, box: row.box, path: row.dir, family: row.family, kind: row.kind, sizeBytes: row.sizeBytes, lines: row.lines, files: row.files,
         lastUse: row.lastUse, uses30d: row.uses30d, lastChange: row.lastChange, proposed: proposedOf(row), action: target.action, foldInto: target.foldInto,
         reason: row.reason || (keepers.has(row.id) ? "The copy the others are compared with." : "The scanner proposes nothing for this copy."),
-        how: op && live(op) ? op.how : plans.get(row.id)?.how ?? "none", keeper: keepers.has(row.id), state: stateOf,
+        how: op && live(op) && op.how !== "place" ? op.how : plans.get(row.id)?.how ?? "none", keeper: keepers.has(row.id), state: stateOf,
         note: step ? (op?.note ?? null) : op?.note ?? plans.get(row.id)?.note ?? null,
       };
     });
@@ -566,7 +641,7 @@ export class SkillsReview {
     for (const row of rows) {
       const action = want.get(row.id)?.action ?? "keep";
       const op = record.ops[row.id];
-      if (live(op) && op!.action === action) out.set(row.id, { how: op!.how, repo: op!.repo, rel: op!.rel, note: op!.note });
+      if (live(op) && op!.action === action && op!.how !== "place") out.set(row.id, { how: op!.how, repo: op!.repo, rel: op!.rel, note: op!.note });
       else if (action === "keep") out.set(row.id, { how: "none", repo: null, rel: null, note: null });
       else if (action === "fold") out.set(row.id, { how: "fold-job", repo: null, rel: null, note: null });
       else if (harnessRef(row)) out.set(row.id, { how: "harness", repo: null, rel: null, note: null });
@@ -611,9 +686,10 @@ export class SkillsReview {
 
   private async apply(set: ReviewSet, item: string, record: ItemRecord, op: Op): Promise<void> {
     const row = op.row;
-    op.backup = this.backupOf(set, item, record, row);
+    op.backup = this.backupOf(set, item, record, row) + (op.how === "place" ? ".placed" : "");
     try {
-      if (op.how === "fold-job") await this.applyFold(set, item, op);
+      if (op.how === "place") await (op.row.box === set.box ? this.applyPlace(set, op) : this.queueMac(set, item, op, "apply"));
+      else if (op.how === "fold-job") await this.applyFold(set, item, op);
       else if (op.how === "follows-git") {
         op.state = "applied";
         op.note = `The Mac's checkout drops ${op.rel} when it pulls${op.commit ? ` ${op.commit.slice(0, 8)}` : " the commit that removes it"}.`;
@@ -635,7 +711,8 @@ export class SkillsReview {
       if (op.state === "queued") {
         const cancelled = await this.cancelMacStep(set, item, copy, "apply", op, "undone");
         if (!cancelled) await this.queueMac(set, item, op, "undo");
-      } else if (op.how === "fold-job") await this.undoFold(set, item, op);
+      } else if (op.how === "place") await (op.row.box === set.box ? this.undoPlace(set, op) : this.queueMac(set, item, op, "undo"));
+      else if (op.how === "fold-job") await this.undoFold(set, item, op);
       else if (op.how === "follows-git") {
         op.state = "undone";
         op.note = "The Mac's checkout gets the path back when it pulls the restore commit.";
@@ -654,11 +731,11 @@ export class SkillsReview {
     const refused = this.outside(set, op.row.dir);
     if (refused) throw new Error(refused);
     const backup = op.backup!;
-    if (existsSync(op.row.dir)) {
+    if (present(op.row.dir)) {
       await mkdir(dirname(backup), { recursive: true });
       await rm(backup, { recursive: true, force: true });
       await move(op.row.dir, backup);
-    } else if (!existsSync(backup)) {
+    } else if (!present(backup)) {
       throw new Error(`${op.row.dir} is not there, and no backup holds it.`);
     }
     op.state = "applied";
@@ -668,10 +745,40 @@ export class SkillsReview {
   private async undoTrash(set: ReviewSet, op: Op): Promise<void> {
     const refused = this.outside(set, op.row.dir);
     if (refused) throw new Error(refused);
-    if (!existsSync(op.row.dir)) {
-      if (!op.backup || !existsSync(op.backup)) throw new Error(`No backup of ${op.row.dir} at ${op.backup}.`);
+    if (!present(op.row.dir)) {
+      if (!op.backup || !present(op.backup)) throw new Error(`No backup of ${op.row.dir} at ${op.backup}.`);
       await mkdir(dirname(op.row.dir), { recursive: true });
       await move(op.backup, op.row.dir);
+    }
+    op.state = "undone";
+    op.note = null;
+  }
+
+  /** Makes the link or copy a skills DB install wants; a link or folder already there as wanted counts as done. */
+  private async applyPlace(set: ReviewSet, op: Op): Promise<void> {
+    const place = op.place!;
+    const refused = this.outside(set, op.row.dir, place.mode === "copy" ? place.from : null);
+    if (refused) throw new Error(refused);
+    if (present(op.row.dir)) {
+      const same = place.mode === "link" ? lstatSync(op.row.dir).isSymbolicLink() && readlinkSync(op.row.dir) === place.from : !lstatSync(op.row.dir).isSymbolicLink();
+      if (!same) throw new Error(`${op.row.dir} already holds something else.`);
+    } else {
+      await mkdir(dirname(op.row.dir), { recursive: true });
+      if (place.mode === "link") await symlink(place.from, op.row.dir);
+      else await cp(place.from, op.row.dir, { recursive: true, errorOnExist: true, force: false });
+    }
+    op.state = "applied";
+    op.note = null;
+  }
+
+  /** Takes a placed link or copy away into the backup, so a redo or a look at it later still finds it. */
+  private async undoPlace(set: ReviewSet, op: Op): Promise<void> {
+    const refused = this.outside(set, op.row.dir);
+    if (refused) throw new Error(refused);
+    if (present(op.row.dir)) {
+      await mkdir(dirname(op.backup!), { recursive: true });
+      await rm(op.backup!, { recursive: true, force: true });
+      await move(op.row.dir, op.backup!);
     }
     op.state = "undone";
     op.note = null;
@@ -814,7 +921,7 @@ export class SkillsReview {
     const backup = kind === "apply" ? `${set.macTrash}/${relative(join(set.stateDir, "trash"), op.backup!)}` : op.backup!;
     op.backup = backup;
     queue.queue = queue.queue.filter(step => !(step.item === item && step.copy === op.row.id));
-    queue.queue.push({ item, copy: op.row.id, kind, dir: op.row.dir, backup, at: now() });
+    queue.queue.push({ item, copy: op.row.id, kind, dir: op.row.dir, backup, at: now(), ...(op.place ? { place: op.place } : {}) });
     await this.saveQueue(set, queue);
     op.state = "queued";
     op.note = set.macHost ? (kind === "apply" ? "Waits for the Mac." : "Waits for the Mac to put it back.") : "Waits for the Mac; this set names no Mac host.";
@@ -862,9 +969,16 @@ export class SkillsReview {
     for (const step of [...queue.queue]) {
       const dir = quote(step.dir);
       const backup = macPath(step.backup);
-      const script = step.kind === "apply"
-        ? `d=${dir}; b=${backup}; if [ -e "$d" ]; then mkdir -p "$(dirname "$b")" && rm -rf "$b" && mv "$d" "$b"; elif [ ! -e "$b" ]; then echo "$d is not there, and no backup holds it." >&2; exit 3; fi`
-        : `d=${dir}; b=${backup}; if [ ! -e "$d" ]; then if [ -e "$b" ]; then mkdir -p "$(dirname "$d")" && mv "$b" "$d"; else echo "No backup at $b." >&2; exit 3; fi; fi`;
+      const here = `{ [ -e "$d" ] || [ -L "$d" ]; }`;
+      const kept = `{ [ -e "$b" ] || [ -L "$b" ]; }`;
+      const put = step.place?.mode === "copy" ? `cp -R ${quote(step.place.from)} "$d"` : `ln -s ${quote(step.place?.from ?? "")} "$d"`;
+      const script = step.place
+        ? step.kind === "apply"
+          ? `d=${dir}; if ! ${here}; then mkdir -p "$(dirname "$d")" && ${put}; fi`
+          : `d=${dir}; b=${backup}; if ${here}; then mkdir -p "$(dirname "$b")" && rm -rf "$b" && mv "$d" "$b"; fi`
+        : step.kind === "apply"
+          ? `d=${dir}; b=${backup}; if ${here}; then mkdir -p "$(dirname "$b")" && rm -rf "$b" && mv "$d" "$b"; elif ! ${kept}; then echo "$d is not there, and no backup holds it." >&2; exit 3; fi`
+          : `d=${dir}; b=${backup}; if ! ${here}; then if ${kept}; then mkdir -p "$(dirname "$d")" && mv "$b" "$d"; else echo "No backup at $b." >&2; exit 3; fi; fi`;
       const outcome = await run("ssh", [...SSH, set.macHost, script]).then(() => ({ code: 0, error: "" }), (error: { code?: unknown }) => ({ code: typeof error.code === "number" ? error.code : 255, error: message(error) }));
       queue.checkedAt = now();
       if (outcome.code === 255) {
@@ -919,6 +1033,20 @@ export class SkillsReview {
 }
 
 const done = (status: ItemStatus): boolean => status !== "pending" && status !== "undone";
+
+function diskState(state: CopyState): DiskResult["state"] {
+  return state === "applied" || state === "queued" || state === "failed" || state === "undone" ? state : "pending";
+}
+
+/** A skills DB step as a review row: the folder is the step's path, and the id carries the step's place in its item. */
+function stepRow(item: string, step: DiskStep, index: number): Row {
+  return {
+    id: `${step.box}:${step.path}#${index}`, name: step.name, box: step.box, path: step.path.startsWith("harness:") ? step.path : join(step.path, "SKILL.md"), dir: step.path,
+    family: "", kind: "ours", group: null, description: "", sizeBytes: null, lines: null, files: null, lastUse: null, uses30d: null, lastChange: null, verdict: null,
+    reason: step.kind === "fold" ? step.reason : "Asked through the skills DB (sw skills).", mergeInto: step.kind === "fold" ? step.into : null, actionable: false, text: null,
+    entryId: null, globalStore: step.path.startsWith("harness:"), item, title: step.name, unit: "skill",
+  };
+}
 
 function counts(items: ReviewItemSummary[]): ReviewReport["counts"] {
   const of = (status: ItemStatus) => items.filter(item => item.status === status).length;

@@ -25,6 +25,9 @@ import { usageLive, usageReport, hostsReport } from "./usage.ts";
 import { Skills } from "./skills.ts";
 import { consolesReport } from "./consoles.ts";
 import { decideBody, ReviewRefused, SkillsReview, undoBody } from "./skills-review.ts";
+import { SkillsDb, SkillsRefused } from "./skills-db.ts";
+import { fixtureScanner, writeSkillsDbFixture } from "./skills-db-fixture.ts";
+import type { InstallBody } from "../web/src/lib/api/shared/skills.ts";
 import { type ClientVia, clientTimings, LoopStalls, RequestLog } from "./request-log.ts";
 import { accountRoutes, PoolError } from "./accounts.ts";
 import { serveWiki } from "./wiki/routes.ts";
@@ -138,6 +141,36 @@ function harnessKind(query: URLSearchParams): HarnessKind {
   return kind as HarnessKind;
 }
 
+const text = (value: unknown, field: string): string => {
+  if (typeof value !== "string" || !value) throw new SkillsRefused(`The body names ${field}.`);
+  return value;
+};
+const opt = (value: unknown): string | null => (typeof value === "string" && value ? value : null);
+
+/**
+ * The skills DB over the live scanner and the live review set, or on the fixture server over a throwaway tree under the data dir that the
+ * real scanner reads with HOME pointed at it, so `sw skills` and the layouts run against real files there too.
+ */
+function skillsDb(app: App, skills: Skills, review: SkillsReview): { db: SkillsDb; skills: Skills } {
+  const piHost = join(app.config.home, ".local/share/pi-host/current/packages/pi-host/src/durable/prime-prompt.ts");
+  const file = join(app.config.dataDir, "chat.sqlite");
+  if (!app.config.skillsReview.fixture) {
+    const db = new SkillsDb({ file, box: app.config.box, home: app.config.home, piHostPrompt: piHost }, review.diskSteps("live"), app.log);
+    skills.attach({ ingest: json => db.ingest(json), overlay: rows => db.overlay(rows), lastAttempt: () => db.lastAttempt() }, true);
+    return { db, skills };
+  }
+  const root = join(app.config.dataDir, "skills-db");
+  const setFile = join(app.config.skillsReview.dir, "sets", "skills-db.json");
+  const fixture = existsSync(setFile) && existsSync(join(root, "home"))
+    ? { home: join(root, "home"), inventory: join(root, "inventory.json"), setName: "skills-db" }
+    : writeSkillsDbFixture(root, { reviewDir: app.config.skillsReview.dir, box: app.config.box });
+  const repo = join(import.meta.dirname, "../../..");
+  const own = new Skills({ inventory: fixture.inventory, scanner: fixtureScanner(fixture, repo) }, app.config.box, app.log, scan => app.broadcast({ type: "skills", scan }));
+  const db = new SkillsDb({ file, box: app.config.box, home: fixture.home, piHostPrompt: existsSync(piHost) ? piHost : null }, review.diskSteps(fixture.setName), app.log);
+  own.attach({ ingest: json => db.ingest(json), overlay: rows => db.overlay(rows), lastAttempt: () => db.lastAttempt() }, true);
+  return { db, skills: own };
+}
+
 export function routes(app: App): Route[] {
   const str = (value: string | null): string | undefined => (value === null || value === "" ? undefined : value);
   const skills = new Skills(app.config.skills, app.config.box, app.log, scan => app.broadcast({ type: "skills", scan }));
@@ -150,7 +183,16 @@ export function routes(app: App): Route[] {
     },
   });
   const refused = (error: unknown): never => {
-    throw error instanceof ReviewRefused ? new BadRequest(error.message) : error;
+    throw error instanceof ReviewRefused || error instanceof SkillsRefused ? new BadRequest(error.message) : error;
+  };
+  const db = skillsDb(app, skills, review);
+  const change = (run: (body: Record<string, unknown>) => Promise<unknown>) => async (_r: IncomingMessage, _p: Params, _q: URLSearchParams, body: () => Promise<unknown>) => {
+    try {
+      const raw = await body();
+      return await run(raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {});
+    } catch (error) {
+      return refused(error);
+    }
   };
   const folderAgent = (id: string): AgentRecord => {
     const agent = agentRecordOf(app, id);
@@ -408,8 +450,22 @@ export function routes(app: App): Route[] {
     ...accountRoutes(app, route),
     route("GET", "/api/hosts", async () => hostsReport(app.host, app.threads, app.config.box, app.config.socket, app.config.hostsFile)),
     route("GET", "/api/consoles", async () => consolesReport(app.config.consoles)),
-    route("GET", "/api/skills", async () => skills.report()),
-    route("POST", "/api/skills/scan", async () => ({ scan: skills.startScan().scan })),
+    route("GET", "/api/skills", async () => db.db.view((await db.skills.report()).scan)),
+    route("GET", "/api/skills/inventory", async () => skills.report()),
+    route("POST", "/api/skills/scan", async () => ({ scan: db.skills.startScan().scan })),
+    route("GET", "/api/skills/check", async () => db.db.check()),
+    route("GET", "/api/skills/moves", async () => ({ moves: db.db.moves() })),
+    route("POST", "/api/skills/apply", change(async b => db.db.apply({ dryRun: b.dryRun === true }))),
+    route("POST", "/api/skills/install", change(async b => db.db.install({
+      name: text(b.name, "name"), box: text(b.box, "box"), runtime: text(b.runtime, "runtime") as InstallBody["runtime"], agent: opt(b.agent),
+      mode: b.mode === "copy" ? "copy" : "link", path: opt(b.path), source: opt(b.source),
+    }))),
+    route("POST", "/api/skills/remove", change(async b => db.db.remove({ target: text(b.target, "target") }))),
+    route("POST", "/api/skills/adopt", change(async b => db.db.adopt({ copyId: text(b.copyId, "copyId"), skillId: opt(b.skillId) }))),
+    route("POST", "/api/skills/move", change(async b => db.db.move({ installId: text(b.installId, "installId"), path: text(b.path, "path") }))),
+    route("POST", "/api/skills/merge", change(async b => db.db.merge({ skillId: text(b.skillId, "skillId"), into: text(b.into, "into") }))),
+    route("POST", "/api/skills/own", change(async b => db.db.own({ skillId: text(b.skillId, "skillId"), owner: text(b.owner, "owner") }))),
+    route("POST", "/api/skills/undo", change(async b => db.db.undo({ moveId: text(b.moveId, "moveId") }))),
     route("GET", "/api/skills/doc", async (_r, _p, q) => {
       const id = q.get("id");
       if (!id) throw new BadRequest("A skill doc names its row as ?id=, the id GET /api/skills lists.");

@@ -15,8 +15,27 @@ export type SkillsConfig = {
   /** The inventory file the scanner writes. */
   inventory: string;
   /** The scanner and its folder, or null where none runs, as on the fixture. */
-  scanner: { command: string; args: string[]; cwd: string } | null;
+  scanner: { command: string; args: string[]; cwd: string; env?: Record<string, string> } | null;
 };
+
+/**
+ * What the skills DB adds to the scanner (server/skills-db.ts): it takes each new inventory, gives the review its rule verdicts, and says
+ * when a box was last scanned, for the schedule.
+ */
+export type SkillsHooks = {
+  ingest: (json: unknown) => void;
+  overlay: (rows: Record<string, unknown>[]) => Record<string, unknown>[];
+  lastAttempt: () => number | null;
+};
+
+/**
+ * The scan runs every hour inside the chat server. A full scan of both boxes took 72 s on metal and 72 s on the Mac when its use caches were
+ * rebuilt on 11-21, and 11 s and 4 s with warm caches, so an hourly scan keeps the use counts and drift under an hour old for about 2% of
+ * one core. In the server it shares the single running scan with POST /api/skills/scan, and needs no unit on each box beside the server.
+ */
+export const SCAN_EVERY_MS = 60 * 60_000;
+/** How often the server looks whether the hourly scan is due, so a restart scans within ten minutes of when it was due. */
+const SCAN_CHECK_MS = 10 * 60_000;
 
 /** The inventory file as last parsed, its raw rows for the fields the page does not get, such as a row's carried `text`. */
 type Read = { inventory: SkillInventory | null; raw: Record<string, unknown>[]; error: string | null };
@@ -28,6 +47,8 @@ export class Skills {
   private running: Promise<void> | null = null;
   private scan: SkillScan = { running: false, startedAt: null, endedAt: null, error: null };
   private parsed: Promise<Parsed> | null = null;
+  private hooks: SkillsHooks | null = null;
+  private timer: NodeJS.Timeout | null = null;
 
   constructor(
     private readonly config: SkillsConfig,
@@ -44,10 +65,40 @@ export class Skills {
     return { inventory: read.inventory, readError: read.error, scan: { ...this.scan } };
   }
 
-  /** The inventory's raw rows, with the fields the page does not get, for the skills review (server/skills-review.ts). */
+  /** The inventory's raw rows, with the fields the page does not get and the rule verdicts as `useful`, for the skills review (server/skills-review.ts). */
   async rawRows(): Promise<{ rows: Record<string, unknown>[]; generatedAt: string | null; error: string | null }> {
     const read = await this.read();
-    return { rows: read.raw, generatedAt: read.inventory?.generatedAt ?? null, error: read.error };
+    return { rows: this.hooks ? this.hooks.overlay(read.raw) : read.raw, generatedAt: read.inventory?.generatedAt ?? null, error: read.error };
+  }
+
+  /** Joins the skills DB: every inventory parsed from now on is ingested, and the hourly scan starts when one is due. */
+  attach(hooks: SkillsHooks, schedule: boolean): void {
+    this.hooks = hooks;
+    void this.read().then(() => this.ingestCurrent());
+    if (!schedule || !this.config.scanner) return;
+    const tick = () => {
+      const last = hooks.lastAttempt();
+      if (!this.running && (last === null || Date.now() - last >= SCAN_EVERY_MS)) void this.start();
+    };
+    this.timer = setInterval(tick, SCAN_CHECK_MS);
+    this.timer.unref();
+    setTimeout(tick, hooks.lastAttempt() === null ? 0 : 30_000).unref();
+  }
+
+  stop(): void {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
+  }
+
+  private json: unknown = null;
+
+  private ingestCurrent(): void {
+    if (!this.hooks || this.json === null) return;
+    try {
+      this.hooks.ingest(this.json);
+    } catch (error) {
+      this.log(`skills: the ingest failed: ${error instanceof Error ? error.stack ?? error.message : String(error)}`);
+    }
   }
 
   /** Starts a scan unless one runs, and answers the scan state at once. `done` settles when that scan ends and its inventory is parsed. */
@@ -88,7 +139,7 @@ export class Skills {
         this.onScan({ ...this.scan });
         resolve();
       };
-      const child = spawn(scanner.command, scanner.args, { cwd: scanner.cwd, stdio: ["ignore", "ignore", "pipe"] });
+      const child = spawn(scanner.command, scanner.args, { cwd: scanner.cwd, stdio: ["ignore", "ignore", "pipe"], env: { ...process.env, ...scanner.env } });
       child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
         stderr = (stderr + chunk).slice(-4000);
       });
@@ -122,6 +173,8 @@ export class Skills {
     }
     try {
       const json = JSON.parse(text) as { skills?: unknown };
+      this.json = json;
+      this.ingestCurrent();
       const inventory = parseInventory(json);
       const raw = Array.isArray(json.skills) ? (json.skills as Record<string, unknown>[]) : [];
       return { stamp, read: inventory ? { inventory, raw, error: null } : { inventory: null, raw: [], error: `${this.config.inventory} holds no skills list.` } };
