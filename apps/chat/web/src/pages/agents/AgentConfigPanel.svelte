@@ -3,12 +3,13 @@
   import { Avatar, Badge, Button, Chip, EmptyState, IconButton, LoadingText, Markdown, Menu, Meter, ModelPicker, PanelHeader, StatusDot, Tabs, TypingDots, stampLabel, toast, type MenuEntry } from "$lib/ui";
   import { conversationHref, hrefFor, router } from "$lib/router.svelte";
   import {
-    JOB_KIND_LABEL, SECTIONS, STATUS_LABEL, bytesLabel, canRename, everyLabel, forLabel, hasForList, levelsFor, modelKey, modelOptions, shortPath, type ConfigSection,
+    SECTIONS, STATUS_LABEL, bytesLabel, canRename, everyLabel, forLabel, hasForList, levelsFor, modelKey, modelOptions, shortPath, type ConfigSection,
   } from "./agents-model";
   import AccountChip from "$pages/accounts/AccountChip.svelte";
   import DutyList from "$pages/board/DutyList.svelte";
   import AgentBrief from "./AgentBrief.svelte";
   import AgentForMe from "./AgentForMe.svelte";
+  import AgentJobs from "./AgentJobs.svelte";
   import AgentMemory from "./AgentMemory.svelte";
   import ProjectPicker from "./ProjectPicker.svelte";
   import MemberPicker from "$pages/channel/MemberPicker.svelte";
@@ -282,7 +283,7 @@
         </dd>
         <dt>Jobs</dt>
         <dd data-fact="jobs">
-          {plural(config.swarm.jobs.length, "job")}{config.swarm.jobs.some((j) => j.status === "working") ? `, ${config.swarm.jobs.filter((j) => j.status === "working").length} working` : ""}
+          {plural(config.swarm.jobs.filter((j) => !j.archived).length, "job")}{config.swarm.jobs.some((j) => j.status === "working") ? `, ${config.swarm.jobs.filter((j) => j.status === "working").length} working` : ""}
           · {plural(config.swarm.duties.length, "duty", "duties")}
           <button type="button" class="more t-caption" onclick={() => onsection("jobs")}>Details</button>
         </dd>
@@ -438,21 +439,7 @@
           <a href={hrefFor("agents", [config.swarm.parent.id])}>{config.swarm.parent.name}</a>
         </section>
       {/if}
-      <section class="block" aria-label="Jobs">
-        <h3 class="t-caption heading">Jobs and sub-agents</h3>
-        <ul class="list">
-          {#each config.swarm.jobs as job (job.id)}
-            <li data-job-id={job.id} style:padding-left="{Math.max(0, job.depth - 1) * 12}px">
-              <StatusDot status={dotOf(job.status)} label={STATUS_LABEL[job.status]} />
-              <a class="grow" href={hrefFor("agents", [job.id])}>{job.name}</a>
-              {#if job.kind !== "job"}<Chip size="sm" label={JOB_KIND_LABEL[job.kind]} />{/if}
-              <span class="t-caption meta when">{job.createdAt ? stampLabel(job.createdAt) : ""}</span>
-            </li>
-          {:else}
-            <li class="t-caption meta">No jobs yet.</li>
-          {/each}
-        </ul>
-      </section>
+      <AgentJobs jobs={config.swarm.jobs} onchanged={load} />
       <section class="block" aria-label="Duties">
         <h3 class="t-caption heading">Duties</h3>
         {#if dutyChat}

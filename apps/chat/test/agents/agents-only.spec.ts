@@ -85,8 +85,13 @@ test("the Agents page shows agent cards only, and a job shows inside its agent's
   await expect(card(page, busiest.agent).locator("[data-jobs]")).toContainText(`${busiest.count} ${busiest.count === 1 ? "job" : "jobs"}`);
 
   const config = (await (await request.get(`/api/agents/${encodeURIComponent(busiest.agent.id)}/config`)).json()) as { swarm: { jobs: { id: string }[] } };
-  await page.goto(`/#/agents/${encodeURIComponent(busiest.agent.id)}?section=jobs`);
   const swarm = page.getByTestId("agent-config").getByRole("tabpanel");
-  await expect(swarm.locator("li[data-job-id]")).toHaveCount(config.swarm.jobs.length);
+  let listed = 0;
+  for (const filter of ["active", "finished", "archived"]) {
+    await page.goto(`/#/agents/${encodeURIComponent(busiest.agent.id)}?section=jobs&jobs=${filter}`);
+    await expect(swarm.getByTestId("agent-jobs")).toHaveAttribute("data-filter", filter);
+    listed += await swarm.locator("li[data-job-id]").count();
+  }
+  expect(listed).toBe(config.swarm.jobs.length);
   expect(config.swarm.jobs.length).toBeGreaterThan(0);
 });

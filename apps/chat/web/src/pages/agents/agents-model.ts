@@ -193,3 +193,31 @@ export function everyLabel(ms: number): string {
 }
 
 export const JOB_KIND_LABEL: Record<"job" | "duty" | "root job", string> = { job: "job", duty: "duty run", "root job": "root job" };
+
+/** The Jobs tab's filters: Active runs or waits, Finished ended and stays until archived, Archived the owner put away. */
+export type JobFilter = "active" | "finished" | "archived";
+type FilteredJob = { name: string; status: RunStatus; archived: boolean };
+
+export function jobFilterOfJob(job: FilteredJob): JobFilter {
+  if (job.archived) return "archived";
+  return job.status === "working" || job.status === "sleeping" ? "active" : "finished";
+}
+
+const matches = (job: FilteredJob, query: string): boolean => job.name.toLowerCase().includes(query.trim().toLowerCase());
+
+/** How many jobs each filter holds among those whose name matches the search. */
+export function jobFilterCounts(jobs: readonly FilteredJob[], query: string): Record<JobFilter, number> {
+  const counts: Record<JobFilter, number> = { active: 0, finished: 0, archived: 0 };
+  for (const job of jobs) if (matches(job, query)) counts[jobFilterOfJob(job)]++;
+  return counts;
+}
+
+/** The filter the URL names, or Active while a job runs and Finished when none does. */
+export function jobFilterOf(param: string | undefined, counts: Record<JobFilter, number>): JobFilter {
+  if (param === "active" || param === "finished" || param === "archived") return param;
+  return counts.active ? "active" : "finished";
+}
+
+export function jobsShown<T extends FilteredJob>(jobs: readonly T[], filter: JobFilter, query: string): T[] {
+  return jobs.filter((job) => jobFilterOfJob(job) === filter && matches(job, query));
+}
