@@ -32,7 +32,7 @@ import { LIST_FOR_ME_TOOL, MARK_MESSAGE_TOOL } from "../../src/durable/for-me.ts
 import { LIST_SAVED_TOOL, REMIND_ME_TOOL, SAVE_MESSAGE_TOOL } from "../../src/durable/later.ts";
 import { SEARCH_MESSAGES_TOOL } from "../../src/durable/search-messages.ts";
 import { loadPrimeChat, PRIME_CHAT_TOOLS, withTurnWrappers, type ChatThread, type PrimeChat } from "../../src/durable/prime-chat.ts";
-import { guidelines } from "../../src/durable/prime-prompt.ts";
+import { guidelines, WRITING_SKILL } from "../../src/durable/prime-prompt.ts";
 import { ChatDoc, threadRegistry } from "../../src/durable/registry.ts";
 import { ROOM_TELL_OWNER_DESCRIPTION, ROOM_TELL_OWNER_PARAMETERS, roomIdNote } from "../../src/durable/room-post.ts";
 import { EDIT_MESSAGE_DESCRIPTION, EDIT_MESSAGE_TOOL, SET_EMOJI_TOOL } from "../../src/durable/room-tools.ts";
@@ -135,8 +135,10 @@ test("the extension registers a Prime chat's tools, and their guidelines are the
   assert.equal(tell.description, TELL_OWNER_DESCRIPTION);
   assert.deepEqual(tell.parameters, TELL_OWNER_PARAMETERS);
   // The brief rides on chat_board and the persona line on poteto_mode, as Prime's base prompt reads them; prime-prompt renders the same lines.
+  // poteto_mode's last line, the unslop skill's text, goes in prime-prompt's own `writing` section instead, so a thread holds it once.
   const lines = chat.tools.flatMap(tool => tool.promptGuidelines ?? []);
-  assert.deepEqual(lines, guidelines({ agentDir, depth: 0 }));
+  assert.ok(lines.at(-1)!.startsWith(`The ${WRITING_SKILL} skill (`));
+  assert.deepEqual(lines.slice(0, -1), guidelines({ agentDir, depth: 0 }));
   assert.ok(chat.loaded.skipped.has("registerCommand"));
 });
 

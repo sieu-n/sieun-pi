@@ -41,8 +41,8 @@ export const CHAT_BRIEF: readonly string[] = [
     "only he can make, a blocker only he can clear, or the answer to a question he asked, and give its why and about; the tool keeps any " +
     "other call there as a note (c117). On 10-19 469 of the 597 messages chats sent in a day came on such turns, mostly relayed job reports. " +
     "Never write 'nothing needs you', 'already handled' or a relay line. Message another thread only when it must act.",
-  "Every tell_owner message, For you todo and choice, and plan step title and note follows the unslop skill (~/.prime/agent/skills/unslop/SKILL.md, " +
-    "reread after each compaction and each writing correction) and reads like a coworker's text in the owner's language: the answer first, short " +
+  "Every tell_owner message, For you todo and choice, and plan step title and note follows the unslop skill, whose full text this prompt holds, " +
+    "and reads like a coworker's text in the owner's language: the answer first, short " +
     "plain sentences in common words, and no labels or report formatting. If he would read a line twice to get it, rewrite it (c18). Say what he " +
     "would see or can do now in the words he would use, never a job report's terms, a UI label or state, a clipped verb or git talk like land " +
     "or roll out (c138), and give times in KST, never UTC or a Z (c135). On 10-19 frontend bro sent \"Home shows 0 matched after landing\" and " +
@@ -209,6 +209,28 @@ export const PERSONA_TOOL = "poteto_mode";
 /** The poteto-mode line, pointing at the installed skill. Null when that skill is not installed, so a profile without it gets nothing. */
 export function personaGuideline(potetoModeSkill: string, exists: (path: string) => boolean = existsSync): string | null {
   return exists(potetoModeSkill) ? `Work in poteto-mode: read ${potetoModeSkill} before your first step.` : null;
+}
+
+/**
+ * The skill whose text the poteto_mode tool puts in full in the base prompt of a chat, each job of it and every subagent under them, beside the
+ * poteto-mode line. A skill shows only its name until the model opens the file, and from 11-14 to 11-21 one of 12 chats on :5182 opened
+ * unslop's SKILL.md, for 200 characters (`~/work/unslop-loaded/A-findings.md`). The owner asked on 11-21 (msg mwqtk65x): "skill:unslop 이거
+ * 로드되고 있지?" pi-host's `writing` section (packages/pi-host prime-prompt.ts) reads the same file through these two functions.
+ */
+export const WRITING_SKILL = "unslop";
+
+/** A SKILL.md without its frontmatter, or null when the file is missing or holds nothing else. */
+export function skillBody(file: string): string | null {
+  try {
+    return readFileSync(file, "utf8").replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, "").trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/** The writing standard as a guideline: a line that says the skill is loaded, then its text as the file holds it. */
+export function writingGuideline(file: string, body: string): string {
+  return `The ${WRITING_SKILL} skill (${file}) is loaded here in full, so you need not open it. Follow it in every line a person reads.\n\n${body}`;
 }
 
 /**

@@ -4,7 +4,7 @@ import type { ExtensionAPI, ExtensionContext } from "prime-agent";
 import { getAgentDir } from "../src/prime-values.ts";
 import { agentLines } from "../src/chat-agents.ts";
 import { agentOpsViaService, applyAgentOps } from "../src/agent-board.ts";
-import { BRIEF_CORRECTIONS, CHAT_BRIEF, CHAT_BRIEF_ENTRY, type ChatJobOf, createdRootChat, JOB_REPLY_TOOL, jobOf, jobReplyGuideline, PERSONA_TOOL, personaGuideline, pinnedBrief } from "../src/chat-brief.ts";
+import { BRIEF_CORRECTIONS, CHAT_BRIEF, CHAT_BRIEF_ENTRY, type ChatJobOf, createdRootChat, JOB_REPLY_TOOL, jobOf, jobReplyGuideline, PERSONA_TOOL, personaGuideline, pinnedBrief, skillBody, WRITING_SKILL, writingGuideline } from "../src/chat-brief.ts";
 import { CHAT_BOARD_TOOL, CHAT_FLAG, CHAT_MODE_ENTRY, OWNER_THREAD_FLAG, chatModeAt, chatShellNote, createSessionNames, hasChatMarker, TELL_OWNER_DESCRIPTION, TELL_OWNER_PARAMETERS,
   askedTodos, type TellInput, type TellTurn, topSession, withChatTool, withMessageIds, withWakeNotes } from "../src/chat-guard.ts";
 import { historyMessages } from "../src/session-tail.ts";
@@ -314,21 +314,24 @@ export default function historyExtension(pi: ExtensionAPI): void {
       async execute() { return { content: [{ type: "text", text: guideline }], details: undefined }; },
     });
   };
-  // A chat, each job of it and every subagent under them work in poteto-mode: one tool whose guideline is the line. Any error fails open.
-  let persona: string | null = null;
-  const registerPersona = (): string | null => {
-    if (persona) return persona;
-    persona = personaGuideline(join(getAgentDir(), "skills", "poteto-mode", "SKILL.md"));
-    const line = persona;
-    if (line) pi.registerTool({
+  // A chat, each job of it and every subagent under them work in poteto-mode and write to the unslop skill: one tool whose guidelines are the
+  // poteto-mode line and the skill's full text, the last of the base prompt's Additional Guidance. Any error fails open.
+  let persona = false;
+  const registerPersona = (): void => {
+    if (persona) return;
+    persona = true;
+    const line = personaGuideline(join(getAgentDir(), "skills", "poteto-mode", "SKILL.md"));
+    const skill = join(getAgentDir(), "skills", WRITING_SKILL, "SKILL.md");
+    const body = skillBody(skill);
+    const lines = [line, body && writingGuideline(skill, body)].filter((text): text is string => !!text);
+    if (lines.length) pi.registerTool({
       name: PERSONA_TOOL,
       label: "poteto-mode",
       description: "Shows the skill this session works in.",
-      promptGuidelines: [line],
+      promptGuidelines: lines,
       parameters: { type: "object", properties: {} },
-      async execute() { return { content: [{ type: "text", text: line }], details: undefined }; },
+      async execute() { return { content: [{ type: "text", text: line ?? lines[0]! }], details: undefined }; },
     });
-    return persona;
   };
   let moved: string | null = null;
   pi.on("session_start", async (_event, ctx) => {

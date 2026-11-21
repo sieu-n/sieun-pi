@@ -7,7 +7,8 @@
  *
  * The parts render as pi-durable sections in Prime's order. pi-ai joins sections with a blank line, so `preamble` through `skills`
  * join to the exact string Prime's builder returns for the same inputs (`primeSystemPrompt`); `rules` and `corrections` follow them, where
- * Prime sends the same texts as messages, and then `writing`, the unslop skill's text, which a Prime chat sees only by name (`writingStandard`).
+ * Prime sends the same texts as messages, and then `writing`, the unslop skill's text, which a Prime chat carries as the last guideline of its
+ * poteto_mode tool, so `guidelines` leaves it out here to keep one copy (`writingStandard`).
  * A thread's root conversation gets the harness digest where Prime puts it, as a message before the turn's input (`prime-harness.ts`); a child
  * conversation still gets it as the `harness` section.
  *
@@ -21,7 +22,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import { defineExtension, GenerationTask, hook, LiveDoc, ROOT_CONVERSATION_ID, section, type ConversationId, type Extension, type Harness, type PromptInput } from "@earendil-works/pi-durable";
-import { BRIEF_CORRECTIONS, CHAT_BRIEF, jobReplyGuideline, personaGuideline } from "../../../../legacy/prime/user-history/src/chat-brief.ts";
+import { BRIEF_CORRECTIONS, CHAT_BRIEF, jobReplyGuideline, personaGuideline, skillBody, WRITING_SKILL, writingGuideline } from "../../../../legacy/prime/user-history/src/chat-brief.ts";
 import { commLedgerPrompt, jobLedgerPrompt, ledgerPrompt, parseLedger, type Ledger } from "../../../../legacy/prime/user-history/src/chat-corrections.ts";
 import { SessionRules } from "../../../pi-claude-rules/src/core/rules.ts";
 import { COMM_BRIEF } from "./room-post.ts";
@@ -340,29 +341,24 @@ function extraParts(input: PrimePromptInput, tools: readonly string[], { skills,
   return out;
 }
 
-/** The skill every thread gets in full in its `writing` section. */
-export const WRITING_SKILL = "unslop";
+export { WRITING_SKILL };
 
 /**
  * The unslop skill's SKILL.md without its frontmatter, from the path the skills list names. Every thread gets it in full, because a skill
  * shows only its name and description until the model opens the file, and on 11-21 a measure of the last 7 days (`~/work/unslop-loaded/
  * measure_reads.py`) found it opened before the first post, report or commit in 0 of 187 comm roots, 1 of 226 work roots and 339 of 538
  * jobs. A comm thread cannot open a file at all. The owner asked in dm_agent-factory p58 (msg mwqtk65x): "skill:unslop 이거 로드되고 있지?"
+ * A Prime chat reads the same file through the same chat-brief.ts functions, as the last guideline of its poteto_mode tool.
  */
 function writingStandard(skills: readonly Skill[]): ContextFile | undefined {
   const skill = skills.find(entry => entry.name === WRITING_SKILL);
-  if (!skill) return undefined;
-  try {
-    const text = readFileSync(skill.filePath, "utf8").replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, "").trim();
-    return text ? { path: skill.filePath, content: text } : undefined;
-  } catch {
-    return undefined;
-  }
+  const text = skill && skillBody(skill.filePath);
+  return skill && text ? { path: skill.filePath, content: text } : undefined;
 }
 
 /** The `writing` section: a line that says the skill is loaded, then its text as the file holds it. */
 export function writingSection(file: ContextFile): string {
-  return `# Writing standard\n\nThe ${WRITING_SKILL} skill (${file.path}) is loaded here in full, so you need not open it. Follow it in every line a person reads.\n\n${file.content}`;
+  return `# Writing standard\n\n${writingGuideline(file.path, file.content)}`;
 }
 
 function readLedger(dir: string): Ledger | null {

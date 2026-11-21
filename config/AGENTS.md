@@ -1,6 +1,6 @@
 # Rules for every prime-agent session
 
-1. Every reply, doc and commit message follows the unslop skill. Read its SKILL.md before your first prose. Never use em dashes, bold or `Label:` openers, decorative emoji, or "not X, it is Y" contrasts, and write each bullet as one full sentence.
+1. Every reply, doc and commit message follows the unslop skill. A chat, its jobs and their subagents carry its full text in their system prompt, and any other session reads its SKILL.md before its first prose. Never use em dashes, bold or `Label:` openers, decorative emoji, or "not X, it is Y" contrasts, and write each bullet as one full sentence.
 2. A job runs as a subagent (`rlm.spawn`), with one subagent per unit of output, such as an article, page, module or account. The brief's `Split:` line decides the fan-out.
 3. Open a new thread with `rlm.create_session` only when the user asks for a new or separate thread.
 4. To steer a live job, message it with `agent_message.send(..., receiver_role="child", receiver_name=...)`. Never spawn a "-2" copy of it.
