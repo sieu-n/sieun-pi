@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
 import { conversation, open, row, VENT, VENT_JOB } from "./helpers";
 
 /**
@@ -7,6 +7,20 @@ import { conversation, open, row, VENT, VENT_JOB } from "./helpers";
  * open shows them from the page's cache. These specs hold every later read of a conversation, so only that cache can fill the screen.
  */
 const held = /\/api\/c\/[^/]+(\/items|\/replies\/[^/]+)?(\?.*)?$/;
+
+/** Whether the page cache keeps a page for `key` in IndexedDB (page-db.ts), which it does only once the whole read ahead is in. */
+const keptPage = (page: Page, cache: string, key: string) =>
+  page.evaluate(([cache, key]) => new Promise<boolean>((resolve) => {
+    const opened = indexedDB.open("chat.pages");
+    opened.onerror = () => resolve(false);
+    opened.onsuccess = () => {
+      const db = opened.result;
+      if (!db.objectStoreNames.contains("pages")) return resolve(false);
+      const got = db.transaction("pages").objectStore("pages").get([cache, key]);
+      got.onsuccess = () => resolve(got.result !== undefined);
+      got.onerror = () => resolve(false);
+    };
+  }), [cache, key] as const);
 
 test("a channel thread and a room the owner has not opened yet show their messages with no call in front of them", async ({ page, request }) => {
   const sidebar = (await (await request.get("/api/sidebar")).json()) as { dms: { id: string }[] };
@@ -72,7 +86,8 @@ test("a job pill opens from a short page read ahead, and its refresh asks for th
   const ahead = page.waitForResponse((r) => new URL(r.url()).pathname === `${job}/items`);
   await open(page, `#/c/${VENT}`);
   expect(new URL((await ahead).url()).searchParams.get("limit")).toBe("10");
-  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 50)));
+  // The read ahead also reads the job's header, and an open while that call is on its way takes the read over instead of refreshing.
+  await expect.poll(() => keptPage(page, "timeline", VENT_JOB)).toBe(true);
 
   const asked: string[] = [];
   await page.route((url) => url.pathname.startsWith(job), (route) => {
