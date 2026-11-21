@@ -1,6 +1,6 @@
 /**
  * The owner's star, mute, close and leave per room (server/sidebar-prefs.ts, `PUT /api/c/:id/prefs`): the sidebar rows carry them, a DM with
- * no posts reads as closed, a closed DM comes back with its next post, a left channel comes back when the owner posts there, and a bad body
+ * no posts is still listed, a closed DM comes back with its next post, a left channel comes back when the owner posts there, and a bad body
  * or an unknown room is refused.
  * Run: cd apps/chat && node --import tsx --test --test-force-exit --test-isolation=none test/server/sidebar-prefs.test.ts
  */
@@ -30,7 +30,7 @@ describe("sidebar prefs", () => {
     assert.deepEqual(applyPrefs(undefined, { muted: true, hidden: "left" }, 5), { muted: true, hidden: { kind: "left", at: 5 } });
     assert.equal(applyPrefs({ starred: true }, { starred: false }, 5), undefined);
     const dm = { id: "dm_x", kind: "dm" } as ConversationSummary;
-    assert.equal(withPrefs(dm, undefined, []).hidden, "closed", "a DM with no posts is not listed");
+    assert.equal(withPrefs(dm, undefined, []).hidden, undefined, "a DM with no posts is still listed");
     assert.equal(withPrefs(dm, { hidden: { kind: "closed", at: 10 } }, [{ at: 11, author: "ag_x" }]).hidden, undefined);
     const ch = { id: "ch_x", kind: "channel" } as ConversationSummary;
     assert.equal(withPrefs(ch, { hidden: { kind: "left", at: 10 } }, [{ at: 11, author: "ag_x" }]).hidden, "left", "an agent's post does not bring a left channel back");

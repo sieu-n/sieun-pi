@@ -1,7 +1,7 @@
 /**
  * The owner's sidebar choices per room, as Slack's row menu sets them: Star, Mute, Close conversation for a DM and Leave channel for a
  * channel. They live in state.json under `sidebar`, and `withPrefs` marks each sidebar row with them. A closed DM comes back with its next
- * post, and a DM with no posts yet counts as closed, so the sidebar lists only DMs that hold a conversation. A left channel comes back when
+ * post, and every agent's DM is listed, posts or not, until the owner closes it (owner, DM msg mwr0j3it). A left channel comes back when
  * the owner posts in it or joins it again.
  */
 import type { ConversationPrefs, ConversationSummary, Ms, PrefsPatch } from "../web/src/lib/api/types.ts";
@@ -18,7 +18,7 @@ function hiddenAs(row: ConversationSummary, prefs: ConversationPrefs | undefined
   const hide = prefs?.hidden;
   if (hide?.kind === "left") return posts.some(p => p.author === "owner" && p.at > hide.at) ? undefined : "left";
   if (hide?.kind === "closed") return posts.some(p => p.at > hide.at) ? undefined : "closed";
-  return row.kind === "dm" && !posts.length ? "closed" : undefined;
+  return undefined;
 }
 
 /** Why a prefs body is refused, or the patch it holds. */
