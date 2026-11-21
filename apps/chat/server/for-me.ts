@@ -91,6 +91,27 @@ export class ForMe {
     return { item: marked, pending: pending + (completed ? -1 : 1), changed: true };
   }
 
+  /**
+   * Marks every listed item completed or pending in one write, such as Mark all completed and its Undo. It answers the ids whose status
+   * changed, so an Undo marks back only those, and the ids not on the list.
+   */
+  markMany(record: AgentRecord, ids: readonly string[], completed: boolean): { changed: string[]; missing: string[]; pending: number } {
+    const items = new Map(this.items(record).map(i => [i.id, i]));
+    const changed: string[] = [];
+    const missing: string[] = [];
+    const at = Date.now();
+    for (const id of new Set(ids)) {
+      const item = items.get(id);
+      if (!item) missing.push(id);
+      else if ((item.status === "completed") !== completed) {
+        (this.file.marks[record.id] ??= {})[id] = { completed, at: Math.max(at, item.activityAt) };
+        changed.push(id);
+      }
+    }
+    if (changed.length) this.save();
+    return { changed, missing, pending: this.pending(record) };
+  }
+
   /** Every item on the agent's list, newest activity first. */
   items(record: AgentRecord): ForMeItem[] {
     const out: ForMeItem[] = [];

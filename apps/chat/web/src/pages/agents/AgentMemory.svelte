@@ -1,12 +1,12 @@
 <script lang="ts">
   /**
    * An agent's memory: the entries of the harness store in its folder, which every thread of the agent reads as its local store. The owner
-   * adds, edits and deletes entries here; a job's card lists them without editing.
+   * finds entries by search and sort, adds and edits them in a dialog, and deletes them here; a job's card lists them without editing.
    */
   import { api, type AgentFolder, type HarnessEntryView } from "$lib/api";
-  import { Button, Chip, Input, TextArea, stampLabel, toast } from "$lib/ui";
+  import { Button, Chip, Dialog, EmptyState, Input, SearchField, Select, TextArea, stampLabel, toast } from "$lib/ui";
   import { SvelteSet } from "svelte/reactivity";
-  import { shortPath } from "./agents-model";
+  import { MEMORY_SORTS, memoryMatches, shortPath, sortMemories, type MemorySort } from "./agents-model";
 
   type Props = {
     folder: AgentFolder;
@@ -17,16 +17,23 @@
   let { folder, name, readonly = false, onsaved }: Props = $props();
 
   type Form = { title: string; content: string };
-  let adding = $state<Form | null>(null);
-  let editing = $state<{ key: string; form: Form } | null>(null);
+  /** The dialog's entry: a new one, or the entry it edits. */
+  let editing = $state<{ entry: HarnessEntryView | null; form: Form } | null>(null);
+  let dialogOpen = $state(false);
   let confirming = $state<string | null>(null);
   let busy = $state<string | null>(null);
   let error = $state<{ key: string; text: string } | null>(null);
+  let query = $state("");
+  let sort = $state<MemorySort>("updated");
   const expanded = new SvelteSet<string>();
 
   const keyOf = (entry: HarnessEntryView) => `${entry.kind}:${entry.id}`;
   const long = (content: string) => content.length > 160 || content.includes("\n");
   const ready = (form: Form) => !!form.title.trim() && !!form.content.trim();
+  const total = $derived(folder.memory.entries.length);
+  const shown = $derived(sortMemories(folder.memory.entries.filter((entry) => memoryMatches(entry, query)), sort));
+  const dialogKey = $derived(editing?.entry ? keyOf(editing.entry) : "new");
+  const plural = (n: number) => `${n} ${n === 1 ? "memory" : "memories"}`;
 
   async function run(key: string, write: () => Promise<AgentFolder>, done: string): Promise<boolean> {
     if (busy) return false;
@@ -43,86 +50,101 @@
       busy = null;
     }
   }
-  async function add() {
-    if (!adding || !ready(adding)) return;
-    const input = { title: adding.title.trim(), content: adding.content.trim() };
-    if (await run("new", () => api.addMemory(folder.agent, input), "Added the memory")) adding = null;
-  }
-  async function update(entry: HarnessEntryView) {
+  async function save() {
     if (!editing || !ready(editing.form)) return;
-    const input = { title: editing.form.title.trim(), content: editing.form.content.trim(), path: entry.path };
-    if (await run(keyOf(entry), () => api.updateMemory(folder.agent, entry.id, input, entry.kind), "Saved the memory")) editing = null;
+    const { entry, form } = editing;
+    const input = { title: form.title.trim(), content: form.content.trim() };
+    const saved = entry
+      ? await run(keyOf(entry), () => api.updateMemory(folder.agent, entry.id, { ...input, path: entry.path }, entry.kind), "Saved the memory")
+      : await run("new", () => api.addMemory(folder.agent, input), "Added the memory");
+    if (saved) close();
   }
   async function remove(entry: HarnessEntryView) {
     if (await run(keyOf(entry), () => api.deleteMemory(folder.agent, entry.id, entry.kind), "Deleted the memory")) confirming = null;
   }
-  function startEdit(entry: HarnessEntryView) {
+  function open(entry: HarnessEntryView | null) {
     confirming = null;
     error = null;
-    editing = { key: keyOf(entry), form: { title: entry.title, content: entry.content } };
+    editing = { entry, form: entry ? { title: entry.title, content: entry.content } : { title: "", content: "" } };
+    dialogOpen = true;
+  }
+  function close() {
+    dialogOpen = false;
+    editing = null;
   }
 </script>
 
-{#snippet form(value: Form, key: string, label: string, onsave: () => void, oncancel: () => void)}
-  <div class="form" data-testid="memory-form">
-    <Input size="sm" bind:value={value.title} placeholder="Title" aria-label="Memory title" disabled={busy === key} />
-    <TextArea bind:value={value.content} rows={3} maxRows={14} placeholder="What {name} should remember" aria-label="Memory content" disabled={busy === key} />
-    <div class="actions">
-      <Button size="sm" variant="ghost" onclick={oncancel} disabled={busy === key}>Cancel</Button>
-      <Button size="sm" variant="primary" onclick={onsave} loading={busy === key} disabled={!!busy || !ready(value)}>{label}</Button>
-    </div>
-    {#if error?.key === key}<p class="t-caption warn" role="alert">{error.text}</p>{/if}
-  </div>
-{/snippet}
-
 <section class="memory" aria-label="Memory of {name}" data-testid="agent-memory">
   <div class="head">
-    <h3 class="t-caption heading">Memory of {name}</h3>
-    {#if !readonly && !adding}<Button size="sm" variant="ghost" icon="plus" onclick={() => ((adding = { title: "", content: "" }), (error = null))}>Add memory</Button>{/if}
+    <h3 class="t-caption heading">Memory of {name}{total ? ` · ${plural(total)}` : ""}</h3>
+    {#if !readonly && total}<Button size="sm" variant="ghost" icon="plus" onclick={() => open(null)}>Add memory</Button>{/if}
   </div>
   <span class="t-caption meta" data-path={folder.memory.path}>
     Loaded into every thread of {name} from <code class="t-mono" title={folder.memory.path}>{shortPath(folder.memory.path)}</code>
   </span>
-  {#if adding}{@render form(adding, "new", "Add", add, () => (adding = null))}{/if}
+  {#if total > 1}
+    <div class="tools-row">
+      <div class="search"><SearchField bind:value={query} placeholder="Search {plural(total)}" label="Search memories" data-testid="memory-search" /></div>
+      <Select label="Sort memories" size="sm" bind:value={sort} options={MEMORY_SORTS} />
+    </div>
+    {#if query.trim()}<span class="t-caption meta" role="status" data-testid="memory-count">{shown.length} of {plural(total)} match</span>{/if}
+  {/if}
+  {#if !total}
+    <EmptyState icon="bulb" title="No memories yet" description="What you add here, every thread of {name} reads." size="sm">
+      {#snippet action()}{#if !readonly}<Button size="sm" variant="primary" icon="plus" onclick={() => open(null)}>Add memory</Button>{/if}{/snippet}
+    </EmptyState>
+  {:else if !shown.length}
+    <EmptyState icon="search" title="No memory matches “{query.trim()}”" description="Search reads each title, its text and who wrote it." size="sm">
+      {#snippet action()}<Button size="sm" onclick={() => (query = "")}>Clear search</Button>{/snippet}
+    </EmptyState>
+  {/if}
   <ul class="entries">
-    {#each folder.memory.entries as entry (keyOf(entry))}
+    {#each shown as entry (keyOf(entry))}
       {@const key = keyOf(entry)}
       <li class="entry" data-entry-id={entry.id} data-kind={entry.kind}>
-        {#if editing?.key === key}
-          {@render form(editing.form, key, "Save", () => update(entry), () => (editing = null))}
-        {:else}
-          <div class="entry-head">
-            <span class="t-label-sm title">{entry.title}</span>
-            {#if entry.kind !== "memory"}<Chip size="sm" label={entry.kind} />{/if}
-            {#if !readonly}
-              <span class="tools">
-                <button type="button" class="link t-caption" aria-label="Edit {entry.title}" onclick={() => startEdit(entry)}>Edit</button>
-                <button type="button" class="link t-caption" aria-label="Delete {entry.title}" onclick={() => ((confirming = key), (error = null))}>Delete</button>
-              </span>
-            {/if}
-          </div>
-          <p class="t-body-sm content" class:folded={!expanded.has(key)}>{entry.content}</p>
-          {#if long(entry.content)}
-            <button type="button" class="link t-caption" aria-expanded={expanded.has(key)} onclick={() => (expanded.has(key) ? expanded.delete(key) : expanded.add(key))}>
-              {expanded.has(key) ? "Show less" : "Show all"}
-            </button>
+        <div class="entry-head">
+          <span class="t-label-sm title">{entry.title}</span>
+          {#if entry.kind !== "memory"}<Chip size="sm" label={entry.kind} />{/if}
+          {#if !readonly}
+            <span class="tools">
+              <button type="button" class="link t-caption" aria-label="Edit {entry.title}" onclick={() => open(entry)}>Edit</button>
+              <button type="button" class="link t-caption" aria-label="Delete {entry.title}" onclick={() => ((confirming = key), (error = null))}>Delete</button>
+            </span>
           {/if}
-          <span class="t-caption meta">From {entry.source || "unknown"} · updated {stampLabel(Date.parse(entry.updatedAt))}</span>
-          {#if confirming === key}
-            <div class="confirm" role="group" aria-label="Confirm delete">
-              <span class="t-caption">Delete this memory from every thread of {name}?</span>
-              <Button size="sm" variant="ghost" onclick={() => (confirming = null)} disabled={busy === key}>Cancel</Button>
-              <Button size="sm" variant="danger" onclick={() => remove(entry)} loading={busy === key} disabled={!!busy}>Delete</Button>
-            </div>
-          {/if}
-          {#if error?.key === key}<p class="t-caption warn" role="alert">{error.text}</p>{/if}
+        </div>
+        <p class="t-body-sm content" class:folded={!expanded.has(key)}>{entry.content}</p>
+        {#if long(entry.content)}
+          <button type="button" class="link t-caption" aria-expanded={expanded.has(key)} onclick={() => (expanded.has(key) ? expanded.delete(key) : expanded.add(key))}>
+            {expanded.has(key) ? "Show less" : "Show all"}
+          </button>
         {/if}
+        <span class="t-caption meta">From {entry.source || "unknown"} · updated {stampLabel(Date.parse(entry.updatedAt))}</span>
+        {#if confirming === key}
+          <div class="confirm" role="group" aria-label="Confirm delete">
+            <span class="t-caption">Delete this memory from every thread of {name}?</span>
+            <Button size="sm" variant="ghost" onclick={() => (confirming = null)} disabled={busy === key}>Cancel</Button>
+            <Button size="sm" variant="danger" onclick={() => remove(entry)} loading={busy === key} disabled={!!busy}>Delete</Button>
+          </div>
+        {/if}
+        {#if error?.key === key && editing?.entry?.id !== entry.id}<p class="t-caption warn" role="alert">{error.text}</p>{/if}
       </li>
-    {:else}
-      <li class="t-caption meta">No memories yet.</li>
     {/each}
   </ul>
 </section>
+
+{#if editing}
+  <Dialog bind:open={dialogOpen} title={editing.entry ? "Edit memory" : "Add memory"} width={560} dirty initialFocus={editing.entry ? "textarea" : "input"} onclose={() => (editing = null)}>
+    <form id="memory-form" class="form" data-testid="memory-form" onsubmit={(e) => (e.preventDefault(), void save())}>
+      <Input size="sm" bind:value={editing.form.title} placeholder="Title" aria-label="Memory title" disabled={busy === dialogKey} />
+      <TextArea bind:value={editing.form.content} rows={4} maxRows={16} placeholder="What {name} should remember" aria-label="Memory content" disabled={busy === dialogKey} />
+      {#if error?.key === dialogKey}<p class="t-caption warn" role="alert">{error.text}</p>{/if}
+    </form>
+    {#snippet actions()}
+      <Button variant="ghost" onclick={close} disabled={busy === dialogKey}>Cancel</Button>
+      <Button variant="primary" type="submit" form="memory-form" loading={busy === dialogKey} disabled={!!busy || !editing || !ready(editing.form)}>{editing?.entry ? "Save" : "Add"}</Button>
+    {/snippet}
+  </Dialog>
+{/if}
 
 <style>
   .memory {
@@ -131,7 +153,7 @@
     gap: var(--space-2);
   }
   .head,
-  .actions,
+  .tools-row,
   .entry-head,
   .confirm {
     display: flex;
@@ -177,8 +199,9 @@
     border-radius: var(--radius-row);
     background: var(--surface-inset);
   }
-  .entry .form {
-    align-self: stretch;
+  .search {
+    flex: 1;
+    min-width: 0;
   }
   .entry-head {
     align-self: stretch;

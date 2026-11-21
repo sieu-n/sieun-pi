@@ -40,6 +40,42 @@ test("a DM post lands on Vent's Pending list live, marks completed and back, and
   await expect(page.locator(`[data-message-id="${post}"]`)).toBeVisible();
 });
 
+test("Mark all completed clears a test agent's Pending list with an Undo, and j, k and e work the rows from the keyboard", async ({ page, request }) => {
+  const agent = (await (await request.post("/api/agents", { data: { name: uniqueName("for list"), test: true } })).json()) as { id: string; room: string };
+  const room = agent.room ?? `dm_${agent.id.slice(3)}`;
+  const posted: string[] = [];
+  for (const text of ["quiet: first ask", "quiet: second ask", "quiet: third ask"]) {
+    const sent = await request.post(`/api/c/${room}/send`, { data: { text: uniqueName(text), requestId: uniqueName("for-all") } });
+    expect(sent.ok()).toBeTruthy();
+    posted.push(`${room}/${((await sent.json()) as { item: { id: string } }).item.id}`);
+  }
+  await page.goto(`/#/agents/${agent.id}?section=for`);
+  for (const id of posted) await expect(row(page, id)).toBeVisible({ timeout: 20_000 });
+
+  await page.keyboard.press("j");
+  await expect(row(page, posted[2]!).locator("a[data-for-me-open]")).toBeFocused();
+  await page.keyboard.press("j");
+  await page.keyboard.press("k");
+  await expect(row(page, posted[2]!).locator("a[data-for-me-open]")).toBeFocused();
+  await page.keyboard.press("e");
+  await expect(row(page, posted[2]!)).toHaveCount(0);
+  await expect(row(page, posted[1]!).locator("a[data-for-me-open]")).toBeFocused();
+  await page.getByRole("button", { name: "Undo" }).click();
+  await expect(row(page, posted[2]!)).toBeVisible();
+
+  await forTab(page).getByRole("button", { name: "Mark all completed" }).click();
+  await expect(forTab(page).getByTestId("for-me-empty")).toContainText("All caught up");
+  for (const id of posted) await expect(row(page, id)).toHaveCount(0);
+  await page.getByRole("button", { name: "Undo" }).click();
+  for (const id of posted) await expect(row(page, id)).toBeVisible();
+
+  await forTab(page).getByRole("button", { name: "Mark all completed" }).click();
+  await expect(forTab(page).getByTestId("for-me-empty")).toBeVisible();
+  const left = (await (await request.get(`/api/agents/${agent.id}/for-me?status=pending`)).json()) as { items: unknown[] };
+  expect(left.items).toHaveLength(0);
+  await request.patch(`/api/c/${agent.id}`, { data: { archived: true } });
+});
+
 test("a job's page has no For tab", async ({ page, request }) => {
   const jobs = (await (await request.get("/api/jobs")).json()) as { id: string; archived: boolean }[];
   const job = jobs.find((item) => !item.archived);

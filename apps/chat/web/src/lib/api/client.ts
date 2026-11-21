@@ -520,6 +520,9 @@ export const api = {
   /** Marks one item, `<room id>/<post id>`, completed or pending again; the same mark twice changes nothing. */
   markForMe: (agent: AgentId, messageId: string, completed: boolean) =>
     call<{ item: ForMeItem; pending: number }>("POST", `/api/agents/${enc(agent)}/for-me`, { messageId, completed }),
+  /** Marks several For items at once and answers the ids whose status changed, which an Undo marks back. */
+  markForMeMany: (agent: AgentId, messageIds: string[], completed: boolean) =>
+    call<{ changed: string[]; pending: number }>("POST", `/api/agents/${enc(agent)}/for-me`, { messageIds, completed }),
 
   usage: (opts: { range: UsageRange; bucket: UsageBucket; thread?: string; host?: string }) => call<UsageReport>("GET", `/api/usage${query(opts)}`),
   pool: () => call<AccountsView>("GET", "/api/pool"),

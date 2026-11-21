@@ -1180,6 +1180,15 @@ export class App {
     return { item: marked.item, pending: marked.pending };
   }
 
+  /** Marks several items of the agent's For list at once, for Mark all completed and its Undo. */
+  markManyForMe(id: string, messageIds: readonly string[], completed: boolean): { changed: string[]; pending: number } {
+    const record = this.forMeAgent(id);
+    const { changed, missing, pending } = this.forMe.markMany(record, messageIds, completed);
+    if (missing.length === messageIds.length && missing.length) throw new NotFound(`None of ${missing.slice(0, 3).join(", ")} is on ${record.name}'s For list; pass ids that GET /api/agents/${record.id}/for-me?status=all lists.`);
+    if (changed.length) this.forMeChanged(record.id);
+    return { changed, pending };
+  }
+
   private forMeAgent(id: string): AgentRecord {
     const record = this.agents.record(id);
     if (!record) throw new NotFound(`No agent ${id}; pass an agent id such as ag_vent, or the id of one of its threads.`);

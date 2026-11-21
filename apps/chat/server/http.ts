@@ -171,7 +171,13 @@ export function routes(app: App): Route[] {
       return app.forMeList(p.id!, status);
     }),
     route("POST", "/api/agents/:id/for-me", async (_r, p, _q, body) => {
-      const { messageId, completed } = ((await body()) ?? {}) as { messageId?: unknown; completed?: unknown };
+      const { messageId, messageIds, completed } = ((await body()) ?? {}) as { messageId?: unknown; messageIds?: unknown; completed?: unknown };
+      if (messageIds !== undefined) {
+        const items = Array.isArray(messageIds) ? messageIds.map(parseItemId) : [];
+        if (!items.length || items.some(i => !i)) throw new BadRequest("messageIds is a list of For item ids, each <room id>/<post id>, such as [\"dm_vent/p41\", \"ch_1a2b3c4d/p12\"].");
+        if (typeof completed !== "boolean") throw new BadRequest("A mark's completed is true to mark the items completed or false to make them pending again.");
+        return app.markManyForMe(p.id!, items.map(i => `${i!.room}/${i!.post}`), completed);
+      }
       const item = parseItemId(messageId);
       if (!item) throw new BadRequest(`${JSON.stringify(messageId ?? "")} is no For item id; pass messageId as <room id>/<post id>, such as dm_vent/p41 or ch_1a2b3c4d/p12.`);
       if (typeof completed !== "boolean") throw new BadRequest("A mark's completed is true to mark the item completed or false to make it pending again.");

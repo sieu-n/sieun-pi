@@ -51,7 +51,7 @@ test("the agent's page shows its host, home directory, board and memory, and eac
   await expect(panel(page).locator('[data-fact="cwd"]').getByRole("button", { name: "Copy working directory" })).toBeVisible();
   await expect(panel(page).locator('[data-fact="memory"]')).toContainText(config.folder ? "memor" : "None of its own");
   if (config.board) await expect(panel(page).locator('[data-fact="board"]')).toContainText(`${config.board.steps.open} open`);
-  else await expect(panel(page).locator('[data-fact="board"]')).toContainText("No board");
+  else await expect(panel(page).locator('[data-fact="board"]')).toContainText("None yet");
 
   await section(page, "Work").click();
   await expect(page).toHaveURL(/section=work/);
@@ -144,4 +144,27 @@ test("a duty run's configuration names its coordinator and shares its chat's boa
   await section(page, "Jobs").click();
   await panel(page).getByRole("tabpanel").getByRole("link", { name: duty!.chat.name }).click();
   await expect(page).toHaveURL(new RegExp(`#/agents/${duty!.chat.id}$`));
+});
+
+test("a new agent's overview names the next step for its board and duties, and a comm thread in an archived channel keeps the channel's name", async ({ page, request }) => {
+  const stamp = Date.now().toString(36);
+  const agent = (await (await request.post("/api/agents", { data: { name: `panel lists ${stamp}`, test: true } })).json()) as { id: string; name: string };
+  const name = `panel-lists-${stamp}`;
+  const room = (await (await request.post("/api/rooms", { data: { kind: "channel", name, members: [agent.id], test: true } })).json()) as { id: string };
+  const commRooms = async () => ((await (await request.get(`/api/agents/${agent.id}/config`)).json()) as { agent: { comm?: { room: string }[] } }).agent.comm?.map((c) => c.room) ?? [];
+  await expect.poll(commRooms).toContain(room.id);
+  await request.patch(`/api/rooms/${room.id}`, { data: { archived: true } });
+
+  await page.goto(`/#/agents/${agent.id}`);
+  await expect(panel(page).locator('[data-fact="board"]')).toContainText("None yet", { timeout: 20_000 });
+  await expect(panel(page).locator('[data-fact="board"]').getByRole("button", { name: `Message ${agent.name}` })).toBeVisible();
+  await expect(panel(page).locator('[data-fact="host"]').getByRole("link")).toHaveAttribute("href", "#/settings/hosts");
+  await panel(page).locator('[data-fact="duties"]').getByRole("button", { name: "Add a duty" }).click();
+  await expect(section(page, "Jobs")).toHaveAttribute("aria-selected", "true");
+
+  await section(page, "Work").click();
+  const comm = panel(page).locator(`li[data-room="${room.id}"]`);
+  await expect(comm).toContainText(`Comm thread in #${name}`);
+  await expect(comm).toContainText("Archived");
+  await request.patch(`/api/c/${agent.id}`, { data: { archived: true } });
 });

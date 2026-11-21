@@ -80,12 +80,31 @@ test("the owner adds a memory to Vent, sees it listed and deletes it", async ({ 
   await expect(memory(page)).toContainText(`Loaded into every thread of ${agent.name}`);
 
   await memory(page).getByRole("button", { name: "Add memory" }).click();
-  await memory(page).getByRole("textbox", { name: "Memory title" }).fill(title);
-  await memory(page).getByRole("textbox", { name: "Memory content" }).fill(content);
-  await memory(page).getByRole("button", { name: "Add", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Add memory" });
+  await dialog.getByRole("textbox", { name: "Memory title" }).fill(title);
+  await dialog.getByRole("textbox", { name: "Memory content" }).fill(content);
+  await dialog.getByRole("button", { name: "Add", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
   const row = memory(page).locator("li[data-entry-id]", { hasText: title });
   await expect(row).toContainText(content);
   await expect(row).toContainText("From owner");
+
+  const search = memory(page).getByRole("searchbox", { name: "Search memories" });
+  if (await search.count()) {
+    await search.fill(title.split(" ").at(-1)!);
+    await expect(memory(page).locator("li[data-entry-id]")).toHaveCount(1);
+    await expect(memory(page).getByTestId("memory-count")).toContainText("1 of");
+    await search.fill("zz-no-memory-holds-this");
+    await expect(memory(page)).toContainText("No memory matches");
+    await memory(page).getByRole("button", { name: "Clear search" }).click();
+    await expect(row).toBeVisible();
+  }
+
+  await row.getByRole("button", { name: `Edit ${title}` }).click();
+  const edit = page.getByRole("dialog", { name: "Edit memory" });
+  await edit.getByRole("textbox", { name: "Memory content" }).fill(`${content} Edited.`);
+  await edit.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(row).toContainText("Edited.");
   const saved = (await folderOf(request, agent.id)).memory.entries.find((entry) => entry.title === title);
   expect(saved?.source).toBe("owner");
 

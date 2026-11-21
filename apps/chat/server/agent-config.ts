@@ -293,6 +293,11 @@ export async function agentConfig(app: App, id: AgentId): Promise<AgentConfig> {
         const member = app.threads.registered(id) ?? app.agents.ofComm(id)?.record;
         return member ? app.groups.memberRooms(member.id).map(row => ({ id: row.id, kind: row.kind, name: row.name })) : [];
       })(),
+      commRooms: (agent.comm ?? []).map(({ room }) => {
+        const row = app.groups.row(room);
+        if (row) return { id: room, kind: row.kind, name: row.name, archived: !!row.archived };
+        return room.startsWith("dm_") ? { id: room, kind: "dm" as const, name: "DM", archived: false } : { id: room, kind: "channel" as const, name: room, archived: false };
+      }),
       duties, checkIn,
       dutiesFile: isChatRoot && dutiesPath ? fileInfo("duties, runs and check-in", dutiesPath) : null,
     },

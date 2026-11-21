@@ -110,13 +110,18 @@
   function setFolder(next: AgentFolder) {
     if (config && next.agent === config.folder?.agent) answer.set({ ...config, folder: next });
   }
-  /** A comm thread is named by its room, never as an agent or a job. */
+  /** A comm thread is named by its room, never as an agent or a job; an archived room keeps its name and reads archived. */
+  const commRoom = (room: string) => config?.swarm.commRooms?.find((r) => r.id === room);
   const commLabel = (room: string) => {
     if (room.startsWith("dm_")) return "DM comm thread";
     const known = conversations.byId(room);
-    const name = known?.name ?? config?.swarm.rooms.find((r) => r.id === room)?.name ?? room;
-    return `Comm thread in ${known?.kind === "channel" || (!known && room.startsWith("ch_")) ? "#" : ""}${name}`;
+    const row = commRoom(room);
+    const name = known?.name ?? row?.name ?? room;
+    const kind = known?.kind ?? row?.kind ?? (room.startsWith("ch_") ? "channel" : "solo");
+    return `Comm thread in ${kind === "channel" ? "#" : ""}${name}`;
   };
+  /** Its comm threads with those in archived rooms last, as Slack lists an archived channel after the open ones. */
+  const commThreads = $derived([...(agent?.comm ?? [])].sort((a, b) => Number(!!commRoom(a.room)?.archived) - Number(!!commRoom(b.room)?.archived)));
   const dotOf = (status: RunStatus) => (status === "working" ? "online" : status === "sleeping" ? "away" : status === "failed" ? "busy" : "offline");
 
   function copy(path: string) {
@@ -252,17 +257,21 @@
       </section>
       <dl class="facts">
         <dt>Host</dt>
-        <dd data-fact="host">{config.runs.host} <span class="t-caption meta">{hostLine}</span></dd>
+        <dd data-fact="host">
+          <a href={hrefFor("settings", ["hosts"])} title="Open Settings > Hosts">{config.runs.host}</a>
+          <span class="t-caption meta">{hostLine} · picked when it was created</span>
+        </dd>
         <dt>Model</dt>
         <dd data-fact="model">{agent?.model ? agent.model.label : "No model yet"}{#if agent?.thinkingLevel}<span class="t-caption meta">{agent.thinkingLevel} thinking</span>{/if}</dd>
         {#if agent?.comm?.length}
           <dt>Threads</dt>
           <dd data-fact="threads">
             <span class="comm"><StatusDot status={dotOf(agent.status)} label={STATUS_LABEL[agent.status]} /><a href={conversationHref(agent.thread)} data-work-thread={agent.thread}>Work thread</a></span>
-            {#each agent.comm as comm (comm.thread)}
+            {#each commThreads as comm (comm.thread)}
               <span class="comm" data-comm-thread={comm.thread} data-room={comm.room}>
                 <StatusDot status={dotOf(comm.status)} label={STATUS_LABEL[comm.status]} />
                 <a href={conversationHref(comm.thread)}>{commLabel(comm.room)}</a>
+                {#if commRoom(comm.room)?.archived}<Chip size="sm" label="Archived" />{/if}
               </span>
             {/each}
           </dd>
@@ -273,7 +282,8 @@
             <a href={boardHref}>{config.board.own ? "Its board" : `Board of ${config.board.chatName}`}</a>
             <span class="t-caption meta">{config.board.steps.open} open · {config.board.steps.done} done · {plural(config.board.openTodos.length, "ask")} for you</span>
           {:else}
-            <span class="meta">No board</span>
+            <span class="meta">None yet. It writes one when it plans work.</span>
+            {#if agent && !agent.archived}<button type="button" class="more t-caption" onclick={() => onmessage(agent)}>Message {agent.name}</button>{/if}
           {/if}
         </dd>
         <dt>Memory</dt>
@@ -284,9 +294,20 @@
         <dt>Jobs</dt>
         <dd data-fact="jobs">
           {plural(config.swarm.jobs.filter((j) => !j.archived).length, "job")}{config.swarm.jobs.some((j) => j.status === "working") ? `, ${config.swarm.jobs.filter((j) => j.status === "working").length} working` : ""}
-          · {plural(config.swarm.duties.length, "duty", "duties")}
           <button type="button" class="more t-caption" onclick={() => onsection("jobs")}>Details</button>
         </dd>
+        {#if agent?.kind === "chat"}
+          <dt>Duties</dt>
+          <dd data-fact="duties">
+            {#if config.swarm.duties.length}
+              {plural(config.swarm.duties.length, "duty", "duties")}{config.swarm.duties.some((d) => d.paused) ? `, ${config.swarm.duties.filter((d) => d.paused).length} paused` : ""}
+              <button type="button" class="more t-caption" onclick={() => onsection("jobs")}>Details</button>
+            {:else}
+              <span class="meta">None yet</span>
+              <button type="button" class="more t-caption" onclick={() => onsection("jobs")}>Add a duty</button>
+            {/if}
+          </dd>
+        {/if}
         {#if config.usage}
           <dt>Last 7 days</dt>
           <dd data-fact="usage">{money(config.usage.cost)} · {plural(config.usage.turns, "turn")}</dd>
@@ -298,10 +319,11 @@
           <h3 class="t-caption heading">Threads</h3>
           <ul class="list">
             <li><StatusDot status={dotOf(agent.status)} label={STATUS_LABEL[agent.status]} /><a class="grow" href={conversationHref(agent.thread)} data-work-thread={agent.thread}>Work thread</a></li>
-            {#each agent.comm ?? [] as comm (comm.thread)}
+            {#each commThreads as comm (comm.thread)}
               <li data-comm-thread={comm.thread} data-room={comm.room}>
                 <StatusDot status={dotOf(comm.status)} label={STATUS_LABEL[comm.status]} />
                 <a class="grow" href={conversationHref(comm.thread)}>{commLabel(comm.room)}</a>
+                {#if commRoom(comm.room)?.archived}<Chip size="sm" label="Archived" />{/if}
               </li>
             {/each}
           </ul>
@@ -400,7 +422,9 @@
           </ul>
         </section>
       {:else}
-        <EmptyState icon="board" title="No board yet" description="Its chat has not written a chat.board document." size="sm" />
+        <EmptyState icon="board" title="No board yet" description="It writes its plan, its asks for you and its duties on a board once it plans work." size="sm">
+          {#snippet action()}{#if agent && !agent.archived}<Button size="sm" icon="chat" onclick={() => onmessage(agent)}>Message {agent.name}</Button>{/if}{/snippet}
+        </EmptyState>
       {/if}
     {:else if section === "memory"}
       {#if folder}

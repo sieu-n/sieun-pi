@@ -151,6 +151,27 @@ describe("an agent's For list", () => {
     assert.equal((await find(`${GENERAL}/${target.id}`))!.status, "completed");
   });
 
+  test("Mark all completed marks several items in one write, answers only the changed ids, and its Undo makes them pending again", async () => {
+    const a = post(GENERAL, "owner", { mentions: [VENT] });
+    const b = post(GENERAL, "owner", { mentions: [VENT] });
+    const ids: [string, string] = [`${GENERAL}/${a.id}`, `${GENERAL}/${b.id}`];
+    assert.equal((await mark(ids[0], true)).status, 200);
+    const before = (await list()).pending;
+    const many = (messageIds: unknown, completed: unknown) => s.send<{ changed: string[]; pending: number; error?: string }>("POST", `/api/agents/${VENT}/for-me`, { messageIds, completed });
+    const done = await many([...ids, ids[1]], true);
+    assert.equal(done.status, 200);
+    assert.deepEqual(done.body.changed, [ids[1]], "the item that was completed already is not changed, and a repeated id counts once");
+    assert.equal(done.body.pending, before - 1);
+    const undone = await many(done.body.changed, false);
+    assert.deepEqual(undone.body.changed, [ids[1]]);
+    assert.equal((await find(ids[1]))!.status, "pending");
+    assert.equal((await find(ids[0]))!.status, "completed");
+    for (const [answer, status] of [[await many([], true), 400], [await many(["p1"], true), 400], [await many(ids, "yes"), 400], [await many([`${GENERAL}/p9999`], true), 404]] as const) {
+      assert.equal(answer.status, status, JSON.stringify(answer.body));
+      assert.match((answer.body as { error: string }).error, /^[^\n]+\.$/);
+    }
+  });
+
   test("a bad request answers 400 and an unknown agent or an item off the list 404, each with one sentence", async () => {
     const answers = [
       [await s.send("GET", "/api/agents/ag_nobody/for-me"), 404],

@@ -722,6 +722,8 @@ export interface AgentConfig {
     jobs: { id: AgentId; name: string; kind: "job" | "duty" | "root job"; status: RunStatus; createdAt: Ms | null; parent: AgentId | null; depth: number; archived: boolean }[];
     /** The channels and Solo rooms it is a member of. */
     rooms: { id: RoomId; kind: "channel" | "solo"; name: string }[];
+    /** The room of each of its comm threads, archived ones too, so a comm thread reads by its room's name. */
+    commRooms: { id: RoomId; kind: "dm" | "channel" | "solo"; name: string; archived: boolean }[];
     duties: { id: string; name: string; goal: string; schedule: string; paused: boolean; nextAt: Ms | null; lastVerdict: string | null; lastAt: Ms | null; runs: number }[];
     /** The check-in clock of its chat, when one is set. */
     checkIn: { everyMs: number; paused: boolean; nextAt: Ms | null; lastAt: Ms | null } | null;

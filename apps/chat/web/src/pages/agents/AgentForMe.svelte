@@ -4,7 +4,8 @@
    * from the room posts (server/for-me.ts); the agent marks them with its mark_message tool, and the owner can mark one here too.
    */
   import { api, live, reads, view, type ForMeItem, type ForMeList, type Reaction } from "$lib/api";
-  import { Avatar, Button, Chip, Icon, IconButton, LoadingText, Tabs, ageLabel, stampLabel, toast } from "$lib/ui";
+  import { tick } from "svelte";
+  import { Avatar, Button, Chip, EmptyState, Icon, IconButton, LoadingText, Tabs, ageLabel, listKey, moveListFocus, stampLabel, toast } from "$lib/ui";
   import { conversationHref } from "$lib/router.svelte";
   import { avatarOf } from "$pages/channel/present";
   import { FOR_FILTERS, FOR_FILTER_LABEL, REASON_LABEL, forCount, reasonChips, forEmpty, forTarget, previewText, type ForFilter } from "./agents-model";
@@ -51,9 +52,17 @@
 
   const tabs = $derived(FOR_FILTERS.map((id) => ({ id, label: FOR_FILTER_LABEL[id], badge: forCount(list, id) })));
 
-  async function mark(item: ForMeItem, completed: boolean) {
-    if (marking) return;
+  let rows = $state<HTMLUListElement>();
+  let markingAll = $state(false);
+  const pendingIds = $derived(list?.items.filter((item) => item.status === "pending").map((item) => item.id) ?? []);
+  const failed = (reason: unknown) => toast.error(reason instanceof Error ? reason.message : "Could not mark the message");
+
+  /** Marks one row; a row that leaves the shown filter gives its focus to the row that takes its place, and completing one offers Undo. */
+  async function mark(item: ForMeItem, completed: boolean, undo = true) {
+    if (marking || markingAll) return;
     marking = item.id;
+    const focused = !!rows && rows.contains(document.activeElement);
+    const at = list?.items.findIndex((row) => row.id === item.id) ?? -1;
     try {
       const { item: next, pending } = await api.markForMe(agentId, item.id, completed);
       if (list) {
@@ -61,11 +70,51 @@
         const items = filter === "all" ? list.items.map((row) => (row.id === next.id ? next : row)) : list.items.filter((row) => row.id !== next.id);
         answer.set({ ...list, items, pending, completed: list.completed + moved });
       }
+      if (undo && completed) toast.success("Marked completed", { action: { label: "Undo", run: () => void mark(next, false, false) } });
     } catch (reason) {
-      toast.error(reason instanceof Error ? reason.message : "Could not mark the message");
+      failed(reason);
     } finally {
       marking = null;
     }
+    if (focused && at >= 0) {
+      await tick();
+      const links = rows?.querySelectorAll<HTMLElement>("[data-for-me-open]");
+      links?.[Math.min(at, links.length - 1)]?.focus();
+    }
+  }
+
+  /** Marks every pending row completed, as Slack's Mark all as read, with an Undo that makes those rows pending again. */
+  async function markAll() {
+    const ids = pendingIds;
+    if (!ids.length || markingAll || marking) return;
+    markingAll = true;
+    try {
+      const { changed } = await api.markForMeMany(agentId, ids, true);
+      await load();
+      if (changed.length) {
+        toast.success(`Marked ${changed.length === 1 ? "1 message" : `${changed.length} messages`} completed`, {
+          action: { label: "Undo", run: () => void api.markForMeMany(agentId, changed, false).then(load, failed) },
+          duration: 8000,
+        });
+      }
+    } catch (reason) {
+      failed(reason);
+    } finally {
+      markingAll = false;
+    }
+  }
+
+  /** The list's keys work from anywhere on the tab, as Slack's Activity keys do, but never inside an open dialog or menu. */
+  function onkeydown(e: KeyboardEvent) {
+    const key = listKey(e);
+    if (!key || key === "close" || key === "all" || !rows) return;
+    if (e.target instanceof Element && e.target.closest("dialog, [role=menu], [role=listbox]")) return;
+    if (document.querySelector("dialog[open]")) return;
+    e.preventDefault();
+    if (key === "next" || key === "prev") return void moveListFocus(rows, "[data-for-me-open]", key);
+    const id = (document.activeElement?.closest("[data-item-id]") as HTMLElement | null)?.dataset.itemId;
+    const item = list?.items.find((row) => row.id === id);
+    if (item) void mark(item, item.status !== "completed");
   }
 
   const hrefOf = (item: ForMeItem) => {
@@ -77,10 +126,18 @@
   const people = (reaction: Reaction) => reaction.by.map((b) => (b.id === "owner" ? "You" : b.name)).join(", ");
 </script>
 
-<section class="for" aria-label="For {name}" data-testid="agent-for-me" data-agent-id={agentId}>
+<svelte:window {onkeydown} />
+
+<section class="for" aria-label="For {name}" data-testid="agent-for-me" data-agent-id={agentId} aria-keyshortcuts="j k e">
   <div class="head">
     <Tabs items={tabs} value={filter} size="sm" label="Which messages" onchange={(next) => (filter = next)} />
-    <span class="t-caption meta">Messages that name {name}, reach it in a room or DM, or react to its posts.</span>
+    {#if filter !== "completed" && pendingIds.length > 1}
+      <span class="all">
+        <Button size="sm" variant="ghost" icon="check" loading={markingAll} disabled={markingAll || !!marking}
+          onclick={() => void markAll()}>Mark all completed</Button>
+      </span>
+    {/if}
+    <span class="t-caption meta">Messages that name {name}, reach it in a room or DM, or react to its posts. Press j and k to move, e to mark one.</span>
   </div>
 
   {#if error && !list}
@@ -91,9 +148,16 @@
   {:else if !list}
     <div class="note"><LoadingText text="Reading its messages…" /></div>
   {:else if !list.items.length}
-    <p class="t-body-sm empty" data-testid="for-me-empty">{forEmpty(name, filter)}</p>
+    <div data-testid="for-me-empty">
+      <EmptyState icon={filter === "pending" ? "check" : "inbox"} title={filter === "pending" ? "All caught up" : forEmpty(name, filter)} description={filter === "pending" ? forEmpty(name, filter) : undefined} size="sm">
+        {#snippet action()}
+          {#if filter === "pending" && list.completed}<Button size="sm" onclick={() => (filter = "completed")}>See completed</Button>
+          {:else if filter === "completed" && list.pending}<Button size="sm" onclick={() => (filter = "pending")}>See pending</Button>{/if}
+        {/snippet}
+      </EmptyState>
+    </div>
   {:else}
-    <ul class="rows">
+    <ul class="rows" bind:this={rows}>
       {#each list.items as item (item.id)}
         {@const face = avatarOf(item.author)}
         <li class="row" data-item-id={item.id} data-status={item.status}>
@@ -162,10 +226,8 @@
     padding: var(--space-4) 0;
     color: var(--text-metadata);
   }
-  .empty {
-    margin: 0;
-    padding: var(--space-4) 0;
-    color: var(--text-subtle);
+  .all {
+    margin-left: auto;
   }
   .rows {
     display: flex;

@@ -1,4 +1,4 @@
-import type { AgentSummary, ForMeItem, ForMeList, ForMeReason, ForMeStatus, ModelCatalog, RunStatus } from "$lib/api";
+import type { AgentSummary, ForMeItem, ForMeList, ForMeReason, ForMeStatus, HarnessEntryView, ModelCatalog, RunStatus } from "$lib/api";
 import type { ModelOption } from "$lib/ui";
 
 /**
@@ -220,4 +220,35 @@ export function jobFilterOf(param: string | undefined, counts: Record<JobFilter,
 
 export function jobsShown<T extends FilteredJob>(jobs: readonly T[], filter: JobFilter, query: string): T[] {
   return jobs.filter((job) => jobFilterOfJob(job) === filter && matches(job, query));
+}
+
+export type MemorySort = "updated" | "oldest" | "title";
+export const MEMORY_SORTS: { value: MemorySort; label: string }[] = [
+  { value: "updated", label: "Recently updated" },
+  { value: "oldest", label: "Oldest updated" },
+  { value: "title", label: "Title A to Z" },
+];
+type MemoryEntry = Pick<HarnessEntryView, "id" | "title" | "content" | "source" | "updatedAt">;
+/** Whether every word of the query is in the entry's title, text, id or source, ignoring case; an empty query matches all. */
+export function memoryMatches(entry: MemoryEntry, query: string): boolean {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return true;
+  const hay = `${entry.title}\n${entry.content}\n${entry.id}\n${entry.source}`.toLowerCase();
+  return words.every((word) => hay.includes(word));
+}
+export function sortMemories<T extends MemoryEntry>(entries: readonly T[], sort: MemorySort): T[] {
+  const at = (entry: T) => Date.parse(entry.updatedAt) || 0;
+  const out = [...entries];
+  switch (sort) {
+    case "updated":
+      return out.sort((a, b) => at(b) - at(a));
+    case "oldest":
+      return out.sort((a, b) => at(a) - at(b));
+    case "title":
+      return out.sort((a, b) => a.title.localeCompare(b.title));
+    default: {
+      const _exhaustive: never = sort;
+      return _exhaustive;
+    }
+  }
 }

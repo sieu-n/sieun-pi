@@ -189,7 +189,7 @@
       <p class="hint t-caption">
         A new agent is a new root thread on pi-host{#if hosts && hosts.length > 1}{" "}on the box you pick{/if}, in its project folder, whose AGENTS.md, skills and rules it reads.
         {#if folders && !folders.default}No project folder is configured on this box, so name one.{/if}
-        You can change its model and folder later from its card.
+        You can change its model and folder later from its page, and it stays on the host it starts on.
       </p>
     </div>
     {#if error}<p class="error t-body-sm" role="alert">{error}</p>{/if}
