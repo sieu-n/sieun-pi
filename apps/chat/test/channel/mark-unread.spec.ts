@@ -114,7 +114,7 @@ test("U marks the hovered post unread, the menu names U, and the hover bar drops
   await item.click();
   await expect(page.getByTestId("new-line")).toHaveCount(1);
   await page.mouse.move(0, 0);
-  await expect(target.locator(".actions")).toHaveCSS("opacity", "0");
+  await expect(target.locator("[data-action-bar]")).toHaveCSS("opacity", "0");
 
   await target.hover();
   await target.locator("[data-message-menu]").click();

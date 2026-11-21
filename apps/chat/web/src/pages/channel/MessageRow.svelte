@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Item, TurnPlace } from "$lib/api";
+  import ActionBar from "$lib/ui/ActionBar.svelte";
   import Avatar from "$lib/ui/Avatar.svelte";
   import Bubble from "$lib/ui/Bubble.svelte";
   import Icon from "$lib/ui/Icon.svelte";
@@ -297,13 +298,13 @@
 </script>
 
 {#snippet actionBar()}
-  <div class="actions" class:inside={barInside} role="toolbar" aria-label="Message actions">
+  <ActionBar label="Message actions" open={picking || menuOpen} inside={barInside}>
     {#if reactable}
       {#each barCompact ? [] : frequentEmoji.list.slice(0, 3) as emoji (emoji)}
         <button type="button" class="quick" aria-label="React with {emoji}" data-quick-reaction={emoji} onclick={() => reactions?.toggle(emoji)}>{emoji}</button>
       {/each}
       <IconButton icon="emoji-add" label="Add reaction" shortcut="R" size="sm" bind:element={reactButton} onclick={() => reactButton && reactions?.pick(reactButton)} data-add-reaction />
-      <span class="divider" aria-hidden="true"></span>
+      <span role="separator" aria-orientation="vertical"></span>
     {/if}
     {#if canReply}<IconButton icon="reply" label="Reply in thread" shortcut="T" size="sm" onclick={() => onthread(replyKey)} />{/if}
     {#if reactable && room}
@@ -311,7 +312,7 @@
       <IconButton icon={saved ? "bookmark-filled" : "bookmark"} label={saved ? "Remove from Later" : "Save for later"} shortcut="A" size="sm" pressed={saved} onclick={() => room && reactable && later.toggle(room, reactable)} data-save-later />
     {/if}
     <IconButton icon="more" label="More actions" size="sm" aria-haspopup="menu" aria-expanded={menuOpen} bind:element={moreButton} onclick={() => (menuOpen = !menuOpen)} data-message-menu />
-  </div>
+  </ActionBar>
   {#if menuOpen}<Menu bind:open={menuOpen} anchor={moreButton} items={menuItems} placement="bottom-end" label="Message actions" />{/if}
   {#if remindOpen}<Menu bind:open={remindOpen} anchor={moreButton ?? rowEl} items={remindItems} placement="bottom-end" label="Remind me about this" />{/if}
   {#if customRemind}<RemindDialog at={reactable?.later?.remindAt} onpick={remind} onclose={() => (customRemind = false)} />{/if}
@@ -435,7 +436,7 @@
 {/snippet}
 
 {#if slack}
-  <li bind:this={rowEl} tabindex="-1" class="row slack" class:pinned={!!pinned} class:own class:first class:done={!!done} class:pending class:picking={picking || menuOpen} data-own-post={editable ? "" : undefined} data-message-id={item.id} data-kind={item.kind} data-flash={flash ? "" : undefined} data-live={live || undefined} onpointerenter={activate} onfocusin={activate} onclickcapture={altClick}>
+  <li bind:this={rowEl} data-action-host tabindex="-1" class="row slack" class:pinned={!!pinned} class:own class:first class:done={!!done} class:pending class:picking={picking || menuOpen} data-own-post={editable ? "" : undefined} data-message-id={item.id} data-kind={item.kind} data-flash={flash ? "" : undefined} data-live={live || undefined} onpointerenter={activate} onfocusin={activate} onclickcapture={altClick}>
     <div class="gutter">
       {#if first}
         {@render authorAvatar(36)}
@@ -497,10 +498,10 @@
       {@render images()}
       {@render tail()}
     </div>
-    {#if active}{@render actionBar()}{/if}
+    {#if active && !editing}{@render actionBar()}{/if}
   </li>
 {:else}
-  <li bind:this={rowEl} tabindex="-1" class="row" class:own class:first class:done={!!done} class:pending class:picking={picking || menuOpen} data-own-post={editable ? "" : undefined} data-message-id={item.id} data-kind={item.kind} data-flash={flash ? "" : undefined} data-live={live || undefined} onpointerenter={activate} onfocusin={activate} onclickcapture={altClick}>
+  <li bind:this={rowEl} data-action-host tabindex="-1" class="row" class:own class:first class:done={!!done} class:pending class:picking={picking || menuOpen} data-own-post={editable ? "" : undefined} data-message-id={item.id} data-kind={item.kind} data-flash={flash ? "" : undefined} data-live={live || undefined} onpointerenter={activate} onfocusin={activate} onclickcapture={altClick}>
     {#if first}
       <div class="byline">
         {#if !own && item.author.kind !== "owner"}<Icon name="robot" size={13} />{/if}
@@ -548,7 +549,7 @@
           </Bubble>
         {/if}
         {@render images()}
-        {#if active}{@render actionBar()}{/if}
+        {#if active && !editing}{@render actionBar()}{/if}
       </div>
     </div>
     {@render tail()}
@@ -720,37 +721,13 @@
     height: auto;
     aspect-ratio: var(--w) / var(--h);
   }
-  .actions {
-    position: absolute;
-    top: -26px;
-    right: 8px;
-    z-index: 2;
-    display: flex;
-    gap: 2px;
-    padding: 2px;
-    border-radius: var(--radius-row);
-    background: var(--popover-glass-fill);
-    backdrop-filter: blur(8px);
-    box-shadow: var(--shadow-sm);
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity var(--duration-fast) var(--ease-standard);
+  /* The hover bar is lib/ui ActionBar; its bottom edge meets the top of the post's first line, so it covers only the end of the line above. */
+  .row {
+    --action-bar-top: -26px;
   }
-  .own:not(.slack) .actions {
-    right: auto;
-    left: 8px;
-  }
-  .row:hover .actions,
-  .row.picking .actions,
-  .actions:focus-within {
-    opacity: 1;
-    pointer-events: auto;
-  }
-  /* The bar mounts on the first hover, so it fades in from there as it does on every later hover. */
-  @starting-style {
-    .row:hover .actions {
-      opacity: 0;
-    }
+  .own:not(.slack) {
+    --action-bar-right: auto;
+    --action-bar-left: 8px;
   }
   .quick {
     display: grid;
@@ -769,14 +746,8 @@
   .quick:hover {
     background: var(--affordance-ghost-hover);
   }
-  .divider {
-    align-self: center;
-    width: 1px;
-    height: 16px;
-    margin: 0 2px;
-    background: var(--border-standard);
-  }
-  .pending .actions {
+
+  .pending :global([data-action-bar]) {
     display: none;
   }
   .note {
@@ -891,10 +862,6 @@
   .slack:focus-visible {
     background: color-mix(in srgb, var(--affordance-ghost-hover) 60%, transparent);
   }
-  .row:focus-visible .actions {
-    opacity: 1;
-    pointer-events: auto;
-  }
   .slack:focus-visible .clock {
     visibility: visible;
   }
@@ -921,14 +888,14 @@
   .slack.done > :is(.gutter, .body),
   .row.done:not(.slack) > :not(.line),
   .row.done:not(.slack) .line > .gutter,
-  .row.done:not(.slack) .stack > :not(.actions) {
+  .row.done:not(.slack) .stack > :not([data-action-bar]) {
     opacity: 0.55;
     transition: opacity var(--duration-fast) var(--ease-standard);
   }
   .slack.done:is(:hover, :focus-visible, :has(:focus-visible)) > :is(.gutter, .body),
   .row.done:not(.slack):is(:hover, :focus-visible, :has(:focus-visible)) > :not(.line),
   .row.done:not(.slack):is(:hover, :focus-visible, :has(:focus-visible)) .line > .gutter,
-  .row.done:not(.slack):is(:hover, :focus-visible, :has(:focus-visible)) .stack > :not(.actions) {
+  .row.done:not(.slack):is(:hover, :focus-visible, :has(:focus-visible)) .stack > :not([data-action-bar]) {
     opacity: 1;
   }
   .done-mark {
@@ -1103,13 +1070,9 @@
   .slack .image img.sized {
     width: min(calc(var(--w) * 1px), var(--cap), calc(100cqi - 2px), calc(var(--cap) * var(--w) / var(--h)));
   }
-  /* The bar's bottom edge meets the top of the post's first line, so it covers only the end of the line above, as Slack's does. */
-  .slack .actions {
-    top: -28px;
-    right: 12px;
-  }
-  .actions.inside {
-    top: 2px;
+  .slack {
+    --action-bar-top: -28px;
+    --action-bar-right: 12px;
   }
   .slack .note,
   .slack .meta {
