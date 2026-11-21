@@ -70,7 +70,7 @@ test("the agent's page shows its host, home directory, board and memory, and eac
   await expect(page).toHaveURL(/section=jobs/);
   const filter = jobFilterOf(undefined, jobFilterCounts(config.swarm.jobs, ""));
   for (const job of jobsShown(config.swarm.jobs, filter, "").slice(0, 5)) await expect(panel(page).locator(`li[data-job-id="${job.id}"]`)).toContainText(job.name.slice(0, 20));
-  for (const duty of config.swarm.duties) await expect(panel(page).locator(`li[data-duty-id="${duty.id}"]`)).toContainText(duty.name);
+  for (const duty of config.swarm.duties) await expect(panel(page).locator(`li[data-board-id="${duty.id}"]`)).toContainText(duty.name);
 
   await section(page, "Board").click();
   if (config.board) {

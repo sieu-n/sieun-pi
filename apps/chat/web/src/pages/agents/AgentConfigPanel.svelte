@@ -449,7 +449,7 @@
             <LoadingText text="Loading duties…" />
           {/if}
         {:else}
-          <p class="t-caption meta">Duties belong to its chat{#if config.board}, <a href={hrefFor("board", [config.board.chat])}>{config.board.chatName}</a>{/if}.</p>
+          <p class="t-caption meta">Duties belong to its chat.</p>
         {/if}
         {#if config.swarm.checkIn}
           <span class="t-caption meta">Check-in {everyLabel(config.swarm.checkIn.everyMs)}{config.swarm.checkIn.paused ? ", paused" : config.swarm.checkIn.nextAt ? `, next ${stampLabel(config.swarm.checkIn.nextAt)}` : ""}</span>
