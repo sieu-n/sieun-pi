@@ -1,7 +1,7 @@
 /**
  * An agent's comm thread and work thread (`comm.ts`, `agent-profile.ts`), on DurableThreads with a real kernel and the faux model:
  * 1. An `agent.ref` parses in its three shapes, and writing one sets the root's tools filter and instructions for the role in the same
- *    commit, again with no change, and never clears a value pi-host did not set. Both comm texts ask for 👀 with set_emoji on the post, taken off once the reply goes out, no ✅ on a post they replied to, its thread marked done with set_thread_done once handled, a later result posted with
+ *    commit, again with no change, and never clears a value pi-host did not set. Both comm texts ask for 👀 with set_emoji on the post, kept until its work ends, no ✅ on a post they replied to, its thread marked done with set_thread_done once handled, a later result posted with
  *    reply_to naming its post, and a fitting reaction in place of a post that only acknowledges.
  * 2. While the work thread runs a slow turn, a status turn of the comm thread reads it with agent_observe (status, messages, live rlm
  *    child with its progress note), and the work conversation's entries and inputs do not change; stop_work then ends the work turn.
@@ -163,7 +163,10 @@ test("an agent.ref sets the root's tools and instructions for its role in its co
     assert.match(commInstructions(comm), /comm thread in room dm_vent[\s\S]*receiver_name="w-1"[\s\S]*stop_work[\s\S]*c117[\s\S]*tell_owner/);
     for (const room of ["dm_vent", "so_1a2b3c4d", "ch_1a2b3c4d"]) {
       assert.match(commInstructions({ ...comm, room }), /When you hand a task over, post nothing about the hand-over in that turn[\s\S]*Post once, with the result[\s\S]*replaces the base prompt's progress updates/, room);
-      assert.match(commInstructions({ ...comm, room }), /put 👀 on it with `set_emoji\(message_id, "eyes", true\)`\. The moment your reply to that post goes out, take 👀 off with `set_emoji\(message_id, "eyes", false\)` in the same turn, also when more work goes on/, room);
+      assert.match(commInstructions({ ...comm, room }), /put 👀 on it with `set_emoji\(message_id, "eyes", true\)`\. 👀 means its work still runs, so keep it on through a first reply or checklist[\s\S]*take it off with `set_emoji\(message_id, "eyes", false\)` when the work ends[\s\S]*An answer you post in full in one turn takes 👀 off in that same turn/, room);
+      assert.doesNotMatch(commInstructions({ ...comm, room }), /also when more work goes on after the reply/, room);
+      assert.match(commInstructions({ ...comm, room }), /A follow-up in a thread you already worked on[\s\S]*within a minute from what you already hold[\s\S]*Never answer it with only a checklist[\s\S]*```mermaid block[\s\S]*`- \[ \]` items[\s\S]*keep 👀 on[\s\S]*steer the job that did it if that job still runs, else to start one job that starts from its findings, never a fresh round of research jobs/, room);
+      assert.match(commInstructions({ ...comm, room }), /a job that writes a page or report from other jobs' findings starts only after those jobs report, never beside them/, room);
       assert.match(commInstructions({ ...comm, room }), /put no ✅ on a post you replied to\. Once all his post asked is handled[\s\S]*mark its thread done with `set_thread_done\(message_id, true\)`, never while the work thread still works on it/, room);
       assert.match(commInstructions({ ...comm, room }), /that mark is the finished signal and no ✅ is\. A quick ask[\s\S]*gets the done mark and no post/, room);
       assert.match(commInstructions({ ...comm, room }), /His new post in a done thread opens it again, so mark it done again once that post is handled[\s\S]*`set_thread_done\(message_id, false\)`/, room);
@@ -199,6 +202,8 @@ test("an agent.ref sets the root's tools and instructions for its role in its co
     const asWork = await state();
     assert.deepEqual([asWork.tools, asWork.modelTools, asWork.instructions], [{ remove: ["tell_owner"] }, undefined, workInstructions(work)]);
     assert.match(workInstructions(work), /work thread[\s\S]*comm thread c-1[\s\S]*comm thread that handed it[\s\S]*no acknowledgment or progress note[\s\S]*sibling:<name>[\s\S]*receiver_name="c-1"/);
+    assert.match(workInstructions(work), /A follow-up on earlier work[\s\S]*steer it with[\s\S]*mode="steer"[\s\S]*else start one job whose brief points at that job's findings/);
+    assert.match(workInstructions(work), /writes a page or report from other jobs' findings only after those jobs have reported/);
 
     await threads.docPut(thread.id, "agent.ref", { agent: "ag_vent", dir: folder, role: "work" });
     const plain = await state();

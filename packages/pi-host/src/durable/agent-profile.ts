@@ -69,14 +69,20 @@ export function commInstructions(ref: { agent: string; room: string; work: strin
  * The steps a comm thread takes with its work thread, in a DM or a group room. On 11-20 the owner saw 👀 stay on his #sw-factory-build p72
  * after its answer, ✅ on most of his posts, and results land in the thread of a newer post (p44, the compaction answer to p37,
  * sat under p27), and wrote "시작하면서 눈까리 붙였으면 끝났을 떄 떼야지 / 체크도 남발하지 마 제발 the final outcome should ALWAYS act like a Slack thread".
- * So 👀 comes off with the reply and a later result names its post with reply_to. Then he asked (p113) "끝난 쓰레드를 Check로 살짝 흐릿하게
+ * So a later result names its post with reply_to. Then he asked (p113) "끝난 쓰레드를 Check로 살짝 흐릿하게
  * 만들수 있으면 좋겠다. make it a boolean flag that applies to the root thread message, and view/editable by agent too", so a handled ask
  * gets its thread marked done with set_thread_done (`thread-done.ts`) in place of ✅.
+ * 👀 first came off with the first reply. On 11-21 he asked (p128) how his #dev-app-search-prospect p14 and its follow-up p16 moved through
+ * the threads, and the trace (wiki domains/devops/sw-factory-threads/message-flow-example.html) showed p14 with no mark for 27 min after its
+ * checklist went out, p16 answered with only a checklist for 5.6 min although the comm thread held the earlier findings, and 3 fresh jobs
+ * for p16 plus a page writer started beside its researchers. So 👀 stays until the work ends, as p75's "끝났을 떄 떼야지" says, a follow-up
+ * gets its answer at once with the proof after it (c52, c132), and the work thread steers or seeds one job and starts a writer last.
  */
 function workSteps(work: string, room: string): string[] {
   return [
     "When you start on a post that needs an answer or work, put 👀 on it with `set_emoji(message_id, \"eyes\", true)`. " +
-      "The moment your reply to that post goes out, take 👀 off with `set_emoji(message_id, \"eyes\", false)` in the same turn, also when more work goes on after the reply, so a post you answered never keeps your 👀. " +
+      "👀 means its work still runs, so keep it on through a first reply or checklist while the work thread works on the post, and take it off with `set_emoji(message_id, \"eyes\", false)` when the work ends: in the turn that posts the result, makes the checklist's last edit or marks the thread done. " +
+      "An answer you post in full in one turn takes 👀 off in that same turn, so a post you answered in full never keeps your 👀, and a post whose work still runs always does. " +
       "Your reply is the outcome, the way a person answers in a Slack thread, so put no ✅ on a post you replied to. " +
       "Once all his post asked is handled, its answer or result posted or the quick ask done, mark its thread done with `set_thread_done(message_id, true)`, never while the work thread still works on it. " +
       "The room shows a done thread with a check, so that mark is the finished signal and no ✅ is. A quick ask you did where a reply would add nothing, such as \"pin that\", gets the done mark and no post, and take 👀 off then too. " +
@@ -92,9 +98,14 @@ function workSteps(work: string, room: string): string[] {
       "When the ask takes several checks or steps, its first reply is a checklist instead, with one `- [ ]` item per check or step grouped under topic bullets, and the answer on top in one short sentence if you know it. Post it with tell_owner's `reply_to` before you hand the task over. " +
       `In the task, tell the work thread to tick each item on that post as it finishes with \`edit_message("reply:${room}/<his post's [message id]>", <the whole post>)\`, and to make its last edit carry the answer. ` +
       "Tell it too to keep the post's shape in every edit, the last one included: the topic bullets with their items nested under them, each item one short line with any detail as a bullet nested under it, and the answer on top as one short sentence of at most 20 words. " +
+      "Tell it too that a job that writes a page or report from other jobs' findings starts only after those jobs report, never beside them. " +
       "Tell it that every edit, the last one too, stays within 80 words, that a nested detail line stays only when it adds a fact the top line and its item lack, and that a finished or blocked item says so in its own line with no sub-bullets. " +
       "When the report or the work-done notice comes, read the post, and if its last edit lacks the answer or an item, or lost that shape, edit it yourself with `edit_message` and take 👀 off. " +
       "A new post goes out only for a question to him, or when the answer is too long for the checklist.",
+    "A follow-up in a thread you already worked on, such as \"how does it work?\" or \"what does the data look like?\", gets its answer within a minute from what you already hold: the thread so far, the work thread's earlier report and the page it linked, which you can read. " +
+      "Never answer it with only a checklist of what you will check. Open with the answer in a short sentence, draw the flow as a ```mermaid block when it reads shorter as one (c52), and show one real example, such as a saved row, when you hold one (c132). " +
+      "Under it, list what still needs proof as `- [ ]` items, such as one real row or the code path, keep 👀 on, and hand the proof to the work thread in the same turn. " +
+      "In that task, name the earlier post and the board step of the earlier work, and tell the work thread to steer the job that did it if that job still runs, else to start one job that starts from its findings, never a fresh round of research jobs, and to correct your answer in the last edit if the proof differs.",
   ];
 }
 
@@ -232,7 +243,7 @@ function plusStep(lines: string[], step: string | undefined): string[] {
 }
 
 function dmCommInstructions(ref: { agent: string; room: string; work: string }): string {
-  const [eyes, react, status, hand, quiet] = workSteps(JSON.stringify(ref.work), ref.room);
+  const [eyes, react, status, hand, quiet, followUp] = workSteps(JSON.stringify(ref.work), ref.room);
   return plusStep(plusStep([
     `You are agent ${ref.agent}'s comm thread in room ${ref.room}. You talk with the owner. The work thread ${ref.work} does the agent's work.`,
     "",
@@ -246,11 +257,12 @@ function dmCommInstructions(ref: { agent: string; room: string; work: string }):
     "8. Speak to the owner only with tell_owner, since the DM shows nothing else you write. End a turn that posts nothing, such as one your reaction answers, with no text, or pi-host asks you to post your answer. You do not edit files, so you have no write, edit, bash or subagent tool.",
     `9. ${slackPostStep()}`,
     `10. ${richPostStep()}`,
+    `11. ${followUp}`,
   ], platformFeedbackStep(ref)), memoryStep(ref)).join("\n");
 }
 
 function groupCommInstructions(ref: { agent: string; room: string; work: string }): string {
-  const [eyes, react, status, hand, quiet] = workSteps(JSON.stringify(ref.work), ref.room);
+  const [eyes, react, status, hand, quiet, followUp] = workSteps(JSON.stringify(ref.work), ref.room);
   return plusStep(plusStep([
     `You are agent ${ref.agent}'s comm thread in room ${ref.room}, a group chat that the owner and other agents share. The work thread ${ref.work} does the agent's work.`,
     "",
@@ -269,6 +281,7 @@ function groupCommInstructions(ref: { agent: string; room: string; work: string 
     "12. You do not edit files, so you have no write, edit, bash or subagent tool.",
     `13. ${slackPostStep()}`,
     `14. ${richPostStep()}`,
+    `15. ${followUp}`,
   ], platformFeedbackStep(ref)), memoryStep(ref)).join("\n");
 }
 
@@ -281,6 +294,9 @@ export function workInstructions(ref: { agent: string; comm: string }): string {
       "Send it no acknowledgment or progress note, such as \"Taken\" or \"expect it within the hour\": it reads your state itself when someone asks, and it posts your report as the result. " +
       "Its message header `[agent-message from sibling:<name>]` names it, so send `await agent_message.send(report, receiver_role=\"sibling\", receiver_name=\"<name>\")` with that exact name.",
     "A task you pass on to a job still reports to the comm thread that handed it to you, once the job's result is in, so note that name on the task's board step.",
+    "A follow-up on earlier work, such as a question in a thread whose result you already reported, goes to the job that did that work: steer it with `agent_message.send(task, receiver_role=\"child\", receiver_name=<job>, mode=\"steer\")` if it still runs, else start one job whose brief points at that job's findings and page. " +
+      "Start several fresh research jobs for a follow-up only when the earlier findings cannot answer it.",
+    "Start a job that writes a page or report from other jobs' findings only after those jobs have reported, and give it their findings. Started beside them, it sits idle and can exit with no reply.",
     `Send a report no comm thread asked for to the main comm thread with \`await agent_message.send(report, receiver_role="sibling", receiver_name=${JSON.stringify(ref.comm)})\`.`,
     "If a handed task ends with no report, pi-host sends your last text to the comm thread that handed it.",
     ...ref.agent === PLATFORM_AGENT.id ? [

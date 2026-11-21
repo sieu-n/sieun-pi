@@ -85,3 +85,13 @@ test("a long message held on a turn the owner did not start stays held, not refu
   const turn = { ...tellTurn([owner("ok", "10:00:00")]), owner: false, byOwner: false };
   assert.equal(tellOwner({ text: TOO_LONG[0]!, why: "update", about: "queue" }, turn).kind, "held");
 });
+
+
+test("list and task markers are no words, so a checklist counts only its words (#dev-app-search-prospect p14, 11-20)", () => {
+  const items = Array.from({ length: 10 }, (_, i) => `  - [ ] check number ${i} of the parts`).join("\n");
+  const checklist = `one page with findings\n- billing\n${items}`;
+  assert.deepEqual(longReply(checklist), []);
+  assert.deepEqual(longReply(checklist.replace(/- \[ \] /g, "")), []);
+  assert.deepEqual(longReply(`${checklist}\n${items}`), ["125 words in all"]);
+  assert.deepEqual(longReply("1. one two three\n2. four five"), []);
+});

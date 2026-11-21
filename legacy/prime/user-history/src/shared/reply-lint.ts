@@ -299,6 +299,13 @@ export const LONG_SENTENCE = 35;
 export const LONG_MESSAGE = 80;
 export const LONG_REPLY_MARK = "Not sent, it runs long";
 
+/**
+ * A list item's marker, `- `, `1. ` or a task's `- [ ] ` and `- [x] `, which is no word. Counted as words they took a sw factory checklist
+ * from 81 words to 108: on 11-20 Search product, misc.'s first checklist for #dev-app-search-prospect p14 was refused as long, and only the
+ * identical resend went out (comm thread 5d50e997, wiki domains/devops/sw-factory-threads/message-flow-example.html).
+ */
+const LIST_MARK = /^\s*(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?/;
+
 /** A table row, its header and its `| --- |` line. */
 const TABLE_ROW = /^\s*\|.*\|\s*$/;
 
@@ -322,7 +329,7 @@ export function unfoldedProse(text: string): string {
  * `<details>` folds do not count (`unfoldedProse`).
  */
 export function longReply(text: string): string[] {
-  const sentences = proseLines(unfoldedProse(text)).flatMap(line => line.words.split(SENTENCE)).map(sentence => sentence.trim().split(/\s+/).filter(Boolean)).filter(words => words.length);
+  const sentences = proseLines(unfoldedProse(text)).flatMap(line => line.words.replace(LIST_MARK, "").split(SENTENCE)).map(sentence => sentence.trim().split(/\s+/).filter(Boolean)).filter(words => words.length);
   const found: string[] = [];
   const longest = sentences.reduce<string[]>((best, words) => words.length > best.length ? words : best, []);
   if (longest.length > LONG_SENTENCE) found.push(`a ${longest.length}-word sentence ("${clipQuote(longest.join(" "))}")`);
