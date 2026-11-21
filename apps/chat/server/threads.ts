@@ -218,6 +218,7 @@ export class Threads {
   async refresh(): Promise<void> {
     // A box link that went up or down reads in hostState before the list does.
     this.summaries.clear();
+    const known = new Set(this.list.keys());
     const read = await this.host.threads();
     // A thread new to this read may be one a create in flight has not claimed yet; the next read lists it.
     const listed = this.creating ? read.filter(t => this.list.has(t.id)) : read;
@@ -240,6 +241,9 @@ export class Threads {
       return t;
     });
     const next = new Map(threads.map(t => [t.id, t]));
+    // A thread `put` while this read ran is one the read began too early to list. On 11-22 such reads dropped 6 of 8 agents the Agent memory
+    // duty made at once, and each send to them right after answered 404.
+    for (const [id, row] of this.list) if (!known.has(id) && !next.has(id)) next.set(id, row);
     this.list = next;
     this.names = undefined;
     this.summaries.clear();
