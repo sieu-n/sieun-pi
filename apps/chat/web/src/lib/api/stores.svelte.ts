@@ -1326,6 +1326,8 @@ class ForYouStore {
   private started = false;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private latest = 0;
+  private busy = false;
+  private again = false;
 
   start(): void {
     if (this.started) return;
@@ -1333,17 +1335,33 @@ class ForYouStore {
     live.on(event => {
       if (event.type === "board" || event.type === "for_you" || event.type === "hello") {
         clearTimeout(this.timer);
-        this.timer = setTimeout(() => void this.refresh(), 100);
+        this.timer = setTimeout(() => this.follow(), 100);
       }
     });
     // The first read can come from a $derived, where refresh's write to `loading` would throw, so the first load starts after it.
     queueMicrotask(() => void this.refresh());
   }
 
+  /** The first load, Retry and the page's own changes read at once and show loading. */
+  refresh(): Promise<void> {
+    return this.read(true);
+  }
+
+  /**
+   * A live change waits for the read in flight and then reads once more, so a stream of board changes cannot restart the deadline forever and
+   * hide a stalled request's error. It never shows loading, so an error stays up with its Retry until an answer replaces it.
+   */
+  private follow(): void {
+    if (this.busy) this.again = true;
+    else void this.read(false);
+  }
+
   /** Only the newest call writes, so a slow answer never replaces a newer one or ends its loading. */
-  async refresh(): Promise<void> {
+  private async read(shown: boolean): Promise<void> {
     const mine = ++this.latest;
-    if (!this.items.length) this.loading = true;
+    this.busy = true;
+    this.again = false;
+    if (shown && !this.items.length) this.loading = true;
     const signal = AbortSignal.timeout(FOR_YOU_DEADLINE_MS);
     try {
       const items = (await api.forYou(signal)).items;
@@ -1354,7 +1372,11 @@ class ForYouStore {
       if (mine !== this.latest) return;
       this.error = signal.aborted ? `For you did not answer in ${FOR_YOU_DEADLINE_MS / 1000} s.` : message(error);
     } finally {
-      if (mine === this.latest) this.loading = false;
+      if (mine === this.latest) {
+        this.loading = false;
+        this.busy = false;
+        if (this.again) this.follow();
+      }
     }
   }
 }
