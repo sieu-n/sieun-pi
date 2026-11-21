@@ -5,7 +5,7 @@
 import { avatarOf } from "../channel/present.ts";
 import { author, locationText, shortDay, what, type Hit } from "./hit-view.ts";
 import { leadIn, matchName, snippetPieces, type Piece } from "./match.ts";
-import { hasFilters, type Filters } from "./filters.ts";
+import { dateLabel, hasFilters, PLACES, type Filters } from "./filters.ts";
 import { datePresets, prompt, searchText, type Operator } from "./operators.ts";
 
 export type { Hit } from "./hit-view.ts";
@@ -57,10 +57,12 @@ export type Action =
   | { type: "scope"; conversation: string }
   | { type: "operator"; operator: Operator }
   | { type: "more" }
+  /** Puts a recent search back in the field and the chips. */
+  | { type: "recall"; search: RecentSearch }
   /** Opens the full results page for what is typed. */
   | { type: "page" };
 
-export type Icon = "chat" | "channel" | "calendar" | "search" | "more";
+export type Icon = "chat" | "channel" | "calendar" | "search" | "more" | "recent";
 export type Row = {
   key: string;
   label: string;
@@ -88,7 +90,43 @@ export type SearchInput = {
   people: readonly Person[];
   messages: Messages;
   now: Date;
+  /** Past searches, newest first, which an empty field lists above the recent activity (recent-searches.svelte.ts). */
+  recent?: readonly RecentSearch[] | undefined;
 };
+
+/** A search the owner ran: its words and filters, as the full results page's address holds them. */
+export type RecentSearch = { q: string; filters: Filters };
+/** One key per distinct search, so running it again moves it to the top instead of listing it twice. */
+export const recentKey = (search: RecentSearch): string => JSON.stringify([search.q.trim().toLowerCase(), search.filters.from, search.filters.place, search.filters.in ?? "", search.filters.after ?? "", search.filters.before ?? ""]);
+export const RECENT_SEARCHES = "Recent searches";
+const RECENT_SEARCH_ROWS = 5;
+
+/** The filters of a recent search in words, such as "from Vent · in #pi-cutover · Threads · Last 7 days". */
+function filterWords(filters: Filters, input: SearchInput): string {
+  const person = (id: string) => (id === "agents" ? "agents" : id === "owner" ? "you" : (input.people.find(one => one.id === id)?.name ?? id));
+  const place = input.conversations.find(conversation => conversation.id === filters.in);
+  return [
+    filters.from.length ? `from ${filters.from.map(person).join(", ")}` : undefined,
+    filters.in ? `in ${place ? (place.kind === "channel" ? `#${place.name.replace(/^#/, "")}` : place.name) : filters.in}` : undefined,
+    ...filters.place.map(id => PLACES.find(one => one.id === id)?.label),
+    dateLabel(filters, input.now),
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+function recentSearchRows(input: SearchInput): Row[] {
+  return (input.recent ?? []).slice(0, RECENT_SEARCH_ROWS).map(search => {
+    const words = filterWords(search.filters, input);
+    return {
+      key: `recent:${recentKey(search)}`,
+      label: search.q || words,
+      detail: search.q ? words || undefined : undefined,
+      icon: "recent",
+      action: { type: "recall", search },
+    };
+  });
+}
 
 /** At most 3 name matches across chats, agents and channels, so the messages show without a scroll; the full results page holds every message. */
 const NAMED_ROWS = 3;
@@ -255,7 +293,8 @@ export function buildGroups(input: SearchInput): Group[] {
       .sort((a, b) => activity(b) - activity(a))
       .slice(0, RECENT_ROWS)
       .map(conversation => ({ ...conversationRow(conversation, ""), ...(conversation.preview ? { detail: conversation.preview } : {}) }));
-    return [...thisConversation, { label: "Recent activity", rows: recent, empty: "No recent activity yet." }];
+    const searches = recentSearchRows(input);
+    return [...thisConversation, ...(searches.length ? [{ label: RECENT_SEARCHES, rows: searches }] : []), { label: "Recent activity", rows: recent, empty: "No recent activity yet." }];
   }
 
   if (filtered) return [seeAll(input), ...thisConversation, messages];

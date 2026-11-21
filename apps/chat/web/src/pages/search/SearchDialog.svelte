@@ -21,15 +21,16 @@
   import { localHits } from "./local-index";
   import { pieces } from "./match";
   import { recentMessages } from "./recent";
-  import { resultParams } from "./results-model";
+  import { recentSearches } from "./recent-searches.svelte";
+  import { readResults, resultParams } from "./results-model";
   import { absorb, prompt, searchText, withOperator, withoutPrompt, type NamedOperator } from "./operators";
-  import { answered, buildGroups, messageGroupLabel, SEE_ALL, type Action, type Icon, type Messages, type Person, type Row, type Sort } from "./search-model";
+  import { answered, buildGroups, messageGroupLabel, RECENT_SEARCHES, SEE_ALL, type Action, type Icon, type Messages, type Person, type RecentSearch, type Row, type Sort } from "./search-model";
 
   type Props = { open: boolean; scope: SearchScope; query: string; onclose: () => void };
   let { open, scope, query, onclose }: Props = $props();
 
   const PAGE = 20;
-  const icons: Record<Icon, string> = { chat: "chat", channel: "hash", calendar: "clock", search: "search", more: "more" };
+  const icons: Record<Icon, string> = { chat: "chat", channel: "hash", calendar: "clock", search: "search", more: "more", recent: "clock" };
 
   let text = $state("");
   /** The one filter state: the chips under the field set it, and so do typed operators such as `from:vent` (operators.ts `absorb`). */
@@ -49,16 +50,35 @@
 
   // This and the request below run before the DOM updates, so a keystroke's request leaves before any row renders and its rows render
   // once, with the page's own matches: as an $effect it waited behind a render of the old rows and went before a second one (p156).
+  // A global opening with nothing to prefill shows the search on screen again: the results page's own, else what the field held when it
+  // last closed without running. Its text is selected, so typing replaces it and Backspace clears it, as in Slack's search box.
   $effect.pre(() => {
     if (!open) return;
-    text = query;
+    const again = untrack(() => (scope.kind === "global" && !query ? reopened() : undefined));
+    text = again?.text ?? query;
     now = new Date();
-    filters = scope.kind === "conversation" ? { ...NO_FILTERS, in: scope.id } : NO_FILTERS;
-    sort = "relevance";
+    filters = again?.filters ?? (scope.kind === "conversation" ? { ...NO_FILTERS, in: scope.id } : NO_FILTERS);
+    sort = again?.sort ?? "relevance";
     messages = { state: "idle" };
     active = undefined;
+    undo = undefined;
     answers.clear();
     recentMessages.refresh();
+    if (again) void tick().then(() => requestAnimationFrame(() => input?.select()));
+  });
+
+  function reopened(): { text: string; filters: Filters; sort: Sort } | undefined {
+    if (router.route.page === "search") {
+      const shown = readResults(router.route.params);
+      if (shown.q || hasFilters(shown.filters)) return { text: shown.q, filters: shown.filters, sort: shown.sort };
+    }
+    const last = recentSearches.last;
+    return last.text.trim() || hasFilters(last.filters) ? { ...last, sort: "relevance" } : undefined;
+  }
+
+  // What the global field holds is kept as it changes, so a close by Esc, Cmd K or a click outside all keep it.
+  $effect(() => {
+    if (open && scope.kind === "global") recentSearches.last = { text, filters };
   });
 
   // The feed loads once the page is idle, so the first Cmd K already matches in the page.
@@ -174,12 +194,13 @@
       people,
       messages,
       now,
+      recent: recentSearches.items,
     }),
   );
   const rows = $derived(groups.flatMap(group => group.rows));
   const messageLabel = $derived(messageGroupLabel(sort, !!filters.in));
   /** Shift Cmd 1 to 9 pick the conversations and messages, past "See all results" and the search-here row. */
-  const numbered = $derived(rows.filter(row => row.key !== SEE_ALL && row.action.type !== "scope"));
+  const numbered = $derived(rows.filter(row => row.key !== SEE_ALL && row.action.type !== "scope" && row.action.type !== "recall"));
   const hasQuery = $derived(!!text.trim() || hasFilters(filters));
 
   $effect(() => {
@@ -209,10 +230,39 @@
     void tick().then(() => input?.focus());
   }
 
+  /** A search that ran is a recent search now, so the next opening starts empty on the recent searches, as Slack's box does. */
+  function forgetDraft() {
+    recentSearches.last = { text: "", filters: NO_FILTERS };
+  }
+
+  /**
+   * The last removal from the recent searches, which the palette offers to undo in its own line: an app toast sits outside the modal
+   * dialog, where the browser makes it inert, so its Undo could not be clicked while the palette is open. Cmd Z in the empty field undoes it too.
+   */
+  let undo = $state<{ text: string; before: RecentSearch[] } | undefined>();
+
+  function forget(search: RecentSearch) {
+    undo = { text: `Removed “${search.q || "a filter search"}” from recent searches.`, before: recentSearches.remove(search) };
+    focusInput();
+  }
+
+  function clearRecent() {
+    undo = { text: "Cleared recent searches.", before: recentSearches.clear() };
+    focusInput();
+  }
+
+  function undoRemoval() {
+    if (undo) recentSearches.restore(undo.before);
+    undo = undefined;
+    focusInput();
+  }
+
   function run(action: Action) {
     switch (action.type) {
       case "open":
+        if (action.messageId && searchText(text)) recentSearches.add({ q: searchText(text), filters });
         close();
+        forgetDraft();
         if (action.link) router.navigate(action.link);
         else router.openConversation(action.conversation, action.messageId ? { messageId: action.messageId } : {});
         return;
@@ -232,8 +282,14 @@
         void loadMore();
         focusInput();
         return;
+      case "recall":
+        text = action.search.q;
+        filters = action.search.filters;
+        focusInput();
+        return;
       case "page":
         close();
+        forgetDraft();
         router.navigate(hrefFor("search", [], resultParams({ q: searchText(text), sort, filters })));
         return;
     }
@@ -241,7 +297,24 @@
 
   function onkeydown(e: KeyboardEvent) {
     if (composing(e)) return;
+    // The field is a search input, whose own Esc only clears the text; one Esc closes the dialog from any state, as Slack's does.
+    if (e.key === "Escape") {
+      e.preventDefault();
+      close();
+      return;
+    }
     const index = active ? rows.findIndex(row => row.key === active) : -1;
+    const picked = rows[index]?.action;
+    if (picked?.type === "recall" && (e.key === "Delete" || (e.key === "Backspace" && e.shiftKey)) && !text) {
+      e.preventDefault();
+      forget(picked.search);
+      return;
+    }
+    if (undo && !text && e.key.toLowerCase() === "z" && (isMac ? e.metaKey : e.ctrlKey) && !e.shiftKey) {
+      e.preventDefault();
+      undoRemoval();
+      return;
+    }
     const digit = /^Digit([1-9])$/.exec(e.code)?.[1];
     if (digit && e.shiftKey && (isMac ? e.metaKey : e.ctrlKey) && !e.altKey) {
       const row = numbered[Number(digit) - 1];
@@ -311,6 +384,12 @@
       </FilterBar>
     </div>
     <div class="scroll" bind:this={list}>
+      {#if undo && !hasQuery}
+        <p class="undo" role="status">
+          <span>{undo.text}</span>
+          <Button variant="plain" size="sm" class="undo-recent" onclick={undoRemoval}>Undo</Button>
+        </p>
+      {/if}
       <div id={listId} role="listbox" aria-label="Search results" class="results">
         {#each groups as group (group.label)}
           {#if group.rows.length || group.empty !== undefined}
@@ -321,10 +400,22 @@
                   <span class="count" data-testid="search-count">{`${group.count.toLocaleString("en-US")} ${group.count === 1 ? "message" : "messages"}`}</span>
                 {:else if messages.state === "loading" && group.label === messageLabel && group.rows.length}
                   <span class="count" data-testid="search-pending"><LoadingText text="Searching all messages…" /></span>
+                {:else if group.label === RECENT_SEARCHES}
+                  <Button variant="plain" size="sm" class="clear-recent" onclick={clearRecent}>Clear all</Button>
                 {/if}
               </h2>
               {#each group.rows as row (row.key)}
-                {@render result(row)}
+                {#if row.action.type === "recall"}
+                  {@const search = row.action.search}
+                  <div class="recall" class:highlighted={active === row.key}>
+                    {@render result(row)}
+                    <span class="forget">
+                      <IconButton icon="close" label="Remove from recent searches" size="xs" tip={false} tabindex={-1} onclick={() => forget(search)} />
+                    </span>
+                  </div>
+                {:else}
+                  {@render result(row)}
+                {/if}
               {/each}
               {#if group.label === messageLabel && messages.state === "ready"}
                 {#each missing as box (box.box)}<p class="empty" data-testid="search-missing">{box.note}</p>{/each}
@@ -494,6 +585,38 @@
     font: var(--text-caption);
     white-space: nowrap;
     font-variant-numeric: tabular-nums;
+  }
+  .recall {
+    position: relative;
+  }
+  /* The x shows on the row under the pointer or the keyboard, over the row's empty right end, as in Slack's recent searches. */
+  .forget {
+    position: absolute;
+    top: 50%;
+    right: 6px;
+    display: flex;
+    visibility: hidden;
+    transform: translateY(-50%);
+  }
+  .recall:hover .forget,
+  .recall.highlighted .forget {
+    visibility: visible;
+  }
+  .undo {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin: 0 0 6px;
+    padding: 0 0 0 8px;
+    color: var(--text-subtle);
+    font: var(--text-body-sm);
+  }
+  .heading :global(.clear-recent),
+  .undo :global(.undo-recent) {
+    height: 24px;
+    padding: 0 6px;
+    font: var(--text-caption);
   }
   .enter {
     padding: 0 5px;

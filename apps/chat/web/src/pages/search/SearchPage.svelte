@@ -14,6 +14,7 @@
   import { entryId, keepPlace, placeOf, type Place } from "./back-place";
   import FilterBar from "./FilterBar.svelte";
   import { hasFilters, NO_FILTERS } from "./filters";
+  import { recentSearches } from "./recent-searches.svelte";
   import ResultCard from "./ResultCard.svelte";
   import { readResults, resultCount, resultParams, searchParams, type Results } from "./results-model";
   import { composing } from "$lib/ui/keyboard";
@@ -60,6 +61,7 @@
       for (const [id, lines] of place?.contexts ?? []) contexts.set(id, lines);
       now = new Date();
       status = place ? { state: "ready" } : params.q ? { state: "loading" } : { state: "idle" };
+      if (params.q) recentSearches.add({ q: params.q, filters: results.filters });
     });
     const keep = () => {
       if (status.state === "ready") keepPlace(entry, placeNow(searched));

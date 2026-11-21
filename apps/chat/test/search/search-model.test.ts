@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { snippetPieces } from "../../web/src/pages/search/match.ts";
 import { NO_FILTERS } from "../../web/src/pages/search/filters.ts";
 import { shortAge } from "../../web/src/pages/search/hit-view.ts";
-import { answered, buildGroups, SEE_ALL, type Conversation, type Hit, type Person, type SearchInput } from "../../web/src/pages/search/search-model.ts";
+import { answered, buildGroups, RECENT_SEARCHES, recentKey, SEE_ALL, type Conversation, type Hit, type Person, type RecentSearch, type SearchInput } from "../../web/src/pages/search/search-model.ts";
 
 const conversations: Conversation[] = [
   { id: "c-vent", kind: "solo", name: "Vent", lastActivityAt: 5, preview: "tests pass" },
@@ -181,4 +181,20 @@ test("the rows of a page of hits read their days with kept formatters, never one
     Date.prototype.toLocaleDateString = kept.date;
     Date.prototype.toLocaleTimeString = kept.time;
   }
+});
+
+test("an empty field lists up to 5 recent searches, with their filters in words, between the search-here row and recent activity", () => {
+  const recent: RecentSearch[] = [
+    { q: "relay", filters: { from: ["c-vent"], place: ["threads"], in: "c-cut" } },
+    { q: "", filters: { from: ["owner"], place: [] } },
+    ...["a", "b", "c", "d"].map(q => ({ q, filters: NO_FILTERS })),
+  ];
+  const groups = buildGroups({ ...base, current: "c-cut", recent });
+  assert.deepEqual(groups.map(group => group.label), ["This conversation", RECENT_SEARCHES, "Recent activity"]);
+  const rows = groups[1]!.rows;
+  assert.deepEqual(rows.map(row => [row.label, row.detail]), [["relay", "from Vent · in #pi-cutover · Threads"], ["from you", undefined], ["a", undefined], ["b", undefined], ["c", undefined]]);
+  assert.deepEqual(rows[0]!.action, { type: "recall", search: recent[0] });
+  assert.equal(recentKey({ q: " Relay ", filters: NO_FILTERS }), recentKey({ q: "relay", filters: NO_FILTERS }));
+  assert.deepEqual(labels({ recent: [] }).map(line => line.split(":")[0]), ["Recent activity"]);
+  assert.ok(!labels({ text: "ven", recent }).some(line => line.startsWith(RECENT_SEARCHES)));
 });
