@@ -91,3 +91,27 @@ test("through pi-ai's Anthropic provider, a warm request puts its breakpoint on 
   assert.deepEqual(marks(cold), ["user:str", "assistant:text", "user:text*"]);
   assert.equal(cold.system[0]!.text, "R1\n\nC2");
 });
+
+/** The request without its cache markers, which move as the transcript grows. */
+const bare = (body: unknown) => JSON.parse(JSON.stringify(body, (key, value) => key === "cache_control" ? undefined : value));
+
+test("on the wire, each request's system, tools and messages start with the previous request's, across a cold fold and a later tool update", async () => {
+  const inner = anthropicProvider();
+  const cold = t0 + 3 * 60 * MIN;
+  const turns: Message[][] = [
+    before,
+    [...before, answer("checking", cold + 500), user("three", cold + 2 * MIN)],
+    [...before, answer("checking", cold + 500), user("three", cold + 2 * MIN), answer("done", cold + 2 * MIN + 500),
+      system({ sections: { context: "C3" }, toolsRemoved: [{ name: "a" }, { name: "b" }], toolsAdded: [tool("a", "a3"), tool("b")] }, cold + 4 * MIN), user("four", cold + 5 * MIN)],
+  ];
+  const clocks = [cold, cold + 2 * MIN, cold + 5 * MIN];
+  const bodies = [];
+  for (const [index, messages] of turns.entries()) bodies.push(bare(await wire(withCacheShape(inner, () => clocks[index]!), messages)));
+  for (let index = 1; index < bodies.length; index++) {
+    const [was, now] = [bodies[index - 1], bodies[index]];
+    assert.deepEqual(now.system, was.system, `request ${index + 1} keeps the system prompt`);
+    assert.deepEqual(now.tools, was.tools, `request ${index + 1} keeps the tool list`);
+    const last = was.messages.length - 1;
+    assert.deepEqual(now.messages.slice(0, last), was.messages.slice(0, last), `request ${index + 1} starts with request ${index}'s messages`);
+  }
+});
