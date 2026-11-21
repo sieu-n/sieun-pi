@@ -23,6 +23,11 @@ export interface HostCall {
   /** The ipython call running now; absent for a request outside a cell and at a settle. */
   readonly api?: ToolExecutionApi;
   readonly models?: Models;
+  /**
+   * Gives back the pi-pool working slot `session` holds. A module's own model call, such as refine's, asks the turn queue as `session`, which
+   * no settle releases, so the module releases it when its calls end.
+   */
+  releaseSlot(): Promise<void>;
   /** Whether a run of the conversation is going now. */
   running(): Promise<boolean>;
   /** Whether the conversation still has work out: an rlm child that runs or a live `bash()` handle in its kernel. */

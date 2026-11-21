@@ -114,6 +114,7 @@ const durable = values["no-durable"] ? undefined : new DurableCommands(new Durab
   turns: {
     ownerTurn: (threadId, session) => turns.ownerTurn({ root: pool.tree(threadId), session }),
     ticket: (threadId, session) => turns.ticket({ root: pool.tree(threadId), session }),
+    release: (threadId, session) => turns.release({ root: pool.tree(threadId), session }),
   },
   pool,
   // Every thread's system prompt is a Prime chat's, built from this agent dir's AGENTS.md, skills, harness and the chat's ledger.

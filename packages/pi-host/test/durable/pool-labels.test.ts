@@ -105,6 +105,7 @@ test("a comm thread runs in its work thread's pool tree, the work tree is high, 
     turns: {
       ownerTurn: (id, session) => turns.ownerTurn({ root: labels.tree(id), session }),
       ticket: (id, session) => turns.ticket({ root: labels.tree(id), session }),
+      release: (id, session) => turns.release({ root: labels.tree(id), session }),
     },
     pool: labels,
   });

@@ -259,6 +259,10 @@ export function refineModule(options: RefineModuleOptions): HostModule {
         // Prime does not retry a failed refine.run (`_emitRefineFailed`); a pi-host stop mid-plan keeps the request for the next settle.
         if (ask && !abort.signal.aborted) await write(call, d => { if (d.pending?.id === ask.id) d.pending = null; }).catch(() => undefined);
       } finally {
+        // The review and the planner ask pi-pool's turn queue as `call.session`, which no settle releases, so the slot goes back here, on
+        // success, error and abort. On 11-22 these slots stayed held for the 1800 s lease after each 20 to 40 s refine and took 12.8 of
+        // the box's 40 working slots on average (~/work/pool-p145/tree-audit.md).
+        await call.releaseSlot().catch(error => call.log(`refine slot release failed: ${message(error)}`));
         if (running.get(key)?.abort === abort) running.delete(key);
       }
       if (!abort.signal.aborted) await serve(call).catch(error => call.log(`refine: ${message(error)}`));

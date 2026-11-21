@@ -112,6 +112,8 @@ export interface RlmThread {
   observeRoot?: (id: string, open: boolean) => Promise<PiRootView | undefined>;
   /** `rlm.create_session`: a new thread with this first input. */
   createSession?: (input: { prompt: string; name?: string; model?: ModelRef; thinking?: string; cwd: string }) => Promise<{ id: string; name: string; file: string; model: string }>;
+  /** Gives back the pi-pool working slot of `session`, a session that no settle releases; pi-host passes its turn queue's release. */
+  releaseSlot?: (session: string) => Promise<void>;
   log?: (line: string) => void;
 }
 
@@ -575,8 +577,9 @@ export class DurableRlm {
     const api = inCell ? slot.call?.api : undefined;
     const models = api?.models ?? thread.models;
     const agent = await threadAgent(harness, context);
+    const session = harnessSessionOf(thread.id, slot.conversation);
     return {
-      thread, conversation: slot.conversation, session: harnessSessionOf(thread.id, slot.conversation), harness,
+      thread, conversation: slot.conversation, session, harness, releaseSlot: async () => { await thread.releaseSlot?.(session); },
       harnessDir: conversationHarnessDir(thread, slot.conversation, agent), ...(agent ? { agent: agentName(agent) } : {}),
       ...(agent?.test ? { test: true as const } : {}), ...(api ? { api } : {}), ...(models ? { models } : {}),
       running: () => this.running(slot),

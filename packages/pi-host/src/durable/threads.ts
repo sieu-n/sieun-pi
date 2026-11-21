@@ -69,6 +69,8 @@ export interface DurableThreadsOptions {
   turns?: {
     ownerTurn: (threadId: string, sessionId: string) => Promise<OwnerMark>;
     ticket: (threadId: string, sessionId: string) => TurnTicket;
+    /** Gives back a session's working slot outside a settle: the slot of a host module's own model call, such as refine's. */
+    release: (threadId: string, sessionId: string) => Promise<void>;
   };
   log?: (line: string) => void;
   now?: () => number;
@@ -401,6 +403,7 @@ export class DurableThreads {
         return this.primeRoots.send(root.id, input.text);
       },
       observeRoot: (root, open) => this.observe(root, { open }),
+      releaseSlot: async session => { await this.options.turns?.release(id, session); },
       createSession: async input => {
         const created = await this.create({
           ...(input.name ? { name: input.name } : {}), ...(input.model ? { model: input.model } : {}), cwd: input.cwd,

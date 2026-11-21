@@ -46,6 +46,7 @@ const threads = new DurableThreads({ dir: join(dir, "durable"), models: modelsFo
   turns: {
     ownerTurn: (threadId, session) => turns.ownerTurn({ root: `pi-durable:${threadId}`, session }),
     ticket: (threadId, session) => turns.ticket({ root: `pi-durable:${threadId}`, session }),
+    release: (threadId, session) => turns.release({ root: `pi-durable:${threadId}`, session }),
   },
 });
 const durable = new DurableCommands(threads);

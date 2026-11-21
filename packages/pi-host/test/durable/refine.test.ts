@@ -7,14 +7,18 @@
  * 4. Outside a run it answers Prime's "no active turn", and a child conversation gets no refine, as Prime registers it only at depth 0, unless
  *    the thread belongs to an agent, whose store outlives the job.
  * 5. A walk's test agent (`agent.ref` `test: true`) gets no skill route, and its refine writes its own store even when asked for global.
+ * 6. With the real pool/turns.py queue, an auto-refine's review and planner take a working slot as `<thread>` and give it back when the
+ *    refine ends, so no finished refine holds a slot for the 1800 s lease.
  */
 import { strict as assert } from "node:assert";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { after, before, test } from "node:test";
 import { fauxAssistantMessage, fauxProvider, fauxText, type Message } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
+import { poolProvider, TurnQueue } from "@sieun-pi/pi-pool/durable";
 import { testPython } from "@sieun-pi/pi-rlm/test-helpers";
 import type { HostCall } from "../../src/durable/host-modules.ts";
 import { threadHarnessDir } from "../../src/durable/prime-harness.ts";
@@ -245,6 +249,68 @@ test("a test agent's refine sends no skill route and writes only its own store, 
     assert.equal(inputs(await entries()).filter(i => i.data?.via === "skill-route").length, 0);
   } finally {
     await threads.shutdown();
+  }
+});
+
+test("an auto-refine gives its pi-pool working slot back when it ends", { timeout: 180_000 }, async () => {
+  const poolDir = join(dir, "pool");
+  mkdirSync(poolDir, { recursive: true });
+  const poolCli = join(import.meta.dirname, "..", "..", "..", "pi-pool", "bin", "pi-pool");
+  const env = { ...process.env, PI_POOL_DIR: poolDir };
+  const poolRun = (...args: string[]) => execFileSync("/usr/bin/python3", ["-B", poolCli, ...args], { env, encoding: "utf8" });
+  poolRun("set", "agent_queue_on", "1");
+  poolRun("set", "working_max", "4");
+  const bin = join(dir, "pool-hook");
+  writeFileSync(bin, `#!/bin/sh\nif [ "$1" = "--cli" ]; then shift; exec /usr/bin/python3 -B '${poolCli}' "$@"; fi\nprintf 'sk-ant-oat01-faux'\n`);
+  chmodSync(bin, 0o755);
+  const settings = join(dir, "agent", "settings.json");
+  const kept = existsSync(settings) ? readFileSync(settings, "utf8") : undefined;
+  writeFileSync(settings, JSON.stringify({ ...(kept ? JSON.parse(kept) : {}), autoRefine: { turnInterval: 2, cooldownMs: 0 } }));
+  const keptPoolDir = process.env.PI_POOL_DIR;
+  process.env.PI_POOL_DIR = poolDir;
+  const turns = new TurnQueue({ bin });
+  const tree = (id: string) => `pi-durable:${id}`;
+  const folder = join(dir, "agents", "vent-pool");
+  const threads = new DurableThreads({
+    dir: join(dir, "threads-pool"),
+    models: id => {
+      const faux = fauxProvider({ provider: MODEL.provider, models: [{ id: MODEL.modelId }], tokensPerSecond: 0 });
+      faux.setResponses(Array.from({ length: 50 }, () => ({ messages }: { messages: Message[] }) => model(messages)));
+      const models = createModels();
+      models.setProvider(poolProvider({ treeKey: tree(id), bin, inner: faux.provider, turns }));
+      return models;
+    },
+    inputSettled: (id, session, runContinues) => turns.release({ root: tree(id), session }, runContinues),
+    turns: {
+      ownerTurn: (id, session) => turns.ownerTurn({ root: tree(id), session }),
+      ticket: (id, session) => turns.ticket({ root: tree(id), session }),
+      release: (id, session) => turns.release({ root: tree(id), session }),
+    },
+    defaultModel: MODEL, defaultThinkingLevel: "off", defaultCwd: dir, rlm, primeRoots: null,
+  });
+  try {
+    const { id } = await threads.create({ name: "vent" });
+    await threads.docPut(id, "agent.ref", { agent: "ag_vent", dir: folder, role: "work" });
+    for (const text of ["hello", "release with the script"]) {
+      const sent = await threads.submit(id, { text });
+      assert.equal((await threads.wait(id, sent.submission)).status, "done");
+    }
+    const store = join(folder, "harness", "harness_state.json");
+    await until("the agent's store", async () => (existsSync(store) ? true : undefined), 30_000);
+    const events = () => readFileSync(join(poolDir, "pi-pool.log"), "utf8").trim().split("\n").map(line => JSON.parse(line) as { event?: string; session?: string });
+    assert.ok(events().some(e => e.event === "turn_admitted" && e.session === id), "the refine asked the queue as the thread's harness session");
+    const working = () => Object.keys((JSON.parse(readFileSync(join(poolDir, "turns.json"), "utf8")) as { working?: Record<string, unknown> }).working ?? {});
+    await until("the refine's slot back", async () => (working().includes(id) ? undefined : true), 10_000)
+      .catch(() => assert.fail(`the finished refine still holds its working slot: working ${JSON.stringify(working())}`));
+    assert.deepEqual(working(), [], "no run of the thread holds a slot once it is idle");
+    assert.ok(events().some(e => e.event === "turn_released" && e.session === id));
+    assert.equal(turns.holds(id), false, "the queue forgets the session, so the next refine asks instead of renewing a lapsed slot");
+  } finally {
+    await threads.shutdown();
+    if (keptPoolDir === undefined) delete process.env.PI_POOL_DIR;
+    else process.env.PI_POOL_DIR = keptPoolDir;
+    if (kept === undefined) rmSync(settings, { force: true });
+    else writeFileSync(settings, kept);
   }
 });
 
