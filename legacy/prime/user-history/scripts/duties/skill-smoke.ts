@@ -56,14 +56,14 @@ async function markdownFiles(dir: string, top = dir): Promise<string[]> {
 
 /**
  * The relative paths a markdown file names: markdown link targets outside code, and backticked paths that start with a skill folder prefix
- * (STRICT) or that end in a file extension under a folder that exists. URLs, anchors, home and absolute paths, and placeholders are left out,
+ * (STRICT) or that end in a file extension under a folder that exists. A `path::name` definition ref names its file. URLs, anchors, home and absolute paths, and placeholders are left out,
  * and so is a link to a bare slug with no slash or dot, such as `[snippet](snippet)` in docs copied from a docs site. Each path carries its line.
  */
 export function namedPaths(markdown: string): { path: string; strict: boolean; line: string }[] {
   const prose = markdown.replace(/^([ \t]*)(```|~~~)[\s\S]*?^\1\2/gm, "");
   const found: { path: string; strict: boolean; line: string }[] = [];
   const add = (raw: string, link: boolean, line: string) => {
-    const path = raw.split("#")[0]!.split("?")[0]!.replace(/:\d+(?:-\d+)?$/, "");
+    const path = raw.split("#")[0]!.split("?")[0]!.replace(/:\d+(?:-\d+)?$/, "").replace(/::[\w.]+$/, "");
     if (!path || /^[a-z][a-z0-9+.-]*:/i.test(path) || /^[/~$]/.test(path) || /[<>{}*$|[\]]|\.\.\./.test(path)) return;
     if (link) return /[/.]/.test(path) ? found.push({ path, strict: true, line }) : undefined;
     if (!path.replace(/\/$/, "").includes("/")) return;

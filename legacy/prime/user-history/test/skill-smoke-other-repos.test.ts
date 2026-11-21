@@ -28,3 +28,21 @@ test("a path on a line that names another checkout resolves there, a path it lac
   rmSync(other, { recursive: true });
   assert.deepEqual(await missingPaths(skill, [other]), ["SKILL.md names scripts/deploy.mjs"]);
 });
+
+// On 11-22 the d5 run counted prime:wiki again, because wiki-dream.md names the removed definition
+// `scripts/dev/release-runner-toggle.mjs::STANDING` on a line that names auto-sns-agent, and the check looked for a file with `::STANDING` in its name.
+test("a path::name definition ref resolves by its file", async t => {
+  const root = mkdtempSync(join(tmpdir(), "skill-smoke-defs-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const other = join(root, "auto-sns-agent");
+  mkdirSync(join(other, "scripts/dev"), { recursive: true });
+  writeFileSync(join(other, "scripts/dev/toggle.mjs"), "");
+  const skill = join(root, "pi/skills/demo");
+  mkdirSync(join(root, "pi/.git"), { recursive: true });
+  mkdirSync(skill, { recursive: true });
+  writeFileSync(join(skill, "SKILL.md"), [
+    "1. auto-sns-agent removed `scripts/dev/toggle.mjs::STANDING` on 11-18.",
+    "2. auto-sns-agent's `scripts/dev/gone.mjs::OTHER` names a file that never existed.",
+  ].join("\n"));
+  assert.deepEqual(await missingPaths(skill, [other]), ["SKILL.md names scripts/dev/gone.mjs"]);
+});
