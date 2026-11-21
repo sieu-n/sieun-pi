@@ -18,11 +18,14 @@
   import { CHANNEL_DRAG_TYPE, channelDrop, groupChannels, sidebarSections, visibleRows, type BuiltinSection, type SectionId } from "$lib/shell/sidebar-sections.svelte";
   import { forYouHref } from "$pages/board/chips";
   import { later, laterHref } from "$lib/later.svelte";
+  import { drafts, draftsHref } from "$lib/drafts.svelte";
   import Badge from "$lib/ui/Badge.svelte";
   import HostBadge from "$pages/agents/HostBadge.svelte";
 
   const current = $derived(router.conversationId);
   const names = (row: ConversationSummary): string[] => row.working.map((w) => w.name);
+  /** Slack's pencil on a room whose box holds a draft, left off the open room, whose box shows the draft itself. */
+  const hasDraft = (row: ConversationSummary): boolean => row.id !== current && drafts.inRoom(row.id);
   const solo = $derived(sidebar.solo);
   const forYouSelected = $derived(router.messagesView === "for-you");
   later.start();
@@ -122,6 +125,7 @@
     unread={row.unread}
     fresh={row.hasNew}
     working={names(row)}
+    draft={hasDraft(row)}
     ondragstart={(e) => dragChannel(e, row.id)}
     oncontextmenu={(e) => contextMenu(e, row.id, channelMenu(row))}
   >
@@ -139,6 +143,7 @@
     unread={row.unread}
     fresh={row.hasNew}
     working={names(row)}
+    draft={hasDraft(row)}
     oncontextmenu={(e) => contextMenu(e, row.id, rowMenu(row))}
   >
     {#snippet actions()}{@render more(row.id, `${row.name} options`, () => rowMenu(row))}{/snippet}
@@ -155,6 +160,11 @@
       {#snippet trailing()}
         {#if later.open}<span class="count" title="{later.open} in progress">{later.open}</span>{/if}
         {#if later.due}<Badge value={later.due} tone="danger" title="{later.due} due" />{/if}
+      {/snippet}
+    </SidebarRow>
+    <SidebarRow href={draftsHref()} label="Drafts" icon="edit" selected={router.messagesView === "drafts"}>
+      {#snippet trailing()}
+        {#if drafts.byKey.size}<span class="count" title="{drafts.byKey.size} unsent">{drafts.byKey.size}</span>{/if}
       {/snippet}
     </SidebarRow>
     <SidebarRow href={forYouHref()} label="For you" icon="inbox" selected={forYouSelected} unread={sidebar.data.forYou} />
@@ -210,6 +220,7 @@
         unread={row.unread}
         fresh={row.hasNew}
         working={names(row)}
+        draft={hasDraft(row)}
         oncontextmenu={(e) => contextMenu(e, row.id, dmMenu(row))}
       >
         {#snippet actions()}{@render more(row.id, `${row.name} options`, () => dmMenu(row))}{/snippet}

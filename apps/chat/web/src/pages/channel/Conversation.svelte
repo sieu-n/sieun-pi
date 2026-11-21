@@ -29,6 +29,7 @@
   import Composer from "./Composer.svelte";
   import ChannelMembers from "./ChannelMembers.svelte";
   import ThreadPane from "./ThreadPane.svelte";
+  import { roomDraftKey, threadDraftKey } from "$lib/drafts.svelte";
   import Timeline from "./Timeline.svelte";
   import { directory } from "./directory.svelte";
   import { AuthorBoards } from "./author-boards.svelte";
@@ -305,6 +306,7 @@
       <ThreadPane
         channel={isChannel ? id : null}
         threadKey={threadParam}
+        draftKey={threadDraftKey(id, threadParam)}
         focus={replyFocus}
         {layout}
         {context}
@@ -452,7 +454,7 @@
     channels={directory.channels}
     room={isChannel || isSolo ? { label: isChannel ? `#${name}` : "this room", members: others.map((m) => m.principal.id) } : null}
     {working}
-    draftKey={id}
+    draftKey={roomDraftKey(id)}
     autofocus
     onsend={send}
     onstop={stop}

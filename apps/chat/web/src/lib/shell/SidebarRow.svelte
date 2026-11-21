@@ -25,10 +25,12 @@
     ondragstart?: (e: DragEvent) => void;
     /** Shown at the right end when the row has no typing dots, count or dot, such as a light count or a danger badge. */
     trailing?: Snippet;
+    /** The room holds an unsent draft: a pencil shows at the right end, as in Slack. */
+    draft?: boolean;
     /** Shown right after the label and always, such as the host badge of a DM whose agent runs on another box. */
     tag?: Snippet;
   };
-  let { href, label, icon, leading, selected = false, unread = 0, fresh = false, working = [], title, oncontextmenu, actions, ondragstart, trailing, tag }: Props = $props();
+  let { href, label, icon, leading, selected = false, unread = 0, fresh = false, working = [], title, oncontextmenu, actions, ondragstart, trailing, tag, draft = false }: Props = $props();
   const workingLabel = $derived(working.length ? `${working.join(", ")} working in ${label}` : "");
 </script>
 
@@ -53,6 +55,7 @@
     <span class="label">{label}</span>
     {#if tag}{@render tag()}{/if}
     <span class="trail">
+      {#if draft}<span class="draft" title="Draft" data-draft><Icon name="edit" size={14} /></span>{/if}
       {#if working.length}
         <span class="working" title={workingLabel}><TypingDots label={workingLabel} size={3} /></span>
       {/if}
@@ -121,6 +124,10 @@
     align-items: center;
     gap: 6px;
     flex: none;
+  }
+  .draft {
+    display: inline-flex;
+    color: var(--text-metadata);
   }
   .working {
     display: inline-flex;

@@ -9,6 +9,7 @@
  *   #/agents, #/agents/<sub>                Agents
  *   #/board, #/board/<chat>                 Board, the index or one chat's board
  *   #/c/later, #/c/later/done               Messages, Later: the posts the owner saved, In progress or Completed
+ *   #/c/drafts                              Messages, Drafts: every unsent draft in this browser (lib/drafts.svelte.ts)
  *   #/settings/<section>                    Settings, one section: usage, hosts, accounts or skills, opened from the Settings button
  *   #/settings/accounts/<provider>?thread=<id>   Settings > Accounts, the pi-pool accounts of claude or codex, optionally for one thread
  *   #/search?q=&from=&in=&after=&before=&sort=&where=   Full search results, opened with Enter in the Cmd K search
@@ -63,7 +64,7 @@ export function movedHash(hash: string): string | null {
 }
 
 /** First segments under `#/c/` that open a Messages view instead of a conversation. */
-export const MESSAGES_VIEWS = ["new", "for-you", "later"] as const;
+export const MESSAGES_VIEWS = ["new", "for-you", "later", "drafts"] as const;
 export type MessagesView = (typeof MESSAGES_VIEWS)[number];
 
 const isMessagesView = (segment: string | undefined): segment is MessagesView => (MESSAGES_VIEWS as readonly (string | undefined)[]).includes(segment);

@@ -13,6 +13,8 @@
     channel?: string | null;
     /** A job's conversation id, or a channel root post id when `channel` is set. */
     threadKey: string;
+    /** The reply box's draft key in lib/drafts, which names the conversation too, since post ids repeat across rooms. */
+    draftKey: string;
     context: MarkdownContext;
     statusOf?: (id: string) => Status | null;
     oncopylink: (item: Item, conversation: string) => void;
@@ -25,7 +27,7 @@
     /** The reply a link names, such as a saved reply on the Later page: the pane scrolls to it and flashes it. */
     focus?: string;
   };
-  let { channel = null, threadKey, focus, context, statusOf, oncopylink, onthread, onmention, onboardid, onartifact, layout = "bubble" }: Props = $props();
+  let { channel = null, threadKey, draftKey, focus, context, statusOf, oncopylink, onthread, onmention, onboardid, onartifact, layout = "bubble" }: Props = $props();
 
   // svelte-ignore state_referenced_locally
   const job = channel ? null : timeline(threadKey);
@@ -105,7 +107,7 @@
     channels={directory.channels}
     room={channelRoom}
     working={job?.status === "working"}
-    draftKey="thread:{threadKey}"
+    {draftKey}
     compact
     onsend={send}
     onstop={job ? () => void job.stop() : undefined}

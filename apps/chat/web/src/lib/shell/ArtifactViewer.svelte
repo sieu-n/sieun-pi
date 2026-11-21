@@ -18,6 +18,7 @@
   import { closeView, currentView, openArtifactTarget, openView, viewedBlock, type View } from "./viewer.svelte";
   import { search } from "./search.svelte";
   import { styleWikiFrame } from "./wiki-embed";
+  import { roomDraftKey } from "$lib/drafts.svelte";
 
   /**
    * The popup the viewer's `?view=` param opens over any page (viewer.svelte.ts): a wiki page in a frame of this server's /wiki, a
@@ -222,7 +223,7 @@
         {:else if view.kind === "skill"}
           <SkillPane id={view.id} />
         {:else if view.kind === "thread"}
-          <ThreadPane threadKey={view.id} {context} oncopylink={copyItemLink} onthread={(key) => openView({ kind: "thread", id: key })} {onmention} onboardid={(id, chatId) => openView({ kind: "board", chatId, focus: id })} {onartifact} />
+          <ThreadPane threadKey={view.id} draftKey={roomDraftKey(view.id)} {context} oncopylink={copyItemLink} onthread={(key) => openView({ kind: "thread", id: key })} {onmention} onboardid={(id, chatId) => openView({ kind: "board", chatId, focus: id })} {onartifact} />
         {:else}
           {@const chatId = view.chatId}
           <div class="board"><BoardPanel {chatId} focus={view.focus} onboardid={(id) => openView({ kind: "board", chatId, focus: id })} /></div>

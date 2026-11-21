@@ -11,6 +11,7 @@
   import { matchCandidates, openQuery, type Query } from "./typeahead";
   import type { Outgoing } from "./present";
   import { composing } from "$lib/ui/keyboard";
+  import { drafts } from "$lib/drafts.svelte";
 
   type Props = {
     placeholder: string;
@@ -22,7 +23,7 @@
     room?: { label: string; members: string[] } | null;
     /** The agent works now: Stop shows beside Send. */
     working?: boolean;
-    /** localStorage key for the draft, one per conversation. */
+    /** The draft's key in lib/drafts, from roomDraftKey or threadDraftKey. */
     draftKey?: string;
     autofocus?: boolean;
     compact?: boolean;
@@ -86,7 +87,7 @@
 
   onMount(() => {
     if (!box) return;
-    const saved = draftKey ? localStorage.getItem(`chat.draft.${draftKey}`) : null;
+    const saved = draftKey ? drafts.text(draftKey) : null;
     if (saved) {
       box.textContent = saved;
       sync();
@@ -122,10 +123,7 @@
     empty = draft.text.trim() === "";
     if (empty && box.hasChildNodes() && !box.querySelector("[data-chip-id]")) box.replaceChildren();
     mentions = draft.mentions;
-    if (draftKey) {
-      if (empty) localStorage.removeItem(`chat.draft.${draftKey}`);
-      else localStorage.setItem(`chat.draft.${draftKey}`, draft.text);
-    }
+    if (draftKey) drafts.write(draftKey, empty ? "" : draft.text);
     updateQuery();
   }
 

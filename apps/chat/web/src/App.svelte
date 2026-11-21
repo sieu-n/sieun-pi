@@ -15,6 +15,7 @@
   import BoardPage from "$pages/board/BoardPage.svelte";
   import ForYouPage from "$pages/board/ForYouPage.svelte";
   import LaterPage from "$pages/later/LaterPage.svelte";
+  import DraftsPage from "$pages/drafts/DraftsPage.svelte";
   import SettingsPage from "$pages/settings/SettingsPage.svelte";
   import SearchDialog from "$pages/search/SearchDialog.svelte";
   import SearchPage from "$pages/search/SearchPage.svelte";
@@ -69,7 +70,7 @@
 
 <Shell>
   {#if router.route.page === "messages"}
-    {#if router.messagesView === "for-you"}<ForYouPage />{:else if router.messagesView === "later"}<LaterPage />{:else}<ChannelPage />{/if}
+    {#if router.messagesView === "for-you"}<ForYouPage />{:else if router.messagesView === "later"}<LaterPage />{:else if router.messagesView === "drafts"}<DraftsPage />{:else}<ChannelPage />{/if}
   {:else if router.route.page === "agents"}
     <AgentsPage />
   {:else if router.route.page === "board"}
