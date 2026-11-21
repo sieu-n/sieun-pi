@@ -85,7 +85,8 @@ The owner wrote on 11-20 in #sw-factory-build: "시작하면서 눈까리 붙였
 4. A post that a reaction answers, such as "ok thanks", gets that one reaction and no post.
 5. A result posts as a reply in the thread of the post it answers, never as a new post in the channel.
 6. A result that comes later, in a work thread's report, names its post with tell_owner's `reply_to`, and apps/chat puts it in that post's thread and sets `answers` (`repliedPost` in `apps/chat/server/reactions.ts`).
-7. No code sets or clears a reaction or the done flag (c210), so these rules live in the comm role text and the blind run checks them.
+7. No code sets or clears an agent's reaction or marks a thread done for it (c210), so these rules live in the comm role text and the blind run checks them.
+   The one flag change code makes is to reopen a done thread in a channel or Solo room when the owner replies in it (`reopens` in `apps/chat/server/thread-done.ts`).
 
 ## Where reply behavior lives
 
@@ -114,8 +115,10 @@ So a change to how agents write is done only when a blind fresh session, given t
 3. Run `node apps/chat/scripts/blind-replies.mjs --out ~/work/<job>/blind-runs.jsonl` against live :5184, and `node apps/chat/scripts/blind-reactions.mjs --out ~/work/<job>/reaction-runs.jsonl` for reactions and threads.
    For lists, run `blind-replies.mjs --set lists --cwd /home/sieun/src/sieun-pi`, which asks for a multi-result check and a one-line answer.
    For a list of options (rule 10), run `blind-replies.mjs --set options`, which asks what other apps do for a feature.
+   For a checklist (rule 5), run `blind-replies.mjs --set checklist --cwd /home/sieun/src/sieun-pi`, which asks for several checks before a ship and a yes or no question.
    For the thread done flag, run `node apps/chat/scripts/blind-thread-done.mjs --out ~/work/<job>/blind-runs.jsonl`, which checks the root reads done after the answer, open after an owner follow-up and done again after its answer.
-4. The script makes a `test: true` agent and channel, posts the asks as the owner with no hint about format, and checks each answer for one post, no table, no labels and the rule 5 lengths, and with `--set lists` for a one-line answer over nested bullets and a task list, and for one short line.
+4. The script makes a `test: true` agent and channel, posts the asks as the owner with no hint about format, and checks each answer for one post, no table, no labels, for a plain reply the lengths of `config/AGENTS.md` rule 5 (80 words, no sentence over 35), and with `--set lists` for a one-line answer over nested bullets and a task list, and for one short line.
+   With `--set checklist` it checks for open tasks in the first version, an edit after it, ticked tasks and a one-line answer on top.
 5. Read every reply yourself against the pairs, because tone is a judgment the script cannot make, and take a shot of the thread pane.
 6. Record each run's pass or fail with its replies in the job's wiki folder.
 7. On a fail, change the code defaults or the tool text and run again with a new agent, until a run passes.
