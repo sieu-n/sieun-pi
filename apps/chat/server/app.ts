@@ -152,7 +152,9 @@ export class App {
           }
         }
         const row = this.later.list("owner", "open").items.find(r => r.id === item.id);
-        if (row) this.broadcast({ type: "later_due", row });
+        // A walk's reminder in a test room toasts and notifies only on the pages that have that room open, never in the owner's own windows.
+        if (row?.test) this.toWatchers(row.room, { type: "later_due", row });
+        else if (row) this.broadcast({ type: "later_due", row });
       },
       log,
     });
