@@ -71,7 +71,7 @@ test("the Settings button opens Settings at Usage, and its sidebar switches to H
 });
 
 test("the avatar menu opens Settings", async ({ page }) => {
-  await page.getByRole("button", { name: "Profile, appearance and settings" }).click();
+  await page.getByRole("button", { name: /^Profile/ }).click();
   await page.getByRole("menuitem", { name: "Settings" }).click();
   await expect(page).toHaveURL(/#\/settings\/usage$/);
 });

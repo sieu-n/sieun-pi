@@ -93,7 +93,7 @@ for (const size of WINDOWS) {
         await page.keyboard.press("Escape");
         await expect(picker).toHaveCount(0);
 
-        await page.getByRole("button", { name: /Profile, appearance/ }).click();
+        await page.getByRole("button", { name: /^Profile/ }).click();
         await inside(page, page.getByRole("menu", { name: "Profile" }));
       });
     });

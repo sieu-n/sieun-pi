@@ -80,3 +80,12 @@ test("Back and Forward grey out at the ends, and History lists the places opened
   await history.getByRole("menuitem", { name: /Later/ }).click();
   await expect.poll(() => page.evaluate(() => location.hash)).toBe("#/c/later");
 });
+
+test("At 110% in a 900 px window the History button stays clear of the capsule", async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 700 });
+  await page.evaluate(() => localStorage.setItem("chat.interfaceScale", "1.1"));
+  await page.reload();
+  const historyBox = await page.locator("header.topbar").getByRole("button", { name: "History" }).boundingBox();
+  const capsuleBox = await page.getByTestId("nav-capsule").boundingBox();
+  expect(historyBox && capsuleBox && historyBox.x + historyBox.width <= capsuleBox.x).toBe(true);
+});

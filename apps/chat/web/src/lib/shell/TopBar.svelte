@@ -20,6 +20,7 @@
   import { presence, setAway, setStatus } from "$lib/presence.svelte";
   import { notifyPrefs, notificationsPaused, pauseNotifications } from "$lib/notify-prefs.svelte";
   import { toast } from "$lib/ui/toast.svelte";
+  import { pausePresets } from "$pages/notifications/pause";
 
   /** `hasSidebar` is false on a page with no left sidebar, which hides the sidebar button. */
   type Props = { ownerName?: string; hasSidebar?: boolean };
@@ -46,15 +47,6 @@
   function whenLabel(at: number): string {
     return new Date(at).toDateString() === new Date().toDateString() ? clock.format(at) : dayClock.format(at);
   }
-  /** The next 9:00 after `days` midnights, as Slack's Until tomorrow and Until next week pick the start of a working day. */
-  function nineAfter(days: number): number {
-    const d = new Date();
-    d.setDate(d.getDate() + days);
-    d.setHours(9, 0, 0, 0);
-    return d.getTime();
-  }
-  const untilMonday = (): number => nineAfter(((8 - new Date().getDay()) % 7) || 7);
-
   // A pause ends on its own, so the menu and the avatar re-read the clock each minute.
   let now = $state(Date.now());
   $effect(() => {
@@ -76,11 +68,13 @@
 
   const pauseItems: MenuEntry[] = $derived([
     ...(paused ? ([{ id: "resume", label: "Resume notifications", icon: "bell", onselect: () => pause(null) }, { type: "separator" }] satisfies MenuEntry[]) : []),
-    { id: "30m", label: "For 30 minutes", onselect: () => pause(Date.now() + 30 * 60_000) },
-    { id: "1h", label: "For 1 hour", onselect: () => pause(Date.now() + 60 * 60_000) },
-    { id: "2h", label: "For 2 hours", onselect: () => pause(Date.now() + 2 * 60 * 60_000) },
-    { id: "tomorrow", label: "Until tomorrow", detail: dayClock.format(nineAfter(1)), onselect: () => pause(nineAfter(1)) },
-    { id: "week", label: "Until next week", detail: dayClock.format(untilMonday()), onselect: () => pause(untilMonday()) },
+    // The lengths count from the pick, so each one reads the clock again when it is picked.
+    ...pausePresets(now).map((p) => ({
+      id: p.id,
+      label: p.label,
+      detail: p.id === "tomorrow" || p.id === "next-week" ? dayClock.format(p.until) : undefined,
+      onselect: () => pause(pausePresets().find((q) => q.id === p.id)?.until ?? p.until),
+    })),
   ]);
   const zoomItems: MenuEntry[] = $derived([
     { id: "zoom-in", label: "Zoom in", icon: "plus", shortcut: shortcutLabel("zoom-in"), disabled: zoom.scale >= ZOOM_MAX, keepOpen: true, onselect: () => stepZoom(0.1) },
@@ -176,11 +170,13 @@
 {#if statusOpen}<StatusDialog onclose={() => (statusOpen = false)} />{/if}
 
 <style>
+  /* Three columns keep the capsule centered while both sides fit, and push it aside instead of under a side's buttons when they do not. */
   .topbar {
     position: relative;
-    display: flex;
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
     align-items: center;
-    justify-content: space-between;
+    column-gap: 8px;
     min-height: var(--size-topbar);
     padding: 0 8px;
   }
@@ -188,6 +184,9 @@
   .topbar.desktop {
     min-height: calc(var(--size-topbar) / var(--interface-scale, 1));
     padding-left: calc(88px / var(--interface-scale, 1));
+  }
+  .right {
+    justify-self: end;
   }
   .left,
   .right {
@@ -197,10 +196,6 @@
     z-index: 1;
   }
   .capsule {
-    position: absolute;
-    left: 50%;
-    top: 50%;
-    transform: translate(-50%, -50%);
     display: flex;
     align-items: center;
     gap: 2px;
