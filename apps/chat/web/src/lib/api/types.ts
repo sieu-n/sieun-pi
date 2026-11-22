@@ -759,6 +759,12 @@ export interface AgentFolder {
   memory: ConfigFile & { entries: HarnessEntryView[] };
 }
 
+/**
+ * An agent's folder as its config sends it: the brief whole, and the memory store's file with its entry count but no entries. agent factory's
+ * store was 432 KB of its 533 KB config on 11-22, sent on every open of its card.
+ */
+export type AgentFolderSummary = Omit<AgentFolder, "memory"> & { memory: ConfigFile & { count: number } };
+
 export interface MemoryInput { title: string; content: string; path?: string }
 
 /**
@@ -808,8 +814,11 @@ export interface AgentConfig {
     awaitingGo: number;
     openTodos: { id: string; text: string; at: string; step?: string }[];
   } | null;
-  /** The folder of the agent this card belongs to, shared by its work thread and every job; null for a root chat no agent holds. */
-  folder: AgentFolder | null;
+  /**
+   * The folder of the agent this card belongs to, shared by its work thread and every job; null for a root chat no agent holds. Its memory
+   * comes as its count; the Memory tab reads the entries with `GET /api/agents/:id/folder`.
+   */
+  folder: AgentFolderSummary | null;
   memory:
     | { kind: "none"; note: string; related: ConfigFile[] }
     | { kind: "agent"; note: string; related: ConfigFile[] };

@@ -9,7 +9,8 @@
   import { shortPath } from "./agents-model";
 
   type Props = {
-    folder: AgentFolder;
+    /** Its config's folder, whose brief this shows; a save answers with the whole folder. */
+    folder: Pick<AgentFolder, "agent" | "brief">;
     name: string;
     /** The agent's first message, offered as starting text for an empty brief. */
     purpose: string | null;

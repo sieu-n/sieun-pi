@@ -106,11 +106,16 @@
     config ? (config.runs.hostVersion && config.runs.hostVersion !== config.runs.hostKind ? `${config.runs.hostKind} ${config.runs.hostVersion}` : config.runs.hostKind) : "",
   );
   const folder = $derived(config?.folder ?? null);
+  /** The Memory tab's entries, which the config counts but does not send, read while the tab shows and kept for its next open. */
+  const memoryFolder = view(() => (section === "memory" && folder ? reads.agentFolder(folder.agent) : null));
   const ownFolder = $derived(!!folder && folder.agent === agentId);
   /** A job loads the folder of the registered agent it works for, which may sit above a job that started it. */
   const folderName = $derived(ownFolder ? (agent?.name ?? "") : (agent?.agent?.name ?? (folder ? agents.byId(folder.agent)?.name : undefined) ?? "its agent"));
   function setFolder(next: AgentFolder) {
-    if (config && next.agent === config.folder?.agent) answer.set({ ...config, folder: next });
+    if (!config || next.agent !== config.folder?.agent) return;
+    const { entries, ...memory } = next.memory;
+    answer.set({ ...config, folder: { ...next, memory: { ...memory, count: entries.length } } });
+    if (memoryFolder.value?.agent === next.agent) memoryFolder.set(next);
   }
   /** A comm thread is named by its room, never as an agent or a job; an archived room keeps its name and reads archived. */
   const commRoom = (room: string) => config?.swarm.commRooms?.find((r) => r.id === room);
@@ -159,7 +164,7 @@
   </li>
 {/snippet}
 
-{#snippet belongs(owner: AgentFolder)}
+{#snippet belongs(owner: Pick<AgentFolder, "agent">)}
   <p class="t-caption belongs" data-testid="folder-owner">
     This job belongs to <a href={hrefFor("agents", [owner.agent])}>{folderName}</a>. It loads the brief and memory of {folderName}, which you edit on its card.
   </p>
@@ -290,7 +295,7 @@
         </dd>
         <dt>Memory</dt>
         <dd data-fact="memory">
-          {#if folder}<span>{plural(folder.memory.entries.length, "memory", "memories")}{ownFolder ? "" : ` of ${folderName}`}</span>{:else}<span>None of its own</span>{/if}
+          {#if folder}<span>{plural(folder.memory.count, "memory", "memories")}{ownFolder ? "" : ` of ${folderName}`}</span>{:else}<span>None of its own</span>{/if}
           <button type="button" class="more t-caption" onclick={() => onsection("memory")}>Details</button>
         </dd>
         <dt>Jobs</dt>
@@ -431,7 +436,15 @@
     {:else if section === "memory"}
       {#if folder}
         {#if !ownFolder}{@render belongs(folder)}{/if}
-        <AgentMemory {folder} name={folderName} readonly={!ownFolder} onsaved={setFolder} />
+        {#if memoryFolder.value}
+          <AgentMemory folder={memoryFolder.value} name={folderName} readonly={!ownFolder} onsaved={setFolder} />
+        {:else if memoryFolder.error}
+          <EmptyState icon="warning" title="The memory could not load" description={memoryFolder.error} size="sm">
+            {#snippet action()}<Button size="sm" icon="refresh" onclick={() => memoryFolder.refresh()}>Retry</Button>{/snippet}
+          </EmptyState>
+        {:else}
+          <div class="loading"><LoadingText text="Reading its memory…" /></div>
+        {/if}
       {:else}
         <section class="block callout" data-memory="none">
           <h3 class="t-label-sm">No memory of its own</h3>

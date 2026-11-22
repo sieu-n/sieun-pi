@@ -500,6 +500,8 @@ export const reads = {
   boards: () => read<BoardRow[]>("/api/boards"),
   /** One agent as a role: purpose, where it runs, its board, memory, instructions and swarm (API.md, Agents). */
   agentConfig: (id: AgentId) => read<AgentConfig>(`/api/agents/${enc(id)}/config`),
+  /** An agent's folder: its brief and every entry of its memory, which its config counts but does not send (API.md, Agent folder). */
+  agentFolder: (id: AgentId) => read<AgentFolder>(`/api/agents/${enc(id)}/folder`),
   /** An agent's For list, newest activity first; the counts cover the whole list whatever `status` picks (API.md, For <agent>). */
   forMe: (agent: AgentId, status: ForMeStatus | "all" = "pending") => read<ForMeList>(`/api/agents/${enc(agent)}/for-me${query({ status })}`),
   board: (chat: string) => read<BoardView>(`${boardBase(chat)}/board`, true),

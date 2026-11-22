@@ -51,6 +51,9 @@ test("a chat's config names its purpose, host, cwd, board, memory, instructions 
 
   assert.equal(c.folder?.agent, agents.harness);
   assert.equal(c.folder?.dir, join(s.app.config.agentsDir, "ai-harness-developer-environment-vp"));
+  const whole = await s.get<{ memory: { entries: unknown[] } }>(`/api/agents/${agents.harness}/folder`);
+  assert.equal(c.folder?.memory.count, whole.memory.entries.length, "the config counts the entries the folder route lists");
+  assert.equal("entries" in (c.folder?.memory ?? {}), false, "the config sends no memory entries");
   assert.equal(c.memory.kind, "agent");
   assert.ok(c.memory.kind === "agent" && /harness store in its agent's folder/.test(c.memory.note));
   const harness = c.memory.related.find(f => f.path.endsWith("harness_state.json"));

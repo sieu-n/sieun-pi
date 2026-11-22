@@ -9,7 +9,7 @@
  * | thread file | `<durable dir>/threads/<thread>.sqlite`, beside pi-host's `index.sqlite` |
  * | board | the `chat.board` document of its chat's root conversation, the last read of it through `Boards.latest` |
  * | duties, check-in | `<data dir>/agents/<agent>/duties.json`, and each duty's precheck state in `<data dir>/agents/<agent>/duties/` |
- * | folder | its agent's folder, `<agents dir>/<slug>/` with `brief.md` and the harness store (`agent-folder.ts`) |
+ * | folder | its agent's folder, `<agents dir>/<slug>/` with `brief.md` and the harness store's file and entry count (`agent-folder.ts`); `GET /api/agents/:id/folder` gives the entries |
  * | memory | Prime's harness digest in pi-host: Prime's global store merged with the agent's store, or with the thread's own store when no agent holds it |
  * | instructions | AGENTS.md and CLAUDE.md in its cwd and each folder above it, and `<agent dir>/AGENTS.md`, which pi-host loads through Prime's resource loader plus the CLAUDE.md beside each AGENTS.md (`context-files.ts`), read on the box that runs the thread |
  * | usage | the thread's sums over the Usage page's 7 days by hour, from the kept hour sums (`KeptUsage`) or pi-host's `durable_usage` |
@@ -17,7 +17,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import type { AgentConfig, AgentId, ChatBoard, ConfigFile, PlanItem } from "../web/src/lib/api/types.ts";
+import type { AgentConfig, AgentFolderSummary, AgentId, ChatBoard, ConfigFile, PlanItem } from "../web/src/lib/api/types.ts";
 import type { Duty, DutyRunRecord } from "../web/src/lib/api/shared/chat-duties.ts";
 import { fileInfo, instructionFiles } from "./agent-folder.ts";
 import type { AgentRecord } from "./agent-store.ts";
@@ -301,7 +301,12 @@ export async function agentConfig(app: App, id: AgentId): Promise<AgentConfig> {
   })() : null;
 
   const record = chat ? app.agents.record(chat) : undefined;
-  const folder = record ? await app.folders.read(record).catch(() => null) : null;
+  const read = record ? await app.folders.read(record).catch(() => null) : null;
+  let folder: AgentFolderSummary | null = null;
+  if (read) {
+    const { entries, ...memory } = read.memory;
+    folder = { ...read, memory: { ...memory, count: entries.length } };
+  }
 
   // Data that outlives a turn: Prime's global store, which pi-host's digest merges into every thread, the thread's own store when no agent
   // holds it, and the duty precheck state files of its chat.
