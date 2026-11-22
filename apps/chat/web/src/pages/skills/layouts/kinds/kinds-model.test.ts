@@ -58,7 +58,7 @@ test("a column counts the skills its kind lists and estimates their tokens", () 
   assert.equal(comm?.listed, 2);
   assert.equal(comm?.imported, 1);
   assert.ok((comm?.tokens ?? 0) > 20);
-  assert.equal(cols.find(c => c.kind === "sw-work")?.tokens, 2500);
+  assert.ok((cols.find(c => c.kind === "sw-work")?.tokens ?? 0) > 2500);
   assert.equal(cols.find(c => c.kind === "sw-work")?.inlined, 1);
   assert.deepEqual(cols.find(c => c.kind === "prime-chat")?.cwd, [{ repo: "/r/slack-green", count: 1 }]);
   assert.equal(families().reduce((n, f) => n + f.span, 0), cols.length);

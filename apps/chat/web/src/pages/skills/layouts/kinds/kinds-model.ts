@@ -104,7 +104,6 @@ export function kindColumns(view: SkillsView): KindColumn[] {
       if (sight.how === "inlined") {
         inlined++;
         chars += entry.size.bytes ?? 0;
-        continue;
       }
       chars += LIST_BLOCK_CHARS + entry.name.length + entry.description.length + (paths.get(sight.copyId)?.length ?? 0);
     }
