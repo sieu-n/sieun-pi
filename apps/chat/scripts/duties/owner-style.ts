@@ -168,15 +168,22 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   if (!values["no-blind"] && blindDue.length) {
     mkdirSync(runs, { recursive: true });
     const script = join(dirname(fileURLToPath(import.meta.url)), "..", "blind-replies.mjs");
-    await Promise.all(blindDue.map(async note => {
+    // One run per set, one set at a time: on 11-22 the 8 notes' runs started together beside 4 hand runs, about 24 test sessions joined a
+    // pool queue of 57, and no test agent got a turn for 3.6 h, so every run failed with no reply.
+    const results = new Map<string, Awaited<ReturnType<typeof blindRun>> & { out: string }>();
+    for (const note of blindDue) {
       const set = (note.blind as { set: string }).set;
-      const out = join(runs, `${note.id}-${set}.jsonl`);
-      const result = await blindRun(script, set, out, server);
-      if (result.agent) await archiveAgent(server, result.agent).catch(() => undefined);
+      if (!results.has(set)) {
+        const out = join(runs, `${set}.jsonl`);
+        const result = await blindRun(script, set, out, server);
+        if (result.agent) await archiveAgent(server, result.agent).catch(() => undefined);
+        results.set(set, { ...result, out });
+      }
+      const { out, ...result } = results.get(set)!;
       blindRows.push({ note: note.id, set, out, ...result });
       if (result.pass) blindPassed++;
       else flagged.push({ kind: result.error ? "blind_error" : "blind_failed", excerpt: `${note.id} --set ${set}: ${result.error ?? `${result.passed} of ${result.of} asks pass`}; replies in ${out}`, sig: `blind:${note.id}` });
-    }));
+    }
   }
 
   const metrics: Record<string, number> = {
