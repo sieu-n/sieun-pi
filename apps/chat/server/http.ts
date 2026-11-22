@@ -3,8 +3,8 @@
  * web client for any other path.
  */
 import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { Server as NetServer, type Socket } from "node:net";
+import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { Server as NetServer, type AddressInfo, type Socket } from "node:net";
 import { extname, join, normalize } from "node:path";
 import type { ConversationPatch, DutyAction, LaterPatch, MemoryInput, ReadPoint, RoomInput, RoomPatch, SendRequest } from "../web/src/lib/api/types.ts";
 import { parseSchedule } from "../web/src/lib/api/shared/chat-duties.ts";
@@ -559,11 +559,16 @@ export function routes(app: App, parts: SkillsParts): Route[] {
   ];
 }
 
+/** How long the server keeps an idle keep-alive connection open; see `serve`. */
+export const KEEP_ALIVE_MS = 100_000;
+
 export function serve(app: App, parts: SkillsParts = skillsParts(app.config, app.log, () => app)): Server {
   const table = routes(app, parts);
   const requests = new RequestLog(join(app.config.dataDir, "requests"), app.log);
   const stalls = new LoopStalls();
   const server = createServer((req, res) => {
+    const target = forwarding.get(server);
+    if (target) return forward(target, req, res);
     const path = (req.url ?? "/").split("?")[0]!;
     const method = req.method ?? "GET";
     if (path === "/api/timings" && method === "POST") return void takeTimings(table, requests, app.log, req, res);
@@ -582,7 +587,15 @@ export function serve(app: App, parts: SkillsParts = skillsParts(app.config, app
   // A whole request may take as long as its body takes to arrive, so an upload of any size over a slow link ends (App.upload);
   // Node's 300 s default cut such uploads off. headersTimeout still drops a client that never finishes its headers.
   server.requestTimeout = 0;
+  // tailscale serve keeps an idle connection to this server for 90 s (IdleConnTimeout in getTransport, ipn/ipnlocal/serve.go, v1.104.6 on
+  // us-metal02) and sends a call that is not idempotent, such as a reaction, once: if the server's close meets that call on the wire, the
+  // owner gets a bare 502. Node closes an idle connection after 5 s by default, so the server closed first all day. KEEP_ALIVE_MS outlasts
+  // the proxy's 90 s, so the proxy closes first, and Node wants headersTimeout above it.
+  server.keepAliveTimeout = KEEP_ALIVE_MS;
+  server.headersTimeout = KEEP_ALIVE_MS + 1000;
   server.on("upgrade", (req, socket, head) => {
+    // A live socket asked for on a kept connection after a hand-over reconnects on a new connection, which reaches the successor.
+    if (forwarding.has(server)) return void socket.destroy();
     const url = new URL(req.url ?? "/", "http://x");
     if (url.pathname !== "/api/live") {
       socket.destroy();
@@ -610,7 +623,7 @@ function track(server: Server): void {
   });
   server.on("request", (req: IncomingMessage, res: ServerResponse) => {
     const conn = open.get(req.socket as Socket);
-    if (!conn) return;
+    if (!conn || forwarding.has(server)) return;
     conn.busy.set(req, res);
     if (draining.has(server)) res.shouldKeepAlive = false;
     res.once("close", () => {
@@ -639,9 +652,11 @@ function track(server: Server): void {
  * its own end until the client closes, and in 4 of 5 live hand-overs on 11-22 (09:33 to 09:34Z) the stop waited the whole 2 s with no call
  * answered in it. Live sockets end with the app.
  */
-export async function drain(server: Server, maxMs = 2000): Promise<string> {
+export async function drain(server: Server, maxMs = 2000, mode: "end" | "forward" = "end"): Promise<string> {
+  const address = server.address();
   netClose.call(server);
   draining.add(server);
+  if (mode === "forward" && address && typeof address === "object") return forwardDrain(server, address, maxMs);
   const open = conns.get(server) ?? new Map<Socket, Conn>();
   const began = Date.now();
   const end = began + maxMs;
@@ -670,6 +685,58 @@ export async function drain(server: Server, maxMs = 2000): Promise<string> {
   return `drained in ${Date.now() - began} ms: ended ${ended} idle connections (${halfOpen} not closed by their client yet)` +
     (cut.length ? `, cut ${cut.length} calls at ${maxMs} ms: ${cut.slice(0, 5).join(", ")}` : "");
 }
+/** Where a server that handed its port over sends the calls that come on its kept connections: the port it listened on. */
+const forwarding = new WeakMap<Server, AddressInfo>();
+
+/**
+ * A hand-over's drain. The old server keeps every connection it holds and sends each call that comes on one from now on to the successor
+ * through the port they share, where it waits in the socket's queue until the successor listens. The answer carries `Connection: close`,
+ * so the client opens its next call on a new connection, which reaches the successor. Ending an idle connection instead races a call its
+ * client sends on it at that moment: in after-walk 5 on 11-22 such a call got no answer, which tailscale serve answers with a bare 502 and
+ * does not retry when the call is not idempotent. The old server then closes no connection itself (`lingerForwarding`).
+ * Resolves once the App's own calls in flight answered, or after `maxMs` with the rest cut.
+ */
+async function forwardDrain(server: Server, address: AddressInfo, maxMs: number): Promise<string> {
+  forwarding.set(server, address);
+  const open = conns.get(server) ?? new Map<Socket, Conn>();
+  const began = Date.now();
+  for (const conn of open.values()) for (const res of conn.busy.values()) if (!res.headersSent) res.shouldKeepAlive = false;
+  while ([...open.values()].some(conn => conn.busy.size) && Date.now() - began < maxMs) await new Promise(resolve => setTimeout(resolve, 10));
+  const cut = [...open.values()].flatMap(conn => [...conn.busy.keys()].map(req => `${req.method} ${req.url}`));
+  return `drained in ${Date.now() - began} ms, keeping ${open.size} connections and sending their calls to ${address.address}:${address.port}` +
+    (cut.length ? `, cut ${cut.length} calls at ${maxMs} ms: ${cut.slice(0, 5).join(", ")}` : "");
+}
+
+/** Sends one call to the successor and passes its answer back with `Connection: close`. The old process runs no handler and writes nothing. */
+function forward(target: AddressInfo, req: IncomingMessage, res: ServerResponse): void {
+  res.shouldKeepAlive = false;
+  const headers = { ...req.headers, connection: "close" };
+  const upstream = httpRequest({ host: target.address, port: target.port, method: req.method, path: req.url, headers, agent: false }, answer => {
+    const back = { ...answer.headers };
+    delete back.connection;
+    delete back["keep-alive"];
+    res.writeHead(answer.statusCode ?? 502, answer.statusMessage, back);
+    answer.pipe(res);
+  });
+  upstream.on("error", error => {
+    if (!res.headersSent) res.writeHead(502, { "content-type": "text/plain; charset=utf-8" });
+    res.end(`the old server could not pass this call to the new one: ${error.message}`);
+  });
+  req.pipe(upstream);
+}
+
+/**
+ * After the successor took over, the old process stays only while it holds a connection, and at most `maxMs`, the server's keep-alive
+ * timeout, by when tailscale serve (90 s) has closed its idle ones first. Resolves with what it did.
+ */
+export async function lingerForwarding(server: Server, maxMs = KEEP_ALIVE_MS + 5000): Promise<string> {
+  const open = conns.get(server) ?? new Map<Socket, Conn>();
+  const began = Date.now();
+  const held = open.size;
+  while (open.size && Date.now() - began < maxMs) await new Promise(resolve => setTimeout(resolve, 100));
+  return `forwarded for ${Date.now() - began} ms; ${held} connections were open, ${open.size} still open at the end`;
+}
+
 const netClose = NetServer.prototype.close;
 /**
  * A client on this box, tailscale serve included, sends its request within a few ms of its connect: over 500 loopback connects on us-metal02

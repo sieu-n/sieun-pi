@@ -6,10 +6,11 @@
  */
 import assert from "node:assert/strict";
 import { connect, type AddressInfo } from "node:net";
+import { createServer } from "node:http";
 import { setTimeout as sleep } from "node:timers/promises";
 import { after, before, test } from "node:test";
 import WebSocket from "ws";
-import { drain, serve } from "../../server/http.ts";
+import { drain, lingerForwarding, serve } from "../../server/http.ts";
 import { start, type Running } from "./helpers.ts";
 
 let s: Running;
@@ -136,6 +137,57 @@ test("a call a client sends on its idle connection just after the drain starts s
     await Promise.race([second, sleep(1000).then(() => { throw new Error(`no answer to the call sent during the drain: ${JSON.stringify(received.slice(-200))}`); })]);
     assert.match(received.slice(received.lastIndexOf("HTTP/1.1 200")), /connection: close/i);
     await drained;
+  } finally {
+    client.destroy();
+  }
+});
+
+test("in a hand-over, a call on a kept connection goes to the new server and answers with Connection: close", async () => {
+  // A call a client sends on its idle connection while the old server ends it gets no answer, and tailscale serve turns that into a bare 502
+  // that it does not retry for a POST. The old server keeps the connection and passes the call on instead.
+  const { server, base } = await listening();
+  const port = Number(new URL(base).port);
+  const client = connect({ port, host: "127.0.0.1", allowHalfOpen: true });
+  let received = "";
+  client.on("data", data => (received += data.toString()));
+  client.write("GET /api/ready HTTP/1.1\r\nHost: x\r\n\r\n");
+  while (!received.includes("\r\n\r\n")) await sleep(10);
+  const line = await drain(server, 2000, "forward");
+  assert.match(line, /keeping 1 connections/);
+  const successor = createServer((req, res) => {
+    let body = "";
+    req.on("data", chunk => (body += chunk));
+    req.on("end", () => res.end(`new server got ${req.method} ${req.url} ${body}`));
+  });
+  await new Promise<void>(resolve => successor.listen(port, "127.0.0.1", resolve));
+  try {
+    const before = received.length;
+    client.write("POST /api/rooms HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}");
+    for (let waited = 0; waited < 2000 && !received.slice(before).includes("new server got"); waited += 10) await sleep(10);
+    const answer = received.slice(before);
+    assert.match(answer, /^HTTP\/1\.1 200/);
+    assert.match(answer, /connection: close/i);
+    assert.match(answer, /new server got POST \/api\/rooms \{\}/);
+    const lingered = lingerForwarding(server, 3000);
+    const started = performance.now();
+    assert.match(await lingered, /0 still open at the end/);
+    assert.ok(performance.now() - started < 1000, "the old server stops once its client closed the connection");
+  } finally {
+    client.destroy();
+    successor.close();
+  }
+});
+
+test("the old server stays at most its bound while a client keeps a connection open", async () => {
+  const { server, base } = await listening();
+  const client = connect({ port: Number(new URL(base).port), host: "127.0.0.1", allowHalfOpen: true });
+  await new Promise(resolve => client.once("connect", resolve));
+  await sleep(50);
+  try {
+    await drain(server, 2000, "forward");
+    const started = performance.now();
+    assert.match(await lingerForwarding(server, 500), /1 still open at the end/);
+    assert.ok(performance.now() - started < 1000);
   } finally {
     client.destroy();
   }

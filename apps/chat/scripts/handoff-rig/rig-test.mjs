@@ -6,7 +6,7 @@
 import { execFileSync } from "node:child_process";
 import { connect } from "node:net";
 import { readdirSync, readFileSync } from "node:fs";
-import { request } from "node:http";
+import { Agent, request } from "node:http";
 import { setTimeout as sleep } from "node:timers/promises";
 
 const [unit, portText, dataDir, roundsText = "5"] = process.argv.slice(2);
@@ -68,7 +68,75 @@ const sends = async lane => {
     await sleep(50);
   }
 };
-const loops = [readLoop("/api/ready"), readLoop("/api/sidebar"), readLoop(`/api/c/${roomId}/items`), sends("a"), sends("b")];
+
+// Writes that a proxy does not send twice: reactions without a requestId on reused keep-alive connections, as Go's ReverseProxy in tailscale
+// serve sends a non-idempotent call once and answers a bare 502 when its connection closed under it. 16 lanes with random pauses keep idle
+// connections in the pool, so a hand-over meets some idle and some about to be reused. Any error or non-200 answer is a failure.
+const keepAlive = new Agent({ keepAlive: true, maxSockets: 16 });
+let reactions = 0;
+const reacted = [];
+const reactLoop = async (lane, postId) => {
+  let on = true;
+  while (loading) {
+    await sleep(50 + Math.random() * 350);
+    const data = Buffer.from(JSON.stringify({ emoji: "eyes", on }));
+    const started = performance.now();
+    const outcome = await new Promise(resolve => {
+      const req = request({ host: "127.0.0.1", port, path: `/api/c/${roomId}/posts/${postId}/reactions`, method: "POST", agent: keepAlive, timeout: 20_000,
+        headers: { "content-type": "application/json", "content-length": data.length } }, res => {
+        res.resume();
+        res.on("end", () => resolve(res.statusCode === 200 ? null : `status ${res.statusCode}`));
+      });
+      req.on("timeout", () => req.destroy(new Error("no answer in 20 s")));
+      req.on("error", error => resolve(error.code ?? error.message));
+      req.end(data);
+    });
+    reactions += 1;
+    slowest = Math.max(slowest, performance.now() - started);
+    if (outcome) failures.push(`${new Date().toISOString()} reaction lane ${lane}: ${outcome} (a proxy answers this with a bare 502)`);
+    on = !on;
+  }
+};
+
+// Rooms made with no requestId on the same kind of pool: a doubled room would mean a call ran twice, a lost one that it ran without an answer.
+let roomsMade = 0;
+const roomTag = `rig-room-${Date.now()}`;
+const roomLoop = async lane => {
+  while (loading) {
+    await sleep(100 + Math.random() * 400);
+    const data = Buffer.from(JSON.stringify({ kind: "channel", name: `${roomTag}-${lane}-${roomsMade}`, members: [], test: true }));
+    const outcome = await new Promise(resolve => {
+      const req = request({ host: "127.0.0.1", port, path: "/api/rooms", method: "POST", agent: keepAlive, timeout: 20_000,
+        headers: { "content-type": "application/json", "content-length": data.length } }, res => {
+        res.resume();
+        res.on("end", () => resolve(res.statusCode === 200 ? null : `status ${res.statusCode}`));
+      });
+      req.on("timeout", () => req.destroy(new Error("no answer in 20 s")));
+      req.on("error", error => resolve(error.code ?? error.message));
+      req.end(data);
+    });
+    if (outcome) failures.push(`${new Date().toISOString()} room lane ${lane}: ${outcome} (a proxy answers this with a bare 502)`);
+    else roomsMade += 1;
+  }
+};
+
+/** Old servers that handed over and still pass calls on (handoff.ts names them), in this unit's cgroup, with when each was first seen. */
+const forwarders = new Map();
+const watchForwarders = () => {
+  for (const name of readdirSync("/proc").filter(each => /^\d+$/.test(each))) {
+    try {
+      if (!readFileSync(`/proc/${name}/cmdline`, "utf8").startsWith("apps-chat old server")) continue;
+      if (!readFileSync(`/proc/${name}/cgroup`, "utf8").includes(unit.replace(/\.service$/, ""))) continue;
+      if (!forwarders.has(name)) forwarders.set(name, { pid: Number(name), seen: Date.now(), last: Date.now() });
+      forwarders.get(name).last = Date.now();
+    } catch {}
+  }
+};
+const forwarderTimer = setInterval(watchForwarders, 500);
+const reactPost = JSON.parse((await call("POST", `/api/c/${roomId}/send`, { text: "rig reaction target", requestId: `rig-react-${Date.now()}` })).text);
+const reactPostId = reactPost.post?.id ?? reactPost.item?.id ?? reactPost.id;
+if (!reactPostId) throw new Error(`no post id in the send answer: ${JSON.stringify(reactPost).slice(0, 200)}`);
+const loops = [...Array.from({ length: 16 }, (_, lane) => reactLoop(lane, reactPostId)), ...Array.from({ length: 4 }, (_, lane) => roomLoop(lane)), readLoop("/api/ready"), readLoop("/api/sidebar"), readLoop(`/api/c/${roomId}/items`), sends("a"), sends("b")];
 const restartsBefore = Number(show("NRestarts"));
 await sleep(3000);
 const results = [];
@@ -169,6 +237,42 @@ for (const signal of ["SIGKILL", "SIGSTOP"]) {
   if (result.backMs === null || result.backMs > limit) failures.push(`after ${signal} on the main process ${victim} no new server answered in ${result.backMs === null ? "60 s" : `${result.backMs} ms`}`);
   if (result.servers.length !== 1) failures.push(`after ${signal}: ${result.servers.length} server processes`);
 }
-console.log(JSON.stringify({ unit, port, dataDir, rounds, room: roomId, calls, sends: sent.length, posts: posts.length, duplicateSeqs, missing: missing.length,
+// A successor that hangs during the hand-over, after the old server stopped and before the successor took over: the old process must not
+// cover for it. Stopped right after the old server logs that the successor loaded; on 11-22 such a successor was never replaced in 60 s.
+{
+  const before = Number(show("MainPID"));
+  const since = Math.floor(Date.now() / 1000);
+  execFileSync("systemctl", ["--user", "reload", unit]);
+  let victim = 0;
+  for (const end = Date.now() + 30_000; !victim && Date.now() < end; await sleep(30)) {
+    const lines = execFileSync("journalctl", ["--user", "-u", unit, "-u", unit.replace(/\.service$/, "-core.scope"), "--since", `@${since}`, "--no-pager", "-o", "cat"], { encoding: "utf8" });
+    const loaded = /handoff: (\d+) loaded in/.exec(lines);
+    if (loaded) victim = Number(loaded[1]);
+  }
+  const result = victim ? await replaced(victim, "SIGSTOP") : { signal: "SIGSTOP", victim: null, by: null, backMs: null };
+  result.when = "during the hand-over";
+  if (victim) try { process.kill(victim, "SIGKILL"); } catch {}
+  await sleep(3000);
+  result.servers = servers().filter(pid => pid !== victim && pid !== before);
+  crashes.push(result);
+  if (result.backMs === null || result.backMs > 30_000) failures.push(`after SIGSTOP of the successor ${victim} during the hand-over no new server answered in ${result.backMs === null ? "60 s" : `${result.backMs} ms`}`);
+  if (result.servers.length !== 1) failures.push(`after SIGSTOP during the hand-over: ${result.servers.length} server processes`);
+}
+// Each old server passes calls on for at most the keep-alive timeout plus 5 s (http.ts lingerForwarding), 105 s.
+for (const end = Date.now() + 120_000; Date.now() < end; await sleep(1000)) {
+  watchForwarders();
+  if ([...forwarders.values()].every(each => { try { readFileSync(`/proc/${each.pid}/cmdline`); return false; } catch { return true; } })) break;
+}
+clearInterval(forwarderTimer);
+const forwarderLives = [...forwarders.values()].map(each => ({ pid: each.pid, seenMs: each.last - each.seen }));
+for (const each of forwarderLives) if (each.seenMs > 110_000) failures.push(`old server ${each.pid} passed calls on for ${each.seenMs} ms, past its 105 s bound`);
+for (const each of forwarders.values()) { try { readFileSync(`/proc/${each.pid}/cmdline`); failures.push(`old server ${each.pid} still runs 120 s after the last hand-over`); } catch {} }
+const roomList = JSON.parse((await call("GET", "/api/rooms?test=1")).text);
+const madeRooms = (roomList.rooms ?? roomList).filter(each => typeof each.name === "string" && each.name.startsWith(roomTag));
+const names = madeRooms.map(each => each.name);
+const doubledRooms = names.length - new Set(names).size;
+if (doubledRooms) failures.push(`${doubledRooms} rooms made twice`);
+if (madeRooms.length !== roomsMade) failures.push(`${roomsMade} rooms answered 200 but ${madeRooms.length} exist`);
+console.log(JSON.stringify({ unit, port, dataDir, rounds, room: roomId, calls, reactions, roomsMade, doubledRooms, forwarders: forwarderLives, sends: sent.length, posts: posts.length, duplicateSeqs, missing: missing.length,
   restarts, slowestCallMs: Math.round(slowest), pass: failures.length === 0, results, crashes, failures: failures.slice(0, 40) }, null, 1));
 process.exit(failures.length ? 1 : 0);

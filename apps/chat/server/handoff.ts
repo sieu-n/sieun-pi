@@ -204,6 +204,14 @@ export interface Running {
   /** Closes the server and waits for its calls in flight (http.ts `drain`). */
   drain(server: Server): Promise<string | void>;
   log(line: string): void;
+  /**
+   * Stops this process's watchdog pings (`startWatchdog`) once it stops serving. A successor that hangs after systemd took it as the main
+   * process then trips the watchdog, where the old process's pings would hide it: on the rig on 11-22 a successor stopped with SIGSTOP in
+   * that window was never replaced in 60 s.
+   */
+  quiet?(): void;
+  /** After the successor took over, waits while this process passes late calls on its kept connections to it (http.ts `lingerForwarding`). */
+  linger?(): Promise<string>;
   /** Ends this process once the successor serves, or once a successor that ended after this process stopped left nothing to serve. */
   exit(code: number): void;
 }
@@ -220,17 +228,28 @@ export function handOverOnHangup(side: Running): () => void {
   return () => { process.off("SIGHUP", start); };
 }
 
+const LOAD_MS = 60_000;
+
 /** One hand-over; resolves once the successor took the port, or once it ended before that. */
 export async function handOver(side: Running, args: string[] = serveArgs(), cwd = process.env[CURRENT_ENV] ?? process.cwd()): Promise<void> {
   const began = Date.now();
   const child = spawn(process.execPath, args, { cwd, env: { ...process.env, [HANDOFF_ENV]: "1" }, stdio: ["ignore", "inherit", "inherit", side.fd, "ipc"] });
   side.log(`handoff: started the successor ${child.pid} in ${cwd}; this process serves until it loaded`);
   let stoppedAt = 0, taken = false;
+  // A successor that never says it loaded is ended, and this process keeps serving. Loads took 0.5 to 3.2 s on 11-22, and a whole start
+  // took at most 8.7 s across the 70 starts of that day.
+  const loading = setTimeout(() => {
+    side.log(`handoff: ${child.pid} did not load in ${LOAD_MS / 1000} s; it is killed and this process keeps serving`);
+    child.kill("SIGKILL");
+  }, LOAD_MS);
+  loading.unref();
   await new Promise<void>(resolve => {
     child.on("message", (message: unknown) => {
       const kind = kindOf(message);
       if (kind === "loaded") {
         const loadedAt = Date.now();
+        clearTimeout(loading);
+        side.quiet?.();
         void (async () => {
           const drained = await side.drain(side.server);
           await side.stop();
@@ -238,21 +257,31 @@ export async function handOver(side: Running, args: string[] = serveArgs(), cwd 
           stoppedAt = Date.now();
           side.log(`handoff: ${child.pid} loaded in ${loadedAt - began} ms; this process stopped in ${Date.now() - loadedAt} ms${drained ? ` (${drained})` : ""}, and calls wait in the socket's queue until ${child.pid} takes it`);
           child.send({ kind: "stopped" } satisfies ToNew);
+          // The successor gives up on its MAINPID= after TAKE_MS and ends, which ends this process too; one that hangs instead is ended here.
+          setTimeout(() => {
+            if (taken) return;
+            side.log(`handoff: ${child.pid} did not take the port in ${(TAKE_MS + 5000) / 1000} s after this process stopped; it is killed`);
+            child.kill("SIGKILL");
+          }, TAKE_MS + 5000).unref();
         })().catch(error => {
           side.log(`handoff: stop: ${error instanceof Error ? error.message : String(error)}`);
           child.kill("SIGKILL");
         });
       } else if (kind === "taken") {
         taken = true;
-        side.log(`handoff: ${child.pid} took the port ${Date.now() - stoppedAt} ms after this process stopped, ${Date.now() - began} ms after the reload; this process exits`);
+        side.log(`handoff: ${child.pid} took the port ${Date.now() - stoppedAt} ms after this process stopped, ${Date.now() - began} ms after the reload; this process ${side.linger ? "passes late calls on its kept connections to it, then exits" : "exits"}`);
         child.disconnect();
         child.unref();
         resolve();
-        side.exit(0);
+        if (!side.linger) return side.exit(0);
+        // A count of `server/main.ts --port` processes, as the one-server checks run, no longer finds this one; its lock and listener are gone too.
+        process.title = `apps-chat old server ${process.pid}, passing calls to ${child.pid}`;
+        void side.linger().then(line => side.log(`handoff: ${line}; this process exits`), error => side.log(`handoff: linger: ${error instanceof Error ? error.message : String(error)}`)).finally(() => side.exit(0));
       }
     });
     child.once("error", error => side.log(`handoff: the successor: ${error.message}`));
     child.once("exit", (code, signal) => {
+      clearTimeout(loading);
       if (taken) return;
       side.log(`handoff: the successor ${child.pid} ended (${signal ?? `exit ${code}`}) before it took the port; ${stoppedAt ? "this process had stopped, so it exits and systemd starts the unit again" : "this process keeps serving"}`);
       resolve();

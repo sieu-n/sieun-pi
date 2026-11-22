@@ -14,7 +14,7 @@ import { PiHost } from "./host/pi-host.ts";
 import { RelayHost } from "./host/relay-host.ts";
 import type { Host } from "./host/types.ts";
 import { projectList } from "./projects.ts";
-import { drain, serve, skillsParts } from "./http.ts";
+import { drain, lingerForwarding, serve, skillsParts } from "./http.ts";
 import { seedFixture } from "./fixture/seed.ts";
 import { DataLock, handOverOnHangup, listening, startWatchdog, tellSystemd } from "./handoff.ts";
 
@@ -91,6 +91,6 @@ try {
   log(`systemd-notify: ${error instanceof Error ? error.message : String(error)}; this process exits`);
   process.exit(1);
 }
-startWatchdog(log);
+const quiet = startWatchdog(log);
 port.predecessor?.taken();
-if (fd !== null) handOverOnHangup({ fd, server: http, drain, stop: stopApp, unlock: () => lock.release(), log, exit: code => process.exit(code) });
+if (fd !== null) handOverOnHangup({ fd, server: http, drain: server => drain(server, undefined, "forward"), linger: () => lingerForwarding(http), stop: stopApp, unlock: () => lock.release(), quiet, log, exit: code => process.exit(code) });
