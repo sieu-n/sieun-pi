@@ -212,6 +212,8 @@ export interface Running {
   quiet?(): void;
   /** After the successor took over, waits while this process passes late calls on its kept connections to it (http.ts `lingerForwarding`). */
   linger?(): Promise<string>;
+  /** Called with true when the successor starts, so the answers from then on close their connections (http.ts `windDown`), and with false when it ended before the stop. */
+  windDown?(on: boolean): void;
   /** Ends this process once the successor serves, or once a successor that ended after this process stopped left nothing to serve. */
   exit(code: number): void;
 }
@@ -235,6 +237,7 @@ export async function handOver(side: Running, args: string[] = serveArgs(), cwd 
   const began = Date.now();
   const child = spawn(process.execPath, args, { cwd, env: { ...process.env, [HANDOFF_ENV]: "1" }, stdio: ["ignore", "inherit", "inherit", side.fd, "ipc"] });
   side.log(`handoff: started the successor ${child.pid} in ${cwd}; this process serves until it loaded`);
+  side.windDown?.(true);
   let stoppedAt = 0, taken = false;
   // A successor that never says it loaded is ended, and this process keeps serving. Loads took 0.5 to 3.2 s on 11-22, and a whole start
   // took at most 8.7 s across the 70 starts of that day.
@@ -285,6 +288,7 @@ export async function handOver(side: Running, args: string[] = serveArgs(), cwd 
       clearTimeout(loading);
       if (taken) return;
       side.log(`handoff: the successor ${child.pid} ended (${signal ?? `exit ${code}`}) before it took the port; ${stoppedAt ? "this process had stopped, so it exits and systemd starts the unit again" : "this process keeps serving"}`);
+      if (!stoppedAt) side.windDown?.(false);
       resolve();
       if (stoppedAt) side.exit(1);
     });

@@ -14,7 +14,7 @@ import { PiHost } from "./host/pi-host.ts";
 import { RelayHost } from "./host/relay-host.ts";
 import type { Host } from "./host/types.ts";
 import { projectList } from "./projects.ts";
-import { drain, lingerForwarding, serve, skillsParts, WRITE_WAIT_MS } from "./http.ts";
+import { drain, lingerForwarding, serve, skillsParts, windDown, WRITE_WAIT_MS } from "./http.ts";
 import { seedFixture } from "./fixture/seed.ts";
 import { DataLock, handOverOnHangup, listening, startWatchdog, tellSystemd } from "./handoff.ts";
 
@@ -110,4 +110,4 @@ try {
 }
 const quiet = startWatchdog(log);
 port.predecessor?.taken();
-if (fd !== null) handOverOnHangup({ fd, server: http, drain: server => drain(server, WRITE_WAIT_MS, "forward"), linger: () => lingerForwarding(http), stop: handOverStop, unlock: () => lock.release(), quiet, log, exit: code => process.exit(code) });
+if (fd !== null) handOverOnHangup({ fd, server: http, drain: server => drain(server, WRITE_WAIT_MS, "forward"), linger: () => lingerForwarding(http), windDown: on => windDown(http, on), stop: handOverStop, unlock: () => lock.release(), quiet, log, exit: code => process.exit(code) });

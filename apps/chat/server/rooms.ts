@@ -306,19 +306,30 @@ export class Rooms {
     return this.deps.store;
   }
 
-  start(): void {
+  /**
+   * Resumes the deliveries a stop left and starts the feed poll. The scan reads every agent room's posts, one room per turn of the event
+   * loop, so calls get answers between rooms: at load 170 on 11-22 the scan in one go held a new server's event loop 1,094 ms. A send that
+   * comes during the scan schedules itself, since `stopped` is already false.
+   */
+  start(): Promise<void> {
     this.stopped = false;
-    for (const record of this.deps.agents.list()) {
-      for (const post of this.store.postsOf(record.room)) {
-        if (post.testSend && (post.testSend.entry === undefined || post.testSend.notice === undefined)) void this.settleTestSend(record, post);
-        if (post.author !== "owner" || post.imported || /^[hi]:/.test(post.requestId)) continue;
-        // A post written just before a crash may have no delivery line yet.
-        if (!post.delivery) this.store.set(post, { delivery: this.newDelivery(post, record) });
-        if (post.delivery!.state === "sending") this.schedule(post, 0);
+    const records = this.deps.agents.list();
+    return (async () => {
+      for (const record of records) {
+        if (this.stopped) return;
+        for (const post of this.store.postsOf(record.room)) {
+          if (post.testSend && (post.testSend.entry === undefined || post.testSend.notice === undefined)) void this.settleTestSend(record, post);
+          if (post.author !== "owner" || post.imported || /^[hi]:/.test(post.requestId)) continue;
+          // A post written just before a crash may have no delivery line yet.
+          if (!post.delivery) this.store.set(post, { delivery: this.newDelivery(post, record) });
+          if (post.delivery!.state === "sending") this.schedule(post, 0);
+        }
+        await new Promise(resolve => setImmediate(resolve));
       }
-    }
-    this.store.saveTestSends(this.allTestSends());
-    this.poll();
+      if (this.stopped) return;
+      this.store.saveTestSends(this.allTestSends());
+      this.poll();
+    })();
   }
 
   stop(): void {

@@ -621,6 +621,18 @@ export function serve(app: App, parts: SkillsParts = skillsParts(app.config, app
 type Conn = { busy: Map<IncomingMessage, ServerResponse>; served: boolean; ended: boolean; lastAt: number };
 const conns = new WeakMap<Server, Map<Socket, Conn>>();
 const draining = new WeakSet<Server>();
+const winding = new WeakSet<Server>();
+
+/**
+ * From a hand-over's start until its stop, every answer carries `Connection: close`, so a client that is calling opens its next call on a
+ * new connection, which the successor takes once it listens. Only the connections idle for that whole window stay with the old process,
+ * which runs outside cpu-protect.py's core scope once the successor is the main process: at load 170 on 11-22 a call it forwarded waited
+ * up to 11 s.
+ */
+export function windDown(server: Server, on = true): void {
+  if (on) winding.add(server);
+  else winding.delete(server);
+}
 
 function track(server: Server): void {
   const open = new Map<Socket, Conn>();
@@ -633,7 +645,7 @@ function track(server: Server): void {
     const conn = open.get(req.socket as Socket);
     if (!conn || forwarding.has(server)) return;
     conn.busy.set(req, res);
-    if (draining.has(server)) res.shouldKeepAlive = false;
+    if (draining.has(server) || winding.has(server)) res.shouldKeepAlive = false;
     res.once("close", () => {
       conn.busy.delete(req);
       conn.served = true;
@@ -718,7 +730,7 @@ async function forwardDrain(server: Server, address: AddressInfo, maxMs: number)
     return `${req.method} ${req.url}`;
   });
   const left = [...open.values()].flatMap(conn => [...conn.busy.keys()].filter(passThrough)).length;
-  return `drained in ${Date.now() - began} ms, keeping ${open.size} connections and sending their calls to ${address.address}:${address.port}` +
+  return `drained in ${Date.now() - began} ms, keeping ${open.size} connections (${[...open.values()].filter(conn => !conn.served).length} never used) and sending their calls to ${address.address}:${address.port}` +
     (left ? `, leaving ${left} reads and wiki calls to finish here` : "") + (cut.length ? `, cut ${cut.length} calls at ${maxMs} ms: ${cut.slice(0, 5).join(", ")}` : "");
 }
 
