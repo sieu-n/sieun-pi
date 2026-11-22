@@ -2269,13 +2269,13 @@
   ],
   "box": [
    {
-    "unit": "ci-monitor.timer"
+    "path": "~/.cache/box-jobs/ci-monitor.last"
    },
    {
-    "unit": "code-health.timer"
+    "path": "~/.cache/box-jobs/code-health.last"
    },
    {
-    "unit": "tiktok-index-gaps.timer"
+    "path": "~/.cache/box-jobs/tiktok-index-gaps.last"
    }
   ]
  },

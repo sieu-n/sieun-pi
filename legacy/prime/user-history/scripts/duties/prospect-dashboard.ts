@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { realpathSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -39,7 +39,8 @@ export const tableName = (schema: { name: string }): string => schema.name.toLow
  * The writer of the GCS files, a us-metal02 user timer at minute 35 of each hour. PostHog's hourly full refresh reloads the last file
  * even when the writer stopped, so a source that reads fresh can hold stale rows, and the writer's last good run is a table problem.
  */
-export const WRITER_UNIT = "posthog-warehouse-sync.service";
+export const WRITER_UNIT = "m02-posthog-warehouse-sync";
+const WRITER_LAST = join(homedir(), ".cache/box-jobs/posthog-warehouse-sync.last");
 export const STATE_EVENTS = ["prospect_state_day", "watchlist_reads_day"] as const;
 export type StateEvent = (typeof STATE_EVENTS)[number];
 /** The day both events were first sent anywhere (staging, 11-03), so an age query reads nothing older. */
@@ -119,14 +120,14 @@ export function tableProblems(schemas: readonly SchemaRow[], required: readonly 
 
 const round = (value: number): number => Math.round(value * 10) / 10;
 
-/** The writer as a table problem when its last run failed or is over twice its hourly timer ago, or null when it is on time. */
+/** The writer as a table problem when its last run failed or is over twice its hourly schedule ago, or null when it is on time. */
 export function writerProblem(writer: Read<WriterRun>, now: number): TableProblem | null {
   const name = `${WRITER_UNIT} (writes the files every table reads)`;
   if (isErr(writer)) return { name, why: `could not read its last run: ${writer.error}` };
   const at = writer.exitedAt ? Date.parse(writer.exitedAt) : NaN;
   if (Number.isNaN(at)) return { name, why: "has no finished run" };
   if (writer.status !== 0) return { name, why: `last run at ${new Date(at).toISOString().slice(0, 16)}Z exited ${writer.status}` };
-  if (now - at > 2 * HOUR) return { name, why: `last run ${new Date(at).toISOString().slice(0, 16)}Z, ${round((now - at) / HOUR)} h ago, over twice its hourly timer` };
+  if (now - at > 2 * HOUR) return { name, why: `last run ${new Date(at).toISOString().slice(0, 16)}Z, ${round((now - at) / HOUR)} h ago, over twice its hourly schedule` };
   return null;
 }
 
@@ -274,12 +275,13 @@ const sh = (command: string, cwd: string): Promise<string> => new Promise((resol
     error ? reject(new Error(`${error.message.split("\n")[0]} ${String(stderr).trim().slice(-200)}`)) : resolve(stdout));
 });
 
-/** The writer unit's last run from `systemctl --user show`, whose unix timestamp reads `@1762634126` and `n/a` before a first run. */
+/** The writer's last run from the "<exit code> <unix seconds>" file each box-jobs run writes (auto-sns-agent
+ *  apps/infra/box/compose.jobs.yml), with no finished run while the file is missing. */
 export async function readWriter(): Promise<WriterRun> {
-  const text = await sh(`systemctl --user show ${WRITER_UNIT} --timestamp=unix -p ExecMainExitTimestamp -p ExecMainStatus`, REPO);
-  const field = (key: string): string => new RegExp(`^${key}=(.*)$`, "m").exec(text)?.[1]?.trim() ?? "";
-  const seconds = /^@(\d+)$/.exec(field("ExecMainExitTimestamp"))?.[1];
-  return { exitedAt: seconds ? new Date(Number(seconds) * 1000).toISOString() : null, status: Number(field("ExecMainStatus") || NaN) };
+  let text = "";
+  try { text = await readFile(WRITER_LAST, "utf8"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  const match = /^(\d+) (\d+)/.exec(text.trim());
+  return { exitedAt: match ? new Date(Number(match[2]) * 1000).toISOString() : null, status: match ? Number(match[1]) : NaN };
 }
 
 async function main(): Promise<void> {

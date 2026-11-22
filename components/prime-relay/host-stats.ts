@@ -619,12 +619,13 @@ export const CPU_SIDES: readonly CpuSide[] = ["harness", "apps", "owner", "ci", 
  * ssh sessions and their transient units) less the units named here for another side, plus agents.slice, so a unit that ends inside the
  * window still counts.
  * Virev's CI VMs and production servers in virev.slice count in full, because on 10-18 from 07:45Z metal-management removed the CPU pins on
- * us-metal02's slices and they run on the same 80 CPUs as the harness.
+ * us-metal02's slices and they run on the same 80 CPUs as the harness. The Komodo box jobs, ci-monitor among them since 11-22, run in
+ * Docker scopes under system.slice, so they count on the system side.
  */
 export const SIDE_CGROUPS: Readonly<Record<Exclude<CpuSide, "harness">, readonly string[]>> = {
   apps: ["dev.slice", "{app}/auto-sns-dev-pm2.service", "{app}/box-devserver-heal.service", "virev.slice/virev-prod.slice"],
   owner: ["{app}/code-server.service"],
-  ci: ["{app}/ci-cache.service", "{app}/ci-monitor.service", "virev.slice/virev-ci.slice"],
+  ci: ["{app}/ci-cache.service", "virev.slice/virev-ci.slice"],
   system: ["system.slice"],
 };
 /**

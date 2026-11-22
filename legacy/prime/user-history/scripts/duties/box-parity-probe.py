@@ -407,7 +407,7 @@ def commits(host):
         patch_of = patch_ids([line[1:] for line in raw.splitlines() if line.startswith("@")], host)
         if host == "box":
             # The box fetches origin's dev branches before it lists `fetched`, and box-parity.ts starts this read after the Mac read finished,
-            # so every commit the Mac reported as pushed is already on origin. ci-head-fetch.timer fetches only dev/sieun, every 5 minutes, and
+            # so every commit the Mac reported as pushed is already on origin. the Komodo job m02-ci-head-fetch fetches only dev/sieun, every 5 minutes, and
             # on 10-28 the row listed 9, then 2 Mac commits pushed to dev/sieun-mac since the box's last fetch. A fetch writes only refs under
             # refs/remotes/origin/dev/, never dev/sieun, the working tree or .git/index, and a failed fetch makes the value a fail.
             git_bytes(["fetch", "--no-tags", "--no-write-fetch-head", "--no-recurse-submodules", "--no-auto-maintenance", "--quiet", "origin",

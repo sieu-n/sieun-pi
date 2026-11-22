@@ -11,8 +11,8 @@ import { wikiContentDir } from "../../src/chat-wiki.ts";
 /**
  * The Code health report duty's precheck (`node --import tsx scripts/duties/code-health-report.ts`). No model call.
  * The owner asked on 2026-10-15 for "daily Git reports and keep track of metrics", and checks it by opening the daily report page and
- * seeing today's numbers for both repos. auto-sns-agent's scripts/dev/code-health-daily.mjs writes them under the systemd user timer
- * code-health.timer (06:00 KST) on the wiki host, into .wiki/code-health.duckdb under the wiki's content root, the page, and a dated copy on the store box.
+ * seeing today's numbers for both repos. auto-sns-agent's scripts/dev/code-health-daily.mjs writes them under
+ * the Komodo Procedure m02-code-health (06:00 KST) on the wiki host, into .wiki/code-health.duckdb under the wiki's content root, the page, and a dated copy on the store box.
  * - report_days_7d reads the store: days of the last 7 KST days with metric rows for both repos.
  * - ranked_metrics_shown reads the page the wiki serves and counts the 10 tracked metrics whose page rows show the newest store day's numbers, with
  *   code_health_page.py's own formatting: the 8 the agent-code-metrics page ranks for both repos, plus auto-sns-agent's tests and CI (sieun-pi has
@@ -35,6 +35,8 @@ const CHECKOUT = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/
 const STORE = join(wikiContentDir(), ".wiki/code-health.duckdb");
 const PAGE_PATH = "/page/domains/devops/agent-code-metrics/daily-report";
 const LOG = join(homedir(), ".local/state/virev/code-health.log");
+/** The lock and last-run files of the box-jobs code-health service, without their .lock and .last suffixes. */
+const JOB_STATE = join(homedir(), ".cache/box-jobs/code-health");
 const STORE_BOX = "root@100.84.91.26";
 const BACKUP_DIR = "backups/code-health";
 /**
@@ -219,11 +221,13 @@ async function storeDays(exec: Exec, now: number): Promise<Record<string, StoreD
   }
 }
 
+/** The box-jobs code-health run (auto-sns-agent apps/infra/box/compose.jobs.yml, Komodo Procedure m02-code-health): its last end
+ *  time from the "<exit code> <unix seconds>" file each run writes, and whether a run holds its flock now. */
 async function timerState(exec: Exec): Promise<TimerState> {
-  const out = await exec("systemctl", ["--user", "show", "code-health.timer", "code-health.service", "--timestamp=unix", "-p", "LastTriggerUSec", "-p", "ActiveState"], 20_000);
-  const trigger = /^LastTriggerUSec=@(\d+)/m.exec(out);
-  const states = [...out.matchAll(/^ActiveState=(\S+)/gm)].map(match => match[1]);
-  return { lastTrigger: trigger ? Number(trigger[1]) * 1000 : null, running: states[1] === "activating" || states[1] === "active" };
+  const last = await exec("cat", [`${JOB_STATE}.last`], 20_000).catch(() => "");
+  const ended = /^\d+ (\d+)/.exec(last.trim());
+  const running = await exec("flock", ["-n", "-E", "9", `${JOB_STATE}.lock`, "true"], 20_000).then(() => false, () => true);
+  return { lastTrigger: ended ? Number(ended[1]) * 1000 : null, running };
 }
 
 /** The newest dated copy on the store box and its mtime. BSD stat on the store box, GNU stat as the fallback. */
@@ -256,8 +260,8 @@ export async function measure(exec: Exec, fetchPage: () => Promise<string>, read
   const flagged: FlaggedSlice[] = [];
   const flag = (kind: string, excerpt: string): void => { flagged.push({ at: now, kind, excerpt: excerpt.slice(0, 400) }); };
   const metrics = { report_days_7d: UNMEASURED, backup_age_h: UNMEASURED, source_errors: UNMEASURED, ranked_metrics_shown: UNMEASURED };
-  const timer = await timerState(exec).catch((error: unknown) => { flag("source_error", `systemctl: ${message(error)}`); return { lastTrigger: null, running: false }; });
-  flag("timer", `code-health.timer last fired ${timer.lastTrigger ? new Date(timer.lastTrigger).toISOString() : "never on this host"}, run going now: ${timer.running}`);
+  const timer = await timerState(exec).catch((error: unknown) => { flag("source_error", `box-jobs state: ${message(error)}`); return { lastTrigger: null, running: false }; });
+  flag("timer", `m02-code-health last ended ${timer.lastTrigger ? new Date(timer.lastTrigger).toISOString() : "never on this host"}, run going now: ${timer.running}`);
 
   const days = await storeDays(exec, now).catch((error: unknown) => { flag("source_error", `store ${STORE}: ${message(error)}`); return null; });
   if (days) {
