@@ -1291,7 +1291,9 @@ export class Replies {
     const asked: Wait = last ? { background: "shown", first: true } : {};
     const { read, wait } = repliesPages.take(key, asked, () => api.replies(channel, rootId, asked));
     void read.then(page => {
-      if (last && (brought(this.items, page.items) || this.items.some(item => !isPending(item) && !page.items.some(fresh => fresh.id === item.id)))) wait.background = undefined;
+      // The screen shows each reply as threadPost draws it, so the answer is drawn the same way before the two are compared.
+      const fresh = merge([], page.items.map(item => threadPost(channel, item)), new Set());
+      if (last && (brought(this.items, fresh) || this.items.some(item => !isPending(item) && !page.items.some(one => one.id === item.id)))) wait.background = undefined;
       this.root = threadPost(channel, page.root);
       if (last) {
         const kept = new Set(page.items.map(item => item.id));

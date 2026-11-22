@@ -176,7 +176,9 @@ class Drafts {
         const channels = sidebar.data.channels;
         if (!POST.test(thread) || this.asked.has(thread) || !channels.length) continue;
         this.asked.add(thread);
-        const found = await Promise.all(channels.map((c) => api.replies(c.id, thread).then((r) => ({ room: c.id, replies: r.items.length }), () => null)));
+        // No view waits on these lookups, so they go out as reads ahead: on 11-21 at 22:49 UTC one legacy draft's 12 lookups counted as
+        // reply opens of 206 to 400 ms in the d2 duty (requests/2026-11-21.jsonl).
+        const found = await Promise.all(channels.map((c) => api.replies(c.id, thread, { background: "ahead" }).then((r) => ({ room: c.id, replies: r.items.length }), () => null)));
         const rooms = found.filter((f) => f !== null);
         const threads = rooms.filter((f) => f.replies > 0);
         const room = threads.length === 1 ? threads[0]?.room : threads.length === 0 && rooms.length === 1 ? rooms[0]?.room : undefined;
