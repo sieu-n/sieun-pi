@@ -1,11 +1,11 @@
 // Counts, per UTC day, the owner's calls that failed or waited over 1 s around an apps/chat restart, from the request log
 // (~/.pi/agent/chat/requests/<day>.jsonl) and the service's start lines in the user journal.
 // His calls are the page's own lines (src client) that came through tailscale serve (via tailnet); walks and duties on the box log as
-// local. A client line is written when its batch reaches the server: at once for a failed call, whose batch the page posts again 10 s
+// local. A restart is a Started line or, since the socket hand-over, a Reloading line. A client line is written when its batch reaches the server: at once for a failed call, whose batch the page posts again 10 s
 // later while the server is down, and within the page's 10 s timer otherwise (web/src/lib/api/client.ts sendTimings). So a call made
 // within 10 s of a start reaches the log within 20 s of it, and that is the window. A call failed when its status is 0 or 500 and up, or
 // it names an error. A slow one waited over 1 s and was a wait of his: background reads (bg ahead or shown) are left out of slow.
-// Usage: node restart-walk-count.mjs [--days 2026-11-22,2026-11-23] [--since-start <s>] [--window <s>] [--slow <ms>] [--json]
+// Usage: node restart-walk-count.mjs [--days 2026-11-22,2026-11-23] [--from <ISO time, counts only restarts and lines after it>] [--window <s>] [--slow <ms>] [--json]
 //   [--requests <dir>] [--unit sieun-pi-apps-chat.service] [--journal <file of journalctl -o short-unix lines>]
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
@@ -13,9 +13,9 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-/** Start times (ms) from `journalctl -o short-unix` lines: each "Started <unit>" line. */
+/** Restart times (ms) from `journalctl -o short-unix` lines: each "Started <unit>" line and each "Reloading <unit>" line of a hand-over. */
 export function parseStarts(text) {
-  return text.split("\n").filter(line => / Started /.test(line)).map(line => Math.round(Number(line.split(" ")[0]) * 1000)).filter(Number.isFinite).sort((a, b) => a - b);
+  return text.split("\n").filter(line => /: (Started|Reloading) /.test(line)).map(line => Math.round(Number(line.split(" ")[0]) * 1000)).filter(Number.isFinite).sort((a, b) => a - b);
 }
 
 /** The request log lines that are the owner's page calls: src client, via tailnet, not the timings post itself. */
@@ -67,10 +67,11 @@ export function countRestartHits(starts, rows, { windowMs = 20_000, slowMs = 100
 }
 
 function main(argv) {
-  const opt = { days: null, windowMs: 20_000, slowMs: 1000, json: false, requests: join(homedir(), ".pi/agent/chat/requests"), unit: "sieun-pi-apps-chat.service", journal: null };
+  const opt = { from: 0, days: null, windowMs: 20_000, slowMs: 1000, json: false, requests: join(homedir(), ".pi/agent/chat/requests"), unit: "sieun-pi-apps-chat.service", journal: null };
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i];
     if (flag === "--days") opt.days = argv[++i].split(",");
+    else if (flag === "--from") opt.from = Date.parse(argv[++i]);
     else if (flag === "--window") opt.windowMs = Number(argv[++i]) * 1000;
     else if (flag === "--slow") opt.slowMs = Number(argv[++i]);
     else if (flag === "--json") opt.json = true;
@@ -84,10 +85,10 @@ function main(argv) {
   const next = new Date(Date.parse(`${last}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
   const journal = opt.journal ? readFileSync(opt.journal, "utf8")
     : spawnSync("journalctl", ["--user", "-u", opt.unit, "-o", "short-unix", "--no-pager", "--since", `${first} 00:00:00 UTC`, "--until", `${next} 00:00:20 UTC`], { encoding: "utf8", maxBuffer: 1 << 28 }).stdout;
-  const starts = parseStarts(journal);
+  const starts = parseStarts(journal).filter(at => at >= opt.from);
   // A line of a day's first 20 s can belong to a start of the day before, so read that file too.
   const prev = new Date(Date.parse(`${first}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
-  const rows = [prev, ...opt.days, next].flatMap(d => (existsSync(join(opt.requests, `${d}.jsonl`)) ? parseOwnerLines(readFileSync(join(opt.requests, `${d}.jsonl`), "utf8")) : []));
+  const rows = [prev, ...opt.days, next].flatMap(d => (existsSync(join(opt.requests, `${d}.jsonl`)) ? parseOwnerLines(readFileSync(join(opt.requests, `${d}.jsonl`), "utf8")) : [])).filter(row => row.at >= opt.from);
   const counts = Object.fromEntries(Object.entries(countRestartHits(starts, rows, opt)).filter(([d]) => opt.days.includes(d)));
   if (opt.json) return console.log(JSON.stringify(counts, null, 1));
   for (const [d, c] of Object.entries(counts)) {

@@ -7,11 +7,13 @@ const journal = [
   "1795305679.068402 us-metal02 systemd[8987]: Stopping sieun-pi-apps-chat.service - apps/chat...",
   "1795305679.162261 us-metal02 systemd[8987]: Started sieun-pi-apps-chat.service - apps/chat.",
   "1795305730.351344 us-metal02 systemd[8987]: Started sieun-pi-apps-chat.service - apps/chat.",
+  "1795305799.000000 us-metal02 systemd[8987]: Reloading sieun-pi-apps-chat.service - apps/chat...",
+  "1795305799.010000 us-metal02 systemd[8987]: Reloaded sieun-pi-apps-chat.service - apps/chat.",
 ].join("\n");
 const line = row => JSON.stringify({ src: "client", via: "tailnet", m: "GET", r: "/api/later", p: "/api/later", s: 200, ms: 20, ...row });
 
-test("parseStarts keeps only Started lines, in ms", () => {
-  assert.deepEqual(parseStarts(journal), [1795305679162, 1795305730351]);
+test("parseStarts keeps the Started and Reloading lines, in ms", () => {
+  assert.deepEqual(parseStarts(journal), [1795305679162, 1795305730351, 1795305799000]);
 });
 
 test("parseOwnerLines keeps his page lines and drops local, server and timings lines", () => {
@@ -36,7 +38,7 @@ test("countRestartHits counts failed and slow calls within the window of the lat
     line({ at: starts[1] + 1_000, ms: 30 }),
   ].join("\n"));
   const day = countRestartHits(starts, rows)["2026-11-22"];
-  assert.equal(day.restarts, 2);
+  assert.equal(day.restarts, 3);
   assert.equal(day.restartsHit, 1);
   assert.equal(day.failed, 2);
   assert.equal(day.slow, 1);
