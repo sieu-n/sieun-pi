@@ -1,12 +1,22 @@
 /**
- * The one WebSocket to /api/live. It reconnects with backoff, re-sends every watch with the newest item id each watcher holds, and hands
- * each event to the listeners of its type. Stores in stores.svelte.ts subscribe here; a page rarely needs this file directly.
+ * The one WebSocket to /api/live. It reconnects, re-sends every watch with the newest item id each watcher holds, and hands each event to
+ * the listeners of its type; the server's hello on each open makes the stores and kept panels read what they missed. Stores in
+ * stores.svelte.ts subscribe here; a page rarely needs this file directly.
  */
+import { RIDE_OUT_MS } from "./client.ts";
 import type { ConversationId, LiveEvent } from "./types.ts";
+
+/**
+ * The wait before each new try while the socket has been down less than `RIDE_OUT_MS`, as when a release restarts :5184, so the socket
+ * is back within this wait and a round trip of the new server listening. A try at a closed port fails in one round trip, so this sends
+ * at most 60 tries in one restart.
+ */
+const QUICK_RETRY_MS = 250;
 
 type Listener = (event: LiveEvent) => void;
 
 class Live {
+  /** False once the socket has been down `RIDE_OUT_MS`, so a release restart shows no Offline note; the page reads it as offline. */
   connected = $state(false);
   /** When the socket last opened (`performance.now()`); a read that left after it missed no event the socket brings. */
   openedAt = Infinity;
@@ -16,6 +26,9 @@ class Live {
   private watches = new Map<ConversationId, { count: number; after: () => string | undefined }>();
   private retry = 0;
   private started = false;
+  /** When the socket went down (`performance.now()`), and the timer that then marks the page offline. */
+  private downSince: number | undefined;
+  private offline: ReturnType<typeof setTimeout> | undefined;
 
   start(): void {
     if (this.started || typeof WebSocket === "undefined") return;
@@ -30,6 +43,9 @@ class Live {
     this.socket = socket;
     socket.onopen = () => {
       this.openedAt = performance.now();
+      clearTimeout(this.offline);
+      this.offline = undefined;
+      this.downSince = undefined;
       this.connected = true;
       this.retry = 0;
       for (const [conversation, watch] of this.watches) this.send({ type: "watch", conversation, ...(watch.after() ? { after: watch.after()! } : {}) });
@@ -44,9 +60,11 @@ class Live {
       for (const listener of this.listeners) listener(event);
     };
     socket.onclose = () => {
-      this.connected = false;
       this.socket = null;
-      const delay = Math.min(15_000, 500 * 2 ** this.retry++);
+      const now = performance.now();
+      this.downSince ??= now;
+      this.offline ??= setTimeout(() => (this.connected = false), Math.max(0, this.downSince + RIDE_OUT_MS - now));
+      const delay = now - this.downSince < RIDE_OUT_MS ? QUICK_RETRY_MS : Math.min(15_000, 500 * 2 ** this.retry++);
       setTimeout(() => this.open(), delay);
     };
   }

@@ -26,11 +26,12 @@ type SendOpts = { images?: Attached[]; mentions?: AgentId[]; threadRoot?: string
 /** A send as the page holds it: a `SendRequest` whose images may still be uploading. */
 type SendDraft = Omit<SendRequest, "images"> & { images?: Attached[] };
 /**
- * Tries after the first when the chat server cannot be reached, each with the same requestId, so a send lands once. The waits double from
- * 400 ms, so 5 tries wait 12.4 s in all. A release restart leaves :5184 closed from its stop until the new server listens, which took 1.3 to
- * 3.0 s over the 14 restarts on 11-03 and 11-04 (journal: Started to "apps/chat on"), longer than the 2.8 s that 3 tries waited.
+ * Tries after the first of a send's image uploads when the chat server cannot be reached. The waits double from 400 ms, so 5 tries wait
+ * 12.4 s in all. A release restart leaves :5184 closed from its stop until the new server listens, which took 1.3 to 3.0 s over the 14
+ * restarts on 11-03 and 11-04 (journal: Started to "apps/chat on"), longer than the 2.8 s that 3 tries waited. The send itself carries its
+ * requestId, so client.ts tries it again (`RIDE_OUT_MS`).
  */
-const SEND_RETRIES = 5;
+const UPLOAD_RETRIES = 5;
 /** A real owner message replaces a pending send with its text only if it is no older than this before it, so history never does. */
 const LAND_SLACK_MS = 60_000;
 const isPending = (item: Item): boolean => item.id.startsWith("r:");
@@ -134,29 +135,32 @@ function inOrder<T>(conversation: ConversationId, run: () => Promise<T>): Promis
   return result;
 }
 
-/**
- * Posts a send once its images are uploaded, trying again with the same requestId while the chat server cannot be reached; a refused send
- * throws at once. The send is kept in localStorage (held-sends.ts) until it lands, so a reload cannot lose it: with its images' refs once
- * they are uploaded, and before that as `Sends.send` kept it, with their bytes.
- */
-async function post(conversation: ConversationId, draft: SendDraft, wait?: Wait): Promise<SendResult> {
-  let kept = heldSends.hasRefs(draft.requestId);
+/** The refs of a send's images, each upload tried again while the chat server cannot be reached; a refused upload throws at once. */
+async function uploaded(draft: SendDraft): Promise<ImageRef[]> {
   for (let attempt = 0; ; attempt++) {
     try {
-      const images = await Promise.all((draft.images ?? []).map(image => image.ref()));
-      if (!kept) {
-        const { images: _files, ...rest } = draft;
-        heldSends.keep({ ...rest, conversation, images, at: Date.now() });
-        void heldImages.drop(draft.requestId);
-      }
-      kept = true;
-      return await api.send(conversation, { ...draft, images }, wait);
+      return await Promise.all((draft.images ?? []).map(image => image.ref()));
     } catch (error) {
       const unreachable = !(error instanceof ApiError) || error.status >= 500;
-      if (!unreachable || attempt >= SEND_RETRIES) throw error;
+      if (!unreachable || attempt >= UPLOAD_RETRIES) throw error;
       await sleep(400 * 2 ** attempt);
     }
   }
+}
+
+/**
+ * Posts a send once its images are uploaded; client.ts sends it again with the same requestId while the chat server cannot be reached. The
+ * send is kept in localStorage (held-sends.ts) until it lands, so a reload cannot lose it: with its images' refs once they are uploaded, and
+ * before that as `Sends.send` kept it, with their bytes.
+ */
+async function post(conversation: ConversationId, draft: SendDraft, wait?: Wait): Promise<SendResult> {
+  const images = await uploaded(draft);
+  if (!heldSends.hasRefs(draft.requestId)) {
+    const { images: _files, ...rest } = draft;
+    heldSends.keep({ ...rest, conversation, images, at: Date.now() });
+    void heldImages.drop(draft.requestId);
+  }
+  return api.send(conversation, { ...draft, images }, wait);
 }
 
 /**

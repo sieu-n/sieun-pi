@@ -119,7 +119,7 @@ function networkMs(path: string, started: number): number | undefined {
  * Records one call; a failed call names its error and goes out at once, so the server log holds it beside the request it failed on. A call
  * a view asked for counts from `asked`, so a refresh that waited in the lane and then changed the screen counts that wait too.
  */
-function recordTiming(m: string, path: string, s: number, started: number, err?: string, wait?: Wait, asked?: number): void {
+function recordTiming(m: string, path: string, s: number, started: number, err?: string, wait?: Wait, asked?: number, first = started): void {
   if (typeof window === "undefined") return;
   const net = networkMs(path, started);
   if (net !== undefined && s > 0) {
@@ -128,7 +128,7 @@ function recordTiming(m: string, path: string, s: number, started: number, err?:
   }
   const now = performance.now();
   timings.push({
-    m, p: path.split("?")[0]!, s, ms: Math.round(wait?.shownMs ?? now - (wait?.since ?? (wait?.background === "ahead" ? started : asked ?? started))), ...(net === undefined ? {} : { net }),
+    m, p: path.split("?")[0]!, s, ms: Math.round(wait?.shownMs ?? now - (wait?.since ?? (wait?.background === "ahead" ? first : asked ?? first))), ...(net === undefined ? {} : { net }),
     ...(wait?.encodeMs === undefined ? {} : { enc: wait.encodeMs }), ...(wait?.since === undefined ? {} : { stored: Math.round(now - wait.since) }),
     ...(err ? { err } : {}), ...(wait ? { wait } : {}),
   });
@@ -389,37 +389,91 @@ if (typeof window !== "undefined") {
   }, () => undefined);
 }
 
+/**
+ * How long a call that did not reach the chat server tries again before it fails. Each release restarts :5184, and the port is closed from
+ * the old server's stop until the new one listens: over the 195 restarts from 11-15 to 11-22 that took p50 2.45 s, p90 5.5 s, p99 9.4 s
+ * and at most 21.9 s (user journal, "Stopping sieun-pi-apps-chat.service" to "apps/chat on http"). On 11-22 the page showed 98 of his
+ * calls failed across 19 restarts (request log).
+ */
+export const RIDE_OUT_MS = 15_000;
+
+/** The wait before try `tries + 1`: 100 ms more per try up to 500 ms, so a call lands within half a second of the new server listening. */
+const tryAgainIn = (tries: number): number => Math.min(500, 100 * tries);
+
+/**
+ * Whether a call may go again after it failed with no answer, when the server may have run it: a GET, which changes nothing, a write
+ * whose body names a `requestId`, which the server takes once (a send: rooms.ts and group-rooms.ts `byRequestId`, outbox.ts), and a read
+ * mark to a `seq`, which sets the read point to that seq however often it lands (rooms.ts `markRead`). Any other write, such as a read mark
+ * to the newest post, a reaction or an upload, could do more the second time, so it fails as before.
+ */
+function repeatable(method: string, path: string, body: unknown): boolean {
+  if (method === "GET") return true;
+  const fields = body instanceof Blob ? undefined : (body as { requestId?: unknown; seq?: unknown } | undefined);
+  return typeof fields?.requestId === "string" || (method === "POST" && /^\/api\/c\/[^/]+\/read$/.test(path) && typeof fields?.seq === "number");
+}
+
+/** Waits `ms`, or rejects as the signal aborts, so a call the lane stops during a wait stops there. */
+const pause = (ms: number, signal: AbortSignal | undefined): Promise<void> => new Promise((resolve, reject) => {
+  const done = () => {
+    clearTimeout(timer);
+    reject(signal!.reason);
+  };
+  const timer = setTimeout(() => {
+    signal?.removeEventListener("abort", done);
+    resolve();
+  }, ms);
+  signal?.addEventListener("abort", done, { once: true });
+});
+
+/**
+ * Every call of the page goes through here. A call that never got the server's answer, a network error or the bare 502 that `tailscale
+ * serve` gives while :5184 is closed, goes again for `RIDE_OUT_MS` when it is `repeatable`, so a release restart shows the owner a slower
+ * answer and no error. Its timing line counts from the first try and holds only the last try's outcome.
+ */
 async function send<T>(method: string, path: string, body: unknown, signal: AbortSignal | undefined, wait: Wait | undefined, asked?: number): Promise<T> {
-  const started = performance.now();
-  if (wait) wait.sent = started;
+  const first = performance.now();
+  const again = async (tries: number): Promise<boolean> => {
+    const ms = tryAgainIn(tries);
+    if (!repeatable(method, path, body) || performance.now() + ms - first > RIDE_OUT_MS) return false;
+    await pause(ms, signal);
+    return true;
+  };
   const blob = body instanceof Blob;
-  let response: Response;
-  let text: string;
-  try {
-    response = await fetch(path, {
-      method,
-      headers: body === undefined ? {} : { "content-type": blob ? body.type || "application/octet-stream" : "application/json" },
-      ...(body === undefined ? {} : { body: blob ? body : JSON.stringify(body) }),
-      ...(signal ? { signal } : {}),
-      ...(wait?.background && method === "GET" && !(wait.background === "shown" && wait.first) ? { priority: "low" as const } : {}),
-      ...(ownConnection && !wait?.background ? { credentials: "omit" as const } : {}),
-    });
-    text = await response.text();
-  } catch (error) {
-    if (!signal?.aborted) recordTiming(method, path, 0, started, error instanceof Error ? `${error.name}: ${error.message}` : String(error), wait, asked);
-    throw error;
+  for (let tries = 1; ; tries++) {
+    const started = performance.now();
+    if (wait) wait.sent = started;
+    let response: Response;
+    let text: string;
+    try {
+      response = await fetch(path, {
+        method,
+        headers: body === undefined ? {} : { "content-type": blob ? body.type || "application/octet-stream" : "application/json" },
+        ...(body === undefined ? {} : { body: blob ? body : JSON.stringify(body) }),
+        ...(signal ? { signal } : {}),
+        ...(wait?.background && method === "GET" && !(wait.background === "shown" && wait.first) ? { priority: "low" as const } : {}),
+        ...(ownConnection && !wait?.background ? { credentials: "omit" as const } : {}),
+      });
+      text = await response.text();
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      if (await again(tries)) continue;
+      recordTiming(method, path, 0, started, error instanceof Error ? `${error.name}: ${error.message}` : String(error), wait, asked, first);
+      throw error;
+    }
+    let value: unknown;
+    let error: string | undefined;
+    try {
+      value = text ? (JSON.parse(text) as unknown) : undefined;
+    } catch {
+      error = `${method} ${path} answered ${response.status} with a body that is not JSON`;
+    }
+    const said = (value as { error?: string } | undefined)?.error;
+    if (response.status === 502 && said === undefined && await again(tries)) continue;
+    const failure = response.ok ? error : said ?? error ?? `${method} ${path} failed with ${response.status}`;
+    recordTiming(method, path, response.status, started, failure, wait, asked, first);
+    if (failure !== undefined) throw response.ok ? new Error(failure) : new ApiError(response.status, failure);
+    return value as T;
   }
-  let value: unknown;
-  let error: string | undefined;
-  try {
-    value = text ? (JSON.parse(text) as unknown) : undefined;
-  } catch {
-    error = `${method} ${path} answered ${response.status} with a body that is not JSON`;
-  }
-  const failure = response.ok ? error : (value as { error?: string } | undefined)?.error ?? error ?? `${method} ${path} failed with ${response.status}`;
-  recordTiming(method, path, response.status, started, failure, wait, asked);
-  if (failure !== undefined) throw response.ok ? new Error(failure) : new ApiError(response.status, failure);
-  return value as T;
 }
 
 /** A list value goes as one comma list, such as `from=owner,ag_vent`; an empty list is left out. */
