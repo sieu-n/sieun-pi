@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { THREAD_KINDS, type SkillCopy, type SkillEntry, type SkillThresholds, type SkillVerdictRow } from "../../../../lib/api/shared/skills.ts";
-import { count, drift, healthy, kindsText, openedByPath, problemGroups, problemsOf, sight, sizeText, splitPath, weakDescription } from "./model.ts";
+import { count, drift, headline, healthy, kindsText, openedByPath, problemGroups, problemsOf, sight, sizeText, splitPath, weakDescription } from "./model.ts";
 
 const limits: SkillThresholds = { medianBytes: 4000, medianLines: 75, bloatBytes: 12000, nearDuplicate: 0.8, staleCheckoutDays: 30, source: "test" };
 
@@ -15,16 +15,23 @@ const verdict = (over: Partial<SkillVerdictRow>): SkillVerdictRow => ({ rule: "d
 const skill = (name: string, over: Partial<SkillEntry> = {}): SkillEntry => ({
   id: `git:sieun-pi/skills/${name}`, name, description: `${name} skill`, owner: { kind: "owner" }, source: { kind: "git", repo: "sieun-pi", path: `skills/${name}` },
   installs: [], copies: [copy({ id: `m:/${name}`, path: `/${name}` })], size: { lines: 10, bytes: 400, ratio: 0.1 }, verdicts: [],
-  use: { uses: 0, sessions: 0, lastUse: null, byKind: {} }, preimported: false, sees: [], ...over,
+  use: { uses: 0, sessions: 0, lastUse: null, byKind: {} }, preimported: false, sees: [], extraCopies: [], ...over,
 });
 
 test("a skill with two problems sits in both groups, each worst first", () => {
-  const twoCopies = skill("two", { verdicts: [verdict({ copyId: "m:/x" }), verdict({ copyId: "m:/y" })] });
-  const oneCopy = skill("one", { verdicts: [verdict({ copyId: "m:/z" }), verdict({ rule: "bloated", action: "note" })], size: { lines: 900, bytes: 90000, ratio: 22.5 } });
+  const twoCopies = skill("two", {
+    copies: [copy({ id: "m:/two" }), copy({ id: "m:/x", role: "checkout" }), copy({ id: "m:/y", role: "checkout" })],
+    verdicts: [verdict({ copyId: "m:/x", other: "m:/two" }), verdict({ copyId: "m:/y", other: "m:/two" })],
+    extraCopies: [{ copyId: "m:/x", keptId: "m:/home/sieun/a/b/two", why: "same-text" }, { copyId: "m:/y", keptId: "m:/home/sieun/a/b/two", why: "same-text" }],
+  });
+  const oneCopy = skill("one", { verdicts: [verdict({ copyId: "m:/one", other: "git:sieun-pi/skills/two", action: "merge" }), verdict({ rule: "bloated", action: "note" })], size: { lines: 900, bytes: 90000, ratio: 22.5 } });
   const bigger = skill("bigger", { verdicts: [verdict({ rule: "bloated", action: "note" })], size: { lines: 2000, bytes: 120000, ratio: 30 } });
   const groups = problemGroups([oneCopy, twoCopies, bigger], null, "");
   assert.deepEqual(groups.map(g => [g.kind, g.skills.map(s => s.name)]), [["duplicated", ["two", "one"]], ["bloated", ["bigger", "one"]]]);
   assert.deepEqual(problemsOf(oneCopy), ["duplicated", "bloated"]);
+  const nameOf = (id: string) => (id === "git:sieun-pi/skills/two" ? "two" : id);
+  assert.equal(headline(twoCopies, "duplicated", limits, nameOf), "2 extra copies of m:…/a/b/two");
+  assert.equal(headline(oneCopy, "duplicated", limits, nameOf), "same text as two");
   assert.deepEqual(problemGroups([oneCopy, twoCopies, bigger], "bloated", "big").map(g => g.skills.map(s => s.name)), [["bigger"]]);
 });
 

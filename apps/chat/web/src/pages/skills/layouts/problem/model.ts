@@ -34,8 +34,10 @@ export const problemsOf = (skill: SkillEntry): GroupKind[] => ORDER.filter(kind 
 export function severity(skill: SkillEntry, kind: GroupKind): number {
   const rows = verdictsOf(skill, kind);
   switch (kind) {
-    case "duplicated":
-      return rows.filter(v => v.copyId !== null).length * 1000 + rows.length;
+    case "duplicated": {
+      const { twins, others } = duplicates(skill);
+      return twins.length * 1000 + others.length;
+    }
     case "outdated": {
       const ids = new Set(rows.map(v => v.copyId));
       return skill.copies.filter(c => ids.has(c.id)).reduce((sum, c) => sum + (c.changedLines ?? 1), 0);
@@ -201,13 +203,48 @@ export function splitPath(path: string): { head: string; tail: string } {
   return cut <= 0 ? { head: "", tail: path } : { head: path.slice(0, cut + 1), tail: path.slice(cut + 1) };
 }
 
-export function headline(skill: SkillEntry, kind: GroupKind, limits: SkillThresholds): string {
+export function duplicates(skill: SkillEntry): { twins: SkillEntry["extraCopies"]; others: { id: string; same: boolean }[] } {
+  const own = new Set(skill.copies.map(c => c.id));
+  const others = new Map<string, boolean>();
+  for (const v of verdictsOf(skill, "duplicated")) if (v.other !== null && !own.has(v.other)) others.set(v.other, (others.get(v.other) ?? false) || v.rule === "duplicate");
+  return { twins: skill.extraCopies.filter(e => e.why !== "stale-clone"), others: [...others].map(([id, same]) => ({ id, same })) };
+}
+
+export function shortCopy(copyId: string): string {
+  const cut = copyId.indexOf(":");
+  const parts = tilde(copyId.slice(cut + 1)).split("/").filter(Boolean).map(part => (part.length > 20 ? `${part.slice(0, 8)}…` : part));
+  return `${copyId.slice(0, cut)}:${parts.length > 3 ? `…/${parts.slice(-3).join("/")}` : parts.join("/")}`;
+}
+
+export function extraNote(skill: SkillEntry, copy: SkillCopy): string | null {
+  const extra = skill.extraCopies.find(e => e.copyId === copy.id);
+  if (!extra) return null;
+  const kept = shortCopy(extra.keptId);
+  switch (extra.why) {
+    case "same-text":
+      return `Extra copy with the same text as ${kept}, which stays.`;
+    case "other-text":
+      return `Extra copy whose text differs from ${kept}, which stays.`;
+    case "stale-clone":
+      return `Extra copy in an old clone; ${kept} stays.`;
+    default: {
+      const _exhaustive: never = extra.why;
+      return _exhaustive;
+    }
+  }
+}
+
+export function headline(skill: SkillEntry, kind: GroupKind, limits: SkillThresholds, nameOf: (id: string) => string): string {
   const rows = verdictsOf(skill, kind);
   switch (kind) {
     case "duplicated": {
-      const extra = rows.filter(v => v.copyId !== null).length;
-      const others = new Set(rows.filter(v => v.copyId === null && v.other !== null).map(v => v.other)).size;
-      const parts = [extra ? `${count(extra, "extra copy", "extra copies")}` : "", others ? `${others} other ${others === 1 ? "skill matches" : "skills match"} its text` : ""];
+      const { twins, others } = duplicates(skill);
+      const first = others[0];
+      const parts = [
+        twins.length ? `${count(twins.length, "extra copy", "extra copies")} of ${shortCopy(twins[0]!.keptId)}` : "",
+        others.length === 1 && first ? `${first.same ? "same text as" : "nearly the same text as"} ${nameOf(first.id)}` : "",
+        others.length > 1 ? `same or nearly the same text as ${others.length} other skills` : "",
+      ];
       return parts.filter(Boolean).join(", ");
     }
     case "outdated": {
@@ -230,9 +267,19 @@ export function headline(skill: SkillEntry, kind: GroupKind, limits: SkillThresh
 }
 
 export function names(skills: readonly SkillEntry[]): Map<string, string> {
-  const seen = new Map<string, number>();
-  for (const s of skills) seen.set(s.name, (seen.get(s.name) ?? 0) + 1);
-  return new Map(skills.map(s => [s.id, (seen.get(s.name) ?? 0) > 1 ? `${s.name} in ${shortSource(s.source)}` : s.name]));
+  const tally = (labels: Map<string, string>) => {
+    const seen = new Map<string, number>();
+    for (const label of labels.values()) seen.set(label, (seen.get(label) ?? 0) + 1);
+    return seen;
+  };
+  const byName = new Map(skills.map(s => [s.id, s.name]));
+  const nameSeen = tally(byName);
+  const bySource = new Map(skills.map(s => [s.id, (nameSeen.get(s.name) ?? 0) > 1 ? `${s.name} in ${shortSource(s.source)}` : s.name]));
+  const sourceSeen = tally(bySource);
+  return new Map(skills.map(s => {
+    const label = bySource.get(s.id) ?? s.name;
+    return [s.id, (sourceSeen.get(label) ?? 0) > 1 && s.source.kind === "git" ? `${s.name} in ${s.source.repo}/${splitPath(s.source.path).head.replace(/\/$/, "")}` : label];
+  }));
 }
 
 function shortSource(source: SkillSource): string {

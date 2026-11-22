@@ -2,7 +2,7 @@
   import type { SkillEntry, SkillThresholds } from "$lib/api/shared/skills";
   import { Badge, Button, Icon, ageLabel, tooltip } from "$lib/ui";
   import {
-    GROUP_TEXT, ROLE_TEXT, count, drift, headline, mergeInto, copyNotes, orderedCopies, problemsOf, kindsText, openedByPath, shape, sight, sizeText, sourceText, splitPath, tilde, topKinds,
+    GROUP_TEXT, ROLE_TEXT, count, extraNote, drift, headline, mergeInto, copyNotes, orderedCopies, problemsOf, kindsText, openedByPath, shape, sight, sizeText, sourceText, splitPath, tilde, topKinds,
     weakDescription, type GroupKind, type RowActions,
   } from "./model";
 
@@ -28,7 +28,7 @@
   const byPath = $derived(openedByPath(skill));
   const capital = (text: string): string => text.charAt(0).toUpperCase() + text.slice(1);
   const now = Date.now();
-  const lead = $derived(kind ? headline(skill, kind, limits) : skill.description);
+  const lead = $derived(kind ? headline(skill, kind, limits, nameOf) : skill.description);
   const ownerText = $derived(skill.owner.kind === "owner" ? "you" : skill.owner.id);
   const merges = $derived([...new Set(skill.verdicts.flatMap(v => (v.action === "merge" && v.copyId === null && v.other ? [v.other] : [])))]);
 </script>
@@ -81,12 +81,14 @@
           {@const s = sizeText(copy.bytes, limits)}
           {@const into = mergeInto(skill, copy)}
           {@const notes = copyNotes(skill, copy)}
+          {@const extra = extraNote(skill, copy)}
           <div class="crow" role="row" data-testid="problem-copy" data-copy={copy.id}>
             <span class="where" role="cell">
               <span class="path" use:tooltip={`${copy.box}:${copy.path}`}><span class="box">{copy.box}</span><span class="head-part"><bdi>{where.head}</bdi></span><span class="tail">{where.tail}</span></span>
               <span class="sub">
                 {ROLE_TEXT[copy.role]}, {tilde(shape(copy))}{#if copy.loadedBy.length}, read by {copy.loadedBy.join(", ")}{:else}, nothing reads it{/if}{#if copy.checkout?.stale}{copy.checkout.headAt ? `, old clone last committed ${copy.checkout.headAt.slice(0, 10)}` : ", old clone"}{/if}
               </span>
+              {#if extra}<span class="sub note">{extra}</span>{/if}
               {#each notes as note (note.rule + note.detail)}<span class="sub note">{note.detail}</span>{/each}
             </span>
             <span role="cell" class="num" class:bad={d.changed}>{d.text}</span>
