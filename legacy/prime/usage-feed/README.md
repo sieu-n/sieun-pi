@@ -27,6 +27,8 @@ tail ~/.local/share/usage-feed/feed.log
 python3 -B legacy/prime/usage-feed/install.py uninstall
 ```
 
+On us-metal02 the Komodo Stack `box-sieun-pi` runs it since 11-21, so there the install writes no unit, disables the old one and restarts the container `box-sieun-pi-usage-feed-1` (`deploy/linux/komodo_stack.py`).
+
 `tests/test_feed.py` checks the offsets, the zero-first export and the handoff.
 
 ## History before the feed started

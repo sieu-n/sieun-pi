@@ -24,12 +24,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO / "deploy/linux"))
+import komodo_stack  # noqa: E402
+
 HOME = Path.home()
 SHARE = HOME / ".local/share/prime-sync"
 CONFIG = HOME / ".config/prime-sync/sync.json"
 STATE_REPO = "https://github.com/sieu-n/prime-shared-state.git"
 MAC_PYTHON = "/opt/homebrew/bin/python3"
-KOMODO_STACK = "box-sieun-pi"
 PYTHON = MAC_PYTHON if platform.system() == "Darwin" and os.path.exists(MAC_PYTHON) else sys.executable
 LABEL = "com.sieun.prime-sync"
 GIT_ENV = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
@@ -90,16 +92,6 @@ def launchd_plist(script: Path) -> str:
 """
 
 
-def komodo_runs_it() -> bool:
-    """Whether this box runs the Komodo Stack box-sieun-pi, whose m02-prime-sync Procedure starts prime-sync each minute."""
-    try:
-        found = subprocess.run(["docker", "ps", "-a", "-q", "--filter", f"label=com.docker.compose.project={KOMODO_STACK}"],
-                               capture_output=True, text=True)
-    except FileNotFoundError:
-        return False
-    return found.returncode == 0 and bool(found.stdout.strip())
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--ref", required=True)
@@ -127,9 +119,9 @@ def main() -> int:
 
     first = subprocess.run([PYTHON, "-B", str(script)], env=GIT_ENV, capture_output=True, text=True)
     sys.stdout.write(first.stdout + first.stderr)
-    if platform.system() == "Linux" and komodo_runs_it():
-        subprocess.run(["systemctl", "--user", "disable", "--now", "prime-sync.timer"], capture_output=True)
-        print(f"Komodo Stack {KOMODO_STACK} runs prime-sync on this box (Procedure m02-prime-sync), so no prime-sync.timer")
+    if platform.system() == "Linux" and komodo_stack.runs_here():
+        komodo_stack.hand_over(["prime-sync.timer"])
+        print(f"Komodo Stack {komodo_stack.STACK} runs prime-sync on this box (Procedure m02-prime-sync), so no prime-sync.timer")
     elif platform.system() == "Linux":
         units = HOME / ".config/systemd/user"
         for name, text in systemd_units(script).items():

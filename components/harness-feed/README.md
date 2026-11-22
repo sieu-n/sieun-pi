@@ -38,4 +38,5 @@ node components/harness-feed/install.mjs uninstall
 ```
 
 The install unpacks `components/harness-feed`, `components/prime-relay` and `legacy/prime/user-history/src` from the commit into `~/.local/share/harness-feed/release-<sha7>` and points `current` at it, so a checkout change does not alter the running copy.
+On us-metal02 the Komodo Stack `box-sieun-pi` runs it since 11-21, so there the install writes no unit, disables the old one and restarts the container `box-sieun-pi-harness-feed-1` (`deploy/linux/komodo-stack.mjs`).
 On 10-19 the whole feed used about 0.03 core on us-metal02 in steady state, measured over 199 s with systemd's CPUUsageNSec, and about 200 MB of memory.

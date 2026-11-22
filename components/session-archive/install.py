@@ -6,17 +6,22 @@ usage: python3 -B components/session-archive/install.py --ref <commit>
 
 Writes sweep.py from <commit> to ~/.local/share/session-archive/releases/<sha>/, points `current` at it in one rename, writes
 session-archive.service and .timer into ~/.config/systemd/user and enables the timer. A second install of the same commit
-changes nothing. `rollback` points `current` back at the release it replaced.
+changes nothing. `rollback` points `current` back at the release it replaced. On a box that runs the Komodo Stack box-sieun-pi
+(us-metal02 since 11-21) its m02-session-archive Procedure runs `current/sweep.py`, so the install writes no units there and disables an old timer.
 """
 from __future__ import annotations
 
 import argparse
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
+sys.path.insert(0, str(REPO / "deploy/linux"))
+import komodo_stack  # noqa: E402
+
 SHARE = Path.home() / ".local/share/session-archive"
 UNITS = Path.home() / ".config/systemd/user"
 UNIT_FILES = ("session-archive.service", "session-archive.timer")
@@ -46,10 +51,14 @@ def install(ref: str) -> None:
     release.mkdir(parents=True, exist_ok=True)
     (release / "sweep.py").write_text(git("show", f"{sha}:components/session-archive/sweep.py"))
     point(release)
+    (Path.home() / ".prime/agent/session-archive").mkdir(parents=True, exist_ok=True)
+    if komodo_stack.runs_here():
+        komodo_stack.hand_over(["session-archive.timer"])
+        print(f"session-archive: installed {sha[:12]} at {release}; Procedure m02-session-archive of {komodo_stack.STACK} runs it")
+        return
     UNITS.mkdir(parents=True, exist_ok=True)
     for name in UNIT_FILES:
         (UNITS / name).write_text(git("show", f"{sha}:components/session-archive/{name}"))
-    (Path.home() / ".prime/agent/session-archive").mkdir(parents=True, exist_ok=True)
     subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
     subprocess.run(["systemctl", "--user", "enable", "--now", "session-archive.timer"], check=True)
     print(f"session-archive: installed {sha[:12]} at {release}")

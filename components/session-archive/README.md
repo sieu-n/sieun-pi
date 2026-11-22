@@ -9,5 +9,5 @@ Each pick goes through the chat service's `POST api/threads/<id>/archive` with `
 Each run appends its counts to `~/.prime/agent/session-archive/runs.jsonl` and one line per archive to `archived.jsonl`. An archived session is no longer live, so a second run picks nothing new.
 
 1. To see what a run would archive, run `python3 -B components/session-archive/sweep.py --dry-run`.
-2. To install a commit, run `python3 -B components/session-archive/install.py --ref <sha>`, which enables `session-archive.timer` (19:30 UTC daily).
+2. To install a commit, run `python3 -B components/session-archive/install.py --ref <sha>`, which enables `session-archive.timer` (19:30 UTC daily). On us-metal02 the Komodo Procedure `m02-session-archive` of Stack `box-sieun-pi` runs the sweep since 11-21, so there the install only points `current` at the release and disables the old timer.
 3. To test, run `python3 -B -m unittest discover -s components/session-archive/tests`.

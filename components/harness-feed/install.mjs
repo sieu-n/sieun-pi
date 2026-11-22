@@ -4,12 +4,14 @@
 //   node components/harness-feed/install.mjs uninstall
 // It unpacks the feed and the app files its readers import (components/prime-relay, legacy/prime/user-history/src) from <commit> into
 // ~/.local/share/harness-feed/release-<sha7>, points `current` at it with one rename and restarts the service, so a later checkout
-// change cannot alter the running copy. `uninstall` stops the service and keeps the log.
+// change cannot alter the running copy. `uninstall` stops the service and keeps the log. On a box that runs the Komodo Stack box-sieun-pi
+// (us-metal02 since 11-21) the service is its container box-sieun-pi-harness-feed-1, so the install writes no unit and restarts the container.
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, platform, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { handOver, stackRunsHere } from "../../deploy/linux/komodo-stack.mjs";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const home = homedir();
@@ -107,6 +109,11 @@ function main() {
   rmSync(next, { force: true });
   symlinkSync(release, next);
   renameSync(next, link);
+  if (platform() === "linux" && stackRunsHere()) {
+    handOver([unit], "harness-feed");
+    console.log(`harness-feed ${sha.slice(0, 7)} installed; the Komodo container box-sieun-pi-harness-feed-1 runs it`);
+    return;
+  }
   stop();
   start(join(link, "components/harness-feed/feed.ts"));
   console.log(`harness-feed ${sha.slice(0, 7)} installed as ${platform() === "linux" ? unit : label}; log in ${log}`);

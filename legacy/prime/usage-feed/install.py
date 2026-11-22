@@ -6,6 +6,8 @@ usage: python3 -B legacy/prime/usage-feed/install.py --ref <commit>
 
 Copies feed.py from <commit> to ~/.local/share/usage-feed, deletes an old `handed-off` marker and starts the feed, so a later
 checkout change cannot alter the running copy until someone installs again. `uninstall` stops it and keeps the log.
+On a box that runs the Komodo Stack box-sieun-pi (us-metal02 since 11-21) the feed is its container box-sieun-pi-usage-feed-1, so the install
+writes no unit there and restarts the container.
 """
 from __future__ import annotations
 
@@ -18,6 +20,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(REPO / "deploy/linux"))
+import komodo_stack  # noqa: E402
+
 HOME = Path.home()
 SHARE = HOME / ".local/share/usage-feed"
 LABEL = "com.sieun.usage-feed"
@@ -98,6 +103,10 @@ def main() -> int:
     write(script, git("show", f"{sha}:legacy/prime/usage-feed/feed.py"), 0o755)
     (SHARE / "handed-off").unlink(missing_ok=True)
     write(SHARE / "release.json", json.dumps({"sha": sha, "installedAt": datetime.now(timezone.utc).isoformat(timespec="seconds")}) + "\n", 0o644)
+    if not MAC and komodo_stack.runs_here():
+        komodo_stack.hand_over([UNIT], "usage-feed")
+        print(f"usage-feed {sha[:7]} installed; the Komodo container {komodo_stack.STACK}-usage-feed-1 runs it")
+        return 0
     if MAC:
         write(PLIST, plist(script), 0o644)
         subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(PLIST)], check=True)

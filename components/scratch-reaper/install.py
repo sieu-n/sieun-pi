@@ -9,6 +9,8 @@ The run deletes the folders in ~/scratch that no owner record on any box names, 
 runtime (~/.local/share/sieun-pi-runtime/current) when the box has one, else from this checkout. Until 11-18 nothing ran it on a schedule, so
 ~/scratch/sieun-pi-runtime-8fClKx (258 MB) sat on the Mac from 19:52Z on 11-17 until a hand run. The hour follows from the 2 h idle line:
 a folder goes within 3 h of its last write. launchd's calendar interval also fires at wake when the Mac slept through the hour.
+On a box that runs the Komodo Stack box-sieun-pi (us-metal02 since 11-21) its m02-scratch-reaper Procedure runs the reaper, so the install
+writes no timer there and disables an old one.
 """
 from __future__ import annotations
 
@@ -22,6 +24,9 @@ from pathlib import Path
 
 HOME = Path.home()
 CHECKOUT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(CHECKOUT / "deploy/linux"))
+import komodo_stack  # noqa: E402
+
 RUNTIME = HOME / ".local/share/sieun-pi-runtime/current"
 LABEL = "com.sieun.scratch-reaper"
 UNIT = "scratch-reaper"
@@ -79,6 +84,10 @@ def main() -> int:
     if sys.argv[1:] == ["remove"]:
         remove()
         print("scratch-reaper removed")
+        return 0
+    if platform.system() == "Linux" and komodo_stack.runs_here():
+        komodo_stack.hand_over([f"{UNIT}.timer"])
+        print(f"Komodo Stack {komodo_stack.STACK} runs scratch-reaper on this box (Procedure m02-scratch-reaper), so no {UNIT}.timer")
         return 0
     argv, cwd = command()
     LOG.parent.mkdir(parents=True, exist_ok=True)

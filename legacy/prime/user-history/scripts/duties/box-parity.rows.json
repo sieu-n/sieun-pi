@@ -1601,9 +1601,14 @@
   ],
   "box": [
    {
-    "unit": "prime-sync.timer"
+    "run": [
+     "sh",
+     "-c",
+     "docker ps -aq --filter label=com.docker.compose.project=box-sieun-pi | grep -q . && find \"$HOME/.local/share/prime-sync/status.json\" -mmin -3 | grep -q . || { echo 'no box-sieun-pi container, or prime-sync wrote no status.json in 3 min'; exit 1; }"
+    ]
    }
-  ]
+  ],
+  "note": "Since 11-21 the box runs prime-sync from the Komodo Procedure m02-prime-sync every minute (schedule 30 * * * * *) in Stack box-sieun-pi, so the box side checks the Stack and a status.json from the last 3 runs instead of prime-sync.timer."
  },
  {
   "id": "tools-panel-check-cua-permissions",

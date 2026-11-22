@@ -43,6 +43,7 @@ node packages/pi-history/install.mjs --ref <sha> --ssh <user@mac>    # the Mac, 
 ```
 
 `install.mjs` exports the package at the commit into `~/.local/share/pi-history/release-<sha>`, points `current` at it, writes the unit or plist from `deploy/` and restarts the service.
+On us-metal02 the Komodo Stack `box-sieun-pi` runs it since 11-21, so there the install writes no unit, disables the old one and restarts the container `box-sieun-pi-pi-history-1` (`deploy/linux/komodo-stack.mjs`).
 
 ## Tests
 
