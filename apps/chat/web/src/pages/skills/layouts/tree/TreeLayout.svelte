@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { tick } from "svelte";
+  import { tick, untrack } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
   import type { BoxName, SkillsView } from "$lib/api/shared/skills";
   import { router } from "$lib/router.svelte";
@@ -51,6 +51,22 @@
       if (path !== params.folder) open.add(key);
       parent = key;
     }
+  });
+
+  let detailEl = $state<HTMLElement | undefined>();
+  let navEl = $state<HTMLElement | undefined>();
+  let navMore = $state(false);
+  const measureNav = (): void => {
+    if (navEl) navMore = navEl.scrollTop + navEl.clientHeight < navEl.scrollHeight - 2;
+  };
+  $effect(() => {
+    void open.size;
+    void tick().then(measureNav);
+  });
+  const shownKey = $derived(`${params.skill ?? ""}|${params.box ?? ""}|${params.folder ?? ""}`);
+  $effect(() => {
+    void shownKey;
+    if (detailEl && detailEl.getBoundingClientRect().top < 0) untrack(() => detailEl?.scrollIntoView({ block: "start" }));
   });
 
   const rows = $derived(visibleRows(shown, open));
@@ -143,7 +159,7 @@
   </section>
 
   <div class="body">
-    <nav class="nav" aria-label="Skill folders">
+    <nav class="nav" class:more={navMore} aria-label="Skill folders" bind:this={navEl} onscroll={measureNav}>
       <ul class="tree" role="tree" aria-label="Skill folders by box" {onkeydown}>
         {#each shown as b (b.box)}
           {@const id = boxKey(b.box)}
@@ -163,7 +179,7 @@
       </ul>
     </nav>
 
-    <div class="detail">
+    <div class="detail" bind:this={detailEl}>
       {#if selectedSkill}
         <button type="button" class="back" onclick={() => pick({ skill: null })}><Icon name="arrow-left" size={16} />{selectedFolder ? `Back to ${shortName(selectedFolder.name)}` : "Back to every folder"}</button>
         {#key selectedSkill.id}<SkillDetail {view} skill={selectedSkill} roots={rootsByBox} folder={selectedFolder?.node.path ?? null} {reload} />{/key}
@@ -210,7 +226,7 @@
       <Icon name="archive" size={16} />
       <span class="text">
         <span class="name">Old clones</span>
-        <span class="sub">{clutterLine(f.clutter)}, nothing current loads them</span>
+        <span class="sub">{clutterLine(f.clutter)}, each behind a newer checkout of its repo</span>
       </span>
     </div>
     {#if open.has(id)}
@@ -238,6 +254,7 @@
   .offline { margin: 0; color: var(--text-subtle); font: var(--text-body-sm); }
   .body { display: grid; grid-template-columns: minmax(18rem, 26rem) minmax(0, 1fr); gap: var(--space-6); align-items: start; }
   .nav { position: sticky; top: 0; max-height: calc(100dvh - 160px); overflow: auto; padding: var(--space-1); border-radius: 12px; box-shadow: inset 0 0 0 1px var(--border-standard); }
+  .nav.more { box-shadow: inset 0 0 0 1px var(--border-standard), inset 0 -24px 16px -16px var(--border-prominent); }
   ul { margin: 0; padding: 0; list-style: none; }
   ul[role="group"] { padding-left: var(--space-4); }
   .item { outline: none; }

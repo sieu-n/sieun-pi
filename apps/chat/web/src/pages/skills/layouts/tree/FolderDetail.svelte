@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { BoxName, SkillsView } from "$lib/api/shared/skills";
-  import { Badge, Button } from "$lib/ui";
+  import { Badge, Button, Disclosure } from "$lib/ui";
   import InstallDialog from "./InstallDialog.svelte";
   import {
     boxLabel, folderLine, folderSkills, isBloated, sizeText, skillProblems, sourceText, tilde, usesText, type CopyRef, type Folder, type FolderSkill, type Problem,
@@ -17,19 +17,26 @@
   };
   let { view, folder, refs, roots, problem, onskill, reload }: Props = $props();
 
+  const OPEN_NEVER_UP_TO = 20;
   let installOpen = $state(false);
+  let neverOpen = $state(false);
   const t = $derived(view.thresholds);
   const isRoot = $derived(folder !== null && folder.children.length === 0 && folder.clutter.length === 0);
   const lists = $derived.by(() => {
     const all = folderSkills(refs, folder?.node.path ?? "/");
-    const keep = (r: FolderSkill): boolean => problem === null || skillProblems(r.skill).includes(problem);
+    const keep = (r: FolderSkill): boolean => problem === null || problemsOf(r).includes(problem);
     return { used: all.used.filter(keep), never: all.never.filter(keep) };
+  });
+  $effect(() => {
+    neverOpen = lists.never.length <= OPEN_NEVER_UP_TO;
   });
 
   function driftOf(row: FolderSkill): string | null {
     const most = Math.max(0, ...row.copies.map(c => c.changedLines ?? 0));
-    return most > 0 ? `${most} ${most === 1 ? "line differs" : "lines differ"}` : null;
+    if (most > 0) return `${most} ${most === 1 ? "line differs" : "lines differ"}`;
+    return row.copies.some(c => c.checkout?.stale) ? "in an old clone" : null;
   }
+  const problemsOf = (row: FolderSkill): Problem[] => [...new Set(row.copies.flatMap(c => skillProblems(row.skill, c.id)))];
 </script>
 
 <section class="folder" data-testid="tree-folder">
@@ -58,7 +65,7 @@
           <button type="button" class="row" onclick={() => onskill(s.id)} data-testid="tree-skill-row" data-skill={s.id}>
             <span class="name">
               <span class="label">{s.name}</span>
-              {#each skillProblems(s) as p (p)}<Badge tone={p === "bloated" ? "warning" : "danger"}>{p}</Badge>{/each}
+              {#each problemsOf(row) as p (p)}<Badge tone={p === "bloated" ? "warning" : "danger"}>{p}</Badge>{/each}
               <span class="source">{sourceText(s)}</span>
             </span>
             <span class="copies">{s.copies.length} {s.copies.length === 1 ? "copy" : "copies"}{folder && row.copies.length > 1 ? `, ${row.copies.length} here` : ""}</span>
@@ -79,9 +86,12 @@
     {@render rows(lists.used)}
   {/if}
   {#if lists.never.length}
-    <h3>Never used in 30 days <span class="count">{lists.never.length}</span></h3>
-    <p class="hint">A weak description may be why no thread picks one, so review it before removing.</p>
-    {@render rows(lists.never)}
+    <div class="never">
+      <Disclosure title="Never used in 30 days" detail={String(lists.never.length)} bind:open={neverOpen}>
+        <p class="hint">A weak description may be why no thread picks one, so review it before removing.</p>
+        {@render rows(lists.never)}
+      </Disclosure>
+    </div>
   {/if}
 </section>
 
@@ -94,7 +104,8 @@
   h2 { margin: 0; font: var(--text-heading); overflow-wrap: anywhere; }
   h3 { margin: var(--space-2) 0 0; font: var(--text-label-sm); }
   .count, .hint { color: var(--text-subtle); font: var(--text-caption); font-weight: 400; }
-  .hint { margin: 0; }
+  .hint { margin: 0 0 var(--space-2); }
+  .never { margin-top: var(--space-2); }
   .meta, .none { margin: 0; color: var(--text-subtle); font: var(--text-body-sm); }
   .actions { display: flex; gap: var(--space-2); }
   .rows { display: flex; flex-direction: column; margin: 0; padding: var(--space-1); list-style: none; border-radius: 12px; box-shadow: inset 0 0 0 1px var(--border-standard); }
