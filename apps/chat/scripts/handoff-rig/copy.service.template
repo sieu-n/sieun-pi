@@ -16,6 +16,8 @@ Environment=TMPDIR=@OUT@/tmp
 # rig-test.mjs runs a wiki engine stand-in here that answers each call after 3 s.
 # Each agent create waits 10 s in the fixture host, as a slow pi-host create does, so the rig can put a write in flight across a hand-over.
 Environment=APPS_CHAT_FIXTURE_CREATE_MS=10000
+# run.sh's FIRST_MS sets the drain's wait for a first call (http.ts FIRST_MS); empty means the code's default.
+Environment=APPS_CHAT_FIRST_MS=@FIRSTMS@
 Environment=APPS_CHAT_WIKI_ENGINE=http://127.0.0.1:@WIKIPORT@
 ExecStart=%h/.local/node/bin/node --import tsx server/main.ts --fixture --port @PORT@ --listen 127.0.0.1 --data-dir @DATA@
 # systemd kills a server that stops pinging (server/handoff.ts startWatchdog) and Restart= starts it again. The longest event-loop stall in the

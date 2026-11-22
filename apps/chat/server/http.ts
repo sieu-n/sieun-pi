@@ -580,6 +580,9 @@ export function serve(app: App, parts: SkillsParts = skillsParts(app.config, app
     const target = forwarding.get(server);
     if (target) {
       forwarded.set(server, (forwarded.get(server) ?? 0) + 1);
+      // "reused" when the connection answered a call before this one, so a client kept it across the stop; "fresh" when the old server
+      // accepted it just before its stop and this is its first call.
+      res.setHeader("x-apps-chat-forwarded", conns.get(server)?.get(req.socket as Socket)?.served ? "reused" : "fresh");
       return forward(target, req, res);
     }
     const path = (req.url ?? "/").split("?")[0]!;
@@ -623,7 +626,7 @@ export function serve(app: App, parts: SkillsParts = skillsParts(app.config, app
  * Each server's connections other than live sockets, with the calls each has in flight, whether it answered one yet and whether `drain`
  * ended it, which `drain` reads.
  */
-type Conn = { busy: Map<IncomingMessage, ServerResponse>; served: boolean; ended: boolean; lastAt: number };
+type Conn = { busy: Map<IncomingMessage, ServerResponse>; served: boolean; ended: boolean; lastAt: number; asked: boolean };
 const conns = new WeakMap<Server, Map<Socket, Conn>>();
 const draining = new WeakSet<Server>();
 const winding = new WeakSet<Server>();
@@ -637,6 +640,14 @@ const winding = new WeakSet<Server>();
  * A browser comes through tailscale serve and keeps its connections. A new loopback connection per call costs a TCP handshake on lo.
  */
 const oneShot = (req: IncomingMessage): boolean => req.headers["user-agent"] === "node" && !req.headers["tailscale-user-login"];
+
+/**
+ * How long a hand-over's drain waits for the first call on a connection the old server accepted but has no call from yet (`forwardDrain`).
+ * A soft wait: a connection still silent after it goes to the forwarder. In the hand-over rig on 11-22 (8 fetch lanes, 5 hand-overs), 1 to 3
+ * connections a hand-over were silent at the stop and all 8 of their calls went through the forwarder with the wait off; with 100 ms, the
+ * one silent connection sent its call 7 ms in and 0 calls were forwarded. APPS_CHAT_FIRST_MS=0 turns it off, for that before-and-after.
+ */
+const FIRST_MS = Number(process.env.APPS_CHAT_FIRST_MS ?? 100);
 
 /** When each server's wind-down began, and how many calls it forwarded after its drain, which the hand-over's log lines report. */
 const windAt = new WeakMap<Server, number>();
@@ -659,12 +670,13 @@ function track(server: Server): void {
   const open = new Map<Socket, Conn>();
   conns.set(server, open);
   server.on("connection", (socket: Socket) => {
-    open.set(socket, { busy: new Map(), served: false, ended: false, lastAt: 0 });
+    open.set(socket, { busy: new Map(), served: false, ended: false, lastAt: 0, asked: false });
     socket.once("close", () => open.delete(socket));
   });
   server.on("request", (req: IncomingMessage, res: ServerResponse) => {
     const conn = open.get(req.socket as Socket);
     if (!conn || forwarding.has(server)) return;
+    conn.asked = true;
     conn.busy.set(req, res);
     if (draining.has(server) || winding.has(server) || oneShot(req)) res.shouldKeepAlive = false;
     res.once("close", () => {
@@ -738,9 +750,17 @@ const forwarding = new WeakMap<Server, AddressInfo>();
  * Resolves once the App's own calls in flight answered, or after `maxMs` with the rest cut.
  */
 async function forwardDrain(server: Server, address: AddressInfo, maxMs: number): Promise<string> {
-  forwarding.set(server, address);
   const open = conns.get(server) ?? new Map<Socket, Conn>();
   const began = Date.now();
+  // A connection accepted before the stop whose first call has not arrived yet is answered here, by the still-running App with
+  // Connection: close, if that call comes within FIRST_MS; only one still silent after it goes to the forwarder. At 11:58:47Z on 11-22, 44
+  // such connections from a burst of pi-host's fetches carried their first calls through the forwarder.
+  const silent = () => [...open.values()].filter(conn => !conn.asked).length;
+  const waiting = silent();
+  while (silent() && Date.now() - began < FIRST_MS) await new Promise(resolve => setTimeout(resolve, 2));
+  const firstWait = Date.now() - began;
+  const asked = waiting - silent();
+  forwarding.set(server, address);
   for (const conn of open.values()) for (const res of conn.busy.values()) if (!res.headersSent) res.shouldKeepAlive = false;
   const holding = () => [...open.values()].flatMap(conn => [...conn.busy.keys()].filter(req => !passThrough(req)));
   while (holding().length && Date.now() - began < maxMs) await new Promise(resolve => setTimeout(resolve, 10));
@@ -753,7 +773,7 @@ async function forwardDrain(server: Server, address: AddressInfo, maxMs: number)
   const left = [...open.values()].flatMap(conn => [...conn.busy.keys()].filter(passThrough)).length;
   const since = windAt.get(server);
   const inWindow = since === undefined ? 0 : [...open.values()].filter(conn => conn.lastAt >= since).length;
-  return `drained in ${Date.now() - began} ms, keeping ${open.size} connections (${[...open.values()].filter(conn => !conn.served).length} never used, ` +
+  return `drained in ${Date.now() - began} ms (${waiting} connections had sent no call; ${asked} sent one within ${firstWait} ms and were answered here), keeping ${open.size} connections (${[...open.values()].filter(conn => !conn.served).length} never used, ` +
     `${inWindow} answered a call since the successor started) and sending their calls to ${address.address}:${address.port}` +
     (left ? `, leaving ${left} reads and wiki calls to finish here` : "") + (cut.length ? `, cut ${cut.length} calls at ${maxMs} ms: ${cut.slice(0, 5).join(", ")}` : "");
 }

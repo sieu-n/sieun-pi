@@ -144,10 +144,28 @@ const watchForwarders = () => {
   }
 };
 const forwarderTimer = setInterval(watchForwarders, 500);
+
+// A fetch lane, as pi-host's ChatApp calls the chat: undici with its keep-alive pool. The server closes a fetch's connection after each
+// answer (http.ts oneShot), so no fetch connection may reach a hand-over's old process as a kept one; an answer marked
+// x-apps-chat-forwarded: reused means one did.
+let fetches = 0, freshForwarded = 0;
+const fetchLoop = async () => {
+  while (loading) {
+    await sleep(Math.random() * 300);
+    try {
+      const answer = await fetch(`http://127.0.0.1:${port}/api/ready`);
+      await answer.text();
+      fetches += 1;
+      if (answer.headers.get("x-apps-chat-forwarded") === "fresh") freshForwarded += 1;
+      if (answer.headers.get("x-apps-chat-forwarded") === "reused") failures.push(`${new Date().toISOString()} a fetch reached the old process on a kept connection`);
+      if (answer.status !== 200) failures.push(`${new Date().toISOString()} fetch answered ${answer.status}`);
+    } catch (error) { failures.push(`${new Date().toISOString()} fetch ${error.cause?.code ?? error.message}`); }
+  }
+};
 const reactPost = JSON.parse((await call("POST", `/api/c/${roomId}/send`, { text: "rig reaction target", requestId: `rig-react-${Date.now()}` })).text);
 const reactPostId = reactPost.post?.id ?? reactPost.item?.id ?? reactPost.id;
 if (!reactPostId) throw new Error(`no post id in the send answer: ${JSON.stringify(reactPost).slice(0, 200)}`);
-const loops = [...Array.from({ length: 16 }, (_, lane) => reactLoop(lane, reactPostId)), ...Array.from({ length: 4 }, (_, lane) => roomLoop(lane)), readLoop("/api/ready"), readLoop("/api/sidebar"), readLoop(`/api/c/${roomId}/items`), sends("a"), sends("b")];
+const loops = [...Array.from({ length: 16 }, (_, lane) => reactLoop(lane, reactPostId)), ...Array.from({ length: 4 }, (_, lane) => roomLoop(lane)), ...Array.from({ length: 8 }, fetchLoop), readLoop("/api/ready"), readLoop("/api/sidebar"), readLoop(`/api/c/${roomId}/items`), sends("a"), sends("b")];
 const restartsBefore = Number(show("NRestarts"));
 await sleep(3000);
 const results = [];
@@ -332,6 +350,6 @@ const names = madeRooms.map(each => each.name);
 const doubledRooms = names.length - new Set(names).size;
 if (doubledRooms) failures.push(`${doubledRooms} rooms made twice`);
 if (madeRooms.length !== roomsMade) failures.push(`${roomsMade} rooms answered 200 but ${madeRooms.length} exist`);
-console.log(JSON.stringify({ unit, port, dataDir, rounds, room: roomId, calls, reactions, roomsMade, slowWrite, doubledRooms, forwarders: forwarderLives, sends: sent.length, posts: posts.length, duplicateSeqs, missing: missing.length,
+console.log(JSON.stringify({ unit, port, dataDir, rounds, room: roomId, calls, reactions, roomsMade, fetches, freshForwarded, slowWrite, doubledRooms, forwarders: forwarderLives, sends: sent.length, posts: posts.length, duplicateSeqs, missing: missing.length,
   restarts, slowestCallMs: Math.round(slowest), pass: failures.length === 0, results, crashes, failures: failures.slice(0, 40) }, null, 1));
 process.exit(failures.length ? 1 : 0);
