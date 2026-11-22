@@ -852,9 +852,12 @@ export class Threads {
       return;
     }
     if (event.type !== "events" || event.conversation !== live.conversation) return;
-    // No streaming: partial text, thinking and tool calls never go to the page. Items go out when an input, an answer with text or a
-    // send_message call lands, and when a run starts (an empty live turn, drawn as typing dots) or ends; the rest of a turn shows with its
-    // next item.
+    // No streaming: partial text never goes to the page. Items go out when an input, an answer with text or a send_message call lands,
+    // and when a run starts (an empty live turn, drawn as typing dots) or ends. A work thread's turn also goes out with each step that
+    // lands, so a page kept from the socket matches the next read: on 11-22 every refresh of a kept work thread while its agent worked
+    // brought steps the socket never sent (work/p157-opens/kept-follow.mjs), and its turns were 1.2 to 7.7 KB with up to 18 steps. A job's
+    // turn runs to hundreds of steps, so its steps still show with its next item.
+    const steps = live.conversation === 1;
     let changed = false;
     for (const agentEvent of event.events as AgentEvent[]) {
       switch (agentEvent.type) {
@@ -873,14 +876,14 @@ export class Threads {
           break;
         case "message_end":
         case "entry_appended":
-          if (this.addEntry(live, agentEvent.entry) && shows(agentEvent.entry)) changed = true;
+          if (this.addEntry(live, agentEvent.entry) && (steps || shows(agentEvent.entry))) changed = true;
           break;
         case "tool_execution_start":
           live.runningTools.add(agentEvent.toolCallId);
           break;
         case "tool_execution_end":
           live.runningTools.delete(agentEvent.toolCallId);
-          this.addEntry(live, agentEvent.entry);
+          if (this.addEntry(live, agentEvent.entry) && steps) changed = true;
           break;
         default:
           break;

@@ -1,7 +1,8 @@
 /**
  * A conversation's turns read the same on every page read, whatever older page was read between them: the server scans the conversation
  * for its earliest speaking call once, and from then on draws each page by that call. Before, a read of an older page that held an earlier
- * call turned the newer page's bubbles into private notes, and a page the browser kept no longer matched the next read.
+ * call turned the newer page's bubbles into private notes, and a page the browser kept no longer matched the next read. A work thread's
+ * live turn also goes to the socket with each step that lands, so a page kept from the socket holds the steps the next read brings.
  * Run: cd apps/chat && node --import tsx --test --test-force-exit --test-isolation=none test/server/first-send.test.ts
  */
 import assert from "node:assert/strict";
@@ -50,4 +51,20 @@ test("an older page's speaking call changes no page read after the scan", async 
   const quiet = turns(first.items).at(-1)!;
   assert.equal(quiet.text, "");
   assert.deepEqual(quiet.sent, []);
+});
+
+test("a work thread's live turn goes to the socket with each step, so the page it keeps matches the next read", async () => {
+  const id = ((await s.send("POST", "/api/agents", { name: "step desk" })).body as { thread: string }).thread;
+  const thread = host.threadsById.get(id)!;
+  const live = await s.live();
+  live.watch(id);
+  await live.waitFor(e => e.type === "status" && e.conversation === id);
+  const at = Date.now();
+  host.append(thread, 1, { kind: "pi.user", model: [{ role: "user", content: [{ type: "text", text: "check the relay" }], timestamp: at }] });
+  host.append(thread, 1, { kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "toolCall", id: "b1", name: "bash", arguments: { command: "tail relay.log" } }], provider: "anthropic", model: "claude-opus-5-5", stopReason: "toolUse", timestamp: at }] });
+  const pushed = await live.waitFor(e => e.type === "items" && e.conversation === id && turns(e.items).some(t => t.steps.some(step => step.kind === "tool" && step.name === "bash")));
+  live.close();
+  assert.ok(pushed.type === "items");
+  const page = await s.get<TimelinePage>(`/api/c/${id}/items`);
+  assert.deepEqual(turns(pushed.items).at(-1)!.steps, turns(page.items).at(-1)!.steps);
 });
