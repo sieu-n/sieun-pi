@@ -7,22 +7,24 @@ import { fileURLToPath } from "node:url";
 
 const USAGE = `usage: node scripts/release-wiki.mjs <commit|release-id> [--rollback] [--no-restart] [--repo <dir>]
 
-Builds ~/.local/share/sieun-pi-wiki/release-<sha7> from the commit, points current at it and restarts the systemd user unit
-sieun-pi-wiki.service (the wiki engine, apps/wiki, on 127.0.0.1:5176 under /wiki). It never touches the chat units or the Prime daemon.
+Builds ~/.local/share/sieun-pi-wiki/release-<sha7> from the commit, points current at it and restarts the container box-sieun-pi-wiki-1
+(the wiki engine, apps/wiki, on 127.0.0.1:5176 under /wiki), the wiki service of the Komodo Stack box-sieun-pi (auto-sns-agent
+apps/infra/box/compose.sieun-pi.yml). The container mounts /home/sieun and starts in current/apps/wiki, so a restart runs the new current.
+It never touches the chat units, the Prime daemon or the Stack's other services.
 The rules follow scripts/release-apps-chat.mjs.
 1. One release runs at a time through <home>/release.lock; a lock whose pid is gone is taken over.
 2. The commit must be on origin's main, fetched at the start: push it first.
 3. A commit that does not descend from the live release's commit is refused, so a late release never rolls back a newer one; --rollback allows it,
    and --rollback onto a release folder already built skips the origin check.
-The build copies apps/wiki and the unit file of the commit with git archive, and runs npm ci and npm run build in apps/wiki. When the release's
-deploy/linux/sieun-pi-wiki.service differs from ~/.config/systemd/user, it installs it and runs daemon-reload. After the restart it checks that
-GET http://127.0.0.1:5176/wiki/api/agent/health answers ok, which waits for the first index, and that the process stays up for 8 s; when it does
-not, current goes back to the release before and the command exits 5.
+The build copies apps/wiki of the commit with git archive, and runs npm ci and npm run build in apps/wiki. After the restart it checks that
+GET http://127.0.0.1:5176/wiki/api/agent/health answers ok, which waits for the first index, that GET /wiki/health names the release's commit,
+and that the container stays up for 8 s with the same start time; when it does not, current goes back to the release before, the container
+restarts again and the command exits 5. WIKI_PORT moves the checks to another port, as it moves the server.
 Prints the live release id on the last line. Exit 1 on a failed build step, 2 on bad usage, 3 on a refused rollback, 4 on a commit not on origin main,
 5 on a start that did not stay up.`;
 
-const UNIT = "sieun-pi-wiki.service";
-const PORT = 5176;
+const CONTAINER = "box-sieun-pi-wiki-1";
+const PORT = Number(process.env.WIKI_PORT ?? 5176);
 const RELEASE_NAME = /^release-([0-9a-f]{7,40})$/;
 const gitEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !["GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE"].includes(key)));
 const log = message => process.stderr.write(`release-wiki: ${message}\n`);
@@ -120,7 +122,7 @@ async function takeLock(home, request) {
 
 async function archive(repo, sha, into) {
   const tar = spawn("tar", ["-x", "-C", into], { stdio: ["pipe", "inherit", "inherit"] });
-  const source = spawn("git", ["-C", repo, "archive", "--format=tar", sha, "apps/wiki", "deploy/linux/sieun-pi-wiki.service"], { stdio: ["ignore", "pipe", "inherit"], env: gitEnv });
+  const source = spawn("git", ["-C", repo, "archive", "--format=tar", sha, "apps/wiki"], { stdio: ["ignore", "pipe", "inherit"], env: gitEnv });
   source.stdout.pipe(tar.stdin);
   const codes = await Promise.all([source, tar].map(child => new Promise(done => child.on("close", done))));
   if (codes.some(code => code !== 0)) throw new Error(`git archive ${sha} | tar -x failed (${codes.join(", ")})`);
@@ -169,33 +171,31 @@ function flip(home, name) {
   renameSync(next, join(home, "current"));
 }
 
-function installUnit(home) {
-  const source = join(home, "current/deploy/linux", UNIT);
-  const target = join(homedir(), ".config/systemd/user", UNIT);
-  const want = readFileSync(source, "utf8");
-  let have = null;
-  try { have = readFileSync(target, "utf8"); } catch {}
-  if (have === want) return;
-  mkdirSync(dirname(target), { recursive: true });
-  writeFileSync(target, want);
-  run("systemctl", ["--user", "daemon-reload"], home);
-  run("systemctl", ["--user", "enable", UNIT], home);
-  log(`installed ${target}`);
-}
+const restart = home => run("docker", ["restart", CONTAINER], home);
 
-async function upCheck() {
-  const pid = () => spawnSync("systemctl", ["--user", "show", "-p", "MainPID", "--value", UNIT], { encoding: "utf8" }).stdout.trim();
+/** The container's state and start time; a crash that Docker's restart policy restarted gives a new start time. */
+const containerState = () => {
+  const result = spawnSync("docker", ["inspect", "-f", "{{.State.Running}} {{.State.StartedAt}}", CONTAINER], { encoding: "utf8" });
+  return result.status === 0 ? result.stdout.trim() : `not inspected: ${result.stderr.trim()}`;
+};
+
+async function upCheck(sha) {
+  const url = path => `http://127.0.0.1:${PORT}/wiki/${path}`;
   // The first answer waits for the first index of the content root: 15 s on us-metal02 on 2026-11-03 with a warm page cache.
   const end = Date.now() + 300_000;
   let ready = false;
   while (Date.now() < end && !ready) {
-    try { ready = (await (await fetch(`http://127.0.0.1:${PORT}/wiki/api/agent/health`, { signal: AbortSignal.timeout(300_000) })).json()).ok === true; } catch {}
+    try { ready = (await (await fetch(url("api/agent/health"), { signal: AbortSignal.timeout(300_000) })).json()).ok === true; } catch {}
     if (!ready) await new Promise(done => setTimeout(done, 1000));
   }
-  if (!ready) throw new NotUp(`${UNIT} did not answer /wiki/api/agent/health on :${PORT} in 300 s`);
-  const first = pid();
+  if (!ready) throw new NotUp(`${CONTAINER} did not answer /wiki/api/agent/health on :${PORT} in 300 s`);
+  let revision = null;
+  try { revision = (await (await fetch(url("health"), { signal: AbortSignal.timeout(30_000) })).json()).revision; } catch {}
+  if (revision !== sha) throw new NotUp(`${CONTAINER} serves revision ${revision}, not ${sha}`);
+  const first = containerState();
   await new Promise(done => setTimeout(done, 8000));
-  if (pid() !== first || spawnSync("systemctl", ["--user", "is-active", "--quiet", UNIT]).status !== 0) throw new NotUp(`${UNIT} did not stay up for 8 s after its start`);
+  const now = containerState();
+  if (!first.startsWith("true ") || now !== first) throw new NotUp(`${CONTAINER} did not stay up for 8 s after its start (${first}, then ${now})`);
 }
 
 function prune(home, keep) {
@@ -216,16 +216,15 @@ async function main() {
     const before = liveRelease(home);
     const name = prebuilt ? options.target : await build(options.repo, home, sha);
     flip(home, name);
-    installUnit(home);
     if (options.restart) {
-      run("systemctl", ["--user", "restart", UNIT], home);
+      restart(home);
       try {
-        await upCheck();
+        await upCheck(JSON.parse(readFileSync(join(home, name, "release.json"), "utf8")).sha);
       } catch (error) {
         if (before && before !== name) {
           log(`${error.message}; going back to ${before}`);
           flip(home, before);
-          run("systemctl", ["--user", "restart", UNIT], home);
+          restart(home);
         }
         throw error;
       }

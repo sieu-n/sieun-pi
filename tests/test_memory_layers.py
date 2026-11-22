@@ -39,10 +39,9 @@ class OomProtectPlan(unittest.TestCase):
 
 class DevServerScores(unittest.TestCase):
     def test_every_dev_server_process_goes_to_minus_500_and_a_raised_one_stays(self):
-        units = {"auto-sns-dev-pm2.service": {50: "PM2 v6.0.8: God", 51: "node-MainThread", 52: "esbuild", 53: "chrome"},
-                 "sieun-pi-wiki.service": {60: "node-MainThread", 61: "sh"}}
-        current = {50: 200, 51: 200, 52: -500, 53: 300, 60: 200, 61: -900}
-        self.assertEqual(oom.plan(units, {"sieun-pi-wiki.service": 60}, current), {50: -500, 51: -500, 60: -500, 61: -500})
+        units = {"auto-sns-dev-pm2.service": {50: "PM2 v6.0.8: God", 51: "node-MainThread", 52: "esbuild", 53: "chrome"}}
+        current = {50: 200, 51: 200, 52: -500, 53: 300}
+        self.assertEqual(oom.plan(units, {"auto-sns-dev-pm2.service": 50}, current), {50: -500, 51: -500})
 
 
 class RunawaySession(unittest.TestCase):

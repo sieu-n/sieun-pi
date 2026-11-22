@@ -9,7 +9,7 @@ The wiki is our work written down as notes that must be true today.
 Query it before you re-derive a fact from code, and write what you learn back to it.
 
 One wiki serves every box at `https://us-metal02-dev.tail0c093d.ts.net:5184/wiki/<path>`.
-The engine is sieun-pi `apps/wiki`, the `sieun-pi-wiki.service` unit on us-metal02, which listens on loopback port 5176, and the apps/chat server on :5184 fronts it.
+The engine is sieun-pi `apps/wiki`, the container `box-sieun-pi-wiki-1` of the Komodo Stack `box-sieun-pi` on us-metal02, which listens on loopback port 5176, and the apps/chat server on :5184 fronts it.
 The pages live on us-metal02 under one content root, `~/.pi/wiki/content`, named by `contentRoot` in `~/.config/sieun-pi/wiki.json`, and an agent's space `agents/<slug>/` is its folder `~/.pi/agent/agents/<slug>/`.
 Agents on every box, the Mac too, read and write pages only through the API, because a file written straight into a folder skips the gates, the index and the backup.
 Since 2026-11-05 the API leaves each curated page read-only, so a direct write such as Python's `open(path, 'w')` fails with EACCES; send that change through `wiki.write` or `wiki.edit` and never chmod the file, because at 01:10Z that day a session wrote `dms-and-reads.html` through the code checkout's `apps/llm-wiki/content` symlink with a ref HEAD lacked and the precheck counted it at once.

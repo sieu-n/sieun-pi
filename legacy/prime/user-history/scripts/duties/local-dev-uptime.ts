@@ -19,8 +19,8 @@ import { macSilent } from "./mac-reach.ts";
  * The local dev uptime duty's precheck (`node --import tsx scripts/duties/local-dev-uptime.ts`): how many of the 5 dev services gave no
  * 200 within 5 s, the wiki's real memory against its cap, and restarts of the wiki and search since the last run. Each service's answer and time
  * goes into the flagged items as run detail. No model call. The wiki is the one server at the wiki host of hosts.json. On us-metal02 it runs as
- * sieun-pi-wiki.service under systemd (deploy/linux/sieun-pi-wiki.service, llm-wiki.service until 2026-11-03) and elsewhere as the llm-wiki app of the pm2 dev stack, so its memory and
- * restarts come from whichever of the two holds it.
+ * the container box-sieun-pi-wiki-1 of the Komodo Stack box-sieun-pi since 11-21 (sieun-pi-wiki.service under systemd before, llm-wiki.service
+ * until 2026-11-03) and elsewhere as the llm-wiki app of the pm2 dev stack, so its memory and restarts come from whichever of the two holds it.
  * Convex and the crawler API may run on another box behind local port forwards. Convex's URL is the one the search dev app uses
  * (apps/search/.env.local), and the crawler's is the one the local Vent uses (.cache/dev/vent.env), because search reaches the crawler through
  * Vent and its tiers dropped CRAWLER_API_URL on 11-04 (auto-sns-agent b4497e1a57). When that file points a service away from this machine
@@ -39,7 +39,7 @@ const REPO = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto
 export const ANSWER_TIMEOUT_MS = 5000;
 /** The wiki's memory cap, the one dev-guard kills it over. */
 export const CAP_MB = 4096;
-export const WIKI_UNIT = "sieun-pi-wiki.service";
+export const WIKI_CONTAINER = "box-sieun-pi-wiki-1";
 
 /** A service: its metric key prefix, and either a fixed URL or the search app's env key for its base URL plus the health path. */
 export type Service = { key: string; url: string } | { key: string; envKey: string; envFile: string; path: string };
@@ -399,28 +399,32 @@ export function restartsSince(previous: { restartTime: number } | undefined, res
   return restartTime >= previous.restartTime ? restartTime - previous.restartTime : restartTime;
 }
 
-/** `systemctl show` output as a map: one `Key=value` per line. */
-export function parseShow(text: string): Record<string, string> {
-  return Object.fromEntries(text.split("\n").filter(line => line.includes("=")).map(line => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]));
-}
-
 /**
- * Restarts of a systemd unit since the last run. NRestarts counts the automatic restarts and goes back to 0 at a manual start, and the
- * InvocationID changes at every start, so a new InvocationID with no NRestarts rise is one manual restart.
+ * Restarts of the wiki container since the last run. Docker's RestartCount counts the restarts its restart policy made and goes back to 0 at a
+ * manual restart, and StartedAt changes at every start, so a new StartedAt with no RestartCount rise is one manual restart.
  */
-export function unitRestartsSince(previous: { restartTime: number; invocation?: string } | undefined, nRestarts: number, invocation: string): number {
-  if (!previous || previous.invocation === invocation) return 0;
-  return Math.max(1, nRestarts >= previous.restartTime ? nRestarts - previous.restartTime : nRestarts + 1);
+export function containerRestartsSince(previous: { restartTime: number; invocation?: string } | undefined, restartCount: number, startedAt: string): number {
+  if (!previous || previous.invocation === startedAt) return 0;
+  return Math.max(1, restartCount >= previous.restartTime ? restartCount - previous.restartTime : restartCount + 1);
 }
 
-/** The wiki's systemd unit when this host loads it: its pids from the unit's cgroup, its restart count and its InvocationID. */
-export async function wikiUnit(deps: Pick<UptimeDeps, "exec" | "read" | "platform">): Promise<{ pids: number[]; nRestarts: number; invocation: string; memoryCurrentMb: number } | undefined> {
+/** The wiki container when this host runs it: its pids from its cgroup, its restart count, its start time and its cgroup's memory.current. */
+export async function wikiContainer(deps: Pick<UptimeDeps, "exec" | "read" | "platform">): Promise<{ pids: number[]; restartCount: number; startedAt: string; memoryCurrentMb: number } | undefined> {
   if (deps.platform !== "linux") return undefined;
-  const show = parseShow(await deps.exec("systemctl", ["--user", "show", WIKI_UNIT, "-p", "LoadState,ActiveState,ControlGroup,NRestarts,InvocationID,MemoryCurrent"]));
-  if (show.LoadState !== "loaded") return undefined;
-  if (show.ActiveState !== "active" || !show.ControlGroup) throw new Error(`${WIKI_UNIT} is ${show.ActiveState}`);
-  const pids = (await deps.read(`/sys/fs/cgroup${show.ControlGroup}/cgroup.procs`)).split("\n").filter(Boolean).map(Number);
-  return { pids, nRestarts: Number(show.NRestarts), invocation: show.InvocationID ?? "", memoryCurrentMb: Math.round(Number(show.MemoryCurrent) / 1024 / 1024) };
+  let inspect: string;
+  try {
+    inspect = await deps.exec("docker", ["inspect", "-f", "{{.State.Running}} {{.State.Pid}} {{.RestartCount}} {{.State.StartedAt}}", WIKI_CONTAINER]);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT" || /no such (object|container)/i.test(String(error))) return undefined;
+    throw error;
+  }
+  const [running, pid, restartCount, startedAt] = inspect.trim().split(" ");
+  if (running !== "true" || !pid || pid === "0") throw new Error(`${WIKI_CONTAINER} is not running (${inspect.trim()})`);
+  const cgroup = /^0::(\/\S+)$/m.exec(await deps.read(`/proc/${pid}/cgroup`))?.[1];
+  if (!cgroup) throw new Error(`${WIKI_CONTAINER}: no cgroup v2 line in /proc/${pid}/cgroup`);
+  const pids = (await deps.read(`/sys/fs/cgroup${cgroup}/cgroup.procs`)).split("\n").filter(Boolean).map(Number);
+  const memoryCurrent = Number((await deps.read(`/sys/fs/cgroup${cgroup}/memory.current`)).trim());
+  return { pids, restartCount: Number(restartCount), startedAt: startedAt ?? "", memoryCurrentMb: Math.round(memoryCurrent / 1024 / 1024) };
 }
 
 /** KEY=value lines of a dotenv file; quotes and a trailing ` # comment` are dropped. */
@@ -554,17 +558,17 @@ export async function measureUptime(deps: UptimeDeps, previous: UptimeState | un
     if (!before) flagged.push({ at, kind: "baseline", excerpt: `first run: ${what} restart count ${restartTime} of ${name} saved as the baseline` });
     else if (restarts > 0) flagged.push({ at, kind: "restarts", excerpt: `${what} restarted ${name} ${restarts} times since ${new Date(before.at).toISOString()} (count ${before.restartTime} to ${restartTime})` });
   };
-  let unit: Awaited<ReturnType<typeof wikiUnit>>;
+  let unit: Awaited<ReturnType<typeof wikiContainer>>;
   try {
-    unit = await wikiUnit(deps);
+    unit = await wikiContainer(deps);
     if (unit) {
-      memory(WIKI_UNIT, unit.pids, await treeMb(deps, unit.pids), `, memory.current ${unit.memoryCurrentMb} MB with page cache`);
-      const before = previous?.restarts[WIKI_UNIT];
-      count(WIKI_UNIT, unitRestartsSince(before, unit.nRestarts, unit.invocation), before, unit.nRestarts, "systemd");
-      state.restarts[WIKI_UNIT] = { restartTime: unit.nRestarts, at, invocation: unit.invocation };
+      memory(WIKI_CONTAINER, unit.pids, await treeMb(deps, unit.pids), `, memory.current ${unit.memoryCurrentMb} MB with page cache`);
+      const before = previous?.restarts[WIKI_CONTAINER];
+      count(WIKI_CONTAINER, containerRestartsSince(before, unit.restartCount, unit.startedAt), before, unit.restartCount, "docker");
+      state.restarts[WIKI_CONTAINER] = { restartTime: unit.restartCount, at, invocation: unit.startedAt };
     }
   } catch (error) {
-    flagged.push({ at, kind: "wiki_memory", excerpt: `${WIKI_UNIT}: read failed: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300) });
+    flagged.push({ at, kind: "wiki_memory", excerpt: `${WIKI_CONTAINER}: read failed: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300) });
   }
 
   let list: Pm2Process[];

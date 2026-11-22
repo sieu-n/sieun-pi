@@ -63,7 +63,7 @@ curl -s "$WIKI/api/agent/page?path=$P" | jq '{title, kind, headings: (.headings|
 curl -s "$WIKI/api/agent/health" | jq .
 ```
 
-If the wiki does not answer, check `systemctl --user status sieun-pi-wiki.service` on us-metal02 (`ssh sieun@100.83.139.73`).
-If the engine's `/wiki/api/agent/health` on its loopback port (`systemctl --user cat sieun-pi-wiki.service`) answers and `:5184/wiki/...` does not, check `sieun-pi-apps-chat.service`, which fronts the engine.
+If the wiki does not answer, check `docker ps --filter name=box-sieun-pi-wiki-1` and `docker logs box-sieun-pi-wiki-1` on us-metal02 (`ssh sieun@100.83.139.73`). The engine runs in that container of the Komodo Stack `box-sieun-pi`.
+If the engine's `/wiki/api/agent/health` on its loopback port 5176 answers and `:5184/wiki/...` does not, check `sieun-pi-apps-chat.service`, which fronts the engine.
 The Local dev servers duty probes the `wiki` url in `~/.config/sieun-pi/hosts.json`, so read that file first when the duty and the public URL disagree. On 2026-10-18 at 03:09Z a local edit pointed it at a localhost port, a stray Mac vite, and the duty missed the public outage.
 Check the page in the running server, because a page write needs no build.

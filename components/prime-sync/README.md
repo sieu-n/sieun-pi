@@ -1,7 +1,7 @@
 # prime-sync
 
 prime-sync makes the Prime setup the same on every box, so a chat or job sees the same skills, rules, harness notes and corrections wherever it runs.
-One run takes a few seconds, and a timer runs it every minute on each box: `prime-sync.timer` under systemd on Linux and `com.sieun.prime-sync` under launchd on macOS.
+One run takes a few seconds, and a timer runs it every minute on each box: `prime-sync.timer` under systemd on Linux and `com.sieun.prime-sync` under launchd on macOS. On us-metal02 the Komodo Procedure `m02-prime-sync` runs it instead, in the `prime-sync` service of the Stack `box-sieun-pi` (auto-sns-agent `apps/infra/box/compose.sieun-pi.yml`), and `install.py` writes no timer on a box that runs that Stack.
 Prime and the chat read only local files, so prime-sync writes those files in place and neither of them knows it exists.
 
 ## What one run does

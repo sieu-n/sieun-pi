@@ -7,7 +7,7 @@
 //
 // It walks both roots each run (8.4 s for 58,839 page files at load 117 on 2026-11-03), commits through a private
 // index in its own bare repo, and drops from the commit any file betterleaks flags, which it logs and retries
-// when the file changes. wiki-backup.timer runs it every 5 minutes.
+// when the file changes. The Komodo job m02-wiki-backup runs it every 5 minutes on us-metal02.
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, linkSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';

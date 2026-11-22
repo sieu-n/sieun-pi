@@ -15,7 +15,7 @@ export async function POST({ request }) {
 	if (!base || !key)
 		error(
 			500,
-			'CRAWLER_API_URL / CRAWLER_API_KEY missing from the env of the wiki server (the EnvironmentFile of sieun-pi-wiki.service).',
+			'CRAWLER_API_URL / CRAWLER_API_KEY missing from the env of the wiki server (~/.config/sieun-pi/wiki.env, which the box-sieun-pi-wiki-1 container reads at its start).',
 		);
 
 	const { username, ...body } = await request.json();

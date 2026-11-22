@@ -16,6 +16,6 @@ A session opens under `sessions/YYYY/MM/DD/hhmm-<slug>/`. A job opens under `age
 2. Run the type check with `heavy 8G -- npm run check` and the build with `heavy 8G -- npm run build`.
 3. Push the commit to main, then release it with `node scripts/release-wiki.mjs <sha>` from the repo root.
 
-The unit is `deploy/linux/sieun-pi-wiki.service`.
+On us-metal02 the engine runs as the container `box-sieun-pi-wiki-1` of the Komodo Stack `box-sieun-pi` (auto-sns-agent `apps/infra/box/compose.sieun-pi.yml`). The release flips `~/.local/share/sieun-pi-wiki/current` and restarts that container, then checks that `/wiki/health` names the released commit. Read its log with `docker logs box-sieun-pi-wiki-1`.
 
 The product specs and their runner stay in auto-sns-agent `apps/specs`, because its CI runs them. The `/specs` page reads them through the `specsDir` key.

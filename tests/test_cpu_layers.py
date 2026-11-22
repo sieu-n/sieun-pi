@@ -127,7 +127,7 @@ class Setup(unittest.TestCase):
                                              "virev.slice": 10000, "virev-prod.slice": 300, "virev-ci.slice": 300,
                                              "system.slice": 400, "dev.slice": 400, "agents.slice": 10000})
         self.assertEqual(weights("USER"), {"sieun-pi-chat.service": 10000, "sieun-pi-apps-chat.service": 10000, "meilisearch.service": 10000, "pi-host.service": 10000,
-                                           "pi-host-relay.service": 10000, "pi-history.service": 10000, "sieun-pi-wiki.service": 10000,
+                                           "pi-host-relay.service": 10000, "pi-history.service": 10000,
                                            "auto-sns-dev-pm2.service": 10000, "pi-pool-serve.service": 1000, "pi-pool-hookd.service": 1000,
                                            "prime-agent-daemon.service": 10000})
 

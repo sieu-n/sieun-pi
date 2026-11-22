@@ -6,6 +6,8 @@ usage: python3 -B components/prime-sync/install.py --ref <commit> [--host <name>
 Copies sync.py from <commit> to ~/.local/share/prime-sync, writes ~/.config/prime-sync/sync.json and the 0600 github-token
 file from `gh auth token` (so the timer never needs the gh keyring helper), clones the state repo,
 installs the timer (prime-sync.timer under systemd --user on Linux, com.sieun.prime-sync under launchd on macOS) and runs one sync.
+On a box that runs the Komodo Stack box-sieun-pi (us-metal02 since 11-21), its m02-prime-sync Procedure runs the sync every minute in the
+prime-sync service of auto-sns-agent apps/infra/box/compose.sieun-pi.yml, so the installer writes no timer there and disables an old one.
 The timer runs the Python that ran this installer, except on macOS, where it runs /opt/homebrew/bin/python3 when that exists:
 launchd jobs under /usr/bin/python3 get "Operation not permitted" in ~/Documents, and on 10-18 at 08:28Z a reinstall run as
 `python3 install.py` over ssh put the Command Line Tools Python in the plist and stopped the Mac's sync for over two hours.
@@ -27,6 +29,7 @@ SHARE = HOME / ".local/share/prime-sync"
 CONFIG = HOME / ".config/prime-sync/sync.json"
 STATE_REPO = "https://github.com/sieu-n/prime-shared-state.git"
 MAC_PYTHON = "/opt/homebrew/bin/python3"
+KOMODO_STACK = "box-sieun-pi"
 PYTHON = MAC_PYTHON if platform.system() == "Darwin" and os.path.exists(MAC_PYTHON) else sys.executable
 LABEL = "com.sieun.prime-sync"
 GIT_ENV = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
@@ -87,6 +90,16 @@ def launchd_plist(script: Path) -> str:
 """
 
 
+def komodo_runs_it() -> bool:
+    """Whether this box runs the Komodo Stack box-sieun-pi, whose m02-prime-sync Procedure starts prime-sync each minute."""
+    try:
+        found = subprocess.run(["docker", "ps", "-a", "-q", "--filter", f"label=com.docker.compose.project={KOMODO_STACK}"],
+                               capture_output=True, text=True)
+    except FileNotFoundError:
+        return False
+    return found.returncode == 0 and bool(found.stdout.strip())
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--ref", required=True)
@@ -114,7 +127,10 @@ def main() -> int:
 
     first = subprocess.run([PYTHON, "-B", str(script)], env=GIT_ENV, capture_output=True, text=True)
     sys.stdout.write(first.stdout + first.stderr)
-    if platform.system() == "Linux":
+    if platform.system() == "Linux" and komodo_runs_it():
+        subprocess.run(["systemctl", "--user", "disable", "--now", "prime-sync.timer"], capture_output=True)
+        print(f"Komodo Stack {KOMODO_STACK} runs prime-sync on this box (Procedure m02-prime-sync), so no prime-sync.timer")
+    elif platform.system() == "Linux":
         units = HOME / ".config/systemd/user"
         for name, text in systemd_units(script).items():
             write(units / name, text, 0o644)

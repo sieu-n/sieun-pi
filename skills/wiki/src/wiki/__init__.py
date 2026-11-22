@@ -1,6 +1,6 @@
 """Read and write the wiki on :5184 from a kernel: a job's workspace folder, its log, its pages and files, and curated pages.
 
-The wiki engine is sieun-pi apps/wiki (sieun-pi-wiki.service on us-metal02), and the apps/chat server on :5184 fronts it at /wiki. In a
+The wiki engine is sieun-pi apps/wiki (the container box-sieun-pi-wiki-1 on us-metal02), and the apps/chat server on :5184 fronts it at /wiki. In a
 pi-host thread's kernel (PI_HOST_THREAD set, or RLM_SESSION_DIR named <thread>-<n>) every call names the conversation in x-pi-conversation,
 so the server stamps the agent, the conversation, the parent and the host, and the agent never types its identity. A Prime session has no
 pi-host conversation; it calls the engine's agent API through /wiki/api/agent/* with the author it is given (author=, WIKI_AUTHOR, or
