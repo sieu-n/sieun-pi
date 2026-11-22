@@ -19,7 +19,7 @@ import {
   type SkillScan, type SkillSource, type SkillsChange, type SkillsCheck, type SkillsView, type SkillThresholds, type SkillVerdictRow, type UndoBody,
 } from "../web/src/lib/api/shared/skills.ts";
 import {
-  canonical, changedLines, copyId, drift, identifyFolder, installState, ownerText, parseFacts, parseOwner, plan, roleOf, sameLink, seedOwner, sees, staleCheckouts,
+  canonical, changedLines, copyId, drift, extraCopies, identifyFolder, installState, ownerText, parseFacts, parseOwner, plan, roleOf, sameLink, seedOwner, sees, staleCheckouts,
   thresholds, tree, verdicts, type BoxScan, type CopyFact, type FactCopy, type FactUse, type InstallRecord, type SkillRecord,
 } from "./skills-model.ts";
 
@@ -490,6 +490,7 @@ export class SkillsDb {
         use: u,
         preimported: own.some(c => c.box === this.config.box && c.pythonImport !== null && (c.source === "prime-links" || c.source === "prime-release")),
         sees: sees(skill.name, own.filter(c => c.box === this.config.box), settings, inlined),
+        extraCopies: extraCopies(own.filter(c => c.key === skill.id), canon).map(x => ({ copyId: copyId(x.copy), keptId: copyId(x.kept), why: x.why })),
       };
     });
     creditUse(entries);

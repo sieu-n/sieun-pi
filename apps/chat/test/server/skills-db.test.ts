@@ -374,6 +374,51 @@ test("a name two skills share credits each thread kind's use to the copy that ki
   assert.equal(rows.reduce((n, k) => n + k.use.uses, 0), 45);
 });
 
+test("duplicates: a pair is flagged once on the copy that is not canonical, two upstreams only get a note, and one folder per box is never extra", t => {
+  const dir = mkdtempSync(join(tmpdir(), "skills-db-dup-"));
+  const db = new SkillsDb({ file: join(dir, "chat.sqlite"), box: BOX, home: "/home/x", piHostPrompt: null }, { run: async () => [], undo: async () => [] });
+  t.after(() => {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const at = "2026-11-22T04:00:00Z";
+  const body = (topic: string, n = -1) => Array.from({ length: 40 }, (_, i) => `${i + 1}. ${topic} step ${i + 1} of ${topic}${i === n ? " changed" : ""}.`).join("\n");
+  const hash = (text: string) => `h${[...text].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) >>> 0, 7)}`;
+  const copy = (box: string, path: string, name: string, source: string, text: string, root?: string) => ({
+    box, path, realPath: path, linkTarget: null, exists: true, name, source, root: dirname(path), runtimes: [], hash: hash(text), text, mtime: at,
+    ...(root ? { checkout: { root, remote: "git@github.com:o/notes-repo.git", branch: "main", headAt: at, upstreamAt: at, behind: 0, fetchedAt: at, tracked: true } } : {}),
+  });
+  const bundle = "/home/x/.local/share/prime-agent/releases/0.9.8/skills/edit";
+  const vendored = "/home/x/src/sieun-pi/packages/pi-rlm/skills/edit";
+  const control = (name: string) => `/home/x/.codex/plugins/cache/openai/${name}/1.0/skills/${name}`;
+  db.ingest({
+    generatedAt: at, usageCounted: false, usage: {},
+    boxes: [{ box: BOX, scannedAt: at, ok: true }, { box: "mac", scannedAt: at, ok: true }],
+    copies: [
+      copy(BOX, bundle, "edit", "prime-release", body("edit")),
+      copy("mac", "/Users/o/.local/share/prime-agent/releases/0.9.8/skills/edit", "edit", "prime-release", body("edit")),
+      copy(BOX, vendored, "edit", "sieun-pi-package", body("edit")),
+      copy(BOX, control("control-chrome"), "control-chrome", "codex-plugin", body("chrome")),
+      copy(BOX, control("control-in-app-browser"), "control-in-app-browser", "codex-plugin", body("chrome", 3)),
+      copy("mac", "/Users/o/src/notes-repo/.agents/skills/notes", "notes", "repo:notes-repo", body("notes"), "/Users/o/src/notes-repo"),
+      copy("mac", "/Users/o/code/notes-repo/.agents/skills/notes", "notes", "repo:notes-repo", body("notes"), "/Users/o/code/notes-repo"),
+    ],
+  });
+  const view = db.view(IDLE);
+  const row = (pred: (path: string) => boolean) => view.skills.find(k => k.copies.some(c => pred(c.path)))!;
+  const rules = (pred: (path: string) => boolean) => row(pred).verdicts.map(v => v.rule).filter(rule => rule !== "bloated");
+  assert.deepEqual(rules(p => p === bundle), [], "the upstream bundle is canonical and carries nothing");
+  assert.equal(row(p => p === bundle).extraCopies.length, 0, "one Prime release folder per box is not extra");
+  assert.deepEqual(rules(p => p === vendored), ["duplicate"]);
+  assert.match(row(p => p === vendored).verdicts.find(v => v.rule === "duplicate")!.detail, /same text as upstream:prime-agent\/edit/);
+  const browser = [...rules(p => p === control("control-chrome")), ...rules(p => p === control("control-in-app-browser"))];
+  assert.deepEqual(browser, ["upstream-match"]);
+  const notes = row(p => p.endsWith("/notes"));
+  assert.deepEqual(notes.extraCopies.map(x => x.why), ["same-text"]);
+  assert.ok(notes.verdicts.some(v => v.rule === "duplicate" && v.copyId === notes.extraCopies[0]!.copyId));
+  assert.equal(view.counts.duplicated, 2, "the vendored edit and the second notes folder, not the bundle or the two plugins");
+});
+
 test("the review runs a skills DB delete of a path that is gone as a no-op, and undoes a step that failed as nothing to put back", async t => {
   const { fixture, review } = rig(t);
   const steps = review.diskSteps(fixture.setName);

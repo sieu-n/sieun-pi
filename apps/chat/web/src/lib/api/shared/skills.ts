@@ -234,7 +234,7 @@ export type SkillCopy = {
  * The rule verdicts, recomputed on every scan (server/skills-rules.ts). Only `merge` needs an agent, which checks the proposal before it
  * applies, and nothing here removes a skill by itself: removal happens when a person or an agent calls remove.
  */
-export const VERDICT_RULES = ["duplicate", "near-duplicate", "name-clash", "outdated", "stale-clone", "bloated", "unused", "broken"] as const;
+export const VERDICT_RULES = ["duplicate", "near-duplicate", "upstream-match", "name-clash", "outdated", "stale-clone", "bloated", "unused", "broken"] as const;
 export type VerdictRule = (typeof VERDICT_RULES)[number];
 
 /** What a verdict proposes: remove a copy, merge it into another skill, review its description, or nothing but a note. */
@@ -291,6 +291,12 @@ export type SkillEntry = {
   /** Whether a Python module of this name is pre-imported in Prime and pi-host, which counts every call as a use. */
   preimported: boolean;
   sees: SkillSight[];
+  /**
+   * Each real folder of this skill beyond the one that stays on its box: `same-text` is a duplicate to remove, `other-text` differs from the
+   * kept folder, and `stale-clone` sits in an old checkout. Links, release folders and one folder per box are never extra. Layouts show this
+   * list and its length, so the extra-copy number matches the copies column.
+   */
+  extraCopies: { copyId: string; keptId: string; why: "same-text" | "other-text" | "stale-clone" }[];
 };
 
 /** A folder in a box's tree, with the skill folders under it. */

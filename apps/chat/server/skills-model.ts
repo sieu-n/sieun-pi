@@ -445,13 +445,10 @@ export function verdicts(input: VerdictInput): Map<string, SkillVerdictRow[]> {
         add(skill.id, { rule: "outdated", action: "note", detail: `${c.changedLines ?? "Some"} lines differ from the source ${copyId(canon)}.`, copyId: copyId(c), other: copyId(canon) });
       }
     }
-    if (canon && !isUpstream(skill.source)) {
-      const twins = copies.filter(c => c !== canon && c.box === canon.box && c.hash === canon.hash && !c.stale && c.checkout?.root === canon.checkout?.root && !RUNTIME_COPY.test(c.path) && !PIHOST_COPY.test(c.path));
-      for (const twin of twins) add(skill.id, { rule: "duplicate", action: "remove", detail: `A byte-identical second folder of ${skill.name} on ${twin.box}; ${copyId(canon)} stays.`, copyId: copyId(twin), other: copyId(canon) });
-    }
-    if (isUpstream(skill.source) && canon) {
-      const twins = copies.filter(c => c !== canon && c.box === canon.box && c.hash === canon.hash && skill.source.kind === "upstream" && skill.source.package === "claude.ai");
-      for (const twin of twins) add(skill.id, { rule: "duplicate", action: "remove", detail: `The same claude.ai skill in a second sync folder; ${copyId(canon)} stays.`, copyId: copyId(twin), other: copyId(canon) });
+    for (const x of extraCopies(copies, canon)) {
+      if (x.why !== "same-text") continue;
+      const action = !isUpstream(skill.source) || (skill.source.kind === "upstream" && skill.source.package === "claude.ai") ? "remove" : "note";
+      add(skill.id, { rule: "duplicate", action, detail: `A second folder of ${skill.name} on ${x.copy.box} with the same text; ${copyId(x.kept)} stays.`, copyId: copyId(x.copy), other: copyId(x.kept) });
     }
     if (canon?.bytes != null && canon.bytes > input.limits.bloatBytes && !isUpstream(skill.source)) {
       const ratio = input.limits.medianBytes ? canon.bytes / input.limits.medianBytes : 0;
@@ -480,11 +477,14 @@ export function verdicts(input: VerdictInput): Map<string, SkillVerdictRow[]> {
       const pair = [[a, b], [b, a]] as const;
       if (score >= input.limits.nearDuplicate) {
         const [keep, extra] = keepFirst(a, b);
-        const action = isUpstream(extra.skill.source) || isUpstream(keep.skill.source) ? "note" : "merge";
-        const rule = same ? "duplicate" : "near-duplicate";
-        const detail = same ? `The same text as ${keep.skill.id}.` : `${Math.round(score * 100)}% of its lines match ${keep.skill.id}.`;
-        add(extra.skill.id, { rule, action, detail: action === "merge" ? `${detail} An agent checks the merge before it applies.` : detail, copyId: copyId(extra.copy), other: keep.skill.id });
-        add(keep.skill.id, { rule, action: "note", detail: `${extra.skill.id} ${same ? "holds the same text" : `matches ${Math.round(score * 100)}% of its lines`}.`, copyId: null, other: extra.skill.id });
+        const match = same ? `the same text as ${keep.skill.id}` : `${Math.round(score * 100)}% of its lines match ${keep.skill.id}`;
+        if (isUpstream(keep.skill.source) && isUpstream(extra.skill.source)) {
+          add(extra.skill.id, { rule: "upstream-match", action: "note", detail: `Two upstream packages ship it: ${match}. Neither is ours to merge or remove.`, copyId: copyId(extra.copy), other: keep.skill.id });
+          continue;
+        }
+        const action = isUpstream(keep.skill.source) ? "note" : "merge";
+        const detail = `${match[0]!.toUpperCase()}${match.slice(1)}.`;
+        add(extra.skill.id, { rule: same ? "duplicate" : "near-duplicate", action, detail: action === "merge" ? `${detail} An agent checks the merge before it applies.` : detail, copyId: copyId(extra.copy), other: keep.skill.id });
       } else if (sameName) {
         for (const [x, y] of pair) add(x.skill.id, { rule: "name-clash", action: "note", detail: `${y.skill.id} has the same name and different text (${Math.round(score * 100)}% of lines match).`, copyId: null, other: y.skill.id });
       }
@@ -493,12 +493,43 @@ export function verdicts(input: VerdictInput): Map<string, SkillVerdictRow[]> {
   return out;
 }
 
-/** Of two near-duplicates, the one to keep: ours over a package's, a git source over a loose folder, a fresh checkout, then the shorter path. */
+/**
+ * Of two skills with the same or near-same text, the canonical one, which carries no verdict: an upstream package the owner installed
+ * (c226), then a git source over a loose folder, a fresh checkout, the newer SKILL.md, then the shorter path.
+ */
 function keepFirst<T extends { skill: SkillRecord; copy: CopyFact }>(a: T, b: T): [T, T] {
-  const rank = (x: T) => [isUpstream(x.skill.source) ? 0 : 1, x.skill.source.kind === "git" ? 1 : 0, x.copy.stale ? 0 : 1, -x.copy.path.length];
+  const rank = (x: T) => [isUpstream(x.skill.source) ? 1 : 0, x.skill.source.kind === "git" ? 1 : 0, x.copy.stale ? 0 : 1, Date.parse(x.copy.mtime ?? "") || 0, -x.copy.path.length];
   const [ra, rb] = [rank(a), rank(b)];
   for (let i = 0; i < ra.length; i++) if (ra[i] !== rb[i]) return ra[i]! > rb[i]! ? [a, b] : [b, a];
   return a.skill.id < b.skill.id ? [a, b] : [b, a];
+}
+
+/** A second real folder of one skill on one box, and the folder on that box that stays. */
+export type ExtraCopy = { copy: CopyFact; kept: CopyFact; why: "same-text" | "other-text" | "stale-clone" };
+
+/**
+ * The extra copies of one skill: on each box, every real folder of the skill beyond the one that stays there, which is the canonical copy
+ * on its box, else the freshest. A link is an install, and a sieun-pi runtime or pi-host release folder is that release's own copy, so
+ * neither is extra; one folder per box is never extra either, such as the same Prime release on metal and on the Mac.
+ */
+export function extraCopies(copies: readonly CopyFact[], canon: CopyFact | undefined): ExtraCopy[] {
+  const out: ExtraCopy[] = [];
+  const byBox = new Map<string, CopyFact[]>();
+  for (const c of copies) {
+    if (c.linkTarget !== null || !c.exists || RUNTIME_COPY.test(c.path) || PIHOST_COPY.test(c.path)) continue;
+    byBox.set(c.box, [...(byBox.get(c.box) ?? []), c]);
+  }
+  for (const here of byBox.values()) {
+    if (here.length < 2) continue;
+    const rank = (c: CopyFact) => [c === canon ? 1 : 0, c.stale ? 0 : 1, c.checkout?.tracked ? 1 : 0, Date.parse(c.mtime ?? "") || 0, -c.path.length];
+    const kept = here.reduce((best, c) => {
+      const [x, y] = [rank(c), rank(best)];
+      for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return x[i]! > y[i]! ? c : best;
+      return best;
+    });
+    for (const c of here) if (c !== kept) out.push({ copy: c, kept, why: c.stale ? "stale-clone" : c.hash !== null && c.hash === kept.hash ? "same-text" : "other-text" });
+  }
+  return out;
 }
 
 // Who sees a skill
