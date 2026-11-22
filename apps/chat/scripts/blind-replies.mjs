@@ -145,10 +145,20 @@ function checks(ask, posts, asked, versions = new Map()) {
   if (ask.expect === "line") return [...plain, ["at most two lines with no bullets", lines.length <= 2 && lines.every(line => !BULLET.test(line))], ["at most 30 words", words(text) <= 30]];
   if (ask.expect === "options") {
     const named = APPS.filter(app => app.test(text)).length;
-    const deep = blocks(text).filter(block => {
-      const apps = APPS.filter(app => app.test(block)).length;
-      return apps > 0 && words(block) >= 20 * apps;
-    });
+    // Since e3bf6439 a list of options opens with the pick and explains it in the bullets under it, so the pick's block runs on through the
+    // following blocks that name no other app, as in d4's 11-22 06:44Z run: "I'd copy Linear's snooze, because ..." with its example in the
+    // next bullet, "You snooze a task to Monday, a teammate comments Friday, ...".
+    const parts = blocks(text);
+    const deep = parts.map((block, i) => {
+      const named = APPS.filter(app => app.test(block));
+      if (!named.length) return undefined;
+      let joined = block;
+      for (const next of parts.slice(i + 1)) {
+        if (APPS.some(app => app.test(next) && !named.includes(app))) break;
+        joined += `\n${next}`;
+      }
+      return words(joined) >= 20 * named.length ? joined : undefined;
+    }).filter(block => block !== undefined);
     return [
       ...plain,
       ["names at least 2 apps", named >= 2],
