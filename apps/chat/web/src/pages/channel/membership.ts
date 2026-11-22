@@ -9,7 +9,7 @@ export type Membership = { room: RoomId; roomName: string; agent: AgentId; agent
 export type MembershipOpts = { wakeOn?: Member["wakeOn"]; refresh: () => Promise<void> | void };
 
 /**
- * What the one add picker (MemberPicker.svelte) adds to. From a room it lists the agents not in it, test agents too in a walk's test room;
+ * What the one add picker (MemberPicker.svelte) adds to. From a room it lists the agents not in it, only test agents in a walk's test room;
  * from an agent it lists the open channels and Solo rooms it is not in, only test rooms for a test agent.
  */
 export type MemberTarget =

@@ -41,7 +41,8 @@
 
   const items = $derived.by((): PickerItem[] => {
     if (target.kind === "room") {
-      const pool = target.test ? (testAgents.value ?? agents.list) : agents.list;
+      // A walk's test room lists only test agents, so a walk never adds a real agent.
+      const pool = target.test ? (testAgents.value ?? []).filter((a) => a.test) : agents.list;
       const members = target.members;
       return agentPickerItems(pool)
         .filter((item) => !members.includes(item.id))

@@ -50,7 +50,8 @@ test("a failed comm run posts one room line in the post's thread, tells agent fa
       models.setProvider(faux.provider);
       return models;
     },
-    settings: () => durableSettings({ baseDelayMs: 5, maxAgentDelayMs: 20 }),
+    // The faux provider defers when asked to, and only pi-pool needs deferred waits.
+    settings: () => ({ ...durableSettings({ baseDelayMs: 5, maxAgentDelayMs: 20 }), stream: {} }),
     agentWork: async (agent: string): Promise<string | undefined> => (agent === "ag_agent-factory" ? ids.factory : agent === "ag_vent" ? ids.work : undefined),
   });
   const factory = await threads.create({ name: "agent factory" });

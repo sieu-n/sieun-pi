@@ -71,7 +71,7 @@ test("a chat's config names its purpose, host, cwd, board, memory, instructions 
   assert.equal(jobs.get(ids.uptimeDuty)?.kind, "duty");
   assert.equal(jobs.get(ids.cutover)?.kind, "root job");
   assert.ok(c.swarm.jobs.some(j => j.kind === "job" && j.id.startsWith(`${ids.harness}:`) && j.status === "working"));
-  assert.deepEqual(c.swarm.rooms, [{ id: "ch_cutover", kind: "channel", name: "pi-cutover" }]);
+  assert.deepEqual(c.swarm.rooms, [{ id: "ch_cutover", kind: "channel", name: "pi-cutover", wakeOn: "all" }]);
   assert.deepEqual(c.swarm.duties.map(d => [d.id, d.schedule, d.paused]), [["d1", "daily at 07:40 KST", false], ["d2", "daily at 07:40 KST", true]]);
   assert.equal(c.swarm.checkIn?.everyMs, 120 * 60_000);
   assert.equal(c.swarm.dutiesFile?.path, join(s.app.config.dataDir, "agents", agents.harness, "duties.json"));

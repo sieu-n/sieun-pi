@@ -291,7 +291,9 @@ export async function agentConfig(app: App, id: AgentId): Promise<AgentConfig> {
       parent: agent.parent ?? null, jobs,
       rooms: (() => {
         const member = app.threads.registered(id) ?? app.agents.ofComm(id)?.record;
-        return member ? app.groups.memberRooms(member.id).map(row => ({ id: row.id, kind: row.kind, name: row.name })) : [];
+        return member ? app.groups.memberRooms(member.id).map(row => ({
+          id: row.id, kind: row.kind, name: row.name, wakeOn: row.members.find(m => m.agent === member.id)?.wakeOn ?? "all",
+        })) : [];
       })(),
       commRooms: (agent.comm ?? []).map(({ room }) => {
         const row = app.groups.row(room);

@@ -19,7 +19,7 @@
     members: Member[];
     /** The channel's name, without the #. */
     channel: string;
-    /** A walk's test room, whose add picker lists test agents too. */
+    /** A walk's test room, whose add picker lists only test agents. */
     test?: boolean;
     statusOf: (agentId: string) => Status | null;
     /** A picked agent opens its DM. */

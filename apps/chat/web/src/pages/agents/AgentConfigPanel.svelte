@@ -342,7 +342,7 @@
               label={room.name}
               onclick={() => router.openConversation(room.id)}
               removeLabel="Remove {config.agent.name} from {place}"
-              onremove={() => void removeMembership({ room: room.id, roomName: room.name, agent: agentId, agentName: config.agent.name }, { refresh: load })}
+              onremove={() => void removeMembership({ room: room.id, roomName: room.name, agent: agentId, agentName: config.agent.name }, { wakeOn: room.wakeOn, refresh: load })}
             />
           {:else}
             <span class="t-caption meta">In no channel or Solo room.</span>

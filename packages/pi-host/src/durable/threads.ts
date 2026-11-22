@@ -41,6 +41,7 @@ import { AGENT_REF_DOC, applyAgentRole, parseAgentRef, threadAgent } from "./age
 import { RlmChildDoc } from "./children.ts";
 import { commExtension, noteHanded, noteHeard, type CommHost, type CommSubmit } from "./comm.ts";
 import { deliverHarnessDigest, type PrimePromptOptions } from "./prime-prompt.ts";
+import { liveRetry, retrySince, retryingText } from "./retrying.ts";
 import { failedInputs, failureNotice, failureTarget, lastModel, mayRetry, retryInput, roomLineWrites, roomPost, TURN_FAILED_VIA, type FailedInput } from "./turn-failed.ts";
 
 const context: Context = BACKGROUND_CONTEXT;
@@ -93,6 +94,8 @@ export interface DurableThreadsOptions {
 
 export interface ThreadInfo extends ThreadRow {
   status: ThreadStatus;
+  /** "retrying since HH:MM: <error kind>" (KST) while a run of the open file has retried a transient error past 5 minutes (`retrying.ts`). */
+  retrying?: string;
 }
 
 export interface TreeNode {
@@ -105,6 +108,8 @@ export interface TreeNode {
   status: "idle" | "running";
   model: string | null;
   createdAt: number | null;
+  /** "retrying since HH:MM: <error kind>" (KST) while the conversation's run has retried a transient error past 5 minutes (`retrying.ts`). */
+  retrying?: string;
 }
 
 export type DurableEvent =
@@ -232,6 +237,8 @@ export class DurableThreads {
   private readonly open = new Map<string, Promise<OpenThread>>();
   /** The slot release of each conversation's last settled input, by `<thread>:<conversation>`, until it is done. */
   private readonly releasing = new Map<string, Promise<void>>();
+  /** Each open thread's conversations whose run sleeps on a retry, with the retrying's start once read and the last error. */
+  private readonly retries = new Map<string, Map<number, { since?: number; error: string }>>();
   private readonly leases = new Leases("pi-host-durable");
   private readonly threadsDir: string;
   private readonly idleCloseMs: number;
@@ -312,7 +319,7 @@ export class DurableThreads {
   }
 
   list(options: { archived?: boolean } = {}): ThreadInfo[] {
-    return this.index.list(options).map(row => ({ ...row, status: statusOf(row) }));
+    return this.index.list(options).map(row => this.withRetry({ ...row, status: statusOf(row) }));
   }
 
   private defaultModel(): ModelRef {
@@ -328,7 +335,33 @@ export class DurableThreads {
   info(id: string): ThreadInfo {
     const row = this.index.get(id);
     if (!row) throw new Error(`No durable thread ${id}`);
-    return { ...row, status: statusOf(row) };
+    return this.withRetry({ ...row, status: statusOf(row) });
+  }
+
+  /** The row with the retrying flag of its longest-retrying conversation, when one has retried past `RETRY_FLAG_MS`. */
+  private withRetry(info: ThreadInfo): ThreadInfo {
+    const oldest = [...(this.retries.get(info.id)?.values() ?? [])].filter(retry => retry.since !== undefined).sort((a, b) => a.since! - b.since!)[0];
+    const text = oldest ? retryingText(oldest.since!, oldest.error, this.now()) : undefined;
+    return text ? { ...info, retrying: text } : info;
+  }
+
+  /** Notes a conversation's `pi.live` change: a retry starts or goes on, and reads its start once; no retry drops it. */
+  private noteRetry(open: OpenThread, conversation: number, value: unknown): void {
+    const retry = liveRetry(value);
+    const kept = this.retries.get(open.id) ?? new Map<number, { since?: number; error: string }>();
+    if (!retry) {
+      kept.delete(conversation);
+      if (!kept.size) this.retries.delete(open.id);
+      return;
+    }
+    const known = kept.get(conversation);
+    kept.set(conversation, { ...known, error: retry.error });
+    this.retries.set(open.id, kept);
+    if (known) return;
+    setImmediate(() => void retrySince(open.harness, conversation as ConversationId, context).then(since => {
+      const now = kept.get(conversation);
+      if (now && since !== undefined) now.since = since;
+    }).catch(error => this.log(`${open.id} retry start read failed: ${error instanceof Error ? error.message : String(error)}`)));
   }
 
   async create(input: { name?: string; model?: ModelRef; thinkingLevel?: ModelThinkingLevel; cwd?: string; id?: string } = {}): Promise<ThreadInfo> {
@@ -602,6 +635,8 @@ export class DurableThreads {
         if (record.type === "input" && (record.status === "done" || record.status === "unanswered")) this.settle(open, record.conversationId);
       } else if (change.type === "conversation") {
         void this.announceConversation(open, change.value);
+      } else if (change.type === "document" && change.record.kind === "pi.live" && change.conversationId !== undefined) {
+        this.noteRetry(open, change.conversationId, change.value);
       }
     }
     const runFailed = failedInputs(publication.changes);
@@ -751,6 +786,7 @@ export class DurableThreads {
     const opening = this.open.get(id);
     if (!opening) return;
     this.open.delete(id);
+    this.retries.delete(id);
     const open = await opening;
     if (open.idleTimer) clearTimeout(open.idleTimer);
     if (open.sleepTimer) clearTimeout(open.sleepTimer);
@@ -938,12 +974,15 @@ export class DurableThreads {
       const first = (await conversation.entries({ order: "ascending" }, 4, undefined, context)).items.find(entry => describeEntry(entry, 0)?.text);
       const described = first ? describeEntry(first, 0) : undefined;
       const live = await open.harness.snapshot(LiveDoc, record.id, context);
+      const retry = liveRetry(live);
+      const since = retry ? await retrySince(open.harness, record.id, context) : undefined;
+      const retrying = retry && since !== undefined ? retryingText(since, retry.error, this.now()) : undefined;
       const agent = await conversation.agent(context);
       nodes.push({
         id: record.id, parent: record.owner?.conversationId ?? null, ownerTask: record.owner?.taskId ?? null,
         name: record.id === ROOT_CONVERSATION_ID ? this.info(id).name : (await rlmChildName(open.harness, record.id, context)) ?? jobTitle(described?.text ?? ""),
         depth: depthOf(record.id), status: live?.run ? "running" : "idle", model: agent.model ? `${agent.model.provider}/${agent.model.modelId}` : null,
-        createdAt: described?.at ?? null,
+        createdAt: described?.at ?? null, ...(retrying ? { retrying } : {}),
       });
     }
     return nodes;

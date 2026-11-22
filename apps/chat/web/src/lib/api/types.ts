@@ -807,8 +807,8 @@ export interface AgentConfig {
   swarm: {
     parent: { id: AgentId; name: string } | null;
     jobs: { id: AgentId; name: string; kind: "job" | "duty" | "root job"; status: RunStatus; createdAt: Ms | null; parent: AgentId | null; depth: number; archived: boolean }[];
-    /** The channels and Solo rooms it is a member of. */
-    rooms: { id: RoomId; kind: "channel" | "solo"; name: string }[];
+    /** The channels and Solo rooms it is a member of, each with whether it wakes on every post there or only on mentions. */
+    rooms: { id: RoomId; kind: "channel" | "solo"; name: string; wakeOn: Member["wakeOn"] }[];
     /** The room of each of its comm threads, archived ones too, so a comm thread reads by its room's name. */
     commRooms: { id: RoomId; kind: "dm" | "channel" | "solo"; name: string; archived: boolean }[];
     duties: { id: string; name: string; goal: string; schedule: string; paused: boolean; nextAt: Ms | null; lastVerdict: string | null; lastAt: Ms | null; runs: number }[];
