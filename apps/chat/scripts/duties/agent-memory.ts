@@ -139,8 +139,25 @@ const captured = (c: Correction, text: string): boolean => new RegExp(`\\b${c.id
 
 const pct = (part: number, whole: number): number => (whole ? Math.round((1000 * part) / whole) / 10 : 100);
 
-async function call(server: string, method: string, path: string, body?: unknown): Promise<any> {
-  const response = await fetch(`${server}${path}`, { method, headers: { "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+/**
+ * How long a call keeps trying while the chat server does not answer at all. An apps/chat release restarts the server for a second or two,
+ * and on 11-22 releases at 05:11 and 05:16 UTC ended a detached d3 rerun with "fetch failed, ECONNREFUSED" before it graded anyone.
+ */
+export const RESTART_WAIT_MS = 120_000;
+
+/** Calls the chat server; a refused or dropped connection is retried every 2 s up to `restartWaitMs`, an HTTP error is not. */
+export async function call(server: string, method: string, path: string, body?: unknown, restartWaitMs = RESTART_WAIT_MS): Promise<any> {
+  const started = Date.now();
+  let response: Response;
+  for (;;) {
+    try {
+      response = await fetch(`${server}${path}`, { method, headers: { "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+      break;
+    } catch (error) {
+      if (Date.now() - started >= restartWaitMs) throw error;
+      await sleep(Math.min(2000, restartWaitMs));
+    }
+  }
   const text = await response.text();
   if (!response.ok) throw new Error(`${method} ${path}: ${response.status} ${text.slice(0, 200)}`);
   return text ? JSON.parse(text) : undefined;

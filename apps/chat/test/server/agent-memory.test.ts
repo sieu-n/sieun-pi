@@ -7,6 +7,7 @@
  * 3. A title that opens with "wip" is session state only as a label, not in a lasting entry about the wip reaction.
  * 4. Every recall agent is archived and its folder deleted, on an error or a timeout too, and a sweep cleans what a killed run left: on
  *    11-20 seven recall agents stayed unarchived.
+ * 5. A call rides out a chat server restart: on 11-22 two apps/chat releases ended a d3 rerun with ECONNREFUSED.
  */
 import { strict as assert } from "node:assert";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
@@ -15,7 +16,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { finishedReply, holds, recall, scratchReason, splitAnswers, sweepRecallAgents } from "../../scripts/duties/agent-memory.ts";
+import { call, finishedReply, holds, recall, scratchReason, splitAnswers, sweepRecallAgents } from "../../scripts/duties/agent-memory.ts";
 
 const ask = { kind: "message", text: "Quick questions" };
 
@@ -169,4 +170,24 @@ test("the sweep cleans this run's and a dead run's recall agents and keeps a liv
   } finally {
     server.close();
   }
+});
+
+test("a call waits for a chat server that restarts, and an HTTP error still throws", async () => {
+  const probe = createServer();
+  await new Promise<void>(done => probe.listen(0, "127.0.0.1", done));
+  const port = (probe.address() as AddressInfo).port;
+  await new Promise<void>(done => probe.close(() => done()));
+  const late = createServer((req: IncomingMessage, res: ServerResponse) => {
+    res.writeHead(req.url === "/bad" ? 500 : 200, { "content-type": "application/json" });
+    res.end(req.url === "/bad" ? "{\"error\":\"boom\"}" : "{\"ok\":true}");
+  });
+  const timer = setTimeout(() => late.listen(port, "127.0.0.1"), 1500);
+  try {
+    assert.deepEqual(await call(`http://127.0.0.1:${port}`, "GET", "/ok", undefined, 20_000), { ok: true });
+    await assert.rejects(call(`http://127.0.0.1:${port}`, "GET", "/bad", undefined, 20_000), /500/);
+  } finally {
+    clearTimeout(timer);
+    await new Promise<void>(done => late.close(() => done()));
+  }
+  await assert.rejects(call(`http://127.0.0.1:${port}`, "GET", "/ok", undefined, 0));
 });
