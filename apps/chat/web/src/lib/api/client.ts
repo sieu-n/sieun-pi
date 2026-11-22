@@ -567,6 +567,8 @@ export const api = {
   /** Only registered agents join; the server refuses a job, a work thread or a comm thread. */
   addMembers: (id: string, agents: AgentId[], wakeOn?: "all" | "none") => call<Room>("POST", `/api/rooms/${enc(id)}/members`, { agents, ...(wakeOn ? { wakeOn } : {}) }),
   removeMember: (id: string, agent: AgentId) => call<Room>("DELETE", `/api/rooms/${enc(id)}/members/${enc(agent)}`),
+  /** `none` is Mentions only: the member wakes on an @mention or a reply in a thread it posted in. */
+  setMemberWakeOn: (id: string, agent: AgentId, wakeOn: Member["wakeOn"]) => call<Room>("PATCH", `/api/rooms/${enc(id)}/members/${enc(agent)}`, { wakeOn }),
 
   search: (params: SearchQuery, options: { signal?: AbortSignal } = {}) =>
     call<SearchResult>("GET", `/api/search${query({ ...params, brief: params.brief ? 1 : undefined })}`, undefined, options.signal),

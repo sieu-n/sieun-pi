@@ -10,7 +10,7 @@ async function channel(page: Page, members: string[]): Promise<{ id: string; nam
 
 const count = (page: Page) => page.getByTestId("channel-members");
 
-test("the member list adds an agent from its Add people row and shows it at once", async ({ page }) => {
+test("Add people picks several agents, clears the search after each pick and adds them all with one Add", async ({ page }) => {
   const room = await channel(page, ["ag_crawler-vp"]);
   await open(page, `#/c/${room.id}`);
   await expect(count(page)).toHaveAttribute("aria-label", "Members, 2 members");
@@ -19,12 +19,63 @@ test("the member list adds an agent from its Add people row and shows it at once
   await expect(page.getByTestId("members-add")).toBeFocused();
   await page.getByTestId("members-add").click();
   const picker = page.getByRole("dialog", { name: `Add people to #${room.name}` });
+  const search = picker.getByRole("searchbox");
+  const add = picker.getByRole("button", { name: "Add", exact: true });
   await expect(picker.getByRole("option", { name: /Crawler VP/ })).toHaveCount(0);
-  await picker.getByRole("searchbox").fill("front");
+  await expect(add).toBeDisabled();
+  await search.fill("front");
   await picker.getByRole("option", { name: /frontend bro/ }).click();
-  await expect(count(page)).toHaveAttribute("aria-label", "Members, 3 members");
+  await expect(search).toHaveValue("");
+  await expect(search).toBeFocused();
+  await expect(picker.getByRole("option", { name: /frontend bro/ })).toHaveAttribute("aria-selected", "true");
+  await search.fill("vent");
+  await page.keyboard.press("Enter");
+  await expect(search).toHaveValue("");
+  await expect(picker.getByRole("button", { name: "Unpick Vent" })).toBeVisible();
+  await search.fill("harness");
+  await page.keyboard.press("Enter");
+  await picker.getByRole("button", { name: /^Unpick AI harness/ }).click();
+  await expect(search).toBeFocused();
+  await expect(picker.getByRole("button", { name: /^Unpick/ })).toHaveCount(2);
+
+  const posts: string[] = [];
+  page.on("request", (r) => r.method() === "POST" && r.url().endsWith(`/api/rooms/${room.id}/members`) && posts.push(r.postData() ?? ""));
+  await page.keyboard.press("Enter");
+  await expect(picker).toBeHidden();
+  await expect(count(page)).toHaveAttribute("aria-label", "Members, 4 members");
   await expect(list.locator('[data-member="ag_frontend-bro"]')).toBeVisible();
-  await expect(page.getByText(`Added frontend bro to #${room.name}`)).toBeVisible();
+  await expect(list.locator('[data-member="ag_vent"]')).toBeVisible();
+  await expect(page.getByText(`Added frontend bro and Vent to #${room.name}`)).toBeVisible();
+  expect(posts.map((p) => (JSON.parse(p) as { agents: string[] }).agents)).toEqual([["ag_frontend-bro", "ag_vent"]]);
+});
+
+test("Mentions only switches a member to wake on mentions, marks its row and switches back", async ({ page }) => {
+  const room = await channel(page, ["ag_crawler-vp", "ag_frontend-bro"]);
+  await open(page, `#/c/${room.id}`);
+  await count(page).click();
+  const list = page.getByRole("dialog", { name: `Members of #${room.name}` });
+  const row = list.locator('[data-member="ag_crawler-vp"]');
+  const toggle = list.getByRole("button", { name: "Mentions only for Crawler VP" });
+  await expect(row.locator(".mute")).toHaveCSS("opacity", "0");
+  await row.hover();
+  await expect(toggle).toHaveAttribute("aria-pressed", "false");
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-pressed", "true");
+  await expect(row).toContainText("Mentions only");
+  await page.mouse.move(0, 0);
+  await expect(row.locator(".mute")).toHaveCSS("opacity", "1");
+  await expect(list.locator('[data-member="ag_frontend-bro"]')).not.toContainText("Mentions only");
+  await expect.poll(async () => {
+    const rooms = (await (await page.request.get("/api/rooms?test=1")).json()) as { id: string; members: { principal: { id: string }; wakeOn: string }[] }[];
+    return rooms.find((r) => r.id === room.id)?.members.find((m) => m.principal.id === "ag_crawler-vp")?.wakeOn;
+  }).toBe("none");
+
+  await page.reload();
+  await count(page).click();
+  await expect(toggle).toHaveAttribute("aria-pressed", "true");
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-pressed", "false");
+  await expect(row).not.toContainText("Mentions only");
 });
 
 test("an agent row shows Remove on hover and keyboard focus, removes at once and Undo brings it back", async ({ page }) => {
@@ -41,6 +92,8 @@ test("an agent row shows Remove on hover and keyboard focus, removes at once and
 
   await page.keyboard.press("ArrowDown");
   await expect(list.locator('[data-member="ag_crawler-vp"] .main')).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(list.getByRole("button", { name: "Mentions only for Crawler VP" })).toBeFocused();
   await page.keyboard.press("Tab");
   await expect(remove).toBeFocused();
   await page.keyboard.press("Enter");
@@ -80,28 +133,43 @@ test("a test channel's picker lists test agents", async ({ page }) => {
   await page.getByTestId("members-add").click();
   const picker = page.getByRole("dialog", { name: `Add people to #${room.name}` });
   await picker.getByRole("option", { name: new RegExp(agent.name) }).click();
+  await picker.getByRole("button", { name: "Add", exact: true }).click();
   await expect(count(page)).toHaveAttribute("aria-label", "Members, 2 members");
 });
 
-test("a test agent's Work tab adds it to a test channel from the same picker and removes it with Undo", async ({ page }) => {
-  const agent = (await (await page.request.post("/api/agents", { data: { name: `work tab agent ${tag()}`, test: true } })).json()) as { id: string; name: string };
+test("a test agent's Work tab adds it to a test channel and a test Solo room at once, and removes each with Undo", async ({ page }) => {
+  const make = async (name: string) => (await (await page.request.post("/api/agents", { data: { name: `${name} ${tag()}`, test: true } })).json()) as { id: string; name: string };
+  const agent = await make("work tab agent");
+  const other = await make("solo mate");
   const room = await channel(page, []);
+  const solo = (await (await page.request.post("/api/rooms", { data: { kind: "solo", agenda: `work tab solo ${tag()}`, members: [other.id], test: true } })).json()) as { id: string; name: string };
   await page.goto(`/#/agents/${agent.id}?section=work`);
   const rooms = page.getByRole("region", { name: "Rooms" });
   await expect(rooms).toContainText("In no channel or Solo room.");
   await page.getByTestId("add-to-channel").click();
-  const picker = page.getByRole("dialog", { name: `Add ${agent.name} to a channel` });
+  const picker = page.getByRole("dialog", { name: `Add ${agent.name} to a channel or Solo room` });
   await expect(picker.getByRole("option", { name: /^general/ })).toHaveCount(0);
-  await picker.getByRole("searchbox").fill("no such channel");
-  await expect(picker).toContainText("No channel matches");
+  await picker.getByRole("searchbox").fill("no such room");
+  await expect(picker).toContainText("No channel or Solo room matches");
   await picker.getByRole("searchbox").fill(room.name);
   await picker.getByRole("option", { name: new RegExp(`^${room.name}`) }).click();
+  await picker.getByRole("searchbox").fill(solo.name);
+  await expect(picker.getByRole("option", { name: new RegExp(`^${solo.name}`) })).toContainText(other.name);
+  await picker.getByRole("option", { name: new RegExp(`^${solo.name}`) }).click();
+  await picker.getByRole("button", { name: "Add", exact: true }).click();
   const chip = rooms.getByRole("button", { name: room.name, exact: true });
+  const soloChip = rooms.getByRole("button", { name: solo.name, exact: true });
   await expect(chip).toBeVisible();
-  await expect(page.getByText(`Added ${agent.name} to #${room.name}`)).toBeVisible();
+  await expect(soloChip).toBeVisible();
+  await expect(page.getByText(`Added ${agent.name} to #${room.name} and ${solo.name}`)).toBeVisible();
+
+  await rooms.getByRole("button", { name: `Remove ${agent.name} from ${solo.name}` }).click();
+  await expect(soloChip).toHaveCount(0);
+  await page.getByRole("button", { name: "Undo" }).click();
+  await expect(soloChip).toBeVisible();
   await rooms.getByRole("button", { name: `Remove ${agent.name} from #${room.name}` }).click();
   await expect(chip).toHaveCount(0);
-  await page.getByRole("button", { name: "Undo" }).click();
+  await page.getByRole("button", { name: "Undo" }).last().click();
   await expect(chip).toBeVisible();
   await chip.click();
   await expect(page).toHaveURL(new RegExp(`#/c/${room.id}`));

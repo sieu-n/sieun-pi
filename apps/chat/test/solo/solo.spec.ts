@@ -122,6 +122,7 @@ test("Add agents offers only registered agents not in the room, and a chip's x r
   await expect(picker.getByRole("option", { name: /Crawler VP/ })).toBeVisible();
   await expect(picker.getByRole("option", { name: /^Vent/ })).toHaveCount(0);
   await picker.getByRole("option", { name: /Crawler VP/ }).click();
+  await picker.getByRole("button", { name: "Add", exact: true }).click();
   const remove = members.getByRole("button", { name: "Remove Crawler VP" });
   await expect(remove).toBeVisible();
   await remove.click();

@@ -338,7 +338,7 @@
             {@const place = room.kind === "solo" ? room.name : `#${room.name}`}
             <Chip
               size="sm"
-              icon={room.kind === "solo" ? "chat" : "hash"}
+              icon={room.kind === "solo" ? "users" : "hash"}
               label={room.name}
               onclick={() => router.openConversation(room.id)}
               removeLabel="Remove {config.agent.name} from {place}"
@@ -348,7 +348,7 @@
             <span class="t-caption meta">In no channel or Solo room.</span>
           {/each}
           {#if agentId.startsWith("ag_")}
-            <Button variant="ghost" size="sm" icon="plus" bind:element={roomAnchor} onclick={() => (addingRoom = true)} data-testid="add-to-channel">Add to channel</Button>
+            <Button variant="ghost" size="sm" icon="plus" bind:element={roomAnchor} onclick={() => (addingRoom = true)} data-testid="add-to-channel">Add to channel or Solo room</Button>
           {/if}
         </div>
         <MemberPicker

@@ -5,11 +5,12 @@
   import AvatarStack from "$lib/ui/AvatarStack.svelte";
   import Button from "$lib/ui/Button.svelte";
   import Icon from "$lib/ui/Icon.svelte";
+  import IconButton from "$lib/ui/IconButton.svelte";
   import Popover from "$lib/ui/Popover.svelte";
   import SearchField from "$lib/ui/SearchField.svelte";
   import type { Status } from "$lib/ui/types";
   import MemberPicker from "./MemberPicker.svelte";
-  import { removeMembership } from "./membership";
+  import { removeMembership, setWakeOn } from "./membership";
   import { avatarKind, avatarOf } from "./present";
 
   type Props = {
@@ -38,6 +39,8 @@
   let active = $state(0);
   /** Members removed here whose header refresh has not landed yet, so the row goes at once. */
   let leaving = $state<string[]>([]);
+  /** Mentions only switches whose header refresh has not landed yet, so the row shows the new setting at once. */
+  let switching = $state<Record<string, Member["wakeOn"]>>({});
 
   const statusText: Record<RunStatus, string> = { working: "Working now", idle: "Idle", sleeping: "Waiting for a model slot", failed: "Last run failed" };
   const isOwner = (m: Member) => m.principal.id === "owner";
@@ -54,10 +57,12 @@
   const stops = $derived(["add", ...shown.filter((m) => !isOwner(m)).map((m) => m.principal.id)]);
   const target = $derived({ kind: "room" as const, room, name: channel, members: present.map((m) => m.principal.id), test });
 
+  const wakeOf = (m: Member): Member["wakeOn"] => switching[m.principal.id] ?? m.wakeOn;
+
   function detailOf(m: Member): string {
     if (isOwner(m)) return "";
     const status = agents.byId(m.principal.id)?.status ?? m.status;
-    return [status ? statusText[status] : "", m.wakeOn === "none" ? "Muted" : ""].filter(Boolean).join(" · ");
+    return [status ? statusText[status] : "", wakeOf(m) === "none" ? "Mentions only" : ""].filter(Boolean).join(" · ");
   }
 
   $effect(() => {
@@ -72,6 +77,11 @@
   $effect(() => {
     const ids = new Set(members.map((m) => m.principal.id));
     if (leaving.some((id) => !ids.has(id))) leaving = leaving.filter((id) => ids.has(id));
+  });
+  // A refresh that carries a switched setting ends its pending show.
+  $effect(() => {
+    const landed = Object.keys(switching).filter((id) => members.find((m) => m.principal.id === id)?.wakeOn === switching[id]);
+    if (landed.length) switching = Object.fromEntries(Object.entries(switching).filter(([id]) => !landed.includes(id)));
   });
 
   /** Add people in the channel menu opens the picker here. */
@@ -95,6 +105,14 @@
     void tick().then(() => focusStop(active));
     const done = await removeMembership({ room, roomName: channel, agent: id, agentName: m.principal.name }, { wakeOn: m.wakeOn, refresh });
     if (!done) leaving = leaving.filter((x) => x !== id);
+  }
+
+  async function switchWake(m: Member) {
+    const id = m.principal.id;
+    const next = wakeOf(m) === "none" ? "all" : "none";
+    switching = { ...switching, [id]: next };
+    const done = await setWakeOn({ room, roomName: channel, agent: id, agentName: m.principal.name }, next, { refresh });
+    if (!done) switching = Object.fromEntries(Object.entries(switching).filter(([x]) => x !== id));
   }
 
   function focusStop(index: number) {
@@ -145,6 +163,7 @@
         {@const owner = isOwner(m)}
         {@const index = stops.indexOf(m.principal.id)}
         {@const detail = detailOf(m)}
+        {@const mentionsOnly = !owner && wakeOf(m) === "none"}
         <li class="row" class:self={owner} data-member={m.principal.id}>
           {#if owner}
             <div class="main">
@@ -159,6 +178,16 @@
                 {#if detail}<span class="detail">{detail}</span>{/if}
               </span>
             </button>
+            <span class="mute" class:on={mentionsOnly}>
+              <IconButton
+                icon={mentionsOnly ? "bell-off" : "bell"}
+                size="sm"
+                label="Mentions only for {m.principal.name}"
+                pressed={mentionsOnly}
+                tabindex={index === active ? 0 : -1}
+                onclick={() => void switchWake(m)}
+              />
+            </span>
             <span class="remove">
               <Button variant="ghost" size="sm" tabindex={index === active ? 0 : -1} aria-label="Remove {m.principal.name} from #{channel}" onclick={() => void remove(m)}>Remove</Button>
             </span>
@@ -274,16 +303,21 @@
   .you {
     color: var(--text-metadata);
   }
+  .mute,
   .remove {
     flex: none;
-    padding-right: 6px;
     opacity: 0;
   }
-  .row:hover .remove,
-  .row:has(:focus-visible) .remove {
+  .remove {
+    padding-right: 6px;
+  }
+  .mute.on,
+  .row:hover :is(.mute, .remove),
+  .row:has(:focus-visible) :is(.mute, .remove) {
     opacity: 1;
   }
   @media (hover: none) {
+    .mute,
     .remove {
       opacity: 1;
     }

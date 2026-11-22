@@ -23,6 +23,8 @@
     placement?: Placement;
     label?: string;
     onselect: (id: string, item: PickerItem) => void;
+    /** A `multiple` list's done key: Enter on an empty search with a pick calls it, unless the arrows moved the highlight since. */
+    onsubmit?: () => void;
     onclose?: () => void;
     /** Extra rows under the list, for example a "Custom model" field or an effort control. */
     footer?: Snippet<[{ query: string; close: () => void }]>;
@@ -47,6 +49,7 @@
     placement = "bottom-start",
     label = "Choose",
     onselect,
+    onsubmit,
     onclose,
     footer,
     rowEnd,
@@ -55,6 +58,8 @@
 
   let query = $state("");
   let active = $state(0);
+  /** The arrows moved the highlight since the last pick or keystroke, so Enter picks that row instead of submitting. */
+  let navigated = false;
   let listEl = $state<HTMLElement>();
   const listId = `pick-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -81,6 +86,7 @@
     if (open)
       untrack(() => {
         query = "";
+        navigated = false;
         const at = items.findIndex((i) => selected.has(i.id));
         active = Math.max(0, at);
       });
@@ -116,10 +122,15 @@
     open = false;
     onclose?.();
   }
+  /** A pick in a `multiple` list clears the search for the next name, as Slack's add dialog does; any other pick closes the list. */
   function choose(item: PickerItem) {
     if (item.disabled) return;
     onselect(item.id, item);
     if (!multiple) close();
+    else if (!typeahead) {
+      query = "";
+      navigated = false;
+    }
   }
   function onKeydown(e: KeyboardEvent) {
     if (composing(e)) return;
@@ -127,6 +138,7 @@
       e.preventDefault();
       const n = filtered.length;
       if (!n) return;
+      navigated = true;
       let next = active;
       for (let k = 0; k < n; k++) {
         next = (next + (e.key === "ArrowDown" ? 1 : n - 1)) % n;
@@ -135,6 +147,11 @@
       active = next;
       listEl?.querySelector(`[data-index="${next}"]`)?.scrollIntoView({ block: "nearest" });
     } else if (e.key === "Enter") {
+      if (onsubmit && !navigated && !query.trim() && selected.size) {
+        e.preventDefault();
+        onsubmit();
+        return;
+      }
       const item = filtered[active];
       if (item) {
         e.preventDefault();
@@ -147,7 +164,10 @@
 <Popover bind:open {anchor} {placement} {width} role="dialog" {label} onclose={close} padding={6} autofocus={!typeahead}>
   <div class="picker" onkeydown={onKeydown} onmousedown={(e) => typeahead && e.preventDefault()} role="presentation">
     {#if showSearch}
-      <div class="search"><SearchField bind:value={query} {placeholder} label={placeholder} oninput={() => (active = 0)} data-autofocus aria-controls={listId} aria-activedescendant={filtered[active] ? `${listId}-${active}` : undefined} /></div>
+      <div class="search"><SearchField bind:value={query} {placeholder} label={placeholder} oninput={() => {
+          active = 0;
+          navigated = false;
+        }} data-autofocus aria-controls={listId} aria-activedescendant={filtered[active] ? `${listId}-${active}` : undefined} /></div>
     {/if}
     <div class="list" id={listId} role="listbox" aria-multiselectable={multiple || undefined} bind:this={listEl} tabindex={showSearch ? -1 : 0}>
       {#each groups as g (g.name)}
@@ -164,6 +184,7 @@
             aria-disabled={item.disabled || undefined}
             tabindex="-1"
             onpointermove={() => (active = index)}
+            onmousedown={(e) => multiple && showSearch && e.preventDefault()}
             onclick={() => choose(item)}
           >
             {#if item.avatar}

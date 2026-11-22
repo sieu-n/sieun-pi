@@ -34,7 +34,7 @@
   import ChannelMembers from "./ChannelMembers.svelte";
   import ChannelDetailsDialog from "./ChannelDetailsDialog.svelte";
   import MemberPicker from "./MemberPicker.svelte";
-  import { addMembership, removeMembership } from "./membership";
+  import { addMemberships, removeMembership } from "./membership";
   import ThreadPane from "./ThreadPane.svelte";
   import PinnedButton from "./PinnedButton.svelte";
   import { roomDraftKey, threadDraftKey } from "$lib/drafts.svelte";
@@ -436,8 +436,8 @@
       else inviteOpen = true;
       return;
     }
-    for (const agentId of mentions.filter((m) => !others.some((o) => o.principal.id === m)))
-      await addMembership({ room: id, roomName: name, agent: agentId, agentName: memberName(agentId) }, { refresh: refreshHeader });
+    const fresh = mentions.filter((m) => !others.some((o) => o.principal.id === m));
+    await addMemberships(fresh.map((agentId) => ({ room: id, roomName: name, agent: agentId, agentName: memberName(agentId) })), { refresh: refreshHeader });
   }
 
   /** A member named by its chip, or by its name typed after /remove when the @ list was skipped. */

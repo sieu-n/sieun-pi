@@ -32,6 +32,11 @@ export const directory = {
   get agents() {
     return agents.list;
   },
+  /** Channels and Solo rooms, archived and closed ones too. */
+  get rooms() {
+    roomDirectory.start();
+    return roomDirectory.list;
+  },
   /** Channels only, for the # typeahead and mention chips. */
   get channels() {
     roomDirectory.start();
