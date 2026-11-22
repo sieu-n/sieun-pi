@@ -574,6 +574,7 @@ export const KEEP_ALIVE_MS = 100_000;
 
 export function serve(app: App, parts: SkillsParts = skillsParts(app.config, app.log, () => app)): Server {
   const table = routes(app, parts);
+  app.socketRead = (path, req) => readRoute(table, path, req);
   const requests = new RequestLog(join(app.config.dataDir, "requests"), app.log);
   const stalls = new LoopStalls();
   const server = createServer((req, res) => {
@@ -911,6 +912,26 @@ async function handle(app: App, table: Route[], req: IncomingMessage, res: Serve
       : error instanceof NotFound || error instanceof EntryMissing ? 404 : error instanceof EntryExists || error instanceof SkillsStepFailed ? 409
       : error instanceof BadRequest || error instanceof CwdRefused || /^(No |A |An |Dates|around|after|.* is not in (#|Solo "))/.test(message) ? 400 : 500;
     refuse(app, table, req, res, status, message, status === 500 && error instanceof Error ? error.stack : undefined);
+  }
+}
+
+/**
+ * Runs a GET route for a page's live socket (app.ts `SocketRead`), with the headers of the socket's upgrade request, and answers its
+ * status and body as `handle` would, or its error.
+ */
+async function readRoute(table: Route[], path: string, upgrade: IncomingMessage | undefined): Promise<{ status: number; value?: unknown; error?: string }> {
+  const url = new URL(path, "http://x");
+  const r = url.pathname.startsWith("/api/") ? table.find(route => route.method === "GET" && route.pattern.test(url.pathname)) : undefined;
+  if (!r) return { status: 404, error: `No endpoint GET ${url.pathname}.` };
+  const match = r.pattern.exec(url.pathname)!;
+  const params: Params = {};
+  r.keys.forEach((key, i) => (params[key] = decodeURIComponent(match[i + 1]!)));
+  const req = { method: "GET", url: `${url.pathname}${url.search}`, headers: upgrade?.headers ?? {} } as IncomingMessage;
+  try {
+    return { status: 200, value: (await r.handler(req, params, url.searchParams, () => Promise.resolve(undefined))) ?? { ok: true } };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { status: error instanceof NotFound || error instanceof EntryMissing ? 404 : isHostAway(error) ? 503 : 500, error: message };
   }
 }
 

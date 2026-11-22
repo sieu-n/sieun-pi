@@ -7,6 +7,7 @@ import type { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
+import type { IncomingMessage } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 import type {
   AgentHostList, AgentId, AgentSummary, ConversationHeader, ConversationId, Delivery, ConversationPatch, ConversationSummary, ImageRef, Item, LiveCommand, LiveEvent, Me, ModelCatalog, ModelInfo, OpenedPage, ProjectList, Reaction, ReadPoint, Room, SendRequest, SendResult, Sidebar, ThinkingLevel,
@@ -42,6 +43,7 @@ import type { ForwardedPost } from "../web/src/lib/api/types.ts";
 import { Rooms } from "./rooms.ts";
 import { applyPrefs, withPrefs } from "./sidebar-prefs.ts";
 import { parseLayout } from "../web/src/lib/api/shared/sidebar-layout.ts";
+import { bucketOf, changedBuckets, digests, PARTIAL_LISTS, type PartialList } from "../web/src/lib/api/shared/hello-buckets.ts";
 import { OwnerSettingsStore } from "./owner-settings.ts";
 import { Unfurler } from "./unfurl.ts";
 import { POST_KINDS, postHas, Search } from "./search.ts";
@@ -85,7 +87,14 @@ const FOR_ME_WATCH = "for:";
 const OWN_RELAY_WAIT_MS = 30_000;
 
 /** `watching` maps each conversation a page watches to the thread conversations that watch holds open. */
-type Client = { socket: WebSocket; watching: Map<ConversationId, ConversationId[]> };
+type Client = { socket: WebSocket; watching: Map<ConversationId, ConversationId[]>; req: IncomingMessage | undefined };
+
+/**
+ * Runs a GET route for a page over its live socket (`LiveCommand` read), as http.ts answers it over HTTP; http.ts `serve` sets it. A
+ * page reads its open panels this way when its socket opens again, since its HTTP connection may still wait in TCP's retries after a cut:
+ * in the wake walk on 11-22 (~/work/p209-wake/after4) the panels' HTTP reads at the open took 4.7 s behind a read the cut had caught.
+ */
+export type SocketRead = (path: string, req: IncomingMessage | undefined) => Promise<{ status: number; value?: unknown; error?: string }>;
 
 export class App {
   readonly store: Store;
@@ -348,7 +357,7 @@ export class App {
       fileNotes,
       log,
     });
-    this.wss.on("connection", socket => this.connect(socket));
+    this.wss.on("connection", (socket: WebSocket, req?: IncomingMessage) => this.connect(socket, req));
   }
 
   /**
@@ -1367,10 +1376,14 @@ export class App {
 
   // Live hub
 
-  private connect(socket: WebSocket): void {
-    const client: Client = { socket, watching: new Map() };
+  /** http.ts `serve` sets it; without it a page's socket read answers 503 and the page reads over HTTP. */
+  socketRead: SocketRead | undefined;
+
+  private connect(socket: WebSocket, req?: IncomingMessage): void {
+    const client: Client = { socket, watching: new Map(), req };
     this.clients.add(client);
-    void this.sidebar().then(sidebar => this.send1(client, { type: "hello", me: this.me(), sidebar, agents: this.threads.agents(), jobs: this.threads.jobList(), conversations: this.threads.conversations() }));
+    const held = new URL(req?.url ?? "/", "http://x").searchParams;
+    void this.sidebar().then(sidebar => this.send1(client, { type: "hello", me: this.me(), sidebar, agents: this.threads.agents(), ...helloLists(held, { jobs: this.threads.jobList(), conversations: this.threads.conversations() }) }));
     socket.on("message", data => {
       let command: LiveCommand;
       try {
@@ -1388,6 +1401,10 @@ export class App {
 
   private async command(client: Client, command: LiveCommand): Promise<void> {
     if (command.type === "ping") return this.send1(client, { type: "pong" });
+    if (command.type === "read") {
+      const answer = await (this.socketRead?.(command.path, client.req) ?? Promise.resolve({ status: 503, error: "This server reads no route over the socket." }));
+      return this.send1(client, { type: "answer", id: command.id, ...answer });
+    }
     if (command.type === "watch") {
       if (client.watching.has(command.conversation)) return;
       // An agent's For list holds no thread open; the page gets its pending count now and on every change.
@@ -1483,3 +1500,20 @@ export class App {
 export class NotFound extends Error {}
 
 export { modelRef };
+
+/**
+ * The hello's jobs and conversations: whole for a page that named nothing it holds, else only the buckets whose digest differs from the
+ * page's (shared/hello-buckets.ts), with their numbers in `partial`.
+ */
+function helloLists(held: URLSearchParams, lists: { jobs: AgentSummary[]; conversations: ConversationSummary[] }): Pick<Extract<LiveEvent, { type: "hello" }>, PartialList | "partial"> {
+  const partial: Partial<Record<PartialList, number[]>> = {};
+  const out = { ...lists };
+  for (const name of PARTIAL_LISTS) {
+    const page = held.get(name);
+    const changed = page ? changedBuckets(page, digests(lists[name])) : null;
+    if (!changed) continue;
+    partial[name] = [...changed];
+    out[name] = (lists[name] as { id: string }[]).filter(item => changed.has(bucketOf(item.id))) as never;
+  }
+  return Object.keys(partial).length ? { ...out, partial } : out;
+}

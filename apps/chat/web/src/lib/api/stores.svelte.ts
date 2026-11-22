@@ -13,6 +13,7 @@ import { pageDb, type KeptPage } from "./page-db.ts";
 import { heldSends, type HeldSend } from "./held-sends.ts";
 import { holdReload, releaseReload } from "./reload.ts";
 import { live } from "./live.svelte.ts";
+import { digests, mergeBuckets } from "./shared/hello-buckets.ts";
 import { SvelteMap } from "svelte/reactivity";
 import type {
   AgentId, AgentSummary, BoardOp, BoardView, ConversationHeader, ConversationId, ConversationSummary, ForYouItem, ImageRef, Item, Me,
@@ -335,6 +336,8 @@ const withStatus = <T extends { status: RunStatus }>(list: T[], item: T | undefi
   item && item.status !== status ? list.map(x => (x === item ? { ...x, status } : x)) : list;
 
 const indexBy = <T extends { id: string }>(list: readonly T[]): Map<string, T> => new Map(list.map(item => [item.id, item]));
+/** The server's order of the job list (threads.ts `newestFirst`), which a hello's merged buckets keep. */
+const newestFirst = (a: AgentSummary, b: AgentSummary): number => b.updatedAt - a.updatedAt;
 
 /**
  * The hello snapshot and its live updates. The lists are raw state, replaced whole on each change: on 11-03 the hello held 349 jobs and
@@ -364,9 +367,22 @@ class Global {
   ready = $state(false);
   private started = false;
 
+  /** The digests of the lists the page holds, kept while the lists stay the same arrays; none before the first hello. */
+  private digested: { jobs: AgentSummary[]; conversations: ConversationSummary[]; held: Record<string, string> } | undefined;
+
+  private held(): Record<string, string> {
+    if (!this.ready) return {};
+    const { jobs, conversations } = this;
+    if (this.digested?.jobs !== jobs || this.digested.conversations !== conversations) {
+      this.digested = { jobs, conversations, held: { jobs: digests(jobs), conversations: digests(conversations) } };
+    }
+    return this.digested.held;
+  }
+
   start(): void {
     if (this.started) return;
     this.started = true;
+    live.holding(() => this.held());
     live.on(event => {
       switch (event.type) {
         case "hello":
@@ -375,8 +391,8 @@ class Global {
           this.sidebar = event.sidebar;
           syncMarked(event.sidebar);
           this.agents = event.agents;
-          this.jobs = event.jobs;
-          this.conversations = event.conversations;
+          this.jobs = event.partial?.jobs ? mergeBuckets(this.jobs, event.partial.jobs, event.jobs).sort(newestFirst) : event.jobs;
+          this.conversations = event.partial?.conversations ? mergeBuckets(this.conversations, event.partial.conversations, event.conversations) : event.conversations;
           this.forYouCount = event.sidebar.forYou;
           this.ready = true;
           roomsAhead(event.sidebar);
@@ -1141,23 +1157,31 @@ export class Timeline {
   private headerAt = -Infinity;
 
   /**
-   * The socket opened again and may have missed this view's events, so the view reads its header and newest page again. The watch's own
-   * catch-up comes behind the server's hello on the socket, 1.6 MB of JSON on 11-22 that reached the page 0.85 to 1.06 s after the open in
-   * the wake walk (scripts/wake-walk.mjs, ~/work/p209-wake/after2), and it sends nothing to a room whose view held no post. A renamed room
-   * also kept its old name after a reconnect there.
+   * The socket opened again and may have missed this view's events: a rename, which only the header shows, or a post in a room whose view
+   * held none, since the watch names the newest post held and the server sends only what came after it. In the wake walk on 11-22
+   * (scripts/wake-walk.mjs) a renamed room kept its old name after a reconnect, and a message sent to an empty room never showed. Both
+   * reads go over the socket, whose connection is new, and over HTTP when it fails.
    */
   private missed(): void {
     if (this.loading || this.headerAt >= live.openedAt) return;
-    void this.refreshHeader({ background: "shown" });
-    if (!this.around) void api.items(this.id, {}, { background: "shown" }).then(page => this.upsert(page.items), () => undefined);
+    this.headerAt = performance.now();
+    const path = `/api/c/${encodeURIComponent(this.id)}`;
+    live.read(path).then(header => this.showHeader(header as ConversationHeader), () => this.refreshHeader({ background: "shown" }));
+    if (this.around || this.items.some(item => !isPending(item))) return;
+    const items = () => api.items(this.id, {}, { background: "shown" });
+    live.read(`${path}/items`).then(page => page as Awaited<ReturnType<typeof api.items>>, items).then(page => this.upsert(page.items), () => undefined);
+  }
+
+  private showHeader(header: ConversationHeader): void {
+    this.header = header;
+    syncMark(header.summary);
   }
 
   /** Reads the header again, after a room's name, agenda, members or closed state changed. */
   async refreshHeader(wait?: Wait): Promise<void> {
     this.headerAt = performance.now();
     try {
-      this.header = await api.header(this.id, wait);
-      syncMark(this.header.summary);
+      this.showHeader(await api.header(this.id, wait));
     } catch (error) {
       this.error = message(error);
     }

@@ -849,7 +849,11 @@ export interface Me {
 /** Server to page, over the one WebSocket at /api/live. */
 export type LiveEvent =
   /** `agents` holds registered agents only (`ag_<slug>`); `jobs` holds each job and child conversation that works for one of them. */
-  | { type: "hello"; me: Me; sidebar: Sidebar; agents: AgentSummary[]; jobs: AgentSummary[]; conversations: ConversationSummary[] }
+  /**
+   * `partial` names, per list, the buckets whose items `jobs` or `conversations` hold, for a page that sent the digests of what it holds
+   * (shared/hello-buckets.ts); a list it does not name is whole.
+   */
+  | { type: "hello"; me: Me; sidebar: Sidebar; agents: AgentSummary[]; jobs: AgentSummary[]; conversations: ConversationSummary[]; partial?: Partial<Record<"jobs" | "conversations", number[]>> }
   | { type: "sidebar"; sidebar: Sidebar }
   /** The owner's status, notification setting or recent searches changed in some browser (server/owner-settings.ts). */
   | { type: "owner_settings"; settings: SavedSettings }
@@ -884,6 +888,8 @@ export type LiveEvent =
   | { type: "for_me"; agent: AgentId; pending: number }
   /** The answer to the page's `ping`, which tells it the socket still reaches the server (live.svelte.ts). */
   | { type: "pong" }
+  /** The answer to the page's `read` with its `id`: the route's status and its body, or its error. */
+  | { type: "answer"; id: number; status: number; value?: unknown; error?: string }
   | { type: "error"; message: string };
 
 /** Page to server. `after` is the newest item id the page holds, so a reconnect sends only what it missed. */
@@ -892,4 +898,6 @@ export type LiveCommand =
   | { type: "watch"; conversation: ConversationId; after?: string }
   | { type: "unwatch"; conversation: ConversationId }
   /** Asks for a `pong`. A page that has heard nothing for a while sends it, and drops the socket when no answer comes (live.svelte.ts). */
-  | { type: "ping" };
+  | { type: "ping" }
+  /** Reads a GET route over the socket; the server answers with `answer` and the same `id` (live.svelte.ts `read`). */
+  | { type: "read"; id: number; path: string };

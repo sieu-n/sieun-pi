@@ -109,7 +109,23 @@ export class Kept<T> {
   missed(): void {
     if ((this.flight ? this.flight.wait.sent ?? Infinity : this.sent) >= live.openedAt) return;
     this.current = false;
-    if (this.views) void this.read();
+    if (this.views) this.readOverSocket();
+  }
+
+  /**
+   * An open panel's read at the socket's open goes over the socket, whose connection is new: in the wake walk on 11-22 the panels' HTTP
+   * reads at the open took 4.7 s behind a read ahead that the cut caught on the HTTP connection (~/work/p209-wake/after4). It reads over
+   * HTTP when the socket read fails.
+   */
+  private readOverSocket(): void {
+    const sent = performance.now();
+    live.read(this.of.path).then(answer => {
+      const next = (this.of.pick ? this.of.pick(answer as never) : answer) as T;
+      this.sent = Math.max(this.sent, sent);
+      this.current = true;
+      if (same(this.value, next)) this.error = null;
+      else this.set(next);
+    }, () => void this.read());
   }
 }
 

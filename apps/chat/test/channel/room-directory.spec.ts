@@ -40,10 +40,12 @@ test("a rooms refresh that changes only lastSeq and member status keeps the show
 });
 
 test("the socket's hello reads no kept answer whose read left after the socket opened", async ({ page }) => {
-  await open(page, "#/c/ch_general");
-  await page.waitForLoadState("networkidle");
   const sent: string[] = [];
   page.on("request", (r) => (r.url().includes("hello=1") ? sent.push(r.url()) : undefined));
+  // A read at the socket's open goes over the socket (kept.svelte.ts `readOverSocket`), so its frames count too.
+  page.on("websocket", (socket) => socket.on("framesent", (frame) => (String(frame.payload).includes("hello=1") ? sent.push(String(frame.payload)) : undefined)));
+  await open(page, "#/c/ch_general");
+  await page.waitForLoadState("networkidle");
   await page.evaluate(async () => {
     const { live } = await import(/* @vite-ignore */ "/src/lib/api/live.svelte.ts");
     const { kept } = await import(/* @vite-ignore */ "/src/lib/api/kept.svelte.ts");

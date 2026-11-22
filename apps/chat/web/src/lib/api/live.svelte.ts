@@ -9,7 +9,7 @@
  * 2.6 s after the network came back. So a page that has heard nothing for `QUIET_MS` asks the server for a pong, drops a socket that does
  * not answer, and tries a new one until one opens, at once when the browser says it is online or the page shows again.
  */
-import { RIDE_OUT_MS, retryNow } from "./client.ts";
+import { ApiError, RIDE_OUT_MS, retryNow } from "./client.ts";
 import type { ConversationId, LiveCommand, LiveEvent } from "./types.ts";
 
 /**
@@ -66,6 +66,11 @@ class Live {
   private pingAt: number | undefined;
   /** The tries since the socket went down. */
   private tries = 0;
+  /** What the page holds of the hello's lists, sent with each try so the hello carries only what changed (shared/hello-buckets.ts). */
+  private held: () => Record<string, string> = () => ({});
+  /** The reads on their way over the open socket, by id. */
+  private reads = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
+  private readId = 0;
 
   start(): void {
     if (this.started || typeof WebSocket === "undefined") return;
@@ -103,6 +108,7 @@ class Live {
     if (this.trying) this.forget(this.trying);
     const url = new URL("/api/live", location.href);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    for (const [name, value] of Object.entries(this.held())) url.searchParams.set(name, value);
     const socket = new WebSocket(url);
     this.trying = socket;
     this.tries += 1;
@@ -132,6 +138,7 @@ class Live {
       } catch {
         return;
       }
+      if (event.type === "answer") return this.answered(event);
       for (const listener of this.listeners) listener(event);
     };
     socket.onclose = () => {
@@ -157,9 +164,19 @@ class Live {
     this.lost(0);
   }
 
+  private answered({ id, status, value, error }: Extract<LiveEvent, { type: "answer" }>): void {
+    const read = this.reads.get(id);
+    if (!read) return;
+    this.reads.delete(id);
+    if (error === undefined && status < 400) read.resolve(value);
+    else read.reject(new ApiError(status, error ?? `The socket read answered ${status}`));
+  }
+
   private lost(wait: number): void {
     this.socket = null;
     this.pingAt = undefined;
+    for (const read of this.reads.values()) read.reject(new Error("The live socket closed before the answer came"));
+    this.reads.clear();
     this.wentDown();
     clearTimeout(this.nextTry);
     if (wait) this.nextTry = setTimeout(() => this.tryOpen(), wait);
@@ -180,6 +197,25 @@ class Live {
     this.start();
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  /** Names what the page holds of the hello's lists for each try to open the socket. */
+  holding(held: () => Record<string, string>): void {
+    this.held = held;
+  }
+
+  /**
+   * Reads a GET route over the open socket, which the server answers in order with its events. A page reads its open panels this way at
+   * the open: the socket is a new connection, while its HTTP connection may still wait in TCP's retries after a cut, as a panel's read at
+   * the open took 4.7 s in the wake walk on 11-22 (~/work/p209-wake/after4). It fails at once when no socket is open.
+   */
+  read(path: string): Promise<unknown> {
+    if (this.socket?.readyState !== WebSocket.OPEN) return Promise.reject(new Error("No live socket is open"));
+    const id = ++this.readId;
+    return new Promise((resolve, reject) => {
+      this.reads.set(id, { resolve, reject });
+      this.send({ type: "read", id, path });
+    });
   }
 
   /**
