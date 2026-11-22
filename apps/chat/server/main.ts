@@ -57,9 +57,15 @@ await skills.ready;
 const skillsMs = Math.round(performance.now() - skillsAt);
 // A successor reads the data dir only once the server it follows stopped and wrote its files (server/handoff.ts).
 const waitedAt = performance.now();
+let told: Promise<void> | undefined;
 if (port.predecessor) {
   await port.predecessor.stopped();
   takeLock();
+  // systemd takes this process as the main one now, before its state read, so cpu-protect.py moves it into the unit's core scope on its next
+  // 2 s pass while it reads: at load 133 to 139 on 11-22 a successor outside it took 2.45 s from the old server's stop to its listen, against
+  // 0.5 to 0.9 s at normal load. The old server has stopped by now, so it serves nothing that would run slower outside the scope.
+  told = tellSystemd(true, log);
+  told.catch(() => undefined);
 }
 const waitedMs = Math.round(performance.now() - waitedAt);
 /**
@@ -81,16 +87,19 @@ const host = config.fixture ? new FixtureHost() : boxes(config);
 if (config.fixture) seedFixture(host as FixtureHost, config.dataDir, Date.now(), config.box);
 const startAt = performance.now();
 app = new App(config, host, log);
-await app.start();
+const builtMs = Math.round(performance.now() - startAt);
+const started = await app.start();
 // A fixture server fills its own search index at once, so its first search does not wait for it.
 if (config.fixture) void app.searchEngine.start().catch(() => undefined);
+const servedAt = performance.now();
 const http = (server = serve(app, skills));
+const routesMs = Math.round(performance.now() - servedAt);
 const fd = port.fd;
 await new Promise<void>(resolve => (fd === null ? http.listen(config.port, config.listen, resolve) : http.listen({ fd }, resolve)));
 log(`apps/chat on http://${config.listen}:${config.port}${fd === null ? "" : ` through fd ${fd}`} (${config.fixture ? "fixture" : `pi-host ${config.socket}`}, data ${config.dataDir}); ` +
-  `modules ${loadedMs} ms, skills ${skillsMs} ms${port.predecessor ? `, the old server's stop ${waitedMs} ms` : ""}, state and start ${Math.round(performance.now() - startAt)} ms`);
+  `modules ${loadedMs} ms, skills ${skillsMs} ms${port.predecessor ? `, the old server's stop ${waitedMs} ms` : ""}, state and start ${Math.round(performance.now() - startAt)} ms (state read ${builtMs} ms, ${started}, routes ${routesMs} ms)`);
 try {
-  await tellSystemd(port.predecessor !== null, log);
+  await (told ?? tellSystemd(false, log));
 } catch (error) {
   // systemd must take a successor as the main process before the old server exits, or it reads that exit as the unit's end.
   log(`systemd-notify: ${error instanceof Error ? error.message : String(error)}; this process exits`);

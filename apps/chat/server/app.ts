@@ -351,12 +351,16 @@ export class App {
     this.wss.on("connection", socket => this.connect(socket));
   }
 
-  async start(): Promise<void> {
+  /** Starts the loops; resolves with how long it waited for this box's own relay and for the first thread list, which a hand-over's log names. */
+  async start(): Promise<string> {
+    const began = performance.now();
     for (const relay of this.routing?.relays() ?? []) relay.start();
     // This box's own agents go through its relay too; its first thread list waits for the hello, as PiHost waits for a pi-host restart.
     const own = this.routing?.relays().find(relay => relay.name === this.config.box);
     if (own && !(await own.whenUp(OWN_RELAY_WAIT_MS))) this.log(`relay ${own.name}: no hello in ${OWN_RELAY_WAIT_MS / 1000} s, starting with its agents away`);
+    const relayed = performance.now();
     await this.threads.start(this.config.fixture ? 1000 : 2000);
+    const listed = performance.now();
     this.rooms.start();
     this.groups.start();
     this.boards.start();
@@ -364,6 +368,7 @@ export class App {
     this.laterDue.arm();
     this.keptUsage?.start();
     if (this.config.meili) void this.searchEngine.refresh().catch(error => this.log(`search: ${String(error)}`));
+    return `own relay ${Math.round(relayed - began)} ms, thread list ${Math.round(listed - relayed)} ms, loops ${Math.round(performance.now() - listed)} ms`;
   }
 
   /**

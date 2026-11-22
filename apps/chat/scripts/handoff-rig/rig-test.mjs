@@ -295,6 +295,27 @@ for (const signal of ["SIGKILL", "SIGSTOP"]) {
   if (result.backMs === null || result.backMs > 30_000) failures.push(`after SIGSTOP of the successor ${victim} during the hand-over no new server answered in ${result.backMs === null ? "60 s" : `${result.backMs} ms`}`);
   if (result.servers.length !== 1) failures.push(`after SIGSTOP during the hand-over: ${result.servers.length} server processes`);
 }
+// A successor that dies after the old server stopped, while it reads its state: systemd already took it as the main process then
+// (server/main.ts sends MAINPID= at the stop), so its end is the unit's end and Restart= brings a new server.
+{
+  const before = Number(show("MainPID"));
+  const since = Math.floor(Date.now() / 1000);
+  execFileSync("systemctl", ["--user", "reload", unit]);
+  let victim = 0;
+  for (const end = Date.now() + 30_000; !victim && Date.now() < end; await sleep(30)) {
+    const lines = execFileSync("journalctl", ["--user", "-u", unit, "-u", unit.replace(/\.service$/, "-core.scope"), "--since", `@${since}`, "--no-pager", "-o", "cat"], { encoding: "utf8" });
+    const loaded = /handoff: (\d+) loaded in [^\n]*this process stopped in/.exec(lines);
+    if (loaded) victim = Number(loaded[1]);
+  }
+  const result = victim ? await replaced(victim, "SIGKILL") : { signal: "SIGKILL", victim: null, by: null, backMs: null };
+  result.when = "after the old server stopped";
+  if (victim) try { process.kill(victim, "SIGKILL"); } catch {}
+  await sleep(3000);
+  result.servers = servers().filter(pid => pid !== victim && pid !== before);
+  crashes.push(result);
+  if (result.backMs === null || result.backMs > 15_000) failures.push(`after SIGKILL of the successor ${victim} after the old server stopped no new server answered in ${result.backMs === null ? "60 s" : `${result.backMs} ms`}`);
+  if (result.servers.length !== 1) failures.push(`after SIGKILL after the old server stopped: ${result.servers.length} server processes`);
+}
 // Each old server passes calls on for at most the keep-alive timeout plus 5 s (http.ts lingerForwarding), 105 s.
 for (const end = Date.now() + 120_000; Date.now() < end; await sleep(1000)) {
   watchForwarders();
