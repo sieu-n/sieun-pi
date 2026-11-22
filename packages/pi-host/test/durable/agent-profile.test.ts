@@ -156,7 +156,13 @@ test("a work thread names a channel comm thread as its main one when its agent h
   assert.match(fields.instructions ?? "", /Send it no acknowledgment or progress note/);
   assert.match(fields.instructions ?? "", /main comm thread 5d50e997 is the one in its DM, or else in its first room[\s\S]*to the main comm thread with `await agent_message\.send\(report, receiver_role="sibling", receiver_name="5d50e997"\)`/);
   assert.doesNotMatch(fields.instructions ?? "", /DM comm thread/);
-  assert.deepEqual(roleFields({ agent: "ag_vent", dir: "/a/vent", role: "work" }), {}, "an agent with no comm thread at all keeps tell_owner");
+});
+
+test("a new agent's work thread holds the work role before its comm thread exists, so its first turn has no tell_owner (d3 recall, 11-22)", () => {
+  const fields = roleFields({ agent: "ag_vent", dir: "/a/vent", role: "work" });
+  assert.deepEqual(fields.tools, { remove: ["tell_owner"] });
+  assert.match(fields.instructions ?? "", /You are agent ag_vent's work thread\. You do not talk with people, so you have no tell_owner tool[\s\S]*comm threads are not made yet, so answer an input that came from no comm thread in your last text/);
+  assert.doesNotMatch(fields.instructions ?? "", /receiver_name="undefined"|main comm thread/);
 });
 
 test("a list of options opens with the pick, explains it with an example and how it fits, and gives each other one line (owner, #sw-factory-build p97)", () => {

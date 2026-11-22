@@ -206,9 +206,10 @@ test("an agent.ref sets the root's tools and instructions for its role in its co
     assert.match(workInstructions(work), /A follow-up on earlier work[\s\S]*steer it with[\s\S]*mode="steer"[\s\S]*else start one job whose brief points at that job's findings/);
     assert.match(workInstructions(work), /writes a page or report from other jobs' findings only after those jobs have reported/);
 
-    await threads.docPut(thread.id, "agent.ref", { agent: "ag_vent", dir: folder, role: "work" });
+    const fresh = { agent: "ag_vent", dir: folder, role: "work" } as const;
+    await threads.docPut(thread.id, "agent.ref", fresh);
     const plain = await state();
-    assert.deepEqual([plain.tools, plain.modelTools, plain.instructions], [undefined, undefined, undefined], "a work ref with no comm clears what pi-host set");
+    assert.deepEqual([plain.tools, plain.modelTools, plain.instructions], [{ remove: ["tell_owner"] }, undefined, workInstructions(fresh)], "a work ref with no comm yet keeps the work role");
 
     await open.root.configure({ instructions: "the owner's own words" }, context);
     await threads.docPut(thread.id, "agent.ref", comm);

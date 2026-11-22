@@ -217,7 +217,7 @@ Phase 4 built these calls from Prime's own tools, and the table at the end of ph
 
 | Tool or call | Comm | Work | Job | Implemented in |
 |---|---|---|---|---|
-| `tell_owner` (`send_message` is its alias) | yes | no, when the agent has a comm thread | yes | Prime's chat tool with its guard (`legacy/prime/user-history/src/chat-guard.ts`), installed by `packages/pi-host/src/durable/registry.ts` |
+| `tell_owner` (`send_message` is its alias) | yes | no, also before its comm thread exists | yes | Prime's chat tool with its guard (`legacy/prime/user-history/src/chat-guard.ts`), installed by `packages/pi-host/src/durable/registry.ts` |
 | `agent_message.send` in ipython | hands work over or steers | reports to the comm thread | reports to its parent | pi-host `durable/rlm.ts`; a comm-to-work message becomes a `comm.hand` task (`durable/threads.ts`, `durable/comm.ts`) |
 | `agent_observe` in ipython | reads the work thread | yes | yes | pi-host `durable/rlm.ts`, read in process with no input to the thread it reads |
 | `stop_work` | yes | no | no | `durable/comm.ts`, a tool only comm threads load |

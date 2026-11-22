@@ -10,8 +10,8 @@
  *
  * The ref's role also sets the root conversation's tools and instructions (`applyAgentRole`), in the commit that writes the ref and again
  * each time pi-host opens the thread, so a release that changes a role's text reaches every thread of that role: a comm thread loses the
- * coding tools that change files and gets `stop_work` (`comm.ts`), and a work thread that has a comm thread loses `tell_owner`. pi-host
- * keeps what it wrote in the `agent.role` document, so it changes or clears only a value it set itself.
+ * coding tools that change files and gets `stop_work` (`comm.ts`), and a work thread loses `tell_owner`, also before its comm thread exists.
+ * pi-host keeps what it wrote in the `agent.role` document, so it changes or clears only a value it set itself.
  */
 import type { Context, JsonValue } from "@earendil-works/chord";
 import { AgentDoc, defineDoc, ROOT_CONVERSATION_ID, type AgentState, type ConversationId, type DocumentReader, type Tx } from "@earendil-works/pi-durable";
@@ -375,11 +375,16 @@ function groupCommInstructions(ref: { agent: string; room: string; work: string 
   ], platformFeedbackStep(ref)), memoryStep(ref)).join("\n");
 }
 
-/** The root conversation's instructions for a work thread whose agent has a comm thread; `comm` is its DM's or else its first room's. */
-export function workInstructions(ref: { agent: string; comm: string }): string {
+/**
+ * The root conversation's instructions for an agent's work thread; `comm` is its main comm thread, its DM's or else its first room's, once
+ * apps/chat made one. A new agent's work thread gets its first input before then, so it already holds the work role without it (d3, 11-22).
+ */
+export function workInstructions(ref: { agent: string; comm?: string }): string {
   return [
     `You are agent ${ref.agent}'s work thread. You do not talk with people, so you have no tell_owner tool.`,
-    `Your agent has one comm thread per room, which talks there and hands you tasks as agent messages. Its main comm thread ${ref.comm} is the one in its DM, or else in its first room.`,
+    ref.comm
+      ? `Your agent has one comm thread per room, which talks there and hands you tasks as agent messages. Its main comm thread ${ref.comm} is the one in its DM, or else in its first room.`
+      : "Your agent has one comm thread per room, which talks there and hands you tasks as agent messages. Its comm threads are not made yet, so answer an input that came from no comm thread in your last text.",
     "When a task finishes, fails or gets blocked, report to the comm thread that handed it to you, and lead the report with the answer. " +
       "Send it no acknowledgment or progress note, such as \"Taken\" or \"expect it within the hour\": it reads your state itself when someone asks, and it posts your report as the result. " +
       "When a task asks you to edit a post in a room with `edit_message`, an edit only fills in results and the answer, never a status of your jobs or plans such as \"Working on it. Three research jobs read the spec now\" (c234). " +
@@ -389,7 +394,7 @@ export function workInstructions(ref: { agent: string; comm: string }): string {
     "A follow-up on earlier work, such as a question in a thread whose result you already reported, goes to the job that did that work: steer it with `agent_message.send(task, receiver_role=\"child\", receiver_name=<job>, mode=\"steer\")` if it still runs, else start one job whose brief points at that job's findings and page. " +
       "Start several fresh research jobs for a follow-up only when the earlier findings cannot answer it.",
     "Start a job that writes a page or report from other jobs' findings only after those jobs have reported, and give it their findings. Started beside them, it sits idle and can exit with no reply.",
-    `Send a report no comm thread asked for to the main comm thread with \`await agent_message.send(report, receiver_role="sibling", receiver_name=${JSON.stringify(ref.comm)})\`.`,
+    ...ref.comm ? [`Send a report no comm thread asked for to the main comm thread with \`await agent_message.send(report, receiver_role="sibling", receiver_name=${JSON.stringify(ref.comm)})\`.`] : [],
     "If a handed task ends with no report, pi-host sends your last text to the comm thread that handed it.",
     ...ref.agent === PLATFORM_AGENT.id ? [
       `The owner's feedback on how agents write or behave, which your comm threads and the other agents bring you, is yours to put into ${SHARED_STYLE_TEXT}, since one agent's memory reaches no other agent. ` +
@@ -404,10 +409,10 @@ type RoleFields = Pick<AgentState, "tools" | "modelTools" | "instructions">;
 const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
 const ROLE_FIELDS = ["tools", "modelTools", "instructions"] as const;
 
-/** The tools filter, offered tools and instructions a ref's role gives the root conversation; none for a job or a work thread with no comm. */
+/** The tools filter, offered tools and instructions a ref's role gives the root conversation; none for a job. */
 export function roleFields(ref: AgentRef | undefined): RoleFields {
   if (ref?.role === "comm") return { tools: { remove: [...COMM_REMOVED_TOOLS] }, modelTools: { add: [STOP_WORK_TOOL] }, instructions: commInstructions(ref) };
-  if (ref?.role === "work" && ref.comm) return { tools: { remove: ["tell_owner"] }, instructions: workInstructions({ agent: ref.agent, comm: ref.comm }) };
+  if (ref?.role === "work") return { tools: { remove: ["tell_owner"] }, instructions: workInstructions(ref) };
   return {};
 }
 
@@ -435,7 +440,10 @@ export async function applyAgentRole(tx: Tx, ref: AgentRef | undefined): Promise
   for (const field of ROLE_FIELDS) {
     const current = state[field] as JsonValue | undefined;
     const mine = applied[field];
-    if (current !== undefined && (mine === null || !same(current, mine))) continue;
+    if (current !== undefined && (mine === null || !same(current, mine))) {
+      if (mine !== null) applied[field] = null;
+      continue;
+    }
     const next = want[field] as JsonValue | undefined;
     if (next === undefined) {
       if (current !== undefined) delete state[field];
