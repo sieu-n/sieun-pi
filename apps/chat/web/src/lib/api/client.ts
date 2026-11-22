@@ -542,6 +542,8 @@ export const api = {
   patchLater: (id: string, patch: LaterPatch) => call<{ item: LaterItem }>("PATCH", `/api/later/${enc(id)}`, patch),
   /** Unsaves a post; unsaving one that is gone answers `{item: null}`. */
   unsaveLater: (id: string) => call<{ item: LaterItem | null }>("DELETE", `/api/later/${enc(id)}`),
+  /** A Later item of the owner's own text, such as /remind me's, which Later lists and, with `remindAt`, the due timer fires as a post's. */
+  remindNote: (note: string, remindAt?: number) => call<{ item: LaterItem }>("POST", "/api/later", { note, ...(remindAt !== undefined ? { remindAt } : {}) } satisfies LaterRequest),
   /** Undo of an unsave: puts the item `unsaveLater` answered back as it was. */
   restoreLater: (item: LaterItem) => call<{ item: LaterItem }>("PUT", `/api/later/${enc(item.id)}`, item),
   /** Slack's Edit message on the owner's own room post. */

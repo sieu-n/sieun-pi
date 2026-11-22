@@ -265,13 +265,18 @@ export interface ForMeList { agent: AgentId; items: ForMeItem[]; pending: number
 
 /** Save for later (server/later.ts): Slack's In progress is `open`, its Archived is `archived` and its Completed is `done`. */
 export type LaterState = "open" | "archived" | "done";
-/** One room post a principal saved for later, the owner or an agent (`by`), stored in `<data dir>/later/<by>.json`. */
-export interface LaterItem {
-  /** `<room id>:<post id>`, such as `ch_1a2b3c4d:p12`: one item per saved post. */
+/**
+ * One Later item of a principal, the owner or an agent (`by`), stored in `<data dir>/later/<by>.json`: a room post saved for later, or a
+ * reminder the owner wrote himself with /remind, which names no post.
+ */
+export type LaterItem = PostLaterItem | NoteLaterItem;
+/** A saved room post: its id is `<room id>:<post id>`, such as `ch_1a2b3c4d:p12`, one item per saved post. */
+export interface PostLaterItem extends LaterFields { room: RoomId; post: string; note?: never }
+/** A /remind reminder or a saved wiki page: its id is `note:<random>` and `note` is its text. With no `remindAt` it is a to-do in Later. */
+export interface NoteLaterItem extends LaterFields { note: string; room?: never; post?: never }
+interface LaterFields {
   id: string;
   by: "owner" | AgentId;
-  room: RoomId;
-  post: string;
   savedAt: Ms;
   state: LaterState;
   /** When it was checked off; present only while done. */
@@ -287,8 +292,12 @@ export interface LaterItem {
    */
   unread?: true;
 }
-/** A Later item with what its row shows of the post. `gone` is a post that was deleted or whose room is gone, which has no text. */
-export interface LaterRow extends LaterItem {
+/** A Later item with what its row shows: a post's room, author and text, or a /remind reminder's text under the owner's name. */
+export type LaterRow = PostLaterRow | NoteLaterRow;
+/** A reminder's row: the owner wrote it, `text` is its note and `at` when he set it. */
+export interface NoteLaterRow extends NoteLaterItem { author: Principal; text: string; at: Ms; images: 0; roomKind?: never; roomName?: never; threadRoot?: never; gone?: never; test?: never }
+/** A saved post's row. `gone` is a post that was deleted or whose room is gone, which has no text. */
+export interface PostLaterRow extends PostLaterItem {
   roomKind: "dm" | "channel" | "solo";
   /** `#name` for a channel, the Solo room's name, or the agent's name for its DM. */
   roomName: string;
@@ -333,8 +342,8 @@ export interface AskNotice { kind: "ask"; chatId: string; chatName: string; todo
 export interface LaterList { items: LaterRow[]; open: number; archived: number; done: number }
 /** What a room post shows its reader about the reader's own save; absent when the reader has no open save of it. */
 export interface LaterMark { saved: boolean; remindAt?: Ms; /** Kept unread: the owner marked it unread and has not handled it. */ unread?: true }
-/** `POST /api/later`. Saving a saved post keeps its one item. */
-export interface LaterRequest { room: RoomId; post: string; remindAt?: Ms }
+/** `POST /api/later`: saves a post, where saving a saved post keeps its one item, or sets a /remind reminder of the owner's own text. */
+export type LaterRequest = { room: RoomId; post: string; remindAt?: Ms } | { note: string; remindAt?: Ms };
 /** `PATCH /api/later/:id`: check off, archive or reopen, and set or clear (`null`) the reminder. */
 export interface LaterPatch { state?: LaterState; remindAt?: Ms | null }
 

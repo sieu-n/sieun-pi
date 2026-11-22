@@ -4,7 +4,7 @@
  */
 import { live } from "./api/live.svelte";
 import type { LaterRow } from "./api/types";
-import { later } from "./later.svelte";
+import { later, laterHref } from "./later.svelte";
 import { remindPresets } from "./remind";
 import { conversationHref, router } from "./router.svelte";
 import { notifyOnce, notifySystem, onNotifyAction } from "./remind-notify";
@@ -18,18 +18,19 @@ function snippet(row: LaterRow): string {
   return text.length > SNIPPET ? `${text.slice(0, SNIPPET - 1)}…` : text;
 }
 
-/** Opens the reminded post where it sits: in its thread when it is a reply, else in its room. */
-export function openReminded(row: Pick<LaterRow, "room" | "post" | "threadRoot">): void {
+/** Opens the reminded post where it sits: in its thread when it is a reply, else in its room; a /remind reminder opens Later. */
+export function openReminded(row: LaterRow): void {
+  if (row.room === undefined) return router.navigate(laterHref());
   router.navigate(conversationHref(row.room, row.threadRoot ? { thread: row.threadRoot, messageId: row.post } : { messageId: row.post }));
 }
 
 export function laterDue(row: LaterRow): void {
   const mine = row.author?.kind === "owner";
-  const from = row.roomKind === "dm"
+  const from = row.room === undefined ? "" : row.roomKind === "dm"
     ? (mine ? `Your message to ${row.roomName}` : row.author?.name ?? row.roomName)
     : mine ? `Your message in ${row.roomName}` : row.author ? `${row.author.name} in ${row.roomName}` : row.roomName;
   // A post he marked unread and has not handled comes back each morning (server/keep-unread.ts).
-  const title = row.unread ? `Still unread: ${from}` : `Reminder: ${from}`;
+  const title = row.unread ? `Still unread: ${from}` : row.room === undefined ? "Reminder" : `Reminder: ${from}`;
   const body = snippet(row);
   // Slack's reminder message: Mark as complete and a Snooze menu sit on it, so neither needs a trip to Later.
   const snooze = (): MenuEntry[] => remindPresets().map((p): MenuEntry => ({ id: `snooze-${p.id}`, label: p.label, onselect: () => void later.remind(row, p.at) }));

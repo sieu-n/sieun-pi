@@ -153,14 +153,14 @@ export class App {
     });
     this.later.onChange(({ by, item }) => {
       this.broadcast({ type: "later", by, open: this.later.openCount(by) });
-      const post = by === "owner" ? this.agentStore.postsOf(item.room).find(p => p.id === item.post) : undefined;
-      if (post) this.emitPosts(item.room, [post]);
+      const post = by === "owner" && item.room !== undefined ? this.agentStore.postsOf(item.room).find(p => p.id === item.post) : undefined;
+      if (post && item.room !== undefined) this.emitPosts(item.room, [post]);
     });
     this.laterDue = new LaterDue({
       items: () => this.later.items("owner"),
       notified: (item, at) => (this.later.get("owner", item.id) ? this.later.update("owner", item.id, { notifiedAt: at }) : undefined),
       fire: item => {
-        if (item.unread) {
+        if (item.unread && item.room !== undefined) {
           try {
             this.roomUnreadFrom(item.room, item.post);
           } catch (error) {
@@ -178,7 +178,7 @@ export class App {
       if (by !== "owner") return;
       this.laterDue.arm();
       // Checking a Keep unread item off, archiving it or unsaving it handles the post, so its room stops reading unread from it.
-      if (item.unread && (removed || item.state !== "open") && this.store.state.reads[item.room]?.from === item.post) this.markRead(item.room);
+      if (item.unread && item.room !== undefined && (removed || item.state !== "open") && this.store.state.reads[item.room]?.from === item.post) this.markRead(item.room);
     });
     const linkOf = routing ? (box: string) => routing.link(box).state : undefined;
     const fileNotes = (text: string, refs: readonly ImageRef[]) => withFileNotes(text, refs, config.box, ref => this.uploadPath(ref));
@@ -321,7 +321,7 @@ export class App {
       this.search.boxes = () => routing.list().filter(b => b.box !== config.box).map(b => ({ box: b.box, link: () => routing.link(b.box) }));
     }
     this.search.testSends = () => this.rooms.allTestSends();
-    this.search.saved = () => this.later.items("owner").filter(item => item.state === "open" && !item.unread).map(item => postDocId(item.room, item.post));
+    this.search.saved = () => this.later.items("owner").flatMap(item => (item.state === "open" && !item.unread && item.room !== undefined ? [postDocId(item.room, item.post)] : []));
     // Search leaves out every comm thread and every thread of a walk's test agent.
     this.search.commThreads = () => [
       ...this.agents.list().flatMap(record => Object.values(record.comm ?? {})),
@@ -746,7 +746,7 @@ export class App {
   /** Undo of an unsave from Later (later.ts `restore`): the item comes back as it was, and a post kept unread makes its room unread from it again. */
   restoreLater(id: string, input: Record<string, unknown>): LaterItem {
     const item = this.later.restore("owner", id, input);
-    if (item.unread && item.state === "open") this.roomUnreadFrom(item.room, item.post);
+    if (item.unread && item.state === "open" && item.room !== undefined) this.roomUnreadFrom(item.room, item.post);
     return item;
   }
 

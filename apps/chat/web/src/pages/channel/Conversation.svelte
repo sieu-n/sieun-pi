@@ -41,6 +41,8 @@
   import Timeline from "./Timeline.svelte";
   import { directory } from "./directory.svelte";
   import type { SlashCommand } from "./typeahead";
+  import { parseRemind } from "./remind-command";
+  import { later as laterStore } from "$lib/later.svelte";
   import { AuthorBoards } from "./author-boards.svelte";
   import { avatarOf, mentionContext, placeText, type Outgoing } from "./present";
 
@@ -415,9 +417,17 @@
         ]
       : []),
     ...(isChannel && header && !archived ? [{ name: "archive", description: "Archive this channel", run: () => archiveRoom(id, name) }] : []),
+    { name: "remind", args: "me [what] [when]", description: "Set a reminder, such as /remind me call the bank in 20 min", run: ({ args }) => remindMe(args) },
     { name: "search", args: "[words]", description: "Search in this conversation", run: ({ args }) => search.open({ kind: "conversation", id }, args) },
     ...(working ? [{ name: "stop", description: "Stop the answer the agent is writing", run: stop }] : []),
   ]);
+
+  /** Slack's /remind me <what> <when>: a Later reminder of his own text; a line it cannot read keeps the draft and says how to write it. */
+  async function remindMe(args: string) {
+    const parsed = parseRemind(args);
+    if (!parsed.ok) throw new Error(parsed.error);
+    await laterStore.remindMe(parsed.text, parsed.at);
+  }
 
   /** Slack's /invite @agent: with no agent named it opens the room's add picker. */
   async function inviteAgents(mentions: string[]) {

@@ -105,4 +105,28 @@ describe("save for later on the fixture server", () => {
     assert.equal((await s.send("PUT", `/api/later/${encodeURIComponent("ch_cutover:p999999")}`, removed)).status, 404);
     assert.equal((await s.send("PUT", `/api/later/${encodeURIComponent(id)}`, { ...removed, state: "gone" })).status, 400);
   });
+
+  test("/remind writes a reminder of his own text with no post, its row reads it, it falls due, and Undo of a remove puts it back", async () => {
+    const live = await s.live();
+    assert.equal((await save({ note: "  ", remindAt: Date.now() + 60_000 })).status, 400);
+    const todo = await save({ note: "read [Plan](wiki:projects/plan.html)" });
+    assert.deepEqual([todo.status, todo.body.item.remindAt], [200, undefined], "a note with no time is a to-do");
+    await s.send("DELETE", `/api/later/${encodeURIComponent(todo.body.item.id)}`);
+    const set = await save({ note: "call the bank", remindAt: Date.now() + 60_000 });
+    assert.equal(set.status, 200, set.body.error);
+    const item = set.body.item;
+    assert.match(item.id, /^note:/);
+    assert.equal(item.note, "call the bank");
+    assert.equal(item.room, undefined);
+    const row = (await s.get<LaterList>("/api/later?state=open")).items.find(r => r.id === item.id)!;
+    assert.deepEqual([row.text, row.author?.id, row.images], ["call the bank", "owner", 0]);
+    await patch(item.id, { remindAt: Date.now() - 1 });
+    const due = await live.waitFor(e => e.type === "later_due" && e.row.id === item.id);
+    assert.equal(due.type === "later_due" && due.row.text, "call the bank");
+    const removed = (await s.send<{ item: LaterItem }>("DELETE", `/api/later/${encodeURIComponent(item.id)}`)).body.item;
+    const back = await s.send<{ item: LaterItem; error?: string }>("PUT", `/api/later/${encodeURIComponent(item.id)}`, removed);
+    assert.equal(back.status, 200, back.body.error);
+    assert.equal(back.body.item.note, "call the bank");
+    await s.send("DELETE", `/api/later/${encodeURIComponent(item.id)}`);
+  });
 });

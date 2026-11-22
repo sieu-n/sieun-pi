@@ -12,7 +12,8 @@
  */
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
-import type { Item, LaterItem, LaterList, LaterMark, LaterPatch, LaterRow, LaterState, Ms, Principal } from "../web/src/lib/api/types.ts";
+import { randomUUID } from "node:crypto";
+import type { Item, LaterItem, LaterList, LaterMark, LaterPatch, LaterRow, LaterState, Ms, NoteLaterItem, PostLaterItem, Principal } from "../web/src/lib/api/types.ts";
 import { isGroupRoom, type AgentStore, type RoomId, type RoomPost, type RoomRow } from "./agent-store.ts";
 import { writeJsonLater } from "./disk.ts";
 import { readJson } from "./store.ts";
@@ -104,15 +105,16 @@ export class Later {
   /** The items a list shows: the owner's leave out posts in test rooms unless `test` asks for them. */
   private listed(by: string, test: boolean): LaterItem[] {
     const all = this.load(by);
-    return by !== "owner" || test ? all : all.filter(i => !this.deps.store.isTest(i.room));
+    return by !== "owner" || test ? all : all.filter(i => i.room === undefined || !this.deps.store.isTest(i.room));
   }
 
   get(by: string, id: string): LaterItem | undefined {
     return this.load(principalOf(by)).find(i => i.id === id);
   }
 
-  find(by: string, room: RoomId, post: string): LaterItem | undefined {
-    return this.get(by, laterId(room, post));
+  find(by: string, room: RoomId, post: string): PostLaterItem | undefined {
+    const item = this.get(by, laterId(room, post));
+    return item?.note === undefined ? item : undefined;
   }
 
   /** What a post shows its reader `by` about its own save, or undefined when `by` has no open save of it. */
@@ -126,7 +128,8 @@ export class Later {
    * Saves the post for `by`. Saving a saved post keeps its item, opens it again when it was done and takes a new `remindAt`, so a retry or
    * a second click writes one item.
    */
-  save(by: string, input: { room?: unknown; post?: unknown; remindAt?: unknown }): LaterItem {
+  save(by: string, input: { room?: unknown; post?: unknown; note?: unknown; remindAt?: unknown }): LaterItem {
+    if (input.note !== undefined) return this.remind(by, input.note, input.remindAt);
     const who = principalOf(by);
     if (typeof input.room !== "string" || typeof input.post !== "string") throw new LaterError(400, "A save names its post as {room, post}, such as {room: \"ch_1a2b3c4d\", post: \"p12\"}.");
     const { room, post } = input as { room: RoomId; post: string };
@@ -139,6 +142,19 @@ export class Later {
       return this.write(who, { ...this.reopened(old), ...(remindAt !== undefined ? { remindAt } : {}) }, remindAt !== undefined);
     }
     return this.write(who, { id: laterId(room, post), by: who, room, post, savedAt: Date.now(), state: "open", ...(remindAt !== undefined ? { remindAt } : {}) }, false);
+  }
+
+  /**
+   * Slack's /remind me, and a saved wiki page: an item of the principal's own text, with no post, due at `remindAt` when it has one. Each
+   * call writes a new item.
+   */
+  remind(by: string, note: unknown, at: unknown): NoteLaterItem {
+    const who = principalOf(by);
+    if (typeof note !== "string" || !note.trim()) throw new LaterError(400, "A note names its text as note, such as {note: \"call the bank\", remindAt: 1795300000000}.");
+    const remindAt = timeOf(at, "remindAt");
+    const item: NoteLaterItem = { id: `note:${randomUUID().slice(0, 8)}`, by: who, note: note.trim().slice(0, 4000), savedAt: Date.now(), state: "open", ...(remindAt !== undefined ? { remindAt } : {}) };
+    this.write(who, item, false);
+    return item;
   }
 
   /**
@@ -205,7 +221,9 @@ export class Later {
     const cut = id.indexOf(":");
     const room = id.slice(0, cut) as RoomId;
     const post = id.slice(cut + 1);
-    if (cut < 1 || !this.deps.store.postsOf(room).some(p => p.id === post)) throw new LaterError(404, `No post ${id} to put back in Later.`);
+    const note = room === "note" ? input.note : undefined;
+    if (room === "note" && (typeof note !== "string" || !note.trim())) throw new LaterError(400, "A reminder put back names its text as note.");
+    if (room !== "note" && (cut < 1 || !this.deps.store.postsOf(room).some(p => p.id === post))) throw new LaterError(404, `No post ${id} to put back in Later.`);
     if (input.state !== "open" && input.state !== "archived" && input.state !== "done") throw new LaterError(400, "A Later state is open, archived or done.");
     const savedAt = timeOf(input.savedAt, "savedAt");
     if (savedAt === undefined) throw new LaterError(400, "An item put back names its savedAt, the time in ms it was first saved.");
@@ -214,7 +232,7 @@ export class Later {
     const remindAt = timeOf(input.remindAt, "remindAt");
     const notifiedAt = remindAt !== undefined ? timeOf(input.notifiedAt, "notifiedAt") : undefined;
     return this.write(who, {
-      id: laterId(room, post), by: who, room, post, savedAt, state: input.state,
+      ...(typeof note === "string" ? { id, note } : { id: laterId(room, post), room, post }), by: who, savedAt, state: input.state,
       ...(doneAt !== undefined ? { doneAt } : {}), ...(archivedAt !== undefined ? { archivedAt } : {}), ...(remindAt !== undefined ? { remindAt } : {}), ...(notifiedAt !== undefined ? { notifiedAt } : {}),
       ...(input.unread === true ? { unread: true as const } : {}),
     }, false);
@@ -255,6 +273,7 @@ export class Later {
 
   /** The item with what its row shows: the post's author, room, text and time, or `gone` once the post was deleted or its room is gone. */
   private row(item: LaterItem): LaterRow {
+    if (item.note !== undefined) return { ...item, author: this.deps.principal(item.by), text: item.note, at: item.savedAt, images: 0 };
     const room = this.deps.store.rooms.rooms.find(r => r.id === item.room);
     const post = room ? this.deps.store.postsOf(room.id).find(p => p.id === item.post) : undefined;
     const roomKind = room?.kind ?? (item.room.startsWith("dm_") ? "dm" : item.room.startsWith("so_") ? "solo" : "channel");

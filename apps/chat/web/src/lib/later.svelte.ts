@@ -132,14 +132,22 @@ class LaterStore {
   }
 
   private async restore(item: LaterItem): Promise<void> {
-    this.optimistic.set(key(item.room, item.post), true);
+    const saved = item.room !== undefined ? key(item.room, item.post) : null;
+    if (saved) this.optimistic.set(saved, true);
     try {
       await api.restoreLater(item);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not put the message back in Later");
     } finally {
-      this.optimistic.delete(key(item.room, item.post));
+      if (saved) this.optimistic.delete(saved);
     }
+  }
+
+  /** Slack's /remind me: sets a reminder of his own text; a failure throws, so the command keeps its draft. */
+  async remindMe(note: string, at: number): Promise<void> {
+    void askNotifyPermission();
+    await api.remindNote(note, at);
+    toast.success(remindedText(at, Date.now()));
   }
 
   /** Sets, snoozes or clears (`null`) a row's reminder, or on a post kept unread moves or stops its return; the live later event re-reads the list. */
@@ -174,7 +182,13 @@ class LaterStore {
   /** Unsaves a row from the Later page. */
   async remove(row: LaterRow): Promise<void> {
     this.lists = { ...this.lists, [row.state]: this.lists[row.state]?.filter((r) => r.id !== row.id) ?? null };
-    await this.unsave(row.room, row.post);
+    if (row.room !== undefined) return this.unsave(row.room, row.post);
+    try {
+      const { item } = await api.unsaveLater(row.id);
+      if (item) this.note("Removed from Later", { label: "Undo", run: () => void this.restore(item) });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not remove the reminder from Later");
+    }
   }
 
   private move(row: LaterRow, state: LaterState): void {

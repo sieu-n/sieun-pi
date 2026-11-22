@@ -82,7 +82,7 @@ export class AgentLater {
 
   /** Puts the item's wake in the folder while its reminder waits, and takes it away otherwise. The owner's reminders are later-due.ts's. */
   syncWake(item: LaterItem, removed = false): void {
-    if (item.by === "owner") return;
+    if (item.by === "owner" || item.room === undefined) return;
     const path = this.wakePath(item);
     const record = this.deps.record(item.by);
     const thread = record && this.deps.thread(record, item.room);

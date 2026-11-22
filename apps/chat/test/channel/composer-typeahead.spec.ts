@@ -100,3 +100,31 @@ test("/invite @agent adds it, /remove @agent takes it out with Undo, and /archiv
   await page.keyboard.press("Enter");
   await expect(page.getByText(/Archived #slash-members/)).toBeVisible();
 });
+
+test("/remind me <what> <when> sets a Later reminder of his own text, and Later lists it under Reminder", async ({ page, request }) => {
+  const word = tag();
+  const created = await request.post("/api/rooms", { data: { kind: "channel", name: `slash-remind-${word}`, members: [], test: true } });
+  const { id } = (await created.json()) as { id: string };
+  await open(page, `#/c/${id}`);
+  const input = composerInput(conversation(page));
+  await input.click();
+  await page.keyboard.type("/remind me sometime");
+  await page.keyboard.press("Enter");
+  await expect(page.getByText(/Say what and when/)).toBeVisible();
+  await expect(input).toHaveText("/remind me sometime");
+  await input.evaluate((e) => { e.textContent = ""; e.dispatchEvent(new InputEvent("input", { bubbles: true })); });
+  await page.keyboard.type(`/remind me call the bank ${word} in 20 min`);
+  await page.keyboard.press("Enter");
+  await expect(page.getByText(/We'll remind you at/)).toBeVisible();
+  await expect(input).toHaveText("");
+  const list = (await (await request.get("/api/later?state=open")).json()) as { items: { id: string; text: string; remindAt?: number; room?: string }[] };
+  const item = list.items.find((i) => i.text === `call the bank ${word}`)!;
+  expect(item.room).toBeUndefined();
+  expect(item.remindAt! - Date.now()).toBeGreaterThan(18 * 60_000);
+  await open(page, "#/c/later", "later-page");
+  const row = page.locator(`[data-later-id="${item.id}"]`);
+  await expect(row).toContainText(`call the bank ${word}`);
+  await expect(row.locator("[data-later-note]")).toHaveText("Reminder");
+  await request.delete(`/api/later/${encodeURIComponent(item.id)}`);
+  await request.patch(`/api/rooms/${id}`, { data: { archived: true } });
+});
