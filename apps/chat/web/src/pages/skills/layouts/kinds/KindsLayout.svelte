@@ -24,6 +24,39 @@
   let pickerOpen = $state(false);
   let unownedOpen = $state(false);
   let matrix = $state<HTMLElement>();
+  let edges = $state({ left: false, right: false });
+
+  function measureEdges(): void {
+    if (!matrix) return;
+    const max = matrix.scrollWidth - matrix.clientWidth;
+    const left = matrix.scrollLeft > 1;
+    const right = matrix.scrollLeft < max - 1;
+    if (left !== edges.left || right !== edges.right) edges = { left, right };
+  }
+
+  function scroller(node: HTMLElement): HTMLElement | null {
+    for (let el = node.parentElement; el; el = el.parentElement) {
+      if (/(auto|scroll)/.test(getComputedStyle(el).overflowY)) return el;
+    }
+    return null;
+  }
+
+  function fit(node: HTMLElement): { destroy: () => void } {
+    const outer = scroller(node);
+    const size = (): void => {
+      const top = node.getBoundingClientRect().top + (outer?.scrollTop ?? 0) - (outer?.getBoundingClientRect().top ?? 0);
+      const pad = outer ? outer.scrollHeight - (node.getBoundingClientRect().bottom + outer.scrollTop - outer.getBoundingClientRect().top) : 24;
+      const room = (outer?.clientHeight ?? innerHeight) - top - Math.max(16, Math.min(pad, 48));
+      node.style.setProperty("--matrix-height", `${Math.max(256, Math.floor(room))}px`);
+      measureEdges();
+    };
+    const observer = new ResizeObserver(size);
+    observer.observe(node);
+    if (outer) observer.observe(outer);
+    if (node.firstElementChild) observer.observe(node.firstElementChild);
+    size();
+    return { destroy: () => observer.disconnect() };
+  }
 
   const columns = $derived(kindColumns(view));
   const groups = families();
@@ -197,7 +230,8 @@
   {#if rows.length === 0}
     <EmptyState icon="filter" title="No skill matches" description="Clear the filter to see every skill." />
   {:else}
-    <div class="matrix" bind:this={matrix} role="region" aria-label="Skills by the kinds of thread that see them" tabindex="-1">
+    <div class="frame" data-more-left={edges.left || undefined} data-more-right={edges.right || undefined}>
+    <div class="matrix" bind:this={matrix} use:fit onscroll={measureEdges} role="region" aria-label="Skills by the kinds of thread that see them" tabindex="-1">
       <table>
         <thead>
           <tr>
@@ -363,6 +397,7 @@
         </tbody>
       </table>
     </div>
+    </div>
   {/if}
 
   {#if view.unowned.length > 0}
@@ -420,8 +455,15 @@
   .controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
   .search { flex: 1 1 16rem; max-width: 24rem; }
 
+  .frame { position: relative; min-width: 0; }
+  .frame::after {
+    content: ""; position: absolute; z-index: 4; inset-block: 1px; inline-size: 28px; pointer-events: none; opacity: 0; transition: opacity 120ms;
+  }
+  .frame::after { inset-inline-end: 1px; border-radius: 0 var(--radius-container) var(--radius-container) 0; background: linear-gradient(to right, transparent, color-mix(in srgb, var(--text-standard) 12%, transparent)); }
+  .frame[data-more-right]::after { opacity: 1; }
+  .frame[data-more-left] tbody th.name, .frame[data-more-left] th.corner { box-shadow: 6px 0 8px -6px color-mix(in srgb, var(--text-standard) 30%, transparent); }
   .matrix {
-    container-type: inline-size; overflow: auto; max-block-size: calc(100dvh - 18rem); min-block-size: 16rem;
+    container-type: inline-size; overflow: auto; max-block-size: var(--matrix-height, calc(100dvh - 18rem)); min-block-size: 16rem;
     border: 1px solid var(--border-standard); border-radius: var(--radius-container); background: var(--surface-panel);
   }
   table { border-collapse: separate; border-spacing: 0; font: var(--text-body-sm); font-variant-numeric: tabular-nums; }
