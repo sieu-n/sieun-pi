@@ -7,7 +7,7 @@
  * | purpose | the conversation's first input among its first 20 entries (`durable_entries after 0`): the owner's first message or the brief its parent or a duty sent, never a tagged notice such as an imported `[harness-digest]` |
  * | system text | pi-host's durable Preamble, `PRIME_BASE_PROMPT` in packages/pi-family/preamble.ts of the pi-host that runs |
  * | thread file | `<durable dir>/threads/<thread>.sqlite`, beside pi-host's `index.sqlite` |
- * | board | the `chat.board` document of its chat's root conversation, through `Boards` |
+ * | board | the `chat.board` document of its chat's root conversation, the last read of it through `Boards.latest` |
  * | duties, check-in | `<data dir>/agents/<agent>/duties.json`, and each duty's precheck state in `<data dir>/agents/<agent>/duties/` |
  * | folder | its agent's folder, `<agents dir>/<slug>/` with `brief.md` and the harness store (`agent-folder.ts`) |
  * | memory | Prime's harness digest in pi-host: Prime's global store merged with the agent's store, or with the thread's own store when no agent holds it |
@@ -254,7 +254,7 @@ export async function agentConfig(app: App, id: AgentId): Promise<AgentConfig> {
     firstInput(app, thread, conversation),
     lastPing(app),
     weekUsage(app, thread),
-    chat ? app.boards.board(chat).catch(() => null) : Promise.resolve(null),
+    chat ? app.boards.latest(chat).catch(() => null) : Promise.resolve(null),
     instructionsOn(app, thread, row.cwd, agentDir),
   ]);
 

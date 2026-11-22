@@ -195,6 +195,15 @@ export class Boards {
     return cached.board;
   }
 
+  /**
+   * The last board read of a chat or agent, even past its TTL, with a fresh read behind it (`known`), for a page that shows the board's counts
+   * beside other data. A read of it waits behind every command queued on pi-host's socket: 59 ms at p50 and 379 ms at p90 in a probe at box
+   * load 190 to 220 on 11-22 (~/work/p155-config).
+   */
+  latest(id: string): Promise<ChatBoard | null> {
+    return this.known(this.chatId(id));
+  }
+
   private read(chat: string): Promise<ChatBoard | null> {
     let pending = this.reading.get(chat);
     if (!pending) {
