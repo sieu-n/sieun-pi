@@ -628,8 +628,11 @@ const conns = new WeakMap<Server, Map<Socket, Conn>>();
 const draining = new WeakSet<Server>();
 const winding = new WeakSet<Server>();
 /**
- * A call from a local fetch (undici's `user-agent: node`), such as pi-host's ChatApp (packages/pi-host/src/durable/chat-app.ts), gets its
- * connection closed after the answer. In 4 live hand-overs at 11:29 to 11:30Z on 11-22, every connection the old process kept (3 to 39)
+ * A call from any fetch on this box (undici's default `user-agent: node`) gets its connection closed after the answer: pi-host's ChatApp
+ * (packages/pi-host/src/durable/chat-app.ts), the walk and blind scripts, and duty prechecks that use fetch. A hand-over's old process keeps
+ * every idle connection open and passes its next call on, and a fetch pool keeps idle connections for its whole life, so closing them per
+ * call leaves the old process none. Clients that are not a fetch keep theirs: browsers through tailscale serve (tailscale-user-login), the
+ * Python board helpers (urllib, a new connection per call anyway) and unixbridge.mjs, which passes its browser's own headers. In 4 live hand-overs at 11:29 to 11:30Z on 11-22, every connection the old process kept (3 to 39)
  * was pi-host's idle undici pool, and each carried one more call through the old process: 52 forwarded calls, up to 27.6 s after the stop.
  * A browser comes through tailscale serve and keeps its connections. A new loopback connection per call costs a TCP handshake on lo.
  */
