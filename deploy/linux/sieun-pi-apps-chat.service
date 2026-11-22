@@ -12,6 +12,9 @@ Type=simple
 WorkingDirectory=%h/.local/share/sieun-pi-apps-chat/current/apps/chat
 Environment=PATH=%h/.local/node/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=AGENT_CHAT_SHARED_DIR=%h/.prime/agent/browser-chat
+# The d2 orphan reaper (legacy/prime/user-history/src/orphan-reaper.ts) keeps a transient unit whose PRIME_OWNER_UNIT has a unit file. The duty
+# prechecks run as transient duty-*-run units (server/duty-run.ts) with this env, and on 11-22 two of them read as orphan_unknown, 5 processes.
+Environment=PRIME_OWNER_UNIT=sieun-pi-apps-chat.service
 # Search's index (server/search-engine.ts) lives in the Komodo container box-sieun-pi-meilisearch-1 (scripts/install-meilisearch.mjs).
 Environment=APPS_CHAT_MEILI_URL=http://127.0.0.1:7700
 Environment=APPS_CHAT_MEILI_KEY_FILE=%h/.config/meilisearch/master.key
