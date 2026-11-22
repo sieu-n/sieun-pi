@@ -268,7 +268,7 @@
                 {/if}
               </th>
               <td class="num" class:muted={entry.use.uses === 0} use:tooltip={usesTitle(entry)}>{row.problems.includes("unused") ? "never" : entry.use.uses.toLocaleString("en-US")}</td>
-              <td class="num" use:tooltip={copiesTitle(entry)}>{entry.copies.length}{#if entry.extraCopies.length > 0}<span class="extra">{" "}{entry.extraCopies.length} extra</span>{/if}</td>
+              <td class="num" use:tooltip={copiesTitle(entry)}>{entry.copies.length}{#if entry.extraCopies.length > 0}<span class="extra">, {entry.extraCopies.length} extra</span>{/if}</td>
               <td class="num" class:bad={size?.bloated} use:tooltip={size?.title}>{size ? (size.times ?? size.label) : "?"}</td>
               {#each THREAD_KINDS as kind (kind)}
                 {@const cell = cellFor(entry, kind)}
