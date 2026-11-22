@@ -323,7 +323,7 @@ export class App {
     this.search.testSends = () => this.rooms.allTestSends();
     this.search.saved = () => this.later.items("owner").flatMap(item => (item.state === "open" && !item.unread && item.room !== undefined ? [postDocId(item.room, item.post)] : []));
     // Search leaves out every comm thread and every thread of a walk's test agent.
-    this.search.commThreads = () => [
+    this.searchEngine.hiddenThreads = () => [
       ...this.agents.list().flatMap(record => Object.values(record.comm ?? {})),
       ...Object.keys(this.agentStore.agents.aliases).filter(thread => this.agentStore.isTest(thread)),
     ];

@@ -22,7 +22,7 @@ export const SEARCH_DOC_VERSION = 1;
 /** `sort` comes first so a `recent` search is newest first; tool output (tier 1) ranks after every message by relevance. */
 export const SEARCH_SETTINGS = {
   searchableAttributes: ["text", "reactions"],
-  filterableAttributes: ["id", "source", "kind", "author", "at", "tier", "threads", "convs", "keys", "channelCopy", "room", "dm", "listed", "ownerPost", "has"],
+  filterableAttributes: ["id", "source", "kind", "author", "at", "tier", "threads", "convs", "keys", "channelCopy", "hidden", "room", "dm", "listed", "ownerPost", "has"],
   sortableAttributes: ["at"],
   rankingRules: ["sort", "tier:asc", "words", "typo", "proximity", "attribute", "exactness"],
   // Meilisearch counts hits only up to maxTotalHits (1,000 by default); "d" alone matched 48,594 entries on 11-03, and the count stays exact (c191).
@@ -67,6 +67,11 @@ export interface EntryDoc {
   threads: string[]; convs: string[]; keys: string[];
   /** An agent message that is a channel post's copy in a member's comm thread (group-rooms.ts CHANNEL_COPY_LIKE). */
   channelCopy: boolean;
+  /**
+   * A copy sits in a thread search leaves out (`SearchEngine.hiddenThreads`): a comm thread or a walk's test agent's thread. A document
+   * Meilisearch got before 11-22 has no such field and reads as false until `flagHidden` marks it.
+   */
+  hidden?: boolean;
 }
 export interface PostDoc {
   id: string; source: "post"; text: string; reactions: string; at: number; tier: 0; author: string; room: string; post: string;
@@ -184,9 +189,9 @@ function docMatches(doc: SearchDoc, words: readonly string[]): number {
 type Pending = { doc: SearchDoc | null; task?: number };
 
 /** One entry's document with the threads of both: a copy in another thread adds its thread. */
-function mergeCopies(was: Pick<EntryDoc, "threads" | "convs" | "keys">, doc: EntryDoc): EntryDoc {
+function mergeCopies(was: Pick<EntryDoc, "threads" | "convs" | "keys" | "hidden">, doc: EntryDoc): EntryDoc {
   const union = (a: readonly string[], b: readonly string[]) => [...new Set([...a, ...b])];
-  return { ...doc, threads: union(was.threads, doc.threads), convs: union(was.convs, doc.convs), keys: union(was.keys, doc.keys) };
+  return { ...doc, threads: union(was.threads, doc.threads), convs: union(was.convs, doc.convs), keys: union(was.keys, doc.keys), hidden: !!(was.hidden || doc.hidden) };
 }
 
 export interface EngineDeps {
@@ -227,6 +232,18 @@ export class SearchEngine {
   private readonly firstTasks = new Map<string, number[]>();
   private readonly unsent = new Map<string, SearchDoc>();
   private draining?: Promise<void>;
+  /**
+   * The threads whose entries search leaves out unless it is scoped to one: every comm thread and every thread of a walk's test agent. Set
+   * by the app. On 11-22 they were 1,012 of them, 41 KB of filter text that took Meilisearch 27 ms at the median against 11 ms without
+   * it, so each entry carries `hidden` and the filter names only the threads `flagHidden` has not marked yet.
+   */
+  hiddenThreads: () => readonly string[] = () => [];
+  /** The hidden threads whose every document in Meilisearch has `hidden` set; empty at each start until `flagHidden` checked them. */
+  private readonly flagged = new Set<string>();
+  private flagging?: Promise<void>;
+  /** The newest task a send got, and the sends still on their way, so `flagHidden` reads the index only after every earlier send. */
+  private lastTask?: number;
+  private readonly sending = new Set<Promise<unknown>>();
 
   constructor(private readonly deps: EngineDeps) {}
 
@@ -464,6 +481,7 @@ export class SearchEngine {
 
   /** Entry rows as documents: the copies of one entry among them, in any thread of any box, make one document that names every thread. */
   private entryDocs(rows: EntryRow[]): EntryDoc[] {
+    const hidden = new Set(this.hiddenThreads());
     const groups = new Map<string, EntryRow[]>();
     for (const row of rows) {
       const id = entryDocId(row);
@@ -478,6 +496,7 @@ export class SearchEngine {
         threads: [...new Set(copies.map(c => c.thread))], convs: [...new Set(copies.map(c => `${c.thread}:${c.conversation}`))],
         keys: [...new Set(copies.map(c => `${c.thread}:${c.entryId}`))],
         channelCopy: first.kind === "agent.message" && this.deps.channelCopy.test(first.text),
+        hidden: copies.some(c => hidden.has(c.thread)),
       } satisfies EntryDoc;
     });
   }
@@ -495,9 +514,12 @@ export class SearchEngine {
     }
     const lookup = entries.filter(doc => !known.has(doc.id)).map(doc => doc.id);
     if (lookup.length && !this.filling) for (const doc of await this.meili.fetch<EntryDoc>(SEARCH_INDEX, lookup, ["id", "threads", "convs", "keys"])) known.set(doc.id, doc);
+    const hidden = new Set(this.hiddenThreads());
     const merged = docs.map(doc => {
       const was = doc.source === "entry" ? known.get(doc.id) : undefined;
-      return was && doc.source === "entry" ? mergeCopies(was, doc) : doc;
+      const one = was && doc.source === "entry" ? mergeCopies(was, doc) : doc;
+      if (one.source === "entry") one.hidden = one.threads.some(thread => hidden.has(thread));
+      return one;
     });
     // A document `pending` holds already stays there in its merged form, so memory never shows an older copy than Meilisearch.
     for (const doc of merged) if (opts.hold || this.pending.has(doc.id)) this.pending.set(doc.id, { doc });
@@ -515,12 +537,85 @@ export class SearchEngine {
         parts.push(part);
         batch.push(merged[at++]!);
       }
-      const { taskUid } = await this.meili.put(SEARCH_INDEX, `[${parts.join(",")}]`);
+      const { taskUid } = await this.sent(this.meili.put(SEARCH_INDEX, `[${parts.join(",")}]`));
       for (const doc of batch) if (this.pending.get(doc.id)?.doc === doc) this.pending.set(doc.id, { doc, task: taskUid });
       tasks.push(taskUid);
     }
     this.drain();
     return tasks;
+  }
+
+  /** A send to Meilisearch, kept until it answered, with its task as the newest. */
+  private async sent<T extends { taskUid: number }>(send: Promise<T>): Promise<T> {
+    this.sending.add(send);
+    try {
+      const task = await send;
+      this.lastTask = Math.max(this.lastTask ?? 0, task.taskUid);
+      return task;
+    } finally {
+      this.sending.delete(send);
+    }
+  }
+
+  /**
+   * The conditions that leave the hidden threads' entries out of an unscoped search: `hidden` for the threads `flagHidden` marked, and the
+   * ids of the rest. A thread that stopped being hidden since it was marked puts every hidden thread's id back in the filter until
+   * `flagHidden` clears its documents, so the answer and its count stay exact (c191) at each step.
+   */
+  hiddenFilter(): Cond[] {
+    const hidden = new Set(this.hiddenThreads());
+    const fresh = [...hidden].filter(thread => !this.flagged.has(thread));
+    const gone = [...this.flagged].some(thread => !hidden.has(thread));
+    if (fresh.length || gone) void this.flagHidden();
+    if (!hidden.size) return [];
+    if (gone) return [not(isIn("threads", [...hidden]))];
+    return [not(eq("hidden", true)), ...(fresh.length ? [not(isIn("threads", fresh))] : [])];
+  }
+
+  /**
+   * Gives `hidden` to every document Meilisearch holds of a thread that became hidden, and takes it off the documents of a thread that no
+   * longer is, unless another of their threads is. It reads the index only after every earlier send has landed, so no document sent before
+   * the thread became hidden is missed; a document sent since carries `hidden` from `putDocs`.
+   */
+  flagHidden(): Promise<void> {
+    return (this.flagging ??= (async () => {
+      if (!this.ready) return;
+      await this.ready;
+      if (this.filling) return;
+      await Promise.all(this.sending);
+      if (this.lastTask !== undefined) await this.meili.waitTask({ taskUid: this.lastTask });
+      const hidden = new Set(this.hiddenThreads());
+      const BATCH = 200;
+      const PAGE = 5_000;
+      const mark = async (threads: string[], filter: string, flag: (doc: Pick<EntryDoc, "id" | "threads">) => boolean | undefined) => {
+        for (let at = 0; at < threads.length; at += BATCH) {
+          const batch = threads.slice(at, at + BATCH);
+          const updates: { id: string; hidden: boolean }[] = [];
+          const where = `${filter} AND ${filterText(isIn("threads", batch))}`;
+          for (let offset = 0; ; offset += PAGE) {
+            const page = await this.meili.call<{ results: Pick<EntryDoc, "id" | "threads">[] }>("POST", `/indexes/${SEARCH_INDEX}/documents/fetch`, { filter: where, fields: ["id", "threads"], limit: PAGE, offset });
+            for (const doc of page.results) {
+              const value = flag(doc);
+              if (value !== undefined) updates.push({ id: doc.id, hidden: value });
+            }
+            if (page.results.length < PAGE) break;
+          }
+          if (updates.length) await this.meili.waitTask(await this.sent(this.meili.call<MeiliTask>("PUT", `/indexes/${SEARCH_INDEX}/documents`, updates)));
+          for (const thread of batch) {
+            if (hidden.has(thread)) this.flagged.add(thread);
+            else this.flagged.delete(thread);
+          }
+        }
+      };
+      await mark([...this.flagged].filter(thread => !hidden.has(thread)), `source = "entry" AND hidden = true`, doc => (doc.threads.some(thread => hidden.has(thread)) ? undefined : false));
+      await mark([...hidden].filter(thread => !this.flagged.has(thread)), `source = "entry" AND NOT hidden = true`, () => true);
+      // Memory holds documents built before their thread became hidden; they change in place, so a send in flight keeps its task.
+      for (const p of this.pending.values()) {
+        if (p.doc?.source === "entry") p.doc.hidden = p.doc.threads.some(thread => hidden.has(thread));
+      }
+    })().catch(error => this.deps.log(`search: ${String(error)}`)).finally(() => {
+      this.flagging = undefined;
+    }));
   }
 
   private async deleteDocs(ids: string[]): Promise<void> {

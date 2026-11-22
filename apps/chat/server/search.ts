@@ -245,8 +245,6 @@ function boxNote(box: SearchBox, state: BoxIndexState): string | undefined {
 export class Search {
   /** The test sends: `from:owner` leaves them out, and their hits name the job as the author. Set by the app once it has the rooms. */
   testSends: () => TestSendEntry[] = () => [];
-  /** Every agent's comm threads and every thread of a walk's test agent, whose entries search leaves out. */
-  commThreads: () => string[] = () => [];
   /** The search documents of the posts the owner has open in Later, for `has` saved. Set by the app. */
   saved: () => string[] = () => [];
   /** The other boxes agents run on. Set by the app when it runs over several boxes. */
@@ -279,7 +277,6 @@ export class Search {
     const tests = this.testSends();
     const testOf = new Map(tests.map(t => [`${t.thread}:${t.entry}`, t]));
     const scope = !inChannel && inId ? parseConversationId(this.threads.conversationOf(inId)) : undefined;
-    const comms = scope ? [] : this.commThreads();
     const rooms = this.listedRooms();
     const rootChats = this.rootChats();
     const entryWhere = Search.entryPlaces(places, rootChats);
@@ -295,7 +292,7 @@ export class Search {
     if (!inChannel && entryWhere && !has.size) {
       parts.push(and(
         eq("source", "entry"), eq("channelCopy", false), ...range, ...entryWhere,
-        ...(scope ? [eq("convs", `${scope.thread}:${scope.conversation}`)] : comms.length ? [not(isIn("threads", comms))] : []),
+        ...(scope ? [eq("convs", `${scope.thread}:${scope.conversation}`)] : this.engine.hiddenFilter()),
         ...anyOf(from.map(f => f.kind === "owner" ? and(eq("author", "owner"), ...(tests.length ? [not(isIn("keys", tests.map(t => `${t.thread}:${t.entry}`)))] : []))
           : f.kind === "agents" ? not(isIn("author", NOT_AGENTS))
           : or(and(eq("kind", "agent.message"), isIn("author", f.authors)), and(not(eq("kind", "agent.message")), not(isIn("author", NOT_AGENTS)), f.work)))),
@@ -345,11 +342,10 @@ export class Search {
     const limit = Math.min(Math.max(params.limit ?? RECENT_LIMIT, 1), RECENT_LIMIT);
     const range: Cond[] = params.after === undefined ? [] : [{ op: "gte", field: "at", value: params.after + 1 }];
     const tests = this.testSends();
-    const comms = this.commThreads();
     const rooms = this.listedRooms();
     const where = or(
       and(eq("source", "entry"), eq("channelCopy", false), eq("author", "owner"), ...range,
-        ...(comms.length ? [not(isIn("threads", comms))] : []), ...(tests.length ? [not(isIn("keys", tests.map(t => `${t.thread}:${t.entry}`)))] : [])),
+        ...this.engine.hiddenFilter(), ...(tests.length ? [not(isIn("keys", tests.map(t => `${t.thread}:${t.entry}`)))] : [])),
       and(eq("source", "post"), eq("dm", false), isIn("room", [...rooms.channels, ...rooms.solos]), ...range),
       and(eq("source", "post"), eq("dm", true), eq("listed", true), isIn("room", rooms.dms), ...range),
     );
