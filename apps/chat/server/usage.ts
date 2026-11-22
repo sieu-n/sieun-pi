@@ -228,8 +228,12 @@ export class KeptUsage implements Pick<Host, "usage"> {
   async usage(range: HostUsageRange): Promise<UsageTotal[]> {
     const { since, until, bucketMs } = range;
     const grain = since === undefined || until === undefined || !bucketMs ? undefined : GRAINS.find(g => since % g.ms === 0 && until % g.ms === 0 && bucketMs % g.ms === 0);
-    const ready = this.sources().every(source => !source.up() || this.boxes.get(source.box)?.read);
-    if (!ready || !grain || since === undefined || until === undefined || !bucketMs || since < this.now() - grain.kept) return this.fallback.usage(range);
+    const ready = (): boolean => this.sources().every(source => !source.up() || this.boxes.get(source.box)?.read);
+    // Until each box's first read lands, a call waits for that read rather than asking every box: on 11-22 after a restart at 07:04:30Z
+    // four calls that asked the boxes took 31 to 40 s and ended together at 07:05:36, while calls from 07:05:08 on answered from the kept
+    // sums in 16 to 67 ms (requests/2026-11-22.jsonl).
+    if (!ready() && this.pulling) await this.pulling;
+    if (!ready() || !grain || since === undefined || until === undefined || !bucketMs || since < this.now() - grain.kept) return this.fallback.usage(range);
     const only = range.threads?.length ? new Set(range.threads) : undefined;
     const out: UsageTotal[] = [];
     for (const [name, box] of this.boxes) {

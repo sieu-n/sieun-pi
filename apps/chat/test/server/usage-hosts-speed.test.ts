@@ -161,9 +161,13 @@ test("api/usage answers from the kept rows with no call to any box, with the sam
   const threads = { thread: () => undefined, threadsList: () => [] } as unknown as Threads;
   const cases = [["1h", "minute"], ["24h", "hour"], ["24h", "minute"], ["7d", "hour"], ["7d", "day"], ["30d", "day"], ["90d", "day"]] as const;
 
-  await kept.usage({ since: now - HOUR - (now % HOUR), until: now - (now % HOUR) + HOUR, bucketMs: HOUR });
-  assert.equal(asked.length, 1, "before the first read the range reads the boxes as before");
-  await kept.pull();
+  const hour = { since: now - HOUR - (now % HOUR), until: now - (now % HOUR) + HOUR, bucketMs: HOUR };
+  await kept.usage(hour);
+  assert.equal(asked.length, 1, "before the first read, with no read on its way, the range reads the boxes as before");
+  const first = kept.pull();
+  await kept.usage(hour);
+  assert.equal(asked.length, 1, "a call while the first read is on its way waits for it and reads no box");
+  await first;
   asked.length = 0;
   for (const [range, bucket] of cases) {
     const got = await usageReport(kept, threads, "box", { range, bucket, host: "box" }, now);
