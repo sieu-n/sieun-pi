@@ -2,13 +2,24 @@
 # It runs the installed release under ~/.local/share/sieun-pi-apps-chat/current, which scripts/release-apps-chat.mjs builds from a commit on origin main.
 # Its own state (channels, read marks, duties) lives in ~/.pi/agent/chat; every thread lives in pi-host's durable files.
 # Tailnet: tailscale serve --bg --https=5184 http://127.0.0.1:5184
+# sieun-pi-apps-chat.socket holds the port, so a call that comes while no process accepts waits instead of being refused. A release reloads
+# this unit: the running server starts its successor on the socket and hands over to it (server/handoff.ts), and the port never closes.
+# The unit before the hand-over is deploy/linux/rollback/sieun-pi-apps-chat.service; its comment has the one command that puts it back.
 [Unit]
 Description=apps/chat, the sieun-pi chat app on pi-host (127.0.0.1:5184)
-After=pi-host.service
+After=pi-host.service sieun-pi-apps-chat.socket
 Wants=pi-host.service
+Requires=sieun-pi-apps-chat.socket
 
 [Service]
-Type=simple
+# The server tells systemd READY=1 once it listens, and a successor tells it MAINPID= when it takes the port, before the old server exits.
+Type=notify
+NotifyAccess=all
+ExecReload=/bin/kill -HUP $MAINPID
+# The successor starts in the release this link names at the reload; the running server's own cwd is the release it started from.
+Environment=APPS_CHAT_CURRENT=%h/.local/share/sieun-pi-apps-chat/current/apps/chat
+# A successor sends MAINPID= until systemctl shows it as this unit's main process, and only then does the old server exit (server/handoff.ts).
+Environment=APPS_CHAT_UNIT=%n
 WorkingDirectory=%h/.local/share/sieun-pi-apps-chat/current/apps/chat
 Environment=PATH=%h/.local/node/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=AGENT_CHAT_SHARED_DIR=%h/.prime/agent/browser-chat
@@ -19,6 +30,10 @@ Environment=PRIME_OWNER_UNIT=sieun-pi-apps-chat.service
 Environment=APPS_CHAT_MEILI_URL=http://127.0.0.1:7700
 Environment=APPS_CHAT_MEILI_KEY_FILE=%h/.config/meilisearch/master.key
 ExecStart=%h/.local/node/bin/node --import tsx server/main.ts --port 5184 --listen 127.0.0.1 --data-dir %h/.pi/agent/chat --socket %t/pi-host/host.sock
+# systemd kills a server that stops pinging (server/handoff.ts startWatchdog) and Restart= starts it again. The longest event-loop stall in the
+# request logs of 11-20 to 11-22 was 5.0 s, so 15 s is three times that. SIGKILL also ends a stopped process, which ignores SIGABRT.
+WatchdogSec=15
+WatchdogSignal=SIGKILL
 KillSignal=SIGTERM
 TimeoutStopSec=20
 Restart=always
