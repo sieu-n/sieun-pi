@@ -85,12 +85,18 @@ export const childWakes = new Map<string, (conversation: number, signal: AbortSi
  * `TICK_MS`), so a wake goes out no sooner than that.
  */
 const wakePollMs = (): number => Number(process.env.PI_HOST_WAKE_POLL_MS ?? 30_000);
+/**
+ * How long a held child sleeps before its next wake read: a random part of one interval the first time, the whole interval after. Children
+ * held at the same moment would otherwise read in step forever: on 11-22, 2,749 wake reads came to :5184 in 11 minutes in bursts of 25 to 71
+ * calls within a few hundred ms, and an apps/chat hand-over that stopped inside one caught 44 fresh connections to forward.
+ */
+export const wakeSleepMs = (first: boolean, poll = wakePollMs(), random = Math.random): number => (first ? Math.floor(random() * poll) : poll);
 /** The statuses of a task that is not over yet (pi-durable's scheduler `LIVE_STATUSES`). */
 const LIVE = ["pending", "running", "waiting", "sleeping", "completing"] as const;
 
 type DeliverState =
   | { phase: "deliver" }
-  | { phase: "hold"; child: number; since: number; answer?: number }
+  | { phase: "hold"; child: number; since: number; answer?: number; polled?: true }
   | { phase: "report"; child: number; since: number; status: "done" | "unanswered"; answer?: number; text: string; stopReason?: string; reason?: string; error?: string };
 
 export const textOfMessage = (message: Message | undefined): string => {
@@ -170,7 +176,7 @@ export const DeliverTask = defineTask<DeliverInput, DeliverState, null>({
         }
         const waking = await childWakes.get(task.input.thread)?.(s.child, runtime.signal);
         if (waking) {
-          await runtime.sleepUntil(runtime.now() + wakePollMs(), s, ctx);
+          await runtime.sleepUntil(runtime.now() + wakeSleepMs(!s.polled), { ...s, polled: true }, ctx);
           return;
         }
       }
