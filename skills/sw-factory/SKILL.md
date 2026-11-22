@@ -42,7 +42,7 @@ The owner said so on 11-20: "no this is not Chat. this is Slack."
 8. A post holds no table unless he asked for one, and its detail goes on a wiki page linked in the same post.
 9. When a reaction says it all, the agent reacts and posts nothing.
 10. A post ends on its words with no sign-off emoji such as 👍 or 🎉, and it says what a JSON or log line shows instead of pasting it, as the last pair below shows.
-11. A list of options, such as products, tools or what other apps do, explains its most interesting one properly, with how it works, a concrete example and how it would fit us, and names the rest in a few words each.
+11. A list of options, such as products, tools or what other apps do, opens with the agent's pick and its reason, explains that one with how it works, a concrete example and how it would fit us, and gives each other option one line on what it would mean for him.
 
 The owner asked for rule 4 on 11-20 under p85 and p95 in #sw-factory-build, which each crammed several results into one long sentence: "이런거 답변할때 hierarchical bullet point, checkmark 등 feature를 활용해서 답변해. like multiple todoes, points, …" (p101).
 He asked for rule 5 under p103 and p105: "checks를 먼저 얘기하고, `edit` 방식으로 체크리스트를 체크하거나 때론 수정하는 방식도 추천해." (p106).
@@ -127,6 +127,24 @@ both fixed, live on metal and the Mac.
 
 ```markdown
 about 3,400 lines of hand-written code and tests changed across 360 files in 60 commits, mostly in search. per-app breakdown → [code change count](wiki:agents/search-product-misc/jobs/2026/11/21/2231-mwg-code-change-count/code-change-count.html)
+```
+
+A list of options, bad (d4 blind run of 11-22, ch_a875dc52 p2) and then good (written for this case on 11-22, after the owner's #sw-factory-build p97).
+
+```markdown
+They split it two ways: snooze hides the task until later, and a reminder pings you while it stays visible.
+
+- Gmail, Linear and Asana snooze to presets like tomorrow or next week, then put the item back on top.
+- Linear brings a snoozed item back early when someone comments on it.
+
+My pick is Linear's way.
+```
+
+```markdown
+I'd copy Linear's snooze, because a comment brings the task back early, so nothing waits on a stale date.
+- you snooze a task to Monday, a teammate comments Friday, and it's back on top Friday
+- for us that's a snooze on each task card that a new comment cancels
+- Things' start date would keep a task out of Today, which helps one person more than a team
 ```
 
 Data from a file or log, bad (dm_blind-reactions-11212039433x p4) and then good (ch_0af55d83 p3).

@@ -159,9 +159,9 @@ test("a work thread names a channel comm thread as its main one when its agent h
   assert.deepEqual(roleFields({ agent: "ag_vent", dir: "/a/vent", role: "work" }), {}, "an agent with no comm thread at all keeps tell_owner");
 });
 
-test("a list of options explains its most interesting one with an example and how it fits (owner, #sw-factory-build p97)", () => {
+test("a list of options opens with the pick, explains it with an example and how it fits, and gives each other one line (owner, #sw-factory-build p97)", () => {
   for (const room of ["dm_vent", "ch_1a2b3c4d"]) {
-    assert.match(commInstructions({ agent: "ag_vent", room, work: "w1" }), /When you list options, explain the most interesting one, with how it works, a concrete example and how it would fit/);
+    assert.match(commInstructions({ agent: "ag_vent", room, work: "w1" }), /When you list options, open with your pick and its reason, explain that one with how it works, a concrete example and how it would fit, and give each other option one line on what it would mean for him/);
   }
 });
 

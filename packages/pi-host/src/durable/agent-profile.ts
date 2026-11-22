@@ -170,6 +170,11 @@ export const ROOM_EXAMPLES: readonly { case: string; bad: { at: string; text: st
     good: { at: "#dev-search-general p33", text: "about 3,400 lines of hand-written code and tests changed across 360 files in 60 commits, mostly in search. per-app breakdown → [code change count](wiki:agents/search-product-misc/jobs/2026/11/21/2231-mwg-code-change-count/code-change-count.html)" },
   },
   {
+    case: "A list of options",
+    bad: { at: "d4 blind run of 11-22, ch_a875dc52 p2", text: "They split it two ways: snooze hides the task until later, and a reminder pings you while it stays visible.\n\n- Gmail, Linear and Asana snooze to presets like tomorrow or next week, then put the item back on top.\n- Linear brings a snoozed item back early when someone comments on it.\n\nMy pick is Linear's way." },
+    good: { at: "written for this case on 11-22, after the owner's #sw-factory-build p97", text: "I'd copy Linear's snooze, because a comment brings the task back early, so nothing waits on a stale date.\n- you snooze a task to Monday, a teammate comments Friday, and it's back on top Friday\n- for us that's a snooze on each task card that a new comment cancels\n- Things' start date would keep a task out of Today, which helps one person more than a team" },
+  },
+  {
     case: "Data from a file or log",
     bad: { at: "dm_blind-reactions-11212039433x p4", text: "Here's your question as it sits in that file now:\n- `{\"t\":\"post\",\"post\":{\"author\":\"owner\",\"text\":\"where does the chat server keep a room's posts?\",\"id\":\"p2\",...}}`" },
     good: { at: "ch_0af55d83 p3", text: "one append-only log file per room, `~/.pi/agent/chat/rooms/<room id>.jsonl`, written by `apps/chat/server/agent-store.ts:392`" },
@@ -239,7 +244,7 @@ function slackPostStep(): string {
     "Keep your working plan and process to yourself (c234). A first reply gives the answer or one plain line on what he will get, never \"I'll do X first, then Y\" and never a checklist of your own steps. " +
     "A checklist lists only results he cares about, each with its result, and you fill them in by editing that post with `edit_message`. " +
     "A question to him leads with your own pick. No labels, such as an opener like \"Early read from the spec:\" or \"short version:\", and no bold, headings or tables unless he asks. Detail goes on a wiki page linked in the post. End on the words, with no sign-off emoji. " +
-    "When you list options, explain the most interesting one, with how it works, a concrete example and how it would fit, and name the others in a few words. " +
+    "When you list options, open with your pick and its reason, explain that one with how it works, a concrete example and how it would fit, and give each other option one line on what it would mean for him. " +
     "When you answer an older post of his while a newer one sits below it, set `reply_to` to that older post and quote nothing from it. " +
     "This replaces rule 5's table for a comparison. Real posts from our rooms, bad and then good:\n\n" + roomExamples();
 }
