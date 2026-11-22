@@ -6,7 +6,8 @@
 import type {
   AgentId, AgentSummary, ConversationId, ConversationSummary, Item, JobNode, LivePartial, ModelRef, Principal, RunStatus, ThinkingLevel, TimelinePage,
 } from "../web/src/lib/api/types.ts";
-import type { AgentEvent, CreateOptions, DurableEvent, DurableThread, EntryRecord, Host, TreeNode } from "./host/types.ts";
+import { AsyncLocalStorage } from "node:async_hooks";
+import type { AgentEvent, CreateOptions, DurableEvent, DurableThread, EntriesQuery, EntryRecord, Host, TreeNode } from "./host/types.ts";
 import type { Store } from "./store.ts";
 import type { AgentRecord } from "./agent-store.ts";
 import { agentSummary, isAgentId, isRoomId, rootRetrying, type AgentRows, type Agents } from "./agents.ts";
@@ -95,6 +96,13 @@ export interface ThreadEvents {
   jobs(thread: string, jobs: JobNode[]): void;
 }
 
+/**
+ * Where one timeline read's handler time went, for its request log line: `calls` pi-host entries reads that took `host` ms and brought
+ * `entries` entries, and which page it asked for (`newest`, `before`, `after` or `around`). The line's `run` less `host` is the drawing.
+ */
+export type ItemsSplit = Record<string, number>;
+const itemsSplit = new AsyncLocalStorage<ItemsSplit>();
+
 const THREADS_CACHE = "threads";
 type ThreadsCache = { threads: DurableThread[]; trees: [string, { updatedAt: number; nodes: TreeNode[] }][] };
 
@@ -153,7 +161,7 @@ export class Threads {
     this.list = new Map(cache.threads.map(t => [t.id, t]));
     this.trees = new Map(cache.trees);
     this.cached = JSON.stringify(cache);
-    this.tails = new TailCache(host, 64, TURN_READ_CAP + 200 + WIDEN);
+    this.tails = new TailCache({ entries: (thread, query) => this.entries(thread, query) }, 64, TURN_READ_CAP + 200 + WIDEN);
     this.scans = new Map(firstSendScans(store.cache<FirstSendsCache | Record<string, FirstSendScan>>(FIRST_SENDS_CACHE, {})));
     for (const [id, scan] of this.scans) if (scan.first !== undefined) this.firstSends.set(id, scan.first);
   }
@@ -625,7 +633,7 @@ export class Threads {
     this.scanQueue = this.scanQueue.then(async () => {
       let scan = this.scans.get(id) ?? { to: 0 };
       while (scan.first === undefined) {
-        const got = await this.host.entries(thread, { conversation, after: scan.to, limit: SCAN_READ, lean: true });
+        const got = await this.entries(thread, { conversation, after: scan.to, limit: SCAN_READ, lean: true });
         if (!got.entries.length) break;
         const mine = got.entries.filter(e => e.conversationId === conversation);
         const first = firstSendIn(mine);
@@ -682,7 +690,7 @@ export class Threads {
   async said(thread: string, conversation: number, settled: { entry?: number; answer?: number }): Promise<{ text: string; to?: string }[]> {
     const turn = await this.turnOf(thread, conversation, settled);
     if (speaksThroughSendMessage(turn, await this.firstSend(thread, conversation))) return sentMessages(turn).map(({ text, to }) => ({ text, ...(to ? { to } : {}) }));
-    const answer = settled.answer === undefined ? undefined : (await this.host.entries(thread, { conversation, before: settled.answer + 1, limit: 1 })).entries[0]?.model?.[0];
+    const answer = settled.answer === undefined ? undefined : (await this.entries(thread, { conversation, before: settled.answer + 1, limit: 1 })).entries[0]?.model?.[0];
     if (answer?.role !== "assistant") return [];
     const text = typeof answer.content === "string" ? answer.content : answer.content.flatMap(b => (b.type === "text" ? [b.text] : [])).join("\n\n");
     return text.trim() ? [{ text }] : [];
@@ -739,7 +747,7 @@ export class Threads {
     const entries: EntryRecord[] = [];
     let cursor = after;
     for (;;) {
-      const got = await this.host.entries(thread, { conversation, after: cursor, limit: 100, lean: true });
+      const got = await this.entries(thread, { conversation, after: cursor, limit: 100, lean: true });
       for (const entry of got.entries) {
         if (entries.length >= limit && isInput(entry)) return { entries, more: true };
         entries.push(entry);
@@ -753,11 +761,29 @@ export class Threads {
   async loadFirstEntry(thread: string, conversation: number): Promise<void> {
     const id = conversationIdOf(thread, conversation);
     if (this.firstEntries.has(id)) return;
-    const first = (await this.host.entries(thread, { conversation, after: 0, limit: 1, lean: true })).entries[0];
+    const first = (await this.entries(thread, { conversation, after: 0, limit: 1, lean: true })).entries[0];
     if (first) this.firstEntries.set(id, first.id);
   }
 
-  async timeline(id: ConversationId, opts: { before?: string; after?: string; around?: string; limit?: number }): Promise<TimelinePage> {
+  /** pi-host's entries read, counted into the split of the timeline read it runs for. */
+  private async entries(thread: string, query: EntriesQuery): Promise<{ entries: EntryRecord[]; more: boolean }> {
+    const split = itemsSplit.getStore();
+    if (!split) return this.host.entries(thread, query);
+    const started = performance.now();
+    const got = await this.host.entries(thread, query);
+    split.calls = (split.calls ?? 0) + 1;
+    split.host = (split.host ?? 0) + performance.now() - started;
+    split.entries = (split.entries ?? 0) + got.entries.length;
+    return got;
+  }
+
+  async timeline(id: ConversationId, opts: { before?: string; after?: string; around?: string; limit?: number }, split?: ItemsSplit): Promise<TimelinePage> {
+    if (!split) return this.read(id, opts);
+    split[opts.around ? "around" : opts.after ? "after" : opts.before ? "before" : "newest"] = 1;
+    return itemsSplit.run(split, () => this.read(id, opts));
+  }
+
+  private async read(id: ConversationId, opts: { before?: string; after?: string; around?: string; limit?: number }): Promise<TimelinePage> {
     const { thread, conversation } = parseConversationId(id);
     await this.loadFirstEntry(thread, conversation);
     const limit = Math.min(Math.max(opts.limit ?? PAGE, 1), 200);
@@ -798,7 +824,7 @@ export class Threads {
   /** A tool step's output (`Step.outputRef`), the text of the conversation's tool result entry `entry`; undefined when it is no such entry. */
   async stepOutput(id: ConversationId, entry: number): Promise<{ output: string } | undefined> {
     const { thread, conversation } = parseConversationId(id);
-    const found = (await this.host.entries(thread, { conversation, before: entry + 1, limit: 1, lean: true })).entries[0];
+    const found = (await this.entries(thread, { conversation, before: entry + 1, limit: 1, lean: true })).entries[0];
     const message = found?.id === entry ? found.model?.[0] : undefined;
     return message?.role === "toolResult" ? { output: stepOutputOf(message) } : undefined;
   }
@@ -833,7 +859,7 @@ export class Threads {
 
   private async attach(id: ConversationId, live: LiveConversation): Promise<void> {
     await this.loadFirstEntry(live.thread, live.conversation);
-    const tail = await this.host.entries(live.thread, { conversation: live.conversation, limit: 1, lean: true });
+    const tail = await this.entries(live.thread, { conversation: live.conversation, limit: 1, lean: true });
     const newest = tail.entries[0]?.id;
     if (newest !== undefined) {
       // A page, not only the newest turn, so a live quiet turn of a conversation that talks through send_message reads as one.

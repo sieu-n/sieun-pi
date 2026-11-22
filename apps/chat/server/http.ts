@@ -60,7 +60,7 @@ export class BadRequest extends Error {}
 type Phase = { body?: number; run?: number; err?: string; split?: SearchSplit };
 const phases = new WeakMap<IncomingMessage, Phase>();
 
-/** A search's split for its request log line, kept on the request's phase. */
+/** A search's or a timeline read's split for its request log line, kept on the request's phase. */
 function splitOf(req: IncomingMessage): SearchSplit {
   const split: SearchSplit = {};
   const phase = phases.get(req);
@@ -315,9 +315,9 @@ export function routes(app: App, parts: SkillsParts): Route[] {
     route("GET", "/api/projects", async () => app.projects()),
     route("GET", "/api/c/:id", async (_r, p) => app.header(p.id!)),
     route("PATCH", "/api/c/:id", async (_r, p, _q, body) => app.patch(p.id!, (await body()) as ConversationPatch)),
-    route("GET", "/api/c/:id/items", async (_r, p, q) => {
+    route("GET", "/api/c/:id/items", async (r, p, q) => {
       const opts = { before: str(q.get("before")), after: str(q.get("after")), around: str(q.get("around")), limit: num(q.get("limit")) };
-      return app.items(p.id!, opts);
+      return app.items(p.id!, opts, splitOf(r));
     }),
     route("GET", "/api/c/:id/output/:entry", async (_r, p) => {
       const entry = Number(p.entry);

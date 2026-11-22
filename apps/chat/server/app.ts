@@ -51,7 +51,7 @@ import { Meili, startOwnMeili, type OwnMeili } from "./meili.ts";
 import type { FixtureHost } from "./host/fixture.ts";
 import { drained } from "./disk.ts";
 import { readJson, Store, writeJson } from "./store.ts";
-import { modelRef, OWNER, parseConversationId, Threads } from "./threads.ts";
+import { modelRef, OWNER, parseConversationId, Threads, type ItemsSplit } from "./threads.ts";
 import { QueueWatch, waitingPlace } from "./queue.ts";
 import { webEntry } from "./web-entry.ts";
 import { isImage, isModelImage, uploadExtension, withFileNotes } from "./files.ts";
@@ -1061,10 +1061,10 @@ export class App {
   }
 
   /** A timeline page; the newest page of a thread also carries the sends pi-host has not shown yet, after its entries. */
-  async items(id: ConversationId, opts: { before?: string; after?: string; around?: string; limit?: number }): Promise<TimelinePage> {
+  async items(id: ConversationId, opts: { before?: string; after?: string; around?: string; limit?: number }, split?: ItemsSplit): Promise<TimelinePage> {
     if (isRoomId(id)) return this.rooms.timeline(this.roomAgent(id), opts);
     if (this.isGroup(id)) return this.groups.timeline(id, opts);
-    const page = await this.threads.timeline(id, opts);
+    const page = await this.threads.timeline(id, opts, split);
     this.outbox.reconcile(id, page.items);
     if (opts.before || page.newer) return page;
     const pending = this.outbox.items(id);

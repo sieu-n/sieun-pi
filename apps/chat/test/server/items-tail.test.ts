@@ -4,7 +4,10 @@
  * Run: cd apps/chat && node --import tsx --test --test-force-exit --test-isolation=none test/server/items-tail.test.ts
  */
 import assert from "node:assert/strict";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { after, before, test } from "node:test";
+import type { RequestTiming } from "../../server/request-log.ts";
 import type { TimelinePage } from "../../web/src/lib/api/types.ts";
 import { FixtureHost } from "../../server/host/fixture.ts";
 import { start, type Running } from "./helpers.ts";
@@ -93,4 +96,24 @@ test("a job conversation's newest page is held apart from the thread's", async (
   assert.deepEqual(root.page, root.reference);
   assert.deepEqual(child.page, child.reference);
   assert.equal(child.reads.length, 1);
+});
+
+test("a thread read's request log line counts its pi-host reads", async () => {
+  const thread = host.addThread({ name: "logged", createdAt: 1 });
+  turn(thread, 3, "a");
+  const id = thread.row.id;
+  await s.get<TimelinePage>(`/api/c/${id}/items`);
+  await s.get<TimelinePage>(`/api/c/${id}/items`);
+  const file = join(s.app.config.dataDir, "requests", `${new Date().toISOString().slice(0, 10)}.jsonl`);
+  let lines: RequestTiming[] = [];
+  for (let k = 0; k < 50 && lines.length < 2; k++) {
+    await new Promise(resolve => setTimeout(resolve, 20));
+    lines = existsSync(file) ? readFileSync(file, "utf8").split("\n").filter(Boolean).map(text => JSON.parse(text) as RequestTiming)
+      .filter(timing => timing.src === "server" && timing.p === `/api/c/${id}/items`) : [];
+  }
+  assert.equal(lines.length, 2);
+  assert.equal(lines[0]!.split?.newest, 1);
+  assert.ok((lines[0]!.split?.calls ?? 0) >= 1);
+  assert.deepEqual({ calls: lines[1]!.split?.calls, entries: lines[1]!.split?.entries }, { calls: 1, entries: 1 }, "a repeat read takes one one-entry read");
+  assert.equal(typeof lines[1]!.split?.host, "number");
 });
