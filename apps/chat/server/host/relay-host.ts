@@ -62,7 +62,7 @@ export interface RelayHostOptions {
 }
 
 type Pending = {
-  op: ServerOp; args: Record<string, unknown>; timeoutMs: number; repeatable: boolean; sent: boolean;
+  op: ServerOp; args: Record<string, unknown>; timeoutMs: number; repeatable: boolean; sent: boolean; sentAt?: number; outBytes?: number;
   resolve: (data: unknown) => void; reject: (error: Error) => void; timer?: NodeJS.Timeout; waitTimer?: NodeJS.Timeout;
 };
 type Watch = { id: string; thread: string; conversation?: number; fromEntry?: number; sink: (event: DurableEvent) => void; open: boolean; stopped: boolean };
@@ -76,6 +76,67 @@ const headersOf = (headers: Headers): Record<string, string> => {
 /** Whether sending the call twice cannot act twice, as PiHost's call loop reads it. */
 const repeatable = (op: ServerOp, args: Record<string, unknown>): boolean =>
   op !== "durable_create" && op !== "durable_import" && op !== "file_put" && op !== "check" && !(op === "durable_submit" && !args.requestId);
+
+/** How long after its first hello a server counts what it asks of the box, once per process (`StartTally`). */
+const TALLY_MS = 10_000;
+
+/**
+ * What this server asked of the box in its first TALLY_MS after its first hello, logged once: a successor's start reads queue on pi-host's
+ * one event loop with every other caller's, and at box load over 200 on 11-22 the first page read after two hand-overs took 9 to 11 s.
+ */
+class StartTally {
+  private readonly ops = new Map<string, { n: number; slowest: number }>();
+  private readonly spans: Array<[number, number]> = [];
+  private out = 0;
+  private in = 0;
+  private open = 0;
+  private peak = 0;
+  private feed = { n: 0, bytes: 0 };
+  private events = { n: 0, bytes: 0 };
+  constructor(private readonly began: number) {}
+
+  counting(at = Date.now()): boolean {
+    return at - this.began < TALLY_MS;
+  }
+
+  sent(bytes: number): void {
+    this.out += bytes;
+    this.open += 1;
+    this.peak = Math.max(this.peak, this.open);
+  }
+
+  answered(op: string, sentAt: number, bytes: number): void {
+    const now = Date.now();
+    this.open = Math.max(0, this.open - 1);
+    this.in += bytes;
+    this.spans.push([sentAt, now]);
+    const each = this.ops.get(op) ?? { n: 0, slowest: 0 };
+    each.n += 1;
+    each.slowest = Math.max(each.slowest, now - sentAt);
+    this.ops.set(op, each);
+  }
+
+  pushed(kind: "feed" | "events", bytes: number): void {
+    const into = kind === "feed" ? this.feed : this.events;
+    into.n += 1;
+    into.bytes += bytes;
+  }
+
+  line(box: string): string {
+    const end = this.began + TALLY_MS;
+    let busy = 0, upTo = this.began;
+    for (const [from, to] of [...this.spans].sort((a, b) => a[0] - b[0])) {
+      const start = Math.max(from, upTo), stop = Math.min(to, end);
+      if (stop > start) busy += stop - start;
+      upTo = Math.max(upTo, Math.min(to, end));
+    }
+    const kb = (bytes: number) => `${Math.round(bytes / 1024)} KB`;
+    const calls = [...this.ops].sort((a, b) => b[1].n - a[1].n).map(([op, each]) => `${op} ${each.n} (slowest ${each.slowest} ms)`).join(", ");
+    return `relay ${box}: in its first ${TALLY_MS / 1000} s after the link this server had ${this.spans.length} calls answered${calls ? ` (${calls})` : ""}, ` +
+      `${kb(this.out)} out and ${kb(this.in)} in; a call was open ${busy} ms of the ${TALLY_MS} ms, up to ${this.peak} at once; ` +
+      `${this.feed.n} feed rows (${kb(this.feed.bytes)}) and ${this.events.n} watch events (${kb(this.events.bytes)}) came in`;
+  }
+}
 
 export class RelayHost implements Host {
   readonly name: string;
@@ -102,6 +163,7 @@ export class RelayHost implements Host {
   onFeed?: (row: FeedRow) => Promise<void>;
   private readonly log: (line: string) => void;
   private readonly cursorFile: string;
+  private tally?: StartTally;
 
   constructor(readonly options: RelayHostOptions) {
     this.name = options.box;
@@ -204,10 +266,12 @@ export class RelayHost implements Host {
     }
   }
 
-  private send(frame: ServerFrame): boolean {
-    if (this.socket?.readyState !== WebSocket.OPEN) return false;
-    this.socket.send(JSON.stringify(frame));
-    return true;
+  /** Sends one frame and returns its length, or 0 when the link is down. */
+  private send(frame: ServerFrame): number {
+    if (this.socket?.readyState !== WebSocket.OPEN) return 0;
+    const text = JSON.stringify(frame);
+    this.socket.send(text);
+    return text.length;
   }
 
   private onMessage(socket: WebSocket, text: string): void {
@@ -228,6 +292,10 @@ export class RelayHost implements Host {
         this.feedHalted = false;
         this.feedChain = Promise.resolve();
         this.setLink("up");
+        if (!this.tally) {
+          const tally = (this.tally = new StartTally(Date.now()));
+          setTimeout(() => this.log(tally.line(this.name)), TALLY_MS).unref();
+        }
         for (const [id, pending] of this.pending) if (!pending.sent) this.write(id, pending);
         void this.rewatch();
         return;
@@ -237,6 +305,7 @@ export class RelayHost implements Host {
         if (!pending) return;
         this.pending.delete(frame.id);
         clearTimeout(pending.timer);
+        if (pending.sentAt !== undefined && this.tally?.counting(pending.sentAt)) this.tally.answered(pending.op, pending.sentAt, text.length);
         if (frame.ok) pending.resolve(frame.data ?? {});
         else pending.reject(new Error(frame.error));
         return;
@@ -245,6 +314,7 @@ export class RelayHost implements Host {
         const watch = this.watches.get(frame.watch);
         if (!watch || watch.stopped) return;
         const event = frame.event as DurableEvent;
+        if (this.tally?.counting()) this.tally.pushed("events", text.length);
         if (event.type === "events") {
           for (const agentEvent of event.events) {
             const entry = agentEvent.type === "entry_appended" || agentEvent.type === "message_end" ? (agentEvent as { entry?: EntryRecord }).entry : undefined;
@@ -256,6 +326,7 @@ export class RelayHost implements Host {
       }
       case "event": {
         const row = frame.row;
+        if (this.tally?.counting()) this.tally.pushed("feed", text.length);
         this.feedChain = this.feedChain.then(() => this.readRow(socket, row));
         return;
       }
@@ -335,8 +406,13 @@ export class RelayHost implements Host {
 
   private write(id: string, pending: Pending): void {
     clearTimeout(pending.waitTimer);
-    pending.sent = this.send({ type: "call", id, op: pending.op, args: pending.args });
+    const bytes = this.send({ type: "call", id, op: pending.op, args: pending.args });
+    pending.sent = bytes > 0;
     if (!pending.sent) return;
+    if (this.tally?.counting()) {
+      pending.sentAt = Date.now();
+      this.tally.sent(bytes);
+    }
     if (pending.timeoutMs) {
       pending.timer = setTimeout(() => this.fail(id, new Error(`${this.name} did not answer ${pending.op} in ${pending.timeoutMs / 1000} s`)), pending.timeoutMs);
     }
