@@ -86,7 +86,7 @@ This list is the single source for these rules.
 14. Every wiki path starts at the content root, such as `sessions/...`, `agents/...` or `apps/...`, and the API answers 400 to a path that starts with a disk prefix such as `content/` or the old repo folder.
 15. Mask a raw `ps` capture or any command output before you save it, because app command lines carry keys, and the page API refuses a page that betterleaks flags.
 16. Close with `wiki.close(outcome, ...)`, which needs `graduated_to`, `gaps_created` or `no_durable_knowledge`, and a closed folder answers 403 to every write except `supersede`.
-17. A curated page links a workspace log (`index.html`) or a page it graduated, never another file in a folder, and the prose lint rule `session-link` refuses such a link.
+17. A curated page links a workspace log (`index.html`) or a page it graduated, never another file in a folder, so move a fact you need from such a file into the page and link the log. The prose lint rule `session-link` refuses such a link into `sessions/`, and `job-folder-link` warns on one into a job folder and names its log.
 
 ## Query
 

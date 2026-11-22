@@ -145,15 +145,17 @@ The word rules are the `unslop` skill's, and the lint checks these on every page
 2. `paragraph-blob` and `paragraph-share` refuse prose paragraphs, and `label-opener` refuses `label: value` lines.
 3. `visuals` and `visual-gap` refuse a page with too few diagrams or images, or a long run of lines without one.
 4. `session-link` refuses a link from a curated page to a file in a session folder other than the session log `index.html`.
-5. `english-only` refuses each Korean sentence outside a quote of the owner (`"..."`, `<q>`, `<blockquote>`) or code, per owner rules c2 and c102, and Korean kept on purpose passes under `lang="ko"` or a `ko/` folder.
-6. The rule exists because the bloat, soft-caps and multi-box design pages of 2026-10-18 were written in Korean.
-7. `sessions/2026/10/09/2344-gateway-v2-rewrite/gateway-v2.html` is the passing example, with 112 numbered lines and 13 diagrams and images.
-8. The page write API (`POST` and `PATCH /api/agent/page`) answers 422 when a write adds lint errors.
-9. The lint does not check size, and the write API accepts a page over the 64 KiB `PAGE_READ_LIMIT` in `apps/wiki/src/lib/server/wiki.ts`, but the reader then shows a "truncated preview" cut mid-page and `GET /api/agent/page` answers 413.
-10. On 2026-10-19 a lint rewrite of `experiments/2026-08-16-email-finder-round2` grew about 30% from split lines and one mermaid per 10 lines and passed 64 KiB, so keep a rewrite under about 62 KB by merging closely linked facts into one sentence, stripping indentation inside mermaid blocks and dropping the tab before `<li>`.
-11. The engine runs the same lint on every write, and no page reaches git except through the backup timer, which commits what the engine wrote.
-12. An edit to an old page passes when it adds no new errors, so legacy pages stay editable.
-13. The lint skips `requests.html` and session log `index.html` files, because they hold verbatim text, and it skips `archive/` and `@code/`.
-14. Write pages through the page API so the write check runs, and never write page files directly.
-15. On 2026-10-28 parallel dream writers kept their page write bodies in the machine's shared temp folder, so a writer that ran `curl --data @r7-patch.json` there sent another job's body under the same name and applied that edit to `apps/search/onboarding-orgs.html` instead of its own page.
-16. Write a page write body to `$SESSION/<uuid>-patch.json` in your workspace folder, or pass the JSON on stdin with `--data @-`, and check that the `path` field of the response names your page.
+5. `job-folder-link` warns on the same kind of link into a pi-host job folder `agents/<slug>/jobs/YYYY/MM/DD/<job>/`, and the finding names the job log `index.html` to link instead.
+6. When a page needs the fact from such a file, move the fact into the line itself or into the curated page that owns it, and link the log.
+7. `english-only` refuses each Korean sentence outside a quote of the owner (`"..."`, `<q>`, `<blockquote>`) or code, per owner rules c2 and c102, and Korean kept on purpose passes under `lang="ko"` or a `ko/` folder.
+8. The rule exists because the bloat, soft-caps and multi-box design pages of 2026-10-18 were written in Korean.
+9. `sessions/2026/10/09/2344-gateway-v2-rewrite/gateway-v2.html` is the passing example, with 112 numbered lines and 13 diagrams and images.
+10. The page write API (`POST` and `PATCH /api/agent/page`) answers 422 when a write adds lint errors.
+11. The lint does not check size, and the write API accepts a page over the 64 KiB `PAGE_READ_LIMIT` in `apps/wiki/src/lib/server/wiki.ts`, but the reader then shows a "truncated preview" cut mid-page and `GET /api/agent/page` answers 413.
+12. On 2026-10-19 a lint rewrite of `experiments/2026-08-16-email-finder-round2` grew about 30% from split lines and one mermaid per 10 lines and passed 64 KiB, so keep a rewrite under about 62 KB by merging closely linked facts into one sentence, stripping indentation inside mermaid blocks and dropping the tab before `<li>`.
+13. The engine runs the same lint on every write, and no page reaches git except through the backup timer, which commits what the engine wrote.
+14. An edit to an old page passes when it adds no new errors, so legacy pages stay editable.
+15. The lint skips `requests.html` and session log `index.html` files, because they hold verbatim text, and it skips `archive/` and `@code/`.
+16. Write pages through the page API so the write check runs, and never write page files directly.
+17. On 2026-10-28 parallel dream writers kept their page write bodies in the machine's shared temp folder, so a writer that ran `curl --data @r7-patch.json` there sent another job's body under the same name and applied that edit to `apps/search/onboarding-orgs.html` instead of its own page.
+18. Write a page write body to `$SESSION/<uuid>-patch.json` in your workspace folder, or pass the JSON on stdin with `--data @-`, and check that the `path` field of the response names your page.

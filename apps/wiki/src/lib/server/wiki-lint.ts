@@ -5,6 +5,7 @@ import { resolveLink } from './wiki-index';
 import { deriveTitleFromPath, isSessionPath } from './session-artifact-index';
 import { extractHtmlHrefs } from './wiki-html';
 import { metaDescription } from './wiki-frontmatter';
+import { sessionFolderLink } from '../session-links.mjs';
 
 /** The lint rules, in report order. Style rules stay WARN tier, so `healthy` reads only broken links and orphans. */
 const RULES = [
@@ -46,10 +47,6 @@ const ENTRY_FILE_STEMS = new Set(['sitemap', 'index', 'readme', 'agents', 'claud
 const CURATED_PREFIXES = ['apps/', 'domains/', 'projects/', 'experiments/'];
 const HOME = 'index.html';
 const RETIRED_STATUSES = new Set(['superseded', 'deprecated', 'archived', 'retired']);
-const SESSION_LOG = /^sessions\/\d{4}\/\d{2}\/\d{2}\/[^/]+\/index\.html$/;
-// A pi-host job folder agents/<slug>/jobs/YYYY/MM/DD/hhmm-job/ is a session folder, and its index.html is the job's log.
-const JOB_FOLDER = /^agents\/[^/]+\/jobs\//;
-const JOB_LOG = /^agents\/[^/]+\/jobs\/\d{4}\/\d{2}\/\d{2}\/[^/]+\/index\.html$/;
 const HUB_FILE = /^(index|README)\.html$/;
 
 export async function getLintReport(): Promise<LintReport> {
@@ -76,8 +73,7 @@ export async function getLintReport(): Promise<LintReport> {
 
 		if (isCuratedPage(page) || page.path === HOME) {
 			for (const target of curated.get(page.path)?.links ?? []) {
-				if ((target.startsWith('sessions/') && !SESSION_LOG.test(target)) || (JOB_FOLDER.test(target) && !JOB_LOG.test(target)))
-					add('sessionLinks', page, `links into session folder "${target}"`, { target });
+				if (sessionFolderLink(target)) add('sessionLinks', page, `links into session folder "${target}"`, { target });
 				const linked = index.byPath.get(target);
 				// Links into archive/ are history links; the defect is a retired page still listed as current.
 				if (isHub(page.path) && !isRetired(page) && linked && isCuratedPage(linked) && isRetired(linked))

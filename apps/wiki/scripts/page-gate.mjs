@@ -13,7 +13,7 @@
  *      `path::name` definition too, and refuses a file the checkout holds uncommitted (pageWriteReasons).
  *   5. A link a write adds leads to a page the wiki index serves (dead_link): the target, resolved as wiki-health.mjs
  *      resolveHref does, is a file with a page extension in the tree or the checkout, or under sessions/, which the
- *      sessionLinks lint judges. A file that is not a page, such as a .py or .mjs script, is linked as /raw/<path>. A bare
+ *      prose lint's session-link rules judge (src/lib/session-links.mjs). A file that is not a page, such as a .py or .mjs script, is linked as /raw/<path>. A bare
  *      absolute href such as /experiments/missing is dead when no route in src/routes (ROUTES) serves its first segment.
  *   6. A warning, not a refusal: a `source_refs` entry a write adds should be no newer than the page's `last_verified`
  *      (stale_vs_code). When a first-parent commit at <rev> changed the ref's file, or for `path::name` that definition,
@@ -328,7 +328,8 @@ function unroutedPath(href) {
  * The link targets `after` adds over `before` (undefined for a new page) that lead to no page. A page-relative or
  * /page/ href resolves to a content path as wiki-health.mjs resolveHref does, and `exists` says whether the index
  * serves it. A bare absolute href that no route serves, such as /experiments/missing, is dead as written. A link the
- * page already had is old debt, and a link into sessions/ is left to the sessionLinks lint.
+ * page already had is old debt, and a link into a session or job folder is left to the prose lint's session-link and
+ * job-folder-link rules, which the page API runs on every write with the sessionLinks lint's src/lib/session-links.mjs.
  */
 export function deadLinksAdded(page, before, after, exists) {
 	const served = (p) => p === page || exists(p);

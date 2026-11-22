@@ -1,5 +1,6 @@
 // Prose lint for llm-wiki HTML pages against sieun-pi `skills/wiki/references/writing.md` and unslop.
 // Pure module; the write API, scripts/prose-lint.mjs and scripts/repo/agent/commit.mjs call it.
+import { isSessionLogPath, sessionFolderLink } from './session-links.mjs';
 
 /** The standard a finding points the writer to. */
 export const STANDARD_FILE = 'skills/wiki/references/writing.md in sieun-pi (~/.prime/agent/skills/wiki/references/writing.md)';
@@ -47,9 +48,6 @@ export const LIMITS = Object.freeze({
 });
 
 
-const SESSION_LOG = /^sessions\/\d{4}\/\d{2}\/\d{2}\/[^/]+\/index\.html$/;
-/** A pi-host job folder's index.html is the job's log, API-managed like a session log. */
-const JOB_LOG = /^agents\/[^/]+\/jobs\/\d{4}\/\d{2}\/\d{2}\/[^/]+\/index\.html$/;
 
 /**
  * True when a content-relative path is a page this lint judges. Session and job logs are API-managed,
@@ -60,7 +58,7 @@ export function isLintedPath(relPath) {
 	const rel = contentRel(relPath);
 	if (!rel.endsWith('.html')) return false;
 	if (rel === 'requests.html' || rel.endsWith('/requests.html')) return false;
-	if (SESSION_LOG.test(rel) || JOB_LOG.test(rel)) return false;
+	if (isSessionLogPath(rel)) return false;
 	if (rel.startsWith('archive/') || rel.startsWith('@code/')) return false;
 	return true;
 }
@@ -75,15 +73,15 @@ function contentRel(relPath) {
 }
 
 const CURATED_PAGE = /^(?:apps|domains|projects|experiments)\/(?!.*\/(?:data|assets)\/).*\.html$/;
-const SESSION_LOG_FOLDER = /^sessions\/\d{4}\/\d{2}\/\d{2}\/[^/]+$/;
 /** A wiki URL on any host that serves it on :5176: the server in hosts.json, or the Mac's old localhost wiki. */
 const WIKI_ORIGIN = /^https?:\/\/[^/\s]+:5176(?=\/)/i;
 
 /**
- * The content path a curated page's href points at when it is a session artifact, else null.
- * Only a session log `index.html` is git-tracked, so any other file under sessions/ is dead in git.
+ * The sessionFolderLink finding (session-links.mjs) for a curated page's href, else null: a link to a file in a session
+ * or job folder other than its log `index.html`.
  * @param {string} href
  * @param {string} pagePath content-relative path of the linking page
+ * @returns {{ target: string, log: string | null } | null}
  */
 export function sessionArtifactLink(href, pagePath) {
 	let target = href.trim().replace(WIKI_ORIGIN, '');
@@ -103,9 +101,7 @@ export function sessionArtifactLink(href, pagePath) {
 		if (part === '..') parts.pop();
 		else if (part && part !== '.') parts.push(part);
 	}
-	const rel = parts.join('/');
-	if (!rel.startsWith('sessions/') || SESSION_LOG.test(rel) || SESSION_LOG_FOLDER.test(rel)) return null;
-	return rel;
+	return sessionFolderLink(parts.join('/'));
 }
 
 
@@ -1053,6 +1049,28 @@ export function futureUtcStamps(text, now) {
 	return [...out, ...futurePastDays(text, now)];
 }
 
+/** The fix both session link rules name. */
+const SESSION_LINK_FIX =
+	'Link the log index.html named in the finding instead of a file inside a session or job folder, and move the fact ' +
+	'you linked into this line or into the curated page that owns it.';
+
+/**
+ * One hit per link of a curated page or the home page into a session or job folder past its log, for the targets
+ * `pick` keeps. The excerpt names the log to link instead.
+ * @param {Page} page
+ * @param {(target: string) => boolean} pick
+ * @returns {Hit[]}
+ */
+function sessionLinkHits(page, pick) {
+	if (!CURATED_PAGE.test(page.path) && page.path !== 'index.html') return [];
+	return page.links.flatMap((l) => {
+		const found = sessionArtifactLink(l.href, page.path);
+		if (!found || !pick(found.target)) return [];
+		const instead = found.log ? `link its log "${found.log}"` : 'link a session log index.html';
+		return [{ excerpt: `links into session folder "${found.target}"; ${instead}`, line: l.line }];
+	});
+}
+
 /** @type {Rule[]} */
 export const RULES = [
 	{
@@ -1343,14 +1361,20 @@ export const RULES = [
 		unslop: 'wiki',
 		severity: 'error',
 		scope: 'page',
-		fix: 'Link the curated page the session graduated to, or the session log index.html, because only the log is in git.',
-		check: (_u, page) => {
-			if (!CURATED_PAGE.test(page.path) && page.path !== 'index.html') return [];
-			return page.links.flatMap((l) => {
-				const target = sessionArtifactLink(l.href, page.path);
-				return target ? [{ excerpt: `links into session folder "${target}"`, line: l.line }] : [];
-			});
-		},
+		fix: SESSION_LINK_FIX,
+		check: (_u, page) => sessionLinkHits(page, (target) => target.startsWith('sessions/')),
+	},
+	{
+		// A warning first, by owner rules c81 and c98. On 2026-11-22 at 03:57Z the page API took two contact-discovery
+		// pages that linked a verdict.html inside a pi-host job folder with no word to the writer, and the 05:00Z wiki
+		// dream precheck counted 2 session links. Those were the only 2 such writes in 7,192 curated revisions from
+		// 11-08 to 11-22, so the rule turns into an error only once warned writers keep such links.
+		id: 'job-folder-link',
+		unslop: 'wiki',
+		severity: 'warn',
+		scope: 'page',
+		fix: SESSION_LINK_FIX,
+		check: (_u, page) => sessionLinkHits(page, (target) => !target.startsWith('sessions/')),
 	},
 	{
 		// A time with a Z is a past UTC event, so one later than the write is a date in the wrong zone.

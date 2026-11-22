@@ -140,3 +140,33 @@ test('a write the ratchet lets through answers with the warnings it kept, so the
 	assert.match(answer.warning, /saved with 1 finding\(s\) \(long-sentence 1\)/);
 	assert.equal(savedLintAnswer(ratchet(null, html.replace(` ${long}`, '')).findings), null, 'a clean page gets none');
 });
+
+// On 2026-11-22 at 03:57Z the page API took apps/crawler-v3/contact-discovery/algorithm.html v66 with a link to a
+// verdict.html inside a pi-host job folder and gave the writer no word, and the 05:00Z wiki dream precheck counted it.
+test('a curated write that adds a link past a job log is saved with a warning naming the log, and one past a session log is refused', () => {
+	const page = 'apps/crawler-v3/contact-discovery/algorithm.html';
+	const job = 'agents/contact-finder/jobs/2026/11/22/0835-d6-bench-egress-proof';
+	const session = 'sessions/2026/11/22/0835-d6-bench';
+	const html = (...hrefs) =>
+		`<!--wiki {"title":"Algorithm","description":"algorithm"} -->\n<h1>Algorithm</h1>\n` +
+		hrefs.map((href) => `<p>The bench proof is in <a href="${href}">the job</a> here.</p>\n`).join('');
+	const before = html(`/page/${job}/index.html`);
+
+	const jobWrite = ratchet(before, html(`/page/${job}/index.html`, `../../../${job}/verdict.html`), { path: page });
+	assert.equal(jobWrite.ok, true, JSON.stringify(jobWrite.grown));
+	const warned = savedLintAnswer(jobWrite.findings)?.lint.filter((f) => f.rule === 'job-folder-link') ?? [];
+	assert.equal(warned.length, 1, JSON.stringify(jobWrite.findings));
+	assert.equal(warned[0].severity, 'warn');
+	assert.match(warned[0].excerpt, new RegExp(`link its log "${job}/index.html"`));
+	assert.match(warned[0].fix, /move the fact you linked into this line or into the curated page that owns it/);
+
+	const sessionWrite = ratchet(before, html(`/page/${job}/index.html`, `/page/${session}/verdict.html`), { path: page });
+	assert.equal(sessionWrite.ok, false);
+	assert.deepEqual(Object.keys(sessionWrite.grown), ['session-link']);
+	assert.match(sessionWrite.newFindings[0].excerpt, new RegExp(`link its log "${session}/index.html"`));
+
+	const logOnly = lintHtml(html(`/page/${job}/index.html`, `/page/${job}`, `/page/${session}/index.html`), { path: page });
+	assert.deepEqual(logOnly.findings.filter((f) => /link/.test(f.rule)).map((f) => f.rule), []);
+	const old = html(`/page/${session}/verdict.html`);
+	assert.equal(ratchet(old, `${old}<p>One more plain line sits here.</p>\n`, { path: page }).ok, true, 'a link the page had is old debt');
+});
