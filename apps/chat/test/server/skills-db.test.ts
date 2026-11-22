@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { SkillsDb, SkillsRefused, SkillsStepFailed, type DiskResult, type DiskStep } from "../../server/skills-db.ts";
+import { SkillsBusy, SkillsDb, SkillsRefused, SkillsStepFailed, type DiskResult, type DiskStep } from "../../server/skills-db.ts";
 import { fixtureScanner, writeSkillsDbFixture, type SkillsDbFixture } from "../../server/skills-db-fixture.ts";
 import { changedLines, similarity, staleCheckouts, type FactCopy } from "../../server/skills-model.ts";
 import { SkillsReview } from "../../server/skills-review.ts";
@@ -515,4 +515,67 @@ test("an inventory the DB took already writes nothing, and a write that finds ch
   assert.ok(performance.now() - began < 1000, "the serving connection does not wait for the lock");
   other.exec("ROLLBACK");
   assert.ok(db.ingest(macScan("2026-11-22T01:00:00Z", [macCopy("/Users/o/.claude/skills/deploy-notes")])));
+});
+
+test("each skills change made while another connection holds chat.sqlite's write lock waits it out off the event loop and succeeds", async t => {
+  const { fixture, db, scan } = rig(t);
+  scan();
+  const file = join(dirname(fixture.root), "chat.sqlite");
+  const other = new DatabaseSync(file);
+  t.after(() => other.close());
+  /** Runs one change while `other` holds the lock for 300 ms, as an ingest in the worker does, and counts the timer ticks meanwhile. */
+  const whileLocked = async <T>(name: string, change: () => Promise<T>): Promise<T> => {
+    other.exec("BEGIN IMMEDIATE");
+    let ticks = 0;
+    const tick = setInterval(() => ticks++, 20);
+    const free = setTimeout(() => other.exec("ROLLBACK"), 300);
+    const began = performance.now();
+    try {
+      const out = await change();
+      assert.ok(performance.now() - began >= 250, `${name} waited for the lock`);
+      assert.ok(ticks >= 5, `${name} left the event loop free while it waited (${ticks} ticks)`);
+      return out;
+    } finally {
+      clearTimeout(free);
+      clearInterval(tick);
+      if (other.isTransaction) other.exec("ROLLBACK");
+    }
+  };
+  const view = db.view(IDLE);
+  const installed = await whileLocked("install", () => db.install({ name: "deploy-notes", box: BOX, runtime: "codex" }));
+  assert.equal(installed.apply?.changes, 1);
+  const codex = db.view(IDLE).skills.find(s => s.id === "git:tools/.agents/skills/deploy-notes")!.installs.find(i => i.path.includes(".codex"))!;
+  await whileLocked("move", () => db.move({ installId: codex.id, path: join(fixture.home, ".codex/skills/deploy-notes-moved") }));
+  await whileLocked("undo", () => db.undo({ moveId: installed.move.id }));
+  await whileLocked("remove", () => db.remove({ target: `${BOX}:${join(fixture.home, ".claude/skills/deploy-notes-copy")}` }));
+  rmSync(join(fixture.home, ".prime/agent/skills/board-rules"));
+  scan();
+  assert.equal((await whileLocked("apply", () => db.apply())).changes, 1);
+  await whileLocked("own", () => db.own({ skillId: "git:tools/.agents/skills/big-guide", owner: "ag_agent-factory" }));
+  const near = view.skills.find(s => s.name === "notes-helper")!;
+  await whileLocked("merge", () => db.merge({ skillId: near.id, into: "git:tools/.agents/skills/deploy-notes" }));
+  execFileSync("mkdir", ["-p", join(fixture.home, ".claude/skills/fresh")]);
+  writeFileSync(join(fixture.home, ".claude/skills/fresh/SKILL.md"), "---\nname: fresh\ndescription: New.\n---\n");
+  scan();
+  const unowned = db.check().items.find(i => i.kind === "unowned");
+  assert.ok(unowned && unowned.kind === "unowned");
+  await whileLocked("adopt", () => db.adopt({ copyId: unowned.copyId }));
+});
+
+test("a skills change answers busy only once the lock stayed held for its whole wait", async t => {
+  const dir = mkdtempSync(join(tmpdir(), "skills-db-held-"));
+  const db = new SkillsDb({ file: join(dir, "chat.sqlite"), box: BOX, home: "/home/x", piHostPrompt: null }, { run: async () => [], undo: async () => [] });
+  db.ingest(macScan("2026-11-22T00:00:00Z", [macCopy("/Users/o/.claude/skills/deploy-notes")]));
+  const other = new DatabaseSync(join(dir, "chat.sqlite"));
+  t.after(() => {
+    other.close();
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const skill = db.view(IDLE).skills[0]!;
+  other.exec("BEGIN IMMEDIATE");
+  const began = performance.now();
+  await assert.rejects(db.own({ skillId: skill.id, owner: "ag_agent-factory" }), SkillsBusy);
+  assert.ok(performance.now() - began >= 4500, "it waited about 5 s first");
+  other.exec("ROLLBACK");
 });

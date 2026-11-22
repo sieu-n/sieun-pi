@@ -51,6 +51,13 @@ export interface DiskSteps {
 /** A caller's mistake, such as an unknown skill or a path another skill holds; http.ts answers it 400. */
 export class SkillsRefused extends Error {}
 
+/** A write that found chat.sqlite's write lock held, mostly by a scan's ingest in the worker, for its whole wait (`SkillsDb.write`). */
+export class SkillsBusy extends SkillsRefused {}
+
+/** How long a skills change waits for chat.sqlite's write lock, off the event loop, before it answers busy: the ingest worker's own
+ *  busy_timeout, so a change made while an ingest holds the lock waits that ingest out (2.4 s on a copy of the live DB at load 234). */
+const WRITE_WAIT_MS = 5_000;
+
 /** A disk step that did not take effect; the change answers an error with the step's reason, and its move stays for undo. */
 export class SkillsStepFailed extends Error {}
 
@@ -226,7 +233,7 @@ export class SkillsDb {
     try {
       this.db.exec("BEGIN IMMEDIATE");
     } catch (error) {
-      if (/SQLITE_BUSY|database is locked/i.test(String(error))) throw new SkillsRefused("The skills DB is busy taking a scan's inventory; try again in a few seconds.");
+      if (/SQLITE_BUSY|database is locked/i.test(String(error))) throw new SkillsBusy("The skills DB is busy taking a scan's inventory; try again in a few seconds.");
       throw error;
     }
     const began = performance.now();
@@ -351,6 +358,23 @@ export class SkillsDb {
       this.setMeta("ingested", facts.generatedAt ?? now());
     }, "ingest");
     return { seeded, copies: facts.copies.length };
+  }
+
+  /**
+   * One write transaction for a change the owner asked for. It tries the lock and, while another connection holds it, tries again on a
+   * timer for up to WRITE_WAIT_MS, so the wait never holds the event loop and a click during an ingest succeeds once the ingest ends.
+   * A disk step a change ran before its write is not run again; only the transaction is retried.
+   */
+  private async write<T>(fn: () => T, name = "change"): Promise<T> {
+    const until = performance.now() + WRITE_WAIT_MS;
+    for (let pause = 50; ; pause = Math.min(pause * 2, 500)) {
+      try {
+        return this.tx(fn, name);
+      } catch (error) {
+        if (!(error instanceof SkillsBusy) || performance.now() + pause > until) throw error;
+      }
+      await new Promise(resolve => setTimeout(resolve, pause));
+    }
   }
 
   /**
@@ -708,7 +732,7 @@ export class SkillsDb {
     const before = opts.before ?? this.snapshot({ installs: planned.map(p => p.installId), copies: touchedCopies });
     const results = await this.disk.run(item, disk);
     const steps: ApplyStep[] = [];
-    this.tx(() => {
+    await this.write(() => {
       for (const p of planned) {
         const i = byId.get(p.installId)!;
         const placed = results.filter(r => r.box === i.box && r.path === i.path).at(-1);
@@ -771,14 +795,14 @@ export class SkillsDb {
       appliedHash: null, sourceHash: null, pending: null,
     };
     const moveId = newMove();
-    this.tx(() => this.insertInstall(install));
+    await this.write(() => this.insertInstall(install));
     const apply = await this.apply({
       only: [install.id], moveId, kind: "install", summary: `install ${skill.name} on ${body.box} at ${path} (${mode})`,
       before: emptySnapshot(), touched: { skills: [], installs: [install.id], copies: [] }, keepFailures: true,
     });
     const failed = apply.steps.filter(x => x.result === "failed");
     if (failed.length) {
-      this.tx(() => {
+      await this.write(() => {
         this.db.prepare("DELETE FROM skill_installs WHERE id = ?").run(install.id);
         this.db.prepare("DELETE FROM skill_copies WHERE box = ? AND path = ?").run(install.box, install.path);
         this.db.prepare("UPDATE skill_moves SET undone_at = ? WHERE id = ?").run(now(), moveId);
@@ -849,7 +873,7 @@ export class SkillsDb {
     const before = this.snapshot({ skills: dropSkills, installs: [...installs.map(i => i.id), ...(dropSkills.length ? st.installs.filter(i => dropSkills.includes(i.skillId)).map(i => i.id) : [])], copies: copyKeys });
     const results = await this.disk.run(item, steps.map(x => ({ kind: "delete" as const, ...x })));
     const failed = results.filter(r => r.state === "failed");
-    this.tx(() => {
+    await this.write(() => {
       for (const r of results) if (r.state === "applied") this.db.prepare("DELETE FROM skill_copies WHERE box = ? AND path = ?").run(r.box, r.path);
       if (!failed.length) {
         for (const i of before.installs) this.db.prepare("DELETE FROM skill_installs WHERE id = ?").run(i.id);
@@ -872,7 +896,7 @@ export class SkillsDb {
       const state = st.states.get(install.id);
       if (state?.kind !== "changed" && state?.kind !== "wrong-link") throw new SkillsRefused(`${body.copyId} is install ${install.id} and matches the disk already.`);
       const before = this.snapshot({ installs: [install.id] });
-      this.tx(() => {
+      await this.write(() => {
         if (install.mode === "link") this.db.prepare("UPDATE skill_installs SET target = ? WHERE id = ?").run(copy.linkTarget ?? install.target, install.id);
         else this.db.prepare("UPDATE skill_installs SET applied_hash = ?, source_hash = ? WHERE id = ?").run(copy.hash, st.canon.get(install.skillId)?.hash ?? null, install.id);
         this.record("adopt", `adopt the disk's ${body.copyId} into install ${install.id}`, null, before, { skills: [], installs: [install.id], copies: [] }, moveId);
@@ -886,7 +910,7 @@ export class SkillsDb {
     const newSkill: SkillRecord | null = known ? null : { id: skillId, name: copy.name, owner: seedOwner(identity.source), source: identity.source, createdAt: now() };
     if (newSkill && body.skillId && body.skillId !== copy.key) throw new SkillsRefused(`No skill ${body.skillId}.`);
     const link = copy.linkTarget !== null ? this.linkInstall(copy, skillId) : null;
-    this.tx(() => {
+    await this.write(() => {
       if (newSkill) this.insertSkill(newSkill);
       if (link) this.insertInstall(link);
       this.record("adopt", `adopt ${body.copyId} as ${link ? `install ${link.id} of ` : "the source of "}${skillId}`, null, emptySnapshot(), { skills: newSkill ? [newSkill.id] : [], installs: link ? [link.id] : [], copies: [] }, moveId);
@@ -914,7 +938,7 @@ export class SkillsDb {
       { kind: "delete", box: install.box, path: install.path, name },
     ]);
     const ok = results.every(r => r.state === "applied" || r.state === "queued");
-    this.tx(() => {
+    await this.write(() => {
       if (ok) {
         this.db.prepare("UPDATE skill_installs SET path = ?, runtimes = ? WHERE id = ?").run(body.path, JSON.stringify(runtimes), install.id);
         this.db.prepare("DELETE FROM skill_copies WHERE box = ? AND path = ?").run(install.box, install.path);
@@ -939,7 +963,7 @@ export class SkillsDb {
     const moveId = newMove();
     const item = `sw:${moveId}`;
     const results = await this.disk.run(item, [{ kind: "fold", box: canon.box, path: canon.path, name: from.name, into: into.id, reason }]);
-    this.tx(() => this.record("merge", `merge ${from.id} into ${into.id}`, item, emptySnapshot(), emptyTouched(), moveId));
+    await this.write(() => this.record("merge", `merge ${from.id} into ${into.id}`, item, emptySnapshot(), emptyTouched(), moveId));
     return { move: this.moveById(moveId)!, apply: diskResult(moveId, results, "fold") };
   }
 
@@ -949,7 +973,7 @@ export class SkillsDb {
     if (!body.owner || !/^(owner|ag_[\w-]+)$/.test(body.owner)) throw new SkillsRefused("An owner is `owner` or an agent id such as ag_agent-factory.");
     const moveId = newMove();
     const before = this.snapshot({ skills: [skill.id] });
-    this.tx(() => {
+    await this.write(() => {
       this.db.prepare("UPDATE skills SET owner = ? WHERE id = ?").run(body.owner, skill.id);
       this.record("own", `${skill.id} now belongs to ${body.owner}`, null, before, { skills: [skill.id], installs: [], copies: [] }, moveId);
     });
@@ -963,7 +987,7 @@ export class SkillsDb {
     if (move.undoneAt) return { move, apply: null };
     const results = move.item ? await this.disk.undo(move.item) : [];
     const failed = results.filter(r => r.state === "failed");
-    this.tx(() => {
+    await this.write(() => {
       if (!failed.length) {
         for (const id of move.touched.skills) this.db.prepare("DELETE FROM skills WHERE id = ?").run(id);
         for (const id of move.touched.installs) this.db.prepare("DELETE FROM skill_installs WHERE id = ?").run(id);
