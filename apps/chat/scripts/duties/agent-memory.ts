@@ -53,7 +53,9 @@ interface Question { q: string; answer?: string; match: string[] }
 interface IdealAgent { agent?: string; slug?: string; expected?: Expected[]; questions?: Question[]; chats?: string[]; must_not?: unknown[];
   /** Corrections from this agent's chats that bind every agent and so stay out of its store (the ledger digest carries them). */
   general_corrections?: string[] }
-interface Ideal { agents?: IdealAgent[]; general_corrections?: string[] }
+/** A `public_values` row: a fixed dev-only credential committed in plaintext (`where`), which an entry may write out. */
+interface PublicValue { value: string; where: string }
+interface Ideal { agents?: IdealAgent[]; general_corrections?: string[]; public_values?: PublicValue[] }
 interface Correction { id: string; at: string; chat: { id: string; name?: string }; rule: string; ref?: string; status?: string }
 
 export interface Finding { kind: string; excerpt: string; sig: string }
@@ -110,18 +112,19 @@ export function scratchReason(entry: StoreEntry): string | null {
 
 /**
  * A secret value in an entry: an API key or token shape, or a password, secret or key written out after a colon or equals sign. The digest
- * copies entries into prompts, so a store names where a secret lives and never holds its value (ideal.json rules.must_not).
+ * copies entries into prompts, so a store names where a secret lives and never holds its value (ideal.json rules.must_not). A value
+ * ideal.json lists in public_values is committed in plaintext, such as auto-sns-agent's local-agent-key, and is no secret.
  */
-export function secretReason(entry: StoreEntry): string | null {
+export function secretReason(entry: StoreEntry, publicValues: ReadonlySet<string> = new Set()): string | null {
   const text = entryText(entry);
   const token = text.match(/\b(sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{30,}|xox[abp]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{30,}\.[A-Za-z0-9_-]+)/);
   if (token) return `token ${token[0].slice(0, 6)}...`;
   const pair = text.match(/\b(password|passwd|secret|api[_ -]?key|token)\s*[:=]\s*["'`]?([^\s"'`]{8,})/i);
-  return pair && !/^(<|\$|\{|process\.env|env\.|see\b|in\b)/i.test(pair[2]!) ? `${pair[1]} written out` : null;
+  return pair && !publicValues.has(pair[2]!.replace(/[.,;:)\]]+$/, "")) && !/^(<|\$|\{|process\.env|env\.|see\b|in\b)/i.test(pair[2]!) ? `${pair[1]} written out` : null;
 }
 
 /** The must-not items of ideal.json that a script can read: an object with `match` words; a prose item is for the duty job to read. */
-function mustNotHits(entries: readonly StoreEntry[], items: readonly unknown[]): { entry: StoreEntry; rule: string }[] {
+function mustNotHits(entries: readonly StoreEntry[], items: readonly unknown[], publicValues: ReadonlySet<string>): { entry: StoreEntry; rule: string }[] {
   const hits: { entry: StoreEntry; rule: string }[] = [];
   for (const item of items) {
     if (typeof item !== "object" || item === null || !Array.isArray((item as { match?: unknown }).match)) continue;
@@ -130,7 +133,7 @@ function mustNotHits(entries: readonly StoreEntry[], items: readonly unknown[]):
     for (const entry of entries) if (holds(entryText(entry), words)) hits.push({ entry, rule });
   }
   for (const entry of entries) {
-    const secret = secretReason(entry);
+    const secret = secretReason(entry, publicValues);
     if (secret) hits.push({ entry, rule: `secret value: ${secret}` });
   }
   return hits;
@@ -318,6 +321,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const idealDoc = existsSync(idealFile) ? JSON.parse(readFileSync(idealFile, "utf8")) as Ideal : null;
   const ideal = idealDoc ? idealDoc.agents ?? [] : null;
   const idealOf = (record: AgentRecord): IdealAgent | undefined => ideal?.find(entry => entry.agent === record.id || entry.slug === record.slug);
+  const publicValues = new Set((idealDoc?.public_values ?? []).map(row => row.value));
   const corrections = existsSync(correctionsFile) ? (JSON.parse(readFileSync(correctionsFile, "utf8")) as { corrections: Correction[] }).corrections : [];
 
   const flagged: Finding[] = [];
@@ -350,7 +354,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     row.entries = entries.length;
 
     const missing = (want?.expected ?? []).filter(exp => !entries.some(entry => (!exp.kind || exp.kind === entry.kind) && holds(entryText(entry), exp.match)));
-    const forbidden = mustNotHits(entries, want?.must_not ?? []);
+    const forbidden = mustNotHits(entries, want?.must_not ?? [], publicValues);
     const expected = want?.expected ?? [];
     const matches = !!want && !forbidden.length && (expected.length ? !missing.length : !entries.length);
     if (matches) onIdeal++;

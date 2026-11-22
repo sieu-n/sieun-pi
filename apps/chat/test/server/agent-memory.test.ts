@@ -17,7 +17,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { call, EMPTY_TURN, emptyTurn, finishedReply, holds, recall, scratchReason, splitAnswers, sweepRecallAgents } from "../../scripts/duties/agent-memory.ts";
+import { call, EMPTY_TURN, emptyTurn, finishedReply, holds, recall, scratchReason, secretReason, splitAnswers, sweepRecallAgents } from "../../scripts/duties/agent-memory.ts";
 
 const ask = { kind: "message", text: "Quick questions" };
 
@@ -75,6 +75,15 @@ test("a wip title is session state only as a label or with a plan step", () => {
   assert.equal(scratchReason(entry("wip p12 cache fix")), "title reads as session state");
   assert.equal(scratchReason(entry("Status")), "title reads as session state");
   assert.equal(scratchReason(entry("Session state: install cleanup, p14 fixes")), "title reads as session state");
+});
+
+test("a key written out is a secret unless ideal.json lists it as a committed public value", () => {
+  const stub = entry("Local crawler stub", "POST /__stub/faults needs header x-api-key: local-agent-key (the stub's CRAWLER_API_KEY).");
+  assert.equal(secretReason(stub), "api-key written out");
+  assert.equal(secretReason(stub, new Set(["local-agent-key"])), null);
+  assert.equal(secretReason(entry("Stub key", "api_key=local-agent-key.")), "api_key written out");
+  assert.equal(secretReason(entry("Stub key", "api_key=local-agent-key."), new Set(["local-agent-key"])), null);
+  assert.equal(secretReason(entry("Prod key", "api_key: prod-9f3a2c71e0"), new Set(["local-agent-key"])), "api_key written out");
 });
 
 /** A stub of :5184 for recall agents: `send` and `items` act as each test sets, and every call is logged. */
