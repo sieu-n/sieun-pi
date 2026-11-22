@@ -134,7 +134,7 @@ export function sightFor(entry: SkillEntry, kind: ThreadKind): SkillSight {
   return entry.sees.find(s => s.kind === kind) ?? { kind, how: "hidden", why: HIDDEN_DEFAULT };
 }
 
-export type CellTone = "listed" | "imported" | "inlined" | "cwd" | "hidden";
+export type CellTone = "listed" | "imported" | "inlined" | "cwd" | "path" | "hidden";
 export type Cell = { tone: CellTone; label: string; title: string };
 
 export function cellFor(entry: SkillEntry, kind: ThreadKind): Cell {
@@ -146,7 +146,11 @@ export function cellFor(entry: SkillEntry, kind: ThreadKind): Cell {
     case "imported": return { tone: "imported", label: "pre-imported", title: `Every ${who} lists it and pre-imports its Python module, from ${from(sight.copyId)}` };
     case "inlined": return { tone: "inlined", label: "inlined", title: `Every ${who} carries its whole SKILL.md in the prompt, from ${from(sight.copyId)}` };
     case "cwd": return { tone: "cwd", label: `in ${repoName(sight.repo)}`, title: `A ${who} lists it only when its folder is ${sight.repo}, from ${from(sight.copyId)}` };
-    case "hidden": return { tone: "hidden", label: "hidden", title: sight.why };
+    case "hidden": {
+      const uses = entry.use.byKind[kind]?.uses ?? 0;
+      if (uses === 0) return { tone: "hidden", label: "hidden", title: sight.why };
+      return { tone: "path", label: "by path", title: `Not listed: ${sight.why}. A ${who} still opened it by its path ${uses.toLocaleString("en-US")} ${uses === 1 ? "time" : "times"} in 30 days.` };
+    }
     default: {
       const _exhaustive: never = sight;
       return _exhaustive;
@@ -301,4 +305,24 @@ export function sourceShort(entry: SkillEntry): string {
       return _exhaustive;
     }
   }
+}
+
+/** The uses that came from kinds of thread that do not list the skill, which opened it by its path. */
+export function pathUses(entry: SkillEntry): { uses: number; kinds: string[] } | null {
+  let uses = 0;
+  const kinds: string[] = [];
+  for (const kind of THREAD_KINDS) {
+    const n = entry.use.byKind[kind]?.uses ?? 0;
+    if (n === 0 || sightFor(entry, kind).how !== "hidden") continue;
+    uses += n;
+    kinds.push(KIND_META[kind].name);
+  }
+  return uses > 0 ? { uses, kinds } : null;
+}
+
+export function pathUsesLabel(entry: SkillEntry): string | null {
+  const found = pathUses(entry);
+  if (!found) return null;
+  const all = found.uses === entry.use.uses;
+  return `${all ? "Every use" : `${found.uses.toLocaleString("en-US")} of its uses`} came from threads that do not list it and opened it by its path: ${found.kinds.join(", ")}.`;
 }

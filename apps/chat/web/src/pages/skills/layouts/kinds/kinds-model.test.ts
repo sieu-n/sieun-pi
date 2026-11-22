@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { SkillCopy, SkillEntry, SkillsView } from "../../../../lib/api/shared/skills.ts";
-import { cellFor, driftOf, installDrift, families, kindColumns, problemsOf, rowsFor, shortPath, sizeOf } from "./kinds-model.ts";
+import { cellFor, driftOf, installDrift, pathUsesLabel, families, kindColumns, problemsOf, rowsFor, shortPath, sizeOf } from "./kinds-model.ts";
 
 const copy = (over: Partial<SkillCopy>): SkillCopy => ({
   id: "us-metal02:/s/board", box: "us-metal02", path: "/s/board", role: "source", installId: null, link: null, realPath: "/s/board", exists: true, hash: "h", lines: 70,
@@ -97,4 +97,15 @@ test("an install with no folder on disk says why", () => {
   const install = { id: "i2", box: "mac", path: "/p", mode: "link" as const, runtimes: [], agent: null, state: { kind: "missing" as const } };
   assert.equal(installDrift(install).label, "install missing");
   assert.equal(installDrift({ ...install, state: { kind: "ok" } }).label, "not scanned yet");
+});
+
+test("a hidden kind that still used the skill reads as opened by path", () => {
+  const e = entry({
+    sees: [{ kind: "prime-subagent", how: "hidden", why: "no folder this kind reads holds it" }, { kind: "sw-work", how: "listed", copyId: "x" }],
+    use: { uses: 10, sessions: 4, lastUse: null, byKind: { "prime-subagent": { uses: 7, sessions: 3 }, "sw-work": { uses: 3, sessions: 1 } } },
+  });
+  assert.equal(cellFor(e, "prime-subagent").label, "by path");
+  assert.match(cellFor(e, "prime-subagent").title, /opened it by its path 7 times/);
+  assert.equal(cellFor(e, "prime-job").label, "hidden");
+  assert.equal(pathUsesLabel(e), "7 of its uses came from threads that do not list it and opened it by its path: Prime subagent.");
 });

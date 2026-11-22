@@ -7,7 +7,7 @@
   import type { PickerItem } from "$lib/ui/types";
   import {
     PROBLEMS, ROLE_LABEL, boxNotices, cellFor, columnTitle, driftOf, families, homeBox, kindColumns, ownerLabel, problemCount, rowsFor, sizeOf,
-    installDrift, pathTitle, shortPath, sourceLabel, sourceShort, tokensLabel, usesLabel, usesTitle, type Filter, type Problem,
+    installDrift, pathTitle, pathUsesLabel, shortPath, sourceLabel, sourceShort, tokensLabel, usesLabel, usesTitle, type Filter, type Problem,
   } from "./kinds-model";
 
   let { view, reload }: { view: SkillsView; reload: () => Promise<void> } = $props();
@@ -248,7 +248,7 @@
                   <div class="detail-body">
                     <p class="description" class:missing={!entry.description}>{entry.description || "No description, so no thread knows when to pick it."}</p>
                     <p class="facts">
-                      {usesLabel(entry, row.problems.includes("unused"))}. Owned by {ownerLabel(entry, agentNames)}. Source {sourceLabel(entry)}{size ? `, ${size.label}${size.ratio ? `, ${size.ratio}` : ""}` : ""}.
+                      {usesLabel(entry, row.problems.includes("unused"))}.{#if pathUsesLabel(entry)} {pathUsesLabel(entry)}{/if} Owned by {ownerLabel(entry, agentNames)}. Source {sourceLabel(entry)}{size ? `, ${size.label}${size.ratio ? `, ${size.ratio}` : ""}` : ""}.
                     </p>
                     {#if entry.verdicts.length > 0}
                       <ul class="verdicts">
@@ -366,7 +366,7 @@
   {/if}
 
   {#if view.unowned.length > 0}
-    <Disclosure title={`${view.unowned.length.toLocaleString("en-US")} folders no skill owns`} detail="Adopt one to give it a row, or remove it" bind:open={unownedOpen}>
+    <Disclosure title={`${view.unowned.length.toLocaleString("en-US")} ${view.unowned.length === 1 ? "folder" : "folders"} no skill owns`} detail="Adopt one to give it a row, or remove it" bind:open={unownedOpen}>
       <table class="copies" data-testid="skills-unowned">
         <thead><tr><th scope="col">Box</th><th scope="col">Folder</th><th scope="col">Size</th><th scope="col">Loaded by</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
         <tbody>
@@ -449,6 +449,7 @@
   .cell.imported, .cell.inlined { font-weight: 500; }
   .cell.cwd { max-width: 5.5rem; overflow: hidden; text-overflow: ellipsis; color: var(--text-subtle); }
   .cell.hidden { color: var(--text-subtle); opacity: 0.55; }
+  .cell.path { color: var(--text-subtle); }
   .num { text-align: right; }
   .muted { color: var(--text-subtle); }
   .bad { color: var(--text-danger); }
