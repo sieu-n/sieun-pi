@@ -314,7 +314,7 @@ for (const signal of ["SIGKILL", "SIGSTOP"]) {
   if (result.servers.length !== 1) failures.push(`after SIGSTOP during the hand-over: ${result.servers.length} server processes`);
 }
 // A successor that dies after the old server stopped, while it reads its state: systemd already took it as the main process then
-// (server/main.ts sends MAINPID= at the stop), so its end is the unit's end and Restart= brings a new server.
+// (server/handoff.ts boostBeforeStop sends MAINPID= before the stop), so its end is the unit's end and Restart= brings a new server.
 {
   const before = Number(show("MainPID"));
   const since = Math.floor(Date.now() / 1000);
@@ -333,6 +333,40 @@ for (const signal of ["SIGKILL", "SIGSTOP"]) {
   crashes.push(result);
   if (result.backMs === null || result.backMs > 15_000) failures.push(`after SIGKILL of the successor ${victim} after the old server stopped no new server answered in ${result.backMs === null ? "60 s" : `${result.backMs} ms`}`);
   if (result.servers.length !== 1) failures.push(`after SIGKILL after the old server stopped: ${result.servers.length} server processes`);
+}
+// The window boostBeforeStop opens: systemd took the successor as the main process while the old server still serves. Each case reloads,
+// waits until MainPID moves to the successor, and kills one side before the old server logs its stop. A dead successor must leave the old
+// server serving or a restarted unit; a dead old server must leave the successor serving the data dir. Either way one server answers.
+const mainMoved = async before => {
+  for (const end = Date.now() + 30_000; Date.now() < end; await sleep(30)) {
+    const pid = Number(show("MainPID"));
+    if (pid && pid !== before) return pid;
+  }
+  return 0;
+};
+for (const side of ["successor", "old server"]) {
+  const before = Number(show("MainPID"));
+  const restartsAt = Number(show("NRestarts"));
+  const since = Math.floor(Date.now() / 1000);
+  execFileSync("systemctl", ["--user", "reload", unit]);
+  const successor = await mainMoved(before);
+  const victim = side === "successor" ? successor : before;
+  const stoppedFirst = () => execFileSync("journalctl", ["--user", "-u", unit, "-u", unit.replace(/\.service$/, "-core.scope"), "--since", `@${since}`, "--no-pager", "-o", "cat"], { encoding: "utf8" }).includes("this process stopped in");
+  const early = successor ? !stoppedFirst() : false;
+  const result = successor ? await replaced(victim, "SIGKILL") : { signal: "SIGKILL", victim: null, by: null, backMs: null };
+  result.when = `${side} killed after the successor's MAINPID=, before the old server's stop`;
+  result.beforeStop = early;
+  await sleep(3000);
+  result.servers = servers().filter(pid => pid !== victim);
+  result.mainPid = Number(show("MainPID"));
+  result.restarts = Number(show("NRestarts")) - restartsAt;
+  try { result.answeredBy = JSON.parse((await call("GET", "/api/ready")).text).pid; } catch (error) { result.answeredBy = error.code ?? error.message; }
+  crashes.push(result);
+  if (!successor) failures.push(`${side} case: MainPID never moved to a successor in 30 s`);
+  else if (!early) failures.push(`${side} case: the old server had stopped before the kill, so the case did not run in its window`);
+  if (result.backMs === null || result.backMs > 15_000) failures.push(`after SIGKILL of the ${side} ${victim} before the stop no other server answered in ${result.backMs === null ? "60 s" : `${result.backMs} ms`}`);
+  if (result.servers.length !== 1) failures.push(`after SIGKILL of the ${side} before the stop: ${result.servers.length} server processes`);
+  if (result.servers.length === 1 && result.mainPid !== result.servers[0]) failures.push(`after SIGKILL of the ${side} before the stop systemd's MainPID is ${result.mainPid}, not the server ${result.servers[0]}`);
 }
 // Each old server passes calls on for at most the keep-alive timeout plus 5 s (http.ts lingerForwarding), 105 s.
 for (const end = Date.now() + 120_000; Date.now() < end; await sleep(1000)) {

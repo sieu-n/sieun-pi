@@ -16,7 +16,7 @@ import type { Host } from "./host/types.ts";
 import { projectList } from "./projects.ts";
 import { drain, lingerForwarding, serve, skillsParts, windDown, WRITE_WAIT_MS } from "./http.ts";
 import { seedFixture } from "./fixture/seed.ts";
-import { DataLock, handOverOnHangup, listening, startWatchdog, tellSystemd } from "./handoff.ts";
+import { boostBeforeStop, DataLock, handOverOnHangup, listening, startWatchdog, tellSystemd } from "./handoff.ts";
 
 const loadedMs = Math.round(performance.now());
 const config = readConfig();
@@ -56,16 +56,24 @@ const skills = skillsParts(config, log, () => app);
 await skills.ready;
 const skillsMs = Math.round(performance.now() - skillsAt);
 // A successor reads the data dir only once the server it follows stopped and wrote its files (server/handoff.ts).
-const waitedAt = performance.now();
-let told: Promise<void> | undefined;
+// systemd's ExecReload sends SIGHUP to the main process, which a successor is from its MAINPID= on; until it serves, a reload is left out.
+const earlyHangup = () => log("handoff: a reload came before this process took the port; it is left out");
+if (port.predecessor) process.on("SIGHUP", earlyHangup);
+const boostAt = performance.now();
 if (port.predecessor) {
-  await port.predecessor.stopped();
+  try {
+    await boostBeforeStop(log);
+  } catch (error) {
+    // The running server still serves and still is the main process, so this successor only ends.
+    log(`systemd-notify: ${error instanceof Error ? error.message : String(error)}; this process exits`);
+    process.exit(1);
+  }
+}
+const boostMs = Math.round(performance.now() - boostAt);
+const waitedAt = performance.now();
+if (port.predecessor) {
+  if ((await port.predecessor.stopped()) === "gone") log("handoff: the running server ended before its stop; this process takes the data dir");
   takeLock();
-  // systemd takes this process as the main one now, before its state read, so cpu-protect.py moves it into the unit's core scope on its next
-  // 2 s pass while it reads: at load 133 to 139 on 11-22 a successor outside it took 2.45 s from the old server's stop to its listen, against
-  // 0.5 to 0.9 s at normal load. The old server has stopped by now, so it serves nothing that would run slower outside the scope.
-  told = tellSystemd(true, log);
-  told.catch(() => undefined);
 }
 const waitedMs = Math.round(performance.now() - waitedAt);
 /**
@@ -97,17 +105,19 @@ const routesMs = Math.round(performance.now() - servedAt);
 const fd = port.fd;
 await new Promise<void>(resolve => (fd === null ? http.listen(config.port, config.listen, resolve) : http.listen({ fd }, resolve)));
 log(`apps/chat on http://${config.listen}:${config.port}${fd === null ? "" : ` through fd ${fd}`} (${config.fixture ? "fixture" : `pi-host ${config.socket}`}, data ${config.dataDir}); ` +
-  `modules ${loadedMs} ms, skills ${skillsMs} ms${port.predecessor ? `, the old server's stop ${waitedMs} ms` : ""}, state and start ${Math.round(performance.now() - startAt)} ms (state read ${builtMs} ms, ${started}, routes ${routesMs} ms)`);
+  `modules ${loadedMs} ms, skills ${skillsMs} ms${port.predecessor ? `, main process and core scope ${boostMs} ms, the old server's stop ${waitedMs} ms` : ""}, state and start ${Math.round(performance.now() - startAt)} ms (state read ${builtMs} ms, ${started}, routes ${routesMs} ms)`);
 // The loops start once the queued calls had their answers, and after cpu-protect.py's next 2 s pass (INTERVAL_S) moved this process into the
 // unit's core scope, where their scan of every room's posts runs at its weight.
 setTimeout(() => { if (!stopping) log(`loops: started in ${app!.startLoops()} ms`); }, 2000);
-try {
-  await (told ?? tellSystemd(false, log));
-} catch (error) {
-  // systemd must take a successor as the main process before the old server exits, or it reads that exit as the unit's end.
-  log(`systemd-notify: ${error instanceof Error ? error.message : String(error)}; this process exits`);
-  process.exit(1);
+if (!port.predecessor) {
+  try {
+    await tellSystemd(false, log);
+  } catch (error) {
+    log(`systemd-notify: ${error instanceof Error ? error.message : String(error)}; this process exits`);
+    process.exit(1);
+  }
 }
 const quiet = startWatchdog(log);
 port.predecessor?.taken();
-if (fd !== null) handOverOnHangup({ fd, server: http, drain: server => drain(server, WRITE_WAIT_MS, "forward"), linger: () => lingerForwarding(http), windDown: on => windDown(http, on), stop: handOverStop, unlock: () => lock.release(), quiet, log, exit: code => process.exit(code) });
+process.off("SIGHUP", earlyHangup);
+if (fd !== null) handOverOnHangup({ fd, server: http, drain: server => drain(server, WRITE_WAIT_MS, "forward"), linger: () => lingerForwarding(http), windDown: on => windDown(http, on), stop: handOverStop, unlock: () => lock.release(), quiet, log, exit: code => process.exit(code), reclaim: () => tellSystemd(true, log) });

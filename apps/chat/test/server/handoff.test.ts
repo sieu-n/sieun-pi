@@ -15,6 +15,8 @@ import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { test } from "node:test";
 import WebSocket from "ws";
+import { EventEmitter } from "node:events";
+import { Predecessor } from "../../server/handoff.ts";
 
 const APP = join(import.meta.dirname, "../..");
 const SOCKET_UNIT = `
@@ -142,4 +144,17 @@ test("a second server on the same data dir finds the lock held and exits", { tim
     await new Promise(resolve => one.once("exit", resolve));
     rmSync(data, { recursive: true, force: true });
   }
+});
+
+test("a successor's wait for the stop ends when the running server's channel closes first", async () => {
+  const channel = (connected: boolean) => Object.assign(new EventEmitter(), { connected, send: () => true }) as unknown as ConstructorParameters<typeof Predecessor>[0] & EventEmitter;
+  assert.equal(await new Predecessor(channel(false)).stopped(), "gone");
+  const closing = channel(true);
+  const waiting = new Predecessor(closing).stopped();
+  closing.emit("disconnect");
+  assert.equal(await waiting, "gone");
+  const stopping = channel(true);
+  const stopped = new Predecessor(stopping).stopped();
+  stopping.emit("message", { kind: "stopped" });
+  assert.equal(await stopped, "stopped");
 });

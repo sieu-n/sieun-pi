@@ -3,14 +3,19 @@
  * so a call that lands while no process accepts waits in the socket's queue instead of failing with ECONNREFUSED. A release reloads the
  * unit (SIGHUP), and the running server starts its successor beside it on the same fd:
  *
- * 1. The successor loads its modules, which is most of a start (1.2 to 2.9 s of the 3.2 s median start on 11-22, server/main.ts), and says
- *    `loaded` while the running server still answers every call.
+ * 1. The successor loads its modules, which is most of a start (1.2 to 2.9 s of the 3.2 s median start on 11-22, server/main.ts), tells
+ *    systemd MAINPID= and waits until cpu-protect.py moved it into the unit's core scope (`boostBeforeStop`), and says `loaded`, all
+ *    while the running server still answers every call.
  * 2. The running server stops taking connections, lets its calls in flight answer (`drain`), stops its loops and writes its queued files
  *    (`App.stop`), and says `stopped`. Calls that arrive from now on wait in the socket's queue.
  *    It releases the data dir's lock (`DataLock`).
  * 3. The successor takes the lock and reads the state files only now, so no write of the running server lands after it read them. It
- *    starts, takes the fd, tells systemd MAINPID= until systemd shows it as the main process (`tellSystemd`), and says `taken`; only then
- *    does the running server exit, so systemd never reads that exit as the unit's end.
+ *    starts, takes the fd and says `taken`; only then does the running server exit. systemd took the successor as the main process in
+ *    step 1, so it never reads that exit as the unit's end.
+ *
+ * A successor that ends between its MAINPID= and the stop leaves the running server serving, and the running server tells systemd
+ * MAINPID= of its own (`reclaim`). A running server that ends before its stop closes the IPC channel, and the successor, the main process
+ * by then, takes the lock the kernel dropped and serves.
  *
  * Two App instances never run at once, so nothing in the data dir, the wakes, the duties or the search index is written by both, and a
  * second server started on the same data dir by any other path finds the lock held and exits. Without a
@@ -53,17 +58,24 @@ export function listening(env: NodeJS.ProcessEnv = process.env): Listening {
 
 /** The successor's side of a hand-over. */
 export class Predecessor {
-  constructor(private readonly channel: Pick<NodeJS.Process, "on" | "off" | "send"> = process) {}
+  constructor(private readonly channel: Pick<NodeJS.Process, "on" | "off" | "send" | "connected"> = process) {}
 
-  /** Says this process loaded, and resolves once the running server stopped and wrote its files. */
-  stopped(): Promise<void> {
-    const done = new Promise<void>(resolve => {
-      const on = (message: unknown) => {
-        if (kindOf(message) !== "stopped") return;
+  /**
+   * Says this process loaded, and resolves once the running server stopped and wrote its files, or with "gone" once its channel closed
+   * first: the running server ended before its stop, and the kernel dropped its data dir lock with it.
+   */
+  stopped(): Promise<"stopped" | "gone"> {
+    if (!this.channel.connected) return Promise.resolve("gone");
+    const done = new Promise<"stopped" | "gone">(resolve => {
+      const end = (how: "stopped" | "gone") => {
         this.channel.off("message", on);
-        resolve();
+        this.channel.off("disconnect", gone);
+        resolve(how);
       };
+      const on = (message: unknown) => { if (kindOf(message) === "stopped") end("stopped"); };
+      const gone = () => end("gone");
       this.channel.on("message", on);
+      this.channel.on("disconnect", gone);
     });
     this.send({ kind: "loaded" });
     return done;
@@ -74,8 +86,9 @@ export class Predecessor {
     this.send({ kind: "taken" });
   }
 
+  /** A send on a channel the running server closed by ending fails in the callback, which drops it; the "disconnect" handler acts on it. */
   private send(message: ToOld): void {
-    this.channel.send?.(message);
+    this.channel.send?.(message, undefined, undefined, () => undefined);
   }
 }
 
@@ -116,6 +129,39 @@ const TAKE_MS = 15_000;
  * Tells systemd this process serves: READY=1, or for a successor MAINPID= and READY=1 again every 250 ms until systemd shows it as the
  * unit's main process, which must happen before the old server exits. Throws when systemd did not take it in TAKE_MS.
  */
+/** The cgroup a process runs in, from /proc/<pid>/cgroup, or "" when it cannot be read. */
+export function cgroupOf(pid: number | "self" = "self"): string {
+  try { return readFileSync(`/proc/${pid}/cgroup`, "utf8").trim().split("\n").find(line => line.startsWith("0::"))?.slice(3) ?? ""; } catch { return ""; }
+}
+
+/**
+ * How long a successor that systemd took as the main process waits for cpu-protect.py to move it into the unit's core scope before it lets
+ * the running server stop: one 2 s pass (INTERVAL_S) and 1 s for the pass itself.
+ */
+const BOOST_MS = 3_000;
+
+/**
+ * A successor's first step once it loaded, while the running server still serves every call: it becomes the unit's main process, so
+ * cpu-protect.py moves it into <unit>-core.scope, and it waits there before the running server stops. Its lock, state read and listen then
+ * run at the core scope's weight. Before 11-23 it told systemd only at the stop, and at box load 277 on 11-22 a successor that ran outside
+ * the scope took 4.4 s from that stop to its listen, against 0.15 to 0.6 s in the four other hand-overs of that walk. The running server
+ * leaves the scope at the next pass and serves outside it until it stopped. Without a core scope around the running server (no
+ * cpu-protect.py, or a box without it) the wait is left out. Throws when systemd did not take this process in TAKE_MS.
+ */
+export async function boostBeforeStop(log: (line: string) => void, env: NodeJS.ProcessEnv = process.env): Promise<void> {
+  if (!env.NOTIFY_SOCKET) return;
+  const scope = `${(env[UNIT_ENV] ?? "").replace(/\.service$/, "")}-core.scope`;
+  const protectedRunning = cgroupOf(process.ppid).endsWith(`/${scope}`);
+  await tellSystemd(true, log, env);
+  if (!protectedRunning) return;
+  const began = Date.now();
+  while (!cgroupOf().endsWith(`/${scope}`)) {
+    if (Date.now() - began > BOOST_MS) return log(`systemd: not in ${scope} after ${BOOST_MS} ms; the running server stops anyway`);
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  log(`systemd: in ${scope} after ${Date.now() - began} ms; the running server stops now`);
+}
+
 export async function tellSystemd(successor: boolean, log: (line: string) => void, env: NodeJS.ProcessEnv = process.env): Promise<void> {
   if (!env.NOTIFY_SOCKET) return;
   const began = Date.now();
@@ -214,6 +260,8 @@ export interface Running {
   linger?(): Promise<string>;
   /** Called with true when the successor starts, so the answers from then on close their connections (http.ts `windDown`), and with false when it ended before the stop. */
   windDown?(on: boolean): void;
+  /** Makes this process the unit's main process again after a successor that took that place ended before the stop. */
+  reclaim?(): Promise<void>;
   /** Ends this process once the successor serves, or once a successor that ended after this process stopped left nothing to serve. */
   exit(code: number): void;
 }
@@ -261,7 +309,7 @@ export async function handOver(side: Running, args: string[] = serveArgs(), cwd 
           stoppedAt = Date.now();
           side.log(`handoff: ${child.pid} loaded in ${loadedAt - began} ms; this process stopped in ${Date.now() - loadedAt} ms${drained ? ` (${drained})` : ""}, and calls wait in the socket's queue until ${child.pid} takes it`);
           child.send({ kind: "stopped" } satisfies ToNew);
-          // The successor gives up on its MAINPID= after TAKE_MS and ends, which ends this process too; one that hangs instead is ended here.
+          // A successor that hangs after the stop is ended here; systemd then reads the end of its main process and starts the unit again.
           setTimeout(() => {
             if (taken) return;
             side.log(`handoff: ${child.pid} did not take the port in ${(TAKE_MS + 5000) / 1000} s after this process stopped; it is killed`);
@@ -288,7 +336,10 @@ export async function handOver(side: Running, args: string[] = serveArgs(), cwd 
       clearTimeout(loading);
       if (taken) return;
       side.log(`handoff: the successor ${child.pid} ended (${signal ?? `exit ${code}`}) before it took the port; ${stoppedAt ? "this process had stopped, so it exits and systemd starts the unit again" : "this process keeps serving"}`);
-      if (!stoppedAt) side.windDown?.(false);
+      if (!stoppedAt) {
+        side.windDown?.(false);
+        void side.reclaim?.().catch(error => side.log(`handoff: reclaim: ${error instanceof Error ? error.message : String(error)}`));
+      }
       resolve();
       if (stoppedAt) side.exit(1);
     });
