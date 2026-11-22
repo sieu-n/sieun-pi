@@ -1,13 +1,15 @@
 /**
  * Channel members on the fixture host (group-rooms.ts rule 6): an add makes the new member's comm thread at once, with no post, and shows
  * "You added X" in the timeline; a removed member gets no later post, keeps its comm thread record, and a re-add goes on in that thread;
- * adding twice and removing a non-member change nothing, the owner stays; and an agent's set_room_member route adds and removes by name.
+ * adding twice and removing a non-member change nothing, the owner stays; an agent's set_room_member route adds and removes by name; and a
+ * remove stops the member's comm thread turn in the room, running or waiting for a slot, so its answer never lands after the remove.
  * Run: cd apps/chat && node --import tsx --test --test-force-exit --test-isolation=none --test-timeout=120000 test/server/room-members.test.ts
  */
 import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
 import type { ConversationHeader, Item, Room, TimelinePage } from "../../web/src/lib/api/types.ts";
 import { FIXTURE_AGENTS as agents, FIXTURE_IDS as ids } from "../../server/fixture/seed.ts";
+import type { FixtureHost } from "../../server/host/fixture.ts";
 import { start, until, type Running } from "./helpers.ts";
 
 const lines = async (s: Running, room: string): Promise<string[]> =>
@@ -73,4 +75,41 @@ describe("channel members", () => {
     assert.equal((await as({ room: room.id, agent: "nobody", member: true })).status, 404);
     assert.equal((await as({ room: room.id, agent: "frontend bro" })).status, 400);
   });
+});
+
+describe("a remove mid-turn", () => {
+  let s: Running;
+  let host: FixtureHost;
+  let room: Room;
+  before(async () => {
+    s = await start({ wordMs: 20 });
+    host = s.host as FixtureHost;
+    const made = await s.send("POST", "/api/rooms", { kind: "channel", name: "members-stop", members: [agents.crawler], test: true });
+    room = made.body;
+  });
+  after(async () => {
+    await s.close();
+  });
+  const crawlerPosts = () => s.app.agentStore.postsOf(room.id).filter(p => p.author === agents.crawler);
+
+  // The fixture answers "slow" a word a second and holds "queue" two seconds in its turn queue before it starts.
+  for (const [what, text, busy] of [
+    ["running", "slow check of the relay port", (t: { running: Map<number, unknown> }) => t.running.has(1)],
+    ["waiting for a slot", "queue check of the relay port", (t: { places: Map<number, { state: string }> }) => t.places.get(1)?.state === "queued"],
+  ] as const) {
+    test(`stops the member's comm thread turn ${what}, so no answer lands after the remove`, async () => {
+      if (!s.app.groups.row(room.id)!.members.some(m => m.agent === agents.crawler)) await s.send("POST", `/api/rooms/${room.id}/members`, { agents: [agents.crawler] });
+      await s.send("POST", `/api/c/${room.id}/send`, { text, requestId: `stop-${what}` });
+      const comm = await until(async () => s.app.agents.record(agents.crawler)!.comm?.[room.id], id => id !== undefined);
+      const thread = host.threadsById.get(comm!)!;
+      await until(async () => busy(thread as never), on => on);
+      const removed = await s.send("DELETE", `/api/rooms/${room.id}/members/${agents.crawler}`);
+      assert.equal(removed.status, 200);
+      await until(async () => thread.running.has(1), on => !on);
+      await new Promise(resolve => setTimeout(resolve, 2500));
+      await s.app.groups.feed(comm!);
+      assert.deepEqual(crawlerPosts(), [], "the stopped turn posted nothing");
+      assert.equal((thread.entries.at(-1)?.model?.[0] as { stopReason?: string } | undefined)?.stopReason, "aborted");
+    });
+  }
 });

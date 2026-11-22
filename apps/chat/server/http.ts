@@ -369,7 +369,7 @@ export function routes(app: App): Route[] {
       const input = ((await body()) ?? {}) as { agents?: string[]; wakeOn?: WakeOn };
       return app.addMembers(p.id!, input.agents ?? [], input.wakeOn).room;
     }),
-    route("DELETE", "/api/rooms/:id/members/:agent", async (_r, p) => app.groups.removeMember(p.id!, p.agent!).room),
+    route("DELETE", "/api/rooms/:id/members/:agent", async (_r, p) => (await app.removeMember(p.id!, p.agent!)).room),
     route("POST", "/api/threads/:id/members", async (_r, p, _q, body) => {
       return app.memberAsAgent(p.id!, ((await body()) ?? {}) as { room?: unknown; agent?: unknown; member?: unknown });
     }),

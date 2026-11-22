@@ -921,10 +921,21 @@ export class App {
   }
 
   /**
+   * Takes an agent out of a channel or Solo room (group-rooms.ts `removeMember`) and stops its comm thread there, as the room's Stop does,
+   * so a turn it was in, or one waiting for a slot in pi-pool's queue, posts nothing after the remove. A later @mention starts a new turn.
+   */
+  async removeMember(id: ConversationId, agent: string, by: MemberChange["by"] = "owner"): Promise<{ room: Room; removed: boolean }> {
+    const result = this.groups.removeMember(id, agent, by);
+    const thread = result.removed ? this.threads.registered(agent)?.comm?.[result.room.id] : undefined;
+    if (thread) await this.host.abort(thread).catch(error => this.log(`rooms: stopping ${agent}'s comm thread ${thread} after its remove from ${result.room.id} failed: ${String(error)}`));
+    return result;
+  }
+
+  /**
    * An agent's set_room_member: adds `agent`, an agent id or name, to `room`, a channel or Solo room by id or `#name`, or takes it out.
    * The answer's `text` is the tool's result line.
    */
-  memberAsAgent(thread: string, input: { room?: unknown; agent?: unknown; member?: unknown }): { room: RoomId; agent: AgentId; member: boolean; text: string } {
+  async memberAsAgent(thread: string, input: { room?: unknown; agent?: unknown; member?: unknown }): Promise<{ room: RoomId; agent: AgentId; member: boolean; text: string }> {
     const record = this.agents.ofComm(thread)?.record ?? this.agents.ofWorkThread(thread);
     if (!record) throw new ReactionError(404, `Thread ${thread} is no agent's comm thread or work thread; call set_room_member from the agent's own thread.`);
     if (typeof input.room !== "string" || !input.room.trim()) throw new ReactionError(400, "set_room_member names the room, such as ch_1a2b3c4d or #general.");
@@ -940,7 +951,7 @@ export class App {
       const text = added.length ? `Added ${target.name} to ${where}; it hears every post there from now on.` : `${target.name} is already in ${where}; nothing changed.`;
       return { room: row.id, agent: target.id, member: true, text };
     }
-    const { removed } = this.groups.removeMember(row.id, target.id, record.id);
+    const { removed } = await this.removeMember(row.id, target.id, record.id);
     const text = removed ? `Removed ${target.name} from ${where}; later posts no longer reach it, unless one @mentions it.` : `${target.name} is not in ${where}; nothing changed.`;
     return { room: row.id, agent: target.id, member: false, text };
   }

@@ -148,12 +148,16 @@ export class FixtureHost implements Host {
       thread.places.set(conversation, { state: "working", kind: input.ownerTurn ? "owner" : "slot" });
       void this.answer(thread, conversation, submission, input.text ?? "");
     };
+    // A run that waits for its slot is running to pi-durable, as pi-pool's queue holds its first model request, so `abort` stops it there.
     const waits = /\bqueue\b/i.test(input.text ?? "") && this.wordMs > 0;
     const start = waits
       ? () => {
+          const timers = [setTimeout(() => thread.places.set(conversation, { state: "queued", position: 1, total: 7 }), 1000), setTimeout(begin, 2000)];
           thread.places.set(conversation, { state: "queued", position: 3, total: 7 });
-          setTimeout(() => thread.places.set(conversation, { state: "queued", position: 1, total: 7 }), 1000);
-          setTimeout(begin, 2000);
+          thread.running.set(conversation, { stop: () => {
+            for (const timer of timers) clearTimeout(timer);
+            void this.answer(thread, conversation, submission, "", undefined, true);
+          } });
         }
       : begin;
     if (!thread.running.has(conversation)) start();
@@ -170,9 +174,9 @@ export class FixtureHost implements Host {
   }
 
   /** Streams an answer word by word as message_update events, then appends it. */
-  async answer(thread: FakeThread, conversation: number, submission: SubmissionRecord, text: string, reply?: string): Promise<void> {
+  async answer(thread: FakeThread, conversation: number, submission: SubmissionRecord, text: string, reply?: string, aborted = false): Promise<void> {
     const node = thread.nodes.find(n => n.id === conversation)!;
-    let stopped = false;
+    let stopped = aborted;
     thread.running.set(conversation, { stop: () => (stopped = true) });
     node.status = "running";
     if (conversation === 1) this.setStatus(thread, "running");
