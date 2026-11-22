@@ -6,7 +6,7 @@
   import type { PickerItem } from "$lib/ui/types";
   import {
     PROBLEMS, ROLE_LABEL, boxNotices, cellFor, columnTitle, driftOf, families, homeBox, kindColumns, ownerLabel, problemCount, rowsFor, sizeOf,
-    installDrift, pathTitle, shortPath, sourceLabel, tokensLabel, usesLabel, usesTitle, type Filter, type Problem,
+    installDrift, pathTitle, shortPath, sourceLabel, sourceShort, tokensLabel, usesLabel, usesTitle, type Filter, type Problem,
   } from "./kinds-model";
 
   let { view, reload }: { view: SkillsView; reload: () => Promise<void> } = $props();
@@ -32,7 +32,8 @@
   const generated = $derived(view.generatedAt ? Date.parse(view.generatedAt) : null);
   const liveAgents = $derived(agents.list.filter(a => a.kind === "chat" && !a.archived && !a.test));
   const agentNames = $derived(new Map(liveAgents.map(a => [a.id as string, a.name])));
-  const span = THREAD_KINDS.length + 4;
+  const span = THREAD_KINDS.length + 3;
+  const names = $derived(view.skills.reduce((m, s) => m.set(s.name, (m.get(s.name) ?? 0) + 1), new Map<string, number>()));
 
   const pickerItems = $derived.by((): PickerItem[] => {
     if (!picker) return [];
@@ -60,14 +61,14 @@
   async function undo(moveId: string): Promise<void> {
     try {
       const result = await api.undoSkillMove({ moveId });
-      toast.show(`Undone: ${result.move.summary}`);
+      toast.show(result.move.undoneAt ? "Undone" : "Undo sent");
       await reload();
     } catch (reason) {
       toast.error(`Undo failed: ${message(reason)}`);
     }
   }
 
-  async function change(key: string, run: () => Promise<SkillsChange>): Promise<boolean> {
+  async function change(key: string, done: string | ((result: SkillsChange) => string), run: () => Promise<SkillsChange>): Promise<boolean> {
     busy = key;
     try {
       const result = await run();
@@ -75,8 +76,9 @@
       const failed = steps.filter(s => s.result === "failed");
       const queued = steps.some(s => s.result === "queued");
       const action = { label: "Undo", run: () => void undo(result.move.id) };
-      if (failed.length > 0) toast.error(`${result.move.summary}, but ${failed.length} disk ${failed.length === 1 ? "step" : "steps"} failed: ${failed[0]?.note ?? "no reason given"}`, { action });
-      else toast.success(queued ? `${result.move.summary}. The Mac part waits until the Mac wakes.` : result.move.summary, { action });
+      const text = typeof done === "string" ? done : done(result);
+      if (failed.length > 0) toast.error(`${text}, but ${failed.length} disk ${failed.length === 1 ? "step" : "steps"} failed: ${failed[0]?.note ?? "no reason given"}`, { action });
+      else toast.success(queued ? `${text}. The Mac part waits until the Mac wakes.` : text, { action });
       await reload();
       return true;
     } catch (reason) {
@@ -100,7 +102,8 @@
     if (!current) return;
     const entry = current.entry;
     if (current.kind === "merge") {
-      void change(`merge:${entry.id}`, () => api.mergeSkill({ skillId: entry.id, into: id }));
+      const into = view.skills.find(s => s.id === id)?.name ?? id;
+      void change(`merge:${entry.id}`, `Asked agent factory to merge ${entry.name} into ${into}`, () => api.mergeSkill({ skillId: entry.id, into: id }));
       return;
     }
     const box = homeBox(entry, view.boxes);
@@ -108,7 +111,7 @@
       toast.error("No box has scanned yet, so there is nowhere to install it");
       return;
     }
-    void change(`agent:${entry.id}`, () => api.installSkill({ name: entry.name, box, runtime: "pi-host", agent: id }));
+    void change(`agent:${entry.id}`, `Added ${entry.name} for ${agentNames.get(id) ?? id}`, () => api.installSkill({ name: entry.name, box, runtime: "pi-host", agent: id }));
   }
 
   function startAdd(entry: SkillEntry): void {
@@ -119,7 +122,7 @@
     const form = adding;
     if (!form || !form.box) return;
     const path = form.path.trim();
-    const done = await change(`add:${entry.id}`, () => api.installSkill({ name: entry.name, box: form.box, runtime: form.runtime, path: path || null }));
+    const done = await change(`add:${entry.id}`, result => `Added ${entry.name} at ${shortPath(result.apply?.steps[0]?.path ?? path)} on ${form.box}`, () => api.installSkill({ name: entry.name, box: form.box, runtime: form.runtime, path: path || null }));
     if (done) adding = null;
   }
 
@@ -131,7 +134,7 @@
       moving = null;
       return;
     }
-    const done = await change(`move:${key}`, () => api.moveSkill({ installId: form.installId, path }));
+    const done = await change(`move:${key}`, `Moved to ${shortPath(path)}`, () => api.moveSkill({ installId: form.installId, path }));
     if (done) moving = null;
   }
 
@@ -182,7 +185,6 @@
             <th class="metric" scope="col" rowspan="2">Uses, 30 days</th>
             <th class="metric" scope="col" rowspan="2">Copies</th>
             <th class="metric" scope="col" rowspan="2" use:tooltip={`SKILL.md bytes against the median of our skills, ${view.thresholds.medianBytes.toLocaleString("en-US")} bytes`}>Size</th>
-            <th class="metric left" scope="col" rowspan="2">Problems</th>
             {#each groups as group (group.family)}<th class="family" scope="colgroup" colspan={group.span}>{group.family}</th>{/each}
           </tr>
           <tr>
@@ -206,12 +208,15 @@
                 <button type="button" class="opener" aria-expanded={expanded} aria-controls={`kinds-${entry.id}`} onclick={() => toggle(entry.id)}>
                   <Icon name={expanded ? "chevron-down" : "chevron-right"} size={16} />
                   <span class="skill">{entry.name}</span>
+                  {#if (names.get(entry.name) ?? 0) > 1}<span class="src" use:tooltip={sourceLabel(entry)}>{sourceShort(entry)}</span>{/if}
                 </button>
+                {#if row.problems.some(p => p !== "unused")}
+                  <span class="flags">{#each row.problems.filter(p => p !== "unused") as problem (problem)}<Badge tone={problem === "bloated" ? "danger" : "warning"}>{problem}</Badge>{/each}</span>
+                {/if}
               </th>
               <td class="num" class:muted={entry.use.uses === 0} use:tooltip={usesTitle(entry)}>{row.problems.includes("unused") ? "never" : entry.use.uses.toLocaleString("en-US")}</td>
               <td class="num" use:tooltip={`On ${boxes.join(" and ") || "no box"}`}>{entry.copies.length}</td>
               <td class="num" class:bad={size?.bloated} use:tooltip={size?.title}>{size ? (size.ratio ?? size.label) : "?"}</td>
-              <td><span class="flags">{#each row.problems.filter(p => p !== "unused") as problem (problem)}<Badge tone={problem === "bloated" ? "danger" : "warning"}>{problem}</Badge>{/each}</span></td>
               {#each THREAD_KINDS as kind (kind)}
                 {@const cell = cellFor(entry, kind)}
                 <td class="cell {cell.tone}" use:tooltip={cell.title}>{cell.label}</td>
@@ -257,13 +262,13 @@
                             <td>{copy.loadedBy.length ? copy.loadedBy.join(", ") : "nothing"}</td>
                             <td class="actions">
                               {#if copy.role === "unowned"}
-                                <Button size="sm" variant="ghost" loading={busy === `adopt:${copy.id}`} onclick={() => void change(`adopt:${copy.id}`, () => api.adoptSkill({ copyId: copy.id, skillId: entry.id }))}>Adopt</Button>
+                                <Button size="sm" variant="ghost" loading={busy === `adopt:${copy.id}`} onclick={() => void change(`adopt:${copy.id}`, `Adopted ${shortPath(copy.path)} into ${entry.name}`, () => api.adoptSkill({ copyId: copy.id, skillId: entry.id }))}>Adopt</Button>
                               {/if}
                               {#if install && !moving}
                                 <Button size="sm" variant="ghost" onclick={() => (moving = { installId: install.id, path: copy.path })}>Move</Button>
                               {/if}
                               {#if copy.role !== "source"}
-                                <IconButton icon="trash" size="sm" label={`Remove ${copy.box}:${copy.path}`} loading={busy === `remove:${copy.id}`} onclick={() => void change(`remove:${copy.id}`, () => api.removeSkill({ target: copy.id }))} />
+                                <IconButton icon="trash" size="sm" label={`Remove ${copy.box}:${copy.path}`} loading={busy === `remove:${copy.id}`} onclick={() => void change(`remove:${copy.id}`, `Removed ${shortPath(copy.path)} on ${copy.box}`, () => api.removeSkill({ target: copy.id }))} />
                               {/if}
                             </td>
                           </tr>
@@ -290,7 +295,7 @@
                             <td>{install.runtimes.join(", ")}</td>
                             <td class="actions">
                               {#if !moving}<Button size="sm" variant="ghost" onclick={() => (moving = { installId: install.id, path: install.path })}>Move</Button>{/if}
-                              <IconButton icon="trash" size="sm" label={`Remove ${install.box}:${install.path}`} loading={busy === `remove:${install.id}`} onclick={() => void change(`remove:${install.id}`, () => api.removeSkill({ target: install.id }))} />
+                              <IconButton icon="trash" size="sm" label={`Remove ${install.box}:${install.path}`} loading={busy === `remove:${install.id}`} onclick={() => void change(`remove:${install.id}`, `Removed ${shortPath(install.path)} on ${install.box}`, () => api.removeSkill({ target: install.id }))} />
                             </td>
                           </tr>
                         {/each}
@@ -311,7 +316,7 @@
                         <Button size="sm" variant="outline" icon="plus" loading={busy === `agent:${entry.id}`} onclick={event => openPicker("agent", entry, event)}>Add to agent</Button>
                         <Button size="sm" variant="outline" icon="folder" onclick={() => startAdd(entry)}>Add to folder</Button>
                         <Button size="sm" variant="outline" loading={busy === `merge:${entry.id}`} onclick={event => openPicker("merge", entry, event)}>Merge into…</Button>
-                        <Button size="sm" variant="ghost" icon="trash" loading={busy === `remove:${entry.id}`} onclick={() => void change(`remove:${entry.id}`, () => api.removeSkill({ target: entry.id }))}>Remove skill</Button>
+                        <Button size="sm" variant="ghost" icon="trash" loading={busy === `remove:${entry.id}`} onclick={() => void change(`remove:${entry.id}`, `Removed ${entry.name} and its copies`, () => api.removeSkill({ target: entry.id }))}>Remove skill</Button>
                       </div>
                     {/if}
                   </div>
@@ -344,8 +349,8 @@
               <td class="num" class:bad={copySize?.bloated} use:tooltip={copySize?.title}>{copySize ? copySize.label : "?"}</td>
               <td>{copy.loadedBy.length ? copy.loadedBy.join(", ") : "nothing"}</td>
               <td class="actions">
-                <Button size="sm" variant="ghost" loading={busy === `adopt:${copy.id}`} onclick={() => void change(`adopt:${copy.id}`, () => api.adoptSkill({ copyId: copy.id }))}>Adopt</Button>
-                <IconButton icon="trash" size="sm" label={`Remove ${copy.box}:${copy.path}`} loading={busy === `remove:${copy.id}`} onclick={() => void change(`remove:${copy.id}`, () => api.removeSkill({ target: copy.id }))} />
+                <Button size="sm" variant="ghost" loading={busy === `adopt:${copy.id}`} onclick={() => void change(`adopt:${copy.id}`, `Adopted ${shortPath(copy.path)}`, () => api.adoptSkill({ copyId: copy.id }))}>Adopt</Button>
+                <IconButton icon="trash" size="sm" label={`Remove ${copy.box}:${copy.path}`} loading={busy === `remove:${copy.id}`} onclick={() => void change(`remove:${copy.id}`, `Removed ${shortPath(copy.path)} on ${copy.box}`, () => api.removeSkill({ target: copy.id }))} />
               </td>
             </tr>
           {/each}
@@ -393,21 +398,20 @@
   table { border-collapse: separate; border-spacing: 0; font: var(--text-body-sm); font-variant-numeric: tabular-nums; }
   .matrix > table { min-width: 100%; }
   thead { position: sticky; inset-block-start: 0; z-index: 2; background: var(--surface-panel); }
-  thead th { padding: var(--space-1) var(--space-2); border-bottom: 1px solid var(--border-standard); color: var(--text-subtle); font: var(--text-caption); font-weight: 400; text-align: left; white-space: nowrap; background: var(--surface-panel); }
+  thead th { padding: var(--space-1) 6px; border-bottom: 1px solid var(--border-standard); color: var(--text-subtle); font: var(--text-caption); font-weight: 400; text-align: left; white-space: nowrap; background: var(--surface-panel); }
   th.family { color: var(--text-standard); border-left: 1px solid var(--border-standard); }
   th.corner { position: sticky; inset-inline-start: 0; z-index: 3; vertical-align: bottom; }
   th.kind { vertical-align: bottom; border-left: 1px solid var(--border-standard); cursor: default; }
   .kind-label { display: block; color: var(--text-standard); font: var(--text-label-sm); }
   .kind-stat { display: block; }
   th.metric { vertical-align: bottom; text-align: right; }
-  th.metric.left { text-align: left; }
 
-  tbody th, tbody td { padding: 6px var(--space-2); border-bottom: 1px solid var(--border-standard); text-align: left; font-weight: 400; white-space: nowrap; }
+  tbody th, tbody td { padding: 6px; border-bottom: 1px solid var(--border-standard); text-align: left; font-weight: 400; white-space: nowrap; }
   tbody th.name { position: sticky; inset-inline-start: 0; z-index: 1; background: var(--surface-panel); padding: 0; }
   .row:hover th.name, .row:hover td { background: var(--surface-inset); }
   .row.expanded th.name, .row.expanded td { border-bottom-color: transparent; }
   .opener {
-    display: flex; align-items: center; gap: 4px; width: 100%; min-width: 12rem; max-width: 18rem; padding: 6px var(--space-2); border: 0; background: none;
+    display: flex; align-items: center; gap: 6px; width: 100%; min-width: 12rem; max-width: 18rem; padding: 6px var(--space-2); border: 0; background: none;
     color: var(--text-standard); font: var(--text-body-sm); font-weight: 500; text-align: left; cursor: pointer;
   }
   .opener .skill { overflow: hidden; text-overflow: ellipsis; }
@@ -418,7 +422,8 @@
   .num { text-align: right; }
   .muted { color: var(--text-subtle); }
   .bad { color: var(--text-danger); }
-  .flags { display: inline-flex; gap: 4px; }
+  .flags { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 var(--space-2) 6px 28px; }
+  .opener .src { flex: none; color: var(--text-subtle); font-weight: 400; }
 
   .detail td { padding: 0; background: var(--surface-inset); }
   .fold td { padding: 0; }

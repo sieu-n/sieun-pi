@@ -126,7 +126,7 @@ export function columnTitle(column: KindColumn): string {
 }
 
 export function tokensLabel(tokens: number): string {
-  return tokens >= 1000 ? `≈${(tokens / 1000).toFixed(1)}k tokens` : `≈${tokens} tokens`;
+  return tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k tokens` : `${tokens} tokens`;
 }
 
 const HIDDEN_DEFAULT = "No folder this kind of thread reads holds it";
@@ -287,4 +287,18 @@ export function pathTitle(copy: SkillCopy): string {
   if (copy.link) lines.push(`Links to ${copy.link}`);
   if (copy.realPath && copy.realPath !== copy.path && copy.realPath !== copy.link) lines.push(`The real folder is ${copy.realPath}`);
   return lines.join("\n");
+}
+
+export function sourceShort(entry: SkillEntry): string {
+  const s = entry.source;
+  switch (s.kind) {
+    case "git": return s.repo;
+    case "upstream": return s.package;
+    case "harness": return "harness";
+    case "local": return `${s.box} folder`;
+    default: {
+      const _exhaustive: never = s;
+      return _exhaustive;
+    }
+  }
 }
