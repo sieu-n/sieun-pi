@@ -12,8 +12,8 @@ import type { LaterChange } from "./later.ts";
 export const CHAT_URL_ENV = "PI_HOST_CHAT_URL";
 export const DEFAULT_CHAT_URL = "http://127.0.0.1:5184";
 
-/** apps/chat's CheckInView (web/src/lib/api/types.ts). */
-export interface CheckInView { everyMs: number; paused: boolean; pausedUntil: number | "forever" | null; nextAt: number | null; lastAt: number | null }
+/** apps/chat's CheckInView (web/src/lib/api/types.ts): `everyMs` is the interval it runs at, and `planEveryMs` the setting while a board with no open step runs daily. */
+export interface CheckInView { everyMs: number; planEveryMs?: number; paused: boolean; pausedUntil: number | "forever" | null; nextAt: number | null; lastAt: number | null }
 export interface OtherAsk { chat: string; id: string; text: string; at: string }
 
 export class ChatApp {
@@ -133,7 +133,7 @@ export class ChatApp {
    * `pausedBy`, so every pause reads as the owner's, which an agent may not lift (Prime's rule for a pause with no author).
    */
   checkInSettings(signal?: AbortSignal): CheckInSettings {
-    const setting = (view: CheckInView): CheckInSetting => ({ everyMs: view.everyMs, ...(view.paused && view.pausedUntil !== null ? { pausedUntil: view.pausedUntil } : {}) });
+    const setting = (view: CheckInView): CheckInSetting => ({ everyMs: view.planEveryMs ?? view.everyMs, ...(view.paused && view.pausedUntil !== null ? { pausedUntil: view.pausedUntil } : {}) });
     return {
       all: async () => ({}),
       get: async id => setting(await this.checkIn(id, signal)),

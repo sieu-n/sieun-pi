@@ -30,9 +30,13 @@ export const ownTree = (thread: string): string => `pi-durable:${thread}`;
 /** A duty job's name, `<duty name> duty <yymmdd-hhmmss>` (`runStamp` in apps/chat/server/duty-run.ts). */
 const DUTY_JOB = / duty \d{6}-\d{6}$/;
 
+/** A check-in job's name, `check-in <agent> HH:MM` (`checkInJobName` in apps/chat/server/check-in-job.ts), as Prime's `isCheckInJob` reads it. */
+const CHECK_IN_JOB = /^check-in /i;
+
 /** The class a thread's agent role asks for, by Prime's rules; undefined for a thread with no agent. */
 export function threadClass(ref: AgentRef | undefined, name: string): PoolClass | undefined {
   if (!ref) return undefined;
+  if (ref.role === "job" && CHECK_IN_JOB.test(name.trim())) return "normal";
   if (ref.role !== "job" || !DUTY_JOB.test(name)) return "high";
   const duty = name.replace(DUTY_JOB, "").trim().toLowerCase();
   return duty === "check-in" || duty.startsWith("wiki dream") ? "normal" : "low";

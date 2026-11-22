@@ -38,6 +38,7 @@ test("threadClass gives a work thread, a comm thread and a job high, a duty job 
   assert.equal(threadClass({ agent: "ag_vent", dir, role: "job" }, "relay page job"), "high");
   assert.equal(threadClass({ agent: "ag_vent", dir, role: "job" }, "Uptime sweep duty 261103-190500"), "low");
   assert.equal(threadClass({ agent: "ag_vent", dir, role: "job" }, "Check-in duty 261103-190500"), "normal");
+  assert.equal(threadClass({ agent: "ag_vent", dir, role: "job" }, "check-in vent 14:00"), "normal");
   assert.equal(threadClass({ agent: "ag_vent", dir, role: "job" }, "Wiki dream vent duty 261103-190500"), "normal");
   assert.equal(threadClass(undefined, "New thread"), undefined);
 });

@@ -37,7 +37,7 @@ Status: built. Phases 1 to 6 are live, and section 2 lists the tools as built.
 | Owner send to a thread no agent holds | Lands in the chat server's outbox at once, then goes to pi-host with retries. | `server/outbox.ts` |
 | Channel and Solo room | Rooms whose posts the chat server stores. A post goes to each woken member's comm thread for the room, and its tell_owner calls come back as posts. Hop cap 6. | `server/group-rooms.ts`, `<data dir>/rooms/<id>.jsonl` |
 | Board | The `chat.board` doc of the agent's work thread's root conversation in pi-host. | `server/boards.ts` |
-| Duties, check-in | `<data dir>/agents/<agent id>/duties.json`. | `server/boards.ts`, `server/duty-run.ts` |
+| Duties, check-in | `<data dir>/agents/<agent id>/duties.json`, and each check-in run's detail file under `check-ins/`. A due check-in starts a check-in job filed under the agent, as Prime's chat does. | `server/boards.ts`, `server/duty-run.ts`, `server/check-in-job.ts` |
 | Agent config | Read from pi-host's thread row and the agent folder: the brief, the agent's harness store and Prime's global one, and the instruction files Prime's loader takes, each marked loaded. | `server/agent-config.ts`, `server/agent-folder.ts` |
 | Thread setup | Every thread gets Prime's prompt, the coding tools, `subagent`, `send_message`, Prime's chat tools, the room tools, child tasks, `ipython` with its RLM runtime, the comm extension and sieun-rules' guards. A role then removes tools (section 2). | `packages/pi-host/src/durable/registry.ts` `threadRegistry`, `agent-profile.ts` |
 | Hosts | The chat server reaches every box listed in `~/.config/sieun-pi/hosts.json`, metal too, through that box's agent relay on :7791, and keeps the local pi-host socket only for a box the registry does not list. `/api/hosts` shows each relay link. | `server/main.ts` `boxes`, `server/host/multi-host.ts`, `server/usage.ts` |
@@ -358,7 +358,7 @@ The migration is one script, `apps/chat/scripts/migrate-agents.ts`, and the serv
 | Board side panel: steps with owners, "Done when", awaiting go, owner ops reach the agent as `[board]` | `client/BoardPanel.svelte`, `PlanView.svelte` | The agent's board in a DM; the invited agents' boards in a Solo room |
 | Bare ids as chips: p12, d9, t4, c31 | `client/IdChip.svelte` | Same, resolved against the room's agent |
 | Job pills under the message that started a job, opening its transcript | `client/JobDrawer.svelte`, `SubagentList.svelte` | Pills under the post whose turn delegated or started a job |
-| Check-ins every N, pause for 1h, until tomorrow or forever | `client/CheckInControl.svelte`, `chat-checkin.ts` | Per agent. They go to the work thread, and the comm thread speaks only if needed. |
+| Check-ins every N, pause for 1h, until tomorrow or forever | `client/CheckInControl.svelte`, `chat-checkin.ts` | Per agent, daily while the board has no open step. Each due check-in with something due starts a check-in job with Prime's brief, its report goes to the work thread as `[check-in]`, and the comm thread speaks only if needed. |
 | Duty cards with the last verdict and miss streak, and run, pause and resume | `client/DutyList.svelte`, `chat-duty-*.ts` | Per agent |
 | Wakes on a CI run, a time or a check | `skills/board/SKILL.md` | The `wake` tool |
 | The owner's message starts at once (owner turn), with the queue place shown | `chat-turn-queue.ts` | `ownerTurn` on the delivery, carried into `delegate` |

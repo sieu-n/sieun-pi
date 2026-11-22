@@ -419,6 +419,14 @@ export function routes(app: App): Route[] {
           throw new BadRequest(error instanceof Error ? error.message : String(error));
         }
       }),
+      // A check-in job's message to a job of its agent (check-in-job.ts); a bad body or a job the agent lacks is the caller's error.
+      route("POST", `/api/${scope}/:id/job-steer`, async (_r, p, _q, body) => {
+        if (!app.boards.has(p.id!)) throw new NotFound(`No agent or thread ${p.id}.`);
+        const input = ((await body()) ?? {}) as { job?: unknown; text?: unknown; from?: unknown };
+        return app.boards.steerJob(p.id!, input).catch(error => {
+          throw new BadRequest(error instanceof Error ? error.message : String(error));
+        });
+      }),
       route("POST", `/api/${scope}/:id/board/hidden`, async (_r, p, _q, body) => {
         const input = (await body()) as { hidden?: unknown } | null;
         if (typeof input?.hidden !== "boolean") throw new BadRequest("A board hide body is { hidden: true } or { hidden: false }.");

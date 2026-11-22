@@ -2,10 +2,11 @@
  * Boards, For you, duties and check-ins, keyed by agent id (`ag_<slug>`), or by thread id for a root chat no agent holds yet; a thread id
  * of an agent's work thread or root job resolves to the agent. An agent's board is the `chat.board` document of its work thread's root
  * conversation in pi-host, changed through the board reducer copied from today's chat (web/src/lib/api/shared/chat-board.ts), because
- * pi-host's `chat_board` tool reads it there. Duties and the check-in clock live in the chat server's data dir under `agents/<agent id>/`,
- * and a due duty, check-in or wake reaches the work thread as an input from "board". Wakes are server/wakes.ts.
+ * pi-host's `chat_board` tool reads it there. Duties and the check-in clock live in the chat server's data dir under `agents/<agent id>/`.
+ * A due duty or check-in starts a job filed under the agent, whose report reaches the work thread as an input from that job, and a due wake
+ * reaches the thread that set it. Check-in jobs are server/check-in-job.ts, wakes server/wakes.ts.
  */
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import type { AgentSummary, BoardOp, BoardRow, BoardView, ChatBoard, CheckInPatch, CheckInView, DutyAction, DutyRow, DutyView, ForYouItem, PlanItem } from "../web/src/lib/api/types.ts";
 import { applyBoardOp, BOARD_PREFIX, emptyBoard, needsGo, nextIds, parseBoard, parseBoardOps, stepGo } from "../web/src/lib/api/shared/chat-board.ts";
@@ -15,6 +16,8 @@ import { asAfter, measure, measureAfter, runStamp } from "./duty-run.ts";
 import { dutyCard, judgedRun, missStreak } from "../web/src/lib/api/shared/duty-card.ts";
 import type { ChatAgent } from "../web/src/lib/api/shared/types.ts";
 import { threadModel, type Agents } from "./agents.ts";
+import { agentFolderDir } from "./agent-folder.ts";
+import { checkInDetail, checkInIdle, checkInJobBrief, checkInJobName, checkInPrecheck, checkInPrompt, datedName, planEveryMs, planHasOpenStep } from "./check-in-job.ts";
 import type { Host } from "./host/types.ts";
 import { readJson, writeJson, type Store } from "./store.ts";
 import { OWNER_ZONE_OFFSET_MS } from "./search.ts";
@@ -43,15 +46,18 @@ export function workingJobs(summaries: readonly AgentSummary[], waking: Readonly
   return names;
 }
 
+/** Prime's CHECK_IN_MS (legacy/prime/user-history/src/checkin-settings.ts). */
 const DEFAULT_CHECK_IN_MS = 120 * 60_000;
-/**
- * The check-in turn. It names the brief because an agent whose board is empty has nothing else to move: the knowledge manager agent
- * (11-20) answered seven check-ins with "the board is empty, nothing changed" while its name held the owner's ask.
- */
-export const CHECK_IN_TEXT = "[check-in] Read your board and your jobs, move each open step, add the next steps your brief calls for when none is open, and tell the owner only what needs him.";
+/** Prime's CHECK_IN_RETRY_MS (chats.ts): a check-in whose job did not start tries again this soon, not a whole interval later. */
+const CHECK_IN_RETRY_MS = 5 * 60_000;
 const BOARD_TTL_MS = 15_000;
 
-interface CheckInState { everyMs: number; pausedUntil: number | "forever" | null; lastAt: number | null }
+/** A board's check-in setting, its last run, and the last check-in job it started, which a run skips behind while it works. */
+interface CheckInState {
+  everyMs: number; pausedUntil: number | "forever" | null; lastAt: number | null;
+  /** `submission` is the job's first input and `reported` is set once its report went to the work thread (`reportCheckIn`). */
+  job?: { id: string; name: string; submission?: number; reported?: true; archived?: true };
+}
 /** `hidden` is when the owner hid the board from All boards and the Board sidebar; it still opens by its link. */
 export interface DutyFile { duties: Duty[]; runs: Record<string, DutyRunRecord[]>; checkIn?: CheckInState; hidden?: number }
 
@@ -91,6 +97,13 @@ export function nextRun(schedule: DutySchedule, from: number): number {
 }
 
 const BOARDS_CACHE = "boards";
+const readFileSafe = (file: string): string => {
+  try {
+    return readFileSync(file, "utf8");
+  } catch {
+    return "";
+  }
+};
 
 export class Boards {
   /** Boards read in the last BOARD_TTL_MS; a doc event or an owner op replaces one at once. */
@@ -668,31 +681,38 @@ export class Boards {
   }
 
   /**
-   * A board's check-in setting: the one its file holds, else every 2 hours from the agent's or root chat's start. A walk's test agent gets no
-   * check-in until one is set for it.
+   * A board's check-in setting: the one its file holds, else every 2 hours from the agent's or root chat's start (Prime's CHECK_IN_MS). A
+   * walk's test agent gets no check-in until one is set for it.
    */
   private checkInState(chat: string, file = this.file(chat)): CheckInState | null {
     if (file.checkIn) return file.checkIn;
     return this.agents.store.isTest(chat) ? null : { everyMs: DEFAULT_CHECK_IN_MS, pausedUntil: null, lastAt: null };
   }
 
+  /**
+   * The check-in as it runs, in Prime's shape (shared/types.ts `CheckInState`): while the board has no open step it runs daily (Prime's
+   * `planCheckIn`), `everyMs` reads that daily interval and `planEveryMs` the setting. The board is the last one read, and a board never read
+   * counts as open, as Prime counts a chat it has no plan for.
+   */
   checkIn(id: string): CheckInView {
     const chat = this.chatId(id);
     const state = this.checkInState(chat);
     if (!state) return { everyMs: DEFAULT_CHECK_IN_MS, paused: false, pausedUntil: null, nextAt: null, lastAt: null };
     const now = Date.now();
     const paused = state.pausedUntil === "forever" || (typeof state.pausedUntil === "number" && state.pausedUntil > now);
+    const cached = this.cache.get(chat);
+    const everyMs = planEveryMs(state.everyMs, cached ? planHasOpenStep(cached.board) : true);
     const base = state.lastAt ?? this.agents.record(chat)?.createdAt ?? this.threads.thread(this.threadOf(chat))?.createdAt ?? now;
     return {
-      everyMs: state.everyMs, paused, pausedUntil: paused ? state.pausedUntil : null,
-      nextAt: paused ? (state.pausedUntil === "forever" ? null : Math.max(state.pausedUntil as number, base + state.everyMs)) : base + state.everyMs, lastAt: state.lastAt,
+      everyMs, ...(everyMs !== state.everyMs ? { planEveryMs: state.everyMs } : {}), paused, pausedUntil: paused ? state.pausedUntil : null,
+      nextAt: paused ? (state.pausedUntil === "forever" ? null : Math.max(state.pausedUntil as number, base + everyMs)) : base + everyMs, lastAt: state.lastAt,
     };
   }
 
   setCheckIn(id: string, patch: CheckInPatch): CheckInView {
     const chat = this.chatId(id);
     const file = this.file(chat);
-    const state = file.checkIn ?? { everyMs: DEFAULT_CHECK_IN_MS, pausedUntil: null, lastAt: null };
+    const state: CheckInState = file.checkIn ?? { everyMs: DEFAULT_CHECK_IN_MS, pausedUntil: null, lastAt: null };
     if (patch.everyMs !== undefined) {
       if (!Number.isFinite(patch.everyMs) || patch.everyMs < 60_000) throw new Error("A check-in runs at most once a minute.");
       state.everyMs = Math.round(patch.everyMs);
@@ -711,6 +731,142 @@ export class Boards {
     return this.checkIn(chat);
   }
 
+  /** The check-in run going per board (`runCheckIn`), so a tick while one starts its job starts no second. */
+  private readonly checkIns = new Map<string, Promise<void>>();
+
+  /**
+   * One check-in, as Prime's chat runs it (chat-duty-run.ts `Duties.checkIn`): no job while the last check-in job still works, none when
+   * nothing is due (`checkInIdle`), else one check-in job filed under the agent as `runDutyOnce` files a duty job, with Prime's brief
+   * (server/check-in-job.ts) and the run's detail file beside the duties.
+   */
+  private async runCheckIn(chat: string, at: number): Promise<void> {
+    const last = this.file(chat).checkIn?.job;
+    const working = workingJobs(this.threads.allSummaries(), new Set(this.pendingWakes().map(wake => wake.session)));
+    if (last && (working.has(last.name) || this.waiting.has(last.id))) {
+      this.log(`check-in ${chat.slice(0, 8)}: skipped, the last check-in job ${last.name} still works`);
+      return;
+    }
+    const board = await this.board(chat);
+    const record = this.agents.record(chat);
+    const briefFile = record ? join(agentFolderDir(this.agents.agentsDirOf(record), record), "brief.md") : undefined;
+    // An agent on another box keeps its brief there, where its job reads it; one here counts only when the file holds text.
+    const brief = briefFile && (record?.agentsDir !== undefined || readFileSafe(briefFile).trim()) ? briefFile : undefined;
+    const precheck = checkInPrecheck(board, this.chatAgents(chat), working);
+    if (checkInIdle(precheck, { brief })) {
+      this.log(`check-in ${chat.slice(0, 8)}: nothing due, no job`);
+      return;
+    }
+    const taken = new Set(this.threads.threadsList().map(thread => thread.name));
+    const first = checkInJobName(this.nameOf(chat), at);
+    const name = taken.has(first) ? datedName(first, at) : first;
+    const dir = join(this.dir(chat), "check-ins");
+    mkdirSync(dir, { recursive: true });
+    const detail = join(dir, `checkin-${runStamp(at)}.md`);
+    writeFileSync(detail, checkInDetail(precheck, at), { mode: 0o600 });
+    const thread = this.threadOf(chat);
+    const text = checkInJobBrief({
+      agent: this.nameOf(chat), workThread: thread, job: name, at, prompt: checkInPrompt(precheck, { brief }), detail,
+      boardApi: `${this.selfUrl}/api/threads/${thread}/board`, steerApi: `${this.selfUrl}/api/threads/${thread}/job-steer`, itemsApi: `${this.selfUrl}/api/c/${thread}/items`,
+    });
+    const work = this.threads.thread(thread);
+    let job: { id: string };
+    let submitted: { submission: number };
+    try {
+      job = await this.threads.create({ name, ...threadModel(work), ...(work?.cwd ? { cwd: work.cwd } : {}) }, made => {
+        this.store.state.threads[made.id] = { kind: "job", parent: chat };
+        this.store.saveState();
+        this.agents.alias(made.id, chat);
+      });
+      await this.threads.refresh().catch(() => undefined);
+      submitted = await this.host.submit(job.id, { text, requestId: `checkin:${chat}:${at}`, entry: { kind: "agent.message", data: { from: chat, via: "check-in" } } });
+    } catch (error) {
+      // As Prime's chat does, a job that did not start is tried again in CHECK_IN_RETRY_MS (slack green guy 10-12: "daemon client closed").
+      const failed = this.file(chat);
+      if (failed.checkIn) {
+        failed.checkIn.lastAt = at - this.checkIn(chat).everyMs + CHECK_IN_RETRY_MS;
+        this.save(chat, failed);
+      }
+      throw new Error(`the check-in job did not start, so it tries again in 5 min: ${String(error)}`);
+    }
+    const file = this.file(chat);
+    if (file.checkIn) file.checkIn.job = { id: job.id, name, submission: submitted.submission };
+    else file.checkIn = { everyMs: DEFAULT_CHECK_IN_MS, pausedUntil: null, lastAt: at, job: { id: job.id, name, submission: submitted.submission } };
+    this.save(chat, file);
+    this.log(`check-in ${chat.slice(0, 8)}: started ${name}`);
+    void this.reportCheckIn(chat, { id: job.id, submission: submitted.submission });
+  }
+
+  /**
+   * Posts what the check-in job sent with send_message to the work thread as one `[check-in]` input, or its final answer when it sent none;
+   * nothing sent, or "nothing to report", posts nothing. The request id lets a second send after a restart land once (`tick`).
+   */
+  private async reportCheckIn(chat: string, job: { id: string; submission: number }): Promise<void> {
+    this.waiting.add(job.id);
+    try {
+      const settled = await this.host.wait(job.id, job.submission);
+      const text = (await this.threads.said(job.id, 1, settled)).map(m => m.text).join("\n\n");
+      if (text.trim() && !/^nothing to report\.?$/i.test(text.trim())) {
+        await this.host.submit(this.threadOf(chat), { text: `[check-in] ${text}`, whenBusy: "followUp", requestId: `checkin-report:${job.id}`, entry: { kind: "agent.message", data: { from: job.id, via: "check-in" } } });
+      }
+      const file = this.file(chat);
+      if (file.checkIn?.job?.id === job.id) {
+        file.checkIn.job.reported = true;
+        this.save(chat, file);
+      }
+    } catch (error) {
+      this.log(`check-in ${chat.slice(0, 8)}: its job's report did not reach the work thread: ${String(error)}`);
+    } finally {
+      this.waiting.delete(job.id);
+      await this.threads.refresh().catch(() => undefined);
+    }
+  }
+
+  /** The check-in jobs whose archive is being checked now (`archiveCheckIn`), so a tick checks each once. */
+  private readonly archiving = new Set<string>();
+
+  /**
+   * Archives a check-in job that reported and has ended (`jobEnded`), as Prime's chat archives a duty job at its end ("duty_job_end"), so the
+   * agent's Jobs list keeps only the check-in at work. Its own `rlm.create_session` jobs are threads of their own and stay.
+   */
+  private async archiveCheckIn(chat: string, job: string): Promise<void> {
+    if (this.archiving.has(job)) return;
+    this.archiving.add(job);
+    try {
+      if (!(await this.jobEnded(job).catch(() => false))) return;
+      this.threads.put(await this.host.set(job, { archived: true }));
+      const file = this.file(chat);
+      if (file.checkIn?.job?.id === job) {
+        file.checkIn.job.archived = true;
+        this.save(chat, file);
+      }
+    } catch (error) {
+      this.log(`check-in ${chat.slice(0, 8)}: archiving ${job} failed: ${String(error)}`);
+    } finally {
+      this.archiving.delete(job);
+    }
+  }
+
+  /**
+   * Delivers a message to a job of the agent, by its name or session id, as an input from `from` (Prime's `Chats.steerJob`, which a check-in job
+   * calls through scripts/job-steer.ts). A job inside the work thread is out of reach of another thread's `agent_message`, so the check-in job
+   * steers through this. A job that is working takes it as a steer, and an idle one as a new turn.
+   */
+  async steerJob(id: string, input: { job?: unknown; text?: unknown; from?: unknown }): Promise<{ job: string; submission: number }> {
+    if (typeof input.job !== "string" || !input.job.trim() || typeof input.text !== "string" || !input.text.trim()) throw new Error("A job steer is { job: <name or session id>, text }.");
+    const chat = this.chatId(id);
+    const thread = this.threadOf(chat);
+    const wanted = input.job.trim();
+    const jobs = this.threads.allSummaries({ archived: false }).filter(a => a.kind === "job" && ((a.thread === thread && a.conversation !== 1) || a.parent?.id === chat));
+    const target = jobs.find(a => a.name === wanted) ?? jobs.find(a => a.id === wanted || (a.conversation === 1 && a.thread === wanted));
+    if (!target) throw new Error(`No job ${wanted} of ${this.nameOf(chat)}; its jobs are ${jobs.map(a => a.name).join(", ") || "none"}.`);
+    const from = typeof input.from === "string" && input.from.trim() ? input.from.trim() : chat;
+    const submitted = await this.host.submit(target.thread, {
+      ...(target.conversation !== 1 ? { conversation: target.conversation } : {}), text: input.text, whenBusy: "steer",
+      requestId: `steer:${target.id}:${Date.now()}`, entry: { kind: "agent.message", data: { from, via: "job-steer" } },
+    });
+    return { job: target.name, submission: submitted.submission };
+  }
+
   // The clock: due check-ins, duties and wakes
 
   start(everyMs = 30_000): void {
@@ -726,20 +882,21 @@ export class Boards {
   async tick(now = Date.now()): Promise<void> {
     for (const chat of this.chats()) {
       const file = this.file(chat);
-      let dirty = false;
       const state = this.checkInState(chat, file);
-      if (state) {
+      const last = state?.job;
+      // A check-in job's report that a restart of this server cut off goes now, under the same request id, so it lands once.
+      if (last?.submission !== undefined && !last.reported && !this.waiting.has(last.id)) void this.reportCheckIn(chat, { id: last.id, submission: last.submission });
+      if (last?.reported && !last.archived) void this.archiveCheckIn(chat, last.id);
+      if (state && !this.checkIns.has(chat)) {
+        // The last board read sets the interval (`checkIn`); a board never read is read now, so one with no open step waits a day.
+        if (!this.cache.has(chat)) await this.known(chat).catch(() => null);
         const view = this.checkIn(chat);
-        if (view.nextAt !== null && view.nextAt <= now && !this.rootRunning(this.threadOf(chat))) {
-          file.checkIn = { ...state, lastAt: now };
-          dirty = true;
-          await this.host.submit(this.threadOf(chat), {
-            text: CHECK_IN_TEXT, whenBusy: "followUp",
-            requestId: `checkin:${chat}:${now}`, entry: { kind: "agent.message", data: { from: "board", via: "check-in" } },
-          }).catch(error => this.log(`check-in for ${chat} failed: ${String(error)}`));
+        if (view.nextAt !== null && view.nextAt <= now) {
+          this.save(chat, { ...file, checkIn: { ...state, lastAt: now } });
+          const run = this.runCheckIn(chat, now).catch(error => this.log(`check-in ${chat}: ${String(error)}`)).finally(() => this.checkIns.delete(chat));
+          this.checkIns.set(chat, run);
         }
       }
-      if (dirty) this.save(chat, file);
       // Each due duty runs on its own; runDuty writes the duties file itself, so the tick does not wait for a precheck.
       for (const duty of file.duties) {
         void this.afterJob(chat, duty.id);
