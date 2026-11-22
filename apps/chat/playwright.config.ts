@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defineConfig, devices } from "@playwright/test";
+import { liveRefusal } from "./test/live-guard.ts";
 
 /**
  * Browser specs for every page, one folder per builder under test/<area>.
@@ -12,6 +13,8 @@ import { defineConfig, devices } from "@playwright/test";
 const WEB_PORT = Number(process.env.CHAT_WEB_PORT ?? 5187);
 const SERVER_URL = process.env.CHAT_SERVER_URL ?? "http://127.0.0.1:5186";
 const SERVER_PORT = Number(new URL(SERVER_URL).port || 80);
+const refusal = liveRefusal(SERVER_URL) ?? liveRefusal(`http://127.0.0.1:${WEB_PORT}`);
+if (refusal) throw new Error(`Refusing to run the specs: ${refusal}`);
 /**
  * Each run writes its traces to its own folder, because Playwright empties its output folder when a run starts and two runs that shared one
  * deleted each other's artifacts. The workers read the main process's pick from the environment. The name stays short, as a long TMPDIR
@@ -22,6 +25,7 @@ process.env.CHAT_PW_OUTPUT ??= join(tmpdir(), `acpw-${randomBytes(3).toString("h
 export default defineConfig({
   testDir: "test",
   testMatch: "**/*.spec.ts",
+  globalSetup: "./test/global-setup.ts",
   fullyParallel: true,
   // Chrome on the box sometimes drops a cold dev-server load with ERR_NETWORK_CHANGED.
   retries: 1,
