@@ -1,3 +1,4 @@
+import { writeFileSync } from "node:fs";
 import { expect, test } from "@playwright/test";
 import { composerInput, conversation, FRONTEND, open, tag } from "./helpers";
 
@@ -34,12 +35,22 @@ for (const where of ["thread", "channel"] as const) {
   });
 }
 
-test("a file over 40 MB is refused with its size before any upload", async ({ page }) => {
+test("a 60 MB file uploads whole and posts as a card", async ({ page, request }, info) => {
+  // setInputFiles takes a buffer of up to 50 MB, so a bigger file goes in by its path.
+  const file = info.outputPath("recording.mov");
+  writeFileSync(file, Buffer.alloc(60 * 1000 * 1000, 7));
   await open(page, `#/c/${FRONTEND}`);
-  let uploads = 0;
-  page.on("request", (r) => void (r.url().includes("/api/uploads") && r.method() === "POST" && (uploads += 1)));
-  await conversation(page).locator('input[type="file"]').setInputFiles({ name: "big.zip", mimeType: "application/zip", buffer: Buffer.alloc(41 * 1024 * 1024) });
-  await expect(page.getByText("big.zip is 43 MB; a file can be up to 40 MB.")).toBeVisible();
-  await expect(conversation(page).locator(".attachments")).toHaveCount(0);
-  expect(uploads).toBe(0);
+  const box = conversation(page);
+  await box.locator('input[type="file"]').setInputFiles(file);
+  await expect(box.locator(".attachments [data-testid=file-card]")).toContainText("MOV · 60 MB");
+  const word = `big ${tag()}`;
+  await composerInput(box).click();
+  await page.keyboard.type(word);
+  const sent = page.waitForRequest((r) => r.url().includes(`/api/c/${FRONTEND}/send`) && r.method() === "POST", { timeout: 60_000 });
+  await page.keyboard.press("Enter");
+  const [ref] = ((await sent).postDataJSON() as { images: { url: string; size: number }[] }).images;
+  expect(ref!.size).toBe(60_000_000);
+  await expect(box.locator(".row").filter({ hasText: word }).locator("[data-testid=file-card]")).toContainText("recording.mov");
+  const served = await request.get(ref!.url);
+  expect(served.headers()["content-length"]).toBe("60000000");
 });

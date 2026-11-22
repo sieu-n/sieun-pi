@@ -45,6 +45,7 @@ const TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".json": "application/json", ".woff2": "font/woff2", ".ico": "image/x-icon",
 };
+/** The most a JSON body reads into memory; POST /api/uploads streams its file to disk instead and takes any size (App.upload). */
 const MAX_BODY = 40 * 1024 * 1024;
 
 export class BadRequest extends Error {}
@@ -278,7 +279,7 @@ export function routes(app: App): Route[] {
       return output;
     }),
     route("GET", "/api/c/:id/replies/:root", async (_r, p) => app.replies(p.id!, p.root!)),
-    route("POST", "/api/uploads", async (req, _p, q) => app.upload(req.headers["content-type"] ?? "", await readBytes(req), str(q.get("name")))),
+    route("POST", "/api/uploads", async (req, _p, q) => app.upload(req.headers["content-type"] ?? "", req, str(q.get("name")))),
     route("POST", "/api/c/:id/send", async (_r, p, _q, body) => app.send(p.id!, (await body()) as SendRequest)),
     route("POST", "/api/c/:id/send/:requestId/retry", async (_r, p) => app.retrySend(p.id!, p.requestId!)),
     route("DELETE", "/api/c/:id/send/:requestId", async (_r, p) => {

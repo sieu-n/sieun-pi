@@ -1,8 +1,10 @@
 /**
  * Wires the host seam, the chat server's store and the services, and holds the one live hub every page connects to over /api/live.
  */
-import { existsSync, mkdirSync, readFileSync, statSync, watch, writeFileSync, type FSWatcher } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { createWriteStream, existsSync, mkdirSync, readFileSync, statSync, watch, writeFileSync, type FSWatcher } from "node:fs";
+import { rm } from "node:fs/promises";
+import type { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { WebSocket, WebSocketServer } from "ws";
@@ -1058,13 +1060,23 @@ export class App {
    * POST /api/uploads: an attached file's bytes, kept under a fresh name; a send names the ref it returns. An image answers its size in
    * pixels; any other file (server/files.ts) answers the `name` the page passed and its size in bytes.
    */
-  async upload(contentType: string, bytes: Buffer, fileName?: string): Promise<ImageRef> {
+  async upload(contentType: string, body: Readable, fileName?: string): Promise<ImageRef> {
     const mimeType = contentType.split(";")[0]!.trim().toLowerCase() || "application/octet-stream";
-    if (!bytes.length) throw new Error("An upload needs the file's bytes.");
     const name = `${randomUUID()}.${uploadExtension(mimeType, isImage({ mimeType }) ? undefined : fileName)}`;
-    await writeFile(this.store.imagePath(name), bytes);
-    if (isImage({ mimeType })) return { url: `/api/uploads/${name}`, mimeType, ...imageSize(bytes) };
-    return { url: `/api/uploads/${name}`, mimeType, name: fileName?.trim().slice(0, 255) || "file", size: bytes.length };
+    const path = this.store.imagePath(name);
+    try {
+      await pipeline(body, createWriteStream(path));
+    } catch (error) {
+      await rm(path, { force: true });
+      throw error;
+    }
+    const size = statSync(path).size;
+    if (!size) {
+      await rm(path, { force: true });
+      throw new Error("An upload needs the file's bytes.");
+    }
+    if (isImage({ mimeType })) return { url: `/api/uploads/${name}`, mimeType, ...fileImageSize(path) };
+    return { url: `/api/uploads/${name}`, mimeType, name: fileName?.trim().slice(0, 255) || "file", size };
   }
 
   /**

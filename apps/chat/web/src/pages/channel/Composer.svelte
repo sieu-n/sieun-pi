@@ -5,7 +5,7 @@
   import { emojiOf, searchEmoji } from "$lib/api/shared/emoji";
   import AvatarStack from "$lib/ui/AvatarStack.svelte";
   import Checkbox from "$lib/ui/Checkbox.svelte";
-  import FileCard, { fileSize } from "$lib/ui/FileCard.svelte";
+  import FileCard from "$lib/ui/FileCard.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
   import Picker from "$lib/ui/Picker.svelte";
   import Popover from "$lib/ui/Popover.svelte";
@@ -65,7 +65,6 @@
   });
   $effect(() => () => releaseReload(reloadHold));
   let query = $state<Query | null>(null);
-  const MAX_UPLOAD = 40 * 1024 * 1024;
   let dragging = $state(false);
   /** The "Also send to #channel" box, cleared after each send as Slack clears it. */
   let alsoChecked = $state(false);
@@ -304,14 +303,7 @@
   }
 
   function addFiles(files: Iterable<File>) {
-    for (const file of files) {
-      // The chat server refuses a request body over 40 MB (MAX_BODY in server/http.ts), so a bigger file is refused here before its upload.
-      if (file.size > MAX_UPLOAD) {
-        toast.error(`${file.name} is ${fileSize(file.size)}; a file can be up to 40 MB.`);
-        continue;
-      }
-      attachments = [...attachments, { file, image: attach(file) }];
-    }
+    for (const file of files) attachments = [...attachments, { file, image: attach(file) }];
   }
 
   function removeAttachment(index: number) {

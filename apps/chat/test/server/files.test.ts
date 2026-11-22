@@ -46,6 +46,15 @@ describe("attached files", () => {
     assert.match(saved.headers.get("content-disposition")!, /^attachment; filename\*=UTF-8''x\.pdf$/);
   });
 
+  test("a file far over the 40 MB JSON body limit streams to disk whole", async () => {
+    const big = Buffer.alloc(120 * 1000 * 1000, 3);
+    const ref = await upload(big, "video/quicktime", "screen.mov");
+    assert.deepEqual([ref.name, ref.size], ["screen.mov", big.length]);
+    const res = await fetch(`${s.base}${ref.url}`);
+    assert.equal(res.headers.get("content-length"), String(big.length));
+    assert.equal((await res.arrayBuffer()).byteLength, big.length);
+  });
+
   test("an HTML or unknown file downloads as bytes and never renders as a page of the app", async () => {
     for (const [type, name] of [["text/html", "page.html"], ["application/octet-stream", "blob"], ["application/zip", "a.zip"]]) {
       const ref = await upload(Buffer.from("<script>alert(1)</script>"), type!, name!);
