@@ -22,10 +22,13 @@ const jobRun: DutyRunRecord = {
   job: { id: "01a17077-bd9e-7416-b73b-aacf6fbeccd2", name: "visitors become paying users slack green guy 10-25 09:30" },
   after: { at: at("25T00:57:25"), verdict: "missed", metrics: reach(66.67), summary: "" },
 };
+// The job's run read 66.67 itself, so since 11-22 its red end owes no push at once (duty-push-briefed-miss.test.ts). The loops below need a
+// push at once, so they start from the same job with its run reading the duty on target and its after-job measure reading the miss.
+const newMiss: DutyRunRecord = { ...jobRun, verdict: "met", metrics: reach(95) };
 
 test("a push run that measured red and started no job waits the check-in interval, instead of firing again on the next tick", () => {
-  assert.deepEqual(pushMisses([jobRun], COUNTED, EVERY, at("25T00:58:00")), ["home_test_reach_pct"], "the red end of the job owes one push at once");
-  const pushed = [run("25T00:58:00", "push", 66.67), jobRun];
+  assert.deepEqual(pushMisses([newMiss], COUNTED, EVERY, at("25T00:58:00")), ["home_test_reach_pct"], "the red end of the job owes one push at once");
+  const pushed = [run("25T00:58:00", "push", 66.67), newMiss];
   assert.equal(pushMisses(pushed, COUNTED, EVERY, at("25T00:58:30")), null);
   assert.equal(pushMisses(pushed, COUNTED, EVERY, at("25T01:57:59")), null);
   assert.deepEqual(pushMisses(pushed, COUNTED, EVERY, at("25T01:58:00")), ["home_test_reach_pct"]);
@@ -40,5 +43,5 @@ test("the runs of 10-26 get no push 30 s after the 00:30Z schedule run, which re
 
 test("a duty job that just ended red still gets its push at once, and a push run beside it while it worked does not count", () => {
   const beside = run("25T00:45:00", "push", 66.67, "skipped: previous run still working (job visitors become paying users); handed it 1 item");
-  assert.deepEqual(pushMisses([beside, jobRun], COUNTED, EVERY, at("25T00:58:00")), ["home_test_reach_pct"]);
+  assert.deepEqual(pushMisses([beside, newMiss], COUNTED, EVERY, at("25T00:58:00")), ["home_test_reach_pct"]);
 });

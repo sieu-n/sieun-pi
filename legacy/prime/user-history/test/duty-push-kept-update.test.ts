@@ -19,8 +19,11 @@ test("a push run that found the ended job kept by a Prime update counts as the p
   assert.notEqual(pushMisses(RUNS, COUNTED, EVERY, firstPush.at + EVERY), null, "the check-in interval still brings the next push");
 });
 
-test("the red end of the 07:54Z job owes one push at once while no run has read the duty since", () => {
+test("the red end of the 07:54Z job owes a push at once only on a miss its own run did not read, else the interval brings it", () => {
   const job = RUNS.at(-1)!;
   assert.equal(job.trigger, "schedule");
-  assert.notEqual(pushMisses([job], COUNTED, EVERY, job.after!.at + 60_000), null);
+  assert.equal(pushMisses([job], COUNTED, EVERY, job.after!.at + 60_000), null, "its run read quiet_agent_gb off target, so its brief had it");
+  assert.deepEqual(pushMisses([job], COUNTED, EVERY, job.at + EVERY), ["quiet_agent_gb"]);
+  const met = { ...job, metrics: { ...job.metrics, quiet_agent_gb: { ...job.metrics.quiet_agent_gb!, value: 4, met: true } } };
+  assert.deepEqual(pushMisses([met], COUNTED, EVERY, job.after!.at + 60_000), ["quiet_agent_gb"], "a miss the job's run read on target");
 });

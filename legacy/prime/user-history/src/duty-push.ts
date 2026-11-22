@@ -23,14 +23,23 @@ import { effectiveRun, metricStreaks, newestReading, stillMissed, type MetricStr
  */
 const KEPT = / is kept[ ,]/;
 
-function endedUnpushed(runs: readonly DutyRunRecord[]): boolean {
+/**
+ * The misses an ended job already had in its brief, which owe no push at once, or null when the job owes no push at once. A job that ended with
+ * an after-job measure was briefed on its own run's misses, and a push run then briefs a second job on the same ones; the check-in interval
+ * brings the next push for them. A cut job did not finish, so it owes a push on every miss. On 11-20 to 11-22 the AI harness chat's d9 job of
+ * each 2-hour slot ended red in 1 to 6 min on duties_green_pct, which other chats' duties hold red, and each end started a push run with a
+ * second job on the same miss: 01:32 and 01:36, 03:32 and 03:33, 05:32 and 05:38 KST on 11-22. Of the 45 such pushes in all chats from 11-15
+ * to 11-22, 43 pushed only misses their ended job's run had read; d4 of 11-18 and d11 of 11-20 ended on a metric their met run had not missed.
+ */
+function endedUnpushed(runs: readonly DutyRunRecord[]): ReadonlySet<string> | null {
   const index = runs.findIndex(run => run.job !== undefined);
   const last = runs[index];
-  if (!last || (!last.after && !last.cut)) return false;
+  if (!last || (!last.after && !last.cut)) return null;
   const ended = last.after?.at ?? last.cut?.at ?? last.at;
-  if (runs.slice(0, index).some(run => run.verdict !== "skipped" && run.at >= ended && (!run.summary.includes(STILL_WORKING) || KEPT.test(run.summary)))) return false;
+  if (runs.slice(0, index).some(run => run.verdict !== "skipped" && run.at >= ended && (!run.summary.includes(STILL_WORKING) || KEPT.test(run.summary)))) return null;
   const origin = last.trigger === "rerun" ? runs.find(run => run.at === last.rerunOf) ?? last : last;
-  return last.trigger !== "push" && origin.trigger !== "push";
+  if (last.trigger === "push" || origin.trigger === "push") return null;
+  return new Set(last.after ? missedKeys(last) : []);
 }
 
 /**
@@ -49,7 +58,8 @@ export const PART_READ_MS = 15 * 60_000;
  * counted metric that no newer run measured on target (`stillMissed`). It gets a push once its newest run of any verdict is `everyMs` old, the chat's check-in interval: the owner's own push
  * cadence for the chat. Without it a red daily duty waited a whole day after its fix job ended, and forever when its job did not start: from
  * 10-16 to 10-18 four daily duties sat red with no job for 1 to 2 days after "the catalog cannot list the chat". It gets one sooner when its
- * newest job ended red with no push job since (`endedUnpushed`), on the misses that are no quiet windowed count, which owe no fix job.
+ * newest job ended red with no push job since (`endedUnpushed`), on the misses that are no quiet windowed count, which owe no fix job, and
+ * that the job's own run did not read, since the job had those in its brief.
  *
  * A met run whose part of a counted metric (`metricParts`, `<metricKey>_<part>`) is off target gets a push for that part too: the part is work
  * the verdict waits to count. The Wiki dream's `wiki_problems_following` counts pages behind their code for less than the time one push run
@@ -85,7 +95,8 @@ export function pushMisses(runs: readonly DutyRunRecord[], counted: ReadonlySet<
     if (open.some(key => windowState(measured, key, newest.at, now) === "rolled")) return open;
     const pace = countedParts(measured, counted) ? Math.min(everyMs, PART_READ_MS) : everyMs;
     if (now - newest.at >= pace) { const due = open.filter(key => !aging.has(key)); return due.length ? due : null; }
-    const owed = endedUnpushed(runs) ? open.filter(key => !quiet.has(key)) : [];
+    const briefed = endedUnpushed(runs);
+    const owed = briefed ? open.filter(key => !quiet.has(key) && !briefed.has(key)) : [];
     return owed.length ? owed : null;
   }
   const parts = countedParts(measured, counted);
