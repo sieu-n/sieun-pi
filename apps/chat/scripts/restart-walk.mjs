@@ -419,6 +419,11 @@ export function report(out) {
       const open = ws.find(r => r.event === "open" && r.at > close.at);
       closes.push({ at: close.at, openAt: open?.at ?? null, backMs: open ? open.at - close.at : null, release: windowOf(close.at)?.n ?? null });
     }
+    // The page's dead-socket check (restart-walk-page.mjs): pings, pongs, and drops with the quiet time and the ping's wait at each drop.
+    const liveCheck = {
+      pings: ws.filter(r => r.event === "ping").length, pongs: ws.filter(r => r.event === "pong").length,
+      drops: ws.filter(r => r.event === "drop").map(r => ({ at: r.at, quietMs: r.heardAt ? r.at - r.heardAt : null, pingWaitMs: r.pingAt ? r.at - r.pingAt : null, readyState: r.readyState })),
+    };
     const sends = records.filter(r => r.kind === "send");
     const end = records.find(r => r.kind === "end");
     // A send counts as landed when the server stored the text the page posted for it, matched by the send's stamp.
@@ -441,7 +446,7 @@ export function report(out) {
     browsers[browser] = {
       fetches: fetches.length, aborted: all.length - fetches.length, fetchesInWindows: inWindows.length,
       fetchFailed: fetchFailed.length, fetchFailedByRoute: countBy(fetchFailed), fetchFailedErrors: [...new Set(fetchFailed.map(f => f.err ?? `status ${f.s}`))].slice(0, 6),
-      fetchSlow: fetchSlow.length, fetchSlowWhere: slowWhere, fetchSlowCpuStallMs: slowCpuStallMs, fetchSlowList: slowList,
+      liveCheck, fetchSlow: fetchSlow.length, fetchSlowWhere: slowWhere, fetchSlowCpuStallMs: slowCpuStallMs, fetchSlowList: slowList,
       fetchOver2s: fetches.filter(f => !failed(f.s) && f.ms > 2000).map(f => ({ route: f.route, at: f.start, ms: f.ms, inWindow: Boolean(windowOf(f.start)), split: split(f), cpuStallMs: cpuStallMs(f),
         stalledMs: stalls.filter(x => x.at - x.ms <= f.end && x.at >= f.start).reduce((sum, x) => sum + x.ms, 0) })),
       stalls: stalls.length, stallMax: stalls.length ? Math.max(...stalls.map(x => x.ms)) : 0, stallsOver500: stalls.filter(x => x.ms >= 500).map(x => ({ at: x.at, ms: x.ms })),
@@ -483,6 +488,7 @@ export function report(out) {
       `${name}: of the ${b.fetchSlow} slow calls, ${b.fetchSlowWhere.behind} waited mostly behind the front, ${b.fetchSlowWhere.after} after it (rig browser side), ${b.fetchSlowWhere.before} before it${b.fetchSlowWhere.unmatched ? `, and ${b.fetchSlowWhere.unmatched} had no front line` : ""}. ${b.fetchSlowCpuStallMs
         ? `Over their spans the cgroups' CPU stall summed ${Object.entries(b.fetchSlowCpuStallMs).map(([group, ms]) => `${group} ${ms} ms`).join(", ")}.`
         : "This walk recorded no CPU stall."}`,
+      ...(b.liveCheck?.pings || b.liveCheck?.drops.length ? [`${name}: the live socket check sent ${b.liveCheck.pings} pings, heard ${b.liveCheck.pongs} pongs and dropped ${b.liveCheck.drops.length} sockets${b.liveCheck.drops.length ? ` (quiet ${b.liveCheck.drops.map(d => `${d.quietMs ?? "?"} ms`).join(", ")} before each)` : ""}.`] : []),
       "",
     ]),
     "",

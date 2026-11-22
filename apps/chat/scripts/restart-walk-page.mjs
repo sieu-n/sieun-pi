@@ -53,14 +53,39 @@ const instrument = () => {
     if (now - last >= 50) records.push({ kind: "stall", at: Date.now(), ms: Math.round(now - last - 10) });
     last = now;
   }, 10);
+  // The live client's dead-socket check (web/src/lib/api/live.svelte.ts): each ping it sends, each pong, and each close() the page calls on
+  // an open socket (its drop), with when the socket last brought anything (heardAt) and when the ping on its way left (pingAt).
   const RealSocket = window.WebSocket;
+  let sockets = 0;
   window.WebSocket = class extends RealSocket {
     constructor(url, protocols) {
       super(url, protocols);
       if (!String(url).includes("/api/live")) return;
-      records.push({ kind: "ws", event: "connect", at: Date.now() });
-      this.addEventListener("open", () => records.push({ kind: "ws", event: "open", at: Date.now() }));
-      this.addEventListener("close", () => records.push({ kind: "ws", event: "close", at: Date.now() }));
+      this.walkId = ++sockets;
+      this.heardAt = null;
+      this.pingAt = null;
+      const id = this.walkId;
+      records.push({ kind: "ws", event: "connect", socket: id, at: Date.now() });
+      this.addEventListener("open", () => records.push({ kind: "ws", event: "open", socket: id, at: Date.now() }));
+      this.addEventListener("close", () => records.push({ kind: "ws", event: "close", socket: id, at: Date.now() }));
+      this.addEventListener("message", message => {
+        this.heardAt = Date.now();
+        if (String(message.data).startsWith('{"type":"pong"')) {
+          records.push({ kind: "ws", event: "pong", socket: id, at: this.heardAt, pingAt: this.pingAt });
+          this.pingAt = null;
+        }
+      });
+    }
+    send(data) {
+      if (this.walkId && String(data).startsWith('{"type":"ping"')) {
+        this.pingAt = Date.now();
+        records.push({ kind: "ws", event: "ping", socket: this.walkId, at: this.pingAt, heardAt: this.heardAt, readyState: this.readyState });
+      }
+      return super.send(data);
+    }
+    close(code, reason) {
+      if (this.walkId) records.push({ kind: "ws", event: "drop", socket: this.walkId, at: Date.now(), heardAt: this.heardAt, pingAt: this.pingAt, readyState: this.readyState });
+      return super.close(code, reason);
     }
   };
 };
