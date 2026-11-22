@@ -68,7 +68,7 @@ export interface DreamDeps {
 /** A curated page's wiki path, its stored HTML size in bytes and the `status` of its header. */
 export interface PageSize { path: string; bytes: number; status?: string }
 /** One row of the wiki's `revisions` table: the page's wiki path, who wrote it, the write's summary, its ISO time and the page's stored bytes around it. */
-export interface PageRevision { path: string; author: string; summary: string; ts?: string; bytesBefore?: number | null; bytesAfter?: number | null }
+export interface PageRevision { path: string; author: string; summary: string; ts?: string; bytesBefore?: number | null; bytesAfter?: number | null; version?: number }
 
 /** What `wiki-health.mjs` prints (build contract part A). */
 export interface HealthItem { kind: string; path: string; excerpt?: string; target?: string }
@@ -510,10 +510,30 @@ export function nearCapSince(rows: readonly PageRevision[]): Map<string, number>
   return out;
 }
 
+/**
+ * When each page was created through the page API: the time of its first revision (version 1). A hub orphan created within FOLLOW_WINDOW_MS
+ * is followed, so it counts in `wiki_problems_following` and only later in wiki_problems, because the page API's dead-link gate refuses a hub
+ * row written before its page exists (`hubRowWarning` in apps/wiki/src/lib/server/wiki-write.ts). On 2026-11-21 agent-factory created
+ * domains/devops/sw-factory-threads/architecture.html at 22:59:41Z and its hub row 39 s later, and the 23:00:16Z run read wiki_problems 1.
+ * A page with no version-1 row in the rows read was created before them, or outside the page API, and counts at once.
+ */
+export function createdAt(rows: readonly PageRevision[]): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const row of rows) {
+    const at = Date.parse(row.ts ?? "");
+    if (row.version === 1 && at > 0) out.set(row.path, at);
+  }
+  return out;
+}
+
+/** The text a followed item's flagged line ends with: when it started and when it counts in wiki_problems. */
+const countsAt = (what: string, since: number): string =>
+  `; ${what} at ${new Date(since).toISOString().slice(11, 16)}Z, counts in wiki_problems at ${new Date(since + FOLLOW_WINDOW_MS).toISOString().slice(11, 16)}Z`;
+
 /** The flagged line of a page near or over the read cap, with the time it counts when it is still followed. */
 export function readCapExcerpt(page: PageSize, since?: number): string {
   const where = page.bytes > PAGE_READ_CAP ? `${page.bytes - PAGE_READ_CAP} B over` : `${PAGE_READ_CAP - page.bytes} B under`;
-  const followed = since ? `; crossed the line at ${new Date(since).toISOString().slice(11, 16)}Z, counts in wiki_problems at ${new Date(since + FOLLOW_WINDOW_MS).toISOString().slice(11, 16)}Z` : "";
+  const followed = since ? countsAt("crossed the line", since) : "";
   return `${page.bytes} B, ${where} the ${PAGE_READ_CAP} B read cap, and a dream rewrite adds ${DREAM_GROWTH_P90} B at p90${followed}: split it into a short index and topic child pages`;
 }
 
@@ -677,7 +697,8 @@ export function pickFlagged(slices: readonly FlaggedSlice[]): FlaggedSlice[] {
 const HEALTH_METRICS = ["hub_orphans", "dead_links", "session_links", "superseded_linked", "missing_meta", "stale_vs_code"] as const;
 /**
  * The sync problems wiki_problems adds up; pages_behind_code counts the pages of wiki-health's stale list (parseStale) behind for longer than
- * FOLLOW_WINDOW_MS, and pages_near_read_cap the current curated pages at NEAR_READ_CAP bytes or more that crossed it longer ago (`nearCapSince`).
+ * FOLLOW_WINDOW_MS, pages_near_read_cap the current curated pages at NEAR_READ_CAP bytes or more that crossed it longer ago (`nearCapSince`),
+ * and hub_orphans wiki-health's hub orphans less those created within FOLLOW_WINDOW_MS (`createdAt`).
  */
 const PROBLEM_METRICS = ["hub_orphans", "dead_links", "session_links", "superseded_linked", "missing_meta", "pages_behind_code", "pages_near_read_cap"] as const;
 
@@ -743,7 +764,15 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
   const crossed = pageRows ? nearCapSince(pageRows) : new Map<string, number>();
   const capFollowed = new Map((nearCap ?? []).flatMap(page => { const at = crossed.get(page.path) ?? 0; return at > 0 && now - at <= FOLLOW_WINDOW_MS ? [[page.path, at] as const] : []; }));
   metrics.pages_near_read_cap = nearCap ? nearCap.length - capFollowed.size : UNMEASURED;
-  if (following || capFollowed.size) metrics.wiki_problems_following = (following ? following.length - waiting.size : 0) + capFollowed.size;
+  const created = pageRows ? createdAt(pageRows) : new Map<string, number>();
+  const orphanFollowed = new Map(metrics.hub_orphans === UNMEASURED ? [] : (health?.items ?? []).flatMap(item => {
+    const at = item.kind === "hub_orphan" ? created.get(item.path) ?? 0 : 0;
+    return at > 0 && now - at <= FOLLOW_WINDOW_MS ? [[item.path, at] as const] : [];
+  }));
+  if (orphanFollowed.size) metrics.hub_orphans = Math.max(0, metrics.hub_orphans! - orphanFollowed.size);
+  if (following || capFollowed.size || orphanFollowed.size) {
+    metrics.wiki_problems_following = (following ? following.length - waiting.size : 0) + capFollowed.size + orphanFollowed.size;
+  }
   metrics.wiki_problems = PROBLEM_METRICS.some(key => metrics[key] === UNMEASURED) ? UNMEASURED : PROBLEM_METRICS.reduce((sum, key) => sum + metrics[key]!, 0);
   const lintFailing = health?.facts.lint_failing_pages;
   metrics.lint_over_glide = lintFailing === undefined ? UNMEASURED : lintFailing - glide(LINT_GLIDE, now);
@@ -816,7 +845,8 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
   for (const page of nearCap ?? []) slices.push({ kind: "near_read_cap", item: page.path, excerpt: readCapExcerpt(page, capFollowed.get(page.path)) });
   for (const item of health?.items ?? []) {
     if (item.kind === "signal" || (item.kind === "stale_vs_code" && stalePages)) continue;
-    slices.push({ kind: item.kind, item: item.path, excerpt: clip(`${item.excerpt ?? item.path}${item.target ? ` -> ${item.target}` : ""}`) });
+    const born = item.kind === "hub_orphan" ? orphanFollowed.get(item.path) : undefined;
+    slices.push({ kind: item.kind, item: item.path, excerpt: `${clip(`${item.excerpt ?? item.path}${item.target ? ` -> ${item.target}` : ""}`)}${born ? countsAt("created", born) : ""}` });
   }
   for (const pair of unjudged ?? []) slices.push({ kind: "dup_pair", item: pairKey(pair.a, pair.b), excerpt: `${pair.a} and ${pair.b} look alike (score ${pair.score})` });
 
@@ -856,7 +886,7 @@ async function readRevisions(db: string, sinceIso: string): Promise<PageRevision
   const { DatabaseSync } = await import("node:sqlite");
   const database = new DatabaseSync(db, { readOnly: true });
   try {
-    return database.prepare("SELECT path, author, summary, ts, bytes_before AS bytesBefore, bytes_after AS bytesAfter FROM revisions WHERE ts >= ?")
+    return database.prepare("SELECT path, version, author, summary, ts, bytes_before AS bytesBefore, bytes_after AS bytesAfter FROM revisions WHERE ts >= ?")
       .all(sinceIso) as unknown as PageRevision[];
   } finally { database.close(); }
 }
