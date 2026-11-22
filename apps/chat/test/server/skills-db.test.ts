@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
@@ -297,6 +297,34 @@ test("a scan that walks more folders owns the copies it newly finds, and a later
   const later = { ...clone, path: "/Users/o/code/ws/VIR-1/.agents/skills/new-skill", realPath: "/Users/o/code/ws/VIR-1/.agents/skills/new-skill", name: "new-skill" };
   db.ingest({ ...macScan("2026-11-22T02:00:00Z", [macCopy("/Users/o/.claude/skills/deploy-notes"), clone, later]), coverage: 2 });
   assert.deepEqual(db.check().items.map(i => i.kind), ["unowned"]);
+});
+
+test("a Python skill reads imported, the WRITING_SKILL reads inlined in sw threads, and a Prime duty sees what a Prime chat sees", async t => {
+  const dir = mkdtempSync(join(tmpdir(), "skills-db-sees-"));
+  const fixture = writeSkillsDbFixture(join(dir, "tree"), { reviewDir: join(dir, "review"), box: BOX });
+  const tool = join(fixture.home, "src/tools/.agents/skills/py-tool");
+  mkdirSync(join(tool, "src/py_tool"), { recursive: true });
+  writeFileSync(join(tool, "SKILL.md"), "---\nname: py-tool\ndescription: Use when a test needs a Python skill.\n---\n\n# Py tool\n");
+  writeFileSync(join(tool, "pyproject.toml"), "[project]\nname = \"py-tool\"\n");
+  writeFileSync(join(tool, "src/py_tool/__init__.py"), "");
+  symlinkSync(tool, join(fixture.home, ".prime/agent/skills/py-tool"));
+  const brief = join(dir, "chat-brief.ts");
+  writeFileSync(brief, 'export const WRITING_SKILL = "board-rules";\n');
+  const db = new SkillsDb({ file: join(dir, "chat.sqlite"), box: BOX, home: fixture.home, piHostPrompt: brief }, { run: async () => [], undo: async () => [] });
+  t.after(() => {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const scanner = fixtureScanner(fixture, REPO);
+  execFileSync(scanner.command, scanner.args, { cwd: scanner.cwd, env: { ...process.env, ...scanner.env }, stdio: "ignore" });
+  db.ingest(JSON.parse(readFileSync(fixture.inventory, "utf8")));
+  const sight = (name: string) => Object.fromEntries(db.view(IDLE).skills.find(k => k.name === name)!.sees.map(x => [x.kind, x.how]));
+  assert.equal(sight("py-tool")["prime-chat"], "imported");
+  assert.equal(sight("py-tool")["prime-duty"], "imported");
+  assert.equal(sight("py-tool")["sw-work"], "imported");
+  assert.equal(sight("board-rules")["sw-comm"], "inlined");
+  assert.equal(sight("board-rules")["prime-chat"], "listed");
+  assert.equal(sight("deploy-notes")["prime-duty"], sight("deploy-notes")["prime-chat"]);
 });
 
 test("the review runs a skills DB delete of a path that is gone as a no-op, and undoes a step that failed as nothing to put back", async t => {

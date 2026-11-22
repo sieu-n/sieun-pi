@@ -29,7 +29,7 @@ export type SkillsDbConfig = {
   /** The box this server runs on, whose files it reads and writes itself. */
   box: string;
   home: string;
-  /** The installed pi-host release's prime-prompt.ts, whose WRITING_SKILL names the skill every sw factory thread gets in full. */
+  /** The installed pi-host release's chat-brief.ts, whose WRITING_SKILL names the skill every sw factory thread gets in full through prime-prompt.ts. */
   piHostPrompt: string | null;
 };
 

@@ -159,6 +159,14 @@ def prime_release_skills() -> Path | None:
     return skills if skills.is_dir() else None
 
 
+def python_import(folder: Path, name: str) -> str | None:
+    """The module Prime pre-imports for a skill, by Prime's own rule: a pyproject.toml beside SKILL.md and src/<name with _ for ->/__init__.py."""
+    module = name.replace("-", "_")
+    if not folder.is_dir() or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", module) or not (folder / "pyproject.toml").is_file():
+        return None
+    return module if (folder / "src" / module / "__init__.py").is_file() else None
+
+
 def scan_entry(path: Path, box: str, how: str, runtimes: list[str], source: str, root: Path) -> dict:
     is_link = path.is_symlink()
     target = os.readlink(path) if is_link else None
@@ -191,7 +199,7 @@ def scan_entry(path: Path, box: str, how: str, runtimes: list[str], source: str,
         "dirName": path.name,
         "description": fm.get("description", ""),
         "disableModelInvocation": fm.get("disable-model-invocation", "").lower() == "true",
-        "pythonImport": fm.get("python_import") or (fm.get("metadata") and None),
+        "pythonImport": fm.get("python_import") or python_import(real, fm.get("name") or path.name),
         "skillMd": str(skill_md),
         "hash": sha256(skill_md),
         "sizeBytes": size,

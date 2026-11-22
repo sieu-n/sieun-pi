@@ -153,7 +153,7 @@ const opt = (value: unknown): string | null => (typeof value === "string" && val
  * real scanner reads with HOME pointed at it, so `sw skills` and the layouts run against real files there too.
  */
 function skillsDb(app: App, skills: Skills, review: SkillsReview): { db: SkillsDb; skills: Skills } {
-  const piHost = join(app.config.home, ".local/share/pi-host/current/packages/pi-host/src/durable/prime-prompt.ts");
+  const piHost = join(app.config.home, ".local/share/pi-host/current/legacy/prime/user-history/src/chat-brief.ts");
   const file = join(app.config.dataDir, "chat.sqlite");
   if (!app.config.skillsReview.fixture) {
     const db = new SkillsDb({ file, box: app.config.box, home: app.config.home, piHostPrompt: piHost }, review.diskSteps("live"), app.log);

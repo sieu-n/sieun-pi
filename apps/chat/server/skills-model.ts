@@ -494,7 +494,7 @@ function keepFirst<T extends { skill: SkillRecord; copy: CopyFact }>(a: T, b: T)
 // Who sees a skill
 
 const SW_KINDS: readonly ThreadKind[] = ["sw-comm", "sw-work", "sw-job", "sw-subagent", "sw-duty"];
-const PRIME_KINDS: readonly ThreadKind[] = ["prime-chat", "prime-job", "prime-subagent"];
+const PRIME_KINDS: readonly ThreadKind[] = ["prime-chat", "prime-job", "prime-subagent", "prime-duty"];
 /** Prime drops `refine` below depth 0, while pi-host passes it at every depth (skills-load findings, agent-session.js:8900). */
 const ROOT_ONLY = new Set(["refine"]);
 
