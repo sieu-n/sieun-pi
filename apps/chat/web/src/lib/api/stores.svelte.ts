@@ -1141,16 +1141,15 @@ export class Timeline {
   private headerAt = -Infinity;
 
   /**
-   * The socket opened again and may have missed this view's events: a rename, or a post in a room whose view held none, since the watch
-   * names the newest post held and the server sends only what came after it. In the wake walk (scripts/wake-walk.mjs) a renamed room kept
-   * its old name after a reconnect, and a message sent to an empty room during a cut never showed.
+   * The socket opened again and may have missed this view's events, so the view reads its header and newest page again. The watch's own
+   * catch-up comes behind the server's hello on the socket, 1.6 MB of JSON on 11-22 that reached the page 0.85 to 1.06 s after the open in
+   * the wake walk (scripts/wake-walk.mjs, ~/work/p209-wake/after2), and it sends nothing to a room whose view held no post. A renamed room
+   * also kept its old name after a reconnect there.
    */
   private missed(): void {
     if (this.loading || this.headerAt >= live.openedAt) return;
     void this.refreshHeader({ background: "shown" });
-    if (!this.items.some(item => !isPending(item))) {
-      void api.items(this.id, {}, { background: "shown" }).then(page => this.upsert(page.items), () => undefined);
-    }
+    if (!this.around) void api.items(this.id, {}, { background: "shown" }).then(page => this.upsert(page.items), () => undefined);
   }
 
   /** Reads the header again, after a room's name, agenda, members or closed state changed. */
