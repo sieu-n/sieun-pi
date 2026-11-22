@@ -248,7 +248,7 @@
                   <div class="detail-body">
                     <p class="description" class:missing={!entry.description}>{entry.description || "No description, so no thread knows when to pick it."}</p>
                     <p class="facts">
-                      {usesLabel(entry, row.problems.includes("unused"))}.{#if pathUsesLabel(entry)} {pathUsesLabel(entry)}{/if} Owned by {ownerLabel(entry, agentNames)}. Source {sourceLabel(entry)}{size ? `, ${size.label}${size.ratio ? `, ${size.ratio}` : ""}` : ""}.
+                      {usesLabel(entry, row.problems.includes("unused"))}.{#if pathUsesLabel(entry)}{" "}{pathUsesLabel(entry)}{/if} Owned by {ownerLabel(entry, agentNames)}. Source {sourceLabel(entry)}{size ? `, ${size.label}${size.ratio ? `, ${size.ratio}` : ""}` : ""}.
                     </p>
                     {#if entry.verdicts.length > 0}
                       <ul class="verdicts">
