@@ -3,7 +3,7 @@
  * conversation for a DM, Leave channel and Archive channel. The server keeps the choices (`PUT /api/c/:id/prefs`, server/sidebar-prefs.ts)
  * and sends the sidebar again; an action that takes a room out of the sidebar shows a toast with Undo.
  */
-import { api, isSoloRoom, type ConversationId, type ConversationSummary, type PrefsPatch } from "$lib/api";
+import { api, isSoloRoom, type ConversationId, type ConversationSummary, type PrefsPatch, type Sidebar } from "$lib/api";
 import type { MenuEntry } from "$lib/ui/menu";
 import { toast } from "$lib/ui/toast.svelte";
 import { hrefFor, router } from "$lib/router.svelte";
@@ -11,9 +11,48 @@ import { sidebar } from "./sidebar.svelte";
 
 const label = (row: Pick<ConversationSummary, "kind" | "name">): string => (row.kind === "channel" ? `#${row.name}` : row.name);
 
+const inSidebar = (id: ConversationId): boolean => {
+  const { solo, channels, dms } = sidebar.data;
+  return [...channels, ...dms, ...solo].some((row) => row.id === id);
+};
+
+/**
+ * The open room when the server's sidebar leaves it out because it is a walk's test room (app.ts `sidebar` drops those), read from its
+ * header, so its row and row menu show while it is open and a walk can use a test room from the start.
+ */
+class OpenTestRoom {
+  row = $state.raw<ConversationSummary | null>(null);
+  private asked: ConversationId | null = null;
+
+  async load(id: ConversationId | null, again = false): Promise<void> {
+    if (!id || inSidebar(id)) {
+      this.asked = null;
+      this.row = null;
+      return;
+    }
+    if (this.asked === id && !again) return;
+    this.asked = id;
+    const header = await api.header(id).catch(() => null);
+    if (this.asked === id) this.row = header?.test && !header.summary.archived ? header.summary : null;
+  }
+}
+export const openTestRoom = new OpenTestRoom();
+
+/** The sidebar's rooms, with the open test room in its kind's list. */
+export function sidebarRooms(): Pick<Sidebar, "solo" | "channels" | "dms"> {
+  const { solo, channels, dms } = sidebar.data;
+  const extra = openTestRoom.row;
+  if (!extra) return { solo, channels, dms };
+  return {
+    solo: extra.kind === "solo" ? [...solo, extra] : solo,
+    channels: extra.kind === "channel" ? [...channels, extra].sort((a, b) => a.name.localeCompare(b.name)) : channels,
+    dms: extra.kind === "dm" ? [extra, ...dms] : dms,
+  };
+}
+
 /** The sidebar row for a room, which carries its star, mute and hidden state; undefined for an archived room or a job. */
 export function roomRow(id: ConversationId): ConversationSummary | undefined {
-  const { solo, channels, dms } = sidebar.data;
+  const { solo, channels, dms } = sidebarRooms();
   return [...channels, ...dms, ...solo].find((row) => row.id === id);
 }
 
@@ -24,7 +63,7 @@ export function listed(row: ConversationSummary, current: ConversationId | null)
 
 /** The Starred section's rows, rooms of every kind by name; each leaves its own section (`unstarred`). */
 export function starredRows(current: ConversationId | null): ConversationSummary[] {
-  const { solo, channels, dms } = sidebar.data;
+  const { solo, channels, dms } = sidebarRooms();
   return [...solo, ...channels, ...dms].filter((row) => row.starred && listed(row, current)).sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -42,6 +81,7 @@ export function rowUnread(row: ConversationSummary): { unread: number; fresh: bo
 async function setPrefs(row: ConversationSummary, patch: PrefsPatch, failed: string): Promise<boolean> {
   try {
     await api.setPrefs(row.id, patch);
+    if (openTestRoom.row?.id === row.id) await openTestRoom.load(row.id, true);
     return true;
   } catch {
     toast.error(`Could not ${failed} ${label(row)}`);

@@ -62,6 +62,24 @@ test("a channel stars, mutes, leaves and archives from its row menu, and Undo br
   }
 });
 
+test("a test room's row shows while it is open, takes its menu, and leaves the sidebar when another room opens", async ({ page }) => {
+  const name = `rowmenu-test-${Date.now().toString(36)}`;
+  const made = await page.request.post("/api/rooms", { data: { kind: "channel", name, members: [], test: true } });
+  expect(made.ok()).toBe(true);
+  const id = ((await made.json()) as { id: string }).id;
+  try {
+    await page.goto(`/#/c/${id}`);
+    await expect(row(page, id)).toBeVisible({ timeout: 15_000 });
+    await pick(page, id, name, "Star channel");
+    await expect(starredBlock(page).locator(`a[href="#/c/${id}"]`)).toBeVisible();
+    await page.goto("/#/c/ch_general");
+    await expect(row(page, "ch_general")).toBeVisible();
+    await expect(row(page, id)).toHaveCount(0);
+  } finally {
+    await page.request.patch(`/api/rooms/${id}`, { data: { archived: true } });
+  }
+});
+
 test("Close conversation takes the open DM out of the sidebar and off the page, and Undo puts it back", async ({ page }) => {
   const id = "dm_crawler-vp";
   await page.goto(`/#/c/${id}`);

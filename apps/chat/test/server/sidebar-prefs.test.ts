@@ -44,6 +44,8 @@ describe("sidebar prefs", () => {
     let sb = await s.get<Sidebar>("/api/sidebar");
     assert.equal(row(sb, ids.cutoverChannel)?.starred, true);
     assert.equal(row(sb, ids.cutoverChannel)?.muted, true);
+    const header = await s.get<{ summary: ConversationSummary }>(`/api/c/${ids.cutoverChannel}`);
+    assert.equal(header.summary.starred, true, "the header's summary carries the prefs too, for a test room's row");
 
     assert.equal((await s.send("PUT", `/api/c/${ids.cutoverChannel}/prefs`, { hidden: "left" })).status, 200);
     sb = await s.get<Sidebar>("/api/sidebar");

@@ -7,7 +7,7 @@ import { wikiHref } from "$pages/wiki/wiki-pages";
 import { unreadsHref } from "$lib/unreads.svelte";
 import type { MessagesView } from "$lib/router.svelte";
 import { sidebar, soloGroups } from "./sidebar.svelte";
-import { rowUnread, starredRows, unstarred } from "./room-actions.svelte";
+import { rowUnread, sidebarRooms, starredRows, unstarred } from "./room-actions.svelte";
 import { groupRows, sidebarSections, visibleRows, type BuiltinSection, type SectionId } from "./sidebar-sections.svelte";
 
 /** One row of the Messages sidebar that Alt+Up and Alt+Down step through. `conversation` is null for a view row such as Later. */
@@ -25,8 +25,9 @@ export function sidebarStops(asShown: boolean): SidebarStop[] {
   const current = router.conversationId;
   const shown = (rows: readonly ConversationSummary[], id: BuiltinSection | SectionId): ConversationSummary[] =>
     visibleRows(rows, asShown && sidebarSections.isFolded(id), (row) => row.id === current || isUnread(row));
-  const solo = soloGroups(unstarred(sidebar.data.solo, current));
-  const groups = groupRows(unstarred(sidebar.data.channels, current), unstarred(sidebar.data.dms, current), sidebarSections.model);
+  const rooms = sidebarRooms();
+  const solo = soloGroups(unstarred(rooms.solo, current));
+  const groups = groupRows(unstarred(rooms.channels, current), unstarred(rooms.dms, current), sidebarSections.model);
   const done = !asShown ? solo.done : sidebarSections.isFolded("solo") ? shown(solo.done, "solo") : sidebar.doneOpen ? solo.done : [];
   const rows = [
     ...shown(starredRows(current), "starred"),

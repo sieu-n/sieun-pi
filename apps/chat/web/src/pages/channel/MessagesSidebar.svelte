@@ -35,7 +35,7 @@
   import { wikiHref } from "$pages/wiki/wiki-pages";
   import { drafts, draftsHref } from "$lib/drafts.svelte";
   import Badge from "$lib/ui/Badge.svelte";
-  import { roomActions, rowUnread, starredRows, unstarred } from "$lib/shell/room-actions.svelte";
+  import { openTestRoom, roomActions, rowUnread, sidebarRooms, starredRows, unstarred } from "$lib/shell/room-actions.svelte";
   import { isUnread, markAllRead, unreadRooms, unreadsHref } from "$lib/unreads.svelte";
   import HostBadge from "$pages/agents/HostBadge.svelte";
 
@@ -48,10 +48,12 @@
     if (jobs.list.length || sidebar.data.channels.length) untrack(() => void drafts.resolveLegacy());
   });
   const starred = $derived(starredRows(current));
-  const solo = $derived(soloGroups(unstarred(sidebar.data.solo, current)));
+  const rooms = $derived(sidebarRooms());
+  $effect(() => void openTestRoom.load(current));
+  const solo = $derived(soloGroups(unstarred(rooms.solo, current)));
   const forYouSelected = $derived(router.messagesView === "for-you");
   later.start();
-  const groups = $derived(groupRows(unstarred(sidebar.data.channels, current), unstarred(sidebar.data.dms, current), sidebarSections.model));
+  const groups = $derived(groupRows(unstarred(rooms.channels, current), unstarred(rooms.dms, current), sidebarSections.model));
   $effect(() => sidebarSections.migrate());
   const folded = (id: BuiltinSection | SectionId): boolean => sidebarSections.isFolded(id);
   /** A folded section still shows the open conversation and every unread one, as Slack does. */

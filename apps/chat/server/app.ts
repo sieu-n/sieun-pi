@@ -467,8 +467,7 @@ export class App {
 
   async sidebar(): Promise<Sidebar> {
     const byNew = (a: ConversationSummary, b: ConversationSummary) => b.lastActivityAt - a.lastActivityAt;
-    const prefs = this.store.state.sidebar ?? {};
-    const mark = (c: ConversationSummary) => withPrefs(c, prefs[c.id], this.agentStore.postsOf(c.id));
+    const mark = (c: ConversationSummary) => this.marked(c);
     const groups = this.groups.summaries().filter(c => !c.archived && !this.agentStore.isTest(c.id)).map(mark);
     const solo = groups.filter(c => c.kind === "solo");
     return {
@@ -568,6 +567,11 @@ export class App {
     return record;
   }
 
+  /** A room's row with the owner's star, mute and hidden state, for the sidebar and for the room's header, which a test room's row reads. */
+  private marked(summary: ConversationSummary): ConversationSummary {
+    return withPrefs(summary, this.store.state.sidebar?.[summary.id], this.agentStore.postsOf(summary.id));
+  }
+
   /** Stars, mutes, closes or leaves a DM, channel or Solo room for the owner's sidebar. */
   setPrefs(id: ConversationId, patch: PrefsPatch): ConversationPrefs {
     if (!this.isGroup(id)) this.roomAgent(id);
@@ -611,7 +615,7 @@ export class App {
       const readSeq = this.groups.readSeq(group);
       const posts = this.agentStore.postsOf(group.id);
       return {
-        summary: this.groups.summary(group), members: this.groups.members(group), model: null, thinkingLevel: null, createdAt: group.createdAt,
+        summary: this.marked(this.groups.summary(group)), members: this.groups.members(group), model: null, thinkingLevel: null, createdAt: group.createdAt,
         pins: pinnedPosts(posts).map(p => this.groups.item(group, p, posts)),
         boards: group.members.filter(m => this.agents.record(m.agent)).map(m => m.agent),
         ...(group.kind === "channel"
@@ -626,7 +630,7 @@ export class App {
       if (!agent) throw new NotFound(`No agent ${record.id}.`);
       const readSeq = this.rooms.readSeq(record);
       return {
-        summary: this.rooms.summary(record), members: this.members(agent), model: agent.model, thinkingLevel: agent.thinkingLevel, agent,
+        summary: this.marked(this.rooms.summary(record)), members: this.members(agent), model: agent.model, thinkingLevel: agent.thinkingLevel, agent,
         queue: this.queues.place(this.agents.roomThread(record)), workThread: record.workThread, ...(readSeq !== undefined ? { readSeq } : {}),
         pins: pinnedPosts(this.agentStore.postsOf(record.room)).map(p => this.rooms.item(p)),
       };
