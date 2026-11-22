@@ -57,6 +57,7 @@ import { boardLimitFlag } from "../../../../legacy/prime/user-history/src/shared
 import type { ChatBoard, PlanItem, ThreadMessage } from "../../../../legacy/prime/user-history/src/shared/types.ts";
 import { SEARCH_HISTORY_TOOL } from "../../../pi-history/src/pi/index.ts";
 import { threadAgent } from "./agent-profile.ts";
+import { leanHistory } from "./cache-shape.ts";
 import { roundEndsTurn, TOLD } from "./turn-end.ts";
 import { ChatApp } from "./chat-app.ts";
 import { CommHandedDoc } from "./comm.ts";
@@ -379,7 +380,9 @@ export function primeChat(chat: PrimeChat, thread: ChatThread): Extension {
         } catch (error) {
           thread.log?.(`turn wrappers read no entries: ${error instanceof Error ? error.message : String(error)}`);
         }
-        return { messages: withTurnWrappers(messages, view) };
+        const wrapped = withTurnWrappers(messages, view);
+        // A comm thread's earlier turns lose what its next post never uses once the cache lapsed (`leanHistory`).
+        return { messages: (await threadAgent(api, context))?.role === "comm" ? [...leanHistory(wrapped, Date.now())] : wrapped };
       },
     })],
   });

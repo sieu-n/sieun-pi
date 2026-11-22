@@ -7,7 +7,7 @@ import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import type { Message, Provider, Tool } from "@earendil-works/pi-ai";
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
-import { cacheableBreakpoints, COLD_MS, foldPoint, foldSystem, withCacheShape } from "../../src/durable/cache-shape.ts";
+import { cacheableBreakpoints, COLD_MS, foldPoint, foldSystem, LEAN_CHARS, leanHistory, withCacheShape } from "../../src/durable/cache-shape.ts";
 
 const tool = (name: string, description = name): Tool => ({ name, description, parameters: { type: "object", properties: {} } } as unknown as Tool);
 const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
@@ -105,13 +105,36 @@ test("on the wire, each request's system, tools and messages start with the prev
       system({ sections: { context: "C3" }, toolsRemoved: [{ name: "a" }, { name: "b" }], toolsAdded: [tool("a", "a3"), tool("b")] }, cold + 4 * MIN), user("four", cold + 5 * MIN)],
   ];
   const clocks = [cold, cold + 2 * MIN, cold + 5 * MIN];
-  const bodies: { system: unknown; tools: unknown; messages: unknown[] }[] = [];
-  for (const [index, messages] of turns.entries()) bodies.push(bare(await wire(withCacheShape(inner, () => clocks[index]!), messages)));
-  for (let index = 1; index < bodies.length; index++) {
-    const [was, now] = [bodies[index - 1]!, bodies[index]!];
-    assert.deepEqual(now.system, was.system, `request ${index + 1} keeps the system prompt`);
-    assert.deepEqual(now.tools, was.tools, `request ${index + 1} keeps the tool list`);
-    const last = was.messages.length - 1;
-    assert.deepEqual(now.messages.slice(0, last), was.messages.slice(0, last), `request ${index + 1} starts with request ${index}'s messages`);
+  for (const lean of [false, true]) {
+    const bodies: { system: unknown; tools: unknown; messages: unknown[] }[] = [];
+    // A comm thread's request also passes through leanHistory first, in prime-chat's beforeRequest hook.
+    for (const [index, messages] of turns.entries()) bodies.push(bare(await wire(withCacheShape(inner, () => clocks[index]!), lean ? [...leanHistory(messages, clocks[index]!)] : messages)));
+    for (let index = 1; index < bodies.length; index++) {
+      const [was, now] = [bodies[index - 1]!, bodies[index]!];
+      assert.deepEqual(now.system, was.system, `request ${index + 1} keeps the system prompt`);
+      assert.deepEqual(now.tools, was.tools, `request ${index + 1} keeps the tool list`);
+      const last = was.messages.length - 1;
+      assert.deepEqual(now.messages.slice(0, last), was.messages.slice(0, last), `request ${index + 1} starts with request ${index}'s messages`);
+    }
   }
+});
+
+test("a comm thread's earlier turns lose thinking and long tool texts once the cache lapsed, the current turn stays whole, and later requests trim the same way", () => {
+  const long = "x".repeat(LEAN_CHARS + 500);
+  const think = (text: string, timestamp: number): Message => ({ ...answer(text, timestamp), content: [{ type: "thinking", thinking: "hmm", thinkingSignature: "sig" }, { type: "toolCall", id: `t${timestamp}`, name: "ipython", arguments: { code: long } }] } as Message);
+  const toolResult = (timestamp: number): Message => ({ role: "toolResult", toolCallId: `t${timestamp}`, toolName: "ipython", content: [{ type: "text", text: long }, { type: "image", data: "AAAA", mimeType: "image/png" }], isError: false, timestamp } as Message);
+  const old: Message[] = [head, user("one", t0), think("a", t0 + 1000), toolResult(t0 + 1000), answer("done", t0 + 2000)];
+  const cold = t0 + 3 * 60 * MIN;
+  const now: Message[] = [...old, user("two", cold), think("b", cold + 500), toolResult(cold + 500)];
+  const warm = [...old, user("two", t0 + 20 * MIN), think("b", t0 + 20 * MIN + 500)];
+  assert.equal(leanHistory(warm, t0 + 30 * MIN), warm, "within the hour nothing is trimmed");
+  const lean = leanHistory(now, cold + 1000);
+  const earlier = lean[2] as Extract<Message, { role: "assistant" }>;
+  assert.deepEqual(earlier.content.map(part => part.type), ["toolCall"], "the earlier turn's thinking is gone");
+  const code = (earlier.content[0] as unknown as { arguments: { code: string } }).arguments.code;
+  assert.ok(code.startsWith("x".repeat(LEAN_CHARS)) && code.includes("500 more characters cut"), code.slice(-80));
+  assert.deepEqual((lean[3] as Extract<Message, { role: "toolResult" }>).content.map(part => part.type === "text" ? part.text.length < long.length : part.type), [true, true]);
+  assert.deepEqual(lean.slice(5), now.slice(5), "the turn the cold request runs in stays whole, thinking and all");
+  const next = [...now, answer("ok", cold + 2000), user("three", cold + 5 * MIN)];
+  assert.deepEqual(leanHistory(next, cold + 5 * MIN).slice(0, lean.length), lean, "the next request trims the same part the same way");
 });

@@ -11,6 +11,7 @@
  *    whose tools changed, the block is a `tool_addition` or `tool_removal`, and Anthropic writes no cache there: on 11-21, 84 of 125
  *    requests right after such an update sent their history as fresh input (5d50e997's entries 222, 299, 308 and 332, each 160k to 274k
  *    tokens), and the next request wrote it again. So the breakpoint moves to the last block before it that Anthropic caches.
+ * 3. Lean history. A comm thread's turns before that point lose their thinking and long tool texts (`leanHistory`, comm threads only).
  */
 import { getCurrentSystemMessage, type Message, type Provider } from "@earendil-works/pi-ai";
 
@@ -43,6 +44,54 @@ export function foldSystem(messages: readonly Message[], now: number): readonly 
   const lead = getCurrentSystemMessage([head, ...folded]);
   const rest = messages.slice(1).filter((message, index) => index + 1 >= point || message.role !== "system");
   return lead ? [lead, ...rest] : rest;
+}
+
+/** A tool result's text, or a string argument of a tool call, longer than this is cut in the part of a comm thread's history `leanHistory` trims. */
+export const LEAN_CHARS = 1500;
+
+const cut = (value: string): string => value.length > LEAN_CHARS ? `${value.slice(0, LEAN_CHARS)}\n[... ${value.length - LEAN_CHARS} more characters cut from an earlier turn]` : value;
+const cutArgs = (value: unknown): unknown =>
+  typeof value === "string" ? cut(value)
+    : Array.isArray(value) ? value.map(cutArgs)
+      : value && typeof value === "object" ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, cutArgs(item)])) : value;
+
+/**
+ * A comm thread's transcript with its earlier turns trimmed, the turns before the one `foldPoint` falls in: each assistant message loses its
+ * thinking, a tool call's long string arguments and a tool result's long texts are cut to LEAN_CHARS, and a tool result's image becomes a
+ * line. The trimmed part sits before the point where the cache lapsed, so the request that trims it writes its prefix anyway, and later
+ * requests trim the same part the same way and read the cache. A comm thread answers in its room and hands work to its work thread, so an
+ * old search result or hand-over script does nothing for its next post: on 11-22 its earlier turns' thinking, tool results and tool calls
+ * were 1.08M, 0.93M and 0.48M of the 3.0M characters of real comm threads' histories, and cold comm turns cost $1.16 on average.
+ * The turn the point falls in stays whole, since Anthropic needs a running tool loop's thinking.
+ */
+export function leanHistory(messages: readonly Message[], now: number): readonly Message[] {
+  const point = foldPoint(messages, now);
+  let start = -1;
+  for (let index = Math.min(point, messages.length) - 1; index >= 0; index--) {
+    if (messages[index]!.role === "user") { start = index; break; }
+  }
+  if (start <= 0) return messages;
+  let changed = false;
+  const out = messages.map((message, index): Message => {
+    if (index >= start) return message;
+    if (message.role === "assistant") {
+      const content: typeof message.content = message.content.flatMap((part): typeof message.content =>
+        part.type === "thinking" ? [] : part.type === "toolCall" ? [{ ...part, arguments: cutArgs(part.arguments) as typeof part.arguments }] : [part]);
+      if (content.length === 0) return message;
+      if (JSON.stringify(content) === JSON.stringify(message.content)) return message;
+      changed = true;
+      return { ...message, content };
+    }
+    if (message.role === "toolResult") {
+      const content: typeof message.content = message.content.map(part =>
+        part.type === "text" ? (part.text.length > LEAN_CHARS ? { ...part, text: cut(part.text) } : part) : { type: "text" as const, text: "[an image from an earlier turn]" });
+      if (content.every((part, at) => part === message.content[at])) return message;
+      changed = true;
+      return { ...message, content };
+    }
+    return message;
+  });
+  return changed ? out : messages;
 }
 
 type Block = { type?: string; cache_control?: unknown };
