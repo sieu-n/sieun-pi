@@ -194,7 +194,7 @@ export function bytesLabel(bytes: number): string {
   return `${(bytes / 1000).toFixed(bytes < 10_000 ? 1 : 0)} kB`;
 }
 
-export type Size = { label: string; ratio: string | null; bloated: boolean; title: string };
+export type Size = { label: string; ratio: string | null; times: string | null; bloated: boolean; title: string };
 
 export function sizeOf(bytes: number | null, lines: number | null, thresholds: SkillThresholds, folderBytes: number | null = null): Size | null {
   if (bytes === null) return null;
@@ -205,7 +205,8 @@ export function sizeOf(bytes: number | null, lines: number | null, thresholds: S
     `The median of our skills is ${thresholds.medianBytes.toLocaleString("en-US")} bytes; over ${thresholds.bloatBytes.toLocaleString("en-US")} is bloated.`,
     ...(folderBytes !== null && folderBytes !== bytes ? [`The whole folder, with its scripts and references, is ${bytesLabel(folderBytes)}.`] : []),
   ].join("\n");
-  return { label: bytesLabel(bytes), ratio: ratio === null ? null : `${ratio < 10 ? ratio.toFixed(1) : Math.round(ratio)}× median`, bloated, title };
+  const times = ratio === null ? null : `${ratio < 10 ? ratio.toFixed(1) : Math.round(ratio)}×`;
+  return { label: bytesLabel(bytes), ratio: times === null ? null : `${times} median`, times, bloated, title };
 }
 
 export const ROLE_LABEL: Record<SkillCopy["role"], string> = { source: "source", checkout: "other checkout", install: "install", unowned: "no owner" };

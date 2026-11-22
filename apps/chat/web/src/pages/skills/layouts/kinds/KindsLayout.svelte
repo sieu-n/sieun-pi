@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
   import { agents, api } from "$lib/api";
   import { SKILL_RUNTIMES, THREAD_KINDS, type SkillEntry, type SkillRuntime, type SkillsChange, type SkillsView } from "$lib/api/shared/skills";
@@ -21,6 +22,7 @@
   let picker = $state<{ kind: "merge" | "agent"; entry: SkillEntry; anchor: HTMLElement } | null>(null);
   let pickerOpen = $state(false);
   let unownedOpen = $state(false);
+  let matrix = $state<HTMLElement>();
 
   const columns = $derived(kindColumns(view));
   const groups = families();
@@ -49,9 +51,26 @@
     filter = filter === next ? "all" : next;
   }
 
-  function toggle(id: string): void {
-    if (open.has(id)) open.delete(id);
-    else open.add(id);
+  async function toggle(id: string): Promise<void> {
+    if (open.has(id)) {
+      open.delete(id);
+      return;
+    }
+    open.add(id);
+    await tick();
+    reveal(id);
+  }
+
+  function reveal(id: string): void {
+    const detail = document.getElementById(`kinds-${id}`);
+    const row = detail?.previousElementSibling;
+    const head = matrix?.querySelector("thead");
+    if (!matrix || !detail || !row || !head) return;
+    const box = matrix.getBoundingClientRect();
+    const below = detail.getBoundingClientRect().bottom - box.bottom;
+    if (below <= 0) return;
+    const roomAbove = row.getBoundingClientRect().top - box.top - head.getBoundingClientRect().height;
+    matrix.scrollBy({ top: Math.min(below + 8, roomAbove), behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
   }
 
   function message(reason: unknown): string {
@@ -177,14 +196,14 @@
   {#if rows.length === 0}
     <EmptyState icon="filter" title="No skill matches" description="Clear the filter to see every skill." />
   {:else}
-    <div class="matrix" role="region" aria-label="Skills by the kinds of thread that see them" tabindex="-1">
+    <div class="matrix" bind:this={matrix} role="region" aria-label="Skills by the kinds of thread that see them" tabindex="-1">
       <table>
         <thead>
           <tr>
             <th class="corner" scope="col" rowspan="2">Skill</th>
-            <th class="metric" scope="col" rowspan="2">Uses, 30 days</th>
+            <th class="metric wrap" scope="col" rowspan="2">Uses in 30 days</th>
             <th class="metric" scope="col" rowspan="2">Copies</th>
-            <th class="metric" scope="col" rowspan="2" use:tooltip={`SKILL.md bytes against the median of our skills, ${view.thresholds.medianBytes.toLocaleString("en-US")} bytes`}>Size</th>
+            <th class="metric" scope="col" rowspan="2" use:tooltip={`SKILL.md bytes against the median of our skills, ${view.thresholds.medianBytes.toLocaleString("en-US")} bytes`}>Size vs median</th>
             {#each groups as group (group.family)}<th class="family" scope="colgroup" colspan={group.span}>{group.family}</th>{/each}
           </tr>
           <tr>
@@ -205,7 +224,7 @@
             {@const boxes = [...new Set(entry.copies.map(c => c.box))]}
             <tr class="row" class:expanded data-skill={entry.id}>
               <th scope="row" class="name">
-                <button type="button" class="opener" aria-expanded={expanded} aria-controls={`kinds-${entry.id}`} onclick={() => toggle(entry.id)}>
+                <button type="button" class="opener" aria-expanded={expanded} aria-controls={`kinds-${entry.id}`} onclick={() => void toggle(entry.id)}>
                   <Icon name={expanded ? "chevron-down" : "chevron-right"} size={16} />
                   <span class="skill">{entry.name}</span>
                   {#if (names.get(entry.name) ?? 0) > 1}<span class="src" use:tooltip={sourceLabel(entry)}>{sourceShort(entry)}</span>{/if}
@@ -216,7 +235,7 @@
               </th>
               <td class="num" class:muted={entry.use.uses === 0} use:tooltip={usesTitle(entry)}>{row.problems.includes("unused") ? "never" : entry.use.uses.toLocaleString("en-US")}</td>
               <td class="num" use:tooltip={`On ${boxes.join(" and ") || "no box"}`}>{entry.copies.length}</td>
-              <td class="num" class:bad={size?.bloated} use:tooltip={size?.title}>{size ? (size.ratio ?? size.label) : "?"}</td>
+              <td class="num" class:bad={size?.bloated} use:tooltip={size?.title}>{size ? (size.times ?? size.label) : "?"}</td>
               {#each THREAD_KINDS as kind (kind)}
                 {@const cell = cellFor(entry, kind)}
                 <td class="cell {cell.tone}" use:tooltip={cell.title}>{cell.label}</td>
@@ -403,8 +422,9 @@
   th.corner { position: sticky; inset-inline-start: 0; z-index: 3; vertical-align: bottom; }
   th.kind { vertical-align: bottom; border-left: 1px solid var(--border-standard); cursor: default; }
   .kind-label { display: block; color: var(--text-standard); font: var(--text-label-sm); }
-  .kind-stat { display: block; }
+  .kind-stat { display: block; max-width: 4.5rem; white-space: normal; }
   th.metric { vertical-align: bottom; text-align: right; }
+  th.wrap, th.metric { white-space: normal; max-width: 4.5rem; }
 
   tbody th, tbody td { padding: 6px; border-bottom: 1px solid var(--border-standard); text-align: left; font-weight: 400; white-space: nowrap; }
   tbody th.name { position: sticky; inset-inline-start: 0; z-index: 1; background: var(--surface-panel); padding: 0; }
@@ -417,7 +437,7 @@
   .opener .skill { overflow: hidden; text-overflow: ellipsis; }
   .cell { border-left: 1px solid var(--border-standard); color: var(--text-standard); }
   .cell.imported, .cell.inlined { font-weight: 500; }
-  .cell.cwd { color: var(--text-subtle); font-style: normal; }
+  .cell.cwd { max-width: 5.5rem; overflow: hidden; text-overflow: ellipsis; color: var(--text-subtle); }
   .cell.hidden { color: var(--text-subtle); opacity: 0.55; }
   .num { text-align: right; }
   .muted { color: var(--text-subtle); }
