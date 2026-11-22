@@ -2,7 +2,7 @@
   import type { SkillEntry, SkillThresholds } from "$lib/api/shared/skills";
   import { Badge, Button, Icon, ageLabel, tooltip } from "$lib/ui";
   import {
-    GROUP_TEXT, ROLE_TEXT, drift, headline, mergeInto, copyNotes, orderedCopies, problemsOf, shape, sight, sizeText, sourceText, splitPath, tilde, topKinds,
+    GROUP_TEXT, ROLE_TEXT, drift, headline, mergeInto, copyNotes, orderedCopies, problemsOf, openedByPath, shape, sight, sizeText, sourceText, splitPath, tilde, topKinds,
     weakDescription, type GroupKind, type RowActions,
   } from "./model";
 
@@ -25,6 +25,7 @@
   const weak = $derived(weakDescription(skill));
   const seen = $derived(sight(skill.sees));
   const kinds = $derived(topKinds(skill));
+  const byPath = $derived(openedByPath(skill));
   const now = Date.now();
   const lead = $derived(kind ? headline(skill, kind, limits) : skill.description);
   const ownerText = $derived(skill.owner.kind === "owner" ? "you" : skill.owner.id);
@@ -60,6 +61,7 @@
           {:else}
             No session opened or called it.{#if weak} Its description may be why, so review it before removing.{/if}
           {/if}
+          {#if byPath.length}<span class="hidden">{byPath.join(", ")} opened it by path, not from the skills list in their prompt.</span>{/if}
           {#if skill.preimported}<span class="aside"> Pre-imported as a Python module, so every call counts.</span>{/if}
         </dd>
         <dt>Seen by</dt>

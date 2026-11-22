@@ -256,3 +256,8 @@ export function sourceBox(skills: readonly SkillEntry[]): string | null {
   for (const skill of skills) for (const c of skill.copies) if (c.role === "source") tally.set(c.box, (tally.get(c.box) ?? 0) + 1);
   return [...tally].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
 }
+
+export function openedByPath(skill: SkillEntry): string[] {
+  const listed = new Set(skill.sees.filter(s => s.how !== "hidden").map(s => s.kind));
+  return THREAD_KINDS.filter(kind => (skill.use.byKind[kind]?.uses ?? 0) > 0 && !listed.has(kind)).map(kind => THREAD_TEXT[kind]);
+}
