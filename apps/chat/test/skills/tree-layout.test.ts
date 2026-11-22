@@ -29,7 +29,7 @@ const big = skill("big", [copy("/home/u/.prime/agent/skills/big", { bytes: 20000
 const source = skill("tool", [copy("/home/u/src/x/skills/tool", { loadedBy: [] }), copy("/home/u/.prime/agent/skills/tool", { link: "/home/u/src/x/skills/tool" })], 1);
 
 const box: SkillBoxState = {
-  box: "metal", state: "ok", scannedAt: null, lastOkAt: null, since: null, seconds: null, message: null, error: null,
+  box: "metal", state: "ok", scannedAt: null, lastOkAt: null, since: null, seconds: null, error: null,
   tree: [node("home/u", "/home/u", 2, 3, [node(".prime/agent/skills", "/home/u/.prime/agent/skills", 1, 2), node("code/old/skills", "/home/u/code/old/skills", 1, 0)])],
 };
 const view = { skills: [board, wiki, big] } as Parameters<typeof copiesByBox>[0];

@@ -572,11 +572,8 @@ export class SkillsDb {
   }
 
   private boxState(scan: BoxScan, copies: CopyFact[]): SkillBoxState {
-    const label = scan.box === "mac" ? "Mac" : scan.box;
-    const day = (iso: string | null) => (iso ? `${iso.slice(5, 10)} ${iso.slice(11, 16)}Z` : "never");
     const state = scan.ok ? "ok" : scan.lastOkAt ? "offline" : "never";
-    const message = scan.ok ? null : scan.lastOkAt ? `${label} asleep or offline since ${day(scan.since)}, showing its scan from ${day(scan.lastOkAt)}.` : `${label} has not answered a scan yet.`;
-    return { box: scan.box, state, scannedAt: scan.attemptedAt, lastOkAt: scan.lastOkAt, since: scan.ok ? null : scan.since, seconds: scan.seconds, message, error: scan.error, tree: tree(copies) };
+    return { box: scan.box, state, scannedAt: scan.attemptedAt, lastOkAt: scan.lastOkAt, since: scan.ok ? null : scan.since, seconds: scan.seconds, error: scan.error, tree: tree(copies) };
   }
 
   check(): SkillsCheck {

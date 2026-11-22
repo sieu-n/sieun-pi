@@ -184,7 +184,8 @@ test("a box whose scan fails keeps its last good copies and says since when", t 
   db.ingest({ generatedAt: "2026-11-21T04:00:00Z", boxes: [{ box: "mac", scannedAt: "2026-11-21T04:00:00Z", ok: false, error: "ssh exit 255: timed out" }], copies: [], usage: {} });
   const mac = db.view(IDLE).boxes.find(b => b.box === "mac")!;
   assert.equal(mac.state, "offline");
-  assert.equal(mac.message, "Mac asleep or offline since 11-21 04:00Z, showing its scan from 11-21 03:00Z.");
+  assert.equal(mac.since, "2026-11-21T04:00:00Z");
+  assert.equal(mac.lastOkAt, "2026-11-21T03:00:00Z");
   assert.equal(mac.error, "ssh exit 255: timed out");
   assert.equal(db.view(IDLE).counts.copies, 1);
 });

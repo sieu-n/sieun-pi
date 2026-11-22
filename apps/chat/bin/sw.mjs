@@ -61,7 +61,11 @@ function printApply(result) {
 function printView(view) {
   const c = view.counts;
   console.log(`${c.skills} skills, ${c.copies} copies, ${c.installs} installs. Duplicated ${c.duplicated}, outdated ${c.outdated}, bloated ${c.bloated}, never used ${c.neverUsed}, drift ${c.drift}.`);
-  for (const box of view.boxes) console.log(`${box.box}: ${box.message ?? `scanned ${box.scannedAt ?? "never"}`}`);
+  const local = iso => new Date(iso).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  for (const box of view.boxes) {
+    const line = box.state === "ok" ? `scanned ${local(box.scannedAt)}` : box.lastOkAt ? `asleep or offline since ${local(box.since ?? box.scannedAt)}, showing its scan from ${local(box.lastOkAt)}` : "has not answered a scan yet";
+    console.log(`${box.box}: ${line}`);
+  }
 }
 
 function printList(view) {

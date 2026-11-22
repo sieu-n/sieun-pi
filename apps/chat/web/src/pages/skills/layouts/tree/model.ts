@@ -196,11 +196,7 @@ export function driftText(copy: SkillCopy): string {
 
 export const usesText = (n: number): string => `${n.toLocaleString("en-US")} ${n === 1 ? "use" : "uses"}`;
 
-export function boxLine(box: SkillBoxState): string | null {
-  if (box.state === "ok") return null;
-  if (box.message) return box.message;
-  return box.state === "never" ? `${boxLabel(box.box)} has no scan yet` : `${boxLabel(box.box)} is offline`;
-}
+export { boxStateLine as boxLine } from "../../box-line.ts";
 
 export type TreeRow = { id: string; parent: string | null; expandable: boolean };
 

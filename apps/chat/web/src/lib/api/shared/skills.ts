@@ -304,7 +304,7 @@ export type SkillTreeNode = { name: string; path: string; copies: number; links:
 
 /**
  * A box's scan state. An asleep Mac keeps its last good scan: `state` is `offline`, `since` is the first failed scan after it, and
- * `message` reads "Mac asleep or offline since X, showing its scan from Y"; `error` holds the raw ssh error for a hover.
+ * the page words it in the viewer's own time (web/src/pages/skills/box-line.ts); `error` holds the raw ssh error for a hover.
  */
 export type SkillBoxState = {
   box: BoxName;
@@ -313,7 +313,6 @@ export type SkillBoxState = {
   lastOkAt: string | null;
   since: string | null;
   seconds: number | null;
-  message: string | null;
   error: string | null;
   tree: SkillTreeNode[];
 };

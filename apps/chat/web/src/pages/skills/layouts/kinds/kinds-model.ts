@@ -2,6 +2,7 @@ import {
   COUNT_RULES, THREAD_KINDS, type InstallState, type SkillBoxState, type SkillCopy, type SkillEntry, type SkillInstall, type SkillSight, type SkillThresholds,
   type SkillsView, type ThreadKind, type VerdictRule,
 } from "../../../../lib/api/shared/skills.ts";
+import { boxStateLine } from "../../box-line.ts";
 
 
 export type Problem = "duplicated" | "outdated" | "bloated" | "unused";
@@ -277,8 +278,7 @@ export function ownerLabel(entry: SkillEntry, names: ReadonlyMap<string, string>
 export function boxNotices(boxes: readonly SkillBoxState[]): { box: string; text: string; error: string | null }[] {
   return boxes.flatMap(b => {
     if (b.state === "ok") return [];
-    const text = b.message ?? (b.state === "never" ? `${b.box} has not scanned yet` : `${b.box} is offline${b.lastOkAt ? `, showing its scan from ${b.lastOkAt.slice(0, 16).replace("T", " ")}` : ""}`);
-    return [{ box: b.box, text, error: b.error }];
+    return [{ box: b.box, text: boxStateLine(b) ?? "", error: b.error }];
   });
 }
 

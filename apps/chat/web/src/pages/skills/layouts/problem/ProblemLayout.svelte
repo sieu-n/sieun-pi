@@ -4,6 +4,7 @@
   import { Button, Dialog, EmptyState, Field, Input, SearchField, Select, ageLabel, toast, tooltip } from "$lib/ui";
   import { SvelteSet } from "svelte/reactivity";
   import SkillRow from "./SkillRow.svelte";
+  import { boxStateLine } from "../../box-line";
   import { GROUP_TEXT, PROBLEMS, count, healthy, names, problemGroups, sourceBox, tilde, type Problem, type RowActions } from "./model";
 
   /**
@@ -161,7 +162,7 @@
 <div class="layout" data-testid="skills-layout-problem">
   {#each view.boxes.filter(box => box.state !== "ok") as box (box.box)}
     <p class="offline" role="status" use:tooltip={box.error ?? ""}>
-      {box.message ?? (box.state === "never" ? `${box.box} has not been scanned yet.` : `${box.box} is offline.`)}
+      {boxStateLine(box)}
     </p>
   {/each}
   {#if view.scan.error}<p class="offline" role="status" use:tooltip={view.scan.error}>The last scan failed, so this shows the one before it.</p>{/if}
