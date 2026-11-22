@@ -4,16 +4,20 @@
 // a reset stream after.
 // It guards live data: every write but one to the walk's test rooms is refused, and POST /api/timings is answered here and written to
 // <timings.jsonl> with its arrival time and user agent, so the walk's calls stay out of the owner's request log.
+// Each forwarded call also goes to front-calls.jsonl beside it: when it came in, when the server's answer headers came, and when the
+// answer's last byte left for the browser, so a slow page call can be split into the path before the front and the path behind it.
 // Usage: node restart-walk-front.mjs <listen port> <socket path> <key.pem> <cert.pem> <timings.jsonl> <room id>...
 import http2 from "node:http2";
 import http from "node:http";
 import net from "node:net";
 import { appendFileSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 const [listen, socketPath, key, cert, timingsFile, ...rooms] = process.argv.slice(2);
 if (!rooms.length) throw new Error("usage: node restart-walk-front.mjs <port> <socket> <key> <cert> <timings.jsonl> <room id>...");
 const agent = new http.Agent({ keepAlive: true, maxSockets: Infinity });
 const hop = new Set(["connection", "keep-alive", "transfer-encoding", "upgrade", "proxy-connection", "http2-settings", "te", "host"]);
+const callsFile = join(dirname(timingsFile), "front-calls.jsonl");
 const writable = path => rooms.some(room => path === `/api/c/${room}` || path.startsWith(`/api/c/${room}/`)) || path.startsWith("/api/uploads");
 
 const server = http2.createSecureServer({ key: readFileSync(key), cert: readFileSync(cert), allowHTTP1: true, settings: { maxConcurrentStreams: 250 } }, (req, res) => {
@@ -34,10 +38,17 @@ const server = http2.createSecureServer({ key: readFileSync(key), cert: readFile
     res.end(JSON.stringify({ error: `restart walk guard: ${req.method} ${path} refused` }));
     return;
   }
+  const call = { m: req.method, p: path, ua: /Chrome\//.test(req.headers["user-agent"] ?? "") ? "chromium" : "webkit", in: Date.now() };
+  res.on("close", () => {
+    call.out = Date.now();
+    appendFileSync(callsFile, `${JSON.stringify(call)}\n`);
+  });
   const headers = {};
   for (const [name, value] of Object.entries(req.headers)) if (!name.startsWith(":") && !hop.has(name)) headers[name] = value;
   headers.host = "127.0.0.1:5184";
   const up = http.request({ socketPath, method: req.method, path: req.url, headers, agent }, answer => {
+    call.head = Date.now();
+    call.s = answer.statusCode;
     const out = {};
     for (const [name, value] of Object.entries(answer.headers)) if (!hop.has(name)) out[name] = value;
     res.writeHead(answer.statusCode, out);

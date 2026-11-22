@@ -8,6 +8,8 @@
 // socket bridge from this process to the server's port. A pure-delay relay over HTTP/1.1 showed no queueing in p155.
 // The page half is restart-walk-page.mjs. Two test channels (POST /api/rooms test:true) take the sends, so no agent wakes, and the first
 // shows the home agent's board pane, as the owner's rooms do; both are archived at the end.
+// Before each release it makes a test agent (POST /api/agents test:true), and after the release it sends to that agent's DM and checks
+// for 200 and the post in the DM's items, the case a d3 run hit on 11-22; each agent's DM is archived at the end.
 //
 // Run it as a detached unit from the repo root, never inside an agent's Python kernel:
 //   systemd-run --user --unit=restart-walk-<label> --collect --same-dir -E PATH -E HOME sh -c \
@@ -27,6 +29,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import net from "node:net";
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -112,7 +115,7 @@ async function walk(o) {
   const rig = `restart-walk-${o.label}`.replace(/[^a-zA-Z0-9_.-]/g, "-");
   const socket = join(o.scratch, "chat.sock");
   const cleanups = [];
-  const meta = { label: o.label, base: o.base, release: o.release, releases: [], browsers, rig, startedAt: Date.now() };
+  const meta = { label: o.label, base: o.base, release: o.release, releases: [], fresh: [], agents: [], browsers, rig, startedAt: Date.now() };
   try {
     // Test rooms: sends land in A; A shows the home agent's board pane when the server has that agent.
     const stamp = o.label.replace(/[^a-z0-9-]/gi, "-").toLowerCase();
@@ -120,7 +123,7 @@ async function walk(o) {
     const roomB = await call(o.base, "POST", "/api/rooms", { kind: "channel", name: `restart-walk-${stamp}-b`, agenda: "", members: [], test: true });
     meta.rooms = [roomA.id, roomB.id];
     cleanups.push(async () => {
-      for (const id of meta.rooms) await call(o.base, "PATCH", `/api/c/${id}`, { archived: true }).catch(error => log(`archive ${id} failed: ${error.message}`));
+      for (const id of [...meta.rooms, ...meta.agents]) await call(o.base, "PATCH", `/api/c/${id}`, { archived: true }).catch(error => log(`archive ${id} failed: ${error.message}`));
     });
     if (o.home && (await fetch(`${o.base}/api/agents/${o.home}/board`).then(r => r.ok, () => false))) {
       await call(o.base, "PATCH", `/api/rooms/${roomA.id}`, { homeChat: o.home });
@@ -179,6 +182,16 @@ async function walk(o) {
       let live = "";
       try { live = basename(readlinkSync(join(o.releaseHome, "current"))); } catch {}
       const command = o.release.replaceAll("{live}", live);
+      // The case a d3 run hit on 11-22: an agent made just before a hand-over, and a send to it right after, which got 404 'No thread'.
+      const fresh = { n };
+      try {
+        const made = Date.now();
+        const agent = await call(o.base, "POST", "/api/agents", { name: `restart walk ${o.label} ${n}`, test: true, thinkingLevel: "low", cwd: repo, brief: "A throwaway test agent of the restart walk. Answer any message with the one word ok." });
+        Object.assign(fresh, { agent: agent.id, room: agent.room ?? `dm_${agent.id.slice(3)}`, madeMs: Date.now() - made, madeAt: Date.now() });
+        meta.agents.push(fresh.room);
+      } catch (error) {
+        fresh.makeError = String(error.message).slice(0, 300);
+      }
       const start = Date.now();
       log(`release ${n}: ${command}`);
       const run = spawn("sh", ["-c", command], { cwd: repo, stdio: ["ignore", "pipe", "pipe"] });
@@ -191,6 +204,25 @@ async function walk(o) {
       // Two servers on one socket split the posts (the 11-22 after-walk), so each release counts them.
       const servers = Number(spawnSync("pgrep", ["-fc", `[s]erver/main.ts --port ${target.port || 80}`], { encoding: "utf8" }).stdout.trim() || 0);
       meta.releases.push({ n, command, live, start, end, exit, waitedForLockMs: waited, servers });
+      if (fresh.room) {
+        const text = `restart walk check ${o.label} ${n} ${Date.now()}`;
+        const sent = Date.now();
+        try {
+          await call(o.base, "POST", `/api/c/${fresh.room}/send`, { text, requestId: randomUUID() });
+          fresh.send = 200;
+        } catch (error) {
+          fresh.send = String(error.message).slice(0, 300);
+        }
+        fresh.sendMs = Date.now() - sent;
+        const shows = async () => ((await call(o.base, "GET", `/api/c/${fresh.room}/items?limit=50`).catch(() => ({ items: [] }))).items ?? []).some(item => item.text === text);
+        fresh.inItems = await shows();
+        if (!fresh.inItems) {
+          await sleep(5000);
+          fresh.inItemsAfter5s = await shows();
+        }
+      }
+      meta.fresh.push(fresh);
+      log(`release ${n}: fresh agent ${fresh.agent ?? fresh.makeError}, send ${fresh.send}, in its DM ${fresh.inItems}`);
       log(`release ${n}: exit ${exit} in ${((end - start) / 1000).toFixed(1)} s`);
     }
 
@@ -220,7 +252,7 @@ async function walk(o) {
   } finally {
     for (const cleanup of cleanups.reverse()) await cleanup().catch(error => log(`cleanup failed: ${error.message}`));
     meta.endedAt = Date.now();
-    for (const name of ["timings.jsonl", ...meta.browsers.map(b => `page-${b}.jsonl`)]) {
+    for (const name of ["timings.jsonl", "front-calls.jsonl", ...meta.browsers.map(b => `page-${b}.jsonl`)]) {
       if (existsSync(join(o.scratch, name))) cpSync(join(o.scratch, name), join(o.out, name));
     }
     writeFileSync(join(o.out, "meta.json"), `${JSON.stringify(meta, null, 1)}\n`);
@@ -267,6 +299,12 @@ export function report(out) {
     const inWindows = fetches.filter(f => windowOf(f.start) || windowOf(f.end));
     const fetchFailed = fetches.filter(f => failed(f.s));
     const fetchSlow = inWindows.filter(f => !failed(f.s) && f.ms > normalOf(f.route) + BEYOND_MS);
+    // Where a slow call's time went, from the front's own line of it: before the front, behind it (server and bridge), after it.
+    const frontCalls = readJsonl(join(out, "front-calls.jsonl")).filter(c => c.ua === browser);
+    const split = f => {
+      const c = frontCalls.filter(x => x.p === f.p && x.m === f.m && x.in >= f.start - 50 && x.in <= f.end).sort((a, b) => a.in - b.in)[0];
+      return c ? { toFront: c.in - f.start, behindFront: (c.head ?? c.out) - c.in, frontOut: c.out - (c.head ?? c.out), afterFront: f.end - c.out } : null;
+    };
 
     const lines = timings.filter(t => t.browser === browser && t.p !== "/api/timings").map(t => ({ ...t, route: `${t.m} ${routeOf(t.p, meta.rooms ?? [])}` }));
     // A page line reaches the front when its batch is posted: at once for a failed call, else within the page's 10 s timer.
@@ -297,7 +335,8 @@ export function report(out) {
     browsers[browser] = {
       fetches: fetches.length, aborted: all.length - fetches.length, fetchesInWindows: inWindows.length,
       fetchFailed: fetchFailed.length, fetchFailedByRoute: countBy(fetchFailed), fetchFailedErrors: [...new Set(fetchFailed.map(f => f.err ?? `status ${f.s}`))].slice(0, 6),
-      fetchSlow: fetchSlow.length, fetchSlowList: fetchSlow.map(f => ({ route: f.route, ms: f.ms, normal: normalOf(f.route), release: windowOf(f.start)?.n ?? null })),
+      fetchSlow: fetchSlow.length, fetchSlowList: fetchSlow.map(f => ({ route: f.route, at: f.start, ms: f.ms, normal: normalOf(f.route), release: windowOf(f.start)?.n ?? null, split: split(f) })),
+      fetchOver2s: fetches.filter(f => !failed(f.s) && f.ms > 2000).map(f => ({ route: f.route, at: f.start, ms: f.ms, inWindow: Boolean(windowOf(f.start)), split: split(f) })),
       pageLines: lines.length, pageFailed: lineFailed.length, pageFailedByRoute: countBy(lineFailed), pageFailedErrors: [...new Set(lineFailed.map(t => t.err ?? `status ${t.s}`))].slice(0, 6),
       pageSlow: lineSlow.length,
       socketCloses: closes.length, socketBackMs: closes.map(c => c.backMs), socketBackMax: closes.length ? Math.max(...closes.map(c => c.backMs ?? Infinity)) : null,
@@ -314,12 +353,14 @@ export function report(out) {
     else merged.push({ ...x });
   }
   const outages = merged.map(x => ({ ...x, ms: x.up ? x.up - x.down : null, release: windowOf(x.down)?.n ?? null }));
-  const result = { label: meta.label, base: meta.base, releases: meta.releases.map(({ n, exit, live, start, end, servers }) => ({ n, exit, live, servers, seconds: Math.round((end - start) / 100) / 10 })), outages, postLog: meta.postLog ?? null, browsers };
+  const fresh = meta.fresh ?? [];
+  const result = { label: meta.label, base: meta.base, fresh, releases: meta.releases.map(({ n, exit, live, start, end, servers }) => ({ n, exit, live, servers, seconds: Math.round((end - start) / 100) / 10 })), outages, postLog: meta.postLog ?? null, browsers };
   writeFileSync(join(out, "report.json"), `${JSON.stringify(result, null, 1)}\n`);
   const md = [
     `# Restart walk ${meta.label}`, "",
     `${meta.releases.length} releases of \`${meta.release}\` against ${meta.base}; exits ${meta.releases.map(r => r.exit).join(", ")}.`,
-    `Servers after each release: ${meta.releases.map(r => r.servers ?? "?").join(", ")}; the test rooms' post logs ${meta.postLog ? `has ${meta.postLog.lines} posts and ${meta.postLog.repeatedSeqs} repeated seqs` : "was not read"}.`,
+    `Servers after each release: ${meta.releases.map(r => r.servers ?? "?").join(", ")}; the test rooms' post logs ${meta.postLog ? `hold ${meta.postLog.lines} posts and ${meta.postLog.repeatedSeqs} repeated seqs` : "was not read"}.`,
+    ...(fresh.length ? [`Fresh agent made before each release, then a send after it: ${fresh.map(f => `${f.n}: ${f.agent ? `send ${f.send}, ${f.inItems ? "in its DM" : f.inItemsAfter5s ? "in its DM after 5 s" : "not in its DM"}` : `not made (${f.makeError})`}`).join("; ")}.`] : []),
     `The server missed /api/ready for ${outages.map(x => (x.ms === null ? "never back" : `${x.ms} ms`)).join(", ") || "no span"}.`, "",
     "| Browser | Calls | In release windows | Failed calls | Page lines failed | Calls 2 s over normal | Page lines 2 s over normal | Socket back after each close (ms) | Sends stored |",
     "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
