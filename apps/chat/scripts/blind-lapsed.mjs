@@ -6,6 +6,10 @@
  * waits until the comm thread has made no model call for 66 min, then asks in that thread about the last thing the agent handed over.
  *
  *   node apps/chat/scripts/blind-lapsed.mjs [--cwd <project>] [--out <file.jsonl>] [--server http://127.0.0.1:5184] [--keep]
+ *     [--agent <id> --room <id> --task <post id>]
+ *
+ * With --agent, --room and --task the run picks up a run a stop cut off after its task: a pi-host restart adds no model call to the comm
+ * thread, so the idle wait goes on from its last call.
  *
  * Checks:
  * 1. The comm thread handed the task over with more than 1,500 characters, so the trim cut it (else the run is n/a).
@@ -21,7 +25,7 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { DatabaseSync } from "node:sqlite";
 
-const { values } = parseArgs({ options: { cwd: { type: "string" }, out: { type: "string" }, server: { type: "string" }, keep: { type: "boolean" } } });
+const { values } = parseArgs({ options: { cwd: { type: "string" }, out: { type: "string" }, server: { type: "string" }, keep: { type: "boolean" }, agent: { type: "string" }, room: { type: "string" }, task: { type: "string" } } });
 const server = values.server ?? "http://127.0.0.1:5184";
 const cwd = values.cwd ?? join(homedir(), "code/symphony");
 const threadsDir = join(homedir(), ".prime/agent/pi-host/durable/threads");
@@ -53,8 +57,8 @@ async function call(method, path, body) {
 }
 
 const stamp = `${new Date().toISOString().slice(5, 19).replace(/[-T:]/g, "")}${Math.random().toString(36).slice(2, 4)}`;
-const agent = await call("POST", "/api/agents", { name: `blind lapsed ${stamp}`, test: true, cwd });
-const room = (await call("POST", "/api/rooms", { kind: "channel", name: `blind-lapsed-${stamp}`, agenda: "", members: [agent.id], test: true })).id;
+const agent = values.agent ? { id: values.agent } : await call("POST", "/api/agents", { name: `blind lapsed ${stamp}`, test: true, cwd });
+const room = values.room ?? (await call("POST", "/api/rooms", { kind: "channel", name: `blind-lapsed-${stamp}`, agenda: "", members: [agent.id], test: true })).id;
 console.log(`agent ${agent.id} room ${room} cwd ${cwd}`);
 
 const record = async () => (await call("GET", "/api/agents?test=1")).find(a => a.id === agent.id);
@@ -90,7 +94,7 @@ const commOf = async () => (await record())?.comm?.find(c => c.room === room)?.t
 
 let line;
 try {
-  const task = await send(TASK, "task");
+  const task = values.task ? (await posts()).find(p => p.id === values.task) : await send(TASK, "task");
   const done = async id => (await posts()).find(p => p.id === id)?.done?.done === true;
   const taskDone = await waitFor(TASK_MS, () => done(task.id));
   const before = await posts();
