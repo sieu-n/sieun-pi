@@ -203,7 +203,9 @@ async function walk(o) {
       writeFileSync(join(o.out, `release-${n}.log`), output);
       // Two servers on one socket split the posts (the 11-22 after-walk), so each release counts them.
       const servers = Number(spawnSync("pgrep", ["-fc", `[s]erver/main.ts --port ${target.port || 80}`], { encoding: "utf8" }).stdout.trim() || 0);
-      meta.releases.push({ n, command, live, start, end, exit, waitedForLockMs: waited, servers });
+      // Since 510f86ee an old server stays up to 105 s after a hand-over, retitled and with no listener, so it is counted apart.
+      const oldServers = Number(spawnSync("pgrep", ["-fc", "[a]pps-chat old server"], { encoding: "utf8" }).stdout.trim() || 0);
+      meta.releases.push({ n, command, live, start, end, exit, waitedForLockMs: waited, servers, oldServers });
       if (fresh.room) {
         const text = `restart walk check ${o.label} ${n} ${Date.now()}`;
         const sent = Date.now();
@@ -362,7 +364,7 @@ export function report(out) {
   const md = [
     `# Restart walk ${meta.label}`, "",
     `${meta.releases.length} releases of \`${meta.release}\` against ${meta.base}; exits ${meta.releases.map(r => r.exit).join(", ")}.`,
-    `Servers after each release: ${meta.releases.map(r => r.servers ?? "?").join(", ")}; the test rooms' post logs ${meta.postLog ? `hold ${meta.postLog.lines} posts and ${meta.postLog.repeatedSeqs} repeated seqs` : "was not read"}.`,
+    `Servers after each release: ${meta.releases.map(r => r.servers ?? "?").join(", ")} (old servers passing calls on: ${meta.releases.map(r => r.oldServers ?? "?").join(", ")}); the test rooms' post logs ${meta.postLog ? `hold ${meta.postLog.lines} posts and ${meta.postLog.repeatedSeqs} repeated seqs` : "was not read"}.`,
     ...(fresh.length ? [`Fresh agent made before each release, then a send after it: ${fresh.map(f => `${f.n}: ${f.agent ? `send ${f.send}, ${f.inItems ? "in its DM" : f.inItemsAfter5s ? "in its DM after 5 s" : "not in its DM"}` : `not made (${f.makeError})`}`).join("; ")}.`] : []),
     `The server missed /api/ready for ${outages.map(x => (x.ms === null ? "never back" : `${x.ms} ms`)).join(", ") || "no span"}.`, "",
     "| Browser | Calls | In release windows | Failed calls | Page lines failed | Calls 2 s over normal | Page lines 2 s over normal | Socket back after each close (ms) | Sends stored |",
