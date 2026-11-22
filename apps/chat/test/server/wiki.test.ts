@@ -81,13 +81,14 @@ test("a conversation opens its workspace, writes, edits and closes it, and every
   const page = `${folder}/notes.html`;
   const put = await fetch(`${server.base}/wiki/${page}`, {
     method: "PUT", headers: { ...as, "content-type": "text/markdown" },
-    body: "---\ntitle: \"Wiki route notes\"\nkind: \"note\"\n---\n\n# Wiki route notes\n\nThe chat server wrote this page through its wiki routes.\n",
+    body: "---\ntitle: \"Wiki route notes\"\nkind: \"note\"\n---\n\n# Wiki route notes\n\nThe chat server wrote this page through its wiki routes.\n\n```mermaid\nflowchart TD\n  a --> b\n```\n",
   });
   const written = await put.json() as { version: number; author: string };
   assert.equal(put.status, 201, JSON.stringify(written));
   assert.equal(written.author, `vent (${job})`);
   const stored = await (await fetch(`${server.base}/wiki/${page}?format=html`)).text();
   assert.match(stored, /^<!--wiki \{"title":"Wiki route notes","kind":"note"\} -->\n<h1>Wiki route notes<\/h1>/);
+  assert.match(stored, /<pre class="mermaid">flowchart TD\n  a --&gt; b\n<\/pre>/, "a ```mermaid fence is stored as the pre.mermaid that the prose lint's visuals rule counts");
 
   const create = await fetch(`${server.base}/wiki/${page}`, { method: "POST", headers: as, body: "<h1>Again</h1>" });
   assert.equal(create.status, 409);

@@ -77,7 +77,10 @@ export function parseHeader(markdown: string): { meta: Meta; body: string } {
 export function fromMarkdown(markdown: string): { content: string; baseVersion?: number } {
   const { meta, body } = parseHeader(markdown);
   const { path: _path, version, ...rest } = meta;
-  const html = (marked.parse(body, { async: false }) as string).trim();
+  // marked writes a ```mermaid fence as `pre > code.language-mermaid`, and the page script and the prose lint's `visuals` count only `pre.mermaid`.
+  const html = (marked.parse(body, { async: false }) as string)
+    .replace(/<pre><code class="language-mermaid">([\s\S]*?)<\/code><\/pre>/g, '<pre class="mermaid">$1</pre>')
+    .trim();
   const content = Object.keys(rest).length ? `<!--wiki ${JSON.stringify(rest)} -->\n${html}\n` : `${html}\n`;
   return { content, ...(typeof version === "number" ? { baseVersion: version } : {}) };
 }
