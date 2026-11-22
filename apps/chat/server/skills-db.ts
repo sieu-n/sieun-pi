@@ -236,8 +236,13 @@ export class SkillsDb {
       for (const box of facts.boxes.filter(b => b.ok && !this.meta(`seeded:${b.box}`))) {
         this.seed(box.box);
         this.setMeta(`seeded:${box.box}`, now());
+        this.setMeta(`coverage:${box.box}`, String(facts.coverage));
         if (!this.meta("seeded")) this.setMeta("seeded", now());
         seeded = true;
+      }
+      for (const box of facts.boxes.filter(b => b.ok && Number(this.meta(`coverage:${b.box}`) ?? 1) < facts.coverage)) {
+        this.seed(box.box);
+        this.setMeta(`coverage:${box.box}`, String(facts.coverage));
       }
       for (const install of this.installs().filter(i => i.pending)) {
         if (facts.boxes.some(b => b.box === install.box && b.ok)) this.db.prepare("UPDATE skill_installs SET pending = NULL WHERE id = ?").run(install.id);
@@ -318,7 +323,8 @@ export class SkillsDb {
       const source = c.linkTarget === null || canon.has(c.key) ? identifyFolder(base).source : id.source;
       addSkill.run(c.key, base.name, ownerText(seedOwner(source)), JSON.stringify(source), at);
     }
-    for (const c of copies.filter(c => c.linkTarget !== null)) this.insertInstall(this.linkInstall(c, c.key));
+    const placed = new Set(this.installs().map(i => `${i.box}:${i.path}`));
+    for (const c of copies.filter(c => c.linkTarget !== null && !placed.has(`${c.box}:${c.path}`))) this.insertInstall(this.linkInstall(c, c.key));
   }
 
   private linkInstall(c: CopyFact, skillId: string): InstallRecord {

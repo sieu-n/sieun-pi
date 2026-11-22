@@ -289,6 +289,16 @@ test("a link that prime-sync moved to a newer runtime release reads ok, and a la
   assert.deepEqual(placed.map(step => step.kind === "place" ? step.from : null), [release("bbb")]);
 });
 
+test("a scan that walks more folders owns the copies it newly finds, and a later new folder is unowned again", async t => {
+  const { db } = fakeDisk(t, { run: () => [], undo: () => [] });
+  const clone = { ...macCopy("/Users/o/code/ws/VIR-1/.agents/skills/old-skill"), name: "old-skill", root: "/Users/o/code/ws/VIR-1/.agents/skills", source: "repo:ws/VIR-1" };
+  db.ingest({ ...macScan("2026-11-22T01:00:00Z", [macCopy("/Users/o/.claude/skills/deploy-notes"), clone]), coverage: 2 });
+  assert.equal(db.check().items.length, 0, JSON.stringify(db.check().items));
+  const later = { ...clone, path: "/Users/o/code/ws/VIR-1/.agents/skills/new-skill", realPath: "/Users/o/code/ws/VIR-1/.agents/skills/new-skill", name: "new-skill" };
+  db.ingest({ ...macScan("2026-11-22T02:00:00Z", [macCopy("/Users/o/.claude/skills/deploy-notes"), clone, later]), coverage: 2 });
+  assert.deepEqual(db.check().items.map(i => i.kind), ["unowned"]);
+});
+
 test("the review runs a skills DB delete of a path that is gone as a no-op, and undoes a step that failed as nothing to put back", async t => {
   const { fixture, review } = rig(t);
   const steps = review.diskSteps(fixture.setName);

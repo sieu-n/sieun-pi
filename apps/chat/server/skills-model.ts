@@ -52,7 +52,8 @@ export type FactBox = { box: string; scannedAt: string | null; ok: boolean; erro
 
 export type FactUse = { uses30d: number; sessions30d: number; lastUse: string | null; byKind: SkillUse30d["byKind"] };
 
-export type Facts = { generatedAt: string | null; boxes: FactBox[]; copies: FactCopy[]; usage: Map<string, FactUse>; usageCounted: boolean };
+/** `coverage` is the scanner's COVERAGE, which it raises each time it walks more folders; an inventory without it is coverage 1. */
+export type Facts = { generatedAt: string | null; coverage: number; boxes: FactBox[]; copies: FactCopy[]; usage: Map<string, FactUse>; usageCounted: boolean };
 
 type Json = Record<string, unknown>;
 const isObject = (value: unknown): value is Json => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -108,7 +109,7 @@ export function parseFacts(raw: unknown): Facts | null {
     return box ? [{ box, scannedAt: str(b.scannedAt), ok: b.ok !== false, error: str(b.error), seconds: num(b.seconds), settings: parseSettings(b.settings) }] : [];
   });
   const usage = new Map(Object.entries(isObject(raw.usage) ? raw.usage : {}).flatMap(([name, use]) => (isObject(use) ? [[name, parseUse(use)] as const] : [])));
-  return { generatedAt: str(raw.generatedAt), boxes, copies: raw.copies.filter(isObject).flatMap(c => parseCopy(c) ?? []), usage, usageCounted: raw.usageCounted === true };
+  return { generatedAt: str(raw.generatedAt), coverage: num(raw.coverage) ?? 1, boxes, copies: raw.copies.filter(isObject).flatMap(c => parseCopy(c) ?? []), usage, usageCounted: raw.usageCounted === true };
 }
 
 // Which skill a folder belongs to

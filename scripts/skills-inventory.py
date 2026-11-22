@@ -32,6 +32,9 @@ SKIP_DIRS = {"node_modules", ".venv", "dist", ".git", "__pycache__", ".trash"}
 REPO_PARENTS = ("src", "Documents/Github", "Documents", "code")
 SOURCE_REPO = "sieun-pi"
 SOURCE_SKILL_DIRS = ("skills", "legacy/prime/skills")
+# Which folders the scan walks, raised each time it walks more: the skills DB owns the copies a new walk finds once, instead of listing every
+# one as unowned. 2 added ~/code's symphony workspaces, .claude/skills-native, repo skills folders and the DB's install paths on 11-22.
+COVERAGE = 2
 REPO_SKILL_DIRS = (".agents/skills", ".claude/skills", ".claude/skills-native", ".codex/skills", ".cursor/skills", ".pi/skills")
 USER_SKILL_DIRS = (
     (".claude/skills", "claude", "~/.claude/skills"),
@@ -576,6 +579,7 @@ def build(scans: list[dict], config: dict) -> dict:
     }
     return {
         "generatedAt": datetime.now(timezone.utc).isoformat(),
+        "coverage": COVERAGE,
         "definition": config.get("definition"),
         "boxes": [{"box": s["box"], "scannedAt": s["scannedAt"], "ok": s["ok"], "error": s["error"], "seconds": s.get("seconds"),
                    "usageStores": (s.get("usage") or {}).get("stores", []), "extras": s.get("extras"), "settings": s.get("settings")} for s in scans],
