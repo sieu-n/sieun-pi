@@ -58,10 +58,16 @@ test("away, a status, a pause and a search set in one browser show in another wi
   }
 });
 
-test("a browser's old localStorage copies merge into the server once and leave localStorage", async ({ page }) => {
+test("after a change and a restore, a browser's old localStorage copies still move up once and leave localStorage", async ({ page }) => {
   const t = tag();
   const [canary, relay] = [{ q: `canary${t}`, filters: {} }, { q: `relay${t}`, filters: { from: "vent" } }];
   await page.request.patch("/api/owner-settings", { data: { recentSearches: [canary] } });
+  // A walk's round trip: read, change, put the read copy back with its stamps.
+  const before = await ownerSettings(page.request);
+  await page.request.patch("/api/owner-settings", { data: { presence: { away: true }, notify: { level: "all", badge: true } } });
+  await page.request.put("/api/owner-settings", { data: before });
+  expect((await ownerSettings(page.request)).edited.presence).toBeUndefined();
+
   await openApp(page);
   await page.evaluate((old) => {
     localStorage.setItem("chat.presence", JSON.stringify({ away: true, status: { emoji: "🎧", text: "Focus" } }));
@@ -69,14 +75,11 @@ test("a browser's old localStorage copies merge into the server once and leave l
     localStorage.setItem("chat.recentSearches", JSON.stringify(old));
   }, [relay, canary]);
   await page.reload();
-  await expect(profile(page)).toBeVisible();
-  // Other specs' searches may land in the list meanwhile, so this looks at its own two.
-  const mine = async () => ((await ownerSettings(page.request)).recentSearches as { q: string }[]).filter(one => one.q.endsWith(t));
-  await expect.poll(mine).toEqual([canary, relay]);
-  // The reset set presence and notify by hand, which is newer than any old copy, so they stay; recent searches always merge.
+  await expect(profile(page)).toHaveAttribute("aria-label", /away, 🎧 Focus/);
   const saved = await ownerSettings(page.request);
-  expect(saved.presence).toEqual({ away: false });
-  expect(saved.notify).toEqual({ level: "direct", badge: true });
-  await expect(profile(page)).not.toHaveAttribute("aria-label", /Focus/);
+  expect(saved.presence).toEqual({ away: true, status: { emoji: "🎧", text: "Focus" } });
+  expect(saved.notify).toEqual({ level: "off", badge: false });
+  // Other specs' searches may land in the list meanwhile, so this looks at its own two.
+  expect((saved.recentSearches as { q: string }[]).filter(one => one.q.endsWith(t))).toEqual([canary, relay]);
   expect(await page.evaluate(() => ["chat.presence", "chat.notify", "chat.recentSearches"].map(key => localStorage.getItem(key)))).toEqual([null, null, null]);
 });

@@ -39,6 +39,7 @@ Pages call the server through `web/src/lib/api` (`import { api, timeline, agents
 | `api.saveSidebarLayout(layout)` | `PUT /api/sidebar/layout` | `SavedLayout`: replaces the owner's sidebar sections, placements, sorts and folds with `layout`, adds 1 to `rev` and sends `sidebar` to every tab. `GET /api/sidebar` carries it as `layout` once set. |
 | `api.ownerSettings()` | `GET /api/owner-settings` | `SavedSettings` (`web/src/lib/api/shared/owner-settings.ts`): the owner's `presence` (status and away), `notify` (level, badge, pause) and `recentSearches`, the same in every browser, with `rev` and when each part was last set by hand in `edited`. |
 | `api.saveOwnerSettings(parts)` | `PATCH /api/owner-settings` | `SavedSettings`: replaces each part `parts` names, adds 1 to `rev` and sends `owner_settings` to every tab. |
+| (walks and specs) | `PUT /api/owner-settings` | `SavedSettings`: puts back a whole copy from GET with its `edited` stamps, so a change-and-restore leaves a part never set when it was. |
 | `api.importOwnerSettings(old)` | `POST /api/owner-settings/import` | `SavedSettings`: merges one browser's old localStorage copies once (`mergeOld`); a part set by hand since stays, recent searches always merge. |
 | `api.conversations({archived})` | `GET /api/conversations?archived=1` | `ConversationSummary[]` for every solo thread, DM, job, channel and Solo room. |
 | `api.directory()` | `GET /api/directory` | `{agents, jobs, rooms}` for the @ and # typeahead: `agents` as `GET /api/agents`, `jobs` as `GET /api/jobs`, `rooms` as `GET /api/rooms`. |

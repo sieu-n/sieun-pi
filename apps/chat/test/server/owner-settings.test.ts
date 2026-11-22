@@ -84,3 +84,15 @@ test("the list keeps 10 searches", () => {
   const many = Array.from({ length: 14 }, (_, i) => ({ q: `q${i}`, filters: {} }));
   assert.equal(settings.patch({ recentSearches: many }, NOW).recentSearches.length, 10);
 });
+
+test("a restore puts back the stamps too, so an old copy still moves up after a walk", () => {
+  const { settings } = rig();
+  const before = settings.get(NOW);
+  settings.patch({ presence: { away: true }, notify: { level: "all", badge: true } }, NOW);
+  const restored = settings.replace(before, NOW + 1);
+  assert.deepEqual(restored.edited, {});
+  assert.equal(restored.rev, 2);
+  const merged = settings.importOld({ presence: { away: false, status: { emoji: "🎧", text: "Focus" } }, notify: { level: "off", badge: true } }, NOW + 2);
+  assert.deepEqual(merged.presence, { away: false, status: { emoji: "🎧", text: "Focus" } });
+  assert.equal(merged.notify.level, "off");
+});

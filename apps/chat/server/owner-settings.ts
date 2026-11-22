@@ -21,6 +21,15 @@ export class OwnerSettingsStore {
     return this.save({ ...current, ...parts, rev: current.rev + 1, edited });
   }
 
+  /**
+   * Puts back a whole copy from GET, its `edited` stamps included, so a walk that changes a setting and restores it leaves each part as
+   * never set when it was, and a device that has not loaded since still moves its old copy up.
+   */
+  replace(body: unknown, now = Date.now()): SavedSettings {
+    const { presence, notify, recentSearches, edited } = parseSaved(body, now);
+    return this.save({ presence, notify, recentSearches, edited, rev: this.get(now).rev + 1 });
+  }
+
   /** Merges one browser's old localStorage copies (`mergeOld`), which it sends once on its first load after the move. */
   importOld(body: unknown, now = Date.now()): SavedSettings {
     const current = this.get(now);
