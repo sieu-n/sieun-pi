@@ -13,9 +13,10 @@
  * Two App instances never run at once, so nothing in the data dir, the wakes, the duties or the search index is written by both. Without a
  * passed fd (a hand run, the fixture specs) the server listens on its port itself and a SIGHUP does nothing.
  */
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import type { Server } from "node:http";
-import { notifySystemd, serveArgs } from "../../../legacy/prime/user-history/src/chat-handoff.ts";
+import { promisify } from "node:util";
 import { takeListenFd } from "../../../legacy/prime/user-history/src/listen-fd.ts";
 
 /** Set in a successor's environment by the running server that started it with the port's fd as its fd 3 and an IPC channel. */
@@ -73,9 +74,29 @@ export class Predecessor {
   }
 }
 
+/**
+ * This serve's arguments after node, from /proc/self/cmdline, so the successor runs the same command. The same as chat-handoff.ts
+ * `serveArgs` of the :5182 chat; importing that file pulls the Prime daemon client into apps/chat's typecheck, which fails in a release
+ * folder that has no prime-agent package (release-441a086 on 11-22).
+ */
+export function serveArgs(cmdline = (() => { try { return readFileSync("/proc/self/cmdline", "utf8"); } catch { return null; } })()): string[] {
+  const parts = cmdline?.split("\0").filter(Boolean);
+  return parts && parts.length > 1 ? parts.slice(1) : [...process.execArgv, ...process.argv.slice(1)];
+}
+
+/** sd_notify through systemd-notify, as chat-handoff.ts `notifySystemd` does; false when the unit is no Type=notify one. */
+async function notifySystemd(fields: readonly string[], log: (line: string) => void): Promise<boolean> {
+  if (!process.env.NOTIFY_SOCKET) return false;
+  const at = Date.now();
+  // systemd-notify answered in 13 ms from a test unit on us-metal02 on 11-08 (chat-handoff.ts); 30 s fails only one that hangs.
+  await promisify(execFile)("systemd-notify", [`--pid=${process.pid}`, ...fields], { timeout: 30_000 });
+  log(`systemd: told it ${fields.join(" ")} in ${Date.now() - at} ms`);
+  return true;
+}
+
 /** Tells systemd this process serves: READY=1, and MAINPID= for a successor, which systemd must take as the main process before its predecessor exits. */
 export async function tellSystemd(successor: boolean, log: (line: string) => void): Promise<void> {
-  await notifySystemd(successor ? [`MAINPID=${process.pid}`, "READY=1"] : ["READY=1"], process.env, log);
+  await notifySystemd(successor ? [`MAINPID=${process.pid}`, "READY=1"] : ["READY=1"], log);
 }
 
 /** The running server's side. */
