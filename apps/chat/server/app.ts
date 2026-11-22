@@ -1119,7 +1119,10 @@ export class App {
       const label = typeof ref.name === "string" && ref.name.trim() ? ref.name.trim().slice(0, 255) : "file";
       return { url: `/api/uploads/${name}`, mimeType: ref.mimeType, name: label, size: statSync(this.store.imagePath(name)).size };
     }
-    return withSize({ url: `/api/uploads/${name}`, mimeType: ref.mimeType }, () => fileImageSize(this.store.imagePath(name)));
+    const image = withSize({ url: `/api/uploads/${name}`, mimeType: ref.mimeType }, () => fileImageSize(this.store.imagePath(name)));
+    if (isModelImage(ref)) return image;
+    const label = typeof ref.name === "string" && ref.name.trim() ? ref.name.trim().slice(0, 255) : "image";
+    return { ...image, name: label, size: statSync(this.store.imagePath(name)).size };
   }
 
   /** Where an upload's bytes sit on this box, which an agent reads a file that is not an image from (server/files.ts). */

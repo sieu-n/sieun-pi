@@ -114,7 +114,7 @@ describe("attached files", () => {
         assert.equal(sent.status, 200, sent.body.error);
         const input = await until(async () => inputs.find(i => i.text.includes(text)), i => !!i);
         assert.deepEqual(input!.images, ["image/png"], conversation);
-        const path = /\[attached file "[^"]*" \(image\/tiff, \d+ bytes\), saved on \S+ at (\S+)\]/.exec(input!.text)?.[1];
+        const path = /\[attached file "image" \(image\/tiff, 12 bytes\), saved on \S+ at (\S+)\]/.exec(input!.text)?.[1];
         assert.ok(path, `${conversation}: ${input!.text}`);
         assert.equal(readFileSync(path, "latin1").slice(0, 4), "MM\0*", conversation);
       }
