@@ -4,6 +4,7 @@
   import Button from "$lib/ui/Button.svelte";
   import Dialog from "$lib/ui/Dialog.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
+  import { later } from "$lib/later.svelte";
   import Markdown from "$lib/ui/Markdown.svelte";
   import { wikiUrl } from "$lib/ui/markdown";
   import { modKey } from "$lib/ui/keyboard";
@@ -56,6 +57,7 @@
   let unstyle: (() => void) | null = null;
   const lastSegment = (path: string): string => path.split("/").filter(Boolean).filter((part) => part !== "index.html").at(-1) ?? path;
   const wikiPath = $derived(view?.kind === "wiki" ? view.path : null);
+  later.start();
   /** A canvas's Share: the dialog that posts the page on screen into a channel or a DM. */
   let sharing = $state(false);
   const wikiTitle = $derived(wikiPath ? (frameMissing ? "" : frameTitle) || lastSegment(wikiPath) : "");
@@ -448,6 +450,10 @@
   {:else}
   {#if view?.kind === "wiki" && !frameFailed && editable(framePath ?? wikiPath ?? "")}<IconButton icon="edit" label="Edit" size="sm" onclick={() => void startEdit()} data-wiki-edit />{/if}
   {#if view?.kind === "wiki"}<IconButton icon="forward" label="Share" size="sm" onclick={() => (sharing = true)} data-share-page />{/if}
+  {#if view?.kind === "wiki" && wikiPath}
+    {@const pageSaved = !!later.pageRow(framePath ?? wikiPath)}
+    <IconButton icon={pageSaved ? "bookmark-filled" : "bookmark"} label={pageSaved ? "Remove from Later" : "Save for later"} size="sm" pressed={pageSaved} onclick={() => wikiPath && void later.togglePage(framePath ?? wikiPath, title)} data-save-page />
+  {/if}
   <IconButton icon="link" label="Copy link" size="sm" onclick={copyLink} />
   {#if view?.kind === "wiki"}<IconButton icon="external" label="Open in new tab" size="sm" href={tabHref} target="_blank" />{:else}<Button size="sm" variant="ghost" icon="external" href={tabHref} target="_blank">Open in new tab</Button>{/if}
   {#if view?.kind === "wiki" && !frameFailed && editable(framePath ?? wikiPath ?? "")}<IconButton icon="more" label="More actions" size="sm" bind:element={moreAnchor} onclick={() => (moreOpen = !moreOpen)} data-wiki-more />{/if}

@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onDestroy, tick } from "svelte";
   import { markUnread, type LaterRow, type LaterState } from "$lib/api";
-  import { later, laterHref } from "$lib/later.svelte";
-  import { conversationHref, router } from "$lib/router.svelte";
+  import { later, laterHref, savedPage } from "$lib/later.svelte";
+  import { conversationHref, hrefFor, router } from "$lib/router.svelte";
   import { Avatar, Button, EmptyState, Icon, IconButton, LoadingText, PanelHeader, Tabs, stampLabel } from "$lib/ui";
   import { previewText } from "$pages/agents/agents-model";
   import { avatarOf } from "$pages/channel/present";
@@ -50,7 +50,12 @@
   const showTab = (id: LaterState) => router.navigate(`${laterHref(id)}${test ? "?test=1" : ""}`, { replace: true });
   /** A saved reply opens its thread at the reply, and any other post its room at the post. */
   const hrefOf = (row: LaterRow) =>
-    row.room === undefined ? laterHref(row.state) : conversationHref(row.room, row.threadRoot ? { thread: row.threadRoot, messageId: row.post } : { messageId: row.post });
+    row.room === undefined ? pageHref(row) : conversationHref(row.room, row.threadRoot ? { thread: row.threadRoot, messageId: row.post } : { messageId: row.post });
+  /** A saved wiki page opens beside Later in the viewer; a /remind reminder opens nothing. */
+  function pageHref(row: LaterRow): string {
+    const page = savedPage(row.text);
+    return page ? hrefFor("messages", row.state === "open" ? ["later"] : ["later", row.state], { view: `wiki:${page.path}` }) : laterHref(row.state);
+  }
   /** A room that is gone keeps only its id as its name, and has nothing to open; a /remind reminder has no room. */
   const roomHref = (row: LaterRow) => (row.room === undefined || row.roomName === row.room ? null : conversationHref(row.room));
   /** The row whose Remind me menu is open, and the button it hangs from; the row whose Custom picker is open. */
@@ -118,7 +123,7 @@
   function rowMenu(row: LaterRow): MenuEntry[] {
     const room = roomHref(row);
     return [
-      ...(row.room === undefined ? [] : [{ id: "open", label: row.threadRoot ? "Open in thread" : "Open message", icon: row.threadRoot ? "thread" : "external", shortcut: "Enter", onselect: () => router.navigate(hrefOf(row)) }]),
+      ...(row.room === undefined ? (savedPage(row.text) ? [{ id: "open", label: "Open page", icon: "file", shortcut: "Enter", onselect: () => router.navigate(hrefOf(row)) }] : []) : [{ id: "open", label: row.threadRoot ? "Open in thread" : "Open message", icon: row.threadRoot ? "thread" : "external", shortcut: "Enter", onselect: () => router.navigate(hrefOf(row)) }]),
       ...(room ? [{ id: "room", label: `Go to ${row.roomName}`, icon: row.roomKind === "channel" ? "hash" : (roomIcon(row) ?? "chat"), onselect: () => router.navigate(room) }] : []),
       { type: "separator" },
       row.state === "done"
@@ -228,7 +233,8 @@
               </span>
               <span class="main">
                 <span class="where t-caption">
-                  {#if row.room === undefined}<Icon name="clock" size={12} /><span class="room" data-later-note>Reminder</span>
+                  {#if row.room === undefined && savedPage(row.text)}<Icon name="file" size={12} /><span class="room" data-later-page>Wiki page</span>
+                  {:else if row.room === undefined}<Icon name="clock" size={12} /><span class="room" data-later-note>Reminder</span>
                   {:else}
                   {#if roomIcon(row)}<Icon name={roomIcon(row)!} size={12} />{/if}
                   {#if room}<a class="room" href={room} tabindex="-1" data-later-room>{row.roomName}</a>{:else}<span class="room">{row.roomName}</span>{/if}
@@ -246,7 +252,7 @@
                   {#if row.gone}
                     <span class="preview t-body gone">This message was deleted.</span>
                   {:else}
-                    <span class="preview t-body">{previewText(row.text) || (row.images ? `${row.images} image${row.images === 1 ? "" : "s"}` : "")}</span>
+                    <span class="preview t-body">{savedPage(row.text)?.title || previewText(row.text) || (row.images ? `${row.images} image${row.images === 1 ? "" : "s"}` : "")}</span>
                   {/if}
                 </a>
               </span>

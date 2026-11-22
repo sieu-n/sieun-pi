@@ -143,6 +143,24 @@ class LaterStore {
     }
   }
 
+  /** The open Later row that saves this wiki page, a note whose text is the page's link. */
+  pageRow(path: string): LaterRow | undefined {
+    return this.lists.open?.find((row) => row.room === undefined && savedPage(row.text)?.path === path);
+  }
+
+  /** A canvas's Save for later on a wiki page: a Later note whose text is the page's link, or Remove from Later when the page is saved. */
+  async togglePage(path: string, title: string): Promise<void> {
+    const row = this.pageRow(path);
+    if (row) return this.remove(row);
+    try {
+      await api.remindNote(`[${title.replace(/[[\]]/g, "") || path}](wiki:${path})`);
+      this.note("Saved for later", { label: "View", run: () => router.navigate(laterHref()) });
+      void this.refresh();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not save the page");
+    }
+  }
+
   /** Slack's /remind me: sets a reminder of his own text; a failure throws, so the command keeps its draft. */
   async remindMe(note: string, at: number): Promise<void> {
     void askNotifyPermission();
@@ -205,6 +223,12 @@ export const later = new LaterStore();
 
 /** Later is a Messages view: `#/c/later` is In progress, `#/c/later/archived` Archived and `#/c/later/done` Completed. */
 export const laterHref = (state: LaterState = "open"): string => hrefFor("messages", state === "open" ? ["later"] : ["later", state]);
+
+/** The wiki page a Later note saves, when its text is the `[title](wiki:path)` link the viewer's Save for later writes. */
+export function savedPage(text: string): { title: string; path: string } | null {
+  const match = /^\[([^\]]*)\]\(wiki:([^)\s]+)\)$/.exec(text.trim());
+  return match ? { title: match[1]!, path: match[2]! } : null;
+}
 
 /** The message menu's Save for later item, or Remove from Later on a saved post. */
 export function laterMenuItem(room: string, message: Pick<Message, "id" | "later">): MenuEntry {
