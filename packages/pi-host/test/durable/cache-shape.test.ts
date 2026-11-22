@@ -7,7 +7,7 @@ import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import type { Message, Provider, Tool } from "@earendil-works/pi-ai";
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
-import { cacheableBreakpoints, COLD_MS, foldPoint, foldSystem, LEAN_CHARS, leanHistory, sniffImage, viewableImages, withCacheShape } from "../../src/durable/cache-shape.ts";
+import { cacheableBreakpoints, COLD_MS, foldPoint, foldSystem, KEEP_CHARS, LEAN_CHARS, LEFT_OUT_NOTE, leanHistory, sniffImage, viewableImages, withCacheShape } from "../../src/durable/cache-shape.ts";
 
 const tool = (name: string, description = name): Tool => ({ name, description, parameters: { type: "object", properties: {} } } as unknown as Tool);
 const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
@@ -168,4 +168,22 @@ test("on the wire, a history holding an SVG image sends its text line, and the n
   const last = bodies[0].messages.length - 1;
   assert.deepEqual(bodies[1].messages.slice(0, last), bodies[0].messages.slice(0, last));
   assert.deepEqual(bodies[1].system, bodies[0].system);
+});
+
+test("a cold comm request keeps only the newest earlier turns that fit KEEP_CHARS, cut where a turn starts, and later requests keep the same", () => {
+  const big = "y".repeat(1000);
+  const turns: Message[] = [];
+  for (let n = 0; n < 200; n++) turns.push(user(`ask ${n} ${big}`, t0 + n * 1000), answer(`answer ${n}`, t0 + n * 1000 + 500));
+  const cold = t0 + 4 * 60 * MIN;
+  const now: Message[] = [head, ...turns, system({ sections: { context: "C9" } }, t0 + 300_000), user("latest", cold)];
+  const lean = leanHistory(now, cold);
+  const kept = lean.slice(1).filter(message => message.role !== "system");
+  const chars = kept.slice(0, -1).reduce((sum, message) => sum + JSON.stringify(message.content).length, 0);
+  assert.ok(chars <= KEEP_CHARS && chars > KEEP_CHARS / 2, `kept ${chars} characters of earlier turns`);
+  assert.equal(kept[0]!.role, "user", "the kept part starts with a turn's input");
+  assert.equal(((kept[0] as Extract<Message, { role: "user" }>).content as { text: string }[])[0]!.text, LEFT_OUT_NOTE);
+  assert.ok(lean.some(message => message.role === "system" && message.sections?.context === "C9"), "a system update stays for the fold");
+  assert.deepEqual(lean.at(-1), now.at(-1));
+  const next = [...now, answer("ok", cold + 1000), user("more", cold + 2 * MIN)];
+  assert.deepEqual(leanHistory(next, cold + 2 * MIN).slice(0, lean.length), lean, "the next request keeps the same part");
 });

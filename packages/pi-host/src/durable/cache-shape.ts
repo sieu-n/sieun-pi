@@ -103,7 +103,8 @@ const cutArgs = (value: unknown): unknown =>
  * requests trim the same part the same way and read the cache. A comm thread answers in its room and hands work to its work thread, so an
  * old search result or hand-over script does nothing for its next post: on 11-22 its earlier turns' thinking, tool results and tool calls
  * were 1.08M, 0.93M and 0.48M of the 3.0M characters of real comm threads' histories, and cold comm turns cost $1.16 on average.
- * The turn the point falls in stays whole, since Anthropic needs a running tool loop's thinking.
+ * The turn the point falls in stays whole, since Anthropic needs a running tool loop's thinking. Of the earlier turns, only the newest that fit
+ * KEEP_CHARS stay (`keepRecent`).
  */
 export function leanHistory(messages: readonly Message[], now: number): readonly Message[] {
   const point = foldPoint(messages, now);
@@ -132,7 +133,41 @@ export function leanHistory(messages: readonly Message[], now: number): readonly
     }
     return message;
   });
-  return changed ? out : messages;
+  return keepRecent(changed ? out : messages, start);
+}
+
+/**
+ * About how much of a comm thread's earlier turns a cold request keeps, in characters of their messages after the trim, about 17k tokens.
+ * On 11-22 cold comm turns that kept every earlier turn wrote 51k to 239k tokens at $8/M and cost $1.52 on average over 6 turns, almost all
+ * of it that one cache write, and the biggest threads keep growing until they compact at 483,616 tokens.
+ */
+export const KEEP_CHARS = 60_000;
+export const LEFT_OUT_NOTE = "[Earlier turns of this thread are left out of this request. Read them with search_history, the room's posts, " +
+  "or agent_observe on your work thread when you need one.]";
+
+const sizeOf = (message: Message): number => message.role === "system" ? 0 : JSON.stringify(message.content).length;
+
+/**
+ * `messages` without the earlier turns before `start` that do not fit KEEP_CHARS, newest kept first and cut only where a turn starts, so a tool
+ * call keeps its result. System messages stay in place, since the fold reads them. The first kept turn's input opens with LEFT_OUT_NOTE.
+ */
+function keepRecent(messages: readonly Message[], start: number): readonly Message[] {
+  let size = 0;
+  let from = start;
+  for (let index = start - 1; index >= 1; index--) {
+    size += sizeOf(messages[index]!);
+    if (size > KEEP_CHARS) break;
+    if (messages[index]!.role === "user") from = index;
+  }
+  const dropped = messages.slice(1, from).some(message => message.role !== "system");
+  if (!dropped) return messages;
+  return messages.flatMap((message, index): Message[] => {
+    if (index === 0 || message.role === "system" || index > from) return [message];
+    if (index < from) return [];
+    const user = message as Extract<Message, { role: "user" }>;
+    const content = typeof user.content === "string" ? [{ type: "text" as const, text: user.content }] : user.content;
+    return [{ ...user, content: [{ type: "text" as const, text: LEFT_OUT_NOTE }, ...content] }];
+  });
 }
 
 type Block = { type?: string; cache_control?: unknown };
