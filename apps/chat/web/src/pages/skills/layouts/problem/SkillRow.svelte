@@ -2,7 +2,7 @@
   import type { SkillEntry, SkillThresholds } from "$lib/api/shared/skills";
   import { Badge, Button, Icon, ageLabel, tooltip } from "$lib/ui";
   import {
-    GROUP_TEXT, ROLE_TEXT, drift, headline, mergeInto, copyNotes, orderedCopies, problemsOf, kindsText, openedByPath, shape, sight, sizeText, sourceText, splitPath, tilde, topKinds,
+    GROUP_TEXT, ROLE_TEXT, count, drift, headline, mergeInto, copyNotes, orderedCopies, problemsOf, kindsText, openedByPath, shape, sight, sizeText, sourceText, splitPath, tilde, topKinds,
     weakDescription, type GroupKind, type RowActions,
   } from "./model";
 
@@ -43,9 +43,9 @@
     <span class="facts">
       {#if others.length}<span class="others">{#each others as other (other)}<Badge tone="outline">{GROUP_TEXT[other].title.toLowerCase()}</Badge>{/each}</span>{/if}
       {#if weak}<Badge tone="warning" title="No session opened or called it in 30 days, so its description may be too weak for agents to pick it.">weak description, review</Badge>{/if}
-      <span class="num" use:tooltip={"Folders and links that hold it"}>{skill.copies.length} {skill.copies.length === 1 ? "copy" : "copies"}</span>
+      <span class="num" use:tooltip={"Folders and links that hold it"}>{count(skill.copies.length, "copy", "copies")}</span>
       <span class="num" class:bad={size?.bloated}>{size ? size.text : "size unknown"}</span>
-      <span class="num use">{skill.use.uses ? `${skill.use.uses.toLocaleString("en-US")} uses` : "never used"}</span>
+      <span class="num use">{skill.use.uses ? count(skill.use.uses, "use") : "never used"}</span>
     </span>
   </button>
 
@@ -58,7 +58,7 @@
         <dt>Use in 30 days</dt>
         <dd>
           {#if skill.use.uses}
-            {skill.use.uses.toLocaleString("en-US")} uses in {skill.use.sessions.toLocaleString("en-US")} sessions{#if skill.use.lastUse}, last {ageLabel(Date.parse(skill.use.lastUse), now)} ago{/if}{#if kinds.length}, most from {kinds.map(k => `${k.kind} (${k.uses.toLocaleString("en-US")})`).join(", ")}{/if}.
+            {count(skill.use.uses, "use")} in {count(skill.use.sessions, "session")}{#if skill.use.lastUse}, last {ageLabel(Date.parse(skill.use.lastUse), now)} ago{/if}{#if kinds.length}, most from {kinds.map(k => `${k.kind} (${k.uses.toLocaleString("en-US")})`).join(", ")}{/if}.
           {:else}
             No session opened or called it.{#if weak} Its description may be why, so review it before removing.{/if}
           {/if}

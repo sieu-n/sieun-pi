@@ -4,7 +4,7 @@
   import { Button, Dialog, EmptyState, Field, Input, SearchField, Select, ageLabel, toast, tooltip } from "$lib/ui";
   import { SvelteSet } from "svelte/reactivity";
   import SkillRow from "./SkillRow.svelte";
-  import { GROUP_TEXT, PROBLEMS, healthy, names, problemGroups, sourceBox, tilde, type Problem, type RowActions } from "./model";
+  import { GROUP_TEXT, PROBLEMS, count, healthy, names, problemGroups, sourceBox, tilde, type Problem, type RowActions } from "./model";
 
   /**
    * Settings > Skills, by problem: the duplicated, outdated and bloated counts, each a filter, then the skills grouped by problem worst
@@ -53,7 +53,7 @@
       await reload();
       const queued = done.apply?.steps.filter(step => step.result === "queued").length ?? 0;
       const failed = done.apply?.steps.filter(step => step.result === "failed") ?? [];
-      const tail = failed.length ? `, but ${failed.length} disk ${failed.length === 1 ? "step" : "steps"} failed` : queued ? `, and it waits for the Mac to wake` : "";
+      const tail = failed.length ? `, but ${count(failed.length, "disk step")} failed` : queued ? `, and it waits for the Mac to wake` : "";
       const said = text.same && done.apply?.changes === 0 ? text.same : `${text.said}${tail}`;
       toast.show(said, { tone: failed.length ? "danger" : "neutral", duration: UNDO_MS, action: { label: "Undo", run: () => void undo(done.move.id, text.undone) } });
       return true;
@@ -177,7 +177,7 @@
     </div>
     <div class="side">
       <p class="totals">
-        {view.counts.skills.toLocaleString("en-US")} skills in {view.counts.copies.toLocaleString("en-US")} folders, {view.counts.neverUsed.toLocaleString("en-US")} never used in 30 days.
+        {count(view.counts.skills, "skill")} in {count(view.counts.copies, "folder")}, {view.counts.neverUsed.toLocaleString("en-US")} never used in 30 days.
         {#if scanned !== null}Scanned {ageLabel(scanned, now)} ago.{/if}
       </p>
       <div class="tools">
@@ -219,7 +219,7 @@
         <h2 id="problem-unused">Never used <span class="k">{unused.length}</span></h2>
         <p>
           No session opened or called these in 30 days. A weak description may be why, so the ones we wrote say to review it before any removal.
-          {#if !text && view.counts.neverUsed > unused.length}{(view.counts.neverUsed - unused.length).toLocaleString("en-US")} more never-used skills sit in the problem groups above.{/if}
+          {#if !text && view.counts.neverUsed > unused.length}{count(view.counts.neverUsed - unused.length, "more never-used skill sits", "more never-used skills sit")} in the problem groups above.{/if}
         </p>
       </header>
       <div class="list">

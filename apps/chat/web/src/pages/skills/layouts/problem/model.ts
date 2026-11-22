@@ -1,6 +1,8 @@
 import { COUNT_RULES, THREAD_KINDS, type CopyRole, type SkillCopy, type SkillEntry, type SkillSight, type SkillSource, type SkillThresholds, type SkillVerdictRow, type ThreadKind, type VerdictRule } from "../../../../lib/api/shared/skills.ts";
 
 export type Problem = keyof typeof COUNT_RULES;
+export const count = (n: number, one: string, many = `${one}s`): string => `${n.toLocaleString("en-US")} ${n === 1 ? one : many}`;
+
 export const PROBLEMS: readonly Problem[] = ["duplicated", "outdated", "bloated"];
 
 export type Extra = "broken" | "name-clash";
@@ -95,7 +97,7 @@ export const orderedCopies = (skill: SkillEntry): SkillCopy[] =>
 export const ROLE_TEXT: Record<CopyRole, string> = { source: "source", install: "install", checkout: "other checkout", unowned: "no DB row" };
 
 export function shape(copy: SkillCopy): string {
-  if (copy.link === null) return copy.files !== null && copy.files > 1 ? `folder, ${copy.files} files` : "folder";
+  if (copy.link === null) return copy.files !== null && copy.files > 1 ? `folder, ${count(copy.files, "file")}` : "folder";
   return copy.exists ? `link to ${tilde(copy.link)}` : `broken link to ${tilde(copy.link)}`;
 }
 
@@ -103,7 +105,7 @@ export function drift(copy: SkillCopy): { text: string; changed: boolean } {
   if (copy.role === "source") return { text: "source", changed: false };
   if (copy.changedLines === null) return { text: "not compared", changed: false };
   if (copy.changedLines === 0) return { text: "same as source", changed: false };
-  return { text: `${copy.changedLines.toLocaleString("en-US")} lines changed`, changed: true };
+  return { text: `${count(copy.changedLines, "line")} changed`, changed: true };
 }
 
 export function kb(bytes: number): string {
@@ -205,12 +207,12 @@ export function headline(skill: SkillEntry, kind: GroupKind, limits: SkillThresh
     case "duplicated": {
       const extra = rows.filter(v => v.copyId !== null).length;
       const others = new Set(rows.filter(v => v.copyId === null && v.other !== null).map(v => v.other)).size;
-      const parts = [extra ? `${extra} extra ${extra === 1 ? "copy" : "copies"}` : "", others ? `${others} other ${others === 1 ? "skill matches" : "skills match"} its text` : ""];
+      const parts = [extra ? `${count(extra, "extra copy", "extra copies")}` : "", others ? `${others} other ${others === 1 ? "skill matches" : "skills match"} its text` : ""];
       return parts.filter(Boolean).join(", ");
     }
     case "outdated": {
       const lines = severity(skill, kind);
-      return `${rows.length} ${rows.length === 1 ? "copy" : "copies"} behind, ${lines.toLocaleString("en-US")} lines changed`;
+      return `${count(rows.length, "copy", "copies")} behind, ${count(lines, "line")} changed`;
     }
     case "bloated":
       return sizeText(skill.size.bytes, limits)?.text ?? rows[0]?.detail ?? "";

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { THREAD_KINDS, type SkillCopy, type SkillEntry, type SkillThresholds, type SkillVerdictRow } from "../../../../lib/api/shared/skills.ts";
-import { drift, healthy, kindsText, openedByPath, problemGroups, problemsOf, sight, sizeText, splitPath, weakDescription } from "./model.ts";
+import { count, drift, healthy, kindsText, openedByPath, problemGroups, problemsOf, sight, sizeText, splitPath, weakDescription } from "./model.ts";
 
 const limits: SkillThresholds = { medianBytes: 4000, medianLines: 75, bloatBytes: 12000, nearDuplicate: 0.8, staleCheckoutDays: 30, source: "test" };
 
@@ -65,4 +65,11 @@ test("thread kinds that used a skill their prompt does not list read as opened b
     use: { uses: 10, sessions: 5, lastUse: null, byKind: { "prime-subagent": { uses: 8, sessions: 4 }, claude: { uses: 2, sessions: 1 } } },
   });
   assert.deepEqual(openedByPath(s), ["prime-subagent"]);
+});
+
+test("counts take the singular for one", () => {
+  assert.equal(count(1, "use"), "1 use");
+  assert.equal(count(3825, "use"), "3,825 uses");
+  assert.equal(count(1, "copy", "copies"), "1 copy");
+  assert.deepEqual(drift(copy({ role: "checkout", changedLines: 1 })), { text: "1 line changed", changed: true });
 });
