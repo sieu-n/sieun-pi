@@ -37,3 +37,11 @@ test("an entry with nothing to cut comes back as the same object", () => {
   const bare = { id: 1, kind: "pi.system", conversationId: 1 } as unknown as EntryRecord;
   assert.equal(leanEntry(bare), bare);
 });
+
+test("a lean system message keeps its role, text and time and drops its prompt sections and tool lists", () => {
+  const system = { role: "system", content: "", sections: Array.from({ length: 40 }, (_, i) => ({ key: `s${i}`, text: "p".repeat(5000) })), toolsAdded: [{ name: "bash" }], toolsRemoved: ["x"], timestamp: 5 };
+  const lean = leanEntry({ id: 4, kind: "pi.system", conversationId: 1, model: [system] } as unknown as EntryRecord) as unknown as { model: unknown[] };
+  assert.deepEqual(lean.model[0], { role: "system", content: "", timestamp: 5 });
+  const bare = { id: 5, kind: "pi.system", conversationId: 1, model: [{ role: "system", content: "short", timestamp: 6 }] } as unknown as EntryRecord;
+  assert.equal(leanEntry(bare), bare);
+});

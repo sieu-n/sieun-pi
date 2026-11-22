@@ -6,6 +6,9 @@
  *    a tool's output at 4000 characters and draws no system message.
  * 3. A thinking block loses its `thinkingSignature`, the provider's opaque replay token, which no page draws. On 11-03 the signatures were
  *    389 KB of the 1.2 MB lean read of a job's 329-entry turn.
+ * 4. A system message keeps only its role, its text and its time, and loses the prompt `sections` and tool lists the agent's request read.
+ *    On 11-22 three such entries were 680 KB of a 1.33 MB lean read of a job's newest 140 entries (~/work/thread-reads/big.py), and each
+ *    page read after a chat restart took pi-host 40 to 100 ms to send.
  *
  * On 11-03 a 100-entry page of a job that took screenshots was 2.0 MB, 1.76 MB of it image data, and took 0.3 to 1 s to cross pi-host, the
  * relay and the chat server under load; the same page lean is about 0.25 of the size.
@@ -35,6 +38,14 @@ export function leanEntry(entry: EntryRecord): EntryRecord {
   let changed = false;
   const next = model.map((message: { role?: string; content?: unknown }) => {
     const clipText = CLIPPED_ROLES.has(message?.role ?? "");
+    if (message?.role === "system") {
+      const { role, content, timestamp } = message as { role: string; content?: unknown; timestamp?: unknown };
+      const text = typeof content === "string" ? clip(content) : Array.isArray(content) ? (content as Block[]).map(block => leanBlock(block, true)) : content;
+      const kept = { role, ...(content === undefined ? {} : { content: text }), ...(timestamp === undefined ? {} : { timestamp }) };
+      if (Object.keys(kept).length === Object.keys(message).length && text === content) return message;
+      changed = true;
+      return kept;
+    }
     if (typeof message?.content === "string") {
       if (!clipText || message.content.length <= LEAN_TEXT) return message;
       changed = true;
