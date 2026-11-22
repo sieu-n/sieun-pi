@@ -84,6 +84,15 @@ class RunTests(unittest.TestCase):
             )
             self.assertNotIn("Result ", out)
 
+    def test_a_proxy_provider_down_503_reads_as_the_proxy_hold(self):
+        """Prod 2026-11-22 20:05Z: the portal passed the crawler's proxy_provider_down code on as it is."""
+        held = json.dumps({"error": {"code": "proxy_provider_down", "message": "Our proxy provider is not serving reads right now. Retry after 30 s. You are not charged."}})
+        out, seen = self.run_with(lambda request: httpx.Response(503, text=held))
+        self.assertEqual(len(seen), 1)
+        self.assertIn("Google is unavailable on the Virev search backend right now (HTTP 503: proxy_provider_down: Our proxy provider", out)
+        self.assertIn("no retry helps until the owner picks a proxy", out)
+        self.assertNotIn("Virev search error", out)
+
     def test_a_crawler_503_reads_as_google_down_and_a_portal_503_keeps_its_own_text(self):
         """Prod 2026-11-10 to 11-12: the crawler refused every Google search while it held its proxy supply."""
         held = json.dumps({"error": {"code": "upstream_error", "message": "upstream temporarily unavailable"}})

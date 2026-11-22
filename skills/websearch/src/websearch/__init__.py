@@ -107,6 +107,11 @@ def _error_message(body_text: str) -> str:
         return body_text[:300]
 
 
+# The crawler's proxy supply codes (crawler-v3 http/errors.py), which the portal passes on while
+# the paid proxy is lapsed or its supply is held (owner rule c230).
+_PROXY_HOLD_CODES = frozenset({"proxy_provider_down", "proxy_auth_failed", "proxy_quota_exhausted", "proxy_unreachable"})
+
+
 def _error_code(body_text: str) -> str:
     try:
         return str(json.loads(body_text)["error"]["code"])
@@ -128,20 +133,25 @@ def _friendly_http_error(status: int, body_text: str) -> str:
             "Top up the balance at api.virev.ai to keep searching."
         )
     # A 503 `upstream_error` is the crawler's own refusal, as while it holds its proxy supply
-    # ("upstream temporarily unavailable"). The portal's other 503s (auth_unavailable,
+    # ("upstream temporarily unavailable"). Since 11-22 the portal passes the crawler's own code
+    # through instead, as 503 proxy_provider_down "Our proxy provider is not serving reads right
+    # now" (measured at 20:05Z on 11-22). The portal's other 503s (auth_unavailable,
     # rate_limit_unavailable, billing_unavailable) are its Convex calls and keep their own text.
-    if status in (429, 502, 504) or (status == 503 and _error_code(body_text) == "upstream_error"):
+    code = _error_code(body_text)
+    proxy_hold = code in _PROXY_HOLD_CODES
+    if status in (429, 502, 504) or (status == 503 and (code == "upstream_error" or proxy_hold)):
         # A 429 is Google refusing the crawler's exits. A 502 or 504 can also be the
         # crawler itself being down: on 2026-10-15 a prod deploy hold stopped it from
         # 09:16Z to 10:24Z and every call came back as 502 "Upstream error".
         held = (
             " The crawler holds every search while its paid proxy is lapsed, so no retry helps"
             " until the owner picks a proxy."
-            if "upstream temporarily unavailable" in message
+            if proxy_hold or "upstream temporarily unavailable" in message
             else ""
         )
+        named = f"{code}: {message}" if proxy_hold else message
         return (
-            f"Google is unavailable on the Virev search backend right now (HTTP {status}: {message}). "
+            f"Google is unavailable on the Virev search backend right now (HTTP {status}: {named}). "
             f"No charge was taken.{held}"
         )
     return f"Virev search error ({status}): {message}"

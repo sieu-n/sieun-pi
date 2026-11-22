@@ -219,6 +219,16 @@ test("websearch_query reads the crawler's proxy hold as off without a second sea
   assert.equal(calls.n, 1);
 });
 
+// 11-22 20:05Z: the portal passes the crawler's proxy_provider_down on as it is, and the skill names the code.
+const PROVIDER_DOWN = { ...DOWN, stdout: "Results for query \"Prime Intellect\":\n\nGoogle is unavailable on the Virev search backend right now (HTTP 503: proxy_provider_down: Our proxy provider is not serving reads right now. Retry after 30 s. You are not charged.). No charge was taken. The crawler holds every search while its paid proxy is lapsed, so no retry helps until the owner picks a proxy.\n" };
+
+test("websearch_query reads the portal's proxy_provider_down as the proxy hold", async () => {
+  const calls = { n: 0 };
+  const outcome = await websearchQuery.run(searchDeps([PROVIDER_DOWN, GOOGLE], calls));
+  assert.ok(outcome.status === "off" && outcome.detail.includes("c230") && outcome.detail.includes("proxy_provider_down"), JSON.stringify(outcome));
+  assert.equal(calls.n, 1);
+});
+
 test("websearch_query keeps another 503 as an agent fix", async () => {
   const other = { ...DOWN, stdout: DOWN.stdout.replace("HTTP 502: Upstream error", "HTTP 503: capacity_exhausted") };
   const outcome = await websearchQuery.run(searchDeps([other], { n: 0 }));
