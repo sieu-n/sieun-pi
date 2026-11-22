@@ -118,6 +118,11 @@ DEFAULTS = {
     # "fail" the turn with the reason. The owner set this as a Settings choice on 11-03 (For you todo t2). Prime trees keep
     # Prime's own retry.provider.waitForUsage.
     "no_model_room": "wait",
+    # The ssh destination that reaches the pi-pool of each machine whose runs `pi-pool serve` forwards, by the address serve took
+    # them from. A wake for a tree of that machine runs its `pi-pool wake-slot` there, since only that machine's Prime holds the
+    # tree's credential wait: on 11-22 claude3's 04:43:47Z reset booked 01a0cc38, a Mac tree, whose wake on this box answered
+    # "none", and it slept 16 min to its own cell.
+    "wake_ssh": {},
 }
 # The values `pi-pool set` takes for a key with a fixed set of them.
 CHOICES = {"no_model_room": ("wait", "switch", "fail")}

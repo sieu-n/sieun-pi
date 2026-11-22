@@ -1530,6 +1530,29 @@ class BookOnRead(unittest.TestCase):
                          "d7 reads a booked tree's cell from this line, since no parked line shows it until the tree asks")
         self.assertLess(cells["first"], cells["second"])
 
+    def test_a_booked_tree_of_another_machine_is_woken_on_that_machine(self):
+        """On 11-22 claude3's 04:43:47Z reset booked 01a0cc38, a Mac tree whose runs `pi-pool serve` forwards, and its wake here
+        answered "none", since only the Mac's Prime holds its credential wait. It slept 16 min to its own cell."""
+        from vend.pool import remote
+        state = empty_state()
+        put(state, tree_key("mac-tree"), on="y")
+        put(state, tree_key("here"), on="y")
+        with unittest.mock.patch.dict(os.environ, {remote.CLIENT_ENV: "100.66.173.18"}):
+            self.assertTrue(vending.note_host(state, tree_key("mac-tree")))
+        with unittest.mock.patch.dict(os.environ):
+            os.environ.pop(remote.CLIENT_ENV, None)
+            self.assertFalse(vending.note_host(state, tree_key("here")), "a run of this machine files no host")
+        self.assertEqual(remote.holder_env(None, None, "100.66.173.18")[remote.CLIENT_ENV], "100.66.173.18")
+        hosts = turns_mod.wake_hosts(state["sessions"], {"wake_ssh": {"100.66.173.18": "mac"}})
+        self.assertEqual(hosts, {"mac-tree": "mac"})
+        turns = {"working": {}, "queued": {}, "owner": {}, "lead": [], "kept": {}}
+        asked, sent = [], []
+        tried = turns_mod.wake_slot(["mac-tree", "here"], run=lambda session: asked.append(session) or "timer", now=NOW, turns=turns,
+                                    each=True, hosts=hosts, remote=lambda dest, tree: sent.append((dest, tree)) or {"mac-sub": "park"})
+        self.assertEqual(sent, [("mac", "mac-tree")], "the Mac tree's wake runs on the Mac")
+        self.assertEqual(asked, ["here"], "only this machine's tree is woken here")
+        self.assertEqual(tried[0], ("mac-tree", {"mac-sub": "park"}))
+
     def test_a_tree_woken_with_each_does_not_stop_the_wake_of_the_trees_after_it(self):
         turns = {"working": {}, "queued": {}, "owner": {}, "lead": [], "kept": {}}
         asked = []

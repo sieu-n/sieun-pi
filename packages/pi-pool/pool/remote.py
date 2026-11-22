@@ -14,6 +14,9 @@ SERVE = os.path.join(base.POOL, "serve.json")
 REMOTE = os.path.join(base.POOL, "remote.json")
 KEY_ENV = "PI_POOL_SESSION_KEY"
 OFF_ENV = "PI_POOL_REMOTE"
+# The address `pi-pool serve` took a forwarded run from, so the hook can file it on the tree (vending.note_host) and a wake for
+# that tree goes to the machine it runs on (turns.wake_slot).
+CLIENT_ENV = "PI_POOL_CLIENT"
 # Turn slots, the session's class and the login hand-off stay on the machine the session runs on.
 LOCAL_COMMANDS = {"admit", "release", "park", "wake-parked", "wake-slot", "owner-turn", "lead", "queue", "priority", "adopt-logins", "config", "set", "log", "serve",
                   "login", "hookd", "snapshot"}
@@ -133,11 +136,13 @@ def via_hookd(script, args, env):
         return 1, "", "pi-pool serve: hookd dropped the request\n"
 
 
-def holder_env(session, protocol=None):
-    """The holder's environment for one forwarded run, with the asking Prime's credential protocol."""
+def holder_env(session, protocol=None, client=None):
+    """The holder's environment for one forwarded run, with the asking Prime's credential protocol and the address it came from."""
     env = {k: v for k, v in os.environ.items()
-           if k not in (base.SESSION_ENV, base.JOURNAL_ENV, KEY_ENV, base.CREDENTIAL_PROTOCOL_ENV)}
+           if k not in (base.SESSION_ENV, base.JOURNAL_ENV, KEY_ENV, base.CREDENTIAL_PROTOCOL_ENV, CLIENT_ENV)}
     env[OFF_ENV] = "off"
+    if client:
+        env[CLIENT_ENV] = client
     if protocol == "1":
         env[base.CREDENTIAL_PROTOCOL_ENV] = "1"
     if session and session.get("key"):
@@ -172,7 +177,7 @@ def make_handler(cfg, root):
             if not valid_argv(argv) or not (session is None or isinstance(session, dict)) \
                     or not (given_in is None or isinstance(given_in, str)):
                 return self.send_error(400)
-            env = holder_env(session, protocol)
+            env = holder_env(session, protocol, self.client_address[0])
             done = None if given_in else via_hookd(*holder_script(root, argv), env)
             if done is None:
                 run = subprocess.run(holder_command(root, argv), env=env, input=given_in or "", capture_output=True, text=True)

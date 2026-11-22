@@ -567,15 +567,42 @@ def sleeping(turns, tree, now):
     return found or [tree]
 
 
-def wake_slot(trees, run=run_wake, now=None, turns=None, each=False):
+def wake_hosts(sessions, cfg):
+    """The ssh destination of each tree that `pi-pool serve` forwarded from another machine (vending.note_host), by `wake_ssh`."""
+    dests = cfg.get("wake_ssh") or {}
+    return {k: dests[rec["host"]] for k, rec in sessions.items() if isinstance(rec, dict) and rec.get("host") in dests}
+
+
+def run_remote_wake(dest, tree):
+    """`pi-pool wake-slot --each <tree>` on the machine at `dest`, whose turn queue and Prime hold the tree's sessions: their
+    {session: woke}, else {tree: what went wrong}."""
+    import shlex
+    script = ('PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH" /usr/bin/python3 -B "$HOME/.config/pi-pool/bin/pi-pool" '
+              "wake-slot --each " + shlex.quote(tree))
+    try:
+        done = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", dest, script], capture_output=True, text=True,
+                              timeout=WAKE_LEASE_SEC)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return {tree: type(e).__name__}
+    try:
+        tried = json.loads(done.stdout.strip().splitlines()[-1])["tried"]
+        return dict(tried[0]["woke"]) if tried else {tree: "none"}
+    except (ValueError, IndexError, KeyError, TypeError):
+        return {tree: f"ssh exit {done.returncode}"}
+
+
+def wake_slot(trees, run=run_wake, now=None, turns=None, each=False, hosts=None, remote=run_remote_wake):
     """Wake the sessions of the first of `trees` (refill's line for a cell that opened) that any session answers for, so that
     tree asks now and takes the cell. A session in no credential wait answers "none", and the next tree in line is tried.
-    With `each` (book_line's trees, each booked into its own cell) every tree is woken. Returns [(tree, {session: woke})] for the
-    trees tried."""
+    With `each` (book_line's trees, each booked into its own cell) every tree is woken. A tree of another machine (`hosts`, by
+    `wake_hosts`) is woken there. Returns [(tree, {session: woke})] for the trees tried."""
     now = time.time() if now is None else now
     turns, tried = turns or current(), []
+    if hosts is None:
+        # state.json is replaced in one rename, so this read needs no flock.
+        hosts = wake_hosts((base.load_json(base.STATE, {}) or {}).get("sessions") or {}, base.config())
     for tree in trees:
-        woke = {s: run(s) for s in sleeping(turns, tree, now)}
+        woke = remote(hosts[tree], tree) if tree in hosts else {s: run(s) for s in sleeping(turns, tree, now)}
         tried.append((tree, woke))
         base.log("slot_wake", tree=tree, woke=woke)
         if not each and any(w in ("timer", "park") for w in woke.values()):

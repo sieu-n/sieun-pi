@@ -603,6 +603,23 @@ def utc(epoch):
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch))
 
 
+def note_host(state, key):
+    """File on the tree the address `pi-pool serve` forwarded this run from (remote.CLIENT_ENV), or drop it for a run of this
+    machine, so a wake for the tree reaches the machine its sessions run on (turns.wake_slot). Returns True when it changed."""
+    from . import remote
+    rec = state["sessions"].get(key.key) if key else None
+    if rec is None:
+        return False
+    host = os.environ.get(remote.CLIENT_ENV) or None
+    if rec.get("host") == host:
+        return False
+    if host:
+        rec["host"] = host
+    else:
+        rec.pop("host", None)
+    return True
+
+
 def note_model(state, key, provider, model, cfg, now):
     """File the model one request of the tree runs, as `pi-pool model` does for a Prime session, unless the record names
     it already. pi-host's durable provider names it in MODEL_ENV on each request: from 10-30 22:32Z to 11-01 12:00Z
@@ -924,7 +941,8 @@ def vend(provider):
             reads = reads_due(state, provider, accounts, cfg, now)
             HookWriter(state).start_reads(provider, [a.id for a in reads], now)
             token = stay_now(state, d, tree, key, provider, cfg, now, parent)
-            if pruned or noted or wrote or reads or token:
+            hosted = note_host(state, key)
+            if pruned or noted or wrote or reads or token or hosted:
                 base.save_json(base.STATE, state)
     except TimeoutError:
         # save_json replaces state.json in one rename, so an unlocked read sees a whole file. A 429 still in the
