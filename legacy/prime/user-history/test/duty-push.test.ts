@@ -126,3 +126,17 @@ test("a miss on a closed window gets no push until the window rolls over, then o
   const live: DutyRunRecord = { ...unended, metrics: { ...scheduled.metrics, slow_route_p90_s: result(9) } };
   assert.deepEqual(pushMisses([live], counted, EVERY, at("2T21:58:24")), ["slow_route_p90_s"], "a miss with no closed window keeps its push");
 });
+
+test("a miss that a newer error run measured on target gets no push, and one it measured off target does (CI and RepoOps d6, 11-22)", () => {
+  const day = (clock: string) => Date.parse(`2026-11-22T${clock}Z`);
+  const anchor = (value: number): MetricResult => ({ value, target: 10, op: "<=", met: value <= 10 });
+  const verify: DutyRunRecord = { duty: "d6", at: day("05:10:19"), trigger: "verify", ms: 1, verdict: "error", summary: "",
+    metrics: { visual_anchor_below_baseline_pts: anchor(10) }, job: { id: "j-0510", name: "component history CI and RepoOps 14:10" },
+    after: { at: day("06:05:56"), verdict: "missed", summary: "", metrics: { visual_anchor_below_baseline_pts: anchor(13.3) } } };
+  const push = (after: number): DutyRunRecord => ({ duty: "d6", at: day("06:07:55"), trigger: "push", ms: 1, verdict: "error", summary: "",
+    metrics: { visual_anchor_below_baseline_pts: anchor(0) }, job: { id: "j-0607", name: "component history CI and RepoOps 15:07" },
+    after: { at: day("06:11:55"), verdict: "error", summary: "", metrics: { visual_anchor_below_baseline_pts: anchor(after) } } });
+  const counted = new Set(["visual_anchor_below_baseline_pts"]);
+  assert.equal(pushMisses([push(6.6), verify], counted, 60 * MIN, day("13:33:00")), null);
+  assert.deepEqual(pushMisses([push(13.3), verify], counted, 60 * MIN, day("13:33:00")), ["visual_anchor_below_baseline_pts"]);
+});

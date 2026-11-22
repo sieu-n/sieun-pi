@@ -198,3 +198,24 @@ test("a check-in's board metric the live board reads clean owes no fix, though i
   assert.equal(read(goal("Done when p90 reads under 10 min on main")).redDuties.length, 0, "every open goal has a done line now");
   assert.deepEqual(read(goal("")).redDuties.map(red => red.keys), [["no_done_line"]], "a goal with no done line still owes a fix");
 });
+
+// CI and RepoOps d6 on 11-22, as its runs file holds them: the 05:10Z verify run's after-job measure at 06:05Z missed the visual anchor, and the
+// 06:07Z push run's after-job measure at 06:11Z read it on target with verdict error, since the email metrics carried the 999999 placeholder.
+const anchor = (value: number) => ({ value, target: 10, op: "<=" as const, met: value <= 10 });
+const p50 = (value: number) => ({ value, target: 25, op: "<=" as const, met: value <= 25 });
+const nov22 = (clock: string) => Date.parse(`2026-11-22T${clock}Z`);
+const verifyRun: DutyRunRecord = { duty: "d6", at: nov22("05:10:19"), trigger: "verify", ms: 1, verdict: "error", summary: "",
+  metrics: { visual_anchor_below_baseline_pts: anchor(10), visual_p50_rise_pct: p50(-6.4) }, job: { id: "j-0510", name: "component history CI and RepoOps 14:10" },
+  after: { at: nov22("06:05:56"), verdict: "missed", summary: "", metrics: { visual_anchor_below_baseline_pts: anchor(13.3), visual_p50_rise_pct: p50(14.4) } } };
+const pushRun = (after: number): DutyRunRecord => ({ duty: "d6", at: nov22("06:07:55"), trigger: "push", ms: 1, verdict: "error", summary: "",
+  metrics: { visual_anchor_below_baseline_pts: anchor(0), visual_p50_rise_pct: p50(0.7) }, job: { id: "j-0607", name: "component history CI and RepoOps 15:07" },
+  after: { at: nov22("06:11:55"), verdict: "error", summary: "", metrics: { visual_anchor_below_baseline_pts: anchor(after), visual_p50_rise_pct: p50(1.7) } } });
+
+test("a miss that a newer error run measured on target owes no fix, and one it measured off target still does (CI and RepoOps d6, 11-22 06:33Z)", () => {
+  const duty = { id: "d6", name: "Component history" };
+  assert.equal(planCounts(inputs([verifyRun], duty, nov22("06:33:00"))).redDuties.length, 1, "the 06:05Z reading alone owes a fix");
+  assert.deepEqual(owedKeys(["visual_anchor_below_baseline_pts"], [pushRun(6.6), verifyRun], new Set()), []);
+  assert.equal(planCounts(inputs([pushRun(6.6), verifyRun], duty, nov22("06:33:00"))).redDuties.length, 0);
+  assert.deepEqual(planCounts(inputs([pushRun(13.3), verifyRun], duty, nov22("06:33:00"))).redDuties.map(red => red.keys),
+    [["visual_anchor_below_baseline_pts"]], "an error run that measured the miss keeps it");
+});

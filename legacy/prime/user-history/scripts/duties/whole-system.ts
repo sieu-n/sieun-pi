@@ -26,7 +26,7 @@ import { readRecords } from "../../src/orphan-services.ts";
 import { hostUpdateSpans, readUpdateSpans, type UpdateSpan } from "../../src/prime-update.ts";
 import { deliveryCandidates, outboxLandings, readSessionMarks, type SlotWaitTimeout, splitSlotWaits } from "../../src/slot-wait-timeouts.ts";
 import { CHECK_IN_DUTY_ID, type DutyRunRecord, type FlaggedSlice, HOST_AWAY, type PrecheckOutput } from "../../src/shared/chat-duties.ts";
-import { effectiveRun, metricStreaks, missStreak, newestReading } from "../../src/shared/duty-streak.ts";
+import { effectiveRun, metricStreaks, missStreak, newestReading, stillMissed } from "../../src/shared/duty-streak.ts";
 import { type PrimeEvent, primeWords, readCallLogs, readPrimeEvents } from "./prime-call-logs.ts";
 import { missedKeys, parseDutyLink } from "../../src/shared/duty-fixes.ts";
 import { boardMetricsClean } from "../../src/checkin-findings.ts";
@@ -1433,13 +1433,13 @@ export function unreadWindows(missed: readonly string[], metrics: DutyRunRecord[
  * with no `lastEventAt` reads as such a lagging window too (`unreadWindows`), and d9's push asks its chat to add the field. A check-in's
  * stuck_steps owes none once none of the steps it flagged is stuck on the live board (`liveStuck`, which stuck_steps_all reads): launch main
  * bro's and CI and RepoOps' check-ins counted at 03:29Z and 03:52Z while stuck_steps_all read 0. Nor does a board metric the live board reads
- * clean (`boardMetricsClean`), the keys `liveClean` holds.
+ * clean (`boardMetricsClean`), the keys `liveClean` holds. Nor does a metric a newer run of any verdict measured on target (`stillMissed`).
  */
 export function owedKeys(missed: readonly string[], runs: readonly DutyRunRecord[], liveClean: ReadonlySet<string>): string[] {
   const quiet = new Set(metricStreaks(runs).filter(streak => streak.quietSince !== undefined).map(streak => streak.key));
   const newest = newestReading(runs);
   const unread = new Set(newest ? unreadWindows(missed, effectiveRun(newest).metrics) : []);
-  return missed.filter(key => !quiet.has(key) && !unread.has(key) && !liveClean.has(key));
+  return stillMissed(missed, runs).filter(key => !quiet.has(key) && !unread.has(key) && !liveClean.has(key));
 }
 
 /**

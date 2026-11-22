@@ -232,6 +232,17 @@ export function metricStreaks(runs: readonly DutyRunRecord[]): MetricStreak[] {
  * reading of 1 and counted the duty stuck. Over every duty's runs at 23:30Z on 11-09 this changed that one verdict and no other.
  */
 export function verdictNow(runs: readonly DutyRunRecord[]): "met" | "missed" | undefined {
+  const now = readingNow(runs);
+  if (!now) return undefined;
+  if (!now.overlaid) return now.verdict;
+  return now.met.size && [...now.met.values()].every(Boolean) ? "met" : "missed";
+}
+
+/**
+ * Each metric's met flag now, as `verdictNow` reads it: the newest reading's, with each newer error run's measure over it one metric at a time,
+ * and `overlaid` when such an error run exists. An error run that measured a miss keeps it, as one that measured the metric met clears it.
+ */
+function readingNow(runs: readonly DutyRunRecord[]): { verdict: "met" | "missed"; met: Map<string, boolean>; overlaid: boolean } | undefined {
   let best: { at: number; verdict: "met" | "missed"; metrics: Record<string, MetricResult> } | undefined;
   for (const run of runs) {
     const metrics = Object.values(run.metrics ?? {});
@@ -241,10 +252,20 @@ export function verdictNow(runs: readonly DutyRunRecord[]): "met" | "missed" | u
   }
   if (!best) return undefined;
   const newer = runs.filter(run => run.at > best.at && effectiveRun(run).verdict === "error" && Object.keys(effectiveRun(run).metrics ?? {}).length).sort((a, b) => a.at - b.at);
-  if (!newer.length) return best.verdict;
   const met = new Map(Object.entries(best.metrics).map(([key, result]) => [key, result.met]));
   for (const run of newer) for (const [key, result] of Object.entries(effectiveRun(run).metrics ?? {})) met.set(key, result.met);
-  return met.size && [...met.values()].every(Boolean) ? "met" : "missed";
+  return { verdict: best.verdict, met, overlaid: newer.length > 0 };
+}
+
+/**
+ * The keys of `missed` that no reading since measured on target (`readingNow`). The newest met-or-missed reading (`newestReading`) skips error
+ * runs, so it can name a miss that a newer error run measured met. CI and RepoOps d6 on 11-22: the 05:10Z run's after-job measure at 06:05Z read
+ * visual_anchor_below_baseline_pts 13.3 against at most 10, the 06:07Z push run's after-job measure at 06:11Z read 6.6 with verdict error only
+ * because the email metrics waited on the crawl stop, and d9's 06:33Z run still owed a fix for the visual anchor.
+ */
+export function stillMissed(missed: readonly string[], runs: readonly DutyRunRecord[]): string[] {
+  const met = readingNow(runs)?.met;
+  return met ? missed.filter(key => met.get(key) !== true) : [...missed];
 }
 
 /** The missed metric the line names: the duty's headline when it missed, else the one missed for the most runs in a row. */

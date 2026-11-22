@@ -1,6 +1,6 @@
 import { missedKeys } from "./shared/duty-fixes.ts";
 import { type DutyRunRecord, STILL_WORKING } from "./shared/chat-duties.ts";
-import { effectiveRun, metricStreaks, newestReading, type MetricStreak } from "./shared/duty-streak.ts";
+import { effectiveRun, metricStreaks, newestReading, stillMissed, type MetricStreak } from "./shared/duty-streak.ts";
 
 /**
  * Whether the duty's newest job ended with no push job since: that job is no push run's, nor a rerun's of a push run, and it ended with an
@@ -46,7 +46,7 @@ export const PART_READ_MS = 15 * 60_000;
 /**
  * The counted metrics a push run of a standing duty goes after, or null when the duty gets no push now. `runs` are the duty's runs, newest
  * first. The duty is red when its newest met-or-missed reading (`newestReading`, so a run whose after-job measure is met counts green) missed a
- * counted metric. It gets a push once its newest run of any verdict is `everyMs` old, the chat's check-in interval: the owner's own push
+ * counted metric that no newer run measured on target (`stillMissed`). It gets a push once its newest run of any verdict is `everyMs` old, the chat's check-in interval: the owner's own push
  * cadence for the chat. Without it a red daily duty waited a whole day after its fix job ended, and forever when its job did not start: from
  * 10-16 to 10-18 four daily duties sat red with no job for 1 to 2 days after "the catalog cannot list the chat". It gets one sooner when its
  * newest job ended red with no push job since (`endedUnpushed`), on the misses that are no quiet windowed count, which owe no fix job.
@@ -71,7 +71,7 @@ export function pushMisses(runs: readonly DutyRunRecord[], counted: ReadonlySet<
   if (!holder) return null;
   const measured = effectiveRun(holder);
   if (measured.verdict === "missed") {
-    const keys = missedKeys(measured).filter(key => counted.has(key));
+    const keys = stillMissed(missedKeys(measured), runs).filter(key => counted.has(key));
     const streaks = metricStreaks(runs);
     const quiet = new Set(streaks.filter(streak => streak.quietSince !== undefined).map(streak => streak.key));
     // A quiet windowed count only waits for its old events to leave the window (`agedOut` pushes once they have), so the interval push skips
