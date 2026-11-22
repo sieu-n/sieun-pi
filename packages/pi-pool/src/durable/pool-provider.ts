@@ -145,6 +145,10 @@ export function ticketIn(text: string | undefined, key: TreeKey): TurnTicket {
  */
 export class TurnQueue {
   private readonly held = new Map<string, number>();
+  /** Each session's last pool call, which its next call waits for, so a release never lands before the admit it gives back. */
+  private readonly lines = new Map<string, Promise<unknown>>();
+  /** How many releases each session sent, so an admit that answers after a release does not mark the slot held. */
+  private readonly releases = new Map<string, number>();
   readonly bin: string;
   readonly turnsFile: string;
 
@@ -157,16 +161,36 @@ export class TurnQueue {
     return (this.opts.now ?? Date.now)();
   }
 
+  /**
+   * One pool call, after the session's call before it. An input that settles while its admit is still in the hook, as an abort does, sends
+   * its release behind that admit; sent at once, the release came first and the late admit kept a working slot for its 30 min lease.
+   */
   private async call(key: TreeKey, args: string[]): Promise<{ ok: boolean; out: string }> {
-    const run = await runPool(this.bin, ["--cli", ...args], poolEnv(key, this.opts.agentDir), this.opts.exec ? { exec: this.opts.exec } : {});
-    return { ok: run.code === 0, out: run.stdout.trim() || run.stderr.trim() };
+    const before = this.lines.get(key.session);
+    const mine = (async () => {
+      await before;
+      const run = await runPool(this.bin, ["--cli", ...args], poolEnv(key, this.opts.agentDir), this.opts.exec ? { exec: this.opts.exec } : {});
+      return { ok: run.code === 0, out: run.stdout.trim() || run.stderr.trim() };
+    })();
+    this.lines.set(key.session, mine);
+    try {
+      return await mine;
+    } finally {
+      if (this.lines.get(key.session) === mine) this.lines.delete(key.session);
+    }
+  }
+
+  /** An admit names this process, which the queue's "process gone" sweep follows, also when `exec` runs the hook from another process. */
+  private admitArgs(key: TreeKey, renew = false): string[] {
+    return ["admit", key.session, "--pid", String(process.pid), ...(renew ? ["--renew"] : [])];
   }
 
   private async ask(key: TreeKey): Promise<TurnPlace> {
-    const res = await this.call(key, ["admit", key.session]);
+    const released = this.releases.get(key.session);
+    const res = await this.call(key, this.admitArgs(key));
     const reply: AdmitReply | null = res.ok ? admitReply(res.out) : null;
     if (reply?.state === "queued") return { kind: "wait", position: reply.position, total: reply.total, askedAt: this.now() };
-    if (reply?.state === "admitted") this.held.set(key.session, this.now());
+    if (reply?.state === "admitted" && this.releases.get(key.session) === released) this.held.set(key.session, this.now());
     return { kind: "go" };
   }
 
@@ -176,7 +200,7 @@ export class TurnQueue {
     if (renewedAt === undefined) return this.ask(key);
     if (this.now() - renewedAt >= TURN_RENEW_MS) {
       this.held.set(key.session, this.now());
-      await this.call(key, ["admit", key.session, "--renew"]);
+      await this.call(key, this.admitArgs(key, true));
     }
     return { kind: "go" };
   }
@@ -200,6 +224,7 @@ export class TurnQueue {
   /** After the session's input settled: give the slot back; `queuedInput` keeps the place for a run that starts at once. */
   async release(key: TreeKey, queuedInput = false): Promise<void> {
     this.held.delete(key.session);
+    this.releases.set(key.session, (this.releases.get(key.session) ?? 0) + 1);
     await this.call(key, ["release", key.session, ...(queuedInput ? ["--queued-input"] : [])]);
   }
 
