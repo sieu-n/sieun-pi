@@ -90,15 +90,6 @@
   ]
  },
  {
-  "id": "skill-principle-make-operations-idempotent",
-  "tool": "skill principle-make-operations-idempotent",
-  "probes": [
-   {
-    "path": "~/.prime/agent/skills/principle-make-operations-idempotent/SKILL.md"
-   }
-  ]
- },
- {
   "id": "skill-principle-migrate-callers-then-delete-legacy-apis",
   "tool": "skill principle-migrate-callers-then-delete-legacy-apis",
   "probes": [

@@ -517,7 +517,9 @@
       "upstream_path": "pstack/skills/principle-make-operations-idempotent/SKILL.md",
       "upstream_sha256": "540738217c3da7bf513b9886924ad6a2bc77e58be867f5bd2e1831c74bf2ce70",
       "import_sha256": "540738217c3da7bf513b9886924ad6a2bc77e58be867f5bd2e1831c74bf2ce70",
-      "unchanged_at_comparison": true
+      "unchanged_at_comparison": true,
+      "merged_into": "skills/poteto-mode/SKILL.md",
+      "merged_on": "2026-11-23"
     },
     {
       "path": "skills/principle-minimize-reader-load/SKILL.md",

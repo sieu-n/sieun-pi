@@ -54,7 +54,6 @@ Read the leaf skill in full for any principle you apply.
 | principle-model-the-domain | Logic holds state or branches a lot. Encode it in a state machine, typed model, table, or reducer. |
 | principle-boundary-discipline | You wire validation, errors, or adapters. Guard at system edges and trust internal types. |
 | typescript-best-practices | You design types or a signature in any typed language. Make illegal states unrepresentable and parse external data at edges. |
-| principle-make-operations-idempotent | A command or loop runs through crashes and retries. Make it converge to one end state. |
 | principle-separate-before-serializing-shared-state | Concurrent actors may write the same file, branch, or key. Remove the sharing first. |
 | principle-prove-it-works | You are about to call a task done. Check the real artifact, not a proxy. |
 | principle-fix-root-causes | You debug. Reproduce first and trace each symptom to its cause. |
@@ -63,6 +62,7 @@ Read the leaf skill in full for any principle you apply.
 
 These rules have no leaf skill, because one line holds each of them.
 
+- When a command, lifecycle step or loop can crash, restart or retry, make it reach the same end state however often it runs. On start, reconcile what a prior run left: adopt live work, judge a lock stale by whether its PID still lives, and compare artifacts by content, not creation order. Ask what a second run in a row does and what a rerun does after a crash at each point, and add a reconcile step wherever the answer depends on leftover state.
 - When a new requirement lands on an old design, build what you would have built had it been there from day one, and carry the change through every type, doc and example.
 - When you weigh product, UX or scope, pick what the user sees over what is easy to build, and ship a few polished features before many rough ones.
 - When a new internal API replaces an old one, move every caller and delete the old API in the same change, and in a phased rewrite go straight to the target without throwaway compatibility code between phases.

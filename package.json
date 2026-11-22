@@ -61,7 +61,6 @@
       "./skills/principle-encode-lessons-in-structure/SKILL.md",
       "./skills/principle-fix-root-causes/SKILL.md",
       "./skills/principle-laziness-protocol/SKILL.md",
-      "./skills/principle-make-operations-idempotent/SKILL.md",
       "./skills/principle-model-the-domain/SKILL.md",
       "./skills/principle-prove-it-works/SKILL.md",
       "./skills/principle-separate-before-serializing-shared-state/SKILL.md",

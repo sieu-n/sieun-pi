@@ -83,13 +83,6 @@
       "target": ".prime/agent/skills/principle-laziness-protocol"
     },
     {
-      "id": "skill:principle-make-operations-idempotent",
-      "kind": "link",
-      "source": "skills/principle-make-operations-idempotent",
-      "scope": "home",
-      "target": ".prime/agent/skills/principle-make-operations-idempotent"
-    },
-    {
       "id": "skill:principle-model-the-domain",
       "kind": "link",
       "source": "skills/principle-model-the-domain",
