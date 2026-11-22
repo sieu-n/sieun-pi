@@ -8,7 +8,7 @@
   import TpsCard from "./TpsCard.svelte";
   import UsageChart from "./UsageChart.svelte";
   import { chartFormat, cost, count, exactCost, full, percent, type TipRow } from "./format";
-  import { keptReport, readAhead, readReport, REFRESH_MS, type UsageFilters } from "./reports";
+  import { keptReport, readAhead, readReport, REFRESH_MS, type ReadMode, type UsageFilters } from "./reports";
   import { bucketValue, cacheHit, cellsOf, KIND_LABEL, KINDS, METRIC_LABEL, modelName, modelsByCost, seriesOf, summarize, tokenSum, type Measure, type Metric, type Unit } from "./stats";
 
   /**
@@ -56,21 +56,32 @@
     hosts = [...new Set([...hosts, ...next.rows.map(row => row.host)])].sort();
   }
 
-  /** Shows the kept report of the filters at once, if the page read one, and reads it again; `poll` is the page's own refresh. */
-  async function load(poll = false): Promise<void> {
+  /** When the shown report is refreshed: once it is `REFRESH_MS` old. */
+  let pollTimer: ReturnType<typeof setTimeout> | undefined;
+  function schedulePoll(read: number): void {
+    clearTimeout(pollTimer);
+    pollTimer = setTimeout(() => void load("poll"), Math.max(0, read + REFRESH_MS - performance.now()));
+  }
+
+  /** Shows the kept report of the filters at once, if the page read one, and reads it unless it is current (reports.ts). */
+  async function load(mode: ReadMode = "view"): Promise<void> {
     const id = ++request;
     loading = true;
     const filters: UsageFilters = { range, bucket, ...(thread === ALL ? {} : { thread }), ...(host === ALL ? {} : { host }) };
     const before = keptReport(filters);
     if (before && before !== report) show(before);
     try {
-      const next = await readReport(filters, poll);
+      const next = await readReport(filters, mode);
       if (id !== request) return;
-      show(next);
+      show(next.report);
       error = null;
+      schedulePoll(next.read);
       readAhead(filters);
     } catch (reason) {
-      if (id === request) error = message(reason);
+      if (id === request) {
+        error = message(reason);
+        schedulePoll(performance.now());
+      }
     } finally {
       if (id === request) loading = false;
     }
@@ -84,11 +95,7 @@
     }
   }
   function refresh(): void {
-    void load();
-    void loadPool();
-  }
-  function poll(): void {
-    void load(true);
+    void load("force");
     void loadPool();
   }
 
@@ -101,8 +108,11 @@
   });
   $effect(() => {
     void loadPool();
-    const timer = setInterval(poll, REFRESH_MS);
-    return () => clearInterval(timer);
+    const timer = setInterval(loadPool, REFRESH_MS);
+    return () => {
+      clearInterval(timer);
+      clearTimeout(pollTimer);
+    };
   });
 
   const setParams = (next: Record<string, string | null>) => router.setParams({ days: null, ...next }, { replace: true });
