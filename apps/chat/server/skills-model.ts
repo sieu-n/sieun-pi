@@ -447,8 +447,11 @@ export function verdicts(input: VerdictInput): Map<string, SkillVerdictRow[]> {
     }
     for (const x of extraCopies(copies, canon)) {
       if (x.why !== "same-text") continue;
-      const action = !isUpstream(skill.source) || (skill.source.kind === "upstream" && skill.source.package === "claude.ai") ? "remove" : "note";
-      add(skill.id, { rule: "duplicate", action, detail: `A second folder of ${skill.name} on ${x.copy.box} with the same text; ${copyId(x.kept)} stays.`, copyId: copyId(x.copy), other: copyId(x.kept) });
+      if (isUpstream(skill.source) && !(skill.source.kind === "upstream" && skill.source.package === "claude.ai")) {
+        add(skill.id, { rule: "upstream-match", action: "note", detail: `The package keeps a second folder of ${skill.name} with the same text in its own cache on ${x.copy.box}; it is not ours to remove.`, copyId: copyId(x.copy), other: copyId(x.kept) });
+        continue;
+      }
+      add(skill.id, { rule: "duplicate", action: "remove", detail: `A second folder of ${skill.name} on ${x.copy.box} with the same text; ${copyId(x.kept)} stays.`, copyId: copyId(x.copy), other: copyId(x.kept) });
     }
     if (canon?.bytes != null && canon.bytes > input.limits.bloatBytes && !isUpstream(skill.source)) {
       const ratio = input.limits.medianBytes ? canon.bytes / input.limits.medianBytes : 0;

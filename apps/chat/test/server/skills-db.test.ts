@@ -400,6 +400,7 @@ test("duplicates: a pair is flagged once on the copy that is not canonical, two 
       copy(BOX, vendored, "edit", "sieun-pi-package", body("edit")),
       copy(BOX, control("control-chrome"), "control-chrome", "codex-plugin", body("chrome")),
       copy(BOX, control("control-in-app-browser"), "control-in-app-browser", "codex-plugin", body("chrome", 3)),
+      copy(BOX, control("control-chrome").replace("/1.0/", "/latest/"), "control-chrome", "codex-plugin", body("chrome")),
       copy("mac", "/Users/o/src/notes-repo/.agents/skills/notes", "notes", "repo:notes-repo", body("notes"), "/Users/o/src/notes-repo"),
       copy("mac", "/Users/o/code/notes-repo/.agents/skills/notes", "notes", "repo:notes-repo", body("notes"), "/Users/o/code/notes-repo"),
     ],
@@ -412,7 +413,7 @@ test("duplicates: a pair is flagged once on the copy that is not canonical, two 
   assert.deepEqual(rules(p => p === vendored), ["duplicate"]);
   assert.match(row(p => p === vendored).verdicts.find(v => v.rule === "duplicate")!.detail, /same text as upstream:prime-agent\/edit/);
   const browser = [...rules(p => p === control("control-chrome")), ...rules(p => p === control("control-in-app-browser"))];
-  assert.deepEqual(browser, ["upstream-match"]);
+  assert.deepEqual(browser, ["upstream-match", "upstream-match"], "the plugin cache's latest folder and the second plugin are notes");
   const notes = row(p => p.endsWith("/notes"));
   assert.deepEqual(notes.extraCopies.map(x => x.why), ["same-text"]);
   assert.ok(notes.verdicts.some(v => v.rule === "duplicate" && v.copyId === notes.extraCopies[0]!.copyId));
