@@ -34,10 +34,13 @@
       if (id === request) error = reason instanceof Error ? reason.message : String(reason);
     }
   }
+  /** The card shows the live rate its report brought until its first poll; a new chat or host filter waits for its own. */
+  let mounted = false;
   $effect(() => {
     void thread;
     void host;
-    live = null;
+    live = mounted ? null : untrack(() => report.live ?? null);
+    mounted = true;
     void poll();
     const timer = setInterval(() => {
       if (!document.hidden) void poll();

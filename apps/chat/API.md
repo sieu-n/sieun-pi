@@ -188,7 +188,7 @@ Pages call the server through `web/src/lib/api` (`import { api, timeline, agents
 
 | Call | Endpoint | Returns |
 |---|---|---|
-| `api.usage({range, bucket, thread, host})` | `GET /api/usage` | `UsageReport`: rows per thread and model with tokens and the cost of each kind, and one bucket per minute, hour or local day of the range (1h, 24h, 7d, 30d or 90d) with its turns, tokens, cost of each kind, and each model's cost (`byModel`) and tokens of each kind (`tokensByModel`). |
+| `api.usage({range, bucket, thread, host})` | `GET /api/usage` | `UsageReport`: rows per thread and model with tokens and the cost of each kind, and one bucket per minute, hour or local day of the range (1h, 24h, 7d, 30d or 90d) with its turns, tokens, cost of each kind, and each model's cost (`byModel`) and tokens of each kind (`tokensByModel`), plus `live`, the `GET /api/usage/live` answer for the same chat and host. |
 | `api.pool()` | `GET /api/pool` | `AccountsView` with no thread, from the pi-pool reading the Accounts endpoints share. |
 | `api.hosts()` | `GET /api/hosts` | `HostsReport`: each box's relay, pi-host, machine reading and threads. |
 | `api.consoles()` | `GET /api/consoles` | `ConsolesReport`: the consoles table from auto-sns-agent's `apps/infra/metal/config/consoles.json` on this box, read on each call (`server/consoles.ts`), or `readError` when the file is missing or broken. The Consoles section of Settings renders it. |
