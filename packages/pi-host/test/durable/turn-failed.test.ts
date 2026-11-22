@@ -82,6 +82,7 @@ test("a failed comm run posts one room line in the post's thread, tells agent fa
     assert.deepEqual(calls.map(call => call.type === "toolCall" ? [call.name, call.arguments] : []), [["tell_owner", { text: ROOM_LINE, reply_to: "ch_abcd1234/p7" }]]);
     const results = (await models(comm.id)).flatMap(entry => entry.message?.role === "toolResult" ? [entry.message] : []);
     assert.deepEqual(results.map(result => [result.toolName, result.isError, (result.content[0] as { text: string }).text]), [["tell_owner", false, TOLD]]);
+    assert.deepEqual((await models(comm.id)).filter(entry => entry.message?.role === "toolResult").map(entry => entry.kind), ["pi.tool-result"], "the result is a tool result entry, as pi-durable writes one");
 
     // The report runs again, as after a crash between its writes: nothing lands twice.
     const open = await threads.thread(comm.id);

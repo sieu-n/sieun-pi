@@ -22,7 +22,7 @@
  */
 import type { Context } from "@earendil-works/chord";
 import type { ImageContent, Message, TextContent } from "@earendil-works/pi-ai";
-import { ROOT_CONVERSATION_ID, type CommitChange, type Cursor, type EntryRecord, type Harness, type Storage, type SubmissionDraft, type SubmissionRecord } from "@earendil-works/pi-durable";
+import { AssistantEntry, ROOT_CONVERSATION_ID, ToolResultEntry, type CommitChange, type Cursor, type EntryRecord, type Harness, type Storage, type SubmissionDraft, type SubmissionRecord } from "@earendil-works/pi-durable";
 import { DatabaseSync } from "node:sqlite";
 import { PLATFORM_AGENT, type AgentRef } from "./agent-profile.ts";
 import { TOLD } from "./turn-end.ts";
@@ -92,8 +92,8 @@ export function roomLineWrites(failed: FailedInput, post: string, model: { api: 
   } as Message;
   const result: Message = { role: "toolResult", toolCallId: id, toolName: "tell_owner", content: [{ type: "text", text: TOLD }], isError: false, timestamp: at };
   return [
-    { type: "write", requestId: `${id}:call`, entry: { kind: "pi.assistant", model: [call] } },
-    { type: "write", requestId: `${id}:result`, entry: { kind: "pi.toolResult", model: [result], data: { diagnostics: [] } } },
+    { type: "write", requestId: `${id}:call`, entry: { kind: AssistantEntry.kind, model: [call] } },
+    { type: "write", requestId: `${id}:result`, entry: { kind: ToolResultEntry.kind, model: [result], data: { diagnostics: [] } } },
   ] as SubmissionDraft[];
 }
 
