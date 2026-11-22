@@ -68,9 +68,11 @@
               {#each problemsOf(row) as p (p)}<Badge tone={p === "bloated" ? "warning" : "danger"}>{p}</Badge>{/each}
               <span class="source">{sourceText(s)}</span>
             </span>
-            <span class="copies">{s.copies.length} {s.copies.length === 1 ? "copy" : "copies"}{folder && row.copies.length > 1 ? `, ${row.copies.length} here` : ""}</span>
-            <span class="drift" class:warn={drift !== null}>{drift ?? "same as source"}</span>
-            <span class="size" class:warn={isBloated(s.size.bytes, t)}>{sizeText(s.size.bytes, t) ?? ""}</span>
+            <span class="facts">
+              <span>{s.copies.length} {s.copies.length === 1 ? "copy" : "copies"}{folder && row.copies.length > 1 ? `, ${row.copies.length} here` : ""}</span>
+              <span class:warn={drift !== null}>{drift ?? "same as source"}</span>
+              {#if sizeText(s.size.bytes, t)}<span class:warn={isBloated(s.size.bytes, t)}>{sizeText(s.size.bytes, t)}</span>{/if}
+            </span>
             <span class="uses">{s.use.uses ? usesText(s.use.uses) : "never"}</span>
           </button>
         </li>
@@ -110,20 +112,16 @@
   .actions { display: flex; gap: var(--space-2); }
   .rows { display: flex; flex-direction: column; margin: 0; padding: var(--space-1); list-style: none; border-radius: 12px; box-shadow: inset 0 0 0 1px var(--border-standard); }
   .row {
-    display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 0.8fr) minmax(0, 0.8fr); align-items: center;
-    gap: var(--space-3); width: 100%; min-height: 40px; padding: var(--space-1) var(--space-3); border: 0; border-radius: 8px; background: transparent;
+    display: grid; grid-template-columns: minmax(0, 1fr) max-content; grid-template-areas: "name uses" "facts uses"; align-items: center;
+    gap: 2px var(--space-6); width: 100%; min-height: 40px; padding: var(--space-2) var(--space-3); border: 0; border-radius: 8px; background: transparent;
     color: var(--text-standard); font: var(--text-body-sm); text-align: left; cursor: pointer;
   }
   .row:hover { background: var(--affordance-ghost-hover); }
   .row:focus-visible { outline: 2px solid var(--border-focus); outline-offset: -2px; }
-  .name { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1) var(--space-2); min-width: 0; }
+  .name { grid-area: name; display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-1) var(--space-2); min-width: 0; }
   .label { font: var(--text-label-sm); overflow-wrap: anywhere; }
-  .source { flex-basis: 100%; color: var(--text-metadata); font: var(--text-caption); overflow-wrap: anywhere; }
-  .copies, .drift, .size { color: var(--text-subtle); font: var(--text-caption); }
-  .uses { justify-self: end; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .source { color: var(--text-metadata); font: var(--text-caption); overflow-wrap: anywhere; }
+  .facts { grid-area: facts; display: flex; flex-wrap: wrap; gap: 0 var(--space-4); color: var(--text-subtle); font: var(--text-caption); }
+  .uses { grid-area: uses; justify-self: end; font-variant-numeric: tabular-nums; white-space: nowrap; }
   .warn { color: var(--text-danger); }
-  @container (width < 560px) {
-    .row { grid-template-columns: minmax(0, 1fr) auto; }
-    .copies, .drift, .size { display: none; }
-  }
 </style>
