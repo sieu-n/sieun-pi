@@ -298,6 +298,7 @@ export function report(out) {
     const normalOf = route => median(normal.get(route) ?? []) ?? allNormal;
     const inWindows = fetches.filter(f => windowOf(f.start) || windowOf(f.end));
     const fetchFailed = fetches.filter(f => failed(f.s));
+    const stalls = records.filter(r => r.kind === "stall");
     const fetchSlow = inWindows.filter(f => !failed(f.s) && f.ms > normalOf(f.route) + BEYOND_MS);
     // Where a slow call's time went, from the front's own line of it: before the front, behind it (server and bridge), after it.
     const frontCalls = readJsonl(join(out, "front-calls.jsonl")).filter(c => c.ua === browser);
@@ -336,7 +337,9 @@ export function report(out) {
       fetches: fetches.length, aborted: all.length - fetches.length, fetchesInWindows: inWindows.length,
       fetchFailed: fetchFailed.length, fetchFailedByRoute: countBy(fetchFailed), fetchFailedErrors: [...new Set(fetchFailed.map(f => f.err ?? `status ${f.s}`))].slice(0, 6),
       fetchSlow: fetchSlow.length, fetchSlowList: fetchSlow.map(f => ({ route: f.route, at: f.start, ms: f.ms, normal: normalOf(f.route), release: windowOf(f.start)?.n ?? null, split: split(f) })),
-      fetchOver2s: fetches.filter(f => !failed(f.s) && f.ms > 2000).map(f => ({ route: f.route, at: f.start, ms: f.ms, inWindow: Boolean(windowOf(f.start)), split: split(f) })),
+      fetchOver2s: fetches.filter(f => !failed(f.s) && f.ms > 2000).map(f => ({ route: f.route, at: f.start, ms: f.ms, inWindow: Boolean(windowOf(f.start)), split: split(f),
+        stalledMs: stalls.filter(x => x.at - x.ms <= f.end && x.at >= f.start).reduce((sum, x) => sum + x.ms, 0) })),
+      stalls: stalls.length, stallMax: stalls.length ? Math.max(...stalls.map(x => x.ms)) : 0, stallsOver500: stalls.filter(x => x.ms >= 500).map(x => ({ at: x.at, ms: x.ms })),
       pageLines: lines.length, pageFailed: lineFailed.length, pageFailedByRoute: countBy(lineFailed), pageFailedErrors: [...new Set(lineFailed.map(t => t.err ?? `status ${t.s}`))].slice(0, 6),
       pageSlow: lineSlow.length,
       socketCloses: closes.length, socketBackMs: closes.map(c => c.backMs), socketBackMax: closes.length ? Math.max(...closes.map(c => c.backMs ?? Infinity)) : null,

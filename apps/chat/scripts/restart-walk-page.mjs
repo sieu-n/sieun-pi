@@ -46,6 +46,13 @@ const instrument = () => {
       },
     );
   };
+  // Main-thread gaps of 50 ms or more, from a 10 ms timer, so a slow call can be told from a busy page.
+  let last = performance.now();
+  setInterval(() => {
+    const now = performance.now();
+    if (now - last >= 50) records.push({ kind: "stall", at: Date.now(), ms: Math.round(now - last - 10) });
+    last = now;
+  }, 10);
   const RealSocket = window.WebSocket;
   window.WebSocket = class extends RealSocket {
     constructor(url, protocols) {
