@@ -4,7 +4,7 @@
   import { hrefFor } from "$lib/router.svelte";
   import { boardHref } from "./chips";
   import DutyDialog from "./DutyDialog.svelte";
-  import { lastLabel, nextLabel, scheduleLabel, VERDICT_WORDS, whenLabel, type Verdict } from "./schedule";
+  import { clockTime, lastLabel, nextLabel, scheduleLabel, VERDICT_WORDS, whenLabel, type Verdict } from "./schedule";
 
   /** A chat's duties, on its board and on its agent page: run now, pause, edit, remove with Undo, add, and each run's measure. */
   let { chatId, duties, onchange, now, focus = null }: { chatId: string; duties: DutyRow[]; onchange: (duties: DutyRow[]) => void; now: number; focus?: string | null } = $props();
@@ -98,6 +98,7 @@
             <span class="text">
               <span class="name t-body-sm">{duty.duty.name}</span>
               <span class="meta t-caption">{scheduleLabel(duty.schedule)} · {lastLabel(lastRun, now)}</span>
+              {#if duty.waitingForAccountSince !== undefined}<span class="meta t-caption" data-account-wait>waiting for a model account since {clockTime(duty.waitingForAccountSince)}</span>{/if}
             </span>
           </button>
           <IdChip id={duty.duty.id} {chatId} href={boardHref(chatId, duty.duty.id)} title="{duty.duty.id} · {duty.duty.name}" />

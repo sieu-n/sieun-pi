@@ -11,8 +11,12 @@ import type { ReviewEvent } from "./shared/skills-review.ts";
 export type { BoardOp, ChatBoard, CheckInPause, CheckInView, ChatAgent, OwnerTodo, PlanItem, PlanStatus, AccountsView, MachineView } from "./shared/types.ts";
 export type { DutyView } from "./shared/chat-duties.ts";
 
-/** A duty row as the server sends it: the DutyView with its runs newest first, the card model and the judged last run. */
-export type DutyRow = DutyView & { card: DutyCardModel; last: { verdict: string; at: number; streak: number; afterJob: boolean } | null };
+/**
+ * A duty row as the server sends it: the DutyView with its runs newest first, the card model and the judged last run, which is the newest run
+ * that measured. `waitingForAccountSince` is set while the duty's newest job waits for a model account in pi-pool, from the start of its run
+ * (`readAccountWait` in server/boards.ts).
+ */
+export type DutyRow = DutyView & { card: DutyCardModel; last: { verdict: string; at: number; streak: number; afterJob: boolean } | null; waitingForAccountSince?: Ms };
 
 /** Epoch milliseconds. */
 export type Ms = number;

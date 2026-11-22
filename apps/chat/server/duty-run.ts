@@ -136,7 +136,9 @@ export async function measure(input: {
   duty: Duty; chat: { id: string; name: string }; dir: string; trigger: DutyTrigger; previous: readonly DutyRunRecord[]; board: ChatBoard | null;
   liveJob: (job: string) => boolean; boardApi: string; now?: number; log?: (line: string) => void;
 }): Promise<DutyRunResult> {
-  const { duty, dir, trigger, previous } = input;
+  const { duty, dir, trigger } = input;
+  // A skipped run measured nothing, so the precheck's LAST_RUNS_FILE and the streaks read the measured runs only, as Prime's `Duties.run` does.
+  const previous = input.previous.filter(run => run.verdict !== "skipped");
   const started = input.now ?? Date.now();
   const detail = join(dir, `${duty.id}-${runStamp(started)}.json`);
   const wall = Date.now();
