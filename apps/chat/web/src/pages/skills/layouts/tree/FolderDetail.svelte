@@ -3,7 +3,7 @@
   import { Badge, Button } from "$lib/ui";
   import InstallDialog from "./InstallDialog.svelte";
   import {
-    PROBLEMS, boxLabel, folderLine, folderSkills, isBloated, sizeText, skillProblems, sourceText, tilde, usesText, type CopyRef, type Folder, type FolderSkill, type Problem,
+    boxLabel, folderLine, folderSkills, isBloated, sizeText, skillProblems, sourceText, tilde, usesText, type CopyRef, type Folder, type FolderSkill, type Problem,
   } from "./model";
 
   type Props = {
@@ -42,7 +42,7 @@
     </div>
     <p class="meta">
       {#if folder}{folderLine(folder)}.{:else}Pick a folder in the tree to see only its skills, or a skill to see its copies on every box.{/if}
-      {#if problem}Showing only {PROBLEMS[problem].label} skills.{/if}
+      {#if problem}Showing only {problem} skills.{/if}
     </p>
     {#if isRoot}
       <div class="actions"><Button size="sm" icon="plus" onclick={() => (installOpen = true)} data-testid="tree-add-here">Add skill here</Button></div>
@@ -58,7 +58,7 @@
           <button type="button" class="row" onclick={() => onskill(s.id)} data-testid="tree-skill-row" data-skill={s.id}>
             <span class="name">
               <span class="label">{s.name}</span>
-              {#each skillProblems(s) as p (p)}<Badge tone={p === "bloated" ? "warning" : "danger"}>{PROBLEMS[p].label}</Badge>{/each}
+              {#each skillProblems(s) as p (p)}<Badge tone={p === "bloated" ? "warning" : "danger"}>{p}</Badge>{/each}
               <span class="source">{sourceText(s)}</span>
             </span>
             <span class="copies">{s.copies.length} {s.copies.length === 1 ? "copy" : "copies"}{folder && row.copies.length > 1 ? `, ${row.copies.length} here` : ""}</span>
@@ -72,7 +72,7 @@
   {/snippet}
 
   {#if lists.used.length === 0 && lists.never.length === 0}
-    <p class="none">{problem ? `No ${PROBLEMS[problem].label} skill here.` : "No skill here."}</p>
+    <p class="none">{problem ? `No ${problem} skill here.` : "No skill here."}</p>
   {/if}
   {#if lists.used.length}
     <h3>Used in the last 30 days <span class="count">{lists.used.length}</span></h3>

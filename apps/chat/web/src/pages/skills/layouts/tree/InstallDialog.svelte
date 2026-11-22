@@ -55,7 +55,7 @@
   const items = $derived(
     [...view.skills]
       .sort((a, b) => a.name.localeCompare(b.name))
-      .map((s): PickerItem => ({ id: s.id, label: s.name, detail: s.description, trailing: sourceText(s), keywords: [s.id] })),
+      .map((s): PickerItem => ({ id: s.id, label: s.name, detail: sourceText(s) })),
   );
   const agentOptions = $derived([
     { value: "", label: "No agent" },
@@ -67,7 +67,7 @@
     if (!chosen || !box) return;
     busy = true;
     const ok = await act(
-      `Adding ${chosen.name}`,
+      { doing: `Adding ${chosen.name}`, done: `Added ${chosen.name} to ${path === RUNTIME_FOLDER ? `${runtimeLabel(runtime)}'s folder` : tilde(path)} on ${boxLabel(box)}` },
       () => api.installSkill({ name: chosen.name, source: chosen.id, box, runtime, mode, agent: agent || null, path: target }),
       reload,
     );

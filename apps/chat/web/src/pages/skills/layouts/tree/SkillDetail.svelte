@@ -2,11 +2,11 @@
   import { api } from "$lib/api";
   import type { BoxName, SkillCopy, SkillEntry, SkillsView } from "$lib/api/shared/skills";
   import { ageLabel, Badge, Button, Picker, type PickerItem } from "$lib/ui";
-  import { act } from "./actions";
+  import { act, type ChangeWords } from "./actions";
   import InstallDialog from "./InstallDialog.svelte";
   import MoveDialog from "./MoveDialog.svelte";
   import {
-    PROBLEMS, boxLabel, boxLine, byBoxOrder, driftText, sourceText, isBloated, kb, roleLabel, runtimeLabel, sizeText, skillProblems, tilde, usesText, verdictsOf, type Folder,
+    boxLabel, boxLine, byBoxOrder, driftText, sourceText, isBloated, kb, roleLabel, runtimeLabel, sizeText, skillProblems, tilde, usesText, verdictsOf, type Folder,
   } from "./model";
 
   type Props = {
@@ -34,12 +34,13 @@
     view.skills
       .filter(s => s.id !== skill.id)
       .sort((a, b) => Number(b.name === skill.name) - Number(a.name === skill.name) || a.name.localeCompare(b.name))
-      .map((s): PickerItem => ({ id: s.id, label: s.name, detail: s.description, group: s.name === skill.name ? "Same name" : "Other skills", keywords: [s.id] })),
+      .map((s): PickerItem => ({ id: s.id, label: s.name, detail: sourceText(s), group: s.name === skill.name ? "Same name" : "Other skills" })),
   );
 
   const ROLE_ORDER = { source: 0, install: 1, checkout: 2, unowned: 3 } as const;
   const order = (c: SkillCopy): number => ROLE_ORDER[c.role] + (c.checkout?.stale ? 4 : 0);
   const linksTo = (c: SkillCopy): SkillCopy[] => skill.copies.filter(l => l !== c && l.box === c.box && l.link !== null && l.realPath === c.realPath);
+  const parentOf = (path: string): string => path.slice(0, path.lastIndexOf("/"));
   const inFolder = (c: SkillCopy): boolean => folder !== null && c.path.startsWith(`${folder}/`);
 
   function useLine(): string {
@@ -55,23 +56,23 @@
     return [lines === null ? null : `${lines} lines`, kb(bytes), sizeText(bytes, t)].filter(Boolean).join(", ");
   }
 
-  async function run(key: string, what: string, call: () => ReturnType<typeof api.removeSkill>): Promise<void> {
+  async function run(key: string, words: ChangeWords, call: () => ReturnType<typeof api.removeSkill>): Promise<void> {
     busy = key;
-    await act(what, call, reload);
+    await act(words, call, reload);
     busy = null;
   }
 
-  const remove = (c: SkillCopy) => run(c.id, `Removing ${tilde(c.path)}`, () => api.removeSkill({ target: c.id }));
-  const adopt = (c: SkillCopy) => run(c.id, `Adopting ${tilde(c.path)}`, () => api.adoptSkill({ copyId: c.id, skillId: skill.id }));
-  const removeSkill = () => run(skill.id, `Removing ${skill.name}`, () => api.removeSkill({ target: skill.id }));
-  const merge = (into: string) => run(skill.id, `Merging ${skill.name}`, () => api.mergeSkill({ skillId: skill.id, into }));
+  const remove = (c: SkillCopy) => run(c.id, { doing: `Removing ${tilde(c.path)}`, done: `Removed ${skill.name} from ${tilde(parentOf(c.path))} on ${boxLabel(c.box)}` }, () => api.removeSkill({ target: c.id }));
+  const adopt = (c: SkillCopy) => run(c.id, { doing: `Adopting ${tilde(c.path)}`, done: `Adopted ${tilde(c.path)} as a copy of ${skill.name}` }, () => api.adoptSkill({ copyId: c.id, skillId: skill.id }));
+  const removeSkill = () => run(skill.id, { doing: `Removing ${skill.name}`, done: `Removed ${skill.name} from every box` }, () => api.removeSkill({ target: skill.id }));
+  const merge = (into: string) => run(skill.id, { doing: `Merging ${skill.name}`, done: `Handed the merge of ${skill.name} into ${view.skills.find(s => s.id === into)?.name ?? into} to agent factory` }, () => api.mergeSkill({ skillId: skill.id, into }));
 </script>
 
 <article class="skill" data-testid="tree-skill" data-skill={skill.id}>
   <header>
     <div class="title">
       <h2>{skill.name}</h2>
-      {#each problems as p (p)}<Badge tone={p === "bloated" ? "warning" : "danger"}>{PROBLEMS[p].label}</Badge>{/each}
+      {#each problems as p (p)}<Badge tone={p === "bloated" ? "warning" : "danger"}>{p}</Badge>{/each}
       {#if skill.use.uses === 0}<Badge tone="outline" title="A weak description may be why no thread picks it.">never used</Badge>{/if}
     </div>
     {#if skill.description}<p class="description">{skill.description}</p>{/if}
@@ -115,7 +116,7 @@
             </dl>
             {#each copyProblems as v (v.rule + v.detail)}<p class="verdict">{v.detail}</p>{/each}
             <div class="copy-actions">
-              {#if copy.role === "install" && copy.installId}<Button size="sm" variant="ghost" icon="arrow-right" onclick={() => ((moving = copy), (moveOpen = true))}>Move</Button>{/if}
+              {#if copy.role === "install" && copy.installId}<Button size="sm" variant="ghost" icon="arrow-right" onclick={() => ((moving = copy), (moveOpen = true))} data-testid="tree-copy-move">Move</Button>{/if}
               {#if copy.role === "unowned"}<Button size="sm" variant="ghost" icon="check" loading={busy === copy.id} onclick={() => void adopt(copy)}>Adopt</Button>{/if}
               {#if copy.role !== "source"}<Button size="sm" variant="ghost" icon="trash" loading={busy === copy.id} onclick={() => void remove(copy)} data-testid="tree-copy-remove">Remove</Button>{/if}
             </div>

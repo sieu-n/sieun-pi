@@ -1,14 +1,10 @@
 import type {
-  BoxName, CopyRole, SkillBoxState, SkillCopy, SkillEntry, SkillRuntime, SkillThresholds, SkillTreeNode, SkillVerdictRow, SkillsView, VerdictRule,
+  BoxName, CopyRole, SkillBoxState, SkillCopy, SkillEntry, SkillRuntime, SkillThresholds, SkillTreeNode, SkillVerdictRow, SkillsView,
 } from "$lib/api/shared/skills";
+import { COUNT_RULES } from "../../../../lib/api/shared/skills.ts";
 
-export const PROBLEMS = {
-  duplicated: { label: "duplicated", rules: ["duplicate", "near-duplicate"] },
-  outdated: { label: "outdated", rules: ["outdated", "stale-clone"] },
-  bloated: { label: "bloated", rules: ["bloated"] },
-} as const satisfies Record<string, { label: string; rules: readonly VerdictRule[] }>;
-export type Problem = keyof typeof PROBLEMS;
-export const PROBLEM_IDS = Object.keys(PROBLEMS) as Problem[];
+export type Problem = keyof typeof COUNT_RULES;
+export const PROBLEM_IDS = Object.keys(COUNT_RULES) as Problem[];
 
 const RUNTIME_LABEL: Record<SkillRuntime, string> = { prime: "Prime", "pi-host": "pi-host", claude: "Claude Code", codex: "Codex", pi: "pi" };
 export const runtimeLabel = (runtime: SkillRuntime): string => RUNTIME_LABEL[runtime];
@@ -75,7 +71,7 @@ export type Folder = {
 };
 
 const hasProblem = (skill: SkillEntry, problem: Problem, copyId: string | null): boolean =>
-  skill.verdicts.some(v => (PROBLEMS[problem].rules as readonly string[]).includes(v.rule) && (copyId === null || v.copyId === null || v.copyId === copyId));
+  skill.verdicts.some(v => (COUNT_RULES[problem] as readonly string[]).includes(v.rule) && (copyId === null || v.copyId === null || v.copyId === copyId));
 
 function linkedInto(refs: readonly CopyRef[], inside: readonly CopyRef[], folder: string): number {
   const real = new Set(inside.filter(r => r.copy.link === null).map(r => r.copy.realPath));
@@ -89,7 +85,7 @@ export const shortName = (name: string): string =>
   name.split("/").map(part => (part.length > LONG_SEGMENT ? `${part.slice(0, 20)}…` : part)).join("/");
 
 export function problemLine(folder: Folder): string {
-  return PROBLEM_IDS.filter(p => folder.problems[p] > 0).map(p => `${folder.problems[p]} ${PROBLEMS[p].label}`).join(", ");
+  return PROBLEM_IDS.filter(p => folder.problems[p] > 0).map(p => `${folder.problems[p]} ${p}`).join(", ");
 }
 
 export function folders(box: SkillBoxState, refs: readonly CopyRef[]): Folder[] {

@@ -22,7 +22,7 @@
     const installId = copy.installId;
     if (!installId || !target) return;
     busy = true;
-    const ok = await act(`Moving ${skill.name}`, () => api.moveSkill({ installId, path: target }), reload);
+    const ok = await act({ doing: `Moving ${skill.name}`, done: `Moved ${skill.name} to ${tilde(folder)}` }, () => api.moveSkill({ installId, path: target }), reload);
     busy = false;
     if (ok) open = false;
   }

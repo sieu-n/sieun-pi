@@ -7,7 +7,7 @@
   import FolderDetail from "./FolderDetail.svelte";
   import SkillDetail from "./SkillDetail.svelte";
   import {
-    PROBLEMS, PROBLEM_IDS, ancestors, boxKey, boxLabel, boxLine, byBoxOrder, clutterKey, clutterLine, copiesByBox, findFolder, folderKey, folderLine,
+    PROBLEM_IDS, ancestors, boxKey, boxLabel, boxLine, byBoxOrder, clutterKey, clutterLine, copiesByBox, findFolder, folderKey, folderLine,
     folders, kb, problemLine, roots, shortName, visibleRows, withProblem, type Folder, type Problem,
   } from "./model";
 
@@ -128,7 +128,7 @@
       {#each PROBLEM_IDS as p (p)}
         <button type="button" class="problem" aria-pressed={problem === p} onclick={() => pick({ problem: problem === p ? null : p })} data-testid={`tree-count-${p}`}>
           <span class="number">{view.counts[p].toLocaleString("en-US")}</span>
-          <span class="what">{PROBLEMS[p].label}</span>
+          <span class="what">{p}</span>
         </button>
       {/each}
     </div>
