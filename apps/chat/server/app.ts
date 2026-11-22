@@ -351,8 +351,11 @@ export class App {
     this.wss.on("connection", socket => this.connect(socket));
   }
 
-  /** Starts the loops; resolves with how long it waited for this box's own relay and for the first thread list, which a hand-over's log names. */
-  async start(): Promise<string> {
+  /**
+   * Starts the relays and the thread list, then the loops unless `loops` is false, when `startLoops` runs them later. Resolves with how long
+   * each part took, which a hand-over's log names.
+   */
+  async start(options: { loops?: boolean } = {}): Promise<string> {
     const began = performance.now();
     for (const relay of this.routing?.relays() ?? []) relay.start();
     // This box's own agents go through its relay too; its first thread list waits for the hello, as PiHost waits for a pi-host restart.
@@ -361,6 +364,17 @@ export class App {
     const relayed = performance.now();
     await this.threads.start(this.config.fixture ? 1000 : 2000);
     const listed = performance.now();
+    const loops = options.loops === false ? "loops after the listen" : `loops ${this.startLoops()} ms`;
+    return `own relay ${Math.round(relayed - began)} ms, thread list ${Math.round(listed - relayed)} ms, ${loops}`;
+  }
+
+  /**
+   * Starts the rooms' deliveries, the boards, the outbox, Later and usage, and returns how many ms that took. A send that comes before
+   * this waits as "sending" in its room's log, and the rooms' start schedules every such post. At load 110 to 125 on 11-22 this took
+   * 1,256 ms of a successor's 1,518 ms between the old server's stop and its listen, mostly the rooms' scan of every agent room's posts.
+   */
+  startLoops(): number {
+    const began = performance.now();
     this.rooms.start();
     this.groups.start();
     this.boards.start();
@@ -368,7 +382,7 @@ export class App {
     this.laterDue.arm();
     this.keptUsage?.start();
     if (this.config.meili) void this.searchEngine.refresh().catch(error => this.log(`search: ${String(error)}`));
-    return `own relay ${Math.round(relayed - began)} ms, thread list ${Math.round(listed - relayed)} ms, loops ${Math.round(performance.now() - listed)} ms`;
+    return Math.round(performance.now() - began);
   }
 
   /**

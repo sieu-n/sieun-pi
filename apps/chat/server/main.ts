@@ -88,7 +88,7 @@ if (config.fixture) seedFixture(host as FixtureHost, config.dataDir, Date.now(),
 const startAt = performance.now();
 app = new App(config, host, log);
 const builtMs = Math.round(performance.now() - startAt);
-const started = await app.start();
+const started = await app.start({ loops: false });
 // A fixture server fills its own search index at once, so its first search does not wait for it.
 if (config.fixture) void app.searchEngine.start().catch(() => undefined);
 const servedAt = performance.now();
@@ -98,6 +98,9 @@ const fd = port.fd;
 await new Promise<void>(resolve => (fd === null ? http.listen(config.port, config.listen, resolve) : http.listen({ fd }, resolve)));
 log(`apps/chat on http://${config.listen}:${config.port}${fd === null ? "" : ` through fd ${fd}`} (${config.fixture ? "fixture" : `pi-host ${config.socket}`}, data ${config.dataDir}); ` +
   `modules ${loadedMs} ms, skills ${skillsMs} ms${port.predecessor ? `, the old server's stop ${waitedMs} ms` : ""}, state and start ${Math.round(performance.now() - startAt)} ms (state read ${builtMs} ms, ${started}, routes ${routesMs} ms)`);
+// The loops start once the queued calls had their answers, and after cpu-protect.py's next 2 s pass (INTERVAL_S) moved this process into the
+// unit's core scope, where their scan of every room's posts runs at its weight.
+setTimeout(() => { if (!stopping) log(`loops: started in ${app!.startLoops()} ms`); }, 2000);
 try {
   await (told ?? tellSystemd(false, log));
 } catch (error) {
