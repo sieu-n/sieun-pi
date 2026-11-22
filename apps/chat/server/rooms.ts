@@ -155,6 +155,12 @@ export interface Spoken {
   jobs?: string[];
 }
 
+/** The text of a thread input. */
+function entryText(entry: EntryRecord): string {
+  const content = entry.model?.[0]?.content;
+  return typeof content === "string" ? content : (content ?? []).flatMap(b => (b.type === "text" ? [b.text] : [])).join("\n");
+}
+
 /**
  * One room's side of a feed read, which the DM (this file) and the group rooms (group-rooms.ts) each give: how an input starts a turn,
  * whether the turn's speaking calls post in the room, and how such a call becomes a post.
@@ -702,10 +708,17 @@ export class Rooms {
       room: record.room,
       turn: entry => {
         const channel = entry.kind === "agent.message" && isChannelVia((entry.data as { via?: unknown } | undefined)?.via);
-        // The owner post an input delivered is the newest one sent to this thread by the input's time. The feed may read the input while its
-        // delivery still reads as sending, with no thread yet, so this skips agentPost's delivered check.
+        // The owner post an input delivered is the oldest one sent to this thread before the input's time whose text the input holds and whose
+        // input has not entered yet, else the newest one sent before it. On 11-21 his p2, queued behind a long turn, entered after his p3 was
+        // posted, and the newest-post match named p3. The feed may read the input while its delivery still reads as sending, with no thread
+        // yet, so this skips agentPost's delivered check.
         const at = entry.kind === "pi.user" ? entry.model?.[0]?.timestamp : undefined;
-        const post = typeof at === "number" ? posts().findLast(p => p.author === "owner" && p.at <= at && sentHere(p.delivery)) : undefined;
+        const all = posts();
+        const sent = typeof at === "number" ? all.filter(p => p.author === "owner" && p.at <= at && sentHere(p.delivery)) : [];
+        const matched = sent.find(p => p.inputs?.some(i => i.thread === thread && i.at === at)) ??
+          sent.find(p => !p.inputs?.some(i => i.thread === thread) && p.text.trim() !== "" && entryText(entry).trim().startsWith(p.text.trim()));
+        if (matched && typeof at === "number") this.store.noteInput(matched, thread, at);
+        const post = matched ?? sent.at(-1);
         return { input: entry.id, channel, ...(post ? { post: post.id } : {}) };
       },
       speaks: turn => !turn?.channel,

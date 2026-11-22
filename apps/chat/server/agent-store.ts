@@ -92,6 +92,11 @@ export interface RoomPost {
   jobs?: string[];
   /** A DM post's one delivery, to the room's agent. */
   delivery?: RoomDelivery;
+  /**
+   * When the owner post's input entered each agent thread it reached, the time Prime's `[message id: ...]` note shows in base 36, so a
+   * reply_to with that id names this post exactly (`agentPost`). A queued input enters after newer posts, which a time match then named.
+   */
+  inputs?: { thread: string; at: Ms }[];
   /** A group room post's deliveries, one per member it wakes. */
   deliveries?: RoomDelivery[];
   /** Group rooms: the members the post names (agent ids, or "owner"). */
@@ -139,7 +144,7 @@ export interface StoredReaction { emoji: string; by: "owner" | AgentId; at: Ms }
  */
 export interface TestSend { by: string; reason: string; at: Ms; entry?: number; notice?: Ms }
 
-export type PostPatch = Partial<Pick<RoomPost, "delivery" | "deliveries" | "jobs" | "text" | "testSend" | "reactions" | "images" | "editedAt" | "editedFrom" | "deletedAt" | "done" | "pinned">>;
+export type PostPatch = Partial<Pick<RoomPost, "delivery" | "deliveries" | "inputs" | "jobs" | "text" | "testSend" | "reactions" | "images" | "editedAt" | "editedFrom" | "deletedAt" | "done" | "pinned">>;
 type LogLine = { t: "post"; post: RoomPost } | { t: "set"; post: string; patch: PostPatch };
 
 /**
@@ -384,6 +389,12 @@ export class AgentStore {
     this.onPost(post);
     this.onAppend(post);
     return { post, created: true };
+  }
+
+  /** Records when `post`'s input entered `thread` (`RoomPost.inputs`), once. */
+  noteInput(post: RoomPost, thread: string, at: Ms): void {
+    if (post.inputs?.some(i => i.thread === thread)) return;
+    this.set(post, { inputs: [...(post.inputs ?? []), { thread, at }] });
   }
 
   set(post: RoomPost, patch: PostPatch): void {

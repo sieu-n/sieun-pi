@@ -79,6 +79,18 @@ describe("the reaction model", () => {
     assert.equal(status(() => agentPost(posts, record, "C", "dm_vent", id(500))), 404);
     assert.equal(status(() => agentPost(posts, record, "C", "dm_vent", "the last one")), 400);
   });
+
+  test("a message id names the post whose input entered at that time, also when the input was queued behind newer posts", () => {
+    // On 11-21 a blind check's p2 and p3 were both delivered while the comm thread ran a long turn, p2's input entered after p3 was posted,
+    // and its stamp named p3, so the answer to p2 was stored as answers=p3.
+    const t0 = Date.UTC(2026, 10, 21);
+    const p2 = { ...post(2, t0 + 4_000, t0 + 4_100), inputs: [{ thread: "C", at: t0 + 648_000 }] };
+    const p3 = { ...post(3, t0 + 8_000, t0 + 8_100), inputs: [{ thread: "C", at: t0 + 668_000 }] };
+    const posts = [post(1, t0, t0 + 300), p2, p3];
+    assert.equal(agentPost(posts, record, "C", "dm_vent", (t0 + 648_000).toString(36)).id, "p2");
+    assert.equal(agentPost(posts, record, "C", "dm_vent", (t0 + 668_000).toString(36)).id, "p3");
+    assert.equal(agentPost(posts, record, "C", "dm_vent", (t0 + 650_000).toString(36)).id, "p3", "a stamp no input holds keeps the time match");
+  });
 });
 
 describe("reactions on the fixture server", () => {

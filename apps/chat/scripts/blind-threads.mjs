@@ -7,7 +7,7 @@
  * The owner wrote "slop slop slop" on 11-21 (#dev-app-search-prospect p33) under a thread where Search product, misc. had put its answer to
  * his older p9 in the thread of his newer p11, and had crammed three numbers into one run-on line (p13).
  *
- *   node apps/chat/scripts/blind-threads.mjs [--cwd <project>] [--host <box>] [--out <file.jsonl>] [--server http://127.0.0.1:5184] [--keep]
+ *   node apps/chat/scripts/blind-threads.mjs [--cwd <project>] [--host <box>] [--out <file.jsonl>] [--server http://127.0.0.1:5184] [--keep] [--dm]
  *
  * Checks, per run:
  * 1. The quick question gets its answer in its own thread.
@@ -18,6 +18,9 @@
  *    small, about 10k lines of app code plus 10k of tests, and the suite runs in about 39 s.", whose results all sat in its bullets.
  * The run also records whether the measuring answer came as a new post or as the last edit of a checklist, since only a new post in the
  * report's turn tests apps/chat's default for a post with no reply_to.
+ * With --dm the asks go to the agent's DM, with a second quick question 4 s after the first, so both queue behind the agent's turn. Each
+ * answer must answer its own post (`answers`). On 11-21 a contact finder blind check's answer to p2 was stored as answers=p3, because p2's
+ * input entered the comm thread after p3 was posted and its message id named p3 by time (apps/chat `RoomPost.inputs`).
  *
  * The measuring ask waits up to 40 min, since blind-follow-up.mjs's research task took up to 27 min. The asks are about an upstream clone we
  * only read (~/code/symphony), never sw factory, because fresh agents read sw-factory asks as feedback (agent-factory memory, 11-20).
@@ -28,7 +31,7 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { crammedLine } from "../../../packages/pi-host/src/durable/comm-guard.ts";
 
-const { values } = parseArgs({ options: { cwd: { type: "string" }, host: { type: "string" }, out: { type: "string" }, server: { type: "string" }, keep: { type: "boolean" } } });
+const { values } = parseArgs({ options: { cwd: { type: "string" }, host: { type: "string" }, out: { type: "string" }, server: { type: "string" }, keep: { type: "boolean" }, dm: { type: "boolean" } } });
 const server = values.server ?? "http://127.0.0.1:5184";
 const cwd = values.cwd ?? join(homedir(), "code/symphony");
 const MEASURE_MS = 40 * 60_000;
@@ -37,6 +40,8 @@ const POLL_MS = 2_000;
 
 const MEASURE = "we're sizing symphony before we adopt it. can you measure how many source files, lines of code and test files the elixir app has, and how long its test suite takes to run?";
 const QUESTION = "unrelated quick one, what license is symphony under?";
+const QUESTION2 = "and which elixir version does it need?";
+const QUESTION2_GAP_MS = 4_000;
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -82,7 +87,7 @@ const piHost = () => { try { return readlinkSync(join(homedir(), ".local/share/p
 const piHostAtStart = piHost();
 const stamp = `${new Date().toISOString().slice(5, 19).replace(/[-T:]/g, "")}${Math.random().toString(36).slice(2, 4)}`;
 const agent = await call("POST", "/api/agents", { name: `blind threads ${stamp}`, test: true, cwd, ...(values.host ? { host: values.host } : {}) });
-const room = (await call("POST", "/api/rooms", { kind: "channel", name: `blind-threads-${stamp}`, agenda: "", members: [agent.id], test: true })).id;
+const room = values.dm ? agent.room : (await call("POST", "/api/rooms", { kind: "channel", name: `blind-threads-${stamp}`, agenda: "", members: [agent.id], test: true })).id;
 console.log(`agent ${agent.id} room ${room} cwd ${cwd}`);
 
 const record = async () => (await call("GET", "/api/agents?test=1")).find(a => a.id === agent.id);
@@ -125,9 +130,15 @@ const started = Date.now();
 let line;
 try {
   const measure = await send(MEASURE, "measure");
-  await waitFor(QUESTION_GAP_MS, () => false);
+  // In a DM the quick questions follow within seconds, so they reach the comm thread while its first turn still runs and queue behind it.
+  await waitFor(values.dm ? QUESTION2_GAP_MS : QUESTION_GAP_MS, () => false);
   const question = await send(QUESTION, "question");
-  await waitFor(MEASURE_MS, () => inThread(question.id).length > 0 && measured() !== undefined && (doneOf(measure.id) || lastAt(measured()) > Date.now() - 60_000));
+  let question2;
+  if (values.dm) {
+    await waitFor(QUESTION2_GAP_MS, () => false);
+    question2 = await send(QUESTION2, "question2");
+  }
+  await waitFor(MEASURE_MS, () => inThread(question.id).length > 0 && (!question2 || inThread(question2.id).length > 0) && measured() !== undefined && (doneOf(measure.id) || lastAt(measured()) > Date.now() - 60_000));
   // A last edit or a done mark can follow the answer by seconds.
   await waitFor(45_000, () => false);
 
@@ -137,7 +148,13 @@ try {
   const answerShape = answer ? shape(answer.text) : null;
   const firstQuestionReplyAt = questionReplies[0]?.at ?? null;
   const viaEdit = answer ? (versions.get(answer.id)?.length ?? 1) > 1 || answer.at < (firstQuestionReplyAt ?? 0) : null;
-  const checks = [
+  const answersOwn = id => latest.some(p => isAgent(p) && p.answers === id);
+  const checks = values.dm ? [
+    ["the first quick question got a post that answers it", answersOwn(question.id)],
+    ["the second quick question got a post that answers it", Boolean(question2) && answersOwn(question2.id)],
+    ["the measuring answer answers the measuring ask", answer?.answers === measure.id],
+    ["no line outside a list item crams several results", Boolean(answer) && crammedLine(answer.text) === undefined],
+  ] : [
     ["the quick question got an answer in its own thread", questionReplies.some(p => p.threadRoot === question.id)],
     ["the measuring answer came", Boolean(answer)],
     ["the measuring answer sits in the measuring ask's thread", answer?.threadRoot === measure.id],
@@ -149,7 +166,7 @@ try {
   ];
   line = {
     at: new Date().toISOString(), piHost: { start: piHostAtStart, end: piHost() }, agent: agent.id, room, cwd, seconds: Math.round((Date.now() - started) / 1000),
-    thread: `${server}/#/c/${room}?thread=${measure.id}`, measure: measure.id, question: question.id, answer: answer?.id ?? null, viaEdit, shape: answerShape,
+    thread: `${server}/#/c/${room}?thread=${measure.id}`, measure: measure.id, question: question.id, question2: question2?.id ?? null, answer: answer?.id ?? null, viaEdit, shape: answerShape,
     posts: latest.map(p => ({ id: p.id, author: isAgent(p) ? "agent" : "owner", threadRoot: p.threadRoot ?? null, answers: p.answers ?? null, versions: (versions.get(p.id) ?? []).map(v => v.text) })),
     checks: Object.fromEntries(checks), pass: checks.every(([, ok]) => ok),
   };
@@ -165,7 +182,7 @@ try {
   if (!values.keep) {
     const thread = (await record().catch(() => undefined))?.thread;
     if (thread) await call("PATCH", `/api/c/${thread}`, { archived: true }).catch(e => console.error(`archive agent: ${e}`));
-    await call("PATCH", `/api/rooms/${room}`, { archived: true }).catch(e => console.error(`archive room: ${e}`));
+    if (!values.dm) await call("PATCH", `/api/rooms/${room}`, { archived: true }).catch(e => console.error(`archive room: ${e}`));
   }
 }
 process.exit(line?.pass ? 0 : 1);

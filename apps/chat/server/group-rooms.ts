@@ -755,6 +755,9 @@ export class GroupRooms {
         const data = entry.data as { via?: unknown; post?: unknown; hops?: unknown } | undefined;
         if (entry.kind === "pi.user") {
           const post = this.ownerPostOf(row, record, thread, entry);
+          const at = entry.model?.[0]?.timestamp;
+          const named = envelopeHeaders(entry).some(h => `p${h.seq}` === post) ? this.store.postsOf(row.id).find(p => p.id === post) : undefined;
+          if (named && typeof at === "number") this.store.noteInput(named, thread, at);
           return { input: entry.id, channel: false, hops: 0, ...(post ? { post } : {}) };
         }
         if (entry.kind === "agent.message" && data?.via === row.id) {

@@ -169,6 +169,27 @@ describe("owner posts and the feed", () => {
     assert.equal((await posts(s)).find(p => p.text === "yes, it serves")?.answers, task.body.item.id);
   });
 
+  test("a reply_to with the message id of an input queued behind newer posts answers that input's post", async () => {
+    // A contact finder blind check on 11-21: p2 and p3 reached the comm thread during a long turn, p2's input entered after p3 was posted,
+    // and the answer whose reply_to was p2's message id was stored as answers=p3.
+    const older = await s.send("POST", `/api/c/${ROOM}/send`, { text: `quiet, does it work today? ${Date.now()}`, requestId: "queued-1" });
+    const newer = await s.send("POST", `/api/c/${ROOM}/send`, { text: `quiet, fast vs thorough? ${Date.now()}`, requestId: "queued-2" });
+    await until(() => posts(s), page => page.find(p => p.id === newer.body.item.id)?.deliveries[0]?.state === "delivered");
+    const entered = Date.now() + 60_000;
+    for (const [i, text] of [older.body.item.text, newer.body.item.text].entries()) {
+      for (const e of inputs(host, vent().comm?.[ROOM] ?? ids.vent, text)) e.model![0]!.timestamp = entered + i * 1000;
+    }
+    await s.app.rooms.feed(vent());
+    for (const [id, at] of [["c_q1", entered], ["c_q2", entered + 1000]] as const) {
+      assistant([{ type: "toolCall", id, name: "tell_owner", arguments: { text: `queued ${id}`, why: "answer", about: "finder", reply_to: at.toString(36) } }]);
+      result(id, "tell_owner", "told the owner");
+    }
+    await s.app.rooms.feed(vent());
+    const page = await posts(s);
+    assert.equal(page.find(p => p.text === "queued c_q1")?.answers, older.body.item.id);
+    assert.equal(page.find(p => p.text === "queued c_q2")?.answers, newer.body.item.id);
+  });
+
   test("a turn a channel post started speaks to the channel, not the DM", async () => {
     const before = (await posts(s)).length;
     host.append(thread(), 1, { kind: "agent.message", model: [{ role: "user", content: [{ type: "text", text: "[#pi-cutover · post 9 from You (owner)] status?" }], timestamp: Date.now() }], data: { from: "owner", via: "#pi-cutover" } });
