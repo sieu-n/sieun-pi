@@ -230,6 +230,9 @@ export function checkInJobBrief({ agent, workThread, job, at, prompt, detail, bo
       "them. A problem that kept coming back in the thread becomes a duty metric, and a goal or step whose target reads met closes at once when a duty keeps its metric.",
     `The agent's work thread is ${workThread}. Its board is GET ${boardApi}, and its conversation is GET ${itemsApi}?limit=40, newest page first.`,
     `${prompt}\n\nThe full precheck, with every step and finding, is in ${detail}. Read it for the work you take on; never paste it into a message.`,
+    // On 11-22 pi-pool held the first check-in jobs for an account slot for 4 to 5 h, and their precheck's job states were that old.
+    `The precheck read the board and the jobs at ${localTime(at)} KST, when the server filed this job. pi-pool can hold a job for hours before ` +
+      "its first turn, so when your turn starts later than that, read the board and the jobs live before you act on the precheck.",
     "## How to act",
     [
       `Apply board changes with \`import httpx\` and \`httpx.post(${JSON.stringify(boardApi)}, json={"actor": "agent", "ops": ops}, timeout=60).json()\`, where ops are chat_board ops.`,
@@ -238,8 +241,8 @@ export function checkInJobBrief({ agent, workThread, job, at, prompt, detail, bo
         "and a job whose turn ended takes it as a new turn. Write that message " +
         "in a few plain sentences that name at most 2 step ids in a paragraph, and the other steps by a few words of their title: on 10-18 the " +
         "12:40 steer to a gaps job listed four step ids in one paragraph, which the job had to look up on the board.",
-      `${CHECK_IN_REPORT} Send it with send_message (with no such tool, make it your final answer), and the chat server posts it to the agent's ` +
-        "work thread as a `[check-in]` note; when nothing needs the agent, send nothing.",
+      `${CHECK_IN_REPORT} Send it with send_message, and the chat server posts it to the agent's ` +
+        "work thread as a `[check-in]` note when your turn ends; your final answer stays in this job, so when nothing needs the agent, send nothing.",
     ].map(line => `- ${line}`).join("\n"),
   ].join("\n\n") + "\n";
 }

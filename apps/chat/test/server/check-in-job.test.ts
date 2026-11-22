@@ -179,3 +179,36 @@ test("job-steer delivers a message to a job inside the work thread as an input f
   assert.equal(missing.status, 400);
   host.beforeSubmit = previous;
 });
+
+test("job-steer reaches a subagent of the agent's duty job", async () => {
+  const duty = (await s.send("POST", "/api/agents", { name: "relay duty 261122-0700", kind: "job", parent: busy.id })).body as AgentSummary;
+  const root = host.threadsById.get(duty.thread)!;
+  const child = host.addChild(root, 1, "relay probe", Date.now(), "idle");
+  root.row.updatedAt = Date.now() + 4;
+  await s.app.threads.refresh();
+  const steered: { thread: string; conversation?: number }[] = [];
+  const previous = host.beforeSubmit;
+  host.beforeSubmit = (thread, input) => {
+    if (input.entry?.data.via === "job-steer") steered.push({ thread, ...(input.conversation ? { conversation: input.conversation } : {}) });
+    return previous?.(thread, input);
+  };
+  const ok = await s.send("POST", `/api/agents/${busy.id}/job-steer`, { job: "relay probe", text: "Report the probe." });
+  host.beforeSubmit = previous;
+  assert.equal(ok.status, 200);
+  assert.deepEqual(steered, [{ thread: duty.thread, conversation: child.id }]);
+});
+
+
+test("a check-in job that ends on a plain answer posts nothing to the work thread", async () => {
+  host.sendMessage = false;
+  try {
+    const before = dutyFile(busy).checkIn?.job?.id;
+    const at = await nextAt(busy);
+    await s.app.boards.tick(at);
+    const job = (await until(async () => dutyFile(busy).checkIn?.job, value => value !== undefined && value.id !== before))!;
+    await until(async () => dutyFile(busy).checkIn?.job?.reported, reported => reported === true);
+    assert.equal(workInputs.some(input => input.requestId === `checkin-report:${job.id}`), false);
+  } finally {
+    host.sendMessage = true;
+  }
+});

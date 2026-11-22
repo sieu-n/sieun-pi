@@ -830,14 +830,16 @@ export class Boards {
   }
 
   /**
-   * Posts what the check-in job sent with send_message to the work thread as one `[check-in]` input, or its final answer when it sent none;
-   * nothing sent, or "nothing to report", posts nothing. The request id lets a second send after a restart land once (`tick`).
+   * Posts what the check-in job sent with send_message to the work thread as one `[check-in]` input; nothing sent, or "nothing to report",
+   * posts nothing. Its final answer stays in the job, as a Prime check-in job reports only through agent_message: on 11-22 the fable
+   * auditor's job ended on "Nothing changed", and posting that answer cost the work thread a turn that said "Nothing to change on the board".
+   * The request id lets a second send after a restart land once (`tick`).
    */
   private async reportCheckIn(chat: string, job: { id: string; submission: number }): Promise<void> {
     this.waiting.add(job.id);
     try {
       const settled = await this.host.wait(job.id, job.submission);
-      const text = (await this.threads.said(job.id, 1, settled)).map(m => m.text).join("\n\n");
+      const text = (await this.threads.sent(job.id, 1, settled)).map(m => m.text).join("\n\n");
       if (text.trim() && !/^nothing to report\.?$/i.test(text.trim())) {
         await this.host.submit(this.threadOf(chat), { text: `[check-in] ${text}`, whenBusy: "followUp", requestId: `checkin-report:${job.id}`, entry: { kind: "agent.message", data: { from: job.id, via: "check-in" } } });
       }
@@ -889,7 +891,11 @@ export class Boards {
     const chat = this.chatId(id);
     const thread = this.threadOf(chat);
     const wanted = input.job.trim();
-    const jobs = this.threads.allSummaries({ archived: false }).filter(a => a.kind === "job" && ((a.thread === thread && a.conversation !== 1) || a.parent?.id === chat));
+    const all = this.threads.allSummaries({ archived: false });
+    // The agent's root jobs, such as its duty and check-in jobs, and every conversation inside one or inside the work thread: on 11-22 the
+    // agent factory check-in could not chase the subagents of a duty job, which this list missed.
+    const roots = new Set(all.filter(a => a.kind === "job" && a.conversation === 1 && a.parent?.id === chat).map(a => a.thread));
+    const jobs = all.filter(a => a.kind === "job" && (a.parent?.id === chat || (a.conversation !== 1 && (a.thread === thread || roots.has(a.thread)))));
     const target = jobs.find(a => a.name === wanted) ?? jobs.find(a => a.id === wanted || (a.conversation === 1 && a.thread === wanted));
     if (!target) throw new Error(`No job ${wanted} of ${this.nameOf(chat)}; its jobs are ${jobs.map(a => a.name).join(", ") || "none"}.`);
     const from = typeof input.from === "string" && input.from.trim() ? input.from.trim() : chat;

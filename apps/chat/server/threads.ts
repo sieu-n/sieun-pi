@@ -586,6 +586,11 @@ export class Threads {
     return turn;
   }
 
+  /** Only what a settled turn sent with send_message, never its final answer, which stays in its thread (a check-in job's report, `reportCheckIn`). */
+  async sent(thread: string, conversation: number, settled: { entry?: number; answer?: number }): Promise<{ text: string; to?: string }[]> {
+    return sentMessages(await this.turnOf(thread, conversation, settled)).map(({ text, to }) => ({ text, ...(to ? { to } : {}) }));
+  }
+
   /**
    * What a settled turn said to people, for a channel thread or a duty report: its send_message messages, or none, when the agent talks
    * through send_message (`speaksThroughSendMessage`); otherwise, for an agent that has never called it, its answer's text as one message.
