@@ -126,6 +126,9 @@ export class FixtureHost implements Host {
   }
 
   async create(opts: { name?: string; model?: string; thinkingLevel?: string; cwd?: string }): Promise<DurableThread> {
+    // The hand-over rig (scripts/handoff-rig) holds a create as long as a slow pi-host create takes, to put a write in flight across a hand-over.
+    const hold = Number(process.env.APPS_CHAT_FIXTURE_CREATE_MS);
+    if (hold > 0) await new Promise(resolve => setTimeout(resolve, hold));
     const thread = this.addThread({ name: opts.name ?? "New thread", createdAt: this.now(), ...(opts.model ? { model: opts.model } : {}) });
     if (opts.thinkingLevel) thread.row.thinkingLevel = opts.thinkingLevel;
     if (opts.cwd) thread.row.cwd = opts.cwd;

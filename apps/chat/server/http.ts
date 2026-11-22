@@ -559,6 +559,14 @@ export function routes(app: App, parts: SkillsParts): Route[] {
   ];
 }
 
+/**
+ * How long a hand-over's drain lets a write in flight run (`forwardDrain`). A write is never cut short there, because a cut one could leave
+ * its pi-host half made with no chat row: the slowest write on 11-21 took 8.8 s (POST /api/threads/:id/board), and 65 of its writes passed
+ * 2 s. New calls wait behind such a write, which happens in about 0.1 of a day's 70 hand-overs. 30 s is above every write seen.
+ * Hard limit, for data integrity: past it the write is cut with no answer (`forwardDrain`), sized from the 8.8 s slowest write of 11-21.
+ */
+export const WRITE_WAIT_MS = 30_000;
+
 /** How long the server keeps an idle keep-alive connection open; see `serve`. */
 export const KEEP_ALIVE_MS = 100_000;
 
@@ -701,11 +709,28 @@ async function forwardDrain(server: Server, address: AddressInfo, maxMs: number)
   const open = conns.get(server) ?? new Map<Socket, Conn>();
   const began = Date.now();
   for (const conn of open.values()) for (const res of conn.busy.values()) if (!res.headersSent) res.shouldKeepAlive = false;
-  while ([...open.values()].some(conn => conn.busy.size) && Date.now() - began < maxMs) await new Promise(resolve => setTimeout(resolve, 10));
-  const cut = [...open.values()].flatMap(conn => [...conn.busy.keys()].map(req => `${req.method} ${req.url}`));
+  const holding = () => [...open.values()].flatMap(conn => [...conn.busy.keys()].filter(req => !passThrough(req)));
+  while (holding().length && Date.now() - began < maxMs) await new Promise(resolve => setTimeout(resolve, 10));
+  // A write still running at the limit is cut: its connection ends with no answer, so its client sees an error and not a 2xx from a handler
+  // whose chat-store writes the seal will drop. Its pi-host part may still land.
+  const cut = holding().map(req => {
+    req.socket.destroy();
+    return `${req.method} ${req.url}`;
+  });
+  const left = [...open.values()].flatMap(conn => [...conn.busy.keys()].filter(passThrough)).length;
   return `drained in ${Date.now() - began} ms, keeping ${open.size} connections and sending their calls to ${address.address}:${address.port}` +
-    (cut.length ? `, cut ${cut.length} calls at ${maxMs} ms: ${cut.slice(0, 5).join(", ")}` : "");
+    (left ? `, leaving ${left} reads and wiki calls to finish here` : "") + (cut.length ? `, cut ${cut.length} calls at ${maxMs} ms: ${cut.slice(0, 5).join(", ")}` : "");
 }
+
+/**
+ * A call that writes none of the chat's own stores: a read (GET or HEAD), which passes through to pi-host or reads memory, or a `/wiki`
+ * call, whose store is the wiki engine. The drain does not wait for one. It finishes on the old process, which keeps its pi-host client
+ * open (`App.stop({ keepHost })`) and stays while the call's connection is open (`lingerForwarding`), and a write it would make there is
+ * dropped (disk.ts `seal`). In after-walk 8 on 11-22, two wiki PATCHes of about 4 s held two hand-overs' drains to their 2 s cap, so new
+ * calls waited up to 4 s; both edits landed once. On 11-21, 109 of the 183 calls over 2 s were reads (90 GET /api/c/:id/items, 14
+ * GET /api/agents/:id/board, 9 GET /api/agents/:id/config, 5 GET /api/usage/live).
+ */
+const passThrough = (req: IncomingMessage): boolean => req.method === "GET" || req.method === "HEAD" || (req.url ?? "").startsWith("/wiki");
 
 /** Sends one call to the successor and passes its answer back with `Connection: close`. The old process runs no handler and writes nothing. */
 function forward(target: AddressInfo, req: IncomingMessage, res: ServerResponse): void {

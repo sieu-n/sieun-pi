@@ -6,7 +6,7 @@
 import { execFileSync } from "node:child_process";
 import { connect } from "node:net";
 import { readdirSync, readFileSync } from "node:fs";
-import { Agent, request } from "node:http";
+import { Agent, createServer, request } from "node:http";
 import { setTimeout as sleep } from "node:timers/promises";
 
 const [unit, portText, dataDir, roundsText = "5"] = process.argv.slice(2);
@@ -36,6 +36,17 @@ const servers = () => readdirSync("/proc").filter(name => /^\d+$/.test(name)).fl
     return argv.some(arg => arg.endsWith("server/main.ts")) && argv.includes(dataDir) ? [Number(pid)] : [];
   } catch { return []; }
 });
+
+// A wiki engine stand-in on port + 1 (copy.service.template's APPS_CHAT_WIKI_ENGINE) that answers each call after 5 s, so a wiki PATCH is in
+// flight through every hand-over. The old server must finish it with its full answer without making new calls wait for it.
+const engine = createServer((req, res) => {
+  req.resume();
+  setTimeout(() => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ ok: true, path: "apps/rig-slow.html", version: 1, note: "rig engine answered after 5 s" }));
+  }, 5000);
+});
+await new Promise(resolve => engine.listen(port + 1, "127.0.0.1", resolve));
 
 const room = JSON.parse((await call("POST", "/api/rooms", { kind: "channel", name: `rig-${Date.now()}`, members: [], test: true })).text);
 const roomId = room.id ?? room.room?.id;
@@ -140,6 +151,7 @@ const loops = [...Array.from({ length: 16 }, (_, lane) => reactLoop(lane, reactP
 const restartsBefore = Number(show("NRestarts"));
 await sleep(3000);
 const results = [];
+let slowWrite = null;
 for (round = 1; round <= rounds; round++) {
   const before = Number(show("MainPID"));
   // An idle keep-alive connection whose client keeps it half open after the server ends it, as a net pipe does; on 11-22 such clients held
@@ -148,6 +160,7 @@ for (round = 1; round <= rounds; round++) {
   idle.on("error", () => {});
   await new Promise(resolve => { idle.on("data", resolve); idle.write("GET /api/ready HTTP/1.1\r\nHost: rig\r\n\r\n"); });
   const since = Math.floor(Date.now() / 1000);
+  const slow = call("PATCH", "/wiki/apps/rig-slow.html", { edits: [{ old_string: "a", new_string: "b" }] }).catch(error => ({ status: 0, text: error.code ?? error.message }));
   const at = performance.now();
   execFileSync("systemctl", ["--user", "reload", unit]);
   // Writes that land on the old server while the successor loads: a room change, a read mark and a post, each read back through the successor.
@@ -173,6 +186,8 @@ for (round = 1; round <= rounds; round++) {
   if (!windowPost) failures.push(`round ${round}: the post sent in the hand-over window is not in the room's log`);
   await sleep(3000);
   idle.destroy();
+  const slowAnswer = await slow;
+  if (slowAnswer.status !== 200 || !slowAnswer.text.includes("rig engine answered after 5 s")) failures.push(`round ${round}: the wiki PATCH in flight through the hand-over got ${slowAnswer.status}: ${slowAnswer.text.slice(0, 160)}`);
   const stopLine = execFileSync("journalctl", ["--user", "-u", unit, "-u", unit.replace(/\.service$/, "-core.scope"), "--since", `@${since}`, "--no-pager", "-o", "cat"], { encoding: "utf8" })
     .split("\n").find(line => line.includes("this process stopped in")) ?? "";
   const stopMs = Number(/stopped in (\d+) ms/.exec(stopLine)?.[1] ?? NaN);
@@ -180,7 +195,7 @@ for (round = 1; round <= rounds; round++) {
   // The old server's stop is the time new calls wait in the socket's queue before the successor's own start of about 0.5 s.
   if (!(stopMs < 1000)) failures.push(`round ${round}: the old server's stop took ${stopMs} ms: ${stopLine}`);
   const running = servers();
-  results.push({ round, from: before, to: Number(show("MainPID")), handed, handedMs: Math.round(performance.now() - at - 3000), stopMs, written, agenda, windowPost, servers: running });
+  results.push({ round, from: before, to: Number(show("MainPID")), handed, handedMs: Math.round(performance.now() - at - 3000), stopMs, slowWiki: slowAnswer.status, written, agenda, windowPost, servers: running });
   if (!handed) failures.push(`round ${round}: no hand-over to a new main process in 60 s`);
   if (running.length !== 1) failures.push(`round ${round}: ${running.length} server processes on ${dataDir}: ${running.join(", ")}`);
 }
@@ -198,8 +213,10 @@ if (duplicateSeqs) failures.push(`${duplicateSeqs} duplicate seqs in ${roomId}`)
 if (missing.length) failures.push(`${missing.length} of ${sent.length} sends answered 200 and are not in ${roomId}`);
 const reads = JSON.parse(readFileSync(`${dataDir}/state.json`, "utf8")).reads?.[roomId];
 if (JSON.stringify(reads ?? null).indexOf(String(rounds)) < 0) failures.push(`the room's read mark reads ${JSON.stringify(reads)} after round ${rounds}'s mark`);
+if (slowest > 2000) failures.push(`the slowest call took ${Math.round(slowest)} ms, over the 2 s bound`);
 const restarts = Number(show("NRestarts")) - restartsBefore;
 if (restarts) failures.push(`systemd restarted the unit ${restarts} times`);
+
 
 // A successor that crashes or hangs after its hand-over must be replaced by systemd on its own, as a crashed server was before: kill -9,
 // then SIGSTOP, each on the main process right after a hand-over, timed until a new server answers.
@@ -224,6 +241,26 @@ const replaced = async (victim, signal) => {
   }
   return { signal, victim, by: null, backMs: null };
 };
+
+// A write in flight across a hand-over: an agent create that waits 10 s on its pi-host create (copy.service.template), past the 15 s watchdog's
+// third and near TimeoutStopSec. It must end fully applied, its agent listed by the successor, or as an error with no agent made; the old
+// server's stop waits for it, and neither the watchdog nor systemd may restart the unit meanwhile.
+{
+  const since = Math.floor(Date.now() / 1000);
+  const name = `rig-slow-agent-${Date.now()}`;
+  const create = call("POST", "/api/agents", { name, kind: "chat", test: true }).catch(error => ({ status: 0, text: error.code ?? error.message }));
+  await sleep(300);
+  await handOver();
+  const answer = await create;
+  await sleep(1000);
+  const listed = JSON.parse((await call("GET", "/api/agents?test=1")).text);
+  const found = (listed.agents ?? listed).filter(each => each.name === name).length;
+  const stopLine = execFileSync("journalctl", ["--user", "-u", unit, "-u", unit.replace(/\.service$/, "-core.scope"), "--since", `@${since}`, "--no-pager", "-o", "cat"], { encoding: "utf8" })
+    .split("\n").find(line => line.includes("this process stopped in")) ?? "";
+  slowWrite = { status: answer.status, listed: found, restartsSoFar: Number(show("NRestarts")) - restartsBefore, stopMs: Number(/stopped in (\d+) ms/.exec(stopLine)?.[1] ?? NaN) };
+  if (slowWrite.restartsSoFar) failures.push(`systemd restarted the unit during the 10 s write's hand-over`);
+  if (answer.status === 200 ? found !== 1 : found !== 0) failures.push(`the agent create in flight through a hand-over answered ${answer.status} and the successor lists ${found} such agents: ${answer.text.slice(0, 160)}`);
+}
 const crashes = [];
 for (const signal of ["SIGKILL", "SIGSTOP"]) {
   const victim = await handOver();
@@ -264,6 +301,7 @@ for (const end = Date.now() + 120_000; Date.now() < end; await sleep(1000)) {
   if ([...forwarders.values()].every(each => { try { readFileSync(`/proc/${each.pid}/cmdline`); return false; } catch { return true; } })) break;
 }
 clearInterval(forwarderTimer);
+engine.close();
 const forwarderLives = [...forwarders.values()].map(each => ({ pid: each.pid, seenMs: each.last - each.seen }));
 for (const each of forwarderLives) if (each.seenMs > 110_000) failures.push(`old server ${each.pid} passed calls on for ${each.seenMs} ms, past its 105 s bound`);
 for (const each of forwarders.values()) { try { readFileSync(`/proc/${each.pid}/cmdline`); failures.push(`old server ${each.pid} still runs 120 s after the last hand-over`); } catch {} }
@@ -273,6 +311,6 @@ const names = madeRooms.map(each => each.name);
 const doubledRooms = names.length - new Set(names).size;
 if (doubledRooms) failures.push(`${doubledRooms} rooms made twice`);
 if (madeRooms.length !== roomsMade) failures.push(`${roomsMade} rooms answered 200 but ${madeRooms.length} exist`);
-console.log(JSON.stringify({ unit, port, dataDir, rounds, room: roomId, calls, reactions, roomsMade, doubledRooms, forwarders: forwarderLives, sends: sent.length, posts: posts.length, duplicateSeqs, missing: missing.length,
+console.log(JSON.stringify({ unit, port, dataDir, rounds, room: roomId, calls, reactions, roomsMade, slowWrite, doubledRooms, forwarders: forwarderLives, sends: sent.length, posts: posts.length, duplicateSeqs, missing: missing.length,
   restarts, slowestCallMs: Math.round(slowest), pass: failures.length === 0, results, crashes, failures: failures.slice(0, 40) }, null, 1));
 process.exit(failures.length ? 1 : 0);

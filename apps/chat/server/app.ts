@@ -366,7 +366,11 @@ export class App {
     if (this.config.meili) void this.searchEngine.refresh().catch(error => this.log(`search: ${String(error)}`));
   }
 
-  async stop(): Promise<void> {
+  /**
+   * Stops the app's loops and writes its queue. A hand-over's old server passes `keepHost`: its pi-host client stays open for the reads it
+   * still finishes after the stop (http.ts `passThrough`), and closes when the process exits.
+   */
+  async stop(options: { keepHost?: boolean } = {}): Promise<void> {
     this.rooms.stop();
     this.groups.stop();
     this.boards.stop();
@@ -376,7 +380,7 @@ export class App {
     clearTimeout(this.sidebarTimer);
     // The host client closes first: a watch's unwatch sent to a pi-host that restarts beside the chat retried for 30 s, past systemd's
     // 20 s stop timeout, so restarting both services on 10-28 ended in a SIGKILL. pi-host drops a closed connection's watches itself.
-    await this.host.close();
+    if (!options.keepHost) await this.host.close();
     await this.threads.stop();
     for (const client of this.clients) client.socket.close();
     this.searchStop();

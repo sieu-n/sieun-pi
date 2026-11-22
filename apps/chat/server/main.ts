@@ -6,7 +6,7 @@ import { mkdtempSync } from "node:fs";
 import { homedir, platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import { App } from "./app.ts";
-import { flushSync, onWriteError } from "./disk.ts";
+import { flushSync, onWriteError, seal } from "./disk.ts";
 import { fixtureFolders, readAgentHosts, readConfig, type Config } from "./config.ts";
 import { FixtureHost } from "./host/fixture.ts";
 import { MultiHost, type Box } from "./host/multi-host.ts";
@@ -14,7 +14,7 @@ import { PiHost } from "./host/pi-host.ts";
 import { RelayHost } from "./host/relay-host.ts";
 import type { Host } from "./host/types.ts";
 import { projectList } from "./projects.ts";
-import { drain, lingerForwarding, serve, skillsParts } from "./http.ts";
+import { drain, lingerForwarding, serve, skillsParts, WRITE_WAIT_MS } from "./http.ts";
 import { seedFixture } from "./fixture/seed.ts";
 import { DataLock, handOverOnHangup, listening, startWatchdog, tellSystemd } from "./handoff.ts";
 
@@ -26,6 +26,11 @@ process.on("exit", flushSync);
 let app: App | undefined;
 let stopping: Promise<void> | undefined;
 const stopApp = () => (stopping ??= app ? app.stop().catch(() => undefined) : Promise.resolve());
+/** A hand-over's stop: the app keeps its pi-host client for the reads it still finishes, and every later write is dropped before the lock moves. */
+const handOverStop = async () => {
+  await (stopping ??= app ? app.stop({ keepHost: true }).catch(() => undefined) : Promise.resolve());
+  seal("this server handed the data dir to its successor");
+};
 let server: ReturnType<typeof serve> | undefined;
 const shutdown = async () => {
   if (server) log(`stop: ${await drain(server)}`);
@@ -93,4 +98,4 @@ try {
 }
 const quiet = startWatchdog(log);
 port.predecessor?.taken();
-if (fd !== null) handOverOnHangup({ fd, server: http, drain: server => drain(server, undefined, "forward"), linger: () => lingerForwarding(http), stop: stopApp, unlock: () => lock.release(), quiet, log, exit: code => process.exit(code) });
+if (fd !== null) handOverOnHangup({ fd, server: http, drain: server => drain(server, WRITE_WAIT_MS, "forward"), linger: () => lingerForwarding(http), stop: handOverStop, unlock: () => lock.release(), quiet, log, exit: code => process.exit(code) });

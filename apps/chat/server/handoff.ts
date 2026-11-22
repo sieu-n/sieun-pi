@@ -205,7 +205,7 @@ export interface Running {
   drain(server: Server): Promise<string | void>;
   log(line: string): void;
   /**
-   * Stops this process's watchdog pings (`startWatchdog`) once it stops serving. A successor that hangs after systemd took it as the main
+   * Stops this process's watchdog pings (`startWatchdog`) once its App stopped. A successor that hangs after systemd took it as the main
    * process then trips the watchdog, where the old process's pings would hide it: on the rig on 11-22 a successor stopped with SIGSTOP in
    * that window was never replaced in 60 s.
    */
@@ -249,10 +249,11 @@ export async function handOver(side: Running, args: string[] = serveArgs(), cwd 
       if (kind === "loaded") {
         const loadedAt = Date.now();
         clearTimeout(loading);
-        side.quiet?.();
         void (async () => {
           const drained = await side.drain(side.server);
           await side.stop();
+          // The pings go on while a write in flight runs (up to http.ts WRITE_WAIT_MS, past WatchdogSec), and end once this process serves nothing.
+          side.quiet?.();
           side.unlock();
           stoppedAt = Date.now();
           side.log(`handoff: ${child.pid} loaded in ${loadedAt - began} ms; this process stopped in ${Date.now() - loadedAt} ms${drained ? ` (${drained})` : ""}, and calls wait in the socket's queue until ${child.pid} takes it`);

@@ -26,6 +26,27 @@ export function onWriteError(write: (line: string) => void): void {
   log = write;
 }
 
+let sealedBy: string | null = null;
+const dropped = new Set<string>();
+
+/**
+ * Drops every later write and logs the first one to each file. A hand-over's old server seals once its App stopped and its queue is on
+ * disk, before the data dir's lock moves, so a read it still finishes (http.ts `passThrough`) cannot write over the successor's files.
+ */
+export function seal(reason: string): void {
+  sealedBy = reason;
+}
+
+/** Whether a write to `path` is dropped, logging the first one per file. */
+export function sealedFor(path: string): boolean {
+  if (sealedBy === null) return false;
+  if (!dropped.has(path)) {
+    dropped.add(path);
+    log(`disk: dropped a write to ${path}: ${sealedBy}`);
+  }
+  return true;
+}
+
 function op(kind: Op["kind"], path: string, text: string): Op {
   let settle!: () => void;
   const done = new Promise<void>(resolve => (settle = resolve));
@@ -34,6 +55,7 @@ function op(kind: Op["kind"], path: string, text: string): Op {
 
 /** Queues `text` as the whole new content of `path`, written to a temp file and renamed over it. */
 export function replaceLater(path: string, text: string): void {
+  if (sealedFor(path)) return;
   const at = queue.findIndex(o => o.kind === "replace" && o.path === path);
   const next = op("replace", path, text);
   if (at >= 0) {
@@ -52,6 +74,7 @@ export function writeJsonLater(path: string, value: unknown): void {
 
 /** Queues `text` at the end of `path`. */
 export function appendLater(path: string, text: string): void {
+  if (sealedFor(path)) return;
   const tail = queue.at(-1);
   if (tail?.kind === "append" && tail.path === path) {
     tail.text += text;

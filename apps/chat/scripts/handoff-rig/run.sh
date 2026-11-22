@@ -14,7 +14,7 @@ U=apps-chat-handoff-copy.service
 UNITS=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
 DATA=$OUT/data
 mkdir -p "$OUT/home" "$OUT/tmp" "$DATA" "$UNITS"
-sed -e "s#@CODE@#$CODE#g" -e "s#@DATA@#$DATA#g" -e "s#@OUT@#$OUT#g" -e "s#@PORT@#$PORT#g" "$HERE/copy.service.template" > "$UNITS/$U"
+sed -e "s#@CODE@#$CODE#g" -e "s#@DATA@#$DATA#g" -e "s#@OUT@#$OUT#g" -e "s#@PORT@#$PORT#g" -e "s#@WIKIPORT@#$((PORT + 1))#g" "$HERE/copy.service.template" > "$UNITS/$U"
 printf '[Unit]\nDescription=apps/chat hand-over copy rig port 127.0.0.1:%s (throwaway)\n[Socket]\nListenStream=127.0.0.1:%s\n' "$PORT" "$PORT" > "$UNITS/apps-chat-handoff-copy.socket"
 systemctl --user daemon-reload
 systemctl --user restart apps-chat-handoff-copy.socket "$U"

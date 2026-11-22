@@ -3,6 +3,7 @@
  * their post logs are agent-store.ts, duties and check-ins boards.ts. pi-host owns every thread's entries; nothing here copies them. One process writes these files.
  */
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { sealedFor } from "./disk.ts";
 import { dirname, join } from "node:path";
 import { readLatest, writeJsonLater } from "./disk.ts";
 import type { AgentId, ConversationId, ConversationPrefs, SavedLayout, ThinkingLevel } from "../web/src/lib/api/types.ts";
@@ -48,6 +49,7 @@ export interface StateFile {
 }
 
 export function writeJson(path: string, value: unknown): void {
+  if (sealedFor(path)) return;
   mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.${process.pid}.tmp`;
   writeFileSync(tmp, `${JSON.stringify(value, null, 1)}\n`);
