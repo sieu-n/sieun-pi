@@ -258,14 +258,17 @@ export async function recall(server: string, agentsDir: string, record: AgentRec
     await call(server, "POST", `/api/c/${made.thread}/send`, { text, requestId: `memory-recall-${record.slug}-${stamp}` });
     for (;;) {
       await sleep(timing.pollMs);
-      const [{ items }, header] = await Promise.all([
+      // A failed poll is read again on the next one: on 11-22 a pi-host restart at 05:28 UTC answered 500 "pi-host is shutting down"
+      // for ten seconds and ended 5 of 10 recalls with no answer, though durable runs resume after a restart.
+      const polled = await Promise.all([
         call(server, "GET", `/api/c/${made.thread}/items`) as Promise<{ items: TurnItem[] }>,
         call(server, "GET", `/api/c/${made.thread}`) as Promise<{ summary: { status: RunStatus } }>,
-      ]);
-      const done = finishedReply(items, header.summary.status);
+      ]).catch((error: unknown) => error instanceof Error ? error : new Error(String(error)));
+      const done = polled instanceof Error ? null : finishedReply(polled[0].items, polled[1].summary.status);
       if (done) return { ...done, seconds: Math.round((Date.now() - started) / 1000), thread: made.thread };
       if (Date.now() - started > timing.waitMs) {
-        return { reply: "", seconds: Math.round((Date.now() - started) / 1000), thread: made.thread, error: `no answer within ${Math.round(timing.waitMs / 1000)} s` };
+        const last = polled instanceof Error ? `, last poll ${polled.message.slice(0, 160)}` : "";
+        return { reply: "", seconds: Math.round((Date.now() - started) / 1000), thread: made.thread, error: `no answer within ${Math.round(timing.waitMs / 1000)} s${last}` };
       }
     }
   } catch (error) {

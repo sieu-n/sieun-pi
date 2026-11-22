@@ -8,6 +8,7 @@
  * 4. Every recall agent is archived and its folder deleted, on an error or a timeout too, and a sweep cleans what a killed run left: on
  *    11-20 seven recall agents stayed unarchived.
  * 5. A call rides out a chat server restart: on 11-22 two apps/chat releases ended a d3 rerun with ECONNREFUSED.
+ * 6. A recall poll that fails is read again: on 11-22 a pi-host restart ended 5 of 10 recalls with a 500 "pi-host is shutting down".
  */
 import { strict as assert } from "node:assert";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
@@ -77,7 +78,7 @@ test("a wip title is session state only as a label or with a plan step", () => {
 });
 
 /** A stub of :5184 for recall agents: `send` and `items` act as each test sets, and every call is logged. */
-function stub(opts: { send?: number; items?: () => unknown[]; status?: () => string; agents?: { id: string; name: string; thread: string; archived?: boolean; createdAt?: number }[] }) {
+function stub(opts: { send?: number; itemsStatus?: () => number; items?: () => unknown[]; status?: () => string; agents?: { id: string; name: string; thread: string; archived?: boolean; createdAt?: number }[] }) {
   const calls: string[] = [];
   const agents = opts.agents ?? [];
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
@@ -93,7 +94,10 @@ function stub(opts: { send?: number; items?: () => unknown[]; status?: () => str
     }
     if (req.method === "GET" && req.url === "/api/agents?test=1") return reply(200, agents);
     if (req.method === "POST" && req.url?.endsWith("/send")) return reply(opts.send ?? 200, {});
-    if (req.method === "GET" && req.url?.endsWith("/items")) return reply(200, { items: opts.items?.() ?? [] });
+    if (req.method === "GET" && req.url?.endsWith("/items")) {
+      const status = opts.itemsStatus?.() ?? 200;
+      return reply(status, status === 200 ? { items: opts.items?.() ?? [] } : { error: "pi-host is shutting down" });
+    }
     if (req.method === "GET" && req.url?.startsWith("/api/c/")) return reply(200, { summary: { status: opts.status?.() ?? "idle" } });
     if (req.method === "PATCH") {
       const agent = agents.find(a => `/api/c/${a.thread}` === req.url);
@@ -143,6 +147,23 @@ test("a recall waits past the pool slot's retry error for the answer", async () 
     const result = await recall(server.url, agentsDir, record, questions, "s1", { waitMs: 5000, pollMs: 10 });
     assert.equal(result.error, undefined);
     assert.equal(result.reply, "1. No.");
+  } finally {
+    server.close();
+  }
+});
+
+test("a recall reads past a poll that fails while pi-host restarts", async () => {
+  const agentsDir = mkdtempSync(join(root, "agents-"));
+  let polls = 0;
+  const server = await stub({
+    itemsStatus: () => (++polls < 3 ? 500 : 200),
+    items: () => [{ kind: "turn", live: false, text: "1. No." }],
+  });
+  try {
+    const result = await recall(server.url, agentsDir, record, questions, "s1", { waitMs: 5000, pollMs: 10 });
+    assert.equal(result.error, undefined);
+    assert.equal(result.reply, "1. No.");
+    assert.ok(polls >= 3);
   } finally {
     server.close();
   }
