@@ -46,7 +46,7 @@ for (const path of [pool, join(store, 'openai-codex')]) mkdirSync(path, { recurs
 writeFileSync(join(store, 'openai-codex.json'), JSON.stringify({ version: 1, accounts: [{ id: C, email: 'c@x', label: 'c@x', tier: 'plus', windows: [] }] }));
 writeFileSync(join(store, 'openai-codex', `${C}.json`), JSON.stringify({ tokens: { access_token: jwt(C), refresh_token: 'synthetic' } }));
 const emptyProvider = { pin: null, cooldowns: {}, disabled: {} };
-writeFileSync(join(pool, 'state.json'), JSON.stringify({ version: 2, providers: { anthropic: emptyProvider, 'openai-codex': { ...emptyProvider, pin: C } }, sessions: {} }));
+writeFileSync(join(pool, 'state.json'), JSON.stringify({ version: 2, providers: { anthropic: emptyProvider, 'openai-codex': emptyProvider }, sessions: {} }));
 const cliEnv = { ...process.env, ...isolationEnv, PI_POOL_DIR: pool };
 delete cliEnv.PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID;
 delete cliEnv.PRIME_AGENT_INTERNAL_DAEMON_WORKER_RECOVERY_JOURNAL;
