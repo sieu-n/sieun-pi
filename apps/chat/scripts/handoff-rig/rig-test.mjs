@@ -4,6 +4,7 @@
 // or when the channel holds a duplicate seq or misses a send that answered 200. Prints one JSON report.
 // Usage: node rig-test.mjs <unit> <port> <data dir> [rounds=5]; run.sh in this folder sets up the copy unit, mover.py and the data dir.
 import { execFileSync } from "node:child_process";
+import { connect } from "node:net";
 import { readdirSync, readFileSync } from "node:fs";
 import { request } from "node:http";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -73,6 +74,12 @@ await sleep(3000);
 const results = [];
 for (round = 1; round <= rounds; round++) {
   const before = Number(show("MainPID"));
+  // An idle keep-alive connection whose client keeps it half open after the server ends it, as a net pipe does; on 11-22 such clients held
+  // the old server's stop to its 2 s cap in 4 of 5 live hand-overs.
+  const idle = connect({ port, host: "127.0.0.1", allowHalfOpen: true });
+  idle.on("error", () => {});
+  await new Promise(resolve => { idle.on("data", resolve); idle.write("GET /api/ready HTTP/1.1\r\nHost: rig\r\n\r\n"); });
+  const since = Math.floor(Date.now() / 1000);
   const at = performance.now();
   execFileSync("systemctl", ["--user", "reload", unit]);
   // Writes that land on the old server while the successor loads: a room change, a read mark and a post, each read back through the successor.
@@ -97,8 +104,15 @@ for (round = 1; round <= rounds; round++) {
   const windowPost = readFileSync(`${dataDir}/rooms/${roomId}.jsonl`, "utf8").includes(`"rig window ${round}"`);
   if (!windowPost) failures.push(`round ${round}: the post sent in the hand-over window is not in the room's log`);
   await sleep(3000);
+  idle.destroy();
+  const stopLine = execFileSync("journalctl", ["--user", "-u", unit, "-u", unit.replace(/\.service$/, "-core.scope"), "--since", `@${since}`, "--no-pager", "-o", "cat"], { encoding: "utf8" })
+    .split("\n").find(line => line.includes("this process stopped in")) ?? "";
+  const stopMs = Number(/stopped in (\d+) ms/.exec(stopLine)?.[1] ?? NaN);
+  // The main process logs from the core scope that mover.py, like cpu-protect.py, moves it into.
+  // The old server's stop is the time new calls wait in the socket's queue before the successor's own start of about 0.5 s.
+  if (!(stopMs < 1000)) failures.push(`round ${round}: the old server's stop took ${stopMs} ms: ${stopLine}`);
   const running = servers();
-  results.push({ round, from: before, to: Number(show("MainPID")), handed, handedMs: Math.round(performance.now() - at - 3000), written, agenda, windowPost, servers: running });
+  results.push({ round, from: before, to: Number(show("MainPID")), handed, handedMs: Math.round(performance.now() - at - 3000), stopMs, written, agenda, windowPost, servers: running });
   if (!handed) failures.push(`round ${round}: no hand-over to a new main process in 60 s`);
   if (running.length !== 1) failures.push(`round ${round}: ${running.length} server processes on ${dataDir}: ${running.join(", ")}`);
 }

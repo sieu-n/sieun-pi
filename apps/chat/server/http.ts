@@ -593,23 +593,28 @@ export function serve(app: App, parts: SkillsParts = skillsParts(app.config, app
   return server;
 }
 
-/** Each server's connections other than live sockets, with the calls each has in flight and whether it answered one yet, which `drain` reads. */
-type Conn = { busy: number; served: boolean };
+/**
+ * Each server's connections other than live sockets, with the calls each has in flight, whether it answered one yet and whether `drain`
+ * ended it, which `drain` reads.
+ */
+type Conn = { busy: Map<IncomingMessage, ServerResponse>; served: boolean; ended: boolean };
 const conns = new WeakMap<Server, Map<Socket, Conn>>();
+const draining = new WeakSet<Server>();
 
 function track(server: Server): void {
   const open = new Map<Socket, Conn>();
   conns.set(server, open);
   server.on("connection", (socket: Socket) => {
-    open.set(socket, { busy: 0, served: false });
+    open.set(socket, { busy: new Map(), served: false, ended: false });
     socket.once("close", () => open.delete(socket));
   });
   server.on("request", (req: IncomingMessage, res: ServerResponse) => {
     const conn = open.get(req.socket as Socket);
     if (!conn) return;
-    conn.busy += 1;
+    conn.busy.set(req, res);
+    if (draining.has(server)) res.shouldKeepAlive = false;
     res.once("close", () => {
-      conn.busy -= 1;
+      conn.busy.delete(req);
       conn.served = true;
     });
   });
@@ -617,25 +622,49 @@ function track(server: Server): void {
 }
 
 /**
- * Stops taking connections and resolves once every connection it took has answered its calls and closed, or after `maxMs` with the rest
- * cut. A release restart used to end the process mid-call, so a send or a change in flight failed with "Load failed" in the owner's
- * browser. 99.9% of the 128,600 server lines of 11-21 and 11-22 answered within 1.5 s, so the default waits 2 s; the longest took 10.8 s.
+ * Stops taking connections and resolves once every connection it took has answered its calls, or after `maxMs` with the rest cut, with a
+ * line that says what it waited for. A release restart used to end the process mid-call, so a send or a change in flight failed with "Load
+ * failed" in the owner's browser. 99.9% of the 128,600 server lines of 11-21 and 11-22 answered within 1.5 s, so the default waits 2 s; the
+ * longest took 10.8 s.
  * http's own close also ends a connection accepted just before whose request was not read yet, and the hand-over spec
  * (test/server/handoff.test.ts) saw that as ECONNRESET on 1 or 2 of about 300 calls in 2 of 3 runs on 11-22, so only net's close runs here:
  * a connection that answered a call and holds none is ended, and a new one is kept until its call answered. A new one that sent nothing
- * within SILENT_MS is a client's spare connection and is ended too. Live sockets end with the app.
+ * within SILENT_MS is a client's spare connection and is ended too. A call in flight answers with `Connection: close`, so its client does not
+ * send another on that connection.
+ * An ended connection counts as done once it holds no call, without its client's close: http's server keeps a connection half open after
+ * its own end until the client closes, and in 4 of 5 live hand-overs on 11-22 (09:33 to 09:34Z) the stop waited the whole 2 s with no call
+ * answered in it. Live sockets end with the app.
  */
-export async function drain(server: Server, maxMs = 2000): Promise<void> {
+export async function drain(server: Server, maxMs = 2000): Promise<string> {
   netClose.call(server);
+  draining.add(server);
   const open = conns.get(server) ?? new Map<Socket, Conn>();
   const began = Date.now();
   const end = began + maxMs;
+  let ended = 0;
   for (;;) {
     const silent = Date.now() - began >= SILENT_MS;
-    for (const [socket, conn] of open) if (!conn.busy && (conn.served || (silent && socket.bytesRead === 0))) socket.end();
-    if (!open.size || Date.now() >= end) break;
+    let waiting = 0;
+    for (const [socket, conn] of open) {
+      if (conn.busy.size) {
+        for (const res of conn.busy.values()) if (!res.headersSent) res.shouldKeepAlive = false;
+        waiting += 1;
+        continue;
+      }
+      if (conn.ended) continue;
+      if (conn.served || (silent && socket.bytesRead === 0)) {
+        conn.ended = true;
+        ended += 1;
+        socket.end();
+      } else waiting += 1;
+    }
+    if (!waiting || Date.now() >= end) break;
     await new Promise(resolve => setTimeout(resolve, 10));
   }
+  const cut = [...open.values()].flatMap(conn => [...conn.busy.keys()].map(req => `${req.method} ${req.url}`));
+  const halfOpen = [...open.values()].filter(conn => conn.ended && !conn.busy.size).length;
+  return `drained in ${Date.now() - began} ms: ended ${ended} idle connections (${halfOpen} not closed by their client yet)` +
+    (cut.length ? `, cut ${cut.length} calls at ${maxMs} ms: ${cut.slice(0, 5).join(", ")}` : "");
 }
 const netClose = NetServer.prototype.close;
 /**

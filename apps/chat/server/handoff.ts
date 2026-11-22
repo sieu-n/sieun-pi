@@ -199,7 +199,7 @@ export interface Running {
   /** Releases the data dir's lock, once the app stopped, so the successor can take it. */
   unlock(): void;
   /** Closes the server and waits for its calls in flight (http.ts `drain`). */
-  drain(server: Server): Promise<void>;
+  drain(server: Server): Promise<string | void>;
   log(line: string): void;
   /** Ends this process once the successor serves, or once a successor that ended after this process stopped left nothing to serve. */
   exit(code: number): void;
@@ -229,11 +229,11 @@ export async function handOver(side: Running, args: string[] = serveArgs(), cwd 
       if (kind === "loaded") {
         const loadedAt = Date.now();
         void (async () => {
-          await side.drain(side.server);
+          const drained = await side.drain(side.server);
           await side.stop();
           side.unlock();
           stoppedAt = Date.now();
-          side.log(`handoff: ${child.pid} loaded in ${loadedAt - began} ms; this process stopped in ${Date.now() - loadedAt} ms, and calls wait in the socket's queue until ${child.pid} takes it`);
+          side.log(`handoff: ${child.pid} loaded in ${loadedAt - began} ms; this process stopped in ${Date.now() - loadedAt} ms${drained ? ` (${drained})` : ""}, and calls wait in the socket's queue until ${child.pid} takes it`);
           child.send({ kind: "stopped" } satisfies ToNew);
         })().catch(error => {
           side.log(`handoff: stop: ${error instanceof Error ? error.message : String(error)}`);

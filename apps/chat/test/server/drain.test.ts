@@ -5,7 +5,7 @@
  * Run: cd apps/chat && node --import tsx --test --test-force-exit --test-isolation=none test/server/drain.test.ts
  */
 import assert from "node:assert/strict";
-import type { AddressInfo } from "node:net";
+import { connect, type AddressInfo } from "node:net";
 import { setTimeout as sleep } from "node:timers/promises";
 import { after, before, test } from "node:test";
 import WebSocket from "ws";
@@ -65,5 +65,47 @@ test("a call that never answers holds the drain only up to its cap", async () =>
   } finally {
     s.app.header = header;
     server.closeAllConnections();
+  }
+});
+
+test("a client that keeps its idle connection half open after the server ends it does not hold the drain", async () => {
+  // On 11-22, 4 of 5 live hand-overs waited out the 2 s cap with no call in flight: http's server keeps an ended connection half open
+  // until its client closes it.
+  const { server, base } = await listening();
+  const port = Number(new URL(base).port);
+  const client = connect({ port, host: "127.0.0.1", allowHalfOpen: true });
+  const answered = new Promise<void>(resolve => client.on("data", data => { if (data.toString().includes("\r\n\r\n")) resolve(); }));
+  client.write("GET /api/ready HTTP/1.1\r\nHost: x\r\nConnection: keep-alive\r\n\r\n");
+  await answered;
+  const ended = new Promise<void>(resolve => client.once("end", () => resolve()));
+  try {
+    const started = performance.now();
+    const line = await drain(server);
+    const took = performance.now() - started;
+    await ended;
+    assert.ok(took < 300, `the drain ended without the client's close: ${took.toFixed(0)} ms (${line})`);
+    assert.match(line, /ended 1 idle connections \(1 not closed/);
+  } finally {
+    client.destroy();
+  }
+});
+
+test("a call in flight when the drain starts answers with Connection: close", async () => {
+  const { server, base } = await listening();
+  const header = s.app.header.bind(s.app);
+  s.app.header = async id => {
+    await sleep(300);
+    return header(id);
+  };
+  try {
+    const call = fetch(`${base}/api/c/${s.app.agents.list()[0]!.room}`);
+    await sleep(100);
+    const drained = drain(server);
+    const answer = await call;
+    assert.equal(answer.status, 200);
+    assert.equal(answer.headers.get("connection"), "close");
+    await drained;
+  } finally {
+    s.app.header = header;
   }
 });

@@ -28,7 +28,7 @@ let stopping: Promise<void> | undefined;
 const stopApp = () => (stopping ??= app ? app.stop().catch(() => undefined) : Promise.resolve());
 let server: ReturnType<typeof serve> | undefined;
 const shutdown = async () => {
-  if (server) await drain(server);
+  if (server) log(`stop: ${await drain(server)}`);
   await stopApp();
   process.exit(0);
 };

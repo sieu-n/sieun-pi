@@ -25,7 +25,7 @@ node "$HERE/rig-test.mjs" "$U" "$PORT" "$DATA" 5 > "$OUT/report.json" 2>&1
 code=$?
 systemctl --user stop apps-chat-handoff-mover "$U" apps-chat-handoff-copy.socket
 systemctl --user stop apps-chat-handoff-copy-core.scope 2>/dev/null
-journalctl --user -u "$U" --since "-15 min" --no-pager -o short-iso-precise > "$OUT/journal.txt"
+journalctl --user -u "$U" -u apps-chat-handoff-copy-core.scope --since "-15 min" --no-pager -o short-iso-precise > "$OUT/journal.txt"
 rm -f "$UNITS/$U" "$UNITS/apps-chat-handoff-copy.socket"
 systemctl --user daemon-reload
 echo "handoff rig: exit $code, report $OUT/report.json"
