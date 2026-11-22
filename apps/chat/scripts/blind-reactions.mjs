@@ -173,6 +173,8 @@ async function runRoom(kind) {
       [`${label} got a reply that answers it`, replies.length > 0],
       ...(kind === "channel" ? [[`${label}'s reply is in its thread`, replies.length > 0 && replies.every(r => r.threadRoot === post.id)]] : []),
       [`${label} keeps no 👀 at the end`, !mine(byId(post.id), EYES)],
+      // On 11-22 a work thread edited the answer in and sent no report, so the comm thread never took 👀 off or marked the thread done.
+      [`${label}'s thread is marked done at the end`, Boolean(byId(post.id)?.done)],
       [`${label} has no ✅`, !mine(byId(post.id), CHECK)],
     ];
   };
