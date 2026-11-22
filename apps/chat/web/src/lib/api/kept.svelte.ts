@@ -10,7 +10,7 @@
  * Each call's line says what the screen did (client.ts `Wait`): `ahead` for a read no panel shows yet, `shown` for a refresh behind a
  * panel that already showed the kept answer and got the same one back, and a wait for a first read or a refresh that changed the panel.
  */
-import { get, reads, takeOver, type Read, type Wait } from "./client.ts";
+import { afterWrite, get, reads, takeOver, type Read, type Wait } from "./client.ts";
 import { live } from "./live.svelte.ts";
 import { pageDb, type KeptPage } from "./page-db.ts";
 
@@ -58,7 +58,8 @@ export class Kept<T> {
   }
 
   private fetch(background: Wait["background"]): Promise<void> {
-    if (this.flight) {
+    // A refresh asked as his write answered reads again, since a read on its way since before may carry the answer from before the write.
+    if (this.flight && !(background !== "ahead" && afterWrite(this.flight.wait))) {
       if (background !== "ahead") takeOver(this.flight.wait, background);
       return this.flight.read;
     }
@@ -66,6 +67,7 @@ export class Kept<T> {
     const flight = {
       wait,
       read: get(this.of, wait).then(next => {
+        if (this.flight !== flight) return;
         this.sent = wait.sent ?? -Infinity;
         // A refresh that changed what the panel shows is one the owner waited for.
         if (same(this.value, next)) this.error = null;

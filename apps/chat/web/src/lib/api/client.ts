@@ -269,16 +269,37 @@ function settle(ticket: Ticket): void {
   pump();
 }
 
-async function waited<T>(send: () => Promise<T>): Promise<T> {
+async function waited<T>(send: () => Promise<T>, write: boolean): Promise<T> {
   busy += 1;
   stop(ticket => !pageRefresh(ticket));
   try {
     return await send();
   } finally {
     busy -= 1;
+    if (write) wrote();
     pump();
   }
 }
+
+/**
+ * Whether one of the owner's writes (any call but a GET) answered in the page's current task. A read asked then is the refetch that shows
+ * him what his write changed, such as the member list after Add, which a view starts in the write's own promise chain, so it goes as his
+ * call: at once, before the reads ahead, which hold behind it. A Work tab remove reads the agent's rooms again through a kept panel's read
+ * (AgentConfigPanel.svelte `load`), which before this waited in the lane as a panel refresh at fetch priority low.
+ */
+let wroteNow = false;
+/** When his last write answered (`performance.now()`): a read that left before it may have missed the write (kept.svelte.ts). */
+let wroteAt = -Infinity;
+
+function wrote(): void {
+  wroteAt = performance.now();
+  if (wroteNow) return;
+  wroteNow = true;
+  setTimeout(() => (wroteNow = false));
+}
+
+/** Whether a read asked now must leave after his last write answered, and so may not take the answer of a read on its way since before. */
+export const afterWrite = (wait: Wait): boolean => wroteNow && (wait.sent ?? Infinity) < wroteAt;
 
 /** A call sent when the lane lets it; one the lane stopped is sent again from the start, and its stop is no error. */
 function laned<T>(wait: Wait, attempt: (signal: AbortSignal | undefined, asked: number | undefined) => Promise<T>): Promise<T> {
@@ -309,14 +330,14 @@ function laned<T>(wait: Wait, attempt: (signal: AbortSignal | undefined, asked: 
 /**
  * A view takes over a read ahead: it shows the answer behind a page it already shows (`background` "shown"), and then the read waits in
  * the lane as a refresh, or it waits on it, and then its calls leave the lane at once: a queued one is sent now and one on its way is
- * never stopped, and each counts as his call until it ends.
+ * never stopped, and each counts as his call until it ends. A refresh asked as his write answered is one he waits on (`wroteNow`).
  */
 export function takeOver(wait: Wait, background: Wait["background"]): void {
-  wait.background = background;
-  if (background === "ahead") return;
+  wait.background = wroteNow && background === "shown" ? undefined : background;
+  if (wait.background === "ahead") return;
   const mine = [...queued, ...flying].filter(ticket => ticket.wait === wait);
   for (const ticket of mine) ticket.asked ??= performance.now();
-  if (background === "shown") return pump();
+  if (wait.background === "shown") return pump();
   if (!mine.length) return;
   const unsent = mine.filter(ticket => ticket.state.kind === "queued");
   for (const ticket of mine) {
@@ -338,11 +359,12 @@ export function dropAhead(wait: Wait): void {
 /**
  * A Blob body goes as its own bytes with its own type, any other body as JSON. A call that fails, refused by the server or never reaching
  * it, posts its error with its timing (`recordTiming`), so the server's log holds every failure the page shows, such as a Not delivered send.
- * A GET read ahead or refresh goes through the lane; every other call is one he waits on.
+ * A GET read ahead or refresh goes through the lane; every other call is one he waits on, and so is a refresh asked as his write answered.
  */
 function call<T>(method: string, path: string, body?: unknown, signal?: AbortSignal, wait?: Wait): Promise<T> {
+  if (wroteNow && wait?.background === "shown") wait.background = undefined;
   if (wait?.background && method === "GET" && !signal) return laned(wait, (own, asked) => send<T>(method, path, body, own, wait, asked));
-  return waited(() => send<T>(method, path, body, signal, wait));
+  return waited(() => send<T>(method, path, body, signal, wait), method !== "GET");
 }
 
 /**
