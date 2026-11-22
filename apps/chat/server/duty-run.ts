@@ -44,7 +44,7 @@ export interface PrecheckLaunch {
   runner: { kind: "unit"; unit: string } | { kind: "pid"; pid: number };
 }
 
-/** How often a wait reads the exit file and whether the precheck still runs. */
+/** How often a wait reads the exit file and whether the precheck still runs, after a first read at 50 ms that doubles up to it. */
 const POLL_MS = 2000;
 const run = promisify(execFile);
 const shellQuote = (text: string): string => `'${text.replace(/'/g, `'\\''`)}'`;
@@ -118,7 +118,7 @@ async function running(launch: PrecheckLaunch): Promise<boolean> {
 
 /** The precheck's exit code once it ended, or how it ended with none: at its hard stop, or before it. A stop of the server aborts the wait. */
 async function ended(launch: PrecheckLaunch, signal?: AbortSignal): Promise<number | "hard stop" | "no exit code"> {
-  for (;;) {
+  for (let wait = 50; ; wait = Math.min(wait * 2, POLL_MS)) {
     const code = await readExit(launch.exit);
     if (code !== null) return code;
     const past = Date.now() - launch.startedAt >= launch.hardStopMs;
@@ -127,14 +127,15 @@ async function ended(launch: PrecheckLaunch, signal?: AbortSignal): Promise<numb
       try { process.kill(-launch.runner.pid, "SIGKILL"); } catch { /* it ended meanwhile */ }
       return "hard stop";
     }
-    await sleep(POLL_MS, undefined, { signal });
+    await sleep(wait, undefined, { signal });
   }
 }
 
 /**
  * Waits for a launched precheck, in this server process or the next one, and returns its parsed OUTPUT_FILE; the state file moves forward
- * only on a good run, and an after-job measure keeps none, so the next run counts from the same point. A stop of the server rejects with
- * the abort and leaves every file for the next server process.
+ * only on a good run, and an after-job measure keeps none, so the next run counts from the same point. The exit and output files stay until
+ * `clearPrecheck`, which runs after the save that records the run, so a server that stops after the precheck ended and before that save
+ * leaves the next server process the same result to read. A stop of the server rejects with the abort.
  */
 export async function waitPrecheck(duty: Duty, launch: PrecheckLaunch, log: (line: string) => void = () => {}, signal?: AbortSignal): Promise<PrecheckOutput> {
   const targetIn = launch.startedAt + duty.precheck.timeoutMs - Date.now();
@@ -146,27 +147,31 @@ export async function waitPrecheck(duty: Duty, launch: PrecheckLaunch, log: (lin
   } finally {
     clearTimeout(pastTarget);
   }
-  try {
-    if (code !== 0) {
-      const words = code === "hard stop" ? `stopped at its hard stop after ${Math.round(launch.hardStopMs / 60_000)} min` : code === "no exit code" ? "it ended with no exit code" : `exit ${code}`;
-      const tail = (await readFile(launch.stderr, "utf8").catch(() => "")).trim().split("\n").slice(-3).join(" ").slice(0, 300);
-      throw new Error(`${words}${tail ? `: ${tail}` : ""} (all of stderr: ${launch.stderr})`);
-    }
-    await rm(launch.stderr, { force: true });
-    let output: unknown;
-    try {
-      output = JSON.parse(await readFile(launch.output, "utf8"));
-    } catch {
-      throw new Error("no valid JSON in OUTPUT_FILE");
-    }
-    if (typeof output !== "object" || output === null || typeof (output as { metrics?: unknown }).metrics !== "object" || (output as { metrics?: unknown }).metrics === null) {
-      throw new Error("OUTPUT_FILE has no metrics object");
-    }
-    if (launch.mode === "run") await rename(launch.nextState, join(dirname(launch.nextState), `${duty.id}.state.json`));
-    return output as PrecheckOutput;
-  } finally {
-    await Promise.all([launch.nextState, launch.script, launch.env, launch.exit].map(file => rm(file, { force: true })));
+  if (code !== 0) {
+    const words = code === "hard stop" ? `stopped at its hard stop after ${Math.round(launch.hardStopMs / 60_000)} min` : code === "no exit code" ? "it ended with no exit code" : `exit ${code}`;
+    const tail = (await readFile(launch.stderr, "utf8").catch(() => "")).trim().split("\n").slice(-3).join(" ").slice(0, 300);
+    throw new Error(`${words}${tail ? `: ${tail}` : ""} (all of stderr: ${launch.stderr})`);
   }
+  await rm(launch.stderr, { force: true });
+  let output: unknown;
+  try {
+    output = JSON.parse(await readFile(launch.output, "utf8"));
+  } catch {
+    throw new Error("no valid JSON in OUTPUT_FILE");
+  }
+  if (typeof output !== "object" || output === null || typeof (output as { metrics?: unknown }).metrics !== "object" || (output as { metrics?: unknown }).metrics === null) {
+    throw new Error("OUTPUT_FILE has no metrics object");
+  }
+  // A server that stopped after this rename leaves no state copy, and the state file already holds it.
+  if (launch.mode === "run") await rename(launch.nextState, join(dirname(launch.nextState), `${duty.id}.state.json`)).catch(error => {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  });
+  return output as PrecheckOutput;
+}
+
+/** Deletes a precheck's state copy, wrapper, env file and exit file, once the save that records its run went through. */
+export async function clearPrecheck(launch: PrecheckLaunch): Promise<void> {
+  await Promise.all([launch.nextState, launch.script, launch.env, launch.exit].map(file => rm(file, { force: true })));
 }
 
 /** Where a measure's precheck stands: `resume` is one a stopped server launched, and `launched` hears of a new one before the wait. */

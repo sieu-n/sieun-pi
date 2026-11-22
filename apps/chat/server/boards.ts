@@ -12,7 +12,7 @@ import type { AgentSummary, BoardOp, BoardRow, BoardView, ChatBoard, CheckInPatc
 import { applyBoardOp, BOARD_PREFIX, emptyBoard, needsGo, nextIds, parseBoard, parseBoardOps, stepGo } from "../web/src/lib/api/shared/chat-board.ts";
 import { snoozed } from "../web/src/lib/api/shared/snooze.ts";
 import { morningTime, STILL_WORKING, upsertDuty, type Duty, type DutyRunRecord, type DutySchedule, type DutyTrigger } from "../web/src/lib/api/shared/chat-duties.ts";
-import { asAfter, measure, measureAfter, runStamp, type PrecheckLaunch } from "./duty-run.ts";
+import { asAfter, clearPrecheck, measure, measureAfter, runStamp, type PrecheckLaunch } from "./duty-run.ts";
 import { dutyCard, judgedRun, missStreak } from "../web/src/lib/api/shared/duty-card.ts";
 import type { ChatAgent } from "../web/src/lib/api/shared/types.ts";
 import { threadModel, type Agents } from "./agents.ts";
@@ -60,9 +60,11 @@ interface CheckInState {
 }
 /**
  * A duty's precheck at work, per duty id, from its launch until the save that records its run (`run`) or its run's after-job measure
- * (`after`, on the run at `run`), so the next server process waits for it and records it after a restart (`resumePrechecks`).
+ * (`after`, on the run at `run`), so the next server process waits for it and records it after a restart (`resumePrechecks`). A run's `job`
+ * is the duty job it made, which a resumed run submits to again instead of making a second one.
  */
-export type PendingPrecheck = { at: number; launch: PrecheckLaunch } & ({ mode: "run"; trigger: DutyTrigger } | { mode: "after"; run: number; job: string });
+export type PendingPrecheck = { at: number; launch: PrecheckLaunch }
+  & ({ mode: "run"; trigger: DutyTrigger; job?: { id: string; name: string } } | { mode: "after"; run: number; job: string });
 /** `hidden` is when the owner hid the board from All boards and the Board sidebar; it still opens by its link. */
 export interface DutyFile { duties: Duty[]; runs: Record<string, DutyRunRecord[]>; pending?: Record<string, PendingPrecheck>; checkIn?: CheckInState; hidden?: number }
 
@@ -636,10 +638,14 @@ export class Boards {
         // its chat's model, so a Fable advisor's sweep judges on Fable and every Opus agent's duty stays on Opus.
         const work = this.threads.thread(thread);
         const cwd = duty.precheck.cwd || work?.cwd;
-        const job = await this.threads.create({ name, ...threadModel(work), ...(cwd ? { cwd } : {}) }, made => {
+        // A run resumed after a stop that came after its job was made submits to that job, and the request id lands the brief once.
+        const job = resume?.job ?? await this.threads.create({ name, ...threadModel(work), ...(cwd ? { cwd } : {}) }, made => {
           this.store.state.threads[made.id] = { kind: "job", parent: chat };
           this.store.saveState();
           this.agents.alias(made.id, chat);
+          const file = this.file(chat);
+          const pending = file.pending?.[dutyId];
+          if (pending?.mode === "run") this.save(chat, Boards.pend(file, dutyId, { ...pending, job: { id: made.id, name } }));
         });
         await this.threads.refresh().catch(() => undefined);
         const submitted = await this.host.submit(job.id, { text: brief, requestId: `duty:${chat}:${duty.id}:${record.at}`, entry: { kind: "agent.message", data: { from: chat, via: `duty ${duty.id}` } } });
@@ -656,7 +662,9 @@ export class Boards {
     const measured = asAfter(record);
     if (lastRun?.job && !lastRun.after && measured && (record.job || !working.has(lastRun.job.name))) lastRun.after = measured;
     after.runs[dutyId] = [record, ...(after.runs[dutyId] ?? [])].sort((a, b) => b.at - a.at).slice(0, 20);
+    const launch = after.pending?.[dutyId]?.launch;
     this.save(chat, Boards.pend(after, dutyId, null));
+    if (launch) void clearPrecheck(launch).catch(error => this.log(`duty ${chat.slice(0, 8)}: clearing its precheck files failed: ${String(error)}`));
     this.log(`duty ${chat.slice(0, 8)}/${duty.id}: ${record.verdict}, ${record.summary}${record.job ? `, job ${record.job.name}` : ""}`);
   }
 
@@ -749,10 +757,12 @@ export class Boards {
       duty, chat, dir: join(this.dir(chat), "duties"), runs, now: at, log: this.log, signal: this.stopping.signal, ...(resume ? { resume: resume.launch } : {}),
       launched: launch => this.save(chat, Boards.pend(this.file(chat), duty.id, { mode: "after", at, run: runAt, job: jobName, launch })),
     });
-    const latest = Boards.pend(this.file(chat), duty.id, null);
+    const latest = this.file(chat);
+    const launch = latest.pending?.[duty.id]?.launch;
     const target = latest.runs[duty.id]?.find(entry => entry.at === runAt);
     if (target && !target.after) target.after = after;
-    this.save(chat, latest);
+    this.save(chat, Boards.pend(latest, duty.id, null));
+    if (launch) void clearPrecheck(launch).catch(error => this.log(`duty ${chat.slice(0, 8)}: clearing its precheck files failed: ${String(error)}`));
     if (target?.after !== after) return;
     this.log(`duty ${chat.slice(0, 8)}/${duty.id}: after its job ${jobName}, ${after.verdict}, ${after.summary}`);
     this.events.duties(chat, this.duties(chat));

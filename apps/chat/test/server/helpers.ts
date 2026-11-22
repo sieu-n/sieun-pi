@@ -15,6 +15,13 @@ import { PiHost } from "../../server/host/pi-host.ts";
 import { serve } from "../../server/http.ts";
 import { seedFixture } from "../../server/fixture/seed.ts";
 
+/**
+ * A test run inside a systemd unit inherits its INVOCATION_ID, and a duty precheck of a test server would start as a transient unit of the
+ * box (server/duty-run.ts `launchPrecheck`); on 11-22 one ran against a /tmp/apps-chat-test-* data dir. Without it the precheck starts as a
+ * detached process group, as for any server outside systemd.
+ */
+delete process.env.INVOCATION_ID;
+
 export interface Running {
   base: string;
   app: App;

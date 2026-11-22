@@ -26,6 +26,11 @@ const OWNER_SETTINGS_SPECS = ["**/shell/profile-menu.spec.ts", "**/shell/setting
  * already pushes Chrome's socket path past its limit.
  */
 process.env.CHAT_PW_OUTPUT ??= join(tmpdir(), `acpw-${randomBytes(3).toString("hex")}`);
+/**
+ * A run started from a systemd unit hands the fixture servers its INVOCATION_ID, and their duty prechecks would start as transient units of
+ * the box (server/duty-run.ts `launchPrecheck`). Without it they start as detached process groups, as for any server outside systemd.
+ */
+delete process.env.INVOCATION_ID;
 
 export default defineConfig({
   testDir: "test",
