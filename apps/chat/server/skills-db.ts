@@ -15,7 +15,7 @@ import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
   COUNT_RULES, SKILL_RUNTIMES, type VerdictRule, type AdoptBody, type ApplyResult, type ApplyStep, type CopyRole, type InstallBody, type InstallState, type MergeBody, type MoveBody,
-  type OwnBody, type RemoveBody, type SkillBoxState, type SkillCopy, type SkillCounts, type SkillEntry, type SkillMove, type SkillOwner, type SkillRuntime,
+  type OwnBody, type RemoveBody, type SkillBoxState, type SkillCopy, type SkillCounts, type SkillEntry, type SkillMove, type SkillSight, type SkillOwner, type SkillRuntime,
   type SkillScan, type SkillSource, type SkillsChange, type SkillsCheck, type SkillsView, type SkillThresholds, type SkillVerdictRow, type UndoBody,
 } from "../web/src/lib/api/shared/skills.ts";
 import {
@@ -115,6 +115,41 @@ function runtimeFolder(home: string, runtime: SkillRuntime): string {
 /** The runtimes whose skill folder is the folder a path sits in; an install outside every runtime's folder is read by none of them. */
 function runtimesAt(home: string, path: string): SkillRuntime[] {
   return SKILL_RUNTIMES.filter(runtime => runtimeFolder(home, runtime) === dirname(path));
+}
+
+const SIGHT_RANK: Record<SkillSight["how"], number> = { inlined: 0, imported: 1, listed: 2, cwd: 3, hidden: 4 };
+
+/**
+ * Splits the use of a name that several skills share, because a transcript names the skill and not the copy it read. Each thread kind's
+ * tally goes to the skill that kind loads (its best non-hidden sight), and a kind that loads none of them goes to the skill most kinds load.
+ * On 11-22 agent-message, edit and agent-observe each showed their full count twice, on Prime's bundled copy and on sieun-pi's
+ * packages/pi-rlm copy, though the skills-load capture shows every Prime and sw factory kind reading the bundled one.
+ */
+export function creditUse(entries: SkillEntry[]): void {
+  const byName = new Map<string, SkillEntry[]>();
+  for (const e of entries) byName.set(e.name, [...(byName.get(e.name) ?? []), e]);
+  for (const same of byName.values()) {
+    if (same.length < 2) continue;
+    const total = same[0]!.use;
+    const seen = (e: SkillEntry, kind: string) => e.sees.find(x => x.kind === kind)?.how ?? "hidden";
+    const reach = (e: SkillEntry) => e.sees.filter(x => x.how !== "hidden").length;
+    const fallback = same.reduce((best, e) => (reach(e) > reach(best) ? e : best));
+    const credit = new Map(same.map(e => [e, { uses: 0, sessions: 0, byKind: {} as typeof total.byKind }]));
+    for (const [kind, tally] of Object.entries(total.byKind)) {
+      if (!tally) continue;
+      const loaders = same.filter(e => seen(e, kind) !== "hidden").sort((a, b) => SIGHT_RANK[seen(a, kind)] - SIGHT_RANK[seen(b, kind)]);
+      const to = credit.get(loaders[0] ?? fallback)!;
+      to.uses += tally.uses;
+      to.sessions += tally.sessions;
+      to.byKind[kind as keyof typeof total.byKind] = tally;
+    }
+    const counted = [...credit.values()].reduce((n, c) => n + c.uses, 0);
+    credit.get(fallback)!.uses += Math.max(0, total.uses - counted);
+    for (const e of same) {
+      const c = credit.get(e)!;
+      e.use = { uses: c.uses, sessions: e === fallback && counted === 0 ? total.sessions : c.sessions, lastUse: c.uses ? total.lastUse : null, byKind: c.byKind };
+    }
+  }
 }
 
 export class SkillsDb {
@@ -457,6 +492,7 @@ export class SkillsDb {
         sees: sees(skill.name, own.filter(c => c.box === this.config.box), settings, inlined),
       };
     });
+    creditUse(entries);
     const unowned = st.copies.filter(c => st.roles.get(copyId(c)) === "unowned").map(copyView);
     const items = drift(st.copies, st.roles, st.installs, st.states);
     const has = (e: SkillEntry, rules: readonly VerdictRule[]) => e.verdicts.some(v => rules.includes(v.rule));

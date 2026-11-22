@@ -350,6 +350,30 @@ test("a checkout that fetched this week is judged by its own origin, and one wit
   assert.equal(stale.has(detached), true, "no upstream, so judged by the newest clone");
 });
 
+test("a name two skills share credits each thread kind's use to the copy that kind loads, so no use counts twice", t => {
+  const dir = mkdtempSync(join(tmpdir(), "skills-db-credit-"));
+  const db = new SkillsDb({ file: join(dir, "chat.sqlite"), box: BOX, home: "/home/x", piHostPrompt: null }, { run: async () => [], undo: async () => [] });
+  t.after(() => {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const at = "2026-11-22T04:00:00Z";
+  const bundled = "/home/x/.local/share/prime-agent/releases/0.9.8/skills/agent-message";
+  const forked = "/home/x/src/sieun-pi/packages/pi-rlm/skills/agent-message";
+  const copy = (path: string, source: string, hash: string) => ({ box: BOX, path, realPath: path, linkTarget: null, exists: true, name: "agent-message", source, root: dirname(path), runtimes: [], hash, text: "x" });
+  db.ingest({
+    generatedAt: at, boxes: [{ box: BOX, scannedAt: at, ok: true }], usageCounted: true,
+    copies: [copy(bundled, "prime-release", "h1"), copy(forked, "sieun-pi-package", "h2")],
+    usage: { "agent-message": { uses30d: 45, sessions30d: 30, lastUse: at, byKind: { "prime-chat": { uses: 20, sessions: 10 }, "sw-work": { uses: 15, sessions: 12 }, claude: { uses: 10, sessions: 8 } } } },
+  });
+  const rows = db.view(IDLE).skills.filter(k => k.name === "agent-message");
+  assert.equal(rows.length, 2);
+  const of = (path: string) => rows.find(k => k.copies.some(c => c.path === path))!.use;
+  assert.equal(of(bundled).uses, 45, "every kind loads the bundled copy, and claude, which loads neither, goes to it too");
+  assert.equal(of(forked).uses, 0);
+  assert.equal(rows.reduce((n, k) => n + k.use.uses, 0), 45);
+});
+
 test("the review runs a skills DB delete of a path that is gone as a no-op, and undoes a step that failed as nothing to put back", async t => {
   const { fixture, review } = rig(t);
   const steps = review.diskSteps(fixture.setName);
