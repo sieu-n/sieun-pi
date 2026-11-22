@@ -17,7 +17,8 @@
  * passed fd (a hand run, the fixture specs) the server listens on its port itself and a SIGHUP does nothing.
  */
 import { execFile, spawn } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { Server } from "node:http";
 import { promisify } from "node:util";
@@ -168,6 +169,8 @@ export class DataLock {
 
   /** Takes the lock, or returns who holds it when another process does. */
   take(): string | null {
+    // A first start on a new box or a fixture run names a data dir nobody made yet, and SQLite cannot open a file in it.
+    mkdirSync(dirname(this.file), { recursive: true });
     const db = new DatabaseSync(this.file);
     try {
       db.exec("PRAGMA journal_mode = DELETE; PRAGMA busy_timeout = 0;");
