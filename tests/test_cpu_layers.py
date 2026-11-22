@@ -63,6 +63,19 @@ class CpuProtectPlan(unittest.TestCase):
         self.assertEqual(cpu.plan(groups, {unit: 50}, PUBLIC), {scope: [50], unit: [52, 53]})
         self.assertEqual(cpu.plan(groups, {unit: None}, PUBLIC), {})
 
+    def test_every_apps_chat_server_process_goes_to_its_core_scope_and_its_helpers_stay_in_the_unit(self):
+        """A hand-over runs a successor beside the old server; at load 133 to 139 on 11-22 both starved in the unit while not the MainPID."""
+        unit, scope = "sieun-pi-apps-chat.service", "sieun-pi-apps-chat-core.scope"
+        serve = ["/home/sieun/.local/node-v26.12.1-linux-x64/bin/node", "--import", "tsx", "server/main.ts", "--port", "5184", "--listen", "127.0.0.1"]
+        old = ["apps-chat old server 40, passing calls to 41" + " " * 40]
+        pinger = ["sh", "-c", "while read -r _; do systemd-notify WATCHDOG=1; done"]
+        copy = ["/home/sieun/.local/node/bin/node", "--import", "tsx", "server/main.ts", "--fixture", "--port", "5791"]
+        groups = {unit: {41: (40, serve), 42: (41, pinger), 43: (40, ["git", "status"]), 44: (2, copy)}, scope: {40: (2, old), 45: (40, pinger)}}
+        self.assertEqual(cpu.plan(groups, {unit: 41}, PUBLIC), {scope: [41], unit: [45]})
+        self.assertEqual(cpu.plan({unit: {41: (2, serve)}}, {unit: 41}, PUBLIC), {scope: [41]})
+        other = "sieun-pi-chat.service"
+        self.assertEqual(cpu.plan({other: {50: (2, serve)}, "sieun-pi-chat-core.scope": {}}, {other: 51}, PUBLIC), {}, "only apps-chat's rule changes")
+
     def test_the_batch_indexers_stay_in_user_slice(self):
         """meilisearch's and pi-history's index threads ran 92% and 94% of their CPU on 11-04."""
         self.assertNotIn("meilisearch.service", cpu.SERVICES)
