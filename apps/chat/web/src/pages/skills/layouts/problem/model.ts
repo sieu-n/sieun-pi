@@ -130,29 +130,34 @@ export const THREAD_TEXT: Record<ThreadKind, string> = {
   codex: "Codex",
 };
 
-export function sight(sees: readonly SkillSight[]): { listed: string[]; hidden: { kinds: string[]; why: string }[] } {
-  const listed: string[] = [];
-  const hidden: { kinds: string[]; why: string }[] = [];
+export function kindsText(kinds: readonly ThreadKind[]): string {
+  const set = new Set(kinds);
+  const sw = THREAD_KINDS.filter(k => k.startsWith("sw-"));
+  const prime = THREAD_KINDS.filter(k => k.startsWith("prime-"));
+  const parts: string[] = [];
+  const allSw = sw.every(k => set.has(k));
+  const allPrime = prime.every(k => set.has(k));
+  if (allSw) parts.push("every sw factory thread");
+  if (allPrime) parts.push("every Prime thread");
+  for (const k of THREAD_KINDS) if (set.has(k) && !(allSw && sw.includes(k)) && !(allPrime && prime.includes(k))) parts.push(THREAD_TEXT[k]);
+  return parts.length > 1 ? `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}` : (parts[0] ?? "");
+}
+
+export function sight(sees: readonly SkillSight[]): string[] {
+  const groups = new Map<string, ThreadKind[]>();
+  const add = (key: string, kind: ThreadKind) => groups.set(key, [...(groups.get(key) ?? []), kind]);
   for (const s of sees) {
     switch (s.how) {
       case "listed":
-        listed.push(THREAD_TEXT[s.kind]);
-        break;
       case "imported":
-        listed.push(`${THREAD_TEXT[s.kind]} (imported)`);
-        break;
       case "inlined":
-        listed.push(`${THREAD_TEXT[s.kind]} (full text)`);
+        add(s.how, s.kind);
         break;
       case "cwd":
-        listed.push(`${THREAD_TEXT[s.kind]} in ${s.repo}`);
+        add(`cwd\u0000${s.repo}`, s.kind);
         break;
       case "hidden":
-        {
-          const same = hidden.find(h => h.why === s.why);
-          if (same) same.kinds.push(THREAD_TEXT[s.kind]);
-          else hidden.push({ kinds: [THREAD_TEXT[s.kind]], why: s.why });
-        }
+        add(`hidden\u0000${s.why}`, s.kind);
         break;
       default: {
         const _exhaustive: never = s;
@@ -160,7 +165,18 @@ export function sight(sees: readonly SkillSight[]): { listed: string[]; hidden: 
       }
     }
   }
-  return { listed, hidden };
+  const lines: string[] = [];
+  for (const [key, kinds] of groups) {
+    const [how, extra] = key.split("\u0000");
+    const who = kindsText(kinds);
+    if (how === "listed") lines.push(`Listed for ${who}.`);
+    else if (how === "imported") lines.push(`Listed and pre-imported for ${who}.`);
+    else if (how === "inlined") lines.push(`Full text in the prompt of ${who}.`);
+    else if (how === "cwd") lines.push(`Listed for ${who} when the folder is ${extra}.`);
+    else lines.push(`Hidden from ${who}, because ${(extra ?? "").replace("this kind reads", kinds.length > 1 ? "they read" : "it reads")}.`);
+  }
+  const rank = (line: string) => (line.startsWith("Hidden") ? 1 : 0);
+  return lines.sort((a, b) => rank(a) - rank(b));
 }
 
 export const topKinds = (skill: SkillEntry): { kind: string; uses: number }[] =>
@@ -257,7 +273,7 @@ export function sourceBox(skills: readonly SkillEntry[]): string | null {
   return [...tally].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
 }
 
-export function openedByPath(skill: SkillEntry): string[] {
+export function openedByPath(skill: SkillEntry): ThreadKind[] {
   const listed = new Set(skill.sees.filter(s => s.how !== "hidden").map(s => s.kind));
-  return THREAD_KINDS.filter(kind => (skill.use.byKind[kind]?.uses ?? 0) > 0 && !listed.has(kind)).map(kind => THREAD_TEXT[kind]);
+  return THREAD_KINDS.filter(kind => (skill.use.byKind[kind]?.uses ?? 0) > 0 && !listed.has(kind));
 }

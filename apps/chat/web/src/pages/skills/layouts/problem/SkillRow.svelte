@@ -2,7 +2,7 @@
   import type { SkillEntry, SkillThresholds } from "$lib/api/shared/skills";
   import { Badge, Button, Icon, ageLabel, tooltip } from "$lib/ui";
   import {
-    GROUP_TEXT, ROLE_TEXT, drift, headline, mergeInto, copyNotes, orderedCopies, problemsOf, openedByPath, shape, sight, sizeText, sourceText, splitPath, tilde, topKinds,
+    GROUP_TEXT, ROLE_TEXT, drift, headline, mergeInto, copyNotes, orderedCopies, problemsOf, kindsText, openedByPath, shape, sight, sizeText, sourceText, splitPath, tilde, topKinds,
     weakDescription, type GroupKind, type RowActions,
   } from "./model";
 
@@ -26,6 +26,7 @@
   const seen = $derived(sight(skill.sees));
   const kinds = $derived(topKinds(skill));
   const byPath = $derived(openedByPath(skill));
+  const capital = (text: string): string => text.charAt(0).toUpperCase() + text.slice(1);
   const now = Date.now();
   const lead = $derived(kind ? headline(skill, kind, limits) : skill.description);
   const ownerText = $derived(skill.owner.kind === "owner" ? "you" : skill.owner.id);
@@ -40,7 +41,7 @@
       <span class="lead">{lead}</span>
     </span>
     <span class="facts">
-      {#each others as other (other)}<Badge tone="outline">{GROUP_TEXT[other].title.toLowerCase()}</Badge>{/each}
+      {#if others.length}<span class="others">{#each others as other (other)}<Badge tone="outline">{GROUP_TEXT[other].title.toLowerCase()}</Badge>{/each}</span>{/if}
       {#if weak}<Badge tone="warning" title="No session opened or called it in 30 days, so its description may be too weak for agents to pick it.">weak description, review</Badge>{/if}
       <span class="num" use:tooltip={"Folders and links that hold it"}>{skill.copies.length} {skill.copies.length === 1 ? "copy" : "copies"}</span>
       <span class="num" class:bad={size?.bloated}>{size ? size.text : "size unknown"}</span>
@@ -61,12 +62,12 @@
           {:else}
             No session opened or called it.{#if weak} Its description may be why, so review it before removing.{/if}
           {/if}
-          {#if byPath.length}<span class="hidden">{byPath.join(", ")} opened it by path, not from the skills list in their prompt.</span>{/if}
+          {#if byPath.length}<span class="hidden">{capital(kindsText(byPath))} opened it by path, since their prompt does not list it.</span>{/if}
           {#if skill.preimported}<span class="aside"> Pre-imported as a Python module, so every call counts.</span>{/if}
         </dd>
         <dt>Seen by</dt>
         <dd>
-          {seen.listed.length ? seen.listed.join(", ") : "no thread kind"}{#each seen.hidden as h (h.why)}<span class="hidden">Hidden from {h.kinds.join(", ")}, because {h.why}.</span>{/each}
+          {#each seen as line (line)}<span class="line">{line}</span>{:else}No thread kind lists it.{/each}
         </dd>
       </dl>
 
@@ -117,10 +118,11 @@
   .head:focus-visible { outline: 2px solid var(--border-focus); outline-offset: -2px; }
   .head :global(.icon) { color: var(--text-subtle); transition: transform var(--duration-base) var(--ease-standard); }
   .open .head :global(.icon) { transform: rotate(90deg); }
-  .title { display: flex; align-items: baseline; gap: var(--space-2); min-width: 0; }
-  .name { flex: none; font: var(--text-label-sm); }
-  .lead { overflow: hidden; color: var(--text-subtle); font: var(--text-body-sm); text-overflow: ellipsis; white-space: nowrap; }
+  .title { display: flex; align-items: baseline; gap: var(--space-2); min-width: 0; overflow: hidden; }
+  .name { flex: 0 1 auto; min-width: 4em; overflow: hidden; font: var(--text-label-sm); text-overflow: ellipsis; white-space: nowrap; }
+  .lead { flex: 1 1 0; min-width: 0; overflow: hidden; color: var(--text-subtle); font: var(--text-body-sm); text-overflow: ellipsis; white-space: nowrap; }
   .facts { display: flex; align-items: center; gap: var(--space-3); }
+  .others { display: flex; gap: 4px; }
   .num { color: var(--text-subtle); font: var(--text-body-sm); font-variant-numeric: tabular-nums; white-space: nowrap; }
   .facts .num { min-width: 5.5em; text-align: right; }
   .facts .use { min-width: 7em; }
@@ -132,6 +134,7 @@
   .meta dd { margin: 0; color: var(--text-standard); }
   .aside { color: var(--text-subtle); }
   .hidden { display: block; color: var(--text-subtle); }
+  .line { display: block; }
   .copies { display: flex; flex-direction: column; padding: var(--space-1); border-radius: 12px; box-shadow: inset 0 0 0 1px var(--border-standard); }
   .crow { display: grid; grid-template-columns: minmax(0, 1fr) 9.5em 10em auto; align-items: center; gap: var(--space-3); min-height: 40px; padding: var(--space-1) var(--space-3); border-radius: 8px; }
   .crow:not(.cols):hover { background: var(--affordance-ghost-hover); }
@@ -146,6 +149,9 @@
   .note { color: var(--text-metadata); }
   .acts { display: flex; justify-content: flex-end; gap: 2px; white-space: nowrap; }
   .skill-acts { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+  @container (width < 1100px) {
+    .others { display: none; }
+  }
   @container (width < 760px) {
     .facts .num:not(.use) { display: none; }
     .crow { grid-template-columns: minmax(0, 1fr) auto; }

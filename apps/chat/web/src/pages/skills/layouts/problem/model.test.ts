@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { SkillCopy, SkillEntry, SkillThresholds, SkillVerdictRow } from "../../../../lib/api/shared/skills.ts";
-import { drift, healthy, openedByPath, problemGroups, problemsOf, sight, sizeText, splitPath, weakDescription } from "./model.ts";
+import { THREAD_KINDS, type SkillCopy, type SkillEntry, type SkillThresholds, type SkillVerdictRow } from "../../../../lib/api/shared/skills.ts";
+import { drift, healthy, kindsText, openedByPath, problemGroups, problemsOf, sight, sizeText, splitPath, weakDescription } from "./model.ts";
 
 const limits: SkillThresholds = { medianBytes: 4000, medianLines: 75, bloatBytes: 12000, nearDuplicate: 0.8, staleCheckoutDays: 30, source: "test" };
 
@@ -50,10 +50,13 @@ test("a copy row says its drift, its size against the median and keeps the folde
   assert.equal(drift(copy({ role: "source" })).text, "source");
   assert.deepEqual(sizeText(94583, limits), { text: "95 KB, 23.6x median", ratio: 94583 / 4000, bloated: true });
   assert.deepEqual(splitPath("/home/sieun/src/sieun-pi/skills/board"), { head: "/home/sieun/src/sieun-pi/skills/", tail: "board" });
-  assert.deepEqual(sight([{ kind: "sw-comm", how: "listed", copyId: "x" }, { kind: "sw-work", how: "inlined", copyId: "x" }, { kind: "prime-job", how: "hidden", why: "disable-model-invocation" }]), {
-    listed: ["sw factory comm", "sw factory work (full text)"],
-    hidden: [{ kinds: ["Prime job"], why: "disable-model-invocation" }],
-  });
+  assert.deepEqual(sight([{ kind: "sw-comm", how: "listed", copyId: "x" }, { kind: "sw-work", how: "inlined", copyId: "x" }, { kind: "prime-job", how: "hidden", why: "settings hide it" }]), [
+    "Listed for sw factory comm.",
+    "Full text in the prompt of sw factory work.",
+    "Hidden from Prime job, because settings hide it.",
+  ]);
+  const every = THREAD_KINDS.filter(k => k.startsWith("sw-") || k.startsWith("prime-"));
+  assert.equal(kindsText([...every, "codex"]), "every sw factory thread, every Prime thread and Codex");
 });
 
 test("thread kinds that used a skill their prompt does not list read as opened by path", () => {
@@ -61,5 +64,5 @@ test("thread kinds that used a skill their prompt does not list read as opened b
     sees: [{ kind: "claude", how: "listed", copyId: "x" }, { kind: "prime-subagent", how: "hidden", why: "settings hide it" }],
     use: { uses: 10, sessions: 5, lastUse: null, byKind: { "prime-subagent": { uses: 8, sessions: 4 }, claude: { uses: 2, sessions: 1 } } },
   });
-  assert.deepEqual(openedByPath(s), ["Prime subagent"]);
+  assert.deepEqual(openedByPath(s), ["prime-subagent"]);
 });
