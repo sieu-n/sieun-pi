@@ -70,3 +70,22 @@ test("with Node's default 5 s, a call 6 s after the last one meets a closed conn
     server.close();
   }
 });
+
+test("a local fetch's connection closes after its answer, so a hand-over keeps none of pi-host's pool", async () => {
+  const server = await listening();
+  try {
+    const port = (server.address() as AddressInfo).port;
+    const answer = await fetch(`http://127.0.0.1:${port}/api/ready`);
+    assert.equal(answer.headers.get("connection"), "close");
+    const client = connect({ port, host: "127.0.0.1" });
+    let received = "";
+    client.on("data", data => (received += data.toString()));
+    client.write("GET /api/ready HTTP/1.1\r\nHost: x\r\n\r\n");
+    while (!received.includes("\r\n\r\n")) await sleep(10);
+    client.destroy();
+    assert.match(received, /connection: keep-alive/i, "a client that is not a local fetch keeps its connection");
+  } finally {
+    server.closeAllConnections();
+    server.close();
+  }
+});

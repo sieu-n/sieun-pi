@@ -627,6 +627,14 @@ type Conn = { busy: Map<IncomingMessage, ServerResponse>; served: boolean; ended
 const conns = new WeakMap<Server, Map<Socket, Conn>>();
 const draining = new WeakSet<Server>();
 const winding = new WeakSet<Server>();
+/**
+ * A call from a local fetch (undici's `user-agent: node`), such as pi-host's ChatApp (packages/pi-host/src/durable/chat-app.ts), gets its
+ * connection closed after the answer. In 4 live hand-overs at 11:29 to 11:30Z on 11-22, every connection the old process kept (3 to 39)
+ * was pi-host's idle undici pool, and each carried one more call through the old process: 52 forwarded calls, up to 27.6 s after the stop.
+ * A browser comes through tailscale serve and keeps its connections. A new loopback connection per call costs a TCP handshake on lo.
+ */
+const oneShot = (req: IncomingMessage): boolean => req.headers["user-agent"] === "node" && !req.headers["tailscale-user-login"];
+
 /** When each server's wind-down began, and how many calls it forwarded after its drain, which the hand-over's log lines report. */
 const windAt = new WeakMap<Server, number>();
 const forwarded = new WeakMap<Server, number>();
@@ -655,7 +663,7 @@ function track(server: Server): void {
     const conn = open.get(req.socket as Socket);
     if (!conn || forwarding.has(server)) return;
     conn.busy.set(req, res);
-    if (draining.has(server) || winding.has(server)) res.shouldKeepAlive = false;
+    if (draining.has(server) || winding.has(server) || oneShot(req)) res.shouldKeepAlive = false;
     res.once("close", () => {
       conn.busy.delete(req);
       conn.served = true;
