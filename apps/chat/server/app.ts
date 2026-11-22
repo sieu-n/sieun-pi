@@ -10,7 +10,7 @@ import { randomUUID } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 import type {
-  AgentHostList, AgentId, AgentSummary, ConversationHeader, ConversationId, Delivery, ConversationPatch, ConversationSummary, ImageRef, Item, LiveCommand, LiveEvent, Me, ModelCatalog, ModelInfo, OpenedPage, ProjectList, Reaction, ReadPoint, Room, SendRequest, SendResult, Sidebar, ThinkingLevel,
+  AgentHostList, AgentId, AgentSummary, ConversationHeader, ConversationId, Delivery, ConversationPatch, ConversationSummary, ImageRef, Item, LiveCommand, LiveEvent, Me, ModelCatalog, ModelInfo, OpenedPage, ProjectList, Reaction, ReadPoint, Room, RunStatus, SendRequest, SendResult, Sidebar, ThinkingLevel,
   TimelinePage,
 } from "../web/src/lib/api/types.ts";
 import type { AllowedModel } from "../../../config/allowed-models.ts";
@@ -221,11 +221,13 @@ export class App {
       partial: (conversation, partial) => this.toWatchers(conversation, { type: "partial", conversation, partial }),
       status: (conversation, status) => {
         this.broadcast({ type: "status", conversation, status });
-        const record = this.agents.ofWorkThread(conversation);
-        if (record) this.broadcast({ type: "status", conversation: record.room, status });
-        // The DM works while its comm thread answers; the next thread list read sets the room's status once it stops.
+        // The room a comm or work thread belongs to works out its status from both, on the path each thread list read takes.
         const comm = this.agents.ofComm(conversation);
-        if (comm && status === "working") this.broadcast({ type: "status", conversation: comm.room, status });
+        if (comm && isGroupRoomId(comm.room)) this.groups.settle(comm.room);
+        else {
+          const record = this.agents.ofWorkThread(conversation) ?? comm?.record;
+          if (record) this.rooms.settle(record);
+        }
         this.sidebarSoon();
       },
       jobs: (thread, jobs) => this.broadcast({ type: "jobs", thread, jobs }),
@@ -239,7 +241,7 @@ export class App {
           this.toWatchers(room, { type: "items", conversation: room, items });
           this.forMeChanged();
         },
-        status: (room, status) => this.broadcast({ type: "status", conversation: room, status }),
+        status: (room, status) => this.roomStatus(room, status),
         changed: () => this.roomsChanged(),
         thread: (record, thread) => this.watchRoomThread(record.room, thread),
         submitted: (thread, result) => this.queues.follow(thread, result.ticket?.place ?? null),
@@ -264,7 +266,7 @@ export class App {
         },
         room: room => this.broadcast({ type: "room", room }),
         conversations: changed => this.conversationsChanged(changed),
-        status: (room, status) => this.broadcast({ type: "status", conversation: room, status }),
+        status: (room, status) => this.roomStatus(room, status),
         thread: (room, thread) => this.watchRoomThread(room, thread),
         submitted: (thread, result) => this.queues.follow(thread, result.ticket?.place ?? null),
       },
@@ -1464,6 +1466,13 @@ export class App {
 
   private send1(client: Client, event: LiveEvent): void {
     if (client.socket.readyState === WebSocket.OPEN) client.socket.send(JSON.stringify(event));
+  }
+
+  /** Sends a room's status to every page; a test room's goes only to the pages that watch it, so a walk sees its own Stop come and go. */
+  private roomStatus(room: ConversationId, status: RunStatus): void {
+    const event: LiveEvent = { type: "status", conversation: room, status };
+    if (this.agentStore.isTest(room)) this.toWatchers(room, event);
+    else this.broadcast(event);
   }
 
   /** Sends an event to every page, except one about a walk's test agent, room or job, which no owner list shows. */

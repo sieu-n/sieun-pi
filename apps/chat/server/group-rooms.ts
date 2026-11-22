@@ -224,7 +224,7 @@ export class GroupRooms {
 
   /** Working while a member's comm thread for the room answers. */
   status(row: GroupRoom): RunStatus {
-    return this.commThreads(row).some(c => this.deps.threads.statusOfConversation(c.thread, 1) === "working") ? "working" : "idle";
+    return this.commThreads(row).some(c => this.deps.threads.runStatus(c.thread, 1) === "working") ? "working" : "idle";
   }
 
   summary(row: GroupRoom): ConversationSummary {
@@ -235,7 +235,7 @@ export class GroupRooms {
     // As in Slack, a thread reply leaves the room read: the thread's reply count and For you show it, and opening the room marks read only its top-level posts.
     // The post he marked unread counts, his own or a thread reply too.
     const unseen = posts.filter(p => p.seq > mark && ((p.author !== "owner" && !p.threadRoot) || p.id === read?.from));
-    const working = this.commThreads(row).filter(c => this.deps.threads.statusOfConversation(c.thread, 1) === "working")
+    const working = this.commThreads(row).filter(c => this.deps.threads.runStatus(c.thread, 1) === "working")
       .map(c => ({ id: c.agent.id, name: this.deps.threads.principal(c.agent.id).name }));
     // In a Solo room every post is about the owner's agenda; in a channel only a post that names him counts as unread.
     const unread = row.kind === "solo" ? unseen.length : unseen.filter(p => p.mentions?.includes("owner")).length;
@@ -725,16 +725,24 @@ export class GroupRooms {
         if (updatedAt !== undefined && this.seen.get(thread) !== updatedAt) void this.feed(thread, updatedAt);
       }
     }
-    const changed: ConversationSummary[] = [];
-    for (const row of this.rows()) {
-      const status = this.status(row);
-      const before = this.statuses.get(row.id);
-      this.statuses.set(row.id, status);
-      if (before === undefined || before === status) continue;
-      this.deps.events.status(row.id, status);
-      changed.push(this.summary(row));
-    }
+    const changed = this.rows().filter(row => this.statusChanged(row, false)).map(row => this.summary(row));
     if (changed.length) this.deps.events.conversations(changed);
+  }
+
+  /** A run of a member's comm thread in `room` started or ended: the room's status goes out now, as the next list read would send it. */
+  settle(room: RoomId): void {
+    const row = this.row(room);
+    if (row && this.statusChanged(row, true)) this.deps.events.conversations([this.summary(row)]);
+  }
+
+  /** Sends the room's status when it changed since the last check; a room seen for the first time sends it only with `first`. */
+  private statusChanged(row: GroupRoom, first: boolean): boolean {
+    const status = this.status(row);
+    const before = this.statuses.get(row.id);
+    this.statuses.set(row.id, status);
+    if (before === status || (before === undefined && !first)) return false;
+    this.deps.events.status(row.id, status);
+    return true;
   }
 
   /** Reads a group comm thread after its cursor; a read asked for while one runs follows it. Any other thread is ignored. */

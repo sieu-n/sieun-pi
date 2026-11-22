@@ -365,6 +365,17 @@ export class Threads {
     return node ? statusOf(node.status) : "idle";
   }
 
+  /**
+   * A conversation's run status, where a watched one's live run wins over the list's row. The list reads every 2 s, so a run that starts and
+   * ends between two reads never shows in it, and a read that began before the run ended still lists it running.
+   */
+  runStatus(thread: string, conversation: number): RunStatus {
+    const listed = this.statusOfConversation(thread, conversation);
+    const live = this.live.get(conversationIdOf(thread, conversation));
+    if (!live) return listed;
+    return live.running ? "working" : listed === "working" ? "idle" : listed;
+  }
+
   /** Who an id or a name is. A name finds a registered agent before any job or thread of the same name. */
   principal(id: string): Principal {
     if (id === "owner") return OWNER;

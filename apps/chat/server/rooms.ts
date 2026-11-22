@@ -342,14 +342,7 @@ export class Rooms {
   poll(): void {
     let changed = false;
     for (const record of this.deps.agents.list()) {
-      const status = this.status(record);
-      const commStatus = this.commStatus(record);
-      if (this.statuses.get(record.room) !== status || this.commStatuses.get(record.room) !== commStatus) {
-        if (this.statuses.has(record.room)) changed = true;
-        if (this.statuses.get(record.room) !== status) this.deps.events.status(record.room, status);
-        this.statuses.set(record.room, status);
-        this.commStatuses.set(record.room, commStatus);
-      }
+      if (this.statusChanged(record)) changed = true;
       const thread = this.deps.agents.roomThread(record);
       const row = this.deps.threads.thread(thread);
       if (row && this.seen.get(record.id) !== `${thread}@${row.updatedAt}`) void this.feed(record, `${thread}@${row.updatedAt}`);
@@ -357,15 +350,41 @@ export class Rooms {
     if (changed) this.deps.events.changed();
   }
 
-  /** The DM's status: the agent's (its work thread and jobs), and working while its comm thread answers. */
+  /**
+   * A run of the DM's comm or work thread started or ended: the room's status goes out now, as the next list read would send it. Before,
+   * only the comm thread's start went out at once, so a comm turn that ended before a list read saw it running, such as one that posted
+   * nothing, left Stop on the DM until some later change.
+   */
+  settle(record: AgentRecord): void {
+    if (this.statusChanged(record)) this.deps.events.changed();
+  }
+
+  /** Sends the room's status when it changed, and answers whether the room's row changed since an earlier check. */
+  private statusChanged(record: AgentRecord): boolean {
+    const status = this.status(record);
+    const commStatus = this.commStatus(record);
+    if (this.statuses.get(record.room) === status && this.commStatuses.get(record.room) === commStatus) return false;
+    const known = this.statuses.has(record.room);
+    if (this.statuses.get(record.room) !== status) this.deps.events.status(record.room, status);
+    this.statuses.set(record.room, status);
+    this.commStatuses.set(record.room, commStatus);
+    return known;
+  }
+
+  /**
+   * The DM's status: working while its comm thread answers, else the agent's (its work thread and jobs). Both threads' own runs read live
+   * while watched (`Threads.runStatus`).
+   */
   status(record: AgentRecord): RunStatus {
-    return this.commStatus(record) === "working" ? "working" : this.deps.threads.agent(record.id)?.status ?? "idle";
+    if (this.commStatus(record) === "working") return "working";
+    const jobs = this.deps.threads.agent(record.id)?.status === "working" && this.deps.threads.statusOfConversation(record.workThread, 1) !== "working";
+    return jobs ? "working" : this.deps.threads.runStatus(record.workThread, 1);
   }
 
   /** The DM comm thread's own state, when the agent has one. */
   commStatus(record: AgentRecord): RunStatus | undefined {
     const comm = record.comm?.[record.room];
-    return comm ? this.deps.threads.statusOfConversation(comm, 1) : undefined;
+    return comm ? this.deps.threads.runStatus(comm, 1) : undefined;
   }
 
   // Owner posts
