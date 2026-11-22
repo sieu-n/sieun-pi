@@ -106,8 +106,8 @@
   }
 
   const threadParam = $derived(router.route.params.thread ?? null);
-  /** A thread key that names a root post (`p<seq>`) in a channel or a DM; in a DM any other key is a job's conversation. */
-  const isPostThread = (key: string): boolean => isChannel || (isDm && /^p\d+$/.test(key));
+  /** A thread key that names a root post (`p<seq>`) in a channel, a DM or a Solo room; in a DM or a Solo room any other key is a job's conversation. */
+  const isPostThread = (key: string): boolean => isChannel || ((isDm || isSolo) && /^p\d+$/.test(key));
   const postThread = $derived(!!threadParam && isPostThread(threadParam));
   /** `?thread=<root>&m=<reply>` names a reply: the thread pane flashes it, and the room only scrolls to its root, as in Slack. */
   const replyFocus = $derived(postThread && threadParam && around && around !== threadParam ? around : undefined);
@@ -642,7 +642,7 @@
     {liveLabel}
     queue={store.queue}
     openThread={threadParam}
-    canReply={isChannel || isDm}
+    canReply={isChannel || isDm || isSolo}
     {statusOf}
     onretry={() => location.reload()}
     onretrysend={(item) => store.retrySend(item.id)}

@@ -6,7 +6,7 @@
  * lands; nothing waits on the network before the composer takes the next message. An attached image shows from its preview while its
  * upload ends, and the post names the uploaded ref.
  */
-import { AHEAD_LANE, api, ApiError, attach, attachedFacts, dropAhead, reads, reportNotDelivered, roomOf, shownRef, takeOver, type Attached, type Read, type Wait } from "./client.ts";
+import { AHEAD_LANE, api, ApiError, attach, attachedFacts, dropAhead, isSoloRoom, reads, reportNotDelivered, roomOf, shownRef, takeOver, type Attached, type Read, type Wait } from "./client.ts";
 import { kept, restoreKept, type Kept } from "./kept.svelte.ts";
 import { heldImages } from "./held-images.ts";
 import { pageDb, type KeptPage } from "./page-db.ts";
@@ -36,8 +36,8 @@ const LAND_SLACK_MS = 60_000;
 const isPending = (item: Item): boolean => item.id.startsWith("r:");
 /** A DM room (`dm_<slug>`): its items are stored posts, and an owner post's delivery to the agent's work thread is its send line. */
 const isRoom = (id: ConversationId): boolean => id.startsWith("dm_");
-/** A channel or a DM, whose posts start threads: its timeline shows root posts, and each reply lives in its root's thread. */
-const threaded = (id: ConversationId): boolean => id.startsWith("ch_") || isRoom(id);
+/** A channel, a DM or a Solo room, whose posts start threads: its timeline shows root posts, and each reply lives in its root's thread. */
+const threaded = (id: ConversationId): boolean => id.startsWith("ch_") || isRoom(id) || isSoloRoom(id);
 const sameText = (a: string, b: string): boolean => a.trim() === b.trim();
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 

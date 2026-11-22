@@ -34,6 +34,13 @@ const PAGE = 40;
 /** How many earlier posts of a thread a reply's input carries, and how much of each; group-rooms.ts `envelope` reads them too. */
 export const CONTEXT_POSTS = 5;
 export const CONTEXT_CLIP = 2048;
+
+/**
+ * The thread an agent's answer goes in, in a DM or a Solo room: the answered post's thread, or the thread the turn's post is a reply in when
+ * `reply_to` names that thread's root; none for an answer to a root post. group-rooms.ts uses it for Solo rooms.
+ */
+export const answerThread = (answered: RoomPost | undefined, asked: RoomPost | undefined): string | undefined =>
+  answered?.threadRoot ?? (answered && asked?.threadRoot === answered.id ? answered.id : undefined);
 /** Entries the feed reads per pi-host call. */
 const FEED_PAGE = 200;
 
@@ -728,8 +735,7 @@ export class Rooms {
         const asked = turn?.post ? all.find(p => p.id === turn.post) : undefined;
         const answered = repliedPost(all, record, thread, record.room, replyTo) ?? namedPost(all, record, thread, record.room, named) ??
           (turn?.post ? asked : replyTo?.trim() ? undefined : open(all));
-        // An answer to a reply in a thread goes in that thread, as does one whose reply_to names the root of the thread the turn's post is in.
-        const threadRoot = answered?.threadRoot ?? (answered && asked?.threadRoot === answered.id ? answered.id : undefined);
+        const threadRoot = answerThread(answered, asked);
         return this.store.append({
           room: record.room, author: record.id, images: [], ...spoken, ...(threadRoot ? { threadRoot } : {}), ...(answered?.author === "owner" ? { answers: answered.id } : {}),
         }).post;

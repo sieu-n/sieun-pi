@@ -36,7 +36,7 @@ import { doneOf, reopens } from "./thread-done.ts";
 import { pinnedSection, pinOf } from "./pins.ts";
 import { forwardPart, withForward } from "./forward.ts";
 import type { ForwardedPost } from "../web/src/lib/api/types.ts";
-import { agedPost, agentPostParts, CONTEXT_CLIP, CONTEXT_POSTS, queuedNote, readFeedThread, type FeedSide, type Spoken } from "./rooms.ts";
+import { agedPost, agentPostParts, answerThread, CONTEXT_CLIP, CONTEXT_POSTS, queuedNote, readFeedThread, type FeedSide, type Spoken } from "./rooms.ts";
 import { readMark, type Store } from "./store.ts";
 import { OWNER, type Threads } from "./threads.ts";
 
@@ -421,7 +421,7 @@ export class GroupRooms {
     if (existing) return existing.deliveries?.some(d => d.state === "failed") ? this.retry(row.id, existing.requestId) : this.result(row, existing);
     const refused = refusal(row);
     if (refused) throw new Error(refused);
-    if (request.threadRoot && (row.kind !== "channel" || !this.store.postsOf(row.id).some(p => p.id === request.threadRoot && !p.threadRoot))) {
+    if (request.threadRoot && !this.store.postsOf(row.id).some(p => p.id === request.threadRoot && !p.threadRoot)) {
       throw new Error(`No thread ${request.threadRoot} in ${roomLabel(row)}.`);
     }
     const mentions = [...new Set((request.mentions ?? []).flatMap(m => {
@@ -682,8 +682,8 @@ export class GroupRooms {
 
   /**
    * The text a member reads: `[<label> · post <seq> from <author>[ (owner)] · hops <n>]`, a blank line and the post. A Solo room's label
-   * carries its agenda and members; a channel root post adds the root posts its target missed, and a channel reply adds up to five earlier
-   * posts of its thread. Each of those context lines ends with the post's reactions (reactions.ts `reactionsLine`) and the reader's own save
+   * carries its agenda and members; a channel root post adds the root posts its target missed, and a channel post or any thread reply adds a
+   * line that names its thread and up to five earlier posts of the thread. Each of those context lines ends with the post's reactions (reactions.ts `reactionsLine`) and the reader's own save
    * of it (later-agents.ts `laterLine`).
    */
   envelope(row: GroupRoom, post: RoomPost, missed: RoomPost[] = [], reader?: AgentId): string {
@@ -691,7 +691,12 @@ export class GroupRooms {
     const label = row.kind === "channel"
       ? `#${row.name}`
       : `Solo "${row.name}" (${row.id}): ${row.agenda.length > AGENDA_CLIP ? `${row.agenda.slice(0, AGENDA_CLIP)}…` : row.agenda} · with ${row.members.map(m => this.deps.threads.principal(m.agent).name).join(", ")}`;
-    const lines = [`[${label.replace(/\n+/g, " ")} · post ${post.seq} from ${author.name}${author.kind === "owner" ? " (owner)" : ""} · hops ${post.hops ?? 0}]`, "", this.deps.fileNotes(withForward(post.text, post.forward), post.images)];
+    const root = post.threadRoot ? this.store.postsOf(row.id).find(p => p.id === post.threadRoot) : undefined;
+    const lines = [
+      `[${label.replace(/\n+/g, " ")} · post ${post.seq} from ${author.name}${author.kind === "owner" ? " (owner)" : ""} · hops ${post.hops ?? 0}]`,
+      ...(post.threadRoot ? [`(a reply in the thread of post ${root?.seq ?? post.threadRoot}; your answer goes in that thread)`] : []),
+      "", this.deps.fileNotes(withForward(post.text, post.forward), post.images),
+    ];
     const context = (p: RoomPost) => {
       const shown = p.images.filter(isImage).length;
       const images = `${shown ? ` [${shown} image${shown > 1 ? "s" : ""} attached]` : ""}${shown < p.images.length ? ` ${this.deps.fileNotes("", p.images).replace(/\n+/g, " ")}` : ""}`;
@@ -700,7 +705,7 @@ export class GroupRooms {
       return `${p.seq} ${this.deps.threads.principal(p.author).name}: ${p.text.slice(0, CONTEXT_CLIP)}${images}${reactions ? ` ${reactions}` : ""}${saved ? ` ${saved}` : ""}`;
     };
     if (missed.length) lines.push("", "(channel before this post)", ...missed.map(context));
-    if (row.kind === "channel") {
+    if (row.kind === "channel" || post.threadRoot) {
       const rootId = post.threadRoot ?? post.id;
       const thread = this.store.postsOf(row.id).filter(p => (p.id === rootId || p.threadRoot === rootId) && p.seq < post.seq && p.deletedAt === undefined).slice(-CONTEXT_POSTS);
       if (thread.length) lines.push("", "(thread so far)", ...thread.map(context));
@@ -800,7 +805,9 @@ export class GroupRooms {
         const posts = this.store.postsOf(row.id);
         const started = repliedPost(posts, record, thread, row.id, replyTo) ?? namedPost(posts, record, thread, row.id, named) ??
           (turn?.post ? posts.find(p => p.id === turn.post) : undefined);
-        const threadRoot = row.kind === "channel" && started ? started.threadRoot ?? started.id : undefined;
+        // A channel answer always goes in a thread; a Solo room answers a root post at the root and a thread reply in its thread, as a DM does.
+        const asked = turn?.post ? posts.find(p => p.id === turn.post) : undefined;
+        const threadRoot = row.kind === "channel" ? (started ? started.threadRoot ?? started.id : undefined) : answerThread(started, asked);
         return this.write(row, {
           author: record.id, images: [], ...spoken, hops: (turn?.hops ?? 0) + 1, mentions: this.mentionsIn(row, spoken.text, record.id),
           ...(threadRoot ? { threadRoot } : {}), ...(started?.author === "owner" ? { answers: started.id } : {}),
@@ -869,7 +876,7 @@ export class GroupRooms {
   }
 
   item(row: GroupRoom, post: RoomPost, all = this.store.postsOf(row.id)): Item {
-    const replies = row.kind === "channel" && !post.threadRoot ? all.filter(p => p.threadRoot === post.id && p.deletedAt === undefined) : [];
+    const replies = !post.threadRoot ? all.filter(p => p.threadRoot === post.id && p.deletedAt === undefined) : [];
     const authors = [...new Set(replies.map(r => r.author))].slice(0, 3).map(a => this.deps.threads.principal(a));
     return {
       kind: "message", id: post.id, seq: post.seq, at: post.at, author: this.deps.threads.principal(post.author), text: post.text, images: post.images,
@@ -923,7 +930,7 @@ export class GroupRooms {
     return { items, ...(start > 0 ? { older: roots[start]!.id } : {}), ...(end < roots.length ? { newer: roots[end - 1]!.id } : {}), ...(focus ? { focus } : {}) };
   }
 
-  /** A channel thread: the root post and every reply, oldest first. */
+  /** A thread in a channel or a Solo room: the root post and every reply, oldest first. */
   replies(id: string, root: string): { root: Item; items: Item[] } {
     const row = this.require(id);
     const all = this.store.postsOf(row.id);
