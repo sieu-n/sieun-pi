@@ -6,7 +6,10 @@
  * waits until the comm thread has made no model call for 66 min, then asks in that thread about the last thing the agent handed over.
  *
  *   node apps/chat/scripts/blind-lapsed.mjs [--cwd <project>] [--out <file.jsonl>] [--server http://127.0.0.1:5184] [--keep]
- *     [--agent <id> --room <id> --task <post id>]
+ *     [--agent <id> --room <id> --task <post id>] [--fill <n>]
+ *
+ * With --fill the run posts n quick questions about the repo after the task, so the comm thread's earlier turns grow past what a cold request
+ * keeps (pi-host `keepRecent`, about 60,000 characters) and the follow-up's request leaves the task's own turn out.
  *
  * With --agent, --room and --task the run picks up a run a stop cut off after its task: a pi-host restart adds no model call to the comm
  * thread, so the idle wait goes on from its last call.
@@ -25,7 +28,14 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { DatabaseSync } from "node:sqlite";
 
-const { values } = parseArgs({ options: { cwd: { type: "string" }, out: { type: "string" }, server: { type: "string" }, keep: { type: "boolean" }, agent: { type: "string" }, room: { type: "string" }, task: { type: "string" } } });
+const { values } = parseArgs({ options: { cwd: { type: "string" }, out: { type: "string" }, server: { type: "string" }, keep: { type: "boolean" }, agent: { type: "string" }, room: { type: "string" }, task: { type: "string" }, fill: { type: "string" } } });
+/** Quick questions posted after the task, so the comm thread's earlier turns pass pi-host's KEEP_CHARS and the cold request leaves the task's turn out. */
+const QUICK = [
+  "what language is symphony written in?", "how do i start it locally?", "where does it read its config from?", "does it have tests? how do i run them?",
+  "what license is it under?", "how many agents can it run at once?", "which linear states does it watch?", "does it need a database?",
+  "what does it log when a run starts?", "is there a web page to watch runs?", "what happens if linear is down?", "which env vars does it need?",
+  "how does it pick the next issue?", "can it run on a mac?", "what's the biggest file in the repo?", "does it talk to github?",
+].slice(0, Number(values.fill ?? 0));
 const server = values.server ?? "http://127.0.0.1:5184";
 const cwd = values.cwd ?? join(homedir(), "code/symphony");
 const threadsDir = join(homedir(), ".prime/agent/pi-host/durable/threads");
@@ -90,6 +100,17 @@ function messages(thread) {
     db.close();
   }
 }
+/** The comm thread's messages before `at` as pi-host's leanHistory sizes them: no thinking, tool texts and string arguments cut to 1,500. */
+function earlierSize(thread, at) {
+  const cut = value => typeof value === "string" ? value.slice(0, 1500) : value;
+  return messages(thread).filter(m => m.role !== "system" && (m.timestamp ?? 0) < at).reduce((sum, m) => {
+    const content = typeof m.content === "string" ? m.content : m.content.flatMap(b => b.type === "thinking" ? []
+      : b.type === "toolCall" ? [{ ...b, arguments: Object.fromEntries(Object.entries(b.arguments ?? {}).map(([k, v]) => [k, cut(v)])) }]
+        : m.role === "toolResult" ? [b.type === "text" ? { ...b, text: cut(b.text) } : { type: "text", text: "[an image from an earlier turn]" }] : [b]);
+    return sum + JSON.stringify(content).length;
+  }, 0);
+}
+let earlier = () => 0;
 const commOf = async () => (await record())?.comm?.find(c => c.room === room)?.thread;
 
 let line;
@@ -101,10 +122,15 @@ try {
   const taskDone = values.task ? await done(task.id) : await waitFor(TASK_MS, () => done(task.id));
   const before = await posts();
   const checklist = before.find(p => isAgent(p) && p.answers === task.id);
+  for (const [n, question] of QUICK.entries()) {
+    const asked = await send(question, `quick-${n}`);
+    await waitFor(8 * 60_000, async () => (await posts()).some(p => isAgent(p) && p.answers === asked.id) && await done(asked.id));
+  }
   const comm = await commOf();
   const handOvers = messages(comm).flatMap(m => m.role === "assistant" ? m.content.filter(b => b.type === "toolCall" && /agent_message\.send/.test(String(b.arguments?.code ?? ""))) : [])
     .map(b => String(b.arguments.code));
-  const handOver = handOvers.at(-1) ?? "";
+  const handOver = handOvers[0] ?? "";
+  earlier = at => earlierSize(comm, at);
   const lastCall = () => Math.max(0, ...messages(comm).filter(m => m.role === "assistant").map(m => m.timestamp ?? 0));
   await waitFor(IDLE_MS + 30 * 60_000, () => Date.now() - lastCall() >= IDLE_MS);
   const idleMinutes = Math.round((Date.now() - lastCall()) / 60_000);
@@ -126,12 +152,13 @@ try {
     ["the hand-over ran over 1,500 characters, so the trim cut it", handOver.length > 1500 ? true : null],
     ["the follow-up's first call read under 20k tokens from the cache", firstCall ? (firstCall.usage?.cacheRead ?? 0) < 20_000 : false],
     ["the follow-up got a reply and the thread read done again", Boolean(followDone) && followReplies.length > 0],
+    ...(QUICK.length ? [["the earlier turns passed 60,000 characters, so the cold request left the task's turn out", earlier(followUp.at) > 60_000]] : []),
     ["the checklist reply keeps its final text", Boolean(checklist) && checklistNow?.text === checklist.text],
     ["no reply to the follow-up ends with an open item", followReplies.every(p => !OPEN_ITEM.test(p.text))],
   ];
   line = {
     at: new Date().toISOString(), agent: agent.id, room, comm, work, idleMinutes, thread: `${server}/#/c/${room}?thread=${task.id}`,
-    handOver, handOverChars: handOver.length, checklist: checklist?.text ?? null, firstCallUsage: firstCall?.usage ?? null,
+    handOver, handOverChars: handOver.length, fill: QUICK.length, earlierChars: earlier(followUp.at), checklist: checklist?.text ?? null, firstCallUsage: firstCall?.usage ?? null,
     followUp: FOLLOW_UP, followReplies: followReplies.map(p => p.text), reports: report,
     checks: Object.fromEntries(checks), pass: checks.every(([, ok]) => ok !== false),
   };
