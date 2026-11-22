@@ -11,7 +11,7 @@ import type { Store } from "./store.ts";
 import type { AgentRecord } from "./agent-store.ts";
 import { agentSummary, isAgentId, isRoomId, rootRetrying, type AgentRows, type Agents } from "./agents.ts";
 import { TailCache } from "./tail-cache.ts";
-import { buildItems, earliest, entryOf, firstSendIn, isInput, itemIdFor, sentMessages, speaks, speaksThroughSendMessage, stepOutputOf, type TimelineContext } from "./timeline.ts";
+import { buildItems, earliest, entryOf, firstSendIn, isInput, openSendIn, itemIdFor, sentMessages, speaks, speaksThroughSendMessage, stepOutputOf, type TimelineContext } from "./timeline.ts";
 
 export const OWNER: Principal = { id: "owner", kind: "owner", name: "You", avatar: { initials: "Me", hue: 210 } };
 
@@ -49,6 +49,12 @@ const TURN_READ_CAP = 2000;
 const WIDEN = 100;
 
 const FIRST_SENDS_CACHE = "first-sends";
+/**
+ * Version 2 counts only a speaking call that went out (timeline.ts `firstSendIn`). A version 1 scan that found a call may have found one that
+ * failed, so it is read again; one that found none still holds.
+ */
+const FIRST_SENDS_VERSION = 2;
+type FirstSendsCache = { v: typeof FIRST_SENDS_VERSION; scans: Record<string, FirstSendScan> };
 /** How many entries one read of a scan for a conversation's earliest speaking call asks for, the most one timeline page reads. */
 const SCAN_READ = 200;
 /**
@@ -148,7 +154,7 @@ export class Threads {
     this.trees = new Map(cache.trees);
     this.cached = JSON.stringify(cache);
     this.tails = new TailCache(host, 64, TURN_READ_CAP + 200 + WIDEN);
-    this.scans = new Map(Object.entries(store.cache<Record<string, FirstSendScan>>(FIRST_SENDS_CACHE, {})));
+    this.scans = new Map(firstSendScans(store.cache<FirstSendsCache | Record<string, FirstSendScan>>(FIRST_SENDS_CACHE, {})));
     for (const [id, scan] of this.scans) if (scan.first !== undefined) this.firstSends.set(id, scan.first);
   }
 
@@ -601,8 +607,10 @@ export class Threads {
     const newest = Math.max(...ids);
     if (!scan || oldest > scan.to) return this.settleFirstSend(thread, conversation);
     if (newest <= scan.to) return;
-    const first = firstSendIn(entries.filter(e => e.id > scan.to));
-    this.scans.set(id, { to: newest, ...(first === undefined ? {} : { first }) });
+    const fresh = entries.filter(e => e.id > scan.to);
+    const first = firstSendIn(fresh);
+    const open = first === undefined ? openSendIn(fresh) : undefined;
+    this.scans.set(id, { to: open === undefined ? newest : open - 1, ...(first === undefined ? {} : { first }) });
     this.saveScans();
   }
 
@@ -619,10 +627,13 @@ export class Threads {
       while (scan.first === undefined) {
         const got = await this.host.entries(thread, { conversation, after: scan.to, limit: SCAN_READ, lean: true });
         if (!got.entries.length) break;
-        const first = firstSendIn(got.entries.filter(e => e.conversationId === conversation));
-        scan = { to: got.entries.at(-1)!.id, ...(first === undefined ? {} : { first }) };
+        const mine = got.entries.filter(e => e.conversationId === conversation);
+        const first = firstSendIn(mine);
+        const open = first === undefined ? openSendIn(mine) : undefined;
+        const before = scan.to;
+        scan = { to: open === undefined ? got.entries.at(-1)!.id : open - 1, ...(first === undefined ? {} : { first }) };
         this.scans.set(id, scan);
-        if (!got.more) break;
+        if (!got.more || scan.to <= before) break;
       }
       if (scan.first !== undefined) this.firstSends.set(id, scan.first);
       this.saveScans();
@@ -630,7 +641,7 @@ export class Threads {
   }
 
   private saveScans(): void {
-    this.store.saveCache(FIRST_SENDS_CACHE, Object.fromEntries(this.scans));
+    this.store.saveCache(FIRST_SENDS_CACHE, { v: FIRST_SENDS_VERSION, scans: Object.fromEntries(this.scans) } satisfies FirstSendsCache);
   }
 
   /** Ends when every scan started so far has ended; tests wait on it. */
@@ -896,9 +907,10 @@ export class Threads {
     if (!entry || entry.conversationId !== live.conversation || live.recent.some(e => e.id === entry.id)) return false;
     if (isInput(entry) && live.recent.length && !live.running) live.recent = [];
     live.recent.push(entry);
-    this.noteSends(live.thread, live.conversation, [entry], false);
     live.recent.sort((a, b) => a.id - b.id);
     if (live.recent.length > TURN_READ_CAP) live.recent = live.recent.slice(-TURN_READ_CAP);
+    // The whole turn, so a speaking call's result, which says whether it went out, meets its call.
+    this.noteSends(live.thread, live.conversation, live.recent, false);
     return true;
   }
 
@@ -908,6 +920,11 @@ export class Threads {
 }
 
 const newestFirst = (a: AgentSummary, b: AgentSummary): number => b.updatedAt - a.updatedAt;
+
+function firstSendScans(cache: FirstSendsCache | Record<string, FirstSendScan>): [string, FirstSendScan][] {
+  if ("v" in cache && cache.v === FIRST_SENDS_VERSION) return Object.entries((cache as FirstSendsCache).scans);
+  return Object.entries(cache as Record<string, FirstSendScan>).filter(([, scan]) => scan.first === undefined);
+}
 
 /** The summaries that differ from `cache`, the ids gone from it, and the next cache. */
 function diff(cache: ReadonlyMap<AgentId, string>, list: AgentSummary[]): { changed: AgentSummary[]; removed: AgentId[]; cache: Map<AgentId, string> } {

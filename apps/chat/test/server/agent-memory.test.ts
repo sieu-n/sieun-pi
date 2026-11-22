@@ -17,7 +17,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { call, finishedReply, holds, recall, scratchReason, splitAnswers, sweepRecallAgents } from "../../scripts/duties/agent-memory.ts";
+import { call, EMPTY_TURN, emptyTurn, finishedReply, holds, recall, scratchReason, splitAnswers, sweepRecallAgents } from "../../scripts/duties/agent-memory.ts";
 
 const ask = { kind: "message", text: "Quick questions" };
 
@@ -145,6 +145,39 @@ test("a recall waits past the pool slot's retry error for the answer", async () 
   });
   try {
     const result = await recall(server.url, agentsDir, record, questions, "s1", { waitMs: 5000, pollMs: 10 });
+    assert.equal(result.error, undefined);
+    assert.equal(result.reply, "1. No.");
+  } finally {
+    server.close();
+  }
+});
+
+test("an idle thread's turn with no text, post, stop or error reads empty; one that works or answers does not", () => {
+  assert.equal(emptyTurn([ask, { kind: "turn", live: false, text: "", sent: [] }], "idle"), true);
+  assert.equal(emptyTurn([ask, { kind: "turn", live: false, text: "" }], "working"), false);
+  assert.equal(emptyTurn([ask, { kind: "turn", live: true, text: "" }], "idle"), false);
+  assert.equal(emptyTurn([ask, { kind: "turn", live: false, text: "", sent: ["1. No."] }], "idle"), false);
+  assert.equal(emptyTurn([ask], "idle"), false);
+});
+
+test("a recall whose turn stays over and empty ends with the empty turn error, not the full wait", async () => {
+  const agentsDir = mkdtempSync(join(root, "agents-"));
+  const server = await stub({ items: () => [{ kind: "turn", live: false, text: "", sent: [], usage: { cost: 0.02 } }] });
+  try {
+    const result = await recall(server.url, agentsDir, record, questions, "s1", { waitMs: 60_000, pollMs: 10, settleMs: 50 });
+    assert.match(result.error ?? "", new RegExp(`^${EMPTY_TURN}:`));
+    assert.ok(result.seconds < 5);
+  } finally {
+    server.close();
+  }
+});
+
+test("a recall waits past a short empty read for the answer that lands after it", async () => {
+  const agentsDir = mkdtempSync(join(root, "agents-"));
+  let polls = 0;
+  const server = await stub({ items: () => [{ kind: "turn", live: false, text: ++polls < 4 ? "" : "1. No." }] });
+  try {
+    const result = await recall(server.url, agentsDir, record, questions, "s1", { waitMs: 5000, pollMs: 10, settleMs: 1000 });
     assert.equal(result.error, undefined);
     assert.equal(result.reply, "1. No.");
   } finally {

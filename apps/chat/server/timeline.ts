@@ -58,15 +58,44 @@ export function sentMessage(block: ContentBlock): { id: string; text: string; to
   return { id: block.id, text, ...(to ? { to } : {}) };
 }
 
-/** The id of the first entry, in `entries`, that holds a speaking call. */
-export function firstSendIn(entries: readonly EntryRecord[]): number | undefined {
-  let first: number | undefined;
-  for (const entry of entries) {
+/**
+ * The speaking calls in `entries` by entry id, oldest first, each with how it ended: `sent` (a result that is no error, a held tell_owner
+ * included), `failed` (an error result, such as "Tool tell_owner is not available" in a work thread that has no tell_owner), or `open` when
+ * no result is among `entries` yet and nothing but tool results follows it, as while the call runs. A call with no result and later entries
+ * after it never ran, so it is left out.
+ */
+function speakingCalls(entries: readonly EntryRecord[]): { entry: number; end: "sent" | "failed" | "open" }[] {
+  const mine = [...entries].sort((a, b) => a.id - b.id);
+  const results = new Map<string, boolean>();
+  for (const entry of mine) {
     const message = entry.model?.[0];
-    if (message?.role !== "assistant" || typeof message.content === "string") continue;
-    if (message.content.some(speaks) && (first === undefined || entry.id < first)) first = entry.id;
+    if (message?.role === "toolResult" && message.toolCallId) results.set(message.toolCallId, !!message.isError);
   }
-  return first;
+  const lastOther = mine.findLast(e => e.model?.[0]?.role !== "toolResult")?.id;
+  return mine.flatMap(entry => {
+    const message = entry.model?.[0];
+    if (message?.role !== "assistant" || typeof message.content === "string") return [];
+    const ends = message.content.flatMap(block => (block.type === "toolCall" && SPEAKING_TOOLS.has(block.name) ? [results.get(block.id)] : [])).map(failed =>
+      failed === undefined ? (entry.id === lastOther ? "open" : undefined) : failed ? "failed" : "sent",
+    );
+    const end = ends.includes("sent") ? "sent" : ends.includes("open") ? "open" : ends.includes("failed") ? "failed" : undefined;
+    return end ? [{ entry: entry.id, end }] : [];
+  });
+}
+
+/**
+ * The id of the first entry, in `entries`, that holds a speaking call that went out. A call that failed sent nothing, so the turn's own
+ * text stays its bubble: on 11-22 three d3 recall threads called tell_owner, which a work thread lacks, and their right answers read as
+ * private notes. With `open`, a call still running counts too, as the live turn draws it.
+ */
+export function firstSendIn(entries: readonly EntryRecord[], open = false): number | undefined {
+  return speakingCalls(entries).find(call => call.end === "sent" || (open && call.end === "open"))?.entry;
+}
+
+/** The id of the entry before which a scan of `entries` must stop, because its speaking call has no result yet; undefined when none. */
+export function openSendIn(entries: readonly EntryRecord[]): number | undefined {
+  const calls = speakingCalls(entries);
+  return calls.find(call => call.end === "sent") ? undefined : calls.find(call => call.end === "open")?.entry;
 }
 
 /** The earlier of two first-send ids. */
@@ -272,7 +301,7 @@ export function buildItems(entries: readonly EntryRecord[], ctx: TimelineContext
   const items: Item[] = [];
   let turn: TurnDraft | undefined;
   let lastInput: number | undefined;
-  const firstSend = earliest(ctx.firstSend, firstSendIn(entries.filter(e => e.conversationId === ctx.conversation)));
+  const firstSend = earliest(ctx.firstSend, firstSendIn(entries.filter(e => e.conversationId === ctx.conversation), ctx.running));
   const flush = (live: boolean) => {
     if (turn) items.push(buildTurn(turn, ctx, live, firstSend));
     turn = undefined;

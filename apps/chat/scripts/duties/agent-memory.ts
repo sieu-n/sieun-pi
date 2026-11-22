@@ -38,6 +38,13 @@ const DAY_MS = 86_400_000;
  */
 const ANSWER_WAIT_MS = 20 * 60_000;
 const POLL_MS = 5_000;
+/**
+ * How long a recall's newest turn may read over and empty (`emptyTurn`) before the recall ends with EMPTY_TURN. A fresh thread read that
+ * way for 18 to 48 s on 11-20 right after a pi-host restart while it still worked, so this is 2.5 times the longest of those. On 11-22 three
+ * right answers that the page drew as private notes cost the whole ANSWER_WAIT_MS each.
+ */
+const EMPTY_SETTLE_MS = 120_000;
+export const EMPTY_TURN = "empty turn";
 
 interface AgentRecord { id: string; slug: string; name: string; workThread: string; home?: string; archived?: boolean; test?: boolean; agentsDir?: string; comm?: Record<string, string> }
 interface StoreEntry { id: string; kind: string; title: string; content: string; path?: string; created_at?: string }
@@ -198,6 +205,13 @@ export function finishedReply(items: readonly TurnItem[], status?: RunStatus): {
   return { reply, ...(turn.usage?.cost !== undefined ? { cost: turn.usage.cost } : {}), ...(failed ? { error: failed } : {}) };
 }
 
+/** Whether the thread is idle and its newest turn is over with no text, no post, no stop and no error, which `finishedReply` waits past. */
+export function emptyTurn(items: readonly TurnItem[], status?: RunStatus): boolean {
+  if (status === "working" || status === "sleeping") return false;
+  const turn = items.findLast(item => item.kind === "turn");
+  return !!turn && turn.live === false && !turn.text?.trim() && !turn.sent?.some(post => post.trim()) && !turn.stop && !turn.error;
+}
+
 /** The name every recall agent starts with; its stamp ends it. */
 const RECALL_NAME = "memory recall ";
 /**
@@ -242,7 +256,7 @@ export async function sweepRecallAgents(server: string, agentsDir: string, opts:
  * running out.
  */
 export async function recall(server: string, agentsDir: string, record: AgentRecord, questions: readonly Question[], stamp: string,
-  timing: { waitMs: number; pollMs: number } = { waitMs: ANSWER_WAIT_MS, pollMs: POLL_MS }): Promise<{ reply: string; seconds: number; cost?: number; thread?: string; error?: string }> {
+  timing: { waitMs: number; pollMs: number; settleMs?: number } = { waitMs: ANSWER_WAIT_MS, pollMs: POLL_MS }): Promise<{ reply: string; seconds: number; cost?: number; thread?: string; error?: string }> {
   const started = Date.now();
   let made: Made | undefined;
   const cwd = record.home && existsSync(record.home) ? realpathSync(record.home) : undefined;
@@ -256,6 +270,8 @@ export async function recall(server: string, agentsDir: string, record: AgentRec
     const text = ["Quick questions, answer each from what you remember, without searching the repo, wiki or web. Number your answers 1 to " +
       `${questions.length}, one or two sentences each, and say "don't know" when you don't.`, ...questions.map((q, i) => `${i + 1}. ${q.q}`)].join("\n");
     await call(server, "POST", `/api/c/${made.thread}/send`, { text, requestId: `memory-recall-${record.slug}-${stamp}` });
+    const settleMs = timing.settleMs ?? EMPTY_SETTLE_MS;
+    let emptySince: number | undefined;
     for (;;) {
       await sleep(timing.pollMs);
       // A failed poll is read again on the next one: on 11-22 a pi-host restart at 05:28 UTC answered 500 "pi-host is shutting down"
@@ -266,6 +282,11 @@ export async function recall(server: string, agentsDir: string, record: AgentRec
       ]).catch((error: unknown) => error instanceof Error ? error : new Error(String(error)));
       const done = polled instanceof Error ? null : finishedReply(polled[0].items, polled[1].summary.status);
       if (done) return { ...done, seconds: Math.round((Date.now() - started) / 1000), thread: made.thread };
+      if (!(polled instanceof Error)) emptySince = emptyTurn(polled[0].items, polled[1].summary.status) ? emptySince ?? Date.now() : undefined;
+      if (emptySince !== undefined && Date.now() - emptySince >= settleMs) {
+        const error = `${EMPTY_TURN}: the turn ended with no text, post, stop or error and stayed so for ${Math.round(settleMs / 1000)} s`;
+        return { reply: "", seconds: Math.round((Date.now() - started) / 1000), thread: made.thread, error };
+      }
       if (Date.now() - started > timing.waitMs) {
         const last = polled instanceof Error ? `, last poll ${polled.message.slice(0, 160)}` : "";
         return { reply: "", seconds: Math.round((Date.now() - started) / 1000), thread: made.thread, error: `no answer within ${Math.round(timing.waitMs / 1000)} s${last}` };

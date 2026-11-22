@@ -90,6 +90,8 @@ export class Agents {
   private cleaned = false;
   /** The `agent.ref` each thread holds as this server last read or wrote it, so a sweep reads a thread once per run. */
   private refs = new Map<string, AgentRef>();
+  /** The first agent.ref writes in flight (`firstRef`), by thread. */
+  private readonly writingRefs = new Map<string, Promise<boolean>>();
   private sweeping?: Promise<void>;
   /** The comm thread being made per `<agent id>/<room>`, so two deliveries at once make one. */
   private readonly making = new Map<string, Promise<string>>();
@@ -217,7 +219,7 @@ export class Agents {
     this.store.rooms.feed[record.id] = { entry: 0, open: {} };
     this.store.saveAgents();
     this.store.saveRooms();
-    void this.putRef(thread.id, agentRef(this.agentsDirOf(record), record, "work"));
+    this.firstRef(thread.id, agentRef(this.agentsDirOf(record), record, "work"));
     return record;
   }
 
@@ -227,8 +229,24 @@ export class Agents {
     if (!record) return undefined;
     this.store.agents.aliases[thread] = record.id;
     this.store.saveAgents();
-    void this.putRef(thread, agentRef(this.agentsDirOf(record), record, thread === record.workThread ? "work" : "job"));
+    this.firstRef(thread, agentRef(this.agentsDirOf(record), record, thread === record.workThread ? "work" : "job"));
     return record.id;
+  }
+
+  /**
+   * Writes a new thread's first agent.ref, which `refWritten` answers until it lands: a send right after POST /api/agents could otherwise start
+   * a turn before pi-host reads the thread's role.
+   */
+  private firstRef(thread: string, ref: AgentRef): void {
+    const writing: Promise<boolean> = this.putRef(thread, ref).finally(() => {
+      if (this.writingRefs.get(thread) === writing) this.writingRefs.delete(thread);
+    });
+    this.writingRefs.set(thread, writing);
+  }
+
+  /** Ends once the thread's first agent.ref write ends; answers whether the thread holds it. */
+  refWritten(thread: string): Promise<boolean> {
+    return this.writingRefs.get(thread) ?? Promise.resolve(true);
   }
 
   /**

@@ -93,6 +93,22 @@ test("a new agent's work thread and a root job filed under an agent get their re
   assert.deepEqual(refOf(host(), job.body.thread), { agent: agents.vent, dir: ventDir(), role: "job" });
 });
 
+test("POST /api/agents answers after the new work thread's and root job's agent.ref land, so a send right after it runs with a role", async () => {
+  const docPut = host().docPut.bind(host());
+  host().docPut = async (id, name, value) => {
+    await new Promise(resolve => setTimeout(resolve, 100));
+    return docPut(id, name, value);
+  };
+  try {
+    const made = await s.send<AgentSummary>("POST", "/api/agents", { name: "Slow ref probe" });
+    assert.equal((refOf(host(), made.body.thread) as { role?: string } | undefined)?.role, "work");
+    const job = await s.send<AgentSummary>("POST", "/api/agents", { name: "Slow ref probe job", kind: "job", parent: agents.vent });
+    assert.equal((refOf(host(), job.body.thread) as { role?: string } | undefined)?.role, "job");
+  } finally {
+    host().docPut = docPut;
+  }
+});
+
 test("a new agent's brief from the create form lands in its brief.md, a blank one writes none, and a brief that is no string is refused", async () => {
   const words = "Keep the llm-wiki info and the skills always up to date.";
   const made = await s.send<AgentSummary>("POST", "/api/agents", { name: "Brief probe", brief: `  ${words}\n` });

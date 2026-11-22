@@ -1250,6 +1250,7 @@ export class App {
       record = this.agents.add(thread, agentsDir, input.test === true);
     });
     this.threads.put(created);
+    await this.agents.refWritten(created.id);
     if (!record) return this.threads.agent(created.id)!;
     if (input.brief?.trim()) await this.folders.writeBrief(record, input.brief.trim());
     this.roomsChanged();
