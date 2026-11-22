@@ -7,6 +7,8 @@
  * 4. An item is worth a look when it is new or was last raised 24 h ago, so a quiet run starts no job.
  * 5. A sweep's findings count as passed on once the agent posts in its DM after the run or its job answered "nothing to report"; a sweep
  *    that finds things is the duty working, so after mode reads 0 then (c67).
+ * 6. Each item carries what a reviewer needs to judge it, so the Fable turn reads one file: a duty's last three runs and fix step, and three or
+ *    more jobs that wait for a model account as one item.
  */
 import { strict as assert } from "node:assert";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -14,7 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
-import { answerOf, jobFindings, lastEntries, postFindings, reportState, stalledSteps, worthALook, type Item, type Job, type Post } from "../../scripts/duties/fable-sweep.ts";
+import { answerOf, dutyContext, jobFindings, lastEntries, poolWaits, postFindings, reportState, stalledSteps, worthALook, type Item, type Job, type Post } from "../../scripts/duties/fable-sweep.ts";
 
 const MIN = 60_000;
 const now = Date.parse("2026-11-22T12:00:00Z");
@@ -120,4 +122,26 @@ test("a later empty turn does not hide the job's report", () => {
   const items = [{ kind: "turn", text: "4 things", sent: ["4 things"] }, { kind: "message", text: "[skill-route]" }, { kind: "turn", text: "" }];
   assert.deepEqual(answerOf(items), ["4 things", "4 things"]);
   assert.deepEqual(answerOf([{ kind: "turn", text: "nothing to report", live: true }]), []);
+});
+
+test("a duty's context is its last three measured runs, after-job measures first, and its fix steps", () => {
+  const at = Date.parse("2026-11-22T00:00:00Z");
+  const lines = dutyContext([
+    { at, verdict: "missed", summary: "x 1", after: { verdict: "met", summary: "x 0" }, fixes: { x: { step: "p9", job: "fix x", live: true } } },
+    { at: at - 1, verdict: "skipped", summary: "skipped: previous run still working" },
+    { at: at - 2, verdict: "error", error: "Command failed" },
+    { at: at - 3, verdict: "missed", summary: "x 2" },
+    { at: at - 4, verdict: "missed", summary: "x 3" },
+  ]);
+  assert.deepEqual(lines, ["11-22 09:00 KST met: x 0", "11-22 08:59 KST error: Command failed", "11-22 08:59 KST missed: x 2", "x fix step p9, job fix x live"]);
+});
+
+test("three or more jobs that wait for a model account fold into one item, and fewer stay apart", () => {
+  const waiting = (n: number): Item => ({ kind: "job_stuck", sig: `stuck:j${n}`, agent: `a${n % 2}`, text: `a job "j${n}" reads working with no new entry for 1 h, waiting for a model account`, link: `#/c/j${n}`, at: now - n * MIN });
+  const other: Item = { kind: "job_stuck", sig: "stuck:k", agent: "b", text: `b job "k" reads working with no new entry for 2 h`, link: "#/c/k", at: now };
+  assert.equal(poolWaits([waiting(1), waiting(2), other], now).length, 3);
+  const folded = poolWaits([waiting(1), waiting(2), waiting(3), other], now);
+  assert.deepEqual(folded.map(item => item.sig), ["stuck:k", "stuck:pool"]);
+  assert.equal(folded[1]!.text, "3 jobs wait for a model account, the oldest with no new entry for 3 min");
+  assert.equal(folded[1]!.context?.length, 3);
 });

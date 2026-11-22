@@ -15,6 +15,12 @@
  *   duty_off: a duty, not paused, whose last run missed its target or errored.
  *   step_stalled: an open board step with no live job on it, no wait still running and no open owner todo that holds it. A step whose job
  *     wrote in the last 45 min still moves, since its parent often closes the step right after the job reports (the 45 min of rule 6).
+ *   model_off: an agent other than this one whose work thread runs on Fable, which the owner keeps for this advisor (msg mwqwsgx9: "main
+ *     worker들은 opus가 되면 좋겠거든? 워낙 비용이 비싸니까").
+ *
+ * Each item carries the context a reviewer would look up to judge it, in the detail file under its line: a duty's last three runs and its fix
+ * step, a step's note, a stuck job's pi-host task state, such as waiting for an account slot. The first Fable sweep on 11-22 spent 40 turns
+ * and $3.07 reading boards, duty runs, jobs and thread files for exactly this, so the judging turn now reads one file and posts.
  *
  * An item is fresh when it is new since the last run or was last raised 24 h ago or more, so a problem that stays shows once a day (the
  * daily cadence c66 gives a duty) and not on every 3-hourly run. A sweep that finds things is the duty working, so the headline counts
@@ -33,7 +39,7 @@
  * Job entry times come from the job's pi-host thread file, read only (`<threads dir>/<thread>.sqlite`), because every conversation of a
  * thread shares one `updatedAt` in the :5184 lists. A step's age is the start of the job on it, else the first run that saw it open.
  *
- * Usage: OUTPUT_FILE=<file> [STATE_FILE=<file>] [LAST_RUNS_FILE=<file>] [PRECHECK_MODE=run|after] node --import tsx scripts/duties/fable-sweep.ts
+ * Usage: OUTPUT_FILE=<file> [STATE_FILE=<file>] [LAST_RUNS_FILE=<file>] [PRECHECK_MODE=run|after|peek] node --import tsx scripts/duties/fable-sweep.ts
  *   --agent <agent id> [--server http://127.0.0.1:5184] [--threads-dir <dir>]
  * Defaults: APPS_CHAT_URL else http://127.0.0.1:5184, ~/.prime/agent/pi-host/durable/threads. The detail file is OUTPUT_FILE with
  * `.items.md` in place of `.json`, else ~/work/fable-sweep/<stamp>.items.md, and the summary goes to OUTPUT_FILE, else stdout.
@@ -52,16 +58,17 @@ const STUCK_MS = 45 * MIN;
 const FAILED_WINDOW_MS = 24 * HOUR;
 const RERAISE_MS = 24 * HOUR;
 
-export const KINDS = ["owner_unanswered", "delivery_error", "job_stuck", "job_failed", "duty_off", "step_stalled"] as const;
+export const KINDS = ["owner_unanswered", "delivery_error", "job_stuck", "job_failed", "duty_off", "step_stalled", "model_off"] as const;
 export type Kind = (typeof KINDS)[number];
 const KIND_WORDS: Record<Kind, [string, string]> = {
   owner_unanswered: ["owner post with no answer", "owner posts with no answer"], delivery_error: ["delivery error", "delivery errors"],
   job_stuck: ["stuck job", "stuck jobs"], job_failed: ["failed job or thread", "failed jobs and threads"],
   duty_off: ["duty off target", "duties off target"], step_stalled: ["step nobody moves", "steps nobody moves"],
+  model_off: ["main worker on Fable", "main workers on Fable"],
 };
 const counted = (kind: Kind, n: number): string => `${n} ${KIND_WORDS[kind][n === 1 ? 0 : 1]}`;
 
-export interface Item { kind: Kind; sig: string; agent: string; text: string; link: string; at?: number }
+export interface Item { kind: Kind; sig: string; agent: string; text: string; link: string; at?: number; context?: string[] }
 export interface SweepState { raised?: Record<string, number>; seen?: Record<string, number>; lastRun?: { at: number; fresh: number } }
 /** The part of a duty run record (LAST_RUNS_FILE) this precheck reads. */
 export interface RunRecord { at: number; job?: { id: string; name: string }; metrics?: Record<string, { value: number }> }
@@ -73,8 +80,9 @@ export interface Post {
   reactions?: { emoji: string; by: Author[] }[]; done?: { at: number }; thread?: { authors?: Author[]; lastAt?: number } | null;
 }
 export interface Job { id: string; name: string; status: string; thread: string; conversation: number; createdAt: number; agent?: { id: string; name: string } }
-interface Agent { id: string; name: string; status: string; thread: string; room?: string; comm?: { room: string; thread: string; status: string }[] }
-interface PlanItem { id: string; text: string; status: string; job?: string; waitUntil?: string | number; waitFor?: unknown; children?: PlanItem[] }
+interface Agent { id: string; name: string; status: string; thread: string; room?: string; model?: { id: string; label?: string }; comm?: { room: string; thread: string; status: string }[] }
+interface PlanItem { id: string; text: string; status: string; note?: string; job?: string; waitUntil?: string | number; waitFor?: unknown; children?: PlanItem[] }
+export interface DutyRunView { at: number; verdict: string; summary?: string; error?: string; after?: { verdict?: string; summary?: string }; fixes?: Record<string, { step: string; job?: string; live: boolean }> | null }
 interface Todo { id: string; done?: boolean; step?: string }
 
 const isAgent = (author: Author): boolean => author.kind !== "owner";
@@ -145,7 +153,10 @@ export function stalledSteps(input: {
       const since = Math.min(seen[key] ?? now, ...named.map(job => job.createdAt));
       const job = named.find(j => j.status === "failed") ?? named[0];
       const why = step.job ? (job ? `its job ${step.job} is ${job.status}` : `its job ${step.job} is gone`) : "no job";
-      items.push({ kind: "step_stalled", sig: `step:${key}`, agent: agent.name, text: `${agent.name} ${step.id} ${step.status}, ${why}, open ${since < now ? `${ago(now - since)}+` : "since this run"}: ${oneLine(step.text, 70)}`, link: `#/agents/${agent.id}`, at: since });
+      items.push({
+        kind: "step_stalled", sig: `step:${key}`, agent: agent.name, text: `${agent.name} ${step.id} ${step.status}, ${why}, open ${since < now ? `${ago(now - since)}+` : "since this run"}: ${oneLine(step.text, 70)}`,
+        link: `#/agents/${agent.id}`, at: since, ...(step.note?.trim() ? { context: [`note: ${oneLine(step.note, 240)}`] } : {}),
+      });
     }
   };
   visit(input.plan);
@@ -172,19 +183,65 @@ export function lastEntries(file: string, conversations: readonly number[]): Map
   return out;
 }
 
-/** The working jobs with no entry for 45 min and the jobs that failed in the last 24 h. */
-export function jobFindings(jobs: readonly Job[], last: (job: Job) => number | undefined, now: number): Item[] {
+/**
+ * What pi-host's newest task of a conversation is doing, read only from its thread file, such as "sleeping: waiting for an account slot";
+ * undefined when the file or the task is not there.
+ */
+export function taskState(file: string, conversation: number): string | undefined {
+  if (!existsSync(file)) return undefined;
+  const db = new DatabaseSync(file, { readOnly: true });
+  try {
+    const row = db.prepare("SELECT status, record FROM tasks WHERE conversation_id = ? ORDER BY id DESC LIMIT 1").get(conversation) as { status: string; record: string } | undefined;
+    if (!row) return undefined;
+    const record = JSON.parse(row.record) as { state?: { checkpoint?: { handle?: { data?: { message?: unknown } } } } };
+    const said = record.state?.checkpoint?.handle?.data?.message;
+    return `pi-host task ${row.status}${typeof said === "string" ? `: ${said}` : ""}`;
+  } catch {
+    return undefined;
+  } finally {
+    db.close();
+  }
+}
+
+/** The working jobs with no entry for 45 min and the jobs that failed in the last 24 h; `task` gives a stuck job's pi-host task state. */
+export function jobFindings(jobs: readonly Job[], last: (job: Job) => number | undefined, now: number, task?: (job: Job) => string | undefined): Item[] {
   const items: Item[] = [];
   for (const job of jobs) {
     const at = last(job);
     const agent = job.agent?.name ?? "";
     if (job.status === "working" && at !== undefined && now - at >= STUCK_MS) {
-      items.push({ kind: "job_stuck", sig: `stuck:${job.id}`, agent, text: `${agent} job "${job.name}" reads working with no new entry for ${ago(now - at)}`, link: `#/c/${job.id}`, at });
+      const state = task?.(job);
+      items.push({
+        kind: "job_stuck", sig: `stuck:${job.id}`, agent, text: `${agent} job "${job.name}" reads working with no new entry for ${ago(now - at)}${state?.includes("account slot") ? ", waiting for a model account" : ""}`,
+        link: `#/c/${job.id}`, at, ...(state ? { context: [`started ${ago(now - job.createdAt)} ago, ${state}`] } : {}),
+      });
     } else if (job.status === "failed" && at !== undefined && now - at < FAILED_WINDOW_MS) {
       items.push({ kind: "job_failed", sig: `failed:${job.id}`, agent, text: `${agent} job "${job.name}" failed ${ago(now - at)} ago`, link: `#/c/${job.id}`, at });
     }
   }
   return items;
+}
+
+/** Stuck jobs that wait for a model account fold into one item when there are 3 or more, since they share one cause: the pool. */
+export function poolWaits(items: readonly Item[], now: number): Item[] {
+  const waiting = items.filter(item => item.kind === "job_stuck" && item.text.endsWith("waiting for a model account"));
+  if (waiting.length < 3) return [...items];
+  const oldest = Math.min(...waiting.map(item => item.at ?? now));
+  const folded: Item = {
+    kind: "job_stuck", sig: "stuck:pool", agent: [...new Set(waiting.map(item => item.agent).filter(Boolean))].join(", "),
+    text: `${waiting.length} jobs wait for a model account, the oldest with no new entry for ${ago(now - oldest)}`, link: waiting[0]!.link, at: oldest,
+    context: [...waiting.slice(0, 5).map(item => `${item.text.replace(/, waiting for a model account$/, "")} (${item.link})`), ...(waiting.length > 5 ? [`and ${waiting.length - 5} more`] : [])],
+  };
+  return [...items.filter(item => !waiting.includes(item)), folded];
+}
+
+/** A duty's last three measured runs and the fix step of its newest, one line each, for the reviewer to judge a miss without opening it. */
+export function dutyContext(runs: readonly DutyRunView[]): string[] {
+  const kst = (at: number): string => new Date(at + 9 * HOUR).toISOString().slice(5, 16).replace("T", " ");
+  const lines = runs.filter(run => run.verdict !== "skipped").slice(0, 3).map(run =>
+    `${kst(run.at)} KST ${run.after?.verdict ?? run.verdict}: ${oneLine(run.after?.summary ?? run.error ?? run.summary ?? "", 120)}`);
+  const fixes = Object.entries(runs[0]?.fixes ?? {}).map(([key, fix]) => `${key} fix step ${fix.step}${fix.job ? `, job ${fix.job} ${fix.live ? "live" : "not live"}` : ", no job"}`);
+  return [...lines, ...fixes];
 }
 
 /** Splits items into the ones worth a look now (new, or last raised 24 h ago or more) and the state the next run reads. */
@@ -228,7 +285,8 @@ interface Hit { conversation: { id: string; kind: string; name: string }; messag
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const { values } = parseArgs({ options: { agent: { type: "string" }, server: { type: "string" }, "threads-dir": { type: "string" } } });
-  const mode = process.env.PRECHECK_MODE === "after" ? "after" : "run";
+  // peek reads like run and writes no state: the judging turn runs it when it starts late, so it judges fresh data (PRECHECK_MODE=peek).
+  const mode = process.env.PRECHECK_MODE === "after" ? "after" : process.env.PRECHECK_MODE === "peek" ? "peek" : "run";
   const lastRuns: RunRecord[] = process.env.LAST_RUNS_FILE && existsSync(process.env.LAST_RUNS_FILE) ? JSON.parse(readFileSync(process.env.LAST_RUNS_FILE, "utf8") || "[]") : [];
   const server = values.server ?? process.env.APPS_CHAT_URL ?? "http://127.0.0.1:5184";
   const threadsDir = values["threads-dir"] ?? join(homedir(), ".prime/agent/pi-host/durable/threads");
@@ -268,7 +326,12 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     if (!times.has(job.id)) times.set(job.id, lastEntries(join(threadsDir, `${job.thread}.sqlite`), [job.conversation]).get(job.conversation));
     return times.get(job.id);
   };
-  items.push(...jobFindings(liveJobs.filter(job => job.status === "working" || job.status === "failed"), lastOf, now));
+  const taskOf = (job: Job): string | undefined => taskState(join(threadsDir, `${job.thread}.sqlite`), job.conversation);
+  items.push(...poolWaits(jobFindings(liveJobs.filter(job => job.status === "working" || job.status === "failed"), lastOf, now, taskOf), now));
+  for (const agent of agents) {
+    if (agent.id === values.agent || !/fable/i.test(agent.model?.id ?? "")) continue;
+    items.push({ kind: "model_off", sig: `model:${agent.id}/${agent.model!.id}`, agent: agent.name, text: `${agent.name}'s work thread runs ${agent.model!.label ?? agent.model!.id}, so its comm threads and duty jobs do too`, link: `#/agents/${agent.id}` });
+  }
   for (const agent of agents) {
     if (agent.status === "failed") items.push({ kind: "job_failed", sig: `failed:${agent.thread}`, agent: agent.name, text: `${agent.name}'s work thread failed`, link: `#/c/${agent.thread}` });
     for (const comm of agent.comm ?? []) {
@@ -281,7 +344,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   await Promise.all(agents.map(async agent => {
     const [board, duties] = await Promise.all([
       get<{ board: { plan: PlanItem[]; todos: Todo[] } | null }>(server, `/api/agents/${agent.id}/board`).catch(() => ({ board: null })),
-      get<{ duties: { duty: { id: string; name: string }; paused: boolean; last: { verdict: string; at: number; streak: number } | null; runs: { summary?: string; error?: string; after?: { summary?: string } }[] }[] }>(server, `/api/agents/${agent.id}/duties`).catch(() => ({ duties: [] })),
+      get<{ duties: { duty: { id: string; name: string }; paused: boolean; last: { verdict: string; at: number; streak: number } | null; runs: DutyRunView[] }[] }>(server, `/api/agents/${agent.id}/duties`).catch(() => ({ duties: [] })),
     ]);
     if (board.board) {
       const steps = stalledSteps({ agent, plan: board.board.plan, todos: board.board.todos ?? [], jobs: liveJobs, now, seen: state.seen ?? {}, last: lastOf });
@@ -289,10 +352,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       items.push(...steps);
     }
     for (const row of duties.duties) {
-      if (row.paused || !row.last || (row.last.verdict !== "missed" && row.last.verdict !== "error")) continue;
+      // This agent's own sweep duty is the one judging, so its misses are never a finding of it.
+      if (agent.id === values.agent || row.paused || !row.last || (row.last.verdict !== "missed" && row.last.verdict !== "error")) continue;
       const run = row.runs[0];
       const why = oneLine(run?.after?.summary ?? run?.error ?? run?.summary ?? "", 110);
-      items.push({ kind: "duty_off", sig: `duty:${agent.id}/${row.duty.id}`, agent: agent.name, text: `${agent.name} ${row.duty.id} "${row.duty.name}" ${row.last.verdict}${row.last.streak > 1 ? `, ${row.last.streak} runs in a row` : ""}: ${why}`, link: `#/agents/${agent.id}`, at: row.last.at });
+      items.push({ kind: "duty_off", sig: `duty:${agent.id}/${row.duty.id}`, agent: agent.name, text: `${agent.name} ${row.duty.id} "${row.duty.name}" ${row.last.verdict}${row.last.streak > 1 ? `, ${row.last.streak} runs in a row` : ""}: ${why}`, link: `#/agents/${agent.id}`, at: row.last.at, context: dutyContext(row.runs) });
     }
   }));
 
@@ -303,7 +367,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   mkdirSync(dirname(detailFile), { recursive: true });
   const sections = KINDS.map(kind => {
     const list = items.filter(item => item.kind === kind).sort((a, b) => (a.at ?? now) - (b.at ?? now));
-    return list.length ? [`## ${KIND_WORDS[kind][1]} (${list.length})`, ...list.map(item => `- ${freshSigs.has(item.sig) ? "" : "(raised before) "}${item.text} [open](${item.link})`)].join("\n") : "";
+    return list.length ? [`## ${KIND_WORDS[kind][1]} (${list.length})`, ...list.map(item => [`- ${freshSigs.has(item.sig) ? "" : "(raised before) "}${item.text} [open](${item.link})`, ...(item.context ?? []).map(line => `  - ${line}`)].join("\n"))].join("\n") : "";
   }).filter(Boolean);
   writeFileSync(detailFile, [`# Everything at a glance, ${new Date(now).toISOString().slice(0, 16)}Z`,
     `${fresh.length} items worth a look of ${items.length} open. Items marked "raised before" were in a sweep less than 24 h ago. Links open on :5184.`, ...sections].join("\n\n") + "\n");
