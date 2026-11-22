@@ -94,6 +94,7 @@ test("a server killed mid-call and started again shows no failed call, no Offlin
   test.setTimeout(120_000);
   const dir = info.outputPath("server");
   mkdirSync(dir, { recursive: true });
+  mkdirSync(join(dir, "data"), { recursive: true });
   const server = new Server(await freePort(), dir);
   await server.start();
   try {

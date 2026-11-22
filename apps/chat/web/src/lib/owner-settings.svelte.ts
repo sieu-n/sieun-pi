@@ -6,7 +6,7 @@
  * Before the server kept them, each browser held its own copy in localStorage. The first load after the move sends those copies to the
  * server once, which merges them, and then removes them.
  */
-import { api } from "$lib/api";
+import { api, type Wait } from "$lib/api";
 import { live } from "$lib/api/live.svelte";
 import { defaultSettings, parseNotify, parsePresence, parseRecent, type OwnerSettings, type SavedSettings } from "$lib/api/shared/owner-settings";
 import { toast } from "$lib/ui/toast.svelte";
@@ -57,8 +57,8 @@ class OwnerSettingsSync {
     this.started = true;
     live.on(event => {
       if (event.type === "owner_settings") this.take(event.settings);
-      // A reconnect may have missed an event, so each hello reads the settings again.
-      else if (event.type === "hello") void this.refresh();
+      // A reconnect may have missed an event, so each hello reads the settings again, behind his calls (client.ts lane).
+      else if (event.type === "hello") void this.refresh({ background: "shown" });
     });
     void this.refresh();
   }
@@ -86,9 +86,9 @@ class OwnerSettingsSync {
     if (saved.rev >= this.server.rev) this.server = saved;
   }
 
-  private async refresh(): Promise<void> {
+  private async refresh(wait?: Wait): Promise<void> {
     try {
-      this.take(await api.ownerSettings());
+      this.take(await api.ownerSettings(wait));
     } catch {
       return;
     }

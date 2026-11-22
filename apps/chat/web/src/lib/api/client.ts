@@ -369,9 +369,12 @@ export function dropAhead(wait: Wait): void {
  */
 function call<T>(method: string, path: string, body?: unknown, signal?: AbortSignal, wait?: Wait): Promise<T> {
   if (wroteNow && wait?.background === "shown") wait.background = undefined;
-  if (wait?.background && method === "GET" && !signal) return laned(wait, (own, asked) => send<T>(method, path, body, own, wait, asked));
+  if (wait?.background && method === "GET") return laned(wait, (own, asked) => send<T>(method, path, body, either(own, signal), wait, asked));
   return waited(() => send<T>(method, path, body, signal, wait), method !== "GET");
 }
+
+/** A signal that aborts when either does: the lane's stop or the caller's own deadline. */
+const either = (a: AbortSignal | undefined, b: AbortSignal | undefined): AbortSignal | undefined => (a && b ? AbortSignal.any([a, b]) : a ?? b);
 
 /**
  * Whether the calls the owner waits on can take a connection of their own. A fetch with credentials "omit" goes on its own HTTP/2
@@ -569,7 +572,7 @@ export const api = {
   sidebar: () => call<Sidebar>("GET", "/api/sidebar"),
   /** Saves the whole sidebar layout; the answer carries its new `rev`, and every browser gets it in the next `sidebar` event. */
   saveSidebarLayout: (layout: SidebarLayout) => call<SavedLayout>("PUT", "/api/sidebar/layout", layout),
-  ownerSettings: () => call<SavedSettings>("GET", "/api/owner-settings"),
+  ownerSettings: (wait?: Wait) => call<SavedSettings>("GET", "/api/owner-settings", undefined, undefined, wait),
   /** Replaces each part `parts` names; every page gets the result as `owner_settings`. */
   saveOwnerSettings: (parts: Partial<OwnerSettings>) => call<SavedSettings>("PATCH", "/api/owner-settings", parts),
   /** Sends this browser's old localStorage copies once, which the server merges (shared/owner-settings.ts `mergeOld`). */
@@ -624,7 +627,7 @@ export const api = {
   pin: (id: ConversationId, post: string, pinned: boolean) =>
     call<{ item: Item }>("POST", `/api/c/${enc(id)}/posts/${enc(post)}/pin`, { pinned } satisfies PinRequest),
   /** The owner's Save for later rows in one tab, newest first, with each tab's count (server/later.ts); `test` keeps posts in walks' test rooms. */
-  later: (state?: LaterState, test = false) => call<LaterList>("GET", `/api/later${query({ state, test: test ? 1 : undefined })}`),
+  later: (state?: LaterState, test = false, wait?: Wait) => call<LaterList>("GET", `/api/later${query({ state, test: test ? 1 : undefined })}`, undefined, undefined, wait),
   /** Saves a room post for later; saving a saved post keeps its one item and opens it again when it was done. */
   saveLater: (room: ConversationId, post: string, remindAt?: number) =>
     call<{ item: LaterItem }>("POST", "/api/later", { room, post, ...(remindAt !== undefined ? { remindAt } : {}) } satisfies LaterRequest),
@@ -677,7 +680,7 @@ export const api = {
   setCheckIn: (chat: string, patch: CheckInPatch) => call<CheckInView>("POST", `${boardBase(chat)}/check-in`, patch),
   /** Hides a board from All boards and the Board sidebar, or shows it again. */
   setBoardHidden: (chat: string, hidden: boolean) => call<{ hidden: boolean }>("POST", `${boardBase(chat)}/board/hidden`, { hidden }),
-  forYou: (signal?: AbortSignal) => call<{ items: ForYouItem[] }>("GET", "/api/for-you", undefined, signal),
+  forYou: (signal?: AbortSignal, wait?: Wait) => call<{ items: ForYouItem[] }>("GET", "/api/for-you", undefined, signal, wait),
   /** Marks one item, `<room id>/<post id>`, completed or pending again; the same mark twice changes nothing. */
   markForMe: (agent: AgentId, messageId: string, completed: boolean) =>
     call<{ item: ForMeItem; pending: number }>("POST", `/api/agents/${enc(agent)}/for-me`, { messageId, completed }),

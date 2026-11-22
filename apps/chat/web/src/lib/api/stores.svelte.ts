@@ -380,7 +380,6 @@ class Global {
           this.forYouCount = event.sidebar.forYou;
           this.ready = true;
           roomsAhead(event.sidebar);
-          for (const queue of panelQueues.values()) queue.again();
           boardsAhead(this.agents);
           liveJobsAhead(this.jobs);
           break;
@@ -737,7 +736,9 @@ type Ahead = { id: string; at: number; working: boolean };
  * Reads conversations and panels before the owner opens them, as many at once as the lane sends (client.ts `AHEAD_LANE`), so a first open
  * shows from the page's cache with no call in front of it. One is read again when it shows activity newer than what the page kept, once it is idle: a working one changes with every
  * step, and its open view reads it live. A hidden page reads nothing until it shows again; those first reads also open the connection
- * again after a sleep, where on 11-19 a lone replies call 29 min after the last one took 3 round trips.
+ * again after a sleep, where on 11-19 a lone replies call 29 min after the last one took 3 round trips. A socket that comes back reads
+ * again only the ones its hello shows newer, and each open panel its own (kept.svelte.ts `missed`): on 11-22 a reconnect that read all
+ * 12 agents' four board reads again sent 48 calls, and in walks of 5 restarts two WebKit board reads in that burst took 2.1 s.
  */
 class ReadAhead<Wanted extends Ahead = Ahead> {
   /** Each one's `at` when its kept answer was read. */
@@ -760,11 +761,6 @@ class ReadAhead<Wanted extends Ahead = Ahead> {
   seen(id: string): void {
     const found = this.wanted.find(c => c.id === id);
     if (found) this.readAt.set(id, found.at);
-  }
-
-  /** The socket came back, so what the page kept may have missed changes: everything wanted is read again. */
-  again(): void {
-    this.readAt.clear();
   }
 
   private next(): Wanted | undefined {
@@ -1473,7 +1469,7 @@ class ForYouStore {
     if (shown && !this.items.length) this.loading = true;
     const signal = AbortSignal.timeout(FOR_YOU_DEADLINE_MS);
     try {
-      const items = (await api.forYou(signal)).items;
+      const items = (await api.forYou(signal, shown ? undefined : { background: "shown" })).items;
       if (mine !== this.latest) return;
       this.items = items;
       this.error = null;

@@ -4,7 +4,7 @@
  * click and the post the server sends back, so the bookmark fills at once.
  */
 import { SvelteMap } from "svelte/reactivity";
-import { api, type Item, type LaterItem, type LaterList, type LaterMark, type LaterRow, type LaterState } from "$lib/api";
+import { api, type Item, type LaterItem, type LaterList, type LaterMark, type LaterRow, type LaterState, type Wait } from "$lib/api";
 import { live } from "$lib/api/live.svelte";
 import { hrefFor, router } from "$lib/router.svelte";
 import { isOverdue, remindedText } from "$lib/remind";
@@ -45,7 +45,8 @@ class LaterStore {
       if (event.type === "later" && event.by === "owner") this.open = event.open;
       if ((event.type === "later" && event.by === "owner") || event.type === "hello") {
         clearTimeout(this.timer);
-        this.timer = setTimeout(() => void this.refresh(), 80);
+        const behind = event.type === "hello";
+        this.timer = setTimeout(() => void this.refresh(behind), 80);
       }
     });
     void this.refresh();
@@ -53,14 +54,15 @@ class LaterStore {
 
   /**
    * Reads every tab; only the newest read writes. A walk opens `#/c/later?test=1` to see the posts it saved in its test rooms, which the
-   * owner's Later leaves out.
+   * owner's Later leaves out. `behind` reads behind what the page shows, after a reconnect, in the lane behind his calls (client.ts).
    */
-  async refresh(): Promise<void> {
+  async refresh(behind = false): Promise<void> {
     const mine = ++this.latest;
     const test = router.route.params.test === "1";
     this.withTest = test;
+    const wait = (): Wait | undefined => (behind ? { background: "shown" } : undefined);
     try {
-      const [open, archived, done] = await Promise.all([api.later("open", test), api.later("archived", test), api.later("done", test)]);
+      const [open, archived, done] = await Promise.all([api.later("open", test, wait()), api.later("archived", test, wait()), api.later("done", test, wait())]);
       if (mine !== this.latest) return;
       this.set(open, archived, done);
       this.error = null;
