@@ -300,7 +300,7 @@ function forMeStep(room: string): string {
  */
 function memoryStep(ref: { agent: string }): string {
   const agent = agentName(ref);
-  const save = `When the owner gives a rule, a correction or a lasting fact for ${agent}'s work, such as a URL, a sign-in, a command or how something must work, save it to ${agent}'s memory in that turn with his words and the post's message id: find the entry that covers it with \`rlm.harness.search("<topic words>", "memory")\`, then \`rlm.harness.update_memory(id, title, content)\` it or \`rlm.harness.create_memory(title, content)\`. A task or a one-off answer is not memory. `;
+  const save = `When the owner gives a rule, a correction or a lasting fact for ${agent}'s work, such as a URL, a sign-in, a command or how something must work, save it to ${agent}'s memory in that turn with his words and the post's message id: find the entry that covers it with \`rlm.harness.search("<topic words>", "memory")\`, then \`rlm.harness.update_memory(id, title, content)\` it or \`rlm.harness.create_memory(title, content)\`. A standing ask, such as \"keep advising X\", \"always do Y\" or \"from now on Z\", is such a rule, so save it the same way; a one-off task or answer is not memory. `;
   const scope = "A rule about one project or product stays in memory, and a general rule, such as how agents write or behave in a room, also goes into the shared skills, as the refine-harness skill says (#sw-factory-build p110). ";
   if (ref.agent === PLATFORM_AGENT.id) {
     return save + scope + `Every other agent brings such general feedback to you, so putting it into ${SHARED_STYLE_TEXT} is your agent's job: save it to memory and hand it to your work thread as the step above says, in the same turn.`;
