@@ -14,7 +14,7 @@ const copy = (path: string, over: Partial<SkillCopy> = {}): SkillCopy => ({
 
 const skill = (name: string, copies: SkillCopy[], uses: number, verdicts: SkillVerdictRow[] = []): SkillEntry => ({
   id: `git:x/${name}`, name, description: "", owner: { kind: "owner" }, source: { kind: "git", repo: "x", path: `skills/${name}` }, installs: [], copies,
-  size: { lines: 10, bytes: 1000, ratio: 0.25 }, verdicts, use: { uses, sessions: uses, lastUse: null, byKind: {} }, preimported: false, sees: [],
+  size: { lines: 10, bytes: 1000, ratio: 0.25 }, verdicts, extraCopies: [], use: { uses, sessions: uses, lastUse: null, byKind: {} }, preimported: false, sees: [],
 });
 
 const node = (name: string, path: string, copies: number, links: number, children: SkillTreeNode[] = []): SkillTreeNode => ({ name, path, copies, links, loadedBy: ["prime"], children });
