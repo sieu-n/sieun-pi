@@ -22,6 +22,7 @@
 //   --home <agent id>   the agent whose board pane the first test channel shows, skipped when the server has no such agent [ag_agent-factory]
 //   --label <name>, --out <dir>, --scratch <dir>  [walk-<time>, ~/work/apps-chat-restart/<label>, ~/scratch/restart-walk-<label>]
 //   --release-home <dir>  where {live} is read and whose release.lock a run waits out [~/.local/share/sieun-pi-apps-chat]
+//   --data-dir <dir>    the server's data dir, whose post log of the first room shows a seq written twice [~/.pi/agent/chat]
 //   --report <out dir>  only rebuild the report of a finished walk from its raw files
 import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
@@ -45,7 +46,7 @@ function parseArgs(argv) {
   const o = {
     base: "http://127.0.0.1:5184", release: "node scripts/release-apps-chat.mjs --rollback {live}", releases: 5, browsers: "chromium,webkit",
     warm: 45, tail: 40, home: "ag_agent-factory", label: `walk-${stamp}`, out: null, scratch: null,
-    releaseHome: join(homedir(), ".local/share/sieun-pi-apps-chat"), report: null,
+    releaseHome: join(homedir(), ".local/share/sieun-pi-apps-chat"), dataDir: join(homedir(), ".pi/agent/chat"), report: null,
   };
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i];
@@ -62,6 +63,7 @@ function parseArgs(argv) {
     else if (flag === "--scratch") o.scratch = resolve(value());
     else if (flag === "--release-home") o.releaseHome = resolve(value());
     else if (flag === "--report") o.report = resolve(value());
+    else if (flag === "--data-dir") o.dataDir = resolve(value());
     else throw new Error(`unknown option ${flag}`);
   }
   o.out ??= join(homedir(), "work/apps-chat-restart", o.label);
@@ -186,7 +188,9 @@ async function walk(o) {
       const exit = await new Promise(done => run.on("exit", code => done(code)));
       const end = Date.now();
       writeFileSync(join(o.out, `release-${n}.log`), output);
-      meta.releases.push({ n, command, live, start, end, exit, waitedForLockMs: waited });
+      // Two servers on one socket split the posts (the 11-22 after-walk), so each release counts them.
+      const servers = Number(spawnSync("pgrep", ["-fc", `[s]erver/main.ts --port ${target.port || 80}`], { encoding: "utf8" }).stdout.trim() || 0);
+      meta.releases.push({ n, command, live, start, end, exit, waitedForLockMs: waited, servers });
       log(`release ${n}: exit ${exit} in ${((end - start) / 1000).toFixed(1)} s`);
     }
 
@@ -200,6 +204,12 @@ async function walk(o) {
     // Which sends the server stored.
     const items = await call(o.base, "GET", `/api/c/${meta.rooms[0]}/items?limit=500`).catch(() => ({ items: [] }));
     meta.stored = (items.items ?? []).filter(item => item.kind === "message").map(item => item.text ?? item.body ?? "");
+    // The room's post log, when the server's data dir is on this box: a seq written twice means two servers took posts.
+    const logFile = join(o.dataDir, "rooms", `${meta.rooms[0]}.jsonl`);
+    if (existsSync(logFile)) {
+      const seqs = readFileSync(logFile, "utf8").split("\n").filter(Boolean).flatMap(line => { try { return [JSON.parse(line).post?.seq]; } catch { return []; } }).filter(seq => seq !== undefined);
+      meta.postLog = { lines: seqs.length, repeatedSeqs: seqs.length - new Set(seqs).size };
+    }
   } finally {
     for (const cleanup of cleanups.reverse()) await cleanup().catch(error => log(`cleanup failed: ${error.message}`));
     meta.endedAt = Date.now();
@@ -297,11 +307,12 @@ export function report(out) {
     else merged.push({ ...x });
   }
   const outages = merged.map(x => ({ ...x, ms: x.up ? x.up - x.down : null, release: windowOf(x.down)?.n ?? null }));
-  const result = { label: meta.label, base: meta.base, releases: meta.releases.map(({ n, exit, live, start, end }) => ({ n, exit, live, seconds: Math.round((end - start) / 100) / 10 })), outages, browsers };
+  const result = { label: meta.label, base: meta.base, releases: meta.releases.map(({ n, exit, live, start, end, servers }) => ({ n, exit, live, servers, seconds: Math.round((end - start) / 100) / 10 })), outages, postLog: meta.postLog ?? null, browsers };
   writeFileSync(join(out, "report.json"), `${JSON.stringify(result, null, 1)}\n`);
   const md = [
     `# Restart walk ${meta.label}`, "",
     `${meta.releases.length} releases of \`${meta.release}\` against ${meta.base}; exits ${meta.releases.map(r => r.exit).join(", ")}.`,
+    `Servers after each release: ${meta.releases.map(r => r.servers ?? "?").join(", ")}; the first room's post log ${meta.postLog ? `has ${meta.postLog.lines} posts and ${meta.postLog.repeatedSeqs} repeated seqs` : "was not read"}.`,
     `The server missed /api/ready for ${outages.map(x => (x.ms === null ? "never back" : `${x.ms} ms`)).join(", ") || "no span"}.`, "",
     "| Browser | Calls | In release windows | Failed calls | Page lines failed | Calls 2 s over normal | Page lines 2 s over normal | Socket back after each close (ms) | Sends stored |",
     "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
