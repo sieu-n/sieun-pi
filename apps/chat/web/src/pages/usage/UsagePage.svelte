@@ -8,7 +8,7 @@
   import TpsCard from "./TpsCard.svelte";
   import UsageChart from "./UsageChart.svelte";
   import { chartFormat, cost, count, exactCost, full, percent, type TipRow } from "./format";
-  import { keptReport, readAhead, readReport, REFRESH_MS, type ReadMode, type UsageFilters } from "./reports";
+  import { isCurrent, keptReport, readAhead, readReport, REFRESH_MS, restoreReport, type ReadMode, type UsageFilters } from "./reports";
   import { bucketValue, cacheHit, cellsOf, KIND_LABEL, KINDS, METRIC_LABEL, modelName, modelsByCost, seriesOf, summarize, tokenSum, type Measure, type Metric, type Unit } from "./stats";
 
   /**
@@ -39,6 +39,8 @@
   let report = $state<UsageReport | null>(null);
   let error = $state<string | null>(null);
   let loading = $state(false);
+  /** The time the shown report is as of, while the read of the latest is on its way behind it; null once the shown report is current. */
+  let asOf = $state<number | null>(null);
   let pool = $state<AccountsView | null>(null);
   let poolError = $state<string | null>(null);
   /** Every chat and host seen in a report, so a filter keeps its other choices. */
@@ -63,17 +65,24 @@
     pollTimer = setTimeout(() => void load("poll"), Math.max(0, read + REFRESH_MS - performance.now()));
   }
 
-  /** Shows the kept report of the filters at once, if the page read one, and reads it unless it is current (reports.ts). */
+  /**
+   * Shows the kept report of the filters at once, the one an earlier page load stored included, and reads it unless it is current
+   * (reports.ts). While the read behind a report that is not current is on its way, the header names the time the report is as of, so
+   * every number on the page is exact for the time it names (c191).
+   */
   async function load(mode: ReadMode = "view"): Promise<void> {
     const id = ++request;
     loading = true;
     const filters: UsageFilters = { range, bucket, ...(thread === ALL ? {} : { thread }), ...(host === ALL ? {} : { host }) };
-    const before = keptReport(filters);
+    const before = keptReport(filters) ?? (mode === "view" ? await restoreReport(filters) : null);
+    if (id !== request) return;
     if (before && before !== report) show(before);
+    asOf = mode === "view" && before && !isCurrent(filters) ? before.at : null;
     try {
       const next = await readReport(filters, mode);
       if (id !== request) return;
       show(next.report);
+      asOf = null;
       error = null;
       schedulePoll(next.read);
       readAhead(filters);
@@ -86,6 +95,13 @@
       if (id === request) loading = false;
     }
   }
+  /** A report's time: the clock today, else the day and the clock. */
+  function stamp(at: number): string {
+    const date = new Date(at);
+    const today = date.toDateString() === new Date().toDateString();
+    return date.toLocaleString(undefined, { ...(today ? {} : { month: "short", day: "numeric" }), hour: "numeric", minute: "2-digit", second: "2-digit" });
+  }
+
   async function loadPool(): Promise<void> {
     try {
       pool = await api.pool();
@@ -155,6 +171,9 @@
   {#snippet header()}
     <PanelHeader title="Usage" icon="chart-bar" level={1}>
       {#snippet actions()}
+        {#if asOf !== null}
+          <span class="caption" role="status" data-testid="usage-as-of" title="Every figure is as of this time, and the latest is on its way">As of {stamp(asOf)}</span>
+        {/if}
         <IconButton icon="refresh" label="Refresh usage" size="sm" {loading} onclick={refresh} />
       {/snippet}
     </PanelHeader>

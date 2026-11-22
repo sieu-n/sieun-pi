@@ -124,6 +124,31 @@ test("the page reads every other range ahead, so a pick shows its chart with no 
   release();
 });
 
+test("a page load draws the report the last load stored at once, names its time, and reads the latest behind it", async ({ page }) => {
+  await page.goto("/#/settings/usage");
+  await expect(mainChart(page)).toBeVisible();
+  await expect.poll(() => page.evaluate(() => new Promise<boolean>(resolve => {
+    const open = indexedDB.open("chat.usage");
+    open.onsuccess = () => {
+      const get = open.result.transaction("reports").objectStore("reports").get("24h:hour");
+      get.onsuccess = () => resolve(get.result !== undefined);
+      get.onerror = () => resolve(false);
+    };
+    open.onerror = () => resolve(false);
+  }))).toBe(true);
+  let release = () => {};
+  const held = new Promise<void>(resolve => (release = resolve));
+  await page.route("**/api/usage?range=24h&bucket=hour*", async route => {
+    await held;
+    await route.continue();
+  });
+  await page.reload();
+  await expect(page.locator('section[aria-label$=" per hour"]')).toBeVisible();
+  await expect(page.getByTestId("usage-as-of")).toContainText("As of");
+  release();
+  await expect(page.getByTestId("usage-as-of")).toHaveCount(0);
+});
+
 test("an old ?days=7 link opens the 7d range", async ({ page }) => {
   const asked = page.waitForRequest(request => request.url().includes("/api/usage?range=7d&bucket=hour"));
   await page.goto("/#/settings/usage?days=7");
