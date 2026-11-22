@@ -52,7 +52,9 @@ export type BoxSettings = {
 
 export type FactBox = { box: string; scannedAt: string | null; ok: boolean; error: string | null; seconds: number | null; settings: BoxSettings | null };
 
-export type FactUse = { uses30d: number; sessions30d: number; lastUse: string | null; byKind: SkillUse30d["byKind"] };
+/** One SKILL.md path a use opened, per thread kind, as the transcript wrote it (absolute, `~/...` or relative to the thread's folder). */
+export type PathUse = { box: string; path: string; kind: ThreadKind; uses: number; sessions: number };
+export type FactUse = { uses30d: number; sessions30d: number; lastUse: string | null; byKind: SkillUse30d["byKind"]; byPath: PathUse[] };
 
 /** `coverage` is the scanner's COVERAGE, which it raises each time it walks more folders; an inventory without it is coverage 1. */
 export type Facts = { generatedAt: string | null; coverage: number; boxes: FactBox[]; copies: FactCopy[]; usage: Map<string, FactUse>; usageCounted: boolean };
@@ -100,7 +102,11 @@ function parseUse(raw: Json): FactUse {
   for (const [kind, tally] of Object.entries(isObject(raw.byKind) ? raw.byKind : {})) {
     if (isKind(kind) && isObject(tally)) byKind[kind] = { uses: num(tally.uses) ?? 0, sessions: num(tally.sessions) ?? 0 };
   }
-  return { uses30d: num(raw.uses30d) ?? 0, sessions30d: num(raw.sessions30d) ?? 0, lastUse: str(raw.lastUse), byKind };
+  const byPath = (Array.isArray(raw.byPath) ? raw.byPath : []).filter(isObject).flatMap(p => {
+    const [box, path, kind] = [str(p.box), str(p.path), str(p.kind)];
+    return box && path && kind && isKind(kind) ? [{ box, path, kind, uses: num(p.uses) ?? 0, sessions: num(p.sessions) ?? 0 }] : [];
+  });
+  return { uses30d: num(raw.uses30d) ?? 0, sessions30d: num(raw.sessions30d) ?? 0, lastUse: str(raw.lastUse), byKind, byPath };
 }
 
 /** The scanner's inventory.json as facts, or null when it carries no `copies` list (a scanner from before the skills DB). */

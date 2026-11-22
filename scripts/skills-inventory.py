@@ -445,12 +445,13 @@ def merge_usage(scans: list[dict]) -> dict:
         usage = scan.get("usage") or {}
         for name, u in (usage.get("skills") or {}).items():
             m = merged.setdefault(name, {"uses7d": 0, "uses30d": 0, "sessions7d": 0, "sessions30d": 0, "cliUnverified": 0, "agents": set(), "uses": [],
-                                         "byKind": {}, "lastUse": None})
+                                         "byKind": {}, "byPath": [], "lastUse": None})
             for k in ("uses7d", "uses30d", "sessions7d", "sessions30d", "cliUnverified"):
                 m[k] += u.get(k, 0)
             m["agents"].update(a for a in u.get("agents", []) if a)
             m["uses"].extend(u.get("uses", []))
             add_kinds(m["byKind"], u.get("byKind") or {})
+            m["byPath"].extend(u.get("byPath") or [])
             m["lastUse"] = max(filter(None, (m["lastUse"], u.get("lastUse"))), default=None)
     for m in merged.values():
         m["agentsCount"] = len(m["agents"])
@@ -611,7 +612,7 @@ def build(scans: list[dict], config: dict) -> dict:
         "skills": out_rows,
         "copies": [{k: v for k, v in row.items() if k != "lastChange"} for s in scans for row in s["rows"]
                    if row.get("harnessKind") in (None, "skill", "subagent")],
-        "usage": {name: {k: u[k] for k in ("uses30d", "sessions30d", "byKind", "lastUse", "cliUnverified")} for name, u in usage.items()},
+        "usage": {name: {k: u[k] for k in ("uses30d", "sessions30d", "byKind", "byPath", "lastUse", "cliUnverified")} for name, u in usage.items()},
         "usageCounted": any(s.get("usage") for s in scans),
     }
 

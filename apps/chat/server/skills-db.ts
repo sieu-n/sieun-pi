@@ -16,11 +16,11 @@ import { DatabaseSync } from "node:sqlite";
 import {
   COUNT_RULES, SKILL_RUNTIMES, type VerdictRule, type AdoptBody, type ApplyResult, type ApplyStep, type CopyRole, type InstallBody, type InstallState, type MergeBody, type MoveBody,
   type OwnBody, type RemoveBody, type SkillBoxState, type SkillCopy, type SkillCounts, type SkillEntry, type SkillMove, type SkillSight, type SkillOwner, type SkillRuntime,
-  type SkillScan, type SkillSource, type SkillsChange, type SkillsCheck, type SkillsView, type SkillThresholds, type SkillVerdictRow, type UndoBody,
+  type SkillScan, type SkillSource, type SkillsChange, type SkillsCheck, type SkillsView, type SkillThresholds, type ThreadKind, type SkillVerdictRow, type UndoBody,
 } from "../web/src/lib/api/shared/skills.ts";
 import {
   canonical, changedLines, copyId, drift, extraCopies, identifyFolder, installState, ownerText, parseFacts, parseOwner, plan, roleOf, sameLink, seedOwner, sees, staleCheckouts,
-  thresholds, tree, verdicts, type BoxScan, type CopyFact, type FactCopy, type FactUse, type InstallRecord, type SkillRecord,
+  thresholds, tree, verdicts, type BoxScan, type CopyFact, type FactCopy, type FactUse, type InstallRecord, type PathUse, type SkillRecord,
 } from "./skills-model.ts";
 
 export type SkillsDbConfig = {
@@ -120,28 +120,46 @@ function runtimesAt(home: string, path: string): SkillRuntime[] {
 const SIGHT_RANK: Record<SkillSight["how"], number> = { inlined: 0, imported: 1, listed: 2, cwd: 3, hidden: 4 };
 
 /**
- * Splits the use of a name that several skills share, because a transcript names the skill and not the copy it read. Each thread kind's
- * tally goes to the skill that kind loads (its best non-hidden sight), and a kind that loads none of them goes to the skill most kinds load.
- * On 11-22 agent-message, edit and agent-observe each showed their full count twice, on Prime's bundled copy and on sieun-pi's
- * packages/pi-rlm copy, though the skills-load capture shows every Prime and sw factory kind reading the bundled one.
+ * Splits the use of a name that several skills share, because the use count is kept per name. A SKILL.md read whose transcript names a
+ * path goes to the skill whose copy sits at that path (a link counts by its realPath); a `~/` path is read under the box's home, and a
+ * relative one matches the copy whose path ends with it. The rest of each thread kind's tally, such as a Python call, goes to the skill
+ * that kind loads (its best non-hidden sight), and a kind that loads none of them goes to the skill most kinds load.
+ * On 11-22 agent-message, edit and agent-observe showed their full count twice, on Prime's bundled copy and on sieun-pi's pi-rlm copy,
+ * and frontend-implementation credited auto-sns-agent's copy 0 though Prime threads open it by its path.
  */
-export function creditUse(entries: SkillEntry[]): void {
+export function creditUse(entries: SkillEntry[], byPath: ReadonlyMap<string, readonly PathUse[]> = new Map(), homeOf: (box: string) => string | null = () => null): void {
   const byName = new Map<string, SkillEntry[]>();
   for (const e of entries) byName.set(e.name, [...(byName.get(e.name) ?? []), e]);
-  for (const same of byName.values()) {
+  for (const [name, same] of byName) {
     if (same.length < 2) continue;
     const total = same[0]!.use;
     const seen = (e: SkillEntry, kind: string) => e.sees.find(x => x.kind === kind)?.how ?? "hidden";
     const reach = (e: SkillEntry) => e.sees.filter(x => x.how !== "hidden").length;
-    const fallback = same.reduce((best, e) => (reach(e) > reach(best) ? e : best));
+    const best = (from: SkillEntry[], kind: string) => [...from].sort((a, b) => SIGHT_RANK[seen(a, kind)] - SIGHT_RANK[seen(b, kind)])[0]!;
+    const fallback = same.reduce((top, e) => (reach(e) > reach(top) ? e : top));
     const credit = new Map(same.map(e => [e, { uses: 0, sessions: 0, byKind: {} as typeof total.byKind }]));
-    for (const [kind, tally] of Object.entries(total.byKind)) {
-      if (!tally) continue;
-      const loaders = same.filter(e => seen(e, kind) !== "hidden").sort((a, b) => SIGHT_RANK[seen(a, kind)] - SIGHT_RANK[seen(b, kind)]);
-      const to = credit.get(loaders[0] ?? fallback)!;
-      to.uses += tally.uses;
-      to.sessions += tally.sessions;
-      to.byKind[kind as keyof typeof total.byKind] = tally;
+    const give = (e: SkillEntry, kind: ThreadKind, uses: number, sessions: number) => {
+      const to = credit.get(e)!;
+      to.uses += uses;
+      to.sessions += sessions;
+      const cur = to.byKind[kind] ?? { uses: 0, sessions: 0 };
+      to.byKind[kind] = { uses: cur.uses + uses, sessions: cur.sessions + sessions };
+    };
+    const left = new Map(Object.entries(total.byKind).map(([kind, tally]) => [kind as ThreadKind, { ...tally! }]));
+    for (const use of byPath.get(name) ?? []) {
+      const at = holder(same, use, homeOf(use.box));
+      const rest = left.get(use.kind);
+      if (!at.length || !rest) continue;
+      const uses = Math.min(use.uses, rest.uses);
+      const sessions = Math.min(use.sessions, rest.sessions);
+      give(best(at, use.kind), use.kind, uses, sessions);
+      rest.uses -= uses;
+      rest.sessions -= sessions;
+    }
+    for (const [kind, rest] of left) {
+      if (!rest.uses) continue;
+      const loaders = same.filter(e => seen(e, kind) !== "hidden");
+      give(loaders.length ? best(loaders, kind) : fallback, kind, rest.uses, rest.sessions);
     }
     const counted = [...credit.values()].reduce((n, c) => n + c.uses, 0);
     credit.get(fallback)!.uses += Math.max(0, total.uses - counted);
@@ -150,6 +168,16 @@ export function creditUse(entries: SkillEntry[]): void {
       e.use = { uses: c.uses, sessions: e === fallback && counted === 0 ? total.sessions : c.sessions, lastUse: c.uses ? total.lastUse : null, byKind: c.byKind };
     }
   }
+}
+
+/** The skills of one name whose copy sits at the path a use opened, on the use's box first. */
+function holder(same: readonly SkillEntry[], use: PathUse, home: string | null): SkillEntry[] {
+  let path = use.path.replace(/\/SKILL\.md$/, "");
+  if (path.startsWith("~/") && home) path = `${home}${path.slice(1)}`;
+  const rel = path.replace(/^(\.\/)+/, "");
+  const at = (c: SkillCopy) => (path.startsWith("/") ? c.path === path || c.realPath === path : c.path.endsWith(`/${rel}`) || c.realPath.endsWith(`/${rel}`));
+  const here = same.filter(e => e.copies.some(c => c.box === use.box && at(c)));
+  return here.length ? here : same.filter(e => e.copies.some(at));
 }
 
 export class SkillsDb {
@@ -162,6 +190,8 @@ export class SkillsDb {
     this.db = new DatabaseSync(config.file);
     this.db.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;");
     this.db.exec(SCHEMA);
+    const useColumns = (this.db.prepare("PRAGMA table_info(skill_use)").all() as Row[]).map(r => s(r.name));
+    if (!useColumns.includes("by_path")) this.db.exec("ALTER TABLE skill_use ADD COLUMN by_path TEXT NOT NULL DEFAULT '[]'");
   }
 
   close(): void {
@@ -405,8 +435,8 @@ export class SkillsDb {
     for (const [skill, rows] of found) for (const v of rows) add.run(skill, v.rule, v.action, v.detail, v.copyId, v.other);
     if (usageCounted) {
       this.db.exec("DELETE FROM skill_use");
-      const use = this.db.prepare("INSERT INTO skill_use (name, uses, sessions, last_use, by_kind) VALUES (?, ?, ?, ?, ?)");
-      for (const [name, u] of usage) use.run(name, u.uses30d, u.sessions30d, u.lastUse, JSON.stringify(u.byKind));
+      const use = this.db.prepare("INSERT INTO skill_use (name, uses, sessions, last_use, by_kind, by_path) VALUES (?, ?, ?, ?, ?, ?)");
+      for (const [name, u] of usage) use.run(name, u.uses30d, u.sessions30d, u.lastUse, JSON.stringify(u.byKind), JSON.stringify(u.byPath));
       this.setMeta("usageCounted", "1");
     }
     this.setMeta("thresholds", JSON.stringify(limits));
@@ -423,8 +453,10 @@ export class SkillsDb {
     return out;
   }
 
-  private useRows(): Map<string, SkillEntry["use"]> {
-    return new Map((this.db.prepare("SELECT * FROM skill_use").all() as Row[]).map(r => [s(r.name), { uses: nn(r.uses) ?? 0, sessions: nn(r.sessions) ?? 0, lastUse: sn(r.last_use), byKind: JSON.parse(s(r.by_kind)) }]));
+  private useRows(): Map<string, SkillEntry["use"] & { byPath: PathUse[] }> {
+    return new Map((this.db.prepare("SELECT * FROM skill_use").all() as Row[]).map(r => [s(r.name), {
+      uses: nn(r.uses) ?? 0, sessions: nn(r.sessions) ?? 0, lastUse: sn(r.last_use), byKind: JSON.parse(s(r.by_kind)), byPath: JSON.parse(sn(r.by_path) ?? "[]") as PathUse[],
+    }]));
   }
 
   private inlined(): string | null {
@@ -480,7 +512,8 @@ export class SkillsDb {
         const at = st.copyAt.get(`${i.box}:${i.path}`);
         if (at && !own.includes(at)) own.push(at);
       }
-      const u = use.get(skill.name) ?? { uses: 0, sessions: 0, lastUse: null, byKind: {} };
+      const found = use.get(skill.name);
+      const u = found ? { uses: found.uses, sessions: found.sessions, lastUse: found.lastUse, byKind: found.byKind } : { uses: 0, sessions: 0, lastUse: null, byKind: {} };
       return {
         id: skill.id, name: skill.name, description: canon?.description ?? own[0]?.description ?? "", owner: skill.owner, source: skill.source,
         installs: (installsOf.get(skill.id) ?? []).map(i => ({ id: i.id, box: i.box, path: i.path, mode: i.mode, runtimes: i.runtimes, agent: i.agent, state: st.states.get(i.id)! })),
@@ -493,7 +526,15 @@ export class SkillsDb {
         extraCopies: extraCopies(own.filter(c => c.key === skill.id), canon).map(x => ({ copyId: copyId(x.copy), keptId: copyId(x.kept), why: x.why })),
       };
     });
-    creditUse(entries);
+    const home = (box: string): string | null => {
+      try {
+        return this.homeOf(box, st.copies);
+      } catch {
+        return null;
+      }
+    };
+    const homes = new Map(st.scans.map(scan => [scan.box, home(scan.box)]));
+    creditUse(entries, new Map([...use].map(([name, u]) => [name, u.byPath])), box => homes.get(box) ?? null);
     const unowned = st.copies.filter(c => st.roles.get(copyId(c)) === "unowned").map(copyView);
     const items = drift(st.copies, st.roles, st.installs, st.states);
     const has = (e: SkillEntry, rules: readonly VerdictRule[]) => e.verdicts.some(v => rules.includes(v.rule));

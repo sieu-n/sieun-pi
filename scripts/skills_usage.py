@@ -26,7 +26,7 @@ import tokenize
 
 DAY_MS = 86400000
 # Bump when the matcher or an event changes shape, so old cached events are dropped.
-CACHE_VERSION = 6
+CACHE_VERSION = 7
 HOW_READ = "read SKILL.md"
 HOW_PY = "python call"
 HOW_CLI = "cli"
@@ -39,6 +39,8 @@ DEFAULT_IMPORTS = {
     "agent_message": "agent-message", "rlm_heartbeat": "rlm-heartbeat", "linear_ticket": "linear-ticket", "mcp": "mcp",
 }
 SKILL_MD = re.compile(r"skills/(?:[\w.-]+/)*?([A-Za-z0-9][\w.-]*)/SKILL\.md")
+# The whole path a SKILL.md read names, so the DB credits the use to the copy at that path (apps/chat creditUse).
+PATH_MD = re.compile(r"[\w./~-]*?skills/(?:[\w.-]+/)*?([A-Za-z0-9][\w.-]*)/SKILL\.md")
 READ_SKILL = re.compile(r"read-skill\.mjs\s+['\"]?([\w./-]+)")
 BASH_CALL = re.compile(r"""\bbash\(\s*[rRfFbBuU]{0,2}('''|\"\"\"|'|")(.*?)\1""", re.S)
 SEGMENT_SPLIT = re.compile(r"\n|;|&&|\|\||\||\$\(|`|\(|\)")
@@ -117,6 +119,12 @@ def opened(text, name):
     return not all(NOT_OPEN.search(line) and not OPEN_OPS.search(line) for line in lines)
 
 
+def read_how(text, name):
+    """HOW_READ with the path the text names for the skill, as `read SKILL.md|<path>`; aggregate() splits it off again."""
+    path = next((m.group(0) for m in PATH_MD.finditer(text) if m.group(1) == name), None)
+    return f"{HOW_READ}|{path}" if path else HOW_READ
+
+
 class Matcher:
     """Finds skill uses in one tool call's name and arguments."""
 
@@ -139,7 +147,7 @@ class Matcher:
         if "SKILL.md" in text:
             for name in self.skill_reads(text):
                 if opened(text, name):
-                    out.add((name, HOW_READ))
+                    out.add((name, read_how(text, name)))
         for m in READ_SKILL.finditer(text):
             parts = [part for part in m.group(1).split("/") if part and part != "SKILL.md"]
             if parts:
@@ -177,7 +185,7 @@ class Matcher:
         if "SKILL.md" in code:
             for name in self.skill_reads(code):
                 if opened(code, name):
-                    out.add((name, HOW_READ))
+                    out.add((name, read_how(code, name)))
         for m in BASH_CALL.finditer(code):
             self.shell(m.group(2), out)
 
@@ -201,7 +209,7 @@ class Matcher:
             path = args.get("path") or args.get("file_path") or args.get("filePath")
             if isinstance(path, str):
                 for name in self.skill_reads(path):
-                    out.add((name, HOW_READ))
+                    out.add((name, read_how(path, name)))
             return out
         code = args.get("code")
         if isinstance(code, str):
@@ -757,16 +765,21 @@ def aggregate(events, names, now_ms, box):
         if how == HOW_CLI:
             cli[skill] = cli.get(skill, 0) + 1
             continue
-        key = (runtime, session_key, turn, skill, how)
+        key = (runtime, session_key, turn, skill, how.partition("|")[0])
         if key not in first or at < first[key][0]:
             first[key] = (at, runtime, session, event, agent, kind)
-    empty = lambda: {"uses7d": 0, "uses30d": 0, "sessions7d": 0, "sessions30d": 0, "agents": [], "uses": [], "byKind": {}, "lastUse": None,
-                     "cliUnverified": 0}
+    empty = lambda: {"uses7d": 0, "uses30d": 0, "sessions7d": 0, "sessions30d": 0, "agents": [], "uses": [], "byKind": {}, "byPath": [],
+                     "lastUse": None, "cliUnverified": 0}
     skills = {name: empty() for name in names}
     sessions = {}
     for (runtime, session_key, _turn, skill, how), (at, _r, session, event, agent, kind) in first.items():
         entry = skills.setdefault(skill, empty())
-        per = sessions.setdefault(skill, {"s7": set(), "s30": set(), "agents": set(), "uses": [], "kinds": {}})
+        per = sessions.setdefault(skill, {"s7": set(), "s30": set(), "agents": set(), "uses": [], "kinds": {}, "paths": {}})
+        path = event[2].partition("|")[2]
+        if path:
+            spot = per["paths"].setdefault((path, kind), [0, set()])
+            spot[0] += 1
+            spot[1].add((runtime, session_key))
         entry["uses30d"] += 1
         per["s30"].add((runtime, session_key))
         tally = per["kinds"].setdefault(kind, [0, set()])
@@ -792,6 +805,8 @@ def aggregate(events, names, now_ms, box):
         entry["agents"] = sorted(per["agents"])
         entry["uses"] = [use for _at, use in sorted(per["uses"], key=lambda pair: -pair[0])[:10]]
         entry["byKind"] = {kind: {"uses": n, "sessions": len(seen)} for kind, (n, seen) in sorted(per["kinds"].items())}
+        entry["byPath"] = [{"box": box, "path": path, "kind": kind, "uses": n, "sessions": len(seen)}
+                           for (path, kind), (n, seen) in sorted(per["paths"].items())]
     for skill, n in cli.items():
         skills.setdefault(skill, empty())["cliUnverified"] = n
     return dict(sorted(skills.items(), key=lambda pair: (-pair[1]["uses30d"], pair[0])))

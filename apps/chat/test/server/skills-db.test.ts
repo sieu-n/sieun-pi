@@ -374,6 +374,43 @@ test("a name two skills share credits each thread kind's use to the copy that ki
   assert.equal(rows.reduce((n, k) => n + k.use.uses, 0), 45);
 });
 
+test("a SKILL.md read that names a path credits the copy at that path, and only the rest goes by sight", t => {
+  const dir = mkdtempSync(join(tmpdir(), "skills-db-path-"));
+  const db = new SkillsDb({ file: join(dir, "chat.sqlite"), box: BOX, home: "/home/x", piHostPrompt: null }, { run: async () => [], undo: async () => [] });
+  t.after(() => {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const at = "2026-11-22T04:00:00Z";
+  const repo = (name: string) => `/home/x/src/${name}`;
+  const skill = (name: string) => `${repo(name)}/.agents/skills/workflows/frontend-implementation`;
+  const copy = (name: string, text: string) => ({
+    box: BOX, path: skill(name), realPath: skill(name), linkTarget: null, exists: true, name: "frontend-implementation", source: `repo:${name}`, root: dirname(skill(name)),
+    runtimes: ["claude", "codex"], hash: `h-${name}`, text,
+    checkout: { root: repo(name), remote: `git@github.com:o/${name}.git`, branch: "main", headAt: at, upstreamAt: at, behind: 0, fetchedAt: at, tracked: true },
+  });
+  db.ingest({
+    generatedAt: at, usageCounted: true, boxes: [{ box: BOX, scannedAt: at, ok: true, settings: { repos: { [repo("auto-sns-agent")]: ["!../../.agents/skills/**"] } } }],
+    copies: [copy("auto-sns-agent", "one guide"), copy("slack-green", "another guide")],
+    usage: {
+      "frontend-implementation": {
+        uses30d: 12, sessions30d: 9, lastUse: at,
+        byKind: { "prime-chat": { uses: 10, sessions: 7 }, "prime-job": { uses: 2, sessions: 2 } },
+        byPath: [
+          { box: BOX, path: `${skill("auto-sns-agent")}/SKILL.md`, kind: "prime-chat", uses: 6, sessions: 4 },
+          { box: BOX, path: "~/src/auto-sns-agent/.agents/skills/workflows/frontend-implementation/SKILL.md", kind: "prime-chat", uses: 1, sessions: 1 },
+          { box: BOX, path: ".agents/skills/nowhere/frontend-implementation/SKILL.md", kind: "prime-job", uses: 1, sessions: 1 },
+        ],
+      },
+    },
+  });
+  const rows = db.view(IDLE).skills.filter(k => k.name === "frontend-implementation");
+  const of = (name: string) => rows.find(k => k.id.startsWith(`git:${name}/`))!.use.uses;
+  assert.equal(of("auto-sns-agent"), 7, "the 6 absolute and 1 ~/ reads of its path, though its repo's settings hide it");
+  assert.equal(of("slack-green"), 5, "the 3 reads with no path of that copy and the 2 prime-job uses go by sight");
+  assert.equal(rows.reduce((n, k) => n + k.use.uses, 0), 12);
+});
+
 test("duplicates: a pair is flagged once on the copy that is not canonical, two upstreams only get a note, and one folder per box is never extra", t => {
   const dir = mkdtempSync(join(tmpdir(), "skills-db-dup-"));
   const db = new SkillsDb({ file: join(dir, "chat.sqlite"), box: BOX, home: "/home/x", piHostPrompt: null }, { run: async () => [], undo: async () => [] });
