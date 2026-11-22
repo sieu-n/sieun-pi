@@ -133,6 +133,31 @@ export async function tellSystemd(successor: boolean, log: (line: string) => voi
 }
 
 /**
+ * Pings systemd's watchdog (WatchdogSec in the unit) every fifth of its interval while this process's event loop runs, so systemd kills
+ * and restarts a server that hangs, as it restarts one that ends. The pings go out from a shell this process starts, which stays in the
+ * unit's cgroup: cpu-protect.py moves the main process into <unit>-core.scope and every other process back to the unit, and systemd
+ * --user drops a notify from outside the unit. A ping from a systemd-notify the main process ran would start in the scope. The shell
+ * pings only on a line from this process, so a hung event loop sends none. Returns the stop.
+ */
+export function startWatchdog(log: (line: string) => void, env: NodeJS.ProcessEnv = process.env): () => void {
+  const usec = Number(env.WATCHDOG_USEC);
+  if (!env.NOTIFY_SOCKET || !Number.isFinite(usec) || usec <= 0) return () => {};
+  const pinger = spawn("sh", ["-c", "while read -r _; do systemd-notify WATCHDOG=1; done"], { stdio: ["pipe", "ignore", "inherit"] });
+  pinger.on("error", error => log(`watchdog: the pinger: ${error.message}`));
+  pinger.stdin.on("error", () => {});
+  const ping = () => { if (pinger.stdin.writable) pinger.stdin.write("\n"); };
+  ping();
+  const timer = setInterval(ping, Math.max(1000, Math.round(usec / 1000 / 5)));
+  timer.unref();
+  pinger.unref();
+  log(`watchdog: pings every ${Math.round(usec / 1000 / 5)} ms through pinger ${pinger.pid}`);
+  return () => {
+    clearInterval(timer);
+    pinger.stdin.end();
+  };
+}
+
+/**
  * The data dir's lock, held for the life of the server that serves it: an exclusive SQLite transaction on <data dir>/server.lock, which
  * the kernel drops when the process ends. Hard limit, data integrity: two servers on one data dir split posts on 11-22, 25 of 87 with
  * duplicate seqs. A running server releases it in a hand-over once it stopped, before its successor reads the state files.

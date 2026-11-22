@@ -16,7 +16,7 @@ import type { Host } from "./host/types.ts";
 import { projectList } from "./projects.ts";
 import { drain, serve, skillsParts } from "./http.ts";
 import { seedFixture } from "./fixture/seed.ts";
-import { DataLock, handOverOnHangup, listening, tellSystemd } from "./handoff.ts";
+import { DataLock, handOverOnHangup, listening, startWatchdog, tellSystemd } from "./handoff.ts";
 
 const loadedMs = Math.round(performance.now());
 const config = readConfig();
@@ -91,5 +91,6 @@ try {
   log(`systemd-notify: ${error instanceof Error ? error.message : String(error)}; this process exits`);
   process.exit(1);
 }
+startWatchdog(log);
 port.predecessor?.taken();
 if (fd !== null) handOverOnHangup({ fd, server: http, drain, stop: stopApp, unlock: () => lock.release(), log, exit: code => process.exit(code) });
