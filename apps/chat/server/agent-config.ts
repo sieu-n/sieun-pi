@@ -12,7 +12,7 @@
  * | folder | its agent's folder, `<agents dir>/<slug>/` with `brief.md` and the harness store (`agent-folder.ts`) |
  * | memory | Prime's harness digest in pi-host: Prime's global store merged with the agent's store, or with the thread's own store when no agent holds it |
  * | instructions | AGENTS.md and CLAUDE.md in its cwd and each folder above it, and `<agent dir>/AGENTS.md`, which pi-host loads through Prime's resource loader plus the CLAUDE.md beside each AGENTS.md (`context-files.ts`), read on the box that runs the thread |
- * | usage | pi-host's `durable_usage` sums for the thread over the last 7 days |
+ * | usage | the thread's sums over the Usage page's 7 days by hour, from the kept hour sums (`KeptUsage`) or pi-host's `durable_usage` |
  */
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -25,12 +25,13 @@ import { NotFound, type App } from "./app.ts";
 import { judgedRun } from "../web/src/lib/api/shared/duty-card.ts";
 import { awaitingGo, BOARD_DOC, nextRun, type DutyFile } from "./boards.ts";
 import { isNoProject } from "./projects.ts";
-import type { EntryRecord } from "./host/types.ts";
+import type { EntryRecord, Ping, UsageTotal } from "./host/types.ts";
 import { ownerText } from "./rooms.ts";
 import { readJson } from "./store.ts";
 import { conversationIdOf, parseConversationId } from "./threads.ts";
+import { bucketStart } from "./usage.ts";
+import { BUCKET_MS, RANGE_MS } from "../web/src/lib/api/shared/usage-range.ts";
 
-const DAY = 86_400_000;
 const PURPOSE_CAP = 1500;
 /** Entries read for the purpose: an imported Prime session opens with its harness digest and other tagged notices before the first input. */
 const FIRST_INPUT_SCAN = 20;
@@ -82,18 +83,39 @@ async function instructionsOn(app: App, thread: string, cwd: string, agentDir: s
   }
 }
 
-/** A harness store with its memory count and newest three memory titles, read as `{entries: {memory, prompt, ...}}`. */
+/** Each harness store's memory count and newest titles, by path, kept until the file's size or mtime changes. */
+const storeSummaries = new Map<string, { mtimeMs: number; size: number; summary: { count: number; preview: string } | null }>();
+
+/**
+ * A harness store with its memory count and newest three memory titles, read as `{entries: {memory, prompt, ...}}`. Prime's global store was
+ * 1.5 MB on 11-22 and its parse took 12 to 140 ms at box load 190 to 220, so a store is parsed again only after it changed.
+ */
 function harnessStore(label: string, path: string, note: string): ConfigFile {
   const info = fileInfo(label, path, { loaded: true, note });
   if (!info.exists) return info;
+  let stat: { mtimeMs: number; size: number };
   try {
-    const state = JSON.parse(readFileSync(path, "utf8")) as { entries?: { memory?: Record<string, { title?: string; updated_at?: string }> } };
-    const memories = Object.values(state.entries?.memory ?? {});
-    info.count = memories.length;
-    info.preview = memories.sort((a, b) => String(b.updated_at ?? "").localeCompare(String(a.updated_at ?? ""))).slice(0, 3).map(m => `- ${m.title ?? "(untitled)"}`).join("\n");
+    stat = statSync(path);
   } catch {
-    info.note = `${info.note} The file did not parse.`;
+    return info;
   }
+  let kept = storeSummaries.get(path);
+  if (!kept || kept.mtimeMs !== stat.mtimeMs || kept.size !== stat.size) {
+    let summary: { count: number; preview: string } | null = null;
+    try {
+      const state = JSON.parse(readFileSync(path, "utf8")) as { entries?: { memory?: Record<string, { title?: string; updated_at?: string }> } };
+      const memories = Object.values(state.entries?.memory ?? {});
+      summary = {
+        count: memories.length,
+        preview: memories.sort((a, b) => String(b.updated_at ?? "").localeCompare(String(a.updated_at ?? ""))).slice(0, 3).map(m => `- ${m.title ?? "(untitled)"}`).join("\n"),
+      };
+    } catch {
+      summary = null;
+    }
+    storeSummaries.set(path, kept = { mtimeMs: stat.mtimeMs, size: stat.size, summary });
+  }
+  if (kept.summary) Object.assign(info, kept.summary);
+  else info.note = `${info.note} The file did not parse.`;
   return info;
 }
 
@@ -147,6 +169,64 @@ export function agentRecordOf(app: App, id: string): AgentRecord | undefined {
   return chat ? app.agents.record(chat) : undefined;
 }
 
+/**
+ * The last answer of `app.host.ping()`, with a new ping started behind each config read. This box's ping lists every thread (durable_threads,
+ * 450 KB on 11-22), and in a probe at box load 190 to 220 it took 185 ms at p50 and 1,048 ms at p90 on pi-host's one socket, where every other
+ * call of the read waited behind it (~/work/p155-config). Only the first read of a page load's server waits for it.
+ */
+const pings = new WeakMap<App, { last?: Ping; flight?: Promise<Ping> }>();
+function lastPing(app: App): Promise<Ping> {
+  let kept = pings.get(app);
+  if (!kept) pings.set(app, kept = {});
+  const slot = kept;
+  slot.flight ??= app.host.ping().catch((error): Ping => ({ ok: false, error: String(error) })).then(answer => {
+    slot.last = answer;
+    slot.flight = undefined;
+    return answer;
+  });
+  return slot.last ? Promise.resolve(slot.last) : slot.flight;
+}
+
+/** A conversation's purpose as kept: its first input, the text cut at `PURPOSE_CAP`, and who sent it by id. */
+type FirstInput = { text: string; truncated: boolean; from: string; at: number | undefined; via?: string };
+
+/**
+ * Each conversation's first input, kept once found, since entries after it never change it. Its read of the first 20 entries carried 850 KB
+ * for agent factory's work thread on 11-22, whose imported Prime session opens with its harness digest, and took 827 ms at p50 at box load
+ * 190 to 220 (~/work/p155-config).
+ */
+const firstInputs = new WeakMap<App, Map<string, FirstInput>>();
+async function firstInput(app: App, thread: string, conversation: number): Promise<FirstInput | undefined> {
+  let kept = firstInputs.get(app);
+  if (!kept) firstInputs.set(app, kept = new Map());
+  const key = `${thread}\u0000${conversation}`;
+  const known = kept.get(key);
+  if (known) return known;
+  const first = await app.host.entries(thread, { conversation, after: 0, limit: FIRST_INPUT_SCAN }).then(got => got.entries.find(isFirstInput), () => undefined);
+  const message = first?.model?.[0];
+  if (!first || !message || (message.role !== "user" && first.kind !== "agent.message")) return undefined;
+  const text = (first.kind === "pi.user" ? ownerText(first) : undefined)
+    ?? (typeof message.content === "string" ? message.content : message.content.flatMap(b => (b.type === "text" ? [b.text] : [])).join("\n"));
+  const data = first.kind === "agent.message" ? (first.data as { from?: string; via?: string } | undefined) : undefined;
+  const found: FirstInput = {
+    text: text.length > PURPOSE_CAP ? `${text.slice(0, PURPOSE_CAP - 1)}…` : text, truncated: text.length > PURPOSE_CAP,
+    from: data?.from ?? "owner", at: message.timestamp, ...(data?.via ? { via: data.via } : {}),
+  };
+  kept.set(key, found);
+  return found;
+}
+
+/**
+ * The thread's usage over the Usage page's 7 days by hour: the 168 clock hours that end with the one holding now. Those bounds fall on the
+ * kept hour sums (usage.ts `KeptUsage`), so the read calls no box; a 7 days ending at this moment ended off every grain and read pi-host,
+ * 161 ms at p50 and 486 ms at p90 at box load 190 to 220 (~/work/p155-config).
+ */
+function weekUsage(app: App, thread: string, now = Date.now()): Promise<UsageTotal[] | null> {
+  const until = bucketStart("hour", now) + BUCKET_MS.hour;
+  const since = until - RANGE_MS["7d"];
+  return app.usage.usage({ since, until, bucketMs: until - since, threads: [thread] }).catch(() => null);
+}
+
 export async function agentConfig(app: App, id: AgentId): Promise<AgentConfig> {
   let agent = app.threads.agent(id);
   if (!agent) {
@@ -171,24 +251,17 @@ export async function agentConfig(app: App, id: AgentId): Promise<AgentConfig> {
   }
 
   const [first, ping, usage, board, instructions] = await Promise.all([
-    app.host.entries(thread, { conversation, after: 0, limit: FIRST_INPUT_SCAN }).then(got => got.entries.find(isFirstInput), () => undefined),
-    app.host.ping().catch(error => ({ ok: false as const, error: String(error) })),
-    app.host.usage({ since: Date.now() - 7 * DAY, threads: [thread] }).catch(() => null),
+    firstInput(app, thread, conversation),
+    lastPing(app),
+    weekUsage(app, thread),
     chat ? app.boards.board(chat).catch(() => null) : Promise.resolve(null),
     instructionsOn(app, thread, row.cwd, agentDir),
   ]);
 
   let purpose: AgentConfig["identity"]["purpose"] = null;
-  const message = first?.model?.[0];
-  if (first && message && (message.role === "user" || first.kind === "agent.message")) {
-    const text = (first.kind === "pi.user" ? ownerText(first) : undefined)
-      ?? (typeof message.content === "string" ? message.content : message.content.flatMap(b => (b.type === "text" ? [b.text] : [])).join("\n"));
-    const data = first.kind === "agent.message" ? (first.data as { from?: string; via?: string } | undefined) : undefined;
-    const from = app.threads.principal(data?.from ?? "owner");
-    purpose = {
-      text: text.length > PURPOSE_CAP ? `${text.slice(0, PURPOSE_CAP - 1)}…` : text, truncated: text.length > PURPOSE_CAP,
-      from: { id: from.id, name: from.name }, at: message.timestamp ?? agent.createdAt, ...(data?.via ? { via: data.via } : {}),
-    };
+  if (first) {
+    const from = app.threads.principal(first.from);
+    purpose = { text: first.text, truncated: first.truncated, from: { id: from.id, name: from.name }, at: first.at ?? agent.createdAt, ...(first.via ? { via: first.via } : {}) };
   }
 
   const durableDir = !app.config.fixture && app.config.durableIndex ? dirname(app.config.durableIndex) : null;

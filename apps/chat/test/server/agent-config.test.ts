@@ -116,6 +116,30 @@ test("an imported thread's harness digest and tagged notices before the first me
   await s.send("PATCH", `/api/c/dm_imported`, { archived: true });
 });
 
+test("a second config read takes its first input and ping from the first, and its usage is the Usage page's 7 days of the thread", async () => {
+  const calls: string[] = [];
+  const host = s.app.host as unknown as Record<string, (...args: unknown[]) => unknown>;
+  const originals = { entries: host.entries!, ping: host.ping! };
+  host.entries = (...args) => (calls.push("entries"), originals.entries.apply(s.app.host, args));
+  host.ping = (...args) => (calls.push("ping"), originals.ping.apply(s.app.host, args));
+  try {
+    await config(agents.harness);
+    calls.length = 0;
+    const c = await config(agents.harness);
+    assert.equal(c.identity.purpose?.text, "What still blocks the migration to pi-host?");
+    assert.equal(calls.filter(call => call === "entries").length, 0);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.ok(c.runs.hostVersion, "the kept ping answers");
+    const report = await s.get<{ rows: { thread: string; turns: number; cost: { total: number } }[] }>(`/api/usage?range=7d&bucket=hour&thread=${encodeURIComponent(ids.harness)}`);
+    const rows = report.rows.filter(row => row.thread === ids.harness);
+    assert.equal(c.usage?.turns, rows.reduce((sum, row) => sum + row.turns, 0));
+    assert.ok(Math.abs((c.usage?.cost ?? 0) - rows.reduce((sum, row) => sum + row.cost.total, 0)) < 1e-9);
+  } finally {
+    host.entries = originals.entries;
+    host.ping = originals.ping;
+  }
+});
+
 test("an unknown agent is a 404", async () => {
   const response = await s.send("GET", "/api/agents/no-such-agent/config");
   assert.equal(response.status, 404);
