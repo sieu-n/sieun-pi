@@ -400,14 +400,15 @@ test("a SKILL.md read that names a path credits the copy at that path, and only 
           { box: BOX, path: `${skill("auto-sns-agent")}/SKILL.md`, kind: "prime-chat", uses: 6, sessions: 4 },
           { box: BOX, path: "~/src/auto-sns-agent/.agents/skills/workflows/frontend-implementation/SKILL.md", kind: "prime-chat", uses: 1, sessions: 1 },
           { box: BOX, path: ".agents/skills/nowhere/frontend-implementation/SKILL.md", kind: "prime-job", uses: 1, sessions: 1 },
+          { box: BOX, path: `${repo("auto-sns-agent")}/.agents/skills/frontend-implementation/SKILL.md`, kind: "prime-chat", uses: 2, sessions: 1 },
         ],
       },
     },
   });
   const rows = db.view(IDLE).skills.filter(k => k.name === "frontend-implementation");
   const of = (name: string) => rows.find(k => k.id.startsWith(`git:${name}/`))!.use.uses;
-  assert.equal(of("auto-sns-agent"), 7, "the 6 absolute and 1 ~/ reads of its path, though its repo's settings hide it");
-  assert.equal(of("slack-green"), 5, "the 3 reads with no path of that copy and the 2 prime-job uses go by sight");
+  assert.equal(of("auto-sns-agent"), 9, "6 absolute and 1 ~/ reads of its path and 2 read-skill.mjs reads under its checkout, though its settings hide it");
+  assert.equal(of("slack-green"), 3, "the 1 prime-chat read with no path and the 2 prime-job uses go by sight");
   assert.equal(rows.reduce((n, k) => n + k.use.uses, 0), 12);
 });
 

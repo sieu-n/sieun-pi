@@ -26,7 +26,7 @@ import tokenize
 
 DAY_MS = 86400000
 # Bump when the matcher or an event changes shape, so old cached events are dropped.
-CACHE_VERSION = 7
+CACHE_VERSION = 8
 HOW_READ = "read SKILL.md"
 HOW_PY = "python call"
 HOW_CLI = "cli"
@@ -119,6 +119,18 @@ def opened(text, name):
     return not all(NOT_OPEN.search(line) and not OPEN_OPS.search(line) for line in lines)
 
 
+# read-skill.mjs reads `.agents/skills/<arg>` under the repo it sits in (auto-sns-agent's scripts/skills/read-skill.mjs).
+READ_SKILL_AT = re.compile(r"([\w./~-]*?)scripts/skills/read-skill\.mjs\s+['\"]?([\w./-]+)")
+
+
+def rooted(how, cwd):
+    """A read's path joined to the thread's folder when the transcript wrote it relative, so it names one checkout."""
+    base, _, path = how.partition("|")
+    if not path or not cwd or path.startswith(("/", "~")):
+        return how
+    return f"{base}|{os.path.normpath(os.path.join(cwd, path))}"
+
+
 def read_how(text, name):
     """HOW_READ with the path the text names for the skill, as `read SKILL.md|<path>`; aggregate() splits it off again."""
     path = next((m.group(0) for m in PATH_MD.finditer(text) if m.group(1) == name), None)
@@ -144,6 +156,7 @@ class Matcher:
         return {m.group(1) for m in SKILL_MD.finditer(text) if "<" not in m.group(1)}
 
     def shell(self, text, out):
+        self.read_skill_paths(text, out)
         if "SKILL.md" in text:
             for name in self.skill_reads(text):
                 if opened(text, name):
@@ -179,6 +192,14 @@ class Matcher:
                 continue
             if words[i + 1:i + 2] == ["("] or (words[i + 1:i + 2] == ["."] and words[i + 3:i + 4] == ["("]):
                 out.add((self.imports[word], HOW_PY))
+
+    def read_skill_paths(self, text, out):
+        """Adds the copy path to each read-skill.mjs read: `.agents/skills/<arg>` under the folder the script sits two levels below."""
+        for m in READ_SKILL_AT.finditer(text):
+            folder = "/".join(p for p in m.group(2).split("/") if p and p != "SKILL.md" and "." not in p)
+            name = folder.split("/")[-1] if folder else ""
+            if name:
+                out.add((name, f"{HOW_READ}|{m.group(1)}.agents/skills/{folder}/SKILL.md"))
 
     def python(self, code, out):
         self.python_calls(code, out)
@@ -327,6 +348,13 @@ def scan_jsonl_prime(path, state, matcher):
         users.append(pos)
         pos = data.find(USER_KEY, pos + 1)
     seen_lines = set()
+    if state["offset"] == 0 and data:
+        try:
+            header = json.loads(data[:data.find(b"\n")])
+            if isinstance(header, dict) and isinstance(header.get("cwd"), str):
+                state["cwd"] = header["cwd"]
+        except ValueError:
+            pass
     for m in re.finditer(rb'"type":"session_info"', data):
         start = data.rfind(b"\n", 0, m.start()) + 1
         line = data[start:data.find(b"\n", m.start())]
@@ -365,7 +393,7 @@ def events_from_prime_line(line, state, matcher, turn):
     for block in message["content"]:
         if isinstance(block, dict) and block.get("type") == "toolCall":
             for skill, how in matcher.call(block.get("name"), block.get("arguments")):
-                state["events"].append([at, skill, how, state["sid"], turn, None, record.get("id")])
+                state["events"].append([at, skill, rooted(how, state.get("cwd")), state["sid"], turn, None, record.get("id")])
 
 
 def scan_prime(box, now_ms, matcher, use_cache, workers):
@@ -603,7 +631,7 @@ def scan_codex_file(path, matcher):
                     args = payload.get("arguments", payload.get("input"))
                     if at:
                         for skill, how in matcher.call(payload.get("name"), args):
-                            events.append([at, skill, how, sid or os.path.basename(path), turn, None, payload.get("call_id"), cwd])
+                            events.append([at, skill, rooted(how, cwd), sid or os.path.basename(path), turn, None, payload.get("call_id"), cwd])
     return events
 
 
@@ -766,7 +794,7 @@ def aggregate(events, names, now_ms, box):
             cli[skill] = cli.get(skill, 0) + 1
             continue
         key = (runtime, session_key, turn, skill, how.partition("|")[0])
-        if key not in first or at < first[key][0]:
+        if key not in first or at < first[key][0] or (at == first[key][0] and "|" in how and "|" not in first[key][3][2]):
             first[key] = (at, runtime, session, event, agent, kind)
     empty = lambda: {"uses7d": 0, "uses30d": 0, "sessions7d": 0, "sessions30d": 0, "agents": [], "uses": [], "byKind": {}, "byPath": [],
                      "lastUse": None, "cliUnverified": 0}

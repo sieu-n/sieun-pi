@@ -175,7 +175,10 @@ function holder(same: readonly SkillEntry[], use: PathUse, home: string | null):
   let path = use.path.replace(/\/SKILL\.md$/, "");
   if (path.startsWith("~/") && home) path = `${home}${path.slice(1)}`;
   const rel = path.replace(/^(\.\/)+/, "");
-  const at = (c: SkillCopy) => (path.startsWith("/") ? c.path === path || c.realPath === path : c.path.endsWith(`/${rel}`) || c.realPath.endsWith(`/${rel}`));
+  const repo = /^(\/.+?)\/\.(?:agents|claude|codex)\/skills\//.exec(path)?.[1] ?? null;
+  const at = (c: SkillCopy) => path.startsWith("/")
+    ? c.path === path || c.realPath === path || (repo !== null && c.checkout?.root === repo)
+    : c.path.endsWith(`/${rel}`) || c.realPath.endsWith(`/${rel}`);
   const here = same.filter(e => e.copies.some(c => c.box === use.box && at(c)));
   return here.length ? here : same.filter(e => e.copies.some(at));
 }
