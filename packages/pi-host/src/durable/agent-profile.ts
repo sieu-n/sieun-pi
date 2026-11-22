@@ -83,9 +83,9 @@ export function commInstructions(ref: { agent: string; room: string; work: strin
  */
 function workSteps(work: string, room: string): string[] {
   return [
-    "When you start on a post that needs an answer or work, put 👀 on it with `set_emoji(message_id, \"eyes\", true)`. " +
+    "When you start on a post whose work runs past this turn, put 👀 on it with `set_emoji(message_id, \"eyes\", true)`. " +
       "👀 means its work still runs, so keep it on through a first reply while the work thread works on the post, and take it off with `set_emoji(message_id, \"eyes\", false)` when the work ends: in the turn that posts the result, makes the last edit or marks the thread done. " +
-      "An answer you post in full in one turn takes 👀 off in that same turn. " +
+      "A post you answer in full in this turn, such as a quick question, gets the answer and no 👀, the way a person in Slack just replies. " +
       "Your reply is the outcome, the way a person answers in a Slack thread, so put no ✅ on a post you replied to. " +
       "Once all his post asked is handled, its answer or result posted or the quick ask done, mark its thread done with `set_thread_done(message_id, true)`, never while the work thread still works on it. " +
       "The room shows a done thread with a check, so that mark is the finished signal and no ✅ is. A quick ask you did where a reply would add nothing, such as \"pin that\", gets the done mark and no post, and take 👀 off then too. " +
@@ -96,9 +96,10 @@ function workSteps(work: string, room: string): string[] {
     `Hand any task that takes more than a minute to the work thread with \`await agent_message.send(task, receiver_role="sibling", receiver_name=${work})\`. Steer it the same way with \`mode="steer"\`, and stop its turn with stop_work.`,
     "When you hand a task over, name his post's [message id] in the task, and post nothing that only reports the hand-over: your 👀 already shows it. " +
       "Within about a minute (c224), reply with what you already know or one plain line on what he will get, with tell_owner's `reply_to` set to his post, never an ack such as \"on it\". " +
-      "Post the result once, when the work thread's report or the work-done notice brings it, with `reply_to` set to his post, then take 👀 off and mark the thread done. " +
+      "That first reply is the one post for his ask: a question the work needs goes at its end, after your pick, never as a post of its own. " +
+      "The work thread edits that post into the answer when its work ends. When its report or the work-done notice comes, read the post, edit it yourself only if the answer is missing, and post again only for a new question to him; then take 👀 off and mark the thread done. " +
       "If you can answer in full yourself, answer and hand nothing over. This replaces the base prompt's progress updates. " +
-      `Tell the work thread that an edit of your post, \`edit_message("reply:${room}/<his post's [message id]>", <the whole post>)\`, only fills in results and the answer, never a status of its jobs or plans, ` +
+      `Tell the work thread that its last edit of your post, \`edit_message("reply:${room}/<his post's [message id]>", <the whole post>)\`, carries the answer, that an edit only fills in results and the answer, never a status of its jobs or plans, and that it posts nothing new, ` +
       "and that a job that writes a page or report from other jobs' findings starts only after those jobs report, never beside them.",
     "A follow-up in a thread you already worked on gets its answer within a minute from what you already hold: the thread so far, the earlier report and its page. " +
       "Open with the answer, draw the flow as a ```mermaid block when it reads shorter as one (c52), and show one real example, such as a saved row, when you hold one (c132). " +
@@ -236,7 +237,7 @@ function slackPostStep(): string {
     "Put the answer on its own line and each further point on its own line or `- ` bullet, never in one paragraph. " +
     "Keep your working plan and process to yourself (c234). A first reply gives the answer or one plain line on what he will get, never \"I'll do X first, then Y\" and never a checklist of your own steps. " +
     "A checklist lists only results he cares about, each with its result, and you fill them in by editing that post with `edit_message`. " +
-    "A question to him leads with your own pick. No labels, bold, headings or tables unless he asks. Detail goes on a wiki page linked in the post. End on the words, with no sign-off emoji. " +
+    "A question to him leads with your own pick. No labels, such as an opener like \"Early read from the spec:\" or \"short version:\", and no bold, headings or tables unless he asks. Detail goes on a wiki page linked in the post. End on the words, with no sign-off emoji. " +
     "When you list options, explain the most interesting one, with how it works, a concrete example and how it would fit, and name the others in a few words. " +
     "When you answer an older post of his while a newer one sits below it, set `reply_to` to that older post and quote nothing from it. " +
     "This replaces rule 5's table for a comparison. Real posts from our rooms, bad and then good:\n\n" + roomExamples();

@@ -18,6 +18,8 @@ The owner said so on 11-20: "no this is not Chat. this is Slack."
 1. The answer comes first, in a plain sentence, as a Prime chat reply opens, or the cause when there is no short answer.
 2. One answer is one post, and each waiting post of his that asks its own thing gets its own answer, a tell_owner call with `reply_to` set to that post, so in a channel it lands in that post's thread.
    Two posts merge into one answer only when the second adds to or corrects the first, since on 11-21 a blind-reactions run's DM agent merged two posts into one that answered only the first.
+   One ask also gets one post: the first reply holds any question at its end after the pick, and the work thread's last edit of that post carries the answer, with no new post for the result.
+   On 11-21 a blind natural run's DM agent sent its question as its own post, then a first read, then the result as a third post, while the work thread also edited the question post into the answer.
 3. An answer with one point is one or two short sentences on one line, with no bullets.
 4. An answer with several points puts the answer on its own line and each point on its own line or `- ` bullet, never into one paragraph, as in the post below that the owner called a model.
    Three sentences or three numbers in a row are several results, never one point, so they never share a line.
@@ -32,7 +34,7 @@ The owner said so on 11-20: "no this is not Chat. this is Slack."
    comm-guard no longer asks a post after a hand-over for a question or an open `- [ ]` item, so the plain line goes out, and a post with relay words is still refused.
 6. A post stays within 120 words, counted without list markers, which tell_owner and `edit_message` hold once in a room and let through when the same text is sent again (`ROOM_LONG` in `packages/pi-host/src/durable/room-post.ts`, c98).
    A Prime chat's 80-word cap held the owner's model post below, at 92 words, and 14 of 1,315 agent room posts ran over 120 on 11-21.
-7. Lowercase and a fitting emoji are fine, and labels, bold and headings are out.
+7. Lowercase and a fitting emoji are fine, and labels, bold and headings are out, including an opener such as "Early read from the spec:" or "short version:", which a blind run on 11-21 opened with.
 8. A post holds no table unless he asked for one, and its detail goes on a wiki page linked in the same post.
 9. When a reaction says it all, the agent reacts and posts nothing.
 10. A post ends on its words with no sign-off emoji such as 👍 or 🎉, and it says what a JSON or log line shows instead of pasting it, as the last pair below shows.
@@ -163,7 +165,7 @@ He drew the line in p110: a request about one product or scope goes to that agen
 The owner wrote on 11-20 in #sw-factory-build: "시작하면서 눈까리 붙였으면 끝났을 떄 떼야지 / 체크도 남발하지 마 제발 the final outcome should ALWAYS act like a Slack thread".
 
 1. An agent puts 👀 on a post when it starts on it and keeps it on while that post's work runs, through a first reply, and takes it off in the turn that posts the result, makes the last edit or marks the thread done.
-   An answer posted in full in one turn takes 👀 off in that same turn.
+   A post answered in full in one turn, such as a quick question, gets the answer and no 👀, the way a person in Slack just replies, so 👀 always means work still runs.
    Until 11-21, 👀 came off with the first reply, and in the owner's p128 trace his #dev-app-search-prospect p14 then showed no mark for 27 min while the work ran ([message flow example](wiki:domains/devops/sw-factory-threads/message-flow-example.html)).
    His p75 words, "끝났을 떄 떼야지", ask for 👀 to come off when the work ends, so it now stays until then.
 2. The reply is the outcome, so once its work ends a post the agent replied to keeps no emoji of the agent's, and no ✅ marks a post finished.

@@ -165,10 +165,11 @@ async function runRoom(kind) {
   const calls = await emojiCalls(room);
   const byId = id => posts.find(p => p.id === id);
   const eyesSeen = post => seen.has(post.id) || calls.some(c => c.on && emojiName(c.emoji) === "eyes" && names(c, room, post, posts));
-  const replyChecks = (post, label) => {
+  // A quick question answered in one turn gets no 👀 (pi-host workSteps), so only the task's 👀 is checked.
+  const replyChecks = (post, label, eyes) => {
     const replies = answersOf(posts, post.id);
     return [
-      [`${label} got 👀 while the agent worked on it`, eyesSeen(post)],
+      ...(eyes ? [[`${label} got 👀 while the agent worked on it`, eyesSeen(post)]] : []),
       [`${label} got a reply that answers it`, replies.length > 0],
       ...(kind === "channel" ? [[`${label}'s reply is in its thread`, replies.length > 0 && replies.every(r => r.threadRoot === post.id)]] : []),
       [`${label} keeps no 👀 at the end`, !mine(byId(post.id), EYES)],
@@ -177,8 +178,8 @@ async function runRoom(kind) {
   };
   const afterThanks = posts.filter(p => p.author?.id === agent.id && p.seq > thanks.seq);
   const checks = [
-    ...replyChecks(question, "the question"),
-    ...replyChecks(task, "the task"),
+    ...replyChecks(question, "the question", false),
+    ...replyChecks(task, "the task", true),
     ["ok thanks got one reaction", agentReactions(byId(thanks.id)).length === 1],
     ["ok thanks got no post", afterThanks.length === 0],
     ...(kind === "channel" ? [["no agent post is a root post", posts.every(p => p.author?.id !== agent.id || p.threadRoot)]] : []),

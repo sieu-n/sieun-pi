@@ -174,7 +174,9 @@ test("a room post answers first, breaks into lines and keeps the agent's process
     assert.match(text, /A checklist lists only results he cares about, each with its result, and you fill them in by editing that post with `edit_message`\./);
     assert.match(text, /A question to him leads with your own pick\./);
     assert.match(text, /Within about a minute \(c224\), reply with what you already know or one plain line on what he will get/);
-    assert.match(text, /an edit of your post[\s\S]*only fills in results and the answer, never a status of its jobs or plans/);
+    assert.match(text, /last edit of your post[\s\S]*carries the answer, that an edit only fills in results and the answer, never a status of its jobs or plans, and that it posts nothing new/);
+    assert.match(text, /a question the work needs goes at its end, after your pick, never as a post of its own/);
+    assert.match(text, /No labels, such as an opener like "Early read from the spec:"/);
     assert.match(text, /Keep ✅ and 👀 out of your post text too\./);
     assert.doesNotMatch(text, /your first post is the plan|tick each item|item per step|list what still needs proof|in the first few words|topic bullets|\b80 words|\b120 words/);
   }
