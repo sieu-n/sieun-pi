@@ -95,8 +95,7 @@ def plan(groups: dict[str, Procs], mains: dict[str, int | None], public_dir: str
 
     The supervisor goes to CORE once it is the daemon's MainPID and back to the unit while it is not; its workers, its catalogs and pi-pool token
     helpers go to CORE, and every other process of the daemon's side to TOOLS. prime-agent-daemon-ctl and what it starts stay in the unit. A
-    service's MainPID goes to its core scope and every other process there back to its unit, except that sieun-pi-apps-chat's server processes
-    (`is_apps_chat_server`) go to its core scope too."""
+    service's MainPID goes to its core scope and every other process there back to its unit."""
     side = {**groups.get(TOOLS, {}), **groups.get(CORE, {}), **groups.get(DAEMON, {})}
     main = mains.get(DAEMON)
 
@@ -116,25 +115,10 @@ def plan(groups: dict[str, Procs], mains: dict[str, int | None], public_dir: str
         if mains.get(unit) is None:
             continue
         for here, to, wanted in ((unit, core(unit), True), (core(unit), unit, False)):
-            for pid, (_, argv) in groups.get(here, {}).items():
-                if (pid == mains[unit] or (unit == APPS_CHAT and is_apps_chat_server(argv))) == wanted:
+            for pid in groups.get(here, {}):
+                if (pid == mains[unit]) == wanted:
                     moves.setdefault(to, []).append(pid)
     return {to: sorted(pids) for to, pids in moves.items()}
-
-
-APPS_CHAT = "sieun-pi-apps-chat.service"
-
-
-def is_apps_chat_server(argv: list[str]) -> bool:
-    """An apps/chat server process of sieun-pi-apps-chat.service other than its MainPID: a hand-over's successor before systemd takes it as main
-    (server/main.ts --port 5184), and the old server while it passes calls on its kept connections, which names itself by its process title
-    (apps/chat server/handoff.ts). At load 133 to 139 on 11-22 at 10:43Z, a successor back in the unit took 6.45 s to load and 2.45 s to read its
-    state after the old server stopped, against 0.5 to 2 s and 0.5 to 0.9 s at normal load, and the old server's forwarded calls waited 5 to 12 s,
-    so /api/ready went unanswered 22.7 s (~/work/apps-chat-restart/after9/). The watchdog pinger and every other helper stay in the unit."""
-    if argv[:1] and argv[0].startswith("apps-chat old server"):
-        return True
-    return any(os.path.basename(arg) == "main.ts" and arg.endswith("server/main.ts") for arg in argv) and \
-        any(arg == "--port" and argv[i + 1:i + 2] == ["5184"] for i, arg in enumerate(argv))
 
 
 def candidates(groups: dict[str, Procs], manager: int, public_dir: str) -> frozenset[tuple[str, int]]:
