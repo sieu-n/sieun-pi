@@ -7,6 +7,7 @@ import type {
   AgentId, AgentSummary, ConversationId, ConversationSummary, Item, JobNode, LivePartial, ModelRef, Principal, RunStatus, ThinkingLevel, TimelinePage,
 } from "../web/src/lib/api/types.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { join } from "node:path";
 import type { AgentEvent, CreateOptions, DurableEvent, DurableThread, EntriesQuery, EntryRecord, Host, TreeNode } from "./host/types.ts";
 import type { Store } from "./store.ts";
 import type { AgentRecord } from "./agent-store.ts";
@@ -161,7 +162,7 @@ export class Threads {
     this.list = new Map(cache.threads.map(t => [t.id, t]));
     this.trees = new Map(cache.trees);
     this.cached = JSON.stringify(cache);
-    this.tails = new TailCache({ entries: (thread, query) => this.entries(thread, query) }, 64, TURN_READ_CAP + 200 + WIDEN);
+    this.tails = new TailCache({ entries: (thread, query) => this.entries(thread, query) }, 64, TURN_READ_CAP + 200 + WIDEN, join(store.dir, "cache", "tails"));
     this.scans = new Map(firstSendScans(store.cache<FirstSendsCache | Record<string, FirstSendScan>>(FIRST_SENDS_CACHE, {})));
     for (const [id, scan] of this.scans) if (scan.first !== undefined) this.firstSends.set(id, scan.first);
   }
@@ -188,6 +189,7 @@ export class Threads {
     clearInterval(this.timer);
     for (const live of this.live.values()) await live.stop?.().catch(() => undefined);
     this.saveListCache();
+    await this.tails.save().catch(error => this.log(`saving the read tails failed: ${String(error)}`));
   }
 
   /**
