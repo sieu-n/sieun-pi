@@ -119,8 +119,8 @@ test("a due check-in files one job under the agent, sends nothing into the work 
 test("the check-in skips while its last check-in job still works, and the ended job is archived", async () => {
   const job = dutyFile(busy).checkIn!.job!;
   const thread = host.threadsById.get(job.id)!;
-  thread.nodes[0]!.status = "running";
-  thread.row.status = "running";
+  // pi-pool holds the job for an account slot: pi-host reads it as sleeping, not running.
+  thread.row.status = "sleeping";
   thread.row.updatedAt = Date.now() + 1;
   await s.app.threads.refresh();
   const at = await nextAt(busy);

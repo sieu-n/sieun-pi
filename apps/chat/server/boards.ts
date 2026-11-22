@@ -742,7 +742,9 @@ export class Boards {
   private async runCheckIn(chat: string, at: number): Promise<void> {
     const last = this.file(chat).checkIn?.job;
     const working = workingJobs(this.threads.allSummaries(), new Set(this.pendingWakes().map(wake => wake.session)));
-    if (last && (working.has(last.name) || this.waiting.has(last.id))) {
+    // A job pi-pool holds for an account slot sleeps on pi-host and reads as not working, and after a restart `waiting` no longer holds it.
+    const lastStatus = last ? this.threads.thread(last.id)?.status : undefined;
+    if (last && (working.has(last.name) || this.waiting.has(last.id) || lastStatus === "running" || lastStatus === "sleeping")) {
       this.log(`check-in ${chat.slice(0, 8)}: skipped, the last check-in job ${last.name} still works`);
       return;
     }
