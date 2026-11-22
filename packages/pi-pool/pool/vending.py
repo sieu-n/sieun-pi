@@ -816,14 +816,18 @@ def book_line(state, provider, account_ids, accounts, cfg, now):
             continue
         HookWriter(state).set_wait(key, provider, account_id, slot_at, now)
         booked.append(k)
-        by_account.setdefault(account_id, []).append(k)
+        by_account.setdefault(account_id, {})[k] = slot_at
         if tree.wait[0] != account_id:
             left.add(tree.wait[0])
     if booked:
         _wakes.append(["--each", *booked])
     labels = {a.id: a.label for a in accounts}
-    for account_id, line in by_account.items():
-        base.log("cell_opened", provider=provider, account=labels.get(account_id, account_id), line=line, booked=True)
+    # `cells` names each booked tree's new cell, which no parked line shows until the tree asks again, so d7 can read a tree that
+    # asks after it as asleep past its own cell. On 11-22 claude3's 04:43:47Z reset booked 01a0cc38, a Mac tree no wake reaches,
+    # into claude3 at once; it asked next at 05:00:02Z, and d7 read it as passed for 16.5 min by the tree booked after it.
+    for account_id, cells in by_account.items():
+        base.log("cell_opened", provider=provider, account=labels.get(account_id, account_id), line=list(cells), booked=True,
+                 cells={k: round(at, 1) for k, at in cells.items()})
     for held in sorted(left - read):
         refill(state, provider, held, accounts, cfg, now)
     return booked

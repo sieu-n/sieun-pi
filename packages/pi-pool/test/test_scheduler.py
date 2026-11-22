@@ -1514,6 +1514,22 @@ class BookOnRead(unittest.TestCase):
         self.assertEqual((type(d), d.slot_account.id), (sched.Wait, "x"))
         self.assertLess(d.slot_at, NOW + FIVE, "the second tree waits for the next cell on x, not for y's reset")
 
+    def test_the_booked_line_names_each_trees_new_cell(self):
+        fresh, full = self.seat(NOW), acct("y", five=100, five_reset_in=FIVE)
+        sp = sched.slot_spacing(fresh, CFG)
+        state = empty_state()
+        for name, since, n in (("first", NOW - 900, 0), ("second", NOW - 800, 1)):
+            put(state, tree_key(name), on="y")
+            state["sessions"][name]["wait"] = {P: {"account": "y", "slot_at": NOW + FIVE + n * sp, "since": since}}
+        with unittest.mock.patch.object(base, "log") as log:
+            self.assertEqual(vending.book_line(state, P, ["x"], [fresh, full], CFG, NOW), ["first", "second"])
+        opened = [c.kwargs for c in log.call_args_list if c.args == ("cell_opened",)]
+        self.assertEqual(len(opened), 1)
+        cells = {k: state["sessions"][k]["wait"][P]["slot_at"] for k in ("first", "second")}
+        self.assertEqual(opened[0]["cells"], {k: round(at, 1) for k, at in cells.items()},
+                         "d7 reads a booked tree's cell from this line, since no parked line shows it until the tree asks")
+        self.assertLess(cells["first"], cells["second"])
+
     def test_a_tree_woken_with_each_does_not_stop_the_wake_of_the_trees_after_it(self):
         turns = {"working": {}, "queued": {}, "owner": {}, "lead": [], "kept": {}}
         asked = []

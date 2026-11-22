@@ -846,9 +846,10 @@ export function readSmoothness(lines: readonly string[], heads: ReadonlySet<stri
   for (const line of lines) {
     if (!line.includes('"turn_admitted"') && !line.includes('"turn_queued"') && !line.includes('"turn_dropped"') && !line.includes('"parked"') &&
       !line.includes('"unparked"') && !line.includes('"vend"') && !line.includes('"wait"') && !line.includes('"limited"') && !line.includes('"priority"') &&
-      !line.includes('"turn_lead_set"')) continue;
+      !line.includes('"turn_lead_set"') && !line.includes('"cell_opened"')) continue;
     let entry: { ts?: unknown; event?: unknown; session?: unknown; at?: unknown; waited_s?: unknown; priority?: unknown; provider?: unknown; reason?: unknown; manual?: unknown;
-      vend?: unknown; budget?: unknown; slot_at?: unknown; since?: unknown; lead?: unknown; lead_s?: unknown; led?: unknown; unled?: unknown };
+      vend?: unknown; budget?: unknown; slot_at?: unknown; since?: unknown; lead?: unknown; lead_s?: unknown; led?: unknown; unled?: unknown;
+      booked?: unknown; cells?: unknown };
     try { entry = JSON.parse(line) as typeof entry; } catch { continue; }
     // A run leads from the moment pi-pool marks it (`mark_led` in packages/pi-pool/pool/turns.py): its turn_queued line says `lead` when its
     // session was on the lead list as it queued, and a turn_lead_set line names the queued runs it put on the list (`led`) or took off
@@ -859,6 +860,17 @@ export function readSmoothness(lines: readonly string[], heads: ReadonlySet<stri
       const ids = (value: unknown): string[] => Array.isArray(value) ? value.filter((id): id is string => typeof id === "string") : [];
       for (const session of ids(entry.led)) if (!inLine.has(session)) inLine.set(session, false);
       for (const session of ids(entry.unled)) if (!heads.has(session)) inLine.delete(session);
+      continue;
+    }
+    // A booked line (vending.book_line) gives each tree in it a new cell, named in `cells` from 11-22, which no parked line shows until
+    // the tree asks again. Claude3's 04:43:47Z reset on 11-22 booked 01a0cc38, a Mac tree, into claude3 at once; no wake reaches a Mac
+    // session, it asked next at 05:00:02Z, and d7 read it as passed for 16.5 min by 01a10810, which took the 04:44:00Z cell booked after it.
+    if (entry.event === "cell_opened") {
+      if (entry.booked !== true || entry.provider !== "anthropic" || typeof entry.cells !== "object" || entry.cells === null) continue;
+      for (const [session, at] of Object.entries(entry.cells)) {
+        const park = parks.get(session);
+        if (park && typeof at === "number") park.slot = at * 1000;
+      }
       continue;
     }
     if (typeof entry.session !== "string") continue;
