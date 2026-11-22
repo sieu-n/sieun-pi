@@ -1087,3 +1087,27 @@ test('a last_verified time to the minute covers that whole minute', (t) => {
 	rows = w.refsByPage();
 	assert.deepEqual(rows['apps/next-minute.html'], [{ ref: 'a.py', modified: '2026-10-20T01:01:00.000Z', since: '2026-10-20T01:01:00.000Z' }], 'the next minute counts');
 });
+
+// 2026-11-22: a writer swapped backups.html to compose.ops.yml::convex-backup, changed at 05:20Z, and the 12:32Z precheck counted it at once.
+test('a ref a page begins to cite after its check counts from the first report that reads it, not from its older change', (t) => {
+	const w = fixture(t);
+	w.write('a.py', 'x = 1\n');
+	w.write('b.py', 'x = 1\n');
+	w.page('swap.html', ['a.py']);
+	w.init();
+	w.commit('2026-10-20T01:00:00Z', 'pages');
+	w.write('b.py', 'x = 2\n');
+	w.commit('2026-10-20T05:00:00Z', 'b.py');
+	assert.equal(w.refsByPage()['apps/swap.html'], undefined, 'the page cites only a.py, which no commit changed');
+
+	w.page('swap.html', ['b.py']);
+	const before = Date.now();
+	const [row] = w.refsByPage()['apps/swap.html'];
+	assert.equal(row.ref, 'b.py');
+	assert.equal(row.modified, '2026-10-20T05:00:00.000Z');
+	assert.ok(Date.parse(row.since) >= before, `since ${row.since} is the report that first read b.py, not its 05:00 change`);
+	assert.deepEqual(w.refsByPage()['apps/swap.html'], [row], 'a later report keeps the first time');
+
+	w.page('swap.html', ['b.py'], { verified: '2026-10-20T04:00Z' });
+	assert.deepEqual(w.refsByPage()['apps/swap.html'], [{ ref: 'b.py', ...at('05') }], 'a new check dates the ref from its change again');
+});

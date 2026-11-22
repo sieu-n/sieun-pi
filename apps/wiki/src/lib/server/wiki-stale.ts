@@ -80,8 +80,11 @@ export type Change = { at: number; sha: string; parent: string; files: string[];
 
 type StaleRef = { ref: string; modified: string; since?: string };
 
-/** One page's result at the state's pin: its check time and, per `source_refs` entry in order, the stale row or null. */
-type PageEntry = { key: string; verifiedAt: number; refs: Array<StaleRef | null> };
+/**
+ * One page's result at the state's pin: its check time, per `source_refs` entry in order the stale row or null, and `cited`, the
+ * time a report first read each ref the page began to cite after its check (citedSince).
+ */
+type PageEntry = { key: string; verifiedAt: number; refs: Array<StaleRef | null>; cited?: Record<string, number> };
 
 /**
  * What one report leaves for the next, in the code repo's git dir (`wiki-stale/report-state.json`) and in memory: the pinned
@@ -276,6 +279,35 @@ async function definitionChange(
 	return definitionDates(after, head, at, pin);
 }
 
+/**
+ * The `cited` times of a page re-read at `now` while its check stays that of `held`: the stamps of `held`, and `now` for each ref the
+ * page cites that `held` did not. A new check covers every ref, so it drops them. A report dates a ref's change from the page's
+ * check, so with no stamp a ref swapped in later counts at once: at 12:25:35Z on 2026-11-22 a writer swapped
+ * domains/devops/production-infrastructure/backups.html from `convex-backup.timer::OnCalendar` to
+ * `compose.ops.yml::convex-backup`, which auto-sns-agent c8e3e5589e had added at 05:20Z, and the 12:32Z dream precheck counted
+ * the page with no follow window.
+ */
+export function citedSince(
+	refs: readonly string[],
+	held: { refs: readonly string[]; verifiedAt: number; cited?: Record<string, number> } | null,
+	verifiedAt: number,
+	now: number,
+): Record<string, number> {
+	const cited: Record<string, number> = {};
+	if (!held || held.verifiedAt !== verifiedAt) return cited;
+	for (const ref of refs) {
+		const stamp = held.cited?.[ref] ?? (held.refs.includes(ref) ? undefined : now);
+		if (stamp !== undefined) cited[ref] = stamp;
+	}
+	return cited;
+}
+
+/** A stale row followed from `cited` when the page began to cite its ref after the ref changed; an undated row stays as it is. */
+function followCited(row: StaleRef, cited: number | undefined): StaleRef {
+	const since = Date.parse(row.since ?? row.modified);
+	return cited !== undefined && Number.isFinite(since) && cited > since ? { ...row, since: new Date(cited).toISOString() } : row;
+}
+
 export type FileCommit = { at: number; sha: string };
 
 /** The commits in ms and sha of each file that `keep` accepts, in the order of `changes`. */
@@ -348,6 +380,8 @@ async function siblingTouched(held: string | undefined, now: { root: string; pin
  * 66 page flags. d0799f3f changed only a comment and flagged 2 pages, and 6 more flags touched nothing their page states. Of these 8,
  * 5 ended in a `last_verified`-only recheck, 1 page fix had a `path::name` flag from the same commit, and 2 page fixes of
  * apps/llm-wiki/index.html added a fact the page had not named (after 0f695503 and d0799f3f).
+ * A ref that a page began to cite after its check, with its check unchanged, gets `since` no earlier than the first report that
+ * read it (citedSince), so the dream precheck follows the page for its window from then.
  * A page's result is kept in the StaleState and reused while its meta, its text and every file it cites stay unchanged, so a
  * report reads git per page only for the pages a commit since the last report touched.
  * GET /api/agent/stale and wiki-health.mjs use it.
@@ -430,8 +464,15 @@ export async function getStaleReport(
 	const todo = checkable.filter((p) => !pages[p.path]);
 	if (todo.length) {
 		const { evaluate, close } = await pageEvaluator(repoRoot, pin, changes, todo, siblingPins, sources, { fileOf, local, onDisk });
+		const now = Date.now();
 		try {
-			for (const p of todo) pages[p.path] = { key: keyOf(p), ...(await evaluate(p)) };
+			for (const p of todo) {
+				const result = await evaluate(p);
+				const entry = held?.pages[p.path];
+				const before = entry ? { ...entry, refs: (JSON.parse(entry.key) as [unknown, unknown, string[] | undefined])[2] ?? [] } : null;
+				const cited = citedSince(p.meta.source_refs ?? [], before, result.verifiedAt, now);
+				pages[p.path] = { key: keyOf(p), ...result, ...(Object.keys(cited).length ? { cited } : {}) };
+			}
 		} finally {
 			close();
 		}
@@ -464,7 +505,7 @@ export async function getStaleReport(
 		const staleRefs = (p.meta.source_refs ?? []).flatMap((ref, i): StaleRef[] => {
 			if (onDisk(ref) && !siblingRef(ref))
 				return existsSync(diskPath(fileOf(ref).slice(PAGES.length))) ? [] : [{ ref, modified: MISSING }];
-			return entry.refs[i] ? [entry.refs[i]!] : [];
+			return entry.refs[i] ? [followCited(entry.refs[i]!, entry.cited?.[ref])] : [];
 		});
 		if (staleRefs.length > 0)
 			stale.push({
