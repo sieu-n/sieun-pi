@@ -149,10 +149,16 @@ const pasteShot = (input: import("@playwright/test").Locator) => input.evaluate(
 });
 
 type Sample = { m: string; p: string; ms: number; enc?: number; bg?: string };
+/**
+ * The page's timing lines, read from each POST /api/timings body in a route: the request event's postData of the beacon's Blob body was null
+ * in two runs of the Stop job on a busy box on 11-22, and a route sees the body the page sent.
+ */
 const timingSamples = (page: import("@playwright/test").Page): Sample[] => {
   const samples: Sample[] = [];
-  page.on("request", (r) => {
-    if (r.method() === "POST" && r.url().endsWith("/api/timings")) samples.push(...((r.postDataJSON() as { samples: Sample[] }).samples ?? []));
+  void page.route(/\/api\/timings$/, async (route) => {
+    const body = route.request().postDataBuffer();
+    if (route.request().method() === "POST" && body) samples.push(...((JSON.parse(body.toString()) as { samples?: Sample[] }).samples ?? []));
+    await route.continue().catch(() => undefined);
   });
   return samples;
 };
