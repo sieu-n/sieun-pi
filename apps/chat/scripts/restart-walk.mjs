@@ -22,7 +22,7 @@
 //   --home <agent id>   the agent whose board pane the first test channel shows, skipped when the server has no such agent [ag_agent-factory]
 //   --label <name>, --out <dir>, --scratch <dir>  [walk-<time>, ~/work/apps-chat-restart/<label>, ~/scratch/restart-walk-<label>]
 //   --release-home <dir>  where {live} is read and whose release.lock a run waits out [~/.local/share/sieun-pi-apps-chat]
-//   --data-dir <dir>    the server's data dir, whose post log of the first room shows a seq written twice [~/.pi/agent/chat]
+//   --data-dir <dir>    the server's data dir, whose test room post logs show a seq written twice [~/.pi/agent/chat]
 //   --report <out dir>  only rebuild the report of a finished walk from its raw files
 import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
@@ -202,13 +202,20 @@ async function walk(o) {
     front.kill();
 
     // Which sends the server stored.
-    const items = await call(o.base, "GET", `/api/c/${meta.rooms[0]}/items?limit=500`).catch(() => ({ items: [] }));
-    meta.stored = (items.items ?? []).filter(item => item.kind === "message").map(item => item.text ?? item.body ?? "");
+    // Both rooms: a send typed while WebKit still showed room B lands there (two in the 11-22 after2 walk).
+    meta.stored = [];
+    for (const room of meta.rooms) {
+      const items = await call(o.base, "GET", `/api/c/${room}/items?limit=500`).catch(() => ({ items: [] }));
+      meta.stored.push(...(items.items ?? []).filter(item => item.kind === "message").map(item => item.text ?? item.body ?? ""));
+    }
     // The room's post log, when the server's data dir is on this box: a seq written twice means two servers took posts.
-    const logFile = join(o.dataDir, "rooms", `${meta.rooms[0]}.jsonl`);
-    if (existsSync(logFile)) {
+    for (const room of meta.rooms) {
+      const logFile = join(o.dataDir, "rooms", `${room}.jsonl`);
+      if (!existsSync(logFile)) continue;
       const seqs = readFileSync(logFile, "utf8").split("\n").filter(Boolean).flatMap(line => { try { return [JSON.parse(line).post?.seq]; } catch { return []; } }).filter(seq => seq !== undefined);
-      meta.postLog = { lines: seqs.length, repeatedSeqs: seqs.length - new Set(seqs).size };
+      meta.postLog ??= { lines: 0, repeatedSeqs: 0 };
+      meta.postLog.lines += seqs.length;
+      meta.postLog.repeatedSeqs += seqs.length - new Set(seqs).size;
     }
   } finally {
     for (const cleanup of cleanups.reverse()) await cleanup().catch(error => log(`cleanup failed: ${error.message}`));
@@ -312,7 +319,7 @@ export function report(out) {
   const md = [
     `# Restart walk ${meta.label}`, "",
     `${meta.releases.length} releases of \`${meta.release}\` against ${meta.base}; exits ${meta.releases.map(r => r.exit).join(", ")}.`,
-    `Servers after each release: ${meta.releases.map(r => r.servers ?? "?").join(", ")}; the first room's post log ${meta.postLog ? `has ${meta.postLog.lines} posts and ${meta.postLog.repeatedSeqs} repeated seqs` : "was not read"}.`,
+    `Servers after each release: ${meta.releases.map(r => r.servers ?? "?").join(", ")}; the test rooms' post logs ${meta.postLog ? `has ${meta.postLog.lines} posts and ${meta.postLog.repeatedSeqs} repeated seqs` : "was not read"}.`,
     `The server missed /api/ready for ${outages.map(x => (x.ms === null ? "never back" : `${x.ms} ms`)).join(", ") || "no span"}.`, "",
     "| Browser | Calls | In release windows | Failed calls | Page lines failed | Calls 2 s over normal | Page lines 2 s over normal | Socket back after each close (ms) | Sends stored |",
     "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",

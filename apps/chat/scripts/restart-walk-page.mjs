@@ -104,7 +104,9 @@ async function walk(name) {
         await page.keyboard.press("Escape");
       }
       if (action === "roomA" && step % 6 === 0) {
-        await page.waitForTimeout(400);
+        // WebKit can still show room B for a moment after the hash change, and a send typed then lands in room B.
+        await page.waitForURL(`**/#/c/${roomA}`, { timeout: 3000 });
+        await page.waitForTimeout(800);
         const text = `restart walk ${name} send ${sends.length + 1} ${Date.now()}`;
         // fill, not type: WebKit dropped typed letters while the room re-rendered (a baseline post stored as "9222").
         await composer().fill(text, { timeout: 3000 });
