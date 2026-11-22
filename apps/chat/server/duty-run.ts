@@ -4,9 +4,12 @@
  * due (a miss, a precheck error, an overrun, flagged items or a hand-off) start one duty job with the findings as its brief. On pi-host the
  * duty job is a durable thread filed under the chat, and what it sends with send_message comes back to the chat as an input from the job.
  */
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
+import { promisify } from "node:util";
 import type { ChatBoard, PlanItem } from "../web/src/lib/api/types.ts";
 import {
   errorStreak, headlineMetric, hostAwayOf, judge, outputReadings, overrunWords, verdictMetrics, ERROR_RUNS_TARGET,
@@ -28,69 +31,177 @@ export const runStamp = (at: number): string => {
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
 /**
- * Runs the precheck in its cwd and returns its parsed OUTPUT_FILE; the state file moves forward only on a good run. An after-job measure
- * (`after`) reads the state but keeps none, so the next run counts from the same point, and it has its own files, so it can run beside a run
- * of the same duty. PRECHECK_MODE tells the precheck which one it is, as Prime's `Duties.precheck` does.
+ * A precheck started outside this server's control group: a transient systemd unit when the server runs under systemd (INVOCATION_ID),
+ * else a detached process group. A restart of the server, every 2 to 12 min on 11-22 while d3's precheck takes 8 to 15 min, kills every
+ * child in the server's group, so the next server process waits for this one and records it (`waitPrecheck`).
  */
-export async function precheck(duty: Duty, dir: string, outputFile: string, lastRuns: readonly DutyRunRecord[], log: (line: string) => void = () => {},
-  mode: "run" | "after" = "run"): Promise<PrecheckOutput> {
+export interface PrecheckLaunch {
+  mode: "run" | "after";
+  /** The OUTPUT_FILE, the file the wrapper writes the exit code into, stderr, the state copy, and the wrapper script and its env file. */
+  output: string; exit: string; stderr: string; nextState: string; script: string; env: string;
+  startedAt: number;
+  hardStopMs: number;
+  runner: { kind: "unit"; unit: string } | { kind: "pid"; pid: number };
+}
+
+/** How often a wait reads the exit file and whether the precheck still runs. */
+const POLL_MS = 2000;
+const run = promisify(execFile);
+const shellQuote = (text: string): string => `'${text.replace(/'/g, `'\\''`)}'`;
+/** A value of a systemd EnvironmentFile, double-quoted, which keeps newlines and needs these four escaped. */
+const envQuote = (text: string): string => '"' + text.replace(/[\\"$`]/g, char => "\\" + char) + '"';
+/** The server's own unit variables, which the precheck's unit sets for itself. */
+const UNIT_ENV = new Set(["INVOCATION_ID", "JOURNAL_STREAM", "SYSTEMD_EXEC_PID", "MANAGERPID"]);
+
+/**
+ * Starts the precheck in its cwd with STATE_FILE, LAST_RUNS_FILE, OUTPUT_FILE and PRECHECK_MODE. An after-job measure (`after`) has its own
+ * files, so it can run beside a run of the same duty. `tag` names the transient unit, such as `ag_agent-d3-251122-153000-run`.
+ */
+export async function launchPrecheck(duty: Duty, dir: string, outputFile: string, lastRuns: readonly DutyRunRecord[], mode: "run" | "after", tag: string): Promise<PrecheckLaunch> {
   await mkdir(dir, { recursive: true, mode: 0o700 });
   const stateFile = join(dir, `${duty.id}.state.json`);
   const nextState = join(dir, `${duty.id}.state.${mode === "run" ? "next" : "after"}.json`);
   const lastRunsFile = join(dir, `${duty.id}.last-runs${mode === "run" ? "" : ".after"}.json`);
+  const base = outputFile.replace(/\.json$/, "");
+  const files = { output: outputFile, exit: `${base}.exit`, stderr: `${base}.stderr.log`, nextState, script: `${base}.sh`, env: `${base}.env` };
   await copyFile(stateFile, nextState).catch(async () => writeFile(nextState, "{}", { mode: 0o600 }));
   await writeFile(lastRunsFile, JSON.stringify(lastRuns), { mode: 0o600 });
-  await rm(outputFile, { force: true });
+  await Promise.all([rm(outputFile, { force: true }), rm(files.exit, { force: true })]);
   const [command, ...args] = duty.precheck.command;
   const file = command === "node" ? process.execPath : command!;
-  const stderrFile = `${outputFile.replace(/\.json$/, "")}.stderr.log`;
+  const env = { ...process.env, STATE_FILE: nextState, LAST_RUNS_FILE: lastRunsFile, OUTPUT_FILE: outputFile, PRECHECK_MODE: mode, PRECHECK_STDERR_FILE: files.stderr };
+  await writeFile(files.script, [
+    `${[file, ...args].map(shellQuote).join(" ")} </dev/null >/dev/null 2>${shellQuote(files.stderr)}`,
+    `printf '%s\\n' "$?" >${shellQuote(`${files.exit}.part`)}`,
+    `mv ${shellQuote(`${files.exit}.part`)} ${shellQuote(files.exit)}`,
+  ].join("\n") + "\n", { mode: 0o600 });
+  const cwd = duty.precheck.cwd || process.cwd();
   const hardStopMs = precheckHardStopMs(duty);
-  const pastTarget = setTimeout(() => log(`duty ${duty.id}: the precheck is past its ${Math.round(duty.precheck.timeoutMs / 1000)} s target and keeps running`), duty.precheck.timeoutMs);
+  const startedAt = Date.now();
+  if (process.env.INVOCATION_ID) {
+    const lines = Object.entries(env).filter(([key, value]) => value !== undefined && /^[A-Za-z_][A-Za-z0-9_]*$/.test(key) && !UNIT_ENV.has(key));
+    await writeFile(files.env, lines.map(([key, value]) => `${key}=${envQuote(value!)}\n`).join(""), { mode: 0o600 });
+    const unit = `duty-${tag.replace(/[^A-Za-z0-9_.-]/g, "-")}`;
+    await run("systemd-run", ["--user", `--unit=${unit}`, "--collect", "--quiet", `--working-directory=${cwd}`, "-p", `RuntimeMaxSec=${Math.ceil(hardStopMs / 1000)}`,
+      "-p", `EnvironmentFile=${files.env}`, "/bin/sh", files.script]);
+    return { mode, ...files, startedAt, hardStopMs, runner: { kind: "unit", unit } };
+  }
+  const child = spawn("/bin/sh", [files.script], { cwd, env, detached: true, stdio: "ignore" });
+  await new Promise<void>((resolve, reject) => child.once("spawn", resolve).once("error", reject));
+  child.unref();
+  return { mode, ...files, startedAt, hardStopMs, runner: { kind: "pid", pid: child.pid! } };
+}
+
+const readExit = async (file: string): Promise<number | null> => {
+  const text = await readFile(file, "utf8").catch(() => null);
+  return text === null ? null : Number(text.trim());
+};
+
+/** Whether the precheck still runs: its unit is active, or its pid runs its wrapper script (a reused pid runs something else). */
+async function running(launch: PrecheckLaunch): Promise<boolean> {
+  if (launch.runner.kind === "unit") {
+    try {
+      const { stdout } = await run("systemctl", ["--user", "show", "-p", "ActiveState", "--value", launch.runner.unit]);
+      return ["active", "activating", "deactivating", "reloading"].includes(stdout.trim());
+    } catch {
+      return true;
+    }
+  }
+  if (existsSync("/proc/self")) return (await readFile(`/proc/${launch.runner.pid}/cmdline`, "utf8").catch(() => "")).includes(launch.script);
   try {
-    await new Promise<void>((resolve, reject) => {
-      execFile("/bin/sh", ["-c", 'exec "$0" "$@" </dev/null >/dev/null 2>"$PRECHECK_STDERR_FILE"', file, ...args], {
-        cwd: duty.precheck.cwd, timeout: hardStopMs, killSignal: "SIGKILL",
-        env: { ...process.env, STATE_FILE: nextState, LAST_RUNS_FILE: lastRunsFile, OUTPUT_FILE: outputFile, PRECHECK_MODE: mode, PRECHECK_STDERR_FILE: stderrFile },
-      }, error => {
-        if (!error) return resolve();
-        reject(new Error(error.killed ? `stopped at its hard stop after ${Math.round(hardStopMs / 60_000)} min` : typeof error.code === "number" ? `exit ${error.code}` : error.message));
-      });
-    }).catch(async error => {
-      const tail = (await readFile(stderrFile, "utf8").catch(() => "")).trim().split("\n").slice(-3).join(" ").slice(0, 300);
-      throw new Error(`${message(error)}${tail ? `: ${tail}` : ""} (all of stderr: ${stderrFile})`);
-    });
-    await rm(stderrFile, { force: true });
+    process.kill(launch.runner.pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The precheck's exit code once it ended, or how it ended with none: at its hard stop, or before it. A stop of the server aborts the wait. */
+async function ended(launch: PrecheckLaunch, signal?: AbortSignal): Promise<number | "hard stop" | "no exit code"> {
+  for (;;) {
+    const code = await readExit(launch.exit);
+    if (code !== null) return code;
+    const past = Date.now() - launch.startedAt >= launch.hardStopMs;
+    if (!(await running(launch))) return (await readExit(launch.exit)) ?? (past ? "hard stop" : "no exit code");
+    if (past && launch.runner.kind === "pid") {
+      try { process.kill(-launch.runner.pid, "SIGKILL"); } catch { /* it ended meanwhile */ }
+      return "hard stop";
+    }
+    await sleep(POLL_MS, undefined, { signal });
+  }
+}
+
+/**
+ * Waits for a launched precheck, in this server process or the next one, and returns its parsed OUTPUT_FILE; the state file moves forward
+ * only on a good run, and an after-job measure keeps none, so the next run counts from the same point. A stop of the server rejects with
+ * the abort and leaves every file for the next server process.
+ */
+export async function waitPrecheck(duty: Duty, launch: PrecheckLaunch, log: (line: string) => void = () => {}, signal?: AbortSignal): Promise<PrecheckOutput> {
+  const targetIn = launch.startedAt + duty.precheck.timeoutMs - Date.now();
+  const pastTarget = targetIn > 0
+    ? setTimeout(() => log(`duty ${duty.id}: the precheck is past its ${Math.round(duty.precheck.timeoutMs / 1000)} s target and keeps running`), targetIn) : undefined;
+  let code: Awaited<ReturnType<typeof ended>>;
+  try {
+    code = await ended(launch, signal);
+  } finally {
+    clearTimeout(pastTarget);
+  }
+  try {
+    if (code !== 0) {
+      const words = code === "hard stop" ? `stopped at its hard stop after ${Math.round(launch.hardStopMs / 60_000)} min` : code === "no exit code" ? "it ended with no exit code" : `exit ${code}`;
+      const tail = (await readFile(launch.stderr, "utf8").catch(() => "")).trim().split("\n").slice(-3).join(" ").slice(0, 300);
+      throw new Error(`${words}${tail ? `: ${tail}` : ""} (all of stderr: ${launch.stderr})`);
+    }
+    await rm(launch.stderr, { force: true });
     let output: unknown;
     try {
-      output = JSON.parse(await readFile(outputFile, "utf8"));
+      output = JSON.parse(await readFile(launch.output, "utf8"));
     } catch {
       throw new Error("no valid JSON in OUTPUT_FILE");
     }
     if (typeof output !== "object" || output === null || typeof (output as { metrics?: unknown }).metrics !== "object" || (output as { metrics?: unknown }).metrics === null) {
       throw new Error("OUTPUT_FILE has no metrics object");
     }
-    if (mode === "run") await rename(nextState, stateFile);
+    if (launch.mode === "run") await rename(launch.nextState, join(dirname(launch.nextState), `${duty.id}.state.json`));
     return output as PrecheckOutput;
   } finally {
-    clearTimeout(pastTarget);
-    await rm(nextState, { force: true });
+    await Promise.all([launch.nextState, launch.script, launch.env, launch.exit].map(file => rm(file, { force: true })));
   }
+}
+
+/** Where a measure's precheck stands: `resume` is one a stopped server launched, and `launched` hears of a new one before the wait. */
+export interface PrecheckHooks {
+  resume?: PrecheckLaunch;
+  launched?: (launch: PrecheckLaunch) => void;
+  signal?: AbortSignal;
+  log?: (line: string) => void;
+}
+
+/** The precheck's output: of the launch a stopped server left (`resume`), else of a new launch, which `launched` hears of before the wait. */
+async function precheckOf(duty: Duty, dir: string, outputFile: string, lastRuns: readonly DutyRunRecord[], mode: "run" | "after", tag: string, hooks: PrecheckHooks): Promise<PrecheckOutput> {
+  let launch = hooks.resume;
+  if (!launch) {
+    launch = await launchPrecheck(duty, dir, outputFile, lastRuns, mode, tag);
+    hooks.launched?.(launch);
+  }
+  return waitPrecheck(duty, launch, hooks.log, hooks.signal);
 }
 
 /**
  * A run's re-measure after its own job ended (Prime's `Duties.afterMeasure`): the precheck once more in `after` mode, judged against the
  * targets and the duty's last 10 measured runs. A precheck that fails gives an error measure, so the run still records that it was looked at.
  */
-export async function measureAfter(input: { duty: Duty; dir: string; runs: readonly DutyRunRecord[]; now?: number; log?: (line: string) => void }): Promise<AfterMeasure> {
+export async function measureAfter(input: { duty: Duty; chat: string; dir: string; runs: readonly DutyRunRecord[]; now?: number } & PrecheckHooks): Promise<AfterMeasure> {
   const { duty, dir } = input;
   const at = input.now ?? Date.now();
   const lastRuns = input.runs.filter(run => run.verdict !== "skipped").slice(0, 10);
   try {
-    const output = await precheck(duty, dir, join(dir, `${duty.id}.after.json`), lastRuns, input.log, "after");
+    const output = await precheckOf(duty, dir, join(dir, `${duty.id}.after.json`), lastRuns, "after", `${input.chat.slice(0, 8)}-${duty.id}-${runStamp(at)}-after`, input);
     const readings = outputReadings(duty.readings, output);
     const hostAway = hostAwayOf(output);
     return { at, ...judge(duty.metrics, output, { now: at, runs: lastRuns }), ...(readings ? { readings } : {}), ...(hostAway ? { hostAway } : {}) };
   } catch (error) {
+    if (input.signal?.aborted) throw error;
     return { at, verdict: "error", metrics: {}, summary: `the after-job measure failed: ${message(error).slice(0, 300)}` };
   }
 }
@@ -134,14 +245,14 @@ export interface DutyRunResult {
 /** Measures one run and writes its detail and findings files into `dir`. */
 export async function measure(input: {
   duty: Duty; chat: { id: string; name: string }; dir: string; trigger: DutyTrigger; previous: readonly DutyRunRecord[]; board: ChatBoard | null;
-  liveJob: (job: string) => boolean; boardApi: string; now?: number; log?: (line: string) => void;
-}): Promise<DutyRunResult> {
+  liveJob: (job: string) => boolean; boardApi: string; now?: number;
+} & PrecheckHooks): Promise<DutyRunResult> {
   const { duty, dir, trigger } = input;
   // A skipped run measured nothing, so the precheck's LAST_RUNS_FILE and the streaks read the measured runs only, as Prime's `Duties.run` does.
   const previous = input.previous.filter(run => run.verdict !== "skipped");
   const started = input.now ?? Date.now();
   const detail = join(dir, `${duty.id}-${runStamp(started)}.json`);
-  const wall = Date.now();
+  const wall = input.resume?.startedAt ?? Date.now();
   const overrunOf = () => {
     const ms = Date.now() - wall;
     return ms > duty.precheck.timeoutMs ? { overrun: { ms, targetMs: duty.precheck.timeoutMs } } : {};
@@ -149,7 +260,7 @@ export async function measure(input: {
   let record: DutyRunRecord;
   let flagged: FlaggedSlice[] = [];
   try {
-    const output = await precheck(duty, dir, detail, previous.slice(0, 10), input.log);
+    const output = await precheckOf(duty, dir, detail, previous.slice(0, 10), "run", `${input.chat.id.slice(0, 8)}-${duty.id}-${runStamp(started)}-run`, input);
     const judged = judge(duty.metrics, output, { now: started, runs: previous });
     const readings = outputReadings(duty.readings, output);
     const hostAway = hostAwayOf(output);
@@ -160,6 +271,7 @@ export async function measure(input: {
       ...(judged.verdict === "error" ? { error: judged.summary } : {}), ...overrunOf(), ...(hostAway ? { hostAway } : {}),
     };
   } catch (error) {
+    if (input.signal?.aborted) throw error;
     await rm(detail, { force: true });
     record = { duty: duty.id, at: started, slot: started, trigger, ms: Date.now() - wall, verdict: "error", metrics: {}, summary: "the precheck failed", error: message(error).slice(0, 500), ...overrunOf() };
   }

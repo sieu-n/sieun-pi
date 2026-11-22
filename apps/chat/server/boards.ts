@@ -12,7 +12,7 @@ import type { AgentSummary, BoardOp, BoardRow, BoardView, ChatBoard, CheckInPatc
 import { applyBoardOp, BOARD_PREFIX, emptyBoard, needsGo, nextIds, parseBoard, parseBoardOps, stepGo } from "../web/src/lib/api/shared/chat-board.ts";
 import { snoozed } from "../web/src/lib/api/shared/snooze.ts";
 import { morningTime, STILL_WORKING, upsertDuty, type Duty, type DutyRunRecord, type DutySchedule, type DutyTrigger } from "../web/src/lib/api/shared/chat-duties.ts";
-import { asAfter, measure, measureAfter, runStamp } from "./duty-run.ts";
+import { asAfter, measure, measureAfter, runStamp, type PrecheckLaunch } from "./duty-run.ts";
 import { dutyCard, judgedRun, missStreak } from "../web/src/lib/api/shared/duty-card.ts";
 import type { ChatAgent } from "../web/src/lib/api/shared/types.ts";
 import { threadModel, type Agents } from "./agents.ts";
@@ -58,8 +58,13 @@ interface CheckInState {
   /** `submission` is the job's first input and `reported` is set once its report went to the work thread (`reportCheckIn`). */
   job?: { id: string; name: string; submission?: number; reported?: true; archived?: true };
 }
+/**
+ * A duty's precheck at work, per duty id, from its launch until the save that records its run (`run`) or its run's after-job measure
+ * (`after`, on the run at `run`), so the next server process waits for it and records it after a restart (`resumePrechecks`).
+ */
+export type PendingPrecheck = { at: number; launch: PrecheckLaunch } & ({ mode: "run"; trigger: DutyTrigger } | { mode: "after"; run: number; job: string });
 /** `hidden` is when the owner hid the board from All boards and the Board sidebar; it still opens by its link. */
-export interface DutyFile { duties: Duty[]; runs: Record<string, DutyRunRecord[]>; checkIn?: CheckInState; hidden?: number }
+export interface DutyFile { duties: Duty[]; runs: Record<string, DutyRunRecord[]>; pending?: Record<string, PendingPrecheck>; checkIn?: CheckInState; hidden?: number }
 
 export interface BoardEvents {
   board(chatId: string, board: ChatBoard, awaitingGo: string[]): void;
@@ -523,6 +528,7 @@ export class Boards {
     if (at < 0) return { duties: this.duties(chat), result: `no duty ${dutyId}` };
     file.duties.splice(at, 1);
     delete file.runs[dutyId];
+    delete file.pending?.[dutyId];
     this.save(chat, file);
     const stateDir = join(this.dir(chat), "duties");
     let names: string[] = [];
@@ -533,6 +539,8 @@ export class Boards {
   }
 
   private readonly dutyRuns = new Map<string, Promise<void>>();
+  /** Aborted when this server stops, which ends each precheck wait without a record (`resumePrechecks`). */
+  private stopping = new AbortController();
   /** The after-job measure going per `<chat>/<duty>` (`afterJob`); a due run of the duty waits for it, as in Prime's `Duties.afters`. */
   private readonly afters = new Map<string, Promise<void>>();
   /** Duty jobs whose first turn this process still waits on (`reportDutyJob`), so a thread list read before their submit cannot read them as ended. */
@@ -560,12 +568,13 @@ export class Boards {
    * One duty run: the precheck, the judged record, and a duty job when something is due (`measure` in duty-run.ts). The job is a durable
    * thread filed under the chat; what it sends reaches the chat as an input from that job (`reportDutyJob`). A second start while one runs shares it.
    */
-  private runDuty(chat: string, duty: Duty, trigger: DutyTrigger): Promise<void> {
+  private runDuty(chat: string, duty: Pick<Duty, "id">, trigger: DutyTrigger, resume?: Extract<PendingPrecheck, { mode: "run" }>): Promise<void> {
     const key = `${chat}/${duty.id}`;
     const going = this.dutyRuns.get(key);
     if (going) return going;
     // A run waits for the after-job measure going on the duty, so the two never run its precheck side by side (Prime's push waits the same way).
-    const run = (this.afters.get(key) ?? Promise.resolve()).then(() => this.runDutyOnce(chat, duty.id, trigger)).catch(error => this.log(`duty ${key} failed: ${String(error)}`)).finally(() => {
+    const run = (this.afters.get(key) ?? Promise.resolve()).then(() => this.runDutyOnce(chat, duty.id, trigger, resume))
+      .catch(error => this.log(this.stopping.signal.aborted ? `duty ${key}: the next server process records its run` : `duty ${key} failed: ${String(error)}`)).finally(() => {
       this.dutyRuns.delete(key);
       this.events.duties(chat, this.duties(chat));
     });
@@ -574,33 +583,51 @@ export class Boards {
     return run;
   }
 
-  private async runDutyOnce(chat: string, dutyId: string, trigger: DutyTrigger): Promise<void> {
+  /** Writes a duty's precheck at work, or with null clears it, into `file`, which the caller saves. */
+  private static pend(file: DutyFile, dutyId: string, entry: PendingPrecheck | null): DutyFile {
+    const pending = { ...file.pending };
+    if (entry) pending[dutyId] = entry;
+    else delete pending[dutyId];
+    if (Object.keys(pending).length) file.pending = pending;
+    else delete file.pending;
+    return file;
+  }
+
+  /** A run, or with `resume` the rest of a run whose precheck a stopped server process launched: no new precheck, the same time and trigger. */
+  private async runDutyOnce(chat: string, dutyId: string, trigger: DutyTrigger, resume?: Extract<PendingPrecheck, { mode: "run" }>): Promise<void> {
     const before = this.file(chat);
     const duty = before.duties.find(d => d.id === dutyId);
-    if (!duty) return;
-    const at = Date.now();
-    duty.lastRunAt = at;
-    duty.runCount += 1;
-    const working = workingJobs(this.threads.allSummaries(), new Set(this.pendingWakes().map(wake => wake.session)));
-    // A run behind a job that still works or waits for an account runs no precheck and starts no job, as a check-in does (b6b7bf30): on 11-22
-    // the fable auditor's sweep jobs waited hours for a Fable account and each due sweep started one more behind them. A wait records one
-    // skipped run, which each later skip of it replaces, so a long wait keeps the duty's measured runs in its newest 20.
-    const runs = [...(before.runs[dutyId] ?? [])].sort((a, b) => b.at - a.at);
-    const busy = runs.find(run => run.job)?.job;
-    if (busy && this.jobBusy(busy, working)) {
-      const skipped: DutyRunRecord = { duty: dutyId, at, slot: at, trigger, ms: 0, verdict: "skipped", metrics: {}, summary: STILL_WORKING };
-      const kept = runs[0]?.verdict === "skipped" && runs[0].summary === STILL_WORKING ? runs.slice(1) : runs;
-      before.runs[dutyId] = [skipped, ...kept].slice(0, 20);
-      this.save(chat, before);
-      this.log(`duty ${chat.slice(0, 8)}/${dutyId}: skipped, its job ${busy.name} still works or waits for an account`);
+    if (!duty) {
+      if (resume) this.save(chat, Boards.pend(before, dutyId, null));
       return;
     }
-    this.save(chat, before);
+    const at = resume?.at ?? Date.now();
+    const working = workingJobs(this.threads.allSummaries(), new Set(this.pendingWakes().map(wake => wake.session)));
+    if (!resume) {
+      duty.lastRunAt = at;
+      duty.runCount += 1;
+      // A run behind a job that still works or waits for an account runs no precheck and starts no job, as a check-in does (b6b7bf30): on 11-22
+      // the fable auditor's sweep jobs waited hours for a Fable account and each due sweep started one more behind them. A wait records one
+      // skipped run, which each later skip of it replaces, so a long wait keeps the duty's measured runs in its newest 20.
+      const runs = [...(before.runs[dutyId] ?? [])].sort((a, b) => b.at - a.at);
+      const busy = runs.find(run => run.job)?.job;
+      if (busy && this.jobBusy(busy, working)) {
+        const skipped: DutyRunRecord = { duty: dutyId, at, slot: at, trigger, ms: 0, verdict: "skipped", metrics: {}, summary: STILL_WORKING };
+        const kept = runs[0]?.verdict === "skipped" && runs[0].summary === STILL_WORKING ? runs.slice(1) : runs;
+        before.runs[dutyId] = [skipped, ...kept].slice(0, 20);
+        this.save(chat, before);
+        this.log(`duty ${chat.slice(0, 8)}/${dutyId}: skipped, its job ${busy.name} still works or waits for an account`);
+        return;
+      }
+      this.save(chat, before);
+    }
     const dir = join(this.dir(chat), "duties");
     const thread = this.threadOf(chat);
     const { record, brief } = await measure({
       duty, chat: { id: chat, name: this.nameOf(chat) }, dir, trigger, previous: before.runs[dutyId] ?? [], board: await this.board(chat),
-      liveJob: job => working.has(job), boardApi: `${this.selfUrl}/api/threads/${thread}/board`, log: this.log,
+      liveJob: job => working.has(job), boardApi: `${this.selfUrl}/api/threads/${thread}/board`, now: at, log: this.log, signal: this.stopping.signal,
+      ...(resume ? { resume: resume.launch } : {}),
+      launched: launch => this.save(chat, Boards.pend(this.file(chat), dutyId, { mode: "run", at, trigger, launch })),
     });
     if (brief) {
       const name = `${duty.name} duty ${runStamp(record.at)}`;
@@ -629,7 +656,7 @@ export class Boards {
     const measured = asAfter(record);
     if (lastRun?.job && !lastRun.after && measured && (record.job || !working.has(lastRun.job.name))) lastRun.after = measured;
     after.runs[dutyId] = [record, ...(after.runs[dutyId] ?? [])].sort((a, b) => b.at - a.at).slice(0, 20);
-    this.save(chat, after);
+    this.save(chat, Boards.pend(after, dutyId, null));
     this.log(`duty ${chat.slice(0, 8)}/${duty.id}: ${record.verdict}, ${record.summary}${record.job ? `, job ${record.job.name}` : ""}`);
   }
 
@@ -708,18 +735,50 @@ export class Boards {
       if (!ended || this.dutyRuns.has(key) || this.afters.has(key)) return;
       const task = (async () => {
         if (job.submission !== undefined && !job.reported) await this.deliverReport(chat, dutyId, job.id, job.submission);
-        const after = await measureAfter({ duty, dir: join(this.dir(chat), "duties"), runs, log: this.log });
-        const latest = this.file(chat);
-        const target = latest.runs[dutyId]?.find(entry => entry.at === run.at);
-        if (!target || target.after) return;
-        target.after = after;
-        this.save(chat, latest);
-        this.log(`duty ${chat.slice(0, 8)}/${dutyId}: after its job ${job.name}, ${after.verdict}, ${after.summary}`);
-        this.events.duties(chat, this.duties(chat));
+        await this.measureAfterJob(chat, duty, runs, run.at, job.name);
       })().catch(error => this.log(`duty ${key}: the after-job measure of ${job.name} failed: ${String(error)}`)).finally(() => this.afters.delete(key));
       this.afters.set(key, task);
       return task;
     });
+  }
+
+  /** The after-job measure of the run at `runAt`, or with `resume` the rest of one whose precheck a stopped server process launched. */
+  private async measureAfterJob(chat: string, duty: Duty, runs: readonly DutyRunRecord[], runAt: number, jobName: string, resume?: Extract<PendingPrecheck, { mode: "after" }>): Promise<void> {
+    const at = resume?.at ?? Date.now();
+    const after = await measureAfter({
+      duty, chat, dir: join(this.dir(chat), "duties"), runs, now: at, log: this.log, signal: this.stopping.signal, ...(resume ? { resume: resume.launch } : {}),
+      launched: launch => this.save(chat, Boards.pend(this.file(chat), duty.id, { mode: "after", at, run: runAt, job: jobName, launch })),
+    });
+    const latest = Boards.pend(this.file(chat), duty.id, null);
+    const target = latest.runs[duty.id]?.find(entry => entry.at === runAt);
+    if (target && !target.after) target.after = after;
+    this.save(chat, latest);
+    if (target?.after !== after) return;
+    this.log(`duty ${chat.slice(0, 8)}/${duty.id}: after its job ${jobName}, ${after.verdict}, ${after.summary}`);
+    this.events.duties(chat, this.duties(chat));
+  }
+
+  /**
+   * Waits again for each precheck a stopped server process launched and records it as that process would have, before the first tick, so a
+   * tick, an owner's run or a job's end shares the wait instead of starting a second precheck of the duty.
+   */
+  private resumePrechecks(): void {
+    for (const chat of this.chats()) {
+      const file = this.file(chat);
+      for (const [dutyId, entry] of Object.entries(file.pending ?? {})) {
+        const key = `${chat}/${dutyId}`;
+        this.log(`duty ${chat.slice(0, 8)}/${dutyId}: waiting again for its ${entry.mode} precheck from ${new Date(entry.at).toISOString()}`);
+        if (entry.mode === "run") {
+          void this.runDuty(chat, { id: dutyId }, entry.trigger, entry);
+          continue;
+        }
+        const duty = file.duties.find(d => d.id === dutyId);
+        const runs = [...(file.runs[dutyId] ?? [])].sort((a, b) => b.at - a.at);
+        const task = (duty ? this.measureAfterJob(chat, duty, runs, entry.run, entry.job, entry) : Promise.resolve(this.save(chat, Boards.pend(this.file(chat), dutyId, null))))
+          .catch(error => this.log(`duty ${key}: the after-job measure of ${entry.job} failed: ${String(error)}`)).finally(() => this.afters.delete(key));
+        this.afters.set(key, task);
+      }
+    }
   }
 
   /**
@@ -918,10 +977,14 @@ export class Boards {
   // The clock: due check-ins, duties and wakes
 
   start(everyMs = 30_000): void {
+    if (this.stopping.signal.aborted) this.stopping = new AbortController();
+    this.resumePrechecks();
     this.timer = setInterval(() => void this.tick().catch(error => this.log(`board tick failed: ${String(error)}`)), everyMs);
     this.stopWakes = startThreadWakes({ dir: this.wakeDir, host: this.host, log: this.log, checkOn: thread => this.checkOn(thread), ...this.wakeHooks });
   }
   stop(): void {
+    // A precheck at work runs on outside this process, and its wait ends here with its pending entry kept for the next server process.
+    this.stopping.abort();
     clearInterval(this.timer);
     clearTimeout(this.snoozeTimer);
     this.stopWakes?.();
