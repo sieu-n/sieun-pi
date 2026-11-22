@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { SkillCopy, SkillEntry, SkillsView } from "../../../../lib/api/shared/skills.ts";
-import { cellFor, driftOf, families, kindColumns, problemsOf, rowsFor, shortPath, sizeOf } from "./kinds-model.ts";
+import { cellFor, driftOf, installDrift, families, kindColumns, problemsOf, rowsFor, shortPath, sizeOf } from "./kinds-model.ts";
 
 const copy = (over: Partial<SkillCopy>): SkillCopy => ({
   id: "us-metal02:/s/board", box: "us-metal02", path: "/s/board", role: "source", installId: null, link: null, realPath: "/s/board", exists: true, hash: "h", lines: 70,
@@ -91,4 +91,10 @@ test("a path under a home folder reads with ~", () => {
   assert.equal(shortPath("/home/sieun/.prime/agent/skills/board"), "~/.prime/agent/skills/board");
   assert.equal(shortPath("/Users/sieunpark/code/x"), "~/code/x");
   assert.equal(shortPath("/opt/skills/x"), "/opt/skills/x");
+});
+
+test("an install with no folder on disk says why", () => {
+  const install = { id: "i2", box: "mac", path: "/p", mode: "link" as const, runtimes: [], agent: null, state: { kind: "missing" as const } };
+  assert.equal(installDrift(install).label, "install missing");
+  assert.equal(installDrift({ ...install, state: { kind: "ok" } }).label, "not scanned yet");
 });

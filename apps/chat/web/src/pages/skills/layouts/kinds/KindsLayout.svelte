@@ -1,12 +1,12 @@
 <script lang="ts">
   import { SvelteSet } from "svelte/reactivity";
   import { agents, api } from "$lib/api";
-  import { SKILL_RUNTIMES, THREAD_KINDS, type SkillCopy, type SkillEntry, type SkillRuntime, type SkillsChange, type SkillsView } from "$lib/api/shared/skills";
+  import { SKILL_RUNTIMES, THREAD_KINDS, type SkillEntry, type SkillRuntime, type SkillsChange, type SkillsView } from "$lib/api/shared/skills";
   import { ageLabel, Badge, Button, Disclosure, EmptyState, Icon, IconButton, Input, Picker, SearchField, Select, toast, tooltip } from "$lib/ui";
   import type { PickerItem } from "$lib/ui/types";
   import {
     PROBLEMS, ROLE_LABEL, boxNotices, cellFor, columnTitle, driftOf, families, homeBox, kindColumns, ownerLabel, problemCount, rowsFor, sizeOf,
-    pathTitle, shortPath, sourceLabel, tokensLabel, usesLabel, usesTitle, type Filter, type Problem,
+    installDrift, pathTitle, shortPath, sourceLabel, tokensLabel, usesLabel, usesTitle, type Filter, type Problem,
   } from "./kinds-model";
 
   let { view, reload }: { view: SkillsView; reload: () => Promise<void> } = $props();
@@ -123,15 +123,15 @@
     if (done) adding = null;
   }
 
-  async function submitMove(copy: SkillCopy): Promise<void> {
+  async function submitMoveInstall(key: string, from: string): Promise<void> {
     const form = moving;
     if (!form) return;
     const path = form.path.trim();
-    if (!path || path === copy.path) {
+    if (!path || path === from) {
       moving = null;
       return;
     }
-    const done = await change(`move:${copy.id}`, () => api.moveSkill({ installId: form.installId, path }));
+    const done = await change(`move:${key}`, () => api.moveSkill({ installId: form.installId, path }));
     if (done) moving = null;
   }
 
@@ -241,7 +241,7 @@
                             <td>{copy.box}</td>
                             <td class="path">
                               {#if moving && install && moving.installId === install.id}
-                                <form class="inline" onsubmit={event => { event.preventDefault(); void submitMove(copy); }}>
+                                <form class="inline" onsubmit={event => { event.preventDefault(); void submitMoveInstall(copy.id, copy.path); }}>
                                   <Input size="sm" bind:value={moving.path} aria-label="New folder" onkeydown={event => onFormKey(event, () => (moving = null))} />
                                   <Button size="sm" variant="primary" type="submit" loading={busy === `move:${copy.id}`}>Move</Button>
                                   <Button size="sm" variant="ghost" type="button" onclick={() => (moving = null)}>Cancel</Button>
@@ -268,7 +268,33 @@
                             </td>
                           </tr>
                         {/each}
-                        {#if entry.copies.length === 0}<tr><td colspan="7" class="muted">The last scan saw no folder for it.</td></tr>{/if}
+                        {#each entry.installs.filter(i => !entry.copies.some(c => c.installId === i.id)) as install (install.id)}
+                          {@const drift = installDrift(install)}
+                          <tr data-install={install.id}>
+                            <td>{install.box}</td>
+                            <td class="path">
+                              {#if moving && moving.installId === install.id}
+                                <form class="inline" onsubmit={event => { event.preventDefault(); void submitMoveInstall(install.id, install.path); }}>
+                                  <Input size="sm" bind:value={moving.path} aria-label="New folder" onkeydown={event => onFormKey(event, () => (moving = null))} />
+                                  <Button size="sm" variant="primary" type="submit" loading={busy === `move:${install.id}`}>Move</Button>
+                                  <Button size="sm" variant="ghost" type="button" onclick={() => (moving = null)}>Cancel</Button>
+                                </form>
+                              {:else}
+                                <span use:tooltip={install.path}>{shortPath(install.path)}</span>
+                                {#if install.agent}<span class="for">for {agentNames.get(install.agent) ?? install.agent}</span>{/if}
+                              {/if}
+                            </td>
+                            <td>install</td>
+                            <td><span class="drift {drift.tone}" use:tooltip={drift.title}>{drift.label}</span></td>
+                            <td class="num">?</td>
+                            <td>{install.runtimes.join(", ")}</td>
+                            <td class="actions">
+                              {#if !moving}<Button size="sm" variant="ghost" onclick={() => (moving = { installId: install.id, path: install.path })}>Move</Button>{/if}
+                              <IconButton icon="trash" size="sm" label={`Remove ${install.box}:${install.path}`} loading={busy === `remove:${install.id}`} onclick={() => void change(`remove:${install.id}`, () => api.removeSkill({ target: install.id }))} />
+                            </td>
+                          </tr>
+                        {/each}
+                        {#if entry.copies.length === 0 && entry.installs.length === 0}<tr><td colspan="7" class="muted">The last scan saw no folder for it.</td></tr>{/if}
                       </tbody>
                     </table>
 

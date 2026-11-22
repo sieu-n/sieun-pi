@@ -215,7 +215,7 @@ export type Drift = { label: string; tone: "ok" | "warn" | "bad" | "muted"; titl
 export function driftOf(copy: SkillCopy, install: SkillInstall | null): Drift {
   if (!copy.exists) return { label: "broken link", tone: "bad", title: `The link points at ${copy.link ?? "a folder"} that is gone` };
   if (install) {
-    const state = installDrift(install.state);
+    const state = installStateDrift(install.state);
     if (state) return state;
   }
   if (copy.role === "source") return { label: "source", tone: "muted", title: "The text every other copy is compared with" };
@@ -229,7 +229,11 @@ export function driftOf(copy: SkillCopy, install: SkillInstall | null): Drift {
   return { label: stale ? `old clone, ${lines}` : lines, tone: "warn", title: stale ? `In ${stale.root}${age}` : "Lines added plus lines removed against the source" };
 }
 
-function installDrift(state: InstallState): Drift | null {
+export function installDrift(install: SkillInstall): Drift {
+  return installStateDrift(install.state) ?? { label: "not scanned yet", tone: "muted", title: "The last scan ran before this install" };
+}
+
+function installStateDrift(state: InstallState): Drift | null {
   switch (state.kind) {
     case "ok": return null;
     case "missing": return { label: "install missing", tone: "bad", title: "The DB wants this install and the disk lacks it; apply puts it back" };
