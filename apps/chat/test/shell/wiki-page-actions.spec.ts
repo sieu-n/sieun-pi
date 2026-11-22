@@ -15,15 +15,35 @@ const page = (title: string, prose: string) => `<!doctype html><html><head><titl
 <aside class="rail"><section class="rail-card"><h2>Backlinks <span class="badge">0</span></h2><p class="muted small">No pages link here yet.</p></section></aside>
 </div></article></div></body></html>`;
 
-type Wiki = { stored: Map<string, string>; writes: { method: string; path: string; body: Record<string, unknown> }[]; version: number };
+type Wiki = { stored: Map<string, string>; trash: Map<string, string>; writes: { method: string; path: string; body: Record<string, unknown> }[]; version: number };
 
 /** A wiki of `stored` pages behind /wiki: the page view, `?format=html`, the md head with its version, and PUT and POST writes. */
 async function mockWiki(p: Page, stored: Record<string, string>): Promise<Wiki> {
-  const wiki: Wiki = { stored: new Map(Object.entries(stored)), writes: [], version: 3 };
+  const wiki: Wiki = { stored: new Map(Object.entries(stored)), trash: new Map(), writes: [], version: 3 };
   await p.route((url) => url.pathname.startsWith("/wiki/"), async (route: Route) => {
     const url = new URL(route.request().url());
     const path = decodeURIComponent(url.pathname.replace(/^\/wiki\//, ""));
     const method = route.request().method();
+    if (path.startsWith("api/agent/")) {
+      const verb = path.slice("api/agent/".length);
+      const body = method === "DELETE" ? Object.fromEntries(url.searchParams) : (route.request().postDataJSON() as Record<string, unknown>);
+      wiki.writes.push({ method: `${method} ${verb}`, path: String(body.path), body });
+      const from = String(body.path);
+      if (verb === "page" && method === "DELETE") {
+        wiki.trash.set(from, wiki.stored.get(from)!);
+        wiki.stored.delete(from);
+      } else if (verb === "restore") {
+        wiki.stored.set(from, wiki.trash.get(from)!);
+      } else if (verb === "move") {
+        const to = String(body.to);
+        if (wiki.stored.has(to) && !wiki.stored.get(to)!.includes(`"moved_to":"${from}"`)) return route.fulfill({ status: 409, json: { error: `${to} exists; pick another path` } });
+        const undo = wiki.stored.has(to);
+        wiki.stored.set(to, wiki.stored.get(from)!);
+        if (undo) wiki.stored.delete(from);
+        else wiki.stored.set(from, `<!--wiki\n{"title":"Edit me","moved_to":"${to}"}\n-->\n<h1>Edit me</h1>\n`);
+      }
+      return route.fulfill({ json: { path: from, version: (wiki.version += 1) } });
+    }
     const found = wiki.stored.get(path) ?? wiki.stored.get(`${path}.html`);
     if (method === "PUT" || method === "POST") {
       const body = route.request().postDataJSON() as Record<string, unknown>;
@@ -146,4 +166,40 @@ test("a post's card for a wiki page that does not exist reads Page not found bef
   await expect(cards.nth(1)).toHaveClass(/missing/);
   await expect(cards.nth(1)).toContainText("Page not found");
   await expect(cards.nth(1)).toContainText("Nothing is at sessions/2026/11/22/gone-page.html");
+});
+
+test("Delete page in the pane's menu removes the page, and Undo in the toast restores it", async ({ page: p }) => {
+  const wiki = await mockWiki(p, { [PATH]: RAW });
+  const pane = await openPage(p, PATH);
+  const frame = pane.locator("iframe.wiki-frame").contentFrame();
+  await expect(frame.locator(".prose")).toContainText("First line of the page.");
+  await pane.locator("[data-wiki-more]").click();
+  await p.getByRole("menuitem", { name: "Delete page" }).click();
+  await expect.poll(() => wiki.writes.map((w) => w.method)).toEqual(["DELETE page"]);
+  expect(wiki.writes[0]!.body).toMatchObject({ path: PATH, author: "owner", baseVersion: "3" });
+  await expect(pane.locator("[data-wiki-missing]")).toContainText("This page doesn't exist");
+  const toast = p.getByRole("region", { name: "Notifications" }).locator(".toast").filter({ hasText: "Deleted Edit me" });
+  await toast.getByRole("button", { name: "Undo" }).click();
+  await expect.poll(() => wiki.writes.map((w) => w.method)).toEqual(["DELETE page", "POST restore"]);
+  await expect(frame.locator(".prose")).toContainText("First line of the page.");
+});
+
+test("Move in the pane's menu moves the page to a typed path, the pane follows it, and Undo moves it back", async ({ page: p }) => {
+  const wiki = await mockWiki(p, { [PATH]: RAW });
+  const pane = await openPage(p, PATH);
+  await expect(pane.locator("iframe.wiki-frame").contentFrame().locator(".prose")).toContainText("First line of the page.");
+  await pane.locator("[data-wiki-more]").click();
+  await p.getByRole("menuitem", { name: "Move…" }).click();
+  const field = p.getByLabel("Path");
+  await expect(field).toHaveValue(PATH);
+  await field.fill("sessions/2026/11/22/moved-here");
+  await p.keyboard.press("Enter");
+  await expect.poll(() => wiki.writes.map((w) => w.method)).toEqual(["POST move"]);
+  expect(wiki.writes[0]!.body).toMatchObject({ path: PATH, to: "sessions/2026/11/22/moved-here.html", author: "owner" });
+  await expect(p).toHaveURL(/moved-here\.html/);
+  const toast = p.getByRole("region", { name: "Notifications" }).locator(".toast").filter({ hasText: "Moved to" });
+  await toast.getByRole("button", { name: "Undo" }).click();
+  await expect.poll(() => wiki.writes.map((w) => w.method)).toEqual(["POST move", "POST move"]);
+  expect(wiki.writes[1]!.body).toMatchObject({ path: "sessions/2026/11/22/moved-here.html", to: PATH });
+  await expect(p).toHaveURL(new RegExp(encodeURIComponent(PATH).replace(/%2F/g, "(%2F|/)")));
 });

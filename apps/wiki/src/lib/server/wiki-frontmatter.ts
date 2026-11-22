@@ -17,6 +17,8 @@ export type WikiMeta = {
 	source_refs?: string[];
 	archived_reason?: string;
 	superseded_by?: string;
+	/** The page this path moved to (wiki-write.ts movePage); the page view redirects there. */
+	moved_to?: string;
 	goal?: string;
 	outcome?: string;
 	graduated_to?: string[];
@@ -41,6 +43,7 @@ export const META_STRING_KEYS = [
 	'last_verified',
 	'archived_reason',
 	'superseded_by',
+	'moved_to',
 	'goal',
 	'outcome',
 	'agent',

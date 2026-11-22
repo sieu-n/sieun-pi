@@ -22,8 +22,11 @@
   import { search } from "./search.svelte";
   import { sidePanel } from "./side-panel.svelte";
   import { styleWikiFrame } from "./wiki-embed";
-  import { createPage, editable, loadStored, runsScript, sharesOf, shortError, showShares, startEditing, titleFromPath, wikiHref, writePage, type Editing } from "./wiki-page";
+  import { createPage, deletePage, editable, loadStored, restorePage, type StoredPage, runsScript, sharesOf, shortError, showShares, startEditing, titleFromPath, wikiHref, writePage, type Editing } from "./wiki-page";
   import EmptyState from "$lib/ui/EmptyState.svelte";
+  import Menu from "$lib/ui/Menu.svelte";
+  import type { MenuEntry } from "$lib/ui/menu";
+  import { renameDialog } from "./rename-dialog.svelte";
   import { stampLabel } from "$lib/ui/datetime";
   import type { WikiShare } from "$lib/api/types";
   import { roomDraftKey } from "$lib/drafts.svelte";
@@ -170,6 +173,47 @@
         run: () => void writePage(page.path, before, saved.version).then((back) => {
           if (!back.ok) return void toast.error(`Could not undo. ${shortError(back.error)}`);
           toast.show("Edit undone");
+          if (currentView()?.kind === "wiki") reloadFrame();
+        }),
+      },
+    });
+  }
+
+  let moreOpen = $state(false);
+  let moreAnchor = $state<HTMLButtonElement>();
+  /** The pane's More menu: move the page to a new path, which its old path keeps redirecting to, or delete it with Undo in the toast. */
+  const moreItems: MenuEntry[] = [
+    { id: "move", label: "Move…", icon: "folder", onselect: () => void moveCurrent() },
+    { type: "separator" },
+    { id: "delete", label: "Delete page", icon: "trash", tone: "danger", onselect: () => void deleteCurrent() },
+  ];
+
+  async function storedPage(): Promise<StoredPage | null> {
+    const path = framePath ?? wikiPath;
+    const page = path ? await loadStored(path) : null;
+    if (!page) toast.error("Could not read this page");
+    return page;
+  }
+
+  async function moveCurrent() {
+    const page = await storedPage();
+    if (page) renameDialog.open(page.path, page.path, "page");
+  }
+
+  async function deleteCurrent() {
+    const page = await storedPage();
+    if (!page) return;
+    const name = wikiTitle;
+    const gone = await deletePage(page);
+    if (!gone.ok) return void toast.error(`Page not deleted. ${shortError(gone.error)}`);
+    reloadFrame();
+    toast.show(`Deleted ${name}`, {
+      duration: 10_000,
+      action: {
+        label: "Undo",
+        run: () => void restorePage(page.path).then((back) => {
+          if (!back.ok) return void toast.error(`Could not restore the page. ${shortError(back.error)}`);
+          toast.show("Page restored");
           if (currentView()?.kind === "wiki") reloadFrame();
         }),
       },
@@ -406,6 +450,7 @@
   {#if view?.kind === "wiki"}<IconButton icon="forward" label="Share" size="sm" onclick={() => (sharing = true)} data-share-page />{/if}
   <IconButton icon="link" label="Copy link" size="sm" onclick={copyLink} />
   {#if view?.kind === "wiki"}<IconButton icon="external" label="Open in new tab" size="sm" href={tabHref} target="_blank" />{:else}<Button size="sm" variant="ghost" icon="external" href={tabHref} target="_blank">Open in new tab</Button>{/if}
+  {#if view?.kind === "wiki" && !frameFailed && editable(framePath ?? wikiPath ?? "")}<IconButton icon="more" label="More actions" size="sm" bind:element={moreAnchor} onclick={() => (moreOpen = !moreOpen)} data-wiki-more />{/if}
   {/if}
   {/if}
 {/snippet}
@@ -437,6 +482,7 @@
   </div>
 {/snippet}
 
+<Menu bind:open={moreOpen} anchor={moreAnchor} items={moreItems} placement="bottom-end" label="Page actions" />
 {#if sharing && wikiPath}<ForwardDialog subject={{ kind: "wiki", path: framePath ?? wikiPath, title }} onclose={() => (sharing = false)} />{/if}
 
 <Dialog open={dialogView !== null} {title} {description} presentation="sheet" {headerActions} onclose={closeView}>

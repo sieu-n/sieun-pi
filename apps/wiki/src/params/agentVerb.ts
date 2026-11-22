@@ -16,6 +16,8 @@ export const AGENT_VERBS = [
 	'changes',
 	'stale',
 	'supersede',
+	'move',
+	'restore',
 	'sessions',
 	'assets',
 	'gaps',

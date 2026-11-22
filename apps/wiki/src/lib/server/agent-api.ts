@@ -45,6 +45,9 @@ import {
 	commitPage,
 	readForEdit,
 	supersedePage,
+	deletePage,
+	movePage,
+	restorePage,
 	withPageLock,
 	WriteError,
 	type Edit,
@@ -622,6 +625,19 @@ const API = {
 				});
 			}),
 		},
+		DELETE: {
+			doc: doc(
+				'Delete a page (query path, author, baseVersion); its bytes go to the trash, so POST /api/agent/restore brings it back, and a revision records the delete. 404 missing page, 409 stale baseVersion, 403 session log/closed session/archive/@code/home page',
+				{ parameters: [q('path', 'page path', true), q('author', 'who deletes'), q('baseVersion', 'the version the deleter read')] },
+			),
+			run: write('delete failed', async (c) => {
+				const rawPath = param(c, 'path');
+				if (!rawPath) return fail('need ?path=<page>', 400);
+				const baseVersion = param(c, 'baseVersion');
+				const result = await deletePage({ rawPath, author: optional(c, 'author'), ...(baseVersion ? { baseVersion: Number(baseVersion) } : {}) });
+				return json({ ...result, revisionLogged: store.storeStatus().ok });
+			}),
+		},
 	},
 	backlinks: {
 		GET: {
@@ -815,6 +831,33 @@ const API = {
 				if (!b || typeof b.path !== 'string' || typeof b.by !== 'string')
 					return fail('Body needs string "path" (old page) + "by" (new page)', 400);
 				const result = await supersedePage({ rawPath: b.path, by: b.by, author: b.author, summary: b.summary });
+				return json({ ...result, revisionLogged: store.storeStatus().ok });
+			}),
+		},
+	},
+	move: {
+		POST: {
+			doc: doc(
+				'Move a page to a new path; the old path keeps a page with moved_to, which the page view redirects, and a move back onto that redirect undoes the move. 409 target exists, 404 missing page, 400 same path, non-HTML or a redirect page',
+				{ requestBody: body(['path', 'to'], { path: str, to: str, author: str }) },
+			),
+			run: write('move failed', async (c) => {
+				const b = await readJson(c);
+				if (!b || typeof b.path !== 'string' || typeof b.to !== 'string') return fail('Body needs string "path" + "to"', 400);
+				const result = await movePage({ rawPath: b.path, to: b.to, author: b.author });
+				return json({ ...result, revisionLogged: store.storeStatus().ok });
+			}),
+		},
+	},
+	restore: {
+		POST: {
+			doc: doc('Restore a deleted page from the trash, as it was. 404 no deleted copy, 409 the path holds a page again', {
+				requestBody: body(['path'], { path: str, author: str }),
+			}),
+			run: write('restore failed', async (c) => {
+				const b = await readJson(c);
+				if (!b || typeof b.path !== 'string') return fail('Body needs string "path"', 400);
+				const result = await restorePage({ rawPath: b.path, author: b.author });
 				return json({ ...result, revisionLogged: store.storeStatus().ok });
 			}),
 		},

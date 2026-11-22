@@ -3,12 +3,12 @@
  * The EDITABLE gate lives in the route; this module confines paths to content/, rejects @code/ and allows page extensions only.
  */
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { mkdir, readFile, stat } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import { indexWrittenPage, normalizeLinkTarget, normalizeRequestedPath, PAGE_READ_LIMIT, readLimitFor } from './wiki';
+import { getContentRoot, indexWrittenPage, normalizeLinkTarget, normalizeRequestedPath, PAGE_READ_LIMIT, readLimitFor } from './wiki';
 import { extractHtmlTitle, META_COMMENT, parseHtmlMeta } from './wiki-html';
 import { hubsLinking, isCuratedPath, missingHubRow, isRetiredStatus, retiredLinksAdded, titleMatchesH1 } from './wiki-lint';
 import { addRevision, currentVersion } from './wiki-store';
@@ -687,4 +687,184 @@ async function supersedePageLocked(input: Parameters<typeof supersedePage>[0]): 
 		baseVersion: null,
 	});
 	return { ...result, superseded_by: target, changed: true };
+}
+
+
+/**
+ * Where a deleted page waits for restorePage: `<content root>/.wiki/trash/<path>`, beside wiki.db, which the index and the backup skip.
+ * One copy per path, so a second delete of the same path keeps only the newer page.
+ */
+function trashPath(rel: string): string {
+	return path.join(getContentRoot(), '.wiki', 'trash', rel);
+}
+
+/** The guards every delete, move and restore shares with a write: session folders open, the log and archive/ untouched. */
+async function assertRemovable(rel: string): Promise<void> {
+	if (isSessionPath(rel)) await assertSessionWorkspaceWritable(rel);
+	if (rel.startsWith('archive/')) throw new WriteError(403, 'archive/ is frozen: archived pages are not editable');
+	if (rel === 'index.html') throw new WriteError(403, 'the home page cannot be deleted or moved');
+}
+
+const gatedFile = (rel: string) => rel.endsWith('.html') && (isCuratedPath(rel) || rel === 'index.html');
+
+/** Log a revision and change the file in one step, as writeLogged does, for a delete or a restore. */
+async function removeOrRestoreLogged(input: {
+	rel: string;
+	before: string;
+	after: string;
+	author?: string;
+	summary: string;
+	baseVersion: number | null;
+	change: { write: () => void; restore: () => void };
+}): Promise<number> {
+	const version = addRevision(
+		{
+			path: input.rel,
+			author: input.author ?? 'agent',
+			summary: input.summary,
+			baseVersion: input.baseVersion,
+			contentHash: createHash('sha1').update(input.after).digest('hex'),
+			diff: unifiedDiff(input.before, input.after, input.rel),
+			...changeStats(input.before, input.after),
+		},
+		input.change,
+	);
+	await indexWrittenPage(input.rel);
+	return version;
+}
+
+/**
+ * Delete a page. Its bytes go to the trash first, so POST /api/agent/restore brings it back as it was, and the revision log records the
+ * delete with the whole page in its diff. A stale baseVersion answers 409, a missing page 404.
+ */
+export function deletePage(input: { rawPath: string; author?: string; summary?: string; baseVersion?: number | null }): Promise<{ path: string; version: number; deleted: true }> {
+	return withPageLock(input.rawPath, async () => {
+		const { rel, full } = resolveWritePath(input.rawPath);
+		await assertRemovable(rel);
+		const before = await readForEdit(rel);
+		if (before === null) throw new WriteError(404, `page not found: ${rel}`);
+		if (input.baseVersion !== undefined && input.baseVersion !== null && currentVersion(rel) !== input.baseVersion)
+			throw new WriteError(409, `stale: baseVersion ${input.baseVersion} != current ${currentVersion(rel)}`);
+		const trash = trashPath(rel);
+		mkdirSync(path.dirname(trash), { recursive: true });
+		const version = await removeOrRestoreLogged({
+			rel,
+			before,
+			after: '',
+			author: input.author,
+			summary: input.summary ?? 'deleted',
+			baseVersion: input.baseVersion ?? null,
+			change: {
+				write: () => {
+					writeFileSync(trash, before, 'utf8');
+					rmSync(full);
+				},
+				restore: () => writePageFile(full, before, gatedFile(rel)),
+			},
+		});
+		return { path: rel, version, deleted: true };
+	});
+}
+
+/** Bring back the page a delete put in the trash, as it was. 404 when the trash holds no copy, 409 when a page took the path since. */
+export function restorePage(input: { rawPath: string; author?: string }): Promise<{ path: string; version: number; restored: true }> {
+	return withPageLock(input.rawPath, async () => {
+		const { rel, full } = resolveWritePath(input.rawPath);
+		await assertRemovable(rel);
+		const trash = trashPath(rel);
+		let content: string;
+		try {
+			content = await readFile(trash, 'utf8');
+		} catch {
+			throw new WriteError(404, `no deleted copy of ${rel} to restore`);
+		}
+		if ((await readForEdit(rel)) !== null) throw new WriteError(409, `${rel} exists again; move or delete it before restoring`);
+		await mkdir(path.dirname(full), { recursive: true });
+		const version = await removeOrRestoreLogged({
+			rel,
+			before: '',
+			after: content,
+			author: input.author,
+			summary: 'restored',
+			baseVersion: null,
+			change: {
+				write: () => {
+					writePageFile(full, content, gatedFile(rel));
+					rmSync(trash, { force: true });
+				},
+				restore: () => rmSync(full, { force: true }),
+			},
+		});
+		return { path: rel, version, restored: true };
+	});
+}
+
+/** The meta JSON of a page, or an empty object. */
+function metaOf(content: string): Record<string, unknown> {
+	try {
+		const meta = JSON.parse(META_COMMENT.exec(content)?.[1]?.trim() ?? '{}') as unknown;
+		return meta && typeof meta === 'object' && !Array.isArray(meta) ? (meta as Record<string, unknown>) : {};
+	} catch {
+		return {};
+	}
+}
+
+/**
+ * Move a page to a new path. The page lands at `to` as it was, and the old path keeps a short page whose `moved_to` sends a reader on
+ * (the page view redirects), so every link to the old path still opens it. A move onto a page that only redirects back to `rawPath` is
+ * allowed, which is how a move is undone, and the path it leaves is then removed instead of redirecting. 409 when `to` holds another page, 404 when the page is missing, 400 for the same path or a
+ * page that is itself a redirect.
+ */
+export function movePage(input: { rawPath: string; to: string; author?: string }): Promise<{ path: string; to: string; version: number; moved: true }> {
+	const [first, second] = [input.rawPath, input.to].sort();
+	return withPageLock(first, () => withPageLock(second, async () => {
+		const from = resolveWritePath(input.rawPath);
+		const to = resolveWritePath(input.to);
+		if (from.rel === to.rel) throw new WriteError(400, 'a page cannot move onto itself');
+		if (!/\.html?$/i.test(from.rel) || !/\.html?$/i.test(to.rel)) throw new WriteError(400, 'only an HTML page moves; give both paths with .html');
+		await assertRemovable(from.rel);
+		if (isSessionPath(to.rel)) await assertSessionWorkspaceWritable(to.rel);
+		const before = await readForEdit(from.rel);
+		if (before === null) throw new WriteError(404, `page not found: ${from.rel}`);
+		if (typeof metaOf(before).moved_to === 'string') throw new WriteError(400, `${from.rel} only redirects; move the page it points to`);
+		const there = await readForEdit(to.rel);
+		if (there !== null && metaOf(there).moved_to !== from.rel) throw new WriteError(409, `${to.rel} exists; pick another path`);
+		const result = await writeLogged({
+			rel: to.rel,
+			full: to.full,
+			before: there ?? '',
+			existed: there !== null,
+			content: before,
+			author: input.author,
+			summary: `moved from ${from.rel}`,
+			baseVersion: null,
+		});
+		// Moving back onto the page's own redirect undoes a move, so the path it leaves keeps no redirect of its own.
+		if (there !== null) {
+			await removeOrRestoreLogged({
+				rel: from.rel,
+				before,
+				after: '',
+				author: input.author,
+				summary: `moved back to ${to.rel}`,
+				baseVersion: null,
+				change: { write: () => rmSync(from.full), restore: () => writePageFile(from.full, before, gatedFile(from.rel)) },
+			});
+			return { path: from.rel, to: to.rel, version: result.version, moved: true };
+		}
+		const title = (typeof metaOf(before).title === 'string' ? (metaOf(before).title as string) : null) ?? extractHtmlTitle(before) ?? path.basename(from.rel);
+		const safe = title.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
+		const stub = `<!--wiki\n${JSON.stringify({ title, moved_to: to.rel, superseded_by: to.rel })}\n-->\n<h1>${safe}</h1>\n<p>This page moved to <a href="/page/${to.rel.split('/').map(encodeURIComponent).join('/')}">${safe}</a>.</p>\n`;
+		await writeLogged({
+			rel: from.rel,
+			full: from.full,
+			before,
+			existed: true,
+			content: stub,
+			author: input.author,
+			summary: `moved to ${to.rel}`,
+			baseVersion: null,
+		});
+		return { path: from.rel, to: to.rel, version: result.version, moved: true };
+	}));
 }

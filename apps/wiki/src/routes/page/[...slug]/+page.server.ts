@@ -1,4 +1,5 @@
-import { error } from '@sveltejs/kit';
+import { error, redirect } from '@sveltejs/kit';
+import { base } from '$app/paths';
 import { readPage } from '$lib/server/wiki';
 import { renderWikiPage } from '$lib/server/render';
 import { recordView, statOne } from '$lib/server/wiki-store';
@@ -7,6 +8,8 @@ import { getMirrorHistory } from '$lib/server/wiki-git-history';
 export async function load({ params }) {
 	const page = await readPage(params.slug);
 	if (!page) error(404, 'Wiki page not found');
+	// A moved page's old path sends the reader on (wiki-write.ts movePage), so every link to it still opens the page.
+	if (page.meta.moved_to && page.meta.moved_to !== page.path) redirect(308, `${base}/page/${page.meta.moved_to.split('/').map(encodeURIComponent).join('/')}`);
 	recordView({ path: page.path, viewerKind: 'human', source: 'wiki-page' });
 	const rendered = await renderWikiPage(page.content, page);
 	const replacedBy = page.meta.superseded_by;

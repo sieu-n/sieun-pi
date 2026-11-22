@@ -4,6 +4,8 @@
  * every write, and the frame keeps the wiki's own look while a page is edited.
  */
 import type { WikiShare } from "$lib/api/types";
+import { router } from "$lib/router.svelte";
+import { toast } from "$lib/ui/toast.svelte";
 
 /** A content path as a `/wiki` URL, each segment encoded. */
 export const wikiHref = (path: string, query = ""): string => `/wiki/${path.split("/").map(encodeURIComponent).join("/")}${query}`;
@@ -199,4 +201,59 @@ export function showShares(doc: Document, rows: ShareRow[]): void {
     card.append(list);
   }
   rail.append(card);
+}
+
+
+/** A call to the wiki engine's agent API through this server's /wiki, as the owner. */
+async function agentCall(method: "POST" | "DELETE", verb: string, body: Record<string, unknown>): Promise<SaveResult> {
+  const query = method === "DELETE" ? `?${new URLSearchParams(Object.entries(body).map(([k, v]) => [k, String(v)]))}` : "";
+  const res = await fetch(`/wiki/api/agent/${verb}${query}`, {
+    method,
+    headers: { "content-type": "application/json" },
+    ...(method === "DELETE" ? {} : { body: JSON.stringify(body) }),
+  });
+  const answer = (await res.json().catch(() => ({}))) as { version?: number; error?: string };
+  return res.ok ? { ok: true, version: typeof answer.version === "number" ? answer.version : null } : { ok: false, status: res.status, error: answer.error ?? `The wiki answered ${res.status}.` };
+}
+
+/** Delete a page as the version the pane read; the engine keeps its bytes, so `restorePage` undoes it. */
+export const deletePage = (page: StoredPage): Promise<SaveResult> =>
+  agentCall("DELETE", "page", { path: page.path, author: "owner", ...(page.version === null ? {} : { baseVersion: page.version }) });
+
+export const restorePage = (path: string): Promise<SaveResult> => agentCall("POST", "restore", { path, author: "owner" });
+
+/** A typed move target as a page path: `notes/plan` reads `notes/plan.html`. */
+export const pagePathOf = (typed: string): string => {
+  const clean = typed.trim().replace(/^\/+/, "").replace(/^wiki:/, "");
+  return /\.html?$/i.test(clean) ? clean : `${clean.replace(/\/+$/, "")}.html`;
+};
+
+/** Move a page; the old path redirects to the new one, and a move back undoes it. */
+export const movePage = (from: string, to: string): Promise<SaveResult> => agentCall("POST", "move", { path: from, to, author: "owner" });
+
+
+/**
+ * Move the page the pane shows and follow it to its new path, with Undo in the toast that moves it back. Throws the engine's reason, which
+ * the move dialog shows under its field.
+ */
+export async function moveAndFollow(from: string, typed: string): Promise<string> {
+  const to = pagePathOf(typed);
+  const moved = await movePage(from, to);
+  if (!moved.ok) throw new Error(shortError(moved.error));
+  const follow = (path: string) => {
+    if (router.route.params.view?.startsWith("wiki:")) router.setParams({ view: `wiki:${path}` }, { replace: true });
+  };
+  follow(to);
+  toast.success(`Moved to ${to}`, {
+    duration: 10_000,
+    action: {
+      label: "Undo",
+      run: () => void movePage(to, from).then((back) => {
+        if (!back.ok) return void toast.error(`Could not move it back. ${shortError(back.error)}`);
+        follow(from);
+        toast.show("Move undone");
+      }),
+    },
+  });
+  return to;
 }
