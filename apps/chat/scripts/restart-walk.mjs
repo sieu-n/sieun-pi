@@ -90,6 +90,15 @@ function sh(command, args) {
   return done.stdout.trim();
 }
 
+/** pi-host's and its relay's last start, so a walk that a pi-host restart fell inside can be told and run again. */
+function hostUnits() {
+  const out = spawnSync("systemctl", ["--user", "show", "-p", "Id,ActiveEnterTimestamp", "pi-host.service", "pi-host-relay.service"], { encoding: "utf8" }).stdout;
+  return Object.fromEntries(out.trim().split("\n\n").map(block => {
+    const fields = Object.fromEntries(block.split("\n").map(line => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]));
+    return [fields.Id, fields.ActiveEnterTimestamp];
+  }));
+}
+
 /** Polls the server's /api/ready every 100 ms and keeps each span it did not answer 200. */
 function watchReady(base) {
   const outages = [];
@@ -168,6 +177,7 @@ async function walk(o) {
       await sleep(500);
     }
     log(`pages ready: ${browsers.join(", ")}; walking ${o.warm} s before the first release`);
+    meta.hostUnitsAtStart = hostUnits();
     const stopReady = watchReady(o.base);
     await sleep(o.warm * 1000);
 
@@ -232,6 +242,7 @@ async function walk(o) {
     log(`walking ${o.tail} s after the last release`);
     await sleep(o.tail * 1000);
     meta.outages = await stopReady();
+    meta.hostUnitsAtEnd = hostUnits();
     writeFileSync(join(o.scratch, "stop"), String(Date.now()));
     await Promise.race([pageDone, sleep(90_000)]);
     front.kill();
@@ -360,11 +371,14 @@ export function report(out) {
   }
   const outages = merged.map(x => ({ ...x, ms: x.up ? x.up - x.down : null, release: windowOf(x.down)?.n ?? null }));
   const fresh = meta.fresh ?? [];
-  const result = { label: meta.label, base: meta.base, fresh, releases: meta.releases.map(({ n, exit, live, start, end, servers }) => ({ n, exit, live, servers, seconds: Math.round((end - start) / 100) / 10 })), outages, postLog: meta.postLog ?? null, browsers };
+  const result = { label: meta.label, base: meta.base, hostUnitsAtStart: meta.hostUnitsAtStart ?? null, hostUnitsAtEnd: meta.hostUnitsAtEnd ?? null, fresh, releases: meta.releases.map(({ n, exit, live, start, end, servers }) => ({ n, exit, live, servers, seconds: Math.round((end - start) / 100) / 10 })), outages, postLog: meta.postLog ?? null, browsers };
   writeFileSync(join(out, "report.json"), `${JSON.stringify(result, null, 1)}\n`);
   const md = [
     `# Restart walk ${meta.label}`, "",
     `${meta.releases.length} releases of \`${meta.release}\` against ${meta.base}; exits ${meta.releases.map(r => r.exit).join(", ")}.`,
+    meta.hostUnitsAtStart ? (JSON.stringify(meta.hostUnitsAtStart) === JSON.stringify(meta.hostUnitsAtEnd)
+      ? `pi-host and pi-host-relay did not restart during the walk (${Object.entries(meta.hostUnitsAtStart).map(([unit, at]) => `${unit} since ${at}`).join(", ")}).`
+      : `pi-host or pi-host-relay restarted during the walk (start ${JSON.stringify(meta.hostUnitsAtStart)}, end ${JSON.stringify(meta.hostUnitsAtEnd)}); run it again.`) : "pi-host's start was not recorded.",
     `Box load (1 min) after each release: ${meta.releases.map(r => r.load ?? "?").join(", ")}.`,
     `Servers after each release: ${meta.releases.map(r => r.servers ?? "?").join(", ")} (old servers passing calls on: ${meta.releases.map(r => r.oldServers ?? "?").join(", ")}); the test rooms' post logs ${meta.postLog ? `hold ${meta.postLog.lines} posts and ${meta.postLog.repeatedSeqs} repeated seqs` : "was not read"}.`,
     ...(fresh.length ? [`Fresh agent made before each release, then a send after it: ${fresh.map(f => `${f.n}: ${f.agent ? `send ${f.send}, ${f.inItems ? "in its DM" : f.inItemsAfter5s ? "in its DM after 5 s" : "not in its DM"}` : `not made (${f.makeError})`}`).join("; ")}.`] : []),
