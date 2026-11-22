@@ -175,6 +175,7 @@ test("an answer that names a proxy supply hold or a switched-off Vent is held, n
   assert.equal(classify(503, error("upstream_error", "upstream temporarily unavailable")).verdict, "held");
   assert.equal(classify(503, error("upstream_error", "integration crawler is switched off on this Vent: c230")).verdict, "held");
   assert.equal(classify(503, error("upstream_error", "vent_integration_disabled")).verdict, "held");
+  assert.equal(classify(403, error("upstream_error", "vent_crawl_paused")).verdict, "held");
   assert.equal(classify(502, error("upstream_error", "The crawl job failed")).verdict, "crawler");
 });
 
