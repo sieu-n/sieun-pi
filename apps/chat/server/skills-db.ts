@@ -19,8 +19,8 @@ import {
   type SkillScan, type SkillSource, type SkillsChange, type SkillsCheck, type SkillsView, type SkillThresholds, type ThreadKind, type SkillVerdictRow, type UndoBody,
 } from "../web/src/lib/api/shared/skills.ts";
 import {
-  canonical, changedLines, copyId, drift, extraCopies, identifyFolder, installState, ownerText, parseFacts, parseOwner, plan, roleOf, sameLink, seedOwner, sees, staleCheckouts,
-  thresholds, tree, verdicts, type BoxScan, type CopyFact, type FactCopy, type FactUse, type InstallRecord, type PathUse, type SkillRecord,
+  canonical, changedLines, copyId, drift, extraCopies, identifyFolder, installState, ownerText, parseFacts, parseOwner, plan, roleOf, sameLink, seedOwner, sees, staleCheckouts, sumUse,
+  thresholds, tree, verdicts, type BoxScan, type CopyFact, type FactCopy, type Facts, type FactUse, type InstallRecord, type PathUse, type SkillRecord,
 } from "./skills-model.ts";
 
 export type SkillsDbConfig = {
@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS skill_scans (
 );
 CREATE TABLE IF NOT EXISTS skill_verdicts (skill_id TEXT NOT NULL, rule TEXT NOT NULL, action TEXT NOT NULL, detail TEXT NOT NULL, copy_id TEXT, other TEXT);
 CREATE TABLE IF NOT EXISTS skill_use (name TEXT PRIMARY KEY, uses INTEGER NOT NULL, sessions INTEGER NOT NULL, last_use TEXT, by_kind TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS skill_use_box (box TEXT NOT NULL, name TEXT NOT NULL, use TEXT NOT NULL, PRIMARY KEY (box, name));
 CREATE TABLE IF NOT EXISTS skill_moves (
   id TEXT PRIMARY KEY, at TEXT NOT NULL, kind TEXT NOT NULL, summary TEXT NOT NULL, item TEXT, before TEXT NOT NULL, touched TEXT NOT NULL, undone_at TEXT
 );
@@ -322,7 +323,7 @@ export class SkillsDb {
         const at = facts.copies.find(c => c.box === install.box && c.path === install.path);
         if (at?.linkTarget && at.linkTarget !== install.target && sameLink(at.linkTarget, install.target)) this.db.prepare("UPDATE skill_installs SET target = ? WHERE id = ?").run(at.linkTarget, install.id);
       }
-      this.rules(facts.usage, facts.usageCounted);
+      this.rules(this.storeUse(facts), facts.usageCounted);
       this.setMeta("ingested", facts.generatedAt ?? now());
     });
     return { seeded, copies: facts.copies.length };
@@ -423,6 +424,23 @@ export class SkillsDb {
   }
 
   /** The verdicts and the use counts, recomputed from the copies, the rows and the scan's use. */
+  /**
+   * Keeps each counted box's use and sums the boxes, so a box whose scan failed, such as the Mac asleep, keeps its last counts in the
+   * totals. On 11-22 the Mac slept at 06:00Z and agent-message fell from 46,025 to 43,727 uses until it woke. An inventory from before
+   * usageByBox gives its merged use as is.
+   */
+  private storeUse(facts: Facts): ReadonlyMap<string, FactUse> {
+    if (!facts.usageByBox.size) return facts.usage;
+    const put = this.db.prepare("INSERT INTO skill_use_box (box, name, use) VALUES (?, ?, ?)");
+    for (const [box, byName] of facts.usageByBox) {
+      this.db.prepare("DELETE FROM skill_use_box WHERE box = ?").run(box);
+      for (const [name, use] of byName) put.run(box, name, JSON.stringify(use));
+    }
+    const byName = new Map<string, FactUse[]>();
+    for (const r of this.db.prepare("SELECT name, use FROM skill_use_box").all() as Row[]) byName.set(s(r.name), [...(byName.get(s(r.name)) ?? []), JSON.parse(s(r.use)) as FactUse]);
+    return new Map([...byName].map(([name, parts]) => [name, sumUse(parts)]));
+  }
+
   private rules(usage: ReadonlyMap<string, FactUse>, usageCounted: boolean): void {
     const skills = this.skills();
     const copies = this.copies();

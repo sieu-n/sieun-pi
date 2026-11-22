@@ -412,6 +412,30 @@ test("a SKILL.md read that names a path credits the copy at that path, and only 
   assert.equal(rows.reduce((n, k) => n + k.use.uses, 0), 12);
 });
 
+test("a box whose scan fails keeps its last use counts in the totals, and its next good scan replaces them", t => {
+  const dir = mkdtempSync(join(tmpdir(), "skills-db-usebox-"));
+  const db = new SkillsDb({ file: join(dir, "chat.sqlite"), box: BOX, home: "/home/x", piHostPrompt: null }, { run: async () => [], undo: async () => [] });
+  t.after(() => {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const copy = { box: BOX, path: "/home/x/.claude/skills/notes", realPath: "/home/x/.claude/skills/notes", linkTarget: null, exists: true, name: "notes", source: "user-dir", root: "/home/x/.claude/skills", runtimes: ["claude"], hash: "h1", text: "x" };
+  const use = (uses: number, at: string) => ({ notes: { uses30d: uses, sessions30d: uses, lastUse: at, byKind: { claude: { uses, sessions: uses } }, byPath: [] } });
+  const scan = (at: string, mac: boolean, metalUses: number, macUses: number) => db.ingest({
+    generatedAt: at, usageCounted: true, copies: [copy],
+    boxes: [{ box: BOX, scannedAt: at, ok: true }, { box: "mac", scannedAt: at, ok: mac, ...(mac ? {} : { error: "ssh exit 255" }) }],
+    usage: {}, usageByBox: { [BOX]: use(metalUses, at), ...(mac ? { mac: use(macUses, at) } : {}) },
+  });
+  const uses = () => db.view(IDLE).skills.find(k => k.name === "notes")!.use;
+  scan("2026-11-22T05:00:00Z", true, 5, 3);
+  assert.equal(uses().uses, 8);
+  scan("2026-11-22T06:00:00Z", false, 6, 0);
+  assert.equal(uses().uses, 9, "metal's new 6 plus the Mac's last 3");
+  assert.equal(uses().byKind.claude?.uses, 9);
+  scan("2026-11-22T07:00:00Z", true, 6, 1);
+  assert.equal(uses().uses, 7);
+});
+
 test("duplicates: a pair is flagged once on the copy that is not canonical, two upstreams only get a note, and one folder per box is never extra", t => {
   const dir = mkdtempSync(join(tmpdir(), "skills-db-dup-"));
   const db = new SkillsDb({ file: join(dir, "chat.sqlite"), box: BOX, home: "/home/x", piHostPrompt: null }, { run: async () => [], undo: async () => [] });

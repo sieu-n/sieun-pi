@@ -54,10 +54,29 @@ export type FactBox = { box: string; scannedAt: string | null; ok: boolean; erro
 
 /** One SKILL.md path a use opened, per thread kind, as the transcript wrote it (absolute, `~/...` or relative to the thread's folder). */
 export type PathUse = { box: string; path: string; kind: ThreadKind; uses: number; sessions: number };
+/** The use of one name summed over boxes: counts and kinds add, paths join, and the last use is the latest. */
+export function sumUse(parts: readonly FactUse[]): FactUse {
+  const byKind: SkillUse30d["byKind"] = {};
+  for (const part of parts) {
+    for (const [kind, tally] of Object.entries(part.byKind) as [ThreadKind, { uses: number; sessions: number }][]) {
+      const cur = byKind[kind] ?? { uses: 0, sessions: 0 };
+      byKind[kind] = { uses: cur.uses + tally.uses, sessions: cur.sessions + tally.sessions };
+    }
+  }
+  return {
+    uses30d: parts.reduce((n, p) => n + p.uses30d, 0), sessions30d: parts.reduce((n, p) => n + p.sessions30d, 0),
+    lastUse: parts.map(p => p.lastUse).filter((x): x is string => x !== null).sort().at(-1) ?? null, byKind, byPath: parts.flatMap(p => p.byPath),
+  };
+}
+
 export type FactUse = { uses30d: number; sessions30d: number; lastUse: string | null; byKind: SkillUse30d["byKind"]; byPath: PathUse[] };
 
 /** `coverage` is the scanner's COVERAGE, which it raises each time it walks more folders; an inventory without it is coverage 1. */
-export type Facts = { generatedAt: string | null; coverage: number; boxes: FactBox[]; copies: FactCopy[]; usage: Map<string, FactUse>; usageCounted: boolean };
+/** `usageByBox` holds each counted box's own use, so a box that is asleep keeps its last counts in the DB instead of dropping out. */
+export type Facts = {
+  generatedAt: string | null; coverage: number; boxes: FactBox[]; copies: FactCopy[]; usage: Map<string, FactUse>; usageByBox: Map<string, Map<string, FactUse>>;
+  usageCounted: boolean;
+};
 
 type Json = Record<string, unknown>;
 const isObject = (value: unknown): value is Json => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -116,8 +135,12 @@ export function parseFacts(raw: unknown): Facts | null {
     const box = str(b.box);
     return box ? [{ box, scannedAt: str(b.scannedAt), ok: b.ok !== false, error: str(b.error), seconds: num(b.seconds), settings: parseSettings(b.settings) }] : [];
   });
-  const usage = new Map(Object.entries(isObject(raw.usage) ? raw.usage : {}).flatMap(([name, use]) => (isObject(use) ? [[name, parseUse(use)] as const] : [])));
-  return { generatedAt: str(raw.generatedAt), coverage: num(raw.coverage) ?? 1, boxes, copies: raw.copies.filter(isObject).flatMap(c => parseCopy(c) ?? []), usage, usageCounted: raw.usageCounted === true };
+  const uses = (from: unknown) => new Map(Object.entries(isObject(from) ? from : {}).flatMap(([name, use]) => (isObject(use) ? [[name, parseUse(use)] as const] : [])));
+  const usageByBox = new Map(Object.entries(isObject(raw.usageByBox) ? raw.usageByBox : {}).map(([box, byName]) => [box, uses(byName)] as const));
+  return {
+    generatedAt: str(raw.generatedAt), coverage: num(raw.coverage) ?? 1, boxes, copies: raw.copies.filter(isObject).flatMap(c => parseCopy(c) ?? []), usage: uses(raw.usage),
+    usageByBox, usageCounted: raw.usageCounted === true,
+  };
 }
 
 // Which skill a folder belongs to

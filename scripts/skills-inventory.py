@@ -613,6 +613,8 @@ def build(scans: list[dict], config: dict) -> dict:
         "copies": [{k: v for k, v in row.items() if k != "lastChange"} for s in scans for row in s["rows"]
                    if row.get("harnessKind") in (None, "skill", "subagent")],
         "usage": {name: {k: u[k] for k in ("uses30d", "sessions30d", "byKind", "byPath", "lastUse", "cliUnverified")} for name, u in usage.items()},
+        "usageByBox": {scan["box"]: {name: {k: u.get(k) for k in ("uses30d", "sessions30d", "byKind", "byPath", "lastUse", "cliUnverified")}
+                                     for name, u in (scan["usage"].get("skills") or {}).items()} for scan in scans if scan.get("usage")},
         "usageCounted": any(s.get("usage") for s in scans),
     }
 
