@@ -67,7 +67,11 @@ export function readReport(filters: UsageFilters, mode: ReadMode = "view"): Prom
   return fetchReport(filters, shown ? { background: "shown" } : {});
 }
 
-/** Reads ahead every other range and grouping for the same chat and host whose kept report is not current, while the page is in view. */
+/**
+ * Reads ahead every other range and grouping for the same chat and host whose kept report is not current, while the page is in view.
+ * They are reads for the page he looks at (`Wait.first`), so the lane sends them before the sidebar's: in a walk on 11-22 the first load
+ * of the app on the Usage page queued them behind its rooms and boards, and 7 picks in 30 s found no kept report and waited 435 to 889 ms.
+ */
 export function readAhead(filters: UsageFilters): void {
   if (typeof document !== "undefined" && document.hidden) return;
   for (const range of USAGE_RANGES) {
@@ -75,7 +79,7 @@ export function readAhead(filters: UsageFilters): void {
       const other = { ...filters, range, bucket };
       const key = keyOf(other);
       if (key === keyOf(filters) || flights.has(key) || current(kept.get(key))) continue;
-      fetchReport(other, { background: "ahead" }).catch(() => undefined);
+      fetchReport(other, { background: "ahead", first: true }).catch(() => undefined);
     }
   }
 }
