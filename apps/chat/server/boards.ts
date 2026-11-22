@@ -11,7 +11,7 @@ import { isAbsolute, join } from "node:path";
 import type { AgentSummary, BoardOp, BoardRow, BoardView, ChatBoard, CheckInPatch, CheckInView, DutyAction, DutyRow, DutyView, ForYouItem, PlanItem } from "../web/src/lib/api/types.ts";
 import { applyBoardOp, BOARD_PREFIX, emptyBoard, needsGo, nextIds, parseBoard, parseBoardOps, stepGo } from "../web/src/lib/api/shared/chat-board.ts";
 import { snoozed } from "../web/src/lib/api/shared/snooze.ts";
-import { morningTime, STILL_WORKING, upsertDuty, type Duty, type DutyRunRecord, type DutySchedule, type DutyTrigger } from "../web/src/lib/api/shared/chat-duties.ts";
+import { morningTime, upsertDuty, type Duty, type DutyRunRecord, type DutySchedule, type DutyTrigger } from "../web/src/lib/api/shared/chat-duties.ts";
 import { asAfter, clearPrecheck, measure, measureAfter, runStamp, type PrecheckLaunch } from "./duty-run.ts";
 import { dutyCard, judgedRun, missStreak } from "../web/src/lib/api/shared/duty-card.ts";
 import type { ChatAgent } from "../web/src/lib/api/shared/types.ts";
@@ -608,21 +608,13 @@ export class Boards {
     if (!resume) {
       duty.lastRunAt = at;
       duty.runCount += 1;
-      // A run behind a job that still works or waits for an account runs no precheck and starts no job, as a check-in does (b6b7bf30): on 11-22
-      // the fable auditor's sweep jobs waited hours for a Fable account and each due sweep started one more behind them. A wait records one
-      // skipped run, which each later skip of it replaces, so a long wait keeps the duty's measured runs in its newest 20.
-      const runs = [...(before.runs[dutyId] ?? [])].sort((a, b) => b.at - a.at);
-      const busy = runs.find(run => run.job)?.job;
-      if (busy && this.jobBusy(busy, working)) {
-        const skipped: DutyRunRecord = { duty: dutyId, at, slot: at, trigger, ms: 0, verdict: "skipped", metrics: {}, summary: STILL_WORKING };
-        const kept = runs[0]?.verdict === "skipped" && runs[0].summary === STILL_WORKING ? runs.slice(1) : runs;
-        before.runs[dutyId] = [skipped, ...kept].slice(0, 20);
-        this.save(chat, before);
-        this.log(`duty ${chat.slice(0, 8)}/${dutyId}: skipped, its job ${busy.name} still works or waits for an account`);
-        return;
-      }
       this.save(chat, before);
     }
+    // A run behind the duty's last job that still works measures and records its run but starts no job, as Prime's `Duties.launch` does. Until
+    // 11-23 such a run skipped its precheck too: the fable auditor's 16:06Z sweep job of 11-22 waited 3 h 44 min for a Fable account, and every
+    // due sweep behind it recorded "skipped" and measured nothing.
+    const lastJob = [...(before.runs[dutyId] ?? [])].sort((a, b) => b.at - a.at).find(run => run.job)?.job;
+    const busy = lastJob && !resume?.job && this.jobBusy(lastJob, working) ? lastJob : undefined;
     const dir = join(this.dir(chat), "duties");
     const thread = this.threadOf(chat);
     const { record, brief } = await measure({
@@ -631,7 +623,8 @@ export class Boards {
       ...(resume ? { resume: resume.launch } : {}),
       launched: launch => this.save(chat, Boards.pend(this.file(chat), dutyId, { mode: "run", at, trigger, launch })),
     });
-    if (brief) {
+    if (busy) record.summary += await this.besideBusyJob(chat, duty, busy, record, brief);
+    else if (brief) {
       const name = `${duty.name} duty ${runStamp(record.at)}`;
       try {
         // The duty job works where its precheck runs, else in its chat's project folder, so it reads that folder's AGENTS.md chain. It runs on
@@ -660,12 +653,43 @@ export class Boards {
     // and this run started none, since then the job's own end measures it (`afterJob`).
     const lastRun = (after.runs[dutyId] ?? []).filter(run => run.job).sort((a, b) => b.at - a.at)[0];
     const measured = asAfter(record);
-    if (lastRun?.job && !lastRun.after && measured && (record.job || !working.has(lastRun.job.name))) lastRun.after = measured;
+    if (lastRun?.job && !lastRun.after && measured && !busy && (record.job || !working.has(lastRun.job.name))) lastRun.after = measured;
     after.runs[dutyId] = [record, ...(after.runs[dutyId] ?? [])].sort((a, b) => b.at - a.at).slice(0, 20);
     const launch = after.pending?.[dutyId]?.launch;
     this.save(chat, Boards.pend(after, dutyId, null));
     if (launch) void clearPrecheck(launch).catch(error => this.log(`duty ${chat.slice(0, 8)}: clearing its precheck files failed: ${String(error)}`));
     this.log(`duty ${chat.slice(0, 8)}/${duty.id}: ${record.verdict}, ${record.summary}${record.job ? `, job ${record.job.name}` : ""}`);
+  }
+
+  /**
+   * What a run does beside the duty's last job that still works, and the words it adds to the run's summary. A job with no model answer yet
+   * waits for an account and has read nothing, so it keeps its place in pi-pool's line: a due run steers this run's brief into it, which it
+   * reads after its first answer, and a run with nothing due stops it. A job that answered works its brief, and the run leaves it alone.
+   */
+  private async besideBusyJob(chat: string, duty: Duty, job: { id: string; name: string }, record: DutyRunRecord, brief: string | null): Promise<string> {
+    const waits = !(await this.answeredOnce(job.id).catch(() => true));
+    if (!waits) return `; its job ${job.name} still works, so this run started none`;
+    try {
+      if (!brief) {
+        await this.host.abort(job.id);
+        return `; stopped its job ${job.name}, which still waited for a model account, since nothing is due`;
+      }
+      const text = `A newer ${duty.name} run measured while you waited for a model account: ${record.summary}. Work from the brief below instead of your first brief, since its precheck is newer.\n\n${brief}`;
+      await this.host.submit(job.id, { text, whenBusy: "steer", requestId: `duty-handoff:${job.id}:${record.at}`, entry: { kind: "agent.message", data: { from: chat, via: `duty ${duty.id}` } } });
+      return `; its job ${job.name} still waits for a model account and got this run's brief`;
+    } catch (error) {
+      this.log(`duty ${chat.slice(0, 8)}/${duty.id}: reaching its waiting job ${job.name} failed: ${String(error)}`);
+      return `; its job ${job.name} still waits for a model account, and reaching it failed`;
+    }
+  }
+
+  /** Whether a duty job got a model answer that is no error; pi-pool's "the token hook gave no token" errors are no answer (`readAccountWait`). */
+  private async answeredOnce(job: string): Promise<boolean> {
+    if (this.answered.has(job)) return true;
+    const { entries } = await this.host.entries(job, { after: 0, limit: 50, lean: true });
+    const answer = entries.some(entry => entry.model?.some(message => message.role === "assistant" && message.stopReason !== "error"));
+    if (answer) this.answered.add(job);
+    return answer;
   }
 
   /**
@@ -1047,13 +1071,7 @@ export class Boards {
       if (run?.job && (status === "running" || status === "sleeping")) {
         const job = run.job.id;
         const ticket = await this.host.ticket(job).catch(() => null);
-        if (ticket?.place.state === "queued") since = run.at;
-        else if (!this.answered.has(job)) {
-          const { entries } = await this.host.entries(job, { after: 0, limit: 50, lean: true });
-          const answer = entries.some(entry => entry.model?.some(message => message.role === "assistant" && message.stopReason !== "error"));
-          if (answer) this.answered.add(job);
-          else since = run.at;
-        }
+        if (ticket?.place.state === "queued" || !(await this.answeredOnce(job))) since = run.at;
       }
       if (since === this.accountWaits.get(key)) return;
       if (since === undefined) this.accountWaits.delete(key);
