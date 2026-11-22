@@ -7,10 +7,13 @@
  * The thread here holds 10,000 matching entries, and every host read waits 50 ms, the way a read that opens a cold thread file waits.
  */
 import assert from "node:assert/strict";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { after, before, test } from "node:test";
 import type { SearchResult, TimelinePage } from "../../web/src/lib/api/types.ts";
 import type { FixtureHost } from "../../server/host/fixture.ts";
 import { start, type Running } from "./helpers.ts";
+import type { RequestTiming } from "../../server/request-log.ts";
 
 const ENTRIES = 10_000;
 const HOST_READ_MS = 50;
@@ -98,4 +101,17 @@ test("so does each keystroke with filters on: many from values and where", async
   await keystrokes("&where=root,thread&from=owner", ENTRIES / 50);
   assert.equal((await s.get<SearchResult>("/api/search?q=zephyr&where=tool")).total, ENTRIES - ENTRIES / 50);
   assert.equal((await s.get<SearchResult>("/api/search?q=zephyr&where=root")).total, ENTRIES / 50);
+});
+
+test("a search's request log line says where its handler time went", async () => {
+  await s.get<SearchResult>("/api/search?q=zephyr%20split");
+  const file = join(s.app.config.dataDir, "requests", `${new Date().toISOString().slice(0, 10)}.jsonl`);
+  let line: RequestTiming | undefined;
+  for (let k = 0; k < 50 && !line; k++) {
+    await new Promise(resolve => setTimeout(resolve, 20));
+    line = existsSync(file) ? readFileSync(file, "utf8").split("\n").filter(Boolean).map(text => JSON.parse(text) as RequestTiming)
+      .find(timing => timing.src === "server" && timing.r === "/api/search" && timing.split !== undefined) : undefined;
+  }
+  assert.ok(line?.split, "no /api/search line with a split");
+  for (const part of ["prep", "read", "ready", "local", "meili", "hits", "pending", "filterKb"]) assert.equal(typeof line.split[part], "number", part);
 });

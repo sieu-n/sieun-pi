@@ -17,7 +17,7 @@ import { conversationIdOf, parseConversationId, type Threads } from "./threads.t
 import type { AgentRecord, RoomPost } from "./agent-store.ts";
 import { isAgentId, isRoomId } from "./agents.ts";
 import { reactionList, reactionsLine } from "./reactions.ts";
-import { and, eq, isIn, not, or, type BoxIndexState, type Cond, type EntryDoc, type PostDoc, type PostHas, type SearchDoc, type SearchEngine } from "./search-engine.ts";
+import { and, eq, isIn, not, or, type BoxIndexState, type Cond, type EntryDoc, type PostDoc, type PostHas, type SearchDoc, type SearchEngine, type SearchSplit } from "./search-engine.ts";
 
 /** The owner reads dates in KST. */
 export const OWNER_ZONE_OFFSET_MS = 9 * 3600_000;
@@ -254,7 +254,8 @@ export class Search {
 
   constructor(readonly threads: Threads, readonly groups: GroupRooms, readonly engine: SearchEngine, private readonly posts: (room: string) => readonly RoomPost[]) {}
 
-  async run(params: SearchParams): Promise<SearchResult> {
+  async run(params: SearchParams, split?: SearchSplit): Promise<SearchResult> {
+    const started = performance.now();
     const query = parseQuery(params);
     const words = terms(query.q);
     const has = parseHas(query.has);
@@ -313,7 +314,10 @@ export class Search {
       ));
     }
 
-    const mine = parts.length ? await this.engine.search(words.length ? query.q : "", or(...parts), { sort, limit: offset + limit }) : { docs: [], total: 0 };
+    const asked = performance.now();
+    if (split) split.prep = asked - started;
+    const mine = parts.length ? await this.engine.search(words.length ? query.q : "", or(...parts), { sort, limit: offset + limit }, split) : { docs: [], total: 0 };
+    const answered = performance.now();
     // Only the page's hits need their conversation's summary; every conversation's summaries took tens of ms to build on us-metal02.
     const known = new Map<string, ConversationSummary | undefined>();
     const summaries = { get: (id: string) => (known.has(id) ? known.get(id) : known.set(id, this.threads.conversation(id)).get(id)) };
@@ -326,6 +330,7 @@ export class Search {
     let hits = mine.docs.slice(offset, offset + limit).flatMap(doc => this.docHit(doc, scope?.thread, summaries, marks, testOf, roots, !!query.brief) ?? []);
     // An answer whose match sits only in a tool call's arguments is found by its text, so it sinks below the messages of its own page.
     if (sort === "relevance") hits = [...hits.filter(hit => hit.role !== "tool"), ...hits.filter(hit => hit.role === "tool")];
+    if (split) split.hits = performance.now() - answered;
     return {
       hits, total, ...(offset + limit < total ? { nextCursor: String(offset + limit) } : {}), ...(missing.length ? { missing } : {}),
     };

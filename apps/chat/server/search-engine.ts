@@ -204,6 +204,9 @@ export interface EngineDeps {
 
 export interface EngineAnswer { docs: SearchDoc[]; total: number }
 
+/** Where one search's handler time went, in ms by part, with the pending count and filter size, for its request log line (request-log.ts `split`). */
+export type SearchSplit = Record<string, number>;
+
 export class SearchEngine {
   private readonly pending = new Map<string, Pending>();
   private ready?: Promise<void>;
@@ -582,11 +585,18 @@ export class SearchEngine {
    * The first `limit` documents that hold every word of `q` and meet `where`, and the exact count of all of them: Meilisearch's for the
    * documents it holds, with the pending ones read here and merged by rank.
    */
-  async search(q: string, where: Cond, opts: { sort: "relevance" | "recent"; limit: number }): Promise<EngineAnswer> {
+  async search(q: string, where: Cond, opts: { sort: "relevance" | "recent"; limit: number }, split?: SearchSplit): Promise<EngineAnswer> {
+    let mark = performance.now();
+    const took = (part: string) => {
+      const now = performance.now();
+      if (split) split[part] = (split[part] ?? 0) + now - mark;
+      mark = now;
+    };
     if (!this.ready) void this.start().catch(() => undefined);
     // This box's rows written since the last read are found at once; other boxes' rows come with their read every `SEND_SPACING_MS`.
     await Promise.all(this.own.filter(source => this.readCursors.has(source.box)).map(source => this.readBox(source)))
       .catch(error => this.deps.log(`search: ${String(error)}`));
+    took("read");
     if (this.unsent.size) this.scheduleRefresh();
     // A first fill is waited for, so every answer comes from Meilisearch's matching, typo tolerance included; memory answers only while
     // Meilisearch cannot start, as on a box without its binary.
@@ -604,16 +614,24 @@ export class SearchEngine {
       // The pending list as it stands is enough for this answer: a document Meilisearch already holds is read from memory once more.
       void this.settle().catch(error => this.deps.log(`search: ${String(error)}`));
     }
+    took("ready");
     const words = queryWords(q);
     const local = [...this.pending.values()].flatMap(p => (p.doc && holds(where, p.doc) ? [{ doc: p.doc, score: words.length ? docMatches(p.doc, words) : 1 }] : [])).filter(m => m.score > 0);
     local.sort((a, b) => (opts.sort === "recent" ? b.doc.at - a.doc.at : a.doc.tier - b.doc.tier || b.score - a.score || b.doc.at - a.doc.at));
     const fresh = local.map(m => m.doc);
     if (this.filling) return { docs: fresh.slice(0, opts.limit), total: fresh.length };
     const pendingIds = [...this.pending.keys()];
+    const filter = filterText(pendingIds.length ? and(where, not(isIn("id", pendingIds))) : where);
+    if (split) {
+      split.pending = pendingIds.length;
+      split.filterKb = Math.round(filter.length / 102.4) / 10;
+    }
+    took("local");
     const answer = await this.meili.search<SearchDoc>(SEARCH_INDEX, {
-      q, filter: filterText(pendingIds.length ? and(where, not(isIn("id", pendingIds))) : where), page: 1, hitsPerPage: opts.limit, matchingStrategy: "all",
+      q, filter, page: 1, hitsPerPage: opts.limit, matchingStrategy: "all",
       ...(opts.sort === "recent" ? { sort: ["at:desc"] } : {}),
     });
+    took("meili");
     let docs: SearchDoc[];
     if (opts.sort === "recent") docs = [...answer.hits, ...fresh].sort((a, b) => b.at - a.at);
     else {

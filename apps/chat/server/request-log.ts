@@ -29,6 +29,8 @@ export interface RequestTiming {
   stored?: number;
   /** A server line's split of `ms`: the wait for the request body, the handler's own time after it, and the longest event-loop stall in it. */
   body?: number; run?: number; stall?: number;
+  /** On a server line of GET /api/search, where its handler time went by part, with its pending count and filter size (search-engine.ts `SearchSplit`). */
+  split?: Record<string, number>;
   /**
    * Why the request failed: the server's error for a refused or failed request, and on a client line the error the page got, with `s` 0 when
    * the call never reached the server, such as during a release restart.
@@ -95,7 +97,8 @@ export class RequestLog {
   write(timing: RequestTiming): void {
     const day = dayOf(timing.at);
     const round = (ms: number | undefined) => (ms === undefined ? undefined : Math.round(ms * 10) / 10);
-    const line = `${JSON.stringify({ ...timing, ms: round(timing.ms), body: round(timing.body), run: round(timing.run), stall: timing.stall ? round(timing.stall) : undefined })}\n`;
+    const line = `${JSON.stringify({ ...timing, ms: round(timing.ms), body: round(timing.body), run: round(timing.run), stall: timing.stall ? round(timing.stall) : undefined,
+      split: timing.split && Object.fromEntries(Object.entries(timing.split).map(([part, ms]) => [part, round(ms)])) })}\n`;
     this.pending = this.pending.then(async () => {
       if (day !== this.day) {
         this.day = day;

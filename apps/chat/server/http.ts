@@ -19,6 +19,7 @@ import { parsePrefsPatch } from "./sidebar-prefs.ts";
 import { LaterError } from "./later.ts";
 import { CwdRefused } from "./projects.ts";
 import { listValues, SearchFilterError } from "./search.ts";
+import type { SearchSplit } from "./search-engine.ts";
 import { isHostAway } from "./host/types.ts";
 import { readJson } from "./store.ts";
 import { usageLive, usageReport, hostsReport } from "./usage.ts";
@@ -54,8 +55,16 @@ export class BadRequest extends Error {}
  * A request's split of its time for the request log: the body wait and the handler's own time, and the reason a refused or failed
  * request gave (request-log.ts `RequestTiming`).
  */
-type Phase = { body?: number; run?: number; err?: string };
+type Phase = { body?: number; run?: number; err?: string; split?: SearchSplit };
 const phases = new WeakMap<IncomingMessage, Phase>();
+
+/** A search's split for its request log line, kept on the request's phase. */
+function splitOf(req: IncomingMessage): SearchSplit {
+  const split: SearchSplit = {};
+  const phase = phases.get(req);
+  if (phase) phase.split = split;
+  return split;
+}
 
 function route(method: string, path: string, handler: Handler): Route {
   const keys: string[] = [];
@@ -379,11 +388,11 @@ export function routes(app: App): Route[] {
     route("POST", "/api/dms", async (_r, _p, _q, body) => app.openDm(((await body()) as { agent: string }).agent)),
     route("GET", "/api/dms", async () => app.rooms.summaries()),
     // `from`, `where`, `place` and `has` take comma lists and repeated params alike; a value search cannot read is the caller's error.
-    route("GET", "/api/search", async (_r, _p, q) => app.search.run({
+    route("GET", "/api/search", async (r, _p, q) => app.search.run({
       q: q.get("q") ?? "", from: listValues(q.getAll("from")), where: listValues(q.getAll("where")), place: listValues(q.getAll("place")), in: str(q.get("in")), after: str(q.get("after")),
       before: str(q.get("before")), sort: q.get("sort") === "recent" ? "recent" : "relevance", limit: num(q.get("limit")), cursor: str(q.get("cursor")),
       brief: q.get("brief") === "1", has: listValues(q.getAll("has")),
-    }).catch((error: unknown) => {
+    }, splitOf(r)).catch((error: unknown) => {
       throw error instanceof SearchFilterError ? new BadRequest(error.message) : error;
     })),
     route("GET", "/api/search/recent", async (_r, _p, q) => app.search.recent({ after: num(q.get("after")), limit: num(q.get("limit")) })),
