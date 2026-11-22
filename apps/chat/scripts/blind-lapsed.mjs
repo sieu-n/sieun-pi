@@ -124,7 +124,8 @@ try {
   const checklist = before.find(p => isAgent(p) && p.answers === task.id);
   for (const [n, question] of QUICK.entries()) {
     const asked = await send(question, `quick-${n}`);
-    await waitFor(8 * 60_000, async () => (await posts()).some(p => isAgent(p) && p.answers === asked.id) && await done(asked.id));
+    // A quick answer often gets no done mark, so the reply alone ends the wait.
+    await waitFor(8 * 60_000, async () => (await posts()).some(p => isAgent(p) && p.answers === asked.id));
   }
   const comm = await commOf();
   const handOvers = messages(comm).flatMap(m => m.role === "assistant" ? m.content.filter(b => b.type === "toolCall" && /agent_message\.send/.test(String(b.arguments?.code ?? ""))) : [])
