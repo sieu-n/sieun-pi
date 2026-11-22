@@ -378,6 +378,7 @@ class Global {
           roomsAhead(event.sidebar);
           for (const queue of panelQueues.values()) queue.again();
           boardsAhead(this.agents);
+          liveJobsAhead(this.jobs);
           break;
         case "sidebar":
           this.sidebar = event.sidebar;
@@ -397,9 +398,11 @@ class Global {
           break;
         case "job":
           this.jobs = upsert(this.jobs, event.job);
+          liveJobsAhead(this.jobs);
           break;
         case "job_removed":
           this.jobs = this.jobs.filter(j => j.id !== event.id);
+          liveJobsAhead(this.jobs);
           break;
         case "conversation": {
           const next = event.conversation;
@@ -413,6 +416,7 @@ class Global {
           this.jobs = withStatus(this.jobs, this.jobsById.get(id), status);
           this.conversations = withStatus(this.conversations, this.conversationsById.get(id), status);
           boardsAhead(this.agents);
+          if (this.jobsById.has(id)) liveJobsAhead(this.jobs);
           break;
         }
         case "for_you":
@@ -657,7 +661,9 @@ const readTimeline = async (id: ConversationId, around?: string, wait?: Wait, li
 const ROOMS_AHEAD = 40;
 const WORK_AHEAD = 20;
 const JOBS_AHEAD = 20;
-const timelinePages = new PageCache<TimelineRead, TimelineShown>("timeline", ROOMS_AHEAD + WORK_AHEAD + JOBS_AHEAD);
+/** How many of the jobs that work now are read ahead and followed (`liveJobsAhead`): on 11-22 at 05:40 UTC 14 worked and 5 slept (GET /api/jobs). */
+const LIVE_JOBS_AHEAD = 20;
+const timelinePages = new PageCache<TimelineRead, TimelineShown>("timeline", ROOMS_AHEAD + WORK_AHEAD + JOBS_AHEAD + LIVE_JOBS_AHEAD);
 
 /** A channel thread reply that shows only in its thread, not one also sent to the channel. */
 const threadOnly = (item: Item): boolean => item.kind === "message" && !!item.threadRoot && !item.alsoInChannel;
@@ -845,7 +851,7 @@ function roomsAhead(sidebar: Sidebar | null = global.sidebar): void {
     .map(agent => ({ id: agent.thread, at: agent.updatedAt, working: agent.status === "working" }));
   const wanted = [...list, ...work.filter(thread => !list.some(room => room.id === thread.id))];
   rooms.want(wanted);
-  followRooms(wanted.map(room => room.id));
+  follow("rooms", wanted.map(room => room.id));
 }
 
 /**
@@ -857,13 +863,16 @@ function roomsAhead(sidebar: Sidebar | null = global.sidebar): void {
  */
 const followed = new Map<ConversationId, () => void>();
 let following = false;
+/** What each list wants followed, by list name; a new list of one name replaces its last one. */
+const followLists = new Map<string, readonly ConversationId[]>();
 
-function followRooms(ids: readonly ConversationId[]): void {
+function follow(list: string, ids: readonly ConversationId[]): void {
+  followLists.set(list, ids);
   if (!following) {
     following = true;
     live.on(event => (event.type === "items" && followed.has(event.conversation) ? keepArrived(event.conversation, event.items, event.removed ?? []) : undefined));
   }
-  const wanted = new Set(ids);
+  const wanted = new Set([...followLists.values()].flat());
   for (const [id, stop] of followed) {
     if (wanted.has(id)) continue;
     stop();
@@ -927,6 +936,20 @@ const jobPills = new ReadAhead(warmTimeline(JOB_PAGE, { first: true }), viewingT
 function jobsAhead(items: readonly Item[]): void {
   const refs = items.flatMap(item => (item.kind === "turn" ? item.jobs : item.kind === "message" ? item.jobs ?? [] : []));
   jobPills.want(refs.reverse().slice(0, JOBS_AHEAD).map(job => ({ id: job.conversation, at: job.lastAt, working: job.status === "working" })));
+}
+
+/**
+ * The jobs that work or sleep now, of every agent, the newest first, read ahead as short pages and followed on the socket like the sidebar
+ * rooms, so a job opened after a reload, from a pill or by its link, draws its kept page with its newest steps. On 11-22 a reload walk at a
+ * 200 ms round trip waited 408 to 825 ms for 3 of its 6 job opens, each a job no list had read (work/p157-opens/reload-walks).
+ */
+const liveJobs = new ReadAhead(warmTimeline(JOB_PAGE), viewingTimeline);
+function liveJobsAhead(list: readonly AgentSummary[]): void {
+  const wanted = list.filter(job => !job.archived && (job.status === "working" || job.status === "sleeping"))
+    .sort((a, b) => b.createdAt - a.createdAt).slice(0, LIVE_JOBS_AHEAD)
+    .map(job => ({ id: job.id, at: job.updatedAt, working: job.status === "working" }));
+  liveJobs.want(wanted);
+  follow("jobs", wanted.map(job => job.id));
 }
 
 /** The seq of the newest thread reply that the root posts among `items` show in their pills, or -1 when they show none. */

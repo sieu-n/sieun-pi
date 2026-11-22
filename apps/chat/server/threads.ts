@@ -48,6 +48,18 @@ const TURN_READ_CAP = 2000;
 /** How many entries one widening read asks for, past the page, to reach the input that starts the page's oldest turn. */
 const WIDEN = 100;
 
+const FIRST_SENDS_CACHE = "first-sends";
+/** How many entries one read of a scan for a conversation's earliest speaking call asks for, the most one timeline page reads. */
+const SCAN_READ = 200;
+/**
+ * What a scan knows of one conversation's earliest speaking call: every entry up to `to` was read, and `first` is the earliest call among
+ * them, which no later read can move. Before it, a page drew its turns by the earliest call any read had seen so far, so a read of an older
+ * page could turn a later page's bubbles into private notes: on 11-22 at 05:35 UTC six turns of the agent factory's work thread and one of
+ * vent's lost their text between two reads of the same page, and each open of a page kept before that waited a round trip for the change
+ * (work/p157-opens/kept-follow.mjs).
+ */
+type FirstSendScan = { to: number; first?: number };
+
 interface LiveConversation {
   thread: string;
   conversation: number;
@@ -103,6 +115,11 @@ export class Threads {
    * through send_message reads that way even when the page itself holds no call, such as a run of quiet turns.
    */
   private readonly firstSends = new Map<ConversationId, number>();
+  /** Each conversation's scan for its earliest speaking call (`settleFirstSend`), kept in the cache across restarts. */
+  private readonly scans: Map<ConversationId, FirstSendScan>;
+  private readonly scanning = new Set<ConversationId>();
+  /** The scans run one at a time, so a release that reads many conversations at once starts no burst of history reads on pi-host. */
+  private scanQueue: Promise<void> = Promise.resolve();
   private readonly tails: TailCache;
   private timer?: NodeJS.Timeout;
   /** The channels and Solo rooms (group-rooms.ts), merged into conversations(). */
@@ -131,6 +148,8 @@ export class Threads {
     this.trees = new Map(cache.trees);
     this.cached = JSON.stringify(cache);
     this.tails = new TailCache(host, 64, TURN_READ_CAP + 200 + WIDEN);
+    this.scans = new Map(Object.entries(store.cache<Record<string, FirstSendScan>>(FIRST_SENDS_CACHE, {})));
+    for (const [id, scan] of this.scans) if (scan.first !== undefined) this.firstSends.set(id, scan.first);
   }
 
   /**
@@ -559,12 +578,64 @@ export class Threads {
     return [...this.roomSummaries(), ...this.threadConversations(), ...this.groupSummaries()];
   }
 
-  /** Keeps the earliest send_message call in `entries` as the conversation's, and returns the earliest known. */
-  noteSends(thread: string, conversation: number, entries: readonly EntryRecord[]): number | undefined {
+  /**
+   * Keeps the earliest send_message call in `entries` as the conversation's, and returns the earliest known: the scan's once it found one.
+   * `run` says the entries are a run of the conversation read in order, such as a page, which can extend its scan; a live entry is not.
+   */
+  noteSends(thread: string, conversation: number, entries: readonly EntryRecord[], run = true): number | undefined {
     const id = conversationIdOf(thread, conversation);
-    const first = earliest(this.firstSends.get(id), firstSendIn(entries.filter(e => e.conversationId === conversation)));
+    const mine = entries.filter(e => e.conversationId === conversation);
+    if (run) this.noteRun(thread, conversation, mine);
+    const first = this.scans.get(id)?.first ?? earliest(this.firstSends.get(id), firstSendIn(mine));
     if (first !== undefined) this.firstSends.set(id, first);
     return first;
+  }
+
+  /** Extends the conversation's scan with a run that joins it, or starts a scan from where the last one stopped when the run is past it. */
+  private noteRun(thread: string, conversation: number, entries: readonly EntryRecord[]): void {
+    const id = conversationIdOf(thread, conversation);
+    const scan = this.scans.get(id);
+    if (!entries.length || scan?.first !== undefined || this.scanning.has(id)) return;
+    const ids = entries.map(e => e.id);
+    const oldest = Math.min(...ids);
+    const newest = Math.max(...ids);
+    if (!scan || oldest > scan.to) return this.settleFirstSend(thread, conversation);
+    if (newest <= scan.to) return;
+    const first = firstSendIn(entries.filter(e => e.id > scan.to));
+    this.scans.set(id, { to: newest, ...(first === undefined ? {} : { first }) });
+    this.saveScans();
+  }
+
+  /**
+   * Reads the conversation forward from where its scan stopped, the first entry at the start, until a speaking call or its newest entry.
+   * It runs behind the read that asked, so that read draws its page as before; the reads after it draw by the scan's call.
+   */
+  private settleFirstSend(thread: string, conversation: number): void {
+    const id = conversationIdOf(thread, conversation);
+    if (this.scanning.has(id)) return;
+    this.scanning.add(id);
+    this.scanQueue = this.scanQueue.then(async () => {
+      let scan = this.scans.get(id) ?? { to: 0 };
+      while (scan.first === undefined) {
+        const got = await this.host.entries(thread, { conversation, after: scan.to, limit: SCAN_READ, lean: true });
+        if (!got.entries.length) break;
+        const first = firstSendIn(got.entries.filter(e => e.conversationId === conversation));
+        scan = { to: got.entries.at(-1)!.id, ...(first === undefined ? {} : { first }) };
+        this.scans.set(id, scan);
+        if (!got.more) break;
+      }
+      if (scan.first !== undefined) this.firstSends.set(id, scan.first);
+      this.saveScans();
+    }).catch(error => this.log(`first send scan of ${id} failed: ${String(error)}`)).finally(() => this.scanning.delete(id));
+  }
+
+  private saveScans(): void {
+    this.store.saveCache(FIRST_SENDS_CACHE, Object.fromEntries(this.scans));
+  }
+
+  /** Ends when every scan started so far has ended; tests wait on it. */
+  scansDone(): Promise<void> {
+    return this.scanQueue;
   }
 
   /** The conversation's earliest known send_message call; with none known yet, reads its newest page, as the page the owner opens would. */
@@ -822,7 +893,7 @@ export class Threads {
     if (!entry || entry.conversationId !== live.conversation || live.recent.some(e => e.id === entry.id)) return false;
     if (isInput(entry) && live.recent.length && !live.running) live.recent = [];
     live.recent.push(entry);
-    this.noteSends(live.thread, live.conversation, [entry]);
+    this.noteSends(live.thread, live.conversation, [entry], false);
     live.recent.sort((a, b) => a.id - b.id);
     if (live.recent.length > TURN_READ_CAP) live.recent = live.recent.slice(-TURN_READ_CAP);
     return true;
