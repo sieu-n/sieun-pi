@@ -54,7 +54,15 @@ const closes = (line) => {
  * apps/infra/metal/compose.yml::redis. On a replay of the 7 days to 2026-11-20 08:15Z this drops 8 of the 1,241 flagged
  * dream rechecks, all on that ref, and two of them that changed a page body changed only box-proxy lines; keeping the
  * shallowest key instead also dropped 5 rechecks that fixed a one-line key, such as `includedSeats: 1,` of a new plan in
- * convex/search/pricing.ts, whose interface field sat shallower (~/work/wiki-stale-yaml-key-depth/). Failing all of
+ * convex/search/pricing.ts, whose interface field sat shallower (~/work/wiki-stale-yaml-key-depth/). Among such block
+ * keys a top-level block wins when one exists, as the top-level `networks:` of apps/infra/metal/compose.yml over the
+ * `networks:` of each service, because on 2026-11-22 auto-sns-agent 7e8408aa08 added the search, api-portal and admin
+ * services with their own `networks:` blocks and flagged domains/devops/production-infrastructure/box-and-networks.html.
+ * On a replay of the 2,034 dream rechecks in the 7 days to 2026-11-22 06:00Z, 1,865 behind a flag, this drops 2, both
+ * `last_verified` only rechecks of that page on that ref (d57b358397 and 7e8408aa08), and none that changed a page body,
+ * and the `redis` service ref above keeps its block, since compose.yml has no top-level `redis:`. Keeping the shallowest
+ * block key instead drops one more, also `last_verified` only, but changes the definition in 117 rechecks against 67
+ * (~/work/wiki-stale-reflow-and-shared-keys/). Failing all of
  * those, a Markdown heading `## name` runs to the next heading of its level or higher, because on the 7 days to 2026-10-28
  * 10:28Z commits to other sections of ops/runbooks/dev-boxes.md and apps/infra/metal/README.md flagged
  * domains/devops/local-store-box/index.html and domains/devops/aws-estate.html 11 times and none of them changed the page.
@@ -99,7 +107,8 @@ export function definitionText(text, name) {
 			blocks.push({ depth, text: lines.slice(head, end).join('\n').trimEnd() });
 		}
 		const heads = pattern === patterns[1] ? blocks.filter((block) => block.text.includes('\n')) : [];
-		const kept = pattern === patterns[0] ? blocks.filter((block) => block.depth === 0) : heads;
+		const top = heads.filter((block) => block.depth === 0);
+		const kept = pattern === patterns[0] ? blocks.filter((block) => block.depth === 0) : top.length ? top : heads;
 		if (blocks.length) return (kept.length ? kept : blocks).map((block) => block.text).join('\n');
 	}
 	const blocks = braceBlocks(lines, name);

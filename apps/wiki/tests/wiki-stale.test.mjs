@@ -283,6 +283,27 @@ test('a path::name key that heads a block wins over one-line keys of the same na
 	assert.equal(definitionText(plans, 'seats'), '\tseats: number;\n\t\tseats: 1,', 'one-line keys alone all count');
 });
 
+// 2026-11-22: auto-sns-agent 7e8408aa08 added the search, api-portal and admin services to apps/infra/metal/compose.yml,
+// each with its own networks: block, and box-and-networks.html read as behind code on compose.yml::networks.
+test('a path::name key with a top-level block follows that block, not the nested blocks of the same key', (t) => {
+	const w = fixture(t);
+	const compose = (top, services) =>
+		`networks:\n  default:\n    name: ${top}\nservices:\n${services.map((s) => `  ${s}:\n    image: ${s}\n    networks:\n      default:\n        aliases: [${s}]\n`).join('')}`;
+	w.write('compose.yml', compose('virev', ['redis']));
+	w.page('networks.html', ['compose.yml::networks']);
+	w.init();
+	w.commit('2026-10-20T01:00:00Z', 'pages');
+	w.write('compose.yml', compose('virev', ['redis', 'search', 'admin']));
+	w.commit('2026-10-20T04:00:00Z', '7e8408aa08');
+	assert.deepEqual(w.refsByPage(), {}, 'a service network block is no change to the top-level networks');
+	w.write('compose.yml', compose('virev-prod', ['redis', 'search', 'admin']));
+	w.commit('2026-10-20T05:00:00Z', 'name');
+	assert.deepEqual(w.refsByPage()['apps/networks.html'], [{ ref: 'compose.yml::networks', ...at('05') }]);
+	assert.equal(definitionText(compose('virev', ['redis']), 'networks'), 'networks:\n  default:\n    name: virev');
+	const nested = 'services:\n  a:\n    networks:\n      - x\n  b:\n    networks:\n      - y\n';
+	assert.equal(definitionText(nested, 'networks'), '    networks:\n      - x\n    networks:\n      - y', 'with no top-level block every block counts');
+});
+
 // 2026-10-28: 6a0b8a728a only reworded a comment in the guest block of apps/infra/ci-server/host-vars.ci02.yml, and
 // runners.html read as behind code through its ref host-vars.ci02.yml::guest, because code-text.mjs kept YAML comments.
 test('a comment-only change in a cited YAML or TOML block leaves the page current, and a value change counts', (t) => {
