@@ -85,6 +85,8 @@
   const working = $derived(store.status === "working");
   /** The agent's live card: its work thread's own status and its comm threads. */
   const liveAgent = $derived(agent ? (agents.byId(agent.id) ?? agent) : null);
+  /** pi-host's "retrying since HH:MM: <kind>" of the agent's comm thread for this room, else of its own turn, which the working line shows. */
+  const retrying = $derived(liveAgent?.comm?.find((c) => c.room === id)?.retrying ?? (isDm ? liveAgent?.retrying : undefined) ?? null);
   /** The Work pill shows while the agent's work thread or one of its jobs runs. */
   const workRunning = $derived(
     isDm && !!workThread && !!liveAgent && (liveAgent.status === "working" || jobs.of(liveAgent.id).some((job) => job.status === "working")),
@@ -657,7 +659,10 @@
     onmarkread={readNow}
   />
   <div class="typing" aria-live="polite">
-    {#if waitText && agent}
+    {#if retrying && agent}
+      <TypingDots mode="waiting" />
+      <span data-testid="retrying-line">{agent.name}: {retrying}</span>
+    {:else if waitText && agent}
       <TypingDots mode="waiting" />
       <span>{agent.name} {waitText}</span>
     {:else if waiting && agent}

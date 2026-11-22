@@ -90,6 +90,7 @@
           <span class="grow">
             <a href={hrefFor("agents", [job.id])}>{job.name}</a>
             {#if parent}<span class="t-caption meta">under {parent}</span>{/if}
+            {#if liveJobs.byId(job.id)?.retrying}<span class="t-caption meta" data-retrying>{liveJobs.byId(job.id)?.retrying}</span>{/if}
           </span>
           {#if job.kind !== "job"}<Chip size="sm" label={JOB_KIND_LABEL[job.kind]} />{/if}
           <span class="t-caption meta when">{job.createdAt ? stampLabel(job.createdAt) : ""}</span>

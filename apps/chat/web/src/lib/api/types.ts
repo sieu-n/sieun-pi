@@ -85,7 +85,12 @@ export interface AgentSummary {
    * An agent's comm threads, one per room (agent-model.md phase 4): the thin thread that talks in that room, reads the work thread's state
    * and hands it work. A comm thread is never an agent, a job or a solo chat, so no list shows it as one.
    */
-  comm?: { room: RoomId; thread: string; status: RunStatus }[];
+  comm?: { room: RoomId; thread: string; status: RunStatus; retrying?: string }[];
+  /**
+   * pi-host's "retrying since HH:MM: <error kind>" (KST) while its own turn, or a comm thread's in `comm`, has retried a transient error past
+   * 5 minutes. The retry goes on; the room's working line and the Jobs list show it.
+   */
+  retrying?: string;
   /** "away" while the chat server has no live link to the agent's box (`host`); absent on a server with one box. */
   hostState?: AgentHostState;
 }

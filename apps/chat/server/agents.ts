@@ -52,6 +52,15 @@ export interface AgentRows {
 const runStatus = (row: DurableThread | undefined): RunStatus => (row?.status === "running" ? "working" : row?.status ?? "idle");
 
 /**
+ * pi-host's "retrying since HH:MM: <kind>" of the agent's own turn: its work thread's root conversation node, or the row while the thread
+ * has no jobs, since a row's flag covers every conversation in the file.
+ */
+export function rootRetrying(rows: Pick<AgentRows, "row" | "tree">): string | undefined {
+  const node = rows.tree.find(n => n.id === 1);
+  return node ? node.retrying : rows.tree.length ? undefined : rows.row?.retrying;
+}
+
+/**
  * An agent works while its work thread, any conversation in it, or any of its root job threads runs. A comm thread's turn does not count,
  * so the Work pill stays off while it answers; only the DM's own status counts it (rooms.ts).
  */
@@ -69,7 +78,8 @@ export function agentSummary(record: AgentRecord, rows: AgentRows, extra: { mode
     status: agentStatus(rows), parent: null, thread: record.workThread, conversation: 1, archived: row?.archived ?? record.archived,
     createdAt: record.createdAt, updatedAt: Math.max(row?.updatedAt ?? record.createdAt, ...rows.jobs.map(j => j.updatedAt)),
     preview: row?.preview.split("\n").find(line => line.trim()) ?? "", rooms: extra.rooms, host: record.host, room: record.room, home: record.home,
-    ...(rows.comm?.length ? { comm: rows.comm.map(c => ({ room: c.room, thread: c.thread, status: runStatus(c.row) })) } : {}),
+    ...(rows.comm?.length ? { comm: rows.comm.map(c => ({ room: c.room, thread: c.thread, status: runStatus(c.row), ...(c.row?.retrying ? { retrying: c.row.retrying } : {}) })) } : {}),
+    ...(rootRetrying(rows) ? { retrying: rootRetrying(rows)! } : {}),
     ...(extra.hostState ? { hostState: extra.hostState } : {}),
     ...(record.test ? { test: true as const } : {}),
   };

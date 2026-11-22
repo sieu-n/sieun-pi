@@ -11,6 +11,8 @@
  *     a comm thread takes to ack (c224).
  *   delivery_error: an owner post of the last 3 h whose delivery to an agent failed, still queued after 10 min, or that reached no agent.
  *   job_stuck: a job that reads working whose newest entry is 45 min old or more (sieun-pi AGENTS.md rule 6 reads that as stalled).
+ *   job_retrying: a job whose run pi-host flags "retrying since HH:MM: <error kind>", a transient error it has retried past 5 minutes and
+ *     keeps retrying, which is no stall (packages/pi-host/src/durable/retrying.ts).
  *   job_failed: a job whose last turn failed, with an entry in the last 24 h, and an agent's work or comm thread that failed.
  *   duty_off: a duty, not paused, whose last run missed its target or errored.
  *   step_stalled: an open board step with no live job on it, no wait still running and no open owner todo that holds it. A step whose job
@@ -58,11 +60,11 @@ const STUCK_MS = 45 * MIN;
 const FAILED_WINDOW_MS = 24 * HOUR;
 const RERAISE_MS = 24 * HOUR;
 
-export const KINDS = ["owner_unanswered", "delivery_error", "job_stuck", "job_failed", "duty_off", "step_stalled", "model_off"] as const;
+export const KINDS = ["owner_unanswered", "delivery_error", "job_stuck", "job_retrying", "job_failed", "duty_off", "step_stalled", "model_off"] as const;
 export type Kind = (typeof KINDS)[number];
 const KIND_WORDS: Record<Kind, [string, string]> = {
   owner_unanswered: ["owner post with no answer", "owner posts with no answer"], delivery_error: ["delivery error", "delivery errors"],
-  job_stuck: ["stuck job", "stuck jobs"], job_failed: ["failed job or thread", "failed jobs and threads"],
+  job_stuck: ["stuck job", "stuck jobs"], job_retrying: ["job retrying an error", "jobs retrying an error"], job_failed: ["failed job or thread", "failed jobs and threads"],
   duty_off: ["duty off target", "duties off target"], step_stalled: ["step nobody moves", "steps nobody moves"],
   model_off: ["main worker on Fable", "main workers on Fable"],
 };
@@ -79,7 +81,7 @@ export interface Post {
   id: string; at: number; author: Author; text?: string; answers?: string; deliveries?: Delivery[];
   reactions?: { emoji: string; by: Author[] }[]; done?: { at: number }; thread?: { authors?: Author[]; lastAt?: number } | null;
 }
-export interface Job { id: string; name: string; status: string; thread: string; conversation: number; createdAt: number; agent?: { id: string; name: string } }
+export interface Job { id: string; name: string; status: string; thread: string; conversation: number; createdAt: number; agent?: { id: string; name: string }; retrying?: string }
 interface Agent { id: string; name: string; status: string; thread: string; room?: string; model?: { id: string; label?: string }; comm?: { room: string; thread: string; status: string }[] }
 interface PlanItem { id: string; text: string; status: string; note?: string; job?: string; waitUntil?: string | number; waitFor?: unknown; children?: PlanItem[] }
 export interface DutyRunView { at: number; verdict: string; summary?: string; error?: string; after?: { verdict?: string; summary?: string }; fixes?: Record<string, { step: string; job?: string; live: boolean }> | null }
@@ -203,13 +205,21 @@ export function taskState(file: string, conversation: number): string | undefine
   }
 }
 
-/** The working jobs with no entry for 45 min and the jobs that failed in the last 24 h; `task` gives a stuck job's pi-host task state. */
+/**
+ * The jobs pi-host flags as retrying, the working jobs with no entry for 45 min and the jobs that failed in the last 24 h; `task` gives a
+ * stuck job's pi-host task state. A retrying job reads as retrying, never as stuck, since its run still tries.
+ */
 export function jobFindings(jobs: readonly Job[], last: (job: Job) => number | undefined, now: number, task?: (job: Job) => string | undefined): Item[] {
   const items: Item[] = [];
   for (const job of jobs) {
     const at = last(job);
     const agent = job.agent?.name ?? "";
-    if (job.status === "working" && at !== undefined && now - at >= STUCK_MS) {
+    if (job.retrying && (job.status === "working" || job.status === "sleeping")) {
+      items.push({
+        kind: "job_retrying", sig: `retrying:${job.id}`, agent, text: `${agent} job "${job.name}" is ${job.retrying}`, link: `#/c/${job.id}`,
+        ...(at === undefined ? {} : { at }), context: [`started ${ago(now - job.createdAt)} ago, ${job.retrying}`],
+      });
+    } else if (job.status === "working" && at !== undefined && now - at >= STUCK_MS) {
       const state = task?.(job);
       items.push({
         kind: "job_stuck", sig: `stuck:${job.id}`, agent, text: `${agent} job "${job.name}" reads working with no new entry for ${ago(now - at)}${state?.includes("account slot") ? ", waiting for a model account" : ""}`,

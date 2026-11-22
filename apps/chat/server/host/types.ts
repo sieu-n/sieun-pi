@@ -11,9 +11,15 @@ export interface DurableThread {
   box?: string;
   id: string; name: string; provider: string; modelId: string; thinkingLevel: string; cwd: string;
   createdAt: number; updatedAt: number; wakeAt?: number; failed: boolean; archived: boolean; preview: string; children: number; status: ThreadStatus;
+  /** pi-host's "retrying since HH:MM: <error kind>" (KST) while a run of the thread has retried a transient error past 5 minutes. */
+  retrying?: string;
 }
 
-export interface TreeNode { id: number; parent: number | null; ownerTask: number | null; name: string; depth: number; status: "idle" | "running"; model: string | null; createdAt: number | null }
+export interface TreeNode {
+  id: number; parent: number | null; ownerTask: number | null; name: string; depth: number; status: "idle" | "running"; model: string | null; createdAt: number | null;
+  /** pi-host's "retrying since HH:MM: <error kind>" while this conversation's run has retried a transient error past 5 minutes. */
+  retrying?: string;
+}
 
 export type ContentBlock =
   | { type: "text"; text: string }

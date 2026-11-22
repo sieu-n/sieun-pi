@@ -9,7 +9,7 @@ import type {
 import type { AgentEvent, CreateOptions, DurableEvent, DurableThread, EntryRecord, Host, TreeNode } from "./host/types.ts";
 import type { Store } from "./store.ts";
 import type { AgentRecord } from "./agent-store.ts";
-import { agentSummary, isAgentId, isRoomId, type AgentRows, type Agents } from "./agents.ts";
+import { agentSummary, isAgentId, isRoomId, rootRetrying, type AgentRows, type Agents } from "./agents.ts";
 import { TailCache } from "./tail-cache.ts";
 import { buildItems, earliest, entryOf, firstSendIn, isInput, itemIdFor, sentMessages, speaks, speaksThroughSendMessage, stepOutputOf, type TimelineContext } from "./timeline.ts";
 
@@ -224,7 +224,8 @@ export class Threads {
     const listed = this.creating ? read.filter(t => this.list.has(t.id)) : read;
     for (const thread of listed) {
       const tree = this.trees.get(thread.id);
-      if (thread.children > 0 && (!tree || tree.updatedAt !== thread.updatedAt || thread.status === "running")) {
+      // A retrying run sleeps between attempts and writes no newer row, so its tree is read again while the row carries pi-host's flag.
+      if (thread.children > 0 && (!tree || tree.updatedAt !== thread.updatedAt || thread.status === "running" || thread.retrying !== undefined || tree.nodes.some(n => n.retrying))) {
         const nodes = await this.host.tree(thread.id).catch(() => tree?.nodes ?? []);
         const before = JSON.stringify(tree?.nodes ?? []);
         this.trees.set(thread.id, { updatedAt: thread.updatedAt, nodes });
@@ -445,6 +446,7 @@ export class Threads {
         thinkingLevel: (row.thinkingLevel as ThinkingLevel) ?? null, status: statusOf(row.status), parent: meta.kind === "job" ? this.parentOf(meta) : null,
         thread: row.id, conversation: 1, archived: row.archived, createdAt: row.createdAt, updatedAt: row.updatedAt,
         preview: row.preview.split("\n").find(line => line.trim()) ?? "", rooms: [], host: row.box ?? this.box,
+        ...(rootRetrying({ row, tree: this.tree(row.id) }) ? { retrying: rootRetrying({ row, tree: this.tree(row.id) })! } : {}),
       };
     const owner = this.ownerOf(row);
     const worksFor = owner ? { id: owner.id, name: this.list.get(owner.workThread)?.name || owner.name } : undefined;
@@ -462,7 +464,7 @@ export class Threads {
         id, kind: "job", name: node.name, avatar: avatarOf(node.name), model: modelRef(node.model), thinkingLevel: root.thinkingLevel,
         status: statusOf(node.status), parent: { id: parentId, name: parentName }, thread: row.id, conversation: node.id, archived: row.archived || this.jobArchived(row.id, node.id),
         createdAt: node.createdAt ?? row.createdAt, updatedAt: row.updatedAt, preview: "", rooms: [], host: this.box,
-        ...(worksFor ? { agent: worksFor } : {}),
+        ...(worksFor ? { agent: worksFor } : {}), ...(node.retrying ? { retrying: node.retrying } : {}),
       });
     }
     return out;

@@ -82,6 +82,16 @@ test("a working job with no entry for 45 min is stuck, and a failure is listed f
   assert.deepEqual(jobFindings(jobs, last, now).map(i => [i.kind, i.sig]), [["job_stuck", "stuck:t:quiet"], ["job_failed", "failed:t:broke"]]);
 });
 
+test("a job pi-host flags as retrying reads retrying since, not stuck, while it works or sleeps", () => {
+  const flag = "retrying since 08:22: pi-pool token hook lock_wait_timeout";
+  const jobs = [{ ...job("retry", "sleeping"), retrying: flag }, { ...job("retry-work", "working"), retrying: flag }, job("quiet", "working")];
+  const items = jobFindings(jobs, () => now - 60 * MIN, now);
+  assert.deepEqual(items.map(i => [i.kind, i.sig]), [["job_retrying", "retrying:t:retry"], ["job_retrying", "retrying:t:retry-work"], ["job_stuck", "stuck:t:quiet"]]);
+  assert.equal(items[0]!.text, `x job "retry" is ${flag}`);
+  assert.match(items[0]!.context?.[0] ?? "", new RegExp(`ago, ${flag}$`));
+  assert.ok(items.every(i => !(i.kind === "job_stuck" && i.sig.includes("retry"))), "a retrying job is never stuck");
+});
+
 test("an item is worth a look when new or last raised a day ago", () => {
   const item = (sig: string): Item => ({ kind: "duty_off", sig, agent: "x", text: sig, link: "#" });
   const first = worthALook([item("a"), item("b")], {}, now);
