@@ -7,7 +7,7 @@ import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import type { Message, Provider, Tool } from "@earendil-works/pi-ai";
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
-import { cacheableBreakpoints, COLD_MS, foldPoint, foldSystem, LEAN_CHARS, leanHistory, withCacheShape } from "../../src/durable/cache-shape.ts";
+import { cacheableBreakpoints, COLD_MS, foldPoint, foldSystem, LEAN_CHARS, leanHistory, sniffImage, viewableImages, withCacheShape } from "../../src/durable/cache-shape.ts";
 
 const tool = (name: string, description = name): Tool => ({ name, description, parameters: { type: "object", properties: {} } } as unknown as Tool);
 const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
@@ -137,4 +137,35 @@ test("a comm thread's earlier turns lose thinking and long tool texts once the c
   assert.deepEqual(lean.slice(5), now.slice(5), "the turn the cold request runs in stays whole, thinking and all");
   const next = [...now, answer("ok", cold + 2000), user("three", cold + 5 * MIN)];
   assert.deepEqual(leanHistory(next, cold + 5 * MIN).slice(0, lean.length), lean, "the next request trims the same part the same way");
+});
+
+const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d]).toString("base64");
+const TIFF = Buffer.from("MM\0*\0\0\0\x08rest", "latin1").toString("base64");
+const SVG = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>').toString("base64");
+const withImage = (data: string, mimeType: string, timestamp: number): Message =>
+  ({ role: "user", content: [{ type: "text", text: "look" }, { type: "image", data, mimeType }], timestamp } as Message);
+
+test("an image whose bytes are no type Anthropic takes becomes a text line, a mislabelled one gets its own type, and a good one stays", () => {
+  assert.equal(sniffImage(PNG), "image/png");
+  assert.equal(sniffImage(TIFF), undefined);
+  const good = [head, withImage(PNG, "image/png", t0)];
+  assert.equal(viewableImages(good), good);
+  const [, svg, tiff, wrong, empty] = viewableImages([head, withImage(SVG, "image/svg+xml", t0), withImage(TIFF, "image/tiff", t0), withImage(PNG, "image/jpeg", t0), withImage(TIFF, "", t0)]);
+  assert.deepEqual((svg as { content: unknown[] }).content[1], { type: "text", text: "[an image of type image/svg+xml, not shown]" });
+  assert.deepEqual((tiff as { content: unknown[] }).content[1], { type: "text", text: "[an image of type image/tiff, not shown]" });
+  assert.deepEqual((wrong as { content: unknown[] }).content[1], { type: "image", data: PNG, mimeType: "image/png" });
+  assert.deepEqual((empty as { content: unknown[] }).content[1], { type: "text", text: "[an image of type unknown, not shown]" });
+});
+
+test("on the wire, a history holding an SVG image sends its text line, and the next request starts with the same messages", async () => {
+  const inner = anthropicProvider();
+  const first: Message[] = [head, withImage(SVG, "image/svg+xml", t0), answer("ok", t0 + 1000), user("two", t0 + 2 * MIN)];
+  const second: Message[] = [...first, answer("sure", t0 + 2 * MIN + 500), user("three", t0 + 4 * MIN)];
+  const bodies = [bare(await wire(withCacheShape(inner, () => t0 + 2 * MIN), first)), bare(await wire(withCacheShape(inner, () => t0 + 4 * MIN), second))];
+  const sent = JSON.stringify(bodies[0].messages);
+  assert.ok(sent.includes("[an image of type image/svg+xml, not shown]"), sent.slice(0, 400));
+  assert.ok(!sent.includes('"image"'), "no image block goes out");
+  const last = bodies[0].messages.length - 1;
+  assert.deepEqual(bodies[1].messages.slice(0, last), bodies[0].messages.slice(0, last));
+  assert.deepEqual(bodies[1].system, bodies[0].system);
 });

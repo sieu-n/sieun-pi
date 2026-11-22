@@ -12,8 +12,49 @@
  *    requests right after such an update sent their history as fresh input (5d50e997's entries 222, 299, 308 and 332, each 160k to 274k
  *    tokens), and the next request wrote it again. So the breakpoint moves to the last block before it that Anthropic caches.
  * 3. Lean history. A comm thread's turns before that point lose their thinking and long tool texts (`leanHistory`, comm threads only).
+ * 4. Images. An image part whose bytes are no type Anthropic takes goes out as a text line (`viewableImages`).
  */
 import { getCurrentSystemMessage, type Message, type Provider } from "@earendil-works/pi-ai";
+
+type ImagePart = { type: "image"; data: string; mimeType: string };
+
+/** The image type an image's first bytes show, of the four Anthropic takes, or undefined for anything else. */
+export function sniffImage(data: string): string | undefined {
+  const bytes = Buffer.from(data.slice(0, 24), "base64");
+  if (bytes.subarray(0, 4).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47]))) return "image/png";
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
+  if (bytes.toString("latin1", 0, 4) === "GIF8") return "image/gif";
+  if (bytes.toString("latin1", 0, 4) === "RIFF" && bytes.toString("latin1", 8, 12) === "WEBP") return "image/webp";
+  return undefined;
+}
+
+/**
+ * An image part as a model can take it: the same part when its bytes are the type it names, the part relabelled when its bytes are
+ * another type Anthropic takes, else a text line. On 11-22 the owner's TIFF screenshot in comm thread 5d50e997 made Anthropic answer
+ * every turn with 400 "media_type: Input should be 'image/jpeg', 'image/png', 'image/gif' or 'image/webp'". The result reads only the
+ * stored part, so each request sends the same bytes for it and the cache prefix holds.
+ */
+function viewable<P extends { type: string }>(part: P): P | ImagePart | { type: "text"; text: string } {
+  if (part.type !== "image") return part;
+  const image = part as unknown as ImagePart;
+  const seen = typeof image.data === "string" ? sniffImage(image.data) : undefined;
+  if (seen === image.mimeType) return part;
+  if (seen) return { ...image, mimeType: seen };
+  return { type: "text", text: `[an image of type ${image.mimeType || "unknown"}, not shown]` };
+}
+
+/** The transcript with each image part `viewable`; the same array, and the same messages, when every image already is. */
+export function viewableImages(messages: readonly Message[]): readonly Message[] {
+  let changed = false;
+  const out = messages.map((message): Message => {
+    if ((message.role !== "user" && message.role !== "toolResult") || !Array.isArray(message.content)) return message;
+    const content = (message.content as { type: string }[]).map(viewable);
+    if (content.every((part, at) => part === (message.content as unknown[])[at])) return message;
+    changed = true;
+    return { ...message, content } as Message;
+  });
+  return changed ? out : messages;
+}
 
 /** A request this long after the one before finds the 1 h cache gone: an hour plus five minutes, as a request's timestamp is its start. */
 export const COLD_MS = 65 * 60_000;
@@ -125,10 +166,10 @@ export function cacheableBreakpoints(payload: unknown): unknown {
 
 type StreamOptions = { onPayload?: (payload: unknown, model: never) => unknown } | undefined;
 
-/** `inner` with each request's transcript folded and its breakpoints on cacheable blocks; `now` is the clock the fold reads. */
+/** `inner` with each request's images viewable, its transcript folded and its breakpoints on cacheable blocks; `now` is the clock the fold reads. */
 export function withCacheShape(inner: Provider, now: () => number = Date.now): Provider {
   const shape = <O extends StreamOptions>(context: { messages: Message[] }, options: O): [{ messages: Message[] }, O] => {
-    const messages = foldSystem(context.messages, now());
+    const messages = foldSystem(viewableImages(context.messages), now());
     const own = options?.onPayload;
     const onPayload = async (payload: unknown, model: never): Promise<unknown> => {
       const next = (await own?.(payload, model)) ?? undefined;
