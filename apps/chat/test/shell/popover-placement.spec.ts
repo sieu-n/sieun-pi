@@ -72,10 +72,14 @@ for (const size of WINDOWS) {
         await open(page, scale, "/#/c/ch_general");
         const link = page.getByRole("navigation", { name: "Conversations" }).locator('a[href="#/c/ch_general"]');
         const l = await box(link);
-        await page.mouse.click(l.x + 40, l.y + l.height / 2, { button: "right" });
+        const pointer = { x: l.x + 40, y: l.y + l.height / 2 };
+        await page.mouse.click(pointer.x, pointer.y, { button: "right" });
         const m = await inside(page, page.getByRole("menu").first());
-        expect(Math.abs(m.x - (l.x + 40))).toBeLessThan(2);
-        expect(Math.abs(m.y - (l.y + l.height / 2))).toBeLessThan(2);
+        expect(Math.abs(m.x - pointer.x)).toBeLessThan(2);
+        // The menu hangs from the pointer when it fits below, and near the bottom edge it flips up so its bottom sits at the pointer, as
+        // Slack's does: at 1180x720 and 100% the channel row's menu is 315 px tall under a pointer 302 px from the bottom.
+        const fitsBelow = pointer.y + m.height <= page.viewportSize()!.height - 8 * scale;
+        expect(Math.abs((fitsBelow ? m.y : m.y + m.height) - pointer.y)).toBeLessThan(2);
       });
 
       test("the emoji picker and the profile menu stay in the window", async ({ page }) => {
