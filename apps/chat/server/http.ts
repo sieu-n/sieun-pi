@@ -519,6 +519,9 @@ export function serve(app: App): Server {
     void handle(app, table, req, res);
   });
   inFlight.set(server, calls);
+  // A whole request may take as long as its body takes to arrive, so an upload of any size over a slow link ends (App.upload);
+  // Node's 300 s default cut such uploads off. headersTimeout still drops a client that never finishes its headers.
+  server.requestTimeout = 0;
   server.on("upgrade", (req, socket, head) => {
     const url = new URL(req.url ?? "/", "http://x");
     if (url.pathname !== "/api/live") {

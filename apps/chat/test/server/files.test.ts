@@ -10,6 +10,7 @@ import type { ImageRef, Item, TimelinePage } from "../../web/src/lib/api/types.t
 import type { FixtureHost } from "../../server/host/fixture.ts";
 import { FIXTURE_AGENTS as agents, FIXTURE_IDS as ids } from "../../server/fixture/seed.ts";
 import { withFileCards, withFileNotes } from "../../server/files.ts";
+import { serve } from "../../server/http.ts";
 import { start, until, type Running } from "./helpers.ts";
 
 type Message = Extract<Item, { kind: "message" }>;
@@ -53,6 +54,13 @@ describe("attached files", () => {
     const res = await fetch(`${s.base}${ref.url}`);
     assert.equal(res.headers.get("content-length"), String(big.length));
     assert.equal((await res.arrayBuffer()).byteLength, big.length);
+  });
+
+  test("the server sets no time limit on a whole request, so a slow upload of a big file ends", () => {
+    const server = serve(s.app);
+    assert.equal(server.requestTimeout, 0);
+    assert.ok(server.headersTimeout > 0);
+    server.close();
   });
 
   test("an HTML or unknown file downloads as bytes and never renders as a page of the app", async () => {
