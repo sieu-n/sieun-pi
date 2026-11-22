@@ -3,9 +3,10 @@
  * instead of the 100 to 2,100 entries a page widens over. pi-host appends entries with ids that only grow and never edits one, so the held
  * entries stay right: a read checks the newest id and fetches only the entries after the newest held.
  *
- * The tails outlive a restart: the stopping server saves each one to `dir` (`save`), and the next server takes a conversation's file on its
- * first read of it. On 11-22 the chat restarted 27 to 31 times an hour during release walks, and 253 of the 269 page reads that went to
- * pi-host whole in one such hour were the first read of their conversation after a restart (~/work/thread-reads/window.py).
+ * The tails outlive a restart: a server writes each changed tail to `dir` in the background (`save`), and the next server reads a
+ * conversation's file on its first read of it. On 11-22 the chat restarted 27 to 31 times an hour during release walks, and 253 of the
+ * 269 page reads that went to pi-host whole in one such hour were the first read of their conversation after a restart
+ * (~/work/thread-reads/window.py).
  */
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -30,13 +31,24 @@ interface Tail {
 
 /** How many entries one read after the newest held asks for. */
 const CATCH_UP = 100;
-/** The most entries a saved tail keeps, newest first: a newest page and its widening read about 140 to 300. */
-const SAVE_KEEP = 500;
+/**
+ * The most entries a saved tail keeps, newest first: a newest page and its widening read about 140 to 300. On 11-22 a file of 500 live
+ * entries was 0.6 to 1.3 MB and took 4 to 11 ms to write as JSON and as long to read (~/work/thread-reads/save-cost.mts).
+ */
+const SAVE_KEEP = 300;
 /** A saved tail older than this is left unread and deleted: catching it up could cost more reads than reading the page again. */
 const SAVED_FOR_MS = 10 * 60_000;
+/** How long after a tail changes its file is written; a tail that changes again meanwhile is written once. */
+const SAVE_EVERY_MS = 5000;
 
 export class TailCache {
   private readonly tails = new Map<string, Tail>();
+  /** The keys whose tail changed since its file was written. */
+  private readonly dirty = new Set<string>();
+  private timer?: NodeJS.Timeout;
+  private stopped = false;
+  /** When `save` last deleted the files older than SAVED_FOR_MS. */
+  private swept = 0;
 
   /**
    * @param conversations how many conversations keep a tail; 64 held the conversation of 97% of the 37,639 GET /api/c/:id/items reads
@@ -71,6 +83,7 @@ export class TailCache {
       if (this.tails.get(key) === held && held.entries.length + got.entries.length <= this.keep) {
         held.entries.push(...got.entries);
         held.more = got.more;
+        this.touch(key);
       }
       return { entries: [...entries, ...got.entries], more: got.more };
     };
@@ -90,6 +103,7 @@ export class TailCache {
     }
     this.tails.delete(key);
     this.tails.set(key, next);
+    if (next.entries.length) this.touch(key);
     for (const old of this.tails.keys()) {
       if (this.tails.size <= this.conversations) break;
       this.tails.delete(old);
@@ -97,20 +111,35 @@ export class TailCache {
     return next;
   }
 
+  /** Marks the key's tail for the next background write, which runs SAVE_EVERY_MS after the first mark and never on a read's path. */
+  private touch(key: string): void {
+    if (!this.dir || this.stopped) return;
+    this.dirty.add(key);
+    if (this.timer) return;
+    this.timer = setTimeout(() => void this.save().catch(() => undefined), SAVE_EVERY_MS);
+    this.timer.unref();
+  }
+
   /**
-   * Writes each held tail to `dir`, up to SAVE_KEEP entries, for the next server; each file goes through a rename, so a reader sees it whole.
-   * Files older than SAVED_FOR_MS go.
+   * Writes each tail that changed since its last write to `dir`, up to SAVE_KEEP entries, one file per conversation through a rename, so a
+   * reader sees a file whole. A file older than SAVED_FOR_MS goes. The files are written while the server serves, so a hand-over's stop
+   * writes nothing and the next server reads a conversation's file on its first read of it.
    */
   async save(): Promise<void> {
+    this.timer = undefined;
     if (!this.dir) return;
     await mkdir(this.dir, { recursive: true });
-    for (const [key, tail] of this.tails) {
-      const saved: Tail = { entries: tail.entries.slice(0, SAVE_KEEP), more: tail.more || tail.entries.length > SAVE_KEEP };
+    for (const key of [...this.dirty]) {
+      this.dirty.delete(key);
+      const tail = this.tails.get(key);
+      if (!tail?.entries.length || this.stopped) continue;
       const path = join(this.dir, fileOf(key));
-      await writeFile(`${path}.tmp`, JSON.stringify(saved));
+      await writeFile(`${path}.tmp`, JSON.stringify({ entries: tail.entries.slice(0, SAVE_KEEP), more: tail.more || tail.entries.length > SAVE_KEEP } satisfies Tail));
       await rename(`${path}.tmp`, path);
     }
     const now = Date.now();
+    if (now - this.swept < SAVED_FOR_MS) return;
+    this.swept = now;
     for (const name of await readdir(this.dir)) {
       const path = join(this.dir, name);
       const info = await stat(path).catch(() => undefined);
@@ -118,14 +147,20 @@ export class TailCache {
     }
   }
 
-  /** The tail the last server saved for `key`, taken once: its file goes, and a file older than SAVED_FOR_MS is not read. */
+  /** Ends the background writes, so a stopped server never writes over a newer server's files. */
+  stop(): void {
+    this.stopped = true;
+    clearTimeout(this.timer);
+    this.timer = undefined;
+  }
+
+  /** The tail a server saved for `key` within SAVED_FOR_MS, which a read catches up from its newest entry. */
   private async load(key: string): Promise<Tail | undefined> {
     if (!this.dir) return undefined;
     const path = join(this.dir, fileOf(key));
     const info = await stat(path).catch(() => undefined);
-    if (!info) return undefined;
-    const text = Date.now() - info.mtimeMs > SAVED_FOR_MS ? undefined : await readFile(path, "utf8").catch(() => undefined);
-    await rm(path, { force: true });
+    if (!info || Date.now() - info.mtimeMs > SAVED_FOR_MS) return undefined;
+    const text = await readFile(path, "utf8").catch(() => undefined);
     if (this.tails.has(key) || !text) return this.tails.get(key);
     const tail = JSON.parse(text) as Tail;
     if (!Array.isArray(tail.entries) || !tail.entries.length) return undefined;

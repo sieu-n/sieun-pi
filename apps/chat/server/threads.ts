@@ -189,7 +189,7 @@ export class Threads {
     clearInterval(this.timer);
     for (const live of this.live.values()) await live.stop?.().catch(() => undefined);
     this.saveListCache();
-    await this.tails.save().catch(error => this.log(`saving the read tails failed: ${String(error)}`));
+    this.tails.stop();
   }
 
   /**

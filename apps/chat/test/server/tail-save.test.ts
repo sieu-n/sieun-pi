@@ -1,9 +1,10 @@
 /**
- * A restarted server takes the tails the stopping one saved, so the first read of a page after a restart costs one one-entry pi-host read.
+ * A restarted server reads the tails the last one wrote in the background, so the first read of a page after a restart costs one one-entry
+ * pi-host read, and catches up from the saved newest entry to the conversation's newest.
  * Run: cd apps/chat && node --import tsx --test --test-force-exit --test-isolation=none test/server/tail-save.test.ts
  */
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readdirSync, rmSync, utimesSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -32,7 +33,7 @@ function host(count: () => number) {
   };
 }
 
-test("the first newest read after a restart takes the saved tail and reads only the entries added since", async () => {
+test("the first newest read after a restart reads the saved tail and only the entries added since", async () => {
   let count = 300;
   const old = host(() => count);
   const before = new TailCache(old, 64, 2300, join(dir, "tails"));
@@ -46,7 +47,7 @@ test("the first newest read after a restart takes the saved tail and reads only 
   const again = await (await after.reader("t", 1, undefined))(undefined, 140);
   assert.deepEqual(again.entries.map(e => e.id), Array.from({ length: 140 }, (_, i) => 303 - i));
   assert.deepEqual(next.reads.map(r => ({ limit: r.limit, after: r.after })), [{ limit: 1, after: undefined }, { limit: 100, after: 300 }]);
-  assert.equal(readdirSync(join(dir, "tails")).length, 0, "a saved tail is taken once");
+  assert.equal(readdirSync(join(dir, "tails")).length, 1);
 });
 
 test("a saved tail older than 10 minutes is not read and goes at the next save", async () => {
@@ -62,5 +63,22 @@ test("a saved tail older than 10 minutes is not read and goes at the next save",
   const after = new TailCache(next, 64, 2300, join(dir, "old"));
   await (await after.reader("t", 2, undefined))(undefined, 40);
   assert.deepEqual(next.reads.map(r => r.limit), [40], "a stale file reads the page again");
-  assert.equal(existsSync(file), false);
+  const other = join(dir, "old", "t%3A9.json");
+  writeFileSync(other, JSON.stringify({ entries: [{ id: 1 }], more: false }));
+  utimesSync(other, stale, stale);
+  await after.save();
+  assert.equal(existsSync(other), false, "a stale file goes at the next save");
+  assert.ok(Date.now() - statSync(file).mtimeMs < 60_000, "the conversation read again has a new file");
+});
+
+test("a stopped cache writes no tail, so an old server never writes over the next one's files", async () => {
+  let count = 60;
+  const old = host(() => count);
+  const cache = new TailCache(old, 64, 2300, join(dir, "stopped"));
+  await (await cache.reader("t", 3, undefined))(undefined, 40);
+  cache.stop();
+  count = 70;
+  await (await cache.reader("t", 3, undefined))(undefined, 40);
+  await cache.save();
+  assert.equal(existsSync(join(dir, "stopped")) ? readdirSync(join(dir, "stopped")).length : 0, 0);
 });
