@@ -75,6 +75,28 @@ test("the sweep writes agent.ref into each work thread and root job thread once,
       await second.app.agents.sweepRefs();
       assert.equal(gets, 0, `the second server found every ref in the first one's cache (it read ${gets}: ${reads.join(", ")})`);
       assert.deepEqual(puts, [], "every ref was already there");
+
+      // A thread whose agent moved to another box reads its ref again there.
+      const vent = second.app.agents.record(agents.vent)!;
+      const box = vent.host;
+      vent.host = "another-box";
+      reads.length = 0;
+      await second.app.agents.sweepRefs();
+      vent.host = box;
+      await second.app.agents.sweepRefs();
+      assert.ok(reads.includes(`${ids.vent}/${AGENT_REF_DOC}`), `the moved agent's work thread is read again: ${reads.join(", ")}`);
+
+      // A ref that vanishes inside pi-host behind the cache comes back on the background check, and a changed one is put right.
+      h.docGet = get;
+      const ventRef = refOf(h, ids.vent);
+      const harnessRef = refOf(h, ids.harness);
+      h.threadsById.get(ids.vent)!.docs.delete(AGENT_REF_DOC);
+      await put(ids.harness, AGENT_REF_DOC, { ...(harnessRef as object), role: "job" });
+      second.app.agents.verifyGapMs = 1;
+      await second.app.agents.verifyRefs();
+      assert.deepEqual(refOf(h, ids.vent), ventRef);
+      assert.deepEqual(refOf(h, ids.harness), harnessRef);
+      assert.deepEqual([...new Set(puts)].sort(), [ids.harness, ids.vent].sort());
     } finally {
       await second.close();
       h.docPut = put;

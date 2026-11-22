@@ -37,6 +37,11 @@ export function seal(reason: string): void {
   sealedBy = reason;
 }
 
+/** Whether this process sealed its data dir, so work that only feeds its files ends. */
+export function isSealed(): boolean {
+  return sealedBy !== null;
+}
+
 /** Whether a write to `path` is dropped, logging the first one per file. */
 export function sealedFor(path: string): boolean {
   if (sealedBy === null) return false;

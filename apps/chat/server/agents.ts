@@ -14,7 +14,7 @@ import { freeSlug, isUntitled, type AgentRecord, type AgentStore, type RoomId } 
 import { DEFAULT_MODEL, DEFAULT_THINKING, type Config } from "./config.ts";
 import type { CreateOptions, DurableThread, Host, TreeNode } from "./host/types.ts";
 import { join } from "node:path";
-import { writeJsonLater } from "./disk.ts";
+import { isSealed, writeJsonLater } from "./disk.ts";
 import { readJson, type Store } from "./store.ts";
 
 /** How many entries of a root thread `fileSpawned` reads for its first input; the input follows a few setup entries. */
@@ -87,16 +87,24 @@ export function agentSummary(record: AgentRecord, rows: AgentRows, extra: { mode
   };
 }
 
+type CachedRef = { host: string; ref: AgentRef };
+
 export class Agents {
   /** Whether `dropUntitled` ran on this server's first thread list. */
   private cleaned = false;
   /**
-   * The `agent.ref` each thread holds as this server or one before it last read or wrote it, so a sweep reads a thread once and not again at
-   * each start. Kept in <data dir>/cache/agent-refs.json: on 11-22 every start read all 1,819 refs one by one in its first 10 s, a count that
-   * grows with each agent made. Only a read or write that pi-host answered goes in, and a ref an agent change alters is read again.
+   * The `agent.ref` each thread holds as this server or one before it last read or wrote it, with the box that answered, so a sweep reads a
+   * thread once and not again at each start. Kept in <data dir>/cache/agent-refs.json: on 11-22 every start read all 1,819 refs one by one in
+   * its first 10 s, a count that grows with each agent made. Only a read or write that the box answered goes in. A ref counts as held only
+   * on the box that answered, so a thread moved to another box reads again there, and a ref an agent change alters reads again. `verifyRefs`
+   * reads every kept ref again in the background, so one that changed inside pi-host is found and written again.
    */
-  private readonly refs: Map<string, AgentRef>;
+  private readonly refs: Map<string, CachedRef>;
   private refsChanged = false;
+  /** The wait before the first background check of the kept refs, and between two checks (`verifyRefs`). */
+  verifyDelayMs = 60_000;
+  verifyGapMs = 500;
+  private verifying?: Promise<void>;
   /** The first agent.ref writes in flight (`firstRef`), by thread. */
   private readonly writingRefs = new Map<string, Promise<boolean>>();
   private sweeping?: Promise<void>;
@@ -121,7 +129,60 @@ export class Agents {
     readonly config: Pick<Config, "box" | "agentsDir" | "agentRefs">,
     private readonly log: (line: string) => void = () => {},
   ) {
-    this.refs = store.dir ? new Map(Object.entries(readJson<Record<string, AgentRef>>(this.refsFile(), {}))) : new Map();
+    const kept = store.dir ? readJson<{ v?: number; refs?: Record<string, CachedRef> }>(this.refsFile(), {}) : {};
+    this.refs = new Map(kept.v === 2 && kept.refs ? Object.entries(kept.refs) : []);
+  }
+
+  /** The box whose pi-host holds the agent's threads. */
+  private boxOf(ref: AgentRef): string {
+    return this.record(ref.agent)?.host ?? this.config.box;
+  }
+
+  private holds(thread: string, ref: AgentRef): boolean {
+    const kept = this.refs.get(thread);
+    return !!kept && kept.host === this.boxOf(ref) && sameRef(kept.ref, ref);
+  }
+
+  private keepRefs(): void {
+    if (!this.refsChanged || !this.store.dir) return;
+    this.refsChanged = false;
+    writeJsonLater(this.refsFile(), { v: 2, refs: Object.fromEntries(this.refs) });
+  }
+
+  /**
+   * Reads each kept ref again, one every `verifyGapMs`, and writes the wanted one where pi-host holds another or none, with a log line.
+   * The sweep starts one pass `verifyDelayMs` after the start, past the first page reads, and another after each pass, until this process
+   * seals its data dir in a hand-over.
+   */
+  async verifyRefs(): Promise<void> {
+    for (const [thread, ref] of this.wantedRefs()) {
+      if (isSealed()) return;
+      if (!this.holds(thread, ref)) continue;
+      try {
+        const held = await this.host.docGet(thread, AGENT_REF_DOC);
+        if (!sameRef(held, ref)) {
+          this.refs.delete(thread);
+          this.refsChanged = true;
+          this.log(`agent.ref for ${thread} (${ref.agent}) read ${held ? "another ref" : "no ref"} in pi-host behind the kept one; writing it again`);
+          await this.putRef(thread, ref);
+        }
+      } catch {
+        // The box is away; the next pass reads it again.
+      }
+      await new Promise(resolve => setTimeout(resolve, this.verifyGapMs).unref());
+    }
+    this.keepRefs();
+  }
+
+  private startVerifying(): void {
+    if (this.verifying || !this.config.agentRefs) return;
+    this.verifying = (async () => {
+      await new Promise(resolve => setTimeout(resolve, this.verifyDelayMs).unref());
+      while (!isSealed()) {
+        await this.verifyRefs();
+        await new Promise(resolve => setTimeout(resolve, this.verifyGapMs).unref());
+      }
+    })();
   }
 
   private refsFile(): string {
@@ -286,11 +347,9 @@ export class Agents {
     if (!this.config.agentRefs) return Promise.resolve();
     this.sweeping ??= (async () => {
       for (const [thread, ref] of this.wantedRefs()) if (listed(thread)) await this.putRef(thread, ref);
-      if (this.refsChanged && this.store.dir) {
-        this.refsChanged = false;
-        writeJsonLater(this.refsFile(), Object.fromEntries(this.refs));
-      }
+      this.keepRefs();
     })().finally(() => { this.sweeping = undefined; });
+    this.startVerifying();
     return this.sweeping;
   }
 
@@ -299,10 +358,10 @@ export class Agents {
    * logs and never throws. With `agentRefs` off, no ref is written and every thread counts as holding it.
    */
   private async putRef(thread: string, ref: AgentRef): Promise<boolean> {
-    if (!this.config.agentRefs || sameRef(this.refs.get(thread), ref)) return true;
+    if (!this.config.agentRefs || this.holds(thread, ref)) return true;
     try {
       if (!sameRef(await this.host.docGet(thread, AGENT_REF_DOC), ref)) await this.host.docPut(thread, AGENT_REF_DOC, ref);
-      this.refs.set(thread, ref);
+      this.refs.set(thread, { host: this.boxOf(ref), ref });
       this.refsChanged = true;
       return true;
     } catch (error) {
