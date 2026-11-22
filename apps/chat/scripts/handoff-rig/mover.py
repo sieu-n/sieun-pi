@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """The copy rig's stand-in for cpu-protect.py (sieun-pi deploy/linux/cpu/cpu-protect.py, which is root and moves only the live units): every
 2 s it moves the copy unit's MainPID into <unit>-core.scope, a scope outside the unit's cgroup, and every other process found in that scope
-back into the unit, the same plan cpu-protect.py runs for sieun-pi-apps-chat.service. systemd --user then drops a notify from a process in
+back into the unit, the same plan cpu-protect.py runs for sieun-pi-apps-chat.service. Like cpu-protect.py it reads the MainPID again only
+when the user manager's children in the unit and the scope changed. systemd --user then drops a notify from a process in
 the scope, as it does on live.
 
 Usage: mover.py <unit>   (run.sh starts it; it runs until stopped and starts the scope itself with a sleep as its first process)"""
@@ -47,9 +48,27 @@ def comm(pid: int) -> str:
         return ""
 
 
+def candidates() -> frozenset[int]:
+    """The children of the user manager in the unit or its scope, cpu-protect.py's `candidates` for a service: it asks systemd for the
+    MainPID again only when this set changed, so a MAINPID= from a successor, the old server's child, goes unseen until a new one shows."""
+    found = set()
+    for pid in procs(UNIT) + procs(SCOPE):
+        try:
+            with open(f"/proc/{pid}/stat") as fh:
+                if int(fh.read().rsplit(")", 1)[1].split()[1]) == MANAGER:
+                    found.add(pid)
+        except (OSError, ValueError, IndexError):
+            pass
+    return frozenset(found)
+
+
+MANAGER = os.getppid()  # systemd-run --user starts this mover as a unit, so its parent is the user manager
 subprocess.run(["systemd-run", "--user", "--scope", "--collect", f"--unit={SCOPE}", "--", "sh", "-c", "sleep infinity &"], check=False)
+main, seen = 0, None
 while True:
-    main = main_pid()
+    now = candidates()
+    if now != seen or not main:
+        main, seen = main_pid(), now
     if main:
         for pid in procs(UNIT):
             if pid == main:

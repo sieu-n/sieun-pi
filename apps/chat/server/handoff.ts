@@ -136,9 +136,9 @@ export function cgroupOf(pid: number | "self" = "self"): string {
 
 /**
  * How long a successor that systemd took as the main process waits for cpu-protect.py to move it into the unit's core scope before it lets
- * the running server stop. The passes come every 2 s (INTERVAL_S), but on live at load 102 on 11-22 the move took over 3 s after MAINPID=
- * (release-36c711c). The same pass moves the running server out of the scope, so the wait costs release time and no call's time; the
- * bound only ends a wait for a pass that never comes.
+ * the running server stop. The passes come every 2 s (INTERVAL_S). The same pass moves the running server out of the scope, so the wait
+ * costs release time and no call's time; the bound only ends a wait for a pass that never comes, as with release-36c711c on 11-22, before
+ * `nudgeCpuProtect`.
  */
 const BOOST_MS = 10_000;
 
@@ -147,7 +147,7 @@ const BOOST_MS = 10_000;
  * cpu-protect.py moves it into <unit>-core.scope, and it waits there before the running server stops. Its lock, state read and listen then
  * run at the core scope's weight. Before 11-23 it told systemd only at the stop, and at box load 277 on 11-22 a successor that ran outside
  * the scope took 4.4 s from that stop to its listen, against 0.15 to 0.6 s in the four other hand-overs of that walk. The running server
- * leaves the scope at the next pass and serves outside it until it stopped. Without a core scope around the running server (no
+ * leaves the scope in the same pass and serves outside it until it stopped. Without a core scope around the running server (no
  * cpu-protect.py, or a box without it) the wait is left out. Throws when systemd did not take this process in TAKE_MS.
  */
 export async function boostBeforeStop(log: (line: string) => void, env: NodeJS.ProcessEnv = process.env): Promise<void> {
@@ -157,11 +157,48 @@ export async function boostBeforeStop(log: (line: string) => void, env: NodeJS.P
   await tellSystemd(true, log, env);
   if (!protectedRunning) return;
   const began = Date.now();
-  while (!cgroupOf().endsWith(`/${scope}`)) {
-    if (Date.now() - began > BOOST_MS) return log(`systemd: not in ${scope} after ${BOOST_MS} ms; the running server stops anyway`);
-    await new Promise(resolve => setTimeout(resolve, 100));
+  const endNudge = nudgeCpuProtect();
+  try {
+    while (!cgroupOf().endsWith(`/${scope}`)) {
+      if (Date.now() - began > BOOST_MS) return log(`systemd: not in ${scope} after ${BOOST_MS} ms; the running server stops anyway`);
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+  } finally {
+    endNudge();
   }
   log(`systemd: in ${scope} after ${Date.now() - began} ms; the running server stops now`);
+}
+
+/**
+ * cpu-protect.py reads a unit's MainPID from systemd only when a new child of the user manager shows in the unit or its core scope (its
+ * `candidates`), as a start or a restart makes one; a MAINPID= alone does not make it read again. A successor is the running server's child,
+ * so until 11-23 cpu-protect.py moved it in only once the old server had exited and the successor passed to the user manager. An orphan
+ * started here is such a child: systemd --user takes the orphans of its units. It sleeps until the returned stop ends it, at most BOOST_MS.
+ */
+function nudgeCpuProtect(): () => void {
+  let orphan = 0;
+  const shell = spawn("sh", ["-c", `sleep ${Math.ceil(BOOST_MS / 1000)} >/dev/null 2>&1 & echo $!`], { stdio: ["ignore", "pipe", "ignore"] });
+  shell.on("error", () => {});
+  shell.stdout.on("data", chunk => { orphan = Number(String(chunk).trim()) || orphan; });
+  return () => { if (orphan) try { process.kill(orphan); } catch { /* ended */ } };
+}
+
+/**
+ * Makes this running server the unit's main process again, and has cpu-protect.py read that, after a successor that took the place ended.
+ * systemd refuses a MAINPID= for a process outside the unit's cgroup ("does not belong to service" on the copy rig on 11-22), and
+ * cpu-protect.py keeps this process in the core scope while it holds it as the main one. A first nudge makes cpu-protect.py read the main
+ * process again, find the successor there and move this process back to the unit, where its MAINPID= counts; a second one brings it into
+ * the scope again.
+ */
+export async function reclaimMain(log: (line: string) => void, env: NodeJS.ProcessEnv = process.env): Promise<void> {
+  if (!env.NOTIFY_SOCKET) return;
+  const endNudge = nudgeCpuProtect();
+  try {
+    await tellSystemd(true, log, env);
+  } finally {
+    endNudge();
+  }
+  nudgeCpuProtect();
 }
 
 export async function tellSystemd(successor: boolean, log: (line: string) => void, env: NodeJS.ProcessEnv = process.env): Promise<void> {

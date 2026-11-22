@@ -16,7 +16,7 @@ import type { Host } from "./host/types.ts";
 import { projectList } from "./projects.ts";
 import { drain, lingerForwarding, serve, skillsParts, windDown, WRITE_WAIT_MS } from "./http.ts";
 import { seedFixture } from "./fixture/seed.ts";
-import { boostBeforeStop, DataLock, handOverOnHangup, listening, startWatchdog, tellSystemd } from "./handoff.ts";
+import { boostBeforeStop, DataLock, handOverOnHangup, listening, reclaimMain, startWatchdog, tellSystemd } from "./handoff.ts";
 
 const loadedMs = Math.round(performance.now());
 const config = readConfig();
@@ -120,4 +120,4 @@ if (!port.predecessor) {
 const quiet = startWatchdog(log);
 port.predecessor?.taken();
 process.off("SIGHUP", earlyHangup);
-if (fd !== null) handOverOnHangup({ fd, server: http, drain: server => drain(server, WRITE_WAIT_MS, "forward"), linger: () => lingerForwarding(http), windDown: on => windDown(http, on), stop: handOverStop, unlock: () => lock.release(), quiet, log, exit: code => process.exit(code), reclaim: () => tellSystemd(true, log) });
+if (fd !== null) handOverOnHangup({ fd, server: http, drain: server => drain(server, WRITE_WAIT_MS, "forward"), linger: () => lingerForwarding(http), windDown: on => windDown(http, on), stop: handOverStop, unlock: () => lock.release(), quiet, log, exit: code => process.exit(code), reclaim: () => reclaimMain(log) });

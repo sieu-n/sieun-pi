@@ -212,6 +212,10 @@ for (round = 1; round <= rounds; round++) {
   // The main process logs from the core scope that mover.py, like cpu-protect.py, moves it into.
   // The old server's stop is the time new calls wait in the socket's queue before the successor's own start of about 0.5 s.
   if (!(stopMs < 1000)) failures.push(`round ${round}: the old server's stop took ${stopMs} ms: ${stopLine}`);
+  // The successor must sit in the core scope before the old server stops (handoff.ts boostBeforeStop), as cpu-protect.py places it on live.
+  const notBoosted = execFileSync("journalctl", ["--user", "-u", unit, "-u", unit.replace(/\.service$/, "-core.scope"), "--since", `@${since}`, "--no-pager", "-o", "cat"], { encoding: "utf8" })
+    .split("\n").find(line => / not in \S+-core\.scope after/.test(line));
+  if (notBoosted) failures.push(`round ${round}: the successor was outside the core scope at the stop: ${notBoosted}`);
   const running = servers();
   results.push({ round, from: before, to: Number(show("MainPID")), handed, handedMs: Math.round(performance.now() - at - 3000), stopMs, slowWiki: slowAnswer.status, written, agenda, windowPost, servers: running });
   if (!handed) failures.push(`round ${round}: no hand-over to a new main process in 60 s`);
@@ -351,9 +355,15 @@ for (const side of ["successor", "old server"]) {
   execFileSync("systemctl", ["--user", "reload", unit]);
   const successor = await mainMoved(before);
   const victim = side === "successor" ? successor : before;
-  const stoppedFirst = () => execFileSync("journalctl", ["--user", "-u", unit, "-u", unit.replace(/\.service$/, "-core.scope"), "--since", `@${since}`, "--no-pager", "-o", "cat"], { encoding: "utf8" }).includes("this process stopped in");
-  const early = successor ? !stoppedFirst() : false;
+  // When the old server logged its stop, from the journal's own stamps, so a slow journal read does not move the kill.
+  const stoppedAt = () => {
+    const line = execFileSync("journalctl", ["--user", "-u", unit, "-u", unit.replace(/\.service$/, "-core.scope"), "--since", `@${since}`, "--no-pager", "-o", "short-unix"], { encoding: "utf8" })
+      .split("\n").find(each => each.includes("this process stopped in"));
+    return line ? Number(line.split(" ")[0]) * 1000 : Infinity;
+  };
+  const killAt = Date.now();
   const result = successor ? await replaced(victim, "SIGKILL") : { signal: "SIGKILL", victim: null, by: null, backMs: null };
+  const early = successor ? stoppedAt() > killAt : false;
   result.when = `${side} killed after the successor's MAINPID=, before the old server's stop`;
   result.beforeStop = early;
   await sleep(3000);
