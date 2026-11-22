@@ -1,10 +1,6 @@
-// Counts, per UTC day, the owner's calls that failed or waited over 1 s around an apps/chat restart, from the request log
-// (~/.pi/agent/chat/requests/<day>.jsonl) and the service's start lines in the user journal.
-// His calls are the page's own lines (src client) that came through tailscale serve (via tailnet); walks and duties on the box log as
-// local. A restart is a Started line or, since the socket hand-over, a Reloading line. A client line is written when its batch reaches the server: at once for a failed call, whose batch the page posts again 10 s
-// later while the server is down, and within the page's 10 s timer otherwise (web/src/lib/api/client.ts sendTimings). So a call made
-// within 10 s of a start reaches the log within 20 s of it, and that is the window. A call failed when its status is 0 or 500 and up, or
-// it names an error. A slow one waited over 1 s and was a wait of his: background reads (bg ahead or shown) are left out of slow.
+// Counts, per UTC day, the owner's calls that failed or waited over 1 s within 20 s of an apps/chat restart or hand-over, from the request
+// log (~/.pi/agent/chat/requests/<day>.jsonl) and the service's Started and Reloading lines in the user journal. The rules are in
+// restart-walk-hits.ts, which duty d2 (scripts/duties/api-speed.ts) reads too; node runs that .ts file with its own type stripping.
 // Usage: node restart-walk-count.mjs [--days 2026-11-22,2026-11-23] [--from <ISO time, counts only restarts and lines after it>] [--window <s>] [--slow <ms>] [--json]
 //   [--requests <dir>] [--unit sieun-pi-apps-chat.service] [--journal <file of journalctl -o short-unix lines>]
 import { spawnSync } from "node:child_process";
@@ -12,59 +8,9 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { countRestartHits, parseOwnerLines, parseStarts } from "./restart-walk-hits.ts";
 
-/** Restart times (ms) from `journalctl -o short-unix` lines: each "Started <unit>" line and each "Reloading <unit>" line of a hand-over. */
-export function parseStarts(text) {
-  return text.split("\n").filter(line => /: (Started|Reloading) /.test(line)).map(line => Math.round(Number(line.split(" ")[0]) * 1000)).filter(Number.isFinite).sort((a, b) => a - b);
-}
-
-/** The request log lines that are the owner's page calls: src client, via tailnet, not the timings post itself. */
-export function parseOwnerLines(text) {
-  const out = [];
-  for (const line of text.split("\n")) {
-    if (!line.includes('"tailnet"') || !line.includes('"client"')) continue;
-    let row;
-    try { row = JSON.parse(line); } catch { continue; }
-    if (row.src === "client" && row.via === "tailnet" && row.r !== "/api/timings" && Number.isFinite(row.at)) out.push(row);
-  }
-  return out;
-}
-
-export const failedLine = row => Boolean(row.err) || row.s === 0 || row.s >= 500;
-
-/**
- * Per day of the restart: how many restarts there were, how many had one of his calls fail or wait, and the counts, with the routes. A
- * line belongs to the latest start at or before it, when it came within `windowMs` of that start.
- */
-export function countRestartHits(starts, rows, { windowMs = 20_000, slowMs = 1000 } = {}) {
-  const days = {};
-  const day = at => new Date(at).toISOString().slice(0, 10);
-  for (const start of starts) (days[day(start)] ??= { restarts: 0, restartsHit: 0, failed: 0, slow: 0, outsideFailed: 0, outsideSlow: 0, routes: {}, hit: new Set() }).restarts++;
-  for (const row of rows) {
-    const failed = failedLine(row);
-    const slow = !failed && row.ms > slowMs && !row.bg;
-    if (!failed && !slow) continue;
-    let i = -1;
-    for (let lo = 0, hi = starts.length - 1; lo <= hi;) {
-      const mid = (lo + hi) >> 1;
-      if (starts[mid] <= row.at) { i = mid; lo = mid + 1; } else hi = mid - 1;
-    }
-    const near = i >= 0 && row.at - starts[i] <= windowMs;
-    const d = (days[day(near ? starts[i] : row.at)] ??= { restarts: 0, restartsHit: 0, failed: 0, slow: 0, outsideFailed: 0, outsideSlow: 0, routes: {}, hit: new Set() });
-    if (!near) {
-      d[failed ? "outsideFailed" : "outsideSlow"]++;
-      continue;
-    }
-    d[failed ? "failed" : "slow"]++;
-    d.hit.add(i);
-    const key = `${row.m} ${row.r}`;
-    d.routes[key] = (d.routes[key] ?? 0) + 1;
-  }
-  return Object.fromEntries(Object.entries(days).sort().map(([name, d]) => {
-    const { hit, ...rest } = d;
-    return [name, { ...rest, restartsHit: hit.size, routes: Object.entries(d.routes).sort((a, b) => b[1] - a[1]) }];
-  }));
-}
+export { countRestartHits, failedLine, parseOwnerLines, parseStarts } from "./restart-walk-hits.ts";
 
 function main(argv) {
   const opt = { from: 0, days: null, windowMs: 20_000, slowMs: 1000, json: false, requests: join(homedir(), ".pi/agent/chat/requests"), unit: "sieun-pi-apps-chat.service", journal: null };

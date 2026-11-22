@@ -9,15 +9,19 @@
  * browser's network time for the call, so a flagged route whose network p90 is far below its wait was held by the page's main thread. *
  * When no tailnet or server line of the window reached search, messages or replies, the precheck times a few GETs of that route against the
  * live server itself and says so in `metricSources`; a probe that fails gives no value and a probe_failed row.
+ * failed_sends_24h also counts the owner's calls that failed within 20 s of an apps/chat restart or hand-over (the service's Started and
+ * Reloading lines in the user journal, scripts/restart-walk-hits.ts), each a restart_hit row apart from the failed_send rows.
  * Usage: OUTPUT_FILE=<file> node --import tsx scripts/duties/api-speed.ts [--data-dir <dir>] [--hours 24] [--server http://127.0.0.1:5184]
  * The data dir defaults to APPS_CHAT_DATA_DIR, else ~/.pi/agent/chat, and the server to APPS_CHAT_URL, else http://127.0.0.1:5184.
  * Without OUTPUT_FILE the result prints to stdout.
  */
+import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import type { RequestTiming } from "../../server/request-log.ts";
+import { parseStarts, RESTART_WINDOW_MS, restartHits } from "../restart-walk-hits.ts";
 import type { Item } from "../../web/src/lib/api/types.ts";
 
 /**
@@ -264,7 +268,21 @@ export async function probeRoutes(base: string, routes: readonly string[], timin
   return out;
 }
 
-export function apiSpeed(dir: string, now: number, windowMs: number, probes: readonly Probe[] = []) {
+/**
+ * The apps/chat service's Started and Reloading lines from `since` on, from the user journal: each release's restart or hand-over. An
+ * unreadable journal gives none, so the count reads low rather than failing the duty.
+ */
+export function readRestarts(since: number, unit = "sieun-pi-apps-chat.service"): number[] {
+  const out = spawnSync("journalctl", ["--user", "-u", unit, "-o", "short-unix", "--no-pager", "--since", `@${Math.floor(since / 1000)}`], { encoding: "utf8", maxBuffer: 1 << 26 });
+  return out.status === 0 ? parseStarts(out.stdout) : [];
+}
+
+/**
+ * `restarts` are the service's restart and hand-over times (readRestarts). The owner's tailnet calls that failed within 20 s of one count in
+ * failed_sends_24h beside his Not delivered sends, each as a restart_hit row: on 11-22 his page logged 152 failed calls within 20 s of a
+ * restart, across 32 of 94 restarts, mostly GET /api/later ('TypeError: Load failed'), and no metric counted them.
+ */
+export function apiSpeed(dir: string, now: number, windowMs: number, probes: readonly Probe[] = [], restarts: readonly number[] = []) {
   const timings = readTimings(dir, now, windowMs);
   const speeds = routeSpeeds(timings);
   const net = ownerNetwork(timings);
@@ -276,6 +294,8 @@ export function apiSpeed(dir: string, now: number, windowMs: number, probes: rea
   const failed = failedSends(timings);
   const owners = failed.filter(t => !fromBox(t));
   const walks = failed.filter(fromBox);
+  const counted = new Set(owners);
+  const hits = restartHits(restarts, timings).filter(hit => !counted.has(hit.line));
   const pageRoutes = new Set<string>([...Object.values(ROUTES), ...speeds.filter(s => s.src !== "server").map(s => s.route)]);
   const slowest = [...pageRoutes].flatMap(route => speedOf(route) ?? []).sort((a, b) => b.p90 - a.p90).slice(0, 3);
   const walkSlowest = speeds.filter(s => s.src === "client").slice(0, 3);
@@ -287,7 +307,7 @@ export function apiSpeed(dir: string, now: number, windowMs: number, probes: rea
   if (replies) metrics.thread_open_p90_ms_replies = replies.p90;
   if (messages || replies) metrics.thread_open_p90_ms = Math.max(messages?.p90 ?? 0, replies?.p90 ?? 0);
   if (send) metrics.send_p90_ms = send.p90;
-  metrics.failed_sends_24h = owners.length;
+  metrics.failed_sends_24h = owners.length + hits.length;
   return {
     metrics,
     slowest,
@@ -298,6 +318,10 @@ export function apiSpeed(dir: string, now: number, windowMs: number, probes: rea
       ...[...owners.map(t => ["failed_send", t] as const), ...walks.map(t => ["walk_failed_send", t] as const)].map(([kind, t]) => ({
         kind, sig: `${who(t)}:${t.m} ${t.r}:${t.s}`,
         excerpt: `${new Date(t.at).toISOString()} ${t.m} ${t.p} ${t.s ? `answered ${t.s}` : "never reached the server"} (${who(t)}${t.shown ? ", Not delivered after the page's tries" : ""}): ${t.err ?? "no reason logged"}`,
+      })),
+      ...hits.map(({ line: t, restart }) => ({
+        kind: "restart_hit", sig: `restart:${t.m} ${t.r}:${t.s}`,
+        excerpt: `${new Date(t.at).toISOString()} ${t.m} ${t.p} ${t.s ? `answered ${t.s}` : "never reached the server"} on the owner's page, logged ${Math.round((t.at - restart) / 100) / 10} s after the apps/chat restart or hand-over at ${new Date(restart).toISOString()}: ${t.err ?? "no reason logged"}`,
       })),
       ...probes.flatMap(p => ("error" in p ? [{ kind: "probe_failed", sig: `probe:${p.route}`, excerpt: `${p.route} has no value: a probe from the box at ${new Date(p.at).toISOString()} failed: ${p.error}` }] : [])),
       ...slowest.map(o => ({ kind: "slow_api", sig: `${o.speed.src}:${o.route}`, excerpt: slowExcerpt(o) })),
@@ -314,7 +338,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const windowMs = Number(values.hours ?? 24) * 3600_000;
   const timings = readTimings(dir, now, windowMs);
   const probes = await probeRoutes(base, unmeasured(routeSpeeds(timings)), timings);
-  const json = JSON.stringify(apiSpeed(dir, now, windowMs, probes), null, 1);
+  const json = JSON.stringify(apiSpeed(dir, now, windowMs, probes, readRestarts(now - windowMs - RESTART_WINDOW_MS)), null, 1);
   if (process.env.OUTPUT_FILE) writeFileSync(process.env.OUTPUT_FILE, json);
   else process.stdout.write(`${json}\n`);
 }

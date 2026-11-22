@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { apiSpeed, finding, probeRoutes, readTimings, routeSpeeds, unmeasured } from "../../scripts/duties/api-speed.ts";
+import { parseStarts } from "../../scripts/restart-walk-hits.ts";
 import { dayOf, LoopStalls, RequestLog, type RequestTiming } from "../../server/request-log.ts";
 import { start } from "./helpers.ts";
 
@@ -324,4 +325,35 @@ test("with no line of the owner's or the server's on a metric route, the CLI's p
   } finally {
     await new Promise(done => server.close(done));
   }
+});
+
+test("failed_sends_24h counts the owner's calls that failed within 20 s of a restart or hand-over, each once, as restart_hit rows", () => {
+  const dir = tempDir();
+  mkdirSync(join(dir, "requests"));
+  const now = Date.UTC(2026, 10, 22, 12);
+  const reload = now - 3600_000;
+  const journal = [
+    `${(reload - 30_000) / 1000}.000000 us-metal02 systemd[8987]: Started sieun-pi-apps-chat.service - apps/chat.`,
+    `${reload / 1000}.000000 us-metal02 systemd[8987]: Reloading sieun-pi-apps-chat.service - apps/chat...`,
+    `${reload / 1000 + 0.01}.000000 us-metal02 systemd[8987]: Reloaded sieun-pi-apps-chat.service - apps/chat.`,
+  ].join("\n");
+  const restarts = parseStarts(journal);
+  assert.deepEqual(restarts, [reload - 30_000, reload]);
+  const row = (after: number, via: string, extra: Record<string, unknown> = {}) =>
+    JSON.stringify({ at: reload + after, src: "client", via, m: "GET", r: "/api/later", p: "/api/later", s: 0, ms: 47, err: "TypeError: Load failed", ...extra });
+  writeFileSync(join(dir, "requests", "2026-11-22.jsonl"), `${[
+    row(5_000, "tailnet"),
+    row(60_000, "tailnet"),
+    row(5_000, "local"),
+    row(6_000, "tailnet", { m: "POST", r: "/api/c/:id/send", p: "/api/c/dm_x/send", shown: true }),
+    row(7_000, "tailnet", { s: 200, err: undefined }),
+  ].join("\n")}\n`);
+  const out = apiSpeed(dir, now, 24 * 3600_000, [], restarts);
+  // The GET 5 s after the reload and the Not delivered send count; the GET 60 s after, the box browser's line and the call that landed do not.
+  assert.equal(out.metrics.failed_sends_24h, 2);
+  const hits = out.flagged.filter(row => row.kind === "restart_hit");
+  assert.deepEqual(hits.map(row => row.sig), ["restart:GET /api/later:0"]);
+  assert.equal(hits[0]!.excerpt, `${new Date(reload + 5_000).toISOString()} GET /api/later never reached the server on the owner's page, logged 5 s after the apps/chat restart or hand-over at ${new Date(reload).toISOString()}: TypeError: Load failed`);
+  assert.deepEqual(out.flagged.filter(row => row.kind === "failed_send").map(row => row.sig), ["client via tailnet:POST /api/c/:id/send:0"]);
+  assert.equal(apiSpeed(dir, now, 24 * 3600_000).metrics.failed_sends_24h, 1);
 });
