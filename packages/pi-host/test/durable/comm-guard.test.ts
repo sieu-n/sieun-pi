@@ -109,7 +109,9 @@ test("a post with a table is held once unless the post that started the turn ask
   assert.equal(tableResent([{ role: "user", content: "catalog?" }, call("a", CATALOG)], CATALOG), false);
   assert.equal(tableResent([call("a", CATALOG), held("a"), { role: "user", content: "and now?" }, call("b", CATALOG)], CATALOG), false, "a new turn holds it again");
   for (const text of ["can you put it in a table?", "표로 정리해줘", "show it as a table"]) assert.equal(asksTable(text), true, text);
-  for (const text of ["what is our definitive catalog now after this update?", "발표 자료 대표 이미지 표시해줘", "is it stable?"]) assert.equal(asksTable(text), false, text);
+  // c225: a question how a setup or catalog is set up gets one table of its pieces, so it counts as asking for one.
+  for (const text of ["what is our definitive catalog now after this update?", "what pieces make up the skill setup agents get in this repo?", "is the mcp configured properly?", "스킬 설정 어떻게 돼있어?"]) assert.equal(asksTable(text), true, text);
+  for (const text of ["발표 자료 대표 이미지 표시해줘", "is it stable?", "is this checkout on main right now?"]) assert.equal(asksTable(text), false, text);
   const header = "[#dev-search-general · post 15 from You (owner) · hops 0]\n\n";
   assert.equal(turnAskedTable([{ role: "user", content: `${header}what pieces make up the skill?\n\n(thread so far)\n11 agent: | a | b |\n|---|---|\nput it in a table` }]), false);
   assert.equal(turnAskedTable([{ role: "user", content: `${header}put it in a table please\n\n(thread so far)\n11 agent: ok` }]), true);

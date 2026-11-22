@@ -61,8 +61,13 @@ const TABLE = /^[ \t]*\|?.*\|.*\n[ \t]*\|?[ \t]*:?-{3,}:?[ \t]*(?:\|[ \t]*:?-{3,
 /** Whether a post holds a markdown table. */
 export const hasTable = (text: string): boolean => TABLE.test(text);
 
-/** Whether the owner's post asks for a table, in English or in the Korean he writes ("표로", "표 형식"). */
-export const asksTable = (text: string): boolean => /\btables?\b|\btabular\b|표로|표를|표 ?형식|표 ?형태/iu.test(text);
+/**
+ * Whether the owner's post asks for a table, in English or in the Korean he writes ("표로", "표 형식"), or asks how a setup, a skill or a
+ * catalog is set up, which c225 answers with one table of each piece, where it lives, who loads it and what it says (his words, 11-20:
+ * "씨발 이럴떄 스킬이 어떻게 됐는지 설명하라니까? what is our definitive catalog now after this update?").
+ */
+export const asksTable = (text: string): boolean =>
+  /\btables?\b|\btabular\b|표로|표를|표 ?형식|표 ?형태|\bset ?up\b|\bsetup\b|\bconfigur|\bcatalog|설정|세팅|셋업/iu.test(text);
 
 /** Why a comm thread's post must not go out, or undefined when it may. */
 export function commPostRefusal(text: string, turn: CommPostTurn): string | undefined {

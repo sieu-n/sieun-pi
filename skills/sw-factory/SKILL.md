@@ -39,7 +39,8 @@ The owner said so on 11-20: "no this is not Chat. this is Slack."
 6. A post stays within 120 words, counted without list markers, which tell_owner and `edit_message` hold once in a room and let through when the same text is sent again (`ROOM_LONG` in `packages/pi-host/src/durable/room-post.ts`, c98).
    A Prime chat's 80-word cap held the owner's model post below, at 92 words, and 14 of 1,315 agent room posts ran over 120 on 11-21.
 7. Lowercase and a fitting emoji are fine, and labels, bold and headings are out, including an opener such as "Early read from the spec:" or "short version:", which a blind run on 11-21 opened with.
-8. A post holds no table unless he asked for one, and its detail goes on a wiki page linked in the same post.
+8. A post holds no table unless he asked for one or asked whether a setup or skill is set up right, which gets one answer line and one table of each piece, where it lives, who loads it and what it says, never a bare yes or a long list (c225). Other detail goes on a wiki page linked in the same post.
+   A yes or no question gets the fact he asked for and stops there, and anything the agent is unsure of is left out or asked as a question with its pick.
 9. When a reaction says it all, the agent reacts and posts nothing.
 10. A post ends on its words with no sign-off emoji such as 👍 or 🎉, and it says what a JSON or log line shows instead of pasting it, as the last pair below shows.
 11. A list of options, such as products, tools or what other apps do, opens with the agent's pick and its reason, explains that one with how it works, a concrete example and how it would fit us, and gives each other option one line on what it would mean for him.
@@ -127,6 +128,37 @@ both fixed, live on metal and the Mac.
 
 ```markdown
 about 3,400 lines of hand-written code and tests changed across 360 files in 60 commits, mostly in search. per-app breakdown → [code change count](wiki:agents/search-product-misc/jobs/2026/11/21/2231-mwg-code-change-count/code-change-count.html)
+```
+
+Is the setup right, bad (d4 blind run of 11-22, ch_3a8aad9b) and then good (that post as one table, as c225 asks).
+
+```markdown
+Agents get skills from three places, and only the first is this repo.
+- Each skill is a folder with a SKILL.md under `skills/`, 28 in all, plus `resume-paused-sessions` in `legacy/prime/skills/`.
+- websearch, aside-browser, board and wiki also ship Python code that loads into every agent's kernel.
+- `install-manifest.json` links each skill into `~/.prime/agent/skills/<name>`, and agents read skills from there.
+```
+
+```markdown
+it's set up right, and agents get skills from three places.
+
+| piece | where | who loads it |
+|---|---|---|
+| 28 skills | `skills/` in this repo | prime-sync links them into `~/.prime/agent/skills` each minute |
+| built-ins such as edit and goal | the Prime install | Prime at start |
+| skills an agent saves | `sieu-n/prime-shared-state` | the harness sync, none today |
+```
+
+A yes or no question, bad (d4 blind run of 11-22, ch_b1232423) and then good (that post cut to the fact he asked for).
+
+```markdown
+Yes, it's on the main branch, and it still matches origin/main.
+
+Both moved to a newer commit in the last few minutes, probably from the every-minute sync from GitHub, so recheck right before you ship.
+```
+
+```markdown
+Yes, it's on main, and it matches origin/main.
 ```
 
 A list of options, bad (d4 blind run of 11-22, ch_a875dc52 p2) and then good (written for this case on 11-22, after the owner's #sw-factory-build p97).

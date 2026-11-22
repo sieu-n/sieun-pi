@@ -170,6 +170,16 @@ export const ROOM_EXAMPLES: readonly { case: string; bad: { at: string; text: st
     good: { at: "#dev-search-general p33", text: "about 3,400 lines of hand-written code and tests changed across 360 files in 60 commits, mostly in search. per-app breakdown → [code change count](wiki:agents/search-product-misc/jobs/2026/11/21/2231-mwg-code-change-count/code-change-count.html)" },
   },
   {
+    case: "Is the setup right",
+    bad: { at: "d4 blind run of 11-22, ch_3a8aad9b", text: "Agents get skills from three places, and only the first is this repo.\n- Each skill is a folder with a SKILL.md under `skills/`, 28 in all, plus `resume-paused-sessions` in `legacy/prime/skills/`.\n- websearch, aside-browser, board and wiki also ship Python code that loads into every agent's kernel.\n- `install-manifest.json` links each skill into `~/.prime/agent/skills/<name>`, and agents read skills from there." },
+    good: { at: "that post as one table, as c225 asks", text: "it's set up right, and agents get skills from three places.\n\n| piece | where | who loads it |\n|---|---|---|\n| 28 skills | `skills/` in this repo | prime-sync links them into `~/.prime/agent/skills` each minute |\n| built-ins such as edit and goal | the Prime install | Prime at start |\n| skills an agent saves | `sieu-n/prime-shared-state` | the harness sync, none today |" },
+  },
+  {
+    case: "A yes or no question",
+    bad: { at: "d4 blind run of 11-22, ch_b1232423", text: "Yes, it's on the main branch, and it still matches origin/main.\n\nBoth moved to a newer commit in the last few minutes, probably from the every-minute sync from GitHub, so recheck right before you ship." },
+    good: { at: "that post cut to the fact he asked for", text: "Yes, it's on main, and it matches origin/main." },
+  },
+  {
     case: "A list of options",
     bad: { at: "d4 blind run of 11-22, ch_a875dc52 p2", text: "They split it two ways: snooze hides the task until later, and a reminder pings you while it stays visible.\n\n- Gmail, Linear and Asana snooze to presets like tomorrow or next week, then put the item back on top.\n- Linear brings a snoozed item back early when someone comments on it.\n\nMy pick is Linear's way." },
     good: { at: "written for this case on 11-22, after the owner's #sw-factory-build p97", text: "I'd copy Linear's snooze, because a comment brings the task back early, so nothing waits on a stale date.\n- you snooze a task to Monday, a teammate comments Friday, and it's back on top Friday\n- for us that's a snooze on each task card that a new comment cancels\n- Things' start date would keep a task out of Today, which helps one person more than a team" },
@@ -243,7 +253,8 @@ function slackPostStep(): string {
     "Put the answer on its own line and each further point on its own line or `- ` bullet, never in one paragraph, and keep each bullet to one point in one or two sentences. " +
     "Keep your working plan and process to yourself (c234). A first reply gives the answer or one plain line on what he will get, never \"I'll do X first, then Y\" and never a checklist of your own steps. " +
     "A checklist lists only results he cares about, each with its result, and you fill them in by editing that post with `edit_message`. " +
-    "A question to him leads with your own pick. No labels, such as an opener like \"Early read from the spec:\" or \"short version:\", and no bold, headings or tables unless he asks. Detail goes on a wiki page linked in the post. End on the words, with no sign-off emoji. " +
+    "A question to him leads with your own pick. No labels, such as an opener like \"Early read from the spec:\" or \"short version:\", and no bold, headings or tables unless he asks. A question whether a setup or skill is set up right gets one answer line and one table of each piece, where it lives, who loads it and what it says, never a bare yes or a long list (c225). Detail goes on a wiki page linked in the post. End on the words, with no sign-off emoji. " +
+    "A yes or no question gets the fact he asked for and stops there: leave out what you are unsure of, or ask it as a question with your pick. " +
     "When you list options, open with your pick and its reason, explain that one with how it works, a concrete example and how it would fit, and give each other option one line on what it would mean for him. " +
     "When you answer an older post of his while a newer one sits below it, set `reply_to` to that older post and quote nothing from it. " +
     "This replaces rule 5's table for a comparison. Real posts from our rooms, bad and then good:\n\n" + roomExamples();

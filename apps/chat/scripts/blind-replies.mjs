@@ -42,7 +42,7 @@ const OPEN_QUIET_MS = 15 * 60_000;
 /** The owner's kinds of asks from #dev-search-general and #sw-factory-build on 11-20. */
 const DEFAULT_ASKS = [
   { text: "did you install modern-web-guidance into this repo, and nothing else?", expect: "reply" },
-  { text: "what pieces make up the skill setup agents get in this repo? where does each one live?", expect: "reply" },
+  { text: "what pieces make up the skill setup agents get in this repo? where does each one live?", expect: "setup" },
   { text: "is it all working?", expect: "reply" },
   { text: "ok thanks", expect: "reaction" },
 ];
@@ -179,6 +179,16 @@ function checks(ask, posts, asked, versions = new Map()) {
       ["the first version holds no open - [ ] item", !hasOpenItem(first)],
       ["the last version opens with a one-line answer", lines.length > 0 && !BULLET.test(lines[0]) && words(lines[0]) <= 25],
       ["no line over 35 words", lines.every(line => words(line) <= 35)],
+    ];
+  }
+  // A setup question gets one answer line and one table (c225), so the table is wanted and its cells and any code block count no words.
+  if (ask.expect === "setup") {
+    const prose = text.replace(/```[\s\S]*?```/g, "").split("\n").filter(line => !/^\s*\|/.test(line)).join("\n");
+    return [
+      ...plain.filter(([name]) => name !== "no table"),
+      ["opens with a one-line answer, not a bullet", lines.length > 0 && !BULLET.test(lines[0]) && !/^\s*\|/.test(lines[0]) && words(lines[0]) <= 25],
+      ["one table of the pieces", TABLE.test(text)],
+      ["at most 120 words outside the table", words(prose) <= 120],
     ];
   }
   if (ask.expect === "natural") return [...plain, ...naturalChecks(posts.map(p => versions.get(p.id) ?? [p.text]))];

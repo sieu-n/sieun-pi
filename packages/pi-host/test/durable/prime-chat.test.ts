@@ -268,7 +268,7 @@ test("in a comm thread, a post with a table nobody asked for is held once, the s
   await harness.commit(async tx => {
     (await tx.doc(ChatDoc, ROOT_CONVERSATION_ID, AGENT_REF_DOC, null)).value = { agent: "ag_vent", dir: agentDir, role: "comm", room: "ch_1a2b3c4d", work: "w-1" };
   }, context);
-  await (await root.submit({ type: "input", content: "[#dev · post 14 from You (owner) · hops 0]\n\nwhat is the catalog now?" }, context)).wait(context);
+  await (await root.submit({ type: "input", content: "[#dev · post 14 from You (owner) · hops 0]\n\nwhich skills does it have now?" }, context)).wait(context);
   await (await root.submit({ type: "input", content: "[#dev · post 15 from You (owner) · hops 0]\n\nput it in a table" }, context)).wait(context);
   const told = results(await entriesOf(root)).filter(result => result.name === "tell_owner");
   await harness.close(context);
