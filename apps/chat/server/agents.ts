@@ -13,7 +13,9 @@ import { AGENT_REF_DOC, agentRef, commRef, sameRef, type AgentRef } from "./agen
 import { freeSlug, isUntitled, type AgentRecord, type AgentStore, type RoomId } from "./agent-store.ts";
 import { DEFAULT_MODEL, DEFAULT_THINKING, type Config } from "./config.ts";
 import type { CreateOptions, DurableThread, Host, TreeNode } from "./host/types.ts";
-import type { Store } from "./store.ts";
+import { join } from "node:path";
+import { writeJsonLater } from "./disk.ts";
+import { readJson, type Store } from "./store.ts";
 
 /** How many entries of a root thread `fileSpawned` reads for its first input; the input follows a few setup entries. */
 const FIRST_INPUT_SCAN = 20;
@@ -88,8 +90,13 @@ export function agentSummary(record: AgentRecord, rows: AgentRows, extra: { mode
 export class Agents {
   /** Whether `dropUntitled` ran on this server's first thread list. */
   private cleaned = false;
-  /** The `agent.ref` each thread holds as this server last read or wrote it, so a sweep reads a thread once per run. */
-  private refs = new Map<string, AgentRef>();
+  /**
+   * The `agent.ref` each thread holds as this server or one before it last read or wrote it, so a sweep reads a thread once and not again at
+   * each start. Kept in <data dir>/cache/agent-refs.json: on 11-22 every start read all 1,819 refs one by one in its first 10 s, a count that
+   * grows with each agent made. Only a read or write that pi-host answered goes in, and a ref an agent change alters is read again.
+   */
+  private readonly refs: Map<string, AgentRef>;
+  private refsChanged = false;
   /** The first agent.ref writes in flight (`firstRef`), by thread. */
   private readonly writingRefs = new Map<string, Promise<boolean>>();
   private sweeping?: Promise<void>;
@@ -113,7 +120,13 @@ export class Agents {
     readonly host: Host,
     readonly config: Pick<Config, "box" | "agentsDir" | "agentRefs">,
     private readonly log: (line: string) => void = () => {},
-  ) {}
+  ) {
+    this.refs = store.dir ? new Map(Object.entries(readJson<Record<string, AgentRef>>(this.refsFile(), {}))) : new Map();
+  }
+
+  private refsFile(): string {
+    return join(this.store.dir, "cache", "agent-refs.json");
+  }
 
 
   /** Where the agent's folder lives on its box: the record's own `agentsDir` for an agent on another box, else this box's. */
@@ -273,6 +286,10 @@ export class Agents {
     if (!this.config.agentRefs) return Promise.resolve();
     this.sweeping ??= (async () => {
       for (const [thread, ref] of this.wantedRefs()) if (listed(thread)) await this.putRef(thread, ref);
+      if (this.refsChanged && this.store.dir) {
+        this.refsChanged = false;
+        writeJsonLater(this.refsFile(), Object.fromEntries(this.refs));
+      }
     })().finally(() => { this.sweeping = undefined; });
     return this.sweeping;
   }
@@ -286,6 +303,7 @@ export class Agents {
     try {
       if (!sameRef(await this.host.docGet(thread, AGENT_REF_DOC), ref)) await this.host.docPut(thread, AGENT_REF_DOC, ref);
       this.refs.set(thread, ref);
+      this.refsChanged = true;
       return true;
     } catch (error) {
       this.log(`agent.ref for ${thread} (${ref.agent}) not written, next sweep tries again: ${error instanceof Error ? error.message : String(error)}`);

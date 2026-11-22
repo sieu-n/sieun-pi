@@ -280,6 +280,94 @@ describe("restarts", () => {
   });
 });
 
+describe("feed marks across a restart", () => {
+  test("a row written after the stop's save and a row whose read was cut by the stop each land once, and an unchanged feed is not read", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "apps-chat-rooms-seen-"));
+    const host = new FixtureHost();
+    host.wordMs = 0;
+    seedFixture(host, dataDir);
+    const feedReads: string[] = [];
+    let gate: { thread: string; release: (error: Error) => void; reached: () => void } | null = null;
+    const entries = host.entries.bind(host);
+    host.entries = async (thread, opts) => {
+      if (opts.conversation === 1 && opts.after !== undefined) feedReads.push(thread);
+      if (gate && thread === gate.thread && opts.after !== undefined) {
+        const held = gate;
+        gate = null;
+        held.reached();
+        await new Promise<never>((_, reject) => { held.release = reject; });
+      }
+      return entries(thread, opts);
+    };
+    const told = (thread: string, id: string, text: string) => {
+      const t = host.threadsById.get(thread)!;
+      host.append(t, 1, { kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "toolCall", id, name: "tell_owner", arguments: { text } }], provider: "anthropic", model: "claude-opus-5-5", stopReason: "toolUse", timestamp: Date.now() }] });
+      host.append(t, 1, { kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: id, toolName: "tell_owner", content: [{ type: "text", text: "told the owner" }], isError: false, timestamp: Date.now() }] });
+    };
+    const count = (page: Message[], text: string) => page.filter(p => p.author.id === agents.vent && p.text === text).length;
+    try {
+      const first = await start({ host, dataDir });
+      const opened = `make the comm thread ${Date.now()}`;
+      await first.send("POST", `/api/c/${ROOM}/send`, { text: opened, requestId: "seen-1" });
+      await until(() => posts(first), page => page.some(p => p.author.id === agents.vent && p.text.includes(opened)));
+      const comm = commOf(first);
+      await first.app.threads.refresh();
+      first.app.rooms.poll();
+      await first.app.rooms.feed(first.app.agents.record(agents.vent)!);
+      await first.close();
+
+      // Written after the first server saved its marks: the thread's updatedAt moves past the kept mark.
+      told(comm, "seen-after-save", "written after the save");
+      const second = await start({ host, dataDir });
+      try {
+        await until(() => posts(second), page => count(page, "written after the save") === 1);
+        // A read the stop cuts: the poll starts it, pi-host never answers it, and the server stops meanwhile.
+        let reached!: () => void;
+        const waiting = new Promise<void>(resolve => (reached = resolve));
+        gate = { thread: comm, release: () => {}, reached };
+        const held = gate;
+        told(comm, "seen-cut-by-stop", "read when the stop came");
+        await second.app.threads.refresh();
+        second.app.rooms.poll();
+        await waiting;
+        await second.close();
+        held.release(new Error("this server stopped"));
+      } catch (error) {
+        await second.close().catch(() => undefined);
+        throw error;
+      }
+
+      feedReads.length = 0;
+      const third = await start({ host, dataDir });
+      try {
+        const page = await until(() => posts(third), p => count(p, "read when the stop came") === 1);
+        assert.equal(count(page, "written after the save"), 1);
+        assert.equal(count(page, "read when the stop came"), 1);
+        // The cut read left no mark, so the third start read that feed; a feed with a kept mark and no change was not read.
+        assert.ok(feedReads.includes(comm), "the feed whose read the stop cut is read again");
+        const fourth = feedReads.length;
+        await third.close();
+        feedReads.length = 0;
+        const again = await start({ host, dataDir });
+        try {
+          await new Promise(resolve => setTimeout(resolve, 300));
+          assert.ok(!feedReads.includes(comm), `an unchanged feed was read again at the start: ${feedReads.join(", ")} (third start read ${fourth})`);
+          const last = await posts(again);
+          assert.equal(count(last, "written after the save"), 1);
+          assert.equal(count(last, "read when the stop came"), 1);
+        } finally {
+          await again.close();
+        }
+      } catch (error) {
+        await third.close().catch(() => undefined);
+        throw error;
+      }
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("test sends", () => {
   let s: Running;
   let host: FixtureHost;

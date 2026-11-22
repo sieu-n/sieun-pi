@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import type { AgentConfig, AgentFolder, AgentSummary, ConversationSummary } from "../../web/src/lib/api/types.ts";
 import { AGENT_REF_DOC, harnessSlug } from "../../server/agent-folder.ts";
+import { drained } from "../../server/disk.ts";
 import type { FixtureHost } from "../../server/host/fixture.ts";
 import { FIXTURE_AGENTS as agents, FIXTURE_IDS as ids } from "../../server/fixture/seed.ts";
 import { start, until, type Running } from "./helpers.ts";
@@ -35,7 +36,7 @@ const folder = (id: string) => s.get<AgentFolder>(`/api/agents/${encodeURICompon
 const ventDir = () => join(s.app.config.agentsDir, "vent");
 const storeFile = () => join(ventDir(), "harness", "harness_state.json");
 
-test("the sweep writes agent.ref into each work thread and root job thread once, and a second server's sweep writes nothing", async () => {
+test("the sweep writes agent.ref into each work thread and root job thread once, and a second server's sweep reads and writes nothing", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "apps-chat-refs-"));
   const first = await start({ dataDir });
   try {
@@ -51,6 +52,10 @@ test("the sweep writes agent.ref into each work thread and root job thread once,
     assert.deepEqual(refOf(h, ids.uptimeDuty), { agent: agents.harness, dir: dirOf("ai-harness-developer-environment-vp"), role: "job" });
 
     await first.app.agents.sweepRefs();
+    // A second sweep, since the first call may join one that began before the last comm thread's ref landed.
+    await first.app.agents.sweepRefs();
+    // The sweep keeps the refs it read or wrote in <data dir>/cache/agent-refs.json for the next start.
+    await drained();
     const puts: string[] = [];
     let gets = 0;
     const put = h.docPut.bind(h);
@@ -59,14 +64,16 @@ test("the sweep writes agent.ref into each work thread and root job thread once,
       puts.push(thread);
       return put(thread, name, value);
     };
+    const reads: string[] = [];
     h.docGet = async (thread, name) => {
       gets += 1;
+      reads.push(`${thread}/${name}`);
       return get(thread, name);
     };
     const second = await start({ dataDir, host: h });
     try {
       await second.app.agents.sweepRefs();
-      assert.ok(gets >= 4, `the second server read each ref (${gets} reads)`);
+      assert.equal(gets, 0, `the second server found every ref in the first one's cache (it read ${gets}: ${reads.join(", ")})`);
       assert.deepEqual(puts, [], "every ref was already there");
     } finally {
       await second.close();
