@@ -65,7 +65,7 @@ The owner asked for it in these words: "a daily job that cleans wiki, find anti-
 2. Point a link into `sessions/`, other than a session log `index.html`, at the curated page that graduated from that session.
 3. When no such page exists, remove the link and move the fact it backed into the line itself or into the owning curated page.
 4. Point a link to a superseded page at the page named in its `superseded_by`.
-5. Fix a `hub_orphan` under a hub that holds `<wiki-children>` by fixing the page's folder, its `status` or the hub's `exclude` list, never by adding a hand row.
+5. Fix a `hub_orphan` under a hub that holds `<wiki-children>` by fixing the page's folder, its `status` or the hub's `exclude` list, never by adding a hand row. A hub orphan whose page the page API created within the 70-min follow window counts in `wiki_problems_following`, not `wiki_problems`, because a writer adds the hub row only after the page exists, and its flagged line names when it counts ([051ce807](https://github.com/sieu-n/sieun-pi/commit/051ce807)).
 6. Add the missing row to a hub that still has a hand-kept list, until that hub moves to `<wiki-children>`.
 7. Fix `missing_meta` by setting `updated`, writing a `description`, or matching the `<h1>` to `title`.
 8. Rewrite relative dates such as "yesterday" or "last week" to the absolute date while a page is open anyway.
