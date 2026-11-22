@@ -5,7 +5,7 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import { MODEL_POST } from "../../src/durable/agent-profile.ts";
-import { LONG_EDIT_MARK, longEdit } from "../../src/durable/room-tools.ts";
+import { LONG_EDIT_MARK, longEdit, TABLE_EDIT_MARK, tableEdit } from "../../src/durable/room-tools.ts";
 
 const checklist = (items: number) => ["yes, both boxes match main and every link resolves", "- this box",
   ...Array.from({ length: items }, (_, i) => `  - [x] check ${i + 1} passed on the box with nothing left`)].join("\n");
@@ -28,4 +28,12 @@ test("list and task markers are no words, so a checklist of 74 words that is 96 
 test("the post the owner called a model, 92 words, edits on the first try (msg mwqtp2l1)", () => {
   const held = new Set<string>();
   assert.equal(longEdit(MODEL_POST, held), undefined);
+});
+
+test("an edit with a table is held once, and the very same text sent again goes out (11-22 blind-reactions run)", () => {
+  const held = new Set<string>();
+  const result = "Yes, both pass, with 10 of 10 tests green.\n\n| Test file | Pass | Fail |\n|---|---|---|\n| `reactions.test.ts` | 6 | 0 |";
+  assert.ok(tableEdit(result, held)?.startsWith(TABLE_EDIT_MARK));
+  assert.equal(tableEdit(result, held), undefined, "the resend edits the post");
+  assert.equal(tableEdit(MODEL_POST, new Set()), undefined, "a post with bullets and no table edits at once");
 });

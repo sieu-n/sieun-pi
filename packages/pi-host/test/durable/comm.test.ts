@@ -167,7 +167,7 @@ test("an agent.ref sets the root's tools and instructions for its role in its co
       assert.doesNotMatch(commInstructions({ ...comm, room }), /also when more work goes on after the reply/, room);
       assert.match(commInstructions({ ...comm, room }), /A follow-up in a thread you already worked on[\s\S]*within a minute from what you already hold[\s\S]*```mermaid block[\s\S]*Keep 👀 on[\s\S]*steer the job that did it if that job still runs, else to start one job that starts from its findings, never a fresh round of research jobs/, room);
       assert.match(commInstructions({ ...comm, room }), /a job that writes a page or report from other jobs' findings starts only after those jobs report, never beside them/, room);
-      assert.match(commInstructions({ ...comm, room }), /one plain line on what he will get, with tell_owner's `reply_to` set to his post, never an ack such as "on it"/, room);
+      assert.match(commInstructions({ ...comm, room }), /one plain line on what he will get, such as "pass and fail per test file coming here", with tell_owner's `reply_to` set to his post, never an ack such as "on it"/, room);
       assert.match(commInstructions({ ...comm, room }), /put no ✅ on a post you replied to\. Once all his post asked is handled[\s\S]*mark its thread done with `set_thread_done\(message_id, true\)`, never while the work thread still works on it/, room);
       assert.match(commInstructions({ ...comm, room }), /that mark is the finished signal and no ✅ is\. A quick ask[\s\S]*gets the done mark and no post/, room);
       assert.match(commInstructions({ ...comm, room }), /His new post in a done thread opens it again, so mark it done again once that post is handled[\s\S]*`set_thread_done\(message_id, false\)`/, room);

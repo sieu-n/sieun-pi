@@ -22,7 +22,7 @@
 import { Type } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool, ROOT_CONVERSATION_ID, type Extension } from "@earendil-works/pi-durable";
 import type { ChatApp } from "./chat-app.ts";
-import { crammedEdit } from "./comm-guard.ts";
+import { crammedEdit, hasTable } from "./comm-guard.ts";
 import { closingControl, forMeTools } from "./for-me.ts";
 import { longReply } from "../../../../legacy/prime/user-history/src/shared/reply-lint.ts";
 import { ROOM_LONG_WORDS } from "./room-post.ts";
@@ -66,6 +66,20 @@ export function longEdit(edit: string, held: Set<string>): string | undefined {
     "items, a nested detail only for a fact its item lacks, and the rest on a wiki page you link. Sending the very same text again edits it as it is (c98).";
 }
 
+export const TABLE_EDIT_MARK = "Not edited, it holds a table";
+
+/**
+ * The note for an edit whose text holds a markdown table, once, or undefined; the same text sent again edits it (c98). A post with a table is
+ * held once (comm-guard.ts), and on 11-22 a blind-reactions run's work thread put a pass and fail table into the result by editing the
+ * comm thread's first reply, which no check held.
+ */
+export function tableEdit(edit: string, held: Set<string>): string | undefined {
+  if (held.has(edit) || !hasTable(edit)) return undefined;
+  held.add(edit);
+  return `${TABLE_EDIT_MARK}, and a room's thread pane cuts a table off. Say the result in a line or a few short bullets, and put a table he ` +
+    "must see on a wiki page you link. Sending the very same text again edits it as it is (c98).";
+}
+
 export interface SetEmojiArgs { message_id: string; emoji: string; on: boolean }
 
 const text = (value: string) => [{ type: "text" as const, text: value }];
@@ -77,6 +91,7 @@ const isEyes = (emoji: string): boolean => ["eyes", ":eyes:", "👀"].includes(e
 export function roomTools(app: ChatApp, thread: string): Extension {
   const heldEdits = new Set<string>();
   const heldCrammed = new Set<string>();
+  const heldTables = new Set<string>();
   return defineExtension({
     name: ROOM_TOOLS_EXTENSION,
     tools: [
@@ -124,6 +139,8 @@ export function roomTools(app: ChatApp, thread: string): Extension {
           if (long) return { output: text(long), isError: true };
           const crammed = crammedEdit(args.text.trim(), heldCrammed);
           if (crammed) return { output: text(crammed), isError: true };
+          const table = tableEdit(args.text.trim(), heldTables);
+          if (table) return { output: text(table), isError: true };
           try {
             const answer = await app.editPost(thread, { message: args.message_id, text: args.text }, context.abortSignal);
             return { output: text(answer.text), ...await closingControl(true, api, context) };
