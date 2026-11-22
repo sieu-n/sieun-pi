@@ -52,6 +52,8 @@ class Live {
   connected = $state(false);
   /** When the socket last opened (`performance.now()`); a read that left after it missed no event the socket brings. */
   openedAt = Infinity;
+  /** How many times the socket has opened since the page loaded. */
+  opens = 0;
   /** The open socket, and the one try on its way while there is none. */
   private socket: WebSocket | null = null;
   private trying: WebSocket | null = null;
@@ -140,6 +142,7 @@ class Live {
       this.trying = null;
       this.socket = socket;
       this.tries = 0;
+      this.opens += 1;
       this.openedAt = performance.now();
       this.heardAt = Date.now();
       this.askedAt = undefined;

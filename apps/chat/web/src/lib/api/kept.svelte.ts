@@ -10,6 +10,7 @@
  * Each call's line says what the screen did (client.ts `Wait`): `ahead` for a read no panel shows yet, `shown` for a refresh behind a
  * panel that already showed the kept answer and got the same one back, and a wait for a first read or a refresh that changed the panel.
  */
+import { untrack } from "svelte";
 import { afterWrite, get, reads, takeOver, type Read, type Wait } from "./client.ts";
 import { live } from "./live.svelte.ts";
 import { pageDb, type KeptPage } from "./page-db.ts";
@@ -128,12 +129,16 @@ export class Kept<T> {
 
   /**
    * The socket opened again, so events may have been missed: an open panel reads again, and a read ahead may run again. An answer whose read
-   * left after the socket opened, or one still waiting to leave, missed nothing. On a page load the panels read before the socket's hello
+   * left after the socket opened missed nothing, and on the page's first open so did one still waiting to leave. On a page load the panels read before the socket's hello
    * came, and the hello read each of them again: in a walk at a 200 ms round trip on 11-22 every load read /api/rooms, the board and its
    * duties twice (~/work/p189-rooms).
    */
   missed(): void {
-    if ((this.flight ? this.flight.wait.sent ?? Infinity : this.sent) >= live.openedAt) return;
+    // After a drop, a read still waiting to leave may wait behind the owner's calls on the old HTTP connection, which TCP brings back seconds
+    // after the network: in the wake walk on 11-22 a board refresh queued in the lane showed 2.6 s after the network came back while the
+    // socket opened at 0.8 s (~/work/p209-wake/after7). So only a read that left after this open counts then.
+    const waiting = live.opens > 1 ? -Infinity : Infinity;
+    if ((this.flight ? this.flight.wait.sent ?? waiting : this.sent) >= live.openedAt) return;
     this.current = false;
     if (this.views) this.readOverSocket();
   }
@@ -228,7 +233,12 @@ export function view<T>(of: () => Read<T> | null): { readonly value: T | null; r
     const read = of();
     return read ? kept(read) : null;
   });
-  $effect(() => entry?.open());
+  // The open reads the kept answer, which must not make the effect follow it: each board event that set the answer opened it again, and
+  // every open read it again (board-lists-live.spec.ts).
+  $effect(() => {
+    const shown = entry;
+    return untrack(() => shown?.open());
+  });
   return {
     get value() {
       return entry?.value ?? null;

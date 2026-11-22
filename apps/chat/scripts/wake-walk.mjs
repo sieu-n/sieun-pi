@@ -18,7 +18,7 @@
 //   --scratch <dir>    the rig's throwaway folder, deleted at the end; put it under your job's own scratch folder [~/scratch/wake-walk-<label>]
 //   --report <out dir> only rebuild the report of a finished walk
 import { spawn, spawnSync } from "node:child_process";
-import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
@@ -55,6 +55,11 @@ function parseArgs(argv) {
   return o;
 }
 
+/** Writes a file the page half polls for whole, so it never reads one half written (the 11-22 after6 walk's WebKit page died on one). */
+const publish = (file, value) => {
+  writeFileSync(`${file}.tmp`, JSON.stringify(value));
+  renameSync(`${file}.tmp`, file);
+};
 const log = line => console.log(`${new Date().toISOString().slice(11, 23)} ${line}`);
 const sleep = ms => new Promise(done => setTimeout(done, ms));
 
@@ -151,7 +156,7 @@ async function walk(o) {
       const at = `${13 + Math.floor(Math.random() * 11)}:${String(Math.floor(Math.random() * 60)).padStart(2, "0")}`;
       const markers = { board: `wake step ${n} ${tag}`, duty: `Daily at ${at}`, message: `wake message ${n} ${tag}`, room: `wake-room-${n}-${tag}` };
       const probe = { n, seconds, markers, load: Number(readFileSync("/proc/loadavg", "utf8").split(" ")[0]) };
-      writeFileSync(join(o.scratch, `probe-${n}.json`), JSON.stringify(probe));
+      publish(join(o.scratch, `probe-${n}.json`), probe);
       // A cut of 0 s is the control: the same changes with the network up.
       if (seconds) netem(true);
       probe.cutAt = Date.now();
@@ -167,7 +172,7 @@ async function walk(o) {
       await sleep(Math.max(0, probe.cutAt + seconds * 1000 - Date.now()));
       if (seconds) netem(false);
       probe.backAt = Date.now();
-      writeFileSync(join(o.scratch, `back-${n}.json`), JSON.stringify({ backAt: probe.backAt }));
+      publish(join(o.scratch, `back-${n}.json`), { backAt: probe.backAt });
       log(`probe ${n}: network back; writes ${probe.writes.join(", ")}`);
       const by = probe.backAt + GIVE_UP_MS + 5000;
       while (!browsers.every(b => existsSync(join(o.scratch, `result-${n}-${b}.json`))) && Date.now() < by) await sleep(500);
