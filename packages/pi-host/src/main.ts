@@ -16,6 +16,7 @@ import { durableSettings, TurnQueue } from "@sieun-pi/pi-pool/durable";
 import { DurableCommands, DurableThreads } from "./durable/index.ts";
 import { durableCompactionLine, durableModels, primeDefaults } from "./durable/models.ts";
 import { PoolLabels } from "./durable/pool-labels.ts";
+import { ChatApp } from "./durable/chat-app.ts";
 import { withPrimeCompaction } from "./durable/prime-compaction.ts";
 import { loadPrimeChat, type PrimeChat } from "./durable/prime-chat.ts";
 import { DurableRules } from "./durable/rules.ts";
@@ -117,6 +118,8 @@ const durable = values["no-durable"] ? undefined : new DurableCommands(new Durab
     release: (threadId, session) => turns.release({ root: pool.tree(threadId), session }),
   },
   pool,
+  // A run that fails with no answer tells its agent's work thread, or agent factory's (durable/turn-failed.ts).
+  agentWork: agent => new ChatApp().agentWork(agent),
   // Every thread's system prompt is a Prime chat's, built from this agent dir's AGENTS.md, skills, harness and the chat's ledger.
   prompt: { agentDir, tools: promptTools() },
   ...(chat ? { chat } : {}),

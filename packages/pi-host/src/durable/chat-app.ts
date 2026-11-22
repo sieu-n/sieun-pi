@@ -70,6 +70,16 @@ export class ChatApp {
     return Array.isArray(body.agents) ? body.agents as ChatAgent[] : [];
   }
 
+  /** An agent's work thread by its id, from apps/chat's agent list (`GET /api/agents`, and `?test=1` for a walk's throwaway agent). */
+  async agentWork(agent: string, signal?: AbortSignal): Promise<string | undefined> {
+    for (const query of ["", "?test=1"]) {
+      const rows = await this.call<unknown>("GET", `/api/agents${query}`, undefined, signal);
+      const found = Array.isArray(rows) ? (rows as { id?: unknown; thread?: unknown }[]).find(row => row.id === agent) : undefined;
+      if (typeof found?.thread === "string" && found.thread) return found.thread;
+    }
+    return undefined;
+  }
+
   /** Puts this thread's agent's reaction on a room post or takes it off; the answer's `text` is one line that names the post and its reactions. */
   async react(thread: string, change: { message: string; emoji: string; on: boolean }, signal?: AbortSignal): Promise<{ text: string }> {
     const body = await this.call<{ text?: unknown }>("POST", this.thread(thread, "reactions"), change, signal);

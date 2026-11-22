@@ -18,7 +18,7 @@ import type { Models } from "@earendil-works/pi-ai/models";
 import {
   Harness, LiveDoc, ProviderDoc, ROOT_CONVERSATION_ID, watchEvents, type AgentEvent, type AgentEventStream, type CommitPublication, type Conversation,
   type ConversationId, type ConversationRecord, type EntryDraft, type EntryId, type EntryRecord, type HarnessSettings, type ModelRef, type ReportInfo, type SettledSubmissionRecord,
-  type SubmissionId, type SubmissionRecord, type Wake,
+  type Storage, type SubmissionId, type SubmissionRecord, type Wake,
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import type { OwnerMark, TurnTicket } from "@sieun-pi/pi-pool/durable";
@@ -41,6 +41,7 @@ import { AGENT_REF_DOC, applyAgentRole, parseAgentRef, threadAgent } from "./age
 import { RlmChildDoc } from "./children.ts";
 import { commExtension, noteHanded, noteHeard, type CommHost, type CommSubmit } from "./comm.ts";
 import { deliverHarnessDigest, type PrimePromptOptions } from "./prime-prompt.ts";
+import { failedInputs, failureNotice, failureTarget, lastModel, mayRetry, retryInput, roomLineWrites, roomPost, TURN_FAILED_VIA, type FailedInput } from "./turn-failed.ts";
 
 const context: Context = BACKGROUND_CONTEXT;
 const PREVIEW_CHARS = 200;
@@ -58,7 +59,7 @@ export interface DurableThreadsOptions {
   defaultCwd: string;
   /** How long a file with no runnable work and no watcher stays open; default 10 minutes. */
   idleCloseMs?: number;
-  /** Each thread's run settings, such as pi-pool's `durableSettings`, whose retry budget follows that thread's pool waits. */
+  /** Each thread's run settings, such as pi-pool's `durableSettings`, which retries every transient error with no retry count. */
   settings?: (threadId: string) => HarnessSettings;
   /**
    * Called when an input of a conversation settles, with the conversation's provider session id and whether a run
@@ -86,6 +87,8 @@ export interface DurableThreadsOptions {
   primeRoots?: PrimeRoots | null;
   /** pi-pool's tree, class and lead place for each thread's agent role (`pool-labels.ts`), told at each open, `agent.ref` write, root input and close. */
   pool?: Pick<PoolLabels, "agent" | "submitted" | "closed">;
+  /** An agent's work thread by agent id, which hears of a run that failed with no answer (`turn-failed.ts`); pi-host asks apps/chat. */
+  agentWork?: (agent: string) => Promise<string | undefined>;
 }
 
 export interface ThreadInfo extends ThreadRow {
@@ -161,6 +164,8 @@ interface OpenThread {
   tasks: Map<number, TaskInput>;
   /** This file's comm extension, whose hand-over task a comm thread's send to its work thread creates. */
   comm: ReturnType<typeof commExtension>;
+  /** The file's storage, whose submission scan the retry of a failed owner post reads (`turn-failed.ts`). */
+  storage: Storage;
 }
 
 /** A child conversation's task: the input its owner wrote, which the index must not credit to the owner of the box. */
@@ -275,7 +280,35 @@ export class DurableThreads {
     }
     this.armWakes();
     if (due.length) this.log(`recovered ${due.length} threads: ${due.join(", ")}`);
+    void this.retryFailedPosts();
     return due;
+  }
+
+  /**
+   * After a restart, such as the release of a fix, gives each comm thread's newest owner post its turn again when the run that held it
+   * failed with no answer and nothing later answered it (`retryInput`), so nobody has to send it again. A read-only look picks the files.
+   */
+  async retryFailedPosts(): Promise<string[]> {
+    const retried: string[] = [];
+    for (const row of this.index.list()) {
+      if (this.closing) break;
+      // Each look is a synchronous read, 1.9 ms on average over the 1,265 files on us-metal02 on 11-22, so the loop yields between files.
+      await new Promise(resolve => setImmediate(resolve));
+      if (!existsSync(this.fileOf(row.id)) || !mayRetry(this.fileOf(row.id))) continue;
+      try {
+        const open = await this.thread(row.id);
+        const ref = await threadAgent(open.harness, context);
+        if (ref?.role !== "comm") continue;
+        const input = await retryInput(open.harness, open.storage, ref.room, context);
+        if (!input) continue;
+        await this.submit(row.id, { ...input, whenBusy: "followUp", ownerTurn: true });
+        retried.push(`${row.id} ${input.requestId}`);
+      } catch (error) {
+        this.log(`retry of ${row.id}'s failed post failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    if (retried.length) this.log(`retried ${retried.length} failed owner posts: ${retried.join(", ")}`);
+    return retried;
   }
 
   list(options: { archived?: boolean } = {}): ThreadInfo[] {
@@ -373,7 +406,7 @@ export class DurableThreads {
       // The pool tree before the first request after the open, which `harness.resume()` below may start.
       if (this.options.pool) this.options.pool.agent({ id, name: name() }, ref, ref?.role === "comm" ? await this.sessionOf(harness, ROOT_CONVERSATION_ID) : undefined);
       const tasks = await this.backfill(id, harness);
-      state = { id, file, harness, root, watchers: new Set(), wake, stopCommits: () => {}, ...(prompt ? { prompt } : {}), digesting: Promise.resolve(), tasks, comm };
+      state = { id, file, harness, root, watchers: new Set(), wake, stopCommits: () => {}, ...(prompt ? { prompt } : {}), digesting: Promise.resolve(), tasks, comm, storage };
       const opened = state;
       opened.stopCommits = harness.subscribeCommits(publication => this.onCommit(opened, publication));
       this.onWake(opened, harness.wake());
@@ -571,6 +604,9 @@ export class DurableThreads {
         void this.announceConversation(open, change.value);
       }
     }
+    const runFailed = failedInputs(publication.changes);
+    // Off the commit listener, which must not call Session APIs.
+    if (runFailed.length) setImmediate(() => void this.reportFailure(open, runFailed));
     try {
       if (entries.length || usage.length) this.index.addEntries(open.id, entries, usage);
       if (preview !== undefined || failed !== undefined) this.index.update(open.id, { updatedAt: now, ...(preview === undefined ? {} : { preview }), ...(failed === undefined ? {} : { failed }) });
@@ -607,6 +643,34 @@ export class DurableThreads {
       await this.options.inputSettled(open.id, provider.sessionId, Boolean(live?.run));
     } catch (error) {
       this.log(`${open.id} settle hook failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /**
+   * Tells someone once that a root run ended with no answer on an error pi-durable does not retry (`turn-failed.ts`): a comm thread posts
+   * `ROOM_LINE` in the thread of the failed room post, and the agent's work thread for a job, or else agent factory's, gets the notice.
+   */
+  private async reportFailure(open: OpenThread, failed: FailedInput[]): Promise<void> {
+    const first = failed[0]!;
+    try {
+      const ref = await threadAgent(open.harness, context);
+      const post = ref?.role === "comm" ? failed.map(input => roomPost(input.requestId, ref.room)).findLast(Boolean) : undefined;
+      if (post) {
+        const model = await lastModel(open.harness, context);
+        if (model) for (const write of roomLineWrites(first, post, model, this.now())) await open.root.submit(write, context);
+      }
+      const target = await this.options.agentWork?.(failureTarget(ref));
+      const name = this.index.get(open.id)?.name ?? open.id;
+      if (!target || target === open.id) {
+        this.log(`${open.id} run failed with no one to tell: ${first.error}`);
+        return;
+      }
+      await this.submit(target, {
+        text: failureNotice({ id: open.id, name }, ref, first), requestId: `turn-failed:${open.id}:${first.submission}`, whenBusy: "followUp",
+        entry: { kind: "agent.message", data: { from: open.id, via: TURN_FAILED_VIA } },
+      });
+    } catch (error) {
+      this.log(`${open.id} failure notice failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
