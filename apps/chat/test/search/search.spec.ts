@@ -28,7 +28,8 @@ test.beforeEach(async ({ page }) => {
 test("Cmd K opens on this conversation and recent activity, and Esc closes it", async ({ page }) => {
   await page.keyboard.press(`${mod}+k`);
   await expect(field(page)).toBeFocused();
-  expect(await groupNames(page)).toEqual(["This conversation", "Recent activity"]);
+  // Recent searches are the owner's on the one fixture server, so other specs' searches may add that group.
+  expect((await groupNames(page)).filter(name => name !== "Recent searches")).toEqual(["This conversation", "Recent activity"]);
   await expect(palette(page).locator("[role=group][aria-label='Recent activity'] [data-search-result]")).toHaveCount(4);
   await page.keyboard.press("Escape");
   await expect(palette(page)).toBeHidden();

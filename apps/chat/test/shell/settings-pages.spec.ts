@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { ownerSettings, resetOwnerSettings } from "./owner-settings";
 
 /** Settings > Preferences, Notifications and Keyboard: this browser's own settings, read from and written to the stores the app uses. */
 
@@ -39,7 +40,12 @@ test("Preferences sets the color mode and shows the exact interface size, which 
   expect(await page.evaluate(() => localStorage.getItem("chat.interfaceScale"))).toBeNull();
 });
 
-test("Notifications writes chat.notify, pauses with a preset and resumes", async ({ page }) => {
+// Two tests below write the notification setting on the one fixture server, so the tests take turns.
+test.describe.configure({ mode: "serial" });
+test.afterAll(({ request }) => resetOwnerSettings(request));
+
+test("Notifications saves the setting on the server, pauses with a preset and resumes", async ({ page }) => {
+  await resetOwnerSettings(page.request);
   await page.addInitScript(() => {
     class Stub {
       static permission = "granted";
@@ -49,7 +55,7 @@ test("Notifications writes chat.notify, pauses with a preset and resumes", async
     Object.assign(window, { Notification: Stub });
   });
   await page.goto("/#/settings/notifications");
-  const stored = () => page.evaluate(() => JSON.parse(localStorage.getItem("chat.notify") ?? "null"));
+  const stored = async () => (await ownerSettings(page.request)).notify;
 
   await page.getByLabel("Notify me about").selectOption("all");
   await expect.poll(stored).toMatchObject({ level: "all" });
@@ -67,6 +73,7 @@ test("Notifications writes chat.notify, pauses with a preset and resumes", async
 });
 
 test("Notifications says plainly when the browser blocks them", async ({ page }) => {
+  await resetOwnerSettings(page.request);
   await page.addInitScript(() => {
     class Stub {
       static permission = "denied";

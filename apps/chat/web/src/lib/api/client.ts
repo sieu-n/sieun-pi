@@ -12,6 +12,7 @@ import type {
   SkillsReport, SkillsView, UndoBody,
 } from "./shared/skills.ts";
 import type { ConsolesReport } from "./shared/consoles.ts";
+import type { OwnerSettings, SavedSettings } from "./shared/owner-settings.ts";
 import type { ReviewDecideBody, ReviewItem, ReviewReport, ReviewResult, ReviewUndoBody } from "./shared/skills-review.ts";
 import type { PinRequest } from "./types.ts";
 import type { SavedLayout, SidebarLayout } from "./types.ts";
@@ -484,6 +485,11 @@ export const api = {
   sidebar: () => call<Sidebar>("GET", "/api/sidebar"),
   /** Saves the whole sidebar layout; the answer carries its new `rev`, and every browser gets it in the next `sidebar` event. */
   saveSidebarLayout: (layout: SidebarLayout) => call<SavedLayout>("PUT", "/api/sidebar/layout", layout),
+  ownerSettings: () => call<SavedSettings>("GET", "/api/owner-settings"),
+  /** Replaces each part `parts` names; every page gets the result as `owner_settings`. */
+  saveOwnerSettings: (parts: Partial<OwnerSettings>) => call<SavedSettings>("PATCH", "/api/owner-settings", parts),
+  /** Sends this browser's old localStorage copies once, which the server merges (shared/owner-settings.ts `mergeOld`). */
+  importOwnerSettings: (old: Partial<OwnerSettings>) => call<SavedSettings>("POST", "/api/owner-settings/import", old),
   conversations: (opts: { archived?: boolean } = {}) => call<ConversationSummary[]>("GET", `/api/conversations${query({ archived: opts.archived ? 1 : undefined })}`),
 
   jobs: (opts: { archived?: boolean } = {}) => call<AgentSummary[]>("GET", `/api/jobs${query({ archived: opts.archived ? 1 : undefined })}`),

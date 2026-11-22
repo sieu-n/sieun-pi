@@ -1,11 +1,17 @@
 import { expect, test, type Page } from "@playwright/test";
+import { resetOwnerSettings } from "./owner-settings";
 
 /** The profile menu sets a status, away and a notification pause; the interface size shows its percent; Back and Forward grey out at the ends. */
 
 const profile = (page: Page) => page.locator("header.topbar button.profile");
 const menu = (page: Page) => page.getByRole("menu", { name: "Profile" });
 
+// The status, away and pause live on the one fixture server, so these tests take turns and leave them at the default.
+test.describe.configure({ mode: "serial" });
+test.afterAll(({ request }) => resetOwnerSettings(request));
+
 test.beforeEach(async ({ page }) => {
+  await resetOwnerSettings(page.request);
   await page.goto("/#/c/later");
   await expect(profile(page)).toBeVisible({ timeout: 20_000 });
 });

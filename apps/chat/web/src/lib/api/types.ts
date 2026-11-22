@@ -7,6 +7,7 @@ import type { DutySchedule, DutyView } from "./shared/chat-duties.ts";
 import type { DutyCardModel } from "./shared/duty-card.ts";
 import type { SkillScan } from "./shared/skills.ts";
 import type { ReviewEvent } from "./shared/skills-review.ts";
+import type { SavedSettings } from "./shared/owner-settings.ts";
 
 export type { BoardOp, ChatBoard, CheckInPause, CheckInView, ChatAgent, OwnerTodo, PlanItem, PlanStatus, AccountsView, MachineView } from "./shared/types.ts";
 export type { DutyView } from "./shared/chat-duties.ts";
@@ -837,6 +838,8 @@ export type LiveEvent =
   /** `agents` holds registered agents only (`ag_<slug>`); `jobs` holds each job and child conversation that works for one of them. */
   | { type: "hello"; me: Me; sidebar: Sidebar; agents: AgentSummary[]; jobs: AgentSummary[]; conversations: ConversationSummary[] }
   | { type: "sidebar"; sidebar: Sidebar }
+  /** The owner's status, notification setting or recent searches changed in some browser (server/owner-settings.ts). */
+  | { type: "owner_settings"; settings: SavedSettings }
   | { type: "agent"; agent: AgentSummary }
   | { type: "agent_removed"; id: AgentId }
   | { type: "job"; job: AgentSummary }

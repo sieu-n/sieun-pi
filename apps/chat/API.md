@@ -37,6 +37,9 @@ Pages call the server through `web/src/lib/api` (`import { api, timeline, agents
 |---|---|---|
 | `api.sidebar()` | `GET /api/sidebar` | `Sidebar`: `solo`, `channels`, `dms` and the open For you count, plus `layout` once the owner sets sections. |
 | `api.saveSidebarLayout(layout)` | `PUT /api/sidebar/layout` | `SavedLayout`: replaces the owner's sidebar sections, placements, sorts and folds with `layout`, adds 1 to `rev` and sends `sidebar` to every tab. `GET /api/sidebar` carries it as `layout` once set. |
+| `api.ownerSettings()` | `GET /api/owner-settings` | `SavedSettings` (`web/src/lib/api/shared/owner-settings.ts`): the owner's `presence` (status and away), `notify` (level, badge, pause) and `recentSearches`, the same in every browser, with `rev` and when each part was last set by hand in `edited`. |
+| `api.saveOwnerSettings(parts)` | `PATCH /api/owner-settings` | `SavedSettings`: replaces each part `parts` names, adds 1 to `rev` and sends `owner_settings` to every tab. |
+| `api.importOwnerSettings(old)` | `POST /api/owner-settings/import` | `SavedSettings`: merges one browser's old localStorage copies once (`mergeOld`); a part set by hand since stays, recent searches always merge. |
 | `api.conversations({archived})` | `GET /api/conversations?archived=1` | `ConversationSummary[]` for every solo thread, DM, job, channel and Solo room. |
 | `api.directory()` | `GET /api/directory` | `{agents, jobs, rooms}` for the @ and # typeahead: `agents` as `GET /api/agents`, `jobs` as `GET /api/jobs`, `rooms` as `GET /api/rooms`. |
 | `api.header(id)` | `GET /api/c/:id` | `ConversationHeader`: summary, members, model and the agent; a channel's purpose and home chat; a Solo room's agenda and `closedAt`; and for both, `boards`, the member agents whose boards the side panel shows. |
@@ -281,7 +284,7 @@ The log frontmatter is the record, so the open folder of a conversation comes fr
 
 `/api/live` is one WebSocket per tab, and `lib/api/live.svelte.ts` owns it.
 
-1. The server sends `hello` (me, sidebar, agents, jobs, conversations) on connect, then `sidebar`, `agent` and `agent_removed` (registered agents only), `job` and `job_removed` (the `GET /api/jobs` list), `conversation`, `status`, `jobs`, `board`, `for_you`, `duties` and `room` (a channel or Solo room whose row or members changed) to every tab. `duties` carries a chat's `DutyRow[]` when a run starts or ends and when a duty is paused, resumed or rescheduled.
+1. The server sends `hello` (me, sidebar, agents, jobs, conversations) on connect, then `sidebar`, `agent` and `agent_removed` (registered agents only), `job` and `job_removed` (the `GET /api/jobs` list), `conversation`, `status`, `jobs`, `board`, `for_you`, `duties`, `owner_settings` (the owner's status, notification setting or recent searches changed) and `room` (a channel or Solo room whose row or members changed) to every tab. `duties` carries a chat's `DutyRow[]` when a run starts or ends and when a duty is paused, resumed or rescheduled.
 2. `items` and `queue` go only to tabs that watch that conversation, and a DM's `status` follows its agent, so the page draws typing dots while the agent works; `items` may carry `removed`, ids to drop, such as a pending send that landed or was discarded. The server sends no `partial`.
 3. A tab sends `{type: "watch", conversation, after}` and `{type: "unwatch", conversation}`, and `after` is the newest item id it holds, so a reconnect gets what it missed, and the thread's pending sends.
 

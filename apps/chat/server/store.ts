@@ -6,6 +6,7 @@ import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { readLatest, writeJsonLater } from "./disk.ts";
 import type { AgentId, ConversationId, ConversationPrefs, SavedLayout, ThinkingLevel } from "../web/src/lib/api/types.ts";
+import type { SavedSettings } from "../web/src/lib/api/shared/owner-settings.ts";
 
 export interface ThreadMeta { kind: "chat" | "job"; parent?: AgentId }
 /**
@@ -42,6 +43,8 @@ export interface StateFile {
   sidebar?: Record<ConversationId, ConversationPrefs>;
   /** The owner's sidebar sections, placements, sorts and folds, so every browser and the desktop app show the same sidebar. */
   sidebarLayout?: SavedLayout;
+  /** The owner's status, notification setting and recent searches, the same in every browser and the desktop app (owner-settings.ts). */
+  ownerSettings?: SavedSettings;
 }
 
 export function writeJson(path: string, value: unknown): void {

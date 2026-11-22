@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { open, tag } from "../channel/helpers";
+import { resetOwnerSettings } from "./owner-settings";
 
 /**
  * New messages notify as Slack's desktop app does (lib/notices.svelte.ts): a system notification for a DM, mention or reply while the owner
@@ -7,6 +8,11 @@ import { open, tag } from "../channel/helpers";
  */
 
 type Shown = { title: string; body: string };
+
+// The notification setting lives on the one fixture server, so these tests take turns and leave it at the default.
+test.describe.configure({ mode: "serial" });
+test.beforeEach(({ request }) => resetOwnerSettings(request));
+test.afterAll(({ request }) => resetOwnerSettings(request));
 
 /** Stubs the Web Notification API as granted and records each notification; `focused` sets what document.hasFocus answers. */
 async function stubBrowser(page: Page, focused: boolean): Promise<void> {
@@ -61,7 +67,7 @@ test("the open DM in a focused window raises no notification, and Off in the set
   await page.waitForTimeout(3000);
   expect(await shown(page)).toEqual([]);
 
-  await page.evaluate(() => localStorage.setItem("chat.notify", JSON.stringify({ level: "off", badge: true })));
+  await page.request.patch("/api/owner-settings", { data: { notify: { level: "off", badge: true } } });
   await page.reload();
   await page.getByTestId("timeline").first().waitFor();
   await unfocus(page);

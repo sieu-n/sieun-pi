@@ -42,6 +42,7 @@ import type { ForwardedPost } from "../web/src/lib/api/types.ts";
 import { Rooms } from "./rooms.ts";
 import { applyPrefs, withPrefs } from "./sidebar-prefs.ts";
 import { parseLayout } from "../web/src/lib/api/shared/sidebar-layout.ts";
+import { OwnerSettingsStore } from "./owner-settings.ts";
 import { Unfurler } from "./unfurl.ts";
 import { POST_KINDS, postHas, Search } from "./search.ts";
 import { likeRegex, postDocId, SEARCH_DOC_VERSION, SearchEngine, SqliteEntries, type EntrySource, type PostDoc } from "./search-engine.ts";
@@ -116,6 +117,8 @@ export class App {
   readonly laterDue: LaterDue<LaterItem>;
   /** The agents' side of Save for later and Remind me: their tools' answers and their reminders' wakes (later-agents.ts). */
   readonly agentLater: AgentLater;
+  /** The owner's status, notification setting and recent searches, shared by every browser (owner-settings.ts). */
+  readonly ownerSettings: OwnerSettingsStore;
   private readonly clients = new Set<Client>();
   private sidebarTimer?: NodeJS.Timeout;
   private lastSidebar = "";
@@ -136,6 +139,7 @@ export class App {
 
   constructor(readonly config: Config, readonly host: Host, readonly log: (line: string) => void = line => console.log(line)) {
     this.store = new Store(config.dataDir);
+    this.ownerSettings = new OwnerSettingsStore(this.store, settings => this.broadcast({ type: "owner_settings", settings }));
     mkdirSync(this.store.imagePath(""), { recursive: true });
     this.agentStore = new AgentStore(config.dataDir);
     this.agents = new Agents(this.agentStore, this.store, host, config, log);
