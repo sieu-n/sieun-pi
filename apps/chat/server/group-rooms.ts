@@ -36,7 +36,7 @@ import { doneOf, reopens } from "./thread-done.ts";
 import { pinnedSection, pinOf } from "./pins.ts";
 import { forwardPart, withForward } from "./forward.ts";
 import type { ForwardedPost } from "../web/src/lib/api/types.ts";
-import { agedPost, agentPostParts, answerThread, CONTEXT_CLIP, CONTEXT_POSTS, queuedNote, readFeedThread, type FeedSide, type Spoken } from "./rooms.ts";
+import { agedPost, agentPostParts, answerThread, CONTEXT_CLIP, CONTEXT_POSTS, queuedNote, keepSeen, readFeedThread, readSeen, type FeedSide, type Spoken } from "./rooms.ts";
 import { readMark, type Store } from "./store.ts";
 import { OWNER, type Threads } from "./threads.ts";
 
@@ -143,10 +143,12 @@ export class GroupRooms {
   private readonly reading = new Map<string, Promise<void>>();
   private readonly again = new Set<string>();
   /** Each comm thread's `updatedAt` at its last feed read. */
-  private readonly seen = new Map<string, number>();
+  private readonly seen: Map<string, number>;
   private readonly statuses = new Map<RoomId, RunStatus>();
 
-  constructor(private readonly deps: GroupDeps) {}
+  constructor(private readonly deps: GroupDeps) {
+    this.seen = readSeen<number>(deps.store, "feed-seen-group");
+  }
 
   private get store(): AgentStore {
     return this.deps.store;
@@ -164,6 +166,7 @@ export class GroupRooms {
     this.stopped = true;
     for (const timer of this.timers.values()) clearTimeout(timer);
     this.timers.clear();
+    keepSeen(this.store, "feed-seen-group", this.seen, this.reading, this.again);
   }
 
   // Rooms
