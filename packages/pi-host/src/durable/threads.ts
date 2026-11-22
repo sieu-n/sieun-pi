@@ -16,7 +16,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ImageContent, Message, ModelThinkingLevel, TextContent, Usage } from "@earendil-works/pi-ai";
 import type { Models } from "@earendil-works/pi-ai/models";
 import {
-  Harness, LiveDoc, ProviderDoc, ROOT_CONVERSATION_ID, watchEvents, type AgentEvent, type AgentEventStream, type CommitPublication, type Conversation,
+  Harness, LiveDoc, ProviderDoc, ROOT_CONVERSATION_ID, watchEvents, type AgentEvent, type AgentEventStream, type CommitChange, type CommitPublication, type Conversation,
   type ConversationId, type ConversationRecord, type EntryDraft, type EntryId, type EntryRecord, type HarnessSettings, type ModelRef, type ReportInfo, type SettledSubmissionRecord,
   type Storage, type SubmissionId, type SubmissionRecord, type Wake,
 } from "@earendil-works/pi-durable";
@@ -171,6 +171,14 @@ interface OpenThread {
   comm: ReturnType<typeof commExtension>;
   /** The file's storage, whose submission scan the retry of a failed owner post reads (`turn-failed.ts`). */
   storage: Storage;
+  /**
+   * Each conversation's tree node as `tree` last built it, until a commit touches that conversation (`onCommit`). A node reads about five
+   * records, so on 11-22 a tree of agent factory's 380 conversations held pi-host's loop 250 to 300 ms, the chat read it every 2 s while the
+   * thread ran, and every timeline read of any thread waited behind it (~/work/thread-reads/).
+   */
+  treeNodes: Map<number, TreeNode>;
+  /** How many commits touched each conversation, so a node built while one landed is not kept. */
+  treeTouches: Map<number, number>;
 }
 
 /** A child conversation's task: the input its owner wrote, which the index must not credit to the owner of the box. */
@@ -219,6 +227,25 @@ export function previewText(entry: EntryRecord, now: number): string | undefined
     if (sent.length) return sent.at(-1);
   }
   return describeEntry(entry, now)?.text || undefined;
+}
+
+/**
+ * The conversation a commit change touches, whose tree node it may change: a conversation record, an entry, a submission or a conversation's
+ * doc. A task record and a Session doc feed no node.
+ */
+function conversationOf(change: CommitChange): number | undefined {
+  switch (change.type) {
+    case "conversation":
+      return change.value.id;
+    case "entry":
+    case "submission":
+      return change.value.conversationId;
+    case "document":
+    case "document.copy":
+      return change.conversationId;
+    default:
+      return undefined;
+  }
 }
 
 function usageOf(entry: EntryRecord, thread: string, now: number): UsageRow | undefined {
@@ -439,7 +466,7 @@ export class DurableThreads {
       // The pool tree before the first request after the open, which `harness.resume()` below may start.
       if (this.options.pool) this.options.pool.agent({ id, name: name() }, ref, ref?.role === "comm" ? await this.sessionOf(harness, ROOT_CONVERSATION_ID) : undefined);
       const tasks = await this.backfill(id, harness);
-      state = { id, file, harness, root, watchers: new Set(), wake, stopCommits: () => {}, ...(prompt ? { prompt } : {}), digesting: Promise.resolve(), tasks, comm, storage };
+      state = { id, file, harness, root, watchers: new Set(), wake, stopCommits: () => {}, ...(prompt ? { prompt } : {}), digesting: Promise.resolve(), tasks, comm, storage, treeNodes: new Map(), treeTouches: new Map() };
       const opened = state;
       opened.stopCommits = harness.subscribeCommits(publication => this.onCommit(opened, publication));
       this.onWake(opened, harness.wake());
@@ -609,6 +636,12 @@ export class DurableThreads {
   }
 
   private onCommit(open: OpenThread, publication: CommitPublication): void {
+    for (const change of publication.changes) {
+      const touched = conversationOf(change);
+      if (touched === undefined) continue;
+      open.treeNodes.delete(touched);
+      open.treeTouches.set(touched, (open.treeTouches.get(touched) ?? 0) + 1);
+    }
     const now = this.now();
     const entries: IndexedEntry[] = [];
     const usage: UsageRow[] = [];
@@ -969,6 +1002,12 @@ export class DurableThreads {
     };
     const nodes: TreeNode[] = [];
     for (const record of records) {
+      const kept = open.treeNodes.get(record.id);
+      if (kept) {
+        nodes.push({ ...kept, depth: depthOf(record.id), ...(record.id === ROOT_CONVERSATION_ID ? { name: this.info(id).name } : {}) });
+        continue;
+      }
+      const touches = open.treeTouches.get(record.id) ?? 0;
       const conversation = await open.harness.conversation(record.id, context);
       if (!conversation) continue;
       const first = (await conversation.entries({ order: "ascending" }, 4, undefined, context)).items.find(entry => describeEntry(entry, 0)?.text);
@@ -978,12 +1017,15 @@ export class DurableThreads {
       const since = retry ? await retrySince(open.harness, record.id, context) : undefined;
       const retrying = retry && since !== undefined ? retryingText(since, retry.error, this.now()) : undefined;
       const agent = await conversation.agent(context);
-      nodes.push({
+      const node: TreeNode = {
         id: record.id, parent: record.owner?.conversationId ?? null, ownerTask: record.owner?.taskId ?? null,
         name: record.id === ROOT_CONVERSATION_ID ? this.info(id).name : (await rlmChildName(open.harness, record.id, context)) ?? jobTitle(described?.text ?? ""),
         depth: depthOf(record.id), status: live?.run ? "running" : "idle", model: agent.model ? `${agent.model.provider}/${agent.model.modelId}` : null,
         createdAt: described?.at ?? null, ...(retrying ? { retrying } : {}),
-      });
+      };
+      nodes.push(node);
+      // A retrying node's text names the time, so it is built again on each read.
+      if (!retry && (open.treeTouches.get(record.id) ?? 0) === touches) open.treeNodes.set(record.id, node);
     }
     return nodes;
   }
