@@ -1,6 +1,6 @@
 ---
 name: mac-screen
-description: "Use when a task needs the owner's own Mac screen or his signed-in desktop Chrome, such as a dashboard open only in his Chrome, and he asked for it. Takes a screenshot of his Mac and clicks, types and presses keys there through CuaDriver over ssh, from any box."
+description: "Drives the owner's MacBook desktop through CuaDriver over ssh, from any host: captures his display and sends clicks, typing and key presses. Use it, when he asked, for a native macOS app window or a dashboard signed in only in his desktop Chrome profile."
 ---
 
 # mac-screen
