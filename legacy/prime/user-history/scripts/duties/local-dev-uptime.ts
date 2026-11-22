@@ -40,6 +40,8 @@ export const ANSWER_TIMEOUT_MS = 5000;
 /** The wiki's memory cap, the one dev-guard kills it over. */
 export const CAP_MB = 4096;
 export const WIKI_CONTAINER = "box-sieun-pi-wiki-1";
+/** The search dev server on us-metal02, a container of the Komodo Stack box-dev since the pm2 dev stack there stopped on 11-08. */
+export const SEARCH_CONTAINER = "box-dev-search-1";
 
 /** A service: its metric key prefix, and either a fixed URL or the search app's env key for its base URL plus the health path. */
 export type Service = { key: string; url: string } | { key: string; envKey: string; envFile: string; path: string };
@@ -409,19 +411,19 @@ export function containerRestartsSince(previous: { restartTime: number; invocati
 }
 
 /** The wiki container when this host runs it: its pids from its cgroup, its restart count, its start time and its cgroup's memory.current. */
-export async function wikiContainer(deps: Pick<UptimeDeps, "exec" | "read" | "platform">): Promise<{ pids: number[]; restartCount: number; startedAt: string; memoryCurrentMb: number } | undefined> {
+export async function devContainer(deps: Pick<UptimeDeps, "exec" | "read" | "platform">, name: string): Promise<{ pids: number[]; restartCount: number; startedAt: string; memoryCurrentMb: number } | undefined> {
   if (deps.platform !== "linux") return undefined;
   let inspect: string;
   try {
-    inspect = await deps.exec("docker", ["inspect", "-f", "{{.State.Running}} {{.State.Pid}} {{.RestartCount}} {{.State.StartedAt}}", WIKI_CONTAINER]);
+    inspect = await deps.exec("docker", ["inspect", "-f", "{{.State.Running}} {{.State.Pid}} {{.RestartCount}} {{.State.StartedAt}}", name]);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT" || /no such (object|container)/i.test(String(error))) return undefined;
     throw error;
   }
   const [running, pid, restartCount, startedAt] = inspect.trim().split(" ");
-  if (running !== "true" || !pid || pid === "0") throw new Error(`${WIKI_CONTAINER} is not running (${inspect.trim()})`);
+  if (running !== "true" || !pid || pid === "0") throw new Error(`${name} is not running (${inspect.trim()})`);
   const cgroup = /^0::(\/\S+)$/m.exec(await deps.read(`/proc/${pid}/cgroup`))?.[1];
-  if (!cgroup) throw new Error(`${WIKI_CONTAINER}: no cgroup v2 line in /proc/${pid}/cgroup`);
+  if (!cgroup) throw new Error(`${name}: no cgroup v2 line in /proc/${pid}/cgroup`);
   const pids = (await deps.read(`/sys/fs/cgroup${cgroup}/cgroup.procs`)).split("\n").filter(Boolean).map(Number);
   const memoryCurrent = Number((await deps.read(`/sys/fs/cgroup${cgroup}/memory.current`)).trim());
   return { pids, restartCount: Number(restartCount), startedAt: startedAt ?? "", memoryCurrentMb: Math.round(memoryCurrent / 1024 / 1024) };
@@ -558,9 +560,9 @@ export async function measureUptime(deps: UptimeDeps, previous: UptimeState | un
     if (!before) flagged.push({ at, kind: "baseline", excerpt: `first run: ${what} restart count ${restartTime} of ${name} saved as the baseline` });
     else if (restarts > 0) flagged.push({ at, kind: "restarts", excerpt: `${what} restarted ${name} ${restarts} times since ${new Date(before.at).toISOString()} (count ${before.restartTime} to ${restartTime})` });
   };
-  let unit: Awaited<ReturnType<typeof wikiContainer>>;
+  let unit: Awaited<ReturnType<typeof devContainer>>;
   try {
-    unit = await wikiContainer(deps);
+    unit = await devContainer(deps, WIKI_CONTAINER);
     if (unit) {
       memory(WIKI_CONTAINER, unit.pids, await treeMb(deps, unit.pids), `, memory.current ${unit.memoryCurrentMb} MB with page cache`);
       const before = previous?.restarts[WIKI_CONTAINER];
@@ -571,16 +573,30 @@ export async function measureUptime(deps: UptimeDeps, previous: UptimeState | un
     flagged.push({ at, kind: "wiki_memory", excerpt: `${WIKI_CONTAINER}: read failed: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300) });
   }
 
+  let searchUnit: Awaited<ReturnType<typeof devContainer>>;
+  try {
+    searchUnit = await devContainer(deps, SEARCH_CONTAINER);
+    if (searchUnit) {
+      const before = previous?.restarts[SEARCH_CONTAINER];
+      count(SEARCH_CONTAINER, containerRestartsSince(before, searchUnit.restartCount, searchUnit.startedAt), before, searchUnit.restartCount, "docker");
+      state.restarts[SEARCH_CONTAINER] = { restartTime: searchUnit.restartCount, at, invocation: searchUnit.startedAt };
+    }
+  } catch (error) {
+    flagged.push({ at, kind: "restarts_read", excerpt: `${SEARCH_CONTAINER}: read failed: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300) });
+  }
+
+  // A pm2 call where no pm2 daemon runs starts an empty one: on 11-22 at 05:07Z this precheck's jlist started one on us-metal02.
+  const pm2Names = PM2_NAMES.filter(name => !(name === "llm-wiki" && unit) && !(name === "search" && searchUnit));
+  if (!pm2Names.length) return { output: { metrics, flagged, ...windows }, state };
   let list: Pm2Process[];
   try {
     const text = await deps.exec(deps.pm2.bin, ["jlist"], { PM2_HOME: deps.pm2.home });
-    list = JSON.parse(text.slice(text.indexOf("["))) as Pm2Process[];
+    list = JSON.parse(text.trim().split("\n").at(-1) ?? "") as Pm2Process[];
   } catch (error) {
     flagged.push({ at, kind: "pm2", excerpt: `pm2 (PM2_HOME ${deps.pm2.home}): pm2 jlist failed: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300) });
     return { output: { metrics, flagged, ...windows }, state };
   }
-  for (const name of PM2_NAMES) {
-    if (name === "llm-wiki" && unit) continue;
+  for (const name of pm2Names) {
     const proc = list.find(candidate => candidate.name === name);
     if (!proc?.pid) { flagged.push({ at, kind: "pm2", excerpt: `pm2 has no live ${name} process (status ${proc?.pm2_env?.status ?? "missing"})` }); continue; }
     const restartTime = proc.pm2_env?.restart_time ?? 0;

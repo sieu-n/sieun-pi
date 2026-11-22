@@ -8,6 +8,7 @@ const rollup = (pss: number) => `00400000-7ffda3845000 ---p 00000000 00:00 0  [r
 const enoent = (path: string) => Object.assign(new Error(`ENOENT: ${path}`), { code: "ENOENT" });
 const CGROUP = "/user.slice/user-serve.slice/docker-c285685a37f0.scope";
 
+const pm2Calls: string[] = [];
 function deps(inspect: string | Error, pm2: object[]): UptimeDeps {
   const files: Record<string, string> = {
     "/proc/100/cgroup": `0::${CGROUP}\n`, [`/sys/fs/cgroup${CGROUP}/cgroup.procs`]: "100\n101\n", [`/sys/fs/cgroup${CGROUP}/memory.current`]: "1200000000\n",
@@ -19,7 +20,7 @@ function deps(inspect: string | Error, pm2: object[]): UptimeDeps {
     read: async path => { if (path in files) return files[path]!; throw enoent(path); },
     exec: async (file, args) => {
       if (file === "docker" && args[0] === "inspect") { if (inspect instanceof Error) throw inspect; return inspect; }
-      if (file === "pm2") return JSON.stringify(pm2);
+      if (file === "pm2") { pm2Calls.push(args.join(" ")); return `[PM2] Spawning PM2 daemon with pm2_home=/pm2\n[PM2] PM2 Successfully daemonized\n${JSON.stringify(pm2)}\n`; }
       if (file === "ps") return "  1 0\n200 1\n";
       throw new Error(`spawn ${file} ${args.join(" ")} ENOENT`);
     },
@@ -47,4 +48,14 @@ test("a manual restart resets RestartCount and still counts once", () => {
   assert.equal(containerRestartsSince({ restartTime: 0, invocation: "a" }, 0, "a"), 0);
   assert.equal(containerRestartsSince({ restartTime: 0, invocation: "a" }, 0, "b"), 1);
   assert.equal(containerRestartsSince({ restartTime: 3, invocation: "a" }, 1, "b"), 2);
+});
+
+test("on us-metal02 search restarts come from box-dev-search-1 and no pm2 call starts an empty daemon", async () => {
+  pm2Calls.length = 0;
+  const previous = { restarts: { "box-sieun-pi-wiki-1": { restartTime: 2, at: 0, invocation: "2026-11-22T00:07:11Z" }, "box-dev-search-1": { restartTime: 2, at: 0, invocation: "2026-11-21T00:00:00Z" } } };
+  const { output, state } = await measureUptime(deps(container("2026-11-22T00:07:11Z", 2), []), previous);
+  assert.equal(output.metrics.restarts, 1);
+  assert.equal(state?.restarts["box-dev-search-1"]?.invocation, "2026-11-22T00:07:11Z");
+  assert.deepEqual(pm2Calls, []);
+  assert.ok(!output.flagged?.some(slice => slice.kind === "pm2"), JSON.stringify(output.flagged));
 });
