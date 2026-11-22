@@ -35,7 +35,7 @@ test("every call names this duty as a probe to the portal", async (t) => {
     sent.push(new Headers(init.headers));
     return new Response(JSON.stringify({ data: {}, meta: {} }), { status: 200 });
   });
-  await probe("https://api.test", {}, { id: "org_1", key: "kb_live_x" }, "creators.profile_search",
+  await probe("https://api.test", { id: "org_1", key: "kb_live_x" }, "creators.profile_search",
     { method: "POST", path: "/v1/creators/profiles/search", query: {}, body: { query: "natgeo", limit: 2 } }, "prod");
   assert.equal(sent[0]!.get("x-virev-caller"), "probe:portal-parity");
 });
@@ -59,7 +59,7 @@ test("a call with no answer by its deadline fails for the portal as no answer", 
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address() as AddressInfo;
   try {
-    const answer = await probe(`http://127.0.0.1:${port}`, {}, { id: "org_1", key: "kb_live_x" }, "GET /v1/hang",
+    const answer = await probe(`http://127.0.0.1:${port}`, { id: "org_1", key: "kb_live_x" }, "GET /v1/hang",
       { method: "GET", path: "/v1/hang", query: {} }, "docs example", 200);
     assert.deepEqual([answer.verdict, answer.code, answer.note], ["portal", "no_answer", "docs example: no answer in 0.2 s"]);
   } finally {

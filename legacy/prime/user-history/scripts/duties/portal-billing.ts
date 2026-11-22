@@ -303,9 +303,9 @@ LEFT JOIN
 ON f.rid = r.rid GROUP BY kind, status, path`;
 
 /** Calls the probes on one env and reads that env's ledger for each answer's request_id. */
-async function probeEnv(env: Env, key: string, headers: Record<string, string>, query: (path: string, args: unknown) => Promise<unknown>, signal: AbortSignal): Promise<ProbeResult[]> {
+async function probeEnv(env: Env, key: string, query: (path: string, args: unknown) => Promise<unknown>, signal: AbortSignal): Promise<ProbeResult[]> {
   const file = await envFile(env);
-  const doc = await (await fetch(`${file.urls.apiPortal}/openapi.json`, { headers, signal })).json() as { paths: Record<string, { get?: { "x-dashboard-cost"?: string } }> };
+  const doc = await (await fetch(`${file.urls.apiPortal}/openapi.json`, { signal })).json() as { paths: Record<string, { get?: { "x-dashboard-cost"?: string } }> };
   const started = Date.now();
   const results = await Promise.all(PROBES.map(async (probe): Promise<ProbeResult> => {
     const url = new URL(file.urls.apiPortal + probe.path);
@@ -314,7 +314,7 @@ async function probeEnv(env: Env, key: string, headers: Record<string, string>, 
       const cost = doc.paths[probe.path]?.get?.["x-dashboard-cost"];
       if (!cost) throw new Error(`${env} openapi has no x-dashboard-cost for GET ${probe.path}`);
       const probeSignal = AbortSignal.any([signal, AbortSignal.timeout(PROBE_DEADLINE_MS)]);
-      const response = await fetch(url, { headers: { ...headers, authorization: `Bearer ${key}` }, signal: probeSignal });
+      const response = await fetch(url, { headers: { authorization: `Bearer ${key}` }, signal: probeSignal });
       const body = await response.json().catch(() => null) as { meta?: { request_id?: string }; error?: { request_id?: string } } | null;
       const requestId = body?.meta?.request_id ?? body?.error?.request_id;
       const result: ProbeResult = { env, probe: probe.name, status: response.status, expected: expectedCharge(probe, response.status, micros(cost)) };
@@ -332,8 +332,8 @@ async function probeEnv(env: Env, key: string, headers: Record<string, string>, 
 /** Staging probes run under a throwaway org seeded through the staging Convex test routes, deleted again at the end. */
 async function stagingProbes(signal: AbortSignal): Promise<ProbeResult[]> {
   const file = await envFile("staging");
-  const [bypass, secret] = await Promise.all(["VERCEL_AUTOMATION_BYPASS_SECRET", "CONVEX_WEBHOOK_SECRET"].map(async name => lastLine(await sh(file.keySources[name]!.cmd, REPO, signal))));
-  if (!bypass || !secret) throw new Error("the staging bypass secret or CONVEX_WEBHOOK_SECRET is empty");
+  const secret = lastLine(await sh(file.keySources.CONVEX_WEBHOOK_SECRET!.cmd, REPO, signal));
+  if (!secret) throw new Error("the staging CONVEX_WEBHOOK_SECRET is empty");
   const query = await convexAdmin("staging", signal);
   const key = `kb_live_${randomBytes(16).toString("hex")}`;
   const orgId = `org_duty_billing_${Date.now()}`;
@@ -343,7 +343,7 @@ async function stagingProbes(signal: AbortSignal): Promise<ProbeResult[]> {
   if (!seeded.ok) throw new Error(`staging /api/test/seed gave HTTP ${seeded.status}: ${(await seeded.text()).slice(0, 160)}`);
   const keyId = ((await seeded.json()) as { keyId?: string }).keyId;
   try {
-    return await probeEnv("staging", key, { "x-vercel-protection-bypass": bypass }, query, signal);
+    return await probeEnv("staging", key, query, signal);
   } finally {
     if (keyId) await post("/api/test/revoke-key", { keyId }).catch(() => undefined);
     // A cleanup that fails throws here, so "staging probes" becomes a source error naming the org and its metrics are unmeasured, never a pass.
@@ -354,7 +354,7 @@ async function stagingProbes(signal: AbortSignal): Promise<ProbeResult[]> {
 async function prodProbes(signal: AbortSignal): Promise<ProbeResult[]> {
   const key = process.env.VIREV_API_KEY_PROD || lastLine(await sh("cd apps/api-portal && npx --no-install dotenvx get VIREV_API_KEY_PROD -f .env", REPO, signal));
   if (!key.startsWith("kb_live_")) throw new Error("VIREV_API_KEY_PROD from apps/api-portal/.env is not a kb_live_ key");
-  return probeEnv("prod", key, {}, await convexAdmin("prod", signal), signal);
+  return probeEnv("prod", key, await convexAdmin("prod", signal), signal);
 }
 
 async function measure(now: number, signal: AbortSignal): Promise<BillingData> {

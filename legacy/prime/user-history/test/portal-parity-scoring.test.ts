@@ -150,9 +150,9 @@ test("a keyless media read the crawler held on purpose scores as held, not the p
   const answer = (code: string) => async () => Response.json({ ok: false, error: { code, message: "paused" } }, { status: 503 });
   const url = "https://staging-api.virev.ai/v1/media/tiktok_account/275923/profile_pic?e=1795824000&s=7334454549c453ddf83cf23898bf4a00";
   t.mock.method(globalThis, "fetch", answer("source_paused"));
-  assert.equal((await probeMedia(url, {})).verdict, "held");
+  assert.equal((await probeMedia(url)).verdict, "held");
   t.mock.method(globalThis, "fetch", answer("media_unavailable"));
-  assert.equal((await probeMedia(url, {})).verdict, "portal");
+  assert.equal((await probeMedia(url)).verdict, "portal");
 });
 
 test("while an env's crawler reports a proxy supply hold, the run sends none of its box-egress /v1/crawl calls", () => {

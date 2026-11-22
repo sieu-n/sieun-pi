@@ -12,7 +12,7 @@ import { checkCleanup } from "./test-org-cleanup.ts";
  * The api portal vp chat's "Portal matches crawler" precheck (`node --import tsx scripts/duties/portal-parity.ts`). No model call.
  * It answers the owner's "is all apis working that work in crawler api work for api portal? all working in prod?" on prod and staging:
  * 1. It reads four openapi.json files: crawler.virev.ai and staging-crawler.virev.ai (each env's crawler routes), api.virev.ai (prod) and
- *    staging-api.virev.ai (through the Vercel automation bypass).
+ *    staging-api.virev.ai.
  * 2. On each env it calls every documented non-DM /v1 operation once with its own docs example. Staging calls go out under throwaway test
  *    orgs that it seeds through the staging Convex /api/test/seed route and deletes again through /api/test/cleanup. Prod calls use
  *    VIREV_API_KEY_PROD and skip only the writes SPEC-93 never makes on prod. The paid reads SPEC-93 leaves out of its prod run for cost
@@ -508,11 +508,11 @@ export function firstMediaUrl(bodies: readonly unknown[]): string | null {
 }
 
 /** One keyless GET of a signed media URL, as a browser's <img> sends it: an image or video answer works, and any other answer is the portal's. */
-export async function probeMedia(url: string | null, extra: Record<string, string>): Promise<ProbeResult> {
+export async function probeMedia(url: string | null): Promise<ProbeResult> {
   if (!url) return { op: MEDIA_OP, verdict: "unprobed", status: 0, ms: 0, note: "no /v1/media URL in this run's working answers" };
   const start = Date.now();
   try {
-    const response = await fetch(url, { headers: { ...CALLER, ...extra }, redirect: "manual" });
+    const response = await fetch(url, { headers: CALLER, redirect: "manual" });
     const type = response.headers.get("content-type") ?? "";
     const text = Buffer.from(await response.arrayBuffer());
     const ms = Date.now() - start;
@@ -652,8 +652,8 @@ const sh = (command: string, cwd: string) => new Promise<string>((resolve, rejec
   execFile("/bin/sh", ["-c", command], { cwd, encoding: "utf8", maxBuffer: 1024 * 1024 }, (error, stdout) => error ? reject(error) : resolve(stdout.trim()));
 });
 
-async function getJson(url: string, headers: Record<string, string> = {}): Promise<OpenApi> {
-  const response = await fetch(url, { headers, redirect: "manual" });
+async function getJson(url: string): Promise<OpenApi> {
+  const response = await fetch(url, { redirect: "manual" });
   if (response.status !== 200) throw new Error(`GET ${url} gave HTTP ${response.status}`);
   return await response.json() as OpenApi;
 }
@@ -686,7 +686,7 @@ type Answer = ProbeResult & { body: unknown; retryAfterS?: number };
  */
 const CALLER = { "x-virev-caller": "probe:portal-parity" };
 
-export async function probe(base: string, extra: Record<string, string>, org: Org, op: string, request: ProbeRequest, note: string,
+export async function probe(base: string, org: Org, op: string, request: ProbeRequest, note: string,
   deadlineMs = PROBE_DEADLINE_MS): Promise<Answer> {
   const url = new URL(base + request.path);
   for (const [key, value] of Object.entries(request.query)) url.searchParams.set(key, value);
@@ -695,7 +695,7 @@ export async function probe(base: string, extra: Record<string, string>, org: Or
   try {
     const response = await fetch(url, {
       method: request.method,
-      headers: { authorization: `Bearer ${org.key}`, ...CALLER, ...extra, ...(request.body === undefined ? {} : { "content-type": "application/json" }) },
+      headers: { authorization: `Bearer ${org.key}`, ...CALLER, ...(request.body === undefined ? {} : { "content-type": "application/json" }) },
       body: request.body === undefined ? null : JSON.stringify(request.body),
       redirect: "manual",
       signal,
@@ -722,8 +722,8 @@ export async function probe(base: string, extra: Record<string, string>, org: Or
  * Cancels one job this run started, so it stops holding one of the org's 5 open job slots. The staging cancel answered in 756 ms on 10-15.
  * True when the job holds no slot any more: 200 cancelled, 409 job_finished, or 404 for a job the portal no longer has.
  */
-async function cancelJob(base: string, extra: Record<string, string>, org: Org, id: string): Promise<boolean> {
-  return fetch(`${base}/v1/jobs/${encodeURIComponent(id)}/cancel`, { method: "POST", headers: { authorization: `Bearer ${org.key}`, ...CALLER, ...extra }, signal: AbortSignal.timeout(10_000) })
+async function cancelJob(base: string, org: Org, id: string): Promise<boolean> {
+  return fetch(`${base}/v1/jobs/${encodeURIComponent(id)}/cancel`, { method: "POST", headers: { authorization: `Bearer ${org.key}`, ...CALLER }, signal: AbortSignal.timeout(10_000) })
     .then(response => { void response.body?.cancel(); return [200, 404, 409].includes(response.status); }).catch(() => false);
 }
 
@@ -769,7 +769,7 @@ export async function leftoverJobs(dir: string, alive: (pid: number) => boolean 
 /** Cancels the prod jobs that runs which are gone left open, and keeps in their files only the ones whose cancel got no answer. */
 export async function cancelLeftovers(base: string, org: Org): Promise<void> {
   for (const { file, ids } of await leftoverJobs(JOBS_DIR)) {
-    const kept = (await Promise.all(ids.map(async id => await cancelJob(base, {}, org, id) ? null : id))).filter(id => id !== null);
+    const kept = (await Promise.all(ids.map(async id => await cancelJob(base, org, id) ? null : id))).filter(id => id !== null);
     await (kept.length ? writeFile(file, JSON.stringify(kept) + "\n") : rm(file, { force: true }));
   }
 }
@@ -792,7 +792,7 @@ export function pacedSlot(perMinute: number, now: () => number = Date.now, sleep
   };
 }
 
-interface ProbeTarget { env: Env; base: string; doc: OpenApi; orgs: Org[]; headers: Record<string, string>; skip: ReadonlyMap<string, string>; held?: ReadonlyMap<string, ProbeResult>; hold?: string | null; perMinute?: number; spend?: { usd: number }; lastMs?: Record<string, number> | undefined; ledger?: JobLedger }
+interface ProbeTarget { env: Env; base: string; doc: OpenApi; orgs: Org[]; skip: ReadonlyMap<string, string>; held?: ReadonlyMap<string, ProbeResult>; hold?: string | null; perMinute?: number; spend?: { usd: number }; lastMs?: Record<string, number> | undefined; ledger?: JobLedger }
 
 /**
  * Calls every documented non-DM operation of one env once with its docs example, the job-mode route entries with max_pages 2, the chained
@@ -808,11 +808,11 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[]): Promise<
   // and a hand run together got 52 prod answers of 429 rate_limit_exceeded. So a 429 rate_limit_exceeded waits its Retry-After and calls again.
   const call = async (org: Org, op: string, request: ProbeRequest, note: string): Promise<Answer> => {
     await slot();
-    let result = await probe(base, target.headers, org, op, request, note);
+    let result = await probe(base, org, op, request, note);
     for (let waits = 1; result.status === 429 && result.code === RATE_LIMITED; waits++) {
       await new Promise(resolve => setTimeout(resolve, (result.retryAfterS ?? 1) * 1000));
       await slot();
-      const again = await probe(base, target.headers, org, op, request, note);
+      const again = await probe(base, org, op, request, note);
       result = { ...again, note: `${again.note}, after ${waits} rate limit wait${waits === 1 ? "" : "s"}` };
     }
     if (!target.spend) return result;
@@ -849,7 +849,7 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[]): Promise<
   // as soon as its receipt comes back. The first one is cancelled once the chained calls have read it: on 2026-10-18 a prod run 8 min
   // after another got 429 'At most 5 crawl jobs' on 8 job rows, because the earlier run's jobs still held the org's slots.
   const opened: { org: Org; id: string }[] = [];
-  const cancel = async (org: Org, id: string) => { if (await cancelJob(base, target.headers, org, id)) await target.ledger?.drop(id); };
+  const cancel = async (org: Org, id: string) => { if (await cancelJob(base, org, id)) await target.ledger?.drop(id); };
   const jobsRun = (async () => {
     const results: (ProbeResult & { body: unknown })[] = [];
     for (const [index, op] of jobOps.entries()) {
@@ -929,7 +929,7 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[]): Promise<
   }));
   const mediaUrl = firstMediaUrl([...phase1, ...fed].filter(result => result.verdict === "ok").map(result => result.body));
   const mediaHeld = heldMedia(mediaUrl, [...phase1, ...fed]);
-  const media = mediaHeld ? Promise.resolve(mediaHeld) : probeMedia(mediaUrl, target.headers);
+  const media = mediaHeld ? Promise.resolve(mediaHeld) : probeMedia(mediaUrl);
   await Promise.all([...pageTwoRuns, ...opened.map(job => cancel(job.org, job.id))]);
   // A page-2 failure counts against the operation, and a held page 2 holds it: a customer cannot get past page 1. A page 2 the run did not
   // reach leaves page 1's verdict.
@@ -1008,18 +1008,17 @@ async function main(): Promise<void> {
   const readEnv = (name: string) => attempt(`auto-sns-agent apps/specs/envs/${name}.json`, async () =>
     JSON.parse(await readFile(join(REPO, `apps/specs/envs/${name}.json`), "utf8")) as EnvFile);
   const [env, prodEnv] = await Promise.all([readEnv("staging"), readEnv("prod")]);
-  const [crawlerProd, crawlerStaging, prod, bypass, secret, prodKey, skips] = await Promise.all([
+  const [crawlerProd, crawlerStaging, prod, secret, prodKey, skips] = await Promise.all([
     attempt(CRAWLER_OPENAPI.prod, () => getJson(CRAWLER_OPENAPI.prod)),
     attempt(CRAWLER_OPENAPI.staging, () => getJson(CRAWLER_OPENAPI.staging)),
     attempt(PROD_OPENAPI, () => getJson(PROD_OPENAPI)),
-    env ? attempt("VERCEL_AUTOMATION_BYPASS_SECRET key source", () => sh(env.keySources.VERCEL_AUTOMATION_BYPASS_SECRET!.cmd, REPO)) : null,
     env ? attempt("CONVEX_WEBHOOK_SECRET key source", () => sh(env.keySources.CONVEX_WEBHOOK_SECRET!.cmd, REPO)) : null,
     process.env.VIREV_API_KEY_PROD || attempt("VIREV_API_KEY_PROD from apps/api-portal/.env", () => sh(PROD_KEY_CMD, REPO)),
     attempt("SPEC-93 prod skips in apps/specs/lib/api-portal", prodSkips),
   ]);
   const [stagingHold, prodHold] = await Promise.all([supplyHold("staging", env), supplyHold("prod", prodEnv)]);
   const base = env?.urls.apiPortal ?? "";
-  const staging = bypass ? await attempt(`${base}/openapi.json`, () => getJson(`${base}/openapi.json`, { "x-vercel-protection-bypass": bypass })) : null;
+  const staging = env ? await attempt(`${base}/openapi.json`, () => getJson(`${base}/openapi.json`)) : null;
   const probes: Record<Env, ProbeResult[]> = { prod: [], staging: [] };
   const orgs: Org[] = [];
   const spend = { usd: 0 };
@@ -1027,14 +1026,14 @@ async function main(): Promise<void> {
   const prodOrg: Org | null = prodKey ? { id: "prod", key: prodKey } : null;
   if (prodOrg && prodEnv) await attempt("cancel of prod jobs that earlier runs left open", () => cancelLeftovers(prodEnv.urls.apiPortal!, prodOrg));
   try {
-    if (env && staging && bypass && secret) {
+    if (env && staging && secret) {
       const seeded = await attempt("staging test org seed", () => Promise.all(Array.from({ length: ORGS }, (_, index) => seedOrg(env.urls.convex!, secret, index, start))));
       if (seeded) orgs.push(...seeded);
     }
     await Promise.all([
-      orgs.length && staging && bypass ? probeEnv({ env: "staging", base, doc: staging, orgs, headers: { "x-vercel-protection-bypass": bypass }, skip: new Map(), held: heldEgress(staging, stagingHold), hold: stagingHold, perMinute: perMinute(orgs), lastMs: previous?.ms }, routes)
+      orgs.length && staging ? probeEnv({ env: "staging", base, doc: staging, orgs, skip: new Map(), held: heldEgress(staging, stagingHold), hold: stagingHold, perMinute: perMinute(orgs), lastMs: previous?.ms }, routes)
         .then(results => { probes.staging = results; }) : null,
-      prod && prodOrg && skips && prodEnv ? probeEnv({ env: "prod", base: prodEnv.urls.apiPortal!, doc: prod, orgs: [prodOrg], headers: {}, skip: skips.skip, held: new Map([...held, ...heldEgress(prod, prodHold)]), hold: prodHold, perMinute: perMinute([prodOrg]), spend, lastMs: previous?.ms, ledger: jobLedger(JOBS_DIR) }, routes)
+      prod && prodOrg && skips && prodEnv ? probeEnv({ env: "prod", base: prodEnv.urls.apiPortal!, doc: prod, orgs: [prodOrg], skip: skips.skip, held: new Map([...held, ...heldEgress(prod, prodHold)]), hold: prodHold, perMinute: perMinute([prodOrg]), spend, lastMs: previous?.ms, ledger: jobLedger(JOBS_DIR) }, routes)
         .then(results => { probes.prod = results; }) : null,
     ]);
   } finally {
