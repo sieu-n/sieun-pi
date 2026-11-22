@@ -597,7 +597,7 @@ export function serve(app: App, parts: SkillsParts = skillsParts(app.config, app
  * Each server's connections other than live sockets, with the calls each has in flight, whether it answered one yet and whether `drain`
  * ended it, which `drain` reads.
  */
-type Conn = { busy: Map<IncomingMessage, ServerResponse>; served: boolean; ended: boolean };
+type Conn = { busy: Map<IncomingMessage, ServerResponse>; served: boolean; ended: boolean; lastAt: number };
 const conns = new WeakMap<Server, Map<Socket, Conn>>();
 const draining = new WeakSet<Server>();
 
@@ -605,7 +605,7 @@ function track(server: Server): void {
   const open = new Map<Socket, Conn>();
   conns.set(server, open);
   server.on("connection", (socket: Socket) => {
-    open.set(socket, { busy: new Map(), served: false, ended: false });
+    open.set(socket, { busy: new Map(), served: false, ended: false, lastAt: 0 });
     socket.once("close", () => open.delete(socket));
   });
   server.on("request", (req: IncomingMessage, res: ServerResponse) => {
@@ -616,6 +616,7 @@ function track(server: Server): void {
     res.once("close", () => {
       conn.busy.delete(req);
       conn.served = true;
+      conn.lastAt = Date.now();
     });
   });
   server.on("upgrade", (req: IncomingMessage) => open.delete(req.socket as Socket));
@@ -631,6 +632,9 @@ function track(server: Server): void {
  * a connection that answered a call and holds none is ended, and a new one is kept until its call answered. A new one that sent nothing
  * within SILENT_MS is a client's spare connection and is ended too. A call in flight answers with `Connection: close`, so its client does not
  * send another on that connection.
+ * A connection that answered a call within SILENT_MS is ended only once it stayed quiet that long, and a call that comes on it meanwhile
+ * answers with `Connection: close`: in after-walk 4 on 11-22, 3 calls that a polling client sent just before an end met the ended
+ * connection and got no answer (status 0 in the request log at 09:46:24.219Z), and the walk's front showed 2 of them as 502.
  * An ended connection counts as done once it holds no call, without its client's close: http's server keeps a connection half open after
  * its own end until the client closes, and in 4 of 5 live hand-overs on 11-22 (09:33 to 09:34Z) the stop waited the whole 2 s with no call
  * answered in it. Live sockets end with the app.
@@ -652,7 +656,7 @@ export async function drain(server: Server, maxMs = 2000): Promise<string> {
         continue;
       }
       if (conn.ended) continue;
-      if (conn.served || (silent && socket.bytesRead === 0)) {
+      if ((conn.served && Date.now() - conn.lastAt >= SILENT_MS) || (silent && socket.bytesRead === 0)) {
         conn.ended = true;
         ended += 1;
         socket.end();

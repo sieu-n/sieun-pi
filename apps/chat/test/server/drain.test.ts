@@ -109,3 +109,34 @@ test("a call in flight when the drain starts answers with Connection: close", as
     s.app.header = header;
   }
 });
+
+test("a call a client sends on its idle connection just after the drain starts still answers", async () => {
+  // A polling client sends its next call a moment after each answer; on 11-22 calls that met a connection the drain had just ended got
+  // no answer. The client here sends 20 ms after the drain starts, as a call already on the wire would arrive.
+  const { server, base } = await listening();
+  const client = connect({ port: Number(new URL(base).port), host: "127.0.0.1", allowHalfOpen: true });
+  let received = "";
+  const answers = (n: number) => new Promise<void>(resolve => {
+    const on = () => {
+      if (received.split("HTTP/1.1 200").length - 1 >= n) {
+        client.off("data", on);
+        resolve();
+      }
+    };
+    client.on("data", data => { received += data.toString(); on(); });
+  });
+  const request = "GET /api/ready HTTP/1.1\r\nHost: x\r\n\r\n";
+  client.write(request);
+  await answers(1);
+  try {
+    const drained = drain(server);
+    await sleep(20);
+    const second = answers(2);
+    client.write(request);
+    await Promise.race([second, sleep(1000).then(() => { throw new Error(`no answer to the call sent during the drain: ${JSON.stringify(received.slice(-200))}`); })]);
+    assert.match(received.slice(received.lastIndexOf("HTTP/1.1 200")), /connection: close/i);
+    await drained;
+  } finally {
+    client.destroy();
+  }
+});
