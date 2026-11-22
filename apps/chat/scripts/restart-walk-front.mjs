@@ -6,6 +6,7 @@
 // <timings.jsonl> with its arrival time and user agent, so the walk's calls stay out of the owner's request log.
 // Each forwarded call also goes to front-calls.jsonl beside it: when it came in, when the server's answer headers came, and when the
 // answer's last byte left for the browser, so a slow page call can be split into the path before the front and the path behind it.
+// Each /api/live upgrade adds a {kind: "ws"} line there when it closes, with its bytes each way.
 // Usage: node restart-walk-front.mjs <listen port> <socket path> <key.pem> <cert.pem> <timings.jsonl> <room id>...
 import http2 from "node:http2";
 import http from "node:http";
@@ -72,11 +73,19 @@ function reset(res) {
 }
 
 server.on("upgrade", (req, socket, head) => {
+  const ws = { kind: "ws", p: (req.url ?? "/").split("?")[0], ua: /Chrome\//.test(req.headers["user-agent"] ?? "") ? "chromium" : "webkit", in: Date.now(), bytesUp: head?.length ?? 0, bytesDown: 0 };
+  socket.once("close", () => {
+    ws.out = Date.now();
+    appendFileSync(callsFile, `${JSON.stringify(ws)}\n`);
+  });
   const up = net.connect(socketPath, () => {
     const lines = [`${req.method} ${req.url} HTTP/1.1`, ...Object.entries(req.headers).map(([name, value]) => `${name}: ${value}`), "", ""];
     up.write(lines.join("\r\n"));
     if (head?.length) up.write(head);
+    up.on("data", chunk => { ws.bytesDown += chunk.length; });
     up.pipe(socket);
+    // Counted here, not before the dial, because a data listener starts the flow and bytes sent before the pipe would be lost.
+    socket.on("data", chunk => { ws.bytesUp += chunk.length; });
     socket.pipe(up);
   });
   up.on("error", () => socket.destroy());

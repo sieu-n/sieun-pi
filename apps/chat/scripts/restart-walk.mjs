@@ -6,6 +6,8 @@
 // The rig, as in the p155 read-ahead walk (~/work/p155-readahead/summary.md): a Playwright container whose loopback has netem 100 ms each
 // way and MTU 1280, so its TCP sees the owner's round trip and slow start; restart-walk-front.mjs in it as the TLS front; and a unix
 // socket bridge from this process to the server's port. A pure-delay relay over HTTP/1.1 showed no queueing in p155.
+// Each second it writes pressure.jsonl with the CPU stall of the rig's cgroup, its own and the server's, and the report splits each slow
+// call into time before the front, behind it and after it, so a CPU-starved rig browser can be told from a server wait.
 // The page half is restart-walk-page.mjs. Two test channels (POST /api/rooms test:true) take the sends, so no agent wakes, and the first
 // shows the home agent's board pane, as the owner's rooms do; both are archived at the end.
 // Before each release it makes a test agent (POST /api/agents test:true), and after the release it sends to that agent's DM and checks
@@ -25,9 +27,12 @@
 //   --label <name>, --out <dir>, --scratch <dir>  [walk-<time>, ~/work/apps-chat-restart/<label>, ~/scratch/restart-walk-<label>]
 //   --release-home <dir>  where {live} is read and whose release.lock a run waits out [~/.local/share/sieun-pi-apps-chat]
 //   --data-dir <dir>    the server's data dir, whose test room post logs show a seq written twice [~/.pi/agent/chat]
+//   --unit <name>       the server's systemd user unit, whose cgroup and core scope (<unit>-core.scope in agents.slice, where
+//                       cpu-protect moves the main pid) give the server's CPU stall in pressure.jsonl [sieun-pi-apps-chat.service]
 //   --report <out dir>  only rebuild the report of a finished walk from its raw files
-import { spawn, spawnSync } from "node:child_process";
-import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { execFile, spawn, spawnSync } from "node:child_process";
+import { cpSync, createWriteStream, existsSync, mkdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { appendFile, readFile, writeFile } from "node:fs/promises";
 import net from "node:net";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
@@ -50,6 +55,7 @@ function parseArgs(argv) {
     base: "http://127.0.0.1:5184", release: "node scripts/release-apps-chat.mjs --rollback {live}", releases: 5, browsers: "chromium,webkit",
     warm: 45, tail: 40, home: "ag_agent-factory", label: `walk-${stamp}`, out: null, scratch: null,
     releaseHome: join(homedir(), ".local/share/sieun-pi-apps-chat"), dataDir: join(homedir(), ".pi/agent/chat"), report: null,
+    unit: "sieun-pi-apps-chat.service",
   };
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i];
@@ -67,6 +73,7 @@ function parseArgs(argv) {
     else if (flag === "--release-home") o.releaseHome = resolve(value());
     else if (flag === "--report") o.report = resolve(value());
     else if (flag === "--data-dir") o.dataDir = resolve(value());
+    else if (flag === "--unit") o.unit = value();
     else throw new Error(`unknown option ${flag}`);
   }
   o.out ??= join(homedir(), "work/apps-chat-restart", o.label);
@@ -90,9 +97,14 @@ function sh(command, args) {
   return done.stdout.trim();
 }
 
+// The bridge to the server runs in this process, so from the time the pages are ready every call here must be async: in walk after12
+// two spawnSync pgrep calls after release 5 held every browser call 4.3 s behind the front.
+/** Runs a command without blocking and gives its stdout, whatever its exit code; pgrep -c exits 1 when it counts 0. */
+const stdoutOf = (command, args) => new Promise(done => execFile(command, args, { encoding: "utf8" }, (_, stdout) => done(String(stdout ?? "").trim())));
+
 /** pi-host's and its relay's last start, so a walk that a pi-host restart fell inside can be told and run again. */
-function hostUnits() {
-  const out = spawnSync("systemctl", ["--user", "show", "-p", "Id,ActiveEnterTimestamp", "pi-host.service", "pi-host-relay.service"], { encoding: "utf8" }).stdout;
+async function hostUnits() {
+  const out = await stdoutOf("systemctl", ["--user", "show", "-p", "Id,ActiveEnterTimestamp", "pi-host.service", "pi-host-relay.service"]);
   return Object.fromEntries(out.trim().split("\n\n").map(block => {
     const fields = Object.fromEntries(block.split("\n").map(line => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]));
     return [fields.Id, fields.ActiveEnterTimestamp];
@@ -114,6 +126,34 @@ function watchReady(base) {
     }
   })();
   return async () => { stopped = true; await loop; if (down !== null) outages.push({ down, up: null }); return outages; };
+}
+
+/** The cgroup folder of a pid, from /proc/<pid>/cgroup. */
+async function cgroupOf(pid) {
+  const line = (await readFile(`/proc/${pid}/cgroup`, "utf8").catch(() => "")).split("\n").find(l => l.startsWith("0::"));
+  return line ? join("/sys/fs/cgroup", line.slice(3)) : null;
+}
+
+/** Each second, writes the box's 1 min load and the CPU stall ("some" in cpu.pressure) of each named cgroup folder to a jsonl file, so a
+ *  slow call can be told apart as a CPU-starved rig browser or a CPU-starved server. */
+function watchPressure(file, groups) {
+  let stopped = false;
+  const stall = async dir => {
+    const some = (await readFile(join(dir, "cpu.pressure"), "utf8").catch(() => "")).split("\n").find(l => l.startsWith("some "));
+    if (!some) return null;
+    const field = name => Number(some.match(new RegExp(`${name}=([\\d.]+)`))?.[1]);
+    return { someTotalUs: field("total"), someAvg10: field("avg10") };
+  };
+  const loop = (async () => {
+    while (!stopped) {
+      const at = Date.now();
+      const [loadavg, ...stalls] = await Promise.all([readFile("/proc/loadavg", "utf8").catch(() => ""), ...Object.values(groups).map(stall)]);
+      const read = Object.keys(groups).map((name, i) => [name, stalls[i]]).filter(([, value]) => value);
+      await appendFile(file, `${JSON.stringify({ at, load1: Number(loadavg.split(" ")[0]) || null, groups: Object.fromEntries(read) })}\n`);
+      await sleep(Math.max(0, 1000 - (Date.now() - at)));
+    }
+  })();
+  return async () => { stopped = true; await loop; };
 }
 
 async function walk(o) {
@@ -162,13 +202,29 @@ async function walk(o) {
     sh("docker", ["run", "--rm", "--cap-add", "NET_ADMIN", "--network", `container:${rig}`, "alpine:3.20", "sh", "-c", "apk add -q iproute2-tc && ip link set lo mtu 1280 && tc qdisc add dev lo root netem delay 100ms limit 100000"]);
     log(`rig ${rig} up with netem 100 ms each way, MTU 1280`);
 
+    const uid = process.getuid();
+    const unitDir = join(`/sys/fs/cgroup/user.slice/user-${uid}.slice/user@${uid}.service/app.slice`, o.unit);
+    const candidates = {
+      rig: await cgroupOf(await stdoutOf("docker", ["inspect", "-f", "{{.State.Pid}}", rig])),
+      walk: await cgroupOf("self"),
+      unit: unitDir,
+      core: join("/sys/fs/cgroup/agents.slice", `${o.unit.replace(/\.service$/, "")}-core.scope`),
+    };
+    meta.pressureGroups = Object.fromEntries(Object.entries(candidates).filter(([, dir]) => dir && existsSync(join(dir, "cpu.pressure"))));
+    const missing = Object.entries(candidates).filter(([name]) => !meta.pressureGroups[name]);
+    log(`cpu.pressure of ${Object.entries(meta.pressureGroups).map(([name, dir]) => `${name} ${dir}`).join(", ")}${missing.length ? `; not found: ${missing.map(([name, dir]) => `${name} ${dir}`).join(", ")}` : ""}`);
+    const stopPressure = watchPressure(join(o.out, "pressure.jsonl"), meta.pressureGroups);
+    cleanups.push(stopPressure);
+
     const front = spawn("docker", ["exec", rig, "node", join(here, "restart-walk-front.mjs"), String(FRONT_PORT), socket, join(o.scratch, "key.pem"), join(o.scratch, "cert.pem"), join(o.scratch, "timings.jsonl"), ...meta.rooms], { stdio: ["ignore", "pipe", "pipe"] });
-    front.stdout.on("data", chunk => appendFileSync(join(o.out, "front.log"), chunk));
-    front.stderr.on("data", chunk => appendFileSync(join(o.out, "front.log"), chunk));
+    const frontLog = createWriteStream(join(o.out, "front.log"), { flags: "a" });
+    front.stdout.pipe(frontLog);
+    front.stderr.pipe(frontLog);
     await sleep(1500);
     const page = spawn("docker", ["exec", rig, "node", join(here, "restart-walk-page.mjs"), `https://127.0.0.1:${FRONT_PORT}`, o.scratch, o.browsers, ...meta.rooms], { stdio: ["ignore", "pipe", "pipe"] });
-    page.stdout.on("data", chunk => appendFileSync(join(o.out, "page.log"), chunk));
-    page.stderr.on("data", chunk => appendFileSync(join(o.out, "page.log"), chunk));
+    const pageLog = createWriteStream(join(o.out, "page.log"), { flags: "a" });
+    page.stdout.pipe(pageLog);
+    page.stderr.pipe(pageLog);
     const pageDone = new Promise(done => page.on("exit", done));
 
     const readyBy = Date.now() + 120_000;
@@ -177,7 +233,7 @@ async function walk(o) {
       await sleep(500);
     }
     log(`pages ready: ${browsers.join(", ")}; walking ${o.warm} s before the first release`);
-    meta.hostUnitsAtStart = hostUnits();
+    meta.hostUnitsAtStart = await hostUnits();
     const stopReady = watchReady(o.base);
     await sleep(o.warm * 1000);
 
@@ -210,12 +266,12 @@ async function walk(o) {
       run.stderr.on("data", chunk => { output += chunk; });
       const exit = await new Promise(done => run.on("exit", code => done(code)));
       const end = Date.now();
-      writeFileSync(join(o.out, `release-${n}.log`), output);
+      await writeFile(join(o.out, `release-${n}.log`), output);
       // Two servers on one socket split the posts (the 11-22 after-walk), so each release counts them.
-      const servers = Number(spawnSync("pgrep", ["-fc", `[s]erver/main.ts --port ${target.port || 80}`], { encoding: "utf8" }).stdout.trim() || 0);
+      const servers = Number((await stdoutOf("pgrep", ["-fc", `[s]erver/main.ts --port ${target.port || 80}`])) || 0);
       // Since 510f86ee an old server stays up to 105 s after a hand-over, retitled and with no listener, so it is counted apart.
-      const oldServers = Number(spawnSync("pgrep", ["-fc", "[a]pps-chat old server"], { encoding: "utf8" }).stdout.trim() || 0);
-      const load = Number(readFileSync("/proc/loadavg", "utf8").split(" ")[0]);
+      const oldServers = Number((await stdoutOf("pgrep", ["-fc", "[a]pps-chat old server"])) || 0);
+      const load = Number((await readFile("/proc/loadavg", "utf8")).split(" ")[0]);
       meta.releases.push({ n, command, live, start, end, exit, waitedForLockMs: waited, servers, oldServers, load });
       if (fresh.room) {
         const text = `restart walk check ${o.label} ${n} ${Date.now()}`;
@@ -242,7 +298,7 @@ async function walk(o) {
     log(`walking ${o.tail} s after the last release`);
     await sleep(o.tail * 1000);
     meta.outages = await stopReady();
-    meta.hostUnitsAtEnd = hostUnits();
+    meta.hostUnitsAtEnd = await hostUnits();
     writeFileSync(join(o.scratch, "stop"), String(Date.now()));
     await Promise.race([pageDone, sleep(90_000)]);
     front.kill();
@@ -300,6 +356,32 @@ export function report(out) {
     try { samples = JSON.parse(batch.body).samples ?? []; } catch {}
     return samples.map(sample => ({ ...sample, at: batch.at, browser: browserOfUa(batch.ua) }));
   });
+  // The per-second CPU stall totals of the rig, the walk and the server's cgroups; walks before pressure.jsonl have none.
+  const series = {};
+  for (const line of readJsonl(join(out, "pressure.jsonl"))) {
+    for (const [name, value] of Object.entries(line.groups ?? {})) (series[name] ??= []).push({ at: line.at, us: value.someTotalUs });
+  }
+  const totalAt = (samples, t) => {
+    const i = samples.findIndex(x => x.at >= t);
+    if (i < 0 || (i === 0 && samples[0].at > t)) return null;
+    if (samples[i].at === t) return samples[i].us;
+    const [a, b] = [samples[i - 1], samples[i]];
+    return a.us + ((b.us - a.us) * (t - a.at)) / (b.at - a.at);
+  };
+  /** Each cgroup's CPU stall over a call's span in ms, or null for a walk with no pressure.jsonl. */
+  const cpuStallMs = f => {
+    if (!Object.keys(series).length) return null;
+    return Object.fromEntries(Object.entries(series).map(([name, samples]) => {
+      const [from, to] = [totalAt(samples, f.start), totalAt(samples, f.end)];
+      return [name, from === null || to === null ? null : Math.round((to - from) / 1000)];
+    }));
+  };
+  /** Where most of a slow call's time went: before the front, behind it (bridge and server, up to the last byte out), or after it. */
+  const whereOf = split => {
+    if (!split) return "unmatched";
+    const parts = { before: split.toFront, behind: split.behindFront + split.frontOut, after: split.afterFront };
+    return Object.entries(parts).sort((a, b) => b[1] - a[1])[0][0];
+  };
   const browsers = {};
   for (const browser of meta.browsers) {
     const records = readJsonl(join(out, `page-${browser}.jsonl`));
@@ -315,7 +397,7 @@ export function report(out) {
     const stalls = records.filter(r => r.kind === "stall");
     const fetchSlow = inWindows.filter(f => !failed(f.s) && f.ms > normalOf(f.route) + BEYOND_MS);
     // Where a slow call's time went, from the front's own line of it: before the front, behind it (server and bridge), after it.
-    const frontCalls = readJsonl(join(out, "front-calls.jsonl")).filter(c => c.ua === browser);
+    const frontCalls = readJsonl(join(out, "front-calls.jsonl")).filter(c => c.kind !== "ws" && c.ua === browser);
     const split = f => {
       const c = frontCalls.filter(x => x.p === f.p && x.m === f.m && x.in >= f.start - 50 && x.in <= f.end).sort((a, b) => a.in - b.in)[0];
       return c ? { toFront: c.in - f.start, behindFront: (c.head ?? c.out) - c.in, frontOut: c.out - (c.head ?? c.out), afterFront: f.end - c.out } : null;
@@ -346,12 +428,21 @@ export function report(out) {
     for (const f of all) if (f.text !== undefined) posted.set(f.requestId, f.text);
     const landed = send => [...posted.values()].some(text => stamp(text) === stamp(send.text) && stored.has(text))
       || (posted.size === 0 && [...stored].some(text => stamp(text) === stamp(send.text)));
+    const slowList = fetchSlow.map(f => {
+      const s = split(f);
+      return { route: f.route, at: f.start, ms: f.ms, normal: normalOf(f.route), release: windowOf(f.start)?.n ?? null, split: s, where: whereOf(s), cpuStallMs: cpuStallMs(f) };
+    });
+    const slowWhere = { behind: 0, after: 0, before: 0, unmatched: 0 };
+    for (const f of slowList) slowWhere[f.where]++;
+    const slowCpuStallMs = Object.keys(series).length
+      ? Object.fromEntries(Object.keys(series).map(name => [name, slowList.reduce((sum, f) => sum + (f.cpuStallMs?.[name] ?? 0), 0)]))
+      : null;
     const countBy = list => Object.entries(list.reduce((acc, x) => ({ ...acc, [x.route]: (acc[x.route] ?? 0) + 1 }), {})).sort((a, b) => b[1] - a[1]);
     browsers[browser] = {
       fetches: fetches.length, aborted: all.length - fetches.length, fetchesInWindows: inWindows.length,
       fetchFailed: fetchFailed.length, fetchFailedByRoute: countBy(fetchFailed), fetchFailedErrors: [...new Set(fetchFailed.map(f => f.err ?? `status ${f.s}`))].slice(0, 6),
-      fetchSlow: fetchSlow.length, fetchSlowList: fetchSlow.map(f => ({ route: f.route, at: f.start, ms: f.ms, normal: normalOf(f.route), release: windowOf(f.start)?.n ?? null, split: split(f) })),
-      fetchOver2s: fetches.filter(f => !failed(f.s) && f.ms > 2000).map(f => ({ route: f.route, at: f.start, ms: f.ms, inWindow: Boolean(windowOf(f.start)), split: split(f),
+      fetchSlow: fetchSlow.length, fetchSlowWhere: slowWhere, fetchSlowCpuStallMs: slowCpuStallMs, fetchSlowList: slowList,
+      fetchOver2s: fetches.filter(f => !failed(f.s) && f.ms > 2000).map(f => ({ route: f.route, at: f.start, ms: f.ms, inWindow: Boolean(windowOf(f.start)), split: split(f), cpuStallMs: cpuStallMs(f),
         stalledMs: stalls.filter(x => x.at - x.ms <= f.end && x.at >= f.start).reduce((sum, x) => sum + x.ms, 0) })),
       stalls: stalls.length, stallMax: stalls.length ? Math.max(...stalls.map(x => x.ms)) : 0, stallsOver500: stalls.filter(x => x.ms >= 500).map(x => ({ at: x.at, ms: x.ms })),
       pageLines: lines.length, pageFailed: lineFailed.length, pageFailedByRoute: countBy(lineFailed), pageFailedErrors: [...new Set(lineFailed.map(t => t.err ?? `status ${t.s}`))].slice(0, 6),
@@ -389,6 +480,10 @@ export function report(out) {
     "",
     ...Object.entries(browsers).flatMap(([name, b]) => [
       `${name}: failed by route ${b.fetchFailedByRoute.map(([r, n]) => `${r} ${n}`).join(", ") || "none"}; errors ${b.fetchFailedErrors.join("; ") || "none"}; Not delivered shown ${b.notDeliveredShown}; step errors ${b.stepErrors}${b.fatal ? `; fatal ${b.fatal.split("\n")[0]}` : ""}.`,
+      `${name}: of the ${b.fetchSlow} slow calls, ${b.fetchSlowWhere.behind} waited mostly behind the front, ${b.fetchSlowWhere.after} after it (rig browser side), ${b.fetchSlowWhere.before} before it${b.fetchSlowWhere.unmatched ? `, and ${b.fetchSlowWhere.unmatched} had no front line` : ""}. ${b.fetchSlowCpuStallMs
+        ? `Over their spans the cgroups' CPU stall summed ${Object.entries(b.fetchSlowCpuStallMs).map(([group, ms]) => `${group} ${ms} ms`).join(", ")}.`
+        : "This walk recorded no CPU stall."}`,
+      "",
     ]),
     "",
   ].join("\n");
