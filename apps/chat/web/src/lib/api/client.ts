@@ -367,11 +367,21 @@ export function dropAhead(wait: Wait): void {
  * it, posts its error with its timing (`recordTiming`), so the server's log holds every failure the page shows, such as a Not delivered send.
  * A GET read ahead or refresh goes through the lane; every other call is one he waits on, and so is a refresh asked as his write answered.
  */
-function call<T>(method: string, path: string, body?: unknown, signal?: AbortSignal, wait?: Wait): Promise<T> {
+function call<T>(method: string, path: string, body?: unknown, signal?: AbortSignal, wait?: Wait, safeTwice = false): Promise<T> {
   if (wroteNow && wait?.background === "shown") wait.background = undefined;
-  if (wait?.background && method === "GET") return laned(wait, (own, asked) => send<T>(method, path, body, either(own, signal), wait, asked));
-  return waited(() => send<T>(method, path, body, signal, wait), method !== "GET");
+  const repeat = method === "GET" || safeTwice || deduped(body);
+  if (wait?.background && method === "GET") return laned(wait, (own, asked) => send<T>(method, path, body, either(own, signal), wait, repeat, asked));
+  return waited(() => send<T>(method, path, body, signal, wait, repeat), method !== "GET");
 }
+
+/**
+ * A write whose second run leaves the server as its first did, so `send` may try it again after it got no answer: it sets fields or a
+ * value (a PATCH or PUT, a reaction, pin or done mark with its value, a read mark), deletes (a second run changes nothing, or answers an
+ * error for what the first did), or keeps one row however often it lands (Save for later, a For mark, room members, an upload, which
+ * at worst leaves a file no post names). Every other write goes once: a create (an agent, a room, a memory entry, a reminder note), a list
+ * change (board ops, a duty run or set, skills moves) and a write whose answer is its Undo (Mark all as read, a For mark of many).
+ */
+const twice = <T>(method: string, path: string, body?: unknown, wait?: Wait): Promise<T> => call<T>(method, path, body, undefined, wait, true);
 
 /** A signal that aborts when either does: the lane's stop or the caller's own deadline. */
 const either = (a: AbortSignal | undefined, b: AbortSignal | undefined): AbortSignal | undefined => (a && b ? AbortSignal.any([a, b]) : a ?? b);
@@ -403,17 +413,8 @@ export const RIDE_OUT_MS = 15_000;
 /** The wait before try `tries + 1`: 100 ms more per try up to 500 ms, so a call lands within half a second of the new server listening. */
 const tryAgainIn = (tries: number): number => Math.min(500, 100 * tries);
 
-/**
- * Whether a call may go again after it failed with no answer, when the server may have run it: a GET, which changes nothing, a write
- * whose body names a `requestId`, which the server takes once (a send: rooms.ts and group-rooms.ts `byRequestId`, outbox.ts), and a read
- * mark to a `seq`, which sets the read point to that seq however often it lands (rooms.ts `markRead`). Any other write, such as a read mark
- * to the newest post, a reaction or an upload, could do more the second time, so it fails as before.
- */
-function repeatable(method: string, path: string, body: unknown): boolean {
-  if (method === "GET") return true;
-  const fields = body instanceof Blob ? undefined : (body as { requestId?: unknown; seq?: unknown } | undefined);
-  return typeof fields?.requestId === "string" || (method === "POST" && /^\/api\/c\/[^/]+\/read$/.test(path) && typeof fields?.seq === "number");
-}
+/** A write whose body names a `requestId`, which the server takes once: a send (rooms.ts and group-rooms.ts `byRequestId`, outbox.ts). */
+const deduped = (body: unknown): boolean => !(body instanceof Blob) && typeof (body as { requestId?: unknown } | undefined)?.requestId === "string";
 
 /** Waits `ms`, or rejects as the signal aborts, so a call the lane stops during a wait stops there. */
 const pause = (ms: number, signal: AbortSignal | undefined): Promise<void> => new Promise((resolve, reject) => {
@@ -430,14 +431,15 @@ const pause = (ms: number, signal: AbortSignal | undefined): Promise<void> => ne
 
 /**
  * Every call of the page goes through here. A call that never got the server's answer, a network error or the bare 502 that `tailscale
- * serve` gives while :5184 is closed, goes again for `RIDE_OUT_MS` when it is `repeatable`, so a release restart shows the owner a slower
- * answer and no error. Its timing line counts from the first try and holds only the last try's outcome.
+ * serve` gives while :5184 is closed or a hand-over's old server closes an idle connection under it, goes again for `RIDE_OUT_MS` when
+ * `repeat` says it may run twice (`call`: a GET, a send, a `twice` write), so a release shows the owner a slower answer and no error. Its
+ * timing line counts from the first try and holds only the last try's outcome.
  */
-async function send<T>(method: string, path: string, body: unknown, signal: AbortSignal | undefined, wait: Wait | undefined, asked?: number): Promise<T> {
+async function send<T>(method: string, path: string, body: unknown, signal: AbortSignal | undefined, wait: Wait | undefined, repeat: boolean, asked?: number): Promise<T> {
   const first = performance.now();
   const again = async (tries: number): Promise<boolean> => {
     const ms = tryAgainIn(tries);
-    if (!repeatable(method, path, body) || performance.now() + ms - first > RIDE_OUT_MS) return false;
+    if (!repeat || performance.now() + ms - first > RIDE_OUT_MS) return false;
     await pause(ms, signal);
     return true;
   };
@@ -571,12 +573,12 @@ export const api = {
   me: () => call<Me>("GET", "/api/me"),
   sidebar: () => call<Sidebar>("GET", "/api/sidebar"),
   /** Saves the whole sidebar layout; the answer carries its new `rev`, and every browser gets it in the next `sidebar` event. */
-  saveSidebarLayout: (layout: SidebarLayout) => call<SavedLayout>("PUT", "/api/sidebar/layout", layout),
+  saveSidebarLayout: (layout: SidebarLayout) => twice<SavedLayout>("PUT", "/api/sidebar/layout", layout),
   ownerSettings: (wait?: Wait) => call<SavedSettings>("GET", "/api/owner-settings", undefined, undefined, wait),
   /** Replaces each part `parts` names; every page gets the result as `owner_settings`. */
-  saveOwnerSettings: (parts: Partial<OwnerSettings>) => call<SavedSettings>("PATCH", "/api/owner-settings", parts),
+  saveOwnerSettings: (parts: Partial<OwnerSettings>) => twice<SavedSettings>("PATCH", "/api/owner-settings", parts),
   /** Sends this browser's old localStorage copies once, which the server merges (shared/owner-settings.ts `mergeOld`). */
-  importOwnerSettings: (old: Partial<OwnerSettings>) => call<SavedSettings>("POST", "/api/owner-settings/import", old),
+  importOwnerSettings: (old: Partial<OwnerSettings>) => twice<SavedSettings>("POST", "/api/owner-settings/import", old),
   conversations: (opts: { archived?: boolean } = {}) => call<ConversationSummary[]>("GET", `/api/conversations${query({ archived: opts.archived ? 1 : undefined })}`),
 
   jobs: (opts: { archived?: boolean } = {}) => call<AgentSummary[]>("GET", `/api/jobs${query({ archived: opts.archived ? 1 : undefined })}`),
@@ -587,20 +589,20 @@ export const api = {
   agentHosts: () => call<AgentHostList>("GET", "/api/agent-hosts"),
   /** The agent folder: its brief and its memory, which every thread of the agent loads (API.md, Agent folder). */
   agentFolder: (id: AgentId) => call<AgentFolder>("GET", `/api/agents/${enc(id)}/folder`),
-  setBrief: (id: AgentId, text: string) => call<AgentFolder>("PUT", `/api/agents/${enc(id)}/brief`, { text }),
+  setBrief: (id: AgentId, text: string) => twice<AgentFolder>("PUT", `/api/agents/${enc(id)}/brief`, { text }),
   addMemory: (id: AgentId, input: MemoryInput) => call<AgentFolder>("POST", `/api/agents/${enc(id)}/memory`, input),
   updateMemory: (id: AgentId, entry: string, input: MemoryInput, kind: HarnessEntryView["kind"] = "memory") =>
-    call<AgentFolder>("PUT", `/api/agents/${enc(id)}/memory/${enc(entry)}${query({ kind })}`, input),
+    twice<AgentFolder>("PUT", `/api/agents/${enc(id)}/memory/${enc(entry)}${query({ kind })}`, input),
   deleteMemory: (id: AgentId, entry: string, kind: HarnessEntryView["kind"] = "memory") =>
-    call<AgentFolder>("DELETE", `/api/agents/${enc(id)}/memory/${enc(entry)}${query({ kind })}`),
+    twice<AgentFolder>("DELETE", `/api/agents/${enc(id)}/memory/${enc(entry)}${query({ kind })}`),
   projects: () => call<ProjectList>("GET", "/api/projects"),
   /** These act on an agent through its DM (`PATCH` and abort of `/api/c/dm_<slug>`), and on a job or a root thread through itself. */
-  setAgentCwd: (id: AgentId, cwd: string) => call<ConversationHeader>("PATCH", `/api/c/${enc(roomOf(id))}`, { cwd }),
+  setAgentCwd: (id: AgentId, cwd: string) => twice<ConversationHeader>("PATCH", `/api/c/${enc(roomOf(id))}`, { cwd }),
   setAgentModel: (id: AgentId, model: string, thinkingLevel?: ThinkingLevel) =>
-    call<ConversationHeader>("PATCH", `/api/c/${enc(roomOf(id))}`, { model, ...(thinkingLevel ? { thinkingLevel } : {}) }),
-  stopAgent: (id: AgentId) => call<{ ok: true }>("POST", `/api/c/${enc(roomOf(id))}/abort`),
-  archiveAgent: (id: AgentId, archived = true) => call<ConversationHeader>("PATCH", `/api/c/${enc(roomOf(id))}`, { archived }),
-  renameAgent: (id: AgentId, name: string) => call<ConversationHeader>("PATCH", `/api/c/${enc(roomOf(id))}`, { name }),
+    twice<ConversationHeader>("PATCH", `/api/c/${enc(roomOf(id))}`, { model, ...(thinkingLevel ? { thinkingLevel } : {}) }),
+  stopAgent: (id: AgentId) => twice<{ ok: true }>("POST", `/api/c/${enc(roomOf(id))}/abort`),
+  archiveAgent: (id: AgentId, archived = true) => twice<ConversationHeader>("PATCH", `/api/c/${enc(roomOf(id))}`, { archived }),
+  renameAgent: (id: AgentId, name: string) => twice<ConversationHeader>("PATCH", `/api/c/${enc(roomOf(id))}`, { name }),
 
   header: (id: ConversationId, wait?: Wait) => call<ConversationHeader>("GET", `/api/c/${enc(id)}`, undefined, undefined, wait),
   items: (id: ConversationId, opts: { before?: string; after?: string; around?: string; limit?: number } = {}, wait?: Wait) =>
@@ -610,58 +612,58 @@ export const api = {
   /** A tool step's output, which a page leaves out until the owner opens it. */
   stepOutput: (ref: StepOutputRef) => call<{ output: string }>("GET", `/api/c/${enc(ref.conversation)}/output/${ref.entry}`),
   /** Keeps an attached file's bytes on the server; a send names the ref it answers (`attach`). A file that is not an image passes its `name`. */
-  upload: (file: Blob, wait?: Wait, name?: string) => call<ImageRef>("POST", `/api/uploads${query({ name })}`, file, undefined, wait),
+  upload: (file: Blob, wait?: Wait, name?: string) => twice<ImageRef>("POST", `/api/uploads${query({ name })}`, file, wait),
   send: (id: ConversationId, request: SendRequest, wait?: Wait) => call<SendResult>("POST", `/api/c/${enc(id)}/send`, request, undefined, wait),
   /** Tries a pending send that failed again now. */
-  retrySend: (id: ConversationId, requestId: string) => call<SendResult>("POST", `/api/c/${enc(id)}/send/${enc(requestId)}/retry`),
+  retrySend: (id: ConversationId, requestId: string) => twice<SendResult>("POST", `/api/c/${enc(id)}/send/${enc(requestId)}/retry`),
   /** Drops a pending send that failed. */
-  discardSend: (id: ConversationId, requestId: string) => call<{ ok: true }>("DELETE", `/api/c/${enc(id)}/send/${enc(requestId)}`),
-  abort: (id: ConversationId) => call<{ ok: true }>("POST", `/api/c/${enc(id)}/abort`),
+  discardSend: (id: ConversationId, requestId: string) => twice<{ ok: true }>("DELETE", `/api/c/${enc(id)}/send/${enc(requestId)}`),
+  abort: (id: ConversationId) => twice<{ ok: true }>("POST", `/api/c/${enc(id)}/abort`),
   /** Puts the owner's emoji on a room post, or with `on` false takes it off; the room's live `items` event carries the change too. */
   react: (id: ConversationId, post: string, emoji: string, on = true) =>
-    call<{ item: Item }>("POST", `/api/c/${enc(id)}/posts/${enc(post)}/reactions`, { emoji, on } satisfies ReactionRequest),
+    twice<{ item: Item }>("POST", `/api/c/${enc(id)}/posts/${enc(post)}/reactions`, { emoji, on } satisfies ReactionRequest),
   /** Marks the thread of a room post done, or with `done` false reopens it; the flag sits on the thread's root (server/thread-done.ts). */
   threadDone: (id: ConversationId, post: string, done: boolean) =>
-    call<{ item: Item }>("POST", `/api/c/${enc(id)}/posts/${enc(post)}/done`, { done } satisfies ThreadDoneRequest),
+    twice<{ item: Item }>("POST", `/api/c/${enc(id)}/posts/${enc(post)}/done`, { done } satisfies ThreadDoneRequest),
   /** Pins a room post to its room, or with `pinned` false un-pins it (server/pins.ts). */
   pin: (id: ConversationId, post: string, pinned: boolean) =>
-    call<{ item: Item }>("POST", `/api/c/${enc(id)}/posts/${enc(post)}/pin`, { pinned } satisfies PinRequest),
+    twice<{ item: Item }>("POST", `/api/c/${enc(id)}/posts/${enc(post)}/pin`, { pinned } satisfies PinRequest),
   /** The owner's Save for later rows in one tab, newest first, with each tab's count (server/later.ts); `test` keeps posts in walks' test rooms. */
   later: (state?: LaterState, test = false, wait?: Wait) => call<LaterList>("GET", `/api/later${query({ state, test: test ? 1 : undefined })}`, undefined, undefined, wait),
   /** Saves a room post for later; saving a saved post keeps its one item and opens it again when it was done. */
   saveLater: (room: ConversationId, post: string, remindAt?: number) =>
-    call<{ item: LaterItem }>("POST", "/api/later", { room, post, ...(remindAt !== undefined ? { remindAt } : {}) } satisfies LaterRequest),
+    twice<{ item: LaterItem }>("POST", "/api/later", { room, post, ...(remindAt !== undefined ? { remindAt } : {}) } satisfies LaterRequest),
   /** Checks a saved post off (`done`) or opens it again, and sets or clears (`null`) its reminder. */
-  patchLater: (id: string, patch: LaterPatch) => call<{ item: LaterItem }>("PATCH", `/api/later/${enc(id)}`, patch),
+  patchLater: (id: string, patch: LaterPatch) => twice<{ item: LaterItem }>("PATCH", `/api/later/${enc(id)}`, patch),
   /** Unsaves a post; unsaving one that is gone answers `{item: null}`. */
-  unsaveLater: (id: string) => call<{ item: LaterItem | null }>("DELETE", `/api/later/${enc(id)}`),
+  unsaveLater: (id: string) => twice<{ item: LaterItem | null }>("DELETE", `/api/later/${enc(id)}`),
   /** A Later item of the owner's own text, such as /remind me's, which Later lists and, with `remindAt`, the due timer fires as a post's. */
   remindNote: (note: string, remindAt?: number) => call<{ item: LaterItem }>("POST", "/api/later", { note, ...(remindAt !== undefined ? { remindAt } : {}) } satisfies LaterRequest),
   /** Undo of an unsave: puts the item `unsaveLater` answered back as it was. */
-  restoreLater: (item: LaterItem) => call<{ item: LaterItem }>("PUT", `/api/later/${enc(item.id)}`, item),
+  restoreLater: (item: LaterItem) => twice<{ item: LaterItem }>("PUT", `/api/later/${enc(item.id)}`, item),
   /** Slack's Edit message on the owner's own room post. */
-  editPost: (id: ConversationId, post: string, text: string) => call<{ item: Item }>("PATCH", `/api/c/${enc(id)}/posts/${enc(post)}`, { text }),
+  editPost: (id: ConversationId, post: string, text: string) => twice<{ item: Item }>("PATCH", `/api/c/${enc(id)}/posts/${enc(post)}`, { text }),
   /** Slack's Delete message on the owner's own room post. */
-  deletePost: (id: ConversationId, post: string) => call<{ item: Item }>("DELETE", `/api/c/${enc(id)}/posts/${enc(post)}`),
-  patch: (id: ConversationId, patch: ConversationPatch) => call<ConversationHeader>("PATCH", `/api/c/${enc(id)}`, patch),
-  rename: (id: ConversationId, name: string) => call<ConversationHeader>("PATCH", `/api/c/${enc(id)}`, { name }),
-  archive: (id: ConversationId, archived = true) => call<ConversationHeader>("PATCH", `/api/c/${enc(id)}`, { archived }),
-  read: (id: ConversationId, seq?: number) => call<{ ok: true }>("POST", `/api/c/${enc(id)}/read`, seq === undefined ? {} : { seq }),
-  markUnread: (id: ConversationId, post: string) => call<{ ok: true }>("POST", `/api/c/${enc(id)}/read`, { unreadFrom: post }),
+  deletePost: (id: ConversationId, post: string) => twice<{ item: Item }>("DELETE", `/api/c/${enc(id)}/posts/${enc(post)}`),
+  patch: (id: ConversationId, patch: ConversationPatch) => twice<ConversationHeader>("PATCH", `/api/c/${enc(id)}`, patch),
+  rename: (id: ConversationId, name: string) => twice<ConversationHeader>("PATCH", `/api/c/${enc(id)}`, { name }),
+  archive: (id: ConversationId, archived = true) => twice<ConversationHeader>("PATCH", `/api/c/${enc(id)}`, { archived }),
+  read: (id: ConversationId, seq?: number) => twice<{ ok: true }>("POST", `/api/c/${enc(id)}/read`, seq === undefined ? {} : { seq }),
+  markUnread: (id: ConversationId, post: string) => twice<{ ok: true }>("POST", `/api/c/${enc(id)}/read`, { unreadFrom: post }),
   readAll: (rooms: ConversationId[]) => call<{ before: ReadPoint[] }>("POST", "/api/read", { rooms } satisfies ReadAllRequest),
-  restoreReads: (restore: ReadPoint[]) => call<{ ok: true }>("POST", "/api/read", { restore } satisfies ReadAllRequest),
+  restoreReads: (restore: ReadPoint[]) => twice<{ ok: true }>("POST", "/api/read", { restore } satisfies ReadAllRequest),
   threadJobs: (thread: string) => call<JobNode[]>("GET", `/api/threads/${enc(thread)}/jobs`),
-  openDm: (agent: AgentId) => call<ConversationSummary>("POST", "/api/dms", { agent }),
+  openDm: (agent: AgentId) => twice<ConversationSummary>("POST", "/api/dms", { agent }),
 
   createRoom: (input: RoomInput) => call<Room & { opened: OpenedPage }>("POST", "/api/rooms", input),
   /** `closed` closes or reopens a Solo room. */
-  updateRoom: (id: string, patch: RoomPatch) => call<Room>("PATCH", `/api/rooms/${enc(id)}`, patch),
-  setPrefs: (id: ConversationId, patch: PrefsPatch) => call<ConversationPrefs>("PUT", `/api/c/${enc(id)}/prefs`, patch),
+  updateRoom: (id: string, patch: RoomPatch) => twice<Room>("PATCH", `/api/rooms/${enc(id)}`, patch),
+  setPrefs: (id: ConversationId, patch: PrefsPatch) => twice<ConversationPrefs>("PUT", `/api/c/${enc(id)}/prefs`, patch),
   /** Only registered agents join; the server refuses a job, a work thread or a comm thread. */
-  addMembers: (id: string, agents: AgentId[], wakeOn?: "all" | "none") => call<Room>("POST", `/api/rooms/${enc(id)}/members`, { agents, ...(wakeOn ? { wakeOn } : {}) }),
-  removeMember: (id: string, agent: AgentId) => call<Room>("DELETE", `/api/rooms/${enc(id)}/members/${enc(agent)}`),
+  addMembers: (id: string, agents: AgentId[], wakeOn?: "all" | "none") => twice<Room>("POST", `/api/rooms/${enc(id)}/members`, { agents, ...(wakeOn ? { wakeOn } : {}) }),
+  removeMember: (id: string, agent: AgentId) => twice<Room>("DELETE", `/api/rooms/${enc(id)}/members/${enc(agent)}`),
   /** `none` is Mentions only: the member wakes on an @mention or a reply in a thread it posted in. */
-  setMemberWakeOn: (id: string, agent: AgentId, wakeOn: Member["wakeOn"]) => call<Room>("PATCH", `/api/rooms/${enc(id)}/members/${enc(agent)}`, { wakeOn }),
+  setMemberWakeOn: (id: string, agent: AgentId, wakeOn: Member["wakeOn"]) => twice<Room>("PATCH", `/api/rooms/${enc(id)}/members/${enc(agent)}`, { wakeOn }),
 
   search: (params: SearchQuery, options: { signal?: AbortSignal } = {}) =>
     call<SearchResult>("GET", `/api/search${query({ ...params, brief: params.brief ? 1 : undefined })}`, undefined, options.signal),
@@ -676,14 +678,15 @@ export const api = {
   importPrime: (chat: string, prime: string) =>
     call<{ board: boolean; duties: number; runs: number; checkInMs: number | null }>("POST", `/api/threads/${enc(chat)}/import-prime`, { prime }),
   /** `result` says what a set or remove did, such as "added d3", "updated d1", "unchanged d1" or "removed d2". */
-  dutyAction: (chat: string, action: DutyAction) => call<{ duties: DutyRow[]; result?: string }>("POST", `${boardBase(chat)}/duties`, action),
-  setCheckIn: (chat: string, patch: CheckInPatch) => call<CheckInView>("POST", `${boardBase(chat)}/check-in`, patch),
+  dutyAction: (chat: string, action: DutyAction) =>
+    call<{ duties: DutyRow[]; result?: string }>("POST", `${boardBase(chat)}/duties`, action, undefined, undefined, action.action !== "run" && action.action !== "set"),
+  setCheckIn: (chat: string, patch: CheckInPatch) => twice<CheckInView>("POST", `${boardBase(chat)}/check-in`, patch),
   /** Hides a board from All boards and the Board sidebar, or shows it again. */
-  setBoardHidden: (chat: string, hidden: boolean) => call<{ hidden: boolean }>("POST", `${boardBase(chat)}/board/hidden`, { hidden }),
+  setBoardHidden: (chat: string, hidden: boolean) => twice<{ hidden: boolean }>("POST", `${boardBase(chat)}/board/hidden`, { hidden }),
   forYou: (signal?: AbortSignal, wait?: Wait) => call<{ items: ForYouItem[] }>("GET", "/api/for-you", undefined, signal, wait),
   /** Marks one item, `<room id>/<post id>`, completed or pending again; the same mark twice changes nothing. */
   markForMe: (agent: AgentId, messageId: string, completed: boolean) =>
-    call<{ item: ForMeItem; pending: number }>("POST", `/api/agents/${enc(agent)}/for-me`, { messageId, completed }),
+    twice<{ item: ForMeItem; pending: number }>("POST", `/api/agents/${enc(agent)}/for-me`, { messageId, completed }),
   /** Marks several For items at once and answers the ids whose status changed, which an Undo marks back. */
   markForMeMany: (agent: AgentId, messageIds: string[], completed: boolean) =>
     call<{ changed: string[]; pending: number }>("POST", `/api/agents/${enc(agent)}/for-me`, { messageIds, completed }),
@@ -702,7 +705,7 @@ export const api = {
   /** Where the disk differs from the DB: folders with no row and installs the disk does not match. */
   skillsCheck: () => call<SkillsCheck>("GET", "/api/skills/check"),
   /** Makes the disk match the DB; a second run changes nothing. `dryRun` only plans. */
-  applySkills: (body: ApplyBody = {}) => call<ApplyResult>("POST", "/api/skills/apply", body),
+  applySkills: (body: ApplyBody = {}) => twice<ApplyResult>("POST", "/api/skills/apply", body),
   installSkill: (body: InstallBody) => call<SkillsChange>("POST", "/api/skills/install", body),
   /** Removes a copy, an install or a whole skill, with a backup that undo restores. */
   removeSkill: (body: RemoveBody) => call<SkillsChange>("POST", "/api/skills/remove", body),
@@ -713,7 +716,7 @@ export const api = {
   undoSkillMove: (body: UndoBody) => call<SkillsChange>("POST", "/api/skills/undo", body),
   skillMoves: () => call<SkillMoves>("GET", "/api/skills/moves"),
   /** Starts a scan of the boxes unless one runs; the `skills` live event says when it ends. */
-  scanSkills: () => call<{ scan: SkillScan }>("POST", "/api/skills/scan"),
+  scanSkills: () => twice<{ scan: SkillScan }>("POST", "/api/skills/scan"),
   skillDoc: (id: string) => call<SkillDoc>("GET", `/api/skills/doc?id=${enc(id)}`),
   /** The skills review: the cleanup items of a set in review order, one item with its copies and diffs, and the owner's decide and undo. */
   skillsReview: (set?: string) => call<ReviewReport>("GET", `/api/skills/review${query({ set })}`),

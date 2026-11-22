@@ -173,3 +173,46 @@ test("a server killed mid-call and started again shows no failed call, no Offlin
     await server.kill();
   }
 });
+
+/**
+ * A hand-over's old server closes an idle kept connection just as `tailscale serve` sends a call on it, and Go's ReverseProxy answers
+ * a bare 502 for a call it does not retry itself, such as a POST. The page sends a write that may run twice again (client.ts `twice`),
+ * so a reaction, a PATCH and a DELETE in that moment land; a create goes once and fails, since a second run would create a second one.
+ */
+test("a bare 502 under a reaction, a post edit and a delete is tried again, and a room create is not", async ({ page, request }) => {
+  const t = tag();
+  const room = (await (await request.post("/api/rooms", { data: { kind: "channel", name: `bare-502-${t}`, members: [], test: true } })).json()) as { id: string };
+  const sent = (await (await request.post(`/api/c/${room.id}/send`, { data: { text: `post ${t}`, requestId: `bare-${t}` } })).json()) as { item: { id: string } };
+  const post = sent.item.id;
+  const errors: string[] = [];
+  await page.route(url => url.pathname === "/api/timings", async route => {
+    const body = route.request().postDataJSON() as { samples?: { m: string; p: string; err?: string }[] } | null;
+    for (const sample of body?.samples ?? []) if (sample.err) errors.push(`${sample.m} ${sample.p}: ${sample.err}`);
+    await route.fulfill({ json: { ok: true } });
+  });
+  const seen = new Map<string, number>();
+  await page.route(url => url.pathname.startsWith("/api/"), async route => {
+    const key = `${route.request().method()} ${new URL(route.request().url()).pathname}`;
+    if (route.request().method() === "GET" || key.endsWith(" /api/timings")) return route.fallback();
+    seen.set(key, (seen.get(key) ?? 0) + 1);
+    if (seen.get(key) === 1) return route.fulfill({ status: 502, body: "" });
+    return route.fallback();
+  });
+  await open(page, `#/c/${room.id}`);
+  const outcome = await page.evaluate(async ({ room, post, t }) => {
+    const { api } = await import(/* @vite-ignore */ "/src/lib/api/client.ts");
+    const settle = (p: Promise<unknown>) => p.then(() => "ok", (e: unknown) => String(e instanceof Error ? e.message : e));
+    return {
+      react: await settle(api.react(room, post, "👍")),
+      edit: await settle(api.editPost(room, post, `edited ${t}`)),
+      delete: await settle(api.deletePost(room, post)),
+      create: await settle(api.createRoom({ kind: "channel", name: `bare-502-b-${t}`, members: [], test: true })),
+    };
+  }, { room: room.id, post, t });
+  expect(outcome).toEqual({ react: "ok", edit: "ok", delete: "ok", create: expect.stringContaining("502") });
+  expect(seen.get(`POST /api/c/${room.id}/posts/${post}/reactions`)).toBe(2);
+  expect(seen.get(`PATCH /api/c/${room.id}/posts/${post}`)).toBe(2);
+  expect(seen.get(`DELETE /api/c/${room.id}/posts/${post}`)).toBe(2);
+  expect(seen.get("POST /api/rooms")).toBe(1);
+  await expect.poll(() => errors).toEqual(["POST /api/rooms: POST /api/rooms failed with 502"]);
+});
