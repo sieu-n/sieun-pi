@@ -311,9 +311,12 @@ describe("boards", () => {
     const list = await s.get<any[]>("/api/jobs");
     assert.equal(list.find(a => a.id === run.job.id).parent.id, agents.frontend);
     await until(() => s.get<TimelinePage>(`/api/c/${ids.frontend}/items?limit=200`), p => p.items.some(i => i.kind === "message" && i.text.startsWith("[duty d9]") && i.author.id === run.job.id));
+    // The job's end measures its run again; the next run waits for that measure, so the test reads one order of runs at any box load.
+    const measuredAfter = await until(() => s.get(`/api/threads/${ids.frontend}/duties`), v => v.duties[0].runs[0].after !== undefined && !v.duties[0].running);
+    assert.equal(measuredAfter.duties[0].runs[0].after.verdict, "met", JSON.stringify(measuredAfter.duties[0].runs[0].after));
     await s.send("POST", `/api/threads/${ids.frontend}/duties`, { duty: "d9", action: "run" });
     const met = await until(() => s.get(`/api/threads/${ids.frontend}/duties`), v => v.duties[0].runs.length === 2);
-    assert.equal(met.duties[0].runs[0].verdict, "met");
+    assert.equal(met.duties[0].runs[0].verdict, "met", JSON.stringify(met.duties[0].runs[0]));
     assert.equal(met.duties[0].runs[0].job, undefined, "a met run with nothing flagged starts no job");
   });
 

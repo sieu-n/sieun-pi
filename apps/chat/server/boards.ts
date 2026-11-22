@@ -655,8 +655,10 @@ export class Boards {
     const measured = asAfter(record);
     if (lastRun?.job && !lastRun.after && measured && !busy && (record.job || !working.has(lastRun.job.name))) lastRun.after = measured;
     after.runs[dutyId] = [record, ...(after.runs[dutyId] ?? [])].sort((a, b) => b.at - a.at).slice(0, 20);
-    const launch = after.pending?.[dutyId]?.launch;
-    this.save(chat, Boards.pend(after, dutyId, null));
+    // Only this run's own precheck entry is cleared, with its files, so an entry another measure wrote keeps its files.
+    const pending = after.pending?.[dutyId];
+    const launch = pending?.mode === "run" && pending.at === at ? pending.launch : undefined;
+    this.save(chat, launch ? Boards.pend(after, dutyId, null) : after);
     if (launch) void clearPrecheck(launch).catch(error => this.log(`duty ${chat.slice(0, 8)}: clearing its precheck files failed: ${String(error)}`));
     this.log(`duty ${chat.slice(0, 8)}/${duty.id}: ${record.verdict}, ${record.summary}${record.job ? `, job ${record.job.name}` : ""}`);
   }
@@ -782,10 +784,11 @@ export class Boards {
       launched: launch => this.save(chat, Boards.pend(this.file(chat), duty.id, { mode: "after", at, run: runAt, job: jobName, launch })),
     });
     const latest = this.file(chat);
-    const launch = latest.pending?.[duty.id]?.launch;
+    const pending = latest.pending?.[duty.id];
+    const launch = pending?.mode === "after" && pending.at === at ? pending.launch : undefined;
     const target = latest.runs[duty.id]?.find(entry => entry.at === runAt);
     if (target && !target.after) target.after = after;
-    this.save(chat, Boards.pend(latest, duty.id, null));
+    this.save(chat, launch ? Boards.pend(latest, duty.id, null) : latest);
     if (launch) void clearPrecheck(launch).catch(error => this.log(`duty ${chat.slice(0, 8)}: clearing its precheck files failed: ${String(error)}`));
     if (target?.after !== after) return;
     this.log(`duty ${chat.slice(0, 8)}/${duty.id}: after its job ${jobName}, ${after.verdict}, ${after.summary}`);

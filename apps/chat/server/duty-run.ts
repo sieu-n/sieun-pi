@@ -60,9 +60,11 @@ const UNIT_ENV = new Set(["INVOCATION_ID", "JOURNAL_STREAM", "SYSTEMD_EXEC_PID",
 export async function launchPrecheck(duty: Duty, dir: string, outputFile: string, lastRuns: readonly DutyRunRecord[], mode: "run" | "after", tag: string): Promise<PrecheckLaunch> {
   await mkdir(dir, { recursive: true, mode: 0o700 });
   const stateFile = join(dir, `${duty.id}.state.json`);
-  const nextState = join(dir, `${duty.id}.state.${mode === "run" ? "next" : "after"}.json`);
-  const lastRunsFile = join(dir, `${duty.id}.last-runs${mode === "run" ? "" : ".after"}.json`);
   const base = outputFile.replace(/\.json$/, "");
+  // Each launch has its own state copy, which `clearPrecheck` deletes after its run is saved. Until 11-23 every run of a duty shared
+  // `<duty>.state.next.json`, so a cleanup of one run that landed late deleted the STATE_FILE of the next.
+  const nextState = `${base}.next-state.json`;
+  const lastRunsFile = join(dir, `${duty.id}.last-runs${mode === "run" ? "" : ".after"}.json`);
   const files = { output: outputFile, exit: `${base}.exit`, stderr: `${base}.stderr.log`, nextState, script: `${base}.sh`, env: `${base}.env` };
   await copyFile(stateFile, nextState).catch(async () => writeFile(nextState, "{}", { mode: 0o600 }));
   await writeFile(lastRunsFile, JSON.stringify(lastRuns), { mode: 0o600 });
