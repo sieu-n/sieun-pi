@@ -16,7 +16,7 @@ import type { Host } from "./host/types.ts";
 import { projectList } from "./projects.ts";
 import { drain, serve, skillsParts } from "./http.ts";
 import { seedFixture } from "./fixture/seed.ts";
-import { handOverOnHangup, listening, tellSystemd } from "./handoff.ts";
+import { DataLock, handOverOnHangup, listening, tellSystemd } from "./handoff.ts";
 
 const loadedMs = Math.round(performance.now());
 const config = readConfig();
@@ -37,6 +37,14 @@ process.on("SIGINT", () => void shutdown());
 if (config.fixture && !process.argv.includes("--data-dir")) config.dataDir = mkdtempSync(join(tmpdir(), "apps-chat-fixture-"));
 if (config.fixture) Object.assign(config, fixtureFolders(config.dataDir));
 const port = listening();
+const lock = new DataLock(join(config.dataDir, "server.lock"));
+const takeLock = () => {
+  const held = lock.take();
+  if (!held) return;
+  log(`data dir: ${held}; this server does not serve it and exits`);
+  process.exit(1);
+};
+if (!port.predecessor) takeLock();
 // The skills DB's first ingest runs before the port is taken, and for a successor while the old server still serves (http.ts skillsParts).
 const skillsAt = performance.now();
 const skills = skillsParts(config, log, () => app);
@@ -44,7 +52,10 @@ await skills.ready;
 const skillsMs = Math.round(performance.now() - skillsAt);
 // A successor reads the data dir only once the server it follows stopped and wrote its files (server/handoff.ts).
 const waitedAt = performance.now();
-if (port.predecessor) await port.predecessor.stopped();
+if (port.predecessor) {
+  await port.predecessor.stopped();
+  takeLock();
+}
 const waitedMs = Math.round(performance.now() - waitedAt);
 /**
  * One `Host` per box with an agent relay in the hosts registry, and the local pi-host socket for this box until its own relay is listed
@@ -81,4 +92,4 @@ try {
   process.exit(1);
 }
 port.predecessor?.taken();
-if (fd !== null) handOverOnHangup({ fd, server: http, drain, stop: stopApp, log, exit: code => process.exit(code) });
+if (fd !== null) handOverOnHangup({ fd, server: http, drain, stop: stopApp, unlock: () => lock.release(), log, exit: code => process.exit(code) });

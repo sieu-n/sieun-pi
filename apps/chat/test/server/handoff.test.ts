@@ -118,3 +118,28 @@ test("three reloads in a row hand the port over with no refused, reset or slow c
     rmSync(data, { recursive: true, force: true });
   }
 });
+
+test("a second server on the same data dir finds the lock held and exits", { timeout: 120_000 }, async () => {
+  const data = mkdtempSync(join(tmpdir(), "apps-chat-lock-"));
+  const [first, second] = [await freePort(), await freePort()];
+  const start = (port: number) => spawn(process.execPath, ["--import", "tsx", "server/main.ts", "--fixture", "--data-dir", data, "--port", String(port)],
+    { cwd: APP, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, NOTIFY_SOCKET: "" } });
+  const one = start(first);
+  try {
+    for (let at = Date.now(); ; await sleep(100)) {
+      try { if ((await get(first, "/api/ready")).status === 200) break; } catch { /* not up yet */ }
+      assert.ok(Date.now() - at < 60_000, "the first server did not answer in 60 s");
+    }
+    const two = start(second);
+    let out = "";
+    two.stdout.on("data", chunk => (out += chunk));
+    const code = await new Promise<number | null>(resolve => two.once("exit", resolve));
+    assert.equal(code, 1, out);
+    assert.match(out, /does not serve it and exits/);
+    assert.equal((await get(first, "/api/ready")).status, 200, "the first server still serves");
+  } finally {
+    one.kill("SIGTERM");
+    await new Promise(resolve => one.once("exit", resolve));
+    rmSync(data, { recursive: true, force: true });
+  }
+});

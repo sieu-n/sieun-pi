@@ -7,14 +7,18 @@
  *    `loaded` while the running server still answers every call.
  * 2. The running server stops taking connections, lets its calls in flight answer (`drain`), stops its loops and writes its queued files
  *    (`App.stop`), and says `stopped`. Calls that arrive from now on wait in the socket's queue.
- * 3. The successor reads the state files only now, so no write of the running server lands after it read them, starts, takes the fd, tells
- *    systemd it is the main process and says `taken`; the running server exits.
+ *    It releases the data dir's lock (`DataLock`).
+ * 3. The successor takes the lock and reads the state files only now, so no write of the running server lands after it read them. It
+ *    starts, takes the fd, tells systemd MAINPID= until systemd shows it as the main process (`tellSystemd`), and says `taken`; only then
+ *    does the running server exit, so systemd never reads that exit as the unit's end.
  *
- * Two App instances never run at once, so nothing in the data dir, the wakes, the duties or the search index is written by both. Without a
+ * Two App instances never run at once, so nothing in the data dir, the wakes, the duties or the search index is written by both, and a
+ * second server started on the same data dir by any other path finds the lock held and exits. Without a
  * passed fd (a hand run, the fixture specs) the server listens on its port itself and a SIGHUP does nothing.
  */
 import { execFile, spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import type { Server } from "node:http";
 import { promisify } from "node:util";
 import { takeListenFd } from "../../../legacy/prime/user-history/src/listen-fd.ts";
@@ -84,19 +88,81 @@ export function serveArgs(cmdline = (() => { try { return readFileSync("/proc/se
   return parts && parts.length > 1 ? parts.slice(1) : [...process.execArgv, ...process.argv.slice(1)];
 }
 
-/** sd_notify through systemd-notify, as chat-handoff.ts `notifySystemd` does; false when the unit is no Type=notify one. */
-async function notifySystemd(fields: readonly string[], log: (line: string) => void): Promise<boolean> {
-  if (!process.env.NOTIFY_SOCKET) return false;
-  const at = Date.now();
+/** sd_notify through systemd-notify, as chat-handoff.ts `notifySystemd` does. */
+async function notify(fields: readonly string[]): Promise<void> {
   // systemd-notify answered in 13 ms from a test unit on us-metal02 on 11-08 (chat-handoff.ts); 30 s fails only one that hangs.
   await promisify(execFile)("systemd-notify", [`--pid=${process.pid}`, ...fields], { timeout: 30_000 });
-  log(`systemd: told it ${fields.join(" ")} in ${Date.now() - at} ms`);
-  return true;
 }
 
-/** Tells systemd this process serves: READY=1, and MAINPID= for a successor, which systemd must take as the main process before its predecessor exits. */
-export async function tellSystemd(successor: boolean, log: (line: string) => void): Promise<void> {
-  await notifySystemd(successor ? [`MAINPID=${process.pid}`, "READY=1"] : ["READY=1"], log);
+/** The unit's MainPID as systemd has it now, or 0. */
+async function mainPidOf(unit: string): Promise<number> {
+  const { stdout } = await promisify(execFile)("systemctl", ["--user", "show", "-p", "MainPID", "--value", unit], { timeout: 30_000 });
+  return Number(stdout.trim()) || 0;
+}
+
+/** The unit's name, which the unit file sets as %n, so a successor can read whether systemd took it as the main process. */
+export const UNIT_ENV = "APPS_CHAT_UNIT";
+/**
+ * How long a successor keeps telling systemd MAINPID= before it gives up. cpu-protect.py moves the unit's main process into
+ * agents.slice/<unit>-core.scope, so a successor starts there, and systemd --user drops a notification from outside the unit's cgroup;
+ * the same pass moves every other process in that scope back to the unit, once every 2 s (cpu-protect.py INTERVAL_S). On 11-22 the
+ * hand-overs that sent MAINPID= once lost it twice in three, and systemd read the old server's exit as the unit's end and started a
+ * fresh server beside the successor. 15 s is seven passes.
+ */
+const TAKE_MS = 15_000;
+
+/**
+ * Tells systemd this process serves: READY=1, or for a successor MAINPID= and READY=1 again every 250 ms until systemd shows it as the
+ * unit's main process, which must happen before the old server exits. Throws when systemd did not take it in TAKE_MS.
+ */
+export async function tellSystemd(successor: boolean, log: (line: string) => void, env: NodeJS.ProcessEnv = process.env): Promise<void> {
+  if (!env.NOTIFY_SOCKET) return;
+  const began = Date.now();
+  if (!successor) {
+    await notify(["READY=1"]);
+    return log(`systemd: told it READY=1 in ${Date.now() - began} ms`);
+  }
+  const unit = env[UNIT_ENV];
+  if (!unit) throw new Error(`${UNIT_ENV} is not set, so this successor cannot see whether systemd took it as the main process`);
+  for (let tries = 1; ; tries += 1) {
+    await notify([`MAINPID=${process.pid}`, "READY=1"]);
+    if ((await mainPidOf(unit)) === process.pid) return log(`systemd: took this process as ${unit}'s main one after ${tries} MAINPID= in ${Date.now() - began} ms`);
+    if (Date.now() - began > TAKE_MS) throw new Error(`systemd did not take this process as ${unit}'s main one in ${TAKE_MS / 1000} s of MAINPID=`);
+    await new Promise(resolve => setTimeout(resolve, 250));
+  }
+}
+
+/**
+ * The data dir's lock, held for the life of the server that serves it: an exclusive SQLite transaction on <data dir>/server.lock, which
+ * the kernel drops when the process ends. Hard limit, data integrity: two servers on one data dir split posts on 11-22, 25 of 87 with
+ * duplicate seqs. A running server releases it in a hand-over once it stopped, before its successor reads the state files.
+ */
+export class DataLock {
+  private db: DatabaseSync | null = null;
+  constructor(private readonly file: string) {}
+
+  /** Takes the lock, or returns who holds it when another process does. */
+  take(): string | null {
+    const db = new DatabaseSync(this.file);
+    try {
+      db.exec("PRAGMA journal_mode = DELETE; PRAGMA busy_timeout = 0;");
+      db.exec("BEGIN EXCLUSIVE");
+    } catch (error) {
+      db.close();
+      let holder = "another process";
+      try { holder = `pid ${readFileSync(`${this.file}.pid`, "utf8").trim()}`; } catch { /* no note */ }
+      return `${holder} holds ${this.file} (${error instanceof Error ? error.message : String(error)})`;
+    }
+    this.db = db;
+    writeFileSync(`${this.file}.pid`, `${process.pid}\n`);
+    return null;
+  }
+
+  release(): void {
+    try { this.db?.exec("ROLLBACK"); } catch { /* ended already */ }
+    this.db?.close();
+    this.db = null;
+  }
 }
 
 /** The running server's side. */
@@ -105,6 +171,8 @@ export interface Running {
   server: Server;
   /** Stops the app and writes its queued files; the port is closed and drained by then. */
   stop(): Promise<void>;
+  /** Releases the data dir's lock, once the app stopped, so the successor can take it. */
+  unlock(): void;
   /** Closes the server and waits for its calls in flight (http.ts `drain`). */
   drain(server: Server): Promise<void>;
   log(line: string): void;
@@ -138,6 +206,7 @@ export async function handOver(side: Running, args: string[] = serveArgs(), cwd 
         void (async () => {
           await side.drain(side.server);
           await side.stop();
+          side.unlock();
           stoppedAt = Date.now();
           side.log(`handoff: ${child.pid} loaded in ${loadedAt - began} ms; this process stopped in ${Date.now() - loadedAt} ms, and calls wait in the socket's queue until ${child.pid} takes it`);
           child.send({ kind: "stopped" } satisfies ToNew);
