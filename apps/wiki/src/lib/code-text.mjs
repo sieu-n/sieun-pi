@@ -188,6 +188,35 @@ const css = (lines) => (/** @type {string} */ text) => {
 };
 
 /**
+ * JSON with no whitespace outside its strings and one line per member: a line break after each `{`, `[` and `,` and before
+ * each `}` and `]`, so a commit that only reflows a value, such as a one-line object split over several lines, changes no line.
+ * JSONC and JSON5 read the same way after their comments go. Python and YAML keep their indentation, which is code there. On
+ * 2026-11-22 auto-sns-agent c8e3e5589e split the one-line `m02-ci-monitor` and `m02-land-tick` objects of
+ * apps/infra/komodo/stacks.json over several lines and changed no value, and the 14:22 KST dream run flagged the 2 pages
+ * citing them. On a replay of the 2,034 dream rechecks in the 7 days to 2026-11-22 06:00Z, 1,865 behind a flag, this drops
+ * those 2, both `last_verified` only, and none of the rechecks that changed a page body
+ * (~/work/wiki-stale-reflow-and-shared-keys/).
+ * @param {string} text
+ */
+function jsonLayout(text) {
+	let out = '';
+	let i = 0;
+	while (i < text.length) {
+		const c = text[i];
+		let end = i + 1;
+		if (c === '"' || c === "'") {
+			while (end < text.length && text[end] !== c && text[end] !== '\n') end += text[end] === '\\' ? 2 : 1;
+			end = Math.min(text.length, end + 1);
+			out += text.slice(i, end);
+		} else if ('{[,'.includes(c)) out += `${c}\n`;
+		else if ('}]'.includes(c)) out += `\n${c}`;
+		else if (!/\s/.test(c)) out += c;
+		i = end;
+	}
+	return out;
+}
+
+/**
  * SQL without `--` line comments and `/* *\/` block comments, which may nest, as PostgreSQL and ClickHouse read them,
  * outside a `'` string (with `''` or `\'` inside), a `"` or backtick quoted identifier.
  * @param {string} text
@@ -417,7 +446,7 @@ const LANGUAGES = [
 	{ match: /\.(?:css|pcss|postcss)$/, strip: css(false) },
 	{ match: /\.(?:scss|less)$/, strip: css(true) },
 	{ match: /\.sql$/, strip: sql },
-	{ match: /\.json[c5]?$/, strip: css(true) },
+	{ match: /\.json[c5]?$/, strip: (text) => jsonLayout(css(true)(text)) },
 	{ match: /\.(?:sh|bash|zsh)$/, strip: shell },
 	{ match: /\.ya?ml$/, strip: yaml },
 	{ match: /\.toml$|^\.env(?:\.[\w.-]+)?$/, strip: toml },

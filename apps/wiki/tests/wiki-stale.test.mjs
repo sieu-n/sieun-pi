@@ -453,7 +453,30 @@ test('a run block scalar drops whole-line shell comments, and keeps a #! line, a
 test('JSONC and JSON5 comments are no code, and a comment marker inside a string is', () => {
 	const text = '{\n\t// gone\n\t"//#ci:x": { "url": "https://x.example/*kept*/", /* gone */ "a": 1 } // gone\n}\n';
 	for (const file of ['turbo.json', 'tsconfig.jsonc', 'a.json5'])
-		assert.equal(codeText(text, file), '{\n\t"//#ci:x": { "url": "https://x.example/*kept*/",   "a": 1 }\n}', file);
+		assert.equal(codeText(text, file), '{\n"//#ci:x":{\n"url":"https://x.example/*kept*/",\n"a":1\n}\n}', file);
+});
+
+// 2026-11-22: auto-sns-agent c8e3e5589e split the one-line m02-ci-monitor and m02-land-tick objects of
+// apps/infra/komodo/stacks.json over several lines with no value changed, and 2 pages read as behind code on them.
+test('a JSON reflow is no change to a path::name ref, and a changed value or a space inside a string is', (t) => {
+	const w = fixture(t);
+	const line = (schedule) => `{\n\t"procedures": {\n\t\t"m02-ci-monitor": { "stack": "box-jobs", "schedule": "${schedule}" },\n\t\t"m02-other": { "stack": "box-jobs" }\n\t}\n}\n`;
+	const split = (schedule) =>
+		`{\n\t"procedures": {\n\t\t"m02-ci-monitor": {\n\t\t\t"stack": "box-jobs",\n\t\t\t"schedule": "${schedule}"\n\t\t},\n\t\t"m02-other": {\n\t\t\t"stack": "box-jobs"\n\t\t}\n\t}\n}\n`;
+	w.write('stacks.json', line('56 */10 * * * *'));
+	w.page('monitor.html', ['stacks.json::m02-ci-monitor']);
+	w.page('whole.html', ['stacks.json'], { body: '<p>The <code>m02-ci-monitor</code> job runs on box-jobs.</p>' });
+	w.init();
+	w.commit('2026-10-20T01:00:00Z', 'pages');
+	w.write('stacks.json', split('56 */10 * * * *'));
+	w.commit('2026-10-20T04:00:00Z', 'c8e3e5589e');
+	assert.deepEqual(w.refsByPage(), {}, 'a reflow changes no value');
+	w.write('stacks.json', split('56  */10 * * * *'));
+	w.commit('2026-10-20T05:00:00Z', 'schedule');
+	assert.deepEqual(w.refsByPage()['apps/monitor.html'], [{ ref: 'stacks.json::m02-ci-monitor', ...at('05') }]);
+	assert.equal(codeText(line('x'), 'stacks.json'), codeText(split('x'), 'stacks.json'));
+	assert.notEqual(codeText('a:\n  b: 1\n', 'ci.yml'), codeText('a:\nb: 1\n', 'ci.yml'), 'YAML indentation is code');
+	assert.notEqual(codeText('if a:\n    b()\nc()\n', 'a.py'), codeText('if a:\n    b()\n    c()\n', 'a.py'), 'Python indentation is code');
 });
 
 // 2026-10-29: enterprise-mock.html cited apps/virev-demo/src/routes/dev/design/charts/+page.svelte, a gitignored file a
