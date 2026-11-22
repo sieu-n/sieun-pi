@@ -120,13 +120,13 @@ try {
   const done = async id => Boolean((await posts()).find(p => p.id === id)?.done);
   // A picked-up run waited for its task before the stop, so it reads the done mark once.
   const taskDone = values.task ? await done(task.id) : await waitFor(TASK_MS, () => done(task.id));
-  const before = await posts();
-  const checklist = before.find(p => isAgent(p) && p.answers === task.id);
   for (const [n, question] of QUICK.entries()) {
     const asked = await send(question, `quick-${n}`);
     // A quick answer often gets no done mark, so the reply alone ends the wait.
     await waitFor(8 * 60_000, async () => (await posts()).some(p => isAgent(p) && p.answers === asked.id));
   }
+  // Read after the quick asks, since a later answer may correct the checklist, as one did on 11-22.
+  const checklist = (await posts()).find(p => isAgent(p) && p.answers === task.id);
   const comm = await commOf();
   const handOvers = messages(comm).flatMap(m => m.role === "assistant" ? m.content.filter(b => b.type === "toolCall" && /agent_message\.send/.test(String(b.arguments?.code ?? ""))) : [])
     .map(b => String(b.arguments.code));
