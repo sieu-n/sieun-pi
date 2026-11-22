@@ -7,6 +7,10 @@
 
 const holds = new Set<string>();
 let wanted = false;
+let reloading = false;
+
+/** The page called location.reload() for a newer build, so a call that fails from here on is its own reload's abort. */
+export const pageReloading = (): boolean => reloading;
 
 /** Something only this page holds; the page does not reload until it is released. */
 export function holdReload(key: string): void {
@@ -28,5 +32,6 @@ export function reloadWhenSafe(): void {
 
 function tryReload(): void {
   if (!wanted || holds.size || (!document.hidden && document.hasFocus())) return;
+  reloading = true;
   location.reload();
 }

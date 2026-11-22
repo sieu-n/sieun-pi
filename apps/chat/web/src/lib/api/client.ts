@@ -17,6 +17,7 @@ import type { ReviewDecideBody, ReviewItem, ReviewReport, ReviewResult, ReviewUn
 import type { PinRequest } from "./types.ts";
 import type { SavedLayout, SidebarLayout } from "./types.ts";
 import type { ConversationPrefs, PrefsPatch } from "./types.ts";
+import { pageReloading } from "./reload.ts";
 import { shrink } from "./shrink.ts";
 
 export class ApiError extends Error {
@@ -47,7 +48,17 @@ const boardBase = (chat: string): string => (chat.startsWith("ag_") ? `/api/agen
  * busy before it could send the call or read the answer: on 11-03 a thread open in the box Chrome waited 2,135 ms for /api/rooms, of which
  * the network and the server took 29 ms.
  */
-type Timing = { m: string; p: string; s: number; ms: number; net?: number; enc?: number; stored?: number; err?: string; shown?: true; wait?: Wait };
+type Timing = { m: string; p: string; s: number; ms: number; net?: number; enc?: number; stored?: number; err?: string; shown?: true; page?: PageState; wait?: Wait };
+
+/**
+ * What the page was doing when a call failed, logged beside the failure so duty d2 counts only failures the owner could see (scripts/
+ * restart-walk-hits.ts): `leaving` once the page began to reload for a newer build (reload.ts) or to unload, since its own reload aborts
+ * its calls, `hidden` for a hidden tab, else `visible`. On 11-22, 49 of 50 failed calls after a restart were a hidden page's calls aborted
+ * by its own reload, which the owner never saw.
+ */
+type PageState = "visible" | "hidden" | "leaving";
+let leaving = false;
+const pageState = (): PageState => (leaving || pageReloading() ? "leaving" : document.visibilityState === "hidden" ? "hidden" : "visible");
 
 /**
  * What the owner saw while a call ran, which its caller sets and may change until the batch is posted. `ahead` is a read ahead of any
@@ -130,13 +141,16 @@ function recordTiming(m: string, path: string, s: number, started: number, err?:
   timings.push({
     m, p: path.split("?")[0]!, s, ms: Math.round(wait?.shownMs ?? now - (wait?.since ?? (wait?.background === "ahead" ? first : asked ?? first))), ...(net === undefined ? {} : { net }),
     ...(wait?.encodeMs === undefined ? {} : { enc: wait.encodeMs }), ...(wait?.since === undefined ? {} : { stored: Math.round(now - wait.since) }),
-    ...(err ? { err } : {}), ...(wait ? { wait } : {}),
+    ...(err ? { err, page: pageState() } : {}), ...(wait ? { wait } : {}),
   });
   if (err) sendTimings();
   else timingsTimer ??= setTimeout(sendTimings, 10_000);
 }
 
-if (typeof window !== "undefined") addEventListener("pagehide", () => sendTimings(true));
+if (typeof window !== "undefined") addEventListener("pagehide", () => {
+  leaving = true;
+  sendTimings(true);
+});
 
 /**
  * A send the page gave up on and showed as Not delivered, with the last call's status (0 when it never reached the server) and error. Each

@@ -10,7 +10,9 @@
 
 /** The fields of a request log line this file reads (server/request-log.ts `RequestTiming`). */
 export interface HitLine {
-  at: number; src: string; via?: string; m: string; r: string; p: string; s: number; ms: number; err?: string; bg?: string;
+  at: number; src: string; via?: string; m: string; r: string; p: string; s: number; ms: number; err?: string; bg?: string; shown?: true;
+  /** What the page was doing when the call failed (web client.ts `pageState`); lines from before 11-22 have none. */
+  page?: string;
 }
 
 export interface RestartHit<T extends HitLine = HitLine> {
@@ -49,6 +51,20 @@ export function parseOwnerLines(text: string): HitLine[] {
 /** A call failed when its status is 0 or 500 and up, or it names an error. */
 export const failedLine = (line: HitLine): boolean => Boolean(line.err) || line.s === 0 || line.s >= 500;
 
+/**
+ * A failed call the owner could see or lose: any write that never landed, and a read his screen waited on (no `bg`) on a visible page. The
+ * page logs a failure only after its own tries (client.ts), so a line is the call's end. A read ahead of any view or a refresh behind a page
+ * already on the screen is no wait of his, and a call on a hidden page or one the page's own reload or unload aborted never showed. A line
+ * from before the page logged `page` counts a read only when the server answered 500 and up: on 11-22 its 49 network errors after
+ * restarts were a hidden page's calls aborted by its own reload, and the 1 that showed was a 502. A 4xx is no restart's doing.
+ */
+export function seenFailure(line: HitLine): boolean {
+  if (!(line.s === 0 || line.s >= 500)) return false;
+  if (line.m !== "GET" && line.m !== "HEAD") return true;
+  if (line.bg) return false;
+  return line.page ? line.page === "visible" : line.s >= 500;
+}
+
 /** The latest restart at or before `at`, when `at` is within `windowMs` of it. `starts` is sorted. */
 export function restartBefore(starts: readonly number[], at: number, windowMs = RESTART_WINDOW_MS): number | undefined {
   let found = -1;
@@ -62,10 +78,10 @@ export function restartBefore(starts: readonly number[], at: number, windowMs = 
   return found >= 0 && at - starts[found]! <= windowMs ? starts[found] : undefined;
 }
 
-/** The owner's failed calls that came within the window of a restart, each with the restart it followed. */
+/** The owner's failed calls he could see or lose (seenFailure) that came within the window of a restart, each with the restart it followed. */
 export function restartHits<T extends HitLine>(starts: readonly number[], lines: readonly T[], windowMs = RESTART_WINDOW_MS): RestartHit<T>[] {
   return lines.flatMap(line => {
-    if (!ownerLine(line) || !failedLine(line)) return [];
+    if (!ownerLine(line) || !seenFailure(line)) return [];
     const restart = restartBefore(starts, line.at, windowMs);
     return restart === undefined ? [] : [{ line, restart }];
   });

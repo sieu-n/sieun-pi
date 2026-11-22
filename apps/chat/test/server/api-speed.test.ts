@@ -108,7 +108,7 @@ test("a refused send logs its route, status and reason, and a page's failed call
     assert.deepEqual(await chat.send("POST", "/api/timings", { samples }), { status: 200, body: { taken: 4 } });
     await new Promise(resolve => setTimeout(resolve, 50));
     assert.ok(logs.some(line => line.startsWith(`POST /api/c/:id/send ${p} 400: No upload blob:x;`)), logs.join("\n"));
-    assert.ok(logs.includes(`POST /api/c/:id/send ${p} 400: A message needs text or an image.`), logs.join("\n"));
+    assert.ok(logs.includes(`POST /api/c/:id/send ${p} 400: A message needs text, an image or a forwarded post.`), logs.join("\n"));
     assert.ok(logs.includes(`client POST /api/c/:id/send ${p} unreached (local): TypeError: Failed to fetch`), logs.join("\n"));
     assert.ok(logs.includes(`client POST /api/c/:id/send ${p} Not delivered (local): TypeError: Failed to fetch`), logs.join("\n"));
     const sends = lines(dataDir).filter(line => line.r === "/api/c/:id/send");
@@ -327,7 +327,7 @@ test("with no line of the owner's or the server's on a metric route, the CLI's p
   }
 });
 
-test("failed_sends_24h counts the owner's calls that failed within 20 s of a restart or hand-over, each once, as restart_hit rows", () => {
+test("failed_sends_24h counts the owner's calls a restart or hand-over failed that he could see or lose, each once, as restart_hit rows", () => {
   const dir = tempDir();
   mkdirSync(join(dir, "requests"));
   const now = Date.UTC(2026, 10, 22, 12);
@@ -339,21 +339,46 @@ test("failed_sends_24h counts the owner's calls that failed within 20 s of a res
   ].join("\n");
   const restarts = parseStarts(journal);
   assert.deepEqual(restarts, [reload - 30_000, reload]);
-  const row = (after: number, via: string, extra: Record<string, unknown> = {}) =>
-    JSON.stringify({ at: reload + after, src: "client", via, m: "GET", r: "/api/later", p: "/api/later", s: 0, ms: 47, err: "TypeError: Load failed", ...extra });
+  const row = (after: number, extra: Record<string, unknown> = {}) =>
+    JSON.stringify({ at: reload + after, src: "client", via: "tailnet", m: "GET", r: "/api/later", p: "/api/later", s: 0, ms: 47, err: "TypeError: Load failed", page: "visible", ...extra });
   writeFileSync(join(dir, "requests", "2026-11-22.jsonl"), `${[
-    row(5_000, "tailnet"),
-    row(60_000, "tailnet"),
-    row(5_000, "local"),
-    row(6_000, "tailnet", { m: "POST", r: "/api/c/:id/send", p: "/api/c/dm_x/send", shown: true }),
-    row(7_000, "tailnet", { s: 200, err: undefined }),
+    row(5_000),
+    row(60_000),
+    row(5_000, { via: "local" }),
+    row(5_000, { page: "leaving" }),
+    row(5_000, { page: "hidden" }),
+    row(5_000, { bg: "ahead" }),
+    row(5_000, { page: undefined }),
+    row(5_000, { page: undefined, r: "/api/rooms", p: "/api/rooms", s: 502, err: "GET /api/rooms failed with 502" }),
+    row(5_000, { s: 400, err: "No post p35 in #mcp-dev." }),
+    row(5_000, { m: "PATCH", r: "/api/c/:id", p: "/api/c/dm_x", page: "hidden" }),
+    row(6_000, { m: "POST", r: "/api/c/:id/send", p: "/api/c/dm_x/send", shown: true }),
+    row(7_000, { s: 200, err: undefined }),
   ].join("\n")}\n`);
   const out = apiSpeed(dir, now, 24 * 3600_000, [], restarts);
-  // The GET 5 s after the reload and the Not delivered send count; the GET 60 s after, the box browser's line and the call that landed do not.
-  assert.equal(out.metrics.failed_sends_24h, 2);
+  // Count: the visible page's GET that failed after its tries, the older line's 502, the PATCH that never landed and the Not delivered
+  // send (once). Leave out: the GET 60 s after, a box browser's line, an abort by the page's own reload, a hidden page's read, a read
+  // ahead, an older line's network error, a 4xx and a call that landed.
+  assert.equal(out.metrics.failed_sends_24h, 4);
   const hits = out.flagged.filter(row => row.kind === "restart_hit");
-  assert.deepEqual(hits.map(row => row.sig), ["restart:GET /api/later:0"]);
+  assert.deepEqual(hits.map(row => row.sig), ["restart:GET /api/later:0", "restart:GET /api/rooms:502", "restart:PATCH /api/c/:id:0"]);
   assert.equal(hits[0]!.excerpt, `${new Date(reload + 5_000).toISOString()} GET /api/later never reached the server on the owner's page, logged 5 s after the apps/chat restart or hand-over at ${new Date(reload).toISOString()}: TypeError: Load failed`);
   assert.deepEqual(out.flagged.filter(row => row.kind === "failed_send").map(row => row.sig), ["client via tailnet:POST /api/c/:id/send:0"]);
   assert.equal(apiSpeed(dir, now, 24 * 3600_000).metrics.failed_sends_24h, 1);
+});
+
+test("the server keeps what a failed call's page was doing, and drops a value it does not know", async () => {
+  const dataDir = tempDir();
+  const chat = await start({ dataDir });
+  try {
+    await chat.send("POST", "/api/timings", { samples: [
+      { m: "GET", p: "/api/later", s: 0, ms: 40, err: "TypeError: Load failed", page: "leaving" },
+      { m: "GET", p: "/api/later", s: 0, ms: 41, err: "TypeError: Load failed", page: "visible" },
+      { m: "GET", p: "/api/later", s: 0, ms: 42, err: "TypeError: Load failed", page: "gone" },
+    ] });
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.deepEqual(lines(dataDir).filter(line => line.src === "client").map(line => [line.ms, line.page]), [[40, "leaving"], [41, "visible"], [42, undefined]]);
+  } finally {
+    await chat.close();
+  }
 });
