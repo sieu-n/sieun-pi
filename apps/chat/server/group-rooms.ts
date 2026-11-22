@@ -225,9 +225,10 @@ export class GroupRooms {
     });
   }
 
-  /** Working while a member's comm thread for the room answers. */
+  /** Working while a member's comm thread for the room answers, else sleeping while one's turn waits for a working slot or an account. */
   status(row: GroupRoom): RunStatus {
-    return this.commThreads(row).some(c => this.deps.threads.runStatus(c.thread, 1) === "working") ? "working" : "idle";
+    const statuses = this.commThreads(row).map(c => this.deps.threads.runStatus(c.thread, 1));
+    return statuses.includes("working") ? "working" : statuses.includes("sleeping") ? "sleeping" : "idle";
   }
 
   summary(row: GroupRoom): ConversationSummary {
@@ -243,7 +244,7 @@ export class GroupRooms {
     // In a Solo room every post is about the owner's agenda; in a channel only a post that names him counts as unread.
     const unread = row.kind === "solo" ? unseen.length : unseen.filter(p => p.mentions?.includes("owner")).length;
     return {
-      id: row.id, kind: row.kind, name: row.name, status: working.length ? "working" : "idle", archived: row.archived,
+      id: row.id, kind: row.kind, name: row.name, status: this.status(row), archived: row.archived,
       lastActivityAt: last?.at ?? row.createdAt,
       preview: last ? `${this.deps.threads.principal(last.author).name}: ${last.text}`.slice(0, 200) : (row.kind === "solo" ? row.agenda : row.purpose).slice(0, 200),
       unread, hasNew: unseen.length > 0, ...(read?.from && unseen.some(p => p.id === read.from) ? { unreadFrom: read.from } : {}), working,

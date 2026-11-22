@@ -74,6 +74,8 @@ interface LiveConversation {
   /** Entries from the newest input on, oldest first. */
   recent: EntryRecord[];
   running: boolean;
+  /** pi-host's newest status event: "sleeping" while the run waits for a working slot or an account, which no run event says. */
+  hostStatus?: RunStatus;
   runningTools: Set<string>;
   /** Always null: the page gets no partial text (see onEvent). */
   partial: LivePartial | null;
@@ -366,14 +368,17 @@ export class Threads {
   }
 
   /**
-   * A conversation's run status, where a watched one's live run wins over the list's row. The list reads every 2 s, so a run that starts and
-   * ends between two reads never shows in it, and a read that began before the run ended still lists it running.
+   * A conversation's run status, where a watched one's live run and pi-host's newest status event win over the list's row. The list reads
+   * every 2 s, so a run that starts and ends between two reads never shows in it, and a read that began before the run ended still lists it
+   * running. A run that waits for a working slot or an account is sleeping, from pi-host's status event only.
    */
   runStatus(thread: string, conversation: number): RunStatus {
     const listed = this.statusOfConversation(thread, conversation);
     const live = this.live.get(conversationIdOf(thread, conversation));
     if (!live) return listed;
-    return live.running ? "working" : listed === "working" ? "idle" : listed;
+    if (live.running) return "working";
+    if (live.hostStatus && live.hostStatus !== "working") return live.hostStatus;
+    return listed === "working" ? "idle" : listed;
   }
 
   /** Who an id or a name is. A name finds a registered agent before any job or thread of the same name. */
@@ -901,6 +906,7 @@ export class Threads {
     if (event.type === "status") {
       if (live.conversation === 1) {
         const status = statusOf(event.status);
+        live.hostStatus = status;
         const running = status === "working";
         if (running !== live.running) {
           live.running = running;
@@ -931,7 +937,7 @@ export class Threads {
           live.running = false;
           live.runningTools.clear();
           changed = true;
-          this.events.status(id, this.statusOfConversation(live.thread, live.conversation) === "sleeping" ? "sleeping" : "idle");
+          this.events.status(id, this.runStatus(live.thread, live.conversation) === "sleeping" ? "sleeping" : "idle");
           break;
         case "message_end":
         case "entry_appended":

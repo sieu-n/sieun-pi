@@ -82,7 +82,8 @@
   const waitText = $derived(placeText(store.queue));
   const liveLabel = $derived(waiting ? "Waiting for a model slot" : null);
   const others = $derived(header?.members.filter((m) => m.principal.id !== "owner") ?? []);
-  const working = $derived(store.status === "working");
+  /** A turn in flight: running, or waiting for a working slot or an account (pi-host's sleep, pi-pool's queue place). Stop ends either. */
+  const working = $derived(store.status === "working" || waiting || !!store.queue);
   /** The agent's live card: its work thread's own status and its comm threads. */
   const liveAgent = $derived(agent ? (agents.byId(agent.id) ?? agent) : null);
   /** pi-host's "retrying since HH:MM: <kind>" of the agent's comm thread for this room, else of its own turn, which the working line shows. */

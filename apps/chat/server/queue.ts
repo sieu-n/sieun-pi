@@ -45,6 +45,15 @@ export class QueueWatch {
     entry.timer ??= setTimeout(() => void this.read(id), READ_EVERY_MS);
   }
 
+  /** After a Stop: reads the place now, and a run that left the queue ends the follow at this read, not after NONE_READS reads. */
+  stopped(id: ConversationId): void {
+    const entry = this.followed.get(id);
+    if (!entry) return;
+    clearTimeout(entry.timer);
+    entry.nones = NONE_READS - 1;
+    void this.read(id);
+  }
+
   private set(id: ConversationId, entry: Followed, place: TurnPlace | null): void {
     if (JSON.stringify(place) === JSON.stringify(entry.place)) return;
     entry.place = place;
@@ -66,7 +75,7 @@ export class QueueWatch {
     try {
       const ticket = await this.host.ticket(thread, conversation === 1 ? undefined : conversation);
       const place = ticket?.place ?? { state: "none" as const };
-      entry.nones = place.state === "none" && this.threads.statusOfConversation(thread, conversation) !== "working" ? entry.nones + 1 : 0;
+      entry.nones = place.state === "none" && this.threads.runStatus(thread, conversation) !== "working" ? entry.nones + 1 : 0;
       if (place.state === "working" || entry.nones >= NONE_READS || Date.now() > entry.until) return this.end(id, entry);
       this.set(id, entry, waitingPlace(place) ?? null);
     } catch (error) {

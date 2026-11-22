@@ -1175,15 +1175,23 @@ export class App {
     }
   }
 
+  /** Stops the conversation's turn, a running one or one that waits for a working slot, and its wait line goes at the next queue read. */
   async abort(id: ConversationId): Promise<void> {
-    if (this.isGroup(id)) return this.groups.abort(id);
+    if (this.isGroup(id)) {
+      await this.groups.abort(id);
+      for (const comm of this.groups.commThreads(this.groups.require(id))) this.queues.stopped(comm.thread);
+      return;
+    }
     if (isRoomId(id)) {
       const record = this.roomAgent(id);
-      await Promise.all([...new Set([record.workThread, this.agents.roomThread(record)])].map(thread => this.host.abort(thread)));
+      const threads = [...new Set([record.workThread, this.agents.roomThread(record)])];
+      await Promise.all(threads.map(thread => this.host.abort(thread)));
+      for (const thread of threads) this.queues.stopped(thread);
       return;
     }
     const { thread, conversation } = parseConversationId(id);
     await this.host.abort(thread, conversation === 1 ? undefined : conversation);
+    this.queues.stopped(id);
   }
 
   /** On a DM, a rename or archive changes the agent and its work thread, and model, thinking level and cwd change the work thread. */

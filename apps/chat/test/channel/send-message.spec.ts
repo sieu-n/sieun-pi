@@ -50,6 +50,23 @@ test("two send_message calls are two DM posts and two bubbles in the comm thread
   await expect(conversation(page).locator(".row:not(.own)")).toHaveCount(2, { timeout: 15_000 });
 });
 
+test("a turn that waits for a working slot shows Stop, and Stop ends the wait with no answer", async ({ page, request }) => {
+  const agent = (await (await request.post("/api/agents", { data: { kind: "chat", name: `waiter ${tag()}` } })).json()) as { id: string; room: string; thread: string };
+  await open(page, `#/c/${agent.room}`);
+  const input = composerInput(conversation(page));
+  await input.click();
+  await page.keyboard.type(`queue long ${tag()}`);
+  await page.keyboard.press("Enter");
+  const waitLine = page.locator(".typing").filter({ hasText: "waits at place" });
+  await expect(waitLine).toBeVisible({ timeout: 8_000 });
+  await expect(page.getByTestId("stop")).toBeVisible();
+  await page.getByTestId("stop").click();
+  await expect(page.getByTestId("stop")).toBeHidden({ timeout: 2_000 });
+  await expect(waitLine).toBeHidden({ timeout: 4_000 });
+  await page.waitForTimeout(2_000);
+  await expect(conversation(page).locator(".row:not(.own)")).toHaveCount(0);
+});
+
 test("a thread from before send_message keeps its answers as text bubbles with the fold inside", async ({ page }) => {
   await open(page, `#/c/${VENT}`);
   const answer = row(page, "t2");

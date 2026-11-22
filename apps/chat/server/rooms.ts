@@ -393,11 +393,13 @@ export class Rooms {
   }
 
   /**
-   * The DM's status: working while its comm thread answers, else the agent's (its work thread and jobs). Both threads' own runs read live
+   * The DM's status: working while its comm thread answers and sleeping while its turn waits for a working slot or an account, which
+   * pi-durable holds as a sleep (pi-pool's pool-provider.ts), else the agent's (its work thread and jobs). Both threads' own runs read live
    * while watched (`Threads.runStatus`).
    */
   status(record: AgentRecord): RunStatus {
-    if (this.commStatus(record) === "working") return "working";
+    const comm = this.commStatus(record);
+    if (comm === "working" || comm === "sleeping") return comm;
     const jobs = this.deps.threads.agent(record.id)?.status === "working" && this.deps.threads.statusOfConversation(record.workThread, 1) !== "working";
     return jobs ? "working" : this.deps.threads.runStatus(record.workThread, 1);
   }

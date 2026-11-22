@@ -151,12 +151,15 @@ export class FixtureHost implements Host {
       thread.places.set(conversation, { state: "working", kind: input.ownerTurn ? "owner" : "slot" });
       void this.answer(thread, conversation, submission, input.text ?? "");
     };
-    // A run that waits for its slot is running to pi-durable, as pi-pool's queue holds its first model request, so `abort` stops it there.
+    // A run that waits for its slot sleeps in pi-durable until the slot opens, as pi-pool's pool-provider.ts defers its first model request,
+    // and `abort` ends the sleep with no model call. "queue long" waits 30 s, long enough for a page to press Stop.
     const waits = /\bqueue\b/i.test(input.text ?? "") && this.wordMs > 0;
+    const waitMs = /\bqueue long\b/i.test(input.text ?? "") ? 30_000 : 2000;
     const start = waits
       ? () => {
-          const timers = [setTimeout(() => thread.places.set(conversation, { state: "queued", position: 1, total: 7 }), 1000), setTimeout(begin, 2000)];
+          const timers = [setTimeout(() => thread.places.set(conversation, { state: "queued", position: 1, total: 7 }), waitMs / 2), setTimeout(begin, waitMs)];
           thread.places.set(conversation, { state: "queued", position: 3, total: 7 });
+          if (conversation === 1) this.setStatus(thread, "sleeping");
           thread.running.set(conversation, { stop: () => {
             for (const timer of timers) clearTimeout(timer);
             void this.answer(thread, conversation, submission, "", undefined, true);
