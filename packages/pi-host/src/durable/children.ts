@@ -91,6 +91,11 @@ const wakePollMs = (): number => Number(process.env.PI_HOST_WAKE_POLL_MS ?? 30_0
  * calls within a few hundred ms, and an apps/chat hand-over that stopped inside one caught 44 fresh connections to forward.
  */
 export const wakeSleepMs = (first: boolean, poll = wakePollMs(), random = Math.random): number => (first ? Math.floor(random() * poll) : poll);
+/** The child a delivery task holds, when its state is in the `hold` phase. */
+const heldChild = (state: unknown): number | undefined => {
+  const checkpoint = (state as { checkpoint?: { phase?: string; child?: number } }).checkpoint;
+  return checkpoint?.phase === "hold" ? checkpoint.child : undefined;
+};
 /** The statuses of a task that is not over yet (pi-durable's scheduler `LIVE_STATUSES`). */
 const LIVE = ["pending", "running", "waiting", "sleeping", "completing"] as const;
 
@@ -157,8 +162,9 @@ export const DeliverTask = defineTask<DeliverInput, DeliverState, null>({
       if (handle && !doc?.deleted) {
         do await handle.waitForIdle(ctx);
         while (await childWork.get(task.input.thread)?.(s.child, runtime.signal));
-        const subagents = await new Promise<TaskId[]>((resolve, reject) => void runtime.commit(async tx => {
+        const { subagents, holder } = await new Promise<{ subagents: TaskId[]; holder?: TaskId }>((resolve, reject) => void runtime.commit(async tx => {
           const live: TaskId[] = [];
+          let holder: TaskId | undefined;
           for (const status of LIVE) {
             let cursor: Parameters<typeof tx.scanTasks>[2];
             do {
@@ -166,12 +172,27 @@ export const DeliverTask = defineTask<DeliverInput, DeliverState, null>({
               live.push(...page.items.filter(t => (t.input as DeliverInput).parent === s.child).map(t => t.id));
               cursor = page.next;
             } while (cursor !== undefined);
+            let sibling: Parameters<typeof tx.scanTasks>[2];
+            do {
+              const page = await tx.scanTasks({ conversationId: task.input.parent as ConversationId, kind: "rlm.deliver", status }, 500, sibling);
+              for (const t of page.items) {
+                if (t.id < runtime.taskId && (holder === undefined || t.id < holder) && heldChild(t.state) === s.child) holder = t.id;
+              }
+              sibling = page.next;
+            } while (sibling !== undefined);
           }
-          resolve(live);
+          resolve({ subagents: live, ...(holder === undefined ? {} : { holder }) });
           return undefined;
         }, ctx).catch(reject));
         if (subagents.length) {
           await runtime.commit(() => ({ status: "waiting", checkpoint: s, on: subagents, policy: "allSettled" }), ctx);
+          return;
+        }
+        // An older delivery to the same child holds it for the same handles, subagents and wakes, so this one waits for that one to end
+        // instead of reading the wakes too. On 11-22, 160 held deliveries were for 14 children, one child had 36, and the
+        // 123 that slept read :5184's wakes every 30 s each, about 4 reads a second.
+        if (holder !== undefined) {
+          await runtime.commit(() => ({ status: "waiting", checkpoint: s, on: [holder], policy: "allSettled" }), ctx);
           return;
         }
         const waking = await childWakes.get(task.input.thread)?.(s.child, runtime.signal);
