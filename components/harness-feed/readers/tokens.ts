@@ -73,31 +73,21 @@ export async function readLog(file: string, state: LogState): Promise<LogState> 
 
 type Proc = { up: boolean; cpuSeconds: number | null; rssBytes: number | null };
 
-/** Linux: the systemd user unit's cgroup (install.py's usage-feed.service); no unit is not running. */
-async function linuxProc(): Promise<Proc> {
-  const uid = process.getuid?.() ?? 0;
-  const dir = `/sys/fs/cgroup/user.slice/user-${uid}.slice/user@${uid}.service/app.slice/usage-feed.service`;
-  const [procs, cpu] = await Promise.all([readFile(join(dir, "cgroup.procs"), "utf8").catch(() => ""), readFile(join(dir, "cpu.stat"), "utf8").catch(() => "")]);
-  const pid = procs.split("\n").find(Boolean);
-  if (!pid) return { up: false, cpuSeconds: null, rssBytes: null };
-  const usec = /^usage_usec (\d+)$/m.exec(cpu);
-  const status = await readFile(`/proc/${pid}/status`, "utf8").catch(() => "");
-  const rss = /^VmRSS:\s+(\d+) kB$/m.exec(status);
-  return { up: true, cpuSeconds: usec ? Number(usec[1]) / 1e6 : null, rssBytes: rss ? Number(rss[1]) * 1024 : null };
-}
-
 /** `ps` TIME, such as 2:05.22 or 1:02:05.22, in seconds. */
 export function psSeconds(time: string): number {
   return time.split(":").reduce((total, part) => total * 60 + Number(part), 0);
 }
 
-/** The Mac: the launchd job's python, found with one `ps -ax` and then followed by pid with `ps -p`. */
-async function macProc(state: Map<string, unknown>): Promise<Proc> {
+/** The feed's python, found with one `ps -ax` and then followed by pid with `ps -p`: the launchd job on the Mac, and on us-metal02 the
+ * container box-sieun-pi-usage-feed-1, whose processes this feed's container sees through the host pid namespace. */
+async function feedProc(state: Map<string, unknown>): Promise<Proc> {
   const ps = async (args: string[]) => (await run("/bin/ps", args).catch(() => ({ stdout: "" }))).stdout;
+  // The container's tini and sh lines name feed.py too, inside their `sh -c` command.
+  const isFeed = (row: string) => row.includes("usage-feed/feed.py") && !row.includes(" -c ");
   let pid = state.get("tokens.feedPid") as string | undefined;
   let line = pid ? (await ps(["-o", "pid=,rss=,time=,command=", "-p", pid])).trim() : "";
-  if (!line.includes("usage-feed/feed.py")) {
-    line = (await ps(["-axo", "pid=,rss=,time=,command="])).split("\n").find(row => row.includes("usage-feed/feed.py"))?.trim() ?? "";
+  if (!isFeed(line)) {
+    line = (await ps(["-axo", "pid=,rss=,time=,command="])).split("\n").find(isFeed)?.trim() ?? "";
     pid = line.split(/\s+/)[0];
     state.set("tokens.feedPid", pid);
   }
@@ -110,7 +100,7 @@ async function feedHealth(ctx: Context): Promise<Sample[]> {
   const share = join(ctx.home, ".local/share/usage-feed");
   const previous = (ctx.state.get("tokens.log") as LogState | undefined) ?? { offset: 0, startedAt: null, errors: [] };
   const [proc, handedOff, release, log] = await Promise.all([
-    ctx.platform === "darwin" ? macProc(ctx.state) : linuxProc(),
+    feedProc(ctx.state),
     stat(join(share, "handed-off")).then(() => true, () => false),
     readFile(join(share, "release.json"), "utf8").then(text => JSON.parse(text) as { sha?: unknown; installedAt?: unknown }, () => null),
     readLog(join(share, "feed.log"), previous),

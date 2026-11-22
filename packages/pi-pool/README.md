@@ -131,9 +131,9 @@ One machine holds every account and does every OAuth refresh; since 2026-10-18 t
 us-metal02. Another machine (the Mac) has no accounts. Two copies of one refresh token
 would make each other invalid, so a client never gets one.
 
-The holder runs `pi-pool serve` and the usage sampler as systemd user units
-(`deploy/systemd/`: `pi-pool-serve.service`, `pi-pool-sample.service` and
-`pi-pool-sample.timer`). `serve` listens on the address in `serve.json`, the holder's
+The holder runs `pi-pool serve` as a systemd user unit (`deploy/systemd/pi-pool-serve.service`)
+and the usage sampler as the Komodo Procedure `m02-pi-pool-sample`, the job service
+`pi-pool-sample` of auto-sns-agent `apps/infra/box/compose.sieun-pi.yml`. `serve` listens on the address in `serve.json`, the holder's
 tailnet IP, and answers only requests that carry the secret from that file. The client
 keeps the same secret and the holder's URL in `remote.json`. Both files are mode 0600 in
 the pool folder.
@@ -314,7 +314,7 @@ Claude usage comes from `GET https://api.anthropic.com/api/oauth/usage?at_wall=1
 Codex usage from `GET https://chatgpt.com/backend-api/wham/usage`. A team seat's Claude body
 has a 5h window and no weekly one; its 5h and per-model windows land as they are.
 
-`sample` runs every minute on the holder (`pi-pool-sample.timer`). It reads each account
+`sample` runs every minute on the holder (Komodo Procedure `m02-pi-pool-sample`). It reads each account
 whose figure is older than its interval: 15 minutes scaled by the headroom of its fullest
 window, never under 90 seconds, and 15 minutes once a window is full. An account that
 needs a sign-in is skipped. The hook also starts a detached `refresh` of an account whose

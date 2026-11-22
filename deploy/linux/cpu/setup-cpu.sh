@@ -37,9 +37,13 @@ user_ctl=(systemctl --user "--machine=$DEV_USER@")
 # at most those cores, while its weight on each CPU it runs on is about 3000 against CI's 10000 spread over 35 to 50 busy cores.
 # measured: at 01:55 to 01:58Z on 11-04, with the loop in user.slice at 1000 against virev.slice at 10000 and CI ramping from 15 to 51 cores,
 # 14 Prime stalls of 5 s or more followed, up to 65.6 s, and at 02:34Z the workers' main threads waited 2.09 s per CPU-second used.
-declare -A SYSTEM_WEIGHTS=([ssh.service]=1000 [tailscaled.service]=1000 [user.slice]=1000 [user@$uid.service]=10000 [virev.slice]=10000 [virev-prod.slice]=300 [virev-ci.slice]=300 [system.slice]=400 [dev.slice]=400 [agents.slice]=10000)
-# auto-sns-dev-pm2 (the dev servers duty d1 probes) runs at 10000 for the same reason as pi-history, as the wiki did as sieun-pi-wiki.service
-# until it moved into user-serve.slice as the container box-sieun-pi-wiki-1 on 11-21.
+# user-serve.slice and user-devservers.slice hold the Komodo containers that were 10000-weight user units until 11-21, each at the
+# weight its units had: user-serve.slice the wiki, Meilisearch and pi-history (auto-sns-agent apps/infra/box/compose.sieun-pi.yml), and
+# user-devservers.slice the dev servers of auto-sns-dev-pm2 (compose.dev.yml). Docker puts a container in the slice its compose
+# cgroup_parent names, and a docker --cpu-shares is no option, because the sieun-rules cap guard refuses it (c107). Both slices sit beside
+# user-1001.slice in user.slice, so each weighs against the user's own work as the units did inside user@1001.service.
+declare -A SYSTEM_WEIGHTS=([ssh.service]=1000 [tailscaled.service]=1000 [user.slice]=1000 [user@$uid.service]=10000 [virev.slice]=10000 [virev-prod.slice]=300 [virev-ci.slice]=300 [system.slice]=400 [dev.slice]=400 [agents.slice]=10000 [user-serve.slice]=10000 [user-devservers.slice]=10000)
+# The dev servers (the ones duty d1 probes) and the wiki run at 10000 for the same reason as pi-history.
 # measured: on 10-29 at load 200 and weight 100, per CPU-second used the wiki waited 0.35 s and pm2 0.32 s against 0.02 s for the
 # chat at 10000; at load 230 :5174 answered in 12.7 s and the wiki in up to 1.1 s while the chat took 0.13 s, and d1 at 06:06Z saw
 # the wiki miss its 5 s probe. The wiki's cgroup had waited 220 s on CPU and 0.25 s on memory since its start, so the wait is CPU.
@@ -47,11 +51,10 @@ declare -A SYSTEM_WEIGHTS=([ssh.service]=1000 [tailscaled.service]=1000 [user.sl
 # first one takes: each page call reads through the relay and pi-host. measured: on 11-03 at 10:53Z at load 434 and weight 100, per
 # CPU-second used the apps-chat main thread waited 3.02 s in the run queue, pi-host 2.36 s and the relay 4.15 s, against 0.39 s for
 # sieun-pi-chat at 10000, and the agent page's calls waited 1 to 4.3 s in the browser while their handlers took 1 to 44 ms.
-# meilisearch.service runs at 10000 for the same reason as pi-history, whose place behind api/search it took on 11-03. measured: on 11-03 at
+# Meilisearch runs at 10000 for the same reason as pi-history, whose place behind api/search it took on 11-03. measured: on 11-03 at
 # 21:3xZ at load 330 and weight 100, per CPU-second used its threads waited 22.06 s in the run queue against 0.91 s for apps-chat at 10000,
 # and over 137 sequential searches the handler waited p90 107 ms, 72 ms of it in Meilisearch, whose own work for one search took 2 to 10 ms.
-declare -A USER_WEIGHTS=([sieun-pi-chat.service]=10000 [sieun-pi-apps-chat.service]=10000 [meilisearch.service]=10000 [pi-host.service]=10000 [pi-host-relay.service]=10000 [pi-history.service]=10000 [auto-sns-dev-pm2.service]=10000 [pi-pool-serve.service]=1000 [pi-pool-hookd.service]=1000 [prime-agent-daemon.service]=10000)
-
+declare -A USER_WEIGHTS=([sieun-pi-chat.service]=10000 [sieun-pi-apps-chat.service]=10000 [pi-host.service]=10000 [pi-host-relay.service]=10000 [pi-pool-serve.service]=1000 [pi-pool-hookd.service]=1000 [prime-agent-daemon.service]=10000)
 dropin() {
   printf '# CPU layer 1 of deploy/linux/README.md (owner'"'"'s t84 answer 10-19, after https://cho.sh/ko/1983DC). A weight is no cap.\n[%s]\nCPUWeight=%s\n' "$1" "$2"
 }

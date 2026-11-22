@@ -382,7 +382,7 @@ export class App {
   }
 
   /**
-   * Search's one Meilisearch index: meilisearch.service when the config names it, else a Meilisearch of this server's own, started on the
+   * Search's one Meilisearch index: the Komodo container box-sieun-pi-meilisearch-1 when the config names it, else a Meilisearch of this server's own, started on the
    * first search. Entries come from pi-host's index.sqlite, or from the fixture host's threads.
    */
   private newSearchEngine(local: Host, routing: MultiHost | undefined): SearchEngine {

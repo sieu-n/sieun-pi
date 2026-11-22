@@ -5,10 +5,10 @@ usage: python3 -B components/prime-sync/install.py --ref <commit> [--host <name>
 
 Copies sync.py from <commit> to ~/.local/share/prime-sync, writes ~/.config/prime-sync/sync.json and the 0600 github-token
 file from `gh auth token` (so the timer never needs the gh keyring helper), clones the state repo,
-installs the timer (prime-sync.timer under systemd --user on Linux, com.sieun.prime-sync under launchd on macOS) and runs one sync.
-On a box that runs the Komodo Stack box-sieun-pi (us-metal02 since 11-21), its m02-prime-sync Procedure runs the sync every minute in the
-prime-sync service of auto-sns-agent apps/infra/box/compose.sieun-pi.yml, so the installer writes no timer there and disables an old one.
-The timer runs the Python that ran this installer, except on macOS, where it runs /opt/homebrew/bin/python3 when that exists:
+installs the launchd job com.sieun.prime-sync on macOS and runs one sync. On Linux (us-metal02) the Komodo Procedure m02-prime-sync
+runs ~/.local/share/prime-sync/sync.py every minute in the job service prime-sync of the Stack box-sieun-pi (auto-sns-agent
+apps/infra/box/compose.sieun-pi.yml), so the installer schedules nothing there.
+The launchd job runs /opt/homebrew/bin/python3 when that exists, else the Python that ran this installer:
 launchd jobs under /usr/bin/python3 get "Operation not permitted" in ~/Documents, and on 10-18 at 08:28Z a reinstall run as
 `python3 install.py` over ssh put the Command Line Tools Python in the plist and stopped the Mac's sync for over two hours.
 """
@@ -24,9 +24,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO / "deploy/linux"))
-import komodo_stack  # noqa: E402
-
 HOME = Path.home()
 SHARE = HOME / ".local/share/prime-sync"
 CONFIG = HOME / ".config/prime-sync/sync.json"
@@ -47,31 +44,6 @@ def write(path: Path, text: str, mode: int) -> None:
 
 def git(*args: str) -> str:
     return subprocess.run(["git", "-C", str(REPO), *args], env=GIT_ENV, check=True, capture_output=True, text=True).stdout
-
-
-def systemd_units(script: Path) -> dict[str, str]:
-    service = f"""[Unit]
-Description=prime-sync: skills, AGENTS.md, harness entries and the corrections ledger match every box
-After=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart={PYTHON} -B {script}
-StandardOutput=null
-StandardError=append:{SHARE / 'sync.err'}
-"""
-    timer = """[Unit]
-Description=Run prime-sync every minute
-
-[Timer]
-OnBootSec=1min
-OnUnitActiveSec=1min
-AccuracySec=5s
-
-[Install]
-WantedBy=timers.target
-"""
-    return {"prime-sync.service": service, "prime-sync.timer": timer}
 
 
 def launchd_plist(script: Path) -> str:
@@ -119,15 +91,8 @@ def main() -> int:
 
     first = subprocess.run([PYTHON, "-B", str(script)], env=GIT_ENV, capture_output=True, text=True)
     sys.stdout.write(first.stdout + first.stderr)
-    if platform.system() == "Linux" and komodo_stack.runs_here():
-        komodo_stack.hand_over(["prime-sync.timer"])
-        print(f"Komodo Stack {komodo_stack.STACK} runs prime-sync on this box (Procedure m02-prime-sync), so no prime-sync.timer")
-    elif platform.system() == "Linux":
-        units = HOME / ".config/systemd/user"
-        for name, text in systemd_units(script).items():
-            write(units / name, text, 0o644)
-        subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
-        subprocess.run(["systemctl", "--user", "enable", "--now", "prime-sync.timer"], check=True)
+    if platform.system() == "Linux":
+        print("the Komodo Procedure m02-prime-sync runs the sync on this box every minute")
     else:
         plist = HOME / "Library/LaunchAgents" / f"{LABEL}.plist"
         write(plist, launchd_plist(script), 0o644)

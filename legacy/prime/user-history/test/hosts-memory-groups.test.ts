@@ -51,9 +51,10 @@ test("leafHolder names jobs' transient units, installed services and the units t
   assert.deepEqual(leafHolder(app + "run-p1097888-i900400.scope", new Set(["run-p1097888-i900400.scope"])), { id: "jobs", label: "run-p1097888-i900400" });
   assert.deepEqual(leafHolder(app + "pi-rlm-kernel-01a17e5d-mvqy8a55.scope", transient), { id: "agents", label: "Prime kernels" });
   assert.deepEqual(leafHolder(app + "sieun-pi-chat.service", transient), { id: "services", label: "sieun-pi-chat" });
-  assert.deepEqual(leafHolder(app + "harness-feed.service", transient), { id: "services", label: "harness-feed" });
-  assert.deepEqual(leafHolder(app + "auto-sns-dev-pm2.service", transient), { id: "dev", label: "auto-sns-dev-pm2" });
-  assert.deepEqual(leafHolder(app + "ci-cache.service", transient), { id: "ci", label: "ci-cache" });
+  const scope = "docker-c285685a37f00ee84b6298ce28b1099a6d82d5c20b298e8b6e7497b3e9b5b05e.scope";
+  assert.deepEqual(leafHolder(`user.slice/user-serve.slice/${scope}`, transient), { id: "services", label: "docker-c285685a37f0" }, "the wiki's container since 11-21");
+  assert.deepEqual(leafHolder(`user.slice/user-devservers.slice/${scope}`, transient), { id: "dev", label: "docker-c285685a37f0" });
+  assert.deepEqual(leafHolder(`dev.slice/${scope}`, transient), { id: "docker", label: "docker-c285685a37f0" });
   assert.equal(leafHolder(DAEMON, transient), "by-process");
   assert.equal(leafHolder(app + "prime-agent-tools.scope", new Set(["prime-agent-tools.scope"])), "by-process", "the kernels and their commands since 11-02");
   assert.equal(leafHolder("user.slice/user-1001.slice/session-c922.scope", transient), "by-process");

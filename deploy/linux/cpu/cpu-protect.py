@@ -40,7 +40,7 @@ import time
 
 USER = os.environ.get("CPU_PROTECT_USER", "sieun")
 DAEMON = "prime-agent-daemon.service"
-# The units whose main process serves the owner. meilisearch.service and pi-history.service stay out: their index threads ran 92% and 94% of
+# The units whose main process serves the owner. Meilisearch and pi-history stay out, in user-serve.slice: their index threads ran 92% and 94% of
 # their CPU (10,343 s of 11,289 s and 49,335 s of 52,328 s, read from /proc on 11-04 at 02:5xZ), batch work that must not meet CI as an equal.
 SERVICES = ("sieun-pi-chat.service", "sieun-pi-apps-chat.service", "pi-host.service", "pi-host-relay.service")
 TOOLS = "prime-agent-tools.scope"

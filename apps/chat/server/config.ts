@@ -67,7 +67,7 @@ export interface Config {
    */
   consoles: string;
   /**
-   * The Meilisearch search keeps its index in (meilisearch.service): `APPS_CHAT_MEILI_URL` and the master key in `APPS_CHAT_MEILI_KEY_FILE`.
+   * The Meilisearch search keeps its index in (the Komodo container box-sieun-pi-meilisearch-1): `APPS_CHAT_MEILI_URL` and the master key in `APPS_CHAT_MEILI_KEY_FILE`.
    * Without it, as on the fixture or in a test, the server starts a Meilisearch of its own with a temp folder.
    */
   meili?: { url: string; keyFile: string };

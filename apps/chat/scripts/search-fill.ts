@@ -1,5 +1,5 @@
 /**
- * Fills meilisearch.service with every entry of pi-host's index.sqlite before a release turns search over to it, so the chat's first
+ * Fills the live Meilisearch (box-sieun-pi-meilisearch-1) with every entry of pi-host's index.sqlite before a release turns search over to it, so the chat's first
  * start finds a full index and no search reads 65,000 entries in memory. It writes the cursor the chat reads, `<data dir>/search/meili.json`.
  * Run it again after the index was lost; the chat itself also fills an empty index on its own.
  *

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # One box follow step of the Box tools parity duty (box-parity.ts): installs version $1 of a tool on us-metal02 with the recipe in $2, the
-# `follow` of its probe in box-parity.rows.json, into ~/.local without root. One lock keeps the precheck and box-follow.timer from installing at once.
+# `follow` of its probe in box-parity.rows.json, into ~/.local without root. One lock keeps the precheck and the Komodo Procedure m02-box-follow from installing at once.
 # A recipe sees $V and the helpers below, which put each version in its own ~/.local/opt/<name>-$V and link it, so an older one stays whole.
 set -euo pipefail
 V=$1

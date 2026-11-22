@@ -2,7 +2,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 /**
- * The state of the automatic Claude grant renewal (scripts/claude-grant-renew.ts, run by deploy/linux/claude-grant-renew.timer on us-metal02).
+ * The state of the automatic Claude grant renewal (scripts/claude-grant-renew.ts, run every 3 h by the Komodo Procedure m02-claude-grant-renew on us-metal02).
  * A Claude refresh grant has a fixed end about 28 days after its sign-in, and no refresh moves it: claude18@slack.green signed in at 04:36Z on
  * 11-15 and its grant ends at 08:12Z on 12-13. Each of about 20 paid pool accounts reaches that end on its own day, so from 11-13 to 11-16
  * skills_or_tools_to_fix missed 4 runs in a row while d5 jobs signed one account in by hand per run. The renewal signs each account in again
@@ -58,7 +58,7 @@ const minute = (ms: number) => `${new Date(ms).toISOString().slice(5, 16).replac
 export function renewalGap(state: RenewalState | undefined, key: string, end: number, now: number, warnMs: number): string | undefined {
   if (end - now > RENEW_LEAD_MS) return undefined;
   const near = end - now <= warnMs;
-  if (!state) return near ? "the grant renewal (claude-grant-renew.timer) has no state on this box" : undefined;
+  if (!state) return near ? "the grant renewal (Komodo Procedure m02-claude-grant-renew) has no state on this box" : undefined;
   const ran = Date.parse(state.ranAt);
   if (now - ran > RENEW_STALE_MS) return near ? `the grant renewal has not run since ${minute(ran)}` : undefined;
   const last = state.results[key.toLowerCase()];

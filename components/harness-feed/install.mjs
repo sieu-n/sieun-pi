@@ -1,26 +1,25 @@
 #!/usr/bin/env node
-// Install harness-feed from one commit and keep it running: systemd harness-feed.service on Linux, launchd com.sieun.harness-feed on macOS.
+// Install harness-feed from one commit and keep it running: launchd com.sieun.harness-feed on macOS, and on Linux (us-metal02) the
+// container box-sieun-pi-harness-feed-1 of the Komodo Stack box-sieun-pi (auto-sns-agent apps/infra/box/compose.sieun-pi.yml).
 //   node components/harness-feed/install.mjs --ref <commit>
-//   node components/harness-feed/install.mjs uninstall
+//   node components/harness-feed/install.mjs uninstall      (macOS; on Linux remove the service from the compose file)
 // It unpacks the feed and the app files its readers import (components/prime-relay, legacy/prime/user-history/src) from <commit> into
 // ~/.local/share/harness-feed/release-<sha7>, points `current` at it with one rename and restarts the service, so a later checkout
-// change cannot alter the running copy. `uninstall` stops the service and keeps the log. On a box that runs the Komodo Stack box-sieun-pi
-// (us-metal02 since 11-21) the service is its container box-sieun-pi-harness-feed-1, so the install writes no unit and restarts the container.
+// change cannot alter the running copy. On the Mac the feed logs to ~/.local/share/harness-feed/feed.log, and on Linux to the
+// container's stdout (`docker logs box-sieun-pi-harness-feed-1`).
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, platform, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { handOver, stackRunsHere } from "../../deploy/linux/komodo-stack.mjs";
+import { restart } from "../../deploy/linux/komodo-stack.mjs";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const home = homedir();
 const share = join(home, ".local/share/harness-feed");
 const log = join(share, "feed.log");
 const label = "com.sieun.harness-feed";
-const unit = "harness-feed.service";
 const plist = join(home, "Library/LaunchAgents", `${label}.plist`);
-const unitFile = join(home, ".config/systemd/user", unit);
 const gitEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
 const PATHS = ["package.json", "components/harness-feed", "components/prime-relay", "legacy/prime/user-history/package.json", "legacy/prime/user-history/src"];
 
@@ -29,21 +28,6 @@ function write(path, text, mode = 0o644) {
   writeFileSync(path + ".tmp", text, { mode });
   renameSync(path + ".tmp", path);
 }
-
-const systemdUnit = script => `[Unit]
-Description=harness-feed: coding harness health as OTLP metrics to the box's Alloy (sieun-pi components/harness-feed)
-
-[Service]
-Type=simple
-ExecStart=${process.execPath} ${script}
-Restart=always
-RestartSec=10
-StandardOutput=append:${log}
-StandardError=append:${log}
-
-[Install]
-WantedBy=default.target
-`;
 
 const launchdPlist = script => `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -60,19 +44,9 @@ const launchdPlist = script => `<?xml version="1.0" encoding="UTF-8"?>
 </plist>
 `;
 
-function stop() {
-  if (platform() === "linux") spawnSync("systemctl", ["--user", "stop", unit]);
-  else spawnSync("launchctl", ["bootout", `gui/${userInfo().uid}/${label}`]);
-}
+const stop = () => spawnSync("launchctl", ["bootout", `gui/${userInfo().uid}/${label}`]);
 
 function start(script) {
-  if (platform() === "linux") {
-    write(unitFile, systemdUnit(script));
-    execFileSync("systemctl", ["--user", "daemon-reload"]);
-    execFileSync("systemctl", ["--user", "enable", unit]);
-    execFileSync("systemctl", ["--user", "restart", unit]);
-    return;
-  }
   write(plist, launchdPlist(script));
   for (let attempt = 1; ; attempt++) {
     const result = spawnSync("launchctl", ["bootstrap", `gui/${userInfo().uid}`, plist], { encoding: "utf8" });
@@ -86,9 +60,9 @@ function start(script) {
 function main() {
   const argv = process.argv.slice(2);
   if (argv[0] === "uninstall") {
+    if (platform() === "linux") throw new Error("on Linux the feed is a service of the Komodo Stack box-sieun-pi; remove it from auto-sns-agent apps/infra/box/compose.sieun-pi.yml");
     stop();
-    if (platform() === "linux") { spawnSync("systemctl", ["--user", "disable", unit]); rmSync(unitFile, { force: true }); spawnSync("systemctl", ["--user", "daemon-reload"]); }
-    else rmSync(plist, { force: true });
+    rmSync(plist, { force: true });
     console.log(`harness-feed removed; log kept in ${log}`);
     return;
   }
@@ -109,14 +83,14 @@ function main() {
   rmSync(next, { force: true });
   symlinkSync(release, next);
   renameSync(next, link);
-  if (platform() === "linux" && stackRunsHere()) {
-    handOver([unit], "harness-feed");
+  if (platform() === "linux") {
+    restart("harness-feed");
     console.log(`harness-feed ${sha.slice(0, 7)} installed; the Komodo container box-sieun-pi-harness-feed-1 runs it`);
     return;
   }
   stop();
   start(join(link, "components/harness-feed/feed.ts"));
-  console.log(`harness-feed ${sha.slice(0, 7)} installed as ${platform() === "linux" ? unit : label}; log in ${log}`);
+  console.log(`harness-feed ${sha.slice(0, 7)} installed as ${label}; log in ${log}`);
 }
 
 try { main(); } catch (error) { process.stderr.write(`harness-feed install: ${error instanceof Error ? error.message : String(error)}\n`); process.exitCode = 1; }

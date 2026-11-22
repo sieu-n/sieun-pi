@@ -38,12 +38,13 @@ It runs on plain `node` 26 with only `node:` builtins, so a box needs no `npm in
 ## Install
 
 ```sh
-node packages/pi-history/install.mjs --ref <sha>                     # this box, systemd user unit pi-history.service
+node packages/pi-history/install.mjs --ref <sha>                     # us-metal02, the Komodo container box-sieun-pi-pi-history-1
 node packages/pi-history/install.mjs --ref <sha> --ssh <user@mac>    # the Mac, launchd agent com.sieun.pi-history
 ```
 
-`install.mjs` exports the package at the commit into `~/.local/share/pi-history/release-<sha>`, points `current` at it, writes the unit or plist from `deploy/` and restarts the service.
-On us-metal02 the Komodo Stack `box-sieun-pi` runs it since 11-21, so there the install writes no unit, disables the old one and restarts the container `box-sieun-pi-pi-history-1` (`deploy/linux/komodo-stack.mjs`).
+`install.mjs` exports the package at the commit into `~/.local/share/pi-history/release-<sha>` and points `current` at it.
+On the Mac it writes the plist from `deploy/` and restarts the launchd agent.
+On us-metal02 the `pi-history` service of the Komodo Stack `box-sieun-pi` (auto-sns-agent `apps/infra/box/compose.sieun-pi.yml`) runs `current`, so the install runs `docker restart box-sieun-pi-pi-history-1`.
 
 ## Tests
 

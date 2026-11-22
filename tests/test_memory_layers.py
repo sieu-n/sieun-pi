@@ -37,13 +37,6 @@ class OomProtectPlan(unittest.TestCase):
         self.assertEqual(oom.plan(units, mains, {10: -900, 12: 500, 20: -900}), {})
 
 
-class DevServerScores(unittest.TestCase):
-    def test_every_dev_server_process_goes_to_minus_500_and_a_raised_one_stays(self):
-        units = {"auto-sns-dev-pm2.service": {50: "PM2 v6.0.8: God", 51: "node-MainThread", 52: "esbuild", 53: "chrome"}}
-        current = {50: 200, 51: 200, 52: -500, 53: 300}
-        self.assertEqual(oom.plan(units, {"auto-sns-dev-pm2.service": 50}, current), {50: -500, 51: -500})
-
-
 class RunawaySession(unittest.TestCase):
     # 10-26 in small: worker 11 with its kernel 12 in session 11, a pytest command in session 20, and a recursive bash
     # command in session 30 whose forks are each smaller than the kernel and together larger.

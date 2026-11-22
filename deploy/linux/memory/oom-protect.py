@@ -6,8 +6,8 @@ units and writes their scores. A process forked from a protected one inherits it
 those units goes back to the user units' default of 200, the value systemd --user gave every unit on us-metal02 on 10-19.
 Prime workers spawn kernels and agent commands, which must stay killable.
 
-The dev servers (auto-sns-dev-pm2.service with every pm2 app) go to -500 in every process, as the wiki container does from its compose oom_score_adj, so
-earlyoom takes them after the CI guests (qemu:ci-, avoided, about 390) and every adj-200 agent command (800). Every
+The dev servers and the wiki run as Komodo containers whose compose files set oom_score_adj -500 in every process (auto-sns-agent
+apps/infra/box/compose.dev.yml and compose.sieun-pi.yml), so earlyoom takes them after the CI guests (qemu:ci-, avoided, about 390) and every adj-200 agent command (800). Every
 agent writes its session to the wiki on :5176, and search on :5174 takes 60 to 97 s to cold start (ops, 2026-10-26).
 
 Every agent command starts its own session (rlm bash() runs with start_new_session), and its forks stay in it. The
@@ -41,11 +41,9 @@ TOOLS = "prime-agent-tools.scope"
 # count as their unit's here.
 AGENTS = "agents.slice"
 CORE_UNITS = (DAEMON, "sieun-pi-chat.service", "pi-pool-serve.service", "pi-pool-hookd.service")
-DEV_UNITS = ("auto-sns-dev-pm2.service",)
 SSH_CARRIERS = ("tailscaled", "sshd", "sshd-session")
 MAIN_ADJ = -900
 WORKER_ADJ = -500
-DEV_ADJ = -500
 UNIT_DEFAULT_ADJ = 200
 MARK_ADJ = 1000
 MARK_FILE = "/run/oom-protect/marked-session"
@@ -64,11 +62,7 @@ def plan(units: dict[str, dict[int, str]], main_pids: dict[str, int], current: d
         for pid, comm in procs.items():
             if comm in SSH_CARRIERS:
                 continue
-            if unit in DEV_UNITS:
-                if current.get(pid, UNIT_DEFAULT_ADJ) > UNIT_DEFAULT_ADJ:
-                    continue
-                want = DEV_ADJ
-            elif pid == main:
+            if pid == main:
                 want = MAIN_ADJ
             elif unit == DAEMON and comm == "prime-agent":
                 want = WORKER_ADJ
@@ -131,7 +125,7 @@ def snapshot(uid: int) -> tuple[dict[str, dict[int, str]], dict[int, int]]:
     app = f"{user_slice}/user@{uid}.service/app.slice"
     logins = sorted(name for name in os.listdir(user_slice) if is_login_scope(name))
     units, current = {}, {}
-    paths = [(unit, f"{app}/{unit}") for unit in CORE_UNITS + DEV_UNITS] + [(DAEMON, f"{app}/{TOOLS}")]
+    paths = [(unit, f"{app}/{unit}") for unit in CORE_UNITS] + [(DAEMON, f"{app}/{TOOLS}")]
     paths += [(unit, f"/sys/fs/cgroup/{AGENTS}/{unit.removesuffix('.service')}-core.scope") for unit in CORE_UNITS]
     for unit, path in paths + [(name, f"{user_slice}/{name}") for name in logins]:
         procs = units.setdefault(unit, {})

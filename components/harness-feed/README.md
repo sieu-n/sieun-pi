@@ -32,11 +32,11 @@ A reader reuses the app's own function where plain node can load it (node 26 str
 ```sh
 node components/harness-feed/feed.ts --dry-run --once [--only pool,tokens]   # print one round, send nothing
 node --test components/harness-feed/test/                                    # every reader's tests
-node components/harness-feed/install.mjs --ref "$(git rev-parse HEAD)"       # systemd harness-feed.service on Linux, launchd com.sieun.harness-feed on the Mac
-tail ~/.local/share/harness-feed/feed.log
-node components/harness-feed/install.mjs uninstall
+node components/harness-feed/install.mjs --ref "$(git rev-parse HEAD)"       # the Komodo container box-sieun-pi-harness-feed-1 on us-metal02, launchd com.sieun.harness-feed on the Mac
+docker logs --tail 20 box-sieun-pi-harness-feed-1                            # its log on us-metal02; ~/.local/share/harness-feed/feed.log on the Mac
+node components/harness-feed/install.mjs uninstall                           # the Mac only
 ```
 
 The install unpacks `components/harness-feed`, `components/prime-relay` and `legacy/prime/user-history/src` from the commit into `~/.local/share/harness-feed/release-<sha7>` and points `current` at it, so a checkout change does not alter the running copy.
-On us-metal02 the Komodo Stack `box-sieun-pi` runs it since 11-21, so there the install writes no unit, disables the old one and restarts the container `box-sieun-pi-harness-feed-1` (`deploy/linux/komodo-stack.mjs`).
-On 10-19 the whole feed used about 0.03 core on us-metal02 in steady state, measured over 199 s with systemd's CPUUsageNSec, and about 200 MB of memory.
+On us-metal02 the `harness-feed` service of the Komodo Stack `box-sieun-pi` (auto-sns-agent `apps/infra/box/compose.sieun-pi.yml`) runs `current`, so the install restarts the container `box-sieun-pi-harness-feed-1`.
+On 10-19 the whole feed used about 0.03 core on us-metal02 in steady state, measured over 199 s with systemd's CPUUsageNSec when it ran as a unit, and about 200 MB of memory.

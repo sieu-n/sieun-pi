@@ -39,7 +39,7 @@ import { CHECKS, type Outcome, realDeps, runChecks } from "./skills-and-tools.ts
  * STATE_FILE keeps the Mac CLI versions the probe had to run, keyed by path and mtime, so later runs only read the Mac.
  * The box follows the Mac by itself: a box probe with a `follow` recipe that falls short gets the Mac's version installed by box-follow.sh before
  * the rows are judged, and those rows are probed again, so a Mac upgrade (Homebrew, bun, uv, the kernel venv) needs no duty job. Each install is
- * a `followed` item. `--follow` runs only that part, for box-follow.timer between duty runs. A version row with no recipe has a tool the box
+ * a `followed` item. `--follow` runs only that part, for the Komodo Procedure m02-box-follow between duty runs. A version row with no recipe has a tool the box
  * user cannot install or must not move on his own: docker and tailscale are system packages, git and gh's PATH entries are agent shims, prime-agent
  * is the pinned sieun-pi runtime, aside runs on the Mac, cua-driver is a Mac app, ngrok's download URL carries a build hash, and pdftotext is `intended`.
  */
@@ -636,7 +636,7 @@ export async function measure(rows: readonly Row[], known: Record<string, unknow
   return { output: { metrics, flagged }, ...(mac instanceof Error ? {} : { versions: mac.versions }) };
 }
 
-/** `--follow`, for box-follow.timer: reads both hosts for the rows with a recipe and installs what the box lacks, one line per install. */
+/** `--follow`, for the Komodo Procedure m02-box-follow: reads both hosts for the rows with a recipe and installs what the box lacks, one line per install. */
 async function followOnly(rows: readonly Row[]): Promise<void> {
   const mine = rows.filter(row => probesOf(row, "box").some(probe => typeof probe.follow === "string"));
   const away = await macAway(MAC, "tool rows are", Date.now());

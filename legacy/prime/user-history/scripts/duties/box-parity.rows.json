@@ -2002,7 +2002,7 @@
   ],
   "box": [
    {
-    "unit": "ci-cache.service"
+    "container": "box-services-ci-cache-1"
    },
    {
     "path": "~/.cache/virev/ci-runs.json"
@@ -2152,10 +2152,7 @@
   ],
   "box": [
    {
-    "unit": "box-devserver-heal.service"
-   },
-   {
-    "unit": "box-pm2-keep.timer"
+    "container": "box-dev-dev-heal-1"
    }
   ]
  },

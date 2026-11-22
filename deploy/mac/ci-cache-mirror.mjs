@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-// ci-cache-mirror: keeps the Mac's ~/.cache/virev a read copy of the CI cache that ci-cache.service writes on the box
-// (deploy/linux/ci-cache.service, scripts/dev/ci-cache.mjs poll from auto-sns-agent). One poller runs, on the box, so the
+// ci-cache-mirror: keeps the Mac's ~/.cache/virev a read copy of the CI cache that the Komodo container box-services-ci-cache-1 writes
+// on the box (scripts/dev/ci-cache.mjs poll from auto-sns-agent, apps/infra/box/compose.services.yml). One poller runs, on the box, so the
 // sieu-n token's 5,000/h GitHub quota is spent once. Mac readers (ci-run-status, the gh shim, gh run watch, ci-monitor,
 // commit.mjs --probed, the repo rules duty, login-health) read the local files as before and need no change.
 //   node ci-cache-mirror.mjs [host name in ~/.config/sieun-pi/hosts.json, default us-metal02] [--once]
-// Every 15 s, through the box's rsync daemon (deploy/linux/ci-cache-rsyncd.service, port 8873 on the tailnet):
+// Every 15 s, through the box's rsync daemon (the Komodo container box-services-ci-cache-rsyncd-1, port 8873 on the tailnet):
 //   1. hands the Mac's ci-wants (runs a reader asked for and did not find) to the box's ci-wants module;
 //   2. runs one `rsync -az` of the mirrored box files into ~/.cache/virev/.mirror, which keeps the last copy as rsync's
 //      delta basis. The poller rewrites the 32 MB ci-runs.json every cycle, and a whole copy through the relay took

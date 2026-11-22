@@ -22,12 +22,12 @@ A restart of the feed starts new series and skips the calls made while it was do
 
 ```sh
 python3 -B legacy/prime/usage-feed/feed.py --dry-run --once                  # print the payload, send nothing
-python3 -B legacy/prime/usage-feed/install.py --ref "$(git rev-parse HEAD)"  # launchd com.sieun.usage-feed on the Mac, systemd usage-feed.service on Linux
+python3 -B legacy/prime/usage-feed/install.py --ref "$(git rev-parse HEAD)"  # launchd com.sieun.usage-feed on the Mac, the Komodo container box-sieun-pi-usage-feed-1 on us-metal02
 tail ~/.local/share/usage-feed/feed.log
-python3 -B legacy/prime/usage-feed/install.py uninstall
+python3 -B legacy/prime/usage-feed/install.py uninstall                       # the Mac only
 ```
 
-On us-metal02 the Komodo Stack `box-sieun-pi` runs it since 11-21, so there the install writes no unit, disables the old one and restarts the container `box-sieun-pi-usage-feed-1` (`deploy/linux/komodo_stack.py`).
+On us-metal02 the `usage-feed` service of the Komodo Stack `box-sieun-pi` (auto-sns-agent `apps/infra/box/compose.sieun-pi.yml`) runs `feed.py` and appends to the same `feed.log`, which harness-feed's tokens reader parses, so the install restarts the container `box-sieun-pi-usage-feed-1`.
 
 `tests/test_feed.py` checks the offsets, the zero-first export and the handoff.
 

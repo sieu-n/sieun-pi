@@ -2083,7 +2083,7 @@ export function measure(input: Inputs): PrecheckOutput {
     metrics.ci_cache_age_s = Math.max(0, Math.round((now - input.ciCache.fetchedAt) / 1000));
     if (beatStale(input.ciCache, now)) flagged.push({ kind: "ci_cache_stale", excerpt: `The CI cache last read GitHub at ${clock(input.ciCache.fetchedAt)}, ` +
       `${Math.round((now - input.ciCache.fetchedAt) / MINUTE)} min ago at a ${input.ciCache.intervalSeconds} s pace${input.ciCache.error ? ` (last cycle: ${input.ciCache.error})` : ""}. ` +
-      "Run wakes read GitHub with gh run view meanwhile; ci-run-status and the gh shim answer from the old cache until it is 10 min old. Read ~/.cache/virev/ci-cache.log and systemctl --user status ci-cache." });
+      "Run wakes read GitHub with gh run view meanwhile; ci-run-status and the gh shim answer from the old cache until it is 10 min old. Read ~/.cache/virev/ci-cache.log and `docker ps -a --filter name=box-services-ci-cache-1`." });
   }
   if (stuckHandoffs.length) flagged.push({ kind: "handoff_stuck", excerpt: `${stuckHandoffs.length} detached-service handoffs stayed open over ${WINDOW_MS / MINUTE} min, ` +
     `though each idle unload sweep resumes them: ${stuckHandoffs.slice(0, 5).map(entry => `${entry.session.slice(0, 8)} ${entry.state} since ${clock(entry.at)}`).join(", ")}. ` +

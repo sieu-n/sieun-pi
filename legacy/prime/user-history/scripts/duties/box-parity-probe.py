@@ -137,7 +137,7 @@ def distinfo(pattern):
     return names(found)
 
 
-# prime-sync.timer fetches the shared state each minute, and its block watch alerts after 600 s with no progress, so an older fetch reads as stalled.
+# The Komodo Procedure m02-prime-sync fetches the shared state each minute, and its block watch alerts after 600 s with no progress, so an older fetch reads as stalled.
 SYNC_FRESH_S = 600
 
 
@@ -225,6 +225,14 @@ def service(unit):
     if done is None:
         return text
     return "ok" if done.returncode == 0 else "fail: " + (brief(text) or "exit %d" % done.returncode)
+
+
+def container(name):
+    """A Komodo-managed container on the box, such as box-services-ci-cache-1, which replaced a systemd user unit on 11-21."""
+    done, text = run(["docker", "inspect", "-f", "{{.State.Running}}", name])
+    if done is None:
+        return text
+    return "ok" if done.returncode == 0 and done.stdout.strip() == "true" else "fail: " + (brief(text) or "exit %d" % done.returncode)
 
 
 KNOWN = {}
@@ -554,6 +562,8 @@ def probe_value(spec, host):
         return launchd(spec["launchd"])
     if kind == "unit":
         return service(spec["unit"])
+    if kind == "container":
+        return container(spec["container"])
     if kind == "mcp":
         return mcp(spec["mcp"])
     if kind == "version":

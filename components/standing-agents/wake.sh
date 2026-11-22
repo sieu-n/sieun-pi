@@ -1,7 +1,8 @@
 #!/bin/bash
 # wake.sh <agent> - deliver one scheduled wake to a standing agent's saved session.
 #
-# On us-metal02 the systemd --user timer harness-keeper-wake.timer runs this (moved from the Mac launchd job com.sieun.wake-harness-keeper on 10-19).
+# On us-metal02 the Komodo Procedure m02-harness-keeper-wake runs this in a container of the Stack box-sieun-pi (moved from the Mac launchd job
+# com.sieun.wake-harness-keeper on 10-19, and from a systemd --user timer on 11-22).
 # It resumes the newest transcript in the entry's session_dir with `prime-agent -p -r`, so the
 # agent keeps its history and harness without a live chat session, a tmux pane, or an
 # rlm_heartbeat. Those three all died with worker restarts, daemon restarts and reboots

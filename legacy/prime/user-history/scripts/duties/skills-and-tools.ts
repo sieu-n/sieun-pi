@@ -411,7 +411,7 @@ async function pool(deps: Deps, provider: "anthropic" | "openai-codex"): Promise
     // sieunpark77's sign-in in owner_fixes, where no todo could hold it and the dead account fell out of skills_or_tools_to_fix.
     const mac = await macReach(deps);
     return FAIL("agent", `${open.join(", ")} need a new sign-in (${counts})${gated.length ? `; ${gated.join("; ")}: waits on the owner` : ""}${renewalWords}${mac.online ? "" : `; ${mac.detail}`}`,
-      `rerun the grant renewal with \`systemctl --user start claude-grant-renew.service\` on us-metal02 and read its journal when the detail names a renewal gap; else copy a live login of the account if a box has one, else run \`pi-pool login <email> --provider ${provider}\` in the owner's Aside once his Mac is online; never \`pi-pool off\` the account, since he turns accounts on and off in Settings, Accounts and his last choice stands; when the attempt reaches a password, 2FA or passkey prompt, record it with \`node --import tsx scripts/sign-in-prompt.ts <email> --provider ${provider} --prompt <password|2fa|passkey> --where <page> --evidence <screenshot>\` in sieun-pi's user-history, which makes it the owner's item`);
+      `rerun the grant renewal with \`docker compose -p box-sieun-pi -f ~/Documents/Github/auto-sns-agent/apps/infra/box/compose.sieun-pi.yml run --rm claude-grant-renew\` on us-metal02 (the job of the Komodo Procedure m02-claude-grant-renew) and read its output when the detail names a renewal gap; else copy a live login of the account if a box has one, else run \`pi-pool login <email> --provider ${provider}\` in the owner's Aside once his Mac is online; never \`pi-pool off\` the account, since he turns accounts on and off in Settings, Accounts and his last choice stands; when the attempt reaches a password, 2FA or passkey prompt, record it with \`node --import tsx scripts/sign-in-prompt.ts <email> --provider ${provider} --prompt <password|2fa|passkey> --where <page> --evidence <screenshot>\` in sieun-pi's user-history, which makes it the owner's item`);
   }
   // Every account used up its own window by real work and serves again at a known time, so nothing waits on a fix: on 11-01 sieunpark77's
   // Codex week, spent from 10-28 06:38Z to 10-31 00Z by two Prime chats and Vent's CLIProxy traffic, reset on 11-04, and the check called it
@@ -763,7 +763,7 @@ export const CHECKS: readonly Check[] = [
     const result = await deps.exec("claude", ["auth", "status"], { timeoutMs: CALL_TIMEOUT_MS });
     let status: { loggedIn?: boolean; email?: string; subscriptionType?: string } = {};
     try { status = parseJson(result.stdout) as typeof status; } catch { /* reported below */ }
-    const renew = "run `systemctl --user start claude-grant-renew.service` on us-metal02, which signs the CLI in again through the owner's Aside, and read its journal; a password prompt makes it an owner item";
+    const renew = "run `docker compose -p box-sieun-pi -f ~/Documents/Github/auto-sns-agent/apps/infra/box/compose.sieun-pi.yml run --rm claude-grant-renew` on us-metal02 (the job of the Komodo Procedure m02-claude-grant-renew), which signs the CLI in again through the owner's Aside, and read its output; a password prompt makes it an owner item";
     if (status.loggedIn !== true) return FAIL("agent", `claude auth status: ${failText(result)}`, renew);
     // On 11-16 the CLI's grant ended at 03:53Z with nothing flagged and the CLI blanked its tokens at 06:27Z, so its grant end counts like a pool account's.
     let end: unknown;
@@ -778,7 +778,7 @@ export const CHECKS: readonly Check[] = [
       : FAIL("agent", `claude-sdk-session.py --help: ${failText(result)}`, "fix the script's inline dependency or the uv cache");
   } },
   { id: "codex_cli", group: "peers", tool: "codex CLI", run: deps => cliLogin(deps, "codex", ["login", "status"], result => both(result).includes("Logged in"),
-    "run `systemctl --user start codex-pool-auth.service`, which writes ~/.codex/auth.json from the pi-pool Codex account it names (deploy/linux/codex-pool-auth), and read its journal if pi-pool refuses") },
+    "run `docker compose -p box-sieun-pi -f ~/Documents/Github/auto-sns-agent/apps/infra/box/compose.sieun-pi.yml run --rm codex-pool-auth` on us-metal02 (the job of the Komodo Procedure m02-codex-pool-auth), which writes ~/.codex/auth.json from the pi-pool Codex account it names (deploy/linux/codex-pool-auth), and read its output if pi-pool refuses") },
   { id: "gh_auth", group: "service clis", tool: "gh", run: deps => cliLogin(deps, "gh", ["auth", "status"], result => both(result).includes("Logged in to github.com"), "run `gh auth login --web` in the owner's Aside browser") },
   { id: "vercel_auth", group: "service clis", tool: "vercel", run: deps => cliLogin(deps, "vercel", ["whoami"], () => true, "run `vercel login` in the owner's Aside browser") },
   { id: "railway_auth", group: "service clis", tool: "railway", run: railwayAuth },

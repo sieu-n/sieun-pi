@@ -5,7 +5,7 @@ pi-pool holds the account's refresh token, and a refresh rotates it, so a second
 pool's next refresh fail with refresh_token_reused. This writes $CODEX_HOME/auth.json (default
 ~/.codex) from `pi-pool token`, the access token the pool refreshes when it nears expiry, with a
 refresh token codex cannot spend. codex reads id_token only for its claims, and the access token
-carries the same chatgpt claims, so it fills both. codex-pool-auth.timer reruns this."""
+carries the same chatgpt claims, so it fills both. On us-metal02 the Komodo Procedure m02-codex-pool-auth reruns this every 15 min."""
 import base64, datetime, json, os, subprocess, sys, tempfile
 
 UNUSABLE_REFRESH = "pi-pool-owned"

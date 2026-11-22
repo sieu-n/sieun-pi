@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Install usage-feed from one commit and keep it running: launchd on the Mac, a systemd user service on Linux.
+"""Install usage-feed from one commit and keep it running: launchd on the Mac, a Komodo container on Linux (us-metal02).
 
 usage: python3 -B legacy/prime/usage-feed/install.py --ref <commit>
        python3 -B legacy/prime/usage-feed/install.py uninstall
 
 Copies feed.py from <commit> to ~/.local/share/usage-feed, deletes an old `handed-off` marker and starts the feed, so a later
-checkout change cannot alter the running copy until someone installs again. `uninstall` stops it and keeps the log.
-On a box that runs the Komodo Stack box-sieun-pi (us-metal02 since 11-21) the feed is its container box-sieun-pi-usage-feed-1, so the install
-writes no unit there and restarts the container.
+checkout change cannot alter the running copy until someone installs again. `uninstall` stops it and keeps the log (the Mac only).
+On Linux the feed is the container box-sieun-pi-usage-feed-1 of the Komodo Stack box-sieun-pi (auto-sns-agent
+apps/infra/box/compose.sieun-pi.yml), which runs ~/.local/share/usage-feed/feed.py, so the install restarts the container.
 """
 from __future__ import annotations
 
@@ -27,8 +27,6 @@ HOME = Path.home()
 SHARE = HOME / ".local/share/usage-feed"
 LABEL = "com.sieun.usage-feed"
 PLIST = HOME / "Library/LaunchAgents" / f"{LABEL}.plist"
-UNIT = "usage-feed.service"
-UNIT_FILE = HOME / ".config/systemd/user" / UNIT
 MAC = sys.platform == "darwin"
 PYTHON = "/usr/bin/python3"  # the installed copy lives outside ~/Documents, so the Mac's system Python can read it
 
@@ -62,26 +60,8 @@ def plist(script: Path) -> str:
 """
 
 
-def unit(script: Path) -> str:
-    return f"""[Unit]
-Description=usage-feed: Prime model call usage from session transcripts to LGTM until Prime's OTLP exporter is live (legacy/prime/usage-feed)
-
-[Service]
-ExecStart=/usr/bin/python3 -B {script}
-Restart=on-failure
-StandardOutput=append:{SHARE / 'feed.log'}
-StandardError=append:{SHARE / 'feed.log'}
-
-[Install]
-WantedBy=default.target
-"""
-
-
 def stop() -> None:
-    if MAC:
-        subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/{LABEL}"], capture_output=True)
-    else:
-        subprocess.run(["systemctl", "--user", "disable", "--now", UNIT], capture_output=True)
+    subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/{LABEL}"], capture_output=True)
 
 
 def main() -> int:
@@ -89,11 +69,11 @@ def main() -> int:
     parser.add_argument("action", nargs="?", default="install", choices=["install", "uninstall"])
     parser.add_argument("--ref")
     args = parser.parse_args()
-    stop()
     if args.action == "uninstall":
-        (PLIST if MAC else UNIT_FILE).unlink(missing_ok=True)
         if not MAC:
-            subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
+            parser.error("on Linux the feed is a service of the Komodo Stack box-sieun-pi; remove it from auto-sns-agent apps/infra/box/compose.sieun-pi.yml")
+        stop()
+        PLIST.unlink(missing_ok=True)
         print(f"usage-feed removed; log kept in {SHARE / 'feed.log'}")
         return 0
     if not args.ref:
@@ -103,18 +83,14 @@ def main() -> int:
     write(script, git("show", f"{sha}:legacy/prime/usage-feed/feed.py"), 0o755)
     (SHARE / "handed-off").unlink(missing_ok=True)
     write(SHARE / "release.json", json.dumps({"sha": sha, "installedAt": datetime.now(timezone.utc).isoformat(timespec="seconds")}) + "\n", 0o644)
-    if not MAC and komodo_stack.runs_here():
-        komodo_stack.hand_over([UNIT], "usage-feed")
-        print(f"usage-feed {sha[:7]} installed; the Komodo container {komodo_stack.STACK}-usage-feed-1 runs it")
+    if not MAC:
+        komodo_stack.restart("usage-feed")
+        print(f"usage-feed {sha[:7]} installed; the Komodo container {komodo_stack.STACK}-usage-feed-1 runs it; log in {SHARE / 'feed.log'}")
         return 0
-    if MAC:
-        write(PLIST, plist(script), 0o644)
-        subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(PLIST)], check=True)
-    else:
-        write(UNIT_FILE, unit(script), 0o644)
-        subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
-        subprocess.run(["systemctl", "--user", "enable", "--now", UNIT], check=True)
-    print(f"usage-feed {sha[:7]} installed as {LABEL if MAC else UNIT}; log in {SHARE / 'feed.log'}")
+    stop()
+    write(PLIST, plist(script), 0o644)
+    subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(PLIST)], check=True)
+    print(f"usage-feed {sha[:7]} installed as {LABEL}; log in {SHARE / 'feed.log'}")
     return 0
 
 

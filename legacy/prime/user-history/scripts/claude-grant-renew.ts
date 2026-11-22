@@ -8,7 +8,7 @@ import { parsePrompts, type PromptKind, promptsText, signInPromptsFile, withProm
 
 /**
  * Signs each pi-pool Claude account, and the box claude CLI, in again before its refresh grant reaches its fixed end
- * (src/claude-grant-renewal.ts). deploy/linux/claude-grant-renew.timer runs it on us-metal02:
+ * (src/claude-grant-renewal.ts). The Komodo Procedure m02-claude-grant-renew runs it on us-metal02 every 3 h:
  * `node --import tsx scripts/claude-grant-renew.ts [--dry-run] [--only <email|claude-cli>]`.
  * Each sign-in is the one d5 jobs did by hand (p1552, 11-15): `pi-pool login <email> --provider anthropic` or `claude auth login`, its URL
  * opened in the owner's Aside through `aside mcp`, claude.ai's email link read from his Gmail, and Authorize clicked once its hCaptcha lets

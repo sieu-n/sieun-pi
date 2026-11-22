@@ -223,12 +223,11 @@ export interface Holder { id: MemoryGroupId; label: string }
 
 /**
  * The units installed under the user's app.slice that are not agent services, by group. Every other installed unit there serves the harness
- * (the chat services, pi-pool, the relay, prime-sync, the watchdog, the feeds), and every transient unit is a job's (`leafHolder`).
+ * (the chat services, pi-pool, the relay, the watchdog), and every transient unit is a job's (`leafHolder`). The dev servers, the CI poller,
+ * code-server and the feeds left app.slice for Komodo containers on 11-21 (PATH_RULES).
  */
 const INSTALLED_UNITS: [MemoryGroupId, RegExp][] = [
-  ["dev", /^(auto-sns-dev-pm2|box-devserver-heal|b2-viewer)\.service$/],
-  ["ci", /^ci-(cache|monitor)\.service$/],
-  ["coding", /code-server|cursor|vscode/],
+  ["coding", /cursor|vscode/],
   ["system", /^(dbus|ssh-agent|gpg-agent[\w-]*|at-spi[\w-]*)\.(service|socket)$/],
 ];
 const APP_UNIT = /^user\.slice\/user-\d+\.slice\/user@\d+\.service\/app\.slice\/([^/]+)/;
@@ -236,8 +235,12 @@ const LOGIN_SCOPE = /^user\.slice\/user-\d+\.slice\/session-[^/]+\.scope$/;
 /**
  * The group of a cgroup path under /sys/fs/cgroup outside the user's app.slice, first match. The dev half of us-metal02 is dev.slice and the
  * CI half is virev.slice, with its production servers in virev-prod.slice; the box's CI runner slots run as system.slice/system-ci02\x2dslot.slice.
+ * Since 11-21 the Komodo containers of the wiki, Meilisearch and pi-history run in SERVE_SLICE, and the dev servers' in
+ * user.slice/user-devservers.slice (auto-sns-agent apps/infra/box/compose.sieun-pi.yml and compose.dev.yml).
  */
 const PATH_RULES: [MemoryGroupId, RegExp][] = [
+  ["services", /^user\.slice\/user-serve\.slice\//],
+  ["dev", /^user\.slice\/user-devservers\.slice\//],
   ["dev", /^virev\.slice\/virev-prod/],
   ["ci", /^virev\.slice\/|virev-ci|virev\\x2dci|ci02\\x2dslot/],
   ["docker", /docker|containerd|^machine\.slice\//],
@@ -619,15 +622,19 @@ export const CPU_SIDES: readonly CpuSide[] = ["harness", "apps", "owner", "ci", 
  * ssh sessions and their transient units) less the units named here for another side, plus agents.slice, so a unit that ends inside the
  * window still counts.
  * Virev's CI VMs and production servers in virev.slice count in full, because on 10-18 from 07:45Z metal-management removed the CPU pins on
- * us-metal02's slices and they run on the same 80 CPUs as the harness. The Komodo box jobs, ci-monitor among them since 11-22, run in
- * Docker scopes under system.slice, so they count on the system side.
+ * us-metal02's slices and they run on the same 80 CPUs as the harness. Since 11-21 Komodo runs the box's own services as Docker containers:
+ * the dev servers in user.slice/user-devservers.slice count on the apps side, and the wiki, Meilisearch and pi-history in SERVE_SLICE on the
+ * harness side. Every other box container, code-server, the CI poller and the box jobs among them, runs in dev.slice (Docker's cgroup-parent)
+ * and counts on the apps side, so the owner side reads 0 until code-server gets a slice of its own.
  */
 export const SIDE_CGROUPS: Readonly<Record<Exclude<CpuSide, "harness">, readonly string[]>> = {
-  apps: ["dev.slice", "{app}/auto-sns-dev-pm2.service", "{app}/box-devserver-heal.service", "virev.slice/virev-prod.slice"],
-  owner: ["{app}/code-server.service"],
-  ci: ["{app}/ci-cache.service", "virev.slice/virev-ci.slice"],
+  apps: ["dev.slice", "user.slice/user-devservers.slice", "virev.slice/virev-prod.slice"],
+  owner: [],
+  ci: ["virev.slice/virev-ci.slice"],
   system: ["system.slice"],
 };
+/** The slice of the Komodo containers that serve the agents (the wiki, Meilisearch and pi-history), on the harness side in full. */
+export const SERVE_SLICE = "user.slice/user-serve.slice";
 /**
  * The root slice that holds the agents' control loop since 11-04: sieun-pi cpu-protect.py moves the Prime supervisor, its workers and the chat
  * services' main processes there from the user slice, so it counts on the harness side in full.
@@ -673,7 +680,7 @@ export function cpuSides(before: ReadonlyMap<string, number>, after: ReadonlyMap
       if (path.startsWith(`${slice.slice}/`)) inSlice += usec;
     }
   }
-  sides.harness = used(slice.slice) - inSlice + used(AGENTS_SLICE);
+  sides.harness = used(slice.slice) - inSlice + used(AGENTS_SLICE) + used(SERVE_SLICE);
   return Object.fromEntries(CPU_SIDES.map(side => [side, cores(sides[side])])) as CpuSides;
 }
 const CGROUP_ROOT = "/sys/fs/cgroup";
@@ -687,7 +694,7 @@ const ownSlice = process.platform === "linux" ? userSlice(readText("/proc/self/c
  */
 async function readCgroups(slice: { slice: string; app: string } | null): Promise<Map<string, number> | undefined> {
   if (!slice) return undefined;
-  const paths = [slice.slice, AGENTS_SLICE, ...Object.values(SIDE_CGROUPS).flat().map(template => template.replace("{app}", slice.app))];
+  const paths = [slice.slice, AGENTS_SLICE, SERVE_SLICE, ...Object.values(SIDE_CGROUPS).flat().map(template => template.replace("{app}", slice.app))];
   const texts = await Promise.all(paths.map(path => kernelFile(join(CGROUP_ROOT, path, "cpu.stat")).catch(() => "")));
   return new Map(paths.flatMap((path, at) => { const usec = parseUsageUsec(texts[at]!); return usec === null ? [] : [[path, usec] as const]; }));
 }

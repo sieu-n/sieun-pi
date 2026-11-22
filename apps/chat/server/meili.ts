@@ -1,6 +1,7 @@
 /**
  * A Meilisearch client for the one search index (search-engine.ts), and a private Meilisearch process for a fixture server or a test.
- * The live server talks to the meilisearch.service systemd user unit (deploy/linux/meilisearch.service, scripts/install-meilisearch.mjs).
+ * The live server talks to the Meilisearch on 127.0.0.1:7700 that the Komodo container box-sieun-pi-meilisearch-1 runs on us-metal02
+ * (auto-sns-agent apps/infra/box/compose.sieun-pi.yml, scripts/install-meilisearch.mjs).
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";

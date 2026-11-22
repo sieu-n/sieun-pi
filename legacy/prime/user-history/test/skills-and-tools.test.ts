@@ -598,7 +598,7 @@ test("pool_claude flags a grant end once the grant renewal failed at it, and lea
   const failed = await run({ ranAt: ran, results: { "claude16@slack.green": { at: ran, outcome: "failed", email: "claude16@slack.green", detail: "the Authorize button stayed disabled through 3 reloads" } } });
   assert.ok(failed.status === "fail" && failed.fixer === "agent" && failed.detail.startsWith("claude16@slack.green (grant ends 11-19 20:00Z) need")
     && failed.detail.includes("the grant renewal failed at 11-16 19:00Z: the Authorize button stayed disabled") && !failed.detail.includes("claude19")
-    && failed.fix.includes("claude-grant-renew.service"), JSON.stringify(failed));
+    && failed.fix.includes("run --rm claude-grant-renew"), JSON.stringify(failed));
   const covered = await run({ ranAt: ran, results: {} });
   assert.ok(covered.status === "pass", JSON.stringify(covered));
   const lapsed = await run({ ranAt: ran, results: {} }, now + 2 * 86_400_000);
@@ -619,7 +619,7 @@ test("claude_cli flags a signed-in CLI whose grant ends soon only when the grant
     } });
   assert.equal((await run(now + 20 * 86_400_000, undefined)).status, "pass");
   const ending = await run(now + 20 * 3_600_000, undefined);
-  assert.ok(ending.status === "fail" && ending.detail.startsWith("claude21@slack.green's CLI grant ends 11-17 16:00Z") && ending.fix.includes("claude-grant-renew.service"), JSON.stringify(ending));
+  assert.ok(ending.status === "fail" && ending.detail.startsWith("claude21@slack.green's CLI grant ends 11-17 16:00Z") && ending.fix.includes("run --rm claude-grant-renew"), JSON.stringify(ending));
   const ran = new Date(now - 600_000).toISOString();
   assert.equal((await run(now + 3 * 86_400_000, { ranAt: ran, results: { "claude-cli": { at: ran, outcome: "renewed", email: "claude21@slack.green", detail: "ok" } } })).status, "pass");
 });

@@ -1,21 +1,19 @@
 #!/usr/bin/env node
 /**
- * Installs Meilisearch for apps/chat search on this Linux box, as a systemd user unit with no container:
+ * Installs Meilisearch for apps/chat search on this Linux box (us-metal02), whose Komodo Stack box-sieun-pi runs it as the container
+ * box-sieun-pi-meilisearch-1 and keeps its index file in the page cache with the Procedure m02-meilisearch-warm (auto-sns-agent
+ * apps/infra/box/compose.sieun-pi.yml):
  * 1. The pinned release binary, checked against its sha256, under ~/.local/opt/meilisearch/v<version>, with `current` pointing at it.
- * 2. A master key, made once, in ~/.config/meilisearch/master.key (the chat reads it) and ~/.config/meilisearch/env (the unit reads it).
- * 3. deploy/linux/meilisearch.service in ~/.config/systemd/user, enabled and started, and a wait for its /health.
- * 4. deploy/linux/meilisearch-warm.timer and its service, enabled and started, which keep the index file in the page cache.
- * On a box that runs the Komodo Stack box-sieun-pi (us-metal02 since 11-21), its meilisearch service and m02-meilisearch-warm Procedure
- * run both, so steps 3 and 4 become a disable of the old units and a restart of box-sieun-pi-meilisearch-1.
+ * 2. A master key, made once, in ~/.config/meilisearch/master.key (the chat reads it) and ~/.config/meilisearch/env (the container reads it).
+ * 3. A restart of box-sieun-pi-meilisearch-1, which runs `current`, and a wait for its /health.
  *
  * Usage: node scripts/install-meilisearch.mjs. Run it again to move to a new pinned version; it keeps the key and the data.
  */
-import { execFileSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { containerRunning, handOver, stackRunsHere } from "../deploy/linux/komodo-stack.mjs";
+import { containerRunning, restart } from "../deploy/linux/komodo-stack.mjs";
 
 const VERSION = "1.56.1";
 const SHA256 = "b2c7a647d4cdfdd7a901466bfd6797077b849e90f5eb2c0f5b1d05869592e27e";
@@ -24,8 +22,6 @@ const home = homedir();
 const opt = join(home, ".local/opt/meilisearch");
 const bin = join(opt, `v${VERSION}`, "meilisearch");
 const config = join(home, ".config/meilisearch");
-const unit = join(home, ".config/systemd/user/meilisearch.service");
-const repo = join(import.meta.dirname, "..");
 
 const sha = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
 
@@ -52,17 +48,7 @@ const key = readFileSync(keyFile, "utf8").trim();
 writeFileSync(join(config, "env"), `MEILI_MASTER_KEY=${key}\n`, { mode: 0o600 });
 mkdirSync(join(home, ".local/share/meilisearch"), { recursive: true });
 
-const stack = stackRunsHere();
-if (stack) handOver(["meilisearch.service", "meilisearch-warm.timer"], "meilisearch");
-else {
-  mkdirSync(dirname(unit), { recursive: true });
-  copyFileSync(join(repo, "deploy/linux/meilisearch.service"), unit);
-  for (const name of ["meilisearch-warm.service", "meilisearch-warm.timer"]) copyFileSync(join(repo, "deploy/linux", name), join(dirname(unit), name));
-  execFileSync("systemctl", ["--user", "daemon-reload"], { stdio: "inherit" });
-  execFileSync("systemctl", ["--user", "enable", "meilisearch.service"], { stdio: "inherit" });
-  execFileSync("systemctl", ["--user", "restart", "meilisearch.service"], { stdio: "inherit" });
-  execFileSync("systemctl", ["--user", "enable", "--now", "meilisearch-warm.timer"], { stdio: "inherit" });
-}
+restart("meilisearch");
 
 for (let pause = 50; ; pause = Math.min(pause * 2, 1000)) {
   try {
@@ -71,11 +57,7 @@ for (let pause = 50; ; pause = Math.min(pause * 2, 1000)) {
   } catch {
     // Not listening yet.
   }
-  if (stack) {
-    if (!containerRunning("meilisearch")) throw new Error("box-sieun-pi-meilisearch-1 is not running; read `docker logs box-sieun-pi-meilisearch-1`");
-  } else if (execFileSync("systemctl", ["--user", "is-active", "meilisearch.service"], { encoding: "utf8" }).trim() === "failed") {
-    throw new Error("meilisearch.service failed; read `journalctl --user -u meilisearch.service`");
-  }
+  if (!containerRunning("meilisearch")) throw new Error("box-sieun-pi-meilisearch-1 is not running; read `docker logs box-sieun-pi-meilisearch-1`");
   await new Promise(resolve => setTimeout(resolve, pause));
 }
 console.log(`meilisearch ${VERSION} is up on 127.0.0.1:7700 (${bin})`);

@@ -125,10 +125,10 @@ class Setup(unittest.TestCase):
     def test_logins_get_1000_and_the_chat_and_daemon_the_most_systemd_takes(self):
         self.assertEqual(weights("SYSTEM"), {"ssh.service": 1000, "tailscaled.service": 1000, "user.slice": 1000, "user@1001.service": 10000,
                                              "virev.slice": 10000, "virev-prod.slice": 300, "virev-ci.slice": 300,
-                                             "system.slice": 400, "dev.slice": 400, "agents.slice": 10000})
-        self.assertEqual(weights("USER"), {"sieun-pi-chat.service": 10000, "sieun-pi-apps-chat.service": 10000, "meilisearch.service": 10000, "pi-host.service": 10000,
-                                           "pi-host-relay.service": 10000, "pi-history.service": 10000,
-                                           "auto-sns-dev-pm2.service": 10000, "pi-pool-serve.service": 1000, "pi-pool-hookd.service": 1000,
+                                             "system.slice": 400, "dev.slice": 400, "agents.slice": 10000,
+                                             "user-serve.slice": 10000, "user-devservers.slice": 10000})
+        self.assertEqual(weights("USER"), {"sieun-pi-chat.service": 10000, "sieun-pi-apps-chat.service": 10000, "pi-host.service": 10000,
+                                           "pi-host-relay.service": 10000, "pi-pool-serve.service": 1000, "pi-pool-hookd.service": 1000,
                                            "prime-agent-daemon.service": 10000})
 
     def test_the_chat_path_is_outweighed_below_the_root_at_no_level(self):
@@ -137,9 +137,10 @@ class Setup(unittest.TestCase):
         self.assertEqual(user["sieun-pi-chat.service"], max(user.values()))
 
     def test_every_unit_a_sw_factory_search_or_page_call_waits_on_runs_at_the_chat_weight(self):
-        user = weights("USER")
-        for unit in ("sieun-pi-apps-chat.service", "pi-host.service", "pi-host-relay.service", "meilisearch.service"):
+        system, user = weights("SYSTEM"), weights("USER")
+        for unit in ("sieun-pi-apps-chat.service", "pi-host.service", "pi-host-relay.service"):
             self.assertEqual(user[unit], user["sieun-pi-apps-chat.service"], unit)
+        self.assertEqual(system["user-serve.slice"], user["sieun-pi-apps-chat.service"], "Meilisearch and pi-history in user-serve.slice")
 
     def test_busy_ci_outweighs_the_agents_tools_and_the_control_loop_meets_ci_as_an_equal(self):
         """t68 ranks CI above dev box work; the 01:55Z 11-04 stalls came from the control loop sharing user.slice's 1000 with the tools."""

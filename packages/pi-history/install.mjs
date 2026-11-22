@@ -13,7 +13,7 @@ const LABEL = "com.sieun.pi-history";
 
 const run = (cmd, args, opts = {}) => (execFileSync(cmd, args, { stdio: ["ignore", "pipe", "inherit"], encoding: "utf8", ...opts }) ?? "").trim();
 
-/** The node on PATH, kept as a link so a node upgrade behind it does not break the unit. */
+/** The node on PATH, kept as a link so a node upgrade behind it does not break the launchd job. */
 function nodePath() {
   for (const dir of (process.env.PATH ?? "").split(":")) {
     if (dir && existsSync(join(dir, "node"))) return join(dir, "node");
@@ -29,11 +29,11 @@ function fill(template) {
 }
 
 /**
- * Points current at release-<sha> and restarts the service from it, on the box this runs on. On a box that runs the Komodo Stack
- * box-sieun-pi (us-metal02 since 11-21) the service is its container box-sieun-pi-pi-history-1. The helper is imported only on Linux,
- * because a release copy on the Mac holds this package alone.
+ * Points current at release-<sha> and restarts the service from it, on the box this runs on. On Linux (us-metal02) the service is the
+ * container box-sieun-pi-pi-history-1 of the Komodo Stack box-sieun-pi (auto-sns-agent apps/infra/box/compose.sieun-pi.yml), which
+ * runs `current`. The restart is spelled out here because a release copy activated over ssh holds this package alone.
  */
-async function activate(sha) {
+function activate(sha) {
   const release = join(SHARE, `release-${sha}`);
   if (!existsSync(join(release, "src", "main.ts"))) throw new Error(`no release at ${release}`);
   const next = join(SHARE, `current.${process.pid}`);
@@ -51,16 +51,7 @@ async function activate(sha) {
     while (spawnSync("launchctl", ["print", `${domain}/${LABEL}`], { stdio: "ignore" }).status === 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
     run("launchctl", ["bootstrap", domain, plist]);
   } else {
-    const komodo = await import("../../deploy/linux/komodo-stack.mjs");
-    if (komodo.stackRunsHere()) komodo.handOver(["pi-history.service"], "pi-history");
-    else {
-      const unit = join(homedir(), ".config/systemd/user/pi-history.service");
-      mkdirSync(dirname(unit), { recursive: true });
-      writeFileSync(unit, fill("pi-history.service"));
-      run("systemctl", ["--user", "daemon-reload"]);
-      run("systemctl", ["--user", "enable", "pi-history.service"], { stdio: "ignore" });
-      run("systemctl", ["--user", "restart", "pi-history.service"]);
-    }
+    run("docker", ["restart", "box-sieun-pi-pi-history-1"]);
   }
   console.log(`pi-history ${sha} is live from ${release}`);
 }
@@ -88,12 +79,12 @@ function exportRemote(sha, host) {
 }
 
 const { values } = parseArgs({ options: { ref: { type: "string" }, ssh: { type: "string" }, activate: { type: "string" } } });
-if (values.activate) await activate(values.activate);
+if (values.activate) activate(values.activate);
 else {
   const sha = run("git", ["-C", HERE, "rev-parse", "--short=12", values.ref ?? "HEAD"]);
   if (values.ssh) exportRemote(sha, values.ssh);
   else {
     exportLocal(sha);
-    await activate(sha);
+    activate(sha);
   }
 }
