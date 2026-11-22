@@ -53,7 +53,7 @@ import { readJson, Store, writeJson } from "./store.ts";
 import { modelRef, OWNER, parseConversationId, Threads } from "./threads.ts";
 import { QueueWatch, waitingPlace } from "./queue.ts";
 import { webEntry } from "./web-entry.ts";
-import { isImage, uploadExtension, withFileNotes } from "./files.ts";
+import { isImage, isModelImage, uploadExtension, withFileNotes } from "./files.ts";
 import { fileImageSize, imageSize, withSize } from "./image-size.ts";
 import { askNoticeOf, noticeOf, noticeReason } from "./notices.ts";
 
@@ -1123,10 +1123,10 @@ export class App {
     return this.store.imagePath(ref.url.slice("/api/uploads/".length).replace(/[^\w.-]/g, ""));
   }
 
-  /** An attached image's bytes for a model; a file that is not an image reaches the agent as a line with its path instead. */
+  /** An attached image's bytes for a model; any other file, a TIFF or SVG image too, reaches the agent as a line with its path instead. */
   private readUpload(ref: ImageRef): { data: string; mimeType: string } | undefined {
     const name = ref.url.startsWith("/api/uploads/") ? ref.url.slice("/api/uploads/".length).replace(/[^\w.-]/g, "") : "";
-    if (!name || !isImage(ref)) return undefined;
+    if (!name || !isModelImage(ref)) return undefined;
     try {
       return { data: readFileSync(this.store.imagePath(name)).toString("base64"), mimeType: ref.mimeType };
     } catch {

@@ -99,6 +99,30 @@ describe("attached files", () => {
     }
   });
 
+  test("a TIFF image reaches the agent as a file line with its path, while a PNG goes as an image block", async () => {
+    const tiff = await upload(Buffer.from("MM\0*\0\0\0\x08tiff", "latin1"), "image/tiff", "paste.tiff");
+    const png = await upload(Buffer.from("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489", "hex"), "image/png", "dot.png");
+    const inputs: { text: string; images: string[] }[] = [];
+    host.beforeSubmit = async (_thread, input) => {
+      inputs.push({ text: input.text ?? "", images: (input.images ?? []).map(i => i.mimeType) });
+    };
+    const channel = (await s.send("POST", "/api/rooms", { kind: "channel", name: `tiff-${Date.now()}`, members: [agents.vent] })).body.id as string;
+    try {
+      for (const conversation of ["dm_vent", channel]) {
+        const text = `tiff ${conversation} ${Date.now()}`;
+        const sent = await s.send("POST", `/api/c/${conversation}/send`, { text, images: [tiff, png], requestId: `tiff-${conversation}`, mentions: conversation === channel ? [agents.vent] : [] });
+        assert.equal(sent.status, 200, sent.body.error);
+        const input = await until(async () => inputs.find(i => i.text.includes(text)), i => !!i);
+        assert.deepEqual(input!.images, ["image/png"], conversation);
+        const path = /\[attached file "[^"]*" \(image\/tiff, \d+ bytes\), saved on \S+ at (\S+)\]/.exec(input!.text)?.[1];
+        assert.ok(path, `${conversation}: ${input!.text}`);
+        assert.equal(readFileSync(path, "latin1").slice(0, 4), "MM\0*", conversation);
+      }
+    } finally {
+      host.beforeSubmit = undefined;
+    }
+  });
+
   test("a file line goes back into a card, and text around it stays as written", () => {
     const ref: ImageRef = { url: "/api/uploads/abc-1.pdf", mimeType: "application/pdf", name: 'a "b".pdf', size: 12 };
     const image: ImageRef = { url: "/api/images/t/1/0", mimeType: "image/png" };

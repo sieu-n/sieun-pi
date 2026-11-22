@@ -8,14 +8,22 @@ import type { ImageRef } from "../web/src/lib/api/types.ts";
 
 export const isImage = (ref: Pick<ImageRef, "mimeType">): boolean => ref.mimeType.startsWith("image/");
 
+/**
+ * An image a model reads as an image block: the four types Anthropic takes. Any other image, such as a TIFF pasted on a Mac or an SVG,
+ * reaches the agent as a file line with its path, because on 11-22 the owner's TIFF in a channel post made every later turn of
+ * Search product, misc.'s comm thread fail with a 400 on its media type.
+ */
+const MODEL_IMAGES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+export const isModelImage = (ref: Pick<ImageRef, "mimeType">): boolean => MODEL_IMAGES.has(ref.mimeType);
+
 /** The line an agent reads for one attached file that is not an image. */
 export function fileNote(ref: ImageRef, box: string, path: string): string {
   return `[attached file ${JSON.stringify(ref.name ?? "file")} (${ref.mimeType}, ${ref.size ?? 0} bytes), saved on ${box} at ${path}]`;
 }
 
-/** The text with a line for each attached file that is not an image; images go to the model as image blocks instead. */
+/** The text with a line for each attached file a model does not read as an image; those images go to the model as image blocks instead. */
 export function withFileNotes(text: string, refs: readonly ImageRef[], box: string, pathOf: (ref: ImageRef) => string): string {
-  const notes = refs.filter(ref => !isImage(ref)).map(ref => fileNote(ref, box, pathOf(ref)));
+  const notes = refs.filter(ref => !isModelImage(ref)).map(ref => fileNote(ref, box, pathOf(ref)));
   return notes.length ? [text, ...notes].filter(Boolean).join("\n\n") : text;
 }
 

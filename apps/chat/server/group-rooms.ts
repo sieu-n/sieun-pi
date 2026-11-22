@@ -27,7 +27,7 @@ import type {
 import { type AgentRecord, type AgentStore, type FeedCursor, type GroupRoom, type MemberChange, type RoomDelivery, type RoomId, type RoomMember, type RoomPost, type WakeOn } from "./agent-store.ts";
 import type { Agents } from "./agents.ts";
 import { isHostAway, type EntryRecord, type Host, type Submitted } from "./host/types.ts";
-import { isImage } from "./files.ts";
+import { isModelImage } from "./files.ts";
 import { refusedForGood, retryWait } from "./outbox.ts";
 import { postState } from "./post-edits.ts";
 import { laterLine, reminderPost } from "./later-agents.ts";
@@ -698,7 +698,7 @@ export class GroupRooms {
       "", this.deps.fileNotes(withForward(post.text, post.forward), post.images),
     ];
     const context = (p: RoomPost) => {
-      const shown = p.images.filter(isImage).length;
+      const shown = p.images.filter(isModelImage).length;
       const images = `${shown ? ` [${shown} image${shown > 1 ? "s" : ""} attached]` : ""}${shown < p.images.length ? ` ${this.deps.fileNotes("", p.images).replace(/\n+/g, " ")}` : ""}`;
       const reactions = reactionsLine(id => this.deps.threads.principal(id), p);
       const saved = reader ? laterLine(this.deps.agentLaterMark?.(reader, p)) : "";
