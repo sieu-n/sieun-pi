@@ -277,7 +277,8 @@ export class App {
     this.threads.groupSummaries = () => this.groups.summaries().filter(c => !this.agentStore.isTest(c.id));
     this.threads.roomsOf = agent => this.groups.memberRooms(agent).map(row => row.id);
     this.boards = new Boards(host, this.store, this.threads, this.agents, {
-      board: (chatId, board, awaitingGo) => this.broadcast({ type: "board", chatId, board, awaitingGo }),
+      board: (chatId, board, awaitingGo, lists) => this.broadcast({ type: "board", chatId, board, awaitingGo, ...lists }),
+      row: (chatId, row) => this.broadcast({ type: "board_row", chatId, row }),
       forYou: count => {
         this.broadcast({ type: "for_you", count });
         this.sidebarSoon();
@@ -1493,7 +1494,7 @@ export class App {
   private aboutTest(event: LiveEvent): boolean {
     const id = event.type === "agent" ? event.agent.id : event.type === "job" ? event.job.agent?.id ?? event.job.id
       : event.type === "conversation" ? event.conversation.agent ?? event.conversation.id : event.type === "room" ? event.room.id
-      : event.type === "status" ? event.conversation : event.type === "jobs" ? event.thread : event.type === "board" || event.type === "duties" ? event.chatId : undefined;
+      : event.type === "status" ? event.conversation : event.type === "jobs" ? event.thread : event.type === "board" || event.type === "board_row" || event.type === "duties" ? event.chatId : undefined;
     return id !== undefined && this.agentStore.isTest(id);
   }
 

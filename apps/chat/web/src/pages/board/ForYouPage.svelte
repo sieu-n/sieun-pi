@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
-  import { api, forYou, type BoardOp } from "$lib/api";
+  import { api, reads, view, type BoardOp } from "$lib/api";
   import { Avatar, Bubble, Button, EmptyState, IconButton, IdChip, listKey, LoadingText, Menu, NavItem, PanelHeader, SplitPane, stampLabel, toast, type MenuEntry } from "$lib/ui";
   import { whenLabel } from "$lib/remind";
   import { router } from "$lib/router.svelte";
@@ -23,7 +23,9 @@
   const clock = setInterval(() => { now = Date.now(); }, 30_000);
   onDestroy(() => clearInterval(clock));
 
-  const items = $derived(forYou.items as ForYouItem[]);
+  /** The kept answer of every chat's asks, shown at once on a later open and kept up to date by each board event (kept.svelte.ts). */
+  const forYou = view(() => reads.forYou());
+  const items = $derived((forYou.value ?? []) as ForYouItem[]);
   const visible = $derived(visibleItems(items, filter, now));
   let noteOpen = $state(false);
   /** Set by a click on a row, so its ask opens with the reply box focused; j, k and the arrows open asks with focus left on the list. */
@@ -107,7 +109,6 @@
     <IconButton size="sm" icon="filter" label={filter.unansweredOnly ? "Show every ask" : "Show unanswered only"} pressed={filter.unansweredOnly} onclick={() => { filter = { ...filter, unansweredOnly: !filter.unansweredOnly }; }} />
     <Menu bind:open={menuOpen} anchor={menuAnchor} items={menu} label="For you filters" />
     <span class="spacer"></span>
-    {#if forYou.loading && items.length}<span class="t-caption status">Checking your chats…</span>{/if}
     <IconButton size="sm" icon="plus" label="New note" onclick={() => { noteOpen = true; }} />
   </header>
 {/snippet}
@@ -210,7 +211,6 @@
   .list-pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; height: 100%; }
   .toolbar { display: flex; flex: none; align-items: center; gap: var(--space-1); min-height: var(--size-panel-header); padding-inline: var(--space-1); border-bottom: 1px solid var(--border-standard); }
   .spacer { flex: 1; }
-  .status { color: var(--text-subtle); padding-inline-end: var(--space-2); }
   .scroll { flex: 1; min-height: 0; overflow: auto; }
   .notice { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); padding: var(--space-3) var(--space-panel-inset); }
   .notice p { margin: 0; }

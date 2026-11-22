@@ -11,6 +11,7 @@ import { isAbsolute, join } from "node:path";
 import type { AgentSummary, BoardOp, BoardRow, BoardView, ChatBoard, CheckInPatch, CheckInView, DutyAction, DutyRow, DutyView, ForYouItem, PlanItem } from "../web/src/lib/api/types.ts";
 import { applyBoardOp, BOARD_PREFIX, emptyBoard, needsGo, nextIds, parseBoard, parseBoardOps, stepGo } from "../web/src/lib/api/shared/chat-board.ts";
 import { snoozed } from "../web/src/lib/api/shared/snooze.ts";
+import { newestAskFirst } from "../web/src/lib/api/shared/board-lists.ts";
 import { morningTime, upsertDuty, type Duty, type DutyRunRecord, type DutySchedule, type DutyTrigger } from "../web/src/lib/api/shared/chat-duties.ts";
 import { asAfter, clearPrecheck, measure, measureAfter, runStamp, type PrecheckLaunch } from "./duty-run.ts";
 import { dutyCard, judgedRun, missStreak } from "../web/src/lib/api/shared/duty-card.ts";
@@ -68,8 +69,18 @@ export type PendingPrecheck = { at: number; launch: PrecheckLaunch }
 /** `hidden` is when the owner hid the board from All boards and the Board sidebar; it still opens by its link. */
 export interface DutyFile { duties: Duty[]; runs: Record<string, DutyRunRecord[]>; pending?: Record<string, PendingPrecheck>; checkIn?: CheckInState; hidden?: number }
 
+/**
+ * What a board change does to the two lists of every board: the chat's row in All boards and its asks in For you, or a null row and no
+ * asks for a chat neither list shows, such as a walk's test agent. The page swaps them into its kept answers of GET /api/boards and GET
+ * /api/for-you, so a board change needs no read of either: on 11-21 each change read both again, and his Board list waited 391 to 2,705 ms
+ * behind 5 to 8 For you reads at a time (requests/2026-11-21.jsonl).
+ */
+export interface BoardLists { row: BoardRow | null; forYou: ForYouItem[] }
+
 export interface BoardEvents {
-  board(chatId: string, board: ChatBoard, awaitingGo: string[]): void;
+  board(chatId: string, board: ChatBoard, awaitingGo: string[], lists: BoardLists): void;
+  /** A chat's row in All boards after its duties file changed what the row shows, such as a check-in's next time or a duty's verdict. */
+  row(chatId: string, row: BoardRow): void;
   forYou(count: number): void;
   /** Open For you asks whose Remind me came due, which the page notifies about (notices.ts). */
   asksDue?(items: ForYouItem[], at: number): void;
@@ -229,7 +240,7 @@ export class Boards {
     const board = result ? (result.value ? parseBoard(result.value) : null) : (cached?.board ?? null);
     this.remember(chat, board);
     if (cached && JSON.stringify(cached.board) !== JSON.stringify(board)) {
-      if (board) this.events.board(chat, board, awaitingGo(board));
+      if (board) this.changed(chat, board);
       void this.forYouCount().then(count => this.events.forYou(count), () => undefined);
     }
     return board;
@@ -258,7 +269,7 @@ export class Boards {
     }
     await this.host.docPut(thread, BOARD_DOC, board);
     this.remember(chat, board);
-    this.events.board(chat, board, awaitingGo(board));
+    this.changed(chat, board);
     this.events.forYou(await this.forYouCount());
     if (summaries.length && actor === "owner") {
       const images = ops.flatMap(op => op.op === "todo_update" && op.reply ? this.replyImages(op.reply) : []);
@@ -289,25 +300,34 @@ export class Boards {
     const chat = this.chatId(thread);
     const board = value ? parseBoard(value) : null;
     this.remember(chat, board);
-    if (board) this.events.board(chat, board, awaitingGo(board));
+    if (board) this.changed(chat, board);
+  }
+
+  /** The chats All boards and For you list; a walk's test agent has no place in either, nor in the For you badge. */
+  private listed(): string[] {
+    return this.chats().filter(chat => !this.agents.store.isTest(chat));
+  }
+
+  /** Sends a board's change with its row and its asks, as GET /api/boards and GET /api/for-you would show them now. */
+  private changed(chat: string, board: ChatBoard): void {
+    const row = this.listed().includes(chat) ? this.rowOf(chat, board) : null;
+    if (row) this.sentRows.set(chat, JSON.stringify(row));
+    this.events.board(chat, board, awaitingGo(board), row ? { row, forYou: this.asksOf(chat, board) } : { row: null, forYou: [] });
+  }
+
+  private asksOf(chat: string, board: ChatBoard): ForYouItem[] {
+    const steps = new Map<string, PlanItem>();
+    walk(board.plan, item => steps.set(item.id, item));
+    return board.todos.map(todo => {
+      const step = todo.step ? steps.get(todo.step) : undefined;
+      return { chatId: chat, chatName: this.nameOf(chat), todo, ...(step ? { step: { id: step.id, text: step.text, status: step.status } } : {}) };
+    });
   }
 
   async forYou(): Promise<ForYouItem[]> {
-    const out: ForYouItem[] = [];
-    // A walk's test agent has no place in the owner's For you list or its badge.
-    const chats = this.chats().filter(chat => !this.agents.store.isTest(chat));
+    const chats = this.listed();
     const boards = await Promise.all(chats.map(chat => this.known(chat)));
-    for (const [i, chat] of chats.entries()) {
-      const board = boards[i];
-      if (!board) continue;
-      const steps = new Map<string, PlanItem>();
-      walk(board.plan, item => steps.set(item.id, item));
-      for (const todo of board.todos) {
-        const step = todo.step ? steps.get(todo.step) : undefined;
-        out.push({ chatId: chat, chatName: this.nameOf(chat), todo, ...(step ? { step: { id: step.id, text: step.text, status: step.status } } : {}) });
-      }
-    }
-    return out.sort((a, b) => b.todo.at.localeCompare(a.todo.at));
+    return chats.flatMap((chat, i) => (boards[i] ? this.asksOf(chat, boards[i]) : [])).sort(newestAskFirst);
   }
 
   /** Open todos that no Remind me hides; the soonest reminder sends the count again when it comes due. */
@@ -336,30 +356,27 @@ export class Boards {
   }
 
   async index(): Promise<BoardRow[]> {
-    const rows: BoardRow[] = [];
-    // A walk's test agent stays out of All boards and the Board sidebar, as it stays out of For you.
-    const chats = this.chats().filter(chat => !this.agents.store.isTest(chat));
+    const chats = this.listed();
     const boards = await Promise.all(chats.map(chat => this.known(chat)));
-    for (const [i, chat] of chats.entries()) {
-      const board = boards[i];
-      if (!board) continue;
-      let done = 0;
-      let total = 0;
-      walk(board.plan, item => {
-        if (item.status === "dropped") return;
-        total += 1;
-        if (item.status === "done") done += 1;
-      });
-      const checkIn = this.checkIn(chat);
-      rows.push({
-        chatId: chat, chatName: this.nameOf(chat), rev: board.rev, progress: { done, total },
-        openAsks: board.todos.filter(t => !t.done).length, needsGo: awaitingGo(board).length,
-        checkIn: { nextAt: checkIn.nextAt, paused: checkIn.paused },
-        duties: this.duties(chat).map(d => ({ id: d.duty.id, name: d.duty.name, nextAt: d.nextAt, lastVerdict: d.last?.verdict ?? null })),
-        ...(this.file(chat).hidden ? { hidden: true } : {}),
-      });
-    }
-    return rows;
+    return chats.flatMap((chat, i) => (boards[i] ? [this.rowOf(chat, boards[i])] : []));
+  }
+
+  private rowOf(chat: string, board: ChatBoard): BoardRow {
+    let done = 0;
+    let total = 0;
+    walk(board.plan, item => {
+      if (item.status === "dropped") return;
+      total += 1;
+      if (item.status === "done") done += 1;
+    });
+    const checkIn = this.checkIn(chat);
+    return {
+      chatId: chat, chatName: this.nameOf(chat), rev: board.rev, progress: { done, total },
+      openAsks: board.todos.filter(t => !t.done).length, needsGo: awaitingGo(board).length,
+      checkIn: { nextAt: checkIn.nextAt, paused: checkIn.paused },
+      duties: this.duties(chat).map(d => ({ id: d.duty.id, name: d.duty.name, nextAt: d.nextAt, lastVerdict: d.last?.verdict ?? null })),
+      ...(this.file(chat).hidden ? { hidden: true } : {}),
+    };
   }
 
   /** Hides a board from All boards and the Board sidebar, or shows it again; open boards read the change from the board event. */
@@ -370,7 +387,7 @@ export class Boards {
     else delete file.hidden;
     this.save(chat, file);
     const board = await this.known(chat);
-    if (board) this.events.board(chat, board, awaitingGo(board));
+    if (board) this.changed(chat, board);
     return { hidden };
   }
 
@@ -390,7 +407,7 @@ export class Boards {
     if (board) {
       await this.host.docPut(this.threadOf(chat), BOARD_DOC, board);
       this.remember(chat, board);
-      this.events.board(chat, board, awaitingGo(board));
+      this.changed(chat, board);
       this.events.forYou(await this.forYouCount());
     }
     const prime = readJson<{ duties?: Duty[]; checkIn?: { lastRunAt?: number } }>(join(primeDir, "duties", `${primeId}.json`), {});
@@ -443,6 +460,20 @@ export class Boards {
   }
   private save(chat: string, file: DutyFile): void {
     writeJson(this.dutiesPath(chat), file);
+    this.rowChanged(chat);
+  }
+
+  /** Each listed chat's row as the page last got it from an event, so a save that changes nothing it shows sends nothing. */
+  private readonly sentRows = new Map<string, string>();
+
+  private rowChanged(chat: string): void {
+    const board = this.cache.get(chat)?.board;
+    if (!board || !this.listed().includes(chat)) return;
+    const row = this.rowOf(chat, board);
+    const text = JSON.stringify(row);
+    if (this.sentRows.get(chat) === text) return;
+    this.sentRows.set(chat, text);
+    this.events.row(chat, row);
   }
 
   /** The jobs of an agent: the conversations inside its work thread, and its root job threads. */

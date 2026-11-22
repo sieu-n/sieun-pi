@@ -16,7 +16,7 @@ import { live } from "./live.svelte.ts";
 import { digests, mergeBuckets, untimed, type Timed } from "./shared/hello-buckets.ts";
 import { SvelteMap } from "svelte/reactivity";
 import type {
-  AgentId, AgentSummary, BoardOp, BoardView, ConversationHeader, ConversationId, ConversationSummary, ForYouItem, ImageRef, Item, Me,
+  AgentId, AgentSummary, BoardOp, BoardView, ConversationHeader, ConversationId, ConversationSummary, ImageRef, Item, Me,
   LiveEvent, OpenedPage, RunStatus, SendRequest, SendResult, Sidebar, TurnPlace,
 } from "./types.ts";
 
@@ -1467,87 +1467,8 @@ export class BoardStore {
 }
 export const boardStore = (chatId: string): BoardStore => new BoardStore(chatId);
 
-/** How long For you waits for /api/for-you before it shows an error with Retry; with board reads cached it answered in 10 to 680 ms during searches on 10-28. */
-export const FOR_YOU_DEADLINE_MS = 10_000;
-
-class ForYouStore {
-  items = $state<ForYouItem[]>([]);
-  loading = $state(true);
-  error = $state<string | null>(null);
-  private started = false;
-  private timer: ReturnType<typeof setTimeout> | undefined;
-  private latest = 0;
-  private busy = false;
-  private again = false;
-
-  start(): void {
-    if (this.started) return;
-    this.started = true;
-    live.on(event => {
-      if (event.type === "board" || event.type === "for_you" || event.type === "hello") {
-        clearTimeout(this.timer);
-        this.timer = setTimeout(() => this.follow(), 100);
-      }
-    });
-    // The first read can come from a $derived, where refresh's write to `loading` would throw, so the first load starts after it.
-    queueMicrotask(() => void this.refresh());
-  }
-
-  /** The first load, Retry and the page's own changes read at once and show loading. */
-  refresh(): Promise<void> {
-    return this.read(true);
-  }
-
-  /**
-   * A live change waits for the read in flight and then reads once more, so a stream of board changes cannot restart the deadline forever and
-   * hide a stalled request's error. It never shows loading, so an error stays up with its Retry until an answer replaces it.
-   */
-  private follow(): void {
-    if (this.busy) this.again = true;
-    else void this.read(false);
-  }
-
-  /** Only the newest call writes, so a slow answer never replaces a newer one or ends its loading. */
-  private async read(shown: boolean): Promise<void> {
-    const mine = ++this.latest;
-    this.busy = true;
-    this.again = false;
-    if (shown && !this.items.length) this.loading = true;
-    const signal = AbortSignal.timeout(FOR_YOU_DEADLINE_MS);
-    try {
-      const items = (await api.forYou(signal, shown ? undefined : { background: "shown" })).items;
-      if (mine !== this.latest) return;
-      this.items = items;
-      this.error = null;
-    } catch (error) {
-      if (mine !== this.latest) return;
-      this.error = signal.aborted ? `For you did not answer in ${FOR_YOU_DEADLINE_MS / 1000} s.` : message(error);
-    } finally {
-      if (mine === this.latest) {
-        this.loading = false;
-        this.busy = false;
-        if (this.again) this.follow();
-      }
-    }
-  }
-}
-const forYouStore = new ForYouStore();
-
-/** Every chat's todos, open and done, newest first, live. */
+/** Open todos across every chat, for the sidebar count; the For you page shows the kept answer of `reads.forYou()`. */
 export const forYou = {
-  get items() {
-    forYouStore.start();
-    return forYouStore.items;
-  },
-  get loading() {
-    forYouStore.start();
-    return forYouStore.loading;
-  },
-  get error() {
-    return forYouStore.error;
-  },
-  refresh: () => forYouStore.refresh(),
-  /** Open todos across every chat, from the sidebar count. */
   get count() {
     global.start();
     return global.forYouCount;

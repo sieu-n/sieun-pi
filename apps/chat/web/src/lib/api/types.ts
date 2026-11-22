@@ -874,7 +874,10 @@ export type LiveEvent =
   /** Only to tabs that watch it: the run's place in pi-pool's turn queue while it waits, then null once it works or ends. */
   | { type: "queue"; conversation: ConversationId; place: TurnPlace | null }
   | { type: "jobs"; thread: string; jobs: JobNode[] }
-  | { type: "board"; chatId: string; board: ChatBoard; awaitingGo: string[] }
+  /** `row` and `forYou` are the chat's row in All boards and its asks in For you, a null row and no asks for a chat neither lists. */
+  | { type: "board"; chatId: string; board: ChatBoard; awaitingGo: string[]; row: BoardRow | null; forYou: ForYouItem[] }
+  /** A chat's row in All boards changed with no board change, such as a check-in's next time or a duty's last verdict. */
+  | { type: "board_row"; chatId: string; row: BoardRow }
   | { type: "for_you"; count: number }
   /** A chat's duty rows, sent when a run starts or ends and when a duty is paused, resumed or rescheduled. */
   | { type: "duties"; chatId: string; duties: DutyRow[] }

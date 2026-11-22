@@ -13,6 +13,7 @@
 import { afterWrite, get, reads, takeOver, type Read, type Wait } from "./client.ts";
 import { live } from "./live.svelte.ts";
 import { pageDb, type KeptPage } from "./page-db.ts";
+import { withAsks, withRow } from "./shared/board-lists.ts";
 
 /** The page-db.ts cache the answers go to, so a page load shows them at once and its first read of each is a refresh behind them. */
 const STORED = "kept";
@@ -20,12 +21,15 @@ const STORED = "kept";
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 const same = (a: unknown, b: unknown): boolean => a === b || JSON.stringify(a) === JSON.stringify(b);
 
+/** A read on its way, with the live events' changes that came meanwhile (`Kept.change`). */
+type Flight<T> = { read: Promise<void>; wait: Wait; changes: ((value: T) => T | undefined)[] };
+
 /** One read's kept answer, shared by every panel that shows it. */
 export class Kept<T> {
   /** Raw state, replaced whole by each answer that differs: a board measured 142 KB on 11-20, too big to proxy deeply. */
   value = $state.raw<T | null>(null);
   error = $state<string | null>(null);
-  private flight: { read: Promise<void>; wait: Wait } | undefined;
+  private flight: Flight<T> | undefined;
   private views = 0;
   /** A `live` read holds what the socket's events said since its last answer, so reading it ahead again would bring the same. */
   private current = false;
@@ -64,11 +68,20 @@ export class Kept<T> {
       return this.flight.read;
     }
     const wait: Wait = background ? { background } : {};
-    const flight = {
+    let unplaced = false;
+    const flight: Flight<T> = {
       wait,
-      read: get(this.of, wait).then(next => {
+      changes: [],
+      read: get(this.of, wait).then(answer => {
         if (this.flight !== flight) return;
         this.sent = wait.sent ?? -Infinity;
+        // An event that came while the read was on its way may be newer than the answer, so it goes on top of it, in order.
+        let next = answer;
+        for (const change of flight.changes) {
+          const changed = change(next);
+          if (changed === undefined) unplaced = true;
+          else next = changed;
+        }
         // A refresh that changed what the panel shows is one the owner waited for.
         if (same(this.value, next)) this.error = null;
         else {
@@ -80,10 +93,23 @@ export class Kept<T> {
         if (this.value === null) this.error = message(error);
       }).finally(() => {
         if (this.flight === flight) this.flight = undefined;
+        if (unplaced) void this.read();
       }),
     };
     this.flight = flight;
     return flight.read;
+  }
+
+  /**
+   * Brings the kept answer up to date from a live event, with no read: `change` gives the new answer, or `undefined` when the event cannot
+   * be placed in it, which reads it again. An answer on its way takes the change too, since it may have left the server before the event.
+   */
+  change(change: (value: T) => T | undefined): void {
+    this.flight?.changes.push(change);
+    if (this.value === null) return;
+    const next = change(this.value);
+    if (next === undefined) void this.read();
+    else if (!same(this.value, next)) this.set(next);
   }
 
   /** The answer a read, a write or a live event brought; it is kept for the next page load too. */
@@ -169,7 +195,11 @@ export function kept<T>(of: Read<T>): Kept<T> {
       for (const entry of entries.values()) entry.missed();
     });
     live.on(event => {
-      if (event.type === "board") known(reads.board(event.chatId))?.set({ board: event.board, awaitingGo: event.awaitingGo });
+      if (event.type === "board") {
+        known(reads.board(event.chatId))?.set({ board: event.board, awaitingGo: event.awaitingGo });
+        known(reads.boards())?.change(rows => withRow(rows, event.chatId, event.row));
+        known(reads.forYou())?.change(items => withAsks(items, event.chatId, event.forYou));
+      } else if (event.type === "board_row") known(reads.boards())?.change(rows => withRow(rows, event.chatId, event.row));
       else if (event.type === "duties") known(reads.duties(event.chatId))?.set({ duties: event.duties });
     });
   }

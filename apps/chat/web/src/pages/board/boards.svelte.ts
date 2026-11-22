@@ -1,11 +1,11 @@
-import { agents, api, kept, live, reads, type BoardRow } from "$lib/api";
+import { agents, api, kept, reads, type BoardRow } from "$lib/api";
 import { hrefFor, router } from "$lib/router.svelte";
 import { toast, type MenuEntry } from "$lib/ui";
 import { boardHref, chatHref } from "./chips";
 
 /**
  * Every chat's board row from /api/boards, shared by the Board sidebar and the index so they read once and agree. It is the page's kept
- * answer (kept.svelte.ts), read again on each board event and after the socket comes back.
+ * answer (kept.svelte.ts), which each board event brings up to date and which is read again after the socket comes back.
  */
 class Boards {
   private get kept() {
@@ -13,17 +13,11 @@ class Boards {
   }
 
   private started = false;
-  private timer: ReturnType<typeof setTimeout> | undefined;
 
   start(): void {
     if (this.started) return;
     this.started = true;
     this.kept.open();
-    live.on(event => {
-      if (event.type !== "board") return;
-      clearTimeout(this.timer);
-      this.timer = setTimeout(() => void this.kept.read(), 150);
-    });
   }
 
   load(): Promise<void> {

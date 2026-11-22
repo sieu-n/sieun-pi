@@ -595,10 +595,22 @@ export function attach(file: Blob): Attached {
  * `live` marks one the socket keeps current between reads, by the event that carries its whole answer. `pick` keeps only the part of the
  * server's answer the page shows, so a refresh that changed only the rest leaves the screen as it was and counts as no wait of his.
  */
-export interface Read<T> { readonly path: string; readonly live?: true; readonly pick?: (answer: never) => T; readonly answer?: T }
+export interface Read<T> {
+  readonly path: string; readonly live?: true; readonly pick?: (answer: never) => T; readonly answer?: T;
+  /** How long a read may take before it fails with `error`, so a panel with nothing to show offers Retry instead of loading forever. */
+  readonly deadline?: { ms: number; error: string };
+}
 const read = <T>(path: string, live?: true): Read<T> => ({ path, ...(live ? { live } : {}) });
-export const get = <T>(of: Read<T>, wait?: Wait): Promise<T> =>
-  of.pick ? call<never>("GET", of.path, undefined, undefined, wait).then(of.pick) : call<T>("GET", of.path, undefined, undefined, wait);
+export function get<T>(of: Read<T>, wait?: Wait): Promise<T> {
+  const signal = of.deadline ? AbortSignal.timeout(of.deadline.ms) : undefined;
+  const answer = call<never>("GET", of.path, undefined, signal, wait).catch((error: unknown) => {
+    throw signal?.aborted && of.deadline ? new Error(of.deadline.error) : error;
+  });
+  return of.pick ? answer.then(of.pick) : answer;
+}
+
+/** How long For you waits for /api/for-you before it shows an error with Retry; with board reads cached it answered in 10 to 680 ms during searches on 10-28. */
+export const FOR_YOU_DEADLINE_MS = 10_000;
 
 /**
  * A channel or Solo room as the page lists it, for the # typeahead, mention chips and pickers (pages/channel/directory.svelte.ts):
@@ -623,6 +635,11 @@ export const reads = {
   /** Archived channels and Solo rooms, newest first, for the sidebar's Archived channels list. */
   archivedRooms: () => read<Room[]>("/api/rooms?archived=1"),
   boards: () => read<BoardRow[]>("/api/boards"),
+  /** Every chat's asks, open and done, newest first; each board event brings the kept answer up to date (kept.svelte.ts). */
+  forYou: (): Read<ForYouItem[]> => ({
+    path: "/api/for-you", pick: (answer: { items: ForYouItem[] }) => answer.items,
+    deadline: { ms: FOR_YOU_DEADLINE_MS, error: `For you did not answer in ${FOR_YOU_DEADLINE_MS / 1000} s.` },
+  }),
   /** One agent as a role: purpose, where it runs, its board, memory, instructions and swarm (API.md, Agents). */
   agentConfig: (id: AgentId) => read<AgentConfig>(`/api/agents/${enc(id)}/config`),
   /** An agent's folder: its brief and every entry of its memory, which its config counts but does not send (API.md, Agent folder). */
@@ -749,7 +766,6 @@ export const api = {
   setCheckIn: (chat: string, patch: CheckInPatch) => twice<CheckInView>("POST", `${boardBase(chat)}/check-in`, patch),
   /** Hides a board from All boards and the Board sidebar, or shows it again. */
   setBoardHidden: (chat: string, hidden: boolean) => twice<{ hidden: boolean }>("POST", `${boardBase(chat)}/board/hidden`, { hidden }),
-  forYou: (signal?: AbortSignal, wait?: Wait) => call<{ items: ForYouItem[] }>("GET", "/api/for-you", undefined, signal, wait),
   /** Marks one item, `<room id>/<post id>`, completed or pending again; the same mark twice changes nothing. */
   markForMe: (agent: AgentId, messageId: string, completed: boolean) =>
     twice<{ item: ForMeItem; pending: number }>("POST", `/api/agents/${enc(agent)}/for-me`, { messageId, completed }),
