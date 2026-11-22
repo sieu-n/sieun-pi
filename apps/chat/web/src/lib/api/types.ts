@@ -8,6 +8,7 @@ import type { DutyCardModel } from "./shared/duty-card.ts";
 import type { SkillScan } from "./shared/skills.ts";
 import type { ReviewEvent } from "./shared/skills-review.ts";
 import type { SavedSettings } from "./shared/owner-settings.ts";
+import type { ThreadTimes, Timed } from "./shared/hello-buckets.ts";
 
 export type { BoardOp, ChatBoard, CheckInPause, CheckInView, ChatAgent, OwnerTodo, PlanItem, PlanStatus, AccountsView, MachineView } from "./shared/types.ts";
 export type { DutyView } from "./shared/chat-duties.ts";
@@ -850,10 +851,14 @@ export interface Me {
 export type LiveEvent =
   /** `agents` holds registered agents only (`ag_<slug>`); `jobs` holds each job and child conversation that works for one of them. */
   /**
-   * `partial` names, per list, the buckets whose items `jobs` or `conversations` hold, for a page that sent the digests of what it holds
+   * `jobs` and `conversations` are in their `Timed` form, an item whose time is its thread's without it, and `times` holds each thread's
+   * time. `partial` names, per list, the buckets whose items they hold, for a page that sent the digests of what it holds
    * (shared/hello-buckets.ts); a list it does not name is whole.
    */
-  | { type: "hello"; me: Me; sidebar: Sidebar; agents: AgentSummary[]; jobs: AgentSummary[]; conversations: ConversationSummary[]; partial?: Partial<Record<"jobs" | "conversations", number[]>> }
+  | {
+    type: "hello"; me: Me; sidebar: Sidebar; agents: AgentSummary[]; jobs: Timed<AgentSummary>[]; conversations: Timed<ConversationSummary>[]; times: ThreadTimes;
+    partial?: Partial<Record<"jobs" | "conversations", number[]>>;
+  }
   | { type: "sidebar"; sidebar: Sidebar }
   /** The owner's status, notification setting or recent searches changed in some browser (server/owner-settings.ts). */
   | { type: "owner_settings"; settings: SavedSettings }

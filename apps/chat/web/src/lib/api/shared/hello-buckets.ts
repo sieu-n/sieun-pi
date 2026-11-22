@@ -3,19 +3,60 @@
  * of JSON (jobs 959 KB, conversations 609 KB) and reached the owner's page about 1 s after each socket open at a 200 ms round trip
  * (~/work/p209-wake/after2), and every apps/chat release reopens every page's socket.
  *
- * Each list splits by id into `HELLO_BUCKETS` buckets, and a bucket's digest is FNV-1a over its items' JSON in id order. The page sends the
- * digests of what it holds when it opens the socket (live.svelte.ts), and the hello carries the items of each bucket whose digest differs,
- * with their bucket numbers in `partial`; the page drops what it held in those buckets and takes the hello's items. Equal digests mean
- * equal JSON, so the merged list holds what a whole hello would.
+ * A job's `updatedAt` and a thread's conversations' `lastActivityAt` are their thread's time (server/threads.ts `buildAgentsOf`), so one
+ * turn of a thread with 588 jobs changed 588 rows (11-22, ~/work/p209-wake/hello-diff60.json). The hello therefore carries each thread's
+ * time once in `times`, and an item whose time is its thread's goes as its `Timed` form, without the time and marked `"@t": 1`.
+ *
+ * Each list splits by id into `HELLO_BUCKETS` buckets, and a bucket's digest is FNV-1a over its timed items' JSON in id order. The page
+ * sends the digests of the timed items of its last hello when it opens the socket (live.svelte.ts), and the hello carries the items of
+ * each bucket whose digest differs, with their bucket numbers in `partial`; the page swaps those buckets and puts each thread's time back.
+ * Equal digests mean equal timed items, so the lists equal a whole hello's.
  */
 
 /** The lists a hello may send in part; `agents` and the sidebar always go whole. */
 export const PARTIAL_LISTS = ["jobs", "conversations"] as const;
 export type PartialList = typeof PARTIAL_LISTS[number];
 
-export const HELLO_BUCKETS = 128;
+/** 256 buckets of 8 hex digits are 2 KB per list in the socket's URL; on 11-22 a bucket held about 7 jobs. */
+export const HELLO_BUCKETS = 256;
 
 type Keyed = { readonly id: string };
+/** An item without its time when its time is its thread's (`"@t": 1`). */
+export type Timed<T> = T | (Omit<T, "updatedAt" | "lastActivityAt"> & { "@t": 1 });
+/** Each thread's time, by thread id. */
+export type ThreadTimes = Record<string, number>;
+
+const TIME_FIELD: Record<PartialList, "updatedAt" | "lastActivityAt"> = { jobs: "updatedAt", conversations: "lastActivityAt" };
+/** The thread of a job (`thread`) or of a conversation, whose id is the thread's or `<thread>:<conversation>`. */
+const threadOf = (item: Keyed & { thread?: string }): string => item.thread ?? item.id.split(":")[0]!;
+
+/** Each thread's time, read from its jobs, which all carry it. */
+export function threadTimes(jobs: readonly (Keyed & { thread: string; updatedAt: number })[]): ThreadTimes {
+  const times: ThreadTimes = {};
+  for (const job of jobs) times[job.thread] = Math.max(times[job.thread] ?? 0, job.updatedAt);
+  return times;
+}
+
+/** The list's items in their `Timed` form. */
+export function timed<T extends Keyed>(list: PartialList, items: readonly T[], times: ThreadTimes): Timed<T>[] {
+  const field = TIME_FIELD[list];
+  return items.map(item => {
+    const time = (item as Record<string, unknown>)[field];
+    if (time === undefined || times[threadOf(item)] !== time) return item;
+    const { [field]: _time, ...rest } = item as Record<string, unknown>;
+    return { ...rest, "@t": 1 } as Timed<T>;
+  });
+}
+
+/** The items with each thread's time put back. */
+export function untimed<T extends Keyed>(list: PartialList, items: readonly Timed<T>[], times: ThreadTimes): T[] {
+  const field = TIME_FIELD[list];
+  return items.map(item => {
+    if (!("@t" in item)) return item as T;
+    const { "@t": _mark, ...rest } = item;
+    return { ...rest, [field]: times[threadOf(item)] ?? 0 } as unknown as T;
+  });
+}
 
 function fnv(text: string): number {
   let hash = 0x811c9dc5;

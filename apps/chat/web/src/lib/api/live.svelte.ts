@@ -23,12 +23,16 @@ const TRY_EVERY_MS = 1_000;
 
 /**
  * How long a try to open the socket may go unanswered before the page drops it and starts a new one. A try into a network that drops
- * packets gets no answer, and the system sends its connect again 1 s and 3 s after it started, so a new try each 4 s keeps the gap
- * between connects at 2 s at most while it adds few failed tries: Chrome waits before each new socket of a page 1 to 5 s times
- * 2^min(pending + failed / (opened + 1), 16) / 65536, over the failed and opened sockets of the last 2 to 4 minutes, and a try the page
- * drops counts as failed (services/network/websocket_throttler.cc). In the wake walk (scripts/wake-walk.mjs, ~/work/p209-wake/after1),
- * a new try each second through a 60 s cut left Chromium with no socket for 90 s after the network came back.
+ * packets gets no answer, and the system sends its connect again 1 s and 3 s after it started (Linux), so a new try each 2 s keeps the
+ * gap between connects at 1 s, and one each 4 s at 2 s. Each dropped try counts against the page: Chrome waits before each new socket
+ * 1 to 5 s times 2^min(pending + failed / (opened + 1), 16) / 65536, over the failed and opened sockets of the last 2 to 4 minutes
+ * (services/network/websocket_throttler.cc). In the wake walk a try each second through a 60 s cut left Chromium with no socket for
+ * 90 s after the network came back (~/work/p209-wake/after1), and a try each 4 s left a 2 s gap that made fresh panels wait 2.9 s after
+ * a 5 s cut (after5). So tries go each 2 s for the first `SHORT_OUTAGE_MS`, 15 dropped tries, and each 4 s after: a 60 s outage then
+ * drops about 22 tries, which at one opened socket waits 31 to 156 ms.
  */
+const SHORT_TRY_LIFE_MS = 2_000;
+const SHORT_OUTAGE_MS = 30_000;
 const TRY_LIFE_MS = 4_000;
 
 /**
@@ -61,9 +65,12 @@ class Live {
   private offline: ReturnType<typeof setTimeout> | undefined;
   /** The next try, or the end of the try on its way. */
   private nextTry: ReturnType<typeof setTimeout> | undefined;
-  /** When the open socket last brought anything, and when the ping on its way left, in `Date.now()`, so the time a Mac slept counts as quiet. */
+  /**
+   * When the open socket last brought anything, and when the oldest ping that nothing answered since left, in `Date.now()`, so the time a
+   * Mac slept counts as quiet.
+   */
   private heardAt = 0;
-  private pingAt: number | undefined;
+  private askedAt: number | undefined;
   /** The tries since the socket went down. */
   private tries = 0;
   /** What the page holds of the hello's lists, sent with each try so the hello carries only what changed (shared/hello-buckets.ts). */
@@ -89,17 +96,24 @@ class Live {
     else this.tryOpen();
   }
 
+  /**
+   * Pings a socket that has been quiet `QUIET_MS`, and drops one that has heard nothing in the `PONG_WITHIN_MS` since its oldest unanswered
+   * ping, whatever its `readyState` says. The drop reads only the clock and the last thing heard, so no event the socket fires or misses
+   * keeps a dead socket: in the restart walk after13 on 11-22 (~/work/apps-chat-restart/after13) a WebKit page kept a socket the server
+   * had closed for 15.5 s, until WebKit fired its close.
+   */
   private tick(): void {
     const socket = this.socket;
     if (!socket || document.visibilityState !== "visible") return;
-    if (this.pingAt !== undefined) {
-      if (Date.now() - this.pingAt >= PONG_WITHIN_MS) this.drop(socket);
-    } else if (Date.now() - this.heardAt >= QUIET_MS) this.ping();
+    const now = Date.now();
+    if (now - this.heardAt >= QUIET_MS) this.ping();
+    if (this.askedAt !== undefined && this.heardAt < this.askedAt && now - this.askedAt >= PONG_WITHIN_MS) this.drop(socket);
   }
 
+  /** Asks the server for a pong; the oldest ping that nothing answered yet starts the drop's clock. */
   private ping(): void {
-    if (this.pingAt !== undefined || !this.socket) return;
-    this.pingAt = Date.now();
+    if (!this.socket) return;
+    if (this.askedAt === undefined || this.heardAt >= this.askedAt) this.askedAt = Date.now();
     this.send({ type: "ping" });
   }
 
@@ -109,10 +123,18 @@ class Live {
     const url = new URL("/api/live", location.href);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     for (const [name, value] of Object.entries(this.held())) url.searchParams.set(name, value);
-    const socket = new WebSocket(url);
+    let socket: WebSocket;
+    try {
+      socket = new WebSocket(url);
+    } catch {
+      this.wentDown();
+      this.nextTry = setTimeout(() => this.tryOpen(), TRY_EVERY_MS);
+      return;
+    }
     this.trying = socket;
     this.tries += 1;
-    this.nextTry = setTimeout(() => this.tryOpen(), TRY_LIFE_MS);
+    const down = this.downSince === undefined ? 0 : performance.now() - this.downSince;
+    this.nextTry = setTimeout(() => this.tryOpen(), down < SHORT_OUTAGE_MS ? SHORT_TRY_LIFE_MS : TRY_LIFE_MS);
     socket.onopen = () => {
       clearTimeout(this.nextTry);
       this.trying = null;
@@ -120,7 +142,7 @@ class Live {
       this.tries = 0;
       this.openedAt = performance.now();
       this.heardAt = Date.now();
-      this.pingAt = undefined;
+      this.askedAt = undefined;
       clearTimeout(this.offline);
       this.offline = undefined;
       this.downSince = undefined;
@@ -131,7 +153,6 @@ class Live {
     };
     socket.onmessage = message => {
       this.heardAt = Date.now();
-      this.pingAt = undefined;
       let event: LiveEvent;
       try {
         event = JSON.parse(String(message.data)) as LiveEvent;
@@ -155,11 +176,16 @@ class Live {
   /** Closes a socket the page no longer uses, without its close counting as the open socket's. */
   private forget(socket: WebSocket): void {
     socket.onopen = socket.onmessage = socket.onclose = null;
-    socket.close();
+    try {
+      socket.close();
+    } catch {
+      // A socket the browser already gave up on may refuse the close; the page uses it no more either way.
+    }
   }
 
   /** The open socket went unanswered: the network dropped it, so a new try goes now. */
   private drop(socket: WebSocket): void {
+    this.socket = null;
     this.forget(socket);
     this.lost(0);
   }
@@ -174,7 +200,7 @@ class Live {
 
   private lost(wait: number): void {
     this.socket = null;
-    this.pingAt = undefined;
+    this.askedAt = undefined;
     for (const read of this.reads.values()) read.reject(new Error("The live socket closed before the answer came"));
     this.reads.clear();
     this.wentDown();

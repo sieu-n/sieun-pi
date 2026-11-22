@@ -5,8 +5,8 @@
 import { strict as assert } from "node:assert";
 import { after, test } from "node:test";
 import WebSocket from "ws";
-import { digests, mergeBuckets } from "../../web/src/lib/api/shared/hello-buckets.ts";
-import type { AgentSummary, ConversationSummary, LiveEvent } from "../../web/src/lib/api/types.ts";
+import { digests, mergeBuckets, untimed } from "../../web/src/lib/api/shared/hello-buckets.ts";
+import type { LiveEvent } from "../../web/src/lib/api/types.ts";
 import { start, type Running } from "./helpers.ts";
 
 type Hello = Extract<LiveEvent, { type: "hello" }>;
@@ -45,22 +45,32 @@ test("a page that names what it holds gets only the changed buckets, and merging
   const first = await open(chat.base);
   assert.equal(first.hello.partial, undefined);
   assert.ok(first.hello.conversations.length > 0 && first.hello.jobs.length > 0);
-  const held = (jobs: AgentSummary[], conversations: ConversationSummary[]) => `?jobs=${digests(jobs)}&conversations=${digests(conversations)}`;
+  const held = `?jobs=${digests(first.hello.jobs)}&conversations=${digests(first.hello.conversations)}`;
+  // The lists as a page shows them: each thread's time put back.
+  const lists = (hello: Hello, jobs = hello.jobs, conversations = hello.conversations) =>
+    ({ jobs: byId(untimed("jobs", jobs, hello.times)), conversations: byId(untimed("conversations", conversations, hello.times)) });
 
-  const same = await open(chat.base, held(first.hello.jobs, first.hello.conversations));
+  const same = await open(chat.base, held);
   assert.deepEqual(same.hello.partial, { jobs: [], conversations: [] });
   assert.deepEqual([same.hello.jobs.length, same.hello.conversations.length], [0, 0]);
   assert.ok(same.bytes < first.bytes / 2, `${same.bytes} bytes against ${first.bytes}`);
 
+  // A rename moves the job thread's time, which every job of it carries.
+  const thread = first.hello.jobs.find(job => job.conversation !== 1)!.thread;
+  const before = first.hello.times[thread]!;
+  assert.equal((await chat.send("PATCH", `/api/c/${thread}`, { name: "hello buckets job thread" })).status, 200);
+  await chat.app.threads.refresh();
   const room = await chat.send("POST", "/api/rooms", { kind: "channel", name: "hello-buckets", members: [] });
   assert.equal(room.status, 200);
-  const changed = await open(chat.base, held(first.hello.jobs, first.hello.conversations));
+  const changed = await open(chat.base, held);
   const whole = await open(chat.base);
+  assert.ok(whole.hello.times[thread]! > before, "the thread's time moved");
   assert.ok(changed.hello.partial!.conversations!.length >= 1);
-  const merged = mergeBuckets(first.hello.conversations, changed.hello.partial!.conversations!, changed.hello.conversations);
-  assert.deepEqual(byId(merged), byId(whole.hello.conversations));
-  assert.ok(merged.some(c => c.id === room.body.id));
-  assert.deepEqual(byId(mergeBuckets(first.hello.jobs, changed.hello.partial!.jobs!, changed.hello.jobs)), byId(whole.hello.jobs));
+  const merged = lists(changed.hello, mergeBuckets(first.hello.jobs, changed.hello.partial!.jobs!, changed.hello.jobs),
+    mergeBuckets(first.hello.conversations, changed.hello.partial!.conversations!, changed.hello.conversations));
+  assert.deepEqual(merged, lists(whole.hello));
+  assert.ok(merged.conversations.some(c => c.id === room.body.id));
+  assert.ok(merged.jobs.filter(job => job.thread === thread).every(job => job.updatedAt === whole.hello.times[thread]));
 
   // A string that is not a set of digests gets the whole list.
   const broken = await open(chat.base, "?jobs=zz");

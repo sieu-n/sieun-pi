@@ -43,7 +43,7 @@ import type { ForwardedPost } from "../web/src/lib/api/types.ts";
 import { Rooms } from "./rooms.ts";
 import { applyPrefs, withPrefs } from "./sidebar-prefs.ts";
 import { parseLayout } from "../web/src/lib/api/shared/sidebar-layout.ts";
-import { bucketOf, changedBuckets, digests, PARTIAL_LISTS, type PartialList } from "../web/src/lib/api/shared/hello-buckets.ts";
+import { bucketOf, changedBuckets, digests, PARTIAL_LISTS, threadTimes, timed, type PartialList } from "../web/src/lib/api/shared/hello-buckets.ts";
 import { OwnerSettingsStore } from "./owner-settings.ts";
 import { Unfurler } from "./unfurl.ts";
 import { POST_KINDS, postHas, Search } from "./search.ts";
@@ -1519,18 +1519,19 @@ export class NotFound extends Error {}
 export { modelRef };
 
 /**
- * The hello's jobs and conversations: whole for a page that named nothing it holds, else only the buckets whose digest differs from the
- * page's (shared/hello-buckets.ts), with their numbers in `partial`.
+ * The hello's jobs and conversations in their `Timed` form with each thread's time in `times`: whole for a page that named nothing it
+ * holds, else only the buckets whose digest differs from the page's (shared/hello-buckets.ts), with their numbers in `partial`.
  */
-function helloLists(held: URLSearchParams, lists: { jobs: AgentSummary[]; conversations: ConversationSummary[] }): Pick<Extract<LiveEvent, { type: "hello" }>, PartialList | "partial"> {
+function helloLists(held: URLSearchParams, lists: { jobs: AgentSummary[]; conversations: ConversationSummary[] }): Pick<Extract<LiveEvent, { type: "hello" }>, PartialList | "partial" | "times"> {
+  const times = threadTimes(lists.jobs);
+  const out = { jobs: timed("jobs", lists.jobs, times), conversations: timed("conversations", lists.conversations, times) };
   const partial: Partial<Record<PartialList, number[]>> = {};
-  const out = { ...lists };
   for (const name of PARTIAL_LISTS) {
     const page = held.get(name);
-    const changed = page ? changedBuckets(page, digests(lists[name])) : null;
+    const changed = page ? changedBuckets(page, digests(out[name])) : null;
     if (!changed) continue;
     partial[name] = [...changed];
-    out[name] = (lists[name] as { id: string }[]).filter(item => changed.has(bucketOf(item.id))) as never;
+    out[name] = (out[name] as { id: string }[]).filter(item => changed.has(bucketOf(item.id))) as never;
   }
-  return Object.keys(partial).length ? { ...out, partial } : out;
+  return { ...out, times, ...(Object.keys(partial).length ? { partial } : {}) };
 }

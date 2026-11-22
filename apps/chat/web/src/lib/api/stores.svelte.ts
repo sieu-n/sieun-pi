@@ -13,11 +13,11 @@ import { pageDb, type KeptPage } from "./page-db.ts";
 import { heldSends, type HeldSend } from "./held-sends.ts";
 import { holdReload, releaseReload } from "./reload.ts";
 import { live } from "./live.svelte.ts";
-import { digests, mergeBuckets } from "./shared/hello-buckets.ts";
+import { digests, mergeBuckets, untimed, type Timed } from "./shared/hello-buckets.ts";
 import { SvelteMap } from "svelte/reactivity";
 import type {
   AgentId, AgentSummary, BoardOp, BoardView, ConversationHeader, ConversationId, ConversationSummary, ForYouItem, ImageRef, Item, Me,
-  OpenedPage, RunStatus, SendRequest, SendResult, Sidebar, TurnPlace,
+  LiveEvent, OpenedPage, RunStatus, SendRequest, SendResult, Sidebar, TurnPlace,
 } from "./types.ts";
 
 const byTime = (a: Item, b: Item) => a.at - b.at || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
@@ -367,22 +367,25 @@ class Global {
   ready = $state(false);
   private started = false;
 
-  /** The digests of the lists the page holds, kept while the lists stay the same arrays; none before the first hello. */
-  private digested: { jobs: AgentSummary[]; conversations: ConversationSummary[]; held: Record<string, string> } | undefined;
+  /**
+   * The timed lists of the last hello and their digests, which the next socket open names so its hello carries only the buckets that
+   * changed (shared/hello-buckets.ts); none before the first hello.
+   */
+  private lastHello: { jobs: Timed<AgentSummary>[]; conversations: Timed<ConversationSummary>[]; held: Record<string, string> } | undefined;
 
-  private held(): Record<string, string> {
-    if (!this.ready) return {};
-    const { jobs, conversations } = this;
-    if (this.digested?.jobs !== jobs || this.digested.conversations !== conversations) {
-      this.digested = { jobs, conversations, held: { jobs: digests(jobs), conversations: digests(conversations) } };
-    }
-    return this.digested.held;
+  private takeLists(event: Extract<LiveEvent, { type: "hello" }>): void {
+    const jobs = event.partial?.jobs && this.lastHello ? mergeBuckets(this.lastHello.jobs, event.partial.jobs, event.jobs) : event.jobs;
+    const conversations = event.partial?.conversations && this.lastHello
+      ? mergeBuckets(this.lastHello.conversations, event.partial.conversations, event.conversations) : event.conversations;
+    this.lastHello = { jobs, conversations, held: { jobs: digests(jobs), conversations: digests(conversations) } };
+    this.jobs = untimed("jobs", jobs, event.times).sort(newestFirst);
+    this.conversations = untimed("conversations", conversations, event.times);
   }
 
   start(): void {
     if (this.started) return;
     this.started = true;
-    live.holding(() => this.held());
+    live.holding(() => this.lastHello?.held ?? {});
     live.on(event => {
       switch (event.type) {
         case "hello":
@@ -391,8 +394,7 @@ class Global {
           this.sidebar = event.sidebar;
           syncMarked(event.sidebar);
           this.agents = event.agents;
-          this.jobs = event.partial?.jobs ? mergeBuckets(this.jobs, event.partial.jobs, event.jobs).sort(newestFirst) : event.jobs;
-          this.conversations = event.partial?.conversations ? mergeBuckets(this.conversations, event.partial.conversations, event.conversations) : event.conversations;
+          this.takeLists(event);
           this.forYouCount = event.sidebar.forYou;
           this.ready = true;
           roomsAhead(event.sidebar);
