@@ -15,6 +15,9 @@ async function report(page: Page, range = "24h", extra = ""): Promise<Report> {
   return (await response.json()) as Report;
 }
 
+/** The range's own chart; the tokens per second card under it draws a second one. */
+const mainChart = (page: Page) => page.getByRole("region", { name: / per (minute|hour|day)$/ });
+
 function sums(rows: Row[]) {
   const tokens = Object.fromEntries(KINDS.map(kind => [kind, rows.reduce((sum, row) => sum + row.tokens[kind], 0)])) as Record<Kind, number>;
   const cost = Object.fromEntries([...KINDS, "total"].map(kind => [kind, rows.reduce((sum, row) => sum + row.cost[kind as Kind | "total"], 0)])) as Record<Kind | "total", number>;
@@ -35,9 +38,9 @@ test("the chart comes first, and its total, the figures and every token kind equ
     await expect(row).toContainText(whole(total.tokens[kind]));
     await expect(row).toContainText(dollars(total.cost[kind]));
   }
-  await expect(page.getByTestId("usage-chart-total")).toHaveAttribute("title", exact);
-  await expect(page.getByTestId("usage-figures-total")).toHaveText(exact);
-  await expect(page.getByTestId("usage-figures").locator("tbody tr")).toHaveCount(data.buckets.filter(b => b.turns > 0).length);
+  await expect(mainChart(page).getByTestId("usage-chart-total")).toHaveAttribute("title", exact);
+  await expect(mainChart(page).getByTestId("usage-figures-total")).toHaveText(exact);
+  await expect(mainChart(page).getByTestId("usage-figures").locator("tbody tr")).toHaveCount(data.buckets.filter(b => b.turns > 0).length);
   await expect(page.getByText("Summed from every model call")).toHaveCount(0);
   const chartTop = (await page.getByRole("img", { name: "Cost per day" }).boundingBox())!.y;
   const kindsTop = (await page.getByTestId("usage-kind-input").boundingBox())!.y;
@@ -48,7 +51,7 @@ test("a hover names the bucket and its total, as its figures row has it", async 
   await page.goto("/#/settings/usage?range=7d&by=day");
   const data = await report(page, "7d", "&bucket=day");
   test.skip(!data.rows.length, "no usage in the last 7 days on this server");
-  const hit = page.getByTestId("usage-chart-hit");
+  const hit = mainChart(page).getByTestId("usage-chart-hit");
   const box = (await hit.boundingBox())!;
   const index = data.buckets.findLastIndex(b => b.turns > 0);
   await page.mouse.move(box.x + (box.width / data.buckets.length) * (index + 0.5), box.y + box.height / 2);
@@ -81,14 +84,12 @@ test("the range and the grouping live in the URL, ask the server again, and a ra
   await expect(by.getByRole("tab", { name: "Hour" })).toHaveAttribute("aria-selected", "true");
   await expect(by.getByRole("tab", { name: "Day" })).toHaveAttribute("aria-disabled", "true");
 
-  let asked = page.waitForRequest(request => request.url().includes("/api/usage?range=24h&bucket=minute"));
   await by.getByRole("tab", { name: "Minute" }).click();
-  await asked;
   await expect(page).toHaveURL(/#\/settings\/usage\?.*by=minute/);
+  await expect(page.locator('section[aria-label$=" per minute"]')).toBeVisible();
 
-  asked = page.waitForRequest(request => request.url().includes("/api/usage?range=30d&bucket=day"));
   await range.getByRole("tab", { name: "30d" }).click();
-  await asked;
+  await expect(page.locator('section[aria-label$=" per day"]')).toBeVisible();
   await expect(by.getByRole("tab", { name: "Day" })).toHaveAttribute("aria-selected", "true");
   await expect(by.getByRole("tab", { name: "Minute" })).toHaveAttribute("aria-disabled", "true");
 
@@ -100,6 +101,27 @@ test("the range and the grouping live in the URL, ask the server again, and a ra
   await expect(page).toHaveURL(new RegExp(`thread=${pick.thread}`));
   const only = await report(page, "30d", `&thread=${pick.thread}`);
   await expect(page.getByTestId("usage-cost")).toHaveText(dollars(sums(only.rows).cost.total));
+});
+
+test("the page reads every other range ahead, so a pick shows its chart with no wait and reads it again behind", async ({ page }) => {
+  const ahead = ["range=1h&bucket=minute", "range=24h&bucket=minute", "range=7d&bucket=hour", "range=7d&bucket=day", "range=30d&bucket=day", "range=30d&bucket=hour", "range=90d&bucket=day"];
+  const read = ahead.map(q => page.waitForResponse(response => response.url().includes(`/api/usage?${q}`)));
+  await page.goto("/#/settings/usage");
+  await expect(page.getByTestId("usage-filters")).toBeVisible();
+  await Promise.all(read);
+  const data = await report(page, "7d", "&bucket=day");
+  test.skip(!data.rows.length, "no usage in the last 7 days on this server");
+  let release = () => {};
+  const held = new Promise<void>(resolve => (release = resolve));
+  await page.route("**/api/usage?range=7d*", async route => {
+    await held;
+    await route.continue();
+  });
+  await page.getByRole("tablist", { name: "Range" }).getByRole("tab", { name: "7d" }).click();
+  await page.getByRole("tablist", { name: "Group by" }).getByRole("tab", { name: "Day" }).click();
+  await expect(page.locator('section[aria-label$=" per day"]')).toBeVisible();
+  await expect(mainChart(page).getByTestId("usage-figures").locator("tbody tr")).toHaveCount(data.buckets.filter(b => b.turns > 0).length);
+  release();
 });
 
 test("an old ?days=7 link opens the 7d range", async ({ page }) => {

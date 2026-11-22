@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import { api, type UsageLive, type UsageReport } from "$lib/api";
   import { BUCKET_MS } from "$lib/api/shared/usage-range";
   import { CardGroup } from "$lib/ui";
@@ -24,7 +25,8 @@
   async function poll(): Promise<void> {
     const id = ++request;
     try {
-      const next = await api.usageLive({ ...(thread ? { thread } : {}), ...(host ? { host } : {}) });
+      const shown = untrack(() => live !== null);
+      const next = await api.usageLive({ ...(thread ? { thread } : {}), ...(host ? { host } : {}) }, shown ? { background: "shown" } : {});
       if (id !== request) return;
       live = next;
       error = null;

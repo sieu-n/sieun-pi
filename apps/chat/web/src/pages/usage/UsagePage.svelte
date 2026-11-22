@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import { agents, api, type AccountsView, type UsageBucket, type UsageRange, type UsageReport } from "$lib/api";
   import { bucketFor, isRange, RANGE_BUCKETS, USAGE_RANGES } from "$lib/api/shared/usage-range";
   import { hrefFor, router } from "$lib/router.svelte";
@@ -7,6 +8,7 @@
   import TpsCard from "./TpsCard.svelte";
   import UsageChart from "./UsageChart.svelte";
   import { chartFormat, cost, count, exactCost, full, percent, type TipRow } from "./format";
+  import { keptReport, readAhead, readReport, REFRESH_MS, type UsageFilters } from "./reports";
   import { bucketValue, cacheHit, cellsOf, KIND_LABEL, KINDS, METRIC_LABEL, modelName, modelsByCost, seriesOf, summarize, tokenSum, type Measure, type Metric, type Unit } from "./stats";
 
   /**
@@ -23,7 +25,6 @@
   /** An old #/settings/usage?days=7 link opens the range it meant. */
   const OLD_DAYS: Record<string, UsageRange> = { "1": "24h", "7": "7d", "30": "30d", "90": "90d" };
   const ALL = "all";
-  const REFRESH_MS = 60_000;
   /** The agent a pi-host thread belongs to, as its work thread or one of its comm threads, so its row shows that agent's mascot. */
   const ownerOf = (thread: string) => agents.list.find((agent) => agent.thread === thread || agent.comm?.some((comm) => comm.thread === thread));
 
@@ -47,19 +48,27 @@
 
   const message = (reason: unknown): string => (reason instanceof Error ? reason.message : String(reason));
 
-  async function load(): Promise<void> {
+  function show(next: UsageReport): void {
+    report = next;
+    const seen = { ...chats };
+    for (const row of next.rows) seen[row.thread] = row.threadName;
+    chats = seen;
+    hosts = [...new Set([...hosts, ...next.rows.map(row => row.host)])].sort();
+  }
+
+  /** Shows the kept report of the filters at once, if the page read one, and reads it again; `poll` is the page's own refresh. */
+  async function load(poll = false): Promise<void> {
     const id = ++request;
     loading = true;
-    const filters = { range, bucket, ...(thread === ALL ? {} : { thread }), ...(host === ALL ? {} : { host }) };
+    const filters: UsageFilters = { range, bucket, ...(thread === ALL ? {} : { thread }), ...(host === ALL ? {} : { host }) };
+    const before = keptReport(filters);
+    if (before && before !== report) show(before);
     try {
-      const next = await api.usage(filters);
+      const next = await readReport(filters, poll);
       if (id !== request) return;
-      report = next;
+      show(next);
       error = null;
-      const seen = { ...chats };
-      for (const row of next.rows) seen[row.thread] = row.threadName;
-      chats = seen;
-      hosts = [...new Set([...hosts, ...next.rows.map(row => row.host)])].sort();
+      readAhead(filters);
     } catch (reason) {
       if (id === request) error = message(reason);
     } finally {
@@ -78,17 +87,21 @@
     void load();
     void loadPool();
   }
+  function poll(): void {
+    void load(true);
+    void loadPool();
+  }
 
   $effect(() => {
     void range;
     void bucket;
     void thread;
     void host;
-    void load();
+    untrack(() => void load());
   });
   $effect(() => {
     void loadPool();
-    const timer = setInterval(refresh, REFRESH_MS);
+    const timer = setInterval(poll, REFRESH_MS);
     return () => clearInterval(timer);
   });
 

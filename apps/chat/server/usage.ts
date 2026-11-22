@@ -105,6 +105,12 @@ export interface UsageSource {
   read(cursor: string | undefined, since: number): UsageRead | Promise<UsageRead>;
 }
 
+/**
+ * Rows a read of this box's index takes at once; the pull yields between pages. On 11-22 under load 140 on us-metal02 the first read of
+ * 129k rows took 4.2 s, so a 20,000-row page held the chat's event loop about 650 ms and a 1,000-row page about 33 ms.
+ */
+const SQLITE_PAGE_ROWS = 1_000;
+
 /** This box's pi-host index.sqlite, read as pi-host's `durable_usage_read` reads it. */
 export class SqliteUsage implements UsageSource {
   private db?: DatabaseSync;
@@ -115,7 +121,7 @@ export class SqliteUsage implements UsageSource {
   read(cursor: string | undefined, since: number): UsageRead {
     if (!this.db && !existsSync(this.path)) return { rows: [], cursor: cursor ?? "0:0", more: false, restart: cursor === undefined };
     this.db ??= openIndexReadOnly(this.path);
-    return readUsageRows(this.db, cursor, since);
+    return readUsageRows(this.db, cursor, since, SQLITE_PAGE_ROWS);
   }
   close(): void {
     this.db?.close();
@@ -232,10 +238,13 @@ export class KeptUsage implements Pick<Host, "usage"> {
         if (sum.start < since || sum.start >= until || (only && !only.has(sum.thread))) continue;
         const bucket = since + Math.floor((sum.start - since) / bucketMs) * bucketMs;
         const key = `${bucket}\u0000${sum.thread}\u0000${sum.model}`;
-        const { start: _start, ...sums } = sum;
         const row = rows.get(key);
-        if (!row) rows.set(key, { ...sums, bucket, host: name });
-        else for (const field of SUMS) row[field] += sum[field];
+        if (!row) {
+          rows.set(key, {
+            bucket, host: name, thread: sum.thread, model: sum.model, turns: sum.turns, input: sum.input, output: sum.output, cacheRead: sum.cacheRead,
+            cacheWrite: sum.cacheWrite, cost: sum.cost, costInput: sum.costInput, costOutput: sum.costOutput, costCacheRead: sum.costCacheRead, costCacheWrite: sum.costCacheWrite,
+          });
+        } else for (const field of SUMS) row[field] += sum[field];
       }
       out.push(...[...rows.values()].sort((a, b) => a.bucket! - b.bucket! || a.thread.localeCompare(b.thread) || a.model.localeCompare(b.model)));
     }
