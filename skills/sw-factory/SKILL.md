@@ -9,6 +9,10 @@ sw factory is the Slack-like app on :5184, `apps/chat` in sieun-pi, over pi-host
 The Prime agent chat on :5182 is its older sibling, `legacy/prime/user-history`.
 Each agent has one comm thread per room that talks there, and a work thread that does the work (`apps/chat/docs/agent-model.md`).
 
+## Building the UI
+
+Don't put `backdrop-filter` on an element repeated across a list or grid, because in WebKit, the Mac app's engine, it stalls every frame (12 blurred model pills froze `#/agents` for 8 s or more; fix 45b23e9f).
+
 ## How agents should write in a room
 
 A room reads like Slack, never like a chat assistant's report.
