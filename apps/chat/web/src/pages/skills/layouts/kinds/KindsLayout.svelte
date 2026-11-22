@@ -16,6 +16,7 @@
   let text = $state("");
   let showUnused = $state(false);
   const open = new SvelteSet<string>();
+  const verdictsOpen = new SvelteSet<string>();
   let busy = $state<string | null>(null);
   let moving = $state<{ installId: string; path: string } | null>(null);
   let adding = $state<{ skillId: string; box: string; runtime: SkillRuntime; path: string } | null>(null);
@@ -250,7 +251,16 @@
                       {usesLabel(entry, row.problems.includes("unused"))}. Owned by {ownerLabel(entry, agentNames)}. Source {sourceLabel(entry)}{size ? `, ${size.label}${size.ratio ? `, ${size.ratio}` : ""}` : ""}.
                     </p>
                     {#if entry.verdicts.length > 0}
-                      <ul class="verdicts">{#each entry.verdicts as verdict, i (i)}<li>{verdict.detail}</li>{/each}</ul>
+                      <ul class="verdicts">
+                        {#each entry.verdicts.slice(0, 3) as verdict, i (i)}<li>{verdict.detail}</li>{/each}
+                        {#if entry.verdicts.length > 3}
+                          {#if verdictsOpen.has(entry.id)}
+                            {#each entry.verdicts.slice(3) as verdict, i (i)}<li>{verdict.detail}</li>{/each}
+                          {:else}
+                            <li class="more"><button type="button" class="link" onclick={() => verdictsOpen.add(entry.id)}>{entry.verdicts.length - 3} more findings</button></li>
+                          {/if}
+                        {/if}
+                      </ul>
                     {/if}
 
                     <table class="copies">
@@ -454,6 +464,8 @@
   .description { margin: 0; max-width: 60rem; color: var(--text-standard); font: var(--text-body); }
   .description.missing { color: var(--text-danger); }
   .facts { margin: 0; color: var(--text-subtle); font: var(--text-body-sm); }
+  .verdicts .more { list-style: none; }
+  .link { padding: 0; border: 0; background: none; color: var(--accent-link); font: inherit; cursor: pointer; }
   .verdicts { margin: 0; padding-left: var(--space-4); color: var(--text-standard); font: var(--text-body-sm); }
   .copies { width: 100%; background: var(--surface-panel); border: 1px solid var(--border-standard); border-radius: var(--radius-row); }
   .copies th { padding: 4px var(--space-2); border-bottom: 1px solid var(--border-standard); color: var(--text-subtle); font: var(--text-caption); text-align: left; }
