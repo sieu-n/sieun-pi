@@ -117,7 +117,6 @@ const TABLE = /^[ \t]*\|?.*\|.*\n[ \t]*\|?[ \t]*:?-{3,}:?[ \t]*(?:\|[ \t]*:?-{3,
 const sentences = text => text.replace(/\]\([^)]*\)/g, "]").split(/(?<=[.!?])\s+|\n+/).filter(line => line.trim());
 
 const BULLET = /^\s*[-*+] /;
-const TASK = /^\s*[-*+] \[[ xX]\] /m;
 
 /** Apps with a snooze or remind-later feature, mail and chat apps and the todo apps OPTIONS_ASKS asks about, which an answer names. */
 const APPS = ["Slack", "Superhuman", "Gmail", "Outlook", "Linear", "Discord", "Teams", "Spark", "Hey", "Front", "Missive", "Todoist", "Notion", "Telegram", "WhatsApp", "Apple Mail", "Shortwave", "Boomerang",
@@ -141,7 +140,9 @@ function checks(ask, posts, asked, versions = new Map()) {
     ["no table", !TABLE.test(text)],
     ["no heading, bold or label opener", !/^#{1,6} |\*\*|^[A-Z][\w ]{0,20}:\s/m.test(text)],
   ];
-  if (ask.expect === "line") return [...plain, ["one line with no bullets", lines.length === 1 && !BULLET.test(lines[0])], ["at most 30 words", words(text) <= 30]];
+  // A quick answer may break its two sentences into two lines, as the owner asked in p57 ("엔터, bullet point 똑바로 쓰고."), so the check
+  // asks for no bullets and at most two lines rather than one line.
+  if (ask.expect === "line") return [...plain, ["at most two lines with no bullets", lines.length <= 2 && lines.every(line => !BULLET.test(line))], ["at most 30 words", words(text) <= 30]];
   if (ask.expect === "options") {
     const named = APPS.filter(app => app.test(text)).length;
     const deep = blocks(text).filter(block => {
@@ -177,7 +178,7 @@ function checks(ask, posts, asked, versions = new Map()) {
       ["opens with a one-line answer, not a bullet", lines.length > 1 && !BULLET.test(lines[0]) && words(lines[0]) <= 25],
       // Nested topic groups are allowed but not required, since the owner asked for flat short sentences in p54 on 11-21.
       ["bullets under the answer", lines.slice(1).some(line => BULLET.test(line))],
-      ["a task list", TASK.test(text)],
+      // Since c234 a list of results may be plain bullets, so a task list is no longer required.
       ["no line over 35 words", lines.every(line => words(line) <= 35)],
     ];
   }
