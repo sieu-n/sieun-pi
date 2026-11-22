@@ -3,6 +3,8 @@
  * web client for any other path.
  */
 import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { Server as NetServer, type AddressInfo, type Socket } from "node:net";
 import { extname, join, normalize } from "node:path";
@@ -576,7 +578,10 @@ export function serve(app: App, parts: SkillsParts = skillsParts(app.config, app
   const stalls = new LoopStalls();
   const server = createServer((req, res) => {
     const target = forwarding.get(server);
-    if (target) return forward(target, req, res);
+    if (target) {
+      forwarded.set(server, (forwarded.get(server) ?? 0) + 1);
+      return forward(target, req, res);
+    }
     const path = (req.url ?? "/").split("?")[0]!;
     const method = req.method ?? "GET";
     if (path === "/api/timings" && method === "POST") return void takeTimings(table, requests, app.log, req, res);
@@ -622,6 +627,9 @@ type Conn = { busy: Map<IncomingMessage, ServerResponse>; served: boolean; ended
 const conns = new WeakMap<Server, Map<Socket, Conn>>();
 const draining = new WeakSet<Server>();
 const winding = new WeakSet<Server>();
+/** When each server's wind-down began, and how many calls it forwarded after its drain, which the hand-over's log lines report. */
+const windAt = new WeakMap<Server, number>();
+const forwarded = new WeakMap<Server, number>();
 
 /**
  * From a hand-over's start until its stop, every answer carries `Connection: close`, so a client that is calling opens its next call on a
@@ -630,8 +638,10 @@ const winding = new WeakSet<Server>();
  * up to 11 s.
  */
 export function windDown(server: Server, on = true): void {
-  if (on) winding.add(server);
-  else winding.delete(server);
+  if (on) {
+    winding.add(server);
+    windAt.set(server, Date.now());
+  } else winding.delete(server);
 }
 
 function track(server: Server): void {
@@ -730,7 +740,10 @@ async function forwardDrain(server: Server, address: AddressInfo, maxMs: number)
     return `${req.method} ${req.url}`;
   });
   const left = [...open.values()].flatMap(conn => [...conn.busy.keys()].filter(passThrough)).length;
-  return `drained in ${Date.now() - began} ms, keeping ${open.size} connections (${[...open.values()].filter(conn => !conn.served).length} never used) and sending their calls to ${address.address}:${address.port}` +
+  const since = windAt.get(server);
+  const inWindow = since === undefined ? 0 : [...open.values()].filter(conn => conn.lastAt >= since).length;
+  return `drained in ${Date.now() - began} ms, keeping ${open.size} connections (${[...open.values()].filter(conn => !conn.served).length} never used, ` +
+    `${inWindow} answered a call since the successor started) and sending their calls to ${address.address}:${address.port}` +
     (left ? `, leaving ${left} reads and wiki calls to finish here` : "") + (cut.length ? `, cut ${cut.length} calls at ${maxMs} ms: ${cut.slice(0, 5).join(", ")}` : "");
 }
 
@@ -770,8 +783,32 @@ export async function lingerForwarding(server: Server, maxMs = KEEP_ALIVE_MS + 5
   const open = conns.get(server) ?? new Map<Socket, Conn>();
   const began = Date.now();
   const held = open.size;
+  const peers = await peersOf(server, [...open.keys()]);
   while (open.size && Date.now() - began < maxMs) await new Promise(resolve => setTimeout(resolve, 100));
-  return `forwarded for ${Date.now() - began} ms; ${held} connections were open, ${open.size} still open at the end`;
+  return `forwarded ${forwarded.get(server) ?? 0} calls in ${Date.now() - began} ms; ${held} connections were open (${peers}), ${open.size} still open at the end`;
+}
+
+/** Which processes hold the given connections, by their local port in `ss -tnp`, as "name xN" counts; "peers unknown" when ss fails. */
+async function peersOf(server: Server, sockets: Socket[]): Promise<string> {
+  const port = forwarding.get(server)?.port;
+  if (!port || !sockets.length) return "no peers";
+  try {
+    const { stdout } = await promisify(execFile)("ss", ["-tnpH", "state", "established", `( dport = :${port} )`], { timeout: 5000 });
+    const byPort = new Map<number, string>();
+    for (const line of stdout.split("\n")) {
+      const local = /\s\S+:(\d+)\s+\S+:\d+\s/.exec(line);
+      const name = /users:\(\("([^"]+)",pid=(\d+)/.exec(line);
+      if (local) byPort.set(Number(local[1]), name ? `${name[1]} ${name[2]}` : "unknown");
+    }
+    const counts = new Map<string, number>();
+    for (const socket of sockets) {
+      const who = byPort.get(socket.remotePort ?? 0) ?? (socket.remoteAddress === "127.0.0.1" ? "loopback, not in ss" : String(socket.remoteAddress));
+      counts.set(who, (counts.get(who) ?? 0) + 1);
+    }
+    return [...counts].sort((a, b) => b[1] - a[1]).map(([who, n]) => `${who} x${n}`).join(", ");
+  } catch (error) {
+    return `peers unknown: ${error instanceof Error ? error.message : String(error)}`;
+  }
 }
 
 const netClose = NetServer.prototype.close;
