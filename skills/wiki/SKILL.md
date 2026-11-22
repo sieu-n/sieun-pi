@@ -34,6 +34,10 @@ wiki.supersede(old_path, new_path)
 wiki.close("what changed", no_durable_knowledge=True)  # or graduated_to=[...] or gaps_created=[...]
 ```
 
+`read`, `write`, `edit`, `put` and `supersede` take the same names.
+A bare or relative name such as `check.html` or `notes/check.html` is a page in your workspace folder.
+A name that starts with `sessions/`, `agents/`, `apps/`, `domains/`, `projects/`, `experiments/`, `archive/` or `@code/` is that page at the content root, and a leading `/` also starts at the root, so the home page is `/index.html`.
+
 1. A pi-host job's folder is `agents/<slug>/jobs/YYYY/MM/DD/hhmm-<job>/` (KST day), and an agent's work thread gets its standing notebook `agents/<slug>/work/`, which never closes.
 2. A Prime session's folder is `sessions/YYYY/MM/DD/hhmm-<slug>/`, and its first `wiki.workspace(goal, author=...)` call names the goal.
 3. A refused write raises `wiki.WikiError` with the server's status and its reason, such as 422 for a prose-lint error or a duplicate page, 409 for a stale `base_version` and 403 for a closed folder. A `write`, `edit` or `publish` of a page this process read sends the version that read saw as `base_version`, so a change saved since answers 409 with each newer version, its author and time; read the page again and redo your change. On 2026-11-04 a wiki-dream writer's full write of `dev-push-checks.html` made v116 over another job's v115 with no base and dropped four facts. A second write or edit with a `wiki-dream:` summary of a page this process already saved raises ValueError unless it passes `again='<reason>'`.

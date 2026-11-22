@@ -284,5 +284,89 @@ class ReadVersionTests(unittest.TestCase):
         self.assertEqual(self.bases(), ["114"])
 
 
+class PageStore(BaseHTTPRequestHandler):
+    """Saves each written page by path and serves it back, answering 404 for a path nobody wrote, like the :5184 /wiki routes."""
+
+    pages: dict = {}
+    gets: list = []
+
+    def log_message(self, *args):
+        pass
+
+    def _send(self, status, out, kind="application/json"):
+        data = out.encode() if isinstance(out, str) else json.dumps(out).encode()
+        self.send_response(status)
+        self.send_header("content-type", kind)
+        self.send_header("content-length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _answer(self):
+        size = int(self.headers.get("content-length") or 0)
+        body = self.rfile.read(size).decode() if size else ""
+        url = urllib.parse.urlsplit(self.path)
+        query = dict(urllib.parse.parse_qsl(url.query))
+        if url.path.endswith("/workspace"):
+            return self._send(201, {"id": "agents/vent/jobs/2026/11/22/1400-x", "path": "agents/vent/jobs/2026/11/22/1400-x/index.html"})
+        if url.path == "/wiki/api/agent/sessions":
+            return self._send(201, {"id": "sessions/2026/11/22/1400-x", "path": "sessions/2026/11/22/1400-x/index.html", "version": 1})
+        if self.command == "POST" and url.path == "/wiki/api/agent/page":
+            sent = json.loads(body)
+            PageStore.pages[sent["path"]] = sent["content"]
+            return self._send(201, {"path": sent["path"], "version": 1})
+        if self.command == "PUT":
+            PageStore.pages[urllib.parse.unquote(url.path.removeprefix("/wiki/"))] = body
+            return self._send(201, {"version": 1})
+        if url.path == "/wiki/api/agent/page":
+            found = PageStore.pages.get(query["path"])
+            return self._send(200, {"path": query["path"], "version": 1}) if found is not None else self._send(404, {"error": "not found"})
+        path = urllib.parse.unquote(url.path.removeprefix("/wiki/"))
+        PageStore.gets.append(path)
+        if path not in PageStore.pages:
+            return self._send(404, {"error": f"{path}: no such page"})
+        return self._send(200, PageStore.pages[path], "text/html")
+
+    do_GET = do_POST = do_PUT = _answer
+
+
+class BareNameReadTests(unittest.TestCase):
+    def setUp(self):
+        PageStore.pages, PageStore.gets = {"apps/vent/index.html": "<h1>Vent</h1>"}, []
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), PageStore)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+        self.tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.tmp.cleanup()
+
+    def env(self, session: Path):
+        clean = {k: v for k, v in os.environ.items() if k not in ("PI_HOST_THREAD", "PI_HOST_CONVERSATION", "WIKI_AUTHOR", "RLM_SESSION_DIR")}
+        return patch.dict(os.environ, {**clean, "PI_HOST_CHAT_URL": self.url, "RLM_SESSION_DIR": str(session), "WIKI_AUTHOR": "prime job check"},
+                          clear=True)
+
+    def test_a_bare_name_reads_back_the_workspace_page_write_saved(self):
+        session = Path(self.tmp.name) / ".prime/agent/session-artifacts/01a201a2-7887-77f7-a0f6-8a92a16942f1"
+        session.mkdir(parents=True)
+        with self.env(session):
+            wiki = load_wiki()
+            wiki.workspace("Check bare names")
+            wiki.write("check.html", "<h1>Check</h1><p>bare name</p>")
+            self.assertEqual(wiki.read("check.html", html=True), "<h1>Check</h1><p>bare name</p>")
+            self.assertEqual(wiki.read("apps/vent/index.html", html=True), "<h1>Vent</h1>")
+        self.assertEqual(PageStore.gets, ["sessions/2026/11/22/1400-x/check.html", "apps/vent/index.html"])
+
+    def test_a_pi_host_job_reads_a_bare_name_from_its_folder(self):
+        session = Path(self.tmp.name) / ".prime/agent/pi-host/durable/session-artifacts" / f"{THREAD}-7"
+        session.mkdir(parents=True)
+        with self.env(session):
+            wiki = load_wiki()
+            wiki.write("notes/check.html", "<h1>Check</h1>")
+            self.assertEqual(wiki.read("notes/check.html", html=True), "<h1>Check</h1>")
+        self.assertEqual(PageStore.gets, ["agents/vent/jobs/2026/11/22/1400-x/notes/check.html"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -27,6 +27,7 @@ SPACES = ("sessions", "agents", "apps", "domains", "projects", "experiments", "a
 # The wiki home page, which only a rooted name reaches: on 2026-11-14 at 23:40Z a job's write("index.html") meant its own
 # folder and replaced the home page, because a bare "index.html" was read as the home path.
 HOME = "index.html"
+ROOTS = (*SPACES, "@code")
 PUBLIC = "https://us-metal02-dev.tail0c093d.ts.net:5184/wiki"
 _CONVERSATION = re.compile(r"^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-(\d+)$", re.I)
 _SLUG = re.compile(r"[^a-z0-9]+")
@@ -209,13 +210,14 @@ def _folder() -> str:
 
 
 def _path(name: str) -> str:
-    """A wiki path: `name` as given when it starts in a content space or with "/" (the home page is "/index.html"), else under
-    the workspace folder."""
+    """The wiki path read, write, edit, put and supersede send: `name` as given when it starts in a content space, in @code/ or
+    with "/" (the home page is "/index.html"), else under the workspace folder. On 2026-11-22 read sent a bare "check.html" to the
+    content root and got 404 while write had saved it in the workspace."""
     rooted = name.startswith("/")
     name = name.lstrip("/")
     if name.startswith(("apps/llm-wiki/content/", "content/")):
         raise ValueError(f"{name}: a wiki path starts at the content root, such as sessions/... or apps/...; drop the disk prefix.")
-    return name if rooted or name.split("/")[0] in SPACES else _folder() + name
+    return name if rooted or name.split("/")[0] in ROOTS else _folder() + name
 
 
 def _base(path: str, base_version: int | None) -> int | None:
@@ -353,7 +355,8 @@ def publish(path: str, html: str, *, summary: str | None = None, base_version: i
     """Write a curated page (apps/, domains/, projects/, experiments/) and run the verify gate; close() lists it in graduated_to."""
     if path.lstrip("/") != HOME and (path.lstrip("/").split("/")[0] not in SPACES or path.lstrip("/").startswith(("sessions/", "agents/"))):
         raise ValueError(f"{path}: publish() writes a curated page such as apps/<app>/index.html; write() takes workspace pages.")
-    got = write(path, html, summary=summary, base_version=base_version, author=author, again=again)
+    path = path.lstrip("/")
+    got = write("/" + path, html, summary=summary, base_version=base_version, author=author, again=again)
     verify = _call("POST", "/wiki/api/agent/verify", {"path": path})
     state = _state()
     state["graduated"] = list(dict.fromkeys([*state.get("graduated", []), path]))
@@ -376,10 +379,12 @@ def search(q: str, *, agent: str | None = None, sessions: bool = False, limit: i
 def read(path: str, *, section: str | None = None, lines: str | None = None, html: bool = False) -> str:
     """A page as markdown (Turndown of the stored HTML), or its stored HTML with html=True; either read keeps the page's version.
 
+    `path` names a page the way write and edit do: a bare or relative name is in the workspace, and a content-root path is that page.
+
     The markdown header carries the version. The HTML view has none, so the version is asked first: a write that lands between the two
     calls leaves an older base, which answers 409 instead of being overwritten.
     """
-    path = path.lstrip("/")
+    path = _path(path)
     query = {"format": "html" if html else "md", **({"section": section} if section else {}), **({"lines": lines} if lines else {})}
     version = _version(path) if html else None
     got = _call("GET", f"/wiki/{_quote(path)}?{urllib.parse.urlencode(query)}", text=True)
@@ -403,7 +408,7 @@ def _version(path: str) -> int | None:
 def supersede(old: str, new: str, *, summary: str | None = None, author: str | None = None) -> dict:
     """Mark old (even in a closed folder) as replaced by new."""
     who = _author(author) if not conversation() else author or f"conversation {conversation()}"
-    return _call("POST", "/wiki/api/agent/supersede", {"path": old, "by": new, "author": who, **({"summary": summary} if summary else {})})
+    return _call("POST", "/wiki/api/agent/supersede", {"path": _path(old), "by": _path(new), "author": who, **({"summary": summary} if summary else {})})
 
 
 class _Answer:
