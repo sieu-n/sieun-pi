@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { SkillsDb, SkillsRefused, SkillsStepFailed, type DiskResult, type DiskStep } from "../../server/skills-db.ts";
 import { fixtureScanner, writeSkillsDbFixture, type SkillsDbFixture } from "../../server/skills-db-fixture.ts";
@@ -494,4 +495,24 @@ test("the review runs a skills DB delete of a path that is gone as a no-op, and 
   assert.equal(failed[0]!.state, "failed");
   assert.equal((await steps.undo("sw:mv_fail"))[0]!.state, "undone");
   assert.equal((await review.report(fixture.setName)).items.filter(item => item.id.startsWith("sw:")).length, 0, "the review list hides skills DB items");
+});
+
+test("an inventory the DB took already writes nothing, and a write that finds chat.sqlite locked answers busy at once", t => {
+  const dir = mkdtempSync(join(tmpdir(), "skills-db-busy-"));
+  const db = new SkillsDb({ file: join(dir, "chat.sqlite"), box: BOX, home: "/home/x", piHostPrompt: null }, { run: async () => [], undo: async () => [] });
+  const other = new DatabaseSync(join(dir, "chat.sqlite"));
+  t.after(() => {
+    other.close();
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const scan = macScan("2026-11-22T00:00:00Z", [macCopy("/Users/o/.claude/skills/deploy-notes")]);
+  assert.ok(db.ingest(scan));
+  other.exec("BEGIN IMMEDIATE");
+  const began = performance.now();
+  assert.ok(db.ingest(scan), "the same inventory again needs no write lock");
+  assert.throws(() => db.ingest(macScan("2026-11-22T01:00:00Z", [macCopy("/Users/o/.claude/skills/deploy-notes")])), SkillsRefused);
+  assert.ok(performance.now() - began < 1000, "the serving connection does not wait for the lock");
+  other.exec("ROLLBACK");
+  assert.ok(db.ingest(macScan("2026-11-22T01:00:00Z", [macCopy("/Users/o/.claude/skills/deploy-notes")])));
 });

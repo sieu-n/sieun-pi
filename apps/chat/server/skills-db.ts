@@ -13,6 +13,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { Worker } from "node:worker_threads";
 import {
   COUNT_RULES, SKILL_RUNTIMES, type VerdictRule, type AdoptBody, type ApplyResult, type ApplyStep, type CopyRole, type InstallBody, type InstallState, type MergeBody, type MoveBody,
   type OwnBody, type RemoveBody, type SkillBoxState, type SkillCopy, type SkillCounts, type SkillEntry, type SkillMove, type SkillSight, type SkillOwner, type SkillRuntime,
@@ -189,10 +190,15 @@ export class SkillsDb {
   private version = 0;
   private cached: { version: number; view: Omit<SkillsView, "scan"> } | null = null;
 
-  constructor(private readonly config: SkillsDbConfig, private readonly disk: DiskSteps, private readonly log: (line: string) => void = () => {}) {
+  /**
+   * `busyMs` is how long a write waits for chat.sqlite's write lock inside the call. The serving process passes 0: node:sqlite waits on its
+   * event loop, so a wait there stalls every call, and a write that finds the lock held answers that the DB is busy instead
+   * (`SkillsRefused`). The ingest worker (`ingestOffThread`) waits 5 s.
+   */
+  constructor(private readonly config: SkillsDbConfig, private readonly disk: DiskSteps, private readonly log: (line: string) => void = () => {}, busyMs = 0) {
     mkdirSync(dirname(config.file), { recursive: true });
     this.db = new DatabaseSync(config.file);
-    this.db.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;");
+    this.db.exec(`PRAGMA journal_mode = WAL; PRAGMA busy_timeout = ${busyMs};`);
     this.db.exec(SCHEMA);
     const useColumns = (this.db.prepare("PRAGMA table_info(skill_use)").all() as Row[]).map(r => s(r.name));
     if (!useColumns.includes("by_path")) this.db.exec("ALTER TABLE skill_use ADD COLUMN by_path TEXT NOT NULL DEFAULT '[]'");
@@ -211,8 +217,19 @@ export class SkillsDb {
     this.db.prepare("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(key, value);
   }
 
-  private tx<T>(fn: () => T): T {
-    this.db.exec("BEGIN IMMEDIATE");
+  /**
+   * One write transaction. node:sqlite waits for a held write lock inside the call (busy_timeout 5000), so that wait holds this process's
+   * whole event loop; a wait or a hold over 200 ms is logged with the transaction's name, so a stall can be told apart from one here.
+   */
+  private tx<T>(fn: () => T, name = "write"): T {
+    const asked = performance.now();
+    try {
+      this.db.exec("BEGIN IMMEDIATE");
+    } catch (error) {
+      if (/SQLITE_BUSY|database is locked/i.test(String(error))) throw new SkillsRefused("The skills DB is busy taking a scan's inventory; try again in a few seconds.");
+      throw error;
+    }
+    const began = performance.now();
     try {
       const out = fn();
       this.db.exec("COMMIT");
@@ -221,6 +238,9 @@ export class SkillsDb {
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;
+    } finally {
+      const waited = Math.round(began - asked), held = Math.round(performance.now() - began);
+      if (waited > 200 || held > 200) this.log(`skills db: ${name} waited ${waited} ms for chat.sqlite's write lock and held it ${held} ms`);
     }
   }
 
@@ -284,6 +304,10 @@ export class SkillsDb {
   ingest(raw: unknown): { seeded: boolean; copies: number } | null {
     const facts = parseFacts(raw);
     if (!facts) return null;
+    // Each start takes the inventory again, and a hand-over's successor does it while the old server still serves from the same DB. An
+    // inventory this DB took already changes nothing, so its write transaction, which held chat.sqlite's write lock for seconds at box
+    // load over 200, is left out.
+    if (facts.generatedAt && this.meta("ingested") === facts.generatedAt) return { seeded: false, copies: facts.copies.length };
     const insertCopy = this.db.prepare(
       "INSERT OR REPLACE INTO skill_copies (box, path, real_path, link_target, hash, lines, bytes, mtime, skill_key, changed_lines, stale, fact) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     );
@@ -325,8 +349,27 @@ export class SkillsDb {
       }
       this.rules(this.storeUse(facts), facts.usageCounted);
       this.setMeta("ingested", facts.generatedAt ?? now());
-    });
+    }, "ingest");
     return { seeded, copies: facts.copies.length };
+  }
+
+  /**
+   * `ingest` in a worker thread with its own connection to chat.sqlite, for the serving process: at box load 234 on 11-22 one ingest held
+   * the thread that ran it 6.2 s (a copy of the live DB and inventory), and the old server's ingest after an hourly scan froze every call
+   * for 7.2 s in a walk. Pages read the DB as before; WAL readers never wait for the worker's write.
+   */
+  ingestOffThread(raw: unknown): Promise<{ seeded: boolean; copies: number } | null> {
+    return new Promise((resolve, reject) => {
+      const worker = new Worker(new URL("./skills-db-worker.ts", import.meta.url), { workerData: { config: this.config, raw } });
+      worker.on("message", (message: { log?: string; result?: { seeded: boolean; copies: number } | null; error?: string }) => {
+        if (message.log !== undefined) return this.log(message.log);
+        this.version++;
+        if (message.error !== undefined) reject(new Error(message.error));
+        else resolve(message.result ?? null);
+        void worker.terminate();
+      });
+      worker.on("error", reject);
+    });
   }
 
   /** Each copy's source key, whether its checkout is stale, and its changed lines against its source's canonical text. */
