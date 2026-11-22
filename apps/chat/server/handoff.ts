@@ -136,9 +136,11 @@ export function cgroupOf(pid: number | "self" = "self"): string {
 
 /**
  * How long a successor that systemd took as the main process waits for cpu-protect.py to move it into the unit's core scope before it lets
- * the running server stop: one 2 s pass (INTERVAL_S) and 1 s for the pass itself.
+ * the running server stop. The passes come every 2 s (INTERVAL_S), but on live at load 102 on 11-22 the move took over 3 s after MAINPID=
+ * (release-36c711c). The same pass moves the running server out of the scope, so the wait costs release time and no call's time; the
+ * bound only ends a wait for a pass that never comes.
  */
-const BOOST_MS = 3_000;
+const BOOST_MS = 10_000;
 
 /**
  * A successor's first step once it loaded, while the running server still serves every call: it becomes the unit's main process, so
