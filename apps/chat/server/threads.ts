@@ -187,6 +187,19 @@ export class Threads {
   async stop(): Promise<void> {
     clearInterval(this.timer);
     for (const live of this.live.values()) await live.stop?.().catch(() => undefined);
+    this.saveListCache();
+  }
+
+  /**
+   * Saves the thread list the next server starts on (`start`), with every thread this one knows, one made since the last list read too.
+   * The cache held only what the last read listed: on 11-22 a hand-over came 3 s after the Agent memory duty made 12 test agents, the new
+   * server served a cache without them, and the duty's 12 sends got 404 "No thread" (~/work/agent-memory/d3-hand-2611220900.json).
+   */
+  private saveListCache(): void {
+    const cache = JSON.stringify({ threads: [...this.list.values()], trees: [...this.trees] } satisfies ThreadsCache);
+    if (cache === this.cached) return;
+    this.cached = cache;
+    this.store.saveCache(THREADS_CACHE, JSON.parse(cache));
   }
 
   /**
@@ -284,11 +297,7 @@ export class Threads {
     this.agentRecords?.dropUntitled(next);
     this.agentRecords?.follow(next);
     await this.agentRecords?.fileSpawned(next);
-    const cache = JSON.stringify({ threads, trees: [...this.trees] } satisfies ThreadsCache);
-    if (cache !== this.cached) {
-      this.cached = cache;
-      this.store.saveCache(THREADS_CACHE, JSON.parse(cache));
-    }
+    this.saveListCache();
     const agents = diff(this.agentCache, this.agents({ archived: true }));
     this.agentCache = agents.cache;
     if (agents.changed.length || agents.removed.length) this.events.agents(agents.changed, agents.removed);
