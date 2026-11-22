@@ -9,6 +9,7 @@ import { extname, join, normalize } from "node:path";
 import type { ConversationPatch, DutyAction, LaterPatch, MemoryInput, ReadPoint, RoomInput, RoomPatch, SendRequest } from "../web/src/lib/api/types.ts";
 import { parseSchedule } from "../web/src/lib/api/shared/chat-duties.ts";
 import { agentConfig, agentRecordOf } from "./agent-config.ts";
+import type { Config } from "./config.ts";
 import { EntryExists, EntryMissing, HARNESS_KINDS, type HarnessKind } from "./agent-folder.ts";
 import { parseItemId } from "./for-me.ts";
 import type { AgentRecord, WakeOn } from "./agent-store.ts";
@@ -162,41 +163,74 @@ const opt = (value: unknown): string | null => (typeof value === "string" && val
  * The skills DB over the live scanner and the live review set, or on the fixture server over a throwaway tree under the data dir that the
  * real scanner reads with HOME pointed at it, so `sw skills` and the layouts run against real files there too.
  */
-function skillsDb(app: App, skills: Skills, review: SkillsReview): { db: SkillsDb; skills: Skills } {
-  const piHost = join(app.config.home, ".local/share/pi-host/current/legacy/prime/user-history/src/chat-brief.ts");
-  const file = join(app.config.dataDir, "chat.sqlite");
-  if (!app.config.skillsReview.fixture) {
-    const db = new SkillsDb({ file, box: app.config.box, home: app.config.home, piHostPrompt: piHost }, review.diskSteps("live"), app.log);
-    skills.attach({ ingest: json => db.ingest(json), overlay: rows => db.overlay(rows), lastAttempt: () => db.lastAttempt(), installPaths: () => db.installPaths() }, true);
+function skillsDb(config: Config, log: (line: string) => void, broadcast: Broadcast, skills: Skills, review: SkillsReview): { db: SkillsDb; skills: Skills } {
+  const piHost = join(config.home, ".local/share/pi-host/current/legacy/prime/user-history/src/chat-brief.ts");
+  const file = join(config.dataDir, "chat.sqlite");
+  if (!config.skillsReview.fixture) {
+    const db = new SkillsDb({ file, box: config.box, home: config.home, piHostPrompt: piHost }, review.diskSteps("live"), log);
+    skills.attach({ ingest: once(json => db.ingest(json)), overlay: rows => db.overlay(rows), lastAttempt: () => db.lastAttempt(), installPaths: () => db.installPaths() }, true);
     return { db, skills };
   }
-  const root = join(app.config.dataDir, "skills-db");
-  const setFile = join(app.config.skillsReview.dir, "sets", "skills-db.json");
+  const root = join(config.dataDir, "skills-db");
+  const setFile = join(config.skillsReview.dir, "sets", "skills-db.json");
   const fixture = existsSync(setFile) && existsSync(join(root, "home"))
     ? { home: join(root, "home"), inventory: join(root, "inventory.json"), setName: "skills-db" }
-    : writeSkillsDbFixture(root, { reviewDir: app.config.skillsReview.dir, box: app.config.box });
+    : writeSkillsDbFixture(root, { reviewDir: config.skillsReview.dir, box: config.box });
   const repo = join(import.meta.dirname, "../../..");
-  const own = new Skills({ inventory: fixture.inventory, scanner: fixtureScanner(fixture, repo) }, app.config.box, app.log, scan => app.broadcast({ type: "skills", scan }));
-  const db = new SkillsDb({ file, box: app.config.box, home: fixture.home, piHostPrompt: existsSync(piHost) ? piHost : null }, review.diskSteps(fixture.setName), app.log);
-  own.attach({ ingest: json => db.ingest(json), overlay: rows => db.overlay(rows), lastAttempt: () => db.lastAttempt(), installPaths: () => db.installPaths() }, true);
+  const own = new Skills({ inventory: fixture.inventory, scanner: fixtureScanner(fixture, repo) }, config.box, log, scan => broadcast({ type: "skills", scan }));
+  const db = new SkillsDb({ file, box: config.box, home: fixture.home, piHostPrompt: existsSync(piHost) ? piHost : null }, review.diskSteps(fixture.setName), log);
+  own.attach({ ingest: once(json => db.ingest(json)), overlay: rows => db.overlay(rows), lastAttempt: () => db.lastAttempt(), installPaths: () => db.installPaths() }, true);
   return { db, skills: own };
 }
 
-export function routes(app: App): Route[] {
-  const str = (value: string | null): string | undefined => (value === null || value === "" ? undefined : value);
-  const skills = new Skills(app.config.skills, app.config.box, app.log, scan => app.broadcast({ type: "skills", scan }));
-  const review = new SkillsReview(app.config.skillsReview, skills, app.config.box, {
-    log: app.log,
-    broadcast: event => app.broadcast(event),
+type Broadcast = (event: Parameters<App["broadcast"]>[0]) => void;
+
+/**
+ * An ingest that skips the inventory it took last. A start parses the inventory once, and both the scanner's parse and its attach hand that
+ * same object to the DB, so the first ingest ran twice.
+ */
+function once(ingest: (json: unknown) => void): (json: unknown) => void {
+  let last: unknown;
+  return json => {
+    if (json === last) return;
+    last = json;
+    ingest(json);
+  };
+}
+
+/** The skills scanner, review and DB that the routes use, and `ready`, which settles once the first inventory read and its ingest ended. */
+export type SkillsParts = { skills: Skills; review: SkillsReview; db: { db: SkillsDb; skills: Skills }; ready: Promise<void> };
+
+/**
+ * Builds the skills parts apart from the App, so the first ingest runs before the server takes the port. On a copy of the live data on 11-22
+ * that ingest held the main thread 1.6 s (skills-db.ts ingest in a CPU profile), and on live every hand-over to a server that ran it after
+ * it listened held all calls for 3.0 to 3.8 s. A successor builds them before it says it loaded (server/handoff.ts), while the old server
+ * still serves; their writes to chat.sqlite are the same rows the old server's own ingest wrote.
+ */
+export function skillsParts(config: Config, log: (line: string) => void, app: () => App | undefined): SkillsParts {
+  const broadcast: Broadcast = event => app()?.broadcast(event);
+  const skills = new Skills(config.skills, config.box, log, scan => broadcast({ type: "skills", scan }));
+  const review = new SkillsReview(config.skillsReview, skills, config.box, {
+    log,
+    broadcast,
     // A live fold goes to agent factory's work thread as a message from the review, the way a duty job's report reaches its chat.
     fold: async (text, requestId) => {
-      await app.host.submit(app.boards.threadOf("ag_agent-factory"), { text, requestId, whenBusy: "followUp", entry: { kind: "agent.message", data: { from: "skills review", via: "skills review" } } });
+      const live = app();
+      if (!live) throw new Error("The chat server is still starting.");
+      await live.host.submit(live.boards.threadOf("ag_agent-factory"), { text, requestId, whenBusy: "followUp", entry: { kind: "agent.message", data: { from: "skills review", via: "skills review" } } });
     },
   });
+  const db = skillsDb(config, log, broadcast, skills, review);
+  const ready = db.skills.report().then(() => new Promise<void>(resolve => setImmediate(resolve)));
+  return { skills, review, db, ready };
+}
+
+export function routes(app: App, parts: SkillsParts): Route[] {
+  const str = (value: string | null): string | undefined => (value === null || value === "" ? undefined : value);
+  const { skills, review, db } = parts;
   const refused = (error: unknown): never => {
     throw error instanceof ReviewRefused || error instanceof SkillsRefused ? new BadRequest(error.message) : error;
   };
-  const db = skillsDb(app, skills, review);
   const change = (run: (body: Record<string, unknown>) => Promise<unknown>) => async (_r: IncomingMessage, _p: Params, _q: URLSearchParams, body: () => Promise<unknown>) => {
     try {
       const raw = await body();
@@ -525,8 +559,8 @@ export function routes(app: App): Route[] {
   ];
 }
 
-export function serve(app: App): Server {
-  const table = routes(app);
+export function serve(app: App, parts: SkillsParts = skillsParts(app.config, app.log, () => app)): Server {
+  const table = routes(app, parts);
   const requests = new RequestLog(join(app.config.dataDir, "requests"), app.log);
   const stalls = new LoopStalls();
   const server = createServer((req, res) => {

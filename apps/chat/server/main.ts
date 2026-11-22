@@ -14,7 +14,7 @@ import { PiHost } from "./host/pi-host.ts";
 import { RelayHost } from "./host/relay-host.ts";
 import type { Host } from "./host/types.ts";
 import { projectList } from "./projects.ts";
-import { drain, serve } from "./http.ts";
+import { drain, serve, skillsParts } from "./http.ts";
 import { seedFixture } from "./fixture/seed.ts";
 import { handOverOnHangup, listening, tellSystemd } from "./handoff.ts";
 
@@ -34,13 +34,18 @@ const shutdown = async () => {
 };
 process.on("SIGTERM", () => void shutdown());
 process.on("SIGINT", () => void shutdown());
-// A successor reads the data dir only once the server it follows stopped and wrote its files (server/handoff.ts).
+if (config.fixture && !process.argv.includes("--data-dir")) config.dataDir = mkdtempSync(join(tmpdir(), "apps-chat-fixture-"));
+if (config.fixture) Object.assign(config, fixtureFolders(config.dataDir));
 const port = listening();
+// The skills DB's first ingest runs before the port is taken, and for a successor while the old server still serves (http.ts skillsParts).
+const skillsAt = performance.now();
+const skills = skillsParts(config, log, () => app);
+await skills.ready;
+const skillsMs = Math.round(performance.now() - skillsAt);
+// A successor reads the data dir only once the server it follows stopped and wrote its files (server/handoff.ts).
 const waitedAt = performance.now();
 if (port.predecessor) await port.predecessor.stopped();
 const waitedMs = Math.round(performance.now() - waitedAt);
-if (config.fixture && !process.argv.includes("--data-dir")) config.dataDir = mkdtempSync(join(tmpdir(), "apps-chat-fixture-"));
-if (config.fixture) Object.assign(config, fixtureFolders(config.dataDir));
 /**
  * One `Host` per box with an agent relay in the hosts registry, and the local pi-host socket for this box until its own relay is listed
  * there, behind one `MultiHost`.
@@ -63,11 +68,11 @@ app = new App(config, host, log);
 await app.start();
 // A fixture server fills its own search index at once, so its first search does not wait for it.
 if (config.fixture) void app.searchEngine.start().catch(() => undefined);
-const http = (server = serve(app));
+const http = (server = serve(app, skills));
 const fd = port.fd;
 await new Promise<void>(resolve => (fd === null ? http.listen(config.port, config.listen, resolve) : http.listen({ fd }, resolve)));
 log(`apps/chat on http://${config.listen}:${config.port}${fd === null ? "" : ` through fd ${fd}`} (${config.fixture ? "fixture" : `pi-host ${config.socket}`}, data ${config.dataDir}); ` +
-  `modules ${loadedMs} ms${port.predecessor ? `, the old server's stop ${waitedMs} ms` : ""}, state and start ${Math.round(performance.now() - startAt)} ms`);
+  `modules ${loadedMs} ms, skills ${skillsMs} ms${port.predecessor ? `, the old server's stop ${waitedMs} ms` : ""}, state and start ${Math.round(performance.now() - startAt)} ms`);
 try {
   await tellSystemd(port.predecessor !== null, log);
 } catch (error) {
