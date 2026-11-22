@@ -122,3 +122,41 @@ test("a kept panel's read asked as his write answered leaves at once and does no
     return (kept({ path: "/api/rooms?test=1&panel=1" }).value as { name: string }[]).some((room) => room.name === name);
   }, name)).toBe(true);
 });
+
+test("the Work tab's rooms read after a remove and its Undo is logged as a wait, not a refresh", async ({ page }) => {
+  await page.addInitScript(() => {
+    navigator.sendBeacon = () => false;
+  });
+  const t = tag();
+  const agent = (await (await page.request.post("/api/agents", { data: { name: `refetch work ${t}`, test: true } })).json()) as { id: string; name: string };
+  const room = (await (await page.request.post("/api/rooms", { data: { kind: "channel", name: `refetch-work-${t}`, members: [agent.id], test: true } })).json()) as { id: string; name: string };
+  await page.goto(`/#/agents/${agent.id}?section=work`);
+  const rooms = page.getByRole("region", { name: "Rooms" });
+  const chip = rooms.getByRole("button", { name: room.name, exact: true });
+  await expect(chip).toBeVisible();
+  await page.waitForLoadState("networkidle");
+  const config = `/api/agents/${agent.id}/config`;
+  const batches: { p: string; m: string; bg?: string }[][] = [];
+  page.on("request", (r) => {
+    if (r.url().endsWith("/api/timings")) batches.push((r.postDataJSON() as { samples: { p: string; m: string; bg?: string }[] }).samples);
+  });
+  const flush = async () => {
+    const before = batches.length;
+    await page.evaluate(() => dispatchEvent(new Event("pagehide")));
+    await expect.poll(() => batches.length).toBeGreaterThan(before);
+  };
+  await flush();
+  const from = batches.length;
+  await rooms.getByRole("button", { name: `Remove ${agent.name} from #${room.name}` }).click();
+  await expect(chip).toHaveCount(0);
+  await page.getByRole("button", { name: "Undo" }).last().click();
+  await expect(chip).toBeVisible();
+  await page.waitForLoadState("networkidle");
+  await flush();
+  const lines = batches.slice(from).flat();
+  const writes = lines.filter((s) => s.p.startsWith(`/api/rooms/${room.id}/members`));
+  const reads = lines.filter((s) => s.m === "GET" && s.p === config);
+  expect(writes).toHaveLength(2);
+  // One read after each write is his; a socket event's read of an unchanged panel after it may still be a refresh.
+  expect(reads.filter((s) => !s.bg).length).toBeGreaterThanOrEqual(2);
+});

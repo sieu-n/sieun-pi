@@ -327,14 +327,20 @@ function laned<T>(wait: Wait, attempt: (signal: AbortSignal | undefined, asked: 
   });
 }
 
+/** How much a call is his: a read ahead, a refresh behind a shown page, or a call he waits on. */
+const rank = (background: Wait["background"]): number => (background === "ahead" ? 0 : background === "shown" ? 1 : 2);
+
 /**
  * A view takes over a read ahead: it shows the answer behind a page it already shows (`background` "shown"), and then the read waits in
  * the lane as a refresh, or it waits on it, and then its calls leave the lane at once: a queued one is sent now and one on its way is
- * never stopped, and each counts as his call until it ends. A refresh asked as his write answered is one he waits on (`wroteNow`).
+ * never stopped, and each counts as his call until it ends. A refresh asked as his write answered is one he waits on (`wroteNow`). A take
+ * over never makes a call less his: on 11-22 all 8 Work tab rooms reads after a remove or Undo in a live walk, his calls, were logged as
+ * refreshes, because a later read of the same panel took each over as one (work/p155-write-refetch/walk-after.log, write-refetch.spec.ts).
  */
 export function takeOver(wait: Wait, background: Wait["background"]): void {
-  wait.background = wroteNow && background === "shown" ? undefined : background;
-  if (wait.background === "ahead") return;
+  const next = wroteNow && background === "shown" ? undefined : background;
+  if (rank(next) <= rank(wait.background)) return;
+  wait.background = next;
   const mine = [...queued, ...flying].filter(ticket => ticket.wait === wait);
   for (const ticket of mine) ticket.asked ??= performance.now();
   if (wait.background === "shown") return pump();
