@@ -18,8 +18,8 @@ import { fileArchived } from "./session-file-end.ts";
  * the other LC_* variables (sshd here accepts LC_*). Chrome overwrites its environ with its title, so a Chrome takes the owner of the group it
  * runs in. A group is a transient systemd user service (one systemd-run unit) or else the tree under the topmost process below systemd --user,
  * pid 1 or an sshd. A group with no owner signal is listed and never signalled. Prime's own processes and everything under a live kernel, the
- * shared services (pm2 and the Convex watcher under it, Aside, cua-driver) and every process of a unit with a unit file (the chat services,
- * llm-wiki, code-server, the Prime daemon) are never in a group.
+ * shared services (pm2 and the Convex watcher under it, Aside, cua-driver) and every process of a unit with a unit file (the chat services and
+ * the Prime daemon) or of a Docker container scope are never in a group.
  *
  * A container's processes run under containerd-shim with no owner in their env, so a container is a group of its own, read from the label
  * ai.virev.owner that the sieun-rules docker shim (unit-env/docker) adds to each `docker run` and `docker create`. On 11-13 the ClickHouse rig
@@ -68,6 +68,10 @@ export function unitOf(cgroup: string | null): string | null {
   return match ? match[1]! : null;
 }
 
+/** A Docker container's cgroup, under any slice: Docker's cgroup-parent is dev.slice on us-metal02, and Komodo Stacks set others. A
+ * container is judged as a whole by containerGroups, from its owner label, never process by process. */
+const DOCKER_SCOPE = /\/docker-[0-9a-f]+\.scope$/;
+
 const hasUnitFile = (unit: string, files: ReadonlySet<string>): boolean => files.has(unit) || files.has(unit.replace(/@[^.]*\./, "@."));
 
 /**
@@ -77,11 +81,14 @@ const hasUnitFile = (unit: string, files: ReadonlySet<string>): boolean => files
 export function groupProcesses(rows: readonly ProcRow[], unitFiles: ReadonlySet<string>, hostOf: (address: string) => string, here: string): Group[] {
   const byPid = new Map(rows.map(row => [row.pid, row]));
   const service = (row: ProcRow): string | null => { const unit = unitOf(row.cgroup); return unit?.endsWith(".service") ? unit : null; };
-  const keptUnit = (unit: string | null | undefined): boolean => !!unit && unit !== "prime-agent-daemon.service" && hasUnitFile(unit, unitFiles);
+  // An owner named komodo:<stack>/<service> is a Komodo-managed container, such as komodo:box-services/ci-cache, which has no unit file.
+  const keptUnit = (unit: string | null | undefined): boolean =>
+    !!unit && (unit.startsWith("komodo:") || (unit !== "prime-agent-daemon.service" && hasUnitFile(unit, unitFiles)));
   // A runner unit that take-in.service's timer run started belongs to take-in.service as much as its own processes do: from 18:06Z on 11-03
   // every d2 run listed one convex-save-check-land-object unit (6 processes, 5.3 GB) as an orphan of no owner.
   const kept = (row: ProcRow): boolean =>
-    row.prime || row.shared || PROTECTED_COMMAND.test(row.command) || (row.cgroup ?? "").includes("/system.slice/") || keptUnit(service(row)) || keptUnit(row.ownerUnit);
+    row.prime || row.shared || PROTECTED_COMMAND.test(row.command) || (row.cgroup ?? "").includes("/system.slice/") || DOCKER_SCOPE.test(row.cgroup ?? "")
+    || keptUnit(service(row)) || keptUnit(row.ownerUnit);
   const boundary = (row: ProcRow | undefined): boolean => !row || row.pid <= 1 || /(^|\/)systemd --user/.test(row.command) || /^sshd/.test(row.command);
   /** The topmost process below a boundary, or null when the chain passes a Prime process, a shared service or a kept unit. */
   const rootOf = (row: ProcRow): number | null => {

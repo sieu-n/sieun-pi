@@ -1,8 +1,7 @@
 // Guards p661 (10-31): a Mac job's Chrome driver ran 2 days on us-metal02 after its job ended, so d2 stops a process only when its own env or its
 // group names a session that ended over 1 h ago, and lists a group with no owner without signalling it.
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -67,6 +66,15 @@ test("11-03: a runner unit take-in.service started is kept like take-in.service,
     row(90, 4578, runner, { cgroup: `${USER}/convex-save-check-land-object-90.service`, ownerUnit: "aw-drv.service" }),
   ], ["take-in.service"]);
   assert.deepEqual(groups.map(entry => entry.unit), ["convex-save-check-land-object-90.service"]);
+});
+
+test("11-22: a runner whose owner is a Komodo container and every process of a container scope are kept", () => {
+  const groups = group([
+    row(95, 4578, "node scripts/repo/agent/convex-save-check.mjs run", { cgroup: `${USER}/convex-save-check-probe-95.service`, ownerUnit: "komodo:box-services/ci-cache" }),
+    row(96, 900, "node server.mjs", { cgroup: "/user.slice/user-serve.slice/docker-c285685a37f0.scope" }),
+    row(97, 900, "node scripts/dev/ci-cache.mjs poll", { cgroup: "/dev.slice/docker-3c057784b74b.scope" }),
+  ]);
+  assert.deepEqual(groups, []);
 });
 
 test("RLM_SESSION_DIR on this box wins over the ssh tag, and a tag with no host takes the box its ssh came from", () => {
@@ -362,17 +370,6 @@ test("a Mac owner's transcript is found through a login shell that fails on an u
     assert.equal(verdicts.get(`mac/${JOB}`)?.state, "ended");
     assert.equal(hosts("Mac"), "mac");
   } finally { await rm(home, { recursive: true, force: true }); }
-});
-
-test("the reaper runs on its own timer at least once per ENDED_FOR_MS, not only in the daily d2 run", async () => {
-  // 11-03: box Chrome runners of Mac jobs that ended 1 to 10.6 h before still held 2.2 GB, because only the daily d2 run reaped.
-  const deploy = new URL("../../../../deploy/linux/", import.meta.url);
-  const timer = await readFile(new URL("orphan-reaper.timer", deploy), "utf8");
-  const minutes = Number(/^OnUnitInactiveSec=(\d+)min$/m.exec(timer)?.[1]);
-  assert.ok(minutes > 0 && minutes * 60_000 <= ENDED_FOR_MS, `orphan-reaper.timer runs every ${minutes} min`);
-  const service = await readFile(new URL("orphan-reaper.service", deploy), "utf8");
-  const script = /^ExecStart=.* (scripts\/\S+\.ts)$/m.exec(service)?.[1];
-  assert.ok(script && existsSync(new URL(`../${script}`, import.meta.url)), `orphan-reaper.service runs ${script}`);
 });
 
 test("11-03: a vitest fork worker or a multiprocessing forkserver that lost its parent stops even while the chat its env names is live", () => {

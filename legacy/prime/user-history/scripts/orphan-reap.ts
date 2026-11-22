@@ -1,5 +1,5 @@
 /**
- * d2's orphan reaper on its own timer (deploy/linux/orphan-reaper.timer): it stops the processes whose owning Prime session ended over
+ * d2's orphan reaper on its own schedule (Komodo Procedure m02-orphan-reaper, every 15 min, auto-sns-agent apps/infra/box/compose.sieun-pi.yml): it stops the processes whose owning Prime session ended over
  * ENDED_FOR_MS ago, as the daily VPS and dev boxes run does (scripts/duties/vps-boxes.ts). On 11-03 at 11:40Z five box Chrome runners whose Mac
  * jobs had ended 1 to 10.6 h before still held 2.2 GB on us-metal02, because the daily d2 run had last read the box at 22:52Z the day before.
  */
