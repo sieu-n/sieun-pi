@@ -52,6 +52,6 @@ test("a copy row says its drift, its size against the median and keeps the folde
   assert.deepEqual(splitPath("/home/sieun/src/sieun-pi/skills/board"), { head: "/home/sieun/src/sieun-pi/skills/", tail: "board" });
   assert.deepEqual(sight([{ kind: "sw-comm", how: "listed", copyId: "x" }, { kind: "sw-work", how: "inlined", copyId: "x" }, { kind: "prime-job", how: "hidden", why: "disable-model-invocation" }]), {
     listed: ["sw factory comm", "sw factory work (full text)"],
-    hidden: [{ kind: "Prime job", why: "disable-model-invocation" }],
+    hidden: [{ kinds: ["Prime job"], why: "disable-model-invocation" }],
   });
 });

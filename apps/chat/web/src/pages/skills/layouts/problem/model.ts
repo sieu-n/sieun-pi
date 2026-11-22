@@ -130,9 +130,9 @@ export const THREAD_TEXT: Record<ThreadKind, string> = {
   codex: "Codex",
 };
 
-export function sight(sees: readonly SkillSight[]): { listed: string[]; hidden: { kind: string; why: string }[] } {
+export function sight(sees: readonly SkillSight[]): { listed: string[]; hidden: { kinds: string[]; why: string }[] } {
   const listed: string[] = [];
-  const hidden: { kind: string; why: string }[] = [];
+  const hidden: { kinds: string[]; why: string }[] = [];
   for (const s of sees) {
     switch (s.how) {
       case "listed":
@@ -148,7 +148,11 @@ export function sight(sees: readonly SkillSight[]): { listed: string[]; hidden: 
         listed.push(`${THREAD_TEXT[s.kind]} in ${s.repo}`);
         break;
       case "hidden":
-        hidden.push({ kind: THREAD_TEXT[s.kind], why: s.why });
+        {
+          const same = hidden.find(h => h.why === s.why);
+          if (same) same.kinds.push(THREAD_TEXT[s.kind]);
+          else hidden.push({ kinds: [THREAD_TEXT[s.kind]], why: s.why });
+        }
         break;
       default: {
         const _exhaustive: never = s;
@@ -170,7 +174,7 @@ export const topKinds = (skill: SkillEntry): { kind: string; uses: number }[] =>
 export const mergeInto = (skill: SkillEntry, copy: SkillCopy): string | null =>
   skill.verdicts.find(v => v.action === "merge" && v.copyId === copy.id && v.other !== null)?.other ?? null;
 
-export const copyNotes = (skill: SkillEntry, copy: SkillCopy): SkillVerdictRow[] => skill.verdicts.filter(v => v.copyId === copy.id);
+export const copyNotes = (skill: SkillEntry, copy: SkillCopy): SkillVerdictRow[] => skill.verdicts.filter(v => v.copyId === copy.id && v.rule !== "bloated");
 
 export const tilde = (path: string): string => path.replace(/^\/(?:home|Users)\/[^/]+(?=\/|$)/, "~");
 
@@ -195,8 +199,11 @@ export function headline(skill: SkillEntry, kind: GroupKind, limits: SkillThresh
     case "bloated":
       return sizeText(skill.size.bytes, limits)?.text ?? rows[0]?.detail ?? "";
     case "broken":
-    case "name-clash":
       return rows[0]?.detail ?? "";
+    case "name-clash": {
+      const others = new Set(rows.map(v => v.other)).size;
+      return `${others} other ${others === 1 ? "skill has" : "skills have"} this name and different text`;
+    }
     default: {
       const _exhaustive: never = kind;
       return _exhaustive;
@@ -242,4 +249,10 @@ export function sourceText(source: SkillSource): string {
       return _exhaustive;
     }
   }
+}
+
+export function sourceBox(skills: readonly SkillEntry[]): string | null {
+  const tally = new Map<string, number>();
+  for (const skill of skills) for (const c of skill.copies) if (c.role === "source") tally.set(c.box, (tally.get(c.box) ?? 0) + 1);
+  return [...tally].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
 }

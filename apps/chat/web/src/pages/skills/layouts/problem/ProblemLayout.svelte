@@ -4,7 +4,7 @@
   import { Button, Dialog, EmptyState, Field, Input, SearchField, Select, ageLabel, toast, tooltip } from "$lib/ui";
   import { SvelteSet } from "svelte/reactivity";
   import SkillRow from "./SkillRow.svelte";
-  import { GROUP_TEXT, PROBLEMS, healthy, names, problemGroups, tilde, type Problem, type RowActions } from "./model";
+  import { GROUP_TEXT, PROBLEMS, healthy, names, problemGroups, sourceBox, tilde, type Problem, type RowActions } from "./model";
 
   /**
    * Settings > Skills, by problem: the duplicated, outdated and bloated counts, each a filter, then the skills grouped by problem worst
@@ -67,16 +67,24 @@
 
   async function undo(moveId: string, undone: string): Promise<void> {
     try {
-      await api.undoSkillMove({ moveId });
+      const done = await api.undoSkillMove({ moveId });
       await reload();
-      toast.show(undone);
+      const failed = done.apply?.steps.filter(step => step.result === "failed") ?? [];
+      if (failed.length) toast.error(`Undo did not finish on ${failed[0]!.box}: ${failed[0]!.note ?? "a disk step failed"}`);
+      else toast.show(undone);
     } catch (reason) {
       toast.error(`Undo failed: ${message(reason)}`);
     }
   }
 
+  const mainBox = $derived(sourceBox(view.skills) ?? boxNames[0] ?? "");
+  const homeBox = (skillId: string): string => {
+    const copies = view.skills.find(s => s.id === skillId)?.copies ?? [];
+    return (copies.find(c => c.role === "source") ?? copies.find(c => c.box === mainBox))?.box ?? mainBox;
+  };
+
   function openInstall(skillId = "", locked = false): void {
-    form = { kind: "install", skillId, box: boxNames[0] ?? "", runtime: "prime", agent: "", mode: "link", path: "", locked };
+    form = { kind: "install", skillId, box: homeBox(skillId), runtime: "prime", agent: "", mode: "link", path: "", locked };
     formError = null;
     formOpen = true;
   }
@@ -209,7 +217,10 @@
     <section class="group" aria-labelledby="problem-unused" data-testid="problem-group-unused">
       <header>
         <h2 id="problem-unused">Never used <span class="k">{unused.length}</span></h2>
-        <p>No session opened or called these in 30 days. A weak description may be why, so the ones we wrote say to review it before any removal.</p>
+        <p>
+          No session opened or called these in 30 days. A weak description may be why, so the ones we wrote say to review it before any removal.
+          {#if !text && view.counts.neverUsed > unused.length}{(view.counts.neverUsed - unused.length).toLocaleString("en-US")} more never-used skills sit in the problem groups above.{/if}
+        </p>
       </header>
       <div class="list">
         {#each firstOf("unused", unused) as skill (skill.id)}<SkillRow {skill} kind={null} limits={view.thresholds} {nameOf} {busy} {act} open={opened.has(`healthy:${skill.id}`)} ontoggle={toggler(`healthy:${skill.id}`)} />{/each}
@@ -228,7 +239,7 @@
     <form id="skill-form" class="form" onsubmit={submit}>
       {#if form.kind === "install"}
         {#if !form.locked}
-          <Field label="Skill" id="sf-skill" hint="A skill the table holds. A new skill starts as a commit in its git source."><Select id="sf-skill" label="Skill" bind:value={form.skillId} options={choices} /></Field>
+          <Field label="Skill" id="sf-skill" hint="A skill the table holds. A new skill starts as a commit in its git source."><Select id="sf-skill" label="Skill" bind:value={form.skillId} options={choices} onchange={id => form?.kind === "install" && (form.box = homeBox(id))} /></Field>
         {/if}
         <div class="pair">
           <Field label="Box" id="sf-box"><Select id="sf-box" label="Box" bind:value={form.box} options={boxNames.map(b => ({ value: b, label: b }))} /></Field>

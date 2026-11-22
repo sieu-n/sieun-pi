@@ -64,7 +64,7 @@
         </dd>
         <dt>Seen by</dt>
         <dd>
-          {seen.listed.length ? seen.listed.join(", ") : "no thread kind"}{#if seen.hidden.length}<span class="aside">; hidden from {seen.hidden.map(h => `${h.kind} (${h.why})`).join(", ")}</span>{/if}
+          {seen.listed.length ? seen.listed.join(", ") : "no thread kind"}{#each seen.hidden as h (h.why)}<span class="hidden">Hidden from {h.kinds.join(", ")}, because {h.why}.</span>{/each}
         </dd>
       </dl>
 
@@ -82,7 +82,7 @@
             <span class="where" role="cell">
               <span class="path" use:tooltip={`${copy.box}:${copy.path}`}><span class="box">{copy.box}</span><span class="head-part"><bdi>{where.head}</bdi></span><span class="tail">{where.tail}</span></span>
               <span class="sub">
-                {ROLE_TEXT[copy.role]}, {tilde(shape(copy))}{#if copy.loadedBy.length}, read by {copy.loadedBy.join(", ")}{:else}, nothing reads it{/if}{#if copy.checkout?.stale}, old clone{#if copy.checkout.headAt} last committed {copy.checkout.headAt.slice(0, 10)}{/if}{/if}
+                {ROLE_TEXT[copy.role]}, {tilde(shape(copy))}{#if copy.loadedBy.length}, read by {copy.loadedBy.join(", ")}{:else}, nothing reads it{/if}{#if copy.checkout?.stale}{copy.checkout.headAt ? `, old clone last committed ${copy.checkout.headAt.slice(0, 10)}` : ", old clone"}{/if}
               </span>
               {#each notes as note (note.rule + note.detail)}<span class="sub note">{note.detail}</span>{/each}
             </span>
@@ -129,6 +129,7 @@
   .meta dt { color: var(--text-metadata); }
   .meta dd { margin: 0; color: var(--text-standard); }
   .aside { color: var(--text-subtle); }
+  .hidden { display: block; color: var(--text-subtle); }
   .copies { display: flex; flex-direction: column; padding: var(--space-1); border-radius: 12px; box-shadow: inset 0 0 0 1px var(--border-standard); }
   .crow { display: grid; grid-template-columns: minmax(0, 1fr) 9.5em 10em auto; align-items: center; gap: var(--space-3); min-height: 40px; padding: var(--space-1) var(--space-3); border-radius: 8px; }
   .crow:not(.cols):hover { background: var(--affordance-ghost-hover); }
