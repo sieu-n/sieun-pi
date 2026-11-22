@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { SkillCopy, SkillEntry, SkillsView } from "../../../../lib/api/shared/skills.ts";
-import { cellFor, driftOf, installDrift, pathUsesLabel, families, kindColumns, problemsOf, rowsFor, shortPath, sizeOf } from "./kinds-model.ts";
+import { cellFor, copiesTitle, driftOf, extraLabel, installDrift, pathUsesLabel, families, kindColumns, problemsOf, rowsFor, shortPath, sizeOf } from "./kinds-model.ts";
 
 const copy = (over: Partial<SkillCopy>): SkillCopy => ({
   id: "us-metal02:/s/board", box: "us-metal02", path: "/s/board", role: "source", installId: null, link: null, realPath: "/s/board", exists: true, hash: "h", lines: 70,
@@ -11,7 +11,7 @@ const copy = (over: Partial<SkillCopy>): SkillCopy => ({
 const entry = (over: Partial<SkillEntry>): SkillEntry => ({
   id: "git:sieun-pi/skills/board", name: "board", description: "Read a chat's board", owner: { kind: "owner" },
   source: { kind: "git", repo: "sieun-pi", path: "skills/board" }, installs: [], copies: [copy({})], size: { lines: 70, bytes: 4000, ratio: 1 },
-  verdicts: [], use: { uses: 0, sessions: 0, lastUse: null, byKind: {} }, preimported: false, sees: [], ...over,
+  verdicts: [], use: { uses: 0, sessions: 0, lastUse: null, byKind: {} }, preimported: false, sees: [], extraCopies: [], ...over,
 });
 
 const view = (skills: SkillEntry[]): SkillsView => ({
@@ -108,4 +108,14 @@ test("a hidden kind that still used the skill reads as opened by path", () => {
   assert.match(cellFor(e, "prime-subagent").title, /opened it by its path 7 times/);
   assert.equal(cellFor(e, "prime-job").label, "hidden");
   assert.equal(pathUsesLabel(e), "7 of its uses came from threads that do not list it and opened it by its path: Prime subagent.");
+});
+
+test("an extra copy names the folder kept in its place", () => {
+  const e = entry({
+    copies: [copy({}), copy({ id: "mac:/Users/x/code/old/board", box: "mac", path: "/Users/x/code/old/board", role: "checkout" })],
+    extraCopies: [{ copyId: "mac:/Users/x/code/old/board", keptId: "us-metal02:/s/board", why: "stale-clone" }],
+  });
+  assert.equal(extraLabel(e, "mac:/Users/x/code/old/board"), "extra, old clone of /s/board");
+  assert.equal(extraLabel(e, "us-metal02:/s/board"), null);
+  assert.match(copiesTitle(e), /1 is an extra folder/);
 });

@@ -7,7 +7,7 @@
   import type { PickerItem } from "$lib/ui/types";
   import {
     PROBLEMS, ROLE_LABEL, boxNotices, cellFor, columnTitle, driftOf, families, homeBox, kindColumns, ownerLabel, problemCount, rowsFor, sizeOf,
-    installDrift, pathTitle, pathUsesLabel, shortPath, sourceLabel, sourceShort, tokensLabel, usesLabel, usesTitle, type Filter, type Problem,
+    copiesTitle, extraLabel, installDrift, pathTitle, pathUsesLabel, shortPath, sourceLabel, sourceShort, tokensLabel, usesLabel, usesTitle, type Filter, type Problem,
   } from "./kinds-model";
 
   let { view, reload }: { view: SkillsView; reload: () => Promise<void> } = $props();
@@ -256,7 +256,6 @@
             {@const entry = row.entry}
             {@const size = sizeOf(entry.size.bytes, entry.size.lines, view.thresholds)}
             {@const expanded = open.has(entry.id)}
-            {@const boxes = [...new Set(entry.copies.map(c => c.box))]}
             <tr class="row" class:expanded data-skill={entry.id}>
               <th scope="row" class="name">
                 <button type="button" class="opener" aria-expanded={expanded} aria-controls={`kinds-${entry.id}`} onclick={() => void toggle(entry.id)}>
@@ -269,7 +268,7 @@
                 {/if}
               </th>
               <td class="num" class:muted={entry.use.uses === 0} use:tooltip={usesTitle(entry)}>{row.problems.includes("unused") ? "never" : entry.use.uses.toLocaleString("en-US")}</td>
-              <td class="num" use:tooltip={`On ${boxes.join(" and ") || "no box"}`}>{entry.copies.length}</td>
+              <td class="num" use:tooltip={copiesTitle(entry)}>{entry.copies.length}{#if entry.extraCopies.length > 0}<span class="extra">{" "}{entry.extraCopies.length} extra</span>{/if}</td>
               <td class="num" class:bad={size?.bloated} use:tooltip={size?.title}>{size ? (size.times ?? size.label) : "?"}</td>
               {#each THREAD_KINDS as kind (kind)}
                 {@const cell = cellFor(entry, kind)}
@@ -319,7 +318,7 @@
                                 {#if install?.agent}<span class="for">for {agentNames.get(install.agent) ?? install.agent}</span>{/if}
                               {/if}
                             </td>
-                            <td>{ROLE_LABEL[copy.role]}</td>
+                            <td>{ROLE_LABEL[copy.role]}{#if extraLabel(entry, copy.id)}<span class="extra-note">{extraLabel(entry, copy.id)}</span>{/if}</td>
                             <td><span class="drift {drift.tone}" use:tooltip={drift.title}>{drift.label}</span></td>
                             <td class="num" class:bad={copySize?.bloated} use:tooltip={copySize?.title}>{copySize ? copySize.label : "?"}</td>
                             <td>{copy.loadedBy.length ? copy.loadedBy.join(", ") : "nothing"}</td>
@@ -493,6 +492,8 @@
   .cell.hidden { color: var(--text-subtle); opacity: 0.55; }
   .cell.path { color: var(--text-subtle); }
   .num { text-align: right; }
+  .extra { color: var(--text-subtle); }
+  .extra-note { display: block; color: var(--text-subtle); font: var(--text-caption); }
   .muted { color: var(--text-subtle); }
   .bad { color: var(--text-danger); }
   .flags { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 var(--space-2) 6px 28px; }

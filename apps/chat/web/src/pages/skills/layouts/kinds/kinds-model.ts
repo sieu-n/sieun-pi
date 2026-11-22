@@ -326,3 +326,24 @@ export function pathUsesLabel(entry: SkillEntry): string | null {
   const all = found.uses === entry.use.uses;
   return `${all ? "Every use" : `${found.uses.toLocaleString("en-US")} of its uses`} came from threads that do not list it and opened it by its path: ${found.kinds.join(", ")}.`;
 }
+
+const EXTRA_WHY: Record<SkillEntry["extraCopies"][number]["why"], string> = {
+  "same-text": "same text as",
+  "other-text": "other text than",
+  "stale-clone": "old clone of",
+};
+
+export function extraLabel(entry: SkillEntry, copyId: string): string | null {
+  const extra = entry.extraCopies.find(x => x.copyId === copyId);
+  if (!extra) return null;
+  const kept = entry.copies.find(c => c.id === extra.keptId);
+  return `extra, ${EXTRA_WHY[extra.why]} ${kept ? shortPath(kept.path) : extra.keptId}`;
+}
+
+export function copiesTitle(entry: SkillEntry): string {
+  const boxes = [...new Set(entry.copies.map(c => c.box))];
+  const lines = [`On ${boxes.join(" and ") || "no box"}.`];
+  const n = entry.extraCopies.length;
+  if (n > 0) lines.push(`${n} ${n === 1 ? "is an extra folder" : "are extra folders"} that one folder per box would replace.`);
+  return lines.join("\n");
+}
