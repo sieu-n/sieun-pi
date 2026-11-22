@@ -7,25 +7,29 @@
  * events sent meanwhile wait in the server's TCP retries, which back off to seconds and minutes, and the page shows the panels of before
  * until they arrive. In a walk at a 200 ms round trip (scripts/wake-walk.mjs, ~/work/p209-wake), a message sent during a 5 s cut showed
  * 2.6 s after the network came back. So a page that has heard nothing for `QUIET_MS` asks the server for a pong, drops a socket that does
- * not answer, and tries a new one every `TRY_EVERY_MS` until one opens, at once when the browser says it is online or the page shows again.
+ * not answer, and tries a new one until one opens, at once when the browser says it is online or the page shows again.
  */
 import { RIDE_OUT_MS, retryNow } from "./client.ts";
 import type { ConversationId, LiveCommand, LiveEvent } from "./types.ts";
 
 /**
- * The wait before a new try after one failed fast, as a try at a closed port does while a release restarts :5184, so the socket is back
- * within this wait and a round trip of the new server listening.
+ * The wait before a new try after one failed fast, as a try at a closed port does while a release restarts :5184, for the first
+ * `QUICK_TRIES` tries of an outage, so the socket is back within this wait and a round trip of the new server listening; `TRY_EVERY_MS`
+ * after them.
  */
 const QUICK_RETRY_MS = 250;
+const QUICK_TRIES = 4;
+const TRY_EVERY_MS = 1_000;
 
 /**
- * The longest a try to open the socket may go unanswered before the page drops it and starts a new one. A try into a network that drops
- * packets gets no answer at all, and the browser's own retries of its connect wait 1 s, then 2 s, then 4 s and longer, while a browser
- * opens one socket to a host at a time. The owner's round trip is about 210 ms (his tailnet calls' p50 network time on 11-21 and 11-22,
- * requests/2026-11-22.jsonl), so a try's connect, TLS and upgrade take about 0.6 s; the brief of p209 asks for fresh panels within 2 s
- * of the network's return.
+ * How long a try to open the socket may go unanswered before the page drops it and starts a new one. A try into a network that drops
+ * packets gets no answer, and the system sends its connect again 1 s and 3 s after it started, so a new try each 4 s keeps the gap
+ * between connects at 2 s at most while it adds few failed tries: Chrome waits before each new socket of a page 1 to 5 s times
+ * 2^min(pending + failed / (opened + 1), 16) / 65536, over the failed and opened sockets of the last 2 to 4 minutes, and a try the page
+ * drops counts as failed (services/network/websocket_throttler.cc). In the wake walk (scripts/wake-walk.mjs, ~/work/p209-wake/after1),
+ * a new try each second through a 60 s cut left Chromium with no socket for 90 s after the network came back.
  */
-const TRY_EVERY_MS = 1_000;
+const TRY_LIFE_MS = 4_000;
 
 /**
  * How long the page waits with nothing heard before it pings. The owner's page hears an event every few seconds while his agents work,
@@ -37,6 +41,7 @@ const QUIET_MS = 2_000;
 const PONG_WITHIN_MS = 1_500;
 
 type Listener = (event: LiveEvent) => void;
+type Opener = () => void;
 
 class Live {
   /** False once the socket has been down `RIDE_OUT_MS`, so a release restart shows no Offline note; the page reads it as offline. */
@@ -47,6 +52,7 @@ class Live {
   private socket: WebSocket | null = null;
   private trying: WebSocket | null = null;
   private listeners = new Set<Listener>();
+  private openers = new Set<Opener>();
   /** Watch counts per conversation, and the newest item id each one holds for a reconnect. */
   private watches = new Map<ConversationId, { count: number; after: () => string | undefined }>();
   private started = false;
@@ -58,6 +64,8 @@ class Live {
   /** When the open socket last brought anything, and when the ping on its way left, in `Date.now()`, so the time a Mac slept counts as quiet. */
   private heardAt = 0;
   private pingAt: number | undefined;
+  /** The tries since the socket went down. */
+  private tries = 0;
 
   start(): void {
     if (this.started || typeof WebSocket === "undefined") return;
@@ -97,11 +105,13 @@ class Live {
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     const socket = new WebSocket(url);
     this.trying = socket;
-    this.nextTry = setTimeout(() => this.tryOpen(), TRY_EVERY_MS);
+    this.tries += 1;
+    this.nextTry = setTimeout(() => this.tryOpen(), TRY_LIFE_MS);
     socket.onopen = () => {
       clearTimeout(this.nextTry);
       this.trying = null;
       this.socket = socket;
+      this.tries = 0;
       this.openedAt = performance.now();
       this.heardAt = Date.now();
       this.pingAt = undefined;
@@ -111,6 +121,7 @@ class Live {
       this.connected = true;
       for (const [conversation, watch] of this.watches) this.send({ type: "watch", conversation, ...(watch.after() ? { after: watch.after()! } : {}) });
       retryNow();
+      for (const opener of this.openers) opener();
     };
     socket.onmessage = message => {
       this.heardAt = Date.now();
@@ -129,8 +140,7 @@ class Live {
         this.trying = null;
         this.wentDown();
         clearTimeout(this.nextTry);
-        const down = performance.now() - this.downSince!;
-        this.nextTry = setTimeout(() => this.tryOpen(), down < RIDE_OUT_MS ? QUICK_RETRY_MS : TRY_EVERY_MS);
+        this.nextTry = setTimeout(() => this.tryOpen(), this.tries < QUICK_TRIES ? QUICK_RETRY_MS : TRY_EVERY_MS);
       }
     };
   }
@@ -170,6 +180,16 @@ class Live {
     this.start();
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  /**
+   * Runs `opener` each time the socket opens, when the events since the last one may be lost, without waiting for the server's hello: at
+   * box load 80 on 11-22 the hello came 0.9 s after the open in the wake walk (~/work/p209-wake/after1).
+   */
+  onOpen(opener: Opener): () => void {
+    this.start();
+    this.openers.add(opener);
+    return () => this.openers.delete(opener);
   }
 
   /** Streams a conversation's items, partial text and status until the returned function runs. */

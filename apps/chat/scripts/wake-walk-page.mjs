@@ -1,6 +1,6 @@
 // The browser half of the wake walk (wake-walk.mjs). It opens the walk's test room in Chromium and WebKit side by side, and for each
 // probe the host writes (<dir>/probe-<n>.json) it checks the page every 50 ms for the probe's four changes and writes, per browser, when
-// each first showed (<dir>/result-<n>-<browser>.json, Date.now() stamps); the room's new name counts once a GET /api/rooms answer holds it. With "freeze" it freezes the Chromium page from the probe until
+// each first showed (<dir>/result-<n>-<browser>.json, Date.now() stamps); the room's new name counts once the page or a GET /api/rooms answer shows it. With "freeze" it freezes the Chromium page from the probe until
 // the host's back mark (<dir>/back-<n>.json), as a Mac sleep stops the page's timers. The init script of restart-walk-page.mjs records
 // every /api/ fetch and every /api/live socket open and close to <dir>/page-<browser>.jsonl.
 // Usage: node wake-walk-page.mjs <front url> <dir> <browsers, comma separated> <room> <freeze|awake>
@@ -114,7 +114,7 @@ async function walk(name) {
         write({ kind: "active", at: Date.now(), n });
       }
       if (!frozen) {
-        const shown = await page.evaluate(list => list.map(([key, text]) => (key === "room" ? (window.__rooms ?? "") : document.body.textContent).includes(text)), Object.entries(markers)).catch(() => []);
+        const shown = await page.evaluate(list => list.map(([key, text]) => (key === "room" ? `${document.body.textContent}${window.__rooms ?? ""}` : document.body.textContent).includes(text)), Object.entries(markers)).catch(() => []);
         const at = Date.now();
         Object.keys(markers).forEach((key, i) => { if (shown[i] && seen[key] === undefined) seen[key] = at; });
       }

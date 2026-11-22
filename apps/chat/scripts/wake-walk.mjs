@@ -123,6 +123,9 @@ async function walk(o) {
     sh("docker", ["exec", tc, "sh", "-c", "apk add -q iproute2-tc && ip link set lo mtu 1280 && tc qdisc add dev lo root netem delay 100ms limit 100000"]);
     const netem = loss => sh("docker", ["exec", tc, "tc", "qdisc", "change", "dev", "lo", "root", "netem", "delay", "100ms", ...(loss ? ["loss", "100%"] : []), "limit", "100000"]);
     log(`rig ${rig} up with netem 100 ms each way, MTU 1280`);
+    // Every SYN to the front, so a socket try that never opened can be told from one the browser never sent.
+    const syns = spawn("docker", ["exec", tc, "sh", "-c", `apk add -q tcpdump && tcpdump -i lo -nn -tt -l 'tcp dst port ${FRONT_PORT} and tcp[tcpflags] & tcp-syn != 0'`], { stdio: ["ignore", "pipe", "ignore"] });
+    syns.stdout.on("data", chunk => appendFileSync(join(o.out, "syns.log"), chunk));
 
     const front = spawn("docker", ["exec", rig, "node", join(here, "restart-walk-front.mjs"), String(FRONT_PORT), socket, join(o.scratch, "key.pem"), join(o.scratch, "cert.pem"), join(o.scratch, "timings.jsonl"), room.id], { stdio: ["ignore", "pipe", "pipe"] });
     front.stdout.on("data", chunk => appendFileSync(join(o.out, "front.log"), chunk));

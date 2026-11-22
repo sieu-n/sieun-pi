@@ -101,7 +101,7 @@ export class Kept<T> {
   }
 
   /**
-   * The socket came back, so events may have been missed: an open panel reads again, and a read ahead may run again. An answer whose read
+   * The socket opened again, so events may have been missed: an open panel reads again, and a read ahead may run again. An answer whose read
    * left after the socket opened, or one still waiting to leave, missed nothing. On a page load the panels read before the socket's hello
    * came, and the hello read each of them again: in a walk at a 200 ms round trip on 11-22 every load read /api/rooms, the board and its
    * duties twice (~/work/p189-rooms).
@@ -149,9 +149,11 @@ const known = <T>(of: Read<T>): Kept<T> | undefined => entries.get(of.path) as K
 export function kept<T>(of: Read<T>): Kept<T> {
   if (!listening) {
     listening = true;
+    live.onOpen(() => {
+      for (const entry of entries.values()) entry.missed();
+    });
     live.on(event => {
-      if (event.type === "hello") for (const entry of entries.values()) entry.missed();
-      else if (event.type === "board") known(reads.board(event.chatId))?.set({ board: event.board, awaitingGo: event.awaitingGo });
+      if (event.type === "board") known(reads.board(event.chatId))?.set({ board: event.board, awaitingGo: event.awaitingGo });
       else if (event.type === "duties") known(reads.duties(event.chatId))?.set({ duties: event.duties });
     });
   }

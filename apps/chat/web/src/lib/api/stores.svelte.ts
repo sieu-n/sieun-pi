@@ -1043,6 +1043,7 @@ export class Timeline {
   focus = $state<string | undefined>(undefined);
   private stopWatch: (() => void) | undefined;
   private stopListen: (() => void) | undefined;
+  private stopOpen: (() => void) | undefined;
   readonly isChannel: boolean;
   readonly isRoom: boolean;
   private readonly sends: Sends;
@@ -1069,6 +1070,7 @@ export class Timeline {
       else if (event.type === "queue" && event.conversation === id) this.queue = event.place;
       else if (event.type === "room" && event.room.id === id) void this.refreshHeader();
     });
+    this.stopOpen = live.onOpen(() => this.missed());
     timelinePages.open(id, () => this.showing());
     this.openedFrom = markedUnread.get(id);
     this.loaded = this.load(opts.around);
@@ -1096,6 +1098,7 @@ export class Timeline {
       // With the kept page on the screen, this read is a refresh behind it, unless it changes what the screen shows.
       const asked: Wait = last ? { background: "shown", first: true } : {};
       this.limit = last?.limit;
+      this.headerAt = performance.now();
       const taken = pages.take(key, asked, () => readTimeline(this.id, around, asked, last?.limit));
       // The threads and jobs of the kept page queue now, behind this read, not one round trip later when its refresh lands.
       if (last && threaded(this.id)) warmReplies(this.id, last.items);
@@ -1134,10 +1137,27 @@ export class Timeline {
     }
   }
 
+  /** When the view last read its header (`performance.now()`), so a hello after that read finds nothing missed. */
+  private headerAt = -Infinity;
+
+  /**
+   * The socket opened again and may have missed this view's events: a rename, or a post in a room whose view held none, since the watch
+   * names the newest post held and the server sends only what came after it. In the wake walk (scripts/wake-walk.mjs) a renamed room kept
+   * its old name after a reconnect, and a message sent to an empty room during a cut never showed.
+   */
+  private missed(): void {
+    if (this.loading || this.headerAt >= live.openedAt) return;
+    void this.refreshHeader({ background: "shown" });
+    if (!this.items.some(item => !isPending(item))) {
+      void api.items(this.id, {}, { background: "shown" }).then(page => this.upsert(page.items), () => undefined);
+    }
+  }
+
   /** Reads the header again, after a room's name, agenda, members or closed state changed. */
-  async refreshHeader(): Promise<void> {
+  async refreshHeader(wait?: Wait): Promise<void> {
+    this.headerAt = performance.now();
     try {
-      this.header = await api.header(this.id);
+      this.header = await api.header(this.id, wait);
       syncMark(this.header.summary);
     } catch (error) {
       this.error = message(error);
@@ -1282,6 +1302,7 @@ export class Timeline {
   close(): void {
     this.stopWatch?.();
     this.stopListen?.();
+    this.stopOpen?.();
     this.sends.close();
     const keep = this.page();
     timelinePages.close(this.id, keep);
