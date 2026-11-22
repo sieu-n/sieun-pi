@@ -1,3 +1,4 @@
+import './no-wiki-config.mjs';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { test } from 'node:test';

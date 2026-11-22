@@ -2,6 +2,7 @@
  * The page API's lint, secret scan, duplicate check and page gate run in a worker thread, so the server's thread keeps
  * answering reads while a write is checked (devbox-wiki-public-down at 15:56Z on 2026-11-13, during a wiki dream run).
  */
+import './no-wiki-config.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
