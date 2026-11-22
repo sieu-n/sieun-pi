@@ -95,7 +95,8 @@ const commOf = async () => (await record())?.comm?.find(c => c.room === room)?.t
 let line;
 try {
   const task = values.task ? (await posts()).find(p => p.id === values.task) : await send(TASK, "task");
-  const done = async id => (await posts()).find(p => p.id === id)?.done?.done === true;
+  // The items API shows a done root's flag as `done: { by, at }` and leaves it out while the thread is open.
+  const done = async id => Boolean((await posts()).find(p => p.id === id)?.done);
   // A picked-up run waited for its task before the stop, so it reads the done mark once.
   const taskDone = values.task ? await done(task.id) : await waitFor(TASK_MS, () => done(task.id));
   const before = await posts();
