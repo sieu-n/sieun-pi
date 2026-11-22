@@ -446,7 +446,7 @@ const LANGUAGES = [
 	{ match: /\.(?:css|pcss|postcss)$/, strip: css(false) },
 	{ match: /\.(?:scss|less)$/, strip: css(true) },
 	{ match: /\.sql$/, strip: sql },
-	{ match: /\.json[c5]?$/, strip: (text) => jsonLayout(css(true)(text)) },
+	{ match: /\.json[c5]?$/, strip: (/** @type {string} */ text) => jsonLayout(css(true)(text)) },
 	{ match: /\.(?:sh|bash|zsh)$/, strip: shell },
 	{ match: /\.ya?ml$/, strip: yaml },
 	{ match: /\.toml$|^\.env(?:\.[\w.-]+)?$/, strip: toml },
