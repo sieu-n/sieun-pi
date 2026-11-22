@@ -118,7 +118,7 @@ test("Add agents offers only registered agents not in the room, and a chip's x r
   const members = page.getByTestId("solo-members");
   await expect(members).toContainText("Vent");
   await members.getByRole("button", { name: "Add agents" }).click();
-  const picker = page.getByRole("dialog", { name: "Add agents" });
+  const picker = page.getByRole("dialog", { name: `Add people to ${room.name}` });
   await expect(picker.getByRole("option", { name: /Crawler VP/ })).toBeVisible();
   await expect(picker.getByRole("option", { name: /^Vent/ })).toHaveCount(0);
   await picker.getByRole("option", { name: /Crawler VP/ }).click();
