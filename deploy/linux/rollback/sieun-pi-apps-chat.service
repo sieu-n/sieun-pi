@@ -1,0 +1,33 @@
+# The unit before the socket hand-over (deploy/linux/sieun-pi-apps-chat.socket): systemd restarts the server and the port is closed while it starts.
+# Put it back on a box with:
+#   systemctl --user disable --now sieun-pi-apps-chat.socket; rm -f ~/.config/systemd/user/sieun-pi-apps-chat.socket; cp ~/src/sieun-pi/deploy/linux/rollback/sieun-pi-apps-chat.service ~/.config/systemd/user/ && systemctl --user daemon-reload && systemctl --user restart sieun-pi-apps-chat.service
+# The next release-apps-chat.mjs run installs the release's own units again; to stay on this one, also release a commit from before the hand-over
+# with --rollback, whose deploy/linux holds no socket unit, and the script removes the socket unit itself.
+# apps/chat, the new chat app on pi-host, beside the live chat (:5182) and the canary (:5183), never replacing either.
+# It runs the installed release under ~/.local/share/sieun-pi-apps-chat/current, which scripts/release-apps-chat.mjs builds from a commit on origin main.
+# Its own state (channels, read marks, duties) lives in ~/.pi/agent/chat; every thread lives in pi-host's durable files.
+# Tailnet: tailscale serve --bg --https=5184 http://127.0.0.1:5184
+[Unit]
+Description=apps/chat, the sieun-pi chat app on pi-host (127.0.0.1:5184)
+After=pi-host.service
+Wants=pi-host.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.local/share/sieun-pi-apps-chat/current/apps/chat
+Environment=PATH=%h/.local/node/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=AGENT_CHAT_SHARED_DIR=%h/.prime/agent/browser-chat
+# The d2 orphan reaper (legacy/prime/user-history/src/orphan-reaper.ts) keeps a transient unit whose PRIME_OWNER_UNIT has a unit file. The duty
+# prechecks run as transient duty-*-run units (server/duty-run.ts) with this env, and on 11-22 two of them read as orphan_unknown, 5 processes.
+Environment=PRIME_OWNER_UNIT=sieun-pi-apps-chat.service
+# Search's index (server/search-engine.ts) lives in the Komodo container box-sieun-pi-meilisearch-1 (scripts/install-meilisearch.mjs).
+Environment=APPS_CHAT_MEILI_URL=http://127.0.0.1:7700
+Environment=APPS_CHAT_MEILI_KEY_FILE=%h/.config/meilisearch/master.key
+ExecStart=%h/.local/node/bin/node --import tsx server/main.ts --port 5184 --listen 127.0.0.1 --data-dir %h/.pi/agent/chat --socket %t/pi-host/host.sock
+KillSignal=SIGTERM
+TimeoutStopSec=20
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target

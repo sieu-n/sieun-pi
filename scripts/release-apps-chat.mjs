@@ -1,28 +1,33 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, linkSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const USAGE = `usage: node scripts/release-apps-chat.mjs <commit|release-id> [--rollback] [--no-restart] [--repo <dir>]
 
-Builds ~/.local/share/sieun-pi-apps-chat/release-<sha7> from the commit, points current at it and restarts the systemd user unit
-sieun-pi-apps-chat.service (apps/chat on 127.0.0.1:5184). It never touches sieun-pi-chat.service (:5182), sieun-pi-chat-pi.service (:5183)
-or the Prime daemon.
+Builds ~/.local/share/sieun-pi-apps-chat/release-<sha7> from the commit, points current at it and reloads the systemd user unit
+sieun-pi-apps-chat.service (apps/chat on 127.0.0.1:5184), whose server hands the port held by sieun-pi-apps-chat.socket to a successor on the new
+release (apps/chat/server/handoff.ts). It never touches sieun-pi-chat.service (:5182), sieun-pi-chat-pi.service (:5183) or the Prime daemon.
 The rules follow scripts/release-chat.mjs.
 1. One release runs at a time through <home>/release.lock; a lock whose pid is gone is taken over.
 2. The commit must be on origin's main, fetched at the start: push it first.
 3. A commit that does not descend from the live release's commit is refused, so a late release never rolls back a newer one; --rollback allows it,
    and --rollback onto a release folder already built skips the origin check.
+4. A commit the live release holds already ends as done, and the lock's holder releases the newest commit a waiting release asked for when that
+   one holds its own, so releases queued behind one lock start the unit once.
 The build copies the commit with git archive, runs npm ci, the server typecheck and the fixture specs in apps/chat with a private HOME and TMPDIR,
-and npm ci and npm run build in apps/chat/web. When the release's deploy/linux/sieun-pi-apps-chat.service differs from ~/.config/systemd/user, it
-installs it and runs daemon-reload. After the restart it checks that GET http://127.0.0.1:5184/api/ready answers and the process stays up for 8 s;
-when it does not, current goes back to the release before and the command exits 5.
+and npm ci and npm run build in apps/chat/web. When the release's deploy/linux service or socket unit differs from ~/.config/systemd/user, it
+installs it, runs daemon-reload and restarts the unit instead of a reload, and it removes the socket unit when the release has none. Then it checks
+that a new main process runs from the release, answers GET http://127.0.0.1:5184/api/ready and stays up for 8 s; when it does not, current goes
+back to the release before and the command exits 5.
 Prints the live release id on the last line. Exit 1 on a failed build step, 2 on bad usage, 3 on a refused rollback, 4 on a commit not on origin main,
 5 on a start that did not stay up.`;
 
 const UNIT = "sieun-pi-apps-chat.service";
+/** The port's socket unit, which keeps 127.0.0.1:5184 open across restarts and hand-overs (deploy/linux/sieun-pi-apps-chat.socket). */
+const SOCKET = "sieun-pi-apps-chat.socket";
 const PORT = 5184;
 const RELEASE_NAME = /^release-([0-9a-f]{7,40})$/;
 const gitEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !["GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE"].includes(key)));
@@ -32,6 +37,9 @@ class Refused extends Error {}
 class Unpublished extends Error {}
 class UsageError extends Error {}
 class NotUp extends Error {}
+class AlreadyLive extends Error {
+  constructor(live, message) { super(message); this.live = live; }
+}
 
 function parseArgs(argv) {
   const options = { target: null, rollback: false, restart: true, repo: resolve(dirname(fileURLToPath(import.meta.url)), "..") };
@@ -67,12 +75,16 @@ function releaseCommit(repo, dir) {
   return match ? git(repo, ["rev-parse", "--verify", "--quiet", `${match[1]}^{commit}`]) : null;
 }
 
-/** Refused unless `sha` holds the live release's commit, or --rollback. */
+/**
+ * Refused unless `sha` holds the live release's commit, or --rollback. A live release that holds `sha` already, such as one a release
+ * queued behind the same lock made, ends this one as done.
+ */
 function checkNewer(repo, home, sha, rollback) {
   const live = liveRelease(home);
   if (!live || rollback) return;
   const liveSha = releaseCommit(repo, resolve(home, live));
   if (!liveSha) throw new Refused(`current points at ${live}, whose commit is not in ${repo}; pass --rollback to replace it anyway`);
+  if (contains(repo, liveSha, sha)) throw new AlreadyLive(live, `${sha.slice(0, 7)} is live already in ${live}`);
   if (!contains(repo, sha, liveSha)) throw new Refused(`${sha.slice(0, 7)} does not descend from the live ${live} (${liveSha.slice(0, 7)}); pass --rollback to go back on purpose`);
 }
 
@@ -86,6 +98,22 @@ function checkPublished(repo, sha) {
   } finally {
     spawnSync("git", ["-C", repo, "update-ref", "-d", ref], { env: gitEnv });
   }
+}
+
+/**
+ * The newest commit a release waiting for the lock asked for, when it holds `sha` and every other waiting one. On 11-22 the unit started 70
+ * times, nearly all from 65 releases that separate jobs ran one after another through the lock, each of a newer main that held the one
+ * before; the holder now releases the newest once and the waiting ones end as done (`checkNewer`).
+ */
+function newestWaiting(repo, home, sha) {
+  const waiting = readdirSync(home).filter(entry => entry.startsWith("release.lock.")).flatMap(entry => {
+    try {
+      const request = JSON.parse(readFileSync(join(home, entry), "utf8"));
+      return request.pid !== process.pid && !request.rollback && typeof request.sha === "string" && alive(request.pid) ? [request.sha] : [];
+    } catch { return []; }
+  });
+  const later = [...new Set(waiting)].filter(other => other !== sha && contains(repo, other, sha));
+  return later.find(other => later.every(each => contains(repo, other, each))) ?? null;
 }
 
 const alive = pid => { try { process.kill(pid, 0); return true; } catch (error) { return error.code === "EPERM"; } };
@@ -121,7 +149,9 @@ async function takeLock(home, request) {
 
 async function archive(repo, sha, into) {
   const tar = spawn("tar", ["-x", "-C", into], { stdio: ["pipe", "inherit", "inherit"] });
-  const source = spawn("git", ["-C", repo, "archive", "--format=tar", sha, "apps/chat", "config/allowed-models.ts", "packages/pi-host/src/durable/index-db.ts", "deploy/linux/sieun-pi-apps-chat.service",
+  // A commit from before the hand-over holds no socket unit, and git archive fails on a path the commit lacks.
+  const socket = spawnSync("git", ["-C", repo, "cat-file", "-e", `${sha}:deploy/linux/${SOCKET}`], { env: gitEnv }).status === 0 ? [`deploy/linux/${SOCKET}`] : [];
+  const source = spawn("git", ["-C", repo, "archive", "--format=tar", sha, "apps/chat", "config/allowed-models.ts", "packages/pi-host/src/durable/index-db.ts", "deploy/linux/sieun-pi-apps-chat.service", ...socket,
     // scripts/duties/relay-posts.ts counts room posts with pi-host's relay words, the ones its comm guard refuses.
     "packages/pi-host/src/durable/relay-line.ts",
     // It reads an owner post as asking the way the comm guard does (comm-guard.ts asks), so a progress post that answers him is no relay.
@@ -192,32 +222,76 @@ function flip(home, name) {
   renameSync(next, join(home, "current"));
 }
 
-function installUnit(home) {
-  const source = join(home, "current/deploy/linux", UNIT);
-  const target = join(homedir(), ".config/systemd/user", UNIT);
-  const want = readFileSync(source, "utf8");
-  let have = null;
-  try { have = readFileSync(target, "utf8"); } catch {}
-  if (have === want) return;
-  mkdirSync(dirname(target), { recursive: true });
-  writeFileSync(target, want);
+/**
+ * Installs the release's service and socket units into ~/.config/systemd/user when they differ, and removes the socket unit when the
+ * release has none (a --rollback to a commit from before the hand-over). Returns whether any unit changed, which the running server
+ * cannot take over by a reload.
+ */
+function installUnits(home) {
+  const dir = join(homedir(), ".config/systemd/user");
+  let changed = false;
+  for (const name of [UNIT, SOCKET]) {
+    const source = join(home, "current/deploy/linux", name);
+    const target = join(dir, name);
+    let want = null, have = null;
+    try { want = readFileSync(source, "utf8"); } catch {}
+    try { have = readFileSync(target, "utf8"); } catch {}
+    if (have === want) continue;
+    changed = true;
+    if (want === null) {
+      run("systemctl", ["--user", "disable", "--now", name], home);
+      rmSync(target, { force: true });
+      log(`removed ${target}`);
+      continue;
+    }
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(target, want);
+    log(`installed ${target}`);
+  }
+  if (!changed) return false;
   run("systemctl", ["--user", "daemon-reload"], home);
-  run("systemctl", ["--user", "enable", UNIT], home);
-  log(`installed ${target}`);
+  run("systemctl", ["--user", "enable", ...[UNIT, SOCKET].filter(name => existsSync(join(dir, name)))], home);
+  return true;
 }
 
-async function upCheck() {
-  const pid = () => spawnSync("systemctl", ["--user", "show", "-p", "MainPID", "--value", UNIT], { encoding: "utf8" }).stdout.trim();
+const mainPid = () => Number(spawnSync("systemctl", ["--user", "show", "-p", "MainPID", "--value", UNIT], { encoding: "utf8" }).stdout.trim()) || 0;
+const isActive = () => spawnSync("systemctl", ["--user", "is-active", "--quiet", UNIT]).status === 0;
+const cwdOf = pid => { try { return realpathSync(`/proc/${pid}/cwd`); } catch { return null; } };
+
+/**
+ * Starts the release: a reload when the unit runs and its units did not change, so the running server hands the port to a successor and the
+ * port never closes (apps/chat/server/handoff.ts), else a restart, during which calls wait in the socket's queue.
+ */
+function startRelease(home, unitsChanged) {
+  const handsOver = existsSync(join(homedir(), ".config/systemd/user", SOCKET));
+  const how = handsOver && !unitsChanged && isActive() ? "reload" : "restart";
+  run("systemctl", ["--user", how, UNIT], home);
+  return how;
+}
+
+/**
+ * Waits until a process other than `before` is the unit's main one, runs from the release `dir`, answers GET /api/ready as itself, and
+ * stays the main one for 8 s.
+ */
+async function upCheck(before, dir) {
+  const app = realpathSync(join(dir, "apps/chat"));
   const end = Date.now() + 60_000;
-  let ready = false;
-  while (Date.now() < end && !ready) {
-    try { ready = (await fetch(`http://127.0.0.1:${PORT}/api/ready`, { signal: AbortSignal.timeout(3000) })).ok; } catch {}
-    if (!ready) await new Promise(done => setTimeout(done, 500));
+  let pid = 0;
+  for (;;) {
+    pid = mainPid();
+    let answered = 0;
+    if (pid && pid !== before && cwdOf(pid) === app) {
+      try {
+        const res = await fetch(`http://127.0.0.1:${PORT}/api/ready`, { signal: AbortSignal.timeout(3000) });
+        if (res.ok) answered = (await res.json()).pid ?? pid;
+      } catch {}
+    }
+    if (answered === pid && pid) break;
+    if (Date.now() > end) throw new NotUp(`${UNIT} did not answer /api/ready from ${basename(dir)} on :${PORT} in 60 s`);
+    await new Promise(done => setTimeout(done, 250));
   }
-  if (!ready) throw new NotUp(`${UNIT} did not answer /api/ready on :${PORT} in 60 s`);
-  const first = pid();
   await new Promise(done => setTimeout(done, 8000));
-  if (pid() !== first || spawnSync("systemctl", ["--user", "is-active", "--quiet", UNIT]).status !== 0) throw new NotUp(`${UNIT} did not stay up for 8 s after its start`);
+  if (mainPid() !== pid || !isActive()) throw new NotUp(`${UNIT} did not stay up for 8 s after its start`);
 }
 
 function prune(home, keep) {
@@ -233,24 +307,39 @@ async function main() {
   if (!sha) throw new UsageError(`${options.target} is not a commit in ${options.repo}`);
   const releaseLock = await takeLock(home, { pid: process.pid, sha, startedAt: new Date().toISOString(), rollback: options.rollback });
   try {
-    if (!prebuilt) checkPublished(options.repo, sha);
     checkNewer(options.repo, home, sha, options.rollback);
-    const before = liveRelease(home);
-    const name = prebuilt ? options.target : await build(options.repo, home, sha);
-    flip(home, name);
-    installUnit(home);
-    if (options.restart) {
-      run("systemctl", ["--user", "restart", UNIT], home);
+    let target = sha;
+    const newest = options.rollback ? null : newestWaiting(options.repo, home, sha);
+    if (newest) {
       try {
-        await upCheck();
+        checkPublished(options.repo, newest);
+        target = newest;
+        log(`releasing ${newest.slice(0, 7)}, which a waiting release asked for and which holds ${sha.slice(0, 7)}`);
+      } catch (error) {
+        log(`${error.message}; releasing ${sha.slice(0, 7)} itself`);
+      }
+    }
+    if (!prebuilt && target === sha) checkPublished(options.repo, sha);
+    const before = liveRelease(home);
+    const name = prebuilt ? options.target : await build(options.repo, home, target);
+    flip(home, name);
+    const unitsChanged = installUnits(home);
+    if (options.restart) {
+      const pid = mainPid();
+      const how = startRelease(home, unitsChanged);
+      try {
+        await upCheck(pid, join(home, name));
       } catch (error) {
         if (before && before !== name) {
           log(`${error.message}; going back to ${before}`);
           flip(home, before);
-          run("systemctl", ["--user", "restart", UNIT], home);
+          installUnits(home);
+          // After a failed hand-over the server before still serves; only a new main process that failed needs a restart.
+          if (how === "restart" || mainPid() !== pid) run("systemctl", ["--user", "restart", UNIT], home);
         }
         throw error;
       }
+      log(`${name} serves after a ${how}`);
     }
     prune(home, [name, before].filter(Boolean));
     console.log(name);
@@ -261,5 +350,9 @@ async function main() {
 
 main().catch(error => {
   log(error.message);
+  if (error instanceof AlreadyLive) {
+    console.log(error.live);
+    process.exit(0);
+  }
   process.exit(error instanceof UsageError ? 2 : error instanceof Refused ? 3 : error instanceof Unpublished ? 4 : error instanceof NotUp ? 5 : 1);
 });

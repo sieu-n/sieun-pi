@@ -16,11 +16,29 @@ import type { Host } from "./host/types.ts";
 import { projectList } from "./projects.ts";
 import { drain, serve } from "./http.ts";
 import { seedFixture } from "./fixture/seed.ts";
+import { handOverOnHangup, listening, tellSystemd } from "./handoff.ts";
 
+const loadedMs = Math.round(performance.now());
 const config = readConfig();
 const log = (line: string) => console.log(`${new Date().toISOString()} ${line}`);
 onWriteError(log);
 process.on("exit", flushSync);
+let app: App | undefined;
+let stopping: Promise<void> | undefined;
+const stopApp = () => (stopping ??= app ? app.stop().catch(() => undefined) : Promise.resolve());
+let server: ReturnType<typeof serve> | undefined;
+const shutdown = async () => {
+  if (server) await drain(server);
+  await stopApp();
+  process.exit(0);
+};
+process.on("SIGTERM", () => void shutdown());
+process.on("SIGINT", () => void shutdown());
+// A successor reads the data dir only once the server it follows stopped and wrote its files (server/handoff.ts).
+const port = listening();
+const waitedAt = performance.now();
+if (port.predecessor) await port.predecessor.stopped();
+const waitedMs = Math.round(performance.now() - waitedAt);
 if (config.fixture && !process.argv.includes("--data-dir")) config.dataDir = mkdtempSync(join(tmpdir(), "apps-chat-fixture-"));
 if (config.fixture) Object.assign(config, fixtureFolders(config.dataDir));
 /**
@@ -40,18 +58,22 @@ function boxes(config: Config): Host {
 
 const host = config.fixture ? new FixtureHost() : boxes(config);
 if (config.fixture) seedFixture(host as FixtureHost, config.dataDir, Date.now(), config.box);
-const app = new App(config, host, log);
+const startAt = performance.now();
+app = new App(config, host, log);
 await app.start();
 // A fixture server fills its own search index at once, so its first search does not wait for it.
 if (config.fixture) void app.searchEngine.start().catch(() => undefined);
-const server = serve(app);
-server.listen(config.port, config.listen, () => log(`apps/chat on http://${config.listen}:${config.port} (${config.fixture ? "fixture" : `pi-host ${config.socket}`}, data ${config.dataDir})`));
-
-let stopping: Promise<void> | undefined;
-const shutdown = () => (stopping ??= (async () => {
-  await drain(server);
-  await app.stop().catch(() => undefined);
-  process.exit(0);
-})());
-process.on("SIGTERM", () => void shutdown());
-process.on("SIGINT", () => void shutdown());
+const http = (server = serve(app));
+const fd = port.fd;
+await new Promise<void>(resolve => (fd === null ? http.listen(config.port, config.listen, resolve) : http.listen({ fd }, resolve)));
+log(`apps/chat on http://${config.listen}:${config.port}${fd === null ? "" : ` through fd ${fd}`} (${config.fixture ? "fixture" : `pi-host ${config.socket}`}, data ${config.dataDir}); ` +
+  `modules ${loadedMs} ms${port.predecessor ? `, the old server's stop ${waitedMs} ms` : ""}, state and start ${Math.round(performance.now() - startAt)} ms`);
+try {
+  await tellSystemd(port.predecessor !== null, log);
+} catch (error) {
+  // systemd must take a successor as the main process before the old server exits, or it reads that exit as the unit's end.
+  log(`systemd-notify: ${error instanceof Error ? error.message : String(error)}; this process exits`);
+  process.exit(1);
+}
+port.predecessor?.taken();
+if (fd !== null) handOverOnHangup({ fd, server: http, drain, stop: stopApp, log, exit: code => process.exit(code) });

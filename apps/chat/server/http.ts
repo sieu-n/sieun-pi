@@ -4,6 +4,7 @@
  */
 import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { Server as NetServer, type Socket } from "node:net";
 import { extname, join, normalize } from "node:path";
 import type { ConversationPatch, DutyAction, LaterPatch, MemoryInput, ReadPoint, RoomInput, RoomPatch, SendRequest } from "../web/src/lib/api/types.ts";
 import { parseSchedule } from "../web/src/lib/api/shared/chat-duties.ts";
@@ -210,7 +211,7 @@ export function routes(app: App): Route[] {
     return agent;
   };
   return [
-    route("GET", "/api/ready", async () => ({ ready: true })),
+    route("GET", "/api/ready", async () => ({ ready: true, pid: process.pid })),
     route("GET", "/api/me", async () => app.me()),
     route("GET", "/api/sidebar", async () => app.sidebar()),
     route("PUT", "/api/sidebar/layout", async (_r, _p, _q, body) => {
@@ -528,12 +529,9 @@ export function serve(app: App): Server {
   const table = routes(app);
   const requests = new RequestLog(join(app.config.dataDir, "requests"), app.log);
   const stalls = new LoopStalls();
-  const calls = new Set<ServerResponse>();
   const server = createServer((req, res) => {
     const path = (req.url ?? "/").split("?")[0]!;
     const method = req.method ?? "GET";
-    calls.add(res);
-    res.once("close", () => calls.delete(res));
     if (path === "/api/timings" && method === "POST") return void takeTimings(table, requests, app.log, req, res);
     if (path.startsWith("/api/")) {
       const started = performance.now();
@@ -546,7 +544,7 @@ export function serve(app: App): Server {
     }
     void handle(app, table, req, res);
   });
-  inFlight.set(server, calls);
+  track(server);
   // A whole request may take as long as its body takes to arrive, so an upload of any size over a slow link ends (App.upload);
   // Node's 300 s default cut such uploads off. headersTimeout still drops a client that never finishes its headers.
   server.requestTimeout = 0;
@@ -561,27 +559,56 @@ export function serve(app: App): Server {
   return server;
 }
 
-/** Each server's calls in flight, which `drain` waits for. */
-const inFlight = new WeakMap<Server, Set<ServerResponse>>();
+/** Each server's connections other than live sockets, with the calls each has in flight and whether it answered one yet, which `drain` reads. */
+type Conn = { busy: number; served: boolean };
+const conns = new WeakMap<Server, Map<Socket, Conn>>();
+
+function track(server: Server): void {
+  const open = new Map<Socket, Conn>();
+  conns.set(server, open);
+  server.on("connection", (socket: Socket) => {
+    open.set(socket, { busy: 0, served: false });
+    socket.once("close", () => open.delete(socket));
+  });
+  server.on("request", (req: IncomingMessage, res: ServerResponse) => {
+    const conn = open.get(req.socket as Socket);
+    if (!conn) return;
+    conn.busy += 1;
+    res.once("close", () => {
+      conn.busy -= 1;
+      conn.served = true;
+    });
+  });
+  server.on("upgrade", (req: IncomingMessage) => open.delete(req.socket as Socket));
+}
 
 /**
- * Stops taking calls and resolves once the calls in flight have answered, or after `maxMs` with the rest cut. A release restart used to end
- * the process mid-call, so a send or a change in flight failed with "Load failed" in the owner's browser. 99.9% of the 128,600 server lines of
- * 11-21 and 11-22 answered within 1.5 s, so the default waits 2 s; the longest took 10.8 s, and the port stays closed while it waits. The live
- * sockets stay open meanwhile and end with the process.
+ * Stops taking connections and resolves once every connection it took has answered its calls and closed, or after `maxMs` with the rest
+ * cut. A release restart used to end the process mid-call, so a send or a change in flight failed with "Load failed" in the owner's
+ * browser. 99.9% of the 128,600 server lines of 11-21 and 11-22 answered within 1.5 s, so the default waits 2 s; the longest took 10.8 s.
+ * http's own close also ends a connection accepted just before whose request was not read yet, and the hand-over spec
+ * (test/server/handoff.test.ts) saw that as ECONNRESET on 1 or 2 of about 300 calls in 2 of 3 runs on 11-22, so only net's close runs here:
+ * a connection that answered a call and holds none is ended, and a new one is kept until its call answered. A new one that sent nothing
+ * within SILENT_MS is a client's spare connection and is ended too. Live sockets end with the app.
  */
 export async function drain(server: Server, maxMs = 2000): Promise<void> {
-  server.close();
-  server.closeIdleConnections();
-  const calls = inFlight.get(server) ?? new Set<ServerResponse>();
-  let timer: NodeJS.Timeout | undefined;
-  const late = new Promise<void>(resolve => { timer = setTimeout(resolve, maxMs); });
-  const answered = (async () => {
-    while (calls.size) await Promise.all([...calls].map(res => new Promise(resolve => res.once("close", resolve))));
-  })();
-  await Promise.race([answered, late]);
-  clearTimeout(timer);
+  netClose.call(server);
+  const open = conns.get(server) ?? new Map<Socket, Conn>();
+  const began = Date.now();
+  const end = began + maxMs;
+  for (;;) {
+    const silent = Date.now() - began >= SILENT_MS;
+    for (const [socket, conn] of open) if (!conn.busy && (conn.served || (silent && socket.bytesRead === 0))) socket.end();
+    if (!open.size || Date.now() >= end) break;
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
 }
+const netClose = NetServer.prototype.close;
+/**
+ * A client on this box, tailscale serve included, sends its request within a few ms of its connect: over 500 loopback connects on us-metal02
+ * on 11-22 the first byte came 0.2 ms after the accept at the median, 1.3 ms at p99 and 4.7 ms at most.
+ */
+const SILENT_MS = 100;
 
 const viaOf = (req: IncomingMessage): ClientVia => (req.headers["tailscale-user-login"] ? "tailnet" : "local");
 
