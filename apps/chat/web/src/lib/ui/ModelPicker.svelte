@@ -82,8 +82,8 @@
     height: 24px;
     padding: 0 8px;
     border-radius: var(--radius-pill);
+    /* No backdrop-filter: the fill is 90% opaque, and in WebKit 12 blurred pills over the cards' blurred washes stalled #/agents for 8 s or more per frame (11-21). */
     background: var(--popover-glass-fill);
-    backdrop-filter: blur(8px);
   }
   .pill:hover:not(:disabled),
   .pill[aria-expanded="true"] {
