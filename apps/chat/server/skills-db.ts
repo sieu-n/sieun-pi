@@ -50,6 +50,15 @@ export interface DiskSteps {
 /** A caller's mistake, such as an unknown skill or a path another skill holds; http.ts answers it 400. */
 export class SkillsRefused extends Error {}
 
+/** A disk step that did not take effect; the change answers an error with the step's reason, and its move stays for undo. */
+export class SkillsStepFailed extends Error {}
+
+function failure(what: string, moveId: string, results: readonly { box: string; path: string; note: string | null; state: string }[]): SkillsStepFailed | null {
+  const failed = results.filter(r => r.state === "failed");
+  if (!failed.length) return null;
+  return new SkillsStepFailed(`${what} failed on ${failed.length} of ${results.length} steps (move ${moveId}): ${failed.map(r => `${r.box}:${r.path}: ${r.note ?? "no reason given"}`).join("; ")}`);
+}
+
 type StoredCopy = { box: string; path: string; fact: FactCopy; key: string; changed: number | null; stale: boolean };
 type Snapshot = { skills: SkillRecord[]; installs: InstallRecord[]; copies: StoredCopy[] };
 type Touched = { skills: string[]; installs: string[]; copies: string[] };
@@ -224,9 +233,7 @@ export class SkillsDb {
         seeded = true;
       }
       for (const install of this.installs().filter(i => i.pending)) {
-        const scan = this.scans().find(x => x.box === install.box);
-        const here = this.storedCopies().find(c => c.box === install.box && c.path === install.path);
-        if (scan?.ok && here) this.db.prepare("UPDATE skill_installs SET pending = NULL WHERE id = ?").run(install.id);
+        if (facts.boxes.some(b => b.box === install.box && b.ok)) this.db.prepare("UPDATE skill_installs SET pending = NULL WHERE id = ?").run(install.id);
       }
       this.rules(facts.usage, facts.usageCounted);
       this.setMeta("ingested", facts.generatedAt ?? now());
@@ -501,6 +508,12 @@ export class SkillsDb {
     return move;
   }
 
+  /** Refuses a path outside the box's home folder, such as a metal path given for the Mac, which no step there can create. */
+  private inHome(box: string, path: string, home: string): void {
+    if (!path.startsWith("/") || path.split("/").includes("..")) throw new SkillsRefused(`${path} is not an absolute path.`);
+    if (path !== home && !path.startsWith(`${home}/`)) throw new SkillsRefused(`${path} is outside ${box}'s home ${home}.`);
+  }
+
   private homeOf(box: string, copies: readonly CopyFact[]): string {
     if (box === this.config.box) return this.config.home;
     for (const c of copies) {
@@ -511,7 +524,7 @@ export class SkillsDb {
   }
 
   /** Makes the disk match the installs: creates what is missing, points wrong links back and refreshes copies left behind. */
-  async apply(opts: { dryRun?: boolean; only?: string[]; moveId?: string; kind?: SkillMove["kind"]; summary?: string; before?: Snapshot; touched?: Touched } = {}): Promise<ApplyResult> {
+  async apply(opts: { dryRun?: boolean; only?: string[]; moveId?: string; kind?: SkillMove["kind"]; summary?: string; before?: Snapshot; touched?: Touched; keepFailures?: boolean } = {}): Promise<ApplyResult> {
     const st = this.state();
     const installs = st.installs.filter(i => !opts.only || opts.only.includes(i.id));
     const pending = installs.filter(i => i.pending);
@@ -548,6 +561,8 @@ export class SkillsDb {
       const summary = opts.summary ?? `apply: ${steps.filter(x => x.result !== "failed").length} of ${steps.length} steps`;
       this.record(opts.kind ?? "apply", summary, item, before, { skills: opts.touched?.skills ?? [], installs: opts.touched?.installs ?? [], copies: [...(opts.touched?.copies ?? []), ...touchedCopies] }, moveId);
     });
+    const failed = failure("apply", moveId, results);
+    if (failed && !opts.keepFailures) throw failed;
     return { at: now(), dryRun: false, changes: steps.filter(x => x.result !== "failed").length, steps, moveId };
   }
 
@@ -580,7 +595,9 @@ export class SkillsDb {
     const runtime = body.runtime;
     if (!isRuntime(runtime)) throw new SkillsRefused(`A runtime is one of ${SKILL_RUNTIMES.join(", ")}.`);
     const mode = body.mode ?? "link";
-    const path = body.path ?? `${runtimeFolder(this.homeOf(body.box, st.copies), runtime)}/${skill.name}`;
+    const home = this.homeOf(body.box, st.copies);
+    const path = body.path ?? `${runtimeFolder(home, runtime)}/${skill.name}`;
+    this.inHome(body.box, path, home);
     const existing = st.installAt.get(`${body.box}:${path}`);
     if (existing && existing.skillId !== skill.id) throw new SkillsRefused(`${body.box}:${path} is ${existing.skillId}'s install ${existing.id}; remove it first.`);
     const onDisk = st.copyAt.get(`${body.box}:${path}`);
@@ -598,8 +615,17 @@ export class SkillsDb {
     this.tx(() => this.insertInstall(install));
     const apply = await this.apply({
       only: [install.id], moveId, kind: "install", summary: `install ${skill.name} on ${body.box} at ${path} (${mode})`,
-      before: emptySnapshot(), touched: { skills: [], installs: [install.id], copies: [] },
+      before: emptySnapshot(), touched: { skills: [], installs: [install.id], copies: [] }, keepFailures: true,
     });
+    const failed = apply.steps.filter(x => x.result === "failed");
+    if (failed.length) {
+      this.tx(() => {
+        this.db.prepare("DELETE FROM skill_installs WHERE id = ?").run(install.id);
+        this.db.prepare("DELETE FROM skill_copies WHERE box = ? AND path = ?").run(install.box, install.path);
+        this.db.prepare("UPDATE skill_moves SET undone_at = ? WHERE id = ?").run(now(), moveId);
+      });
+      throw new SkillsStepFailed(`install of ${skill.name} on ${body.box} failed, so no install row stays (move ${moveId}): ${failed.map(x => x.note ?? "no reason given").join("; ")}`);
+    }
     return { move: this.moveById(moveId) ?? this.record("install", `install ${skill.name}`, null, emptySnapshot(), { skills: [], installs: [install.id], copies: [] }, moveId), apply };
   }
 
@@ -658,12 +684,14 @@ export class SkillsDb {
       if (copy.linkTarget === null && !left.length && st.skillMap.has(copy.key)) dropSkills = [copy.key];
       summary = `remove ${copyId(copy)}`;
     } else throw new SkillsRefused(`No skill, install or copy ${target}; a copy id is <box>:<path> as GET /api/skills lists it.`);
-    if (!steps.length) throw new SkillsRefused(`${target} has nothing on disk to remove.`);
+    const scanned = (box: string) => st.scans.some(x => x.box === box && x.lastOkAt !== null);
+    const waiting = new Set(installs.filter(i => i.pending).map(i => `${i.box}:${i.path}`));
+    steps = steps.filter(x => st.copyAt.has(`${x.box}:${x.path}`) || waiting.has(`${x.box}:${x.path}`) || !scanned(x.box));
     const moveId = newMove();
-    const item = `sw:${moveId}`;
+    const item = steps.length ? `sw:${moveId}` : null;
     const copyKeys = steps.map(x => `${x.box}:${x.path}`);
     const before = this.snapshot({ skills: dropSkills, installs: [...installs.map(i => i.id), ...(dropSkills.length ? st.installs.filter(i => dropSkills.includes(i.skillId)).map(i => i.id) : [])], copies: copyKeys });
-    const results = await this.disk.run(item, steps.map(x => ({ kind: "delete" as const, ...x })));
+    const results = item ? await this.disk.run(item, steps.map(x => ({ kind: "delete" as const, ...x }))) : [];
     const failed = results.filter(r => r.state === "failed");
     this.tx(() => {
       for (const r of results) if (r.state === "applied") this.db.prepare("DELETE FROM skill_copies WHERE box = ? AND path = ?").run(r.box, r.path);
@@ -673,6 +701,8 @@ export class SkillsDb {
       }
       this.record("remove", failed.length ? `${summary} (${failed.length} steps failed)` : summary, item, before, { skills: dropSkills, installs: before.installs.map(i => i.id), copies: copyKeys }, moveId);
     });
+    const error = failure("remove", moveId, results);
+    if (error) throw error;
     return { move: this.moveById(moveId)!, apply: diskResult(moveId, results, "delete") };
   }
 
@@ -713,6 +743,7 @@ export class SkillsDb {
     const install = st.installs.find(i => i.id === body.installId);
     if (!install) throw new SkillsRefused(`No install ${body.installId}.`);
     if (install.path === body.path) throw new SkillsRefused(`${install.id} is at ${body.path} already.`);
+    this.inHome(install.box, body.path, this.homeOf(install.box, st.copies));
     if (st.installAt.has(`${install.box}:${body.path}`) || st.copyAt.has(`${install.box}:${body.path}`)) throw new SkillsRefused(`${install.box}:${body.path} already holds a folder.`);
     const name = st.skillMap.get(install.skillId)?.name ?? "";
     const moveId = newMove();
@@ -733,6 +764,8 @@ export class SkillsDb {
       }
       this.record("move", `move ${install.id} from ${install.path} to ${body.path}${ok ? "" : " (failed)"}`, item, before, { skills: [], installs: [install.id], copies }, moveId);
     });
+    const error = failure("move", moveId, results);
+    if (error) throw error;
     return { move: this.moveById(moveId)!, apply: diskResult(moveId, results, "create") };
   }
 
@@ -786,6 +819,8 @@ export class SkillsDb {
         this.db.prepare("UPDATE skill_moves SET undone_at = ? WHERE id = ?").run(now(), move.id);
       }
     });
+    const error = failure("undo", move.id, results);
+    if (error) throw error;
     return { move: this.moveById(move.id)!, apply: diskResult(move.id, results, "restore") };
   }
 

@@ -25,7 +25,7 @@ import { usageLive, usageReport, hostsReport } from "./usage.ts";
 import { Skills } from "./skills.ts";
 import { consolesReport } from "./consoles.ts";
 import { decideBody, ReviewRefused, SkillsReview, undoBody } from "./skills-review.ts";
-import { SkillsDb, SkillsRefused } from "./skills-db.ts";
+import { SkillsDb, SkillsRefused, SkillsStepFailed } from "./skills-db.ts";
 import { fixtureScanner, writeSkillsDbFixture } from "./skills-db-fixture.ts";
 import type { InstallBody } from "../web/src/lib/api/shared/skills.ts";
 import { type ClientVia, clientTimings, LoopStalls, RequestLog } from "./request-log.ts";
@@ -614,7 +614,7 @@ async function handle(app: App, table: Route[], req: IncomingMessage, res: Serve
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const status = error instanceof PoolError || error instanceof ReactionError || error instanceof LaterError ? error.status : isHostAway(error) ? 503
-      : error instanceof NotFound || error instanceof EntryMissing ? 404 : error instanceof EntryExists ? 409
+      : error instanceof NotFound || error instanceof EntryMissing ? 404 : error instanceof EntryExists || error instanceof SkillsStepFailed ? 409
       : error instanceof BadRequest || error instanceof CwdRefused || /^(No |A |An |Dates|around|after|.* is not in (#|Solo "))/.test(message) ? 400 : 500;
     refuse(app, table, req, res, status, message, status === 500 && error instanceof Error ? error.stack : undefined);
   }

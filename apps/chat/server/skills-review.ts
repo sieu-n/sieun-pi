@@ -74,11 +74,13 @@ type OpHow = ReviewHow | "place";
 type Op = {
   row: Row; how: OpHow; action: ReviewAction; place?: { mode: "link" | "copy"; from: string }; foldInto: string | null; state: CopyState; note: string | null; at: string;
   backup: string | null; repo: string | null; rel: string | null; commit: string | null;
+  /** A skills DB delete, whose goal is that nothing sits at the path, so a path already gone ends the step as done. */
+  absentOk?: boolean;
 };
 
 type ItemRecord = { status: ItemStatus; decision: ReviewDecision | null; stamp: string | null; ops: Record<string, Op> };
 type SetState = { items: Record<string, ItemRecord> };
-type MacStep = { item: string; copy: string; kind: "apply" | "undo"; dir: string; backup: string; at: string; place?: { mode: "link" | "copy"; from: string } };
+type MacStep = { item: string; copy: string; kind: "apply" | "undo"; dir: string; backup: string; at: string; place?: { mode: "link" | "copy"; from: string }; absentOk?: boolean };
 type MacQueue = { queue: MacStep[]; online: boolean | null; checkedAt: string | null };
 
 type Loaded = { set: ReviewSet; skills: Skills };
@@ -398,6 +400,7 @@ export class SkillsReview {
         const op: Op = {
           row, how, action: step.kind === "fold" ? "fold" : "delete", foldInto: step.kind === "fold" ? step.into : null, state: "pending", note: null, at: now(),
           backup: null, repo: plan?.repo ?? null, rel: plan?.rel ?? null, commit: null, ...(step.kind === "place" ? { place: { mode: step.mode, from: step.from } } : {}),
+          ...(step.kind === "delete" ? { absentOk: true } : {}),
         };
         if (how === "follows-git") op.commit = record.ops[plan?.follows ?? ""]?.commit ?? null;
         record.ops[row.id] = op;
@@ -422,6 +425,10 @@ export class SkillsReview {
       for (const copy of Object.keys(record.ops).reverse()) {
         const op = record.ops[copy]!;
         if (live(op)) await this.reverse(loaded.set, item, record, copy);
+        else if (op.state === "pending" || (op.state === "failed" && !op.note?.startsWith("Undo failed"))) {
+          op.state = "undone";
+          op.note = "The step never took effect, so nothing was put back.";
+        }
         await this.saveState(loaded.set, state);
         results.push({ box: op.row.box, path: op.row.dir, state: diskState(op.state), note: op.note });
       }
@@ -737,7 +744,11 @@ export class SkillsReview {
       await rm(backup, { recursive: true, force: true });
       await move(op.row.dir, backup);
     } else if (!present(backup)) {
-      throw new Error(`${op.row.dir} is not there, and no backup holds it.`);
+      if (!op.absentOk) throw new Error(`${op.row.dir} is not there, and no backup holds it.`);
+      op.backup = null;
+      op.state = "applied";
+      op.note = "Nothing was there to remove.";
+      return;
     }
     op.state = "applied";
     op.note = null;
@@ -746,7 +757,7 @@ export class SkillsReview {
   private async undoTrash(set: ReviewSet, op: Op): Promise<void> {
     const refused = this.outside(set, op.row.dir);
     if (refused) throw new Error(refused);
-    if (!present(op.row.dir)) {
+    if (!present(op.row.dir) && !(op.absentOk && (!op.backup || !present(op.backup)))) {
       if (!op.backup || !present(op.backup)) throw new Error(`No backup of ${op.row.dir} at ${op.backup}.`);
       await mkdir(dirname(op.row.dir), { recursive: true });
       await move(op.backup, op.row.dir);
@@ -922,7 +933,7 @@ export class SkillsReview {
     const backup = kind === "apply" ? `${set.macTrash}/${relative(join(set.stateDir, "trash"), op.backup!)}` : op.backup!;
     op.backup = backup;
     queue.queue = queue.queue.filter(step => !(step.item === item && step.copy === op.row.id));
-    queue.queue.push({ item, copy: op.row.id, kind, dir: op.row.dir, backup, at: now(), ...(op.place ? { place: op.place } : {}) });
+    queue.queue.push({ item, copy: op.row.id, kind, dir: op.row.dir, backup, at: now(), ...(op.place ? { place: op.place } : {}), ...(op.absentOk ? { absentOk: true } : {}) });
     await this.saveQueue(set, queue);
     op.state = "queued";
     op.note = set.macHost ? (kind === "apply" ? "Waits for the Mac." : "Waits for the Mac to put it back.") : "Waits for the Mac; this set names no Mac host.";
@@ -978,8 +989,8 @@ export class SkillsReview {
           ? `d=${dir}; if ! ${here}; then mkdir -p "$(dirname "$d")" && ${put}; fi`
           : `d=${dir}; b=${backup}; if ${here}; then mkdir -p "$(dirname "$b")" && rm -rf "$b" && mv "$d" "$b"; fi`
         : step.kind === "apply"
-          ? `d=${dir}; b=${backup}; if ${here}; then mkdir -p "$(dirname "$b")" && rm -rf "$b" && mv "$d" "$b"; elif ! ${kept}; then echo "$d is not there, and no backup holds it." >&2; exit 3; fi`
-          : `d=${dir}; b=${backup}; if ! ${here}; then if ${kept}; then mkdir -p "$(dirname "$d")" && mv "$b" "$d"; else echo "No backup at $b." >&2; exit 3; fi; fi`;
+          ? `d=${dir}; b=${backup}; if ${here}; then mkdir -p "$(dirname "$b")" && rm -rf "$b" && mv "$d" "$b"; elif ! ${kept}; then ${step.absentOk || step.item.startsWith(DB_ITEM) ? "exit 0" : `echo "$d is not there, and no backup holds it." >&2; exit 3`}; fi`
+          : `d=${dir}; b=${backup}; if ! ${here}; then if ${kept}; then mkdir -p "$(dirname "$d")" && mv "$b" "$d"; else ${step.absentOk || step.item.startsWith(DB_ITEM) ? "exit 0" : `echo "No backup at $b." >&2; exit 3`}; fi; fi`;
       const outcome = await run("ssh", [...SSH, set.macHost, script]).then(() => ({ code: 0, error: "" }), (error: { code?: unknown }) => ({ code: typeof error.code === "number" ? error.code : 255, error: message(error) }));
       queue.checkedAt = now();
       if (outcome.code === 255) {
@@ -991,7 +1002,7 @@ export class SkillsReview {
       const op = state.items[step.item]?.ops[step.copy];
       if (op) {
         op.state = outcome.code === 0 ? (step.kind === "apply" ? "applied" : "undone") : "failed";
-        op.note = outcome.code === 0 ? null : outcome.error;
+        op.note = outcome.code === 0 ? null : step.kind === "undo" ? `Undo failed: ${outcome.error}` : outcome.error;
         await this.logMove(set, step.item, op, step.kind);
       }
       await this.saveState(set, state);

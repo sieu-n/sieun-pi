@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, mkdtempSync, readFileSync, readlinkSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
-import { SkillsDb } from "../../server/skills-db.ts";
+import { SkillsDb, SkillsRefused, SkillsStepFailed, type DiskResult, type DiskStep } from "../../server/skills-db.ts";
 import { fixtureScanner, writeSkillsDbFixture, type SkillsDbFixture } from "../../server/skills-db-fixture.ts";
 import { changedLines, similarity } from "../../server/skills-model.ts";
 import { SkillsReview } from "../../server/skills-review.ts";
@@ -16,6 +16,25 @@ const BOX = "us-metal02";
 const IDLE: SkillScan = { running: false, startedAt: null, endedAt: null, error: null };
 
 type Rig = { fixture: SkillsDbFixture; db: SkillsDb; review: SkillsReview; scan: () => void; present: (path: string) => boolean };
+
+const macCopy = (path: string) => ({ box: "mac", path, realPath: path, linkTarget: null, exists: true, name: "deploy-notes", source: "user-dir", root: "/Users/o/.claude/skills", runtimes: ["claude"], hash: "h1", text: "x" });
+const macScan = (at: string, copies: unknown[], ok = true) => ({ generatedAt: at, boxes: [{ box: "mac", scannedAt: at, ok, ...(ok ? {} : { error: "ssh exit 255" }) }], copies, usage: {} });
+
+/** A skills DB over a fake disk, for steps a test box cannot take, such as the Mac's. */
+function fakeDisk(t: { after: (fn: () => void) => void }, answer: { run: (steps: DiskStep[]) => DiskResult[]; undo: () => DiskResult[] }) {
+  const dir = mkdtempSync(join(tmpdir(), "skills-db-fake-"));
+  const calls: { run: DiskStep[][]; undo: number } = { run: [], undo: 0 };
+  const db = new SkillsDb({ file: join(dir, "chat.sqlite"), box: BOX, home: "/home/x", piHostPrompt: null }, {
+    run: async (_item, steps) => (calls.run.push(steps), answer.run(steps)),
+    undo: async () => (calls.undo++, answer.undo()),
+  });
+  t.after(() => {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  db.ingest(macScan("2026-11-22T00:00:00Z", [macCopy("/Users/o/.claude/skills/deploy-notes")]));
+  return { db, calls };
+}
 
 function rig(t: { after: (fn: () => void) => void }): Rig {
   const dir = mkdtempSync(join(tmpdir(), "skills-db-"));
@@ -172,4 +191,69 @@ test("changed lines and similarity count lines added and removed", () => {
   assert.equal(changedLines("a\nb\nc\n", "a\nb\nc\n"), 0);
   assert.equal(changedLines("a\nb\nc", "a\nx\nc"), 2);
   assert.equal(similarity("a\nb\nc\nd", "a\nb\nc\ne"), 0.75);
+});
+
+test("install refuses a path outside the box's home, such as a metal path for the Mac", async t => {
+  const { db } = fakeDisk(t, { run: () => [], undo: () => [] });
+  await assert.rejects(db.install({ name: "deploy-notes", box: "mac", runtime: "claude", path: "/home/sieun/scratch/x/deploy-notes", mode: "copy" }), SkillsRefused);
+  await assert.rejects(db.install({ name: "deploy-notes", box: "mac", runtime: "claude", path: "/Users/o/../etc/deploy-notes", mode: "copy" }), SkillsRefused);
+  assert.equal(db.view(IDLE).counts.installs, 0);
+});
+
+test("an install whose step fails answers an error and keeps no row", async t => {
+  const { fixture, db, scan } = rig(t);
+  scan();
+  writeFileSync(join(fixture.home, "blocker"), "a file where a folder would go\n");
+  const installs = db.view(IDLE).counts.installs;
+  await assert.rejects(db.install({ name: "deploy-notes", box: BOX, runtime: "codex", path: join(fixture.home, "blocker/deploy-notes") }), SkillsStepFailed);
+  assert.equal(db.view(IDLE).counts.installs, installs);
+  assert.equal(db.check().items.length, 0);
+  assert.equal((await db.apply()).changes, 0);
+});
+
+test("undo of an install whose Mac step never took effect drops the row, and a failed undo answers an error", async t => {
+  const failing = { value: false };
+  const { db } = fakeDisk(t, {
+    run: steps => steps.map(step => ({ box: step.box, path: step.path, state: "queued" as const, note: "Waits for the Mac." })),
+    undo: () => [{ box: "mac", path: "/Users/o/.codex/skills/deploy-notes", state: failing.value ? "failed" as const : "undone" as const, note: failing.value ? "ssh exit 3" : null }],
+  });
+  const first = await db.install({ name: "deploy-notes", box: "mac", runtime: "codex", mode: "copy" });
+  assert.equal(first.apply?.steps[0]?.result, "queued");
+  failing.value = true;
+  await assert.rejects(db.undo({ moveId: first.move.id }), SkillsStepFailed);
+  assert.equal(db.moves().find(m => m.id === first.move.id)?.undoneAt, null, "a failed undo leaves the move open");
+  assert.equal(db.view(IDLE).counts.installs, 1);
+  failing.value = false;
+  const undone = await db.undo({ moveId: first.move.id });
+  assert.ok(undone.move.undoneAt);
+  assert.equal(db.view(IDLE).counts.installs, 0);
+});
+
+test("remove of an install that never reached the disk runs no disk step and drops the row", async t => {
+  const { db, calls } = fakeDisk(t, {
+    run: steps => steps.map(step => ({ box: step.box, path: step.path, state: "queued" as const, note: null })),
+    undo: () => [],
+  });
+  await db.install({ name: "deploy-notes", box: "mac", runtime: "codex", mode: "copy" });
+  db.ingest(macScan("2026-11-22T01:00:00Z", [macCopy("/Users/o/.claude/skills/deploy-notes")]));
+  assert.deepEqual(db.check().items.map(i => i.kind), ["missing"]);
+  const install = db.view(IDLE).skills.flatMap(k => k.installs)[0]!;
+  calls.run.length = 0;
+  await db.remove({ target: install.id });
+  assert.equal(calls.run.length, 0, "no step went to the disk");
+  assert.equal(db.view(IDLE).counts.installs, 0);
+  assert.equal(db.check().items.length, 0);
+});
+
+test("the review runs a skills DB delete of a path that is gone as a no-op, and undoes a step that failed as nothing to put back", async t => {
+  const { fixture, review } = rig(t);
+  const steps = review.diskSteps(fixture.setName);
+  const gone = await steps.run("sw:mv_gone", [{ kind: "delete", box: BOX, path: join(fixture.home, ".claude/skills/never-there"), name: "never-there" }]);
+  assert.equal(gone[0]!.state, "applied");
+  assert.equal((await steps.undo("sw:mv_gone"))[0]!.state, "undone");
+  writeFileSync(join(fixture.home, "blocker"), "x\n");
+  const failed = await steps.run("sw:mv_fail", [{ kind: "place", box: BOX, path: join(fixture.home, "blocker/x"), name: "x", mode: "link", from: "/nowhere" }]);
+  assert.equal(failed[0]!.state, "failed");
+  assert.equal((await steps.undo("sw:mv_fail"))[0]!.state, "undone");
+  assert.equal((await review.report(fixture.setName)).items.filter(item => item.id.startsWith("sw:")).length, 0, "the review list hides skills DB items");
 });
