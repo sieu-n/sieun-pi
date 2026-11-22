@@ -49,6 +49,11 @@ export interface RequestTiming {
    * it is from before 11-22, when 49 of 50 failed calls after a restart were the hidden old page's calls aborted by its own reload.
    */
   page?: "visible" | "hidden" | "leaving";
+  /**
+   * On a client line, the ms of `ms` the page was hidden (web client.ts `hiddenWithin`), which the owner never waited for: a page reloads
+   * for a newer build while it is hidden or out of focus (web reload.ts), and its first reads wait in the hidden page's throttled timers.
+   */
+  hid?: number;
 }
 
 /**
@@ -87,7 +92,9 @@ export class LoopStalls {
 }
 
 /** A client sample as POST /api/timings takes it; the server names its route. */
-export interface ClientTiming { m: string; p: string; s: number; ms: number; net?: number; enc?: number; stored?: number; err?: string; shown?: true; bg?: "ahead" | "shown"; page?: "visible" | "hidden" | "leaving" }
+export interface ClientTiming {
+  m: string; p: string; s: number; ms: number; net?: number; enc?: number; stored?: number; err?: string; shown?: true; bg?: "ahead" | "shown"; page?: "visible" | "hidden" | "leaving"; hid?: number;
+}
 
 /** A 24 h window spans at most two UTC days, so a file older than yesterday holds no line the duty reads. */
 const KEEP_DAYS = 2;
@@ -135,12 +142,13 @@ export function clientTimings(body: unknown): ClientTiming[] {
   return samples.filter((sample): sample is ClientTiming => {
     const { m, p, s, ms } = (sample ?? {}) as Record<string, unknown>;
     return typeof m === "string" && typeof p === "string" && p.startsWith("/api/") && typeof s === "number" && typeof ms === "number" && Number.isFinite(ms) && ms >= 0;
-  }).map(({ m, p, s, ms, net, enc, stored, err, shown, bg, page }) => ({
+  }).map(({ m, p, s, ms, net, enc, stored, err, shown, bg, page, hid }) => ({
     m, p: p.split("?")[0]!, s, ms, ...(typeof net === "number" && Number.isFinite(net) && net >= 0 ? { net } : {}),
     ...(typeof enc === "number" && Number.isFinite(enc) && enc >= 0 ? { enc } : {}),
     ...(typeof stored === "number" && Number.isFinite(stored) && stored >= 0 ? { stored } : {}),
     ...(typeof err === "string" && err ? { err: err.slice(0, 500) } : {}), ...(shown === true ? { shown } : {}),
     ...(bg === "ahead" || bg === "shown" ? { bg } : {}),
     ...(page === "visible" || page === "hidden" || page === "leaving" ? { page } : {}),
+    ...(typeof hid === "number" && Number.isFinite(hid) && hid > 0 ? { hid: Math.min(hid, ms) } : {}),
   }));
 }

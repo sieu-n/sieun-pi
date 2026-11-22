@@ -1387,6 +1387,7 @@ export class App {
   }
 
   private async command(client: Client, command: LiveCommand): Promise<void> {
+    if (command.type === "ping") return this.send1(client, { type: "pong" });
     if (command.type === "watch") {
       if (client.watching.has(command.conversation)) return;
       // An agent's For list holds no thread open; the page gets its pending count now and on every change.

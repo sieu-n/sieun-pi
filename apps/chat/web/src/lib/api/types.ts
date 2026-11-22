@@ -882,10 +882,14 @@ export type LiveEvent =
   | ReviewEvent
   /** Only to pages that watch `for:<agent id>`: the agent's For list changed, with its new pending count. */
   | { type: "for_me"; agent: AgentId; pending: number }
+  /** The answer to the page's `ping`, which tells it the socket still reaches the server (live.svelte.ts). */
+  | { type: "pong" }
   | { type: "error"; message: string };
 
 /** Page to server. `after` is the newest item id the page holds, so a reconnect sends only what it missed. */
 export type LiveCommand =
   /** `conversation` may be `for:<agent id>`, which watches that agent's For list and gets its `for_me` events. */
   | { type: "watch"; conversation: ConversationId; after?: string }
-  | { type: "unwatch"; conversation: ConversationId };
+  | { type: "unwatch"; conversation: ConversationId }
+  /** Asks for a `pong`. A page that has heard nothing for a while sends it, and drops the socket when no answer comes (live.svelte.ts). */
+  | { type: "ping" };

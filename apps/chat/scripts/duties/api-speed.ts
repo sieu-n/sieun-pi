@@ -44,9 +44,10 @@ export interface RouteSpeed {
 
 /**
  * The wait a line counts as. A refresh behind a page the screen already showed, whose answer changed nothing on it (`bg: "shown"`), is
- * an open the owner waited 0 ms for. A read ahead of any view (`bg: "ahead"`) is no wait of his at all, so no speed counts it.
+ * an open the owner waited 0 ms for. A read ahead of any view (`bg: "ahead"`) is no wait of his at all, so no speed counts it. The ms
+ * the page was hidden (`hid`, request-log.ts) are no wait of his either, as for a page that reloaded hidden after his Mac woke.
  */
-const waitOf = (t: RequestTiming): number => (t.bg === "shown" ? 0 : t.ms);
+const waitOf = (t: RequestTiming): number => (t.bg === "shown" ? 0 : t.ms - (t.hid ?? 0));
 
 /** The routes each metric reads, by `<method> <route pattern>`. */
 export const ROUTES = {

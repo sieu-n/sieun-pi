@@ -382,3 +382,40 @@ test("the server keeps what a failed call's page was doing, and drops a value it
     await chat.close();
   }
 });
+
+test("the ms a page was hidden count in no wait, and an old line without them counts whole", async () => {
+  const dir = tempDir();
+  mkdirSync(join(dir, "requests"));
+  const now = Date.UTC(2026, 10, 22, 14, 41);
+  const at = Date.UTC(2026, 10, 22, 13, 50, 24);
+  const row = (r: string, ms: number, net: number, more: Record<string, unknown> = {}) =>
+    JSON.stringify({ at, src: "client", via: "tailnet", m: "GET", r, p: r.replace(":id", "ag_agent-factory"), s: 200, ms, net, ...more });
+  // The owner's batch of 11-22 13:50:24 after his Mac woke (requests/2026-11-22.jsonl), whose board refresh changed the panel 20,866 ms
+  // after the page asked for it; no line of that page says whether it was hidden, so the duty reads the wait whole.
+  const batch = [
+    row("/api/later", 4067, 4008), row("/api/owner-settings", 4058, 3971), row("/api/agents/:id/duties", 20682, 219), row("/api/agents/:id/board", 20866, 421),
+    row("/api/rooms", 20724, 206, { bg: "shown" }), row("/api/later", 11400, 419, { bg: "shown" }),
+  ];
+  writeFileSync(join(dir, "requests", "2026-11-22.jsonl"), `${batch.join("\n")}\n`);
+  assert.equal(apiSpeed(dir, now, 24 * 3600_000).metrics.slowest_api_p90_ms, 20866);
+  // The same reads from a page that was hidden for 20,000 ms of their wait count the 866 and 682 ms he could see.
+  writeFileSync(join(dir, "requests", "2026-11-22.jsonl"), `${[
+    row("/api/later", 4067, 4008), row("/api/owner-settings", 4058, 3971), row("/api/agents/:id/duties", 20682, 219, { hid: 20000 }), row("/api/agents/:id/board", 20866, 421, { hid: 20000 }),
+  ].join("\n")}\n`);
+  const out = apiSpeed(dir, now, 24 * 3600_000);
+  assert.equal(out.metrics.slowest_api_p90_ms, 4067);
+  assert.deepEqual(["GET /api/agents/:id/board", "GET /api/agents/:id/duties"].map(route => out.routes.find(s => s.route === route)?.p90), [866, 682]);
+
+  const dataDir = tempDir();
+  const chat = await start({ dataDir });
+  try {
+    await chat.send("POST", "/api/timings", { samples: [
+      { m: "GET", p: "/api/rooms", s: 200, ms: 900, hid: 700 }, { m: "GET", p: "/api/rooms", s: 200, ms: 901, hid: 5000 },
+      { m: "GET", p: "/api/rooms", s: 200, ms: 902, hid: "long" }, { m: "GET", p: "/api/rooms", s: 200, ms: 903, hid: -1 },
+    ] });
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.deepEqual(lines(dataDir).filter(line => line.src === "client").map(line => [line.ms, line.hid]), [[900, 700], [901, 901], [902, undefined], [903, undefined]]);
+  } finally {
+    await chat.close();
+  }
+});

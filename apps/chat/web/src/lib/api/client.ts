@@ -48,7 +48,27 @@ const boardBase = (chat: string): string => (chat.startsWith("ag_") ? `/api/agen
  * busy before it could send the call or read the answer: on 11-03 a thread open in the box Chrome waited 2,135 ms for /api/rooms, of which
  * the network and the server took 29 ms.
  */
-type Timing = { m: string; p: string; s: number; ms: number; net?: number; enc?: number; stored?: number; err?: string; shown?: true; page?: PageState; wait?: Wait };
+type Timing = { m: string; p: string; s: number; ms: number; net?: number; enc?: number; stored?: number; err?: string; shown?: true; page?: PageState; hid?: number; wait?: Wait };
+
+/**
+ * The page's hidden spells as [start, end) in `performance.now()`, the one going on with end Infinity. A call's line names in `hid` the ms
+ * of its `ms` the page was hidden, which the speed duty takes off the wait (scripts/duties/api-speed.ts), since the owner saw none of it: a
+ * page reloads for a newer build while it is hidden or out of focus (reload.ts), as after a Mac wakes, and its first reads then wait while
+ * nobody looks.
+ */
+const hiddenSpells: [number, number][] = [];
+const hiddenWithin = (from: number, to: number): number => hiddenSpells.reduce((sum, [start, end]) => sum + Math.max(0, Math.min(end, to) - Math.max(start, from)), 0);
+if (typeof document !== "undefined") {
+  if (document.visibilityState === "hidden") hiddenSpells.push([0, Infinity]);
+  document.addEventListener("visibilitychange", () => {
+    const now = performance.now();
+    const open = hiddenSpells.at(-1);
+    if (document.visibilityState === "hidden") {
+      if (!open || open[1] !== Infinity) hiddenSpells.push([now, Infinity]);
+      if (hiddenSpells.length > 20) hiddenSpells.shift();
+    } else if (open && open[1] === Infinity) open[1] = now;
+  });
+}
 
 /**
  * What the page was doing when a call failed, logged beside the failure so duty d2 counts only failures the owner could see (scripts/
@@ -138,8 +158,10 @@ function recordTiming(m: string, path: string, s: number, started: number, err?:
     if (recentNet.length > 20) recentNet.shift();
   }
   const now = performance.now();
+  const from = wait?.since ?? (wait?.background === "ahead" ? first : asked ?? first);
+  const hid = wait?.shownMs === undefined ? Math.round(hiddenWithin(from, now)) : 0;
   timings.push({
-    m, p: path.split("?")[0]!, s, ms: Math.round(wait?.shownMs ?? now - (wait?.since ?? (wait?.background === "ahead" ? first : asked ?? first))), ...(net === undefined ? {} : { net }),
+    m, p: path.split("?")[0]!, s, ms: Math.round(wait?.shownMs ?? now - from), ...(net === undefined ? {} : { net }), ...(hid > 0 ? { hid } : {}),
     ...(wait?.encodeMs === undefined ? {} : { enc: wait.encodeMs }), ...(wait?.since === undefined ? {} : { stored: Math.round(now - wait.since) }),
     ...(err ? { err, page: pageState() } : {}), ...(wait ? { wait } : {}),
   });
@@ -430,18 +452,48 @@ const tryAgainIn = (tries: number): number => Math.min(500, 100 * tries);
 /** A write whose body names a `requestId`, which the server takes once: a send (rooms.ts and group-rooms.ts `byRequestId`, outbox.ts). */
 const deduped = (body: unknown): boolean => !(body instanceof Blob) && typeof (body as { requestId?: unknown } | undefined)?.requestId === "string";
 
-/** Waits `ms`, or rejects as the signal aborts, so a call the lane stops during a wait stops there. */
+/** The waits of the calls that will try again, which `retryNow` ends at once. */
+const waking = new Set<() => void>();
+
+/**
+ * The server is in reach again: every call waiting to try again tries now. The live socket calls it when it opens (live.svelte.ts), and
+ * the page when the browser says it is online or the page shows again, as after a Mac wakes, whose tailnet fails calls for a few
+ * seconds: on 11-22 at 13:50 UTC his page's first calls after a wake took 4.0 s of network (requests/2026-11-22.jsonl).
+ */
+export function retryNow(): void {
+  for (const wake of [...waking]) wake();
+}
+
+/** Waits `ms` or until `retryNow`, or rejects as the signal aborts, so a call the lane stops during a wait stops there. */
 const pause = (ms: number, signal: AbortSignal | undefined): Promise<void> => new Promise((resolve, reject) => {
-  const done = () => {
+  const end = () => {
     clearTimeout(timer);
+    waking.delete(wake);
+    signal?.removeEventListener("abort", done);
+  };
+  const wake = () => {
+    end();
+    resolve();
+  };
+  const done = () => {
+    end();
     reject(signal!.reason);
   };
-  const timer = setTimeout(() => {
-    signal?.removeEventListener("abort", done);
-    resolve();
-  }, ms);
+  const timer = setTimeout(wake, ms);
+  waking.add(wake);
   signal?.addEventListener("abort", done, { once: true });
 });
+
+if (typeof window !== "undefined") {
+  addEventListener("online", retryNow);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible") return;
+    retryNow();
+    // A hidden page's timers wait for the browser's throttling, a lane step queued while it was hidden among them.
+    pumping = false;
+    pump();
+  });
+}
 
 /**
  * Every call of the page goes through here. A call that never got the server's answer, a network error or the bare 502 that `tailscale
