@@ -112,7 +112,10 @@ function runtimeFolder(home: string, runtime: SkillRuntime): string {
   }
 }
 
-const RUNTIMES_OF: Record<SkillRuntime, SkillRuntime[]> = { prime: ["prime", "pi-host"], "pi-host": ["prime", "pi-host"], claude: ["claude"], codex: ["codex"], pi: ["pi"] };
+/** The runtimes whose skill folder is the folder a path sits in; an install outside every runtime's folder is read by none of them. */
+function runtimesAt(home: string, path: string): SkillRuntime[] {
+  return SKILL_RUNTIMES.filter(runtime => runtimeFolder(home, runtime) === dirname(path));
+}
 
 export class SkillsDb {
   private readonly db: DatabaseSync;
@@ -625,7 +628,7 @@ export class SkillsDb {
     }
     const target = mode === "link" ? this.linkTarget(skill.id, body.box, st) : this.copySource({ skillId: skill.id, box: body.box } as InstallRecord, st);
     const install: InstallRecord = {
-      id: `inst_${short(`${body.box}:${path}`)}`, skillId: skill.id, box: body.box, path, mode, target, runtimes: RUNTIMES_OF[runtime], agent: body.agent ?? null,
+      id: `inst_${short(`${body.box}:${path}`)}`, skillId: skill.id, box: body.box, path, mode, target, runtimes: runtimesAt(home, path), agent: body.agent ?? null,
       appliedHash: null, sourceHash: null, pending: null,
     };
     const moveId = newMove();
@@ -757,7 +760,9 @@ export class SkillsDb {
     const install = st.installs.find(i => i.id === body.installId);
     if (!install) throw new SkillsRefused(`No install ${body.installId}.`);
     if (install.path === body.path) throw new SkillsRefused(`${install.id} is at ${body.path} already.`);
-    this.inHome(install.box, body.path, this.homeOf(install.box, st.copies));
+    const home = this.homeOf(install.box, st.copies);
+    this.inHome(install.box, body.path, home);
+    const runtimes = runtimesAt(home, body.path);
     if (st.installAt.has(`${install.box}:${body.path}`) || st.copyAt.has(`${install.box}:${body.path}`)) throw new SkillsRefused(`${install.box}:${body.path} already holds a folder.`);
     const name = st.skillMap.get(install.skillId)?.name ?? "";
     const moveId = newMove();
@@ -772,9 +777,9 @@ export class SkillsDb {
     const ok = results.every(r => r.state === "applied" || r.state === "queued");
     this.tx(() => {
       if (ok) {
-        this.db.prepare("UPDATE skill_installs SET path = ? WHERE id = ?").run(body.path, install.id);
+        this.db.prepare("UPDATE skill_installs SET path = ?, runtimes = ? WHERE id = ?").run(body.path, JSON.stringify(runtimes), install.id);
         this.db.prepare("DELETE FROM skill_copies WHERE box = ? AND path = ?").run(install.box, install.path);
-        if (results.every(r => r.state === "applied")) this.placedFact({ ...install, path: body.path }, st);
+        if (results.every(r => r.state === "applied")) this.placedFact({ ...install, path: body.path, runtimes }, st);
       }
       this.record("move", `move ${install.id} from ${install.path} to ${body.path}${ok ? "" : " (failed)"}`, item, before, { skills: [], installs: [install.id], copies }, moveId);
     });

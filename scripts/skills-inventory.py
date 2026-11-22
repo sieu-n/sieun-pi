@@ -109,6 +109,21 @@ def toplevel(folder: Path) -> str | None:
     return _toplevels[parent]
 
 
+def origin_head(out) -> str:
+    """The ref a checkout is judged against: origin's default branch (origin/HEAD), else the branch's own upstream."""
+    return "origin/HEAD" if out("rev-parse", "--verify", "-q", "origin/HEAD") else "@{u}"
+
+
+def fetched_at(top: str, common: str | None) -> str | None:
+    """When the checkout last fetched, from its FETCH_HEAD, so a reader knows whether its upstream ref is today's origin or an old copy."""
+    if not common:
+        return None
+    try:
+        return datetime.fromtimestamp((Path(top) / common / "FETCH_HEAD").stat().st_mtime, timezone.utc).isoformat()
+    except OSError:
+        return None
+
+
 def checkout_of(path: Path) -> dict | None:
     """The git checkout a folder or link sits in, with its remote, branch, last commit time and whether git tracks the path."""
     top = toplevel(path.parent) if path.parent.is_dir() else None
@@ -121,7 +136,8 @@ def checkout_of(path: Path) -> dict | None:
         files = subprocess.run(["git", "-C", top, "ls-files", "-z"], capture_output=True)
         _checkouts[top] = {
             "info": {"root": top, "remote": out("remote", "get-url", "origin"), "branch": out("branch", "--show-current"), "headAt": out("log", "-1", "--format=%cI"),
-                     "upstreamAt": out("log", "-1", "--format=%cI", "@{u}"), "behind": int(out("rev-list", "--count", "HEAD..@{u}") or 0)},
+                     "upstreamAt": out("log", "-1", "--format=%cI", origin_head(out)), "behind": int(out("rev-list", "--count", f"HEAD..{origin_head(out)}") or 0),
+                     "fetchedAt": fetched_at(top, out("rev-parse", "--git-common-dir"))},
             "files": set(files.stdout.decode(errors="replace").split("\0")) if files.returncode == 0 else set(),
         }
     known = _checkouts[top]

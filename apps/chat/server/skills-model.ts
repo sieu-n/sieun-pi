@@ -34,7 +34,9 @@ export type FactCopy = {
   files: number | null;
   mtime: string | null;
   skillMd: string | null;
-  checkout: { root: string; remote: string | null; branch: string | null; headAt: string | null; upstreamAt: string | null; behind: number; tracked: boolean } | null;
+  checkout: {
+    root: string; remote: string | null; branch: string | null; headAt: string | null; upstreamAt: string | null; behind: number; fetchedAt: string | null; tracked: boolean;
+  } | null;
   dmi: boolean;
   pythonImport: string | null;
   deadRefs: string[];
@@ -74,7 +76,7 @@ function parseCopy(raw: Json): FactCopy | null {
   const checkout = isObject(raw.checkout) && str(raw.checkout.root)
     ? {
       root: String(raw.checkout.root), remote: str(raw.checkout.remote), branch: str(raw.checkout.branch), headAt: str(raw.checkout.headAt),
-      upstreamAt: str(raw.checkout.upstreamAt), behind: num(raw.checkout.behind) ?? 0, tracked: raw.checkout.tracked === true,
+      upstreamAt: str(raw.checkout.upstreamAt), behind: num(raw.checkout.behind) ?? 0, fetchedAt: str(raw.checkout.fetchedAt), tracked: raw.checkout.tracked === true,
     }
     : null;
   return {
@@ -254,26 +256,34 @@ export const BLOAT_FACTOR = 3;
  */
 export const NEAR_DUPLICATE = 0.8;
 /**
- * A checkout is stale when its last commit is this many days older than the newest commit any checkout of the same repo knows, its own
- * upstream included. On 11-21 the 13 old clones on the Mac were 37 or more days behind (skills-tree findings), metal's slack-green sat 8
- * days and 120 commits behind origin/main with local edits, and the checkouts in daily use had commits from the same day.
+ * A checkout is stale when the origin head it knows is more than this many days newer than its own last commit. On 11-21 the 13 old clones
+ * on the Mac were 37 or more days behind (skills-tree findings), metal's slack-green sat 8 days and 120 commits behind its own origin/main
+ * with local edits, and the checkouts in daily use had commits from the same day.
  */
 export const STALE_CHECKOUT_DAYS = 7;
 
-/** Marks each copy whose checkout is stale against the newest commit of its repo. */
-export function staleCheckouts(copies: readonly FactCopy[]): Set<FactCopy> {
+/**
+ * Marks each copy whose checkout is stale. A checkout that tracks an upstream and fetched within the window is judged only against its own
+ * origin head (`git rev-list HEAD..origin/HEAD`, else its upstream, and that head's time), so another box's newer clone never makes it stale. A checkout with no
+ * upstream, or one that has not fetched in the window, knows no current origin head, so it is judged against the newest commit any checkout
+ * of the same repo knows: the Mac's ~/code clones have either no upstream or one last fetched in June.
+ */
+export function staleCheckouts(copies: readonly FactCopy[], now = Date.now()): Set<FactCopy> {
+  const window = STALE_CHECKOUT_DAYS * 86_400_000;
+  const time = (iso: string | null | undefined) => Date.parse(iso ?? "") || 0;
+  const fresh = (c: NonNullable<FactCopy["checkout"]>) => c.upstreamAt !== null && now - time(c.fetchedAt) <= window;
   const newest = new Map<string, number>();
   for (const c of copies) {
     if (!c.checkout) continue;
     const repo = repoName(c.checkout);
-    const at = Math.max(Date.parse(c.checkout.headAt ?? "") || 0, Date.parse(c.checkout.upstreamAt ?? "") || 0);
-    newest.set(repo, Math.max(newest.get(repo) ?? 0, at));
+    newest.set(repo, Math.max(newest.get(repo) ?? 0, time(c.checkout.headAt), time(c.checkout.upstreamAt)));
   }
   const out = new Set<FactCopy>();
   for (const c of copies) {
     if (!c.checkout?.headAt) continue;
-    const head = Date.parse(c.checkout.headAt);
-    if ((newest.get(repoName(c.checkout)) ?? head) - head > STALE_CHECKOUT_DAYS * 86_400_000) out.add(c);
+    const head = time(c.checkout.headAt);
+    const against = fresh(c.checkout) ? (c.checkout.behind > 0 ? time(c.checkout.upstreamAt) : head) : newest.get(repoName(c.checkout)) ?? head;
+    if (against - head > window) out.add(c);
   }
   return out;
 }

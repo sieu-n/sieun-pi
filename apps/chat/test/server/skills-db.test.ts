@@ -6,7 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 import { SkillsDb, SkillsRefused, SkillsStepFailed, type DiskResult, type DiskStep } from "../../server/skills-db.ts";
 import { fixtureScanner, writeSkillsDbFixture, type SkillsDbFixture } from "../../server/skills-db-fixture.ts";
-import { changedLines, similarity } from "../../server/skills-model.ts";
+import { changedLines, similarity, staleCheckouts, type FactCopy } from "../../server/skills-model.ts";
 import { SkillsReview } from "../../server/skills-review.ts";
 import { Skills } from "../../server/skills.ts";
 import type { SkillScan } from "../../web/src/lib/api/shared/skills.ts";
@@ -238,7 +238,11 @@ test("an install outside every scanned root stays found after a rescan, and remo
   const installed = await db.install({ name: "deploy-notes", box: BOX, runtime: "codex", path });
   const id = installed.apply!.steps[0]!.installId;
   assert.ok(present(path));
+  const row = () => db.view(IDLE).skills.flatMap(k => k.copies).find(c => c.path === path);
+  assert.deepEqual(row()?.loadedBy, [], "no runtime reads a folder outside its own skill folders");
+  assert.deepEqual(db.view(IDLE).skills.flatMap(k => k.installs).find(i => i.id === id)?.runtimes, []);
   scan();
+  assert.deepEqual(row()?.loadedBy, [], "the scan agrees after a rescan");
   assert.equal(db.check().items.length, 0, JSON.stringify(db.check().items));
   assert.equal((await db.apply()).changes, 0);
   await db.remove({ target: id });
@@ -325,6 +329,25 @@ test("a Python skill reads imported, the WRITING_SKILL reads inlined in sw threa
   assert.equal(sight("board-rules")["sw-comm"], "inlined");
   assert.equal(sight("board-rules")["prime-chat"], "listed");
   assert.equal(sight("deploy-notes")["prime-duty"], sight("deploy-notes")["prime-chat"]);
+});
+
+test("a checkout that fetched this week is judged by its own origin, and one with no fresh origin by the newest clone of its repo", () => {
+  const now = Date.parse("2026-11-22T04:00:00Z");
+  const clone = (box: string, headAt: string, upstream: { at: string; behind: number; fetchedAt: string } | null) => ({
+    box, path: `/${box}/slack-green/.agents/skills/x`,
+    checkout: { root: `/${box}/slack-green`, remote: "git@github.com:o/slack-green.git", branch: "main", headAt, upstreamAt: upstream?.at ?? null, behind: upstream?.behind ?? 0, fetchedAt: upstream?.fetchedAt ?? null, tracked: true },
+  }) as unknown as FactCopy;
+  const current = clone("metal", "2026-11-10T00:00:00Z", { at: "2026-11-10T00:00:00Z", behind: 0, fetchedAt: "2026-11-22T03:00:00Z" });
+  const behind = clone("metal2", "2026-11-12T00:00:00Z", { at: "2026-11-21T00:00:00Z", behind: 120, fetchedAt: "2026-11-21T23:00:00Z" });
+  const newer = clone("mac", "2026-11-21T00:00:00Z", { at: "2026-11-21T00:00:00Z", behind: 0, fetchedAt: "2026-11-21T00:00:00Z" });
+  const unfetched = clone("mac2", "2026-06-01T00:00:00Z", { at: "2026-06-01T00:00:00Z", behind: 0, fetchedAt: "2026-06-01T00:00:00Z" });
+  const detached = clone("mac3", "2026-09-02T00:00:00Z", null);
+  const stale = staleCheckouts([current, behind, newer, unfetched, detached], now);
+  assert.equal(stale.has(current), false, "current with its own fresh origin, though another box's clone is 11 days newer");
+  assert.equal(stale.has(behind), true, "9 days behind its own origin head");
+  assert.equal(stale.has(newer), false);
+  assert.equal(stale.has(unfetched), true, "last fetched in June, so judged by the newest clone");
+  assert.equal(stale.has(detached), true, "no upstream, so judged by the newest clone");
 });
 
 test("the review runs a skills DB delete of a path that is gone as a no-op, and undoes a step that failed as nothing to put back", async t => {
