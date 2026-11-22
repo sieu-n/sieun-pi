@@ -101,7 +101,7 @@ test("a comm thread runs in its work thread's pool tree, the work tree is high, 
       models.setProvider(poolProvider({ treeKey: () => labels.tree(id), bin, inner: faux.provider, turns }));
       return models;
     },
-    settings: id => durableSettings(() => labels.tree(id)),
+    settings: () => durableSettings(),
     inputSettled: (id, session, runContinues) => turns.release({ root: labels.tree(id), session }, runContinues),
     turns: {
       ownerTurn: (id, session) => turns.ownerTurn({ root: labels.tree(id), session }),

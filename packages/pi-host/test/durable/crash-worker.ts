@@ -74,7 +74,7 @@ async function main() {
   const started = Date.now();
   const treeKey = `pi-durable:${file}`;
   const models = modelsFor(mode, treeKey);
-  const { harness, root } = await openDurableHost({ file, models, model: MODEL, settings: durableSettings(treeKey), thinkingLevel: mode === "real" ? "high" : "off", readOnly: phase === "inspect", onReport: (error, info) => say("report", { info, error: String(error) }) }, context);
+  const { harness, root } = await openDurableHost({ file, models, model: MODEL, settings: durableSettings(), thinkingLevel: mode === "real" ? "high" : "off", readOnly: phase === "inspect", onReport: (error, info) => say("report", { info, error: String(error) }) }, context);
   say("opened", { ms: Date.now() - started });
 
   if (phase === "inspect") {

@@ -41,7 +41,7 @@ function modelsFor(threadId: string) {
 
 const log = (line: string) => process.stderr.write(`${new Date().toISOString()} ${line}\n`);
 const threads = new DurableThreads({ dir: join(dir, "durable"), models: modelsFor, defaultModel: MODEL, defaultThinkingLevel: mode === "real" ? "high" : "off", defaultCwd: dir, log,
-  settings: threadId => durableSettings(`pi-durable:${threadId}`),
+  settings: () => durableSettings(),
   inputSettled: (threadId, session, runContinues) => turns.release({ root: `pi-durable:${threadId}`, session }, runContinues),
   turns: {
     ownerTurn: (threadId, session) => turns.ownerTurn({ root: `pi-durable:${threadId}`, session }),

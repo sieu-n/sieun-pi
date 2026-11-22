@@ -48,7 +48,7 @@ test("a run in an account slot wait holds no working slot, and the next run take
   faux.setResponses([fauxAssistantMessage("answered")]);
   const models = createModels();
   models.setProvider(poolProvider({ treeKey, bin: hook, inner: faux.provider, turns: new TurnQueue({ bin: hook }) }));
-  const harness = await Harness.open(await openNodeSqliteStorage(join(dir, "thread.sqlite")), { models, registry: createRegistry(), settings: durableSettings(treeKey, { baseDelayMs: 5, maxAgentDelayMs: 20 }) }, context);
+  const harness = await Harness.open(await openNodeSqliteStorage(join(dir, "thread.sqlite")), { models, registry: createRegistry(), settings: durableSettings({ baseDelayMs: 5, maxAgentDelayMs: 20 }) }, context);
   harness.resume();
   const root = await harness.root(context, { agent: { model: { provider: "anthropic", modelId: "claude-opus-5-5" }, thinkingLevel: "off" } });
   const watch = await root.watch(context);

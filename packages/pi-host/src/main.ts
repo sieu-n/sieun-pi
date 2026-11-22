@@ -109,7 +109,7 @@ const durable = values["no-durable"] ? undefined : new DurableCommands(new Durab
   defaultThinkingLevel: () => primeDefaults(agentDir).thinkingLevel,
   defaultCwd: values.cwd ? resolve(values.cwd) : homedir(),
   // Compacts where a Prime chat on this host does: Prime's window minus Prime's reserve (prime-compaction.ts).
-  settings: threadId => withPrimeCompaction(durableSettings(() => pool.tree(threadId)), agentDir),
+  settings: () => withPrimeCompaction(durableSettings(), agentDir),
   inputSettled: (threadId, session, runContinues) => turns.release({ root: pool.tree(threadId), session }, runContinues),
   turns: {
     ownerTurn: (threadId, session) => turns.ownerTurn({ root: pool.tree(threadId), session }),

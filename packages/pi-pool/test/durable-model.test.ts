@@ -44,7 +44,7 @@ function rig(name: string, pool: Record<string, unknown>) {
   const open = async () => {
     const models = createModels();
     models.setProvider(poolProvider({ treeKey, bin: FAKE_POOL, inner: faux.provider }));
-    const harness = await Harness.open(await openNodeSqliteStorage(join(dir, `${name}.sqlite`)), { models, registry: createRegistry(), settings: durableSettings(treeKey, { baseDelayMs: 5, maxAgentDelayMs: 20 }) }, context);
+    const harness = await Harness.open(await openNodeSqliteStorage(join(dir, `${name}.sqlite`)), { models, registry: createRegistry(), settings: durableSettings({ baseDelayMs: 5, maxAgentDelayMs: 20 }) }, context);
     const root = await harness.root(context, { agent: { model: MODEL, thinkingLevel: "off" } });
     return { harness, root };
   };

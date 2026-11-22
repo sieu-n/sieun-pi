@@ -40,7 +40,7 @@ if (argv[0] !== "--cli") {
   if ((state.failTimes ?? 0) > 0) {
     state.failTimes--;
     save();
-    process.stderr.write("pi-pool-token: no token (no_account)\n");
+    process.stderr.write(`pi-pool-token: no token (${state.failReason ?? "no_account"})\n`);
     process.exit(1);
   }
   const account = state.accounts[state.current];
