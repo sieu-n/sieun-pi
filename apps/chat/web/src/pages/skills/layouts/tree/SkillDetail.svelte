@@ -81,7 +81,7 @@
       {useLine()}{skill.preimported ? " Its module is pre-imported, so each call counts." : ""}
       {#if sizeLine()}<span class:warn={isBloated(skill.size.bytes, t)}>{sizeLine()}.</span>{/if}
     </p>
-    {#each verdictsOf(skill, null) as v (v.rule + v.detail)}<p class="verdict">{v.detail}</p>{/each}
+    {#each verdictsOf(skill, null).filter(v => v.rule !== "bloated") as v (v.rule + v.detail)}<p class="verdict">{v.detail}</p>{/each}
     <div class="actions">
       <Button size="sm" icon="plus" onclick={() => (installOpen = true)}>Add to a folder</Button>
       <Button size="sm" icon="forward" trailingIcon="chevron-down" bind:element={mergeAnchor} loading={busy === skill.id && mergeOpen} onclick={() => (mergeOpen = !mergeOpen)}>Merge into</Button>
@@ -95,7 +95,7 @@
         <h3>{boxLabel(box.box)} <span class="count">{copies.length} {copies.length === 1 ? "copy" : "copies"}</span></h3>
         {#if boxLine(box)}<p class="offline" title={box.error ?? undefined}>{boxLine(box)}</p>{/if}
         {#each copies as copy (copy.id)}
-          {@const copyProblems = verdictsOf(skill, copy.id)}
+          {@const copyProblems = verdictsOf(skill, copy.id).filter(v => v.rule !== "bloated")}
           {@const via = linksTo(copy)}
           <div class="copy" class:here={inFolder(copy)} class:gone={!copy.exists} data-testid="tree-copy" data-copy={copy.id}>
             <div class="path"><code>{tilde(copy.path)}</code></div>
