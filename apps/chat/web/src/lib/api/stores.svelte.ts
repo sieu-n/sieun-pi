@@ -661,9 +661,14 @@ const readTimeline = async (id: ConversationId, around?: string, wait?: Wait, li
 const ROOMS_AHEAD = 40;
 const WORK_AHEAD = 20;
 const JOBS_AHEAD = 20;
+/**
+ * How many jobs of the open work thread or job are read ahead beside its pills, the newest first (`jobsAhead`). On 11-22 a reload walk
+ * opened three jobs no pill on the page named: two of the agent factory's 374 at ranks 1 and 2 by age, and one of API portal's 15 at 14.
+ */
+const THREAD_JOBS_AHEAD = 20;
 /** How many of the jobs that work now are read ahead and followed (`liveJobsAhead`): on 11-22 at 05:40 UTC 14 worked and 5 slept (GET /api/jobs). */
 const LIVE_JOBS_AHEAD = 20;
-const timelinePages = new PageCache<TimelineRead, TimelineShown>("timeline", ROOMS_AHEAD + WORK_AHEAD + JOBS_AHEAD + LIVE_JOBS_AHEAD);
+const timelinePages = new PageCache<TimelineRead, TimelineShown>("timeline", ROOMS_AHEAD + WORK_AHEAD + JOBS_AHEAD + THREAD_JOBS_AHEAD + LIVE_JOBS_AHEAD);
 
 /** A channel thread reply that shows only in its thread, not one also sent to the channel. */
 const threadOnly = (item: Item): boolean => item.kind === "message" && !!item.threadRoot && !item.alsoInChannel;
@@ -933,9 +938,15 @@ export function listedAhead(listed: readonly { conversation: ConversationId; mes
  */
 const JOB_PAGE = 10;
 const jobPills = new ReadAhead(warmTimeline(JOB_PAGE, { first: true }), viewingTimeline);
-function jobsAhead(items: readonly Item[]): void {
+function jobsAhead(id: ConversationId, items: readonly Item[]): void {
   const refs = items.flatMap(item => (item.kind === "turn" ? item.jobs : item.kind === "message" ? item.jobs ?? [] : []));
-  jobPills.want(refs.reverse().slice(0, JOBS_AHEAD).map(job => ({ id: job.conversation, at: job.lastAt, working: job.status === "working" })));
+  const pills = refs.reverse().slice(0, JOBS_AHEAD).map(job => ({ id: job.conversation, at: job.lastAt, working: job.status === "working" }));
+  // A work thread's jobs at every depth, or a job's own subagents, which the page's jobs list names before any pill does.
+  const mine = global.jobs.filter(job => !job.archived && (id.includes(":") ? job.parent?.id === id : job.thread === id))
+    .sort((a, b) => b.createdAt - a.createdAt).slice(0, THREAD_JOBS_AHEAD)
+    .filter(job => !pills.some(pill => pill.id === job.id))
+    .map(job => ({ id: job.id, at: job.updatedAt, working: job.status === "working" }));
+  jobPills.want([...pills, ...mine]);
 }
 
 /**
@@ -1088,7 +1099,7 @@ export class Timeline {
       const taken = pages.take(key, asked, () => readTimeline(this.id, around, asked, last?.limit));
       // The threads and jobs of the kept page queue now, behind this read, not one round trip later when its refresh lands.
       if (last && threaded(this.id)) warmReplies(this.id, last.items);
-      if (last && !this.isChannel) jobsAhead(last.items);
+      if (last && !this.isChannel) jobsAhead(this.id, last.items);
       const { wait } = taken;
       const { page, header } = await taken.read;
       const readSeq = header.readSeq;
@@ -1137,7 +1148,7 @@ export class Timeline {
   upsert(incoming: Item[], removed: string[] = []): void {
     const shown = threaded(this.id) ? incoming.filter(item => !threadOnly(item)) : incoming;
     if (threaded(this.id)) warmReplies(this.id, shown);
-    if (!this.isChannel) jobsAhead(this.items.concat(shown));
+    if (!this.isChannel) jobsAhead(this.id, this.items.concat(shown));
     this.sends.merge(this.isRoom ? shown.filter(item => this.newest(item)).map(roomPost) : shown, removed);
   }
 
