@@ -7,7 +7,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
 import { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex";
 import { join } from "node:path";
-import { poolProvider, type TurnQueue } from "@sieun-pi/pi-pool/durable";
+import { poolProvider, type PoolExec, type TurnQueue } from "@sieun-pi/pi-pool/durable";
 import type { ModelThinkingLevel, Provider } from "@earendil-works/pi-ai";
 import type { ModelRef } from "@earendil-works/pi-durable";
 import { withCacheShape } from "./cache-shape.ts";
@@ -97,6 +97,8 @@ export interface DurableModelsOptions {
   turns?: TurnQueue;
   /** The thread's pi-pool tree at each request (`PoolLabels.tree`); default its own, `pi-durable:<thread id>`. */
   tree?: () => string;
+  /** How the pool's token hook runs (pi-pool `PoolExec`); node's `execFile` by default. */
+  exec?: PoolExec;
 }
 
 /**
@@ -107,7 +109,7 @@ export function durableModels(threadId: string, options: DurableModelsOptions = 
   const models = createModels();
   const treeKey = options.tree ?? `pi-durable:${threadId}`;
   for (const inner of [anthropicProvider(), openaiCodexProvider()]) {
-    models.setProvider(poolProvider({ treeKey, agentDir: options.agentDir, turns: options.turns, inner: withCacheShape(withPrimeWindows(withPrimeModels(inner, options.agentDir), options.agentDir)) }));
+    models.setProvider(poolProvider({ treeKey, agentDir: options.agentDir, turns: options.turns, ...(options.exec ? { exec: options.exec } : {}), inner: withCacheShape(withPrimeWindows(withPrimeModels(inner, options.agentDir), options.agentDir)) }));
   }
   return models;
 }

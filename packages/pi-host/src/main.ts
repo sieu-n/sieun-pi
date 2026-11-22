@@ -13,6 +13,7 @@ import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { durableSettings, TurnQueue } from "@sieun-pi/pi-pool/durable";
+import { hostExecFile } from "../../../legacy/prime/user-history/src/spawn-host.ts";
 import { DurableCommands, DurableThreads } from "./durable/index.ts";
 import { durableCompactionLine, durableModels, primeDefaults } from "./durable/models.ts";
 import { PoolLabels } from "./durable/pool-labels.ts";
@@ -78,7 +79,8 @@ const dataDir = values["data-dir"] ? resolve(values["data-dir"]) : join(agentDir
 // Durable threads: one pi-durable file per root thread, each its own pi-pool tree except a comm thread, which runs in its agent's work
 // thread's tree. The default model is the newest Opus (c185).
 // One line for every run on the box (pi-pool's turn queue): each durable request takes its run's place, and a settled input gives it back.
-const turns = new TurnQueue({ agentDir });
+// Every pool call forks from the spawn host's small process: a fork from this one held its loop 50 to 290 ms per call on 11-22.
+const turns = new TurnQueue({ agentDir, exec: hostExecFile });
 // Each thread's pool tree, class and lead place from its agent role, as the chat service labels a Prime chat (durable/pool-labels.ts).
 const pool = new PoolLabels(turns, line => host.log(`durable: ${line}`));
 // Prime's chat extension (user-history), loaded once as a chat: every thread's root conversation offers its tools and turn wrappers.
@@ -104,7 +106,7 @@ if (!values["no-durable"] && process.env.PI_HOST_RULES !== "0") {
 }
 const durable = values["no-durable"] ? undefined : new DurableCommands(new DurableThreads({
   dir: values["durable-dir"] ? resolve(values["durable-dir"]) : join(dataDir, "durable"),
-  models: threadId => durableModels(threadId, { agentDir, turns, tree: () => pool.tree(threadId) }),
+  models: threadId => durableModels(threadId, { agentDir, turns, tree: () => pool.tree(threadId), exec: hostExecFile }),
   // A Prime chat's default on this host, read from Prime's settings.json at each creation (models.ts primeDefaults); --model overrides it.
   defaultModel: values.model ? { provider, modelId: modelId.join("/") } : () => primeDefaults(agentDir).model,
   defaultThinkingLevel: () => primeDefaults(agentDir).thinkingLevel,

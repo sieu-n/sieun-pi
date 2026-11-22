@@ -35,7 +35,9 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { rewriteFailure, type PoolCall } from "../core/errors.ts";
 import { admitReply, placeIn, type AdmitReply } from "../core/turns.ts";
-import { defaultPoolBin, poolEnv, runPool, sleep, vendOnce, WAIT_ASK_MS, type TreeKey, type Vend } from "../core/pool-cli.ts";
+import { defaultPoolBin, poolEnv, runPool, sleep, vendOnce, WAIT_ASK_MS, type PoolExec, type TreeKey, type Vend } from "../core/pool-cli.ts";
+
+export type { PoolExec } from "../core/pool-cli.ts";
 
 export interface PoolProviderOptions {
   /**
@@ -52,6 +54,8 @@ export interface PoolProviderOptions {
   /** The machine's turn queue, shared by every thread in the process; without it requests take no place in line. */
   turns?: TurnQueue;
   now?: () => number;
+  /** How the token hook runs; node's `execFile` by default. pi-host forks it from a small helper process. */
+  exec?: PoolExec;
 }
 
 /** The deferred handle id of a slot wait. A real Anthropic response id never has this form. */
@@ -144,7 +148,7 @@ export class TurnQueue {
   readonly bin: string;
   readonly turnsFile: string;
 
-  constructor(private readonly opts: { bin?: string; agentDir?: string; turnsFile?: string; now?: () => number } = {}) {
+  constructor(private readonly opts: { bin?: string; agentDir?: string; turnsFile?: string; now?: () => number; exec?: PoolExec } = {}) {
     this.bin = opts.bin ?? defaultPoolBin();
     this.turnsFile = opts.turnsFile ?? join(process.env.PI_POOL_DIR || join(homedir(), ".config", "pi-pool"), "turns.json");
   }
@@ -154,7 +158,7 @@ export class TurnQueue {
   }
 
   private async call(key: TreeKey, args: string[]): Promise<{ ok: boolean; out: string }> {
-    const run = await runPool(this.bin, ["--cli", ...args], poolEnv(key, this.opts.agentDir));
+    const run = await runPool(this.bin, ["--cli", ...args], poolEnv(key, this.opts.agentDir), this.opts.exec ? { exec: this.opts.exec } : {});
     return { ok: run.code === 0, out: run.stdout.trim() || run.stderr.trim() };
   }
 
@@ -300,7 +304,7 @@ export function poolProvider(opts: PoolProviderOptions): Provider {
   const keyOf = (options: StreamOptions | undefined): TreeKey => ({ root: treeOf(), session: options?.sessionId ?? treeOf() });
   const envOf = (options: StreamOptions | undefined) => poolEnv(keyOf(options), opts.agentDir);
   const callOf = (env: NodeJS.ProcessEnv): PoolCall => async args => {
-    const run = await runPool(bin, ["--cli", ...args], env);
+    const run = await runPool(bin, ["--cli", ...args], env, opts.exec ? { exec: opts.exec } : {});
     const out = run.stdout.trim() || run.stderr.trim();
     return { ok: run.code === 0, out: out || (run.code === 0 ? "" : "pi-pool-token failed") };
   };
@@ -334,7 +338,7 @@ export function poolProvider(opts: PoolProviderOptions): Provider {
         place = await opts.turns.poll(key, place.askedAt);
       }
       if (place.kind === "wait") return { place, got: undefined };
-      const got = await vendOnce(bin, model.provider, env, signal, model.id);
+      const got = await vendOnce(bin, model.provider, env, signal, model.id, opts.exec);
       if (got.kind !== "wait" || defers) return { place, got };
       if (opts.turns?.holds(key.session)) await opts.turns.release(key);
       if (!(await sleep(Math.min(Math.max(1000, got.retryAt * 1000 - now()), WAIT_ASK_MS), signal))) return { place, got };
@@ -412,7 +416,7 @@ export function poolProvider(opts: PoolProviderOptions): Provider {
         // The poll's options carry no session id, so the wait's handle names the session that asked.
         const data = (handle.data ?? {}) as { session?: unknown };
         const key: TreeKey = { root: treeOf(), session: typeof data.session === "string" ? data.session : keyOf(options).session };
-        const got = await vendOnce(bin, model.provider, poolEnv(key, opts.agentDir), options?.signal, model.id);
+        const got = await vendOnce(bin, model.provider, poolEnv(key, opts.agentDir), options?.signal, model.id, opts.exec);
         const final = got.kind === "wait" ? slotWait(model, key, got, now())
           : got.kind === "failed" ? noToken(model, got.reason)
           : got.kind === "final" ? message(model, { stopReason: "error", errorMessage: got.message })

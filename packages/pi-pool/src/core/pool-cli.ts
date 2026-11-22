@@ -39,12 +39,37 @@ export interface Run {
   stderr: string;
 }
 
-/** Runs the pool hook once. Never throws: a spawn failure or a kill comes back as a null code. */
-export function runPool(bin: string, args: string[], env: NodeJS.ProcessEnv, opts: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<Run> {
+/**
+ * Runs a file as node:child_process `execFile` does and calls back once. pi-host passes one that forks from a small helper process: a fork
+ * from pi-host's own 1 GB process held its event loop 50 to 290 ms per pool call on us-metal02 on 11-22.
+ */
+export type PoolExec = (
+  file: string,
+  args: readonly string[],
+  options: { env: NodeJS.ProcessEnv; timeout: number; maxBuffer: number },
+  callback: (error: (Error & { code?: number | string | null }) | null, stdout: string, stderr: string) => void,
+) => unknown;
+
+/**
+ * Runs the pool hook once. Never throws: a spawn failure or a kill comes back as a null code. With `exec`, an abort answers at once and the
+ * hook's late answer is dropped, since the helper cannot kill the hook.
+ */
+export function runPool(bin: string, args: string[], env: NodeJS.ProcessEnv, opts: { timeoutMs?: number; signal?: AbortSignal; exec?: PoolExec } = {}): Promise<Run> {
   return new Promise(resolve => {
-    execFile(bin, args, { env, timeout: opts.timeoutMs ?? 10_000, signal: opts.signal, maxBuffer: 4 << 20 }, (error, stdout, stderr) => {
-      const code = error ? (typeof (error as { code?: unknown }).code === "number" ? ((error as { code: number }).code) : null) : 0;
+    const done = (error: (Error & { code?: unknown }) | null, stdout: unknown, stderr: unknown) => {
+      const code = error ? (typeof error.code === "number" ? error.code : null) : 0;
       resolve({ code, stdout: String(stdout ?? ""), stderr: String(stderr ?? "") || (error && code === null ? error.message : "") });
+    };
+    if (!opts.exec) {
+      execFile(bin, args, { env, timeout: opts.timeoutMs ?? 10_000, signal: opts.signal, maxBuffer: 4 << 20 }, done);
+      return;
+    }
+    if (opts.signal?.aborted) return done(Object.assign(new Error("The operation was aborted"), { code: "ABORT_ERR" }), "", "");
+    const aborted = () => done(Object.assign(new Error("The operation was aborted"), { code: "ABORT_ERR" }), "", "");
+    opts.signal?.addEventListener("abort", aborted, { once: true });
+    opts.exec(bin, args, { env, timeout: opts.timeoutMs ?? 10_000, maxBuffer: 4 << 20 }, (error, stdout, stderr) => {
+      opts.signal?.removeEventListener("abort", aborted);
+      done(error, stdout, stderr);
     });
   });
 }
@@ -96,9 +121,9 @@ export function readVend(run: Run): Vend {
 /** The model a request runs, which the hook files for the tree (pool/vending.py note_model). */
 const MODEL_ENV = "PI_POOL_MODEL";
 
-export async function vendOnce(bin: string, provider: string, env: NodeJS.ProcessEnv, signal?: AbortSignal, model?: string): Promise<Vend> {
+export async function vendOnce(bin: string, provider: string, env: NodeJS.ProcessEnv, signal?: AbortSignal, model?: string, exec?: PoolExec): Promise<Vend> {
   const asked = { ...env, [PROTOCOL_ENV]: "1", ...(model ? { [MODEL_ENV]: model } : {}) };
-  return readVend(await runPool(bin, ["--provider", provider], asked, { timeoutMs: 30_000, signal }));
+  return readVend(await runPool(bin, ["--provider", provider], asked, { timeoutMs: 30_000, ...(signal ? { signal } : {}), ...(exec ? { exec } : {}) }));
 }
 
 /** Resolves after `ms`, or at once when `signal` aborts. Returns false on an abort. */
