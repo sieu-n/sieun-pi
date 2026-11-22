@@ -157,7 +157,7 @@ function skillsDb(app: App, skills: Skills, review: SkillsReview): { db: SkillsD
   const file = join(app.config.dataDir, "chat.sqlite");
   if (!app.config.skillsReview.fixture) {
     const db = new SkillsDb({ file, box: app.config.box, home: app.config.home, piHostPrompt: piHost }, review.diskSteps("live"), app.log);
-    skills.attach({ ingest: json => db.ingest(json), overlay: rows => db.overlay(rows), lastAttempt: () => db.lastAttempt() }, true);
+    skills.attach({ ingest: json => db.ingest(json), overlay: rows => db.overlay(rows), lastAttempt: () => db.lastAttempt(), installPaths: () => db.installPaths() }, true);
     return { db, skills };
   }
   const root = join(app.config.dataDir, "skills-db");
@@ -168,7 +168,7 @@ function skillsDb(app: App, skills: Skills, review: SkillsReview): { db: SkillsD
   const repo = join(import.meta.dirname, "../../..");
   const own = new Skills({ inventory: fixture.inventory, scanner: fixtureScanner(fixture, repo) }, app.config.box, app.log, scan => app.broadcast({ type: "skills", scan }));
   const db = new SkillsDb({ file, box: app.config.box, home: fixture.home, piHostPrompt: existsSync(piHost) ? piHost : null }, review.diskSteps(fixture.setName), app.log);
-  own.attach({ ingest: json => db.ingest(json), overlay: rows => db.overlay(rows), lastAttempt: () => db.lastAttempt() }, true);
+  own.attach({ ingest: json => db.ingest(json), overlay: rows => db.overlay(rows), lastAttempt: () => db.lastAttempt(), installPaths: () => db.installPaths() }, true);
   return { db, skills: own };
 }
 

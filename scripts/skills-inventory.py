@@ -32,7 +32,7 @@ SKIP_DIRS = {"node_modules", ".venv", "dist", ".git", "__pycache__", ".trash"}
 REPO_PARENTS = ("src", "Documents/Github", "Documents", "code")
 SOURCE_REPO = "sieun-pi"
 SOURCE_SKILL_DIRS = ("skills", "legacy/prime/skills")
-REPO_SKILL_DIRS = (".agents/skills", ".claude/skills", ".codex/skills", ".cursor/skills", ".pi/skills")
+REPO_SKILL_DIRS = (".agents/skills", ".claude/skills", ".claude/skills-native", ".codex/skills", ".cursor/skills", ".pi/skills")
 USER_SKILL_DIRS = (
     (".claude/skills", "claude", "~/.claude/skills"),
     (".codex/skills", "codex", "~/.codex/skills"),
@@ -203,7 +203,7 @@ def scan_entry(path: Path, box: str, how: str, runtimes: list[str], source: str,
     return row
 
 
-def discover(box: str) -> list[dict]:
+def discover(box: str, installs: list[str] | None = None) -> list[dict]:
     rows: list[dict] = []
     jobs: list[tuple] = []
 
@@ -255,7 +255,7 @@ def discover(box: str) -> list[dict]:
         base = HOME / parent
         if not base.is_dir():
             continue
-        for repo in sorted(base.iterdir()):
+        for repo in repo_dirs(base):
             if not repo.is_dir() or repo.is_symlink() or repo.resolve() in seen_repos:
                 continue
             seen_repos.add(repo.resolve())
@@ -266,11 +266,31 @@ def discover(box: str) -> list[dict]:
                 for folder in sorted(repo.glob("packages/*/skills")):
                     add(folder, [p for p in sorted(folder.iterdir()) if (p / "SKILL.md").exists()], f"sieun-pi package {folder.parent.name}", ["pi-host"], "sieun-pi-package")
                 add(repo / "config/claude-rules", sorted((repo / "config/claude-rules").glob("*.md")), "pi-claude-rules extension", ["prime", "pi-host"], "sieun-pi-rules")
-            for rel in REPO_SKILL_DIRS:
-                add(repo / rel, find_skill_dirs(repo / rel), f"repo {rel} ({repo.name})", ["claude", "codex"], f"repo:{repo.name}")
+            label = str(repo.relative_to(base))
+            for rel in REPO_SKILL_DIRS + (() if repo.name == SOURCE_REPO else ("skills",)):
+                runtimes = [] if rel in (".claude/skills-native", "skills") else ["claude", "codex"]
+                add(repo / rel, find_skill_dirs(repo / rel), f"repo {rel} ({label})", runtimes, f"repo:{label}")
+    found = {str(job[0]) for job in jobs}
+    for path in map(Path, installs or []):
+        if str(path) not in found and path.is_absolute() and (path.is_symlink() or (path / "SKILL.md").exists() or path.is_file()):
+            add(path.parent, [path], "sw skills install", [], "sw-install")
     with ThreadPoolExecutor(8) as pool:
         rows.extend(pool.map(lambda job: scan_entry(*job), jobs))
     return rows
+
+
+def repo_dirs(base: Path) -> list[Path]:
+    """The folders under base to scan as repos, plus the checkouts one level inside a folder that holds checkouts, such as ~/code's symphony workspaces."""
+    out = []
+    for repo in sorted(base.iterdir()):
+        out.append(repo)
+        if not repo.is_dir() or repo.is_symlink() or (repo / ".git").exists() or any((repo / rel).is_dir() for rel in REPO_SKILL_DIRS):
+            continue
+        try:
+            out.extend(child for child in sorted(repo.iterdir()) if child.is_dir() and not child.is_symlink() and (child / ".git").exists())
+        except OSError:
+            pass
+    return out
 
 
 def box_settings() -> dict:
@@ -280,7 +300,7 @@ def box_settings() -> dict:
     repos = {}
     for parent in REPO_PARENTS:
         base = HOME / parent
-        for repo in sorted(base.iterdir()) if base.is_dir() else []:
+        for repo in repo_dirs(base) if base.is_dir() else []:
             settings = load_json(repo / ".prime/agent/settings.json")
             if isinstance(settings, dict) and isinstance(settings.get("skills"), list):
                 repos[str(repo.resolve())] = settings["skills"]
@@ -302,11 +322,11 @@ def count_usage(now: datetime, box: str) -> dict:
     return skills_usage.count_usage(now, box)
 
 
-def scan_box(box: str, usage: bool) -> dict:
+def scan_box(box: str, usage: bool, installs: list[str] | None = None) -> dict:
     started = time.time()
     now = datetime.now(timezone.utc)
     out = {"box": box, "scannedAt": now.isoformat(), "ok": True, "error": None}
-    out["rows"] = discover(box)
+    out["rows"] = discover(box, installs)
     out["settings"] = box_settings()
     trash = HOME / ".claude/skills/.trash"
     wt = subprocess.run(["git", "-C", str(HOME / "src/sieun-pi"), "worktree", "list", "--porcelain"], capture_output=True, text=True)
@@ -319,10 +339,12 @@ def scan_box(box: str, usage: bool) -> dict:
     return out
 
 
-def scan_remote(box: str, host: str, usage: bool, timeout: int) -> dict:
+def scan_remote(box: str, host: str, usage: bool, timeout: int, installs: list[str] | None = None) -> dict:
     args = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host, "python3", "-", "--scan-box", box]
     if not usage:
         args.append("--no-usage")
+    if installs:
+        args += ["--installs-b64", base64.b64encode(json.dumps(installs).encode()).decode()]
     here = Path(__file__).resolve().parent
     blobs = {name: base64.b64encode((here / name).read_bytes()).decode() for name in ("skills_usage.py", "skills-inventory.py")}
     source = (
@@ -352,13 +374,18 @@ def main() -> None:
     ap.add_argument("--no-usage", action="store_true")
     ap.add_argument("--mac-host", default="mac")
     ap.add_argument("--mac-timeout", type=int, default=300)
+    ap.add_argument("--install-paths", help="a JSON file of {box: [path]}, the skills DB's install paths, scanned also where they sit outside every root")
+    ap.add_argument("--installs-b64", help="the install paths of the box --scan-box scans, as base64 JSON, for the ssh scan")
     args = ap.parse_args()
     if args.scan_box:
-        json.dump(scan_box(args.scan_box, not args.no_usage), sys.stdout)
+        installs = json.loads(base64.b64decode(args.installs_b64)) if args.installs_b64 else None
+        json.dump(scan_box(args.scan_box, not args.no_usage, installs), sys.stdout)
         return
-    scans = [scan_box("us-metal02", not args.no_usage)]
+    by_box = load_json(Path(args.install_paths)) if args.install_paths else None
+    by_box = by_box if isinstance(by_box, dict) else {}
+    scans = [scan_box("us-metal02", not args.no_usage, by_box.get("us-metal02"))]
     if not args.no_mac:
-        scans.append(scan_remote("mac", args.mac_host, not args.no_usage, args.mac_timeout))
+        scans.append(scan_remote("mac", args.mac_host, not args.no_usage, args.mac_timeout, by_box.get("mac")))
     config_path = Path(__file__).resolve().parent.parent / "config/skills-health.json"
     config = json.loads(config_path.read_text()) if config_path.exists() else {}
     inventory = build(scans, config)

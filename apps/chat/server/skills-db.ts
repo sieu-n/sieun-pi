@@ -19,7 +19,7 @@ import {
   type SkillScan, type SkillSource, type SkillsChange, type SkillsCheck, type SkillsView, type SkillThresholds, type SkillVerdictRow, type UndoBody,
 } from "../web/src/lib/api/shared/skills.ts";
 import {
-  canonical, changedLines, copyId, drift, identifyFolder, installState, ownerText, parseFacts, parseOwner, plan, roleOf, seedOwner, sees, staleCheckouts,
+  canonical, changedLines, copyId, drift, identifyFolder, installState, ownerText, parseFacts, parseOwner, plan, roleOf, sameLink, seedOwner, sees, staleCheckouts,
   thresholds, tree, verdicts, type BoxScan, type CopyFact, type FactCopy, type FactUse, type InstallRecord, type SkillRecord,
 } from "./skills-model.ts";
 
@@ -186,7 +186,14 @@ export class SkillsDb {
   }
 
   /** When the last scan of any box was tried, for the schedule. */
-  lastAttempt(): number | null {
+  /** Each box's install paths, for the scanner to read also where they sit outside every folder it walks. */
+  installPaths(): Record<string, string[]> {
+    const out: Record<string, string[]> = {};
+    for (const install of this.installs()) (out[install.box] ??= []).push(install.path);
+    return out;
+  }
+
+    lastAttempt(): number | null {
     const row = this.db.prepare("SELECT max(attempted_at) AS at FROM skill_scans").get() as Row | undefined;
     return row?.at ? Date.parse(s(row.at)) : null;
   }
@@ -234,6 +241,10 @@ export class SkillsDb {
       }
       for (const install of this.installs().filter(i => i.pending)) {
         if (facts.boxes.some(b => b.box === install.box && b.ok)) this.db.prepare("UPDATE skill_installs SET pending = NULL WHERE id = ?").run(install.id);
+      }
+      for (const install of this.installs().filter(i => i.mode === "link")) {
+        const at = facts.copies.find(c => c.box === install.box && c.path === install.path);
+        if (at?.linkTarget && at.linkTarget !== install.target && sameLink(at.linkTarget, install.target)) this.db.prepare("UPDATE skill_installs SET target = ? WHERE id = ?").run(at.linkTarget, install.id);
       }
       this.rules(facts.usage, facts.usageCounted);
       this.setMeta("ingested", facts.generatedAt ?? now());
@@ -684,14 +695,11 @@ export class SkillsDb {
       if (copy.linkTarget === null && !left.length && st.skillMap.has(copy.key)) dropSkills = [copy.key];
       summary = `remove ${copyId(copy)}`;
     } else throw new SkillsRefused(`No skill, install or copy ${target}; a copy id is <box>:<path> as GET /api/skills lists it.`);
-    const scanned = (box: string) => st.scans.some(x => x.box === box && x.lastOkAt !== null);
-    const waiting = new Set(installs.filter(i => i.pending).map(i => `${i.box}:${i.path}`));
-    steps = steps.filter(x => st.copyAt.has(`${x.box}:${x.path}`) || waiting.has(`${x.box}:${x.path}`) || !scanned(x.box));
     const moveId = newMove();
-    const item = steps.length ? `sw:${moveId}` : null;
+    const item = `sw:${moveId}`;
     const copyKeys = steps.map(x => `${x.box}:${x.path}`);
     const before = this.snapshot({ skills: dropSkills, installs: [...installs.map(i => i.id), ...(dropSkills.length ? st.installs.filter(i => dropSkills.includes(i.skillId)).map(i => i.id) : [])], copies: copyKeys });
-    const results = item ? await this.disk.run(item, steps.map(x => ({ kind: "delete" as const, ...x }))) : [];
+    const results = await this.disk.run(item, steps.map(x => ({ kind: "delete" as const, ...x })));
     const failed = results.filter(r => r.state === "failed");
     this.tx(() => {
       for (const r of results) if (r.state === "applied") this.db.prepare("DELETE FROM skill_copies WHERE box = ? AND path = ?").run(r.box, r.path);

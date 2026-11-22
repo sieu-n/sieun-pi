@@ -7,7 +7,8 @@
  * inventory, so this module only runs it and reads its file.
  */
 import { spawn } from "node:child_process";
-import { readFile, stat } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { NotFound } from "./app.ts";
 import { parseInventory, type SkillDoc, type SkillInventory, type SkillScan, type SkillsReport } from "../web/src/lib/api/shared/skills.ts";
 
@@ -26,6 +27,8 @@ export type SkillsHooks = {
   ingest: (json: unknown) => void;
   overlay: (rows: Record<string, unknown>[]) => Record<string, unknown>[];
   lastAttempt: () => number | null;
+  /** Each box's install paths, which the scanner also reads where they sit outside every folder it walks, such as a scratch path. */
+  installPaths?: () => Record<string, string[]>;
 };
 
 /**
@@ -123,13 +126,23 @@ export class Skills {
     }
   }
 
+  /** Writes the skills DB's install paths beside the inventory, for the scanner's --install-paths. */
+  private async installArgs(): Promise<string[]> {
+    const paths = this.hooks?.installPaths?.();
+    if (!paths) return [];
+    const file = join(dirname(this.config.inventory), "install-paths.json");
+    await mkdir(dirname(file), { recursive: true });
+    await writeFile(file, JSON.stringify(paths));
+    return ["--install-paths", file];
+  }
+
   private start(): Promise<void> {
     const scanner = this.config.scanner;
     if (!scanner) return Promise.resolve();
     if (this.running) return this.running;
     this.scan = { running: true, startedAt: Date.now(), endedAt: null, error: null };
     this.onScan({ ...this.scan });
-    this.running = new Promise<void>(resolve => {
+    this.running = this.installArgs().catch(() => [] as string[]).then(extra => new Promise<void>(resolve => {
       let stderr = "";
       const finish = async (failure: string | null) => {
         if (failure) this.log(`skills: the scan failed: ${failure}`);
@@ -139,13 +152,13 @@ export class Skills {
         this.onScan({ ...this.scan });
         resolve();
       };
-      const child = spawn(scanner.command, scanner.args, { cwd: scanner.cwd, stdio: ["ignore", "ignore", "pipe"], env: { ...process.env, ...scanner.env } });
+      const child = spawn(scanner.command, [...scanner.args, ...extra], { cwd: scanner.cwd, stdio: ["ignore", "ignore", "pipe"], env: { ...process.env, ...scanner.env } });
       child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
         stderr = (stderr + chunk).slice(-4000);
       });
       child.on("error", error => void finish(error.message));
       child.on("close", (code, signal) => void finish(code === 0 ? null : stderr.trim().split("\n").slice(-3).join(" ") || `exit ${code ?? signal}`));
-    });
+    }));
     return this.running;
   }
 

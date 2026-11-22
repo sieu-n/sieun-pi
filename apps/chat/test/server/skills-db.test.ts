@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, lstatSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 import { SkillsDb, SkillsRefused, SkillsStepFailed, type DiskResult, type DiskStep } from "../../server/skills-db.ts";
 import { fixtureScanner, writeSkillsDbFixture, type SkillsDbFixture } from "../../server/skills-db-fixture.ts";
@@ -46,7 +46,9 @@ function rig(t: { after: (fn: () => void) => void }): Rig {
   const db = new SkillsDb({ file: join(dir, "chat.sqlite"), box: BOX, home: fixture.home, piHostPrompt: null }, review.diskSteps(fixture.setName));
   const scanner = fixtureScanner(fixture, REPO);
   const scan = () => {
-    execFileSync(scanner.command, scanner.args, { cwd: scanner.cwd, env: { ...process.env, ...scanner.env }, stdio: "ignore" });
+    const paths = join(dir, "install-paths.json");
+    writeFileSync(paths, JSON.stringify(db.installPaths()));
+    execFileSync(scanner.command, [...scanner.args, "--install-paths", paths], { cwd: scanner.cwd, env: { ...process.env, ...scanner.env }, stdio: "ignore" });
     assert.ok(db.ingest(JSON.parse(readFileSync(fixture.inventory, "utf8"))));
   };
   const present = (path: string) => {
@@ -229,20 +231,62 @@ test("undo of an install whose Mac step never took effect drops the row, and a f
   assert.equal(db.view(IDLE).counts.installs, 0);
 });
 
-test("remove of an install that never reached the disk runs no disk step and drops the row", async t => {
-  const { db, calls } = fakeDisk(t, {
-    run: steps => steps.map(step => ({ box: step.box, path: step.path, state: "queued" as const, note: null })),
-    undo: () => [],
-  });
-  await db.install({ name: "deploy-notes", box: "mac", runtime: "codex", mode: "copy" });
-  db.ingest(macScan("2026-11-22T01:00:00Z", [macCopy("/Users/o/.claude/skills/deploy-notes")]));
-  assert.deepEqual(db.check().items.map(i => i.kind), ["missing"]);
-  const install = db.view(IDLE).skills.flatMap(k => k.installs)[0]!;
-  calls.run.length = 0;
-  await db.remove({ target: install.id });
-  assert.equal(calls.run.length, 0, "no step went to the disk");
-  assert.equal(db.view(IDLE).counts.installs, 0);
+test("an install outside every scanned root stays found after a rescan, and remove deletes its link", async t => {
+  const { fixture, db, scan, present } = rig(t);
+  scan();
+  const path = join(fixture.home, "elsewhere/deploy-notes");
+  const installed = await db.install({ name: "deploy-notes", box: BOX, runtime: "codex", path });
+  const id = installed.apply!.steps[0]!.installId;
+  assert.ok(present(path));
+  scan();
+  assert.equal(db.check().items.length, 0, JSON.stringify(db.check().items));
+  assert.equal((await db.apply()).changes, 0);
+  await db.remove({ target: id });
+  assert.ok(!present(path), "remove deleted the link on disk");
+  scan();
   assert.equal(db.check().items.length, 0);
+});
+
+test("remove of an install whose path is gone runs a delete that ends as done, and drops the row", async t => {
+  const { fixture, db, scan, present } = rig(t);
+  scan();
+  const path = join(fixture.home, "elsewhere/deploy-notes");
+  const installed = await db.install({ name: "deploy-notes", box: BOX, runtime: "codex", path });
+  const id = installed.apply!.steps[0]!.installId;
+  rmSync(path);
+  scan();
+  assert.deepEqual(db.check().items.map(i => i.kind), ["missing"]);
+  const removed = await db.remove({ target: id });
+  assert.equal(removed.apply?.steps[0]?.result, "done");
+  assert.ok(!present(path));
+  assert.equal(db.check().items.length, 0);
+});
+
+test("a link that prime-sync moved to a newer runtime release reads ok, and a later apply links to the newer release", async t => {
+  const release = (sha: string) => `/Users/o/.local/share/sieun-pi-runtime/releases/${sha}/skills/wiki`;
+  const link = { ...macCopy("/Users/o/.prime/agent/skills/wiki"), name: "wiki", root: "/Users/o/.prime/agent/skills", source: "prime-links", runtimes: ["prime"] };
+  const disk = (sha: string, linked = true) => [
+    macCopy("/Users/o/.claude/skills/deploy-notes"),
+    { ...macCopy(release(sha)), name: "wiki", root: dirname(release(sha)), source: "sieun-pi-runtime", runtimes: [] },
+    ...(linked ? [{ ...link, realPath: release(sha), linkTarget: release(sha) }] : []),
+  ];
+  const placed: DiskStep[] = [];
+  const dir = mkdtempSync(join(tmpdir(), "skills-db-link-"));
+  const db = new SkillsDb({ file: join(dir, "chat.sqlite"), box: BOX, home: "/home/x", piHostPrompt: null }, {
+    run: async (_item, steps) => (placed.push(...steps), steps.map(step => ({ box: step.box, path: step.path, state: "applied" as const, note: null }))),
+    undo: async () => [],
+  });
+  t.after(() => {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  db.ingest(macScan("2026-11-22T00:00:00Z", disk("aaa")));
+  db.ingest(macScan("2026-11-22T01:00:00Z", disk("bbb")));
+  assert.equal(db.check().items.length, 0, JSON.stringify(db.check().items));
+  db.ingest(macScan("2026-11-22T02:00:00Z", disk("bbb", false)));
+  assert.deepEqual(db.check().items.map(i => i.kind), ["missing"]);
+  await db.apply();
+  assert.deepEqual(placed.map(step => step.kind === "place" ? step.from : null), [release("bbb")]);
 });
 
 test("the review runs a skills DB delete of a path that is gone as a no-op, and undoes a step that failed as nothing to put back", async t => {

@@ -117,6 +117,17 @@ export type Identity = { key: string; name: string; source: SkillSource };
 
 const RUNTIME_COPY = /\/sieun-pi-runtime\/(?:current|releases\/[^/]+)\/(.+)$/;
 const PIHOST_COPY = /\/pi-host\/(?:current|release-[^/]+)\/(packages\/.+)$/;
+/**
+ * Two link targets name the same skill when they differ only in the sieun-pi runtime or pi-host release folder. prime-sync relinks the Mac's
+ * ~/.prime/agent/skills into each new runtime release, which on 11-22 showed 29 links as wrong-link an hour after the seed.
+ */
+export function sameLink(a: string | null, b: string | null): boolean {
+  if (a === b) return true;
+  if (a === null || b === null) return false;
+  const unpin = (t: string) => t.replace(/\/sieun-pi-runtime\/releases\/[^/]+\//, "/sieun-pi-runtime/current/").replace(/\/pi-host\/release-[^/]+\//, "/pi-host/current/");
+  return unpin(a) === unpin(b);
+}
+
 const PLUGIN = /\/\.(claude|codex)\/plugins\/cache\/([^/]+)\/([^/]+)\/[^/]+\/skills\//;
 const PRIME_BUNDLE = /\/prime-agent\/releases\/[^/]+\/skills\//;
 
@@ -342,7 +353,7 @@ export const copyId = (c: { box: string; path: string }): string => `${c.box}:${
 export function installState(install: InstallRecord, at: CopyFact | undefined, scan: BoxScan | undefined, sourceHash: string | null): InstallState {
   if (!scan?.lastOkAt) return { kind: "unknown", reason: `${install.box} has no good scan yet.` };
   if (!at) return { kind: "missing" };
-  if (install.mode === "link") return at.linkTarget === install.target ? { kind: "ok" } : { kind: "wrong-link", target: at.linkTarget };
+  if (install.mode === "link") return sameLink(at.linkTarget, install.target) ? { kind: "ok" } : { kind: "wrong-link", target: at.linkTarget };
   if (at.hash !== install.appliedHash) return { kind: "changed", changedLines: at.changedLines ?? 0 };
   if (sourceHash !== null && install.sourceHash !== null && sourceHash !== install.sourceHash) return { kind: "behind", changedLines: at.changedLines ?? 0 };
   return { kind: "ok" };
