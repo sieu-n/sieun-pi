@@ -364,12 +364,15 @@ export function routes(app: App): Route[] {
       return { ...room, opened: await app.opened(room.id) };
     }),
     route("PATCH", "/api/rooms/:id", async (_r, p, _q, body) => app.groups.update(p.id!, ((await body()) ?? {}) as RoomPatch)),
-    // Adding twice or removing a non-member changes nothing; both answer the room (group-rooms.ts `addMembers`, `removeMember`).
+    // Adding twice, removing a non-member or setting the wakeOn a member has changes nothing; each answers the room (group-rooms.ts
+    // `addMembers`, `removeMember`, `setWakeOn`).
     route("POST", "/api/rooms/:id/members", async (_r, p, _q, body) => {
       const input = ((await body()) ?? {}) as { agents?: string[]; wakeOn?: WakeOn };
       return app.addMembers(p.id!, input.agents ?? [], input.wakeOn).room;
     }),
     route("DELETE", "/api/rooms/:id/members/:agent", async (_r, p) => (await app.removeMember(p.id!, p.agent!)).room),
+    route("PATCH", "/api/rooms/:id/members/:agent", async (_r, p, _q, body) =>
+      app.groups.setWakeOn(p.id!, p.agent!, ((await body()) as { wakeOn?: unknown } | undefined)?.wakeOn)),
     route("POST", "/api/threads/:id/members", async (_r, p, _q, body) => {
       return app.memberAsAgent(p.id!, ((await body()) ?? {}) as { room?: unknown; agent?: unknown; member?: unknown });
     }),

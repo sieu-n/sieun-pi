@@ -2,7 +2,8 @@
  * Channel members on the fixture host (group-rooms.ts rule 6): an add makes the new member's comm thread at once, with no post, and shows
  * "You added X" in the timeline; a removed member gets no later post, keeps its comm thread record, and a re-add goes on in that thread;
  * adding twice and removing a non-member change nothing, the owner stays; an agent's set_room_member route adds and removes by name; and a
- * remove stops the member's comm thread turn in the room, running or waiting for a slot, so its answer never lands after the remove.
+ * remove stops the member's comm thread turn in the room, running or waiting for a slot, so its answer never lands after the remove; and a
+ * mentions-only member (`wakeOn: "none"`, set with PATCH) wakes only on an @mention or a reply in a thread it posted in.
  * Run: cd apps/chat && node --import tsx --test --test-force-exit --test-isolation=none --test-timeout=120000 test/server/room-members.test.ts
  */
 import assert from "node:assert/strict";
@@ -10,6 +11,7 @@ import { after, before, describe, test } from "node:test";
 import type { ConversationHeader, Item, Room, TimelinePage } from "../../web/src/lib/api/types.ts";
 import { FIXTURE_AGENTS as agents, FIXTURE_IDS as ids } from "../../server/fixture/seed.ts";
 import type { FixtureHost } from "../../server/host/fixture.ts";
+import type { ContentBlock } from "../../server/host/types.ts";
 import { start, until, type Running } from "./helpers.ts";
 
 const lines = async (s: Running, room: string): Promise<string[]> =>
@@ -112,4 +114,65 @@ describe("a remove mid-turn", () => {
       assert.equal((thread.entries.at(-1)?.model?.[0] as { stopReason?: string } | undefined)?.stopReason, "aborted");
     });
   }
+});
+
+describe("a mentions-only member", () => {
+  let s: Running;
+  let host: FixtureHost;
+  let room: Room;
+  before(async () => {
+    s = await start({ wordMs: 0 });
+    host = s.host as FixtureHost;
+    const made = await s.send("POST", "/api/rooms", { kind: "channel", name: "members-mentions", members: [agents.vent, agents.crawler], test: true });
+    room = made.body;
+  });
+  after(async () => {
+    await s.close();
+  });
+  // Every text says "quiet", which the fixture's agents read as a turn that sends nothing.
+  const woken = async (requestId: string, more: { threadRoot?: string; mentions?: string[] } = {}): Promise<{ id: string; targets: string[] }> => {
+    const sent = await s.send("POST", `/api/c/${room.id}/send`, { text: `quiet, ${requestId}`, requestId, ...more });
+    assert.equal(sent.status, 200, JSON.stringify(sent.body));
+    return { id: sent.body.item.id, targets: sent.body.deliveries.map((d: { target: string }) => d.target) };
+  };
+  const wakeOn = (r: Room, agent: string) => r.members.find(m => m.principal.id === agent)?.wakeOn;
+
+  test("PATCH sets a member's wakeOn with no system line; the same value again changes nothing; the owner and non-members are refused", async () => {
+    const path = `/api/rooms/${room.id}/members`;
+    const set = await s.send("PATCH", `${path}/${agents.crawler}`, { wakeOn: "none" });
+    assert.equal(set.status, 200, JSON.stringify(set.body));
+    assert.equal(wakeOn(set.body, agents.crawler), "none");
+    assert.equal(wakeOn(set.body, agents.vent), "all");
+    const again = await s.send("PATCH", `${path}/Crawler VP`, { wakeOn: "none" });
+    assert.deepEqual(again.body, set.body);
+    assert.deepEqual(await lines(s, room.id), [], "a wakeOn change shows no line, as Slack shows none for a notification setting");
+    assert.equal((await s.send("PATCH", `${path}/owner`, { wakeOn: "none" })).status, 400);
+    assert.equal((await s.send("PATCH", `${path}/${agents.frontend}`, { wakeOn: "none" })).status, 400, "a non-member has no wakeOn");
+    assert.equal((await s.send("PATCH", `${path}/${agents.crawler}`, { wakeOn: "mention" })).status, 400);
+    assert.equal((await s.send("PATCH", `${path}/${agents.crawler}`, {})).status, 400);
+  });
+
+  test("it wakes on a root post or thread reply that @mentions it, and not on others", async () => {
+    const plain = await woken("roll call");
+    assert.deepEqual(plain.targets, [agents.vent]);
+    assert.deepEqual((await woken("tagged root", { mentions: [agents.crawler] })).targets, [agents.vent, agents.crawler]);
+    assert.deepEqual((await woken("plain reply", { threadRoot: plain.id })).targets, [agents.vent]);
+    assert.deepEqual((await woken("tagged reply", { threadRoot: plain.id, mentions: [agents.crawler] })).targets, [agents.vent, agents.crawler]);
+  });
+
+  test("it keeps waking on replies in a thread it posted in, as an all member does", async () => {
+    const root = await woken("thread to join", { mentions: [agents.crawler] });
+    const comm = await until(async () => s.app.agents.record(agents.crawler)!.comm?.[room.id], id => id !== undefined);
+    const thread = host.threadsById.get(comm!)!;
+    await until(async () => thread.running.has(1), on => !on);
+    const content: ContentBlock[] = [{ type: "toolCall", id: "c1", name: "tell_owner", arguments: { text: "quiet, on it", why: "answer" } }];
+    host.append(thread, 1, { kind: "pi.assistant", model: [{ role: "assistant", content, provider: "anthropic", model: "claude-opus-5-5", stopReason: "toolUse", timestamp: Date.now() }] });
+    host.append(thread, 1, { kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: "c1", toolName: "tell_owner", content: [{ type: "text", text: "told the owner" }], isError: false, timestamp: Date.now() }] });
+    await s.app.groups.feed(comm!);
+    assert.equal(s.app.agentStore.postsOf(room.id).find(p => p.requestId === `m:${comm}:c1`)?.threadRoot, root.id);
+    assert.deepEqual((await woken("follow-up in its thread", { threadRoot: root.id })).targets, [agents.vent, agents.crawler]);
+
+    await s.send("PATCH", `/api/rooms/${room.id}/members/${agents.crawler}`, { wakeOn: "all" });
+    assert.deepEqual((await woken("back to all")).targets, [agents.vent, agents.crawler]);
+  });
 });

@@ -4,8 +4,9 @@
  * agents, each with a `wakeOn`.
  *
  * 1. A post wakes every member whose `wakeOn` is `all`, minus its author, as if it tagged each one; in a channel a thread reply wakes them
- *    too, and a muted member (`none`) wakes on nothing. Each woken member gets one delivery to its comm thread for the room
- *    (`Agents.ensureComm`), never to its work thread, keyed `d:<room>:<post>:<agent>`, with retries; a restart resubmits every delivery still `sending` with the same key.
+ *    too. A mentions-only member (`none`) wakes on a post that @mentions it and on a reply in a channel thread it posted in, as Slack's
+ *    "mentions only" still follows threads you are in; `setWakeOn` switches it, with no system line. Each woken member gets one delivery
+ *    to its comm thread for the room (`Agents.ensureComm`), never to its work thread, keyed `d:<room>:<post>:<agent>`, with retries; a restart resubmits every delivery still `sending` with the same key.
  *    Deliveries that waited for an offline box go as one bundled input per member when the box is back, keyed `b:<room>:<first post>:<agent>`.
  * 2. An owner post goes in as the owner's turn; an agent post goes in as an `agent.message` whose data names the author, the room, the post
  *    and its hops. A post `MAX_HOPS` agent hops from the owner's last post gets `stopped` deliveries and is never submitted.
@@ -91,6 +92,7 @@ const inChannel = (post: RoomPost): boolean => !post.threadRoot || post.alsoInCh
 const rootText = (root: RoomPost | undefined): string => (root && root.deletedAt === undefined ? root.text.trim().split("\n")[0]!.slice(0, 200) : "");
 const channelName = (name: string): string => name.trim().replace(/^#/, "").toLowerCase().replace(/[^a-z0-9-_]+/g, "-").replace(/^-+|-+$/g, "");
 const WAKE_ON: readonly WakeOn[] = ["all", "none"];
+const isWakeOn = (value: unknown): value is WakeOn => WAKE_ON.some(w => w === value);
 
 const HEADER = /· post (\d+) from [^\n]* · hops (\d+)\]$/;
 
@@ -327,8 +329,8 @@ export class GroupRooms {
   }
 
   /**
-   * Adds registered agents, who wake on every post unless `wakeOn` is `none`; `added` names the ones that were not members, and each gets a
-   * system line. App.addMembers makes their comm threads.
+   * Adds registered agents, who wake on every post unless `wakeOn` is `none`, mentions only; `added` names the ones that were not members,
+   * and each gets a system line. App.addMembers makes their comm threads.
    */
   addMembers(id: string, agents: string[], wakeOn?: WakeOn, by: MemberChange["by"] = "owner"): { room: Room; added: AgentId[] } {
     const row = this.require(id);
@@ -359,6 +361,24 @@ export class GroupRooms {
     }
     if (stopped.length) this.emit(row, stopped);
     return { room: this.memberChanged(row, [{ at: now, agent: key, by, change: "removed" }]), removed: true };
+  }
+
+  /**
+   * Switches a member between waking on every post (`all`) and mentions only (`none`, rule 1). The room shows no line, as Slack shows none
+   * for a notification setting, and the value the member already has changes nothing.
+   */
+  setWakeOn(id: string, agent: string, wakeOn: unknown): Room {
+    const row = this.require(id);
+    if (!isWakeOn(wakeOn)) throw new Error(`A member's wakeOn is one of ${WAKE_ON.join(", ")}.`);
+    if (agent === OWNER.id || agent === OWNER.name) throw new Error("A room's owner hears every post; only an agent member's wakeOn changes.");
+    const key = this.deps.threads.registered(agent)?.id ?? agent;
+    const member = row.members.find(m => m.agent === key);
+    if (!member) throw new Error(`${agent} is not in ${roomLabel(row)}; add it before you set its wakeOn.`);
+    if (member.wakeOn === wakeOn) return this.view(row);
+    member.wakeOn = wakeOn;
+    this.store.saveRooms();
+    this.changed(row);
+    return this.view(row);
   }
 
   /** Saves the room after its members changed, logs each change and sends its system line to the room's watchers. */
@@ -486,13 +506,14 @@ export class GroupRooms {
   }
 
   /**
-   * Who a post wakes: every `all` member and every registered agent it mentions that is not a member, minus its author, for a channel thread
-   * reply too.
+   * Who a post wakes: every `all` member, every `none` member it mentions or whose thread it replies in, and every registered agent it
+   * mentions that is not a member, minus its author.
    */
   private wakes(row: GroupRoom, draft: Draft): AgentId[] {
-    const woken = row.members.filter(m =>
-      m.agent !== draft.author && m.wakeOn === "all" && this.deps.agents.record(m.agent) !== undefined,
-    ).map(m => m.agent);
+    const root = draft.threadRoot;
+    const inThread = root === undefined ? [] : this.store.postsOf(row.id).filter(p => p.id === root || p.threadRoot === root).map(p => p.author);
+    const hears = (m: RoomMember) => m.wakeOn === "all" || draft.mentions?.includes(m.agent) === true || inThread.includes(m.agent);
+    const woken = row.members.filter(m => m.agent !== draft.author && hears(m) && this.deps.agents.record(m.agent) !== undefined).map(m => m.agent);
     const outside = (draft.mentions ?? []).filter((agent): agent is AgentId =>
       agent !== "owner" && agent !== draft.author && !row.members.some(m => m.agent === agent) && this.deps.agents.record(agent) !== undefined);
     return [...woken, ...outside];
