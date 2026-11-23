@@ -66,6 +66,7 @@ const closes = (line) => {
  * those, a Markdown heading `## name` runs to the next heading of its level or higher, because on the 7 days to 2026-10-28
  * 10:28Z commits to other sections of ops/runbooks/dev-boxes.md and apps/infra/metal/README.md flagged
  * domains/devops/local-store-box/index.html and domains/devops/aws-estate.html 11 times and none of them changed the page.
+ * Failing those, a route key such as `/api/search` or `GET /api/search` names each call that registers it (`routeCall`).
  * Before the headings, a block that opens with `{` at the end of a line that names `name` runs to its matching close brace
  * (`braceBlocks`), which names a Caddyfile site, snippet, matcher or directive block. Failing a heading too, a Markdown table
  * row whose first cell is `name` (`tableRows`) is that row alone.
@@ -111,6 +112,8 @@ export function definitionText(text, name) {
 		const kept = pattern === patterns[0] ? blocks.filter((block) => block.depth === 0) : top.length ? top : heads;
 		if (blocks.length) return (kept.length ? kept : blocks).map((block) => block.text).join('\n');
 	}
+	const call = routeCall(text, name);
+	if (call !== null) return call;
 	const blocks = braceBlocks(lines, name);
 	if (blocks.length) return blocks.join('\n');
 	const heading = new RegExp(`^(#{1,6})\\s+${id}\\s*#*\\s*$`);
@@ -185,6 +188,46 @@ function braceBlocks(lines, name) {
 	return blocks;
 }
 
+/** An HTTP method that heads a route key such as `GET /api/search`, with its space. */
+const METHOD_HEAD = /^(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS) (?=\/)/;
+
+/**
+ * Each call whose first two arguments are an HTTP method string and the route `name`, such as
+ * `route("GET", "/api/search", async (r, _p, q) => ...)` in `routes` of apps/chat/server/http.ts, from its line to its close
+ * paren, joined, or null when no call registers it. A key `GET /api/search` names the calls of that method, and a bare
+ * `/api/search` the calls of every method. A string, its brackets aside, counts no bracket. Until 2026-11-23 no such
+ * route resolved, so the pages citing apps/chat/server/http.ts kept `::routes` whole, and that day 9e08c8d5 and e1e99b12
+ * changed other routes and flagged domains/devops/sw-factory-threads/system.html and search.html, whose rechecks changed only
+ * `last_verified`.
+ * @param {string} text
+ * @param {string} name
+ * @returns {string | null}
+ */
+export function routeCall(text, name) {
+	const method = METHOD_HEAD.exec(name)?.[0].trim();
+	const route = name.replace(METHOD_HEAD, '');
+	if (!/^\/\S+$/.test(route)) return null;
+	const head = new RegExp(
+		`^\\s*[\\w$.]*\\(\\s*["'](?:${method ?? 'GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS'})["']\\s*,\\s*["']${escape(route)}["']\\s*[,)]`,
+	);
+	const lines = text.split('\n');
+	/** @type {string[]} */
+	const calls = [];
+	for (let start = 0; start < lines.length; start += 1) {
+		if (!lines[start].includes(route) || !head.test(lines[start])) continue;
+		let depth = 0;
+		let end = start;
+		for (; end < lines.length; end += 1) {
+			const code = lines[end].replace(/(["'`])(?:\\.|(?!\1).)*\1/g, '');
+			depth += (code.match(/[([{]/g) ?? []).length - (code.match(/[)\]}]/g) ?? []).length;
+			if (depth <= 0) break;
+		}
+		calls.push(lines.slice(start, end + 1).join('\n').trimEnd());
+		start = end;
+	}
+	return calls.length ? calls.join('\n') : null;
+}
+
 /**
  * The code (`codeText`) of the definition `name` in `text`, a version of `file`, or null when there is no text or no such definition.
  * @param {string | null} text
@@ -193,7 +236,7 @@ function braceBlocks(lines, name) {
  * @returns {string | null}
  */
 export function definitionCode(text, name, file) {
-	const definition = text === null || !text.includes(name) ? null : definitionText(text, name);
+	const definition = text === null || !text.includes(name.replace(METHOD_HEAD, '')) ? null : definitionText(text, name);
 	return definition === null ? null : codeText(definition, file);
 }
 

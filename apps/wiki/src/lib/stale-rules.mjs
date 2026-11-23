@@ -3,7 +3,7 @@
  * applies them to each commit after a page's check, and the follow gate (scripts/follow-gate.mjs) applies them to the
  * one commit commit.mjs is about to write, so both read a change the same way.
  */
-import { definitionText, rowsHolding } from './definitions.mjs';
+import { definitionText, routeCall, rowsHolding } from './definitions.mjs';
 
 /** The UTC start in ms of the day a `last_verified` value names.
  * @param {string} lastVerified
@@ -190,7 +190,14 @@ export function linesTouch(lines, { tokens, paths }) {
  * apps/search/brand-tracking-watches.html, which names only the monitor-range row. On a replay of the 1,989 dream rechecks
  * in the 7 days to 2026-11-21 18:08Z this drops 3 flags of that page, all `last_verified` only, and none of the body changes,
  * and adds 3 flags on `INTEGRATIONS` for 76000addb1 and 86038f4e2e, whose facts those rechecks wrote
- * (~/work/wiki-stale-method-routes/).
+ * (~/work/wiki-stale-method-routes/). A function whose body registers routes as calls, as `routes` in
+ * apps/chat/server/http.ts does with `route("GET", "/api/search", ...)`, keys only the routes the page names that a call
+ * registers (`routeCall`), and none when the page counts the routes (`ROUTE_COUNT`). On a replay of the 2,304 dream rechecks
+ * in the 7 days to 2026-11-23 07:55Z, 50 of them on pages citing `http.ts::routes`, this drops 5 flags of that ref and 2
+ * whole rechecks, and adds none. One of the 2 changed only `last_verified`, and the other added a fact about the
+ * `sieun-pi-apps-chat.socket` unit of 441a0866, whose only `routes` change was `/api/ready` adding `pid`, a route the page never
+ * names. Without the count rule it dropped 19 flags and 9 whole rechecks, 3 of which updated a route count such as
+ * function-calls.html's `77 more /api routes` (~/work/wiki-stale-call-routes/).
  * @param {string} source
  * @param {string} definition
  * @returns {string[]}
@@ -198,7 +205,8 @@ export function linesTouch(lines, { tokens, paths }) {
 export function entryKeys(source, definition) {
 	const head = definition.split('\n')[0] ?? '';
 	if (KWARG_CALL.test(head)) return kwargKeys(source, definition);
-	if (!/=\s*[({[]\s*$/.test(head)) return [];
+	const literal = /=\s*[({[]\s*$/.test(head);
+	if (!literal && ROUTE_COUNT.test(pageBody(source).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' '))) return [];
 	/** @type {Set<string>} */
 	const keys = new Set();
 	for (const text of codeSpans(source)) {
@@ -207,13 +215,19 @@ export function entryKeys(source, definition) {
 			const route = /^\/[^\s/]/.test(key);
 			const withMethod = `${spanWords[at - 1]} ${key}`;
 			const quoted = definition.includes(`'${key}'`) || definition.includes(`"${key}"`);
-			if (route && METHOD_ROUTE.test(withMethod) && methodRows(definition, withMethod) !== null) keys.add(withMethod);
+			if (!literal) {
+				if (route && METHOD_ROUTE.test(withMethod) && routeCall(definition, withMethod) !== null) keys.add(withMethod);
+				else if (route && routeCall(definition, key) !== null) keys.add(key);
+			} else if (route && METHOD_ROUTE.test(withMethod) && entry(definition, withMethod) !== null) keys.add(withMethod);
 			else if (!route && !/^\w+(?:\.\w+)+$/.test(key) && !distinctive(key)) return;
 			else if ((quoted || (route && methodRows(definition, key) !== null)) && entry(definition, key) !== null) keys.add(key);
 		});
 	}
 	return [...keys];
 }
+
+/** A count of two or more routes in page text, such as `104 HTTP routes` or `108 more /api routes`, a fact about every row of a table. */
+const ROUTE_COUNT = /\b(?:[2-9]|\d[\d,]+)\s+(?:[\w/-]+\s+){0,3}routes\b/;
 
 /** A route behind its HTTP method, as the row `"POST /api/watch-targets/monitor-range",` of `_CRAWLER_CONVEX` in apps/vent/src/vent/tables.py holds it. */
 const METHOD_ROUTE = /^(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS) \/[^\s/]/;
@@ -270,6 +284,7 @@ export function namedEntries(definition, keys) {
 
 /** The entry of a table keyed by `key`, or for a route or a distinctive word the array rows that hold it (`rowsHolding`).
  * A method route such as `POST /api/x`, and a bare route that no row holds, key the lines that hold it quoted (`methodRows`).
+ * A route that a call registers, as `route("GET", "/api/x", ...)`, keys that call first (`routeCall`).
  * An ALLCAPS word keys no row, because `'POST'` is a column of `OPERATION_ROWS` that every POST row holds.
  * @param {string} definition
  * @param {string} key
@@ -277,8 +292,9 @@ export function namedEntries(definition, keys) {
  */
 const entry = (definition, key) =>
 	METHOD_ROUTE.test(key)
-		? methodRows(definition, key)
-		: (definitionText(definition, key) ??
+		? (methodRows(definition, key) ?? routeCall(definition, key))
+		: ((/^\/[^\s/]/.test(key) ? routeCall(definition, key) : null) ??
+			definitionText(definition, key) ??
 			(/^\/[^\s/]/.test(key)
 				? (rowsHolding(definition, key) ?? methodRows(definition, key))
 				: distinctive(key) && key !== key.toUpperCase()
