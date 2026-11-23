@@ -1,7 +1,8 @@
 # A sw factory instance of your own for development: `docker compose up -d` in this checkout brings up apps/chat on
 # http://127.0.0.1:${SWF_PORT:-5190}, pi-host and Meilisearch, with all their state in the volume `data` and the volume `meili`.
 # `docker compose watch` also syncs your edits in (see each service's develop.watch). `docker compose up -d fixture` starts the UI on the
-# fixture host alone, with no model. Configuration is .env (deploy/compose/env.example lists every variable); every one has a default.
+# fixture host alone, with no model. `docker compose --profile fixture down -v` removes every container, volume and network of the
+# project; a plain `down -v` leaves a running fixture and its volume. Configuration is .env (deploy/compose/env.example lists every variable); every one has a default.
 # On a box with pi-pool, `-f compose.yaml -f deploy/compose/compose.pool.yaml` runs the agents on the box's account pool.
 name: sw-factory
 
