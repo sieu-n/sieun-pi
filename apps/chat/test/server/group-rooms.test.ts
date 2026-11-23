@@ -10,7 +10,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
-import type { ConversationHeader, Item, LiveEvent, Room, Sidebar, TimelinePage } from "../../web/src/lib/api/types.ts";
+import type { AgentConfig, ConversationHeader, Item, LiveEvent, Room, Sidebar, TimelinePage } from "../../web/src/lib/api/types.ts";
 import { MAX_HOPS } from "../../server/group-rooms.ts";
 import { FIXTURE_AGENTS as agents, FIXTURE_IDS as ids, seedFixture } from "../../server/fixture/seed.ts";
 import { FixtureHost } from "../../server/host/fixture.ts";
@@ -369,6 +369,9 @@ describe("a channel on rooms", () => {
     assert.equal(host.threadsById.get(ventComm!)!.row.name, "Vent · #pi-cutover");
     const room = (await s.get<Room[]>("/api/rooms")).find(r => r.id === ids.cutoverChannel)!;
     assert.ok(!room.members.some(m => m.principal.id === agents.vent), "a mention does not add the agent to the channel");
+    const config = await s.get<AgentConfig>(`/api/agents/${agents.vent}/config`);
+    assert.equal(config.swarm.commRooms.find(r => r.id === ids.cutoverChannel)?.membership, "mentioned", "its Threads tab says it is no member there");
+    assert.equal(config.swarm.commRooms.find(r => r.id.startsWith("dm_"))?.membership, "member");
     host.beforeSubmit = undefined;
   });
 });

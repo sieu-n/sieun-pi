@@ -1,4 +1,4 @@
-import { agents, conversations, type AgentConfig, type AgentFolder, type AgentSummary, type RunStatus } from "$lib/api";
+import { agents, conversations, type AgentConfig, type AgentFolder, type AgentSummary, type CommMembership, type RunStatus } from "$lib/api";
 import type { ConfigSection } from "./agents-model";
 
 /**
@@ -45,9 +45,22 @@ export function commLabel(config: AgentConfig, room: string): string {
 
 export const commArchived = (config: AgentConfig, room: string): boolean => !!config.swarm.commRooms?.find((r) => r.id === room)?.archived;
 
-/** Its comm threads with those in archived rooms last, as Slack lists an archived channel after the open ones. */
-export const commThreadsOf = (config: AgentConfig, agent: AgentSummary | null) =>
-  [...(agent?.comm ?? [])].sort((a, b) => Number(commArchived(config, a.room)) - Number(commArchived(config, b.room)));
+/** Whether the agent is a member of a comm thread's room; an older server that sends no membership reads as a member. */
+export const commMembership = (config: AgentConfig, room: string): CommMembership => config.swarm.commRooms?.find((r) => r.id === room)?.membership ?? "member";
+
+/** What a comm thread's row says when its agent is no member of the room: it left, or an @mention reached it there. */
+export function commNotMember(config: AgentConfig, room: string): string | null {
+  const membership = commMembership(config, room);
+  const solo = config.swarm.commRooms?.find((r) => r.id === room)?.kind === "solo";
+  if (membership === "left") return solo ? "Left the Solo room" : "Left the channel";
+  return membership === "mentioned" ? "Not a member, mentioned there" : null;
+}
+
+/** Its comm threads in rooms it is a member of first, then rooms it is not in, then archived rooms, as Slack lists an archived channel last. */
+export const commThreadsOf = (config: AgentConfig, agent: AgentSummary | null) => {
+  const rank = (room: string) => (commArchived(config, room) ? 2 : commMembership(config, room) === "member" ? 0 : 1);
+  return [...(agent?.comm ?? [])].sort((a, b) => rank(a.room) - rank(b.room));
+};
 
 export const hostLineOf = (config: AgentConfig): string =>
   config.runs.hostVersion && config.runs.hostVersion !== config.runs.hostKind ? `${config.runs.hostKind} ${config.runs.hostVersion}` : config.runs.hostKind;

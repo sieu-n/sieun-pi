@@ -894,8 +894,11 @@ export interface AgentConfig {
     jobs: { id: AgentId; name: string; kind: "job" | "duty" | "root job"; status: RunStatus; createdAt: Ms | null; parent: AgentId | null; depth: number; archived: boolean }[];
     /** The channels and Solo rooms it is a member of, each with whether it wakes on every post there or only on mentions. */
     rooms: { id: RoomId; kind: "channel" | "solo"; name: string; wakeOn: Member["wakeOn"] }[];
-    /** The room of each of its comm threads, archived ones too, so a comm thread reads by its room's name. */
-    commRooms: { id: RoomId; kind: "dm" | "channel" | "solo"; name: string; archived: boolean }[];
+    /**
+     * The room of each of its comm threads, archived ones too, so a comm thread reads by its room's name, and whether the agent is a member
+     * there: an @mention reaches any registered agent (group-rooms.ts rule 5), so a comm thread can sit in a room it never joined or left.
+     */
+    commRooms: { id: RoomId; kind: "dm" | "channel" | "solo"; name: string; archived: boolean; membership: CommMembership }[];
     duties: { id: string; name: string; goal: string; schedule: string; paused: boolean; nextAt: Ms | null; lastVerdict: string | null; lastAt: Ms | null; runs: number }[];
     /** The check-in clock of its chat, when one is set. */
     checkIn: { everyMs: number; paused: boolean; nextAt: Ms | null; lastAt: Ms | null } | null;
@@ -925,6 +928,9 @@ export interface AgentScript {
   /** Null for a file in a release folder, whose time is the release's build. */
   modifiedAt: Ms | null;
 }
+
+/** Whether an agent is a member of a comm thread's room, left it (its member log says so), or only got a post there through an @mention. */
+export type CommMembership = "member" | "left" | "mentioned";
 
 /** The kinds of thread an agent runs: its main thread, one comm thread per room, and root job threads. */
 export type ThreadKind = "main" | "comm" | "jobs";

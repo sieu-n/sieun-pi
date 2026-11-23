@@ -5,7 +5,7 @@
   import MemberPicker from "$pages/channel/MemberPicker.svelte";
   import { removeMembership } from "$pages/channel/membership";
   import { STATUS_LABEL } from "./agents-model";
-  import { commArchived, commLabel, commThreadsOf, hostLineOf, money, plural, statusDot, type AgentTabProps } from "./agent-tab";
+  import { commArchived, commLabel, commNotMember, commThreadsOf, hostLineOf, money, plural, statusDot, type AgentTabProps } from "./agent-tab";
   import { capped, ROWS_SHOWN, usageRows, wakeWhen } from "./threads-tab";
   import AgentJobs from "./AgentJobs.svelte";
   import ConfigFileRow from "./ConfigFileRow.svelte";
@@ -32,10 +32,11 @@
     <ul class="list">
       <li><StatusDot status={statusDot(agent.status)} label={STATUS_LABEL[agent.status]} /><a class="grow" href={conversationHref(agent.thread)} data-work-thread={agent.thread}>Main thread</a></li>
       {#each capped(commThreads, allComm) as comm (comm.thread)}
-        <li data-comm-thread={comm.thread} data-room={comm.room}>
+        {@const notMember = commNotMember(config, comm.room)}
+        <li data-comm-thread={comm.thread} data-room={comm.room} data-member={notMember ? "no" : undefined}>
           <StatusDot status={statusDot(comm.status)} label={STATUS_LABEL[comm.status]} />
           <a class="grow" href={conversationHref(comm.thread)}>{commLabel(config, comm.room)}</a>
-          {#if commArchived(config, comm.room)}<Chip size="sm" label="Archived" />{/if}
+          {#if commArchived(config, comm.room)}<Chip size="sm" label="Archived" />{:else if notMember}<Chip size="sm" label={notMember} />{/if}
         </li>
       {/each}
       {#if commThreads.length > ROWS_SHOWN}

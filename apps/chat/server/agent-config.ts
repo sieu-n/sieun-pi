@@ -18,7 +18,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import type { AgentConfig, AgentFolderSummary, AgentId, AgentSummary, AgentWake, ChatBoard, ConfigFile, PlanItem, ThreadKind, UsagePart } from "../web/src/lib/api/types.ts";
+import type { AgentConfig, AgentFolderSummary, AgentId, AgentSummary, AgentWake, ChatBoard, CommMembership, ConfigFile, PlanItem, ThreadKind, UsagePart } from "../web/src/lib/api/types.ts";
 import type { Duty, DutyRunRecord } from "../web/src/lib/api/shared/chat-duties.ts";
 import { fileInfo, instructionFiles } from "./agent-folder.ts";
 import { agentScripts } from "./agent-scripts.ts";
@@ -278,6 +278,12 @@ const kindCount = (kinds: ReadonlyMap<string, ThreadKind>, kind: ThreadKind, wor
   return `${n} ${word}${n === 1 ? "" : "s"}`;
 };
 
+/** Whether the agent is a member of a comm thread's room, left it, or got a post there only through an @mention (group-rooms.ts rule 5). */
+function commMembership(row: { members: readonly { agent: AgentId }[]; memberLog?: readonly { agent: AgentId; change: string }[] }, member: { id: AgentId } | undefined): CommMembership {
+  if (!member || row.members.some(m => m.agent === member.id)) return "member";
+  return row.memberLog?.some(change => change.agent === member.id && change.change === "removed") ? "left" : "mentioned";
+}
+
 /** Run wakes first, since they wait on CI with no clock, then the soonest. */
 const wakeOrder = (a: AgentWake, b: AgentWake): number => (a.on.kind === "run" ? 0 : a.on.at) - (b.on.kind === "run" ? 0 : b.on.at);
 
@@ -464,8 +470,10 @@ export async function agentConfig(app: App, id: AgentId): Promise<AgentConfig> {
       })(),
       commRooms: (agent.comm ?? []).map(({ room }) => {
         const row = app.groups.row(room);
-        if (row) return { id: room, kind: row.kind, name: row.name, archived: !!row.archived };
-        return room.startsWith("dm_") ? { id: room, kind: "dm" as const, name: "DM", archived: false } : { id: room, kind: "channel" as const, name: room, archived: false };
+        if (row) return { id: room, kind: row.kind, name: row.name, archived: !!row.archived, membership: commMembership(row, app.threads.registered(id) ?? app.agents.ofComm(id)?.record) };
+        return room.startsWith("dm_")
+          ? { id: room, kind: "dm" as const, name: "DM", archived: false, membership: "member" as const }
+          : { id: room, kind: "channel" as const, name: room, archived: false, membership: "mentioned" as const };
       }),
       duties, checkIn,
       dutiesOf: !isChatRoot && chat ? { id: chat, name: app.boards.nameOf(chat) } : null,
