@@ -7,6 +7,11 @@ sink.json (default ~/.config/usage-collector/sink.json):
   headers         extra headers, such as {"Authorization": "Bearer ..."} for a door
   token_file      a file whose text is sent as "Authorization: Bearer <text>", so the secret stays in the file it already lives in
   max_body_bytes  default 1000000, the body cap of the devbox-push door (store.md section 3)
+
+The prod store takes writes through the devbox-push door, which forwards a fixed INSERT as usage_writer and passes
+insert_deduplication_token through; on us-metal02 its sink.json is
+  {"url": "https://devbox-push.virev.ai/usage/model_calls", "token_file": "/home/sieun/box-ops/obs/alloy/push-token"}
+A test rig is ClickHouse itself: {"url": "http://127.0.0.1:18123/"}.
 """
 from __future__ import annotations
 

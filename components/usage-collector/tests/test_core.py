@@ -17,7 +17,7 @@ def numbered(count: int, per_checkpoint: int):
     def collect(ctx):
         start = ctx.state.get("next", 0)
         for n in range(start, count):
-            yield {"source_key": f"test:h1:{n}", "call_at": 1795400000000 + n, "provider": "anthropic", "model": "m",
+            yield {"source_key": f"test:h1:{n}", "call_at": 1795400000000 + n, "session": "s1", "provider": "anthropic", "model": "m",
                    "input_tokens": 1, "output_tokens": 2, "cost_output_usd": 1.6e-05, "cost_source": "reported"}
             ctx.state["next"] = n + 1
             if (n + 1) % per_checkpoint == 0:
@@ -40,7 +40,7 @@ class CoreTest(unittest.TestCase):
         self.dir.cleanup()
 
     def test_normalize_formats_time_and_costs(self) -> None:
-        row = core.normalize({"source_key": "test:h1:1", "call_at": 1795473490322, "provider": "p", "model": "m",
+        row = core.normalize({"source_key": "test:h1:1", "call_at": 1795473490322, "session": "s", "provider": "p", "model": "m",
                               "cost_input_usd": 1.6e-05, "input_tokens": 2**40, "cost_source": "reported"}, "test", "h1")
         self.assertEqual(row["call_at"], "2026-11-23 22:38:10.322")
         self.assertEqual(row["cost_input_usd"], "0.000016000")
@@ -49,7 +49,11 @@ class CoreTest(unittest.TestCase):
 
     def test_key_must_name_client_and_host(self) -> None:
         with self.assertRaises(core.RowError):
-            core.normalize({"source_key": "other:h1:1", "call_at": 0, "provider": "p", "model": "m", "cost_source": "x"}, "test", "h1")
+            core.normalize({"source_key": "other:h1:1", "call_at": 0, "session": "s", "provider": "p", "model": "m", "cost_source": "x"}, "test", "h1")
+
+    def test_every_row_names_its_session(self) -> None:
+        with self.assertRaises(core.RowError):
+            core.normalize({"source_key": "test:h1:1", "call_at": 0, "provider": "p", "model": "m", "cost_source": "x"}, "test", "h1")
 
     def test_cursor_is_saved_only_after_the_rows_are_written(self) -> None:
         sink = FakeSink(fail_on=3)

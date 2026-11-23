@@ -29,7 +29,8 @@ TEXT = ("source_key", "host", "client", "agent", "thread", "thread_name", "sessi
 TOKENS = ("input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens", "cache_write_tokens", "cache_write_1h_tokens", "duration_ms")
 COSTS = ("cost_input_usd", "cost_output_usd", "cost_cache_read_usd", "cost_cache_write_usd")
 COLUMNS = ("source_key", "call_at") + TEXT[1:] + TOKENS + COSTS
-REQUIRED = ("source_key", "call_at", "provider", "model", "cost_source")
+# ops guy's ask for the prod store: every row names its host, client and session; core fills host and client itself.
+REQUIRED = ("source_key", "call_at", "session", "provider", "model", "cost_source")
 UINT32_MAX = 2**32 - 1
 
 

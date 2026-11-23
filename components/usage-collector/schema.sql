@@ -38,4 +38,5 @@ CREATE TABLE IF NOT EXISTS usage.model_calls
 ENGINE = ReplacingMergeTree(collected_at)
 PARTITION BY toYYYYMM(call_at)
 ORDER BY (host, client, call_at, row_id)
+TTL toDate(call_at) + INTERVAL 5 YEAR
 SETTINGS non_replicated_deduplication_window = 1000;

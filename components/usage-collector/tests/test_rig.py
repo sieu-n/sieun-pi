@@ -29,6 +29,8 @@ class RigTest(unittest.TestCase):
         statements = [s for s in "\n".join(l for l in SCHEMA.read_text().splitlines() if not l.startswith("--")).split(";") if s.strip()]
         for statement in statements:
             self.sink.query(statement.replace("usage.model_calls", self.table))
+        # a background merge would fold duplicate keys at a random moment, and the raw counts below must count every inserted row
+        self.sink.query(f"SYSTEM STOP MERGES {self.table}")
         self.config = root / "sink.json"
         self.config.write_text(json.dumps({"url": RIG, "table": self.table, "max_body_bytes": 2000}))
         self.home = root / "home"
