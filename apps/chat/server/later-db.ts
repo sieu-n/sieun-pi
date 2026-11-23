@@ -1,16 +1,20 @@
 /**
- * Save for later's items in chat.sqlite (chat-db.ts), moved from `<data dir>/later/<by>.json` (json-move.ts). Later (later.ts) keeps each
- * principal's list in memory as it did with the files, and each write changes one item's row.
+ * Where Save for later's lists are kept: `<data dir>/later/<by>.json` (`LaterFiles`), or chat.sqlite (chat-db.ts) once the server names the
+ * kind `later` in APPS_CHAT_DB_KINDS (`LaterRows`), moved from those files by json-move.ts. Later (later.ts) keeps each principal's list in
+ * memory either way.
  *
  * `later_items` holds one row per item, with the item as later.ts holds it in `body`. A list reads newest save first, the order of the old
  * file: an item saved anew goes on top, with an `ord` below every other of its principal's items, and a changed item keeps its place.
  * `later_principals` names each principal that has a list, so the export of a list whose last item went still writes `{"v": 1, "items": []}`.
  */
 import { readdirSync } from "node:fs";
+import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import type { LaterItem } from "../web/src/lib/api/types.ts";
 import type { ChatDb, Stmt } from "./chat-db.ts";
+import { writeJsonLater } from "./disk.ts";
 import type { JsonKind, JsonMove } from "./json-move.ts";
+import { readJson } from "./store.ts";
 
 /** `owner` or an agent id; it names the principal's file, so it may hold no path characters. */
 export const PRINCIPAL = /^(owner|ag_[\w.-]+)$/;
@@ -20,6 +24,37 @@ const fileOf = (by: string): string => `later/${by}.json`;
 const principalOf = (file: string): string | undefined => FILE.exec(file)?.[1];
 
 interface LaterFile { v: 1; items: LaterItem[] }
+
+/** Each principal's list as Later reads and writes it. */
+export interface LaterLists {
+  /** The principal's list as stored, newest save first, or an empty one. */
+  load(by: string): LaterItem[];
+  /** Stores `item`, which the principal's list `list` now holds in its place, or on top when it is new. */
+  put(by: string, list: readonly LaterItem[], item: LaterItem): void;
+  /** Takes the item `id` away; `list` is the principal's list without it. */
+  remove(by: string, list: readonly LaterItem[], id: string): void;
+}
+
+/** The lists as JSON files, one per principal, each rewritten whole on a change. */
+export class LaterFiles implements LaterLists {
+  private readonly dir: string;
+
+  constructor(dataDir: string) {
+    this.dir = join(dataDir, "later");
+  }
+
+  load(by: string): LaterItem[] {
+    return readJson<LaterFile>(join(this.dir, `${by}.json`), { v: 1, items: [] }).items ?? [];
+  }
+
+  put(by: string, list: readonly LaterItem[]): void {
+    writeJsonLater(join(this.dir, `${by}.json`), { v: 1, items: [...list] } satisfies LaterFile);
+  }
+
+  remove(by: string, list: readonly LaterItem[]): void {
+    this.put(by, list);
+  }
+}
 
 /** The items of a list's text, or null when it is no list, which the release before the move read as an empty one. */
 function itemsOf(text: string): LaterItem[] | null {
@@ -43,11 +78,12 @@ export const LATER: JsonKind = {
   ],
   files(dataDir) {
     try {
-      return readdirSync(`${dataDir}/later`).filter(name => name.endsWith(".json") && PRINCIPAL.test(name.slice(0, -5))).map(name => `later/${name}`).sort();
+      return readdirSync(join(dataDir, "later")).filter(name => name.endsWith(".json") && PRINCIPAL.test(name.slice(0, -5))).map(name => `later/${name}`).sort();
     } catch {
       return [];
     }
   },
+  /** The file is the whole list, so an item the DB holds and the file does not, such as one an older release unsaved, goes. */
   load(db, file, text) {
     const by = principalOf(file);
     const items = itemsOf(text);
@@ -70,28 +106,28 @@ export const LATER: JsonKind = {
   },
 };
 
-/** The rows of Later's lists: every list read once at boot, and one statement per changed item after. */
-export class LaterRows {
+/** The lists as chat.sqlite rows: every list read once here, and one statement per changed item after. */
+export class LaterRows implements LaterLists {
+  private readonly lists = new Map<string, LaterItem[]>();
   /** Each principal's items by id with their `ord`, and the lowest `ord`, under which a new save goes. */
   private readonly ords = new Map<string, { of: Map<string, number>; low: number }>();
 
-  constructor(private readonly chat: ChatDb, private readonly move: JsonMove) {}
-
-  /** Every principal's list as stored, newest save first. */
-  all(): Map<string, LaterItem[]> {
-    const lists = new Map<string, LaterItem[]>();
-    for (const { by } of this.chat.db.prepare("SELECT by FROM later_principals ORDER BY by").all() as { by: string }[]) lists.set(by, []);
-    const all = this.chat.db.prepare("SELECT by, id, ord, body FROM later_items ORDER BY by, ord").all() as { by: string; id: string; ord: number | bigint; body: string }[];
+  constructor(private readonly chat: ChatDb, private readonly move: JsonMove) {
+    for (const { by } of chat.db.prepare("SELECT by FROM later_principals ORDER BY by").all() as { by: string }[]) this.lists.set(by, []);
+    const all = chat.db.prepare("SELECT by, id, ord, body FROM later_items ORDER BY by, ord").all() as { by: string; id: string; ord: number | bigint; body: string }[];
     for (const row of all) {
       const ord = Number(row.ord);
       const kept = this.ordsOf(row.by);
       kept.of.set(row.id, ord);
       kept.low = Math.min(kept.low, ord);
-      const list = lists.get(row.by);
+      const list = this.lists.get(row.by);
       if (list) list.push(JSON.parse(row.body) as LaterItem);
-      else lists.set(row.by, [JSON.parse(row.body) as LaterItem]);
+      else this.lists.set(row.by, [JSON.parse(row.body) as LaterItem]);
     }
-    return lists;
+  }
+
+  load(by: string): LaterItem[] {
+    return this.lists.get(by) ?? [];
   }
 
   private ordsOf(by: string): { of: Map<string, number>; low: number } {
@@ -100,29 +136,26 @@ export class LaterRows {
     return kept;
   }
 
-  /** Stores `item` in its place, or on top of the list when it is new there. */
-  put(by: string, item: LaterItem): Promise<void> {
+  put(by: string, _list: readonly LaterItem[], item: LaterItem): void {
     const kept = this.ordsOf(by);
     let ord = kept.of.get(item.id);
     if (ord === undefined) {
       ord = kept.low = kept.of.size ? kept.low - 1 : 0;
       kept.of.set(item.id, ord);
     }
-    return this.write([
+    this.write([
       { sql: "INSERT OR IGNORE INTO later_principals (by) VALUES (?)", params: [by] },
       { sql: "INSERT INTO later_items (by, id, ord, body) VALUES (?, ?, ?, ?) ON CONFLICT (by, id) DO UPDATE SET ord = excluded.ord, body = excluded.body", params: [by, item.id, ord, JSON.stringify(item)] },
     ], by);
   }
 
-  /** Deletes the item's row; its principal keeps its list, maybe empty. */
-  remove(by: string, id: string): Promise<void> {
+  remove(by: string, _list: readonly LaterItem[], id: string): void {
     this.ordsOf(by).of.delete(id);
-    return this.write([{ sql: "DELETE FROM later_items WHERE by = ? AND id = ?", params: [by, id] }], by);
+    this.write([{ sql: "DELETE FROM later_items WHERE by = ? AND id = ?", params: [by, id] }], by);
   }
 
-  private write(stmts: Stmt[], by: string): Promise<void> {
-    const done = this.chat.write(stmts, `later ${by}`);
+  private write(stmts: Stmt[], by: string): void {
+    void this.chat.write(stmts, `later ${by}`);
     this.move.touch(fileOf(by));
-    return done;
   }
 }

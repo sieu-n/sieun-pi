@@ -1,7 +1,7 @@
 /**
- * Each board's duties file in chat.sqlite (chat-db.ts), moved from `<data dir>/agents/<agent>/duties.json` and, for a root chat or an
- * agent whose folder was not moved, `<data dir>/boards/<thread>/duties.json` (json-move.ts). `DutyFiles` keeps every file in memory, where
- * the board reads it, and a save stores the file's row.
+ * Where each board's duties file is kept: `<data dir>/agents/<agent>/duties.json` or, for a root chat or an agent whose folder was not
+ * moved, `<data dir>/boards/<thread>/duties.json` (`DutyJsonFiles`), or chat.sqlite (chat-db.ts) once the server names the kind `duties` in
+ * APPS_CHAT_DB_KINDS (`DutyFiles`), moved from those files by json-move.ts. `DutyFiles` keeps every file in memory, where the board reads it.
  *
  * A row is one duties file, keyed by its path in the data dir, with the file as boards.ts builds it in `body`: the duties, their runs, the
  * prechecks at work, the duty jobs not started yet and the check-in. A save rewrites that one row, as it rewrote that one file, and the
@@ -14,6 +14,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { DutyFile } from "./boards.ts";
 import type { ChatDb } from "./chat-db.ts";
 import type { JsonKind, JsonMove } from "./json-move.ts";
+import { readJson, writeJson } from "./store.ts";
 
 /** The folders that hold a duties file, one per agent or root chat. */
 const FOLDERS = ["agents", "boards"];
@@ -67,7 +68,38 @@ export const DUTIES: JsonKind = {
   },
 };
 
-export class DutyFiles {
+/** The duties files the board reads and saves, keyed by their path in the data dir. */
+export interface DutyStore {
+  /** The file at `path` as kept, for a read that changes nothing, or undefined when there is none. */
+  peek(path: string): DutyFile | undefined;
+  /** A copy of the file at `path` for the caller to change and save, or an empty one. */
+  get(path: string): DutyFile;
+  /** Stores the file at `path`; the promise settles once it is stored. */
+  save(path: string, file: DutyFile): Promise<void>;
+  /** Settles once every save so far is stored. */
+  written(): Promise<void>;
+}
+
+/** The duties files as JSON files, read on each use and written whole on each save. */
+export class DutyJsonFiles implements DutyStore {
+  constructor(private readonly dataDir: string) {}
+
+  peek(path: string): DutyFile | undefined {
+    return readJson<DutyFile | undefined>(join(this.dataDir, path), undefined);
+  }
+
+  get(path: string): DutyFile {
+    return readJson<DutyFile>(join(this.dataDir, path), { duties: [], runs: {} });
+  }
+
+  async save(path: string, file: DutyFile): Promise<void> {
+    writeJson(join(this.dataDir, path), file);
+  }
+
+  async written(): Promise<void> {}
+}
+
+export class DutyFiles implements DutyStore {
   /** Each duties file by its path in the data dir, as last saved. */
   private readonly files = new Map<string, DutyFile>();
 

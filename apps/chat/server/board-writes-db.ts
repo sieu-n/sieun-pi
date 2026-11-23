@@ -1,6 +1,7 @@
 /**
- * The board writes this server answered and pi-host has not taken yet, in chat.sqlite (chat-db.ts), moved from `<data dir>/board-writes.json`
- * (json-move.ts). pi-host keeps each board in its thread's `chat.board` document; this is only the queue of puts in front of it, which the
+ * The board writes this server answered and pi-host has not taken yet: in `<data dir>/board-writes.json` (`BoardWritesFile`), or in
+ * chat.sqlite (chat-db.ts) once the server names the kind `board-writes` in APPS_CHAT_DB_KINDS (`BoardWrites`), moved from that file by
+ * json-move.ts. pi-host keeps each board in its thread's `chat.board` document; this is only the queue of puts in front of it, which the
  * next server process puts again (boards.ts `putBoards`).
  *
  * One row per chat holds the newest board that waits for its put. `ord` keeps the order the old file listed the chats in: a chat keeps its
@@ -11,7 +12,9 @@ import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import type { ChatBoard } from "../web/src/lib/api/types.ts";
 import type { ChatDb } from "./chat-db.ts";
+import { writeJsonLater, written } from "./disk.ts";
 import type { JsonKind, JsonMove } from "./json-move.ts";
+import { readJson } from "./store.ts";
 
 const FILE = "board-writes.json";
 
@@ -44,7 +47,43 @@ export const BOARD_WRITES: JsonKind = {
   dump: db => `${JSON.stringify(Object.fromEntries(rows(db).map(row => [row.chat, JSON.parse(row.body) as ChatBoard])), null, 1)}\n`,
 };
 
-export class BoardWrites {
+/** The queue of board puts, which the board keeps in memory as `unput` and hands here whole on each change. */
+export interface BoardWriteStore {
+  /** The boards that wait for their put, in queue order. */
+  all(): Map<string, ChatBoard>;
+  /** Queues the chat's newest board, which `unput` now holds; the promise settles once it is stored, which a board write's answer waits for. */
+  put(chat: string, board: ChatBoard, unput: ReadonlyMap<string, ChatBoard>): Promise<void>;
+  /** Takes the chat's board out of the queue once its put landed; `unput` no longer holds it. */
+  remove(chat: string, unput: ReadonlyMap<string, ChatBoard>): Promise<void>;
+}
+
+/** The queue as one JSON file, rewritten whole on each change. */
+export class BoardWritesFile implements BoardWriteStore {
+  private readonly file: string;
+
+  constructor(dataDir: string) {
+    this.file = join(dataDir, FILE);
+  }
+
+  all(): Map<string, ChatBoard> {
+    return new Map(Object.entries(readJson<Record<string, ChatBoard>>(this.file, {})));
+  }
+
+  put(_chat: string, _board: ChatBoard, unput: ReadonlyMap<string, ChatBoard>): Promise<void> {
+    return this.write(unput);
+  }
+
+  remove(_chat: string, unput: ReadonlyMap<string, ChatBoard>): Promise<void> {
+    return this.write(unput);
+  }
+
+  private write(unput: ReadonlyMap<string, ChatBoard>): Promise<void> {
+    writeJsonLater(this.file, Object.fromEntries(unput));
+    return written(this.file);
+  }
+}
+
+export class BoardWrites implements BoardWriteStore {
   /** Each chat's place in the queue, and the next place a chat queued anew takes. */
   private readonly ords = new Map<string, number>();
   private next = 0;
