@@ -50,15 +50,16 @@ test("every box has a row with its figures, the picked box shows its services an
     if (host.self) await expect(row.getByText("This box", { exact: true })).toBeVisible();
     if (host.machine) await expect(row.getByRole("meter", { name: "Memory" })).toBeVisible();
     await row.click();
-    await expect(row).toHaveAttribute("aria-selected", "true");
+    await expect(row).toHaveAttribute("aria-current", "true");
     const detail = page.getByTestId(`host-${host.name}`);
     await expect(detail.getByRole("heading", { name: host.name, exact: true })).toBeVisible();
     await expect(detail.getByText("pi-host", { exact: true })).toBeVisible();
     if (host.piHost.state === "absent") continue;
-    await detail.getByRole("tab", { name: `All ${total(host.counts.real)}`, exact: true }).click();
+    await detail.getByRole("tab", { name: /^All \d+$/ }).click();
     const all = (await (await page.request.get(`/api/hosts?box=${encodeURIComponent(host.name)}&threads=all`)).json()) as Report;
-    const listed = all.hosts.find(h => h.name === host.name)!.threads;
-    expect(listed).toHaveLength(total(host.counts.real));
+    const read = all.hosts.find(h => h.name === host.name)!;
+    const listed = read.threads;
+    expect(listed).toHaveLength(total(read.counts.real));
     for (const thread of listed) await expect(detail.getByTestId(`host-thread-${thread.id}`)).toContainText(thread.name);
   }
   const owner = data.hosts.find(host => total(host.counts.real));

@@ -66,7 +66,7 @@
     if (!next) return;
     event.preventDefault();
     pick(next.name);
-    (event.currentTarget as HTMLElement).querySelector<HTMLElement>(`[data-host="${CSS.escape(next.name)}"]`)?.focus();
+    (event.currentTarget as HTMLElement).parentElement?.querySelector<HTMLElement>(`[data-host="${CSS.escape(next.name)}"]`)?.focus();
   }
 </script>
 
@@ -91,7 +91,7 @@
       {#if shown.registryError}<p class="note" role="status" use:tooltip={shown.registryError}>The hosts list didn't read, so only this box shows.</p>{/if}
       <div class="table">
         <div class="row cols" aria-hidden="true"><span>Host</span><span>CPU</span><span>Memory</span><span class="right">Threads</span></div>
-        <div role="tablist" aria-label="Hosts" aria-orientation="vertical" tabindex="-1" onkeydown={onKeydown}>
+        <div class="rows">
           {#each shown.hosts as host (host.name)}
             {@const state = hostState(host)}
             {@const machine = host.machine}
@@ -102,12 +102,11 @@
             <button
               type="button"
               class="row host"
-              role="tab"
-              aria-selected={host.name === selected?.name}
-              tabindex={host.name === selected?.name ? 0 : -1}
+              aria-current={host.name === selected?.name ? "true" : undefined}
               data-host={host.name}
               data-testid="host-row-{host.name}"
               onclick={() => pick(host.name)}
+              onkeydown={onKeydown}
             >
               <span class="name"><StatusDot status={state.dot} /><span class="label">{host.name}</span>{#if host.self}<span class="tag">This box</span>{/if}</span>
               {#if machine}
@@ -132,9 +131,9 @@
         </div>
       </div>
       {#if selected}
-        <div role="tabpanel" aria-label={selected.name}>
+        <section aria-label={selected.name}>
           {#key selected.name}<HostDetail host={selected} now={shown.checkedAt} onrefresh={() => void hosts.refresh()} bind:filter bind:showTests listing={hosts.value !== null} />{/key}
-        </div>
+        </section>
       {/if}
     </div>
   {/if}
@@ -145,12 +144,12 @@
   .note { margin: 0; color: var(--text-subtle); font: var(--text-body-sm); }
   .stale { color: var(--text-subtle); font: var(--text-caption); margin-right: var(--space-2); }
   .table { padding: var(--space-1); border-radius: 12px; box-shadow: inset 0 0 0 1px var(--border-standard); }
-  [role="tablist"] { display: flex; flex-direction: column; outline: none; }
+  .rows { display: flex; flex-direction: column; }
   .row { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1.4fr) minmax(0, 1fr); align-items: center; gap: var(--space-4); padding: 0 var(--space-3); }
   .cols { min-height: 28px; color: var(--text-metadata); font: var(--text-caption); letter-spacing: var(--tracking-caption); }
   .host { min-height: 40px; border: 0; border-radius: 8px; background: transparent; color: var(--text-standard); text-align: left; cursor: pointer; }
   .host:hover { background: var(--affordance-ghost-hover); }
-  .host[aria-selected="true"] { background: var(--interaction-selected); }
+  .host[aria-current="true"] { background: var(--interaction-selected); }
   .host:focus-visible { outline: 2px solid var(--border-focus); outline-offset: -2px; }
   .right { justify-self: end; text-align: right; }
   .name { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
