@@ -29,6 +29,8 @@ before(async () => {
   store.set(dm, { delivery: stopped(NOW - 3_600_000) });
   const reply = store.append({ room: "dm_vent", author: "owner", text: "And the canary relay error from 02:10, did the restart clear it?", images: [], at: NOW - 3_000_000, requestId: "same-results-dm-2", threadRoot: dm.id }).post;
   store.set(reply, { delivery: stopped(NOW - 3_000_000) });
+  // The server reads the posts from disk, or imports them into chat.sqlite on its start, so they are written first.
+  await store.written("dm_vent");
   s = await start({ host, dataDir });
   // Meilisearch's order, not the engine's merge of what it has not indexed yet, which the first search read while the posts were in flight.
   await s.app.searchEngine.settled();

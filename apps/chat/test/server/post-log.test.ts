@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import type { RoomPost } from "../../server/agent-store.ts";
+import { AgentStore, type RoomPost } from "../../server/agent-store.ts";
+import { ChatRecords } from "../../server/chat-records.ts";
 import { ChatDb, openDb } from "../../server/chat-db.ts";
 import { drained } from "../../server/disk.ts";
 import { JsonMove } from "../../server/json-move.ts";
@@ -120,4 +121,23 @@ test("writes queued at a crash commit at exit, and a replay of them changes noth
   assert.equal(read.length, 200);
   assert.deepEqual(read, log.postsOf("dm_burst"));
   await chat.close();
+});
+
+test("AgentStore keeps posts in the room logs until the server keeps the posts kind in chat.sqlite", async () => {
+  const data = rig();
+  writeFileSync(join(data, "rooms", "dm_vent.jsonl"), `${oldLog("dm_vent")}\n`);
+  const files = new AgentStore(data, ChatRecords.standalone(data, []));
+  const { post } = files.append({ room: "dm_vent", author: "owner", text: "to the log", images: [], at: 9, requestId: "r-log" });
+  files.set(post, { text: "to the log, edited" });
+  await files.written("dm_vent");
+  assert.equal(existsSync(join(data, "chat.sqlite")), false, "a store whose kinds all keep their files never opens chat.sqlite");
+  assert.deepEqual(replayLog(readFileSync(join(data, "rooms", "dm_vent.jsonl"), "utf8")).map(p => [p.id, p.text]), [["p1", "edited"], ["p2", "post 2"], ["p3", "to the log, edited"]]);
+
+  const rows = new AgentStore(data, ChatRecords.standalone(data, ["posts"]));
+  assert.deepEqual(rows.postsOf("dm_vent"), new AgentStore(data, ChatRecords.standalone(data, [])).postsOf("dm_vent"), "the first open imports the log");
+  const before = readFileSync(join(data, "rooms", "dm_vent.jsonl"), "utf8");
+  const { post: added } = rows.append({ room: "dm_vent", author: "owner", text: "to the rows", images: [], at: 10, requestId: "r-row" });
+  rows.set(added, { reactions: [{ emoji: "👍", by: "owner", at: 11 }] });
+  assert.deepEqual(new AgentStore(data, ChatRecords.standalone(data, ["posts"])).postsOf("dm_vent").at(-1), added, "a standalone store commits each write before it returns");
+  assert.equal(readFileSync(join(data, "rooms", "dm_vent.jsonl"), "utf8"), before, "the log waits for the export");
 });

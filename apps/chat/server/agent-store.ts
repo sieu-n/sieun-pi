@@ -5,11 +5,10 @@
  */
 import { join } from "node:path";
 import type { AgentId, ForwardedPost, ImageRef, Ms } from "../web/src/lib/api/types.ts";
-import { appendLater, readLatest, written } from "./disk.ts";
 import { writeJson } from "./store.ts";
 import { ChatRecords, type Doc } from "./chat-records.ts";
 import { AGENTS, ROOMS } from "./record-kinds.ts";
-import { fileImageSize, withSize } from "./image-size.ts";
+import { JsonPostLog, PostLog, POSTS, type Posts } from "./post-log.ts";
 
 export type RoomId = string;
 
@@ -147,7 +146,6 @@ export interface StoredReaction { emoji: string; by: "owner" | AgentId; at: Ms }
 export interface TestSend { by: string; reason: string; at: Ms; entry?: number; notice?: Ms }
 
 export type PostPatch = Partial<Pick<RoomPost, "delivery" | "deliveries" | "inputs" | "jobs" | "text" | "testSend" | "reactions" | "images" | "editedAt" | "editedFrom" | "deletedAt" | "done" | "pinned">>;
-type LogLine = { t: "post"; post: RoomPost } | { t: "set"; post: string; patch: PostPatch };
 
 /**
  * Who in a room a post wakes (phase 5): `all` hears every post, as if each one tagged it, and `none` (muted) hears nothing. A member of a
@@ -235,7 +233,8 @@ export class AgentStore {
   /** Counts the saves of agents.json and rooms.json; what reads the records keys its caches on it. */
   version = 0;
   private index?: StoreLookup;
-  private readonly posts = new Map<RoomId, RoomPost[]>();
+  /** Each room's posts: rows of chat.sqlite once the server keeps the `posts` kind there, else the room logs (post-log.ts). */
+  private readonly posts: Posts;
   /** Hears each post added or changed, after it is written; search indexes it. */
   onPost: (post: RoomPost) => void = () => {};
   /** Hears each new post once, after `onPost`; the owner's notices read it (notices.ts). */
@@ -246,6 +245,7 @@ export class AgentStore {
     this.roomsDoc = records.doc(ROOMS);
     // Before 11-03 a channel member woke only on a mention; the owner asked that each one hear every post, so the old `mention` reads as `all`.
     for (const row of this.rooms.rooms) if (isGroupRoom(row)) for (const m of row.members) if ((m.wakeOn as string) === "mention") m.wakeOn = "all";
+    this.posts = records.inDb(POSTS.kind) ? new PostLog(records.chat, dir, records.move(POSTS), { sync: records.syncSaves }) : new JsonPostLog(dir);
   }
 
   get agents(): AgentsFile {
@@ -380,34 +380,7 @@ export class AgentStore {
   }
 
   postsOf(room: RoomId): RoomPost[] {
-    let list = this.posts.get(room);
-    if (list) return list;
-    list = [];
-    const text = readLatest(this.logFile(room));
-    if (text !== undefined) {
-      const byId = new Map<string, RoomPost>();
-      for (const line of text.split("\n")) {
-        if (!line.trim()) continue;
-        let parsed: LogLine;
-        try {
-          parsed = JSON.parse(line) as LogLine;
-        } catch {
-          continue;
-        }
-        if (parsed.t === "post") {
-          if (byId.has(parsed.post.id)) continue;
-          // A post from before its upload's size was kept reads it from the file's header here, so every room draws its images at size.
-          if (parsed.post.images?.length) parsed.post.images = parsed.post.images.map(ref => withSize(ref, () => this.uploadSize(ref)));
-          byId.set(parsed.post.id, parsed.post);
-          list.push(parsed.post);
-        } else {
-          const post = byId.get(parsed.post);
-          if (post) Object.assign(post, parsed.patch);
-        }
-      }
-    }
-    this.posts.set(room, list);
-    return list;
+    return this.posts.postsOf(room);
   }
 
   /** The post with this dedup key, if the room has one. */
@@ -417,16 +390,12 @@ export class AgentStore {
 
   /**
    * Appends a post with the next seq, or answers the post that already has its requestId. Posts keep their seq order; a migrated post
-   * keeps its original `at`, so the log is ordered by seq, not by time.
+   * keeps its original `at`, so a room is ordered by seq, not by time.
    */
   append(input: Omit<RoomPost, "id" | "seq">): { post: RoomPost; created: boolean } {
     const existing = this.byRequestId(input.room, input.requestId);
     if (existing) return { post: existing, created: false };
-    const list = this.postsOf(input.room);
-    const seq = (list.at(-1)?.seq ?? 0) + 1;
-    const post: RoomPost = { ...input, id: `p${seq}`, seq };
-    list.push(post);
-    appendLater(this.logFile(input.room), `${JSON.stringify({ t: "post", post } satisfies LogLine)}\n`);
+    const post = this.posts.add(input);
     this.onPost(post);
     this.onAppend(post);
     return { post, created: true };
@@ -440,21 +409,12 @@ export class AgentStore {
 
   set(post: RoomPost, patch: PostPatch): void {
     Object.assign(post, patch);
-    appendLater(this.logFile(post.room), `${JSON.stringify({ t: "set", post: post.id, patch } satisfies LogLine)}\n`);
+    this.posts.save(post, patch);
     this.onPost(post);
   }
 
-  /** Settles once every post and change queued for the room's log so far is on disk (disk.ts). */
+  /** Settles once every post and change of the room so far is stored, as a send awaits before it answers. */
   written(room: RoomId): Promise<void> {
-    return written(this.logFile(room));
-  }
-
-  private uploadSize(ref: ImageRef): { width: number; height: number } | undefined {
-    const name = ref.url.startsWith("/api/uploads/") ? ref.url.slice("/api/uploads/".length).replace(/[^\w.-]/g, "") : "";
-    return name ? fileImageSize(join(this.dir, "images", name)) : undefined;
-  }
-
-  private logFile(room: RoomId): string {
-    return join(this.dir, "rooms", `${room.replace(/[^\w.-]/g, "_")}.jsonl`);
+    return this.posts.written(room);
   }
 }

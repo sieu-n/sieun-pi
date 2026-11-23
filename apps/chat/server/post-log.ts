@@ -153,8 +153,11 @@ export class PostLog implements Posts {
   private readonly last = new Map<string, Promise<void>>();
   private select?: StatementSync;
 
-  /** `move` is the posts move while its week of exports lasts; a tool that only reads the posts passes none. */
-  constructor(private readonly chat: ChatDb, private readonly dir: string, private readonly move?: JsonMove) {}
+  /**
+   * `move` is the posts move while its week of exports lasts; a tool that only reads the posts passes none. `sync`: each write commits
+   * before it returns, as a script's or spec's must, since the next store it opens on the same dir reads the DB (chat-records.ts `syncSaves`).
+   */
+  constructor(private readonly chat: ChatDb, private readonly dir: string, private readonly move?: JsonMove, private readonly options: { sync?: boolean } = {}) {}
 
   private get db(): DatabaseSync {
     return this.chat.db;
@@ -201,6 +204,7 @@ export class PostLog implements Posts {
 
   private write(name: string, stmt: { sql: string; params: (string | number)[] }, label: string): void {
     const done = this.chat.write([stmt], label);
+    if (this.options.sync) this.chat.flushSync();
     this.last.set(name, done);
     void done.then(() => {
       if (this.last.get(name) === done) this.last.delete(name);
