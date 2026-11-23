@@ -15,9 +15,9 @@
  *
  * With --b2 it also uploads the newest backup to Backblaze B2 under sw-factory-chat-backups/<stamp>/, encrypted with AES-256-GCM. The key id,
  * app key and bucket are in ~/.config/sieun-pi/chat-backup.env (B2_KEY_ID=, B2_APP_KEY=, B2_BUCKET=), and the encryption key is
- * ~/.config/sieun-pi/chat-backup.key, which `install` makes once and copies to the Mac (ssh mac) so a B2 backup outlives the box. The nightly
- * unit runs without --b2: on 11-24 every B2 key we hold could write only a product bucket (influencer-prod and -dev are public, and
- * virev-backups-* and virev-langfuse belong to the product's backups and Langfuse), and none could create a bucket of our own.
+ * ~/.config/sieun-pi/chat-backup.key, which `install` makes once and copies to the Mac (ssh mac) so a B2 backup outlives the box. The bucket
+ * is the private sieun-sw-factory-chat-backups, made in the B2 console on 11-23 with a lifecycle rule that hides a file 30 days after upload
+ * and deletes it a day later, and its key (sw-factory-chat-backup-metal) reads and writes that bucket only.
  *
  * `install` writes the systemd user units from deploy/linux/sieun-pi-chat-backup.{service,timer}, rewrites a unit only when its text differs
  * and enables the timer; a second install changes nothing.
