@@ -45,8 +45,6 @@ test("remindAt hides an open ask from the For you count until it comes due", asy
 test("a count read after a reminder's time, before its timer ran, still sends the ask back", async () => {
   const { chatId, id } = await openAsk();
   const count = await s.app.boards.forYouCount();
-  const at = Date.now() + 100;
-  await s.app.boards.apply(chatId, [{ op: "todo_update", id, remindAt: new Date(at).toISOString() }]);
   const due: string[] = [];
   const counts: number[] = [];
   const events = s.app.boards.events as { forYou(count: number): void; asksDue?(items: { todo: { id: string } }[], now: number): void };
@@ -54,10 +52,12 @@ test("a count read after a reminder's time, before its timer ran, still sends th
   events.forYou = next => { counts.push(next); real.forYou(next); };
   events.asksDue = (items, now) => { due.push(...items.map(item => item.todo.id)); real.asksDue?.(items, now); };
   try {
+    const at = Date.now() + 100;
+    await s.app.boards.apply(chatId, [{ op: "todo_update", id, remindAt: new Date(at).toISOString() }]);
     // A busy box: the loop runs nothing until past the reminder's time and its timer's 50 ms, then a page reads the count (App.sidebar).
     while (Date.now() < at + 200) { /* hold the loop */ }
     assert.equal(await s.app.boards.forYouCount(), count);
-    await new Promise(resolve => setTimeout(resolve, 300));
+    await until(async () => due.length > 0 && counts.includes(count), sent => sent, 5_000).catch(() => undefined);
     assert.deepEqual(due, [id], "the ask went out as due");
     assert.ok(counts.includes(count), `the count went out again: ${counts.join(", ")}`);
   } finally {
