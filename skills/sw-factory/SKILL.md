@@ -267,7 +267,9 @@ So a change to how agents write is done only when a blind fresh session, given t
 A new param on an agent tool gets the same check: its tool and param text say when to use it with a concrete case, such as `place: ["jobs","tools"]` when a job said something you can't name, and a blind fresh agent must pick it unprompted, since on 11-21 three agents ignored `place` until 84469deb added that case (c210).
 
 1. Write the ideal replies first, as before and after pairs from real posts, before you change any prompt.
-2. Change the code defaults and tool text, test them, push, and release apps/chat and pi-host on every box.
+2. Change the code defaults and tool text, test them, push to sieun-pi main, and release apps/chat and pi-host on every box.
+   Only agent factory's work thread runs `scripts/install-pi-host-box.mjs`, because it warns the running jobs, restarts pi-host-relay and checks the release live, and on 11-23 a job's own install of bf752a7a restarted pi-host with no warning, voided a blind run and left the relay on the old release.
+   Any other thread sends agent factory the pushed pi-host or pi-rlm sha with one line on what it changes and what could break.
 3. Run `node apps/chat/scripts/blind-replies.mjs --out ~/work/<job>/blind-runs.jsonl` against live :5184, and `node apps/chat/scripts/blind-reactions.mjs --out ~/work/<job>/reaction-runs.jsonl` for reactions and threads.
    For lists, run `blind-replies.mjs --set lists --cwd /home/sieun/src/sieun-pi`, which asks for a multi-result check and a one-line answer.
    For a list of options (rule 11), run `blind-replies.mjs --set options`, which asks what other apps do for a feature.
