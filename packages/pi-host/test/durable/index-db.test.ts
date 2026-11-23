@@ -260,3 +260,26 @@ test("a failed root turn reads failed ahead of a pending wake, a job's input kee
   assert.equal(statusOf(index.get("w")!), "sleeping");
   index.close();
 });
+
+test("a rebuild of the index and a thread's reset keep the usage rows of calls that left no entry", () => {
+  const path = join(dir, "usage-keep.sqlite");
+  const usage = (entryId: number) => ({ thread: "k1", conversation: 1, entryId, model: "anthropic/claude-opus-5-5", at: 100, input: 1, output: 2, cacheRead: 3,
+    cacheWrite: 4, cost: 1.5, costInput: 0.1, costOutput: 0.2, costCacheRead: 0.3, costCacheWrite: 0.9 });
+  const ids = (index: ThreadIndex) => index.readUsage(undefined).rows.map(row => row.entryId).sort((a, b) => a - b);
+  let index = new ThreadIndex(path);
+  index.insertThread({ id: "k1", name: "keep", provider: "anthropic", modelId: "claude-opus-5-5", thinkingLevel: "high", cwd: "/", createdAt: 1, updatedAt: 1 });
+  index.addEntries("k1", [], [usage(1), usage(2)]);
+  index.addUsage(usage(-7));
+  assert.deepEqual(ids(index), [-7, 1, 2]);
+  index.resetEntries("k1");
+  assert.deepEqual(ids(index), [-7], "a thread's reset drops only the rows its backfill writes again");
+  index.addEntries("k1", [], [usage(1)]);
+  index.close();
+  const raw = new DatabaseSync(path);
+  raw.exec("PRAGMA user_version = 0");
+  raw.close();
+  index = new ThreadIndex(path);
+  assert.equal(index.rebuilt, true);
+  assert.deepEqual(ids(index), [-7], "the rebuild keeps the refine row");
+  index.close();
+});

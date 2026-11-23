@@ -434,12 +434,12 @@ export class ThreadIndex {
       // An index from before the cost split: its usage rows lack the four costs, so every thread's derived rows start over.
       this.db.exec(`ALTER TABLE usage ADD COLUMN cost_input REAL NOT NULL DEFAULT 0; ALTER TABLE usage ADD COLUMN cost_output REAL NOT NULL DEFAULT 0;
         ALTER TABLE usage ADD COLUMN cost_cache_read REAL NOT NULL DEFAULT 0; ALTER TABLE usage ADD COLUMN cost_cache_write REAL NOT NULL DEFAULT 0;
-        DELETE FROM entries; DELETE FROM usage; UPDATE threads SET indexed_entry = 0;`);
+        DELETE FROM entries; DELETE FROM usage WHERE entry_id >= 0; UPDATE threads SET indexed_entry = 0;`);
       this.rebuilt = true;
     }
     if (Number((this.db.prepare("PRAGMA user_version").get() as Row).user_version) < TASK_AUTHOR_VERSION) {
       // An index from before task authors credited every child conversation's task input to the owner, so its search rows start over.
-      this.db.exec(`DELETE FROM entries; DELETE FROM usage; UPDATE threads SET indexed_entry = 0; PRAGMA user_version = ${TASK_AUTHOR_VERSION};`);
+      this.db.exec(`DELETE FROM entries; DELETE FROM usage WHERE entry_id >= 0; UPDATE threads SET indexed_entry = 0; PRAGMA user_version = ${TASK_AUTHOR_VERSION};`);
       this.rebuilt = true;
     }
     if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'usage_hours'").get()) {
@@ -530,7 +530,7 @@ export class ThreadIndex {
 
   /**
    * Adds one usage row of a model call that leaves no entry, such as refine's review and plan, with a negative `entryId` so it never meets an
-   * entry's row. The thread's indexed mark stays, so the entries after it still come in.
+   * entry's row. The thread's indexed mark stays, so the entries after it still come in, and no rebuild deletes the row (`resetEntries`).
    */
   addUsage(row: UsageRow): void {
     this.db.prepare(`INSERT OR IGNORE INTO usage (thread, conversation, entry_id, model, at, input, output, cache_read, cache_write, cost,
@@ -650,10 +650,13 @@ export class ThreadIndex {
     }));
   }
 
-  /** Drops a thread's derived search and usage rows, so the next backfill reads its whole file again. */
+  /**
+   * Drops a thread's derived search and usage rows, so the next backfill reads its whole file again. A row of a call that left no entry
+   * (`addUsage`, a negative id) stays, since no backfill could write it again.
+   */
   resetEntries(thread: string): void {
     this.db.prepare("DELETE FROM entries WHERE thread = ?").run(thread);
-    this.db.prepare("DELETE FROM usage WHERE thread = ?").run(thread);
+    this.db.prepare("DELETE FROM usage WHERE thread = ? AND entry_id >= 0").run(thread);
     this.db.prepare("UPDATE threads SET indexed_entry = 0 WHERE id = ?").run(thread);
   }
 }
