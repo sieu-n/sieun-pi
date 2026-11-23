@@ -3,14 +3,20 @@
 // at four layers: Chrome's host resolver (every request of every frame, worker and context), CDP Fetch on each page (a clear
 // net::ERR_BLOCKED_BY_CLIENT), page.goto (an error naming c230), and Node's DNS lookup in the runner (fetch, http and
 // Playwright's page.request). aside_browser reads the same list.
+// Owner rule c230 exception (#dev-app-search-prospect p63 and p65, 11-24): Instagram image and video files load straight from its CDN.
+// instagram-media-hosts.json lists those hosts as globs whose * stands for one DNS label. static.cdninstagram.com stays refused,
+// because it serves the web app's script bundles the crawler reads, and Facebook's own fbcdn.net hosts stay refused.
 import dns from "node:dns";
 import fs from "node:fs";
 
-export const PLATFORM_HOSTS = JSON.parse(fs.readFileSync(new URL("./platform-hosts.json", import.meta.url), "utf8"));
+const readJson = (name) => JSON.parse(fs.readFileSync(new URL(name, import.meta.url), "utf8"));
+export const PLATFORM_HOSTS = readJson("./platform-hosts.json");
+export const INSTAGRAM_MEDIA_HOSTS = readJson("./instagram-media-hosts.json");
+const MEDIA = INSTAGRAM_MEDIA_HOSTS.map((g) => new RegExp(`^${g.replace(/\./g, "\\.").replace(/\*/g, "[a-z0-9-]+")}$`));
 
 export const isPlatformHost = (host) => {
   const h = String(host || "").toLowerCase().replace(/\.$/, "");
-  return PLATFORM_HOSTS.some((p) => h === p || h.endsWith(`.${p}`));
+  return PLATFORM_HOSTS.some((p) => h === p || h.endsWith(`.${p}`)) && !MEDIA.some((m) => m.test(h));
 };
 
 export function isPlatformUrl(url) {
@@ -22,11 +28,15 @@ export function isPlatformUrl(url) {
 }
 
 export const refusal = (url) => Object.assign(
-  new Error(`aside-box refused ${url}: owner rule c230 allows no crawl or platform read from our servers without a paid proxy, and the box Chrome has none, so reads of ${PLATFORM_HOSTS.join(", ")} stay stopped`),
+  new Error(`aside-box refused ${url}: owner rule c230 allows no crawl or platform read from our servers without a paid proxy, and the box Chrome has none, so reads of ${PLATFORM_HOSTS.join(", ")} stay stopped. Only Instagram image and video files on ${INSTAGRAM_MEDIA_HOSTS.join(", ")} load, with no login and no proxy`),
   { code: "C230_REFUSED" },
 );
 
-export const CHROME_ARGS = [`--host-resolver-rules=${PLATFORM_HOSTS.flatMap((h) => [`MAP ${h} ~NOTFOUND`, `MAP *.${h} ~NOTFOUND`]).join(", ")}`];
+// Chrome skips every MAP for a host an EXCLUDE matches, and its * also matches dots, so CDP Fetch and goto below check the exact hosts.
+export const CHROME_ARGS = [`--host-resolver-rules=${[
+  ...PLATFORM_HOSTS.flatMap((h) => [`MAP ${h} ~NOTFOUND`, `MAP *.${h} ~NOTFOUND`]),
+  ...INSTAGRAM_MEDIA_HOSTS.map((g) => `EXCLUDE ${g}`),
+].join(", ")}`];
 
 const PATTERNS = PLATFORM_HOSTS.flatMap((h) => [`*://${h}*`, `*://*.${h}*`]).map((urlPattern) => ({ urlPattern, requestStage: "Request" }));
 const BLOCKED = /ERR_BLOCKED_BY_CLIENT|ERR_NAME_NOT_RESOLVED|ERR_TUNNEL_CONNECTION_FAILED/;

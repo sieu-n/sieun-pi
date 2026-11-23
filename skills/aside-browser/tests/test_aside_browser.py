@@ -502,6 +502,11 @@ class BrowserRoutingTests(Base):
         with patch.object(ab, "box_available", return_value=True), patch.object(ab, "_box_call", box):
             for url in (
                 "https://www.instagram.com/",
+                "https://www.instagram.com/api/v1/users/web_profile_info/?username=u",
+                "https://instagram.com/reels/",
+                "https://static.cdninstagram.com/rsrc.php/v4/a.js",
+                "https://scontent.fccp1-1.fna.fbcdn.net/v/t39.30808-6/a.jpg",
+                "https://p16-sign-va.tiktokcdn.com/a.jpeg",
                 "https://www.tiktok.com/@u/video/1",
                 "https://youtu.be/x",
                 "https://i.ytimg.com/vi/a.jpg",
@@ -513,6 +518,16 @@ class BrowserRoutingTests(Base):
             self.assertEqual(box.await_count, 0)
             for url in ("https://box.com/", "https://staging.virev.ai/brands?url=instagram.com", "https://example.com/"):
                 self.assertFalse(ab.platform_host(url), url)
+
+    def test_box_lets_instagram_cdn_media_through_under_the_c230_exception(self):
+        for url in (
+            "https://scontent-icn2-1.cdninstagram.com/v/t51.2885-15/a.jpg",
+            "https://scontent.cdninstagram.com/v/t51.2885-19/a.jpg",
+            "https://instagram.ficn2-2.fna.fbcdn.net/o1/v/t16/f2/m86/a.mp4",
+        ):
+            self.assertFalse(ab.platform_host(url), url)
+        for url in ("https://a.scontent-icn2-1.cdninstagram.com/a.jpg", "https://cdninstagram.com/a.jpg", "https://instagram.ficn2-2.xx.fbcdn.net/a.jpg"):
+            self.assertTrue(ab.platform_host(url), url)
 
     def test_bracketed_ipv6_pages_on_this_host_go_to_the_box(self):
         with patch.object(ab, "box_available", return_value=True):

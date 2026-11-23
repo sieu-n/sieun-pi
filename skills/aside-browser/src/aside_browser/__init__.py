@@ -847,23 +847,28 @@ LOGIN_HOSTS = re.compile(
 )
 # Owner rule c230 (2026-11-20): no crawl or platform read leaves our servers without a paid proxy, and the box Chrome has none, so it
 # refuses these hosts and their subdomains (box/platforms.mjs reads the same list). open_tab() refuses them here before a runner starts.
+# Owner rule c230 exception (#dev-app-search-prospect p63 and p65, 11-24): Instagram image and video files load straight from its CDN.
 with open(os.path.join(BOX_DIR, "platform-hosts.json"), encoding="utf-8") as _hosts:
     PLATFORM_HOSTS: tuple[str, ...] = tuple(json.load(_hosts))
+with open(os.path.join(BOX_DIR, "instagram-media-hosts.json"), encoding="utf-8") as _hosts:
+    INSTAGRAM_MEDIA_HOSTS: tuple[str, ...] = tuple(json.load(_hosts))
+_MEDIA = tuple(re.compile("^" + re.escape(g).replace(r"\*", "[a-z0-9-]+") + "$") for g in INSTAGRAM_MEDIA_HOSTS)
 
 
 def platform_host(url: str) -> bool:
-    """Whether url's host is one of PLATFORM_HOSTS or a subdomain of one."""
+    """Whether url's host is one of PLATFORM_HOSTS or a subdomain of one, and not an INSTAGRAM_MEDIA_HOSTS host."""
     try:
         host = (urlsplit(url or "").hostname or "").rstrip(".").lower()
     except ValueError:
         return False
-    return any(host == p or host.endswith("." + p) for p in PLATFORM_HOSTS)
+    return any(host == p or host.endswith("." + p) for p in PLATFORM_HOSTS) and not any(m.match(host) for m in _MEDIA)
 
 
 def _platform_refusal(url: str) -> AsideError:
     return AsideError(
         f"aside-box refused {url}: owner rule c230 allows no crawl or platform read from our servers without a paid proxy, "
-        "and the box Chrome has none, so these reads stay stopped.",
+        "and the box Chrome has none, so these reads stay stopped. Only Instagram image and video files on "
+        f"{', '.join(INSTAGRAM_MEDIA_HOSTS)} load, with no login and no proxy.",
         "Do not route the read around the refusal. Note the blocked step and move on.",
     )
 
