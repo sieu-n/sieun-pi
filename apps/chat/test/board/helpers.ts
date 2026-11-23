@@ -91,12 +91,23 @@ async function post(request: APIRequestContext, server: string, path: string, da
   return response.json();
 }
 
-/** Put the asks, duties and check-ins the specs change back to the fixture's seed, so each spec starts from the seed on its worker's server. */
+/** The seed's todos per board (server/fixture/seed.ts); a todo another spec added is removed again on reset. */
+const SEED_TODOS: Record<string, string[]> = { [HARNESS]: ["t1", "t2", "t3"], [CRAWLER]: ["t1"], [VENT]: ["t1"] };
+
+/**
+ * Put the asks, duties and check-ins the specs change back to the fixture's seed, so each spec starts from the seed on its worker's server.
+ * The spec files of one worker share its server, so an ask another file added or snoozed is removed or woken again here.
+ */
 export async function resetFixture(request: APIRequestContext, server: string): Promise<void> {
-  const open = (id: string) => ({ op: "todo_update", id, done: false, reply: null });
-  await post(request, server, `/api/threads/${HARNESS}/board`, { ops: [open("t1"), open("t2"), { op: "todo_update", id: "t3", done: true, reply: "yes" }] });
-  await post(request, server, `/api/threads/${CRAWLER}/board`, { ops: [open("t1")] });
-  await post(request, server, `/api/threads/${VENT}/board`, { ops: [open("t1")] });
+  const open = (id: string) => ({ op: "todo_update", id, done: false, reply: null, remindAt: null });
+  for (const [chat, seed] of Object.entries(SEED_TODOS)) {
+    const view = await request.get(`${server}/api/threads/${chat}/board`);
+    if (!view.ok()) throw new Error(`board ${chat}: ${view.status()} ${await view.text()}`);
+    const { board } = await view.json() as { board: { todos: { id: string }[] } };
+    const added = board.todos.filter(todo => !seed.includes(todo.id)).map(todo => ({ op: "todo_remove", id: todo.id }));
+    const reset = chat === HARNESS ? [open("t1"), open("t2"), { op: "todo_update", id: "t3", done: true, reply: "yes", remindAt: null }] : [open("t1")];
+    await post(request, server, `/api/threads/${chat}/board`, { ops: [...added, ...reset] });
+  }
   await post(request, server, `/api/threads/${HARNESS}/duties`, { duty: "d1", action: "resume" });
   await post(request, server, `/api/threads/${HARNESS}/duties`, { duty: "d2", action: "pause" });
   for (const chat of [HARNESS, VENT, CRAWLER]) await post(request, server, `/api/threads/${chat}/check-in`, { pause: null, everyMs: 120 * 60_000 });
