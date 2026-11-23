@@ -42,7 +42,7 @@ import { RlmChildDoc } from "./children.ts";
 import { commExtension, noteHanded, noteHeard, type CommHost, type CommSubmit } from "./comm.ts";
 import { deliverHarnessDigest, type PrimePromptOptions } from "./prime-prompt.ts";
 import { liveRetry, retrySince, retryingText } from "./retrying.ts";
-import { failedInputs, failureNotice, rootFailed, failureTarget, lastModel, mayRetry, newestRootFailed, retryInput, roomLineWrites, roomPost, TURN_FAILED_VIA, type FailedInput } from "./turn-failed.ts";
+import { failedInputs, failureNotice, rootFailed, failureTarget, isRetry, lastModel, mayRetry, newestRootFailed, retryInput, roomLine, roomLineWrites, roomPost, toldName, TURN_FAILED_VIA, type FailedInput } from "./turn-failed.ts";
 
 const context: Context = BACKGROUND_CONTEXT;
 const PREVIEW_CHARS = 200;
@@ -723,24 +723,30 @@ export class DurableThreads {
 
   /**
    * Tells someone once that a root run ended with no answer on an error pi-durable does not retry (`turn-failed.ts`): a comm thread posts
-   * `ROOM_LINE` in the thread of the failed room post, and the agent's work thread for a job, or else agent factory's, gets the notice;
-   * agent factory's own work thread tells its DM comm thread.
+   * `roomLine` in the thread of the failed room post, and the agent's work thread for a job, or else agent factory's, gets the notice;
+   * agent factory's own work thread tells its DM comm thread. The room line names who is told only when someone is.
    */
   private async reportFailure(open: OpenThread, failed: FailedInput[]): Promise<void> {
     const first = failed[0]!;
     try {
       const ref = await threadAgent(open.harness, context);
-      const post = ref?.role === "comm" ? failed.map(input => roomPost(input.requestId, ref.room)).findLast(Boolean) : undefined;
-      if (post) {
-        const model = await lastModel(open.harness, context);
-        if (model) for (const write of roomLineWrites(first, post, model, this.now())) await open.root.submit(write, context);
+      let work: string | undefined;
+      try {
+        work = await this.options.agentWork?.(failureTarget(ref));
+      } catch (error) {
+        this.log(`${open.id} failure notice: ${failureTarget(ref)}'s work thread did not resolve: ${error instanceof Error ? error.message : String(error)}`);
       }
-      const work = await this.options.agentWork?.(failureTarget(ref));
       // Agent factory's own work thread would tell itself, so its DM comm thread hears and tells the owner.
       const toComm = work === open.id && ref?.role === "work" ? ref.comm : undefined;
       const target = toComm ?? work;
+      const told = target && target !== open.id ? toldName(ref) : undefined;
+      const post = ref?.role === "comm" ? failed.map(input => roomPost(input.requestId, ref.room)).findLast(Boolean) : undefined;
+      if (post && !isRetry(first)) {
+        const model = await lastModel(open.harness, context);
+        if (model) for (const write of roomLineWrites(first, post, model, this.now(), roomLine(told, first.error))) await open.root.submit(write, context);
+      }
       const name = this.index.get(open.id)?.name ?? open.id;
-      if (!target || target === open.id) {
+      if (!told || !target) {
         this.log(`${open.id} run failed with no one to tell: ${first.error}`);
         return;
       }

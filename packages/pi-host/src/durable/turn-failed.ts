@@ -7,7 +7,7 @@
  * a 400 for a bad image media type: on 11-22 comm thread 5d50e997 failed that way on the owner's posts 42 and 43 in #dev-app-search-prospect,
  * and nothing told the room or anyone else. So each such run tells someone once:
  *
- * 1. A comm thread whose failed run held a room post writes `ROOM_LINE` as its own tell_owner call and result, which apps/chat's feed
+ * 1. A comm thread whose failed run held a room post writes `roomLine` as its own tell_owner call and result, which apps/chat's feed
  *    (`apps/chat/server/rooms.ts` `readFeedThread`) posts in the room in the thread of that post, and agent factory's work thread gets
  *    `failureNotice`.
  * 2. A job's agent's work thread gets `failureNotice`, so a job never reads as working while it is dead.
@@ -28,8 +28,26 @@ import { DatabaseSync } from "node:sqlite";
 import { PLATFORM_AGENT, type AgentRef } from "./agent-profile.ts";
 import { TOLD } from "./turn-end.ts";
 
-/** What the room reads when a comm thread's run on its post failed. */
-export const ROOM_LINE = `I couldn't read this post because of an error on my side, and ${PLATFORM_AGENT.name} is told.`;
+/**
+ * What the room reads when a comm thread's run on its post failed: who hears of it, or, when nobody does, the error itself, so the room says
+ * why. A compose dev instance has no agent factory, and on 11-23 its line said "agent factory is told" over a missing API key.
+ */
+export function roomLine(told: string | undefined, error: string): string {
+  if (told) return `I couldn't read this post because of an error on my side, and ${told} is told.`;
+  const reason = error.replace(/\s+/g, " ").trim().slice(0, 300);
+  return `I couldn't read this post because of an error on my side${reason ? `: ${reason}` : "."}`;
+}
+
+/** The name `roomLine` gives the work thread that `failureTarget` picks. */
+export function toldName(ref: AgentRef | undefined): string {
+  return failureTarget(ref) === PLATFORM_AGENT.id ? PLATFORM_AGENT.name : failureTarget(ref);
+}
+
+/**
+ * Whether a failed input is `retryInput`'s retry of a post. Its room already shows the line of the first failure, so a retry that fails
+ * again posts none: on 11-23 each `docker compose down` and `up` of a dev instance with no API key added the same line under the post.
+ */
+export const isRetry = (failed: FailedInput): boolean => failed.requestId?.startsWith(RETRY) === true;
 /** The `via` of a failure notice's agent message. */
 export const TURN_FAILED_VIA = "turn.failed";
 /** The settle reasons of a run whose model call failed (pi-durable generation.js `failModelError`, `failNoModel`, `classify`). */
@@ -103,13 +121,13 @@ export function failureNotice(thread: { id: string; name: string }, ref: AgentRe
 }
 
 /**
- * The comm thread's tell_owner call that posts `ROOM_LINE` in the thread of `post`, and its result, as two model writes. apps/chat's feed
+ * The comm thread's tell_owner call that posts `text`, a `roomLine`, in the thread of `post`, and its result, as two model writes. apps/chat's feed
  * posts a speaking call once its result says it went out (`TOLD`), so the room shows the line from the agent's name.
  */
-export function roomLineWrites(failed: FailedInput, post: string, model: { api: string; provider: string; model: string }, at: number): SubmissionDraft[] {
+export function roomLineWrites(failed: FailedInput, post: string, model: { api: string; provider: string; model: string }, at: number, text: string): SubmissionDraft[] {
   const id = `${LINE_CALL}${failed.submission}`;
   const call: Message = {
-    role: "assistant", content: [{ type: "toolCall", id, name: "tell_owner", arguments: { text: ROOM_LINE, reply_to: post } }],
+    role: "assistant", content: [{ type: "toolCall", id, name: "tell_owner", arguments: { text, reply_to: post } }],
     api: model.api, provider: model.provider, model: model.model, stopReason: "toolUse", timestamp: at,
     usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
   } as Message;

@@ -9,6 +9,8 @@
  *    its DM comm thread, reads failed, and reads idle again once a root turn answers. A stop is no failure.
  * 5. A start clears the failed flag that a build before 58af9c85 wrote on a stop, which kept 20 stopped threads such as duty thread
  *    efbf242e on the Hosts page's Failed tab on 11-23.
+ * 6. With no one to tell, as on a compose dev instance, the room line gives the error and names no one, and a retry that fails again
+ *    posts no second line.
  */
 import { strict as assert } from "node:assert";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -20,7 +22,7 @@ import { fauxAssistantMessage, fauxProvider, type Message } from "@earendil-work
 import { createModels } from "@earendil-works/pi-ai/models";
 import { durableSettings } from "@sieun-pi/pi-pool/durable";
 import { DurableThreads } from "../../src/durable/threads.ts";
-import { failedInputs, rootFailed, ROOM_LINE, TURN_FAILED_VIA } from "../../src/durable/turn-failed.ts";
+import { failedInputs, rootFailed, roomLine, TURN_FAILED_VIA } from "../../src/durable/turn-failed.ts";
 import { TOLD } from "../../src/durable/turn-end.ts";
 import { MODEL } from "./crash-scenario.ts";
 
@@ -84,7 +86,7 @@ test("a failed comm run posts one room line in the post's thread, tells agent fa
     const told = await until(async () => (await notices(factory.id))[0], "agent factory's notice");
     assert.match(String((told.message?.content as { text: string }[])[0]?.text), new RegExp(`turn-failed thread:${comm.id}[\\s\\S]*invalid_request_error`));
     const calls = (await models(comm.id)).flatMap(entry => entry.message?.role === "assistant" ? entry.message.content.filter(part => part.type === "toolCall") : []);
-    assert.deepEqual(calls.map(call => call.type === "toolCall" ? [call.name, call.arguments] : []), [["tell_owner", { text: ROOM_LINE, reply_to: "ch_abcd1234/p7" }]]);
+    assert.deepEqual(calls.map(call => call.type === "toolCall" ? [call.name, call.arguments] : []), [["tell_owner", { text: roomLine("agent factory", BAD_IMAGE), reply_to: "ch_abcd1234/p7" }]]);
     const results = (await models(comm.id)).flatMap(entry => entry.message?.role === "toolResult" ? [entry.message] : []);
     assert.deepEqual(results.map(result => [result.toolName, result.isError, (result.content[0] as { text: string }).text]), [["tell_owner", false, TOLD]]);
     assert.deepEqual((await models(comm.id)).filter(entry => entry.message?.role === "toolResult").map(entry => entry.kind), ["pi.tool-result"], "the result is a tool result entry, as pi-durable writes one");
@@ -111,6 +113,48 @@ test("a failed comm run posts one room line in the post's thread, tells agent fa
     }, "the retried post's answer");
     assert.equal((answered.content[0] as { text: string }).text, "On it.");
     assert.deepEqual(await threads.retryFailedPosts(), [], "a post gets one retry");
+  } finally {
+    await threads.shutdown();
+  }
+});
+
+test("with no one to tell, the room line gives the error and names no one, and a retry that fails again posts no second line", async () => {
+  // A compose dev instance with no API key: no agent factory, and every run ends on the token hook's message.
+  const NO_KEY = "No model credential for anthropic: set ANTHROPIC_API_KEY in .env and run docker compose up -d.";
+  const threads = new DurableThreads({
+    dir: join(scratch, "durable-alone"), defaultModel: MODEL, defaultThinkingLevel: "off", defaultCwd: scratch, primeRoots: null,
+    models: () => {
+      const models = createModels();
+      const faux = fauxProvider({ provider: "anthropic", models: [{ id: MODEL.modelId }] });
+      faux.setResponses(Array.from({ length: 20 }, () => () => fauxAssistantMessage([], { stopReason: "error", errorMessage: NO_KEY })));
+      models.setProvider(faux.provider);
+      return models;
+    },
+    settings: () => ({ ...durableSettings({ baseDelayMs: 5, maxAgentDelayMs: 20 }), stream: {} }),
+    agentWork: async (): Promise<string | undefined> => undefined,
+  });
+  const work = await threads.create({ name: "walk" });
+  const comm = await threads.create({ name: "walk · DM" });
+  await threads.docPut(work.id, "agent.ref", { agent: "ag_walk", dir, role: "work", comm: comm.id });
+  await threads.docPut(comm.id, "agent.ref", { agent: "ag_walk", dir, role: "comm", room: "dm_walk", work: work.id });
+  const lines = async () => (await threads.entries(comm.id, { conversation: 1, after: 0, limit: 500 })).entries
+    .flatMap(entry => { const m = entry.model?.[0] as Message | undefined; return m?.role === "assistant" ? m.content.filter(part => part.type === "toolCall") : []; })
+    .map(call => (call.type === "toolCall" ? call.arguments : {}));
+  try {
+    const post = await threads.submit(comm.id, { text: "[DM · post 1 from You (owner)]\n\nhi", requestId: "d:p1:ag_walk" });
+    assert.equal((await threads.wait(comm.id, post.submission)).status, "unanswered");
+    const first = await until(async () => { const all = await lines(); return all.length ? all : undefined; }, "the room line");
+    assert.deepEqual(first, [{ text: roomLine(undefined, NO_KEY), reply_to: "dm_walk/p1" }]);
+    assert.doesNotMatch(String(first[0]!.text), /is told/);
+    assert.match(String(first[0]!.text), /ANTHROPIC_API_KEY/);
+
+    // A restart with nothing fixed retries the post once; the retry fails the same way and adds no line.
+    const retried = await threads.retryFailedPosts();
+    assert.deepEqual(retried, [`${comm.id} retry:d:p1:ag_walk`]);
+    await until(async () => (await threads.list()).find(row => row.id === comm.id && row.status !== "running" && row.status !== "sleeping") ? true : undefined, "the retry to settle");
+    await new Promise(resolve => setTimeout(resolve, 200));
+    assert.equal((await lines()).length, 1, "the room keeps one line for the post");
+    assert.deepEqual(await threads.retryFailedPosts(), [], "and the post gets no third run");
   } finally {
     await threads.shutdown();
   }
