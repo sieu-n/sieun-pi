@@ -19,7 +19,7 @@ import {
   type HarnessState,
   type Scope,
 } from "../core/store.ts";
-import { buildDelta, buildDigest, buildQueryTerms, digestMessageContent, fingerprint, updateMessageContent, type DigestOptions } from "../core/digest.ts";
+import { DIGEST_TYPE, digestOffLoop, type Delivered, type DigestFlags, type DigestMessage, type MessageJob, type SectionJob } from "./digest-worker.ts";
 import {
   applyProposal,
   autoRefineInstructions,
@@ -56,7 +56,7 @@ import { conversationText, fitPrompt } from "../core/conversation.ts";
  * the kernel's `refine.run()` and auto-refine every 25 assistant turns or after a compaction, and posts Prime's notice messages.
  */
 
-export const DIGEST_TYPE = "harness_digest";
+export { DIGEST_TYPE };
 export const SECTION_ENTRY = "harness_section";
 const SECTION = "harness_state";
 const PLANNER_CONVERSATION = 80_000;
@@ -153,61 +153,50 @@ export function createHarnessExtension(options: HarnessExtensionOptions = {}) {
     const contextMessages = (ctx: ExtensionContext): AgentMessage[] =>
       buildSessionContext(ctx.sessionManager.getEntries() as never, ctx.sessionManager.getLeafId()).messages as AgentMessage[];
 
-    const digestOptions = (s: SessionHarness, recent: string[]): DigestOptions => {
+    const digestFlags = (s: SessionHarness): DigestFlags => {
       const tools = pi.getActiveTools();
       const ipython = tools.includes("ipython");
       return {
         includeIpythonExamples: ipython,
         includeShellExamples: tools.includes("bash"),
         includeRefineExamples: ipython && s.depth === 0 && s.localDir !== undefined,
-        queryTerms: buildQueryTerms(undefined, recent),
       };
+    };
+
+    /** The user and assistant texts of the context, then the prompt, which rank the digest's entries. */
+    const recentTexts = (messages: AgentMessage[], prompt: string | undefined): string[] => {
+      const recent = messages.filter(m => m.role === "user" || m.role === "assistant").map(textOf);
+      if (prompt) recent.push(prompt);
+      return recent;
     };
 
     /** The digest message for the next run in the message route, or undefined when the context already has the current state. */
-    const nextDigestMessage = (s: SessionHarness, prompt: string | undefined) => {
-      const { global, local } = loadStates(s);
-      const state = mergeStates(global, local);
+    const nextDigestMessage = async (s: SessionHarness, prompt: string | undefined): Promise<DigestMessage | undefined> => {
       const messages = contextMessages(s.ctx);
-      const recent = messages.filter(m => m.role === "user" || m.role === "assistant").map(textOf);
-      if (prompt) recent.push(prompt);
-      const opts = digestOptions(s, recent);
-      const { queryTerms, ...flags } = opts;
-      const print = fingerprint(state, flags);
-      const delivered: { at: number; text: string; details?: { digest?: string; stateFingerprint?: string } }[] = [];
+      const delivered: Delivered[] = [];
       for (const m of messages) {
         if (m.role !== "custom" || (m as { customType: string }).customType !== DIGEST_TYPE) continue;
-        delivered.push({ at: (m as { timestamp: number }).timestamp, text: textOf(m), details: (m as { details?: { digest?: string; stateFingerprint?: string } }).details });
+        delivered.push({ at: (m as { timestamp: number }).timestamp, text: textOf(m), details: (m as { details?: Delivered["details"] }).details });
       }
-      const digest = buildDigest(state, opts);
-      const latest = delivered.filter(d => d.details?.digest !== undefined).at(-1);
-      if (!latest) return { customType: DIGEST_TYPE, content: digestMessageContent(digest), display: false, details: { digest, stateFingerprint: print } };
-      if (latest.details?.stateFingerprint === print) return undefined;
-      const delta = buildDelta(state, delivered.map(d => d.text), latest.at, opts);
-      return {
-        customType: DIGEST_TYPE,
-        content: delta === undefined ? digestMessageContent(digest) : updateMessageContent(delta),
-        display: false,
-        details: { digest, stateFingerprint: print, stacked: true },
-      };
+      const job: MessageJob = { kind: "message", globalDir: s.globalDir, localDir: s.localDir, flags: digestFlags(s), recent: recentTexts(messages, prompt), delivered };
+      const answer = await digestOffLoop(job);
+      if (answer.kind !== "message") throw new Error(`the digest worker answered a message job with ${answer.kind}`);
+      return answer.message;
     };
 
     /** The section text for the section route. It changes only when the stores change, so the cached prefix stays put between changes. */
-    const sectionText = (s: SessionHarness, prompt: string | undefined): string => {
-      const { global, local } = loadStates(s);
-      const state = mergeStates(global, local);
-      const recent = contextMessages(s.ctx).filter(m => m.role === "user" || m.role === "assistant").map(textOf);
-      if (prompt) recent.push(prompt);
-      const opts = digestOptions(s, recent);
-      const { queryTerms, ...flags } = opts;
-      const print = fingerprint(state, flags);
+    const sectionText = async (s: SessionHarness, prompt: string | undefined): Promise<string> => {
       if (!s.section) {
         const saved = s.ctx.sessionManager.getBranch().filter(e => e.type === "custom" && (e as { customType: string }).customType === SECTION_ENTRY).at(-1);
         const data = saved && (saved as { data?: { fingerprint?: string; text?: string } }).data;
         if (data?.fingerprint && typeof data.text === "string") s.section = { fingerprint: data.fingerprint, text: data.text };
       }
-      if (s.section?.fingerprint === print) return s.section.text;
-      s.section = { fingerprint: print, text: buildDigest(state, opts) };
+      const known = s.section;
+      const job: SectionJob = { kind: "section", globalDir: s.globalDir, localDir: s.localDir, flags: digestFlags(s), recent: recentTexts(contextMessages(s.ctx), prompt), known: known?.fingerprint };
+      const answer = await digestOffLoop(job);
+      if (answer.kind !== "section") throw new Error(`the digest worker answered a section job with ${answer.kind}`);
+      if (answer.text === undefined && known) return known.text;
+      s.section = { fingerprint: answer.fingerprint, text: answer.text ?? "" };
       pi.appendEntry(SECTION_ENTRY, s.section);
       return s.section.text;
     };
@@ -422,11 +411,14 @@ export function createHarnessExtension(options: HarnessExtensionOptions = {}) {
       s.ctx = ctx;
       if (s.inFlight) await s.inFlight;
       const prompt = event.messageType === "user" ? event.prompt : undefined;
+      // Pi's compaction check ran in this loop turn. The context read below waits until the loop has polled for I/O once, and the store
+      // work runs on a worker. A setImmediate queued in the poll phase runs before the next poll, so it takes two.
+      await new Promise(resolve => setImmediate(() => setImmediate(resolve)));
       if (settings().digestRoute === "section") {
-        event.systemPromptOptions.sections[SECTION] = sectionText(s, prompt);
+        event.systemPromptOptions.sections[SECTION] = await sectionText(s, prompt);
         return;
       }
-      const message = nextDigestMessage(s, prompt);
+      const message = await nextDigestMessage(s, prompt);
       return message ? { message } : undefined;
     });
 

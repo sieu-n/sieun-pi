@@ -127,30 +127,31 @@ export function buildQueryTerms(goal: string | undefined, recentTexts: string[])
 
 const lower = (value: unknown) => (typeof value === "string" ? value.toLowerCase() : "");
 
-function idfOf(entries: HarnessEntry[], terms: Map<string, number>): Map<string, number> {
-  const out = new Map<string, number>();
-  if (terms.size === 0) return out;
-  const counts = new Map<string, number>();
-  for (const e of entries) {
-    const title = lower(e.title), content = lower(e.content), pathId = `${lower(e.path)} ${lower(e.id)}`;
-    for (const term of terms.keys()) if (title.includes(term) || content.includes(term) || pathId.includes(term)) counts.set(term, (counts.get(term) ?? 0) + 1);
-  }
-  for (const [term, count] of counts) out.set(term, Math.log(1 + entries.length / count));
-  return out;
-}
-
-function score(e: HarnessEntry, terms: Map<string, number>, idf: Map<string, number>): number {
-  if (terms.size === 0) return 0;
-  const title = lower(e.title), content = lower(e.content), pathId = `${lower(e.path)} ${lower(e.id)}`;
-  let total = 0;
-  for (const [term, weight] of terms) {
-    const fields = (title.includes(term) ? 1 : 0) + (content.includes(term) ? 1 : 0) + (pathId.includes(term) ? 1 : 0);
-    if (fields > 0) total += weight * (idf.get(term) ?? 1) * (1 + (fields - 1) * 0.5);
-  }
-  return total;
-}
-
 const sortKey = (e: HarnessEntry) => [e.path, e.title, e.id].join("\0");
+
+/**
+ * One kind's entries in digest order: highest score against the query terms first, then by path, title and id.
+ * A term's score in an entry is its weight times its idf, Prime's `log(1 + entries / entries matching)`, times 1, 1.5 or 2 for the number of
+ * fields it is in: the lowercased title, content and `path id`.
+ * Each entry is matched against the terms once. Matching inside the sort comparator redid it on every comparison, 0.7 to 1.2 s for the live
+ * store's 856 entries and 48 terms in one loop turn at a Pi session's run start (work/pi-host-stalls/j-run-start/report.md).
+ */
+function digestOrder(entries: HarnessEntry[], terms: Map<string, number> | undefined): HarnessEntry[] {
+  const weighted = [...(terms ?? [])];
+  const rows = entries.map(entry => {
+    const title = lower(entry.title), content = lower(entry.content), pathId = `${lower(entry.path)} ${lower(entry.id)}`;
+    const fields = weighted.map(([term]) => (title.includes(term) ? 1 : 0) + (content.includes(term) ? 1 : 0) + (pathId.includes(term) ? 1 : 0));
+    return { entry, key: sortKey(entry), fields, score: 0 };
+  });
+  const idf = weighted.map((_, i) => Math.log(1 + entries.length / rows.filter(row => (row.fields[i] ?? 0) > 0).length));
+  for (const row of rows)
+    weighted.forEach(([, weight], i) => {
+      const fields = row.fields[i] ?? 0;
+      if (fields > 0) row.score += weight * (idf[i] ?? 1) * (1 + (fields - 1) * 0.5);
+    });
+  rows.sort((a, b) => b.score - a.score || a.key.localeCompare(b.key));
+  return rows.map(row => row.entry);
+}
 
 /** Prime's `qFn`: the full digest text. */
 export function buildDigest(state: HarnessState, options: DigestOptions = {}): string {
@@ -175,15 +176,7 @@ export function buildDigest(state: HarnessState, options: DigestOptions = {}): s
   const ranked = terms !== undefined && terms.size > 0;
   let total = 0;
   for (const kind of Object.keys(state.entries) as (keyof HarnessState["entries"])[]) {
-    const entries = Object.values(state.entries[kind]);
-    const idf = ranked ? idfOf(entries, terms) : new Map<string, number>();
-    entries.sort((a, b) => {
-      if (ranked) {
-        const diff = score(b, terms, idf) - score(a, terms, idf);
-        if (diff !== 0) return diff;
-      }
-      return sortKey(a).localeCompare(sortKey(b));
-    });
+    const entries = digestOrder(Object.values(state.entries[kind]), ranked ? terms : undefined);
     total += entries.length;
     if (kind === "subagent" && entries.length > 0 && ipython)
       lines.push(`${kind}: ${entries.length} (invoke a spec by turning it into a concise task prompt and spawning with \`await rlm.spawn('<task>', name='<worker>')\`; admission returns a child handle, never the answer)`);
