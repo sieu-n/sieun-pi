@@ -838,6 +838,8 @@ export type PromptSectionOutline = Omit<PromptSection, "text"> & { chars: number
  */
 export type AgentPromptOutline = Omit<AgentPrompt, "kinds"> & {
   kinds: (Omit<AgentPrompt["kinds"][number], "sections"> & { sections: PromptSectionOutline[] })[];
+  /** The answer an earlier build stored, sent while the builder starts; `?wait=1` brings the build it started. */
+  pending?: true;
 };
 
 /**

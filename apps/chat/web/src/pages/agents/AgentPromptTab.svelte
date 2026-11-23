@@ -1,5 +1,6 @@
 <script lang="ts">
   import { kept, reads, view, type AgentPrompt, type AgentPromptOutline, type PromptKind } from "$lib/api";
+  import { get } from "$lib/api/client";
   import { Button, Disclosure, IconButton, LoadingText, ShowAllList, stampLabel, toast } from "$lib/ui";
   import type { AgentTabProps } from "./agent-tab";
 
@@ -27,6 +28,14 @@
   $effect(() => {
     const first = outline.value;
     if (first && texts.value?.builtAt !== first.builtAt) void texts.ahead();
+  });
+  /** An outline marked pending is the one an earlier build stored, sent while the builder starts: the build it started takes its place. */
+  $effect(() => {
+    const first = outline.value;
+    if (!first?.pending) return;
+    void get<AgentPromptOutline>({ path: `${reads.agentPromptOutline(agentId).path}?wait=1` }, { background: "ahead" }).then(fresh => {
+      if (outline.value === first) outline.set(fresh);
+    }, () => undefined);
   });
   /** The sections of a kind with their text, the whole answer read now when the one of the outline's build has not come. */
   async function sectionsOf(kind: PromptKind): Promise<AgentPrompt["kinds"][number]["sections"] | undefined> {

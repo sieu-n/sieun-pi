@@ -7,7 +7,8 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { builderStarts, promptBuilds } from "../../server/agent-prompt.ts";
+import { builderStarts, forgetPrompts, promptBuilds } from "../../server/agent-prompt.ts";
+import { flushSync } from "../../server/disk.ts";
 import type { AgentPrompt, AgentPromptOutline } from "../../web/src/lib/api/types.ts";
 import { FIXTURE_AGENTS as agents, FIXTURE_IDS as ids } from "../../server/fixture/seed.ts";
 import { start, type Running } from "./helpers.ts";
@@ -101,4 +102,22 @@ test("the outline lists each section's key, source and size with no text, of the
   assert.deepEqual(outline.kinds.map(k => k.sections.map(sec => [sec.key, sec.chars])), whole.kinds.map(k => k.sections.map(sec => [sec.key, sec.text.length])));
   assert.equal(outline.kinds.some(k => k.sections.some(sec => "text" in sec)), false);
   assert.deepEqual(outline.skills, whole.skills);
+});
+
+test("after a restart an outline read answers at once from the stored answer, marked pending, and ?wait=1 brings the build it started", async () => {
+  const path = `/api/agents/${encodeURIComponent(agents.harness)}/prompt/outline`;
+  const built = await s.get<AgentPromptOutline>(path);
+  flushSync();
+  forgetPrompts();
+  const asked = performance.now();
+  const stored = await s.get<AgentPromptOutline>(path);
+  const ms = performance.now() - asked;
+  assert.equal(stored.pending, true);
+  assert.equal(stored.builtAt, built.builtAt);
+  assert.ok(ms < 1_000, `the stored answer came in ${Math.round(ms)} ms, while a new builder's first build takes about 3 s`);
+  const whole = await prompt(agents.harness);
+  assert.equal(whole.builtAt, built.builtAt, "the whole answer of the stored build comes with it");
+  const fresh = await s.get<AgentPromptOutline>(`${path}?wait=1`);
+  assert.equal(fresh.pending, undefined);
+  assert.equal(fresh.builtAt, built.builtAt, "the same text keeps the time it was first built across the restart");
 });

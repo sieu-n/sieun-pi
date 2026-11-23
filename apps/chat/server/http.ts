@@ -303,7 +303,7 @@ export function routes(app: App, parts: SkillsParts): Route[] {
     }),
     route("GET", "/api/agents/:id/config", async (_r, p) => agentConfig(app, p.id!)),
     route("GET", "/api/agents/:id/prompt", async (_r, p) => agentPromptAnswer(app, p.id!)),
-    route("GET", "/api/agents/:id/prompt/outline", async (_r, p) => agentPromptOutlineAnswer(app, p.id!)),
+    route("GET", "/api/agents/:id/prompt/outline", async (_r, p, q) => agentPromptOutlineAnswer(app, p.id!, q.get("wait") === "1")),
     route("GET", "/api/agents/:id/for-me", async (_r, p, q) => {
       const status = q.get("status") ?? "pending";
       if (status !== "pending" && status !== "completed" && status !== "all") throw new BadRequest("A For list's status is pending, completed or all.");

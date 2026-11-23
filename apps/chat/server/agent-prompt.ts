@@ -37,10 +37,10 @@ export interface PromptChildAnswer {
 const CHECKOUT = resolve(import.meta.dirname, "../../..");
 const BUILDER = "packages/pi-host/src/durable/prime-prompt.ts";
 
-/** The pi-host tree to build with: the checkout's for the fixture, else the one the box runs, else the checkout's. */
+/** The pi-host tree to build with: the checkout's for a fixture with no PI_HOST_DIR, else the one the box runs, else the checkout's. */
 export function builderTree(fixture: boolean, env: NodeJS.ProcessEnv = process.env): string {
   const installed = env.PI_HOST_DIR ?? join(homedir(), ".local/share/pi-host/current");
-  const trees = fixture ? [CHECKOUT, installed] : [installed, CHECKOUT];
+  const trees = fixture && !env.PI_HOST_DIR ? [CHECKOUT, installed] : [installed, CHECKOUT];
   const tree = trees.find(dir => existsSync(join(dir, BUILDER)));
   if (!tree) throw new Error(`no pi-host tree with ${BUILDER} at ${trees.join(" or ")}`);
   return realpathSync(tree);
@@ -56,6 +56,8 @@ class Builder {
   private next = 0;
   private err = "";
   ended: Error | undefined;
+  /** Whether it answered a build: until then a call waits for node, tsx and the imports, 3 to 9 s at load 120 to 235 on 11-24. */
+  ready = false;
 
   constructor(readonly tree: string) {
     builderStarts += 1;
@@ -97,6 +99,7 @@ class Builder {
     }
     const call = this.waiting.get(message.id);
     this.waiting.delete(message.id);
+    if (message.answer) this.ready = true;
     if (message.answer) call?.done(message.answer);
     else call?.fail(new Error(`the prompt build in ${this.tree} failed: ${message.error ?? "no answer"}`));
   }
@@ -118,17 +121,29 @@ function builderFor(tree: string): Builder {
   return (builder = new Builder(tree));
 }
 
+/** Whether the builder of the tree a call would build with answered a build, so a call to it takes 50 to 80 ms of its time. */
+function builderWarm(app: App): boolean {
+  try {
+    return builder !== undefined && !builder.ended && builder.ready && builder.tree === builderTree(app.config.fixture);
+  } catch {
+    return false;
+  }
+}
+
 /**
- * Starts the builder of the live server (main.ts), with one build that loads Prime's modules, and again when the box's pi-host tree
- * changes, which `install-pi-host-box.mjs` does by moving its `current` link. A fixture's, a test's or a rig's builder starts at its first call.
+ * Starts the builder of the live server (main.ts) and builds each of this box's agents once, which stores each answer for the next start,
+ * and does it again when the box's pi-host tree changes, which `install-pi-host-box.mjs` does by moving its `current` link. A fixture's, a
+ * test's or a rig's builder starts at its first call.
  */
 export function warmPrompts(app: App): void {
   if (app.config.fixture) return;
-  const warm = () => {
-    const first = app.agents.list().find(record => !record.archived && app.threads.agent(record.id) && (app.routing?.boxOf(record.workThread) ?? app.config.box) === app.config.box);
-    if (first) void agentPrompt(app, first.id).catch(error => app.log(`prompt: the builder did not warm: ${error instanceof Error ? error.message : String(error)}`));
+  const warm = async () => {
+    for (const record of app.agents.list()) {
+      if (record.archived || !app.threads.agent(record.id) || (app.routing?.boxOf(record.workThread) ?? app.config.box) !== app.config.box) continue;
+      await agentPrompt(app, record.id).catch(error => app.log(`prompt: ${record.id} did not build: ${error instanceof Error ? error.message : String(error)}`));
+    }
   };
-  warm();
+  void warm();
   const installed = process.env.PI_HOST_DIR ?? join(homedir(), ".local/share/pi-host/current");
   try {
     watch(dirname(installed), (_event, name) => {
@@ -139,7 +154,7 @@ export function warmPrompts(app: App): void {
       } catch {
         return;
       }
-      if (builder?.tree !== tree) warm();
+      if (builder?.tree !== tree) void warm();
     }).unref();
   } catch (error) {
     app.log(`prompt: no watch on ${dirname(installed)}: ${error instanceof Error ? error.message : String(error)}`);
@@ -151,16 +166,37 @@ const building = new Map<AgentId, Promise<AgentPrompt>>();
 const newest = new Map<AgentId, { text: string; answer: AgentPrompt }>();
 /** How many builds this process ran; a test reads it. */
 export let promptBuilds = 0;
+const textOf = (answer: AgentPrompt): string => JSON.stringify({ ...answer, builtAt: 0 });
+/** The store cache that keeps an agent's newest answer for the next server (store.ts `cache`). */
+const cacheName = (id: AgentId): string => `prompt-${id}`;
+
+/** The agent's newest answer, from this server's builds or else the one an earlier server stored. */
+function storedPrompt(app: App, id: AgentId): AgentPrompt | undefined {
+  let kept = newest.get(id);
+  if (!kept) {
+    const answer = app.store.cache<AgentPrompt | null>(cacheName(id), null);
+    if (answer && Array.isArray(answer.kinds)) newest.set(id, (kept = { text: textOf(answer), answer }));
+  }
+  return kept?.answer;
+}
+
+/** The state a new server process starts with: no builder and no answer in memory; a test calls it. */
+export function forgetPrompts(): void {
+  builder?.stop();
+  builder = undefined;
+  newest.clear();
+}
 
 export function agentPrompt(app: App, id: AgentId): Promise<AgentPrompt> {
   let pending = building.get(id);
   if (!pending) {
     promptBuilds += 1;
     pending = build(app, id).then(answer => {
-      const text = JSON.stringify({ ...answer, builtAt: 0 });
-      const kept = newest.get(id);
-      if (kept?.text === text) return kept.answer;
+      const text = textOf(answer);
+      const kept = storedPrompt(app, id);
+      if (kept && newest.get(id)?.text === text) return kept;
       newest.set(id, { text, answer });
+      app.store.saveCache(cacheName(id), answer);
       return answer;
     }).finally(() => building.delete(id));
     building.set(id, pending);
@@ -176,7 +212,8 @@ export function agentPrompt(app: App, id: AgentId): Promise<AgentPrompt> {
  * Crawler guy on 11-24.
  */
 export async function agentPromptAnswer(app: App, id: AgentId): Promise<KeptJson> {
-  const answer = await (building.get(id) ?? newest.get(id)?.answer ?? agentPrompt(app, id));
+  const warm = builderWarm(app);
+  const answer = await ((warm ? building.get(id) : undefined) ?? storedPrompt(app, id) ?? agentPrompt(app, id));
   return new KeptJson(`prompt:${id}`, [answer], () => {
     const json = JSON.stringify(answer);
     return { json, rest: json, entries: [] };
@@ -193,11 +230,16 @@ export const promptOutline = (answer: AgentPrompt): AgentPromptOutline => ({
  * GET /api/agents/:id/prompt/outline as a `KeptJson`, kept by the answer it outlines; each read builds. At a 200 ms round trip in a
  * walk on 11-24, a first open that read the whole answer, 63 to 94 KB as brotli, drew the tab 1.4 s after the click once the page had
  * sat idle.
+ *
+ * While the builder is not warm, after a server start or a pi-host install, a read answers at once with the stored answer marked
+ * `pending` and starts the build; a read with `wait` waits for that build. A first call there waited 6.5 to 8.8 s on 11-24.
  */
-export async function agentPromptOutlineAnswer(app: App, id: AgentId): Promise<KeptJson> {
-  const answer = await agentPrompt(app, id);
-  return new KeptJson(`prompt-outline:${id}`, [answer], () => {
-    const json = JSON.stringify(promptOutline(answer));
+export async function agentPromptOutlineAnswer(app: App, id: AgentId, wait = false): Promise<KeptJson> {
+  const kept = !wait && !builderWarm(app) ? storedPrompt(app, id) : undefined;
+  if (kept) void agentPrompt(app, id).catch(error => app.log(`prompt: ${id} did not build: ${error instanceof Error ? error.message : String(error)}`));
+  const answer = kept ?? await agentPrompt(app, id);
+  return new KeptJson(`prompt-outline:${id}`, [answer, kept !== undefined], () => {
+    const json = JSON.stringify(kept ? { ...promptOutline(answer), pending: true } : promptOutline(answer));
     return { json, rest: json, entries: [] };
   });
 }
