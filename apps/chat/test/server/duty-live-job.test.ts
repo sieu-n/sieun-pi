@@ -9,8 +9,8 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
+import type { ChatBoard } from "../../web/src/lib/api/types.ts";
 import type { DutyRunRecord } from "../../web/src/lib/api/shared/chat-duties.ts";
-import { BOARD_DOC } from "../../server/boards.ts";
 import { armWake } from "../../server/wakes.ts";
 import { FIXTURE_AGENTS as agents, FIXTURE_IDS as ids } from "../../server/fixture/seed.ts";
 import type { FixtureHost } from "../../server/host/fixture.ts";
@@ -21,6 +21,7 @@ const now = Date.now();
 let s: Running;
 let work: string;
 const briefs: string[] = [];
+const steps: Record<string, string> = {};
 const runsOf = (): DutyRunRecord[] => (JSON.parse(readFileSync(join(s.app.boards.dir(agents.vent), "duties.json"), "utf8")) as { runs: Record<string, DutyRunRecord[]> }).runs.d1 ?? [];
 
 before(async () => {
@@ -39,13 +40,6 @@ before(async () => {
   armWake(s.app.boards.wakeDir, ids.vent, { conversation: waitingWalk.id, on: { kind: "time", at: now + 10 * HOUR }, note: "walk done" });
   // pi-host bumps a thread's updatedAt when its tree changes, and the chat server reads the tree again only then.
   thread.row.updatedAt = now + 1;
-  // The board goes in before the read: the read's events start the sidebar's timer, which reads and keeps each chat's board.
-  const at = new Date().toISOString();
-  await host.docPut(ids.vent, BOARD_DOC, { v: 2, rev: 1, updatedAt: at, todos: [], plan: [
-    { id: "p1", text: "Fix up", status: "doing", duty: "d1/up", job: "busy fix", children: [] },
-    { id: "p2", text: "Fix down", status: "doing", duty: "d1/down", job: "quiet fix", children: [] },
-    { id: "p3", text: "Fix side", status: "doing", duty: "d1/side", job: "waiting fix", children: [] },
-  ] });
   await s.app.threads.refresh();
   host.beforeSubmit = async (_id, input) => {
     if (input.requestId?.startsWith("duty:")) briefs.push(input.text ?? "");
@@ -56,6 +50,15 @@ before(async () => {
     precheck: { command: ["node", "-e", `require("fs").writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { up: 90, down: 90, side: 90 } }))`], cwd: work, timeoutMs: 30_000 } };
   mkdirSync(s.app.boards.dir(agents.vent), { recursive: true });
   writeFileSync(join(s.app.boards.dir(agents.vent), "duties.json"), JSON.stringify({ duties: [duty], runs: {} }));
+  // The fix steps go in through the board API, as the chat's chat_board call writes them. A doc put straight into the fixture host reached the
+  // server only if it had not read the board yet: in 2 of 24 copies run beside the full suite, a read during start() kept the seeded board
+  // first, the run saw no fix step, and the run's fixes read undefined.
+  const fixes = [["up", "busy fix"], ["down", "quiet fix"], ["side", "waiting fix"]] as const;
+  const { status, body } = await s.send<{ board: ChatBoard }>("POST", `/api/threads/${ids.vent}/board`, {
+    actor: "agent", ops: fixes.map(([key, job]) => ({ op: "plan_add", text: `Fix ${key}`, status: "doing", duty: `d1/${key}`, job })),
+  });
+  assert.equal(status, 200, JSON.stringify(body));
+  for (const [key] of fixes) steps[key] = body.board.plan.find(item => item.text === `Fix ${key}`)!.id;
 });
 after(async () => {
   await s.close();
@@ -66,10 +69,10 @@ test("an idle fix job with a working subagent or a pending wake under it reads a
   await s.send("POST", `/api/threads/${ids.vent}/duties`, { duty: "d1", action: "run" });
   const [run] = await until(() => Promise.resolve(runsOf()), runs => runs.length === 1 && !!runs[0]!.job);
   assert.deepEqual(run!.fixes, {
-    up: { step: "p1", job: "busy fix", live: true }, down: { step: "p2", job: "quiet fix", live: false }, side: { step: "p3", job: "waiting fix", live: true },
+    up: { step: steps.up, job: "busy fix", live: true }, down: { step: steps.down, job: "quiet fix", live: false }, side: { step: steps.side, job: "waiting fix", live: true },
   });
   assert.equal(briefs.length, 1);
-  assert.match(briefs[0]!, /- up: missed 1 run in a row, fix step p1 \(job busy fix, working\)\./);
-  assert.match(briefs[0]!, /- down: missed 1 run in a row, fix step p2 \(job quiet fix, not working\)\./);
-  assert.match(briefs[0]!, /- side: missed 1 run in a row, fix step p3 \(job waiting fix, working\)\./);
+  assert.ok(briefs[0]!.includes(`- up: missed 1 run in a row, fix step ${steps.up} (job busy fix, working).`), briefs[0]);
+  assert.ok(briefs[0]!.includes(`- down: missed 1 run in a row, fix step ${steps.down} (job quiet fix, not working).`), briefs[0]);
+  assert.ok(briefs[0]!.includes(`- side: missed 1 run in a row, fix step ${steps.side} (job waiting fix, working).`), briefs[0]);
 });
