@@ -410,6 +410,8 @@ export class App {
     this.laterDue.stop();
     this.queues.stop();
     clearTimeout(this.sidebarTimer);
+    // A board put at work lands before the next process can put a later board of the same chat (boards.ts `putBoards`).
+    await this.boards.putsSettled();
     // The host client closes first: a watch's unwatch sent to a pi-host that restarts beside the chat retried for 30 s, past systemd's
     // 20 s stop timeout, so restarting both services on 10-28 ended in a SIGKILL. pi-host drops a closed connection's watches itself.
     if (!options.keepHost) await this.host.close();

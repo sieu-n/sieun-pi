@@ -22,6 +22,9 @@ import { agentFolderDir } from "./agent-folder.ts";
 import { checkInDetail, checkInIdle, checkInJobBrief, checkInJobName, checkInPrecheck, checkInPrompt, datedName, planEveryMs, planHasOpenStep } from "./check-in-job.ts";
 import type { Host } from "./host/types.ts";
 import { readJson, writeJson, type Store } from "./store.ts";
+import { writeJsonLater, written } from "./disk.ts";
+import { retryWait } from "./outbox.ts";
+import type { SearchSplit } from "./search-engine.ts";
 import { OWNER_ZONE_OFFSET_MS } from "./search.ts";
 import type { Threads } from "./threads.ts";
 import { StepOwners } from "./step-owners.ts";
@@ -150,6 +153,17 @@ export class Boards {
   private readonly cache = new Map<string, { board: ChatBoard | null; at: number }>();
   /** The one pi-host read in flight per chat, which every caller shares. */
   private readonly reading = new Map<string, Promise<ChatBoard | null>>();
+  /**
+   * Board writes answered but not yet in pi-host, by chat, kept in `board-writes.json` until their put lands (`putBoards`). A put waits behind
+   * every command on pi-host's event loop: on 11-23 two of 100 walk writes waited 3,495 and 3,725 ms in the handler (p50 48.5 ms) while pi-host
+   * reopened a session for a heartbeat and built 2,558 rows for an `agent_observe.list_agents()` (~/work/p231-slow-calls/p231-board-handler).
+   */
+  private readonly unput = new Map<string, ChatBoard>();
+  /** The one put loop per chat, which writes its newest unput board until none is left. */
+  private readonly putting = new Map<string, Promise<void>>();
+  private putsStopped = false;
+  /** Counts the For you count sends, so a count read before a later write never goes out after it. */
+  private forYouSent = 0;
   private timer?: NodeJS.Timeout;
   /** Sends the For you count again when the soonest Remind me on an open todo comes due. */
   private snoozeTimer?: NodeJS.Timeout;
@@ -176,6 +190,11 @@ export class Boards {
   ) {
     // The boards of the last run, read again on first use, so For you and the sidebar count answer while pi-host starts.
     for (const [chat, board] of Object.entries(store.cache<Record<string, ChatBoard | null>>(BOARDS_CACHE, {}))) this.cache.set(chat, { board, at: 0 });
+    // The writes the last process answered and had not put into pi-host yet; `start` puts them, and every read answers them meanwhile.
+    for (const [chat, board] of Object.entries(readJson<Record<string, ChatBoard>>(this.unputFile, {}))) {
+      this.unput.set(chat, board);
+      this.cache.set(chat, { board, at: Date.now() });
+    }
     this.owners = new StepOwners(this, log);
   }
 
@@ -222,6 +241,7 @@ export class Boards {
 
   async board(id: string): Promise<ChatBoard | null> {
     const chat = this.chatId(id);
+    if (this.unput.has(chat)) return this.unput.get(chat)!;
     const cached = this.cache.get(chat);
     if (cached && Date.now() - cached.at < BOARD_TTL_MS) return cached.board;
     return this.read(chat);
@@ -232,6 +252,7 @@ export class Boards {
    * there, such as a search that takes seconds, so For you, the board index and the sidebar count wait on pi-host only for a chat never read.
    */
   private async known(chat: string): Promise<ChatBoard | null> {
+    if (this.unput.has(chat)) return this.unput.get(chat)!;
     const cached = this.cache.get(chat);
     if (!cached) return this.read(chat);
     if (Date.now() - cached.at >= BOARD_TTL_MS) void this.read(chat).catch(error => this.log(`board read for ${chat} failed: ${String(error)}`));
@@ -262,6 +283,7 @@ export class Boards {
     const result = await this.host.docGet(this.threadOf(chat), BOARD_DOC).then(value => ({ value }), () => null);
     const cached = this.cache.get(chat);
     if (cached && cached.at > startedAt) return cached.board;
+    if (this.unput.has(chat)) return this.unput.get(chat)!;
     const board = result ? (result.value ? parseBoard(result.value) : null) : (cached?.board ?? null);
     const before = this.remember(chat, board);
     if (cached && JSON.stringify(cached.board) !== JSON.stringify(board)) {
@@ -282,13 +304,17 @@ export class Boards {
    * A caller that names the board it holds (`base`, `boardKey`) gets only what changed when that was the board before the ops (`BoardWrite`).
    */
   apply(id: string, raw: unknown, actor?: "owner" | "agent"): Promise<BoardView & { summaries: string[] }>;
-  apply(id: string, raw: unknown, actor: "owner" | "agent", base: unknown): Promise<BoardWrite & { summaries: string[] }>;
-  async apply(id: string, raw: unknown, actor: "owner" | "agent" = "owner", base?: unknown): Promise<BoardWrite & { summaries: string[] }> {
+  apply(id: string, raw: unknown, actor: "owner" | "agent", base: unknown, split?: SearchSplit): Promise<BoardWrite & { summaries: string[] }>;
+  async apply(id: string, raw: unknown, actor: "owner" | "agent" = "owner", base?: unknown, split?: SearchSplit): Promise<BoardWrite & { summaries: string[] }> {
     const chat = this.chatId(id);
     const thread = this.threadOf(chat);
     const ops: BoardOp[] = parseBoardOps(raw);
     const now = new Date().toISOString();
-    const before = await this.board(chat);
+    let mark = performance.now();
+    const read = await this.board(chat);
+    if (split) split.read = performance.now() - mark;
+    // The board kept now, which a write that landed during the read already changed.
+    const before = this.unput.get(chat) ?? (this.cache.has(chat) ? this.cache.get(chat)!.board : read);
     let board = before ?? emptyBoard(now);
     const summaries: string[] = [];
     for (const op of ops) {
@@ -296,21 +322,91 @@ export class Boards {
       board = result.board;
       summaries.push(result.summary);
     }
-    await this.host.docPut(thread, BOARD_DOC, board);
+    // The write answers once it is on this server's disk; pi-host gets it behind, in order (`putBoards`).
+    this.unput.set(chat, board);
+    writeJsonLater(this.unputFile, Object.fromEntries(this.unput));
+    const put = this.putBoards(chat);
     this.changed(chat, board, this.remember(chat, board));
-    this.events.forYou(await this.forYouCount());
+    this.sendForYou();
     // The chat's `[board]` line goes after the answer: no part of the answer waits on it, and a pi-host submit waits behind every command
     // queued there. On 11-20 to 11-23 the owner's board writes, which send it, ran p50 226 ms in the handler against 52 ms for the agents'
     // own writes, which do not (requests/*.jsonl, ~/work/p231-slow-calls).
     if (summaries.length && actor === "owner") {
       const images = ops.flatMap(op => op.op === "todo_update" && op.reply ? this.replyImages(op.reply) : []);
-      void this.host.submit(thread, {
+      // It follows the board into pi-host, so the turn it starts reads the board it names.
+      void put.then(() => this.host.submit(thread, {
         text: `${BOARD_PREFIX}${summaries.join("\n")}`, ...(images.length ? { images } : {}), whenBusy: "followUp", requestId: `board:${chat}:${board.rev}`,
         entry: { kind: "agent.message", data: { from: "owner", via: "board" } },
-      }).catch(error => this.log(`board note to ${chat} failed: ${String(error)}`));
+      })).catch(error => this.log(`board note to ${chat} failed: ${String(error)}`));
     }
+    mark = performance.now();
+    await written(this.unputFile);
+    if (split) split.journal = performance.now() - mark;
     const step = before && typeof base === "string" && base === boardKey(before) ? boardStep(before, board) : null;
     return step ? { delta: boardDelta(base as string, board, [step]), awaitingGo: awaitingGo(board), summaries } : { board, awaitingGo: awaitingGo(board), summaries };
+  }
+
+  /** Where the board writes not yet in pi-host wait (`unput`). */
+  private get unputFile(): string {
+    return join(this.store.dir, "board-writes.json");
+  }
+
+  /**
+   * Puts a chat's newest unput board into pi-host until none is left, and settles then. Each put writes the whole board, so a board a later
+   * write replaced before its put started is never sent. A failed put tries again (`retryWait`) and keeps the board in `board-writes.json`.
+   */
+  private putBoards(chat: string): Promise<void> {
+    let running = this.putting.get(chat);
+    if (!running) {
+      running = this.putLoop(chat).finally(() => {
+        this.putting.delete(chat);
+        // A write that came between the loop's last look and here starts the loop again.
+        if (this.unput.has(chat) && !this.putsStopped) void this.putBoards(chat);
+      });
+      this.putting.set(chat, running);
+    }
+    return running;
+  }
+
+  private async putLoop(chat: string): Promise<void> {
+    for (let failures = 0; ;) {
+      const board = this.unput.get(chat);
+      if (!board || this.putsStopped) return;
+      const began = performance.now();
+      try {
+        await this.host.docPut(this.threadOf(chat), BOARD_DOC, board);
+      } catch (error) {
+        failures += 1;
+        const wait = retryWait(failures);
+        this.log(`board put for ${chat} failed ${failures} times, retry in ${wait} ms: ${String(error)}`);
+        await new Promise<void>(resolve => {
+          const timer = setTimeout(resolve, wait);
+          this.stopping.signal.addEventListener("abort", () => (clearTimeout(timer), resolve()), { once: true });
+        });
+        continue;
+      }
+      failures = 0;
+      const ms = Math.round(performance.now() - began);
+      // Over 1 s is 20 times the 48.5 ms p50 of 11-23's writes, which is worth a line in the log.
+      if (ms > 1_000) this.log(`board put for ${chat} took ${ms} ms in pi-host`);
+      if (this.unput.get(chat) === board) {
+        this.unput.delete(chat);
+        writeJsonLater(this.unputFile, Object.fromEntries(this.unput));
+      }
+    }
+  }
+
+  /** Waits for the puts at work after `stop`, so a later process's put of the same board never lands before this one's. */
+  async putsSettled(): Promise<void> {
+    await Promise.all(this.putting.values());
+  }
+
+  /** Sends the For you count after a write without holding its answer; a count read before a later write's is dropped. */
+  private sendForYou(): void {
+    const sent = ++this.forYouSent;
+    void this.forYouCount().then(count => {
+      if (sent === this.forYouSent) this.events.forYou(count);
+    }, error => this.log(`For you count failed: ${String(error)}`));
   }
 
   /** The images the owner attached to an answer, as `![name](/api/uploads/<file>)` in its text, so the chat sees them with the `[board]` line. */
@@ -330,6 +426,8 @@ export class Boards {
   /** A doc event from pi-host: the thread wrote its board. */
   docChanged(thread: string, value: unknown): void {
     const chat = this.chatId(thread);
+    // A write not yet in pi-host is newer than any doc event before its put.
+    if (this.unput.has(chat)) return;
     const board = value ? parseBoard(value) : null;
     const before = this.remember(chat, board);
     if (board) this.changed(chat, board, before);
@@ -1125,6 +1223,8 @@ export class Boards {
 
   start(everyMs = 30_000): void {
     if (this.stopping.signal.aborted) this.stopping = new AbortController();
+    this.putsStopped = false;
+    for (const chat of this.unput.keys()) void this.putBoards(chat);
     this.resumePrechecks();
     this.timer = setInterval(() => void this.tick().catch(error => this.log(`board tick failed: ${String(error)}`)), everyMs);
     this.stopWakes = startThreadWakes({ dir: this.wakeDir, host: this.host, log: this.log, checkOn: thread => this.checkOn(thread), ...this.wakeHooks });
@@ -1132,6 +1232,7 @@ export class Boards {
   stop(): void {
     // A precheck at work runs on outside this process, and its wait ends here with its pending entry kept for the next server process.
     this.stopping.abort();
+    this.putsStopped = true;
     clearInterval(this.timer);
     clearTimeout(this.snoozeTimer);
     this.stopWakes?.();
