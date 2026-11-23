@@ -9,6 +9,7 @@
   import IconButton from "$lib/ui/IconButton.svelte";
   import Tabs from "$lib/ui/Tabs.svelte";
   import TextArea from "$lib/ui/TextArea.svelte";
+  import { composing } from "$lib/ui/keyboard";
   import { toast } from "$lib/ui/toast.svelte";
   import { avatarOf } from "./present";
 
@@ -76,7 +77,7 @@
   }
 
   function onkeydown(e: KeyboardEvent) {
-    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+    if (e.key === "Enter" && !e.shiftKey && !composing(e)) {
       e.preventDefault();
       void save();
     } else if (e.key === "Escape") {

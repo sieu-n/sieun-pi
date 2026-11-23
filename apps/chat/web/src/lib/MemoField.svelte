@@ -1,6 +1,7 @@
 <script lang="ts">
   import { tick } from "svelte";
   import TextArea from "$lib/ui/TextArea.svelte";
+  import { composing } from "$lib/ui/keyboard";
 
   /**
    * The memo field of a saved item, on its Saved row and in the save toast's Add memo: Enter or leaving the field saves, Shift+Enter starts
@@ -26,7 +27,7 @@
     });
   });
   function onkeydown(e: KeyboardEvent) {
-    if (e.isComposing) return;
+    if (composing(e)) return;
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       end(true);

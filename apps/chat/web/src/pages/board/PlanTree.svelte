@@ -2,6 +2,7 @@
   import { onDestroy, tick, untrack } from "svelte";
   import { agents as agentList, api, requestId, type BoardOp, type ChatAgent, type PlanItem } from "$lib/api";
   import { Badge, Button, Chip, Dialog, EmptyState, IconButton, IdChip, Icon, Input, Menu, TextArea, toast, type MenuEntry } from "$lib/ui";
+  import { composing } from "$lib/ui/keyboard";
   import PlanMark from "./PlanMark.svelte";
   import { router } from "$lib/router.svelte";
   import { boardHref } from "./chips";
@@ -298,7 +299,7 @@
               aria-label="Rename {step.id}"
               {@attach focusField}
               onkeydown={(e: KeyboardEvent) => {
-                if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); void saveRename(step); }
+                if (e.key === "Enter" && !composing(e)) { e.preventDefault(); void saveRename(step); }
                 else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); editing = null; }
               }}
               onblur={() => { if (editing === step.id) editing = null; }}
@@ -358,7 +359,7 @@
         aria-label={draft?.parent ? `New step under ${draft.parent}` : "New step"}
         {@attach focusField}
         onkeydown={(e: KeyboardEvent) => {
-          if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); void saveDraft(); }
+          if (e.key === "Enter" && !composing(e)) { e.preventDefault(); void saveDraft(); }
           else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); draft = null; }
         }}
         onblur={() => { draft = null; }}
@@ -446,7 +447,7 @@
     aria-label="Your question"
     placeholder="Your question goes to {agentName}'s DM with this step named. Enter sends."
     data-autofocus
-    onkeydown={(e: KeyboardEvent) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); void ask(); } }}
+    onkeydown={(e: KeyboardEvent) => { if (e.key === "Enter" && !e.shiftKey && !composing(e)) { e.preventDefault(); void ask(); } }}
   />
   {#snippet actions()}
     <Button variant="primary" disabled={!askText.trim()} onclick={() => void ask()}>Send</Button>

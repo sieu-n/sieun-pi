@@ -33,7 +33,13 @@
   {#if forward.text}<Markdown text={forward.text} {context} {onmention} {onartifact} class="msg-text" />{/if}
   {#if images.length}
     <div class="images">
-      {#each images as image, index (image.url + index)}<img src={image.url} alt="Forwarded image {index + 1}" loading="lazy" />{/each}
+      {#each images as image, index (image.url + index)}
+        {#if image.width && image.height}
+          <img src={image.url} alt="Forwarded image {index + 1}" loading="lazy" width={image.width} height={image.height} style:--w={image.width} style:--h={image.height} />
+        {:else}
+          <img class="unsized" src={image.url} alt="Forwarded image {index + 1}" loading="lazy" />
+        {/if}
+      {/each}
     </div>
   {/if}
   {#if files}<p class="files">{files} file{files > 1 ? "s" : ""} attached</p>{/if}
@@ -68,13 +74,21 @@
   .images {
     display: flex;
     flex-wrap: wrap;
+    align-items: flex-start;
     gap: 6px;
   }
+  /* An image draws its box at its shown size before its bytes arrive, so the rows below a forward never move when it loads. */
   .images img {
-    max-width: 240px;
-    max-height: 160px;
+    width: min(calc(var(--w) * 1px), 240px, calc(160px * var(--w) / var(--h)));
+    height: auto;
+    aspect-ratio: var(--w) / var(--h);
     border-radius: 8px;
     object-fit: cover;
+  }
+  /* An image whose size the server could not read takes the largest box a forward shows. */
+  .images img.unsized {
+    width: 240px;
+    height: 160px;
   }
   .files,
   .foot {

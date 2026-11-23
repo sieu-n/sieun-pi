@@ -37,6 +37,8 @@
 
   type Props = {
     item: Exclude<Item, { kind: "system" }>;
+    /** One of the newest rows, which Timeline draws on open instead of letting content-visibility stand it at a guessed height. */
+    eager?: boolean;
     first: boolean;
     last: boolean;
     /** bubble is the chat look; slack is a channel's full-width left-aligned row with the avatar on a group's first post. */
@@ -70,7 +72,7 @@
      */
     alsoIn?: "channel" | "thread" | null;
   };
-  let { item, first, last, layout = "bubble", fullTime = false, replyTo = null, alsoIn = null, context: roomContext, liveLabel = null, queue = null, flash = false, openThread = null, canReply = false, statusOf, onretrysend, ondiscardsend, onthread, oncopylink, onmention, onboardid, onartifact }: Props = $props();
+  let { item, eager = false, first, last, layout = "bubble", fullTime = false, replyTo = null, alsoIn = null, context: roomContext, liveLabel = null, queue = null, flash = false, openThread = null, canReply = false, statusOf, onretrysend, ondiscardsend, onthread, oncopylink, onmention, onboardid, onartifact }: Props = $props();
 
   const own = $derived(isOwn(item));
   /** Reply in thread opens the post's own thread, or for a reply also sent to the channel, the thread it is in. */
@@ -343,7 +345,7 @@
           {#if image.width && image.height}
             <img class="sized" data-src={sized?.src ?? image.url} data-srcset={sized?.srcset} alt="Attached image {index + 1}" loading="lazy" decoding="async" width={image.width} height={image.height} style:--w={image.width} style:--h={image.height} />
           {:else}
-            <img data-src={sized?.src ?? image.url} data-srcset={sized?.srcset} alt="Attached image {index + 1}" loading="lazy" decoding="async" />
+            <img class="unsized" data-src={sized?.src ?? image.url} data-srcset={sized?.srcset} alt="Attached image {index + 1}" loading="lazy" decoding="async" />
           {/if}
         </button>
       {/each}
@@ -444,7 +446,7 @@
 {/snippet}
 
 {#if slack}
-  <li bind:this={rowEl} data-action-host tabindex="-1" class="row slack" class:pinned={!!pinned} class:own class:first class:done={!!done} class:pending class:picking={picking || menuOpen} data-own-post={editable ? "" : undefined} data-message-id={item.id} data-kind={item.kind} data-flash={flash ? "" : undefined} data-live={live || undefined} onpointerenter={activate} onfocusin={activate} onclickcapture={altClick}>
+  <li bind:this={rowEl} data-action-host tabindex="-1" class="row slack" class:eager class:pinned={!!pinned} class:own class:first class:done={!!done} class:pending class:picking={picking || menuOpen} data-own-post={editable ? "" : undefined} data-message-id={item.id} data-kind={item.kind} data-flash={flash ? "" : undefined} data-live={live || undefined} onpointerenter={activate} onfocusin={activate} onclickcapture={altClick}>
     <div class="gutter">
       {#if first}
         {@render authorAvatar(36)}
@@ -509,7 +511,7 @@
     {#if active && !editing}{@render actionBar()}{/if}
   </li>
 {:else}
-  <li bind:this={rowEl} data-action-host tabindex="-1" class="row" class:own class:first class:done={!!done} class:pending class:picking={picking || menuOpen} data-own-post={editable ? "" : undefined} data-message-id={item.id} data-kind={item.kind} data-flash={flash ? "" : undefined} data-live={live || undefined} onpointerenter={activate} onfocusin={activate} onclickcapture={altClick}>
+  <li bind:this={rowEl} data-action-host tabindex="-1" class="row" class:eager class:own class:first class:done={!!done} class:pending class:picking={picking || menuOpen} data-own-post={editable ? "" : undefined} data-message-id={item.id} data-kind={item.kind} data-flash={flash ? "" : undefined} data-live={live || undefined} onpointerenter={activate} onfocusin={activate} onclickcapture={altClick}>
     {#if first}
       <div class="byline">
         {#if !own && item.author.kind !== "owner"}<Icon name="robot" size={13} />{/if}
@@ -728,6 +730,16 @@
     width: min(calc(var(--w) * 1px), var(--cap), calc(var(--cap) * var(--w) / var(--h)));
     height: auto;
     aspect-ratio: var(--w) / var(--h);
+  }
+  /*
+   * An image whose size the server could not read, such as a thread image a post links by /api/images (16 of 154 room images on 11-24), takes
+   * a fixed box and fits inside it, so its load moves no row.
+   */
+  .image img.unsized {
+    width: var(--cap);
+    height: auto;
+    aspect-ratio: 4 / 3;
+    object-fit: contain;
   }
   /* The hover bar is lib/ui ActionBar; its bottom edge meets the top of the post's first line, so it covers only the end of the line above. */
   .row {
@@ -1077,6 +1089,9 @@
   }
   .slack .image img.sized {
     width: min(calc(var(--w) * 1px), var(--cap), calc(100cqi - 2px), calc(var(--cap) * var(--w) / var(--h)));
+  }
+  .slack .image img.unsized {
+    width: min(var(--cap), calc(100cqi - 2px));
   }
   .slack {
     --action-bar-top: -28px;

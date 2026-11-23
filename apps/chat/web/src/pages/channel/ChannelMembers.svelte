@@ -6,6 +6,7 @@
   import Button from "$lib/ui/Button.svelte";
   import Icon from "$lib/ui/Icon.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
+  import { composing } from "$lib/ui/keyboard";
   import Popover from "$lib/ui/Popover.svelte";
   import SearchField from "$lib/ui/SearchField.svelte";
   import type { Status } from "$lib/ui/types";
@@ -134,7 +135,7 @@
         e.preventDefault();
         void remove(m);
       }
-    } else if (fromSearch && e.key === "Enter") {
+    } else if (fromSearch && e.key === "Enter" && !composing(e)) {
       e.preventDefault();
       const first = shown.find((m) => !isOwner(m));
       if (first) onopen(first.principal.id);

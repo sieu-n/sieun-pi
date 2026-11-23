@@ -21,8 +21,8 @@ export const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(
  * deliver that Enter after compositionend with isComposing false (WebKit bug 165004), and sw factory renders in WKWebView on the Mac, so
  * keyCode 229, which a keydown reports while an IME takes the key, counts too.
  */
-export function composing(e: KeyboardEvent): boolean {
-  return e.isComposing || e.keyCode === 229;
+export function composing(e: { isComposing?: boolean; keyCode?: number }): boolean {
+  return !!e.isComposing || e.keyCode === 229;
 }
 
 /** True for Cmd on a Mac and Ctrl elsewhere. */

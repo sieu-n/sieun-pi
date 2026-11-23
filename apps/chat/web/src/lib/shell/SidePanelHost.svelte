@@ -1,6 +1,7 @@
 <script lang="ts">
   import PanelHeader from "$lib/ui/PanelHeader.svelte";
   import ResizeHandle from "$lib/ui/ResizeHandle.svelte";
+  import { composing } from "$lib/ui/keyboard";
   import { SIDE_PANEL_MIN, sidePanel } from "./side-panel.svelte";
 
   type Props = {
@@ -27,7 +28,7 @@
    * takes it. Focus in the pane goes back to the main composer.
    */
   function onkeydown(e: KeyboardEvent) {
-    if (!content || e.defaultPrevented || e.isComposing || e.altKey || e.shiftKey) return;
+    if (!content || e.defaultPrevented || composing(e) || e.altKey || e.shiftKey) return;
     const dot = e.key === "." && (e.metaKey || e.ctrlKey);
     const target = e.target instanceof Element ? e.target : null;
     const inPane = !!target && !!aside?.contains(target);

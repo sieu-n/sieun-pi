@@ -24,7 +24,7 @@
   import Menu from "$lib/ui/Menu.svelte";
   import PanelHeader from "$lib/ui/PanelHeader.svelte";
   import TypingDots from "$lib/ui/TypingDots.svelte";
-  import { modKey } from "$lib/ui/keyboard";
+  import { composing, modKey } from "$lib/ui/keyboard";
   import type { MenuEntry } from "$lib/ui/menu";
   import { toast } from "$lib/ui/toast.svelte";
   import type { Status } from "$lib/ui/types";
@@ -295,7 +295,7 @@
   }
 
   function agendaKey(e: KeyboardEvent) {
-    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+    if (e.key === "Enter" && !e.shiftKey && !composing(e)) {
       e.preventDefault();
       void saveAgenda();
     } else if (e.key === "Escape") {

@@ -1,4 +1,5 @@
 /** Pure helpers for the skills review screen: the key map, the item order, the owner's edits as decide overrides, the diff lines and the words of the counts. */
+import { composing } from "../../lib/ui/keyboard";
 import type { ItemStatus, ReviewAction, ReviewCopy, ReviewDecideBody, ReviewItem, ReviewItemSummary, ReviewReport } from "$lib/api/shared/skills-review";
 
 /** The owner's commands on the review screen, each with its key, as the buttons show them. */
@@ -22,8 +23,8 @@ function typing(target: EventTarget | null): boolean {
 }
 
 /** The command a keydown runs, or null for a key with a modifier, a key typed into a field, or a key no command has. */
-export function commandFor(event: Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "altKey" | "target"> & { isComposing?: boolean }): Command | null {
-  if (event.metaKey || event.ctrlKey || event.altKey || event.isComposing || typing(event.target)) return null;
+export function commandFor(event: Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "altKey" | "target"> & { isComposing?: boolean; keyCode?: number }): Command | null {
+  if (event.metaKey || event.ctrlKey || event.altKey || composing(event) || typing(event.target)) return null;
   return BY_KEY.get(event.key) ?? null;
 }
 

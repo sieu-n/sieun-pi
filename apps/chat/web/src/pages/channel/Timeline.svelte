@@ -5,6 +5,7 @@
   import Button from "$lib/ui/Button.svelte";
   import Icon from "$lib/ui/Icon.svelte";
   import { stampLabel } from "$lib/ui/datetime";
+  import { composing } from "$lib/ui/keyboard";
   import DayDivider from "$lib/ui/DayDivider.svelte";
   import LoadingText from "$lib/ui/LoadingText.svelte";
   import SystemLine from "$lib/ui/SystemLine.svelte";
@@ -81,6 +82,11 @@
   let keptDays: DayGroup<Item>[] = [];
   const days = $derived((keptDays = keepGroups(keptDays, dayGroups(rows))));
   const drawn = $derived(full ? days : newestRows(days, FIRST_ROWS));
+  /**
+   * The newest rows, on screen when a thread opens, always draw instead of standing at content-visibility's guessed height. On 11-24 a channel
+   * whose days held one post each kept only its newest row drawn, and the rest jumped from 160 px to their real height on open (CLS 0.11).
+   */
+  const eager = $derived(new Set(newestRows(days, FIRST_ROWS).flatMap((day) => day.rows.map((row) => row.key))));
   const slack = $derived(layout === "slack");
   const intro = $derived(beginning && (slack || beginning.kind === "dm") && full && !hasOlder && !loadingOlder ? beginning : null);
   const introName = $derived(intro ? (intro.kind === "solo" || intro.kind === "dm" ? intro.name : `#${intro.name}`) : "");
@@ -356,7 +362,7 @@
    * me, U mark unread, Delete delete. MessageRow takes the `postkey` event and cancels it when the key did something.
    */
   function postKeys(e: KeyboardEvent) {
-    if (e.defaultPrevented || e.isComposing || !scroller || document.querySelector("[role=menu], dialog[open]")) return;
+    if (e.defaultPrevented || composing(e) || !scroller || document.querySelector("[role=menu], dialog[open]")) return;
     const target = e.target instanceof Element ? e.target : null;
     if (e.key === "Tab" && e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
       const box = target?.closest("[data-testid=composer-input]");
@@ -442,7 +448,7 @@
             <ol class="day-rows">
               {#each day.rows as row (row.key)}
                 {#if row.kind === "system"}
-                  <li data-message-id={row.item.id}>
+                  <li class:eager={eager.has(row.key)} data-message-id={row.item.id}>
                     <SystemLine
                       text={row.item.text}
                       members={row.item.kind === "system" ? row.item.avatars.map(avatarOf) : []}
@@ -450,10 +456,11 @@
                   </li>
                 {:else if row.item.kind !== "system"}
                   {#if row.item.id === newLine}
-                    <li class="new-line" role="separator" aria-label="New messages" data-testid="new-line"><span>New</span></li>
+                    <li class="new-line" class:eager={eager.has(row.key)} role="separator" aria-label="New messages" data-testid="new-line"><span>New</span></li>
                   {/if}
                   <MessageRow
                     item={row.item}
+                    eager={eager.has(row.key)}
                     first={row.first || row.item.id === newLine}
                     last={row.last}
                     replyTo={row.replyTo ?? null}
@@ -477,7 +484,7 @@
                   />
                 {/if}
                 {#if replyCount && row.key === firstPost}
-                  <li class="replies" data-testid="thread-replies-divider">
+                  <li class="replies" class:eager={eager.has(row.key)} data-testid="thread-replies-divider">
                     <span>{replyCount} {replyCount === 1 ? "reply" : "replies"}</span>
                   </li>
                 {/if}
@@ -533,14 +540,14 @@
   }
   /*
    * A long thread holds over 12,000 nodes, and on 11-20 each older page that came in blocked the main thread for 230 to 330 ms. A row off
-   * screen skips its layout and paint and keeps the height it last drew at; the newest rows, on screen when a thread opens, always draw.
+   * screen skips its layout and paint and keeps the height it last drew at; the newest rows (.eager), on screen when a thread opens, always draw.
    */
   .day-rows > :global(li) {
     content-visibility: auto;
     contain-intrinsic-size: auto none auto 160px;
   }
   /* Containment clips what a row draws outside itself, so a row that shows its hover toolbar above its top edge drops it. */
-  .day-group:last-child .day-rows > :global(li:nth-last-child(-n + 16)),
+  .day-rows > :global(li.eager),
   .day-rows > :global(li:is(:hover, :focus-within, .picking)) {
     content-visibility: visible;
   }
