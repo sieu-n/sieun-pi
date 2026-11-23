@@ -528,16 +528,17 @@ export function parseDutyInput(value: unknown, id: string, now: number, schedule
 /**
  * Adds a duty definition to a chat's duties, or updates the definition of the duty with the same name and keeps its run state, so applying it
  * twice changes nothing. A definition with no `schedule` keeps the existing duty's schedule, and a new one runs daily at `morning`
- * (`morningTime`). Returns what it did: "added d3", "updated d1" or "unchanged d1".
+ * (`morningTime`). A new duty's id is above `lastId`, the highest id the chat ever gave (`nextDutyId`). Returns what it did: "added d3",
+ * "updated d1" or "unchanged d1".
  */
-export function upsertDuty(duties: Duty[], definition: unknown, now: number, morning?: string): string {
+export function upsertDuty(duties: Duty[], definition: unknown, now: number, morning?: string, lastId = 0): string {
   const name = isRecord(definition) && typeof definition.name === "string" ? definition.name.trim() : undefined;
   const before = duties.find(duty => duty.name === name);
   if (isRecord(definition)) {
     const stray = dutyStrayBranches(definition);
     if (stray.length) throw new Error(`names ${stray.map(branch => `"${branch}"`).join(", ")}. ${STRAY_BRANCH_FIX}`);
   }
-  const parsed = parseDutyInput(definition, nextDutyId(duties), now, before?.schedule ?? (morning ? { kind: "daily", at: morning } : undefined));
+  const parsed = parseDutyInput(definition, nextDutyId(duties, lastId), now, before?.schedule ?? (morning ? { kind: "daily", at: morning } : undefined));
   const existing = duties.find(duty => duty.name === parsed.name);
   if (!existing) { duties.push(parsed); return `added ${parsed.id}`; }
   const { id: _id, status: _status, createdAt: _createdAt, updatedAt: _updatedAt, runCount: _runCount, ...fields } = parsed;
@@ -548,9 +549,12 @@ export function upsertDuty(duties: Duty[], definition: unknown, now: number, mor
   return `updated ${existing.id}`;
 }
 
-/** The next duty id in a chat: d1, d2, ... never reused. */
-export function nextDutyId(duties: readonly Duty[]): string {
-  return `d${duties.reduce((max, duty) => Math.max(max, Number(duty.id.slice(1)) || 0), 0) + 1}`;
+/**
+ * The next duty id in a chat: d1, d2, ... above every id in `duties` and above `last`, the highest id the chat ever gave. A removed duty's id
+ * is gone from `duties`, so without `last` the next duty would take it, with its fix steps (`d3/<metric>`) and any state file a late precheck wrote.
+ */
+export function nextDutyId(duties: readonly Duty[], last = 0): string {
+  return `d${duties.reduce((max, duty) => Math.max(max, Number(duty.id.slice(1)) || 0), last) + 1}`;
 }
 
 /** A duties file as stored; unreadable duties are dropped rather than failing the chat's whole list. */

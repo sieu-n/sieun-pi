@@ -100,6 +100,13 @@ test("a remove deletes the duty with its runs and precheck state, and a second r
   assert.equal((await s.send<{ result: string }>("POST", `/api/agents/${agent}/duties`, { action: "remove", duty: "d1" })).body.result, "no duty d1");
 });
 
+test("a set after a remove of the highest duty takes a new id, never the removed one's", async () => {
+  assert.deepEqual(await duties(), []);
+  assert.equal((await set(definition)).body.result, "added d2");
+  assert.equal((await s.send<{ result: string }>("POST", `/api/agents/${agent}/duties`, { action: "remove", duty: "d2" })).body.result, "removed d2");
+  assert.equal(JSON.parse(readFileSync(s.app.boards.dutiesPath(agent), "utf8")).lastId, 2);
+});
+
 test("a relative precheck cwd, a bad definition and an unknown agent are refused", async () => {
   const relative = await set({ ...definition, precheck: { ...definition.precheck, cwd: "../.." } });
   assert.equal(relative.status, 400);

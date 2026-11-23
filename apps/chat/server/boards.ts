@@ -79,8 +79,15 @@ interface CheckInState {
  */
 export type PendingPrecheck = { at: number; launch: PrecheckLaunch }
   & ({ mode: "run"; trigger: DutyTrigger; job?: { id: string; name: string } } | { mode: "after"; run: number; job: string });
-/** `hidden` is when the owner hid the board from All boards and the Board sidebar; it still opens by its link. */
-export interface DutyFile { duties: Duty[]; runs: Record<string, DutyRunRecord[]>; pending?: Record<string, PendingPrecheck>; checkIn?: CheckInState; hidden?: number }
+/**
+ * `hidden` is when the owner hid the board from All boards and the Board sidebar; it still opens by its link. `lastId` is the number of the
+ * highest duty id the board ever gave, which a remove writes, so a new duty never takes a removed duty's id (`dutyIdFloor`).
+ */
+export interface DutyFile { duties: Duty[]; runs: Record<string, DutyRunRecord[]>; pending?: Record<string, PendingPrecheck>; checkIn?: CheckInState; hidden?: number; lastId?: number }
+
+/** The highest duty id number a duties file names: in `lastId`, a duty, its runs or a precheck at work. */
+const dutyIdFloor = (file: DutyFile): number =>
+  Math.max(file.lastId ?? 0, ...[...file.duties.map(duty => duty.id), ...Object.keys(file.runs ?? {}), ...Object.keys(file.pending ?? {})].map(id => Number(id.slice(1)) || 0));
 
 /**
  * What a board change does to the two lists of every board: the chat's row in All boards and its asks in For you, or a null row and no
@@ -595,7 +602,7 @@ export class Boards {
     const chat = this.chatId(id);
     const taken = new Set(this.chats().flatMap(other => this.file(other).duties.flatMap(duty => duty.schedule.kind === "daily" ? [duty.schedule.at] : [])));
     const file = this.file(chat);
-    const result = upsertDuty(file.duties, definition, now, morningTime(taken, "high", Math.random));
+    const result = upsertDuty(file.duties, definition, now, morningTime(taken, "high", Math.random), dutyIdFloor(file));
     if (!result.startsWith("unchanged")) this.save(chat, file);
     return { duties: this.duties(chat), result };
   }
@@ -606,6 +613,7 @@ export class Boards {
     const file = this.file(chat);
     const at = file.duties.findIndex(duty => duty.id === dutyId);
     if (at < 0) return { duties: this.duties(chat), result: `no duty ${dutyId}` };
+    file.lastId = dutyIdFloor(file);
     file.duties.splice(at, 1);
     delete file.runs[dutyId];
     delete file.pending?.[dutyId];
