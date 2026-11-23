@@ -10,8 +10,8 @@
  * line says what the screen did (client.ts `Wait`): `ahead` for a read no view shows yet, `shown` for a refresh behind a report the page
  * shows, and a wait for the rest.
  *
- * The reports the page showed with no chat or host filter are also kept in IndexedDB, one per range and grouping, so the first open after
- * a page load draws the last one at once: on 11-22 that open still waited 280 to 450 ms for its 37 KB answer, two round trips of slow start
+ * Every report with no chat or host filter, read ahead or shown, is also kept in IndexedDB, one per range and grouping, so the first open
+ * after a page load draws the last one at once and reads no other ahead: on 11-22 that open still waited 280 to 450 ms for its 37 KB answer, two round trips of slow start
  * (~/work/p188-usage/summary.md).
  */
 import { api, takeOver, type Wait } from "$lib/api/client";
@@ -64,18 +64,27 @@ function stored(key: string): Promise<UsageReport | null> {
   }), () => null);
 }
 
+/** The keys of the stored reports, read once per page load, so a read ahead skips a report the page can draw from the store. */
+let storedKeys: Promise<Set<string>> | undefined;
+const keysStored = (): Promise<Set<string>> => (storedKeys ??= stores("readonly").then(store => new Promise<Set<string>>(resolve => {
+  const request = store.getAllKeys();
+  request.onsuccess = () => resolve(new Set(request.result.map(String)));
+  request.onerror = () => resolve(new Set());
+}), () => new Set<string>()));
+
 function store(key: string, report: UsageReport): void {
+  void keysStored().then(keys => keys.add(key));
   void stores("readwrite").then(store => void store.put(report, key), () => undefined);
 }
 
-function fetchReport(filters: UsageFilters, wait: Wait, keep: boolean): Promise<KeptReport> {
+function fetchReport(filters: UsageFilters, wait: Wait): Promise<KeptReport> {
   const key = keyOf(filters);
   const left = performance.now();
   const promise = api.usage(filters, wait).then(report => {
     const entry = { report, read: left };
     kept.set(key, entry);
     const at = storedKey(filters);
-    if (keep && at) store(at, report);
+    if (at) store(at, report);
     return entry;
   }).finally(() => {
     if (flights.get(key)?.promise === promise) flights.delete(key);
@@ -120,23 +129,27 @@ export function readReport(filters: UsageFilters, mode: ReadMode = "view"): Prom
     if (flight.wait.background === "ahead") takeOver(flight.wait, shown ? "shown" : undefined);
     return flight.promise;
   }
-  return fetchReport(filters, shown ? { background: "shown" } : {}, true);
+  return fetchReport(filters, shown ? { background: "shown" } : {});
 }
 
 /**
- * Reads ahead every other range and grouping for the same chat and host whose kept report is not current, while the page is in view.
- * They are reads for the page he looks at (`Wait.first`), so the lane sends them before the sidebar's: in a walk on 11-22 the first load
- * of the app on the Usage page queued them behind its rooms and boards, and 7 picks in 30 s found no kept report and waited 435 to 889 ms.
+ * Reads ahead each other range and grouping for the same chat and host that the page has no report of, kept or stored, while the page is
+ * in view. A pick of a report it has shows that report at once with its time and reads the latest behind it (`readReport`), so a read ahead
+ * goes once per report, never again at each refresh. On 11-23 at 23:27 KST every load, each minute's refresh included, read all 7 others
+ * again, 6 to 149 KB of brotli each and about 650 KB in all, and the owner's own picks from Korea waited 3.5 to 4.4 s behind them while the
+ * server answered in 5 to 54 ms (requests/2026-11-23.jsonl, ~/work/usage-open-korea). They are reads for the page he looks at
+ * (`Wait.first`), so the lane sends them before the sidebar's.
  */
-export function readAhead(filters: UsageFilters): void {
+export async function readAhead(filters: UsageFilters): Promise<void> {
   if (typeof document !== "undefined" && document.hidden) return;
-  for (const range of USAGE_RANGES) {
-    for (const bucket of RANGE_BUCKETS[range]) {
-      const other = { ...filters, range, bucket };
-      const key = keyOf(other);
-      if (key === keyOf(filters) || flights.has(key) || current(kept.get(key))) continue;
-      fetchReport(other, { background: "ahead", first: true }, false).catch(() => undefined);
-    }
+  const others = USAGE_RANGES.flatMap(range => RANGE_BUCKETS[range].map(bucket => ({ ...filters, range, bucket })))
+    .filter(other => keyOf(other) !== keyOf(filters));
+  const keys = others.some(other => storedKey(other)) ? await keysStored() : new Set<string>();
+  for (const other of others) {
+    const key = keyOf(other);
+    const at = storedKey(other);
+    if (flights.has(key) || kept.has(key) || (at && keys.has(at))) continue;
+    fetchReport(other, { background: "ahead", first: true }).catch(() => undefined);
   }
 }
 
@@ -150,6 +163,6 @@ const FIRST: UsageFilters = { range: "24h", bucket: "hour" };
 export function storeFirstViewAhead(): void {
   void stored(storedKey(FIRST)!).then(report => {
     if (report || kept.has(keyOf(FIRST)) || flights.has(keyOf(FIRST))) return;
-    fetchReport(FIRST, { background: "ahead" }, true).catch(() => undefined);
+    fetchReport(FIRST, { background: "ahead" }).catch(() => undefined);
   });
 }

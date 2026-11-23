@@ -90,7 +90,7 @@
       asOf = null;
       error = null;
       schedulePoll(next.read);
-      readAhead(filters);
+      void readAhead(filters);
     } catch (reason) {
       if (id === request) {
         error = message(reason);

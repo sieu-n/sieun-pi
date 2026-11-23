@@ -124,6 +124,43 @@ test("the page reads every other range ahead, so a pick shows its chart with no 
   release();
 });
 
+/** The reports with no filter the page stored in IndexedDB (reports.ts), by key such as "24h:hour". */
+const storedReports = (page: Page) => page.evaluate(() => new Promise<string[]>(resolve => {
+  const open = indexedDB.open("chat.usage");
+  open.onsuccess = () => {
+    const keys = open.result.transaction("reports").objectStore("reports").getAllKeys();
+    keys.onsuccess = () => resolve(keys.result.map(String).sort());
+    keys.onerror = () => resolve([]);
+  };
+  open.onerror = () => resolve([]);
+}));
+
+test("each other range is read ahead once and stored, so a page load or a minute's refresh reads only the report on screen", async ({ page }) => {
+  await page.clock.install();
+  const asked: string[] = [];
+  page.on("request", request => {
+    const url = new URL(request.url());
+    if (url.pathname === "/api/usage") asked.push(url.search);
+  });
+  await page.goto("/#/settings/usage");
+  await expect(mainChart(page)).toBeVisible();
+  const all = ["1h:minute", "24h:hour", "24h:minute", "30d:day", "30d:hour", "7d:day", "7d:hour", "90d:day"];
+  await expect.poll(() => storedReports(page)).toEqual(all);
+
+  asked.length = 0;
+  await page.clock.runFor(61_000);
+  await expect.poll(() => asked).toEqual(["?range=24h&bucket=hour"]);
+  await page.clock.runFor(3_000);
+  expect(asked).toEqual(["?range=24h&bucket=hour"]);
+
+  asked.length = 0;
+  await page.reload();
+  await expect(mainChart(page)).toBeVisible();
+  await expect.poll(() => asked).toEqual(["?range=24h&bucket=hour"]);
+  await page.clock.runFor(3_000);
+  expect(asked).toEqual(["?range=24h&bucket=hour"]);
+});
+
 test("a page load draws the report the last load stored at once, names its time, and reads the latest behind it", async ({ page }) => {
   await page.goto("/#/settings/usage");
   await expect(mainChart(page)).toBeVisible();
