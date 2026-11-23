@@ -149,10 +149,13 @@ export function warmPrompts(app: App): void {
 const building = new Map<AgentId, Promise<AgentPrompt>>();
 /** Each agent's newest answer, by its text: a build that made the same text answers with it, so `builtAt` is when that text was first built. */
 const newest = new Map<AgentId, { text: string; answer: AgentPrompt }>();
+/** How many builds this process ran; a test reads it. */
+export let promptBuilds = 0;
 
 export function agentPrompt(app: App, id: AgentId): Promise<AgentPrompt> {
   let pending = building.get(id);
   if (!pending) {
+    promptBuilds += 1;
     pending = build(app, id).then(answer => {
       const text = JSON.stringify({ ...answer, builtAt: 0 });
       const kept = newest.get(id);
@@ -166,11 +169,14 @@ export function agentPrompt(app: App, id: AgentId): Promise<AgentPrompt> {
 }
 
 /**
- * The route's answer: the same text keeps its bytes, compressed once, and its ETag, so a page that holds it gets 304 with no body. An
- * answer was 67 to 102 KB as brotli for agent factory, vent and Crawler guy on 11-24, and a page reads it again at each open of the tab.
+ * GET /api/agents/:id/prompt: the whole answer of the newest build, waiting for one on its way, and built only when there is none. The
+ * page reads it for the texts of the outline it shows, whose read built them (`agentPromptOutlineAnswer`); a second build per open doubled
+ * the builder's work, and at load 120 to 235 on us-metal02 on 11-24 the route's server time reached p90 553 ms. The same text keeps its
+ * bytes, compressed once, and its ETag, so a page that holds it gets 304 with no body: 67 to 102 KB as brotli for agent factory, vent and
+ * Crawler guy on 11-24.
  */
 export async function agentPromptAnswer(app: App, id: AgentId): Promise<KeptJson> {
-  const answer = await agentPrompt(app, id);
+  const answer = await (building.get(id) ?? newest.get(id)?.answer ?? agentPrompt(app, id));
   return new KeptJson(`prompt:${id}`, [answer], () => {
     const json = JSON.stringify(answer);
     return { json, rest: json, entries: [] };
@@ -184,8 +190,9 @@ export const promptOutline = (answer: AgentPrompt): AgentPromptOutline => ({
 });
 
 /**
- * GET /api/agents/:id/prompt/outline as a `KeptJson`, kept by the answer it outlines. At a 200 ms round trip in a walk on 11-24, a first
- * open that read the whole answer, 63 to 94 KB as brotli, drew the tab 1.4 s after the click once the page had sat idle.
+ * GET /api/agents/:id/prompt/outline as a `KeptJson`, kept by the answer it outlines; each read builds. At a 200 ms round trip in a
+ * walk on 11-24, a first open that read the whole answer, 63 to 94 KB as brotli, drew the tab 1.4 s after the click once the page had
+ * sat idle.
  */
 export async function agentPromptOutlineAnswer(app: App, id: AgentId): Promise<KeptJson> {
   const answer = await agentPrompt(app, id);

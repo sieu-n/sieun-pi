@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { builderStarts } from "../../server/agent-prompt.ts";
+import { builderStarts, promptBuilds } from "../../server/agent-prompt.ts";
 import type { AgentPrompt, AgentPromptOutline } from "../../web/src/lib/api/types.ts";
 import { FIXTURE_AGENTS as agents, FIXTURE_IDS as ids } from "../../server/fixture/seed.ts";
 import { start, type Running } from "./helpers.ts";
@@ -50,18 +50,24 @@ test("calls for one agent that overlap share one build, and an unknown agent is 
   assert.equal((await s.send("GET", "/api/agents/ag_nobody/prompt")).status, 404);
 });
 
-test("a later call builds again in the builder the first call started, and an AGENTS.md changed between calls reaches its answer", async () => {
+test("an outline read builds again in the builder the first call started, and an AGENTS.md changed between reads reaches the whole answer", async () => {
   const first = await prompt(agents.harness);
   const starts = builderStarts;
+  const outline = () => s.get<AgentPromptOutline>(`/api/agents/${encodeURIComponent(agents.harness)}/prompt/outline`);
   const rules = join(s.app.agents.record(agents.harness)!.home, "AGENTS.md");
   const text = existsSync(rules) ? readFileSync(rules, "utf8") : undefined;
   try {
     writeFileSync(rules, `${text ?? "# Rules\n"}\nThe prompt-tab-speed marker line.\n`);
+    const built = promptBuilds;
+    await outline();
+    assert.equal(promptBuilds, built + 1, "the outline read builds");
     const second = await prompt(agents.harness);
+    assert.equal(promptBuilds, built + 1, "the whole answer after it takes that build's texts and builds no more");
     assert.equal(builderStarts, starts, "the second call starts no new builder");
     assert.ok(second.builtAt > first.builtAt, "the second call builds again");
     const context = second.kinds[0]!.sections.find(sec => sec.key === "context")!.text;
     assert.match(context, /The prompt-tab-speed marker line\./);
+    await outline();
     const third = await prompt(agents.harness);
     assert.equal(builderStarts, starts, "the third call starts no new builder");
     assert.equal(third.builtAt, second.builtAt, "a build that made the same text answers with the time that text was first built");
@@ -89,8 +95,8 @@ test("a page that holds the newest answer gets 304 with no body", async () => {
 });
 
 test("the outline lists each section's key, source and size with no text, of the same build as the whole answer", async () => {
-  const whole = await prompt(agents.harness);
   const outline = await s.get<AgentPromptOutline>(`/api/agents/${encodeURIComponent(agents.harness)}/prompt/outline`);
+  const whole = await prompt(agents.harness);
   assert.equal(outline.builtAt, whole.builtAt);
   assert.deepEqual(outline.kinds.map(k => k.sections.map(sec => [sec.key, sec.chars])), whole.kinds.map(k => k.sections.map(sec => [sec.key, sec.text.length])));
   assert.equal(outline.kinds.some(k => k.sections.some(sec => "text" in sec)), false);
