@@ -1,8 +1,7 @@
 <script lang="ts">
-  import { reads, view, type AgentPrompt, type PromptKind, type PromptSection } from "$lib/api";
+  import { reads, view, type PromptKind, type PromptSection } from "$lib/api";
   import { Button, Disclosure, IconButton, LoadingText, ShowAllList, stampLabel, toast } from "$lib/ui";
   import type { AgentTabProps } from "./agent-tab";
-  import { shortPath } from "./agents-model";
 
   /**
    * The Prompt tab: the whole prompt each kind of the agent's threads runs with, as pi-host's builder makes it (GET /api/agents/:id/prompt),
@@ -31,13 +30,20 @@
     working: "Working memory",
     instructions: "Role text",
   };
+  /** pi-host's `PRIME_SECTIONS`: the parts Prime's own builder writes, in its order. */
+  const PRIME = new Set(["preamble", "delegation", "mcp", "guidance", "context", "skills"]);
+  /** The sections in the groups the model gets them in: Prime's prompt, what pi-host adds after it, and a root's digest sent before each input. */
+  const groupsOf = (sections: readonly PromptSection[]) => [
+    { id: "prime", label: "Prime's prompt", sections: sections.filter(s => !s.message && PRIME.has(s.key)) },
+    { id: "added", label: "Added by pi-host after it", sections: sections.filter(s => !s.message && !PRIME.has(s.key)) },
+    { id: "turn", label: "Sent as a message before each turn's input", sections: sections.filter(s => s.message) },
+  ].filter(group => group.sections.length > 0);
   const sectionName = (key: string): string => SECTIONS[key] ?? key.replace(/[-_]/g, " ").replace(/^./, c => c.toUpperCase());
   const chars = (n: number): string => `${n.toLocaleString("en-US")} ${n === 1 ? "character" : "characters"}`;
   /** The text the model gets: the system prompt's sections joined as pi-ai joins them, then the digest a root gets as a message. */
   const whole = (sections: readonly PromptSection[]): string =>
     [sections.filter(s => !s.message), sections.filter(s => s.message)].map(group => group.map(s => s.text).join("\n\n")).filter(Boolean).join("\n\n");
   const sizeOf = (sections: readonly PromptSection[]): number => sections.reduce((n, s) => n + s.text.length, 0);
-  const jobNote = (kind: AgentPrompt["kinds"][number]): string => kind.kind === "job" ? `${KINDS.job.note} Built here for job ${kind.conversation}.` : KINDS[kind.kind].note;
   const builtBy = (path: string): string => path.split("/").filter(Boolean).at(-1) ?? path;
 
   function copy(text: string, what: string) {
@@ -73,17 +79,16 @@
         <span class="t-caption meta">{chars(sizeOf(kind.sections))}</span>
         <IconButton icon="copy" label="Copy the {title.toLowerCase()} prompt" size="xs" onclick={() => copy(whole(kind.sections), `the ${title.toLowerCase()} prompt`)} />
       </div>
-      <p class="t-caption meta">{jobNote(kind)}</p>
-      <ShowAllList items={kind.sections.filter(s => !s.message)} key={section => section.key} noun="sections" label="{title} system prompt" row={sectionRow} dense />
-      {#if kind.sections.some(s => s.message)}
-        <p class="t-caption meta turn">Sent as a message before each turn's input</p>
-        <ShowAllList items={kind.sections.filter(s => s.message)} key={section => section.key} noun="sections" label="{title} messages" row={sectionRow} dense />
-      {/if}
+      <p class="t-caption meta">{KINDS[kind.kind].note}</p>
+      {#each groupsOf(kind.sections) as group (group.id)}
+        <p class="t-caption meta group" data-group={group.id}>{group.label}</p>
+        <ShowAllList items={group.sections} key={section => section.key} noun="sections" label="{title}: {group.label}" row={sectionRow} dense />
+      {/each}
     </section>
   {/each}
   {#if prompt.builtBy}
     <p class="t-caption meta built" title={prompt.builtBy}>
-      Built by pi-host {builtBy(prompt.builtBy)} in {shortPath(prompt.builtBy)}, {stampLabel(prompt.builtAt)}.
+      Built by pi-host {builtBy(prompt.builtBy)}, {stampLabel(prompt.builtAt)}.
       <Button variant="ghost" size="sm" disabled={answer.loading} onclick={() => answer.refresh()}>Build again</Button>
     </p>
   {/if}
@@ -110,7 +115,7 @@
   .section {
     min-width: 0;
   }
-  .turn {
+  .group {
     margin: var(--space-1) 0 0;
   }
   .text {

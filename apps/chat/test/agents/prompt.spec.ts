@@ -22,8 +22,8 @@ test("the Prompt tab shows each thread kind's whole prompt with its size, folded
     // The server builds the prompts in a child process, about 3 s alone and longer beside the other workers' fixture load.
     await expect(block.locator(".kind-head")).toContainText(`${size.toLocaleString("en-US")} characters`, { timeout: 30_000 });
     await expect(block.getByRole("button", { name: /^Copy the .* prompt$/ })).toBeVisible();
-    const system = kind.sections.filter((s) => !s.message).length;
-    await expect(block.locator("li.section")).toHaveCount(Math.min(system, 10) + kind.sections.length - system);
+    // Each group (Prime's prompt, what pi-host adds, a root's digest) holds at most 6 sections, so every row shows with no Show all.
+    await expect(block.locator("li.section")).toHaveCount(kind.sections.length);
   }
 
   // A section opens to its text and source, and a root's digest says it goes in before each turn.
@@ -33,7 +33,7 @@ test("the Prompt tab shows each thread kind's whole prompt with its size, folded
   await expect(work.locator(`li.section[data-key="${first.key}"] pre`)).toContainText(first.text.slice(0, 60));
   const digest = prompt.kinds[0]!.sections.find((s) => s.key === "harness");
   if (digest?.message) {
-    await expect(work.locator("p.turn")).toHaveText("Sent as a message before each turn's input");
+    await expect(work.locator('p[data-group="turn"]')).toHaveText("Sent as a message before each turn's input");
     await expect(work.locator('li.section[data-key="harness"]')).toBeVisible();
   }
   await expect(panel.getByText(/^Built by pi-host /)).toBeVisible();
