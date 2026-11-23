@@ -178,8 +178,7 @@ export class DurableCommands {
         case "durable_doc_get":
           return done({ value: await this.threads.docGet(str(command, "thread"), str(command, "name"), optNum(command, "conversation")) });
         case "durable_doc_put":
-          await this.threads.docPut(str(command, "thread"), str(command, "name"), command.value ?? null, optNum(command, "conversation"));
-          return done();
+          return done({ written: await this.threads.docPut(str(command, "thread"), str(command, "name"), command.value ?? null, optNum(command, "conversation"), { newerOnly: command.newerOnly === true }) });
         case "durable_set": {
           const model = modelRef(command.model);
           return done({ thread: await this.threads.set(str(command, "thread"), {

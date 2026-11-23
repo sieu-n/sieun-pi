@@ -47,6 +47,9 @@ import { failedInputs, failureNotice, rootFailed, failureTarget, isRetry, lastMo
 const context: Context = BACKGROUND_CONTEXT;
 const PREVIEW_CHARS = 200;
 const PAGE_MAX = 500;
+/** A doc value's `rev`, such as a chat.board's, for `docPut`'s newerOnly; a value with none counts as older than any. */
+const revOf = (value: unknown): number =>
+  typeof value === "object" && value !== null && typeof (value as { rev?: unknown }).rev === "number" ? (value as { rev: number }).rev : -Infinity;
 
 export interface DurableThreadsOptions {
   /** The folder of thread files (`threads/<id>.sqlite`) and `index.sqlite`. */
@@ -1098,20 +1101,32 @@ export class DurableThreads {
     return doc?.value ?? null;
   }
 
-  /** Writes a chat.doc. An `agent.ref` in the root conversation also sets the root's tools and instructions for its role, in the same commit. */
-  async docPut(id: string, name: string, value: unknown, conversation?: number): Promise<void> {
+  /**
+   * Writes a chat.doc. An `agent.ref` in the root conversation also sets the root's tools and instructions for its role, in the same commit.
+   * With `newerOnly` the doc it holds stays when its `rev` is above `value.rev`, checked in the same commit, and the answer is false: apps/chat
+   * puts a board after it answered the write, so a put that lands late, such as one a release's stop left running, must not replace a later
+   * board (apps/chat/server/boards.ts `putBoards`).
+   */
+  async docPut(id: string, name: string, value: unknown, conversation?: number, opts: { newerOnly?: boolean } = {}): Promise<boolean> {
     const open = await this.thread(id);
     const target = (conversation ?? ROOT_CONVERSATION_ID) as ConversationId;
+    let written = true;
     await open.harness.commit(async tx => {
       const draft = await tx.doc(ChatDoc, target, name, null);
+      if (opts.newerOnly && revOf(draft.value) > revOf(value)) {
+        written = false;
+        return;
+      }
       draft.value = value as never;
       if (name === AGENT_REF_DOC && target === ROOT_CONVERSATION_ID) await applyAgentRole(tx, parseAgentRef(value));
     }, context);
+    if (!written) return false;
     if (name === AGENT_REF_DOC && target === ROOT_CONVERSATION_ID && this.options.pool) {
       const ref = parseAgentRef(value);
       this.options.pool.agent({ id, name: this.index.get(id)?.name ?? id }, ref, ref?.role === "comm" ? await this.sessionOf(open.harness, ROOT_CONVERSATION_ID) : undefined);
     }
     for (const watcher of open.watchers) watcher.sink({ type: "doc", conversation: target, name, value });
+    return true;
   }
 
   /**
