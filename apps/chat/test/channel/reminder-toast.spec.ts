@@ -4,24 +4,31 @@ import { open, tag } from "./helpers.ts";
 /**
  * A due reminder as Slack's Slackbot message has it: the toast carries View, Mark complete and a Snooze menu (lib/remind-live.ts). Undo
  * after Remove from Later puts the row back with its reminder (server/later.ts `restore`), and a post kept unread reads as coming back
- * unread, never as a reminder he set. Each run makes its own channel on the fixture server.
+ * unread, never as a reminder he set. Each run makes its own test channel on the fixture server. The server sends a test room's due
+ * reminder only to the pages that have that room open (server/app.ts `later_due`), so the toasts of one test never land on another
+ * test's page, where four due reminders at once pushed out a "Removed from Later" toast before its Undo was clicked. The pages open
+ * with `?test=1`, as a walk does, so Later reads keep the test room's rows.
  */
-async function post(page: Page): Promise<{ room: string; id: string; text: string }> {
+async function posts(page: Page, count = 1): Promise<{ room: string; id: string; text: string }[]> {
   const name = `remind-${tag()}`;
-  const room = ((await (await page.request.post("/api/rooms", { data: { kind: "channel", name, members: [] } })).json()) as { id: string }).id;
-  const text = `remind me about ${name}`;
-  const sent = (await (await page.request.post(`/api/c/${room}/send`, { data: { text, requestId: crypto.randomUUID() } })).json()) as { item: { id: string } };
-  return { room, id: sent.item.id, text };
+  const room = ((await (await page.request.post("/api/rooms", { data: { kind: "channel", name, members: [], test: true } })).json()) as { id: string }).id;
+  const sent = [];
+  for (let i = 1; i <= count; i++) {
+    const text = `remind me about ${name} ${i}`;
+    const res = (await (await page.request.post(`/api/c/${room}/send`, { data: { text, requestId: crypto.randomUUID() } })).json()) as { item: { id: string } };
+    sent.push({ room, id: res.item.id, text });
+  }
+  return sent;
 }
+const post = async (page: Page) => (await posts(page))[0]!;
 
 type Item = { id: string; state: string; remindAt?: number; unread?: boolean };
 const item = async (page: Page, id: string): Promise<Item | undefined> =>
-  ((await (await page.request.get("/api/later")).json()) as { items: Item[] }).items.find((i) => i.id === id);
+  ((await (await page.request.get("/api/later?test=1")).json()) as { items: Item[] }).items.find((i) => i.id === id);
 
 test("a due reminder's toast snoozes it from a menu and marks it complete", async ({ page }) => {
-  const a = await post(page);
-  const b = await post(page);
-  await open(page, `#/c/${a.room}`);
+  const [a, b] = await posts(page, 2);
+  await open(page, `#/c/${a.room}?test=1`);
   const due = Date.now() + 1500;
   await page.request.post("/api/later", { data: { room: a.room, post: a.id, remindAt: due } });
   await page.request.post("/api/later", { data: { room: b.room, post: b.id, remindAt: due } });
@@ -46,9 +53,8 @@ test("a due reminder's toast snoozes it from a menu and marks it complete", asyn
 });
 
 test("a due reminder's toast goes away when another tab or the Mac app checks it off or snoozes it", async ({ page }) => {
-  const a = await post(page);
-  const b = await post(page);
-  await open(page, `#/c/${a.room}`);
+  const [a, b] = await posts(page, 2);
+  await open(page, `#/c/${a.room}?test=1`);
   const due = Date.now() + 1500;
   await page.request.post("/api/later", { data: { room: a.room, post: a.id, remindAt: due } });
   await page.request.post("/api/later", { data: { room: b.room, post: b.id, remindAt: due } });
@@ -68,7 +74,7 @@ test("Undo after Remove from Later brings the row back with its reminder", async
   const a = await post(page);
   const remindAt = Date.now() + 2 * 3_600_000;
   await page.request.post("/api/later", { data: { room: a.room, post: a.id, remindAt } });
-  await open(page, "#/c/later", "later-page");
+  await open(page, "#/c/later?test=1", "later-page");
   const row = page.locator(`[data-later-id="${a.room}:${a.id}"]`);
   await expect(row.locator("[data-later-due]")).toContainText("Due");
   await row.hover();
@@ -83,7 +89,7 @@ test("Undo after Remove from Later brings the row back with its reminder", async
 test("a post kept unread says when it comes back unread, not a due time", async ({ page }) => {
   const a = await post(page);
   await page.request.post(`/api/c/${a.room}/read`, { data: { unreadFrom: a.id } });
-  await open(page, "#/c/later", "later-page");
+  await open(page, "#/c/later?test=1", "later-page");
   const row = page.locator(`[data-later-id="${a.room}:${a.id}"]`);
   await expect(row.locator("[data-later-due]")).toContainText("Comes back unread");
   await row.hover();
@@ -109,9 +115,8 @@ test("the Mac app's reminder notification has Snooze and Mark complete buttons t
       },
     };
   });
-  const a = await post(page);
-  const b = await post(page);
-  await open(page, `#/c/${a.room}`);
+  const [a, b] = await posts(page, 2);
+  await open(page, `#/c/${a.room}?test=1`);
   type Call = { cmd: string; args?: { types?: { id: string; actions: { title: string }[] }[]; event?: string; handler?: string; options?: { title: string; actionTypeId?: string; extra?: { row: { id: string } } } } };
   const calls = () => page.evaluate(() => (window as unknown as { __calls: unknown[] }).__calls) as Promise<Call[]>;
   await expect.poll(async () => (await calls()).find((c) => c.cmd === "plugin:notification|register_action_types")?.args?.types?.[0]?.actions.map((x) => x.title))
