@@ -136,11 +136,11 @@ export interface DutyFile { version: 1; duties: Duty[]; checkIn?: CheckInDutySta
  * after its summary (ops guy 10-10 to 10-12: 220 of 293 Local dev servers runs skipped the precheck too); a check-in run is recorded as skipped.
  */
 export const STILL_WORKING = "skipped: previous run still working";
-/** What started a run: its schedule, a catch-up, or the owner's Run now. */
-/** `verify`: a re-measure after a fix step linked to one of the duty's metrics closed (src/shared/duty-streak.ts). */
-/** `push`: a red standing duty with no job at work on it, run again at the chat's check-in interval (`pushMisses` in src/duty-push.ts). */
-/** `rerun`: the one rerun of a cut run (`DutyRunRecord.cut`), at the first tick pi-pool admits the cut job's tree (`Duties.rerunCut`). */
-/** `host-back`: the rerun of a run that waited on a box Tailscale read offline (`DutyRunRecord.hostAway`), at the first tick it reads online. */
+/**
+ * What started a run. sw factory starts one on its schedule, as a catch-up of a missed slot, or on the owner's Run now (`Boards.runDuty`).
+ * `verify`, `push`, `rerun` and `host-back` come only on runs copied from a Prime chat (`Boards.importPrime`), where they mean a re-measure
+ * after a fix step closed, a red duty run again at the check-in interval, the one rerun of a cut run, and a rerun once its box was back online.
+ */
 export type DutyTrigger = "schedule" | "catch-up" | "owner" | "verify" | "push" | "rerun" | "host-back";
 export type DutyVerdict = "met" | "missed" | "error" | "skipped";
 /** `lastEventAt` is the precheck's time of the newest event a windowed count counts (`PrecheckOutput.lastEventAt`), `windowMs` its window. */

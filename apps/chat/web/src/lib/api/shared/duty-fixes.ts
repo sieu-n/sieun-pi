@@ -1,6 +1,5 @@
 import { CHECK_IN_DUTY, type Duty, type DutyRunRecord, type FixLink, type FlaggedSlice } from "./chat-duties.ts";
-import type { MetricStreak } from "./duty-streak.ts";
-import type { BoardOp, ChatBoard, PlanItem, SessionRow } from "./types.ts";
+import type { ChatBoard, PlanItem, SessionRow } from "./types.ts";
 import type { StalledCall } from "./stalled-calls.ts";
 
 /** Whether a fix step's job is at work: true, false, or the stall of its owner session, which counts as not at work and names the process to stop. */
@@ -8,7 +7,8 @@ export type FixLiveness = boolean | StalledCall;
 
 /**
  * Fix steps: a plan step whose `duty` is `<dutyId>/<metricKey>` is the chat's fix for that duty metric. A duty run records them for its missed
- * metrics (`dutyFixes`, with `fixJobLive`), and a fix step that closes starts a verify run of its duty (`closedFixes`), whose reading goes into its note (`verifyNoteOps`). Pure and browser-safe.
+ * metrics (`dutyFixes`, with `fixJobLive`). sw factory starts no run when a fix step closes, so the duty's next run measures the fix. Pure and
+ * browser-safe.
  */
 
 const DUTY_LINK = /^([a-z][a-z0-9_-]{0,39})\/([a-z][a-z0-9_]{0,39})$/;
@@ -116,45 +116,6 @@ function stepTarget(item: PlanItem): { target: NonNullable<FixLink["target"]> } 
 }
 
 export const missedKeys = (run: Pick<DutyRunRecord, "metrics">): string[] => Object.entries(run.metrics).filter(([, result]) => !result.met).map(([key]) => key);
-
-/**
- * The ops that write a verify run's reading into the note of each fix step it finds closed while its metric still misses. The step stays done:
- * the duty's push owns the number, through a live fix job or a new fix job on a new step for a new cause. Until 10-22 a verify run reopened
- * such a step as todo with no job, and closing it again started the next verify run: AI harness closed p804 and p818 at 06:34Z on 10-22, the
- * verify runs read stuck_steps_all 1 and stuck_duties 4, reopened both, and they reopened again at 06:36Z, so the plan showed four todo steps
- * nobody worked (owner 10-22: "are they real items? are agents working on all of them actively?").
- */
-export function verifyNoteOps(board: ChatBoard | null, streaks: readonly MetricStreak[], at: number): BoardOp[] {
-  const steps = new Map<string, PlanItem>();
-  const visit = (items: readonly PlanItem[]) => { for (const item of items) { steps.set(item.id, item); visit(item.children); } };
-  visit(board?.plan ?? []);
-  const notes = new Map<string, string>();
-  for (const streak of streaks) {
-    const step = streak.fix && steps.get(streak.fix.step);
-    if (!step || step.status !== "done") continue;
-    const words = `The ${new Date(at).toISOString().slice(11, 16)}Z verify run read ${streak.key} ${streak.value}, target ${streak.op} ${streak.target}.`;
-    const note = notes.get(step.id) ?? step.note ?? "";
-    if (!note.includes(words)) notes.set(step.id, note ? `${note} ${words}` : words);
-  }
-  return [...notes].map(([id, note]) => ({ op: "plan_update", id, note }));
-}
-
-/** The steps with a duty link that were open or absent before and are done after: each starts one verify run of its duty. */
-export function closedFixes(before: ChatBoard | null, after: ChatBoard): { step: string; duty: string; metric: string }[] {
-  const was = new Map<string, PlanItem["status"]>();
-  const seen = (items: readonly PlanItem[]) => { for (const item of items) { was.set(item.id, item.status); seen(item.children); } };
-  seen(before?.plan ?? []);
-  const closed: { step: string; duty: string; metric: string }[] = [];
-  const visit = (items: readonly PlanItem[]) => {
-    for (const item of items) {
-      const link = item.duty ? parseDutyLink(item.duty) : null;
-      if (link && item.status === "done" && was.get(item.id) !== "done") closed.push({ step: item.id, ...link });
-      visit(item.children);
-    }
-  };
-  visit(after.plan);
-  return closed;
-}
 
 /**
  * Where `fixLiveReader` reads a fix job's state: the catalog rows, the sessions asleep on a board.wake, in pi-pool's queue, held by pi-pool after a

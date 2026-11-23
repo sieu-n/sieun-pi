@@ -129,7 +129,7 @@ export interface PlanItem {
   target?: GoalTarget;
   /**
    * The duty metric this step fixes, `<dutyId>/<metricKey>` like "d6/usable_pct_24h" or "checkin/stuck_steps" (`dutyFixes` in
-   * src/shared/duty-fixes.ts). Each duty run reads it as the fix for that metric's miss, and its close starts a verify run of the duty.
+   * src/shared/duty-fixes.ts). Each duty run reads it as the fix for that metric's miss.
    */
   duty?: string;
   /**
