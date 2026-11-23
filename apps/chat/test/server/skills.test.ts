@@ -72,6 +72,18 @@ test("a failed scan keeps the last inventory and names its error", async t => {
   assert.equal(after.inventory?.skills.length, 1);
 });
 
+test("a clean scan logs each skipped part it names, as one plain line, and no failure", async t => {
+  const dir = folder(t);
+  const inventory = join(dir, "inventory.json");
+  writeFileSync(inventory, JSON.stringify({ skills: [row({})] }));
+  const lines: string[] = [];
+  const script = "echo 'skipped the Mac scan: this box has no ssh client' >&2; echo 'some progress' >&2";
+  const skills = new Skills({ inventory, scanner: { command: "sh", args: ["-c", script], cwd: dir } }, "box1", line => lines.push(line));
+  await skills.startScan().done;
+  assert.deepEqual(lines, ["skills: skipped the Mac scan: this box has no ssh client"]);
+  assert.equal((await skills.report()).scan.error, null);
+});
+
 test("a doc reads the file on this box, the carried text of a row on another box, and names related rows", async t => {
   const dir = folder(t);
   const inventory = join(dir, "inventory.json");

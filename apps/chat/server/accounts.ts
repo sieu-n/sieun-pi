@@ -9,7 +9,7 @@ import type { IncomingMessage } from "node:http";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import {
-  AccountLogins, forgetAccountReadings, listAccounts, PoolError, readNoModelRoom, runAccountAction, setNoModelRoom, setPoolPriority, UsageRefreshes,
+  AccountLogins, forgetAccountReadings, listAccounts, poolExecutable, PoolError, readNoModelRoom, runAccountAction, setNoModelRoom, setPoolPriority, UsageRefreshes,
 } from "../../../legacy/prime/user-history/src/chat-pool.ts";
 import { NO_MODEL_ROOM, POOL_PRIORITIES, type AccountAction, type AccountsView, type AccountThread, type NoModelRoom, type PoolPriority } from "../web/src/lib/api/shared/types.ts";
 import type { App } from "./app.ts";
@@ -162,6 +162,15 @@ async function poolView(tree: string | null, model: string | null, fresh: boolea
   };
 }
 
+/**
+ * The view of a box with no pi-pool CLI, or undefined when the CLI is there. A compose dev instance has none (its pi-host takes an API key,
+ * or the box's pool through deploy/compose/compose.pool.yaml), and every pool read there failed with ENOENT, which the page showed as
+ * "Accounts unavailable" on every DM.
+ */
+function noPool(): AccountsView | undefined {
+  return existsSync(poolExecutable()) ? undefined : { sessionId: null, checkedAt: new Date().toISOString(), providers: [], poolConfig: null, absent: true };
+}
+
 const hasNoRecord = (view: AccountsView): boolean => view.providers.every(entry => NO_RECORD.test(entry.error ?? ""));
 
 /** Turns a failed tree write into a plain sentence when the reason is that the tree has no record yet. */
@@ -196,8 +205,10 @@ export function accountRoutes<R>(app: App, route: (method: string, path: string,
   const names = new AccountNames(join(app.config.dataDir, "account-names.json"));
   const accountsView = async (tree: string | null, model: string | null, fresh: boolean): Promise<AccountsView> => names.apply(await poolView(tree, model, fresh));
   return [
-    route("GET", "/api/pool", handled(async () => names.apply(await listAccounts(null)))),
+    route("GET", "/api/pool", handled(async () => noPool() ?? names.apply(await listAccounts(null)))),
     route("GET", "/api/accounts", handled(async (_r, _p, q) => {
+      const absent = noPool();
+      if (absent) return absent;
       const thread = q.get("thread");
       return accountsView(thread ? poolTree(app, thread) : null, optional(q.get("model") || null, "model", 256), q.get("fresh") === "1");
     })),

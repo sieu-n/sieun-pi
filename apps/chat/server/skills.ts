@@ -157,7 +157,11 @@ export class Skills {
         stderr = (stderr + chunk).slice(-4000);
       });
       child.on("error", error => void finish(error.message));
-      child.on("close", (code, signal) => void finish(code === 0 ? null : stderr.trim().split("\n").slice(-3).join(" ") || `exit ${code ?? signal}`));
+      child.on("close", (code, signal) => {
+        // A clean scan says on stderr what it left out, such as the Mac scan on a box with no ssh client (scripts/skills-inventory.py).
+        if (code === 0) for (const line of stderr.split("\n")) if (line.startsWith("skipped ")) this.log(`skills: ${line}`);
+        void finish(code === 0 ? null : stderr.trim().split("\n").slice(-3).join(" ") || `exit ${code ?? signal}`);
+      });
     }));
     return this.running;
   }

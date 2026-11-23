@@ -19,6 +19,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -411,7 +412,10 @@ def main() -> None:
     by_box = load_json(Path(args.install_paths)) if args.install_paths else None
     by_box = by_box if isinstance(by_box, dict) else {}
     scans = [scan_box("us-metal02", not args.no_usage, by_box.get("us-metal02"))]
-    if not args.no_mac:
+    if not args.no_mac and shutil.which("ssh") is None:
+        # A box with no ssh client, such as a compose dev instance (compose.yaml), cannot reach the Mac; apps/chat logs this line once per scan.
+        print("skipped the Mac scan: this box has no ssh client", file=sys.stderr)
+    elif not args.no_mac:
         scans.append(scan_remote("mac", args.mac_host, not args.no_usage, args.mac_timeout, by_box.get("mac")))
     config_path = Path(__file__).resolve().parent.parent / "config/skills-health.json"
     config = json.loads(config_path.read_text()) if config_path.exists() else {}

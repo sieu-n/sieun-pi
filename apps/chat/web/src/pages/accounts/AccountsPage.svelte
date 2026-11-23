@@ -369,7 +369,9 @@
     </PanelHeader>
   {/snippet}
 
-  {#if error && !view}
+  {#if view?.absent}
+    <EmptyState icon="users" title="No account pool on this box" description="pi-host here gets its model token without pi-pool, so there are no accounts to show." />
+  {:else if error && !view}
     <div title={error}>
       <EmptyState icon="warning" title="Accounts unavailable" description="The pool did not answer.">
         {#snippet action()}<Button variant="outline" size="sm" {loading} onclick={() => void load(true)}>Retry</Button>{/snippet}

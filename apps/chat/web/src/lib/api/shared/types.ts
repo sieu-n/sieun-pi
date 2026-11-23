@@ -477,7 +477,11 @@ export interface PoolProvider { provider: "anthropic" | "openai-codex"; rows: Po
 export type PoolConfig = Readonly<Record<string, number>>;
 /** `poolConfig` is null when `pi-pool config` could not be read; the client then shows pi-pool's defaults. */
 /** `priority` is the thread's pool class, null with no thread or when the pool does not say. */
-export interface AccountsView { sessionId: string | null; checkedAt: string; providers: PoolProvider[]; poolConfig: PoolConfig | null; priority?: PoolPriority | null; notice?: string }
+/**
+ * One read of the account pool. `absent` says this box has no pi-pool CLI, as a compose dev instance whose pi-host takes an API key: the page then
+ * shows no account chip, since no account is in use.
+ */
+export interface AccountsView { sessionId: string | null; checkedAt: string; providers: PoolProvider[]; poolConfig: PoolConfig | null; priority?: PoolPriority | null; notice?: string; absent?: true }
 export type AccountAction = { action: "use"; provider: string; account: string; id: string; newSession?: boolean } | { action: "follow"; provider: string; id: string }
   | { action: "pin"; provider: string; account: string } | { action: "unpin"; provider: string } | { action: "switch"; provider: string }
   | { action: "recheck"; provider: string } | { action: "resets"; provider: string; account?: string } | { action: "reset"; provider: string; account: string; grant?: string }

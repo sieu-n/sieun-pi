@@ -65,6 +65,22 @@ test("GET /api/accounts reads an agent, its DM, its comm thread and a conversati
   assert.ok(provider(crawler, "anthropic").wait!.slotAt > Date.now());
 });
 
+test("a box with no pi-pool CLI reads as no pool, not as a failed read", async () => {
+  const bin = process.env.PI_POOL_BIN;
+  process.env.PI_POOL_BIN = "/nonexistent/pi-pool";
+  try {
+    for (const path of ["/api/pool", `/api/accounts?thread=ag_vent&model=claude-opus-5-5`]) {
+      const answer = await s.send<AccountsView>("GET", path);
+      assert.equal(answer.status, 200, path);
+      assert.equal(answer.body.absent, true, path);
+      assert.deepEqual(answer.body.providers, [], path);
+    }
+  } finally {
+    process.env.PI_POOL_BIN = bin;
+  }
+  assert.equal((await s.get<AccountsView>("/api/pool")).absent, undefined, "with the CLI back the pool reads again");
+});
+
 test("a thread that never sent a request reads as the pool with a sentence, and a pick on it says why it cannot hold", async () => {
   const view = await s.get<AccountsView>(`/api/accounts?thread=${FIXTURE_IDS.solo}`);
   assert.equal(view.sessionId, tree(FIXTURE_IDS.solo));

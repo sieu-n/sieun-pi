@@ -119,6 +119,8 @@
   }
 </script>
 
+<!-- A box with no account pool shows no chip: no account is in use there (AccountsView.absent). -->
+{#if !view?.absent}
 <span
   class="account-chip"
   class:warning
@@ -149,6 +151,7 @@
     label={choosing ? `${providerName} account for the new thread` : agent ? `${providerName} account for ${agent.name}` : undefined}
     onchoose={(next) => void choose(next)}
   />
+{/if}
 {/if}
 
 <style>
