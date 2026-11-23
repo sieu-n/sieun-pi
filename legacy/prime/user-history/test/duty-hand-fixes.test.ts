@@ -393,6 +393,15 @@ test("a container or exec on no prod or staging network is not a hand-run writer
   assert.deepEqual(handExecs(execs), []);
 });
 
+test("a --rm helper of komodo-periphery's own image is Komodo's call, while a --rm container of another image still counts (d3 11-23)", () => {
+  const { containers } = parseBox([
+    "C\tkomodo-periphery\trunning|periphery||||unless-stopped|bridge,|ghcr.io/moghtech/komodo-periphery:2.3.4|2026-11-22T00:00:00Z||sha256:fb4b|false",
+    "C\thardcore_saha\trunning||||||host,|sha256:fb4b|2026-11-23T06:51:57Z||sha256:fb4b|true",
+    "C\thand_run\trunning||||||virev-prod,|ghcr.io/x/crawler@sha256:aa|2026-11-23T06:51:57Z||sha256:cc|true",
+  ].join("\n"));
+  assert.deepEqual(oneOffs(containers, Date.parse("2026-11-23T07:00:00Z")).map(container => container.name), ["hand_run"]);
+});
+
 // 10-19 19:50Z: a one-shot read-only ClickHouse query run through docker exec in crawler-api counted as a hand writer. An exec counts only
 // when it still runs at the read's second sample; a read with no second sample counts every running exec, as before.
 test("an exec gone by the second sample is not a hand-run writer; one that lasts is", () => {

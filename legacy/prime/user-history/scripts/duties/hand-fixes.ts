@@ -89,7 +89,7 @@ export type RefState = { kind: "step"; status: string | null } | { kind: "git"; 
  * restart policy, virev.follow_release label, and whether its tier's boot relaunch (virev-oneoff-boot@<tier>.service) is enabled on the box.
  */
 /** `networks` is the docker networks it joins, or undefined when the read did not list them. */
-export interface BoxContainer { name: string; status: string; service: string; oneoff?: { expiresAt: number | null; restart: string; followRelease: boolean; bootRelaunch: boolean }; networks?: string[]; image?: string; created?: string }
+export interface BoxContainer { name: string; status: string; service: string; oneoff?: { expiresAt: number | null; restart: string; followRelease: boolean; bootRelaunch: boolean }; networks?: string[]; image?: string; created?: string; imageId?: string; autoRemove?: boolean }
 /**
  * `id` is the docker exec id; `lasted` is whether it still ran at the read's second sample, or undefined when the read took none. `text` is
  * the exec's script with its same-folder imports, read on the box through /proc/<exec Pid>/root, or undefined when it could not be read.
@@ -273,7 +273,7 @@ export function doneSeenAfter(registry: Registry, refs: ReadonlyMap<string, RefS
 }
 
 /**
- * The ssh output: `C<TAB>name<TAB>status|service|execids|oneoff|expires_at|restart|networks|image|created|follow_release` per container,
+ * The ssh output: `C<TAB>name<TAB>status|service|execids|oneoff|expires_at|restart|networks|image|created|follow_release|image_id|auto_remove` per container,
  * `E<TAB>name<TAB><exec json>` per exec session, `H<TAB>pid<TAB><base64 json {command, text}>` per detached session process,
  * `D<TAB>time<TAB>sha12` per ok prod deploy, and `B<TAB>tier<TAB><systemctl is-enabled>|<script>` per tier's one-off boot relaunch.
  */
@@ -292,10 +292,10 @@ export function parseBox(text: string): { containers: BoxContainer[]; execs: Box
     const [tag, name, rest] = line.split("\t");
     if (!name || rest === undefined) continue;
     if (tag === "C") {
-      const [status = "", svc = "", , oneoff = "", expires = "", restart = "", nets, image, created, follow] = rest.split("|");
+      const [status = "", svc = "", , oneoff = "", expires = "", restart = "", nets, image, created, follow, imageId, autoRemove] = rest.split("|");
       const expiresAt = /^\d+$/.test(expires) ? Number(expires) : null;
       const networks = nets === undefined ? undefined : nets.split(",").filter(Boolean);
-      containers.push({ name, status, service: svc, ...(oneoff === "true" ? { oneoff: { expiresAt, restart, followRelease: follow === "true", bootRelaunch: false } } : {}), ...(networks ? { networks } : {}), ...(image ? { image, created: created ?? "" } : {}) });
+      containers.push({ name, status, service: svc, ...(oneoff === "true" ? { oneoff: { expiresAt, restart, followRelease: follow === "true", bootRelaunch: false } } : {}), ...(networks ? { networks } : {}), ...(image ? { image, created: created ?? "" } : {}), ...(imageId ? { imageId } : {}), ...(autoRemove ? { autoRemove: autoRemove === "true" } : {}) });
       service.set(name, svc);
       if (networks) nets_.set(name, networks);
     } else if (tag === "B") {
@@ -358,9 +358,18 @@ export const keptOneOff = (container: BoxContainer, now: number): boolean => {
   if (!oneoff || !oneoff.bootRelaunch || !["on-failure", "unless-stopped", "always"].includes(oneoff.restart)) return false;
   return oneoff.followRelease || (oneoff.expiresAt !== null && oneoff.expiresAt * 1000 > now);
 };
+/**
+ * A helper container Komodo starts for one call: komodo-periphery runs `docker run --rm --privileged --pid=host --network=host` of its own
+ * image for each box-exec, box-run deploy and noop probe (apps/infra/komodo/box-exec.sh, box-run.sh, komodo.mjs in auto-sns-agent), and
+ * --rm removes it when the call ends. From 11-22 to 11-23 us-metal01 ran 57 such containers, each a few minutes, and d3 counted the
+ * one alive at its read (epic_galileo at 01:30Z, hardcore_saha at 06:54Z on 11-23) as a hand-run writer.
+ */
+export const komodoHelper = (container: BoxContainer, containers: readonly BoxContainer[]): boolean =>
+  !container.service && container.autoRemove === true && container.imageId !== undefined &&
+  containers.some(other => other.name === "komodo-periphery" && other.service !== "" && other.imageId === container.imageId);
 /** Running containers with no compose service and no kept one-off; an exited one runs nothing, as posts-backfill-handrun after promote 12 on 10-18. */
 export const oneOffs = (containers: readonly BoxContainer[], now: number): BoxContainer[] =>
-  containers.filter(container => !container.service && container.status === "running" && !keptOneOff(container, now) && reachesTier(container));
+  containers.filter(container => !container.service && container.status === "running" && !keptOneOff(container, now) && reachesTier(container) && !komodoHelper(container, containers));
 /**
  * Whether a container can reach prod or staging: it joins a virev-prod or virev-staging network, or the read did not list its networks.
  * A bench on the default bridge reaches no store by name: on 10-19 tblspc-bench and two signer A/B containers (p438-sig-new, -head)
@@ -593,7 +602,7 @@ for t in prod staging; do
   printf 'B\\t%s\\t%s|%s\\n' "$t" "$(systemctl is-enabled "virev-oneoff-boot@$t.service" 2>/dev/null)" "$(test -x /usr/local/lib/virev-oneoff-boot/scripts/oneoff-boot.sh && echo script)"
 done
 for c in $(docker ps -a --format '{{.Names}}'); do
-  info=$(docker inspect -f '{{.State.Status}}|{{index .Config.Labels "com.docker.compose.service"}}|{{range .ExecIDs}}{{.}} {{end}}|{{index .Config.Labels "virev.oneoff"}}|{{index .Config.Labels "virev.expires_at"}}|{{.HostConfig.RestartPolicy.Name}}|{{range $k, $v := .NetworkSettings.Networks}}{{$k}},{{end}}|{{.Config.Image}}|{{.Created}}|{{index .Config.Labels "virev.follow_release"}}' "$c")
+  info=$(docker inspect -f '{{.State.Status}}|{{index .Config.Labels "com.docker.compose.service"}}|{{range .ExecIDs}}{{.}} {{end}}|{{index .Config.Labels "virev.oneoff"}}|{{index .Config.Labels "virev.expires_at"}}|{{.HostConfig.RestartPolicy.Name}}|{{range $k, $v := .NetworkSettings.Networks}}{{$k}},{{end}}|{{.Config.Image}}|{{.Created}}|{{index .Config.Labels "virev.follow_release"}}|{{.Image}}|{{.HostConfig.AutoRemove}}' "$c")
   printf 'C\\t%s\\t%s\\n' "$c" "$info"
   for e in $(printf '%s' "$info" | cut -d'|' -f3); do
     j=$(curl -s --max-time 5 --unix-socket /var/run/docker.sock "http://localhost/exec/$e/json")
