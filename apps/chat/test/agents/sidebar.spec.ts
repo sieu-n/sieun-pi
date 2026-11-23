@@ -9,16 +9,31 @@ test.describe.configure({ retries: 1 });
 type Json = Record<string, unknown>;
 const section = (page: Page, id: string) => agentsSidebar(page).locator(`[data-section="${id}"]`);
 
-/** Proxies /api/live and gives the named agents the statuses the test needs, as the server's hello and agent events would. */
+/**
+ * Proxies /api/live and gives the named agents the statuses the test needs, as the server's hello, agent and status events would. The fixture's
+ * agents really run (a duty check-in wakes them about 30 s after boot), so a status event for an agent's id, work thread or DM is rewritten too.
+ */
 async function withStatuses(page: Page, statuses: Record<string, Agent["status"]>): Promise<void> {
   const apply = (agent: Json): Json => (statuses[agent.id as string] ? { ...agent, status: statuses[agent.id as string] } : agent);
+  /** The status each of the named agents' conversation ids carries: the agent's id, its work thread and its DM. */
+  const byConversation = new Map<string, Agent["status"]>();
+  const remember = (agent: Json) => {
+    const status = statuses[agent.id as string];
+    if (status) for (const key of [agent.id, agent.thread, agent.room]) if (typeof key === "string") byConversation.set(key, status);
+  };
   await page.routeWebSocket(/\/api\/live/, (ws) => {
     const server = ws.connectToServer();
     server.onMessage((message) => {
       const event = JSON.parse(String(message)) as Json;
-      if (event.type === "hello") ws.send(JSON.stringify({ ...event, agents: (event.agents as Json[]).map(apply) }));
-      else if (event.type === "agent") ws.send(JSON.stringify({ ...event, agent: apply(event.agent as Json) }));
-      else ws.send(String(message));
+      if (event.type === "hello") {
+        (event.agents as Json[]).forEach(remember);
+        ws.send(JSON.stringify({ ...event, agents: (event.agents as Json[]).map(apply) }));
+      } else if (event.type === "agent") {
+        remember(event.agent as Json);
+        ws.send(JSON.stringify({ ...event, agent: apply(event.agent as Json) }));
+      } else if (event.type === "status" && byConversation.has(event.conversation as string)) {
+        ws.send(JSON.stringify({ ...event, status: byConversation.get(event.conversation as string) }));
+      } else ws.send(String(message));
     });
     ws.onMessage((message) => server.send(message));
   });
