@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page, type Request } from "@playwright/test";
 import { open, row, tag } from "./helpers.ts";
 
 /**
@@ -9,12 +9,12 @@ import { open, row, tag } from "./helpers.ts";
 async function channel(page: Page): Promise<{ room: string; posts: { id: string; seq: number }[] }> {
   const name = `unread-${tag()}`;
   const room = ((await (await page.request.post("/api/rooms", { data: { kind: "channel", name, members: [] } })).json()) as { id: string }).id;
-  const posts: { id: string; seq: number }[] = [];
-  for (let n = 1; n <= 30; n++) {
-    const sent = (await (await page.request.post(`/api/c/${room}/send`, { data: { text: `post ${n} of ${name}`, requestId: crypto.randomUUID() } })).json()) as { item: { id: string; seq: number } };
-    posts.push(sent.item);
-  }
-  return { room, posts };
+  // The sends go at once and the posts sort by the seq the server gave each. One by one they took 10 s of the 30 s test at load 800 on 11-23.
+  const sends = Array.from({ length: 30 }, async (_, n) => {
+    const sent = (await (await page.request.post(`/api/c/${room}/send`, { data: { text: `post ${n + 1} of ${name}`, requestId: crypto.randomUUID() } })).json()) as { item: { id: string; seq: number } };
+    return sent.item;
+  });
+  return { room, posts: (await Promise.all(sends)).sort((a, b) => a.seq - b.seq) };
 }
 
 test("Alt-click marks a post unread with the New line over it, a toast, no jump and no read of its own", async ({ page }) => {
@@ -56,6 +56,12 @@ test("Alt-click marks a post unread with the New line over it, a toast, no jump 
 
 test("a send takes the New line away, and the room reopens with the line in view when it sits above the newest posts", async ({ page }) => {
   const { room, posts } = await channel(page);
+  const reading = new Set<Request>();
+  page.on("request", (r) => {
+    if (r.method() === "POST" && r.url().endsWith(`/api/c/${room}/read`)) reading.add(r);
+  });
+  page.on("requestfinished", (r) => reading.delete(r));
+  page.on("requestfailed", (r) => reading.delete(r));
   await open(page, `#/c/${room}`);
   const line = page.getByTestId("new-line");
   await row(page, posts[29]!.id).click({ modifiers: ["Alt"], position: { x: 80, y: 12 } });
@@ -64,8 +70,13 @@ test("a send takes the New line away, and the room reopens with the line in view
   await page.keyboard.press("Enter");
   await expect(line).toHaveCount(0);
 
-  await page.request.post(`/api/c/${room}/read`, { data: { unreadFrom: posts[2]!.id } });
+  // The mark below stands for one from another tab. The page reads the room 400 ms after his send, unless a summary that came by then holds
+  // it (Conversation.svelte markRead), and a read that lands after the mark reads over it. At load 150 on 11-23 the read went 1.5 s after
+  // the send, and the reopened room had no line. A reload ends that timer, and the mark waits until every read the page sent has its answer.
   await open(page, "#/c/dm_vent");
+  await page.reload();
+  await expect.poll(() => reading.size).toBe(0);
+  await page.request.post(`/api/c/${room}/read`, { data: { unreadFrom: posts[2]!.id } });
   await open(page, `#/c/${room}`);
   await expect(line).toHaveCount(1);
   const feed = page.getByTestId("timeline").first();
