@@ -44,6 +44,8 @@ import { Rooms } from "./rooms.ts";
 import { applyPrefs, withPrefs } from "./sidebar-prefs.ts";
 import { parseLayout } from "../web/src/lib/api/shared/sidebar-layout.ts";
 import { bucketOf, changedBuckets, digests, PARTIAL_LISTS, threadTimes, timed, type PartialList } from "../web/src/lib/api/shared/hello-buckets.ts";
+import { boardDelta, boardKey, boardStep, parseBoardsParam } from "../web/src/lib/api/shared/board-delta.ts";
+import type { ChatBoard } from "../web/src/lib/api/shared/types.ts";
 import { OwnerSettingsStore } from "./owner-settings.ts";
 import { Unfurler } from "./unfurl.ts";
 import { POST_KINDS, postHas, Search } from "./search.ts";
@@ -87,7 +89,8 @@ const FOR_ME_WATCH = "for:";
 const OWN_RELAY_WAIT_MS = 30_000;
 
 /** `watching` maps each conversation a page watches to the thread conversations that watch holds open. */
-type Client = { socket: WebSocket; watching: Map<ConversationId, ConversationId[]>; req: IncomingMessage | undefined };
+/** `boards` is the `boardKey` of each board the page holds, as its socket's `boards=` named it and each board event since left it. */
+type Client = { socket: WebSocket; watching: Map<ConversationId, ConversationId[]>; req: IncomingMessage | undefined; boards: Map<string, string> };
 
 /**
  * Runs a GET route for a page over its live socket (`LiveCommand` read), as http.ts answers it over HTTP; http.ts `serve` sets it. A
@@ -277,7 +280,7 @@ export class App {
     this.threads.groupSummaries = () => this.groups.summaries().filter(c => !this.agentStore.isTest(c.id));
     this.threads.roomsOf = agent => this.groups.memberRooms(agent).map(row => row.id);
     this.boards = new Boards(host, this.store, this.threads, this.agents, {
-      board: (chatId, board, awaitingGo, lists) => this.broadcast({ type: "board", chatId, board, awaitingGo, ...lists }),
+      board: (chatId, board, awaitingGo, lists, before) => this.boardChanged(chatId, board, before, { awaitingGo, ...lists }),
       row: (chatId, row) => this.broadcast({ type: "board_row", chatId, row }),
       forYou: count => {
         this.broadcast({ type: "for_you", count });
@@ -1391,9 +1394,9 @@ export class App {
   socketRead: SocketRead | undefined;
 
   private connect(socket: WebSocket, req?: IncomingMessage): void {
-    const client: Client = { socket, watching: new Map(), req };
-    this.clients.add(client);
     const held = new URL(req?.url ?? "/", "http://x").searchParams;
+    const client: Client = { socket, watching: new Map(), req, boards: parseBoardsParam(held.get("boards")) };
+    this.clients.add(client);
     void this.sidebar().then(sidebar => this.send1(client, { type: "hello", me: this.me(), sidebar, agents: this.threads.agents(), ...helloLists(held, { jobs: this.threads.jobList(), conversations: this.threads.conversations() }) }));
     socket.on("message", data => {
       let command: LiveCommand;
@@ -1412,6 +1415,10 @@ export class App {
 
   private async command(client: Client, command: LiveCommand): Promise<void> {
     if (command.type === "ping") return this.send1(client, { type: "pong" });
+    if (command.type === "boards") {
+      for (const [chat, key] of parseBoardsParam(command.held)) client.boards.set(chat, key);
+      return;
+    }
     if (command.type === "read") {
       const answer = await (this.socketRead?.(command.path, client.req) ?? Promise.resolve({ status: 503, error: "This server reads no route over the socket." }));
       return this.send1(client, { type: "answer", id: command.id, ...answer });
@@ -1489,6 +1496,26 @@ export class App {
     if (this.aboutTest(event)) return;
     const json = JSON.stringify(event);
     for (const client of this.clients) if (client.socket.readyState === WebSocket.OPEN) client.socket.send(json);
+  }
+
+  /**
+   * A board change to every page: what changed to a page that holds the board kept before it, and the whole board to any other, which then
+   * holds this one. On 11-23 agent factory's whole board was 219 KB of JSON and 80 KB on the wire in each event, to every open tab, while a
+   * change touched one step; what changed came to 0.1 to 0.3 KB on the wire (~/work/p231-slow-calls/p231-board-event).
+   */
+  private boardChanged(chatId: string, board: ChatBoard, before: ChatBoard | null, rest: Omit<Extract<LiveEvent, { type: "board" }>, "type" | "chatId" | "board" | "delta">): void {
+    const whole: LiveEvent = { type: "board", chatId, board, ...rest };
+    if (this.aboutTest(whole)) return;
+    const base = before && boardKey(before);
+    const step = before && boardStep(before, board);
+    let wholeJson: string | undefined;
+    const deltaJson = base && step ? JSON.stringify({ type: "board", chatId, delta: boardDelta(base, board, [step]), ...rest } satisfies LiveEvent) : undefined;
+    const key = boardKey(board);
+    for (const client of this.clients) {
+      if (client.socket.readyState !== WebSocket.OPEN) continue;
+      client.socket.send(deltaJson && client.boards.get(chatId) === base ? deltaJson : (wholeJson ??= JSON.stringify(whole)));
+      client.boards.set(chatId, key);
+    }
   }
 
   private aboutTest(event: LiveEvent): boolean {

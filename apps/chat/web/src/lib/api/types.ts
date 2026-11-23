@@ -895,8 +895,12 @@ export type LiveEvent =
   /** Only to tabs that watch it: the run's place in pi-pool's turn queue while it waits, then null once it works or ends. */
   | { type: "queue"; conversation: ConversationId; place: TurnPlace | null }
   | { type: "jobs"; thread: string; jobs: JobNode[] }
-  /** `row` and `forYou` are the chat's row in All boards and its asks in For you, a null row and no asks for a chat neither lists. */
-  | { type: "board"; chatId: string; board: ChatBoard; awaitingGo: string[]; row: BoardRow | null; forYou: ForYouItem[] }
+  /**
+   * `row` and `forYou` are the chat's row in All boards and its asks in For you, a null row and no asks for a chat neither lists. A tab
+   * that holds the board before the change, as its socket's `boards=` or the last board event said, gets what changed (`delta`), and any
+   * other tab the whole board: on 11-23 agent factory's whole board was 219 KB of JSON, 80 KB on the wire, on every change to every open tab.
+   */
+  | ({ type: "board"; chatId: string; awaitingGo: string[]; row: BoardRow | null; forYou: ForYouItem[] } & ({ board: ChatBoard } | { delta: BoardDelta }))
   /** A chat's row in All boards changed with no board change, such as a check-in's next time or a duty's last verdict. */
   | { type: "board_row"; chatId: string; row: BoardRow }
   | { type: "for_you"; count: number }
@@ -929,4 +933,6 @@ export type LiveCommand =
   /** Asks for a `pong`. A page that has heard nothing for a while sends it, and drops the socket when no answer comes (live.svelte.ts). */
   | { type: "ping" }
   /** Reads a GET route over the socket; the server answers with `answer` and the same `id` (live.svelte.ts `read`). */
-  | { type: "read"; id: number; path: string };
+  | { type: "read"; id: number; path: string }
+  /** Boards the page read since its socket opened, in the `boards=` form (shared/board-delta.ts `boardsParam`), so their next change is a delta. */
+  | { type: "boards"; held: string };

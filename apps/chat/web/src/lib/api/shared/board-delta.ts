@@ -81,6 +81,30 @@ export function applyBoardDelta(board: ChatBoard, delta: BoardDelta): ChatBoard 
 }
 
 /**
+ * The board a page shows after a delta the server sent it: the board it holds when that already has the change or a later one, as a write's
+ * own answer may have brought it first, or undefined when the delta follows another board, which the page then reads again.
+ */
+export function boardAfterDelta(held: ChatBoard | null, delta: BoardDelta): ChatBoard | undefined {
+  if (held && held.rev >= delta.top.rev) return held;
+  return (held && applyBoardDelta(held, delta)) ?? undefined;
+}
+
+/**
+ * The boards a page holds, as it names them when its live socket opens (`boards=`): `<chat id>|<boardKey>` for each, comma-separated. A
+ * chat id holds no `,` or `|`, and a key's first `|` follows its rev.
+ */
+export const boardsParam = (held: ReadonlyMap<string, string>): string => [...held].map(([chat, key]) => `${chat}|${key}`).join(",");
+
+export function parseBoardsParam(param: string | null): Map<string, string> {
+  const held = new Map<string, string>();
+  for (const pair of (param ?? "").split(",")) {
+    const cut = pair.indexOf("|");
+    if (cut > 0) held.set(pair.slice(0, cut), pair.slice(cut + 1));
+  }
+  return held;
+}
+
+/**
  * The board a page holds from its thread feed. A delta that follows it applies; one that does not, after a missed frame or the owner's own
  * change shown before the server's, makes it ask for the whole board once (`fetchBoard`) and apply the deltas that came meanwhile. A board or
  * delta older than the one held is dropped.

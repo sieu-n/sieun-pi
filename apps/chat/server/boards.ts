@@ -99,7 +99,8 @@ const dutyIdFloor = (file: DutyFile): number =>
 export interface BoardLists { row: BoardRow | null; forYou: ForYouItem[] }
 
 export interface BoardEvents {
-  board(chatId: string, board: ChatBoard, awaitingGo: string[], lists: BoardLists): void;
+  /** `before` is the board kept before the change, null for a chat read for the first time. */
+  board(chatId: string, board: ChatBoard, awaitingGo: string[], lists: BoardLists, before: ChatBoard | null): void;
   /** A chat's row in All boards after its duties file changed what the row shows, such as a check-in's next time or a duty's verdict. */
   row(chatId: string, row: BoardRow): void;
   forYou(count: number): void;
@@ -178,10 +179,13 @@ export class Boards {
     this.owners = new StepOwners(this, log);
   }
 
-  private remember(chat: string, board: ChatBoard | null): void {
-    const changed = JSON.stringify(this.cache.get(chat)?.board ?? null) !== JSON.stringify(board) || !this.cache.has(chat);
+  /** Keeps a chat's board read or written now, and answers the one kept before it, which its board event's delta starts from. */
+  private remember(chat: string, board: ChatBoard | null): ChatBoard | null {
+    const before = this.cache.get(chat)?.board ?? null;
+    const changed = JSON.stringify(before) !== JSON.stringify(board) || !this.cache.has(chat);
     this.cache.set(chat, { board, at: Date.now() });
     if (changed) this.store.saveCache(BOARDS_CACHE, Object.fromEntries([...this.cache].map(([id, entry]) => [id, entry.board])));
+    return before;
   }
 
   /** The board's key for an agent id, a DM room, or a thread id: the agent's id, else the root chat's thread id. */
@@ -259,9 +263,9 @@ export class Boards {
     const cached = this.cache.get(chat);
     if (cached && cached.at > startedAt) return cached.board;
     const board = result ? (result.value ? parseBoard(result.value) : null) : (cached?.board ?? null);
-    this.remember(chat, board);
+    const before = this.remember(chat, board);
     if (cached && JSON.stringify(cached.board) !== JSON.stringify(board)) {
-      if (board) this.changed(chat, board);
+      if (board) this.changed(chat, board, before);
       void this.forYouCount().then(count => this.events.forYou(count), () => undefined);
     }
     return board;
@@ -293,8 +297,7 @@ export class Boards {
       summaries.push(result.summary);
     }
     await this.host.docPut(thread, BOARD_DOC, board);
-    this.remember(chat, board);
-    this.changed(chat, board);
+    this.changed(chat, board, this.remember(chat, board));
     this.events.forYou(await this.forYouCount());
     // The chat's `[board]` line goes after the answer: no part of the answer waits on it, and a pi-host submit waits behind every command
     // queued there. On 11-20 to 11-23 the owner's board writes, which send it, ran p50 226 ms in the handler against 52 ms for the agents'
@@ -328,8 +331,8 @@ export class Boards {
   docChanged(thread: string, value: unknown): void {
     const chat = this.chatId(thread);
     const board = value ? parseBoard(value) : null;
-    this.remember(chat, board);
-    if (board) this.changed(chat, board);
+    const before = this.remember(chat, board);
+    if (board) this.changed(chat, board, before);
   }
 
   /** The chats All boards and For you list; a walk's test agent has no place in either, nor in the For you badge. */
@@ -337,11 +340,14 @@ export class Boards {
     return this.chats().filter(chat => !this.agents.store.isTest(chat));
   }
 
-  /** Sends a board's change with its row and its asks, as GET /api/boards and GET /api/for-you would show them now. */
-  private changed(chat: string, board: ChatBoard): void {
+  /**
+   * Sends a board's change with its row and its asks, as GET /api/boards and GET /api/for-you would show them now, and the board kept before
+   * it (`remember`), from which a page that holds that board gets only what changed.
+   */
+  private changed(chat: string, board: ChatBoard, before: ChatBoard | null): void {
     const row = this.listed().includes(chat) ? this.rowOf(chat, board) : null;
     if (row) this.sentRows.set(chat, JSON.stringify(row));
-    this.events.board(chat, board, awaitingGo(board), row ? { row, forYou: this.asksOf(chat, board) } : { row: null, forYou: [] });
+    this.events.board(chat, board, awaitingGo(board), row ? { row, forYou: this.asksOf(chat, board) } : { row: null, forYou: [] }, before);
   }
 
   private asksOf(chat: string, board: ChatBoard): ForYouItem[] {
@@ -418,7 +424,7 @@ export class Boards {
     else delete file.hidden;
     this.save(chat, file);
     const board = await this.known(chat);
-    if (board) this.changed(chat, board);
+    if (board) this.changed(chat, board, board);
     return { hidden };
   }
 
@@ -437,8 +443,7 @@ export class Boards {
     const board = existsSync(boardFile) ? parseBoard(JSON.parse(readFileSync(boardFile, "utf8"))) : null;
     if (board) {
       await this.host.docPut(this.threadOf(chat), BOARD_DOC, board);
-      this.remember(chat, board);
-      this.changed(chat, board);
+      this.changed(chat, board, this.remember(chat, board));
       this.events.forYou(await this.forYouCount());
     }
     const prime = readJson<{ duties?: Duty[]; checkIn?: { lastRunAt?: number } }>(join(primeDir, "duties", `${primeId}.json`), {});

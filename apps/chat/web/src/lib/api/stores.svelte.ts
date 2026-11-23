@@ -7,14 +7,14 @@
  * upload ends, and the post names the uploaded ref.
  */
 import { AHEAD_LANE, api, ApiError, attach, attachedFacts, dropAhead, isSoloRoom, reads, reportNotDelivered, roomOf, shownRef, takeOver, type Attached, type Read, type Wait } from "./client.ts";
-import { kept, restoreKept, type Kept } from "./kept.svelte.ts";
+import { heldBoards, kept, restoreKept, type Kept } from "./kept.svelte.ts";
 import { heldImages } from "./held-images.ts";
 import { pageDb, type KeptPage } from "./page-db.ts";
 import { heldSends, type HeldSend } from "./held-sends.ts";
 import { holdReload, releaseReload } from "./reload.ts";
 import { live } from "./live.svelte.ts";
 import { digests, mergeBuckets, untimed, type Timed } from "./shared/hello-buckets.ts";
-import { applyBoardDelta, boardKey } from "./shared/board-delta.ts";
+import { boardAfterDelta, boardKey, boardsParam } from "./shared/board-delta.ts";
 import { SvelteMap } from "svelte/reactivity";
 import type {
   AgentId, AgentSummary, BoardOp, BoardView, ConversationHeader, ConversationId, ConversationSummary, ImageRef, Item, Me,
@@ -386,7 +386,7 @@ class Global {
   start(): void {
     if (this.started) return;
     this.started = true;
-    live.holding(() => this.lastHello?.held ?? {});
+    live.holding(() => ({ ...this.lastHello?.held, boards: boardsParam(heldBoards()) }));
     live.on(event => {
       switch (event.type) {
         case "hello":
@@ -1493,9 +1493,8 @@ export async function applyBoard(chatId: string, ops: BoardOp[]): Promise<void> 
   }
   entry.change(view => {
     if ("board" in answer) return (view.board?.rev ?? -1) > (answer.board?.rev ?? -1) ? view : answer;
-    if (view.board && view.board.rev >= answer.delta.top.rev) return view;
-    const board = view.board && applyBoardDelta(view.board, answer.delta);
-    return board ? { board, awaitingGo: answer.awaitingGo } : undefined;
+    const board = boardAfterDelta(view.board, answer.delta);
+    return board === view.board ? view : board && { board, awaitingGo: answer.awaitingGo };
   });
 }
 

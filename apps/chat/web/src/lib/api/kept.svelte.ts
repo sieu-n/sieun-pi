@@ -15,6 +15,8 @@ import { afterWrite, get, reads, takeOver, type Read, type Wait } from "./client
 import { live } from "./live.svelte.ts";
 import { pageDb, type KeptPage } from "./page-db.ts";
 import { withAsks, withRow } from "./shared/board-lists.ts";
+import { boardAfterDelta, boardKey, boardsParam } from "./shared/board-delta.ts";
+import type { BoardView, LiveEvent } from "./types.ts";
 
 /** The page-db.ts cache the answers go to, so a page load shows them at once and its first read of each is a refresh behind them. */
 const STORED = "kept";
@@ -98,6 +100,7 @@ export class Kept<T> {
         else {
           if (wait.background === "shown") wait.background = undefined;
           this.set(next);
+          readBoard(this.of.path, next);
         }
         this.current = true;
       }, error => {
@@ -170,7 +173,10 @@ export class Kept<T> {
       this.sent = Math.max(this.sent, sent);
       this.current = true;
       if (same(this.value, next)) this.error = null;
-      else this.set(next);
+      else {
+        this.set(next);
+        readBoard(this.of.path, next);
+      }
     }, () => void this.read());
   }
 }
@@ -227,6 +233,47 @@ function changeKept<T>(of: Read<T>, change: (value: T) => T | undefined): void {
 }
 
 /**
+ * A kept board after a board event: its whole board, or the board the page holds with the event's delta, or undefined when the delta follows
+ * another board, which reads it again (`Kept.change`).
+ */
+function boardView(view: BoardView, event: Extract<LiveEvent, { type: "board" }>): BoardView | undefined {
+  if ("board" in event) return { board: event.board, awaitingGo: event.awaitingGo };
+  const board = boardAfterDelta(view.board, event.delta);
+  return board === view.board ? view : board && { board, awaitingGo: event.awaitingGo };
+}
+
+const BOARD_PATH = /^\/api\/(?:agents|threads)\/([^/]+)\/board$/;
+
+/**
+ * The `boardKey` of each board the page keeps, by chat, also one the last page load kept that no view opened yet. The socket names them
+ * when it opens (`boards=`), so the server's board events to this page carry only what changed from them.
+ */
+export function heldBoards(): Map<string, string> {
+  const held = new Map<string, string>();
+  for (const [path, value] of [...restored, ...[...entries].map(([path, entry]) => [path, entry.value] as const)]) {
+    const board = boardHeld(path, value);
+    if (board) held.set(...board);
+  }
+  return held;
+}
+
+/** The chat and `boardKey` of a kept board read's answer, or undefined for another read's or an empty board. */
+function boardHeld(path: string, value: unknown): [string, string] | undefined {
+  const chat = BOARD_PATH.exec(path)?.[1];
+  const board = (value as BoardView | null)?.board;
+  return chat && board && reads.board(decodeURIComponent(chat)).path === path ? [decodeURIComponent(chat), boardKey(board)] : undefined;
+}
+
+/**
+ * Names a board a read brought to the server over the open socket, so its next change comes as a delta: a board the page first read after
+ * its socket opened came whole in the next event.
+ */
+function readBoard(path: string, value: unknown): void {
+  const board = boardHeld(path, value);
+  if (board) live.holdsBoards(boardsParam(new Map([board])));
+}
+
+/**
  * The kept answer of a read, the same object for every caller. The board and duties events carry their read's whole answer, which goes on
  * top of a read on its way and into an answer the last page load kept: a read that left before the event would bring the answer from before
  * it, and a kept copy no view opened yet would show it stale (`changeKept`).
@@ -239,7 +286,7 @@ export function kept<T>(of: Read<T>): Kept<T> {
     });
     live.on(event => {
       if (event.type === "board") {
-        changeKept(reads.board(event.chatId), () => ({ board: event.board, awaitingGo: event.awaitingGo }));
+        changeKept(reads.board(event.chatId), view => boardView(view, event));
         changeKept(reads.boards(), rows => withRow(rows, event.chatId, event.row));
         changeKept(reads.forYou(), items => withAsks(items, event.chatId, event.forYou));
       } else if (event.type === "board_row") changeKept(reads.boards(), rows => withRow(rows, event.chatId, event.row));

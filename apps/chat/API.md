@@ -329,7 +329,7 @@ The page's wiki pickers read the engine through two routes of their own (`server
 
 | Event | Goes to | Means |
 |---|---|---|
-| `hello` | the tab that connected | Sent once on connect: me, the sidebar, agents, jobs and conversations. A tab that sends the digests of what it holds gets only the buckets that changed, named in `partial` (`shared/hello-buckets.ts`). |
+| `hello` | the tab that connected | Sent once on connect: me, the sidebar, agents, jobs and conversations. A tab that sends the digests of what it holds gets only the buckets that changed, named in `partial` (`shared/hello-buckets.ts`). The socket's `boards=` names the `boardKey` of each board the tab keeps, for the `board` event. |
 | `sidebar` | every tab | The sidebar changed. |
 | `owner_settings` | every tab | The owner's status, notification setting or recent searches changed in some browser. |
 | `agent` | every tab | A registered agent's card changed. |
@@ -339,7 +339,7 @@ The page's wiki pickers read the engine through two routes of their own (`server
 | `conversation` | every tab | A conversation's summary row changed. |
 | `status` | every tab | A thread started or stopped working. A DM's `status` follows its agent, so the page draws typing dots while the agent works. |
 | `jobs` | every tab | A thread's job tree changed. |
-| `board` | every tab | A board changed, with its row in All boards and its asks in For you. |
+| `board` | every tab | A board changed, with its row in All boards and its asks in For you. A tab that holds the board before the change, as its `boards=`, its `boards` command or the last `board` event left it, gets what changed in `delta` (`shared/board-delta.ts`); any other tab gets the whole `board`. |
 | `board_row` | every tab | A board's row changed with no board change, such as a check-in's next time or a duty's last verdict. |
 | `for_you` | every tab | The open For you count changed. |
 | `duties` | every tab | A chat's `DutyRow[]`, when a run starts or ends and when a duty is paused, resumed or rescheduled. |
@@ -362,6 +362,7 @@ The page's wiki pickers read the engine through two routes of their own (`server
 | `unwatch` | `conversation` | Stops them. |
 | `ping` | none | Asks for a `pong`. A tab that has heard nothing for a while sends it, and drops the socket when no answer comes. |
 | `read` | `id`, `path` | Runs a GET route over the socket, which answers with `answer` and the same `id`. |
+| `boards` | `held` | Names boards the tab read after its socket opened, in the `boards=` form, so their next `board` event is a `delta`. |
 
 Nothing streams: the server sends no partial text, as Live stores item 3 says.
 

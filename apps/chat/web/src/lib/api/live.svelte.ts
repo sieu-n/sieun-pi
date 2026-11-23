@@ -234,6 +234,14 @@ class Live {
   }
 
   /**
+   * Names a board the page read, in the `boards=` form, so the server sends its next change as a delta; a socket that opens later names
+   * every kept board in its URL instead.
+   */
+  holdsBoards(held: string): void {
+    this.send({ type: "boards", held });
+  }
+
+  /**
    * Reads a GET route over the open socket, which the server answers in order with its events. A page reads its open panels this way at
    * the open: the socket is a new connection, while its HTTP connection may still wait in TCP's retries after a cut, as a panel's read at
    * the open took 4.7 s in the wake walk on 11-22 (~/work/p209-wake/after4). It fails at once when no socket is open.
