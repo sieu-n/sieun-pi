@@ -90,6 +90,25 @@ export function foldSystem(messages: readonly Message[], now: number): readonly 
   return lead ? [lead, ...rest] : rest;
 }
 
+/** Whether pi-ai's Anthropic conversion sends a block for this assistant part: it skips blank text and thinking with no text and no signature. */
+const hasBlock = (part: { type: string; text?: string; thinking?: string; thinkingSignature?: string; redacted?: boolean }): boolean =>
+  part.type === "toolCall" || (part.type === "text" && !!part.text?.trim())
+  || (part.type === "thinking" && (!!part.redacted || !!part.thinking?.trim() || !!part.thinkingSignature?.trim()));
+
+/**
+ * The transcript without assistant messages that send no block, the same array when it has none. A turn whose model answers with nothing
+ * stores an assistant message with `content: []`. pi-ai's Anthropic conversion holds each system update back until the next assistant message,
+ * sends it there and then skips the empty message, so an update written at the start of that turn lands right before the next input, and
+ * Anthropic answers 400 "role 'system' must precede an 'assistant' message or end the array". On 11-23 comm thread 64bc3ad1 held a
+ * `pi.system` entry (42), an empty reply to a no-reply work notice (43) and an agent message (44), and every later turn failed. Without the
+ * empty message the update stays held until the next assistant message or the end of the array, where Anthropic takes it. The fold runs
+ * first, since an empty reply's timestamp counts in `foldPoint`.
+ */
+export function withoutEmptyReplies(messages: readonly Message[]): readonly Message[] {
+  const empty = (message: Message): boolean => message.role === "assistant" && !message.content.some(part => hasBlock(part as never));
+  return messages.some(empty) ? messages.filter(message => !empty(message)) : messages;
+}
+
 /** A tool result's text, or a string argument of a tool call, longer than this is cut in the part of a comm thread's history `leanHistory` trims. */
 export const LEAN_CHARS = 1500;
 
@@ -302,7 +321,8 @@ export function withCacheShape(inner: Provider, now: () => number = Date.now): P
       const thawed = thawArrays(sent);
       return thawed === sent ? shaped : thawed;
     };
-    return [messages === context.messages ? context : { ...context, messages: [...messages] }, { ...options, onPayload } as O];
+    const kept = withoutEmptyReplies(messages);
+    return [kept === context.messages ? context : { ...context, messages: [...kept] }, { ...options, onPayload } as O];
   };
   return {
     ...inner,
