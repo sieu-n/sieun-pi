@@ -166,8 +166,20 @@ export class StoreUsage {
   private lastError?: string;
   private timer?: NodeJS.Timeout;
 
-  constructor(private readonly reader: StoreReader, private readonly table: string, private readonly log: (line: string) => void = () => {},
-    private readonly now: () => number = Date.now, private readonly fullEvery = STORE_FULL_PULL_MS) {}
+  private readonly reader: StoreReader;
+  private readonly table: string;
+  private readonly log: (line: string) => void;
+  private readonly now: () => number;
+  private readonly fullEvery: number;
+
+  // Plain fields, not parameter properties: pi-host-relay loads this file through config.ts with node's type stripping, which refuses them.
+  constructor(reader: StoreReader, table: string, log: (line: string) => void = () => {}, now: () => number = Date.now, fullEvery: number = STORE_FULL_PULL_MS) {
+    this.reader = reader;
+    this.table = table;
+    this.log = log;
+    this.now = now;
+    this.fullEvery = fullEvery;
+  }
 
   start(ms = USAGE_PULL_MS): void {
     void this.pull();
