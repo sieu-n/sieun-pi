@@ -2,7 +2,8 @@
  * The outbox's rows in chat.sqlite (chat-db.ts): the owner's sends pi-host has not taken (`outbox_rows`), the other sends kept until pi-host
  * takes them (`outbox_kept`) and the request ids that finished in the last day (`outbox_done`), each in the order the outbox holds them.
  * Before the move they were lines of `outbox.jsonl`, read by replaying it; `OUTBOX` imports that file once (json-move.ts) and writes it back
- * for the week of exports as the outbox's compaction wrote it, the finished ids, then the rows, then the kept sends.
+ * for the week of exports as the outbox's compaction wrote it, the finished ids, then the rows, then the kept sends. A server whose
+ * APPS_CHAT_DB_KINDS leaves out `outbox` keeps the file as before the move (`JsonOutboxLog`).
  */
 import { existsSync } from "node:fs";
 import { join } from "node:path";
