@@ -38,12 +38,12 @@ The owner said so on 11-20: "no this is not Chat. this is Slack."
    comm-guard no longer asks a post after a hand-over for a question or an open `- [ ]` item, so the plain line goes out, and a post with relay words is still refused.
 6. A post stays within 120 words, counted without list markers, which tell_owner and `edit_message` hold once in a room and let through when the same text is sent again (`ROOM_LONG` in `packages/pi-host/src/durable/room-post.ts`, c98).
    A Prime chat's 80-word cap held the owner's model post below, at 92 words, and 14 of 1,315 agent room posts ran over 120 on 11-21.
-7. Lowercase and a fitting emoji are fine, and labels, bold and headings are out, including an opener such as "Early read from the spec:" or "short version:", which a blind run on 11-21 opened with.
+7. Lowercase and a fitting emoji are fine, and labels, bold and headings are out, including an opener such as "Early read from the spec:" or "short version:", which a blind run on 11-21 opened with, and a line of a word or two over a group of bullets, such as "The others:", which a blind run on 11-23 put over its other options.
 8. A post holds no table unless he asked for one or asked whether a setup or skill is set up right, which gets one answer line and one table of each piece, where it lives, who loads it and what it says, never a bare yes or a long list (c225). Other detail goes on a wiki page linked in the same post.
    A yes or no question gets the fact he asked for and stops there, and anything the agent is unsure of is left out or asked as a question with its pick.
 9. When a reaction says it all, the agent reacts and posts nothing.
 10. A post ends on its words with no sign-off emoji such as 👍 or 🎉, and it says what a JSON or log line shows instead of pasting it, as the last pair below shows.
-11. A list of options, such as products, tools or what other apps do, opens with the agent's pick and its reason, explains that one with how it works, a concrete example and how it would fit us, and gives each other option one line on what it would mean for him.
+11. A list of options, such as products, tools or what other apps do, opens with the agent's pick and its reason, explains that one with how it works, a concrete example and how it would fit us, and gives each other option one line on what it would mean for him, as more bullets of the same list.
 
 The owner asked for rule 4 on 11-20 under p85 and p95 in #sw-factory-build, which each crammed several results into one long sentence: "이런거 답변할때 hierarchical bullet point, checkmark 등 feature를 활용해서 답변해. like multiple todoes, points, …" (p101).
 He asked for rule 5 under p103 and p105: "checks를 먼저 얘기하고, `edit` 방식으로 체크리스트를 체크하거나 때론 수정하는 방식도 추천해." (p106).
