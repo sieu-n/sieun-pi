@@ -46,7 +46,8 @@ suite("search filters", () => {
   });
 
   test("place splits every hit into six places, OR-ed within, AND-ed with where, in and from", async () => {
-    const dm = await s.send("POST", "/api/c/dm_vent/send", { text: "is the relay up in the DM too", requestId: "filters-place-dm" });
+    // "quiet" keeps Vent from answering: its two answers landed 260 to 700 ms after the send, in the middle of this test on a loaded box.
+    const dm = await s.send("POST", "/api/c/dm_vent/send", { text: "quiet: is the relay up in the DM too", requestId: "filters-place-dm" });
     assert.equal(dm.status, 200, JSON.stringify(dm.body));
     const all = await search("");
     const by = Object.fromEntries(await Promise.all(SEARCH_PLACES.map(async place => [place, await search(`place=${place}`)] as const)));

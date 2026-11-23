@@ -83,18 +83,27 @@ test("a job's new test send leaves from:owner at the next search", async () => {
 });
 
 test("a thread that joins the list becomes a root chat, and one filed under an agent moves inside its work, at the next search", async () => {
-  const word = "prepokapi";
-  const chat = host.addThread({ name: "Prep root chat", createdAt: Date.now() - 3600_000 });
-  say(chat, `the ${word} note`);
-  await s.app.searchEngine.settled();
-  const place = async () => (await find(word)).hits.find(hit => hit.conversation.id === chat.row.id)?.where;
-  assert.equal(await place(), "tool", "a thread the list does not hold yet is no root chat");
+  // The fixture server's 1 s thread poll would list the thread between the steps below (4 of 11 runs alone on 11-23), so the test lists it.
+  const threads = s.app.threads;
+  const poll = threads.poll;
+  await threads.poll();
+  threads.poll = () => Promise.resolve();
+  try {
+    const word = "prepokapi";
+    const chat = host.addThread({ name: "Prep root chat", createdAt: Date.now() - 3600_000 });
+    say(chat, `the ${word} note`);
+    await s.app.searchEngine.settled();
+    const place = async () => (await find(word)).hits.find(hit => hit.conversation.id === chat.row.id)?.where;
+    assert.equal(await place(), "tool", "a thread the list does not hold yet is no root chat");
 
-  await s.app.threads.refresh();
-  assert.equal(await place(), "root", "the listed thread is not a root chat");
+    await threads.refresh();
+    assert.equal(await place(), "root", "the listed thread is not a root chat");
 
-  s.app.agents.fileJob(chat.row.id, s.app.agents.record(agents.vent)!);
-  assert.equal(await place(), "tool", "the filed job still reads as a root chat");
+    s.app.agents.fileJob(chat.row.id, s.app.agents.record(agents.vent)!);
+    assert.equal(await place(), "tool", "the filed job still reads as a root chat");
+  } finally {
+    threads.poll = poll;
+  }
 });
 
 test("a conversation's summary is the one its thread's full list holds", async () => {
