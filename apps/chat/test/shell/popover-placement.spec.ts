@@ -86,6 +86,9 @@ for (const size of WINDOWS) {
       test("a right-click menu opens at the pointer", async ({ page }) => {
         await open(page, scale, "/#/c/ch_general");
         const link = page.getByRole("navigation", { name: "Conversations" }).locator('a[href="#/c/ch_general"]');
+        // The owner right-clicks a row he can see. Channels other specs make sort above general and push it under the sidebar's fold at
+        // 1180x720 and 120%, where a click at its box landed at y 734 in a 720 px window and opened nothing.
+        await link.scrollIntoViewIfNeeded();
         const l = await box(link);
         const pointer = { x: l.x + 40, y: l.y + l.height / 2 };
         await page.mouse.click(pointer.x, pointer.y, { button: "right" });
