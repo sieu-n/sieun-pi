@@ -8,10 +8,11 @@
  */
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
-import type { AgentSummary, BoardOp, BoardRow, BoardView, ChatBoard, CheckInPatch, CheckInView, DutyAction, DutyRow, DutyView, ForYouItem, PlanItem } from "../web/src/lib/api/types.ts";
+import type { AgentSummary, BoardOp, BoardRow, BoardView, BoardWrite, ChatBoard, CheckInPatch, CheckInView, DutyAction, DutyRow, DutyView, ForYouItem, PlanItem } from "../web/src/lib/api/types.ts";
 import { applyBoardOp, BOARD_PREFIX, emptyBoard, needsGo, nextIds, parseBoard, parseBoardOps, stepGo } from "../web/src/lib/api/shared/chat-board.ts";
 import { snoozed, waitingAsks } from "../web/src/lib/api/shared/snooze.ts";
 import { newestAskFirst } from "../web/src/lib/api/shared/board-lists.ts";
+import { boardDelta, boardKey, boardStep } from "../web/src/lib/api/shared/board-delta.ts";
 import { morningTime, upsertDuty, type AfterMeasure, type Duty, type DutyRunRecord, type DutySchedule, type DutyTrigger } from "../web/src/lib/api/shared/chat-duties.ts";
 import { asAfter, clearPrecheck, measure, measureAfter, runStamp, type PrecheckLaunch } from "./duty-run.ts";
 import { dutyCard, judgedRun, missStreak } from "../web/src/lib/api/shared/duty-card.ts";
@@ -274,13 +275,17 @@ export class Boards {
   /**
    * The owner's or an agent's board ops; each of the owner's also reaches the chat as a `[board]` line, as today. The answer carries each op's
    * summary line, which the chat's own `chat_board` call returns to it (packages/pi-host/src/durable/prime-chat.ts), as Prime's agent-board route does.
+   * A caller that names the board it holds (`base`, `boardKey`) gets only what changed when that was the board before the ops (`BoardWrite`).
    */
-  async apply(id: string, raw: unknown, actor: "owner" | "agent" = "owner"): Promise<BoardView & { summaries: string[] }> {
+  apply(id: string, raw: unknown, actor?: "owner" | "agent"): Promise<BoardView & { summaries: string[] }>;
+  apply(id: string, raw: unknown, actor: "owner" | "agent", base: unknown): Promise<BoardWrite & { summaries: string[] }>;
+  async apply(id: string, raw: unknown, actor: "owner" | "agent" = "owner", base?: unknown): Promise<BoardWrite & { summaries: string[] }> {
     const chat = this.chatId(id);
     const thread = this.threadOf(chat);
     const ops: BoardOp[] = parseBoardOps(raw);
     const now = new Date().toISOString();
-    let board = (await this.board(chat)) ?? emptyBoard(now);
+    const before = await this.board(chat);
+    let board = before ?? emptyBoard(now);
     const summaries: string[] = [];
     for (const op of ops) {
       const result = applyBoardOp(board, op, actor, now, nextIds(board));
@@ -301,7 +306,8 @@ export class Boards {
         entry: { kind: "agent.message", data: { from: "owner", via: "board" } },
       }).catch(error => this.log(`board note to ${chat} failed: ${String(error)}`));
     }
-    return { board, awaitingGo: awaitingGo(board), summaries };
+    const step = before && typeof base === "string" && base === boardKey(before) ? boardStep(before, board) : null;
+    return step ? { delta: boardDelta(base as string, board, [step]), awaitingGo: awaitingGo(board), summaries } : { board, awaitingGo: awaitingGo(board), summaries };
   }
 
   /** The images the owner attached to an answer, as `![name](/api/uploads/<file>)` in its text, so the chat sees them with the `[board]` line. */

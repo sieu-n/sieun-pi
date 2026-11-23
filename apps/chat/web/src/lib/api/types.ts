@@ -5,6 +5,7 @@
 import type { BoardOp, ChatBoard, CheckInPause, CheckInView, ChatAgent, OwnerTodo, PlanStatus, AccountsView, MachineView } from "./shared/types.ts";
 import type { DutySchedule, DutyView } from "./shared/chat-duties.ts";
 import type { DutyCardModel } from "./shared/duty-card.ts";
+import type { BoardDelta } from "./shared/board-delta.ts";
 import type { SkillScan } from "./shared/skills.ts";
 import type { ReviewEvent } from "./shared/skills-review.ts";
 import type { SavedSettings } from "./shared/owner-settings.ts";
@@ -643,6 +644,11 @@ export interface JobNode { id: ConversationId; parent: ConversationId | null; na
 
 /** Board: a plan step that waits for the owner's go carries `awaitingGo`. */
 export interface BoardView { board: ChatBoard | null; awaitingGo: string[] }
+/**
+ * The answer to the owner's board ops: what changed when the request named the board it shows (`base`, `boardKey`) and the server's board
+ * before the ops was that one, else the whole board. A whole board measured 70 KB on 11-23, three round trips at his 200 ms.
+ */
+export type BoardWrite = BoardView | { delta: BoardDelta; awaitingGo: string[] };
 /** `chatId` is the agent id (or a thread id that no agent holds yet), and `chatName` the agent's name. */
 export interface ForYouItem { chatId: string; chatName: string; todo: OwnerTodo; step?: { id: string; text: string; status: PlanStatus } }
 export interface BoardRow {

@@ -6,7 +6,8 @@
  */
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import type { AgentSummary, BoardView } from "../../web/src/lib/api/types.ts";
+import type { AgentSummary, BoardView, BoardWrite } from "../../web/src/lib/api/types.ts";
+import { applyBoardDelta, boardKey } from "../../web/src/lib/api/shared/board-delta.ts";
 import { FixtureHost } from "../../server/host/fixture.ts";
 import { start, until, type Running } from "./helpers.ts";
 
@@ -30,6 +31,20 @@ before(async () => {
 after(async () => {
   release();
   await s.close();
+});
+
+test("a write that names the board it was made on answers only what changed, and that applied to it gives the board a read answers", async () => {
+  const path = `/api/agents/${agent.id}/board`;
+  await s.send("POST", path, { actor: "agent", ops: [{ op: "plan_add", text: "Pick the night shift's pager.", note: "x".repeat(4_000) }, { op: "plan_add", text: "Move the alerts." }] });
+  const shown = (await s.get<BoardView>(path)).board!;
+  const written = await s.send<BoardWrite & { summaries: string[] }>("POST", path, { actor: "agent", base: boardKey(shown), ops: [{ op: "plan_update", id: shown.plan.at(-1)!.id, text: "Move the alerts to the night channel." }] });
+  assert.equal(written.status, 200);
+  assert.ok("delta" in written.body, "the answer carries the whole board");
+  assert.ok(JSON.stringify(written.body).length < 1_000, `the answer is ${JSON.stringify(written.body).length} bytes`);
+  assert.deepEqual(applyBoardDelta(shown, written.body.delta), (await s.get<BoardView>(path)).board);
+  // A page whose board is not the server's gets the whole board.
+  const stale = await s.send<BoardWrite>("POST", path, { actor: "agent", base: boardKey(shown), ops: [{ op: "plan_update", id: shown.plan.at(-1)!.id, text: "Move the alerts." }] });
+  assert.ok("board" in stale.body);
 });
 
 test("an owner's board write answers its board while the chat's [board] line is still on its way to pi-host", async () => {

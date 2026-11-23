@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
-  import { api, reads, view, type BoardOp } from "$lib/api";
+  import { applyBoard, reads, view, type BoardOp } from "$lib/api";
   import { Avatar, Bubble, Button, EmptyState, IconButton, IdChip, listKey, LoadingText, Menu, NavItem, PanelHeader, SplitPane, stampLabel, toast, type MenuEntry } from "$lib/ui";
   import { whenLabel } from "$lib/remind";
   import { router } from "$lib/router.svelte";
@@ -80,9 +80,7 @@
   }
 
   /** The socket's board event carries the chat's asks into the kept list, so the write needs no read of For you after it. */
-  async function apply(item: ForYouItem, ops: BoardOp[]) {
-    await api.boardOps(item.chatId, ops);
-  }
+  const apply = (item: ForYouItem, ops: BoardOp[]) => applyBoard(item.chatId, ops);
   /** Done or Dismiss, or Reopen on a done one, with Undo in its toast. */
   async function markDone(item: ForYouItem) {
     const change = item.todo.done ? "reopen" : "done";

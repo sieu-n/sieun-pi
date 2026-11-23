@@ -477,9 +477,9 @@ export function routes(app: App, parts: SkillsParts): Route[] {
     ...(["agents", "threads"] as const).flatMap(scope => [
       route("GET", `/api/${scope}/:id/board`, async (_r, p) => app.boards.view(p.id!)),
       route("POST", `/api/${scope}/:id/board`, async (_r, p, _q, body) => {
-        const input = (await body()) as { ops: unknown; actor?: string };
+        const input = (await body()) as { ops: unknown; actor?: string; base?: unknown };
         // A refused op (a bad shape, or an agent answering a todo) is the caller's error.
-        return app.boards.apply(p.id!, input.ops, input.actor === "agent" ? "agent" : "owner").catch(error => {
+        return app.boards.apply(p.id!, input.ops, input.actor === "agent" ? "agent" : "owner", input.base).catch(error => {
           throw new BadRequest(error instanceof Error ? error.message : String(error));
         });
       }),

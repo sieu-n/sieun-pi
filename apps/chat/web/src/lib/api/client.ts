@@ -3,7 +3,7 @@
  * message. Paths are relative, so the page works behind Vite's proxy on :5185 and from the server on :5184 alike.
  */
 import type {
-  AgentConfig, AgentFolder, AgentHostList, AgentId, AgentSummary, BoardOp, BoardRow, BoardView, CheckInPatch, CheckInView, ChatAgent, ConversationHeader, ConversationId,
+  AgentConfig, AgentFolder, AgentHostList, AgentId, AgentSummary, BoardOp, BoardRow, BoardView, BoardWrite, CheckInPatch, CheckInView, ChatAgent, ConversationHeader, ConversationId,
   ConversationPatch, ConversationSummary, DutyAction, DutyRow, ForMeItem, ForMeList, ForMeStatus, ForYouItem, HarnessEntryView, HostsReport, HostThreadFilter, ImageRef, Item, JobNode, Me, Member, MemoryInput, ModelCatalog, OpenedPage, ProjectList, SearchQuery, SearchResult, SendRequest, WikiPages,
   LaterItem, LaterList, LaterPatch, LaterRequest, LaterState, ReactionRequest, ReadAllRequest, ReadPoint, Room, RoomInput, RoomPatch, SendResult, Sidebar, StepOutputRef, ThinkingLevel, ThreadDoneRequest, TimelinePage, UsageBucket, UsageRange, UsageReport, AccountsView,
 } from "./types.ts";
@@ -798,6 +798,9 @@ export const api = {
    */
   boardOps: (chat: string, ops: BoardOp[]) =>
     call<BoardView & { summaries: string[] }>("POST", `${boardBase(chat)}/board`, { ops }).then(({ board, awaitingGo }): BoardView => ({ board, awaitingGo })),
+  /** Board ops from a page that shows the board `base` names (`boardKey`): the answer is what changed from it, or the whole board (`BoardWrite`). */
+  boardOpsAfter: (chat: string, base: string, ops: BoardOp[]) =>
+    call<BoardWrite & { summaries: string[] }>("POST", `${boardBase(chat)}/board`, { ops, base }).then(({ summaries: _summaries, ...answer }): BoardWrite => answer),
   /** Copies a Prime chat's board, duties and check-in interval into the thread it moved to. */
   importPrime: (chat: string, prime: string) =>
     call<{ board: boolean; duties: number; runs: number; checkInMs: number | null }>("POST", `/api/threads/${enc(chat)}/import-prime`, { prime }),

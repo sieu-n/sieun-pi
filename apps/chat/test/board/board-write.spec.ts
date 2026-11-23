@@ -1,4 +1,5 @@
 import type { Locator, Page, Request } from "@playwright/test";
+import WebSocket from "ws";
 import { HARNESS_AGENT, expect, resetFixture, test } from "./helpers";
 
 /**
@@ -42,12 +43,19 @@ const shownReads = (lines: Line[], paths: (path: string) => boolean): string[] =
   lines.filter(line => line.m === "GET" && paths(line.p) && line.bg !== "ahead").map(line => `${line.p} ${line.bg ?? "waited"}`);
 const isBoard = (path: string) => path.endsWith("/board");
 
-/** Answers the ask t1 and waits for the write's answer, the open list's change and a second for any read it starts. */
+/**
+ * Answers the ask t1 and waits for the write's answer, the open list's change and a second for any read it starts. The page names the board
+ * it shows, so the answer is the one todo that changed, not the whole board.
+ */
 async function answer(page: Page, where: Locator): Promise<void> {
   const before = await where.locator(".ask-row").count();
   const written = page.waitForResponse(r => r.request().method() === "POST" && isBoard(new URL(r.url()).pathname));
   await where.getByRole("button", { name: "Friday 09:00" }).click();
-  expect((await written).ok()).toBe(true);
+  const response = await written;
+  expect(response.ok()).toBe(true);
+  const body = (await response.json()) as { board?: unknown; delta?: { plan: unknown[]; todos: { id: string }[] } };
+  expect(body.board).toBeUndefined();
+  expect(body.delta?.todos.map(todo => todo.id)).toEqual(["t1"]);
   await expect(where.locator(".ask-row")).toHaveCount(before - 1);
   await page.waitForTimeout(1_000);
 }
@@ -99,6 +107,42 @@ test("a Dismiss on For you shows its change with no read of For you or the board
   await expect(rows).toHaveCount(before - 1);
   await page.waitForTimeout(1_000);
   expect(shownReads(await lines(), path => isBoard(path) || path === "/api/for-you")).toEqual([]);
+});
+
+test("a refresh of a board the page built from a write's answer counts as no wait when the server's board is the same", async ({ page, chatServer }) => {
+  // From the write on, the socket's board events, which carry the server's whole board, are held back, so the page shows only the board it
+  // built itself from the write's answer. The socket goes to the worker's server, as helpers.ts sends it.
+  let holding = false;
+  await page.routeWebSocket(/\/api\/live/, route => {
+    const url = new URL(route.url());
+    url.protocol = "ws:";
+    url.host = new URL(chatServer).host;
+    const upstream = new WebSocket(url.toString());
+    const early: string[] = [];
+    upstream.on("open", () => { for (const message of early.splice(0)) upstream.send(message); });
+    upstream.on("message", data => {
+      const text = String(data);
+      if (!(holding && text.startsWith('{"type":"board"'))) route.send(text);
+    });
+    upstream.on("close", () => void route.close().catch(() => undefined));
+    route.onMessage(message => (upstream.readyState === WebSocket.OPEN ? upstream.send(message) : early.push(String(message))));
+    route.onClose(() => upstream.close());
+  });
+  await page.goto(`/#/board/${HARNESS_AGENT}`);
+  const region = page.getByRole("region", { name: "For you" });
+  await expect(region).toContainText("Pick the day for the production cutover.");
+  await page.waitForLoadState("networkidle");
+  holding = true;
+  await answer(page, region);
+  const lines = await linesFromNow(page);
+  await page.evaluate(() => { location.hash = "#/agents"; });
+  await expect(page.locator('[role="gridcell"]').first()).toBeVisible();
+  const read = page.waitForResponse(r => r.request().method() === "GET" && new URL(r.url()).pathname === `/api/agents/${HARNESS_AGENT}/board`);
+  await page.evaluate(hash => { location.hash = hash; }, `#/board/${HARNESS_AGENT}`);
+  await read;
+  await page.waitForTimeout(500);
+  const board = (await lines()).filter(line => line.m === "GET" && line.p === `/api/agents/${HARNESS_AGENT}/board`).map(line => line.bg ?? "waited");
+  expect(board).toEqual(["shown"]);
 });
 
 test("the board the page keeps after a write is the board a read answers", async ({ page, request, chatServer }) => {

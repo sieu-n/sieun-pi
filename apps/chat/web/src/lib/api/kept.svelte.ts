@@ -20,7 +20,17 @@ import { withAsks, withRow } from "./shared/board-lists.ts";
 const STORED = "kept";
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
-const same = (a: unknown, b: unknown): boolean => a === b || JSON.stringify(a) === JSON.stringify(b);
+/**
+ * Whether two answers hold the same data, whatever their keys' order: a board the page built from a write's delta (board-delta.ts
+ * `applyBoardDelta`) orders its keys unlike the server's, and compared as JSON text the next read of it counted as a change he waited for.
+ */
+function same(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null || Array.isArray(a) !== Array.isArray(b)) return false;
+  const keys = (value: object) => Object.keys(value).filter(key => (value as Record<string, unknown>)[key] !== undefined);
+  const left = keys(a), right = keys(b);
+  return left.length === right.length && left.every(key => same((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key]));
+}
 
 /** A read on its way, with the live events' changes that came meanwhile (`Kept.change`). */
 type Flight<T> = { read: Promise<void>; wait: Wait; changes: ((value: T) => T | undefined)[] };

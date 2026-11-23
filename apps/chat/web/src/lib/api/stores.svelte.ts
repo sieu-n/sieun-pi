@@ -14,6 +14,7 @@ import { heldSends, type HeldSend } from "./held-sends.ts";
 import { holdReload, releaseReload } from "./reload.ts";
 import { live } from "./live.svelte.ts";
 import { digests, mergeBuckets, untimed, type Timed } from "./shared/hello-buckets.ts";
+import { applyBoardDelta, boardKey } from "./shared/board-delta.ts";
 import { SvelteMap } from "svelte/reactivity";
 import type {
   AgentId, AgentSummary, BoardOp, BoardView, ConversationHeader, ConversationId, ConversationSummary, ImageRef, Item, Me,
@@ -1466,14 +1467,8 @@ export class BoardStore {
     return this.kept.read();
   }
 
-  /**
-   * The answer is the whole board, which replaces the kept one with no read. The socket's board event may have brought a later write before
-   * it came, so it replaces only an older board, and a read on its way takes it on top of its own answer (`Kept.change`).
-   */
-  async apply(ops: BoardOp[]): Promise<void> {
-    const answer = await api.boardOps(this.chatId, ops);
-    if (this.kept.value === null) return this.kept.set(answer);
-    this.kept.change(shown => ((shown.board?.rev ?? -1) > (answer.board?.rev ?? -1) ? shown : answer));
+  apply(ops: BoardOp[]): Promise<void> {
+    return applyBoard(this.chatId, ops);
   }
 
   close(): void {
@@ -1481,6 +1476,28 @@ export class BoardStore {
   }
 }
 export const boardStore = (chatId: string): BoardStore => new BoardStore(chatId);
+
+/**
+ * The owner's board ops on `chatId`, whose answer goes into the kept board with no read. A page that shows the board names it, and the answer
+ * is then what changed: on 11-23 a whole board answer was 70 KB, three round trips at his 200 ms. The socket's board event may have brought
+ * this write or a later one first, so the answer replaces only an older board; a change that cannot be placed reads the board again, and a
+ * read on its way takes the answer on top of its own (`Kept.change`).
+ */
+export async function applyBoard(chatId: string, ops: BoardOp[]): Promise<void> {
+  const entry = kept(reads.board(chatId));
+  const shown = entry.value?.board;
+  const answer = await (shown ? api.boardOpsAfter(chatId, boardKey(shown), ops) : api.boardOps(chatId, ops));
+  if (entry.value === null) {
+    if ("board" in answer) entry.set(answer);
+    return;
+  }
+  entry.change(view => {
+    if ("board" in answer) return (view.board?.rev ?? -1) > (answer.board?.rev ?? -1) ? view : answer;
+    if (view.board && view.board.rev >= answer.delta.top.rev) return view;
+    const board = view.board && applyBoardDelta(view.board, answer.delta);
+    return board ? { board, awaitingGo: answer.awaitingGo } : undefined;
+  });
+}
 
 /** Open todos across every chat, for the sidebar count; the For you page shows the kept answer of `reads.forYou()`. */
 export const forYou = {
