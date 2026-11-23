@@ -428,7 +428,9 @@ function replyFor(text: string, image: string): string {
   if (/\bmermaid\b/i.test(text)) return "Here is the flow:\n\n```mermaid\nflowchart LR\n  owner --> chat --> pi-host\n```\n\nThe chat server sits in the middle.";
   if (/\brich\b/i.test(text)) return richReply(image);
   if (/\bslow\b/i.test(text)) return Array.from({ length: 60 }, (_, i) => `word${i + 1}`).join(" ");
-  return `Got it. You said: "${text.split("\n").find(line => line.trim() && !line.startsWith("["))?.slice(0, 120) ?? text.slice(0, 120)}". I checked the canary and the relay, and both answer.`;
+  // The quote drops each @, so an echo of "@Crawler VP ..." mentions no one: a quoted mention woke that agent again on every hop in #general.
+  const said = (text.split("\n").find(line => line.trim() && !line.startsWith("[")) ?? text).slice(0, 120).replaceAll("@", "");
+  return `Got it. You said: "${said}". I checked the canary and the relay, and both answer.`;
 }
 
 /** An entry as pi-host indexes it: its text with each tool call as its name and JSON arguments, its author and time; none for a system note. */

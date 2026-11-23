@@ -176,7 +176,7 @@ describe("on the fixture", () => {
     const post = (await s.send("POST", `/api/c/${channel.id}/send`, { text: "@channel desk is the relay fine?", mentions: [id], requestId: "smc-1" })).body;
     const thread = await until(() => s.get(`/api/c/${channel.id}/replies/${post.item.id}`), t => t.root.deliveries[0].state === "answered");
     assert.deepEqual(thread.items.map((i: Extract<Item, { kind: "message" }>) => [i.author.id, i.text]), [
-      [agent, 'Got it. You said: "@channel desk is the relay fine?". I checked the canary and the relay, and both answer.'],
+      [agent, 'Got it. You said: "channel desk is the relay fine?". I checked the canary and the relay, and both answer.'],
     ]);
     assert.equal(thread.root.deliveries[0].answer, thread.items[0].id);
     const comm = s.app.agents.record(agent)!.comm![channel.id]!;

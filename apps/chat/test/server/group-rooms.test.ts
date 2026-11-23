@@ -454,4 +454,21 @@ describe("sequence (d) on the fixture", () => {
     assert.equal(refused.status, 400);
     assert.equal(stored(s, room.id).length, all.length);
   });
+
+  test("an agent's echo of a mention wakes no one, so a mentioned outsider answers the owner once", async () => {
+    const room: Room = (await s.send("POST", "/api/rooms", { kind: "channel", name: "echo-loop", members: [agents.vent, agents.frontend] })).body;
+    await s.send("POST", `/api/c/${room.id}/send`, { text: "@Crawler VP is the relay fine?", mentions: [agents.crawler], requestId: "echo-loop-1" });
+    // The room is done once no delivery is still sending and no post came in for 1.5 s.
+    for (let calm = 0, last = -1, end = Date.now() + 30_000; calm < 3 && Date.now() < end;) {
+      await new Promise(resolve => setTimeout(resolve, 500));
+      const list = stored(s, room.id);
+      calm = list.length === last && list.every(p => (p.deliveries ?? []).every(d => d.state !== "sending")) ? calm + 1 : 0;
+      last = list.length;
+    }
+    const all = stored(s, room.id);
+    const agentPosts = all.filter(p => p.author !== "owner");
+    assert.deepEqual(agentPosts.flatMap(p => p.mentions ?? []), [], "no agent post mentions anyone");
+    assert.equal(all.filter(p => p.deliveries?.some(d => d.target === agents.crawler)).length, 1, `Crawler VP hears only the owner's post (${agentPosts.length} agent posts)`);
+    assert.equal(agentPosts.filter(p => p.author === agents.crawler).length, 1);
+  });
 });
