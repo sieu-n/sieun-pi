@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { uniqueName } from "./helpers.ts";
 
 /**
  * Host badges (agent-model.md phase 6): an agent on another box than the chat's own shows that box beside its name on its card and in its
@@ -14,6 +15,9 @@ type Json = Record<string, unknown>;
 type Agent = { id: string; name: string; room?: string; archived: boolean };
 
 const MAC = { host: "mac", hostState: "away" };
+
+// A page read still in a rewriting route when the test ends would fail the worker.
+test.afterEach(({ page }) => page.unrouteAll({ behavior: "ignoreErrors" }));
 
 /** Rewrites the server's answers so `agent` runs on the away Mac: the live hello and agent events, the agent list and its DM header. */
 async function onMac(page: Page, agent: Agent): Promise<void> {
@@ -41,16 +45,18 @@ async function onMac(page: Page, agent: Agent): Promise<void> {
   });
 }
 
-async function firstAgent(page: Page): Promise<Agent> {
-  const response = await page.request.get("/api/agents");
+/**
+ * A fresh agent per test, so no other spec's agents, archives or posts land in its checks. `test` keeps it off the owner's lists, which the
+ * badge test reads, so only the DM test makes a test agent.
+ */
+async function newAgent(page: Page, prefix: string, test = false): Promise<Agent> {
+  const response = await page.request.post("/api/agents", { data: { name: uniqueName(prefix), ...(test ? { test } : {}) } });
   expect(response.ok()).toBeTruthy();
-  const agent = ((await response.json()) as Agent[]).find((a) => !a.archived && a.room);
-  test.skip(!agent, "no agent with a DM on this server");
-  return agent!;
+  return (await response.json()) as Agent;
 }
 
 test("an agent on the away Mac shows a dimmed Mac badge on its card and in its DM header", async ({ page }) => {
-  const agent = await firstAgent(page);
+  const agent = await newAgent(page, "spec mac badge");
   await onMac(page, agent);
   await page.goto("/#/agents");
   const card = page.locator(`[role="gridcell"][data-agent-id="${agent.id}"]`);
@@ -70,7 +76,9 @@ test("an agent on the away Mac shows a dimmed Mac badge on its card and in its D
 });
 
 test("a DM post that waits on an away box reads Queued, Mac is offline instead of Not delivered", async ({ page }) => {
-  const agent = await firstAgent(page);
+  const agent = await newAgent(page, "spec mac queued", true);
+  const text = uniqueName("a post for the away Mac");
+  expect((await page.request.post(`/api/c/${agent.room}/send`, { data: { text, requestId: crypto.randomUUID() } })).ok()).toBeTruthy();
   await onMac(page, agent);
   await page.route(new RegExp(`/api/c/${agent.room}/items`), async (route) => {
     const response = await route.fetch();
@@ -84,7 +92,7 @@ test("a DM post that waits on an away box reads Queued, Mac is offline instead o
     await route.fulfill({ response, json: body });
   });
   await page.goto(`/#/c/${agent.room}`);
-  const queued = page.locator('[data-send-state="queued"]');
+  const queued = page.locator(".row.own").filter({ hasText: text }).locator('[data-send-state="queued"]');
   await expect(queued).toHaveText("Queued, Mac is offline", { timeout: 20_000 });
   await expect(page.locator('[data-send-state="failed"]')).toHaveCount(0);
   await expect(page.getByText(`${agent.name} was mentioned`)).toHaveCount(0);

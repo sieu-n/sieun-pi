@@ -16,8 +16,10 @@
     /** Show a ring, used inside an AvatarStack. */
     ring?: boolean;
     title?: string;
+    /** The name is printed beside the avatar, so screen readers and the text around it skip the avatar's own copy. */
+    decorative?: boolean;
   };
-  let { name, kind = "agent", src = null, seed, size = 28, status = null, ring = false, title }: Props = $props();
+  let { name, kind = "agent", src = null, seed, size = 28, status = null, ring = false, title, decorative = false }: Props = $props();
 
   const key = $derived(seed ?? name);
   const hue = $derived(hueFor(key));
@@ -37,14 +39,15 @@
   style:--tint={tint}
   title={title ?? name}
   data-kind={kind}
+  aria-hidden={decorative ? "true" : undefined}
 >
   {#if src}
-    <img {src} alt={name} draggable="false" />
+    <img {src} alt={decorative ? "" : name} draggable="false" />
   {:else if kind === "person"}
     <span class="initials" style:font-size="{Math.max(9, Math.round(size * 0.4))}px">{initials(name)}</span>
   {:else}
     <span class="figure" {@attach (figure) => figure.replaceChildren(mascotNode(key, `av-${uid}`))}></span>
-    <span class="sr-only">{name}</span>
+    {#if !decorative}<span class="sr-only">{name}</span>{/if}
   {/if}
   {#if status}
     <span class="status {status}" style:width="{dot}px" style:height="{dot}px" aria-label={status}></span>
