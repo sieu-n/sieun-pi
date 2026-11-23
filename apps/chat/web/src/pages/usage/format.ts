@@ -5,11 +5,17 @@ const dollars = new Intl.NumberFormat("en-US", { style: "currency", currency: "U
 const compact = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 });
 const whole = new Intl.NumberFormat("en-US");
 
+/**
+ * USD on a grid of a billionth of a dollar. The page sums one range two ways, by chat rows and by chart buckets, and float sums in two orders
+ * of the same calls end on either side of a half cent or half of a hundredth of a cent: 5.025149999 and 5.025150001 printed $5.0251 over the
+ * kinds and $5.0252 under the chart for the same calls (usage.spec, 11-23). Both land on one value here, so every figure rounds alike.
+ */
+const usdGrid = (usd: number): number => Math.round(usd * 1e9) / 1e9;
 /** USD to the cent, and a nonzero amount under a cent as such. */
-export const cost = (usd: number): string => (usd > 0 && usd < 0.005 ? "<$0.01" : dollars.format(usd));
+export const cost = (usd: number): string => (usd > 0 && usd < 0.005 ? "<$0.01" : dollars.format(usdGrid(usd)));
 /** USD to a hundredth of a cent, for a hover that must show what a cent hides. */
 const exact = new Intl.NumberFormat("en-US", { minimumFractionDigits: 4, maximumFractionDigits: 4 });
-export const exactCost = (usd: number): string => `$${exact.format(usd)}`;
+export const exactCost = (usd: number): string => `$${exact.format(usdGrid(usd))}`;
 export const percent = (share: number): string => `${Math.round(share * 100)}%`;
 /** A count in short form, 12.4M, with `noun` pluralized. */
 export function count(value: number, noun?: string): string {

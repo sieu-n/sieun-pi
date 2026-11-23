@@ -7,7 +7,9 @@ type Report = { range: string; bucket: string; rows: Row[]; buckets: Bucket[] };
 
 const KINDS: Kind[] = ["input", "output", "cacheRead", "cacheWrite"];
 const whole = (n: number) => Math.round(n).toLocaleString("en-US");
-const dollars = (n: number) => (n > 0 && n < 0.005 ? "<$0.01" : new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(n));
+/** USD on the page's grid of a billionth of a dollar (format.ts), so a sum in this test's order rounds as the page's sum in its own order. */
+const grid = (n: number) => Math.round(n * 1e9) / 1e9;
+const dollars = (n: number) => (n > 0 && n < 0.005 ? "<$0.01" : new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(grid(n)));
 
 async function report(page: Page, range = "24h", extra = ""): Promise<Report> {
   const response = await page.request.get(`/api/usage?range=${range}${extra}`);
@@ -42,7 +44,7 @@ test("the chart comes first, and its total, the figures and every token kind equ
   const data = await read;
   test.skip(!data.rows.length, "no usage in the last 7 days on this server");
   const total = sums(data.rows);
-  const exact = `$${total.cost.total.toLocaleString("en-US", { minimumFractionDigits: 4, maximumFractionDigits: 4 })}`;
+  const exact = `$${grid(total.cost.total).toLocaleString("en-US", { minimumFractionDigits: 4, maximumFractionDigits: 4 })}`;
   await expect(page.getByTestId("usage-cost")).toHaveText(dollars(total.cost.total));
   await expect(page.getByTestId("usage-kind-total")).toContainText(`${whole(total.turns)} turn`);
   for (const kind of KINDS) {
@@ -56,6 +58,33 @@ test("the chart comes first, and its total, the figures and every token kind equ
   const chartTop = (await page.getByRole("img", { name: "Cost per day" }).boundingBox())!.y;
   const kindsTop = (await page.getByTestId("usage-kind-input").boundingBox())!.y;
   expect(chartTop).toBeLessThan(kindsTop);
+});
+
+test("a range whose sum sits on a half of a hundredth of a cent shows one exact total over the kinds and the chart's table", async ({ page }) => {
+  // Three calls: $0.10 on one day, then $0.20 and $2.00005 on the next. Summed by chat rows the float sum is 2.3000499999999997, summed by day
+  // buckets it is 2.30005, so the kinds and the chart's table printed $2.3000 and $2.3001 for the same calls before format.ts put them on one grid.
+  const costs = [0.1, 0.2, 2.00005];
+  const byRows = costs.reduce((sum, usd) => sum + usd, 0);
+  const byBuckets = costs[0]! + (costs[1]! + costs[2]!);
+  const four = (n: number) => n.toLocaleString("en-US", { minimumFractionDigits: 4, maximumFractionDigits: 4 });
+  expect([four(byRows), four(byBuckets)]).toEqual(["2.3000", "2.3001"]);
+
+  const base = await report(page, "7d", "&bucket=day");
+  const tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  const costOf = (usd: number) => ({ input: 0, output: usd, cacheRead: 0, cacheWrite: 0, total: usd });
+  const model = "anthropic/claude-opus-5-5";
+  const rows: Row[] = costs.map((usd, i) => ({ thread: `half-${i}`, threadName: `Half ${i}`, host: "fixture", model, turns: 1, tokens, cost: costOf(usd) }));
+  const days = [[costs[0]!], [costs[1]!, costs[2]!]];
+  const buckets = base.buckets.map((bucket, i) => {
+    const day = days[i - (base.buckets.length - days.length)] ?? [];
+    const usd = day.reduce((sum, value) => sum + value, 0);
+    return { ...bucket, turns: day.length, tokens, cost: costOf(usd), byModel: day.length ? { [model]: usd } : {}, tokensByModel: day.length ? { [model]: tokens } : {} };
+  });
+  await page.route("**/api/usage?range=7d&bucket=day*", route => route.fulfill({ json: { ...base, rows, buckets } }));
+  await page.goto("/#/settings/usage?range=7d&by=day");
+  await expect(mainChart(page).getByTestId("usage-figures-total")).toHaveText("$2.3001");
+  await expect(page.getByTestId("usage-kind-total")).toHaveAttribute("title", /, \$2\.3001$/);
+  await expect(page.getByTestId("usage-kind-output")).toHaveAttribute("title", /, \$2\.3001$/);
 });
 
 test("the page draws one chart, with tokens per second now in its header row, and the unit and token kind toggles drive both", async ({ page }) => {
