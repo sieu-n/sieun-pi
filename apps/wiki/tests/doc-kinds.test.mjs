@@ -85,6 +85,11 @@ test('an unknown doc_kind is refused, and a design page keeps the short numbered
 	const lines = (n) =>
 		`<ol>${Array.from({ length: n }, (_, i) => `<li>The design keeps option ${i + 1} on the table.</li>`).join('')}</ol>\n<pre class="mermaid">flowchart LR\n  a --> b</pre>\n<pre class="mermaid">flowchart LR\n  c --> d</pre>\n`;
 	assert.deepEqual(errors(page('design', lines(18))), []);
+	const oneDiagram = (n) =>
+		`<ol>${Array.from({ length: n }, (_, i) => `<li>The design keeps option ${i + 1} of the plan on the table for now.</li>`).join('')}</ol>\n<pre class="mermaid">flowchart LR\n  a --> b</pre>\n`;
+	assert.deepEqual(errors(page('design', oneDiagram(20))), [], 'one diagram is enough at the design-length limit');
+	assert.deepEqual(errors(page('design', oneDiagram(20).replace(/<pre[^]*<\/pre>/, ''))), ['visuals']);
+	assert.ok(errors(page(null, oneDiagram(20))).includes('visuals'), 'a numbered-line page of 20 lines still wants 2');
 	assert.deepEqual(errors(page('design', lines(22))), ['design-length']);
 	assert.ok(errors(page('design', `<p>${para(4)} ${para(2)}</p>`)).includes('paragraph-blob'));
 });

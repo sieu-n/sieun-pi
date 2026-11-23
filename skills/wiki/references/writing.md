@@ -86,6 +86,7 @@ The structure comes from these pages, which a writer reads for shape, never for 
 2. Every other rule still runs, such as banned words, em dashes, label openers, bullet sentences, sentence length, bold, `english-only` and the UTC date rules.
 3. An explanation needs one diagram per 800 words, half the numbered-line rate of one per 400, because its paragraphs carry the reasons that numbered lines leave to a picture.
 4. A tutorial step needs its own code block or image, because the owner follows a tutorial step by step and checks each result against the page.
+5. On a `design` page, `visuals` asks for one diagram whatever the page's length, because c83 allows one and `design-length` caps the size.
 
 ## The page is numbered lines and pictures
 

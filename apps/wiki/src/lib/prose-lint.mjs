@@ -1358,7 +1358,9 @@ export const RULES = [
 			const lines = page.units.filter((u) => u.numbered).length;
 			const byWords =
 				page.words > LIMITS.VISUAL_MIN_WORDS ? Math.max(1, Math.floor(page.words / LIMITS.WORDS_PER_VISUAL)) : 0;
-			const need = Math.max(byWords, Math.floor(lines / LIMITS.LINES_PER_VISUAL));
+			// Owner rule c83 gives a design page one diagram, and design-length already caps its size.
+			const need =
+				page.docKind === 'design' ? 1 : Math.max(byWords, Math.floor(lines / LIMITS.LINES_PER_VISUAL));
 			return page.visuals.length < need
 				? [
 						{
