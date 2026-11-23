@@ -95,7 +95,13 @@ const bundledSkillsDir = captureBundled && existsSync(captureBundled) ? captureB
 const harnessDir = capture.sessionFile ? (await import("../packages/pi-host/src/durable/prime-harness.ts")).threadHarnessDir(capture.sessionFile, session) : undefined;
 const input = { agentDir, cwd, messagesPath: capture.sessionFile ?? undefined, depth: 0, tools, brief, bundledSkillsDir, ...(harnessDir ? { harnessDir } : {}) };
 const parts = await builder.primePromptParts(input);
-const primeJoined = parts.filter(part => builder.PRIME_SECTIONS.includes(part.key)).map(part => part.text).join("\n\n");
+// A Prime chat carries the writing standard as the last guideline of its poteto_mode tool, at the end of guidance; pi-host sends the same
+// text as its own `writing` section under a heading (prime-prompt.ts writingStandard). The joined text puts it back where Prime has it.
+const WRITING_HEADING = "# Writing standard\n\n";
+const writingText = parts.find(part => part.key === "writing")?.text;
+const writingLine = writingText?.startsWith(WRITING_HEADING) ? writingText.slice(WRITING_HEADING.length) : undefined;
+const primeJoined = parts.filter(part => builder.PRIME_SECTIONS.includes(part.key))
+  .map(part => part.key === "guidance" && writingLine ? `${part.text}\n- ${writingLine}` : part.text).join("\n\n");
 for (const part of parts) write(`builder/${part.key}.txt`, part.text);
 write("builder/system.txt", parts.map(part => part.text).join("\n\n"));
 
@@ -220,15 +226,17 @@ const lineDiff = (pi, prime) => {
   return { onlyPi: [...a].filter(line => !b.has(line)).length, onlyPrime: [...b].filter(line => !a.has(line)).length, shared: [...a].filter(line => b.has(line)).length };
 };
 const rows = parts.map(part => {
-  const prime = builder.PRIME_SECTIONS.includes(part.key) ? system : { rules: primeRules, harness: primeHarness, corrections: primeCorrections }[part.key];
-  const where = builder.PRIME_SECTIONS.includes(part.key) ? "system prompt" : "message";
+  const inGuidance = part.key === "writing" && writingLine !== undefined;
+  const prime = builder.PRIME_SECTIONS.includes(part.key) || inGuidance ? system : { rules: primeRules, harness: primeHarness, corrections: primeCorrections }[part.key];
+  const where = builder.PRIME_SECTIONS.includes(part.key) ? "system prompt" : inGuidance ? "system prompt, guidance's last line" : "message";
   const same = part.key === "harness" && harness?.sameEntries ? (harness.digestIdentical && harness.messageIdentical ? "identical for the same entries (newest digest message)" : "different for the same entries")
     : part.key === "harness" && harness ? "stores changed since the newest digest message"
-    : prime === null || prime === undefined ? "absent in capture" : builder.PRIME_SECTIONS.includes(part.key) ? (prime.includes(part.text) ? "identical" : "different")
+    : prime === null || prime === undefined ? "absent in capture" : inGuidance ? (prime.includes(`\n- ${writingLine}`) ? "identical" : "different")
+    : builder.PRIME_SECTIONS.includes(part.key) ? (prime.includes(part.text) ? "identical" : "different")
     : prime === part.text ? "identical" : "different";
   const liveBytes = live?.sections.find(section => section.key === part.key)?.bytes ?? 0;
   const lines = where === "message" ? lineDiff(part.text, prime) : null;
-  return { key: part.key, source: part.source, primeAt: where, builderBytes: bytes(part.text), primeBytes: where === "system prompt" ? null : bytes(prime), parity: same, lines, liveBytes };
+  return { key: part.key, source: part.source, primeAt: where, builderBytes: bytes(part.text), primeBytes: where.startsWith("system prompt") ? null : bytes(prime), parity: same, lines, liveBytes };
 });
 const summary = {
   capturedAt: capture.capturedAt, session, sessionFile: capture.sessionFile, cwd, brief: pinned, tools, bundledSkillsDir, installedBundled,
