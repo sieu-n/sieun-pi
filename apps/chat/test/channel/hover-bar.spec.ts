@@ -34,14 +34,14 @@ const buttons = (post: Locator) => post.getByRole("toolbar", { name: "Message ac
 /** The bar's button names; Forward message belongs to the forward spec, so these checks leave it out. */
 const labels = (post: Locator) => buttons(post).evaluateAll((els) => els.map((el) => el.getAttribute("aria-label")).filter((l) => l !== "Forward message"));
 
-test("a room post's bar holds Slack's seven buttons and sits above the post's first line", async ({ page }) => {
+test("a room post's bar holds Slack's seven buttons and Mark as done, and sits above the post's first line", async ({ page }) => {
   const { room, posts } = await channel(page);
   await open(page, `#/c/${room}`);
   const post = row(page, posts[2]!);
   await post.evaluate((el) => el.scrollIntoView({ block: "center" }));
   await post.hover();
   await expect(post.locator("[data-quick-reaction]")).toHaveCount(3);
-  expect((await labels(post)).slice(3)).toEqual(["Add reaction", "Reply in thread", "Save for later", "More actions"]);
+  expect((await labels(post)).slice(3)).toEqual(["Add reaction", "Reply in thread", "Save for later", "Mark as done", "More actions"]);
   const { bar, text } = await geometry(post);
   expect(bar.y + bar.height).toBeLessThanOrEqual(text.top + 1);
 });

@@ -186,8 +186,9 @@
   }
 
   /**
-   * The message menu behind the hover bar's More actions. The bar keeps Slack's few buttons (reactions, Reply in thread, Save for later),
-   * so it stays narrow and off the text, and every other message action goes in this one list.
+   * The message menu behind the hover bar's More actions. The bar keeps Slack's few buttons (reactions, Reply in thread, Save for later) and,
+   * on a thread's root, Mark as done, which the owner asked for on 11-24 (p184), so it stays narrow and off the text; every other message
+   * action goes in this one list.
    */
   let menuOpen = $state(false);
   let moreButton = $state<HTMLButtonElement>();
@@ -198,7 +199,7 @@
       { ...remindMenu({ remindAt: reactable.later?.remindAt, kept: !!reactable.later?.unread, set: remind, custom: () => (customRemind = true), clear: () => remind(null) }), shortcut: "M" },
       separator,
     ] : []),
-    ...(doneable ? [{ id: "done", label: done ? "Reopen thread" : "Mark thread done", icon: "check", onselect: afterPick(toggleDone) }] : []),
+    ...(doneable ? [{ id: "done", label: done ? "Reopen thread" : "Mark as done", icon: "check", onselect: afterPick(toggleDone) }] : []),
     ...(reactable ? [{ id: "pin", label: pinned ? `Un-pin from ${pinPlace}` : `Pin to ${pinPlace}`, icon: "pin", shortcut: "P", onselect: afterPick(togglePin) }] : []),
     ...(workHref && !why ? [{ id: "work", label: "Show work", icon: "robot", onselect: afterPick(() => workHref && router.navigate(workHref)) }] : []),
     { id: "copy-link", label: "Copy link", icon: "link", onselect: afterPick(() => oncopylink(item)) },
@@ -316,6 +317,7 @@
       <IconButton icon="forward" label="Forward message" size="sm" onclick={() => (forwarding = true)} data-forward-message />
       <IconButton icon={saved ? "bookmark-filled" : "bookmark"} label={saved ? "Remove from Later" : "Save for later"} shortcut="A" size="sm" pressed={saved} onclick={() => room && reactable && later.toggle(room, reactable)} data-save-later />
     {/if}
+    {#if doneable}<IconButton icon="check" label={done ? "Reopen thread" : "Mark as done"} size="sm" pressed={!!done} onclick={toggleDone} data-thread-done-toggle />{/if}
     <IconButton icon="more" label="More actions" size="sm" aria-haspopup="menu" aria-expanded={menuOpen} bind:element={moreButton} onclick={() => (menuOpen = !menuOpen)} data-message-menu />
   </ActionBar>
   {#if menuOpen}<Menu bind:open={menuOpen} anchor={moreButton} items={menuItems} placement="bottom-end" label="Message actions" />{/if}
