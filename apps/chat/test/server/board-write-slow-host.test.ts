@@ -20,6 +20,14 @@ import { start, until } from "./helpers.ts";
 const within = <T>(promise: Promise<T>, ms: number): Promise<T | "held"> =>
   Promise.race([promise, new Promise<"held">(resolve => setTimeout(() => resolve("held"), ms))]);
 
+/**
+ * How long a write or a stop may take while pi-host holds a put or a read. Each fault these tests guard waits for a call the test holds until
+ * it ends, so it never answers, and the old stop waited 27 to 29 s for a held put (6204dbd3). At box load 280, 30 runs at once of the first
+ * test answered every write in at most 1,506 ms, and in a full parallel server run at load 150 to 290 a write took over 1 s and failed the
+ * old 1 s wait (~/work/chat-specs-red/specs-red-srv-board-write-slow-host/notes.md).
+ */
+const HELD_MS = 10_000;
+
 test("a board write answers while pi-host holds its put for seconds, and pi-host gets every write in order with its [board] line after it", async () => {
   const s = await start({ wordMs: 0 });
   let release: () => void = () => undefined;
@@ -41,9 +49,9 @@ test("a board write answers while pi-host holds its put for seconds, and pi-host
       if (input.requestId?.startsWith("board:")) order.push(`line ${input.requestId.split(":").at(-1)}`);
     };
 
-    const first = await within(s.send<BoardView>("POST", path, { ops: [{ op: "todo_add", text: "Pick the night shift's alert channel." }] }), 1_000);
+    const first = await within(s.send<BoardView>("POST", path, { ops: [{ op: "todo_add", text: "Pick the night shift's alert channel." }] }), HELD_MS);
     assert.notEqual(first, "held", "the write waited for pi-host's put");
-    const second = await within(s.send<BoardView>("POST", path, { ops: [{ op: "plan_add", text: "Move the alerts." }] }), 1_000);
+    const second = await within(s.send<BoardView>("POST", path, { ops: [{ op: "plan_add", text: "Move the alerts." }] }), HELD_MS);
     assert.notEqual(second, "held", "the second write waited for pi-host's put");
     if (first === "held" || second === "held") return;
     assert.equal(first.status, 200);
@@ -79,7 +87,7 @@ test("a write answered while pi-host refused its put reaches pi-host from the ne
     host.docPut = async () => {
       throw new Error("connect ECONNREFUSED pi-host.sock");
     };
-    const written = await within(first.send<BoardView>("POST", `/api/agents/${agent.id}/board`, { actor: "agent", ops: [{ op: "plan_add", text: "Keep this step." }] }), 1_000);
+    const written = await within(first.send<BoardView>("POST", `/api/agents/${agent.id}/board`, { actor: "agent", ops: [{ op: "plan_add", text: "Keep this step." }] }), HELD_MS);
     assert.notEqual(written, "held");
     assert.equal((await first.get<BoardView>(`/api/agents/${agent.id}/board`)).board?.plan.at(-1)?.text, "Keep this step.");
   } finally {
@@ -158,7 +166,7 @@ test("a write on a board this server read long ago answers with no pi-host read,
     };
     // A minute later: the old 15 s TTL read pi-host again here, inside the write.
     Date.now = () => realNow() + 60_000;
-    const written = await within(s.send<BoardView>("POST", path, { ops: [{ op: "plan_add", text: "Written a minute after the read." }] }), 1_000);
+    const written = await within(s.send<BoardView>("POST", path, { ops: [{ op: "plan_add", text: "Written a minute after the read." }] }), HELD_MS);
     assert.notEqual(written, "held", "the write waited for a pi-host read");
     if (written === "held") return;
     assert.equal(written.body.board?.plan.at(-1)?.text, "Written a minute after the read.");
@@ -198,7 +206,7 @@ test("a stop ends while pi-host holds a board put, and that put, landing after t
     const older = (await first.send<BoardView>("POST", path, { actor: "agent", ops: [{ op: "plan_add", text: "Older step." }] })).body.board!;
     // A hand-over's calls wait in the socket's queue while the old server stops, so its stop never waits for pi-host's put.
     firstOpen = false;
-    assert.notEqual(await within(first.close(), 2_000), "held", "the stop waited for pi-host's put");
+    assert.notEqual(await within(first.close(), HELD_MS), "held", "the stop waited for pi-host's put");
     // The next server starts from the same data dir, puts the board the first one left in board-writes.json, and takes a later write.
     next = await start({ wordMs: 0, dataDir, host });
     await until(async () => (await host.docGet(agent.thread, "chat.board")) as ChatBoard | null, board => board?.rev === older.rev);
