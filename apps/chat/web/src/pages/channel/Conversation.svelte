@@ -356,7 +356,8 @@
           { type: "separator" as const },
         ]
       : []),
-    ...(isChannel && header ? [{ id: "details", label: "Channel details", icon: "info", onselect: () => channelDetails.open(id) }] : []),
+    // Channel details opens before the header is in, as the title does, so no row lands above Search under the pointer once it loads.
+    ...(isChannel ? [{ id: "details", label: "Channel details", icon: "info", onselect: () => channelDetails.open(id) }] : []),
     { id: "search", label: "Search in this conversation", icon: "search", onselect: () => search.open({ kind: "conversation", id }) },
     { id: "link", label: "Copy link", icon: "link", onselect: () => void navigator.clipboard.writeText(`${location.origin}${location.pathname}${conversationHref(id)}`).then(() => toast.show("Link copied")) },
     ...(paneBoard

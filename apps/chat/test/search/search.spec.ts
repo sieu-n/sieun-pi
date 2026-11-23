@@ -20,7 +20,49 @@ async function total(page: Page, params: Record<string, string>): Promise<number
 
 const messages = (n: number) => `${n.toLocaleString("en-US")} ${n === 1 ? "message" : "messages"}`;
 
+/** A search's words and filters, without its page size, sort or cursor, as the palette's requests and a test's params both name them. */
+const searchKey = (params: URLSearchParams) => JSON.stringify([...params].filter(([name]) => !["limit", "brief", "sort", "cursor"].includes(name)).sort());
+
+/** The total of each first page the palette's own requests got back, by searchKey. */
+const answers = new WeakMap<Page, Map<string, number>>();
+
+/**
+ * The count shows the exact total the palette's own request got back for these words and filters, which it returns. A GET of its own made
+ * after the palette's can count more: every DM another spec sends a fixture agent gets back "I checked the canary and the relay".
+ */
+async function showsAnswer(page: Page, params: Record<string, string>): Promise<number> {
+  const totals = answers.get(page)!;
+  const key = searchKey(new URLSearchParams(params));
+  await expect
+    .poll(async () => {
+      const answer = totals.get(key);
+      const shown = await count(page).textContent();
+      return answer === undefined ? `no answer yet, the count shows ${shown}` : shown === messages(answer) ? "shown" : `the count shows ${shown} for an answer of ${messages(answer)}`;
+    })
+    .toBe("shown");
+  return totals.get(key)!;
+}
+
+/** A word only this test wrote, in `posts` posts of a new channel with no members, so no agent answers there and no other spec writes it. */
+async function ownWord(page: Page, posts: number): Promise<string> {
+  const word = `zq${Array.from({ length: 10 }, () => String.fromCharCode(97 + Math.floor(Math.random() * 26))).join("")}`;
+  const room = (await (await page.request.post("/api/rooms", { data: { kind: "channel", name: `search-${word}`, members: [] } })).json()) as { id: string };
+  await Promise.all(Array.from({ length: posts }, (_, n) => page.request.post(`/api/c/${room.id}/send`, { data: { text: `${word} post ${n + 1}`, requestId: crypto.randomUUID() } })));
+  await expect.poll(() => total(page, { q: word })).toBe(posts);
+  return word;
+}
+
 test.beforeEach(async ({ page }) => {
+  const totals = new Map<string, number>();
+  answers.set(page, totals);
+  page.on("response", response => {
+    const url = new URL(response.url());
+    if (url.pathname !== "/api/search" || url.searchParams.has("cursor") || !response.ok()) return;
+    response.json().then(
+      (answer: { total: number }) => totals.set(searchKey(url.searchParams), answer.total),
+      () => {},
+    );
+  });
   await page.goto("/#/c/ch_general");
   await expect(page.getByTestId("nav-capsule")).toBeVisible();
 });
@@ -38,7 +80,7 @@ test("Cmd K opens on this conversation and recent activity, and Esc closes it", 
 test("text shows at most 3 named rows before messages, with an exact count and underlined matches", async ({ page }) => {
   await page.keyboard.press(`${mod}+k`);
   await field(page).fill("relay");
-  await expect(count(page)).toHaveText(messages(await total(page, { q: "relay" })));
+  await showsAnswer(page, { q: "relay" });
   const names = await groupNames(page);
   expect(names[0]).toBe("All results");
   expect(names.at(-1)).toBe("Messages");
@@ -59,11 +101,11 @@ test("from: picks an author into the From chip, the count follows it, and Backsp
   await expect(chip).not.toHaveText("From");
   await expect(chip).toContainText("From: ");
   await expect(field(page)).toHaveValue("relay ");
-  await expect(count(page)).toHaveText(messages(await total(page, { q: "relay", from: "owner" })));
+  await showsAnswer(page, { q: "relay", from: "owner" });
   await field(page).press("Home");
   await field(page).press("Backspace");
   await expect(chip).toHaveText("From");
-  await expect(count(page)).toHaveText(messages(await total(page, { q: "relay" })));
+  await showsAnswer(page, { q: "relay" });
 });
 
 test("a typed operator lands in its chip once it is complete, and the chip's x removes it", async ({ page }) => {
@@ -72,7 +114,7 @@ test("a typed operator lands in its chip once it is complete, and the chip's x r
   const chip = chips(page).locator("[data-chip=in]");
   await expect(chip).toHaveText("In: #pi-cutover");
   await expect(field(page)).toHaveValue("relay");
-  await expect(count(page)).toHaveText(messages(await total(page, { q: "relay", in: "ch_cutover" })));
+  await showsAnswer(page, { q: "relay", in: "ch_cutover" });
   await chips(page).getByRole("button", { name: "Remove the In filter" }).click();
   await expect(chip).toHaveText("In");
 });
@@ -89,7 +131,7 @@ test("after: offers date presets, and a bad date stays as text", async ({ page }
   const chip = chips(page).locator("[data-chip=date]");
   await expect(chip).toContainText("On or after");
   const date = new URL((await sent).url()).searchParams.get("after")!;
-  await expect(count(page)).toHaveText(messages(await total(page, { q: "canary", after: date })));
+  await showsAnswer(page, { q: "canary", after: date });
   await field(page).fill("canary before:2026-02-30 ");
   await expect(chip).toContainText("On or after");
   await expect(field(page)).toHaveValue("canary before:2026-02-30 ");
@@ -98,8 +140,11 @@ test("after: offers date presets, and a bad date stays as text", async ({ page }
 test("arrow keys move the highlight, Enter opens the hit at its message", async ({ page }) => {
   await page.keyboard.press(`${mod}+k`);
   await field(page).fill("migration");
+  // The rows above the hits are counted once they are all in: the server's messages replace the page's own, and the fixture's
+  // migration-signer-recipe wiki page comes in its own request at least 150 ms after the keystroke.
+  await showsAnswer(page, { q: "migration" });
+  await expect(palette(page).locator("[role=group][aria-label='Pages'] [data-search-result]").first()).toBeVisible();
   const hits = palette(page).locator("[role=group][aria-label='Messages'] [data-search-result]");
-  await expect(hits.first()).toBeVisible();
   const first = await palette(page).locator("[data-search-result]").first().getAttribute("id");
   await expect(field(page)).toHaveAttribute("aria-activedescendant", first!);
   const rows = await palette(page).locator("[data-search-result]").count();
@@ -146,7 +191,7 @@ test("the conversation menu scopes search to this conversation, sorts, and the s
   await page.getByRole("menuitem", { name: "Search in this conversation" }).click();
   await expect(page.getByRole("dialog", { name: "Search this conversation" })).toBeVisible();
   await field(page).fill("relay");
-  await expect(count(page)).toHaveText(messages(await total(page, { q: "relay", in: "ch_cutover" })));
+  await showsAnswer(page, { q: "relay", in: "ch_cutover" });
   expect(await groupNames(page)).toEqual(["All results", "Most relevant"]);
   await palette(page).locator("[data-search-sort]").click();
   await page.getByRole("menuitemradio", { name: "Most recent" }).click();
@@ -154,15 +199,45 @@ test("the conversation menu scopes search to this conversation, sorts, and the s
   await expect(chips(page).locator("[data-chip=in]")).toHaveText("In: #pi-cutover");
   await chips(page).getByRole("button", { name: "Remove the In filter" }).click();
   await expect(page.getByRole("dialog", { name: "Search" })).toBeVisible();
-  await expect(count(page)).toHaveText(messages(await total(page, { q: "relay" })));
+  await showsAnswer(page, { q: "relay" });
   expect(await groupNames(page)).toContain("This conversation");
   expect((await groupNames(page)).at(-1)).toBe("Messages");
 });
 
+/**
+ * The menu used to add "Channel details" above "Search in this conversation" once the channel's header came in, so at load a click aimed
+ * at Search opened the channel's details (~/work/chat-specs-red/specs-red-search-search/notes.md).
+ */
+test("the conversation menu's rows above Search stay put when the channel's header comes in", async ({ page }) => {
+  const word = `zq${Array.from({ length: 10 }, () => String.fromCharCode(97 + Math.floor(Math.random() * 26))).join("")}`;
+  const room = (await (await page.request.post("/api/rooms", { data: { kind: "channel", name: `menu-${word}`, members: [] } })).json()) as { id: string };
+  let release = () => {};
+  const held = new Promise<void>(resolve => (release = resolve));
+  await page.route(new RegExp(`/api/c/${room.id}(\\?|$)`), async route => {
+    await held;
+    await route.continue();
+  });
+  await page.goto(`/#/c/${room.id}`);
+  await page.getByRole("button", { name: "Channel actions" }).click();
+  const items = page.getByRole("menuitem");
+  const above = async () => {
+    const labels = await items.allInnerTexts();
+    return labels.slice(0, labels.indexOf("Search in this conversation"));
+  };
+  await expect(page.getByRole("menuitem", { name: "Search in this conversation" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Add people" })).toHaveCount(0);
+  const before = await above();
+  release();
+  await expect(page.getByRole("menuitem", { name: "Add people" })).toBeVisible();
+  expect(await above()).toEqual(before);
+});
+
 test("Show more pages through every hit up to the exact count", async ({ page }) => {
+  // Three pages of 20, 20 and 5: a seed word's count grows while the pages load, as the fixture's agents keep writing it.
+  const all = 45;
+  const word = await ownWord(page, all);
   await page.keyboard.press(`${mod}+k`);
-  await field(page).fill("canary");
-  const all = await total(page, { q: "canary" });
+  await field(page).fill(word);
   await expect(count(page)).toHaveText(messages(all));
   const hits = palette(page).locator("[data-search-result][data-key^='hit:']");
   const more = palette(page).locator("[data-key='more-messages']");
@@ -221,7 +296,7 @@ test("a keystroke shows message rows from the page before the server answers, an
   // Every key sent its request at once, with no wait for the typing to stop.
   expect(asked).toBe(5);
   release();
-  await expect(count(page)).toHaveText(messages(await total(page, { q: "relay" })));
+  await showsAnswer(page, { q: "relay" });
   await expect(palette(page).getByTestId("search-pending")).toHaveCount(0);
 });
 
@@ -246,9 +321,9 @@ test("a keystroke's search leaves before its rows render", async ({ page }) => {
   await expect(page.getByTestId("nav-capsule")).toBeVisible();
   await page.keyboard.press(`${mod}+k`);
   await field(page).pressSequentially("rel");
-  await expect(count(page)).toHaveText(messages(await total(page, { q: "rel" })));
+  await showsAnswer(page, { q: "rel" });
   await field(page).press("a");
-  await expect(count(page)).toHaveText(messages(await total(page, { q: "rela" })));
+  await showsAnswer(page, { q: "rela" });
   const seen = await page.evaluate(() => (window as unknown as { seenAtSearch: string[] }).seenAtSearch);
   expect(seen.at(-1)).toContain("“rel”");
 });
@@ -259,22 +334,22 @@ test("the search never waits on the feed: with it blocked, the server's rows and
   await expect(page.getByTestId("nav-capsule")).toBeVisible();
   await page.keyboard.press(`${mod}+k`);
   await field(page).fill("relay");
-  await expect(count(page)).toHaveText(messages(await total(page, { q: "relay" })));
+  await showsAnswer(page, { q: "relay" });
   await expect(palette(page).locator("[role=group][aria-label='Messages'] [data-search-result]").first()).toBeVisible();
 });
 
 test("a word typed again shows its earlier answer with no new request", async ({ page }) => {
   await page.keyboard.press(`${mod}+k`);
   await field(page).fill("relay");
-  await expect(count(page)).toHaveText(messages(await total(page, { q: "relay" })));
+  const relay = await showsAnswer(page, { q: "relay" });
   await field(page).fill("canary");
-  await expect(count(page)).toHaveText(messages(await total(page, { q: "canary" })));
-  expect(await total(page, { q: "canary" })).not.toBe(await total(page, { q: "relay" }));
+  const canary = await showsAnswer(page, { q: "canary" });
+  expect(canary).not.toBe(relay);
   let asked = 0;
   page.on("request", request => {
     if (/\/api\/search\?/.test(request.url())) asked += 1;
   });
   await field(page).fill("relay");
-  await expect(count(page)).toHaveText(messages(await total(page, { q: "relay" })));
+  await expect(count(page)).toHaveText(messages(relay));
   expect(asked).toBe(0);
 });
