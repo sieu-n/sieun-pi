@@ -1,4 +1,5 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
+import { tag } from "../channel/helpers.ts";
 
 // The layout lives on the one fixture server, so these tests take turns and leave it empty.
 test.describe.configure({ mode: "serial" });
@@ -10,7 +11,34 @@ const section = (page: Page, name: string) => sidebar(page).locator("[data-secti
 const fold = (page: Page, name: string) => sidebar(page).getByRole("button", { name, exact: true });
 const IDS: Record<string, string> = { general: "ch_general", "pi-cutover": "ch_cutover", vent: "dm_vent", "frontend-bro": "dm_frontend-bro" };
 const order = (page: Page, name: string) => section(page, name).locator("a[data-sidebar-row]").evaluateAll((rows) => rows.map((r) => r.getAttribute("href")));
-const sectionNames = (page: Page) => sidebar(page).locator("[data-section-id^=sec_] [data-fold]").allInnerTexts();
+const sectionNames = (page: Page, own: readonly string[]) =>
+  sidebar(page).locator("[data-section-id^=sec_] [data-fold]").allInnerTexts().then((names) => names.filter((n) => own.includes(n)));
+
+/**
+ * Drags `source` onto `target` as a person does in a long sidebar: the drag starts at the row, the sidebar scrolls to the target while it
+ * is held, and the drop lands there. Other specs add channels to the one fixture server, so a DM row can sit thousands of pixels below a
+ * section, and Playwright's dragTo, which scrolls to the target before the drag has started, then drops nothing.
+ */
+async function drag(page: Page, source: Locator, target: Locator, at?: { x: number; y: number }) {
+  await source.scrollIntoViewIfNeeded();
+  const from = (await source.boundingBox())!;
+  await page.mouse.move(from.x + 30, from.y + from.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(from.x + 30, from.y + from.height / 2 - 6, { steps: 2 });
+  await target.evaluate((el) => el.scrollIntoView({ block: "center" }));
+  const to = (await target.boundingBox())!;
+  await page.mouse.move(to.x + (at?.x ?? to.width / 2), to.y + (at?.y ?? to.height / 2), { steps: 5 });
+  await page.mouse.up();
+}
+
+/** A channel of this test's own, unread from its one post, since other specs open and read the seeded rooms at any time. */
+async function unreadChannel(page: Page): Promise<string> {
+  const room = ((await (await page.request.post("/api/rooms", { data: { kind: "channel", name: `sections-${tag()}`, members: [] } })).json()) as { id: string }).id;
+  const sent = (await (await page.request.post(`/api/c/${room}/send`, { data: { text: "a post left unread", requestId: crypto.randomUUID() } })).json()) as { item: { id: string } };
+  expect((await page.request.post(`/api/c/${room}/read`, { data: { unreadFrom: sent.item.id } })).ok()).toBe(true);
+  return room;
+}
+const archive = (page: Page, room: string) => page.request.patch(`/api/rooms/${room}`, { data: { archived: true } });
 
 async function sectionMenu(page: Page, name: string, item: string) {
   await section(page, name).getByRole("heading", { name }).hover();
@@ -46,6 +74,7 @@ test.beforeEach(async ({ page }) => {
 
 test("a section takes channels by menu and drag, renames, folds to its open and unread rows with the built-in sections, survives a reload and gives its channels back", async ({ page }) => {
   test.slow();
+  const unread = await unreadChannel(page);
   await block(page, "channels").getByRole("heading", { name: "Channels" }).hover();
   await sidebar(page).getByRole("button", { name: "Channels options" }).click();
   await page.getByRole("menuitem", { name: "New section" }).click();
@@ -66,7 +95,7 @@ test("a section takes channels by menu and drag, renames, folds to its open and 
   await expect(page.getByRole("menu")).toHaveCount(0);
   await expect(section(page, "Projects").locator(link("general"))).toBeVisible();
 
-  await channel(page, "pi-cutover").dragTo(section(page, "Projects").getByRole("heading", { name: "Projects" }));
+  await drag(page, channel(page, "pi-cutover"), section(page, "Projects").getByRole("heading", { name: "Projects" }));
   await expect(section(page, "Projects").locator(link("pi-cutover"))).toBeVisible();
   for (const name of ["general", "pi-cutover"]) await expect(block(page, "channels").locator(link(name))).toHaveCount(0);
 
@@ -89,13 +118,16 @@ test("a section takes channels by menu and drag, renames, folds to its open and 
   const dms = sidebar(page).locator('[data-section="dms"] a[href^="#/c/dm_"]:not([data-unread])');
   await expect(dms).toHaveCount(1);
   await expect(dms).toHaveAttribute("href", "#/c/dm_vent");
-  await expect(sidebar(page).locator('[data-section="dms"] a[data-unread]').first()).toBeVisible();
+  const unreadRow = block(page, "channels").locator(`a[href="#/c/${unread}"]`);
+  await expect(unreadRow).toHaveAttribute("data-unread", "true");
+  await expect(block(page, "channels").locator("a:not([data-unread])")).toHaveCount(0);
 
   await page.reload();
   await expect(section(page, "Work")).toBeVisible({ timeout: 15_000 });
   for (const name of ["Work", "Channels", "Direct messages"]) await expect(fold(page, name)).toHaveAttribute("aria-expanded", "false");
   await expect(readWork).toHaveCount(0);
   await expect(dms).toHaveCount(1);
+  await expect(unreadRow).toBeVisible();
 
   await page.goto("/#/c/ch_general");
   await expect(section(page, "Work").locator(link("general"))).toHaveAttribute("aria-current", "page", { timeout: 15_000 });
@@ -111,6 +143,7 @@ test("a section takes channels by menu and drag, renames, folds to its open and 
   await fold(page, "Channels").click();
   await expect(block(page, "channels").locator(link("general"))).toBeVisible();
   await expect(block(page, "channels").locator(link("pi-cutover"))).toBeVisible();
+  await archive(page, unread);
 });
 
 test("the row's context menu renames the channel, makes a section for it, refuses a duplicate name and deletes an empty section at once", async ({ page }) => {
@@ -136,7 +169,7 @@ test("the row's context menu renames the channel, makes a section for it, refuse
   await expect(dialog.getByRole("alert")).toHaveText("A section with this name already exists");
   await nameSection(page, "New section", "Later");
 
-  await channel(page, "general").dragTo(block(page, "channels").getByRole("heading", { name: "Channels" }));
+  await drag(page, channel(page, "general"), block(page, "channels").getByRole("heading", { name: "Channels" }));
   await expect(block(page, "channels").locator(link("general"))).toBeVisible();
   await section(page, "Later").getByRole("heading", { name: "Later" }).hover();
   await sidebar(page).getByRole("button", { name: "Later options" }).click();
@@ -201,9 +234,9 @@ test("a DM goes into a section, rows reorder by drag and Sort, sections reorder 
   await expect(block(page, "dms").locator(link("vent"))).toHaveCount(0);
   await expect.poll(() => order(page, "Work")).toEqual([`#/c/ch_general`, `#/c/dm_vent`]);
 
-  await channel(page, "frontend-bro").dragTo(section(page, "Work").locator(link("general")), { targetPosition: { x: 30, y: 3 } });
+  await drag(page, channel(page, "frontend-bro"), section(page, "Work").locator(link("general")), { x: 30, y: 3 });
   await expect.poll(() => order(page, "Work")).toEqual([`#/c/dm_frontend-bro`, `#/c/ch_general`, `#/c/dm_vent`]);
-  await channel(page, "vent").dragTo(section(page, "Work").locator(link("general")), { targetPosition: { x: 30, y: 3 } });
+  await drag(page, channel(page, "vent"), section(page, "Work").locator(link("general")), { x: 30, y: 3 });
   await expect.poll(() => order(page, "Work")).toEqual([`#/c/dm_frontend-bro`, `#/c/dm_vent`, `#/c/ch_general`]);
   await sectionMenu(page, "Work", "Sort");
   await expect(page.getByRole("menuitemradio", { name: /Custom order/ })).toHaveAttribute("aria-checked", "true");
@@ -214,14 +247,14 @@ test("a DM goes into a section, rows reorder by drag and Sort, sections reorder 
   await sidebar(page).getByRole("button", { name: "Channels options" }).click();
   await page.getByRole("menuitem", { name: "New section" }).click();
   await nameSection(page, "New section", "Ops");
-  await expect.poll(() => sectionNames(page)).toEqual(["Work", "Ops"]);
-  await section(page, "Ops").getByRole("heading", { name: "Ops" }).dragTo(section(page, "Work").getByRole("heading", { name: "Work" }), { targetPosition: { x: 30, y: 2 } });
-  await expect.poll(() => sectionNames(page)).toEqual(["Ops", "Work"]);
+  await expect.poll(() => sectionNames(page, ["Work", "Ops"])).toEqual(["Work", "Ops"]);
+  await drag(page, section(page, "Ops").getByRole("heading", { name: "Ops" }), section(page, "Work").getByRole("heading", { name: "Work" }), { x: 30, y: 2 });
+  await expect.poll(() => sectionNames(page, ["Work", "Ops"])).toEqual(["Ops", "Work"]);
 
   const other = await browser.newContext({ baseURL });
   const second = await other.newPage();
   await second.goto("/#/c/ch_general");
-  await expect.poll(() => sectionNames(second), { timeout: 15_000 }).toEqual(["Ops", "Work"]);
+  await expect.poll(() => sectionNames(second, ["Work", "Ops"]), { timeout: 15_000 }).toEqual(["Ops", "Work"]);
   await expect.poll(() => order(second, "Work")).toEqual([`#/c/dm_frontend-bro`, `#/c/ch_general`, `#/c/dm_vent`]);
   await other.close();
 
@@ -236,10 +269,12 @@ test("a DM goes into a section, rows reorder by drag and Sort, sections reorder 
 });
 
 test("every row's menu copies its link and offers Mark as read only when unread, a DM's opens its agent, and Move to leaves out the channel's own section", async ({ page }) => {
-  await sidebar(page).locator('[data-section="dms"] a[data-unread]').first().click({ button: "right" });
+  const unread = await unreadChannel(page);
+  await sidebar(page).locator(`a[href="#/c/${unread}"]`).click({ button: "right" });
   await expect(page.getByRole("menuitem", { name: "Copy link" })).toBeVisible();
   await expect(page.getByRole("menuitem", { name: "Mark as read" })).toBeVisible();
   await page.keyboard.press("Escape");
+  await archive(page, unread);
   await channel(page, "vent").click({ button: "right" });
   await page.getByRole("menuitem", { name: "Open agent" }).click();
   await expect(page).toHaveURL(/#\/agents\/ag_vent/);
