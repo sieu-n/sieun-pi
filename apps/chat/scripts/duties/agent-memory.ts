@@ -8,7 +8,9 @@
  *
  * Metrics:
  *   agents_on_ideal_pct, the headline: the share of real agents whose store holds every expected entry and no secret value or must-not
- *     entry with `match` words; an agent whose ideal expects nothing matches while its store is empty.
+ *     entry with `match` words; an agent whose ideal expects nothing matches while its store is empty. An agent made under a day ago with
+ *     no ideal.json row yet is not measured (`agents_ideal_unwritten`, flag `ideal_unwritten`), like a correction under a day old: on 11-24
+ *     crawler-guy, made 3 h before the run, read as off its ideal. After a day a missing row is a miss.
  *   corrections_captured_pct: the share of the owner's corrections about an agent, at least a day old, that its store names by id or msg id;
  *     a correction ideal.json lists in `general_corrections` binds every agent, reaches it through the ledger and is left out.
  *   scratch_entries: entries in the agents' stores that are session state or step status instead of lasting knowledge (target 0).
@@ -51,7 +53,7 @@ const POLL_MS = 5_000;
 const EMPTY_SETTLE_MS = 120_000;
 export const EMPTY_TURN = "empty turn";
 
-interface AgentRecord { id: string; slug: string; name: string; workThread: string; home?: string; archived?: boolean; test?: boolean; agentsDir?: string; comm?: Record<string, string> }
+interface AgentRecord { id: string; slug: string; name: string; workThread: string; home?: string; archived?: boolean; test?: boolean; agentsDir?: string; comm?: Record<string, string>; createdAt?: number }
 interface StoreEntry { id: string; kind: string; title: string; content: string; path?: string; created_at?: string }
 interface Expected { kind?: string; title: string; match: string[] }
 interface Question { q: string; answer?: string; match: string[] }
@@ -155,6 +157,10 @@ export function correctionsOf(record: AgentRecord, corrections: readonly Correct
 }
 
 const captured = (c: Correction, text: string): boolean => new RegExp(`\\b${c.id}\\b`).test(text) || (!!c.ref && text.includes(c.ref));
+
+/** An agent made under a day ago with no ideal.json row yet: the duty job writes the row on the agent's first day, so it is not measured. */
+export const idealUnwritten = (record: { createdAt?: number }, want: unknown, now: number): boolean =>
+  !want && record.createdAt !== undefined && record.createdAt > now - DAY_MS;
 
 const pct = (part: number, whole: number): number => (whole ? Math.round((1000 * part) / whole) / 10 : 100);
 
@@ -376,6 +382,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const flagged: Finding[] = [];
   const rows: Record<string, unknown>[] = [];
   let onIdeal = 0;
+  let unwritten = 0;
   let correctionsDue = 0;
   let correctionsKept = 0;
   let scratch = 0;
@@ -405,12 +412,17 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     const forbidden = mustNotHits(entries, want?.must_not ?? [], publicValues);
     const expected = want?.expected ?? [];
     const matches = !!want && !forbidden.length && (expected.length ? !missing.length : !entries.length);
+    const fresh = idealUnwritten(record, want, now) && !forbidden.length;
     if (matches) onIdeal++;
-    row.ideal = want ? { expected: want.expected?.length ?? 0, missing: missing.map(exp => exp.title), mustNot: forbidden.map(hit => `${hit.entry.title} (${hit.rule})`) } : "no ideal for this agent";
-    if (!matches) {
-      const why = !want ? "ideal.json has no entry for it" : !expected.length && entries.length ? `its ideal store is empty and it holds ${entries.length} entries`
-        : [missing.length ? `misses ${missing.length} of ${want.expected!.length}: ${missing.slice(0, 3).map(exp => exp.title).join("; ")}` : "",
-          forbidden.length ? `holds ${forbidden.length} must-not entr${forbidden.length === 1 ? "y" : "ies"}: ${forbidden[0]!.entry.title}` : ""].filter(Boolean).join(", ");
+    if (fresh) {
+      unwritten++;
+      flagged.push({ kind: "ideal_unwritten", excerpt: `${record.slug} was made ${Math.round((now - record.createdAt!) / 3_600_000)} h ago and ideal.json has no entry for it yet, so it is not measured; write its row from its brief and store`, sig: `idealnew:${record.slug}` });
+    }
+    row.ideal = fresh ? "no ideal yet for this agent, made under a day ago" : want ? { expected: want.expected?.length ?? 0, missing: missing.map(exp => exp.title), mustNot: forbidden.map(hit => `${hit.entry.title} (${hit.rule})`) } : "no ideal for this agent";
+    if (!matches && !fresh) {
+      const held = forbidden.length ? `holds ${forbidden.length} must-not entr${forbidden.length === 1 ? "y" : "ies"}: ${forbidden[0]!.entry.title}` : "";
+      const why = !want ? ["ideal.json has no entry for it", held].filter(Boolean).join(" and it ") : !expected.length && entries.length ? `its ideal store is empty and it holds ${entries.length} entries`
+        : [missing.length ? `misses ${missing.length} of ${want.expected!.length}: ${missing.slice(0, 3).map(exp => exp.title).join("; ")}` : "", held].filter(Boolean).join(", ");
       flagged.push({ kind: "off_ideal", excerpt: `${record.slug} ${why}`, sig: `ideal:${record.slug}:${missing.map(exp => exp.title).join("|")}:${forbidden.length}` });
     }
 
@@ -455,12 +467,13 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const left = sweeps.at(-1)?.left ?? [];
   for (const id of left) flagged.push({ kind: "recall_agent_left", excerpt: `${id} is a recall agent the server would not archive`, sig: `left:${id}` });
 
-  const measured = records.filter(record => !record.agentsDir).length;
+  const measured = records.filter(record => !record.agentsDir).length - unwritten;
   const metrics: Record<string, number> = {
     corrections_captured_pct: pct(correctionsKept, correctionsDue),
     scratch_entries: scratch,
     agents_real: measured,
     agents_on_ideal: onIdeal,
+    agents_ideal_unwritten: unwritten,
     corrections_due: correctionsDue,
     corrections_kept: correctionsKept,
   };
@@ -489,7 +502,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       (carried ? `, so recall_right_pct keeps the ${carried.pct}% measured at ${new Date(carried.at).toISOString().slice(0, 16)}Z` : ", and no earlier run measured it");
   const output = {
     metrics,
-    flagged: [...(ideal ? [] : [{ kind: "source_error", excerpt: `no ideal file at ${idealFile}`, sig: "no-ideal" }]), { kind: "summary", excerpt: `${onIdeal} of ${measured} agents hold their ideal memory; ${correctionsKept} of ${correctionsDue} corrections a day old are kept; ` +
+    flagged: [...(ideal ? [] : [{ kind: "source_error", excerpt: `no ideal file at ${idealFile}`, sig: "no-ideal" }]), { kind: "summary", excerpt: `${onIdeal} of ${measured} agents hold their ideal memory${unwritten ? ` (${unwritten} made under a day ago ${unwritten === 1 ? "has" : "have"} no ideal yet and ${unwritten === 1 ? "is" : "are"} not measured)` : ""}; ${correctionsKept} of ${correctionsDue} corrections a day old are kept; ` +
       `${scratch} scratch entries; ${recallWords}`, sig: "summary" }, ...flagged],
     idealFile, agents: rows,
   };

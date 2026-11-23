@@ -20,7 +20,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { call, EMPTY_TURN, emptyTurn, finishedReply, holds, lastMeasuredRecall, recall, recallCount, scratchReason, secretReason, splitAnswers, sweepRecallAgents, unanswered } from "../../scripts/duties/agent-memory.ts";
+import { call, EMPTY_TURN, emptyTurn, finishedReply, holds, idealUnwritten, lastMeasuredRecall, recall, recallCount, scratchReason, secretReason, splitAnswers, sweepRecallAgents, unanswered } from "../../scripts/duties/agent-memory.ts";
 
 const ask = { kind: "message", text: "Quick questions" };
 
@@ -95,6 +95,16 @@ test("an env variable's name after a secret word is where the value lives, not a
   assert.equal(secretReason(entry("Call shape", "api_key: CRAWLER_API_KEY.")), null);
   assert.equal(secretReason(entry("Prod key", "secret = PROD9F3A2C71E0")), "secret written out");
   assert.equal(secretReason(entry("Prod key", "secret = Prod_9f3a_2c71")), "secret written out");
+});
+
+// 11-24: crawler-guy, made 3 h before the 07:31 KST run, read as off its ideal because nobody had written its ideal.json row yet.
+test("an agent made under a day ago with no ideal row is not measured, and after a day a missing row is a miss", () => {
+  const now = Date.UTC(2026, 10, 23, 22, 31);
+  const hour = 3_600_000;
+  assert.equal(idealUnwritten({ createdAt: now - 3 * hour }, undefined, now), true);
+  assert.equal(idealUnwritten({ createdAt: now - 25 * hour }, undefined, now), false);
+  assert.equal(idealUnwritten({ createdAt: now - 3 * hour }, { slug: "crawler-guy", expected: [] }, now), false);
+  assert.equal(idealUnwritten({}, undefined, now), false);
 });
 
 test("a recall whose wait ran out is not measured, and a turn that ended wrong, empty or failed still counts", () => {
