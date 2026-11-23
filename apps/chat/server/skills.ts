@@ -6,7 +6,7 @@
  * or waited for it, took p90 2.2 s and once 118 s, and each read parsed the 725 KB file again. The scanner is the one tool that builds the
  * inventory, so this module only runs it and reads its file.
  */
-import { spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { NotFound } from "./app.ts";
@@ -52,6 +52,9 @@ export class Skills {
   private parsed: Promise<Parsed> | null = null;
   private hooks: SkillsHooks | null = null;
   private timer: NodeJS.Timeout | null = null;
+  private firstTick: NodeJS.Timeout | null = null;
+  private child: ChildProcess | null = null;
+  private stopped = false;
 
   constructor(
     private readonly config: SkillsConfig,
@@ -85,12 +88,24 @@ export class Skills {
     };
     this.timer = setInterval(tick, SCAN_CHECK_MS);
     this.timer.unref();
-    setTimeout(tick, hooks.lastAttempt() === null ? 0 : 30_000).unref();
+    this.firstTick = setTimeout(tick, hooks.lastAttempt() === null ? 0 : 30_000).unref();
   }
 
+  /**
+   * Ends the schedule and kills the scan that runs now. A test server deletes its data dir once it stopped, and a scanner it left running
+   * wrote into that dir's skills-db folder while the delete ran, which failed with ENOTEMPTY (dm-threads.test.ts at a box load of 150 on 11-23).
+   */
   stop(): void {
+    this.stopped = true;
     if (this.timer) clearInterval(this.timer);
-    this.timer = null;
+    if (this.firstTick) clearTimeout(this.firstTick);
+    this.timer = this.firstTick = null;
+    this.child?.kill();
+  }
+
+  /** Settles once the scan that runs now, if any, ended and its inventory was read. */
+  scanned(): Promise<void> {
+    return this.running ?? Promise.resolve();
   }
 
   private json: unknown = null;
@@ -138,7 +153,7 @@ export class Skills {
 
   private start(): Promise<void> {
     const scanner = this.config.scanner;
-    if (!scanner) return Promise.resolve();
+    if (!scanner || this.stopped) return Promise.resolve();
     if (this.running) return this.running;
     this.scan = { running: true, startedAt: Date.now(), endedAt: null, error: null };
     this.onScan({ ...this.scan });
@@ -149,10 +164,12 @@ export class Skills {
         await this.read();
         this.scan = { running: false, startedAt: this.scan.startedAt, endedAt: Date.now(), error: failure };
         this.running = null;
+        this.child = null;
         this.onScan({ ...this.scan });
         resolve();
       };
-      const child = spawn(scanner.command, [...scanner.args, ...extra], { cwd: scanner.cwd, stdio: ["ignore", "ignore", "pipe"], env: { ...process.env, ...scanner.env } });
+      if (this.stopped) return void finish("the server stopped before the scan started");
+      const child = (this.child = spawn(scanner.command, [...scanner.args, ...extra], { cwd: scanner.cwd, stdio: ["ignore", "ignore", "pipe"], env: { ...process.env, ...scanner.env } }));
       child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
         stderr = (stderr + chunk).slice(-4000);
       });

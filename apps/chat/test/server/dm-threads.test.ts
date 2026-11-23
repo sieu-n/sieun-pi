@@ -48,7 +48,12 @@ describe("threads in a DM", () => {
     assert.match(said, /\(thread so far\)/);
     assert.ok(said.includes(root.text.slice(0, 20)), "the input carries the root post");
 
-    const replies = await until(() => thread(s, root.id), t => t.items.some(m => m.author.id === agents.vent));
+    // The agent answers in one post per send_message call, a beat apart, so the thread is read once its turn ended and each call shows.
+    const turn = [...host.threadsById.get(comm)!.submissions.values()].find(r => r.entry === input!.id)!;
+    const done = await host.wait(comm, turn.id);
+    const sends = host.threadsById.get(comm)!.entries
+      .filter(e => e.id > input!.id && e.id < done.answer! && JSON.stringify(e.model).includes('"name":"send_message"')).length;
+    const replies = await until(() => thread(s, root.id), t => t.items.filter(m => m.author.id === agents.vent).length >= sends);
     assert.deepEqual(replies.items.map(m => m.author.id), ["owner", agents.vent, agents.vent], "his reply and the agent's answers, in the thread");
     assert.ok(replies.items.every(m => m.threadRoot === root.id));
     assert.equal(replies.items[1]!.answers, sent.body.item.id);

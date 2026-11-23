@@ -12,7 +12,7 @@ import { App } from "../../server/app.ts";
 import { fixtureFolders, readConfig } from "../../server/config.ts";
 import { FixtureHost } from "../../server/host/fixture.ts";
 import { PiHost } from "../../server/host/pi-host.ts";
-import { serve } from "../../server/http.ts";
+import { serve, skillsParts } from "../../server/http.ts";
 import { seedFixture } from "../../server/fixture/seed.ts";
 
 /**
@@ -61,7 +61,8 @@ export async function start(opts: { real?: boolean; wordMs?: number; url?: strin
   await app.start();
   // The comm threads the first thread list read starts making, so no spec races them.
   await app.ensureComms();
-  const server = serve(app);
+  const parts = skillsParts(app.config, app.log, () => app);
+  const server = serve(app, parts);
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   const sockets: WebSocket[] = [];
@@ -71,7 +72,10 @@ export async function start(opts: { real?: boolean; wordMs?: number; url?: strin
       for (const socket of sockets) socket.close();
       server.closeAllConnections();
       server.close();
+      // The fixture's skills scanner writes under the data dir, and one still running when the delete below ran failed it with ENOTEMPTY.
+      parts.db.skills.stop();
       await app.stop();
+      await parts.db.skills.scanned();
       if (!opts.dataDir) rmSync(dataDir, { recursive: true, force: true });
     },
   };
