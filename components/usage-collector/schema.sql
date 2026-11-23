@@ -1,5 +1,19 @@
--- usage.model_calls: one row per model call from every host and client (store.md section 5 in ~/work/usage-one-source).
--- Users and grants are not here: the box owner makes usage_writer and grants grafana_ro on prod-clickhouse (c146).
+-- usage.model_calls holds one row per model call from every host and chat client, for the Usage pages of the Prime
+-- chat and sw factory. sieun-pi's components/usage-collector runs on each box, reads each client's own usage records
+-- and posts rows to devbox-push.virev.ai/usage/model_calls (config/caddy/obs.Caddyfile), which inserts them as
+-- usage_writer (config/clickhouse/obs-users.sql). Grafana reads them as grafana_ro (grafana-ro-prod.sql).
+-- host, client and session name where each call ran, so a page can split by them. source_key is
+-- '<client>:<host>:<source id>', the same string on every rerun of the collector, and ReplacingMergeTree keeps one row
+-- per (host, client, row_id) with the newest collected_at, so readers use FINAL. call_at stays out of ORDER BY, so a
+-- key resent with another call_at still folds into one row; the minmax index on call_at lets a time range skip
+-- granules. ReplacingMergeTree folds rows only within one partition, so call_at must not change for a key across a
+-- month edge: the collectors take it from the source record, never from the collection time. A resent identical
+-- block is dropped at insert time by non_replicated_deduplication_window and the collector's insert_deduplication_token.
+-- The TTL keeps 5 years from the call's day, because the Usage pages show history the owner reads and the table grows
+-- by about 1 GB a year (the store plan's estimate), so a short TTL would cut numbers he sees.
+-- sieun-pi components/usage-collector/schema.sql is the same table for the collector's test rig; change both together.
+-- No deploy applies this file, because its CREATE DATABASE needs the container admin (ops/bin/schema-drift.mjs
+-- HAND_FILES). apply_obs_users.py prod sends it before obs-users.sql, as the admin, and it is idempotent.
 
 CREATE DATABASE IF NOT EXISTS usage;
 
@@ -33,10 +47,11 @@ CREATE TABLE IF NOT EXISTS usage.model_calls
     cost_source           LowCardinality(String),
     duration_ms           UInt32 DEFAULT 0,
     collected_at          DateTime64(3, 'UTC') DEFAULT now64(3),
-    INDEX thread_bf thread TYPE bloom_filter(0.01) GRANULARITY 4
+    INDEX thread_bf thread TYPE bloom_filter(0.01) GRANULARITY 4,
+    INDEX call_at_minmax call_at TYPE minmax GRANULARITY 1
 )
 ENGINE = ReplacingMergeTree(collected_at)
 PARTITION BY toYYYYMM(call_at)
-ORDER BY (host, client, call_at, row_id)
+ORDER BY (host, client, row_id)
 TTL toDate(call_at) + INTERVAL 5 YEAR
 SETTINGS non_replicated_deduplication_window = 1000;

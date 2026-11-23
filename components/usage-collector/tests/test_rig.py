@@ -66,6 +66,15 @@ class RigTest(unittest.TestCase):
         cost = self.sink.query(f"SELECT toString(sum(cost_usd)) FROM {self.table} FINAL WHERE client = 'pi-host'").strip()
         self.assertEqual(cost, "0.0802", "20 rows of 0.00001 + 0.0025 + 0.0005 + 0.001")
 
+    def test_copies_that_disagree_on_call_at_fold_into_one_row(self) -> None:
+        """call_at is not in the sort key, so even a copy with another time (none seen: 0 of 3,169,290 Prime keys on us-metal02 on 11-23
+        had two call_at values) is one row under FINAL."""
+        transcript(self.home / ".prime/agent/sessions/s3.jsonl", "s3", [assistant("e1", T0 + 5000, "msg_1")])
+        self.assertEqual(self.collect("state"), 0)
+        self.assertEqual(int(self.sink.query(f"SELECT count() FROM {self.table} FINAL WHERE source_key = 'prime:rig:msg_1'")), 1)
+        self.assertGreaterEqual(int(self.sink.query(f"SELECT count() FROM {self.table} WHERE source_key = 'prime:rig:msg_1'")), 2)
+        self.assertEqual(int(self.sink.query(f"SELECT uniqExact(call_at) FROM {self.table} WHERE source_key = 'prime:rig:msg_1'")), 2)
+
     def test_a_new_sink_is_backfilled(self) -> None:
         self.assertEqual(self.collect("state"), 0)
         other = f"{self.table}_next"

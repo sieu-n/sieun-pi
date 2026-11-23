@@ -53,6 +53,26 @@ class PiHostTest(ClientCase):
         pi_host_db(self.home, [("t-work", 2, T0 + 10, 0)], {})
         self.assertEqual(self.run_once(pi_host).rows, 1)
 
+    def test_refine_rows_with_negative_ids(self) -> None:
+        pi_host_db(self.home, [("t-work", 1, T0, 0), ("t-work", -1795400000000001, T0 + 1, 0)], {})
+        self.run_once(pi_host)
+        rows = {row["source_key"]: row for row in self.sink.rows()}
+        self.assertEqual(sorted(rows), ["pi-host:h1:t-work:-1795400000000001", "pi-host:h1:t-work:1"])
+        self.assertEqual(rows["pi-host:h1:t-work:-1795400000000001"]["agent"], "agent a")
+
+    def test_call_at_is_the_rows_own_time_on_every_run(self) -> None:
+        pi_host_db(self.home, [("t-work", 1, T0, 0), ("t-work", 2, T0 + 7, 0)], {})
+        self.run_once(pi_host)
+        first = {row["source_key"]: row["call_at"] for row in self.sink.rows()}
+        self.assertEqual(first["pi-host:h1:t-work:2"], "2026-11-23 02:13:20.007")
+        pi_host_db(self.home, [("t-work", 3, T0 + 99, 0)], {})
+        self.run_once(pi_host)
+        self.store = StateStore(Path(self.dir.name) / "fresh")
+        self.run_once(pi_host)
+        for row in self.sink.rows():
+            if row["source_key"] in first:
+                self.assertEqual(row["call_at"], first[row["source_key"]])
+
     def test_since_skips_old_rows(self) -> None:
         pi_host_db(self.home, [("t-work", 1, T0, 0), ("t-work", 2, T0 + 5000, 0)], {})
         self.assertEqual(self.run_once(pi_host, since=T0 + 1000).rows, 1)
@@ -117,6 +137,25 @@ class PrimeTest(ClientCase):
         self.assertEqual(stats.rows, 1)
         self.assertEqual(self.sink.rows()[-1]["source_key"], "prime:h1:msg_4")
         self.assertEqual(self.sink.rows()[-1]["agent"], "CI chat")
+
+    def test_call_at_is_the_entrys_own_time_on_every_run_and_copy(self) -> None:
+        """call_at is the assistant entry's own timestamp, the end of the call, as usage-feed buckets it in LGTM. A fork copies the entry
+        whole, so its copy has the same responseId and timestamp, and the two give one key with one call_at."""
+        root = self.prime / "sessions/s-root.jsonl"
+        transcript(root, "s-root", [assistant("e1", T0 + 123, "msg_1")])
+        self.run_once(prime, cache={})
+        first = self.sink.rows()[0]
+        self.assertEqual(first["call_at"], "2026-11-23 02:13:20.123")
+        with open(root, "ab") as handle:
+            handle.write(json.dumps(assistant("e2", T0 + 500, "msg_2"), separators=(",", ":")).encode() + b"\n")
+        self.run_once(prime, cache={})
+        transcript(self.prime / "sessions/s-fork.jsonl", "s-fork", [assistant("e1", T0 + 123, "msg_1"), assistant("f1", T0 + 900, "msg_3")])
+        self.store = StateStore(Path(self.dir.name) / "fresh")
+        self.run_once(prime, cache={})
+        copies = [row for row in self.sink.rows() if row["source_key"] == "prime:h1:msg_1"]
+        self.assertEqual(len(copies), 3, "first run, fresh run of s-root, and the fork's copy")
+        self.assertEqual({row["call_at"] for row in copies}, {first["call_at"]})
+        self.assertEqual({row["source_key"] for row in copies}, {"prime:h1:msg_1"})
 
     def test_old_files_are_skipped_and_a_replaced_file_is_read_again(self) -> None:
         old = self.prime / "sessions/s-old.jsonl"
