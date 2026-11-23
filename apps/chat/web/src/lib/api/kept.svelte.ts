@@ -192,6 +192,25 @@ function outsideReactions<T>(of: Read<T>, value: T | null): Kept<T> {
 
 const known = <T>(of: Read<T>): Kept<T> | undefined => entries.get(of.path) as Kept<T> | undefined;
 
+/**
+ * Brings a kept answer up to date from a live event, also one the last page load kept that no view of this load has opened yet: in a walk
+ * at a 200 ms round trip on 11-22, a load that never opened the Board page let its kept list go stale, and the next load's Board open
+ * waited 824 ms for a refresh that changed it (~/work/p213-boards). One the event cannot be placed in is dropped, so its next open reads it.
+ */
+function changeKept<T>(of: Read<T>, change: (value: T) => T | undefined): void {
+  const entry = known(of);
+  if (entry) return entry.change(change);
+  if (!restored.has(of.path)) return;
+  const next = change(restored.get(of.path) as T);
+  if (next === undefined) {
+    restored.delete(of.path);
+    void pageDb.drop(STORED, of.path);
+  } else {
+    restored.set(of.path, next);
+    void pageDb.put(STORED, of.path, next);
+  }
+}
+
 /** The kept answer of a read, the same object for every caller. The board and duties events carry their read's whole answer. */
 export function kept<T>(of: Read<T>): Kept<T> {
   if (!listening) {
@@ -202,9 +221,9 @@ export function kept<T>(of: Read<T>): Kept<T> {
     live.on(event => {
       if (event.type === "board") {
         known(reads.board(event.chatId))?.set({ board: event.board, awaitingGo: event.awaitingGo });
-        known(reads.boards())?.change(rows => withRow(rows, event.chatId, event.row));
-        known(reads.forYou())?.change(items => withAsks(items, event.chatId, event.forYou));
-      } else if (event.type === "board_row") known(reads.boards())?.change(rows => withRow(rows, event.chatId, event.row));
+        changeKept(reads.boards(), rows => withRow(rows, event.chatId, event.row));
+        changeKept(reads.forYou(), items => withAsks(items, event.chatId, event.forYou));
+      } else if (event.type === "board_row") changeKept(reads.boards(), rows => withRow(rows, event.chatId, event.row));
       else if (event.type === "duties") known(reads.duties(event.chatId))?.set({ duties: event.duties });
     });
   }

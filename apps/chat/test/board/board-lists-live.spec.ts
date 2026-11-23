@@ -74,3 +74,21 @@ test("a reload shows For you from the answer the last load kept while its read h
   await expect(asks(page)).toHaveText(shown);
   await expect(page.getByText("Loading For you")).toHaveCount(0);
 });
+
+test("a board change while the Board page is closed reaches the list the last load kept, so its next open shows it while the read hangs", async ({ page, request, chatServer }) => {
+  const openAsks = async () => ((await (await request.get(`${chatServer}/api/boards`)).json()) as { chatId: string; openAsks: number }[]).find(row => row.chatId === VENT_AGENT)!.openAsks;
+  const before = await openAsks();
+  await page.goto("/#/board");
+  await expect(sidebar(page).locator(`a[href="#/board/${VENT_AGENT}"]`)).toHaveAttribute("title", `Vent: ${before} ask${before === 1 ? "" : "s"} for you`);
+  await page.waitForLoadState("networkidle");
+  await page.goto("about:blank");
+  await page.goto("/#/c/for-you");
+  await expect(asks(page).first()).toBeVisible();
+  const text = `Pick the pager rota for week ${Date.now()}.`;
+  const added = await request.post(`${chatServer}/api/threads/${VENT}/board`, { data: { ops: [{ op: "todo_add", text }] } });
+  expect(added.ok()).toBe(true);
+  await expect(asks(page).filter({ hasText: text })).toHaveCount(1);
+  await page.route("**/api/boards", () => undefined);
+  await page.evaluate(() => { location.hash = "#/board"; });
+  await expect(sidebar(page).locator(`a[href="#/board/${VENT_AGENT}"]`)).toHaveAttribute("title", `Vent: ${before + 1} asks for you`);
+});
