@@ -176,7 +176,10 @@ test("a room post answers first, breaks into lines and keeps the agent's process
     const text = commInstructions({ agent: "ag_vent", room, work: "w1" });
     assert.match(text, /Write each post like a coworker types in Slack: the answer first in a plain sentence/);
     // d4's 17:41 KST checklist run of 11-23 opened "All clear to ship." over a bullet that counted 7 uncommitted files and 8 untracked paths.
-    assert.match(text, /The answer holds for every result under it: when one result is not clean, the answer names it, as in "three of the four are clear, but 15 files are uncommitted", never "all clear" over a bullet that says otherwise\./);
+    // The example is no answer to a blind ask: with "three of the four are clear, but 15 files are uncommitted" in the text, all 5 checklist
+    // reruns at 18:26 KST opened on those words, so they showed a copied line and not the rule.
+    assert.match(text, /The answer holds for every result under it: when one result is not clean, the answer names it, as in "two of the three deploys are live, but staging fails its health check", never "all clear" over a bullet that says otherwise\./);
+    assert.doesNotMatch(text, /three of the four are clear/);
     assert.match(text, /Put the answer on its own line and each further point on its own line or `- ` bullet, never in one paragraph, and keep each bullet to one point in one or two sentences\./);
     assert.match(text, /Keep your working plan and process to yourself \(c234\)\. A first reply gives the answer or one plain line on what he will get, never "I'll do X first, then Y" and never a checklist of your own steps\./);
     assert.match(text, /A checklist lists only results he cares about, each with its result, and you fill them in by editing that post with `edit_message`\./);

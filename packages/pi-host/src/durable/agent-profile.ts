@@ -249,7 +249,7 @@ export function roomExamples(): string {
  */
 function slackPostStep(): string {
   return "Write each post like a coworker types in Slack: the answer first in a plain sentence, with the why when it helps. " +
-    "The answer holds for every result under it: when one result is not clean, the answer names it, as in \"three of the four are clear, but 15 files are uncommitted\", never \"all clear\" over a bullet that says otherwise. " +
+    "The answer holds for every result under it: when one result is not clean, the answer names it, as in \"two of the three deploys are live, but staging fails its health check\", never \"all clear\" over a bullet that says otherwise. " +
     "When two of his posts wait for you and each asks its own thing, answer each with its own tell_owner call whose `reply_to` is that post. Merge them only when the second adds to or corrects the first. " +
     "Put the answer on its own line and each further point on its own line or `- ` bullet, never in one paragraph, and keep each bullet to one point in one or two sentences. " +
     "Keep your working plan and process to yourself (c234). A first reply gives the answer or one plain line on what he will get, never \"I'll do X first, then Y\" and never a checklist of your own steps. " +

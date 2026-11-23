@@ -20,7 +20,7 @@ The owner said so on 11-20: "no this is not Chat. this is Slack."
 [Ideal Slack replies in sw factory rooms](wiki:agents/agent-factory/jobs/2026/11/20/1139-slack-style-replies/ideal-replies.html) holds 17 real before and after pairs, and every change to reply behavior aims at them.
 
 1. The answer comes first, in a plain sentence, as a Prime chat reply opens, or the cause when there is no short answer.
-   The answer holds for every result under it, so when one result is not clean the answer names it, as in "three of the four are clear, but 15 files are uncommitted".
+   The answer holds for every result under it, so when one result is not clean the answer names it, as in "two of the three deploys are live, but staging fails its health check".
    On 11-23 a blind checklist run opened "All clear to ship." over a bullet that counted 7 uncommitted files and 8 untracked paths, while the 6 runs before it named the files in the answer.
 2. One answer is one post, and each waiting post of his that asks its own thing gets its own answer, a tell_owner call with `reply_to` set to that post, so in a channel it lands in that post's thread.
    Two posts merge into one answer only when the second adds to or corrects the first, since on 11-21 a blind-reactions run's DM agent merged two posts into one that answered only the first.
