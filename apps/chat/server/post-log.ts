@@ -1,7 +1,9 @@
 /**
- * Each room's posts, reactions, edits, pins and deliveries included, as rows of chat.sqlite (chat-db.ts): one row per post with its room,
- * its place in the room and its current state as JSON. Before the move each room had an append-only log, `rooms/<room>.jsonl`, with a `post`
- * line per new post and a `set` line per later change, read by replaying it; `POSTS` imports each such log once (json-move.ts).
+ * Where each room's posts are kept, reactions, edits, pins and deliveries included. A server whose APPS_CHAT_DB_KINDS leaves out `posts`,
+ * as the live unit (deploy/linux/sieun-pi-apps-chat.service) does until the posts move, keeps an append-only log per room,
+ * `rooms/<room>.jsonl`, with a `post` line per new post and a `set` line per later change, read by replaying it (`JsonPostLog`). A server
+ * that names `posts` keeps them as rows of chat.sqlite (chat-db.ts, `PostLog`): one row per post with its room, its place in the room and
+ * its current state as JSON. `POSTS` imports each room's log once (json-move.ts).
  *
  * A room's posts are read once, on the first read of the room, and kept in memory as the log's were, so a read never waits on the DB. A new
  * post or a change writes the post's row through the writer thread, and a send awaits `written(room)` before it answers, as it awaited the
