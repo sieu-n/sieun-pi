@@ -934,19 +934,19 @@ export class Boards {
 
   /**
    * The board's open steps read by the owner's rule (#sw-factory-build p205, msg mwtu5kfz: "all board items should be either user-bottlenecked
-   * or actively being worked on"), the same rule the check-in counts with (`checkInPrecheck`): a step is moved while its own job is at work, a
-   * subagent of it works or it sleeps on a board.wake, and held while an open For you todo links it or it waits on the owner's go. `stuck` lists
-   * every other open step, and `gaps` the open goals short of their target that no live job owns.
+   * or actively being worked on"), counted as the check-in counts them (`checkInPrecheck` over d9's rule in `StepOwners.stuck`). `stuck` lists
+   * every open step nobody moves or holds, and `gaps` the open goals short of their target whose open steps are all stuck.
    */
   async steps(id: string): Promise<{ open: number; stuck: Pick<PlanItem, "id" | "text" | "status" | "job" | "waitFor" | "waitUntil">[]; gaps: Pick<PlanItem, "id" | "text">[] }> {
     const chat = this.chatId(id);
     const working = workingJobs(this.threads.allSummaries(), new Set(this.pendingWakes().map(wake => wake.session)));
-    const precheck = checkInPrecheck(await this.board(chat), this.chatAgents(chat), working);
+    const unmoved = new Set((await this.owners.stuck(chat)).map(item => item.id));
+    const precheck = checkInPrecheck(await this.board(chat), this.chatAgents(chat), working, unmoved);
     return {
       open: precheck.open,
       stuck: precheck.stuck.map(item => ({ id: item.id, text: item.text, status: item.status, ...(item.job ? { job: item.job } : {}),
         ...(item.waitFor ? { waitFor: item.waitFor } : {}), ...(item.waitUntil ? { waitUntil: item.waitUntil } : {}) })),
-      gaps: precheck.goals.filter(view => view.met === false && !view.owner).map(view => ({ id: view.goal.id, text: view.goal.text })),
+      gaps: precheck.goals.filter(view => view.gap).map(view => ({ id: view.goal.id, text: view.goal.text })),
     };
   }
 
@@ -1329,7 +1329,7 @@ export class Boards {
     const briefFile = record ? join(agentFolderDir(this.agents.agentsDirOf(record), record), "brief.md") : undefined;
     // An agent on another box keeps its brief there, where its job reads it; one here counts only when the file holds text.
     const brief = briefFile && (record?.agentsDir !== undefined || readFileSafe(briefFile).trim()) ? briefFile : undefined;
-    const precheck = checkInPrecheck(board, this.chatAgents(chat), working);
+    const precheck = checkInPrecheck(board, this.chatAgents(chat), working, new Set((await this.owners.stuck(chat)).map(item => item.id)));
     const measured = checkInMeasure(precheck);
     const runOf = (extra: Partial<DutyRunRecord> = {}): DutyRunRecord =>
       ({ duty: CHECK_IN_DUTY_ID, at, trigger: "schedule", ms: Date.now() - began, ...measured, ...extra });

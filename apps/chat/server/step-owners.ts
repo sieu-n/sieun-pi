@@ -5,7 +5,8 @@
  * idle, so the notice it reads is the board it acts on, and never while a duty run of it works. Until 11-03 the :5184 check-in only said "move each open step", and d9 found vent's p126 and chrome
  * extension's p20 each waiting with no wake and no job, which no part of the app had named to its chat.
  */
-import { appsGapsKey, appsOwnerGaps, appsOwnerNotice, type AppsChat } from "../../../legacy/prime/user-history/src/apps-step-owners.ts";
+import { appsGapsKey, appsOwnerGaps, appsOwnerNotice, appsOwnerReads, appsStuckSteps, type AppsChat } from "../../../legacy/prime/user-history/src/apps-step-owners.ts";
+import type { PlanItem } from "../web/src/lib/api/shared/types.ts";
 import { liveWindowMs } from "../../../legacy/prime/user-history/src/checkin-steps.ts";
 import type { Boards } from "./boards.ts";
 
@@ -35,6 +36,32 @@ export class StepOwners {
         ...row.nextAt !== null ? { nextAt: row.nextAt } : {} })),
       jobs: this.boards.chatAgents(agent.id), everyMs: this.boards.checkIn(agent.id).everyMs,
     })));
+  }
+
+  /**
+   * The open steps of one board that nobody moves, by the rule d9 counts with (`appsStuckSteps`): a step is moved while one of its owners
+   * works, wrote within the live window, sleeps on a board.wake or waits for a pi-pool slot, while a wake of the chat's own thread names it, or
+   * while its wait hands it to another chat's open step, and held while an open For you todo or an owner correction holds it. GET /steps and
+   * the check-in precheck read this one rule: until 11-24 the check-in credited only a working job named in the step's job field, and d5's first
+   * run counted 15 stuck steps where this rule finds fewer, such as Crawler guy's six steps that wait on its work thread's prod-lanes wake.
+   */
+  async stuck(id: string, now = Date.now()): Promise<PlanItem[]> {
+    const chats = await this.chats();
+    const chat = chats.find(each => each.id === id) ?? await this.rootChat(id);
+    const [sessions, wakes] = [this.boards.threads.conversations(), await this.boards.owedWakes(now)];
+    const links = { self: chat.id, others: new Map(chats.map(each => [each.id, each.board] as const)), chats: chats.map(each => ({ id: each.id, name: each.name })) };
+    return appsStuckSteps(chat, appsOwnerReads(chat, sessions, wakes, now), now, links);
+  }
+
+  /** A board that no agent of the app owns, such as a root chat's, read as `chats` reads an agent's. */
+  private async rootChat(id: string): Promise<AppsChat> {
+    const thread = this.boards.threadOf(id);
+    const row = this.boards.threads.thread(thread);
+    return {
+      id, name: this.boards.nameOf(id), board: await this.boards.board(id), thread, working: this.boards.rootRunning(thread), ...(row ? { updatedAt: row.updatedAt } : {}),
+      duties: this.boards.duties(id).map(row => ({ duty: row.duty, paused: row.paused, running: row.running, runs: row.runs, schedule: row.schedule, ...row.nextAt !== null ? { nextAt: row.nextAt } : {} })),
+      jobs: this.boards.chatAgents(id), everyMs: this.boards.checkIn(id).everyMs,
+    };
   }
 
   async tick(now = Date.now()): Promise<void> {

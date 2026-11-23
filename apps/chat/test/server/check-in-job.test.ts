@@ -50,16 +50,21 @@ test("the precheck asks for a target, a push step and each stuck step, and an ow
     item("p3", "Cut the bill", { target: { metric: "cost", target: 100, unit: "USD", current: 300, direction: "down" }, children: [item("p4", "Trim reads", { job: "trimmer" })] }),
     item("p5", "Write the docs"),
     item("p6", "Merge PR #12", { status: "doing" }),
+    item("p7", "Census reads under 5 s", { target: { metric: "seconds", target: 5, unit: "s", current: 9, direction: "down" }, children: [item("p8", "Rerun once the proxy is back", { status: "blocked" })] }),
   ];
   const board = { ...boardOf(plan), todos: [{ id: "t1", text: "ok to merge?", done: false, from: "agent" as const, at: new Date(AT).toISOString(), step: "p6" }] };
-  const precheck = checkInPrecheck(board, [], new Set(["trimmer"]));
-  assert.deepEqual(precheck.goals.map(view => [view.goal.id, view.met, view.owner ?? null]), [["p1", false, null], ["p3", false, "trimmer"], ["p5", null, null], ["p6", null, null]]);
+  // d9's rule (`appsStuckSteps`) finds p2 and p5 unmoved; p8 sleeps on a wake of the work thread, which no job field names.
+  const precheck = checkInPrecheck(board, [], new Set(["trimmer"]), new Set(["p2", "p5"]));
+  assert.deepEqual(precheck.goals.map(view => [view.goal.id, view.met, view.owner ?? null, view.gap]),
+    [["p1", false, null, true], ["p3", false, "trimmer", false], ["p5", null, null, false], ["p6", null, null, false], ["p7", false, null, false]]);
   assert.deepEqual(precheck.stuck.map(step => step.id), ["p2", "p5"]);
   const prompt = checkInPrompt(precheck);
   assert.ok(prompt.includes('- "Crawl at 10k a minute" (p1): profiles a minute 4,000 of 10,000, 6,000 short; no live job owns it.'));
   assert.ok(prompt.includes('- "Cut the bill" (p3): cost 300 USD, target at most 100 USD, 200 USD over; trimmer owns it.'));
   assert.ok(prompt.includes('Add a push step under p1 with duty "checkin/goal_gaps"'));
   assert.ok(!prompt.includes("push step under p3"));
+  assert.ok(prompt.includes('- "Census reads under 5 s" (p7): seconds 9 s, target at most 5 s, 4 s over; its open steps have owners or wait on the owner.'));
+  assert.ok(!prompt.includes("push step under p7"));
   assert.ok(prompt.includes('Give "Write the docs" a target from the owner\'s words, with plan_update target.'));
   assert.ok(prompt.includes("2 open steps have no live owner."));
   assert.ok(prompt.includes("A step that waits on a time or on another agent's work still needs a job of its own that sleeps on a board.wake"));
@@ -70,7 +75,7 @@ test("the precheck asks for a target, a push step and each stuck step, and an ow
 });
 
 test("an empty board is idle for a root chat and due for an agent with a brief, which the prompt names", () => {
-  const empty = checkInPrecheck(boardOf([item("p1", "Old work", { status: "done" })]), [], new Set());
+  const empty = checkInPrecheck(boardOf([item("p1", "Old work", { status: "done" })]), [], new Set(), new Set());
   assert.equal(empty.planOpen, false);
   assert.equal(checkInIdle(empty), true);
   assert.ok(checkInPrompt(empty).includes("Nothing is due"));
@@ -176,7 +181,7 @@ test("a board with no open step checks in daily, and with no brief starts no job
   }
 });
 
-test("GET /steps lists the open steps neither moved nor held by the check-in's rule, and a step's working job moves it", async () => {
+test("GET /steps lists the open steps nobody moves or holds by d9's rule, and a working job or a wake naming the step moves it", async () => {
   const before = await s.get<{ open: number; stuck: { id: string; text: string }[]; gaps: unknown[] }>(`/api/agents/${busy.id}/steps`);
   assert.deepEqual([before.open, before.stuck.map(step => step.text), before.gaps], [1, ["Ship the relay"], []]);
   const job = (await s.send("POST", "/api/agents", { name: "relay shipper", kind: "job", parent: busy.id })).body as AgentSummary;
@@ -189,6 +194,11 @@ test("GET /steps lists the open steps neither moved nor held by the check-in's r
   const after = await s.get<{ open: number; stuck: unknown[] }>(`/api/agents/${busy.id}/steps`);
   assert.deepEqual([after.open, after.stuck.length], [1, 0]);
   await s.app.boards.apply(busy.id, [{ op: "plan_update", id: before.stuck[0]!.id, job: null }], "agent");
+  // With no job, a wake of the agent's work thread whose note names the step moves it, as d9 counts it (`heldByChat`).
+  const step = before.stuck[0]!.id;
+  const armed = await s.send("POST", `/api/threads/${busy.thread}/wakes`, { id: `${busy.thread}-1-steps`, conversation: 1, on: { kind: "time", at: Date.now() + 3_600_000 }, note: `${step} reads prod lanes again`, since: Date.now() });
+  assert.equal(armed.status, 200, JSON.stringify(armed.body));
+  assert.equal((await s.get<{ stuck: unknown[] }>(`/api/agents/${busy.id}/steps`)).stuck.length, 0);
 });
 
 test("a paused check-in starts no job", async () => {

@@ -60,6 +60,8 @@ export interface GoalView {
   pushStep?: string;
   /** Open steps under the goal, which keep a goal at target open. */
   left: number;
+  /** Short of its target, and every open leaf under it, or the goal itself when it has none, is stuck (`CheckInPrecheck.stuck`). */
+  gap: boolean;
 }
 
 export interface CheckInPrecheck {
@@ -77,9 +79,11 @@ const met = (target: GoalTarget): boolean | null =>
 
 /**
  * The check-in's small precheck over the board, in place of Prime's whole one (chat-checkin.ts `checkInPrecheck`): the open goals with their
- * target numbers, the open leaf steps no live job moves, and the agent's jobs. `working` holds the names of the jobs at work (`workingJobs`).
+ * target numbers, the open leaf steps nobody moves, and the agent's jobs. `working` holds the names of the jobs at work (`workingJobs`), which
+ * name a goal's owner. `unmoved` holds the ids of the open steps nobody moves by d9's rule (`StepOwners.stuck`, `appsStuckSteps`), which GET
+ * /steps reads through this function too, so the check-in, the steps route and agent factory's d5 count one set.
  */
-export function checkInPrecheck(board: ChatBoard | null, jobs: readonly ChatAgent[], working: ReadonlySet<string>): CheckInPrecheck {
+export function checkInPrecheck(board: ChatBoard | null, jobs: readonly ChatAgent[], working: ReadonlySet<string>, unmoved: ReadonlySet<string>): CheckInPrecheck {
   const plan = board?.plan ?? [];
   const names = new Map(jobs.flatMap(job => job.sessionId ? [[job.sessionId, job.name] as const] : []));
   const liveJob = (item: PlanItem): string | undefined => {
@@ -87,13 +91,16 @@ export function checkInPrecheck(board: ChatBoard | null, jobs: readonly ChatAgen
     return refs.map(ref => names.get(ref) ?? ref).find(name => working.has(name));
   };
   const openUnder = (item: PlanItem): PlanItem[] => item.children.flatMap(child => OPEN.has(child.status) ? [child, ...openUnder(child)] : []);
+  const held = (item: PlanItem): boolean => !unmoved.has(item.id) || (board !== null && needsGo(item) && !stepGo(board, item));
   const goals = openGoals(plan).map((goal): GoalView => {
     const under = openUnder(goal);
     const owner = [goal, ...under].map(liveJob).find(Boolean);
     const push = under.find(item => item.duty === GOAL_PUSH_LINK);
-    return { goal, met: goal.target ? met(goal.target) : null, ...owner ? { owner } : {}, ...push ? { pushStep: push.id } : {}, left: under.length };
+    const leaves = under.filter(item => !item.children.some(child => OPEN.has(child.status)));
+    const goalMet = goal.target ? met(goal.target) : null;
+    return { goal, met: goalMet, ...owner ? { owner } : {}, ...push ? { pushStep: push.id } : {}, left: under.length,
+      gap: goalMet === false && !owner && !(leaves.length ? leaves : [goal]).some(held) };
   });
-  const asked = new Set((board?.todos ?? []).filter(todo => !todo.done && todo.step).map(todo => todo.step!));
   const stuck: PlanItem[] = [];
   let open = 0;
   const visit = (items: readonly PlanItem[]): void => {
@@ -101,7 +108,7 @@ export function checkInPrecheck(board: ChatBoard | null, jobs: readonly ChatAgen
       visit(item.children);
       if (!OPEN.has(item.status) || numberedGoal(item) || item.children.some(child => OPEN.has(child.status))) continue;
       open += 1;
-      if (liveJob(item) || asked.has(item.id) || (board && needsGo(item) && !stepGo(board, item))) continue;
+      if (held(item)) continue;
       stuck.push(item);
     }
   };
@@ -138,7 +145,7 @@ function goalPromptLine(view: GoalView): string {
   if (!goal.target) return `${title} has no number yet: no target${goal.duty ? "" : " and no duty metric"}.`;
   const gap = gapText(goal.target);
   const pace = view.met ? view.left ? `at target, and it stays open for ${view.left} open ${view.left === 1 ? "step" : "steps"}` : "at target" : "";
-  const owner = view.owner ? `${view.owner} owns it` : "no live job owns it";
+  const owner = view.owner ? `${view.owner} owns it` : view.gap ? "no live job owns it" : "its open steps have owners or wait on the owner";
   return `${title}: ${numberText(goal.target)}${gap ? `, ${gap}` : ""}${pace ? `; ${pace}` : ""}; ${owner}.`;
 }
 
@@ -153,7 +160,7 @@ function goalSteer(view: GoalView): string {
 function goalDueLine(view: GoalView): string | null {
   const title = quote(view.goal.text);
   if (!view.goal.target) return `Give ${title} a target from the owner's words, with plan_update target.`;
-  if (view.met || view.owner) return null;
+  if (!view.gap) return null;
   const ask = `${view.pushStep ? `Set one job on the push step ${view.pushStep} of ${title},` : `Add a push step under ${view.goal.id} with duty "${GOAL_PUSH_LINK}" for ${title}, set its job to`} ` +
     `a live job of the goal or a new one, and send it this message. Read the board first: a duty job may have added a fix step since this brief, ` +
     "and when one has a working job, steer that job instead and start none";
@@ -209,7 +216,7 @@ const CHECK_IN_METRICS = CHECK_IN_DUTY.metrics.filter(metric => metric.key === "
  * their target that no live job owns, and stuck_steps the open steps nobody moves (`CheckInPrecheck.stuck`).
  */
 export function checkInMeasure(precheck: CheckInPrecheck): { verdict: "met" | "missed" | "error"; metrics: Record<string, MetricResult>; summary: string } {
-  const goalGaps = precheck.goals.filter(view => view.met === false && !view.owner).length;
+  const goalGaps = precheck.goals.filter(view => view.gap).length;
   const { verdict, metrics, summary } = judge(CHECK_IN_METRICS, { metrics: { goal_gaps: goalGaps, stuck_steps: precheck.stuck.length } });
   return { verdict, metrics, summary };
 }
