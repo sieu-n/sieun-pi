@@ -58,13 +58,17 @@ describe("notice events", () => {
 
   test("a test room's notice goes only to a page that watches the room", async () => {
     const room = (await s.send("POST", "/api/rooms", { kind: "channel", name: `notice-test-${crypto.randomUUID().slice(0, 8)}`, members: [], test: true })).body.id as string;
+    const plain = (await s.send("POST", "/api/rooms", { kind: "channel", name: `notice-${crypto.randomUUID().slice(0, 8)}`, members: [] })).body.id as string;
     const watching = await s.live();
     const other = await s.live();
     watching.watch(room);
-    await new Promise(resolve => setTimeout(resolve, 100));
+    // The room's status answers the watch, so the server holds the watch before the post.
+    await watching.waitFor(event => event.type === "status" && event.conversation === room, 5000);
     agentPost(room, "done", { mentions: ["owner"] });
     await watching.waitFor(isNotice(room), 5000);
-    await new Promise(resolve => setTimeout(resolve, 200));
+    // A plain room's notice reaches every page after the test room's, and one socket keeps order, so `other` holds every earlier notice once it has this one.
+    agentPost(plain, "later", { mentions: ["owner"] });
+    await other.waitFor(isNotice(plain), 5000);
     assert.equal(other.events.some(isNotice(room)), false);
   });
 
