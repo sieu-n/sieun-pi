@@ -4,7 +4,9 @@
  * box-sieun-pi-meilisearch-1 and keeps its index file in the page cache with the Procedure m02-meilisearch-warm (auto-sns-agent
  * apps/infra/box/compose.sieun-pi.yml):
  * 1. The pinned release binary, checked against its sha256, under ~/.local/opt/meilisearch/v<version>, with `current` pointing at it.
- * 2. A master key, made once, in ~/.config/meilisearch/master.key (the chat reads it) and ~/.config/meilisearch/env (the container reads it).
+ * 2. A master key, made once, in ~/.config/meilisearch/master.key, which the chat reads. The container takes the same key from the
+ *    Komodo Variable PROD__MEILI_MASTER_KEY (auto-sns-agent apps/infra/.env row MEILI_MASTER_KEY, set by
+ *    apps/infra/komodo/variables.mjs), so a new key file also needs that row and a box-sieun-pi deploy.
  * 3. A restart of box-sieun-pi-meilisearch-1, which runs `current`, and a wait for its /health.
  *
  * Usage: node scripts/install-meilisearch.mjs. Run it again to move to a new pinned version; it keeps the key and the data.
@@ -44,8 +46,6 @@ symlinkSync(`v${VERSION}`, join(opt, "current"));
 mkdirSync(config, { recursive: true, mode: 0o700 });
 const keyFile = join(config, "master.key");
 if (!existsSync(keyFile)) writeFileSync(keyFile, `${randomBytes(32).toString("hex")}\n`, { mode: 0o600 });
-const key = readFileSync(keyFile, "utf8").trim();
-writeFileSync(join(config, "env"), `MEILI_MASTER_KEY=${key}\n`, { mode: 0o600 });
 mkdirSync(join(home, ".local/share/meilisearch"), { recursive: true });
 
 restart("meilisearch");
