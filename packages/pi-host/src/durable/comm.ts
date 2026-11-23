@@ -12,8 +12,9 @@
  * 2. `[work-done: cancelled agent:<work name>]` when the input was aborted, such as by `stop_work`, under the same condition.
  * 3. `[work-failed agent:<work name>]` with the error whenever the input failed, as Prime's `[child-failed ...]` goes out even after a reply.
  *
- * The task is durable, so a pi-host restart resumes it at its phase, and the request ids (the hand-over's own, and `n:<work>:<submission>`
- * for the notice) keep each input once. `stop_work` aborts the work thread's root conversation; it is a deferred tool that only a comm
+ * The task is durable, so a pi-host restart resumes it at its phase, and the request ids (the hand-over's own, and `n:<work>:a<answer entry>`
+ * for the notice, or `n:<work>:<submission>` when the input settled with no answer) keep each input once, so hand-overs that settle on the
+ * same answer of the work thread send one notice, and `comm.noticed` drops a notice whose text the newest notice already carried. `stop_work` aborts the work thread's root conversation; it is a deferred tool that only a comm
  * thread's agent loads (`agent-profile.ts` `roleFields`).
  */
 import type { Context } from "@earendil-works/chord";
@@ -80,11 +81,25 @@ export async function noteHanded(tx: Tx, at: number): Promise<void> {
   (await tx.doc(CommHandedDoc, ROOT_CONVERSATION_ID)).at = at;
 }
 
+/**
+ * The newest notice each work thread's hand-overs sent this comm thread, with its request id. A notice with the same text as the newest one
+ * goes out only under that request id, so a rerun of its phase still sends it and a later hand-over that ends on the same text sends none.
+ */
+export const CommNoticedDoc = defineDoc<{ from: Record<string, { requestId: string; text: string }> }>({
+  kind: "comm.noticed",
+  version: 1,
+  scope: "conversation",
+  history: "latest",
+  fork: "initial",
+  initial: () => ({ from: {} }),
+  checkpointWhen: () => true,
+});
+
 export type HandInput = { work: string } & CommSubmit;
 type HandState =
   | { phase: "deliver" }
   | { phase: "wait"; submission: SubmissionId; heard: number }
-  | { phase: "report"; submission?: SubmissionId; heard: number; status: "done" | "unanswered"; text: string; reason?: string; error?: string };
+  | { phase: "report"; submission?: SubmissionId; answer?: number; heard: number; status: "done" | "unanswered"; text: string; reason?: string; error?: string };
 
 const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
@@ -147,6 +162,7 @@ function handTask(host: CommHost): Task<HandInput, HandState, null, object> {
           status: "running",
           checkpoint: {
             phase: "report", submission: s.submission, heard: s.heard, status: settled.status, text: textOfMessage(answer),
+            ...(settled.status === "done" ? { answer: settled.answer as number } : {}),
             ...(settled.status === "unanswered" ? { reason: settled.reason } : {}), ...(error ? { error } : {}),
           },
         }), ctx);
@@ -156,9 +172,22 @@ function handTask(host: CommHost): Task<HandInput, HandState, null, object> {
         const work = task.input.work;
         const heard = (await runtime.snapshot(CommHeardDoc, ROOT_CONVERSATION_ID, ctx))?.from[work] ?? 0;
         const notice = workNotice(host.name(work), s, heard > s.heard);
+        // Hand-overs steered into one run of the work thread settle on its one answer, and a later run can end on the same text: on 11-23
+        // agent factory's #sw-factory-build comm thread got the same no-reply text for 2 to 6 hand-overs at once. One notice per text goes out.
+        const requestId = `n:${work}:${s.answer !== undefined ? `a${s.answer}` : s.submission ?? `task-${runtime.taskId}`}`;
+        let fresh = false;
         if (notice) {
+          await runtime.commit(async tx => {
+            const noticed = await tx.doc(CommNoticedDoc, ROOT_CONVERSATION_ID);
+            const last = noticed.from[work];
+            fresh = last === undefined || last.text !== notice || last.requestId === requestId;
+            if (fresh) noticed.from[work] = { requestId, text: notice };
+            return undefined;
+          }, ctx);
+        }
+        if (notice && fresh) {
           const sent = await across(host, runtime.signal, () => host.submit(host.thread, {
-            text: notice, requestId: `n:${work}:${s.submission ?? `task-${runtime.taskId}`}`, whenBusy: "steer", entry: { kind: "agent.message", data: { from: work, via: "work.done" } },
+            text: notice, requestId, whenBusy: "steer", entry: { kind: "agent.message", data: { from: work, via: "work.done" } },
           }));
           if ("error" in sent) runtime.report(new Error(`the work-done notice was not admitted: ${sent.error}`));
         }

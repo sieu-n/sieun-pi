@@ -6,8 +6,8 @@
  * 2. While the work thread runs a slow turn, a status turn of the comm thread reads it with agent_observe (status, messages, live rlm
  *    child with its progress note), and the work conversation's entries and inputs do not change; stop_work then ends the work turn.
  * 3. A task the comm thread hands the work thread with agent_message.send that settles with no reply sends the comm thread one
- *    `[work-done: no-reply ...]` input, a task the work thread reported on sends none, and a hand-over cut by a pi-host restart sends its
- *    notice once.
+ *    `[work-done: no-reply ...]` input, a task the work thread reported on sends none, a hand-over cut by a pi-host restart sends its
+ *    notice once, and hand-overs whose runs end on the same answer or the same text send one notice.
  * 4. A second comm thread of the agent, for a Solo room, gets the group instructions, hands the same work thread tasks, and gets the notice
  *    of its own hand-over while the DM comm thread gets none; a report the work thread sends it by the name in the task's header counts as
  *    its reply.
@@ -74,6 +74,7 @@ function workModel(messages: Message[]): ReturnType<typeof say> {
   if (text.includes("wait a while")) return answered ? say("helper done") : cell(`await rlm.progress_note("halfway")\nimport asyncio\nawait asyncio.sleep(120)`);
   if (text.includes("long task")) return answered ? say("long task ended") : cell(`await rlm.spawn("wait a while", name="helper")\nimport asyncio\nawait asyncio.sleep(120)`);
   if (text.includes("build the slow page")) return answered ? say("slow page built") : cell("import asyncio\nawait asyncio.sleep(3)");
+  if (text.includes("build the long page")) return answered ? say("long page built") : cell("import asyncio\nawait asyncio.sleep(10)");
   if (text.includes("build the page")) return say("page built");
   if (text.includes("write the report")) return answered ? say("sent the report") : send("report: written", () => ids.comm);
   if (text.includes("write the room report")) return answered ? say("sent the room report") : send("room report: written", () => /sibling:([^\]]+)\]/.exec(text)![1]!);
@@ -86,6 +87,7 @@ function commModel(messages: Message[]): ReturnType<typeof say> {
   if (text === "stop it") return answered ? say("stopped") : call(STOP_WORK_TOOL, {});
   if (text === "do the slow page") return answered ? say("handed") : send("build the slow page", () => ids.work);
   if (text === "do the page") return answered ? say("handed") : send("build the page", () => ids.work);
+  if (text === "do the long page") return answered ? say("handed") : send("build the long page", () => ids.work);
   if (text === "do the report") return answered ? say("handed") : send("write the report", () => ids.work);
   if (text === "do the room page") return answered ? say("handed") : send("build the room page", () => ids.work);
   if (text === "do the room report") return answered ? say("handed") : send("write the room report", () => ids.work);
@@ -288,6 +290,23 @@ test("a handed task that settles with no reply sends the comm thread one work-do
     const settled = await threads.thread(ids.comm);
     await settled.harness.waitForIdle(context);
     assert.equal((await notices(threads)).length, 1, "the reported task sends no notice");
+  } finally {
+    await threads.shutdown();
+  }
+});
+
+test("hand-overs steered into the work thread's runs that end on the same answer or the same text send the comm thread one notice", { timeout: 240_000 }, async () => {
+  const threads = threadsIn("steered");
+  try {
+    await pair(threads);
+    await ask(threads, ids.comm, "do the long page");
+    await until("the work thread's long cell", async () => (await rootEntries(threads, ids.work)).some(entry => (entry.model?.[0] as Message | undefined)?.role === "assistant"));
+    await ask(threads, ids.comm, "do the page");
+    await ask(threads, ids.comm, "do the page");
+    await until("the three hand-overs to end", async () => (await handsLive(threads)) === 0, 120_000);
+    await (await threads.thread(ids.comm)).harness.waitForIdle(context);
+    const found = await notices(threads);
+    assert.deepEqual(found.map(notice => notice.text), ["[work-done: no-reply agent:vent]\n\nLast assistant text: page built"]);
   } finally {
     await threads.shutdown();
   }
