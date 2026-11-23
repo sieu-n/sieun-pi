@@ -9,6 +9,9 @@
  *    11-20 seven recall agents stayed unarchived.
  * 5. A call rides out a chat server restart: on 11-22 two apps/chat releases ended a d3 rerun with ECONNREFUSED.
  * 6. A recall poll that fails is read again: on 11-22 a pi-host restart ended 5 of 10 recalls with a 500 "pi-host is shutting down".
+ * 7. A recall whose wait ran out got no model answer and is not measured, where a turn that ended wrong or empty still counts wrong: on
+ *    11-23 all 12 sessions waited 1,200 s on the account pool and the run stored recall 0 of 31.
+ * 8. The name of an env variable after "secret =" says where a value lives and is no secret written out.
  */
 import { strict as assert } from "node:assert";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
@@ -17,7 +20,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { call, EMPTY_TURN, emptyTurn, finishedReply, holds, recall, scratchReason, secretReason, splitAnswers, sweepRecallAgents } from "../../scripts/duties/agent-memory.ts";
+import { call, EMPTY_TURN, emptyTurn, finishedReply, holds, lastMeasuredRecall, recall, recallCount, scratchReason, secretReason, splitAnswers, sweepRecallAgents, unanswered } from "../../scripts/duties/agent-memory.ts";
 
 const ask = { kind: "message", text: "Quick questions" };
 
@@ -86,6 +89,47 @@ test("a key written out is a secret unless ideal.json lists it as a committed pu
   assert.equal(secretReason(entry("Prod key", "api_key: prod-9f3a2c71e0"), new Set(["local-agent-key"])), "api_key written out");
 });
 
+test("an env variable's name after a secret word is where the value lives, not a secret", () => {
+  assert.equal(secretReason(entry("Staging sign-in", "Mint a ticket (x-agent-secret = STAGING_AGENT_SECRET in apps/search/.env.staging, read the ticket).")), null);
+  assert.equal(secretReason(entry("Call shape", "header X-API-Key = CRAWLER_API_KEY, read with `npx dotenvx get CRAWLER_API_KEY -f .env.staging`")), null);
+  assert.equal(secretReason(entry("Call shape", "api_key: CRAWLER_API_KEY.")), null);
+  assert.equal(secretReason(entry("Prod key", "secret = PROD9F3A2C71E0")), "secret written out");
+  assert.equal(secretReason(entry("Prod key", "secret = Prod_9f3a_2c71")), "secret written out");
+});
+
+test("a recall whose wait ran out is not measured, and a turn that ended wrong, empty or failed still counts", () => {
+  const right = { graded: [{ right: true }, { right: true }, { right: false }] };
+  const waited = { error: "no answer within 1200 s", unanswered: true, graded: [{ right: false }, { right: false }, { right: false }] };
+  const old = { error: "no answer within 1200 s, last poll 500", graded: [{ right: false }] };
+  const empty = { error: `${EMPTY_TURN}: the turn ended with no text`, graded: [{ right: false }, { right: false }] };
+  const failed = { error: "The model call failed.", graded: [{ right: false }] };
+  assert.equal(unanswered(waited), true);
+  assert.equal(unanswered(old), true);
+  assert.equal(unanswered(empty), false);
+  assert.equal(unanswered(failed), false);
+  assert.deepEqual(recallCount([right, waited, old, empty, failed]), { asked: 6, right: 2, unmeasured: 2 });
+  assert.deepEqual(recallCount([waited, old]), { asked: 0, right: 0, unmeasured: 2 });
+  assert.deepEqual(recallCount([]), { asked: 0, right: 0, unmeasured: 0 });
+});
+
+test("a run where no session answered keeps the recall share of the newest run that measured one", () => {
+  const waited = { error: "no answer within 1200 s", graded: [{ right: false }] };
+  const details: Record<string, unknown> = {
+    "none.json": { agents: [{ recall: waited }, { recall: waited }, {}] },
+    "part.json": { agents: [{ recall: waited }, { recall: { graded: [{ right: true }, { right: true }, { right: false }] } }] },
+    "all.json": { agents: [{ recall: { graded: [{ right: true }] } }] },
+    "no-recall.json": { agents: [{}] },
+  };
+  const read = (file: string): unknown => {
+    if (!(file in details)) throw new Error(`ENOENT ${file}`);
+    return details[file];
+  };
+  const runs = [{ at: 1, detail: "all.json" }, { at: 5, detail: "none.json" }, { at: 3, detail: "part.json" }, { at: 4, detail: "gone.json" }, { at: 6, detail: "no-recall.json" }, { at: 7 }];
+  assert.deepEqual(lastMeasuredRecall(runs, read), { pct: 66.7, at: 3 });
+  assert.deepEqual(lastMeasuredRecall([{ at: 5, detail: "none.json" }], read), null);
+  assert.deepEqual(lastMeasuredRecall([], read), null);
+});
+
 /** A stub of :5184 for recall agents: `send` and `items` act as each test sets, and every call is logged. */
 function stub(opts: { send?: number; itemsStatus?: () => number; items?: () => unknown[]; status?: () => string; agents?: { id: string; name: string; thread: string; archived?: boolean; createdAt?: number }[] }) {
   const calls: string[] = [];
@@ -135,6 +179,7 @@ for (const [label, opts, error] of [
     try {
       const result = await recall(server.url, agentsDir, record, questions, "s1", { waitMs: 50, pollMs: 10 });
       assert.match(result.error ?? "", error);
+      assert.equal(result.unanswered, label === "a turn that never ends" ? true : undefined);
       assert.equal(server.agents.length, 1);
       assert.equal(server.agents[0]!.archived, true);
       assert.equal(existsSync(join(agentsDir, "memory-recall-seo-s1")), false);

@@ -12,7 +12,10 @@
  *   corrections_captured_pct: the share of the owner's corrections about an agent, at least a day old, that its store names by id or msg id;
  *     a correction ideal.json lists in `general_corrections` binds every agent, reaches it through the ledger and is left out.
  *   scratch_entries: entries in the agents' stores that are session state or step status instead of lasting knowledge (target 0).
- *   recall_right_pct: a blind fresh session of each agent answers its 3 questions; the share whose answer holds the expected words. The
+ *   recall_right_pct: a blind fresh session of each agent answers its 3 questions; the share whose answer holds the expected words. A
+ *     session whose wait ran out with no reply got no model answer (`unanswered`), so its questions are not measured: the share is over
+ *     the sessions that answered, `recall_agents_unmeasured` counts the rest, and when none answered the metric keeps the value of the
+ *     newest run in LAST_RUNS_FILE whose detail holds an answered session (`recall_carried_at`). The
  *     session is a throwaway `test: true` agent made through POST /api/agents with a copy of the agent's brief and store, so no answer writes
  *     into the real store and no owner list shows it; it is archived and its folder deleted after the answer, and a sweep before and after
  *     the run archives and deletes any recall agent a killed run left.
@@ -113,14 +116,18 @@ export function scratchReason(entry: StoreEntry): string | null {
 /**
  * A secret value in an entry: an API key or token shape, or a password, secret or key written out after a colon or equals sign. The digest
  * copies entries into prompts, so a store names where a secret lives and never holds its value (ideal.json rules.must_not). A value
- * ideal.json lists in public_values is committed in plaintext, such as auto-sns-agent's local-agent-key, and is no secret.
+ * ideal.json lists in public_values is committed in plaintext, such as auto-sns-agent's local-agent-key, and is no secret. Neither is
+ * the name of an env variable, which says where the value lives: on 11-23 search-product-misc's "x-agent-secret = STAGING_AGENT_SECRET in
+ * apps/search/.env.staging" and "X-API-Key = CRAWLER_API_KEY" read as two secrets written out.
  */
+const ENV_NAME = /^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/;
 export function secretReason(entry: StoreEntry, publicValues: ReadonlySet<string> = new Set()): string | null {
   const text = entryText(entry);
   const token = text.match(/\b(sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{30,}|xox[abp]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{30,}\.[A-Za-z0-9_-]+)/);
   if (token) return `token ${token[0].slice(0, 6)}...`;
   const pair = text.match(/\b(password|passwd|secret|api[_ -]?key|token)\s*[:=]\s*["'`]?([^\s"'`]{8,})/i);
-  return pair && !publicValues.has(pair[2]!.replace(/[.,;:)\]]+$/, "")) && !/^(<|\$|\{|process\.env|env\.|see\b|in\b)/i.test(pair[2]!) ? `${pair[1]} written out` : null;
+  const value = pair?.[2]!.replace(/[.,;:)\]]+$/, "");
+  return pair && !publicValues.has(value!) && !ENV_NAME.test(value!) && !/^(<|\$|\{|process\.env|env\.|see\b|in\b)/i.test(pair[2]!) ? `${pair[1]} written out` : null;
 }
 
 /** The must-not items of ideal.json that a script can read: an object with `match` words; a prose item is for the duty job to read. */
@@ -215,6 +222,38 @@ export function emptyTurn(items: readonly TurnItem[], status?: RunStatus): boole
   return !!turn && turn.live === false && !turn.text?.trim() && !turn.sent?.some(post => post.trim()) && !turn.stop && !turn.error;
 }
 
+/** How the error of a recall whose wait ran out starts. */
+const NO_ANSWER = "no answer within";
+
+/** One agent's recall as a run's detail file stores it under `agents[].recall`. */
+export interface RecallRow { error?: string; unanswered?: boolean; graded?: { right: boolean }[] }
+/**
+ * Whether a recall session got no model answer before its wait ran out, which is no wrong answer: on 11-23 at 07:31 KST all 12 sessions
+ * ended "no answer within 1200 s" while 3 of 42 accounts took new work and up to 82 sessions waited, and the run stored recall 0 of 31.
+ * A detail file from before the `unanswered` field says it only in the error.
+ */
+export const unanswered = (row: RecallRow): boolean => row.unanswered ?? !!row.error?.startsWith(NO_ANSWER);
+/** The questions asked and answered right over the sessions that answered, and the number of sessions that did not. */
+export function recallCount(rows: readonly RecallRow[]): { asked: number; right: number; unmeasured: number } {
+  const answered = rows.filter(row => !unanswered(row));
+  const graded = answered.flatMap(row => row.graded ?? []);
+  return { asked: graded.length, right: graded.filter(g => g.right).length, unmeasured: rows.length - answered.length };
+}
+/**
+ * The recall share of the newest earlier run whose detail file holds an answered session, counted the same way, or null when no run
+ * measured one. `runs` is LAST_RUNS_FILE, where each run names its detail file.
+ */
+export function lastMeasuredRecall(runs: readonly { at: number; detail?: string }[], read: (file: string) => unknown): { pct: number; at: number } | null {
+  for (const run of runs.filter(run => run.detail).sort((a, b) => b.at - a.at)) {
+    let detail: unknown;
+    try { detail = read(run.detail!); } catch { continue; }
+    const rows = ((detail as { agents?: { recall?: RecallRow }[] } | null)?.agents ?? []).flatMap(agent => agent.recall ? [agent.recall] : []);
+    const count = recallCount(rows);
+    if (count.asked) return { pct: pct(count.right, count.asked), at: run.at };
+  }
+  return null;
+}
+
 /** The name every recall agent starts with; its stamp ends it. */
 const RECALL_NAME = "memory recall ";
 /**
@@ -259,7 +298,7 @@ export async function sweepRecallAgents(server: string, agentsDir: string, opts:
  * running out.
  */
 export async function recall(server: string, agentsDir: string, record: AgentRecord, questions: readonly Question[], stamp: string,
-  timing: { waitMs: number; pollMs: number; settleMs?: number } = { waitMs: ANSWER_WAIT_MS, pollMs: POLL_MS }): Promise<{ reply: string; seconds: number; cost?: number; thread?: string; error?: string }> {
+  timing: { waitMs: number; pollMs: number; settleMs?: number } = { waitMs: ANSWER_WAIT_MS, pollMs: POLL_MS }): Promise<{ reply: string; seconds: number; cost?: number; thread?: string; error?: string; unanswered?: true }> {
   const started = Date.now();
   let made: Made | undefined;
   const cwd = record.home && existsSync(record.home) ? realpathSync(record.home) : undefined;
@@ -292,7 +331,7 @@ export async function recall(server: string, agentsDir: string, record: AgentRec
       }
       if (Date.now() - started > timing.waitMs) {
         const last = polled instanceof Error ? `, last poll ${polled.message.slice(0, 160)}` : "";
-        return { reply: "", seconds: Math.round((Date.now() - started) / 1000), thread: made.thread, error: `no answer within ${Math.round(timing.waitMs / 1000)} s${last}` };
+        return { reply: "", seconds: Math.round((Date.now() - started) / 1000), thread: made.thread, error: `${NO_ANSWER} ${Math.round(timing.waitMs / 1000)} s${last}`, unanswered: true };
       }
     }
   } catch (error) {
@@ -339,8 +378,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       process.once(signal, () => void sweepRecallAgents(server, agentsDir, { stamp, now: Date.now() }).finally(() => process.exit(signal === "SIGINT" ? 130 : 143)));
     }
   }
-  let questionsAsked = 0;
-  let questionsRight = 0;
+  const recallRows: RecallRow[] = [];
 
   for (const record of records) {
     const row: Record<string, unknown> = { agent: record.id };
@@ -388,9 +426,12 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       recalls.push(recall(server, agentsDir, record, questions, stamp).then(result => {
         const answers = splitAnswers(result.reply, questions.length);
         const graded = questions.map((q, i) => ({ q: q.q, right: !result.error && holds(answers[i]!, q.match), answer: answers[i]!.trim().slice(0, 600) }));
-        questionsAsked += questions.length;
-        questionsRight += graded.filter(g => g.right).length;
         row.recall = { ...result, reply: undefined, graded };
+        recallRows.push({ ...result, graded });
+        if (result.unanswered) {
+          flagged.push({ kind: "recall_unmeasured", excerpt: `${record.slug} recall session got no model answer (${result.error}); its ${questions.length} questions are not measured`, sig: `recallnone:${record.slug}` });
+          return;
+        }
         if (result.error) flagged.push({ kind: "recall_failed", excerpt: `${record.slug} recall session: ${result.error}`, sig: `recallerr:${record.slug}` });
         for (const [i, g] of graded.entries()) {
           if (g.right) continue;
@@ -418,15 +459,28 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     metrics.recall_agents_left = left.length;
     metrics.recall_agents_swept = sweeps.reduce((sum, sweep) => sum + sweep.swept.length, 0);
   }
-  if (questionsAsked) {
-    metrics.recall_right_pct = pct(questionsRight, questionsAsked);
-    metrics.recall_asked = questionsAsked;
-    metrics.recall_right = questionsRight;
+  const count = recallCount(recallRows);
+  const lastRuns = !count.asked && count.unmeasured && process.env.LAST_RUNS_FILE && existsSync(process.env.LAST_RUNS_FILE)
+    ? JSON.parse(readFileSync(process.env.LAST_RUNS_FILE, "utf8") || "[]") as { at: number; detail?: string }[] : [];
+  const carried = lastMeasuredRecall(lastRuns, file => JSON.parse(readFileSync(file, "utf8")));
+  if (count.asked) {
+    metrics.recall_right_pct = pct(count.right, count.asked);
+    metrics.recall_asked = count.asked;
+    metrics.recall_right = count.right;
+  } else if (carried) {
+    metrics.recall_right_pct = carried.pct;
+    metrics.recall_carried_at = carried.at;
   }
+  if (recallOn) metrics.recall_agents_unmeasured = count.unmeasured;
+  const sessions = (n: number): string => `${n} recall session${n === 1 ? "" : "s"}`;
+  const recallWords = count.asked ? `${count.right} of ${count.asked} recall answers right${count.unmeasured ? `, and ${sessions(count.unmeasured)} got no model answer in time and ${count.unmeasured === 1 ? "is" : "are"} not measured` : ""}`
+    : !count.unmeasured ? "no recall run"
+    : `recall not measured, since none of the ${sessions(count.unmeasured)} got a model answer in time` +
+      (carried ? `, so recall_right_pct keeps the ${carried.pct}% measured at ${new Date(carried.at).toISOString().slice(0, 16)}Z` : ", and no earlier run measured it");
   const output = {
     metrics,
     flagged: [...(ideal ? [] : [{ kind: "source_error", excerpt: `no ideal file at ${idealFile}`, sig: "no-ideal" }]), { kind: "summary", excerpt: `${onIdeal} of ${measured} agents hold their ideal memory; ${correctionsKept} of ${correctionsDue} corrections a day old are kept; ` +
-      `${scratch} scratch entries; ${questionsAsked ? `${questionsRight} of ${questionsAsked} recall answers right` : "no recall run"}`, sig: "summary" }, ...flagged],
+      `${scratch} scratch entries; ${recallWords}`, sig: "summary" }, ...flagged],
     idealFile, agents: rows,
   };
   const json = JSON.stringify(output, null, 1);
