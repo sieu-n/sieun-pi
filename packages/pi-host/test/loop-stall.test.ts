@@ -6,6 +6,7 @@ import { after, test } from "node:test";
 import type { DurableCommands } from "../src/durable/commands.ts";
 import { PiHost, type Connection } from "../src/host.ts";
 import { LoopStalls, noteLine, readCounts, track } from "../src/loop-stall.ts";
+import { StallProfiler } from "../src/stall-profile.ts";
 
 process.env.PI_OFFLINE = "1";
 process.env.PI_TELEMETRY = "0";
@@ -118,6 +119,40 @@ test("a stall says how long the loop thread ran on a CPU in it, so work and GC r
     assert.ok(cpu[1]! < 200, `a waiting stall ran ${cpu[1]} ms on CPU: ${lines[1]}`);
   } finally {
     stalls.stop();
+  }
+});
+
+/** Holds the loop for `ms` in its own frames, as untracked work such as a model turn's request build does. */
+function buildLongRequestForTest(ms: number): number {
+  const end = performance.now() + ms;
+  let sum = 0;
+  while (performance.now() < end) for (let i = 0; i < 100_000; i++) sum += Math.sqrt(i);
+  return sum;
+}
+
+test("a stall no tracked work explains names the function that held the loop, and writes its samples to a .cpuprofile", async () => {
+  const lines: string[] = [];
+  const dir = join(root, "stall-profiles");
+  // A second host's profiler in the same process, as in a test file with two hosts, hears of the first one's profiles too.
+  const other = new StallProfiler();
+  const stalls = new LoopStalls({ log: line => lines.push(line), profiler: new StallProfiler({ dir }) });
+  try {
+    await tick();
+    buildLongRequestForTest(700);
+    await tick();
+    const line = lines.find(text => text.startsWith("loop stall "));
+    assert.ok(line, JSON.stringify(lines));
+    assert.match(line, /ran: no tracked work \|.* \| profile self: buildLongRequestForTest pi-host\/test\/loop-stall\.test\.ts:\d+ (\d+) ms/);
+    const selfMs = Number(/profile self: buildLongRequestForTest \S+ (\d+) ms/.exec(line)![1]);
+    assert.ok(selfMs >= 500, `the profile gave the loop holder ${selfMs} ms: ${line}`);
+    const file = /profile file (\S+\.cpuprofile)/.exec(line)?.[1];
+    assert.ok(file && file.startsWith(dir), line);
+    const profile = JSON.parse(readFileSync(file, "utf8")) as { nodes: unknown[]; samples: number[]; timeDeltas: number[] };
+    assert.equal(profile.samples.length, profile.timeDeltas.length);
+    assert.ok(profile.samples.length >= 20, `${profile.samples.length} samples in the stall`);
+  } finally {
+    stalls.stop();
+    other.stop();
   }
 });
 

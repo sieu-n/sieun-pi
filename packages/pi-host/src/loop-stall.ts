@@ -6,11 +6,13 @@
  * A timer every 50 ms measures how late it runs. A gap over 500 ms writes one host.log line that names the work that ran in it: the
  * commands, host requests and scheduler reopens that started or ended inside the gap (`track`), with their thread and row count, the work
  * still in flight across it, and the last host.log line written in it. Counts per UTC day (over 500 ms, over 1 s, longest, by cause) stay
- * in `<data dir>/loop-stalls.json` for today and the 2 days before it, so a duty reads them across restarts.
+ * in `<data dir>/loop-stalls.json` for today and the 2 days before it, so a duty reads them across restarts. With a `StallProfiler`, the
+ * line also names the functions that ran on CPU in the gap, for the stalls no tracked work explains (`stall-profile.ts`).
  */
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { PerformanceObserver } from "node:perf_hooks";
+import type { StallProfiler } from "./stall-profile.ts";
 
 /** One piece of tracked work: a socket command, a kernel host request or a scheduler reopen. `rows` is the answer's longest list. */
 interface Work {
@@ -107,6 +109,8 @@ export interface LoopStallOptions {
   /** A gap over this many ms is a stall. */
   thresholdMs?: number;
   intervalMs?: number;
+  /** Samples the loop's call stacks, so a stall line names the functions that ran in it; `stop` stops it too. */
+  profiler?: StallProfiler;
 }
 
 export class LoopStalls {
@@ -141,20 +145,21 @@ export class LoopStalls {
     if (gap > this.threshold) {
       // The gc observer hears of a pause in the gap only on a later turn, so the line is written one turn on, with the work as it is now.
       const all = [...ended, ...inFlight];
-      setImmediate(() => this.report(from, now, gap, cpuMs, all));
+      const startedAt = new Date(Date.now() - (now - from));
+      const profile = this.options.profiler?.take(from, now, `${startedAt.toISOString().replace(/:/g, "-")}-${ms(gap)}ms`);
+      setImmediate(() => this.report(from, now, gap, cpuMs, all, startedAt, profile?.text));
     } else {
       this.gc = this.gc.filter(pause => pause.start >= from);
     }
     ended = [];
   }
 
-  private report(from: number, to: number, gap: number, cpuMs: number, all: readonly Work[]): void {
+  private report(from: number, to: number, gap: number, cpuMs: number, all: readonly Work[], started: Date, profile: string | undefined): void {
     // Work that started or ended inside the gap ran in it; work in flight across the whole gap may only have been waiting.
     const ran = all.filter(work => work.start >= from || (work.end !== undefined && work.end <= to))
       .sort((a, b) => (Math.min(b.end ?? to, to) - Math.max(b.start, from)) - (Math.min(a.end ?? to, to) - Math.max(a.start, from)));
     const waiting = all.filter(work => !ran.includes(work));
-    const startedAt = new Date(Date.now() - (to - from)).toISOString().slice(11, 23);
-    const parts = [`${OWN_LINE}${ms(gap)} ms from ${startedAt}Z`];
+    const parts = [`${OWN_LINE}${ms(gap)} ms from ${started.toISOString().slice(11, 23)}Z`];
     parts.push(ran.length ? `ran: ${ran.map(work => describe(work, from, to)).join("; ")}` : "ran: no tracked work");
     if (waiting.length) {
       const types = new Map<string, number>();
@@ -165,6 +170,7 @@ export class LoopStalls {
     const gc = this.gc.filter(pause => pause.start >= from && pause.start < to);
     if (lastLine && lastLine.at >= from - this.interval) parts.push(`last log line: ${JSON.stringify(lastLine.text.slice(0, 200))}`);
     parts.push(`loop thread on CPU ${ms(cpuMs)} ms${gc.length ? `, gc ${ms(gc.reduce((sum, pause) => sum + pause.ms, 0))} ms in ${gc.length} pauses` : ""}`);
+    if (profile) parts.push(profile);
     this.options.log(parts.join(" | "));
     this.count(ran[0]?.type ?? (lastLine && lastLine.at >= from - this.interval ? "untracked, see last log line" : "untracked"), gap);
   }
@@ -192,6 +198,7 @@ export class LoopStalls {
   stop(): void {
     clearInterval(this.timer);
     this.gcObserver.disconnect();
+    this.options.profiler?.stop();
   }
 }
 

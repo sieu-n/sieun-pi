@@ -35,6 +35,7 @@ import {
 } from "./protocol.ts";
 import { HostedSession, modelRef, type Sink } from "./session.ts";
 import { Scheduler } from "./scheduler.ts";
+import { StallProfiler } from "./stall-profile.ts";
 import schedulerExtension from "./scheduler-extension.ts";
 import { withPoolRetries } from "@sieun-pi/pi-family/retries";
 import type { Job } from "./schedule.ts";
@@ -131,7 +132,8 @@ export class PiHost implements HostApi {
 
   constructor(readonly options: HostOptions) {
     this.agentDir = options.agentDir;
-    this.stalls = new LoopStalls({ log: line => this.log(line), file: countsFileOf(options.dataDir ?? join(options.agentDir, "pi-host")) });
+    const dataDir = options.dataDir ?? join(options.agentDir, "pi-host");
+    this.stalls = new LoopStalls({ log: line => this.log(line), file: countsFileOf(dataDir), profiler: new StallProfiler({ dir: join(dataDir, "stall-profiles") }) });
     this.scheduler = new Scheduler({
       dataDir: options.dataDir ?? join(options.agentDir, "pi-host"),
       reopen: job => track("scheduler reopen", job.activeSessionId, () => this.reopenFor(job)),
