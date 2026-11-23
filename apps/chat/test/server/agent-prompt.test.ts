@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { builderStarts } from "../../server/agent-prompt.ts";
 import type { AgentPrompt } from "../../web/src/lib/api/types.ts";
-import { FIXTURE_AGENTS as agents } from "../../server/fixture/seed.ts";
+import { FIXTURE_AGENTS as agents, FIXTURE_IDS as ids } from "../../server/fixture/seed.ts";
 import { start, type Running } from "./helpers.ts";
 
 let s: Running;
@@ -66,4 +66,10 @@ test("a later call builds again in the builder the first call started, and an AG
     if (text === undefined) rmSync(rules);
     else writeFileSync(rules, text);
   }
+});
+
+test("a root job filed under an agent shows as one job, with no role text", async () => {
+  const p = await prompt(ids.cutover);
+  assert.deepEqual(p.kinds.map(k => [k.kind, k.conversation]), [["job", 1]]);
+  assert.equal(p.kinds[0]!.sections.some(sec => sec.key === "instructions"), false);
 });

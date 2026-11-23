@@ -189,7 +189,9 @@ async function build(app: App, id: AgentId): Promise<AgentPrompt> {
     // A job's page: its own conversation, with the ref its thread holds (a job of the main thread reads the main thread's).
     const dir = record && app.agents.agentsDirOf(record);
     const ref = record && dir ? (agent.thread === record.workThread ? agentRef(dir, record, "work") : agentRef(dir, record, "job")) : undefined;
-    conversations.push(at(agent.conversation > 1 ? "job" : "work", agent.thread, agent.conversation, ref));
+    // A root job thread filed under the agent is a job too, at its root conversation.
+    const kind: PromptKind = agent.conversation > 1 || (record !== undefined && agent.thread !== record.workThread) ? "job" : "work";
+    conversations.push(at(kind, agent.thread, agent.conversation, ref));
   }
   const tree = builderTree(app.config.fixture);
   const answer = await builderFor(tree).build({ agentDir: primeAgentDir(app), conversations });
