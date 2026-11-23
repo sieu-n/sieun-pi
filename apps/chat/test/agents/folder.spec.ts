@@ -76,7 +76,7 @@ test("the owner adds a memory to Vent, sees it listed and deletes it", async ({ 
   const title = uniqueName("Relay gaps");
   const content = "The Mac sleeps every night, so a relay gap under an hour is normal.";
   await openCard(page, agent);
-  await panel(page).getByRole("tab", { name: /^Memory/ }).click();
+  await panel(page).getByRole("tab", { name: /^Knowledge/ }).click();
   await expect(memory(page)).toContainText(`Loaded into every thread of ${agent.name}`);
 
   await memory(page).getByRole("button", { name: "Add memory" }).click();
@@ -127,7 +127,7 @@ test("a job of Vent shows Vent's folder read-only and links back to Vent", async
   await expect(brief(page)).toBeVisible();
   await expect(brief(page).getByRole("button")).toHaveCount(0);
 
-  await panel(page).getByRole("tab", { name: /^Memory/ }).click();
+  await panel(page).getByRole("tab", { name: /^Knowledge/ }).click();
   await expect(memory(page)).toBeVisible();
   await expect(memory(page).getByRole("button", { name: "Add memory" })).toHaveCount(0);
   await panel(page).getByTestId("folder-owner").getByRole("link", { name: agent.name }).click();

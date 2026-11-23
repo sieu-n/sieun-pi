@@ -4,7 +4,7 @@ import { open, tag } from "./helpers";
 /**
  * The read that follows one of the owner's writes, such as the member list after Add, is a call he waits on (client.ts `wroteNow`): it
  * leaves at once, while the page's reads ahead and the refresh of the page he looks at are still on their way or queued, and a kept panel
- * reads again instead of taking the answer of a read that left before the write. On 11-22 a Work tab remove read the agent's rooms as a
+ * reads again instead of taking the answer of a read that left before the write. On 11-22 a Work tab (now Threads) remove read the agent's rooms as a
  * panel refresh in the lane, which could join a read sent before the remove (AgentConfigPanel.svelte `load`).
  */
 declare global {
@@ -104,7 +104,7 @@ test("a kept panel's read asked as his write answered leaves at once and does no
   });
   await expect.poll(() => panel.length).toBe(1);
   const held = await fill(page, 6);
-  // His write, a new test channel, then the panel's refresh in its answer's promise chain, as the Work tab reads its rooms after a remove.
+  // His write, a new test channel, then the panel's refresh in its answer's promise chain, as the Threads tab reads its rooms after a remove.
   const name = `refetch-panel-${tag()}`;
   await page.evaluate(async (name) => {
     const client = "/src/lib/api/client.ts";
@@ -132,7 +132,7 @@ test("a kept panel's read asked as his write answered leaves at once and does no
   }, name)).toBe(true);
 });
 
-test("the Work tab's rooms read after a remove and its Undo is logged as a wait, not a refresh", async ({ page }) => {
+test("the Threads tab's rooms read after a remove and its Undo is logged as a wait, not a refresh", async ({ page }) => {
   await page.addInitScript(() => {
     navigator.sendBeacon = () => false;
   });
@@ -140,7 +140,7 @@ test("the Work tab's rooms read after a remove and its Undo is logged as a wait,
   const agent = (await (await page.request.post("/api/agents", { data: { name: `refetch work ${t}`, test: true } })).json()) as { id: string; name: string };
   const room = (await (await page.request.post("/api/rooms", { data: { kind: "channel", name: `refetch-work-${t}`, members: [agent.id], test: true } })).json()) as { id: string; name: string };
   await noSocket(page);
-  await page.goto(`/#/agents/${agent.id}?section=work`);
+  await page.goto(`/#/agents/${agent.id}?section=threads`);
   const rooms = page.getByRole("region", { name: "Rooms" });
   const chip = rooms.getByRole("button", { name: room.name, exact: true });
   await expect(chip).toBeVisible();

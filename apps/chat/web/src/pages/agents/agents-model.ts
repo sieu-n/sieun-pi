@@ -126,17 +126,17 @@ export function levelsFor(catalog: ModelCatalog | null, key: string): string[] {
 /** pi-host names root threads only, so an agent or a root job takes a new name and a job inside a thread keeps its thread's. */
 export const canRename = (agent: Pick<AgentSummary, "conversation">): boolean => agent.conversation === 1;
 
-/** The tabs of an agent's page, as apps/chat/docs/agent-model.md names them. */
-export type ConfigSection = "overview" | "for" | "work" | "jobs" | "board" | "memory" | "instructions";
+/** The tabs of an agent's page, as apps/chat/docs/agent-model.md names them; each tab is its own component file (agent-tab.ts). */
+export type ConfigSection = "brief" | "knowledge" | "board" | "duties" | "threads" | "for" | "prompt";
 /** `for` is the agent's For list; its tab reads "For <agent name>" (forLabel) and shows only for a registered agent (hasForList). */
 export const SECTIONS: readonly { id: ConfigSection; label: string }[] = [
-  { id: "overview", label: "Overview" },
-  { id: "for", label: "For" },
-  { id: "work", label: "Work" },
-  { id: "jobs", label: "Jobs" },
+  { id: "brief", label: "Brief" },
+  { id: "knowledge", label: "Knowledge" },
   { id: "board", label: "Board" },
-  { id: "memory", label: "Memory" },
-  { id: "instructions", label: "Instructions" },
+  { id: "duties", label: "Duties" },
+  { id: "threads", label: "Threads" },
+  { id: "for", label: "For" },
+  { id: "prompt", label: "Prompt" },
 ];
 /** Only a registered agent (`ag_<slug>`) has a For list; a job or a root thread with no agent record has none. */
 export const hasForList = (id: string): boolean => id.startsWith("ag_");
@@ -175,12 +175,14 @@ export function previewText(text: string): string {
     .trim();
 }
 
-/** Old `?section=` ids from the side panel: Host became Work and Swarm became Jobs. */
-const RENAMED: Record<string, ConfigSection> = { runs: "work", swarm: "jobs" };
+/** Old `?section=` ids: Overview became Brief, Memory and Instructions became Knowledge, and Work, Jobs, Host and Swarm became Threads. */
+const RENAMED: Record<string, ConfigSection> = {
+  overview: "brief", memory: "knowledge", instructions: "knowledge", work: "threads", jobs: "threads", runs: "threads", swarm: "threads",
+};
 /** The new id an old `?section=` link names, so the page rewrites the address once; null when the link is current. */
 export const renamedSection = (params: Record<string, string>): ConfigSection | null => (params.section ? (RENAMED[params.section] ?? null) : null);
 export const sectionFromParams = (params: Record<string, string>): ConfigSection =>
-  renamedSection(params) ?? (SECTIONS.some((section) => section.id === params.section) ? (params.section as ConfigSection) : "overview");
+  renamedSection(params) ?? (SECTIONS.some((section) => section.id === params.section) ? (params.section as ConfigSection) : "brief");
 
 export function bytesLabel(size: number | null): string {
   if (size === null) return "";

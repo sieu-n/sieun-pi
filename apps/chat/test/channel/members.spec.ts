@@ -143,13 +143,13 @@ test("a test channel's picker lists only test agents", async ({ page }) => {
   await expect(count(page)).toHaveAttribute("aria-label", "Members, 2 members");
 });
 
-test("a test agent's Work tab adds it to a test channel and a test Solo room at once, and removes each with Undo", async ({ page }) => {
+test("a test agent's Threads tab adds it to a test channel and a test Solo room at once, and removes each with Undo", async ({ page }) => {
   const make = async (name: string) => (await (await page.request.post("/api/agents", { data: { name: `${name} ${tag()}`, test: true } })).json()) as { id: string; name: string };
   const agent = await make("work tab agent");
   const other = await make("solo mate");
   const room = await channel(page, []);
   const solo = (await (await page.request.post("/api/rooms", { data: { kind: "solo", agenda: `work tab solo ${tag()}`, members: [other.id], test: true } })).json()) as { id: string; name: string };
-  await page.goto(`/#/agents/${agent.id}?section=work`);
+  await page.goto(`/#/agents/${agent.id}?section=threads`);
   const rooms = page.getByRole("region", { name: "Rooms" });
   await expect(rooms).toContainText("In no channel or Solo room.");
   await page.getByTestId("add-to-channel").click();

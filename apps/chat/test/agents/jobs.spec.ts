@@ -19,7 +19,7 @@ test("the Jobs tab filters by state, searches by name, and archives a finished j
   const finished = live.filter((job) => job.status === "idle" || job.status === "failed");
   test.skip(!active.length || !finished.length, "the fixture agent needs a running and a finished job");
 
-  await page.goto(`/#/agents/${AGENT}?section=jobs`);
+  await page.goto(`/#/agents/${AGENT}?section=threads`);
   await expect(jobsTab(page)).toHaveAttribute("data-filter", "active");
   await expect(jobsTab(page).locator("li[data-job-id]")).toHaveCount(active.length);
   await expect(jobsTab(page).getByRole("tab", { name: /Finished/ })).toContainText(String(finished.length));

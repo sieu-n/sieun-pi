@@ -16,7 +16,7 @@ test("a long memory draws its first rows, then every entry, and search counts ev
     });
     expect(res.ok()).toBeTruthy();
   }
-  await page.goto(`/#/agents/${agent.id}?section=memory`);
+  await page.goto(`/#/agents/${agent.id}?section=knowledge`);
   const memory = page.getByTestId("agent-memory");
   const rows = memory.locator("[data-entry-id]");
   await expect(rows.first()).toBeVisible();

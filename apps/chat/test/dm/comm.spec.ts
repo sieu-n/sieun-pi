@@ -91,11 +91,11 @@ test("Show work opens the post's comm turn in a thread that is no agent and no j
   await expect(conversation(page).locator("[data-flash]")).toHaveCount(1);
 });
 
-test("the agent's Overview lists its DM comm thread, which opens its transcript", async ({ page }) => {
+test("the agent's Brief lists its DM comm thread, which opens its transcript", async ({ page }) => {
   const vent = await splitVent(page);
   await open(page, "#/agents/ag_vent", "agent-config");
   const threads = page.getByTestId("agent-config").locator('[data-fact="threads"]');
-  await expect(threads.getByRole("link", { name: "Work thread" })).toHaveAttribute("href", `#/c/${VENT}`);
+  await expect(threads.getByRole("link", { name: "Main thread" })).toHaveAttribute("href", `#/c/${VENT}`);
   const comm = threads.locator(`[data-comm-thread="${COMM}"]`);
   await expect(comm).toHaveAttribute("data-room", DM);
   await expect(comm.getByRole("link", { name: "DM comm thread" })).toHaveAttribute("href", `#/c/${COMM}`);

@@ -87,7 +87,7 @@
     if (renamed) router.setParams({ section: renamed }, { replace: true });
   });
   function setSection(next: ConfigSection) {
-    router.setParams({ section: next === "overview" ? null : next }, { replace: true });
+    router.setParams({ section: next === "brief" ? null : next }, { replace: true });
   }
   async function run(label: string, action: () => Promise<unknown>, done: string) {
     try {

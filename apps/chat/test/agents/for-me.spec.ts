@@ -81,6 +81,6 @@ test("a job's page has no For tab", async ({ page, request }) => {
   const job = jobs.find((item) => !item.archived);
   test.skip(!job, "no jobs on this server");
   await page.goto(`/#/agents/${encodeURIComponent(job!.id)}`);
-  await expect(page.getByTestId("agent-config").getByRole("tab", { name: "Overview" })).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByTestId("agent-config").getByRole("tab", { name: "Brief" })).toBeVisible({ timeout: 20_000 });
   await expect(page.getByTestId("agent-config").getByRole("tab", { name: /^For / })).toHaveCount(0);
 });

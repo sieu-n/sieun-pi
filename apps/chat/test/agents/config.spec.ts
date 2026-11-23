@@ -44,7 +44,7 @@ test("the agent's page shows its host, home directory, board and memory, and eac
   await card(page, chat).click({ position: { x: 40, y: 120 } });
   await expect(panel(page)).toBeVisible();
   await expect(page.getByTestId("main-panel").getByTestId("agent-config")).toHaveAttribute("data-agent-id", chat.id);
-  await expect(panel(page).getByRole("tab")).toHaveText(["Overview", ...(chat.id.startsWith("ag_") ? [`For ${chat.name}`] : []), "Work", "Jobs", "Board", "Memory", "Instructions"]);
+  await expect(panel(page).getByRole("tab")).toHaveText(["Brief", "Knowledge", "Board", "Duties", "Threads", ...(chat.id.startsWith("ag_") ? [`For ${chat.name}`] : []), "Prompt"]);
 
   await expect(panel(page).locator('[data-fact="host"]')).toContainText(config.runs.host);
   await expect(panel(page).locator('[data-fact="cwd"] code')).toHaveAttribute("title", config.runs.cwd);
@@ -53,23 +53,23 @@ test("the agent's page shows its host, home directory, board and memory, and eac
   if (config.board) await expect(panel(page).locator('[data-fact="board"]')).toContainText(`${config.board.steps.open} open`);
   else await expect(panel(page).locator('[data-fact="board"]')).toContainText("None yet");
 
-  await section(page, "Work").click();
-  await expect(page).toHaveURL(/section=work/);
+  await section(page, "Threads").click();
+  await expect(page).toHaveURL(/section=threads/);
   await expect(panel(page).getByRole("tabpanel")).toContainText(config.runs.thread);
   for (const room of config.swarm.rooms) await expect(panel(page).getByRole("button", { name: room.name, exact: true })).toBeVisible();
 
-  await section(page, "Memory").click();
+  await section(page, "Knowledge").click();
   if (config.folder) await expect(panel(page).getByTestId("agent-memory")).toBeVisible();
   else await expect(panel(page).locator('[data-memory="none"]')).toContainText("No memory of its own");
   for (const file of config.memory.related) await expect(panel(page).locator(`li[data-path="${file.path}"]`)).toBeVisible();
 
-  await section(page, "Instructions").click();
   for (const file of config.instructions.files) await expect(panel(page).locator(`li[data-path="${file.path}"]`)).toContainText(tail(file.path));
 
-  await section(page, "Jobs").click();
-  await expect(page).toHaveURL(/section=jobs/);
+  await section(page, "Threads").click();
   const filter = jobFilterOf(undefined, jobFilterCounts(config.swarm.jobs, ""));
   for (const job of jobsShown(config.swarm.jobs, filter, "").slice(0, 5)) await expect(panel(page).locator(`li[data-job-id="${job.id}"]`)).toContainText(job.name.slice(0, 20));
+  await section(page, "Duties").click();
+  await expect(page).toHaveURL(/section=duties/);
   for (const duty of config.swarm.duties) await expect(panel(page).locator(`li[data-board-id="${duty.id}"]`)).toContainText(duty.name);
 
   await section(page, "Board").click();
@@ -104,21 +104,21 @@ test("a page link opens on its own tab, back returns to the grid and forward ope
   const chat = (await listAgents(request)).find((agent) => agent.kind === "chat");
   test.skip(!chat, "no chats on this server");
   await openAgents(page);
-  await page.goto(`/#/agents/${chat!.id}?section=memory`);
+  await page.goto(`/#/agents/${chat!.id}?section=knowledge`);
   await expect(panel(page)).toBeVisible();
-  await expect(section(page, "Memory")).toHaveAttribute("aria-selected", "true");
+  await expect(section(page, "Knowledge")).toHaveAttribute("aria-selected", "true");
   await page.goto("/#/agents");
   await expect(panel(page)).toHaveCount(0);
   await expect(grid(page)).toBeVisible();
   await page.goBack();
   await expect(panel(page)).toBeVisible();
-  await expect(section(page, "Memory")).toHaveAttribute("aria-selected", "true");
+  await expect(section(page, "Knowledge")).toHaveAttribute("aria-selected", "true");
 });
 
 test("old section links from the side panel land on the tab that replaced them", async ({ page, request }) => {
   const chat = (await listAgents(request)).find((agent) => agent.kind === "chat");
   test.skip(!chat, "no chats on this server");
-  for (const [old, next, tab] of [["runs", "work", "Work"], ["swarm", "jobs", "Jobs"]] as const) {
+  for (const [old, next, tab] of [["runs", "threads", "Threads"], ["swarm", "threads", "Threads"], ["overview", "brief", "Brief"], ["memory", "knowledge", "Knowledge"], ["instructions", "knowledge", "Knowledge"], ["work", "threads", "Threads"], ["jobs", "threads", "Threads"]] as const) {
     await page.goto(`/#/agents/${chat!.id}?section=${old}`);
     await expect(section(page, tab)).toHaveAttribute("aria-selected", "true", { timeout: 20_000 });
     await expect(page).toHaveURL(new RegExp(`#/agents/${chat!.id}\\?section=${next}$`));
@@ -141,7 +141,7 @@ test("a duty run's configuration names its coordinator and shares its chat's boa
   await expect(card(page, { id: duty!.id })).toHaveCount(0);
   await expect(panel(page)).toContainText("duty run");
   await expect(panel(page).locator('[data-fact="board"]')).toContainText(`Board of ${duty!.chat.name}`);
-  await section(page, "Jobs").click();
+  await section(page, "Threads").click();
   await panel(page).getByRole("tabpanel").getByRole("link", { name: duty!.chat.name }).click();
   await expect(page).toHaveURL(new RegExp(`#/agents/${duty!.chat.id}$`));
 });
@@ -160,9 +160,9 @@ test("a new agent's overview names the next step for its board and duties, and a
   await expect(panel(page).locator('[data-fact="board"]').getByRole("button", { name: `Message ${agent.name}` })).toBeVisible();
   await expect(panel(page).locator('[data-fact="host"]').getByRole("link")).toHaveAttribute("href", "#/settings/hosts");
   await panel(page).locator('[data-fact="duties"]').getByRole("button", { name: "Add a duty" }).click();
-  await expect(section(page, "Jobs")).toHaveAttribute("aria-selected", "true");
+  await expect(section(page, "Duties")).toHaveAttribute("aria-selected", "true");
 
-  await section(page, "Work").click();
+  await section(page, "Threads").click();
   const comm = panel(page).locator(`li[data-room="${room.id}"]`);
   await expect(comm).toContainText(`Comm thread in #${name}`);
   await expect(comm).toContainText("Archived");

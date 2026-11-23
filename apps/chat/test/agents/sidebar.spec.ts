@@ -104,8 +104,8 @@ test("a deep link with an old section opens the page on its new tab with its row
   const agent = (await listAgents(request)).find((a) => a.kind === "chat");
   test.skip(!agent, "no agents on this server");
   await openSidebar(page, `#/agents/${agent!.id}?section=swarm`);
-  await expect(page).toHaveURL(new RegExp(`#/agents/${agent!.id}\\?section=jobs$`));
-  await expect(agentPage(page).getByRole("tab", { name: "Jobs" })).toHaveAttribute("aria-selected", "true");
+  await expect(page).toHaveURL(new RegExp(`#/agents/${agent!.id}\\?section=threads$`));
+  await expect(agentPage(page).getByRole("tab", { name: "Threads" })).toHaveAttribute("aria-selected", "true");
   await expect(sidebarRow(page, agent!)).toHaveAttribute("aria-current", "page");
 });
 

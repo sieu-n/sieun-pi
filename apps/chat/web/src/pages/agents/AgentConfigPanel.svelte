@@ -1,19 +1,16 @@
 <script lang="ts">
-  import { agents, api, conversations, reads, view, type AgentFolder, type AgentSummary, type ConfigFile, type ModelCatalog, type ProjectList, type RunStatus, type ThinkingLevel } from "$lib/api";
-  import { Avatar, Badge, Button, Chip, EmptyState, IconButton, LoadingText, Markdown, Menu, Meter, ModelPicker, PanelHeader, StatusDot, Tabs, TypingDots, stampLabel, toast, type MenuEntry } from "$lib/ui";
-  import { conversationHref, hrefFor, router } from "$lib/router.svelte";
-  import {
-    SECTIONS, STATUS_LABEL, bytesLabel, canRename, everyLabel, forLabel, hasForList, levelsFor, modelKey, modelOptions, shortPath, type ConfigSection,
-  } from "./agents-model";
+  import { reads, view, type AgentSummary, type ModelCatalog, type RunStatus, type ThinkingLevel } from "$lib/api";
+  import { Avatar, Badge, Button, EmptyState, IconButton, LoadingText, Menu, Meter, ModelPicker, PanelHeader, Tabs, TypingDots, stampLabel, type MenuEntry } from "$lib/ui";
+  import { hrefFor, router } from "$lib/router.svelte";
+  import { SECTIONS, STATUS_LABEL, canRename, forLabel, hasForList, levelsFor, modelKey, modelOptions, type ConfigSection } from "./agents-model";
+  import type { AgentTabProps } from "./agent-tab";
   import AccountChip from "$pages/accounts/AccountChip.svelte";
-  import DutyList from "$pages/board/DutyList.svelte";
-  import AgentBrief from "./AgentBrief.svelte";
+  import AgentBriefTab from "./AgentBriefTab.svelte";
+  import AgentDutiesTab from "./AgentDutiesTab.svelte";
   import AgentForMe from "./AgentForMe.svelte";
-  import AgentJobs from "./AgentJobs.svelte";
-  import AgentMemory from "./AgentMemory.svelte";
-  import ProjectPicker from "./ProjectPicker.svelte";
-  import MemberPicker from "$pages/channel/MemberPicker.svelte";
-  import { removeMembership } from "$pages/channel/membership";
+  import AgentKnowledgeTab from "./AgentKnowledgeTab.svelte";
+  import AgentPromptTab from "./AgentPromptTab.svelte";
+  import AgentThreadsTab from "./AgentThreadsTab.svelte";
   import { agentMenu, onAgentsChanged, renameAgent, unarchiveAgent } from "./agent-actions.svelte";
 
   type Props = {
@@ -31,47 +28,11 @@
   /** The agent's configuration, from the page's kept answer when it holds one and read again behind it. */
   const answer = view(() => reads.agentConfig(agentId));
   const config = $derived(answer.value);
-  /** A chat agent's own duties, which the Duties section runs, pauses, edits, removes and adds through the board's list. */
-  const dutyChat = $derived(config?.agent.kind === "chat" ? config.agent.id : null);
-  const dutyRows = view(() => (dutyChat ? reads.duties(dutyChat) : null));
   const error = $derived(answer.error ?? "");
-  let moving = $state(false);
-  let addingRoom = $state(false);
-  let roomAnchor = $state<HTMLElement>();
-  let projects = $state<ProjectList | null>(null);
-  let nextCwd = $state("");
-  let saving = $state(false);
-  let moveError = $state("");
-
-  async function startMove() {
-    moveError = "";
-    moving = true;
-    projects ??= await api.projects().catch(() => ({ projects: [], default: null, home: "" }));
-    nextCwd = config?.runs.project ? config.runs.cwd : (projects.default ?? "");
-  }
-  async function saveMove() {
-    if (!config || saving) return;
-    saving = true;
-    moveError = "";
-    try {
-      await api.setAgentCwd(agentId, nextCwd.trim());
-      moving = false;
-      toast.success("Its next turn runs in the new folder");
-      await load();
-    } catch (reason) {
-      moveError = reason instanceof Error ? reason.message : String(reason);
-    } finally {
-      saving = false;
-    }
-  }
 
   const load = () => answer.refresh();
   /** A rename, archive or unarchive reads the page again, since an archived agent's card is not in the live list that updates the header. */
   $effect(() => onAgentsChanged(() => void load()));
-  $effect(() => {
-    void agentId;
-    moving = false;
-  });
   // A new status or model on the live card reads the config again, so jobs, board and usage follow the run.
   let seen = "";
   $effect(() => {
@@ -102,73 +63,11 @@
   const tabs = $derived(
     SECTIONS.filter((item) => item.id !== "for" || forList).map((item) => (item.id === "for" ? { ...item, label: forLabel(forName) } : { ...item })),
   );
-  const hostLine = $derived(
-    config ? (config.runs.hostVersion && config.runs.hostVersion !== config.runs.hostKind ? `${config.runs.hostKind} ${config.runs.hostVersion}` : config.runs.hostKind) : "",
-  );
-  const folder = $derived(config?.folder ?? null);
-  /** The Memory tab's entries, which the config counts but does not send, read while the tab shows and kept for its next open. */
-  const memoryFolder = view(() => (section === "memory" && folder ? reads.agentFolder(folder.agent) : null));
-  const ownFolder = $derived(!!folder && folder.agent === agentId);
-  /** A job loads the folder of the registered agent it works for, which may sit above a job that started it. */
-  const folderName = $derived(ownFolder ? (agent?.name ?? "") : (agent?.agent?.name ?? (folder ? agents.byId(folder.agent)?.name : undefined) ?? "its agent"));
-  function setFolder(next: AgentFolder) {
-    if (!config || next.agent !== config.folder?.agent) return;
-    const { entries, ...memory } = next.memory;
-    answer.set({ ...config, folder: { ...next, memory: { ...memory, count: entries.length } } });
-    if (memoryFolder.value?.agent === next.agent) memoryFolder.set(next);
-  }
-  /** A comm thread is named by its room, never as an agent or a job; an archived room keeps its name and reads archived. */
-  const commRoom = (room: string) => config?.swarm.commRooms?.find((r) => r.id === room);
-  const commLabel = (room: string) => {
-    if (room.startsWith("dm_")) return "DM comm thread";
-    const known = conversations.byId(room);
-    const row = commRoom(room);
-    const name = known?.name ?? row?.name ?? room;
-    const kind = known?.kind ?? row?.kind ?? (room.startsWith("ch_") ? "channel" : "solo");
-    return `Comm thread in ${kind === "channel" ? "#" : ""}${name}`;
-  };
-  /** Its comm threads with those in archived rooms last, as Slack lists an archived channel after the open ones. */
-  const commThreads = $derived([...(agent?.comm ?? [])].sort((a, b) => Number(!!commRoom(a.room)?.archived) - Number(!!commRoom(b.room)?.archived)));
   const dotOf = (status: RunStatus) => (status === "working" ? "online" : status === "sleeping" ? "away" : status === "failed" ? "busy" : "offline");
-
-  function copy(path: string) {
-    navigator.clipboard?.writeText(path).then(
-      () => toast.success("Copied path"),
-      () => toast.error("Copy failed"),
-    );
-  }
   const plural = (n: number, word: string, many = `${word}s`) => `${n} ${n === 1 ? word : many}`;
-  const money = (n: number) => `$${n < 10 ? n.toFixed(2) : Math.round(n).toLocaleString("en-US")}`;
+  /** What every tab gets from the page: the card, its configuration and the calls that read it again or keep a new answer. */
+  const tabProps = $derived(config ? ({ agentId, agent, config, reload: load, onconfig: (next) => answer.set(next), onsection, onmessage } satisfies AgentTabProps) : null);
 </script>
-
-{#snippet path(value: string, label: string)}
-  <span class="path">
-    <code class="t-mono" title={value}>{shortPath(value)}</code>
-    <IconButton icon="copy" label="Copy {label}" size="xs" onclick={() => copy(value)} />
-  </span>
-{/snippet}
-
-{#snippet file(item: ConfigFile)}
-  <li class="file" data-path={item.path}>
-    <div class="file-head">
-      <span class="t-label-sm">{item.label}</span>
-      {#if item.loaded === false}<Chip size="sm" label="Not loaded" />{:else if item.loaded}<Chip size="sm" label="Loaded" selected />{/if}
-      {#if !item.exists}<Chip size="sm" label="Missing" />{/if}
-    </div>
-    {@render path(item.path, item.label)}
-    <span class="t-caption meta">
-      {[item.count !== undefined ? plural(item.count, "entry", "entries") : "", bytesLabel(item.size), item.modifiedAt ? `changed ${stampLabel(item.modifiedAt)}` : ""].filter(Boolean).join(" · ")}
-    </span>
-    {#if item.preview}<pre class="preview t-mono">{item.preview}</pre>{/if}
-    {#if item.note}<p class="t-caption note">{item.note}</p>{/if}
-  </li>
-{/snippet}
-
-{#snippet belongs(owner: Pick<AgentFolder, "agent">)}
-  <p class="t-caption belongs" data-testid="folder-owner">
-    This job belongs to <a href={hrefFor("agents", [owner.agent])}>{folderName}</a>. It loads the brief and memory of {folderName}, which you edit on its card.
-  </p>
-{/snippet}
 
 <div class="config" data-testid="agent-config" data-agent-id={agentId}>
   {#if agent}
@@ -223,179 +122,10 @@
       </EmptyState>
     {:else if !config}
       <div class="loading"><LoadingText text="Reading its configuration…" /></div>
-    {:else if section === "overview" || section === "for"}
-      <section class="block project" aria-label="Project folder" data-fact="cwd" data-project={config.runs.project ? "yes" : "no"}>
-        <div class="project-head">
-          <h3 class="t-caption heading">Project folder</h3>
-          {#if !config.runs.project}<Badge tone="danger">No project</Badge>{/if}
-          {#if !config.runs.cwdExists}<span class="t-caption warn">Not on this box</span>{/if}
-          {#if config.runs.canMove && !moving}<button type="button" class="more t-caption" aria-label="Change project folder" onclick={startMove}>Change</button>{/if}
-        </div>
-        {@render path(config.runs.cwd, "working directory")}
-        {#if !config.runs.project}
-          <p class="t-caption warn">It runs in the home folder, so it reads no project's AGENTS.md, skills or rules.</p>
-        {/if}
-        {#if moving}
-          <div class="move">
-            <ProjectPicker {projects} bind:value={nextCwd} disabled={saving || !projects} id="agent-project" />
-            <div class="move-actions">
-              <Button size="sm" variant="ghost" onclick={() => (moving = false)} disabled={saving}>Cancel</Button>
-              <Button size="sm" variant="primary" onclick={saveMove} loading={saving} disabled={saving || !nextCwd.trim() || nextCwd.trim() === config.runs.cwd}>Move</Button>
-            </div>
-            <p class="t-caption meta">Its next turn runs its tools, prompt and Python kernel in this folder.</p>
-            {#if moveError}<p class="t-caption warn" role="alert">{moveError}</p>{/if}
-          </div>
-        {/if}
-      </section>
-      {#if folder}
-        {#if !ownFolder}{@render belongs(folder)}{/if}
-        <AgentBrief {folder} name={folderName} purpose={config.identity.purpose?.text ?? null} readonly={!ownFolder} onsaved={setFolder} />
-      {/if}
-      <section class="block" aria-label="Purpose">
-        <h3 class="t-caption heading">First input</h3>
-        {#if config.identity.purpose}
-          <div class="purpose t-body-sm"><Markdown text={config.identity.purpose.text} /></div>
-          <span class="t-caption meta">
-            First input from {config.identity.purpose.from.name}{config.identity.purpose.via ? ` via ${config.identity.purpose.via}` : ""}, {stampLabel(config.identity.purpose.at)}
-          </span>
-        {:else}
-          <p class="t-caption meta">No first input yet.</p>
-        {/if}
-      </section>
-      <dl class="facts">
-        <dt>Host</dt>
-        <dd data-fact="host">
-          <a href={hrefFor("settings", ["hosts"])} title="Open Settings > Hosts">{config.runs.host}</a>
-          <span class="t-caption meta">{hostLine} · picked when it was created</span>
-        </dd>
-        <dt>Model</dt>
-        <dd data-fact="model">{agent?.model ? agent.model.label : "No model yet"}{#if agent?.thinkingLevel}<span class="t-caption meta">{agent.thinkingLevel} thinking</span>{/if}</dd>
-        {#if agent?.comm?.length}
-          <dt>Threads</dt>
-          <dd data-fact="threads">
-            <span class="comm"><StatusDot status={dotOf(agent.status)} label={STATUS_LABEL[agent.status]} /><a href={conversationHref(agent.thread)} data-work-thread={agent.thread}>Work thread</a></span>
-            {#each commThreads as comm (comm.thread)}
-              <span class="comm" data-comm-thread={comm.thread} data-room={comm.room}>
-                <StatusDot status={dotOf(comm.status)} label={STATUS_LABEL[comm.status]} />
-                <a href={conversationHref(comm.thread)}>{commLabel(comm.room)}</a>
-                {#if commRoom(comm.room)?.archived}<Chip size="sm" label="Archived" />{/if}
-              </span>
-            {/each}
-          </dd>
-        {/if}
-        <dt>Board</dt>
-        <dd data-fact="board">
-          {#if config.board}
-            <a href={boardHref}>{config.board.own ? "Its board" : `Board of ${config.board.chatName}`}</a>
-            <span class="t-caption meta">{config.board.steps.open} open · {config.board.steps.done} done · {plural(config.board.openTodos.length, "ask")} for you</span>
-          {:else}
-            <span class="meta">None yet. It writes one when it plans work.</span>
-            {#if agent && !agent.archived}<button type="button" class="more t-caption" onclick={() => onmessage(agent)}>Message {agent.name}</button>{/if}
-          {/if}
-        </dd>
-        <dt>Memory</dt>
-        <dd data-fact="memory">
-          {#if folder}<span>{plural(folder.memory.count, "memory", "memories")}{ownFolder ? "" : ` of ${folderName}`}</span>{:else}<span>None of its own</span>{/if}
-          <button type="button" class="more t-caption" onclick={() => onsection("memory")}>Details</button>
-        </dd>
-        <dt>Jobs</dt>
-        <dd data-fact="jobs">
-          {plural(config.swarm.jobs.filter((j) => !j.archived).length, "job")}{config.swarm.jobs.some((j) => j.status === "working") ? `, ${config.swarm.jobs.filter((j) => j.status === "working").length} working` : ""}
-          <button type="button" class="more t-caption" onclick={() => onsection("jobs")}>Details</button>
-        </dd>
-        {#if agent?.kind === "chat"}
-          <dt>Duties</dt>
-          <dd data-fact="duties">
-            {#if config.swarm.duties.length}
-              {plural(config.swarm.duties.length, "duty", "duties")}{config.swarm.duties.some((d) => d.paused) ? `, ${config.swarm.duties.filter((d) => d.paused).length} paused` : ""}
-              <button type="button" class="more t-caption" onclick={() => onsection("jobs")}>Details</button>
-            {:else}
-              <span class="meta">None yet</span>
-              <button type="button" class="more t-caption" onclick={() => onsection("jobs")}>Add a duty</button>
-            {/if}
-          </dd>
-        {/if}
-        {#if config.usage}
-          <dt>Last 7 days</dt>
-          <dd data-fact="usage">{money(config.usage.cost)} · {plural(config.usage.turns, "turn")}</dd>
-        {/if}
-      </dl>
-    {:else if section === "work"}
-      {#if agent?.kind === "chat"}
-        <section class="block" aria-label="Threads">
-          <h3 class="t-caption heading">Threads</h3>
-          <ul class="list">
-            <li><StatusDot status={dotOf(agent.status)} label={STATUS_LABEL[agent.status]} /><a class="grow" href={conversationHref(agent.thread)} data-work-thread={agent.thread}>Work thread</a></li>
-            {#each commThreads as comm (comm.thread)}
-              <li data-comm-thread={comm.thread} data-room={comm.room}>
-                <StatusDot status={dotOf(comm.status)} label={STATUS_LABEL[comm.status]} />
-                <a class="grow" href={conversationHref(comm.thread)}>{commLabel(comm.room)}</a>
-                {#if commRoom(comm.room)?.archived}<Chip size="sm" label="Archived" />{/if}
-              </li>
-            {/each}
-          </ul>
-        </section>
-      {/if}
-      <section class="block" aria-label="Rooms">
-        <h3 class="t-caption heading">Channels and Solo rooms</h3>
-        <div class="chips">
-          {#each config.swarm.rooms as room (room.id)}
-            {@const place = room.kind === "solo" ? room.name : `#${room.name}`}
-            <Chip
-              size="sm"
-              icon={room.kind === "solo" ? "users" : "hash"}
-              label={room.name}
-              onclick={() => router.openConversation(room.id)}
-              removeLabel="Remove {config.agent.name} from {place}"
-              onremove={() => void removeMembership({ room: room.id, roomName: room.name, agent: agentId, agentName: config.agent.name }, { wakeOn: room.wakeOn, refresh: load })}
-            />
-          {:else}
-            <span class="t-caption meta">In no channel or Solo room.</span>
-          {/each}
-          {#if agentId.startsWith("ag_")}
-            <Button variant="ghost" size="sm" icon="plus" bind:element={roomAnchor} onclick={() => (addingRoom = true)} data-testid="add-to-channel">Add to channel or Solo room</Button>
-          {/if}
-        </div>
-        <MemberPicker
-          bind:open={addingRoom}
-          anchor={roomAnchor}
-          target={{ kind: "agent", agent: agentId, name: config.agent.name, rooms: config.swarm.rooms.map((room) => room.id), test: config.agent.test === true }}
-          refresh={load}
-          placement="bottom-start"
-        />
-      </section>
-      <h3 class="t-caption heading">Where it runs</h3>
-      <dl class="facts">
-        <dt>Host</dt>
-        <dd>{config.runs.host}</dd>
-        <dt>Through</dt>
-        <dd>{hostLine}{config.runs.hostVersion ? "" : " (not answering)"}</dd>
-        <dt>pi-host socket</dt>
-        <dd>{@render path(config.runs.socket, "pi-host socket")}</dd>
-        <dt>Project folder</dt>
-        <dd>{@render path(config.runs.cwd, "working directory")}{#if !config.runs.project}<Badge tone="danger">No project</Badge>{/if}{#if !config.runs.cwdExists}<span class="t-caption warn">Not on this box: its tools fail there until the thread moves</span>{/if}</dd>
-        <dt>Thread</dt>
-        <dd>{@render path(config.runs.thread, "thread id")}</dd>
-        <dt>Conversation</dt>
-        <dd>{config.runs.conversation === 1 ? "1, the root" : `${config.runs.conversation}, a job inside the thread`}</dd>
-        <dt>Created</dt>
-        <dd>{agent ? stampLabel(agent.createdAt) : ""}</dd>
-        <dt>Last activity</dt>
-        <dd>{agent ? stampLabel(agent.updatedAt) : ""}</dd>
-        {#if config.identity.wakeAt}
-          <dt>Wakes</dt>
-          <dd>{stampLabel(config.identity.wakeAt)}</dd>
-        {/if}
-      </dl>
-      <ul class="files">
-        {#if config.runs.threadFile}{@render file(config.runs.threadFile)}{:else}<li class="t-caption meta">The fixture host keeps its threads in memory, with no thread file.</li>{/if}
-        {@render file({ label: "Chat server data", path: config.runs.dataDir, exists: true, size: null, modifiedAt: null, note: "Thread kinds, DMs, read marks, channels, duties and check-ins." })}
-      </ul>
-      <section class="block" aria-label="System text">
-        <h3 class="t-caption heading">System text its model runs with</h3>
-        {#if config.identity.system.text}<pre class="preview t-mono">{config.identity.system.text}</pre>{/if}
-        <span class="t-caption meta">{config.identity.system.source}</span>
-      </section>
+    {:else if (section === "brief" || section === "for") && tabProps}
+      <AgentBriefTab {...tabProps} />
+    {:else if section === "threads" && tabProps}
+      <AgentThreadsTab {...tabProps} />
     {:else if section === "board"}
       {#if config.board}
         {@const board = config.board}
@@ -433,68 +163,12 @@
           {#snippet action()}{#if agent && !agent.archived}<Button size="sm" icon="chat" onclick={() => onmessage(agent)}>Message {agent.name}</Button>{/if}{/snippet}
         </EmptyState>
       {/if}
-    {:else if section === "memory"}
-      {#if folder}
-        {#if !ownFolder}{@render belongs(folder)}{/if}
-        {#if memoryFolder.value}
-          <AgentMemory folder={memoryFolder.value} name={folderName} readonly={!ownFolder} onsaved={setFolder} />
-        {:else if memoryFolder.error}
-          <EmptyState icon="warning" title="The memory could not load" description={memoryFolder.error} size="sm">
-            {#snippet action()}<Button size="sm" icon="refresh" onclick={() => memoryFolder.refresh()}>Retry</Button>{/snippet}
-          </EmptyState>
-        {:else}
-          <div class="loading"><LoadingText text="Reading its memory…" /></div>
-        {/if}
-      {:else}
-        <section class="block callout" data-memory="none">
-          <h3 class="t-label-sm">No memory of its own</h3>
-          <p class="t-body-sm">{config.memory.note}</p>
-        </section>
-      {/if}
-      {#if config.memory.related.length}
-        <section class="block" aria-label="Prime's global store">
-          <h3 class="t-caption heading">Prime's global store</h3>
-          {#if folder && config.memory.note}<p class="t-caption note">{config.memory.note}</p>{/if}
-          <ul class="files">{#each config.memory.related as item (item.path)}{@render file(item)}{/each}</ul>
-        </section>
-      {/if}
-    {:else if section === "instructions"}
-      <section class="block callout"><p class="t-body-sm">{config.instructions.note}</p></section>
-      {#if config.identity.system.text}
-        <section class="block" aria-label="System text">
-          <h3 class="t-caption heading">System text</h3>
-          <pre class="preview t-mono">{config.identity.system.text}</pre>
-          <span class="t-caption meta">{config.identity.system.source}</span>
-        </section>
-      {/if}
-      <h3 class="t-caption heading">Files that apply to its home directory</h3>
-      <ul class="files">
-        {#each config.instructions.files as item (item.path)}{@render file(item)}{:else}<li class="t-caption meta">No AGENTS.md or CLAUDE.md in its home directory or above it.</li>{/each}
-      </ul>
-    {:else if section === "jobs"}
-      {#if config.swarm.parent}
-        <section class="block">
-          <h3 class="t-caption heading">Coordinator</h3>
-          <a href={hrefFor("agents", [config.swarm.parent.id])}>{config.swarm.parent.name}</a>
-        </section>
-      {/if}
-      <AgentJobs jobs={config.swarm.jobs} onchanged={load} />
-      <section class="block" aria-label="Duties">
-        <h3 class="t-caption heading">Duties</h3>
-        {#if dutyChat}
-          {#if dutyRows.value}
-            <DutyList chatId={dutyChat} duties={dutyRows.value.duties} onchange={next => dutyRows.set({ duties: next })} now={Date.now()} />
-          {:else}
-            <LoadingText text="Loading duties…" />
-          {/if}
-        {:else}
-          <p class="t-caption meta">Duties belong to its chat.</p>
-        {/if}
-        {#if config.swarm.checkIn}
-          <span class="t-caption meta">Check-in {everyLabel(config.swarm.checkIn.everyMs)}{config.swarm.checkIn.paused ? ", paused" : config.swarm.checkIn.nextAt ? `, next ${stampLabel(config.swarm.checkIn.nextAt)}` : ""}</span>
-        {/if}
-        {#if config.swarm.dutiesFile}<ul class="files">{@render file(config.swarm.dutiesFile)}</ul>{/if}
-      </section>
+    {:else if section === "knowledge" && tabProps}
+      <AgentKnowledgeTab {...tabProps} />
+    {:else if section === "duties" && tabProps}
+      <AgentDutiesTab {...tabProps} />
+    {:else if section === "prompt" && tabProps}
+      <AgentPromptTab {...tabProps} />
     {/if}
   </div>
 </div>
@@ -534,8 +208,8 @@
     color: var(--text-danger);
   }
   .line a,
-  .facts a,
-  .block a {
+  .body :global(.facts a),
+  .body :global(.block a) {
     color: var(--text-standard);
     text-decoration: underline;
     text-decoration-color: var(--border-standard);
@@ -570,62 +244,62 @@
     gap: var(--space-4);
     padding: var(--space-6) max(var(--space-6), calc((100% - 768px) / 2)) var(--space-8);
   }
-  .loading {
+  .body :global(.loading) {
     padding: var(--space-4) 0;
     color: var(--text-metadata);
   }
-  .block {
+  .body :global(.block) {
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
     margin: 0;
   }
-  .callout {
+  .body :global(.callout) {
     padding: var(--space-3) var(--space-4);
     border-radius: var(--radius-row);
     background: var(--surface-inset);
   }
-  .callout p,
-  .callout h3 {
+  .body :global(.callout p),
+  .body :global(.callout h3) {
     margin: 0;
   }
-  .heading {
+  .body :global(.heading) {
     margin: 0;
     color: var(--text-metadata);
   }
-  .purpose {
+  .body :global(.purpose) {
     margin: 0;
     max-height: 240px;
     overflow: auto;
     overflow-wrap: anywhere;
     color: var(--text-standard);
   }
-  .meta {
+  .body :global(.meta) {
     color: var(--text-metadata);
   }
-  .warn {
+  .body :global(.warn) {
     color: var(--text-danger);
   }
-  .project {
+  .body :global(.project) {
     padding: var(--space-3) var(--space-4);
     border: 1px solid var(--border-standard);
     border-radius: var(--radius-container);
   }
-  .project[data-project="no"] {
+  .body :global(.project[data-project="no"]) {
     border-color: var(--text-danger);
   }
-  .project-head {
+  .body :global(.project-head) {
     display: flex;
     align-items: center;
     gap: var(--space-2);
   }
-  .project .path code {
+  .body :global(.project .path code) {
     color: var(--text-standard);
   }
-  .project .warn {
+  .body :global(.project .warn) {
     margin: 0;
   }
-  .move {
+  .body :global(.move) {
     display: flex;
     flex-direction: column;
     align-items: stretch;
@@ -633,45 +307,45 @@
     gap: var(--space-2);
     padding-top: var(--space-2);
   }
-  .move :global([data-testid="project-picker"]) {
+  .body :global(.move [data-testid="project-picker"]) {
     align-items: flex-start;
   }
-  .move-actions {
+  .body :global(.move-actions) {
     display: flex;
     justify-content: flex-start;
     gap: var(--space-2);
   }
-  .move .meta {
+  .body :global(.move .meta) {
     margin: 0;
   }
-  .belongs {
+  .body :global(.belongs) {
     margin: 0;
     padding: var(--space-2) var(--space-3);
     border-radius: var(--radius-row);
     background: var(--surface-inset);
     color: var(--text-subtle);
   }
-  .belongs a {
+  .body :global(.belongs a) {
     color: var(--text-standard);
     text-decoration: underline;
     text-decoration-color: var(--border-standard);
     text-underline-offset: 2px;
   }
-  .note {
+  .body :global(.note) {
     margin: 0;
     color: var(--text-subtle);
   }
-  .facts {
+  .body :global(.facts) {
     display: grid;
     grid-template-columns: minmax(96px, max-content) minmax(0, 1fr);
     gap: var(--space-2) var(--space-4);
     margin: 0;
     font: var(--text-body-sm);
   }
-  .facts dt {
+  .body :global(.facts dt) {
     color: var(--text-subtle);
   }
-  .facts dd {
+  .body :global(.facts dd) {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
@@ -680,18 +354,18 @@
     margin: 0;
     color: var(--text-standard);
   }
-  .path {
+  .body :global(.path) {
     display: inline-flex;
     align-items: center;
     gap: var(--space-1);
     min-width: 0;
     max-width: 100%;
   }
-  .path code {
+  .body :global(.path code) {
     overflow-wrap: anywhere;
     color: var(--text-standard);
   }
-  .more {
+  .body :global(.more) {
     padding: 0;
     border: 0;
     background: none;
@@ -699,8 +373,8 @@
     text-decoration: underline;
     cursor: pointer;
   }
-  .files,
-  .list {
+  .body :global(.files),
+  .body :global(.list) {
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
@@ -708,7 +382,7 @@
     padding: 0;
     list-style: none;
   }
-  .file {
+  .body :global(.file) {
     display: flex;
     flex-direction: column;
     gap: var(--space-1);
@@ -716,13 +390,13 @@
     border-radius: var(--radius-row);
     background: var(--surface-inset);
   }
-  .file-head {
+  .body :global(.file-head) {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     gap: var(--space-2);
   }
-  .preview {
+  .body :global(.preview) {
     margin: 0;
     max-height: 160px;
     overflow: auto;
@@ -733,39 +407,39 @@
     overflow-wrap: anywhere;
     color: var(--text-subtle);
   }
-  .list li {
+  .body :global(.list li) {
     display: flex;
     align-items: center;
     gap: var(--space-2);
     min-width: 0;
     font: var(--text-body-sm);
   }
-  .grow {
+  .body :global(.grow) {
     display: flex;
     flex-direction: column;
     flex: 1;
     min-width: 0;
     overflow-wrap: anywhere;
   }
-  .id {
+  .body :global(.id) {
     flex: none;
     color: var(--text-subtle);
   }
-  .row-between {
+  .body :global(.row-between) {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: var(--space-2);
   }
-  .row-between h3 {
+  .body :global(.row-between h3) {
     margin: 0;
   }
-  .chips {
+  .body :global(.chips) {
     display: flex;
     flex-wrap: wrap;
     gap: var(--space-1);
   }
-  .comm {
+  .body :global(.comm) {
     display: inline-flex;
     align-items: center;
     gap: var(--space-1);

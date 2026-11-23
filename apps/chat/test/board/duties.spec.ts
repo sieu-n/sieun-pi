@@ -114,7 +114,7 @@ test("Add duty sends the owner's words and schedule to the agent's DM", async ({
 });
 
 test("the agent page's Duties section runs, pauses and edits the same list", async ({ page }) => {
-  await page.goto(`/#/agents/${HARNESS_AGENT}?section=jobs`);
+  await page.goto(`/#/agents/${HARNESS_AGENT}?section=duties`);
   const duties = page.getByRole("region", { name: "Duties" });
   await expect(duties.getByRole("button", { name: "Run Relay uptime now" })).toBeVisible();
   await duties.getByRole("switch", { name: "Relay uptime on" }).click();

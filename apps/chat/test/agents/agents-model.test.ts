@@ -61,19 +61,22 @@ test("models are keyed provider/id with family labels and their levels", () => {
   assert.deepEqual(levelsFor(typed, "x/y"), []);
 });
 
-test("#/agents/<id> names the agent or job whose page is open, and old section ids move to Work and Jobs", () => {
+test("#/agents/<id> names the agent or job whose page is open, and old section ids move to Brief, Knowledge and Threads", () => {
   assert.equal(agentFromRoute([]), null);
   assert.equal(agentFromRoute(["ag_vent"]), "ag_vent");
   assert.equal(agentFromRoute(["t1:4"]), "t1:4");
-  assert.equal(sectionFromParams({ section: "memory" }), "memory");
-  assert.equal(sectionFromParams({ section: "jobs" }), "jobs");
+  assert.equal(sectionFromParams({ section: "knowledge" }), "knowledge");
+  assert.equal(sectionFromParams({ section: "duties" }), "duties");
   assert.equal(sectionFromParams({ section: "for" }), "for");
-  assert.equal(sectionFromParams({ section: "nope" }), "overview");
-  assert.equal(sectionFromParams({}), "overview");
-  assert.equal(sectionFromParams({ section: "runs" }), "work");
-  assert.equal(sectionFromParams({ section: "swarm" }), "jobs");
-  assert.equal(renamedSection({ section: "swarm" }), "jobs");
-  assert.equal(renamedSection({ section: "work" }), null);
+  assert.equal(sectionFromParams({ section: "nope" }), "brief");
+  assert.equal(sectionFromParams({}), "brief");
+  assert.equal(sectionFromParams({ section: "memory" }), "knowledge");
+  assert.equal(sectionFromParams({ section: "instructions" }), "knowledge");
+  assert.equal(sectionFromParams({ section: "overview" }), "brief");
+  assert.equal(sectionFromParams({ section: "runs" }), "threads");
+  assert.equal(sectionFromParams({ section: "jobs" }), "threads");
+  assert.equal(renamedSection({ section: "swarm" }), "threads");
+  assert.equal(renamedSection({ section: "threads" }), null);
   assert.equal(renamedSection({}), null);
 });
 

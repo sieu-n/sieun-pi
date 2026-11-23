@@ -53,7 +53,7 @@ test("a new agent runs in the project picked in the dialog, and its panel moves 
   }
 });
 
-test("an agent in the home folder is flagged as no project in its Overview", async ({ page, request }) => {
+test("an agent in the home folder is flagged as no project in its Brief", async ({ page, request }) => {
   const home = ((await (await request.get("/api/projects")).json()) as Projects).home;
   let found: string | null = null;
   for (const agent of (await listAgents(request)).filter((a) => a.kind === "chat")) {
