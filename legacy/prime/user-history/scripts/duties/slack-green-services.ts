@@ -17,16 +17,18 @@ import { CONNECTION_FAILURE, RETRY_PAUSE_MS, retryUnreached, retryingFetch } fro
  * the us-metal02 prebuilt build had no NEXT_PUBLIC_SUPABASE_* values, and no duty saw it until the owner sent a screenshot (msg mvux3bjx). He then
  * asked for one duty every 3 hours that checks every service works, Vercel and Railway included, and that his own Slack account shows green
  * (msg mvux7mnh).
- * pages_failing, the headline, opens five pages in a headful Chrome on this box through the aside-browser box runner (c177, c205) and counts a
- * page as failing when its document answers non-200, it throws an uncaught error (pageerror), or it shows an error screen. /dashboard is read
- * signed in as sg-qa-services-duty@slack.green, whose password this precheck sets to a new random value each run through Supabase's admin API.
+ * new_user_checks_failing, the headline, asks whether slack.green works for a new user. It counts each of five pages that fails in a
+ * headful Chrome on this box through the aside-browser box runner (c177, c205), plus 1 while the connect check is red. A page fails when its
+ * document answers non-200, it throws an uncaught error (pageerror), or it shows an error screen. /dashboard is read signed in as
+ * sg-qa-services-duty@slack.green, whose password this precheck sets to a new random value each run through Supabase's admin API. The connect
+ * check is red while its newest run on main failed or a connect-check issue is open (readConnectCheck), so a red connect check of the
+ * add-account path starts a fix job on the next run (owner rule c231). The two counts share one number because the owner checks both the same
+ * way, by signing up and connecting; the page_failing and connect_check_red slices say which part is red.
  * deploy_problems folds in the old Slack green deploys duty (d4): main commits not live on the Railway worker after 20 min, failed main CI
  * runs of 24 h, a deploy source that did not read, and the worker crashed or silent. Nothing here redeploys the worker. Main commits that Vercel prod lacks are flagged and not
  * counted, because since 10-30 slack.green builds on us-metal02 (c200) and each prod deploy waits for the release owner (c154). owner_slack_green reads the owner's presence with Slack's users.getPresence
  * through the session tokens Slack Green stores for his ppwc workspace, read only. api_routes_failing calls the add-on's and the CLI's routes
  * with a bogus login and expects their JSON 401, and counts each /api/ route that answered 500 or more during the page walk.
- * connect_check_red reads 1 while the newest Connect check run on main failed or a connect-check issue is open (readConnectCheck), so a red
- * connect check of the add-account path starts a fix job on the next run.
  */
 
 /** SLACK_GREEN_BASE points the walk at one deployment's URL, such as a candidate before a promote (c205). */
@@ -127,8 +129,8 @@ export function servicesOutput(read: Readings, now: number): PrecheckOutput {
   // When failed main runs are all deploy_problems counts, it is a day's window that ages out, so it names that window: without it, d9 and
   // duty-fleet read the 4 failed runs of 11-03 (a vercel-render-check timeout fixed by 97dd3a2 at 14:52Z) as a stuck duty with no clear time.
   const onlyChecks = deployProblems > 0 && deployProblems === checksFailed;
-  return { metrics: { pages_failing: pagesFailing, deploy_problems: deployProblems, owner_slack_green: green, api_routes_failing: routesFailing,
-    connect_check_red: connectRed, source_errors: read.errors.length }, flagged, ...failedAt === undefined ? {} : { lastEventAt: { deploy_problems: failedAt } },
+  return { metrics: { new_user_checks_failing: pagesFailing + connectRed, deploy_problems: deployProblems, owner_slack_green: green,
+    api_routes_failing: routesFailing, source_errors: read.errors.length }, flagged, ...failedAt === undefined ? {} : { lastEventAt: { deploy_problems: failedAt } },
     ...onlyChecks && failedAt !== undefined ? { windowMs: { deploy_problems: CHECKS_WINDOW_MS } } : {} };
 }
 

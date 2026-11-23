@@ -16,10 +16,10 @@ test("a page that answers 200 and throws the missing Supabase env error in the b
 
 test("the 10-30 outage reads every page failing while the worker and the owner's Slack read fine", () => {
   const pages = PAGES.map(spec => page(spec.key, { pageErrors: ["Missing Supabase environment variables. Please check your .env file."] }));
-  const output = servicesOutput({ pages, routes: [], errors: [], presence: { presence: "active", online: true, connectionCount: 1 },
+  const output = servicesOutput({ pages, routes: [], errors: [], connectCheck: { issues: [] }, presence: { presence: "active", online: true, connectionCount: 1 },
     worker: { status: "SUCCESS", deployAt: NOW - 3_600_000, lastActiveAt: NOW - 30_000, activeLines: 200 },
     deploys: { metrics: { commits_not_live: 3, main_checks_failed_24h: 0, railway_not_live: 0, vercel_not_live: 3, source_errors: 0 }, flagged: [] } }, NOW);
-  assert.equal(output.metrics.pages_failing, PAGES.length);
+  assert.equal(output.metrics.new_user_checks_failing, PAGES.length);
   assert.equal(output.metrics.deploy_problems, 0);
   assert.equal(output.metrics.owner_slack_green, 1);
 });
@@ -67,7 +67,7 @@ test("the worker read asks for the CLI's full deployment list, so skipped rows n
 });
 
 // 11-21: a customer's Slack connect failed on prod after add-on 1.6 shipped; the connect check now runs after every main deploy.
-test("connect_check_red reads the newest connect check run that ran, not an hourly run that skipped, and any open connect-check issue", async () => {
+test("the connect check adds 1 to new_user_checks_failing from the newest run that ran, not an hourly run that skipped, or any open connect-check issue", async () => {
   const runs = [
     { databaseId: 3, conclusion: "success", event: "schedule", url: "https://x/3", createdAt: "2026-11-21T13:17:00Z" },
     { databaseId: 2, conclusion: "failure", event: "workflow_run", url: "https://x/2", createdAt: "2026-11-21T12:25:00Z" },
@@ -79,8 +79,10 @@ test("connect_check_red reads the newest connect check run that ran, not an hour
   assert.equal(check.run?.id, 2);
   assert.equal(check.issues[0]?.latest, "| chrome-bound | first | FAIL |");
   const base = { pages: PAGES.map(spec => page(spec.key)), routes: [], errors: [] };
-  assert.equal(servicesOutput({ ...base, connectCheck: check }, NOW).metrics.connect_check_red, 1);
+  assert.equal(servicesOutput({ ...base, connectCheck: check }, NOW).metrics.new_user_checks_failing, 1);
   const green = servicesOutput({ ...base, connectCheck: { run: { ...check.run!, conclusion: "success" }, issues: [] } }, NOW);
-  assert.equal(green.metrics.connect_check_red, 0);
-  assert.equal(servicesOutput(base, NOW).metrics.connect_check_red, 1);
+  assert.equal(green.metrics.new_user_checks_failing, 0);
+  assert.equal(servicesOutput(base, NOW).metrics.new_user_checks_failing, 1);
+  const brokenPage = [page("home", { status: 500 }), ...PAGES.slice(1).map(spec => page(spec.key))];
+  assert.equal(servicesOutput({ ...base, pages: brokenPage, connectCheck: check }, NOW).metrics.new_user_checks_failing, 2);
 });
