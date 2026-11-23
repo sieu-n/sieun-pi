@@ -19,6 +19,8 @@
  *    last one, with their images.
  * 6. The owner or an agent (set_room_member) adds and removes members; each change is a system line in the room's timeline
  *    (`memberLog`), and a removed member keeps its comm thread for the room, which a later add reuses.
+ * 7. An archived agent stays a member, as Slack keeps a deactivated one, but no post, mention or thread reply wakes it, and a delivery
+ *    still on its way stops. Its unarchive brings it back with the same memberships.
  */
 import { randomUUID } from "node:crypto";
 import type {
@@ -203,13 +205,19 @@ export class GroupRooms {
     };
   }
 
-  /** The owner first, then each member row; a member no agent holds any more shows as `threads.principal` names it. */
+  /**
+   * The owner first, then each member row; a member no agent holds any more shows as `threads.principal` names it, and an archived agent
+   * stays a member marked `archived`, as Slack lists a deactivated member.
+   */
   members(row: GroupRoom): Member[] {
     return [
       { principal: OWNER, role: "owner", wakeOn: "all" },
       ...row.members.map((m): Member => {
         const agent = this.deps.threads.agent(m.agent);
-        return { principal: this.deps.threads.principal(m.agent), role: "member", wakeOn: m.wakeOn, ...(agent ? { status: agent.status } : {}) };
+        return {
+          principal: this.deps.threads.principal(m.agent), role: "member", wakeOn: m.wakeOn, ...(agent ? { status: agent.status } : {}),
+          ...(this.deps.agents.record(m.agent)?.archived ? { archived: true as const } : {}),
+        };
       }),
     ];
   }
@@ -514,15 +522,16 @@ export class GroupRooms {
 
   /**
    * Who a post wakes: every `all` member, every `none` member it mentions or whose thread it replies in, and every registered agent it
-   * mentions that is not a member, minus its author.
+   * mentions that is not a member, minus its author. An archived agent is never woken; it keeps its membership for an unarchive.
    */
   private wakes(row: GroupRoom, draft: Draft): AgentId[] {
     const root = draft.threadRoot;
     const inThread = root === undefined ? [] : this.store.postsOf(row.id).filter(p => p.id === root || p.threadRoot === root).map(p => p.author);
     const hears = (m: RoomMember) => m.wakeOn === "all" || draft.mentions?.includes(m.agent) === true || inThread.includes(m.agent);
-    const woken = row.members.filter(m => m.agent !== draft.author && hears(m) && this.deps.agents.record(m.agent) !== undefined).map(m => m.agent);
+    const active = (agent: string) => { const record = this.deps.agents.record(agent); return record !== undefined && !record.archived; };
+    const woken = row.members.filter(m => m.agent !== draft.author && hears(m) && active(m.agent)).map(m => m.agent);
     const outside = (draft.mentions ?? []).filter((agent): agent is AgentId =>
-      agent !== "owner" && agent !== draft.author && !row.members.some(m => m.agent === agent) && this.deps.agents.record(agent) !== undefined);
+      agent !== "owner" && agent !== draft.author && !row.members.some(m => m.agent === agent) && active(agent));
     return [...woken, ...outside];
   }
 
@@ -567,7 +576,8 @@ export class GroupRooms {
       }
     };
     const record = this.deps.agents.record(target);
-    const refused = refusal(row);
+    // A delivery left sending when its agent was archived, such as a retry or one a restart picks up, stops too.
+    const refused = refusal(row) ?? (record?.archived ? `An archived agent takes no posts; unarchive ${record.name} to send it posts.` : undefined);
     if (!record || refused) {
       set(d => ({ ...d, state: record ? "stopped" : "failed", at: Date.now(), error: refused ?? `No agent ${target}.` }));
       this.emit(row, members);

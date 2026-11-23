@@ -45,6 +45,7 @@
   import { later as laterStore } from "$lib/later.svelte";
   import { AuthorBoards } from "./author-boards.svelte";
   import { avatarOf, mentionContext, placeText, type Outgoing } from "./present";
+  import { unarchiveAgent } from "$pages/agents/agent-actions.svelte";
 
   type Props = { id: string; around?: string };
   let { id, around }: Props = $props();
@@ -73,6 +74,8 @@
   const closedAt = $derived(header?.closedAt ?? null);
   /** An archived channel opens read-only, with Unarchive in its banner, as in Slack. */
   const archived = $derived(isChannel && summary?.archived === true);
+  /** An archived agent's DM opens read-only too: the server refuses a post to it until Unarchive brings the agent back. */
+  const agentArchived = $derived(isDm && summary?.archived === true);
   /** A DM's agent works in its work thread, which `Open work thread` shows as today's transcript. */
   const workThread = $derived(header?.workThread ?? null);
   const name = $derived(summary?.name ?? "");
@@ -685,6 +688,12 @@
       <Icon name="archive" size={16} />
       <span>You are viewing <strong>#{name}</strong>, an archived channel. Agents get no posts here until you unarchive it.</span>
       <Button variant="outline" size="sm" onclick={unarchive} data-testid="unarchive">Unarchive</Button>
+    </div>
+  {:else if agentArchived && agent}
+    <div class="closed" role="status" data-testid="archived-agent-banner">
+      <Icon name="archive" size={16} />
+      <span><strong>{name}</strong> is archived and gets no messages, posts or mentions until you unarchive it.</span>
+      <Button variant="outline" size="sm" onclick={() => void unarchiveAgent({ id: agent.id, name }).then(() => store.refreshHeader())}>Unarchive</Button>
     </div>
   {:else}
   <Composer

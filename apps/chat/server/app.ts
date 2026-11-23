@@ -1070,14 +1070,14 @@ export class App {
 
   /**
    * Each @mention in a thread send or a DM post goes to the mentioned agent's work thread as an agent message from the owner, once the send
-   * reached pi-host. Only a registered agent is a target (`Threads.registered`): a mention of a job, a bare thread or a name only a job has
-   * is not delivered.
+   * reached pi-host. Only a registered agent is a target (`Threads.registered`): a mention of a job, a bare thread, a name only a job has
+   * or an archived agent is not delivered.
    */
   private async deliverMentions(row: Pick<OutboxRow, "requestId" | "conversation" | "text" | "mentions">): Promise<Delivery[]> {
     const deliveries: Delivery[] = [];
     const targets = new Map(row.mentions.flatMap(m => {
       const record = this.threads.registered(m);
-      return record && record.workThread !== row.conversation && record.room !== row.conversation ? [[record.id, record] as const] : [];
+      return record && !record.archived && record.workThread !== row.conversation && record.room !== row.conversation ? [[record.id, record] as const] : [];
     }));
     for (const [target, record] of targets) {
       const name = this.threads.principal(target).name;

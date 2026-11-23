@@ -61,6 +61,7 @@
 
   function detailOf(m: Member): string {
     if (isOwner(m)) return "";
+    if (m.archived) return "Archived, gets no posts";
     const status = agents.byId(m.principal.id)?.status ?? m.status;
     return [status ? statusText[status] : "", wakeOf(m) === "none" ? "Mentions only" : ""].filter(Boolean).join(" · ");
   }
@@ -164,7 +165,7 @@
         {@const index = stops.indexOf(m.principal.id)}
         {@const detail = detailOf(m)}
         {@const mentionsOnly = !owner && wakeOf(m) === "none"}
-        <li class="row" class:self={owner} data-member={m.principal.id}>
+        <li class="row" class:self={owner} class:archived={m.archived} data-member={m.principal.id}>
           {#if owner}
             <div class="main">
               <span class="face" aria-hidden="true"><Avatar name={m.principal.name} kind={avatarKind(m.principal)} seed={m.principal.id} size={28} /></span>
@@ -302,6 +303,9 @@
   }
   .you {
     color: var(--text-metadata);
+  }
+  .archived :is(.face, .name) {
+    opacity: 0.5;
   }
   .mute,
   .remove {

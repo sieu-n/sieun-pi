@@ -422,6 +422,7 @@ export class Rooms {
   post(record: AgentRecord, request: SendRequest, forward?: ForwardedPost): SendResult {
     const existing = this.store.byRequestId(record.room, request.requestId);
     if (existing) return existing.delivery?.state === "failed" ? this.retry(record, existing.requestId) : this.result(existing);
+    if (record.archived) throw new Error(`An archived agent takes no messages; unarchive ${record.name} to message it.`);
     const root = request.threadRoot ? this.store.postsOf(record.room).find(p => p.id === request.threadRoot && !p.threadRoot) : undefined;
     if (request.threadRoot && !root) throw new Error(`No thread ${request.threadRoot} in ${record.room}.`);
     const images = (request.images ?? []).map(image => this.deps.uploaded(image));
@@ -511,6 +512,13 @@ export class Rooms {
     const set = (patch: (d: NonNullable<RoomPost["delivery"]>) => NonNullable<RoomPost["delivery"]>) => {
       for (const member of members) if (member.delivery) this.store.set(member, { delivery: patch(member.delivery) });
     };
+    // A post left sending when its agent was archived, such as one a restart picks up, goes no further.
+    if (record.archived) {
+      set(d => ({ ...d, state: "failed", at: Date.now(), error: `An archived agent takes no messages; unarchive ${record.name} to message it.` }));
+      this.inflight.delete(key);
+      this.changed(record, members);
+      return;
+    }
     const images = members.flatMap(p => p.images).map(ref => this.deps.readUpload(ref)).filter((image): image is { data: string; mimeType: string } => !!image);
     try {
       const thread = await this.commThread(record);

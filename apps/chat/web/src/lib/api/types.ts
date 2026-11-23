@@ -465,7 +465,8 @@ export interface TimelinePage {
  */
 export interface OpenedPage { page: TimelinePage; header: ConversationHeader }
 
-export interface Member { principal: Principal; role: "owner" | "member"; wakeOn: "all" | "none"; status?: RunStatus }
+/** A room member; `archived` marks an archived agent, which stays a member but gets no posts until it is unarchived. */
+export interface Member { principal: Principal; role: "owner" | "member"; wakeOn: "all" | "none"; status?: RunStatus; archived?: true }
 
 export interface ConversationHeader {
   summary: ConversationSummary;
