@@ -83,6 +83,44 @@ test("a stall in untracked work names the last host.log line written in it", asy
   }
 });
 
+test("a stall right after another names no last log line when the only line written was the monitor's own", async () => {
+  const lines: string[] = [];
+  // PiHost.log notes every line it writes, the monitor's own too.
+  const stalls = new LoopStalls({ log: line => { noteLine(line); lines.push(line); } });
+  try {
+    await tick();
+    block(600);
+    await tick();
+    block(600);
+    await tick();
+    const own = lines.filter(text => text.startsWith("loop stall "));
+    assert.equal(own.length, 2, JSON.stringify(lines));
+    assert.match(own[1]!, /ran: no tracked work \| loop thread on CPU \d+ ms/);
+    assert.equal(stalls.counts.days[new Date().toISOString().slice(0, 10)]?.byCause.untracked?.count, 2);
+  } finally {
+    stalls.stop();
+  }
+});
+
+test("a stall says how long the loop thread ran on a CPU in it, so work and GC read apart from a thread that waited", async () => {
+  const lines: string[] = [];
+  const stalls = new LoopStalls({ log: line => lines.push(line) });
+  try {
+    await tick();
+    block(600);
+    await tick();
+    // Atomics.wait holds the loop with the thread off CPU, as a thread that waits for a core or on a blocking call does.
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 600);
+    await tick();
+    const cpu = lines.map(line => Number(/loop thread on CPU (\d+) ms/.exec(line)?.[1]));
+    assert.equal(cpu.length, 2, JSON.stringify(lines));
+    assert.ok(cpu[0]! >= 500, `a busy stall ran ${cpu[0]} ms on CPU: ${lines[0]}`);
+    assert.ok(cpu[1]! < 200, `a waiting stall ran ${cpu[1]} ms on CPU: ${lines[1]}`);
+  } finally {
+    stalls.stop();
+  }
+});
+
 test("a loop held under 500 ms writes no line", async () => {
   const lines: string[] = [];
   const stalls = new LoopStalls({ log: line => lines.push(line) });

@@ -10,6 +10,7 @@
  */
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { PerformanceObserver } from "node:perf_hooks";
 
 /** One piece of tracked work: a socket command, a kernel host request or a scheduler reopen. `rows` is the answer's longest list. */
 interface Work {
@@ -49,8 +50,12 @@ export async function track<T>(type: string, thread: string | undefined, run: ()
   }
 }
 
+/** The start of the monitor's own lines, which `noteLine` skips: on 11-23 each stall of a burst named the one before as its last log line. */
+const OWN_LINE = "loop stall ";
+
 /** Notes a host.log line, so a stall names the last line written in it, such as a scheduler reopen's. */
 export function noteLine(text: string): void {
+  if (text.startsWith(OWN_LINE)) return;
   lastLine = { at: performance.now(), text };
 }
 
@@ -109,40 +114,57 @@ export class LoopStalls {
   private readonly threshold: number;
   private readonly interval: number;
   private last = performance.now();
+  /** The loop thread's CPU time at the last tick, so a stall says how much of it the thread ran and how much it waited for a core. */
+  private cpu = process.threadCpuUsage();
+  /** GC pauses since a little before the last stall, from a `gc` observer, so a stall says how much of it was GC. */
+  private gc: { start: number; ms: number }[] = [];
+  private readonly gcObserver = new PerformanceObserver(list => { for (const entry of list.getEntries()) this.gc.push({ start: entry.startTime, ms: entry.duration }); });
   private readonly timer: NodeJS.Timeout;
 
   constructor(private readonly options: LoopStallOptions) {
     this.threshold = options.thresholdMs ?? 500;
     this.interval = options.intervalMs ?? 50;
     this.counts = options.file ? readCounts(options.file) : { days: {} };
+    this.gcObserver.observe({ entryTypes: ["gc"] });
     this.timer = setInterval(() => this.tick(), this.interval);
     this.timer.unref();
   }
 
   private tick(): void {
     const now = performance.now();
+    const cpu = process.threadCpuUsage();
     const from = this.last;
     const gap = now - from - this.interval;
+    const cpuMs = (cpu.user + cpu.system - this.cpu.user - this.cpu.system) / 1000;
     this.last = now;
-    if (gap > this.threshold) this.report(from, now, gap);
+    this.cpu = cpu;
+    if (gap > this.threshold) {
+      // The gc observer hears of a pause in the gap only on a later turn, so the line is written one turn on, with the work as it is now.
+      const all = [...ended, ...inFlight];
+      setImmediate(() => this.report(from, now, gap, cpuMs, all));
+    } else {
+      this.gc = this.gc.filter(pause => pause.start >= from);
+    }
     ended = [];
   }
 
-  private report(from: number, to: number, gap: number): void {
-    const all = [...ended, ...inFlight];
+  private report(from: number, to: number, gap: number, cpuMs: number, all: readonly Work[]): void {
     // Work that started or ended inside the gap ran in it; work in flight across the whole gap may only have been waiting.
     const ran = all.filter(work => work.start >= from || (work.end !== undefined && work.end <= to))
       .sort((a, b) => (Math.min(b.end ?? to, to) - Math.max(b.start, from)) - (Math.min(a.end ?? to, to) - Math.max(a.start, from)));
     const waiting = all.filter(work => !ran.includes(work));
     const startedAt = new Date(Date.now() - (to - from)).toISOString().slice(11, 23);
-    const parts = [`loop stall ${ms(gap)} ms from ${startedAt}Z`];
+    const parts = [`${OWN_LINE}${ms(gap)} ms from ${startedAt}Z`];
     parts.push(ran.length ? `ran: ${ran.map(work => describe(work, from, to)).join("; ")}` : "ran: no tracked work");
     if (waiting.length) {
       const types = new Map<string, number>();
       for (const work of waiting) types.set(work.type, (types.get(work.type) ?? 0) + 1);
       parts.push(`in flight across it: ${waiting.length} (${[...types].map(([type, n]) => `${type} x${n}`).join(", ")})`);
     }
+    // On CPU for most of the gap: work or GC held the loop. Off CPU for most of it: the thread waited for a core or on a blocking call.
+    const gc = this.gc.filter(pause => pause.start >= from && pause.start < to);
     if (lastLine && lastLine.at >= from - this.interval) parts.push(`last log line: ${JSON.stringify(lastLine.text.slice(0, 200))}`);
+    parts.push(`loop thread on CPU ${ms(cpuMs)} ms${gc.length ? `, gc ${ms(gc.reduce((sum, pause) => sum + pause.ms, 0))} ms in ${gc.length} pauses` : ""}`);
     this.options.log(parts.join(" | "));
     this.count(ran[0]?.type ?? (lastLine && lastLine.at >= from - this.interval ? "untracked, see last log line" : "untracked"), gap);
   }
@@ -163,12 +185,13 @@ export class LoopStalls {
       writeFileSync(temp, `${JSON.stringify(this.counts, null, 1)}\n`);
       renameSync(temp, this.options.file);
     } catch (error) {
-      this.options.log(`loop stall counts: ${error instanceof Error ? error.message : String(error)}`);
+      this.options.log(`${OWN_LINE}counts: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
   stop(): void {
     clearInterval(this.timer);
+    this.gcObserver.disconnect();
   }
 }
 
