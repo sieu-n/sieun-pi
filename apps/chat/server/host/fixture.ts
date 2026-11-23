@@ -41,6 +41,9 @@ type Sink = { conversation?: number; sink: (event: DurableEvent) => void };
 /** An agent message's data as pi-host stores it (packages/pi-host durable/commands.ts): `from` and `via` only. */
 const agentMessageData = (data: { from: string; via?: string }): { from: string; via?: string } => ({ from: data.from, ...(data.via !== undefined ? { via: data.via } : {}) });
 
+const revOf = (value: unknown): number =>
+  typeof value === "object" && value !== null && typeof (value as { rev?: unknown }).rev === "number" ? (value as { rev: number }).rev : -Infinity;
+
 const USAGE = (output: number) => ({ input: 40, output, cacheRead: 12_000, cacheWrite: 800, cost: { input: 0.00016, output: output * 0.00002, cacheRead: 0.0024, cacheWrite: 0.0064, total: 0.00896 + output * 0.00002 } });
 
 export class FixtureHost implements Host {
@@ -365,9 +368,11 @@ export class FixtureHost implements Host {
    * With APPS_CHAT_FIXTURE_PUT_MS a put waits that long, as a put behind a busy pi-host does, and with APPS_CHAT_FIXTURE_DOCS each put also
    * lands as a line in that file, which every fixture server on it reads its docs from, so the hand-over rig sees one pi-host across processes.
    */
-  async docPut(id: string, name: string, value: unknown): Promise<void> {
+  async docPut(id: string, name: string, value: unknown, opts: { newerOnly?: boolean } = {}): Promise<void> {
     const hold = Number(process.env.APPS_CHAT_FIXTURE_PUT_MS);
     if (hold > 0) await new Promise(resolve => setTimeout(resolve, hold));
+    // As pi-host's `durable_doc_put` with newerOnly: a held doc with a higher rev stays.
+    if (opts.newerOnly && revOf(await this.docGet(id, name)) > revOf(value)) return;
     const shared = process.env.APPS_CHAT_FIXTURE_DOCS;
     if (shared) appendFileSync(shared, `${JSON.stringify({ at: Date.now(), pid: process.pid, thread: id, name, value })}\n`);
     const thread = this.get(id);

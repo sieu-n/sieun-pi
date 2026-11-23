@@ -107,7 +107,7 @@ export class FakeRelay {
       case "durable_abort": await h.abort(thread, rest.conversation as number | undefined); return {};
       case "durable_wait": return { settled: await h.wait(thread, rest.submission as number) };
       case "durable_doc_get": return { value: await h.docGet(thread, rest.name as string) };
-      case "durable_doc_put": await h.docPut(thread, rest.name as string, rest.value); return {};
+      case "durable_doc_put": await h.docPut(thread, rest.name as string, rest.value, { newerOnly: rest.newerOnly === true }); return {};
       case "durable_set": return { thread: await h.set(thread, rest) };
       case "durable_usage": return { usage: await h.usage(call.args) };
       case "durable_index_read": return h.indexRead((call.args as { cursor?: string }).cursor);

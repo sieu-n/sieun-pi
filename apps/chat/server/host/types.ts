@@ -129,7 +129,11 @@ export interface Host {
   watch(thread: string, opts: { conversation?: number; fromEntry?: number }, sink: (event: DurableEvent) => void): Promise<() => Promise<void>>;
   usage(range: UsageRange): Promise<UsageTotal[]>;
   docGet(thread: string, name: string): Promise<unknown>;
-  docPut(thread: string, name: string, value: unknown): Promise<void>;
+  /**
+   * `newerOnly`: pi-host keeps the doc it holds when that doc's `rev` is above `value.rev`, so a board put that lands late never replaces a
+   * later board (packages/pi-host durable `docPut`). A pi-host from before it writes anyway.
+   */
+  docPut(thread: string, name: string, value: unknown, opts?: { newerOnly?: boolean }): Promise<void>;
   /** `cwd` moves the thread: pi-host runs its next request's tools, prompt and kernels there. */
   set(thread: string, patch: { name?: string; model?: string; thinkingLevel?: string; archived?: boolean; cwd?: string }): Promise<DurableThread>;
   /** True while the host answers; a host over several boxes adds each box's answer. */

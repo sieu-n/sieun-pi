@@ -68,7 +68,6 @@ export function workingJobs(summaries: readonly AgentSummary[], waking: Readonly
 const DEFAULT_CHECK_IN_MS = 120 * 60_000;
 /** Prime's CHECK_IN_RETRY_MS (chats.ts): a check-in whose job did not start tries again this soon, not a whole interval later. */
 const CHECK_IN_RETRY_MS = 5 * 60_000;
-const BOARD_TTL_MS = 15_000;
 /**
  * How long a hand-over's stop waits for a board put at work (`putsSettled`), the same 30 s as its wait for a write in flight (http.ts
  * WRITE_WAIT_MS): the slowest board write on 11-21 took 8.8 s, and on 11-23 the slowest put waited 3.7 s behind pi-host's event loop. Calls
@@ -157,8 +156,14 @@ const readFileSafe = (file: string): string => {
 };
 
 export class Boards {
-  /** Boards read in the last BOARD_TTL_MS; a doc event or an owner op replaces one at once. */
+  /** The boards kept, from pi-host, a doc event, a write, or the last run's file (`at` 0); a doc event or a write replaces one at once. */
   private readonly cache = new Map<string, { board: ChatBoard | null; at: number }>();
+  /**
+   * The chats whose kept board is pi-host's, read or written by this process. This server writes every board (`apply`, `importPrime`) and
+   * pi-host's doc events bring the rest, so such a board is never read from pi-host again, and a write never waits on a read, which queues
+   * behind pi-host's event loop as a put does (59 ms p50 and 379 ms p90 at box load 190 to 220 on 11-22, ~/work/p155-config).
+   */
+  private readonly loaded = new Set<string>();
   /** The one pi-host read in flight per chat, which every caller shares. */
   private readonly reading = new Map<string, Promise<ChatBoard | null>>();
   /**
@@ -211,6 +216,7 @@ export class Boards {
     const before = this.cache.get(chat)?.board ?? null;
     const changed = JSON.stringify(before) !== JSON.stringify(board) || !this.cache.has(chat);
     this.cache.set(chat, { board, at: Date.now() });
+    this.loaded.add(chat);
     if (changed) this.store.saveCache(BOARDS_CACHE, Object.fromEntries([...this.cache].map(([id, entry]) => [id, entry.board])));
     return before;
   }
@@ -250,25 +256,26 @@ export class Boards {
   async board(id: string): Promise<ChatBoard | null> {
     const chat = this.chatId(id);
     if (this.unput.has(chat)) return this.unput.get(chat)!;
-    const cached = this.cache.get(chat);
-    if (cached && Date.now() - cached.at < BOARD_TTL_MS) return cached.board;
+    if (this.loaded.has(chat)) return this.cache.get(chat)?.board ?? null;
     return this.read(chat);
   }
 
   /**
-   * The last board read for a list page, even past its TTL, with a fresh read behind it. A pi-host call waits behind every command queued
-   * there, such as a search that takes seconds, so For you, the board index and the sidebar count wait on pi-host only for a chat never read.
+   * The board kept for a list page, the last run's one with a read behind it until this process read it. A pi-host call waits behind every
+   * command queued there, such as a search that takes seconds, so For you, the board index and the sidebar count wait on pi-host only for a
+   * chat with no board kept at all.
    */
   private async known(chat: string): Promise<ChatBoard | null> {
     if (this.unput.has(chat)) return this.unput.get(chat)!;
     const cached = this.cache.get(chat);
+    if (this.loaded.has(chat)) return cached?.board ?? null;
     if (!cached) return this.read(chat);
-    if (Date.now() - cached.at >= BOARD_TTL_MS) void this.read(chat).catch(error => this.log(`board read for ${chat} failed: ${String(error)}`));
+    void this.read(chat).catch(error => this.log(`board read for ${chat} failed: ${String(error)}`));
     return cached.board;
   }
 
   /**
-   * The last board read of a chat or agent, even past its TTL, with a fresh read behind it (`known`), for a page that shows the board's counts
+   * The board kept of a chat or agent (`known`), for a page that shows the board's counts
    * beside other data. A read of it waits behind every command queued on pi-host's socket: 59 ms at p50 and 379 ms at p90 in a probe at box
    * load 190 to 220 on 11-22 (~/work/p155-config).
    */
@@ -285,14 +292,15 @@ export class Boards {
     return pending;
   }
 
-  /** A failed read keeps the board read before it; a doc event or op that lands while the read runs wins over it. */
+  /** A failed read keeps the board kept before it and leaves the chat unread; a doc event or op that lands while the read runs wins over it. */
   private async fetchBoard(chat: string): Promise<ChatBoard | null> {
     const startedAt = Date.now();
     const result = await this.host.docGet(this.threadOf(chat), BOARD_DOC).then(value => ({ value }), () => null);
     const cached = this.cache.get(chat);
     if (cached && cached.at > startedAt) return cached.board;
     if (this.unput.has(chat)) return this.unput.get(chat)!;
-    const board = result ? (result.value ? parseBoard(result.value) : null) : (cached?.board ?? null);
+    if (!result) return cached?.board ?? null;
+    const board = result.value ? parseBoard(result.value) : null;
     const before = this.remember(chat, board);
     if (cached && JSON.stringify(cached.board) !== JSON.stringify(board)) {
       if (board) this.changed(chat, board, before);
@@ -321,6 +329,8 @@ export class Boards {
     let mark = performance.now();
     const read = await this.board(chat);
     if (split) split.read = performance.now() - mark;
+    // Ops on a board this process never got from pi-host would replace it with the last run's copy or an empty one.
+    if (!this.loaded.has(chat) && !this.unput.has(chat)) throw new Error(`pi-host did not answer the read of ${chat}'s board, so no op was applied; try again.`);
     // The board kept now, which a write that landed during the read already changed.
     const before = this.unput.get(chat) ?? (this.cache.has(chat) ? this.cache.get(chat)!.board : read);
     let board = before ?? emptyBoard(now);
@@ -387,7 +397,8 @@ export class Boards {
       if (!board || this.putsStopped) return;
       const began = performance.now();
       try {
-        await this.host.docPut(this.threadOf(chat), BOARD_DOC, board);
+        // newerOnly: a put of an older board that lands late, such as one a stop left past PUT_WAIT_MS, never replaces a later one.
+        await this.host.docPut(this.threadOf(chat), BOARD_DOC, board, { newerOnly: true });
       } catch (error) {
         failures += 1;
         const wait = retryWait(failures);
@@ -559,7 +570,11 @@ export class Boards {
     if (!this.threads.thread(this.threadOf(chat))) await this.threads.refresh();
     if (!this.threads.thread(this.threadOf(chat))) throw new Error(`No thread ${id}.`);
     const boardFile = join(primeDir, "boards", `${primeId}.json`);
-    const board = existsSync(boardFile) ? parseBoard(JSON.parse(readFileSync(boardFile, "utf8"))) : null;
+    const imported = existsSync(boardFile) ? parseBoard(JSON.parse(readFileSync(boardFile, "utf8"))) : null;
+    const current = imported ? await this.board(chat) : null;
+    if (imported && !this.loaded.has(chat) && !this.unput.has(chat)) throw new Error(`pi-host did not answer the read of ${chat}'s board, so nothing was imported; try again.`);
+    // Its rev goes above the board it replaces, which the put's newerOnly would keep otherwise.
+    const board = imported && { ...imported, rev: Math.max(imported.rev, (current?.rev ?? -1) + 1) };
     if (board) {
       // Through the same journal and put loop as a write, so a put of an older board still waiting never lands over it.
       void this.keep(chat, board);

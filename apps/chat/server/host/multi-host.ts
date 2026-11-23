@@ -180,8 +180,8 @@ export class MultiHost implements Host {
   docGet(thread: string, name: string): Promise<unknown> {
     return this.hostOf(thread).docGet(thread, name);
   }
-  docPut(thread: string, name: string, value: unknown): Promise<void> {
-    return this.hostOf(thread).docPut(thread, name, value);
+  docPut(thread: string, name: string, value: unknown, opts?: { newerOnly?: boolean }): Promise<void> {
+    return this.hostOf(thread).docPut(thread, name, value, opts);
   }
   async set(thread: string, patch: { name?: string; model?: string; thinkingLevel?: string; archived?: boolean; cwd?: string }): Promise<DurableThread> {
     const box = this.boxOf(thread);

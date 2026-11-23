@@ -504,8 +504,8 @@ export class RelayHost implements Host {
   async docGet(thread: string, name: string): Promise<unknown> {
     return ((await this.call("durable_doc_get", { thread, name })) as { value: unknown }).value;
   }
-  async docPut(thread: string, name: string, value: unknown): Promise<void> {
-    await this.call("durable_doc_put", { thread, name, value });
+  async docPut(thread: string, name: string, value: unknown, opts: { newerOnly?: boolean } = {}): Promise<void> {
+    await this.call("durable_doc_put", { thread, name, value, ...(opts.newerOnly ? { newerOnly: true } : {}) });
   }
   async set(thread: string, patch: { name?: string; model?: string; thinkingLevel?: string; archived?: boolean; cwd?: string }): Promise<DurableThread> {
     return ((await this.call("durable_set", { thread, ...patch })) as { thread: DurableThread }).thread;
