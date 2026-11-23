@@ -1,50 +1,41 @@
 <script lang="ts">
   import { api } from "$lib/api";
   import { live } from "$lib/api/live.svelte";
-  import type { SkillsReport } from "$lib/api/shared/skills";
   import { openView } from "$lib/shell/viewer.svelte";
   import { Badge, Button, CardGroup, Disclosure, EmptyState, LoadingText, Markdown, NavItem, SearchField, Tabs } from "$lib/ui";
+  import { skillsInventory } from "../../kept.svelte";
   import { FILTERS, VERDICT_TONE, agoText, definitionMarkdown, flagBadges, grouped, isFlagged, needsAction, rowDetail, type Filter } from "../../model";
 
   /**
    * The `current` layout: the Skills page as it was before the skills DB, every row of the scanner's inventory (GET /api/skills/inventory)
-   * grouped by kind, with its path, box, loaders, last use and flags. It reads the inventory again when the `skills` live event says a scan
-   * ended. A row opens its SKILL.md in the viewer popup.
+   * grouped by kind, with its path, box, loaders, last use and flags. It draws the kept inventory at once and reads it again behind
+   * (kept.svelte.ts), and reads it again when the `skills` live event says a scan ended. A row opens its SKILL.md in the viewer popup.
    */
-  let report = $state<SkillsReport | null>(null);
-  let error = $state<string | null>(null);
+  const report = $derived(skillsInventory.value);
+  let scanError = $state<string | null>(null);
+  const error = $derived(scanError ?? skillsInventory.error);
   let filter = $state<Filter>("all");
   let text = $state("");
   let now = $state(Date.now());
   let definitionOpen = $state(false);
 
-  async function read(): Promise<void> {
-    try {
-      report = await api.skillsInventory();
-      error = null;
-      now = Date.now();
-    } catch (reason) {
-      error = reason instanceof Error ? reason.message : String(reason);
-    }
-  }
-
   /** Shows the last inventory, then starts a scan, whose end the live event brings. */
   async function load(): Promise<void> {
-    await read();
+    await skillsInventory.read();
     try {
       const { scan } = await api.scanSkills();
-      if (report) report = { ...report, scan };
+      skillsInventory.patch(report => ({ ...report, scan }));
+      scanError = null;
     } catch (reason) {
-      error = reason instanceof Error ? reason.message : String(reason);
+      scanError = reason instanceof Error ? reason.message : String(reason);
     }
   }
   $effect(() => {
-    void read();
+    void skillsInventory.open();
     const off = live.on(event => {
       if (event.type !== "skills") return;
-      if (event.scan.running) {
-        if (report) report = { ...report, scan: event.scan };
-      } else void read();
+      if (event.scan.running) skillsInventory.patch(report => ({ ...report, scan: event.scan }));
+      else void skillsInventory.read("shown");
     });
     const tick = setInterval(() => (now = Date.now()), 60_000);
     return () => {

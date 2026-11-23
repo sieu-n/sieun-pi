@@ -5,6 +5,7 @@
  * 52.0 KB and 17.9 KB, and the client's index script 654 KB and 198 KB.
  */
 import type { IncomingMessage, OutgoingHttpHeaders, ServerResponse } from "node:http";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { brotliCompress, brotliCompressSync, constants, gzip, gzipSync } from "node:zlib";
 import { promisify } from "node:util";
@@ -45,6 +46,59 @@ export function sendCompressed(res: ServerResponse, status: number, headers: Out
   const encoding = bytes.length < MIN_BYTES ? undefined : encodingFor(res.req);
   const out = encoding === "br" ? brotliCompressSync(bytes, brotliOptions(LIVE_QUALITY, bytes.length)) : encoding === "gzip" ? gzipSync(bytes) : bytes;
   res.writeHead(status, { ...headers, vary: "accept-encoding", "content-length": out.length, ...(encoding ? { "content-encoding": encoding } : {}) });
+  res.end(out);
+}
+
+/**
+ * A big JSON answer that changes only when its parts do, such as GET /api/skills, 3.4 MB as JSON for 609 skills on 11-23 and 226 KB as
+ * brotli. `parts` say when it changed: each is compared with `===`, so an object part counts as unchanged while the server keeps the same
+ * object, and `json` makes the answer's text only after a part changed.
+ */
+export class KeptJson {
+  constructor(readonly name: string, readonly parts: readonly unknown[], readonly json: () => string) {}
+}
+
+type Made = { parts: readonly unknown[]; json: string; tag: string; bytes: Map<Encoding, Promise<Buffer>> };
+const made = new Map<string, Made>();
+
+/**
+ * Sends a `KeptJson` from the bytes made at its first request since its parts changed, with an ETag and `no-cache`, so the browser keeps
+ * it and asks again with If-None-Match, which answers 304 with no body. Each GET /api/skills used to stringify and brotli the whole view
+ * again, 35 to 50 ms of the event loop on us-metal02 (p50 85 ms, p90 246 ms in requests/2026-11-2*.jsonl), and sent its 252 KB again on
+ * every open of the Skills page, about five round trips of the owner's 200 ms link (~/work/p155-sweep/fix-skills/notes.md).
+ */
+export async function sendKeptJson(res: ServerResponse, headers: OutgoingHttpHeaders, answer: KeptJson): Promise<void> {
+  let entry = made.get(answer.name);
+  if (!entry || entry.parts.length !== answer.parts.length || entry.parts.some((part, i) => part !== answer.parts[i])) {
+    const json = answer.json();
+    entry = { parts: answer.parts, json, tag: createHash("sha1").update(json).digest("base64url"), bytes: new Map() };
+    made.set(answer.name, entry);
+  }
+  const encoding = entry.json.length < MIN_BYTES ? undefined : encodingFor(res.req);
+  const etag = `"${entry.tag}${encoding ? `-${encoding}` : ""}"`;
+  const cached = { ...headers, "cache-control": "no-cache", vary: "accept-encoding", etag };
+  const asked = res.req?.headers["if-none-match"];
+  if (asked && asked.split(",").some(tag => tag.trim().replace(/^W\//, "") === etag)) {
+    res.writeHead(304, cached);
+    res.end();
+    return;
+  }
+  if (!encoding) {
+    const bytes = Buffer.from(entry.json);
+    res.writeHead(200, { ...cached, "content-length": bytes.length });
+    res.end(bytes);
+    return;
+  }
+  let bytes = entry.bytes.get(encoding);
+  if (!bytes) {
+    const plain = Buffer.from(entry.json);
+    bytes = encoding === "br" ? brotliAsync(plain, brotliOptions(FILE_QUALITY, plain.length)) : gzipAsync(plain);
+    entry.bytes.set(encoding, bytes);
+    const kept = entry;
+    bytes.catch(() => kept.bytes.delete(encoding));
+  }
+  const out = await bytes;
+  res.writeHead(200, { ...cached, "content-length": out.length, "content-encoding": encoding });
   res.end(out);
 }
 

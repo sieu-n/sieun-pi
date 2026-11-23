@@ -1,48 +1,52 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import { api } from "$lib/api";
   import { live } from "$lib/api/live.svelte";
-  import type { SkillsView } from "$lib/api/shared/skills";
   import { router } from "$lib/router.svelte";
   import { Button, IconButton, Page, PanelHeader, Tabs } from "$lib/ui";
-  import { LAYOUTS, layoutOf } from "./layouts/registry";
+  import { skillsInventory, skillsView } from "./kept.svelte";
+  import { DEFAULT_LAYOUT, LAYOUTS, layoutOf } from "./layouts/registry";
 
   /**
-   * Settings > Skills: one read of GET /api/skills (the skills DB read model, server/skills-db.ts) handed to the layout that
-   * `?layout=<id>` names, with a switcher in the header. The header's scan button starts a scan, and the `skills` live event says when it
-   * ends; the page reads the view again then, so every layout shows the new scan.
+   * Settings > Skills: GET /api/skills (the skills DB read model, server/skills-db.ts) handed to the layout that `?layout=<id>` names,
+   * with a switcher in the header. The `current` layout draws the scanner's inventory instead, so there the view is only read ahead, behind
+   * the inventory, for a switch to another layout. Both are kept (kept.svelte.ts), so an open draws the last answer at once and reads it
+   * again behind. The header's scan button starts a scan, and the `skills` live event says when it ends; the page reads the view again
+   * then, so every layout shows the new scan.
    */
-  let view = $state<SkillsView | null>(null);
-  let error = $state<string | null>(null);
-  let scanning = $state(false);
+  let scanError = $state<string | null>(null);
+  let scanState = $state<boolean | null>(null);
 
-  async function reload(): Promise<void> {
-    try {
-      view = await api.skills();
-      scanning = view.scan.running;
-      error = null;
-    } catch (reason) {
-      error = reason instanceof Error ? reason.message : String(reason);
-    }
-  }
+  const layout = $derived(layoutOf(router.route.params.layout));
+  const drawsView = $derived(layout?.id !== DEFAULT_LAYOUT);
+  const view = $derived(skillsView.value);
+  const error = $derived(scanError ?? (drawsView ? skillsView.error : null));
+  const scanning = $derived(scanState ?? (drawsView ? view : skillsInventory.value)?.scan.running ?? false);
+
+  const reload = (): Promise<void> => skillsView.read();
 
   async function scan(): Promise<void> {
     try {
-      scanning = (await api.scanSkills()).scan.running;
+      scanState = (await api.scanSkills()).scan.running;
+      scanError = null;
     } catch (reason) {
-      error = reason instanceof Error ? reason.message : String(reason);
+      scanError = reason instanceof Error ? reason.message : String(reason);
     }
   }
 
   $effect(() => {
-    void reload();
-    return live.on(event => {
-      if (event.type !== "skills") return;
-      scanning = event.scan.running;
-      if (!event.scan.running) void reload();
-    });
+    const shows = drawsView;
+    untrack(() => void (shows ? skillsView.open() : skillsView.ahead()));
   });
 
-  const layout = $derived(layoutOf(router.route.params.layout));
+  $effect(() =>
+    live.on(event => {
+      if (event.type !== "skills") return;
+      scanState = event.scan.running;
+      if (event.scan.running) return;
+      void skillsView.read(untrack(() => drawsView) ? "shown" : "ahead");
+    }));
+
   const tabs = $derived(LAYOUTS.map(entry => ({ id: entry.id, label: entry.label })));
 </script>
 

@@ -196,6 +196,10 @@ export class SkillsDb {
   private readonly db: DatabaseSync;
   private version = 0;
   private cached: { version: number; view: Omit<SkillsView, "scan"> } | null = null;
+  /** The view without its scan as JSON, by the DB version it was built at (`viewJson`). */
+  private built: { version: number; json: Promise<string> } | null = null;
+  /** Builds the view for GET /api/skills in a worker thread, as the serving process does; the fixture's small view stays inline for the specs. */
+  viewsOffThread = false;
 
   /**
    * `busyMs` is how long a write waits for chat.sqlite's write lock inside the call. The serving process passes 0: node:sqlite waits on its
@@ -240,7 +244,7 @@ export class SkillsDb {
     try {
       const out = fn();
       this.db.exec("COMMIT");
-      this.version++;
+      this.bump();
       return out;
     } catch (error) {
       this.db.exec("ROLLBACK");
@@ -387,7 +391,7 @@ export class SkillsDb {
       const worker = new Worker(new URL("./skills-db-worker.ts", import.meta.url), { workerData: { config: this.config, raw } });
       worker.on("message", (message: { log?: string; result?: { seeded: boolean; copies: number } | null; error?: string }) => {
         if (message.log !== undefined) return this.log(message.log);
-        this.version++;
+        this.bump();
         if (message.error !== undefined) reject(new Error(message.error));
         else resolve(message.result ?? null);
         void worker.terminate();
@@ -572,8 +576,50 @@ export class SkillsDb {
   }
 
   view(scan: SkillScan): SkillsView {
+    return { ...this.viewWithoutScan(), scan };
+  }
+
+  /** The view without its scan state, the same object until the DB changes. */
+  viewWithoutScan(): Omit<SkillsView, "scan"> {
     if (this.cached?.version !== this.version) this.cached = { version: this.version, view: this.build() };
-    return { ...this.cached.view, scan };
+    return this.cached.view;
+  }
+
+  /**
+   * The view without its scan state as JSON, the same string until the DB changes, so GET /api/skills sends kept bytes until then
+   * (compress.ts `sendKeptJson`). The serving process builds it in a worker thread: on us-metal02 the build took 136 to 235 ms and its
+   * JSON 27 to 33 ms (a copy of the live DB on 11-23), and in the 11-21 to 11-23 request logs 154 of 604 GET /api/skills held the event
+   * loop 100 to 400 ms, every call of the server waiting behind it. A worker answered in 269 to 362 ms with its start.
+   */
+  viewJson(): Promise<string> {
+    if (this.built?.version !== this.version) {
+      const json = this.viewsOffThread ? this.viewOffThread() : Promise.resolve(JSON.stringify(this.viewWithoutScan()));
+      const built = { version: this.version, json };
+      this.built = built;
+      json.catch(() => {
+        if (this.built === built) this.built = null;
+      });
+    }
+    return this.built.json;
+  }
+
+  /** A change to the DB: a view built in a worker is built again at once, so the next read of the page finds it ready. */
+  private bump(): void {
+    this.version++;
+    if (this.viewsOffThread && this.built) setImmediate(() => void this.viewJson().catch(() => undefined));
+  }
+
+  private viewOffThread(): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const worker = new Worker(new URL("./skills-db-worker.ts", import.meta.url), { workerData: { config: this.config, view: true } });
+      worker.on("message", (message: { log?: string; view?: string; error?: string }) => {
+        if (message.log !== undefined) return this.log(message.log);
+        if (message.error !== undefined) reject(new Error(message.error));
+        else resolve(message.view!);
+        void worker.terminate();
+      });
+      worker.on("error", reject);
+    });
   }
 
   private build(): Omit<SkillsView, "scan"> {
@@ -687,7 +733,7 @@ export class SkillsDb {
     const move: SkillMove = { id, at: now(), kind, summary, undoneAt: null };
     this.db.prepare("INSERT INTO skill_moves (id, at, kind, summary, item, before, touched, undone_at) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)")
       .run(move.id, move.at, kind, summary, item, JSON.stringify(before), JSON.stringify(touched));
-    this.version++;
+    this.bump();
     return move;
   }
 

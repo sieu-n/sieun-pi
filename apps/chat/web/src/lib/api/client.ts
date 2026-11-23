@@ -792,9 +792,9 @@ export const api = {
   /** The consoles table from auto-sns-agent's consoles.json, read as the file is now. */
   consoles: () => call<ConsolesReport>("GET", "/api/consoles"),
   /** The skills DB read model, everything a Settings > Skills layout renders. */
-  skills: () => call<SkillsView>("GET", "/api/skills"),
+  skills: (wait?: Wait) => call<SkillsView>("GET", "/api/skills", undefined, undefined, wait),
   /** The scanner's raw inventory, which the `current` layout reads. */
-  skillsInventory: () => call<SkillsReport>("GET", "/api/skills/inventory"),
+  skillsInventory: (wait?: Wait) => call<SkillsReport>("GET", "/api/skills/inventory", undefined, undefined, wait),
   /** Where the disk differs from the DB: folders with no row and installs the disk does not match. */
   skillsCheck: () => call<SkillsCheck>("GET", "/api/skills/check"),
   /** Makes the disk match the DB; a second run changes nothing. `dryRun` only plans. */
