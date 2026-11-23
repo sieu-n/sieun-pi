@@ -1,0 +1,113 @@
+# A sw factory instance of your own for development: `docker compose up -d` in this checkout brings up apps/chat on
+# http://127.0.0.1:${SWF_PORT:-5190}, pi-host and Meilisearch, with all their state in the volume `data` and the volume `meili`.
+# `docker compose watch` also syncs your edits in (see each service's develop.watch). `docker compose up -d fixture` starts the UI on the
+# fixture host alone, with no model. Configuration is .env (deploy/compose/env.example lists every variable); every one has a default.
+# On a box with pi-pool, `-f compose.yaml -f deploy/compose/compose.pool.yaml` runs the agents on the box's account pool.
+name: sw-factory
+
+x-app: &app
+  build:
+    context: .
+    dockerfile: deploy/compose/Dockerfile
+  image: sw-factory-dev:local
+  # tini as pid 1: it reaps the kernels and tools pi-host starts, and a crash of node ends the container, so `restart` brings it back.
+  init: true
+  restart: unless-stopped
+  volumes:
+    - data:/data
+
+services:
+  meili:
+    image: getmeili/meilisearch:v1.56.1
+    restart: unless-stopped
+    environment:
+      MEILI_ENV: development
+      MEILI_NO_ANALYTICS: "true"
+      # Reachable only on this project's network; set your own in .env if you publish it.
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-sw-factory-dev-only-key}
+    volumes:
+      - meili:/meili_data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:7700/health"]
+      interval: 5s
+      start_period: 60s
+      start_interval: 1s
+
+  pi-host:
+    <<: *app
+    working_dir: /app/packages
+    command: ["node", "--import", "tsx", "pi-host/src/main.ts", "--socket", "/data/run/host.sock", "--agent-dir", "/data/home/.prime/agent"]
+    environment:
+      PI_HOST_CHAT_URL: http://chat:5190
+      PI_POOL_TOKEN_BIN: /app/deploy/compose/api-key-token
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    healthcheck:
+      test: ["CMD", "node", "/app/deploy/compose/pi-host-health.mjs", "/data/run/host.sock"]
+      interval: 5s
+      start_period: 120s
+      start_interval: 1s
+    develop:
+      watch:
+        - { action: sync+restart, path: ./packages, target: /app/packages, ignore: [node_modules/, "*/node_modules/"] }
+        - { action: sync+restart, path: ./legacy/prime/user-history, target: /app/legacy/prime/user-history, ignore: [node_modules/] }
+        - { action: rebuild, path: ./packages/package-lock.json }
+
+  chat:
+    <<: *app
+    working_dir: /app/apps/chat
+    # 5190 inside the container too: a host `ps` must show only the live server with `--port 5184` (release checks count those lines).
+    command: ["node", "--import", "tsx", "server/main.ts", "--port", "5190", "--listen", "0.0.0.0"]
+    environment:
+      APPS_CHAT_BOX: ${SWF_BOX:-dev}
+      APPS_CHAT_PROJECTS: /data/home/workspace
+      APPS_CHAT_SKILLS_REPO: /app
+      APPS_CHAT_WIKI_BASE: /wiki
+      PI_HOST_SOCKET: /data/run/host.sock
+      APPS_CHAT_MEILI_URL: http://meili:7700
+      APPS_CHAT_MEILI_KEY_FILE: /run/meili.key
+    configs:
+      - { source: meili_key, target: /run/meili.key }
+    ports:
+      - "${SWF_BIND:-127.0.0.1}:${SWF_PORT:-5190}:5190"
+    depends_on:
+      pi-host: { condition: service_healthy }
+      meili: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:5190/api/ready"]
+      interval: 5s
+      start_period: 120s
+      start_interval: 1s
+    develop:
+      watch:
+        - { action: sync+restart, path: ./apps/chat/server, target: /app/apps/chat/server }
+        - { action: rebuild, path: ./apps/chat/web/src }
+        - { action: rebuild, path: ./apps/chat/package-lock.json }
+
+  # The UI on apps/chat's fixture host: seeded agents and threads, no pi-host, no model. `docker compose up -d fixture`.
+  fixture:
+    <<: *app
+    profiles: [fixture]
+    working_dir: /app/apps/chat
+    command: ["node", "--import", "tsx", "server/main.ts", "--fixture", "--port", "5191", "--listen", "0.0.0.0", "--data-dir", "/data/fixture"]
+    volumes:
+      - fixture:/data
+    ports:
+      - "${SWF_BIND:-127.0.0.1}:${SWF_FIXTURE_PORT:-5191}:5191"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:5191/api/ready"]
+      interval: 5s
+      start_period: 120s
+      start_interval: 1s
+    develop:
+      watch:
+        - { action: sync+restart, path: ./apps/chat/server, target: /app/apps/chat/server }
+        - { action: rebuild, path: ./apps/chat/web/src }
+
+configs:
+  meili_key:
+    content: ${MEILI_MASTER_KEY:-sw-factory-dev-only-key}
+
+volumes:
+  data:
+  meili:
+  fixture:

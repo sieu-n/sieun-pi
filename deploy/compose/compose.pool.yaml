@@ -1,0 +1,26 @@
+# Runs the instance's agents on this box's pi-pool accounts instead of an API key:
+#   docker compose -f compose.yaml -f deploy/compose/compose.pool.yaml up -d
+# pi-host calls the pool's own token hook, which hands the request to the pool's hookd on ~/.config/pi-pool/hook.sock. The pool decides the
+# account, slots and turn queue exactly as for any Prime or pi-host session on the box; nothing here changes a pool setting (c148).
+# hookd serves a client whose HOME, USER and PI_POOL_DIR equal its own and whose cwd exists on the box (packages/pi-pool/pool/hookd.py
+# runner), so pi-host runs as the box user with the box's HOME and a cwd of /tmp. That HOME is the volume's home folder mounted at the
+# box's home path, so every home-relative default still lands in the volume.
+# `pid: host` makes the pid that `pi-pool admit --pid` records the one the pool's process-gone sweep can see. Docker starts no tini
+# (`init: true`) in the host pid namespace, so node is the container's main process here.
+services:
+  pi-host:
+    user: "${SWF_UID:?set SWF_UID in .env to the output of id -u}:${SWF_GID:?set SWF_GID in .env to the output of id -g}"
+    pid: host
+    working_dir: /tmp
+    command: ["node", "--import", "/app/packages/node_modules/tsx/dist/loader.mjs", "/app/packages/pi-host/src/main.ts",
+      "--socket", "/data/run/host.sock", "--agent-dir", "/data/home/.prime/agent"]
+    environment:
+      HOME: ${HOME}
+      USER: ${USER}
+      TSX_TSCONFIG_PATH: /app/packages/tsconfig.json
+      PI_POOL_DIR: ${HOME}/.config/pi-pool
+      PI_POOL_TOKEN_BIN: ${HOME}/.config/pi-pool/bin/pi-pool-token
+    volumes:
+      - { type: volume, source: data, target: "${HOME}", volume: { subpath: home } }
+      - ${HOME}/.config/pi-pool:${HOME}/.config/pi-pool
+      - ${HOME}/.local/share/pi-pool:${HOME}/.local/share/pi-pool:ro

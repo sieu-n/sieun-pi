@@ -1,0 +1,19 @@
+#!/bin/sh
+# The model credential of a compose instance without the account pool: pi-pool's token hook contract (packages/pi-pool/src/core/pool-cli.ts),
+# answered from ANTHROPIC_API_KEY in .env. compose.yaml points PI_POOL_TOKEN_BIN here; compose.pool.yaml points it at the box's pool instead.
+case "$1" in
+  # The turn queue's `--cli admit|release|owner-turn` calls: an instance of its own has no shared queue, and an empty answer lets the run go.
+  --cli) exit 0 ;;
+  --provider)
+    if [ "$2" = anthropic ] && [ -n "$ANTHROPIC_API_KEY" ]; then
+      printf '%s\n' "$ANTHROPIC_API_KEY"
+      exit 0
+    fi
+    # The pool's "end the turn with this message" answer (pool-cli.ts readVend, kind "final"): a missing key never clears by retrying,
+    # so the turn fails at once and the chat shows the message, where a plain hook failure would retry in silence.
+    echo "pi-pool-token: no token (no_model_room)" >&2
+    echo "pi-pool-token: final: No model credential for $2: set ANTHROPIC_API_KEY in .env and run docker compose up -d, or start with deploy/compose/compose.pool.yaml on a box with pi-pool." >&2
+    exit 1 ;;
+esac
+echo "api-key-token: unknown arguments: $*" >&2
+exit 2
