@@ -13,16 +13,19 @@ import { type DsQuery, GRAFANA, HOUR, MINUTE, PG, PROM, REPO, grafanaClient, num
  * The owner, 10-22 (msg mvj491h5): "Crawler running -> Throughput goal achieved ( unified for all platform )". The duty moved from Crawler VP's
  * d9 to Crawler guy's d8 on 11-24 (owner, t9: "Yes, hand everything over so the crawler has one owner (my pick)"). The headline counts the
  * throughput goals prod misses, over every platform that has one, each read the way the crawler Throughput dashboard on obs.virev.ai reads it:
- * - Instagram profiles (IG_PROFILES_PER_MIN): the slowest rolling hour of the last 6 h outside prod deploys (DEPLOY_EXPR), the dashboard's
- *   "slowest hour, 6 h" stats. Instagram counts crawler.instagram_account_snapshots, one row per profile read on any path; census jobs that ended
- *   gone or private read no profile, so crawler.instagram_census_reads ran about 1,350 a minute over it at 06:00-06:30Z on 10-22 (11,002 against
- *   9,648). Instagram reads ClickHouse rows, because the dashboard's gauge crawler_v3_rate_controller_good_per_minute keeps its last value while
- *   the controller is down: on 10-22 it read 11,100 from 00:55 to 01:50Z while census finished 56,843 jobs in the 01:00Z hour, so a stopped crawl
- *   would read green there;
+ * - Instagram house census reads (IG_HOUSE_READS_PER_MIN): ok census jobs with product = 0 in crawler.instagram_census_reads, a minute in the
+ *   slowest rolling hour of the last 6 h outside prod deploys (DEPLOY_EXPR), the dashboard's "slowest hour, 6 h" stats. An ok census job is the
+ *   unit the census price is per (COUNTED_BYTES). A product read (auto-sns-agent 2fb1ca110: a user's request, a Watchlist sweep or a brand crawl,
+ *   and the post and post count jobs behind it) is paid work, so it is left out and shown as detail: on 11-24 the line counted every
+ *   instagram_account_snapshots row, and the demo Watchlist's census reads, about 19.7 a minute, passed it with no house census at all.
+ *   Instagram reads ClickHouse rows, because the dashboard's gauge crawler_v3_rate_controller_good_per_minute keeps its last value while the
+ *   controller is down: on 10-22 it read 11,100 from 00:55 to 01:50Z while census finished 56,843 jobs in the 01:00Z hour;
  * - TikTok Shop products (TTS_PRODUCTS_PER_MIN): ok product rows a minute in the same slowest hour, with the share of live US products read in
- *   the last 7 days as detail;
+ *   the last 7 days as detail. Only the house walker writes crawler.tiktok_shop_reads (auto-sns-agent platforms/tiktok_shop/analytics.py) and it
+ *   binds no paid origin (control/paid_work.py), so every row is a house read;
  * - Meta Ads advertiser re-reads (META_WALKS_PER_MIN): advertiser walks finished a minute over 24 h (the crawler's crawler_v3_meta_ads_finished_1h
- *   gauge in prod Prometheus), with the walks due now, from a page sample of prod meta_ads_walks, and the days one pass over them takes as detail;
+ *   gauge in prod Prometheus), with the walks due now, from a page sample of prod meta_ads_walks, and the days one pass over them takes as detail.
+ *   Only the house scheduler's walks count there, since a paid live read ends LIVE and counts no finish (platforms/meta_ads/writer.py);
  * - Instagram re-reads (REFRESH_ITEM, owner 10-26: "1k+ every month, 10K+ every week" and "under 1k also monthly", at most 1% of read accounts
  *   with 10,000+ followers past 7 days and at most 1% of the rest past 30 days): a page sample of prod instagram_census (REFRESH_SAMPLE_PCT).
  * The re-read goal comes from Crawler guy's board at run time: its target, or the number in its title when it has none. The three lane lines
@@ -76,8 +79,8 @@ export const MONTH_MINUTES = 30 * 24 * 60;
 export const laneMonthGb = (lane: keyof typeof LANE_PACE_MONTH_GB): number =>
   (LANE_PACE_MONTH_GB[lane] * HOUSE_MONTH_GB) / HOUSE_PACE_MONTH_GB;
 export const planRate = (lane: keyof typeof LANE_PACE_MONTH_GB): number => round1((laneMonthGb(lane) * 1e9) / COUNTED_BYTES[lane] / MONTH_MINUTES);
-/** Instagram profiles, TikTok Shop good products and Meta advertiser walks a minute that fit the plan: 17.5, 1.6 and 3.9. */
-export const IG_PROFILES_PER_MIN = planRate("instagram");
+/** Instagram house census reads, TikTok Shop good products and Meta advertiser walks a minute that fit the plan: 17.5, 1.6 and 3.9. */
+export const IG_HOUSE_READS_PER_MIN = planRate("instagram");
 export const TTS_PRODUCTS_PER_MIN = planRate("tiktokShop");
 export const META_WALKS_PER_MIN = planRate("metaAds");
 
@@ -146,7 +149,7 @@ const cappedTopic = (q: Queue): string | undefined => {
 };
 
 /**
- * The census Postgres writer's worst lag over 24 h, read only in the 5-minute slots where Instagram profiles read at p826's rate or more and no
+ * The census Postgres writer's worst lag over 24 h, read only in the 5-minute slots where census reads, house and paid, run at the Instagram line or more and no
  * deploy holds prod (p895, closed 10-23 on 2,613 records at most from 10-22 18:45Z to 00:44Z, against its line of 5,000). A slower census leaves
  * the writer idle, so its lag says nothing there; on 10-22 the lag passed 5,000 on 36 of 130 minutes from 06:00 to 08:00Z at 10,900 ok a minute,
  * while the lane scaler had stopped with 16 writers. The lag is crawler_v3_bus_group_lag_records of instagram-census-pg, its most in each slot. It is
@@ -384,7 +387,9 @@ export interface ThroughputData {
   now: number; errors: { source: string; message: string }[];
   /** Instagram profile slots and census-pg writer lag slots over WRITER_LAG_MS, and the deploy slots over the same span. */
   igSlots24h?: Slot[]; writerLag?: Slot[]; deploys24h?: number[];
-  board?: BoardItem[]; igSlowest?: number | null; igLast30?: number; ttsSlowest?: number | null; ttsWeekly?: { read: number; live: number }; deployMinutes?: number; meta?: MetaWalks; refresh?: RefreshSample[];
+  board?: BoardItem[]; igSlowest?: number | null; igLast30?: number;
+  /** Paid product census reads a minute over the 6 h hold, which the Instagram row leaves out. */
+  igPaid?: number; ttsSlowest?: number | null; ttsWeekly?: { read: number; live: number }; deployMinutes?: number; meta?: MetaWalks; refresh?: RefreshSample[];
   censusFrom: number; censusTo: number; census?: CensusWindow; queues?: Queue[]; panels?: PanelRead[]; others?: OtherRate[];
   /** Prod's deploy lock in seconds, its most in the 5 minutes up to this run, the slot the panel read falls in. */
   panelDeployLock?: number;
@@ -458,8 +463,8 @@ export function goalRows(d: ThroughputData): GoalRow[] {
   const shares = d.refresh ? refreshShares(d.refresh) : null;
   const window = `in the slowest hour of the last ${HOLD_MS / HOUR} h${d.deployMinutes ? ` outside ${d.deployMinutes} min of prod deploys` : ""}`;
   return [
-    { platform: "Instagram profiles", value: d.igSlowest ?? null, op: ">=", goal: IG_PROFILES_PER_MIN, source: "duty", unit: "", reads: `read a minute ${window}`,
-      extra: d.igLast30 === undefined ? undefined : `(${fmt(d.igLast30)} a minute in the last 30 min)` },
+    { platform: "Instagram house census reads", value: d.igSlowest ?? null, op: ">=", goal: IG_HOUSE_READS_PER_MIN, source: "duty", unit: "", reads: `ok a minute ${window}`,
+      extra: igExtra(d) },
     { platform: "TikTok Shop products", value: d.ttsSlowest ?? null, op: ">=", unit: "", goal: TTS_PRODUCTS_PER_MIN, source: "duty", reads: `good a minute ${window}`,
       extra: d.ttsWeekly && d.ttsWeekly.live > 0 ? `(${fmt((100 * d.ttsWeekly.read) / d.ttsWeekly.live, "%")} of live US products read in the last 7 days, ${d.ttsWeekly.read.toLocaleString("en-US")} of ${d.ttsWeekly.live.toLocaleString("en-US")}, gone products left out)` : undefined },
     { platform: "Meta Ads advertiser re-reads", op: ">=", unit: "", reads: "walks finished a minute over 24 h", source: "duty",
@@ -476,20 +481,27 @@ export function goalRows(d: ThroughputData): GoalRow[] {
 }
 
 /**
- * The census Postgres writer's row (Crawler VP's p895): its worst lag over 24 h in the slots at IG_PROFILES_PER_MIN outside deploys, against
- * WRITER_LAG_LINE. A 24 h with no such slot reads 0 and says so, since the writer had no load to judge and the Instagram profiles row is that
+ * The census Postgres writer's row (Crawler VP's p895): its worst lag over 24 h in the slots at IG_HOUSE_READS_PER_MIN outside deploys, against
+ * WRITER_LAG_LINE. A 24 h with no such slot reads 0 and says so, since the writer had no load to judge and the Instagram row is that
  * miss; a failed read reads null.
  */
 export function writerLagRow(d: ThroughputData): GoalRow {
-  const rate = IG_PROFILES_PER_MIN;
+  const rate = IG_HOUSE_READS_PER_MIN;
   const row = { platform: "Census Postgres writer", op: "<=" as const, unit: "", goal: WRITER_LAG_LINE, source: "duty" as const };
   if (!d.igSlots24h || !d.writerLag || !d.deploys24h) return { ...row, value: null, reads: "records of lag at most over 24 h, not read" };
   const worst = writerLagAtRate(d.igSlots24h, d.writerLag, new Set(d.deploys24h), rate);
-  if (!worst) return { ...row, value: 0, reads: `records of lag, not judged: no five-minute slot of the last 24 h read ${fmt(rate)} Instagram profiles a minute outside deploys` };
+  if (!worst) return { ...row, value: 0, reads: `records of lag, not judged: no five-minute slot of the last 24 h read ${fmt(rate)} census reads a minute outside deploys` };
   const over = worst.newestOver === null ? "" : `; the newest over ${fmt(WRITER_LAG_LINE)} (${when(worst.newestOver)}) leaves the 24 h window at ${when(worst.newestOver + WRITER_LAG_MS)}`;
   return { ...row, value: worst.lag, reads: `records of lag at most over 24 h (${when(worst.slot)})`,
-    extra: `(${worst.slots} of 288 five-minute slots at ${fmt(rate)} Instagram profiles a minute or more, outside deploys${over})`,
+    extra: `(${worst.slots} of 288 five-minute slots at ${fmt(rate)} census reads a minute or more, outside deploys${over})`,
     ...(worst.newestOver === null ? {} : { lastEventAt: worst.newestOver, windowMs: WRITER_LAG_MS }) };
+}
+
+/** The Instagram row's detail: house reads in the last 30 min, and the paid product reads the line leaves out. */
+function igExtra(d: ThroughputData): string | undefined {
+  const parts = [...d.igLast30 === undefined ? [] : [`${fmt(d.igLast30)} a minute in the last 30 min`],
+    ...d.igPaid === undefined ? [] : [`${fmt(d.igPaid)} paid product reads a minute over ${HOLD_MS / HOUR} h left out`]];
+  return parts.length ? `(${parts.join("; ")})` : undefined;
 }
 
 /** A time for a line, "10:55Z 10-26". */
@@ -545,13 +557,20 @@ export function report(d: ThroughputData, dutyMetrics: readonly DutyMetric[]): P
     ...Object.keys(windowMs).length ? { windowMs } : {} };
 }
 
-/** What each goal's crawl counts: every Instagram profile read on any path (p826's own reading), and TikTok Shop's good products as its rate controller lane counts them. */
-export const GOOD_ROWS = {
-  instagram: { table: "crawler.instagram_account_snapshots", where: "" },
+/**
+ * What each goal's crawl counts: Instagram's ok census jobs, with `paid` marking the product reads its line leaves out, and TikTok Shop's good
+ * products as its rate controller lane counts them.
+ */
+export const GOOD_ROWS: Record<"instagram" | "tiktokShop", { table: string; where: string; paid?: string }> = {
+  instagram: { table: "crawler.instagram_census_reads", where: "outcome = 'ok' AND ", paid: "product = 1" },
   tiktokShop: { table: "crawler.tiktok_shop_reads", where: "kind = 'product' AND outcome = 'ok' AND " },
-} as const;
+};
 export const SLOT_MS = 5 * MINUTE;
-export interface Slot { slot: number; good: number }
+/** A 5-minute slot's house results (`good`), and for Instagram the paid product reads beside them. */
+export interface Slot { slot: number; good: number; paid?: number }
+/** The slots of a slot read's rows: `good` the house results, `paid` the paid ones when the read counts them. */
+export const slotsOfRows = (rows: readonly Record<string, unknown>[]): Slot[] =>
+  rows.map(row => ({ slot: num(row.slot) ?? 0, good: num(row.good) ?? 0, ...row.paid === undefined ? {} : { paid: num(row.paid) ?? 0 } }));
 
 /**
  * Prod's deploy lock, sampled every 5 minutes as the most it read in the 5 minutes before each point. deploy.sh holds it while it replaces the
@@ -592,14 +611,15 @@ export function slowestHour(slots: readonly Slot[], from: number, to: number, de
 }
 
 /**
- * The census writer's worst lag, and its slot, over the slots whose Instagram profiles read `rate` a minute or more and no deploy holds, with how
+ * The census writer's worst lag, and its slot, over the slots whose census reads, house and paid, since the writer takes both, run `rate` a
+ * minute or more and no deploy holds, with how
  * many slots counted and the newest counted slot over `line` (null when none is); null when no slot counted. A lag point at t covers the slot
  * that ends at t, as deploySlots reads it. The row misses until that newest slot leaves the window, not the worst one: on 10-27 at 01:10Z the
  * worst slot was 214,542 at 10:55Z on 10-26, while counted slots still read 8,034 at 22:05Z and up to 6,327 at 00:25 to 00:35Z on 10-27.
  */
 export function writerLagAtRate(ig: readonly Slot[], lag: readonly Slot[], deploys: ReadonlySet<number>, rate: number, line = WRITER_LAG_LINE):
   { lag: number; slot: number; slots: number; newestOver: number | null } | null {
-  const fast = new Set(ig.filter(s => s.good / (SLOT_MS / MINUTE) >= rate && !deploys.has(s.slot)).map(s => s.slot));
+  const fast = new Set(ig.filter(s => (s.good + (s.paid ?? 0)) / (SLOT_MS / MINUTE) >= rate && !deploys.has(s.slot)).map(s => s.slot));
   const counted = lag.filter(s => fast.has(s.slot));
   if (!counted.length) return null;
   const worst = counted.reduce((top, s) => s.good > top.good ? s : top);
@@ -608,6 +628,9 @@ export function writerLagAtRate(ig: readonly Slot[], lag: readonly Slot[], deplo
 }
 export const lagSlots = (points: readonly [number, number][]): Slot[] =>
   points.filter(([, lag]) => Number.isFinite(lag)).map(([at, lag]) => ({ slot: Math.floor((at - 1) / SLOT_MS) * SLOT_MS, good: lag }));
+
+/** Paid results a minute over the 6 h hold. */
+export const paidPerMinute = (slots: readonly Slot[]): number => round1(slots.reduce((sum, s) => sum + (s.paid ?? 0), 0) / (HOLD_MS / MINUTE));
 
 /** Results a minute over the last 30 minutes before `to`, the window the census canary run reads. */
 export const lastHalfHour = (slots: readonly Slot[], to: number): number =>
@@ -666,8 +689,6 @@ FROM (
   SELECT 'instagram posts' AS kind, toStartOfHour(observed_at) AS hr, sum(posts_stored_ch) / 60 AS v, toStartOfHour(now()) AS cur FROM crawler.instagram_census_reads
   WHERE observed_at >= toStartOfHour(now()) - INTERVAL 24 HOUR AND observed_at < toStartOfHour(now()) GROUP BY hr
 ) GROUP BY kind ORDER BY average24h DESC`;
-/** Crawls whose platform has a goal row: Instagram profiles are p826's, read on the census lanes the dashboard reads. */
-export const GOAL_KINDS: ReadonlySet<string> = new Set(["instagram profiles"]);
 
 export async function measure(query: DsQuery | null, api: GrafanaApi | null, authError: string | null, now: number, readBoard: () => Promise<BoardItem[]>): Promise<ThroughputData> {
   const censusTo = Math.floor((now - SETTLE_MS) / HOUR) * HOUR;
@@ -682,9 +703,8 @@ export async function measure(query: DsQuery | null, api: GrafanaApi | null, aut
   const holdTo = Math.floor((now - SETTLE_MS) / SLOT_MS) * SLOT_MS;
   const holdFrom = holdTo - HOLD_MS;
   const lagFrom = holdTo - WRITER_LAG_MS;
-  const slotsOf = async (rows: { table: string; where: string }, from = holdFrom): Promise<Slot[]> => (await sqlRows(query, CH,
-    `SELECT toInt64(toUnixTimestamp(toStartOfFiveMinutes(observed_at))) * 1000 AS slot, count() AS good FROM ${rows.table} WHERE ${rows.where}observed_at >= ${ms(from)} AND observed_at < ${ms(holdTo)} GROUP BY slot`))
-    .map(row => ({ slot: num(row.slot) ?? 0, good: num(row.good) ?? 0 }));
+  const slotsOf = async (rows: { table: string; where: string; paid?: string }, from = holdFrom): Promise<Slot[]> => slotsOfRows(await sqlRows(query, CH,
+    `SELECT toInt64(toUnixTimestamp(toStartOfFiveMinutes(observed_at))) * 1000 AS slot, ${rows.paid ? `countIf(NOT (${rows.paid})) AS good, countIf(${rows.paid}) AS paid` : "count() AS good"} FROM ${rows.table} WHERE ${rows.where}observed_at >= ${ms(from)} AND observed_at < ${ms(holdTo)} GROUP BY slot`));
   const window = `observed_at >= ${ms(censusFrom)} AND observed_at < ${ms(censusTo)}`;
   // The goal reads run before the panels. Each one answers in 0.2 to 2 s alone (10-23 08:40Z), but beside the burst of every panel's queries
   // ClickHouse missed Grafana's deadline on a different 2 to 5 of them on each of 3 runs at 08:30-08:45Z, so the headline went unmeasured.
@@ -706,8 +726,7 @@ export async function measure(query: DsQuery | null, api: GrafanaApi | null, aut
       const due = await sampledMetaDue(tablePages, async runs => num((await sqlRows(query, PG.prod, metaDueSql(runs)))[0]?.due));
       return { due, finished24h: Math.round(finished[0].value) };
     }),
-    step("other crawls", async () => (await sqlRows(query, CH, OTHERS_SQL)).map(row => ({ kind: String(row.kind), slowest6h: num(row.slowest6h) ?? 0, average24h: num(row.average24h) ?? 0 }))
-      .filter(row => !GOAL_KINDS.has(row.kind))),
+    step("other crawls", async () => (await sqlRows(query, CH, OTHERS_SQL)).map(row => ({ kind: String(row.kind), slowest6h: num(row.slowest6h) ?? 0, average24h: num(row.average24h) ?? 0 }))),
     step("census reads", async (): Promise<CensusWindow> => {
       const row = (await sqlRows(query, CH, `SELECT count() AS jobs, countIf(outcome IN ('blocked', 'failed')) AS bad, sum(attempts) AS att, sum(ok_attempts) AS okAtt FROM crawler.instagram_census_reads WHERE ${window}`))[0];
       if (!row) throw new Error("crawler.instagram_census_reads answered no row");
@@ -764,7 +783,7 @@ export async function measure(query: DsQuery | null, api: GrafanaApi | null, aut
   d.deployMinutes = [...deploys].filter(slot => slot >= holdFrom && slot < holdTo).length * SLOT_MS / MINUTE;
   const holding = igSlots?.filter(s => s.slot >= holdFrom);
   Object.assign(d, igSlots && writerLag && deployPoints && { igSlots24h: igSlots, writerLag, deploys24h: [...deploys] },
-    panels && { panels }, panelDeployLock !== undefined && { panelDeployLock }, holding && { igSlowest: slowestHour(holding, holdFrom, holdTo, deploys), igLast30: lastHalfHour(holding, holdTo) },
+    panels && { panels }, panelDeployLock !== undefined && { panelDeployLock }, holding && { igSlowest: slowestHour(holding, holdFrom, holdTo, deploys), igLast30: lastHalfHour(holding, holdTo), igPaid: paidPerMinute(holding) },
     ttsSlots && { ttsSlowest: slowestHour(ttsSlots, holdFrom, holdTo, deploys) }, ttsWeekly && { ttsWeekly }, meta && { meta }, others && { others },
     census && { census }, queues && { queues }, refresh && { refresh });
   return d;

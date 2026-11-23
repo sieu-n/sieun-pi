@@ -4,7 +4,7 @@
 // drawing ("Check the Observability and Metrics"), where on 10-19 at 15:55Z two panels read No data.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type BoardItem, COUNTED_BYTES, IG_PROFILES_PER_MIN, laneMonthGb, META_WALKS_PER_MIN, MONTH_MINUTES, PLAN_MONTH_GB, planRate, PROD_PAID_MONTH_GB, STAGING_MONTH_GB, WATCHLIST_MONTH_GB, WATCHLIST_WALKS_IN_PAID_GB, TTS_PRODUCTS_PER_MIN, sampledMetaDue, GOOD_ROWS, META_FINISHED_EXPR, META_SAMPLE_PCT, META_SAMPLE_RUNS, REFRESH_SAMPLE_PCT, REFRESH_SAMPLE_RUNS, type ThroughputData, backlogged, blankPanels, boardGoal, deploySlots, goalLine, goalRows, grew, interpolate, lastHalfHour,
+import { type BoardItem, COUNTED_BYTES, IG_HOUSE_READS_PER_MIN, laneMonthGb, META_WALKS_PER_MIN, MONTH_MINUTES, PLAN_MONTH_GB, planRate, PROD_PAID_MONTH_GB, STAGING_MONTH_GB, WATCHLIST_MONTH_GB, WATCHLIST_WALKS_IN_PAID_GB, TTS_PRODUCTS_PER_MIN, sampledMetaDue, paidPerMinute, slotsOfRows, HOLD_MS, META_FINISHED_EXPR, META_SAMPLE_PCT, META_SAMPLE_RUNS, REFRESH_SAMPLE_PCT, REFRESH_SAMPLE_RUNS, type ThroughputData, backlogged, blankPanels, boardGoal, deploySlots, goalLine, goalRows, grew, interpolate, lastHalfHour,
   type Dashboard, folderBoards, folderFiles, lagSlots, metaDueSql, PROVIDERS, QUEUES, missed, readPanels, pageRuns, panelQueries, panelState, refreshShares, refreshSql, report, scaleDue, slowestHour, writerLagAtRate } from "../scripts/duties/throughput-goal.ts";
 import type { DutyMetric } from "../src/shared/chat-duties.ts";
 
@@ -84,16 +84,26 @@ test("the three lane lines spend no more of the 250 GB month than staging, prod 
   const room = PLAN_MONTH_GB - STAGING_MONTH_GB - (PROD_PAID_MONTH_GB - WATCHLIST_WALKS_IN_PAID_GB) - WATCHLIST_MONTH_GB;
   assert.equal(room, 99);
   assert.ok(spent <= room, `${spent} GB`);
-  assert.deepEqual([IG_PROFILES_PER_MIN, TTS_PRODUCTS_PER_MIN, META_WALKS_PER_MIN], [17.5, 1.6, 3.9]);
+  assert.deepEqual([IG_HOUSE_READS_PER_MIN, TTS_PRODUCTS_PER_MIN, META_WALKS_PER_MIN], [17.5, 1.6, 3.9]);
   assert.equal(Math.round(laneMonthGb("instagram") * 10) / 10, 36.3);
 });
 
-test("Instagram counts profile rows on every read path, the table its plan line reads, and TikTok Shop its good products", () => {
-  assert.deepEqual(GOOD_ROWS.instagram, { table: "crawler.instagram_account_snapshots", where: "" });
-  assert.match(GOOD_ROWS.tiktokShop.where, /^kind = 'product' AND outcome = 'ok' AND $/);
-  const rows = goalRows(base({ board: BOARD, igSlowest: 4_423, igLast30: 11_660, deployMinutes: 45 }));
-  assert.match(rows[0]!.reads, /outside 45 min of prod deploys/);
-  assert.match(rows[0]!.extra!, /11,660 a minute in the last 30 min/);
+test("Instagram counts only house census reads: a day of paid product reads alone misses its line (11-24, the demo Watchlist passed it at 19.7 a minute)", () => {
+  const from = Date.parse("2026-11-24T00:00:00Z");
+  const to = from + HOLD_MS;
+  // Each 5-minute slot holds 100 ok census reads (20 a minute), every one a paid product read.
+  const rows = Array.from({ length: HOLD_MS / 300_000 }, (_, index) => ({ slot: String(from + index * 300_000), good: "0", paid: "100" }));
+  const paidOnly = slotsOfRows(rows);
+  const data = base({ board: BOARD, igSlowest: slowestHour(paidOnly, from, to), igLast30: lastHalfHour(paidOnly, to), igPaid: paidPerMinute(paidOnly) });
+  const row = goalRows(data)[0]!;
+  assert.equal(row.goal, IG_HOUSE_READS_PER_MIN);
+  assert.ok(missed(row));
+  assert.match(goalLine(row), /^Instagram house census reads: 0 ok a minute .*\(0 a minute in the last 30 min; 20 paid product reads a minute over 6 h left out\)\. Missed\.$/);
+  const house = slotsOfRows(rows.map(r => ({ ...r, good: "100", paid: "0" })));
+  assert.ok(!missed(goalRows(base({ board: BOARD, igSlowest: slowestHour(house, from, to) }))[0]!));
+  assert.deepEqual(slotsOfRows([{ slot: "1", good: "7" }]), [{ slot: 1, good: 7 }], "TikTok Shop rows carry no paid count, since only the house walker writes them");
+  const rowsOut = goalRows(base({ board: BOARD, igSlowest: 4_423, igLast30: 11_660, deployMinutes: 45 }));
+  assert.match(rowsOut[0]!.reads, /outside 45 min of prod deploys/);
 });
 
 test("every throughput goal is one row, and the headline counts the rows prod misses", () => {
