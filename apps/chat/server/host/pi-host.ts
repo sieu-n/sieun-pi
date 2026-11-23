@@ -5,7 +5,7 @@
 import { randomUUID } from "node:crypto";
 import { connect, type Socket } from "node:net";
 import type { IndexRead } from "../../../../packages/pi-host/src/durable/index-db.ts";
-import type { DurableEvent, DurableThread, EntriesQuery, EntryRecord, Host, SubmissionRecord, Submitted, SubmitInput, Ticket, TreeNode, UsageRange, UsageTotal } from "./types.ts";
+import type { CreateOptions, DurableEvent, DurableThread, EntriesQuery, EntryRecord, Host, SubmissionRecord, Submitted, SubmitInput, Ticket, TreeNode, UsageRange, UsageTotal } from "./types.ts";
 
 type Pending = { resolve: (data: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout };
 type Watch = { thread: string; conversation?: number; fromEntry?: number; sink: (event: DurableEvent) => void; hostId?: string; stopped: boolean };
@@ -133,11 +133,11 @@ export class PiHost implements Host {
 
   /**
    * Sends one command. While pi-host restarts (its socket refuses, or it closes mid-call), the call tries again for up to 30 s, except a
-   * command that would act twice: `durable_create` and `durable_import` make a new thread each time, and a submit without a requestId.
-   * `timeoutMs` 0 waits as long as the connection lives, for `durable_wait`.
+   * command that would act twice: `durable_create` without a `thread` id and `durable_import` make a new thread each time, and a submit
+   * without a requestId. `timeoutMs` 0 waits as long as the connection lives, for `durable_wait`.
    */
   async call(type: string, fields: Record<string, unknown> = {}, timeoutMs = COMMAND_TIMEOUT_MS): Promise<unknown> {
-    const repeatable = type !== "durable_create" && type !== "durable_import" && !(type === "durable_submit" && !fields.requestId);
+    const repeatable = !(type === "durable_create" && !fields.thread) && type !== "durable_import" && !(type === "durable_submit" && !fields.requestId);
     const end = Date.now() + RESTART_WAIT_MS;
     for (;;) {
       if (this.closed) throw new Error(`pi-host client is closed; ${type} not sent`);
@@ -168,7 +168,7 @@ export class PiHost implements Host {
   async threads(opts: { archived?: boolean } = {}): Promise<DurableThread[]> {
     return ((await this.call("durable_threads", opts)) as { threads: DurableThread[] }).threads;
   }
-  async create(opts: { name?: string; model?: string; thinkingLevel?: string; cwd?: string }): Promise<DurableThread> {
+  async create(opts: Omit<CreateOptions, "box">): Promise<DurableThread> {
     return ((await this.call("durable_create", opts)) as { thread: DurableThread }).thread;
   }
   async submit(thread: string, input: SubmitInput): Promise<Submitted> {

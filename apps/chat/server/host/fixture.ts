@@ -16,7 +16,7 @@ import type { TurnPlace } from "../../web/src/lib/api/types.ts";
 import { DEFAULT_MODEL } from "../config.ts";
 import type { IndexRead } from "../../../../packages/pi-host/src/durable/index-db.ts";
 import type { EntryRow } from "../search-engine.ts";
-import type { ContentBlock, DurableEvent, DurableThread, EntryRecord, Host, Message, SubmissionRecord, Submitted, SubmitInput, Ticket, TreeNode, UsageRange, UsageTotal } from "./types.ts";
+import type { ContentBlock, CreateOptions, DurableEvent, DurableThread, EntryRecord, Host, Message, SubmissionRecord, Submitted, SubmitInput, Ticket, TreeNode, UsageRange, UsageTotal } from "./types.ts";
 
 interface FakeThread {
   row: DurableThread;
@@ -129,11 +129,13 @@ export class FixtureHost implements Host {
     return [...this.threadsById.values()].map(t => ({ ...t.row })).filter(t => opts.archived === undefined || t.archived === opts.archived);
   }
 
-  async create(opts: { name?: string; model?: string; thinkingLevel?: string; cwd?: string }): Promise<DurableThread> {
+  async create(opts: Omit<CreateOptions, "box">): Promise<DurableThread> {
     // The hand-over rig (scripts/handoff-rig) holds a create as long as a slow pi-host create takes, to put a write in flight across a hand-over.
     const hold = Number(process.env.APPS_CHAT_FIXTURE_CREATE_MS);
     if (hold > 0) await new Promise(resolve => setTimeout(resolve, hold));
-    const thread = this.addThread({ name: opts.name ?? "New thread", createdAt: this.now(), ...(opts.model ? { model: opts.model } : {}) });
+    const known = opts.thread === undefined ? undefined : this.threadsById.get(opts.thread);
+    if (known) return { ...known.row };
+    const thread = this.addThread({ ...(opts.thread ? { id: opts.thread } : {}), name: opts.name ?? "New thread", createdAt: this.now(), ...(opts.model ? { model: opts.model } : {}) });
     if (opts.thinkingLevel) thread.row.thinkingLevel = opts.thinkingLevel;
     if (opts.cwd) thread.row.cwd = opts.cwd;
     return { ...thread.row };

@@ -94,7 +94,8 @@ export interface SubmitInput {
   ownerTurn?: boolean;
 }
 
-export interface CreateOptions { name?: string; model?: string; thinkingLevel?: string; cwd?: string; box?: string }
+/** `thread` is the new thread's uuid: a create sent again with it answers the thread the first one made instead of making another. */
+export interface CreateOptions { thread?: string; name?: string; model?: string; thinkingLevel?: string; cwd?: string; box?: string }
 
 export type Ping = ({ ok: true; version: string } | { ok: false; error: string }) & { boxes?: Record<string, { ok: true; version: string } | { ok: false; error: string }> };
 

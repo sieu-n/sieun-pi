@@ -80,6 +80,48 @@ describe("delivery to the comm thread", () => {
       rmSync(dataDir, { recursive: true, force: true });
     }
   });
+
+  test("a comm thread create that timed out after pi-host made the thread, tried again in the next pass and after a restart, leaves one thread", async () => {
+    // On 11-23 pi-host's loop froze for 14 min, apps/chat's create for agent factory's #1124-cost-management comm thread timed out three
+    // times, and each try made a thread: two stayed behind empty.
+    const dataDir = mkdtempSync(join(tmpdir(), "apps-chat-comm-again-"));
+    const host = new FixtureHost();
+    host.wordMs = 0;
+    seedFixture(host, dataDir);
+    const create = host.create.bind(host);
+    const timedOut = new Set<string>();
+    host.create = async opts => {
+      const made = await create(opts);
+      if (timedOut.has(made.name)) return made;
+      timedOut.add(made.name);
+      throw new Error("pi-host did not answer durable_create in 120 s");
+    };
+    const doubles = () => {
+      const names = [...host.threadsById.values()].map(t => t.row.name).filter(name => name.includes(" · "));
+      return names.filter((name, i) => names.indexOf(name) !== i);
+    };
+    try {
+      const first = await start({ host, dataDir });
+      try {
+        assert.ok(timedOut.size > 0, "the first pass's creates timed out");
+        await first.app.ensureComms();
+        assert.deepEqual(doubles(), []);
+      } finally {
+        await first.close();
+      }
+      const second = await start({ host, dataDir });
+      try {
+        const comm = commOf(second);
+        assert.ok(comm, "the second try made the comm thread");
+        assert.deepEqual(doubles(), []);
+        assert.deepEqual([...host.threadsById.values()].filter(t => t.row.name === "Vent · DM").map(t => t.row.id), [comm]);
+      } finally {
+        await second.close();
+      }
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("the feed's switch", () => {

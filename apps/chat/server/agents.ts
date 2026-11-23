@@ -8,6 +8,7 @@
  * in the room, and the work thread does the work. The server makes it for the agent's DM and each room it joins after each thread list read
  * (`App.ensureComms`), and a delivery that comes first makes it then, a DM's as a channel's or a Solo room's (phase 5, group-rooms.ts).
  */
+import { createHash } from "node:crypto";
 import type { AgentHostState, AgentId, AgentSummary, RunStatus, ThinkingLevel } from "../web/src/lib/api/types.ts";
 import { AGENT_REF_DOC, agentRef, commRef, sameRef, type AgentRef } from "./agent-folder.ts";
 import { freeSlug, isUntitled, type AgentRecord, type AgentStore, type RoomId } from "./agent-store.ts";
@@ -27,6 +28,18 @@ export const isAgentId = (id: string): boolean => id.startsWith("ag_");
  */
 export const threadModel = (work: DurableThread | undefined): { model: string; thinkingLevel: string } =>
   work?.provider && work.modelId ? { model: `${work.provider}/${work.modelId}`, thinkingLevel: work.thinkingLevel || DEFAULT_THINKING } : { model: DEFAULT_MODEL, thinkingLevel: DEFAULT_THINKING };
+/**
+ * The id of an agent's comm thread in `room`, a uuid (version 5 layout) from a SHA-1 of its work thread id and the room, so every try to make
+ * it names one thread and pi-host makes it once. On 11-23 a comm thread create timed out in a pi-host loop freeze, and its three tries made
+ * three threads.
+ */
+export function commThreadId(workThread: string, room: RoomId): string {
+  const bytes = createHash("sha1").update(`comm:${workThread}:${room}`).digest().subarray(0, 16);
+  bytes[6] = (bytes[6]! & 0x0f) | 0x50;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
 /** A DM room id, `dm_<slug>`. */
 export const isRoomId = (id: string): boolean => id.startsWith("dm_");
 /** A channel (`ch_<id>`) or Solo room (`so_<id>`) id (group-rooms.ts). */
@@ -240,15 +253,17 @@ export class Agents {
   /**
    * The thread `ensureComm` makes for the agent's comm thread in `room`, on its work thread's model and thinking level (`threadModel`):
    * named `<agent> · DM`, `<agent> · #<channel>` or `<agent> · Solo <name>`. A work thread answers its comm thread by that exact name, so a
-   * name another root thread holds gets the room id after it.
+   * name another root thread holds gets the room id after it. Its id comes from the work thread and the room (`commThreadId`), so a create
+   * tried again after a timeout or a restart answers the thread the first try made.
    */
-  private async commCreate(record: AgentRecord, room: RoomId): Promise<{ name: string; model: string; thinkingLevel: string; cwd: string }> {
+  private async commCreate(record: AgentRecord, room: RoomId): Promise<{ thread: string; name: string; model: string; thinkingLevel: string; cwd: string }> {
     const row = this.store.rooms.rooms.find(r => r.id === room);
     const label = !row || row.kind === "dm" ? "DM" : row.kind === "channel" ? `#${row.name}` : `Solo ${row.name}`;
+    const thread = commThreadId(record.workThread, room);
     const threads = await this.host.threads().catch(() => []);
     let name = `${record.name} · ${label}`;
-    if (row && row.kind !== "dm" && threads.some(t => t.name === name)) name = `${name} (${room})`;
-    return { name, ...threadModel(threads.find(t => t.id === record.workThread)), cwd: record.home };
+    if (row && row.kind !== "dm" && threads.some(t => t.name === name && t.id !== thread)) name = `${name} (${room})`;
+    return { thread, name, ...threadModel(threads.find(t => t.id === record.workThread)), cwd: record.home };
   }
 
   /**

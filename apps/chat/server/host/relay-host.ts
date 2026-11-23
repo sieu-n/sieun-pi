@@ -76,7 +76,7 @@ const headersOf = (headers: Headers): Record<string, string> => {
 
 /** Whether sending the call twice cannot act twice, as PiHost's call loop reads it. */
 const repeatable = (op: ServerOp, args: Record<string, unknown>): boolean =>
-  op !== "durable_create" && op !== "durable_import" && op !== "file_put" && op !== "check" && !(op === "durable_submit" && !args.requestId);
+  !(op === "durable_create" && !args.thread) && op !== "durable_import" && op !== "file_put" && op !== "check" && !(op === "durable_submit" && !args.requestId);
 
 /** How long after its first hello a server counts what it asks of the box, once per process (`StartTally`). */
 const TALLY_MS = 10_000;
