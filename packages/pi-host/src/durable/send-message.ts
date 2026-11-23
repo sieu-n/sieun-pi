@@ -8,8 +8,8 @@
  *
  * A thread that runs Prime's chat extension (`prime-chat.ts`) speaks to the owner through Prime's own `tell_owner`, with its guard, as a
  * Prime chat does. There send_message stays as an alias (`SendMessageAlias`, same tool and result, a description that points to
- * tell_owner) for what apps/chat still asks for by this name: a channel post's reply (channels.ts) and a duty job's report (duty-run.ts),
- * which a guard built for the owner's DM would hold. apps/chat draws both tools' calls as the agent's bubbles.
+ * tell_owner) for what apps/chat still asks for by this name: a check-in job's report (apps/chat/server/check-in-job.ts), which a guard built
+ * for the owner's DM would hold. apps/chat draws both tools' calls as the agent's bubbles.
  */
 import { Type } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool, type Extension } from "@earendil-works/pi-durable";

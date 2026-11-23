@@ -23,7 +23,7 @@ import {
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import type { OwnerMark, TurnTicket } from "@sieun-pi/pi-pool/durable";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, statSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { Leases, SessionLockedError } from "../lease.ts";
 import { statusOf, ThreadIndex, type IndexedEntry, type IndexRead, type SearchPage, type SearchQuery, type ThreadRow, type ThreadStatus, type UsageRange, type UsageRead, type UsageRow, type UsageTotal } from "./index-db.ts";
@@ -1140,12 +1140,6 @@ export class DurableThreads {
   /** The usage rows after `cursor` from `since` on, which the chat keeps in memory for every box. */
   usageRead(cursor: string | undefined, since?: number): UsageRead {
     return this.index.readUsage(cursor, since);
-  }
-
-  /** Files in the folder that the index does not list, such as a copied-in thread; each needs `adopt`. */
-  unlisted(): string[] {
-    if (!existsSync(this.threadsDir)) return [];
-    return readdirSync(this.threadsDir).filter(name => name.endsWith(".sqlite")).map(name => name.slice(0, -".sqlite".length)).filter(id => !this.index.get(id));
   }
 
   isLocked(error: unknown): error is SessionLockedError {

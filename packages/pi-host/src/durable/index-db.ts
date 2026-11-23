@@ -1,7 +1,9 @@
 /**
  * The host's one index over every durable thread file in a folder: the thread rows the chat lists, the wake each thread
- * last reported, the full-text search rows and the usage rows. Only pi-host writes it, and every row is derived from the
- * thread files, so a lost or stale index is rebuilt from them (`DurableThreads.reindex`).
+ * last reported, the full-text search rows and the usage rows. Only pi-host writes it. The search and usage rows come from the
+ * thread files, and when a schema change drops them (`ThreadIndex.rebuilt`), `DurableThreads.start` opens each listed thread so its
+ * backfill writes them again. The thread rows, with each name and archived flag, live only here, and no code lists the thread files
+ * again, so a lost index loses the thread list.
  */
 import { DatabaseSync } from "node:sqlite";
 import type { FeedRow } from "../../../../components/prime-relay/agents/protocol.ts";

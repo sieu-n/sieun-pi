@@ -189,7 +189,7 @@ function boardFiles(dataDir: string, thread: string): string[] {
 
 const at = (entry: EntryRecord): Ms | undefined => entry.model?.[0]?.timestamp;
 const via = (entry: EntryRecord): string => String((entry.data as { via?: unknown } | undefined)?.via ?? "");
-/** A channel post's input: channels.ts sends it as an agent.message from `#<channel name>`. */
+/** A channel post's input: an agent.message whose `via` is the room id (`group-rooms.ts`), or `#<channel name>` from the retired channels.ts. */
 const fromChannel = (entry: EntryRecord): boolean => entry.kind === "agent.message" && (via(entry).startsWith("#") || via(entry).startsWith("ch_"));
 
 /**

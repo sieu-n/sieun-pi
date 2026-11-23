@@ -3,7 +3,8 @@
  * (scripts/duties/api-speed.ts). The server writes its own handler time (`src: "server"`), and the web client posts the time it waited for
  * each call (`src: "client"`, POST /api/timings), which also holds the wait while another request blocks the server's one event loop. On 11-03
  * a 3.9 s search made a concurrent replies call take 2.17 s where the handler took 0.01 s, so only the client line shows what the owner feels.
- * A day file older than the duty's 24 h window can hold is deleted when the day changes.
+ * The log keeps today's file and the 2 UTC days before it, 48 to 72 h of lines, for the duty's 24 h window and its 72 h lookback on a quiet
+ * day (`LOOKBACK_MS` in api-speed.ts). An older file is deleted when the day changes.
  */
 import { appendFile, mkdir, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -96,7 +97,7 @@ export interface ClientTiming {
   m: string; p: string; s: number; ms: number; net?: number; enc?: number; stored?: number; err?: string; shown?: true; bg?: "ahead" | "shown"; page?: "visible" | "hidden" | "leaving"; hid?: number;
 }
 
-/** A 24 h window spans at most two UTC days, so a file older than yesterday holds no line the duty reads. */
+/** Today's file and the 2 UTC days before it stay: the duty's whole 24 h window and 48 to 72 h of its 72 h lookback (`LOOKBACK_MS`). */
 const KEEP_DAYS = 2;
 
 export const dayOf = (at: number): string => new Date(at).toISOString().slice(0, 10);
