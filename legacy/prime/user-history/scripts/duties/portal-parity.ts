@@ -20,8 +20,7 @@ import { checkCleanup } from "./test-org-cleanup.ts";
  *    (intelligence profile and contact reads) are called here once a UTC day, and the run output lists what each prod call cost.
  * 3. It sorts each answer: 2xx works, an answer that names a proxy supply hold or a paused source is held, an `upstream_*` or `capacity_exhausted`
  *    code is a crawler cause (the portal passes crawler errors on that way), anything else is a portal cause, and a call it could not make or
- *    judge is unprobed. A page-1 answer with a cursor gets one page-2 call. While an env's crawler reports a proxy supply hold, the run sends
- *    no operation that reads from the crawler box (isBoxEgress) and scores each as held. A held route counts as not working in its env's share.
+ *    judge is unprobed. A page-1 answer with a cursor gets one page-2 call. A held route counts as not working in its env's share.
  * 4. It maps answers to crawler routes through portal-parity.routes.json: an env scores a route its own crawler lists, the route works there
  *    when one of its /v1 operations works there, and a route with no /v1 operation in that env's openapi is missing there.
  * A source it cannot read, an env's crawler openapi included, gives -1 for that env's share, a source_errors count and a flagged slice.
@@ -185,13 +184,10 @@ export function firstReplyKeys(body: unknown): Record<string, string> | undefine
 }
 
 /**
- * Whether an operation reads from the crawler box: every /v1/crawl operation compiles onto the crawler door (POST /api/crawl/fetch), whose
- * `direct` preset read from the box's own address until auto-sns-agent 5088551f80 reaches that env. On 11-20 d2 sent 108 such calls to
- * staging in one hour after the owner's rule c230 ("NEVER EVER FUCKING RUN WITHOUT PROXY JUST STOP FOR NOW").
+ * What holds an env's proxy supply in its crawler's GET /ops/status answer (`supply_holds`), or null when nothing does. Every /v1/crawl
+ * preset reads through the crawler's proxy pool since auto-sns-agent 5088551f80 (11-20), so the run sends them under a hold too and the
+ * crawler answers them held. On 11-23 at 07:37Z the 18 the run held back unsent were the one held route with no crawler answer to check.
  */
-export const isBoxEgress = (op: string) => / \/v1\/crawl\//.test(op);
-
-/** What holds an env's proxy supply in its crawler's GET /ops/status answer (`supply_holds`), or null when nothing does. */
 export function supplyHoldOf(status: unknown): string | null {
   const holds = (status as { data?: { supply_holds?: unknown } } | null)?.data?.supply_holds;
   if (!Array.isArray(holds)) return "the crawler's /ops/status answer has no supply_holds list";
@@ -201,16 +197,6 @@ export function supplyHoldOf(status: unknown): string | null {
     const what = [provider, code ?? message].filter(part => typeof part === "string" && part).join(" ") || "a hold";
     return typeof since === "number" ? `${what} since ${new Date(since * 1000).toISOString().slice(0, 16)}Z` : what;
   }).join("; ");
-}
-
-/** A held result with no call for each box-egress operation of `doc` while `hold` names what holds the env's proxy supply. */
-export function heldEgress(doc: OpenApi, hold: string | null): Map<string, ProbeResult> {
-  const held = new Map<string, ProbeResult>();
-  if (!hold) return held;
-  for (const op of operations(doc).keys()) {
-    if (isBoxEgress(op)) held.set(op, { op, verdict: "held", status: 0, ms: 0, note: `not sent: it reads from the crawler box while the proxy supply is held (${hold}), c230` });
-  }
-  return held;
 }
 
 /** The first item id of a list answer, whose `data` is the list or holds it as `items`. */
@@ -1000,7 +986,7 @@ async function main(): Promise<void> {
     try { return await run(); } catch (error) { sourceErrors.push(`${what}: ${error instanceof Error ? error.message : String(error)}`); return null; }
   };
   type EnvFile = { urls: Record<string, string>; keySources: Record<string, { cmd: string }> };
-  // A supply hold the run cannot read counts as held, so an unread /ops/status never lets a box-egress call out (c230).
+  // A supply hold the run cannot read counts as held, so a batch whose rows all failed under an unread /ops/status reads held.
   const supplyHold = async (name: Env, file: EnvFile | null): Promise<string | null> => {
     if (!file) return null;
     const read = await attempt(`the ${name} crawler's /ops/status supply holds`, async () => {
@@ -1037,9 +1023,9 @@ async function main(): Promise<void> {
       if (seeded) orgs.push(...seeded);
     }
     await Promise.all([
-      orgs.length && staging ? probeEnv({ env: "staging", base, doc: staging, orgs, skip: new Map(), held: heldEgress(staging, stagingHold), hold: stagingHold, perMinute: perMinute(orgs), lastMs: previous?.ms }, routes)
+      orgs.length && staging ? probeEnv({ env: "staging", base, doc: staging, orgs, skip: new Map(), hold: stagingHold, perMinute: perMinute(orgs), lastMs: previous?.ms }, routes)
         .then(results => { probes.staging = results; }) : null,
-      prod && prodOrg && skips && prodEnv ? probeEnv({ env: "prod", base: prodEnv.urls.apiPortal!, doc: prod, orgs: [prodOrg], skip: skips.skip, held: new Map([...held, ...heldEgress(prod, prodHold)]), hold: prodHold, perMinute: perMinute([prodOrg]), spend, lastMs: previous?.ms, ledger: jobLedger(JOBS_DIR) }, routes)
+      prod && prodOrg && skips && prodEnv ? probeEnv({ env: "prod", base: prodEnv.urls.apiPortal!, doc: prod, orgs: [prodOrg], skip: skips.skip, held, hold: prodHold, perMinute: perMinute([prodOrg]), spend, lastMs: previous?.ms, ledger: jobLedger(JOBS_DIR) }, routes)
         .then(results => { probes.prod = results; }) : null,
     ]);
   } finally {

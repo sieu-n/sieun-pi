@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
-import { MEDIA_OP, UNMEASURED_PCT, classify, firstMediaUrl, heldEgress, heldInput, heldMedia, heldPaidReads, parityMetrics, probeMedia, scoredRoutes, snapshotRowsVerdict, supplyHoldOf, type OpenApi, type ProbeResult, type Route } from "../scripts/duties/portal-parity.ts";
+import { MEDIA_OP, UNMEASURED_PCT, classify, firstMediaUrl, heldInput, heldMedia, heldPaidReads, parityMetrics, probeMedia, scoredRoutes, snapshotRowsVerdict, supplyHoldOf, type OpenApi, type ProbeResult, type Route } from "../scripts/duties/portal-parity.ts";
 
 const doc = (...ops: string[]): OpenApi => {
   const paths: NonNullable<OpenApi["paths"]> = {};
@@ -155,18 +155,11 @@ test("a keyless media read the crawler held on purpose scores as held, not the p
   assert.equal((await probeMedia(url)).verdict, "portal");
 });
 
-test("while an env's crawler reports a proxy supply hold, the run sends none of its box-egress /v1/crawl calls", () => {
-  // 11-20: d2 sent 108 /v1/crawl direct preset calls to staging in one hour after the owner's rule c230.
+test("a crawler's supply holds read as what holds its proxy supply, or null when it holds none", () => {
   const status = { ok: true, data: { supply_holds: [{ provider: "geonode", code: "proxy_auth_failed", connect_status: 407, since: 1794213898.7 }] } };
-  const hold = supplyHoldOf(status);
-  assert.match(hold!, /geonode proxy_auth_failed since 2026-11-09/);
+  assert.match(supplyHoldOf(status)!, /geonode proxy_auth_failed since 2026-11-09/);
   assert.equal(supplyHoldOf({ ok: true, data: { supply_holds: [] } }), null);
   assert.ok(supplyHoldOf({ ok: true, data: {} }));
-  const both = doc("GET /v1/crawl/linktree/page", "POST /v1/crawl/web-scraping-api", "GET /v1/instagram/user_feed");
-  const held = heldEgress(both, hold);
-  assert.deepEqual([...held.keys()].sort(), ["GET /v1/crawl/linktree/page", "POST /v1/crawl/web-scraping-api"]);
-  assert.equal(held.get("GET /v1/crawl/linktree/page")!.verdict, "held");
-  assert.equal(heldEgress(both, null).size, 0);
 });
 
 test("an answer that names a proxy supply hold or a switched-off Vent is held, not the crawler's", () => {
