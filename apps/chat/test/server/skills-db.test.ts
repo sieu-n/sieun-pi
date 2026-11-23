@@ -129,6 +129,17 @@ test("install places a link once, a second apply and a rescan change nothing, an
   assert.equal(db.view(IDLE).skills.find(s => s.id === "git:tools/.agents/skills/deploy-notes")!.installs.length, 1);
 });
 
+test("move reports its place step as create and its delete step as delete, as sw skills move prints them", async t => {
+  const { fixture, db, scan, present } = rig(t);
+  scan();
+  const from = join(fixture.home, ".codex/skills/deploy-notes");
+  const to = join(fixture.home, ".codex/skills/deploy-notes-moved");
+  const installed = await db.install({ name: "deploy-notes", box: BOX, runtime: "codex" });
+  const moved = await db.move({ installId: installed.apply!.steps[0]!.installId, path: to });
+  assert.deepEqual(moved.apply?.steps.map(s => [s.step, s.path, s.result]), [["create", to, "done"], ["delete", from, "done"]]);
+  assert.ok(present(to) && !present(from));
+});
+
 test("a link deleted by hand shows as missing, apply puts it back, and the next apply does nothing", async t => {
   const { fixture, db, scan } = rig(t);
   scan();

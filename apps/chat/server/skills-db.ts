@@ -947,7 +947,7 @@ export class SkillsDb {
     });
     const error = failure("remove", moveId, results);
     if (error) throw error;
-    return { move: this.moveById(moveId)!, apply: diskResult(moveId, results, "delete") };
+    return { move: this.moveById(moveId)!, apply: diskResult(moveId, results, () => "delete") };
   }
 
   async adopt(body: AdoptBody): Promise<SkillsChange> {
@@ -997,10 +997,11 @@ export class SkillsDb {
     const from = install.mode === "copy" ? this.copySource(install, st) : install.target;
     const copies = [`${install.box}:${install.path}`, `${install.box}:${body.path}`];
     const before = this.snapshot({ installs: [install.id], copies });
-    const results = await this.disk.run(item, [
+    const steps: DiskStep[] = [
       { kind: "place", box: install.box, path: body.path, name, mode: install.mode, from },
       { kind: "delete", box: install.box, path: install.path, name },
-    ]);
+    ];
+    const results = await this.disk.run(item, steps);
     const ok = results.every(r => r.state === "applied" || r.state === "queued");
     await this.write(() => {
       if (ok) {
@@ -1012,7 +1013,7 @@ export class SkillsDb {
     });
     const error = failure("move", moveId, results);
     if (error) throw error;
-    return { move: this.moveById(moveId)!, apply: diskResult(moveId, results, "create") };
+    return { move: this.moveById(moveId)!, apply: diskResult(moveId, results, i => shownStep(steps[i]!)) };
   }
 
   /** Hands agent factory the merge of one skill into another; the agent checks it, moves the lines, then removes the first with sw skills remove. */
@@ -1028,7 +1029,7 @@ export class SkillsDb {
     const item = `sw:${moveId}`;
     const results = await this.disk.run(item, [{ kind: "fold", box: canon.box, path: canon.path, name: from.name, into: into.id, reason }]);
     await this.write(() => this.record("merge", `merge ${from.id} into ${into.id}`, item, emptySnapshot(), emptyTouched(), moveId));
-    return { move: this.moveById(moveId)!, apply: diskResult(moveId, results, "fold") };
+    return { move: this.moveById(moveId)!, apply: diskResult(moveId, results, () => "fold") };
   }
 
   async own(body: OwnBody): Promise<SkillsChange> {
@@ -1067,7 +1068,7 @@ export class SkillsDb {
     });
     const error = failure("undo", move.id, results);
     if (error) throw error;
-    return { move: this.moveById(move.id)!, apply: diskResult(move.id, results, "restore") };
+    return { move: this.moveById(move.id)!, apply: diskResult(move.id, results, () => "restore") };
   }
 
   private moveRow(id: string): MoveRow | null {
@@ -1089,11 +1090,15 @@ const newMove = (): string => `mv_${Date.now().toString(36)}${randomBytes(3).toS
 const emptySnapshot = (): Snapshot => ({ skills: [], installs: [], copies: [] });
 const emptyTouched = (): Touched => ({ skills: [], installs: [], copies: [] });
 
-function diskResult(moveId: string, results: DiskResult[], step: ApplyStep["step"]): ApplyResult {
+/** The apply step a disk step reads as: placing a folder creates it. */
+const shownStep = (step: DiskStep): ApplyStep["step"] => (step.kind === "place" ? "create" : step.kind);
+
+/** `stepOf(i)` names the step of `results[i]`, as the disk runs one result per step in order. */
+function diskResult(moveId: string, results: DiskResult[], stepOf: (index: number) => ApplyStep["step"]): ApplyResult {
   return {
     at: now(), dryRun: false, changes: results.filter(r => r.state === "applied" || r.state === "queued" || r.state === "undone").length, moveId,
-    steps: results.map(r => ({
-      installId: "", box: r.box, path: r.path, step,
+    steps: results.map((r, i) => ({
+      installId: "", box: r.box, path: r.path, step: stepOf(i),
       result: r.state === "applied" || r.state === "undone" ? "done" : r.state === "queued" ? "queued" : r.state === "pending" ? "planned" : "failed", note: r.note,
     })),
   };
