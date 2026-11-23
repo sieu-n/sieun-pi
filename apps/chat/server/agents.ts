@@ -108,6 +108,11 @@ export class Agents {
   /** The first agent.ref writes in flight (`firstRef`), by thread. */
   private readonly writingRefs = new Map<string, Promise<boolean>>();
   private sweeping?: Promise<void>;
+  /**
+   * The threads whose agent.ref read or write failed, by box. A box's first failure logs and its last thread's success logs, and the
+   * failures between log nothing: while the Mac slept, every 2 s sweep logged one line per thread, about 43,000 lines a day (11-22 journal).
+   */
+  private readonly refFailures = new Map<string, Set<string>>();
   /** The comm thread being made per `<agent id>/<room>`, so two deliveries at once make one. */
   private readonly making = new Map<string, Promise<string>>();
   /** Makes a thread and claims it before a thread list read lists it; the App sets it to `Threads.create`. */
@@ -363,11 +368,29 @@ export class Agents {
       if (!sameRef(await this.host.docGet(thread, AGENT_REF_DOC), ref)) await this.host.docPut(thread, AGENT_REF_DOC, ref);
       this.refs.set(thread, { host: this.boxOf(ref), ref });
       this.refsChanged = true;
+      this.refWorked(this.boxOf(ref), thread);
       return true;
     } catch (error) {
-      this.log(`agent.ref for ${thread} (${ref.agent}) not written, next sweep tries again: ${error instanceof Error ? error.message : String(error)}`);
+      this.refFailed(this.boxOf(ref), thread, ref, error);
       return false;
     }
+  }
+
+  private refFailed(box: string, thread: string, ref: AgentRef, error: unknown): void {
+    const failing = this.refFailures.get(box);
+    if (failing) {
+      failing.add(thread);
+      return;
+    }
+    this.refFailures.set(box, new Set([thread]));
+    this.log(`agent.ref writes on ${box} fail, each sweep tries again and logs once more when they work; first, ${thread} (${ref.agent}): ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  private refWorked(box: string, thread: string): void {
+    const failing = this.refFailures.get(box);
+    if (!failing?.delete(thread) || failing.size) return;
+    this.refFailures.delete(box);
+    this.log(`agent.ref writes on ${box} work again`);
   }
 
   /** Names and archived flags follow the work threads; answers whether a record changed. */
