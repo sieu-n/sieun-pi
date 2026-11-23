@@ -110,6 +110,7 @@ const heldChild = (state: unknown): number | undefined => {
 };
 /** The statuses of a task that is not over yet (pi-durable's scheduler `LIVE_STATUSES`). */
 const LIVE = ["pending", "running", "waiting", "sleeping", "completing"] as const;
+const DELIVER = "rlm.deliver";
 
 type DeliverState =
   | { phase: "deliver" }
@@ -129,7 +130,7 @@ export const textOfMessage = (message: Message | undefined): string => {
  * child conversation. A restart reruns a phase from its top; the request ids find the submissions it already made.
  */
 export const DeliverTask = defineTask<DeliverInput, DeliverState, null>({
-  name: "rlm.deliver",
+  name: DELIVER,
   version: 1,
   initial: () => ({ phase: "deliver" }),
   phases: {
@@ -177,21 +178,20 @@ export const DeliverTask = defineTask<DeliverInput, DeliverState, null>({
         const { subagents, holder } = await new Promise<{ subagents: TaskId[]; holder?: TaskId }>((resolve, reject) => void runtime.commit(async tx => {
           const live: TaskId[] = [];
           let holder: TaskId | undefined;
+          // One scan per status over the whole file, filtered here: a scan that also names the conversation and kind makes SQLite walk
+          // every task of that conversation, and a thread root's 5,640 tasks took 14 to 80 ms per scan, ten scans per hold, on 11-23
+          // (~/work/pi-host-stalls/h-restart-resume/report.md). The few tasks not over yet sit in the status index.
           for (const status of LIVE) {
             let cursor: Parameters<typeof tx.scanTasks>[2];
             do {
-              const page = await tx.scanTasks({ conversationId: s.child as ConversationId, kind: "rlm.deliver", status }, 500, cursor);
-              live.push(...page.items.filter(t => (t.input as DeliverInput).parent === s.child).map(t => t.id));
+              const page = await tx.scanTasks({ status }, 500, cursor);
+              for (const t of page.items) {
+                if (t.kind !== DELIVER) continue;
+                if (t.conversationId === s.child && (t.input as DeliverInput).parent === s.child) live.push(t.id);
+                if (t.conversationId === task.input.parent && t.id < runtime.taskId && (holder === undefined || t.id < holder) && heldChild(t.state) === s.child) holder = t.id;
+              }
               cursor = page.next;
             } while (cursor !== undefined);
-            let sibling: Parameters<typeof tx.scanTasks>[2];
-            do {
-              const page = await tx.scanTasks({ conversationId: task.input.parent as ConversationId, kind: "rlm.deliver", status }, 500, sibling);
-              for (const t of page.items) {
-                if (t.id < runtime.taskId && (holder === undefined || t.id < holder) && heldChild(t.state) === s.child) holder = t.id;
-              }
-              sibling = page.next;
-            } while (sibling !== undefined);
           }
           resolve({ subagents: live, ...(holder === undefined ? {} : { holder }) });
           return undefined;
