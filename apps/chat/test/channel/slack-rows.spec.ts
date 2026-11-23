@@ -24,9 +24,10 @@ test("a channel draws Slack rows: avatar and name on the left of every post, and
   await expect(owner.locator("[data-thread-pill]")).toContainText(/\d+ replies/);
 });
 
-test("a follow-up post within 5 minutes joins the group with no avatar or name", async ({ page }) => {
-  await open(page, "#/c/ch_general");
+test("a follow-up post within 5 minutes joins the group with no avatar or name", async ({ page, request }) => {
   const word = tag();
+  const room = ((await (await request.post("/api/rooms", { data: { kind: "channel", name: `pair-${word}`, members: [], test: true } })).json()) as { id: string }).id;
+  await open(page, `#/c/${room}`);
   const input = composerInput(conversation(page));
   for (const n of [1, 2]) {
     await input.click();
