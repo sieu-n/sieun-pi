@@ -858,9 +858,32 @@ export interface AgentConfig {
     checkIn: { everyMs: number; paused: boolean; nextAt: Ms | null; lastAt: Ms | null } | null;
     /** The file that holds the duties, their runs and the check-in. */
     dutiesFile: ConfigFile | null;
+    /** The board.wakes set on any of its threads that have not gone out yet, the soonest first and run wakes before them. */
+    wakes: AgentWake[];
   };
-  /** pi-host's own sums for its whole thread file over the last 7 days; null when the host does not answer. */
-  usage: { days: number; turns: number; cost: number; tokens: { input: number; output: number; cacheRead: number; cacheWrite: number }; scope: string } | null;
+  /**
+   * The Usage page's last 7 days over every thread of the agent: its main thread with the jobs inside it, its comm threads, and the root job
+   * threads filed under it, with the same sums split by those three kinds. Null when the host does not answer.
+   */
+  usage: {
+    days: number; turns: number; cost: number; tokens: { input: number; output: number; cacheRead: number; cacheWrite: number }; scope: string;
+    split: Record<ThreadKind, UsagePart>;
+  } | null;
+}
+
+/** The kinds of thread an agent runs: its main thread, one comm thread per room, and root job threads. */
+export type ThreadKind = "main" | "comm" | "jobs";
+/** One kind's share of an agent's 7 days: what it cost, its turns, and how many of its threads ran a turn. */
+export type UsagePart = { cost: number; turns: number; threads: number };
+
+/** A board.wake that has not gone out yet: the conversation it wakes, named as the agent page names it, and what it waits on. */
+export interface AgentWake {
+  id: ConversationId;
+  kind: ThreadKind;
+  name: string;
+  on: { kind: "run"; run: number; repo?: string } | { kind: "time"; at: Ms } | { kind: "check"; command: string; every: number; at: Ms };
+  note: string;
+  since: Ms;
 }
 
 export interface Me {

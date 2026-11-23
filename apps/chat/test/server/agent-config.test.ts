@@ -4,6 +4,7 @@
  * Run: cd apps/chat && node --import tsx --test --test-force-exit --test-isolation=none test/server/agent-config.test.ts
  */
 import assert from "node:assert/strict";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import type { AgentConfig, ConversationSummary, Sidebar } from "../../web/src/lib/api/types.ts";
@@ -119,7 +120,7 @@ test("an imported thread's harness digest and tagged notices before the first me
   await s.send("PATCH", `/api/c/dm_imported`, { archived: true });
 });
 
-test("a second config read takes its first input and ping from the first, and its usage is the Usage page's 7 days of the thread", async () => {
+test("a second config read takes its first input and ping from the first, and its usage is the Usage page's 7 days of every thread of the agent", async () => {
   const calls: string[] = [];
   const host = s.app.host as unknown as Record<string, (...args: unknown[]) => unknown>;
   const originals = { entries: host.entries!, ping: host.ping! };
@@ -133,13 +134,49 @@ test("a second config read takes its first input and ping from the first, and it
     assert.equal(calls.filter(call => call === "entries").length, 0);
     await new Promise(resolve => setImmediate(resolve));
     assert.ok(c.runs.hostVersion, "the kept ping answers");
-    const report = await s.get<{ rows: { thread: string; turns: number; cost: { total: number } }[] }>(`/api/usage?range=7d&bucket=hour&thread=${encodeURIComponent(ids.harness)}`);
-    const rows = report.rows.filter(row => row.thread === ids.harness);
-    assert.equal(c.usage?.turns, rows.reduce((sum, row) => sum + row.turns, 0));
-    assert.ok(Math.abs((c.usage?.cost ?? 0) - rows.reduce((sum, row) => sum + row.cost.total, 0)) < 1e-9);
+    const report = await s.get<{ rows: { thread: string; turns: number; cost: { total: number } }[] }>("/api/usage?range=7d&bucket=hour");
+    const jobThreads = new Set(c.swarm.jobs.map(job => job.id.split(":")[0]!));
+    const comm = new Set((c.agent.comm ?? []).map(row => row.thread));
+    const mine = new Set([ids.harness, ...comm, ...jobThreads]);
+    const sum = (keep: (thread: string) => boolean) => {
+      const rows = report.rows.filter(row => keep(row.thread));
+      return { turns: rows.reduce((n, row) => n + row.turns, 0), cost: rows.reduce((n, row) => n + row.cost.total, 0) };
+    };
+    const all = sum(thread => mine.has(thread));
+    const main = sum(thread => thread === ids.harness);
+    const jobs = sum(thread => thread !== ids.harness && !comm.has(thread) && jobThreads.has(thread));
+    assert.ok(main.turns > 0 && jobs.turns > 0, "the fixture's harness agent ran turns in its main thread and in a root job thread");
+    assert.equal(c.usage?.turns, all.turns, "the 7 days count every thread of the agent");
+    assert.ok(Math.abs((c.usage?.cost ?? 0) - all.cost) < 1e-9);
+    assert.equal(c.usage?.split.main.turns, main.turns);
+    assert.equal(c.usage?.split.jobs.turns, jobs.turns);
+    const split = c.usage!.split;
+    assert.ok(Math.abs(split.main.cost + split.comm.cost + split.jobs.cost - c.usage!.cost) < 1e-9, "the split adds up to the total");
+    assert.match(c.usage!.scope, /^its main thread with the jobs inside it, \d+ comm threads? and \d+ root job threads?$/);
   } finally {
     host.entries = originals.entries;
     host.ping = originals.ping;
+  }
+});
+
+test("an agent's wakes list the board.wakes of its main thread and its root jobs, named as the page names them", async () => {
+  const at = Date.now() + 3_600_000;
+  const made = [
+    await s.app.boards.addWake(agents.harness, { on: { kind: "time", at: at + 60_000 }, note: "read the canary again" }),
+    await s.app.boards.addWake(ids.cutover, { on: { kind: "time", at }, note: "cutover window" }),
+    await s.app.boards.addWake(ids.cutover, { on: { kind: "run", run: 42 }, note: "ci" }),
+  ];
+  try {
+    const c = await config(agents.harness);
+    const cutover = c.swarm.jobs.find(job => job.id === ids.cutover)!;
+    assert.deepEqual(c.swarm.wakes.map(w => [w.id, w.kind, w.name, w.on.kind, w.note]), [
+      [ids.cutover, "jobs", cutover.name, "run", "ci"],
+      [ids.cutover, "jobs", cutover.name, "time", "cutover window"],
+      [ids.harness, "main", "Main thread", "time", "read the canary again"],
+    ]);
+    assert.deepEqual((await config(agents.vent)).swarm.wakes, [], "another agent's wakes stay off its page");
+  } finally {
+    for (const { path } of made) rmSync(path, { force: true });
   }
 });
 

@@ -12,12 +12,13 @@
  * | folder | its agent's folder, `<agents dir>/<slug>/` with `brief.md` and the harness store's file and entry count (`agent-folder.ts`); `GET /api/agents/:id/folder` gives the entries |
  * | memory | Prime's harness digest in pi-host: Prime's global store merged with the agent's store, or with the thread's own store when no agent holds it |
  * | instructions | AGENTS.md and CLAUDE.md in its cwd and each folder above it, and `<agent dir>/AGENTS.md`, which pi-host loads through Prime's resource loader plus the CLAUDE.md beside each AGENTS.md (`context-files.ts`), read on the box that runs the thread |
- * | usage | the thread's sums over the Usage page's 7 days by hour, from the kept hour sums (`KeptUsage`) or pi-host's `durable_usage` |
+ * | usage | the sums over the Usage page's 7 days by hour of its main thread, comm threads and root job threads, from the kept hour sums (`KeptUsage`) or pi-host's `durable_usage` |
+ * | wakes | the board.wake files of those threads in `<data dir>/wakes/` that have not gone out yet (`Boards.wakesOn`) |
  */
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import type { AgentConfig, AgentFolderSummary, AgentId, AgentSummary, ChatBoard, ConfigFile, PlanItem } from "../web/src/lib/api/types.ts";
+import type { AgentConfig, AgentFolderSummary, AgentId, AgentSummary, AgentWake, ChatBoard, ConfigFile, PlanItem, ThreadKind, UsagePart } from "../web/src/lib/api/types.ts";
 import type { Duty, DutyRunRecord } from "../web/src/lib/api/shared/chat-duties.ts";
 import { fileInfo, instructionFiles } from "./agent-folder.ts";
 import type { AgentRecord } from "./agent-store.ts";
@@ -31,6 +32,7 @@ import { readJson } from "./store.ts";
 import { conversationIdOf, parseConversationId } from "./threads.ts";
 import { bucketStart } from "./usage.ts";
 import { BUCKET_MS, RANGE_MS } from "../web/src/lib/api/shared/usage-range.ts";
+import { wakeTarget, type Wake } from "./wakes.ts";
 import { waiting } from "../web/src/lib/api/shared/snooze.ts";
 
 const PURPOSE_CAP = 1500;
@@ -222,11 +224,62 @@ async function firstInput(app: App, thread: string, conversation: number): Promi
  * kept hour sums (usage.ts `KeptUsage`), so the read calls no box; a 7 days ending at this moment ended off every grain and read pi-host,
  * 161 ms at p50 and 486 ms at p90 at box load 190 to 220 (~/work/p155-config).
  */
-function weekUsage(app: App, thread: string, now = Date.now()): Promise<UsageTotal[] | null> {
+function weekUsage(app: App, threads: readonly string[], now = Date.now()): Promise<UsageTotal[] | null> {
   const until = bucketStart("hour", now) + BUCKET_MS.hour;
   const since = until - RANGE_MS["7d"];
-  return app.usage.usage({ since, until, bucketMs: until - since, threads: [thread] }).catch(() => null);
+  return app.usage.usage({ since, until, bucketMs: until - since, threads: [...threads] }).catch(() => null);
 }
+
+/**
+ * Each thread of the agent once, with its kind: its main thread, its comm threads, and the threads of the root jobs filed under it. A job inside
+ * a thread runs in that thread's file, so its turns count with the thread that holds it. Until p233 the 7 days counted the main thread alone,
+ * which left 12.6% of agent factory's week out (~/work/agent-definition/surface.md).
+ */
+function threadKinds(agent: AgentSummary, jobs: readonly SwarmJob[]): Map<string, ThreadKind> {
+  const kinds = new Map<string, ThreadKind>([[agent.thread, "main"]]);
+  for (const comm of agent.comm ?? []) if (!kinds.has(comm.thread)) kinds.set(comm.thread, "comm");
+  for (const job of jobs) {
+    const { thread } = parseConversationId(job.id);
+    if (!kinds.has(thread)) kinds.set(thread, "jobs");
+  }
+  return kinds;
+}
+
+/** The 7 days' sums by kind of thread, each with how many of its threads ran a turn. */
+function usageSplit(totals: readonly UsageTotal[], kinds: ReadonlyMap<string, ThreadKind>): Record<ThreadKind, UsagePart> {
+  const split: Record<ThreadKind, UsagePart & { ran: Set<string> }> = {
+    main: { cost: 0, turns: 0, threads: 0, ran: new Set() }, comm: { cost: 0, turns: 0, threads: 0, ran: new Set() }, jobs: { cost: 0, turns: 0, threads: 0, ran: new Set() },
+  };
+  for (const total of totals) {
+    const part = split[kinds.get(total.thread) ?? "main"];
+    part.cost += total.cost;
+    part.turns += total.turns;
+    if (total.turns > 0) part.ran.add(total.thread);
+  }
+  const done = ({ cost, turns, ran }: UsagePart & { ran: Set<string> }): UsagePart => ({ cost, turns, threads: ran.size });
+  return { main: done(split.main), comm: done(split.comm), jobs: done(split.jobs) };
+}
+
+/** A pending wake as the Threads tab lists it, named by the conversation it wakes. */
+function agentWake(app: App, wake: Wake, kinds: ReadonlyMap<string, ThreadKind>, agent: AgentSummary, jobs: readonly SwarmJob[]): AgentWake {
+  const { thread, conversation } = wakeTarget(wake.session);
+  const id = conversationIdOf(thread, conversation);
+  const kind = kinds.get(thread) ?? "main";
+  const comm = agent.comm?.find(c => c.thread === thread);
+  const room = comm ? app.groups.row(comm.room) : undefined;
+  const name = id === agent.id || (thread === agent.thread && conversation === 1) ? "Main thread"
+    : comm && conversation === 1 ? (comm.room.startsWith("dm_") ? "DM comm thread" : `Comm thread in ${room?.kind === "solo" ? "" : "#"}${room?.name ?? comm.room}`)
+    : jobs.find(job => job.id === id)?.name ?? app.threads.tree(thread).find(node => node.id === conversation)?.name ?? id;
+  return { id, kind, name, on: wake.on, note: wake.note, since: wake.since };
+}
+
+const kindCount = (kinds: ReadonlyMap<string, ThreadKind>, kind: ThreadKind, word: string): string => {
+  const n = [...kinds.values()].filter(k => k === kind).length;
+  return `${n} ${word}${n === 1 ? "" : "s"}`;
+};
+
+/** Run wakes first, since they wait on CI with no clock, then the soonest. */
+const wakeOrder = (a: AgentWake, b: AgentWake): number => (a.on.kind === "run" ? 0 : a.on.at) - (b.on.kind === "run" ? 0 : b.on.at);
 
 type SwarmJob = AgentConfig["swarm"]["jobs"][number];
 type DutyJobs = ReadonlyMap<string, unknown>;
@@ -292,10 +345,19 @@ export async function agentConfig(app: App, id: AgentId): Promise<AgentConfig> {
     }
   }
 
+  // Its swarm. A registered agent's jobs are its rows of GET /api/jobs (`jobsOf`), so the Jobs list, the profile card and the Agents card count
+  // the same jobs; on 11-23 this list missed the jobs inside root job threads, and agent factory's tab showed 466 where /api/jobs had 529.
+  // A job's own swarm is the conversations under it in its thread file, and the root jobs filed under it.
+  const jobs: AgentConfig["swarm"]["jobs"] = app.threads.registered(agent.id)?.id === agent.id
+    ? app.threads.jobsOf(agent.id).map(job => agentJob(app, job, agent.id, thread, dutyJobs))
+    : jobJobs(app, agent.id, thread, conversation, dutyJobs);
+  jobs.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
+  const kinds = threadKinds(agent, jobs);
+
   const [first, ping, usage, board, instructions] = await Promise.all([
     firstInput(app, thread, conversation),
     lastPing(app),
-    weekUsage(app, thread),
+    weekUsage(app, [...kinds.keys()]),
     chat ? app.boards.latest(chat).catch(() => null) : Promise.resolve(null),
     instructionsOn(app, thread, row.cwd, agentDir),
   ]);
@@ -308,14 +370,6 @@ export async function agentConfig(app: App, id: AgentId): Promise<AgentConfig> {
 
   const durableDir = !app.config.fixture && app.config.durableIndex ? dirname(app.config.durableIndex) : null;
   const threadFile = durableDir ? fileInfo("pi-durable thread file", join(durableDir, "threads", `${thread}.sqlite`), { note: "Its transcript, every job conversation and its documents, such as chat.board." }) : null;
-
-  // Its swarm. A registered agent's jobs are its rows of GET /api/jobs (`jobsOf`), so the Jobs tab, the profile card and the Agents card count
-  // the same jobs; on 11-23 this list missed the jobs inside root job threads, and agent factory's tab showed 466 where /api/jobs had 529.
-  // A job's own swarm is the conversations under it in its thread file, and the root jobs filed under it.
-  const jobs: AgentConfig["swarm"]["jobs"] = app.threads.registered(agent.id)?.id === agent.id
-    ? app.threads.jobsOf(agent.id).map(job => agentJob(app, job, agent.id, thread, dutyJobs))
-    : jobJobs(app, agent.id, thread, conversation, dutyJobs);
-  jobs.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
 
   const isChatRoot = agent.kind === "chat" && conversation === 1;
   const duties: AgentConfig["swarm"]["duties"] = isChatRoot && dutyFile ? dutyFile.duties.map(duty => {
@@ -411,6 +465,7 @@ export async function agentConfig(app: App, id: AgentId): Promise<AgentConfig> {
       }),
       duties, checkIn,
       dutiesFile: isChatRoot && dutiesPath ? fileInfo("duties, runs and check-in", dutiesPath) : null,
+      wakes: app.boards.wakesOn(new Set(kinds.keys())).map(wake => agentWake(app, wake, kinds, agent, jobs)).sort(wakeOrder),
     },
     usage: usage === null ? null : {
       days: 7, turns: totals.reduce((sum, t) => sum + t.turns, 0), cost: totals.reduce((sum, t) => sum + t.cost, 0),
@@ -418,7 +473,10 @@ export async function agentConfig(app: App, id: AgentId): Promise<AgentConfig> {
         input: totals.reduce((sum, t) => sum + t.input, 0), output: totals.reduce((sum, t) => sum + t.output, 0),
         cacheRead: totals.reduce((sum, t) => sum + t.cacheRead, 0), cacheWrite: totals.reduce((sum, t) => sum + t.cacheWrite, 0),
       },
-      scope: conversation === 1 ? `thread ${thread}, every conversation in it` : `thread ${thread}, which ${parentName ?? "its chat"} and its jobs share`,
+      scope: conversation === 1
+        ? `its main thread with the jobs inside it, ${kindCount(kinds, "comm", "comm thread")} and ${kindCount(kinds, "jobs", "root job thread")}`
+        : `thread ${thread}, which ${parentName ?? "its chat"} and its jobs share`,
+      split: usageSplit(totals, kinds),
     },
   };
 }

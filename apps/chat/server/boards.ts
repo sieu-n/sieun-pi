@@ -1165,6 +1165,7 @@ export class Boards {
     return {
       everyMs, ...(everyMs !== state.everyMs ? { planEveryMs: state.everyMs } : {}), paused, pausedUntil: paused ? state.pausedUntil : null,
       nextAt: paused ? (state.pausedUntil === "forever" ? null : Math.max(state.pausedUntil as number, base + everyMs)) : base + everyMs, lastAt: state.lastAt,
+      ...(state.job ? { job: { id: state.job.id, name: state.job.name } } : {}),
     };
   }
 
@@ -1463,6 +1464,11 @@ export class Boards {
     for (const { file } of files) rmSync(file, { force: true });
     if (files.length) this.log(`wakes: dropped ${files.length} of ${session}, a removed job`);
     return files.length;
+  }
+
+  /** The wakes not gone out yet on any conversation of these threads, as an agent's Threads tab lists them. */
+  wakesOn(threads: ReadonlySet<string>): Wake[] {
+    return this.pendingWakes().filter(wake => threads.has(wakeTarget(wake.session).thread));
   }
 
   /** Every wake that has not gone out yet, one per file in the wake folder. */
