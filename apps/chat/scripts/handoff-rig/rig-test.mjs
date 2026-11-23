@@ -254,8 +254,20 @@ const shown = new Set(posts.map(post => post.text));
 const missing = sent.filter(text => !shown.has(text));
 if (duplicateSeqs) failures.push(`${duplicateSeqs} duplicate seqs in ${roomId}`);
 if (missing.length) failures.push(`${missing.length} of ${sent.length} sends answered 200 and are not in ${roomId}`);
-// The read marks are rows of chat.sqlite once the server keeps the state kind there (server/record-kinds.ts STATE), else state.json.
-const reads = (process.env.APPS_CHAT_DB_KINDS ?? "").split(",").map(kind => kind.trim()).includes("state") ? (() => {
+// The read marks are rows of chat.sqlite once a server moved the state kind there (server/chat-records.ts movedKinds), else state.json.
+const movedKinds = () => {
+  try {
+    const db = new DatabaseSync(`${dataDir}/chat.sqlite`, { readOnly: true });
+    try {
+      return db.prepare("SELECT kind FROM db_kinds WHERE imported_at IS NOT NULL").all().map(row => row.kind);
+    } finally {
+      db.close();
+    }
+  } catch {
+    return [];
+  }
+};
+const reads = movedKinds().includes("state") ? (() => {
   const db = new DatabaseSync(`${dataDir}/chat.sqlite`, { readOnly: true });
   try {
     const row = db.prepare("SELECT body FROM state_reads WHERE conversation = ?").get(roomId);

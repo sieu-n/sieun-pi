@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { ChatDb } from "../../server/chat-db.ts";
-import type { AgentsFile, RoomsFile } from "../../server/agent-store.ts";
-import { ChatRecords, DbDoc, docKind, docText, readDoc, type DocSpec } from "../../server/chat-records.ts";
+import { AgentStore, type AgentsFile, type RoomsFile } from "../../server/agent-store.ts";
+import { ChatRecords, DbDoc, docKind, docText, movedKinds, readDoc, type DocSpec } from "../../server/chat-records.ts";
 import { drained } from "../../server/disk.ts";
 import { JsonMove } from "../../server/json-move.ts";
 import { AGENTS, CHANNELS, FOR_ME, oldChannelLog, oldChannels, ROOMS, STATE, type ForMeFile } from "../../server/record-kinds.ts";
-import type { StateFile } from "../../server/store.ts";
+import { Store, type StateFile } from "../../server/store.ts";
 
 const dir = () => mkdtempSync(join(tmpdir(), "chat-records-"));
 /** A records set whose writes commit on the calling thread at each save, as a script's do. */
@@ -208,4 +208,36 @@ test("the channel files of before phase 5 import as rows and render back to the 
   assert.deepEqual(oldChannels(set.chat.db), channels.channels);
   assert.equal(oldChannelLog(set.chat.db, "ch_1"), log);
   assert.equal(oldChannelLog(set.chat.db, "ch_9"), undefined);
+});
+
+test("a process with no APPS_CHAT_DB_KINDS reads each kind a server moved from the rows, after its exports went stale or were archived", async () => {
+  const data = dir();
+  writeFiles(data);
+  assert.deepEqual(movedKinds(data), [], "a dir no server moved holds no kind in chat.sqlite");
+  const server = served(data);
+  const agents = server.doc(AGENTS);
+  const state = server.doc(STATE);
+  agents.value.agents.push({ ...agents.value.agents[0]!, id: "ag_after_move" });
+  agents.save();
+  state.value.reads.dm_after_move = { at: 9 };
+  state.save();
+  server.flushSync();
+  await server.chat.close();
+  // The week of exports ended and the boot moved the files into json-archive/ (json-move.ts `archive`); agents.json is left stale instead.
+  mkdirSync(join(data, "json-archive"));
+  renameSync(join(data, "state.json"), join(data, "json-archive", "state.json"));
+  assert.ok(!readFileSync(join(data, "agents.json"), "utf8").includes("ag_after_move"));
+
+  const env = process.env.APPS_CHAT_DB_KINDS;
+  delete process.env.APPS_CHAT_DB_KINDS;
+  try {
+    assert.deepEqual(movedKinds(data), ["agents", "state"]);
+    const agentStore = new AgentStore(data);
+    assert.ok(agentStore.records.inDb("agents") && !agentStore.records.inDb("rooms"));
+    assert.ok(agentStore.agents.agents.some(agent => agent.id === "ag_after_move"), "agents come from the rows, not the stale agents.json");
+    assert.deepEqual(agentStore.rooms, FILES["rooms.json"], "rooms, which no server moved, still come from rooms.json");
+    assert.deepEqual(new Store(data).state.reads.dm_after_move, { at: 9 }, "state comes from the rows after state.json was archived");
+  } finally {
+    if (env !== undefined) process.env.APPS_CHAT_DB_KINDS = env;
+  }
 });

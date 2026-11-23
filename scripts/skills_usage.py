@@ -668,25 +668,30 @@ def load_json(path, default):
 
 
 def chat_records(store):
-    """sw factory's agent records and the ids of the threads it keeps a kind for: agents.json and state.json while they are on disk, which a
-    server that keeps them in chat.sqlite still writes as exports for a week (apps/chat/server/json-move.ts), else their rows there."""
-    agents = load_json(os.path.join(store, "agents.json"), None)
-    state = load_json(os.path.join(store, "state.json"), None)
-    db_agents, db_threads = [], []
-    if agents is None or state is None:
-        try:
-            db = sqlite3.connect(f"file:{os.path.join(store, 'chat.sqlite')}?mode=ro", uri=True)
+    """sw factory's agent records and the ids of the threads it keeps a kind for: the rows of chat.sqlite for each kind a server moved there
+    (its `db_kinds` row has `imported_at`, apps/chat/server/json-move.ts), since the JSON files are then exports that stop after a week, else
+    agents.json and state.json."""
+    path = os.path.join(store, "chat.sqlite")
+    db = sqlite3.connect(f"file:{path}?mode=ro", uri=True) if os.path.exists(path) else None
+    try:
+        moved = set()
+        if db is not None:
             try:
-                if agents is None:
-                    db_agents = [json.loads(body) for (body,) in db.execute("SELECT body FROM agents_agents ORDER BY ord")]
-                if state is None:
-                    db_threads = [thread for (thread,) in db.execute("SELECT thread FROM state_threads ORDER BY ord")]
-            finally:
-                db.close()
-        except sqlite3.Error:
-            pass
-    agents = (agents or {}).get("agents", []) if agents is not None else db_agents
-    threads = list((state or {}).get("threads") or {}) if state is not None else db_threads
+                moved = {kind for (kind,) in db.execute("SELECT kind FROM db_kinds WHERE imported_at IS NOT NULL")}
+            except sqlite3.OperationalError as error:
+                if "no such table" not in str(error):
+                    raise
+        if "agents" in moved:
+            agents = [json.loads(body) for (body,) in db.execute("SELECT body FROM agents_agents ORDER BY ord")]
+        else:
+            agents = (load_json(os.path.join(store, "agents.json"), {}) or {}).get("agents", [])
+        if "state" in moved:
+            threads = [thread for (thread,) in db.execute("SELECT thread FROM state_threads ORDER BY ord")]
+        else:
+            threads = list((load_json(os.path.join(store, "state.json"), {}) or {}).get("threads") or {})
+    finally:
+        if db is not None:
+            db.close()
     return [agent for agent in agents if isinstance(agent, dict)], threads
 
 

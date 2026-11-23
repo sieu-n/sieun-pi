@@ -13,9 +13,9 @@
  * `readDoc` renders a document back to the same object, so the JSON export `JsonMove` writes for a week after the move is the file the
  * release before the move wrote, byte for byte.
  */
-import { statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
-import type { DatabaseSync, SQLInputValue } from "node:sqlite";
+import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { ChatDb, type Stmt } from "./chat-db.ts";
 import { drained, writeJsonLater } from "./disk.ts";
 import { JsonMove, type JsonKind } from "./json-move.ts";
@@ -389,9 +389,24 @@ export class DbDoc<T extends object> implements Doc<T> {
   }
 }
 
-/** The kinds `APPS_CHAT_DB_KINDS` names, a comma list, as config.ts reads them for the server. */
-export const dbKindsOf = (env: NodeJS.ProcessEnv = process.env): string[] =>
-  (env.APPS_CHAT_DB_KINDS ?? "").split(",").map(kind => kind.trim()).filter(Boolean);
+/**
+ * The kinds the chat.sqlite of `dataDir` holds: each `db_kinds` row whose first import a server stamped (json-move.ts `open`). From then on
+ * the rows are the records and the JSON files are exports that stop after a week, so a process with no server reads these kinds from the
+ * rows whatever its env says. A dir with no chat.sqlite, or none with a `db_kinds` table, holds none.
+ */
+export function movedKinds(dataDir: string): string[] {
+  const file = join(dataDir, "chat.sqlite");
+  if (!existsSync(file)) return [];
+  const db = new DatabaseSync(file, { readOnly: true });
+  try {
+    return (db.prepare("SELECT kind FROM db_kinds WHERE imported_at IS NOT NULL ORDER BY kind").all() as { kind: string }[]).map(row => row.kind);
+  } catch (error) {
+    if (/no such table: db_kinds/.test(String((error as Error).message))) return [];
+    throw error;
+  } finally {
+    db.close();
+  }
+}
 
 /** The chat.sqlite connection, the data dir, the kinds kept in chat.sqlite and the moves the documents of one process share. */
 export class ChatRecords {
@@ -419,10 +434,11 @@ export class ChatRecords {
   }
 
   /**
-   * For a script or spec with no App: the kinds `APPS_CHAT_DB_KINDS` names, as the server that starts a duty precheck passes them on, and
-   * its own connection, which commits each save on the calling thread at once, and its own moves.
+   * For a script or spec with no App: the kinds a server already moved into the dir's chat.sqlite (`movedKinds`), so a duty script run by
+   * hand or a job's shell with no APPS_CHAT_DB_KINDS reads the rows, never the stale or archived exports; and its own connection, which
+   * commits each save on the calling thread at once, and its own moves.
    */
-  static standalone(dataDir: string, kinds: Iterable<string> = dbKindsOf()): ChatRecords {
+  static standalone(dataDir: string, kinds: Iterable<string> = movedKinds(dataDir)): ChatRecords {
     let chat: ChatDb | undefined;
     const connect = () => (chat ??= new ChatDb(join(dataDir, "chat.sqlite"), { offThread: false }));
     const open = (kind: JsonKind) => {
