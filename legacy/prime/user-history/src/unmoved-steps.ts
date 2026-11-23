@@ -1,8 +1,8 @@
 import { clockTime } from "./checkin-settings.ts";
-import { byIdPrefix, liveWindowMs, OPEN, parkedBy, quote, walk } from "./checkin-steps.ts";
+import { byIdPrefix, liveWindowMs, OPEN, quote, walk } from "./checkin-steps.ts";
 import { BRIEF_ITEMS } from "./shared/brief-cap.ts";
 import { jobSession } from "./shared/chat-board.ts";
-import { handedStep, heldByTodo, type NamedChat } from "./shared/todo-hold.ts";
+import { handedStep, type NamedChat, ownerHold } from "./shared/todo-hold.ts";
 import type { ChatBoard, PlanItem, SessionRow } from "./shared/types.ts";
 
 /**
@@ -46,7 +46,9 @@ export interface OwnerReads {
 
 /**
  * The open leaf steps of a board that nobody moves, read from the board and the step owners alone. A step is held when an open For you todo
- * links it (its step field or `heldByTodo`) or an owner correction parks it (`parkedBy`), and moving when one of its owners (`stepSessions`)
+ * links it by its step field, or when `ownerHold` holds it: a linked For you todo, the owner's own sign-in prompt its wait names (c178) or an
+ * owner correction that parks it, the one rule d5's fix steps read. On 11-24 AI harness p1664 waited for the owner's own Naver password: d5 read it as held on
+ * him and this read it as stuck, so one duty or the other flagged it every 30 min. A step is moving when one of its owners (`stepSessions`)
  * sleeps on a board.wake, waits for its pi-pool slot (`live`) or wrote within the check-in's live window (`liveWindowMs`), or when its wait hands
  * it to another chat's open step (`handedStep`, read only with `links`), which that chat owns. d9 counts a paused
  * chat's stuck steps with it, and the chat service tells every chat the same steps as they go stuck (`unmovedNotice`).
@@ -62,7 +64,7 @@ export function unmovedSteps(board: ChatBoard | null | undefined, now: number, e
   const out: PlanItem[] = [];
   walk(board?.plan ?? [], item => {
     if (!OPEN.has(item.status) || item.children.some(child => OPEN.has(child.status))) return;
-    if (asked.has(item.id) || heldByTodo(item, todos) || parkedBy(item) !== undefined) return;
+    if (asked.has(item.id) || ownerHold(item, todos) !== undefined) return;
     if (links && handedStep(item, new Set([links.self]), links.others, links.chats)) return;
     if (stepSessions(item, named).some(session => live.has(session) || now - (activity.get(session) ?? -Infinity) <= window)) return;
     out.push(item);

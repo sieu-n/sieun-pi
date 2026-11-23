@@ -100,3 +100,14 @@ test("a step owned by the chat's own session is not told while that session slee
   assert.deepEqual(await told({ steps, agents: [], paused: false, wakes: [wake] }), []);
   assert.equal((await told({ steps, agents: [], paused: false, wakes: [{ ...wake, session: JOB }] })).length, 1, "another session's wake holds neither step");
 });
+
+test("a blocked step that waits on the owner's own password is held on him, as d5 reads it, and any other blocked step with no owner is told", async () => {
+  const p1664 = p132({ id: "p1664", text: "krenerd77's Claude grant renews once the owner signs Aside into Naver", status: "blocked",
+    job: "own sign-in hold for d9", waitFor: "the owner's own password for krenerd77@naver.com's Naver mail, since Claude mails that account's " +
+      "sign-in link there and the password saved in Aside fails since 10-27 (c178 keeps it off For you)" });
+  assert.deepEqual(await told({ steps: [p1664] }), []);
+  const lines = await told({ steps: [p1664, p132({ status: "blocked", waitFor: "the owner's go on the move" })] });
+  assert.equal(lines.length, 1, lines.join("\n"));
+  assert.match(lines[0]!, /no live owner: .*p132 /);
+  assert.doesNotMatch(lines[0]!, /p1664/);
+});
