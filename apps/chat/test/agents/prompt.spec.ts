@@ -1,5 +1,5 @@
-import { expect, test } from "@playwright/test";
-import { listAgents } from "./helpers.ts";
+import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
+import { uniqueName } from "./helpers.ts";
 
 /** The AgentPrompt fields the spec reads; the full type is web/src/lib/api/types.ts. */
 interface Prompt {
@@ -7,14 +7,24 @@ interface Prompt {
 }
 
 test("the Prompt tab shows each thread kind's whole prompt with its size, folded sections, their text and copy", async ({ page, request }) => {
-  const agent = (await listAgents(request)).find((a) => a.id.startsWith("ag_"));
-  test.skip(!agent, "no registered agent on this server");
-  const response = await request.get(`/api/agents/${encodeURIComponent(agent!.id)}/prompt`);
+  // The spec owns its agent: other specs move a shared agent's project folder mid-run, which changes its prompt between two reads.
+  const created = await request.post("/api/agents", { data: { name: uniqueName("prompt"), test: true } });
+  expect(created.ok()).toBeTruthy();
+  const agent = (await created.json()) as { id: string };
+  try {
+    await checkPrompt(page, request, agent.id);
+  } finally {
+    await request.patch(`/api/c/${encodeURIComponent(agent.id)}`, { data: { archived: true } });
+  }
+});
+
+async function checkPrompt(page: Page, request: APIRequestContext, id: string) {
+  const response = await request.get(`/api/agents/${encodeURIComponent(id)}/prompt`);
   expect(response.ok()).toBeTruthy();
   const prompt = (await response.json()) as Prompt;
   expect(prompt.kinds.map((k) => k.kind)[0]).toBe("work");
 
-  await page.goto(`/#/agents/${encodeURIComponent(agent!.id)}?section=prompt`);
+  await page.goto(`/#/agents/${encodeURIComponent(id)}?section=prompt`);
   const panel = page.getByTestId("agent-config").getByRole("tabpanel");
   for (const kind of prompt.kinds) {
     const block = panel.locator(`section[data-kind="${kind.kind}"]`);
@@ -37,4 +47,4 @@ test("the Prompt tab shows each thread kind's whole prompt with its size, folded
     await expect(work.locator('li.section[data-key="harness"]')).toBeVisible();
   }
   await expect(panel.getByText(/^Built by pi-host /)).toBeVisible();
-});
+}
