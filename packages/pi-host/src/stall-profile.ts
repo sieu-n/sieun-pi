@@ -25,10 +25,11 @@ export interface StallProfileOptions {
   restartMs?: number;
 }
 
-/** What a stall's samples say: a line part for host.log, and the file they went to. */
+/** What a stall's samples say: a line part for host.log, the file they went to, and the function with the most self time and its ms. */
 export interface StallSlice {
   readonly text: string;
   readonly file: string | undefined;
+  readonly top: { readonly frame: string; readonly ms: number };
 }
 
 const KEEP_MS = 2 * 86_400_000;
@@ -143,7 +144,7 @@ export class StallProfiler {
     if (stack.length > 1) parts.push(`its stack: ${stack.join(" < ")}`);
     const file = this.write(profile, kept, label);
     if (file) parts.push(`profile file ${file}`);
-    return { text: parts.join(" | "), file };
+    return { text: parts.join(" | "), file, top: { frame: top[0]![0], ms: top[0]![1] } };
   }
 
   /** Writes the stall's samples as a `.cpuprofile`, and deletes this folder's files older than 2 days. */

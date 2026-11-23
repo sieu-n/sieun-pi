@@ -7,12 +7,13 @@
  * commands, host requests and scheduler reopens that started or ended inside the gap (`track`), with their thread and row count, the work
  * still in flight across it, and the last host.log line written in it. Counts per UTC day (over 500 ms, over 1 s, longest, by cause) stay
  * in `<data dir>/loop-stalls.json` for today and the 2 days before it, so a duty reads them across restarts. With a `StallProfiler`, the
- * line also names the functions that ran on CPU in the gap, for the stalls no tracked work explains (`stall-profile.ts`).
+ * line also names the functions that ran on CPU in the gap, for the stalls no tracked work explains (`stall-profile.ts`), and the count
+ * goes under the function that held the loop for half the gap or more, before any tracked work.
  */
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { PerformanceObserver } from "node:perf_hooks";
-import type { StallProfiler } from "./stall-profile.ts";
+import type { StallProfiler, StallSlice } from "./stall-profile.ts";
 
 /** One piece of tracked work: a socket command, a kernel host request or a scheduler reopen. `rows` is the answer's longest list. */
 interface Work {
@@ -97,6 +98,16 @@ const ms = (n: number): number => Math.round(n);
 /** A thread or session id as host.log names it: its first 8 characters, plus a harness session's `-<conversation>` after a 36-character id. */
 const short = (thread: string | undefined): string => (thread ? ` in ${thread.slice(0, 8)}${thread.slice(36)}` : "");
 
+/**
+ * The function that held the loop for at least half the stall, by the profile, as a count's cause. A command that ran in the gap cannot
+ * say that: on 11-23 from 22:08Z to 22:22Z, ipython's output stream held the loop 736 s in 49 stalls (rlm.ts:472, 82 to 99% of each
+ * stall's samples), and the counts put 733 s of it under 11 kinds of tracked work that got a turn between its chunks, such as durable_submit
+ * with 238 s, and 2.8 s under untracked (~/work/pi-host-stalls/n-onstream-census/report.md).
+ */
+function cpuHolder(profile: StallSlice | undefined, gap: number): string | undefined {
+  return profile && profile.top.ms >= gap / 2 ? `cpu ${profile.top.frame}` : undefined;
+}
+
 function describe(work: Work, from: number, to: number): string {
   const inside = Math.min(work.end ?? to, to) - Math.max(work.start, from);
   return `${work.type}${short(work.thread)}${work.rows === undefined ? "" : `, ${work.rows} rows`}, ${ms(inside)} ms of it in the stall`;
@@ -147,14 +158,14 @@ export class LoopStalls {
       const all = [...ended, ...inFlight];
       const startedAt = new Date(Date.now() - (now - from));
       const profile = this.options.profiler?.take(from, now, `${startedAt.toISOString().replace(/:/g, "-")}-${ms(gap)}ms`);
-      setImmediate(() => this.report(from, now, gap, cpuMs, all, startedAt, profile?.text));
+      setImmediate(() => this.report(from, now, gap, cpuMs, all, startedAt, profile));
     } else {
       this.gc = this.gc.filter(pause => pause.start >= from);
     }
     ended = [];
   }
 
-  private report(from: number, to: number, gap: number, cpuMs: number, all: readonly Work[], started: Date, profile: string | undefined): void {
+  private report(from: number, to: number, gap: number, cpuMs: number, all: readonly Work[], started: Date, profile: StallSlice | undefined): void {
     // Work that started or ended inside the gap ran in it; work in flight across the whole gap may only have been waiting.
     const ran = all.filter(work => work.start >= from || (work.end !== undefined && work.end <= to))
       .sort((a, b) => (Math.min(b.end ?? to, to) - Math.max(b.start, from)) - (Math.min(a.end ?? to, to) - Math.max(a.start, from)));
@@ -170,9 +181,9 @@ export class LoopStalls {
     const gc = this.gc.filter(pause => pause.start >= from && pause.start < to);
     if (lastLine && lastLine.at >= from - this.interval) parts.push(`last log line: ${JSON.stringify(lastLine.text.slice(0, 200))}`);
     parts.push(`loop thread on CPU ${ms(cpuMs)} ms${gc.length ? `, gc ${ms(gc.reduce((sum, pause) => sum + pause.ms, 0))} ms in ${gc.length} pauses` : ""}`);
-    if (profile) parts.push(profile);
+    if (profile) parts.push(profile.text);
     this.options.log(parts.join(" | "));
-    this.count(ran[0]?.type ?? (lastLine && lastLine.at >= from - this.interval ? "untracked, see last log line" : "untracked"), gap);
+    this.count(cpuHolder(profile, gap) ?? ran[0]?.type ?? (lastLine && lastLine.at >= from - this.interval ? "untracked, see last log line" : "untracked"), gap);
   }
 
   private count(cause: string, gap: number): void {

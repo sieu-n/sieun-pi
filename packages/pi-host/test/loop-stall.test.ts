@@ -156,6 +156,26 @@ test("a stall no tracked work explains names the function that held the loop, an
   }
 });
 
+test("a stall one function held most of counts under that function, not under a command that got a turn in it", async () => {
+  const lines: string[] = [];
+  const stalls = new LoopStalls({ log: line => lines.push(line), profiler: new StallProfiler() });
+  try {
+    await tick();
+    // As on 11-23 22:08Z: a socket command starts and ends inside a stall that ipython's output stream holds.
+    const command = track("durable_submit", "cc4136cd-1111-2222-3333-444444444444", async () => ({ ok: true }));
+    buildLongRequestForTest(700);
+    await command;
+    await tick();
+    assert.match(lines.join("\n"), /ran: durable_submit in cc4136cd/);
+    const causes = Object.keys(stalls.counts.days[new Date().toISOString().slice(0, 10)]?.byCause ?? {});
+    // V8 may inline the busy function into its caller here, so the frame is the test file's line, under either name.
+    assert.equal(causes.length, 1, JSON.stringify(causes));
+    assert.match(causes[0]!, /^cpu \S+ pi-host\/test\/loop-stall\.test\.ts:\d+$/);
+  } finally {
+    stalls.stop();
+  }
+});
+
 test("a profiler stopped twice ends quietly, as LoopStalls.stop after its own profiler.stop does", () => {
   const profiler = new StallProfiler();
   profiler.stop();
