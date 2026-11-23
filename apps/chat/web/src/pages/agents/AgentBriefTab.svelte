@@ -1,10 +1,8 @@
 <script lang="ts">
-  import { api, reads, view, type ProjectList, type ThinkingLevel } from "$lib/api";
-  import { Badge, Button, Markdown, ModelPicker, stampLabel, toast } from "$lib/ui";
+  import { api, type ProjectList } from "$lib/api";
+  import { Badge, Button, Markdown, stampLabel, toast } from "$lib/ui";
   import { hrefFor } from "$lib/router.svelte";
-  import { levelsFor, modelKey, modelOptions } from "./agents-model";
   import { folderOwner, money, plural, withFolder, type AgentTabProps } from "./agent-tab";
-  import { changeModel } from "./agent-actions.svelte";
   import AgentFolderText from "./AgentFolderText.svelte";
   import CopyPath from "./CopyPath.svelte";
   import FolderNote from "./FolderNote.svelte";
@@ -14,17 +12,9 @@
    * The Brief tab: what the agent is for and what it is on, its brief and its working memory, and what it runs on, its model, host and
    * project folder, with its first input. Its threads, duties, memory and board have their own tabs.
    */
-  let { agentId, agent, config, reload, onconfig }: AgentTabProps = $props();
+  let { agentId, agent, config, reload, onconfig, onsection }: AgentTabProps = $props();
 
-  const models = view(() => reads.models());
-  const catalog = $derived(models.value);
-  const current = $derived(agent?.model ? modelKey(agent.model) : "");
-  const options = $derived.by(() => {
-    const list = modelOptions(catalog);
-    if (agent?.model && !list.some((option) => option.id === current)) list.push({ id: current, label: agent.model.label, family: "Other" });
-    return list;
-  });
-  /** What a model change moves: the main thread and each comm thread (app.ts `patch`), and the jobs it starts from then on. */
+  /** What runs on its model: the main thread and each comm thread, which a model change moves too (app.ts `patch`), and the jobs it starts. */
   const modelLine = $derived.by(() => {
     if (agent?.kind !== "chat") return "This job runs on it.";
     const comms = agent.comm?.length ?? 0;
@@ -75,10 +65,7 @@
   <dt>Model</dt>
   <dd data-fact="model">
     {#if agent?.model}
-      <span class="model">
-        <ModelPicker models={options} value={current} efforts={levelsFor(catalog, current)} effort={agent.thinkingLevel ?? undefined}
-          disabled={agent.archived} onchange={(next) => void changeModel(agent, next.model, next.effort as ThinkingLevel | undefined, catalog).then((ok) => ok && reload())} />
-      </span>
+      <span>{agent.model.label}{agent.thinkingLevel ? ` · ${agent.thinkingLevel} thinking` : ""}</span>
       <span class="t-caption meta">{modelLine}</span>
     {:else}
       No model yet
@@ -114,29 +101,29 @@
   </dd>
   {#if config.usage}
     <dt>Last 7 days</dt>
-    <dd data-fact="usage">{money(config.usage.cost)} · {plural(config.usage.turns, "turn")}</dd>
+    <dd data-fact="usage">
+      {money(config.usage.cost)} over {plural(config.usage.turns, "turn")}
+      <button type="button" class="more t-caption" onclick={() => onsection("threads")}>By thread</button>
+    </dd>
   {/if}
 </dl>
-<section class="block" aria-label="First input">
-  <h3 class="t-caption heading">First input</h3>
-  {#if config.identity.purpose}
+{#if config.identity.purpose}
+  <section class="block" aria-label="First input">
+    <h3 class="t-caption heading">First input</h3>
     <div class="purpose t-body-sm"><Markdown text={config.identity.purpose.text} /></div>
     <span class="t-caption meta">
       From {config.identity.purpose.from.name}{config.identity.purpose.via ? ` via ${config.identity.purpose.via}` : ""}, {stampLabel(config.identity.purpose.at)}
     </span>
-  {:else}
-    <p class="t-caption meta">No first input yet.</p>
-  {/if}
-</section>
+  </section>
+{/if}
 
 <style>
-  .model,
   .cwd {
     display: inline-flex;
     align-items: center;
     gap: var(--space-2);
   }
-  .folder {
+  .facts > .folder {
     flex-direction: column;
     align-items: flex-start;
   }

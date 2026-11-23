@@ -149,7 +149,7 @@ test("a duty run's configuration names its coordinator and shares its chat's boa
   await expect(page).toHaveURL(new RegExp(`#/agents/${duty!.chat.id}$`));
 });
 
-test("a new agent's Brief tab shows an empty brief and working memory, its model change moves each comm thread, and a comm thread in an archived channel keeps the channel's name", async ({ page, request }) => {
+test("a new agent's Brief tab shows an empty brief and working memory, a model change in the header moves each comm thread and the Brief tab shows it, and a comm thread in an archived channel keeps the channel's name", async ({ page, request }) => {
   const stamp = Date.now().toString(36);
   const agent = (await (await request.post("/api/agents", { data: { name: `panel lists ${stamp}`, test: true } })).json()) as { id: string; name: string };
   const name = `panel-lists-${stamp}`;
@@ -165,7 +165,7 @@ test("a new agent's Brief tab shows an empty brief and working memory, its model
 
   const model = panel(page).locator('[data-fact="model"]');
   await expect(model).toContainText("Its main thread and its 2 comm threads run on it");
-  await model.getByRole("button", { name: /Opus 5\.5/ }).click();
+  await panel(page).getByRole("toolbar", { name: "Agent actions" }).getByRole("button", { name: /Opus 5\.5/ }).click();
   await page.getByRole("option", { name: /Fable 5\.2/ }).click();
   await expect(model).toContainText("Fable 5.2");
   const comms = ((await (await request.get(`/api/agents/${agent.id}/config`)).json()) as { agent: { comm: { thread: string }[] } }).agent.comm;

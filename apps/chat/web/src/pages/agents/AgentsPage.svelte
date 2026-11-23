@@ -125,7 +125,6 @@
     {section}
     onsection={setSection}
     onmessage={messageAgent}
-    onmodel={setModel}
   />
 {:else}
   <PanelHeader title="Agents" icon="robot" level={1} divider />

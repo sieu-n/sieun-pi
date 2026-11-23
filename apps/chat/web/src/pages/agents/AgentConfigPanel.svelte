@@ -11,7 +11,7 @@
   import AgentKnowledgeTab from "./AgentKnowledgeTab.svelte";
   import AgentPromptTab from "./AgentPromptTab.svelte";
   import AgentThreadsTab from "./AgentThreadsTab.svelte";
-  import { agentMenu, onAgentsChanged, renameAgent, unarchiveAgent } from "./agent-actions.svelte";
+  import { agentMenu, changeModel, onAgentsChanged, renameAgent, unarchiveAgent } from "./agent-actions.svelte";
 
   type Props = {
     agentId: string;
@@ -21,9 +21,8 @@
     section: ConfigSection;
     onsection: (section: ConfigSection) => void;
     onmessage: (agent: AgentSummary) => void;
-    onmodel: (agent: AgentSummary, model: string, level: ThinkingLevel | undefined) => void;
   };
-  let { agentId, agent: liveAgent, catalog, section, onsection, onmessage, onmodel }: Props = $props();
+  let { agentId, agent: liveAgent, catalog, section, onsection, onmessage }: Props = $props();
 
   /** The agent's configuration, from the page's kept answer when it holds one and read again behind it. */
   const answer = view(() => reads.agentConfig(agentId));
@@ -91,7 +90,7 @@
           <span class="model">
             {#if agent.model}
               <ModelPicker models={options} value={current} efforts={levelsFor(catalog, current)} effort={agent.thinkingLevel ?? undefined}
-                onchange={(next) => onmodel(agent, next.model, next.effort as ThinkingLevel | undefined)} />
+                onchange={(next) => void changeModel(agent, next.model, next.effort as ThinkingLevel | undefined, catalog).then((ok) => { if (ok) void load(); })} />
               <AccountChip thread={agent.id} model={agent.model} />
             {:else}
               <span class="t-caption">No model yet</span>
@@ -279,25 +278,6 @@
   }
   .body :global(.warn) {
     color: var(--text-danger);
-  }
-  .body :global(.project) {
-    padding: var(--space-3) var(--space-4);
-    border: 1px solid var(--border-standard);
-    border-radius: var(--radius-container);
-  }
-  .body :global(.project[data-project="no"]) {
-    border-color: var(--text-danger);
-  }
-  .body :global(.project-head) {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-  }
-  .body :global(.project .path code) {
-    color: var(--text-standard);
-  }
-  .body :global(.project .warn) {
-    margin: 0;
   }
   .body :global(.move) {
     display: flex;
