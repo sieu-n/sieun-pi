@@ -71,7 +71,8 @@ for (const path of ["/api/conversations?archived=1", "/assets/index-abc.js", "/"
 test("an answer that fits one packet, an image and an error keep their form", async () => {
   const ready = await raw("/api/ready", "br, gzip");
   assert.equal(ready.headers["content-encoding"], undefined);
-  assert.deepEqual(JSON.parse(ready.bytes.toString()), { ready: true });
+  // The server runs in this process, and a release reads the pid to tell the new server from the old one (441a0866).
+  assert.deepEqual(JSON.parse(ready.bytes.toString()), { ready: true, pid: process.pid });
   const image = await raw("/assets/dot.png", "br, gzip");
   assert.equal(image.headers["content-encoding"], undefined);
   assert.equal(image.bytes.length, 4000);
