@@ -41,7 +41,7 @@ test("the check-in menu takes a custom interval and a pause until a picked date 
   await dialog.getByRole("button", { name: "Save" }).click();
   await expect(dialog).toBeHidden();
   await expect(settings).toHaveText(/Check-in 3h/);
-  await expect(checkIn).toContainText("Check-in every 180 min");
+  await expect(checkIn).toContainText("Check-in every 3 hours");
 
   await settings.click();
   await page.getByRole("menuitem", { name: "Pause until…" }).click();

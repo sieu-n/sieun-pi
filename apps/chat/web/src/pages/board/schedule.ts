@@ -112,26 +112,27 @@ export const pauseNow = (state: CheckInState, now: number): number | "forever" |
   state.pausedUntil === "forever" || (state.pausedUntil !== null && state.pausedUntil > now) ? state.pausedUntil : null;
 
 /**
- * The check-in line: "Check-in every 120 min, one check-in job each", or its pause. `on` is false while paused and while none is set, as a
+ * The check-in line: "Check-in every 2 hours, one check-in job each", or its pause. `on` is false while paused and while none is set, as a
  * test agent has none until one is picked (boards.ts checkInState), which the server sends as no pause and no next time.
  */
 export function checkInStatus(state: CheckInState | null, now: number): { text: string; on: boolean } {
-  if (!state) return { text: "Check-in every 120 min, one check-in job each", on: true };
+  if (!state) return { text: "Check-in every 2 hours, one check-in job each", on: true };
   const pause = pauseNow(state, now);
   if (pause === null && state.nextAt === null) return { text: "No check-in set yet", on: false };
   if (pause === null) {
     const every = state.planEveryMs !== undefined
-      ? `daily while the plan has no open step, then every ${Math.round(state.planEveryMs / MINUTE)} min`
+      ? `daily while the plan has no open step, then ${everyWords(state.planEveryMs)}`
       : everyWords(state.everyMs);
     return { text: `Check-in ${every}, one check-in job each`, on: true };
   }
   return { text: pause === "forever" ? "Check-in paused until you resume it" : `Check-in paused until ${whenLabel(pause, now)}`, on: false };
 }
 
-/** "every 120 min", "daily" or "every 3 days". */
+/** "every 90 min", "every 6 hours", "daily" or "every 3 days". */
 function everyWords(everyMs: number): string {
   const { amount, unit } = intervalParts(everyMs);
-  if (unit !== "days") return `every ${Math.round(everyMs / MINUTE)} min`;
+  if (unit === "minutes") return `every ${amount} min`;
+  if (unit === "hours") return amount === 1 ? "every hour" : `every ${amount} hours`;
   return amount === 1 ? "daily" : `every ${amount} days`;
 }
 

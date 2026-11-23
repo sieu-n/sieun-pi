@@ -134,6 +134,24 @@ test("the agent page's Duties tab sets the check-in with the board's control and
   await expect.poll(setting).toBe(30 * 60_000);
 });
 
+test("an open duty shows 10 runs and a Show all control for the rest", async ({ page }) => {
+  await page.routeWebSocket(/\/api\/live/, () => {});
+  await page.route(/\/api\/(agents|threads)\/[^/]+\/duties$/, async route => {
+    const response = await route.fetch();
+    const body = await response.json();
+    const d1 = body.duties.find((row: { duty: { id: string } }) => row.duty.id === "d1");
+    const first = d1.runs[0];
+    d1.runs = Array.from({ length: 14 }, (_, i) => ({ ...first, at: first.at - i * 86_400_000 }));
+    await route.fulfill({ status: response.status(), contentType: "application/json", body: JSON.stringify(body) });
+  });
+  await page.goto(`/#/agents/${HARNESS_AGENT}?section=duties`);
+  const duties = page.getByRole("region", { name: "Duties" });
+  await duties.getByRole("button", { name: /Relay uptime/ }).first().click();
+  await expect(duties.locator(".run-line")).toHaveCount(10);
+  await duties.getByRole("button", { name: "Show all 14 runs" }).click();
+  await expect(duties.locator(".run-line")).toHaveCount(14);
+});
+
 test("a job's Duties tab links the agent its duties belong to", async ({ page }) => {
   await page.goto(`/#/agents/${UPTIME_DUTY}?section=duties`);
   const owner = page.getByTestId("duties-owner");

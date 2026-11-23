@@ -77,7 +77,7 @@
     <span class="t-body-sm">{status.text}</span>
     {#if view && status.on}<span class="t-caption next">{nextLabel({ running: false, nextAt: view.nextAt }, now)}</span>{/if}
     {#if view?.lastAt}
-      <span class="t-caption next" data-checkin-last>Last ran at {whenLabel(view.lastAt, now)}{#if view.job} in job <a href={hrefFor("agents", [view.job.id])}>{view.job.name}</a>{/if}.</span>
+      <span class="t-caption next" data-checkin-last>Last ran at {whenLabel(view.lastAt, now)}{#if view.job}{" in job "}<a href={hrefFor("agents", [view.job.id])}>{view.job.name}</a>{/if}.</span>
     {/if}
   </div>
   <Button size="sm" variant="outline" icon={paused ? "pause" : "clock"} trailingIcon="chevron-down" loading={busy} disabled={!view} bind:element={anchor}

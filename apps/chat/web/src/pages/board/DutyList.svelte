@@ -1,6 +1,6 @@
 <script lang="ts">
   import { api, type DutyRow } from "$lib/api";
-  import { Button, EmptyState, Icon, IconButton, IdChip, Menu, Switch, toast, type MenuEntry } from "$lib/ui";
+  import { Button, EmptyState, Icon, IconButton, IdChip, Menu, ShowAllList, Switch, toast, type MenuEntry } from "$lib/ui";
   import { hrefFor } from "$lib/router.svelte";
   import { boardHref } from "./chips";
   import DutyDialog from "./DutyDialog.svelte";
@@ -21,7 +21,6 @@
 
   let busy = $state<string | null>(null);
   let opened = $state<string | null>(null);
-  let allRuns = $state<string | null>(null);
   let allDuties = $state(false);
   let openRun = $state<string | null>(null);
   let removed = $state<ReadonlySet<string>>(new Set());
@@ -31,7 +30,6 @@
   let dialogOpen = $state(false);
 
   const shown = $derived(duties.filter(duty => !removed.has(duty.duty.id)));
-  const listed = $derived(allDuties ? shown : shown.slice(0, ROWS_SHOWN));
 
   $effect(() => {
     const at = focus ? shown.findIndex(duty => duty.duty.id === focus) : -1;
@@ -92,11 +90,11 @@
 </script>
 
 {#if shown.length}
-  <ul class="duties">
-    {#each listed as duty (duty.duty.id)}
+  <div class="duties">
+    <ShowAllList items={shown} key={duty => duty.duty.id} noun="duties" limit={ROWS_SHOWN} bind:open={allDuties}>
+      {#snippet row(duty: DutyRow)}
       {@const isOpen = opened === duty.duty.id}
       {@const lastRun = last(duty)}
-      {@const runs = allRuns === duty.duty.id ? duty.runs : duty.runs.slice(0, ROWS_SHOWN)}
       <li class="duty" data-board-id={duty.duty.id} data-verdict={duty.last?.verdict ?? "none"}>
         <div class="card" class:paused={duty.paused}>
           <button type="button" class="summary" aria-expanded={isOpen} onclick={() => { opened = isOpen ? null : duty.duty.id; }}>
@@ -123,8 +121,9 @@
             <p class="t-caption next">{nextLabel(duty, now)}</p>
             {#if duty.runs.length}
               <h4 class="t-label-sm runs-title">Runs</h4>
-              <ol class="runs">
-                {#each runs as run (run.at)}
+              <div class="runs">
+                <ShowAllList items={duty.runs} key={run => String(run.at)} noun="runs" limit={ROWS_SHOWN} dense>
+                {#snippet row(run: Run)}
                   {@const key = runKey(duty, run)}
                   <li class="run t-caption">
                     <div class="run-line">
@@ -150,25 +149,19 @@
                       </div>
                     {/if}
                   </li>
-                {/each}
-              </ol>
-              {#if duty.runs.length > ROWS_SHOWN}
-                <button type="button" class="more-runs t-caption" onclick={() => { allRuns = allRuns === duty.duty.id ? null : duty.duty.id; }}>
-                  {allRuns === duty.duty.id ? "Show fewer runs" : `Show all ${duty.runs.length} runs`}
-                </button>
-              {/if}
+                {/snippet}
+                </ShowAllList>
+              </div>
             {:else}
               <p class="t-caption next">No runs yet.</p>
             {/if}
           </div>
         {/if}
       </li>
-    {/each}
-    {#if shown.length > ROWS_SHOWN}
-      <li><button type="button" class="more-runs t-caption" onclick={() => { allDuties = !allDuties; }}>{allDuties ? "Show fewer duties" : `Show all ${shown.length} duties`}</button></li>
-    {/if}
-    <li><button type="button" class="add t-body-sm" onclick={() => edit(null)}><Icon name="plus" size={14} />Add duty</button></li>
-  </ul>
+      {/snippet}
+    </ShowAllList>
+    <button type="button" class="add t-body-sm" onclick={() => edit(null)}><Icon name="plus" size={14} />Add duty</button>
+  </div>
 {:else}
   <EmptyState size="sm" icon="clock" title="No duties yet" description="A duty checks something on a schedule and starts a job when it is off target.">
     {#snippet action()}<Button size="sm" icon="plus" onclick={() => edit(null)}>Add duty</Button>{/snippet}
@@ -182,7 +175,7 @@
 
 <style>
   /* Each grid track is minmax(0, 1fr), so a one-line run summary or a long path cannot widen an open card past the board. */
-  .duties { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-2); }
+  .duties { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-2); }
   .card { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto auto; align-items: center; gap: var(--space-2); padding: var(--space-1) var(--space-2) var(--space-1) var(--space-1); border: 1px solid var(--border-standard); border-radius: var(--radius-container); }
   .summary { display: flex; align-items: center; gap: var(--space-3); min-width: 0; padding: var(--space-2); border: 0; border-radius: var(--radius-row); background: none; color: inherit; font: inherit; text-align: start; cursor: pointer; }
   .summary:hover { background: var(--affordance-ghost-hover); }
@@ -198,7 +191,7 @@
   .miss { color: var(--text-danger); }
   .ok, .next { color: var(--text-subtle); }
   .runs-title { margin: var(--space-2) 0 0; }
-  .runs { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; color: var(--text-subtle); }
+  .runs { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; color: var(--text-subtle); }
   .run-line { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
   .run-line .run-row { flex: 1; min-width: 0; }
   .run-job { flex: none; white-space: nowrap; padding-inline-end: var(--space-1); }
@@ -214,7 +207,7 @@
   .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--status-offline); }
   .dot.met { background: var(--status-online); }
   .dot.missed, .dot.error { background: var(--border-danger); }
-  .more-runs, .add { justify-self: start; display: inline-flex; align-items: center; gap: var(--space-1); padding: var(--space-1) var(--space-2); border: 0; border-radius: var(--radius-row); background: none; color: var(--text-subtle); font: inherit; cursor: pointer; }
-  .more-runs:hover, .add:hover { background: var(--affordance-ghost-hover); color: var(--text-standard); }
+  .add { justify-self: start; display: inline-flex; align-items: center; gap: var(--space-1); padding: var(--space-1) var(--space-2); border: 0; border-radius: var(--radius-row); background: none; color: var(--text-subtle); font: inherit; cursor: pointer; }
+  .add:hover { background: var(--affordance-ghost-hover); color: var(--text-standard); }
   .add { padding-block: var(--space-2); }
 </style>

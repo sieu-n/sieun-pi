@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
-  import { reads, view } from "$lib/api";
-  import { LoadingText } from "$lib/ui";
+  import { reads, view, type ConfigFile } from "$lib/api";
+  import { LoadingText, ShowAllList } from "$lib/ui";
   import { hrefFor } from "$lib/router.svelte";
   import CheckInControl from "$pages/board/CheckInControl.svelte";
   import DutyList from "$pages/board/DutyList.svelte";
@@ -26,7 +26,7 @@
 
 {#if chatId}
   <section class="block" aria-label="Duties">
-    <h3 class="t-caption heading">Duties{#if count}<span class="count"> · {count}</span>{/if}</h3>
+    <h3 class="t-caption heading">{count ? count.charAt(0).toUpperCase() + count.slice(1) : "Duties"}</h3>
     {#if dutyRows.value}
       <DutyList chatId={chatId} duties={dutyRows.value.duties} onchange={next => dutyRows.set({ duties: next })} {now} />
     {:else if dutyRows.error}
@@ -42,10 +42,9 @@
   {#if config.swarm.dutiesFile}
     <section class="block" aria-label="Duty files">
       <h3 class="t-caption heading">Where they live</h3>
-      <ul class="files">
-        <ConfigFileRow item={config.swarm.dutiesFile} />
-        {#each config.swarm.dutyStates as file (file.path)}<ConfigFileRow item={file} />{/each}
-      </ul>
+      <ShowAllList items={[config.swarm.dutiesFile, ...config.swarm.dutyStates]} key={file => file.path} noun="files">
+        {#snippet row(file: ConfigFile)}<ConfigFileRow item={file} />{/snippet}
+      </ShowAllList>
     </section>
   {/if}
 {:else}
@@ -59,7 +58,3 @@
     {/if}
   </section>
 {/if}
-
-<style>
-  .count { opacity: 0.7; }
-</style>
