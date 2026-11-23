@@ -36,6 +36,13 @@ export interface JsonKind {
    * the file's export, as the release before the move deleted a file whose last record went.
    */
   dump(db: DatabaseSync, file: string): string | null;
+  /**
+   * The same text rendered from the records a store holds in memory, which an export writes instead of `dump`'s when the kind has it, so an
+   * export reads nothing back from the DB; `check` always compares the file with `dump`, so a wrong render shows there.
+   */
+  exportText?(file: string): string | null;
+  /** How long after a write its file's export waits, EXPORT_DELAY_MS unless the kind sets its own. */
+  exportDelayMs?: number;
 }
 
 export type OpenResult = { kind: string; imported: string[]; records: number; known: number; archived: string[] };
@@ -77,7 +84,7 @@ export class JsonMove {
     this.log = options.log ?? (() => {});
     this.now = options.now ?? Date.now;
     this.exportDays = options.exportDays ?? 7;
-    this.exportDelayMs = options.exportDelayMs ?? EXPORT_DELAY_MS;
+    this.exportDelayMs = options.exportDelayMs ?? kind.exportDelayMs ?? EXPORT_DELAY_MS;
   }
 
   private get db(): DatabaseSync {
@@ -204,7 +211,7 @@ export class JsonMove {
     await this.chat.written();
     const done: string[] = [];
     for (const file of files) {
-      const text = this.kind.dump(this.db, file);
+      const text = this.kind.exportText?.(file) ?? this.kind.dump(this.db, file);
       if (text === null) {
         // A write took the file's last record away, such as a wake that went out, so the export goes too: a rollback must not find it.
         const path = join(this.dataDir, file);

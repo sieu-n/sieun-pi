@@ -147,7 +147,7 @@ const recordsOf = (s: Split): number => (s.groups.length ? s.groups.reduce((n, g
 
 /** The JsonKind and the rows of a kind whose files split by `groups`, with tables `<prefix>_heads`, `_orders` and `_parts`. */
 export function splitKind(options: {
-  kind: string; prefix: string; files: (dataDir: string) => string[]; groups: SplitKind["groups"]; indent: number;
+  kind: string; prefix: string; files: (dataDir: string) => string[]; groups: SplitKind["groups"]; indent: number; exportDelayMs?: number;
 }): SplitKind {
   const { prefix } = options;
   const parse = (text: string): { ok: true; value: unknown } | { ok: false } => {
@@ -167,6 +167,7 @@ export function splitKind(options: {
     files: options.files,
     groups: options.groups,
     indent: options.indent,
+    ...(options.exportDelayMs === undefined ? {} : { exportDelayMs: options.exportDelayMs }),
     load(db, file, text) {
       const parsed = parse(text);
       // A file that is not JSON read as missing before the move too; the rows keep what they held.
@@ -234,13 +235,13 @@ function readRows(db: DatabaseSync, prefix: string): Map<string, Rows> {
   return out;
 }
 
-function valueOf(rows: Rows, indent: number): unknown {
-  return JSON.parse(textOf(rows.head, rows.spec, grp => {
-    const group = rows.groups.get(grp);
-    const keys = group?.keys ?? [];
-    return { keys, bodies: keys.map(key => group?.bodies.get(key) ?? "null") };
-  }, indent));
-}
+const groupRows = (rows: Rows) => (grp: string): GroupRows => {
+  const group = rows.groups.get(grp);
+  const keys = group?.keys ?? [];
+  return { keys, bodies: keys.map(key => group?.bodies.get(key) ?? "null") };
+};
+
+const valueOf = (rows: Rows, indent: number): unknown => JSON.parse(textOf(rows.head, rows.spec, groupRows(rows), indent));
 
 /** A place that keeps JSON values by their file path relative to the data dir. */
 export interface Kept {
@@ -252,9 +253,15 @@ export interface Kept {
 export class KeptJson implements Kept {
   private readonly files: Map<string, Rows>;
   private readonly prefix: string;
+  /** The kind as its move sees it, whose exports render from these rows in memory (`text`). */
+  readonly kind: SplitKind;
+  readonly move?: JsonMove;
 
-  constructor(private readonly chat: ChatDb, private readonly kind: SplitKind, private readonly move?: JsonMove) {
+  /** `open` opens the kind's move, which imports the JSON files the DB has not seen, before the rows are read. */
+  constructor(private readonly chat: ChatDb, kind: SplitKind, open?: (kind: SplitKind) => JsonMove) {
     this.prefix = kind.kind.replace(/\W/g, "_");
+    this.kind = { ...kind, exportText: file => this.text(file) };
+    this.move = open?.(this.kind);
     this.files = readRows(chat.db, this.prefix);
   }
 
@@ -262,6 +269,12 @@ export class KeptJson implements Kept {
   read(file: string): unknown {
     const rows = this.files.get(file);
     return rows ? valueOf(rows, this.kind.indent) : undefined;
+  }
+
+  /** The text of `file` as `dump` renders it from the DB, rendered from the rows in memory; its move's export writes it. */
+  text(file: string): string | null {
+    const rows = this.files.get(file);
+    return rows ? `${textOf(rows.head, rows.spec, groupRows(rows), this.kind.indent)}\n` : null;
   }
 
   /** Writes `value` as `file`'s value, as the rows that changed; settles once they are committed. */
@@ -313,6 +326,14 @@ const jsonFiles = (dataDir: string, dir: string): string[] => {
   }
 };
 
+/**
+ * How long a write's JSON export waits for these kinds. Every thread list read changes host-routes.json, cache/threads.json and
+ * cache/boards.json, 1.2 to 1.9 MB each; at json-move's 1 s their exports took 8.8 s of 200 s of the server's main thread on the one-db rig
+ * on 11-23 (~/work/one-db/host-routes/prof3-b), against about 1.5 s for the whole-file writes they replace. Both kinds are copies of what
+ * pi-host last said, so an export a minute old costs a rollback at most one thread list read.
+ */
+const EXPORT_DELAY_MS = 60_000;
+
 /** host-routes.json (host/multi-host.ts): the box of each thread, and each box's last good thread list, one row per thread. */
 export const HOST_ROUTES_KIND = splitKind({
   kind: "host-routes",
@@ -324,6 +345,7 @@ export const HOST_ROUTES_KIND = splitKind({
       Object.keys(isRecord(lists) ? lists : {}).map((list): Group => ({ path: ["rows", box, list], by: "id" }))),
   ],
   indent: 0,
+  exportDelayMs: EXPORT_DELAY_MS,
 });
 
 /**
@@ -344,4 +366,5 @@ export const CACHE_KIND = splitKind({
     return [];
   },
   indent: 1,
+  exportDelayMs: EXPORT_DELAY_MS,
 });

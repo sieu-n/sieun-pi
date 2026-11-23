@@ -173,3 +173,19 @@ test("once the week of exports ended, the files move to json-archive and writes 
   assert.deepEqual(await move.apply(), { kind: "notes", dryRun: false, exported: [], archived: [], left: [] });
   await chat.close();
 });
+
+test("an export writes the kind's exportText after its own delay, and check still compares the file with dump", async () => {
+  const data = dir();
+  writeFileSync(join(data, "notes.json"), notesFile([{ id: "a", text: "" }]));
+  const chat = new ChatDb(join(data, "chat.sqlite"), { offThread: false });
+  const move = new JsonMove(chat, data, { ...NOTES, exportDelayMs: 5, exportText: () => notesFile([{ id: "memory", text: "" }]) });
+  move.open();
+  await chat.write([addNote({ id: "b", text: "" }, 1)]);
+  move.touch("notes.json");
+  await new Promise(resolve => setTimeout(resolve, 50));
+  await move.flushExports();
+  await drained();
+  assert.equal(readFileSync(join(data, "notes.json"), "utf8"), notesFile([{ id: "memory", text: "" }]), "the kind's own delay of 5 ms ran the export");
+  assert.deepEqual(move.check().items.map(i => i.state), ["behind"], "check reads dump, so a render that differs from the DB shows");
+  await chat.close();
+});

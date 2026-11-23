@@ -169,7 +169,7 @@ export class App {
     this.records = new ChatRecords(this.chatDb, config.dataDir, kind => this.move(kind), config.dbKinds ?? []);
     if (this.records.inDb(CHANNELS.kind)) this.records.move(CHANNELS);
     this.store = new Store(config.dataDir, this.records);
-    if (config.dbKinds?.includes(CACHE_KIND.kind)) this.store.caches = new KeptJson(this.chatDb, CACHE_KIND, this.move(CACHE_KIND));
+    if (config.dbKinds?.includes(CACHE_KIND.kind)) this.store.caches = new KeptJson(this.chatDb, CACHE_KIND, kind => this.move(kind));
     this.ownerSettings = new OwnerSettingsStore(this.store, settings => this.broadcast({ type: "owner_settings", settings }));
     mkdirSync(this.store.imagePath(""), { recursive: true });
     this.agentStore = new AgentStore(config.dataDir, this.records);
@@ -177,7 +177,7 @@ export class App {
     const routing = host instanceof MultiHost ? host : undefined;
     this.routing = routing;
     if (routing) {
-      if (config.dbKinds?.includes(HOST_ROUTES_KIND.kind)) routing.keep(new KeptJson(this.chatDb, HOST_ROUTES_KIND, this.move(HOST_ROUTES_KIND)));
+      if (config.dbKinds?.includes(HOST_ROUTES_KIND.kind)) routing.keep(new KeptJson(this.chatDb, HOST_ROUTES_KIND, kind => this.move(kind)));
       for (const relay of routing.relays()) if (this.store.caches) relay.kept = this.store.caches;
       routing.agentHost = thread => this.agents.record(thread)?.host;
       this.agents.hostState = box => routing.link(box).state;

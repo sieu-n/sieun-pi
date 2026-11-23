@@ -93,11 +93,17 @@ test("host-routes.json imports once, a second boot imports nothing, and the rout
   const old = { v: 1, threads: { gone: "mac" }, rows: { mac: { live: [row("gone", 1, "mac")] } } };
   writeFileSync(join(data, ROUTES_FILE), `${JSON.stringify(old)}\n`);
   let chat = new ChatDb(join(data, "chat.sqlite"));
-  let move = new JsonMove(chat, data, HOST_ROUTES_KIND, { exportDelayMs: 10 });
-  assert.deepEqual(move.open(), { kind: "host-routes", imported: [ROUTES_FILE], records: 2, known: 0, archived: [] });
+  let opened: unknown;
+  const kept = new KeptJson(chat, HOST_ROUTES_KIND, kind => {
+    const move = new JsonMove(chat, data, kind, { exportDelayMs: 10 });
+    opened = move.open();
+    return move;
+  });
+  assert.deepEqual(opened, { kind: "host-routes", imported: [ROUTES_FILE], records: 2, known: 0, archived: [] });
+  let move = kept.move!;
   const fixture = new FixtureHost();
   const host = new MultiHost("metal", [{ box: "metal", label: "metal", host: fixture }], data, { box: "metal", platform: "linux", home: "/", projects: [], agentsDir: "/" });
-  host.keep(new KeptJson(chat, HOST_ROUTES_KIND, move));
+  host.keep(kept);
   assert.equal(host.boxOf("gone"), "metal", "a route to a box this server does not have goes to its own");
   const made = await host.create({ name: "new one" });
   const listed = await host.threads();
@@ -116,7 +122,7 @@ test("host-routes.json imports once, a second boot imports nothing, and the rout
   move = new JsonMove(chat, data, HOST_ROUTES_KIND);
   assert.deepEqual(move.open().imported, [], "the boot after an export knows the file it wrote");
   const again = new MultiHost("metal", [{ box: "metal", label: "metal", host: new FixtureHost() }], data, { box: "metal", platform: "linux", home: "/", projects: [], agentsDir: "/" });
-  again.keep(new KeptJson(chat, HOST_ROUTES_KIND, move));
+  again.keep(new KeptJson(chat, HOST_ROUTES_KIND));
   assert.equal((again as unknown as { routes: typeof old }).routes.threads[made.id as "gone"], "metal");
   await chat.close();
 });
@@ -188,4 +194,16 @@ test("a relay's feed cursor kept in chat.sqlite answers its welcome and moves wi
     await relay.close();
     await chat.close();
   }
+});
+
+test("an export renders from the rows in memory, byte for byte what dump reads back, and waits a minute after a write", async () => {
+  const { chat, kept: store } = kept(CACHE_KIND);
+  const value = { threads: [row("t1", 3), row("t2", 2)], trees: [["t1", { updatedAt: 3, nodes: [{ id: 1 }] }]] };
+  await store.write("cache/threads.json", value);
+  assert.equal(store.text("cache/threads.json"), CACHE_KIND.dump(chat.db, "cache/threads.json"));
+  assert.equal(store.text("cache/threads.json"), indented(value));
+  assert.equal(store.kind.exportText?.("cache/threads.json"), indented(value));
+  assert.equal(store.text("cache/none.json"), null);
+  assert.deepEqual([CACHE_KIND.exportDelayMs, HOST_ROUTES_KIND.exportDelayMs], [60_000, 60_000]);
+  await chat.close();
 });
