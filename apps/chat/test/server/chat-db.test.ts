@@ -121,6 +121,40 @@ test("a file an older release wrote after a rollback imports again, and a missin
   await chat.close();
 });
 
+test("a write that takes a file's last record away deletes its export, and check names such a file until apply deletes it", async () => {
+  const { mkdirSync, readdirSync } = await import("node:fs");
+  /** One file per note, notes/<id>.json, as the wake folder keeps one file per wake. */
+  const PER_FILE: JsonKind = {
+    kind: "pernote",
+    migrations: ["CREATE TABLE pernote (id TEXT PRIMARY KEY, body TEXT NOT NULL)"],
+    files: dir => (existsSync(join(dir, "notes")) ? readdirSync(join(dir, "notes")).map(name => `notes/${name}`) : []),
+    load(db, file, text) {
+      db.prepare("INSERT OR REPLACE INTO pernote (id, body) VALUES (?, ?)").run(file, text);
+      return 1;
+    },
+    records: () => 1,
+    count: (db, file) => (db.prepare("SELECT 1 FROM pernote WHERE id = ?").get(file) ? 1 : 0),
+    dump: (db, file) => (db.prepare("SELECT body FROM pernote WHERE id = ?").get(file) as { body: string } | undefined)?.body ?? null,
+  };
+  const data = dir();
+  mkdirSync(join(data, "notes"));
+  writeFileSync(join(data, "notes", "a.json"), "{}\n");
+  writeFileSync(join(data, "notes", "b.json"), "{}\n");
+  const chat = new ChatDb(join(data, "chat.sqlite"));
+  const move = new JsonMove(chat, data, PER_FILE);
+  assert.deepEqual(move.open().imported, ["notes/a.json", "notes/b.json"]);
+  await chat.write([{ sql: "DELETE FROM pernote WHERE id = ?", params: ["notes/a.json"] }]);
+  move.touch("notes/a.json");
+  await move.flushExports();
+  assert.equal(existsSync(join(data, "notes", "a.json")), false);
+  await chat.write([{ sql: "DELETE FROM pernote WHERE id = ?", params: ["notes/b.json"] }]);
+  assert.deepEqual(move.check().items.map(i => [i.file, i.state]), [["notes/b.json", "behind"]]);
+  assert.deepEqual((await move.apply()).exported, ["notes/b.json"]);
+  assert.equal(existsSync(join(data, "notes", "b.json")), false);
+  assert.deepEqual(move.check().items, []);
+  await chat.close();
+});
+
 test("once the week of exports ended, the files move to json-archive and writes no longer export", async () => {
   const data = dir();
   writeFileSync(join(data, "notes.json"), notesFile([{ id: "a", text: "" }]));

@@ -11,10 +11,10 @@
  * `check` counts each file's records against the DB's, and `apply` writes the exports that are behind; `sw <kind> check|apply` call them.
  */
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { replaceLater, written } from "./disk.ts";
+import { replaceLater, sealedFor, written } from "./disk.ts";
 import type { ChatDb } from "./chat-db.ts";
 
 /** One kind of record and its JSON files. Each function gets the calling thread's connection; `load` runs inside the import's transaction. */
@@ -31,7 +31,10 @@ export interface JsonKind {
   records(file: string, text: string): number;
   /** How many records of `file` the DB holds. */
   count(db: DatabaseSync, file: string): number;
-  /** The text of `file` as the release before the move wrote it, rendered from the DB, or null when the DB holds nothing of it. */
+  /**
+   * The text of `file` as the release before the move wrote it, rendered from the DB, or null when the DB holds nothing of it, which deletes
+   * the file's export, as the release before the move deleted a file whose last record went.
+   */
   dump(db: DatabaseSync, file: string): string | null;
 }
 
@@ -202,7 +205,16 @@ export class JsonMove {
     const done: string[] = [];
     for (const file of files) {
       const text = this.kind.dump(this.db, file);
-      if (text === null) continue;
+      if (text === null) {
+        // A write took the file's last record away, such as a wake that went out, so the export goes too: a rollback must not find it.
+        const path = join(this.dataDir, file);
+        await written(path);
+        if (existsSync(path) && !sealedFor(path)) {
+          rmSync(path, { force: true });
+          done.push(file);
+        }
+        continue;
+      }
       const sha = sha256(text);
       const { kind } = this.kind;
       await this.chat.write([
@@ -247,7 +259,7 @@ export class JsonMove {
         continue;
       }
       const dump = this.kind.dump(this.db, file);
-      if (dump !== null && dump !== text) items.push({ file, state: "behind", json: records, db: count, fix: `sw ${kind} apply writes the export` });
+      if (dump !== text) items.push({ file, state: "behind", json: records, db: count, fix: `sw ${kind} apply ${dump === null ? "deletes" : "writes"} the export` });
       else if (records !== count) items.push({ file, state: "count", json: records, db: count, fix: "a bug in the kind's load or dump; nothing fixes it by itself" });
     }
     return { kind, version: state.version, importedAt: state.importedAt, exportUntil: state.exportUntil, files: files.length, json, db, items };
