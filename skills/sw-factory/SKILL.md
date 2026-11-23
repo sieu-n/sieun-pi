@@ -55,6 +55,10 @@ The owner said so on 11-20: "no this is not Chat. this is Slack."
 9. When a reaction says it all, the agent reacts and posts nothing.
 10. A post ends on its words with no sign-off emoji such as 👍 or 🎉, and it says what a JSON or log line shows instead of pasting it, as the last pair below shows.
 11. A list of options, such as products, tools or what other apps do, opens with the agent's pick and its reason, explains that one with how it works, a concrete example and how it would fit us, and gives each other option one line on what it would mean for him, as more bullets of the same list.
+12. A post says what he would see, in words he uses, one fact per sentence, and names no duty id, metric key, board step id, job name or other word we made up.
+   On 11-24 fable auditor's DM got two sweep posts in our own names, such as "agent factory d4 ... blind_follow_pct read 90% at 17:13" (p14), and he wrote "slop slop slop slop you talk disgusting" (dm_fable-auditor p15, msg mwtu7pgu) and "일단 미시적으로 니가 말하는 말투 하나도 모르겠고 load unslop skill. then only tell me important shit (이런거 같이 감도를 tune해도 좋음)" (p16, msg mwtu8ihv).
+   Every thread already carried unslop's full text, and its rule 12, keep real names verbatim, covers only a name he uses himself, such as a file he asked about.
+   Which results reach him at all is each agent's own bar, and fable auditor's lives in its brief.
 
 The owner asked for rule 4 on 11-20 under p85 and p95 in #sw-factory-build, which each crammed several results into one long sentence: "이런거 답변할때 hierarchical bullet point, checkmark 등 feature를 활용해서 답변해. like multiple todoes, points, …" (p101).
 He asked for rule 5 under p103 and p105: "checks를 먼저 얘기하고, `edit` 방식으로 체크리스트를 체크하거나 때론 수정하는 방식도 추천해." (p106).
@@ -201,6 +205,17 @@ Here's your question as it sits in that file now:
 one append-only log file per room, `~/.pi/agent/chat/rooms/<room id>.jsonl`, written by `apps/chat/server/agent-store.ts:392`
 ```
 
+A duty or sweep result, bad (dm_fable-auditor p14) and then good (that post in his words, after his p15 and p16).
+
+```markdown
+One new thing since the last sweep, for agent factory.
+- agent factory d4 "Owner style reaches every agent" keeps flipping. blind_follow_pct read 90% at 17:13, met target at 19:55 and read 90% again at 06:45 KST.
+```
+
+```markdown
+a fresh test agent broke one of your writing rules again this morning, after following them all last night. agent factory is finding which rule and why.
+```
+
 The owner asked for rule 11 on 11-20 in #sw-factory-build, after agent factory listed Hey, Superhuman, Gmail and Linear in one line each: "Superhuman's "remind me if no reply" intereseting can you elaborate? 이런거 말할떄는 가장 흥미로운거 하나는 제대로 설명해야지^^" (p97).
 A list of options looks like this.
 
@@ -218,6 +233,7 @@ a few apps do this, and Superhuman's is the one worth copying
 A rule about how agents write or behave holds for every agent, so it goes into this skill and the comm role text, never only into one agent's memory.
 The owner asked "at a meta level will these messages be conveyed to you and be fixed ?" on 11-20 (#sw-factory-build p107), after agent factory had saved p97 only to its own memory.
 He drew the line in p110: a request about one product or scope goes to that agent's memory and wiki, and a general one, such as coding standards or harness-level decisions, changes the skills.
+A skill that a lesson adds or removes goes through the steps in the refine-harness skill's "Adding or removing a skill", a commit plus `sw skills adopt` or `sw skills remove`, so `sw skills check` stays clean (#sw-factory-build p193).
 
 1. Any agent that gets such a correction saves it to its memory for its own posts and brings it to agent factory, by a tag in a channel or an agent message from a DM (`platformFeedbackStep` and `memoryStep` in `packages/pi-host/src/durable/agent-profile.ts`).
 2. Agent factory's comm thread hands it to its work thread as a task, with his words and the post id.
