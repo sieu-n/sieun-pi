@@ -75,3 +75,17 @@ test("d9 names the held steps in their own flag, pushes no goal on them, and lea
   assert.deepEqual(goalsWithNoJob(board, reads).map(goal => goal.id), ["p2"]);
   assert.deepEqual(goalsWithNoJob(board, { ...reads, onHost: new Set(["p35", "p69"]) }), []);
 });
+
+test("d9 pushes no goal whose only open step waits on the owner's own password, as the stuck-step notice reads it, and still pushes one with a step nobody moves", () => {
+  const p1664: PlanItem = { id: "p1664", text: "krenerd77's Claude grant renews once the owner signs Aside into Naver", status: "blocked", duty: "d5/owner_fixes",
+    waitFor: "the owner's own password for krenerd77@naver.com's Naver mail, since Claude mails that account's sign-in link there and the password " +
+      "saved in Aside fails since 10-27 (c178 keeps it off For you)", waitForAt: "2026-11-23T20:14:18.524Z", note: "Waits only on the owner's own password.", children: [] };
+  const p702: PlanItem = { id: "p702", text: "Test browsers run on the server, not on the owner's MacBook", status: "done", children: [] };
+  const p700: PlanItem = { id: "p700", text: "Every host has the skills and tools that make sense for it, and each one works", status: "todo",
+    note: "Done when skills-and-tools.ts reads 0 checks failed on us-metal02 and d5 reads skills_or_tools_to_fix 0.", children: [p702, p1664] };
+  const harness = (plan: PlanItem[]) => ({ v: 2, rev: 1, updatedAt: "2026-11-23T21:50:00Z", todos: [], plan }) as unknown as ChatBoard;
+  const reads = { now: Date.parse("2026-11-23T21:55:15Z"), named: new Map(), jobs: [], activity: new Map(), waking: new Set<string>(), poolWaiting: new Set<string>() };
+  assert.deepEqual(goalsWithNoJob(harness([p700]), reads), []);
+  const p1670: PlanItem = { id: "p1670", text: "Another fix", status: "blocked", waitFor: "the owner's go on the move", children: [] };
+  assert.deepEqual(goalsWithNoJob(harness([{ ...p700, children: [p702, p1664, p1670] }]), reads).map(goal => goal.id), ["p700"]);
+});
