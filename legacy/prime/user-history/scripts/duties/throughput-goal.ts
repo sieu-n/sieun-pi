@@ -13,23 +13,20 @@ import { type DsQuery, GRAFANA, HOUR, MINUTE, PG, PROM, REPO, grafanaClient, num
  * The owner, 10-22 (msg mvj491h5): "Crawler running -> Throughput goal achieved ( unified for all platform )". The duty moved from Crawler VP's
  * d9 to Crawler guy's d8 on 11-24 (owner, t9: "Yes, hand everything over so the crawler has one owner (my pick)"). The headline counts the
  * throughput goals prod misses, over every platform that has one, each read the way the crawler Throughput dashboard on obs.virev.ai reads it:
- * - Instagram profiles (p826, 10,000 a minute held 6 h): the slowest rolling hour of the
- *   last 6 h outside prod deploys (DEPLOY_EXPR), the dashboard's "slowest hour, 6 h" stats. Instagram counts crawler.instagram_account_snapshots,
- *   one row per profile read on any path, the number p826's target and its census canary run read; census jobs that ended gone or private
- *   read no profile, so crawler.instagram_census_reads ran about 1,350 a minute over it at 06:00-06:30Z on 10-22 (11,002 against 9,648).
- *   TikTok Shop (p696) reads coverage instead since 10-23: live US products with an ok read in the last 7 days over the frontier's live
- *   products, against TTS_WEEKLY_PCT; its slowest-hour rate of ok product rows stays in the line as detail. Instagram reads
- *   ClickHouse rows, because the dashboard's gauge crawler_v3_rate_controller_good_per_minute keeps its last value while the controller is
- *   down: on 10-22 it read 11,100 from 00:55 to 01:50Z while census finished 56,843 jobs in the 01:00Z hour, so a stopped crawl would read green there;
- * - Meta Ads advertiser re-reads (p850, every due advertiser read within 7 days): advertiser walks finished a minute over 24 h (the crawler's
- *   crawler_v3_meta_ads_finished_1h gauge in prod Prometheus) against the walks due now, from a page sample of prod meta_ads_walks, spread over the 7 days;
- * - Instagram re-reads (p683, owner 10-26: "1k+ every month, 10K+ every week" and "under 1k also monthly", at most 1% of read accounts with
- *   10,000+ followers past 7 days and at most 1% of the rest past 30 days): a page sample of prod instagram_census (REFRESH_SAMPLE_PCT).
- *   p829's 14-day line left on 10-26, when the owner's t65 answer replaced it with p683 and the board dropped p829.
- * The open re-read goal comes from Crawler guy's board at run time (REFRESH_ITEM): its target, or the number in its title when it has none. The
- * goals that closed on Crawler VP's board stay this duty's own lines (IG_PROFILES_PER_MIN, META_DAYS, TTS_WEEKLY_PCT, WRITER_LAG_LINE). Platforms
- * that crawl on prod with no goal (crawler.job_run_events crawl_profile, and Instagram posts) are listed in the run detail and left out of the count.
- * The supporting metrics keep the rest of the owner's 10-19 duties for crawler-v3 (msg mvfe8foz): "nothing is backlogging" (p827) and "Check the
+ * - Instagram profiles (IG_PROFILES_PER_MIN): the slowest rolling hour of the last 6 h outside prod deploys (DEPLOY_EXPR), the dashboard's
+ *   "slowest hour, 6 h" stats. Instagram counts crawler.instagram_account_snapshots, one row per profile read on any path; census jobs that ended
+ *   gone or private read no profile, so crawler.instagram_census_reads ran about 1,350 a minute over it at 06:00-06:30Z on 10-22 (11,002 against
+ *   9,648). Instagram reads ClickHouse rows, because the dashboard's gauge crawler_v3_rate_controller_good_per_minute keeps its last value while
+ *   the controller is down: on 10-22 it read 11,100 from 00:55 to 01:50Z while census finished 56,843 jobs in the 01:00Z hour, so a stopped crawl
+ *   would read green there;
+ * - TikTok Shop products (TTS_PRODUCTS_PER_MIN): ok product rows a minute in the same slowest hour, with the share of live US products read in
+ *   the last 7 days as detail;
+ * - Meta Ads advertiser re-reads (META_WALKS_PER_MIN): advertiser walks finished a minute over 24 h (the crawler's crawler_v3_meta_ads_finished_1h
+ *   gauge in prod Prometheus), with the walks due now, from a page sample of prod meta_ads_walks, and the days one pass over them takes as detail;
+ * - Instagram re-reads (REFRESH_ITEM, owner 10-26: "1k+ every month, 10K+ every week" and "under 1k also monthly", at most 1% of read accounts
+ *   with 10,000+ followers past 7 days and at most 1% of the rest past 30 days): a page sample of prod instagram_census (REFRESH_SAMPLE_PCT).
+ * The re-read goal comes from Crawler guy's board at run time: its target, or the number in its title when it has none. The three lane lines
+ * are each lane's share of the 250 GB GeoNode month (PLAN_MONTH_GB), and the census writer keeps its own line (WRITER_LAG_LINE). Platforms
  * Observability and Metrics", every panel of the crawler dashboards run the way Grafana draws it. His "Geonode mbps >=100mbps always" left on
  * 11-24: 100 Mbps every hour is about 32 TB a month, against the 250 GB GeoNode plan he bought that day ("i got 250GB plan. hook it up, and keep
  * monitoring"), whose use Search product, misc.'s d4 watches.
@@ -47,11 +44,35 @@ const CH = "estate_ch_prod";
 export const SETTLE_MS = 5 * MINUTE;
 export const CENSUS_HOURS = 24;
 /**
- * The goals this duty keeps after they closed on Crawler VP's board, which the 11-24 hand-over did not carry, since it moved open steps only:
- * Instagram profiles at 10,000 a minute held 6 h (p826, owner 10-19 p1) and every due Meta advertiser read within 7 days (p850).
+ * The 250 GB GeoNode month the owner bought on 11-24 ("i got 250GB plan. hook it up, and keep monitoring"), split for the house lanes this duty
+ * judges. measured: lane-pricing.html of 11-24 (wiki session 0717-price-every-crawl-lane-on-the-250-gb-geonode-plan-prod-and-s), prod and
+ * staging crawler.proxy_wire_reads at the 11-01 to 11-09 pace: staging up to 40 GB and prod paid and upkeep reads 129 GB leave 81 GB for the
+ * prod house lanes, which ran 65,354 GB a month, so every house lane keeps 81 / 65,354 of its old pace. The census ran 23,979 GB, TikTok Shop
+ * 4,010 GB and Meta Ads 1,583 GB. The lines are a floor on each lane's share; d4 of Search product, misc. watches the month's total.
  */
-export const IG_PROFILES_PER_MIN = 10_000;
-export const META_DAYS = 7;
+export const PLAN_MONTH_GB = 250;
+export const STAGING_MONTH_GB = 40;
+export const PROD_PAID_MONTH_GB = 129;
+export const HOUSE_PACE_MONTH_GB = 65_354;
+export const LANE_PACE_MONTH_GB = { instagram: 23_979, tiktokShop: 4_010, metaAds: 1_583 } as const;
+/**
+ * GeoNode bytes per unit each row counts: lane wire bytes over that window's units, times 1.1375, the counted bytes per wire byte the pricing
+ * page uses (GEONODE_BYTES_PER_COUNTED). measured: census lane 2,061,163,775,511 wire bytes over 48,732,020 ok census jobs (11-06 08:49Z to
+ * 11-09 08:48Z, crawler.instagram_census_reads, the metered span); tiktok-shop-crawler 974,336,591,132 over 12,764,044 ok product rows
+ * (11-01 to 11-09 08:48Z, crawler.tiktok_shop_reads); meta_ads 16.40 GB a day over 1,321,516 advertiser walks finished a day
+ * (crawler_v3_meta_ads_finished_1h over the 8 days to 11-09 08:00Z).
+ */
+export const COUNTED_BYTES = { instagram: 48_112, tiktokShop: 86_830, metaAds: 14_118 } as const;
+export const MONTH_MINUTES = 30 * 24 * 60;
+/** A lane's share of the plan in GB a month, and the units a minute that share buys. */
+export const laneMonthGb = (lane: keyof typeof LANE_PACE_MONTH_GB): number =>
+  (LANE_PACE_MONTH_GB[lane] * (PLAN_MONTH_GB - STAGING_MONTH_GB - PROD_PAID_MONTH_GB)) / HOUSE_PACE_MONTH_GB;
+export const planRate = (lane: keyof typeof LANE_PACE_MONTH_GB): number => round1((laneMonthGb(lane) * 1e9) / COUNTED_BYTES[lane] / MONTH_MINUTES);
+/** Instagram profiles, TikTok Shop good products and Meta advertiser walks a minute that fit the plan: 14.3, 1.3 and 3.2. */
+export const IG_PROFILES_PER_MIN = planRate("instagram");
+export const TTS_PRODUCTS_PER_MIN = planRate("tiktokShop");
+export const META_WALKS_PER_MIN = planRate("metaAds");
+
 /**
  * Crawler guy's re-read goal, Crawler VP's p683 before the hand-over (owner 10-26: "1k+ every month, 10K+ every week" and "under 1k also
  * monthly"): at most its target share of 10k+ accounts past 7 days, and of the rest past 30 days.
@@ -60,13 +81,8 @@ export const REFRESH_ITEM = "p8";
 /** The hold the goals read: p826's "held 6 h straight", and the same window on the dashboard's TikTok Shop stat. */
 export const HOLD_MS = 6 * HOUR;
 /**
- * p696's line since 10-23: the share of live US TikTok Shop products with an ok read in the last 7 days, the owner's "each re-read every week"
- * for p681. Crawler ops set it at 99.5% on 10-23 04:5xZ. A product read rate swings with how many are due (c67): on 10-23 the lane read about
- * 330 distinct products a minute because 1 live product was due and 99.98% had a 7-day ok read, so the old 2,000-a-minute line read Missed on
- * a finished week. Live leaves out frontier rows TikTok answered gone (151,705 of 6,442,529 on 10-23), which cannot be indexed.
- */
-export const TTS_WEEKLY_PCT = 99.5;
-/**
+ * The TikTok Shop row's detail: the share of live US products with an ok read in the last 7 days, p696's goal of 99.5% from 10-23 until the plan
+ * line replaced it on 11-24. Live leaves out frontier rows TikTok answered gone (151,705 of 6,442,529 on 10-23), which cannot be indexed.
  * The numerator counts a product only while it is live now: an ok read in the 7 days and a last read that did not find it gone, the same rows
  * the live count keeps. measured: prod 2026-11-05 17:00Z, every key with an ok read read 6,726,933 against 6,715,478 live (100.17%), because
  * products read ok and then found gone that week counted; this form read 6,711,937 (99.947%), against 99.933% of a 2% frontier sample.
@@ -436,12 +452,11 @@ export function goalRows(d: ThroughputData): GoalRow[] {
   return [
     { platform: "Instagram profiles", value: d.igSlowest ?? null, op: ">=", goal: IG_PROFILES_PER_MIN, source: "duty", unit: "", reads: `read a minute ${window}`,
       extra: d.igLast30 === undefined ? undefined : `(${fmt(d.igLast30)} a minute in the last 30 min)` },
-    { platform: "TikTok Shop products", value: d.ttsWeekly && d.ttsWeekly.live > 0 ? (100 * d.ttsWeekly.read) / d.ttsWeekly.live : null,
-      op: ">=", unit: "%", goal: TTS_WEEKLY_PCT, source: "duty", reads: "of live US products with an ok read in the last 7 days",
-      extra: d.ttsWeekly ? `(${d.ttsWeekly.read.toLocaleString("en-US")} of ${d.ttsWeekly.live.toLocaleString("en-US")}, gone products left out; ${d.ttsSlowest == null ? "rate not read" : `${fmt(d.ttsSlowest)} good a minute ${window}`})` : undefined },
+    { platform: "TikTok Shop products", value: d.ttsSlowest ?? null, op: ">=", unit: "", goal: TTS_PRODUCTS_PER_MIN, source: "duty", reads: `good a minute ${window}`,
+      extra: d.ttsWeekly && d.ttsWeekly.live > 0 ? `(${fmt((100 * d.ttsWeekly.read) / d.ttsWeekly.live, "%")} of live US products read in the last 7 days, ${d.ttsWeekly.read.toLocaleString("en-US")} of ${d.ttsWeekly.live.toLocaleString("en-US")}, gone products left out)` : undefined },
     { platform: "Meta Ads advertiser re-reads", op: ">=", unit: "", reads: "walks finished a minute over 24 h", source: "duty",
-      value: d.meta ? d.meta.finished24h / (24 * 60) : null, goal: d.meta ? d.meta.due / (META_DAYS * 24 * 60) : null,
-      extra: d.meta ? `(about ${count(d.meta.due)} advertiser walks due now from a ${META_SAMPLE_PCT}% page sample, read within ${META_DAYS} days)` : undefined },
+      value: d.meta ? d.meta.finished24h / (24 * 60) : null, goal: META_WALKS_PER_MIN,
+      extra: d.meta ? `(about ${count(d.meta.due)} advertiser walks due now from a ${META_SAMPLE_PCT}% page sample, ${fmt(d.meta.due / (META_WALKS_PER_MIN * 24 * 60))} days at the plan line)` : undefined },
     { platform: "Instagram 10k+ weekly re-reads", item: REFRESH_ITEM, value: shares?.big7Pct ?? null, op: "<=", unit: "%",
       reads: "of sampled read accounts with 10,000+ followers last read over 7 days ago", ...refreshGoal,
       extra: shares ? `(${shares.sum.past7Big.toLocaleString("en-US")} of ${shares.sum.readBig.toLocaleString("en-US")})` : undefined },
