@@ -28,15 +28,15 @@ test("the night's noise lines all went out before their kind's fix, the Mac's sp
   const split = await splitNoise(nightLines, commitTime);
   assert.deepEqual(split.map(line => line.side), Array(7).fill("before_fix"));
   assert.equal(noiseSide(split[0]!), "before fix f4092cd3 of 10-19 21:02Z");
-  assert.deepEqual(noiseLastEvent(split), { needed_pct_24h: at(commits.d7112574!) });
+  assert.deepEqual(noiseLastEvent(split), { needed_pct_24h: at("2026-10-20T04:15:35Z") });
 
   const output = { metrics: { needed_pct_24h: 80.5, ...noiseMetrics(split) }, lastEventAt: noiseLastEvent(split) };
   const run = (time: number): DutyRunRecord => ({ duty: "d11", at: time, trigger: "schedule", ms: 1, ...judge([metric], output) });
   const runs = [run(firstRun + 30 * 60_000), run(firstRun)];
   const [streak] = metricStreaks(runs);
-  assert.equal(streak!.quietSince, at(commits.d7112574!));
+  assert.equal(streak!.quietSince, at("2026-10-20T04:15:35Z"));
   assert.match(missLine("d11", streak!, metric.label, "%"), /moves toward its target as older events leave its window\. Start no new job for it/);
-  assert.equal(agingSince(runs), at(commits.d7112574!));
+  assert.equal(agingSince(runs), at("2026-10-20T04:15:35Z"));
 });
 
 test("a noise line that went out after its kind's fix, or of a kind no fix covers, reads live on the run after its label", async () => {
@@ -157,7 +157,7 @@ test("a kind with a later fix reads its leaks after the first fix as before the 
   assert.deepEqual(split.map(line => [line.side, line.fix]), [["before_fix", "c541b75c"], ["before_fix", "c541b75c"], ["after_fix", "c541b75c"]]);
 });
 
-test("the 10-25 lines that p1067 fixed or dropped read quiet a run after e5d526be, and only a new leak makes the miss live again", async () => {
+test("the 10-25 lines that p1067 fixed or dropped read quiet a run after their label, and only a new leak makes the miss live again", async () => {
   // d11 at 22:01Z on 10-25 read 72.2 (13 needed of 18) on five noise lines sent from 03:29Z to 10:57Z and labelled at 21:09:06Z. Two went
   // out before e5d526be; the t15 re-ask, the t34 nudge and the p161 done went out after the fixes of their kinds, and p1067 dropped a code
   // hold for them on replay evidence. Their after_fix side dated the count `now`, so every run read live and d9 at 22:13Z asked to replace
@@ -175,7 +175,7 @@ test("the 10-25 lines that p1067 fixed or dropped read quiet a run after e5d526b
   ];
   const split = await splitNoise(lines, time);
   assert.deepEqual(noiseMetrics(split), { noise_before_fix_24h: 2, noise_after_fix_24h: 3, noise_no_fix_24h: 0 });
-  assert.deepEqual(noiseLastEvent(split), { needed_pct_24h: at(fixed.e5d526be) });
+  assert.deepEqual(noiseLastEvent(split), { needed_pct_24h: labelled });
 
   const run = (time: number, output: { metrics: Record<string, number>; lastEventAt: Record<string, number> }): DutyRunRecord =>
     ({ duty: "d11", at: time, trigger: "schedule", ms: 1, ...judge([metric], output) });
@@ -183,8 +183,8 @@ test("the 10-25 lines that p1067 fixed or dropped read quiet a run after e5d526b
   const live = [run(at("2026-10-25T22:01:44Z"), reading), run(at("2026-10-25T21:03:04Z"), reading)];
   assert.equal(metricStreaks(live)[0]!.quietSince, undefined);
   const aging = [run(at("2026-10-25T23:01:00Z"), reading), ...live];
-  assert.equal(metricStreaks(aging)[0]!.quietSince, at(fixed.e5d526be));
-  assert.equal(agingSince(aging), at(fixed.e5d526be));
+  assert.equal(metricStreaks(aging)[0]!.quietSince, labelled);
+  assert.equal(agingSince(aging), labelled);
   assert.match(missLine("d11", metricStreaks(aging)[0]!, metric.label, "%"), /Start no new job for it/);
 
   const window = 24 * 3_600_000;

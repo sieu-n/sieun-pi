@@ -32,7 +32,7 @@ import { fixRepos, gitCommitTime } from "./repeat-split.ts";
  *   only when this box's copy of its session file was complete past the grace (`copyThrough`); otherwise it is flagged `host_away`, so the
  *   runner reruns the duty once that box is back, or `copy_behind` while the box is up and the copy has not caught up yet.
  * - noise_before_fix_24h, noise_after_fix_24h, noise_no_fix_24h: the noise lines by when the check for their kind landed (noise-split.ts), and
- *   needed_pct_24h's lastEventAt, the newest send, label or fix landing among them, so a miss on noise no run has newly seen only waits for the
+ *   needed_pct_24h's window and lastEventAt, the newest send or label among them, so a miss on noise no run has newly seen only waits for the
  *   lines to leave the 24 h. A missed needed_pct_24h also flags `aging`: when the oldest noise line leaves and when the share meets the target
  *   with no new noise (noiseAging).
  * Clean-room test chats are left out (clean-room-chats.json), since the goal is about his real chats.
@@ -197,5 +197,5 @@ const clock = (ms: number) => new Date(ms).toISOString().slice(5, 16).replace("T
 if (aging) flagged.push({ kind: "aging", at: aging.oldestLeaves, excerpt: `needed_pct_24h counts ${noise.length} noise lines in ${labelled}, so one line is ${aging.pointsPerLine} points. ` +
   `The oldest leaves the window at ${clock(aging.oldestLeaves)}. At ${target}% the ${needed} needed lines allow ${aging.allowed} noise ${aging.allowed === 1 ? "line" : "lines"}, so with no new noise ` +
   `and the same needed count the share meets the target at ${clock(aging.meetsAt)}.` });
-writeFileSync(out, JSON.stringify({ metrics, flagged, lastEventAt: noiseLastEvent(noise) } satisfies PrecheckOutput, null, 1));
+writeFileSync(out, JSON.stringify({ metrics, flagged, lastEventAt: noiseLastEvent(noise), windowMs: { needed_pct_24h: windowMs } } satisfies PrecheckOutput, null, 1));
 process.stdout.write(`${JSON.stringify(metrics)}\n`);

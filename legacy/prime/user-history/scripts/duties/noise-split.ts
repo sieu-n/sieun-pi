@@ -70,17 +70,19 @@ export function noiseMetrics(split: readonly NoiseLine[]): Record<`noise_${Repea
 }
 
 /**
- * `lastEventAt` for needed_pct_24h: the newest change to a counted noise line, which is when it went out, when a run labelled it, or for a
- * before_fix line when its fix landed. A noise line pulls the share down for the whole 24 h whatever fix lands after it, so once a run has
- * passed since that change the miss reads quiet and only waits for the line to leave. An after_fix or no_fix line reads live on the run after
- * its label, whose miss line starts its fix, and a new leak reads live again, so d9 still judges a fix by the lines sent after it. Before
- * 10-26 an after_fix line dated the count `now`: the 10-25 t15 re-ask, t34 nudge and p161 done, sent from 03:29Z to 10:57Z and labelled at
- * 21:09Z, kept every run live after p1067 had fixed or dropped their kinds, and d9 asked at 22:13Z to replace a fix that no line had leaked
- * past. No noise line gives no `lastEventAt`.
+ * `lastEventAt` for needed_pct_24h: the newest change to a counted noise line, which is when it went out or when a run labelled it. A noise
+ * line pulls the share down for the whole 24 h whatever fix lands after it, so once a run has passed since that change the miss reads quiet
+ * and only waits for the line to leave. An after_fix or no_fix line reads live on the run after its label, whose miss line starts its fix, and
+ * a new leak reads live again, so d9 still judges a fix by the lines sent after it. Before 10-26 an after_fix line dated the count `now`: the
+ * 10-25 t15 re-ask, t34 nudge and p161 done, sent from 03:29Z to 10:57Z and labelled at 21:09Z, kept every run live after p1067 had fixed or
+ * dropped their kinds, and d9 asked at 22:13Z to replace a fix that no line had leaked past. A fix landing moves a line to before_fix, which
+ * owes no job, so it is no event here: until 11-24 it dated the count, and d11f8252, which landed at 21:13:15Z on 11-23, made the 21:16Z
+ * verify run read live on ops guy's 15:13Z t81 resend. d11 runs daily, so d9 counted d11 as a red duty with no live fix for the next day.
+ * No noise line gives no `lastEventAt`.
  */
 export function noiseLastEvent(split: readonly NoiseLine[]): { needed_pct_24h?: number } {
   if (!split.length) return {};
-  return { needed_pct_24h: Math.max(...split.map(line => Math.max(line.at, line.labelled ?? 0, line.side === "before_fix" ? line.fixed! : 0))) };
+  return { needed_pct_24h: Math.max(...split.map(line => Math.max(line.at, line.labelled ?? 0))) };
 }
 
 /** When needed_pct_24h's noise leaves its window: the oldest line, how many noise lines `target` allows beside `needed` needed lines, and when the line that brings the count down to that leaves. */
