@@ -150,9 +150,12 @@ setChildLoaderOptions(() => ({ extensionFactories: [...hostExtensions, scheduler
 // Prime's prompt modules load here too: on a copy of 72ba1ed2 their first import held the loop about 820 ms inside the first root input's
 // digest after a start (~/work/pi-host-stalls/g-live-lines/report.md).
 if (durable) await primeModules();
+// The provider modules load before the socket listens too: after listening, openai-responses alone held the loop 142 to 198 ms on each start
+// of 11-23 (host.log "provider modules loaded").
+const providers = await host.warmProviders();
 const server = await listen(host, socketPath, { scratchChatMark: values["scratch-chat"] === true });
 await durable?.threads.start().catch(error => host.log(`durable recovery failed: ${error instanceof Error ? error.stack : String(error)}`));
-void host.warmProviders().then(rows => host.log(`provider modules loaded: ${rows.map(row => `${row.api} ${row.ms} ms${row.error ? ` (${row.error})` : ""}`).join(", ")}`));
+host.log(`provider modules loaded: ${providers.map(row => `${row.api} ${row.ms} ms${row.error ? ` (${row.error})` : ""}`).join(", ")}`);
 host.log(`listening on ${socketPath} (pid ${process.pid}, agent dir ${agentDir}, ${extensions.length} extensions)`);
 if (durable) host.log(durableCompactionLine(agentDir));
 await host.recoverInboxes().catch(error => host.log(`inbox recovery failed: ${error instanceof Error ? error.message : String(error)}`));

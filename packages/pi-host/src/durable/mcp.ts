@@ -26,8 +26,11 @@ interface PrimeMcp {
 }
 
 let modules: Promise<PrimeMcp> | undefined;
-/** Prime's MCP modules, loaded by their path next to the package index as `prime-prompt.ts` loads its prompt modules. */
-function primeMcp(): Promise<PrimeMcp> {
+/**
+ * Prime's MCP modules, loaded by their path next to the package index as `prime-prompt.ts` loads its prompt modules. DurableRlm.load awaits
+ * it before pi-host listens: on 11-23 the first mcp.config after a start held the loop 533 and 574 ms loading them (host.log 20:00:12Z, 22:02:01Z).
+ */
+export function primeMcp(): Promise<PrimeMcp> {
   modules ??= (async () => {
     const index = import.meta.resolve("prime-agent");
     const load = (path: string) => import(new URL(path, index).href) as Promise<Record<string, unknown>>;

@@ -62,7 +62,7 @@ import { Subagent } from "./subagent.ts";
 import type { HostCall, HostModule } from "./host-modules.ts";
 import { goalModule } from "./goal.ts";
 import { heartbeatModule } from "./heartbeat.ts";
-import { mcpModule } from "./mcp.ts";
+import { mcpModule, primeMcp } from "./mcp.ts";
 import { primeDefaults } from "./models.ts";
 import { refineModule } from "./refine.ts";
 import { ownerTag } from "./owner-tag.ts";
@@ -303,6 +303,9 @@ export class DurableRlm {
     // Prime's job-leftovers module, which `endJob` imports, loads here, before pi-host listens: its first import held the loop 250 to 270 ms
     // in one turn on us-metal02 on 11-23, inside the first rlm.delete_subagent or archive after a restart (h-restart-resume/report.md).
     await import("../../../../legacy/prime/user-history/src/job-leftovers.ts");
+    // Prime's MCP modules too: the first mcp.config after a start held the loop 533 and 574 ms loading them on 11-23. A box without Prime
+    // fails here as its first mcp request would, so the failure stays with that request.
+    await primeMcp().catch(() => undefined);
     return new DurableRlm(await loadIpythonTool(), options);
   }
 
