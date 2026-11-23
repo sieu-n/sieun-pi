@@ -17,7 +17,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import type { AgentConfig, AgentFolderSummary, AgentId, ChatBoard, ConfigFile, PlanItem } from "../web/src/lib/api/types.ts";
+import type { AgentConfig, AgentFolderSummary, AgentId, AgentSummary, ChatBoard, ConfigFile, PlanItem } from "../web/src/lib/api/types.ts";
 import type { Duty, DutyRunRecord } from "../web/src/lib/api/shared/chat-duties.ts";
 import { fileInfo, instructionFiles } from "./agent-folder.ts";
 import type { AgentRecord } from "./agent-store.ts";
@@ -31,6 +31,7 @@ import { readJson } from "./store.ts";
 import { conversationIdOf, parseConversationId } from "./threads.ts";
 import { bucketStart } from "./usage.ts";
 import { BUCKET_MS, RANGE_MS } from "../web/src/lib/api/shared/usage-range.ts";
+import { waiting } from "../web/src/lib/api/shared/snooze.ts";
 
 const PURPOSE_CAP = 1500;
 /** Entries read for the purpose: an imported Prime session opens with its harness digest and other tagged notices before the first input. */
@@ -141,7 +142,7 @@ function boardSummary(board: ChatBoard): Omit<NonNullable<AgentConfig["board"]>,
     doc: BOARD_DOC, rev: board.rev, updatedAt: board.updatedAt,
     goals: board.plan.map(item => ({ id: item.id, text: item.text, status: item.status, ...count(item.children) })),
     steps: { ...all, total: all.open + all.done }, awaitingGo: awaitingGo(board).length,
-    openTodos: board.todos.filter(todo => !todo.done).map(todo => ({ id: todo.id, text: todo.text, at: todo.at, ...(todo.step ? { step: todo.step } : {}) })),
+    openTodos: board.todos.filter(todo => waiting(todo, Date.now())).map(todo => ({ id: todo.id, text: todo.text, at: todo.at, ...(todo.step ? { step: todo.step } : {}) })),
   };
 }
 
@@ -227,6 +228,47 @@ function weekUsage(app: App, thread: string, now = Date.now()): Promise<UsageTot
   return app.usage.usage({ since, until, bucketMs: until - since, threads: [thread] }).catch(() => null);
 }
 
+type SwarmJob = AgentConfig["swarm"]["jobs"][number];
+type DutyJobs = ReadonlyMap<string, unknown>;
+
+/**
+ * A row of a registered agent's Jobs tab. A root job thread sits at depth 1 under the agent, or under the job it is filed under; a job inside
+ * the work thread sits at its depth there, and a job inside a root job thread one deeper, under that root job.
+ */
+function agentJob(app: App, job: AgentSummary, agentId: AgentId, workThread: string, dutyJobs: DutyJobs): SwarmJob {
+  const base = { id: job.id, name: job.name, status: job.status, createdAt: job.createdAt, archived: job.archived };
+  if (job.conversation === 1) {
+    const parent = job.parent?.id ?? agentId;
+    return { ...base, kind: dutyJobs.has(job.id) ? "duty" : "root job", parent, depth: parent === agentId ? 1 : 2 };
+  }
+  const nodes = app.threads.tree(job.thread);
+  const node = nodes.find(n => n.id === job.conversation);
+  const top = nodes.find(n => n.id === 1)?.depth ?? 0;
+  const depth = (node?.depth ?? top + 1) - top + (job.thread === workThread ? 0 : 1);
+  return { ...base, kind: "job", parent: node?.parent ? conversationIdOf(job.thread, node.parent) : null, depth };
+}
+
+/** A job's own swarm: the conversations under it in its thread file, and the root job threads filed under it. */
+function jobJobs(app: App, id: AgentId, thread: string, conversation: number, dutyJobs: DutyJobs): SwarmJob[] {
+  const nodes = app.threads.tree(thread);
+  const below = (conv: number): number[] => nodes.filter(n => n.parent === conv).flatMap(n => [n.id, ...below(n.id)]);
+  const children = new Set(below(conversation));
+  const jobs: SwarmJob[] = nodes.filter(n => children.has(n.id)).map(n => ({
+    id: conversationIdOf(thread, n.id), name: n.name, kind: "job" as const, status: app.threads.statusOfConversation(thread, n.id), createdAt: n.createdAt,
+    parent: n.parent === null ? null : conversationIdOf(thread, n.parent), depth: n.depth - (nodes.find(x => x.id === conversation)?.depth ?? 0),
+    archived: app.threads.jobArchived(thread, n.id),
+  }));
+  for (const other of app.threads.threadsList()) {
+    const meta = app.threads.meta(other.id);
+    if (meta.kind !== "job" || (meta.parent !== id && meta.parent !== thread) || other.id === thread) continue;
+    jobs.push({
+      id: other.id, name: other.name || "Untitled", kind: dutyJobs.has(other.id) ? "duty" : "root job", status: app.threads.statusOfConversation(other.id, 1),
+      createdAt: other.createdAt, parent: id, depth: 1, archived: other.archived,
+    });
+  }
+  return jobs;
+}
+
 export async function agentConfig(app: App, id: AgentId): Promise<AgentConfig> {
   let agent = app.threads.agent(id);
   if (!agent) {
@@ -267,23 +309,12 @@ export async function agentConfig(app: App, id: AgentId): Promise<AgentConfig> {
   const durableDir = !app.config.fixture && app.config.durableIndex ? dirname(app.config.durableIndex) : null;
   const threadFile = durableDir ? fileInfo("pi-durable thread file", join(durableDir, "threads", `${thread}.sqlite`), { note: "Its transcript, every job conversation and its documents, such as chat.board." }) : null;
 
-  // Its swarm: child conversations in its own thread file, and root jobs filed under it.
-  const nodes = app.threads.tree(thread);
-  const below = (conv: number): number[] => nodes.filter(n => n.parent === conv).flatMap(n => [n.id, ...below(n.id)]);
-  const children = new Set(below(conversation));
-  const jobs: AgentConfig["swarm"]["jobs"] = nodes.filter(n => children.has(n.id)).map(n => ({
-    id: conversationIdOf(thread, n.id), name: n.name, kind: "job" as const, status: app.threads.statusOfConversation(thread, n.id), createdAt: n.createdAt,
-    parent: n.parent === null ? null : conversationIdOf(thread, n.parent), depth: n.depth - (nodes.find(x => x.id === conversation)?.depth ?? 0),
-    archived: app.threads.jobArchived(thread, n.id),
-  }));
-  for (const other of app.threads.threadsList()) {
-    const meta = app.threads.meta(other.id);
-    if (meta.kind !== "job" || (meta.parent !== agent.id && meta.parent !== thread) || other.id === thread) continue;
-    jobs.push({
-      id: other.id, name: other.name || "Untitled", kind: dutyJobs.has(other.id) ? "duty" : "root job", status: app.threads.statusOfConversation(other.id, 1),
-      createdAt: other.createdAt, parent: agent.id, depth: 1, archived: other.archived,
-    });
-  }
+  // Its swarm. A registered agent's jobs are its rows of GET /api/jobs (`jobsOf`), so the Jobs tab, the profile card and the Agents card count
+  // the same jobs; on 11-23 this list missed the jobs inside root job threads, and agent factory's tab showed 466 where /api/jobs had 529.
+  // A job's own swarm is the conversations under it in its thread file, and the root jobs filed under it.
+  const jobs: AgentConfig["swarm"]["jobs"] = app.threads.registered(agent.id)?.id === agent.id
+    ? app.threads.jobsOf(agent.id).map(job => agentJob(app, job, agent.id, thread, dutyJobs))
+    : jobJobs(app, agent.id, thread, conversation, dutyJobs);
   jobs.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
 
   const isChatRoot = agent.kind === "chat" && conversation === 1;

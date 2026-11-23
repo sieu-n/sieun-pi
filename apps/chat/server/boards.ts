@@ -10,7 +10,7 @@ import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync,
 import { isAbsolute, join } from "node:path";
 import type { AgentSummary, BoardOp, BoardRow, BoardView, ChatBoard, CheckInPatch, CheckInView, DutyAction, DutyRow, DutyView, ForYouItem, PlanItem } from "../web/src/lib/api/types.ts";
 import { applyBoardOp, BOARD_PREFIX, emptyBoard, needsGo, nextIds, parseBoard, parseBoardOps, stepGo } from "../web/src/lib/api/shared/chat-board.ts";
-import { snoozed } from "../web/src/lib/api/shared/snooze.ts";
+import { snoozed, waitingAsks } from "../web/src/lib/api/shared/snooze.ts";
 import { newestAskFirst } from "../web/src/lib/api/shared/board-lists.ts";
 import { morningTime, upsertDuty, type AfterMeasure, type Duty, type DutyRunRecord, type DutySchedule, type DutyTrigger } from "../web/src/lib/api/shared/chat-duties.ts";
 import { asAfter, clearPrecheck, measure, measureAfter, runStamp, type PrecheckLaunch } from "./duty-run.ts";
@@ -352,15 +352,15 @@ export class Boards {
 
   /** Open todos that no Remind me hides; the soonest reminder sends the count again when it comes due. */
   async forYouCount(now = Date.now()): Promise<number> {
-    const open = (await this.forYou()).filter(item => !item.todo.done);
-    const due = open.filter(item => snoozed(item.todo, now)).map(item => Date.parse(item.todo.remindAt!));
+    const items = await this.forYou();
+    const due = items.filter(item => snoozed(item.todo, now)).map(item => Date.parse(item.todo.remindAt!));
     clearTimeout(this.snoozeTimer);
     if (due.length) {
       // setTimeout takes at most 2^31-1 ms (about 24.8 days); a later reminder re-arms when this one fires.
       this.snoozeTimer = setTimeout(() => void this.snoozeDue().catch(() => undefined), Math.min(Math.min(...due) - now + 50, 2 ** 31 - 1));
       this.snoozeTimer.unref?.();
     }
-    return open.length - due.length;
+    return waitingAsks(items.map(item => item.todo), now);
   }
 
   /** The soonest Remind me came due: the asks back on For you go out as notices, and the count again. */
@@ -372,6 +372,8 @@ export class Boards {
       return !item.todo.done && at > since && at <= now;
     });
     if (due.length) this.events.asksDue?.(due, now);
+    // Each board row counts the asks that came due again, as the badge does.
+    for (const chat of new Set(due.map(item => item.chatId))) this.rowChanged(chat);
     this.events.forYou(await this.forYouCount(now));
   }
 
@@ -392,7 +394,7 @@ export class Boards {
     const checkIn = this.checkIn(chat);
     return {
       chatId: chat, chatName: this.nameOf(chat), rev: board.rev, progress: { done, total },
-      openAsks: board.todos.filter(t => !t.done).length, needsGo: awaitingGo(board).length,
+      openAsks: waitingAsks(board.todos, Date.now()), needsGo: awaitingGo(board).length,
       checkIn: { nextAt: checkIn.nextAt, paused: checkIn.paused },
       duties: this.duties(chat).map(d => ({ id: d.duty.id, name: d.duty.name, nextAt: d.nextAt, lastVerdict: d.last?.verdict ?? null })),
       ...(this.file(chat).hidden ? { hidden: true } : {}),

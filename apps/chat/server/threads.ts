@@ -582,6 +582,14 @@ export class Threads {
     return this.allSummaries(opts).filter(a => a.kind === "job" && a.agent !== undefined && !this.agentRecords?.record(a.agent.id)?.test);
   }
 
+  /**
+   * One registered agent's jobs, archived ones too: the same rows `jobList` holds for it, so its Jobs tab and its card count the same jobs.
+   * A test agent has them too, though `jobList` leaves them out.
+   */
+  jobsOf(agent: AgentId): AgentSummary[] {
+    return this.allSummaries({ archived: true }).filter(a => a.kind === "job" && a.agent?.id === agent);
+  }
+
   jobs(thread: string): JobNode[] {
     return this.tree(thread).map(node => ({
       id: conversationIdOf(thread, node.id), parent: node.parent === null ? null : conversationIdOf(thread, node.parent), name: node.name, depth: node.depth,

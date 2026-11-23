@@ -8,6 +8,7 @@
   import CheckInControl from "./CheckInControl.svelte";
   import { boardTitles, rememberTitles } from "./chips";
   import { groupAsks } from "./model";
+  import { waitingAsks } from "$lib/api/shared/snooze";
   import { dutiesCount } from "./schedule";
 
   /**
@@ -71,7 +72,7 @@
 
     {#if board && board.todos.length}
       <section class="group" aria-label="For you">
-        <h3 class="heading t-label-sm">For you <span class="count">{asks.open.length}</span></h3>
+        <h3 class="heading t-label-sm">For you <span class="count">{waitingAsks(board.todos, now)}</span></h3>
         {#if asks.open.length}
           <ul class="asks">
             {#each asks.open as ask (ask.id)}
