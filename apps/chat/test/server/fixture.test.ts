@@ -329,10 +329,15 @@ describe("boards", () => {
   });
 
   test("duties carry the card and the judged last run, and check-ins pause", async () => {
-    const duties = await s.get(`/api/threads/${ids.harness}/duties`);
+    // The seeded d1 job has ended, so the board clock's first tick (30 s) measures its run again and reads 99.5 met. Wait for that measure, so the
+    // card reads one state whether this test runs before or after that tick: the job's miss now reads met, and only the newest run misses.
+    const jobRun = (view: any) => view.duties.find((d: any) => d.duty.id === "d1").runs.find((r: any) => r.job);
+    const duties = await until(async () => (await s.app.boards.afterJob(agents.harness, "d1"), s.get(`/api/threads/${ids.harness}/duties`)), view => jobRun(view).after !== undefined);
     const d1 = duties.duties.find((d: any) => d.duty.id === "d1");
+    assert.equal(jobRun(duties).after.verdict, "met");
     assert.equal(d1.last.verdict, "missed");
-    assert.equal(d1.card.streak, 2);
+    assert.equal(d1.last.afterJob, false);
+    assert.equal(d1.card.streak, 1);
     const paused = await s.send("POST", `/api/threads/${ids.harness}/check-in`, { pause: "1h" });
     assert.equal(paused.body.paused, true);
     const rows = await s.get("/api/boards");
