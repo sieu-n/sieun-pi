@@ -13,7 +13,8 @@
  * `edit_message` replaces the text of one of the agent's own posts, as Slack's `chat.update` does, through apps/chat's edit of the owner's
  * posts (app.ts `rewrite`): the room shows it with (edited) at once and no new post. An agent fills in results and the answer on its own
  * post instead of a new post per step (owner p106, c207), and never edits in a status of its jobs or plans (c234).
- * An edit that runs long by tell_owner's check is held once with a note, and the same text sent again goes out (`longEdit`, c98).
+ * An edit that runs long by tell_owner's check is held once with a note by apps/chat, which runs `longEdit` on every agent edit, and the same
+ * text sent again goes out (c98).
  * An edit with hand-over words is refused and one with progress words is held once (comm-guard.ts `relayEdit`).
  *
  * `list_for_me_messages` and `mark_message` (`for-me.ts`) read the agent's For list and mark its items, and `save_message`, `remind_me` and
@@ -24,8 +25,6 @@ import { defineExtension, defineTool, ROOT_CONVERSATION_ID, type Extension } fro
 import type { ChatApp } from "./chat-app.ts";
 import { crammedEdit, hasTable, relayEdit } from "./comm-guard.ts";
 import { closingControl, forMeTools } from "./for-me.ts";
-import { longReply } from "../../../../legacy/prime/user-history/src/shared/reply-lint.ts";
-import { ROOM_LONG_WORDS } from "./room-post.ts";
 import { laterTools } from "./later.ts";
 import { searchTools } from "./search-messages.ts";
 import { roomMemberTools } from "./room-members.ts";
@@ -48,22 +47,6 @@ export const EDIT_MESSAGE_DESCRIPTION =
   "never a status of jobs or plans. You can edit only your own posts. The result names the post, such as p14, so a later edit can use that id.";
 
 export interface EditMessageArgs { message_id: string; text: string }
-
-export const LONG_EDIT_MARK = "Not edited, it runs long";
-
-/**
- * The note for an edit that runs long by tell_owner's check in a room (`longReply`: a sentence over 35 words or over `ROOM_LONG_WORDS` in all, list markers not
- * counted), or undefined when it does not. The same text sent again goes out, so the check is a soft cap (c98). On 11-21 a blind run's work
- * thread grew a checklist over its edits from 54 to 78 to 86 words, as the d4 run of 11-20 saw it grow from 63 to 95, and edit_message had no check.
- */
-export function longEdit(edit: string, held: Set<string>): string | undefined {
-  if (held.has(edit)) return undefined;
-  const long = longReply(edit, ROOM_LONG_WORDS);
-  if (!long.length) return undefined;
-  held.add(edit);
-  return `${LONG_EDIT_MARK}, with ${long.join(" and ")}. Keep the post within ${ROOM_LONG_WORDS} words: the answer on its own line, short ` +
-    "items, a nested detail only for a fact its item lacks, and the rest on a wiki page you link. Sending the very same text again edits it as it is (c98).";
-}
 
 export const TABLE_EDIT_MARK = "Not edited, it holds a table";
 
@@ -88,7 +71,6 @@ const isEyes = (emoji: string): boolean => ["eyes", ":eyes:", "👀"].includes(e
 
 /** The room tools of one thread, which call apps/chat as that thread. */
 export function roomTools(app: ChatApp, thread: string): Extension {
-  const heldEdits = new Set<string>();
   const heldCrammed = new Set<string>();
   const heldTables = new Set<string>();
   const heldRelays = new Set<string>();
@@ -137,8 +119,6 @@ export function roomTools(app: ChatApp, thread: string): Extension {
           if (api.conversationId !== ROOT_CONVERSATION_ID) return { output: text("edit_message works only in your agent's own thread, not in a job."), isError: true };
           const relay = relayEdit(args.text.trim(), heldRelays);
           if (relay) return { output: text(relay), isError: true };
-          const long = longEdit(args.text.trim(), heldEdits);
-          if (long) return { output: text(long), isError: true };
           const crammed = crammedEdit(args.text.trim(), heldCrammed);
           if (crammed) return { output: text(crammed), isError: true };
           const table = tableEdit(args.text.trim(), heldTables);

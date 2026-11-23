@@ -22,6 +22,7 @@ import { Boards } from "./boards.ts";
 import { MIN_BYTES } from "./compress.ts";
 import { CHANNEL_COPY_LIKE, GroupRooms, roomLabel } from "./group-rooms.ts";
 import { assertEditable, deleteNotice, deliveriesOf, editNotice } from "./post-edits.ts";
+import { longEdit } from "../../../packages/pi-host/src/durable/long-edit.ts";
 import { ForMe } from "./for-me.ts";
 import { Later } from "./later.ts";
 import { LATER, LaterFiles, LaterRows } from "./later-db.ts";
@@ -162,6 +163,8 @@ export class App {
   private commsNext?: Promise<void>;
   /** The `<agent>/<room>` pairs whose last comm thread try failed, so a failure logs once until it heals. */
   private readonly commFailed = new Set<string>();
+  /** The edit texts each thread's long edit was held for (`longEdit`), so the same text sent again edits the post (c98). */
+  private readonly heldEdits = new Map<string, Set<string>>();
   /**
    * The socket compresses each frame over one packet (permessage-deflate). On 11-20 the hello frame was 742 KB of JSON, sent on every connect
    * to the owner 197 ms away; zlib level 3 made it 88 KB in 4.7 ms on us-metal02 (min of 30), against 80 KB in 14.1 ms at the default level 6.
@@ -923,7 +926,8 @@ export class App {
   /**
    * An agent's edit_message on its own post, through the owner's edit (`rewrite`). `message` names the post as set_emoji does, or as
    * `reply:<id>`, the agent's first post that answers that owner post (`RoomPost.answers`), or `last`, its newest post in the room. The room's
-   * feed is read first, so a post the agent's turn made a moment ago is there.
+   * feed is read first, so a post the agent's turn made a moment ago is there. An edit that runs long is held once here, whether it came
+   * from edit_message or from a kernel's own call of this route (`longEdit`), and answers 400 with the note.
    */
   async editAsAgent(thread: string, input: { message?: unknown; text?: unknown }): Promise<{ room: string; post: string; text: string }> {
     const named = typeof input.message === "string" ? input.message.trim() : input.message;
@@ -942,6 +946,12 @@ export class App {
       post = posts.findLast(mine);
       if (!post) throw new ReactionError(404, `${record.name} has no post in ${room} yet; post with tell_owner first.`);
     } else post = agentPost(posts, record, via, room, id);
+    if (typeof input.text === "string" && input.text.trim() !== post.text) {
+      const held = this.heldEdits.get(thread) ?? new Set<string>();
+      this.heldEdits.set(thread, held);
+      const long = longEdit(input.text.trim(), held);
+      if (long) throw new ReactionError(400, long);
+    }
     const changed = this.rewrite(room, post, record.id, input.text, thread) !== undefined;
     return { room, post: post.id, text: changed ? `Edited ${post.id} in ${room}; the room shows the new text with (edited).` : `${post.id} in ${room} already reads that way; nothing changed.` };
   }

@@ -145,6 +145,20 @@ describe("an agent editing its own posts", () => {
     assert.equal(told.length, 0, "an agent's edit tells no one");
   });
 
+  test("an agent edit over a room's 120 words is held once with a 400 note, from edit_message or a kernel's own call, and the same text again edits it", async () => {
+    const record = s.app.agents.record(agents.vent)!;
+    const thread = s.app.agents.roomThread(record);
+    const mine = s.app.agentStore.postsOf(ROOM).findLast(p => p.author === agents.vent && !p.imported && p.deletedAt === undefined)!;
+    const long = ["prod has 339 tables, and most are helpers", ...Array.from({ length: 16 }, (_, i) => `- database ${i + 1} holds nine data tables and four helper views on prod`)].join("\n");
+    const held = await agentEdit(thread, { message: mine.id, text: long });
+    assert.equal(held.status, 400);
+    assert.match(held.body.error ?? "", /^Not edited, it runs long, with \d+ words in all\. Keep the post within 120 words/);
+    assert.equal(s.app.agentStore.postsOf(ROOM).find(p => p.id === mine.id)!.text, mine.text, "a held edit changes nothing");
+    const resent = await agentEdit(thread, { message: mine.id, text: long });
+    assert.equal(resent.status, 200, resent.body.error);
+    assert.equal(s.app.agentStore.postsOf(ROOM).find(p => p.id === mine.id)!.text, long);
+  });
+
   test("edit_message refuses a post that is not the agent's own, a blank edit, and a post or room that is not there", async () => {
     const record = s.app.agents.record(agents.vent)!;
     const thread = s.app.agents.roomThread(record);

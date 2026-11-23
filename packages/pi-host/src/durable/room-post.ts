@@ -13,6 +13,7 @@
 import { CHAT_BRIEF } from "../../../../legacy/prime/user-history/src/chat-brief.ts";
 import { messageIdNote } from "../../../../legacy/prime/user-history/src/shared/chat-feed.ts";
 import { TELL_OWNER_DESCRIPTION, TELL_OWNER_PARAMETERS } from "../../../../legacy/prime/user-history/src/chat-guard.ts";
+import { ROOM_LONG_WORDS } from "./long-edit.ts";
 
 /** `text` with the part from `from` up to `to` (not included, or the end when `to` is empty) replaced by `by`. */
 function cut(text: string, from: string, to: string, by = ""): string {
@@ -50,14 +51,6 @@ export const ROOM_TELL_OWNER_PARAMETERS = {
 export const COMM_BRIEF: readonly string[] = CHAT_BRIEF.map(line => line.startsWith("Reach the owner only through tell_owner")
   ? cut(line, "Text him like a VP's Slack DM", "On a turn the owner did not start", `${SHAPE_LINE} `)
   : line);
-
-/**
- * A room post's word cap for tell_owner's long check (`longReply`, list markers not counted), above a Prime chat's 80. On 11-21 the owner
- * called agent factory's DM post a model (dm_agent-factory, msg mwqtp2l1, "정말 훌륭한 메시지였어"): an answer line, a short paragraph, a
- * lead-in line, three bullets and a closing line, 92 words, which the 80-word check had held once. Of the 1,315 agent posts in the rooms
- * that day, 32 ran over 80 words and 14 over 120.
- */
-export const ROOM_LONG_WORDS = 120;
 
 /** tell_owner's long check in a room: its cap, and a note that says what the role text says. */
 export const ROOM_LONG = {
