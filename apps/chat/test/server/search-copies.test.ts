@@ -35,11 +35,13 @@ test("a thread imported beside its archived source shows each entry once, from t
   const host = s.host as FixtureHost;
   // Both counts come from Meilisearch, whose typo tolerance finds more than the in-memory read of documents it does not hold yet.
   await s.app.searchEngine.settled();
-  const before = await s.get<SearchResult>("/api/search?q=relay&limit=100");
+  // "mac" is in vent's entries at every depth and not in the channel replies the first test's mention starts. Those replies say "relay"
+  // and pass 100 hits within 5 s, so a slow run's "relay" page no longer held every hit.
+  const before = await s.get<SearchResult>("/api/search?q=mac&limit=100");
   const source = host.addThread({ name: "Vent", createdAt: Date.now() - 86_400_000, archived: true });
   source.entries.push(...host.threadsById.get(ids.vent)!.entries.map(entry => ({ ...entry })));
   await s.app.searchEngine.settled();
-  const after = await s.get<SearchResult>("/api/search?q=relay&limit=100");
+  const after = await s.get<SearchResult>("/api/search?q=mac&limit=100");
   // The fixture's agents may post meanwhile, so the thread hits are compared; every hit fits on the page, so the total holds the posts too.
   const entries = (result: SearchResult) => result.hits.filter(h => h.kind !== "post");
   assert.ok(after.total <= 100);
