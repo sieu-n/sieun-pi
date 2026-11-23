@@ -5,13 +5,13 @@
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { ChatBoard, PlanItem } from "../../web/src/lib/api/types.ts";
 import type { Duty, DutyRunRecord } from "../../web/src/lib/api/shared/chat-duties.ts";
 import { richReply, type FixtureHost } from "../host/fixture.ts";
 import type { ContentBlock, EntryRecord, Message } from "../host/types.ts";
 import { runStamp } from "../duty-run.ts";
-import { createEntry, EntryExists, writeBrief } from "../agent-folder.ts";
+import { agentFolderDir, harnessNow, harnessPath, harnessSlug, writeBrief } from "../agent-folder.ts";
 import { AgentStore, type RoomRow as RoomsRow } from "../agent-store.ts";
 import { fixtureFolders } from "../config.ts";
 import { flushSync } from "../disk.ts";
@@ -362,15 +362,21 @@ export function seedFixture(host: FixtureHost, dataDir: string, now = Date.now()
   });
   writeJson(join(dataDir, "agents", vp, "duties", "d1.state.json"), { lastSeenAt: new Date(at(0, -8)).toISOString(), downMinutes: 41 });
 
-  // Vent's agent folder: a brief and one memory its threads wrote, kept when a data dir is seeded again. The other agents start with an
-  // empty folder.
+  // Vent's agent folder: a brief and a store with one memory its threads wrote. A data dir seeded again keeps the store it has. The other
+  // agents start with an empty folder.
   const ventRecord = store.agents.agents.find(a => a.slug === "vent")!;
   const { agentsDir } = fixtureFolders(dataDir);
   writeBrief(agentsDir, ventRecord, "Keep the canary relay answering every minute, and tell me when the Mac sleeps through a test window.\n");
+  const ventStore = harnessPath(agentFolderDir(agentsDir, ventRecord));
+  const title = "The Mac sleeps from 01:00 to 07:00 KST";
+  const id = harnessSlug(title, "memory");
+  const when = harnessNow(new Date(now));
+  const entry = { id, kind: "memory", title, content: "Run cross-box relay tests in the day; a gap at night is the Mac asleep, not a relay fault.", path: "general", scope: "local", reference: {}, arguments: {}, metadata: {}, source: "agent", created_at: when, updated_at: when, version: 1 };
+  mkdirSync(dirname(ventStore), { recursive: true });
   try {
-    createEntry(agentsDir, ventRecord, "memory", { title: "The Mac sleeps from 01:00 to 07:00 KST", content: "Run cross-box relay tests in the day; a gap at night is the Mac asleep, not a relay fault." }, "agent");
+    writeFileSync(ventStore, JSON.stringify({ schema: 1, entries: { prompt: {}, memory: { [id]: entry }, skill: {}, subagent: {} }, refinements: [] }, null, 2), { flag: "wx", mode: 0o600 });
   } catch (error) {
-    if (!(error instanceof EntryExists)) throw error;
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
   }
 
   // Keep one turn streaming for as long as the fixture runs.

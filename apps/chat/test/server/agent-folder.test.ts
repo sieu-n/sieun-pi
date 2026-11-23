@@ -4,9 +4,12 @@
  * Run: cd apps/chat && node --import tsx --test --test-force-exit --test-isolation=none test/server/agent-folder.test.ts
  */
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { after, before, test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { AgentConfig, AgentFolder, AgentSummary, ConversationSummary } from "../../web/src/lib/api/types.ts";
@@ -221,7 +224,7 @@ test("memory create, update and delete write Prime's harness format, which Prime
 
   const raw = readFileSync(storeFile(), "utf8");
   const parsed = JSON.parse(raw) as { schema: number; entries: Record<string, Record<string, Record<string, unknown>>>; refinements: unknown[] };
-  assert.equal(raw, JSON.stringify(parsed, null, 2), "indent 2 and no trailing newline, as json.dump writes");
+  assert.equal(raw, JSON.stringify(parsed, null, 2) + "\n", "indent 2 and one trailing newline, as pi-harness's writeState writes");
   assert.deepEqual(Object.keys(parsed), ["schema", "entries", "refinements"]);
   assert.deepEqual(Object.keys(parsed.entries), ["prompt", "memory", "skill", "subagent"]);
   const stored = parsed.entries.memory![id]!;
@@ -261,6 +264,38 @@ test("memory create, update and delete write Prime's harness format, which Prime
   assert.equal(deleted.body.memory.entries.some(e => e.id === id), false);
   assert.equal(loadHarnessState(join(ventDir(), "harness"), "local").entries.memory[id], undefined);
   assert.equal((await s.send("DELETE", `/api/agents/${agents.vent}/memory/${id}`)).status, 404);
+});
+
+test("a memory write waits while a pi-harness writer in another process holds the store's lock, so both writers' entries stay", async () => {
+  const dir = join(ventDir(), "harness");
+  const go = join(dir, "race.go");
+  // The other writer, as a kernel or refine is: it takes the lock, adds its entry, and keeps the lock until the test writes `go`.
+  const script = `
+    import { existsSync, writeSync } from "node:fs";
+    const { updateState } = await import(${JSON.stringify(pathToFileURL(fileURLToPath(new URL("../../../../packages/pi-harness/src/core/store.ts", import.meta.url))).href)});
+    await updateState(${JSON.stringify(dir)}, "local", state => {
+      state.entries.memory.kernel_side = { id: "kernel_side", kind: "memory", title: "Kernel side", content: "x", path: "general", scope: "local", reference: {}, arguments: {}, metadata: {}, source: "agent", created_at: "", updated_at: "", version: 1 };
+      writeSync(1, "locked\\n");
+      while (!existsSync(${JSON.stringify(go)}));
+    });`;
+  const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], { stdio: ["ignore", "pipe", "inherit"] });
+  try {
+    await once(child.stdout!, "data");
+    const post = s.send<AgentFolder>("POST", `/api/agents/${agents.vent}/memory`, { title: "Route side", content: "y" });
+    // An unlocked write answers in a few ms, so it lands inside these 300 ms and the other writer then replaces the file without it.
+    await Promise.race([post, sleep(300)]);
+    writeFileSync(go, "");
+    const [created, [exitCode]] = await Promise.all([post, once(child, "exit")]);
+    assert.equal(created.status, 200);
+    assert.equal(exitCode, 0);
+    const memory = loadHarnessState(dir, "local").entries.memory;
+    assert.ok(memory.kernel_side, "the other writer's entry stays");
+    assert.ok(memory.route_side, "the route's entry stays");
+  } finally {
+    child.kill();
+    rmSync(go, { force: true });
+  }
+  for (const entry of ["kernel_side", "route_side"]) await s.send("DELETE", `/api/agents/${agents.vent}/memory/${entry}?kind=memory`);
 });
 
 test("an agent's config carries its folder and memory kind agent, and a job of the agent shares them", async () => {
