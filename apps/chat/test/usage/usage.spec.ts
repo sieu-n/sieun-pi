@@ -173,6 +173,49 @@ test("each pool provider shows its accounts with their 5h and week meters", asyn
   }
 });
 
+/** Keeps the live socket shut, so the page reads the pool only over HTTP: a read at the socket's open goes over it (kept.svelte.ts `readOverSocket`). */
+const noSocket = (page: Page) => page.routeWebSocket(/\/api\/live/, () => {});
+const isPool = (url: URL): boolean => url.pathname === "/api/pool";
+const poolCard = (page: Page) => page.locator('[data-testid="pool-anthropic"], [data-testid="pool-openai-codex"]').first();
+
+test("a visit draws the pool the last visit read at once, names its time while it is older than a poll, and reads it again behind", async ({ page }) => {
+  await noSocket(page);
+  const hourAgo = new Date(Date.now() - 3_600_000).toISOString();
+  await page.route(isPool, async route => {
+    const response = await route.fetch();
+    await route.fulfill({ response, json: { ...((await response.json()) as object), checkedAt: hourAgo } });
+  });
+  await page.goto("/#/settings/usage");
+  await expect(poolCard(page)).toBeVisible();
+  await expect(page.getByTestId("usage-pool-as-of")).toBeVisible();
+  await expect.poll(() => page.evaluate(() => new Promise<boolean>(resolve => {
+    const open = indexedDB.open("chat.pages");
+    open.onsuccess = () => {
+      const get = open.result.transaction("pages").objectStore("pages").get(["kept", "/api/pool"]);
+      get.onsuccess = () => resolve((get.result as { value?: { checkedAt?: string } } | undefined)?.value?.checkedAt !== undefined);
+      get.onerror = () => resolve(false);
+    };
+    open.onerror = () => resolve(false);
+  }))).toBe(true);
+  await page.unroute(isPool);
+  let release = () => {};
+  const held = new Promise<void>(resolve => (release = resolve));
+  let answered = 0;
+  await page.route(isPool, async route => {
+    await held;
+    await route.continue();
+    answered += 1;
+  });
+  await page.reload();
+  await expect(poolCard(page)).toBeVisible();
+  await expect(page.getByTestId("usage-pool-as-of")).toBeVisible();
+  expect(answered).toBe(0);
+  release();
+  await expect.poll(() => answered).toBeGreaterThan(0);
+  await expect(page.getByTestId("usage-pool-as-of")).toHaveCount(0);
+  await page.unrouteAll({ behavior: "ignoreErrors" });
+});
+
 test("a failed read shows the reason and Try again reads again", async ({ page }) => {
   let fail = true;
   await page.route("**/api/usage?*", route => (fail ? route.fulfill({ status: 502, contentType: "application/json", body: JSON.stringify({ error: "pi-host did not answer" }) }) : route.continue()));

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from "svelte";
-  import { agents, api, type AccountsView, type UsageBucket, type UsageRange, type UsageReport } from "$lib/api";
+  import { agents, reads, view, type UsageBucket, type UsageRange, type UsageReport } from "$lib/api";
   import { bucketFor, isRange, RANGE_BUCKETS, USAGE_RANGES } from "$lib/api/shared/usage-range";
   import { hrefFor, router } from "$lib/router.svelte";
   import { Avatar, Button, CardGroup, EmptyState, IconButton, LoadingText, Page, PageHeader, PanelHeader, Select, Tabs } from "$lib/ui";
@@ -41,8 +41,13 @@
   let loading = $state(false);
   /** The time the shown report is as of, while the read of the latest is on its way behind it; null once the shown report is current. */
   let asOf = $state<number | null>(null);
-  let pool = $state<AccountsView | null>(null);
-  let poolError = $state<string | null>(null);
+  /**
+   * The account pool, kept (kept.svelte.ts), so a visit draws the last one at once and reads it again behind, as each minute's poll does. A
+   * shown pool read more than one poll ago names its time (c191), as a kept one from an earlier visit does until the read lands.
+   */
+  const pool = view(() => reads.pool());
+  let now = $state(Date.now());
+  const poolStale = $derived(pool.value !== null && now - Date.parse(pool.value.checkedAt) > REFRESH_MS);
   /** Every chat and host seen in a report, so a filter keeps its other choices. */
   let chats = $state<Record<string, string>>({});
   let hosts = $state<string[]>([]);
@@ -102,17 +107,13 @@
     return date.toLocaleString(undefined, { ...(today ? {} : { month: "short", day: "numeric" }), hour: "numeric", minute: "2-digit", second: "2-digit" });
   }
 
-  async function loadPool(): Promise<void> {
-    try {
-      pool = await api.pool();
-      poolError = null;
-    } catch (reason) {
-      poolError = message(reason);
-    }
+  function readPool(): void {
+    now = Date.now();
+    void pool.refresh();
   }
   function refresh(): void {
     void load("force");
-    void loadPool();
+    readPool();
   }
 
   $effect(() => {
@@ -123,8 +124,7 @@
     untrack(() => void load());
   });
   $effect(() => {
-    void loadPool();
-    const timer = setInterval(loadPool, REFRESH_MS);
+    const timer = setInterval(readPool, REFRESH_MS);
     return () => {
       clearInterval(timer);
       clearTimeout(pollTimer);
@@ -271,12 +271,15 @@
         </section>
       </div>
     {/if}
-    {#if pool}
-      {#each pool.providers.filter(provider => provider.rows.length) as provider (provider.provider)}
-        <PoolCard {provider} view={pool} />
+    {#if pool.value}
+      {#if poolStale}
+        <p class="caption" role="status" data-testid="usage-pool-as-of" title="Every account figure is as of this time">Accounts as of {stamp(Date.parse(pool.value.checkedAt))}</p>
+      {/if}
+      {#each pool.value.providers.filter(provider => provider.rows.length) as provider (provider.provider)}
+        <PoolCard {provider} view={pool.value} />
       {/each}
-    {:else if poolError}
-      <p class="notice" role="status">Couldn't read the account pool: {poolError.replace(/\.$/, "")}. <Button variant="ghost" size="sm" onclick={() => void loadPool()}>Try again</Button></p>
+    {:else if pool.error}
+      <p class="notice" role="status">Couldn't read the account pool: {pool.error.replace(/\.$/, "")}. <Button variant="ghost" size="sm" onclick={readPool}>Try again</Button></p>
     {/if}
   {/if}
 </Page>

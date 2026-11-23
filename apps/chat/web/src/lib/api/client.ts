@@ -656,6 +656,13 @@ export const reads = {
    */
   hosts: (opts: { box?: string; threads?: HostThreadFilter; tests?: boolean } = {}) =>
     read<HostsReport>(`/api/hosts${query({ box: opts.box, threads: opts.threads === "working" ? undefined : opts.threads, tests: opts.tests ? 1 : undefined })}`),
+  /**
+   * The account pool under the Usage page's chart, 3.8 KB with br. Kept, so a visit draws the last one at once and reads it again behind.
+   * Read as his call on each visit and each minute's poll, it shared TCP's first window with the 26 KB usage report sent before it and
+   * took two round trips: in the p155 rig at a 200 ms round trip, 413 ms at p50 behind the report against 207 ms alone
+   * (~/work/p155-sweep/fix-pool/notes.md).
+   */
+  pool: () => read<AccountsView>("/api/pool"),
 };
 
 export const api = {
@@ -782,7 +789,6 @@ export const api = {
   usage: (opts: { range: UsageRange; bucket: UsageBucket; thread?: string; host?: string }, wait?: Wait) => call<UsageReport>("GET", `/api/usage${query(opts)}`, undefined, undefined, wait),
   /** A poll behind a live rate the card already shows is `shown`; the card's first read is one it waits on. */
   usageLive: (opts: { thread?: string; host?: string }, wait: Wait = { background: "shown" }) => call<import("./types.ts").UsageLive>("GET", `/api/usage/live${query(opts)}`, undefined, undefined, wait),
-  pool: () => call<AccountsView>("GET", "/api/pool"),
   /** The consoles table from auto-sns-agent's consoles.json, read as the file is now. */
   consoles: () => call<ConsolesReport>("GET", "/api/consoles"),
   /** The skills DB read model, everything a Settings > Skills layout renders. */
