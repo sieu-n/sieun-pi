@@ -24,6 +24,7 @@ const config = readConfig();
 const log = (line: string) => console.log(`${new Date().toISOString()} ${line}`);
 onWriteError(log);
 process.on("exit", () => {
+  app?.records.flushSync();
   app?.chatDb.flushSync();
   flushSync();
 });
