@@ -551,8 +551,11 @@ class PageCache<Raw, Shown> {
   /** The effect that keeps each open view's page as it changes, by key; it ends when the last view of the key closes. */
   private readonly keeping = new Map<string, () => void>();
 
-  /** With `stored` false the pages live in memory only. */
-  constructor(readonly name: string, readonly keep: number, private readonly stored = true) {}
+  /**
+   * With `stored` false the pages live in memory only. A page `held` names stays when the cache is full, and the oldest page it does not
+   * name goes instead.
+   */
+  constructor(readonly name: string, readonly keep: number, private readonly stored = true, private readonly held: (key: string) => boolean = () => false) {}
 
   /** Takes the pages a page before this one kept, the oldest first; a page this one already holds stays. */
   restore(pages: readonly KeptPage[]): void {
@@ -661,6 +664,7 @@ class PageCache<Raw, Shown> {
     if (this.stored) void pageDb.put(this.name, key, value);
     for (const oldest of this.shown.keys()) {
       if (this.shown.size <= this.keep) break;
+      if (this.held(oldest)) continue;
       this.shown.delete(oldest);
       if (this.stored) void pageDb.drop(this.name, oldest);
     }
@@ -689,7 +693,12 @@ const JOBS_AHEAD = 20;
 const THREAD_JOBS_AHEAD = 20;
 /** How many of the jobs that work now are read ahead and followed (`liveJobsAhead`): on 11-22 at 05:40 UTC 14 worked and 5 slept (GET /api/jobs). */
 const LIVE_JOBS_AHEAD = 20;
-const timelinePages = new PageCache<TimelineRead, TimelineShown>("timeline", ROOMS_AHEAD + WORK_AHEAD + JOBS_AHEAD + THREAD_JOBS_AHEAD + LIVE_JOBS_AHEAD);
+/**
+ * The sidebar rooms, work threads and live jobs the socket follows (`follow`) stay kept when job pages fill the cache, since their read ahead
+ * never reads one again until it shows newer activity. On 11-23 a reload walk at a 200 ms round trip opened 12 work threads, whose jobs read
+ * ahead 101 job pages, and all 9 channels it opened next waited 210 to 387 ms for a page the client had read and dropped (work/p215-opens).
+ */
+const timelinePages = new PageCache<TimelineRead, TimelineShown>("timeline", ROOMS_AHEAD + WORK_AHEAD + JOBS_AHEAD + THREAD_JOBS_AHEAD + LIVE_JOBS_AHEAD, true, key => followed.has(key));
 
 /** A channel thread reply that shows only in its thread, not one also sent to the channel. */
 const threadOnly = (item: Item): boolean => item.kind === "message" && !!item.threadRoot && !item.alsoInChannel;
