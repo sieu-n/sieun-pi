@@ -171,7 +171,6 @@ test("an answer that names a proxy supply hold or a switched-off Vent is held, n
   assert.equal(classify(403, error("upstream_error", "vent_crawl_paused")).verdict, "held");
   // 11-23 06:04Z: the crawl gate refused 34 reads of each tier's test orgs, which d2 read as 34 routes failing in the crawler.
   assert.equal(classify(502, error("upstream_error", "only paid reads may crawl: this read names no customer workspace and no paid work (crawl_gate.paid_only, owner p42 2026-11-22)")).verdict, "held");
-  assert.equal(classify(502, error("upstream_error", "crawl_budget_spent")).verdict, "held");
   assert.equal(classify(502, error("upstream_error", "The crawl job failed")).verdict, "crawler");
 });
 

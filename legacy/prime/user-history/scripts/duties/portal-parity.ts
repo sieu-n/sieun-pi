@@ -360,11 +360,10 @@ export function errorCode(body: unknown): string | undefined {
  * as 503 upstream_error, and a switched-off Vent integration says "is switched off on this Vent" (vent proxy.py). On 11-20 at 11:21Z prod
  * answered 35 calls this way, 18 of them /v1/crawl presets, and staging 20, and d2 read them as 20 routes failing in the crawler.
  * The crawler's crawl gate (crawler-v3 control/crawl_gate.py, owner p42 on 2026-11-22) refuses each crawl read of a workspace Convex does
- * not list as a customer with 409 crawl_unpaid_paused, and each read past the month's proxy budget with 503 crawl_budget_spent, and the
- * portal passes both on as 502 upstream_error with the gate's words. Every test org this run calls is one of Virev's own, so on 11-23 at
+ * not list as a customer with 409 crawl_unpaid_paused, and the portal passes it on as 502 upstream_error with the gate's words. Every test org this run calls is one of Virev's own, so on 11-23 at
  * 06:04Z each tier answered 34 YouTube, LinkedIn, TikTok and Xiaohongshu reads this way and d2 read them as 34 routes failing in the crawler.
  */
-export const HELD_ANSWER = /\b(proxy_provider_down|proxy_auth_failed|proxy_quota_exhausted|proxy_unreachable|vent_integration_disabled|vent_crawl_paused|crawl_unpaid_paused|crawl_budget_spent)\b|crawl_gate\.paid_only|upstream temporarily unavailable|is switched off on this Vent/;
+export const HELD_ANSWER = /\b(proxy_provider_down|proxy_auth_failed|proxy_quota_exhausted|proxy_unreachable|vent_integration_disabled|vent_crawl_paused|crawl_unpaid_paused)\b|crawl_gate\.paid_only|upstream temporarily unavailable|is switched off on this Vent/;
 
 /**
  * Who a probe answer blames. 2xx works. An answer that names a proxy supply hold or a paused source (source_paused) is held: nobody fixes it
