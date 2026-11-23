@@ -12,7 +12,7 @@ import { parseEnv } from "./local-dev-uptime.ts";
  * The owner, 11-13 (c222): "your duty is to check ab test results as they clear every day. NEVER CHANGE SHIT UNLESS PROVEN". So a change reaches
  * all users only after its 50/50 test proves it, and every test gets a call once it clears.
  * The call lives in PostHog itself: a test is called when its experiment in project 226805 has an end date (the duty job ends it with its
- * conclusion from the owner's PostHog tab in Aside). The repo's PostHog keys have no experiment:read or feature_flag:read scope, so the precheck
+ * conclusion through the PostHog API with POSTHOG_EXPERIMENTS_API_KEY). The precheck's key, POSTHOG_PERSONAL_API_KEY, has no experiment:read or feature_flag:read scope, so it
  * reads system.experiments and system.feature_flags through HogQL, which query:read allows.
  * PostHog is the only list of tests, read fresh each run. On 11-16 a table of tests written on 11-13 had missed ten experiments started since and
  * still listed three that had ended, so nothing here keeps a list. Every Slack Green test, in the browser or in the worker, sends PostHog's
