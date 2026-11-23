@@ -204,6 +204,7 @@ export class App {
       jobList: (changed, removed) => {
         for (const job of changed) this.broadcast({ type: "job", job });
         for (const id of removed) this.broadcast({ type: "job_removed", id });
+        this.boards.jobsChanged(changed, removed);
       },
       conversations: changed => this.conversationsChanged(changed),
       items: (conversation, items) => {

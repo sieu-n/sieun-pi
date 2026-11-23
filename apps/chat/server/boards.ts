@@ -474,6 +474,44 @@ export class Boards {
   private save(chat: string, file: DutyFile): void {
     writeJson(this.dutiesPath(chat), file);
     this.rowChanged(chat);
+    this.dutiesChanged(chat);
+  }
+
+  /** Each chat's duty rows as the page last got them from an event, so a change that alters no row sends nothing. */
+  private readonly sentDuties = new Map<string, string>();
+
+  /**
+   * Sends a chat's duty rows when they differ from the rows sent last. Every write of the duties file, each run's start and end, an account
+   * wait and a job that starts or stops working come here, so the page's kept answer stays the server's. Before, a job's working state and a
+   * run's report mark changed the rows with no event, so a kept card could differ from the server's and the next open's refresh changed it: in
+   * the p155 sweep on 11-23 such a refresh of agent factory's duties counted as a 1,214 ms wait (~/work/p155-sweep/fix-duties/notes.md).
+   */
+  private dutiesChanged(chat: string): void {
+    const duties = this.duties(chat);
+    const text = JSON.stringify(duties);
+    if ((this.sentDuties.get(chat) ?? "[]") === text) return;
+    this.sentDuties.set(chat, text);
+    this.events.duties(chat, duties);
+  }
+
+  /** Each job's name, working state and archive mark as its agent's duty rows last read it (`jobsChanged`). */
+  private readonly jobStates = new Map<string, string>();
+
+  /**
+   * The thread list's changed and removed jobs: the agent of a job that started or stopped working, was renamed or was archived gets its duty
+   * rows checked, since a card names its newest job and fix jobs as working or not (duty-card.ts `jobLive`). A job's other changes, such as
+   * its preview line, check nothing.
+   */
+  jobsChanged(changed: readonly AgentSummary[], removed: readonly string[]): void {
+    const chats = new Set<string>();
+    for (const job of changed) {
+      const state = JSON.stringify([job.name, job.status === "working", job.archived]);
+      if (this.jobStates.get(job.id) === state) continue;
+      this.jobStates.set(job.id, state);
+      if (job.agent) chats.add(job.agent.id);
+    }
+    for (const id of removed) if (this.jobStates.delete(id)) for (const chat of this.sentDuties.keys()) chats.add(chat);
+    for (const chat of chats) this.dutiesChanged(chat);
   }
 
   /** Each listed chat's row as the page last got it from an event, so a save that changes nothing it shows sends nothing. */
@@ -543,7 +581,6 @@ export class Boards {
     duty.updatedAt = Date.now();
     this.save(chat, file);
     if (action.action === "run") void this.runDuty(chat, duty, "owner");
-    else this.events.duties(chat, this.duties(chat));
     return { duties: this.duties(chat) };
   }
 
@@ -559,10 +596,7 @@ export class Boards {
     const taken = new Set(this.chats().flatMap(other => this.file(other).duties.flatMap(duty => duty.schedule.kind === "daily" ? [duty.schedule.at] : [])));
     const file = this.file(chat);
     const result = upsertDuty(file.duties, definition, now, morningTime(taken, "high", Math.random));
-    if (!result.startsWith("unchanged")) {
-      this.save(chat, file);
-      this.events.duties(chat, this.duties(chat));
-    }
+    if (!result.startsWith("unchanged")) this.save(chat, file);
     return { duties: this.duties(chat), result };
   }
 
@@ -580,7 +614,6 @@ export class Boards {
     let names: string[] = [];
     try { names = readdirSync(stateDir); } catch { names = []; }
     for (const name of names) if (name.startsWith(`${dutyId}.`) || name.startsWith(`${dutyId}-`)) rmSync(join(stateDir, name), { force: true });
-    this.events.duties(chat, this.duties(chat));
     return { duties: this.duties(chat), result: `removed ${dutyId}` };
   }
 
@@ -622,10 +655,10 @@ export class Boards {
     const run = (this.afters.get(key) ?? Promise.resolve()).then(() => this.runDutyOnce(chat, duty.id, trigger, resume))
       .catch(error => this.log(this.stopping.signal.aborted ? `duty ${key}: the next server process records its run` : `duty ${key} failed: ${String(error)}`)).finally(() => {
       this.dutyRuns.delete(key);
-      this.events.duties(chat, this.duties(chat));
+      this.dutiesChanged(chat);
     });
     this.dutyRuns.set(key, run);
-    this.events.duties(chat, this.duties(chat));
+    this.dutiesChanged(chat);
     return run;
   }
 
@@ -845,9 +878,7 @@ export class Boards {
     const targets = job ? landAfter(latest.runs[duty.id] ?? [], job.id, after) : [];
     this.save(chat, launch ? Boards.pend(latest, duty.id, null) : latest);
     if (launch) void clearPrecheck(launch).catch(error => this.log(`duty ${chat.slice(0, 8)}: clearing its precheck files failed: ${String(error)}`));
-    if (!targets.length) return;
-    this.log(`duty ${chat.slice(0, 8)}/${duty.id}: after its job ${jobName}, ${after.verdict}, ${after.summary}`);
-    this.events.duties(chat, this.duties(chat));
+    if (targets.length) this.log(`duty ${chat.slice(0, 8)}/${duty.id}: after its job ${jobName}, ${after.verdict}, ${after.summary}`);
   }
 
   /**
@@ -1136,7 +1167,7 @@ export class Boards {
       if (since === this.accountWaits.get(key)) return;
       if (since === undefined) this.accountWaits.delete(key);
       else this.accountWaits.set(key, since);
-      this.events.duties(chat, this.duties(chat));
+      this.dutiesChanged(chat);
     } catch (error) {
       this.log(`duty ${key}: reading whether its job waits for an account failed: ${String(error)}`);
     } finally {

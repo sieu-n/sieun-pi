@@ -211,7 +211,11 @@ function changeKept<T>(of: Read<T>, change: (value: T) => T | undefined): void {
   }
 }
 
-/** The kept answer of a read, the same object for every caller. The board and duties events carry their read's whole answer. */
+/**
+ * The kept answer of a read, the same object for every caller. The board and duties events carry their read's whole answer, which goes on
+ * top of a read on its way and into an answer the last page load kept: a read that left before the event would bring the answer from before
+ * it, and a kept copy no view opened yet would show it stale (`changeKept`).
+ */
 export function kept<T>(of: Read<T>): Kept<T> {
   if (!listening) {
     listening = true;
@@ -220,11 +224,11 @@ export function kept<T>(of: Read<T>): Kept<T> {
     });
     live.on(event => {
       if (event.type === "board") {
-        known(reads.board(event.chatId))?.set({ board: event.board, awaitingGo: event.awaitingGo });
+        changeKept(reads.board(event.chatId), () => ({ board: event.board, awaitingGo: event.awaitingGo }));
         changeKept(reads.boards(), rows => withRow(rows, event.chatId, event.row));
         changeKept(reads.forYou(), items => withAsks(items, event.chatId, event.forYou));
       } else if (event.type === "board_row") changeKept(reads.boards(), rows => withRow(rows, event.chatId, event.row));
-      else if (event.type === "duties") known(reads.duties(event.chatId))?.set({ duties: event.duties });
+      else if (event.type === "duties") changeKept(reads.duties(event.chatId), () => ({ duties: event.duties }));
     });
   }
   let entry = known(of);
