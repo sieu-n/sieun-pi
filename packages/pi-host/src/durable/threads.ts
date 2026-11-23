@@ -34,7 +34,7 @@ import { AgentMessageEntry, ChatDoc, threadEnv, threadRegistry } from "./registr
 import { SPEAKING_TOOLS, type PrimeChat } from "./prime-chat.ts";
 import { PrimeRoots } from "./prime-roots.ts";
 import { jobTitle } from "./job-title.ts";
-import { rlmChildName, type DurableRlm, type PiRootView, type RlmThread, type RootRow } from "./rlm.ts";
+import { loopSlices, rlmChildName, type DurableRlm, type PiRootView, type RlmThread, type RootRow } from "./rlm.ts";
 import type { DurableRules } from "./rules.ts";
 import type { PoolLabels } from "./pool-labels.ts";
 import { AGENT_REF_DOC, applyAgentRole, parseAgentRef, threadAgent } from "./agent-profile.ts";
@@ -565,17 +565,18 @@ export class DurableThreads {
   }
 
   /**
-   * A thread's root as another thread's `agent_observe` reads it: its run, model context, live rlm children and turn-queue place. It submits
-   * and writes nothing. With `open` false, a closed file gives undefined.
+   * A thread's root as another thread's `agent_observe` reads it: its run, its harness (whose root context the reader reads), live rlm children
+   * and turn-queue place. It submits and writes nothing. With `open` false, a closed file gives undefined.
    */
   async observe(id: string, options: { open?: boolean } = {}): Promise<PiRootView | undefined> {
     if (!options.open && !this.open.has(id)) return undefined;
     const open = await this.thread(id);
     const harness = open.harness;
     const running = Boolean((await harness.snapshot(LiveDoc, ROOT_CONVERSATION_ID, context))?.run);
-    const messages = (await open.root.context(context)).messages.filter(message => message.role !== "system") as Message[];
     const children: PiRootView["children"] = [];
+    const next = loopSlices();
     for (const record of await this.conversations(harness)) {
+      await next();
       if (record.owner?.conversationId !== ROOT_CONVERSATION_ID) continue;
       const doc = await harness.snapshot(RlmChildDoc, record.id, context);
       if (!doc?.id || doc.deleted) continue;
@@ -585,7 +586,7 @@ export class DurableThreads {
     const session = (await harness.snapshot(ProviderDoc, ROOT_CONVERSATION_ID, context))?.sessionId;
     const row = this.info(id);
     return {
-      status: running ? "running" : row.status, running, cwd: row.cwd, messages, children,
+      status: running ? "running" : row.status, running, cwd: row.cwd, harness, children,
       ...(this.options.turns && session ? { turnQueue: this.options.turns.ticket(id, session).place } : {}),
     };
   }

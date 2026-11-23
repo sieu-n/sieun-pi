@@ -118,26 +118,52 @@ export interface RlmThread {
   log?: (line: string) => void;
 }
 
-/** What `agent_observe` reads of another pi-host thread's root: its run, its model context, its live rlm children and its turn-queue place. */
+/**
+ * What `agent_observe` reads of another pi-host thread's root: its run, its harness (whose root context gives the row's message fields),
+ * its live rlm children and its turn-queue place.
+ */
 export interface PiRootView {
   status: string;
   running: boolean;
   cwd: string;
-  messages: Message[];
+  harness: Harness;
   children: { id: string; name: string; status: string; progressNote: string | null }[];
   /** The root's place in pi-pool's turn queue; absent without the queue or before the root's first request. */
   turnQueue?: unknown;
 }
 
-/** A row's message fields: the count, the first input (or a child's task) and a preview of the newest message. */
-function messageFields(messages: readonly Message[], task?: string): Record<string, unknown> {
-  const first = task ?? textOfMessage(messages.find(msg => msg.role === "user"));
-  const flat = first.replace(/^\[task from parent\]\s*/, "").trim();
+/** What a row shows of a conversation's model context: the message count, the first user message's text and the newest message's preview. */
+interface ContextSummary { count: number; firstUser: string; latest?: ReturnType<typeof previewOf> }
+
+function summaryOf(messages: readonly Message[]): ContextSummary {
   const last = messages.length - 1;
   return {
-    messageCount: messages.length,
+    count: messages.length, firstUser: textOfMessage(messages.find(msg => msg.role === "user")),
+    ...(last >= 0 ? { latest: previewOf(messages[last] as never, last, LATEST_CHARS) } : {}),
+  };
+}
+
+/** A row's message fields: the count, the first input (or a child's task) and a preview of the newest message. */
+function messageFields(summary: ContextSummary, task?: string): Record<string, unknown> {
+  const flat = (task ?? summary.firstUser).replace(/^\[task from parent\]\s*/, "").trim();
+  return {
+    messageCount: summary.count,
     ...(flat ? { firstMessage: flat.length > FIRST_CHARS ? `${flat.slice(0, FIRST_CHARS - 3).trimEnd()}...` : flat } : {}),
-    ...(last >= 0 ? { latestMessage: previewOf(messages[last] as never, last, LATEST_CHARS) } : {}),
+    ...(summary.latest ? { latestMessage: summary.latest } : {}),
+  };
+}
+
+/**
+ * A function to await between the rows of a long listing: it gives the event loop a turn once `sliceMs` of work ran since the last one, so
+ * pi-host's other commands, host requests and tool calls run between rows. On 11-23 one list_agents built 2,558 rows in a single 5.1 s loop
+ * turn (~/work/pi-host-stalls/b-list-agents/report.md); the stall goal is no loop turn over 50 ms, so a slice stays well under it.
+ */
+export function loopSlices(sliceMs = 10): () => Promise<void> {
+  let since = performance.now();
+  return async () => {
+    if (performance.now() - since < sliceMs) return;
+    await new Promise<void>(resolve => setImmediate(resolve));
+    since = performance.now();
   };
 }
 
@@ -256,6 +282,11 @@ export class DurableRlm {
   private readonly threads = new Map<string, RlmThread>();
   /** Whether the chat has answered a wake read since this pi-host started (`wakePending`). */
   private chatAnswered = false;
+  /**
+   * Each listed conversation's context summary by `<thread>:<conversation>`, with the id of the conversation's newest entry when it was read.
+   * Entries up to that id never change, so the same newest entry means the same context; a new entry reads the context again.
+   */
+  private readonly summaries = new Map<string, { tail: number; summary: ContextSummary }>();
 
   private constructor(readonly tool: PiTool, private readonly options: DurableRlmOptions) {
     const moduleOptions = { agentDir: options.agentDir, log: (line: string) => this.log(line) };
@@ -562,6 +593,7 @@ export class DurableRlm {
     this.threads.delete(threadId);
     childWork.delete(threadId);
     childWakes.delete(threadId);
+    for (const key of this.summaries.keys()) if (key.startsWith(`${threadId}:`)) this.summaries.delete(key);
     await Promise.all(this.modules.map(module => module.closeThread?.(threadId).catch(() => undefined)));
   }
 
@@ -795,7 +827,9 @@ export class DurableRlm {
     const parents = new Map(records.map(record => [record.id as number, record.owner?.conversationId as number | undefined]));
     const depth = (id: number) => { let d = 0; for (let at: number | undefined = id; at !== undefined && at !== ROOT_CONVERSATION_ID && d < 64; at = parents.get(at)) d++; return d; };
     const out: Known[] = [];
+    const next = loopSlices();
     for (const record of records) {
+      await next();
       const id = record.id as number;
       if (id === ROOT_CONVERSATION_ID) {
         out.push({ member: { id: thread.id, name: thread.name(), role: "root", depth: 0 }, conversation: id, thread: thread.id });
@@ -1073,11 +1107,27 @@ export class DurableRlm {
 
   // ---- agent_observe.
 
-  private async messagesOf(thread: RlmThread, conversation: number): Promise<Message[]> {
-    const conv = await this.harnessOf(thread).conversation(conversation as ConversationId, context);
+  private async messagesOf(harness: Harness, conversation: number): Promise<Message[]> {
+    const conv = await harness.conversation(conversation as ConversationId, context);
     if (!conv) return [];
     const view = await conv.context(context);
     return view.messages.filter(m => m.role !== "system") as Message[];
+  }
+
+  /**
+   * A conversation's context summary for its row. It reads the newest entry's id, one indexed read, and derives the context again only when
+   * that id moved since the kept summary: on 11-23 the context reads of 1,154 open roots took 2.0 s of one list_agents.
+   */
+  private async summary(threadId: string, harness: Harness, conversation: number): Promise<ContextSummary> {
+    const conv = await harness.conversation(conversation as ConversationId, context);
+    if (!conv) return summaryOf([]);
+    const key = `${threadId}:${conversation}`;
+    const tail = (await conv.entries({ order: "descending" }, 1, undefined, context)).items[0]?.id;
+    const kept = this.summaries.get(key);
+    if (kept && kept.tail === tail) return kept.summary;
+    const summary = summaryOf(await this.messagesOf(harness, conversation));
+    if (tail !== undefined) this.summaries.set(key, { tail, summary });
+    return summary;
   }
 
   /**
@@ -1106,21 +1156,31 @@ export class DurableRlm {
       if (view) {
         return {
           activeSessionId: m.id, ...base, kind: "pi", cwd: view.cwd, status: view.status, activity: view.running ? "model" : "idle", isStreaming: view.running, queuedCount: 0, isSessionActive: true,
-          ...messageFields(view.messages), children: view.children, ...(view.turnQueue === undefined ? {} : { turnQueue: view.turnQueue }),
+          ...messageFields(await this.summary(known.thread, view.harness, ROOT_CONVERSATION_ID)), children: view.children, ...(view.turnQueue === undefined ? {} : { turnQueue: view.turnQueue }),
         };
       }
       return { ...base, kind: "pi", status: known.root?.status ?? "inactive", isStreaming: known.root?.status === "running", queuedCount: 0, isSessionActive: false };
     }
     const harness = this.harnessOf(thread);
     const running = Boolean((await harness.snapshot(LiveDoc, known.conversation as ConversationId, context))?.run);
-    const messages = await this.messagesOf(thread, known.conversation);
+    const summary = await this.summary(thread.id, harness, known.conversation);
     const doc = known.conversation === ROOT_CONVERSATION_ID ? undefined : await harness.snapshot(RlmChildDoc, known.conversation as ConversationId, context);
     return {
       activeSessionId: m.id, ...base, cwd: thread.cwd, status: running ? "running" : "idle", activity: running ? "model" : "idle", isStreaming: running,
       queuedCount: 0, isSessionActive: true,
       ...(rel === "child" && doc ? { repliedSinceTask: doc.repliedAt >= doc.createdAt && doc.repliedAt > 0 } : {}),
-      ...messageFields(messages, doc?.task),
+      ...messageFields(summary, doc?.task),
     };
+  }
+
+  /** A listing's row of one member; a root whose file closed while the listing gave the loop a turn gets a closed root's row, as a later listing would. */
+  private async listedRow(thread: RlmThread, known: Known, rel: Relationship): Promise<Record<string, unknown>> {
+    try {
+      return await this.agentRow(thread, known, false, rel, await this.rootView(thread, known, false));
+    } catch (error) {
+      if (known.root?.kind !== "pi" || (await this.rootView(thread, known, false))) throw error;
+      return this.agentRow(thread, known, false, rel);
+    }
   }
 
   private async listAgents(slot: Slot): Promise<Record<string, unknown>> {
@@ -1128,11 +1188,14 @@ export class DurableRlm {
     const self = all.find(m => m.thread === slot.thread.id && m.conversation === slot.conversation);
     if (!self) throw new Error("agent observation is not available in this conversation");
     const members = family(self.member, all).filter(m => !unlisted(m.item));
-    return {
-      current: await this.agentRow(slot.thread, self, true),
-      agents: await Promise.all(members.map(async m => this.agentRow(slot.thread, m.item, false, m.relationship, await this.rootView(slot.thread, m.item, false)))),
-      ...(missing ? { missing } : {}),
-    };
+    const current = await this.agentRow(slot.thread, self, true);
+    const agents: Record<string, unknown>[] = [];
+    const next = loopSlices();
+    for (const m of members) {
+      await next();
+      agents.push(await this.listedRow(slot.thread, m.item, m.relationship));
+    }
+    return { current, agents, ...(missing ? { missing } : {}) };
   }
 
   private async resolve(slot: Slot, target: string): Promise<{ known: Known; rel?: Relationship; isCurrent: boolean }> {
@@ -1161,7 +1224,8 @@ export class DurableRlm {
     const maxChars = bounded(payload.max_chars, 800, 80, 2000, "agent_observe max_chars");
     const { known, rel, isCurrent } = await this.resolve(slot, String(payload.target ?? ""));
     const view = await this.rootView(slot.thread, known, true);
-    const messages = known.thread === slot.thread.id && known.conversation !== undefined ? await this.messagesOf(slot.thread, known.conversation) : view?.messages ?? [];
+    const messages = known.thread === slot.thread.id && known.conversation !== undefined ? await this.messagesOf(this.harnessOf(slot.thread), known.conversation)
+      : view ? await this.messagesOf(view.harness, ROOT_CONVERSATION_ID) : [];
     const start = Math.max(0, messages.length - limit);
     return {
       agent: await this.agentRow(slot.thread, known, isCurrent, rel, view),
