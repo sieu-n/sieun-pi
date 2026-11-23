@@ -11,13 +11,13 @@ import { start, type Running } from "./helpers.ts";
 
 let s: Running;
 let host: FixtureHost;
-let reads: { limit?: number; lean?: boolean }[] = [];
+let reads: { thread: string; limit?: number; lean?: boolean; after?: number }[] = [];
 before(async () => {
   s = await start();
   host = s.host as FixtureHost;
   const entries = host.entries.bind(host);
   host.entries = async (thread, opts) => {
-    reads.push({ limit: opts.limit, lean: (opts as { lean?: boolean }).lean });
+    reads.push({ thread, limit: opts.limit, lean: (opts as { lean?: boolean }).lean, after: (opts as { after?: number }).after });
     return entries(thread, opts);
   };
 });
@@ -40,6 +40,12 @@ function seed(name: string, turns: number[]): string {
   return thread.row.id;
 }
 
+/**
+ * The reads that draw a page of `thread`, newest backwards. A read with `after` is the first-send scan that runs behind the page, a
+ * one-entry read checks the tail cache, and reads of other threads come from the server's own background work.
+ */
+const pageReads = (thread: string) => reads.filter(r => r.thread === thread && r.after === undefined && r.limit !== 1).map(({ limit, lean }) => ({ limit, lean }));
+
 const shape = (page: TimelinePage) => page.items.map(i => (i.kind === "turn" ? `${i.id}:${(i as Extract<Item, { kind: "turn" }>).steps.length}` : i.id));
 
 test("a page whose oldest turn starts within the widening takes one lean read", async () => {
@@ -48,8 +54,7 @@ test("a page whose oldest turn starts within the widening takes one lean read", 
   const page = await s.get<TimelinePage>(`/api/c/${id}/items?limit=10`);
   assert.equal(page.items[0]!.kind, "message", "the page starts at an input");
   assert.ok(page.older);
-  const pageReads = reads.filter(r => r.limit !== 1);
-  assert.deepEqual(pageReads, [{ limit: 110, lean: true }]);
+  assert.deepEqual(pageReads(id), [{ limit: 110, lean: true }]);
 });
 
 test("a turn longer than one read is read whole, oldest first, and the older page continues before it", async () => {
@@ -57,8 +62,7 @@ test("a turn longer than one read is read whole, oldest first, and the older pag
   reads = [];
   const page = await s.get<TimelinePage>(`/api/c/${id}/items?limit=10`);
   assert.deepEqual(shape(page).slice(0, 2), ["e10", "t10:260"]);
-  assert.equal(reads.filter(r => r.limit !== 1).length, 6, "one widened read, then 100-entry reads back to the long turn's input");
-  assert.ok(reads.every(r => r.lean));
+  assert.deepEqual(pageReads(id), [{ limit: 110, lean: true }, ...Array.from({ length: 5 }, () => ({ limit: 100, lean: true }))], "one widened read, then 100-entry reads back to the long turn's input");
   const older = await s.get<TimelinePage>(`/api/c/${id}/items?before=${page.older}&limit=10`);
   assert.deepEqual(shape(older), ["e2", "t2:3"]);
   assert.equal(older.older, undefined);
