@@ -49,7 +49,7 @@ for (const at of request.conversations) {
   const ref = at.agent === undefined ? undefined : profile.parseAgentRef(at.agent);
   const input = prompt.conversationPromptInput(options, { ...at, ...(ref ? { agent: ref } : {}), rootDigest: true });
   const parts = await prompt.primePromptParts(input);
-  const memory = ref && working?.workingMemoryText(profile.agentName(ref), (profile.workingMemoryPath ?? working.workingMemoryPath)!(ref), working.readWorkingMemory(ref));
+  const memory = ref === undefined ? undefined : working?.workingMemoryText(profile.agentName(ref), (profile.workingMemoryPath ?? working.workingMemoryPath)!(ref), working.readWorkingMemory(ref));
   if (memory) parts.push({ key: "working", text: memory, source: "working-memory.ts workingMemoryText: the agent's working-memory.md" });
   const instructions = at.conversationId === 1 ? profile.roleFields(ref).instructions : undefined;
   if (instructions) parts.push({ key: "instructions", text: instructions, source: "agent-profile.ts roleFields: the role text of the thread's agent.ref" });
