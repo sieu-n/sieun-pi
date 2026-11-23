@@ -155,6 +155,8 @@ test("a thread sends Prime's prompt, keeps it across turns, and sends only a cha
 
   // A subagent's child conversation gets a chat job's prompt: depth 1, spawned by the chat, job_reply and no brief.
   await ask("delegate");
+  // The tool returns at once and the child runs on; its harness section ranks on the digest worker, so its request can come after the turn.
+  for (let i = 0; i < 200 && !childPrompts.length; i++) await new Promise(resolve => setTimeout(resolve, 50));
   assert.equal(childPrompts.length, 1);
   const child = childPrompts[0]!;
   assert.match(child, /Recursive agent depth: 1\n/);

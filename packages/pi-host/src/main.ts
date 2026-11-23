@@ -21,7 +21,7 @@ import { ChatApp } from "./durable/chat-app.ts";
 import { withPrimeCompaction } from "./durable/prime-compaction.ts";
 import { loadPrimeChat, type PrimeChat } from "./durable/prime-chat.ts";
 import { DurableRules } from "./durable/rules.ts";
-import { promptTools } from "./durable/prime-prompt.ts";
+import { primeModules, promptTools } from "./durable/prime-prompt.ts";
 import { DurableRlm } from "./durable/rlm.ts";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -144,6 +144,9 @@ installGuard(host);
 // get the same factories plus the scheduler's, so a child's rlm_heartbeat jobs attach to this host's scheduler.
 const hostExtensions = await host.loadExtensions();
 setChildLoaderOptions(() => ({ extensionFactories: [...hostExtensions, schedulerExtension] }));
+// Prime's prompt modules load here too: on a copy of 72ba1ed2 their first import held the loop about 820 ms inside the first root input's
+// digest after a start (~/work/pi-host-stalls/g-live-lines/report.md).
+if (durable) await primeModules();
 const server = await listen(host, socketPath, { scratchChatMark: values["scratch-chat"] === true });
 await durable?.threads.start().catch(error => host.log(`durable recovery failed: ${error instanceof Error ? error.stack : String(error)}`));
 void host.warmProviders().then(rows => host.log(`provider modules loaded: ${rows.map(row => `${row.api} ${row.ms} ms${row.error ? ` (${row.error})` : ""}`).join(", ")}`));

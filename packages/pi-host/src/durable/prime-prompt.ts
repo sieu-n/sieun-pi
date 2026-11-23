@@ -29,7 +29,8 @@ import { COMM_BRIEF } from "./room-post.ts";
 import { agentHarnessDir, agentName, briefFile, conversationHarnessDir, threadAgent } from "./agent-profile.ts";
 import { withFolderFiles, type ContextFile } from "./context-files.ts";
 import { goalObjective } from "./goal.ts";
-import { contextTail, contextTexts, digestFlags, digestQueryTerms, formatDigest, HarnessDigestDoc, mergedHarnessState, nextDelivery, placeDeliveries, queryText, withDigests } from "./prime-harness.ts";
+import { harnessDelivery, harnessDigest } from "./digest-worker.ts";
+import { contextTail, contextTexts, digestFlags, HarnessDigestDoc, placeDeliveries, queryText, withDigests } from "./prime-harness.ts";
 import { HARNESS_DIGEST_PREFIX, HARNESS_DIGEST_SUFFIX } from "./vendor/prime-harness.ts";
 
 /**
@@ -276,7 +277,7 @@ export async function primePromptParts(input: PrimePromptInput): Promise<PromptP
   const full = prime.buildSystemPrompt(options);
   const parts = splitParts(prime, options, full, tools);
   if (input.primeOnly) return parts;
-  return [...parts, ...extraParts(input, tools, resources)];
+  return [...parts, ...await extraParts(input, tools, resources)];
 }
 
 function splitParts(prime: PrimeModules, options: Record<string, unknown> & { skills: Skill[] }, full: string, tools: readonly string[]): PromptPart[] {
@@ -317,7 +318,7 @@ const sessionRules = (): SessionRules =>
   claudeRules ??= new SessionRules({ cellStart: () => "", cellSteps: (code, start) => [{ code, cwd: start }] }, homedir());
 
 /** The parts Prime sends as messages rather than in its system prompt, in the order they reach the model there, then the unslop skill's text. */
-function extraParts(input: PrimePromptInput, tools: readonly string[], { skills, writing }: Resources): PromptPart[] {
+async function extraParts(input: PrimePromptInput, tools: readonly string[], { skills, writing }: Resources): Promise<PromptPart[]> {
   const out: PromptPart[] = [];
   // claude-rules' context hook puts the cwd repo's unscoped .claude/rules first in every request.
   let rules: string | null = null;
@@ -329,8 +330,11 @@ function extraParts(input: PrimePromptInput, tools: readonly string[], { skills,
   if (rules && !input.comm && !input.skip?.has("rules")) out.push({ key: "rules", text: rules, source: "packages/pi-claude-rules SessionRules.startup (Prime: first user message)" });
   // Prime's harness digest at a session's first turn: the global store merged with the session's local one, ranked by the turn's input.
   if (!input.skip?.has("harness")) {
-    const state = mergedHarnessState(input.agentDir, input.harnessDir);
-    const digest = formatDigest(state, { ...digestFlags(tools, skills), ...(input.query ? { queryTerms: digestQueryTerms([input.query], []) } : {}) }, input.agent);
+    // Ranked on the digest worker (`digest-worker.ts`), so a job's first request does not hold the loop.
+    const digest = await harnessDigest({
+      agentDir: input.agentDir, ...(input.harnessDir ? { localDir: input.harnessDir } : {}), flags: digestFlags(tools, skills),
+      ...(input.query ? { query: input.query } : {}), ...(input.agent ? { agent: input.agent } : {}),
+    });
     out.push({ key: "harness", text: HARNESS_DIGEST_PREFIX + digest + HARNESS_DIGEST_SUFFIX, source: "Prime's formatHarnessStateForPrompt (vendor/prime-harness.ts) over <agentDir>/harness and the local store, with the agent's block in an agent's thread (prime-harness.ts formatDigest) (Prime: [harness-digest] message)" });
   }
   // The legacy chat's corrections block, which its context hook puts in once per context.
@@ -502,12 +506,18 @@ export async function deliverHarnessDigest(options: PrimePromptOptions & { threa
   const tools = TOOLS[options.tools ?? "prime"].root;
   const { skills } = await primeResources(options.agentDir, cwd, options.bundledSkillsDir ?? bundledSkillsDir());
   const agent = await threadAgent(harness, context);
-  const state = mergedHarnessState(options.agentDir, conversationHarnessDir(options.thread, conversationId, agent));
   const goal = await goalObjective(harness, conversationId);
+  // The ranking runs on the digest worker (`digest-worker.ts`), against the deliveries the doc holds now; calls for one thread do not
+  // overlap, so the commit below reads the same ones.
+  const held = (await harness.snapshot(HarnessDigestDoc, conversationId, context))?.deliveries ?? [];
+  const next = await harnessDelivery({
+    agentDir: options.agentDir, localDir: conversationHarnessDir(options.thread, conversationId, agent), flags: digestFlags(tools, skills),
+    input: [input.text], recent: contextTexts(view).filter(Boolean).slice(-4), goal, delivered: placeDeliveries(view, held).map(placed => placed.delivery),
+    after: contextTail(view), now, ...(agent ? { agent: agentName(agent) } : {}),
+  }, options.log);
   await conversation.commit(async tx => {
     const doc = await tx.doc(HarnessDigestDoc, conversationId);
     const kept = placeDeliveries(view, doc.deliveries).map(placed => placed.delivery);
-    const next = nextDelivery({ state, flags: digestFlags(tools, skills), input: [input.text], recent: contextTexts(view), goal, delivered: kept, after: contextTail(view), now, ...(agent ? { agent: agentName(agent) } : {}) });
     if (next || kept.length !== doc.deliveries.length) doc.deliveries = [...kept, ...(next ? [next] : [])];
   }, context);
 }
