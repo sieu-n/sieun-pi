@@ -1,5 +1,5 @@
 /**
- * The checks of blind-replies.mjs `--set natural`, kept apart so natural-checks.test.mjs can run them on real posts. The owner asked in
+ * The checks of blind-replies.mjs `--set natural` and of its list and checklist lines, kept apart so natural-checks.test.mjs can run them on real posts. The owner asked in
  * dm_agent-factory p54 on 11-21 (msg mwqt6ry1): "todo를 리스트하는건 좋은데, 자연스럽게 해야지 메시지면 메시지 context에 맞게, channel 도중이면
  * channel message concept에 맞게. 그리고 follow-up question 물어도 돼 괜찮아 대신 primary suggestion은 꼭 두고", and in p57 (msg mwqtjlth):
  * "이런것도 엔터, bullet point 똑바로 쓰고". He praised a DM reply of an answer line, a short paragraph, a lead-in line, bullets and a closing
@@ -9,6 +9,17 @@
 /** A text's words as tell_owner's long check counts them (reply-lint.ts `longReply`), with no list or task marker counted. */
 export const words = text => text.replace(/\]\([^)]*\)/g, "]").replace(/^[ \t]*(?:[-*+]|\d+[.)])[ \t]+(?:\[[ xX]\][ \t]+)?/gm, "").split(/\s+/).filter(Boolean).length;
 const BULLET = /^\s*[-*+] /;
+/** A post's sentences; a line break ends one too, since a bullet line seldom ends on a period and 3 bullets read as one 40-word sentence on 11-20. */
+export const sentences = text => text.replace(/\]\([^)]*\)/g, "]").split(/(?<=[.!?])\s+|\n+/).filter(line => line.trim());
+/**
+ * The line checks of a list or checklist reply. Since a1005148 the comm role text keeps each bullet to one point in one or two sentences,
+ * so a line holds at most two sentences and the 35-word cap holds per sentence. d4's 11-24 06:45 KST checklist run failed the old
+ * 35-word cap per line on one bullet of two sentences, 14 and 27 words, that followed that rule.
+ */
+export const lineChecks = lines => [
+  ["no line holds more than two sentences", lines.every(line => sentences(line).length <= 2)],
+  ["no sentence over 35 words", lines.every(line => sentences(line).every(sentence => words(sentence) <= 35))],
+];
 /** A word that makes a line a sentence: a pronoun, an auxiliary, a common verb, or a word ending in -ed or -ing. */
 const VERB = /\b(i|i'll|i'm|i've|i'd|we|we'll|we're|we'd|you|you'd|it|it's|they|here's|there's|let's|let me|is|are|was|were|be|been|has|have|had|do|does|did|can|can't|could|will|won't|would|should|need|needs|check|look|pull|read|reads|diff|compare|run|runs|ran|find|found|work|works|go|goes|start|dig|see|map|trace|test|write|pass|passes|fail|fails|pick|picks|keep|keeps|use|uses|handle|handles|get|gets|got|show|shows|take|takes|make|makes|stay|stays|lives|sits|holds|\w+ed|\w+ing)\b/i;
 /** A bullet's text with no list or task marker. */

@@ -1,7 +1,7 @@
 // node --test --test-force-exit --test-isolation=none apps/chat/scripts/natural-checks.test.mjs
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { naturalChecks, naturalLine, overstates } from "./natural-checks.mjs";
+import { lineChecks, naturalChecks, naturalLine, overstates } from "./natural-checks.mjs";
 
 const failed = versions => naturalChecks(versions).filter(([, ok]) => !ok).map(([name]) => name);
 
@@ -79,4 +79,22 @@ test("an answer line that calls all clear over a count of uncommitted files over
   assert.ok(!overstates(ALL_CLEAR.replace("All clear to ship.", "All four look clean for pi-host, but the tree has other sessions' uncommitted work.")));
   assert.ok(!overstates("All clear to ship.\n- Local main matches origin/main.\n- No files are uncommitted.\n- The comm-guard test passes 7 of 7."));
   assert.ok(!overstates("All clear to ship.\n- 0 files are uncommitted."));
+});
+
+const lineFails = text => lineChecks(text.split("\n").filter(line => line.trim())).filter(([, ok]) => !ok).map(([name]) => name);
+
+/** d4's checklist reply of 11-24 06:45 KST, whose third bullet is two sentences of 14 and 27 words, as the a1005148 role text allows. */
+const D4_CHECKLIST = "Three of the four are clean, but the tree isn't: 14 tracked files have uncommitted changes.\n- Local main matches origin/main, 0 ahead and 0 behind, checked after a fresh fetch.\n- The 14 changed files are mostly in the chat app under apps/chat, plus `scripts/skills_usage.py`. There are also 12 untracked entries, 32 files in all, including stray `18731/` to `18734/` folders and a file named `{kind:` at the repo root.\n- The comm-guard test passes, 7 of 7.\n- No TODO is left in packages/pi-host/src/durable.";
+
+test("a bullet of two sentences under 35 words each passes the line checks", () => {
+  assert.deepEqual(lineFails(D4_CHECKLIST), []);
+});
+
+test("a bullet of three sentences fails the line checks", () => {
+  assert.deepEqual(lineFails("Two of the three are clean.\n- Main matches origin. The fetch ran first. Nothing is ahead."), ["no line holds more than two sentences"]);
+});
+
+test("a bullet with one 40-word sentence fails the line checks", () => {
+  const long = Array.from({ length: 40 }, (_, i) => `w${i}`).join(" ");
+  assert.deepEqual(lineFails(`Two of the three are clean.\n- ${long}.`), ["no sentence over 35 words"]);
 });
