@@ -64,9 +64,11 @@ export function rootRetrying(rows: Pick<AgentRows, "row" | "tree">): string | un
 
 /**
  * An agent works while its work thread, any conversation in it, or any of its root job threads runs. A comm thread's turn does not count,
- * so the Work pill stays off while it answers; only the DM's own status counts it (rooms.ts).
+ * so the Work pill stays off while it answers; only the DM's own status counts it (rooms.ts). A failed work thread reads failed ahead of a
+ * running job: on 11-23 agent factory read working all day while 11 of its own turns failed.
  */
 export function agentStatus(rows: AgentRows): RunStatus {
+  if (rows.row?.status === "failed") return "failed";
   if (rows.row?.status === "running" || rows.tree.some(n => n.status === "running") || rows.jobs.some(j => j.status === "running")) return "working";
   return rows.row?.status ?? "idle";
 }
