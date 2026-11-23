@@ -70,9 +70,11 @@ const DEFAULT_CHECK_IN_MS = 120 * 60_000;
 const CHECK_IN_RETRY_MS = 5 * 60_000;
 const BOARD_TTL_MS = 15_000;
 /**
- * How long a stop waits for a board put at work (`putsSettled`), as a hand-over waits for a write in flight (http.ts WRITE_WAIT_MS, sized from
- * the 8.8 s slowest write of 11-21). Past it the stop goes on, so calls stop waiting in the socket's queue; a put cut here could still land
- * after the next process's put of a later board of the same chat.
+ * How long a hand-over's stop waits for a board put at work (`putsSettled`), the same 30 s as its wait for a write in flight (http.ts
+ * WRITE_WAIT_MS): the slowest board write on 11-21 took 8.8 s, and on 11-23 the slowest put waited 3.7 s behind pi-host's event loop. Calls
+ * wait in the socket's queue meanwhile; in the board hand-over rig with puts held 3 s, the stop took 1.0 to 2.8 s
+ * (~/work/p231-slow-calls/p231-board-handler/handoff). A SIGTERM stop ends sooner, at the unit's 20 s TimeoutStopSec. Past it the stop
+ * goes on with the board still in board-writes.json; a put cut here could land after the next process's put of a later board of that chat.
  */
 const PUT_WAIT_MS = 30_000;
 
