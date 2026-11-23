@@ -30,7 +30,8 @@ import { agentHarnessDir, agentName, briefFile, conversationHarnessDir, threadAg
 import { withFolderFiles, type ContextFile } from "./context-files.ts";
 import { goalObjective } from "./goal.ts";
 import { harnessDelivery, harnessDigest } from "./digest-worker.ts";
-import { contextTail, contextTexts, digestFlags, HarnessDigestDoc, placeDeliveries, queryText, withDigests } from "./prime-harness.ts";
+import { contextSummary } from "./context-summary.ts";
+import { digestFlags, HarnessDigestDoc, keptDeliveries, queryText, withDigests } from "./prime-harness.ts";
 import { HARNESS_DIGEST_PREFIX, HARNESS_DIGEST_SUFFIX } from "./vendor/prime-harness.ts";
 
 /**
@@ -543,7 +544,8 @@ export async function deliverHarnessDigest(options: PrimePromptOptions & { threa
   if (input.whenBusy === "steer" && (await harness.snapshot(LiveDoc, conversationId, context))?.run) return;
   const conversation = await harness.conversation(conversationId, context);
   if (!conversation) return;
-  const view = await conversation.context(context);
+  const summary = await contextSummary(harness, conversationId, context);
+  if (!summary) return;
   const cwd = (await conversation.agent(context)).cwd ?? options.thread.cwd;
   const tools = TOOLS[options.tools ?? "prime"].root;
   const { skills } = await primeResources(options.agentDir, cwd, options.bundledSkillsDir ?? bundledSkillsDir());
@@ -554,12 +556,12 @@ export async function deliverHarnessDigest(options: PrimePromptOptions & { threa
   const held = (await harness.snapshot(HarnessDigestDoc, conversationId, context))?.deliveries ?? [];
   const next = await harnessDelivery({
     agentDir: options.agentDir, localDir: conversationHarnessDir(options.thread, conversationId, agent), flags: digestFlags(tools, skills),
-    input: [input.text], recent: contextTexts(view).filter(Boolean).slice(-4), goal, delivered: placeDeliveries(view, held).map(placed => placed.delivery),
-    after: contextTail(view), now, ...(agent ? { agent: agentName(agent) } : {}),
+    input: [input.text], recent: [...summary.recent], goal, delivered: keptDeliveries(summary.head?.id, held),
+    after: summary.tail, now, ...(agent ? { agent: agentName(agent) } : {}),
   }, options.log);
   await conversation.commit(async tx => {
     const doc = await tx.doc(HarnessDigestDoc, conversationId);
-    const kept = placeDeliveries(view, doc.deliveries).map(placed => placed.delivery);
+    const kept = keptDeliveries(summary.head?.id, doc.deliveries);
     if (next || kept.length !== doc.deliveries.length) doc.deliveries = [...kept, ...(next ? [next] : [])];
   }, context);
 }

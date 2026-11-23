@@ -111,14 +111,6 @@ export function digestQueryTerms(input: readonly string[], recent: readonly stri
   ]);
 }
 
-/** The newest entry id of the context, the anchor of a delivery sent now; 0 for an empty context. */
-export const contextTail = (view: ContextView): number => Math.max(0, ...view.entries.map(entry => entry.id as number));
-
-/** Every message text of the context, oldest first, as `queryText` reads it. */
-export function contextTexts(view: ContextView): string[] {
-  return view.entries.flatMap((entry, index) => (view.contributions[index] ?? []).map(message => queryText(entry, message)));
-}
-
 /**
  * Prime's `_nextHarnessDigestMessage`: the full digest for a context with none, nothing when the newest one has the state's fingerprint,
  * else an update with the change (or the full digest when the change has no line). `delivered` are the deliveries in context, oldest first.
@@ -237,14 +229,17 @@ export function formatDigest(state: HarnessState, options: Parameters<typeof for
 const isInput = (entry: EntryRecord, view: ContextView, index: number): boolean =>
   entry.kind !== "pi.compaction" && entry.kind !== "pi.reset" && view.contributions[index]?.[0]?.role === "user";
 
+/** The deliveries a context whose head marker is `head` still holds: those sent at or after it. */
+export const keptDeliveries = (head: number | undefined, deliveries: readonly DigestDelivery[]): DigestDelivery[] =>
+  deliveries.filter(delivery => delivery.after >= (head ?? 0));
+
 /**
  * The deliveries the context still holds, each with the index in `view.entries` of the input it goes before, or -1 while that input is
  * still queued. A compaction or reset ends every delivery sent before it, as Prime's rebuilt context keeps no digest message from before
  * its compaction and holds the snapshot instead; here the next input gets the full digest.
  */
 export function placeDeliveries(view: ContextView, deliveries: readonly DigestDelivery[]): { delivery: DigestDelivery; before: number }[] {
-  const floor = (view.head?.id as number | undefined) ?? 0;
-  return deliveries.filter(delivery => delivery.after >= floor).map(delivery => ({
+  return keptDeliveries(view.head?.id as number | undefined, deliveries).map(delivery => ({
     delivery,
     before: view.entries.findIndex((entry, index) => entry.id !== view.head?.id && (entry.id as number) > delivery.after && isInput(entry, view, index)),
   }));

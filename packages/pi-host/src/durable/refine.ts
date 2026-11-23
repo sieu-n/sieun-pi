@@ -33,6 +33,7 @@ import {
   REVIEW_PROMPT, reviewPrompt, skillRouteContent, type AutoReason, type RefineResult,
 } from "../../../pi-harness/src/core/refine.ts";
 import { appendRefinementLog, mergeStates, readRefinementLog, readState, REFINEMENT_LOG, stateFile, updateState, type HarnessState, type Scope } from "../../../pi-harness/src/core/store.ts";
+import { assistantsAfter, contextSummary } from "./context-summary.ts";
 import type { HostCall, HostModule, HostModuleOptions } from "./host-modules.ts";
 import { track } from "../loop-stall.ts";
 import { harnessNearest } from "./digest-worker.ts";
@@ -235,18 +236,15 @@ export function refineModule(options: RefineModuleOptions): HostModule {
     const auto = autoSettings();
     if (!auto.enabled) return undefined;
     if (reviewed && Date.now() - reviewed.at < auto.cooldownMs) return undefined;
-    const view = await (await call.harness.conversation(call.conversation as ConversationId, context))?.context(context);
-    if (!view) return undefined;
+    const summary = await contextSummary(call.harness, call.conversation as ConversationId, context);
+    if (!summary) return undefined;
     const after = reviewed?.after ?? 0;
-    let turns = 0;
-    view.entries.forEach((entry, index) => {
-      if ((entry.id as number) > after) turns += (view.contributions[index] ?? []).filter(m => m.role === "assistant").length;
-    });
-    const head = view.head;
-    const compacted = auto.compact && head?.kind === "pi.compaction" && (head.id as number) > after;
+    const turns = assistantsAfter(summary, after);
+    const head = summary.head;
+    const compacted = auto.compact && head?.kind === "pi.compaction" && head.id > after;
     const reason: AutoReason = compacted ? "compact" : "turn_interval";
     if (reason === "turn_interval" && turns < auto.turnInterval) return undefined;
-    return { reason, turns, tail: Math.max(0, ...view.entries.map(entry => entry.id as number)) };
+    return { reason, turns, tail: summary.tail };
   };
 
   /** Prime's review gate: asks the conversation's model whether the turns since the last review hold something to keep; records the review first. */
