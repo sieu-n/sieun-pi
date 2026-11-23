@@ -4,6 +4,7 @@
  * server/http.ts, /api/skills/*), so agents, the Settings > Skills page, the review app and the scheduled scan all make the same calls.
  * The server is SW_URL, else http://127.0.0.1:5184. Add --json to any command to print the server's answer as it is.
  */
+import { spawnSync } from "node:child_process";
 import { parseArgs } from "node:util";
 
 const HELP = `sw skills <command>
@@ -24,6 +25,8 @@ const HELP = `sw skills <command>
 sw db                        every kind of record moved into chat.sqlite, its records against its JSON files
 sw <kind> check              one kind, such as rooms: each JSON file the DB has not seen or whose export is behind
 sw <kind> apply [--dry-run]  write the JSON exports that are behind the DB; a second run changes nothing
+
+sw backup check|run [--b2] runs apps/chat/scripts/chat-backup.mjs on this box (the chat data dir's nightly backup).
 
 Options: --json prints the answer as JSON. SW_URL sets the server (default http://127.0.0.1:5184).`;
 
@@ -113,7 +116,14 @@ async function records(area, command, values) {
   return 2;
 }
 
+/** `sw backup check|run [...]`: runs scripts/chat-backup.mjs on this box, beside this file in the same release or checkout. */
+function backup(args) {
+  const script = new URL("../scripts/chat-backup.mjs", import.meta.url).pathname;
+  return spawnSync(process.execPath, [script, ...args], { stdio: "inherit" }).status ?? 1;
+}
+
 async function main(argv) {
+  if (argv[0] === "backup") return backup(argv.slice(1));
   const { values, positionals } = parseArgs({
     args: argv,
     allowPositionals: true,

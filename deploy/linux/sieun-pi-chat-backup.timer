@@ -1,0 +1,10 @@
+# Starts sieun-pi-chat-backup.service each night at 04:30 KST, a quiet hour for the owner, and on the next boot after a missed night.
+[Unit]
+Description=Nightly backup of the apps/chat data dir
+
+[Timer]
+OnCalendar=*-*-* 04:30:00 Asia/Seoul
+Persistent=true
+
+[Install]
+WantedBy=timers.target
