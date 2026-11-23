@@ -66,7 +66,8 @@ const closes = (line) => {
  * those, a Markdown heading `## name` runs to the next heading of its level or higher, because on the 7 days to 2026-10-28
  * 10:28Z commits to other sections of ops/runbooks/dev-boxes.md and apps/infra/metal/README.md flagged
  * domains/devops/local-store-box/index.html and domains/devops/aws-estate.html 11 times and none of them changed the page.
- * Failing those, a route key such as `/api/search` or `GET /api/search` names each call that registers it (`routeCall`).
+ * Failing those, a TOML array-of-tables entry whose `name` key holds `name` (`tomlEntries`) is that entry with its sub-tables.
+ * Then a route key such as `/api/search` or `GET /api/search` names each call that registers it (`routeCall`).
  * Before the headings, a block that opens with `{` at the end of a line that names `name` runs to its matching close brace
  * (`braceBlocks`), which names a Caddyfile site, snippet, matcher or directive block. Failing a heading too, a Markdown table
  * row whose first cell is `name` (`tableRows`) is that row alone.
@@ -112,6 +113,8 @@ export function definitionText(text, name) {
 		const kept = pattern === patterns[0] ? blocks.filter((block) => block.depth === 0) : top.length ? top : heads;
 		if (blocks.length) return (kept.length ? kept : blocks).map((block) => block.text).join('\n');
 	}
+	const entries = tomlEntries(lines, name);
+	if (entries.length) return entries.join('\n');
 	const call = routeCall(text, name);
 	if (call !== null) return call;
 	const blocks = braceBlocks(lines, name);
@@ -147,6 +150,38 @@ function tableRows(lines, name) {
 		const cells = line.trim().slice(1, -1).split(/(?<!\\)\|/).map((cell) => cell.trim());
 		return cells[0] === name ? [`| ${cells.join(' | ')} |`] : [];
 	});
+}
+
+/** A TOML table header such as `[[procedure]]` or `[procedure.config]`, with its dotted path in group 1. */
+const TOML_HEADER = /^\s*\[\[?\s*([\w.-]+)\s*\]\]?\s*(?:#.*)?$/;
+
+/**
+ * Each top-level TOML array-of-tables entry whose own `name` key holds `name`, such as the `[[procedure]]` with
+ * `name = "m02-land-tick"` in auto-sns-agent apps/infra/komodo/resources/us-metal02/procedures.toml, from its header through
+ * its sub-tables such as `[[procedure.config.stage]]` to the next header outside it, such as the next `[[procedure]]`. The
+ * `name` key counts only above the entry's first sub-table, and a sub-table names nothing, so the `name = "run"` of every
+ * stage names no block. code-text.mjs cuts the `#` comments and the `##` separators the block carries. Until 2026-11-24 no
+ * such name resolved, and 6 pages cited that file of 42 procedures whole, so each one-procedure edit flagged all 6, and the
+ * 06:10 KST dream run that day kept 4 of them whole.
+ * @param {readonly string[]} lines
+ * @param {string} name
+ * @returns {string[]}
+ */
+function tomlEntries(lines, name) {
+	const key = new RegExp(`^\\s*name\\s*=\\s*(["'])${escape(name)}\\1\\s*(?:#.*)?$`);
+	/** @type {string[]} */
+	const entries = [];
+	for (let start = 0; start < lines.length; start += 1) {
+		const path = /^\s*\[\[\s*([\w-]+)\s*\]\]/.exec(lines[start])?.[1];
+		if (!path) continue;
+		let end = start + 1;
+		while (end < lines.length && !TOML_HEADER.test(lines[end])) end += 1;
+		if (!lines.slice(start + 1, end).some((line) => key.test(line))) continue;
+		while (end < lines.length && (TOML_HEADER.exec(lines[end])?.[1] ?? `${path}.`).startsWith(`${path}.`)) end += 1;
+		entries.push(lines.slice(start, end).join('\n').trimEnd());
+		start = end - 1;
+	}
+	return entries;
 }
 
 /**

@@ -832,6 +832,37 @@ test('a path::name Caddyfile ref names a site, snippet or directive block by its
 	assert.equal(rows['apps/hdx.html'], undefined, 'a comment edit in the site is no change');
 });
 
+// 2026-11-24: 6 pages cited auto-sns-agent apps/infra/komodo/resources/us-metal02/procedures.toml whole, because
+// definitionText named no [[procedure]] entry by its name, so each edit of one of its 42 procedures flagged all 6.
+test('a path::name TOML ref names an array-of-tables entry by its name key, with its sub-tables', (t) => {
+	const procedure = (name, schedule, service = name) =>
+		`[[procedure]]\nname = "${name}"\nconfig.schedule = "${schedule}" # UTC\n\n[[procedure.config.stage]]\nname = "run"\nexecutions = [\n  { execution.type = "RunStackService", execution.params.stack = "${name}", execution.params.service = "${service}" }\n]\n\n##\n`;
+	const toml = (land, wiki, note = '') =>
+		`# Komodo procedures${note}\n\n${procedure('m02-backend-file-seconds', '0 5 9 * * *')}\n${procedure('m02-land-tick', land, 'land-tick')}\n${procedure('m02-wiki-backup', wiki)}`;
+	const text = toml('25 */5 * * * *', '45 */5 * * * *');
+	const land = definitionText(text, 'm02-land-tick');
+	assert.equal(land?.split('\n')[1], 'name = "m02-land-tick"');
+	assert.match(land ?? '', /execution\.params\.service = "land-tick"/, 'the entry runs through its stage sub-table');
+	assert.doesNotMatch(land ?? '', /m02-wiki-backup|m02-backend/, 'the entry ends at the next [[procedure]]');
+	assert.match(definitionText(text, 'm02-wiki-backup') ?? '', /\]\n\n##$/, 'the last entry runs to the end of the file');
+	assert.equal(definitionText(text, 'run'), null, 'a sub-table name names no block');
+
+	const w = fixture(t);
+	w.write('procedures.toml', text);
+	w.page('land.html', ['procedures.toml::m02-land-tick'], { body: '<p>The land tick runs every 5 minutes.</p>' });
+	w.page('backup.html', ['procedures.toml::m02-wiki-backup'], { body: '<p>The wiki backup runs every 5 minutes.</p>' });
+	w.init();
+	w.commit('2026-10-20T01:00:00Z', 'pages');
+	w.write('procedures.toml', toml('25 */5 * * * *', '45 */5 * * * *', ' on us-metal02'));
+	w.commit('2026-10-20T04:00:00Z', 'a comment above every procedure');
+	w.write('procedures.toml', toml('25 */10 * * * *', '45 */5 * * * *', ' on us-metal02'));
+	w.commit('2026-10-20T05:00:00Z', 'land tick every 10 minutes');
+
+	const rows = w.refsByPage();
+	assert.deepEqual(rows['apps/land.html'], [{ ref: 'procedures.toml::m02-land-tick', ...at('05') }]);
+	assert.equal(rows['apps/backup.html'], undefined, 'an edit of another procedure is no change');
+});
+
 // 2026-10-30: 506e664d4f dropped two rows of the object-row table CASCADE_TABLES in convex/search/orgCascade.ts, and
 // apps/search/onboarding-orgs.html, which names other rows, was flagged; its recheck changed only last_verified.
 test('a path::name table of object rows follows only the rows whose quoted words the page names', (t) => {
