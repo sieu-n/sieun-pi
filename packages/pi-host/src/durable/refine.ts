@@ -21,7 +21,7 @@
  * `updateState`, which holds the file lock Prime's `harness.py` takes, and two refines of one store run one after the other.
  */
 import { randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
@@ -32,8 +32,9 @@ import {
   applyProposal, autoRefineInstructions, mergeHistory, newRefineId, noticeContent, outcomeContent, parseProposal, parseReview, plannerPrompt, PLANNER_PROMPT,
   REVIEW_PROMPT, reviewPrompt, skillRouteContent, type AutoReason, type RefineResult,
 } from "../../../pi-harness/src/core/refine.ts";
-import { appendRefinementLog, mergeStates, readRefinementLog, readState, stateFile, updateState, type Scope } from "../../../pi-harness/src/core/store.ts";
+import { appendRefinementLog, mergeStates, readRefinementLog, readState, REFINEMENT_LOG, stateFile, updateState, type HarnessState, type Scope } from "../../../pi-harness/src/core/store.ts";
 import type { HostCall, HostModule, HostModuleOptions } from "./host-modules.ts";
+import { track } from "../loop-stall.ts";
 import { getGlobalHarnessStateDir } from "./vendor/prime-harness.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -96,6 +97,16 @@ export interface RefineModuleOptions extends HostModuleOptions {
 }
 
 const json = <T>(value: T): T => JSON.parse(JSON.stringify(value));
+
+/** A file's inode, size, mtime and ctime, so a cached read notices a write from any process, as pi-harness's `filesIdentity` does. */
+function identityOf(file: string): string {
+  try {
+    const s = statSync(file);
+    return `${s.ino}:${s.size}:${s.mtimeMs}:${s.ctimeMs}`;
+  } catch {
+    return "none";
+  }
+}
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 /** The conversation's model reply to one planner prompt, with Prime's auxiliary reasoning level (`getAuxiliaryThinkingLevel`). */
@@ -129,6 +140,31 @@ export function refineModule(options: RefineModuleOptions): HostModule {
   const stores = new Map<string, Promise<unknown>>();
   const keyOf = (call: HostCall) => `${call.thread.id}:${call.conversation}`;
 
+  /**
+   * Each store and refinement log as last parsed, by file, kept while the file's identity holds. A review and a refine read the global store,
+   * the local one and the global log; on 11-23 agent factory's store, the global store and the log were 1.5, 1.6 and 1.6 MB, one review
+   * parsed them in about 80 ms of one loop turn, and the reviews that settle together after a pi-host restart did it one after another.
+   * A caller never changes what it gets: `mergeStates` and `mergeHistory` copy, and `applyProposal` reads its baseline.
+   */
+  const parsed = new Map<string, { identity: string; value: unknown }>();
+  // Cleared when no refine runs (`serve`), so an idle pi-host keeps no store in memory.
+  const cached = <T>(key: string, file: string, read: () => T): T => {
+    const identity = identityOf(file);
+    const hit = parsed.get(key);
+    if (hit?.identity === identity) return hit.value as T;
+    const value = read();
+    parsed.set(key, { identity, value });
+    return value;
+  };
+  const stateOf = (dir: string, scope: Scope): HarnessState => {
+    const file = resolve(stateFile(dir));
+    return cached(`${scope}:${file}`, file, () => readState(dir, scope));
+  };
+  const logOf = (): RefineResult[] => {
+    const file = resolve(join(globalDir, REFINEMENT_LOG));
+    return cached(`log:${file}`, file, () => readRefinementLog<RefineResult>(globalDir));
+  };
+
   const read = async (call: HostCall) => call.harness.snapshot(RefineDoc, call.conversation as ConversationId, context);
   const write = (call: HostCall, change: (doc: { pending: Pending | null; records: JsonObject[]; reviewed?: Reviewed }) => void) =>
     call.harness.commit(async tx => change(await tx.doc(RefineDoc, call.conversation as ConversationId) as never), context);
@@ -148,10 +184,10 @@ export function refineModule(options: RefineModuleOptions): HostModule {
     const scope: Scope = ask.global && !call.test ? "global" : "local";
     const dir = scope === "global" ? globalDir : call.harnessDir;
     return exclusive(dir, async () => {
-      const records = mergeHistory(readRefinementLog<RefineResult>(globalDir), ((await read(call))?.records ?? []) as unknown as RefineResult[]);
-      const global = readState(globalDir, "global");
-      const local = readState(call.harnessDir, "local");
-      const text = conversationText(await contextMessages(call) as never).slice(-PLANNER_CONVERSATION);
+      const records = mergeHistory(logOf(), ((await read(call))?.records ?? []) as unknown as RefineResult[]);
+      const global = stateOf(globalDir, "global");
+      const local = stateOf(call.harnessDir, "local");
+      const text = await track("refine context", call.session, async () => conversationText(await contextMessages(call) as never).slice(-PLANNER_CONVERSATION));
       const args = { global: scope === "global", routes: !call.test, ...(ask.instructions ? { instructions: ask.instructions } : {}), ...(scope === "local" && call.agent ? { agent: call.agent } : {}) };
       const reply = await planner(call, PLANNER_PROMPT, text, c => plannerPrompt(scope === "global" ? global : mergeStates(global, local), records, c, args), signal);
       const proposal = parseProposal(reply);
@@ -191,9 +227,9 @@ export function refineModule(options: RefineModuleOptions): HostModule {
   /** Prime's review gate: asks the conversation's model whether the turns since the last review hold something to keep; records the review first. */
   const review = async (call: HostCall, due: { reason: AutoReason; turns: number; tail: number }, signal: AbortSignal) => {
     await write(call, d => { d.reviewed = { at: Date.now(), after: due.tail }; });
-    const records = mergeHistory(readRefinementLog<RefineResult>(globalDir), ((await read(call))?.records ?? []) as unknown as RefineResult[]);
-    const state = mergeStates(readState(globalDir, "global"), readState(call.harnessDir, "local"));
-    const text = conversationText(await contextMessages(call) as never).slice(-REVIEW_CONVERSATION);
+    const records = mergeHistory(logOf(), ((await read(call))?.records ?? []) as unknown as RefineResult[]);
+    const state = mergeStates(stateOf(globalDir, "global"), stateOf(call.harnessDir, "local"));
+    const text = await track("auto-refine context", call.session, async () => conversationText(await contextMessages(call) as never).slice(-REVIEW_CONVERSATION));
     const trigger = { reason: due.reason, turnsSinceLastReview: due.turns, ...(call.agent ? { agent: call.agent } : {}) };
     return parseReview(await planner(call, REVIEW_PROMPT, text, c => reviewPrompt(state, records, c, trigger), signal, NO_THINKING_REVIEW_TOKENS));
   };
@@ -215,7 +251,7 @@ export function refineModule(options: RefineModuleOptions): HostModule {
       call.log(`refine ${ask.id} dropped: its turn was aborted`);
       return;
     }
-    const due = ask ? undefined : await autoDue(call, doc?.reviewed);
+    const due = ask ? undefined : await track("auto-refine check", call.session, () => autoDue(call, doc?.reviewed));
     if (!ask && !due) return;
     const abort = new AbortController();
     running.set(key, { serves: ask?.id ?? "auto", abort });
@@ -264,6 +300,8 @@ export function refineModule(options: RefineModuleOptions): HostModule {
         // the box's 40 working slots on average (~/work/pool-p145/tree-audit.md).
         await call.releaseSlot().catch(error => call.log(`refine slot release failed: ${message(error)}`));
         if (running.get(key)?.abort === abort) running.delete(key);
+        // The parsed stores serve the refines that overlap, such as the burst after a restart; with none left, pi-host holds none of them.
+        if (running.size === 0) parsed.clear();
       }
       if (!abort.signal.aborted) await serve(call).catch(error => call.log(`refine: ${message(error)}`));
     })();

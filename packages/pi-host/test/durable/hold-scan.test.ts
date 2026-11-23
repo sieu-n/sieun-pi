@@ -35,16 +35,18 @@ const SCAN_BOUND_MS = 100;
 /** The ms node:sqlite spent in task scans while `scanning.on` is set. */
 const scanning = { on: false, ms: 0, count: 0 };
 const all = StatementSync.prototype.all;
-StatementSync.prototype.all = function (this: StatementSync, ...params: Parameters<StatementSync["all"]>) {
-  if (!scanning.on || !/FROM\s+"?\w*tasks"?\s+WHERE/.test(this.sourceSQL)) return all.apply(this, params);
-  const start = performance.now();
-  try {
-    return all.apply(this, params);
-  } finally {
-    scanning.ms += performance.now() - start;
-    scanning.count++;
-  }
-};
+Object.defineProperty(StatementSync.prototype, "all", {
+  value: function (this: StatementSync, ...params: unknown[]) {
+    if (!scanning.on || !/FROM\s+"?\w*tasks"?\s+WHERE/.test(this.sourceSQL)) return Reflect.apply(all, this, params);
+    const start = performance.now();
+    try {
+      return Reflect.apply(all, this, params);
+    } finally {
+      scanning.ms += performance.now() - start;
+      scanning.count++;
+    }
+  },
+});
 
 const lastUser = (messages: readonly Message[]) => textOf(([...messages].reverse().find(m => m.role === "user")?.content ?? "") as never);
 

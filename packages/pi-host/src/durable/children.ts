@@ -10,6 +10,7 @@ import type { Message, TextContent } from "@earendil-works/pi-ai";
 import { defineDoc, defineExtension, defineTask, ROOT_CONVERSATION_ID, type ConversationId, type Extension, type TaskId } from "@earendil-works/pi-durable";
 import { dirname, join } from "node:path";
 import { label, PREVIEW } from "../../../pi-rlm/src/pi/children.ts";
+import { track } from "../loop-stall.ts";
 
 /** Prime's agent id of a conversation, as apps/chat names its agents: the thread for the root, `<thread>:<conversation>` for a child. */
 export const agentIdOf = (thread: string, conversation: number): string => (conversation === ROOT_CONVERSATION_ID ? thread : `${thread}:${conversation}`);
@@ -175,7 +176,7 @@ export const DeliverTask = defineTask<DeliverInput, DeliverState, null>({
       if (handle && !doc?.deleted) {
         do await handle.waitForIdle(ctx);
         while (await childWork.get(task.input.thread)?.(s.child, runtime.signal));
-        const { subagents, holder } = await new Promise<{ subagents: TaskId[]; holder?: TaskId }>((resolve, reject) => void runtime.commit(async tx => {
+        const { subagents, holder } = await track("rlm.deliver hold", sessionOf(task.input.thread, s.child), () => new Promise<{ subagents: TaskId[]; holder?: TaskId }>((resolve, reject) => void runtime.commit(async tx => {
           const live: TaskId[] = [];
           let holder: TaskId | undefined;
           // One scan per status over the whole file, filtered here: a scan that also names the conversation and kind makes SQLite walk
@@ -195,7 +196,7 @@ export const DeliverTask = defineTask<DeliverInput, DeliverState, null>({
           }
           resolve({ subagents: live, ...(holder === undefined ? {} : { holder }) });
           return undefined;
-        }, ctx).catch(reject));
+        }, ctx).catch(reject)));
         if (subagents.length) {
           await runtime.commit(() => ({ status: "waiting", checkpoint: s, on: subagents, policy: "allSettled" }), ctx);
           return;
