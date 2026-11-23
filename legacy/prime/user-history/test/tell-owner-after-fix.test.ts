@@ -58,7 +58,7 @@ test("a decision with no question, pick or todo in it is refused once, and one t
   assert.equal(tellOwner({ ...finding, why: "done" }, turn, at("06:49:24"), () => true).kind, "sent", "only a decision is checked");
 });
 
-test("the refusal of a re-ask of an open todo says a reminder or a new date stays on For you and only a changed pick goes again", () => {
+test("the refusal of a re-ask of an open todo says a reminder, a new date or a changed pick stays on For you", () => {
   // 10-25: at 03:51Z a chat resent the t15 ask with its cause added 4.7 s after this refusal, and at 10:57Z another sent "t34 is more urgent
   // now" 8.2 s after it; d11 labelled both noise. A code hold of such resends would also hold 8 needed corrections, so the refusal says it.
   const turn = { ...tellTurn([owner("keep the disks from filling", "01:00:00"), said("A job reads it.", "01:00:10"), job("CI disk holds 5 days", "10:57:00")]), asked: new Set(["t34"]) };
@@ -66,8 +66,23 @@ test("the refusal of a re-ask of an open todo says a reminder or a new date stay
   const refused = tellOwner(nudge, turn, at("10:57:33"), () => true);
   assert.equal(refused.kind, "refused");
   assert.match(refused.text, /a re-ask of an open todo stays on For you/);
-  assert.match(refused.text, /a new date or number, more or less urgency in t34/);
-  assert.match(refused.text, /A new date or number on the same question is no correction/);
-  assert.match(refused.text, /only when your pick or his choices change/);
+  assert.match(refused.text, /a new date or number, more or less urgency, or a change of your own pick in t34 with chat_board todo_update/);
+  assert.match(refused.text, /A new pick, date or number on the same question asks him nothing new/);
+  assert.match(refused.text, /only when his choices change/);
   assert.equal(tellOwner(nudge, { ...turn, resent: new Set([nudge.text]) }, at("10:57:42"), () => true).kind, "sent", "the very same text again goes out");
+});
+
+test("the re-ask refusal sends a flip of the chat's own pick into the todo, and only his changed choices or a must-act-now resend go out", () => {
+  // 11-23 15:13Z: ops guy's re-ask of t81 was refused with "Send the very same text again only when your pick or his choices change". It had
+  // just flipped its own pick on t81 from accept to move with todo_update, so it resent the same text and it went out; d11 labelled it noise.
+  const turn = { ...tellTurn([owner("bring the Vercel bill under the credit", "01:00:00"), said("A job reads it.", "01:00:10"), job("move saves $0.12 a day", "15:12:00")]), asked: new Set(["t81"]) };
+  const ask = { text: "Moving the prod web apps off Vercel would bring Vercel to about $0.55 a day, under its $0.67 credit. Should we move them, as asked on t81?", why: "decision", about: "t81" };
+  const refused = tellOwner(ask, turn, at("15:13:00"), () => true);
+  assert.equal(refused.kind, "refused");
+  assert.match(refused.text, /or a change of your own pick in t81 with chat_board todo_update and end the turn/);
+  assert.doesNotMatch(refused.text, /your pick or his choices change/);
+  assert.match(refused.text, /only when his choices change, such as an option he no longer has, or when he must act on it now/);
+  assert.equal(tellOwner(ask, { ...turn, resent: new Set([ask.text]) }, at("15:13:10"), () => true).kind, "sent", "the very same text again goes out");
+  const ownTurn = { ...tellTurn([owner("should we move the web apps off Vercel?", "15:12:30")]), asked: new Set(["t81"]) };
+  assert.equal(tellOwner(ask, ownTurn, at("15:13:00"), () => true).kind, "sent", "his own turn is never held");
 });

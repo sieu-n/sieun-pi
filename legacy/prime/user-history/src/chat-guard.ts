@@ -726,11 +726,13 @@ export function tellOwner(input: TellInput, turn: TellTurn, now = Date.now(), pa
     `not ask him twice. Wait on that todo, and if you know something it lacks, send it to that chat with agent_message so it adds it to ${other.id}. ` +
     "If yours is a different question he must answer too, send the very same text again and it goes out (c117)." };
   // c083958b's "only when it corrects a fact he would answer wrong" still let 2 of 4 resends of 10-26 out with a new fill date or "no longer
-  // urgent" (09:09Z, 10:49Z, t68), so the line now names the one case past needed resends shared: the pick or the choices change.
+  // urgent" (09:09Z, 10:49Z, t68), so the line named the pick or the choices changing. On 11-23 at 15:13Z ops guy flipped its own pick on
+  // t81 with todo_update and resent the Vercel ask after this refusal, which d11 labelled noise, so a changed pick now goes into the todo too.
   if (reask) return { kind: "refused", text: `${REASK_MARK} as ${reask}, which you added in an earlier turn. He reads it there, so a re-ask ` +
-    `of an open todo stays on For you: put new facts, its cause, a new date or number, more or less urgency in ${reask} with chat_board ` +
-    "todo_update and end the turn. A new date or number on the same question is no correction. Send the very same text again only when " +
-    "your pick or his choices change, such as hold off or go ahead after all, and then it goes out (c117)." };
+    `of an open todo stays on For you: put new facts, its cause, a new date or number, more or less urgency, or a change of your own pick in ` +
+    `${reask} with chat_board todo_update and end the turn. A new pick, date or number on the same question asks him nothing new. Send the ` +
+    "very same text again only when his choices change, such as an option he no longer has, or when he must act on it now, such as a " +
+    "deadline within hours, and then it goes out (c117)." };
   if (repeat) return { kind: "refused", text: `${REPEAT_MARK} ("${repeat}") since his last message. Send nothing unless this brings something ` +
     "new he must see or act on; if it does, send the very same text again and it goes out (c117)." };
   if (!turn.owner && (answers || declared) && !turn.resent?.has(told) && WITHDRAW.test(told)) return { kind: "refused", text: `${WITHDRAW_MARK} ` +
