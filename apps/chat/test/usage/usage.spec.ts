@@ -160,7 +160,10 @@ test("each other range is read ahead once and stored, so a page load or a minute
   await page.goto("/#/settings/usage");
   await expect(mainChart(page)).toBeVisible();
   const all = ["1h:minute", "24h:hour", "24h:minute", "30d:day", "30d:hour", "7d:day", "7d:hour", "90d:day"];
-  await expect.poll(() => storedReports(page)).toEqual(all);
+  // The lane sends reads ahead 2 at a time behind the sidebar's (client.ts `AHEAD_LANE`), and they settle 11.5 s after a load in the walk of
+  // ~/work/p155-readahead/lane-summary.md. At box load 313 on 11-23 only 5 of the 7 had left 6 s after the chart drew
+  // (~/work/chat-specs-red/specs-red-usage-usage/notes.md).
+  await expect.poll(() => storedReports(page), { timeout: 15_000 }).toEqual(all);
 
   asked.length = 0;
   await page.clock.runFor(61_000);
@@ -225,7 +228,11 @@ test("each pool provider shows its accounts with their 5h and week meters", asyn
   }
 });
 
-/** Keeps the live socket shut, so the page reads the pool only over HTTP: a read at the socket's open goes over it (kept.svelte.ts `readOverSocket`). */
+/**
+ * Keeps the live socket silent, so the page reads the pool only over HTTP: a read at the socket's open goes over it (kept.svelte.ts
+ * `readOverSocket`). The page drops a socket that answers no ping and opens a new one (live.svelte.ts `QUIET_MS`, `PONG_WITHIN_MS`), so an
+ * open pool panel reads /api/pool again over HTTP every 4 to 5 s (the trace in ~/work/chat-specs-red/specs-red-usage-usage/notes.md).
+ */
 const noSocket = (page: Page) => page.routeWebSocket(/\/api\/live/, () => {});
 const isPool = (url: URL): boolean => url.pathname === "/api/pool";
 const poolCard = (page: Page) => page.locator('[data-testid="pool-anthropic"], [data-testid="pool-openai-codex"]').first();
@@ -233,31 +240,38 @@ const poolCard = (page: Page) => page.locator('[data-testid="pool-anthropic"], [
 test("a visit draws the pool the last visit read at once, names its time while it is older than a poll, and reads it again behind", async ({ page }) => {
   await noSocket(page);
   const hourAgo = new Date(Date.now() - 3_600_000).toISOString();
+  let release = () => {};
+  let held: Promise<void> | undefined;
+  let answered = 0;
+  // One route for the whole test, as the page reads the pool every few seconds (`noSocket`): a read between a swap of routes and the reload
+  // stored the server's own time, and the reload drew the pool with no time named.
   await page.route(isPool, async route => {
-    const response = await route.fetch();
-    await route.fulfill({ response, json: { ...((await response.json()) as object), checkedAt: hourAgo } });
+    try {
+      if (!held) {
+        const response = await route.fetch();
+        await route.fulfill({ response, json: { ...((await response.json()) as object), checkedAt: hourAgo } });
+        return;
+      }
+      await held;
+      await route.continue();
+      answered += 1;
+    } catch {
+      // A read of the page before the reload, which the reload cancelled.
+    }
   });
   await page.goto("/#/settings/usage");
   await expect(poolCard(page)).toBeVisible();
   await expect(page.getByTestId("usage-pool-as-of")).toBeVisible();
-  await expect.poll(() => page.evaluate(() => new Promise<boolean>(resolve => {
+  await expect.poll(() => page.evaluate(() => new Promise<string | undefined>(resolve => {
     const open = indexedDB.open("chat.pages");
     open.onsuccess = () => {
       const get = open.result.transaction("pages").objectStore("pages").get(["kept", "/api/pool"]);
-      get.onsuccess = () => resolve((get.result as { value?: { checkedAt?: string } } | undefined)?.value?.checkedAt !== undefined);
-      get.onerror = () => resolve(false);
+      get.onsuccess = () => resolve((get.result as { value?: { checkedAt?: string } } | undefined)?.value?.checkedAt);
+      get.onerror = () => resolve(undefined);
     };
-    open.onerror = () => resolve(false);
-  }))).toBe(true);
-  await page.unroute(isPool);
-  let release = () => {};
-  const held = new Promise<void>(resolve => (release = resolve));
-  let answered = 0;
-  await page.route(isPool, async route => {
-    await held;
-    await route.continue();
-    answered += 1;
-  });
+    open.onerror = () => resolve(undefined);
+  }))).toBe(hourAgo);
+  held = new Promise<void>(resolve => (release = resolve));
   await page.reload();
   await expect(poolCard(page)).toBeVisible();
   await expect(page.getByTestId("usage-pool-as-of")).toBeVisible();
@@ -267,6 +281,7 @@ test("a visit draws the pool the last visit read at once, names its time while i
   await expect(page.getByTestId("usage-pool-as-of")).toHaveCount(0);
   await page.unrouteAll({ behavior: "ignoreErrors" });
 });
+
 
 test("a failed read shows the reason and Try again reads again", async ({ page }) => {
   let fail = true;
