@@ -13,7 +13,7 @@ import { MultiHost } from "./host/multi-host.ts";
 import type { RelayHost } from "./host/relay-host.ts";
 import type { Host, Ping, UsageRange as HostUsageRange, UsageTotal } from "./host/types.ts";
 import { OWNER_ZONE_OFFSET_MS } from "./search.ts";
-import { HOURS_KEPT_MS, LIVE_SPAN_MS, LIVE_TICK_MS, MINUTES_KEPT_MS, TICKS_KEPT_MS, USAGE_PULL_MS } from "./usage-store.ts";
+import { addSums, HOURS_KEPT_MS, LIVE_SPAN_MS, LIVE_TICK_MS, MINUTES_KEPT_MS, TICKS_KEPT_MS, USAGE_PULL_MS } from "./usage-store.ts";
 import type { Store } from "./store.ts";
 import { statusOf, type Threads } from "./threads.ts";
 
@@ -45,19 +45,21 @@ function fold(rows: readonly UsageTotal[], since: number, step: number, count: n
     sum.tokens.output += row.output;
     sum.tokens.cacheRead += row.cacheRead;
     sum.tokens.cacheWrite += row.cacheWrite;
-    const cost = costOf(row);
-    for (const kind of ["input", "output", "cacheRead", "cacheWrite", "total"] as const) sum.cost[kind] += cost[kind];
+    sum.cost.input += row.costInput;
+    sum.cost.output += row.costOutput;
+    sum.cost.cacheRead += row.costCacheRead;
+    sum.cost.cacheWrite += row.costCacheWrite;
+    sum.cost.total += row.cost;
     sum.byModel[row.model] = (sum.byModel[row.model] ?? 0) + row.cost;
     const tokens = sum.tokensByModel[row.model] ??= { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
     tokens.input += row.input;
     tokens.output += row.output;
     tokens.cacheRead += row.cacheRead;
     tokens.cacheWrite += row.cacheWrite;
-    const key = `${row.host ?? ""}\u0000${row.client ?? ""}\u0000${row.agent ?? ""}\u0000${row.thread}\u0000${row.model}`;
-    const { bucket: _bucket, ...rest } = row;
+    const key = row.series ?? `${row.host ?? ""}\u0000${row.client ?? ""}\u0000${row.agent ?? ""}\u0000${row.thread}\u0000${row.model}`;
     const total = totals.get(key);
-    if (!total) totals.set(key, { ...rest });
-    else for (const name of SUMS) total[name] += row[name];
+    if (!total) totals.set(key, { ...row });
+    else addSums(total, row);
   }
   return { totals: [...totals.values()], buckets };
 }

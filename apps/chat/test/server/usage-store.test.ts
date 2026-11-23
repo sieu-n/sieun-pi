@@ -5,7 +5,8 @@
  * Run from the repo root: node apps/chat/scripts/spec-clean.mjs --files <changed files> -- node --test --test-force-exit test/server/usage-store.test.ts
  */
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { createServer, type Server } from "node:http";
 import { after, before, test } from "node:test";
 import { join } from "node:path";
@@ -31,9 +32,11 @@ const skip = reachable ? false : `no ClickHouse at ${URL_}`;
 
 before(async () => {
   if (!reachable) return;
-  const schema = readFileSync(join(import.meta.dirname, "../../../../components/usage-collector/schema.sql"), "utf8").replaceAll("usage.", `${DB}.`).replace(/^CREATE DATABASE.*$/m, "");
+  // A spec-clean run loads this file from a release folder, which holds apps/chat only, so the schema comes from the checkout then.
+  const schemaPath = [join(import.meta.dirname, "../../../../components/usage-collector/schema.sql"), join(homedir(), "src/sieun-pi/components/usage-collector/schema.sql")].find(existsSync)!;
+  const schema = readFileSync(schemaPath, "utf8").replaceAll("usage.", `${DB}.`).replace(/^CREATE DATABASE.*$/m, "");
   await ch(`CREATE DATABASE ${DB}`);
-  for (const statement of schema.split(";").map(s => s.replace(/^\s*--.*$/gm, "").trim()).filter(Boolean)) await ch(statement);
+  for (const statement of schema.replace(/--.*$/gm, "").split(";").map(s => s.trim()).filter(Boolean)) await ch(statement);
 });
 after(async () => {
   if (reachable) await ch(`DROP DATABASE IF EXISTS ${DB}`);

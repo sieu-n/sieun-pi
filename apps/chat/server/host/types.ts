@@ -76,6 +76,8 @@ export interface UsageTotal {
   client?: string; agent?: string;
   /** The thread's name as the store's collector saw it, for a client whose threads this chat does not list. */
   threadName?: string;
+  /** host, client, agent, thread and model as one key, which the store makes once per read so a fold keys each row with no new string. */
+  series?: string;
   thread: string; model: string; turns: number; input: number; output: number; cacheRead: number; cacheWrite: number;
   cost: number; costInput: number; costOutput: number; costCacheRead: number; costCacheWrite: number;
 }

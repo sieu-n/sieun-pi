@@ -100,26 +100,54 @@ const KEPT_MS: Readonly<Record<GrainName, number>> = { hour: HOURS_KEPT_MS, minu
 const GRAIN_NAMES: readonly GrainName[] = ["hour", "minute", "tick"];
 
 /** One bucket's sums for one host, client, agent, thread and model; `bucket` is the bucket's first epoch ms. */
-type Sum = Required<Pick<UsageTotal, "bucket" | "host" | "client" | "agent">> & Omit<UsageTotal, "bucket" | "host" | "client" | "agent">;
+type Sum = Required<Pick<UsageTotal, "bucket" | "host" | "client" | "agent" | "series">> & Omit<UsageTotal, "bucket" | "host" | "client" | "agent" | "series">;
 type Grain = { sums: Map<number, Sum[]>; covered: number };
-const SUM_FIELDS = ["turns", "input", "output", "cacheRead", "cacheWrite", "cost", "costInput", "costOutput", "costCacheRead", "costCacheWrite"] as const;
 
-/** The store's sums of one grain from `from` on, in buckets of the grain's length; a client with no threads names its session as the thread. */
-export function sumsSql(table: string, grain: GrainName, from: number): string {
-  const ms = GRAIN_MS[grain];
-  return `SELECT '${grain}' AS grain, toFloat64(intDiv(toUnixTimestamp64Milli(call_at), ${ms}) * ${ms}) AS bucket, host, client, agent,
+/** Adds one sum's counts into another, field by field, which keeps the fold's property reads monomorphic. */
+export function addSums(into: UsageTotal, from: UsageTotal): void {
+  into.turns += from.turns;
+  into.input += from.input;
+  into.output += from.output;
+  into.cacheRead += from.cacheRead;
+  into.cacheWrite += from.cacheWrite;
+  into.cost += from.cost;
+  into.costInput += from.costInput;
+  into.costOutput += from.costOutput;
+  into.costCacheRead += from.costCacheRead;
+  into.costCacheWrite += from.costCacheWrite;
+}
+
+const CALL_COLUMNS = `call_at, host, client, agent, thread, thread_name, session, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+  cost_input_usd, cost_output_usd, cost_cache_read_usd, cost_cache_write_usd`;
+
+/**
+ * The store's calls from `from` on, each call once. A full read takes FINAL. A tail read keeps each row_id's latest copy instead, since the
+ * table's sort key (host, client, row_id) leaves call_at out, so FINAL widens a tail read to most of the table: on the rig with 5.0 M rows a
+ * tail read took 2.6 s with FINAL and 0.24 s this way (~/work/usage-one-source/usage-read-path/report.md). A key's call_at never changes
+ * (store.md section 5, point 2), so every copy of a call falls on the same side of `from`.
+ */
+function callsFrom(table: string, from: number, full: boolean): string {
+  const since = `call_at >= fromUnixTimestamp64Milli(toInt64(${from}))`;
+  return full
+    ? `(SELECT ${CALL_COLUMNS} FROM ${table} FINAL WHERE ${since})`
+    : `(SELECT ${CALL_COLUMNS} FROM ${table} WHERE ${since} ORDER BY collected_at DESC LIMIT 1 BY row_id)`;
+}
+
+/**
+ * The store's sums of every grain from that grain's `from` on, in buckets of the grain's length, from one scan of the calls: three scans, one
+ * per grain, took 3.0 to 7.3 s for a full read on the rig, and one took 1.8 to 2.8 s. A client with no threads names its session as the thread.
+ */
+export function pullSql(table: string, from: Readonly<Record<GrainName, number>>, full: boolean): string {
+  const grains = GRAIN_NAMES.map(grain => `('${grain}', ${GRAIN_MS[grain]}, ${from[grain]})`).join(", ");
+  return `SELECT g.1 AS grain, toFloat64(intDiv(toUnixTimestamp64Milli(call_at), g.2) * g.2) AS bucket, host, client, agent,
   if(thread = '', session, thread) AS thread_or_session, argMax(thread_name, call_at) AS thread_name, model, toFloat64(count()) AS turns,
   toFloat64(sum(input_tokens)) AS input, toFloat64(sum(output_tokens)) AS output, toFloat64(sum(cache_read_tokens)) AS cache_read,
   toFloat64(sum(cache_write_tokens)) AS cache_write, toFloat64(sum(cost_input_usd)) AS cost_input, toFloat64(sum(cost_output_usd)) AS cost_output,
   toFloat64(sum(cost_cache_read_usd)) AS cost_cache_read, toFloat64(sum(cost_cache_write_usd)) AS cost_cache_write
-FROM ${table} FINAL
-WHERE call_at >= fromUnixTimestamp64Milli(toInt64(${from}))
-GROUP BY bucket, host, client, agent, thread_or_session, model`;
+FROM ${callsFrom(table, Math.min(...Object.values(from)), full)} ARRAY JOIN [${grains}] AS g
+WHERE toUnixTimestamp64Milli(call_at) >= g.3
+GROUP BY grain, bucket, host, client, agent, thread_or_session, model`;
 }
-
-/** One query for every grain, so the grains it replaces come from one read. */
-const pullSql = (table: string, from: Readonly<Record<GrainName, number>>): string =>
-  GRAIN_NAMES.map(grain => sumsSql(table, grain, from[grain])).join("\nUNION ALL\n");
 
 function rowsOf(columns: Columns): { grain: GrainName; sum: Sum }[] {
   const grains = columns.grain ?? [];
@@ -138,9 +166,10 @@ function rowsOf(columns: Columns): { grain: GrainName; sum: Sum }[] {
     const sum: Sum = {
       bucket: n(bucket), host: String(host![i]), client: String(client![i]), agent: String(agent![i]), thread: String(thread![i]), threadName: String(threadName![i]), model: String(model![i]),
       turns: n(turns), input: n(input), output: n(output), cacheRead: n(cacheRead), cacheWrite: n(cacheWrite), costInput: n(costInput), costOutput: n(costOutput),
-      costCacheRead: n(costCacheRead), costCacheWrite: n(costCacheWrite), cost: 0,
+      costCacheRead: n(costCacheRead), costCacheWrite: n(costCacheWrite), cost: 0, series: "",
     };
     sum.cost = sum.costInput + sum.costOutput + sum.costCacheRead + sum.costCacheWrite;
+    sum.series = `${sum.host}\u0000${sum.client}\u0000${sum.agent}\u0000${sum.thread}\u0000${sum.model}`;
     return { grain, sum };
   });
 }
@@ -206,7 +235,7 @@ export class StoreUsage {
     const started = performance.now();
     let rows: { grain: GrainName; sum: Sum }[];
     try {
-      rows = rowsOf(await this.reader.query(pullSql(this.table, from)));
+      rows = rowsOf(await this.reader.query(pullSql(this.table, from, full)));
     } catch (error) {
       this.lastError = error instanceof Error ? error.message : String(error);
       this.log(`usage: reading the store failed: ${this.lastError}`);
@@ -246,17 +275,30 @@ export class StoreUsage {
     const grain = this.grains[name];
     if (since < grain.covered) throw new RangeError(`usage: ${since} is older than the kept ${name} sums, which start at ${grain.covered}`);
     const only = range.threads?.length ? new Set(range.threads) : undefined;
-    const rows = new Map<string, UsageTotal>();
+    const out: UsageTotal[] = [];
+    // A bucket of the grain's own length is the kept sums as they are: no copy, which on 61k hour sums was most of a 30-day read.
+    if (bucketMs === GRAIN_MS[name]) {
+      for (let start = since; start < until; start += bucketMs) for (const sum of grain.sums.get(start) ?? []) if (!only || only.has(sum.thread)) out.push(sum);
+      return out;
+    }
+    let bucket = since;
+    let open = new Map<string, UsageTotal>();
+    const close = () => { for (const row of open.values()) out.push(row); };
     for (let start = since; start < until; start += GRAIN_MS[name]) {
+      const at = since + Math.floor((start - since) / bucketMs) * bucketMs;
+      if (at !== bucket) {
+        close();
+        open = new Map();
+        bucket = at;
+      }
       for (const sum of grain.sums.get(start) ?? []) {
         if (only && !only.has(sum.thread)) continue;
-        const bucket = since + Math.floor((start - since) / bucketMs) * bucketMs;
-        const key = `${bucket}\u0000${sum.host}\u0000${sum.client}\u0000${sum.agent}\u0000${sum.thread}\u0000${sum.model}`;
-        const row = rows.get(key);
-        if (!row) rows.set(key, { ...sum, bucket });
-        else for (const field of SUM_FIELDS) row[field] += sum[field];
+        const row = open.get(sum.series);
+        if (!row) open.set(sum.series, { ...sum, bucket });
+        else addSums(row, sum);
       }
     }
-    return [...rows.values()];
+    close();
+    return out;
   }
 }
