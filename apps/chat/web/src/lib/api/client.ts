@@ -792,7 +792,12 @@ export const api = {
   pages: (params: { q?: string; limit?: number } = {}, options: { signal?: AbortSignal } = {}) =>
     call<WikiPages>("GET", `/api/pages${query(params)}`, undefined, options.signal),
 
-  boardOps: (chat: string, ops: BoardOp[]) => call<BoardView>("POST", `${boardBase(chat)}/board`, { ops }),
+  /**
+   * The answer is the board as GET .../board answers it, without the op summaries the server adds for a chat's own call, so the page keeps
+   * the same board a read or event brings, and a refresh whose answer equals it changes nothing on the screen.
+   */
+  boardOps: (chat: string, ops: BoardOp[]) =>
+    call<BoardView & { summaries: string[] }>("POST", `${boardBase(chat)}/board`, { ops }).then(({ board, awaitingGo }): BoardView => ({ board, awaitingGo })),
   /** Copies a Prime chat's board, duties and check-in interval into the thread it moved to. */
   importPrime: (chat: string, prime: string) =>
     call<{ board: boolean; duties: number; runs: number; checkInMs: number | null }>("POST", `/api/threads/${enc(chat)}/import-prime`, { prime }),

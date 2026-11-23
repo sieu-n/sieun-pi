@@ -1466,8 +1466,14 @@ export class BoardStore {
     return this.kept.read();
   }
 
+  /**
+   * The answer is the whole board, which replaces the kept one with no read. The socket's board event may have brought a later write before
+   * it came, so it replaces only an older board, and a read on its way takes it on top of its own answer (`Kept.change`).
+   */
   async apply(ops: BoardOp[]): Promise<void> {
-    this.kept.set(await api.boardOps(this.chatId, ops));
+    const answer = await api.boardOps(this.chatId, ops);
+    if (this.kept.value === null) return this.kept.set(answer);
+    this.kept.change(shown => ((shown.board?.rev ?? -1) > (answer.board?.rev ?? -1) ? shown : answer));
   }
 
   close(): void {

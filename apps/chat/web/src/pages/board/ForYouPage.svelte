@@ -79,9 +79,9 @@
     }
   }
 
+  /** The socket's board event carries the chat's asks into the kept list, so the write needs no read of For you after it. */
   async function apply(item: ForYouItem, ops: BoardOp[]) {
     await api.boardOps(item.chatId, ops);
-    await forYou.refresh();
   }
   /** Done or Dismiss, or Reopen on a done one, with Undo in its toast. */
   async function markDone(item: ForYouItem) {

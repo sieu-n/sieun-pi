@@ -120,10 +120,15 @@ export class Kept<T> {
     void pageDb.put(STORED, this.of.path, value);
   }
 
-  /** A panel shows this answer until the returned function runs: it reads it again now and after each time the socket comes back. */
+  /**
+   * A panel shows this answer until the returned function runs: it reads it again now and after each time the socket comes back. The read
+   * looks at the kept answer, which must not make the derived or effect that opens it follow it: a board store made in a derived was made
+   * again by each board event and each write's answer, and each new store read the board. On 11-23 at 14:23 UTC such a read waited in the
+   * lane behind the owner's board write and then counted as 1,644 ms of his wait (~/work/p231-slow-calls/summary.md).
+   */
   open(): () => void {
     this.views += 1;
-    void this.read();
+    untrack(() => void this.read());
     return () => void (this.views -= 1);
   }
 
@@ -256,11 +261,9 @@ export function view<T>(of: () => Read<T> | null): { readonly value: T | null; r
     const read = of();
     return read ? kept(read) : null;
   });
-  // The open reads the kept answer, which must not make the effect follow it: each board event that set the answer opened it again, and
-  // every open read it again (board-lists-live.spec.ts).
   $effect(() => {
     const shown = entry;
-    return untrack(() => shown?.open());
+    return shown?.open();
   });
   return {
     get value() {

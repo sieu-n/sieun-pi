@@ -291,9 +291,12 @@ export class Boards {
     this.remember(chat, board);
     this.changed(chat, board);
     this.events.forYou(await this.forYouCount());
+    // The chat's `[board]` line goes after the answer: no part of the answer waits on it, and a pi-host submit waits behind every command
+    // queued there. On 11-20 to 11-23 the owner's board writes, which send it, ran p50 226 ms in the handler against 52 ms for the agents'
+    // own writes, which do not (requests/*.jsonl, ~/work/p231-slow-calls).
     if (summaries.length && actor === "owner") {
       const images = ops.flatMap(op => op.op === "todo_update" && op.reply ? this.replyImages(op.reply) : []);
-      await this.host.submit(thread, {
+      void this.host.submit(thread, {
         text: `${BOARD_PREFIX}${summaries.join("\n")}`, ...(images.length ? { images } : {}), whenBusy: "followUp", requestId: `board:${chat}:${board.rev}`,
         entry: { kind: "agent.message", data: { from: "owner", via: "board" } },
       }).catch(error => this.log(`board note to ${chat} failed: ${String(error)}`));
