@@ -50,9 +50,11 @@ test("the owner edits his own DM post in place, Enter saves it, and it shows (ed
 
 test("the Up arrow in an empty composer opens the owner's last post in its editor, as in Slack", async ({ page, request }) => {
   const word = tag();
-  await post(request, `older ${word}`);
-  const id = await post(request, `newest ${word}`);
-  await open(page, `#/c/${ROOM}`);
+  // Its own room: other specs post into the shared fixture channels, and their posts become the owner's last post there.
+  const room = ((await (await request.post("/api/rooms", { data: { kind: "channel", name: `up-edit-${word}`, members: [], test: true } })).json()) as { id: string }).id;
+  await post(request, `older ${word}`, room);
+  const id = await post(request, `newest ${word}`, room);
+  await open(page, `#/c/${room}`);
   const box = page.getByTestId("composer-input").first();
   await box.click();
   await box.press("ArrowUp");
@@ -103,12 +105,21 @@ test("a deleted DM post leaves the conversation", async ({ page, request }) => {
 });
 
 test("an agent's post has no Edit or Delete", async ({ page, request }) => {
-  const items = ((await (await request.get("/api/c/dm_vent/items")).json()) as { items: { id: string; kind: string; author: { kind: string } }[] }).items;
-  const theirs = items.findLast((i) => i.kind === "message" && i.author.kind !== "owner")!;
-  await open(page, "#/c/dm_vent");
-  await row(page, theirs.id).hover();
-  await expect(row(page, theirs.id).locator("[data-quick-reaction]").first()).toBeVisible();
-  await row(page, theirs.id).locator("[data-message-menu]").click();
+  // A test agent's own DM: in the shared Vent DM other specs' sends stream new replies that move the rows mid-hover.
+  const agent = (await (await request.post("/api/agents", { data: { kind: "chat", name: `no edit ${tag()}`, test: true } })).json()) as { room: string };
+  await post(request, `hello ${tag()}`, agent.room);
+  // The fixture agent answers a plain send with two posts; the second came 2.2 s after the send on 11-23 at a box load near 300.
+  let theirs = "";
+  await expect.poll(async () => {
+    const items = ((await (await request.get(`/api/c/${agent.room}/items`)).json()) as { items: { id: string; kind: string; author: { kind: string } }[] }).items;
+    const replies = items.filter((i) => i.kind === "message" && i.author.kind !== "owner");
+    theirs = replies.length >= 2 ? replies.at(-1)!.id : "";
+    return theirs;
+  }, { timeout: 15_000 }).toBeTruthy();
+  await open(page, `#/c/${agent.room}`);
+  await row(page, theirs).hover();
+  await expect(row(page, theirs).locator("[data-quick-reaction]").first()).toBeVisible();
+  await row(page, theirs).locator("[data-message-menu]").click();
   await expect(page.getByRole("menuitem", { name: "Copy text" })).toBeVisible();
   await expect(page.getByRole("menuitem", { name: /Edit message|Delete message/ })).toHaveCount(0);
 });
