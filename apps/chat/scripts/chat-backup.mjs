@@ -13,10 +13,11 @@
  * only what changed. The backup is built in a .partial folder, manifest.json is written last and the folder is renamed only then, so a
  * crash leaves no folder that `check`, `restore` or the prune would count. The newest KEEP backups stay.
  *
- * With --b2 it also uploads the newest backup to Backblaze B2 under sw-factory-chat-backups/<stamp>/, encrypted with AES-256-GCM, because
- * the one bucket the box's key can write (influencer-prod) is public. The key id, app key and bucket are in ~/.config/sieun-pi/chat-backup.env
- * (B2_KEY_ID=, B2_APP_KEY=, B2_BUCKET=), and the encryption key is ~/.config/sieun-pi/chat-backup.key, which `install` makes once and copies
- * to the Mac (ssh mac) so a B2 backup outlives the box.
+ * With --b2 it also uploads the newest backup to Backblaze B2 under sw-factory-chat-backups/<stamp>/, encrypted with AES-256-GCM. The key id,
+ * app key and bucket are in ~/.config/sieun-pi/chat-backup.env (B2_KEY_ID=, B2_APP_KEY=, B2_BUCKET=), and the encryption key is
+ * ~/.config/sieun-pi/chat-backup.key, which `install` makes once and copies to the Mac (ssh mac) so a B2 backup outlives the box. The nightly
+ * unit runs without --b2: on 11-24 every B2 key we hold could write only a product bucket (influencer-prod and -dev are public, and
+ * virev-backups-* and virev-langfuse belong to the product's backups and Langfuse), and none could create a bucket of our own.
  *
  * `install` writes the systemd user units from deploy/linux/sieun-pi-chat-backup.{service,timer}, rewrites a unit only when its text differs
  * and enables the timer; a second install changes nothing.
@@ -483,7 +484,6 @@ export function install({ unitDir = join(HOME, ".config/systemd/user"), template
   const keyMade = ensureKey(DEFAULTS.keyFile, log);
   const mac = keyToMac(DEFAULTS.keyFile, log);
   if (!changed && enabled && active && !keyMade && mac !== "copied") log(`Nothing changed: the units, the timer and the key are in place (runs ${script}).`);
-  if (!existsSync(DEFAULTS.envFile)) log(`No ${DEFAULTS.envFile}, so the nightly run cannot upload to B2.`);
   return { changed, script };
 }
 

@@ -1,4 +1,5 @@
-# The nightly backup of apps/chat's data dir (~/.pi/agent/chat) to /drive2/sieun/backups/sw-factory-chat, plus an encrypted copy in B2.
+# The nightly backup of apps/chat's data dir (~/.pi/agent/chat) to /drive2/sieun/backups/sw-factory-chat. It runs without --b2 until we
+# hold a B2 bucket of our own; the script's header says why.
 # Installed by `node apps/chat/scripts/chat-backup.mjs install`, which puts the script's path in for @SCRIPT@: the installed release's copy
 # under ~/.local/share/sieun-pi-apps-chat/current once a release carries it, else the checkout's copy. Read a run with
 # journalctl --user -u sieun-pi-chat-backup.service, and the newest backup with `sw backup check`.
@@ -8,4 +9,4 @@ Description=Nightly backup of the apps/chat data dir
 [Service]
 Type=oneshot
 Environment=PATH=%h/.local/node/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=%h/.local/node/bin/node @SCRIPT@ run --b2
+ExecStart=%h/.local/node/bin/node @SCRIPT@ run
