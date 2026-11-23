@@ -62,6 +62,9 @@ test("a later call builds again in the builder the first call started, and an AG
     assert.ok(second.builtAt > first.builtAt, "the second call builds again");
     const context = second.kinds[0]!.sections.find(sec => sec.key === "context")!.text;
     assert.match(context, /The prompt-tab-speed marker line\./);
+    const third = await prompt(agents.harness);
+    assert.equal(builderStarts, starts, "the third call starts no new builder");
+    assert.equal(third.builtAt, second.builtAt, "a build that made the same text answers with the time that text was first built");
   } finally {
     if (text === undefined) rmSync(rules);
     else writeFileSync(rules, text);
@@ -72,4 +75,15 @@ test("a root job filed under an agent shows as one job, with no role text", asyn
   const p = await prompt(ids.cutover);
   assert.deepEqual(p.kinds.map(k => [k.kind, k.conversation]), [["job", 1]]);
   assert.equal(p.kinds[0]!.sections.some(sec => sec.key === "instructions"), false);
+});
+
+test("a page that holds the newest answer gets 304 with no body", async () => {
+  const path = `/api/agents/${encodeURIComponent(agents.harness)}/prompt`;
+  const first = await fetch(s.base + path, { headers: { "accept-encoding": "br" } });
+  const etag = first.headers.get("etag");
+  assert.ok(etag, "the answer carries an ETag");
+  await first.arrayBuffer();
+  const again = await fetch(s.base + path, { headers: { "accept-encoding": "br", "if-none-match": etag } });
+  assert.equal(again.status, 304);
+  assert.equal((await again.arrayBuffer()).byteLength, 0);
 });

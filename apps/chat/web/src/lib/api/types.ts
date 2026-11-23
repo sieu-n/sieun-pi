@@ -812,6 +812,7 @@ export interface AgentPrompt {
   agent: AgentId;
   /** The pi-host tree whose code built it, such as `~/.local/share/pi-host/release-bbc1221`. */
   builtBy: string;
+  /** When the server first built this text; every call builds again, and one that made the same text answers with this time. */
   builtAt: Ms;
   kinds: { kind: PromptKind; thread: string; conversation: number; sections: PromptSection[] }[];
   skills: { name: string; description: string; path: string }[];

@@ -6,7 +6,8 @@
   /**
    * The Prompt tab: the whole prompt each kind of the agent's threads runs with, as pi-host's builder makes it (GET /api/agents/:id/prompt),
    * one block per kind with its size and a copy button, and one folded row per section. The answer is kept (kept.svelte.ts), so an open
-   * draws the last build with its time at once, and the build the open asks for, 50 to 80 ms on the server, replaces it.
+   * draws the last build with its time at once, and the build the open asks for, 50 to 80 ms on the server, replaces it when its text
+   * changed.
    */
   let { agentId }: AgentTabProps = $props();
   const answer = view(() => reads.agentPrompt(agentId));
@@ -74,7 +75,7 @@
   {/if}
   {#if prompt.builtBy}
     <p class="t-caption meta built" title={prompt.builtBy}>
-      Built by pi-host {builtBy(prompt.builtBy)}, {stampLabel(prompt.builtAt)}.
+      Built by pi-host {builtBy(prompt.builtBy)}, the same since {stampLabel(prompt.builtAt)}.
       <Button variant="ghost" size="sm" disabled={answer.loading} onclick={() => answer.refresh()}>Build again</Button>
     </p>
   {/if}

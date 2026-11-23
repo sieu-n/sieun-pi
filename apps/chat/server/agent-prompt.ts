@@ -22,6 +22,7 @@ import type { AgentId, AgentPrompt, PromptKind, PromptSection } from "../web/src
 import { agentRef, commRef, type AgentRef } from "./agent-folder.ts";
 import { primeAgentDir } from "./agent-config.ts";
 import { NotFound, type App } from "./app.ts";
+import { KeptJson } from "./compress.ts";
 
 /** One conversation to build, as the child reads it: the fields of pi-host's `PromptAt`, with the ref as apps/chat writes it. */
 export interface PromptChildRequest {
@@ -146,14 +147,34 @@ export function warmPrompts(app: App): void {
 }
 
 const building = new Map<AgentId, Promise<AgentPrompt>>();
+/** Each agent's newest answer, by its text: a build that made the same text answers with it, so `builtAt` is when that text was first built. */
+const newest = new Map<AgentId, { text: string; answer: AgentPrompt }>();
 
 export function agentPrompt(app: App, id: AgentId): Promise<AgentPrompt> {
   let pending = building.get(id);
   if (!pending) {
-    pending = build(app, id).finally(() => building.delete(id));
+    pending = build(app, id).then(answer => {
+      const text = JSON.stringify({ ...answer, builtAt: 0 });
+      const kept = newest.get(id);
+      if (kept?.text === text) return kept.answer;
+      newest.set(id, { text, answer });
+      return answer;
+    }).finally(() => building.delete(id));
     building.set(id, pending);
   }
   return pending;
+}
+
+/**
+ * The route's answer: the same text keeps its bytes, compressed once, and its ETag, so a page that holds it gets 304 with no body. An
+ * answer was 67 to 102 KB as brotli for agent factory, vent and Crawler guy on 11-24, and a page reads it again at each open of the tab.
+ */
+export async function agentPromptAnswer(app: App, id: AgentId): Promise<KeptJson> {
+  const answer = await agentPrompt(app, id);
+  return new KeptJson(`prompt:${id}`, [answer], () => {
+    const json = JSON.stringify(answer);
+    return { json, rest: json, entries: [] };
+  });
 }
 
 async function build(app: App, id: AgentId): Promise<AgentPrompt> {

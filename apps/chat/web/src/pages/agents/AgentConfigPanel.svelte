@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { reads, view, type AgentSummary, type ModelCatalog, type RunStatus, type ThinkingLevel } from "$lib/api";
+  import { kept, reads, view, type AgentSummary, type ModelCatalog, type RunStatus, type ThinkingLevel } from "$lib/api";
   import { Avatar, Badge, Button, EmptyState, IconButton, LoadingText, Menu, Meter, ModelPicker, PanelHeader, Tabs, TypingDots, stampLabel, type MenuEntry } from "$lib/ui";
   import { hrefFor, router } from "$lib/router.svelte";
   import { SECTIONS, STATUS_LABEL, canRename, forLabel, hasForList, levelsFor, modelKey, modelOptions, type ConfigSection } from "./agents-model";
@@ -28,6 +28,11 @@
   const answer = view(() => reads.agentConfig(agentId));
   const config = $derived(answer.value);
   const error = $derived(answer.error ?? "");
+  /** The Prompt and Knowledge tabs show the agent's prompt, 67 to 102 KB as brotli on 11-24; read ahead once the config came, a click on either finds it kept. */
+  const configShown = $derived(config !== null);
+  $effect(() => {
+    if (configShown) void kept(reads.agentPrompt(agentId)).ahead();
+  });
 
   const load = () => answer.refresh();
   /** A rename, archive or unarchive reads the page again, since an archived agent's card is not in the live list that updates the header. */
