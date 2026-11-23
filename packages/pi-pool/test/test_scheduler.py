@@ -1563,3 +1563,41 @@ class BookOnRead(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DisplacedWaiter(unittest.TestCase):
+    """11-23 on us-metal02: at 06:22:00Z 01a205b5-d56b (low, waiting since 00:02:14Z) took the 06:24 claude-virev11 cell. At
+    06:22:01Z 01a205b4-799e (low, since 00:00:45Z) ranked ahead of it and took the same cell. d56b kept a wait on a cell it no
+    longer held, so at 06:23:19Z 01a205b5-e3b8 (low, since 00:02:17Z) took the free 06:24 claude-virev12 cell. At 06:24:00Z d56b
+    asked, slid to 06:26, and high trees took each later cell until 06:42Z. A tree a higher-ranked waiter displaces now moves to
+    the first cell its rank opens at once, so a tree ranked behind it never takes that cell first."""
+
+    def setUp(self):
+        vending._wakes.clear()
+        self.addCleanup(vending._wakes.clear)
+
+    def test_a_displaced_waiter_keeps_its_place_ahead_of_trees_ranked_behind_it(self):
+        state = empty_state()
+        x, y = acct("x", five=10, tier="max 5x"), acct("y", five=10, tier="max 5x")
+        out = acct("out", five=100, five_reset_in=FIVE)
+        accounts = [x, y, out]
+        sp = sched.slot_spacing(x, CFG)
+        cell = (math.ceil(NOW / sp) + 1) * sp
+        state["providers"][P]["admissions"] = {a: [[cell - sp, f"busy-{a}"]] for a in ("x", "y")}
+        first, second, third = (put(state, tree_key(n), on="out", priority="low") for n in ("b4", "d56b", "e3b8"))
+        for key, since in ((first, NOW - 22000), (second, NOW - 21900), (third, NOW - 21897)):
+            state["sessions"][key.key]["wait"] = {P: {"account": "x", "slot_at": cell - sp, "since": since}}
+        d = request(state, second, accounts, cell - sp + 0.3)
+        self.assertEqual((type(d), d.slot_account.id, d.slot_at), (sched.Wait, "x", cell))
+        d = request(state, first, accounts, cell - sp + 1)
+        self.assertEqual((type(d), d.slot_at), (sched.Wait, cell), "the tree first in line takes a cell at the boundary")
+        held = {k: (state["sessions"][k]["wait"][P]["account"], state["sessions"][k]["wait"][P]["slot_at"]) for k in ("b4", "d56b")}
+        self.assertNotEqual(held["b4"], held["d56b"], "two trees never hold one cell")
+        self.assertEqual(held["d56b"][1], cell, "the displaced tree moves to the other account's cell at the same time")
+        d = request(state, third, accounts, cell - 41)
+        self.assertIsInstance(d, sched.Wait)
+        self.assertGreater(d.slot_at, cell, "a tree ranked behind both waits for a later cell")
+        d = request(state, first, accounts, cell + 0.1)
+        self.assertIsInstance(d, sched.Admit)
+        d = request(state, second, accounts, cell + 0.2)
+        self.assertIsInstance(d, sched.Admit, "the displaced tree enters at its cell")

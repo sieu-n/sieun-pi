@@ -707,6 +707,7 @@ def schedule(state, key, provider, accounts, cfg, now, admit_now=True):
         # entered its 21:14:00Z claude-virev5 cell at 21:13:58.7Z, and 01a14210 took the cell at 21:14:01Z ahead of four trees.
         own = tree.wait is not None and tree.wait[0] == d.account.id and now < tree.wait[1] <= now + 2
         writer.admit(key, provider, d.account.id, tree.wait[1] if own else now)
+        rebook_displaced(state, key, provider, d.account.id, tree.wait[1] if own else now, accounts, cfg, now)
         if tree.wait and tree.wait[0] and (tree.wait[1] > now + OWN_CELL_EARLY_SEC or tree.wait[0] != d.account.id):
             # The tree enters ahead of the cell it waited for, or another account, so its cell opens to the next tree in line. Its
             # wait moves to the cell it enters until the vend drops it, so it no longer holds the old one, and it keeps its place
@@ -716,16 +717,66 @@ def schedule(state, key, provider, accounts, cfg, now, admit_now=True):
         return d, tree, True
     if isinstance(d, sched.Admit):
         writer.set_wait(key, provider, d.account.id, now, now)
+        rebook_displaced(state, key, provider, d.account.id, now, accounts, cfg, now)
         refill_left(state, tree, provider, accounts, cfg, now, d.account.id)
         return d, tree, True
     if isinstance(d, sched.Wait) and (tree.wait is None or tree.wait[:2] != (d.slot_account.id, d.slot_at)):
         writer.set_wait(key, provider, d.slot_account.id, d.slot_at, now)
+        rebook_displaced(state, key, provider, d.slot_account.id, d.slot_at, accounts, cfg, now)
         base.log("wait", provider=provider, session=key.key, account=d.slot_account.label,
                  slot_at=iso(d.slot_at), priority=tree.priority, vend=d.vend and d.vend.label,
                  left=d.left and d.left[1], **budget_mark(d))
         refill_left(state, tree, provider, accounts, cfg, now)
         return d, tree, True
     return d, tree, False
+
+
+def rebook_displaced(state, key, provider, account_id, at, accounts, cfg, now):
+    """`key` took the cell at `at` on `account_id`. A tree that waits for that cell and ranks behind it no longer holds it
+    (`sched.cell_taken`), so it moves now to the first cell its rank opens, and a tree that moves takes its new cell from any tree
+    ranked behind it the same way. Until 11-23 the displaced tree kept its wait until it asked at its old cell, and a tree ranked
+    behind it took the cell it would have moved to: 01a205b4-799e took 01a205b5-d56b's 06:24:00Z claude-virev11 cell at 06:22:01Z,
+    01a205b5-e3b8, ranked behind d56b, took the free 06:24:00Z claude-virev12 cell at 06:23:19Z, and d56b waited until 06:42Z. A tree
+    moved to an earlier cell than it held, or admitted now, is woken (`flush_wakes`). Returns the trees moved."""
+    moved, todo, seen = [], [(account_id, at, key.key if key else None)], set()
+    by_id = {a.id: a for a in accounts}
+    while todo:
+        account_id, at, taker = todo.pop(0)
+        held = by_id.get(account_id)
+        rec = state["sessions"].get(taker) if taker else None
+        wait = ((rec or {}).get("wait") or {}).get(provider)
+        if held is None or rec is None:
+            continue
+        sp = sched.slot_spacing(held, cfg)
+        # A tree with no wait (one admitted on its first ask) ranks by now, as in sched.tree_rank.
+        rank = (sched.PRIORITY_RANK.get(rec.get("priority") or "normal", 1), wait["since"] if wait else now, taker)
+        behind = sorted((sched.PRIORITY_RANK.get(r.get("priority") or "normal", 1), w["since"], k)
+                        for k, r in state["sessions"].items() if k != taker and k not in seen
+                        for w in [(r.get("wait") or {}).get(provider) or {}]
+                        if w.get("account") == account_id and int(w["slot_at"] // sp) == int(at // sp) and w["slot_at"] > now)
+        for r_k in behind:
+            if r_k <= rank:
+                continue
+            k = r_k[2]
+            seen.add(k)
+            r = state["sessions"][k]
+            other = registry.SessionKey(k, r.get("uuid"), r.get("active_id"))
+            old = r["wait"][provider]["slot_at"]
+            d, _ = decision(state, other, provider, accounts, cfg, now)
+            if isinstance(d, sched.Admit):
+                new_account, new_at = d.account.id, now
+            elif isinstance(d, sched.Wait):
+                new_account, new_at = d.slot_account.id, d.slot_at
+            else:
+                continue
+            HookWriter(state).set_wait(other, provider, new_account, new_at, now)
+            moved.append(k)
+            base.log("rebooked", provider=provider, session=k, taker=taker, account=by_id[new_account].label,
+                     slot_at=round(new_at, 1), was=round(old, 1))
+            if new_at < old:
+                _wakes.append(["--each", k])
+            todo.append((new_account, new_at, k))
+    return moved
 
 
 def refill_left(state, tree, provider, accounts, cfg, now, entered=None):

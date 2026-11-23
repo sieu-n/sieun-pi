@@ -268,8 +268,8 @@ def tree_rank(tree, now):
 
 def cell_taken(a, cell, tree, rank, book, cfg):
     """A cell holds one tree: one admitted in it, or one waiting for it that ranks
-    ahead of this tree. A lower-ranked waiter yields its cell and is given a later
-    one on its next request."""
+    ahead of this tree. A lower-ranked waiter yields its cell, and the hook moves it at once
+    to the first cell its rank opens (vending.rebook_displaced)."""
     sp = slot_spacing(a, cfg)
     if any(t != tree.key and int(at // sp) == cell for at, t in book.admitted.get(a.id, ())):
         return True
