@@ -371,8 +371,12 @@ export function errorCode(body: unknown): string | undefined {
  * 503 proxy_provider_down says "upstream temporarily unavailable" (crawler-v3 http/errors.py PUBLIC_SUPPLY_ERROR), which the portal passes on
  * as 503 upstream_error, and a switched-off Vent integration says "is switched off on this Vent" (vent proxy.py). On 11-20 at 11:21Z prod
  * answered 35 calls this way, 18 of them /v1/crawl presets, and staging 20, and d2 read them as 20 routes failing in the crawler.
+ * The crawler's crawl gate (crawler-v3 control/crawl_gate.py, owner p42 on 2026-11-22) refuses each crawl read of a workspace Convex does
+ * not list as a customer with 409 crawl_unpaid_paused, and each read past the month's proxy budget with 503 crawl_budget_spent, and the
+ * portal passes both on as 502 upstream_error with the gate's words. Every test org this run calls is one of Virev's own, so on 11-23 at
+ * 06:04Z each tier answered 34 YouTube, LinkedIn, TikTok and Xiaohongshu reads this way and d2 read them as 34 routes failing in the crawler.
  */
-export const HELD_ANSWER = /\b(proxy_provider_down|proxy_auth_failed|proxy_quota_exhausted|proxy_unreachable|vent_integration_disabled|vent_crawl_paused)\b|upstream temporarily unavailable|is switched off on this Vent/;
+export const HELD_ANSWER = /\b(proxy_provider_down|proxy_auth_failed|proxy_quota_exhausted|proxy_unreachable|vent_integration_disabled|vent_crawl_paused|crawl_unpaid_paused|crawl_budget_spent)\b|crawl_gate\.paid_only|upstream temporarily unavailable|is switched off on this Vent/;
 
 /**
  * Who a probe answer blames. 2xx works. An answer that names a proxy supply hold or a paused source (source_paused) is held: nobody fixes it
@@ -586,7 +590,7 @@ export function parityMetrics(input: {
     const byNote = new Map<string, string[]>();
     for (const probe of held.filter(notSent)) byNote.set(probe.note, [...byNote.get(probe.note) ?? [], probe.op]);
     const heldRow = (excerpt: string) => flagged.push({ at, kind: `held_${env}`, excerpt: excerpt.slice(0, 600) });
-    const tail = `on ${env}, counted as not working with no fix job (c230)`;
+    const tail = `on ${env}, counted as not working with no fix job (c230, p42)`;
     for (const [note, ops] of byNote) heldRow(`${ops.length} /v1 operations not sent ${tail}: ${note}: ${ops.join(", ")}`);
     if (answered.length) heldRow(`${answered.length} /v1 operations answered held ${tail}: ${answered.map(probe => `${probe.op} ${probe.status} ${probe.code ?? ""}`.trim()).join(", ")}`);
     const missing = scoredBy[env].filter(route => verdicts[env].get(route) === "missing");
