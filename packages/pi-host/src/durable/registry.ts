@@ -19,6 +19,7 @@ import { roomTools } from "./room-tools.ts";
 import { SendMessage, SendMessageAlias } from "./send-message.ts";
 import { ChildTasks } from "./children.ts";
 import { subagentExtension } from "./subagent.ts";
+import { workingMemory } from "./working-memory.ts";
 
 /** A message one agent or the owner sends another thread, placed as the input's entry so the transcript shows who sent it. */
 export const AgentMessageEntry = defineEntry<{ from: string; via?: string }>("agent.message");
@@ -59,6 +60,8 @@ export function threadRegistry(prompt?: PrimePromptOptions, chat?: { chat: Prime
   if (extras.rlm) registry.install(extras.rlm);
   if (extras.comm) registry.install(extras.comm);
   if (extras.rules) registry.install(extras.rules);
+  // Last, so the `working` section follows every other extension's section.
+  if (prompt) registry.install(workingMemory());
   return registry;
 }
 

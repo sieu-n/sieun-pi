@@ -92,7 +92,8 @@ function workSteps(work: string, room: string): string[] {
       "A quick ask you did where a reply would add nothing, such as \"pin that\", gets 👍 and no post, and take 👀 off then too. " +
       "A post a reaction answers, such as \"ok thanks\", gets that one reaction and no 👀. Keep ✅ and 👀 out of your post text too.",
     "React to posts with fitting emoji the way people do in Slack, such as 👍 to acknowledge, 🙏 for thanks, 🎉 on a ship and 😅 on a slip. When a reaction says it all, such as an acknowledgment with nothing to add, react and post nothing.",
-    `Answer a status question from the work thread's state. Read it in ipython with \`await agent_observe.get_agent(${work})\` or \`await agent_observe.recent_messages(${work})\`, and read the board with chat_board. Never ask the work thread for its status.`,
+    "Answer a status question, such as what the agent works on, from its working memory, the \"# Working memory\" part of your prompt, and from the board, which you read with chat_board. " +
+      `Read the work thread's live state in ipython with \`await agent_observe.get_agent(${work})\` or \`await agent_observe.recent_messages(${work})\` only when the question needs what it does this minute and neither says it. Never ask the work thread for its status.`,
     `Hand any task that takes more than a minute to the work thread by running \`await agent_message.send(task, receiver_role="sibling", receiver_name=${work})\` in ipython, since agent_message is a Python module in the kernel, not a tool. Steer it the same way with \`mode="steer"\`, and stop its turn with stop_work.`,
     "When you hand a task over, name his post's [message id] in the task, and post nothing that only reports the hand-over: your 👀 already shows it. " +
       "Within about a minute (c224), reply with what you already know or one plain line on what he will get, such as \"pass and fail per test file coming here\", with tell_owner's `reply_to` set to his post, never an ack such as \"on it\" and never what you are doing, such as \"running the tests now\" or \"I'll run the tests\". " +
@@ -380,14 +381,17 @@ function groupCommInstructions(ref: { agent: string; room: string; work: string 
  * The root conversation's instructions for an agent's work thread; `comm` is its main comm thread, its DM's or else its first room's, once
  * apps/chat made one. A new agent's work thread gets its first input before then, so it already holds the work role without it (d3, 11-22).
  */
-export function workInstructions(ref: { agent: string; comm?: string }): string {
+export function workInstructions(ref: { agent: string; comm?: string; dir?: string }): string {
   return [
     `You are agent ${ref.agent}'s work thread. You do not talk with people, so you have no tell_owner tool.`,
     ref.comm
       ? `Your agent has one comm thread per room, which talks there and hands you tasks as agent messages. Its main comm thread ${ref.comm} is the one in its DM, or else in its first room.`
       : "Your agent has one comm thread per room, which talks there and hands you tasks as agent messages. Its comm threads are not made yet, so answer an input that came from no comm thread in your last text.",
+    `You alone write your agent's working memory, \`${ref.dir ? workingMemoryPath({ dir: ref.dir }) : WORKING_MEMORY_FILE}\`, and every comm thread and job of your agent reads it in full, so a comm thread answers "what are you working on" from it. ` +
+      "Before you end a turn in which anything in it changed, rewrite the whole file with the write tool, in short markdown: what you work on now and for which post, what waits on whom, the owner's latest asks and decisions in his words with their post ids, and what comes next. " +
+      "Drop what is done or stale, so it stays short enough to read at a glance. Step status stays on the board and lasting rules go to memory. Your prompt's \"# Working memory\" part shows the file's newest text.",
     "When a task finishes, fails or gets blocked, report to the comm thread that handed it to you, and lead the report with the answer. " +
-      "Send it no acknowledgment or progress note, such as \"Taken\" or \"expect it within the hour\": it reads your state itself when someone asks, and it posts your report as the result. " +
+      "Send it no acknowledgment or progress note, such as \"Taken\" or \"expect it within the hour\": it reads your working memory and state itself when someone asks, and it posts your report as the result. " +
       "When a task asks you to edit a post in a room with `edit_message`, an edit only fills in results and the answer, never a status of your jobs or plans such as \"Working on it. Three research jobs read the spec now\" (c234). " +
       "Your last edit of that post is not your report: after it, still send the comm thread a one-line report, such as \"the answer is in p14\", because only that report has it take 👀 off. " +
       "Its message header `[agent-message from sibling:<name>]` names it, so run `await agent_message.send(report, receiver_role=\"sibling\", receiver_name=\"<name>\")` in ipython with that exact name.",
@@ -508,6 +512,10 @@ export function conversationHarnessDir(thread: { id: string; file: string }, con
  */
 export const harnessSessionOf = (thread: string, conversation: number): string =>
   conversation === ROOT_CONVERSATION_ID ? thread : `${thread}-${conversation}`;
+
+/** The agent's working memory in its folder, which its work thread rewrites after each turn (`working-memory.ts`). */
+export const WORKING_MEMORY_FILE = "working-memory.md";
+export const workingMemoryPath = (ref: Pick<AgentRef, "dir">): string => join(ref.dir, WORKING_MEMORY_FILE);
 
 export interface ContextFile { path: string; content: string }
 const briefs = new Map<string, { stamp: string; file: ContextFile | undefined }>();

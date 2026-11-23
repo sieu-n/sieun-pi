@@ -6,7 +6,7 @@ Status: built. Phases 1 to 6 are live, and section 2 lists the tools as built.
 
 1. An **Agent** is a shared template, not a thread. It is a folder holding a name, a brief (its responsibility), skills, a home directory, a host and a model. It has one board and one memory, and every thread that works for it shares them.
 2. A **Room** is where people and agents talk: a DM (the owner and one agent), a Channel, or a Solo room (a group chat of invited agents around one agenda). The chat server stores every room message, as Slack does, and no message is a projection of a pi thread.
-3. Each (agent, room) pair has its own **comm thread**: a thin pi thread that reads the room and speaks only through `tell_owner` (`send_message` is its alias). It does no real work. It reads the agent's state with `agent_observe`, and it hands work to the agent's work thread or steers it with `agent_message`.
+3. Each (agent, room) pair has its own **comm thread**: a thin pi thread that reads the room and speaks only through `tell_owner` (`send_message` is its alias). It does no real work. It reads the agent's working memory and board, and the work thread's live state with `agent_observe`, and it hands work to the agent's work thread or steers it with `agent_message`.
 4. The agent's **work** happens in its main work thread and the subagents and jobs that thread starts. Work threads never talk to people; they report to the comm thread, and the comm thread decides whether the owner needs to hear it.
 5. "So what is status?" asked mid-work starts a turn in the comm thread only. That turn reads the work thread's state and answers, and the worker's context never sees the question.
 6. The sidebar shows Solo rooms, Channels and DMs, and the DMs list holds agents only. Work threads, comm threads and jobs open from the Agents page and from job pills, never from the sidebar.
@@ -159,12 +159,13 @@ sequenceDiagram
   participant K as work thread (running)
   O->>S: "so what is status?" (post 43)
   S->>C: deliver post 43 (ownerTurn)
-  C->>K: agent_observe is a read only: status, recent messages, live children, queue place
+  C->>C: reads the working memory and the board in its own prompt
+  C->>K: agent_observe, a read only, when the question needs this minute's state
   Note over K: gets no input, no steer and no new context
   C->>S: tell_owner("Page builds, uptime query is wired. Waiting on the Mac relay to answer, about 10 min.")
 ```
 
-The comm thread's turn is the only new run. `agent_observe` in the comm thread's ipython reads the work thread through pi-host in the same process, so the worker's turn and its context do not change.
+The comm thread's turn is the only new run. It answers from the agent's working memory (section 3) and the board first. `agent_observe` in the comm thread's ipython reads the work thread through pi-host in the same process, so the worker's turn and its context do not change.
 
 ### (c) The worker finishes, and the comm thread decides whether to speak
 
@@ -242,6 +243,7 @@ Phase 3 is built this way. The agent folder lives on the agent's host, at `~/.pi
 |---|---|---|---|
 | `brief.md` | The responsibility, in the owner's words, with what done looks like. Missing or blank means no brief. | the owner in the Create agent dialog (`POST /api/agents {brief}`) or on the Agents card (`PUT /api/agents/:id/brief`) | every thread of the agent, as one more Prime context file |
 | `harness/harness_state.json` | The agent's memory: a Prime harness store in Prime's own format, with memories, prompt notes, skills and subagent specs | the agent's kernels through `rlm.harness` and `refine.run()`, and the owner on the Agents card (`/api/agents/:id/memory`) | every thread of the agent, through Prime's harness digest |
+| `working-memory.md` | What the agent knows now across its rooms: what it works on and for which post, what waits on whom, the owner's latest asks and decisions, and what comes next. Step status stays on the board. | the agent's work thread, after each turn that changed it, and the owner on the Brief tab (`PUT /api/agents/:id/working-memory`) | every thread of the agent and every job inside one, in full, as the `working` section |
 
 The agent record stays in the chat server's `agents.json`. An `agent.json` on the box waits for phase 6, when the relay needs it there.
 
@@ -271,6 +273,17 @@ The chat server writes a `chat.doc` named `agent.ref`, `{agent, dir, role: "work
 The context section is not pinned, so a brief edit reaches the next request of every thread as a new `pi.system` entry that holds the `context` section alone, and an unchanged brief sends nothing new. A new memory reaches the next turn as a `[harness-digest update]`, as in Prime.
 
 The role section (comm or work rules) and a per-agent skills list wait for phase 4.
+
+### Working memory
+
+The owner asked for it on 11-22 (dm_agent-factory p87): "maybe manage a "working memory" file kinda like a human (next to the working board thing)?", so that an agent does not need the same ask twice and keeps what it heard in one room for the others.
+
+1. Each agent has one file, `working-memory.md` in its folder, next to `brief.md`.
+2. Only the work thread writes it, because comm threads and jobs run at once and one writer loses no edit. The owner's edit on the Brief tab holds until the work thread's next rewrite, which starts from the text the owner left.
+3. The work thread writes it with its own `write` tool, as its role text says (`workInstructions` in `packages/pi-host/src/durable/agent-profile.ts`): before it ends a turn in which anything in it changed, it rewrites the whole file and drops what is done or stale. pi-host adds no tool and no extra model call after the turn, so the file costs nothing on a turn that changed nothing.
+4. pi-host gives every thread of the agent the file's whole text as the `working` section (`packages/pi-host/src/durable/working-memory.ts`), installed after every other extension's section. The section is rendered from the file at each request and is not pinned, so a rewrite reaches each thread's next request as a new `pi.system` entry with that one section, after the cached prefix.
+5. A thread of an agent with no file yet gets one line that names the path, so writing the file later changes that section's text and never adds a section in the middle.
+6. A comm thread answers "what are you working on" from this file and the board, and reads the work thread with `agent_observe` only when the question needs what it does this minute and neither says it.
 
 ## 4. The three tiers
 
