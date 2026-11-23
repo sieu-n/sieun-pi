@@ -1,0 +1,38 @@
+<!--wiki
+{"title": "Lint a wiki page", "kind": "tutorial", "doc_kind": "tutorial", "date": "2026-11-23", "updated": "2026-11-23", "description": "Run the prose lint on one wiki page draft and fix what it finds.", "apps": ["wiki"], "tags": ["lint"], "status": "complete"}
+-->
+<h1>Lint a wiki page</h1>
+<p>This tutorial is for an agent or a person who writes wiki pages in sieun-pi. At the end you will have run the prose lint on a draft, read its findings and fixed one of them.</p>
+
+<h2 id="before-you-start">Before you start</h2>
+<ul>
+	<li>You have the sieun-pi checkout at <code>/home/sieun/src/sieun-pi</code>.</li>
+	<li>You have Node 22 or later on your path.</li>
+</ul>
+
+<h2 id="run-the-lint">Run the lint</h2>
+<ol>
+	<li>
+		<p>Save your draft as an HTML file, then run the lint on it from the checkout.</p>
+		<pre><code>node apps/wiki/scripts/prose-lint.mjs draft.html</code></pre>
+		<p>The lint prints one line for each finding, with its rule and a fix.</p>
+		<pre><code>draft.html:12 error em-dash: End the sentence or use a comma.</code></pre>
+	</li>
+	<li>
+		<p>Open the draft at the line the finding names, and replace the dash with a comma.</p>
+		<pre><code>sed -n 12p draft.html</code></pre>
+	</li>
+</ol>
+
+<h2 id="check-it-worked">Check it worked</h2>
+<p>Run the lint again. It prints no findings and exits with code 0.</p>
+<pre><code>node apps/wiki/scripts/prose-lint.mjs draft.html; echo $?
+0</code></pre>
+
+<h2 id="when-it-goes-wrong">When it goes wrong</h2>
+<p>If the lint prints <code>skipped</code>, the file is markdown. The lint reads HTML only, so save the draft as HTML and run it again.</p>
+
+<h2 id="next-steps">Next steps</h2>
+<ul>
+	<li><a href="../index.html">The wiki home page</a> lists the other tutorials.</li>
+</ul>

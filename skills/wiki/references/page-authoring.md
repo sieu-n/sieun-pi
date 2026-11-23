@@ -5,7 +5,7 @@ Write every page as HTML. The viewer renders `.md` only for the `@code/` mirror 
 
 ## The format, a numbered statement stream (메르 style)
 
-The page is a stream of numbered one-fact lines, with diagrams, tables, code blocks, images and examples inside the stream.
+A page with no `doc_kind`, or with `"doc_kind": "design"`, is a stream of numbered one-fact lines, with diagrams, tables, code blocks, images and examples inside the stream.
 `writing.md` holds the rules for lines, visuals and words, and this section is the HTML shape.
 
 1. One line is one fact in one `<li>`, written as one plain sentence, and numbering runs on across sections with `start=`.
@@ -72,6 +72,57 @@ The paragraph is a prose wall with meta-narration and no numbers. The line is a 
 8. Every heading id on the page is unique, counting both an `id` you write and the slug the renderer makes from a heading's text, because `injectHeadingIds` in `apps/wiki/src/lib/server/render.ts` keeps a written id without checking it against those slugs and the page's table of contents keys its list on the id. On 2026-10-20 a crm-creators page had `<h2 id="header">` and `<h3>Header</h3>`, the table of contents threw Svelte `each_key_duplicate` and the body rendered blank, while prose-lint passed and the page API answered 201. Give a sub-heading its own words, such as `Header checks`, and open the rendered page to see that its contents list has entries.
 9. Never use a one-word heading id that names a DOM or form property, such as `target`, `action`, `name` or `title`, because DOMPurify, which `render.ts` runs through `sanitizeHtml` in `apps/wiki/src/lib/server/sanitize-html.mjs`, strips an id that could clobber `document` or a form, and use two words such as `target-model`. On 2026-10-27 a brand-watch session page had `<h2 id="target">`, which rendered with an empty id and left a blank entry in its contents list, while the page API answered 201 and prose-lint passed. After a page write, read `document.querySelectorAll('h2')` ids in Aside and check that each `pre.mermaid` holds an `svg`.
 
+## Documentation pages, plain prose
+
+A page with `"doc_kind"` set to `start`, `tutorial`, `how-to`, `reference` or `explanation` is a documentation page, and the section "Documentation pages" of `writing.md` holds its rules and the sections each kind needs.
+Its HTML is ordinary prose: `<p>` paragraphs of two to four sentences, sentence-case `<h2>` headings with no `1 ·` number, `<ul>` for parallel items, and an `<ol>` only for steps.
+The full passing tutorial is `apps/wiki/tests/fixtures/prose-lint/good-tutorial.html`, and this is its shape.
+
+```html
+<!--wiki
+{ "title": "Lint a wiki page", "kind": "tutorial", "doc_kind": "tutorial", "date": "2026-11-23", "updated": "2026-11-23",
+  "description": "Run the prose lint on one wiki page draft and fix what it finds.", "apps": ["wiki"], "tags": ["lint"],
+  "status": "complete", "summary": "Run the prose lint on a draft and fix a finding." }
+-->
+<h1>Lint a wiki page</h1>
+<p>This tutorial is for an agent or a person who writes wiki pages in sieun-pi. At the end you will have run the prose
+lint on a draft, read its findings and fixed one of them.</p>
+
+<h2 id="before-you-start">Before you start</h2>
+<ul>
+	<li>You have the sieun-pi checkout at <code>/home/sieun/src/sieun-pi</code>.</li>
+</ul>
+
+<h2 id="run-the-lint">Run the lint</h2>
+<ol>
+	<li>
+		<p>Save your draft as an HTML file, then run the lint on it from the checkout.</p>
+		<pre><code>node apps/wiki/scripts/prose-lint.mjs draft.html</code></pre>
+		<p>The lint prints one line for each finding, with its rule and a fix.</p>
+		<pre><code>draft.html:12 error em-dash: End the sentence or use a comma.</code></pre>
+	</li>
+</ol>
+
+<h2 id="check-it-worked">Check it worked</h2>
+<p>Run the lint again. It prints no findings and exits with code 0.</p>
+<pre><code>node apps/wiki/scripts/prose-lint.mjs draft.html; echo $?
+0</code></pre>
+
+<h2 id="when-it-goes-wrong">When it goes wrong</h2>
+<p>If the lint prints <code>skipped</code>, the file is markdown. The lint reads HTML only, so save the draft as HTML.</p>
+
+<h2 id="next-steps">Next steps</h2>
+<ul>
+	<li><a href="../index.html">The wiki home page</a> lists the other tutorials.</li>
+</ul>
+```
+
+1. Each step `<li>` holds its own `<pre><code>` block or a `<wiki-figure>` screenshot, because `doc-step-proof` refuses a step without one.
+2. A screenshot goes in the page's `assets/` folder through `wiki.put` and shows with `<wiki-figure src="assets/x.png" caption="...">`.
+3. A start page is the intro paragraph, a "Start here" section that links 3 pages, then one `<h2>` per folder with a `<ul>` of one line per page, or a `<wiki-children>` list.
+4. A reference page is the intro, then `<h2>` sections that each hold a sentence or two and a `<table>`.
+5. An explanation page is the intro, then `<h2>` sections of paragraphs, with a `<pre class="mermaid">` diagram beside each flow it describes.
+
 ## Current state only
 
 A curated page describes the system as it is now.
@@ -85,7 +136,8 @@ A curated page describes the system as it is now.
 ## Skeleton
 
 A page is a folder with `index.html`, plus `assets/` for images and `data/` for CSV.
-Start every page with the meta comment and one `<h1>`, never two:
+Start every page with the meta comment and one `<h1>`, never two.
+A documentation page puts an intro `<p>` where this skeleton has `<wiki-tldr>`, as the section "Documentation pages, plain prose" shows.
 
 ```html
 <!--wiki

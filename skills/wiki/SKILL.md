@@ -59,6 +59,7 @@ A name that starts with `sessions/`, `agents/`, `apps/`, `domains/`, `projects/`
 ## The page format
 
 Every page, curated or workspace, is in the 메르 style: numbered short lines in `<ol>`, one plain sentence each, with a mermaid diagram or image for every flow, structure or comparison.
+A documentation page sets `"doc_kind"` to `start`, `tutorial`, `how-to`, `reference` or `explanation` in its header and reads as plain prose paragraphs instead, per the section "Documentation pages" of `references/writing.md`, which the owner asked for on 2026-11-23 (p174).
 A subagent writes every page, one page per subagent, and the parent reviews it.
 Before you write a page, read `references/writing.md` and the format section of `references/page-authoring.md`.
 A plan, spec, design or status page also follows the "Plan, spec and status pages" section of `references/writing.md`.
@@ -81,7 +82,7 @@ This list is the single source for these rules.
 9. Two pages that answer one question are a defect to fix before you close the folder.
 10. Write a curated page (`apps/`, `domains/`, `projects/`, `experiments/`) with `wiki.publish` at wrap-up or once the knowledge is settled, through the gate in `references/verification-algorithm.md`.
 11. Query through the API instead of raw file reads, cite the pages you used, and write the page for any question the wiki could not answer.
-12. Write pages as HTML (`<!--wiki {json}-->`, one `<h1>`, `<wiki-tldr>`) per `references/page-authoring.md`, and always set `description`.
+12. Write pages as HTML (`<!--wiki {json}-->`, one `<h1>`, `<wiki-tldr>`, or an intro `<p>` on a documentation page) per `references/page-authoring.md`, and always set `description`.
 13. Never edit `@code/` (the read-only repo mirror), another agent's folder or a closed log.
 14. Every wiki path starts at the content root, such as `sessions/...`, `agents/...` or `apps/...`, and the API answers 400 to a path that starts with a disk prefix such as `content/` or the old repo folder.
 15. Mask a raw `ps` capture or any command output before you save it, because app command lines carry keys, and the page API refuses a page that betterleaks flags.

@@ -2,6 +2,7 @@
 
 This is the owner's standard for every wiki page, curated or session.
 A page is in the 메르 style, named after the Korean blogger the owner points to: numbered short lines, one plain sentence each, with a diagram or image every few lines.
+A documentation page, which sets `doc_kind` to `start`, `tutorial`, `how-to`, `reference` or `explanation` in its header, reads as plain prose instead, as the section "Documentation pages" below says.
 
 The owner rejected a page of prose paragraphs on 2026-10-10, and the same numbered format with bold-label, stuffed-clause lines on 2026-10-09.
 Both lessons hold, so a page is numbered lines, and each line is one normal sentence.
@@ -23,6 +24,68 @@ A brief for a job that writes a wiki page carries this line. No brief template a
 > subagent. The writer follows `skills/wiki/references/writing.md` in sieun-pi
 > and makes `node apps/wiki/scripts/prose-lint.mjs <page>` pass. The parent
 > then reads the page against that file before it links the page to anyone.
+
+## Documentation pages
+
+On 2026-11-23 the owner asked for the sw factory docs as a Confluence space that onboards him (#sw-factory-build p174, msg mwtd0iuy): "can you make the document properly..? i dont like the way you wrote llm-wiki. skill:unslop, and also think of writing an actual confluence tutorial page like as to onboard me."
+
+1. A page declares its kind in the `doc_kind` field of its `<!--wiki {json}-->` header, as one of `start`, `tutorial`, `how-to`, `reference`, `explanation` or `design`.
+2. Set the older `kind` field to the same value, because the L1 gate needs it, while the lint reads only `doc_kind`, since 550 numbered-line pages already carry `"kind": "reference"`.
+3. A page with no `doc_kind` keeps the numbered-line rules in the rest of this file, and so does a `design` page.
+4. The first five kinds read like a Confluence space that onboards a new engineer, in plain prose under the unslop skill.
+5. The split comes from Diátaxis: a tutorial teaches by doing, a how-to walks a reader who knows the basics through one task, a reference describes the machinery for lookup, and an explanation says how the parts fit and why.
+
+Every documentation page has these parts.
+
+1. The `<h1>` comes first, then one intro paragraph that says who the page is for and what they will have or know at the end.
+2. The page has no `<wiki-tldr>`, because the intro paragraph and the header's `description` do that job.
+3. Headings are sentence case and name what the section holds, such as "Run the lint", never "1 · Overview".
+4. Paragraphs hold two to four sentences and at most 100 words.
+5. A bullet list holds parallel items only, each one full sentence, and no bullet opens with a bold label.
+6. Numbered steps appear only where the reader does things in order.
+7. A flow or structure the page describes gets a mermaid diagram, and a screen it describes gets a screenshot.
+8. Every number a reader may question keeps its source on hover in a `<wiki-cite>` (c202), and every date is UTC.
+9. The page ends with links to the next pages, each named by its title.
+
+| `doc_kind`    | The reader                             | Sections, in order                                                                 |
+| ------------- | -------------------------------------- | ---------------------------------------------------------------------------------- |
+| `start`       | opens the space for the first time     | intro, "Start here" with 3 pages, then one section per folder with a line per page |
+| `tutorial`    | is new and learns by doing             | intro, "Before you start", stages of steps, "Check it worked", "When it goes wrong", "Next steps" |
+| `how-to`      | knows the basics and has one task      | intro, "Before you start", steps, "Check it worked", "When it goes wrong"          |
+| `reference`   | looks up one fact                      | intro, then tables with a sentence or two before each                              |
+| `explanation` | wants to know how parts fit and why    | intro, prose sections with a diagram per flow, links to tutorials and reference    |
+| `design`      | the owner, deciding                    | the short numbered form of "Plan, spec and status pages"                           |
+
+A tutorial or how-to step works like this.
+
+1. Each step is one `<li>` in an `<ol>`, with a sentence or two on what to do and why, then the real command in `<pre><code>`, then what it printed or a screenshot.
+2. Copy the output from a real run on this box, trimmed with `...`, and never write output you did not see.
+3. "Check it worked" shows the command or screen that proves the result and says what the reader should see.
+4. "When it goes wrong" names each real error seen while you wrote the page, with its cause and its fix.
+
+The structure comes from these pages, which a writer reads for shape, never for words.
+
+1. Diátaxis splits docs into [tutorials](https://diataxis.fr/tutorials/), [how-to guides](https://diataxis.fr/how-to-guides/), [reference](https://diataxis.fr/reference/) and [explanation](https://diataxis.fr/explanation/), each for a different reader need.
+2. The [Docker Compose Quickstart](https://docs.docker.com/compose/gettingstarted/) has a short intro, "Prerequisites", numbered "Step N" sections that each run a real command, and "Where to go next".
+3. Stripe's [Set up your development environment](https://docs.stripe.com/get-started/development-environment) says what you learn, installs, then has a "Confirm setup" check and "See also" links.
+4. Atlassian's [how-to article template](https://www.atlassian.com/software/confluence/templates/how-to-article) is a short intro, numbered steps and related articles.
+
+`node apps/wiki/scripts/prose-lint.mjs <page>` reads `doc_kind` and runs these rules, and the page API runs the same ones on every write.
+
+| Rule             | Kinds                 | What it refuses                                                                  |
+| ---------------- | --------------------- | -------------------------------------------------------------------------------- |
+| `doc-paragraph`  | the five prose kinds  | a paragraph or step over 4 sentences or 100 words                                |
+| `doc-intro`      | the five prose kinds  | a `<wiki-tldr>`, or anything but a `<p>` right under the `<h1>`                  |
+| `doc-sections`   | start, tutorial, how-to | a missing section from the table, or a "Check it worked" with no code or image |
+| `doc-step-proof` | tutorial, how-to      | a step `<li>` with no `<pre>` block, diagram or image inside it                  |
+| `doc-diagram`    | explanation           | a page over 300 words with fewer than one diagram or image per 800 words         |
+| `design-length`  | design                | a page over 20 numbered lines or 800 words (c83, c201)                           |
+| `doc-kind`       | any                   | a `doc_kind` value outside the six kinds                                         |
+
+1. On the five prose kinds, `paragraph-blob`, `paragraph-share`, `visuals` and `visual-gap` do not run, and a reference page also skips `table-share`.
+2. Every other rule still runs, such as banned words, em dashes, label openers, bullet sentences, sentence length, bold, `english-only` and the UTC date rules.
+3. An explanation needs one diagram per 800 words, half the numbered-line rate of one per 400, because its paragraphs carry the reasons that numbered lines leave to a picture.
+4. A tutorial step needs its own code block or image, because the owner follows a tutorial step by step and checks each result against the page.
 
 ## The page is numbered lines and pictures
 
@@ -58,6 +121,8 @@ He should scan the page once, top to bottom, and come away with the answer and t
 9. A diagram makes one point on its own, and a diagram that needs a legend gets redrawn.
 
 ## No prose paragraphs
+
+This section holds for a page with no `doc_kind` and for a `design` page.
 
 1. A paragraph of more than 3 sentences is a defect, and the lint refuses it.
 2. A page whose paragraphs and `<ul>` bullets hold more than 40% of its body words is a prose wall, and the lint refuses it.
@@ -112,6 +177,7 @@ These lines held the spec-report skill's rules until 2026-11-17, when that skill
 11. A rendered spec or mock proves the design, never the implementation.
 12. A status page names the final state, what is true today with its check, and the next steps in order.
 13. The page is ready when a reader can say what the user wants to finish, why today's flow fails, which facts changed the plan and how each step gets proven.
+14. A design page for the owner's decision sets `"doc_kind": "design"`, and the lint rule `design-length` refuses one over 20 numbered lines or 800 words.
 
 ## Tables and bold
 
@@ -144,18 +210,19 @@ The word rules are the `unslop` skill's, and the lint checks these on every page
 1. The lint reads an `<ol>` item, and a `<p>` that opens with `1.` or `2)`, as one numbered line.
 2. `paragraph-blob` and `paragraph-share` refuse prose paragraphs, and `label-opener` refuses `label: value` lines.
 3. `visuals` and `visual-gap` refuse a page with too few diagrams or images, or a long run of lines without one.
-4. `session-link` refuses a link from a curated page to a file in a session folder other than the session log `index.html`.
-5. `job-folder-link` warns on the same kind of link into a pi-host job folder `agents/<slug>/jobs/YYYY/MM/DD/<job>/`, and the finding names the job log `index.html` to link instead.
-6. When a page needs the fact from such a file, move the fact into the line itself or into the curated page that owns it, and link the log.
-7. `english-only` refuses each Korean sentence outside a quote of the owner (`"..."`, `<q>`, `<blockquote>`) or code, per owner rules c2 and c102, and Korean kept on purpose passes under `lang="ko"` or a `ko/` folder.
-8. The rule exists because the bloat, soft-caps and multi-box design pages of 2026-10-18 were written in Korean.
-9. `sessions/2026/10/09/2344-gateway-v2-rewrite/gateway-v2.html` is the passing example, with 112 numbered lines and 13 diagrams and images.
-10. The page write API (`POST` and `PATCH /api/agent/page`) answers 422 when a write adds lint errors.
-11. The lint does not check size, and the write API accepts a page over the 64 KiB `PAGE_READ_LIMIT` in `apps/wiki/src/lib/server/wiki.ts`, but the reader then shows a "truncated preview" cut mid-page and `GET /api/agent/page` answers 413.
-12. On 2026-10-19 a lint rewrite of `experiments/2026-08-16-email-finder-round2` grew about 30% from split lines and one mermaid per 10 lines and passed 64 KiB, so keep a rewrite under about 62 KB by merging closely linked facts into one sentence, stripping indentation inside mermaid blocks and dropping the tab before `<li>`.
-13. The engine runs the same lint on every write, and no page reaches git except through the backup timer, which commits what the engine wrote.
-14. An edit to an old page passes when it adds no new errors, so legacy pages stay editable.
-15. The lint skips `requests.html` and session log `index.html` files, because they hold verbatim text, and it skips `archive/` and `@code/`.
-16. Write pages through the page API so the write check runs, and never write page files directly.
-17. On 2026-10-28 parallel dream writers kept their page write bodies in the machine's shared temp folder, so a writer that ran `curl --data @r7-patch.json` there sent another job's body under the same name and applied that edit to `apps/search/onboarding-orgs.html` instead of its own page.
-18. Write a page write body to `$SESSION/<uuid>-patch.json` in your workspace folder, or pass the JSON on stdin with `--data @-`, and check that the `path` field of the response names your page.
+4. A page with a prose `doc_kind` gets the rules of the section "Documentation pages" in place of `paragraph-blob`, `paragraph-share`, `visuals` and `visual-gap`.
+5. `session-link` refuses a link from a curated page to a file in a session folder other than the session log `index.html`.
+6. `job-folder-link` warns on the same kind of link into a pi-host job folder `agents/<slug>/jobs/YYYY/MM/DD/<job>/`, and the finding names the job log `index.html` to link instead.
+7. When a page needs the fact from such a file, move the fact into the line itself or into the curated page that owns it, and link the log.
+8. `english-only` refuses each Korean sentence outside a quote of the owner (`"..."`, `<q>`, `<blockquote>`) or code, per owner rules c2 and c102, and Korean kept on purpose passes under `lang="ko"` or a `ko/` folder.
+9. The rule exists because the bloat, soft-caps and multi-box design pages of 2026-10-18 were written in Korean.
+10. `sessions/2026/10/09/2344-gateway-v2-rewrite/gateway-v2.html` is the passing example, with 112 numbered lines and 13 diagrams and images.
+11. The page write API (`POST` and `PATCH /api/agent/page`) answers 422 when a write adds lint errors.
+12. The lint does not check size, and the write API accepts a page over the 64 KiB `PAGE_READ_LIMIT` in `apps/wiki/src/lib/server/wiki.ts`, but the reader then shows a "truncated preview" cut mid-page and `GET /api/agent/page` answers 413.
+13. On 2026-10-19 a lint rewrite of `experiments/2026-08-16-email-finder-round2` grew about 30% from split lines and one mermaid per 10 lines and passed 64 KiB, so keep a rewrite under about 62 KB by merging closely linked facts into one sentence, stripping indentation inside mermaid blocks and dropping the tab before `<li>`.
+14. The engine runs the same lint on every write, and no page reaches git except through the backup timer, which commits what the engine wrote.
+15. An edit to an old page passes when it adds no new errors, so legacy pages stay editable.
+16. The lint skips `requests.html` and session log `index.html` files, because they hold verbatim text, and it skips `archive/` and `@code/`.
+17. Write pages through the page API so the write check runs, and never write page files directly.
+18. On 2026-10-28 parallel dream writers kept their page write bodies in the machine's shared temp folder, so a writer that ran `curl --data @r7-patch.json` there sent another job's body under the same name and applied that edit to `apps/search/onboarding-orgs.html` instead of its own page.
+19. Write a page write body to `$SESSION/<uuid>-patch.json` in your workspace folder, or pass the JSON on stdin with `--data @-`, and check that the `path` field of the response names your page.

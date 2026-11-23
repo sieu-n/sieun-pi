@@ -45,7 +45,49 @@ export const LIMITS = Object.freeze({
 	TABLE_SHARE_MIN_WORDS: 150,
 	/** Excerpt length in characters. */
 	EXCERPT_CHARS: 90,
+	/** A documentation page paragraph (doc_kind start, tutorial, how-to, reference or explanation) holds 2 to 4 sentences. */
+	DOC_PARAGRAPH_MAX_SENTENCES: 4,
+	/** ...and at most this many words, 4 sentences of about 25. */
+	DOC_PARAGRAPH_MAX_WORDS: 100,
+	/** An explanation page over VISUAL_MIN_WORDS needs one diagram or image per this many words. */
+	DOC_WORDS_PER_VISUAL: 800,
+	/** An owner design page (doc_kind design) stays under these, per owner rules c83 and c201. */
+	DESIGN_MAX_LINES: 20,
+	DESIGN_MAX_WORDS: 800,
 });
+
+/**
+ * The page kinds a page declares in the `doc_kind` field of its `<!--wiki {json}-->` header. The first five are plain
+ * documentation pages in prose, which the owner asked for on 2026-11-23 (#sw-factory-build p174, msg mwtd0iuy); design
+ * keeps the short numbered-line form of owner rules c83 and c201. A page with no doc_kind keeps the numbered-line rules.
+ * The header's older `kind` field is a free label that 550 numbered-line pages set to "reference", so it decides nothing here.
+ */
+export const DOC_KINDS = Object.freeze(['start', 'tutorial', 'how-to', 'reference', 'explanation', 'design']);
+/** The documentation kinds that read as prose paragraphs instead of numbered lines. */
+const PROSE_KINDS = new Set(['start', 'tutorial', 'how-to', 'reference', 'explanation']);
+/** @param {string | null} k */
+const isProse = (k) => k !== null && PROSE_KINDS.has(k);
+/** @param {string | null} k */
+const isMer = (k) => !isProse(k);
+
+/**
+ * The headings a documentation page must have, by doc_kind, matched on the heading text in lower case.
+ * @type {Record<string, { name: string, rx: RegExp }[]>}
+ */
+const DOC_SECTIONS = {
+	start: [{ name: 'Start here', rx: /^start here\b/ }],
+	tutorial: [
+		{ name: 'Before you start', rx: /^before you (?:start|begin)\b/ },
+		{ name: 'Check it worked', rx: /^check (?:that )?it work/ },
+		{ name: 'When it goes wrong', rx: /^when (?:it|something|things) goes? wrong\b/ },
+		{ name: 'Next steps', rx: /^(?:next steps?|what'?s next|where to go next)\b/ },
+	],
+	'how-to': [
+		{ name: 'Before you start', rx: /^before you (?:start|begin)\b/ },
+		{ name: 'Check it worked', rx: /^check (?:that )?it work/ },
+		{ name: 'When it goes wrong', rx: /^when (?:it|something|things) goes? wrong\b/ },
+	],
+};
 
 
 
@@ -271,7 +313,7 @@ export function decodeEntities(s) {
 
 
 /**
- * @typedef {'bullet' | 'paragraph' | 'loose' | 'cell' | 'heading' | 'caption'} UnitKind
+ * @typedef {'bullet' | 'paragraph' | 'loose' | 'cell' | 'heading' | 'caption' | 'step'} UnitKind
  * @typedef {{ text: string, start: number }} Piece
  * @typedef {{
  *   kind: UnitKind, tag: string, line: number, raw: string, text: string, words: number,
@@ -286,6 +328,7 @@ export function decodeEntities(s) {
  *   path: string, units: Unit[], bold: Span[], italics: Span[], tables: TableInfo[],
  *   visuals: number[], words: number, lineOf: (offset: number) => number, ko: boolean,
  *   links: { href: string, line: number }[], now: number, meta: Record<string, unknown>,
+ *   docKind: string | null, steps: { line: number, text: string, proof: boolean }[], proofs: number[],
  * }} Page
  */
 
@@ -339,6 +382,46 @@ function findVisuals(el, out = []) {
 		const cls = attr(node.attrs, 'class');
 		if (VISUAL.has(node.tag) || (cls !== null && /(^|\s)mermaid(\s|$)/.test(cls))) out.push(node.start);
 		else findVisuals(node, out);
+	}
+	return out;
+}
+
+/**
+ * Source offsets of every code block, diagram and image, in document order: what shows a step's command, output or screen.
+ * @param {El} el
+ * @param {number[]} out
+ * @returns {number[]}
+ */
+function findProofs(el, out = []) {
+	for (const node of el.children) {
+		if (node.type !== 'el') continue;
+		const cls = attr(node.attrs, 'class');
+		if (node.tag === 'pre' || VISUAL.has(node.tag) || (cls !== null && /(^|\s)mermaid(\s|$)/.test(cls))) out.push(node.start);
+		else findProofs(node, out);
+	}
+	return out;
+}
+
+/**
+ * The items of every `<ol>` that sits in no list item, table or `<wiki-tldr>`: the steps of a tutorial or how-to.
+ * @param {El} el
+ * @param {(offset: number) => number} lineOf
+ * @param {{ line: number, text: string, proof: boolean }[]} out
+ */
+function findSteps(el, lineOf, out = []) {
+	for (const node of el.children) {
+		if (node.type !== 'el' || node.tag === 'li' || node.tag === 'table' || node.tag === 'wiki-tldr' || isSkipped(node))
+			continue;
+		if (node.tag !== 'ol') {
+			findSteps(node, lineOf, out);
+			continue;
+		}
+		for (const li of node.children) {
+			if (li.type !== 'el' || li.tag !== 'li') continue;
+			const acc = newAcc();
+			gather(li, false, false, acc, () => {});
+			out.push({ line: lineOf(li.start), text: squash(acc.raw), proof: findProofs(li).length > 0 });
+		}
 	}
 	return out;
 }
@@ -503,9 +586,15 @@ export function parsePage(html, opts = {}) {
 			/"lang"\s*:\s*"ko/.test(/<!--wiki((?:(?!-->)[\s\S])*)-->/.exec(html.slice(0, 4000))?.[1] ?? '') ||
 			/(?:^|\/)ko\//.test(contentRel(opts.path ?? '')),
 		meta: wikiMeta(html),
+		docKind: null,
+		steps: [],
+		proofs: [],
 	};
+	page.docKind = typeof page.meta.doc_kind === 'string' ? page.meta.doc_kind : null;
 	const root = parseHtml(html);
 	page.visuals = findVisuals(root);
+	page.proofs = findProofs(root);
+	if (isProse(page.docKind)) page.steps = findSteps(root, lineOf);
 
 	/**
 	 * @param {El} el
@@ -538,6 +627,8 @@ export function parsePage(html, opts = {}) {
 			kind = 'bullet';
 			numbered = true;
 		}
+		// A numbered item of a documentation page is a step, which holds a short paragraph, not a one-sentence line.
+		if (numbered && tag === 'li' && isProse(page.docKind)) kind = 'step';
 		const firstPiece = acc.pieces.find((p) => /\S/.test(p.text));
 		const line = lineOf(
 			firstPiece ? firstPiece.start + (firstPiece.text.length - firstPiece.text.trimStart().length) : start,
@@ -878,7 +969,7 @@ const WORD_RULES = [
  * @typedef {'error' | 'warn'} Severity
  * @typedef {'text' | 'prose' | 'bullet' | 'paragraph' | 'cell' | 'heading' | 'page'} Scope
  * @typedef {{ excerpt: string, line?: number }} Hit
- * @typedef {{ id: string, unslop: string, severity: Severity, scope: Scope, fix: string, check: (unit: any, page: Page) => Hit[] }} Rule
+ * @typedef {{ id: string, unslop: string, severity: Severity, scope: Scope, fix: string, check: (unit: any, page: Page) => Hit[], when?: (docKind: string | null) => boolean }} Rule
  * @typedef {{ rule: string, unslop: string, severity: Severity, line: number, excerpt: string, fix: string }} Finding
  */
 
@@ -1145,6 +1236,7 @@ export const RULES = [
 		unslop: '22',
 		severity: 'error',
 		scope: 'paragraph',
+		when: isMer,
 		fix: `Split the paragraph: at most ${LIMITS.PARAGRAPH_MAX_SENTENCES} sentences and ${LIMITS.PARAGRAPH_MAX_WORDS} words each.`,
 		check: (/** @type {Unit} */ u) => {
 			if (u.inTldr) return [];
@@ -1159,6 +1251,7 @@ export const RULES = [
 		unslop: '4a',
 		severity: 'error',
 		scope: 'page',
+		when: isMer,
 		fix: `Write the body as numbered one-sentence lines in <ol>; paragraphs and <ul> bullets may hold at most ${Math.round(LIMITS.PARAGRAPH_MAX_SHARE * 100)}% of its words.`,
 		check: (_u, page) => {
 			const body = page.units.filter(
@@ -1231,6 +1324,8 @@ export const RULES = [
 		unslop: '24',
 		severity: 'error',
 		scope: 'page',
+		// A reference page is tables with short prose between them.
+		when: (k) => k !== 'reference',
 		fix: `Tables may hold at most ${Math.round(LIMITS.TABLE_MAX_SHARE * 100)}% of the page's words; write the findings as sentences and keep the table for numbers.`,
 		check: (_u, page) => {
 			const words = page.tables.reduce((n, t) => n + t.words, 0);
@@ -1257,6 +1352,7 @@ export const RULES = [
 		unslop: '24',
 		severity: 'error',
 		scope: 'page',
+		when: isMer,
 		fix: `Add mermaid diagrams or images: one per ${LIMITS.LINES_PER_VISUAL} numbered lines, and one per ${LIMITS.WORDS_PER_VISUAL} words once a page passes ${LIMITS.VISUAL_MIN_WORDS} words.`,
 		check: (_u, page) => {
 			const lines = page.units.filter((u) => u.numbered).length;
@@ -1278,6 +1374,7 @@ export const RULES = [
 		unslop: '24',
 		severity: 'error',
 		scope: 'page',
+		when: isMer,
 		fix: `Put a diagram or image between numbered lines at least every ${LIMITS.MAX_LINES_WITHOUT_VISUAL} lines.`,
 		check: (_u, page) => {
 			/** @type {Hit[]} */
@@ -1406,6 +1503,124 @@ export const RULES = [
 				line: 2,
 			})),
 	},
+	{
+		id: 'doc-kind',
+		unslop: 'wiki',
+		severity: 'error',
+		scope: 'page',
+		fix: `Set doc_kind to one of ${DOC_KINDS.join(', ')}, or leave it out for a numbered-line page.`,
+		check: (_u, page) =>
+			page.docKind !== null && !DOC_KINDS.includes(page.docKind)
+				? [{ excerpt: `"doc_kind": "${page.docKind}" is not a page kind`, line: 2 }]
+				: [],
+	},
+	{
+		// Owner, 2026-11-23 (#sw-factory-build p174, msg mwtd0iuy): "think of writing an actual confluence tutorial page
+		// like as to onboard me". A documentation page reads as paragraphs of two to four sentences.
+		id: 'doc-paragraph',
+		unslop: '20',
+		severity: 'error',
+		scope: 'paragraph',
+		when: isProse,
+		fix: `Keep a paragraph or step to ${LIMITS.DOC_PARAGRAPH_MAX_SENTENCES} sentences and ${LIMITS.DOC_PARAGRAPH_MAX_WORDS} words; start a new paragraph for the next idea.`,
+		check: (/** @type {Unit} */ u) => {
+			if (u.inTldr) return [];
+			const n = sentencesOf(u).length;
+			if (n > LIMITS.DOC_PARAGRAPH_MAX_SENTENCES || u.words > LIMITS.DOC_PARAGRAPH_MAX_WORDS)
+				return [{ excerpt: `${n} sentences, ${u.words} words: ${excerpt(u.text)}` }];
+			return [];
+		},
+	},
+	{
+		id: 'doc-intro',
+		unslop: 'wiki',
+		severity: 'error',
+		scope: 'page',
+		when: isProse,
+		fix: 'Open the page under the <h1> with a <p> that says who the page is for and what they have at the end, with no <wiki-tldr>.',
+		check: (_u, page) => {
+			/** @type {Hit[]} */
+			const hits = [];
+			const tldr = page.units.find((u) => u.inTldr);
+			if (tldr) hits.push({ excerpt: `a <wiki-tldr> block: ${excerpt(tldr.text)}`, line: tldr.line });
+			const body = page.units.filter((u) => !u.inTldr && u.kind !== 'caption');
+			const h1 = body.findIndex((u) => u.tag === 'h1');
+			const first = body[h1 + 1];
+			if (!first || first.tag !== 'p')
+				hits.push({ excerpt: `the page opens with ${first ? `<${first.tag}>` : 'nothing'} under its title, not an intro paragraph`, line: first?.line ?? 1 });
+			return hits;
+		},
+	},
+	{
+		id: 'doc-sections',
+		unslop: 'wiki',
+		severity: 'error',
+		scope: 'page',
+		when: (k) => k !== null && k in DOC_SECTIONS,
+		fix: 'Add each missing section under that heading, and show a command and its output or a screenshot under Check it worked.',
+		check: (_u, page) => {
+			const heads = page.units
+				.filter((u) => u.kind === 'heading' && /^h[2-4]$/.test(u.tag))
+				.map((u) => ({ u, text: u.text.toLowerCase().replace(/^[\d.\s\u00b7-]+/, '').trim() }));
+			/** @type {Hit[]} */
+			const hits = [];
+			for (const want of DOC_SECTIONS[/** @type {string} */ (page.docKind)]) {
+				const at = heads.findIndex((h) => want.rx.test(h.text));
+				if (at === -1) {
+					hits.push({ excerpt: `no "${want.name}" heading`, line: 1 });
+					continue;
+				}
+				if (want.name !== 'Check it worked') continue;
+				const from = heads[at].u.start;
+				const to = heads.slice(at + 1).find((h) => h.u.tag <= heads[at].u.tag)?.u.start ?? Infinity;
+				if (!page.proofs.some((p) => p > from && p < to))
+					hits.push({ excerpt: '"Check it worked" shows no command output, code block or screenshot', line: heads[at].u.line });
+			}
+			return hits;
+		},
+	},
+	{
+		// Owner, 2026-11-23 (p174): a tutorial onboards him step by step, so each step shows the real command and what it
+		// printed, or a screenshot of the screen it changed.
+		id: 'doc-step-proof',
+		unslop: 'wiki',
+		severity: 'error',
+		scope: 'page',
+		when: (k) => k === 'tutorial' || k === 'how-to',
+		fix: 'Put the real command in a <pre><code> block inside the step, with its output or a screenshot after it.',
+		check: (_u, page) =>
+			page.steps.filter((s) => !s.proof).map((s) => ({ excerpt: `step with no code block or image: ${excerpt(s.text)}`, line: s.line })),
+	},
+	{
+		id: 'doc-diagram',
+		unslop: '24',
+		severity: 'error',
+		scope: 'page',
+		when: (k) => k === 'explanation',
+		fix: `Draw the flow or structure the page explains as a mermaid diagram: one per ${LIMITS.DOC_WORDS_PER_VISUAL} words once the page passes ${LIMITS.VISUAL_MIN_WORDS} words.`,
+		check: (_u, page) => {
+			if (page.words <= LIMITS.VISUAL_MIN_WORDS) return [];
+			const need = Math.max(1, Math.floor(page.words / LIMITS.DOC_WORDS_PER_VISUAL));
+			return page.visuals.length < need
+				? [{ excerpt: `${page.visuals.length} diagrams or images for ${page.words} words, want ${need}`, line: 1 }]
+				: [];
+		},
+	},
+	{
+		// Owner rules c83 and c201: a design page for his decision is about 1/10 of a spec, with one diagram.
+		id: 'design-length',
+		unslop: 'wiki',
+		severity: 'error',
+		scope: 'page',
+		when: (k) => k === 'design',
+		fix: `Cut the design page to ${LIMITS.DESIGN_MAX_LINES} numbered lines and ${LIMITS.DESIGN_MAX_WORDS} words; move detail to a reference or explanation page and link it.`,
+		check: (_u, page) => {
+			const n = page.units.filter((u) => u.numbered).length;
+			return n > LIMITS.DESIGN_MAX_LINES || page.words > LIMITS.DESIGN_MAX_WORDS
+				? [{ excerpt: `${n} numbered lines and ${page.words} words`, line: 1 }]
+				: [];
+		},
+	},
 	...WORD_RULES.map(
 		(w) =>
 			/** @type {Rule} */ ({
@@ -1436,9 +1651,9 @@ export const RULES = [
 /** @type {Record<Scope, (u: Unit) => boolean>} */
 const SCOPE = {
 	text: () => true,
-	prose: (u) => u.kind === 'bullet' || u.kind === 'paragraph' || u.kind === 'loose',
+	prose: (u) => u.kind === 'bullet' || u.kind === 'paragraph' || u.kind === 'loose' || u.kind === 'step',
 	bullet: (u) => u.kind === 'bullet',
-	paragraph: (u) => u.kind === 'paragraph' || (u.kind === 'loose' && !u.inTldr),
+	paragraph: (u) => u.kind === 'paragraph' || u.kind === 'step' || (u.kind === 'loose' && !u.inTldr),
 	cell: (u) => u.kind === 'cell',
 	heading: (u) => u.kind === 'heading',
 	page: () => false,
@@ -1479,6 +1694,7 @@ export function lintHtml(html, opts = {}) {
 	/** @type {Finding[]} */
 	const findings = [];
 	for (const rule of RULES) {
+		if (rule.when && !rule.when(page.docKind)) continue;
 		/**
 		 * @param {Hit} h
 		 * @param {number} line
