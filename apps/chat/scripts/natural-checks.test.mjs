@@ -81,6 +81,11 @@ test("an answer line that calls all clear over a count of uncommitted files over
   assert.ok(!overstates("All clear to ship.\n- 0 files are uncommitted."));
 });
 
+test("an answer line that says it is not ready does not overstate", () => {
+  assert.ok(!overstates("Not ready to ship yet. Local main and origin/main have split, and the checkout has a lot of uncommitted work.\n- 66 entries are uncommitted: 48 tracked files changed or deleted, mostly in apps/chat"));
+  assert.ok(!overstates("It isn't safe to ship.\n- 12 files are uncommitted."));
+});
+
 const lineFails = text => lineChecks(text.split("\n").filter(line => line.trim())).filter(([, ok]) => !ok).map(([name]) => name);
 
 /** d4's checklist reply of 11-24 06:45 KST, whose third bullet is two sentences of 14 and 27 words, as the a1005148 role text allows. */
