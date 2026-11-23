@@ -47,7 +47,7 @@ def app_files(ref: str) -> Dict[str, bytes]:
 
 def systemd_unit(app: Path) -> str:
     return f"""[Unit]
-Description=usage-collector: this box's model calls into usage.model_calls
+Description=usage-collector: this box's model calls into the model_calls store
 After=network-online.target
 
 [Service]

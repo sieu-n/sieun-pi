@@ -1,6 +1,6 @@
 """usage: python3 -m usage_collector collect [--since 90d] [--loop SECONDS] [--dry-run] [--client NAME ...]
 
-Reads every model call the clients on this host keep and writes it to usage.model_calls. A client with no saved cursor reads back to
+Reads every model call the clients on this host keep and writes it to the store's model_calls table (sink.py TABLE). A client with no saved cursor reads back to
 --since; after that each pass reads only what is new. Cursors are kept per sink, so pointing sink.json at a new store backfills it.
 """
 from __future__ import annotations

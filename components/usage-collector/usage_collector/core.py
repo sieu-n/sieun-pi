@@ -1,7 +1,7 @@
 """The collector core: runs every client module, writes their rows to the sink in JSONEachRow batches, then saves each client's cursor.
 
 A client module in usage_collector/clients defines CLIENT = '<name>' and collect(ctx) -> Iterable[dict | CHECKPOINT]. Each dict holds the
-columns of usage.model_calls (schema.sql). The module keeps its cursor in ctx.state, a dict the core saves only after every row yielded
+columns of the model_calls table (schema.sql). The module keeps its cursor in ctx.state, a dict the core saves only after every row yielded
 before it is in the sink. The module yields CHECKPOINT where ctx.state covers exactly the rows yielded so far, so a long read can be saved
 in parts; without a CHECKPOINT the core writes and saves once, after collect returns.
 """

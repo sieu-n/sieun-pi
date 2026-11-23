@@ -2,7 +2,7 @@
 
 sink.json (default ~/.config/usage-collector/sink.json):
   url             ClickHouse's HTTP address, or the HTTPS door that forwards to it
-  table           default usage.model_calls
+  table           default ai_usage.model_calls (DATABASE below)
   user, password  sent as X-ClickHouse-User and X-ClickHouse-Key when set
   headers         extra headers, such as {"Authorization": "Bearer ..."} for a door
   token_file      a file whose text is sent as "Authorization: Bearer <text>", so the secret stays in the file it already lives in
@@ -10,7 +10,7 @@ sink.json (default ~/.config/usage-collector/sink.json):
 
 The prod store takes writes through the devbox-push door, which forwards a fixed INSERT as usage_writer and passes
 insert_deduplication_token through; on us-metal02 its sink.json is
-  {"url": "https://devbox-push.virev.ai/usage/model_calls", "token_file": "/home/sieun/box-ops/obs/alloy/push-token"}
+  {"url": "https://devbox-push.virev.ai/ai_usage/model_calls", "token_file": "/home/sieun/box-ops/obs/alloy/push-token"}
 A test rig is ClickHouse itself: {"url": "http://127.0.0.1:18123/"}.
 """
 from __future__ import annotations
@@ -24,6 +24,12 @@ from pathlib import Path
 from typing import Any, Dict
 
 
+# The store's database. The product's billing ledger took the name `usage`, and the name may move again, so this is its one place:
+# schema.sql names it too, and the tests read it from here.
+DATABASE = "ai_usage"
+TABLE = f"{DATABASE}.model_calls"
+
+
 class SinkError(RuntimeError):
     pass
 
@@ -33,7 +39,7 @@ class Sink:
         if not config.get("url"):
             raise SinkError("sink config has no url")
         self.url = str(config["url"])
-        self.table = str(config.get("table") or "usage.model_calls")
+        self.table = str(config.get("table") or TABLE)
         self.max_body_bytes = int(config.get("max_body_bytes") or 1_000_000)
         self.timeout = float(config.get("timeout_s") or 60)
         self.headers = {"Content-Type": "application/x-ndjson", **{str(k): str(v) for k, v in (config.get("headers") or {}).items()}}

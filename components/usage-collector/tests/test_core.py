@@ -8,6 +8,7 @@ from pathlib import Path
 from helpers import FakeSink
 
 from usage_collector import core
+from usage_collector.sink import DATABASE, TABLE
 from usage_collector.state import StateStore
 
 
@@ -50,6 +51,11 @@ class CoreTest(unittest.TestCase):
     def test_key_must_name_client_and_host(self) -> None:
         with self.assertRaises(core.RowError):
             core.normalize({"source_key": "other:h1:1", "call_at": 0, "session": "s", "provider": "p", "model": "m", "cost_source": "x"}, "test", "h1")
+
+    def test_schema_names_the_sinks_database(self) -> None:
+        schema = (Path(__file__).resolve().parents[1] / "schema.sql").read_text()
+        self.assertIn(f"CREATE DATABASE IF NOT EXISTS {DATABASE};", schema)
+        self.assertIn(f"CREATE TABLE IF NOT EXISTS {TABLE}\n", schema)
 
     def test_every_row_names_its_session(self) -> None:
         with self.assertRaises(core.RowError):

@@ -12,7 +12,7 @@ from unittest import mock
 from helpers import assistant, pi_host_db, transcript
 
 from usage_collector import cli
-from usage_collector.sink import Sink
+from usage_collector.sink import DATABASE, TABLE, Sink
 
 RIG = os.environ.get("USAGE_RIG_URL")
 SCHEMA = Path(__file__).resolve().parents[1] / "schema.sql"
@@ -24,11 +24,11 @@ class RigTest(unittest.TestCase):
     def setUp(self) -> None:
         self.dir = tempfile.TemporaryDirectory()
         root = Path(self.dir.name)
-        self.table = f"usage.test_calls_{os.getpid()}"
+        self.table = f"{DATABASE}.test_calls_{os.getpid()}"
         self.sink = Sink({"url": RIG, "table": self.table})
         statements = [s for s in "\n".join(l for l in SCHEMA.read_text().splitlines() if not l.startswith("--")).split(";") if s.strip()]
         for statement in statements:
-            self.sink.query(statement.replace("usage.model_calls", self.table))
+            self.sink.query(statement.replace(TABLE, self.table))
         # a background merge would fold duplicate keys at a random moment, and the raw counts below must count every inserted row
         self.sink.query(f"SYSTEM STOP MERGES {self.table}")
         self.config = root / "sink.json"
@@ -79,7 +79,7 @@ class RigTest(unittest.TestCase):
         self.assertEqual(self.collect("state"), 0)
         other = f"{self.table}_next"
         for statement in [s for s in "\n".join(l for l in SCHEMA.read_text().splitlines() if not l.startswith("--")).split(";") if s.strip()]:
-            self.sink.query(statement.replace("usage.model_calls", other))
+            self.sink.query(statement.replace(TABLE, other))
         try:
             self.config.write_text(json.dumps({"url": RIG, "table": other, "max_body_bytes": 2000}))
             self.assertEqual(self.collect("state"), 0)

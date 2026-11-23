@@ -1,6 +1,6 @@
--- usage.model_calls holds one row per model call from every host and chat client, for the Usage pages of the Prime
+-- ai_usage.model_calls holds one row per model call from every host and chat client, for the Usage pages of the Prime
 -- chat and sw factory. sieun-pi's components/usage-collector runs on each box, reads each client's own usage records
--- and posts rows to devbox-push.virev.ai/usage/model_calls (config/caddy/obs.Caddyfile), which inserts them as
+-- and posts rows to devbox-push.virev.ai/ai_usage/model_calls (config/caddy/obs.Caddyfile), which inserts them as
 -- usage_writer (config/clickhouse/obs-users.sql). Grafana reads them as grafana_ro (grafana-ro-prod.sql).
 -- host, client and session name where each call ran, so a page can split by them. source_key is
 -- '<client>:<host>:<source id>', the same string on every rerun of the collector, and ReplacingMergeTree keeps one row
@@ -15,9 +15,9 @@
 -- No deploy applies this file, because its CREATE DATABASE needs the container admin (ops/bin/schema-drift.mjs
 -- HAND_FILES). apply_obs_users.py prod sends it before obs-users.sql, as the admin, and it is idempotent.
 
-CREATE DATABASE IF NOT EXISTS usage;
+CREATE DATABASE IF NOT EXISTS ai_usage;
 
-CREATE TABLE IF NOT EXISTS usage.model_calls
+CREATE TABLE IF NOT EXISTS ai_usage.model_calls
 (
     -- '<client>:<host>:<source id>', the same string on every rerun of the collector
     source_key            String CODEC(ZSTD(1)),
