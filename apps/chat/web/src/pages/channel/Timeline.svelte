@@ -101,8 +101,20 @@
 
   /** A new row scrolls in the frame's own layout, which the rows' ResizeObserver also reads, rather than forcing a layout of every row in the render task. */
   let bottomFrame = 0;
+  /**
+   * His own send (the store's `r:<requestId>` row) pins the feed again wherever he had scrolled, as in Slack. On 11-24 a send after a scroll
+   * up of 250 px or more, or with a New line held, stayed out of view in every room kind in Chromium and WebKit.
+   */
+  let ownSend: string | null = null;
   $effect(() => {
     void lastKey;
+    const last = items.at(-1);
+    if (last?.kind === "message" && last.pending && last.send === "sending" && last.id !== ownSend) {
+      ownSend = last.id;
+      stick = true;
+      held = anchor = null;
+      handAt = -Infinity;
+    }
     if (!scroller || loading || !stick || bottomFrame) return;
     bottomFrame = requestAnimationFrame(() => {
       bottomFrame = 0;
@@ -158,7 +170,11 @@
    * only through noteAnchor still lost it in 6 of 10 opens.
    */
   let held: { row: Element; top: number } | null = null;
-  /** When his hand last moved the feed (a wheel, a touch, a key or a press in it), so a scroll within HAND_MS of it is his own. */
+  /**
+   * When his hand last moved the feed (a wheel, a touch, a key or a press in it), so a scroll within HAND_MS of it is his own. Only his own
+   * scroll unpins the feed: on 11-24 WebKit's scroll from the composer shrinking after an image send read 122 to 244 px from the bottom in
+   * 9 of 9 sends, and toBottom's own scroll read up to 751 px after rows grew in 4 of 27 Chromium and 3 of 28 WebKit opens.
+   */
   let handAt = -Infinity;
   const HAND_MS = 1000;
   $effect(() => {
@@ -168,9 +184,17 @@
       held = null;
       handAt = performance.now();
     };
-    const events = ["wheel", "touchstart", "keydown", "pointerdown"] as const;
+    // A click on the feed outside a post focuses nothing, so his scroll keys then go to the body.
+    const key = (e: KeyboardEvent) => {
+      if (e.target === document.body || (e.target instanceof Node && feed.contains(e.target))) release();
+    };
+    const events = ["wheel", "touchstart", "pointerdown"] as const;
     for (const type of events) feed.addEventListener(type, release, { passive: true });
-    return () => events.forEach((type) => feed.removeEventListener(type, release));
+    window.addEventListener("keydown", key, { passive: true });
+    return () => {
+      events.forEach((type) => feed.removeEventListener(type, release));
+      window.removeEventListener("keydown", key);
+    };
   });
   function noteAnchor() {
     if (!scroller) return;
@@ -265,12 +289,13 @@
     if (!scroller) return;
     const distance = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
     const wasStuck = stick;
-    stick = distance < 80;
-    showJump = distance > 400;
+    const byHand = performance.now() - handAt < HAND_MS;
+    stick = distance < 80 || (wasStuck && !byHand);
+    showJump = !stick && distance > 400;
     // Reaching the bottom is his own read, except while the post he marked unread is still on screen: only scrolling past it reads it.
     if (stick && !wasStuck) onbottom?.(!lineOnScreen());
     if (!stick && !held) noteAnchor();
-    if (scroller.scrollTop < 240 && full && hasOlder && !loadingOlder) void older(performance.now() - handAt < HAND_MS);
+    if (scroller.scrollTop < 240 && full && hasOlder && !loadingOlder) void older(byHand);
   }
 
   function lineOnScreen(): boolean {
