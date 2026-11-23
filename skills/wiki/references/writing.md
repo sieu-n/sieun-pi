@@ -109,6 +109,9 @@ He should scan the page once, top to bottom, and come away with the answer and t
 13. Sections are short, about 3 to 8 lines, under a sentence-case heading that names what they hold.
 14. A `<p>` is one or two sentences of connective text, such as a lead-in before a diagram.
 15. Agent-only detail, such as raw counts and file lists, goes in a collapsed `<details>` block at the end.
+16. A curated page under `apps/` or `domains/` holds only the layers a reader can check against the system: the flow or call stack, the tables and the fields, in about 800 words outside `<details>`.
+17. The question that started the work, the options weighed, what was dropped and the calls left for the owner go in the session page, and the curated page keeps one line of why per choice and links the session log.
+18. On 2026-11-23 the owner called `domains/devops/clickhouse-layout.html` far too long (c243), and it had 1761 words in 10 sections, of which about 710 were short answers, our pick, what we dropped and calls for the owner.
 
 ## A diagram or image for every flow, structure or comparison
 
@@ -121,6 +124,10 @@ He should scan the page once, top to bottom, and come away with the answer and t
 7. No run of more than 24 numbered lines goes without a diagram or image between them.
 8. A diagram uses a concrete example, such as a real event id or a real table name.
 9. A diagram makes one point on its own, and a diagram that needs a legend gets redrawn.
+10. Lay a diagram out for a person, beyond a graph of relations: the entry at the top or left, the main path in one straight line, and each part inside the box of the thing that holds it.
+11. Shapes tell kinds apart, so a table or store is a cylinder `[( )]`, a service or job is a rounded box, and a decision is a diamond.
+12. A thing that exists several times is drawn several times, so three tiers are three boxes side by side, each with its own copy inside.
+13. On 2026-11-23 the tier diagram on `domains/devops/clickhouse-layout.html` drew one box "same on every tier" where local, staging and prod each hold the `crawler` database, and 6 of its 8 diagrams were left-to-right chains of names (c243).
 
 ## No prose paragraphs
 
