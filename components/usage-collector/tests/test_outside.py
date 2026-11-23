@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sqlite3
 import tempfile
 import types
@@ -19,6 +20,7 @@ from usage_collector import core, prices
 from usage_collector.clients import aside, claude_code, codex, goose, hermes, opencode, vent
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
+U3 = "019a5000-0000-7000-8000-000000000003"
 
 
 def ctx(home, host="h1", since=0, state=None):
@@ -197,6 +199,90 @@ class VentTest(unittest.TestCase):
         again = [r for r in vent.collect(c, query=lambda sql: windows.append(sql) or [], now_ns=end_ns + 10**9) if r is not core.CHECKPOINT]
         self.assertEqual(again, [])
         self.assertIn(str(end_ns - vent.OVERLAP_NS), windows[-1])
+
+
+class StableCallAtTest(unittest.TestCase):
+    """usage.model_calls sorts by (host, client, row_id), so a key must carry the same call_at on every read:
+    a rerun, a copy read first or last, and a file whose mtime moved."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.home = Path(self.dir.name)
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def copy_fixture(self, name):
+        shutil.copytree(FIXTURES / name, self.home, dirs_exist_ok=True)
+
+    def times(self, module):
+        return {r["source_key"]: r["call_at"] for r in rows_of(module, ctx(self.home))}
+
+    def touch_all(self, seconds):
+        for p in self.home.rglob("*"):
+            if p.is_file():
+                os.utime(p, (seconds, seconds))
+
+    def assert_stable(self, module):
+        first = self.times(module)
+        self.assertTrue(first)
+        self.touch_all(1_900_000_000)
+        self.assertEqual(self.times(module), first)
+        return first
+
+    def test_codex_copies_and_untimed_events(self):
+        self.copy_fixture("codex")
+        untimed = [{"type": "session_meta", "payload": {"id": U3, "model_provider": "openai"}},
+                   {"type": "turn_context", "payload": {"model": "gpt-5.5"}},
+                   {"type": "event_msg", "payload": {"type": "token_count", "info": {"last_token_usage": {"input_tokens": 9, "output_tokens": 1}}}}]
+        name = f"rollout-2026-11-05T09-00-00-{U3}.jsonl"
+        for folder, mtime in ((".codex/sessions/2026/11/05", 1_800_000_000), (".codex/archived_sessions", 1_850_000_000)):
+            path = self.home / folder / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("".join(json.dumps(e) + "\n" for e in untimed))
+            os.utime(path, (mtime, mtime))
+        first = self.assert_stable(codex)
+        self.assertIn(int(U3.replace("-", "")[:12], 16), first.values())
+        self.assertEqual(len(first), 5)
+
+    def test_claude_code_copy_with_other_prompt_time_keeps_the_response_time(self):
+        self.copy_fixture("claude_code")
+        alone = self.times(claude_code)
+        fork = self.home / ".claude/projects/-w/a-earlier-fork.jsonl"
+        fork.write_text("".join(json.dumps(e) + "\n" for e in [
+            {"type": "user", "timestamp": "2026-11-01T00:00:00.000Z", "sessionId": "s0", "message": {"role": "user", "content": "x"}},
+            {"type": "assistant", "timestamp": "2026-11-02T00:00:02.000Z", "requestId": "req_1", "sessionId": "s0",
+             "message": {"id": "msg_1", "model": "claude-opus-5-5", "usage": {"input_tokens": 3, "output_tokens": 1}}}]))
+        self.assertEqual(self.assert_stable(claude_code), alone)
+        self.assertEqual(alone["claude-code:h1:msg_1:req_1"], 1793577602000)
+
+    def test_aside_rerun_and_untimed_record(self):
+        self.copy_fixture("aside")
+        path = next(self.home.rglob("messages.jsonl"))
+        with open(path, "a") as fh:
+            fh.write(json.dumps({"role": "assistant", "model": "gpt-6-astra", "responseId": "r9", "usage": {"input": 5}}) + "\n")
+        self.assertNotIn("aside:h1:response:12:openai-codex:r9", self.assert_stable(aside))
+
+    def test_sqlite_and_vent_clients_read_time_from_the_record(self):
+        SqliteClientsTest.db(self, ".hermes/state.db", """
+            CREATE TABLE sessions (id TEXT, model TEXT, billing_provider TEXT, started_at REAL, message_count INT, input_tokens INT,
+              output_tokens INT, cache_read_tokens INT, cache_write_tokens INT, reasoning_tokens INT, actual_cost_usd REAL, estimated_cost_usd REAL);
+            INSERT INTO sessions VALUES ('b', 'gpt-4.1', NULL, 1793000100, 2, 50, 5, 0, 0, 0, NULL, 0);""")
+        SqliteClientsTest.db(self, ".local/share/goose/sessions/sessions.db", """
+            CREATE TABLE sessions (id TEXT, model_config_json TEXT, provider_name TEXT, created_at TEXT, total_tokens INT,
+              input_tokens INT, output_tokens INT, accumulated_total_tokens INT, accumulated_input_tokens INT, accumulated_output_tokens INT);
+            INSERT INTO sessions VALUES ('g1', '{"model_name":"claude-sonnet-4-6"}', 'anthropic', '2026-11-01 00:00:00', 10, 5, 5, NULL, NULL, NULL);""")
+        msg = {"role": "assistant", "modelID": "m", "providerID": "anthropic", "tokens": {"input": 1, "output": 1},
+               "time": {"created": 1793000000000}}
+        SqliteClientsTest.db(self, ".local/share/opencode/opencode.db",
+                             f"CREATE TABLE message (id TEXT, session_id TEXT, data TEXT); INSERT INTO message VALUES ('m1', 's', '{json.dumps(msg)}');")
+        self.assertEqual(self.assert_stable(hermes), {"hermes:h1:b": 1793000100000})
+        self.assertEqual(self.assert_stable(goose), {"goose:h1:g1": 1793491200000})
+        self.assertEqual(self.assert_stable(opencode), {"opencode:h1:m1": 1793000000000})
+        page = VentTest.page(None, 1795400000123456789)
+        runs = [[r["call_at"] for r in vent.collect(ctx(self.home, since=1795400000000), query=lambda sql: [page], now_ns=1795400000200000000)
+                 if r is not core.CHECKPOINT] for _ in range(2)]
+        self.assertEqual(runs, [[1795400000123], [1795400000123]])
 
 
 class PricesTest(unittest.TestCase):

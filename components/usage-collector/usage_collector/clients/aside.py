@@ -2,6 +2,8 @@
 
 A port of tokscale's Aside reader (crates/tokscale-core/src/sessions/aside.rs at b265e836).
 Aside records each response's own cost, so rows carry cost_source 'reported' when it is positive.
+A record with no timestamp is skipped, where tokscale would stamp it with the file's mtime, because
+call_at must be the same on every read.
 """
 
 from __future__ import annotations
@@ -10,7 +12,7 @@ import json
 import os
 from typing import Iterable
 
-from usage_collector.outside import changed_files, mtime_ms, parse_ts, reported, row
+from usage_collector.outside import changed_files, parse_ts, reported, row
 
 CLIENT = "aside"
 # Aside's provider field names the route it took; these routes name no vendor or name Anthropic.
@@ -67,7 +69,6 @@ def _n(v) -> int:
 def parse_file(path: str, host: str) -> list:
     session_dir = os.path.dirname(path)
     session = f"{os.path.basename(os.path.dirname(os.path.dirname(session_dir)))}/{os.path.basename(session_dir)}"
-    fallback_ts = mtime_ms(path)
     out = []
     with open(path, "rb") as fh:
         for lineno, raw in enumerate(fh, 1):
@@ -90,9 +91,11 @@ def parse_file(path: str, host: str) -> list:
             model = rec.get("model").strip() if isinstance(rec.get("model"), str) and rec["model"].strip() else "unknown"
             provider = _vendor(rec.get("provider"), model)
             ts = parse_ts(rec.get("timestamp"))
+            if ts is None:
+                continue
             rid = rec.get("responseId").strip() if isinstance(rec.get("responseId"), str) else ""
             key = f"response:{len(provider)}:{provider}:{rid}" if rid else f"nokey:{session}:{lineno}"
-            fields = dict(source_key=f"aside:{host}:{key}", call_at=ts if ts is not None else fallback_ts, host=host,
+            fields = dict(source_key=f"aside:{host}:{key}", call_at=ts, host=host,
                           client=CLIENT, session=session, account=session.split("/")[0], provider=provider, model=model,
                           input_tokens=inp, output_tokens=output, reasoning_tokens=reasoning, cache_read_tokens=cache_read,
                           cache_write_tokens=cache_write, cache_write_1h_tokens=one_hour)

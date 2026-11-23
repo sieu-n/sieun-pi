@@ -12,9 +12,10 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timezone
 from typing import Iterable, Optional
 
-from usage_collector.outside import changed_files, mtime_ms, parse_ts, read_text, row, walk_files
+from usage_collector.outside import changed_files, parse_ts, read_text, row, walk_files
 
 CLIENT = "codex"
 MAX_DECODED_BYTES = 1024 * 1024 * 1024
@@ -199,11 +200,29 @@ class _State:
         self.settled = []
 
 
+def rollout_start_ms(name: str) -> int:
+    """The rollout's start time from its name (the thread id is a UUID v7), the same for every copy of it.
+
+    tokscale stamps a usage event that has no timestamp with the file's mtime, which differs between
+    sessions/ and archived_sessions/ and changes when Codex appends; a row's call_at must not change.
+    """
+    stem = name.split(".jsonl")[0]
+    k = _uuid7_key(stem[-36:])
+    if k:
+        return int(k[:12], 16)
+    if stem.startswith("rollout-") and len(stem) >= 27:
+        try:
+            return int(datetime.strptime(stem[8:27], "%Y-%m-%dT%H-%M-%S").replace(tzinfo=timezone.utc).timestamp() * 1000)
+        except ValueError:
+            pass
+    return 0
+
+
 def parse_file(path: str) -> list:
     """Usage messages of one rollout, as tokscale's parse_codex_file returns them."""
     name = os.path.basename(path)
     session = name.split(".jsonl")[0]
-    fallback_ts = mtime_ms(path)
+    fallback_ts = rollout_start_ms(name)
     st = _State()
     out = []
     pending_model = []

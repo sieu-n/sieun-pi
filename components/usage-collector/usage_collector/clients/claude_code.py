@@ -4,7 +4,9 @@ A port of tokscale's Claude Code reader (crates/tokscale-core/src/sessions/claud
 and the Claude lane of lib.rs at b265e836). One row per assistant response, keyed by
 message.id:requestId. Claude Code writes a response several times while it streams,
 so copies of one key merge by the largest value of each token field, inside a file and
-across files (a resumed or forked transcript repeats earlier responses).
+across files (a resumed or forked transcript repeats earlier responses). call_at is the earliest
+timestamp any copy of the response carries, so it does not depend on which copy is read first;
+tokscale instead stamps the row with the prompt's time, which only moves duration, not tokens.
 """
 
 from __future__ import annotations
@@ -13,7 +15,7 @@ import json
 import os
 from typing import Iterable, Optional
 
-from usage_collector.outside import changed_files, mtime_ms, parse_ts, row, walk_files
+from usage_collector.outside import changed_files, parse_ts, row, walk_files
 
 CLIENT = "claude-code"
 SUBAGENT = "claude-code-subagent"
@@ -104,6 +106,7 @@ def _merge_copy(a: dict, b: dict):
     for k in ("output", "cache_read", "cache_write"):
         ta[k] = max(ta[k], tb[k])
     ta["cache_write_1h"] = min(max(ta["cache_write_1h"], tb["cache_write_1h"]), ta["cache_write"])
+    a["ts"] = min(a["ts"], b["ts"])
     a["duration"] = max(a["duration"] or 0, b["duration"] or 0) or None
     if not a["agent"]:
         a["agent"] = b["agent"]
@@ -175,7 +178,6 @@ def _agent_name(path: str) -> str:
 def parse_file(path: str) -> list:
     """Messages of one transcript, as tokscale's parse_claude_file returns them."""
     session = os.path.basename(path)[: -len(".jsonl")]
-    fallback_ts = mtime_ms(path)
     messages, index, split_keys = [], {}, set()
     pending_start = None
     sidechain_checked = False
@@ -240,9 +242,12 @@ def parse_file(path: str) -> list:
             else:
                 if model is None:
                     continue
-                start = pending_start if pending_start is not None else (ts if ts is not None else fallback_ts)
+                stamp = ts if ts is not None else pending_start
+                if stamp is None:
+                    continue
+                start = pending_start if pending_start is not None else stamp
                 dur = (ts - pending_start) if ts is not None and pending_start is not None and ts > pending_start else None
-                parent = {"key": key, "ts": start, "model": model, "provider": _provider(model, hint), "session": session,
+                parent = {"key": key, "ts": stamp, "start": start, "model": model, "provider": _provider(model, hint), "session": session,
                           "agent": agent, "tokens": _tokens(u), "duration": dur, "path": path, "line": lineno}
                 if key is not None:
                     index[key] = len(messages)
@@ -265,7 +270,7 @@ def parse_file(path: str) -> list:
                     if au["split"]:
                         split_keys.add(akey)
                     continue
-                adv = {"key": akey, "ts": parent["ts"], "model": am, "provider": parent["provider"], "session": session,
+                adv = {"key": akey, "ts": parent["ts"], "start": parent["start"], "model": am, "provider": parent["provider"], "session": session,
                        "agent": parent["agent"], "tokens": _tokens(au), "duration": None, "path": path, "line": lineno}
                 if akey is not None:
                     index[akey] = len(messages)
@@ -289,7 +294,8 @@ def _merge_stream(have: dict, u: dict, ts: Optional[int], have_split: bool):
     t["cache_read"] = max(t["cache_read"], max(u["cache_read_input_tokens"] or 0, 0))
     t["cache_write"] = max(t["cache_write"], max(u["cache_creation_input_tokens"] or 0, 0))
     t["cache_write_1h"] = max(t["cache_write_1h"], u["one_hour"])
-    if ts is not None and ts >= have["ts"]:
-        d = ts - have["ts"]
+    if ts is not None:
+        have["ts"] = min(have["ts"], ts)
+        d = ts - have["start"]
         if d > 0:
             have["duration"] = max(have["duration"] or 0, d)
