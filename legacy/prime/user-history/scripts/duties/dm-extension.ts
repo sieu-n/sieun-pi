@@ -178,6 +178,9 @@ export function parts(autopair: AutopairEvidence | undefined, e2e: E2eEvidence |
   };
 }
 
+/** What the unmeasured slice says when a test account has no residential exit: the run waits on a paid proxy only the owner picks (c230, t112). */
+const NO_PROXY = "e2e_pass waits on a paid proxy, since a test account has no residential exit. The extension has nothing to fix, so start no fix job.";
+
 const STOP_WORDS: Readonly<Record<Exclude<Stop["kind"], "other">, string>> = {
   slow_exit: "a slow Instagram exit", exit_down: "a proxy gateway that opened no tunnel", instagram_refused: "an Instagram refusal",
 };
@@ -261,7 +264,7 @@ export function report(data: DutyData, dutyMetrics: readonly DutyMetric[]): Prec
     if (data.rows.truncated) flagged.push({ at, kind: "rows_truncated", excerpt: `searchDmMessages returned the ${ROWS_LIMIT} newest rows, the CLI's most; older rows attempted in 24 h are not counted. Read by index instead.` });
   }
   const replaced = settle(dutyMetrics, metrics, unmeasured);
-  if (replaced.length) flagged.push(unmeasuredFlag(replaced, at));
+  if (replaced.length) flagged.push(unmeasuredFlag(replaced, at, data.boxed?.length ? `${data.errors.length ? "Fix the source_error first. " : ""}${NO_PROXY}` : undefined));
   return { metrics, flagged };
 }
 

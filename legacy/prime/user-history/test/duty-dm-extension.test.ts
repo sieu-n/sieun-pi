@@ -231,3 +231,16 @@ test("a test account on a box exit reads exit_down with no residential exit and 
   assert.ok(slice?.excerpt.startsWith("no residential exit: sender @caiyiting8674 is prod on exit us-metal01"));
   assert.ok(!out.flagged?.some(s => s.kind === "e2e_part"));
 });
+
+test("with no residential exit the unmeasured slice says the run waits on a paid proxy, not on a source_error (d1, 11-22)", () => {
+  const boxed = ["sender @caiyiting8674: the crawler holds its jar, browser-jar answered 503 proxy_required"];
+  const rows = { messages: [], devices: [], truncated: false };
+  const alone = report({ now: NOW, boxed, rows, errors: [] }, METRICS).flagged?.find(s => s.kind === "unmeasured")?.excerpt ?? "";
+  assert.match(alone, /e2e_pass waits on a paid proxy/);
+  assert.match(alone, /start no fix job/);
+  assert.doesNotMatch(alone, /source_error/);
+  const both = report({ now: NOW, boxed, rows, errors: [{ source: "staging rows", message: "convex data exited 1" }] }, METRICS).flagged?.find(s => s.kind === "unmeasured")?.excerpt ?? "";
+  assert.match(both, /Fix the source_error first\. e2e_pass waits on a paid proxy/);
+  const other = report({ now: NOW, errors: [{ source: "world", message: "up exited 1" }] }, METRICS).flagged?.find(s => s.kind === "unmeasured")?.excerpt ?? "";
+  assert.match(other, /Fix the source_error first\.$/);
+});

@@ -44,9 +44,10 @@ export function settle(dutyMetrics: readonly DutyMetric[], metrics: Record<strin
   return replaced;
 }
 
-export const unmeasuredFlag = (replaced: readonly string[], at: number): FlaggedSlice => ({
+/** The unmeasured slice. `next` says what to do about it, and a caller whose metric waits on something outside its code names that instead. */
+export const unmeasuredFlag = (replaced: readonly string[], at: number, next = "Fix the source_error first."): FlaggedSlice => ({
   at, kind: "unmeasured",
-  excerpt: `Not measured this run, so the value is ${UNMEASURED} or -${UNMEASURED} and counts as a miss: ${replaced.join(", ")}. Fix the source_error first.`.slice(0, 300),
+  excerpt: `Not measured this run, so the value is ${UNMEASURED} or -${UNMEASURED} and counts as a miss: ${replaced.join(", ")}. ${next}`.slice(0, 300),
 });
 
 /** The grafana-read Vent key, decrypted from auto-sns-agent's apps/infra/.env; throws when it is empty or still ciphertext. */
