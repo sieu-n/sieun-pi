@@ -78,16 +78,20 @@ test("the CLIProxy gateway's tier files are out of scope, and other tiers still 
 });
 
 // d1 of 11-04 read 20 keys outside Vent, and 16 of them were other projects' keys on us-metal01 or the staging CLIProxy server's own keys.
-test("slack.green, tokscale and the staging CLIProxy server keep their keys out of the count, and the same names elsewhere still count", () => {
+// d1 of 11-23 read 10 more from prod CLIProxy's move to metal and slack.green's Komodo Variables in the prod infra tier.
+test("slack.green, tokscale and the CLIProxy servers keep their keys out of the count, and the same names elsewhere still count", () => {
   const keys = { locations: {
     "box /srv/slack-green/worker.env": ["RESEND_API_KEY", "SUPABASE_SERVICE_KEY"],
     "container slack-green-worker": ["RESEND_API_KEY"],
     "container virev-obs-tokscale-web": ["GITHUB_CLIENT_SECRET", "GOOGLE_CLIENT_SECRET"],
     "box /srv/obs/secrets/obs.env": ["TOKSCALE_GITHUB_CLIENT_SECRET"],
-    "tier apps/infra/.env": ["TOKSCALE_GOOGLE_CLIENT_SECRET", "CLOUDFLARE_VIBECODINGSTATS_DNS_TOKEN", "STRIPE_USAGE_KEY"],
     "tier apps/infra/.env.staging": ["CLIPROXY_API_KEY", "CLIPROXY_MANAGEMENT_PASSWORD"],
     "box /srv/staging/secrets/release.env": ["CLIPROXY_API_KEY", "CLIPROXY_MANAGEMENT_PASSWORD"],
     "container virev-staging-cliproxy": ["CLIPROXY_API_KEY"],
+    "tier apps/infra/.env": ["TOKSCALE_GOOGLE_CLIENT_SECRET", "CLOUDFLARE_VIBECODINGSTATS_DNS_TOKEN", "STRIPE_USAGE_KEY", "CLIPROXY_API_KEY",
+      "CLIPROXY_MANAGEMENT_PASSWORD", "SLACK_GREEN_RESEND_API_KEY", "SLACK_GREEN_KOMODO_API_SECRET"],
+    "box /srv/prod/secrets/release.env": ["CLIPROXY_API_KEY", "CLIPROXY_MANAGEMENT_PASSWORD"],
+    "container virev-prod-cliproxy": ["CLIPROXY_API_KEY"],
     "container virev-staging-search": ["CLIPROXY_API_KEY"],
     "container virev-prod-worker": ["RESEND_API_KEY"],
   }, unreadable: {} };

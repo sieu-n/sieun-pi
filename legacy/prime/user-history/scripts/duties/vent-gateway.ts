@@ -140,16 +140,18 @@ export const OTHER_PROJECT_PLACES: readonly RegExp[] = [
 /**
  * Key names that belong to another project wherever they sit. Only compose.obs.yml's tokscale-web reads the TOKSCALE_* rows, and no
  * auto-sns-agent file reads CLOUDFLARE_VIBECODINGSTATS_DNS_TOKEN, the DNS token of tokscale's domain (rg at origin/dev/sieun, 11-04).
+ * The SLACK_GREEN_* rows of the prod infra tier are slack.green's worker secrets and its CI's Komodo key, which only komodo.mjs reads
+ * to set the Komodo Variables of the Stack slack-green (04bb770126, 1262a353f3, 11-21 and 11-22).
  */
-export const OTHER_PROJECT_KEY = /^(TOKSCALE_[A-Z0-9_]+|CLOUDFLARE_VIBECODINGSTATS_DNS_TOKEN)$/;
+export const OTHER_PROJECT_KEY = /^(TOKSCALE_[A-Z0-9_]+|SLACK_GREEN_[A-Z0-9_]+|CLOUDFLARE_VIBECODINGSTATS_DNS_TOKEN)$/;
 
 /**
- * The CLIProxy gateway's server keys where compose.staging.yml's cliproxy service takes them since it moved to metal on 11-04: the staging
- * release tier, its box copy and the container. They stay counted anywhere else, because Vent (tables.py) and the virev-demo record scripts
+ * The CLIProxy gateway's server keys where compose.yml's cliproxy service takes them: each tier's infra tier, its release.env copy on
+ * the box and the container. Staging's moved to metal on 11-04 and prod's on 11-22 (6b087534ff). They stay counted anywhere else, because Vent (tables.py) and the virev-demo record scripts
  * read CLIPROXY_API_KEY to call the gateway, so a copy in another app's store is a way around Vent.
  */
 export const CLIPROXY_SERVER = (location: string, name: string) => /^CLIPROXY_(API_KEY|MANAGEMENT_PASSWORD)$/.test(name)
-  && /^(tier apps\/infra\/\.env\.staging|box \/srv\/staging\/secrets\/release\.env|container virev-staging-cliproxy)$/.test(location);
+  && /^(tier apps\/infra\/\.env(\.staging)?|box \/srv\/(prod|staging)\/secrets\/release\.env|container virev-(prod|staging)-cliproxy)$/.test(location);
 
 /**
  * Whether a lister location is a deployment of this system other than Vent: Convex, the auto-sns-crawler Railway project, the auto-sns-*
