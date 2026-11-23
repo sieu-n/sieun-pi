@@ -81,7 +81,7 @@
     const noun = kindLabel?.toLowerCase() ?? "saved items";
     const title = `No ${noun}${filter.room ? ` in ${roomName}` : ""}${filter.q.trim() ? ` match "${filter.q.trim()}"` : ""}`;
     const elsewhere = (["open", "archived", "done"] as const).filter((s) => s !== tab && counts[s]).map((s) => `${counts[s]} in ${tabLabel[s]}`);
-    return { title, description: elsewhere.length ? `Nothing in ${tabLabel[tab]} matches. ${elsewhere.join(", ")}.` : `Nothing in ${tabLabel[tab]} matches.` };
+    return { title, description: elsewhere.length ? `Other tabs have matches: ${elsewhere.join(", ")}.` : "No tab has a match." };
   });
   function onsearchkey(e: KeyboardEvent) {
     if (e.key === "Escape" && filter.q) {
