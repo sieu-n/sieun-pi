@@ -20,6 +20,8 @@ The owner said so on 11-20: "no this is not Chat. this is Slack."
 [Ideal Slack replies in sw factory rooms](wiki:agents/agent-factory/jobs/2026/11/20/1139-slack-style-replies/ideal-replies.html) holds 17 real before and after pairs, and every change to reply behavior aims at them.
 
 1. The answer comes first, in a plain sentence, as a Prime chat reply opens, or the cause when there is no short answer.
+   The answer holds for every result under it, so when one result is not clean the answer names it, as in "three of the four are clear, but 15 files are uncommitted".
+   On 11-23 a blind checklist run opened "All clear to ship." over a bullet that counted 7 uncommitted files and 8 untracked paths, while the 6 runs before it named the files in the answer.
 2. One answer is one post, and each waiting post of his that asks its own thing gets its own answer, a tell_owner call with `reply_to` set to that post, so in a channel it lands in that post's thread.
    Two posts merge into one answer only when the second adds to or corrects the first, since on 11-21 a blind-reactions run's DM agent merged two posts into one that answered only the first.
    One ask also gets one post: the first reply holds any question at its end after the pick, and the work thread's last edit of that post carries the answer, with no new post for the result.
@@ -273,7 +275,7 @@ A new param on an agent tool gets the same check: its tool and param text say wh
    For 👀 until the work ends, a follow-up answered within a minute and the jobs a follow-up starts, run `node apps/chat/scripts/blind-follow-up.mjs --out ~/work/<job>/blind-runs.jsonl`.
    For the thread done flag, run `node apps/chat/scripts/blind-thread-done.mjs --out ~/work/<job>/blind-runs.jsonl`, which checks the root reads done after the answer, open after an owner follow-up and done again after its answer.
 4. The script makes a `test: true` agent and channel, posts the asks as the owner with no hint about format, and checks each answer for one post, no table, no labels, for a plain reply the room's lengths (120 words, no sentence over 35), and with `--set lists` for a one-line answer over a task list, and for one short line.
-   With `--set checklist` it checks that the first version opens with a natural sentence, narrates no plan of the agent's own and holds no open `- [ ]` item (c234), and that the last version opens with a one-line answer, which a later edit may fill in.
+   With `--set checklist` it checks that the first version opens with a natural sentence, narrates no plan of the agent's own and holds no open `- [ ]` item (c234), and that the last version opens with a one-line answer, which a later edit may fill in, and that this answer calls nothing all clear over uncommitted files it lists (rule 1).
    `--set natural` runs the same first-version checks in a DM and a channel, plus no bare topic label, a pick with every question and no line of 3 sentences, and `apps/chat/scripts/natural-checks.test.mjs` holds the owner's praised post and p51, p55 and p158 as its cases.
 5. Read every reply yourself against the pairs, because tone is a judgment the script cannot make, and take a shot of the thread pane.
 6. Record each run's pass or fail with its replies in the job's wiki folder.

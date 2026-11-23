@@ -19,8 +19,28 @@ export const bareLabel = line => {
   const text = item(line).replace(/[:.]$/, "");
   return !text || (text.split(/\s+/).length <= 3 && !VERB.test(text));
 };
-/** A natural opening line for the place: five words or more with a verb, no `label:` opener and no ack such as "on it" or "Working on it." */
-export const naturalLine = line => !BULLET.test(line) && words(line) >= 5 && VERB.test(line) && !/^[^:\n]{1,25}:\s*\S/.test(line) && !/^\W*(?:on it|working on it|got it)\b/i.test(line);
+/** A word that makes a short line with no verb a verdict, such as "All clear to ship." or "Not yet, two are red." */
+const VERDICT = /\b(yes|no|yep|nope|not|none|nothing|clear|clean|fine|good|ready|safe|ok|okay|broken|red|green|live|up|down)\b/i;
+/** A short line is a sentence when it ends like one, says a verb or a verdict and does not open on what the agent is doing. */
+const shortAnswer = line => words(line) >= 2 && /[.!?]$/.test(line) && (VERB.test(line) || VERDICT.test(line)) && !/^\W*\w+ing\b/i.test(line);
+/**
+ * A natural opening line for the place: a sentence with a verb, no `label:` opener and no ack such as "on it" or "Working on it." A line
+ * of five words or more needs only the verb. A shorter one is the answer in a plain sentence, which the owner asks for first, as "yes, all
+ * three are running." opens the post he praised and "Yes, it's on main." answers a quick ask: it passes when it ends as a sentence and
+ * says a verb or a verdict. On 11-23 the 17:41 KST checklist run opened "All clear to ship." and failed here for its 4 words alone. A
+ * title such as "four pre-ship checks" and a progress line such as "checking all four now", both from 11-20 runs, still fail.
+ */
+export const naturalLine = line => !BULLET.test(line) && (words(line) >= 5 ? VERB.test(line) : shortAnswer(line)) && !/^[^:\n]{1,25}:\s*\S/.test(line) && !/^\W*(?:on it|working on it|got it)\b/i.test(line);
+/**
+ * Whether a post's first line calls everything clear while a line under it counts uncommitted files, as the 17:41 KST checklist run of
+ * 11-23 did: "All clear to ship." over "7 tracked files have uncommitted edits ... There are also 8 untracked paths". The other 6
+ * answered runs of that ask since 11-22 named the files in the answer, such as "Three of the four are clear, but 15 files are uncommitted".
+ */
+export const overstates = text => {
+  const [first = "", ...rest] = text.split("\n").filter(line => line.trim());
+  const clear = /\b(all (?:\w+ ){0,3}?(?:clear|clean|good|fine|green)|(?:good|clear|ready|safe) to (?:go|ship)|nothing (?:blocks|is blocking|to fix)|no blockers?)\b/i.test(first) && !/\b(but|except|apart from|other than|aside from|though|besides)\b/i.test(first);
+  return clear && rest.some(line => /\b[1-9]\d*\b[^.\n]*\buncommitted\b|\buncommitted\b[^.\n]*\b[1-9]\d*\b/i.test(line));
+};
 /**
  * The sentences of each line of a text, with code and link targets left out. A wall of text, such as dm_agent-factory p55 on 11-21, a
  * paragraph of the guess, the cause, the plan and the pick, holds 3 or more on one line.

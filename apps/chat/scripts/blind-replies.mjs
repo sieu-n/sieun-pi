@@ -30,7 +30,7 @@ import { appendFileSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import { hasOpenItem, naturalChecks, naturalLine, narrates, words } from "./natural-checks.mjs";
+import { hasOpenItem, naturalChecks, naturalLine, narrates, overstates, words } from "./natural-checks.mjs";
 
 const { values } = parseArgs({ options: { asks: { type: "string" }, set: { type: "string" }, cwd: { type: "string" }, host: { type: "string" }, out: { type: "string" }, server: { type: "string" }, "no-reaction": { type: "boolean" },
   "first-ms": { type: "string" }, "poll-ms": { type: "string" } } });
@@ -186,6 +186,7 @@ function checks(ask, posts, asked, versions = new Map()) {
       ["the first version narrates no plan of the agent's own", !narrates(first)],
       ["the first version holds no open - [ ] item", !hasOpenItem(first)],
       ["the last version opens with a one-line answer", lines.length > 0 && !BULLET.test(lines[0]) && words(lines[0]) <= 25],
+      ["the answer line calls nothing all clear over uncommitted files it lists", !overstates(text)],
       ["no line over 35 words", lines.every(line => words(line) <= 35)],
     ];
   }

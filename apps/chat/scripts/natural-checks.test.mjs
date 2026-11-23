@@ -1,7 +1,7 @@
 // node --test --test-force-exit --test-isolation=none apps/chat/scripts/natural-checks.test.mjs
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { naturalChecks } from "./natural-checks.mjs";
+import { naturalChecks, naturalLine, overstates } from "./natural-checks.mjs";
 
 const failed = versions => naturalChecks(versions).filter(([, ok]) => !ok).map(([name]) => name);
 
@@ -62,4 +62,21 @@ test("a question passes only with the agent's pick before or with it", () => {
   assert.ok(failed([[`The tracker sits behind one adapter, so both ways work.${items}\n\nShould we adapt it or move to linear?`]]).includes("every question comes with the agent's pick"));
   assert.deepEqual(failed([[`The tracker sits behind one adapter, so both ways work.${items}\n\nI'd adapt it, unless you'd rather move to linear?`]]), []);
   assert.deepEqual(failed([[`The tracker sits behind one adapter, so both ways work.${items}\n\nWhich backlog do you mean? I'd plan around our GitHub issues.`]]), []);
+});
+
+/** The checklist set's answer in d4's 17:41 KST measure of 11-23, which failed only on its 4-word opening line. */
+const ALL_CLEAR = "All clear to ship.\n\n- Local main matches origin/main after a fresh fetch, with nothing ahead or behind.\n- 7 tracked files have uncommitted edits, 6 in `apps/chat/web` plus `scripts/skills_usage.py`. There are also 8 untracked paths, such as `.scratch/` and a stray file named `{kind:`.\n- The comm-guard test passes 7 of 7.\n- No TODO is left in `packages/pi-host/src/durable`.";
+
+test("a short answer in a plain sentence is a natural opening, and a title, a progress line or an ack is not", () => {
+  for (const line of ["All clear to ship.", "Yes, it's on main.", "yes, all three are running.", "Not yet.", "No, two are red.", "Three of the four are clear, but 15 files are uncommitted, so I'd check those before you ship."]) assert.ok(naturalLine(line), line);
+  for (const line of ["four pre-ship checks", "Four pre-ship checks.", "Repo status.", "checking all four now", "Checking all four now.", "checking now", "On it.", "Working on it.", "Options:", "The others:", "Plan: three steps to ship it", "Done", "- git"]) assert.ok(!naturalLine(line), line);
+});
+
+test("an answer line that calls all clear over a count of uncommitted files overstates, and one that names them does not", () => {
+  assert.ok(overstates(ALL_CLEAR));
+  assert.ok(overstates("You're good to go.\n- uncommitted: 19 entries, none in pi-host"));
+  assert.ok(!overstates(ALL_CLEAR.replace("All clear to ship.", "Three of the four are clear, but 15 files are uncommitted.")));
+  assert.ok(!overstates(ALL_CLEAR.replace("All clear to ship.", "All four look clean for pi-host, but the tree has other sessions' uncommitted work.")));
+  assert.ok(!overstates("All clear to ship.\n- Local main matches origin/main.\n- No files are uncommitted.\n- The comm-guard test passes 7 of 7."));
+  assert.ok(!overstates("All clear to ship.\n- 0 files are uncommitted."));
 });
