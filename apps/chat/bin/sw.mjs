@@ -87,7 +87,7 @@ function printList(view) {
 function printCheck(check) {
   console.log(check.items.length ? `${plural(check.items.length, "drift item")}:` : "No drift: the disk matches the DB.");
   for (const item of check.items) {
-    const where = "copyId" in item ? item.copyId : `${item.installId} ${item.box}:${item.path}`;
+    const where = "copyId" in item ? item.copyId : item.kind === "gone" ? `${item.skillId}  (its folder left its repo's main branch)` : `${item.installId} ${item.box}:${item.path}`;
     console.log(`  ${item.kind.padEnd(10)} ${where}  fix: ${item.fix.join(" or ")}`);
   }
   if (check.offline.length) console.log(`Offline, showing their last good scan: ${check.offline.join(", ")}`);

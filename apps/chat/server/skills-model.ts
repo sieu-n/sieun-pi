@@ -411,12 +411,32 @@ export function plan(installs: readonly InstallRecord[], states: ReadonlyMap<str
   return steps;
 }
 
-/** What `sw skills check` lists: folders with no row, and installs the disk does not match. */
-export function drift(copies: readonly CopyFact[], roles: ReadonlyMap<string, CopyRole>, installs: readonly InstallRecord[], states: ReadonlyMap<string, InstallState>): DriftItem[] {
+/**
+ * The git skills whose folder left their repo's main branch: the scan saw a checkout of the repo on main or master that is not stale, and
+ * no such checkout holds the skill. On 11-22 commit 5bbbb7f4 deleted skills/principle-make-operations-idempotent from sieun-pi, and its row
+ * lived on with an old clone as its source and a Mac install that prime-sync had already unlinked, while `sw skills check` listed nothing.
+ */
+export function goneSkills(skills: readonly SkillRecord[], copies: readonly CopyFact[]): SkillRecord[] {
+  const mains = new Map<string, Set<string>>();
+  for (const c of copies) {
+    if (!c.checkout || c.stale || (c.checkout.branch !== "main" && c.checkout.branch !== "master")) continue;
+    const repo = repoName(c.checkout);
+    mains.set(repo, (mains.get(repo) ?? new Set()).add(`${c.box}:${c.checkout.root}`));
+  }
+  return skills.filter(skill => {
+    if (skill.source.kind !== "git") return false;
+    const roots = mains.get(skill.source.repo);
+    return !!roots && !copies.some(c => c.key === skill.id && c.linkTarget === null && c.checkout && roots.has(`${c.box}:${c.checkout.root}`));
+  });
+}
+
+/** What `sw skills check` lists: folders with no row, rows whose git source is gone, and installs the disk does not match. */
+export function drift(copies: readonly CopyFact[], roles: ReadonlyMap<string, CopyRole>, installs: readonly InstallRecord[], states: ReadonlyMap<string, InstallState>, skills: readonly SkillRecord[]): DriftItem[] {
   const items: DriftItem[] = [];
   for (const c of copies) {
     if (roles.get(copyId(c)) === "unowned") items.push({ kind: "unowned", copyId: copyId(c), box: c.box, path: c.path, name: c.name, fix: ["adopt", "remove"] });
   }
+  for (const skill of goneSkills(skills, copies)) items.push({ kind: "gone", skillId: skill.id, name: skill.name, fix: ["remove"] });
   for (const install of installs) {
     const state = states.get(install.id);
     if (!state) continue;

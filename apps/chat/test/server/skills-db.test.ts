@@ -186,6 +186,42 @@ test("a new folder after the seed is unowned until adopted, and adopt changes no
   assert.equal((await db.apply()).changes, 0);
 });
 
+test("a skill deleted from its repo's main branch shows as gone while an old clone keeps it, and remove drops the row and leaves the clone", async t => {
+  const { fixture, db, scan, present } = rig(t);
+  scan();
+  const source = join(fixture.home, "src/tools");
+  const clone = join(fixture.home, "code/tools-old/.agents/skills/deploy-notes");
+  execFileSync("git", ["-C", source, "rm", "-r", "-q", ".agents/skills/deploy-notes"]);
+  execFileSync("git", ["-C", source, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com", "commit", "-q", "-m", "drop deploy-notes"]);
+  rmSync(join(fixture.home, ".prime/agent/skills/deploy-notes"));
+  scan();
+  const gone = db.check().items.filter(i => i.kind === "gone");
+  assert.deepEqual(gone.map(i => i.kind === "gone" && i.skillId), ["git:tools/.agents/skills/deploy-notes"]);
+  await db.remove({ target: "git:tools/.agents/skills/deploy-notes" });
+  assert.ok(present(clone), "the old clone keeps its folder");
+  scan();
+  assert.deepEqual(db.check().items.filter(i => i.kind === "gone" || i.kind === "missing"), []);
+});
+
+test("adopting a new skill's source also adopts the links that point at it, so one adopt leaves no drift", async t => {
+  const { fixture, db, scan } = rig(t);
+  scan();
+  const before = db.check().items.length;
+  const dir = join(fixture.home, "src/tools/.agents/skills/fresh");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "SKILL.md"), "---\nname: fresh\ndescription: Use when you test adopt.\n---\n\n# fresh\n");
+  symlinkSync(dir, join(fixture.home, ".prime/agent/skills/fresh"));
+  scan();
+  const unowned = db.check().items.filter(i => i.kind === "unowned");
+  assert.equal(unowned.length, 2, JSON.stringify(unowned));
+  const change = await db.adopt({ copyId: `${BOX}:${dir}` });
+  assert.match(change.move.summary, /with 1 linked installs/);
+  assert.equal(db.check().items.length, before);
+  scan();
+  assert.equal(db.check().items.length, before);
+  assert.equal((await db.apply()).changes, 0);
+});
+
 test("a box whose scan fails keeps its last good copies and says since when", t => {
   const dir = mkdtempSync(join(tmpdir(), "skills-db-mac-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));

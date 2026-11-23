@@ -22,6 +22,9 @@
  *     into the real store and no owner list shows it; it is archived and its folder deleted after the answer, and a sweep before and after
  *     the run archives and deletes any recall agent a killed run left.
  *   recall_agents_left: recall agents still unarchived or with a folder after the run (target 0).
+ *   skills_drift: the items `sw skills check` lists (GET /api/skills/check), each place the skill folders on the boxes differ from the skills
+ *     DB, such as a folder no row owns or a row whose git folder left main (target 0). Memory is what one agent keeps and a skill is what every
+ *     agent keeps, so this duty watches both (#sw-factory-build p193, 11-24: "지금 skills sdk가 제대로 적용된거야?").
  *
  * A match word list is all-of, case-insensitive, and a word written "a|b" takes either form. A form starts at a word start, and a form of
  * up to 3 characters is a whole word, so "no" does not match "now"; a longer form may run on, so "revok" matches "revoked".
@@ -357,6 +360,18 @@ export async function recall(server: string, agentsDir: string, record: AgentRec
   }
 }
 
+/** `sw skills check` as the server answers it: each place the skill folders on the boxes differ from the skills DB in chat.sqlite. */
+async function skillsDrift(server: string): Promise<{ items: { kind: string; where: string; fix: string }[] } | { error: string }> {
+  try {
+    const response = await fetch(`${server}/api/skills/check`);
+    if (!response.ok) return { error: `GET /api/skills/check answered ${response.status}` };
+    const check = await response.json() as { items: { kind: string; copyId?: string; skillId?: string; box?: string; path?: string; fix: string[] }[] };
+    return { items: check.items.map(item => ({ kind: item.kind, where: item.copyId ?? (item.kind === "gone" ? item.skillId! : `${item.box}:${item.path}`), fix: item.fix.join(" or ") })) };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 if (import.meta.url === `file://${process.argv[1]}`) {
   const { values } = parseArgs({ options: {
     "data-dir": { type: "string" }, "agents-dir": { type: "string" }, ideal: { type: "string" }, corrections: { type: "string" },
@@ -467,8 +482,13 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const left = sweeps.at(-1)?.left ?? [];
   for (const id of left) flagged.push({ kind: "recall_agent_left", excerpt: `${id} is a recall agent the server would not archive`, sig: `left:${id}` });
 
+  const skills = await skillsDrift(server);
+  if ("error" in skills) flagged.push({ kind: "source_error", excerpt: `sw skills check failed: ${skills.error}`, sig: "skills-check" });
+  else for (const item of skills.items) flagged.push({ kind: "skills_drift", excerpt: `${item.kind} ${item.where}, fix with sw skills ${item.fix}`, sig: `skills:${item.kind}:${item.where}` });
+
   const measured = records.filter(record => !record.agentsDir).length - unwritten;
   const metrics: Record<string, number> = {
+    ...("error" in skills ? {} : { skills_drift: skills.items.length }),
     corrections_captured_pct: pct(correctionsKept, correctionsDue),
     scratch_entries: scratch,
     agents_real: measured,
@@ -500,10 +520,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     : !count.unmeasured ? "no recall run"
     : `recall not measured, since none of the ${sessions(count.unmeasured)} got a model answer in time` +
       (carried ? `, so recall_right_pct keeps the ${carried.pct}% measured at ${new Date(carried.at).toISOString().slice(0, 16)}Z` : ", and no earlier run measured it");
+  const skillsWords = "error" in skills ? "sw skills check failed" : `${skills.items.length} skills drift item${skills.items.length === 1 ? "" : "s"}`;
   const output = {
     metrics,
     flagged: [...(ideal ? [] : [{ kind: "source_error", excerpt: `no ideal file at ${idealFile}`, sig: "no-ideal" }]), { kind: "summary", excerpt: `${onIdeal} of ${measured} agents hold their ideal memory${unwritten ? ` (${unwritten} made under a day ago ${unwritten === 1 ? "has" : "have"} no ideal yet and ${unwritten === 1 ? "is" : "are"} not measured)` : ""}; ${correctionsKept} of ${correctionsDue} corrections a day old are kept; ` +
-      `${scratch} scratch entries; ${recallWords}`, sig: "summary" }, ...flagged],
+      `${scratch} scratch entries; ${recallWords}; ${skillsWords}`, sig: "summary" }, ...flagged],
     idealFile, agents: rows,
   };
   const json = JSON.stringify(output, null, 1);

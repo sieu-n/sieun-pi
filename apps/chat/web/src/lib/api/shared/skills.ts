@@ -414,12 +414,14 @@ export function withText(view: SkillsView, texts: ReadonlyMap<string, string>): 
 }
 
 /**
- * One way the disk differs from the DB, which GET /api/skills/check lists. `unowned` is a folder with no row, `missing` an install not on
+ * One way the disk differs from the DB, which GET /api/skills/check lists. `unowned` is a folder with no row, `gone` a git skill's row whose
+ * folder left its repo's main branch, `missing` an install not on
  * disk, `changed` a copy edited in place, `behind` a copy whose source moved on, and `wrong-link` a link that points elsewhere. Each item
  * names the commands that settle it.
  */
 export type DriftItem =
   | { kind: "unowned"; copyId: string; box: BoxName; path: string; name: string; fix: ("adopt" | "remove")[] }
+  | { kind: "gone"; skillId: string; name: string; fix: "remove"[] }
   | { kind: "missing" | "wrong-link" | "behind"; installId: string; skillId: string; box: BoxName; path: string; fix: ("apply" | "remove")[] }
   | { kind: "changed"; installId: string; skillId: string; box: BoxName; path: string; changedLines: number; fix: ("adopt" | "remove")[] };
 

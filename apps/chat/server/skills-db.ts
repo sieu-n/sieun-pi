@@ -688,7 +688,7 @@ export class SkillsDb {
     const homes = new Map(st.scans.map(scan => [scan.box, home(scan.box)]));
     creditUse(entries, new Map([...use].map(([name, u]) => [name, u.byPath])), box => homes.get(box) ?? null);
     const unowned = st.copies.filter(c => st.roles.get(copyId(c)) === "unowned").map(copyView);
-    const items = drift(st.copies, st.roles, st.installs, st.states);
+    const items = drift(st.copies, st.roles, st.installs, st.states, st.skills);
     const has = (e: SkillEntry, rules: readonly VerdictRule[]) => e.verdicts.some(v => rules.includes(v.rule));
     const counts: SkillCounts = {
       skills: entries.length, copies: st.copies.length, installs: st.installs.length,
@@ -709,7 +709,7 @@ export class SkillsDb {
 
   check(): SkillsCheck {
     const st = this.state();
-    return { at: now(), items: drift(st.copies, st.roles, st.installs, st.states), offline: st.scans.filter(x => !x.ok).map(x => x.box) };
+    return { at: now(), items: drift(st.copies, st.roles, st.installs, st.states, st.skills), offline: st.scans.filter(x => !x.ok).map(x => x.box) };
   }
 
   moves(): SkillMove[] {
@@ -921,7 +921,9 @@ export class SkillsDb {
       const canon = st.canon.get(skill.id);
       const rel = skill.source.kind === "git" ? skill.source.path : null;
       const mirrors = st.copies.filter(c => c.key === skill.id && c.linkTarget === null && c !== canon && rel !== null && c.box !== canon?.box && c.path.endsWith(`/${rel}`) && !c.stale);
-      steps = [...installs.map(i => ({ box: i.box, path: i.path, name: skill.name })), ...(canon ? [canon] : []).map(c => ({ box: c.box, path: c.path, name: skill.name })), ...mirrors.map(c => ({ box: c.box, path: c.path, name: skill.name }))];
+      // A source in a stale checkout is an old clone or worktree of a skill its repo dropped; removing the row leaves that checkout alone.
+      const source = canon && !canon.stale ? [canon] : [];
+      steps = [...installs.map(i => ({ box: i.box, path: i.path, name: skill.name })), ...source.map(c => ({ box: c.box, path: c.path, name: skill.name })), ...mirrors.map(c => ({ box: c.box, path: c.path, name: skill.name }))];
       dropSkills = [skill.id];
       summary = `remove skill ${skill.id}: ${installs.length} installs and its source`;
     } else if (copy) {
@@ -974,10 +976,13 @@ export class SkillsDb {
     const newSkill: SkillRecord | null = known ? null : { id: skillId, name: copy.name, owner: seedOwner(identity.source), source: identity.source, createdAt: now() };
     if (newSkill && body.skillId && body.skillId !== copy.key) throw new SkillsRefused(`No skill ${body.skillId}.`);
     const link = copy.linkTarget !== null ? this.linkInstall(copy, skillId) : null;
+    // A new skill's source takes the links that already point at it, such as prime-sync's on each box, so one adopt leaves no drift.
+    const links = link ? [link] : newSkill ? st.copies.filter(c => c.linkTarget !== null && c.key === skillId && st.roles.get(copyId(c)) === "unowned").map(c => this.linkInstall(c, skillId)) : [];
     await this.write(() => {
       if (newSkill) this.insertSkill(newSkill);
-      if (link) this.insertInstall(link);
-      this.record("adopt", `adopt ${body.copyId} as ${link ? `install ${link.id} of ` : "the source of "}${skillId}`, null, emptySnapshot(), { skills: newSkill ? [newSkill.id] : [], installs: link ? [link.id] : [], copies: [] }, moveId);
+      for (const l of links) this.insertInstall(l);
+      const what = link ? `install ${link.id} of ${skillId}` : `the source of ${skillId}${links.length ? ` with ${links.length} linked installs` : ""}`;
+      this.record("adopt", `adopt ${body.copyId} as ${what}`, null, emptySnapshot(), { skills: newSkill ? [newSkill.id] : [], installs: links.map(l => l.id), copies: [] }, moveId);
     });
     return { move: this.moveById(moveId)!, apply: null };
   }
