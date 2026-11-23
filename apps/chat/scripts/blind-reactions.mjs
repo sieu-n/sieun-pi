@@ -13,7 +13,7 @@
  * 2. "ok thanks" gets one reaction from the agent and no post.
  * 3. In the channel no agent post is a root post.
  * 4. No agent post has ✅ or 👀 in its text outside code, unless it names the reaction ("my 👀 reaction on p1"), ends on a sign-off emoji, or
- *    pastes a raw JSON or log line. On 11-21 a fresh agent, asked where a room's posts live, gave "a `set` line patches a post later, like my
+ *    pastes a raw JSON or log line. On 11-21 a fresh agent, asked where a room's posts lived, gave "a `set` line patches a post later, like my
  *    👀 reaction on p1" as its example, which uses no emoji as a status mark.
  * 👀 counts as seen when a poll saw it on the post or the agent's comm thread called set_emoji with eyes on it, since a fast answer can put
  * it on and take it off between two polls.
@@ -37,7 +37,8 @@ const EYES = "👀";
 /**
  * Whether a post uses ✅ or 👀 as a status mark outside code, as in "yes, all pass ✅". A post may name the reaction as a thing: "my 👀
  * reaction on p1", or after my, your, the or a, as in "my 👀 on p1 is a later `set` line", which two of four fresh agents wrote on 11-21
- * when asked where a room's posts live.
+ * when asked where a room's posts lived. Since 11-24 the question asks where an attached image is kept, because the role-text example
+ * of reading data from a file names the post log, and a reply that copies it proved nothing.
  */
 const statusMark = text => [...text.replace(/```[\s\S]*?```|`[^`\n]*`/g, "").matchAll(/[✅👀]/gu)]
   .some(m => !/^\s*(?:reactions?|emoji|marks?)\b/u.test(m.input.slice(m.index + m[0].length)) && !/\b(?:my|your|his|the|a|an|its|their)\s+$/iu.test(m.input.slice(0, m.index)));
@@ -45,7 +46,7 @@ const CHECK = "✅";
 
 /** The owner's kinds of posts from #sw-factory-build on 11-20: a task with a result to come, a question while it runs, and a thanks. */
 const TASK = "can you run the apps/chat server tests for reactions and emoji and tell me if they pass?";
-const QUESTION = "where does the chat server keep a room's posts?";
+const QUESTION = "where does the chat server keep an image I attach in a room?";
 const THANKS = "ok thanks";
 
 /** A post that ends on an emoji after its words, such as "yep, all 18 pass 🎉". */
