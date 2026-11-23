@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Installs the usage collector on this box: one command, and a second run changes nothing.
 
-usage: python3 -B components/usage-collector/install.py [--dry-run] [--home DIR] [--no-service]
+usage: python3 -B components/usage-collector/install.py [--ref REF] [--dry-run] [--home DIR] [--no-service]
 
-1. Copies usage_collector/ into ~/.local/share/usage-collector/app, so the service never reads the checkout, which prime-sync moves
+1. Copies usage_collector/ as committed at --ref (default HEAD) into ~/.local/share/usage-collector/app, so the service never reads the checkout, which prime-sync moves
    every minute and which macOS keeps launchd jobs out of under Documents.
 2. Writes the systemd user unit usage-collector.service on Linux, or the launchd agent com.sieun.usage-collector on macOS, running
    `collect --loop 10`.
@@ -35,13 +35,14 @@ def python() -> str:
     return "/usr/bin/python3" if Path("/usr/bin/python3").exists() else (shutil.which("python3") or sys.executable)
 
 
-def app_files() -> Dict[str, bytes]:
-    files = {}
-    for path in sorted((HERE / "usage_collector").rglob("*")):
-        if path.is_file() and "__pycache__" not in path.parts:
-            files[str(path.relative_to(HERE))] = path.read_bytes()
-    files["schema.sql"] = (HERE / "schema.sql").read_bytes()
-    return files
+def app_files(ref: str) -> Dict[str, bytes]:
+    """The package as committed at `ref`, so another job's uncommitted client in the shared checkout never reaches the service."""
+    def git(*args: str) -> bytes:
+        return subprocess.run(["git", "-C", str(HERE), *args], check=True, capture_output=True).stdout
+
+    prefix = git("rev-parse", "--show-prefix").decode().strip()
+    names = git("ls-tree", "-r", "--name-only", "--full-name", ref, "--", "usage_collector", "schema.sql").decode().split("\n")
+    return {name[len(prefix):]: git("cat-file", "blob", f"{ref}:{name}") for name in names if name}
 
 
 def systemd_unit(app: Path) -> str:
@@ -116,6 +117,7 @@ def run(command: List[str], dry_run: bool, changes: List[str]) -> subprocess.Com
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("--ref", default="HEAD", help="the commit whose usage_collector/ is installed")
     parser.add_argument("--dry-run", action="store_true", help="print what would change, change nothing")
     parser.add_argument("--home", default=str(Path.home()), help="install under this home (a test home needs --no-service)")
     parser.add_argument("--no-service", action="store_true", help="write the files only; never call systemctl or launchctl")
@@ -126,7 +128,7 @@ def main() -> int:
         if not args.dry_run:
             return 2
     app = home / ".local/share/usage-collector/app"
-    code = sync(app, app_files(), args.dry_run)
+    code = sync(app, app_files(args.ref), args.dry_run)
     service: List[str] = []
     if sys.platform == "darwin":
         unit_path = home / "Library/LaunchAgents" / f"{LABEL}.plist"

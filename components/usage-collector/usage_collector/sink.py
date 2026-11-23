@@ -10,6 +10,7 @@ sink.json (default ~/.config/usage-collector/sink.json):
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import urllib.error
 import urllib.parse
@@ -37,6 +38,11 @@ class Sink:
         if config.get("token_file"):
             token = Path(str(config["token_file"])).expanduser().read_text().strip()
             self.headers["Authorization"] = f"Bearer {token}"
+
+    @property
+    def id(self) -> str:
+        """Names the store this sink writes to; the cursors live under it, so a new url or table starts with no cursor."""
+        return hashlib.sha256(f"{self.url}\n{self.table}".encode()).hexdigest()[:16]
 
     @classmethod
     def load(cls, path: Path) -> "Sink":

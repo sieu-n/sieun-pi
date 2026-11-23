@@ -1,7 +1,7 @@
 """usage: python3 -m usage_collector collect [--since 90d] [--loop SECONDS] [--dry-run] [--client NAME ...]
 
 Reads every model call the clients on this host keep and writes it to usage.model_calls. A client with no saved cursor reads back to
---since; after that each pass reads only what is new.
+--since; after that each pass reads only what is new. Cursors are kept per sink, so pointing sink.json at a new store backfills it.
 """
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ def main(argv: Optional[list] = None) -> int:
     collect = commands.add_parser("collect", help="read new model calls and write them to the sink")
     collect.add_argument("--since", default="90d", help="how far back a client with no cursor reads: 90d, 12h, or an ISO time")
     collect.add_argument("--loop", type=float, metavar="SECONDS", help="run again every SECONDS, per client")
-    collect.add_argument("--dry-run", action="store_true", help="read and count, write nothing and save no cursor")
+    collect.add_argument("--dry-run", action="store_true", help="read and count from the sink's cursors, write nothing and save no cursor")
     collect.add_argument("--client", action="append", help="only this client (repeatable)")
     collect.add_argument("--config-dir", default=os.environ.get("USAGE_COLLECTOR_CONFIG", str(CONFIG_DIR)))
     collect.add_argument("--state-dir", default=os.environ.get("USAGE_COLLECTOR_STATE", str(STATE_DIR)))
@@ -62,20 +62,18 @@ def main(argv: Optional[list] = None) -> int:
 
     config_dir = Path(args.config_dir).expanduser()
     host = args.host or default_host(config_dir)
-    sink = None
-    if not args.dry_run:
-        try:
-            sink = Sink.load(Path(args.sink).expanduser() if args.sink else config_dir / "sink.json")
-        except SinkError as error:
-            log(str(error))
-            return 2
+    try:
+        sink = Sink.load(Path(args.sink).expanduser() if args.sink else config_dir / "sink.json")
+    except SinkError as error:
+        log(str(error))
+        return 2
     modules = discover(args.client)
     if not modules:
         log("no client modules matched")
         return 2
     settings = Settings(host=host, since_ms=lambda: since_ms(args.since, int(time.time() * 1000)), home=Path(args.home).expanduser(),
-                        sink=sink, store=StateStore(Path(args.state_dir).expanduser()), dry_run=args.dry_run,
-                        max_bytes=sink.max_body_bytes if sink else 1_000_000)
+                        sink=sink, store=StateStore(Path(args.state_dir).expanduser() / sink.id), dry_run=args.dry_run,
+                        max_bytes=sink.max_body_bytes)
     def report(client: str, stats: Stats) -> None:
         if args.loop and not stats.rows:
             return

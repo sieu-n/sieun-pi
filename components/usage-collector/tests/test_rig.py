@@ -64,6 +64,18 @@ class RigTest(unittest.TestCase):
         cost = self.sink.query(f"SELECT toString(sum(cost_usd)) FROM {self.table} FINAL WHERE client = 'pi-host'").strip()
         self.assertEqual(cost, "0.0802", "20 rows of 0.00001 + 0.0025 + 0.0005 + 0.001")
 
+    def test_a_new_sink_is_backfilled(self) -> None:
+        self.assertEqual(self.collect("state"), 0)
+        other = f"{self.table}_next"
+        for statement in [s for s in "\n".join(l for l in SCHEMA.read_text().splitlines() if not l.startswith("--")).split(";") if s.strip()]:
+            self.sink.query(statement.replace("usage.model_calls", other))
+        try:
+            self.config.write_text(json.dumps({"url": RIG, "table": other, "max_body_bytes": 2000}))
+            self.assertEqual(self.collect("state"), 0)
+            self.assertEqual(int(self.sink.query(f"SELECT count() FROM {other} FINAL")), 36, "the same state folder starts the new sink from no cursor")
+        finally:
+            self.sink.query(f"DROP TABLE IF EXISTS {other}")
+
     def test_crash_mid_run_then_rerun(self) -> None:
         real = Sink.insert
         calls = {"n": 0}
