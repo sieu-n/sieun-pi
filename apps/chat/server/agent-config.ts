@@ -21,6 +21,7 @@ import { dirname, join, resolve } from "node:path";
 import type { AgentConfig, AgentFolderSummary, AgentId, AgentSummary, AgentWake, ChatBoard, ConfigFile, PlanItem, ThreadKind, UsagePart } from "../web/src/lib/api/types.ts";
 import type { Duty, DutyRunRecord } from "../web/src/lib/api/shared/chat-duties.ts";
 import { fileInfo, instructionFiles } from "./agent-folder.ts";
+import { agentScripts } from "./agent-scripts.ts";
 import type { AgentRecord } from "./agent-store.ts";
 import { NotFound, type App } from "./app.ts";
 import { judgedRun } from "../web/src/lib/api/shared/duty-card.ts";
@@ -392,6 +393,9 @@ export async function agentConfig(app: App, id: AgentId): Promise<AgentConfig> {
     const { entries, ...memory } = read.memory;
     folder = { ...read, memory: { ...memory, count: entries.length } };
   }
+  const box = app.routing?.boxOf(thread);
+  const scripts = box && box !== app.config.box && app.routing?.relay(box) ? null
+    : agentScripts({ folderDir: read?.dir ?? null, brief: read?.brief.text ?? "", cwd: row.cwd, home: app.config.home, duties: dutyFile?.duties ?? [] });
 
   // Data that outlives a turn: Prime's global store, which pi-host's digest merges into every thread, and the thread's own store when no agent
   // holds it.
@@ -447,11 +451,10 @@ export async function agentConfig(app: App, id: AgentId): Promise<AgentConfig> {
     },
     instructions: {
       files: instructions.files,
-      note: "pi-host builds its system prompt with Prime's own builder, which puts these files in the Project Context part, global first, then each "
-        + "folder down to its cwd, and its agent's brief.md after them. Each folder gives its AGENTS.md and then its CLAUDE.md, which Prime's own "
-        + "loader leaves out, unless one already holds the other's text. An edit shows in its next request."
+      note: "Every thread puts these files in its prompt, global ones first, then each folder down to its cwd. An edit shows in its next request."
         + (instructions.away ? ` ${instructions.away}` : ""),
     },
+    scripts,
     swarm: {
       parent: agent.parent ?? null, jobs,
       rooms: (() => {

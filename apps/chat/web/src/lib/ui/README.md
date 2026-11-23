@@ -83,6 +83,7 @@ Colors, chart series (`--chart-series-1` to `4`), type, radii, shadows, spacing,
 | `SplitPane` | A list and a resizable detail pane, for inbox-style pages. | `list`, `detail`, `detailWidth`, `storageKey` |
 | `ResizeHandle` | A 14 px drag seam that also takes arrow keys. | `size`, `min`, `max`, `edge`, `onresize`, `oncommit` |
 | `Disclosure` | A header that shows or hides its body. | `bind:open`, `title`, `detail`, `actions` |
+| `ShowAllList` | A long list that shows 10 rows and a "Show all N" control, then draws the rest over a few frames (c123). | `items`, `key`, `row` snippet that draws one `<li>`, `noun`, `limit`, `bind:open`, `dense` |
 | `Meter` | A 4 px bar that turns amber at 70 and red at 90. | `percent`, `label`, `value`, `warn`, `danger`, `inverted` |
 | `EmptyState` | An icon, a title, a line of text and actions. | `title`, `description`, `icon`, `action`, `art` |
 | `Spinner`, `LoadingText`, `Skeleton` | Loading marks. LoadingText waits one second before it shows, so fast loads never flicker. | `text`, `delay`, `lines` |

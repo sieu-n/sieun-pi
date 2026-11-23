@@ -851,6 +851,8 @@ export interface AgentConfig {
     | { kind: "none"; note: string; related: ConfigFile[] }
     | { kind: "agent"; note: string; related: ConfigFile[] };
   instructions: { files: ConfigFile[]; note: string };
+  /** Its agent's scripts (`agent-scripts.ts`); null when the agent's folder sits on another box, which this read does not walk. */
+  scripts: AgentScript[] | null;
   swarm: {
     parent: { id: AgentId; name: string } | null;
     jobs: { id: AgentId; name: string; kind: "job" | "duty" | "root job"; status: RunStatus; createdAt: Ms | null; parent: AgentId | null; depth: number; archived: boolean }[];
@@ -878,6 +880,13 @@ export interface AgentConfig {
     days: number; turns: number; cost: number; tokens: { input: number; output: number; cacheRead: number; cacheWrite: number }; scope: string;
     split: Record<ThreadKind, UsagePart>;
   } | null;
+}
+
+/** A script file the agent keeps in its folder, that its brief names, or that one of its duties runs as its precheck. */
+export interface AgentScript {
+  path: string;
+  from: { kind: "folder" } | { kind: "brief" } | { kind: "duty"; duty: string; name: string };
+  modifiedAt: Ms;
 }
 
 /** The kinds of thread an agent runs: its main thread, one comm thread per room, and root job threads. */

@@ -4,7 +4,7 @@
    * finds entries by search and sort, adds and edits them in a dialog, and deletes them here; a job's card lists them without editing.
    */
   import { api, type AgentFolder, type HarnessEntryView } from "$lib/api";
-  import { Button, Chip, Dialog, EmptyState, Input, SearchField, Select, TextArea, stampLabel, toast } from "$lib/ui";
+  import { Button, Chip, Dialog, EmptyState, Input, SearchField, Select, ShowAllList, TextArea, stampLabel, toast } from "$lib/ui";
   import { SvelteSet } from "svelte/reactivity";
   import { MEMORY_SORTS, memoryMatches, shortPath, sortMemories, type MemorySort } from "./agents-model";
 
@@ -27,33 +27,15 @@
   let sort = $state<MemorySort>("updated");
   const expanded = new SvelteSet<string>();
 
-  /** The least height of a folded row: its padding, title, two clamped lines and meta line (`.entry`), so a screen of rows fills the panel. */
-  const ROW_MIN_PX = 96;
   const keyOf = (entry: HarnessEntryView) => `${entry.kind}:${entry.id}`;
   const long = (content: string) => content.length > 160 || content.includes("\n");
   const ready = (form: Form) => !!form.title.trim() && !!form.content.trim();
   const total = $derived(folder.memory.entries.length);
-  const shown = $derived(sortMemories(folder.memory.entries.filter((entry) => memoryMatches(entry, query)), sort));
   /**
-   * The rows drawn so far: a screen of them at once, then twice as many each frame until every match is drawn. agent factory's 479 entries
-   * took 3 to 5.5 s from the tab's click to its first row in WebKit at box load 130 to 200 on 11-22 (~/work/p155-config), nearly all of it
-   * building the rows, since hiding the rows off screen from layout (content-visibility) saved little. The count and search read `shown`.
+   * The matches, of which ShowAllList draws 10 and the rest on Show all. Drawing all of agent factory's 479 entries took 3 to 5.5 s from the
+   * tab's click to its first row in WebKit at box load 130 to 200 on 11-22 (~/work/p155-config). The count and search read every entry.
    */
-  const firstScreen = () => Math.max(1, Math.ceil(innerHeight / ROW_MIN_PX));
-  const first = firstScreen();
-  let drawn = $state(first);
-  $effect(() => {
-    void query;
-    void sort;
-    drawn = firstScreen();
-  });
-  $effect(() => {
-    const all = shown.length;
-    if (drawn >= all) return;
-    const frame = requestAnimationFrame(() => (drawn = Math.min(all, drawn * 2)));
-    return () => cancelAnimationFrame(frame);
-  });
-  const rows = $derived(shown.length > drawn ? shown.slice(0, drawn) : shown);
+  const shown = $derived(sortMemories(folder.memory.entries.filter((entry) => memoryMatches(entry, query)), sort));
   const dialogKey = $derived(editing?.entry ? keyOf(editing.entry) : "new");
   const plural = (n: number) => `${n} ${n === 1 ? "memory" : "memories"}`;
 
@@ -98,7 +80,7 @@
 
 <section class="memory" aria-label="Memory of {name}" data-testid="agent-memory">
   <div class="head">
-    <h3 class="t-caption heading">Memory of {name}{total ? ` · ${plural(total)}` : ""}</h3>
+    <h3 class="t-caption heading">Memory{total ? ` · ${total}` : ""}</h3>
     {#if !readonly && total}<Button size="sm" variant="ghost" icon="plus" onclick={() => open(null)}>Add memory</Button>{/if}
   </div>
   <span class="t-caption meta" data-path={folder.memory.path}>
@@ -120,10 +102,10 @@
       {#snippet action()}<Button size="sm" onclick={() => (query = "")}>Clear search</Button>{/snippet}
     </EmptyState>
   {/if}
-  <ul class="entries">
-    {#each rows as entry, index (keyOf(entry))}
+  <ShowAllList items={shown} key={keyOf} noun="memories" label="Memories">
+    {#snippet row(entry)}
       {@const key = keyOf(entry)}
-      <li class="entry" class:below={index >= first} data-entry-id={entry.id} data-kind={entry.kind}>
+      <li class="entry" data-entry-id={entry.id} data-kind={entry.kind}>
         <div class="entry-head">
           <span class="t-label-sm title">{entry.title}</span>
           {#if entry.kind !== "memory"}<Chip size="sm" label={entry.kind} />{/if}
@@ -150,8 +132,8 @@
         {/if}
         {#if error?.key === key && editing?.entry?.id !== entry.id}<p class="t-caption warn" role="alert">{error.text}</p>{/if}
       </li>
-    {/each}
-  </ul>
+    {/snippet}
+  </ShowAllList>
 </section>
 
 {#if editing}
@@ -204,14 +186,6 @@
     flex-direction: column;
     gap: var(--space-2);
   }
-  .entries {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2);
-    margin: 0;
-    padding: 0;
-    list-style: none;
-  }
   .entry {
     display: flex;
     flex-direction: column;
@@ -220,11 +194,6 @@
     padding: var(--space-3);
     border-radius: var(--radius-row);
     background: var(--surface-inset);
-  }
-  /* A row below the first screen skips layout and paint until it nears the view, sized from its last draw or the least row height. */
-  .below {
-    content-visibility: auto;
-    contain-intrinsic-size: auto none auto 96px;
   }
   .search {
     flex: 1;
