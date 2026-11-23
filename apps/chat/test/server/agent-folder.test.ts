@@ -8,6 +8,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
+import { setTimeout as sleep } from "node:timers/promises";
 import type { AgentConfig, AgentFolder, AgentSummary, ConversationSummary } from "../../web/src/lib/api/types.ts";
 import { AGENT_REF_DOC, harnessSlug } from "../../server/agent-folder.ts";
 import { drained } from "../../server/disk.ts";
@@ -122,19 +123,44 @@ test("a new agent's work thread and a root job filed under an agent get their re
   assert.deepEqual(refOf(host(), job.body.thread), { agent: agents.vent, dir: ventDir(), role: "job" });
 });
 
-test("POST /api/agents answers after the new work thread's and root job's agent.ref land, so a send right after it runs with a role", async () => {
+test("POST /api/agents answers while the new thread's agent.ref write waits, and a send right after it reaches pi-host once the ref lands", async () => {
+  // Until 11-23 the answer waited for the ref write, two pi-host round trips, and a thread list read that answered meanwhile held the
+  // event loop before the answer went out: the create's handler took p50 476 ms and p90 1,039 ms over 422 calls.
   const docPut = host().docPut.bind(host());
+  let release!: () => void;
+  const held = new Promise<void>(resolve => (release = resolve));
   host().docPut = async (id, name, value) => {
-    await new Promise(resolve => setTimeout(resolve, 100));
+    if (name === AGENT_REF_DOC) await held;
     return docPut(id, name, value);
   };
+  const submits: { thread: string; role?: string }[] = [];
+  host().beforeSubmit = thread => {
+    submits.push({ thread, role: (refOf(host(), thread) as { role?: string } | undefined)?.role });
+  };
+  const answered = <T>(call: Promise<T>) => Promise.race([call, sleep(5000).then(() => "no answer while the ref write waits" as const)]);
   try {
-    const made = await s.send<AgentSummary>("POST", "/api/agents", { name: "Slow ref probe" });
-    assert.equal((refOf(host(), made.body.thread) as { role?: string } | undefined)?.role, "work");
-    const job = await s.send<AgentSummary>("POST", "/api/agents", { name: "Slow ref probe job", kind: "job", parent: agents.vent });
-    assert.equal((refOf(host(), job.body.thread) as { role?: string } | undefined)?.role, "job");
+    const made = await answered(s.send<AgentSummary>("POST", "/api/agents", { name: "Slow ref probe" }));
+    assert.ok(typeof made !== "string", made as string);
+    assert.equal(made.status, 200);
+    assert.equal(refOf(host(), made.body.thread), undefined, "the ref write still waits");
+    const job = await answered(s.send<AgentSummary>("POST", "/api/agents", { name: "Slow ref probe job", kind: "job", parent: agents.vent }));
+    assert.ok(typeof job !== "string", job as string);
+    assert.equal(job.status, 200);
+
+    for (const [i, thread] of [made.body.thread, job.body.thread].entries()) {
+      const sent = await s.send("POST", `/api/c/${thread}/send`, { requestId: `slow-ref-${i}`, text: "What is your name?" });
+      assert.equal(sent.status, 200);
+    }
+    await sleep(300);
+    assert.deepEqual(submits.filter(x => x.thread === made.body.thread || x.thread === job.body.thread), [], "no send reaches pi-host before its thread's ref");
+    release();
+    await until(async () => submits.filter(x => x.thread === made.body.thread || x.thread === job.body.thread).length, n => n === 2);
+    assert.equal(submits.find(x => x.thread === made.body.thread)?.role, "work");
+    assert.equal(submits.find(x => x.thread === job.body.thread)?.role, "job");
   } finally {
+    release();
     host().docPut = docPut;
+    host().beforeSubmit = undefined;
   }
 });
 

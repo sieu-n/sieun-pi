@@ -10,7 +10,8 @@
  * 4. `search` and `usage` ask the boxes whose link is up and merge the answers; `ping` answers for the chat's box with every box beside it.
  */
 import type { BoxInfo } from "../../../../components/prime-relay/agents/protocol.ts";
-import { readJson, writeJson } from "../store.ts";
+import { replaceLater } from "../disk.ts";
+import { readJson } from "../store.ts";
 import { join } from "node:path";
 import { RelayHost, type LinkState } from "./relay-host.ts";
 import type {
@@ -37,6 +38,7 @@ export class MultiHost implements Host {
   private readonly file: string;
   private routes: RoutesFile;
   private saved: string;
+  private saving = false;
   private readonly started = Date.now();
   /** The box of the agent record that holds a thread, which the App sets once it has its records. */
   agentHost: (thread: string) => string | undefined = () => undefined;
@@ -102,11 +104,20 @@ export class MultiHost implements Host {
     this.routes.threads[thread] = box;
   }
 
+  /**
+   * Saves the routes once the current task ends, as one write however many calls asked. The file held 1.3 MB on 11-23, and its JSON and sync
+   * write took about 37 ms of each POST /api/agents before the answer; now they run after it, and the write goes through the disk queue.
+   */
   private save(): void {
-    const json = JSON.stringify(this.routes);
-    if (json === this.saved) return;
-    this.saved = json;
-    writeJson(this.file, this.routes);
+    if (this.saving) return;
+    this.saving = true;
+    setImmediate(() => {
+      this.saving = false;
+      const json = JSON.stringify(this.routes);
+      if (json === this.saved) return;
+      this.saved = json;
+      replaceLater(this.file, `${json}\n`);
+    });
   }
 
   async threads(opts: { archived?: boolean } = {}): Promise<DurableThread[]> {

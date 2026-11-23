@@ -224,6 +224,8 @@ describe("agents on another box", () => {
     assert.ok(s.relay.host.threadsById.has(agent.thread), "the work thread is on the Mac's pi-host");
     const record = s.app.agents.record(agent.id)!;
     assert.equal(record.agentsDir, "/Users/test/.pi/agent/agents");
+    // The answer does not wait for the work thread's first agent.ref; a send into it does (outbox.ts).
+    await s.app.agents.refWritten(agent.thread);
     const ref = await s.relay.host.docGet(agent.thread, "agent.ref") as { dir: string };
     assert.equal(ref.dir, "/Users/test/.pi/agent/agents/mac-agent");
   });

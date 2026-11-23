@@ -57,6 +57,11 @@ export interface OutboxDeps {
   host: Host;
   /** pi-host's place for the run, so the page shows "queued" while it waits for a slot. */
   submitted(row: OutboxRow, result: Submitted): void;
+  /**
+   * Ends once a new thread's first agent.ref write ends (agents.ts `refWritten`), so a send right after POST /api/agents runs with the
+   * thread's role. The create's answer does not wait for that write; the send waits here, behind its own answer.
+   */
+  refWritten(thread: string): Promise<boolean>;
   /** Delivers each @mention in the send to that agent, after the send itself reached pi-host. */
   mentions(row: OutboxRow): Promise<Delivery[]>;
   /** Items changed, and items gone (a row that landed or was discarded), for the conversation's watchers. */
@@ -256,6 +261,8 @@ export class Outbox {
     const { thread, conversation } = parseConversationId(row.conversation);
     const images = row.images.map(ref => this.deps.image(ref)).filter((image): image is { data: string; mimeType: string } => !!image);
     try {
+      await this.deps.refWritten(thread);
+      if (this.stopped || !this.rows.has(row.requestId)) return;
       const result = await this.deps.host.submit(thread, {
         ...(conversation === 1 ? {} : { conversation }), text: this.deps.fileNotes(row.text, row.images), ...(images.length ? { images } : {}),
         requestId: row.requestId, whenBusy: row.whenBusy, ownerTurn: true,

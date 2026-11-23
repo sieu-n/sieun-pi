@@ -354,6 +354,7 @@ export class App {
     this.outbox = new Outbox(config.dataDir, {
       host,
       submitted: (row, result) => this.queues.follow(row.conversation, result.ticket?.place ?? null),
+      refWritten: thread => this.agents.refWritten(thread),
       mentions: row => this.deliverMentions(row),
       changed: (conversation, items, removed) => this.toWatchers(conversation, { type: "items", conversation, items, ...(removed.length ? { removed } : {}) }),
       image: ref => this.readUpload(ref),
@@ -535,9 +536,12 @@ export class App {
     this.sidebarSoon();
   }
 
-  /** A DM room changed: its row goes out when it differs from the last one sent. */
-  private roomsChanged(): void {
-    const changed = this.rooms.summaries().filter(c => this.roomCache.get(c.id) !== JSON.stringify(c));
+  /**
+   * DM rooms changed, every one or only `only`'s: a row goes out when it differs from the last one sent. A new agent passes its own, since
+   * the summaries of every DM took about 40 ms of a create on 11-23 over the live data dir's agents.
+   */
+  private roomsChanged(only?: AgentRecord): void {
+    const changed = (only ? [this.rooms.summary(only)] : this.rooms.summaries()).filter(c => this.roomCache.get(c.id) !== JSON.stringify(c));
     for (const summary of changed) this.roomCache.set(summary.id, JSON.stringify(summary));
     this.conversationsChanged(changed);
   }
@@ -1293,10 +1297,12 @@ export class App {
       record = this.agents.add(thread, agentsDir, input.test === true);
     });
     this.threads.put(created);
-    await this.agents.refWritten(created.id);
+    // The answer does not wait for the new thread's first agent.ref: the outbox holds a send into the thread until it lands (outbox.ts
+    // `refWritten`). On 11-23 that wait was two pi-host round trips of the create, and a thread list read that answered meanwhile held the
+    // event loop before the answer went out.
     if (!record) return this.threads.agent(created.id)!;
     if (input.brief?.trim()) await this.folders.writeBrief(record, input.brief.trim());
-    this.roomsChanged();
+    this.roomsChanged(record);
     return this.threads.agent(record.id)!;
   }
 

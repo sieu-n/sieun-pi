@@ -242,9 +242,10 @@ export class AgentStore {
     for (const row of this.rooms.rooms) if (isGroupRoom(row)) for (const m of row.members) if ((m.wakeOn as string) === "mention") m.wakeOn = "all";
   }
 
+  /** Queued as rooms.json is: its sync write took up to 11 ms of each POST /api/agents on 11-23, and more while the ext4 journal commits. */
   saveAgents(): void {
     this.version += 1;
-    writeJson(join(this.dir, "agents.json"), this.agents);
+    writeJsonLater(join(this.dir, "agents.json"), this.agents);
   }
   saveRooms(): void {
     this.version += 1;

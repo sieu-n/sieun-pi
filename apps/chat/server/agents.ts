@@ -314,7 +314,7 @@ export class Agents {
 
   /**
    * Writes a new thread's first agent.ref, which `refWritten` answers until it lands: a send right after POST /api/agents could otherwise start
-   * a turn before pi-host reads the thread's role.
+   * a turn before pi-host reads the thread's role, so the outbox waits on it before it hands the send to pi-host.
    */
   private firstRef(thread: string, ref: AgentRef): void {
     const writing: Promise<boolean> = this.putRef(thread, ref).finally(() => {
