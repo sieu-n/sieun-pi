@@ -162,6 +162,8 @@ test("a new agent's Brief tab shows an empty brief and working memory, a model c
   await expect(panel(page).getByTestId("agent-brief")).toHaveAttribute("data-doc", "empty", { timeout: 20_000 });
   await expect(panel(page).getByTestId("agent-working-memory")).toContainText("No working memory yet");
   await expect(panel(page).locator('[data-fact="host"]').getByRole("link")).toHaveAttribute("href", "#/settings/hosts");
+  const left = async (fact: string) => (await panel(page).locator(`[data-fact="${fact}"]`).locator("a, code").first().boundingBox())!.x;
+  expect(Math.abs((await left("cwd")) - (await left("host"))), "the project folder starts where the host does").toBeLessThan(2);
 
   const model = panel(page).locator('[data-fact="model"]');
   await expect(model).toContainText("Its main thread and its 2 comm threads run on it");

@@ -131,8 +131,7 @@
     align-items: center;
     gap: var(--space-2);
   }
-  .facts > dd.folder {
-    flex-direction: column;
-    align-items: flex-start;
+  .folder > :not(.cwd) {
+    flex-basis: 100%;
   }
 </style>
