@@ -40,7 +40,7 @@ import { header, endpoint, receipt, parseMode, newMessageId } from "../../../pi-
 import { family, relationship, type Member, type Relationship } from "../../../pi-rlm/src/core/bus/family.ts";
 import { preview as previewOf, LATEST_CHARS, FIRST_CHARS } from "../../../pi-rlm/src/core/bus/observe.ts";
 import { bootstrapCode, parseSkillImportErrors } from "../../../pi-rlm/src/core/bootstrap.ts";
-import { Kernel, KernelBusyError, relayPaths, type CellResult, type HostRequest, type RestoreResult } from "../../../pi-rlm/src/core/kernel.ts";
+import { coalesceStream, Kernel, KernelBusyError, relayPaths, type CellResult, type HostRequest, type RestoreResult } from "../../../pi-rlm/src/core/kernel.ts";
 import { BUS_SKILLS, kernelPython, pythonSkillOf, RLM_SKILLS, RUNTIME_SRC, type PythonSkill } from "../../../pi-rlm/src/core/python.ts";
 import { NOTE_INTERVAL_MS } from "../../../pi-rlm/src/pi/children.ts";
 import piRlm, { baseEnv, BUSY_NO_UI, cellImages, formatCell, KERNEL_RESET, noticeMessage, restoreLine, SNAPSHOT_LIMITS, STILL_RUNNING, type Notice } from "../../../pi-rlm/src/pi/index.ts";
@@ -457,7 +457,6 @@ export class DurableRlm {
     slot.idleTimer = undefined;
     const call = { api, spawned: [] as number[] };
     slot.call = call;
-    let streamed = "";
     const progress = (text: string) => api.output(`${text}\n`);
     try {
       const depth = await this.depthOf(thread, api.conversationId);
@@ -468,18 +467,25 @@ export class DurableRlm {
         else this.log(`${slot.session}: the kernel did not move to ${thread.cwd}: ${moved.error?.evalue ?? moved.stderr}`);
       }
       let r: CellResult;
+      // Each stdout chunk goes to the call's output once, joined with the chunks of the same loop turn. On 11-23 the output so far went
+      // through startsWith and slice at every chunk, and one cell's prints held pi-host's loop 736 s (22:08-22:22Z).
+      // A cell still running when the call returns prints on, and the call's output takes nothing after it settled.
+      let live = true;
+      const stream = coalesceStream(chunk => {
+        if (live) api.output(chunk);
+      });
       try {
         const code = String(params.code ?? "");
         r = await start.kernel.execute(guardOn() ? withKernelGuard(code) ?? code : code, {
           ...(ctx.abortSignal ? { signal: ctx.abortSignal } : {}),
-          onStream: text => {
-            if (text.startsWith(streamed) && text.length > streamed.length) api.output(text.slice(streamed.length));
-            streamed = text;
-          },
+          onStream: stream.push,
         });
       } catch (error) {
         if (error instanceof KernelBusyError && !ctx.abortSignal?.aborted) throw new Error(BUSY_NO_UI);
         throw error;
+      } finally {
+        stream.flush();
+        live = false;
       }
       let text = formatCell(r);
       const notes: string[] = [];

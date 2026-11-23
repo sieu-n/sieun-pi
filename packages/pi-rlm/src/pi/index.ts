@@ -23,7 +23,7 @@ import { ChildManager, childRecordOf, closingReason, setClosingReason, type Chil
 import { GOAL_ENTRY, GoalState } from "./goal.ts";
 import { createSession } from "../core/host-client.ts";
 import { hostApi, HOST_SOCKET_ENV } from "@sieun-pi/pi-family/host-api";
-import { Kernel, KernelBusyError, relayPaths, type CellResult, type HostRequest, type KernelOptions, type RestoreResult } from "../core/kernel.ts";
+import { coalesceStream, Kernel, KernelBusyError, relayPaths, type CellResult, type HostRequest, type KernelOptions, type RestoreResult } from "../core/kernel.ts";
 import { BASE_PROMPT, childSection, rlmSection, skillsSection } from "../core/prompt.ts";
 import { kernelPython, pythonSkillOf, RLM_SKILLS, RUNTIME_SRC, type PythonSkill } from "../core/python.ts";
 
@@ -555,12 +555,15 @@ export default function piRlm(pi: ExtensionAPI): void {
       let start = await s.ensureKernel(progress);
       let killed = false;
       let r: CellResult;
+      let shown = "";
+      const stream = coalesceStream(chunk => {
+        shown += chunk;
+        onUpdate?.({ content: [{ type: "text", text: shown }], details: { status: "running" } });
+      });
       for (;;) {
         try {
-          r = await start.kernel.execute(params.code, {
-            signal,
-            onStream: text => onUpdate?.({ content: [{ type: "text", text }], details: { status: "running" } }),
-          });
+          r = await start.kernel.execute(params.code, { signal, onStream: stream.push });
+          stream.flush();
           break;
         } catch (error) {
           if (!(error instanceof KernelBusyError) || signal?.aborted) throw error;

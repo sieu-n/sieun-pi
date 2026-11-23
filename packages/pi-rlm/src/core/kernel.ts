@@ -63,6 +63,30 @@ export interface Ready {
   reattached: boolean;
 }
 
+/**
+ * Joins the stream chunks that arrive in one event-loop turn and hands them to `sink` once, in the next turn, so a cell that prints megabytes
+ * in small writes costs the loop one sink call per pipe read. `flush` hands over what is left at once; call it before the cell's result.
+ */
+export function coalesceStream(sink: (text: string) => void): { push(chunk: string): void; flush(): void } {
+  let pending: string[] = [];
+  let timer: ReturnType<typeof setImmediate> | undefined;
+  const flush = () => {
+    if (timer) clearImmediate(timer);
+    timer = undefined;
+    if (!pending.length) return;
+    const text = pending.length === 1 ? pending[0]! : pending.join("");
+    pending = [];
+    sink(text);
+  };
+  return {
+    push: chunk => {
+      pending.push(chunk);
+      timer ??= setImmediate(flush);
+    },
+    flush,
+  };
+}
+
 /** Thrown by `execute` while an interrupted cell still runs. The caller waits with `idle()` or restarts with `kill()`. */
 export class KernelBusyError extends Error {
   constructor() {
@@ -381,7 +405,8 @@ export class Kernel {
   }
 
   /**
-   * Runs one cell. `onStream` gets the cell's output so far after each stdout or stderr chunk. On abort the cell gets `interrupt`, and a
+   * Runs one cell. `onStream` gets each stdout or stderr chunk as it arrives, so a cell that prints n chunks costs the caller O(n) and not the
+   * O(n²) of passing the output so far: on 11-23 that held pi-host's loop 736 s in 22:08-22:22Z. On abort the cell gets `interrupt`, and a
    * cell that has not stopped after the grace period stays running: `execute` returns `stillRunning` and later calls throw
    * `KernelBusyError` until it ends.
    */
@@ -390,7 +415,6 @@ export class Kernel {
     if (this.busyId) throw new KernelBusyError();
     const started = performance.now();
     const out: CellResult = { status: "ok", stdout: "", stderr: "", displays: [], backgroundOutput: "", durationMs: 0 };
-    let streamed = "";
     const id = `c${++this.seq}`;
     let giveUp: (() => void) | undefined;
     const onAbort = () => {
@@ -416,8 +440,7 @@ export class Kernel {
             if (event.event === "stdout" || event.event === "stderr") {
               if (event.id === null) out.backgroundOutput += event.text;
               else out[event.event] += event.text;
-              streamed += event.text;
-              options.onStream?.(streamed);
+              options.onStream?.(event.text);
             } else if (event.event === "result") out.result = event.text;
             else if (event.event === "display") out.displays.push(event.data);
             else if (event.event === "error") out.error = { ename: event.ename, evalue: event.evalue, traceback: event.traceback };

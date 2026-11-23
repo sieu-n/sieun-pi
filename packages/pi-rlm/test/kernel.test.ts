@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { before, test } from "node:test";
 import { existsSync } from "node:fs";
-import { Kernel, KernelBusyError, type HostRequest } from "../src/core/kernel.ts";
+import { coalesceStream, Kernel, KernelBusyError, type HostRequest } from "../src/core/kernel.ts";
 import { RUNTIME_SRC } from "../src/core/python.ts";
 import { bootstrapCode } from "../src/core/bootstrap.ts";
 import { testPython } from "./helpers.ts";
@@ -41,12 +41,41 @@ test("a kernel keeps state across cells, streams output and answers host request
     const streamed = await kernel.execute("import asyncio\nfor i in range(3):\n    print('tick', i, flush=True)\n    await asyncio.sleep(0.05)", { onStream: t => chunks.push(t) });
     assert.equal(streamed.stdout, "tick 0\ntick 1\ntick 2\n");
     assert.ok(chunks.length >= 3);
+    assert.equal(chunks.join(""), streamed.stdout, "each chunk comes once, not the output so far");
     const reply = await kernel.execute("from rlm import host_request\nr = await host_request('demo.echo', {'n': 7})\nr");
     assert.equal(reply.result, "{'echo': 7}");
     assert.deepEqual(seen.map(r => r.type), ["demo.echo"]);
     const failed = await kernel.execute("1/0");
     assert.equal(failed.status, "error");
     assert.equal(failed.error?.ename, "ZeroDivisionError");
+  } finally {
+    await kernel.shutdown();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a cell that prints 50 MB in small writes streams each byte once, in one sink call per loop turn of at most 1 MB", { timeout: 300_000 }, async () => {
+  const { kernel, dir } = open();
+  try {
+    await kernel.execute(bootstrapCode([]));
+    // Work, not wall-clock time: on us-metal02 at load 323 on 11-23 the loop's gaps reached 258 ms with onStream unset, and one array push
+    // measured 150 ms. The old path handed the stream the output so far at every write, about 25 TB of string work for this cell.
+    const sunk: string[] = [];
+    let handled = 0;
+    const stream = coalesceStream(text => sunk.push(text));
+    const r = await kernel.execute("line = 'x' * 99\nfor i in range(500_000):\n    print(line)", {
+      onStream: chunk => {
+        handled += chunk.length;
+        stream.push(chunk);
+      },
+    });
+    stream.flush();
+    assert.equal(r.status, "ok");
+    assert.equal(r.stdout.length, 50_000_000);
+    assert.equal(handled, r.stdout.length, "the stream handles each byte once");
+    assert.ok(sunk.join("") === r.stdout, "the coalesced stream is the cell's stdout byte for byte");
+    const largest = sunk.reduce((most, text) => Math.max(most, text.length), 0);
+    assert.ok(largest <= 1_000_000, `one sink call took ${largest} characters`);
   } finally {
     await kernel.shutdown();
     rmSync(dir, { recursive: true, force: true });
