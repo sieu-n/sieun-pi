@@ -1,5 +1,5 @@
 import { expect, type Page, test } from "@playwright/test";
-import { conversation, open } from "./helpers";
+import { conversation, open, tag } from "./helpers";
 
 /**
  * On 11-23 a reload walk at a 200 ms round trip opened 12 work threads, whose jobs read ahead 101 job pages into the page cache of 140, and
@@ -26,8 +26,10 @@ const keptPage = (page: Page, key: string) =>
 
 test("a sidebar room stays kept when job pages fill the cache, so it opens with no call in front of its rows", async ({ page, request }) => {
   test.setTimeout(90_000);
-  const sidebar = (await (await request.get("/api/sidebar")).json()) as Record<"solo" | "channels" | "dms", { id: string }[]>;
-  const room = [...sidebar.channels, ...sidebar.solo].find((r) => r.id !== "ch_general")!.id;
+  // The spec makes its own channel with a post, because other specs add empty channels to the fixture, and on 11-23 one sorted first.
+  const word = tag();
+  const room = ((await (await request.post("/api/rooms", { data: { kind: "channel", name: `kept-full-${word}`, members: [] } })).json()) as { id: string }).id;
+  expect((await request.post(`/api/c/${room}/send`, { data: { text: `kept post ${word}`, requestId: crypto.randomUUID() } })).ok()).toBe(true);
   const header = await (await request.get("/api/c/ch_general")).json();
   await open(page, "#/c/ch_general");
   await expect.poll(() => keptPage(page, room), { timeout: 30_000 }).toBe(true);
@@ -47,5 +49,5 @@ test("a sidebar room stays kept when job pages fill the cache, so it opens with 
     asked.push(new URL(route.request().url()).pathname);
   });
   await page.evaluate((id) => (location.hash = `#/c/${id}`), room);
-  await expect(conversation(page).locator("[data-message-id]").first()).toBeVisible();
+  await expect(conversation(page).getByText(`kept post ${word}`)).toBeVisible();
 });
