@@ -1195,7 +1195,10 @@ export class App {
     this.queues.stopped(id);
   }
 
-  /** On a DM, a rename or archive changes the agent and its work thread, and model, thinking level and cwd change the work thread. */
+  /**
+   * On a DM, a rename or archive changes the agent and its work thread, cwd changes the work thread, and model and thinking level change the
+   * work thread and every comm thread, since a comm thread took the work thread's model only when it was made (`threadModel`).
+   */
   async patch(id: ConversationId, patch: ConversationPatch): Promise<ConversationHeader> {
     if (this.isGroup(id)) {
       this.groups.update(id, { ...(patch.name !== undefined ? { name: patch.name } : {}), ...(patch.archived !== undefined ? { archived: patch.archived } : {}) });
@@ -1215,6 +1218,11 @@ export class App {
     const known = patch.model === undefined || MODELS.models.some(m => `${m.provider}/${m.id}` === patch.model);
     if (!Object.keys(set).length) void this.threads.poll();
     else if (!(patch.cwd === undefined && known && this.threads.change(thread, set))) this.threads.put(await this.host.set(thread, set));
+    const model = { ...(set.model !== undefined ? { model: set.model } : {}), ...(set.thinkingLevel !== undefined ? { thinkingLevel: set.thinkingLevel } : {}) };
+    if (isRoomId(id) && Object.keys(model).length) {
+      const comms = Object.values(this.roomAgent(id).comm ?? {});
+      await Promise.all(comms.map(async comm => { if (!(known && this.threads.change(comm, model))) this.threads.put(await this.host.set(comm, model)); }));
+    }
     return this.header(id);
   }
 
