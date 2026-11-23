@@ -1,0 +1,16 @@
+{
+ "name": "Agent boards",
+ "ownerWords": "what is \n- duty\n- the 3-hourly nudge\n\nin prime-agent-chat, and in sw-factory? is it differently implemented/different in practice? (why do i feel like sw-factory is lazy) \n\n시험: what are some core concepts? like all board items should be either user-bottlenecked or actively being worked on.\n(#sw-factory-build p205, 11-24, msg mwtu5kfz)",
+ "goal": "Every open step on every sw factory agent's board is either actively worked on or held on the owner. The precheck (apps/chat/scripts/duties/agent-boards.ts) reads each agent's GET /api/agents/<id>/steps, which counts by the check-in's own rule (server/check-in-job.ts checkInPrecheck): a step is moved while its own job is at work, a subagent of it works or it sleeps on a board.wake, and held while an open For you todo links it by its step field or it waits on the owner's go. It also counts the open goals short of their target that no live job owns, and the check-ins that are not paused and have no run in 1.5 of their intervals. On 11-24 by the owner's rule 7 of 44 open steps had neither a live owner nor an open For you todo, against 2 of 39 on the Prime chats (~/work/duty-and-nudge/part3-lazy.md).",
+ "metrics": [
+  { "key": "stuck_steps_all", "label": "Open steps on sw factory agents' boards that no job of theirs works on and no open For you todo holds", "op": "<=", "target": 0, "unit": " steps", "headline": true },
+  { "key": "goal_gaps_all", "label": "Open goals short of their target that no live job owns", "op": "<=", "target": 0, "unit": " goals" },
+  { "key": "checkins_late", "label": "Agents whose check-in is not paused and has no run in 1.5 of its intervals", "op": "<=", "target": 0, "unit": " agents" }
+ ],
+ "precheck": {
+  "command": ["node", "--import", "tsx", "scripts/duties/agent-boards.ts"],
+  "cwd": "../..",
+  "timeoutMs": 120000
+ },
+ "onMiss": "Each flagged step names its agent, its step and why it is stuck. Find why that agent's check-in did not give it an owner: read the agent's newest check-in run in GET /api/agents/<id>/check-in (its summary, detail file and job) and the check-in job's transcript. Fix the cause in the system, such as the check-in brief (apps/chat/server/check-in-job.ts), the board skill text (skills/board) or the server's check-in and push code (apps/chat/server/boards.ts), add a test, push and release; never close or reassign another agent's steps by hand to turn the number green. A step that waits on a time or on another agent's job with no job of its own is stuck by the owner's rule: the fix makes the check-in give it a job that sleeps on a board.wake, link a For you todo, or drop it. A late check-in means its clock did not fire: read the apps/chat log for 'check-in <agent>' lines."
+}

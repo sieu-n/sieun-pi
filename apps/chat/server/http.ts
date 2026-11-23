@@ -514,6 +514,7 @@ export function routes(app: App, parts: SkillsParts): Route[] {
         });
       }),
       route("GET", `/api/${scope}/:id/check-in`, async (_r, p) => app.boards.checkIn(p.id!)),
+      route("GET", `/api/${scope}/:id/steps`, async (_r, p) => app.boards.steps(p.id!)),
       route("POST", `/api/${scope}/:id/check-in`, async (_r, p, _q, body) => {
         const patch = (await body()) as never;
         try {

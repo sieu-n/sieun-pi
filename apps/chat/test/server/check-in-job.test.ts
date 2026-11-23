@@ -5,6 +5,7 @@
  * 3. A due tick files one job under the agent, submits nothing to the work thread, and posts the job's report there as `[check-in]`.
  * 4. A paused check-in, a board with no open step and a last check-in job still at work start no job.
  * 5. Every run, started, skipped behind its last job or idle, is recorded with its goal_gaps and stuck_steps, and the check-in view lists it.
+ * 6. GET /steps counts the open steps by the same rule.
  * Run: cd apps/chat && node --import tsx --test --test-force-exit --test-isolation=none test/server/check-in-job.test.ts
  */
 import assert from "node:assert/strict";
@@ -172,6 +173,21 @@ test("a board with no open step checks in daily, and with no brief starts no job
   } finally {
     await s.send("POST", `/api/agents/${busy.id}/check-in`, { pause: null });
   }
+});
+
+test("GET /steps lists the open steps neither moved nor held by the check-in's rule, and a step's working job moves it", async () => {
+  const before = await s.get<{ open: number; stuck: { id: string; text: string }[]; gaps: unknown[] }>(`/api/agents/${busy.id}/steps`);
+  assert.deepEqual([before.open, before.stuck.map(step => step.text), before.gaps], [1, ["Ship the relay"], []]);
+  const job = (await s.send("POST", "/api/agents", { name: "relay shipper", kind: "job", parent: busy.id })).body as AgentSummary;
+  const thread = host.threadsById.get(job.thread)!;
+  thread.nodes[0]!.status = "running";
+  thread.row.status = "running";
+  thread.row.updatedAt = Date.now() + 5;
+  await s.app.threads.refresh();
+  await s.app.boards.apply(busy.id, [{ op: "plan_update", id: before.stuck[0]!.id, job: "relay shipper" }], "agent");
+  const after = await s.get<{ open: number; stuck: unknown[] }>(`/api/agents/${busy.id}/steps`);
+  assert.deepEqual([after.open, after.stuck.length], [1, 0]);
+  await s.app.boards.apply(busy.id, [{ op: "plan_update", id: before.stuck[0]!.id, job: null }], "agent");
 });
 
 test("a paused check-in starts no job", async () => {

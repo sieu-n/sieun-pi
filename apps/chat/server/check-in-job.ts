@@ -66,6 +66,8 @@ export interface CheckInPrecheck {
   goals: GoalView[];
   /** Open leaf steps with no live job, no open For you todo and no missing go. */
   stuck: PlanItem[];
+  /** Open leaf steps, the numbered goals left out, which `stuck` is a share of. */
+  open: number;
   jobs: readonly ChatAgent[];
   planOpen: boolean;
 }
@@ -93,16 +95,18 @@ export function checkInPrecheck(board: ChatBoard | null, jobs: readonly ChatAgen
   });
   const asked = new Set((board?.todos ?? []).filter(todo => !todo.done && todo.step).map(todo => todo.step!));
   const stuck: PlanItem[] = [];
+  let open = 0;
   const visit = (items: readonly PlanItem[]): void => {
     for (const item of items) {
       visit(item.children);
       if (!OPEN.has(item.status) || numberedGoal(item) || item.children.some(child => OPEN.has(child.status))) continue;
+      open += 1;
       if (liveJob(item) || asked.has(item.id) || (board && needsGo(item) && !stepGo(board, item))) continue;
       stuck.push(item);
     }
   };
   visit(plan);
-  return { goals, stuck, jobs, planOpen: planHasOpenStep(board) };
+  return { goals, stuck, open, jobs, planOpen: planHasOpenStep(board) };
 }
 
 const clip = (text: string, max: number): string => text.length > max ? `${text.slice(0, max - 1)}…` : text;
