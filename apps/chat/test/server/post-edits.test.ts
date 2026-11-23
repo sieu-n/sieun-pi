@@ -68,7 +68,8 @@ describe("editing and deleting the owner's own posts", () => {
   });
 
   test("a channel delete drops the post from the agents' context lines and its reply from the root's count", async () => {
-    const ROOT = "ch_cutover";
+    // A channel of the owner alone: in ch_cutover the fixture agents answer the root in its thread, and a slow run counts their answers too.
+    const ROOT = (await s.send<{ id: string }>("POST", "/api/rooms", { kind: "channel", name: `post-edits-${Date.now()}` })).body.id;
     const root = await s.send<{ item: Message }>("POST", `/api/c/${ROOT}/send`, { text: "thread root for delete", requestId: "delete-root" });
     const reply = await s.send<{ item: Message }>("POST", `/api/c/${ROOT}/send`, { text: "a reply to delete", requestId: "delete-reply", threadRoot: root.body.item.id });
     const count = async () => ((await s.get<TimelinePage>(`/api/c/${ROOT}/items?limit=200`)).items.find(i => i.id === root.body.item.id) as Message).thread?.replies ?? 0;
