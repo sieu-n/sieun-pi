@@ -76,13 +76,20 @@ test("thread drafts saved before drafts named their room move to their room, and
     "chat.draft.thread:p1": `both channels have p1 ${word}`,
     "chat.draft.thread:ch_general:p2": JSON.stringify({ text: `written by 363f5088 ${word}`, at: Date.now() }),
   };
+  // The seed has p3 only in #pi-cutover, but other specs post and reply in #general and add channels, so their p3 lookups answer as unseeded.
+  await page.route(/\/api\/c\/[^/]+\/replies\/p3$/, (route) =>
+    route.request().url().includes("/api/c/ch_cutover/") ? route.fallback() : route.fulfill({ status: 404, json: { error: "No post p3." } }),
+  );
   await page.goto("/#/c/drafts");
   await page.getByTestId("drafts-page").waitFor();
   await page.evaluate((seed) => {
     for (const k of Object.keys(localStorage)) if (k.startsWith("chat.draft.")) localStorage.removeItem(k);
     for (const [k, v] of Object.entries(seed)) localStorage.setItem(k, v);
   }, old);
+  // The page looks the old drafts up as reads ahead, which wait behind the rooms it reads ahead; at load 300 that took more than 5 s.
+  const lookedUp = page.waitForResponse((response) => response.url().endsWith("/api/c/ch_cutover/replies/p3"));
   await page.reload();
+  await lookedUp;
 
   const list = page.getByTestId("drafts-page");
   const item = (text: string) => list.locator("li[data-draft-key]").filter({ hasText: text });
