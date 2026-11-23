@@ -220,6 +220,25 @@ test("a pool change drops the readings, so the next ask waits for a new one", as
   assert.equal(email(await after), "call2@a");
 });
 
+// 11-23 sw factory specs: api/accounts answered 400 "pi-pool gave no reading" when an account action in another tab dropped the readings while
+// a read of the same thread was out, because the ask after the drop joined that read and the read then landed nothing.
+test("an ask after a pool change does not join a read that started before the change", async () => {
+  const pool = fakePool(), time = clock();
+  const status = new PoolStatusReader(pool.read, 2000, time.now, time.sleep);
+  const before = listAccounts(null, null, { status });
+  await settle();
+  assert.equal(pool.calls.length, 1);
+  time.advance(10);
+  status.forget();
+  const after = listAccounts(null, null, { status });
+  await settle();
+  assert.equal(pool.calls.length, 2, "the ask after the change starts its own read");
+  pool.calls[0]!.answer();
+  pool.calls[1]!.answer();
+  assert.equal(email(await after), "call2@a");
+  assert.equal(email(await before), "call2@a", "the ask from before the change takes the reading made after it");
+});
+
 test("a snapshot part that failed reads as the separate command's failure", async () => {
   const pool = { read: async (threads: readonly PoolThread[]): Promise<PoolSnapshot> => ({ queue: part({}), config: part("", 1),
     threads: threads.map(thread => ({ ...thread, who: part({ error: "--session t9 matches no known session" }, 2),

@@ -285,8 +285,8 @@ export class PoolStatusReader {
   private base: { at: number; queue: PoolPart; config: PoolPart } | null = null;
   private readonly threads = new Map<string, { at: number; parts: ThreadParts }>();
   private readonly pending = new Map<string, PoolThread>();
-  /** The read of one thread by itself (`alone`) in flight, by thread key, with the epoch ms it started. */
-  private readonly alone = new Map<string, { at: number; reading: Promise<void> }>();
+  /** The read of one thread by itself (`alone`) in flight, by thread key, with the epoch ms and the generation it started in. */
+  private readonly alone = new Map<string, { at: number; generation: number; reading: Promise<void> }>();
   /**
    * When this service last changed a session's record (`forgetSession`), and how many reads had started by then: a reading of the session
    * from one of those reads is old. The count decides, since a read can start in the same millisecond as the change.
@@ -378,15 +378,18 @@ export class PoolStatusReader {
     while (this.threads.size > KEPT_THREADS) this.threads.delete(this.threads.keys().next().value!);
   }
 
-  /** Reads `thread` by itself, or joins its read in flight when that read started at `since` or later. */
+  /**
+   * Reads `thread` by itself, or joins its read in flight when that read started at `since` or later and after the last pool change. A read
+   * from before the change lands nothing, so an ask that joined it answered "pi-pool gave no reading" (11-23, sw factory accounts specs).
+   */
   private readAlone(thread: PoolThread, since: number): Promise<void> {
     const key = threadKey(thread);
     const out = this.alone.get(key);
-    if (out && out.at >= since) return out.reading;
+    if (out && out.at >= since && out.generation === this.generation) return out.reading;
     const generation = this.generation, at = this.now(), reads = ++this.started;
     const reading: Promise<void> = this.read([thread]).then(snapshot => this.land(generation, at, reads, snapshot), error => { if (generation === this.generation) this.error = error; })
       .finally(() => { if (this.alone.get(key)?.reading === reading) this.alone.delete(key); });
-    this.alone.set(key, { at, reading });
+    this.alone.set(key, { at, generation, reading });
     return reading;
   }
 
