@@ -45,7 +45,8 @@ test("30 a held thread says which account it waits for and when, and no account 
   await openAccounts(page, DM);
   // With no account email to go by, the page picks the thread's provider from its model, which the agents list may not have loaded yet.
   await showProvider(page, "anthropic");
-  await expect(page.getByText(new RegExp(`^Waiting for ${escape(row.label)}, back at \\d`))).toBeVisible();
+  // Two hours on crosses midnight after 22:00, where the clock gains the date ("back at Nov 24 00:08."), so the time may follow a date.
+  await expect(page.getByText(new RegExp(`^Waiting for ${escape(row.label)}, back at ([A-Z][a-z]{2} \\d{1,2} )?\\d{2}:\\d{2}\\.$`))).toBeVisible();
   served = withProvider(view, "anthropic", { resolution: auto, wait: null });
   await page.reload();
   await showProvider(page, "anthropic");
