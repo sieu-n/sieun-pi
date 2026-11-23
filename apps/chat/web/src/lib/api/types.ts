@@ -679,8 +679,12 @@ export type DutyAction =
 /** `pause` is a preset, or `{ until }` for the owner's own date and time, which must be ahead of now. */
 export interface CheckInPatch { everyMs?: number; pause?: CheckInPause | { until: Ms } | null }
 
+/**
+ * One host, client, agent, thread and model's sums over the range. `client` names the chat client (pi-host, prime, claude-code, codex, aside,
+ * vent and more) and `agent` the agent when the client knows it, else "". A client with no threads names its session as the thread.
+ */
 export interface UsageRow {
-  thread: string; threadName: string; host: string; model: string; turns: number;
+  thread: string; threadName: string; host: string; client: string; agent: string; model: string; turns: number;
   tokens: { input: number; output: number; cacheRead: number; cacheWrite: number };
   cost: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number };
 }

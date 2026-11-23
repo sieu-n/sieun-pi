@@ -10,7 +10,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { ThreadIndex, type UsageRow } from "../../../../packages/pi-host/src/durable/index-db.ts";
 import type { UsageRange } from "../../server/host/types.ts";
-import { KeptUsage, LIVE_TICK_MS, SqliteUsage, usageLive } from "../../server/usage.ts";
+import { KeptUsage, SqliteUsage, usageLive } from "../../server/usage.ts";
+import { LIVE_TICK_MS } from "../../server/usage-store.ts";
 
 test("api/usage/live sums the minute before each 10 s tick over 60, the same from the kept sums as from pi-host, with no call to any box", async () => {
   const dir = mkdtempSync(join(tmpdir(), "usage-live-"));

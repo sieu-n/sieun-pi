@@ -7,6 +7,7 @@ import type { AllowedModel } from "../../../config/allowed-models.ts";
 import { AGENT_RELAY_PATH } from "../../../components/prime-relay/agents/protocol.ts";
 import type { SkillsConfig } from "./skills.ts";
 import type { SkillsReviewConfig } from "./skills-review.ts";
+import { parseUsageStoreConfig, type UsageStoreConfig } from "./usage-store.ts";
 
 /**
  * A new thread's model when none is named: Opus 5.5, the owner's pin (c31, back on 2026-11-13 when he retired c221's Fable 5.2), one of
@@ -77,6 +78,8 @@ export interface Config {
    * (deploy/linux/sieun-pi-apps-chat.service), and leaves the tree green while its code lands.
    */
   dbKinds?: readonly string[];
+  /** The store of model calls the Usage page reads (server/usage-store.ts), from the JSON file `APPS_CHAT_USAGE_STORE` names. */
+  usageStore?: UsageStoreConfig;
 }
 
 /**
@@ -195,6 +198,7 @@ export function readConfig(argv = process.argv.slice(2), env = process.env): Con
       ? join(appDir, "server/fixture/consoles.json")
       : resolve(env.APPS_CHAT_CONSOLES ?? join(home, "Documents/Github/auto-sns-agent/apps/infra/metal/config/consoles.json")),
     dbKinds: (env.APPS_CHAT_DB_KINDS ?? "").split(",").map(kind => kind.trim()).filter(Boolean),
+    ...(!fixture && env.APPS_CHAT_USAGE_STORE ? { usageStore: parseUsageStoreConfig(JSON.parse(readFileSync(resolve(env.APPS_CHAT_USAGE_STORE), "utf8"))) } : {}),
     ...(!fixture && env.APPS_CHAT_MEILI_URL ? { meili: { url: env.APPS_CHAT_MEILI_URL, keyFile: resolve(env.APPS_CHAT_MEILI_KEY_FILE ?? join(home, ".config/meilisearch/master.key")) } } : {}),
   };
 }

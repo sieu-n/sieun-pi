@@ -56,6 +56,7 @@ import { Unfurler } from "./unfurl.ts";
 import { POST_KINDS, postHas, Search } from "./search.ts";
 import { likeRegex, postDocId, SEARCH_DOC_VERSION, SearchEngine, SqliteEntries, type EntrySource, type PostDoc } from "./search-engine.ts";
 import { KeptUsage, SqliteUsage, type UsageSource } from "./usage.ts";
+import { StoreUsage, storeReader } from "./usage-store.ts";
 import { Meili, startOwnMeili, type OwnMeili } from "./meili.ts";
 import type { FixtureHost } from "./host/fixture.ts";
 import { drained } from "./disk.ts";
@@ -128,8 +129,12 @@ export class App {
   readonly queues: QueueWatch;
   readonly searchEngine: SearchEngine;
   private searchStop: () => void = () => {};
-  /** api/usage's sums, every box's usage rows kept in memory; a fixture, or a box with no pi-host index, reads the host itself. */
+  /**
+   * api/usage's sums kept in memory: from the usage store when one is configured, else every box's pi-host usage rows; a fixture, or a box
+   * with no pi-host index, reads the host itself.
+   */
   readonly usage: Pick<Host, "usage">;
+  private readonly storeUsage?: StoreUsage;
   private readonly keptUsage?: KeptUsage;
   private keptUsageClose: () => void = () => {};
   readonly outbox: Outbox;
@@ -360,7 +365,8 @@ export class App {
       if (name === "chat.board") this.boards.docChanged(thread, value);
     };
     this.searchEngine = this.newSearchEngine(routing?.list()[0]!.host ?? host, routing);
-    if (!config.fixture && config.durableIndex) {
+    if (config.usageStore) this.storeUsage = new StoreUsage(storeReader(config.usageStore), config.usageStore.table, log);
+    else if (!config.fixture && config.durableIndex) {
       const own = new SqliteUsage(config.box, config.durableIndex);
       const sources = (): UsageSource[] => [own, ...(routing?.list() ?? []).flatMap(({ box }): UsageSource[] => {
         const relay = box === config.box ? undefined : routing!.relay(box);
@@ -369,7 +375,7 @@ export class App {
       this.keptUsage = new KeptUsage(sources, host, log);
       this.keptUsageClose = () => own.close();
     }
-    this.usage = this.keptUsage ?? host;
+    this.usage = this.storeUsage ?? this.keptUsage ?? host;
     this.search = new Search(this.threads, this.groups, this.searchEngine, room => this.agentStore.postsOf(room));
     if (routing) {
       this.search.boxes = () => routing.list().filter(b => b.box !== config.box).map(b => ({ box: b.box, link: () => routing.link(b.box) }));
@@ -430,6 +436,7 @@ export class App {
     this.boards.start();
     this.outbox.start();
     this.laterDue.arm();
+    this.storeUsage?.start();
     this.keptUsage?.start();
     if (this.config.meili) void this.searchEngine.refresh().catch(error => this.log(`search: ${String(error)}`));
     return Math.round(performance.now() - began);
@@ -467,6 +474,7 @@ export class App {
     await this.threads.stop();
     for (const client of this.clients) client.socket.close();
     this.searchStop();
+    this.storeUsage?.stop();
     this.keptUsage?.stop();
     this.keptUsageClose();
     this.records.flush();

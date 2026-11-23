@@ -1,18 +1,19 @@
 /**
- * Usage and hosts. Usage sums pi-host's `durable_usage` rows; hosts reads the hosts registry and each box's relay. The pool's
- * accounts are server/accounts.ts.
+ * Usage and hosts. Usage sums the usage store's model calls (server/usage-store.ts) when one is configured, else pi-host's `durable_usage`
+ * rows; hosts reads the hosts registry and each box's relay. The pool's accounts are server/accounts.ts.
  */
 import { existsSync, readFileSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { openIndexReadOnly, readUsageRows, type UsageRead, type UsageRow as IndexUsageRow } from "../../../packages/pi-host/src/durable/index-db.ts";
-import { BUCKET_MS, bucketFor, isRange, RANGE_BUCKETS, RANGE_MS, USAGE_RANGES } from "../web/src/lib/api/shared/usage-range.ts";
+import { BUCKET_MS, bucketFor, isRange, RANGE_MS } from "../web/src/lib/api/shared/usage-range.ts";
 import type { AgentRelayLink, HostsReport, HostThread, HostThreadFilter, HostView, MachineView, RunCounts, RunStatus, UsageBucket, UsageBucketSum, UsageLive, UsageRange, UsageReport, UsageRow } from "../web/src/lib/api/types.ts";
 import { MultiHost } from "./host/multi-host.ts";
 import type { RelayHost } from "./host/relay-host.ts";
 import type { Host, Ping, UsageRange as HostUsageRange, UsageTotal } from "./host/types.ts";
 import { OWNER_ZONE_OFFSET_MS } from "./search.ts";
+import { HOURS_KEPT_MS, LIVE_SPAN_MS, LIVE_TICK_MS, MINUTES_KEPT_MS, TICKS_KEPT_MS, USAGE_PULL_MS } from "./usage-store.ts";
 import type { Store } from "./store.ts";
 import { statusOf, type Threads } from "./threads.ts";
 
@@ -30,7 +31,7 @@ const SUMS = ["turns", ...ROW_SUMS] as const;
 
 /** The range's totals per thread and model, and each bucket's sums, from one bucketed answer whose every row names its bucket. */
 function fold(rows: readonly UsageTotal[], since: number, step: number, count: number): UsageFold {
-  // The same thread and model on two boxes are two rows, each under its own box.
+  // The same thread and model on two boxes, or from two clients, are two rows.
   const totals = new Map<string, UsageTotal>();
   const buckets: UsageBucketSum[] = Array.from({ length: count }, (_, i) => ({
     start: since + i * step, turns: 0, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -52,7 +53,7 @@ function fold(rows: readonly UsageTotal[], since: number, step: number, count: n
     tokens.output += row.output;
     tokens.cacheRead += row.cacheRead;
     tokens.cacheWrite += row.cacheWrite;
-    const key = `${row.host ?? ""}\u0000${row.thread}\u0000${row.model}`;
+    const key = `${row.host ?? ""}\u0000${row.client ?? ""}\u0000${row.agent ?? ""}\u0000${row.thread}\u0000${row.model}`;
     const { bucket: _bucket, ...rest } = row;
     const total = totals.get(key);
     if (!total) totals.set(key, { ...rest });
@@ -93,7 +94,7 @@ export async function usageReport(host: Pick<Host, "usage">, threads: Threads, b
   const rowsByBucket = answer.every(row => row.bucket !== undefined) ? answer : await byCalls(host, since, step, count, scope, keep);
   const { totals, buckets } = fold(rowsByBucket, since, step, count);
   const rows: UsageRow[] = totals.map(t => ({
-    thread: t.thread, threadName: threads.thread(t.thread)?.name ?? t.thread, host: hostOf(t), model: t.model, turns: t.turns,
+    thread: t.thread, threadName: threads.thread(t.thread)?.name ?? (t.threadName || t.thread), host: hostOf(t), client: t.client ?? "pi-host", agent: t.agent ?? "", model: t.model, turns: t.turns,
     tokens: { input: t.input, output: t.output, cacheRead: t.cacheRead, cacheWrite: t.cacheWrite }, cost: costOf(t),
   }));
   return { at: now, since, until, range, bucket, rows, buckets };
@@ -131,16 +132,6 @@ export class SqliteUsage implements UsageSource {
 }
 
 const HOUR_MS = BUCKET_MS.hour;
-/** How far back the kept sums go: the longest range and one more bucket, since a range ends with the bucket that holds now. */
-const HOURS_KEPT_MS = Math.max(...USAGE_RANGES.map(range => RANGE_MS[range] + Math.max(...RANGE_BUCKETS[range].map(bucket => BUCKET_MS[bucket]))));
-const MINUTES_KEPT_MS = Math.max(...USAGE_RANGES.filter(range => RANGE_BUCKETS[range].includes("minute")).map(range => RANGE_MS[range])) + BUCKET_MS.minute;
-/** The live rate's grain: Prime's per-second card reads LGTM's 10 s export interval (user-history lgtm.ts SPARK_S). */
-export const LIVE_TICK_MS = 10_000;
-/** The live spark's span, 10 min as Prime's card draws it; its first point looks back one more minute. */
-const LIVE_SPAN_MS = 600_000;
-const TICKS_KEPT_MS = LIVE_SPAN_MS + BUCKET_MS.minute + LIVE_TICK_MS;
-/** The kept rows are read again this often, as often as `Threads` reads the thread list, so the page is never further behind than the sidebar. */
-export const USAGE_PULL_MS = 2_000;
 
 type Sum = UsageTotal & { start: number };
 type BoxUsage = { cursor?: string; read: boolean; hours: Map<string, Sum>; minutes: Map<string, Sum>; ticks: Map<string, Sum> };

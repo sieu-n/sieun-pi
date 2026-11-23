@@ -72,6 +72,10 @@ export interface UsageTotal {
   bucket?: number;
   /** The box whose pi-host answered the row; MultiHost sets it, and a single host's rows leave it to the caller. */
   host?: string;
+  /** The chat client and agent that made the calls, from the usage store (server/usage-store.ts); pi-host's own rows leave them out. */
+  client?: string; agent?: string;
+  /** The thread's name as the store's collector saw it, for a client whose threads this chat does not list. */
+  threadName?: string;
   thread: string; model: string; turns: number; input: number; output: number; cacheRead: number; cacheWrite: number;
   cost: number; costInput: number; costOutput: number; costCacheRead: number; costCacheWrite: number;
 }
