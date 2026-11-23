@@ -4,8 +4,9 @@
  * drops the chat's own tools.
  *
  * `set_emoji` puts the agent's reaction on a post or takes it off, as Slack's `reactions.add` and `reactions.remove` do. The comm role text
- * asks the agent to mark the post it works on with 👀, take it off once its reply goes out, mark the thread done instead of adding ✅,
- * and react the way people do in Slack (`agent-profile.ts`); no code here treats an emoji specially (contract: /home/sieun/work/slack-reactions/contract.md).
+ * asks the agent to mark the post it works on with 👀, keep it on until that work ends (the result, the checklist's last edit or the done
+ * mark), mark the thread done instead of adding ✅, and react the way people do in Slack (`agent-profile.ts` workSteps); no code here
+ * treats an emoji specially, as the owner asked on 11-03 (contract: /home/sieun/work/slack-reactions/contract.md).
  *
  * `set_thread_done` (`thread-done.ts`) marks a thread done or open again with the flag on its root post, which the room shows with a check.
  *
