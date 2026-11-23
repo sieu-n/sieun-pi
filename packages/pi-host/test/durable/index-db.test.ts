@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { ThreadIndex } from "../../src/durable/index.ts";
-import { readIndexRows, readUsageRows, snippetOf, snippetTerms } from "../../src/durable/index-db.ts";
+import { readIndexRows, readUsageRows, snippetOf, snippetTerms, statusOf } from "../../src/durable/index-db.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "pi-host-index-"));
 after(() => rmSync(dir, { recursive: true, force: true }));
@@ -242,4 +242,21 @@ test("a snippet marks word prefixes around the first match and cuts long text wi
   const snippet = snippetOf(long, snippetTerms('"pi-host" under'));
   assert.match(snippet, /^…w35 .*<mark>Pi<\/mark>-<mark>host<\/mark> relay is <mark>Ünder<\/mark> load .*…$/);
   assert.equal(snippetOf("all good here", snippetTerms("go")), "all <mark>good</mark> here");
+});
+
+// 11-23: agent factory's work thread failed 11 turns in compaction and read sleeping all day, because a sleeping job held a wake.
+test("a failed root turn reads failed ahead of a pending wake, a job's input keeps it, and new root work clears it", () => {
+  const index = new ThreadIndex(join(dir, "failed.sqlite"));
+  index.insertThread({ id: "w", name: "work", provider: "anthropic", modelId: "m", thinkingLevel: "high", cwd: "/", createdAt: 1, updatedAt: 1 });
+  index.update("w", { failed: true });
+  index.setWake("w", { active: false, at: 5_000 });
+  assert.equal(statusOf(index.get("w")!), "failed");
+  index.markActive("w", 2, false);
+  assert.equal(statusOf(index.get("w")!), "running");
+  index.setWake("w", { active: false, at: 6_000 });
+  assert.equal(statusOf(index.get("w")!), "failed", "an input to a job conversation leaves the root's failure");
+  index.markActive("w", 3);
+  index.setWake("w", { active: false, at: 7_000 });
+  assert.equal(statusOf(index.get("w")!), "sleeping");
+  index.close();
 });

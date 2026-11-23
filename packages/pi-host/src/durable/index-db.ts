@@ -190,10 +190,14 @@ function threadOf(row: Row): ThreadRow {
   };
 }
 
+/**
+ * A thread whose newest root turn failed reads failed ahead of a pending wake: a work thread almost always holds a wake for a sleeping job,
+ * so on 11-23 agent factory's work thread read sleeping all day while 11 of its turns failed in compaction.
+ */
 export function statusOf(row: Pick<ThreadRow, "wakeActive" | "wakeAt" | "failed">): ThreadStatus {
   if (row.wakeActive) return "running";
-  if (row.wakeAt !== undefined) return "sleeping";
-  return row.failed ? "failed" : "idle";
+  if (row.failed) return "failed";
+  return row.wakeAt !== undefined ? "sleeping" : "idle";
 }
 
 /** FTS5 query text from what a person typed: each word becomes a quoted prefix term, so punctuation never breaks the parse. */
@@ -481,9 +485,12 @@ export class ThreadIndex {
     this.db.prepare("UPDATE threads SET wake_active = ?, wake_at = ? WHERE id = ?").run(wake.active ? 1 : 0, wake.at ?? null, id);
   }
 
-  /** Marks a thread runnable before work is admitted, so a crash between the admit and the Harness's own wake still reopens it. */
-  markActive(id: string, now: number): void {
-    this.db.prepare("UPDATE threads SET wake_active = 1, failed = 0, updated_at = ? WHERE id = ?").run(now, id);
+  /**
+   * Marks a thread runnable before work is admitted, so a crash between the admit and the Harness's own wake still reopens it. Only new root
+   * work clears `failed`: an input to a job conversation leaves the root's failed turn showing once the job sleeps.
+   */
+  markActive(id: string, now: number, root = true): void {
+    this.db.prepare(`UPDATE threads SET wake_active = 1${root ? ", failed = 0" : ""}, updated_at = ? WHERE id = ?`).run(now, id);
   }
 
   update(id: string, change: { name?: string; cwd?: string; provider?: string; modelId?: string; thinkingLevel?: string; archived?: boolean; failed?: boolean; preview?: string; children?: number; updatedAt?: number }): void {

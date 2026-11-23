@@ -42,7 +42,7 @@ import { RlmChildDoc } from "./children.ts";
 import { commExtension, noteHanded, noteHeard, type CommHost, type CommSubmit } from "./comm.ts";
 import { deliverHarnessDigest, type PrimePromptOptions } from "./prime-prompt.ts";
 import { liveRetry, retrySince, retryingText } from "./retrying.ts";
-import { failedInputs, failureNotice, failureTarget, lastModel, mayRetry, retryInput, roomLineWrites, roomPost, TURN_FAILED_VIA, type FailedInput } from "./turn-failed.ts";
+import { failedInputs, failureNotice, rootFailed, failureTarget, lastModel, mayRetry, retryInput, roomLineWrites, roomPost, TURN_FAILED_VIA, type FailedInput } from "./turn-failed.ts";
 
 const context: Context = BACKGROUND_CONTEXT;
 const PREVIEW_CHARS = 200;
@@ -646,7 +646,7 @@ export class DurableThreads {
     const entries: IndexedEntry[] = [];
     const usage: UsageRow[] = [];
     let preview: string | undefined;
-    let failed: boolean | undefined;
+    const failed = rootFailed(publication.changes);
     for (const change of publication.changes) {
       if (change.type !== "conversation") continue;
       const owner = (change.value as ConversationRecord).owner;
@@ -661,10 +661,6 @@ export class DurableThreads {
         }
       } else if (change.type === "submission") {
         const record = change.value as SubmissionRecord;
-        if (record.conversationId === ROOT_CONVERSATION_ID && record.type === "input") {
-          if (record.status === "unanswered") failed = true;
-          if (record.status === "done") failed = false;
-        }
         if (record.type === "input" && (record.status === "done" || record.status === "unanswered")) this.settle(open, record.conversationId);
       } else if (change.type === "conversation") {
         void this.announceConversation(open, change.value);
@@ -716,7 +712,8 @@ export class DurableThreads {
 
   /**
    * Tells someone once that a root run ended with no answer on an error pi-durable does not retry (`turn-failed.ts`): a comm thread posts
-   * `ROOM_LINE` in the thread of the failed room post, and the agent's work thread for a job, or else agent factory's, gets the notice.
+   * `ROOM_LINE` in the thread of the failed room post, and the agent's work thread for a job, or else agent factory's, gets the notice;
+   * agent factory's own work thread tells its DM comm thread.
    */
   private async reportFailure(open: OpenThread, failed: FailedInput[]): Promise<void> {
     const first = failed[0]!;
@@ -727,14 +724,17 @@ export class DurableThreads {
         const model = await lastModel(open.harness, context);
         if (model) for (const write of roomLineWrites(first, post, model, this.now())) await open.root.submit(write, context);
       }
-      const target = await this.options.agentWork?.(failureTarget(ref));
+      const work = await this.options.agentWork?.(failureTarget(ref));
+      // Agent factory's own work thread would tell itself, so its DM comm thread hears and tells the owner.
+      const toComm = work === open.id && ref?.role === "work" ? ref.comm : undefined;
+      const target = toComm ?? work;
       const name = this.index.get(open.id)?.name ?? open.id;
       if (!target || target === open.id) {
         this.log(`${open.id} run failed with no one to tell: ${first.error}`);
         return;
       }
       await this.submit(target, {
-        text: failureNotice({ id: open.id, name }, ref, first), requestId: `turn-failed:${open.id}:${first.submission}`, whenBusy: "followUp",
+        text: failureNotice({ id: open.id, name }, ref, first, Boolean(toComm)), requestId: `turn-failed:${open.id}:${first.submission}`, whenBusy: "followUp",
         entry: { kind: "agent.message", data: { from: open.id, via: TURN_FAILED_VIA } },
       });
     } catch (error) {
@@ -886,7 +886,7 @@ export class DurableThreads {
     await this.releasing.get(`${id}:${conversation.id}`);
     let owner: OwnerMark | undefined;
     if (input.ownerTurn && turns && session && turns.ticket(id, session).place.state !== "working") owner = await turns.ownerTurn(id, session);
-    this.index.markActive(id, this.now());
+    this.index.markActive(id, this.now(), conversation.id === ROOT_CONVERSATION_ID);
     if (conversation.id === ROOT_CONVERSATION_ID) this.options.pool?.submitted(id);
     if (open.prompt && conversation.id === ROOT_CONVERSATION_ID) await this.deliverDigest(open, conversation.id, input);
     const submission = await conversation.submit({

@@ -12,7 +12,8 @@
  *    `failureNotice`.
  * 2. A job's agent's work thread gets `failureNotice`, so a job never reads as working while it is dead.
  * 3. A work thread, or a thread with no agent, sends `failureNotice` to agent factory's work thread. No thread tells itself, since that
- *    input would start a run on the same context and fail again.
+ *    input would start a run on the same context and fail again, so agent factory's own work thread tells its DM comm thread, which tells
+ *    the owner: on 11-23 its 11 failed compaction turns only logged "run failed with no one to tell".
  *
  * A pi-host child conversation reports its own failure to its parent as `[child-failed ...]` (`children.ts`), so only roots come here.
  * Request ids keyed by the failed submission keep each line and notice once.
@@ -66,17 +67,37 @@ export function roomPost(requestId: string | undefined, room: string): string | 
   return undefined;
 }
 
+/** The settle reasons that end a root input with no failure of the run: a stop, a reset, or an input dropped before it ran. */
+const NOT_FAILED = new Set(["aborted", "reset", "stale"]);
+
+/**
+ * Whether a commit leaves the thread's newest root turn failed, for the index row's `failed`: true when a root input settled unanswered
+ * on a failure, false when one settled any other way, and undefined when no root input settled. A failure wins within one commit.
+ */
+export function rootFailed(changes: readonly CommitChange[]): boolean | undefined {
+  let failed: boolean | undefined;
+  for (const change of changes) {
+    if (change.type !== "submission") continue;
+    const record = change.value as SubmissionRecord;
+    if (record.conversationId !== ROOT_CONVERSATION_ID || record.type !== "input") continue;
+    if (record.status === "unanswered" && !NOT_FAILED.has(record.reason)) failed = true;
+    else if (record.status === "done" || record.status === "unanswered") failed ??= false;
+  }
+  return failed;
+}
+
 /** Who hears of a failed run: an agent's work thread by agent id. */
 export function failureTarget(ref: AgentRef | undefined): string {
   return ref?.role === "job" ? ref.agent : PLATFORM_AGENT.id;
 }
 
 /** The agent message a failed run sends: the thread, its role and the error, so the reader can open it. */
-export function failureNotice(thread: { id: string; name: string }, ref: AgentRef | undefined, failed: FailedInput): string {
+export function failureNotice(thread: { id: string; name: string }, ref: AgentRef | undefined, failed: FailedInput, toComm = false): string {
   const role = ref ? `${ref.role} of ${ref.agent}` : "a thread with no agent";
   return `[turn-failed thread:${thread.id} conversation:${ROOT_CONVERSATION_ID}]\n\n` +
     `The run of ${thread.name} (${role}) ended with no answer on input ${failed.requestId ?? `submission ${failed.submission}`}, ` +
-    `and pi-host does not retry this error: ${failed.error}`;
+    `and pi-host does not retry this error: ${failed.error}` +
+    (toComm ? "\n\nYour work thread can't answer now. Tell the owner in a few words, and don't hand this to the work thread, which would fail again." : "");
 }
 
 /**
