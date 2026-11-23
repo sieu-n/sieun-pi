@@ -528,6 +528,10 @@ export function routes(app: App, parts: SkillsParts): Route[] {
         entries: view.entries,
       }), q.get("since"));
     }),
+    route("GET", "/api/skills/text", async (_r, _p, q) => {
+      const view = await db.db.viewListed();
+      return new KeptJson("skills/text", [view], () => ({ json: `{"skills":[${view.texts.map(e => e.json).join(",")}]}`, rest: "{}", entries: view.texts }), q.get("since"));
+    }),
     route("GET", "/api/skills/inventory", async (_r, _p, q) => {
       const report = await skills.report();
       const { inventory } = report;

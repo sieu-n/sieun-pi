@@ -8,10 +8,15 @@
   import NotificationsPage from "$pages/notifications/NotificationsPage.svelte";
   import KeyboardPage from "$pages/keyboard/KeyboardPage.svelte";
   import ConsolesPage from "$pages/consoles/ConsolesPage.svelte";
+  import { untrack } from "svelte";
   import { router } from "$lib/router.svelte";
+  import { readSkillsAhead } from "$pages/skills/kept.svelte";
   import { openSection } from "./sections";
 
   const section = $derived(openSection());
+
+  // Settings open reads the Skills page's answers ahead, so its first open draws at once.
+  $effect(() => untrack(readSkillsAhead));
 </script>
 
 <div class="section" data-testid="settings-section" data-section={section}>

@@ -805,6 +805,8 @@ export const api = {
   skills: () => call<SkillsView>("GET", "/api/skills"),
   /** The skills DB view as the changes since the version `since` names, or whole for an empty one (shared/listed.ts). */
   skillsSince: (since: string, wait?: Wait) => call<import("./shared/listed.ts").ListedAnswer>("GET", `/api/skills?since=${enc(since)}`, undefined, undefined, wait),
+  /** Each skill's description, which the view's `?since=` form leaves out (shared/skills.ts `toWire`), as the changes since `since`. */
+  skillsTextSince: (since: string, wait?: Wait) => call<import("./shared/listed.ts").ListedAnswer>("GET", `/api/skills/text?since=${enc(since)}`, undefined, undefined, wait),
   /** The scanner's raw inventory, which the `current` layout draws, as the changes since the version `since` names (shared/listed.ts). */
   skillsInventorySince: (since: string, wait?: Wait) => call<import("./shared/listed.ts").ListedAnswer>("GET", `/api/skills/inventory?since=${enc(since)}`, undefined, undefined, wait),
   /** Where the disk differs from the DB: folders with no row and installs the disk does not match. */

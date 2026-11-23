@@ -1,7 +1,7 @@
 /**
- * The Skills page's two reads, kept for as long as the page lives and in IndexedDB for the next page load, so an open draws the last
- * answer at once and reads it again behind: GET /api/skills, the skills DB view the layouts draw, and GET /api/skills/inventory, which the
- * `current` layout draws. In the p155 rig at the owner's 200 ms round trip on 11-23, every open of the page read both and waited for them:
+ * The Skills page's reads, kept for as long as the page lives and in IndexedDB for the next page load, so an open draws the last answer
+ * at once and reads it again behind: GET /api/skills, the skills DB view the layouts draw, GET /api/skills/text, its descriptions, and
+ * GET /api/skills/inventory, which the `current` layout draws. In the p155 rig at the owner's 200 ms round trip on 11-23, every open of the page read both and waited for them:
  * the view is 252 KB as brotli and took 1,094 ms at p50 and 1,471 at p90, and the inventory, read beside it, 642 and 1,410 ms
  * (~/work/p155-sweep/fix-skills/notes.md).
  *
@@ -13,8 +13,9 @@
  * answer the page shows that came back the same, and a wait for a first read or a refresh that changed what the page shows.
  */
 import { afterWrite, api, takeOver, type Wait } from "$lib/api/client";
+import { live } from "$lib/api/live.svelte";
 import { applyListed, type ListedAnswer, type ListedVersion } from "$lib/api/shared/listed";
-import { fromWire, type SkillsReport, type SkillsView, type WireView } from "$lib/api/shared/skills";
+import { fromWire, type SkillText, type SkillsReport, type SkillsView, type WireView } from "$lib/api/shared/skills";
 
 /** The IndexedDB store of the answers, apart from page-db.ts, whose every kept page each page load reads before it mounts. */
 const DB = "chat.skills";
@@ -151,7 +152,29 @@ const isReport = (value: unknown): value is SkillsReport => {
   return typeof report?.scan === "object" && report.scan !== null && "inventory" in report;
 };
 
+const isTexts = (value: unknown): value is { skills: SkillText[] } => Array.isArray((value as { skills?: unknown } | null)?.skills);
+
 /** GET /api/skills, the skills DB view every layout but `current` draws. */
 export const skillsView = new KeptAnswer<SkillsView, WireView>("view", (since, wait) => api.skillsSince(since, wait), ["skills"], fromWire, isView);
+/** GET /api/skills/text, each skill's description by id, which the view's wire form leaves out (shared/skills.ts `toWire`). */
+export const skillsText = new KeptAnswer<ReadonlyMap<string, string>, { skills: SkillText[] }>(
+  "text", (since, wait) => api.skillsTextSince(since, wait), ["skills"], sent => new Map(sent.skills.map(t => [t.id, t.description])), isTexts,
+);
+
+/**
+ * Reads the view, then the texts, ahead in the lane, so his first open of the page draws a kept answer: once the page is idle after each
+ * hello of the live socket, and when Settings opens. Without it a fresh profile's first open waited on the whole view, 1,263 ms at a 200 ms
+ * round trip in the p155 rig on 11-23 (runs/p179-default-tree-80271e3). A kept answer reads only its changes, a few bytes when none.
+ */
+export function readSkillsAhead(): void {
+  void skillsView.ahead().then(() => skillsText.ahead());
+}
+
+if (typeof window !== "undefined") {
+  const idle = (run: () => void) => (typeof requestIdleCallback === "function" ? requestIdleCallback(run) : setTimeout(run));
+  live.on(event => {
+    if (event.type === "hello") idle(readSkillsAhead);
+  });
+}
 /** GET /api/skills/inventory, the scanner's inventory the `current` layout draws. */
 export const skillsInventory = new KeptAnswer<SkillsReport>("inventory", (since, wait) => api.skillsInventorySince(since, wait), ["inventory", "skills"], report => report, isReport);

@@ -41,8 +41,20 @@ test("the current layout waits on the inventory alone, and the view goes ahead a
   await expect.poll(() => at.view ?? 0).toBeGreaterThan(0);
   expect(at.view).toBeGreaterThanOrEqual(at.inventory!);
   // The view read ahead is kept, so a switch to a layout that draws it shows it with no wait.
-  await expect.poll(() => storedKeys(page)).toEqual(["inventory", "view"]);
+  await expect.poll(() => storedKeys(page)).toEqual(["inventory", "text", "view"]);
   await slow(page, "/api/skills", 4000);
+  await slow(page, "/api/skills/text", 4000);
+  await page.getByRole("tablist", { name: "Layout", exact: true }).getByRole("tab", { name: "Kinds", exact: true }).click();
+  await expect(page.getByTestId("skills-kinds")).toBeVisible({ timeout: 1500 });
+});
+
+test("the app reads the Skills view and texts ahead once idle, so a fresh profile's first open of Settings > Skills waits on nothing", async ({ page }) => {
+  await page.goto("/");
+  await expect.poll(() => storedKeys(page), { timeout: 15_000 }).toEqual(["text", "view"]);
+  await slow(page, "/api/skills", 4000);
+  await slow(page, "/api/skills/text", 4000);
+  await page.goto("/#/settings/skills");
+  await expect(page.getByTestId("tree-folder")).toBeVisible({ timeout: 1500 });
   await page.getByRole("tablist", { name: "Layout", exact: true }).getByRole("tab", { name: "Kinds", exact: true }).click();
   await expect(page.getByTestId("skills-kinds")).toBeVisible({ timeout: 1500 });
 });
@@ -52,7 +64,7 @@ test("the default tree reads only the view, and a second open and a page load dr
   page.on("request", request => void paths.push(new URL(request.url()).pathname));
   await page.goto("/#/settings/skills");
   await expect(page.getByTestId("tree-folder")).toBeVisible();
-  await expect.poll(() => storedKeys(page)).toEqual(["view"]);
+  await expect.poll(() => storedKeys(page)).toEqual(["text", "view"]);
   expect(paths).not.toContain("/api/skills/inventory");
   await slow(page, "/api/skills", 4000);
   await page.goto("/#/settings/keyboard");

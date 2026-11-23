@@ -15,7 +15,7 @@ import { after, before, test } from "node:test";
 import { brotliDecompressSync } from "node:zlib";
 import { listedView, SkillsDb } from "../../server/skills-db.ts";
 import { applyListed, type ListedAnswer } from "../../web/src/lib/api/shared/listed.ts";
-import { fromWire, toWire, type SkillsView, type WireView } from "../../web/src/lib/api/shared/skills.ts";
+import { fromWire, toWire, withText, type SkillsView, type SkillText, type WireView } from "../../web/src/lib/api/shared/skills.ts";
 import { start, until, type Running } from "./helpers.ts";
 
 let s: Running;
@@ -44,6 +44,15 @@ function raw(path: string, headers: Record<string, string> = {}): Promise<Raw> {
 
 const decode = (answer: Raw): Buffer => (answer.headers["content-encoding"] === "br" ? brotliDecompressSync(answer.bytes) : answer.bytes);
 
+/** The view as the page has it: no layout reads a copy's hash or mtime, so the `?since=` form leaves them out (shared/skills.ts `toWire`). */
+const onPage = (view: SkillsView): SkillsView => ({ ...view, skills: view.skills.map(s => ({ ...s, copies: s.copies.map(c => ({ ...c, hash: null, mtime: null })) })) });
+
+/** The descriptions GET /api/skills/text sends, by skill id. */
+async function texts(): Promise<Map<string, string>> {
+  const held = applyListed<{ skills: SkillText[] }>(null, await s.get<ListedAnswer>("/api/skills/text?since="), ["skills"])!;
+  return new Map(held.value.skills.map(t => [t.id, t.description]));
+}
+
 for (const path of ["/api/skills", "/api/skills/inventory"]) {
   test(`${path} answers 304 with no body to the ETag of its last answer`, async () => {
     const first = await raw(path);
@@ -65,7 +74,7 @@ test("a change to the skills DB answers the old ETag with the new view, and ?sin
   const first = await raw("/api/skills");
   const view = JSON.parse(decode(first).toString()) as SkillsView;
   const held = applyListed<WireView>(null, await s.get<ListedAnswer>("/api/skills?since="), ["skills"])!;
-  assert.deepEqual(fromWire(held.value), view, "a read with an empty since gets the whole view");
+  assert.deepEqual(withText(fromWire(held.value), await texts()), onPage(view), "a read with an empty since and the texts make the whole view");
   assert.deepEqual(await s.get<ListedAnswer>(`/api/skills?since=${held.tag}`), { tag: held.tag, same: true });
   const skill = view.skills.find(entry => entry.owner.kind !== "agent") ?? view.skills[0]!;
   const changed = await s.send("POST", "/api/skills/own", { skillId: skill.id, owner: "ag_agent-factory" });
@@ -79,7 +88,7 @@ test("a change to the skills DB answers the old ETag with the new view, and ?sin
   assert.deepEqual(delta.entries.map(entry => entry.id), [skill.id]);
   assert.deepEqual(delta.removed, []);
   assert.equal("order" in delta, false);
-  assert.deepEqual(fromWire(applyListed(held, delta, ["skills"])!.value), now, "the changes on the held view make the new view");
+  assert.deepEqual(withText(fromWire(applyListed(held, delta, ["skills"])!.value), await texts()), onPage(now), "the changes on the held view make the new view");
   assert.equal("full" in await s.get<ListedAnswer>("/api/skills?since=unknown"), true, "a version the server does not know gets the whole view");
 });
 
@@ -92,12 +101,23 @@ test("/api/skills/inventory?since= puts the rows back under inventory", async ()
 
 test("a copy's checkout goes apart by box and root, and one that differs from its key's stays whole", () => {
   const checkout = { root: "/r", branch: "main", headAt: "2026-11-23T00:00:00Z", stale: false };
-  const copy = (id: string, over: object = {}) => ({ id, box: "m", path: `/r/${id}`, checkout, ...over }) as unknown as SkillsView["unowned"][number];
-  const view = { generatedAt: null, skills: [{ id: "s", copies: [copy("a"), copy("b", { checkout: { ...checkout, stale: true } }), copy("c", { checkout: null })] }] } as unknown as Omit<SkillsView, "scan">;
+  const copy = (name: string, over: object = {}) =>
+    ({ id: `m:/r/${name}`, box: "m", path: `/r/${name}`, realPath: `/r/${name}`, hash: null, mtime: null, checkout, ...over }) as unknown as SkillsView["unowned"][number];
+  const view = { generatedAt: null, skills: [{ id: "s", description: "", copies: [copy("a"), copy("b", { checkout: { ...checkout, stale: true } }), copy("c", { checkout: null })] }] } as unknown as Omit<SkillsView, "scan">;
   const wire = toWire(view);
   assert.deepEqual(wire.checkouts, { "m:/r": checkout });
   assert.deepEqual(wire.skills[0]!.copies.map(c => c.checkout), ["m:/r", { ...checkout, stale: true }, null]);
   assert.deepEqual(fromWire(wire as unknown as WireView), view);
+});
+
+test("the wire leaves out what the page rebuilds or never shows, and the texts put the descriptions back", () => {
+  const copy = { id: "m:/a/s", box: "m", path: "/a/s", realPath: "/b/s", hash: "h", mtime: "2026-11-23T00:00:00Z", link: "/b/s", checkout: null };
+  const view = { generatedAt: null, skills: [{ id: "s", description: "Does s.", copies: [copy, { ...copy, id: "m:/b/s", path: "/b/s", link: null }] }] } as unknown as Omit<SkillsView, "scan">;
+  const sent = toWire(view).skills[0]!;
+  assert.equal("description" in sent, false);
+  assert.deepEqual(sent.copies.map(c => Object.keys(c).filter(k => ["id", "hash", "mtime", "realPath"].includes(k))), [["realPath"], []]);
+  const back = withText(fromWire(toWire(view) as unknown as WireView), new Map([["s", "Does s."]]));
+  assert.deepEqual(back, onPage(view as SkillsView));
 });
 
 test("the changes since a version carry new rows, gone rows and the new order", () => {

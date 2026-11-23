@@ -367,29 +367,50 @@ export type SkillsView = {
  * commit in a checkout changes the headAt of every copy in it. On 11-23 one scan changed 35 of 609 skills, most of them for a new commit
  * in an auto-sns-agent clone that 31 copies of each sit in, and those changes were 46 KB as brotli; with the checkouts apart, 18 skills and
  * 17.8 KB (~/work/p155-sweep/fix-skills/notes.md). A copy whose checkout differs from the one its key holds keeps it whole.
+ *
+ * The page's first read of it on a fresh profile waits on the whole answer: 243 KB as brotli for the live view on 11-23, 1,263 ms at a
+ * 200 ms round trip in the p155 rig. So the wire leaves out what the page can rebuild or never shows: a copy's id (always `<box>:<path>`),
+ * its realPath where it is the path, its hash and mtime (no layout reads them), and each skill's description, 86 KB of the 243, which
+ * GET /api/skills/text sends apart (`SkillText`) and the page puts back (`withText`). The same view was 99 KB as brotli at the server's
+ * quality 5 without them.
  */
-export type WireCopy = Omit<SkillCopy, "checkout"> & { checkout: SkillCopy["checkout"] | string };
-export type WireSkill = Omit<SkillEntry, "copies"> & { copies: WireCopy[] };
+export type WireCopy = Omit<SkillCopy, "checkout" | "id" | "hash" | "mtime" | "realPath"> & { checkout: SkillCopy["checkout"] | string; realPath?: string };
+export type WireSkill = Omit<SkillEntry, "copies" | "description"> & { copies: WireCopy[] };
 export type WireView = Omit<SkillsView, "skills"> & { skills: WireSkill[]; checkouts: Record<string, NonNullable<SkillCopy["checkout"]>> };
+
+/** A skill's description as GET /api/skills/text sends it, apart from the view. */
+export type SkillText = { id: string; description: string };
 
 export function toWire<V extends Omit<SkillsView, "scan">>({ skills, ...rest }: V): Omit<V, "skills"> & { skills: WireSkill[]; checkouts: WireView["checkouts"] } {
   const checkouts: WireView["checkouts"] = {};
   const same = (a: SkillCopy["checkout"], b: SkillCopy["checkout"]) => JSON.stringify(a) === JSON.stringify(b);
-  const wire = skills.map(skill => ({
+  const wire = skills.map(({ description: _description, ...skill }) => ({
     ...skill,
-    copies: skill.copies.map((copy): WireCopy => {
-      if (!copy.checkout) return copy;
-      const key = `${copy.box}:${copy.checkout.root}`;
-      checkouts[key] ??= copy.checkout;
-      return same(checkouts[key], copy.checkout) ? { ...copy, checkout: key } : copy;
+    copies: skill.copies.map(({ id: _id, hash: _hash, mtime: _mtime, realPath, checkout, ...copy }): WireCopy => {
+      const real = realPath === copy.path ? {} : { realPath };
+      if (!checkout) return { ...copy, ...real, checkout };
+      const key = `${copy.box}:${checkout.root}`;
+      checkouts[key] ??= checkout;
+      return { ...copy, ...real, checkout: same(checkouts[key], checkout) ? key : checkout };
     }),
   }));
   return { ...rest, skills: wire, checkouts };
 }
 
+export const skillTexts = (skills: readonly SkillEntry[]): SkillText[] => skills.map(({ id, description }) => ({ id, description }));
+
+/** The view from its wire form, every description empty until `withText` puts them back. */
 export function fromWire({ checkouts, skills, ...rest }: WireView): SkillsView {
-  const copyOf = (copy: WireCopy): SkillCopy => (typeof copy.checkout === "string" ? { ...copy, checkout: checkouts[copy.checkout] ?? null } : (copy as SkillCopy));
-  return { ...rest, skills: skills.map(skill => (skill.copies.some(copy => typeof copy.checkout === "string") ? { ...skill, copies: skill.copies.map(copyOf) } : (skill as SkillEntry))) };
+  const copyOf = ({ checkout, realPath, ...copy }: WireCopy): SkillCopy => ({
+    id: `${copy.box}:${copy.path}`, ...copy, realPath: realPath ?? copy.path, hash: null, mtime: null,
+    checkout: typeof checkout === "string" ? (checkouts[checkout] ?? null) : checkout,
+  });
+  return { ...rest, skills: skills.map(skill => ({ ...skill, description: "", copies: skill.copies.map(copyOf) })) };
+}
+
+/** The view with each skill's description from GET /api/skills/text; a skill the texts lack, such as one a scan just added, keeps none. */
+export function withText(view: SkillsView, texts: ReadonlyMap<string, string>): SkillsView {
+  return { ...view, skills: view.skills.map(skill => ({ ...skill, description: texts.get(skill.id) ?? "" })) };
 }
 
 /**

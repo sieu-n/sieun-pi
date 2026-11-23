@@ -18,10 +18,17 @@ export type LayoutProps = {
 /** How wide the page column is for a layout, as Page's `measure` takes it. */
 export type LayoutMeasure = "default" | "wide" | "full";
 
-export type LayoutEntry = { id: string; label: string; measure: LayoutMeasure; component: Component<LayoutProps> };
+/** `text` says the layout shows skill descriptions, which come in GET /api/skills/text apart from the view, so it draws once they did too. */
+export type LayoutEntry = { id: string; label: string; measure: LayoutMeasure; text: boolean; component: Component<LayoutProps> };
 
 /** The layouts that need more than the wide column: the kinds matrix has 11 kind columns beside the skill, about 1,250 px. */
 const MEASURES: Readonly<Record<string, LayoutMeasure>> = { kinds: "full" };
+
+/**
+ * The layouts that draw before the descriptions come: the tree shows one only in a skill's detail, which fills it in when it comes. Kinds
+ * and problem search descriptions, show them in rows and count their tokens, so they wait for both reads.
+ */
+const NO_TEXT: ReadonlySet<string> = new Set(["tree", "current"]);
 
 const found = import.meta.glob<Component<LayoutProps>>("./*/*Layout.svelte", { eager: true, import: "default" });
 
@@ -39,7 +46,7 @@ const rank = (id: string): number => (id === DEFAULT_LAYOUT ? 0 : id === INVENTO
 export const LAYOUTS: readonly LayoutEntry[] = Object.entries(found)
   .map(([path, component]) => {
     const id = path.split("/")[1]!;
-    return { id, label: LABELS[id] ?? id.charAt(0).toUpperCase() + id.slice(1).replace(/-/g, " "), measure: MEASURES[id] ?? "wide", component };
+    return { id, label: LABELS[id] ?? id.charAt(0).toUpperCase() + id.slice(1).replace(/-/g, " "), measure: MEASURES[id] ?? "wide", text: !NO_TEXT.has(id), component };
   })
   .sort((a, b) => rank(a.id) - rank(b.id) || a.id.localeCompare(b.id));
 

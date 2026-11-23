@@ -18,7 +18,7 @@ import { listedEntries, type ListedEntry } from "./compress.ts";
 import {
   COUNT_RULES, SKILL_RUNTIMES, type VerdictRule, type AdoptBody, type ApplyResult, type ApplyStep, type CopyRole, type InstallBody, type InstallState, type MergeBody, type MoveBody,
   type OwnBody, type RemoveBody, type SkillBoxState, type SkillCopy, type SkillCounts, type SkillEntry, type SkillMove, type SkillSight, type SkillOwner, type SkillRuntime,
-  type SkillScan, type SkillSource, type SkillsChange, type SkillsCheck, type SkillsView, type SkillThresholds, type ThreadKind, type SkillVerdictRow, type UndoBody, toWire,
+  type SkillScan, type SkillSource, type SkillsChange, type SkillsCheck, type SkillsView, type SkillThresholds, type ThreadKind, type SkillVerdictRow, type UndoBody, skillTexts, toWire,
 } from "../web/src/lib/api/shared/skills.ts";
 import {
   canonical, changedLines, copyId, drift, extraCopies, identifyFolder, installState, ownerText, parseFacts, parseOwner, plan, roleOf, sameLink, seedOwner, sees, staleCheckouts, sumUse,
@@ -195,13 +195,14 @@ function holder(same: readonly SkillEntry[], use: PathUse, home: string | null):
 
 /**
  * The view without its scan as JSON texts: `plain` whole, and for a `?since=` read the rest without `skills` and each skill as a
- * `ListedEntry` (compress.ts), in the wire form of shared/skills.ts `toWire`.
+ * `ListedEntry` (compress.ts), in the wire form of shared/skills.ts `toWire`; `texts` are the descriptions that form leaves out, which
+ * GET /api/skills/text sends.
  */
-export type ListedView = { plain: string; rest: string; entries: ListedEntry[] };
+export type ListedView = { plain: string; rest: string; entries: ListedEntry[]; texts: ListedEntry[] };
 
 export function listedView(view: Omit<SkillsView, "scan">): ListedView {
   const { skills, ...rest } = toWire(view);
-  return { plain: JSON.stringify(view), rest: JSON.stringify(rest), entries: listedEntries(skills) };
+  return { plain: JSON.stringify(view), rest: JSON.stringify(rest), entries: listedEntries(skills), texts: listedEntries(skillTexts(view.skills)) };
 }
 
 export class SkillsDb {
