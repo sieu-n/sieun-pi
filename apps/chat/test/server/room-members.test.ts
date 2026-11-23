@@ -164,6 +164,8 @@ describe("a mentions-only member", () => {
     const root = await woken("thread to join", { mentions: [agents.crawler] });
     const comm = await until(async () => s.app.agents.record(agents.crawler)!.comm?.[room.id], id => id !== undefined);
     const thread = host.threadsById.get(comm!)!;
+    // The post's delivery reaches the comm thread after the send answers, so the call below must wait for that input's turn to end.
+    await until(async () => (await s.host.entries(comm!, { conversation: 1, after: 0, limit: 1000 })).entries.some(e => e.kind === "pi.user" && JSON.stringify(e).includes("thread to join")), on => on);
     await until(async () => thread.running.has(1), on => !on);
     const content: ContentBlock[] = [{ type: "toolCall", id: "c1", name: "tell_owner", arguments: { text: "quiet, on it", why: "answer" } }];
     host.append(thread, 1, { kind: "pi.assistant", model: [{ role: "assistant", content, provider: "anthropic", model: "claude-opus-5-5", stopReason: "toolUse", timestamp: Date.now() }] });

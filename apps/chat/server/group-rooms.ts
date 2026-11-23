@@ -177,7 +177,10 @@ export class GroupRooms {
 
   /** A room by id, or a channel by its name with or without `#`. */
   row(id: string): GroupRoom | undefined {
-    return this.store.groupRoom(id) ?? this.store.groupRooms().find(r => r.kind === "channel" && !r.archived && r.name === channelName(id));
+    const room = this.store.groupRoom(id);
+    if (room) return room;
+    const name = channelName(id);
+    return this.store.groupRooms().find(r => r.kind === "channel" && !r.archived && r.name === name);
   }
 
   require(id: string): GroupRoom {
@@ -720,11 +723,15 @@ export class GroupRooms {
 
   // The feed
 
-  /** After each thread list read: each group comm thread whose `updatedAt` changed gets a feed read, and room status changes go out. */
+  /**
+   * After each thread list read: each group comm thread whose `updatedAt` changed gets a feed read, and room status changes go out. A comm
+   * map is keyed by room id, so a DM room's entry is skipped by id: on 11-23 `row` scanned 216 channels by name for each of 598 DM entries
+   * and held the event loop about 72 ms of each 2 s read (~/work/p190-search-walk/summary.md).
+   */
   poll(): void {
     for (const record of this.deps.agents.list()) {
       for (const [room, thread] of Object.entries(record.comm ?? {})) {
-        if (!this.row(room)) continue;
+        if (!this.store.groupRoom(room)) continue;
         const updatedAt = this.deps.threads.thread(thread)?.updatedAt;
         if (updatedAt !== undefined && this.seen.get(thread) !== updatedAt) void this.feed(thread, updatedAt);
       }

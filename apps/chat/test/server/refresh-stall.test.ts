@@ -3,6 +3,8 @@
  * 2 s, and each request that arrived meanwhile waited: a 20 ms read of vent's thread took 260 to 490 ms, and Cmd K searches took 325 to 382 ms
  * at a 200 ms round trip (p156). Three scans made it: a save of rooms.json after every empty feed page, which also bumped the store version
  * and built every summary again, a scan of every alias for each agent's job threads, and a filter of all rooms for each agent's channels.
+ * On 11-23 it held it 130 to 200 ms again with 2,091 threads: a scan of the channels by name for each DM room's comm entry, and the summary
+ * builds run back to back (p190).
  * Run: cd apps/chat && node --import tsx --test --test-force-exit --test-isolation=none test/server/refresh-stall.test.ts
  */
 import assert from "node:assert/strict";
@@ -64,4 +66,19 @@ test("the channels and Solo rooms read from the lookup equal a filter of the roo
   assert.equal(s.app.groups.row(made.body.id)?.id, made.body.id, "a room made just now reads by id");
   assert.equal(s.app.groups.row("#refresh-stall")?.id, made.body.id, "and by its channel name");
   assert.deepEqual(s.app.groups.rows(), store.rooms.rooms.filter(isGroupRoom));
+});
+
+test("the poll after each list read finds each comm thread's room by id, with no scan of the channels for a DM room's entry", () => {
+  const store = s.app.agents.store;
+  const dmEntries = s.app.agents.list().flatMap(r => Object.keys(r.comm ?? {})).filter(room => !store.groupRoom(room));
+  assert.ok(dmEntries.length > 0, "the fixture holds comm entries of rooms that are not channels");
+  const groupRooms = store.groupRooms.bind(store);
+  let scans = 0;
+  store.groupRooms = () => { scans += 1; return groupRooms(); };
+  try {
+    s.app.groups.poll();
+  } finally {
+    store.groupRooms = groupRooms;
+  }
+  assert.equal(scans, 1, "one read of the rooms for the status pass; on 11-23 each of 598 DM entries scanned 216 channels by name");
 });

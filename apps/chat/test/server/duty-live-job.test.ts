@@ -39,13 +39,14 @@ before(async () => {
   armWake(s.app.boards.wakeDir, ids.vent, { conversation: waitingWalk.id, on: { kind: "time", at: now + 10 * HOUR }, note: "walk done" });
   // pi-host bumps a thread's updatedAt when its tree changes, and the chat server reads the tree again only then.
   thread.row.updatedAt = now + 1;
-  await s.app.threads.refresh();
+  // The board goes in before the read: the read's events start the sidebar's timer, which reads and keeps each chat's board.
   const at = new Date().toISOString();
   await host.docPut(ids.vent, BOARD_DOC, { v: 2, rev: 1, updatedAt: at, todos: [], plan: [
     { id: "p1", text: "Fix up", status: "doing", duty: "d1/up", job: "busy fix", children: [] },
     { id: "p2", text: "Fix down", status: "doing", duty: "d1/down", job: "quiet fix", children: [] },
     { id: "p3", text: "Fix side", status: "doing", duty: "d1/side", job: "waiting fix", children: [] },
   ] });
+  await s.app.threads.refresh();
   host.beforeSubmit = async (_id, input) => {
     if (input.requestId?.startsWith("duty:")) briefs.push(input.text ?? "");
   };

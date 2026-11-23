@@ -107,6 +107,8 @@ export type ItemsSplit = Record<string, number>;
 const itemsSplit = new AsyncLocalStorage<ItemsSplit>();
 
 const THREADS_CACHE = "threads";
+/** Lets the calls waiting on the event loop run, such as a search whose Meilisearch answer came in. */
+const yieldLoop = (): Promise<void> => new Promise(resolve => setImmediate(resolve));
 type ThreadsCache = { threads: DurableThread[]; trees: [string, { updatedAt: number; nodes: TreeNode[] }][] };
 
 export class Threads {
@@ -302,12 +304,17 @@ export class Threads {
     this.agentRecords?.follow(next);
     await this.agentRecords?.fileSpawned(next);
     this.saveListCache();
+    // Each part below builds or compares every thread's summaries, and run back to back they held the event loop 130 to 200 ms on 11-23 with
+    // 2,091 threads, so a ⌘K search that came then waited for all of it; a yield between parts lets waiting calls run.
+    await yieldLoop();
     const agents = diff(this.agentCache, this.agents({ archived: true }));
     this.agentCache = agents.cache;
     if (agents.changed.length || agents.removed.length) this.events.agents(agents.changed, agents.removed);
+    await yieldLoop();
     const jobs = diff(this.jobCache, this.jobList({ archived: true }));
     this.jobCache = jobs.cache;
     if (jobs.changed.length || jobs.removed.length) this.events.jobList(jobs.changed, jobs.removed);
+    await yieldLoop();
     const conversations = this.threadConversations();
     const convChanged = conversations.filter(c => this.convCache.get(c.id) !== JSON.stringify(c));
     const convNext = new Map(conversations.map(c => [c.id, JSON.stringify(c)]));
@@ -322,6 +329,7 @@ export class Threads {
         this.events.status(conversationIdOf(live.thread, live.conversation), status);
       }
     }
+    await yieldLoop();
     this.onRefresh();
   }
 
