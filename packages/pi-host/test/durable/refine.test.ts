@@ -5,7 +5,7 @@
  * 2. `refine.run(global=True)` writes the global store and appends Prime's `refinements.jsonl`.
  * 3. In an agent's thread, Prime's auto-refine reviews after the turn interval and writes the agent's store, told it is the agent's memory.
  * 4. Outside a run it answers Prime's "no active turn", and a child conversation gets no refine, as Prime registers it only at depth 0, unless
- *    the thread belongs to an agent, whose store outlives the job.
+ *    the thread belongs to an agent, whose store outlives the job. A job gets no auto-refine review, as Prime reviews only at depth 0.
  * 5. A walk's test agent (`agent.ref` `test: true`) gets no skill route, and its refine writes its own store even when asked for global.
  * 6. With the real pool/turns.py queue, an auto-refine's review and planner take a working slot as `<thread>` and give it back when the
  *    refine ends, so no finished refine holds a slot for the 1800 s lease.
@@ -325,4 +325,20 @@ test("refine.run outside a run answers no active turn, and a child conversation 
   const job = { ...call(2, true), agent: "vent" } as HostCall;
   await assert.rejects(async () => module.request(job, "refine.run", { global: "yes" }), /global must be a boolean/, "a job of an agent's thread gets refine");
   assert.equal(existsSync(join(dir, "nowhere")), false);
+});
+
+test("a job of an agent's thread gets no auto-refine review, as Prime reviews only at depth 0", async () => {
+  const asked: string[] = [];
+  const module = refineModule({
+    agentDir: join(dir, "agent"), log: () => {},
+    autoRefine: () => ({ enabled: true, turnInterval: 1, compact: true, cooldownMs: 0 }),
+    planner: async (_call, system) => { asked.push(system); return "{}"; },
+  });
+  const job = {
+    thread: { id: "t" }, conversation: 2, session: "t:2", agent: "vent", harnessDir: join(dir, "nowhere"), running: async () => false,
+    harness: { snapshot: async () => undefined, conversation: async () => { throw new Error("a job's context is never read for a review"); } },
+  } as unknown as HostCall;
+  await module.settled!(job);
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.deepEqual(asked, []);
 });

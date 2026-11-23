@@ -8,8 +8,8 @@
  *
  * Prime's auto-refine runs here too: at a settle with no request, after Prime's turn interval or a compaction and its cooldown, Prime's review
  * gate asks the model whether the turns hold something to keep, and a yes runs the planner with Prime's auto instructions. In an agent's
- * thread the root and every job conversation refine and auto-refine into the agent's store, with the planner and review told it is the
- * agent's memory (pi-harness `agentPolicy`), so an agent keeps its own memory with no one asking.
+ * thread the root and every job conversation refine into the agent's store, and the root auto-refines into it, with the planner and review
+ * told it is the agent's memory (pi-harness `agentPolicy`), so an agent keeps its own memory with no one asking.
  *
  * A general standard, such as a coding standard or how every agent writes, goes to a skill rather than a store (owner, #sw-factory-build p110):
  * the planner returns it as a skill route (pi-harness `ROUTE_POLICY`), and the thread's root gets a `[skill-route]` input that has it make the
@@ -35,6 +35,7 @@ import {
 import { appendRefinementLog, mergeStates, readRefinementLog, readState, REFINEMENT_LOG, stateFile, updateState, type HarnessState, type Scope } from "../../../pi-harness/src/core/store.ts";
 import type { HostCall, HostModule, HostModuleOptions } from "./host-modules.ts";
 import { track } from "../loop-stall.ts";
+import { harnessNearest } from "./digest-worker.ts";
 import { getGlobalHarnessStateDir } from "./vendor/prime-harness.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -51,6 +52,12 @@ const NO_THINKING_PLANNER_TOKENS = 32_000;
 /** Prime's review gate reads the last 40,000 characters and answers in at most 4,096 tokens with reasoning off (pi-harness `index.ts`). */
 const REVIEW_CONVERSATION = 40_000;
 const NO_THINKING_REVIEW_TOKENS = 4_096;
+/** The local entries an agent's review sees, nearest the conversation first: Prime's VFn shows the planner and the review 40 per kind. */
+const REVIEW_LOCAL_ENTRIES = 40;
+const NO_DIGEST_FLAGS = { includeIpythonExamples: false, includeShellExamples: false, includeRefineExamples: false };
+/** A message's text parts, which the review ranks the agent's entries by. */
+const textOfMessage = (m: Message): string => typeof m.content === "string" ? m.content
+  : (m.content as { type: string; text?: string }[]).flatMap(part => (part.type === "text" && part.text ? [part.text] : [])).join("\n");
 /** The note a job of an agent gets: its refine writes the agent's memory and, as a child, it is not resumed with a notice. */
 export const JOB_SCHEDULED_NOTE =
   "Refinement runs when the current turn ends and writes your agent's memory, which every later thread of the agent reads. You get no notice; continue working normally.";
@@ -122,7 +129,8 @@ const modelPlanner: PlannerCall = async (call, systemPrompt, conversation, build
   const reply: AssistantMessage = await call.models.completeSimple(
     model,
     { systemPrompt, messages: [{ role: "user", content: [{ type: "text", text: fit.prompt }], timestamp: Date.now() }] },
-    { ...(reasoning === "off" ? {} : { reasoning }), maxTokens, signal, sessionId: call.session },
+    // Each review and plan prompt goes out once, so a cache write of it (1 h at PI_CACHE_RETENTION=long) is never read back.
+    { ...(reasoning === "off" ? {} : { reasoning }), maxTokens, signal, sessionId: call.session, cacheRetention: "none" },
   );
   if (reply.stopReason === "error") throw new Error(reply.errorMessage || "Unknown error");
   if (reply.stopReason === "aborted") throw new Error("aborted");
@@ -202,11 +210,12 @@ export function refineModule(options: RefineModuleOptions): HostModule {
 
   /**
    * Whether Prime's auto-refine review is due at this settle (pi-harness `afterRun`): Prime's turn interval of assistant messages since the last
-   * review, or a compaction after it, and the cooldown since it. It runs for a thread's root conversation, as Prime's does for a depth 0
-   * session, and for each job conversation of an agent's thread, whose store is the agent's memory that outlives the job.
+   * review, or a compaction after it, and the cooldown since it. It runs for a thread's root conversation only, as Prime's does for a depth 0
+   * session (pi-harness `afterRun`): a job's lessons reach the agent's memory through the job's own `refine.run`, or through its report,
+   * which the root's next review reads. From 20:38 to 22:31Z on 11-23 jobs ran 132 of pi-host's 161 reviews and 43 of its 53 plans.
    */
   const autoDue = async (call: HostCall, reviewed: Reviewed | undefined): Promise<{ reason: AutoReason; turns: number; tail: number } | undefined> => {
-    if (call.conversation !== ROOT_CONVERSATION_ID && !call.agent) return undefined;
+    if (call.conversation !== ROOT_CONVERSATION_ID) return undefined;
     const auto = autoSettings();
     if (!auto.enabled) return undefined;
     if (reviewed && Date.now() - reviewed.at < auto.cooldownMs) return undefined;
@@ -229,8 +238,13 @@ export function refineModule(options: RefineModuleOptions): HostModule {
     await write(call, d => { d.reviewed = { at: Date.now(), after: due.tail }; });
     const records = mergeHistory(logOf(), ((await read(call))?.records ?? []) as unknown as RefineResult[]);
     const state = mergeStates(stateOf(globalDir, "global"), stateOf(call.harnessDir, "local"));
-    const text = await track("auto-refine context", call.session, async () => conversationText(await contextMessages(call) as never).slice(-REVIEW_CONVERSATION));
-    const trigger = { reason: due.reason, turnsSinceLastReview: due.turns, ...(call.agent ? { agent: call.agent } : {}) };
+    const messages = await contextMessages(call);
+    const text = await track("auto-refine context", call.session, async () => conversationText(messages as never).slice(-REVIEW_CONVERSATION));
+    // An agent's review sees its 40 local entries nearest the conversation, as Prime's VFn shows 40 per kind; the store keeps every entry.
+    const localShown = call.agent
+      ? await harnessNearest({ agentDir: options.agentDir, localDir: call.harnessDir, flags: NO_DIGEST_FLAGS, recent: messages.slice(-4).map(textOfMessage), limit: REVIEW_LOCAL_ENTRIES }, call.log)
+      : undefined;
+    const trigger = { reason: due.reason, turnsSinceLastReview: due.turns, ...(call.agent ? { agent: call.agent } : {}), ...(localShown ? { localShown } : {}) };
     return parseReview(await planner(call, REVIEW_PROMPT, text, c => reviewPrompt(state, records, c, trigger), signal, NO_THINKING_REVIEW_TOKENS));
   };
 

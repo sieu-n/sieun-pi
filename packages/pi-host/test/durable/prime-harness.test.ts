@@ -17,7 +17,7 @@ import { fauxAssistantMessage, fauxProvider, getCurrentSystemPrompt, type Messag
 import { createModels } from "@earendil-works/pi-ai/models";
 import type { ContextView, EntryRecord } from "@earendil-works/pi-durable";
 import { messageIdNote } from "../../../../legacy/prime/user-history/src/shared/chat-feed.ts";
-import { digestFlags, mergedHarnessState, nextDelivery, placeDeliveries, threadHarnessDir, withDigests, type DigestDelivery } from "../../src/durable/prime-harness.ts";
+import { digestFlags, mergedHarnessState, nearestLocal, nextDelivery, placeDeliveries, threadHarnessDir, withDigests, type DigestDelivery } from "../../src/durable/prime-harness.ts";
 import { withTurnWrappers } from "../../src/durable/prime-chat.ts";
 import { roomIdNote } from "../../src/durable/room-post.ts";
 import { DurableThreads } from "../../src/durable/threads.ts";
@@ -50,6 +50,23 @@ function stores(name: string, from = fixture) {
   put(from);
   return { agentDir, file, local, put };
 }
+
+test("an agent's auto-refine review gets its local entries nearest the conversation, at most the limit, and no global entry", () => {
+  const at = "2026-11-23T00:00:00.000Z";
+  const entry = (id: string, title: string, scope: "local" | "global") => ({
+    id, kind: "memory" as const, title, content: `${title}.`, path: "test", scope, reference: {}, arguments: {}, metadata: {}, source: "test", created_at: at, updated_at: at, version: 1,
+  });
+  const entries = [
+    entry("deploy_rule", "Release apps chat with the release script", "local"),
+    entry("lunch", "The team eats lunch at noon", "local"),
+    entry("pool", "pi-pool slots and the turn queue", "local"),
+    entry("release_global", "Release apps chat with the release script", "global"),
+  ];
+  const state = { schema: 1, entries: { prompt: {}, memory: Object.fromEntries(entries.map(e => [e.id, e])), skill: {}, subagent: {} }, refinements: [] };
+  assert.deepEqual(nearestLocal(state, ["how do I release apps chat?"], 2)[0], "memory:deploy_rule");
+  assert.equal(nearestLocal(state, ["how do I release apps chat?"], 2).length, 2);
+  assert.ok(!nearestLocal(state, ["release"], 10).includes("memory:release_global"));
+});
 
 test("the digest and its update are Prime's own bytes for the same global and local entries", () => {
   const s = stores("bytes");

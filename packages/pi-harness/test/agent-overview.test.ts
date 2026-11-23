@@ -22,6 +22,19 @@ test("an agent's planner and review gate list every entry of its memory ahead of
   assert.ok(reviewPrompt(state, [], "conversation", { reason: "turn_interval", turnsSinceLastReview: 25, agent: "seo" }).includes(OWN));
 });
 
+test("an agent's review shows only the local entries it is handed, in that order, and counts the rest; the planner still shows all", () => {
+  const many = parseState(store(Array.from({ length: 60 }, (_, i) => entry(`own_${i}`, `Own note ${i}`))), "local");
+  const both = mergeStates(global, many);
+  const trigger = { reason: "turn_interval" as const, turnsSinceLastReview: 25, agent: "seo", localShown: ["memory:own_7", "memory:own_3"] };
+  const review = reviewPrompt(both, [], "conversation", trigger);
+  assert.ok(review.indexOf("[local:own_7]") < review.indexOf("[local:own_3]"), "the handed order holds");
+  assert.ok(!review.includes("[local:own_0]"));
+  assert.match(review, /- 2 of 60 local memory entries, the ones nearest the conversation/);
+  assert.match(review, /memory: 818/);
+  const planner = plannerPrompt(both, [], "conversation", { global: false, agent: "seo", routes: true });
+  assert.ok(planner.includes("[local:own_0]") && planner.includes("[local:own_59]"), "the planner still sees every local entry");
+});
+
 test("outside an agent the overview keeps Prime's order and cap", () => {
   assert.ok(!plannerPrompt(state, [], "conversation", { global: false }).includes(OWN));
   assert.ok(!reviewPrompt(state, [], "conversation", { reason: "turn_interval", turnsSinceLastReview: 25 }).includes(OWN));

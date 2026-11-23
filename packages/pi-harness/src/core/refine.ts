@@ -458,10 +458,14 @@ export function plannerPrompt(state: HarnessState, history: RefineResult[], conv
 export type AutoReason = "turn_interval" | "compact";
 
 /** The review gate's user prompt for one conversation text. */
-export function reviewPrompt(state: HarnessState, history: RefineResult[], conversation: string, trigger: { reason: AutoReason; turnsSinceLastReview: number; agent?: string }): string {
+export function reviewPrompt(
+  state: HarnessState, history: RefineResult[], conversation: string,
+  trigger: { reason: AutoReason; turnsSinceLastReview: number; agent?: string; localShown?: readonly string[] },
+): string {
+  const shown = trigger.localShown ? { localShown: trigger.localShown } : {};
   return [
     `<trigger>\n${trigger.reason}; ${trigger.turnsSinceLastReview} assistant turns since last auto-refine review\n</trigger>`,
-    `<current_harness_state>\n${plannerOverview(state, { localFirst: trigger.agent !== undefined })}\n</current_harness_state>`,
+    `<current_harness_state>\n${plannerOverview(state, { localFirst: trigger.agent !== undefined, ...shown })}\n</current_harness_state>`,
     `<refinement_history>\n${historyText(history)}\n</refinement_history>`,
     `<conversation>\n${conversation}\n</conversation>`,
     trigger.agent

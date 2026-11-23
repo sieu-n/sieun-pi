@@ -12,7 +12,7 @@
  * process, started at the first job; if it fails, the jobs in it and later ones run on the loop as before.
  */
 import { isMainThread, parentPort, Worker, workerData } from "node:worker_threads";
-import { digestQueryTerms, formatDigest, mergedHarnessState, nextDelivery, type DigestDelivery, type DigestFlags } from "./prime-harness.ts";
+import { digestQueryTerms, formatDigest, mergedHarnessState, nearestLocal, nextDelivery, type DigestDelivery, type DigestFlags } from "./prime-harness.ts";
 
 interface StoreJob {
   agentDir: string;
@@ -27,9 +27,11 @@ interface StoreJob {
 export type DeliveryJob = StoreJob & { kind: "delivery"; input: string[]; recent: string[]; goal?: string; delivered: DigestDelivery[]; after: number; now: number };
 /** A job prompt's `harness` section, ranked by `query`, the job's task, when there is one. */
 export type DigestJob = StoreJob & { kind: "digest"; query?: string };
-type Job = DeliveryJob | DigestJob;
+/** The auto-refine review's local entries: the `limit` nearest `recent`, the conversation's last message texts (`nearestLocal`). */
+export type NearestJob = StoreJob & { kind: "nearest"; recent: string[]; limit: number };
+type Job = DeliveryJob | DigestJob | NearestJob;
 
-type Answer = { kind: "delivery"; delivery: DigestDelivery | undefined } | { kind: "digest"; text: string };
+type Answer = { kind: "delivery"; delivery: DigestDelivery | undefined } | { kind: "digest"; text: string } | { kind: "nearest"; keys: string[] };
 type Reply = { id: number; answer: Answer } | { id: number; error: string };
 
 function run(job: Job): Answer {
@@ -39,6 +41,8 @@ function run(job: Job): Answer {
       return { kind: "delivery", delivery: nextDelivery({ ...job, state, recent: job.recent.filter(Boolean).slice(-4) }) };
     case "digest":
       return { kind: "digest", text: formatDigest(state, { ...job.flags, ...(job.query ? { queryTerms: digestQueryTerms([job.query], []) } : {}) }, job.agent) };
+    case "nearest":
+      return { kind: "nearest", keys: nearestLocal(state, job.recent, job.limit) };
     default: {
       const _exhaustive: never = job;
       return _exhaustive;
@@ -116,6 +120,13 @@ export async function harnessDelivery(job: Omit<DeliveryJob, "kind">, log?: (lin
   const answer = await offLoop({ kind: "delivery", ...job }, log);
   if (answer.kind !== "delivery") throw new Error(`harness digest worker answered a delivery job with ${answer.kind}`);
   return answer.delivery;
+}
+
+/** The review's local entries (`nearestLocal`), ranked off the loop. */
+export async function harnessNearest(job: Omit<NearestJob, "kind">, log?: (line: string) => void): Promise<string[]> {
+  const answer = await offLoop({ kind: "nearest", ...job }, log);
+  if (answer.kind !== "nearest") throw new Error(`harness digest worker answered a nearest job with ${answer.kind}`);
+  return answer.keys;
 }
 
 /** The digest text of a job prompt's `harness` section, ranked off the loop. */

@@ -175,6 +175,22 @@ const compact = (text: string, max: number): string => {
   return flat.length <= max ? flat : `${flat.slice(0, max - 3)}...`;
 };
 
+/** The agent's entries, prompt notes first, each kind ranked by the query when there is one and newest first otherwise. */
+function rankAgentEntries(entries: readonly HarnessEntry[], queryTerms: HarnessQueryTerms | undefined): HarnessEntry[] {
+  const scores = queryTerms?.size ? scoreHarnessEntries(entries, queryTerms) : new Map<HarnessEntry, number>();
+  return AGENT_KINDS.flatMap(kind => entries.filter(entry => entry.kind === kind).sort((a, b) =>
+    (scores.get(b) ?? 0) - (scores.get(a) ?? 0) || (Date.parse(b.updated_at) || 0) - (Date.parse(a.updated_at) || 0) || a.id.localeCompare(b.id)));
+}
+
+/**
+ * The `limit` local entries of `state` nearest `recent`, the last message texts of a conversation, as `<kind>:<id>` in the agent block's
+ * order. The auto-refine review shows only these (`refine.ts`), since showing all 762 of agent factory's entries made its prompt 390k characters.
+ */
+export function nearestLocal(state: HarnessState, recent: readonly string[], limit: number): string[] {
+  const local = Object.values(state.entries).flatMap(kind => Object.values(kind)).filter(entry => entry.scope === "local");
+  return rankAgentEntries(local, digestQueryTerms([], recent)).slice(0, limit).map(entry => `${entry.kind}:${entry.id}`);
+}
+
 /**
  * The agent's own entries, prompt notes first, each kind ranked by the query when there is one and newest first otherwise. A line names the
  * entry as `[agent:<id>]`, which Prime's delta does not read as one it delivered, so a later change to the entry still shows in the update.
@@ -183,9 +199,7 @@ function agentBlock(agent: string, entries: readonly HarnessEntry[], queryTerms:
   if (!entries.length) {
     return [`## Agent ${agent}'s memory`, "", `${agent} has no saved memory yet. Save the first durable fact or owner rule you learn for its work.`, ""];
   }
-  const scores = queryTerms?.size ? scoreHarnessEntries(entries, queryTerms) : new Map<HarnessEntry, number>();
-  const ranked = AGENT_KINDS.flatMap(kind => entries.filter(entry => entry.kind === kind).sort((a, b) =>
-    (scores.get(b) ?? 0) - (scores.get(a) ?? 0) || (Date.parse(b.updated_at) || 0) - (Date.parse(a.updated_at) || 0) || a.id.localeCompare(b.id)));
+  const ranked = rankAgentEntries(entries, queryTerms);
   const lines = [`## Agent ${agent}'s memory (${entries.length} entries)`, ""];
   for (const entry of ranked.slice(0, AGENT_BLOCK_ENTRIES)) {
     const bad = harnessEntryMalformation(entry);

@@ -291,14 +291,21 @@ export function buildDelta(state: HarnessState, delivered: string[], since: numb
  * Prime's `VFn`: the state as the planner and the review gate see it, 40 entries per kind and 240 characters each. With `localFirst`, for a
  * sw factory agent's refine, every local entry (the agent's memory) comes first and only the global entries share the 40: with the global
  * store's 758 memories (11-21) ahead of them, Prime's order showed the planner none of an agent's own entries, so it saved near copies it could not see.
+ * `localShown` lists the local entries to show, as `<kind>:<id>` in rank order; the review gate passes the 40 nearest the conversation, since
+ * on 11-23 agent factory's 762 entries made each review prompt about 390k characters.
  */
-export function plannerOverview(state: HarnessState, options: { localFirst?: boolean } = {}): string {
+export function plannerOverview(state: HarnessState, options: { localFirst?: boolean; localShown?: readonly string[] } = {}): string {
   const lines: string[] = [];
+  const order = options.localShown ? new Map(options.localShown.map((key, index) => [key, index])) : undefined;
   for (const kind of Object.keys(state.entries) as (keyof HarnessState["entries"])[]) {
     const entries = Object.values(state.entries[kind]);
-    const local = options.localFirst ? entries.filter(e => e.scope === "local") : [];
+    const allLocal = options.localFirst ? entries.filter(e => e.scope === "local") : [];
+    const local = order
+      ? allLocal.filter(e => order.has(`${kind}:${e.id}`)).sort((a, b) => order.get(`${kind}:${a.id}`)! - order.get(`${kind}:${b.id}`)!)
+      : allLocal;
     const rest = options.localFirst ? entries.filter(e => e.scope !== "local") : entries;
     lines.push(`${kind}: ${entries.length}`);
+    if (local.length < allLocal.length) lines.push(`- ${local.length} of ${allLocal.length} local ${kind} entries, the ones nearest the conversation`);
     for (const e of [...local, ...rest.slice(0, 40)]) {
       const bad = malformedEntry(e);
       if (bad) {
