@@ -70,16 +70,18 @@ test("an owner send shows at once, its reply post arrives, and a reload keeps bo
 });
 
 test("the owner reacts through the hover bar's picker, his chip is highlighted, a reload keeps it and a click takes it off", async ({ page }) => {
-  // Crawler VP's DM, which no other spec posts to.
-  await open(page, "#/c/dm_crawler-vp");
-  const text = `reaction check ${tag()}`;
+  // A test agent's DM and a quiet send, which gets no answer. A post that lands between the hover and the click moves the row out from under
+  // the pointer, and the hover bar takes no click then: the fixture's answer comes as two posts 400 ms apart, and other specs post to the
+  // seeded DMs, such as board/plan-steps.spec.ts to Crawler VP's.
+  const agent = (await (await page.request.post("/api/agents", { data: { kind: "chat", name: `reaction dm ${tag()}`, test: true } })).json()) as { room: string };
+  await open(page, `#/c/${agent.room}`);
+  const text = `quiet reaction check ${tag()}`;
   await composerInput(page).fill(text);
   await composerInput(page).press("Enter");
   const mine = conversation(page).locator(".row.own[data-message-id]").filter({ hasText: text });
   await expect(mine).toHaveAttribute("data-message-id", /^p\d+$/, { timeout: 5_000 });
-  // The agent's reply moves the rows, so the hover waits for it.
-  const seq = Number((await mine.getAttribute("data-message-id"))!.slice(1));
-  await expect(row(page, `p${seq + 1}`)).toBeVisible({ timeout: 10_000 });
+  // The Sent line under the post goes once the agent has it, which moves the rows too.
+  await expect(mine.locator("[data-send-state]")).toHaveCount(0, { timeout: 10_000 });
 
   await mine.hover();
   await mine.locator("[data-add-reaction]").click();
