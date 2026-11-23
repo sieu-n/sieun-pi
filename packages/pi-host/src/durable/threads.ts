@@ -34,6 +34,7 @@ import { AgentMessageEntry, ChatDoc, threadEnv, threadRegistry } from "./registr
 import { SPEAKING_TOOLS, type PrimeChat } from "./prime-chat.ts";
 import { PrimeRoots } from "./prime-roots.ts";
 import { jobTitle } from "./job-title.ts";
+import { FirstEntries } from "./first-entry.ts";
 import { loopSlices, rlmChildName, type DurableRlm, type PiRootView, type RlmThread, type RootRow } from "./rlm.ts";
 import type { DurableRules } from "./rules.ts";
 import type { PoolLabels } from "./pool-labels.ts";
@@ -190,6 +191,16 @@ interface TaskInput { owner: number; entry?: number }
 /** A task sent as an agent message, which needs no credit of its own. */
 const NO_TASK_INPUT = -1;
 const isInput = (entry: EntryRecord): boolean => entry.kind === "pi.user" || entry.kind === AgentMessageEntry.kind;
+
+/**
+ * The first of a conversation's first `within` entries that `wanted` takes. Its own first entry answers when `wanted` takes it, read alone
+ * (`first-entry.ts`); a fork, whose first entries are its source's, and any other conversation go through pi-durable's page read.
+ */
+async function firstEntry(conversation: Conversation, record: ConversationRecord, firsts: FirstEntries, within: number, wanted: (entry: EntryRecord) => boolean): Promise<EntryRecord | undefined> {
+  const own = record.parent ? undefined : firsts.get(record.id);
+  if (own && wanted(own)) return own;
+  return (await conversation.entries({ order: "ascending" }, within, undefined, context)).items.find(wanted);
+}
 
 /** The author of a task input: the conversation that wrote it, as apps/chat names conversations (`<thread>` for the root, else `<thread>:<n>`). */
 export const taskAuthor = (thread: string, owner: number): string => (owner === ROOT_CONVERSATION_ID ? thread : `${thread}:${owner}`);
@@ -603,23 +614,32 @@ export class DurableThreads {
     const usage: UsageRow[] = [];
     const tasks = new Map<number, TaskInput>();
     let preview: string | undefined;
-    for (const record of conversations) {
-      const conversation = await harness.conversation(record.id, context);
-      if (!conversation) continue;
-      if (record.owner) {
-        // The task is the conversation's first input; one sent as an agent message (8116f3dd on) already names its sender.
-        const first = (await conversation.entries({ order: "ascending" }, 8, undefined, context)).items.find(isInput);
-        tasks.set(record.id, { owner: record.owner.conversationId, ...(first ? { entry: first.kind === "pi.user" ? first.id : NO_TASK_INPUT } : {}) });
-      }
-      let cursor: Parameters<Conversation["entries"]>[2];
-      do {
-        const page = await conversation.entries({ order: "ascending", minEntryId: (mark + 1) as EntryRecord["id"] }, PAGE_MAX, cursor, context);
-        for (const entry of page.items) {
-          this.collect(id, entry, now, entries, usage, tasks);
-          if (record.id === ROOT_CONVERSATION_ID) preview = previewText(entry, now) ?? preview;
+    const firsts = new FirstEntries(this.fileOf(id));
+    // A turn of the loop between conversations: in one go, 72ba1ed2's 445 held it 369 ms on 11-23 (~/work/pi-host-stalls/e-cold-tree/).
+    const next = loopSlices();
+    try {
+      for (const record of conversations) {
+        await next();
+        const conversation = await harness.conversation(record.id, context);
+        if (!conversation) continue;
+        if (record.owner) {
+          // The task is the conversation's first input; one sent as an agent message (8116f3dd on) already names its sender.
+          const first = await firstEntry(conversation, record, firsts, 8, isInput);
+          tasks.set(record.id, { owner: record.owner.conversationId, ...(first ? { entry: first.kind === "pi.user" ? first.id : NO_TASK_INPUT } : {}) });
         }
-        cursor = page.next;
-      } while (cursor !== undefined);
+        let cursor: Parameters<Conversation["entries"]>[2];
+        do {
+          const page = await conversation.entries({ order: "ascending", minEntryId: (mark + 1) as EntryRecord["id"] }, PAGE_MAX, cursor, context);
+          for (const entry of page.items) {
+            this.collect(id, entry, now, entries, usage, tasks);
+            if (record.id === ROOT_CONVERSATION_ID) preview = previewText(entry, now) ?? preview;
+          }
+          cursor = page.next;
+          if (cursor !== undefined) await next();
+        } while (cursor !== undefined);
+      }
+    } finally {
+      firsts.close();
     }
     this.index.addEntries(id, entries.sort((a, b) => a.entryId - b.entryId), usage);
     const root = conversations.find(c => c.id === ROOT_CONVERSATION_ID);
@@ -1022,33 +1042,47 @@ export class DurableThreads {
       return depth;
     };
     const nodes: TreeNode[] = [];
-    for (const record of records) {
-      const kept = open.treeNodes.get(record.id);
-      if (kept) {
-        nodes.push({ ...kept, depth: depthOf(record.id), ...(record.id === ROOT_CONVERSATION_ID ? { name: this.info(id).name } : {}) });
-        continue;
+    const firsts = new FirstEntries(open.file);
+    // A turn of the loop between built nodes: a cold tree of 72ba1ed2's 445 held it 424 ms in one go on 11-23 (~/work/pi-host-stalls/e-cold-tree/).
+    const next = loopSlices();
+    try {
+      for (const record of records) {
+        const kept = open.treeNodes.get(record.id);
+        if (kept) {
+          nodes.push({ ...kept, depth: depthOf(record.id), ...(record.id === ROOT_CONVERSATION_ID ? { name: this.info(id).name } : {}) });
+          continue;
+        }
+        await next();
+        const node = await this.treeNode(open, record, depthOf(record.id), firsts);
+        if (node) nodes.push(node);
       }
-      const touches = open.treeTouches.get(record.id) ?? 0;
-      const conversation = await open.harness.conversation(record.id, context);
-      if (!conversation) continue;
-      const first = (await conversation.entries({ order: "ascending" }, 4, undefined, context)).items.find(entry => describeEntry(entry, 0)?.text);
-      const described = first ? describeEntry(first, 0) : undefined;
-      const live = await open.harness.snapshot(LiveDoc, record.id, context);
-      const retry = liveRetry(live);
-      const since = retry ? await retrySince(open.harness, record.id, context) : undefined;
-      const retrying = retry && since !== undefined ? retryingText(since, retry.error, this.now()) : undefined;
-      const agent = await conversation.agent(context);
-      const node: TreeNode = {
-        id: record.id, parent: record.owner?.conversationId ?? null, ownerTask: record.owner?.taskId ?? null,
-        name: record.id === ROOT_CONVERSATION_ID ? this.info(id).name : (await rlmChildName(open.harness, record.id, context)) ?? jobTitle(described?.text ?? ""),
-        depth: depthOf(record.id), status: live?.run ? "running" : "idle", model: agent.model ? `${agent.model.provider}/${agent.model.modelId}` : null,
-        createdAt: described?.at ?? null, ...(retrying ? { retrying } : {}),
-      };
-      nodes.push(node);
-      // A retrying node's text names the time, so it is built again on each read.
-      if (!retry && (open.treeTouches.get(record.id) ?? 0) === touches) open.treeNodes.set(record.id, node);
+    } finally {
+      firsts.close();
     }
     return nodes;
+  }
+
+  /** A conversation's tree node, built from its records and kept until a commit touches the conversation; undefined when it is gone. */
+  private async treeNode(open: OpenThread, record: ConversationRecord, depth: number, firsts: FirstEntries): Promise<TreeNode | undefined> {
+    const touches = open.treeTouches.get(record.id) ?? 0;
+    const conversation = await open.harness.conversation(record.id, context);
+    if (!conversation) return undefined;
+    const first = await firstEntry(conversation, record, firsts, 4, entry => Boolean(describeEntry(entry, 0)?.text));
+    const described = first ? describeEntry(first, 0) : undefined;
+    const live = await open.harness.snapshot(LiveDoc, record.id, context);
+    const retry = liveRetry(live);
+    const since = retry ? await retrySince(open.harness, record.id, context) : undefined;
+    const retrying = retry && since !== undefined ? retryingText(since, retry.error, this.now()) : undefined;
+    const agent = await conversation.agent(context);
+    const node: TreeNode = {
+      id: record.id, parent: record.owner?.conversationId ?? null, ownerTask: record.owner?.taskId ?? null,
+      name: record.id === ROOT_CONVERSATION_ID ? this.info(open.id).name : (await rlmChildName(open.harness, record.id, context)) ?? jobTitle(described?.text ?? ""),
+      depth, status: live?.run ? "running" : "idle", model: agent.model ? `${agent.model.provider}/${agent.model.modelId}` : null,
+      createdAt: described?.at ?? null, ...(retrying ? { retrying } : {}),
+    };
+    // A retrying node's text names the time, so it is built again on each read.
+    if (!retry && (open.treeTouches.get(record.id) ?? 0) === touches) open.treeNodes.set(record.id, node);
+    return node;
   }
 
   /**
