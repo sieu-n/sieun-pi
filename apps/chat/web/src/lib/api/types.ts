@@ -795,6 +795,29 @@ export type AgentFolderSummary = Omit<AgentFolder, "memory"> & { memory: ConfigF
 
 export interface MemoryInput { title: string; content: string; path?: string }
 
+/** The thread kinds an agent runs: its main (work) thread, a comm thread that talks in a room, and a job its main thread starts. */
+export type PromptKind = "work" | "comm" | "job";
+
+/**
+ * One section of a prompt, as pi-host's builder names it (`PromptKey` in packages/pi-host/src/durable/prime-prompt.ts, plus `instructions`,
+ * the role text). `message` marks the harness digest of a root conversation, which goes in as a message before each turn's input.
+ */
+export interface PromptSection { key: string; text: string; source: string; message?: true }
+
+/**
+ * `GET /api/agents/:id/prompt`: the prompt each kind of the agent's threads runs with, built by the pi-host code that runs them
+ * (`agent-prompt.ts`), and the skills that prompt lists. `away` says why there are no kinds, such as an agent on another box.
+ */
+export interface AgentPrompt {
+  agent: AgentId;
+  /** The pi-host tree whose code built it, such as `~/.local/share/pi-host/release-bbc1221`. */
+  builtBy: string;
+  builtAt: Ms;
+  kinds: { kind: PromptKind; thread: string; conversation: number; sections: PromptSection[] }[];
+  skills: { name: string; description: string; path: string }[];
+  away?: string;
+}
+
 /**
  * `GET /api/agents/:id/config`: one agent as a role, not a thread. Who it is and what it is for, where it runs, the data it shares with its
  * jobs (board, memory, instructions), and its swarm (jobs, channels, duties, check-in). Every field is read from where it lives; see API.md.
