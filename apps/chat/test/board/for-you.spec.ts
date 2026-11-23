@@ -114,16 +114,27 @@ test("j and k move between asks, e dismisses the open one and Escape closes it",
   await page.keyboard.press("j");
   await expect(page).toHaveURL(new RegExp(`#/c/for-you/${HARNESS_AGENT}/t1$`));
   await page.keyboard.press("j");
-  await expect(page).toHaveURL(/#\/c\/for-you\/.+\/t\d+$/);
-  const second = page.url();
+  await expect(page).toHaveURL(new RegExp(`#/c/for-you/${CRAWLER_AGENT}/t1$`));
   await page.keyboard.press("k");
   await expect(page).toHaveURL(new RegExp(`#/c/for-you/${HARNESS_AGENT}/t1$`));
   await page.keyboard.press("ArrowDown");
-  await expect(page).toHaveURL(second);
+  await expect(page).toHaveURL(new RegExp(`#/c/for-you/${CRAWLER_AGENT}/t1$`));
   await page.keyboard.press("e");
   await expect(rows(page)).toHaveCount(3);
   await page.keyboard.press("Escape");
   await expect(page).toHaveURL(/#\/c\/for-you$/);
+});
+
+test("j pressed three times in a row opens the third ask, however fast the presses come", async ({ page }) => {
+  await page.goto("/#/c/for-you");
+  await expect(rows(page)).toHaveCount(4);
+  // The browser ran a press before the hashchange of the one before it, so a quick second j opened the first ask again (8 of 30 tries).
+  for (let i = 0; i < 10; i++) {
+    for (const key of ["j", "j", "j"]) await page.keyboard.press(key);
+    await expect(page).toHaveURL(/#\/c\/for-you\/ag_vent\/t1$/);
+    await page.keyboard.press("Escape");
+    await expect(page).toHaveURL(/#\/c\/for-you$/);
+  }
 });
 
 test("Remind me hides an ask until its time and Snoozed lists it", async ({ page, request, chatServer }) => {

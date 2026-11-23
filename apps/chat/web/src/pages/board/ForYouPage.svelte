@@ -3,7 +3,7 @@
   import { applyBoard, reads, view, type BoardOp } from "$lib/api";
   import { Avatar, Bubble, Button, EmptyState, IconButton, IdChip, listKey, LoadingText, Menu, NavItem, PanelHeader, SplitPane, stampLabel, toast, type MenuEntry } from "$lib/ui";
   import { whenLabel } from "$lib/remind";
-  import { router } from "$lib/router.svelte";
+  import { parseHash, router } from "$lib/router.svelte";
   import { tick } from "svelte";
   import AskCard from "./AskCard.svelte";
   import NoteDialog from "./NoteDialog.svelte";
@@ -54,14 +54,25 @@
   const open = (item: ForYouItem) => { replyOnOpen = true; router.navigate(forYouHref(item.chatId, item.todo.id)); };
   const close = () => router.navigate(forYouHref());
 
+  /**
+   * The open ask by the address itself. `router.route` follows the address on hashchange, which the browser fires after a key press it
+   * already has, so a quick second j read the ask before the last one and opened it again (8 of 30 triple presses, 11-23).
+   */
+  const openKey = (): string | null => {
+    const { rest } = parseHash(location.hash);
+    return rest[0] === "for-you" && rest[1] && rest[2] ? `${rest[1]}/${rest[2]}` : null;
+  };
+
   /** Slack's Activity keys: j or Down opens the next ask, k or Up the one above, e marks the open ask done or opens it again, Esc closes it. */
   async function onKeydown(e: KeyboardEvent) {
     if (noteOpen || document.querySelector("dialog[open], [role=menu]")) return;
     const key = listKey(e);
+    const current = openKey();
+    const openItem = current ? items.find(item => itemKey(item) === current) ?? null : null;
     if (key === "next" || key === "prev") {
       if (!visible.length) return;
       e.preventDefault();
-      const at = visible.findIndex(item => itemKey(item) === selectedKey);
+      const at = visible.findIndex(item => itemKey(item) === current);
       const next = at < 0 ? (key === "next" ? 0 : visible.length - 1) : Math.min(visible.length - 1, Math.max(0, at + (key === "next" ? 1 : -1)));
       const item = visible[next]!;
       replyOnOpen = false;
@@ -70,10 +81,10 @@
       const row = rowsEl?.querySelector<HTMLElement>(`[data-key="${CSS.escape(itemKey(item))}"] .nav-item`);
       row?.focus();
       row?.scrollIntoView({ block: "nearest" });
-    } else if (key === "toggle" && selected) {
+    } else if (key === "toggle" && openItem) {
       e.preventDefault();
-      void markDone(selected);
-    } else if (key === "close" && selectedKey) {
+      void markDone(openItem);
+    } else if (key === "close" && current) {
       e.preventDefault();
       close();
     }
