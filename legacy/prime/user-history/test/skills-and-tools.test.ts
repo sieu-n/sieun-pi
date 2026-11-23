@@ -229,6 +229,16 @@ test("websearch_query reads the portal's proxy_provider_down as the proxy hold",
   assert.equal(calls.n, 1);
 });
 
+// 11-23 19:37Z: Vent's crawl switch for the key's workspace (owner p42) came back as the portal's 503 crawl_paused, and the skill names the code.
+const WORKSPACE_PAUSED = { ...DOWN, stdout: "Results for query \"Prime Intellect\":\n\nGoogle is unavailable on the Virev search backend right now (HTTP 503: crawl_paused: Live reads are paused for this workspace right now, and stored reads still answer. Retry later. You are not charged.). No charge was taken. Virev pauses live reads of this key's workspace, which no customer pays for (owner p42), so no retry helps until that pause lifts.\n" };
+
+test("websearch_query reads the portal's crawl_paused as the workspace's hold", async () => {
+  const calls = { n: 0 };
+  const outcome = await websearchQuery.run(searchDeps([WORKSPACE_PAUSED, GOOGLE], calls));
+  assert.ok(outcome.status === "off" && outcome.detail.includes("p42") && outcome.detail.includes("crawl_paused"), JSON.stringify(outcome));
+  assert.equal(calls.n, 1);
+});
+
 test("websearch_query keeps another 503 as an agent fix", async () => {
   const other = { ...DOWN, stdout: DOWN.stdout.replace("HTTP 502: Upstream error", "HTTP 503: capacity_exhausted") };
   const outcome = await websearchQuery.run(searchDeps([other], { n: 0 }));

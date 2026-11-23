@@ -79,6 +79,8 @@ export interface Deps {
 
 /** The route `await websearch(...)` calls on the Virev API. */
 export const SEARCH_ROUTE = "/v1/search/google";
+/** A held search whose code says the key's workspace pays for no crawl, as the portal's 503 crawl_paused and 409 crawl_unpaid_paused do. */
+const WORKSPACE_HELD = /\b(crawl_paused|vent_crawl_paused|crawl_unpaid_paused)\b/;
 /**
  * The search's own timeout, the skill's default: the crawler ends a Google search at 60 s (crawler-v3 SEARCH_DEADLINE_SECONDS), and on 11-07
  * after 18:30Z a prod search that earned a cookie jar answered in up to 57 s, which the old 40 s timeout read as a ReadTimeout.
@@ -611,7 +613,11 @@ export const CHECKS: readonly Check[] = [
     const first = await search(SEARCH_TIMEOUT_S);
     // While the paid proxy is lapsed the crawler holds every search before it leaves (owner rule c230, 11-20), and the portal answers
     // 503 "upstream temporarily unavailable". No agent can fix that hold and a retry cannot pass, so it counts again once a proxy is picked.
+    // From 11-23 19:34Z Vent's crawl switch also pauses the live reads of the key's workspace, the virev.ai dogfooding org, because the owner
+    // allowed only paid crawl paths (#dev-app-search-prospect p42), and the portal answers 503 crawl_paused.
     const held = down.exec(both(first));
+    if (held && WORKSPACE_HELD.test(held[1]!))
+      return { status: "off", detail: `Google search is held because Virev pauses live reads of the key's workspace (owner p42, ${brief(held[1]!, 120)}), and it counts again once that pause lifts` };
     if (held && HELD_ANSWER.test(held[1]!))
       return { status: "off", detail: `Google search is held while the paid proxy is lapsed (c230, ${brief(held[1]!, 120)}), and it counts again once the owner picks a proxy` };
     const left = Math.floor((CHECK_TIMEOUT_MS - first.ms) / 1000) - 15;

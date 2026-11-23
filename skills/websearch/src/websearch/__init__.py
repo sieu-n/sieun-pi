@@ -111,6 +111,12 @@ def _error_message(body_text: str) -> str:
 # the paid proxy is lapsed or its supply is held (owner rule c230).
 _PROXY_HOLD_CODES = frozenset({"proxy_provider_down", "proxy_auth_failed", "proxy_quota_exhausted", "proxy_unreachable"})
 
+# The portal's codes for a workspace whose live reads are held, because the owner allowed only paid
+# crawl paths (#dev-app-search-prospect p42, 2026-11-22): 503 crawl_paused for Vent's crawl switch
+# (api-portal crawl-paused.ts) and 409 crawl_unpaid_paused for the crawler's paid-only gate. On
+# 11-23 at 19:34Z Vent's switch went off for the virev.ai dogfooding workspace this skill's key uses.
+_WORKSPACE_HOLD_CODES = {"crawl_paused": 503, "crawl_unpaid_paused": 409}
+
 
 def _error_code(body_text: str) -> str:
     try:
@@ -138,6 +144,12 @@ def _friendly_http_error(status: int, body_text: str) -> str:
     # now" (measured at 20:05Z on 11-22). The portal's other 503s (auth_unavailable,
     # rate_limit_unavailable, billing_unavailable) are its Convex calls and keep their own text.
     code = _error_code(body_text)
+    if _WORKSPACE_HOLD_CODES.get(code) == status:
+        return (
+            f"Google is unavailable on the Virev search backend right now (HTTP {status}: {code}: {message}). "
+            "No charge was taken. Virev pauses live reads of this key's workspace, which no customer pays for"
+            " (owner p42), so no retry helps until that pause lifts."
+        )
     proxy_hold = code in _PROXY_HOLD_CODES
     if status in (429, 502, 504) or (status == 503 and (code == "upstream_error" or proxy_hold)):
         # A 429 is Google refusing the crawler's exits. A 502 or 504 can also be the

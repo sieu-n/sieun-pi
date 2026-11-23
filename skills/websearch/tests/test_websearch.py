@@ -93,6 +93,19 @@ class RunTests(unittest.TestCase):
         self.assertIn("no retry helps until the owner picks a proxy", out)
         self.assertNotIn("Virev search error", out)
 
+    def test_a_paused_workspace_reads_as_its_hold(self):
+        """Prod 2026-11-23 19:37Z: Vent's crawl switch for the key's workspace came back as the portal's 503 crawl_paused."""
+        for status, code, message in [
+            (503, "crawl_paused", "Live reads are paused for this workspace right now, and stored reads still answer. Retry later. You are not charged."),
+            (409, "crawl_unpaid_paused", "Live reads need a paid workspace. Add credit or contact support. You are not charged."),
+        ]:
+            body = json.dumps({"error": {"code": code, "message": message}})
+            out, seen = self.run_with(lambda request, status=status, body=body: httpx.Response(status, text=body))
+            self.assertEqual(len(seen), 1)
+            self.assertIn(f"Google is unavailable on the Virev search backend right now (HTTP {status}: {code}: Live reads", out)
+            self.assertIn("no retry helps until that pause lifts", out)
+            self.assertNotIn("Virev search error", out)
+
     def test_a_crawler_503_reads_as_google_down_and_a_portal_503_keeps_its_own_text(self):
         """Prod 2026-11-10 to 11-12: the crawler refused every Google search while it held its proxy supply."""
         held = json.dumps({"error": {"code": "upstream_error", "message": "upstream temporarily unavailable"}})
