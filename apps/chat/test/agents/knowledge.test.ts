@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { compactPath, fileName, loadOrder, scriptSource } from "../../web/src/pages/agents/knowledge.ts";
+import { changedLabel, compactPath, fileName, loadOrder, scriptSource } from "../../web/src/pages/agents/knowledge.ts";
 
 test("a long path keeps its end and as much of its start as fits", () => {
   assert.equal(compactPath("/home/sieun/.prime/agent/skills/board/SKILL.md"), "~/.prime/agent/skills/board/SKILL.md");
@@ -21,4 +21,8 @@ test("a script row names its file and where it came from", () => {
   assert.equal(scriptSource({ kind: "folder" }), "Kept in its folder");
   assert.equal(scriptSource({ kind: "brief" }), "Named in its brief");
   assert.equal(scriptSource({ kind: "duty", duty: "d2", name: "Vent integrations" }), "Duty d2, Vent integrations, runs it as its precheck");
+  const now = Date.UTC(2026, 10, 24, 12);
+  assert.equal(changedLabel(now - 10_000, now), "changed now");
+  assert.equal(changedLabel(now - 3 * 86_400_000, now), "changed 3d ago");
+  assert.match(changedLabel(now - 30 * 86_400_000, now), /^changed Oct 2[45]$/);
 });

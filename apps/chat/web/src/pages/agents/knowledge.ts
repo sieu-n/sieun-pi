@@ -1,5 +1,12 @@
 import type { AgentScript } from "$lib/api";
+import { ageLabel } from "../../lib/ui/datetime.ts";
 import { shortPath } from "./agents-model";
+
+/** A short last-change line for a one-line row, such as "changed 3d ago" or "changed Nov 3"; the row's tooltip holds the full time. */
+export function changedLabel(at: number, now = Date.now()): string {
+  const age = ageLabel(at, now);
+  return age === "now" ? "changed now" : /^\d+[mhd]$/.test(age) ? `changed ${age} ago` : `changed ${age}`;
+}
 
 /**
  * A path cut to fit one row: home-relative, and past `max` characters its middle folders give way to "…", so the folder and file at its end

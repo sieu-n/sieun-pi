@@ -119,7 +119,7 @@
         <p class="t-body-sm content" class:folded={!expanded.has(key)}>{entry.content}</p>
         {#if long(entry.content)}
           <button type="button" class="link t-caption" aria-expanded={expanded.has(key)} onclick={() => (expanded.has(key) ? expanded.delete(key) : expanded.add(key))}>
-            {expanded.has(key) ? "Show less" : "Show all"}
+            {expanded.has(key) ? "Show less" : "Show more"}
           </button>
         {/if}
         <span class="t-caption meta">From {entry.source || "unknown"} · updated {stampLabel(Date.parse(entry.updatedAt))}</span>

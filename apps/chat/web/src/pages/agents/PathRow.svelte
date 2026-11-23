@@ -1,7 +1,7 @@
 <script lang="ts">
   import { stampLabel } from "$lib/ui";
   import CopyPath from "./CopyPath.svelte";
-  import { compactPath } from "./knowledge";
+  import { changedLabel, compactPath } from "./knowledge";
 
   /** One file the agent can use, a skill or a script: its name, one line on what it is, and its path to copy, each on one line. */
   let { name, detail, path, changedAt = null }: { name: string; detail: string; path: string; changedAt?: number | null } = $props();
@@ -14,7 +14,7 @@
   </div>
   <div class="line">
     <CopyPath value={path} label="path of {name}" shown={compactPath(path)} />
-    {#if changedAt}<span class="t-caption changed">changed {stampLabel(changedAt)}</span>{/if}
+    {#if changedAt}<span class="t-caption changed" title="Changed {stampLabel(changedAt)}">{changedLabel(changedAt)}</span>{/if}
   </div>
 </li>
 

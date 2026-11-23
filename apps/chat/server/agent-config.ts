@@ -399,8 +399,8 @@ export async function agentConfig(app: App, id: AgentId): Promise<AgentConfig> {
 
   // Data that outlives a turn: Prime's global store, which pi-host's digest merges into every thread, and the thread's own store when no agent
   // holds it.
-  const related: ConfigFile[] = [harnessStore("Prime's continual harness (global)", join(agentDir, "harness", "harness_state.json"),
-    "Prime's global store. pi-host merges it into every thread's harness digest, as Prime does for its own sessions, and a kernel writes it with global_=True.")];
+  const related: ConfigFile[] = [harnessStore("Memory every agent shares", join(agentDir, "harness", "harness_state.json"),
+    "Prime's global store. Every thread of every agent, and every Prime chat, gets it in its harness digest beside its own memory. A thread writes it with rlm.harness and global_=True.")];
   if (!record && durableDir) {
     const session = conversation === 1 ? thread : `${thread}-${conversation}`;
     related.push(harnessStore("its own harness store", join(durableDir, "session-artifacts", session, "harness", "harness_state.json"),
