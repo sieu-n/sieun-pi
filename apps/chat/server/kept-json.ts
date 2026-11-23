@@ -10,9 +10,11 @@
  * writes only the rows that changed. A group whose entries do not fit its shape, such as two entries with one id, stays whole in the head,
  * so no value is ever dropped.
  *
- * Each value is held in memory as the rows hold it, so a read never waits on the DB. `dump` renders a file from the rows in the bytes the
+ * Each entry's body is its JSON as the file renders it at the top level, so a file is its bodies joined and indented to their depth. Each
+ * value is held in memory as the rows hold it, so a read never waits on the DB. `dump` renders a file from the rows in the bytes the
  * release before the move wrote, which is the rollback export of json-move.ts and the check that nothing was lost.
  */
+import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
@@ -26,8 +28,8 @@ type Group = { path: string[]; by: By };
 export interface SplitKind extends JsonKind {
   /** The groups a file's value splits into; one that does not fit the value is left whole in the head. */
   groups(file: string, value: unknown): Group[];
-  /** The file's text as the release before the move wrote it. */
-  render(value: unknown): string;
+  /** The `JSON.stringify` indent the release before the move wrote the files with: 0 for none, 1 for `writeJson`'s. */
+  indent: number;
 }
 
 /** The rows of one file as they were last written: its head, its group list and each group's keys and entries. */
@@ -37,13 +39,14 @@ type Split = { head: string; spec: string; groups: { grp: string; keys: string[]
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const own = (target: object, key: string, value: unknown) => Object.defineProperty(target, key, { value, enumerable: true, writable: true, configurable: true });
 
-/** The group's entries as `[key, body]`, or null when the value does not fit the group's shape. */
-function entriesOf(value: unknown, by: By): [string, string][] | null {
+/** The group's entries as `[key, body]`, each body as the file renders it at the top level, or null when the value does not fit. */
+function entriesOf(value: unknown, by: By, indent: number): [string, string][] | null {
+  const json = (v: unknown): string | undefined => JSON.stringify(v, null, indent);
   if (by === "key") {
     if (!isRecord(value)) return null;
     // JSON leaves out a key whose value is undefined, as the file did.
     return Object.entries(value).flatMap(([key, v]): [string, string][] => {
-      const body = JSON.stringify(v);
+      const body = json(v);
       return body === undefined ? [] : [[key, body]];
     });
   }
@@ -55,11 +58,11 @@ function entriesOf(value: unknown, by: By): [string, string][] | null {
     if (by === "id") {
       if (!isRecord(item)) return null;
       key = item.id;
-      body = JSON.stringify(item);
+      body = json(item);
     } else {
       if (!Array.isArray(item) || item.length !== 2) return null;
       key = item[0];
-      body = JSON.stringify(item[1]) ?? "null";
+      body = json(item[1]) ?? "null";
     }
     if (typeof key !== "string" || seen.has(key)) return null;
     seen.add(key);
@@ -95,7 +98,7 @@ export function split(kind: SplitKind, file: string, value: unknown): Split {
     // A path inside or around one already taken would split the same entries twice.
     if (taken.some(p => p.length <= group.path.length ? p.every((k, i) => group.path[i] === k) : group.path.every((k, i) => p[i] === k))) continue;
     const found = at(value, group.path);
-    const entries = found.found ? entriesOf(found.value, group.by) : null;
+    const entries = found.found ? entriesOf(found.value, group.by, kind.indent) : null;
     if (!entries) continue;
     taken.push(group.path);
     groups.push({ ...group, entries });
@@ -108,21 +111,35 @@ export function split(kind: SplitKind, file: string, value: unknown): Split {
   };
 }
 
-/** The value the rows hold. */
-function join_(head: string, spec: string, group: (grp: string) => { keys: readonly string[]; body: (key: string) => string }): unknown {
+/** One group's keys in order and each key's body, as the rows hold them. */
+type GroupRows = { keys: readonly string[]; bodies: readonly string[] };
+
+/**
+ * The file's JSON as `JSON.stringify(value, null, indent)` writes it, built from the rows' text: each group's bodies are joined in their
+ * order, indented to their depth, and put in the head where its path holds a marker, so no entry is parsed or rendered again.
+ */
+function textOf(head: string, spec: string, group: (grp: string) => GroupRows, indent: number): string {
+  const groups = JSON.parse(spec) as Group[];
+  const nonce = randomUUID();
   let value = JSON.parse(head) as unknown;
-  for (const { path, by } of JSON.parse(spec) as Group[]) {
-    const { keys, body } = group(JSON.stringify(path));
-    const parts = keys.map(key => [key, JSON.parse(body(key)) as unknown] as const);
-    const content = by === "key" ? Object.fromEntries(parts) : by === "id" ? parts.map(([, v]) => v) : parts.map(([k, v]) => [k, v]);
-    if (!path.length) {
-      value = content;
-      continue;
-    }
-    const parent = at(value, path.slice(0, -1)).value as Record<string, unknown>;
-    own(parent, path.at(-1)!, content);
-  }
-  return value;
+  groups.forEach(({ path }, i) => {
+    if (!path.length) value = `${nonce}:${i}`;
+    else own(at(value, path.slice(0, -1)).value as object, path.at(-1)!, `${nonce}:${i}`);
+  });
+  const nl = (depth: number) => (indent ? `\n${" ".repeat(indent * depth)}` : "");
+  const shift = (body: string, depth: number) => (indent ? body.replaceAll("\n", nl(depth)) : body);
+  const q = (key: string) => JSON.stringify(key);
+  let text = JSON.stringify(value, null, indent);
+  groups.forEach(({ path, by }, i) => {
+    const { keys, bodies } = group(JSON.stringify(path));
+    const d = path.length;
+    const list = (items: string[], open: string, close: string) => (items.length ? `${open}${nl(d + 1)}${items.join(`,${nl(d + 1)}`)}${nl(d)}${close}` : `${open}${close}`);
+    const joined = by === "id" ? list(bodies.map(b => shift(b, d + 1)), "[", "]")
+      : by === "pair" ? list(keys.map((k, n) => `[${nl(d + 2)}${q(k)},${nl(d + 2)}${shift(bodies[n]!, d + 2)}${nl(d + 1)}]`), "[", "]")
+      : list(keys.map((k, n) => `${q(k)}:${indent ? " " : ""}${shift(bodies[n]!, d + 1)}`), "{", "}");
+    text = text.replace(`"${nonce}:${i}"`, () => joined);
+  });
+  return text;
 }
 
 /** How many records a split holds: each group entry, or one for a file with no groups. */
@@ -130,7 +147,7 @@ const recordsOf = (s: Split): number => (s.groups.length ? s.groups.reduce((n, g
 
 /** The JsonKind and the rows of a kind whose files split by `groups`, with tables `<prefix>_heads`, `_orders` and `_parts`. */
 export function splitKind(options: {
-  kind: string; prefix: string; files: (dataDir: string) => string[]; groups: SplitKind["groups"]; render: SplitKind["render"];
+  kind: string; prefix: string; files: (dataDir: string) => string[]; groups: SplitKind["groups"]; indent: number;
 }): SplitKind {
   const { prefix } = options;
   const parse = (text: string): { ok: true; value: unknown } | { ok: false } => {
@@ -149,7 +166,7 @@ export function splitKind(options: {
     ],
     files: options.files,
     groups: options.groups,
-    render: options.render,
+    indent: options.indent,
     load(db, file, text) {
       const parsed = parse(text);
       // A file that is not JSON read as missing before the move too; the rows keep what they held.
@@ -169,8 +186,21 @@ export function splitKind(options: {
       return Number((db.prepare(`SELECT count(*) AS n FROM ${prefix}_parts WHERE file = ?`).get(file) as { n: number | bigint }).n);
     },
     dump(db, file) {
-      const rows = readRows(db, prefix, file).get(file);
-      return rows ? options.render(valueOf(rows)) : null;
+      const head = db.prepare(`SELECT head, groups FROM ${prefix}_heads WHERE file = ?`).get(file) as { head: string; groups: string } | undefined;
+      if (!head) return null;
+      // SQLite joins each group's bodies in its key order, so an export reads one string per group and not one row per entry. JSON text
+      // never holds a raw control character, so char(1) splits them again.
+      const order = db.prepare(`SELECT keys FROM ${prefix}_orders WHERE file = ? AND grp = ?`);
+      const joined = db.prepare(
+        `SELECT group_concat(coalesce(p.body, 'null'), char(1) ORDER BY j.key) AS bodies FROM json_each(?) j ` +
+        `LEFT JOIN ${prefix}_parts p ON p.file = ? AND p.grp = ? AND p.key = j.value`,
+      );
+      const group = (grp: string): GroupRows => {
+        const keys = (order.get(file, grp) as { keys: string } | undefined)?.keys ?? "[]";
+        const bodies = (joined.get(keys, file, grp) as { bodies: string | null }).bodies;
+        return { keys: JSON.parse(keys) as string[], bodies: bodies === null ? [] : bodies.split("\u0001") };
+      };
+      return `${textOf(head.head, head.groups, group, options.indent)}\n`;
     },
   };
   return kind;
@@ -189,28 +219,27 @@ function rowsOf(prefix: string, file: string, s: Split): Stmt[] {
   ];
 }
 
-/** Every file's rows, or one file's. */
-function readRows(db: DatabaseSync, prefix: string, file?: string): Map<string, Rows> {
-  const where = file === undefined ? "" : " WHERE file = ?";
-  const args = file === undefined ? [] : [file];
+/** Every file's rows. */
+function readRows(db: DatabaseSync, prefix: string): Map<string, Rows> {
   const out = new Map<string, Rows>();
-  for (const r of db.prepare(`SELECT file, head, groups FROM ${prefix}_heads${where}`).all(...args) as { file: string; head: string; groups: string }[]) {
+  for (const r of db.prepare(`SELECT file, head, groups FROM ${prefix}_heads`).all() as { file: string; head: string; groups: string }[]) {
     out.set(r.file, { head: r.head, spec: r.groups, groups: new Map() });
   }
-  for (const r of db.prepare(`SELECT file, grp, keys FROM ${prefix}_orders${where}`).all(...args) as { file: string; grp: string; keys: string }[]) {
+  for (const r of db.prepare(`SELECT file, grp, keys FROM ${prefix}_orders`).all() as { file: string; grp: string; keys: string }[]) {
     out.get(r.file)?.groups.set(r.grp, { keys: JSON.parse(r.keys) as string[], bodies: new Map() });
   }
-  for (const r of db.prepare(`SELECT file, grp, key, body FROM ${prefix}_parts${where}`).all(...args) as { file: string; grp: string; key: string; body: string }[]) {
+  for (const r of db.prepare(`SELECT file, grp, key, body FROM ${prefix}_parts`).all() as { file: string; grp: string; key: string; body: string }[]) {
     out.get(r.file)?.groups.get(r.grp)?.bodies.set(r.key, r.body);
   }
   return out;
 }
 
-function valueOf(rows: Rows): unknown {
-  return join_(rows.head, rows.spec, grp => {
+function valueOf(rows: Rows, indent: number): unknown {
+  return JSON.parse(textOf(rows.head, rows.spec, grp => {
     const group = rows.groups.get(grp);
-    return { keys: group?.keys ?? [], body: key => group?.bodies.get(key) ?? "null" };
-  });
+    const keys = group?.keys ?? [];
+    return { keys, bodies: keys.map(key => group?.bodies.get(key) ?? "null") };
+  }, indent));
 }
 
 /** A place that keeps JSON values by their file path relative to the data dir. */
@@ -232,7 +261,7 @@ export class KeptJson implements Kept {
   /** A fresh copy of the value last written to `file`, or undefined when it holds none. */
   read(file: string): unknown {
     const rows = this.files.get(file);
-    return rows ? valueOf(rows) : undefined;
+    return rows ? valueOf(rows, this.kind.indent) : undefined;
   }
 
   /** Writes `value` as `file`'s value, as the rows that changed; settles once they are committed. */
@@ -294,7 +323,7 @@ export const HOST_ROUTES_KIND = splitKind({
     ...Object.entries(at(value, ["rows"]).value ?? {}).flatMap(([box, lists]) =>
       Object.keys(isRecord(lists) ? lists : {}).map((list): Group => ({ path: ["rows", box, list], by: "id" }))),
   ],
-  render: value => `${JSON.stringify(value)}\n`,
+  indent: 0,
 });
 
 /**
@@ -314,5 +343,5 @@ export const CACHE_KIND = splitKind({
     if (file.startsWith("cache/")) return [{ path: [], by: "key" }];
     return [];
   },
-  render: value => `${JSON.stringify(value, null, 1)}\n`,
+  indent: 1,
 });
