@@ -755,7 +755,12 @@ export async function drain(server: Server, maxMs = 2000, mode: "end" | "forward
   const began = Date.now();
   const end = began + maxMs;
   let ended = 0;
-  for (;;) {
+  for (let wait = 0; ; wait = 10) {
+    // Each check runs only after the event loop read its sockets: the timer ends the current loop turn, and setImmediate runs after the next
+    // poll phase. After a stall of 100 ms or more, a check that ran first ended a connection whose next call already sat unread on it, and
+    // that call got no answer.
+    await new Promise(resolve => setTimeout(resolve, wait));
+    await new Promise(resolve => setImmediate(resolve));
     const silent = Date.now() - began >= SILENT_MS;
     let waiting = 0;
     for (const [socket, conn] of open) {
@@ -772,7 +777,6 @@ export async function drain(server: Server, maxMs = 2000, mode: "end" | "forward
       } else waiting += 1;
     }
     if (!waiting || Date.now() >= end) break;
-    await new Promise(resolve => setTimeout(resolve, 10));
   }
   const cut = [...open.values()].flatMap(conn => [...conn.busy.keys()].map(req => `${req.method} ${req.url}`));
   const halfOpen = [...open.values()].filter(conn => conn.ended && !conn.busy.size).length;
@@ -855,8 +859,11 @@ export async function lingerForwarding(server: Server, maxMs = KEEP_ALIVE_MS + 5
   const open = conns.get(server) ?? new Map<Socket, Conn>();
   const began = Date.now();
   const held = open.size;
-  const peers = await peersOf(server, [...open.keys()]);
+  // `ss -tnp` reads every process's sockets and took 0.5 to 0.7 s on us-metal02 on 11-23, so it runs beside the wait and holds the exit no
+  // longer than the bound.
+  const looked = peersOf(server, [...open.keys()]);
   while (open.size && Date.now() - began < maxMs) await new Promise(resolve => setTimeout(resolve, 100));
+  const peers = await Promise.race([looked, new Promise<string>(resolve => setTimeout(resolve, Math.max(0, began + maxMs - Date.now()), "peers unknown: ss did not answer in time").unref())]);
   return `forwarded ${forwarded.get(server) ?? 0} calls in ${Date.now() - began} ms; ${held} connections were open (${peers}), ${open.size} still open at the end`;
 }
 
@@ -864,6 +871,8 @@ export async function lingerForwarding(server: Server, maxMs = KEEP_ALIVE_MS + 5
 async function peersOf(server: Server, sockets: Socket[]): Promise<string> {
   const port = forwarding.get(server)?.port;
   if (!port || !sockets.length) return "no peers";
+  // Read before the lookup, while each socket is still open: a closed socket no longer knows its peer.
+  const remotes = sockets.map(socket => ({ port: socket.remotePort ?? 0, address: socket.remoteAddress }));
   try {
     const { stdout } = await promisify(execFile)("ss", ["-tnpH", "state", "established", `( dport = :${port} )`], { timeout: 5000 });
     const byPort = new Map<number, string>();
@@ -873,8 +882,8 @@ async function peersOf(server: Server, sockets: Socket[]): Promise<string> {
       if (local) byPort.set(Number(local[1]), name ? `${name[1]} ${name[2]}` : "unknown");
     }
     const counts = new Map<string, number>();
-    for (const socket of sockets) {
-      const who = byPort.get(socket.remotePort ?? 0) ?? (socket.remoteAddress === "127.0.0.1" ? "loopback, not in ss" : String(socket.remoteAddress));
+    for (const remote of remotes) {
+      const who = byPort.get(remote.port) ?? (remote.address === "127.0.0.1" ? "loopback, not in ss" : String(remote.address));
       counts.set(who, (counts.get(who) ?? 0) + 1);
     }
     return [...counts].sort((a, b) => b[1] - a[1]).map(([who, n]) => `${who} x${n}`).join(", ");

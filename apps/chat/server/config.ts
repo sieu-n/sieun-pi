@@ -127,10 +127,15 @@ export function defaultProjects(home: string): string[] {
   return [join(home, "src/sieun-pi"), join(home, "Documents/Github/auto-sns-agent"), join(home, "Documents/Github/sieun-pi")];
 }
 
-/** The fixture's home folder, projects, agent folders and skills review folder, under its data dir, as `seedFixture` creates them. */
-export function fixtureFolders(dataDir: string): Pick<Config, "home" | "projects" | "agentsDir" | "skillsReview"> {
+/**
+ * The fixture's home folder, projects, agent folders, skills inventory and skills review folder, under its data dir, as `seedFixture` creates
+ * them. The test servers spread these over a live `readConfig([])`, which read the live 36 MB skills inventory on 11-23: its parse held their
+ * event loop 4.9 s at a box load of 750.
+ */
+export function fixtureFolders(dataDir: string): Pick<Config, "home" | "projects" | "agentsDir" | "skills" | "skillsReview"> {
   return {
     home: join(dataDir, "home"), projects: [join(dataDir, "work", "harness"), join(dataDir, "work", "crawler")], agentsDir: join(dataDir, "agent-folders"),
+    skills: { inventory: join(resolve(import.meta.dirname, ".."), "server/fixture/skills-inventory.json"), scanner: null },
     skillsReview: { dir: join(dataDir, "skills-review"), fixture: true, macHost: null },
   };
 }

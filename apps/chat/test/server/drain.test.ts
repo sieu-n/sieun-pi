@@ -80,11 +80,13 @@ test("a client that keeps its idle connection half open after the server ends it
   await answered;
   const ended = new Promise<void>(resolve => client.once("end", () => resolve()));
   try {
+    // The drain ends the idle connection about 100 ms in (http.ts SILENT_MS); one that waited for the client's close would run to its 10 s cap.
+    // A 300 ms bound here failed at 330 ms in a parallel run on 11-23, a busy event loop and not the fault.
     const started = performance.now();
-    const line = await drain(server);
+    const line = await drain(server, 10_000);
     const took = performance.now() - started;
     await ended;
-    assert.ok(took < 300, `the drain ended without the client's close: ${took.toFixed(0)} ms (${line})`);
+    assert.ok(took < 2000, `the drain ended without the client's close: ${took.toFixed(0)} ms (${line})`);
     assert.match(line, /ended 1 idle connections \(1 not closed/);
   } finally {
     client.destroy();
@@ -111,9 +113,10 @@ test("a call in flight when the drain starts answers with Connection: close", as
   }
 });
 
-test("a call a client sends on its idle connection just after the drain starts still answers", async () => {
+test("a call a client sends on its idle connection just after the drain starts still answers, also when the event loop stalls", async () => {
   // A polling client sends its next call a moment after each answer; on 11-22 calls that met a connection the drain had just ended got
-  // no answer. The client here sends 20 ms after the drain starts, as a call already on the wire would arrive.
+  // no answer. The client here sends right after the drain starts, and the server's event loop then stalls 150 ms, longer than the 100 ms
+  // a connection that answered stays open (http.ts SILENT_MS), as the skills inventory's parse stalled it on 11-23 while the call sat unread.
   const { server, base } = await listening();
   const client = connect({ port: Number(new URL(base).port), host: "127.0.0.1", allowHalfOpen: true });
   let received = "";
@@ -131,9 +134,10 @@ test("a call a client sends on its idle connection just after the drain starts s
   await answers(1);
   try {
     const drained = drain(server);
-    await sleep(20);
     const second = answers(2);
     client.write(request);
+    const stalled = performance.now() + 150;
+    while (performance.now() < stalled);
     await Promise.race([second, sleep(1000).then(() => { throw new Error(`no answer to the call sent during the drain: ${JSON.stringify(received.slice(-200))}`); })]);
     assert.match(received.slice(received.lastIndexOf("HTTP/1.1 200")), /connection: close/i);
     await drained;
