@@ -59,7 +59,7 @@ test("an agent's page renames it from its menu or a double-click, and an archive
   await page.goto(`/#/agents/${agent.id}`);
   await expect(agentPage(page).getByText("Archived", { exact: true })).toBeVisible({ timeout: 20_000 });
   await agentPage(page).getByRole("button", { name: "Unarchive" }).click();
-  await expect(agentPage(page).getByRole("button", { name: "Message" })).toBeVisible();
+  await expect(agentPage(page).getByRole("button", { name: "Message", exact: true })).toBeVisible();
   await request.patch(`/api/c/dm_${agent.id.slice(3)}`, { data: { archived: true } });
 });
 
