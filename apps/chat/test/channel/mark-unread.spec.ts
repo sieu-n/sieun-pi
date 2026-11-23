@@ -1,4 +1,4 @@
-import { expect, test, type Page, type Request } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { open, row, tag } from "./helpers.ts";
 
 /**
@@ -56,12 +56,21 @@ test("Alt-click marks a post unread with the New line over it, a toast, no jump 
 
 test("a send takes the New line away, and the room reopens with the line in view when it sits above the newest posts", async ({ page }) => {
   const { room, posts } = await channel(page);
-  const reading = new Set<Request>();
-  page.on("request", (r) => {
-    if (r.method() === "POST" && r.url().endsWith(`/api/c/${room}/read`)) reading.add(r);
+  // The page's reads of the room go through the test, which counts each until the server answered it. Request events missed one: on 11-23
+  // the page sent its read 11 ms before the reload, the reload dropped it, and Playwright never fired requestfinished or requestfailed for
+  // it (~/work/chat-specs-red/specs-red-channel-mark-unread-2/notes.md).
+  let reading = 0;
+  await page.route((url) => url.pathname === `/api/c/${room}/read`, async (route) => {
+    reading++;
+    try {
+      const response = await route.fetch();
+      await route.fulfill({ response }).catch(() => undefined);
+    } catch {
+      await route.abort().catch(() => undefined);
+    } finally {
+      reading--;
+    }
   });
-  page.on("requestfinished", (r) => reading.delete(r));
-  page.on("requestfailed", (r) => reading.delete(r));
   await open(page, `#/c/${room}`);
   const line = page.getByTestId("new-line");
   await row(page, posts[29]!.id).click({ modifiers: ["Alt"], position: { x: 80, y: 12 } });
@@ -72,10 +81,10 @@ test("a send takes the New line away, and the room reopens with the line in view
 
   // The mark below stands for one from another tab. The page reads the room 400 ms after his send, unless a summary that came by then holds
   // it (Conversation.svelte markRead), and a read that lands after the mark reads over it. At load 150 on 11-23 the read went 1.5 s after
-  // the send, and the reopened room had no line. A reload ends that timer, and the mark waits until every read the page sent has its answer.
+  // the send, and the reopened room had no line. A reload ends that timer, and the mark waits until the server answered every read the page sent.
   await open(page, "#/c/dm_vent");
   await page.reload();
-  await expect.poll(() => reading.size).toBe(0);
+  await expect.poll(() => reading).toBe(0);
   await page.request.post(`/api/c/${room}/read`, { data: { unreadFrom: posts[2]!.id } });
   await open(page, `#/c/${room}`);
   await expect(line).toHaveCount(1);
