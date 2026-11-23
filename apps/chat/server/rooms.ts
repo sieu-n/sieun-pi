@@ -27,9 +27,7 @@ import { pinnedSection, pinOf } from "./pins.ts";
 import { forwardPart, withForward } from "./forward.ts";
 import type { ForwardedPost } from "../web/src/lib/api/types.ts";
 import { localImageSizes } from "./image-size.ts";
-import { join } from "node:path";
-import { writeJsonLater } from "./disk.ts";
-import { readJson, readMark, type Store } from "./store.ts";
+import { readMark, type Store } from "./store.ts";
 import { OWNER, type Threads } from "./threads.ts";
 import type { TestSendEntry } from "./search.ts";
 import { isInput, sentMessage } from "./timeline.ts";
@@ -281,19 +279,17 @@ export function agentPostParts(threads: Threads, post: RoomPost): { why?: string
 export const TEST_SEND_VIA = "test-send";
 
 /**
- * A feed poll's marks of what it read (`Rooms.seen`, `GroupRooms.seen`), kept in <data dir>/cache/<name>.json across a hand-over. Without
+ * A feed poll's marks of what it read (`Rooms.seen`, `GroupRooms.seen`), kept as caches (store.ts `cache`) across a hand-over. Without
  * them a new server's first poll read every agent's feed at once: 1,076 page reads, up to 1,088 calls open at once on pi-host, in the first
  * 10 s of each start on 11-22, which queued the owner's first page reads behind them. A mark is kept only for a feed with no read going,
  * so it names a thread state whose entries were all read; a feed whose thread changed since reads again.
  */
-export function readSeen<V>(store: AgentStore, name: string): Map<string, V> {
-  if (!store.dir) return new Map();
-  return new Map(Object.entries(readJson<Record<string, V>>(join(store.dir, "cache", `${name}.json`), {})));
+export function readSeen<V>(store: Pick<Store, "cache">, name: string): Map<string, V> {
+  return new Map(Object.entries(store.cache<Record<string, V>>(name, {})));
 }
 
-export function keepSeen<V>(store: AgentStore, name: string, seen: ReadonlyMap<string, V>, reading: ReadonlyMap<string, unknown>, again: ReadonlySet<string>): void {
-  if (!store.dir) return;
-  writeJsonLater(join(store.dir, "cache", `${name}.json`), Object.fromEntries([...seen].filter(([key]) => !reading.has(key) && !again.has(key))));
+export function keepSeen<V>(store: Pick<Store, "saveCache">, name: string, seen: ReadonlyMap<string, V>, reading: ReadonlyMap<string, unknown>, again: ReadonlySet<string>): void {
+  store.saveCache(name, Object.fromEntries([...seen].filter(([key]) => !reading.has(key) && !again.has(key))));
 }
 
 /** The agent message that tells an agent a post in its DM came from a job's test, not from the owner. */
@@ -323,7 +319,7 @@ export class Rooms {
   private readonly settleTries = new Map<string, number>();
 
   constructor(private readonly deps: RoomDeps) {
-    this.seen = readSeen<string>(deps.store, "feed-seen-dm");
+    this.seen = readSeen<string>(deps.state, "feed-seen-dm");
   }
 
   private get store(): AgentStore {
@@ -360,7 +356,7 @@ export class Rooms {
     this.stopped = true;
     for (const timer of this.timers.values()) clearTimeout(timer);
     this.timers.clear();
-    keepSeen(this.store, "feed-seen-dm", this.seen, this.reading, this.again);
+    keepSeen(this.deps.state, "feed-seen-dm", this.seen, this.reading, this.again);
   }
 
   /** After each thread list read: status changes go out, and each agent whose feed thread changed gets a feed read. */

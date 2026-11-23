@@ -8,6 +8,7 @@ import { dirname, join } from "node:path";
 import { readLatest, writeJsonLater } from "./disk.ts";
 import type { AgentId, ConversationId, ConversationPrefs, SavedLayout, ThinkingLevel } from "../web/src/lib/api/types.ts";
 import type { SavedSettings } from "../web/src/lib/api/shared/owner-settings.ts";
+import type { Kept } from "./kept-json.ts";
 
 export interface ThreadMeta { kind: "chat" | "job"; parent?: AgentId }
 /**
@@ -71,12 +72,20 @@ export class Store {
     this.state = readJson<StateFile>(join(dir, "state.json"), { v: 1, threads: {}, reads: {} });
   }
 
+  /**
+   * The caches as rows of chat.sqlite (kept-json.ts), which the App sets when APPS_CHAT_DB_KINDS names the cache kind; without it each
+   * cache is its JSON file under cache/.
+   */
+  caches?: Kept;
+
   /** A copy of what pi-host last said, such as the thread list, so pages render while pi-host starts. */
   cache<T>(name: string, fallback: T): T {
+    if (this.caches) return (this.caches.read(`cache/${name}.json`) as T | undefined) ?? fallback;
     return readJson<T>(join(this.dir, "cache", `${name}.json`), fallback);
   }
   saveCache(name: string, value: unknown): void {
-    writeJsonLater(join(this.dir, "cache", `${name}.json`), value);
+    if (this.caches) void this.caches.write(`cache/${name}.json`, value);
+    else writeJsonLater(join(this.dir, "cache", `${name}.json`), value);
   }
 
   /** Counts the saves of state.json; what reads the thread kinds keys its caches on it. */

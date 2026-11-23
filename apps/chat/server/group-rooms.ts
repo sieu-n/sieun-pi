@@ -150,7 +150,7 @@ export class GroupRooms {
   private readonly statuses = new Map<RoomId, RunStatus>();
 
   constructor(private readonly deps: GroupDeps) {
-    this.seen = readSeen<number>(deps.store, "feed-seen-group");
+    this.seen = readSeen<number>(deps.state, "feed-seen-group");
   }
 
   private get store(): AgentStore {
@@ -169,7 +169,7 @@ export class GroupRooms {
     this.stopped = true;
     for (const timer of this.timers.values()) clearTimeout(timer);
     this.timers.clear();
-    keepSeen(this.store, "feed-seen-group", this.seen, this.reading, this.again);
+    keepSeen(this.deps.state, "feed-seen-group", this.seen, this.reading, this.again);
   }
 
   // Rooms

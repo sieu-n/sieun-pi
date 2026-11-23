@@ -173,7 +173,7 @@ test("the live feed starts at the cursor: the open call and a later call post on
   const store = new AgentStore(dir);
   const record = store.agentOf("vent-thread")!;
   const deps = {
-    store, host, state: { state: { reads: {} }, saveState() {} },
+    store, host, state: { state: { reads: {} }, saveState() {}, cache: <T,>(_name: string, fallback: T) => fallback, saveCache() {} },
     agents: { migrationRunning: false, record: () => record, list: () => [record], roomThread: () => record.workThread },
     threads: { tree: () => [], principal: (id: string) => ({ id, kind: "chat", name: id, avatar: { initials: "AG", hue: 0 } }), statusOfConversation: () => "idle", agent: () => undefined },
     events: { items() {}, status() {}, changed() {}, submitted() {} },

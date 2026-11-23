@@ -58,7 +58,8 @@ test("the sweep writes agent.ref into each work thread and root job thread once,
     await first.app.agents.sweepRefs();
     // A second sweep, since the first call may join one that began before the last comm thread's ref landed.
     await first.app.agents.sweepRefs();
-    // The sweep keeps the refs it read or wrote in <data dir>/cache/agent-refs.json for the next start.
+    // The sweep keeps the refs it read or wrote in its caches (store.ts `cache`) for the next start.
+    await first.app.chatDb.written();
     await drained();
     const puts: string[] = [];
     let gets = 0;

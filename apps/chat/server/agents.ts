@@ -13,9 +13,8 @@ import { AGENT_REF_DOC, agentRef, commRef, sameRef, type AgentRef } from "./agen
 import { freeSlug, isUntitled, type AgentRecord, type AgentStore, type RoomId } from "./agent-store.ts";
 import { DEFAULT_MODEL, DEFAULT_THINKING, type Config } from "./config.ts";
 import type { CreateOptions, DurableThread, Host, TreeNode } from "./host/types.ts";
-import { join } from "node:path";
-import { isSealed, writeJsonLater } from "./disk.ts";
-import { readJson, type Store } from "./store.ts";
+import { isSealed } from "./disk.ts";
+import type { Store } from "./store.ts";
 
 /** How many entries of a root thread `fileSpawned` reads for its first input; the input follows a few setup entries. */
 const FIRST_INPUT_SCAN = 20;
@@ -90,13 +89,14 @@ export function agentSummary(record: AgentRecord, rows: AgentRows, extra: { mode
 }
 
 type CachedRef = { host: string; ref: AgentRef };
+const REFS_CACHE = "agent-refs";
 
 export class Agents {
   /** Whether `dropUntitled` ran on this server's first thread list. */
   private cleaned = false;
   /**
    * The `agent.ref` each thread holds as this server or one before it last read or wrote it, with the box that answered, so a sweep reads a
-   * thread once and not again at each start. Kept in <data dir>/cache/agent-refs.json: on 11-22 every start read all 1,819 refs one by one in
+   * thread once and not again at each start. Kept as the agent-refs cache (store.ts `cache`): on 11-22 every start read all 1,819 refs one by one in
    * its first 10 s, a count that grows with each agent made. Only a read or write that the box answered goes in. A ref counts as held only
    * on the box that answered, so a thread moved to another box reads again there, and a ref an agent change alters reads again. `verifyRefs`
    * reads every kept ref again in the background, so one that changed inside pi-host is found and written again.
@@ -138,7 +138,7 @@ export class Agents {
     readonly config: Pick<Config, "box" | "agentsDir" | "agentRefs">,
     private readonly log: (line: string) => void = () => {},
   ) {
-    const kept = store.dir ? readJson<{ v?: number; refs?: Record<string, CachedRef> }>(this.refsFile(), {}) : {};
+    const kept = store.dir ? state.cache<{ v?: number; refs?: Record<string, CachedRef> }>(REFS_CACHE, {}) : {};
     this.refs = new Map(kept.v === 2 && kept.refs ? Object.entries(kept.refs) : []);
   }
 
@@ -155,7 +155,7 @@ export class Agents {
   private keepRefs(): void {
     if (!this.refsChanged || !this.store.dir) return;
     this.refsChanged = false;
-    writeJsonLater(this.refsFile(), { v: 2, refs: Object.fromEntries(this.refs) });
+    this.state.saveCache(REFS_CACHE, { v: 2, refs: Object.fromEntries(this.refs) });
   }
 
   /**
@@ -192,10 +192,6 @@ export class Agents {
         await new Promise(resolve => setTimeout(resolve, this.verifyGapMs).unref());
       }
     })();
-  }
-
-  private refsFile(): string {
-    return join(this.store.dir, "cache", "agent-refs.json");
   }
 
 
