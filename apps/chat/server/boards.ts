@@ -12,7 +12,7 @@ import type { AgentSummary, BoardOp, BoardRow, BoardView, ChatBoard, CheckInPatc
 import { applyBoardOp, BOARD_PREFIX, emptyBoard, needsGo, nextIds, parseBoard, parseBoardOps, stepGo } from "../web/src/lib/api/shared/chat-board.ts";
 import { snoozed } from "../web/src/lib/api/shared/snooze.ts";
 import { newestAskFirst } from "../web/src/lib/api/shared/board-lists.ts";
-import { morningTime, upsertDuty, type Duty, type DutyRunRecord, type DutySchedule, type DutyTrigger } from "../web/src/lib/api/shared/chat-duties.ts";
+import { morningTime, upsertDuty, type AfterMeasure, type Duty, type DutyRunRecord, type DutySchedule, type DutyTrigger } from "../web/src/lib/api/shared/chat-duties.ts";
 import { asAfter, clearPrecheck, measure, measureAfter, runStamp, type PrecheckLaunch } from "./duty-run.ts";
 import { dutyCard, judgedRun, missStreak } from "../web/src/lib/api/shared/duty-card.ts";
 import type { ChatAgent } from "../web/src/lib/api/shared/types.ts";
@@ -30,6 +30,16 @@ export const BOARD_DOC = "chat.board";
 
 /** The runs that name the duty job `job`, in the order given: the run that started it and each later run measured beside it (`runDutyOnce`). */
 const runsOfJob = (runs: readonly DutyRunRecord[], job: string): DutyRunRecord[] => runs.filter(run => run.job?.id === job);
+
+/**
+ * Writes the after-job measure of `job` onto each run that names it and has none, and returns them. A run that started after the measure was
+ * taken keeps its own newer reading, so an older reading never turns a later met run red.
+ */
+export function landAfter(runs: readonly DutyRunRecord[], job: string, after: AfterMeasure): DutyRunRecord[] {
+  const targets = runsOfJob(runs, job).filter(run => !run.after && run.at <= after.at);
+  for (const run of targets) run.after = after;
+  return targets;
+}
 
 /**
  * The names of the jobs at work: each summary that works or has a pending wake (its `<thread>--<conversation>` in `waking`), and every summary
@@ -693,7 +703,7 @@ export class Boards {
     const newestJob = (after.runs[dutyId] ?? []).filter(run => run.job).sort((a, b) => b.at - a.at)[0]?.job;
     const measured = asAfter(record);
     if (newestJob && measured && !busy && (record.job || !working.has(newestJob.name))) {
-      for (const run of runsOfJob(after.runs[dutyId] ?? [], newestJob.id)) run.after ??= measured;
+      landAfter(after.runs[dutyId] ?? [], newestJob.id, measured);
     }
     after.runs[dutyId] = [record, ...(after.runs[dutyId] ?? [])].sort((a, b) => b.at - a.at).slice(0, 20);
     // Only this run's own precheck entry is cleared, with its files, so an entry another measure wrote keeps its files.
@@ -832,8 +842,7 @@ export class Boards {
     const launch = pending?.mode === "after" && pending.at === at ? pending.launch : undefined;
     // The measure goes onto every run that names the job: the run that started it and each later run measured beside it.
     const job = latest.runs[duty.id]?.find(entry => entry.at === runAt)?.job;
-    const targets = job ? runsOfJob(latest.runs[duty.id] ?? [], job.id).filter(entry => !entry.after) : [];
-    for (const target of targets) target.after = after;
+    const targets = job ? landAfter(latest.runs[duty.id] ?? [], job.id, after) : [];
     this.save(chat, launch ? Boards.pend(latest, duty.id, null) : latest);
     if (launch) void clearPrecheck(launch).catch(error => this.log(`duty ${chat.slice(0, 8)}: clearing its precheck files failed: ${String(error)}`));
     if (!targets.length) return;

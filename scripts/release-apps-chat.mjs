@@ -4,6 +4,7 @@ import { existsSync, linkSync, mkdirSync, readdirSync, readFileSync, readlinkSyn
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { prune } from "./release-prune.mjs";
 
 const USAGE = `usage: node scripts/release-apps-chat.mjs <commit|release-id> [--rollback] [--no-restart] [--repo <dir>]
 
@@ -294,10 +295,6 @@ async function upCheck(before, dir) {
   if (mainPid() !== pid || !isActive()) throw new NotUp(`${UNIT} did not stay up for 8 s after its start`);
 }
 
-function prune(home, keep) {
-  for (const entry of readdirSync(home)) if (RELEASE_NAME.test(entry) && !keep.includes(entry)) rmSync(join(home, entry), { recursive: true, force: true });
-}
-
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   const home = join(homedir(), ".local/share/sieun-pi-apps-chat");
@@ -341,7 +338,8 @@ async function main() {
       }
       log(`${name} serves after a ${how}`);
     }
-    prune(home, [name, before].filter(Boolean));
+    const held = prune(home, RELEASE_NAME, [name, before].filter(Boolean));
+    if (held.length) log(`kept ${held.join(", ")}, since a live process still runs in it; a later release removes it`);
     console.log(name);
   } finally {
     releaseLock();

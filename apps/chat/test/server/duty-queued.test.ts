@@ -14,6 +14,7 @@ import type { DutyRow } from "../../web/src/lib/api/types.ts";
 import type { Duty, DutyRunRecord } from "../../web/src/lib/api/shared/chat-duties.ts";
 import { FIXTURE_IDS as ids } from "../../server/fixture/seed.ts";
 import type { FixtureHost } from "../../server/host/fixture.ts";
+import { landAfter } from "../../server/boards.ts";
 import { start, until, type Running } from "./helpers.ts";
 
 const HOUR = 3_600_000;
@@ -199,4 +200,14 @@ test("the job's after-job measure lands on every run that handed it a brief, so 
   assert.equal(d5.last?.afterJob, true);
   assert.equal(d5.last?.streak, 0);
   assert.equal(d5.card.streak, 0);
+});
+
+test("an after-job measure lands only on runs started before it, so an older reading never turns a later met run red", () => {
+  const job = "job-x";
+  const run = (at: number, verdict: "met" | "missed"): DutyRunRecord => ({ ...missed("dx", at, job), verdict, metrics: { up: { value: verdict === "met" ? 100 : 90, target: 99, op: ">=", met: verdict === "met" } } });
+  const runs = [run(now - HOUR, "met"), run(now - 3 * HOUR, "missed"), run(now - 4 * HOUR, "missed")];
+  const after = { at: now - 2 * HOUR, verdict: "missed" as const, metrics: { up: { value: 40, target: 99, op: ">=" as const, met: false } }, summary: "up 40" };
+  assert.deepEqual(landAfter(runs, job, after).map(entry => entry.at), [now - 3 * HOUR, now - 4 * HOUR]);
+  assert.equal(runs[0]!.after, undefined, "the met run measured after the reading keeps its own");
+  assert.equal(landAfter(runs, job, { ...after, at: now }).length, 1, "a later measure lands on the run that has none");
 });
