@@ -36,7 +36,7 @@ function codeRoutes(): Set<string> {
   const http = read("server/http.ts");
   assert.ok(http.includes('(["agents", "threads"] as const).flatMap(scope =>'), "http.ts builds its board routes from the scopes agents and threads");
   const routes = new Set<string>();
-  for (const file of ["server/http.ts", "server/accounts.ts"]) {
+  for (const file of ["server/http.ts", "server/accounts.ts", "server/chat-db-routes.ts"]) {
     const text = read(file);
     const calls = [...text.matchAll(/\broute\(/g)].filter(m => !text.slice(Math.max(0, m.index - 9), m.index).endsWith("function "));
     const found = [...text.matchAll(ROUTE_CALL)];

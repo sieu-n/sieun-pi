@@ -54,6 +54,8 @@ import { KeptUsage, SqliteUsage, type UsageSource } from "./usage.ts";
 import { Meili, startOwnMeili, type OwnMeili } from "./meili.ts";
 import type { FixtureHost } from "./host/fixture.ts";
 import { drained } from "./disk.ts";
+import { ChatDb } from "./chat-db.ts";
+import { JsonMove, type JsonKind } from "./json-move.ts";
 import { readJson, Store, writeJson } from "./store.ts";
 import { modelRef, OWNER, parseConversationId, Threads, type ItemsSplit } from "./threads.ts";
 import { QueueWatch, waitingPlace } from "./queue.ts";
@@ -100,6 +102,9 @@ type Client = { socket: WebSocket; watching: Map<ConversationId, ConversationId[
 export type SocketRead = (path: string, req: IncomingMessage | undefined) => Promise<{ status: number; value?: unknown; error?: string }>;
 
 export class App {
+  /** chat.sqlite, which holds each kind of record moved out of the JSON files (chat-db.ts), and those moves by kind (json-move.ts). */
+  readonly chatDb: ChatDb;
+  readonly moves = new Map<string, JsonMove>();
   readonly store: Store;
   readonly agentStore: AgentStore;
   readonly agents: Agents;
@@ -150,6 +155,7 @@ export class App {
   readonly unfurl = new Unfurler();
 
   constructor(readonly config: Config, readonly host: Host, readonly log: (line: string) => void = line => console.log(line)) {
+    this.chatDb = new ChatDb(join(config.dataDir, "chat.sqlite"), { log });
     this.store = new Store(config.dataDir);
     this.ownerSettings = new OwnerSettingsStore(this.store, settings => this.broadcast({ type: "owner_settings", settings }));
     mkdirSync(this.store.imagePath(""), { recursive: true });
@@ -400,6 +406,17 @@ export class App {
   }
 
   /**
+   * Opens the move of one kind of record into chat.sqlite: its new tables, then the import of each of its JSON files whose content the DB
+   * has not seen (json-move.ts). A store calls it from the constructor, before the server serves.
+   */
+  move(kind: JsonKind): JsonMove {
+    const move = new JsonMove(this.chatDb, this.config.dataDir, kind, { log: this.log });
+    move.open();
+    this.moves.set(kind.kind, move);
+    return move;
+  }
+
+  /**
    * Stops the app's loops and writes its queue. A hand-over's old server passes `keepHost`: its pi-host client stays open for the reads it
    * still finishes after the stop (http.ts `passThrough`), and closes when the process exits.
    */
@@ -422,6 +439,8 @@ export class App {
     this.searchStop();
     this.keptUsage?.stop();
     this.keptUsageClose();
+    await Promise.all([...this.moves.values()].map(move => move.flushExports()));
+    await this.chatDb.written();
     await drained();
   }
 

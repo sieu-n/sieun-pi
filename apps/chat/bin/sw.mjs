@@ -21,6 +21,10 @@ const HELP = `sw skills <command>
   undo <move id>
   moves                      the last changes, newest first
 
+sw db                        every kind of record moved into chat.sqlite, its records against its JSON files
+sw <kind> check              one kind, such as rooms: each JSON file the DB has not seen or whose export is behind
+sw <kind> apply [--dry-run]  write the JSON exports that are behind the DB; a second run changes nothing
+
 Options: --json prints the answer as JSON. SW_URL sets the server (default http://127.0.0.1:5184).`;
 
 const base = (process.env.SW_URL ?? "http://127.0.0.1:5184").replace(/\/+$/, "");
@@ -86,6 +90,29 @@ function printCheck(check) {
   if (check.offline.length) console.log(`Offline, showing their last good scan: ${check.offline.join(", ")}`);
 }
 
+function printMoveCheck(check) {
+  const behind = check.items.length ? `, ${plural(check.items.length, "file")} to settle` : ", every file matches";
+  const week = check.exportUntil ? `exports until ${check.exportUntil}` : "not imported yet";
+  console.log(`${check.kind}: ${check.db} records in chat.sqlite, ${check.json} in ${plural(check.files, "JSON file")}${behind}; ${week}.`);
+  for (const item of check.items) console.log(`  ${item.state.padEnd(8)} ${item.file}  json ${item.json ?? "-"}, db ${item.db}  fix: ${item.fix}`);
+}
+
+/** `sw db` and `sw <kind> check|apply` for a kind of record moved from the JSON files into chat.sqlite (server/json-move.ts). */
+async function records(area, command, values) {
+  const out = (data, print) => (values.json ? console.log(JSON.stringify(data, null, 2)) : print(data));
+  if (area === "db") return out(await call("GET", "/api/db"), data => (data.kinds.length ? data.kinds.forEach(printMoveCheck) : console.log("No kind of record has moved into chat.sqlite yet.")));
+  const kind = encodeURIComponent(area);
+  if (command === "check") return out(await call("GET", `/api/db/${kind}/check`), printMoveCheck);
+  if (command === "apply") {
+    return out(await call("POST", `/api/db/${kind}/apply`, { dryRun: values["dry-run"] === true }), r => {
+      console.log(`${r.dryRun ? "Would write" : "Wrote"} ${plural(r.exported.length, "JSON export")} and ${r.dryRun ? "would move" : "moved"} ${plural(r.archived.length, "file")} to json-archive.`);
+      for (const item of r.left) console.log(`  left ${item.state.padEnd(8)} ${item.file}  fix: ${item.fix}`);
+    });
+  }
+  console.log(HELP);
+  return 2;
+}
+
 async function main(argv) {
   const { values, positionals } = parseArgs({
     args: argv,
@@ -97,6 +124,7 @@ async function main(argv) {
     },
   });
   const [area, command, ...args] = positionals;
+  if (area && area !== "skills" && !values.help) return records(area, command, values);
   if (values.help || area !== "skills" || !command) {
     console.log(HELP);
     return area === "skills" || values.help ? 0 : 2;

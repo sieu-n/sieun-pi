@@ -22,7 +22,10 @@ const loadedMs = Math.round(performance.now());
 const config = readConfig();
 const log = (line: string) => console.log(`${new Date().toISOString()} ${line}`);
 onWriteError(log);
-process.on("exit", flushSync);
+process.on("exit", () => {
+  app?.chatDb.flushSync();
+  flushSync();
+});
 let app: App | undefined;
 let stopping: Promise<void> | undefined;
 const stopApp = () => (stopping ??= app ? app.stop().catch(() => undefined) : Promise.resolve());

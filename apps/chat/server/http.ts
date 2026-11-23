@@ -37,6 +37,7 @@ import { fixtureScanner, writeSkillsDbFixture } from "./skills-db-fixture.ts";
 import type { InstallBody } from "../web/src/lib/api/shared/skills.ts";
 import { type ClientVia, clientTimings, LoopStalls, RequestLog } from "./request-log.ts";
 import { accountRoutes, PoolError } from "./accounts.ts";
+import { chatDbRoutes } from "./chat-db-routes.ts";
 import { serveWiki } from "./wiki/routes.ts";
 import { WikiEngine } from "./wiki/engine.ts";
 import { wikiPages } from "./wiki/pages.ts";
@@ -555,6 +556,7 @@ export function routes(app: App, parts: SkillsParts): Route[] {
     }),
     route("GET", "/api/usage/live", async (_r, _p, q) => usageLive(app.usage, app.config.box, { thread: str(q.get("thread")), host: str(q.get("host")) })),
     ...accountRoutes(app, route),
+    ...chatDbRoutes(() => app.moves, route),
     route("GET", "/api/hosts", async (_r, _p, q) => hostsReport(app.host, app.threads, app.config.box, app.config.socket, app.config.hostsFile, hostsQuery(q))),
     route("GET", "/api/consoles", async () => consolesReport(app.config.consoles)),
     route("GET", "/api/skills", async (_r, _p, q) => viewAnswer(db, q.get("since"))),
