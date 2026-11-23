@@ -5,11 +5,12 @@
  * inside one of them.
  *
  * It is the `working` section, rendered from the file at each request. pi-durable writes a changed section as a new `pi.system` entry at the
- * end of the context, so a rewrite reaches each thread at its next request as that one section, and the cached prefix before it holds.
+ * end of the context, so a rewrite reaches the work thread and each comm thread at its next request as that one section, and the cached
+ * prefix before it holds. A job keeps the text it got at its start (`followsRewrites`).
  * The extension installs last, so the section comes after the other extensions' sections and before pi-durable's `instructions`.
  */
 import { readFileSync, statSync } from "node:fs";
-import { defineExtension, section, type Extension } from "@earendil-works/pi-durable";
+import { defineExtension, ROOT_CONVERSATION_ID, section, type Extension } from "@earendil-works/pi-durable";
 import { agentName, threadAgent, workingMemoryPath, type AgentRef } from "./agent-profile.ts";
 
 export { workingMemoryPath };
@@ -57,13 +58,22 @@ export function workingMemoryText(agent: string, path: string, file: WorkingFile
   ].join("\n");
 }
 
+/**
+ * Whether a conversation gets each rewrite: only the root of the work thread and of a comm thread. A job, a root job or a conversation inside
+ * any thread, keeps the text it got at its start, as Prime pins a job's digest. On 11-23, in the first 28 min after the install, one job of
+ * agent factory got 9 copies, 28 KB, while its work thread rewrote the file after each turn (~/work/working-memory/measure-2150.json).
+ */
+const followsRewrites = (ref: AgentRef, conversation: number): boolean => conversation === ROOT_CONVERSATION_ID && (ref.role === "work" || ref.role === "comm");
+
 /** The extension with the `working` section, for a thread whose root conversation names an agent. */
 export function workingMemory(): Extension {
   return defineExtension({
     name: "working-memory",
     sections: [section("working", async (input, context) => {
       const ref = await threadAgent(input.read, context);
-      return ref ? workingMemoryText(agentName(ref), workingMemoryPath(ref), readWorkingMemory(ref)) : undefined;
+      if (!ref) return undefined;
+      if (input.shown.working !== undefined && !followsRewrites(ref, input.conversationId)) return input.shown.working;
+      return workingMemoryText(agentName(ref), workingMemoryPath(ref), readWorkingMemory(ref));
     }, { tag: false })],
   });
 }

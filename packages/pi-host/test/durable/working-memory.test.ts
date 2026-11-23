@@ -153,6 +153,31 @@ test("a thread with no agent shows no working memory, and a missing or blank fil
   }
 });
 
+test("a root job keeps the text it got at its start, while the work thread gets the rewrite", async () => {
+  const f = fixture("pin");
+  writeFileSync(f.file, "# Working on\n\n- The relay page.\n");
+  const { threads, ask, systems } = threadsOn(f);
+  try {
+    const job = await threads.create({ name: "vent job" });
+    await threads.docPut(job.id, "agent.ref", { agent: "ag_vent", dir: f.folder, role: "job" });
+    const work = await threads.create({ name: "vent" });
+    await threads.docPut(work.id, "agent.ref", { agent: "ag_vent", dir: f.folder, role: "work" });
+    await ask(job.id, "first");
+    await ask(work.id, "first");
+    writeFileSync(f.file, "# Working on\n\n- The uptime query.\n");
+    await ask(job.id, "second");
+    await ask(work.id, "second");
+    const jobEntries = (await systems(job.id)).filter(sections => "working" in sections);
+    assert.equal(jobEntries.length, 1, "the job got one copy");
+    assert.match(jobEntries[0]!.working!, /The relay page/);
+    const workEntries = (await systems(work.id)).filter(sections => "working" in sections);
+    assert.equal(workEntries.length, 2, "the work thread got the rewrite");
+    assert.match(workEntries[1]!.working!, /The uptime query/);
+  } finally {
+    await threads.shutdown();
+  }
+});
+
 test("the work thread's role text names the file and has it rewrite it, and a comm thread answers status from it first", () => {
   const work = workInstructions({ agent: "ag_vent", comm: "c-1", dir: "/agents/vent" });
   assert.match(work, /You alone write your agent's working memory, `\/agents\/vent\/working-memory\.md`[\s\S]*Before you end a turn in which anything in it changed, rewrite the whole file/);
