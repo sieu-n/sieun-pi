@@ -14,13 +14,15 @@ import { applyBoardOp, BOARD_PREFIX, emptyBoard, needsGo, nextIds, parseBoard, p
 import { snoozed, waitingAsks } from "../web/src/lib/api/shared/snooze.ts";
 import { newestAskFirst } from "../web/src/lib/api/shared/board-lists.ts";
 import { boardDelta, boardKey, boardStep } from "../web/src/lib/api/shared/board-delta.ts";
-import { morningTime, upsertDuty, type AfterMeasure, type Duty, type DutyRunRecord, type DutySchedule, type DutyTrigger } from "../web/src/lib/api/shared/chat-duties.ts";
-import { asAfter, clearPrecheck, measure, measureAfter, runStamp, type PrecheckLaunch } from "./duty-run.ts";
+import { CHECK_IN_DUTY_ID, morningTime, upsertDuty, verdictMetrics, type AfterMeasure, type Duty, type DutyRunRecord, type DutySchedule, type DutyTrigger } from "../web/src/lib/api/shared/chat-duties.ts";
+import { asAfter, clearPrecheck, fixesOn, measure, measureAfter, runStamp, type PrecheckLaunch } from "./duty-run.ts";
+import { closedFixes } from "../web/src/lib/api/shared/duty-fixes.ts";
+import { closedUntil, pushMisses } from "../../../legacy/prime/user-history/src/duty-push.ts";
 import { dutyCard, judgedRun, missStreak } from "../web/src/lib/api/shared/duty-card.ts";
 import type { ChatAgent } from "../web/src/lib/api/shared/types.ts";
 import { threadModel, type Agents } from "./agents.ts";
 import { agentFolderDir } from "./agent-folder.ts";
-import { checkInDetail, checkInIdle, checkInJobBrief, checkInJobName, checkInPrecheck, checkInPrompt, datedName, planEveryMs, planHasOpenStep } from "./check-in-job.ts";
+import { checkInDetail, checkInIdle, checkInJobBrief, checkInMeasure, checkInJobName, checkInPrecheck, checkInPrompt, datedName, planEveryMs, planHasOpenStep } from "./check-in-job.ts";
 import type { Host } from "./host/types.ts";
 import { readJson, type Store } from "./store.ts";
 import type { BoardWriteStore } from "./board-writes-db.ts";
@@ -481,6 +483,7 @@ export class Boards {
    * it (`remember`), from which a page that holds that board gets only what changed.
    */
   private changed(chat: string, board: ChatBoard, before: ChatBoard | null): void {
+    if (before && before !== board) this.verifyClosed(chat, before, board);
     const row = this.listed().includes(chat) ? this.rowOf(chat, board) : null;
     if (row) this.sentRows.set(chat, JSON.stringify(row));
     this.events.board(chat, board, awaitingGo(board), row ? { row, forYou: this.asksOf(chat, board) } : { row: null, forYou: [] }, before);
@@ -613,9 +616,9 @@ export class Boards {
     const file = this.file(chat);
     file.duties = prime.duties ?? [];
     const kept = file.runs ?? {};
-    file.runs = Object.fromEntries(file.duties.flatMap(duty => {
-      const merged = new Map([...(runs[duty.id] ?? []), ...(kept[duty.id] ?? [])].map(run => [run.at, run] as const));
-      return merged.size ? [[duty.id, [...merged.values()].sort((a, b) => b.at - a.at).slice(0, 20)]] : [];
+    file.runs = Object.fromEntries([...file.duties.map(duty => duty.id), CHECK_IN_DUTY_ID].flatMap(id => {
+      const merged = new Map([...(runs[id] ?? []), ...(kept[id] ?? [])].map(run => [run.at, run] as const));
+      return merged.size ? [[id, [...merged.values()].sort((a, b) => b.at - a.at).slice(0, 20)]] : [];
     }));
     file.checkIn = { everyMs: everyMs ?? file.checkIn?.everyMs ?? DEFAULT_CHECK_IN_MS, pausedUntil: null, lastAt: prime.checkIn?.lastRunAt ?? null };
     this.save(chat, file);
@@ -872,7 +875,8 @@ export class Boards {
     const at = resume?.at ?? Date.now();
     const working = workingJobs(this.threads.allSummaries(), new Set(this.pendingWakes().map(wake => wake.session)));
     if (!resume) {
-      duty.lastRunAt = at;
+      // A push or verify run leaves the schedule where it was, as in Prime's chat.
+      if (trigger !== "push" && trigger !== "verify") duty.lastRunAt = at;
       duty.runCount += 1;
       this.save(chat, before);
     }
@@ -926,6 +930,64 @@ export class Boards {
     this.save(chat, launch ? Boards.pend(after, dutyId, null) : after);
     if (launch) void clearPrecheck(launch).catch(error => this.log(`duty ${chat.slice(0, 8)}: clearing its precheck files failed: ${String(error)}`));
     this.log(`duty ${chat.slice(0, 8)}/${duty.id}: ${record.verdict}, ${record.summary}${record.job ? `, job ${record.job.name}` : ""}`);
+  }
+
+  /** The duties whose push check runs now (`pushDuty`), so a tick checks each one once at a time. */
+  private readonly pushing = new Set<string>();
+
+  /**
+   * Prime's push run (chat-duty-run.ts `push`): a red duty that is not due gets a run with trigger `push` once its newest run is one check-in
+   * interval old, or at once when a window it misses on rolled over (`pushMisses`), when no job works on it: its last duty job ended and has its
+   * after-job measure, no duty job waits to start, and no fix step of a missed metric has a live job or waits on an open For you todo. Until
+   * 11-24 a red sw factory duty waited for its next daily slot: in the week to 11-23 22:30Z sw factory ran 0 push runs and Prime 2,549
+   * (~/work/duty-and-nudge/part2-practice.md).
+   */
+  private async pushDuty(chat: string, duty: Duty, now: number): Promise<void> {
+    const key = `${chat}/${duty.id}`;
+    if (this.pushing.has(key) || this.dutyRuns.has(key)) return;
+    this.pushing.add(key);
+    try {
+      const file = this.file(chat);
+      if (file.starts?.[duty.id]) return;
+      const runs = [...(file.runs[duty.id] ?? [])].sort((a, b) => b.at - a.at);
+      const misses = pushMisses(runs, new Set(verdictMetrics(duty.metrics).map(metric => metric.key)), this.checkIn(chat).everyMs, now);
+      if (!misses?.length) return;
+      const last = runs.find(run => run.job)?.job;
+      if (last && runs.some(run => run.job?.id === last.id && !run.after)) return;
+      const working = workingJobs(this.threads.allSummaries(), new Set(this.pendingWakes().map(wake => wake.session)));
+      if (last && this.jobBusy(last, working)) return;
+      const fixes = fixesOn(await this.board(chat), duty.id, misses, job => working.has(job));
+      if (Object.values(fixes).some(fix => fix.live) || misses.every(miss => fixes[miss]?.hold !== undefined)) return;
+      this.log(`duty ${chat.slice(0, 8)}/${duty.id}: red on ${misses.join(", ")} with no job at work on it; a push run starts`);
+      void this.runDuty(chat, duty, "push");
+    } finally {
+      this.pushing.delete(key);
+    }
+  }
+
+  /**
+   * Prime's `boardChanged`: each active duty with a fix step that closed in this change starts one verify run, so the land is measured at once
+   * instead of at the duty's next slot, unless each metric it fixes reads a window that has not rolled over yet (`closedUntil`), which the push
+   * then measures. A run of the duty already going takes its place.
+   */
+  private verifyClosed(chat: string, before: ChatBoard, after: ChatBoard): void {
+    const closed = closedFixes(before, after);
+    if (!closed.length) return;
+    const file = this.peek(chat);
+    for (const dutyId of new Set(closed.map(fix => fix.duty))) {
+      const duty = file?.duties.find(d => d.id === dutyId && d.status === "active");
+      if (!duty) continue;
+      const fixed = closed.filter(fix => fix.duty === dutyId);
+      const steps = fixed.map(fix => fix.step).join(", ");
+      const until = closedUntil([...(file!.runs[dutyId] ?? [])].sort((a, b) => b.at - a.at), fixed.map(fix => fix.metric), Date.now());
+      if (until !== undefined) {
+        this.log(`duty ${chat.slice(0, 8)}/${dutyId}: fix ${steps} closed on a window that rolls over at ${new Date(until).toISOString()}; the push then measures it`);
+        continue;
+      }
+      const going = this.dutyRuns.has(`${chat}/${dutyId}`) || this.afters.has(`${chat}/${dutyId}`);
+      this.log(`duty ${chat.slice(0, 8)}/${dutyId}: fix ${steps} closed; ${going ? "a run is going, so no verify run starts" : "a verify run starts"}`);
+      if (!going) void this.runDuty(chat, duty, "verify");
+    }
   }
 
   /** Writes a duty job that did not start, or with null clears it, into `file`, which the caller saves. */
@@ -1184,10 +1246,11 @@ export class Boards {
     const cached = this.cache.get(chat);
     const everyMs = planEveryMs(state.everyMs, cached ? planHasOpenStep(cached.board) : true);
     const base = state.lastAt ?? this.agents.record(chat)?.createdAt ?? this.threads.thread(this.threadOf(chat))?.createdAt ?? now;
+    const runs = this.peek(chat)?.runs?.[CHECK_IN_DUTY_ID];
     return {
       everyMs, ...(everyMs !== state.everyMs ? { planEveryMs: state.everyMs } : {}), paused, pausedUntil: paused ? state.pausedUntil : null,
       nextAt: paused ? (state.pausedUntil === "forever" ? null : Math.max(state.pausedUntil as number, base + everyMs)) : base + everyMs, lastAt: state.lastAt,
-      ...(state.job ? { job: { id: state.job.id, name: state.job.name } } : {}),
+      ...(state.job ? { job: { id: state.job.id, name: state.job.name } } : {}), ...(runs?.length ? { runs } : {}),
     };
   }
 
@@ -1213,6 +1276,16 @@ export class Boards {
     return this.checkIn(chat);
   }
 
+  /**
+   * Adds a check-in run to the board's runs under `checkin`, newest first, keeping 20 as each duty does (`runDutyOnce`), the way Prime's chat
+   * records a check-in run in the chat's runs file (chat-duty-run.ts `checkInRun`): every run, skipped, idle, started or failed to start, so a
+   * late or missing check-in reads apart from a quiet one.
+   */
+  private static checkInRun(file: DutyFile, run: DutyRunRecord): DutyFile {
+    file.runs = { ...file.runs, [CHECK_IN_DUTY_ID]: [run, ...(file.runs?.[CHECK_IN_DUTY_ID] ?? [])].sort((a, b) => b.at - a.at).slice(0, 20) };
+    return file;
+  }
+
   /** The check-in run going per board (`runCheckIn`), so a tick while one starts its job starts no second. */
   private readonly checkIns = new Map<string, Promise<void>>();
 
@@ -1223,9 +1296,13 @@ export class Boards {
    * its first run's name and request id, on the thread a failed try made: until 11-23 each try made a new thread and left the last one empty.
    */
   private async runCheckIn(chat: string, at: number): Promise<void> {
+    const began = Date.now();
     const { job: last, start: kept } = this.file(chat).checkIn ?? {};
     const working = workingJobs(this.threads.allSummaries(), new Set(this.pendingWakes().map(wake => wake.session)));
     if (last && this.jobBusy(last, working)) {
+      this.save(chat, Boards.checkInRun(this.file(chat), {
+        duty: CHECK_IN_DUTY_ID, at, trigger: "schedule", ms: 0, verdict: "skipped", metrics: {}, summary: `skipped: the last check-in job ${last.name} still works`,
+      }));
       this.log(`check-in ${chat.slice(0, 8)}: skipped, the last check-in job ${last.name} still works`);
       return;
     }
@@ -1235,7 +1312,11 @@ export class Boards {
     // An agent on another box keeps its brief there, where its job reads it; one here counts only when the file holds text.
     const brief = briefFile && (record?.agentsDir !== undefined || readFileSafe(briefFile).trim()) ? briefFile : undefined;
     const precheck = checkInPrecheck(board, this.chatAgents(chat), working);
+    const measured = checkInMeasure(precheck);
+    const runOf = (extra: Partial<DutyRunRecord> = {}): DutyRunRecord =>
+      ({ duty: CHECK_IN_DUTY_ID, at, trigger: "schedule", ms: Date.now() - began, ...measured, ...extra });
     if (checkInIdle(precheck, { brief })) {
+      this.save(chat, Boards.checkInRun(this.file(chat), runOf({ summary: `${measured.summary}; nothing due, so no job` })));
       this.log(`check-in ${chat.slice(0, 8)}: nothing due, no job`);
       return;
     }
@@ -1271,15 +1352,15 @@ export class Boards {
       if (failed.checkIn) {
         failed.checkIn.start = { at: run, name, ...(job ? { job: { id: job.id } } : {}) };
         failed.checkIn.lastAt = at - this.checkIn(chat).everyMs + CHECK_IN_RETRY_MS;
-        this.save(chat, failed);
       }
+      this.save(chat, Boards.checkInRun(failed, runOf({ detail, error: String(error), summary: `${measured.summary}; the check-in job did not start, so it tries again in 5 min` })));
       throw new Error(`the check-in job did not start, so it tries again in 5 min: ${String(error)}`);
     }
     const file = this.file(chat);
     delete file.checkIn?.start;
     if (file.checkIn) file.checkIn.job = { id: job.id, name, submission: submitted.submission };
     else file.checkIn = { everyMs: DEFAULT_CHECK_IN_MS, pausedUntil: null, lastAt: at, job: { id: job.id, name, submission: submitted.submission } };
-    this.save(chat, file);
+    this.save(chat, Boards.checkInRun(file, runOf({ detail, job: { id: job.id, name, submission: submitted.submission } })));
     this.log(`check-in ${chat.slice(0, 8)}: started ${name}`);
     void this.reportCheckIn(chat, { id: job.id, submission: submitted.submission });
   }
@@ -1405,8 +1486,8 @@ export class Boards {
         void this.afterJob(chat, duty.id);
         void this.readAccountWait(chat, duty.id, file.runs[duty.id] ?? []);
         if (duty.status !== "active" || this.afters.has(`${chat}/${duty.id}`)) continue;
-        if (nextRun(duty.schedule, duty.lastRunAt ?? duty.createdAt) > now) continue;
-        void this.runDuty(chat, duty, "schedule");
+        if (nextRun(duty.schedule, duty.lastRunAt ?? duty.createdAt) > now) void this.pushDuty(chat, duty, now);
+        else void this.runDuty(chat, duty, "schedule");
       }
     }
     void this.owners.tick(now).catch(error => this.log(`owners tick failed: ${String(error)}`));

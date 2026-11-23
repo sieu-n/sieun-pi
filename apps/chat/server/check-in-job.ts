@@ -6,6 +6,7 @@
  */
 import type { ChatAgent, ChatBoard, GoalTarget, PlanItem } from "../web/src/lib/api/shared/types.ts";
 import { GOAL_PUSH_LINK, needsGo, numberedGoal, openGoals, planJob, stepGo } from "../web/src/lib/api/shared/chat-board.ts";
+import { CHECK_IN_DUTY, judge, type MetricResult } from "../web/src/lib/api/shared/chat-duties.ts";
 import { OWNER_ZONE_OFFSET_MS } from "./search.ts";
 
 /** Prime's IDLE_CHECK_IN_MS (checkin-settings.ts): the interval while the plan has no open step. */
@@ -192,6 +193,19 @@ export function checkInPrompt(precheck: CheckInPrecheck, extras: CheckInExtras =
     `## Goals\n${goals.length ? goals.join("\n") : "The agent has no open goal."}`,
     `## Due this run\n${items.length ? items.map((line, at) => `${at + 1}. ${line}`).join("\n") : "Nothing is due: every goal moves on pace with a live owner. End in one short turn."}`,
   ].join("\n\n");
+}
+
+/** The two counts of Prime's check-in duty (`CHECK_IN_DUTY`) this precheck reads: goal_gaps, the headline, and stuck_steps. */
+const CHECK_IN_METRICS = CHECK_IN_DUTY.metrics.filter(metric => metric.key === "goal_gaps" || metric.key === "stuck_steps");
+
+/**
+ * The check-in run's verdict, as Prime's check-in duty judges its run (chat-duty-run.ts `checkInRun`): goal_gaps counts the open goals short of
+ * their target that no live job owns, and stuck_steps the open steps nobody moves (`CheckInPrecheck.stuck`).
+ */
+export function checkInMeasure(precheck: CheckInPrecheck): { verdict: "met" | "missed" | "error"; metrics: Record<string, MetricResult>; summary: string } {
+  const goalGaps = precheck.goals.filter(view => view.met === false && !view.owner).length;
+  const { verdict, metrics, summary } = judge(CHECK_IN_METRICS, { metrics: { goal_gaps: goalGaps, stuck_steps: precheck.stuck.length } });
+  return { verdict, metrics, summary };
 }
 
 /** Prime's `checkInIdle` (chat-checkin.ts): nothing is due, so the check-in starts no job. */

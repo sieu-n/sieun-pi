@@ -1,4 +1,5 @@
 import type { BoardDelta } from "./board-delta.ts";
+import type { DutyRunRecord } from "./chat-duties.ts";
 import type { OutboxEntry } from "./outbox.ts";
 export type StopReason = "stop" | "length" | "toolUse" | "error" | "aborted";
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
@@ -336,8 +337,11 @@ export interface SessionRow {
  * the chat's own interval, which runs again from its next open step.
  */
 export interface CheckInState { everyMs: number; planEveryMs?: number; paused: boolean; pausedUntil: number | "forever" | null; nextAt: number | null }
-/** `GET api/threads/<id>/check-in`: the state, the last check-in this service ran (null before its first) and the job that run started. */
-export interface CheckInView extends CheckInState { lastAt: number | null; job?: { id: string; name: string } }
+/**
+ * `GET api/threads/<id>/check-in`: the state, the last check-in this service ran (null before its first), the job that run started, and the
+ * kept check-in runs, newest first, each skipped, idle, started or failed to start with its goal_gaps and stuck_steps (`Boards.checkInRun`).
+ */
+export interface CheckInView extends CheckInState { lastAt: number | null; job?: { id: string; name: string }; runs?: DutyRunRecord[] }
 /**
  * A chat's brief in the sessions stream: the version it last loaded (null when it loaded before versions were recorded), the version the service
  * runs now, and whether a reload onto it is queued or waits for the chat's turn to end.

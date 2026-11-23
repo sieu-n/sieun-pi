@@ -19,7 +19,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { AgentConfig, AgentFolderSummary, AgentId, AgentSummary, AgentWake, ChatBoard, CommMembership, ConfigFile, PlanItem, ThreadKind, UsagePart } from "../web/src/lib/api/types.ts";
-import type { Duty, DutyRunRecord } from "../web/src/lib/api/shared/chat-duties.ts";
+import { CHECK_IN_DUTY, type Duty, type DutyRunRecord } from "../web/src/lib/api/shared/chat-duties.ts";
 import { fileInfo, instructionFiles } from "./agent-folder.ts";
 import { agentScripts } from "./agent-scripts.ts";
 import type { AgentRecord } from "./agent-store.ts";
@@ -346,7 +346,8 @@ export async function agentConfig(app: App, id: AgentId): Promise<AgentConfig> {
   const dutyJobs = new Map<string, { chat: string; id: string; name: string }>();
   if (chat && dutyFile) {
     for (const [dutyId, runs] of Object.entries(dutyFile.runs ?? {})) {
-      const duty = dutyFile.duties.find(d => d.id === dutyId);
+      // The check-in's runs sit beside the duties' as the built-in duty `checkin` (`Boards.checkInRun`), so its jobs read as duty jobs too.
+      const duty = dutyId === CHECK_IN_DUTY.id ? CHECK_IN_DUTY : dutyFile.duties.find(d => d.id === dutyId);
       for (const run of runs as DutyRunRecord[]) if (run.job) dutyJobs.set(run.job.id, { chat, id: dutyId, name: duty?.name ?? dutyId });
     }
   }

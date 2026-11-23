@@ -4,6 +4,7 @@
  * 2. The precheck lists goals and stuck steps, and nothing due starts no job.
  * 3. A due tick files one job under the agent, submits nothing to the work thread, and posts the job's report there as `[check-in]`.
  * 4. A paused check-in, a board with no open step and a last check-in job still at work start no job.
+ * 5. Every run, started, skipped behind its last job or idle, is recorded with its goal_gaps and stuck_steps, and the check-in view lists it.
  * Run: cd apps/chat && node --import tsx --test --test-force-exit --test-isolation=none test/server/check-in-job.test.ts
  */
 import assert from "node:assert/strict";
@@ -13,7 +14,7 @@ import { after, before, test } from "node:test";
 import type { AgentSummary, ChatBoard, CheckInView, PlanItem } from "../../web/src/lib/api/types.ts";
 import { FixtureHost } from "../../server/host/fixture.ts";
 import {
-  CHECK_IN_REPORT, CHECK_IN_WORDS, checkInIdle, checkInJobBrief, checkInJobName, checkInPrecheck, checkInPrompt, datedName, IDLE_CHECK_IN_MS,
+  CHECK_IN_REPORT, CHECK_IN_WORDS, checkInIdle, checkInJobBrief, checkInJobName, checkInMeasure, checkInPrecheck, checkInPrompt, datedName, IDLE_CHECK_IN_MS,
 } from "../../server/check-in-job.ts";
 import { start, until, type Running } from "./helpers.ts";
 
@@ -61,6 +62,9 @@ test("the precheck asks for a target, a push step and each stuck step, and an ow
   assert.ok(prompt.includes('Give "Write the docs" a target from the owner\'s words, with plan_update target.'));
   assert.ok(prompt.includes("2 open steps have no live owner."));
   assert.equal(checkInIdle(precheck), false);
+  const measured = checkInMeasure(precheck);
+  assert.equal(measured.verdict, "missed");
+  assert.deepEqual([measured.metrics.goal_gaps?.value, measured.metrics.stuck_steps?.value], [1, 2], "p1 is short with no owner; p3's owner works, and p5 has no target");
 });
 
 test("an empty board is idle for a root chat and due for an agent with a brief, which the prompt names", () => {
@@ -115,6 +119,9 @@ test("a due check-in files one job under the agent, sends nothing into the work 
   assert.ok(reports[0]!.text.startsWith("[check-in] "));
   const details = readdirSync(join(s.app.boards.dir(busy.id), "check-ins"));
   assert.equal(details.length, 1);
+  const [run] = (await s.get<CheckInView>(`/api/agents/${busy.id}/check-in`)).runs!;
+  assert.deepEqual([run!.duty, run!.at, run!.verdict, run!.job?.id, run!.metrics.goal_gaps?.value, run!.metrics.stuck_steps?.value], ["checkin", at, "missed", job.id, 0, 1]);
+  assert.equal(run!.detail, join(s.app.boards.dir(busy.id), "check-ins", details[0]!));
   assert.ok(readFileSync(join(s.app.boards.dir(busy.id), "check-ins", details[0]!), "utf8").includes("Ship the relay"));
 });
 
@@ -130,6 +137,8 @@ test("the check-in skips while its last check-in job still works, and the ended 
   await until(async () => dutyFile(busy).checkIn!.lastAt, lastAt => lastAt === at);
   await new Promise(resolve => setTimeout(resolve, 50));
   assert.equal(dutyFile(busy).checkIn!.job!.id, job.id);
+  const [skipped] = (await s.get<CheckInView>(`/api/agents/${busy.id}/check-in`)).runs!;
+  assert.deepEqual([skipped!.at, skipped!.verdict, skipped!.summary], [at, "skipped", `skipped: the last check-in job ${job.name} still works`]);
   thread.nodes[0]!.status = "idle";
   thread.row.status = "idle";
   thread.row.updatedAt = Date.now() + 2;
@@ -155,6 +164,9 @@ test("a board with no open step checks in daily, and with no brief starts no job
     assert.equal(ended, `check-in ${idle.id.slice(0, 8)}: nothing due, no job`);
     assert.equal(dutyFile(idle).checkIn?.lastAt, view.nextAt);
     assert.equal(dutyFile(idle).checkIn?.job, undefined);
+    const [quiet] = (await s.get<CheckInView>(`/api/agents/${idle.id}/check-in`)).runs!;
+    assert.deepEqual([quiet!.at, quiet!.verdict, quiet!.job], [view.nextAt, "met", undefined]);
+    assert.ok(quiet!.summary.endsWith("; nothing due, so no job"));
     assert.deepEqual(jobsOf(idle), []);
     assert.equal(workInputs.some(input => input.thread === idle.thread), false);
   } finally {

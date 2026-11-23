@@ -99,7 +99,7 @@ The chat brief keeps one line per rule and points here for the detail of one kin
 4. Link a job on the step it does, not on the goal. Goal `Reach chats from a messenger (Slack first)` has Plan (doing, job messenger-bridge-research), Decide (blocked), Build (blocked), Verify (todo).
 5. A step's `job` names its owner, which is a job name or another thread as `thread:<id>` or its session name.
 6. A goal that is a feature of one app goes under that app's goal as a child, not as a new top-level goal.
-7. Keep a few area goals, and move a step filed in the wrong place with plan_update `parent`. A goal with a target stays a goal under an area goal, so it keeps its number, trend and push step. Past 6 open goals the check-in flags only a goal with no number or no live owner job.
+7. Keep a few area goals, and move a step filed in the wrong place with plan_update `parent`. A goal with a target stays a goal under an area goal, so it keeps its number and push step, and in a Prime chat its trend. Past 6 open goals a Prime check-in flags only a goal with no number or no live owner job.
 
 ## Plan and duties
 
@@ -170,7 +170,7 @@ The check-in lists every goal short of its target or not measured. Push the step
 
 ### Duty fix steps
 
-`duty: "<dutyId>/<metricKey>"`, like `"d6/usable_pct_24h"` or `"checkin/stuck_steps"`, marks a step as the fix for one duty metric. Give it a job that works on a code change. Each duty run reads these steps for its missed metrics. In a Prime browser chat, closing one starts a verify run of the duty. sw factory starts a duty run only on its schedule, on the owner's Run now or to finish a run a restart cut, so there the duty's next run measures the fix. The rules are in [check-ins](references/check-ins.md).
+`duty: "<dutyId>/<metricKey>"`, like `"d6/usable_pct_24h"` or `"checkin/stuck_steps"`, marks a step as the fix for one duty metric. Give it a job that works on a code change. Each duty run reads these steps for its missed metrics. Closing one starts a verify run of the duty, in a Prime browser chat and in sw factory. The rules are in [check-ins](references/check-ins.md).
 
 ### Waits
 
@@ -180,5 +180,7 @@ The check-in lists every goal short of its target or not measured. Push the step
 2. The step's job or thread sleeps on a `board.wake`, or some session sleeps on a `board.wake` for the run, land or thread the wait names.
 3. A turn of the step's owner, of the thread the wait names, or of this chat for a step it owns waits in pi-pool's queue.
 4. An open For you todo links the step.
+
+sw factory's check-in credits only movers 1 and 2 for the step's own job, and mover 4. There a step whose own job is not at work or asleep on a `board.wake` counts as stuck, whatever its wait names.
 
 So set the mover in the same turn as the wait, usually a job on the step that calls `board.wake(run=...)` or `board.wake(at=...)` and acts when it wakes. When a `[wake]` comes and the wait still holds, set the next `board.wake` before that turn ends, even when another session said it will message you, because a promise to message is no mover. On 10-23 the job s3int5 install got its wake at 18:16Z, read no clearance from chat-057a in its 18:48Z turn, ended that turn with no new wake, and its goal p900 counted in goal_gaps until a d9 run steered it at 19:19Z. In the 24 h to 14:07Z on 10-23, 82 of the 132 stuck-step flags in the check-ins of the chats outside the owner's Mac were waits with no mover, the largest cause of red check-ins. The step classes still list a wait with no change for 2 h as a stale chase, and after 24 h a stale chase must become a For you todo or a new plan. A wait that a working job carries by rule 1 is no chase and no stalled or blocked step, so leave its owner and place as they are and push the job that carries it. On 10-24 chat-2572's check-in moved p8 and p10 under p6 and tied an unrelated CI probe run to them after 8 runs of "act on it" for waits that p6's live release job carried.

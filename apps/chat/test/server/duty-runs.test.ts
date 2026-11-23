@@ -87,7 +87,8 @@ test("an import run again keeps the runs this server recorded", async () => {
   s.app.config.sharedDir = prime;
   const imported = await s.send("POST", `/api/threads/${ids.vent}/import-prime`, { prime: PRIME_ID });
   assert.equal(imported.status, 200, JSON.stringify(imported.body));
-  assert.equal(imported.body.runs, 4);
+  // The count holds the check-in runs this server recorded too, which the import keeps beside the duty's.
+  assert.equal(imported.body.runs, 4 + (s.app.boards.dutyFile(agents.vent).runs.checkin?.length ?? 0));
   assert.deepEqual((await duties())[0]!.runs.map(run => run.at), before);
   assert.equal(s.app.boards.dutyFile(agents.vent).runs.d1!.length, 4);
 });

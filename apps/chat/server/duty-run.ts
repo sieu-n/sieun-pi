@@ -247,15 +247,20 @@ function walk(plan: readonly PlanItem[], visit: (item: PlanItem) => void): void 
   }
 }
 
-/** The fix step for each missed metric: an open plan step whose `duty` is `<dutyId>/<metricKey>`. */
+/**
+ * The fix step for each missed metric: an open plan step whose `duty` is `<dutyId>/<metricKey>`, with `hold` naming the open For you todo that
+ * links it, since only the owner's answer moves such a step and its miss owes no fix job (`Boards.pushDuty`).
+ */
 export function fixesOn(board: ChatBoard | null, dutyId: string, keys: readonly string[], liveJob: (job: string) => boolean): Record<string, FixLink> {
   const out: Record<string, FixLink> = {};
   if (!board) return out;
+  const held = new Map(board.todos.flatMap(todo => !todo.done && todo.step ? [[todo.step, todo.id] as const] : []));
   walk(board.plan, item => {
     if (item.status === "done" || item.status === "dropped" || !item.duty) return;
     const [id, key] = item.duty.split("/");
     if (id !== dutyId || !key || !keys.includes(key) || out[key]) return;
-    out[key] = { step: item.id, ...(item.job ? { job: item.job } : {}), live: item.job ? liveJob(item.job) : false };
+    const hold = held.get(item.id);
+    out[key] = { step: item.id, ...(item.job ? { job: item.job } : {}), live: item.job ? liveJob(item.job) : false, ...(hold ? { hold } : {}) };
   });
   return out;
 }
@@ -359,7 +364,8 @@ export function dutyJobBrief(input: { duty: Duty; chat: { id: string; name: stri
     ...(misses.length ? [`## Missed metrics: each one needs a fix step with a live job\n` + misses.map(streak => {
       const fix = record.fixes?.[streak.key];
       return `- ${streak.key}: missed ${streak.misses} run${streak.misses === 1 ? "" : "s"} in a row${fix ? `, fix step ${fix.step}${fix.job ? ` (job ${fix.job}${fix.live ? ", working" : ", not working"})` : ""}` : ", no fix step yet"}.`;
-    }).join("\n") + "\n\nA miss is never accepted as it stands. A fix step is a plan step with `duty` set to `" + duty.id + "/<metricKey>`."] : []),
+    }).join("\n") + "\n\nA miss is never accepted as it stands. A fix step is a plan step with `duty` set to `" + duty.id + "/<metricKey>`. " +
+      "When a fix step closes, the chat server runs this duty again at once, and while the duty stays red with no job on it, again each check-in interval."] : []),
     "## How to work",
     `The precheck is \`${duty.precheck.command.join(" ")}\` in ${duty.precheck.cwd}; read its script there and its per-run output in the findings file above.`,
     "Search only named folders with rg, and never walk all of home with find, grep -r or a glob: home holds repo copies that take hours to scan (sieun-pi AGENTS.md rule 6).",

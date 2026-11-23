@@ -7,8 +7,7 @@ export type FixLiveness = boolean | StalledCall;
 
 /**
  * Fix steps: a plan step whose `duty` is `<dutyId>/<metricKey>` is the chat's fix for that duty metric. A duty run records them for its missed
- * metrics (`dutyFixes`, with `fixJobLive`). sw factory starts no run when a fix step closes, so the duty's next run measures the fix. Pure and
- * browser-safe.
+ * metrics (`dutyFixes`, with `fixJobLive`), and a fix step that closes starts a verify run of its duty (`closedFixes`). Pure and browser-safe.
  */
 
 const DUTY_LINK = /^([a-z][a-z0-9_-]{0,39})\/([a-z][a-z0-9_]{0,39})$/;
@@ -113,6 +112,23 @@ function stepTarget(item: PlanItem): { target: NonNullable<FixLink["target"]> } 
   if (!target || typeof target.current !== "number" || !Number.isFinite(target.current)) return {};
   return { target: { current: target.current, target: target.target, ...(target.direction ? { direction: target.direction } : {}),
     ...(target.measuredAt ? { measuredAt: target.measuredAt } : {}) } };
+}
+
+/** Prime's `closedFixes`: the steps with a duty link that were open or absent before and are done after; each starts one verify run of its duty. */
+export function closedFixes(before: ChatBoard | null, after: ChatBoard): { step: string; duty: string; metric: string }[] {
+  const was = new Map<string, PlanItem["status"]>();
+  const seen = (items: readonly PlanItem[]) => { for (const item of items) { was.set(item.id, item.status); seen(item.children); } };
+  seen(before?.plan ?? []);
+  const closed: { step: string; duty: string; metric: string }[] = [];
+  const visit = (items: readonly PlanItem[]) => {
+    for (const item of items) {
+      const link = item.duty ? parseDutyLink(item.duty) : null;
+      if (link && item.status === "done" && was.get(item.id) !== "done") closed.push({ step: item.id, ...link });
+      visit(item.children);
+    }
+  };
+  visit(after.plan);
+  return closed;
 }
 
 export const missedKeys = (run: Pick<DutyRunRecord, "metrics">): string[] => Object.entries(run.metrics).filter(([, result]) => !result.met).map(([key]) => key);
