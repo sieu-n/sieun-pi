@@ -1,5 +1,5 @@
 import { expect, type Page, test } from "@playwright/test";
-import { conversation, open, row } from "./helpers";
+import { conversation, open, row, tag } from "./helpers";
 
 /**
  * Opens that waited one round trip on 11-21, about 210 ms from Korea (d2 run of 11-22 06:30 KST, requests/2026-11-21.jsonl): a work
@@ -32,8 +32,10 @@ async function hang(page: Page, match: RegExp): Promise<string[]> {
 }
 
 test("an agent's work thread opens from the page's read ahead with no call in front of its rows", async ({ page, request }) => {
-  const agents = (await (await request.get("/api/agents")).json()) as { kind: string; thread: string; conversation: number; archived: boolean }[];
-  const work = agents.find((agent) => agent.kind === "chat" && !agent.archived && agent.conversation === 1)!.thread;
+  // Its own agent with a post in the work thread: other specs add chat agents with empty work threads, and the newest of them led the list.
+  const word = tag();
+  const work = ((await (await request.post("/api/agents", { data: { kind: "chat", name: `work ahead ${word}` } })).json()) as { thread: string }).thread;
+  expect((await request.post(`/api/c/${work}/send`, { data: { text: `quiet work ahead ${word}`, requestId: crypto.randomUUID() } })).ok()).toBe(true);
   await open(page, "#/c/ch_general");
   await expect.poll(() => keptPage(page, "timeline", work), { timeout: 30_000 }).toBe(true);
 
@@ -59,11 +61,11 @@ test("Reply in thread on a post with no replies shows the post in the pane with 
 
 test("the refresh of the room he opened goes while one of his calls is on its way", async ({ page }) => {
   await open(page, "#/c/ch_general");
-  await page.waitForLoadState("networkidle");
   let release = (): void => undefined;
   const gate = new Promise<void>((resolve) => (release = resolve));
   const later: string[] = [];
-  await page.route(/\/api\/later(\?.*)?$/, async (route) => {
+  // Only the spec's own call has no query: the page's Later lists ask with ?state= and are left alone.
+  await page.route(/\/api\/later$/, async (route) => {
     later.push(route.request().url());
     await gate;
     await route.fallback().catch(() => undefined);
@@ -93,9 +95,8 @@ test("a kept page that grew past the server's page refreshes with no change, and
   const word = Math.random().toString(36).slice(2, 8);
   const room = (await (await request.post("/api/rooms", { data: { kind: "channel", name: `kept-grown-${word}`, members: [], test: true } })).json()) as { id: string };
   const send = async (text: string) => expect((await request.post(`/api/c/${room.id}/send`, { data: { text, requestId: crypto.randomUUID() } })).ok()).toBe(true);
-  for (let n = 1; ; n++) {
-    await send(`post ${n} ${word}`);
-    if (n >= 2 && ((await (await request.get(`/api/c/${room.id}/items`)).json()) as { older?: string }).older) break;
+  for (let n = 0; !((await (await request.get(`/api/c/${room.id}/items`)).json()) as { older?: string }).older; n += 10) {
+    await Promise.all(Array.from({ length: 10 }, (_, k) => send(`post ${n + k + 1} ${word}`)));
   }
   const first = ((await (await request.get(`/api/c/${room.id}/items`)).json()) as { items: { id: string }[] }).items[0]!.id;
   await open(page, `#/c/${room.id}`);
