@@ -5,7 +5,7 @@
  */
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { asks, asksTable, commPostRefusal, CRAMMED_MARK, crammedLine, crammedResent, hasTable, tableResent, TABLE_MARK, turnAsked, turnAskedTable, turnStartedAt } from "../../src/durable/comm-guard.ts";
+import { asks, asksTable, commPostRefusal, CRAMMED_MARK, crammedLine, crammedResent, hasTable, relayEdit, RELAY_EDIT_MARK, tableResent, TABLE_MARK, turnAsked, turnAskedTable, turnStartedAt } from "../../src/durable/comm-guard.ts";
 import { relayWords } from "../../src/durable/relay-line.ts";
 
 /** Agent posts from the room logs that relay the agent's own work, with the kind each one reads as. */
@@ -71,6 +71,27 @@ test("hand-over words are refused on any turn, and progress words unless the own
     /^Not sent: "job is testing" is progress on work still going/);
   assert.match(commPostRefusal("The work thread is reading threads.ts, the last of the 20 files.", notice)!, /is progress on work still going/);
   assert.equal(commPostRefusal("summaries.md is done, with one line for each of the 20 files.", notice), undefined);
+});
+
+/** On 11-24, the texts the agent factory work thread edited into #dev-app-search-prospect p67 and #dev-crawler p2, and p67 as first posted. */
+const EDITED_IN = [
+  "Crawler guy is set up in this room and has the media move off GeoNode.\n\n- It took over the earlier job's work from its last commit, so nothing is built twice.\n- Its job is changing the fetch path to Instagram's CDN now.\n- It posts the GeoNode media bytes from before and after in this thread.",
+  "Crawler guy is live as the crawler's maintenance and development agent. Talk to it here or in its DM.\n\n- It takes every new crawler ask from today: crawler-v3 lanes, Sirocco, proxies and their spend, and image and video downloads.\n- Its first job is moving media off GeoNode, and it is running.",
+];
+const POSTED = "Crawler guy coming as its own agent in this room, set up from the Crawler VP chat's brief and your proxy rules, with the media move off GeoNode as its first job.";
+
+test("an edit with progress words is held once, one with hand-over words is refused each time, and a result edit goes out", () => {
+  for (const text of EDITED_IN) {
+    const held = new Set<string>();
+    assert.match(relayEdit(text, held)!, new RegExp(`^${RELAY_EDIT_MARK}: "job is (?:changing|moving)" is progress on work still going`), text);
+    assert.equal(relayEdit(text, held), undefined, "the very same text sent again edits it");
+  }
+  const held = new Set<string>();
+  const handoff = "Crawler guy is set up in this room.\n- I'll post the GeoNode media bytes here once the move is done.";
+  assert.match(relayEdit(handoff, held)!, /announces a hand-over or a result to come/);
+  assert.match(relayEdit(handoff, held)!, /announces a hand-over or a result to come/);
+  assert.equal(relayEdit(POSTED, held), undefined);
+  assert.equal(relayEdit("Crawler guy is set up in this room.\n- Images and videos load straight from Instagram's CDN since 05:23 KST.\n- GeoNode carried 0 media bytes on 11-22 and 11-23.", held), undefined);
 });
 
 test("an owner post asks when a line ends in a question, and a statement or a question mid-line before a task does not", () => {

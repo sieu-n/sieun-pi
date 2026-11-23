@@ -156,6 +156,29 @@ export function crammedEdit(edit: string, held: Set<string>): string | undefined
     "Keep the answer on top as one short sentence and give each result its own short item. Sending the very same text again edits it as it is (c98).";
 }
 
+/** How an edit refused or held for relay words opens. */
+export const RELAY_EDIT_MARK = "Not edited";
+
+/**
+ * The note for an edit_message text with relay words (`relay-line.ts`), or undefined when it has none. Hand-over words are refused every
+ * time, as in a post. Progress words are held once, and the very same text sent again edits it (c98), since the edit may answer a status
+ * question the owner asked. On 11-24 the agent factory work thread edited two posts that had gone out as plain results:
+ * #dev-app-search-prospect p67 got "Its job is changing the fetch path to Instagram's CDN now." and #dev-crawler p2 got "Its first job is
+ * moving media off GeoNode, and it is running.", and edit_message checked only length, crammed lines and tables.
+ */
+export function relayEdit(edit: string, held: Set<string>): string | undefined {
+  const relay = relayWords(edit);
+  if (!relay) return undefined;
+  if (relay.kind === "handoff") {
+    return `${RELAY_EDIT_MARK}: "${relay.words}" announces a hand-over or a result to come. An edit holds results and the answer, so leave ` +
+      "the post as it is and edit in the result once it is in.";
+  }
+  if (held.has(edit)) return undefined;
+  held.add(edit);
+  return `${RELAY_EDIT_MARK}: "${relay.words}" is progress on work still going. Take that line out and edit in the result once it is in. ` +
+    "If he asked for this status, sending the very same text again edits it as it is (c98).";
+}
+
 interface TurnCall { role: string; content?: unknown; toolCallId?: unknown }
 
 /** Whether a speaking call with this very text was held for its table earlier in the turn. */

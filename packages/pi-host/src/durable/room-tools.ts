@@ -15,6 +15,7 @@
  * posts (app.ts `rewrite`): the room shows it with (edited) at once and no new post. An agent fills in results and the answer on its own
  * post instead of a new post per step (owner p106, c207), and never edits in a status of its jobs or plans (c234).
  * An edit that runs long by tell_owner's check is held once with a note, and the same text sent again goes out (`longEdit`, c98).
+ * An edit with hand-over words is refused and one with progress words is held once (comm-guard.ts `relayEdit`).
  *
  * `list_for_me_messages` and `mark_message` (`for-me.ts`) read the agent's For list and mark its items, and `save_message`, `remind_me` and
  * `list_saved_messages` (`later.ts`) keep its Later list, and `search_messages` (`search-messages.ts`) runs the owner's Cmd K search with his filters.
@@ -22,7 +23,7 @@
 import { Type } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool, ROOT_CONVERSATION_ID, type Extension } from "@earendil-works/pi-durable";
 import type { ChatApp } from "./chat-app.ts";
-import { crammedEdit, hasTable } from "./comm-guard.ts";
+import { crammedEdit, hasTable, relayEdit } from "./comm-guard.ts";
 import { closingControl, forMeTools } from "./for-me.ts";
 import { longReply } from "../../../../legacy/prime/user-history/src/shared/reply-lint.ts";
 import { ROOM_LONG_WORDS } from "./room-post.ts";
@@ -91,6 +92,7 @@ export function roomTools(app: ChatApp, thread: string): Extension {
   const heldEdits = new Set<string>();
   const heldCrammed = new Set<string>();
   const heldTables = new Set<string>();
+  const heldRelays = new Set<string>();
   return defineExtension({
     name: ROOM_TOOLS_EXTENSION,
     tools: [
@@ -134,6 +136,8 @@ export function roomTools(app: ChatApp, thread: string): Extension {
         replay: "safe",
         execute: async (args, api, context) => {
           if (api.conversationId !== ROOT_CONVERSATION_ID) return { output: text("edit_message works only in your agent's own thread, not in a job."), isError: true };
+          const relay = relayEdit(args.text.trim(), heldRelays);
+          if (relay) return { output: text(relay), isError: true };
           const long = longEdit(args.text.trim(), heldEdits);
           if (long) return { output: text(long), isError: true };
           const crammed = crammedEdit(args.text.trim(), heldCrammed);
