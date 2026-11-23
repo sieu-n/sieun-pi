@@ -67,7 +67,8 @@ test("a snoozed ask leaves every ask count until its time, and comes back to all
   const real = events.row.bind(events);
   events.row = (chat, next) => { if (chat === item.chatId) sent.push(next); real(chat, next); };
   try {
-    await s.app.boards.apply(item.chatId, [{ op: "todo_update", id: item.todo.id, remindAt: new Date(Date.now() + 500).toISOString() }]);
+    // A minute away, so the counts below read it hidden however slow a busy box runs them (they took up to 1.1 s at load 500 on 11-23).
+    await s.app.boards.apply(item.chatId, [{ op: "todo_update", id: item.todo.id, remindAt: new Date(Date.now() + 60_000).toISOString() }]);
     assert.equal(await s.app.boards.forYouCount(), before - 1);
     assert.equal(row(await rows()).openAsks, rowBefore - 1, "the board's row leaves it out too");
     assert.equal(await total(), before - 1);
@@ -76,7 +77,8 @@ test("a snoozed ask leaves every ask count until its time, and comes back to all
     const config = await s.get<AgentConfig>(`/api/agents/${encodeURIComponent(item.chatId)}/config`);
     if (config.board) assert.equal(config.board.openTodos.length, rowBefore - 1, "the agent page's asks for you count the same");
 
-    // The reminder comes due 500 ms after it was set; the server sends the row again on its own, with no read of the page.
+    // The owner moves the reminder to 500 ms from now; when it comes due the server sends the row again on its own, with no read of the page.
+    await s.app.boards.apply(item.chatId, [{ op: "todo_update", id: item.todo.id, remindAt: new Date(Date.now() + 500).toISOString() }]);
     await until(async () => sent.at(-1)?.openAsks, count => count === rowBefore, 5_000).catch(() => undefined);
     assert.ok(sent.some(next => next.openAsks === rowBefore), `the row went out again when the ask came back: ${sent.map(r => r.openAsks).join(", ")}`);
     assert.equal(row(await rows()).openAsks, rowBefore);

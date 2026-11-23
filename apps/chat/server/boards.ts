@@ -477,14 +477,17 @@ export class Boards {
     return chats.flatMap((chat, i) => (boards[i] ? this.asksOf(chat, boards[i]) : [])).sort(newestAskFirst);
   }
 
-  /** Open todos that no Remind me hides; the soonest reminder sends the count again when it comes due. */
+  /**
+   * Open todos that no Remind me hides. The soonest reminder `snoozeDue` has not sent yet arms the timer, so a count read after its time but
+   * before its timer ran still sends its notices and its row.
+   */
   async forYouCount(now = Date.now()): Promise<number> {
     const items = await this.forYou();
-    const due = items.filter(item => snoozed(item.todo, now)).map(item => Date.parse(item.todo.remindAt!));
+    const due = items.filter(item => snoozed(item.todo, this.dueSentTo)).map(item => Date.parse(item.todo.remindAt!));
     clearTimeout(this.snoozeTimer);
     if (due.length) {
       // setTimeout takes at most 2^31-1 ms (about 24.8 days); a later reminder re-arms when this one fires.
-      this.snoozeTimer = setTimeout(() => void this.snoozeDue().catch(() => undefined), Math.min(Math.min(...due) - now + 50, 2 ** 31 - 1));
+      this.snoozeTimer = setTimeout(() => void this.snoozeDue().catch(() => undefined), Math.min(Math.max(Math.min(...due) - now + 50, 0), 2 ** 31 - 1));
       this.snoozeTimer.unref?.();
     }
     return waitingAsks(items.map(item => item.todo), now);
