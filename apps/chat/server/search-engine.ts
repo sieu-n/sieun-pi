@@ -188,6 +188,9 @@ function docMatches(doc: SearchDoc, words: readonly string[]): number {
 
 type Pending = { doc: SearchDoc | null; task?: number };
 
+/** `SearchEngine.hiddenThreads` as a set, with the `hiddenFilter` answer for the `flagged` changes it was built at. */
+type HiddenKept = { threads: readonly string[]; set: ReadonlySet<string>; filter?: { flags: number; conds: Cond[]; unflagged: boolean } };
+
 /** One entry's document with the threads of both: a copy in another thread adds its thread. */
 function mergeCopies(was: Pick<EntryDoc, "threads" | "convs" | "keys" | "hidden">, doc: EntryDoc): EntryDoc {
   const union = (a: readonly string[], b: readonly string[]) => [...new Set([...a, ...b])];
@@ -240,6 +243,10 @@ export class SearchEngine {
   hiddenThreads: () => readonly string[] = () => [];
   /** The hidden threads whose every document in Meilisearch has `hidden` set; empty at each start until `flagHidden` checked them. */
   private readonly flagged = new Set<string>();
+  /** Counts the changes to `flagged`, which `hiddenFilter`'s kept answer reads. */
+  private flags = 0;
+  /** `hiddenThreads` as a set, and `hiddenFilter`'s answer for it and `flags`, kept until the app hands another list or `flagged` changes. */
+  private hidden?: HiddenKept;
   private flagging?: Promise<void>;
   /** The newest task a send got, and the sends still on their way, so `flagHidden` reads the index only after every earlier send. */
   private lastTask?: number;
@@ -481,7 +488,7 @@ export class SearchEngine {
 
   /** Entry rows as documents: the copies of one entry among them, in any thread of any box, make one document that names every thread. */
   private entryDocs(rows: EntryRow[]): EntryDoc[] {
-    const hidden = new Set(this.hiddenThreads());
+    const hidden = this.hiddenKept().set;
     const groups = new Map<string, EntryRow[]>();
     for (const row of rows) {
       const id = entryDocId(row);
@@ -514,7 +521,7 @@ export class SearchEngine {
     }
     const lookup = entries.filter(doc => !known.has(doc.id)).map(doc => doc.id);
     if (lookup.length && !this.filling) for (const doc of await this.meili.fetch<EntryDoc>(SEARCH_INDEX, lookup, ["id", "threads", "convs", "keys"])) known.set(doc.id, doc);
-    const hidden = new Set(this.hiddenThreads());
+    const hidden = this.hiddenKept().set;
     const merged = docs.map(doc => {
       const was = doc.source === "entry" ? known.get(doc.id) : undefined;
       const one = was && doc.source === "entry" ? mergeCopies(was, doc) : doc;
@@ -563,13 +570,22 @@ export class SearchEngine {
    * `flagHidden` clears its documents, so the answer and its count stay exact (c191) at each step.
    */
   hiddenFilter(): Cond[] {
-    const hidden = new Set(this.hiddenThreads());
-    const fresh = [...hidden].filter(thread => !this.flagged.has(thread));
-    const gone = [...this.flagged].some(thread => !hidden.has(thread));
-    if (fresh.length || gone) void this.flagHidden();
-    if (!hidden.size) return [];
-    if (gone) return [not(isIn("threads", [...hidden]))];
-    return [not(eq("hidden", true)), ...(fresh.length ? [not(isIn("threads", fresh))] : [])];
+    const kept = this.hiddenKept();
+    if (kept.filter?.flags !== this.flags) {
+      const hidden = kept.set;
+      const fresh = [...hidden].filter(thread => !this.flagged.has(thread));
+      const gone = [...this.flagged].some(thread => !hidden.has(thread));
+      const conds = !hidden.size ? [] : gone ? [not(isIn("threads", [...hidden]))] : [not(eq("hidden", true)), ...(fresh.length ? [not(isIn("threads", fresh))] : [])];
+      kept.filter = { flags: this.flags, conds, unflagged: !!(fresh.length || gone) };
+    }
+    if (kept.filter.unflagged) void this.flagHidden();
+    return kept.filter.conds;
+  }
+
+  private hiddenKept(): HiddenKept {
+    const threads = this.hiddenThreads();
+    if (this.hidden?.threads !== threads) this.hidden = { threads, set: new Set(threads) };
+    return this.hidden;
   }
 
   /**
@@ -584,7 +600,7 @@ export class SearchEngine {
       if (this.filling) return;
       await Promise.all(this.sending);
       if (this.lastTask !== undefined) await this.meili.waitTask({ taskUid: this.lastTask });
-      const hidden = new Set(this.hiddenThreads());
+      const hidden = this.hiddenKept().set;
       const BATCH = 200;
       const PAGE = 5_000;
       const mark = async (threads: string[], filter: string, flag: (doc: Pick<EntryDoc, "id" | "threads">) => boolean | undefined) => {
@@ -605,6 +621,7 @@ export class SearchEngine {
             if (hidden.has(thread)) this.flagged.add(thread);
             else this.flagged.delete(thread);
           }
+          this.flags += 1;
         }
       };
       await mark([...this.flagged].filter(thread => !hidden.has(thread)), `source = "entry" AND hidden = true`, doc => (doc.threads.some(thread => hidden.has(thread)) ? undefined : false));

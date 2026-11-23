@@ -121,6 +121,8 @@ export class Threads {
   private agentCache = new Map<AgentId, string>();
   /** Agent and thread ids by name, for `principal`; refresh drops it. */
   private names?: Map<string, AgentId>;
+  /** `rootChats` under the store versions it read; a change to the list drops it. */
+  private roots?: { key: string; threads: string[] };
   /** Each thread's summaries (`agentsOf`) with the row they were built from, under `summariesKey`, the store versions they read. */
   private readonly summaries = new Map<string, { row: DurableThread; out: AgentSummary[] }>();
   private summariesKey = "";
@@ -235,6 +237,7 @@ export class Threads {
     this.fresh.set(row.id, row);
     this.list.set(row.id, row);
     this.names = undefined;
+    this.roots = undefined;
     this.agentRecords?.follow(this.list);
     void this.poll();
   }
@@ -301,6 +304,7 @@ export class Threads {
     for (const [id, row] of this.list) if (!known.has(id) && !next.has(id)) next.set(id, row);
     this.list = next;
     this.names = undefined;
+    this.roots = undefined;
     this.summaries.clear();
     this.agentRecords?.dropUntitled(next);
     this.agentRecords?.follow(next);
@@ -604,20 +608,38 @@ export class Threads {
     return [...this.list.values()].filter(row => !this.isComm(row.id) && !this.agentRecords?.store.isTest(row.id)).flatMap(row => this.rowConversations(row));
   }
 
-  /** The threads that are root chats no agent holds, the `solo` rows of `threadConversations`, read with no summary built. */
-  rootChats(): string[] {
-    return [...this.list.keys()].filter(id => this.meta(id).kind !== "job" && !this.agentRecords?.ofWorkThread(id) && !this.isComm(id));
+  /**
+   * The threads that are root chats no agent holds, the `solo` rows of `threadConversations`, read with no summary built. Kept until the
+   * thread list, the agent records or the thread kinds change: each search asked it, 1,000 to 2,000 threads, 0.4 to 1 ms on 11-23.
+   */
+  rootChats(): readonly string[] {
+    const key = `${this.agentRecords?.store.version ?? -1}:${this.store.version}`;
+    if (this.roots?.key !== key) {
+      this.roots = { key, threads: [...this.list.keys()].filter(id => this.meta(id).kind !== "job" && !this.agentRecords?.ofWorkThread(id) && !this.isComm(id)) };
+    }
+    return this.roots.threads;
   }
 
   /** The summary of any conversation by id: a DM room, a channel or Solo room, a thread or job, or a comm or test thread or one of its jobs. */
   conversation(id: ConversationId): ConversationSummary | undefined {
     const row = this.list.get(parseConversationId(id).thread);
-    return (row ? this.rowConversations(row).find(c => c.id === id) : undefined) ?? this.conversations().find(c => c.id === id);
+    return (row ? this.rowConversation(row, id) : undefined) ?? this.conversations().find(c => c.id === id);
+  }
+
+  /** The conversation `id` of the thread `row`, built alone: agent factory's work thread has 390 jobs, and a search hit needs one of them. */
+  private rowConversation(row: DurableThread, id: ConversationId): ConversationSummary | undefined {
+    if (id === row.id) return this.rootConversation(row, this.agentsOf(row));
+    const job = this.agentsOf(row).slice(1).find(agent => agent.id === id);
+    return job && Threads.jobConversation(job);
   }
 
   private rowConversations(row: DurableThread): ConversationSummary[] {
-    const meta = this.meta(row.id);
     const agents = this.agentsOf(row);
+    return [this.rootConversation(row, agents), ...agents.slice(1).map(Threads.jobConversation)];
+  }
+
+  private rootConversation(row: DurableThread, agents: readonly AgentSummary[]): ConversationSummary {
+    const meta = this.meta(row.id);
     const root = agents[0]!;
     const record = this.agentRecords?.ofWorkThread(row.id);
     const comm = this.agentRecords?.ofComm(row.id);
@@ -625,19 +647,19 @@ export class Threads {
     const status = statusOf(row.status);
     const solo = !record && !comm && meta.kind !== "job";
     const parent = record ? record.room : comm ? comm.room : meta.kind === "job" ? root.parent?.id : undefined;
-    const out: ConversationSummary[] = [{
+    return {
       id: row.id, kind: solo ? "solo" : "job", name: row.name || "Untitled", status, archived: row.archived,
       lastActivityAt: row.updatedAt, preview: row.preview.slice(0, 200), unread: solo ? this.unread(row.id, row.updatedAt, status) : 0,
       hasNew: solo && row.updatedAt > (this.store.state.reads[row.id]?.at ?? 0), working, agent: root.id, ...(parent ? { parent } : {}),
-    }];
-    for (const agent of agents.slice(1)) {
-      out.push({
-        id: agent.id, kind: "job", name: agent.name, status: agent.status, archived: agent.archived, lastActivityAt: agent.updatedAt,
-        preview: "", unread: 0, hasNew: false, working: agent.status === "working" ? [{ id: agent.id, name: agent.name }] : [], agent: agent.id,
-        ...(agent.parent ? { parent: agent.parent.id } : {}),
-      });
-    }
-    return out;
+    };
+  }
+
+  private static jobConversation(agent: AgentSummary): ConversationSummary {
+    return {
+      id: agent.id, kind: "job", name: agent.name, status: agent.status, archived: agent.archived, lastActivityAt: agent.updatedAt,
+      preview: "", unread: 0, hasNew: false, working: agent.status === "working" ? [{ id: agent.id, name: agent.name }] : [], agent: agent.id,
+      ...(agent.parent ? { parent: agent.parent.id } : {}),
+    };
   }
 
   conversations(): ConversationSummary[] {

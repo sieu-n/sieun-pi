@@ -30,6 +30,7 @@ import { join } from "node:path";
 import { writeJsonLater } from "./disk.ts";
 import { readJson, readMark, type Store } from "./store.ts";
 import { OWNER, type Threads } from "./threads.ts";
+import type { TestSendEntry } from "./search.ts";
 import { isInput, sentMessage } from "./timeline.ts";
 
 const PAGE = 40;
@@ -316,6 +317,8 @@ export class Rooms {
   private readonly commStatuses = new Map<RoomId, RunStatus | undefined>();
   /** `testSendsOf` per work thread, dropped when a mark changes. */
   private readonly testSends = new Map<string, Map<number, { by: string; reason: string }>>();
+  /** `allTestSends` under the agent store version it read, dropped with `testSends`. */
+  private allTests?: { version: number; entries: TestSendEntry[] };
   private readonly settleTries = new Map<string, number>();
 
   constructor(private readonly deps: RoomDeps) {
@@ -618,7 +621,7 @@ export class Rooms {
     if (post.author !== "owner" || post.imported) throw new Error(`A test send is an owner post typed in the room; ${postId} in ${record.room} is not one.`);
     if (post.testSend?.by !== by || post.testSend.reason !== reason) {
       this.store.set(post, { testSend: { ...post.testSend, by, reason, at: Date.now() } });
-      this.testSends.delete(post.delivery?.thread ?? record.workThread);
+      this.dropTestSends(post.delivery?.thread ?? record.workThread);
       this.changed(record, [post]);
     }
     void this.settleTestSend(record, post);
@@ -645,7 +648,7 @@ export class Rooms {
         const { entry } = await this.deps.host.wait(thread, delivery.submission);
         if (entry !== undefined) {
           this.store.set(post, { testSend: { ...post.testSend!, entry } });
-          this.testSends.delete(thread);
+          this.dropTestSends(thread);
           this.store.saveTestSends(this.allTestSends());
         }
       }
@@ -674,10 +677,23 @@ export class Rooms {
     return found;
   }
 
-  /** Every room's test sends whose entry is known, for search. */
-  allTestSends(): { thread: string; entry: number; by: string; reason: string }[] {
-    return this.deps.agents.list().flatMap(record => [record.workThread, ...Object.values(record.comm ?? {})])
-      .flatMap(thread => [...this.testSendsOf(thread)].map(([entry, mark]) => ({ thread, entry, ...mark })));
+  private dropTestSends(thread: string): void {
+    this.testSends.delete(thread);
+    this.allTests = undefined;
+  }
+
+  /**
+   * Every room's test sends whose entry is known, for search. Kept until a mark or an agent record changes: each search read every agent's
+   * work and comm threads for them, 0.9 to 1.5 ms on 11-23.
+   */
+  allTestSends(): TestSendEntry[] {
+    const { version } = this.store;
+    if (this.allTests?.version !== version) {
+      const entries = this.deps.agents.list().flatMap(record => [record.workThread, ...Object.values(record.comm ?? {})])
+        .flatMap(thread => [...this.testSendsOf(thread)].map(([entry, mark]) => ({ thread, entry, ...mark })));
+      this.allTests = { version, entries };
+    }
+    return this.allTests.entries;
   }
 
   /**

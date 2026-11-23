@@ -4,7 +4,7 @@
  * output, and Prime's notes with a `[tag]` header, so a hit on raw JSON read like `...original\":\"python-httpx\\/0.28.1\",\"vent.attempts\"`
  * on 2026-10-28. Here the text is split and cleaned before the snippet is cut.
  */
-import { snippetOf, snippetTerms } from "../../../packages/pi-host/src/durable/index-db.ts";
+import { snippetTerms } from "../../../packages/pi-host/src/durable/index-db.ts";
 import { SPEAKING_TOOLS } from "./timeline.ts";
 
 export type HitRole = "owner" | "agent" | "tool" | "system";
@@ -29,20 +29,70 @@ const NOT_ASCII = /[^\x00-\x7f]/;
 /** A word without its accents, in lower case. An ASCII word has no accent to take off, which skips the normalize of nearly every word. */
 const fold = (text: string): string => (NOT_ASCII.test(text) ? text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase() : text.toLowerCase());
 
-const WORD = /[\p{L}\p{N}]+/gu;
+/** The ASCII characters a word holds, [A-Za-z0-9], by char code. */
+const ASCII_WORD = Uint8Array.from({ length: 128 }, (_, code) => Number(/[A-Za-z0-9]/.test(String.fromCharCode(code))));
+/** A run of word characters, read from `lastIndex` on: a word is a run of letters and digits, as /[\p{L}\p{N}]+/u splits it. */
+const WORD_RUN = /[\p{L}\p{N}]+/uy;
 
-function wordHit(word: string, terms: readonly string[]): boolean {
-  const folded = fold(word);
-  for (const term of terms) if (folded.startsWith(term)) return true;
-  return false;
+/** Whether the ASCII word at [at, end) starts with `term`, compared in lower case. */
+function asciiHit(text: string, at: number, end: number, term: string): boolean {
+  if (end - at < term.length) return false;
+  for (let k = 0; k < term.length; k++) {
+    const code = text.charCodeAt(at + k);
+    if ((code >= 65 && code <= 90 ? code + 32 : code) !== term.charCodeAt(k)) return false;
+  }
+  return true;
+}
+
+/**
+ * Calls `visit` with each word of `text` in order and whether it starts with one of the terms, the way FTS5 reads a bare word, until
+ * `visit` answers false. An ASCII word is read and compared char by char; only a word with another character goes through the regex and
+ * the accent fold.
+ */
+function eachWord(text: string, terms: readonly string[], visit: (at: number, end: number, hit: boolean) => boolean): void {
+  const length = text.length;
+  for (let i = 0; i < length;) {
+    let code = text.charCodeAt(i);
+    if (code < 128 && !ASCII_WORD[code]) {
+      i++;
+      continue;
+    }
+    let end = i;
+    let ascii = true;
+    while (end < length) {
+      code = text.charCodeAt(end);
+      if (code < 128) {
+        if (!ASCII_WORD[code]) break;
+        end++;
+        continue;
+      }
+      WORD_RUN.lastIndex = end;
+      if (!WORD_RUN.test(text)) break;
+      ascii = false;
+      end = WORD_RUN.lastIndex;
+    }
+    if (end === i) {
+      const next = text.charCodeAt(i + 1);
+      i += code >= 0xd800 && code <= 0xdbff && next >= 0xdc00 && next <= 0xdfff ? 2 : 1;
+      continue;
+    }
+    let hit = false;
+    if (ascii) {
+      for (const term of terms) if (asciiHit(text, i, end, term)) { hit = true; break; }
+    } else {
+      const folded = fold(text.slice(i, end));
+      for (const term of terms) if (folded.startsWith(term)) { hit = true; break; }
+    }
+    if (!visit(i, end, hit)) return;
+    i = end;
+  }
 }
 
 /** Whether the text holds a word that starts with one of the terms, the way FTS5 reads a bare word. */
 export function matches(text: string, terms: readonly string[]): boolean {
-  if (!terms.length) return false;
-  const word = new RegExp(WORD);
-  for (let m = word.exec(text); m; m = word.exec(text)) if (wordHit(m[0], terms)) return true;
-  return false;
+  let found = false;
+  if (terms.length) eachWord(text, terms, (_at, _end, hit) => !(found = hit));
+  return found;
 }
 
 /**
@@ -53,35 +103,38 @@ export function matches(text: string, terms: readonly string[]): boolean {
  */
 function cutAround(text: string, terms: readonly string[], size: number): string | undefined {
   if (!terms.length) return undefined;
-  const words: { at: number; end: number; hit: boolean }[] = [];
-  const word = new RegExp(WORD);
+  const starts: number[] = [];
+  const ends: number[] = [];
+  const hits: boolean[] = [];
   let first = -1;
   // The snippet starts a quarter of its size before the first match; one word past its end says whether the text goes on.
   let last = Infinity;
   let more = false;
-  for (let m = word.exec(text); m; m = word.exec(text)) {
-    const hit = wordHit(m[0], terms);
+  eachWord(text, terms, (at, end, hit) => {
     if (hit && first < 0) {
-      first = words.length;
+      first = starts.length;
       last = Math.max(0, first - Math.floor(size / 4)) + size;
     }
-    if (words.length === last) {
+    if (starts.length === last) {
       more = true;
-      break;
+      return false;
     }
-    words.push({ at: m.index, end: m.index + m[0].length, hit });
-  }
+    starts.push(at);
+    ends.push(end);
+    hits.push(hit);
+    return true;
+  });
   if (first < 0) return undefined;
-  const from = Math.max(0, more ? first - Math.floor(size / 4) : Math.min(first - Math.floor(size / 4), words.length - size));
-  const shown = words.slice(from, from + size);
-  const start = from === 0 ? 0 : shown[0]!.at;
-  const end = more ? shown.at(-1)!.end : text.length;
+  const from = Math.max(0, more ? first - Math.floor(size / 4) : Math.min(first - Math.floor(size / 4), starts.length - size));
+  const to = Math.min(from + size, starts.length);
+  const start = from === 0 ? 0 : starts[from]!;
+  const end = more ? ends[to - 1]! : text.length;
   let out = from === 0 ? "" : "…";
   let cursor = start;
-  for (const w of shown) {
-    if (!w.hit) continue;
-    out += `${text.slice(cursor, w.at)}<mark>${text.slice(w.at, w.end)}</mark>`;
-    cursor = w.end;
+  for (let w = from; w < to; w++) {
+    if (!hits[w]) continue;
+    out += `${text.slice(cursor, starts[w])}<mark>${text.slice(starts[w], ends[w])}</mark>`;
+    cursor = ends[w]!;
   }
   return `${out}${text.slice(cursor, end)}${end < text.length ? "…" : ""}`;
 }
@@ -138,6 +191,7 @@ const SYSTEM_INPUTS: readonly [RegExp, string][] = [
 const titleCase = (tag: string): string => tag.replace(/-/g, " ").replace(/^./, c => c.toUpperCase());
 
 const WINDOW = 12_000;
+const HAS_WORD = /[\p{L}\p{N}]/u;
 const escapeRe = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** A long text cut to about 12,000 characters around its first match, so a 1 MB tool output costs no more than a short one. */
@@ -209,11 +263,11 @@ export function indexedAuthor(kind: string, author: string, text: string): strin
   return author === "owner" && systemInput(messageBody(kind, text)) ? SYSTEM_AUTHOR : author;
 }
 
-const escapeHtml = (text: string): string => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+const ESCAPES: Readonly<Record<string, string>> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" };
 
-/** Raw text with <mark> tags, escaped except for the tags. */
+/** Raw text with <mark> tags, escaped except for the tags, in one pass. */
 export function safeSnippet(raw: string): string {
-  return raw.split(/(<mark>|<\/mark>)/).map(part => (part === "<mark>" || part === "</mark>" ? part : escapeHtml(part))).join("");
+  return raw.replace(/<\/?mark>|[&<>"]/g, part => ESCAPES[part] ?? part);
 }
 
 /** About 36 words around the first match, escaped, with every match in <mark>; empty when the text holds no match. */
@@ -230,5 +284,7 @@ export function fullText(text: string, terms: readonly string[], max = 2000): st
     start = first ? Math.max(0, Math.min(first.index - 300, text.length - max)) : 0;
   }
   const slice = text.slice(start, start + max);
-  return (start > 0 ? "…" : "") + safeSnippet(cutAround(slice, terms, 1e9) ?? snippetOf(slice, terms, 1e9)) + (start + max < text.length ? "…" : "");
+  // With no match, pi-host's `snippetOf` answers the whole slice, or its first 200 characters when it holds no word.
+  const cut = cutAround(slice, terms, 1e9) ?? (HAS_WORD.test(slice) ? slice : slice.slice(0, 200));
+  return (start > 0 ? "…" : "") + safeSnippet(cut) + (start + max < text.length ? "…" : "");
 }

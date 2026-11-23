@@ -221,6 +221,9 @@ interface StoreLookup {
   groupById: Map<string, GroupRoom>;
   /** Each agent's aliased threads, in the aliases' order. */
   aliasedTo: Map<AgentId, string[]>;
+  /** `hiddenThreads` and `heldThreads`, each built on its first read. */
+  hidden?: string[];
+  held?: string[];
 }
 
 export class AgentStore {
@@ -337,6 +340,27 @@ export class AgentStore {
     const comm = this.commOwner(thread);
     if (comm && testRooms.has(comm.room)) return true;
     return !!(this.agentOf(thread)?.test || this.agentByRoom(id)?.test);
+  }
+
+  /**
+   * The threads search leaves out unless it is scoped to one: every comm thread and every thread aliased to a walk's test agent. Built once
+   * per lookup: on 11-23 each search built it again, 1,012 threads and an `isTest` per alias, 1.3 ms of its handler.
+   */
+  hiddenThreads(): readonly string[] {
+    const index = this.lookup();
+    return index.hidden ??= [
+      ...index.agents.flatMap(record => Object.values(record.comm ?? {})),
+      ...Object.keys(index.aliases).filter(thread => this.isTest(thread)),
+    ];
+  }
+
+  /** Every work thread and aliased thread of an agent that is no walk's test agent, work threads first; built once per lookup. */
+  heldThreads(): readonly string[] {
+    const index = this.lookup();
+    return index.held ??= [...new Set([
+      ...index.agents.filter(record => !record.test).map(record => record.workThread),
+      ...Object.entries(index.aliases).filter(([, id]) => !this.agentOf(id)?.test).map(([thread]) => thread),
+    ])];
   }
 
   postsOf(room: RoomId): RoomPost[] {

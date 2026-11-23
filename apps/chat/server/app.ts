@@ -340,10 +340,7 @@ export class App {
     this.search.testSends = () => this.rooms.allTestSends();
     this.search.saved = () => this.later.items("owner").flatMap(item => (item.state === "open" && !item.unread && item.room !== undefined ? [postDocId(item.room, item.post)] : []));
     // Search leaves out every comm thread and every thread of a walk's test agent.
-    this.searchEngine.hiddenThreads = () => [
-      ...this.agents.list().flatMap(record => Object.values(record.comm ?? {})),
-      ...Object.keys(this.agentStore.agents.aliases).filter(thread => this.agentStore.isTest(thread)),
-    ];
+    this.searchEngine.hiddenThreads = () => this.agentStore.hiddenThreads();
     this.agentStore.onPost = post => this.searchEngine.postChanged(postDocId(post.room, post.id), this.postDoc(post.room, post));
     // The drafts set a post's deliveries and fields in the same append, so the notice reads them after it settles.
     this.agentStore.onAppend = post => queueMicrotask(() => this.notice(post));
