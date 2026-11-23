@@ -116,6 +116,36 @@ test('the CLI lints a page by wiki path and --recent from the content root', () 
 	}
 });
 
+// On 2026-11-23 at 06:40Z two wiki dream writers (domains/architecture/outside-calls/attribution.html v19 to v20,
+// apps/crawler-v3/architecture/ops-controls/control-plane.html v41 to v42) linted a clean draft, got the page API's rule 9
+// not-landed warning on the write and wrote again, because the CLI's file path never ran notLandedWarnings.
+test('the CLI warns on a draft line that says a commit has not landed, as the page API does', () => {
+	const dir = mkdtempSync(path.join(tmpdir(), 'prose-lint-draft-'));
+	try {
+		const page = (line) =>
+			`<!--wiki {"title":"Draft","description":"draft fixture"} -->\n<h1>Draft</h1>\n<ol>\n<li>${line}</li>\n</ol>\n`;
+		writeFileSync(path.join(dir, 'stale.html'), page('<code>abc1234567</code> has not landed on staging.'));
+		writeFileSync(path.join(dir, 'clean.html'), page('The retry runs on dev/sieun since <code>abc1234567</code>.'));
+		const cli = fileURLToPath(new URL('../scripts/prose-lint.mjs', import.meta.url));
+		const run = (...args) => spawnSync(process.execPath, [cli, ...args], { cwd: dir, encoding: 'utf8' });
+		const stale = run('--json', 'stale.html');
+		assert.equal(stale.status, 0, stale.stderr);
+		const [result] = JSON.parse(stale.stdout).results;
+		const warned = result.findings.filter((f) => f.rule === 'not-landed');
+		assert.equal(warned.length, 1, stale.stdout);
+		assert.equal(warned[0].severity, 'warn');
+		assert.equal(warned[0].line, 4);
+		assert.match(warned[0].fix, /on dev\/sieun since abc1234567/);
+		assert.deepEqual(result.counts.byRule['not-landed'], { errors: 0, warns: 1 });
+		assert.match(run('stale.html').stdout, /L4 {2}warn {2}not-landed/);
+		const clean = run('--json', 'clean.html');
+		const [ok] = JSON.parse(clean.stdout).results;
+		assert.equal(ok.findings.filter((f) => f.rule === 'not-landed').length, 0, clean.stdout);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test('the lint skips API-managed session and job logs but judges other pages in their folders', () => {
 	// 2026-11-21: job logs under agents/<slug>/jobs/ were linted while session logs were skipped.
 	assert.equal(isLintedPath('sessions/2026/11/21/0101-x/index.html'), false);

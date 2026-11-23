@@ -18,9 +18,10 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { STANDARD_FILE, isLintedPath, lintHtml, ratchet } from '../src/lib/prose-lint.mjs';
-import { gateRefusal } from './dup-gate.mjs';
-import { pageGateRefusal, pageGateWarnings, warningText } from './page-gate.mjs';
+import { STANDARD_FILE, countFindings, isLintedPath, lintHtml, ratchet } from '../src/lib/prose-lint.mjs';
+import { gateRefusal, isCuratedPath } from './dup-gate.mjs';
+import { notLandedWarnings, pageGateRefusal, pageGateWarnings, warningText } from './page-gate.mjs';
+import { notLandedLines } from './wiki-health.mjs';
 import { wikiConfig } from '../src/lib/wiki-config.mjs';
 
 const CONTENT = wikiConfig().contentRoot;
@@ -93,6 +94,38 @@ function recentPages(n) {
 		.sort((a, b) => b.t - a.t)
 		.slice(0, n)
 		.map((x) => x.f);
+}
+
+/**
+ * True for a page the page API's rule 9 judges: a file under the content root on a curated path, or a draft outside the root, which a
+ * writer lints before its one write of a curated page.
+ */
+function isDraftOrCurated(file) {
+	const abs = path.resolve(file);
+	return !abs.startsWith(CONTENT + path.sep) || isCuratedPath(`apps/llm-wiki/content/${path.relative(CONTENT, abs)}`);
+}
+
+/**
+ * Rule 9 of page-gate.mjs as lint warnings: one per line that says a commit has not reached staging or prod (notLandedWarnings
+ * with no old page, so each such line counts as added). Why: in the 2026-11-23 06:40Z wiki dream run, the writers of
+ * domains/architecture/outside-calls/attribution.html (v19 to v20) and apps/crawler-v3/architecture/ops-controls/control-plane.html
+ * (v41 to v42) linted a clean draft, got this warning from the page API and wrote the page again.
+ */
+function notLandedFindings(html) {
+	const lines = html.split('\n');
+	const claims = notLandedLines(html);
+	return notLandedWarnings(undefined, html).map((reason, i) => {
+		const sha = claims[i]?.shas[0]?.slice(0, 7) ?? '';
+		const at = sha ? lines.findIndex((l) => l.includes(sha)) : -1;
+		return {
+			rule: 'not-landed',
+			unslop: 'wiki',
+			severity: 'warn',
+			line: at + 1 || 1,
+			excerpt: claims[i]?.line ?? '',
+			fix: reason,
+		};
+	});
 }
 
 const show = (p) => path.relative(process.cwd(), path.resolve(p)) || p;
@@ -209,7 +242,10 @@ for (const file of files) {
 		results.push({ file, skipped: true, findings: [], counts: { errors: 0, warns: 0, byRule: {} } });
 		continue;
 	}
-	results.push({ file, skipped: false, ...lintHtml(readFileSync(file, 'utf8'), { path: rel }) });
+	const html = readFileSync(file, 'utf8');
+	const { findings } = lintHtml(html, { path: rel });
+	if (isDraftOrCurated(file)) findings.push(...notLandedFindings(html));
+	results.push({ file, skipped: false, findings, counts: countFindings(findings) });
 }
 
 if (json) {
