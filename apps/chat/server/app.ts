@@ -58,6 +58,7 @@ import type { FixtureHost } from "./host/fixture.ts";
 import { drained } from "./disk.ts";
 import { ChatDb } from "./chat-db.ts";
 import { JsonMove, type JsonKind } from "./json-move.ts";
+import { CACHE_KIND, HOST_ROUTES_KIND, KeptJson } from "./kept-json.ts";
 import { readJson, Store, writeJson } from "./store.ts";
 import { modelRef, OWNER, parseConversationId, Threads, type ItemsSplit } from "./threads.ts";
 import { QueueWatch, waitingPlace } from "./queue.ts";
@@ -159,6 +160,7 @@ export class App {
   constructor(readonly config: Config, readonly host: Host, readonly log: (line: string) => void = line => console.log(line)) {
     this.chatDb = new ChatDb(join(config.dataDir, "chat.sqlite"), { log });
     this.store = new Store(config.dataDir);
+    if (config.dbKinds?.includes(CACHE_KIND.kind)) this.store.caches = new KeptJson(this.chatDb, CACHE_KIND, this.move(CACHE_KIND));
     this.ownerSettings = new OwnerSettingsStore(this.store, settings => this.broadcast({ type: "owner_settings", settings }));
     mkdirSync(this.store.imagePath(""), { recursive: true });
     this.agentStore = new AgentStore(config.dataDir);
@@ -166,6 +168,8 @@ export class App {
     const routing = host instanceof MultiHost ? host : undefined;
     this.routing = routing;
     if (routing) {
+      if (config.dbKinds?.includes(HOST_ROUTES_KIND.kind)) routing.keep(new KeptJson(this.chatDb, HOST_ROUTES_KIND, this.move(HOST_ROUTES_KIND)));
+      for (const relay of routing.relays()) if (this.store.caches) relay.kept = this.store.caches;
       routing.agentHost = thread => this.agents.record(thread)?.host;
       this.agents.hostState = box => routing.link(box).state;
     }
@@ -468,16 +472,21 @@ export class App {
     let own: OwnMeili | undefined;
     let memory: Record<string, string> = {};
     const file = join(config.dataDir, "search", "meili.json");
+    // With the cache kind in chat.sqlite, the cursor is a cache row under the file's name.
+    const { caches } = this.store;
     if (config.meili) {
       // `cursor` is this box's cursor as the file kept it before other boxes were indexed too.
-      const saved = readJson<{ v?: number; cursor?: string; cursors?: Record<string, string> }>(file, {});
+      type Saved = { v?: number; cursor?: string; cursors?: Record<string, string> };
+      const saved = caches ? ((caches.read("search/meili.json") ?? {}) as Saved) : readJson<Saved>(file, {});
       if (saved.v === SEARCH_DOC_VERSION) memory = saved.cursors ?? (saved.cursor === undefined ? {} : { [config.box]: saved.cursor });
     }
     const cursors = {
       get: (box: string) => memory[box],
       set: (box: string, next: string) => {
         memory = { ...memory, [box]: next };
-        if (config.meili) writeJson(file, { v: SEARCH_DOC_VERSION, cursors: memory });
+        if (!config.meili) return;
+        if (caches) void caches.write("search/meili.json", { v: SEARCH_DOC_VERSION, cursors: memory });
+        else writeJson(file, { v: SEARCH_DOC_VERSION, cursors: memory });
       },
     };
     const engine = new SearchEngine({

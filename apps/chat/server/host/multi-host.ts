@@ -3,7 +3,7 @@
  * first, which is a `RelayHost` once that box runs an agent relay and the local `PiHost` until then.
  *
  * 1. `threads()` asks every box and tags each row with its `box`. A box that does not answer gives its last good rows, kept in memory and in
- *    `<data dir>/host-routes.json`, so its agents stay listed while it is away.
+ *    `<data dir>/host-routes.json`, or in chat.sqlite once the App calls `keep`, so its agents stay listed while it is away.
  * 2. Each call about one thread goes to the box that listed it (the same file keeps the map), else to the box of the agent record that holds
  *    the thread (`agentHost`), else to the chat's own box.
  * 3. `create` makes the thread on the box it names, the chat's own box by default.
@@ -11,12 +11,16 @@
  */
 import type { BoxInfo } from "../../../../components/prime-relay/agents/protocol.ts";
 import { replaceLater } from "../disk.ts";
+import type { Kept } from "../kept-json.ts";
 import { readJson } from "../store.ts";
 import { join } from "node:path";
 import { RelayHost, type LinkState } from "./relay-host.ts";
 import type {
   CreateOptions, DurableEvent, DurableThread, EntriesQuery, EntryRecord, Host, Ping, SubmissionRecord, Submitted, SubmitInput, Ticket, TreeNode, UsageRange, UsageTotal,
 } from "./types.ts";
+
+/** The routes' file, which also names their rows in chat.sqlite (kept-json.ts HOST_ROUTES_KIND). */
+export const ROUTES_FILE = "host-routes.json";
 
 interface RoutesFile {
   v: 1;
@@ -38,6 +42,8 @@ export class MultiHost implements Host {
   private readonly file: string;
   private routes: RoutesFile;
   private saved: string;
+  /** chat.sqlite's rows of the routes, which `keep` sets when APPS_CHAT_DB_KINDS names the host-routes kind; else the file keeps them. */
+  private kept?: Kept;
   private saving = false;
   private readonly started = Date.now();
   /** The box of the agent record that holds a thread, which the App sets once it has its records. */
@@ -47,9 +53,15 @@ export class MultiHost implements Host {
     for (const box of boxes) this.boxes.set(box.box, box);
     if (!this.boxes.has(self)) throw new Error(`MultiHost needs a host for its own box ${self}.`);
     this.name = this.boxes.get(self)!.host.name;
-    this.file = join(dataDir, "host-routes.json");
+    this.file = join(dataDir, ROUTES_FILE);
     this.routes = readJson<RoutesFile>(this.file, { v: 1, threads: {}, rows: {} });
     this.saved = JSON.stringify(this.routes);
+  }
+
+  /** Keeps the routes in `kept` from now on, starting from the ones it holds; the App calls it before any call goes out. */
+  keep(kept: Kept): void {
+    this.kept = kept;
+    this.routes = (kept.read(ROUTES_FILE) as RoutesFile | undefined) ?? this.routes;
   }
 
   /** Every box, the chat's own first. */
@@ -107,12 +119,14 @@ export class MultiHost implements Host {
   /**
    * Saves the routes once the current task ends, as one write however many calls asked. The file held 1.3 MB on 11-23, and its JSON and sync
    * write took about 37 ms of each POST /api/agents before the answer; now they run after it, and the write goes through the disk queue.
+   * Kept in chat.sqlite, a save writes only the rows that changed.
    */
   private save(): void {
     if (this.saving) return;
     this.saving = true;
     setImmediate(() => {
       this.saving = false;
+      if (this.kept) return void this.kept.write(ROUTES_FILE, this.routes);
       const json = JSON.stringify(this.routes);
       if (json === this.saved) return;
       this.saved = json;

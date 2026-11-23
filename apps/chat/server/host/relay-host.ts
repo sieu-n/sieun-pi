@@ -20,6 +20,7 @@ import {
   type ServerOp,
 } from "../../../../components/prime-relay/agents/protocol.ts";
 import { readLatest, writeJsonLater } from "../disk.ts";
+import type { Kept } from "../kept-json.ts";
 import {
   HostAway, type CreateOptions, type DurableEvent, type DurableThread, type EntriesQuery, type EntryRecord, type Host, type Ping,
   type SubmissionRecord, type Submitted, type SubmitInput, type Ticket, type TreeNode, type UsageRange, type UsageTotal,
@@ -161,15 +162,20 @@ export class RelayHost implements Host {
   /** When the box last answered a liveness ping, kept after the link drops. */
   lastPongAt?: number;
   onFeed?: (row: FeedRow) => Promise<void>;
+  /** chat.sqlite's cache rows, which the App sets when APPS_CHAT_DB_KINDS names the cache kind; the cursor is then kept there as `relay/<box>.json`. */
+  kept?: Kept;
+  private feedAfter?: number;
   private readonly log: (line: string) => void;
   private readonly cursorFile: string;
+  private readonly cursorName: string;
   private tally?: StartTally;
 
   constructor(readonly options: RelayHostOptions) {
     this.name = options.box;
     this.log = options.log ?? (() => {});
     this.onFeed = options.onFeed;
-    this.cursorFile = join(options.dataDir, "relay", `${options.box.replace(/[^\w.-]/g, "_")}.json`);
+    this.cursorName = `relay/${options.box.replace(/[^\w.-]/g, "_")}.json`;
+    this.cursorFile = join(options.dataDir, this.cursorName);
   }
 
   /** The box's BoxInfo from its last `hello`, kept after the link drops. */
@@ -206,6 +212,7 @@ export class RelayHost implements Host {
 
   /** The seq of the newest feed row this server acked for the box. */
   cursor(): number {
+    if (this.kept) return (this.feedAfter ??= Number((this.kept.read(this.cursorName) as { feedAfter?: unknown } | undefined)?.feedAfter) || 0);
     try {
       return Number((JSON.parse(readLatest(this.cursorFile) ?? "") as { feedAfter?: number }).feedAfter) || 0;
     } catch {
@@ -214,6 +221,11 @@ export class RelayHost implements Host {
   }
 
   private saveCursor(seq: number): void {
+    if (this.kept) {
+      this.feedAfter = seq;
+      void this.kept.write(this.cursorName, { feedAfter: seq });
+      return;
+    }
     writeJsonLater(this.cursorFile, { feedAfter: seq });
   }
 
