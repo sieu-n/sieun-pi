@@ -169,7 +169,8 @@
 <DutyDialog bind:open={dialogOpen} {chatId} duty={editing} {onchange} />
 
 <style>
-  .duties { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-2); }
+  /* Each grid track is minmax(0, 1fr), so a one-line run summary or a long path cannot widen an open card past the board. */
+  .duties { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-2); }
   .card { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto auto; align-items: center; gap: var(--space-2); padding: var(--space-1) var(--space-2) var(--space-1) var(--space-1); border: 1px solid var(--border-standard); border-radius: var(--radius-container); }
   .summary { display: flex; align-items: center; gap: var(--space-3); min-width: 0; padding: var(--space-2); border: 0; border-radius: var(--radius-row); background: none; color: inherit; font: inherit; text-align: start; cursor: pointer; }
   .summary:hover { background: var(--affordance-ghost-hover); }
@@ -179,13 +180,13 @@
   .text { display: grid; min-width: 0; }
   .name { color: var(--text-standard); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .meta { color: var(--text-subtle); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .detail { display: grid; gap: var(--space-1); padding: var(--space-3) var(--space-3) var(--space-1); }
+  .detail { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-1); padding: var(--space-3) var(--space-3) var(--space-1); overflow-wrap: anywhere; }
   .detail p { margin: 0; }
   .goal { color: var(--text-standard); }
   .miss { color: var(--text-danger); }
   .ok, .next { color: var(--text-subtle); }
   .runs-title { margin: var(--space-2) 0 0; }
-  .runs { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; color: var(--text-subtle); }
+  .runs { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; color: var(--text-subtle); }
   .run-row { display: flex; align-items: center; gap: var(--space-2); width: 100%; padding: 2px var(--space-1); border: 0; border-radius: var(--radius-row); background: none; color: inherit; font: inherit; text-align: start; cursor: pointer; }
   .run-row:hover { background: var(--affordance-ghost-hover); color: var(--text-standard); }
   .run-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

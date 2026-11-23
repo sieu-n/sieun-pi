@@ -63,6 +63,31 @@ test("a run row opens to its measure and its job, and the duty's job is a link",
   await expect(detail.getByRole("link")).toHaveAttribute("href", /#\/agents\//);
 });
 
+test("an open duty with a long unbroken goal path and a long run summary stays inside the Duties card", async ({ page }) => {
+  // The live d2 card widened past the board on 11-23: a one-line run summary set the width of the open card's grids.
+  const path = `~/work/${"sw_factory_fixes/".repeat(12)}duty_goal_with_a_long_unbroken_path.log`;
+  const summary = Array.from({ length: 40 }, (_, i) => `slowest_api_p90_ms ${1800 + i} ms (target at most 1000 ms)`).join(", ");
+  await page.route(/\/api\/(agents|threads)\/[^/]+\/duties$/, async route => {
+    const response = await route.fetch();
+    const body = await response.json();
+    for (const row of body.duties ?? []) {
+      if (row.duty.id !== "d1") continue;
+      row.duty.goal = `The relay log at ${path} stays clean.`;
+      if (row.runs[0]) row.runs[0].summary = summary;
+    }
+    await route.fulfill({ status: response.status(), contentType: "application/json", body: JSON.stringify(body) });
+  });
+  await page.goto(`/#/board/${HARNESS}`);
+  const duties = page.getByRole("region", { name: "Duties" });
+  await duties.getByRole("button", { name: /Relay uptime/ }).first().click();
+  const goal = duties.locator(".goal");
+  await expect(goal).toContainText(path);
+  const [region, card, text] = await Promise.all([duties.boundingBox(), duties.locator("li.duty").first().boundingBox(), goal.boundingBox()]);
+  expect(card!.x + card!.width).toBeLessThanOrEqual(region!.x + region!.width + 1);
+  expect(text!.x + text!.width).toBeLessThanOrEqual(region!.x + region!.width + 1);
+  expect(await goal.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+});
+
 test("Add duty sends the owner's words and schedule to the agent's DM", async ({ page, request, chatServer }) => {
   await page.goto(`/#/board/${HARNESS}`);
   const duties = page.getByRole("region", { name: "Duties" });
