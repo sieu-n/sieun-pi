@@ -39,7 +39,10 @@ export function deliveryText(delivery: Delivery, post: { mentions: readonly stri
     case "queued": {
       const why = post.mentions.includes(delivery.target) ? "was mentioned" : post.threadRoot ? "is in this thread" : "is a member";
       const offline = offlineText(delivery.error);
-      return offline ? `${delivery.name} ${why}. ${offline}.` : `${delivery.name} ${why} and ${placeText(delivery.queue ?? null) ?? "waits for a working slot"}.`;
+      // A queued delivery with no turn-queue place is still being handed to pi-host; on 11-23 one sat 11 min that way behind a stalled
+      // pi-host loop while the old text said it waited for a working slot, and no pool queue held it.
+      const place = placeText(delivery.queue ?? null);
+      return offline ? `${delivery.name} ${why}. ${offline}.` : place ? `${delivery.name} ${why} and ${place}.` : `${delivery.name} ${why}; handing the post over.`;
     }
     case "read": return `${delivery.name} is reading.`;
     case "no_reply": return `${delivery.name} read it and ended its turn with no reply.`;

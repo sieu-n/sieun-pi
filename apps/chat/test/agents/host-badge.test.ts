@@ -31,15 +31,17 @@ test("a delivery queued on an away box reads as queued, never as a failure", () 
   assert.equal(offlineText(undefined), null);
   const named = { mentions: ["ag_scout"] };
   assert.equal(deliveryText({ target: "ag_scout", name: "Scout", state: "queued", at: 0, error: "queued, mac is offline" }, named), "Scout was mentioned. Queued, Mac is offline.");
-  assert.equal(deliveryText({ target: "ag_scout", name: "Scout", state: "queued", at: 0 }, named), "Scout was mentioned and waits for a working slot.");
+  assert.equal(deliveryText({ target: "ag_scout", name: "Scout", state: "queued", at: 0 }, named), "Scout was mentioned; handing the post over.");
 });
 
 test("a waiting delivery says why the post woke the agent, and says mentioned only when the post names it", () => {
   const queued = { target: "ag_scout", name: "Scout", state: "queued", at: 0 } as const;
-  assert.equal(deliveryText(queued, { mentions: [] }), "Scout is a member and waits for a working slot.");
-  assert.equal(deliveryText(queued, { mentions: [], threadRoot: "p1" }), "Scout is in this thread and waits for a working slot.");
-  assert.equal(deliveryText(queued, { mentions: ["ag_scout"], threadRoot: "p1" }), "Scout was mentioned and waits for a working slot.");
-  assert.equal(deliveryText(queued, { mentions: ["ag_other"], threadRoot: "p1" }), "Scout is in this thread and waits for a working slot.");
+  assert.equal(deliveryText(queued, { mentions: [] }), "Scout is a member; handing the post over.");
+  assert.equal(deliveryText(queued, { mentions: [], threadRoot: "p1" }), "Scout is in this thread; handing the post over.");
+  assert.equal(deliveryText(queued, { mentions: ["ag_scout"], threadRoot: "p1" }), "Scout was mentioned; handing the post over.");
+  assert.equal(deliveryText(queued, { mentions: ["ag_other"], threadRoot: "p1" }), "Scout is in this thread; handing the post over.");
+  const placed = { ...queued, queue: { state: "queued", position: 3, total: 7 } } as const;
+  assert.equal(deliveryText(placed as never, { mentions: ["ag_scout"] }), "Scout was mentioned and waits at place 3 of 7.", "only a turn-queue place says it waits");
 });
 
 test("the host picker lists the chat's own box first and marks an away box", () => {
