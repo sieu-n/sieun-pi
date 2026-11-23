@@ -79,10 +79,10 @@ test("a fix with its own measured target is judged on that target's history in t
 test("the duty records each goal's number, and a run records its fix step's measured target", async () => {
   const judged = judge(goals, { metrics: { throughput_goals_missed: 1 }, items: { p850: { value: 159, target: 252, op: ">=" }, p826: { value: Number.NaN, target: 1, op: ">=" } } });
   assert.deepEqual(judged.items, { p850: { value: 159, target: 252, op: ">=", met: false } });
-  const out = report({ now: t("2026-10-24T16:29:00Z"), errors: [], geoFrom: 0, geoTo: 0, board: [{ id: "p850", text: "Meta Ads", target: { target: 7 } }] as never,
-    meta: { due: 2_537_866, finished24h: 159 * 1440 } } as never, goals);
-  assert.equal(out.items?.p850?.value, 159);
-  assert.equal(Math.round(out.items?.p850?.target ?? 0), 252);
+  const out = report({ now: t("2026-10-24T16:29:00Z"), errors: [], censusFrom: 0, censusTo: 0, board: [{ id: "p8", text: "Re-read", target: { target: 1 } }] as never,
+    refresh: [{ read: 100_000, readBig: 10_000, past7Big: 500, past30Rest: 0 }] } as never, goals);
+  assert.equal(out.items?.p8?.value, 5);
+  assert.equal(out.items?.p8?.target, 1);
   const target = { metric: "nvme0n1 writes, 1 h rate", target: 4, unit: "TB/day", current: 4.35, measuredAt: "2026-10-24T16:52:00.000Z", direction: "down" };
   const fixBoard = { ...board, plan: [step("p952", [], { duty: "d5/crawler_risks_firing", job: "nvme0 root cause", target } as Partial<PlanItem>)] } as unknown as ChatBoard;
   assert.deepEqual(await dutyFixes(fixBoard, "d5", ["crawler_risks_firing"], async () => true),

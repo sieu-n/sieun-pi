@@ -1,37 +1,36 @@
-// Guards the Throughput goal achieved duty's numbers (scripts/duties/throughput-goal.ts), the Crawler VP chat's d9: the owner renamed it from
-// Crawler running on 10-22 (msg mvj491h5, "Throughput goal achieved ( unified for all platform )"). Its headline counts the board's throughput
-// goals prod misses, and it keeps his 10-19 duties for crawler-v3 (msg mvfe8foz): GeoNode at least 100 Mbps, nothing backlogging, and the crawler
-// dashboards drawing ("Check the Observability and Metrics"), where on 10-19 at 15:55Z two panels read No data.
+// Guards the Throughput goal achieved duty's numbers (scripts/duties/throughput-goal.ts), Crawler guy's d8 since 11-24 (Crawler VP's d9 before):
+// the owner renamed it from Crawler running on 10-22 (msg mvj491h5, "Throughput goal achieved ( unified for all platform )"). Its headline counts
+// the throughput goals prod misses, and it keeps his 10-19 duties for crawler-v3 (msg mvfe8foz): nothing backlogging, and the crawler dashboards
+// drawing ("Check the Observability and Metrics"), where on 10-19 at 15:55Z two panels read No data.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type BoardItem, sampledMetaDue, GOOD_ROWS, META_FINISHED_EXPR, META_SAMPLE_PCT, META_SAMPLE_RUNS, REFRESH_SAMPLE_PCT, REFRESH_SAMPLE_RUNS, type ThroughputData, backlogged, blankPanels, boardGoal, deploySlots, geonodeHours, geonodeMbps, goalLine, goalRows, grew, interpolate, lastHalfHour,
+import { type BoardItem, sampledMetaDue, GOOD_ROWS, META_FINISHED_EXPR, META_SAMPLE_PCT, META_SAMPLE_RUNS, REFRESH_SAMPLE_PCT, REFRESH_SAMPLE_RUNS, type ThroughputData, backlogged, blankPanels, boardGoal, deploySlots, goalLine, goalRows, grew, interpolate, lastHalfHour,
   type Dashboard, folderBoards, folderFiles, lagSlots, metaDueSql, PROVIDERS, QUEUES, missed, readPanels, pageRuns, panelQueries, panelState, refreshShares, refreshSql, report, scaleDue, slowestHour, writerLagAtRate } from "../scripts/duties/throughput-goal.ts";
 import type { DutyMetric } from "../src/shared/chat-duties.ts";
 
 const METRICS: DutyMetric[] = [
   { key: "throughput_goals_missed", label: "goals", op: "<=", target: 0, headline: true },
-  { key: "geonode_mbps", label: "mbps", op: ">=", target: 100 },
   { key: "ig_queues_growing_6h", label: "queues", op: "<=", target: 0 },
   { key: "crawler_panels_blank", label: "panels", op: "<=", target: 0 },
 ] as DutyMetric[];
 const NOW = Date.parse("2026-10-22T06:38:00Z");
 const FROM = Date.parse("2026-10-21T15:03:00Z");
 const TO = FROM + 30 * 60_000;
-const GEO_TO = Date.parse("2026-10-22T06:00:00Z");
-const GEO_FROM = GEO_TO - 24 * 3_600_000;
-// The board as it stood on 10-22 at 06:10Z: p826 and p850 carry targets, p696 only its title, p683 is done with its target.
+const CENSUS_TO = Date.parse("2026-10-22T06:00:00Z");
+const CENSUS_FROM = CENSUS_TO - 24 * 3_600_000;
+// Crawler VP's board on 10-22 at 06:10Z, where p826 and p850 carry targets and p696 only its title, and Crawler guy's re-read goal p8 of 11-24.
 const BOARD: BoardItem[] = [
+  { id: "p8", status: "blocked", text: "Re-read every 10k+ Instagram account weekly and every other read account monthly", target: { target: 1 } },
   { id: "p826", text: "Instagram profiles crawl at 10,000 a minute, held 6 h straight (owner 10-19, p1)", target: { target: 10_000 } },
   { id: "p681", text: "TikTok Shop: every shop, product and creator indexed, and each re-read every week", target: { target: 100 },
     children: [{ id: "p696", text: "Push TikTok Shop good products a minute to 2,000 now: drop the per-loop Redis SCAN, run 4 crawler processes, re-measure" }] },
   { id: "p680", text: "Meta Ads", children: [{ id: "p850", text: "Stop Meta Ads advertiser walks from going more than a day overdue", target: { target: 7 } }] },
-  { id: "p683", status: "done", text: "Refresh every read Instagram account at least weekly", target: { target: 1 } },
 ];
 const HALF = { read: 198_769, readBig: 20_000, past7Big: 60, past30Rest: 126 };
 // A census writer that kept up: one slot at 11,000 Instagram profiles a minute with 2,613 records of lag, and no deploy.
 const LAG_OK: Partial<ThroughputData> = { igSlots24h: [{ slot: Date.parse("2026-10-22T19:45:00Z"), good: 55_000 }],
   writerLag: [{ slot: Date.parse("2026-10-22T19:45:00Z"), good: 2_613 }], deploys24h: [] };
-const base = (over: Partial<ThroughputData> = {}): ThroughputData => ({ now: NOW, errors: [], geoFrom: GEO_FROM, geoTo: GEO_TO, ...over });
+const base = (over: Partial<ThroughputData> = {}): ThroughputData => ({ now: NOW, errors: [], censusFrom: CENSUS_FROM, censusTo: CENSUS_TO, ...over });
 
 test("a goal number comes from the item's target, else the number in its title, and a missing item has none", () => {
   assert.deepEqual(boardGoal(BOARD, "p826"), { goal: 10_000, source: "target" });
@@ -72,14 +71,14 @@ test("prod's deploy lock leaves its slots out of the slowest hour (10-22 00:55 t
 });
 
 test("TikTok Shop reads live products with a 7-day ok read, not a rate that swings with what is due (10-23: 330 a minute on a finished week)", () => {
-  const quiet = goalRows(base({ board: BOARD, ttsSlowest: 301, ttsWeekly: { read: 6_290_183, live: 6_291_426 } })).find(row => row.item === "p696")!;
+  const quiet = goalRows(base({ board: BOARD, ttsSlowest: 301, ttsWeekly: { read: 6_290_183, live: 6_291_426 } })).find(row => row.platform === "TikTok Shop products")!;
   assert.equal(missed(quiet), false);
   assert.equal(quiet.goal, 99.5);
   assert.match(quiet.extra!, /6,290,183 of 6,291,426, gone products left out; 301 good a minute/);
-  assert.equal(goalRows(base({ board: BOARD, ttsSlowest: 2_500 })).find(row => row.item === "p696")!.value, null);
+  assert.equal(goalRows(base({ board: BOARD, ttsSlowest: 2_500 })).find(row => row.platform === "TikTok Shop products")!.value, null);
 });
 
-test("Instagram counts profile rows on every read path, the table p826's target reads, and TikTok Shop its good products", () => {
+test("Instagram counts profile rows on every read path, the table its 10,000 a minute goal reads, and TikTok Shop its good products", () => {
   assert.deepEqual(GOOD_ROWS.instagram, { table: "crawler.instagram_account_snapshots", where: "" });
   assert.match(GOOD_ROWS.tiktokShop.where, /^kind = 'product' AND outcome = 'ok' AND $/);
   const rows = goalRows(base({ board: BOARD, igSlowest: 4_423, igLast30: 11_660, deployMinutes: 45 }));
@@ -87,44 +86,34 @@ test("Instagram counts profile rows on every read path, the table p826's target 
   assert.match(rows[0]!.extra!, /11,660 a minute in the last 30 min/);
 });
 
-test("every throughput goal on the board is one row, and the headline counts the rows prod misses", () => {
+test("every throughput goal is one row, and the headline counts the rows prod misses", () => {
   const data = base({ board: BOARD, igSlowest: 5_157, ttsSlowest: 1_960, ttsWeekly: { read: 5_900_000, live: 6_000_000 }, meta: { due: 2_780_536, finished24h: 53_570 }, refresh: [HALF, { ...HALF, past30Rest: 127 }], ...LAG_OK });
   const rows = goalRows(data);
-  assert.deepEqual(rows.map(row => [row.item, missed(row)]), [["p826", true], ["p696", true], ["p850", true], ["p683", false], ["p683", false], ["p895", false]]);
+  assert.deepEqual(rows.map(row => [row.item, missed(row)]), [[undefined, true], [undefined, true], [undefined, true], ["p8", false], ["p8", false], [undefined, false]]);
   assert.equal(Math.round(rows[2]!.goal!), 276);
   const out = report(data, METRICS);
   assert.equal(out.metrics.throughput_goals_missed, 3);
-  assert.ok(out.flagged!.some(item => item.item === "p696" && item.excerpt.includes("98.333%") && item.excerpt.includes("at least 99.5%")));
+  assert.ok(out.flagged!.some(item => item.excerpt.startsWith("TikTok Shop products: 98.333%") && item.excerpt.includes("at least 99.5%")));
   const met = report(base({ ...data, igSlowest: 10_400, ttsSlowest: 2_100, ttsWeekly: { read: 6_290_183, live: 6_291_426 }, meta: { due: 300_000, finished24h: 53_570 } }), METRICS);
   assert.equal(met.metrics.throughput_goals_missed, 0);
 });
 
-test("an item with two rows reports its missed row, so p683's 10k+ slip is not hidden by the met under-10k row (11-05 d9: items.p683 read 0)", () => {
+test("an item with two rows reports its missed row, so the 10k+ slip is not hidden by the met under-10k row (11-05 d9: items.p683 read 0)", () => {
   const out = report(base({ board: BOARD, igSlowest: 10_400, refresh: [{ ...HALF, past7Big: 5_000 }], ...LAG_OK }), METRICS);
-  assert.equal(out.items!.p683!.op, "<=");
-  assert.ok(out.items!.p683!.value > out.items!.p683!.target);
+  assert.equal(out.items!.p8!.op, "<=");
+  assert.ok(out.items!.p8!.value > out.items!.p8!.target);
+});
+
+test("only a row read from a board item reports an item, so the closed goals the 11-24 hand-over left behind name no item of Crawler guy's board", () => {
+  const out = report(base({ board: BOARD, igSlowest: 10_400, ttsWeekly: { read: 6_290_183, live: 6_291_426 }, meta: { due: 300_000, finished24h: 53_570 }, refresh: [HALF], ...LAG_OK }), METRICS);
+  assert.deepEqual(Object.keys(out.items!), ["p8"]);
+  assert.equal(out.metrics.throughput_goals_missed, 0);
 });
 
 test("a goal whose read or board number failed leaves the headline unmeasured instead of counting a miss", () => {
   const noBoard = report(base({ igSlowest: 10_400, ttsSlowest: 2_100, ttsWeekly: { read: 6_290_183, live: 6_291_426 }, meta: { due: 1, finished24h: 53_570 }, refresh: [HALF], errors: [{ source: "board", message: "ENOENT" }] }), METRICS);
   assert.ok(noBoard.metrics.throughput_goals_missed! > 1000);
   assert.equal(noBoard.flagged![0]!.kind, "unmeasured");
-});
-
-test("GeoNode reads the slowest full hour of the 24 h, and an hour with no ledger rows reads near 0", () => {
-  const census = { jobs: 0, bad: 0, att: 0, okAtt: 0, wire: 45_000_000_000 };
-  const hours = Array.from({ length: 24 }, (_, index) => ({ hour: GEO_FROM + index * 3_600_000, census, proxy: [{ lane: "instagram_census", wire: 0 }] }));
-  assert.deepEqual(geonodeHours(hours, [], GEO_FROM, GEO_TO).map(h => h.mbps), Array(24).fill(100));
-  const gap = geonodeHours(hours.filter((_, index) => index !== 19), [], GEO_FROM, GEO_TO);
-  assert.equal(Math.min(...gap.map(h => h.mbps)), 0);
-  const out = report(base({ geoHours: hours.filter((_, index) => index !== 19), adLibrary: [] }), METRICS);
-  assert.equal(out.metrics.geonode_mbps, 0);
-});
-
-test("GeoNode Mbps sums census and lane wire bytes with no per-connection handshake term (TCP_INFO wire bytes, 11-04)", () => {
-  const census = { jobs: 100, bad: 60, att: 400, okAtt: 40, wire: 0 };
-  assert.equal(geonodeMbps(census, [], [], FROM, TO), 0);
-  assert.equal(geonodeMbps({ ...census, wire: 11_250_000_000 }, [{ lane: "instagram_web", wire: 11_250_000_000 }], [], FROM, TO), 100);
 });
 
 test("a queue backlogs while its 30-minute low stands over 80k even as it falls (p827; media.fetch at 5.5M read 0 on 10-22)", () => {
@@ -154,9 +143,9 @@ test("a queue grows only past 10% and about a minute of census intake, with its 
 });
 
 test("the run reads every metric, and a failed source misses instead of reading green", () => {
-  const census = { jobs: 190_193, bad: 144_356, att: 2_000_000, okAtt: 40_000, wire: 0 };
+  const census = { jobs: 190_193, bad: 144_356, att: 2_000_000, okAtt: 40_000 };
   const data = base({ board: BOARD, igSlowest: 10_400, ttsSlowest: 2_100, ttsWeekly: { read: 6_290_183, live: 6_291_426 }, meta: { due: 300_000, finished24h: 53_570 }, refresh: [HALF], ...LAG_OK,
-    geoHours: [{ hour: GEO_FROM, census, proxy: [] }], adLibrary: [],
+    census,
     queues: [{ family: "kafka lag", name: "media.fetch/image-worker", now: 30_400_000, ago6h: 37_400_000, slope6h: -1e6 }],
     panels: [{ dashboard: "Crawler · Throughput", title: "Instagram profiles", state: "no data", detail: "" },
       { dashboard: "Crawler · Health", title: "Profiles a minute", state: "ok", detail: "" }] });
@@ -168,7 +157,7 @@ test("the run reads every metric, and a failed source misses instead of reading 
   assert.ok(out.flagged!.some(item => item.kind === "backlog" && item.excerpt.startsWith("1 of 1 Instagram queues backlog, over 80k")));
   assert.equal(out.metrics.crawler_panels_blank, 1);
   const broken = report(base({ board: BOARD, errors: [{ source: "queues", message: "Grafana HTTP 502" }] }), METRICS);
-  assert.ok(broken.metrics.geonode_mbps! < 0 && broken.metrics.ig_queues_growing_6h! > 1000 && broken.metrics.throughput_goals_missed! > 1000);
+  assert.ok(broken.metrics.ig_queues_growing_6h! > 1000 && broken.metrics.throughput_goals_missed! > 1000);
   assert.equal(broken.flagged![0]!.kind, "unmeasured");
 });
 
@@ -247,15 +236,15 @@ test("the refresh age reads a page sample as TID page runs, leaves GONE rows out
   assert.equal(shares.rest30Pct, 0.071);
   assert.equal(refreshShares([{ ...HALF, readBig: 0, past7Big: 0 }])!.big7Pct, null);
   assert.equal(refreshShares([]), null);
-  const read = goalRows(base({ board: BOARD, refresh: [HALF] })).filter(row => row.item === "p683");
+  const read = goalRows(base({ board: BOARD, refresh: [HALF] })).filter(row => row.item === "p8");
   assert.deepEqual(read.map(row => [row.platform, missed(row)]), [["Instagram 10k+ weekly re-reads", false], ["Instagram under-10k monthly re-reads", false]]);
-  const late = goalRows(base({ board: BOARD, refresh: [{ ...HALF, past7Big: 400 }] })).filter(row => row.item === "p683");
+  const late = goalRows(base({ board: BOARD, refresh: [{ ...HALF, past7Big: 400 }] })).filter(row => row.item === "p8");
   assert.deepEqual(late.map(row => missed(row)), [true, false]);
   const failed = goalRows(base({ board: BOARD, errors: [{ source: "refresh age", message: "Grafana HTTP 400: canceling statement due to statement timeout" }] }));
-  assert.deepEqual(failed.filter(row => row.item === "p683").map(row => row.value), [null, null]);
+  assert.deepEqual(failed.filter(row => row.item === "p8").map(row => row.value), [null, null]);
 });
 
-test("the census writer's worst lag counts only slots at p826's rate outside deploys (p895, 10-22 06:00-08:00Z)", () => {
+test("the census writer's worst lag counts only slots at 10,000 Instagram profiles a minute outside deploys (p895, 10-22 06:00-08:00Z)", () => {
   const from = Date.parse("2026-10-22T06:00:00Z");
   const at = (index: number): number => from + index * 300_000;
   // 10,900 a minute in slots 0-2, 4,000 in slot 3, and slot 2 under a deploy.
@@ -266,16 +255,16 @@ test("the census writer's worst lag counts only slots at p826's rate outside dep
   assert.equal(writerLagAtRate(ig.map(s => ({ ...s, good: 4_000 * 5 })), lag, new Set(), 10_000), null);
 });
 
-test("the census writer is one goal row: its worst lag at p826's rate counts toward the headline, and no slot at that rate reads 0 (p895)", () => {
+test("the census writer is one goal row: its worst lag at 10,000 Instagram profiles a minute counts toward the headline, and no slot at that rate reads 0 (p895)", () => {
   const from = NOW - 24 * 3_600_000;
   const slot = Math.floor(from / 300_000) * 300_000 + 300_000;
-  const row = (over: Partial<ThroughputData>) => goalRows(base({ board: BOARD, deploys24h: [], ...over })).find(r => r.item === "p895")!;
+  const row = (over: Partial<ThroughputData>) => goalRows(base({ board: BOARD, deploys24h: [], ...over })).find(r => r.platform === "Census Postgres writer")!;
   const met = row({ igSlots24h: [{ slot, good: 55_000 }], writerLag: [{ slot, good: 2_613 }] });
   assert.equal(met.value, 2_613);
   assert.equal(missed(met), false);
   const over = row({ igSlots24h: [{ slot, good: 55_000 }], writerLag: [{ slot, good: 17_425 }] });
   assert.equal(missed(over), true);
-  assert.match(goalLine(over), /Census Postgres writer \(p895\): 17,425 records of lag at most over 24 h .* against at most 5,000\b.*Missed\./);
+  assert.match(goalLine(over), /Census Postgres writer: 17,425 records of lag at most over 24 h .* against at most 5,000\b.*Missed\./);
   const slow = row({ igSlots24h: [{ slot, good: 20_000 }], writerLag: [{ slot, good: 50_000 }] });
   assert.equal(slow.value, 0);
   assert.match(slow.reads, /not judged/);
@@ -291,29 +280,17 @@ test("p895 dates its miss at the newest slot over 5,000, not the worst one, and 
   const lag = [{ slot: worst, good: 214_542 }, { slot: later, good: 6_327 }, { slot: calm, good: 3_622 }];
   const data = base({ now, board: BOARD, deploys24h: [], igSlots24h: fast, writerLag: lag, igSlowest: 17_978, ttsWeekly: { read: 6_495_126, live: 6_495_155 },
     meta: { due: 3_015_442, finished24h: 315 * 1_440 }, refresh: [HALF] });
-  const row = goalRows(data).find(r => r.item === "p895")!;
+  const row = goalRows(data).find(r => r.platform === "Census Postgres writer")!;
   assert.equal(row.lastEventAt, later);
   assert.match(goalLine(row), /214,542 records of lag at most over 24 h \(10:55Z 10-26\).*the newest over 5,000 \(00:30Z 10-27\) leaves the 24 h window at 00:30Z 10-28\)\. Missed\.$/);
   const out = report(data, METRICS);
   assert.equal(out.metrics.throughput_goals_missed, 1);
   assert.equal(out.lastEventAt?.throughput_goals_missed, later);
   assert.equal(out.windowMs?.throughput_goals_missed, 24 * 3_600_000, "the key names no window, so the precheck names it");
-  assert.ok(out.flagged!.find(item => item.item === "p895")!.excerpt.endsWith("Missed."));
+  assert.ok(out.flagged!.find(item => item.excerpt.startsWith("Census Postgres writer"))!.excerpt.endsWith("Missed."));
   // Every counted slot under the line reads met with no time; another missed row with no time leaves the headline undated.
   assert.equal(report(base({ ...data, writerLag: [{ slot: calm, good: 3_622 }] }), METRICS).lastEventAt?.throughput_goals_missed, undefined);
   assert.equal(report(base({ ...data, igSlowest: 9_000 }), METRICS).lastEventAt?.throughput_goals_missed, undefined);
-});
-
-test("geonode_mbps dates its miss at the newest hour under 100 Mbps and says when it leaves the 24 h", () => {
-  const census = { jobs: 0, bad: 0, att: 0, okAtt: 0, wire: 0 };
-  const big = { jobs: 0, bad: 0, att: 0, okAtt: 0, wire: 200e6 / 8 * 3_600 };
-  const geoHours = Array.from({ length: 24 }, (_, index) => ({ hour: GEO_FROM + index * 3_600_000, census: index === 5 || index === 9 ? census : big, proxy: [] }));
-  const out = report(base({ geoHours, adLibrary: [] }), METRICS);
-  assert.ok(out.metrics.geonode_mbps! < 100);
-  assert.equal(out.lastEventAt?.geonode_mbps, GEO_FROM + 9 * 3_600_000);
-  assert.equal(out.windowMs?.geonode_mbps, 24 * 3_600_000);
-  assert.match(out.flagged!.find(item => item.kind === "geonode")!.excerpt, /the newest leaving the window at 15:00Z 10-22\./);
-  assert.equal(report(base({ geoHours: geoHours.map(h => ({ ...h, census: big })), adLibrary: [] }), METRICS).lastEventAt?.geonode_mbps, undefined);
 });
 
 test("the Meta Ads row reads finished walks from the crawler gauge and due walks from page runs, which answered under the 10-29 load that timed out TABLESAMPLE", () => {
@@ -335,7 +312,7 @@ test("the Meta Ads row reads finished walks from the crawler gauge and due walks
   assert.doesNotMatch(sql, /tablesample/i);
   // A draw of 24,384 pages that held 41,171 due walks stands for about 4.12M.
   assert.equal(scaleDue(41_171, runs, pages), Math.round((41_171 * pages) / 24_384));
-  const row = goalRows(base({ board: BOARD, meta: { due: 4_123_219, finished24h: 796_658 } })).find(goal => goal.item === "p850")!;
+  const row = goalRows(base({ board: BOARD, meta: { due: 4_123_219, finished24h: 796_658 } })).find(goal => goal.platform === "Meta Ads advertiser re-reads")!;
   assert.equal(Math.round(row.value!), 553);
   assert.equal(Math.round(row.goal!), 409);
   assert.equal(missed(row), false);

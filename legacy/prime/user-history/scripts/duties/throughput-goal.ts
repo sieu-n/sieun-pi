@@ -1,18 +1,18 @@
 import { execFile } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import type { DutyMetric, FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
+import { BASE } from "./apps-chat.ts";
 import { type DsQuery, GRAFANA, HOUR, MINUTE, PG, PROM, REPO, grafanaClient, num, promInstant, promRange, readGrafanaAuth, round1, settle, sqlRows, unmeasuredFlag, utc } from "./estate-reads.ts";
 
 /**
- * The Throughput goal achieved duty's precheck for the Crawler VP chat (`node --import tsx scripts/duties/throughput-goal.ts`). Code only, reads only.
- * The owner, 10-22 (msg mvj491h5): "Crawler running -> Throughput goal achieved ( unified for all platform )". The headline counts the
- * throughput goals on this chat's board that prod misses, over every platform that has one, each read the way the crawler Throughput
- * dashboard on obs.virev.ai reads it:
+ * The Throughput goal achieved duty's precheck for Crawler guy (`node --import tsx scripts/duties/throughput-goal.ts`). Code only, reads only.
+ * The owner, 10-22 (msg mvj491h5): "Crawler running -> Throughput goal achieved ( unified for all platform )". The duty moved from Crawler VP's
+ * d9 to Crawler guy's d8 on 11-24 (owner, t9: "Yes, hand everything over so the crawler has one owner (my pick)"). The headline counts the
+ * throughput goals prod misses, over every platform that has one, each read the way the crawler Throughput dashboard on obs.virev.ai reads it:
  * - Instagram profiles (p826, 10,000 a minute held 6 h): the slowest rolling hour of the
  *   last 6 h outside prod deploys (DEPLOY_EXPR), the dashboard's "slowest hour, 6 h" stats. Instagram counts crawler.instagram_account_snapshots,
  *   one row per profile read on any path, the number p826's target and its census canary run read; census jobs that ended gone or private
@@ -26,24 +26,37 @@ import { type DsQuery, GRAFANA, HOUR, MINUTE, PG, PROM, REPO, grafanaClient, num
  * - Instagram re-reads (p683, owner 10-26: "1k+ every month, 10K+ every week" and "under 1k also monthly", at most 1% of read accounts with
  *   10,000+ followers past 7 days and at most 1% of the rest past 30 days): a page sample of prod instagram_census (REFRESH_SAMPLE_PCT).
  *   p829's 14-day line left on 10-26, when the owner's t65 answer replaced it with p683 and the board dropped p829.
- * Each goal number comes from the board item at run time: its target, or the number in its title when it has none. Platforms that crawl on
- * prod with no goal on the board (crawler.job_run_events crawl_profile, and Instagram posts) are listed in the run detail and left out of the count.
- * The supporting metrics keep the rest of the owner's 10-19 duties for crawler-v3 (msg mvfe8foz): "Geonode mbps >=100mbps always", "nothing is
- * backlogging" (p827) and "Check the Observability and Metrics", every panel of the crawler dashboards run the way Grafana draws it.
- * GeoNode bytes follow auto-sns-agent scripts/duties/crawler/geonode-proxy-use.mjs geonodeBytes: HTTP bytes of each ledger plus 8,678 bytes of
- * CONNECT and TLS per new proxied connection, the size that file measured.
+ * The open re-read goal comes from Crawler guy's board at run time (REFRESH_ITEM): its target, or the number in its title when it has none. The
+ * goals that closed on Crawler VP's board stay this duty's own lines (IG_PROFILES_PER_MIN, META_DAYS, TTS_WEEKLY_PCT, WRITER_LAG_LINE). Platforms
+ * that crawl on prod with no goal (crawler.job_run_events crawl_profile, and Instagram posts) are listed in the run detail and left out of the count.
+ * The supporting metrics keep the rest of the owner's 10-19 duties for crawler-v3 (msg mvfe8foz): "nothing is backlogging" (p827) and "Check the
+ * Observability and Metrics", every panel of the crawler dashboards run the way Grafana draws it. His "Geonode mbps >=100mbps always" left on
+ * 11-24: 100 Mbps every hour is about 32 TB a month, against the 250 GB GeoNode plan he bought that day ("i got 250GB plan. hook it up, and keep
+ * monitoring"), whose use Search product, misc.'s d4 watches.
  */
 
 const DUTY_FILE = join(dirname(fileURLToPath(import.meta.url)), "throughput-goal.duty.json");
-export const CHAT_ID = "01a115e2-9544-7204-b8db-8ce4d5319048";
-const BOARD = join(homedir(), ".prime/agent/browser-chat/boards", `${CHAT_ID}.json`);
+/** Crawler guy, the sw factory agent that owns the crawler since 11-24; apps/chat serves its board from its work thread's root conversation. */
+export const AGENT_ID = "ag_crawler-guy";
+export const BOARD_URL = `${BASE}/api/agents/${AGENT_ID}/board`;
 const CH = "estate_ch_prod";
 /**
- * Rows still in the ClickHouse writer's queue (about 1,000 records, 10-19 15:17Z) would count short, so the GeoNode hours end at the last full
- * hour 5 minutes ago. "Geonode mbps >=100mbps always" is read as its slowest hour over the 24 hours since the last daily run.
+ * Rows still in the ClickHouse writer's queue (about 1,000 records, 10-19 15:17Z) would count short, so the census failure window ends at the
+ * last full hour 5 minutes ago and spans the 24 hours since the last daily run.
  */
 export const SETTLE_MS = 5 * MINUTE;
-export const GEONODE_HOURS = 24;
+export const CENSUS_HOURS = 24;
+/**
+ * The goals this duty keeps after they closed on Crawler VP's board, which the 11-24 hand-over did not carry, since it moved open steps only:
+ * Instagram profiles at 10,000 a minute held 6 h (p826, owner 10-19 p1) and every due Meta advertiser read within 7 days (p850).
+ */
+export const IG_PROFILES_PER_MIN = 10_000;
+export const META_DAYS = 7;
+/**
+ * Crawler guy's re-read goal, Crawler VP's p683 before the hand-over (owner 10-26: "1k+ every month, 10K+ every week" and "under 1k also
+ * monthly"): at most its target share of 10k+ accounts past 7 days, and of the rest past 30 days.
+ */
+export const REFRESH_ITEM = "p8";
 /** The hold the goals read: p826's "held 6 h straight", and the same window on the dashboard's TikTok Shop stat. */
 export const HOLD_MS = 6 * HOUR;
 /**
@@ -113,9 +126,9 @@ const cappedTopic = (q: Queue): string | undefined => {
  * deploy holds prod (p895, closed 10-23 on 2,613 records at most from 10-22 18:45Z to 00:44Z, against its line of 5,000). A slower census leaves
  * the writer idle, so its lag says nothing there; on 10-22 the lag passed 5,000 on 36 of 130 minutes from 06:00 to 08:00Z at 10,900 ok a minute,
  * while the lane scaler had stopped with 16 writers. The lag is crawler_v3_bus_group_lag_records of instagram-census-pg, its most in each slot. It is
- * one goal row of the headline (writerLagRow), so the duty keeps its headline and 3 supporting metrics (c75).
+ * one goal row of the headline (writerLagRow), so the duty keeps its headline and 2 supporting metrics (c75).
  * The headline's `lastEventAt` is the newest slot that keeps a missed row missed, when every missed row reads a trailing window's worst slot (this
- * row; geonode_mbps does the same with its newest hour under 100 Mbps). Before it the p895 miss carried no time over 21 d9 runs to 10-27
+ * row). Before it the p895 miss carried no time over 21 d9 runs to 10-27
  * 00:25Z, so a miss that only waits for old slots to leave the 24 h read the same as one that new slots keep raising.
  */
 export const WRITER_LAG_MS = 24 * HOUR;
@@ -336,11 +349,8 @@ export function grafanaApi(fetcher: typeof fetch, auth: string, signal: AbortSig
 export interface Queue { family: string; name: string; now: number; ago6h: number | null; slope6h: number | null; low?: number | null; low6h?: number | null; wait?: number | null;
   /** A capped Kafka topic's fullest partition in bytes, null when the gauge answered none (CAPPED_TOPICS). */
   bytes?: number | null }
-export interface CensusWindow { jobs: number; bad: number; att: number; okAtt: number; wire: number }
-export interface ProxyLane { lane: string; wire: number }
-export interface WireDay { day: number; wire: number; updated: number }
-/** One hour of GeoNode ledgers, keyed by the hour's start. */
-export interface GeoHour { hour: number; census?: CensusWindow; proxy: ProxyLane[] }
+/** Census jobs over the census window, the ones that ended blocked or failed, and their tries and ok tries. */
+export interface CensusWindow { jobs: number; bad: number; att: number; okAtt: number }
 /** Prod Meta advertiser walks idle and due now, and advertiser walks finished in the last 24 h. */
 export interface MetaWalks { due: number; finished24h: number }
 /** A crawl with no goal on the board: good results a minute in the slowest full hour of the last 6 h (0 when an hour had none) and the 24 h average. */
@@ -351,16 +361,19 @@ export interface ThroughputData {
   /** Instagram profile slots and census-pg writer lag slots over WRITER_LAG_MS, and the deploy slots over the same span. */
   igSlots24h?: Slot[]; writerLag?: Slot[]; deploys24h?: number[];
   board?: BoardItem[]; igSlowest?: number | null; igLast30?: number; ttsSlowest?: number | null; ttsWeekly?: { read: number; live: number }; deployMinutes?: number; meta?: MetaWalks; refresh?: RefreshSample[];
-  geoFrom: number; geoTo: number; geoHours?: GeoHour[]; adLibrary?: WireDay[]; queues?: Queue[]; panels?: PanelRead[]; others?: OtherRate[];
+  censusFrom: number; censusTo: number; census?: CensusWindow; queues?: Queue[]; panels?: PanelRead[]; others?: OtherRate[];
   /** Prod's deploy lock in seconds, its most in the 5 minutes up to this run, the slot the panel read falls in. */
   panelDeployLock?: number;
 }
 
 /** Where a goal number came from: the board item's target, the number in its title when it has no target, or this duty's own line. */
 export type GoalSource = "target" | "title" | "duty";
-/** One throughput goal read against prod. A null value or goal means its read failed, which leaves the headline unmeasured. */
+/**
+ * One throughput goal read against prod. A null value or goal means its read failed, which leaves the headline unmeasured. `item` is the board
+ * item whose goal the row reads, absent for a goal on this duty's own line.
+ */
 export interface GoalRow {
-  platform: string; item: string; value: number | null; goal: number | null; op: ">=" | "<="; source: GoalSource | null;
+  platform: string; item?: string; value: number | null; goal: number | null; op: ">=" | "<="; source: GoalSource | null;
   /** Printed after the value, like "%"; and what the value counts, like "good a minute in the slowest hour of the last 6 h". */
   unit: string; reads: string; extra?: string | undefined;
   /** For a row that reads the worst slot of a trailing window, the start of the newest slot that keeps it missed (`PrecheckOutput.lastEventAt`). */
@@ -390,23 +403,6 @@ export function boardGoal(items: readonly BoardItem[] | undefined, id: string): 
 
 const ms = (t: number): string => `fromUnixTimestamp64Milli(toInt64(${Math.round(t)}), 'UTC')`;
 
-/** The Ad Library's bytes in [from, to): each day row counts the share of its written span inside the window (geonode-proxy-use.mjs adLibraryBytes). */
-export function adLibraryBytes(days: readonly WireDay[], from: number, to: number): number {
-  let bytes = 0;
-  for (const d of days) {
-    const end = Math.min(d.day + 24 * 60 * MINUTE, Math.max(d.updated, d.day));
-    if (end <= d.day) continue;
-    bytes += (d.wire * Math.max(0, Math.min(end, to) - Math.max(d.day, from))) / (end - d.day);
-  }
-  return bytes;
-}
-
-/** GeoNode megabits a second over the window: census, other lanes' and Ad Library wire bytes, which include CONNECT and TLS. */
-export function geonodeMbps(census: CensusWindow, proxy: readonly ProxyLane[], adLibrary: readonly WireDay[], from: number, to: number): number {
-  const bytes = census.wire + proxy.reduce((sum, lane) => sum + lane.wire, 0) + adLibraryBytes(adLibrary, from, to);
-  return round1((bytes * 8) / ((to - from) / 1000) / 1e6);
-}
-
 const rose = (now: number, then: number): boolean => now - then > Math.max(GROW_MIN, GROW_SHARE * then);
 const waits = (q: Queue): boolean => q.wait == null || q.wait > WAIT_LINE_S;
 export const grew = (q: Queue): boolean =>
@@ -429,45 +425,42 @@ export function goalLine(row: GoalRow): string {
   const goal = row.goal === null ? "no goal number on the board item" : `${row.op === ">=" ? "at least" : "at most"} ${fmt(row.goal, row.unit)}`;
   const source = row.source === "title" ? ", from its title since it has no target" : "";
   const verdict = row.value === null || row.goal === null ? "Unmeasured" : missed(row) ? "Missed" : "Met";
-  return `${row.platform} (${row.item}): ${value} ${row.reads}, against ${goal}${source}${row.extra ? ` ${row.extra}` : ""}. ${verdict}.`;
+  return `${row.platform}${row.item ? ` (${row.item})` : ""}: ${value} ${row.reads}, against ${goal}${source}${row.extra ? ` ${row.extra}` : ""}. ${verdict}.`;
 }
 
-/** Every throughput goal the board holds, read against prod. A platform joins by a row here and a goal on the board, with no metric change. */
+/** Every throughput goal, read against prod. A platform joins by a row here, with its goal on the board or on this duty's own line. */
 export function goalRows(d: ThroughputData): GoalRow[] {
-  const goal = (id: string): { goal: number | null; source: GoalSource | null } => {
-    const found = d.board ? boardGoal(d.board, id) : null;
-    return found ?? { goal: null, source: null };
-  };
+  const refreshGoal = (d.board ? boardGoal(d.board, REFRESH_ITEM) : null) ?? { goal: null, source: null };
   const shares = d.refresh ? refreshShares(d.refresh) : null;
-  const metaDays = goal("p850");
-  const days = metaDays.goal;
   const window = `in the slowest hour of the last ${HOLD_MS / HOUR} h${d.deployMinutes ? ` outside ${d.deployMinutes} min of prod deploys` : ""}`;
   return [
-    { platform: "Instagram profiles", item: "p826", value: d.igSlowest ?? null, op: ">=", unit: "", reads: `read a minute ${window}`, ...goal("p826"),
+    { platform: "Instagram profiles", value: d.igSlowest ?? null, op: ">=", goal: IG_PROFILES_PER_MIN, source: "duty", unit: "", reads: `read a minute ${window}`,
       extra: d.igLast30 === undefined ? undefined : `(${fmt(d.igLast30)} a minute in the last 30 min)` },
-    { platform: "TikTok Shop products", item: "p696", value: d.ttsWeekly && d.ttsWeekly.live > 0 ? (100 * d.ttsWeekly.read) / d.ttsWeekly.live : null,
+    { platform: "TikTok Shop products", value: d.ttsWeekly && d.ttsWeekly.live > 0 ? (100 * d.ttsWeekly.read) / d.ttsWeekly.live : null,
       op: ">=", unit: "%", goal: TTS_WEEKLY_PCT, source: "duty", reads: "of live US products with an ok read in the last 7 days",
       extra: d.ttsWeekly ? `(${d.ttsWeekly.read.toLocaleString("en-US")} of ${d.ttsWeekly.live.toLocaleString("en-US")}, gone products left out; ${d.ttsSlowest == null ? "rate not read" : `${fmt(d.ttsSlowest)} good a minute ${window}`})` : undefined },
-    { platform: "Meta Ads advertiser re-reads", item: "p850", op: ">=", unit: "", reads: "walks finished a minute over 24 h",
-      value: d.meta ? d.meta.finished24h / (24 * 60) : null, goal: d.meta && days !== null ? d.meta.due / (days * 24 * 60) : null, source: metaDays.source,
-      extra: d.meta && days !== null ? `(about ${count(d.meta.due)} advertiser walks due now from a ${META_SAMPLE_PCT}% page sample, read within ${days} days)` : undefined },
-    { platform: "Instagram 10k+ weekly re-reads", item: "p683", value: shares?.big7Pct ?? null, op: "<=", unit: "%",
-      reads: "of sampled read accounts with 10,000+ followers last read over 7 days ago", ...goal("p683"),
+    { platform: "Meta Ads advertiser re-reads", op: ">=", unit: "", reads: "walks finished a minute over 24 h", source: "duty",
+      value: d.meta ? d.meta.finished24h / (24 * 60) : null, goal: d.meta ? d.meta.due / (META_DAYS * 24 * 60) : null,
+      extra: d.meta ? `(about ${count(d.meta.due)} advertiser walks due now from a ${META_SAMPLE_PCT}% page sample, read within ${META_DAYS} days)` : undefined },
+    { platform: "Instagram 10k+ weekly re-reads", item: REFRESH_ITEM, value: shares?.big7Pct ?? null, op: "<=", unit: "%",
+      reads: "of sampled read accounts with 10,000+ followers last read over 7 days ago", ...refreshGoal,
       extra: shares ? `(${shares.sum.past7Big.toLocaleString("en-US")} of ${shares.sum.readBig.toLocaleString("en-US")})` : undefined },
-    { platform: "Instagram under-10k monthly re-reads", item: "p683", value: shares?.rest30Pct ?? null, op: "<=", unit: "%",
-      reads: "of the other sampled read accounts last read over 30 days ago", ...goal("p683"),
+    { platform: "Instagram under-10k monthly re-reads", item: REFRESH_ITEM, value: shares?.rest30Pct ?? null, op: "<=", unit: "%",
+      reads: "of the other sampled read accounts last read over 30 days ago", ...refreshGoal,
       extra: shares ? `(${shares.sum.past30Rest.toLocaleString("en-US")} of ${(shares.sum.read - shares.sum.readBig).toLocaleString("en-US")})` : undefined },
-    writerLagRow(d, goal("p826").goal),
+    writerLagRow(d),
   ];
 }
 
 /**
- * p895's row: the census Postgres writer's worst lag over 24 h in the slots at p826's rate outside deploys, against WRITER_LAG_LINE. A 24 h with no
- * such slot reads 0 and says so, since the writer had no load to judge and the p826 row is that miss; a failed read or no p826 number reads null.
+ * The census Postgres writer's row (Crawler VP's p895): its worst lag over 24 h in the slots at IG_PROFILES_PER_MIN outside deploys, against
+ * WRITER_LAG_LINE. A 24 h with no such slot reads 0 and says so, since the writer had no load to judge and the Instagram profiles row is that
+ * miss; a failed read reads null.
  */
-export function writerLagRow(d: ThroughputData, rate: number | null): GoalRow {
-  const row = { platform: "Census Postgres writer", item: "p895", op: "<=" as const, unit: "", goal: WRITER_LAG_LINE, source: "duty" as const };
-  if (!d.igSlots24h || !d.writerLag || !d.deploys24h || rate === null) return { ...row, value: null, reads: "records of lag at most over 24 h, not read" };
+export function writerLagRow(d: ThroughputData): GoalRow {
+  const rate = IG_PROFILES_PER_MIN;
+  const row = { platform: "Census Postgres writer", op: "<=" as const, unit: "", goal: WRITER_LAG_LINE, source: "duty" as const };
+  if (!d.igSlots24h || !d.writerLag || !d.deploys24h) return { ...row, value: null, reads: "records of lag at most over 24 h, not read" };
   const worst = writerLagAtRate(d.igSlots24h, d.writerLag, new Set(d.deploys24h), rate);
   if (!worst) return { ...row, value: 0, reads: `records of lag, not judged: no five-minute slot of the last 24 h read ${fmt(rate)} Instagram profiles a minute outside deploys` };
   const over = worst.newestOver === null ? "" : `; the newest over ${fmt(WRITER_LAG_LINE)} (${when(worst.newestOver)}) leaves the 24 h window at ${when(worst.newestOver + WRITER_LAG_MS)}`;
@@ -478,17 +471,6 @@ export function writerLagRow(d: ThroughputData, rate: number | null): GoalRow {
 
 /** A time for a line, "10:55Z 10-26". */
 const when = (t: number): string => `${utc(t).slice(6)} ${utc(t).slice(0, 5)}`;
-
-/** GeoNode Mbps for each full hour of the window; an hour with no ledger rows reads its Ad Library bytes alone. */
-export function geonodeHours(hours: readonly GeoHour[], adLibrary: readonly WireDay[], from: number, to: number): { hour: number; mbps: number }[] {
-  const none: CensusWindow = { jobs: 0, bad: 0, att: 0, okAtt: 0, wire: 0 };
-  const out: { hour: number; mbps: number }[] = [];
-  for (let hour = from; hour < to; hour += HOUR) {
-    const read = hours.find(h => h.hour === hour);
-    out.push({ hour, mbps: geonodeMbps(read?.census ?? none, read?.proxy ?? [], adLibrary, hour, hour + HOUR) });
-  }
-  return out;
-}
 
 /** The metrics and flagged lines from what measure() read. A source that failed leaves its metric unmeasured, which misses. */
 export function report(d: ThroughputData, dutyMetrics: readonly DutyMetric[]): PrecheckOutput {
@@ -505,29 +487,18 @@ export function report(d: ThroughputData, dutyMetrics: readonly DutyMetric[]): P
     windowMs.throughput_goals_missed = Math.max(...missedRows.map(row => row.lastEventAt! + row.windowMs!)) - lastEventAt.throughput_goals_missed;
   }
   if (rows.some(row => row.value === null || row.goal === null)) unmeasured.add("throughput_goals_missed");
-  for (const row of rows) flagged.push({ at: d.now, kind: "goal", item: row.item, excerpt: goalLine(row).slice(0, 300) });
-  const judged = rows.filter(row => row.value !== null && row.goal !== null);
+  for (const row of rows) flagged.push({ at: d.now, kind: "goal", ...row.item ? { item: row.item } : {}, excerpt: goalLine(row).slice(0, 300) });
+  const judged = rows.filter(row => row.item !== undefined && row.value !== null && row.goal !== null);
   const items = Object.fromEntries([...judged.filter(row => !missed(row)), ...judged.filter(missed)].map(row => [row.item, { value: row.value!, target: row.goal!, op: row.op }] as const));
   if (d.others) {
     const named = (kind: string): string => kind.replace(/^(\w+)/, word => ({ instagram: "Instagram", tiktok: "TikTok", youtube: "YouTube", linkedin: "LinkedIn" })[word] ?? word);
     flagged.push({ at: d.now, kind: "no_goal", excerpt: `No throughput goal on the board, so left out of the count: ${d.others.length ? d.others.map(o =>
       `${named(o.kind)} ${fmt(o.average24h)} a minute over 24 h (slowest hour of 6 h ${fmt(o.slowest6h)})`).join("; ") : "none"}.`.slice(0, 300) });
   }
-  const census = d.geoHours?.reduce<CensusWindow>((sum, h) => h.census ? { jobs: sum.jobs + h.census.jobs, bad: sum.bad + h.census.bad, att: sum.att + h.census.att,
-    okAtt: sum.okAtt + h.census.okAtt, wire: sum.wire + h.census.wire } : sum, { jobs: 0, bad: 0, att: 0, okAtt: 0, wire: 0 });
-  const span = `in the 24 h to ${utc(d.geoTo)}`;
-  if (census && census.jobs) {
+  const census = d.census;
+  const span = `in the ${CENSUS_HOURS} h to ${utc(d.censusTo)}`;
+  if (census?.jobs) {
     flagged.push({ at: d.now, kind: "errors", excerpt: `Reported, not judged: ${round1((100 * census.bad) / census.jobs)}% of ${census.jobs.toLocaleString("en-US")} census jobs ended blocked or failed ${span}, and ${census.att ? round1(100 - (100 * census.okAtt) / census.att) : 0}% of tries failed. 40 to 70% of jobs failing is normal (owner 10-19, c65, c73); a rise past it goes to the alert rules.` });
-  }
-  if (d.geoHours && d.adLibrary) {
-    const hours = geonodeHours(d.geoHours, d.adLibrary, d.geoFrom, d.geoTo);
-    const slowest = hours.reduce((low, h) => h.mbps < low.mbps ? h : low, hours[0]!);
-    metrics.geonode_mbps = slowest.mbps;
-    const under = hours.filter(h => h.mbps < 100);
-    const newestUnder = under.at(-1)?.hour;
-    if (newestUnder !== undefined) { lastEventAt.geonode_mbps = newestUnder; windowMs.geonode_mbps = GEONODE_HOURS * HOUR; }
-    const leaves = newestUnder === undefined ? "" : `, the newest leaving the window at ${when(newestUnder + GEONODE_HOURS * HOUR)}`;
-    flagged.push({ at: d.now, kind: "geonode", excerpt: `GeoNode carried ${slowest.mbps} Mbps in its slowest hour ${span} (${utc(slowest.hour).slice(6)}), ${hours.at(-1)!.mbps} in the last, with ${under.length} of ${hours.length} hours under the owner's 100 Mbps${under.length ? `: ${under.map(h => `${utc(h.hour).slice(6, 11)} ${h.mbps}`).join(", ")}${leaves}` : ""}.`.slice(0, 300) });
   }
   if (d.queues) {
     const backlogs = d.queues.filter(backlogged);
@@ -676,9 +647,9 @@ FROM (
 export const GOAL_KINDS: ReadonlySet<string> = new Set(["instagram profiles"]);
 
 export async function measure(query: DsQuery | null, api: GrafanaApi | null, authError: string | null, now: number, readBoard: () => Promise<BoardItem[]>): Promise<ThroughputData> {
-  const geoTo = Math.floor((now - SETTLE_MS) / HOUR) * HOUR;
-  const geoFrom = geoTo - GEONODE_HOURS * HOUR;
-  const d: ThroughputData = { now, errors: [], geoFrom, geoTo };
+  const censusTo = Math.floor((now - SETTLE_MS) / HOUR) * HOUR;
+  const censusFrom = censusTo - CENSUS_HOURS * HOUR;
+  const d: ThroughputData = { now, errors: [], censusFrom, censusTo };
   const step = async <T>(source: string, read: () => Promise<T>): Promise<T | undefined> => {
     try { return await read(); } catch (error) { d.errors.push({ source, message: error instanceof Error ? error.message : String(error) }); return undefined; }
   };
@@ -691,11 +662,10 @@ export async function measure(query: DsQuery | null, api: GrafanaApi | null, aut
   const slotsOf = async (rows: { table: string; where: string }, from = holdFrom): Promise<Slot[]> => (await sqlRows(query, CH,
     `SELECT toInt64(toUnixTimestamp(toStartOfFiveMinutes(observed_at))) * 1000 AS slot, count() AS good FROM ${rows.table} WHERE ${rows.where}observed_at >= ${ms(from)} AND observed_at < ${ms(holdTo)} GROUP BY slot`))
     .map(row => ({ slot: num(row.slot) ?? 0, good: num(row.good) ?? 0 }));
-  const window = `observed_at >= ${ms(geoFrom)} AND observed_at < ${ms(geoTo)}`;
-  const hourOf = "toInt64(toUnixTimestamp(toStartOfHour(observed_at))) * 1000";
+  const window = `observed_at >= ${ms(censusFrom)} AND observed_at < ${ms(censusTo)}`;
   // The goal reads run before the panels. Each one answers in 0.2 to 2 s alone (10-23 08:40Z), but beside the burst of every panel's queries
   // ClickHouse missed Grafana's deadline on a different 2 to 5 of them on each of 3 runs at 08:30-08:45Z, so the headline went unmeasured.
-  const [igSlots, ttsSlots, ttsWeekly, deployPoints, writerLag, meta, others, census, proxy, adLibrary, queues, refresh] = await Promise.all([
+  const [igSlots, ttsSlots, ttsWeekly, deployPoints, writerLag, meta, others, census, queues, refresh] = await Promise.all([
     step("instagram rate", () => slotsOf(GOOD_ROWS.instagram, lagFrom)),
     step("tiktok shop rate", () => slotsOf(GOOD_ROWS.tiktokShop)),
     step("tiktok shop weekly", async () => {
@@ -715,14 +685,10 @@ export async function measure(query: DsQuery | null, api: GrafanaApi | null, aut
     }),
     step("other crawls", async () => (await sqlRows(query, CH, OTHERS_SQL)).map(row => ({ kind: String(row.kind), slowest6h: num(row.slowest6h) ?? 0, average24h: num(row.average24h) ?? 0 }))
       .filter(row => !GOAL_KINDS.has(row.kind))),
-    step("census reads", async () => (await sqlRows(query, CH, `SELECT ${hourOf} AS hour, count() AS jobs, countIf(outcome IN ('blocked', 'failed')) AS bad, sum(attempts) AS att, sum(ok_attempts) AS okAtt, sum(wire_bytes) AS wire FROM crawler.instagram_census_reads WHERE ${window} GROUP BY hour`))
-      .map(row => ({ hour: num(row.hour) ?? 0, census: { jobs: num(row.jobs) ?? 0, bad: num(row.bad) ?? 0, att: num(row.att) ?? 0, okAtt: num(row.okAtt) ?? 0, wire: num(row.wire) ?? 0 } }))),
-    step("proxy wire reads", async () => (await sqlRows(query, CH, `SELECT ${hourOf} AS hour, lane, sum(wire_bytes) AS wire FROM crawler.proxy_wire_reads WHERE world = 'prod' AND provider = 'geonode' AND ${window} GROUP BY hour, lane`))
-      .map(row => ({ hour: num(row.hour) ?? 0, lane: { lane: String(row.lane), wire: num(row.wire) ?? 0 } }))),
-    step("ad library wire days", async () => {
-      const day = (t: number): string => `date '${new Date(t).toISOString().slice(0, 10)}'`;
-      return (await sqlRows(query, PG.prod, `SELECT (extract(epoch FROM day) * 1000)::bigint AS day, sum(wire_bytes)::bigint AS wire, (extract(epoch FROM max(updated_at)) * 1000)::bigint AS updated FROM meta_ads_wire_days WHERE day >= ${day(geoFrom)} AND day <= ${day(geoTo)} GROUP BY day ORDER BY day`))
-        .map(row => ({ day: num(row.day) ?? 0, wire: num(row.wire) ?? 0, updated: num(row.updated) ?? 0 }));
+    step("census reads", async (): Promise<CensusWindow> => {
+      const row = (await sqlRows(query, CH, `SELECT count() AS jobs, countIf(outcome IN ('blocked', 'failed')) AS bad, sum(attempts) AS att, sum(ok_attempts) AS okAtt FROM crawler.instagram_census_reads WHERE ${window}`))[0];
+      if (!row) throw new Error("crawler.instagram_census_reads answered no row");
+      return { jobs: num(row.jobs) ?? 0, bad: num(row.bad) ?? 0, att: num(row.att) ?? 0, okAtt: num(row.okAtt) ?? 0 };
     }),
     step("queues", async () => {
       const out: Queue[] = [];
@@ -771,20 +737,13 @@ export async function measure(query: DsQuery | null, api: GrafanaApi | null, aut
   ]);
   const [panels, panelDeployLock] = await Promise.all([step("dashboards", async () => readPanels(await folderBoards(await repoAt(await servedObsRev(query)), DASHBOARD_FOLDER), api)),
     step("prod deploy lock now", async () => (await promInstant(query, PROM.prod, DEPLOY_EXPR))[0]?.value ?? 0)]);
-  if (census && proxy) {
-    const hours = new Map<number, GeoHour>();
-    const at = (hour: number): GeoHour => hours.get(hour) ?? hours.set(hour, { hour, proxy: [] }).get(hour)!;
-    for (const row of census) at(row.hour).census = row.census;
-    for (const row of proxy) at(row.hour).proxy.push(row.lane);
-    d.geoHours = [...hours.values()].sort((a, b) => a.hour - b.hour);
-  }
   const deploys = deploySlots(deployPoints ?? []);
   d.deployMinutes = [...deploys].filter(slot => slot >= holdFrom && slot < holdTo).length * SLOT_MS / MINUTE;
   const holding = igSlots?.filter(s => s.slot >= holdFrom);
   Object.assign(d, igSlots && writerLag && deployPoints && { igSlots24h: igSlots, writerLag, deploys24h: [...deploys] },
     panels && { panels }, panelDeployLock !== undefined && { panelDeployLock }, holding && { igSlowest: slowestHour(holding, holdFrom, holdTo, deploys), igLast30: lastHalfHour(holding, holdTo) },
     ttsSlots && { ttsSlowest: slowestHour(ttsSlots, holdFrom, holdTo, deploys) }, ttsWeekly && { ttsWeekly }, meta && { meta }, others && { others },
-    adLibrary && { adLibrary }, queues && { queues }, refresh && { refresh });
+    census && { census }, queues && { queues }, refresh && { refresh });
   return d;
 }
 
@@ -802,7 +761,13 @@ async function main(): Promise<void> {
     query = grafanaClient(fetch, auth, now, signal);
     api = grafanaApi(fetch, auth, signal);
   } catch (error) { authError = error instanceof Error ? error.message : String(error); }
-  const readBoard = async (): Promise<BoardItem[]> => (JSON.parse(await readFile(BOARD, "utf8")) as { plan?: BoardItem[] }).plan ?? [];
+  const readBoard = async (): Promise<BoardItem[]> => {
+    const response = await fetch(BOARD_URL);
+    if (!response.ok) throw new Error(`${BOARD_URL} answered ${response.status}`);
+    const plan = ((await response.json()) as { board?: { plan?: BoardItem[] } }).board?.plan;
+    if (!plan) throw new Error(`${BOARD_URL} answered no board plan`);
+    return plan;
+  };
   const result = report(await measure(query, api, authError, now, readBoard), dutyMetrics);
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");
   process.stdout.write(`throughput-goal: ${Object.entries(result.metrics).map(([key, value]) => `${key}=${value}`).join(" ")}\n`);
