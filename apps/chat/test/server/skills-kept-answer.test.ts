@@ -22,8 +22,10 @@ import { start, until, type Running } from "./helpers.ts";
 let s: Running;
 before(async () => {
   s = await start();
-  // The inventory's first ingest runs in a worker after the start.
-  await until(() => s.get<SkillsView>("/api/skills"), view => view.counts.skills > 0);
+  // The fixture's first scan starts at once and its end changes the view's scan state, and so every ETag and version. Its inventory reaches
+  // the DB while the scanner still runs, so a wait on the counts alone let the scan end between two reads of a test (4.8 s at a box load
+  // of 150 on 11-23, ~/work/chat-specs-red/specs-red-srv-skills-kept-answer/notes.md).
+  await until(() => s.get<SkillsView>("/api/skills"), view => view.counts.skills > 0 && view.scan.endedAt !== null && !view.scan.running);
 });
 after(async () => {
   await s.close();
