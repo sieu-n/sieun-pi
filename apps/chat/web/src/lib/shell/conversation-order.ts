@@ -16,19 +16,19 @@ export type SidebarStop = { key: string; href: string; conversation: Conversatio
 const isUnread = (row: ConversationSummary): boolean => rowUnread(row).unread > 0 || rowUnread(row).fresh;
 
 /**
- * The Messages sidebar's rows top to bottom, in the order pages/channel/MessagesSidebar.svelte draws them: the view rows, Starred, open
- * Solo rooms, the Done fold, each custom section, Channels, then Direct messages. With `asShown`, a folded section keeps only the open and the
- * unread rows, as on the screen; without it every conversation counts, for the next-unread keys. test/shell/conversation-keys.spec.ts
- * checks this order against the drawn rows.
+ * The Messages sidebar's rows top to bottom, as pages/channel/MessagesSidebar.svelte draws them: the view rows, Starred, open Solo rooms,
+ * the Done fold, each custom section, Channels, then Direct messages. A folded section keeps only the open and the unread rows, and a closed
+ * Done fold only the open room, as on the screen, so no key lands on a row the owner cannot see. test/shell/conversation-keys.spec.ts checks
+ * this order against the drawn rows.
  */
-export function sidebarStops(asShown: boolean): SidebarStop[] {
+export function sidebarStops(): SidebarStop[] {
   const current = router.conversationId;
   const shown = (rows: readonly ConversationSummary[], id: BuiltinSection | SectionId): ConversationSummary[] =>
-    visibleRows(rows, asShown && sidebarSections.isFolded(id), (row) => row.id === current || isUnread(row));
+    visibleRows(rows, sidebarSections.isFolded(id), (row) => row.id === current || isUnread(row));
   const rooms = sidebarRooms();
   const solo = soloGroups(unstarred(rooms.solo, current));
   const groups = groupRows(unstarred(rooms.channels, current), unstarred(rooms.dms, current), sidebarSections.model);
-  const done = !asShown ? solo.done : sidebarSections.isFolded("solo") ? shown(solo.done, "solo") : sidebar.doneOpen ? solo.done : [];
+  const done = sidebarSections.isFolded("solo") ? shown(solo.done, "solo") : sidebar.doneOpen ? solo.done : solo.done.filter((row) => row.id === current);
   const rows = [
     ...shown(starredRows(current), "starred"),
     ...shown(solo.open, "solo"),
@@ -64,7 +64,7 @@ function currentKey(): string | null {
  * bottom. With `unreadOnly`, it skips to the next unread conversation and wraps around the ends, as Alt+Shift+Down does in Slack.
  */
 export function nextStop(step: 1 | -1, unreadOnly: boolean): SidebarStop | null {
-  const stops = sidebarStops(!unreadOnly);
+  const stops = sidebarStops();
   const at = stops.findIndex((s) => s.key === currentKey());
   if (!unreadOnly) {
     const next = at === -1 ? (step === 1 ? 0 : stops.length - 1) : at + step;

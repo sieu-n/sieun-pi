@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 
 /** Slack's navigation keys: Alt+Up and Alt+Down walk the Messages sidebar, Alt+Shift jumps to unread rows, and Cmd+/ lists every key. */
 
@@ -9,7 +9,52 @@ async function sidebarHrefs(page: Page): Promise<{ href: string; unread: boolean
   return rows(page).evaluateAll((links) => links.map((a) => ({ href: a.getAttribute("href") ?? "", unread: a.hasAttribute("data-unread") })));
 }
 
+/** The drawn row `step` rows from the open one. */
+async function stepTarget(page: Page, step: 1 | -1): Promise<string | undefined> {
+  const hrefs = (await sidebarHrefs(page)).map((r) => r.href);
+  return hrefs[hrefs.indexOf(await hash(page)) + step];
+}
+
+/**
+ * Presses Alt+Down or Alt+Up and checks that the page moved to the row drawn next to the open one. Other specs add, close and archive rooms
+ * on the one fixture server while a walk runs, so the row counts as next in the rows drawn just before the key or just after the move.
+ */
+async function step(page: Page, by: 1 | -1): Promise<void> {
+  const from = await hash(page);
+  const before = await stepTarget(page, by);
+  await page.keyboard.press(by === 1 ? "Alt+ArrowDown" : "Alt+ArrowUp");
+  await expect.poll(async () => {
+    const at = await hash(page);
+    if (at === from) return `still on ${from}`;
+    const after = (await sidebarHrefs(page)).map((r) => r.href);
+    return at === before || after[after.indexOf(at) - by] === from ? "next row" : `${at}, where the row after ${from} was ${before}`;
+  }).toBe("next row");
+}
+
+/** The first unread conversation drawn after the open row, wrapping around the ends, as Alt+Shift+Down picks it. */
+async function nextUnreadTarget(page: Page): Promise<string | undefined> {
+  const list = await sidebarHrefs(page);
+  const at = list.map((r) => r.href).indexOf(await hash(page));
+  return [...list.slice(at + 1), ...list.slice(0, Math.max(at, 0))].find((r) => r.unread && /^#\/c\/[a-z]+_/.test(r.href))?.href;
+}
+
+/** A closed Solo room of this test's own, which Vent's answer makes unread, so it sits unread in the Done fold. */
+async function closedUnreadSolo(request: APIRequestContext): Promise<string> {
+  const created = await request.post("/api/rooms", { data: { kind: "solo", agenda: `keys closed ${Date.now()}`, members: ["ag_vent"] } });
+  expect(created.ok()).toBe(true);
+  const { id } = (await created.json()) as { id: string };
+  expect((await request.patch(`/api/rooms/${id}`, { data: { closed: true } })).ok()).toBe(true);
+  await expect.poll(async () => {
+    const sidebar = (await (await request.get("/api/sidebar")).json()) as { solo: { id: string; unread: number }[] };
+    return sidebar.solo.find((r) => r.id === id)?.unread ?? 0;
+  }).toBeGreaterThan(0);
+  return id;
+}
+
 test.beforeEach(async ({ page }) => {
+  // Opening a row marks it read on the one fixture server, and a walk opens every row, so the specs that count on the seeded unread rows
+  // would find them read. The page keeps its own read marks; the server keeps the seed's.
+  await page.route(/\/api\/c\/[^/]+\/read$/, (route) => (route.request().method() === "POST" ? route.fulfill({ json: { ok: true } }) : route.fallback()));
   await page.goto("/#/c/later");
   await expect(rows(page).first()).toBeVisible({ timeout: 20_000 });
 });
@@ -18,30 +63,43 @@ test("Alt+Down and Alt+Up step through the sidebar rows in the order they are dr
   const hrefs = (await sidebarHrefs(page)).map((r) => r.href);
   expect(hrefs.length).toBeGreaterThan(3);
   expect(hrefs[0]).toBe("#/c/later");
-  for (const href of hrefs.slice(1)) {
-    await page.keyboard.press("Alt+ArrowDown");
-    await expect.poll(() => hash(page)).toBe(href);
-  }
+  while (await stepTarget(page, 1)) await step(page, 1);
+  const last = await hash(page);
   await page.keyboard.press("Alt+ArrowDown");
-  expect(await hash(page)).toBe(hrefs.at(-1));
-  await page.keyboard.press("Alt+ArrowUp");
-  await expect.poll(() => hash(page)).toBe(hrefs.at(-2));
+  expect(await hash(page)).toBe(last);
+  await step(page, -1);
 });
 
 test("Alt+Down works from the message box", async ({ page }) => {
-  const hrefs = (await sidebarHrefs(page)).map((r) => r.href);
-  const channel = hrefs.find((h) => h.startsWith("#/c/ch_"))!;
+  const channel = (await sidebarHrefs(page)).map((r) => r.href).find((h) => h.startsWith("#/c/ch_"))!;
   await page.goto(`/${channel}`);
+  await expect(rows(page).and(page.locator(`[href="${channel}"]`))).toBeVisible();
   await page.locator('[data-testid="composer"] [contenteditable="true"]').first().focus();
-  await page.keyboard.press("Alt+ArrowDown");
-  await expect.poll(() => hash(page)).toBe(hrefs[hrefs.indexOf(channel) + 1]);
+  await step(page, 1);
 });
 
-test("Alt+Shift+Down jumps to the next unread conversation, or says there is none", async ({ page }) => {
-  const list = await sidebarHrefs(page);
-  const unread = list.filter((r) => r.unread && /^#\/c\/[a-z]+_/.test(r.href));
+test("Alt+Shift+Down jumps to the next unread conversation drawn, past an unread closed Solo room the Done fold hides", async ({ page, request }) => {
+  const closed = await closedUnreadSolo(request);
+  try {
+    // From the last open Solo row, the Done fold's rooms come next in the sidebar.
+    const open = page.locator('nav[data-root="messages"] [data-section="solo"] [data-sidebar-row]:not([data-group="done"] *)');
+    await expect(open.first()).toBeVisible();
+    await page.goto(`/${await open.last().getAttribute("href")}`);
+    await expect(rows(page).first()).toBeVisible();
+    const target = await nextUnreadTarget(page);
+    await page.keyboard.press("Alt+Shift+ArrowDown");
+    if (target) await expect.poll(() => hash(page)).toBe(target);
+    else await expect(page.getByText("No unread conversations")).toBeVisible();
+    expect(await hash(page)).not.toBe(`#/c/${closed}`);
+  } finally {
+    await request.patch(`/api/c/${closed}`, { data: { archived: true } });
+  }
+});
+
+test("Alt+Shift+Down from Later reaches the first unread row drawn, or says there is none", async ({ page }) => {
+  const target = await nextUnreadTarget(page);
   await page.keyboard.press("Alt+Shift+ArrowDown");
-  if (unread.length) await expect.poll(() => hash(page)).toBe(unread[0]!.href);
+  if (target) await expect.poll(() => hash(page)).toBe(target);
   else await expect(page.getByText("No unread conversations")).toBeVisible();
 });
 
