@@ -339,16 +339,29 @@ async function waited<T>(send: () => Promise<T>, write: boolean): Promise<T> {
 let wroteNow = false;
 /** When his last write answered (`performance.now()`): a read that left before it may have missed the write (kept.svelte.ts). */
 let wroteAt = -Infinity;
+/** The address his last write answered on. */
+let wroteOn = "";
+const address = (): string => (typeof location === "undefined" ? "" : location.hash);
 
 function wrote(): void {
   wroteAt = performance.now();
+  wroteOn = address();
   if (wroteNow) return;
   wroteNow = true;
   setTimeout(() => (wroteNow = false));
 }
 
+/**
+ * Whether a read asked now is the refetch of his write: asked in the write's task, on the address it answered on. The timer above ends
+ * that task at the next task, and a hashchange the write's chain queued, such as the open of a room he just made, can run before it. The
+ * page that change opens reads its own pages, behind the page the create call sent. On 11-23 such a new channel's refresh went as his call
+ * and was logged as his wait in 6 spec runs on a loaded box; in probes the timer ran 0 to 5 ms before the hashchange 6 of 6 times, and
+ * after it every time the probe held the timer 40 ms (work/chat-specs-red/specs-red-channel-kept-pages/notes.md).
+ */
+const refetch = (): boolean => wroteNow && address() === wroteOn;
+
 /** Whether a read asked now must leave after his last write answered, and so may not take the answer of a read on its way since before. */
-export const afterWrite = (wait: Wait): boolean => wroteNow && (wait.sent ?? Infinity) < wroteAt;
+export const afterWrite = (wait: Wait): boolean => refetch() && (wait.sent ?? Infinity) < wroteAt;
 
 /** A call sent when the lane lets it; one the lane stopped is sent again from the start, and its stop is no error. */
 function laned<T>(wait: Wait, attempt: (signal: AbortSignal | undefined, asked: number | undefined) => Promise<T>): Promise<T> {
@@ -387,7 +400,7 @@ const rank = (background: Wait["background"]): number => (background === "ahead"
  * refreshes, because a later read of the same panel took each over as one (work/p155-write-refetch/walk-after.log, write-refetch.spec.ts).
  */
 export function takeOver(wait: Wait, background: Wait["background"]): void {
-  const next = wroteNow && background === "shown" ? undefined : background;
+  const next = refetch() && background === "shown" ? undefined : background;
   if (rank(next) <= rank(wait.background)) return;
   wait.background = next;
   const mine = [...queued, ...flying].filter(ticket => ticket.wait === wait);
@@ -417,7 +430,7 @@ export function dropAhead(wait: Wait): void {
  * A GET read ahead or refresh goes through the lane; every other call is one he waits on, and so is a refresh asked as his write answered.
  */
 function call<T>(method: string, path: string, body?: unknown, signal?: AbortSignal, wait?: Wait, safeTwice = false): Promise<T> {
-  if (wroteNow && wait?.background === "shown") wait.background = undefined;
+  if (refetch() && wait?.background === "shown") wait.background = undefined;
   const repeat = method === "GET" || safeTwice || deduped(body);
   if (wait?.background && method === "GET") return laned(wait, (own, asked) => send<T>(method, path, body, either(own, signal), wait, repeat, asked));
   return waited(() => send<T>(method, path, body, signal, wait, repeat), method !== "GET");

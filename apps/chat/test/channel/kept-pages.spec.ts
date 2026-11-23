@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page, type Request } from "@playwright/test";
 import { conversation, open, tag } from "./helpers";
 
 /**
@@ -122,18 +122,40 @@ test("a room Cmd K lists is read before the owner picks it", async ({ page, requ
   release();
 });
 
-test("a message hit Cmd K lists is read before the owner picks it, so it opens at its message with no call in front of it", async ({ page }) => {
+test("a message hit Cmd K lists is read before the owner picks it, so it opens at its message with no call in front of it", async ({ page, request }) => {
+  await page.addInitScript(() => {
+    navigator.sendBeacon = () => false;
+  });
+  // Its own room and post, so the list holds one hit and the reads to wait for are this room's alone: on the shared fixture server other
+  // specs' posts and the fixture agents' replies kept the page's network busy, and a wait for network idle ran out at 30 s.
+  const word = `hit${tag()}`;
+  const room = (await (await request.post("/api/rooms", { data: { kind: "channel", name: `kept-hit-${word}`, members: [] } })).json()) as { id: string };
+  const sent = await request.post(`/api/c/${room.id}/send`, { data: { text: `a post ${word}`, requestId: crypto.randomUUID() } });
+  expect(sent.ok()).toBe(true);
+  const reads = { started: 0, answered: 0, failed: 0 };
+  const ofRoom = (r: Request) => r.method() === "GET" && [`/api/c/${room.id}`, `/api/c/${room.id}/items`].includes(new URL(r.url()).pathname);
+  page.on("request", (r) => void (ofRoom(r) && reads.started++));
+  page.on("requestfinished", (r) => void (ofRoom(r) && reads.answered++));
+  page.on("requestfailed", (r) => void (ofRoom(r) && reads.failed++));
+  const samples = timings(page);
   await open(page, "#/c/ch_general");
-  const ahead = page.waitForResponse((r) => new URL(r.url()).searchParams.has("around"));
+  const ahead = page.waitForResponse((r) => r.url().includes(`/api/c/${room.id}/items`) && new URL(r.url()).searchParams.has("around"));
   await page.keyboard.press("Control+k");
   const palette = page.locator("[data-search-palette]");
-  await palette.getByRole("combobox").fill("relay");
-  const hit = palette.locator('[data-key^="hit:"]').first();
-  await expect(hit).toBeVisible();
+  await palette.getByRole("combobox").fill(word);
+  const hit = palette.locator('[data-key^="hit:"]');
+  await expect(hit).toHaveCount(1);
   const around = new URL((await ahead).url());
-  // Every hit listed is read, and one more turn of the page's loop keeps the answers.
-  await page.waitForLoadState("networkidle");
-  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 50)));
+  // Each read of a page is one items call and one header call. Once every call of the room answered, the page logged each, and each items
+  // line has its header line, the page kept the page around the hit, in the turn its read logged its last line.
+  await expect
+    .poll(async () => {
+      await flush(page);
+      const lines = (path: string) => samples.filter((s) => s.p === path).length;
+      const [items, header] = [lines(`/api/c/${room.id}/items`), lines(`/api/c/${room.id}`)];
+      return reads.started === reads.answered + reads.failed && items + header === reads.answered && items > 0 && header >= items;
+    })
+    .toBe(true);
 
   const asked: string[] = [];
   await page.route(held, (route) => {
@@ -142,7 +164,7 @@ test("a message hit Cmd K lists is read before the owner picks it, so it opens a
   });
   await hit.click();
   await expect(page).toHaveURL(/\?m=/);
-  await expect(conversation(page).locator("[data-message-id]").first()).toBeVisible();
+  await expect(conversation(page).getByText(`a post ${word}`)).toBeVisible();
   expect(asked.some((search) => search.includes("around="))).toBe(true);
   expect(around.pathname).toMatch(/\/items$/);
 });
@@ -178,8 +200,12 @@ test("a reload after live posts shows them from the page it kept, so the reads b
     await gate;
     await route.fallback();
   });
+  await expect.poll(() => keeps(page, "timeline", (key) => key === room.id, `later post ${word}`)).toBe(true);
+  await expect.poll(() => keeps(page, "replies", (key) => key === `${room.id}\u0000${root}`, `later reply ${word}`)).toBe(true);
   await page.evaluate(() => location.reload());
-  await expect(conversation(page).getByText(`later post ${word}`)).toBeVisible();
+  // The reload mounts the whole app again, as open() does, so it gets open()'s budget for a mount: in a run at box load 150 to 800 on
+  // 11-23 the first open took 4.8 s and the reload 6.7 s until the kept page painted, with every read still held (trace of acpw-a4aa83).
+  await expect(conversation(page).getByText(`later post ${word}`)).toBeVisible({ timeout: 15_000 });
   await expect(pane.getByText(`later reply ${word}`)).toBeVisible();
 
   const refreshed = Promise.all([
