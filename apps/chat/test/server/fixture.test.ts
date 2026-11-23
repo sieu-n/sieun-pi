@@ -283,12 +283,15 @@ describe("boards", () => {
     writeFileSync(join(prime, "check-in-settings.json"), JSON.stringify({ [id]: { everyMs: 21_600_000 } }));
     s.app.config.sharedDir = prime;
     const result = await s.send("POST", `/api/threads/${ids.frontend}/import-prime`, { prime: id });
-    assert.deepEqual(result.body, { board: true, duties: 1, runs: 2, checkInMs: 21_600_000 });
+    // Prime's check-in run comes along beside the duty's two runs, and the check-in view lists it.
+    assert.deepEqual(result.body, { board: true, duties: 1, runs: 3, checkInMs: 21_600_000 });
     const view = await s.get(`/api/threads/${ids.frontend}/board`);
     assert.equal(view.board.plan[0].text, "Moved step");
     const duties = await s.get(`/api/threads/${ids.frontend}/duties`);
     assert.equal(duties.duties[0].last.verdict, "missed");
-    assert.equal((await s.get(`/api/threads/${ids.frontend}/check-in`)).everyMs, 21_600_000);
+    const checkIn = await s.get(`/api/threads/${ids.frontend}/check-in`);
+    assert.equal(checkIn.everyMs, 21_600_000);
+    assert.equal(checkIn.runs.at(-1).at, 30);
     assert.ok((await s.get("/api/for-you")).items.some((i: any) => i.chatId === agents.frontend && i.todo.text === "Moved ask"));
   });
 
