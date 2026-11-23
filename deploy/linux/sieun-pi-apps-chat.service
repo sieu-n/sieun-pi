@@ -31,7 +31,7 @@ Environment=APPS_CHAT_MEILI_URL=http://127.0.0.1:7700
 Environment=APPS_CHAT_MEILI_KEY_FILE=%h/.config/meilisearch/master.key
 # The kinds of record this server keeps in chat.sqlite instead of JSON files (server/json-move.ts, server/config.ts dbKinds). Each move goes
 # live by adding its kinds here in its own release; the server imports their JSON files once and writes them back as exports for a week.
-Environment=APPS_CHAT_DB_KINDS=agents,rooms,state,for_me,channels,cache,host-routes
+Environment=APPS_CHAT_DB_KINDS=agents,rooms,state,for_me,channels,cache,host-routes,later,wakes,duties,board-writes
 ExecStart=%h/.local/node/bin/node --import tsx server/main.ts --port 5184 --listen 127.0.0.1 --data-dir %h/.pi/agent/chat --socket %t/pi-host/host.sock
 # systemd kills a server that stops pinging (server/handoff.ts startWatchdog) and Restart= starts it again. The longest event-loop stall in the
 # request logs of 11-20 to 11-22 was 5.0 s, so 15 s is three times that. SIGKILL also ends a stopped process, which ignores SIGABRT.
