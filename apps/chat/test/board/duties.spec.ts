@@ -174,6 +174,7 @@ test("a job's Duties tab links the agent its duties belong to", async ({ page })
   await page.goto(`/#/agents/${UPTIME_DUTY}?section=duties`);
   const owner = page.getByTestId("duties-owner");
   await expect(owner).toContainText("This job has no duties of its own.");
+  await expect(owner).toContainText("It is a run of the duty Relay uptime (d1).");
   await owner.getByRole("link", { name: "AI harness developer environment VP" }).click();
   await expect(page).toHaveURL(new RegExp(`#/agents/${HARNESS_AGENT}\\?section=duties$`));
   await expect(page.getByRole("region", { name: "Duties" }).getByRole("button", { name: "Run Relay uptime now" })).toBeVisible();

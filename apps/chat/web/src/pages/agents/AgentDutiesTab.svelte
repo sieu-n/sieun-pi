@@ -39,7 +39,7 @@
     <h3 class="t-caption heading">Check-in</h3>
     <CheckInControl chatId={chatId} view={checkIn.value} onchange={next => checkIn.set(next)} {now} />
   </section>
-  {#if config.swarm.dutiesFile}
+  {#if config.swarm.dutiesFile?.exists}
     <section class="block" aria-label="Duty files">
       <h3 class="t-caption heading">Where they live</h3>
       <ShowAllList items={[config.swarm.dutiesFile, ...config.swarm.dutyStates]} key={file => file.path} noun="files">
@@ -51,7 +51,7 @@
   <section class="block" aria-label="Duties">
     {#if config.swarm.dutiesOf}
       <p class="t-caption belongs" data-testid="duties-owner">
-        This job has no duties of its own. Its duties and check-in belong to <a href={hrefFor("agents", [config.swarm.dutiesOf.id], { section: "duties" })}>{config.swarm.dutiesOf.name}</a>.
+        This job has no duties of its own. Its duties and check-in belong to <a href={hrefFor("agents", [config.swarm.dutiesOf.id], { section: "duties" })}>{config.swarm.dutiesOf.name}</a>.{#if config.identity.duty}{` It is a run of the duty ${config.identity.duty.name} (${config.identity.duty.id}).`}{/if}
       </p>
     {:else}
       <p class="t-caption belongs" data-testid="duties-owner">This job belongs to no agent or chat, so it has no duties or check-in.</p>
