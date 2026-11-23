@@ -5,7 +5,8 @@
 
   /**
    * The Prompt tab: the whole prompt each kind of the agent's threads runs with, as pi-host's builder makes it (GET /api/agents/:id/prompt),
-   * one block per kind with its size and a copy button, and one folded row per section.
+   * one block per kind with its size and a copy button, and one folded row per section. The answer is kept (kept.svelte.ts), so an open
+   * draws the last build with its time at once, and the build the open asks for, 50 to 80 ms on the server, replaces it.
    */
   let { agentId }: AgentTabProps = $props();
   const answer = view(() => reads.agentPrompt(agentId));
@@ -71,6 +72,12 @@
   {#if prompt.away}
     <p class="t-body-sm meta">{prompt.away}</p>
   {/if}
+  {#if prompt.builtBy}
+    <p class="t-caption meta built" title={prompt.builtBy}>
+      Built by pi-host {builtBy(prompt.builtBy)}, {stampLabel(prompt.builtAt)}.
+      <Button variant="ghost" size="sm" disabled={answer.loading} onclick={() => answer.refresh()}>Build again</Button>
+    </p>
+  {/if}
   {#each prompt.kinds as kind (kind.kind)}
     {@const title = KINDS[kind.kind].title}
     <section class="block kind" aria-label="{title} prompt" data-kind={kind.kind}>
@@ -86,12 +93,6 @@
       {/each}
     </section>
   {/each}
-  {#if prompt.builtBy}
-    <p class="t-caption meta built" title={prompt.builtBy}>
-      Built by pi-host {builtBy(prompt.builtBy)}, {stampLabel(prompt.builtAt)}.
-      <Button variant="ghost" size="sm" disabled={answer.loading} onclick={() => answer.refresh()}>Build again</Button>
-    </p>
-  {/if}
 {:else if answer.error}
   <p class="t-body-sm warn">{answer.error}</p>
   <Button variant="outline" size="sm" onclick={() => answer.refresh()}>Try again</Button>

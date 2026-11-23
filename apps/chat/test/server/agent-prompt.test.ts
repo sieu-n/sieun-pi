@@ -4,7 +4,10 @@
  * Run: cd apps/chat && node --import tsx --test --test-force-exit --test-isolation=none test/server/agent-prompt.test.ts
  */
 import assert from "node:assert/strict";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { after, before, test } from "node:test";
+import { builderStarts } from "../../server/agent-prompt.ts";
 import type { AgentPrompt } from "../../web/src/lib/api/types.ts";
 import { FIXTURE_AGENTS as agents } from "../../server/fixture/seed.ts";
 import { start, type Running } from "./helpers.ts";
@@ -45,4 +48,22 @@ test("calls for one agent that overlap share one build, and an unknown agent is 
   const [a, b] = await Promise.all([prompt(agents.harness), prompt(agents.harness)]);
   assert.equal(a.builtAt, b.builtAt);
   assert.equal((await s.send("GET", "/api/agents/ag_nobody/prompt")).status, 404);
+});
+
+test("a later call builds again in the builder the first call started, and an AGENTS.md changed between calls reaches its answer", async () => {
+  const first = await prompt(agents.harness);
+  const starts = builderStarts;
+  const rules = join(s.app.agents.record(agents.harness)!.home, "AGENTS.md");
+  const text = existsSync(rules) ? readFileSync(rules, "utf8") : undefined;
+  try {
+    writeFileSync(rules, `${text ?? "# Rules\n"}\nThe prompt-tab-speed marker line.\n`);
+    const second = await prompt(agents.harness);
+    assert.equal(builderStarts, starts, "the second call starts no new builder");
+    assert.ok(second.builtAt > first.builtAt, "the second call builds again");
+    const context = second.kinds[0]!.sections.find(sec => sec.key === "context")!.text;
+    assert.match(context, /The prompt-tab-speed marker line\./);
+  } finally {
+    if (text === undefined) rmSync(rules);
+    else writeFileSync(rules, text);
+  }
 });

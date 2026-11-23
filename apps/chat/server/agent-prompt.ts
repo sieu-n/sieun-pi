@@ -5,13 +5,19 @@
  * from that tree's node_modules. The fixture and a checkout run use the checkout's pi-host.
  *
  * A registered agent shows three kinds: its main thread's root, the comm thread of its DM (else of its first room), and a job of its main
- * thread, built for its newest job's conversation. Any other page shows its own conversation. A build took 2.7 s on us-metal02 on 11-23, so
- * calls for one agent that overlap share one build.
+ * thread, built for its newest job's conversation. Any other page shows its own conversation. Calls for one agent that overlap share one build.
+ *
+ * The child stays up and builds every call, so each answer is built from the files as they are at that call. A child per call took 3.1 to
+ * 5.9 s on the server on 11-24 (requests/2026-11-23.jsonl), nearly all of it node, tsx and the import of pi-host's and Prime's modules,
+ * while a build in a child that had them loaded took 50 to 80 ms (agent-prompt-child.ts). The live server starts the child as it starts
+ * and again when the box's pi-host tree changes, so his first open after a restart or a pi-host install finds it loaded. It holds about
+ * 290 MB.
  */
-import { spawn } from "node:child_process";
-import { existsSync, realpathSync } from "node:fs";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { existsSync, realpathSync, watch } from "node:fs";
+import { createInterface } from "node:readline";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import type { AgentId, AgentPrompt, PromptKind, PromptSection } from "../web/src/lib/api/types.ts";
 import { agentRef, commRef, type AgentRef } from "./agent-folder.ts";
 import { primeAgentDir } from "./agent-config.ts";
@@ -39,27 +45,104 @@ export function builderTree(fixture: boolean, env: NodeJS.ProcessEnv = process.e
   return realpathSync(tree);
 }
 
-function runChild(tree: string, request: PromptChildRequest): Promise<PromptChildAnswer> {
-  return new Promise((done, fail) => {
-    const child = spawn(process.execPath, ["--import", "tsx", join(import.meta.dirname, "agent-prompt-child.ts"), tree], { cwd: join(tree, "packages"), stdio: ["pipe", "pipe", "pipe"] });
-    let out = "";
-    let err = "";
-    child.stdout.setEncoding("utf8").on("data", chunk => { out += chunk; });
-    child.stderr.setEncoding("utf8").on("data", chunk => { err += chunk; });
-    child.on("error", fail);
-    child.on("close", code => {
-      const lines = err.split("\n").map(line => line.trim()).filter(Boolean);
+/** How many builder children this process started; a test reads it. */
+export let builderStarts = 0;
+
+/** A child that loaded pi-host's builder from `tree`, with the calls it has not answered yet. */
+class Builder {
+  private readonly child: ChildProcessWithoutNullStreams;
+  private readonly waiting = new Map<number, { done: (answer: PromptChildAnswer) => void; fail: (error: Error) => void }>();
+  private next = 0;
+  private err = "";
+  ended: Error | undefined;
+
+  constructor(readonly tree: string) {
+    builderStarts += 1;
+    this.child = spawn(process.execPath, ["--import", "tsx", join(import.meta.dirname, "agent-prompt-child.ts"), tree], { cwd: join(tree, "packages"), stdio: ["pipe", "pipe", "pipe"] });
+    createInterface({ input: this.child.stdout, crlfDelay: Infinity }).on("line", line => this.answer(line));
+    this.child.stderr.setEncoding("utf8").on("data", (chunk: string) => { this.err = (this.err + chunk).slice(-4000); });
+    this.child.on("error", error => this.end(error));
+    this.child.on("close", code => {
+      const lines = this.err.split("\n").map(line => line.trim()).filter(Boolean);
       const at = lines.findIndex(line => /Error\b/.test(line));
       const cause = at >= 0 ? lines.slice(at, at + 2).join(" ") : lines.at(-1);
-      if (code !== 0) return fail(new Error(`the prompt build in ${tree} exited ${code}: ${cause || "no output"}`));
-      try {
-        done(JSON.parse(out) as PromptChildAnswer);
-      } catch (error) {
-        fail(new Error(`the prompt build in ${tree} wrote no JSON: ${error instanceof Error ? error.message : String(error)}`));
-      }
+      this.end(new Error(`the prompt builder in ${tree} exited ${code}: ${cause || "no output"}`));
     });
-    child.stdin.end(JSON.stringify(request));
-  });
+    // The server never waits on the child to exit; the child exits when the server does, since its stdin ends then.
+    this.child.unref();
+    for (const pipe of [this.child.stdin, this.child.stdout, this.child.stderr]) (pipe as unknown as { unref?: () => void }).unref?.();
+  }
+
+  build(request: PromptChildRequest): Promise<PromptChildAnswer> {
+    if (this.ended) return Promise.reject(this.ended);
+    const id = (this.next += 1);
+    return new Promise((done, fail) => {
+      this.waiting.set(id, { done, fail });
+      this.child.stdin.write(`${JSON.stringify({ id, request })}\n`);
+    });
+  }
+
+  /** Ends the child once it answered the calls it has. */
+  stop(): void {
+    this.child.stdin.end();
+  }
+
+  private answer(line: string): void {
+    let message: { id: number; answer?: PromptChildAnswer; error?: string };
+    try {
+      message = JSON.parse(line) as typeof message;
+    } catch (error) {
+      return this.end(new Error(`the prompt builder in ${this.tree} wrote no JSON: ${error instanceof Error ? error.message : String(error)}`));
+    }
+    const call = this.waiting.get(message.id);
+    this.waiting.delete(message.id);
+    if (message.answer) call?.done(message.answer);
+    else call?.fail(new Error(`the prompt build in ${this.tree} failed: ${message.error ?? "no answer"}`));
+  }
+
+  private end(error: Error): void {
+    this.ended ??= error;
+    for (const call of this.waiting.values()) call.fail(error);
+    this.waiting.clear();
+    if (builder === this) builder = undefined;
+  }
+}
+
+let builder: Builder | undefined;
+
+/** The builder for `tree`, started when there is none or the one there loaded another tree, which ends once it answered its calls. */
+function builderFor(tree: string): Builder {
+  if (builder?.tree === tree && !builder.ended) return builder;
+  builder?.stop();
+  return (builder = new Builder(tree));
+}
+
+/**
+ * Starts the builder of the live server, with one build that loads Prime's modules, and again when the box's pi-host tree changes, which
+ * `install-pi-host-box.mjs` does by moving its `current` link. The fixture's builder starts at its first call.
+ */
+export function warmPrompts(app: App): void {
+  if (app.config.fixture) return;
+  const warm = () => {
+    const first = app.agents.list().find(record => !record.archived && app.threads.agent(record.id) && (app.routing?.boxOf(record.workThread) ?? app.config.box) === app.config.box);
+    if (first) void agentPrompt(app, first.id).catch(error => app.log(`prompt: the builder did not warm: ${error instanceof Error ? error.message : String(error)}`));
+  };
+  warm();
+  const installed = process.env.PI_HOST_DIR ?? join(homedir(), ".local/share/pi-host/current");
+  try {
+    watch(dirname(installed), (_event, name) => {
+      if (name !== basename(installed)) return;
+      let tree: string | undefined;
+      try {
+        tree = builderTree(false);
+      } catch {
+        return;
+      }
+      if (builder?.tree !== tree) warm();
+    }).unref();
+  } catch (error) {
+    app.log(`prompt: no watch on ${dirname(installed)}: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 const building = new Map<AgentId, Promise<AgentPrompt>>();
@@ -109,7 +192,7 @@ async function build(app: App, id: AgentId): Promise<AgentPrompt> {
     conversations.push(at(agent.conversation > 1 ? "job" : "work", agent.thread, agent.conversation, ref));
   }
   const tree = builderTree(app.config.fixture);
-  const answer = await runChild(tree, { agentDir: primeAgentDir(app), conversations });
+  const answer = await builderFor(tree).build({ agentDir: primeAgentDir(app), conversations });
   return {
     agent: agent.id, builtBy: tree, builtAt, skills: answer.skills,
     kinds: answer.kinds.map((kind, index) => {
