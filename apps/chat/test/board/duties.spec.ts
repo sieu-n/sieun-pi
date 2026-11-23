@@ -33,7 +33,12 @@ test("a duty's goal and schedule change from its More menu, and the server keeps
 test("Remove hides a duty with Undo, Undo brings it back, and a remove left alone deletes it on the server", async ({ page, request, chatServer }) => {
   const probe = { name: "Probe check", ownerWords: "watch the probe", goal: "The probe answers.", onMiss: "Fix the probe.", metrics: [{ key: "up", label: "Up", op: ">=", target: 1 }],
     precheck: { command: ["node", "-e", "0"], cwd: "/tmp" } };
-  await request.post(`${chatServer}/api/agents/${HARNESS_AGENT}/duties`, { data: { action: "set", duty: probe } });
+  // A removed duty's id is never given again (boards.ts `dutyIdFloor`), so a second run of this test on the worker's server adds d4, not d3.
+  const added = await (await request.post(`${chatServer}/api/agents/${HARNESS_AGENT}/duties`, { data: { action: "set", duty: probe } })).json() as { result: string };
+  expect(added.result).toMatch(/^added d\d+$/);
+  const id = added.result.replace(/^added /, "");
+  // The page's clock runs the Undo wait, so the 6 s window costs no real time and a slow box cannot run the test past its budget.
+  await page.clock.install();
   await page.goto(`/#/board/${HARNESS}`);
   const duties = page.getByRole("region", { name: "Duties" });
   await duties.getByRole("button", { name: "More actions for Probe check" }).click();
@@ -41,12 +46,13 @@ test("Remove hides a duty with Undo, Undo brings it back, and a remove left alon
   await expect(duties).not.toContainText("Probe check");
   await page.getByRole("region", { name: "Notifications" }).getByRole("button", { name: "Undo" }).click();
   await expect(duties).toContainText("Probe check");
-  await page.waitForTimeout(6500);
-  expect((await dutiesOf(request, chatServer)).map(row => row.duty.id)).toEqual(["d1", "d2", "d3"]);
+  await page.clock.runFor(6500);
+  expect((await dutiesOf(request, chatServer)).map(row => row.duty.id)).toEqual(["d1", "d2", id]);
 
   await duties.getByRole("button", { name: "More actions for Probe check" }).click();
   await page.getByRole("menuitem", { name: "Remove duty" }).click();
   await expect(duties).not.toContainText("Probe check");
+  await page.clock.runFor(6500);
   await expect.poll(async () => (await dutiesOf(request, chatServer)).map(row => row.duty.id), { timeout: 10_000 }).toEqual(["d1", "d2"]);
   await expect(duties).not.toContainText("Probe check");
 });
@@ -67,6 +73,9 @@ test("an open duty with a long unbroken goal path and a long run summary stays i
   // The live d2 card widened past the board on 11-23: a one-line run summary set the width of the open card's grids.
   const path = `~/work/${"sw_factory_fixes/".repeat(12)}duty_goal_with_a_long_unbroken_path.log`;
   const summary = Array.from({ length: 40 }, (_, i) => `slowest_api_p90_ms ${1800 + i} ms (target at most 1000 ms)`).join(", ");
+  // An open panel reads again over the live socket when the socket opens after its HTTP read left (kept.svelte.ts `missed`), and a duty event
+  // carries the server's rows too, so under load the card showed the seed goal past this route. With no socket the made-up rows are all it gets.
+  await page.routeWebSocket(/\/api\/live/, () => {});
   await page.route(/\/api\/(agents|threads)\/[^/]+\/duties$/, async route => {
     const response = await route.fetch();
     const body = await response.json();
