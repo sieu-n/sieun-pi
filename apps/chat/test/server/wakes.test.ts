@@ -110,9 +110,25 @@ test("a run wake follows the latest attempt, waits for attempt= on a rerun, and 
   const ci = ciFixture(39493311906);
   let now = Date.now();
   armWake(dir, THREAD, { on: { kind: "run", run: 39493311906, attempt: 2 }, note: "land r11" }, now);
-  const stop = startThreadWakes({ dir, host, log: () => {}, everyMs: 50, now: () => now, stamp: async () => null, runState: on => readRunState(on, ci.exec) });
+  let passes = 0;
+  const stop = startThreadWakes({ dir, host, log: () => {}, everyMs: 50, now: () => now, stamp: async () => { passes += 1; return null; }, runState: on => readRunState(on, ci.exec) });
   t.after(stop);
-  const step = async () => { now += 3 * MIN; await new Promise(done => setTimeout(done, 150)); };
+  const waitFor = async (done: () => boolean, what: string) => {
+    const end = Date.now() + 10_000;
+    while (!done() && Date.now() < end) await new Promise(next => setTimeout(next, 20));
+    assert.ok(done(), what);
+  };
+  /**
+   * Moves the clock past RUN_LOOK_MS, waits for the pass that reads the run, then for a later pass to take the wake again, which it does only
+   * once the reading pass let go of it. A fixed 150 ms sleep failed in the full parallel suite at load 150, where a pass took longer.
+   */
+  const step = async () => {
+    const reads = ci.calls.length;
+    now += 3 * MIN;
+    await waitFor(() => ci.calls.length > reads, "a pass reads the run once the clock moved");
+    const seen = passes;
+    await waitFor(() => passes > seen || sent.length > 0, "the pass that read the run finished");
+  };
   await step();
   assert.ok(ci.calls.some(call => call.startsWith("ci-run-status 39493311906")));
   Object.assign(ci.state, { status: "completed", conclusion: "cancelled", attempt: 1 });
