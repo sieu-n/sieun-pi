@@ -36,6 +36,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { holds, lastMeasured } from "./agent-memory.ts";
+import { AgentStore } from "../../server/agent-store.ts";
 
 const DAY_MS = 86_400_000;
 /** How far back a note's blind check reruns each day; 7 days of notes was 4 sets on 11-20. */
@@ -71,23 +72,13 @@ export const STYLE_WORDS = new RegExp([
 
 /** The owner's posts in real rooms since `since`: rooms that are not test or archived. */
 export function ownerPosts(dataDir: string, since: number): Post[] {
-  const rooms = (JSON.parse(readFileSync(join(dataDir, "rooms.json"), "utf8")) as { rooms: { id: string; test?: boolean; archived?: boolean }[] }).rooms;
+  const store = new AgentStore(dataDir);
   const posts: Post[] = [];
-  for (const room of rooms) {
+  for (const room of store.rooms.rooms) {
     if (room.test || room.archived) continue;
-    const file = join(dataDir, "rooms", `${room.id}.jsonl`);
-    if (!existsSync(file)) continue;
-    for (const line of readFileSync(file, "utf8").split("\n")) {
-      if (!line.trim()) continue;
-      let entry: { t?: string; post?: { id?: string; author?: string; at?: number; text?: string } };
-      try {
-        entry = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      const post = entry.post;
-      if (entry.t !== "post" || post?.author !== "owner" || !post.id || (post.at ?? 0) < since) continue;
-      posts.push({ room: room.id, id: post.id, at: post.at!, text: post.text ?? "" });
+    for (const post of store.postsOf(room.id)) {
+      if (post.author !== "owner" || (post.at ?? 0) < since || post.deletedAt !== undefined) continue;
+      posts.push({ room: room.id, id: post.id, at: post.at, text: post.text ?? "" });
     }
   }
   return posts;

@@ -11,7 +11,8 @@ import type { AgentId, Item, Ms, Principal } from "../web/src/lib/api/types.ts";
 import { AgentStore, freeSlug, isUntitled, type AgentRecord, type FeedCursor, type RoomId, type RoomPost } from "./agent-store.ts";
 import type { DurableThread, EntryRecord, Host } from "./host/types.ts";
 import { ownerText } from "./rooms.ts";
-import { readJson, writeJson, type StateFile, type Store } from "./store.ts";
+import { STATE } from "./record-kinds.ts";
+import { readJson, Store, writeJson, type StateFile } from "./store.ts";
 import { buildItems, firstSendIn, isInput, sentMessage, sentMessages, TURN_KINDS, type TimelineContext } from "./timeline.ts";
 
 const DAY_MS = 86_400_000;
@@ -65,7 +66,8 @@ export async function migrateAgents(host: Host, dataDir: string, opts: MigrateOp
   const since = now - (opts.days ?? 30) * DAY_MS;
   const log = opts.log ?? (() => {});
   const store = opts.store ?? new AgentStore(dataDir);
-  const state: StateFile = opts.state?.state ?? readJson<StateFile>(join(dataDir, "state.json"), { v: 1, threads: {}, reads: {} });
+  const live = opts.state ?? (store.records.inDb(STATE.kind) ? new Store(dataDir, store.records) : undefined);
+  const state: StateFile = live?.state ?? readJson<StateFile>(join(dataDir, "state.json"), { v: 1, threads: {}, reads: {} });
   const rows = (await host.threads()).filter(row => !row.archived);
   const report: MigrationReport = { apply: opts.apply, since, agents: [], aliases: {}, skipped: [], ms: 0 };
   const taken = new Set(store.agents.agents.map(a => a.slug));
@@ -99,7 +101,7 @@ export async function migrateAgents(host: Host, dataDir: string, opts: MigrateOp
     migration.copied = boardFiles(dataDir, row.id).filter(file => !existsSync(join(dataDir, "agents", record.id, file)));
     report.agents.push(migration);
     planned.push(record);
-    if (opts.apply) write(store, state, opts.state, dataDir, record, migration, history.posts, mark?.at, now, since);
+    if (opts.apply) write(store, state, live, dataDir, record, migration, history.posts, mark?.at, now, since);
   }
 
   const owners = new Map([...store.agents.agents, ...planned].map(a => [a.workThread, a.id]));
@@ -114,6 +116,8 @@ export async function migrateAgents(host: Host, dataDir: string, opts: MigrateOp
     store.saveAgents();
   }
 
+  // A run with no server commits its rows before it returns, so the script's exit and the next read both see them.
+  if (!opts.store) store.records.flushSync();
   report.ms = Date.now() - started;
   for (const agent of report.agents) {
     log(agent.created

@@ -33,6 +33,8 @@ import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync,
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { ChatRecords } from "../../server/chat-records.ts";
+import { AGENTS } from "../../server/record-kinds.ts";
 
 const DAY_MS = 86_400_000;
 /**
@@ -363,7 +365,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const now = Date.now();
   const stamp = `${new Date(now).toISOString().slice(5, 16).replace(/[-T:]/g, "")}${Math.random().toString(36).slice(2, 4)}`;
 
-  const records = (JSON.parse(readFileSync(join(dataDir, "agents.json"), "utf8")) as { agents: AgentRecord[] }).agents
+  const records = (ChatRecords.standalone(dataDir).doc(AGENTS).value.agents as AgentRecord[])
     .filter(record => !record.archived && !record.test && (!only || only.has(record.slug)));
   const idealDoc = existsSync(idealFile) ? JSON.parse(readFileSync(idealFile, "utf8")) as Ideal : null;
   const ideal = idealDoc ? idealDoc.agents ?? [] : null;

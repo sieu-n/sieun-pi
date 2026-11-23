@@ -42,8 +42,9 @@ test("STYLE_WORDS finds the owner's style corrections and skips his feature asks
 test("candidates are owner posts of real rooms in the window", () => {
   const data = join(dir, "chat");
   mkdirSync(join(data, "rooms"), { recursive: true });
-  writeFileSync(join(data, "rooms.json"), JSON.stringify({ rooms: [{ id: "ch_real" }, { id: "ch_walk", test: true }, { id: "ch_old", archived: true }] }));
-  const post = (id: string, author: string, at: number) => JSON.stringify({ t: "post", post: { id, author, at, text: "too much slop" } });
+  const room = (id: string, extra: object = {}) => ({ id, kind: "channel", name: id, purpose: "", members: [], createdAt: 0, archived: false, ...extra });
+  writeFileSync(join(data, "rooms.json"), JSON.stringify({ v: 1, rooms: [room("ch_real"), room("ch_walk", { test: true }), room("ch_old", { archived: true })], feed: {} }));
+  const post = (id: string, author: string, at: number) => JSON.stringify({ t: "post", post: { id, seq: Number(id.slice(1)), author, at, text: "too much slop" } });
   writeFileSync(join(data, "rooms", "ch_real.jsonl"), [post("p1", "owner", 2_000), post("p2", "ag_vent", 2_000), post("p3", "owner", 500), "{bad", JSON.stringify({ t: "set", post: "p1" })].join("\n"));
   writeFileSync(join(data, "rooms", "ch_walk.jsonl"), post("p1", "owner", 2_000));
   writeFileSync(join(data, "rooms", "ch_old.jsonl"), post("p1", "owner", 2_000));

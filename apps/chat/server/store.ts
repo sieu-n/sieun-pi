@@ -8,6 +8,8 @@ import { dirname, join } from "node:path";
 import { readLatest, writeJsonLater } from "./disk.ts";
 import type { AgentId, ConversationId, ConversationPrefs, SavedLayout, ThinkingLevel } from "../web/src/lib/api/types.ts";
 import type { SavedSettings } from "../web/src/lib/api/shared/owner-settings.ts";
+import { ChatRecords, type Doc } from "./chat-records.ts";
+import { STATE } from "./record-kinds.ts";
 import type { Kept } from "./kept-json.ts";
 
 export interface ThreadMeta { kind: "chat" | "job"; parent?: AgentId }
@@ -65,11 +67,19 @@ export function readJson<T>(path: string, fallback: T): T {
 }
 
 export class Store {
-  state: StateFile;
+  /** state.json, or its rows in chat.sqlite once the server keeps the state kind there (chat-records.ts); `state` is its value. */
+  private readonly stateDoc: Doc<StateFile>;
 
-  constructor(readonly dir: string) {
+  constructor(readonly dir: string, readonly records: ChatRecords = ChatRecords.standalone(dir)) {
     mkdirSync(dir, { recursive: true });
-    this.state = readJson<StateFile>(join(dir, "state.json"), { v: 1, threads: {}, reads: {} });
+    this.stateDoc = records.doc(STATE);
+  }
+
+  get state(): StateFile {
+    return this.stateDoc.value;
+  }
+  set state(value: StateFile) {
+    this.stateDoc.value = value;
   }
 
   /**
@@ -93,7 +103,7 @@ export class Store {
 
   saveState(): void {
     this.version += 1;
-    writeJsonLater(join(this.dir, "state.json"), this.state);
+    this.stateDoc.save();
   }
 
   imagePath(name: string): string {

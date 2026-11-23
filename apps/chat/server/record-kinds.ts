@@ -77,27 +77,31 @@ const isLog = (file: string): boolean => file.startsWith(`${CHANNEL_LOGS}/`) && 
  * the file holds it. Nothing writes them, so their files move to json-archive a week after the import.
  */
 export const CHANNELS: JsonKind = (() => {
-  const list = docKind(CHANNEL_LIST);
+  // Made on first use: chat-records.ts and this file import each other through store.ts.
+  let made: JsonKind | undefined;
+  const list = () => (made ??= docKind(CHANNEL_LIST));
   const lines = (db: DatabaseSync, file: string) =>
     db.prepare("SELECT text FROM channels_lines WHERE file = ? ORDER BY n").all(file) as { text: string }[];
   return {
     kind: "channels",
-    migrations: [`${list.migrations[0]};\nCREATE TABLE channels_lines (file TEXT NOT NULL, n INTEGER NOT NULL, text TEXT NOT NULL, PRIMARY KEY (file, n))`],
+    get migrations() {
+      return [`${list().migrations[0]};\nCREATE TABLE channels_lines (file TEXT NOT NULL, n INTEGER NOT NULL, text TEXT NOT NULL, PRIMARY KEY (file, n))`];
+    },
     files(dir) {
       const logs = existsSync(join(dir, CHANNEL_LOGS)) ? readdirSync(join(dir, CHANNEL_LOGS)).filter(f => f.endsWith(".jsonl")).sort() : [];
-      return [...list.files(dir), ...logs.map(f => `${CHANNEL_LOGS}/${f}`)];
+      return [...list().files(dir), ...logs.map(f => `${CHANNEL_LOGS}/${f}`)];
     },
     load(db, file, text) {
-      if (!isLog(file)) return list.load(db, file, text);
+      if (!isLog(file)) return list().load(db, file, text);
       db.prepare("DELETE FROM channels_lines WHERE file = ?").run(file);
       const insert = db.prepare("INSERT INTO channels_lines (file, n, text) VALUES (?, ?, ?)");
       text.split("\n").forEach((line, n) => insert.run(file, n, line));
       return text.split("\n").filter(line => line.trim()).length;
     },
-    records: (file, text) => (isLog(file) ? text.split("\n").filter(line => line.trim()).length : list.records(file, text)),
-    count: (db, file) => (isLog(file) ? lines(db, file).filter(l => l.text.trim()).length : list.count(db, file)),
+    records: (file, text) => (isLog(file) ? text.split("\n").filter(line => line.trim()).length : list().records(file, text)),
+    count: (db, file) => (isLog(file) ? lines(db, file).filter(l => l.text.trim()).length : list().count(db, file)),
     dump(db, file) {
-      if (!isLog(file)) return list.dump(db, file);
+      if (!isLog(file)) return list().dump(db, file);
       const rows = lines(db, file);
       return rows.length ? rows.map(r => r.text).join("\n") : null;
     },

@@ -254,7 +254,16 @@ const shown = new Set(posts.map(post => post.text));
 const missing = sent.filter(text => !shown.has(text));
 if (duplicateSeqs) failures.push(`${duplicateSeqs} duplicate seqs in ${roomId}`);
 if (missing.length) failures.push(`${missing.length} of ${sent.length} sends answered 200 and are not in ${roomId}`);
-const reads = JSON.parse(readFileSync(`${dataDir}/state.json`, "utf8")).reads?.[roomId];
+// The read marks are rows of chat.sqlite once the server keeps the state kind there (server/record-kinds.ts STATE), else state.json.
+const reads = (process.env.APPS_CHAT_DB_KINDS ?? "").split(",").map(kind => kind.trim()).includes("state") ? (() => {
+  const db = new DatabaseSync(`${dataDir}/chat.sqlite`, { readOnly: true });
+  try {
+    const row = db.prepare("SELECT body FROM state_reads WHERE conversation = ?").get(roomId);
+    return row ? JSON.parse(row.body) : undefined;
+  } finally {
+    db.close();
+  }
+})() : JSON.parse(readFileSync(`${dataDir}/state.json`, "utf8")).reads?.[roomId];
 if (JSON.stringify(reads ?? null).indexOf(String(rounds)) < 0) failures.push(`the room's read mark reads ${JSON.stringify(reads)} after round ${rounds}'s mark`);
 if (slowest > 2000) failures.push(`the slowest call took ${Math.round(slowest)} ms, over the 2 s bound`);
 const restarts = Number(show("NRestarts")) - restartsBefore;

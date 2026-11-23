@@ -58,6 +58,8 @@ import type { FixtureHost } from "./host/fixture.ts";
 import { drained } from "./disk.ts";
 import { ChatDb } from "./chat-db.ts";
 import { JsonMove, type JsonKind } from "./json-move.ts";
+import { ChatRecords } from "./chat-records.ts";
+import { CHANNELS } from "./record-kinds.ts";
 import { CACHE_KIND, HOST_ROUTES_KIND, KeptJson } from "./kept-json.ts";
 import { readJson, Store, writeJson } from "./store.ts";
 import { modelRef, OWNER, parseConversationId, Threads, type ItemsSplit } from "./threads.ts";
@@ -108,6 +110,8 @@ export class App {
   /** chat.sqlite, which holds each kind of record moved out of the JSON files (chat-db.ts), and those moves by kind (json-move.ts). */
   readonly chatDb: ChatDb;
   readonly moves = new Map<string, JsonMove>();
+  /** The JSON documents of Store, AgentStore and ForMe, kept as rows of chat.sqlite for each kind `config.dbKinds` names (chat-records.ts). */
+  readonly records: ChatRecords;
   readonly store: Store;
   readonly agentStore: AgentStore;
   readonly agents: Agents;
@@ -159,11 +163,13 @@ export class App {
 
   constructor(readonly config: Config, readonly host: Host, readonly log: (line: string) => void = line => console.log(line)) {
     this.chatDb = new ChatDb(join(config.dataDir, "chat.sqlite"), { log });
-    this.store = new Store(config.dataDir);
+    this.records = new ChatRecords(this.chatDb, config.dataDir, kind => this.move(kind), config.dbKinds ?? []);
+    if (this.records.inDb(CHANNELS.kind)) this.records.move(CHANNELS);
+    this.store = new Store(config.dataDir, this.records);
     if (config.dbKinds?.includes(CACHE_KIND.kind)) this.store.caches = new KeptJson(this.chatDb, CACHE_KIND, this.move(CACHE_KIND));
     this.ownerSettings = new OwnerSettingsStore(this.store, settings => this.broadcast({ type: "owner_settings", settings }));
     mkdirSync(this.store.imagePath(""), { recursive: true });
-    this.agentStore = new AgentStore(config.dataDir);
+    this.agentStore = new AgentStore(config.dataDir, this.records);
     this.agents = new Agents(this.agentStore, this.store, host, config, log);
     const routing = host instanceof MultiHost ? host : undefined;
     this.routing = routing;
@@ -174,7 +180,7 @@ export class App {
       this.agents.hostState = box => routing.link(box).state;
     }
     this.folders = new AgentFolders(record => ({ agentsDir: this.agents.agentsDirOf(record), ...(routing && record.host !== config.box ? { files: this.boxFiles(record.host) } : {}) }));
-    this.forMe = new ForMe({ store: this.agentStore, dataDir: config.dataDir, item: (row, post) => (row.kind === "dm" ? this.rooms.item(post) : this.groups.item(row, post)) });
+    this.forMe = new ForMe({ store: this.agentStore, item: (row, post) => (row.kind === "dm" ? this.rooms.item(post) : this.groups.item(row, post)) });
     this.later = new Later({
       store: this.agentStore, principal: id => this.threads.principal(id),
       lists: config.dbKinds?.includes(LATER.kind) ? new LaterRows(this.chatDb, this.move(LATER)) : new LaterFiles(config.dataDir),
@@ -447,6 +453,7 @@ export class App {
     this.searchStop();
     this.keptUsage?.stop();
     this.keptUsageClose();
+    this.records.flush();
     await Promise.all([...this.moves.values()].map(move => move.flushExports()));
     await this.chatDb.written();
     await drained();

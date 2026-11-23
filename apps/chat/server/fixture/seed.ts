@@ -390,5 +390,6 @@ export function seedFixture(host: FixtureHost, dataDir: string, now = Date.now()
     }
   };
   if (host.wordMs > 0) setTimeout(() => void stream(), 500);
+  store.records.flushSync();
   flushSync();
 }

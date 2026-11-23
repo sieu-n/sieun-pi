@@ -5,8 +5,10 @@
  */
 import { join } from "node:path";
 import type { AgentId, ForwardedPost, ImageRef, Ms } from "../web/src/lib/api/types.ts";
-import { appendLater, readLatest, writeJsonLater, written } from "./disk.ts";
-import { readJson, writeJson } from "./store.ts";
+import { appendLater, readLatest, written } from "./disk.ts";
+import { writeJson } from "./store.ts";
+import { ChatRecords, type Doc } from "./chat-records.ts";
+import { AGENTS, ROOMS } from "./record-kinds.ts";
 import { fileImageSize, withSize } from "./image-size.ts";
 
 export type RoomId = string;
@@ -227,8 +229,9 @@ interface StoreLookup {
 }
 
 export class AgentStore {
-  agents: AgentsFile;
-  rooms: RoomsFile;
+  /** agents.json and rooms.json, or their rows in chat.sqlite once the server keeps those kinds there (chat-records.ts). */
+  private readonly agentsDoc: Doc<AgentsFile>;
+  private readonly roomsDoc: Doc<RoomsFile>;
   /** Counts the saves of agents.json and rooms.json; what reads the records keys its caches on it. */
   version = 0;
   private index?: StoreLookup;
@@ -238,21 +241,34 @@ export class AgentStore {
   /** Hears each new post once, after `onPost`; the owner's notices read it (notices.ts). */
   onAppend: (post: RoomPost) => void = () => {};
 
-  constructor(readonly dir: string) {
-    this.agents = readJson<AgentsFile>(join(dir, "agents.json"), { v: 1, agents: [], aliases: {} });
-    this.rooms = readJson<RoomsFile>(join(dir, "rooms.json"), { v: 1, rooms: [], feed: {} });
+  constructor(readonly dir: string, readonly records: ChatRecords = ChatRecords.standalone(dir)) {
+    this.agentsDoc = records.doc(AGENTS);
+    this.roomsDoc = records.doc(ROOMS);
     // Before 11-03 a channel member woke only on a mention; the owner asked that each one hear every post, so the old `mention` reads as `all`.
     for (const row of this.rooms.rooms) if (isGroupRoom(row)) for (const m of row.members) if ((m.wakeOn as string) === "mention") m.wakeOn = "all";
   }
 
-  /** Queued as rooms.json is: its sync write took up to 11 ms of each POST /api/agents on 11-23, and more while the ext4 journal commits. */
+  get agents(): AgentsFile {
+    return this.agentsDoc.value;
+  }
+  set agents(value: AgentsFile) {
+    this.agentsDoc.value = value;
+  }
+  get rooms(): RoomsFile {
+    return this.roomsDoc.value;
+  }
+  set rooms(value: RoomsFile) {
+    this.roomsDoc.value = value;
+  }
+
+  /** Off the main thread, as rooms are: a sync write of agents.json took up to 11 ms of each POST /api/agents on 11-23. */
   saveAgents(): void {
     this.version += 1;
-    writeJsonLater(join(this.dir, "agents.json"), this.agents);
+    this.agentsDoc.save();
   }
   saveRooms(): void {
     this.version += 1;
-    writeJsonLater(join(this.dir, "rooms.json"), this.rooms);
+    this.roomsDoc.save();
   }
   /** `test-sends.json`: the work-thread inputs that were a job's test send, which pi-history's search reads as the job's too. */
   saveTestSends(entries: { thread: string; entry: number; by: string; reason: string }[]): void {

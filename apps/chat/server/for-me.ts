@@ -10,20 +10,18 @@
  * `for-me.json` holds `since`, set when the file is first written, and the marks. A mark completes an item until newer activity, such as a
  * new reaction, opens it again. With no mark, an item from before `since` reads as completed, so the backlog does not flood the list.
  */
-import { join } from "node:path";
 import type { AgentId, ForMeItem, ForMeList, ForMeReason, ForMeStatus, Item, Ms } from "../web/src/lib/api/types.ts";
 import { isGroupRoom, type AgentRecord, type AgentStore, type RoomId, type RoomPost, type RoomRow } from "./agent-store.ts";
-import { readJson, writeJson } from "./store.ts";
+import type { Doc } from "./chat-records.ts";
+import { FOR_ME, type ForMeFile } from "./record-kinds.ts";
 
-interface Mark { completed: boolean; at: Ms }
-interface ForMeFile { v: 1; since: Ms; marks: Record<AgentId, Record<string, Mark>> }
+type Mark = ForMeFile["marks"][AgentId][string];
 
 /** A message item, as the room's timeline shows the post: its author (a job's test send reads as the job's) and its reactions. */
 type MessageItem = Extract<Item, { kind: "message" }>;
 
 export interface ForMeDeps {
   store: AgentStore;
-  dataDir: string;
   /** The post as its room's timeline shows it. */
   item(row: RoomRow, post: RoomPost): Item;
 }
@@ -53,14 +51,17 @@ function involvement(agent: AgentId, row: RoomRow, post: RoomPost, wrote: Map<st
 }
 
 export class ForMe {
-  private readonly path: string;
-  private file: ForMeFile;
+  /** for-me.json, or its rows in chat.sqlite once the server keeps the for_me kind there (chat-records.ts). */
+  private readonly doc: Doc<ForMeFile>;
 
   constructor(private readonly deps: ForMeDeps) {
-    this.path = join(deps.dataDir, "for-me.json");
-    const read = readJson<ForMeFile | undefined>(this.path, undefined);
-    this.file = read ?? { v: 1, since: Date.now(), marks: {} };
-    if (!read) this.save();
+    this.doc = deps.store.records.doc(FOR_ME);
+    // A new list's `since` is kept at once, so a restart does not move it.
+    if (!this.doc.stored) this.save();
+  }
+
+  private get file(): ForMeFile {
+    return this.doc.value;
   }
 
   /** The agent's items, newest activity first, with the counts of the whole list. */
@@ -151,6 +152,6 @@ export class ForMe {
   }
 
   private save(): void {
-    writeJson(this.path, this.file);
+    this.doc.save();
   }
 }

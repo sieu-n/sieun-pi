@@ -1,6 +1,6 @@
 /**
  * Moves the channels of before phase 5 onto rooms (apps/chat/docs/agent-model.md, phase 5; /home/sieun/work/phase5/contract.md). It reads
- * `channels.json` and `channels/<id>.jsonl` and writes each channel as a `RoomRow` of kind `channel` in `rooms.json` and each post as a
+ * `channels.json` and `channels/<id>.jsonl`, or their rows in chat.sqlite (record-kinds.ts `CHANNELS`), and writes each channel as a `RoomRow` of kind `channel` in `rooms.json` and each post as a
  * `RoomPost` in `rooms/<id>.jsonl`, through `AgentStore` only. Members, authors, mentions and delivery targets were work-thread ids; each one
  * maps through `agents.json` to its agent id, and an id no agent holds stays as it is and is listed in the report. It never changes
  * `channels.json` or an old log. A second run writes nothing, and a run after the old server wrote more posts appends only the posts the
@@ -11,6 +11,7 @@ import { join } from "node:path";
 import type { AgentId, ImageRef, Ms } from "../web/src/lib/api/types.ts";
 import { AgentStore, type RoomDelivery, type RoomMember, type RoomPost, type RoomRow, type WakeOn } from "./agent-store.ts";
 import { flushSync } from "./disk.ts";
+import { CHANNELS, oldChannelLog, oldChannels } from "./record-kinds.ts";
 import { readJson } from "./store.ts";
 
 // The shapes `server/store.ts` and `web/src/lib/api/types.ts` had before phase 5, copied here because phase 5 deletes them.
@@ -56,12 +57,16 @@ export interface ChannelMove {
 
 export interface MigrateChannelsReport { apply: boolean; dataDir: string; channels: ChannelMove[]; unmapped: string[]; roomsWritten: number; postsWritten: number }
 
-/** The channel's posts as the old server read them: post lines, then each delivery line replacing that target's delivery. */
-export function readChannelLog(dataDir: string, channel: string): OldPost[] {
-  const file = join(dataDir, "channels", `${channel}.jsonl`);
-  if (!existsSync(file)) return [];
+/**
+ * The channel's posts as the old server read them: post lines, then each delivery line replacing that target's delivery. The log is the
+ * file, or its rows once the server keeps the channels kind in chat.sqlite (record-kinds.ts `CHANNELS`).
+ */
+export function readChannelLog(store: AgentStore, channel: string): OldPost[] {
+  const file = join(store.dir, "channels", `${channel}.jsonl`);
+  const text = store.records.inDb(CHANNELS.kind) ? oldChannelLog(store.records.chat.db, channel) : existsSync(file) ? readFileSync(file, "utf8") : undefined;
+  if (text === undefined) return [];
   const byId = new Map<string, OldPost>();
-  for (const line of readFileSync(file, "utf8").split("\n")) {
+  for (const line of text.split("\n")) {
     if (!line.trim()) continue;
     let parsed: OldLogLine;
     try {
@@ -95,7 +100,9 @@ function agentResolver(store: AgentStore): (id: string) => AgentId | undefined {
 
 export function migrateChannels(dataDir: string, opts: { apply: boolean }): MigrateChannelsReport {
   const store = new AgentStore(dataDir);
-  const rows = readJson<{ channels: OldChannel[] }>(join(dataDir, "channels.json"), { channels: [] }).channels;
+  const inDb = store.records.inDb(CHANNELS.kind);
+  if (inDb) store.records.move(CHANNELS);
+  const rows = inDb ? oldChannels(store.records.chat.db) as OldChannel[] : readJson<{ channels: OldChannel[] }>(join(dataDir, "channels.json"), { channels: [] }).channels;
   const resolve = agentResolver(store);
   const allUnmapped = new Set<string>();
   const moves: ChannelMove[] = [];
@@ -140,7 +147,7 @@ export function migrateChannels(dataDir: string, opts: { apply: boolean }): Migr
       roomsWritten++;
     }
 
-    const old = readChannelLog(dataDir, row.id);
+    const old = readChannelLog(store, row.id);
     move.posts = old.length;
     const have = new Set(store.postsOf(row.id).map(p => p.id));
     let lastSeq = store.postsOf(row.id).at(-1)?.seq ?? 0;
@@ -170,7 +177,8 @@ export function migrateChannels(dataDir: string, opts: { apply: boolean }): Migr
     move.unmapped = [...unmapped];
     for (const id of unmapped) allUnmapped.add(id);
   }
-  // A migration's writes are on disk when it returns, so the script's exit and the next read both see them.
+  // A migration's writes are on disk or committed when it returns, so the script's exit and the next read both see them.
+  store.records.flushSync();
   flushSync();
   return { apply: opts.apply, dataDir, channels: moves, unmapped: [...allUnmapped], roomsWritten, postsWritten };
 }
