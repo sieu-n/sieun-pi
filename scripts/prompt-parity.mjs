@@ -175,7 +175,7 @@ function harnessCheck() {
   const base = { at: latest.timestamp, local, localEntries: Object.values(harnessVendor.loadHarnessState(local, "local").entries).reduce((n, kind) => n + Object.keys(kind).length, 0),
     primeDigestBytes: bytes(latest.details.digest), primeMessageBytes: bytes(content), stacked: Boolean(latest.details.stacked) };
   if (fingerprint !== latest.details.stateFingerprint) return { ...base, sameEntries: false };
-  const recent = harnessCode.contextTexts(view);
+  const recent = view.entries.flatMap((entry, index) => (view.contributions[index] ?? []).map(message => harnessCode.queryText(entry, message)));
   const full = harnessCode.nextDelivery({ state, flags, input, recent, delivered: [], after: 0, now: 0 });
   // The message itself: the full digest, or the update against the digests the context held before it.
   const before = delivered.filter(d => d.at < Date.parse(latest.timestamp));
