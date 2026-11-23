@@ -68,3 +68,22 @@ test("/api/local-image serves an image file by its path and nothing else", async
   assert.equal((await image("shot.png")).status, 400, "a relative path");
   assert.equal((await image(join(dir, "missing.png"))).status, 404);
 });
+
+test("a reopen of a local image moves no bytes while the file is the same, and a new screenshot at its path loads again", async () => {
+  const png = join(dir, "reopen.png");
+  writeFileSync(png, PNG);
+  const first = await image(png);
+  const tag = first.headers.get("etag");
+  assert.equal(first.status, 200);
+  assert.ok(tag, "the answer carries a tag");
+  const again = await fetch(`${s.base}/api/local-image?path=${encodeURIComponent(png)}`, { headers: { "if-none-match": tag! } });
+  assert.equal(again.status, 304, "the browser's copy is still the file");
+  assert.equal((await again.arrayBuffer()).byteLength, 0);
+  assert.equal(again.headers.get("etag"), tag);
+
+  writeFileSync(png, Buffer.concat([PNG, Buffer.alloc(16)]));
+  const changed = await fetch(`${s.base}/api/local-image?path=${encodeURIComponent(png)}`, { headers: { "if-none-match": tag! } });
+  assert.equal(changed.status, 200, "the agent wrote a new screenshot to the same path");
+  assert.notEqual(changed.headers.get("etag"), tag);
+  assert.equal((await changed.arrayBuffer()).byteLength, PNG.length + 16);
+});

@@ -30,7 +30,21 @@ function hasSignature(bytes: Buffer, mimeType: string): boolean {
   }
 }
 
-export async function readLocalImage(path: string): Promise<{ bytes: Buffer; mimeType: string }> {
+/**
+ * The file as GET /api/local-image answers it: its bytes, or `same` when the browser's copy (its If-None-Match) still has the file's tag, so
+ * a reopen moves no bytes. On 11-23 from 14:12Z the owner's reopens of one reply thread fetched the same three screenshots (126 to 199 KB)
+ * four times, once max-age=60 ran out, and his reply open and read mark waited 1.6 to 1.8 s behind them (work/p231-slow-calls).
+ */
+export type LocalImage = { kind: "same"; tag: string } | { kind: "image"; tag: string; bytes: Buffer; mimeType: string };
+
+/** A strong tag from the file's size and change time, which an agent that writes a new screenshot to the same path changes. */
+const tagOf = (size: number, mtimeMs: number): string => `"${size.toString(36)}-${Math.round(mtimeMs).toString(36)}"`;
+
+/** Whether an If-None-Match header names `tag`: `*`, or a comma list of tags, weak ones (`W/`) included. */
+const matches = (header: string | undefined, tag: string): boolean =>
+  !!header && header.split(",").some(one => one.trim() === "*" || one.trim().replace(/^W\//, "") === tag);
+
+export async function readLocalImage(path: string, ifNoneMatch?: string): Promise<LocalImage> {
   const expanded = path === "~" || path.startsWith("~/") ? join(homedir(), path.slice(1)) : path;
   if (!isAbsolute(expanded) || expanded.includes("\0")) throw new LocalImageError(400, "Give an absolute image path.");
   let file: string;
@@ -44,7 +58,9 @@ export async function readLocalImage(path: string): Promise<{ bytes: Buffer; mim
   const info = await stat(file);
   if (!info.isFile()) throw new LocalImageError(404, "Image file not found.");
   if (info.size > MAX_LOCAL_IMAGE_BYTES) throw new LocalImageError(413, "Image files over 25 MiB do not show.");
+  const tag = tagOf(info.size, info.mtimeMs);
+  if (matches(ifNoneMatch, tag)) return { kind: "same", tag };
   const bytes = await readFile(file);
   if (!hasSignature(bytes, mimeType)) throw new LocalImageError(415, "The file is not the image type its name says.");
-  return { bytes, mimeType };
+  return { kind: "image", tag, bytes, mimeType };
 }

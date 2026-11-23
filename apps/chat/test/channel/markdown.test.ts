@@ -143,12 +143,12 @@ test("web links carry the site icon and the domain, a bare URL shows host and pa
   const html = renderInline("[Vite guide](https://vite.dev/guide/) and https://example.com/a/b?c=1 and https://example.com/shot.png");
   assert.match(html, /<a class="web-link" href="https:\/\/vite\.dev\/guide\/"[^>]*><img class="favicon" src="https:\/\/vite\.dev\/favicon\.ico"[^>]*><span class="link-text">Vite guide<\/span><span class="link-domain">vite\.dev<\/span><\/a>/);
   assert.match(html, /<span class="link-text">example\.com\/a\/b\?c=1<\/span><\/a>/);
-  assert.match(html, /<img class="md-image" src="https:\/\/example\.com\/shot\.png"/);
+  assert.match(html, /<img class="md-image" data-src="https:\/\/example\.com\/shot\.png"/);
   assert.doesNotMatch(renderInline("[vite.dev docs](https://vite.dev/)"), /link-domain/, "no domain when the text names it");
 });
 
 test("a local screenshot path loads through /api/local-image", () => {
-  assert.match(renderMarkdown("![Board panel](/tmp/shot.png)"), /<img class="md-image" src="\/api\/local-image\?path=%2Ftmp%2Fshot\.png" alt="Board panel"/);
+  assert.match(renderMarkdown("![Board panel](/tmp/shot.png)"), /<img class="md-image" data-src="\/api\/local-image\?path=%2Ftmp%2Fshot\.png" alt="Board panel"/);
 });
 
 test("a wide diagram keeps 80% of its drawn width before it scrolls", () => {
@@ -181,7 +181,7 @@ test("a code span that is one target or one job name is its link, and bare absol
   const html = renderMarkdown("`wiki:a/b.html`, `thread:abc-1`, `job:x`, `fast search` and `npm test`; /home/sieun/work/post-parity/ and ~/work/x, /tmp/shot.png, but not and/or or /s.", { jobs: ["fast search"] });
   for (const target of ["wiki:a/b.html", "thread:abc-1", "job:x", "job:fast search", "file:/home/sieun/work/post-parity/", "file:~/work/x"]) assert.ok(html.includes(`data-target="${target}"`), target);
   assert.ok(html.includes("<code>npm test</code>"));
-  assert.match(html, /<img class="md-image thumb" src="\/api\/local-image\?path=%2Ftmp%2Fshot\.png"/);
+  assert.match(html, /<img class="md-image thumb" data-src="\/api\/local-image\?path=%2Ftmp%2Fshot\.png"/);
   assert.ok(html.includes("but not and/or or /s."));
 });
 

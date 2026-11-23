@@ -6,6 +6,7 @@ import { watchReminders } from "$lib/remind-live";
 import { watchNotices } from "$lib/notices.svelte";
 import { later } from "$lib/later.svelte";
 import { storeFirstViewAhead } from "./pages/usage/reports";
+import { holdImages } from "$lib/held-images";
 
 const target = document.getElementById("app");
 if (!target) throw new Error("index.html has no #app element");
@@ -17,5 +18,6 @@ await restorePages();
 later.start();
 watchReminders();
 watchNotices();
+holdImages(document.body);
 export default mount(App, { target });
 storeFirstViewAhead();

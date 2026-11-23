@@ -553,6 +553,10 @@
     opacity: 1;
   }
 }
+/* An image waiting for his calls to answer (held-images.ts) shows nothing, not its alt text. */
+img[data-src]:not([src]) {
+  visibility: hidden;
+}
 .prose .md-image {
   display: block;
   max-width: min(100%, 480px);

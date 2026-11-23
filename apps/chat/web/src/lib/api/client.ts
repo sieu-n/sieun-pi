@@ -283,6 +283,19 @@ function drain(): void {
     flying.add(ticket!);
     ticket!.send(controller.signal);
   }
+  if (!busy && !expected && ![...queued, ...flying].some(pageRefresh)) for (const show of afterHis.splice(0)) show();
+}
+
+/** What waits for the calls he waits on (`afterOwnCalls`). */
+const afterHis: (() => void)[] = [];
+
+/**
+ * Runs `show` after the next paint once none of his calls is on its way or about to go (`expectCall`), and no refresh of the page he looks
+ * at is: the images a page draws wait here (held-images.ts), so their bytes never share his link with the open's own calls.
+ */
+export function afterOwnCalls(show: () => void): void {
+  afterHis.push(show);
+  pump();
 }
 
 /** Stops the calls on their way that `which` picks and puts them back at the front of the queue, in their order. */

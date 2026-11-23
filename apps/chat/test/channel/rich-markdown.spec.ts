@@ -215,6 +215,24 @@ test("the screenshot loads from the box through /api/local-image and opens in th
   await expect(page.getByRole("dialog", { name: "Board panel on staging" })).toBeVisible();
 });
 
+test("the screenshot waits for the room's read mark to answer, so its bytes never share his link with the open's own calls", async ({ page }) => {
+  let answerRead!: () => void;
+  const read = new Promise<void>((resolve) => (answerRead = resolve));
+  await page.route("**/api/c/*/read", async (route) => {
+    await read;
+    await route.continue();
+  });
+  const sent = page.waitForRequest("**/api/c/*/read");
+  await open(page, `#/c/${CRAWLER}`);
+  const img = rich(page).locator("img.md-image");
+  await expect(img).toHaveAttribute("data-src", /^\/api\/local-image\?path=/);
+  await sent;
+  await page.waitForTimeout(500);
+  expect(await img.getAttribute("src")).toBeNull();
+  answerRead();
+  await expect(img).toHaveAttribute("src", /^\/api\/local-image\?path=/);
+});
+
 test.describe("on a short screen", () => {
   test.use({ viewport: { width: 1440, height: 600 } });
 

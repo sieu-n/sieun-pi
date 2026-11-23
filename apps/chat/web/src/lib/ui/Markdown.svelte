@@ -170,7 +170,7 @@
     const img = el.closest<HTMLImageElement>("img.md-image");
     if (img) {
       e.preventDefault();
-      lightbox = { src: img.src, alt: img.alt };
+      lightbox = { src: img.src || new URL(img.dataset.src ?? "", location.href).href, alt: img.alt };
       return;
     }
     const chip = el.closest<HTMLElement>("[data-board-id]");

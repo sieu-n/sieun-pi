@@ -336,9 +336,9 @@
       {#each pictures as image, index (image.url + index)}
         <button type="button" class="image" aria-label="View image {index + 1}" onclick={() => (lightbox = image.url)}>
           {#if image.width && image.height}
-            <img class="sized" src={image.url} alt="Attached image {index + 1}" loading="lazy" width={image.width} height={image.height} style:--w={image.width} style:--h={image.height} />
+            <img class="sized" data-src={image.url} alt="Attached image {index + 1}" loading="lazy" width={image.width} height={image.height} style:--w={image.width} style:--h={image.height} />
           {:else}
-            <img src={image.url} alt="Attached image {index + 1}" loading="lazy" />
+            <img data-src={image.url} alt="Attached image {index + 1}" loading="lazy" />
           {/if}
         </button>
       {/each}

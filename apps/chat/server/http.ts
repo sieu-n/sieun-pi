@@ -17,7 +17,7 @@ import { parseItemId } from "./for-me.ts";
 import type { AgentRecord, WakeOn } from "./agent-store.ts";
 import { App, MODELS, NotFound } from "./app.ts";
 import { uploadHeaders } from "./files.ts";
-import { LocalImageError, readLocalImage } from "./local-image.ts";
+import { LocalImageError, readLocalImage, type LocalImage } from "./local-image.ts";
 import { ReactionError } from "./reactions.ts";
 import { parsePrefsPatch } from "./sidebar-prefs.ts";
 import { LaterError } from "./later.ts";
@@ -919,7 +919,7 @@ async function handle(app: App, table: Route[], req: IncomingMessage, res: Serve
     if (await serveWiki(app, req, res, url)) return;
     if (path.startsWith("/api/images/")) return await serveEntryImage(app, path, res);
     if (path.startsWith("/api/uploads/")) return await serveUpload(res, app.store.imagePath(path.slice("/api/uploads/".length).replace(/[^\w.-]/g, "")), url.searchParams);
-    if (path === "/api/local-image" && req.method === "GET") return await serveLocalImage(url.searchParams.get("path") ?? "", res);
+    if (path === "/api/local-image" && req.method === "GET") return await serveLocalImage(url.searchParams.get("path") ?? "", req.headers["if-none-match"], res);
     if (path.startsWith("/api/")) {
       for (const r of table) {
         if (r.method !== req.method) continue;
@@ -1010,17 +1010,23 @@ async function serveEntryImage(app: App, path: string, res: ServerResponse): Pro
 }
 
 /** An image file an agent linked by its path on this box (local-image.ts). */
-async function serveLocalImage(path: string, res: ServerResponse): Promise<void> {
-  let image: Awaited<ReturnType<typeof readLocalImage>>;
+async function serveLocalImage(path: string, ifNoneMatch: string | undefined, res: ServerResponse): Promise<void> {
+  let image: LocalImage;
   try {
-    image = await readLocalImage(path);
+    image = await readLocalImage(path, ifNoneMatch);
   } catch (error) {
     if (error instanceof LocalImageError) return json(res, error.status, { error: error.message });
     throw error;
   }
+  // The tag lets a reopen past max-age=60 ask again and get a 304 with no bytes while the file is the same (local-image.ts `LocalImage`).
+  const cache = { "cache-control": "private, max-age=60", etag: image.tag };
+  if (image.kind === "same") {
+    res.writeHead(304, cache);
+    return void res.end();
+  }
   // An SVG opened on its own is a document; the sandbox keeps any script in it from running as this page.
   if (image.mimeType === "image/svg+xml") res.setHeader("content-security-policy", "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox");
-  res.writeHead(200, { "content-type": image.mimeType, "content-length": image.bytes.length, "cache-control": "private, max-age=60", "x-content-type-options": "nosniff" });
+  res.writeHead(200, { "content-type": image.mimeType, "content-length": image.bytes.length, ...cache, "x-content-type-options": "nosniff" });
   res.end(image.bytes);
 }
 

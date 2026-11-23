@@ -301,8 +301,9 @@ function conversationName(id: string): string {
   return id;
 }
 
+/** `data-src`: the image loads once the calls he waits on answered (held-images.ts). */
 function imageTag(src: string, alt: string, source: string, thumb = false): string {
-  return `<img class="md-image${thumb ? " thumb" : ""}" src="${escapeHtml(src)}" alt="${escapeHtml(alt)}" title="${escapeHtml(source)}" loading="lazy" data-source="${escapeHtml(source)}">`;
+  return `<img class="md-image${thumb ? " thumb" : ""}" data-src="${escapeHtml(src)}" alt="${escapeHtml(alt)}" title="${escapeHtml(source)}" loading="lazy" data-source="${escapeHtml(source)}">`;
 }
 
 /** The same 13 px glyph MentionChip draws, from the shared icon set. */
