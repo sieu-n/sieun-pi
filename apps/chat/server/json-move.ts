@@ -9,9 +9,10 @@
  * `json-archive/<kind>/` and nothing reads or writes them.
  *
  * `check` counts each file's records against the DB's, and `apply` writes the exports that are behind; `sw <kind> check|apply` call them.
+ * A boot whose APPS_CHAT_DB_KINDS leaves out a moved kind puts that kind back on its files (`returnDropped`).
  */
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { replaceLater, sealedFor, written } from "./disk.ts";
@@ -283,4 +284,53 @@ export class JsonMove {
     const archived = ended ? this.archive() : [];
     return { kind: this.kind.kind, dryRun, exported, archived, left: this.check().items.filter(i => i.state !== "behind" || !exported.includes(i.file)) };
   }
+}
+
+/**
+ * The boot's step for a rollback by kind, before any store reads: each kind of `kinds` that `db_kinds` marks moved and `named`
+ * (APPS_CHAT_DB_KINDS) leaves out goes back to its JSON files. Each file the DB stored is written from the rows where it differs, also after
+ * the week of exports ended or the files went to json-archive/, and its sha256 is stored as an export's, so the server, which reads that
+ * kind's files now, and every reader that follows `db_kinds` (chat-records.ts `movedKinds`) find the current records. The kind's
+ * `imported_at` and `export_until` are cleared, so a later boot that names it again imports each file it has not seen and starts a new week
+ * of exports. A kind `kinds` does not list is left as it is. Answers the kinds it put back.
+ */
+export function returnDropped(chat: ChatDb, dataDir: string, kinds: readonly JsonKind[], named: readonly string[], log: (line: string) => void, now = Date.now): string[] {
+  const db = chat.db;
+  const moved = new Set((db.prepare("SELECT kind FROM db_kinds WHERE imported_at IS NOT NULL").all() as { kind: string }[]).map(row => row.kind));
+  const back: string[] = [];
+  for (const each of kinds) {
+    const { kind } = each;
+    if (!moved.has(kind) || named.includes(kind)) continue;
+    const known = (file: string, sha: string) => db.prepare("SELECT 1 FROM db_files WHERE kind = ? AND path = ? AND sha256 = ?").get(kind, file, sha) !== undefined;
+    const files = (db.prepare("SELECT DISTINCT path FROM db_files WHERE kind = ? ORDER BY path").all(kind) as { path: string }[]).map(row => row.path);
+    let wrote = 0, removed = 0;
+    for (const file of files) {
+      const path = join(dataDir, file);
+      const text = each.dump(db, file);
+      const onDisk = existsSync(path) ? readFileSync(path, "utf8") : null;
+      if (text === null) {
+        // The DB holds nothing of the file any more, as when its last wake went out; a file the DB wrote or read goes, as its export would.
+        if (onDisk !== null && known(file, sha256(onDisk))) {
+          rmSync(path, { force: true });
+          removed += 1;
+        }
+        continue;
+      }
+      if (onDisk === text) continue;
+      mkdirSync(dirname(path), { recursive: true });
+      const tmp = `${path}.return-${process.pid}`;
+      writeFileSync(tmp, text);
+      renameSync(tmp, path);
+      const stat = statSync(path);
+      db.prepare(
+        "INSERT INTO db_files (kind, path, how, sha256, size, mtime_ms, records, at) VALUES (?, ?, 'export', ?, ?, ?, NULL, ?) " +
+        "ON CONFLICT (kind, path, sha256) DO UPDATE SET how = 'export', size = excluded.size, mtime_ms = excluded.mtime_ms, at = excluded.at",
+      ).run(kind, file, sha256(text), stat.size, stat.mtimeMs, iso(now()));
+      wrote += 1;
+    }
+    db.prepare("UPDATE db_kinds SET imported_at = NULL, export_until = NULL WHERE kind = ?").run(kind);
+    log(`chat db: ${kind} is back on its JSON files, since APPS_CHAT_DB_KINDS leaves it out; ${wrote} written from its rows, ${removed} removed`);
+    back.push(kind);
+  }
+  return back;
 }

@@ -60,10 +60,11 @@ import { Meili, startOwnMeili, type OwnMeili } from "./meili.ts";
 import type { FixtureHost } from "./host/fixture.ts";
 import { drained } from "./disk.ts";
 import { ChatDb } from "./chat-db.ts";
-import { JsonMove, type JsonKind } from "./json-move.ts";
+import { JsonMove, returnDropped, type JsonKind } from "./json-move.ts";
 import { CACHE_KIND, HOST_ROUTES_KIND, KeptJson } from "./kept-json.ts";
-import { ChatRecords } from "./chat-records.ts";
-import { CHANNELS } from "./record-kinds.ts";
+import { ChatRecords, docKind, type DocSpec } from "./chat-records.ts";
+import { AGENTS, CHANNELS, FOR_ME, ROOMS, STATE } from "./record-kinds.ts";
+import { POSTS } from "./post-log.ts";
 import { readJson, Store, writeJson } from "./store.ts";
 import { modelRef, OWNER, parseConversationId, Threads, type ItemsSplit } from "./threads.ts";
 import { QueueWatch, waitingPlace } from "./queue.ts";
@@ -166,6 +167,10 @@ export class App {
 
   constructor(readonly config: Config, readonly host: Host, readonly log: (line: string) => void = line => console.log(line)) {
     this.chatDb = new ChatDb(join(config.dataDir, "chat.sqlite"), { log });
+    // A kind a server moved that APPS_CHAT_DB_KINDS no longer names, a rollback by kind, goes back to its files before any store reads them.
+    const kinds: JsonKind[] = [AGENTS, ROOMS, STATE, FOR_ME].map(spec => docKind(spec as unknown as DocSpec<object>));
+    kinds.push(CHANNELS, POSTS, CACHE_KIND, HOST_ROUTES_KIND, WAKES, LATER, DUTIES, BOARD_WRITES, OUTBOX);
+    returnDropped(this.chatDb, config.dataDir, kinds, config.dbKinds ?? [], log);
     this.records = new ChatRecords(this.chatDb, config.dataDir, kind => this.move(kind), config.dbKinds ?? []);
     if (this.records.inDb(CHANNELS.kind)) this.records.move(CHANNELS);
     this.store = new Store(config.dataDir, this.records);
