@@ -13,6 +13,7 @@
  *    tokens), and the next request wrote it again. So the breakpoint moves to the last block before it that Anthropic caches.
  * 3. Lean history. A comm thread's turns before that point lose their thinking and long tool texts (`leanHistory`, comm threads only).
  * 4. Images. An image part whose bytes are no type Anthropic takes goes out as a text line (`viewableImages`).
+ * 5. Encode. The payload the SDK encodes holds no frozen array, which would push V8's JSON.stringify off its fast path (`thawArrays`).
  */
 import { getCurrentSystemMessage, type Message, type Provider } from "@earendil-works/pi-ai";
 
@@ -199,6 +200,41 @@ export function cacheableBreakpoints(payload: unknown): unknown {
   return moved ? payload : undefined;
 }
 
+const isPlainObject = (value: object): value is Record<string, unknown> => {
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+};
+
+/**
+ * `value` with every frozen array in it copied, sharing every other node, or `value` itself when it holds none. The copy is an unfrozen array
+ * with the same items, and each plain object on the way to one is a spread with the same keys in the same order, so JSON.stringify writes the same
+ * bytes. V8's JSON.stringify leaves its fast path at a frozen array, and the later in the body it meets one, the more it pays: on a copy rig on 11-23,
+ * the Anthropic SDK's encode of an 8.8 MB request took 113 to 148 ms with the frozen `required` arrays of pi-durable's frozen tool schemas in
+ * `tools`, which follow the messages, and 26 to 36 ms with those arrays copied (~/work/pi-host-stalls/m-request-cpu/report.md).
+ */
+export function thawArrays<T>(value: T): T {
+  if (Array.isArray(value)) {
+    let out: unknown[] = Object.isFrozen(value) ? value.slice() : value;
+    value.forEach((item: unknown, index: number) => {
+      const next = thawArrays(item);
+      if (next === item) return;
+      if (out === value) out = value.slice();
+      out[index] = next;
+    });
+    return out as T;
+  }
+  if (value === null || typeof value !== "object" || !isPlainObject(value)) return value;
+  let out: Record<string, unknown> = value;
+  for (const key of Object.keys(value)) {
+    const item = value[key];
+    const next = thawArrays(item);
+    if (next === item) continue;
+    if (out === value) out = { ...value };
+    out[key] = next;
+  }
+  return out as T;
+}
+
 type StreamOptions = { onPayload?: (payload: unknown, model: never) => unknown } | undefined;
 
 /** `inner` with each request's images viewable, its transcript folded and its breakpoints on cacheable blocks; `now` is the clock the fold reads. */
@@ -208,7 +244,10 @@ export function withCacheShape(inner: Provider, now: () => number = Date.now): P
     const own = options?.onPayload;
     const onPayload = async (payload: unknown, model: never): Promise<unknown> => {
       const next = (await own?.(payload, model)) ?? undefined;
-      return cacheableBreakpoints(next ?? payload) ?? next;
+      const shaped = cacheableBreakpoints(next ?? payload) ?? next;
+      const sent = shaped ?? payload;
+      const thawed = thawArrays(sent);
+      return thawed === sent ? shaped : thawed;
     };
     return [messages === context.messages ? context : { ...context, messages: [...messages] }, { ...options, onPayload } as O];
   };

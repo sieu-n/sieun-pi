@@ -7,7 +7,7 @@ import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import type { Message, Provider, Tool } from "@earendil-works/pi-ai";
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
-import { cacheableBreakpoints, COLD_MS, foldPoint, foldSystem, KEEP_CHARS, LEAN_CHARS, LEFT_OUT_NOTE, leanHistory, sniffImage, viewableImages, withCacheShape } from "../../src/durable/cache-shape.ts";
+import { cacheableBreakpoints, COLD_MS, foldPoint, foldSystem, KEEP_CHARS, LEAN_CHARS, LEFT_OUT_NOTE, leanHistory, sniffImage, thawArrays, viewableImages, withCacheShape } from "../../src/durable/cache-shape.ts";
 
 const tool = (name: string, description = name): Tool => ({ name, description, parameters: { type: "object", properties: {} } } as unknown as Tool);
 const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
@@ -168,6 +168,71 @@ test("on the wire, a history holding an SVG image sends its text line, and the n
   const last = bodies[0].messages.length - 1;
   assert.deepEqual(bodies[1].messages.slice(0, last), bodies[0].messages.slice(0, last));
   assert.deepEqual(bodies[1].system, bodies[0].system);
+});
+
+/** Freezes `value` and everything in it, as pi-durable's `freezeJson` does with each entry it reads. */
+const deepFreeze = <T>(value: T): T => {
+  if (value && typeof value === "object") {
+    for (const item of Object.values(value)) deepFreeze(item);
+    Object.freeze(value);
+  }
+  return value;
+};
+const frozenArrays = (value: unknown, path = ""): string[] =>
+  Array.isArray(value) ? [...(Object.isFrozen(value) ? [path] : []), ...value.flatMap((item, at) => frozenArrays(item, `${path}[${at}]`))]
+    : value && typeof value === "object" ? Object.entries(value).flatMap(([key, item]) => frozenArrays(item, `${path}.${key}`)) : [];
+
+test("thawArrays copies each frozen array and the plain objects above it, shares every other node, and keeps the JSON bytes", () => {
+  const payload = deepFreeze({ messages: [{ role: "user", content: [{ type: "text", text: "a" }] }], tools: [{ name: "Bash", input_schema: { type: "object", required: ["command"], properties: { command: { type: "string" } } } }], when: new Date(0) });
+  const thawed = thawArrays(payload);
+  assert.equal(JSON.stringify(thawed), JSON.stringify(payload));
+  assert.deepEqual(frozenArrays(thawed), []);
+  assert.equal(thawed.tools[0]!.input_schema.properties, payload.tools[0]!.input_schema.properties, "a node with no frozen array under it is shared");
+  assert.equal(thawed.when, payload.when, "a Date stays the same object, so its toJSON still runs");
+  const plain = { messages: [{ role: "user", content: "a" }], tools: [{ name: "x", required: ["y"] }] };
+  assert.equal(thawArrays(plain), plain, "a payload with no frozen array comes back as is");
+});
+
+test("through pi-ai's Anthropic provider, a frozen context reaches the SDK's body encode with no frozen array, in the same bytes, and encodes as fast as a plain copy", async () => {
+  const inner = anthropicProvider();
+  const schema = { type: "object", properties: { command: { type: "string" }, paths: { type: "array", items: { type: "string" } } }, required: ["command"] };
+  const tools = ["Bash", "Read", "Edit"].map(name => ({ name, description: `${name} tool`, parameters: schema }) as unknown as Tool);
+  const history: Message[] = [];
+  const text = 'a "quoted" line\twith é and 한\n'.repeat(40);
+  for (let n = 0; n < 400; n++) {
+    const call = { type: "toolCall", id: `call_${n}`, name: "Bash", arguments: { command: `echo ${n}`, paths: ["a", "b"] } };
+    history.push(user(`ask ${n} ${text}`, t0 + n * 1000), { ...answer(`looking ${n}`, t0 + n * 1000 + 100), content: [{ type: "text", text: `looking ${n}` }, call] } as Message);
+    for (let k = 0; k < 8; k++) history.push({ role: "toolResult", toolCallId: `call_${n}`, toolName: "Bash", content: [{ type: "text", text }], isError: false, timestamp: t0 + n * 1000 + 200 } as Message);
+    history.push(answer(`answer ${n}`, t0 + n * 1000 + 500));
+  }
+  const messages = deepFreeze([system({ sections: { rules: "R1" }, toolsAdded: tools }, 0), ...history, user("latest", t0 + 400_000)]);
+  const encoded: unknown[] = [];
+  const real = JSON.stringify;
+  JSON.stringify = function (this: unknown, value: unknown, ...rest: unknown[]) {
+    const text = (real as (...args: unknown[]) => string).call(JSON, value, ...rest);
+    if (typeof text === "string" && text.length > 1_000_000) encoded.push(value);
+    return text;
+  } as typeof JSON.stringify;
+  let shapedBody: unknown, rawBody: unknown;
+  try {
+    shapedBody = await wire(withCacheShape(inner, () => t0 + 400_000), messages);
+    rawBody = await wire(inner, messages);
+  } finally {
+    JSON.stringify = real;
+  }
+  const [shapedPayload, rawPayload] = encoded;
+  assert.ok(shapedPayload && rawPayload, `${encoded.length} large encodes seen`);
+  assert.ok(frozenArrays(rawPayload).length > 0, "pi-ai alone hands the SDK the frozen schema arrays");
+  assert.deepEqual(frozenArrays(shapedPayload), [], "the shaped payload holds no frozen array");
+  assert.equal(JSON.stringify(shapedBody), JSON.stringify(rawBody), "both requests send the same body");
+  const median = (value: unknown) => {
+    const times: number[] = [];
+    for (let n = 0; n < 7; n++) { const start = performance.now(); JSON.stringify(value); times.push(performance.now() - start); }
+    return times.sort((a, b) => a - b)[3]!;
+  };
+  const copy = JSON.parse(JSON.stringify(shapedPayload));
+  const [shapedMs, copyMs] = [median(shapedPayload), median(copy)];
+  assert.ok(shapedMs < copyMs * 2, `the shaped payload encodes in ${shapedMs.toFixed(1)} ms against ${copyMs.toFixed(1)} ms for a plain copy`);
 });
 
 test("a cold comm request keeps only the newest earlier turns that fit KEEP_CHARS, cut where a turn starts, and later requests keep the same", () => {
