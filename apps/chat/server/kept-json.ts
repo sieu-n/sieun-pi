@@ -58,7 +58,7 @@ function entriesOf(value: unknown, by: By, indent: number): [string, string][] |
     if (by === "id") {
       if (!isRecord(item)) return null;
       key = item.id;
-      body = json(item);
+      body = json(item) ?? "null";
     } else {
       if (!Array.isArray(item) || item.length !== 2) return null;
       key = item[0];
