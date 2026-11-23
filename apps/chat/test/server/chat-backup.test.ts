@@ -112,7 +112,7 @@ test("a B2 file decrypts back to the bytes it was made from, and a changed byte 
     await decryptFile(join(root, "x.enc"), join(root, "back"), key);
     assert.deepEqual(readFileSync(join(root, "back")), readFileSync(plain));
     const bytes = readFileSync(join(root, "x.enc"));
-    bytes[100] ^= 1;
+    bytes.writeUInt8(bytes.readUInt8(100) ^ 1, 100);
     writeFileSync(join(root, "bad.enc"), bytes);
     await assert.rejects(decryptFile(join(root, "bad.enc"), join(root, "bad"), key));
   } finally {
