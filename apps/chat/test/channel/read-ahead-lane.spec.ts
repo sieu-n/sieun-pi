@@ -17,7 +17,15 @@ declare global {
   interface Window { lane: Lane; settled: Record<string, string> }
 }
 
+/**
+ * Keeps the page's own lane empty, so the test's calls are the only ones in it. The fixture is shared: with the live socket open, the hello
+ * makes the page read ahead every room and board the other specs made (about 200 reads, 2 at once, 14 s at box load 250 on 11-23) and
+ * read Later again, and those reads sat ahead of the test's in the lane. With no hello the page reads only what the open room shows.
+ */
+const noSocket = (page: Page) => page.routeWebSocket(/\/api\/live/, () => {});
+
 async function lane(page: Page): Promise<void> {
+  await noSocket(page);
   await open(page, "#/c/ch_general");
   await page.waitForLoadState("networkidle");
   await page.evaluate(async () => {
@@ -28,7 +36,7 @@ async function lane(page: Page): Promise<void> {
     window.settled = {};
     const note = (path: string, promise: Promise<unknown>) => promise.then(() => (window.settled[path] = "ok"), (error: unknown) => (window.settled[path] = String(error)));
     window.lane = {
-      later: () => note("later", api.later()),
+      later: () => note("later", api.later(undefined, true)),
       ahead: path => note(path, get({ path }, { background: "ahead" })),
       keptAhead: path => note(path, kept({ path }).ahead()),
       keptRead: path => note(`${path} read`, kept({ path }).read()),
@@ -50,11 +58,14 @@ async function hold(page: Page, match: RegExp): Promise<{ sent: string[]; releas
   return { sent, release };
 }
 
+/** His call: GET /api/later?test=1, a read the page itself never makes on #/c/ch_general. */
+const HIS = /\/api\/later\?test=1$/;
+
 const settled = (page: Page, key: string) => page.evaluate((k) => window.settled[k], key);
 
 test("no read ahead starts while a call the owner waits on is on its way", async ({ page }) => {
   await lane(page);
-  const later = await hold(page, /\/api\/later(\?.*)?$/);
+  const later = await hold(page, HIS);
   const rooms: string[] = [];
   page.on("request", (r) => (r.url().includes("lane=1") ? rooms.push(r.url()) : undefined));
   await page.evaluate(() => void window.lane.later());
@@ -72,13 +83,15 @@ test("a read ahead on its way stops when the owner's call starts, goes again aft
   await page.addInitScript(() => {
     navigator.sendBeacon = () => false;
   });
+  const samples: { p: string; err?: string; bg?: string }[] = [];
+  page.on("request", (r) => (r.url().endsWith("/api/timings") ? samples.push(...(r.postDataJSON() as { samples: typeof samples }).samples) : undefined));
   await lane(page);
   const aheadHeld = await hold(page, /\/api\/rooms\?lane=2$/);
   const failed: string[] = [];
   page.on("requestfailed", (r) => (r.url().includes("lane=2") ? failed.push(r.failure()?.errorText ?? "") : undefined));
   await page.evaluate(() => void window.lane.ahead("/api/rooms?lane=2"));
   await expect.poll(() => aheadHeld.sent.length).toBe(1);
-  const later = await hold(page, /\/api\/later(\?.*)?$/);
+  const later = await hold(page, HIS);
   await page.evaluate(() => void window.lane.later());
   await expect.poll(() => failed.length).toBe(1);
   expect(failed[0]).toContain("ABORTED");
@@ -91,12 +104,11 @@ test("a read ahead on its way stops when the owner's call starts, goes again aft
   aheadHeld.release();
   await expect.poll(() => settled(page, "/api/rooms?lane=2")).toBe("ok");
 
-  const batch = page.waitForRequest((r) => r.url().endsWith("/api/timings"));
+  // The page posts its timing lines every 10 s and the rest on pagehide, so the read's line may be in either batch.
   await page.evaluate(() => dispatchEvent(new Event("pagehide")));
-  const samples = ((await batch).postDataJSON() as { samples: { p: string; err?: string; bg?: string }[] }).samples;
-  const rooms = samples.filter((s) => s.p === "/api/rooms" && s.bg === "ahead");
-  expect(rooms).toHaveLength(1);
-  expect(rooms[0]!.err).toBeUndefined();
+  const rooms = () => samples.filter((s) => s.p === "/api/rooms" && s.bg === "ahead");
+  await expect.poll(() => rooms().length).toBe(1);
+  expect(rooms()[0]!.err).toBeUndefined();
 });
 
 test("a read ahead a view takes over leaves the lane: a queued one goes at once and one on its way is never stopped", async ({ page }) => {
@@ -105,7 +117,7 @@ test("a read ahead a view takes over leaves the lane: a queued one goes at once 
   page.on("requestfailed", (r) => (r.url().includes("lane=") ? failed.push(r.url()) : undefined));
 
   // Queued behind his held call, then taken over by a panel that opens: it goes out while his call is still held.
-  const later = await hold(page, /\/api\/later(\?.*)?$/);
+  const later = await hold(page, HIS);
   const queued: string[] = [];
   page.on("request", (r) => (r.url().includes("lane=3") ? queued.push(r.url()) : undefined));
   await page.evaluate(() => void window.lane.later());
@@ -134,6 +146,7 @@ test("a read ahead a view takes over leaves the lane: a queued one goes at once 
 });
 
 test("a new Cmd K list drops the queued reads of the rows it no longer shows", async ({ page }) => {
+  await noSocket(page);
   await open(page, "#/c/ch_general");
   await page.waitForLoadState("networkidle");
   const hits: Record<string, string[]> = {};
@@ -149,11 +162,11 @@ test("a new Cmd K list drops the queued reads of the rows it no longer shows", a
     if (url.searchParams.has("around")) around.push(`${decodeURIComponent(url.pathname.split("/")[3]!)}|${url.searchParams.get("around")}`);
   });
   // His call stays on its way, so every read ahead the palette asks for waits in the lane.
-  const later = await hold(page, /\/api\/later(\?.*)?$/);
+  const later = await hold(page, HIS);
   await page.evaluate(async () => {
     const client = "/src/lib/api/client.ts";
     const { api } = await import(/* @vite-ignore */ client);
-    void api.later();
+    void api.later(undefined, true);
   });
   await expect.poll(() => later.sent.length).toBeGreaterThan(0);
   await page.keyboard.press("Control+k");
@@ -179,7 +192,7 @@ test("a refresh behind a shown panel waits behind the owner's call and goes befo
   await lane(page);
   const order: string[] = [];
   page.on("request", (r) => (r.url().includes("lane=") ? order.push(new URL(r.url()).search) : undefined));
-  const later = await hold(page, /\/api\/later(\?.*)?$/);
+  const later = await hold(page, HIS);
   await page.evaluate(() => void window.lane.later());
   await expect.poll(() => later.sent.length).toBe(1);
   await page.evaluate(async () => {
