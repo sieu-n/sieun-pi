@@ -257,7 +257,7 @@ class Live {
     return () => this.openers.delete(opener);
   }
 
-  /** Streams a conversation's items, partial text and status until the returned function runs. */
+  /** Streams a conversation's items and status until the returned function runs. */
   watch(conversation: ConversationId, after: () => string | undefined = () => undefined): () => void {
     this.start();
     const existing = this.watches.get(conversation);

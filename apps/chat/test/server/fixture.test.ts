@@ -89,7 +89,7 @@ describe("live turns", () => {
     const done = await live.waitFor(e => e.type === "items" && e.items.some(i => i.kind === "turn" && !i.live && i.text.includes("tell me about the canary")));
     assert.equal(done.type, "items");
     await live.waitFor(e => e.type === "status" && e.conversation === ids.frontend && e.status === "idle");
-    assert.ok(!live.events.some(e => e.type === "partial" && !!e.partial), "nothing streams");
+    assert.ok(!live.events.some(e => (e.type as string) === "partial"), "nothing streams");
     const again = await s.send("POST", `/api/c/${ids.frontend}/send`, { text: "tell me about the canary", requestId: "live-1" });
     assert.equal(again.status, 200);
     (s.host as any).wordMs = 2;

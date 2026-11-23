@@ -476,8 +476,6 @@ export interface ConversationHeader {
   agent?: AgentSummary;
   /** A DM: the agent's work thread, which "Open work thread" opens. */
   workThread?: ConversationId;
-  /** Live answer text that has not become an item yet. */
-  partial?: LivePartial | null;
   /** While the conversation's run waits for a working slot: its place in pi-pool's turn queue. */
   queue?: TurnPlace | null;
   /** Channels: the chat whose board the side panel shows. */
@@ -497,8 +495,6 @@ export interface ConversationHeader {
   /** A walk's throwaway room (`POST /api/rooms {test: true}`), whose member picker lists test agents too. */
   test?: true;
 }
-
-export interface LivePartial { itemId: string; text: string; thinking: string; tool?: string }
 
 export interface SendRequest {
   text: string;
@@ -880,7 +876,6 @@ export type LiveEvent =
   | { type: "conversation"; conversation: ConversationSummary }
   /** Only for a conversation the page watches. */
   | { type: "items"; conversation: ConversationId; items: Item[]; /** Ids to drop, such as a pending send that landed or was discarded. */ removed?: string[] }
-  | { type: "partial"; conversation: ConversationId; partial: LivePartial | null }
   | { type: "status"; conversation: ConversationId; status: RunStatus }
   /** Only to tabs that watch it: the run's place in pi-pool's turn queue while it waits, then null once it works or ends. */
   | { type: "queue"; conversation: ConversationId; place: TurnPlace | null }

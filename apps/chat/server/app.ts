@@ -219,7 +219,6 @@ export class App {
         const record = this.agents.ofWorkThread(conversation) ?? comm?.record;
         if (record) void this.rooms.feed(record);
       },
-      partial: (conversation, partial) => this.toWatchers(conversation, { type: "partial", conversation, partial }),
       status: (conversation, status) => {
         this.broadcast({ type: "status", conversation, status });
         // The room a comm or work thread belongs to works out its status from both, on the path each thread list read takes.

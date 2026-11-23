@@ -1,6 +1,6 @@
 /**
  * An in-memory `Host` for fixture mode and tests. It keeps threads, conversations, entries and documents the way pi-durable shapes them,
- * and answers each input with a streamed reply, so pages see partial text, tool steps, jobs, Stop and status without pi-host.
+ * and answers each input with a streamed reply, so pages see tool steps, jobs, Stop and status without pi-host.
  * A message that says "spawn" starts a job (a child conversation), "fail" ends the turn with an error, "slow" streams for a minute, and
  * "queue" waits two seconds in a fake turn queue (place 3 of 7, then 1 of 7) before it starts, "rich" answers with `richReply`, which uses
  * every format the chat renders, and "broken diagram" answers with a mermaid block that does not parse.

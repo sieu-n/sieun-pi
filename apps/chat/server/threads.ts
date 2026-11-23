@@ -4,7 +4,7 @@
  * send_message call lands.
  */
 import type {
-  AgentId, AgentSummary, ConversationId, ConversationSummary, Item, JobNode, LivePartial, ModelRef, Principal, RunStatus, ThinkingLevel, TimelinePage,
+  AgentId, AgentSummary, ConversationId, ConversationSummary, Item, JobNode, ModelRef, Principal, RunStatus, ThinkingLevel, TimelinePage,
 } from "../web/src/lib/api/types.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { join } from "node:path";
@@ -77,8 +77,6 @@ interface LiveConversation {
   /** pi-host's newest status event: "sleeping" while the run waits for a working slot or an account, which no run event says. */
   hostStatus?: RunStatus;
   runningTools: Set<string>;
-  /** Always null: the page gets no partial text (see onEvent). */
-  partial: LivePartial | null;
   stop?: () => Promise<void>;
   watchers: number;
   ready: Promise<void>;
@@ -94,7 +92,6 @@ export interface ThreadEvents {
   jobList(changed: AgentSummary[], removed: AgentId[]): void;
   conversations(changed: ConversationSummary[]): void;
   items(conversation: ConversationId, items: Item[]): void;
-  partial(conversation: ConversationId, partial: LivePartial | null): void;
   status(conversation: ConversationId, status: RunStatus): void;
   jobs(thread: string, jobs: JobNode[]): void;
 }
@@ -905,12 +902,12 @@ export class Threads {
 
   // Live side
 
-  async watch(id: ConversationId): Promise<{ items: Item[]; partial: LivePartial | null; status: RunStatus }> {
+  async watch(id: ConversationId): Promise<{ items: Item[]; status: RunStatus }> {
     let live = this.live.get(id);
     if (!live) {
       const { thread, conversation } = parseConversationId(id);
       const created: LiveConversation = {
-        thread, conversation, recent: [], running: this.statusOfConversation(thread, conversation) === "working", runningTools: new Set(), partial: null, watchers: 0,
+        thread, conversation, recent: [], running: this.statusOfConversation(thread, conversation) === "working", runningTools: new Set(), watchers: 0,
         ready: Promise.resolve(),
       };
       created.ready = this.attach(id, created);
@@ -919,7 +916,7 @@ export class Threads {
     }
     live.watchers += 1;
     await live.ready;
-    return { items: buildItems(live.recent, this.context(live.thread, live.conversation, live)), partial: live.partial, status: live.running ? "working" : this.statusOfConversation(live.thread, live.conversation) };
+    return { items: buildItems(live.recent, this.context(live.thread, live.conversation, live)), status: live.running ? "working" : this.statusOfConversation(live.thread, live.conversation) };
   }
 
   async unwatch(id: ConversationId): Promise<void> {

@@ -121,7 +121,7 @@ describe("thread sends", () => {
     await s.send("POST", `/api/c/${thread}/send`, { text, requestId: "nostream-1" });
     await live.waitFor(e => e.type === "items" && e.items.some(i => i.kind === "turn" && !i.live && i.text.includes(text)));
     const mine = live.events.filter((e): e is Extract<LiveEvent, { type: "items" }> => e.type === "items" && e.conversation === thread);
-    assert.ok(!live.events.some(e => e.type === "partial" && !!e.partial), "no partial text");
+    assert.ok(!live.events.some(e => (e.type as string) === "partial"), "no partial text");
     // The input, the run's start, the one answer with text before the job, each of its two send_message calls, and the run's end.
     assert.ok(mine.filter(e => e.items.some(i => i.kind === "turn")).length <= 6, `${mine.length} item events`);
     live.close();
