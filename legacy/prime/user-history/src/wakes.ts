@@ -1,7 +1,7 @@
 import { hostExecFile } from "./spawn-host.ts";
 import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 /**
  * Kernel-free waits. A job that waits for a CI run or a time calls `board.wake(...)` (skills/board), which writes one file to
@@ -132,8 +132,37 @@ function endedLine(done: Extract<RunState, { done: true }>, setAt: number): stri
   return `It ended at ${stampOf(done.endedAt)}${before >= 1 ? `, ${before} min before you set this wake at ${stampOf(setAt)}` : ""}. `;
 }
 
+/**
+ * Where the ticker finds its wakes: `file` keys each one, and `wake` is null for a file that holds no wake, which the tick removes. The
+ * folder's files by default (`folderWakes`); apps/chat keeps its wakes in chat.sqlite instead (apps/chat/server/wakes-db.ts).
+ */
+export interface WakeFiles {
+  list(): Promise<{ file: string; wake: Wake | null }[]>;
+  remove(file: string): Promise<void>;
+}
+
+/** The `.json` wake files of `dir`, in name order. */
+export function folderWakes(dir: string): WakeFiles {
+  return {
+    async list() {
+      const names = await readdir(dir).catch(() => [] as string[]);
+      const out: { file: string; wake: Wake | null }[] = [];
+      for (const name of names.filter(name => name.endsWith(".json")).sort()) {
+        const file = join(dir, name);
+        let wake: Wake | null;
+        try { wake = parseWake(JSON.parse(await readFile(file, "utf8"))); } catch { wake = null; }
+        out.push({ file, wake });
+      }
+      return out;
+    },
+    remove: file => rm(file, { force: true }),
+  };
+}
+
 export interface WakeDeps {
+  /** The folder of the ticker's stamps (TICKED, KINDS), and of the wake files unless `files` names another place. */
   dir: string;
+  files?: WakeFiles;
   now?: () => number;
   /** Reads a run's state. A run whose `stamp` did not move is not read again before RUN_LOOK_MS. */
   runState: (on: Extract<WakeOn, { kind: "run" }>) => Promise<RunState>;
@@ -168,7 +197,11 @@ export class Wakes {
   /** Each check wake file's last run: when it ran and what it gave. */
   private readonly checked = new Map<string, { at: number; result: CheckResult }>();
   private readonly now: () => number;
-  constructor(private readonly deps: WakeDeps) { this.now = deps.now ?? Date.now; }
+  private readonly files: WakeFiles;
+  constructor(private readonly deps: WakeDeps) {
+    this.now = deps.now ?? Date.now;
+    this.files = deps.files ?? folderWakes(deps.dir);
+  }
 
   /**
    * One pass: a session's due wakes go to the outbox as one message and their files are removed; a wake whose read or outbox write failed stays
@@ -181,14 +214,11 @@ export class Wakes {
    * after their pass began, and on 10-20 at 13:08Z two run wakes 4,995 s, while one read hung.
    */
   async tick(): Promise<number> {
-    const names = await readdir(this.deps.dir).catch(() => [] as string[]);
+    const listed = await this.files.list();
     const now = this.now();
     const parsed: { file: string; wake: Wake }[] = [];
-    for (const name of names.filter(name => name.endsWith(".json")).sort()) {
-      const file = join(this.deps.dir, name);
-      let wake: Wake | null;
-      try { wake = parseWake(JSON.parse(await readFile(file, "utf8"))); } catch { wake = null; }
-      if (!wake) { if (!this.handling.has(file)) { this.deps.log(`wakes: ${name} is not a wake; removed`); await rm(file, { force: true }); } continue; }
+    for (const { file, wake } of listed) {
+      if (!wake) { if (!this.handling.has(file)) { this.deps.log(`wakes: ${basename(file)} is not a wake; removed`); await this.files.remove(file); } continue; }
       parsed.push({ file, wake });
     }
     const runs = new Set<number>();
@@ -251,7 +281,7 @@ export class Wakes {
       const text = wakes.map(({ wake, state, check }) => wakeText(wake, state, now, check)).join("\n");
       const root = wakes.find(({ wake }) => wake.root)?.wake.root;
       await this.deps.deliver(session, text, root, "wake", Math.max(...wakes.map(({ wake }) => wake.since)));
-      for (const { file } of wakes) await rm(file, { force: true });
+      for (const { file } of wakes) await this.files.remove(file);
       this.deps.log(`wakes: woke ${session} for ${what}, waited ${Math.round((now - Math.min(...wakes.map(({ wake }) => wake.since))) / 60_000)} min, queued ${Math.round((this.now() - now) / 1000)} s after the tick began`);
       return true;
     } catch (error) {
