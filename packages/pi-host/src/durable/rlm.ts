@@ -66,6 +66,7 @@ import { mcpModule } from "./mcp.ts";
 import { primeDefaults } from "./models.ts";
 import { refineModule } from "./refine.ts";
 import { ownerTag } from "./owner-tag.ts";
+import { track } from "../loop-stall.ts";
 
 const context: Context = BACKGROUND_CONTEXT;
 export const RLM_EXTENSION = "rlm";
@@ -379,7 +380,7 @@ export class DurableRlm {
     slot.jobs.clear();
     kernel = await Kernel.relay({
       python, cwd, env, stderrLogPath: join(slot.artifactDir, "kernel-stderr.log"),
-      onHostRequest: request => this.hostRequest(slot, request),
+      onHostRequest: request => track(request.type, harnessSessionOf(slot.thread.id, slot.conversation), () => this.hostRequest(slot, request)),
       onDisplay: data => this.onBashActivity(slot, data[BASH_ACTIVITY]),
       interruptGraceMs: Number(process.env.PI_RLM_INTERRUPT_GRACE_MS ?? 3000),
       onExit: () => { if (slot.kernel === kernel) slot.kernel = undefined; this.wake(slot); },

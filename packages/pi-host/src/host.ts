@@ -25,6 +25,7 @@ import * as registry from "@sieun-pi/pi-family/registry";
 import type { AgentEntry, BusMessage, Delivery, Identity } from "@sieun-pi/pi-family/registry";
 import { publishHostApi, type HostApi, type HostEvent, type HostSessionInfo, type OpenRequest } from "./api.ts";
 import { Leases, SessionLockedError } from "./lease.ts";
+import { countsFileOf, LoopStalls, noteLine, track } from "./loop-stall.ts";
 import { SavedIndex } from "./saved-index.ts";
 import {
   fail, HOST_COMMANDS, ok, PROTOCOL, unknownCommand, type AttachResult, type ClientCapability, type HostCommand, type Outbound, type ReplayInfo,
@@ -122,12 +123,15 @@ export class PiHost implements HostApi {
   private closing = false;
   private savedIndex: SavedIndex | undefined;
   readonly scheduler: Scheduler;
+  /** Writes a host.log line for each event-loop stall over 500 ms, naming the work that ran in it (`loop-stall.ts`). */
+  readonly stalls: LoopStalls;
 
   constructor(readonly options: HostOptions) {
     this.agentDir = options.agentDir;
+    this.stalls = new LoopStalls({ log: line => this.log(line), file: countsFileOf(options.dataDir ?? join(options.agentDir, "pi-host")) });
     this.scheduler = new Scheduler({
       dataDir: options.dataDir ?? join(options.agentDir, "pi-host"),
-      reopen: job => this.reopenFor(job),
+      reopen: job => track("scheduler reopen", job.activeSessionId, () => this.reopenFor(job)),
       changed: () => { for (const connection of this.connections) connection.write({ type: "heartbeats_changed" }); },
       log: line => this.log(line),
       now: options.now,
@@ -142,6 +146,7 @@ export class PiHost implements HostApi {
   }
 
   log(line: string): void {
+    noteLine(line);
     (this.options.log ?? (text => process.stderr.write(`${new Date().toISOString()} pi-host ${text}\n`)))(line);
   }
 
@@ -486,7 +491,13 @@ export class PiHost implements HostApi {
 
   /** Answers one command. Returns undefined when the handler wrote its own response, as attach does before its snapshot chunks. */
   /** `envelopeClientId` is the `clientId` of a v7 command envelope, which stays the same when a client retries on a new connection. */
-  async handle(command: HostCommand, connection: Connection, envelopeClientId?: string): Promise<Response | undefined> {
+  handle(command: HostCommand, connection: Connection, envelopeClientId?: string): Promise<Response | undefined> {
+    const thread = "thread" in command && typeof command.thread === "string" ? command.thread
+      : "activeSessionId" in command && typeof command.activeSessionId === "string" ? command.activeSessionId : undefined;
+    return track(command.type, thread, () => this.answer(command, connection, envelopeClientId));
+  }
+
+  private async answer(command: HostCommand, connection: Connection, envelopeClientId?: string): Promise<Response | undefined> {
     const id = command.id;
     const type = command.type as string;
     if (this.options.durable?.handles(type)) return this.options.durable.handle(command as unknown as { id?: string; type: string }, connection);
@@ -878,6 +889,7 @@ export class PiHost implements HostApi {
   async shutdown(): Promise<void> {
     if (this.closing) return;
     this.closing = true;
+    this.stalls.stop();
     if (this.idleTimer) clearInterval(this.idleTimer);
     this.scheduler.stop();
     for (const connection of this.connections) connection.write({ type: "daemon_closing", reason: "shutdown" });
