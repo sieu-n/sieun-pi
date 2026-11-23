@@ -464,6 +464,7 @@ export async function agentConfig(app: App, id: AgentId): Promise<AgentConfig> {
         return room.startsWith("dm_") ? { id: room, kind: "dm" as const, name: "DM", archived: false } : { id: room, kind: "channel" as const, name: room, archived: false };
       }),
       duties, checkIn,
+      dutiesOf: !isChatRoot && chat ? { id: chat, name: app.boards.nameOf(chat) } : null,
       dutiesFile: isChatRoot && dutiesPath ? fileInfo("duties, runs and check-in", dutiesPath) : null,
       wakes: app.boards.wakesOn(new Set(kinds.keys())).map(wake => agentWake(app, wake, kinds, agent, jobs)).sort(wakeOrder),
     },

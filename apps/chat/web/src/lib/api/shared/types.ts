@@ -336,8 +336,8 @@ export interface SessionRow {
  * the chat's own interval, which runs again from its next open step.
  */
 export interface CheckInState { everyMs: number; planEveryMs?: number; paused: boolean; pausedUntil: number | "forever" | null; nextAt: number | null }
-/** `GET api/threads/<id>/check-in`: the state and the last check-in this service ran (null before its first). */
-export interface CheckInView extends CheckInState { lastAt: number | null }
+/** `GET api/threads/<id>/check-in`: the state, the last check-in this service ran (null before its first) and the job that run started. */
+export interface CheckInView extends CheckInState { lastAt: number | null; job?: { id: string; name: string } }
 /**
  * A chat's brief in the sessions stream: the version it last loaded (null when it loaded before versions were recorded), the version the service
  * runs now, and whether a reload onto it is queued or waits for the chat's turn to end.

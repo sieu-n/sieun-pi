@@ -104,6 +104,7 @@ test("a due check-in files one job under the agent, sends nothing into the work 
   await s.app.boards.tick(at);
   const job = (await until(async () => dutyFile(busy).checkIn?.job, value => value !== undefined))!;
   assert.equal(job.name, checkInJobName("check-in busy agent", at));
+  assert.deepEqual((await s.get<CheckInView>(`/api/agents/${busy.id}/check-in`)).job, { id: job.id, name: job.name }, "the view names the job, as the Duties tab links it");
   assert.deepEqual(s.app.store.state.threads[job.id], { kind: "job", parent: busy.id });
   assert.equal(s.app.agents.record(job.id)?.id, busy.id);
   assert.deepEqual(jobsOf(busy), [job.name]);

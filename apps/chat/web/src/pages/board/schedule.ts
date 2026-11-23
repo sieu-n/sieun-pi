@@ -111,10 +111,14 @@ export function everyLabel(everyMs: number): string {
 export const pauseNow = (state: CheckInState, now: number): number | "forever" | null =>
   state.pausedUntil === "forever" || (state.pausedUntil !== null && state.pausedUntil > now) ? state.pausedUntil : null;
 
-/** The check-in line: "Check-in every 120 min, one check-in job each", or its pause. `on` is false while paused. */
+/**
+ * The check-in line: "Check-in every 120 min, one check-in job each", or its pause. `on` is false while paused and while none is set, as a
+ * test agent has none until one is picked (boards.ts checkInState), which the server sends as no pause and no next time.
+ */
 export function checkInStatus(state: CheckInState | null, now: number): { text: string; on: boolean } {
   if (!state) return { text: "Check-in every 120 min, one check-in job each", on: true };
   const pause = pauseNow(state, now);
+  if (pause === null && state.nextAt === null) return { text: "No check-in set yet", on: false };
   if (pause === null) {
     const every = state.planEveryMs !== undefined
       ? `daily while the plan has no open step, then every ${Math.round(state.planEveryMs / MINUTE)} min`
@@ -131,9 +135,10 @@ function everyWords(everyMs: number): string {
   return amount === 1 ? "daily" : `every ${amount} days`;
 }
 
-/** The control's short value: "Check-in 2h", "Paused" or "Paused 45m". */
+/** The control's short value: "Check-in 2h", "Set check-in", "Paused" or "Paused 45m". */
 export function checkInButton(state: CheckInState, now: number): string {
   const pause = pauseNow(state, now);
+  if (pause === null && state.nextAt === null) return "Set check-in";
   if (pause === null) return `Check-in ${everyLabel(state.everyMs)}`;
   if (pause === "forever") return "Paused";
   const minutes = Math.max(1, Math.ceil((pause - now) / MINUTE));

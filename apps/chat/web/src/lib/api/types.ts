@@ -861,6 +861,8 @@ export interface AgentConfig {
     duties: { id: string; name: string; goal: string; schedule: string; paused: boolean; nextAt: Ms | null; lastVerdict: string | null; lastAt: Ms | null; runs: number }[];
     /** The check-in clock of its chat, when one is set. */
     checkIn: { everyMs: number; paused: boolean; nextAt: Ms | null; lastAt: Ms | null } | null;
+    /** On a job, the agent or chat its duties and check-in belong to; null on that agent or chat itself. */
+    dutiesOf: { id: AgentId; name: string } | null;
     /** The file that holds the duties, their runs and the check-in. */
     dutiesFile: ConfigFile | null;
     /** The board.wakes set on any of its threads that have not gone out yet, the soonest first and run wakes before them. */

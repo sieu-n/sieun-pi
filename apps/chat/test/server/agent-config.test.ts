@@ -79,6 +79,7 @@ test("a chat's config names its purpose, host, cwd, board, memory, instructions 
   assert.deepEqual(c.swarm.duties.map(d => [d.id, d.schedule, d.paused]), [["d1", "daily at 07:40 KST", false], ["d2", "daily at 07:40 KST", true]]);
   assert.equal(c.swarm.checkIn?.everyMs, 120 * 60_000);
   assert.equal(c.swarm.dutiesFile?.path, join(s.app.config.dataDir, "agents", agents.harness, "duties.json"));
+  assert.equal(c.swarm.dutiesOf, null);
   assert.ok(c.usage && c.usage.days === 7);
 });
 
@@ -92,6 +93,7 @@ test("a duty thread names its duty and the brief it was given, and shares its ch
   assert.equal(c.board?.chat, agents.harness);
   assert.equal(c.board?.own, false);
   assert.deepEqual(c.swarm.duties, [], "duties belong to the chat");
+  assert.deepEqual(c.swarm.dutiesOf, { id: agents.harness, name: "AI harness developer environment VP" }, "the Duties tab links the agent that holds them");
   assert.equal(c.swarm.parent?.id, agents.harness);
   assert.equal(c.folder?.agent, agents.harness, "a duty thread shares its agent's folder");
   assert.equal(c.memory.kind, "agent");

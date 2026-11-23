@@ -10,7 +10,8 @@
   let { chatId, duties, onchange, now, focus = null }: { chatId: string; duties: DutyRow[]; onchange: (duties: DutyRow[]) => void; now: number; focus?: string | null } = $props();
 
   type Run = DutyRow["runs"][number];
-  const RUNS_SHOWN = 8;
+  /** A long list shows 10 rows and then a Show all control (owner rule c123). */
+  const ROWS_SHOWN = 10;
   /** How long a removed duty waits for Undo before the server deletes it with its runs. */
   const UNDO_MS = 6000;
   const TRIGGER_WORDS: Record<Run["trigger"], string> = {
@@ -21,6 +22,7 @@
   let busy = $state<string | null>(null);
   let opened = $state<string | null>(null);
   let allRuns = $state<string | null>(null);
+  let allDuties = $state(false);
   let openRun = $state<string | null>(null);
   let removed = $state<ReadonlySet<string>>(new Set());
   let menu = $state<{ duty: DutyRow; anchor: HTMLElement } | null>(null);
@@ -29,9 +31,13 @@
   let dialogOpen = $state(false);
 
   const shown = $derived(duties.filter(duty => !removed.has(duty.duty.id)));
+  const listed = $derived(allDuties ? shown : shown.slice(0, ROWS_SHOWN));
 
   $effect(() => {
-    if (focus && duties.some(duty => duty.duty.id === focus)) opened = focus;
+    const at = focus ? shown.findIndex(duty => duty.duty.id === focus) : -1;
+    if (at < 0) return;
+    opened = focus;
+    if (at >= ROWS_SHOWN) allDuties = true;
   });
 
   async function act(duty: DutyRow, action: "run" | "pause" | "resume") {
@@ -87,10 +93,10 @@
 
 {#if shown.length}
   <ul class="duties">
-    {#each shown as duty (duty.duty.id)}
+    {#each listed as duty (duty.duty.id)}
       {@const isOpen = opened === duty.duty.id}
       {@const lastRun = last(duty)}
-      {@const runs = allRuns === duty.duty.id ? duty.runs : duty.runs.slice(0, RUNS_SHOWN)}
+      {@const runs = allRuns === duty.duty.id ? duty.runs : duty.runs.slice(0, ROWS_SHOWN)}
       <li class="duty" data-board-id={duty.duty.id} data-verdict={duty.last?.verdict ?? "none"}>
         <div class="card" class:paused={duty.paused}>
           <button type="button" class="summary" aria-expanded={isOpen} onclick={() => { opened = isOpen ? null : duty.duty.id; }}>
@@ -121,9 +127,12 @@
                 {#each runs as run (run.at)}
                   {@const key = runKey(duty, run)}
                   <li class="run t-caption">
-                    <button type="button" class="run-row" aria-expanded={openRun === key} onclick={() => { openRun = openRun === key ? null : key; }}>
-                      <span class="dot {run.verdict}"></span><span class="run-text">{VERDICT_WORDS[run.verdict as Verdict] ?? run.verdict} · {whenLabel(run.at, now)}{run.summary ? ` · ${run.summary}` : ""}</span>
-                    </button>
+                    <div class="run-line">
+                      <button type="button" class="run-row" aria-expanded={openRun === key} onclick={() => { openRun = openRun === key ? null : key; }}>
+                        <span class="dot {run.verdict}"></span><span class="run-text">{VERDICT_WORDS[run.verdict as Verdict] ?? run.verdict} · {whenLabel(run.at, now)}{run.summary ? ` · ${run.summary}` : ""}</span>
+                      </button>
+                      {#if run.job}<a class="run-job" href={hrefFor("agents", [run.job.id])} title={run.job.name} aria-label="Open job {run.job.name}">Open job</a>{/if}
+                    </div>
                     {#if openRun === key}
                       <div class="run-detail" data-run-detail>
                         <p>{TRIGGER_WORDS[run.trigger] ?? run.trigger} · took {seconds(run.ms)}</p>
@@ -137,13 +146,13 @@
                           </ul>
                         {/if}
                         {#if run.error}<p class="miss">{run.error}</p>{/if}
-                        {#if run.job}<p>Job <a href={hrefFor("agents", [run.job.id])}>{run.job.name}</a></p>{/if}
+                        {#if run.job}<p>Its job is {run.job.name}.</p>{/if}
                       </div>
                     {/if}
                   </li>
                 {/each}
               </ol>
-              {#if duty.runs.length > RUNS_SHOWN}
+              {#if duty.runs.length > ROWS_SHOWN}
                 <button type="button" class="more-runs t-caption" onclick={() => { allRuns = allRuns === duty.duty.id ? null : duty.duty.id; }}>
                   {allRuns === duty.duty.id ? "Show fewer runs" : `Show all ${duty.runs.length} runs`}
                 </button>
@@ -155,6 +164,9 @@
         {/if}
       </li>
     {/each}
+    {#if shown.length > ROWS_SHOWN}
+      <li><button type="button" class="more-runs t-caption" onclick={() => { allDuties = !allDuties; }}>{allDuties ? "Show fewer duties" : `Show all ${shown.length} duties`}</button></li>
+    {/if}
     <li><button type="button" class="add t-body-sm" onclick={() => edit(null)}><Icon name="plus" size={14} />Add duty</button></li>
   </ul>
 {:else}
@@ -187,6 +199,9 @@
   .ok, .next { color: var(--text-subtle); }
   .runs-title { margin: var(--space-2) 0 0; }
   .runs { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; color: var(--text-subtle); }
+  .run-line { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+  .run-line .run-row { flex: 1; min-width: 0; }
+  .run-job { flex: none; white-space: nowrap; padding-inline-end: var(--space-1); }
   .run-row { display: flex; align-items: center; gap: var(--space-2); width: 100%; padding: 2px var(--space-1); border: 0; border-radius: var(--radius-row); background: none; color: inherit; font: inherit; text-align: start; cursor: pointer; }
   .run-row:hover { background: var(--affordance-ghost-hover); color: var(--text-standard); }
   .run-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

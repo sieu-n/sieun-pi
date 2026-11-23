@@ -5,6 +5,8 @@ import { HARNESS, HARNESS_AGENT, expect, resetFixture, test } from "./helpers";
  * Run: cd apps/chat && CHAT_SERVER_URL=http://127.0.0.1:5944 CHAT_WEB_PORT=5945 npx playwright test test/board/duties.spec.ts
  */
 test.describe.configure({ mode: "serial" });
+/** The fixture's duty job of Relay uptime (server/fixture/seed.ts ids.uptimeDuty). */
+const UPTIME_DUTY = "0f1e0000-0000-4000-8000-000000000007";
 test.beforeEach(async ({ request, chatServer }) => { await resetFixture(request, chatServer); });
 
 const dutiesOf = async (request: import("@playwright/test").APIRequestContext, chatServer: string) =>
@@ -57,7 +59,7 @@ test("Remove hides a duty with Undo, Undo brings it back, and a remove left alon
   await expect(duties).not.toContainText("Probe check");
 });
 
-test("a run row opens to its measure and its job, and the duty's job is a link", async ({ page }) => {
+test("a run row opens to its measure, and its job is a link on the row", async ({ page }) => {
   await page.goto(`/#/board/${HARNESS}`);
   const duties = page.getByRole("region", { name: "Duties" });
   await duties.getByRole("button", { name: /Relay uptime/ }).first().click();
@@ -66,7 +68,7 @@ test("a run row opens to its measure and its job, and the duty's job is a link",
   const detail = duties.locator("[data-run-detail]");
   await expect(detail).toContainText("on its schedule");
   await expect(detail).toContainText("Relay uptime: 97.2%, target >= 99%");
-  await expect(detail.getByRole("link")).toHaveAttribute("href", /#\/agents\//);
+  await expect(duties.locator(".run-line", { hasText: "97.2" }).getByRole("link", { name: /^Open job / })).toHaveAttribute("href", /#\/agents\//);
 });
 
 test("an open duty with a long unbroken goal path and a long run summary stays inside the Duties card", async ({ page }) => {
@@ -120,4 +122,23 @@ test("the agent page's Duties section runs, pauses and edits the same list", asy
   await duties.getByRole("switch", { name: "Relay uptime on" }).click();
   await expect(duties.getByRole("switch", { name: "Relay uptime on" })).not.toBeChecked();
   await expect(duties.getByRole("button", { name: "Add duty" })).toBeVisible();
+});
+
+test("the agent page's Duties tab sets the check-in with the board's control and says when it last ran", async ({ page, request, chatServer }) => {
+  await page.goto(`/#/agents/${HARNESS_AGENT}?section=duties`);
+  const checkIn = page.getByRole("region", { name: "Check-in" });
+  await expect(checkIn.locator("[data-checkin-last]")).toContainText("Last ran at");
+  await checkIn.getByRole("button", { name: "Check-in settings" }).click();
+  await page.getByRole("menuitemradio", { name: "30m" }).click();
+  const setting = async () => { const view = await (await request.get(`${chatServer}/api/agents/${HARNESS_AGENT}/check-in`)).json(); return view.planEveryMs ?? view.everyMs; };
+  await expect.poll(setting).toBe(30 * 60_000);
+});
+
+test("a job's Duties tab links the agent its duties belong to", async ({ page }) => {
+  await page.goto(`/#/agents/${UPTIME_DUTY}?section=duties`);
+  const owner = page.getByTestId("duties-owner");
+  await expect(owner).toContainText("This job has no duties of its own.");
+  await owner.getByRole("link", { name: "AI harness developer environment VP" }).click();
+  await expect(page).toHaveURL(new RegExp(`#/agents/${HARNESS_AGENT}\\?section=duties$`));
+  await expect(page.getByRole("region", { name: "Duties" }).getByRole("button", { name: "Run Relay uptime now" })).toBeVisible();
 });

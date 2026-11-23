@@ -3,7 +3,8 @@
   import { CHECK_IN_PRESET_MINUTES } from "$lib/api/shared/types";
   import RemindDialog from "$lib/RemindDialog.svelte";
   import { Button, Dialog, Input, Menu, Select, toast, type MenuEntry } from "$lib/ui";
-  import { INTERVAL_UNITS, checkInButton, checkInChoices, checkInStatus, everyLabel, intervalParts, nextLabel, pauseNow, type IntervalUnit } from "./schedule";
+  import { hrefFor } from "$lib/router.svelte";
+  import { INTERVAL_UNITS, checkInButton, checkInChoices, checkInStatus, everyLabel, intervalParts, nextLabel, pauseNow, whenLabel, type IntervalUnit } from "./schedule";
 
   let { chatId, view, onchange, now }: { chatId: string; view: CheckInView | null; onchange: (view: CheckInView) => void; now: number } = $props();
 
@@ -75,6 +76,9 @@
   <div class="words">
     <span class="t-body-sm">{status.text}</span>
     {#if view && status.on}<span class="t-caption next">{nextLabel({ running: false, nextAt: view.nextAt }, now)}</span>{/if}
+    {#if view?.lastAt}
+      <span class="t-caption next" data-checkin-last>Last ran at {whenLabel(view.lastAt, now)}{#if view.job} in job <a href={hrefFor("agents", [view.job.id])}>{view.job.name}</a>{/if}.</span>
+    {/if}
   </div>
   <Button size="sm" variant="outline" icon={paused ? "pause" : "clock"} trailingIcon="chevron-down" loading={busy} disabled={!view} bind:element={anchor}
     aria-label="Check-in settings" onclick={() => { open = !open; }}>{view ? checkInButton(view, now) : "Check-in"}</Button>
@@ -100,7 +104,7 @@
 <style>
   .checkin { display: flex; align-items: center; gap: var(--space-3); justify-content: space-between; min-width: 0; }
   .words { display: grid; gap: 2px; min-width: 0; }
-  .next { color: var(--text-subtle); }
+  .next { color: var(--text-subtle); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   [data-on="false"] .words { color: var(--text-subtle); }
   .every { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); align-items: center; }
 </style>

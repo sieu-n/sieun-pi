@@ -1,31 +1,62 @@
 <script lang="ts">
+  import { onDestroy } from "svelte";
   import { reads, view } from "$lib/api";
-  import { LoadingText, stampLabel } from "$lib/ui";
+  import { LoadingText } from "$lib/ui";
+  import { hrefFor } from "$lib/router.svelte";
+  import CheckInControl from "$pages/board/CheckInControl.svelte";
   import DutyList from "$pages/board/DutyList.svelte";
-  import { everyLabel } from "./agents-model";
+  import { dutiesCount } from "$pages/board/schedule";
   import type { AgentTabProps } from "./agent-tab";
   import ConfigFileRow from "./ConfigFileRow.svelte";
 
-  /** The Duties tab: a chat agent's duties, which it runs, pauses, edits, removes and adds through the board's list, and its check-in. */
+  /**
+   * The Duties tab: a chat agent's duties with their runs, through the board's DutyList, and its check-in, through the board's CheckInControl.
+   * A job has none of its own, so it links the agent or chat they belong to.
+   */
   let { config }: AgentTabProps = $props();
 
-  const dutyChat = $derived(config.agent.kind === "chat" ? config.agent.id : null);
-  const dutyRows = view(() => (dutyChat ? reads.duties(dutyChat) : null));
+  const chatId = $derived(config.agent.kind === "chat" ? config.agent.id : null);
+  const dutyRows = view(() => (chatId ? reads.duties(chatId) : null));
+  const checkIn = view(() => (chatId ? reads.checkIn(chatId) : null));
+  const count = $derived(dutyRows.value ? dutiesCount(dutyRows.value.duties) : "");
+  let now = $state(Date.now());
+  const clock = setInterval(() => { now = Date.now(); }, 30_000);
+  onDestroy(() => clearInterval(clock));
 </script>
 
-<section class="block" aria-label="Duties">
-  <h3 class="t-caption heading">Duties</h3>
-  {#if dutyChat}
+{#if chatId}
+  <section class="block" aria-label="Duties">
+    <h3 class="t-caption heading">Duties{#if count}<span class="count"> · {count}</span>{/if}</h3>
     {#if dutyRows.value}
-      <DutyList chatId={dutyChat} duties={dutyRows.value.duties} onchange={next => dutyRows.set({ duties: next })} now={Date.now()} />
+      <DutyList chatId={chatId} duties={dutyRows.value.duties} onchange={next => dutyRows.set({ duties: next })} {now} />
+    {:else if dutyRows.error}
+      <p class="t-caption warn">{dutyRows.error}</p>
     {:else}
       <LoadingText text="Loading duties…" />
     {/if}
-  {:else}
-    <p class="t-caption meta">Duties belong to its chat.</p>
+  </section>
+  <section class="block" aria-label="Check-in">
+    <h3 class="t-caption heading">Check-in</h3>
+    <CheckInControl chatId={chatId} view={checkIn.value} onchange={next => checkIn.set(next)} {now} />
+  </section>
+  {#if config.swarm.dutiesFile}
+    <section class="block" aria-label="Duties file">
+      <h3 class="t-caption heading">Where they live</h3>
+      <ul class="files"><ConfigFileRow item={config.swarm.dutiesFile} /></ul>
+    </section>
   {/if}
-  {#if config.swarm.checkIn}
-    <span class="t-caption meta">Check-in {everyLabel(config.swarm.checkIn.everyMs)}{config.swarm.checkIn.paused ? ", paused" : config.swarm.checkIn.nextAt ? `, next ${stampLabel(config.swarm.checkIn.nextAt)}` : ""}</span>
-  {/if}
-  {#if config.swarm.dutiesFile}<ul class="files"><ConfigFileRow item={config.swarm.dutiesFile} /></ul>{/if}
-</section>
+{:else}
+  <section class="block" aria-label="Duties">
+    {#if config.swarm.dutiesOf}
+      <p class="t-caption belongs" data-testid="duties-owner">
+        This job has no duties of its own. Its duties and check-in belong to <a href={hrefFor("agents", [config.swarm.dutiesOf.id], { section: "duties" })}>{config.swarm.dutiesOf.name}</a>.
+      </p>
+    {:else}
+      <p class="t-caption belongs" data-testid="duties-owner">This job belongs to no agent or chat, so it has no duties or check-in.</p>
+    {/if}
+  </section>
+{/if}
+
+<style>
+  .count { opacity: 0.7; }
+</style>
