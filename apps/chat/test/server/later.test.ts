@@ -85,6 +85,8 @@ describe("save for later on the fixture server", () => {
     assert.equal(gone.body.item?.id, items[0]!.id);
     const twice = await s.send<{ item: LaterItem | null }>("DELETE", `/api/later/${encodeURIComponent(items[0]!.id)}`);
     assert.deepEqual([twice.status, twice.body.item], [200, null], "a second unsave changes nothing");
+    // With the kind in chat.sqlite, the list's JSON export follows the DB for the week after the move, so a rollback reads it.
+    await s.app.moves.get("later")?.flushExports();
     await drained();
     const file = JSON.parse(readFileSync(join(s.app.config.dataDir, "later", "owner.json"), "utf8")) as { items: LaterItem[] };
     assert.deepEqual(file.items.map(i => i.id), items.slice(1).map(i => i.id));

@@ -7,8 +7,9 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import type { Stmt } from "./chat-db.ts";
-import type { JsonKind } from "./json-move.ts";
+import type { ChatDb, Stmt } from "./chat-db.ts";
+import { appendLater, readLatest, replaceLater, written } from "./disk.ts";
+import type { JsonKind, JsonMove } from "./json-move.ts";
 import type { KeptSubmit, OutboxRow } from "./outbox.ts";
 
 /** A `set` patch writes null for a field it clears, since JSON drops undefined. */
@@ -119,3 +120,108 @@ export const OUTBOX: JsonKind = {
   count: db => size(readOutbox(db)),
   dump: db => outboxText(readOutbox(db)),
 };
+
+/**
+ * Where the outbox keeps its rows: chat.sqlite (`DbOutboxLog`), or `outbox.jsonl` when APPS_CHAT_DB_KINDS leaves out `outbox`. Each write
+ * records one change the outbox already made in memory.
+ */
+export interface OutboxLog {
+  /** The outbox as stored, read once at start. */
+  load(): OutboxState;
+  row(row: OutboxRow): void;
+  /** A change to a row; one to a row that is gone changes nothing. */
+  set(row: OutboxRow, patch: Patch): void;
+  kept(send: KeptSubmit): void;
+  /** A request id finished: its row or kept send goes, and the id is kept for a day. */
+  done(requestId: string, at: number): void;
+  /** The finished ids in `gone` were dropped from `state`, at start and when the outbox empties. */
+  compact(state: OutboxState, gone: readonly string[]): void;
+  /** Settles once every change so far is stored. */
+  written(): Promise<void>;
+}
+
+/** `outbox.jsonl`, one line per change through the disk queue, rewritten whole at each compaction, as before the move. */
+export class JsonOutboxLog implements OutboxLog {
+  private readonly file: string;
+
+  constructor(dir: string) {
+    this.file = join(dir, OUTBOX_FILE);
+  }
+
+  load(): OutboxState {
+    const text = readLatest(this.file);
+    return text === undefined ? { rows: new Map(), kept: new Map(), done: new Map() } : replayOutbox(text, Date.now());
+  }
+
+  private line(line: Line): void {
+    appendLater(this.file, `${JSON.stringify(line)}\n`);
+  }
+
+  row(row: OutboxRow): void {
+    this.line({ t: "row", row });
+  }
+
+  set(row: OutboxRow, patch: Patch): void {
+    this.line({ t: "set", requestId: row.requestId, patch });
+  }
+
+  kept(send: KeptSubmit): void {
+    this.line({ t: "submit", send });
+  }
+
+  done(requestId: string, at: number): void {
+    this.line({ t: "done", requestId, at });
+  }
+
+  compact(state: OutboxState): void {
+    replaceLater(this.file, outboxText(state));
+  }
+
+  written(): Promise<void> {
+    return written(this.file);
+  }
+}
+
+/** The outbox tables, written through chat-db.ts's writer thread; `move` is the outbox move while its week of exports lasts. */
+export class DbOutboxLog implements OutboxLog {
+  /** The place of the newest row, kept send or finished id, which keeps each table in the order the outbox's Maps hold. */
+  private ord = 0;
+  private last: Promise<void> = Promise.resolve();
+
+  constructor(private readonly chat: ChatDb, private readonly move?: JsonMove) {}
+
+  load(): OutboxState {
+    const { ord, ...state } = readOutbox(this.chat.db);
+    this.ord = ord;
+    return state;
+  }
+
+  private write(stmts: readonly Stmt[], label: string): void {
+    this.last = this.chat.write(stmts, label);
+    this.move?.touch(OUTBOX_FILE);
+  }
+
+  row(row: OutboxRow): void {
+    this.write([outboxSql.row(row, ++this.ord)], "outbox send");
+  }
+
+  set(row: OutboxRow): void {
+    this.write([outboxSql.set(row)], "outbox change");
+  }
+
+  kept(send: KeptSubmit): void {
+    this.write([outboxSql.kept(send, ++this.ord)], "outbox submit");
+  }
+
+  done(requestId: string, at: number): void {
+    this.write(outboxSql.done(requestId, at, ++this.ord), "outbox done");
+  }
+
+  compact(_state: OutboxState, gone: readonly string[]): void {
+    if (gone.length) this.write(outboxSql.forget(gone), "outbox forget");
+  }
+
+  written(): Promise<void> {
+    return this.last;
+  }
+}

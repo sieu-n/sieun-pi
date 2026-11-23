@@ -24,6 +24,7 @@ import { CHANNEL_COPY_LIKE, GroupRooms, roomLabel } from "./group-rooms.ts";
 import { assertEditable, deleteNotice, deliveriesOf, editNotice } from "./post-edits.ts";
 import { ForMe } from "./for-me.ts";
 import { Later } from "./later.ts";
+import { LATER, LaterFiles, LaterRows } from "./later-db.ts";
 import { LaterDue } from "./later-due.ts";
 import { answers, nextMorning } from "./keep-unread.ts";
 import { AgentLater } from "./later-agents.ts";
@@ -34,6 +35,7 @@ import { DEFAULT_MODEL, DEFAULT_THINKING, type Config } from "./config.ts";
 import { MultiHost } from "./host/multi-host.ts";
 import type { Host } from "./host/types.ts";
 import { Outbox, type OutboxRow } from "./outbox.ts";
+import { DbOutboxLog, JsonOutboxLog, OUTBOX } from "./outbox-db.ts";
 import { boxCwd, projectCwd, projectList } from "./projects.ts";
 import { agentPost, react, ReactionError, reactionInput, reactionList, reactionsOf, reactionText } from "./reactions.ts";
 import { doneInput, markDone, threadRootOf } from "./thread-done.ts";
@@ -170,7 +172,8 @@ export class App {
     this.folders = new AgentFolders(record => ({ agentsDir: this.agents.agentsDirOf(record), ...(routing && record.host !== config.box ? { files: this.boxFiles(record.host) } : {}) }));
     this.forMe = new ForMe({ store: this.agentStore, dataDir: config.dataDir, item: (row, post) => (row.kind === "dm" ? this.rooms.item(post) : this.groups.item(row, post)) });
     this.later = new Later({
-      store: this.agentStore, dataDir: config.dataDir, principal: id => this.threads.principal(id),
+      store: this.agentStore, principal: id => this.threads.principal(id),
+      lists: config.dbKinds?.includes(LATER.kind) ? new LaterRows(this.chatDb, this.move(LATER)) : new LaterFiles(config.dataDir),
       item: (row, post) => (row.kind === "dm" ? this.rooms.item(post) : this.groups.item(row, post)),
     });
     this.later.onChange(({ by, item }) => {
@@ -357,7 +360,8 @@ export class App {
       const record = this.agents.ofWorkThread(conversation) ?? this.agents.ofComm(conversation)?.record;
       if (record && this.agents.roomThread(record) === conversation) this.toWatchers(record.room, { type: "queue", conversation: record.room, place });
     }, log);
-    this.outbox = new Outbox(config.dataDir, {
+    const outboxLog = config.dbKinds?.includes(OUTBOX.kind) ? new DbOutboxLog(this.chatDb, this.move(OUTBOX)) : new JsonOutboxLog(config.dataDir);
+    this.outbox = new Outbox(outboxLog, {
       host,
       submitted: (row, result) => this.queues.follow(row.conversation, result.ticket?.place ?? null),
       refWritten: thread => this.agents.refWritten(thread),

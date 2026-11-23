@@ -1,6 +1,6 @@
 /**
  * Slack's Save for later, for the owner and for agents: each principal keeps its own list of saved room posts, one item per post, in
- * `<data dir>/later/<by>.json`, where `by` is `owner` or an agent id (/home/sieun/work/later-and-unread/contract.md).
+ * `<data dir>/later/<by>.json` or chat.sqlite (later-db.ts), where `by` is `owner` or an agent id (/home/sieun/work/later-and-unread/contract.md).
  *
  * An item is `open` (Slack's In progress) until its principal checks it off as `done` (Completed) or puts it away as `archived` (Archived),
  * and saving a done or archived post opens it again. Unsaving deletes the item. The owner's lists leave out posts in walks' test rooms, as
@@ -10,13 +10,10 @@
  * snoozed reminder fires again. Each write reaches every `onChange` listener, which the app turns into a live `later` event and a re-sent
  * post, and Remind me into a re-armed timer.
  */
-import { readdirSync } from "node:fs";
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Item, LaterItem, LaterList, LaterMark, LaterPatch, LaterRow, LaterState, Ms, NoteLaterItem, PostLaterItem, Principal } from "../web/src/lib/api/types.ts";
 import { isGroupRoom, type AgentStore, type RoomId, type RoomPost, type RoomRow } from "./agent-store.ts";
-import { writeJsonLater } from "./disk.ts";
-import { readJson } from "./store.ts";
+import { type LaterLists, PRINCIPAL } from "./later-db.ts";
 
 /** A Later request the server refuses: 400 for a bad body or principal, 404 for a post or item that is not there. */
 export class LaterError extends Error {
@@ -27,7 +24,8 @@ export class LaterError extends Error {
 
 export interface LaterDeps {
   store: AgentStore;
-  dataDir: string;
+  /** Where the lists are kept (later-db.ts). */
+  lists: LaterLists;
   /** The post as its room's timeline shows it, for the row's author. */
   item(row: RoomRow, post: RoomPost): Item;
   principal(id: string): Principal;
@@ -35,11 +33,6 @@ export interface LaterDeps {
 
 /** What changed: the item after the write, and `removed` when it was unsaved. */
 export type LaterChange = { by: string; item: LaterItem; removed?: true };
-
-interface LaterFile { v: 1; items: LaterItem[] }
-
-/** `owner` or an agent id; it names the principal's file, so it may hold no path characters. */
-const PRINCIPAL = /^(owner|ag_[\w.-]+)$/;
 
 /** The one item id of a saved post: `<room id>:<post id>`, such as `ch_1a2b3c4d:p12`. */
 export const laterId = (room: RoomId, post: string): string => `${room}:${post}`;
@@ -58,29 +51,15 @@ function timeOf(value: unknown, name: string): Ms | undefined {
 }
 
 export class Later {
-  private readonly dir: string;
   private readonly files = new Map<string, LaterItem[]>();
   private readonly listeners = new Set<(change: LaterChange) => void>();
 
-  constructor(private readonly deps: LaterDeps) {
-    this.dir = join(deps.dataDir, "later");
-  }
+  constructor(private readonly deps: LaterDeps) {}
 
   /** Calls `listener` after each write; returns the call that stops it. */
   onChange(listener: (change: LaterChange) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
-  }
-
-  /** Every principal with a Later file, such as `owner` and the agents that saved a post. */
-  principals(): string[] {
-    let names: string[] = [];
-    try {
-      names = readdirSync(this.dir).filter(n => n.endsWith(".json")).map(n => n.slice(0, -5));
-    } catch {
-      names = [];
-    }
-    return [...new Set([...names.filter(n => PRINCIPAL.test(n)), ...this.files.keys()])];
   }
 
   /** The principal's items as stored, newest save first. */
@@ -207,8 +186,10 @@ export class Later {
     const list = this.load(who);
     const old = list.find(i => i.id === id);
     if (!old) return undefined;
-    this.files.set(who, list.filter(i => i !== old));
-    this.flush(who, { by: who, item: old, removed: true });
+    const next = list.filter(i => i !== old);
+    this.files.set(who, next);
+    this.deps.lists.remove(who, next, old.id);
+    this.changed({ by: who, item: old, removed: true });
     return old;
   }
 
@@ -252,20 +233,21 @@ export class Later {
     }
     const list = this.load(by);
     const at = list.findIndex(i => i.id === next.id);
-    this.files.set(by, at < 0 ? [next, ...list] : list.map((i, n) => (n === at ? next : i)));
-    this.flush(by, { by, item: next });
+    const kept = at < 0 ? [next, ...list] : list.map((i, n) => (n === at ? next : i));
+    this.files.set(by, kept);
+    this.deps.lists.put(by, kept, next);
+    this.changed({ by, item: next });
     return next;
   }
 
-  private flush(by: string, change: LaterChange): void {
-    writeJsonLater(join(this.dir, `${by}.json`), { v: 1, items: this.files.get(by) ?? [] } satisfies LaterFile);
+  private changed(change: LaterChange): void {
     for (const listener of this.listeners) listener(change);
   }
 
   private load(by: string): LaterItem[] {
     let list = this.files.get(by);
     if (!list) {
-      list = readJson<LaterFile>(join(this.dir, `${by}.json`), { v: 1, items: [] }).items ?? [];
+      list = this.deps.lists.load(by);
       this.files.set(by, list);
     }
     return list;

@@ -14,6 +14,7 @@ import type { DatabaseSync, StatementSync } from "node:sqlite";
 import type { ImageRef } from "../web/src/lib/api/types.ts";
 import type { RoomId, RoomPost } from "./agent-store.ts";
 import type { ChatDb } from "./chat-db.ts";
+import { appendLater, readLatest, written } from "./disk.ts";
 import { fileImageSize, withSize } from "./image-size.ts";
 import type { JsonKind, JsonMove } from "./json-move.ts";
 
@@ -25,8 +26,11 @@ export const logName = (room: RoomId): string => room.replace(/[^\w.-]/g, "_");
 const logFile = (name: string): string => `rooms/${name}.jsonl`;
 const nameOf = (file: string): string => file.slice("rooms/".length, -".jsonl".length);
 
-/** A room log's posts as the log replays: the first `post` line of each id, with every later `set` line on it applied in order. */
-export function replayLog(text: string): RoomPost[] {
+/**
+ * A room log's posts as the log replays: the first `post` line of each id, with every later `set` line on it applied in order. `onPost`
+ * sees each post as its `post` line has it, before any `set` line.
+ */
+export function replayLog(text: string, onPost: (post: RoomPost) => void = () => {}): RoomPost[] {
   const byId = new Map<string, RoomPost>();
   const list: RoomPost[] = [];
   for (const line of text.split("\n")) {
@@ -39,6 +43,7 @@ export function replayLog(text: string): RoomPost[] {
     }
     if (parsed.t === "post") {
       if (byId.has(parsed.post.id)) continue;
+      onPost(parsed.post);
       byId.set(parsed.post.id, parsed.post);
       list.push(parsed.post);
     } else {
@@ -84,7 +89,65 @@ export const POSTS: JsonKind = {
   },
 };
 
-export class PostLog {
+/** Where AgentStore keeps each room's posts: chat.sqlite's rows (`PostLog`), or the room logs when APPS_CHAT_DB_KINDS leaves out `posts`. */
+export interface Posts {
+  /** The room's posts in order, read on the room's first read and kept in memory. */
+  postsOf(room: RoomId): RoomPost[];
+  /** Adds a post with the next seq at the end of its room and writes it. */
+  add(input: Omit<RoomPost, "id" | "seq">): RoomPost;
+  /** Writes a change to the post, which `patch` already made in memory. */
+  save(post: RoomPost, patch: Partial<RoomPost>): void;
+  /** Settles once every post and change of the room written so far is stored. */
+  written(room: RoomId): Promise<void>;
+}
+
+/** The size of an upload a post names, from its file's header, for a post from before its upload's size was kept. */
+function uploadSize(dir: string, ref: ImageRef): { width: number; height: number } | undefined {
+  const name = ref.url.startsWith("/api/uploads/") ? ref.url.slice("/api/uploads/".length).replace(/[^\w.-]/g, "") : "";
+  return name ? fileImageSize(join(dir, "images", name)) : undefined;
+}
+
+/** The room logs `rooms/<room>.jsonl`, appended through the disk queue, as the chat server kept posts before the move. */
+export class JsonPostLog implements Posts {
+  private readonly rooms = new Map<RoomId, RoomPost[]>();
+
+  constructor(private readonly dir: string) {}
+
+  postsOf(room: RoomId): RoomPost[] {
+    let list = this.rooms.get(room);
+    if (list) return list;
+    const text = readLatest(this.logFile(room));
+    // A post from before its upload's size was kept reads it from the file's header here, so every room draws its images at size.
+    list = text === undefined ? [] : replayLog(text, post => {
+      if (post.images?.length) post.images = post.images.map(ref => withSize(ref, () => uploadSize(this.dir, ref)));
+    });
+    this.rooms.set(room, list);
+    return list;
+  }
+
+  add(input: Omit<RoomPost, "id" | "seq">): RoomPost {
+    const list = this.postsOf(input.room);
+    const seq = (list.at(-1)?.seq ?? 0) + 1;
+    const post: RoomPost = { ...input, id: `p${seq}`, seq };
+    list.push(post);
+    appendLater(this.logFile(input.room), `${JSON.stringify({ t: "post", post } satisfies LogLine)}\n`);
+    return post;
+  }
+
+  save(post: RoomPost, patch: Partial<RoomPost>): void {
+    appendLater(this.logFile(post.room), `${JSON.stringify({ t: "set", post: post.id, patch } satisfies LogLine)}\n`);
+  }
+
+  written(room: RoomId): Promise<void> {
+    return written(this.logFile(room));
+  }
+
+  private logFile(room: RoomId): string {
+    return join(this.dir, logFile(logName(room)));
+  }
+}
+
+export class PostLog implements Posts {
   private readonly rooms = new Map<string, RoomPost[]>();
   /** Each room's newest write, which settles once it and every write queued before it are committed. */
   private readonly last = new Map<string, Promise<void>>();
@@ -106,7 +169,7 @@ export class PostLog {
     list = (this.select.all(name) as { body: string }[]).map(row => {
       const post = JSON.parse(row.body) as RoomPost;
       // A post from before its upload's size was kept reads it from the file's header here, so every room draws its images at size.
-      if (post.images?.length) post.images = post.images.map(ref => withSize(ref, () => this.uploadSize(ref)));
+      if (post.images?.length) post.images = post.images.map(ref => withSize(ref, () => uploadSize(this.dir, ref)));
       return post;
     });
     this.rooms.set(name, list);
@@ -126,7 +189,7 @@ export class PostLog {
   }
 
   /** Writes the post's current state over its row, after a change to it. */
-  save(post: RoomPost): void {
+  save(post: RoomPost, _patch?: Partial<RoomPost>): void {
     const name = logName(post.room);
     this.write(name, { sql: "UPDATE posts SET body = ? WHERE room = ? AND id = ?", params: [JSON.stringify(post), name, post.id] }, "post change");
   }
@@ -143,10 +206,5 @@ export class PostLog {
       if (this.last.get(name) === done) this.last.delete(name);
     });
     this.move?.touch(logFile(name));
-  }
-
-  private uploadSize(ref: ImageRef): { width: number; height: number } | undefined {
-    const name = ref.url.startsWith("/api/uploads/") ? ref.url.slice("/api/uploads/".length).replace(/[^\w.-]/g, "") : "";
-    return name ? fileImageSize(join(this.dir, "images", name)) : undefined;
   }
 }

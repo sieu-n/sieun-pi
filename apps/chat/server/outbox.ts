@@ -8,11 +8,10 @@
  * -> gone, once an owner input with its text shows in the conversation. `failed` is only for a send pi-host refuses for good,
  * and it stays until the owner retries or discards it.
  */
-import { join } from "node:path";
 import type { AgentId, ConversationId, Delivery, ImageRef, Item, SendState } from "../web/src/lib/api/types.ts";
 import type { EntryRecord, Host, SubmitInput, Submitted } from "./host/types.ts";
-import { appendLater, readLatest, replaceLater, written } from "./disk.ts";
 import { withFileCards } from "./files.ts";
+import { patchRow, type OutboxLog, type Patch } from "./outbox-db.ts";
 import { isInput } from "./timeline.ts";
 import { OWNER, parseConversationId } from "./threads.ts";
 
@@ -39,10 +38,6 @@ export interface OutboxRow {
  * request id, so a try that landed while its answer was lost lands once (`Outbox.submit`).
  */
 export interface KeptSubmit { thread: string; input: SubmitInput & { requestId: string }; at: number }
-
-/** A `set` patch writes null for a field it clears, since JSON drops undefined. */
-type Patch = { [K in keyof OutboxRow]?: OutboxRow[K] | null };
-type Line = { t: "row"; row: OutboxRow } | { t: "set"; requestId: string; patch: Patch } | { t: "done"; requestId: string; at?: number } | { t: "submit"; send: KeptSubmit };
 
 /** Retry waits grow to this and stay there. A soft cap: the send keeps trying until pi-host takes it or refuses it for good. */
 const MAX_BACKOFF_MS = 30_000;
@@ -81,9 +76,9 @@ export interface OutboxDeps {
 }
 
 export class Outbox {
-  private readonly rows = new Map<string, OutboxRow>();
-  private readonly kept = new Map<string, KeptSubmit>();
-  private readonly done = new Map<string, number>();
+  private readonly rows: Map<string, OutboxRow>;
+  private readonly kept: Map<string, KeptSubmit>;
+  private readonly done: Map<string, number>;
   private readonly timers = new Map<string, NodeJS.Timeout>();
   private readonly inflight = new Set<string>();
   /** Input entries each conversation already matched to a row, so two sends of one text land as two. */
@@ -93,57 +88,27 @@ export class Outbox {
   private sweeper?: NodeJS.Timeout;
   private sweeping = false;
   private stopped = false;
-  private readonly file: string;
 
-  constructor(dir: string, private readonly deps: OutboxDeps) {
-    this.file = join(dir, "outbox.jsonl");
-    this.load();
-  }
-
-  private load(): void {
-    const text = readLatest(this.file);
-    if (text === undefined) return;
-    for (const raw of text.split("\n")) {
-      if (!raw.trim()) continue;
-      let line: Line;
-      try {
-        line = JSON.parse(raw) as Line;
-      } catch {
-        continue;
-      }
-      if (line.t === "row") this.rows.set(line.row.requestId, line.row);
-      else if (line.t === "submit") this.kept.set(line.send.input.requestId, line.send);
-      else if (line.t === "set") {
-        const row = this.rows.get(line.requestId);
-        if (row) patch(row, line.patch);
-      } else {
-        this.rows.delete(line.requestId);
-        this.kept.delete(line.requestId);
-        this.done.set(line.requestId, line.at ?? Date.now());
-      }
-    }
+  /** `log` is where the rows are kept: `outbox.jsonl`, or chat.sqlite once APPS_CHAT_DB_KINDS names `outbox` (outbox-db.ts). */
+  constructor(private readonly log: OutboxLog, private readonly deps: OutboxDeps) {
+    const state = log.load();
+    this.rows = state.rows;
+    this.kept = state.kept;
+    this.done = state.done;
     this.compact();
   }
 
-  /** Rewrites the file with the open rows and the recent finished ids only. */
+  /** Drops the finished ids older than a day, and keeps only the open rows and the recent finished ids. */
   private compact(): void {
     const now = Date.now();
-    for (const [id, at] of this.done) if (now - at > DONE_TTL_MS) this.done.delete(id);
-    const lines: Line[] = [
-      ...[...this.done].map(([requestId, at]): Line => ({ t: "done", requestId, at })),
-      ...[...this.rows.values()].map((row): Line => ({ t: "row", row })),
-      ...[...this.kept.values()].map((send): Line => ({ t: "submit", send })),
-    ];
-    replaceLater(this.file, lines.map(line => `${JSON.stringify(line)}\n`).join(""));
+    const gone = [...this.done].filter(([, at]) => now - at > DONE_TTL_MS).map(([id]) => id);
+    for (const id of gone) this.done.delete(id);
+    this.log.compact({ rows: this.rows, kept: this.kept, done: this.done }, gone);
   }
 
-  private write(line: Line): void {
-    appendLater(this.file, `${JSON.stringify(line)}\n`);
-  }
-
-  /** Settles once every line queued for the outbox file so far is on disk (disk.ts). */
+  /** Settles once every change to the outbox so far is stored. */
   written(): Promise<void> {
-    return written(this.file);
+    return this.log.written();
   }
 
   /** Starts delivering every row a restart left open, and the sweep that finds landed rows. */
@@ -178,7 +143,7 @@ export class Outbox {
     if (this.done.has(input.requestId)) return this.item({ ...input, at: Date.now(), state: "sent", attempts: 1, deliveries: [] });
     const row: OutboxRow = { ...input, at: Date.now(), state: "sending", attempts: 0, deliveries: [] };
     this.rows.set(row.requestId, row);
-    this.write({ t: "row", row });
+    this.log.row(row);
     this.deps.changed(row.conversation, [this.item(row)], []);
     this.schedule(row, 0);
     return this.item(row);
@@ -244,8 +209,8 @@ export class Outbox {
   }
 
   private set(row: OutboxRow, change: Patch): void {
-    patch(row, change);
-    this.write({ t: "set", requestId: row.requestId, patch: change });
+    patchRow(row, change);
+    this.log.set(row, change);
     if (this.rows.has(row.requestId)) this.deps.changed(row.conversation, [this.item(row)], []);
   }
 
@@ -255,7 +220,7 @@ export class Outbox {
     this.rows.delete(row.requestId);
     const at = Date.now();
     this.done.set(row.requestId, at);
-    this.write({ t: "done", requestId: row.requestId, at });
+    this.log.done(row.requestId, at);
     if (!this.rows.size && !this.kept.size && this.done.size > 500) this.compact();
     return `r:${row.requestId}`;
   }
@@ -269,7 +234,7 @@ export class Outbox {
     if (this.kept.has(input.requestId) || this.done.has(input.requestId)) return undefined;
     const send: KeptSubmit = { thread, input, at: Date.now() };
     this.kept.set(input.requestId, send);
-    this.write({ t: "submit", send });
+    this.log.kept(send);
     await after;
     return this.submitKept(send, 0);
   }
@@ -303,7 +268,7 @@ export class Outbox {
     this.kept.delete(requestId);
     const at = Date.now();
     this.done.set(requestId, at);
-    this.write({ t: "done", requestId, at });
+    this.log.done(requestId, at);
   }
 
   private schedule(row: OutboxRow, delay: number): void {
@@ -393,13 +358,6 @@ export class Outbox {
     } finally {
       this.sweeping = false;
     }
-  }
-}
-
-function patch(row: OutboxRow, change: Patch): void {
-  for (const [key, value] of Object.entries(change)) {
-    if (value === null || value === undefined) delete (row as unknown as Record<string, unknown>)[key];
-    else (row as unknown as Record<string, unknown>)[key] = value;
   }
 }
 
