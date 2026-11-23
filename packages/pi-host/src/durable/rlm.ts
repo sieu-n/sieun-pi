@@ -997,7 +997,8 @@ export class DurableRlm {
     const session = harnessSessionOf(threadId, conversation);
     try {
       const leftovers = await import("../../../../legacy/prime/user-history/src/job-leftovers.ts");
-      const left = await leftovers.endLeftovers(this.options.leftovers ?? leftovers.leftoverSource, artifactDirOf(threadFile, threadId, conversation), session);
+      // Tracked, so a stall line names a job end that runs outside rlm.delete_subagent, such as an archive's (`endThread`).
+      const left = await track("job end", session, () => leftovers.endLeftovers(this.options.leftovers ?? leftovers.leftoverSource, artifactDirOf(threadFile, threadId, conversation), session));
       if (left.owned.length || left.units.length || left.kept?.length) this.log(`${session} ended: deleted ${left.owned.join(", ") || "nothing"}${left.units.length ? `, stopped ${left.units.join(", ")}` : ""}${left.kept?.length ? `, kept ${left.kept.join("; ")}` : ""}`);
       return left;
     } catch (error) {

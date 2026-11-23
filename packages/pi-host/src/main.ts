@@ -28,6 +28,7 @@ import { parseArgs } from "node:util";
 import { HOST_SOCKET_ENV } from "./api.ts";
 import { installGuard } from "./guard.ts";
 import { PiHost } from "./host.ts";
+import { noteLine } from "./loop-stall.ts";
 import schedulerExtension from "./scheduler-extension.ts";
 import { listen } from "./server.ts";
 
@@ -92,7 +93,9 @@ if (!values["no-durable"] && process.env.PI_HOST_PRIME_CHAT !== "0") {
 // and a failed load leaves it out too, which the host log says.
 let rlm: DurableRlm | undefined;
 if (!values["no-durable"] && process.env.PI_HOST_RLM !== "0") {
-  rlm = await DurableRlm.load({ agentDir, log: line => process.stderr.write(`${line}\n`) })
+  // Its lines carry the time and count as the last log line of a stall, as the host's own do: on 11-23 an untimed job end line printed after
+  // a stall line read as that stall's cause, though the job ended 6 s later (~/work/pi-host-stalls/k-job-end/report.md).
+  rlm = await DurableRlm.load({ agentDir, log: line => { noteLine(line); process.stderr.write(`${new Date().toISOString()} pi-host ${line}\n`); } })
     .catch(error => { process.stderr.write(`durable ipython failed to load: ${error instanceof Error ? error.stack : String(error)}\n`); return undefined; });
 }
 // sieun-rules' send, repo and transcript guards around every durable tool call, as every Prime session has them (p1331). PI_HOST_RULES=0

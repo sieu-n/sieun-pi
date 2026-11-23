@@ -310,8 +310,11 @@ function otherRecords(own: readonly string[]): Promise<string[]> {
   return new Promise(resolve => {
     hostExecFile("find", [...roots, "-name", OWNED_FILE, "-type", "f"], { maxBuffer: 16 * 1024 * 1024 }, async (_error, stdout) => {
       const files = String(stdout).split("\n").filter(file => file && !skip.has(file));
-      const records = await Promise.all(files.map(file => readOwned(file).then(record => ({ file, paths: record.paths }))));
-      resolve(records.flatMap(record => record.paths.map(path => `${path}\0${dirname(record.file)}`)));
+      // One record at a time, so each read's answer takes its own loop turn: all reads at once came back in one turn. On a rig on us-metal02 on
+      // 11-23, us-metal02's count of 2,364 records held the loop 80 ms per job end, and 10,000 held it 317 ms (~/work/pi-host-stalls/k-job-end/report.md).
+      const named: string[] = [];
+      for (const file of files) for (const path of (await readOwned(file)).paths) named.push(`${path}\0${dirname(file)}`);
+      resolve(named);
     });
   });
 }
