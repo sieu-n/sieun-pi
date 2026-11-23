@@ -360,7 +360,8 @@ export const keptOneOff = (container: BoxContainer, now: number): boolean => {
 };
 /**
  * A helper container Komodo starts for one call: komodo-periphery runs `docker run --rm --privileged --pid=host --network=host` of its own
- * image for each box-exec, box-run deploy and noop probe (apps/infra/komodo/box-exec.sh, box-run.sh, komodo.mjs in auto-sns-agent), and
+ * image for each box-run call of a Stack hook and each noop probe (apps/infra/komodo/box-run.sh, stack-hook.sh, komodo.mjs in
+ * auto-sns-agent; box-exec.sh did the same until its removal on 11-23), and
  * --rm removes it when the call ends. From 11-22 to 11-23 us-metal01 ran 57 such containers, each a few minutes, and d3 counted the
  * one alive at its read (epic_galileo at 01:30Z, hardcore_saha at 06:54Z on 11-23) as a hand-run writer.
  */
