@@ -747,15 +747,6 @@
     min-width: 0;
     overflow-wrap: anywhere;
   }
-  .block-line {
-    display: block;
-  }
-  .when {
-    flex: none;
-    min-width: 72px;
-    text-align: right;
-    font-variant-numeric: tabular-nums;
-  }
   .id {
     flex: none;
     color: var(--text-subtle);

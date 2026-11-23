@@ -29,6 +29,9 @@
       ],
       "$pages/*": [
         "./src/pages/*"
+      ],
+      "/src/*": [
+        "./src/*"
       ]
     }
   },
@@ -38,5 +41,8 @@
     "vite.config.ts",
     "playwright.config.ts",
     "../test/**/*.ts"
+  ],
+  "exclude": [
+    "../test/server/**"
   ]
 }

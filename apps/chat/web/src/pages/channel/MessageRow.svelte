@@ -84,7 +84,7 @@
    */
   const authored = $derived(withAuthor(item.author.kind === "owner" ? { ...roomContext, bold: true } : roomContext, item.author.id));
   /** The post's box images' sizes from the server (Item `imageSizes`), so each draws its box before its bytes arrive. */
-  const context = $derived(item.kind !== "system" && item.imageSizes ? { ...authored, imageSizes: item.imageSizes } : authored);
+  const context = $derived(item.imageSizes ? { ...authored, imageSizes: item.imageSizes } : authored);
   const slack = $derived(layout === "slack");
   const turn = $derived(item.kind === "turn" ? item : null);
   const message = $derived(item.kind === "message" ? item : null);
