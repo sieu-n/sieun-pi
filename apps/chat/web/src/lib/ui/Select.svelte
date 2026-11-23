@@ -31,6 +31,8 @@
 <style>
   .select {
     display: inline-flex;
+    max-width: 100%;
+    min-width: 0;
     align-items: center;
     gap: 8px;
   }
@@ -42,11 +44,14 @@
   .control {
     position: relative;
     display: inline-flex;
+    min-width: 0;
     align-items: center;
   }
   select {
     appearance: none;
+    max-width: 100%;
     height: 32px;
+    text-overflow: ellipsis;
     padding: 0 32px 0 12px;
     border: 1px solid var(--border-standard);
     border-radius: var(--radius-pill);

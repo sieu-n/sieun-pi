@@ -216,20 +216,22 @@
       </section>
 
       <CardGroup title="Cost by token kind" description="Each kind at its own rate, so the shared prompt read from cache never counts as fresh input.">
-        <div class="kind head" aria-hidden="true"><span>Kind</span><span class="num">Tokens</span><span class="num">Share of cost</span><span class="num">Cost</span></div>
-        {#each KINDS as kind (kind)}
-          <div class="kind" data-testid="usage-kind-{kind}" title={kindTitle(total.tokens[kind], total.cost[kind])}>
-            <span>{KIND_LABEL[kind]}</span>
-            <span class="num">{full(total.tokens[kind])}</span>
-            <span class="num">{total.cost.total > 0 ? percent(total.cost[kind] / total.cost.total) : "—"}</span>
-            <span class="num">{cost(total.cost[kind])}</span>
+        <div class="kinds">
+          <div class="kind head" aria-hidden="true"><span>Kind</span><span class="num">Tokens</span><span class="num share">Share of cost</span><span class="num">Cost</span></div>
+          {#each KINDS as kind (kind)}
+            <div class="kind" data-testid="usage-kind-{kind}" title={kindTitle(total.tokens[kind], total.cost[kind])}>
+              <span>{KIND_LABEL[kind]}</span>
+              <span class="num">{full(total.tokens[kind])}</span>
+              <span class="num share">{total.cost.total > 0 ? percent(total.cost[kind] / total.cost.total) : "—"}</span>
+              <span class="num">{cost(total.cost[kind])}</span>
+            </div>
+          {/each}
+          <div class="kind sum" data-testid="usage-kind-total" title={kindTitle(total.tokens.input + total.tokens.output + total.tokens.cacheRead + total.tokens.cacheWrite, total.cost.total)}>
+            <span>Total, {full(total.turns)} {total.turns === 1 ? "turn" : "turns"}</span>
+            <span class="num">{full(total.tokens.input + total.tokens.output + total.tokens.cacheRead + total.tokens.cacheWrite)}</span>
+            <span class="num share">{total.cost.total > 0 ? "100%" : "—"}</span>
+            <span class="num" data-testid="usage-cost">{cost(total.cost.total)}</span>
           </div>
-        {/each}
-        <div class="kind sum" data-testid="usage-kind-total" title={kindTitle(total.tokens.input + total.tokens.output + total.tokens.cacheRead + total.tokens.cacheWrite, total.cost.total)}>
-          <span>Total, {full(total.turns)} {total.turns === 1 ? "turn" : "turns"}</span>
-          <span class="num">{full(total.tokens.input + total.tokens.output + total.tokens.cacheRead + total.tokens.cacheWrite)}</span>
-          <span class="num">{total.cost.total > 0 ? "100%" : "—"}</span>
-          <span class="num" data-testid="usage-cost">{cost(total.cost.total)}</span>
         </div>
       </CardGroup>
     {/if}
@@ -294,6 +296,12 @@
   .kind.sum { border-top: 1px solid var(--border-standard); color: var(--text-standard); font-weight: 500; }
   .kind.head { padding-block: var(--space-2); color: var(--text-metadata); font: var(--text-caption); letter-spacing: var(--tracking-caption); }
   .num { text-align: right; }
+  /* In a narrow pane the share column goes, and the rest fit: the tokens of a 90-day range reach 13 digits with their commas. */
+  .kinds { container-type: inline-size; }
+  @container (max-width: 34rem) {
+    .kind { grid-template-columns: minmax(0, 1fr) 7.5rem 5.5rem; gap: var(--space-3); }
+    .share { display: none; }
+  }
   .section { display: flex; min-width: 0; flex-direction: column; gap: var(--space-3); }
   .columns { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr)); gap: var(--space-8); }
   .list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }

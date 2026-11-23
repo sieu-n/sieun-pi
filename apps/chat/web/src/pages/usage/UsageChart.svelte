@@ -163,35 +163,38 @@
       {figures ? `Hide figures per ${UNIT[bucket]}` : `Show figures per ${UNIT[bucket]}`}
     </Button>
   </div>
-  <table class={figures ? "figures" : "sr-only"} data-testid="usage-figures">
-    <caption class="sr-only">{format.label} per {UNIT[bucket]}, for each {UNIT[bucket]} that ran a model call</caption>
-    <thead>
-      <tr>
-        <th scope="col">{UNIT[bucket][0]!.toUpperCase()}{UNIT[bucket].slice(1)}</th>
-        {#if stacked}{#each series as line (line.key)}<th scope="col">{line.label}</th>{/each}{/if}
-        <th scope="col">Turns</th>
-        <th scope="col">{stacked ? "Total" : format.label}</th>
-      </tr>
-    </thead>
-    <tbody>
-      {#each used as { entry, index } (entry.start)}
+  <!-- Closed, the table stays for screen readers in a 1 px box that clips it: a table never narrows below its content, so it cannot be the clipped box itself. -->
+  <div class={figures ? "figures-box" : "sr-only"}>
+    <table class="figures" data-testid="usage-figures">
+      <caption class="sr-only">{format.label} per {UNIT[bucket]}, for each {UNIT[bucket]} that ran a model call</caption>
+      <thead>
         <tr>
-          <th scope="row">{bucketName(entry.start, bucket)}</th>
-          {#if stacked}{#each series as line, position (line.key)}<td>{format.exact(cells[index]?.[position] ?? 0)}</td>{/each}{/if}
-          <td>{full(entry.turns)}</td>
-          <td>{format.exact(totals[index] ?? 0)}</td>
+          <th scope="col">{UNIT[bucket][0]!.toUpperCase()}{UNIT[bucket].slice(1)}</th>
+          {#if stacked}{#each series as line (line.key)}<th scope="col">{line.label}</th>{/each}{/if}
+          <th scope="col">Turns</th>
+          <th scope="col">{stacked ? "Total" : format.label}</th>
         </tr>
-      {/each}
-    </tbody>
-    <tfoot>
-      <tr>
-        <th scope="row">Total</th>
-        {#if stacked}{#each series as line, position (line.key)}<td>{format.exact(cells.reduce((all, row) => all + (row[position] ?? 0), 0))}</td>{/each}{/if}
-        <td>{full(buckets.reduce((all, entry) => all + entry.turns, 0))}</td>
-        <td data-testid="usage-figures-total">{format.exact(sum)}</td>
-      </tr>
-    </tfoot>
-  </table>
+      </thead>
+      <tbody>
+        {#each used as { entry, index } (entry.start)}
+          <tr>
+            <th scope="row">{bucketName(entry.start, bucket)}</th>
+            {#if stacked}{#each series as line, position (line.key)}<td>{format.exact(cells[index]?.[position] ?? 0)}</td>{/each}{/if}
+            <td>{full(entry.turns)}</td>
+            <td>{format.exact(totals[index] ?? 0)}</td>
+          </tr>
+        {/each}
+      </tbody>
+      <tfoot>
+        <tr>
+          <th scope="row">Total</th>
+          {#if stacked}{#each series as line, position (line.key)}<td>{format.exact(cells.reduce((all, row) => all + (row[position] ?? 0), 0))}</td>{/each}{/if}
+          <td>{full(buckets.reduce((all, entry) => all + entry.turns, 0))}</td>
+          <td data-testid="usage-figures-total">{format.exact(sum)}</td>
+        </tr>
+      </tfoot>
+    </table>
+  </div>
 </div>
 
 <style>
@@ -216,6 +219,7 @@
   /* The tip sits over the plot, so it lets the pointer through: else it takes the hover from the bars it covers. */
   :global(.popover.usage-tip) { pointer-events: none; }
   .toggle { display: flex; }
+  .figures-box { min-width: 0; overflow-x: auto; }
   .figures { width: 100%; border-collapse: collapse; color: var(--text-subtle); font: var(--text-caption); letter-spacing: var(--tracking-caption); font-variant-numeric: tabular-nums; }
   .figures th, .figures td { padding: var(--space-1) var(--space-2); border-bottom: 1px solid var(--border-standard); text-align: right; }
   .figures th:first-child { text-align: left; }
