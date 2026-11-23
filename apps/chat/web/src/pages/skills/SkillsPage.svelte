@@ -49,7 +49,7 @@
     untrack(() => {
       if (!shows) void skillsInventory.open().then(() => skillsView.ahead()).then(() => skillsText.ahead());
       else if (layout?.text) void Promise.all([skillsView.open(), skillsText.open()]);
-      else void skillsView.open().then(() => skillsText.open());
+      else void skillsView.open().then(() => skillsText.ahead());
     });
   });
 

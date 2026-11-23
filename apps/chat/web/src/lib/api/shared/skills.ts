@@ -371,8 +371,8 @@ export type SkillsView = {
  * The page's first read of it on a fresh profile waits on the whole answer: 243 KB as brotli for the live view on 11-23, 1,263 ms at a
  * 200 ms round trip in the p155 rig. So the wire leaves out what the page can rebuild or never shows: a copy's id (always `<box>:<path>`),
  * its realPath where it is the path, its hash and mtime (no layout reads them), and each skill's description, 86 KB of the 243, which
- * GET /api/skills/text sends apart (`SkillText`) and the page puts back (`withText`). The same view was 99 KB as brotli at the server's
- * quality 5 without them.
+ * GET /api/skills/text sends apart (`SkillText`) and the page puts back (`withText`). Without them the live view was 77 KB as brotli at
+ * the kept answers' quality 9 on release-885d7bd, and the texts 70 KB.
  */
 export type WireCopy = Omit<SkillCopy, "checkout" | "id" | "hash" | "mtime" | "realPath"> & { checkout: SkillCopy["checkout"] | string; realPath?: string };
 export type WireSkill = Omit<SkillEntry, "copies" | "description"> & { copies: WireCopy[] };
