@@ -71,9 +71,7 @@ const extensions = [...listedExtensions(), ...(values.extension ?? []).map(path 
 
 const [provider, ...modelId] = (values.model ?? "").split("/");
 
-// pi-rlm children load the host's extensions plus the scheduler's, so a child's rlm_heartbeat jobs attach to this host's scheduler.
 const { setChildLoaderOptions } = await import("@sieun-pi/pi-rlm/children");
-setChildLoaderOptions(() => ({ additionalExtensionPaths: extensions, extensionFactories: [schedulerExtension] }));
 
 const dataDir = values["data-dir"] ? resolve(values["data-dir"]) : join(agentDir, "pi-host");
 // Durable threads: one pi-durable file per root thread, each its own pi-pool tree except a comm thread, which runs in its agent's work
@@ -142,6 +140,10 @@ const host = new PiHost({
   scratchChatMark: values["scratch-chat"] === true,
 });
 installGuard(host);
+// The extensions load once, before the socket listens, so no session open imports them on the loop (host.ts loadExtensions). pi-rlm children
+// get the same factories plus the scheduler's, so a child's rlm_heartbeat jobs attach to this host's scheduler.
+const hostExtensions = await host.loadExtensions();
+setChildLoaderOptions(() => ({ extensionFactories: [...hostExtensions, schedulerExtension] }));
 const server = await listen(host, socketPath, { scratchChatMark: values["scratch-chat"] === true });
 await durable?.threads.start().catch(error => host.log(`durable recovery failed: ${error instanceof Error ? error.stack : String(error)}`));
 void host.warmProviders().then(rows => host.log(`provider modules loaded: ${rows.map(row => `${row.api} ${row.ms} ms${row.error ? ` (${row.error})` : ""}`).join(", ")}`));

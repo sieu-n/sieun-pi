@@ -9,6 +9,7 @@
 import { randomUUID } from "node:crypto";
 import { appendFileSync, closeSync, existsSync, openSync, readdirSync, readSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import {
@@ -20,6 +21,7 @@ import {
   type CreateAgentSessionRuntimeFactory,
   type CreateAgentSessionServicesOptions,
   type ExtensionFactory,
+  type InlineExtension,
 } from "@earendil-works/pi-coding-agent";
 import * as registry from "@sieun-pi/pi-family/registry";
 import type { AgentEntry, BusMessage, Delivery, Identity } from "@sieun-pi/pi-family/registry";
@@ -122,6 +124,7 @@ export class PiHost implements HostApi {
   private readonly idleTimer: NodeJS.Timeout | undefined;
   private closing = false;
   private savedIndex: SavedIndex | undefined;
+  private extensionLoad: Promise<InlineExtension[]> | undefined;
   readonly scheduler: Scheduler;
   /** Writes a host.log line for each event-loop stall over 500 ms, naming the work that ran in it (`loop-stall.ts`). */
   readonly stalls: LoopStalls;
@@ -259,13 +262,38 @@ export class PiHost implements HostApi {
     }
   }
 
+  /**
+   * The `extensions` files as factories, imported once per process through Node's own loader and handed to every session, a pi-rlm child's too.
+   * Given as paths, Pi's loader reads each file through jiti, whose Babel transform runs on the loop: on 11-20 to 11-23 the daily heartbeat's
+   * reopen of 01a17e5d held the loop 4.3 to 5.4 s while jiti transformed 135 files, because jiti keys its cache by path and each release has
+   * a new one (work/pi-host-stalls/c-reopen/report.md). main.ts awaits this before the socket listens, so no open pays for it.
+   */
+  loadExtensions(): Promise<InlineExtension[]> {
+    this.extensionLoad ??= (async () => {
+      const loaded: InlineExtension[] = [];
+      for (const path of this.options.extensions ?? []) {
+        try {
+          const module = (await import(pathToFileURL(path).href)) as { default?: unknown };
+          if (typeof module.default !== "function") throw new Error("its default export is not an extension factory");
+          loaded.push({ name: path, factory: module.default as ExtensionFactory });
+        } catch (error) {
+          this.log(`extension ${path} did not load: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        await new Promise(resolve => setImmediate(resolve));
+      }
+      return loaded;
+    })();
+    return this.extensionLoad;
+  }
+
   private async createRuntime(manager: SessionManager, request: OpenRequest): Promise<AgentSessionRuntime> {
+    const extensions = await this.loadExtensions();
     const flags = new Map(Object.entries(request.extensionFlagValues ?? {}));
     const options = this.options;
     const factory: CreateAgentSessionRuntimeFactory = async ({ cwd, agentDir, sessionManager, sessionStartEvent }) => {
       const services = await createAgentSessionServices({
         cwd, agentDir, extensionFlagValues: flags,
-        resourceLoaderOptions: { ...options.resourceLoaderOptions, additionalExtensionPaths: options.extensions ?? [], extensionFactories: [schedulerExtension, ...options.extensionFactories ?? []] },
+        resourceLoaderOptions: { ...options.resourceLoaderOptions, extensionFactories: [...extensions, schedulerExtension, ...options.extensionFactories ?? []] },
       });
       const asked = request.provider && request.model;
       const model = asked ? services.modelRuntime.getModel(request.provider!, request.model!)
