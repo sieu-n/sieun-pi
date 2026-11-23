@@ -9,7 +9,7 @@ Apply this to any text a human will read. Published text matters most, because a
 
 This file is the one writing standard. If another writing rule disagrees, this file wins.
 
-llm-wiki pages add the 메르 style, and a subagent writes each page. The body is numbered short lines, one plain sentence each, with a mermaid diagram or image for every flow, structure or comparison, short sections, and no prose paragraphs. That standard lives only in sieun-pi `skills/wiki/references/writing.md`, and sieun-pi `apps/wiki/scripts/prose-lint.mjs` enforces both files on every page write.
+An llm-wiki page reads as plain prose under sentence-case headings, and a subagent writes each page. It draws each flow or structure as a mermaid diagram laid out for a person, and it uses a numbered list only for steps in order, never as a string of one-sentence lines. A page under `apps/` or `domains/` holds only the layers a reader can check, the flow or call stack, the tables and the fields, in about 800 words, and the rest goes on the writer's session page. That standard lives only in sieun-pi `skills/wiki/references/writing.md`, and sieun-pi `apps/wiki/scripts/prose-lint.mjs` enforces both files on every page write.
 
 ## The one test
 
@@ -23,7 +23,7 @@ Run this pass first. It catches the most hits.
 2. Use a colon only to introduce a list or an example. Never use one as a mid-sentence connector or a reveal ("The best part: it learns").
 3. Use bold inside a paragraph only for a short label, under about 40 characters, with 2 or 3 bold spans in a message. Italics for emphasis are the same defect.
 4. Let no label open a paragraph or a bullet. A bold lead-in (`**Layer 1, LLM proxy.** As in...`), a colon label (`**Runbook:** the runbook...`, `Live now: ...`) and a bold sentence dropped mid-paragraph are all out.
-5. Make every bullet one normal, complete sentence with a subject and a verb, ending in a period. No fragments, no `label: value` pairs, and no clauses stuffed together with semicolons or comma chains. Two ideas are two bullets. In chat and docs, use a list only for parallel items and write everything else as a paragraph. An llm-wiki page body is the exception described above.
+5. Make every bullet one normal, complete sentence with a subject and a verb, ending in a period. No fragments, no `label: value` pairs, and no clauses stuffed together with semicolons or comma chains. Two ideas are two bullets. In chat, docs and wiki pages, use a list only for parallel items or steps in order, and write everything else as a paragraph.
 6. Write headings in sentence case. Use no decorative emoji, and only straight quotes.
 7. Use numbered lists for sequences. Link text names where the link goes, never "click here".
 
