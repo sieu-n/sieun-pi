@@ -413,19 +413,21 @@ export function routes(app: App, parts: SkillsParts): Route[] {
     // An agent's save_message, remind_me and list_saved_messages (later-agents.ts), as its thread.
     route("GET", "/api/threads/:id/later", async (_r, p, q) => app.laterListAsAgent(p.id!, q.get("state"))),
     route("POST", "/api/threads/:id/later", async (_r, p, _q, body) => {
-      return app.laterAsAgent(p.id!, ((await body()) ?? {}) as { message?: unknown; state?: unknown; remindAt?: unknown });
+      return app.laterAsAgent(p.id!, ((await body()) ?? {}) as { message?: unknown; state?: unknown; remindAt?: unknown; memo?: unknown });
     }),
-    // The owner's Save for later list (later.ts); pi-host's agent tools use the /api/threads/:id/later routes.
+    // The owner's Saved list (later.ts); pi-host's agent tools use the /api/threads/:id/later routes.
     route("GET", "/api/later", async (_r, _p, q) => {
       const state = q.get("state");
-      if (state !== null && state !== "open" && state !== "archived" && state !== "done") throw new BadRequest("A Later list's state is open, archived or done.");
+      if (state !== null && state !== "open" && state !== "archived" && state !== "done") throw new BadRequest("A Saved list's state is open, archived or done.");
       return app.later.list("owner", state ?? undefined, { test: q.get("test") === "1" });
     }),
     route("POST", "/api/later", async (_r, _p, _q, body) => ({ item: app.later.save("owner", ((await body()) ?? {}) as Record<string, unknown>) })),
     route("PATCH", "/api/later/:id", async (_r, p, _q, body) => {
-      const { state, remindAt, ...rest } = ((await body()) ?? {}) as Record<string, unknown>;
-      if (Object.keys(rest).length) throw new BadRequest("A Later patch carries only state and remindAt.");
-      return { item: app.later.update("owner", p.id!, { ...(state !== undefined ? { state } : {}), ...(remindAt !== undefined ? { remindAt } : {}) } as LaterPatch) };
+      const { state, remindAt, memo, ...rest } = ((await body()) ?? {}) as Record<string, unknown>;
+      if (Object.keys(rest).length) throw new BadRequest("A Saved patch carries only state, remindAt and memo.");
+      return {
+        item: app.later.update("owner", p.id!, { ...(state !== undefined ? { state } : {}), ...(remindAt !== undefined ? { remindAt } : {}), ...(memo !== undefined ? { memo } : {}) } as LaterPatch),
+      };
     }),
     route("DELETE", "/api/later/:id", async (_r, p) => ({ item: app.later.remove("owner", p.id!) ?? null })),
     route("PUT", "/api/later/:id", async (_r, p, _q, body) => ({ item: app.restoreLater(p.id!, ((await body()) ?? {}) as Record<string, unknown>) })),

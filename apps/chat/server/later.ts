@@ -6,6 +6,8 @@
  * and saving a done or archived post opens it again. Unsaving deletes the item. The owner's lists leave out posts in walks' test rooms, as
  * every owner list does (agent-store.ts `isTest`), unless a walk asks for them.
  *
+ * `memo` is the principal's own plain text about the item, set as it saves the item or by a patch and never empty: a blank memo is no memo.
+ *
  * `remindAt` and `notifiedAt` belong to Remind me (later-due.ts): a new `remindAt` clears `notifiedAt`, so a
  * snoozed reminder fires again. Each write reaches every `onChange` listener, which the app turns into a live `later` event and a re-sent
  * post, and Remind me into a re-armed timer.
@@ -15,7 +17,7 @@ import type { Item, LaterItem, LaterList, LaterMark, LaterPatch, LaterRow, Later
 import { isGroupRoom, type AgentStore, type RoomId, type RoomPost, type RoomRow } from "./agent-store.ts";
 import { type LaterLists, PRINCIPAL } from "./later-db.ts";
 
-/** A Later request the server refuses: 400 for a bad body or principal, 404 for a post or item that is not there. */
+/** A Saved request the server refuses: 400 for a bad body or principal, 404 for a post or item that is not there. */
 export class LaterError extends Error {
   constructor(readonly status: 400 | 404, message: string) {
     super(message);
@@ -38,6 +40,8 @@ export type LaterChange = { by: string; item: LaterItem; removed?: true };
 export const laterId = (room: RoomId, post: string): string => `${room}:${post}`;
 
 const LATER_STATES: readonly unknown[] = ["open", "archived", "done"] satisfies LaterState[];
+/** The longest note or memo an item keeps; longer text is cut. */
+const TEXT_MAX = 4000;
 
 function principalOf(by: string): string {
   if (!PRINCIPAL.test(by)) throw new LaterError(400, `${JSON.stringify(by)} names nobody who saves posts; pass owner or an agent id such as ag_vent.`);
@@ -48,6 +52,14 @@ function timeOf(value: unknown, name: string): Ms | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) throw new LaterError(400, `${name} is a time in ms since 1970, such as ${Date.now() + 3_600_000}.`);
   return value;
+}
+
+/** A memo as a request sends it: its trimmed text, "" for a blank one or `null`, and undefined when the request names none. */
+function memoOf(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return "";
+  if (typeof value !== "string") throw new LaterError(400, "memo is plain text, such as {memo: \"read before the Thursday call\"}.");
+  return value.trim().slice(0, TEXT_MAX);
 }
 
 export class Later {
@@ -104,34 +116,41 @@ export class Later {
   }
 
   /**
-   * Saves the post for `by`. Saving a saved post keeps its item, opens it again when it was done and takes a new `remindAt`, so a retry or
-   * a second click writes one item.
+   * Saves the post for `by`. Saving a saved post keeps its item, opens it again when it was done and takes a new `remindAt` and a new
+   * memo, so a retry or a second click writes one item. A save with no memo or a blank one keeps the memo the item has.
    */
-  save(by: string, input: { room?: unknown; post?: unknown; note?: unknown; remindAt?: unknown }): LaterItem {
-    if (input.note !== undefined) return this.remind(by, input.note, input.remindAt);
+  save(by: string, input: { room?: unknown; post?: unknown; note?: unknown; remindAt?: unknown; memo?: unknown }): LaterItem {
+    if (input.note !== undefined) return this.remind(by, input.note, input.remindAt, input.memo);
     const who = principalOf(by);
     if (typeof input.room !== "string" || typeof input.post !== "string") throw new LaterError(400, "A save names its post as {room, post}, such as {room: \"ch_1a2b3c4d\", post: \"p12\"}.");
     const { room, post } = input as { room: RoomId; post: string };
     const remindAt = timeOf(input.remindAt, "remindAt");
+    const memo = memoOf(input.memo) || undefined;
     if (!this.deps.store.postsOf(room).some(p => p.id === post)) throw new LaterError(404, `No post ${post} in ${room} to save.`);
     const list = this.load(who);
     const old = list.find(i => i.id === laterId(room, post));
     if (old) {
-      if (old.state === "open" && (remindAt === undefined || remindAt === old.remindAt)) return old;
-      return this.write(who, { ...this.reopened(old), ...(remindAt !== undefined ? { remindAt } : {}) }, remindAt !== undefined);
+      const sameRemind = remindAt === undefined || remindAt === old.remindAt;
+      if (old.state === "open" && sameRemind && (memo === undefined || memo === old.memo)) return old;
+      const next = { ...this.reopened(old), ...(remindAt !== undefined ? { remindAt } : {}), ...(memo !== undefined ? { memo } : {}) };
+      return this.write(who, next, remindAt !== undefined && (old.state !== "open" || !sameRemind));
     }
-    return this.write(who, { id: laterId(room, post), by: who, room, post, savedAt: Date.now(), state: "open", ...(remindAt !== undefined ? { remindAt } : {}) }, false);
+    return this.write(who, { id: laterId(room, post), by: who, room, post, savedAt: Date.now(), state: "open", ...(remindAt !== undefined ? { remindAt } : {}), ...(memo !== undefined ? { memo } : {}) }, false);
   }
 
   /**
    * Slack's /remind me, and a saved wiki page: an item of the principal's own text, with no post, due at `remindAt` when it has one. Each
    * call writes a new item.
    */
-  remind(by: string, note: unknown, at: unknown): NoteLaterItem {
+  remind(by: string, note: unknown, at: unknown, memoText?: unknown): NoteLaterItem {
     const who = principalOf(by);
     if (typeof note !== "string" || !note.trim()) throw new LaterError(400, "A note names its text as note, such as {note: \"call the bank\", remindAt: 1795300000000}.");
     const remindAt = timeOf(at, "remindAt");
-    const item: NoteLaterItem = { id: `note:${randomUUID().slice(0, 8)}`, by: who, note: note.trim().slice(0, 4000), savedAt: Date.now(), state: "open", ...(remindAt !== undefined ? { remindAt } : {}) };
+    const memo = memoOf(memoText) || undefined;
+    const item: NoteLaterItem = {
+      id: `note:${randomUUID().slice(0, 8)}`, by: who, note: note.trim().slice(0, TEXT_MAX), savedAt: Date.now(), state: "open",
+      ...(remindAt !== undefined ? { remindAt } : {}), ...(memo !== undefined ? { memo } : {}),
+    };
     this.write(who, item, false);
     return item;
   }
@@ -152,16 +171,17 @@ export class Later {
   }
 
   /**
-   * Checks the item off (`done`), puts it away (`archived`) or opens it again (`open`), and sets or clears (`null`) its reminder. A patch
-   * that changes nothing writes nothing.
+   * Checks the item off (`done`), puts it away (`archived`) or opens it again (`open`), sets or clears (`null`) its reminder, and sets or
+   * clears (`null` or blank) its memo. A patch that changes nothing writes nothing.
    */
   update(by: string, id: string, patch: LaterPatch & { notifiedAt?: Ms }): LaterItem {
     const who = principalOf(by);
     const old = this.get(who, id);
     if (!old) throw new LaterError(404, `${who} has no saved post ${id}.`);
-    if (patch.state !== undefined && !LATER_STATES.includes(patch.state)) throw new LaterError(400, "A Later state is open, archived or done.");
+    if (patch.state !== undefined && !LATER_STATES.includes(patch.state)) throw new LaterError(400, "A saved item's state is open, archived or done.");
     const remindAt = patch.remindAt === null ? null : timeOf(patch.remindAt, "remindAt");
     const notifiedAt = timeOf(patch.notifiedAt, "notifiedAt");
+    const memo = memoOf(patch.memo);
     let next: LaterItem = old;
     if (patch.state !== undefined && patch.state !== old.state) {
       const rest = this.reopened(old);
@@ -177,6 +197,11 @@ export class Later {
       remindChanged = true;
     }
     if (notifiedAt !== undefined && !remindChanged) next = { ...next, notifiedAt };
+    if (memo && memo !== next.memo) next = { ...next, memo };
+    else if (memo === "" && next.memo !== undefined) {
+      const { memo: _m, ...rest } = next;
+      next = rest;
+    }
     return next === old ? old : this.write(who, next, remindChanged);
   }
 
@@ -194,8 +219,8 @@ export class Later {
   }
 
   /**
-   * Undo of an unsave: puts the item `remove` answered back as it was, with its state, reminder, Keep unread mark and save time, which is
-   * its place in the list. It replaces a save of the post made since.
+   * Undo of an unsave: puts the item `remove` answered back as it was, with its state, reminder, Keep unread mark, memo and save time, which
+   * is its place in the list. It replaces a save of the post made since.
    */
   restore(by: string, id: string, input: Record<string, unknown>): LaterItem {
     const who = principalOf(by);
@@ -204,18 +229,19 @@ export class Later {
     const post = id.slice(cut + 1);
     const note = room === "note" ? input.note : undefined;
     if (room === "note" && (typeof note !== "string" || !note.trim())) throw new LaterError(400, "A reminder put back names its text as note.");
-    if (room !== "note" && (cut < 1 || !this.deps.store.postsOf(room).some(p => p.id === post))) throw new LaterError(404, `No post ${id} to put back in Later.`);
-    if (input.state !== "open" && input.state !== "archived" && input.state !== "done") throw new LaterError(400, "A Later state is open, archived or done.");
+    if (room !== "note" && (cut < 1 || !this.deps.store.postsOf(room).some(p => p.id === post))) throw new LaterError(404, `No post ${id} to put back in Saved.`);
+    if (input.state !== "open" && input.state !== "archived" && input.state !== "done") throw new LaterError(400, "A saved item's state is open, archived or done.");
     const savedAt = timeOf(input.savedAt, "savedAt");
     if (savedAt === undefined) throw new LaterError(400, "An item put back names its savedAt, the time in ms it was first saved.");
     const doneAt = input.state === "done" ? timeOf(input.doneAt, "doneAt") ?? Date.now() : undefined;
     const archivedAt = input.state === "archived" ? timeOf(input.archivedAt, "archivedAt") ?? Date.now() : undefined;
     const remindAt = timeOf(input.remindAt, "remindAt");
     const notifiedAt = remindAt !== undefined ? timeOf(input.notifiedAt, "notifiedAt") : undefined;
+    const memo = memoOf(input.memo) || undefined;
     return this.write(who, {
       ...(typeof note === "string" ? { id, note } : { id: laterId(room, post), room, post }), by: who, savedAt, state: input.state,
       ...(doneAt !== undefined ? { doneAt } : {}), ...(archivedAt !== undefined ? { archivedAt } : {}), ...(remindAt !== undefined ? { remindAt } : {}), ...(notifiedAt !== undefined ? { notifiedAt } : {}),
-      ...(input.unread === true ? { unread: true as const } : {}),
+      ...(input.unread === true ? { unread: true as const } : {}), ...(memo !== undefined ? { memo } : {}),
     }, false);
   }
 

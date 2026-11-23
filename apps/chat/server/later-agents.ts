@@ -38,10 +38,10 @@ export interface AgentLaterDeps {
   now?: () => number;
 }
 
-/** How an agent reads its own save on a post, the way it reads reactions: `[saved for later · reminder 2026-11-20 05:42Z]`, or "". */
+/** How an agent reads its own save on a post, the way it reads reactions: `[saved · reminder 2026-11-20 05:42Z]`, or "". */
 export function laterLine(mark: LaterMark | undefined): string {
   if (!mark?.saved) return "";
-  return `[saved for later${mark.remindAt !== undefined ? ` · reminder ${clock(mark.remindAt)}` : ""}]`;
+  return `[saved${mark.remindAt !== undefined ? ` · reminder ${clock(mark.remindAt)}` : ""}]`;
 }
 
 /** The post a reminder in a comm thread's input names, in `room`; a batch of wakes may hold one among other lines. */
@@ -141,7 +141,7 @@ export class AgentLater {
       shown.map(line).join("\n");
   }
 
-  /** One item as `list_saved_messages` shows it: a header line, then the post's text. */
+  /** One item as `list_saved_messages` shows it: a header line, the agent's memo when it wrote one, then the post's text. */
   private itemText(row: LaterRow): string {
     const head = [
       `${row.room}/${row.post} in ${row.roomName}${row.threadRoot ? `, thread ${row.threadRoot}` : ""}`,
@@ -150,7 +150,8 @@ export class AgentLater {
       ...(row.state === "done" ? [`done ${clock(row.doneAt ?? row.savedAt)}`] : []),
       ...(row.remindAt !== undefined ? [`reminder ${clock(row.remindAt)}${fired(row) ? ", went off" : ""}`] : []),
     ].join(" · ");
-    return row.gone ? `${head}\n(the post was deleted)` : `${head}\n${clip(row.text)}`;
+    const memo = row.memo !== undefined ? `\nYour memo: ${clip(row.memo)}` : "";
+    return row.gone ? `${head}${memo}\n(the post was deleted)` : `${head}${memo}\n${clip(row.text)}`;
   }
 
   /** `list_saved_messages`: a count line, then one block per item, newest first. */
@@ -162,10 +163,10 @@ export class AgentLater {
   }
 
   /**
-   * `save_message` and `remind_me`: sets the agent's item for the post to `state` and its reminder to `remindAt` (null clears it), and
-   * answers the one line the tool returns.
+   * `save_message` and `remind_me`: sets the agent's item for the post to `state`, its reminder to `remindAt` (null clears it) and, on a
+   * save, its memo, and answers the one line the tool returns.
    */
-  set(record: AgentRecord, room: RoomId, post: RoomPost, change: { state?: unknown; remindAt?: unknown }): string {
+  set(record: AgentRecord, room: RoomId, post: RoomPost, change: { state?: unknown; remindAt?: unknown; memo?: unknown }): string {
     const id = `${room}/${post.id}`;
     const { later } = this.deps;
     const old = later.get(record.id, laterId(room, post.id));
@@ -186,14 +187,15 @@ export class AgentLater {
       return `Marked ${id} done${old.remindAt !== undefined && !fired(old) && old.state === "open" ? "; its reminder will not go off" : ""}. ${this.openCount(record)}`;
     }
     const remindAt = change.remindAt as number | null | undefined;
-    let item = later.save(record.id, { room, post: post.id, ...(typeof remindAt === "number" ? { remindAt } : {}) });
+    let item = later.save(record.id, { room, post: post.id, ...(typeof remindAt === "number" ? { remindAt } : {}), ...(change.memo !== undefined ? { memo: change.memo } : {}) });
     if (remindAt === null && item.remindAt !== undefined) item = later.update(record.id, item.id, { remindAt: null });
     const where = this.deps.label(record, room);
     if (typeof remindAt === "number") {
       return `Reminder set on ${id} for ${clock(remindAt)}, in ${span(remindAt - this.now())}. Then you get a [reminder] in your ${where} thread with the post and its thread.`;
     }
     if (remindAt === null) return `${old?.remindAt !== undefined ? "Cleared the reminder on" : "No reminder was set on"} ${id}; it stays saved.`;
-    return `${old?.state === "open" ? "Already saved" : "Saved"} ${id} in ${where} for later. ${this.openCount(record)}`;
+    const memo = item.memo !== undefined && item.memo !== old?.memo ? " with your memo" : "";
+    return `${old?.state === "open" && !memo ? "Already saved" : "Saved"} ${id} in ${where}${memo}. ${this.openCount(record)}`;
   }
 
   private openCount(record: AgentRecord): string {

@@ -939,7 +939,7 @@ export class App {
   }
 
   /** An agent's save_message or remind_me (later-agents.ts `set`); the answer's `text` is the tool's result. */
-  laterAsAgent(thread: string, input: { message?: unknown; state?: unknown; remindAt?: unknown }): { text: string } {
+  laterAsAgent(thread: string, input: { message?: unknown; state?: unknown; remindAt?: unknown; memo?: unknown }): { text: string } {
     const { record, room, post } = this.agentMessage(thread, input.message, input.remindAt !== undefined ? "remind_me" : "save_message");
     return { text: this.agentLater.set(record, room, post, input) };
   }

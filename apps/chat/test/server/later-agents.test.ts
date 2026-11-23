@@ -11,7 +11,7 @@ import { FIXTURE_AGENTS as agents } from "../../server/fixture/seed.ts";
 import { laterLine, reminderPost } from "../../server/later-agents.ts";
 import { start, until, type Running } from "./helpers.ts";
 
-describe("an agent's Later list on the fixture server", () => {
+describe("an agent's Saved list on the fixture server", () => {
   let s: Running;
   let comm: string;
   const set = (body: Record<string, unknown>, thread = comm) =>
@@ -28,17 +28,30 @@ describe("an agent's Later list on the fixture server", () => {
   test("save_message saves a post once, as the agent, and the agent's room reads show its own save only", async () => {
     const saved = await set({ message: "p5", state: "open" });
     assert.equal(saved.status, 200, saved.body.error);
-    assert.equal(saved.body.text, "Saved ch_cutover/p5 in #pi-cutover for later. 1 open on your saved list.");
-    assert.equal((await set({ message: "ch_cutover/p5", state: "open" })).body.text, "Already saved ch_cutover/p5 in #pi-cutover for later. 1 open on your saved list.");
+    assert.equal(saved.body.text, "Saved ch_cutover/p5 in #pi-cutover. 1 open on your saved list.");
+    assert.equal((await set({ message: "ch_cutover/p5", state: "open" })).body.text, "Already saved ch_cutover/p5 in #pi-cutover. 1 open on your saved list.");
     assert.equal(s.app.later.items(agents.crawler).length, 1);
     assert.equal(s.app.later.items("owner").length, 0, "the owner's list is his own");
 
     const row = s.app.groups.row("ch_cutover")!;
     const p5 = s.app.agentStore.postsOf("ch_cutover").find(p => p.id === "p5")!;
     const reply = { ...p5, id: "p99", seq: 99, threadRoot: "p5", text: "a later reply", reactions: [] };
-    assert.match(s.app.groups.envelope(row, reply, [], agents.crawler), /^5 .*\[saved for later\]$/m);
-    assert.doesNotMatch(s.app.groups.envelope(row, reply, [], agents.vent), /saved for later/);
-    assert.doesNotMatch(s.app.groups.envelope(row, reply), /saved for later/);
+    assert.match(s.app.groups.envelope(row, reply, [], agents.crawler), /^5 .*\[saved\]$/m);
+    assert.doesNotMatch(s.app.groups.envelope(row, reply, [], agents.vent), /\[saved/);
+    assert.doesNotMatch(s.app.groups.envelope(row, reply), /\[saved/);
+  });
+
+  test("save_message keeps the agent's memo, a save with no memo keeps it, and list_saved_messages shows it", async () => {
+    const memoed = await set({ message: "p2", state: "open", memo: "  check the cutover numbers  " });
+    assert.equal(memoed.body.text, "Saved ch_cutover/p2 in #pi-cutover with your memo. 2 open on your saved list.");
+    assert.equal(s.app.later.find(agents.crawler, "ch_cutover", "p2")!.memo, "check the cutover numbers");
+    assert.equal((await set({ message: "p2", state: "open" })).body.text, "Already saved ch_cutover/p2 in #pi-cutover. 2 open on your saved list.");
+    assert.equal(s.app.later.find(agents.crawler, "ch_cutover", "p2")!.memo, "check the cutover numbers", "a save with no memo keeps it");
+    assert.equal((await set({ message: "p2", state: "open", memo: "check the cutover numbers" })).body.text, "Already saved ch_cutover/p2 in #pi-cutover. 2 open on your saved list.");
+    const list = await s.get<{ text: string }>(`/api/threads/${encodeURIComponent(comm)}/later?state=open`);
+    assert.match(list.text, /\nch_cutover\/p2 in #pi-cutover, thread p1 · from .*\nYour memo: check the cutover numbers\n/);
+    assert.equal((await set({ message: "p2", state: "open", memo: 7 })).status, 400);
+    assert.equal((await set({ message: "p2", state: "removed" })).status, 200);
   });
 
   test("remind_me sets one time wake for the room's comm thread, and done, clear and removed take it away", async () => {
@@ -54,7 +67,7 @@ describe("an agent's Later list on the fixture server", () => {
 
     const row = s.app.groups.row("ch_cutover")!;
     const p5 = s.app.agentStore.postsOf("ch_cutover").find(p => p.id === "p5")!;
-    assert.match(s.app.groups.envelope(row, { ...p5, id: "p99", seq: 99, threadRoot: "p5", reactions: [] }, [], agents.crawler), /\[saved for later · reminder \d{4}-\d\d-\d\d \d\d:\d\dZ\]$/m);
+    assert.match(s.app.groups.envelope(row, { ...p5, id: "p99", seq: 99, threadRoot: "p5", reactions: [] }, [], agents.crawler), /\[saved · reminder \d{4}-\d\d-\d\d \d\d:\d\dZ\]$/m);
 
     assert.match((await set({ message: "p5", state: "done" })).body.text, /^Marked ch_cutover\/p5 done; its reminder will not go off\./);
     assert.deepEqual(wakeIds(), []);
@@ -77,7 +90,7 @@ describe("an agent's Later list on the fixture server", () => {
     const [first, head, ...thread] = text.split("\n");
     assert.equal(first, "[wake] another wake", "other wakes in the batch stay as they are");
     assert.match(head!, /^\[reminder\] It is .*, the time you set with remind_me on ch_cutover\/p5 in #pi-cutover\. The post now:$|^\[reminder\] .* Its thread now/);
-    assert.ok(thread.some(line => /^5 /.test(line) && line.endsWith("[saved for later · reminder " + new Date(wake.on.kind === "time" ? wake.on.at : 0).toISOString().slice(0, 16).replace("T", " ") + "Z]")), text);
+    assert.ok(thread.some(line => /^5 /.test(line) && line.endsWith("[saved · reminder " + new Date(wake.on.kind === "time" ? wake.on.at : 0).toISOString().slice(0, 16).replace("T", " ") + "Z]")), text);
     assert.doesNotMatch(text, /board\.wake/, "the ticker's board.wake wording and poll hint go");
     assert.equal(reminderPost(text, "ch_cutover"), "p5");
     assert.equal(reminderPost(text, "dm_vent"), undefined);
