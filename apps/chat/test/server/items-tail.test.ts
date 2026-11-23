@@ -42,6 +42,17 @@ function turn(thread: Thread, steps: number, label: string): void {
   host.append(thread, 1, { kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "text", text: `done ${label}` }], provider: "p", model: "m", timestamp: at++ }] } as never);
 }
 
+/**
+ * Waits until both servers have listed every thread and job the test added straight to the host. A page names its authors from the
+ * thread list, which polls every 2 s, so a read before that poll names a root thread as a job called by its id on one server only.
+ */
+async function listed(): Promise<void> {
+  for (const server of [s, fresh]) {
+    await server.app.threads.poll();
+    await server.app.threads.poll();
+  }
+}
+
 /** The page `s` serves for `path`, the pi-host reads it took for the thread, and the page a server with nothing held serves. */
 async function read(thread: string, path: string): Promise<{ page: TimelinePage; reads: typeof reads; reference: TimelinePage }> {
   reads = [];
@@ -55,6 +66,7 @@ test("a repeat read of the newest page of a long turn takes one one-entry read a
   const thread = host.addThread({ name: "long turn", createdAt: 1 });
   turn(thread, 3, "a");
   turn(thread, 260, "b");
+  await listed();
   const id = thread.row.id;
   const first = await read(id, `/api/c/${id}/items`);
   assert.ok(first.reads.length > 1, "the first read widens over the long turn");
@@ -69,6 +81,7 @@ test("after new entries the newest page reads only those, and an older page insi
   const thread = host.addThread({ name: "growing", createdAt: 1 });
   turn(thread, 3, "a");
   turn(thread, 120, "b");
+  await listed();
   const id = thread.row.id;
   await read(id, `/api/c/${id}/items`);
   turn(thread, 2, "c");
@@ -88,6 +101,7 @@ test("a job conversation's newest page is held apart from the thread's", async (
   const job = host.addChild(thread, 1, "job", at++, "idle");
   host.append(thread, job.id, { kind: "pi.user", model: [{ role: "user", content: "task", timestamp: at++ }] } as never);
   host.append(thread, job.id, { kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "text", text: "job done" }], provider: "p", model: "m", timestamp: at++ }] } as never);
+  await listed();
   const id = thread.row.id;
   await read(id, `/api/c/${id}/items`);
   await read(id, `/api/c/${id}:${job.id}/items`);

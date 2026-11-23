@@ -74,17 +74,21 @@ test("a wiki page in the viewer takes the app's colours and follows a change of 
   const colours = () =>
     frame.evaluate((el: HTMLIFrameElement) => {
       const doc = el.contentDocument!;
-      const app = getComputedStyle(document.documentElement);
+      const swatch = document.createElement("div");
+      swatch.style.background = "var(--surface-panel)";
+      document.body.append(swatch);
+      const app = getComputedStyle(swatch).backgroundColor;
+      swatch.remove();
       return {
         page: getComputedStyle(doc.body).backgroundColor,
         text: getComputedStyle(doc.querySelector(".prose")!).color,
         scheme: getComputedStyle(doc.documentElement).colorScheme,
-        app: app.getPropertyValue("--surface-panel").trim(),
+        app,
       };
     });
-  await expect.poll(colours).toEqual({ page: "rgb(26, 26, 26)", text: "rgb(255, 255, 255)", scheme: "dark", app: "#1a1a1a" });
+  await expect.poll(colours).toEqual({ page: "rgb(26, 26, 26)", text: "rgb(255, 255, 255)", scheme: "dark", app: "rgb(26, 26, 26)" });
   await page.evaluate(() => (document.documentElement.dataset.colorMode = "light"));
-  await expect.poll(colours).toEqual({ page: "rgb(255, 255, 255)", text: "rgb(15, 15, 15)", scheme: "light", app: "#ffffff" });
+  await expect.poll(colours).toEqual({ page: "rgb(255, 255, 255)", text: "rgb(15, 15, 15)", scheme: "light", app: "rgb(255, 255, 255)" });
 });
 
 test("Esc in the page closes the panel, and the conversation's composer takes clicks and typing while it is open", async ({ page }) => {
