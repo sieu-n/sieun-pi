@@ -134,6 +134,17 @@ async function ended(launch: PrecheckLaunch, signal?: AbortSignal): Promise<numb
 }
 
 /**
+ * The stderr lines that name a failed precheck's error, for its run's error line: the last line that reads as an error, such as `Error: ...`,
+ * `TypeError [ERR_X]: ...` or Python's `ValueError: ...`, else the last 3 lines that are no stack frame and no Node version banner. Node
+ * prints a crash's error above its stack and `Node.js v26.12.1` last, so until 11-23 the last 3 lines showed a frame, a blank and the banner.
+ */
+export function stderrGist(text: string): string {
+  const lines = text.split("\n").map(line => line.trimEnd()).filter(line => line.trim() && !/^Node\.js v\d/.test(line) && !/^\s+at /.test(line));
+  const error = lines.findLast(line => /^\s*(Uncaught\b|[\w.$]*(Error|Exception)\b)/.test(line));
+  return (error ? error.trim() : lines.slice(-3).join(" ")).slice(0, 300);
+}
+
+/**
  * Waits for a launched precheck, in this server process or the next one, and returns its parsed OUTPUT_FILE; the state file moves forward
  * only on a good run, and an after-job measure keeps none, so the next run counts from the same point. The exit and output files stay until
  * `clearPrecheck`, which runs after the save that records the run, so a server that stops after the precheck ended and before that save
@@ -149,21 +160,22 @@ export async function waitPrecheck(duty: Duty, launch: PrecheckLaunch, log: (lin
   } finally {
     clearTimeout(pastTarget);
   }
-  if (code !== 0) {
-    const words = code === "hard stop" ? `stopped at its hard stop after ${Math.round(launch.hardStopMs / 60_000)} min` : code === "no exit code" ? "it ended with no exit code" : `exit ${code}`;
-    const tail = (await readFile(launch.stderr, "utf8").catch(() => "")).trim().split("\n").slice(-3).join(" ").slice(0, 300);
-    throw new Error(`${words}${tail ? `: ${tail}` : ""} (all of stderr: ${launch.stderr})`);
-  }
-  await rm(launch.stderr, { force: true });
+  // A failed run keeps its whole stderr in its own file, which the run record names as its detail (`measure`).
+  const failed = async (words: string): Promise<Error> => {
+    const gist = stderrGist(await readFile(launch.stderr, "utf8").catch(() => ""));
+    return new Error(`${words}${gist ? `: ${gist}` : ""} (all of stderr: ${launch.stderr})`);
+  };
+  if (code !== 0) throw await failed(code === "hard stop" ? `stopped at its hard stop after ${Math.round(launch.hardStopMs / 60_000)} min` : code === "no exit code" ? "it ended with no exit code" : `exit ${code}`);
   let output: unknown;
   try {
     output = JSON.parse(await readFile(launch.output, "utf8"));
   } catch {
-    throw new Error("no valid JSON in OUTPUT_FILE");
+    throw await failed("no valid JSON in OUTPUT_FILE");
   }
   if (typeof output !== "object" || output === null || typeof (output as { metrics?: unknown }).metrics !== "object" || (output as { metrics?: unknown }).metrics === null) {
-    throw new Error("OUTPUT_FILE has no metrics object");
+    throw await failed("OUTPUT_FILE has no metrics object");
   }
+  await rm(launch.stderr, { force: true });
   // A server that stopped after this rename leaves no state copy, and the state file already holds it.
   if (launch.mode === "run") await rename(launch.nextState, join(dirname(launch.nextState), `${duty.id}.state.json`)).catch(error => {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -281,7 +293,10 @@ export async function measure(input: {
   } catch (error) {
     if (input.signal?.aborted) throw error;
     await rm(detail, { force: true });
-    record = { duty: duty.id, at: started, slot: started, trigger, ms: Date.now() - wall, verdict: "error", metrics: {}, summary: "the precheck failed", error: message(error).slice(0, 500), ...overrunOf() };
+    // The detail of a failed run is its whole stderr, which `launchPrecheck` writes beside the output file and `waitPrecheck` keeps.
+    const stderr = detail.replace(/\.json$/, ".stderr.log");
+    record = { duty: duty.id, at: started, slot: started, trigger, ms: Date.now() - wall, verdict: "error", metrics: {}, summary: "the precheck failed", error: message(error).slice(0, 500),
+      ...(existsSync(stderr) ? { detail: stderr } : {}), ...overrunOf() };
   }
   const counted = new Set(verdictMetrics(duty.metrics).map(m => m.key));
   const missed = Object.entries(record.metrics).filter(([key, result]) => !result.met && counted.has(key)).map(([key]) => key);
