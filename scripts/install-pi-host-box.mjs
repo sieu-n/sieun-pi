@@ -11,6 +11,9 @@
  * 3. It writes the unit or plist, points `current` at the release and restarts the service a few seconds later from a detached process, so
  *    a pi-host thread that runs this command can still answer before its host restarts. Durable threads resume after the restart.
  *
+ * When `current` already points at the commit's release, the unit or plist it would write is the one on disk and the live socket answers
+ * `durable_threads`, the install changes nothing and restarts nothing.
+ *
  * The service runs `node --import tsx pi-host/src/main.ts` from current/packages with Prime's agent dir ~/.prime/agent, the sessions in
  * ~/.prime/agent/pi-sessions and the durable threads in ~/.prime/agent/pi-host/durable, as pi-host.service on us-metal02 does. Rollback is
  * the same command with an older --ref, or pointing `current` back at the last release and restarting the service.
@@ -244,14 +247,17 @@ function delayedRestart(platform, sha7, unitFile, delaySec = 5) {
   return `systemctl --user restart ${UNIT} in ${delaySec} s`;
 }
 
-export async function installPiHost({ repo = checkout, ref = "origin/main", home = homedir(), node = process.execPath, chatUrl, prepareOnly = false, restart = true } = {}) {
+const readText = path => { try { return readFileSync(path, "utf8"); } catch { return undefined; } };
+const linkOf = path => { try { return readlinkSync(path); } catch { return undefined; } };
+
+export async function installPiHost({ repo = checkout, ref = "origin/main", home = homedir(), node = process.execPath, chatUrl, prepareOnly = false, restart = true, socket } = {}) {
   const platform = process.platform;
   if (platform !== "darwin" && platform !== "linux") throw new Error(`pi-host installs on Linux and macOS, not ${platform}`);
   // prime-sync fetches every box's checkout each minute, so a failed fetch (the Mac reached no github.com on 10-30) builds the last fetched ref.
   if (ref.startsWith("origin/")) { try { run("git", ["fetch", "--quiet", "origin"], repo); } catch (error) { process.stderr.write(`git fetch failed, using the last fetched ${ref}: ${error.message}\n`); } }
   const sha = run("git", ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`], repo, true);
   const sha7 = sha.slice(0, 7);
-  const paths = layout(home, platform);
+  const paths = { ...layout(home, platform), ...(socket ? { socket } : {}) };
   mkdirSync(paths.root, { recursive: true });
   const release = join(paths.root, `release-${sha7}`);
   const lock = join(paths.root, ".installing");
@@ -261,16 +267,28 @@ export async function installPiHost({ repo = checkout, ref = "origin/main", home
   }
   try {
     writeFileSync(join(lock, "owner.json"), JSON.stringify({ pid: process.pid, sha, startedAt: new Date().toISOString() }) + "\n");
+    const vars = serviceEnv(home, node, chatUrl);
+    const unit = platform === "darwin" ? plist(paths, node, vars) : systemdUnit(paths, node, vars);
+    if (!prepareOnly && existsSync(release) && linkOf(paths.current) === `release-${sha7}` && readText(paths.unitFile) === unit) {
+      try {
+        const started = Date.now();
+        const { response } = await request(paths.socket, { type: "durable_threads" }, 30_000);
+        if (!response.success) throw new Error(`durable_threads failed: ${response.error}`);
+        const answered = { ms: Date.now() - started, threads: response.data.threads.length };
+        process.stderr.write(`release-${sha7} is live already and answered durable_threads in ${answered.ms} ms; nothing to install or restart\n`);
+        return { sha, release, live: true, unitFile: paths.unitFile, socket: paths.socket, answered };
+      } catch (error) {
+        process.stderr.write(`release-${sha7} is live already, but ${paths.socket} did not answer (${error.message}); installing it again\n`);
+      }
+    }
     const npmCache = join(home, ".npm");
     if (!existsSync(release)) buildRelease(repo, sha, release, paths.current, home, npmCache);
     const boot = await bootCheck(release, node, home, chatUrl);
     process.stderr.write(`boot check: answered durable_threads in ${boot.ms} ms\n`);
     if (prepareOnly) return { sha, release, boot, prepared: true };
-    const vars = serviceEnv(home, node, chatUrl);
     mkdirSync(dirname(paths.unitFile), { recursive: true });
     mkdirSync(dirname(paths.log), { recursive: true });
     mkdirSync(dirname(paths.socket), { recursive: true });
-    const unit = platform === "darwin" ? plist(paths, node, vars) : systemdUnit(paths, node, vars);
     const previous = present(paths.current) ? readlinkSync(paths.current) : undefined;
     writeFileSync(paths.unitFile, unit);
     flip(paths, release);
