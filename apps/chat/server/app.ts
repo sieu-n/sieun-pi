@@ -303,6 +303,7 @@ export class App {
     });
     this.threads.groupSummaries = () => this.groups.summaries().filter(c => !this.agentStore.isTest(c.id));
     this.threads.roomsOf = agent => this.groups.memberRooms(agent).map(row => row.id);
+    this.threads.pendingWakes = () => wakes.list().map(({ wake }) => wake.session);
     const inDb = (kind: JsonKind) => config.dbKinds?.includes(kind.kind) === true;
     this.boards = new Boards(host, this.store, this.threads, this.agents, {
       duties: inDb(DUTIES) ? new DutyFiles(this.chatDb, this.move(DUTIES)) : new DutyJsonFiles(config.dataDir),

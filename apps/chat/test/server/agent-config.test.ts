@@ -183,6 +183,23 @@ test("an agent's wakes list the board.wakes of its main thread and its root jobs
   }
 });
 
+test("an idle job with a pending board.wake reads Waiting and lists under Active, and idle again once the wake is gone", async () => {
+  const before = await config(agents.harness);
+  const job = before.swarm.jobs.find(j => j.kind !== "job" && j.status === "idle" && !j.archived);
+  assert.ok(job, "the fixture's harness agent has an idle root job");
+  const made = await s.app.boards.addWake(job.id, { on: { kind: "time", at: Date.now() + 3_600_000 }, note: "waits on CI" });
+  try {
+    await s.app.threads.refresh();
+    assert.equal((await config(agents.harness)).swarm.jobs.find(j => j.id === job.id)?.status, "sleeping");
+    const listed = (await s.get<{ id: string; status: string }[]>("/api/jobs")).find(j => j.id === job.id);
+    assert.equal(listed?.status, "sleeping", "/api/jobs and the agent card count it as the tab does");
+  } finally {
+    rmSync(made.path, { force: true });
+  }
+  await s.app.threads.refresh();
+  assert.equal((await config(agents.harness)).swarm.jobs.find(j => j.id === job.id)?.status, "idle");
+});
+
 test("an unknown agent is a 404", async () => {
   const response = await s.send("GET", "/api/agents/no-such-agent/config");
   assert.equal(response.status, 404);

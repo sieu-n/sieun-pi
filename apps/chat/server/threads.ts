@@ -13,6 +13,7 @@ import type { Store } from "./store.ts";
 import type { AgentRecord } from "./agent-store.ts";
 import { agentSummary, isAgentId, isRoomId, rootRetrying, type AgentRows, type Agents } from "./agents.ts";
 import { TailCache } from "./tail-cache.ts";
+import { wakeSession } from "./wakes.ts";
 import { buildItems, earliest, entryOf, firstSendIn, isInput, openSendIn, itemIdFor, sentMessages, speaks, speaksThroughSendMessage, stepOutputOf, type TimelineContext } from "./timeline.ts";
 
 export const OWNER: Principal = { id: "owner", kind: "owner", name: "You", avatar: { initials: "Me", hue: 210 } };
@@ -154,6 +155,10 @@ export class Threads {
   onRefresh: () => void = () => {};
   /** The agent records (agents.ts), set once the app has made them. */
   agentRecords?: Agents;
+  /** The `<thread>--<conversation>` of each board.wake that has not gone out (Boards), read once per thread list read. */
+  pendingWakes: () => readonly string[] = () => [];
+  /** The conversations with a pending board.wake as of the last thread list read; a job of one that is idle reads sleeping (`jobStatus`). */
+  private waking: ReadonlySet<string> = new Set();
   /** A work thread's inputs that were a job's test send (rooms.ts `testSendsOf`), set once the app has made the rooms. */
   testSendsOf: (thread: string) => ReadonlyMap<number, { by: string; reason: string }> = () => new Map();
 
@@ -272,6 +277,7 @@ export class Threads {
   async refresh(): Promise<void> {
     // A box link that went up or down reads in hostState before the list does.
     this.summaries.clear();
+    this.waking = new Set(this.pendingWakes());
     const known = new Set(this.list.keys());
     const read = await this.host.threads();
     // A thread new to this read may be one a create in flight has not claimed yet; the next read lists it.
@@ -532,7 +538,8 @@ export class Threads {
       }, { model: rootModel, rooms: this.roomsOf(record.id), hostState: this.agentRecords!.hostState(record.host) })
       : {
         id: row.id, kind: meta.kind, name: row.name || "Untitled", avatar: avatarOf(row.name || row.id), model: rootModel,
-        thinkingLevel: (row.thinkingLevel as ThinkingLevel) ?? null, status: statusOf(row.status), parent: meta.kind === "job" ? this.parentOf(meta) : null,
+        thinkingLevel: (row.thinkingLevel as ThinkingLevel) ?? null, status: meta.kind === "job" ? this.jobStatus(row.id, 1, row.status) : statusOf(row.status),
+        parent: meta.kind === "job" ? this.parentOf(meta) : null,
         thread: row.id, conversation: 1, archived: row.archived, createdAt: row.createdAt, updatedAt: row.updatedAt,
         preview: row.preview.split("\n").find(line => line.trim()) ?? "", rooms: [], host: row.box ?? this.box,
         ...(rootRetrying({ row, tree: this.tree(row.id) }) ? { retrying: rootRetrying({ row, tree: this.tree(row.id) })! } : {}),
@@ -551,7 +558,7 @@ export class Threads {
       const parentName = node.parent === 1 ? root.name : names.get(node.parent) ?? parentId;
       out.push({
         id, kind: "job", name: node.name, avatar: avatarOf(node.name), model: modelRef(node.model), thinkingLevel: root.thinkingLevel,
-        status: statusOf(node.status), parent: { id: parentId, name: parentName }, thread: row.id, conversation: node.id, archived: row.archived || this.jobArchived(row.id, node.id),
+        status: this.jobStatus(row.id, node.id, node.status), parent: { id: parentId, name: parentName }, thread: row.id, conversation: node.id, archived: row.archived || this.jobArchived(row.id, node.id),
         createdAt: node.createdAt ?? row.createdAt, updatedAt: this.jobTime(row, node), preview: "", rooms: [], host: this.box,
         ...(worksFor ? { agent: worksFor } : {}), ...(node.retrying ? { retrying: node.retrying } : {}),
       });
@@ -595,8 +602,18 @@ export class Threads {
   jobs(thread: string): JobNode[] {
     return this.tree(thread).map(node => ({
       id: conversationIdOf(thread, node.id), parent: node.parent === null ? null : conversationIdOf(thread, node.parent), name: node.name, depth: node.depth,
-      status: statusOf(node.status), model: node.model, createdAt: node.createdAt,
+      status: node.parent === null ? statusOf(node.status) : this.jobStatus(thread, node.id, node.status), model: node.model, createdAt: node.createdAt,
     }));
+  }
+
+  /**
+   * A job's status: a job whose run ended while a board.wake of its conversation is pending waits on that wake, so it reads sleeping, shown as
+   * Waiting and listed under Active, as Prime's chat counts a job asleep on its wakes as live (legacy wakes.ts `treeWakes`). On 11-23 the
+   * Threads tab listed "release handover race" under Finished while it slept on a check wake.
+   */
+  private jobStatus(thread: string, conversation: number, status: TreeNode["status"] | DurableThread["status"]): RunStatus {
+    const run = statusOf(status);
+    return run === "idle" && this.waking.has(wakeSession(thread, conversation)) ? "sleeping" : run;
   }
 
   /** Unread for a thread: it changed after the owner's read mark and is not working now. */
