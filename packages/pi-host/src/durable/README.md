@@ -208,6 +208,8 @@ A durable thread compacts where a Prime chat on the same host does, which `prime
 4. The reserve, the kept tokens and `enabled` come from `compaction` in Prime's `settings.json`, and both files are read again when they change.
 5. pi-durable also starts a background compaction 32,768 tokens before that point, which does not hold the turn.
 6. The host log prints each model's point at start, in a line that begins with `durable compaction at window - reserve`.
+7. The summary request gets the model's whole output limit, where pi-durable asks for 0.8 x the reserve, 13,107 tokens, which adaptive thinking shares (`summary-room.ts`).
+8. A summary that still ends at the limit is asked once for half the length, and a second cut one is placed with a line saying where it stops, so no thread fails every turn on a summary that does not fit, as agent factory's work thread did ten times on 11-23.
 
 ## How a request gets its account
 

@@ -12,6 +12,7 @@ import type { ModelThinkingLevel, Provider } from "@earendil-works/pi-ai";
 import type { ModelRef } from "@earendil-works/pi-durable";
 import { withCacheShape } from "./cache-shape.ts";
 import { compactionLine, readJson, withPrimeWindows } from "./prime-compaction.ts";
+import { withSummaryRoom } from "./summary-room.ts";
 
 type Json = Record<string, unknown>;
 const isRecord = (value: unknown): value is Json => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -102,14 +103,15 @@ export interface DurableModelsOptions {
 }
 
 /**
- * One thread's model registry with Prime's context windows, asking pi-pool for the thread's tree (`pool-labels.ts`), and each request shaped
- * for the prompt cache (`cache-shape.ts`).
+ * One thread's model registry with Prime's context windows, asking pi-pool for the thread's tree (`pool-labels.ts`), each request shaped
+ * for the prompt cache (`cache-shape.ts`), and each compaction summary given the model's output limit (`summary-room.ts`). The summary
+ * wrapper sits outside pi-pool, so its shorter retry takes its own place in line and its own token.
  */
 export function durableModels(threadId: string, options: DurableModelsOptions = {}): ReturnType<typeof createModels> {
   const models = createModels();
   const treeKey = options.tree ?? `pi-durable:${threadId}`;
   for (const inner of [anthropicProvider(), openaiCodexProvider()]) {
-    models.setProvider(poolProvider({ treeKey, agentDir: options.agentDir, turns: options.turns, ...(options.exec ? { exec: options.exec } : {}), inner: withCacheShape(withPrimeWindows(withPrimeModels(inner, options.agentDir), options.agentDir)) }));
+    models.setProvider(withSummaryRoom(poolProvider({ treeKey, agentDir: options.agentDir, turns: options.turns, ...(options.exec ? { exec: options.exec } : {}), inner: withCacheShape(withPrimeWindows(withPrimeModels(inner, options.agentDir), options.agentDir)) })));
   }
   return models;
 }
