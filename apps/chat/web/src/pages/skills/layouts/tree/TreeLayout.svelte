@@ -4,6 +4,7 @@
   import type { BoxName, SkillsView } from "$lib/api/shared/skills";
   import { router } from "$lib/router.svelte";
   import { Badge, Icon } from "$lib/ui";
+  import { scanLine } from "../../box-line";
   import FolderDetail from "./FolderDetail.svelte";
   import SkillDetail from "./SkillDetail.svelte";
   import {
@@ -152,10 +153,12 @@
       {view.counts.skills.toLocaleString("en-US")} skills in {view.counts.copies.toLocaleString("en-US")} copies on {view.boxes.length === 1 ? "1 box" : `${view.boxes.length} boxes`},
       and {view.counts.neverUsed.toLocaleString("en-US")} never used in 30 days.
       The median SKILL.md is {kb(view.thresholds.medianBytes)}, and over {kb(view.thresholds.bloatBytes)} counts as bloated.
+      {scanLine(view) ?? ""}
     </p>
     {#each view.boxes as b (b.box)}
       {#if boxLine(b)}<p class="offline" title={b.error ?? undefined} data-testid="tree-box-offline">{boxLine(b)}</p>{/if}
     {/each}
+    {#if view.scan.error}<p class="offline" role="status" title={view.scan.error}>The last scan failed, so this shows the one before it.</p>{/if}
   </section>
 
   <div class="body">

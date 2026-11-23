@@ -1,5 +1,5 @@
-import type { SkillBoxState } from "../../lib/api/shared/skills.ts";
-import { stampLabel } from "../../lib/ui/datetime.ts";
+import type { SkillBoxState, SkillsView } from "../../lib/api/shared/skills.ts";
+import { ageLabel, stampLabel } from "../../lib/ui/datetime.ts";
 
 export const boxName = (box: string): string => (box === "mac" ? "Mac" : box);
 
@@ -14,4 +14,12 @@ export function boxStateLine(box: SkillBoxState, now = Date.now()): string | nul
   if (box.state === "never" || !box.lastOkAt) return `${boxName(box.box)} has not answered a scan yet.`;
   const since = box.since ? ` since ${when(box.since, now)}` : "";
   return `${boxName(box.box)} asleep or offline${since}, showing its scan from ${when(box.lastOkAt, now)}.`;
+}
+
+/** The line every layout shows for the scan its view came from and one that runs now, such as "Scanned 5h ago, and a new scan runs now." */
+export function scanLine(view: Pick<SkillsView, "generatedAt" | "scan">, now = Date.now()): string | null {
+  const at = view.generatedAt ? Date.parse(view.generatedAt) : Number.NaN;
+  if (Number.isNaN(at)) return view.scan.running ? "The first scan runs now." : null;
+  const age = ageLabel(at, now);
+  return `Scanned ${age === "now" ? "just now" : `${age} ago`}${view.scan.running ? ", and a new scan runs now." : "."}`;
 }

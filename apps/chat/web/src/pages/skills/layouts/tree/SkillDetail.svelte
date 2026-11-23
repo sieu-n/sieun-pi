@@ -140,8 +140,8 @@
   .title { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
   h2 { margin: 0; font: var(--text-heading); }
   .description { margin: 0; color: var(--text-standard); font: var(--text-body); }
-  .meta { margin: 0; color: var(--text-subtle); font: var(--text-body-sm); }
-  .verdict { margin: 0; color: var(--text-subtle); font: var(--text-body-sm); padding-left: var(--space-3); border-left: 2px solid var(--border-standard); }
+  .meta { margin: 0; color: var(--text-subtle); font: var(--text-body-sm); overflow-wrap: anywhere; }
+  .verdict { margin: 0; color: var(--text-subtle); font: var(--text-body-sm); padding-left: var(--space-3); border-left: 2px solid var(--border-standard); overflow-wrap: anywhere; }
   .warn { color: var(--text-danger); }
   .actions, .copy-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
   .copies { display: grid; grid-template-columns: repeat(var(--columns), minmax(0, 1fr)); gap: var(--space-4); }

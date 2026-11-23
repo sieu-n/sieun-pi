@@ -1,10 +1,10 @@
 <script lang="ts">
   import { api } from "$lib/api";
   import { SKILL_RUNTIMES, type SkillCopy, type SkillEntry, type SkillRuntime, type SkillsChange, type SkillsView } from "$lib/api/shared/skills";
-  import { Button, Dialog, EmptyState, Field, Input, SearchField, Select, ageLabel, toast, tooltip } from "$lib/ui";
+  import { Button, Dialog, EmptyState, Field, Input, SearchField, Select, toast, tooltip } from "$lib/ui";
   import { SvelteSet } from "svelte/reactivity";
   import SkillRow from "./SkillRow.svelte";
-  import { boxStateLine } from "../../box-line";
+  import { boxStateLine, scanLine } from "../../box-line";
   import { GROUP_TEXT, PROBLEMS, count, healthy, names, problemGroups, sourceBox, tilde, type Problem, type RowActions } from "./model";
 
   /**
@@ -43,7 +43,6 @@
   const now = Date.now();
   const boxNames = $derived(view.boxes.map(box => box.box));
   const choices = $derived([{ value: "", label: "Pick a skill" }, ...[...view.skills].sort((a, b) => nameOf(a.id).localeCompare(nameOf(b.id))).map(s => ({ value: s.id, label: nameOf(s.id) }))]);
-  const scanned = $derived(view.generatedAt ? Date.parse(view.generatedAt) : null);
 
   const message = (reason: unknown): string => (reason instanceof Error ? reason.message : String(reason));
 
@@ -179,7 +178,7 @@
     <div class="side">
       <p class="totals">
         {count(view.counts.skills, "skill")} in {count(view.counts.copies, "folder")}, {view.counts.neverUsed.toLocaleString("en-US")} never used in 30 days.
-        {#if scanned !== null}Scanned {ageLabel(scanned, now)} ago.{/if}
+        {scanLine(view, now) ?? ""}
       </p>
       <div class="tools">
         <div class="search"><SearchField bind:value={text} placeholder="Filter by name or folder" label="Filter skills" clearable /></div>

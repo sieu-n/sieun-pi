@@ -3,8 +3,9 @@
   import { SvelteSet } from "svelte/reactivity";
   import { agents, api } from "$lib/api";
   import { SKILL_RUNTIMES, THREAD_KINDS, type SkillEntry, type SkillRuntime, type SkillsChange, type SkillsView } from "$lib/api/shared/skills";
-  import { ageLabel, Badge, Button, Disclosure, EmptyState, Icon, IconButton, Input, Picker, SearchField, Select, toast, tooltip } from "$lib/ui";
+  import { Badge, Button, Disclosure, EmptyState, Icon, IconButton, Input, Picker, SearchField, Select, toast, tooltip } from "$lib/ui";
   import type { PickerItem } from "$lib/ui/types";
+  import { scanLine } from "../../box-line";
   import {
     PROBLEMS, ROLE_LABEL, boxNotices, cellFor, columnTitle, driftOf, families, homeBox, kindColumns, ownerLabel, problemCount, rowsFor, sizeOf,
     copiesTitle, extraLabel, installDrift, pathTitle, pathUsesLabel, shortPath, sourceLabel, sourceShort, tokensLabel, usesLabel, usesTitle, type Filter, type Problem,
@@ -65,7 +66,6 @@
   const used = $derived(folding ? rows.filter(r => !r.problems.includes("unused")) : rows);
   const hiddenUnused = $derived(rows.length - used.length);
   const notices = $derived(boxNotices(view.boxes));
-  const generated = $derived(view.generatedAt ? Date.parse(view.generatedAt) : null);
   const liveAgents = $derived(agents.list.filter(a => a.kind === "chat" && !a.archived && !a.test));
   const agentNames = $derived(new Map(liveAgents.map(a => [a.id as string, a.name])));
   const span = THREAD_KINDS.length + 3;
@@ -213,7 +213,7 @@
   </div>
   <p class="summary">
     {view.counts.skills.toLocaleString("en-US")} skills in {view.counts.copies.toLocaleString("en-US")} folders on {view.boxes.length === 1 ? "1 box" : `${view.boxes.length} boxes`}.
-    {#if generated !== null}Scanned {ageLabel(generated) === "now" ? "just now" : `${ageLabel(generated)} ago`}{view.scan.running ? ", and a new scan runs now." : "."}{/if}
+    {scanLine(view) ?? ""}
   </p>
   {#each notices as notice (notice.box)}
     <p class="notice" role="status" use:tooltip={notice.error}>{notice.text}</p>
