@@ -25,7 +25,7 @@ ws = wiki.workspace("what this job does")    # opens the folder on the first cal
 wiki.write("plan.html", html)                # a page in the workspace; a full path such as apps/x/index.html also works, and the home page is "/index.html"
 wiki.write("notes.html", md, markdown=True)  # markdown in, stored as HTML (pi-host threads)
 wiki.edit("plan.html", [(old, new)])         # exact-string edits against the stored HTML
-wiki.put("data/run.log", "/path/run.log")    # any file that is not a page
+wiki.put("data/run.log", "/path/run.log")    # any file that is not a page; a .md or .html answers 400, so write it with wiki.write
 wiki.log("ran the bench, 3 of 4 green")      # an event on the workspace log
 wiki.read("apps/search/index.html")          # markdown made from the stored HTML; html=True gives the HTML
 wiki.search("crawler frontier", agent="vent")
