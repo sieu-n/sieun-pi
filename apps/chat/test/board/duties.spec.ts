@@ -152,6 +152,24 @@ test("an open duty shows 10 runs and a Show all control for the rest", async ({ 
   await expect(duties.locator(".run-line")).toHaveCount(14);
 });
 
+test("a long goal opens folded to 4 lines, and Show more opens it whole", async ({ page }) => {
+  await page.routeWebSocket(/\/api\/live/, () => {});
+  await page.route(/\/api\/(agents|threads)\/[^/]+\/duties$/, async route => {
+    const response = await route.fetch();
+    const body = await response.json();
+    body.duties.find((row: { duty: { id: string } }) => row.duty.id === "d1").duty.goal = "The relay answers every probe in time. ".repeat(40);
+    await route.fulfill({ status: response.status(), contentType: "application/json", body: JSON.stringify(body) });
+  });
+  await page.goto(`/#/agents/${HARNESS_AGENT}?section=duties`);
+  const duties = page.getByRole("region", { name: "Duties" });
+  await duties.getByRole("button", { name: /Relay uptime/ }).first().click();
+  const goal = duties.locator(".goal");
+  const folded = (await goal.boundingBox())!.height;
+  await duties.getByRole("button", { name: "Show more" }).click();
+  expect((await goal.boundingBox())!.height).toBeGreaterThan(folded * 2);
+  await expect(duties.getByRole("button", { name: "Show less" })).toBeVisible();
+});
+
 test("a job's Duties tab links the agent its duties belong to", async ({ page }) => {
   await page.goto(`/#/agents/${UPTIME_DUTY}?section=duties`);
   const owner = page.getByTestId("duties-owner");

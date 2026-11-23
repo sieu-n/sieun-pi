@@ -22,6 +22,10 @@
   let busy = $state<string | null>(null);
   let opened = $state<string | null>(null);
   let allDuties = $state(false);
+  /** A goal longer than this many characters opens folded to 4 lines, so the duty's runs stay in view; vent's d2 goal was 3,700 on 11-23. */
+  const GOAL_FOLD = 360;
+  let fullGoal = $state<ReadonlySet<string>>(new Set());
+  const toggleGoal = (id: string) => { fullGoal = fullGoal.has(id) ? without(fullGoal, id) : new Set([...fullGoal, id]); };
   let openRun = $state<string | null>(null);
   let removed = $state<ReadonlySet<string>>(new Set());
   let menu = $state<{ duty: DutyRow; anchor: HTMLElement } | null>(null);
@@ -111,8 +115,12 @@
           <IconButton size="sm" icon="more" label="More actions for {duty.duty.name}" onclick={(event: MouseEvent) => { menu = { duty, anchor: event.currentTarget as HTMLElement }; menuOpen = true; }} />
         </div>
         {#if isOpen}
+          {@const long = duty.duty.goal.length > GOAL_FOLD}
           <div class="detail t-body-sm">
-            <p class="goal">{duty.duty.goal}</p>
+            <p class="goal" class:folded={long && !fullGoal.has(duty.duty.id)}>{duty.duty.goal}</p>
+            {#if long}
+              <button type="button" class="more-goal t-caption" aria-expanded={fullGoal.has(duty.duty.id)} onclick={() => toggleGoal(duty.duty.id)}>{fullGoal.has(duty.duty.id) ? "Show less" : "Show more"}</button>
+            {/if}
             {#if duty.card.headline}<p>{duty.card.headline}</p>{/if}
             {#if duty.card.headlineMiss}<p class="miss">{duty.card.headlineMiss.text}{duty.card.headlineMiss.misses > 1 ? `, off target ${duty.card.headlineMiss.misses} runs in a row` : ""}</p>{/if}
             {#each duty.card.misses as miss (miss.key)}<p class="miss">{miss.text}</p>{/each}
@@ -188,6 +196,10 @@
   .detail { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-1); padding: var(--space-3) var(--space-3) var(--space-1); overflow-wrap: anywhere; }
   .detail p { margin: 0; }
   .goal { color: var(--text-standard); }
+  .goal.folded { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; line-clamp: 4; overflow: hidden; }
+  .more-goal { justify-self: start; padding: 0; border: 0; background: none; color: var(--text-subtle); font: inherit; text-decoration: underline; cursor: pointer; }
+  .more-goal:hover { color: var(--text-standard); }
+  .duties :global(.show-all) { justify-self: start; }
   .miss { color: var(--text-danger); }
   .ok, .next { color: var(--text-subtle); }
   .runs-title { margin: var(--space-2) 0 0; }
