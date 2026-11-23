@@ -4,7 +4,7 @@ import { openAccounts, postedAction, resetPool } from "./helpers.ts";
 
 /** The pool-wide `no_model_room` control on Settings > Accounts, against the fake pi-pool. It changes server-wide state, so it runs in order. */
 test.describe.configure({ mode: "default", timeout: 60_000 });
-test.beforeEach(async ({ request }) => { await resetPool(request); });
+test.beforeEach(async ({ request }) => { await resetPool(request, "config"); });
 
 const PATH = "/api/accounts/no-model-room";
 const LABEL = "When no account has room for an agent's model";

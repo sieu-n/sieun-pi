@@ -2,7 +2,7 @@
 /**
  * A fake pi-pool for apps/chat's --fixture (server/fixture/pool.ts). It answers every command server/accounts.ts runs through the old
  * chat's chat-pool.ts, with the JSON shapes the installed pi-pool prints, and keeps its state in `$PI_POOL_DIR/fake-pi-pool.json`.
- * `fake-seed` writes the seed state again. The seed names each account by its state, so a spec can find the row it needs.
+ * `fake-seed [accounts|config]` writes the seed state of that part again, both when no part is named. The seed names each account by its state, so a spec can find the row it needs.
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -14,6 +14,8 @@ if (!dir) {
   process.exit(2);
 }
 const file = join(dir, "fake-pi-pool.json");
+/** `pi-pool set` values and their writers, apart from the accounts like the real pool's config.json, so an accounts reset or write keeps them. */
+const configFile = join(dir, "fake-pi-pool-config.json");
 /** How long each refresh read and the Codex sign-in take, so a page can see them run. */
 const STEP_MS = Number(process.env.FAKE_PI_POOL_STEP_MS ?? 300);
 const CODEX_LOGIN_MS = Number(process.env.FAKE_PI_POOL_CODEX_LOGIN_MS ?? 3000);
@@ -68,7 +70,7 @@ function seed(now = Date.now() / 1000) {
     const wait = record.wait ? { [record.wait.provider]: { account: record.wait.account, slot_at: now + record.wait.inSec } } : {};
     trees[tree] = { priority: record.priority ?? "normal", pins: record.pins ?? {}, current: {}, wait };
   }
-  return { providers: { anthropic: { pin: "claude-pinned" }, "openai-codex": { pin: null } }, accounts, trees, added: 0, config: {}, set_by: {} };
+  return { providers: { anthropic: { pin: "claude-pinned" }, "openai-codex": { pin: null } }, accounts, trees, added: 0 };
 }
 
 /**
@@ -100,11 +102,13 @@ function load() {
   return JSON.parse(readFileSync(file, "utf8"));
 }
 
-function save(state) {
+function save(state, to = file) {
   mkdirSync(dir, { recursive: true });
-  writeFileSync(file + ".tmp", JSON.stringify(state, null, 2));
-  renameSync(file + ".tmp", file);
+  writeFileSync(to + ".tmp", JSON.stringify(state, null, 2));
+  renameSync(to + ".tmp", to);
 }
+
+const loadConfig = () => (existsSync(configFile) ? JSON.parse(readFileSync(configFile, "utf8")) : { config: {}, set_by: {} });
 
 function flags(args) {
   const out = { provider: "anthropic", session: undefined, model: null, json: false, follow: false, newSession: false, stream: false, force: false, grant: null, threads: [], trees: [], positional: [] };
@@ -200,16 +204,18 @@ function who(state, f) {
   return { session: f.session ?? null, priority: tree?.priority ?? "normal", providers };
 }
 
-const config = state => ({ ...CONFIG, ...state.config, set_by: state.set_by });
+const config = () => { const kept = loadConfig(); return { ...CONFIG, ...kept.config, set_by: kept.set_by }; };
 
 /** `pi-pool set <key> <value> --by <who>`: refuses a key the pool does not know and a value outside a key's choices, on stderr like the pool. */
-function set(state, f) {
+function set(f) {
   const [key, value] = f.positional;
   if (!(key in CONFIG)) return { error: `unknown key ${key}; known: ${Object.keys(CONFIG).sort().join(", ")}` };
   if (CHOICES[key] && !CHOICES[key].includes(value)) return { error: `${key} takes ${CHOICES[key].join(", ")}` };
-  state.config[key] = typeof CONFIG[key] === "number" ? Number(value) : value;
-  state.set_by[key] = { by: f.by ?? null, at: Math.round(Date.now() / 1000) };
-  return { out: `${key} = ${JSON.stringify(state.config[key])}\n` };
+  const kept = loadConfig();
+  kept.config[key] = typeof CONFIG[key] === "number" ? Number(value) : value;
+  kept.set_by[key] = { by: f.by ?? null, at: Math.round(Date.now() / 1000) };
+  save(kept, configFile);
+  return { out: `${key} = ${JSON.stringify(kept.config[key])}\n` };
 }
 
 const queue = () => ({ enabled: true, working_max: 40, working_max_set: null, tree_working_max: 60, working: [], queued: [] });
@@ -228,7 +234,7 @@ function snapshot(state, f) {
     return { trees: f.trees.map(session => ({ session, priority: state.trees[session]?.priority ?? null, label: null })) };
   }
   return {
-    queue: part(() => json(queue())), config: part(() => json(config(state))),
+    queue: part(() => json(queue())), config: part(() => json(config())),
     threads: f.threads.map(thread => {
       const g = { ...f, session: thread.session ?? undefined, model: thread.model };
       return {
@@ -377,7 +383,12 @@ async function login(f) {
 async function main(argv) {
   const [command, ...rest] = argv;
   const f = flags(rest);
-  if (command === "fake-seed") { const state = seed(); save(state); writeSessions(state); return 0; }
+  if (command === "fake-seed") {
+    const part = f.positional[0] ?? "all";
+    if (part !== "config") { const state = seed(); save(state); writeSessions(state); }
+    if (part !== "accounts") save({ config: {}, set_by: {} }, configFile);
+    return 0;
+  }
   if (command === "refresh") return refresh(f);
   if (command === "login") { await login(f); return null; }
   const state = load();
@@ -387,11 +398,11 @@ async function main(argv) {
     case "ls": return write(json(ls(state, f)), false);
     case "who": return write(json(who(state, f)), false);
     case "queue": return write(json(queue()), false);
-    case "config": return write(json(config(state)), false);
+    case "config": return write(json(config()), false);
     case "set": {
-      const said = set(state, f);
+      const said = set(f);
       if (said.error) { process.stderr.write(said.error + "\n"); return 1; }
-      return write(said.out);
+      return write(said.out, false);
     }
     case "use": return write(use(state, f));
     case "pin": { const account = needAccount(state, f); state.providers[f.provider].pin = account.id; return write(`${account.email} pinned for all sessions\n`); }

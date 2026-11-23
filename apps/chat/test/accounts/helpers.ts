@@ -30,9 +30,12 @@ export const providerOf = (view: AccountsView, provider: ProviderId): PoolProvid
 export const rowIn = (view: AccountsView, provider: ProviderId, state: AccountState | null, extra: (row: PoolAccount) => boolean = () => true): PoolAccount | undefined =>
   providerOf(view, provider).rows.find(row => accountState(row) === state && extra(row));
 
-/** Resets the fake pi-pool to its seed when the fixture offers the hook (POST /api/fixture/pi-pool/reset); a fixture without it keeps its state. */
-export async function resetPool(request: APIRequestContext): Promise<boolean> {
-  const response = await request.post("/api/fixture/pi-pool/reset");
+/**
+ * Resets one part of the fake pi-pool to its seed when the fixture offers the hook (POST /api/fixture/pi-pool/reset); a fixture without it keeps
+ * its state. Specs in other files run at the same time on the one fixture, so a spec resets only the part it owns: the accounts, or the config.
+ */
+export async function resetPool(request: APIRequestContext, part: "accounts" | "config" = "accounts"): Promise<boolean> {
+  const response = await request.post(`/api/fixture/pi-pool/reset?part=${part}`);
   return response.ok();
 }
 

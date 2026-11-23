@@ -243,6 +243,19 @@ test("a no-model-room value outside wait, switch and fail is refused and changes
   assert.deepEqual(await s.get<NoModelRoomSetting>("/api/accounts/no-model-room"), { value: "wait", set: null });
 });
 
+test("a fixture reset of the accounts keeps the pool's config, and a reset of the config keeps the accounts", async () => {
+  await s.send("POST", "/api/accounts/no-model-room", { value: "fail" });
+  await s.send("POST", "/api/accounts", { action: "disable", provider: "anthropic", account: "claude-ready" });
+  await s.send("POST", "/api/fixture/pi-pool/reset?part=accounts");
+  assert.equal((await s.get<NoModelRoomSetting>("/api/accounts/no-model-room")).value, "fail");
+  assert.equal(row(await s.get<AccountsView>("/api/pool"), "claude-ready")!.disabled, false);
+  await s.send("POST", "/api/accounts", { action: "disable", provider: "anthropic", account: "claude-ready" });
+  await s.send("POST", "/api/fixture/pi-pool/reset?part=config");
+  assert.deepEqual(await s.get<NoModelRoomSetting>("/api/accounts/no-model-room"), { value: "wait", set: null });
+  assert.equal(row(await s.get<AccountsView>("/api/pool"), "claude-ready")!.disabled, true);
+  assert.equal((await s.send("POST", "/api/fixture/pi-pool/reset?part=pool")).status, 400);
+});
+
 test("a pi-pool config with no no_model_room key reads as an error that says so", () => {
   assert.throws(() => parseNoModelRoom({ working_max: 40, set_by: {} }), /has no no_model_room setting/);
   assert.deepEqual(parseNoModelRoom({ no_model_room: "switch", set_by: { no_model_room: { by: "the Settings pane", at: 1793700000 } } }),

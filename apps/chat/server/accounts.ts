@@ -278,12 +278,15 @@ export function accountRoutes<R>(app: App, route: (method: string, path: string,
     })),
     ...(app.config.fixture ? [
       route("GET", "/api/fixture/pi-pool", async () => fakePoolState()),
-      route("POST", "/api/fixture/pi-pool/reset", async () => {
-        reseedFakePool();
+      route("POST", "/api/fixture/pi-pool/reset", handled(async (_r, _p, query) => {
+        const part = query.get("part") ?? "all";
+        if (part !== "accounts" && part !== "config" && part !== "all") throw new PoolError(400, "part must be accounts, config or all.");
+        reseedFakePool(part);
+        if (part === "config") return fakePoolState();
         names.clear();
         forgetAccountReadings();
         return fakePoolState();
-      }),
+      })),
     ] : []),
   ];
 }

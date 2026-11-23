@@ -33,8 +33,11 @@ export function useFakePool(dataDir: string, threads: readonly string[]): void {
   reseedFakePool();
 }
 
-export function reseedFakePool(): void {
-  execFileSync(FAKE, ["fake-seed"], { env: process.env });
+/** The parts a reset can reseed: the accounts and trees, the `pi-pool set` config, or both. */
+export type FakePoolPart = "accounts" | "config" | "all";
+
+export function reseedFakePool(part: FakePoolPart = "all"): void {
+  execFileSync(FAKE, ["fake-seed", part], { env: process.env });
 }
 
 export function fakePoolState(): unknown {
