@@ -66,10 +66,11 @@ test("a board change shows in For you and the Board sidebar with no read of eith
 
 test("a reload shows For you from the answer the last load kept while its read hangs", async ({ page }) => {
   await page.goto("/#/c/for-you");
-  await expect(asks(page)).toHaveCount(4);
-  await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 200)));
+  await expect(asks(page).first()).toBeVisible();
+  await page.waitForLoadState("networkidle");
+  const shown = await asks(page).allTextContents();
   await page.route("**/api/for-you", () => undefined);
   await page.reload();
-  await expect(asks(page)).toHaveCount(4);
+  await expect(asks(page)).toHaveText(shown);
   await expect(page.getByText("Loading For you")).toHaveCount(0);
 });
