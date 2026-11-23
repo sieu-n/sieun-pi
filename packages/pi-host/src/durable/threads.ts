@@ -46,7 +46,7 @@ import { commExtension, noteHanded, noteHeard, type CommHost, type CommSubmit } 
 import { drainGate } from "./drain-gate.ts";
 import { deliverHarnessDigest, type PrimePromptOptions } from "./prime-prompt.ts";
 import { liveRetry, retrySince, retryingText } from "./retrying.ts";
-import { failedInputs, failureNotice, rootFailed, failureTarget, isRetry, lastModel, mayRetry, newestRootFailed, retryInput, roomLine, roomLineWrites, roomPost, toldName, TURN_FAILED_VIA, type FailedInput } from "./turn-failed.ts";
+import { clearsOnItsOwn, failedInputs, failureNotice, rootFailed, failureTarget, isRetry, lastModel, mayRetry, newestRootFailed, retryInput, roomLine, roomLineWrites, roomPost, toldName, TURN_FAILED_VIA, type FailedInput } from "./turn-failed.ts";
 
 const context: Context = BACKGROUND_CONTEXT;
 const PREVIEW_CHARS = 200;
@@ -790,6 +790,9 @@ export class DurableThreads {
       if (post && !isRetry(first)) {
         const model = await lastModel(open.harness, context);
         if (model) for (const write of roomLineWrites(first, post, model, this.now(), roomLine(told, first.error))) await open.root.submit(write, context);
+        // An error that clears on its own gives the post its one retry now, not at the next restart (`clearsOnItsOwn`).
+        const retry = ref?.role === "comm" && clearsOnItsOwn(first.error) ? await retryInput(open.harness, open.storage, ref.room, context) : undefined;
+        if (retry) await this.submit(open.id, { ...retry, whenBusy: "followUp", ownerTurn: true });
       }
       const name = this.index.get(open.id)?.name ?? open.id;
       if (!told || !target) {

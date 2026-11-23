@@ -11,6 +11,7 @@
  *    efbf242e on the Hosts page's Failed tab on 11-23.
  * 6. With no one to tell, as on a compose dev instance, the room line gives the error and names no one, and a retry that fails again
  *    posts no second line.
+ * 7. A post whose run failed on "Connection error" gets its one retry at once, which answers it, and a restart retries it no more.
  */
 import { strict as assert } from "node:assert";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -22,7 +23,7 @@ import { fauxAssistantMessage, fauxProvider, type Message } from "@earendil-work
 import { createModels } from "@earendil-works/pi-ai/models";
 import { durableSettings } from "@sieun-pi/pi-pool/durable";
 import { DurableThreads } from "../../src/durable/threads.ts";
-import { failedInputs, rootFailed, roomLine, TURN_FAILED_VIA } from "../../src/durable/turn-failed.ts";
+import { clearsOnItsOwn, failedInputs, rootFailed, roomLine, TURN_FAILED_VIA } from "../../src/durable/turn-failed.ts";
 import { TOLD } from "../../src/durable/turn-end.ts";
 import { MODEL } from "./crash-scenario.ts";
 
@@ -155,6 +156,42 @@ test("with no one to tell, the room line gives the error and names no one, and a
     await new Promise(resolve => setTimeout(resolve, 200));
     assert.equal((await lines()).length, 1, "the room keeps one line for the post");
     assert.deepEqual(await threads.retryFailedPosts(), [], "and the post gets no third run");
+  } finally {
+    await threads.shutdown();
+  }
+});
+
+test("a post whose run failed on an error that clears on its own gets its one retry at once, and a restart retries it no more", async () => {
+  assert.equal(clearsOnItsOwn("Connection error."), true);
+  assert.equal(clearsOnItsOwn("pi-pool: the anthropic service is temporarily unavailable"), true);
+  assert.equal(clearsOnItsOwn(BAD_IMAGE), false);
+  let calls = 0;
+  const threads = new DurableThreads({
+    dir: join(scratch, "durable-transient"), defaultModel: MODEL, defaultThinkingLevel: "off", defaultCwd: scratch, primeRoots: null,
+    models: () => {
+      const models = createModels();
+      const faux = fauxProvider({ provider: "anthropic", models: [{ id: MODEL.modelId }] });
+      faux.setResponses(Array.from({ length: 20 }, () => () => (calls++ === 0 ? fauxAssistantMessage([], { stopReason: "error", errorMessage: "Connection error." }) : fauxAssistantMessage("On it."))));
+      models.setProvider(faux.provider);
+      return models;
+    },
+    // pi-durable's own retry is off here, as for an error it does not call transient.
+    settings: () => ({ ...durableSettings({ baseDelayMs: 5, maxAgentDelayMs: 20, maxRetries: 0 }), stream: {} }),
+    agentWork: async (): Promise<string | undefined> => undefined,
+  });
+  const work = await threads.create({ name: "walk" });
+  const comm = await threads.create({ name: "walk · DM" });
+  await threads.docPut(work.id, "agent.ref", { agent: "ag_walk", dir, role: "work", comm: comm.id });
+  await threads.docPut(comm.id, "agent.ref", { agent: "ag_walk", dir, role: "comm", room: "dm_walk", work: work.id });
+  try {
+    const post = await threads.submit(comm.id, { text: "[DM · post 2 from You (owner)]\n\nhow is the relay?", requestId: "d:p2:ag_walk" });
+    assert.equal((await threads.wait(comm.id, post.submission)).status, "unanswered");
+    const answered = await until(async () => {
+      const last = (await threads.entries(comm.id, { conversation: 1, after: 0, limit: 500 })).entries.at(-1)?.model?.[0] as Message | undefined;
+      return last?.role === "assistant" && last.stopReason === "stop" ? last : undefined;
+    }, "the retried post's answer");
+    assert.equal((answered.content[0] as { text: string }).text, "On it.");
+    assert.deepEqual(await threads.retryFailedPosts(), [], "the post had its one retry");
   } finally {
     await threads.shutdown();
   }

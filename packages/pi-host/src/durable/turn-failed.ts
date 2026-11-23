@@ -19,7 +19,8 @@
  * Request ids keyed by the failed submission keep each line and notice once.
  *
  * After a fix ships, `retryInput` gives a comm thread's newest owner post its turn again when the run that held it failed and no later
- * call of the thread answered or closed it; the retry's request id `retry:<the post's request id>` keeps it to one retry per post.
+ * call of the thread answered or closed it; the retry's request id `retry:<the post's request id>` keeps it to one retry per post. A post
+ * whose run failed on an error that clears on its own gets that retry at once (`clearsOnItsOwn`).
  */
 import type { Context } from "@earendil-works/chord";
 import type { ImageContent, Message, TextContent } from "@earendil-works/pi-ai";
@@ -48,6 +49,15 @@ export function toldName(ref: AgentRef | undefined): string {
  * again posts none: on 11-23 each `docker compose down` and `up` of a dev instance with no API key added the same line under the post.
  */
 export const isRetry = (failed: FailedInput): boolean => failed.requestId?.startsWith(RETRY) === true;
+/**
+ * Whether a failed run's error clears on its own, such as a dropped connection or pi-pool or the provider being unavailable for a moment, so
+ * its post gets its one retry at once instead of after a restart. A 400 or a missing credential needs a fix first, so its retry waits for the
+ * restart that ships the fix (`retryFailedPosts`). From 11-19 to 11-24, 9 of the 14 owner posts whose comm turn failed with no answer failed on
+ * "Connection error" or pi-pool "service is temporarily unavailable", and waited 4 to 17 min for someone to send them again
+ * (~/work/duty-and-nudge/part3-lazy.md).
+ */
+export const clearsOnItsOwn = (error: string): boolean =>
+  /connection error|temporarily unavailable|fetch failed|ECONN|socket hang up|network|timed? ?out|overloaded|(?<![0-9])(429|5\d\d)(?![0-9])/i.test(error);
 /** The `via` of a failure notice's agent message. */
 export const TURN_FAILED_VIA = "turn.failed";
 /** The settle reasons of a run whose model call failed (pi-durable generation.js `failModelError`, `failNoModel`, `classify`). */
