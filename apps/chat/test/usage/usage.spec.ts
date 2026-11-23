@@ -15,6 +15,17 @@ async function report(page: Page, range = "24h", extra = ""): Promise<Report> {
   return (await response.json()) as Report;
 }
 
+/**
+ * The report the page itself reads for `query`, which it shows until its refresh a minute later (reports.ts `REFRESH_MS`). The fixture's
+ * agents answer other specs' posts all the while, so a read of the test's own a moment later can count more turns than the screen does.
+ */
+function shown(page: Page, query: string): Promise<Report> {
+  return page.waitForResponse(response => {
+    const url = new URL(response.url());
+    return url.pathname === "/api/usage" && url.search === `?${query}`;
+  }).then(async response => (await response.json()) as Report);
+}
+
 /** The range's own chart; the tokens per second card under it draws a second one. */
 const mainChart = (page: Page) => page.getByRole("region", { name: / per (minute|hour|day)$/ });
 
@@ -25,9 +36,10 @@ function sums(rows: Row[]) {
 }
 
 test("the chart comes first, and its total, the figures and every token kind equal the server's rows exactly", async ({ page }) => {
+  const read = shown(page, "range=7d&bucket=day");
   await page.goto("/#/settings/usage?range=7d&by=day");
   await expect(page.getByTestId("usage-cost")).toBeVisible();
-  const data = await report(page, "7d", "&bucket=day");
+  const data = await read;
   test.skip(!data.rows.length, "no usage in the last 7 days on this server");
   const total = sums(data.rows);
   const exact = `$${total.cost.total.toLocaleString("en-US", { minimumFractionDigits: 4, maximumFractionDigits: 4 })}`;
@@ -48,8 +60,9 @@ test("the chart comes first, and its total, the figures and every token kind equ
 });
 
 test("a hover names the bucket and its total, as its figures row has it", async ({ page }) => {
+  const read = shown(page, "range=7d&bucket=day");
   await page.goto("/#/settings/usage?range=7d&by=day");
-  const data = await report(page, "7d", "&bucket=day");
+  const data = await read;
   test.skip(!data.rows.length, "no usage in the last 7 days on this server");
   const hit = mainChart(page).getByTestId("usage-chart-hit");
   const box = (await hit.boundingBox())!;
@@ -62,9 +75,10 @@ test("a hover names the bucket and its total, as its figures row has it", async 
 });
 
 test("By chat lists every chat, costliest first, and a row opens its channel", async ({ page }) => {
+  const read = shown(page, "range=24h&bucket=hour");
   await page.goto("/#/settings/usage");
-  const data = await report(page);
-  test.skip(!data.rows.length, "no usage in the last 30 days on this server");
+  const data = await read;
+  test.skip(!data.rows.length, "no usage in the last 24 hours on this server");
   const byThread = new Map<string, { name: string; cost: number }>();
   for (const row of data.rows) byThread.set(row.thread, { name: row.threadName, cost: (byThread.get(row.thread)?.cost ?? 0) + row.cost.total });
   const list = page.getByTestId("usage-by-chat").getByRole("link");
@@ -97,9 +111,10 @@ test("the range and the grouping live in the URL, ask the server again, and a ra
   const threads = [...new Set(data.rows.map(row => row.thread))];
   test.skip(threads.length < 2, "the chat filter shows only with two chats or more");
   const pick = data.rows.find(row => row.thread === threads[1])!;
+  const picked = shown(page, `range=30d&bucket=day&thread=${pick.thread}`);
   await page.getByRole("combobox", { name: "Chat", exact: true }).selectOption(pick.thread);
   await expect(page).toHaveURL(new RegExp(`thread=${pick.thread}`));
-  const only = await report(page, "30d", `&thread=${pick.thread}`);
+  const only = await picked;
   await expect(page.getByTestId("usage-cost")).toHaveText(dollars(sums(only.rows).cost.total));
 });
 
@@ -108,8 +123,8 @@ test("the page reads every other range ahead, so a pick shows its chart with no 
   const read = ahead.map(q => page.waitForResponse(response => response.url().includes(`/api/usage?${q}`)));
   await page.goto("/#/settings/usage");
   await expect(page.getByTestId("usage-filters")).toBeVisible();
-  await Promise.all(read);
-  const data = await report(page, "7d", "&bucket=day");
+  const responses = await Promise.all(read);
+  const data = (await responses[ahead.indexOf("range=7d&bucket=day")]!.json()) as Report;
   test.skip(!data.rows.length, "no usage in the last 7 days on this server");
   let release = () => {};
   const held = new Promise<void>(resolve => (release = resolve));
