@@ -2,7 +2,8 @@
  * Duty precheck: sw factory stays snappy (owner's words, #sw-factory-build, 11-03, msg mw0et67o: "Thread > load messages 이것도 진짜 너무
  * 느리거든? 이거 계속 느린 api 뭔지 꾸준히 (daily) monitoring 하는걸 add to duty and keep it snappy"). It reads the request log
  * (server/request-log.ts) of the last 24 h and gives each route's p90 as the owner waits for it: his own devices' lines (via tailnet), else
- * the server's handler time plus his network p50 from his other tailnet lines, and each metric says which in `metricSources`. A box
+ * the server's handler time plus his network p50 from his other tailnet lines (the handler time alone when fewer than MIN_NETWORK_LINES of
+ * them carry a network time), and each metric says which in `metricSources`. A box
  * browser's line, such as a job's walk, never sets a metric; its slowest routes are walk_slow_api rows apart. A call the screen did not
  * wait on says so in `bg` (request-log.ts): a read ahead of any view counts nowhere, and a refresh behind a page already on the screen
  * counts as a 0 ms wait. A client line's `net` is the
@@ -113,8 +114,25 @@ export function ownerNetwork(timings: readonly RequestTiming[]): OwnerNetwork | 
 }
 
 /**
+ * The fewest of the owner's lines whose network p50 is added to a handler or probe time. His first page load after a quiet spell posts one
+ * batch of 1 to 19 lines that wait on a waking link: the 10 such batches of 11-21 and 11-22 had medians of 220 to 793 ms on days whose p50
+ * was 212 ms, and on 11-23 the only line of 15 h, at 793 ms, made search read 898 ms on a 105 ms handler and thread open 815 ms on 22 ms.
+ * Over his 12,344 lines of those two days, the median of 20 lines in a row passed twice the day's p50 in 4.1% of places and reached
+ * 1,378 ms; of 30 in a row, in 2.2% and never past 621 ms.
+ */
+export const MIN_NETWORK_LINES = 30;
+
+/** A handler's or a probe's p90 as the owner would wait for it: his network p50 added when enough of his lines give one, else the p90 alone. */
+function withNetwork(p90: number, head: string, net: OwnerNetwork | undefined): { p90: number; source: string } {
+  if (!net) return { p90, source: `${head} alone, since no tailnet request in the window carries the network time` };
+  if (net.count < MIN_NETWORK_LINES)
+    return { p90, source: `${head} alone, since only ${net.count} tailnet requests in the window carry the network time (p50 ${net.p50} ms) and fewer than ${MIN_NETWORK_LINES} set no metric` };
+  return { p90: Math.round((p90 + net.p50) * 10) / 10, source: `${head} plus his network p50 ${net.p50} ms over ${net.count} tailnet requests` };
+}
+
+/**
  * A route's p90 as the owner waits for it, and the text that says where it came from: his own devices' lines, else the server's handler p90
- * plus his network p50 from his other calls. A box browser's line never sets it. On 11-05 the send metric read 288 ms from 255 job walks in
+ * plus his network p50 from his other calls when at least MIN_NETWORK_LINES of them carry one. A box browser's line never sets it. On 11-05 the send metric read 288 ms from 255 job walks in
  * the box Chrome, which waits for the box's CPU, while the server answered sends at 15 ms p90 and the owner made no send over the tailnet.
  */
 export interface OwnerSpeed { route: string; p90: number; source: string; speed: RouteSpeed }
@@ -125,9 +143,7 @@ export function ownerSpeed(speeds: readonly RouteSpeed[], route: string, net: Ow
   const server = speeds.find(s => s.src === "server" && s.route === route);
   if (!server) return undefined;
   const handler = `no request of the owner's in the window, so the server's handler p90 ${server.p90} ms over ${server.count} requests`;
-  return net
-    ? { route, p90: Math.round((server.p90 + net.p50) * 10) / 10, source: `${handler} plus his network p50 ${net.p50} ms over ${net.count} tailnet requests`, speed: server }
-    : { route, p90: server.p90, source: `${handler} alone, since no tailnet request in the window carries the network time`, speed: server };
+  return { route, ...withNetwork(server.p90, handler, net), speed: server };
 }
 
 const WHO: Record<SpeedSource, string> = {
@@ -190,15 +206,13 @@ export const PROBED = [ROUTES.search, ROUTES.messages, ROUTES.replies] as const;
 
 export const unmeasured = (speeds: readonly RouteSpeed[]): string[] => PROBED.filter(route => !speeds.some(s => s.route === route && s.src !== "client"));
 
-/** A probed route's p90 as the owner would wait for it: the probe's wall-time p90 plus his network p50 when the window has it. */
+/** A probed route's p90 as the owner would wait for it: the probe's wall-time p90 plus his network p50 when enough of the window's lines give one. */
 export function probeSpeed(probe: Probe, net: OwnerNetwork | undefined): OwnerSpeed | undefined {
   if (!("ms" in probe) || !probe.ms.length) return undefined;
   const sorted = [...probe.ms].sort((a, b) => a - b);
   const speed: RouteSpeed = { route: probe.route, src: "probe", count: sorted.length, p50: percentile(sorted, 0.5), p90: percentile(sorted, 0.9), max: sorted.at(-1)!, slowestPath: probe.path };
   const head = `a probe from the box at ${new Date(probe.at).toISOString()}, since the owner made no call in the window: ${speed.count} GETs of ${probe.path} took p90 ${speed.p90} ms`;
-  return net
-    ? { route: probe.route, p90: Math.round((speed.p90 + net.p50) * 10) / 10, source: `${head} plus his network p50 ${net.p50} ms over ${net.count} tailnet requests`, speed }
-    : { route: probe.route, p90: speed.p90, source: `${head} alone, since no tailnet request in the window carries the network time`, speed };
+  return { route: probe.route, ...withNetwork(speed.p90, head, net), speed };
 }
 
 const PROBE_CALLS = 5;

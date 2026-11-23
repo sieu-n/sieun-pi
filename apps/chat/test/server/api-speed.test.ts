@@ -10,7 +10,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { apiSpeed, finding, probeRoutes, readTimings, routeSpeeds, unmeasured } from "../../scripts/duties/api-speed.ts";
+import { apiSpeed, finding, MIN_NETWORK_LINES, probeRoutes, probeSpeed, readTimings, routeSpeeds, unmeasured } from "../../scripts/duties/api-speed.ts";
 import { parseStarts } from "../../scripts/restart-walk-hits.ts";
 import { dayOf, LoopStalls, RequestLog, type RequestTiming } from "../../server/request-log.ts";
 import { start } from "./helpers.ts";
@@ -184,18 +184,19 @@ test("the precheck reads each metric from the owner's lines, falls back to the s
     row("client", "local", "POST", "/api/c/:id/send", 288),
     row("server", "local", "POST", "/api/c/:id/send", 40),
     row("client", "local", "GET", "/api/me", 3),
+    ...Array.from({ length: 18 }, () => row("client", "tailnet", "GET", "/api/rooms", 20, at, 20)),
     row("client", "tailnet", "GET", "/api/search", 99_000, now - 30 * 3600_000),
   ];
   writeFileSync(join(dir, "requests", "2026-11-02.jsonl"), `${rows.at(-1)}\n`);
   writeFileSync(join(dir, "requests", "2026-11-03.jsonl"), `${rows.slice(0, -1).join("\n")}\n{"torn`);
   const out = apiSpeed(dir, now, 24 * 3600_000);
-  // The network p50 is 20 ms over the owner's 12 lines, so search reads 5 + 20 and send 40 + 20; the walks' 900 and 288 set nothing.
+  // The network p50 is 20 ms over the owner's 30 lines, so search reads 5 + 20 and send 40 + 20; the walks' 900 and 288 set nothing.
   assert.deepEqual(out.metrics, {
     slowest_api_p90_ms: 2500, search_p90_ms: 25, thread_open_p90_ms_messages: 190, thread_open_p90_ms_replies: 2500, thread_open_p90_ms: 2500, send_p90_ms: 60,
     failed_sends_24h: 0,
   });
   assert.equal(out.metricSources.messages, "GET /api/c/:id/items: the owner's devices, 10 requests");
-  assert.equal(out.metricSources.send, "POST /api/c/:id/send: no request of the owner's in the window, so the server's handler p90 40 ms over 1 requests plus his network p50 20 ms over 12 tailnet requests");
+  assert.equal(out.metricSources.send, "POST /api/c/:id/send: no request of the owner's in the window, so the server's handler p90 40 ms over 1 requests plus his network p50 20 ms over 30 tailnet requests");
   assert.deepEqual(out.slowest.map(s => s.route), ["GET /api/c/:id/replies/:root", "GET /api/c/:id/items", "POST /api/c/:id/send"]);
   assert.deepEqual(out.flagged.map(row => `${row.kind} ${row.sig}`), [
     "slow_api tailnet:GET /api/c/:id/replies/:root", "slow_api tailnet:GET /api/c/:id/items", "slow_api server:POST /api/c/:id/send",
@@ -274,6 +275,31 @@ test("a walk never sets a metric, and with no tailnet line the server's handler 
   assert.deepEqual(own.routes.map(s => [s.src, s.count, s.p90]), [["client", 2, 2000], ["tailnet", 1, 80], ["server", 1, 5]]);
 });
 
+test("a network time from too few of the owner's lines sets no metric, and the source says so", () => {
+  const dir = tempDir();
+  mkdirSync(join(dir, "requests"));
+  const now = Date.UTC(2026, 10, 23, 6);
+  const row = (src: string, r: string, ms: number, via?: string, net?: number) =>
+    JSON.stringify({ at: now - 60_000, src, m: "GET", r, p: r.replace(":id", "dm_x"), s: 200, ms, ...(via ? { via } : {}), ...(net === undefined ? {} : { net }) });
+  const file = join(dir, "requests", "2026-11-23.jsonl");
+  const wake = (count: number) => Array.from({ length: count }, () => row("client", "/api/search/recent", 800, "tailnet", 793));
+  writeFileSync(file, `${[row("server", "/api/search", 105), row("server", "/api/c/:id/items", 22), ...wake(1)].join("\n")}\n`);
+  const one = apiSpeed(dir, now, 15 * 3600_000);
+  assert.deepEqual(one.network, { count: 1, p50: 793 });
+  assert.equal(one.metrics.search_p90_ms, 105, "one waking call's 793 ms adds to no handler time");
+  assert.equal(one.metrics.thread_open_p90_ms, 22);
+  assert.equal(one.metricSources.search, "GET /api/search: no request of the owner's in the window, so the server's handler p90 105 ms over 1 requests alone, since only 1 tailnet requests in the window carry the network time (p50 793 ms) and fewer than 30 set no metric");
+  const probe = { route: "GET /api/search", at: now, path: "/api/search?q=duty", ms: [40, 50] };
+  assert.equal(probeSpeed(probe, one.network)!.p90, 50, "a probe stands alone the same way");
+  assert.match(probeSpeed(probe, one.network)!.source, /took p90 50 ms alone, since only 1 tailnet requests .* fewer than 30 set no metric$/);
+  writeFileSync(file, `${wake(MIN_NETWORK_LINES - 2).join("\n")}\n`, { flag: "a" });
+  assert.equal(apiSpeed(dir, now, 15 * 3600_000).metrics.search_p90_ms, 105, "29 lines are still too few");
+  writeFileSync(file, `${wake(1).join("\n")}\n`, { flag: "a" });
+  const enough = apiSpeed(dir, now, 15 * 3600_000);
+  assert.equal(enough.metrics.search_p90_ms, 898);
+  assert.match(enough.metricSources.search!, /plus his network p50 793 ms over 30 tailnet requests$/);
+});
+
 test("a finding whose wait is close to its network time blames the network or the server", () => {
   const excerpt = finding({ route: "GET /api/usage", src: "tailnet", count: 4, p50: 300, p90: 390, max: 400, slowestPath: "/api/usage", netCount: 4, netP50: 290, netP90: 380 });
   assert.match(excerpt, /^GET \/api\/usage p90 390 ms.*from the owner's devices; on the 4 lines .* p90 380 ms, p50 290 ms, so the network or the server held the wait;/);
@@ -287,7 +313,7 @@ test("with no line of the owner's or the server's on a metric route, the CLI's p
     JSON.stringify({ at: now - 60_000, src: "client", m: "GET", r, p, s: 200, ms, via, ...(net === undefined ? {} : { net }) });
   writeFileSync(join(dir, "requests", `${dayOf(now)}.jsonl`), `${[
     row("local", "/api/c/:id/items", "/api/c/dm_busy/items", 900), row("local", "/api/c/:id/items", "/api/c/dm_busy/items", 800),
-    row("local", "/api/search", "/api/search", 700), row("tailnet", "/api/rooms", "/api/rooms", 30, 12),
+    row("local", "/api/search", "/api/search", 700), ...Array.from({ length: MIN_NETWORK_LINES }, () => row("tailnet", "/api/rooms", "/api/rooms", 30, 12)),
   ].join("\n")}\n`);
   const seen: string[] = [];
   const server = createServer((req, res) => {
@@ -318,7 +344,7 @@ test("with no line of the owner's or the server's on a metric route, the CLI's p
     assert.equal(out.metrics.thread_open_p90_ms_messages, Math.round((p90("GET /api/c/:id/items") + 12) * 10) / 10, "the probe's p90 plus the owner's network p50");
     assert.equal(out.metrics.thread_open_p90_ms_replies, Math.round((p90("GET /api/c/:id/replies/:root") + 12) * 10) / 10);
     assert.ok(out.metrics.slowest_api_p90_ms! >= out.metrics.thread_open_p90_ms!);
-    assert.match(out.metricSources.messages!, /^GET \/api\/c\/:id\/items: a probe from the box at \d{4}-\d\d-\d\dT[\d:.]+Z, since the owner made no call in the window: 5 GETs of \/api\/c\/dm_busy\/items took p90 [\d.]+ ms plus his network p50 12 ms over 1 tailnet requests$/);
+    assert.match(out.metricSources.messages!, /^GET \/api\/c\/:id\/items: a probe from the box at \d{4}-\d\d-\d\dT[\d:.]+Z, since the owner made no call in the window: 5 GETs of \/api\/c\/dm_busy\/items took p90 [\d.]+ ms plus his network p50 12 ms over 30 tailnet requests$/);
     assert.deepEqual(out.flagged.filter(f => f.kind === "probe_failed").map(f => f.sig), ["probe:GET /api/search"]);
     assert.match(out.flagged.find(f => f.kind === "probe_failed")!.excerpt, /^GET \/api\/search has no value: a probe from the box at .* failed: GET \/api\/search\?q=duty answered 500/);
     assert.deepEqual(await probeRoutes(base, [], timings), [], "a measured window probes nothing");
