@@ -12,8 +12,10 @@ test("a wake reads as what it waits on", () => {
   assert.equal(wakeWhen({ kind: "time", at: 5 }, stamp), "at T5");
   assert.equal(wakeWhen({ kind: "run", run: 42 }, stamp), "when CI run 42 ends");
   assert.equal(wakeWhen({ kind: "run", run: 42, repo: "sieu-n/sieun-pi" }, stamp), "when CI run 42 in sieu-n/sieun-pi ends");
-  assert.equal(wakeWhen({ kind: "check", command: "true", every: 1_800_000, at: 9 }, stamp), "when its check passes, run every 30 min, or at T9");
-  assert.equal(wakeWhen({ kind: "check", command: "true", every: 7_200_000, at: 9 }, stamp), "when its check passes, run every 2 h, or at T9");
+  assert.equal(wakeWhen({ kind: "check", command: "true", every: 60_000, at: 9 }, stamp), "when its check passes or at T9, checked every minute");
+  assert.equal(wakeWhen({ kind: "check", command: "true", every: 1_800_000, at: 9 }, stamp), "when its check passes or at T9, checked every 30 min");
+  assert.equal(wakeWhen({ kind: "check", command: "true", every: 3_600_000, at: 9 }, stamp), "when its check passes or at T9, checked every hour");
+  assert.equal(wakeWhen({ kind: "check", command: "true", every: 7_200_000, at: 9 }, stamp), "when its check passes or at T9, checked every 2 hours");
 });
 
 test("the split shows the main thread always and another kind only once it ran or cost something", () => {

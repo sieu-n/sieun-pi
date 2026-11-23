@@ -11,16 +11,17 @@ export const USAGE_ROWS: readonly { kind: ThreadKind; label: string }[] = [
   { kind: "jobs", label: "Root jobs" },
 ];
 
-const minutes = (ms: number): string => {
+const every = (ms: number): string => {
   const m = Math.round(ms / 60_000);
-  return m >= 60 && m % 60 === 0 ? `${m / 60} h` : `${m} min`;
+  if (m === 1) return "every minute";
+  return m >= 60 && m % 60 === 0 ? (m === 60 ? "every hour" : `every ${m / 60} hours`) : `every ${m} min`;
 };
 
-/** What a pending wake waits on, as one plain phrase: "at 14:40", "when CI run 123 ends" or "when its check passes, ...". */
+/** What a pending wake waits on, as one plain phrase: "at 14:40", "when CI run 123 ends" or "when its check passes or at 14:40, checked ...". */
 export function wakeWhen(on: AgentWake["on"], stamp: (at: number) => string): string {
   if (on.kind === "time") return `at ${stamp(on.at)}`;
   if (on.kind === "run") return `when CI run ${on.run}${on.repo ? ` in ${on.repo}` : ""} ends`;
-  return `when its check passes, run every ${minutes(on.every)}, or at ${stamp(on.at)}`;
+  return `when its check passes or at ${stamp(on.at)}, checked ${every(on.every)}`;
 }
 
 /** The main thread and each other kind with a turn or a cost in the 7 days, so a $0.00 row over no thread does not show. */

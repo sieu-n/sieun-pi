@@ -22,6 +22,7 @@
   const hostLine = $derived(hostLineOf(config));
   const commThreads = $derived(commThreadsOf(config, agent));
   const wakes = $derived(config.swarm.wakes ?? []);
+  const whereDetail = $derived(hostLine.startsWith(config.runs.host) ? hostLine : `${config.runs.host} · ${hostLine}`);
   const wakeHref = (wake: AgentWake) => (wake.kind === "jobs" || wake.id.includes(":") ? hrefFor("agents", [wake.id]) : conversationHref(wake.id));
 </script>
 
@@ -112,9 +113,12 @@
     <a href={hrefFor("agents", [config.swarm.parent.id])}>{config.swarm.parent.name}</a>
   </section>
 {/if}
-<AgentJobs jobs={config.swarm.jobs} onchanged={reload} />
+<section class="block" aria-label="Jobs list">
+  <h3 class="t-caption heading">Jobs</h3>
+  <AgentJobs jobs={config.swarm.jobs} onchanged={reload} />
+</section>
 <section class="where" aria-label="Where it runs" data-testid="where-it-runs">
-  <Disclosure title="Where it runs" detail={`${config.runs.host} · ${hostLine}`} bind:open={whereOpen}>
+  <Disclosure title="Where it runs" detail={whereDetail} bind:open={whereOpen}>
     <dl class="facts">
       <dt>Host</dt>
       <dd>{config.runs.host}</dd>
@@ -132,7 +136,7 @@
       <dd>{agent ? stampLabel(agent.createdAt) : ""}</dd>
       <dt>Last activity</dt>
       <dd>{agent ? stampLabel(agent.updatedAt) : ""}</dd>
-      {#if config.identity.wakeAt}
+      {#if config.identity.wakeAt && agent?.status === "sleeping"}
         <dt>Sleeps until</dt>
         <dd>{stampLabel(config.identity.wakeAt)}</dd>
       {/if}
