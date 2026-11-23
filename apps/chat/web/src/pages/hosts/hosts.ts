@@ -21,6 +21,7 @@ export interface HostState { dot: Status; text: string | null; tip: string | nul
 export function hostState(host: HostView): HostState {
   const link = host.agentRelay;
   if (link?.state === "away") return { dot: "away", text: `Offline, last seen ${hhmm(link.lastPongAt ?? link.since)}`, tip: `Agent relay away since ${hhmm(link.since)}` };
+  if (!host.agentRelay && host.relay.state === "reading") return { dot: "offline", text: "Reading…", tip: null };
   if (!reachable(host)) return { dot: "offline", text: "Not answering", tip: host.relay.state === "unreachable" ? host.relay.error : null };
   if (host.piHost.state === "down") return { dot: "busy", text: "pi-host down", tip: host.piHost.error };
   return { dot: "online", text: null, tip: null };
@@ -55,6 +56,7 @@ export function agentRelayLine(host: HostView, now: number): ServiceLine | null 
 
 export function machineRelayLine(host: HostView): ServiceLine {
   if (host.relay.state === "unreachable") return { name: "Machine relay", dot: "offline", text: "Not answering", tip: host.relay.error };
+  if (host.relay.state === "reading") return { name: "Machine relay", dot: "offline", text: "Reading…", tip: null };
   return { name: "Machine relay", dot: "online", text: host.self ? "This box" : `${Math.round(host.relay.pingMs)} ms`, tip: null };
 }
 

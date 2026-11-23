@@ -120,7 +120,7 @@
                   <span class="bar" role="meter" aria-label="Memory" aria-valuenow={Math.round((100 * machine.memory.usedBytes) / machine.memory.totalBytes)} aria-valuemin={0} aria-valuemax={100}><span style:width="{(100 * machine.memory.usedBytes) / machine.memory.totalBytes}%"></span></span>
                 </span>
               {:else}
-                <span class="state" use:tooltip={state.tip}>{state.text ?? "No machine reading"}</span>
+                <span class="state" use:tooltip={state.tip}>{state.text ?? (host.relay.state === "reading" ? "Reading…" : "No machine reading")}</span>
               {/if}
               <span class="count right">
                 {#if host.piHost.state === "absent"}<span class="of">No pi-host</span>

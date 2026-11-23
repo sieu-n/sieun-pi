@@ -19,7 +19,7 @@ import { KeptUsage, MACHINE_TICK_MS, MachineReads, SqliteUsage, usageReport } fr
 const settle = () => new Promise(resolve => setImmediate(resolve));
 const machine = (percent: number) => ({ platform: "linux", cpu: { percent, cores: 8, load: [1, 1, 1] }, memory: { usedBytes: 1, totalBytes: 2 } }) as unknown as MachineView;
 
-test("a machine reading answers at once within the tick, and past it answers the last reading while one read runs behind it", async () => {
+test("a machine reading answers at once: null before the first read lands, the last reading after, with one read behind it past the tick", async () => {
   let at = 1_000_000;
   const calls: { resolve: (percent: number) => void; reject: (error: Error) => void }[] = [];
   const reads = new MachineReads(() => new Promise((resolve, reject) => {
@@ -27,32 +27,46 @@ test("a machine reading answers at once within the tick, and past it answers the
   }), () => at);
   const box = { name: "mac", address: "127.0.0.1", relayPort: 1 };
 
-  const first = reads.get(box);
-  await settle();
-  assert.equal(calls.length, 1, "a box never read waits for its first read");
+  assert.equal(reads.get(box), null, "a box never read answers at once with no reading, and never waits on its relay");
+  assert.equal(reads.get(box), null);
+  assert.equal(calls.length, 1, "one first read runs behind however many calls ask");
   calls[0]!.resolve(10);
-  const one = await first;
+  await reads.settled();
+  const one = reads.get(box)!;
   assert.ok("read" in one && one.read.machine?.cpu.percent === 10);
 
   at += MACHINE_TICK_MS - 1;
-  assert.equal(await reads.get(box), one, "a reading younger than the tick answers with no read");
+  assert.equal(reads.get(box), one, "a reading younger than the tick answers with no read");
   assert.equal(calls.length, 1);
 
   at += 1;
-  const stale = await Promise.all([reads.get(box), reads.get(box), reads.get(box)]);
-  assert.ok(stale.every(answer => answer === one), "past the tick the last reading answers at once");
+  assert.ok([reads.get(box), reads.get(box), reads.get(box)].every(answer => answer === one), "past the tick the last reading answers at once");
   assert.equal(calls.length, 2, "and one read starts behind it however many polls ask");
   calls[1]!.resolve(20);
-  await settle(); await settle();
-  const two = await reads.get(box);
+  await reads.settled();
+  const two = reads.get(box)!;
   assert.ok("read" in two && two.read.machine?.cpu.percent === 20);
 
   at += MACHINE_TICK_MS;
-  assert.equal(await reads.get(box), two);
+  assert.equal(reads.get(box), two);
   calls[2]!.reject(new Error("connect ECONNREFUSED"));
-  await settle(); await settle();
-  const down = await reads.get(box);
+  await reads.settled();
+  const down = reads.get(box)!;
   assert.ok("error" in down && down.error === "connect ECONNREFUSED", "a relay that stops answering reads as unreachable at the next poll");
+});
+
+test("the last machine readings stay on disk, so a restarted server answers its first call with them", async () => {
+  const saved = new Map<string, unknown>();
+  const store = { cache: <T>(name: string, fallback: T): T => (saved.has(name) ? structuredClone(saved.get(name)) as T : fallback), saveCache: (name: string, value: unknown) => void saved.set(name, structuredClone(value)) };
+  const box = { name: "mac", address: "127.0.0.1", relayPort: 1 };
+  const before = new MachineReads(async () => ({ pingMs: 5, machine: machine(42) }), Date.now, store);
+  assert.equal(before.get(box), null);
+  await before.settled();
+  let reads = 0;
+  const after = new MachineReads(() => (reads++, new Promise(() => {})), Date.now, store);
+  const first = after.get(box);
+  assert.ok(first && "read" in first && first.read.machine?.cpu.percent === 42, "the reading from before the restart answers at once");
+  assert.equal(reads, 0, "a reading younger than the tick reads no relay");
 });
 
 test("api/usage reads the range in one bucketed call, each bucket summed apart and the totals equal to their sum", async () => {

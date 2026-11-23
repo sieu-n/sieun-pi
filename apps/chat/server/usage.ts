@@ -13,6 +13,7 @@ import { MultiHost } from "./host/multi-host.ts";
 import type { RelayHost } from "./host/relay-host.ts";
 import type { Host, Ping, UsageRange as HostUsageRange, UsageTotal } from "./host/types.ts";
 import { OWNER_ZONE_OFFSET_MS } from "./search.ts";
+import type { Store } from "./store.ts";
 import { statusOf, type Threads } from "./threads.ts";
 
 /** One row's cost by kind, as pi-host sums it from each answer's own usage. */
@@ -314,23 +315,35 @@ export const MACHINE_TICK_MS = 2_000;
 /** A machine relay read as it ended: the reading, or why the relay did not answer, with the epoch ms the read started. */
 export type MachineAnswer = { at: number } & ({ read: MachineRead } | { error: string });
 
+/** Where the last machine readings stay across restarts (store.ts `cache`), so the first api/hosts after a start has them. */
+const MACHINE_CACHE = "machine-reads";
+type MachineStore = Pick<Store, "cache" | "saveCache">;
+
 /**
- * Each box's last machine reading, answered at once, with one read started behind it once it is a tick old; only a box never read waits.
- * On 11-03 GET /v1/host took 0.5 to 1.2 s on both boxes, since each read starts `pi-pool queue` and `config` there, and api/hosts waited for
- * every box's read on each 2 s poll of the Hosts page.
+ * Each box's last machine reading, answered at once, with one read started behind it once it is a tick old. A box with no reading yet
+ * answers null at once, and its first read runs behind. On 11-03 GET /v1/host took 0.5 to 1.2 s on both boxes, since each read starts
+ * `pi-pool queue` and `config` there, and api/hosts waited for every box's read on each 2 s poll of the Hosts page. Until 11-23 a box never
+ * read still held api/hosts for its first read: the Mac's machine relay times out at 5 s, so the first call after each apps/chat release
+ * took 5,218 ms in the p155 sweeps full1 and full3. The readings are kept on disk, so a restart starts from the last ones.
  */
 export class MachineReads {
-  private readonly last = new Map<string, MachineAnswer>();
+  private readonly last: Map<string, MachineAnswer>;
   private readonly out = new Map<string, Promise<MachineAnswer>>();
 
-  constructor(private readonly read: (h: RegistryHost) => Promise<MachineRead> = relayHost, private readonly now: () => number = Date.now) {}
+  constructor(private readonly read: (h: RegistryHost) => Promise<MachineRead> = relayHost, private readonly now: () => number = Date.now, private readonly store?: MachineStore) {
+    this.last = new Map(Object.entries(store?.cache<Record<string, MachineAnswer>>(MACHINE_CACHE, {}) ?? {}));
+  }
 
-  get(h: RegistryHost): Promise<MachineAnswer> {
+  get(h: RegistryHost): MachineAnswer | null {
     const key = `${h.name} ${h.address}:${h.relayPort ?? 7790}`;
-    const last = this.last.get(key);
-    if (last && this.now() - last.at < MACHINE_TICK_MS) return Promise.resolve(last);
-    const reading = this.out.get(key) ?? this.start(key, h);
-    return last ? Promise.resolve(last) : reading;
+    const last = this.last.get(key) ?? null;
+    if (!last || this.now() - last.at >= MACHINE_TICK_MS) this.out.get(key) ?? this.start(key, h);
+    return last;
+  }
+
+  /** Resolves once every read on its way has landed. */
+  settled(): Promise<unknown> {
+    return Promise.all(this.out.values());
   }
 
   private start(key: string, h: RegistryHost): Promise<MachineAnswer> {
@@ -339,6 +352,7 @@ export class MachineReads {
       .then(answer => {
         this.last.set(key, answer);
         this.out.delete(key);
+        this.store?.saveCache(MACHINE_CACHE, Object.fromEntries(this.last));
         return answer;
       });
     this.out.set(key, reading);
@@ -382,7 +396,7 @@ export function hostsQuery(params: URLSearchParams): HostsQuery {
  */
 export async function hostsReport(host: Host, threads: Threads, box: string, socket: string, hostsFile: string, query: HostsQuery = {}): Promise<HostsReport> {
   let reads = machineReads.get(host);
-  if (!reads) machineReads.set(host, reads = new MachineReads());
+  if (!reads) machineReads.set(host, reads = new MachineReads(relayHost, Date.now, threads.store));
   let registry: RegistryHost[] = [];
   let registryError: string | null = null;
   try {
@@ -397,7 +411,7 @@ export async function hostsReport(host: Host, threads: Threads, box: string, soc
   const rows = threads.threadsList().filter(t => !t.archived);
   const listed = query.box && names.includes(query.box) ? query.box : box;
   const filter = query.threads ?? "working";
-  const views = await Promise.all(names.map(async (name): Promise<HostView> => {
+  const views = names.map((name): HostView => {
     const self = name === box;
     const entry = registry.find(h => h.name === name);
     const relay = routing?.relay(name);
@@ -407,8 +421,9 @@ export async function hostsReport(host: Host, threads: Threads, box: string, soc
     let machine: MachineView | null = null;
     let machineRelay: HostView["relay"] = self ? { state: "up", pingMs: 0 } : { state: "unreachable", error: `${name} is not in ${hostsFile}` };
     if (entry) {
-      const answer = await reads.get(entry);
-      if ("read" in answer) {
+      const answer = reads.get(entry);
+      if (!answer) machineRelay = { state: "reading" };
+      else if ("read" in answer) {
         machine = answer.read.machine;
         if (!self) machineRelay = { state: "up", pingMs: answer.read.pingMs };
       } else if (!self) machineRelay = { state: "unreachable", error: answer.error };
@@ -429,6 +444,6 @@ export async function hostsReport(host: Host, threads: Threads, box: string, soc
       name, address: entry?.address ?? (self ? "127.0.0.1" : "unknown"), self, relay: machineRelay, piHost,
       agentRelay, machine, counts, threads: shown.sort((a, b) => b.updatedAt - a.updatedAt),
     };
-  }));
+  });
   return { checkedAt: Date.now(), registryError, hosts: views };
 }

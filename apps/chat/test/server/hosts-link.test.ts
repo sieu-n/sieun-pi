@@ -3,7 +3,8 @@
  * Run: cd apps/chat && node --import tsx --test --test-force-exit --test-isolation=none test/server/hosts-link.test.ts
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer as createTcpServer, type Socket } from "node:net";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -118,4 +119,26 @@ test("each box counts every thread by status, test threads apart, and only the p
   assert.deepEqual((await report("?box=mac&threads=all")).hosts[0]!.threads, [], "a pick of another box lists none of this box's threads");
   const bytes = async (query: string) => (await (await fetch(`${base}/api/hosts${query}`)).text()).length;
   assert.ok(await bytes("") < await bytes("?threads=all&tests=1"), "the 2 s poll of the default view carries only the threads it shows");
+});
+
+test("a box whose machine relay never answers is listed at once as reading, and no call waits on its relay", async () => {
+  const held: Socket[] = [];
+  const silent = createTcpServer(socket => void held.push(socket));
+  await new Promise<void>(resolve => silent.listen(0, "127.0.0.1", resolve));
+  const port = (silent.address() as AddressInfo).port;
+  writeFileSync(app.config.hostsFile, JSON.stringify({ hosts: [{ name: "silent-box", address: "127.0.0.1", relayPort: port }] }));
+  try {
+    const started = performance.now();
+    const report = (await (await fetch(`${base}/api/hosts`)).json()) as HostsReport;
+    const ms = performance.now() - started;
+    assert.ok(ms < 1000, `api/hosts answered in ${Math.round(ms)} ms with the relay silent; it waited for the relay's 5 s timeout before`);
+    const box = report.hosts.find(h => h.name === "silent-box")!;
+    assert.deepEqual(box.relay, { state: "reading" });
+    assert.equal(box.machine, null);
+    await until(async () => held.length, n => n > 0);
+  } finally {
+    rmSync(app.config.hostsFile, { force: true });
+    for (const socket of held) socket.destroy();
+    silent.close();
+  }
 });

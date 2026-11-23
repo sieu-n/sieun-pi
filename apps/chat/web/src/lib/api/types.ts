@@ -707,8 +707,8 @@ export interface AgentRelayLink {
 }
 export interface HostView {
   name: string; address: string; self: boolean;
-  /** The machine relay (`/v1/host`, relayPort) that the page reads the machine figures from. */
-  relay: { state: "up"; pingMs: number } | { state: "unreachable"; error: string };
+  /** The machine relay (`/v1/host`, relayPort) that the page reads the machine figures from; `reading` until the server's first read of it lands. */
+  relay: { state: "up"; pingMs: number } | { state: "unreachable"; error: string } | { state: "reading" };
   /** `socket` is set on the chat server's own box. A box with an agent relay reads pi-host from the relay's last `hello`. */
   piHost: { state: "answering"; version: string; socket?: string } | { state: "down"; error: string } | { state: "absent" };
   /** Null when the chat server dials no agent relay for the box. */
