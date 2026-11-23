@@ -338,6 +338,12 @@ test("the audit rows keep the box's dropped cua-driver out of tool_rows_off, and
   assert.deepEqual([judge(false).off.length, judge(false).unpushed.length], [0, 1]);
 });
 
+test("every row that is not by design gives the box a probe for each Mac probe, since judgeRows pairs them by index (d1-261123-2307)", () => {
+  const rows = JSON.parse(readFileSync(join(import.meta.dirname, "../scripts/duties/box-parity.rows.json"), "utf8")) as Row[];
+  const count = (row: Row, host: "mac" | "box") => (row[host] ?? row.probes ?? []).length;
+  assert.deepEqual(rows.filter(row => !row.byDesign && count(row, "box") < count(row, "mac")).map(row => row.id), []);
+});
+
 test("the harness row skips a Mac entry the box deleted and synced, which the sleeping Mac still held in d1-261103-0955, and counts one the shared state holds", () => {
   const row = (JSON.parse(readFileSync(join(import.meta.dirname, "../scripts/duties/box-parity.rows.json"), "utf8")) as Row[]).find(r => r.id === "global-harness-entries")!;
   const probe = (host: "mac" | "box", memories: string[], shared?: string[], fetchedAgo = 0) => {

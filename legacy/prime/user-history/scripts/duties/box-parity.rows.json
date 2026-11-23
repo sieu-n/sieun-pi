@@ -2125,6 +2125,10 @@
     "port": 5174
    },
    {
+    "port": 5180,
+    "intended": "The box runs no 5180, because demo work runs only on the owner's Mac (owner, 2026-10-19; auto-sns-agent scripts/dev/dev-apps.cjs macOnly)."
+   },
+   {
     "port": 5179
    }
   ],
@@ -2144,8 +2148,17 @@
   "box": [
    {
     "container": "box-dev-dev-heal-1"
+   },
+   {
+    "run": [
+     "sh",
+     "-c",
+     "docker inspect -f '{{.HostConfig.RestartPolicy.Name}}' $(docker ps -aq --filter label=com.docker.compose.project=box-dev)"
+    ],
+    "expect": "\\A\\s*((unless-stopped|always)\\s+)*(unless-stopped|always)\\s*\\Z"
    }
-  ]
+  ],
+  "note": "The Mac keeps its pm2 dev apps up with mac-devserver-heal and mac-pm2-keep. The box runs each dev app in a container of the Komodo Stack box-dev since sieun-pi ca31d315 (11-22): box-dev-dev-heal-1 restarts a hung one, and Docker's unless-stopped restart policy on every box-dev container restarts one that exits, as pm2-keep does."
  },
  {
   "id": "chat-service",
