@@ -6,7 +6,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { chatUrlFor, installPiHost, layout, plist, serviceEnv, systemdUnit } from "../scripts/install-pi-host-box.mjs";
+import { chatUrlFor, installPiHost, layout, plist, relayBootCheck, relayNode, serviceEnv, systemdUnit } from "../scripts/install-pi-host-box.mjs";
 
 const dirs = [];
 const temp = name => { const dir = mkdtempSync(join(tmpdir(), `${name}-`)); dirs.push(dir); return dir; };
@@ -86,4 +86,34 @@ test("a Mac install points PI_HOST_CHAT_URL at the agent relay's chat proxy", ()
   assert.equal(chatUrlFor(home, "linux"), undefined);
   const rendered = plist(layout(home, "darwin"), "/usr/local/bin/node", serviceEnv(home, "/usr/local/bin/node", chatUrlFor(home, "darwin")));
   assert.match(rendered, /<key>PI_HOST_CHAT_URL<\/key><string>http:\/\/127\.0\.0\.1:7799<\/string>/);
+});
+
+test("the relay boot check reads the relay's node from its unit or plist, and skips a box with no relay", () => {
+  const home = temp("relay-node");
+  assert.equal(relayNode(home, "linux"), undefined);
+  mkdirSync(join(home, ".config/systemd/user"), { recursive: true });
+  writeFileSync(join(home, ".config/systemd/user/pi-host-relay.service"), "[Service]\nExecStart=/opt/node/bin/node /x/main.ts /x/relay.json\n");
+  assert.equal(relayNode(home, "linux"), "/opt/node/bin/node");
+  mkdirSync(join(home, "Library/LaunchAgents"), { recursive: true });
+  writeFileSync(join(home, "Library/LaunchAgents/com.sieun.pi-host-relay.plist"), "<key>ProgramArguments</key><array><string>/opt/homebrew/bin/node</string><string>/x/main.ts</string></array>");
+  assert.equal(relayNode(home, "darwin"), "/opt/homebrew/bin/node");
+});
+
+test("a release whose relay plain node refuses fails the boot check with the relay's own error", async () => {
+  const release = temp("bad-relay");
+  mkdirSync(join(release, "components/prime-relay/agents"), { recursive: true });
+  writeFileSync(join(release, "components/prime-relay/agents/main.ts"), "export class Store { constructor(private readonly at: number) {} }\n");
+  const dir = temp("relay-boot");
+  await assert.rejects(relayBootCheck(release, process.execPath, join(dir, "host.sock"), dir), /pi-host-relay exited 1 during the boot check:[\s\S]*ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX/);
+});
+
+test("this checkout's relay passes the boot check in front of a pi-host socket", async () => {
+  const dir = temp("relay-boot");
+  const server = await fakeHost(join(dir, "host.sock"));
+  try {
+    const result = await relayBootCheck(join(import.meta.dirname, ".."), process.execPath, join(dir, "host.sock"), dir);
+    assert.ok(result.ms > 0);
+  } finally {
+    server.close();
+  }
 });

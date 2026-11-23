@@ -21,6 +21,12 @@ The JSON files of the kinds that moved are rollback exports until 2026-11-30, so
 
 Don't put `backdrop-filter` on an element repeated across a list or grid, because in WebKit, the Mac app's engine, it stalls every frame (12 blurred model pills froze `#/agents` for 8 s or more; fix 45b23e9f).
 
+## Code the agent relay loads
+
+Every file the agent relay imports, from `components/prime-relay/agents/main.ts` into apps/chat/server, uses only syntax node's type stripping takes, so no parameter property, enum or namespace.
+pi-host-relay.service runs it with plain node, and on 11-23 a parameter property in `usage-store.ts` stopped the relay on every start, so us-metal02 read away for 12 min.
+`components/prime-relay/test/strip-only.test.mjs` walks that graph, and `scripts/install-pi-host-box.mjs` boots the new release's relay before it switches `current`.
+
 ## Running tests while other sessions edit the checkout
 
 About 20 jobs edit `/home/sieun/src/sieun-pi` at once, so run apps/chat server tests and Playwright specs through `node apps/chat/scripts/spec-clean.mjs [--files a.ts,b.ts] -- node --test test/server/x.test.ts` or `-- playwright test test/shell/x.spec.ts` from the repo root with a short TMPDIR such as `/tmp/acr72`. It runs the live release's clean build, the folder `~/.local/share/sieun-pi-apps-chat/current` points at, with every apps/chat file HEAD changed since that release taken from HEAD as committed, plus each file you name in `--files` (relative to apps/chat) taken from the working tree, so another session's uncommitted edits stay out unless you name their file. A web/ file in the overlay gets a vite build of the release's web in the run's own folder, a test file only the overlay has runs from its source path, and `--files path=/abs/source` swaps in any file for a probe. The header of `apps/chat/scripts/spec-clean.mjs` has the details.

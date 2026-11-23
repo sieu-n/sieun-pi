@@ -4,7 +4,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
 import type { AllowedModel } from "../../../config/allowed-models.ts";
-import { AGENT_RELAY_PATH } from "../../../components/prime-relay/agents/protocol.ts";
+import { AGENT_RELAY_PATH, defaultProjects } from "../../../components/prime-relay/agents/protocol.ts";
 import type { SkillsConfig } from "./skills.ts";
 import type { SkillsReviewConfig } from "./skills-review.ts";
 import { parseUsageStoreConfig, type UsageStoreConfig } from "./usage-store.ts";
@@ -129,11 +129,6 @@ export function readAgentHosts(file: string, box: string, log: (line: string) =>
     }
     return [{ box: h.name, label: h.label ?? h.name, url: `ws://${h.address}:${h.agentRelayPort}${AGENT_RELAY_PATH}`, token, self: h.name === box }];
   });
-}
-
-/** The checkouts the agents work in on the Linux box and the Mac; APPS_CHAT_PROJECTS (colon-separated) replaces the list. */
-export function defaultProjects(home: string): string[] {
-  return [join(home, "src/sieun-pi"), join(home, "Documents/Github/auto-sns-agent"), join(home, "Documents/Github/sieun-pi")];
 }
 
 /**

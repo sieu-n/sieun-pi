@@ -8,8 +8,7 @@ import { mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/
 import { homedir, hostname, platform } from "node:os";
 import { basename, dirname, isAbsolute, join, sep } from "node:path";
 import { instructionFiles } from "../../../apps/chat/server/agent-folder.ts";
-import { defaultProjects } from "../../../apps/chat/server/config.ts";
-import type { BoxInfo, InstructionsAnswer } from "./protocol.ts";
+import { defaultProjects, type BoxInfo, type InstructionsAnswer } from "./protocol.ts";
 
 /** How much of a check's output comes back; the same tail as legacy wakes.ts CHECK_TAIL. */
 const CHECK_TAIL = 1500;

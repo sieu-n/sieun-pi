@@ -7,7 +7,9 @@
  * 1. It exports the commit to ~/.local/share/pi-host/release-<sha7>, with its own node_modules in the root, packages and
  *    legacy/prime/user-history. A folder whose dependencies and package-lock.json match the current release or the sieun-pi runtime
  *    reuses that node_modules as hard links (Linux) or clones (APFS); any other folder gets `npm ci --ignore-scripts`.
- * 2. It boots the release on a temp socket with temp session, data and durable dirs, and asks `durable_threads` there.
+ * 2. It boots the release on a temp socket with temp session, data and durable dirs, and asks `durable_threads` there. When the box runs
+ *    pi-host-relay, it also starts the release's relay with the node of the relay's unit or plist, on 127.0.0.1 scratch ports in front of that
+ *    temp socket, and asks `/v1/health`. Either check failing leaves `current` and both services as they were.
  * 3. It writes the unit or plist, points `current` at the release and restarts the service a few seconds later from a detached process, so
  *    a pi-host thread that runs this command can still answer before its host restarts. Durable threads resume after the restart.
  *
@@ -20,7 +22,8 @@
  * the same command with an older --ref, or pointing `current` back at the last release and restarting the service.
  */
 import { spawn, spawnSync } from "node:child_process";
-import { createConnection } from "node:net";
+import { randomBytes } from "node:crypto";
+import { createConnection, createServer } from "node:net";
 import { closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -200,8 +203,68 @@ function request(socket, command, timeoutMs) {
   });
 }
 
-/** Starts the release on a temp socket with its own session, data and durable dirs, so it touches no thread, schedule or kernel of the live host. */
-async function bootCheck(release, node, home, chatUrl) {
+/** The node binary pi-host-relay runs with on this box, read from its unit or plist; undefined when the box runs no relay. */
+export function relayNode(home = homedir(), platform = process.platform) {
+  const file = platform === "darwin" ? join(home, "Library/LaunchAgents/com.sieun.pi-host-relay.plist") : join(home, ".config/systemd/user/pi-host-relay.service");
+  const text = readText(file);
+  if (text === undefined) return undefined;
+  const match = platform === "darwin" ? /<key>ProgramArguments<\/key>\s*<array>\s*<string>([^<]+)<\/string>/.exec(text) : /^ExecStart=(\S+)/m.exec(text);
+  return match?.[1];
+}
+
+const freePort = () => new Promise((resolvePort, reject) => {
+  const server = createServer().once("error", reject);
+  server.listen(0, "127.0.0.1", () => { const { port } = server.address(); server.close(() => resolvePort(port)); });
+});
+
+/**
+ * Starts the release's agent relay as pi-host-relay.service does, plain node on components/prime-relay/agents/main.ts, with a scratch config
+ * in `dir`: 127.0.0.1, free ports, a fresh token and `piHostSocket` as its pi-host. It passes when `/v1/health` reads that pi-host as answering
+ * and the chat proxy answers. On 11-23 release-08178e5's relay exited on every start with ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX while pi-host's own
+ * boot check passed, so us-metal02 read away for 12 min.
+ */
+export async function relayBootCheck(release, node, piHostSocket, dir) {
+  const token = randomBytes(32).toString("hex");
+  const tokenFile = join(dir, "relay.token");
+  writeFileSync(tokenFile, `${token}\n`, { mode: 0o600 });
+  const port = await freePort();
+  const chatProxyPort = await freePort();
+  const config = join(dir, "relay.json");
+  writeFileSync(config, JSON.stringify({ listen: "127.0.0.1", port, chatProxyPort, daemonSocket: piHostSocket, piHostSocket, roots: [dir], tokenFile,
+    historySocket: join(dir, "history.sock"), box: "boot-check", agentsDir: join(dir, "agents") }));
+  const log = join(dir, "relay.log");
+  const fd = openSync(log, "a");
+  const child = spawn(node, [join(release, "components/prime-relay/agents/main.ts"), config], { cwd: release, env, stdio: ["ignore", fd, fd] });
+  const started = Date.now();
+  try {
+    let last = "no answer";
+    // Plain node linked main.ts's whole graph in 1.8 s on us-metal02 on 11-23; a relay that loads at all listens well inside this.
+    while (Date.now() - started < 60_000) {
+      if (child.exitCode !== null || child.signalCode !== null) throw new Error(`pi-host-relay exited ${child.exitCode ?? child.signalCode} during the boot check:\n${readFileSync(log, "utf8").slice(-3000)}`);
+      try {
+        const health = await fetch(`http://127.0.0.1:${port}/v1/health`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(5_000) });
+        const body = await health.json();
+        if (health.ok && body.daemon === "answering") {
+          await fetch(`http://127.0.0.1:${chatProxyPort}/`, { signal: AbortSignal.timeout(5_000) });
+          return { ms: Date.now() - started };
+        }
+        last = `/v1/health answered ${health.status} ${JSON.stringify(body)}`;
+      } catch (error) { last = error.message; }
+      await new Promise(done => setTimeout(done, 250));
+    }
+    throw new Error(`pi-host-relay did not answer /v1/health on 127.0.0.1:${port} within 60 s: ${last}\n${readFileSync(log, "utf8").slice(-3000)}`);
+  } finally {
+    child.kill("SIGTERM");
+    await new Promise(done => { if (child.exitCode !== null || child.signalCode !== null) done(); else { child.once("exit", done); setTimeout(() => { child.kill("SIGKILL"); done(); }, 15_000); } });
+    closeSync(fd);
+  }
+}
+
+/**
+ * Starts the release on a temp socket with its own session, data and durable dirs, so it touches no thread, schedule or kernel of the live host,
+ * and, given the relay's node, the release's relay in front of it.
+ */
+async function bootCheck(release, node, home, chatUrl, relay) {
   const dir = mkdtempSync(join(tmpdir(), "pi-host-boot-"));
   const socket = join(dir, "s.sock");
   const log = join(dir, "boot.log");
@@ -215,11 +278,13 @@ async function bootCheck(release, node, home, chatUrl) {
     while (Date.now() - started < 120_000) {
       if (child.exitCode !== null) throw new Error(`pi-host exited ${child.exitCode} during the boot check:\n${readFileSync(log, "utf8").slice(-3000)}`);
       if (existsSync(socket)) {
+        let answered;
         try {
           const { response } = await request(socket, { type: "durable_threads" }, 30_000);
           if (!response.success) throw new Error(`durable_threads failed: ${response.error}`);
-          return { ms: Date.now() - started, threads: response.data.threads.length };
+          answered = { ms: Date.now() - started, threads: response.data.threads.length };
         } catch (error) { lastError = error; }
+        if (answered) return relay ? { ...answered, relay: await relayBootCheck(release, relay, socket, dir) } : answered;
       }
       await new Promise(done => setTimeout(done, 250));
     }
@@ -292,8 +357,9 @@ export async function installPiHost({ repo = checkout, ref = "origin/main", home
     }
     const npmCache = join(home, ".npm");
     if (!existsSync(release)) buildRelease(repo, sha, release, paths.current, home, npmCache);
-    const boot = await bootCheck(release, node, home, chatUrl);
-    process.stderr.write(`boot check: answered durable_threads in ${boot.ms} ms\n`);
+    const relay = relayNode(home, platform);
+    const boot = await bootCheck(release, node, home, chatUrl, relay);
+    process.stderr.write(`boot check: answered durable_threads in ${boot.ms} ms; ${boot.relay ? `pi-host-relay answered /v1/health in ${boot.relay.ms} ms` : "no pi-host-relay on this box"}\n`);
     if (prepareOnly) return { sha, release, boot, prepared: true };
     mkdirSync(dirname(paths.unitFile), { recursive: true });
     mkdirSync(dirname(paths.log), { recursive: true });

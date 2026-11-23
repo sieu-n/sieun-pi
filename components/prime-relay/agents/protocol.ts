@@ -18,6 +18,7 @@
  * which pi-host keeps once, and a speaking call's post has requestId `m:<thread>:<toolCallId>`, which the chat server stores once.
  */
 
+import { join } from "node:path";
 import type { ConfigFile } from "../../../apps/chat/web/src/lib/api/types.ts";
 
 /** The relay protocol's version; `hello` carries it, and the server refuses a relay with another major. */
@@ -65,6 +66,11 @@ export interface BoxInfo {
   projects: string[];
   /** Where agent folders live on this box (`~/.pi/agent/agents`). */
   agentsDir: string;
+}
+
+/** The checkouts the agents work in on the Linux box and the Mac; the chat server's APPS_CHAT_PROJECTS (colon-separated) replaces the list. */
+export function defaultProjects(home: string): string[] {
+  return [join(home, "src/sieun-pi"), join(home, "Documents/Github/auto-sns-agent"), join(home, "Documents/Github/sieun-pi")];
 }
 
 /** The instruction files Prime loads for a thread whose cwd is `cwd` on this box, as the Agents page lists them (`instructions` op). */
