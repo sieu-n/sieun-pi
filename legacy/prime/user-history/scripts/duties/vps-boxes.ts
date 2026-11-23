@@ -9,7 +9,7 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
 import { BRIDGE_FILE, alertsFiring } from "./prod-alerts.ts";
 import { readFiringRules } from "../../src/alert-bridge.ts";
 import { loadHosts, selfHost } from "../../src/hosts.ts";
-import { type Reading, defaultContext, describe, hostMatcher, liveStopSource, readOrphans, stopGroups } from "../../src/orphan-reaper.ts";
+import { type Reading, defaultContext, describe, hostMatcher, liveStopSource, missedByReaper, readOrphans, stopGroups } from "../../src/orphan-reaper.ts";
 
 /**
  * The precheck of the ops chat's duty "VPS and dev boxes" (`node --import tsx scripts/duties/vps-boxes.ts`). The chat's risk list
@@ -30,6 +30,8 @@ import { type Reading, defaultContext, describe, hostMatcher, liveStopSource, re
  * day (p468: p456's 41 kills up to 16:52Z on 10-19 kept it at 41 until 16:52Z on 10-20). oom_kills_explained counts the kills left out.
  * orphan_processes counts the processes on us-metal02 whose owning Prime session ended over 1 h ago, read before this run stops them
  * (src/orphan-reaper.ts, p661): on 10-28 a Mac job's Chrome driver ran 2 days after its job ended and made 2,320 staging Convex failures.
+ * It leaves out the groups the 15 min reaper (m02-orphan-reaper) has not reached yet, which orphan_processes_due counts in the run detail,
+ * so the number says that reaper missed a group: on 11-23 the 09:23Z run counted a unit 71 min after its owner ended, 3.5 min before that reaper.
  * orphan_processes_unknown in the run detail counts the processes left by their parent that name no owner, which the run lists, one orphan_unknown
  * line per group, and never stops (p664).
  * The owner, 10-18: standing risks live on a risk page that a duty checks, not on the plan.
@@ -268,7 +270,7 @@ async function oomBoxes(at: number): Promise<OomKills[]> {
 /** One flagged line per group the run stops and per group with no owner, largest first, and one line with what the stop signalled. */
 export function orphanLines(reading: Reading, stopped: { signalled: number[]; killed: number[]; containers: string[] } | null, at: number): FlaggedSlice[] {
   const bySize = <T extends { bytes: number }>(groups: readonly T[]): T[] => [...groups].sort((a, b) => b.bytes - a.bytes);
-  const lines: FlaggedSlice[] = bySize(reading.stop).map(group => ({ at, kind: "orphan", excerpt: describe(group, at, reading.verdicts).slice(0, 600) }));
+  const lines: FlaggedSlice[] = bySize(reading.stop).map(group => ({ at, kind: missedByReaper(group, reading.verdicts, at) ? "orphan" : "orphan_due", excerpt: describe(group, at, reading.verdicts).slice(0, 600) }));
   lines.push(...bySize(reading.unknown).map(group => ({ at, kind: "orphan_unknown", excerpt: `${describe(group, at, reading.verdicts)}; listed, not stopped`.slice(0, 600) })));
   if (reading.listFailure) lines.push({ at, kind: "gap", excerpt: `orphan_processes: ${reading.listFailure}, so each top-level session not in the roster was held as live this run` });
   if (stopped) lines.push({ at, kind: "orphan_stopped", excerpt: `sent SIGTERM to ${stopped.signalled.length} orphan processes and SIGKILL to the ${stopped.killed.length} still running 10 s later${stopped.containers.length ? `, and stopped the containers ${stopped.containers.join(", ")}` : ""}` });
@@ -331,6 +333,7 @@ async function main(): Promise<void> {
       const found = await orphans(at);
       if (!found) return;
       result.metrics.orphan_processes = found.reading.orphan_processes;
+      result.metrics.orphan_processes_due = found.reading.orphan_due;
       result.metrics.orphan_processes_unknown = found.reading.orphan_unknown;
       flagged.push(...found.lines);
     }),

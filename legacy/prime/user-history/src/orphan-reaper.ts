@@ -31,6 +31,12 @@ import { fileArchived } from "./session-file-end.ts";
 export const ENDED_FOR_MS = 3_600_000;
 /** SIGTERM first, then SIGKILL after this long if the same process still runs (the owner's 10-15 ask, as job-leftovers.ts KILL_AFTER_MS). */
 export const KILL_AFTER_MS = 10_000;
+/**
+ * How often the Komodo Procedure m02-orphan-reaper runs scripts/orphan-reap.ts: schedule "40 11-59/15 * * * *" in auto-sns-agent
+ * apps/infra/komodo/stacks.json. A group stays up to this long past ENDED_FOR_MS before that reaper reaches it, so the d2 count leaves those out:
+ * on 11-23 the 09:23Z d2 run counted mac-install51-01a20228.service, whose owner ended at 08:12Z, 1.5 min before the reaper's 09:26:40Z run.
+ */
+export const REAP_EVERY_MS = 900_000;
 
 /** One process as `worker-footprint.py --owners` prints it. */
 export interface ProcRow {
@@ -218,6 +224,19 @@ export function decide(groups: readonly Group[], verdicts: ReadonlyMap<string, V
 }
 
 export const ownerKey = (owner: Owner): string => `${owner.host}/${owner.session}`;
+
+/** When a stopped group became due as decide() reads it: a parent-only worker ENDED_FOR_MS after its start, any other group ENDED_FOR_MS after its last owner ended. */
+export function dueAt(group: Group, verdicts: ReadonlyMap<string, Verdict>): number | null {
+  if (PARENT_ONLY.test(group.command) && group.started !== null) return group.started * 1000 + ENDED_FOR_MS;
+  const ends = group.owners.map(owner => verdicts.get(ownerKey(owner))).flatMap(read => read?.state === "ended" ? [read.at] : []);
+  return ends.length ? Math.max(...ends) + ENDED_FOR_MS : null;
+}
+
+/** Whether the 15 min reaper (REAP_EVERY_MS) should already have stopped a group the d2 run stops; a group with no due time counts. */
+export const missedByReaper = (group: Group, verdicts: ReadonlyMap<string, Verdict>, now: number): boolean => {
+  const due = dueAt(group, verdicts);
+  return due === null || now - due >= REAP_EVERY_MS;
+};
 
 // ---- reads ----
 
@@ -485,8 +504,11 @@ export const liveStopSource: StopSource = {
 
 // ---- the d2 reading ----
 
-/** `listFailure` names the first top-level session file whose archive state did not read; the run held each such session as live. */
-export interface Reading { orphan_processes: number; orphan_unknown: number; stop: Group[]; held: { group: Group; why: string }[]; unknown: Group[]; verdicts: Map<string, Verdict>;
+/**
+ * `listFailure` names the first top-level session file whose archive state did not read; the run held each such session as live.
+ * orphan_processes counts the processes of the stop groups the 15 min reaper missed (missedByReaper), and orphan_due those it had not reached yet.
+ */
+export interface Reading { orphan_processes: number; orphan_due: number; orphan_unknown: number; stop: Group[]; held: { group: Group; why: string }[]; unknown: Group[]; verdicts: Map<string, Verdict>;
   listFailure: string | null }
 
 const age = (group: Group, now: number): string => group.started === null ? "?" : `${((now / 1000 - group.started) / 3600).toFixed(1)} h`;
@@ -527,7 +549,9 @@ export async function readOrphans(context: ReadContext, hostOf: (address: string
   const [verdicts, holds] = await Promise.all([readVerdicts(owned, context, read), readUnitHolds(groups, context, read)]);
   const decision = decide(groups, verdicts, context.now, holds);
   const unknown = decision.unknown.filter(group => leftParent(group, rows));
-  return { rows, reading: { orphan_processes: decision.stop.reduce((sum, group) => sum + group.pids.length, 0), orphan_unknown: unknown.reduce((sum, group) => sum + group.pids.length, 0),
+  const pids = (groups: readonly Group[]): number => groups.reduce((sum, group) => sum + group.pids.length, 0);
+  const missed = decision.stop.filter(group => missedByReaper(group, verdicts, context.now));
+  return { rows, reading: { orphan_processes: pids(missed), orphan_due: pids(decision.stop) - pids(missed), orphan_unknown: pids(unknown),
     stop: decision.stop, held: decision.held, unknown, verdicts, listFailure: read.failure() } };
 }
 

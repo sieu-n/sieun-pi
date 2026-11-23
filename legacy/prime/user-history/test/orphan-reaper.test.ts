@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
-import { ENDED_FOR_MS, KILL_AFTER_MS, type Group, type ProcRow, type Verdict, containerGroups, decide, describe, groupProcesses, hostMatcher, leftParent, ownerOf, piThreadRow, readUnitHolds, readVerdicts, reader, stopGroups, unitFileNames, unitOf, verdict } from "../src/orphan-reaper.ts";
+import { ENDED_FOR_MS, KILL_AFTER_MS, REAP_EVERY_MS, type Group, type ProcRow, type Verdict, containerGroups, decide, describe, groupProcesses, hostMatcher, leftParent, missedByReaper, ownerOf, piThreadRow, readUnitHolds, readVerdicts, reader, stopGroups, unitFileNames, unitOf, verdict } from "../src/orphan-reaper.ts";
 
 const JOB = "01a183f7-0a0b-725c-984d-d59f150e6420";
 const LIVE = "01a190a3-1b2e-74ad-88ca-f217e0f956a8";
@@ -112,6 +112,18 @@ test("a group stops only when every owner ended over 1 h ago; a live owner, a re
   assert.deepEqual(decision.stop.map(entry => entry.key), ["old"]);
   assert.deepEqual(decision.held.map(entry => entry.group.key), ["mixed", "recent", "asleep"]);
   assert.deepEqual(decision.unknown.map(entry => entry.key), ["none"]);
+});
+
+test("11-23: d2 counts a stopped group only once the 15 min reaper should have stopped it", () => {
+  const now = 10 * ENDED_FOR_MS;
+  const owned = (key: string): Group => ({ key, root: 1, pids: [1], bytes: 0, started: 0, command: key, owners: [{ session: key, host: "us-metal02" }] });
+  const ended = (key: string, ago: number): [string, Verdict] => [`us-metal02/${key}`, { state: "ended", at: now - ago, why: "" }];
+  const verdicts = new Map<string, Verdict>([ended("fresh", ENDED_FOR_MS + 11 * 60_000), ended("missed", ENDED_FOR_MS + REAP_EVERY_MS)]);
+  assert.equal(missedByReaper(owned("fresh"), verdicts, now), false);
+  assert.equal(missedByReaper(owned("missed"), verdicts, now), true);
+  const worker = (started: number): Group => ({ key: "w", root: 1, pids: [1], bytes: 0, started, command: "python -c from multiprocessing.forkserver import main", owners: [] });
+  assert.equal(missedByReaper(worker((now - ENDED_FOR_MS - 60_000) / 1000), verdicts, now), false);
+  assert.equal(missedByReaper(worker((now - ENDED_FOR_MS - REAP_EVERY_MS) / 1000), verdicts, now), true);
 });
 
 test("the stop skips a reused pid, sends SIGTERM, and sends SIGKILL after 10 s only to the processes that still run", async () => {
