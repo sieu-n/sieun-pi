@@ -37,7 +37,7 @@
     },
     workingMemory: {
       title: "Working memory", testid: "agent-working-memory", write: "Write it", noun: "the working memory",
-      empty: "No working memory yet. Its main thread writes down what it is on after its next turn.",
+      empty: "No working memory yet. Its main thread writes one after its next turn.",
       placeholder: "What {name} is on now, what it waits for and what comes next.",
       save: api.setWorkingMemory,
     },
@@ -112,7 +112,7 @@
     <p class="t-caption meta">{readonly ? `${name} has no ${copy.title.toLowerCase()} yet.` : copy.empty}</p>
   {/if}
   <span class="t-caption meta" data-path={file.path}>
-    {doc === "brief" ? `Loaded into every thread of ${name} from` : `Rewritten by the main thread of ${name} after each turn, in`}
+    {doc === "brief" ? `Loaded into every thread of ${name} from` : `Rewritten by its main thread after each turn and read by every other thread of ${name}, from`}
     <code class="t-mono" title={file.path}>{shortPath(file.path)}</code>{file.modifiedAt ? `, changed ${stampLabel(file.modifiedAt)}` : ""}
   </span>
 </section>

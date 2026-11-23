@@ -3,7 +3,7 @@
   import { Badge, Button, Markdown, ModelPicker, stampLabel, toast } from "$lib/ui";
   import { hrefFor } from "$lib/router.svelte";
   import { levelsFor, modelKey, modelOptions } from "./agents-model";
-  import { folderOwner, hostLineOf, money, plural, withFolder, type AgentTabProps } from "./agent-tab";
+  import { folderOwner, money, plural, withFolder, type AgentTabProps } from "./agent-tab";
   import { changeModel } from "./agent-actions.svelte";
   import AgentFolderText from "./AgentFolderText.svelte";
   import CopyPath from "./CopyPath.svelte";
@@ -87,36 +87,36 @@
   <dt>Host</dt>
   <dd data-fact="host">
     <a href={hrefFor("settings", ["hosts"])} title="Open Settings > Hosts">{config.runs.host}</a>
-    <span class="t-caption meta">{hostLineOf(config)} · picked when it was created</span>
+    <span class="t-caption meta">Picked when it was created</span>
+  </dd>
+  <dt>Project folder</dt>
+  <dd class="folder" data-fact="cwd" data-project={config.runs.project ? "yes" : "no"}>
+    <span class="cwd">
+      <CopyPath value={config.runs.cwd} label="working directory" />
+      {#if !config.runs.project}<Badge tone="danger">No project</Badge>{/if}
+      {#if !config.runs.cwdExists}<span class="t-caption warn">Not on this box</span>{/if}
+      {#if config.runs.canMove && !moving}<button type="button" class="more t-caption" aria-label="Change project folder" onclick={startMove}>Change</button>{/if}
+    </span>
+    {#if !config.runs.project}
+      <p class="t-caption warn">It runs in the home folder, so it reads no project's AGENTS.md, skills or rules.</p>
+    {/if}
+    {#if moving}
+      <div class="move">
+        <ProjectPicker {projects} bind:value={nextCwd} disabled={saving || !projects} id="agent-project" />
+        <div class="move-actions">
+          <Button size="sm" variant="ghost" onclick={() => (moving = false)} disabled={saving}>Cancel</Button>
+          <Button size="sm" variant="primary" onclick={saveMove} loading={saving} disabled={saving || !nextCwd.trim() || nextCwd.trim() === config.runs.cwd}>Move</Button>
+        </div>
+        <p class="t-caption meta">Its next turn runs its tools, prompt and Python kernel in this folder.</p>
+        {#if moveError}<p class="t-caption warn" role="alert">{moveError}</p>{/if}
+      </div>
+    {/if}
   </dd>
   {#if config.usage}
     <dt>Last 7 days</dt>
     <dd data-fact="usage">{money(config.usage.cost)} · {plural(config.usage.turns, "turn")}</dd>
   {/if}
 </dl>
-<section class="block project" aria-label="Project folder" data-fact="cwd" data-project={config.runs.project ? "yes" : "no"}>
-  <div class="project-head">
-    <h3 class="t-caption heading">Project folder</h3>
-    {#if !config.runs.project}<Badge tone="danger">No project</Badge>{/if}
-    {#if !config.runs.cwdExists}<span class="t-caption warn">Not on this box</span>{/if}
-    {#if config.runs.canMove && !moving}<button type="button" class="more t-caption" aria-label="Change project folder" onclick={startMove}>Change</button>{/if}
-  </div>
-  <CopyPath value={config.runs.cwd} label="working directory" />
-  {#if !config.runs.project}
-    <p class="t-caption warn">It runs in the home folder, so it reads no project's AGENTS.md, skills or rules.</p>
-  {/if}
-  {#if moving}
-    <div class="move">
-      <ProjectPicker {projects} bind:value={nextCwd} disabled={saving || !projects} id="agent-project" />
-      <div class="move-actions">
-        <Button size="sm" variant="ghost" onclick={() => (moving = false)} disabled={saving}>Cancel</Button>
-        <Button size="sm" variant="primary" onclick={saveMove} loading={saving} disabled={saving || !nextCwd.trim() || nextCwd.trim() === config.runs.cwd}>Move</Button>
-      </div>
-      <p class="t-caption meta">Its next turn runs its tools, prompt and Python kernel in this folder.</p>
-      {#if moveError}<p class="t-caption warn" role="alert">{moveError}</p>{/if}
-    </div>
-  {/if}
-</section>
 <section class="block" aria-label="First input">
   <h3 class="t-caption heading">First input</h3>
   {#if config.identity.purpose}
@@ -130,7 +130,14 @@
 </section>
 
 <style>
-  .model {
+  .model,
+  .cwd {
     display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+  .folder {
+    flex-direction: column;
+    align-items: flex-start;
   }
 </style>

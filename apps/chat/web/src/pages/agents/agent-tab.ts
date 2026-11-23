@@ -52,5 +52,5 @@ export const commThreadsOf = (config: AgentConfig, agent: AgentSummary | null) =
 export const hostLineOf = (config: AgentConfig): string =>
   config.runs.hostVersion && config.runs.hostVersion !== config.runs.hostKind ? `${config.runs.hostKind} ${config.runs.hostVersion}` : config.runs.hostKind;
 
-export const plural = (n: number, word: string, many = `${word}s`): string => `${n} ${n === 1 ? word : many}`;
+export const plural = (n: number, word: string, many = `${word}s`): string => `${n.toLocaleString("en-US")} ${n === 1 ? word : many}`;
 export const money = (n: number): string => `$${n < 10 ? n.toFixed(2) : Math.round(n).toLocaleString("en-US")}`;
