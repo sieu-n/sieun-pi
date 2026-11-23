@@ -181,7 +181,7 @@ test("a root job keeps the text it got at its start, while the work thread gets 
 test("the work thread's role text names the file and has it rewrite it, and a comm thread answers status from it first", () => {
   const work = workInstructions({ agent: "ag_vent", comm: "c-1", dir: "/agents/vent" });
   assert.match(work, /You alone write your agent's working memory, `\/agents\/vent\/working-memory\.md`[\s\S]*Before you end a turn in which anything in it changed, rewrite the whole file/);
-  assert.match(work, /Step status stays on the board/);
+  assert.match(work, /Keep it near 4 KB[\s\S]*leave step detail, job names, shas and logs on the board/);
   const comm = commInstructions({ agent: "ag_vent", room: "dm_vent", work: "w-1" });
   assert.match(comm, /Answer a status question, such as what the agent works on, from its working memory[\s\S]*agent_observe\.get_agent\("w-1"\)`[\s\S]*only when the question needs what it does this minute/);
 });
