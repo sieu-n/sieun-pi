@@ -5,7 +5,7 @@
  */
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { start, type Running } from "./helpers.ts";
+import { start, until, type Running } from "./helpers.ts";
 
 let s: Running;
 before(async () => { s = await start(); });
@@ -20,9 +20,10 @@ const openAsk = async (): Promise<{ chatId: string; id: string }> => {
 test("remindAt hides an open ask from the For you count until it comes due", async () => {
   const { chatId, id } = await openAsk();
   const count = await s.app.boards.forYouCount();
-  const soon = new Date(Date.now() + 400).toISOString();
-  const view = await s.app.boards.apply(chatId, [{ op: "todo_update", id, remindAt: soon }]);
-  assert.equal(view.board?.todos.find(todo => todo.id === id)?.remindAt, soon);
+  // A minute away, so the count below reads it hidden however slow a busy box runs it (this test took 7.8 s in a full suite run at load 600 on 11-23).
+  const later = new Date(Date.now() + 60_000).toISOString();
+  const view = await s.app.boards.apply(chatId, [{ op: "todo_update", id, remindAt: later }]);
+  assert.equal(view.board?.todos.find(todo => todo.id === id)?.remindAt, later);
   assert.match(view.summaries[0]!, /set a reminder on .* so it leaves For you until then/);
   assert.equal(await s.app.boards.forYouCount(), count - 1);
   const counts: number[] = [];
@@ -30,7 +31,9 @@ test("remindAt hides an open ask from the For you count until it comes due", asy
   const real = events.forYou.bind(events);
   events.forYou = (next: number) => { counts.push(next); real(next); };
   try {
-    await new Promise(resolve => setTimeout(resolve, 700));
+    // The owner moves it to 400 ms from now; when it comes due the server sends the count again on its own.
+    await s.app.boards.apply(chatId, [{ op: "todo_update", id, remindAt: new Date(Date.now() + 400).toISOString() }]);
+    await until(async () => counts.includes(count), found => found, 5_000).catch(() => undefined);
     assert.ok(counts.includes(count), `the due reminder sent the count again: ${counts.join(", ")}`);
   } finally {
     events.forYou = real;
