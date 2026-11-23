@@ -42,7 +42,7 @@ import { RlmChildDoc } from "./children.ts";
 import { commExtension, noteHanded, noteHeard, type CommHost, type CommSubmit } from "./comm.ts";
 import { deliverHarnessDigest, type PrimePromptOptions } from "./prime-prompt.ts";
 import { liveRetry, retrySince, retryingText } from "./retrying.ts";
-import { failedInputs, failureNotice, rootFailed, failureTarget, lastModel, mayRetry, retryInput, roomLineWrites, roomPost, TURN_FAILED_VIA, type FailedInput } from "./turn-failed.ts";
+import { failedInputs, failureNotice, rootFailed, failureTarget, lastModel, mayRetry, newestRootFailed, retryInput, roomLineWrites, roomPost, TURN_FAILED_VIA, type FailedInput } from "./turn-failed.ts";
 
 const context: Context = BACKGROUND_CONTEXT;
 const PREVIEW_CHARS = 200;
@@ -304,6 +304,7 @@ export class DurableThreads {
         }
       }
     }
+    this.clearStaleFailed();
     const due = this.index.due(this.now());
     for (const id of due) {
       try {
@@ -316,6 +317,16 @@ export class DurableThreads {
     if (due.length) this.log(`recovered ${due.length} threads: ${due.join(", ")}`);
     void this.retryFailedPosts();
     return due;
+  }
+
+  /**
+   * Clears `failed` on each row whose thread file's newest settled root input is no failure (`newestRootFailed`), such as a stop an older
+   * build counted, so a thread that nothing runs again stops reading failed. A start runs it, so its end state is the same however often.
+   */
+  private clearStaleFailed(): void {
+    const cleared = this.index.list().filter(row => row.failed && existsSync(this.fileOf(row.id)) && newestRootFailed(this.fileOf(row.id)) === false);
+    for (const row of cleared) this.index.update(row.id, { failed: false });
+    if (cleared.length) this.log(`cleared a stale failed flag on ${cleared.length} threads: ${cleared.map(row => row.id).join(", ")}`);
   }
 
   /**

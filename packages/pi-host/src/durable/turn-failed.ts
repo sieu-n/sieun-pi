@@ -69,6 +69,8 @@ export function roomPost(requestId: string | undefined, room: string): string | 
 
 /** The settle reasons that end a root input with no failure of the run: a stop, a reset, or an input dropped before it ran. */
 const NOT_FAILED = new Set(["aborted", "reset", "stale"]);
+/** Whether a settled root input leaves its thread failed: unanswered for any reason but a stop, a reset or a dropped input. */
+const failsRoot = (record: SubmissionRecord): boolean => record.status === "unanswered" && !NOT_FAILED.has(record.reason);
 
 /**
  * Whether a commit leaves the thread's newest root turn failed, for the index row's `failed`: true when a root input settled unanswered
@@ -80,7 +82,7 @@ export function rootFailed(changes: readonly CommitChange[]): boolean | undefine
     if (change.type !== "submission") continue;
     const record = change.value as SubmissionRecord;
     if (record.conversationId !== ROOT_CONVERSATION_ID || record.type !== "input") continue;
-    if (record.status === "unanswered" && !NOT_FAILED.has(record.reason)) failed = true;
+    if (failsRoot(record)) failed = true;
     else if (record.status === "done" || record.status === "unanswered") failed ??= false;
   }
   return failed;
@@ -205,6 +207,28 @@ export function mayRetry(file: string): boolean {
     return row?.record ? isFailed(JSON.parse(row.record) as SubmissionRecord) : false;
   } catch {
     return false;
+  } finally {
+    db?.close();
+  }
+}
+
+/**
+ * Whether the newest settled root input of a thread file leaves the thread failed, by `rootFailed`'s rule, or undefined when none settled
+ * or the file does not read. A read-only look, as `mayRetry`. pi-host's start uses it to clear a `failed` an older build wrote: before
+ * 58af9c85 a stop marked its thread failed, and on 11-23 20 of the 66 threads that read failed on us-metal02, such as duty thread
+ * efbf242e, had only been stopped.
+ */
+export function newestRootFailed(file: string): boolean | undefined {
+  let db: DatabaseSync | undefined;
+  try {
+    db = new DatabaseSync(file, { readOnly: true });
+    const row = db.prepare(
+      "SELECT record FROM submissions WHERE conversation_id = 1 AND status IN ('done', 'unanswered') AND json_extract(record, '$.type') = 'input' " +
+      "ORDER BY id DESC LIMIT 1",
+    ).get() as { record?: string } | undefined;
+    return row?.record ? failsRoot(JSON.parse(row.record) as SubmissionRecord) : undefined;
+  } catch {
+    return undefined;
   } finally {
     db?.close();
   }

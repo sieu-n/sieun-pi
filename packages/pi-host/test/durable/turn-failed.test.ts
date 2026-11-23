@@ -7,9 +7,12 @@
  * 3. After the fix, `retryFailedPosts` gives the newest failed owner post one more turn, and a second call retries nothing.
  * 4. On 11-23 agent factory's own work thread failed 11 turns in compaction and only logged "run failed with no one to tell": it now tells
  *    its DM comm thread, reads failed, and reads idle again once a root turn answers. A stop is no failure.
+ * 5. A start clears the failed flag that a build before 58af9c85 wrote on a stop, which kept 20 stopped threads such as duty thread
+ *    efbf242e on the Hosts page's Failed tab on 11-23.
  */
 import { strict as assert } from "node:assert";
 import { mkdtempSync, rmSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -167,4 +170,58 @@ test("a root input settled on a failure marks the thread failed, and a done, a s
   assert.equal(rootFailed([settle("unanswered", "reset")]), false);
   assert.equal(rootFailed([settle("unanswered", "model_error", 2)]), undefined, "a job conversation's input is not the root's turn");
   assert.equal(rootFailed([]), undefined);
+});
+
+test("a start clears a failed flag that an older build wrote on a stop and keeps a real failure (duty thread efbf242e, 11-23)", async () => {
+  const at = join(scratch, "durable-stale");
+  const ids: { stopped?: string; broken?: string } = {};
+  let sent = 0;
+  const make = () => new DurableThreads({
+    dir: at, defaultModel: MODEL, defaultThinkingLevel: "off", defaultCwd: scratch, primeRoots: null,
+    models: id => {
+      const models = createModels();
+      const faux = fauxProvider({ provider: "anthropic", models: [{ id: MODEL.modelId }] });
+      // The stopped thread's run retries a 529 until Stop, as a duty run that someone stopped; the broken one fails for good.
+      faux.setResponses(Array.from({ length: 200 }, () => () => id === ids.stopped
+        ? (sent++, fauxAssistantMessage([], { stopReason: "error", errorMessage: '529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}' }))
+        : fauxAssistantMessage([], { stopReason: "error", errorMessage: BAD_IMAGE })));
+      models.setProvider(faux.provider);
+      return models;
+    },
+    settings: () => ({ ...durableSettings({ baseDelayMs: 5, maxAgentDelayMs: 20 }), stream: {} }),
+  });
+  const first = make();
+  try {
+    const stopped = await first.create({ name: "Wiki and skill facts duty" });
+    const broken = await first.create({ name: "Search traffic duty" });
+    ids.stopped = stopped.id;
+    ids.broken = broken.id;
+    const run = await first.submit(stopped.id, { text: "check the wiki facts." });
+    await until(async () => (sent > 0 ? true : undefined), "the stopped thread's first model call");
+    await first.abort(stopped.id);
+    const settled = await first.wait(stopped.id, run.submission);
+    assert.equal(settled.status === "unanswered" ? settled.reason : settled.status, "aborted");
+    const bad = await first.submit(broken.id, { text: "check the search traffic." });
+    assert.equal((await first.wait(broken.id, bad.submission)).status, "unanswered");
+    await until(async () => (first.info(broken.id).status === "failed" ? true : undefined), "the broken thread to read failed");
+    assert.equal(first.info(stopped.id).status, "idle", "this build marks no stop failed");
+  } finally {
+    await first.shutdown();
+  }
+  // What a build before 58af9c85 left on a stop: the index row reads failed while the thread file holds only the stop.
+  const index = new DatabaseSync(join(at, "index.sqlite"));
+  index.prepare("UPDATE threads SET failed = 1 WHERE id = ?").run(ids.stopped!);
+  index.close();
+
+  const second = make();
+  try {
+    await second.start();
+    assert.equal(second.info(ids.stopped!).status, "idle", "the stale flag is gone after a start");
+    assert.equal(second.info(ids.broken!).status, "failed", "a real failure keeps its flag");
+    await second.start();
+    assert.equal(second.info(ids.stopped!).status, "idle", "a second start changes nothing");
+    assert.equal(second.info(ids.broken!).status, "failed");
+  } finally {
+    await second.shutdown();
+  }
 });
