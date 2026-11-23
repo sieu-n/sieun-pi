@@ -27,18 +27,32 @@ const listening = async () => {
   return { server, base: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
 };
 
+/**
+ * Holds the App's room header call `ms` (forever when undefined). `entered` resolves once the server reads the call, and a test starts the
+ * drain only then. A test that slept 100 ms instead failed with ECONNRESET at box load 150 to 290 on 11-23: the event loop stalled after
+ * fetch's connect, the sleep ended before the server took the connection, and the drain's close reset it in the listen queue.
+ */
+const holdHeader = (ms?: number) => {
+  const header = s.app.header.bind(s.app);
+  let enter = () => {};
+  const entered = new Promise<void>(resolve => (enter = resolve));
+  s.app.header = async id => {
+    enter();
+    if (ms === undefined) return new Promise(() => {});
+    await sleep(ms);
+    return header(id);
+  };
+  return { entered, restore: () => (s.app.header = header) };
+};
+
 test("a call in flight answers before the drain ends, while a live socket stays open", async () => {
   const { server, base } = await listening();
   const socket = new WebSocket(`${base.replace(/^http/, "ws")}/api/live`);
   await new Promise(resolve => socket.once("open", resolve));
-  const header = s.app.header.bind(s.app);
-  s.app.header = async id => {
-    await sleep(400);
-    return header(id);
-  };
+  const held = holdHeader(400);
   try {
     const call = fetch(`${base}/api/c/${s.app.agents.list()[0]!.room}`);
-    await sleep(100);
+    await held.entered;
     const started = performance.now();
     await drain(server);
     const took = performance.now() - started;
@@ -47,24 +61,23 @@ test("a call in flight answers before the drain ends, while a live socket stays 
     assert.ok(took >= 250 && took < 1500, `the drain waited for the call and not for the socket: ${took.toFixed(0)} ms`);
     await assert.rejects(fetch(`${base}/api/me`), "a new call is refused once the drain starts");
   } finally {
-    s.app.header = header;
+    held.restore();
     socket.close();
   }
 });
 
 test("a call that never answers holds the drain only up to its cap", async () => {
   const { server, base } = await listening();
-  const header = s.app.header.bind(s.app);
-  s.app.header = () => new Promise(() => {});
+  const held = holdHeader();
   try {
     void fetch(`${base}/api/c/${s.app.agents.list()[0]!.room}`).catch(() => undefined);
-    await sleep(100);
+    await held.entered;
     const started = performance.now();
     await drain(server, 300);
     const took = performance.now() - started;
     assert.ok(took >= 280 && took < 1000, `the drain ended at its cap: ${took.toFixed(0)} ms`);
   } finally {
-    s.app.header = header;
+    held.restore();
     server.closeAllConnections();
   }
 });
@@ -95,21 +108,18 @@ test("a client that keeps its idle connection half open after the server ends it
 
 test("a call in flight when the drain starts answers with Connection: close", async () => {
   const { server, base } = await listening();
-  const header = s.app.header.bind(s.app);
-  s.app.header = async id => {
-    await sleep(300);
-    return header(id);
-  };
+  const held = holdHeader(300);
   try {
-    const call = fetch(`${base}/api/c/${s.app.agents.list()[0]!.room}`);
-    await sleep(100);
+    // A browser's call: http.ts gives every call with fetch's own user-agent Connection: close anyway (`oneShot`), drain or not.
+    const call = fetch(`${base}/api/c/${s.app.agents.list()[0]!.room}`, { headers: { "user-agent": "Mozilla/5.0" } });
+    await held.entered;
     const drained = drain(server);
     const answer = await call;
     assert.equal(answer.status, 200);
     assert.equal(answer.headers.get("connection"), "close");
     await drained;
   } finally {
-    s.app.header = header;
+    held.restore();
   }
 });
 
