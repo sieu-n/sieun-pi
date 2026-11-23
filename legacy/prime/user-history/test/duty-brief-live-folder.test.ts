@@ -20,6 +20,16 @@ test("a duty brief names a release folder through the current link, and any othe
   } finally { await rm(join(root, ".."), { recursive: true, force: true }); }
 });
 
+test("an apps/chat duty's precheck folder in a release of sieun-pi-apps-chat is named through its current link", async () => {
+  const root = join(await mkdtemp(join(tmpdir(), "duty-apps-live-")), "sieun-pi-apps-chat");
+  try {
+    await mkdir(join(root, "release-a", "apps", "chat"), { recursive: true });
+    await symlink("release-a", join(root, "current"));
+    assert.equal(liveFolder(join(root, "release-a", "apps", "chat")), join(root, "current", "apps", "chat"));
+    assert.equal(liveFolder(join(root, "..", "sieun-pi-other", "release-a")), join(root, "..", "sieun-pi-other", "release-a"));
+  } finally { await rm(join(root, ".."), { recursive: true, force: true }); }
+});
+
 
 const run = promisify(execFile);
 const SRC = fileURLToPath(new URL("../src/", import.meta.url));

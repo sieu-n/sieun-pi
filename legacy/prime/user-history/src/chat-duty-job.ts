@@ -39,8 +39,9 @@ import { HANDED_OVER_REASON } from "./daemon-worker-start.ts";
  */
 const USER_HISTORY = liveFolder(join(import.meta.dirname, ".."));
 
+/** A folder in a release of the :5182 chat (`sieun-pi-chat`) or of apps/chat (`sieun-pi-apps-chat`), named through that app's `current`. */
 export function liveFolder(dir: string): string {
-  const match = /^(.*\/sieun-pi-chat)\/release-[^/]+(\/.*)?$/.exec(dir);
+  const match = /^(.*\/sieun-pi(?:-apps)?-chat)\/release-[^/]+(\/.*)?$/.exec(dir);
   if (!match) return dir;
   const live = `${match[1]}/current${match[2] ?? ""}`;
   return existsSync(live) ? live : dir;
