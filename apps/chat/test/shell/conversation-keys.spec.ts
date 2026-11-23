@@ -9,26 +9,36 @@ async function sidebarHrefs(page: Page): Promise<{ href: string; unread: boolean
   return rows(page).evaluateAll((links) => links.map((a) => ({ href: a.getAttribute("href") ?? "", unread: a.hasAttribute("data-unread") })));
 }
 
-/** The drawn row `step` rows from the open one. */
-async function stepTarget(page: Page, step: 1 | -1): Promise<string | undefined> {
-  const hrefs = (await sidebarHrefs(page)).map((r) => r.href);
-  return hrefs[hrefs.indexOf(await hash(page)) + step];
+/** The address, the sidebar row drawn as the open one and the drawn sidebar rows, read in one call. */
+async function drawn(page: Page): Promise<{ at: string; selected: string | null; hrefs: string[] }> {
+  return page.evaluate(() => {
+    const links = [...document.querySelectorAll('nav[data-root="messages"] [data-sidebar-row]')];
+    return {
+      at: location.hash,
+      selected: links.find((a) => a.getAttribute("aria-current") === "page")?.getAttribute("href") ?? null,
+      hrefs: links.map((a) => a.getAttribute("href") ?? ""),
+    };
+  });
 }
 
 /**
  * Presses Alt+Down or Alt+Up and checks that the page moved to the row drawn next to the open one. Other specs add, close and archive rooms
  * on the one fixture server while a walk runs, so the row counts as next in the rows drawn just before the key or just after the move.
+ * Returns false, with no key pressed, when the open row is the last drawn one in that direction.
  */
-async function step(page: Page, by: 1 | -1): Promise<void> {
-  const from = await hash(page);
-  const before = await stepTarget(page, by);
+async function step(page: Page, by: 1 | -1): Promise<boolean> {
+  const before = await drawn(page);
+  const target = before.hrefs[before.hrefs.indexOf(before.at) + by];
+  if (!target) return false;
   await page.keyboard.press(by === 1 ? "Alt+ArrowDown" : "Alt+ArrowUp");
   await expect.poll(async () => {
-    const at = await hash(page);
-    if (at === from) return `still on ${from}`;
-    const after = (await sidebarHrefs(page)).map((r) => r.href);
-    return at === before || after[after.indexOf(at) - by] === from ? "next row" : `${at}, where the row after ${from} was ${before}`;
+    const now = await drawn(page);
+    if (now.at === before.at) return `still on ${before.at}`;
+    // The next key goes from the row the sidebar shows as open, which follows the address a moment later.
+    if (now.selected !== now.at) return `${now.at} is open, and the sidebar still shows ${now.selected} as open`;
+    return now.at === target || now.hrefs[now.hrefs.indexOf(now.at) - by] === before.at ? "next row" : `${now.at}, where the row after ${before.at} was ${target}`;
   }).toBe("next row");
+  return true;
 }
 
 /** The first unread conversation drawn after the open row, wrapping around the ends, as Alt+Shift+Down picks it. */
@@ -63,11 +73,13 @@ test("Alt+Down and Alt+Up step through the sidebar rows in the order they are dr
   const hrefs = (await sidebarHrefs(page)).map((r) => r.href);
   expect(hrefs.length).toBeGreaterThan(3);
   expect(hrefs[0]).toBe("#/c/later");
-  while (await stepTarget(page, 1)) await step(page, 1);
+  // The walk opens every row, and other specs keep adding rooms: a full run drew 68 rows, and under its load 24 steps took 26 s.
+  test.setTimeout(30_000 + hrefs.length * 1_100);
+  while (await step(page, 1));
   const last = await hash(page);
   await page.keyboard.press("Alt+ArrowDown");
   expect(await hash(page)).toBe(last);
-  await step(page, -1);
+  expect(await step(page, -1)).toBe(true);
 });
 
 test("Alt+Down works from the message box", async ({ page }) => {
@@ -75,7 +87,7 @@ test("Alt+Down works from the message box", async ({ page }) => {
   await page.goto(`/${channel}`);
   await expect(rows(page).and(page.locator(`[href="${channel}"]`))).toBeVisible();
   await page.locator('[data-testid="composer"] [contenteditable="true"]').first().focus();
-  await step(page, 1);
+  expect(await step(page, 1)).toBe(true);
 });
 
 test("Alt+Shift+Down jumps to the next unread conversation drawn, past an unread closed Solo room the Done fold hides", async ({ page, request }) => {
