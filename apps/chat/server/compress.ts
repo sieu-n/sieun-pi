@@ -22,6 +22,11 @@ export const MIN_BYTES = 1_000;
 const LIVE_QUALITY = 4;
 /** A file is compressed once and kept, so it gets quality 5: 22 ms for the 654 KB index script, 198 KB against 213 KB at quality 4. */
 const FILE_QUALITY = 5;
+/**
+ * A kept answer (`KeptJson`) is compressed once per version off the event loop, mostly before any read (`warmKeptJson`), so it gets
+ * quality 9: the lean skills view of 11-23 was 75.7 KB in 66 to 98 ms, against 99.4 KB at quality 4 and 82.5 KB at 6.
+ */
+const KEPT_QUALITY = 9;
 
 const brotliOptions = (quality: number, size: number) => ({ params: { [constants.BROTLI_PARAM_QUALITY]: quality, [constants.BROTLI_PARAM_SIZE_HINT]: size } });
 const brotliAsync = promisify(brotliCompress);
@@ -83,9 +88,10 @@ type Version = { tag: string; hashes: Map<string, string>; order: string };
 /**
  * Each answer's newest versions, for the changes since one of them. A version of the 609 skills is about 60 KB, and a page that holds an
  * older one than these gets the whole list, as a first read does. The server took 2 scans an hour on 11-23 (the hourly one and the
- * owner's or a walk's), so 32 versions reach back more than half a day.
+ * owner's or a walk's), and since http.ts makes each answer ahead, a scan makes 3 versions of the view (its start, its ingest and its
+ * end), so 96 versions reach back about half a day.
  */
-const VERSIONS = 32;
+const VERSIONS = 96;
 const versions = new Map<string, Version[]>();
 
 function current(answer: KeptJson): Made {
@@ -102,12 +108,12 @@ function current(answer: KeptJson): Made {
   return next;
 }
 
-/** The kept bytes of `text` in `encoding`, compressed once per version at FILE_QUALITY off the event loop. */
+/** The kept bytes of `text` in `encoding`, compressed once per version at KEPT_QUALITY off the event loop. */
 function keptBytes(entry: Made, key: string, encoding: Encoding, text: () => string): Promise<Buffer> {
   let bytes = entry.bytes.get(`${key}:${encoding}`);
   if (!bytes) {
     const plain = Buffer.from(text());
-    bytes = encoding === "br" ? brotliAsync(plain, brotliOptions(FILE_QUALITY, plain.length)) : gzipAsync(plain);
+    bytes = encoding === "br" ? brotliAsync(plain, brotliOptions(KEPT_QUALITY, plain.length)) : gzipAsync(plain);
     entry.bytes.set(`${key}:${encoding}`, bytes);
     bytes.catch(() => entry.bytes.delete(`${key}:${encoding}`));
   }
@@ -128,6 +134,17 @@ function changesSince(name: string, entry: Made, since: string): { text: string;
   const removed = [...old.hashes.keys()].filter(id => !ids.has(id));
   const order = old.order === entry.order ? "" : `,"order":${JSON.stringify([...ids])}`;
   return { text: `{"tag":${JSON.stringify(entry.tag)},"rest":${rest},"entries":[${changed.join(",")}],"removed":${JSON.stringify(removed)}${order}}`, full: false };
+}
+
+/**
+ * Makes the whole `?since=` answer of `answer` and its bytes in `encoding` before any read asks for them, as a page with nothing kept
+ * reads it. On 11-23 the first such read after each release or scan ran 442 to 797 ms on the server (requests/2026-11-23.jsonl, via
+ * tailnet), building the view and compressing it, while every later one ran in under 2 ms.
+ */
+export async function warmKeptJson(answer: KeptJson, encoding: Encoding): Promise<void> {
+  const entry = current(answer);
+  const { text, full } = changesSince(answer.name, entry, "");
+  if (full && text.length >= MIN_BYTES) await keptBytes(entry, "full", encoding, () => text);
 }
 
 /**

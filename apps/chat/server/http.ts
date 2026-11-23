@@ -40,7 +40,7 @@ import { WikiEngine } from "./wiki/engine.ts";
 import { wikiPages } from "./wiki/pages.ts";
 import { sharedIn } from "./wiki/shared.ts";
 import { WORKSPACE_ROUTE } from "./wiki/workspaces.ts";
-import { compressibleFile, KeptJson, listedEntries, sendCompressed, sendFileCompressed, sendKeptJson } from "./compress.ts";
+import { compressibleFile, KeptJson, listedEntries, sendCompressed, sendFileCompressed, sendKeptJson, warmKeptJson } from "./compress.ts";
 
 type Params = Record<string, string>;
 type Handler = (req: IncomingMessage, params: Params, query: URLSearchParams, body: () => Promise<unknown>) => Promise<unknown>;
@@ -212,9 +212,30 @@ export type SkillsParts = { skills: Skills; review: SkillsReview; db: { db: Skil
  * it listened held all calls for 3.0 to 3.8 s. A successor builds them before it says it loaded (server/handoff.ts), while the old server
  * still serves; their writes to chat.sqlite are the same rows the old server's own ingest wrote.
  */
+/** GET /api/skills as a `KeptJson`: the view with the scan state, whole or as the changes since `since`. */
+async function viewAnswer(db: { db: SkillsDb; skills: Skills }, since: string | null): Promise<KeptJson> {
+  const [{ scan }, view] = await Promise.all([db.skills.report(), db.db.viewListed()]);
+  const state = JSON.stringify(scan);
+  return new KeptJson("skills", [view, state], () => ({
+    json: `${view.plain.slice(0, -1)},"scan":${state}}`,
+    rest: `${view.rest.slice(0, -1)},"scan":${state}}`,
+    entries: view.entries,
+  }), since);
+}
+
+/** GET /api/skills/text as a `KeptJson`: the descriptions the view's `?since=` form leaves out. */
+async function textAnswer(db: { db: SkillsDb }, since: string | null): Promise<KeptJson> {
+  const view = await db.db.viewListed();
+  return new KeptJson("skills/text", [view], () => ({ json: `{"skills":[${view.texts.map(e => e.json).join(",")}]}`, rest: "{}", entries: view.texts }), since);
+}
+
 export function skillsParts(config: Config, log: (line: string) => void, app: () => App | undefined): SkillsParts {
   const broadcast: Broadcast = event => app()?.broadcast(event);
-  const skills = new Skills(config.skills, config.box, log, scan => broadcast({ type: "skills", scan }));
+  let warm = (): void => {};
+  const skills = new Skills(config.skills, config.box, log, scan => {
+    broadcast({ type: "skills", scan });
+    warm();
+  });
   const review = new SkillsReview(config.skillsReview, skills, config.box, {
     log,
     broadcast,
@@ -227,6 +248,12 @@ export function skillsParts(config: Config, log: (line: string) => void, app: ()
   });
   const db = skillsDb(config, log, broadcast, skills, review);
   const ready = db.skills.report().then(() => new Promise<void>(resolve => setImmediate(resolve)));
+  // The page's first read of the view and the texts finds their bytes made: after the start, each scan state and each DB change.
+  warm = () => void Promise.all([viewAnswer(db, ""), textAnswer(db, "")])
+    .then(answers => Promise.all(answers.map(answer => warmKeptJson(answer, "br"))))
+    .catch(error => log(`skills: the first answer was not made ahead: ${error instanceof Error ? error.message : String(error)}`));
+  db.db.onChange = warm;
+  void ready.then(warm);
   return { skills, review, db, ready };
 }
 
@@ -519,19 +546,8 @@ export function routes(app: App, parts: SkillsParts): Route[] {
     ...accountRoutes(app, route),
     route("GET", "/api/hosts", async (_r, _p, q) => hostsReport(app.host, app.threads, app.config.box, app.config.socket, app.config.hostsFile, hostsQuery(q))),
     route("GET", "/api/consoles", async () => consolesReport(app.config.consoles)),
-    route("GET", "/api/skills", async (_r, _p, q) => {
-      const [{ scan }, view] = await Promise.all([db.skills.report(), db.db.viewListed()]);
-      const state = JSON.stringify(scan);
-      return new KeptJson("skills", [view, state], () => ({
-        json: `${view.plain.slice(0, -1)},"scan":${state}}`,
-        rest: `${view.rest.slice(0, -1)},"scan":${state}}`,
-        entries: view.entries,
-      }), q.get("since"));
-    }),
-    route("GET", "/api/skills/text", async (_r, _p, q) => {
-      const view = await db.db.viewListed();
-      return new KeptJson("skills/text", [view], () => ({ json: `{"skills":[${view.texts.map(e => e.json).join(",")}]}`, rest: "{}", entries: view.texts }), q.get("since"));
-    }),
+    route("GET", "/api/skills", async (_r, _p, q) => viewAnswer(db, q.get("since"))),
+    route("GET", "/api/skills/text", async (_r, _p, q) => textAnswer(db, q.get("since"))),
     route("GET", "/api/skills/inventory", async (_r, _p, q) => {
       const report = await skills.report();
       const { inventory } = report;

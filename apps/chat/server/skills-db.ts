@@ -617,10 +617,14 @@ export class SkillsDb {
     return this.built.listed;
   }
 
+  /** Called after each change of the DB; http.ts makes the page's first answer of the new view then, before any read asks for it. */
+  onChange: (() => void) | null = null;
+
   /** A change to the DB: a view built in a worker is built again at once, so the next read of the page finds it ready. */
   private bump(): void {
     this.version++;
     if (this.viewsOffThread && this.built) setImmediate(() => void this.viewListed().catch(() => undefined));
+    if (this.onChange) setImmediate(this.onChange);
   }
 
   private viewOffThread(): Promise<ListedView> {

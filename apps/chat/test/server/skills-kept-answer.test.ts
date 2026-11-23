@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { brotliDecompressSync } from "node:zlib";
+import { KeptJson, listedEntries, sendKeptJson, warmKeptJson } from "../../server/compress.ts";
 import { listedView, SkillsDb } from "../../server/skills-db.ts";
 import { applyListed, type ListedAnswer } from "../../web/src/lib/api/shared/listed.ts";
 import { fromWire, toWire, withText, type SkillsView, type SkillText, type WireView } from "../../web/src/lib/api/shared/skills.ts";
@@ -126,6 +127,26 @@ test("the changes since a version carry new rows, gone rows and the new order", 
   assert.deepEqual(next, { tag: "b", value: { n: 2, list: [{ id: "w", v: 1 }, { id: "z", v: 1 }, { id: "y", v: 2 }] } });
   assert.equal(applyListed(null, { tag: "b", rest: {}, entries: [], removed: [] }, ["list"]), null, "changes need the version they apply to");
   assert.equal(applyListed(held, { tag: "c", same: true }, ["list"]), null, "same for another version reads again");
+});
+
+test("an answer made ahead is sent from its kept bytes, with no second make or compress", async () => {
+  let makes = 0;
+  const rows = Array.from({ length: 50 }, (_, i) => ({ id: `r${i}`, text: "x".repeat(100) }));
+  const answer = (since: string | null) => new KeptJson("warm-test", [rows], () => {
+    makes++;
+    return { json: JSON.stringify({ rows }), rest: "{}", entries: listedEntries(rows) };
+  }, since);
+  await warmKeptJson(answer(""), "br");
+  let sent: { head: Record<string, unknown>; body: Buffer } | undefined;
+  const res = {
+    req: { headers: { "accept-encoding": "br" } },
+    writeHead: (_status: number, head: Record<string, unknown>) => void (sent = { head, body: Buffer.alloc(0) }),
+    end: (body: Buffer) => void (sent!.body = body),
+  } as unknown as Parameters<typeof sendKeptJson>[0];
+  await sendKeptJson(res, {}, answer(""));
+  assert.equal(makes, 1);
+  assert.equal(sent?.head["content-encoding"], "br");
+  assert.deepEqual(applyListed(null, JSON.parse(brotliDecompressSync(sent!.body).toString()) as ListedAnswer, ["rows"])?.value, { rows });
 });
 
 test("a view built in a worker thread is the inline view, and a change builds it again", async t => {
