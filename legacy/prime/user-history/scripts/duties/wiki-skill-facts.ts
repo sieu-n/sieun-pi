@@ -18,8 +18,9 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * A fact is read from the doc's code spans: a repo path, a `file::name` definition, an env or constant name, a `pnpm <script>` and a `--flag`
  * of a script the span runs. A fact counts when it held at the doc's date and does not hold at HEAD, so a placeholder or an example that never
  * existed never counts. A page's date is its `updated` (or `last_verified`, the newer), a bare day read from 00:00 KST, and a skill's or rule
- * file's is the first-parent commit of its own repo that last touched it. Rule files count in `skills_with_stale_facts`, which keeps the duty at
- * its metric shape, and their own count is the part `skills_with_stale_facts_rules`. A sentence that says a thing was removed, renamed or replaced is history and is not read, and so are
+ * file's is the first-parent commit of its own repo that last touched it. Repo skills, rule files and Prime skills all count in
+ * `skills_with_stale_facts`, which keeps the duty at one headline and three more metrics, and info splits it into `repo_skills_with_stale_facts`,
+ * `rules_with_stale_facts` and `prime_skills_with_stale_facts`. A sentence that says a thing was removed, renamed or replaced is history and is not read, and so are
  * experiment, incident and postmortem pages and the skills a vendor wrote (`vendorSkillDirs`).
  * The Wiki dream duty (wiki-dream.ts) already counts a page whose `<code>` path under apps, convex, packages, scripts or ops is missing, and every
  * `source_refs` change, so a page's path facts under those folders are left to it. A file that only changed counts in info `docs_with_changed_files`
@@ -441,12 +442,12 @@ export async function measureFacts(deps: FactsDeps): Promise<PrecheckOutput & { 
   const metrics: Record<string, number> = {
     docs_with_stale_facts: measured ? stale.length : UNMEASURED,
     pages_with_stale_facts: autoJudged ? count("page") : UNMEASURED,
-    skills_with_stale_facts: autoJudged ? count("skill") + count("rule") : UNMEASURED,
-    skills_with_stale_facts_rules: autoJudged ? count("rule") : UNMEASURED,
-    prime_skills_with_stale_facts: piJudged ? count("prime_skill") : UNMEASURED,
+    skills_with_stale_facts: measured ? count("skill") + count("rule") + count("prime_skill") : UNMEASURED,
     source_errors: errors.length,
   };
   const info: Record<string, number> = {
+    repo_skills_with_stale_facts: autoJudged ? count("skill") : UNMEASURED, rules_with_stale_facts: autoJudged ? count("rule") : UNMEASURED,
+    prime_skills_with_stale_facts: piJudged ? count("prime_skill") : UNMEASURED,
     pages_read: docs.filter(doc => doc.kind === "page").length, skills_read: docs.filter(doc => doc.kind === "skill").length,
     rules_read: docs.filter(doc => doc.kind === "rule").length,
     prime_skills_read: docs.filter(doc => doc.kind === "prime_skill").length, docs_skipped: skipped,

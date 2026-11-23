@@ -1,7 +1,7 @@
 {
   "name": "Wiki and skill facts",
   "ownerWords": "knowledge manager (make llm-wiki info and, skills always up to date)",
-  "goal": "Every curated wiki page (apps/, domains/, projects/) every repo skill (.agents/skills) and every rule file (.claude/rules/*.md, root CLAUDE.md and AGENTS.md) names only code facts that still hold: no repo path, file::name, env or constant name, pnpm script or script flag it cites was taken away by an auto-sns-agent commit after the page's updated date or the skill's or rule file's last commit. Rule files count in skills_with_stale_facts, and the precheck gives their own count as skills_with_stale_facts_rules. Every Prime agent skill whose source is in sieun-pi (skills/, legacy/prime/skills/, packages/*/skills/) holds the same against sieun-pi's commits after its last commit. The target is 0 because the owner asked for them 'always up to date'. Missing page paths under apps, convex, packages, scripts and ops stay with the Wiki dream duty. The first run on 2026-11-20 took 179 s on us-metal02 under load, so the soft target is 600 s.",
+  "goal": "Every curated wiki page (apps/, domains/, projects/) every repo skill (.agents/skills) and every rule file (.claude/rules/*.md, root CLAUDE.md and AGENTS.md) names only code facts that still hold: no repo path, file::name, env or constant name, pnpm script or script flag it cites was taken away by an auto-sns-agent commit after the page's updated date or the skill's or rule file's last commit. Every Prime agent skill whose source is in sieun-pi (skills/, legacy/prime/skills/, packages/*/skills/) holds the same against sieun-pi's commits after its last commit. Repo skills, rule files and Prime skills all count in skills_with_stale_facts, and the precheck's info splits it into repo_skills_with_stale_facts, rules_with_stale_facts and prime_skills_with_stale_facts. The target is 0 because the owner asked for them 'always up to date'. Missing page paths under apps, convex, packages, scripts and ops stay with the Wiki dream duty. The first run on 2026-11-20 took 179 s on us-metal02 under load, so the soft target is 600 s.",
   "metrics": [
     {
       "key": "docs_with_stale_facts",
@@ -18,13 +18,7 @@
     },
     {
       "key": "skills_with_stale_facts",
-      "label": "Repo skills and rule files that name a code fact a later commit took away",
-      "op": "<=",
-      "target": 0
-    },
-    {
-      "key": "prime_skills_with_stale_facts",
-      "label": "Prime skills that name a sieun-pi code fact a later commit took away",
+      "label": "Repo skills, rule files and Prime skills that name a code fact a later commit took away",
       "op": "<=",
       "target": 0
     },

@@ -60,7 +60,8 @@ test("a fact that held at the doc's date and is gone at HEAD counts its doc once
     const result = await measureFacts({ run: runNoShell, repo, piRepo, content, readText: path => Promise.resolve(readFileSync(path, "utf8")),
       listPages: async () => ["apps/tool/index.html", "apps/tool/fresh.html", "domains/x/incident.html", "apps/tool/history.html"] });
     assert.equal(result.metrics.source_errors, 0, JSON.stringify(result.flagged));
-    assert.equal(result.metrics.skills_with_stale_facts, 1);
+    assert.equal(result.metrics.skills_with_stale_facts, 2, "the repo skill and the Prime skill");
+    assert.equal(result.info.repo_skills_with_stale_facts, 1);
     assert.equal(result.metrics.pages_with_stale_facts, 1, "the page dated after the change, the incident and the history sentence do not count");
     assert.equal(result.metrics.docs_with_stale_facts, 3, "the page, the repo skill and the Prime skill");
     const skill = result.flagged!.find(slice => slice.item === ".agents/skills/repo/tool/SKILL.md")!;
@@ -91,7 +92,7 @@ test("a Prime skill counts when a sieun-pi fact it names is gone at sieun-pi's H
   try {
     const result = await measureFacts({ run: runNoShell, repo, piRepo, content, readText: path => Promise.resolve(readFileSync(path, "utf8")), listPages: async () => [] });
     assert.equal(result.metrics.source_errors, 0, JSON.stringify(result.flagged));
-    assert.equal(result.metrics.prime_skills_with_stale_facts, 1);
+    assert.equal(result.info.prime_skills_with_stale_facts, 1);
     assert.equal(result.info.prime_skills_read, 2, "the fixture under packages/pi-host/test is no skill");
     const skill = result.flagged!.find(slice => slice.kind === "stale_prime_skill")!;
     assert.equal(skill.item, "sieun-pi:skills/board/references/git.md");
@@ -100,7 +101,7 @@ test("a Prime skill counts when a sieun-pi fact it names is gone at sieun-pi's H
   } finally { done(); }
 });
 
-test("a rule file or a root contract counts in skills_with_stale_facts and its rules part when a fact it names is gone at HEAD", async () => {
+test("a rule file or a root contract counts in skills_with_stale_facts and in info rules_with_stale_facts when a fact it names is gone at HEAD", async () => {
   // p7 (2026-11-21): d1 read only .claude/rules/app-*.md, so code-quality.md, verification.md, CLAUDE.md and AGENTS.md could drift unseen.
   const { repo, piRepo, content, done } = world({
     ".claude/rules/verification.md": "Run `node scripts/tool.mjs --old` before a commit.\n",
@@ -111,8 +112,8 @@ test("a rule file or a root contract counts in skills_with_stale_facts and its r
     const result = await measureFacts({ run: runNoShell, repo, piRepo, content, readText: path => Promise.resolve(readFileSync(path, "utf8")), listPages: async () => [] });
     assert.equal(result.metrics.source_errors, 0, JSON.stringify(result.flagged));
     assert.equal(result.info.rules_read, 3);
-    assert.equal(result.metrics.skills_with_stale_facts_rules, 2, "AGENTS.md names only a file that still exists");
-    assert.equal(result.metrics.skills_with_stale_facts, 3, "the repo skill and the two rule files");
+    assert.equal(result.info.rules_with_stale_facts, 2, "AGENTS.md names only a file that still exists");
+    assert.equal(result.metrics.skills_with_stale_facts, 4, "the repo skill, the two rule files and the Prime skill");
     const rules = result.flagged!.filter(slice => slice.kind === "stale_rule");
     assert.deepEqual(rules.map(slice => slice.item).sort(), [".claude/rules/verification.md", "CLAUDE.md"]);
     assert.match(rules.find(slice => slice.item === "CLAUDE.md")!.excerpt, /^rule file dated .*OLD_LIMIT is in no code.*ops\/gone\.sh is gone/);
@@ -130,7 +131,7 @@ test("a name an uncommitted delete hides from the checkout still counts as prese
     rmSync(join(repo, "scripts/keep.mjs"));
     const result = await measureFacts({ run: runNoShell, repo, piRepo, content, readText: path => Promise.resolve(readFileSync(path, "utf8")), listPages: async () => [] });
     assert.equal(result.metrics.source_errors, 0, JSON.stringify(result.flagged));
-    assert.equal(result.metrics.skills_with_stale_facts_rules, 0, JSON.stringify(result.flagged));
+    assert.equal(result.info.rules_with_stale_facts, 0, JSON.stringify(result.flagged));
   } finally { done(); }
 });
 
