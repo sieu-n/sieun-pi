@@ -5,17 +5,18 @@
   import { hrefFor, router } from "$lib/router.svelte";
   import { Avatar, Button, CardGroup, EmptyState, IconButton, LoadingText, Page, PageHeader, PanelHeader, Select, Tabs } from "$lib/ui";
   import PoolCard from "./PoolCard.svelte";
-  import TpsCard from "./TpsCard.svelte";
+  import LiveRate from "./LiveRate.svelte";
   import UsageChart from "./UsageChart.svelte";
-  import { chartFormat, cost, count, exactCost, full, percent, type TipRow } from "./format";
+  import { chartFormat, cost, exactCost, full, percent, type TipRow } from "./format";
   import { isCurrent, keptReport, readAhead, readReport, REFRESH_MS, restoreReport, type ReadMode, type UsageFilters } from "./reports";
-  import { bucketValue, cacheHit, cellsOf, KIND_LABEL, KINDS, METRIC_LABEL, modelName, modelsByCost, seriesOf, summarize, tokenSum, type Measure, type Metric, type Unit } from "./stats";
+  import { cacheHit, cellsOf, KIND_LABEL, KINDS, METRIC_LABEL, modelName, modelsByCost, seriesOf, summarize, tokenSum, type Measure, type Metric, type Unit } from "./stats";
 
   /**
    * Usage: what every chat spent, from pi-host's own usage rows, with each token kind priced apart (c157) and every count exact (c191),
    * plus the account pool. The chart comes first, grouped by minute, hour or day over a range, as Prime's chat Usage page draws it (owner
-   * p132). The chart counts dollars or tokens, all of them or output only (owner p162). The unit, the token kind, the range, the grouping and
-   * the chat and host filters live in the URL, as #/settings/usage?unit=tokens&metric=output&range=7d&by=hour&thread=<id>&host=<box>.
+   * p132). The chart counts dollars or tokens, all of them or output only, and tokens per second now sit in its header row, so the page
+   * draws one chart (owner p162, p192). The unit, the token kind, the range, the grouping and the chat and host filters live in the URL, as
+   * #/settings/usage?unit=tokens&metric=output&range=7d&by=hour&thread=<id>&host=<box>.
    */
   const RANGE_LABEL: Record<UsageRange, string> = { "1h": "the last hour", "24h": "the last 24 hours", "7d": "the last 7 days", "30d": "the last 30 days", "90d": "the last 90 days" };
   const BUCKET_LABEL: Record<UsageBucket, string> = { minute: "Minute", hour: "Hour", day: "Day" };
@@ -145,9 +146,6 @@
   const measure = $derived<Measure>(unit === "usd" ? { unit } : { unit, metric });
   const format = $derived(chartFormat(measure));
   const cells = $derived(report ? cellsOf(report.buckets, series, measure) : []);
-  /** The range's sum from the buckets, as the table under the chart sums it. */
-  const chartSum = $derived(report ? report.buckets.reduce((all, entry) => all + bucketValue(entry, measure), 0) : 0);
-  const chartTotal = $derived(unit === "usd" ? { text: `${cost(chartSum)} in total`, title: exactCost(chartSum) } : { text: `${count(chartSum)} ${format.label.toLowerCase()} in total`, title: full(chartSum) });
   /** The tip's rows under the split: in dollars the cache reads, in tokens the other token kind and the cost, then turns and cache hit. */
   function tipRows(index: number): TipRow[] {
     const entry = report?.buckets[index];
@@ -210,9 +208,12 @@
       <EmptyState icon="chart-bar" title="No usage in this range" description="No chat ran a model call in {RANGE_LABEL[report.range]}. Choose a longer range or another chat." />
     {:else}
       <section class="section" aria-label="{format.label} per {report.bucket}" aria-busy={loading}>
-        <UsageChart buckets={report.buckets} {series} bucket={report.bucket} {cells} {format} total={chartTotal} tip={tipRows} />
+        <UsageChart buckets={report.buckets} {series} bucket={report.bucket} {cells} {format} tip={tipRows}>
+          {#snippet header()}
+            <LiveRate initial={report?.live ?? null} {metric} thread={thread === ALL ? undefined : thread} host={host === ALL ? undefined : host} />
+          {/snippet}
+        </UsageChart>
       </section>
-      <TpsCard {report} {series} {metric} thread={thread === ALL ? undefined : thread} host={host === ALL ? undefined : host} />
 
       <CardGroup title="Cost by token kind" description="Each kind at its own rate, so the shared prompt read from cache never counts as fresh input.">
         <div class="kind head" aria-hidden="true"><span>Kind</span><span class="num">Tokens</span><span class="num">Share of cost</span><span class="num">Cost</span></div>

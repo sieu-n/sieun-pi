@@ -26,7 +26,7 @@ function shown(page: Page, query: string): Promise<Report> {
   }).then(async response => (await response.json()) as Report);
 }
 
-/** The range's own chart; the tokens per second card under it draws a second one. */
+/** The page's one chart, by its region "Cost per day" or "Output tokens per hour". */
 const mainChart = (page: Page) => page.getByRole("region", { name: / per (minute|hour|day)$/ });
 
 function sums(rows: Row[]) {
@@ -50,13 +50,58 @@ test("the chart comes first, and its total, the figures and every token kind equ
     await expect(row).toContainText(whole(total.tokens[kind]));
     await expect(row).toContainText(dollars(total.cost[kind]));
   }
-  await expect(mainChart(page).getByTestId("usage-chart-total")).toHaveAttribute("title", exact);
   await expect(mainChart(page).getByTestId("usage-figures-total")).toHaveText(exact);
   await expect(mainChart(page).getByTestId("usage-figures").locator("tbody tr")).toHaveCount(data.buckets.filter(b => b.turns > 0).length);
   await expect(page.getByText("Summed from every model call")).toHaveCount(0);
   const chartTop = (await page.getByRole("img", { name: "Cost per day" }).boundingBox())!.y;
   const kindsTop = (await page.getByTestId("usage-kind-input").boundingBox())!.y;
   expect(chartTop).toBeLessThan(kindsTop);
+});
+
+test("the page draws one chart, with tokens per second now in its header row, and the unit and token kind toggles drive both", async ({ page }) => {
+  const spark = (top: number) => Array.from({ length: 61 }, (_, i) => (top * i) / 60);
+  let live = { at: Date.now(), perSecond: { total: 1234, output: 56.7 }, spark: { total: spark(1234), output: spark(56.7) } };
+  await page.route("**/api/usage/live?*", route => route.fulfill({ json: live }));
+  await page.route("**/api/usage/live", route => route.fulfill({ json: live }));
+  const read = shown(page, "range=7d&bucket=day");
+  await page.goto("/#/settings/usage?range=7d&by=day");
+  test.skip(!(await read).rows.length, "no usage in the last 7 days on this server");
+  const chart = mainChart(page);
+  await expect(chart.getByRole("img", { name: "Cost per day", exact: true })).toBeVisible();
+  await expect(page.getByTestId("usage-chart-hit")).toHaveCount(1);
+  await expect(page.getByTestId("usage-figures")).toHaveCount(1);
+  await expect(page.getByText("Tokens per second", { exact: true })).toHaveCount(0);
+
+  const readout = chart.getByTestId("usage-tps");
+  await expect(readout).toContainText("Tokens / s");
+  await expect(readout.getByTestId("usage-tps-value")).toHaveText("1.2K", { timeout: 10_000 });
+  await expect(readout.getByTestId("usage-tps-other")).toHaveText("out 56.7");
+  await expect(readout.getByTestId("usage-tps-spark")).toBeVisible();
+  live = { at: Date.now(), perSecond: { total: 42, output: 3 }, spark: { total: spark(42), output: spark(3) } };
+  await expect(readout.getByTestId("usage-tps-value")).toHaveText("42.0", { timeout: 10_000 });
+});
+
+test("the unit and token kind toggles switch the chart and the tokens per second readout together", async ({ page }) => {
+  const live = { at: Date.now(), perSecond: { total: 42, output: 3 }, spark: { total: [0, 42], output: [0, 3] } };
+  await page.route("**/api/usage/live?*", route => route.fulfill({ json: live }));
+  await page.route("**/api/usage/live", route => route.fulfill({ json: live }));
+  const read = shown(page, "range=7d&bucket=day");
+  await page.goto("/#/settings/usage?range=7d&by=day&metric=output");
+  test.skip(!(await read).rows.length, "no usage in the last 7 days on this server");
+  const chart = mainChart(page);
+  const readout = chart.getByTestId("usage-tps");
+  await expect(readout).toContainText("Output / s");
+  await expect(readout.getByTestId("usage-tps-value")).toHaveText("3.0", { timeout: 10_000 });
+  await expect(readout.getByTestId("usage-tps-other")).toHaveText("total 42.0");
+  await page.getByRole("tablist", { name: "Unit" }).getByRole("tab", { name: "Tokens" }).click();
+  await expect(page).toHaveURL(/unit=tokens/);
+  await expect(chart.getByRole("img", { name: "Output tokens per day", exact: true })).toBeVisible();
+  await page.getByRole("tablist", { name: "Token kind" }).getByRole("tab", { name: "Total" }).click();
+  await expect(chart.getByRole("img", { name: "Tokens per day", exact: true })).toBeVisible();
+  await expect(readout.getByTestId("usage-tps-value")).toHaveText("42.0");
+  await page.getByRole("tablist", { name: "Unit" }).getByRole("tab", { name: "$" }).click();
+  await expect(chart.getByRole("img", { name: "Cost per day", exact: true })).toBeVisible();
+  await expect(page.getByTestId("usage-chart-hit")).toHaveCount(1);
 });
 
 test("a hover names the bucket and its total, as its figures row has it", async ({ page }) => {

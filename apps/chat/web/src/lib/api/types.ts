@@ -698,7 +698,7 @@ export interface UsageBucketSum {
 /** `buckets` holds every bucket of the range, empty ones too, and its sums equal the sums of `rows` (c191). */
 export interface UsageReport {
   at: Ms; since: Ms; until: Ms; range: UsageRange; bucket: UsageBucket; rows: UsageRow[]; buckets: UsageBucketSum[];
-  /** The live rate as of the answer, which GET /api/usage adds so the tokens per second card's first read is no second round trip. */
+  /** The live rate as of the answer, which GET /api/usage adds so the chart's tokens per second readout opens with no second round trip. */
   live?: UsageLive;
 }
 /**

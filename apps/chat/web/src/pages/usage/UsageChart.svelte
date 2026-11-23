@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { Snippet } from "svelte";
   import type { UsageBucket } from "$lib/api";
   import { BUCKET_MS } from "$lib/api/shared/usage-range";
   import { Button, Popover } from "$lib/ui";
@@ -6,19 +7,18 @@
   import { axis, type Series, type UsageBucketSum } from "./stats";
 
   /**
-   * One value per minute, hour or day, stacked by model, as Prime's chat Usage chart groups it: cost, tokens or tokens per second, as the
-   * caller's `cells` and `format` say. A hover shows the bucket's split and sum, then the caller's own rows (`tip`), and every bucket that
-   * ran a call is in a table one click away, each figure exact (c191), with the range's total under it when `total` is given.
+   * One value per minute, hour or day, stacked by model, as Prime's chat Usage chart groups it: cost or tokens, as the caller's `cells` and
+   * `format` say. A hover shows the bucket's split and sum, then the caller's own rows (`tip`), and every bucket that ran a call is in a
+   * table one click away with the range's total under it, each figure exact (c191). The caller's `header` sits at the end of the legend row.
    */
-  let { buckets, series, bucket, cells, format, total, tip }: {
+  let { buckets, series, bucket, cells, format, header, tip }: {
     buckets: readonly UsageBucketSum[];
     series: readonly Series[];
     bucket: UsageBucket;
     /** Each bucket's value per series, in series order. */
     cells: readonly (readonly number[])[];
     format: ChartFormat;
-    /** The line over the plot; null hides it and the table's total row, as for a rate, whose sum means nothing. */
-    total: { text: string; title: string } | null;
+    header?: Snippet;
     /** More tip rows for the bucket at this index, muted, under its split and sum. */
     tip?: (index: number) => readonly TipRow[];
   } = $props();
@@ -103,7 +103,7 @@
         {#each series as line (line.key)}<li><span class="swatch" style:background={line.color}></span>{line.label}</li>{/each}
       </ul>
     {/if}
-    {#if total}<p class="sum" data-testid="usage-chart-total" title={total.title}>{total.text}</p>{/if}
+    {#if header}<div class="header">{@render header()}</div>{/if}
   </div>
   <div class="plot" bind:this={plotEl} bind:clientWidth={width} style:height="{HEIGHT}px">
     {#if width > 0}
@@ -183,25 +183,23 @@
         </tr>
       {/each}
     </tbody>
-    {#if total}
-      <tfoot>
-        <tr>
-          <th scope="row">Total</th>
-          {#if stacked}{#each series as line, position (line.key)}<td>{format.exact(cells.reduce((all, row) => all + (row[position] ?? 0), 0))}</td>{/each}{/if}
-          <td>{full(buckets.reduce((all, entry) => all + entry.turns, 0))}</td>
-          <td data-testid="usage-figures-total">{format.exact(sum)}</td>
-        </tr>
-      </tfoot>
-    {/if}
+    <tfoot>
+      <tr>
+        <th scope="row">Total</th>
+        {#if stacked}{#each series as line, position (line.key)}<td>{format.exact(cells.reduce((all, row) => all + (row[position] ?? 0), 0))}</td>{/each}{/if}
+        <td>{full(buckets.reduce((all, entry) => all + entry.turns, 0))}</td>
+        <td data-testid="usage-figures-total">{format.exact(sum)}</td>
+      </tr>
+    </tfoot>
   </table>
 </div>
 
 <style>
   .chart { display: flex; flex-direction: column; gap: var(--space-3); }
-  .legend-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-2) var(--space-4); }
+  .legend-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-4); }
   .legend { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-4); margin: 0; padding: 0; list-style: none; color: var(--text-subtle); font: var(--text-caption); letter-spacing: var(--tracking-caption); }
   .legend li, .tip-row { display: inline-flex; align-items: center; gap: var(--space-2); }
-  .sum { margin: 0 0 0 auto; color: var(--text-standard); font: var(--text-body); font-variant-numeric: tabular-nums; }
+  .header { display: flex; min-width: 0; margin-left: auto; }
   .swatch { display: inline-block; width: 8px; height: 8px; border-radius: 2px; }
   .plot { position: relative; width: 100%; }
   svg { display: block; overflow: visible; }

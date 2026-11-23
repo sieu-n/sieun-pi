@@ -106,10 +106,6 @@ export type Measure = { readonly unit: "usd" } | { readonly unit: "tokens"; read
 export const METRIC_LABEL: Readonly<Record<Metric, string>> = { total: "Total", output: "Output" };
 export const metricOf = (tokens: Tokens, metric: Metric): number => (metric === "output" ? tokens.output : tokenSum(tokens));
 
-/** A bucket's whole measure: its cost, or its tokens of the metric. */
-export const bucketValue = (bucket: UsageBucketSum, measure: Measure): number =>
-  measure.unit === "usd" ? bucket.cost.total : metricOf(bucket.tokens, measure.metric);
-
 /** One model's measure in a bucket. */
 const modelValue = (bucket: UsageBucketSum, model: string, measure: Measure): number => {
   if (measure.unit === "usd") return bucket.byModel[model] ?? 0;
