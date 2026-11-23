@@ -106,8 +106,9 @@ test("six overlapping reviews read each store and the log once, and a store writ
     writeStore(localDir, "agent", 3000, "fresh_rule");
     await module.settled!(calls[7]!);
     await until("the eighth review", () => prompts.length === 8);
-    assert.doesNotMatch(prompts[6]!, /fresh_rule/);
-    assert.match(prompts[7]!, /fresh_rule/);
+    // The review shows the 40 local entries nearest the conversation, so the new store shows in its count.
+    assert.match(prompts[6]!, /- 40 of 3000 local memory entries/);
+    assert.match(prompts[7]!, /- 40 of 3001 local memory entries/);
     release();
     released = Promise.resolve();
     await until("every review's log line", () => logged.filter(line => line.startsWith("auto-refine review")).length === 8);
