@@ -12,7 +12,8 @@ Builds ~/.local/share/sieun-pi-apps-chat/release-<sha7> from the commit, points 
 sieun-pi-apps-chat.service (apps/chat on 127.0.0.1:5184), whose server hands the port held by sieun-pi-apps-chat.socket to a successor on the new
 release (apps/chat/server/handoff.ts). It never touches sieun-pi-chat.service (:5182), sieun-pi-chat-pi.service (:5183) or the Prime daemon.
 The rules follow scripts/release-chat.mjs.
-1. One release runs at a time through <home>/release.lock; a lock whose pid is gone is taken over.
+1. One release runs at a time through <home>/release.lock; a lock whose pid is gone is taken over, and a waiting release's
+   release.lock.<pid> draft whose pid is gone is removed.
 2. The commit must be on origin's main, fetched at the start: push it first.
 3. A commit that does not descend from the live release's commit is refused, so a late release never rolls back a newer one; --rollback allows it,
    and --rollback onto a release folder already built skips the origin check.
@@ -125,6 +126,11 @@ async function takeLock(home, request) {
   const draft = `${lock}.${process.pid}`;
   const body = `${JSON.stringify(request)}\n`;
   writeFileSync(draft, body);
+  // A release killed while it waited skips the finally below and leaves its draft, as two from 11-21 did; drop each draft whose pid is gone.
+  for (const entry of readdirSync(home)) {
+    const pid = Number(/^release\.lock\.(\d+)$/.exec(entry)?.[1]);
+    if (pid && !alive(pid)) rmSync(join(home, entry), { force: true });
+  }
   let told = false;
   try {
     for (;;) {
