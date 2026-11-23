@@ -27,14 +27,33 @@ test("a row opens its agent's DM and takes the soft citrus fill", async ({ page 
   await expect(row).toHaveCSS("background-color", "rgb(232, 240, 205)");
 });
 
-test("unread rows are bold and working rows show typing dots in a bubble", async ({ page, request }) => {
-  const crawler = sidebar(page).locator('a[href="#/c/dm_crawler-vp"]');
-  await expect(crawler).toHaveAttribute("data-unread", "true");
-  await expect(crawler).toHaveCSS("font-weight", "500");
-  // Other specs post in DMs, so the read row is whichever DM has nothing new now.
-  const dms = ((await (await request.get("/api/sidebar")).json()) as { dms: { id: string; unread: number; hasNew: boolean; status: string }[] }).dms;
-  const read = dms.find((dm) => !dm.unread && !dm.hasNew && dm.status !== "working");
-  if (read) await expect(sidebar(page).locator(`a[href="#/c/${read.id}"]`)).toHaveCSS("font-weight", "400");
+test("unread rows are bold and working rows show typing dots in a bubble", async ({ page }) => {
+  // Other specs read, close and fold the seeded rooms, so the unread and the read row are this test's own channels.
+  const tag = Date.now().toString(36);
+  const made: string[] = [];
+  const room = async (name: string): Promise<{ id: string; post: string }> => {
+    const id = ((await (await page.request.post("/api/rooms", { data: { kind: "channel", name, members: [] } })).json()) as { id: string }).id;
+    made.push(id);
+    const sent = await page.request.post(`/api/c/${id}/send`, { data: { text: `first post of ${name}`, requestId: crypto.randomUUID() } });
+    return { id, post: ((await sent.json()) as { item: { id: string } }).item.id };
+  };
+  const unread = await room(`sidebar-unread-${tag}`);
+  const read = await room(`sidebar-read-${tag}`);
+  try {
+    expect((await page.request.post(`/api/c/${unread.id}/read`, { data: { unreadFrom: unread.post } })).ok()).toBe(true);
+    // A folded section still shows the open room and the unread ones, so open the read one to keep it on screen.
+    await page.goto(`/#/c/${read.id}`);
+    const unreadRow = sidebar(page).locator(`a[href="#/c/${unread.id}"]`);
+    await expect(unreadRow).toHaveAttribute("data-unread", "true", { timeout: 15_000 });
+    await expect(unreadRow).toHaveCSS("font-weight", "500");
+    const readRow = sidebar(page).locator(`a[href="#/c/${read.id}"]`);
+    await expect(readRow).toHaveAttribute("aria-current", "page");
+    await expect(readRow).not.toHaveAttribute("data-unread");
+    await expect(readRow).toHaveCSS("font-weight", "400");
+  } finally {
+    await page.request.delete(`/api/later/${encodeURIComponent(`${unread.id}:${unread.post}`)}`);
+    for (const id of made) await page.request.patch(`/api/rooms/${id}`, { data: { archived: true } });
+  }
   const cutover = sidebar(page).getByRole("link", { name: "pi-cutover" });
   await expect(cutover).toHaveAttribute("data-working", "true");
   await expect(cutover.getByRole("status")).toHaveAttribute("aria-label", /working in pi-cutover/);
