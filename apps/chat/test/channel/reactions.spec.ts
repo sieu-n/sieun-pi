@@ -76,12 +76,26 @@ test("a click on a chip toggles the owner's own reaction", async ({ page }) => {
   await expect.poll(() => posted).toEqual([{ emoji: "👀", on: false }, { emoji: "⏳", on: true }]);
 });
 
-test("the picker searches, moves by arrows, picks with Enter, keeps Frequently used and closes on Esc", async ({ page }) => {
+/**
+ * Opens the emoji picker from the post's hover bar, and hovers again when the timeline moved under the pointer while the page still loaded:
+ * the bar then hides, and a click left alone retried against the post above for 29 s (11-23). A healthy click took up to 9.3 s at box load 200.
+ */
+async function openPicker(page: Page, post: Locator): Promise<Locator> {
+  const shown = page.locator("[data-emoji-picker]");
+  await expect(async () => {
+    if (await shown.isVisible()) return;
+    await post.hover();
+    await post.locator("[data-add-reaction]").click({ timeout: 10_000 });
+  }).toPass();
+  await expect(shown).toBeVisible();
+  return shown;
+}
+
+// The picker checks are three tests. Each open draws all 1,931 emoji, and as one test with two opens they took 17 to 32 s of the 30 s
+// budget at box load 150 to 240 (11-23); the 32 s run timed out while typing.
+test("the picker searches, picks with Enter and keeps the pick first in Frequently used", async ({ page }) => {
   const { post, posted } = await dressed(page);
-  await post.hover();
-  await post.locator("[data-add-reaction]").click();
-  const picker = page.locator("[data-emoji-picker]");
-  await expect(picker).toBeVisible();
+  const picker = await openPicker(page, post);
   await expect(picker.locator(".head").first()).toHaveText("Frequently used");
   await expect(picker.getByRole("tab")).toHaveCount(10);
   await expect(picker.locator('[data-emoji="👀"]').first()).toHaveClass(/mine/);
@@ -93,16 +107,24 @@ test("the picker searches, moves by arrows, picks with Enter, keeps Frequently u
   await expect(picker).toHaveCount(0);
   await expect.poll(() => posted).toEqual([{ emoji: "🚀", on: true }]);
 
-  await post.hover();
-  await post.locator("[data-add-reaction]").click();
+  await openPicker(page, post);
   await expect(picker.locator(".row").first().locator("[data-emoji]").first()).toHaveAttribute("data-emoji", "🚀");
+});
+
+test("the picker moves by arrows and names the emoji under the pointer", async ({ page }) => {
+  const { post } = await dressed(page);
+  const picker = await openPicker(page, post);
   await page.keyboard.press("ArrowRight");
   await page.keyboard.press("ArrowDown");
   const second = await picker.locator(".row").nth(1).locator("[data-emoji]").nth(1).getAttribute("data-emoji");
   await expect(picker.locator(".cell.active")).toHaveAttribute("data-emoji", second!);
   await picker.locator('[data-emoji="🎉"]').first().hover();
   await expect(picker.locator(".footer")).toContainText(":tada:");
+});
 
+test("a category tab selects, a search with no match says so, and Esc closes the picker", async ({ page }) => {
+  const { post } = await dressed(page);
+  const picker = await openPicker(page, post);
   await picker.getByRole("tab", { name: "Flags" }).click();
   await expect(picker.getByRole("tab", { name: "Flags" })).toHaveAttribute("aria-selected", "true");
   await page.keyboard.type("zzzz");
