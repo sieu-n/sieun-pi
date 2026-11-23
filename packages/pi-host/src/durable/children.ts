@@ -19,6 +19,18 @@ export const sessionOf = (thread: string, conversation: number): string => `${th
 export const artifactDirOf = (threadFile: string, thread: string, conversation: number): string =>
   join(dirname(dirname(threadFile)), "session-artifacts", sessionOf(thread, conversation));
 
+/**
+ * A wake or heartbeat for a job conversation that was removed or does not exist: `DurableThreads.submit` admits nothing, logs one line and
+ * throws this, and `durable_submit` answers `{dropped}`, so apps/chat's wake ticker deletes the wake instead of trying it again on every
+ * tick. On 11-20 a board.wake reached the removed job 28350de8:73, which then ran 10 min with no parent to report to.
+ */
+export class InputDropped extends Error {
+  constructor(readonly reason: string) {
+    super(reason);
+    this.name = "InputDropped";
+  }
+}
+
 // ---------------------------------------------------------------------------------------------------------------------------
 // The family, kept in the thread file.
 

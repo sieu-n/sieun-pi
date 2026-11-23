@@ -17,6 +17,7 @@ import type { ScheduledMessage, Scheduler, SendMode, SessionHandle } from "../sc
 import { rlmHeartbeatHandler } from "../scheduler-extension.ts";
 import type { HostCall, HostModule, HostModuleOptions } from "./host-modules.ts";
 import type { RlmSubmit } from "./rlm.ts";
+import { InputDropped } from "./children.ts";
 
 const TYPES = ["rlm_heartbeat.list", "rlm_heartbeat.create", "rlm_heartbeat.update", "rlm_heartbeat.delete"] as const;
 const THREAD_FILE = ".sqlite";
@@ -66,7 +67,11 @@ function durableHandle(scheduler: Scheduler, input: {
       void input.deliver({
         text, requestId: `rlm_heartbeat:${String(details.jobId ?? "job")}:${String(details.runCount ?? Date.now())}`, whenBusy: followUp ? "followUp" : "steer",
         entry: { kind: "agent.message", data: { from: "heartbeat", via: job?.source ?? "rlm_heartbeat" } },
-      }).catch(error => input.log(`heartbeat ${String(details.jobId ?? "").slice(0, 8)} did not reach ${input.session}: ${error instanceof Error ? error.message : String(error)}`));
+      }).catch(error => {
+        // A tick for a removed job was logged where it was dropped, which also cancelled the job's heartbeats.
+        if (error instanceof InputDropped) return;
+        input.log(`heartbeat ${String(details.jobId ?? "").slice(0, 8)} did not reach ${input.session}: ${error instanceof Error ? error.message : String(error)}`);
+      });
     },
   };
 }

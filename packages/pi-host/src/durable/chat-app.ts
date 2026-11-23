@@ -19,7 +19,7 @@ export interface OtherAsk { chat: string; id: string; text: string; at: string }
 export class ChatApp {
   constructor(readonly base: string = process.env[CHAT_URL_ENV] || DEFAULT_CHAT_URL, private readonly timeoutMs = 15_000) {}
 
-  private async call<T>(method: "GET" | "POST", path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+  private async call<T>(method: "GET" | "POST" | "DELETE", path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
     const timeout = AbortSignal.timeout(this.timeoutMs);
     const response = await fetch(new URL(path, this.base), {
       method,
@@ -63,6 +63,12 @@ export class ChatApp {
   async wakes(thread: string, conversation: number, signal?: AbortSignal): Promise<unknown[]> {
     const body = await this.call<{ wakes?: unknown }>("GET", this.thread(thread, `wakes?conversation=${conversation}`), undefined, signal);
     return Array.isArray(body?.wakes) ? body.wakes : [];
+  }
+
+  /** Deletes the wakes set on a conversation of this thread that have not gone out (`DELETE /api/threads/:id/wakes`); returns how many. */
+  async dropWakes(thread: string, conversation: number, signal?: AbortSignal): Promise<number> {
+    const body = await this.call<{ dropped?: unknown }>("DELETE", this.thread(thread, `wakes?conversation=${conversation}`), undefined, signal);
+    return typeof body?.dropped === "number" ? body.dropped : 0;
   }
 
   async agents(thread: string, signal?: AbortSignal): Promise<ChatAgent[]> {

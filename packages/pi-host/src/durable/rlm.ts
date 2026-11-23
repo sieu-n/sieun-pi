@@ -67,6 +67,8 @@ import { primeDefaults } from "./models.ts";
 import { refineModule } from "./refine.ts";
 import { ownerTag } from "./owner-tag.ts";
 import { track } from "../loop-stall.ts";
+import { hostApi } from "../api.ts";
+import type { Scheduler } from "../scheduler.ts";
 
 const context: Context = BACKGROUND_CONTEXT;
 export const RLM_EXTENSION = "rlm";
@@ -237,6 +239,8 @@ export interface DurableRlmOptions {
   chatUrl?: string;
   /** What a job's end stops and deletes through (`endJob`); default Prime's `leftoverSource`. */
   leftovers?: LeftoverSource;
+  /** The scheduler whose heartbeats a removed job loses (`forget`); default pi-host's own (`hostApi().scheduler`). */
+  scheduler?: () => Pick<Scheduler, "cancelSession"> | undefined;
   /** The modules that answer the `goal`, `refine`, `rlm_heartbeat` and `mcp` host requests; default all four (`host-modules.ts`). */
   modules?: HostModule[];
   log?: (line: string) => void;
@@ -959,11 +963,28 @@ export class DurableRlm {
     const parents = new Map((await this.records(slot.thread)).map(record => [record.id as number, record.owner?.conversationId as number | undefined]));
     const under = (id: number) => { for (let at = parents.get(id), n = 0; at !== undefined && n < 64; at = parents.get(at), n++) if (at === child.id) return true; return false; };
     for (const id of [child.id, ...[...parents.keys()].filter(under)]) {
+      void this.forget(slot.thread.id, id);
       if (id !== child.id && (await harness.snapshot(LiveDoc, id as ConversationId, context))?.run) continue;
       if (id !== child.id) await this.closeSlot(slot.thread.id, id);
       await this.endJob(slot.thread.id, slot.thread.file, id);
     }
     return { ...row, status: "completed", active_session_id: null };
+  }
+
+  /**
+   * Stops what would run a removed job again: its heartbeats in pi-host's scheduler and the board.wakes apps/chat keeps for it. `deleteChild`
+   * calls it for the job and each conversation under it, and `DurableThreads.submit` calls it again when a wake set before that reaches one.
+   * On 11-20 a board.wake reached the removed job 28350de8:73 and ran it 10 min. A failure only logs.
+   */
+  async forget(threadId: string, conversation: number): Promise<void> {
+    const heartbeats = (this.options.scheduler ?? (() => hostApi()?.scheduler))()?.cancelSession(harnessSessionOf(threadId, conversation)).length ?? 0;
+    let wakes = 0;
+    try {
+      wakes = await new ChatApp(this.options.chatUrl ?? process.env[CHAT_URL_ENV] ?? DEFAULT_CHAT_URL).dropWakes(threadId, conversation);
+    } catch (error) {
+      this.log(`${threadId}:${conversation}: its wakes were not dropped: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (heartbeats || wakes) this.log(`${threadId}:${conversation} removed: cancelled ${heartbeats} heartbeats and ${wakes} wakes`);
   }
 
   /**

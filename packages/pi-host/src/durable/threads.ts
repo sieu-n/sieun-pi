@@ -40,7 +40,7 @@ import { loopSlices, rlmChildName, type DurableRlm, type PiRootView, type RlmThr
 import type { DurableRules } from "./rules.ts";
 import type { PoolLabels } from "./pool-labels.ts";
 import { AGENT_REF_DOC, applyAgentRole, parseAgentRef, threadAgent } from "./agent-profile.ts";
-import { RlmChildDoc } from "./children.ts";
+import { InputDropped, RlmChildDoc } from "./children.ts";
 import { commExtension, noteHanded, noteHeard, type CommHost, type CommSubmit } from "./comm.ts";
 import { deliverHarnessDigest, type PrimePromptOptions } from "./prime-prompt.ts";
 import { liveRetry, retrySince, retryingText } from "./retrying.ts";
@@ -146,6 +146,9 @@ export interface SubmitResult {
   /** The answer of the owner-turn mark; absent when `ownerTurn` was not set or the run already held its slot. */
   owner?: OwnerMark;
 }
+
+/** An input a schedule sends: a board.wake or Remind me from apps/chat's wake ticker, or a heartbeat tick (heartbeat.ts). */
+const scheduled = (input: SubmitInput): boolean => input.entry?.data.via === "wake" || input.entry?.data.from === "heartbeat";
 
 interface Watcher {
   sink: DurableSink;
@@ -482,7 +485,7 @@ export class DurableThreads {
         onWake: next => {
           wake = next;
           if (state) this.onWake(state, next);
-          else this.index.setWake(id, next);
+          else this.index.setWake(id, next, this.now());
         },
         onReport: (error: unknown, info: ReportInfo) => this.log(`${id} ${info.type}${"reason" in info && info.reason ? ` ${String(info.reason)}` : ""}: ${error instanceof Error ? error.message : String(error)}`),
       }, context);
@@ -800,7 +803,7 @@ export class DurableThreads {
 
   private onWake(open: OpenThread, wake: Wake): void {
     open.wake = wake;
-    this.index.setWake(open.id, wake);
+    this.index.setWake(open.id, wake, this.now());
     const row = this.index.get(open.id);
     const status = row ? statusOf(row) : wake.active ? "running" : "idle";
     for (const watcher of open.watchers) watcher.sink({ type: "status", status, ...(wake.at === undefined ? {} : { wakeAt: wake.at }) });
@@ -918,6 +921,14 @@ export class DurableThreads {
    */
   async submit(id: string, input: SubmitInput): Promise<SubmitResult> {
     const open = await this.thread(id);
+    if (scheduled(input) && input.conversation !== undefined && input.conversation !== ROOT_CONVERSATION_ID) {
+      const gone = await this.removedJob(open, input.conversation);
+      if (gone) {
+        this.log(`${id}:${input.conversation} ${gone}: dropped its ${input.entry?.data.via ?? "scheduled input"} ${input.requestId ?? ""}, no run`);
+        void this.options.rlm?.forget(id, input.conversation);
+        throw new InputDropped(`${id}:${input.conversation} ${gone}`);
+      }
+    }
     const conversation = await this.conversation(open, input.conversation);
     const content: (TextContent | ImageContent)[] = [];
     if (input.text) content.push({ type: "text", text: input.text });
@@ -947,6 +958,25 @@ export class DurableThreads {
       ...(turns && session ? { ticket: turns.ticket(id, session) } : {}),
       ...(owner ? { owner } : {}),
     };
+  }
+
+  /** Why a job conversation takes no scheduled input: it does not exist, or it or a job above it was removed (`rlm.delete_subagent`). */
+  private async removedJob(open: OpenThread, conversation: number): Promise<string | undefined> {
+    const chain = await open.harness.commit(async tx => {
+      const ids: number[] = [];
+      for (let at: number | undefined = conversation; at !== undefined && at !== ROOT_CONVERSATION_ID && ids.length < 64;) {
+        const record = await tx.conversation(at as ConversationId);
+        if (!record) return undefined;
+        ids.push(at);
+        at = record.owner?.conversationId;
+      }
+      return ids;
+    }, context);
+    if (!chain) return "does not exist";
+    for (const at of chain) {
+      if ((await open.harness.snapshot(RlmChildDoc, at as ConversationId, context))?.deleted) return at === conversation ? "was removed" : `is under removed job ${at}`;
+    }
+    return undefined;
   }
 
   /** Prime's harness check for the turn the input starts (`deliverHarnessDigest`), one at a time per thread; a failure only logs. */

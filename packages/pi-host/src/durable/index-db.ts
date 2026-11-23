@@ -483,8 +483,14 @@ export class ThreadIndex {
     return row ? { id: String(row.id), at: Number(row.wake_at) } : undefined;
   }
 
-  setWake(id: string, wake: { active: boolean; at?: number }): void {
-    this.db.prepare("UPDATE threads SET wake_active = ?, wake_at = ? WHERE id = ?").run(wake.active ? 1 : 0, wake.at ?? null, id);
+  /**
+   * Keeps the thread's wake. A row that stops running moves `updated_at` too, as `markActive` moves it when the run starts, so a reader that
+   * keeps a thread's tree until the row moves reads it again. Before this, a job run that ended with no root entry left the row as it was, and
+   * on 11-20 apps/chat showed the removed job 28350de8:73 working for 89 h.
+   */
+  setWake(id: string, wake: { active: boolean; at?: number }, now: number): void {
+    this.db.prepare("UPDATE threads SET updated_at = CASE WHEN wake_active = 1 AND ? = 0 THEN MAX(updated_at + 1, ?) ELSE updated_at END, wake_active = ?, wake_at = ? WHERE id = ?")
+      .run(wake.active ? 1 : 0, now, wake.active ? 1 : 0, wake.at ?? null, id);
   }
 
   /**

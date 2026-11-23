@@ -249,14 +249,14 @@ test("a failed root turn reads failed ahead of a pending wake, a job's input kee
   const index = new ThreadIndex(join(dir, "failed.sqlite"));
   index.insertThread({ id: "w", name: "work", provider: "anthropic", modelId: "m", thinkingLevel: "high", cwd: "/", createdAt: 1, updatedAt: 1 });
   index.update("w", { failed: true });
-  index.setWake("w", { active: false, at: 5_000 });
+  index.setWake("w", { active: false, at: 5_000 }, 10);
   assert.equal(statusOf(index.get("w")!), "failed");
   index.markActive("w", 2, false);
   assert.equal(statusOf(index.get("w")!), "running");
-  index.setWake("w", { active: false, at: 6_000 });
+  index.setWake("w", { active: false, at: 6_000 }, 10);
   assert.equal(statusOf(index.get("w")!), "failed", "an input to a job conversation leaves the root's failure");
   index.markActive("w", 3);
-  index.setWake("w", { active: false, at: 7_000 });
+  index.setWake("w", { active: false, at: 7_000 }, 10);
   assert.equal(statusOf(index.get("w")!), "sleeping");
   index.close();
 });

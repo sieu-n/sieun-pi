@@ -8,6 +8,7 @@ import { randomUUID } from "node:crypto";
 import { fail, ok, type Response } from "../protocol.ts";
 import type { Sink } from "../session.ts";
 import { FeedStreams } from "./feed.ts";
+import { InputDropped } from "./children.ts";
 import type { DurableThreads, SubmitInput } from "./threads.ts";
 
 export const DURABLE_COMMANDS = new Set([
@@ -94,7 +95,11 @@ export class DurableCommands {
             if (entry.kind !== "agent.message" || typeof entry.data?.from !== "string") throw new Error('durable_submit entry must be {kind: "agent.message", data: {from, via?}}');
             input.entry = { kind: "agent.message", data: { from: entry.data.from, ...(typeof entry.data.via === "string" ? { via: entry.data.via } : {}) } };
           }
-          return done(await this.threads.submit(str(command, "thread"), input));
+          // A wake for a removed job answers `{dropped}`, so apps/chat's wake ticker deletes it instead of trying again each tick.
+          return done(await this.threads.submit(str(command, "thread"), input).catch(error => {
+            if (error instanceof InputDropped) return { dropped: error.reason, requestId: input.requestId ?? null };
+            throw error;
+          }));
         }
         case "durable_wait":
           return done({ settled: await this.threads.wait(str(command, "thread"), command.submission as SubmissionId) });

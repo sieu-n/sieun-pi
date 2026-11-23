@@ -527,6 +527,11 @@ export function routes(app: App, parts: SkillsParts): Route[] {
       if (!Number.isInteger(conversation) || conversation < 1) throw new BadRequest("conversation is a whole number from 1.");
       return { wakes: app.boards.wakes(p.id!, conversation) };
     }),
+    route("DELETE", "/api/threads/:id/wakes", async (_r, p, q) => {
+      const conversation = Number(q.get("conversation"));
+      if (!Number.isInteger(conversation) || conversation < 2) throw new BadRequest("conversation is a job's, a whole number from 2.");
+      return { dropped: app.boards.dropWakes(p.id!, conversation) };
+    }),
     route("POST", "/api/threads/:id/wakes", async (_r, p, _q, body) => {
       try {
         return await app.boards.addWake(p.id!, (await body()) as Record<string, unknown>);

@@ -1440,13 +1440,30 @@ export class Boards {
     return this.pendingWakes().filter(wake => wake.session === session);
   }
 
+  /**
+   * Deletes the wakes set on a thread's conversation that have not gone out, which pi-host asks for when a job is removed, so a removed job's
+   * check stops running and its wake never reaches it. Returns how many went.
+   */
+  dropWakes(id: string, conversation: number): number {
+    const session = wakeSession(this.wakeThread(id), conversation);
+    const files = this.pendingWakeFiles().filter(({ wake }) => wake.session === session);
+    for (const { file } of files) rmSync(file, { force: true });
+    if (files.length) this.log(`wakes: dropped ${files.length} of ${session}, a removed job`);
+    return files.length;
+  }
+
   /** Every wake that has not gone out yet, one per file in the wake folder. */
   private pendingWakes(): Wake[] {
+    return this.pendingWakeFiles().map(({ wake }) => wake);
+  }
+
+  private pendingWakeFiles(): { file: string; wake: Wake }[] {
     let names: string[] = [];
     try { names = readdirSync(this.wakeDir).filter(name => name.endsWith(".json")); } catch { names = []; }
     return names.flatMap(name => {
-      const wake = parseWake(readJson<unknown>(join(this.wakeDir, name), null));
-      return wake ? [wake] : [];
+      const file = join(this.wakeDir, name);
+      const wake = parseWake(readJson<unknown>(file, null));
+      return wake ? [{ file, wake }] : [];
     });
   }
 
