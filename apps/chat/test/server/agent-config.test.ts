@@ -199,7 +199,7 @@ test("an idle job with a pending board.wake reads Waiting and lists under Active
     const listed = (await s.get<{ id: string; status: string }[]>("/api/jobs")).find(j => j.id === job.id);
     assert.equal(listed?.status, "sleeping", "/api/jobs and the agent card count it as the tab does");
   } finally {
-    rmSync(made.path, { force: true });
+    await dropWake(made.wake);
   }
   await s.app.threads.refresh();
   assert.equal((await config(agents.harness)).swarm.jobs.find(j => j.id === job.id)?.status, "idle");
