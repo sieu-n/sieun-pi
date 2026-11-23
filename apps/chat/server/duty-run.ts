@@ -12,7 +12,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { promisify } from "node:util";
 import type { ChatBoard, PlanItem } from "../web/src/lib/api/types.ts";
 import {
-  errorStreak, headlineMetric, hostAwayOf, judge, outputReadings, overrunWords, verdictMetrics, ERROR_RUNS_TARGET,
+  errorStreak, headlineMetric, hostAwayOf, judge, outputReadings, outsideWaitOf, overrunWords, verdictMetrics, ERROR_RUNS_TARGET,
   type AfterMeasure, type Duty, type DutyRunRecord, type DutyTrigger, type FixLink, type FlaggedSlice, type PrecheckOutput,
 } from "../web/src/lib/api/shared/chat-duties.ts";
 import { metricStreaks, type MetricStreak } from "../web/src/lib/api/shared/duty-streak.ts";
@@ -271,11 +271,12 @@ export async function measure(input: {
     const judged = judge(duty.metrics, output, { now: started, runs: previous });
     const readings = outputReadings(duty.readings, output);
     const hostAway = hostAwayOf(output);
+    const waitsOn = judged.verdict === "error" ? outsideWaitOf(output) : undefined;
     flagged = output.flagged ?? [];
     record = {
       duty: duty.id, at: started, slot: started, trigger, ms: Date.now() - wall, verdict: judged.verdict, metrics: judged.metrics, summary: judged.summary, detail,
       ...(judged.parts ? { parts: judged.parts } : {}), ...(judged.items ? { items: judged.items } : {}), ...(readings ? { readings } : {}),
-      ...(judged.verdict === "error" ? { error: judged.summary } : {}), ...overrunOf(), ...(hostAway ? { hostAway } : {}),
+      ...(judged.verdict === "error" ? { error: judged.summary } : {}), ...overrunOf(), ...(hostAway ? { hostAway } : {}), ...(waitsOn ? { waitsOn } : {}),
     };
   } catch (error) {
     if (input.signal?.aborted) throw error;
@@ -291,7 +292,10 @@ export async function measure(input: {
   const misses: MetricStreak[] = record.verdict === "missed" ? metricStreaks([record, ...previous]).filter(streak => counted.has(streak.key)) : [];
   const overrunLine = record.overrun ? `This run went over: ${overrunWords(record.overrun)}. Make the precheck faster or set its timeoutMs to what it needs.` : "";
   let findings: string;
-  if (record.verdict === "error") {
+  if (record.verdict === "error" && record.waitsOn) {
+    findings = [`No measure: ${record.summary}. It waits on something outside the precheck: ${record.waitsOn} The precheck is not broken, so leave it as it is ` +
+      "and start no fix job for it; this run counts toward no error streak.", overrunLine].filter(Boolean).join("\n\n");
+  } else if (record.verdict === "error") {
     const streak = errorStreak([record, ...previous]);
     findings = [`The precheck failed: ${record.error ?? record.summary}. ${streak >= ERROR_RUNS_TARGET ? `It failed ${streak} runs in a row, over the target of ${ERROR_RUNS_TARGET}: fix the precheck first.` : "Fix the precheck or check the duty by hand."}`, overrunLine].filter(Boolean).join("\n\n");
   } else {
@@ -304,7 +308,9 @@ export async function measure(input: {
       flagged, ...(headline ? { headlineKey: headline.key } : {}), detail: findingsFile }), overrunLine].filter(Boolean).join("\n\n");
   }
   const acts = flagged.some(slice => slice.item !== undefined || slice.handOff);
-  const idle = record.verdict === "met" && !misses.length && !record.overrun && !acts;
+  // A run that reads error only because its headline waits outside the precheck, with every number it read on target, has nothing a job can do.
+  const waits = record.verdict === "error" && record.waitsOn !== undefined && Object.values(record.metrics).every(result => result.met);
+  const idle = (record.verdict === "met" || waits) && !misses.length && !record.overrun && !acts;
   return { record, brief: idle ? null : dutyJobBrief({ duty, chat: input.chat, at: started, measure: record.verdict === "error" ? `no measure (${record.summary})` : record.summary, findings, misses, record, boardApi: input.boardApi }) };
 }
 

@@ -179,6 +179,8 @@ export interface DutyRunRecord {
   rerunOf?: number;
   /** The hosts.json name of a box the precheck found offline on Tailscale (`hostAwayOf`), so the run reruns once it is back (`Duties.rerunHostBack`). */
   hostAway?: string;
+  /** What the precheck said its unmeasured metric waits on outside its code (`outsideWaitOf`): such a run counts toward no error streak. */
+  waitsOn?: string;
   /**
    * When a later run last found this run's job kept (`DutyJobHost.kept`, a Prime update): the stuck limit counts from it, so a job that waited
    * for pi-pool or a quota resume gets a whole limit of work once it runs.
@@ -324,6 +326,16 @@ export const HOST_AWAY = "host_away";
 export const hostAwayOf = (output: PrecheckOutput): string | undefined =>
   (output.flagged ?? []).find(slice => slice.kind === HOST_AWAY && typeof slice.host === "string" && slice.host.length > 0)?.host;
 
+/**
+ * A wait outside the precheck's code that left a metric unmeasured, such as a paid proxy only the owner picks: an `outside_wait` item whose
+ * excerpt names it. A precheck flags it only when that wait is the run's one cause. From 11-21 to 11-23 chrome extension's d1 read error on
+ * e2e_pass in 3 runs in a row while both test accounts waited on a paid proxy (c230), and each run's job was told to fix the precheck first.
+ */
+export const OUTSIDE_WAIT = "outside_wait";
+/** What a precheck output's unmeasured metric waits on outside its code (`OUTSIDE_WAIT`), or undefined. */
+export const outsideWaitOf = (output: PrecheckOutput): string | undefined =>
+  (output.flagged ?? []).find(slice => slice.kind === OUTSIDE_WAIT && slice.excerpt.trim().length > 0)?.excerpt.trim();
+
 /** Why the precheck could not read its inputs, from its `source_error`, `gap` and `host_away` items, for the summary of a run with unmeasured metrics. */
 function sourceReasons(output: PrecheckOutput): string {
   const reasons = [...new Set((output.flagged ?? []).filter(slice => slice.kind === "source_error" || slice.kind === "gap" || slice.kind === HOST_AWAY).map(slice => slice.excerpt.trim()))];
@@ -455,10 +467,13 @@ function judgeCounted(metrics: readonly DutyMetric[], output: PrecheckOutput): {
   return { verdict: "missed", metrics: results, summary: end((lead ? [lead, ...misses] : misses).join(", ")) };
 }
 
-/** How many runs in a row, newest first, ended in error. */
+/**
+ * How many runs in a row, newest first, ended in error. A run whose host was away (`hostAway`) or that waited on something outside its code
+ * (`waitsOn`) measured nothing and failed nothing, so it neither counts nor ends the streak.
+ */
 export function errorStreak(runs: readonly DutyRunRecord[]): number {
   let count = 0;
-  for (const run of runs) { if (run.verdict === "skipped") continue; if (run.verdict !== "error") break; count++; }
+  for (const run of runs) { if (run.verdict === "skipped" || run.hostAway || run.waitsOn) continue; if (run.verdict !== "error") break; count++; }
   return count;
 }
 

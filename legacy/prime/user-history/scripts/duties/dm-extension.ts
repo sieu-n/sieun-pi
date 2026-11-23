@@ -4,7 +4,7 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import type { DutyMetric, FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
+import { type DutyMetric, type FlaggedSlice, OUTSIDE_WAIT, type PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { DAY, REPO, settle, SOURCE_DEADLINE_MS, unmeasuredFlag, utc } from "./estate-reads.ts";
 
 /**
@@ -180,6 +180,8 @@ export function parts(autopair: AutopairEvidence | undefined, e2e: E2eEvidence |
 
 /** What the unmeasured slice says when a test account has no residential exit: the run waits on a paid proxy only the owner picks (c230, t112). */
 const NO_PROXY = "e2e_pass waits on a paid proxy, since a test account has no residential exit. The extension has nothing to fix, so start no fix job.";
+/** The run's outside wait when the paid proxy is its one cause: the runner then counts it toward no error streak (`OUTSIDE_WAIT`). */
+const PROXY_WAIT = "a paid proxy only the owner picks (c230): a test account has no residential exit, so e2e_pass is not measured and the extension has nothing to fix.";
 
 const STOP_WORDS: Readonly<Record<Exclude<Stop["kind"], "other">, string>> = {
   slow_exit: "a slow Instagram exit", exit_down: "a proxy gateway that opened no tunnel", instagram_refused: "an Instagram refusal",
@@ -225,7 +227,8 @@ export function report(data: DutyData, dutyMetrics: readonly DutyMetric[]): Prec
   if (data.accounts) flagged.push({ at, kind: "accounts", excerpt: data.accounts.slice(0, 300) });
   if (data.boxed?.length) {
     unmeasured.add("e2e_pass");
-    flagged.push({ at, kind: "exit_down", item: "jars", excerpt: `no residential exit: ${data.boxed.join("; ")}, so the run opened no browser, because owner rule c229 keeps logged-in test accounts off our own server IPs`.slice(0, 300) });
+    flagged.push({ at, kind: "exit_down", excerpt: `no residential exit: ${data.boxed.join("; ")}, so the run opened no browser, because owner rule c229 keeps logged-in test accounts off our own server IPs`.slice(0, 300) });
+    if (!data.errors.length) flagged.push({ at, kind: OUTSIDE_WAIT, excerpt: PROXY_WAIT });
   }
   if (data.waited) flagged.push({ at, kind: "waited", excerpt: `waited ${Math.round(data.waited.ms / 1000)} s for another run on this box before its own work: ${data.waited.on.join("; ")}`.slice(0, 300) });
   const blocked = data.sender !== undefined && !senderFits(data.sender);

@@ -9,7 +9,7 @@ import { POOL_LEAD_MS, type PoolHold, pooledProviders } from "./chat-pool.ts";
 import { WAIT_READ_TREES } from "./idle-unload.ts";
 import { GOAL_PUSH_LINK } from "./checkin-goals.ts";
 import { goalReadingOps } from "./goal-readings.ts";
-import { type AfterMeasure, CHECK_IN_DUTY, CHECK_IN_DUTY_ID, dailySlot, dutyDue, ERROR_RUNS_TARGET, errorStreak, headlineMetric, hostAwayOf, judge, nextRunAt, outputReadings, overrunWords, parseSchedule, type Duty, type DutyJobRef,
+import { type AfterMeasure, CHECK_IN_DUTY, CHECK_IN_DUTY_ID, dailySlot, dutyDue, ERROR_RUNS_TARGET, errorStreak, headlineMetric, hostAwayOf, judge, outsideWaitOf, nextRunAt, outputReadings, overrunWords, parseSchedule, type Duty, type DutyJobRef,
   type DutyCut, type DutyMetric, type DutyRunRecord, type DutySchedule, type DutyTrigger, type DutyView, type FixLink, type FlaggedSlice, type PrecheckOutput, type PrecheckOverrun, STILL_WORKING, verdictMetrics } from "./shared/chat-duties.ts";
 import { briefFindings, headlineWords } from "./shared/brief-cap.ts";
 import { CHECK_IN_PREFIX } from "./shared/chat-feed.ts";
@@ -1668,10 +1668,11 @@ export class Duties {
       const judged = judge(duty.metrics, output, { now: started, runs: previous });
       const readings = outputReadings(duty.readings, output);
       const hostAway = hostAwayOf(output);
+      const waitsOn = judged.verdict === "error" ? outsideWaitOf(output) : undefined;
       flagged = output.flagged ?? [];
       record = { duty: dutyId, at: started, slot: at, trigger, ms: this.now() - started, verdict: judged.verdict, metrics: judged.metrics, summary: judged.summary, detail,
         ...(judged.parts ? { parts: judged.parts } : {}), ...(judged.items ? { items: judged.items } : {}), ...(readings ? { readings } : {}),
-        ...(judged.verdict === "error" ? { error: judged.summary } : {}), ...overrunOf(), ...link, ...hostAway ? { hostAway } : {} };
+        ...(judged.verdict === "error" ? { error: judged.summary } : {}), ...overrunOf(), ...link, ...hostAway ? { hostAway } : {}, ...waitsOn ? { waitsOn } : {} };
     } catch (error) {
       await rm(detail, { force: true });
       record = { duty: dutyId, at: started, slot: at, trigger, ms: this.now() - started, verdict: "error", metrics: {}, summary: "the precheck failed", error: message(error).slice(0, 500),
@@ -1687,6 +1688,9 @@ export class Duties {
     if (record.verdict === "error" && record.hostAway) {
       findings = [`No measure: ${record.summary}. ${record.hostAway} is offline on Tailscale, so this duty reruns by itself at the first tick it is back ` +
         `online; nothing here wakes it.`, overrunLine].filter(Boolean).join("\n\n");
+    } else if (record.verdict === "error" && record.waitsOn) {
+      findings = [`No measure: ${record.summary}. It waits on something outside the precheck: ${record.waitsOn} The precheck is not broken, so leave it ` +
+        `as it is and start no fix job for it; this run counts toward no error streak.`, overrunLine, stuckFindings(misses)].filter(Boolean).join("\n\n");
     } else if (record.verdict === "error") {
       findings = [`The precheck failed: ${record.error ?? record.summary}. ${streak >= ERROR_RUNS_TARGET ? `It failed ${streak} runs in a row, over the target of ` +
         `${ERROR_RUNS_TARGET}: fix the precheck first.` : "Fix the precheck or check the duty by hand."}`, overrunLine, stuckFindings(misses)].filter(Boolean).join("\n\n");
@@ -1706,7 +1710,7 @@ export class Duties {
       : flagged.some(slice => slice.item !== undefined || slice.handOff);
     // A run that reads error only because its headline waits on an offline box, with every number it read on target, has nothing a job can do:
     // its host-back rerun measures the box and starts the job then (`rerunHostBack`).
-    const waits = record.verdict === "error" && record.hostAway !== undefined && Object.values(record.metrics).every(result => result.met);
+    const waits = record.verdict === "error" && (record.hostAway !== undefined || record.waitsOn !== undefined) && Object.values(record.metrics).every(result => result.met);
     const idle = (record.verdict === "met" || waits) && !misses.length && !record.overrun && !acts;
     this.steps.set(key, { at: started, step: "starting its job" });
     const measured = record.verdict === "met" || record.verdict === "missed" ? { at: started, verdict: record.verdict, metrics: record.metrics, summary: record.summary,

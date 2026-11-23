@@ -6,7 +6,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import type { DutyMetric } from "../src/shared/chat-duties.ts";
+import { type DutyMetric, type DutyRunRecord, errorStreak, outsideWaitOf } from "../src/shared/chat-duties.ts";
 import { boxExit, type BrowserJar, errorCounts, jarIgUserId, jarReader, jars, otherRuns, outreachAccounts, parts, report, rigDeadline, senderFits, TAIL_MS, type AutopairEvidence, type DmRow, type E2eEvidence } from "../scripts/duties/dm-extension.ts";
 
 const METRICS = (JSON.parse(readFileSync(new URL("../scripts/duties/dm-extension.duty.json", import.meta.url), "utf8")) as { metrics: DutyMetric[] }).metrics;
@@ -243,4 +243,16 @@ test("with no residential exit the unmeasured slice says the run waits on a paid
   assert.match(both, /Fix the source_error first\. e2e_pass waits on a paid proxy/);
   const other = report({ now: NOW, errors: [{ source: "world", message: "up exited 1" }] }, METRICS).flagged?.find(s => s.kind === "unmeasured")?.excerpt ?? "";
   assert.match(other, /Fix the source_error first\.$/);
+});
+
+test("a paid-proxy wait alone counts toward no error streak, and a source_error beside it still does (d1, 11-23)", () => {
+  const boxed = ["sender @caiyiting8674: the crawler serves no jar of it, browser-jar answered 404 not_found"];
+  const rows = { messages: [], devices: [], truncated: false };
+  const run = (errors: { source: "staging rows"; message: string }[]): DutyRunRecord => {
+    const waitsOn = outsideWaitOf(report({ now: NOW, boxed, rows, errors }, METRICS));
+    return { duty: "d1", at: NOW, trigger: "schedule", ms: 1, verdict: "error", metrics: {}, summary: "", ...waitsOn ? { waitsOn } : {} };
+  };
+  assert.match(run([]).waitsOn ?? "", /paid proxy/);
+  assert.equal(errorStreak([run([]), run([]), run([])]), 0);
+  assert.equal(errorStreak([run([{ source: "staging rows", message: "convex data exited 1" }]), run([]), run([{ source: "staging rows", message: "x" }])]), 2);
 });
