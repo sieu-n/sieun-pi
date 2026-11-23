@@ -709,7 +709,8 @@ export class App {
       const record = this.roomAgent(id);
       const result = this.rooms.post(record, request, forward);
       this.answeredKeptUnread(record.room, request.requestId);
-      if (request.mentions?.length) void this.deliverMentions({ requestId: request.requestId, conversation: id, text: request.text ?? "", mentions: request.mentions });
+      if (request.mentions?.length) void this.deliverMentions({ requestId: request.requestId, conversation: id, text: request.text ?? "", mentions: request.mentions })
+        .then(sent => sent.filter(d => d.state === "failed").forEach(d => this.log(`posts: mention of ${d.target} in ${id} ${request.requestId} failed: ${d.error}`)));
       await this.agentStore.written(record.room);
       return result;
     }
