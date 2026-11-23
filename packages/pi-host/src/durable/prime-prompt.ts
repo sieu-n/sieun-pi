@@ -26,7 +26,7 @@ import { BRIEF_CORRECTIONS, CHAT_BRIEF, jobReplyGuideline, personaGuideline, ski
 import { commLedgerPrompt, jobLedgerPrompt, ledgerPrompt, parseLedger, type Ledger } from "../../../../legacy/prime/user-history/src/chat-corrections.ts";
 import { SessionRules } from "../../../pi-claude-rules/src/core/rules.ts";
 import { COMM_BRIEF } from "./room-post.ts";
-import { agentHarnessDir, agentName, briefFile, conversationHarnessDir, threadAgent } from "./agent-profile.ts";
+import { agentHarnessDir, agentName, briefFile, conversationHarnessDir, threadAgent, type AgentRef } from "./agent-profile.ts";
 import { withFolderFiles, type ContextFile } from "./context-files.ts";
 import { goalObjective } from "./goal.ts";
 import { harnessDelivery, harnessDigest } from "./digest-worker.ts";
@@ -391,6 +391,50 @@ export interface PrimePromptOptions {
   log?: (line: string) => void;
 }
 
+/** Where one conversation of a thread sits: what `conversationPromptInput` reads to build its prompt. */
+export interface PromptAt {
+  conversationId: ConversationId;
+  cwd: string;
+  /** The thread's agent, from the `agent.ref` doc of its root conversation. */
+  agent?: AgentRef;
+  /** The thread: its file for "Conversation log:", its name for a child's lines. */
+  thread?: { id: string; file: string; name: string };
+  /** The input a job's digest is ranked by. */
+  query?: string;
+  /** The sections the conversation already shows; a pinned one keeps that text and is not built. */
+  shown?: Partial<Record<string, unknown>>;
+  /** Build the harness digest of a root conversation too, which a thread sends as a message before each turn's input rather than as a section. */
+  rootDigest?: boolean;
+}
+
+/**
+ * The builder's input for one conversation: a root conversation is a chat (depth 0) and a child is a chat's job (depth 1); a comm thread's root
+ * gets the lean parts (`commRoot`) and `COMM_BRIEF`; an agent's thread adds its brief and reads the agent's harness store. `primePrompt` builds
+ * every request from it, and apps/chat's Prompt tab (`apps/chat/server/agent-prompt.ts`) shows an agent's prompts from it.
+ */
+export function conversationPromptInput(options: Pick<PrimePromptOptions, "agentDir" | "tools" | "bundledSkillsDir" | "ledgerDir">, at: PromptAt): PrimePromptInput {
+  const depth = at.conversationId === ROOT_CONVERSATION_ID ? 0 : 1;
+  const comm = depth === 0 && at.agent?.role === "comm";
+  const brief = at.agent && briefFile(at.agent);
+  const harnessDir = at.thread ? conversationHarnessDir(at.thread, at.conversationId, at.agent) : at.agent && agentHarnessDir(at.agent);
+  const shown = at.shown ?? {};
+  return {
+    agentDir: options.agentDir,
+    cwd: at.cwd,
+    ...(at.thread ? { messagesPath: at.thread.file, parentName: at.thread.name, session: `${at.thread.id}-${at.conversationId}` } : {}),
+    ...(harnessDir ? { harnessDir } : {}),
+    ...(at.agent ? { agent: agentName(at.agent) } : {}),
+    ...(at.query ? { query: at.query } : {}),
+    ...(brief ? { agentBrief: brief } : {}),
+    depth,
+    ...(comm ? { comm, brief: COMM_BRIEF } : {}),
+    tools: options.tools ?? "prime",
+    skip: new Set([...PINNED_SECTIONS].filter(key => (shown[key] !== undefined && !(comm && COMM_REBUILT.has(key))) || (key === "harness" && depth === 0 && !at.rootDigest))),
+    ...(options.bundledSkillsDir ? { bundledSkillsDir: options.bundledSkillsDir } : {}),
+    ...(options.ledgerDir ? { ledgerDir: options.ledgerDir } : {}),
+  };
+}
+
 export function promptTools(env: NodeJS.ProcessEnv = process.env): PromptTools {
   return env[PROMPT_TOOLS_ENV] === "pi" ? "pi" : "prime";
 }
@@ -403,30 +447,18 @@ export function promptTools(env: NodeJS.ProcessEnv = process.env): PromptTools {
 export function primePrompt(options: PrimePromptOptions): Extension {
   const builds = new WeakMap<object, Promise<Map<PromptKey, string>>>();
   const parts = async (input: PromptInput, context: Context): Promise<Map<PromptKey, string>> => {
-    const depth = input.conversationId === ROOT_CONVERSATION_ID ? 0 : 1;
-    const comm = await commRoot(input, context);
-    const cwd = input.agent.cwd ?? (input.env as { cwd?: string } | undefined)?.cwd ?? options.thread?.cwd ?? process.cwd();
     const thread = options.thread;
     const agent = await threadAgent(input.read, context);
-    const brief = agent && briefFile(agent);
-    const harnessDir = thread ? conversationHarnessDir(thread, input.conversationId, agent) : agent && agentHarnessDir(agent);
     // A job's digest is ranked by its task, the first input of its conversation, as Prime ranks a session's first digest by its first input.
-    const query = depth > 0 && input.shown.harness === undefined ? await firstInput(thread?.harness?.(), input.conversationId, context) : undefined;
-    const built = await primePromptParts({
-      agentDir: options.agentDir,
-      cwd,
-      ...(thread ? { messagesPath: thread.file, parentName: thread.name(), session: `${thread.id}-${input.conversationId}` } : {}),
-      ...(harnessDir ? { harnessDir } : {}),
-      ...(agent ? { agent: agentName(agent) } : {}),
+    const query = input.conversationId !== ROOT_CONVERSATION_ID && input.shown.harness === undefined ? await firstInput(thread?.harness?.(), input.conversationId, context) : undefined;
+    const built = await primePromptParts(conversationPromptInput(options, {
+      conversationId: input.conversationId,
+      cwd: input.agent.cwd ?? (input.env as { cwd?: string } | undefined)?.cwd ?? thread?.cwd ?? process.cwd(),
+      ...(thread ? { thread: { id: thread.id, file: thread.file, name: thread.name() } } : {}),
+      ...(agent ? { agent } : {}),
       ...(query ? { query } : {}),
-      ...(brief ? { agentBrief: brief } : {}),
-      depth,
-      ...(comm ? { comm, brief: COMM_BRIEF } : {}),
-      tools: options.tools ?? "prime",
-      skip: new Set([...PINNED_SECTIONS].filter(key => (input.shown[key] !== undefined && !(comm && COMM_REBUILT.has(key))) || (key === "harness" && depth === 0))),
-      ...(options.bundledSkillsDir ? { bundledSkillsDir: options.bundledSkillsDir } : {}),
-      ...(options.ledgerDir ? { ledgerDir: options.ledgerDir } : {}),
-    });
+      shown: input.shown,
+    }));
     return new Map(built.map(part => [part.key, part.text]));
   };
   const build = (input: PromptInput, context: Context): Promise<Map<PromptKey, string>> => {

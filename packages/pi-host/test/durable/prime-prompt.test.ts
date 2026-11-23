@@ -17,7 +17,8 @@ import { Harness, type EntryRecord } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { CHAT_BRIEF, jobReplyGuideline } from "../../../../legacy/prime/user-history/src/chat-brief.ts";
 import { PRIME_BASE_PROMPT } from "@sieun-pi/pi-family/preamble";
-import { EXTRA_SECTIONS, PRIME_SECTIONS, primeModules, primePromptParts, primeSystemPrompt } from "../../src/durable/prime-prompt.ts";
+import { conversationPromptInput, EXTRA_SECTIONS, PRIME_SECTIONS, primeModules, primePromptParts, primeSystemPrompt } from "../../src/durable/prime-prompt.ts";
+import { COMM_BRIEF } from "../../src/durable/room-post.ts";
 import { threadRegistry } from "../../src/durable/registry.ts";
 import { DurableThreads } from "../../src/durable/threads.ts";
 import { MODEL, textOf } from "./crash-scenario.ts";
@@ -326,4 +327,28 @@ test("a thread moved to a new cwd runs its next request there: its tools, its Wo
   } finally {
     await threads.shutdown();
   }
+});
+
+test("conversationPromptInput builds a work root, a comm root and a job of an agent the way a request does, and a root's digest only when asked", () => {
+  const agentFolder = join(dir, "agent-input");
+  mkdirSync(agentFolder, { recursive: true });
+  writeFileSync(join(agentFolder, "brief.md"), "Keep the server running.\n");
+  const thread = { id: "t1", file: join(dir, "t1.sqlite"), name: "keeper" };
+  const options = { agentDir: join(dir, "agent-input-dir") };
+  const work = conversationPromptInput(options, { conversationId: 1, cwd: dir, thread, agent: { agent: "ag_keeper", dir: agentFolder, role: "work" } });
+  assert.equal(work.depth, 0);
+  assert.equal(work.agent, "keeper");
+  assert.equal(work.agentBrief?.content, "Keep the server running.\n");
+  assert.equal(work.harnessDir, join(agentFolder, "harness"));
+  assert.equal(work.comm, undefined);
+  assert.ok(work.skip?.has("harness"), "a root sends its digest as a message");
+  assert.ok(!conversationPromptInput(options, { conversationId: 1, cwd: dir, thread, rootDigest: true }).skip?.has("harness"));
+  const comm = conversationPromptInput(options, { conversationId: 1, cwd: dir, thread, agent: { agent: "ag_keeper", dir: agentFolder, role: "comm", room: "dm_keeper", work: "w1" } });
+  assert.equal(comm.comm, true);
+  assert.deepEqual(comm.brief, COMM_BRIEF);
+  const job = conversationPromptInput(options, { conversationId: 4, cwd: dir, thread, agent: { agent: "ag_keeper", dir: agentFolder, role: "work" }, shown: { corrections: "kept" } });
+  assert.equal(job.depth, 1);
+  assert.equal(job.session, "t1-4");
+  assert.equal(job.parentName, "keeper");
+  assert.ok(job.skip?.has("corrections") && !job.skip.has("harness"), "a job keeps its pinned corrections and builds its digest");
 });
