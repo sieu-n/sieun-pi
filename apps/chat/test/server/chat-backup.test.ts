@@ -3,12 +3,14 @@
  * Run: cd apps/chat && node --import tsx --test --test-force-exit --test-isolation=none test/server/chat-backup.test.ts
  */
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createReadStream } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 // @ts-expect-error The script is plain ESM with no types.
 import { checkBackups, completeBackups, decryptFile, encryptTo, restoreBackup, runBackup } from "../../scripts/chat-backup.mjs";
 
@@ -115,6 +117,19 @@ test("a B2 file decrypts back to the bytes it was made from, and a changed byte 
     bytes.writeUInt8(bytes.readUInt8(100) ^ 1, 100);
     writeFileSync(join(root, "bad.enc"), bytes);
     await assert.rejects(decryptFile(join(root, "bad.enc"), join(root, "bad"), key));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the script runs its command when started through a symlink, as the nightly unit starts the release's copy", () => {
+  const root = mkdtempSync(join(tmpdir(), "chat-backup-"));
+  try {
+    const script = fileURLToPath(new URL("../../scripts/chat-backup.mjs", import.meta.url));
+    symlinkSync(dirname(script), join(root, "current"));
+    const r = spawnSync(process.execPath, [join(root, "current", "chat-backup.mjs"), "check", "--to", join(root, "none")], { encoding: "utf8" });
+    assert.equal(r.status, 1);
+    assert.match(r.stdout, /No complete backup/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

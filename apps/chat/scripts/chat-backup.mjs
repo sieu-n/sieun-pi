@@ -26,7 +26,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import {
   chmodSync, closeSync, copyFileSync, createReadStream, createWriteStream, existsSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync,
-  readFileSync, readlinkSync, readSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync,
+  readFileSync, readlinkSync, readSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -564,7 +564,8 @@ async function main(argv) {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+// realpath, because the nightly unit runs the script through the release's `current` symlink and import.meta.url names the real file.
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   main(process.argv.slice(2)).then(code => {
     process.exitCode = code;
   }, error => {
