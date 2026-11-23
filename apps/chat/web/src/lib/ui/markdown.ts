@@ -1,6 +1,7 @@
 import DOMPurify from "dompurify";
 import { Marked, type Tokens, type TokenizerAndRendererExtension } from "marked";
 import { emojiOf } from "../api/shared/emoji";
+import type { LocalImageSizes } from "../api/types";
 import { hueFor } from "./hash";
 import { ICONS } from "./icons";
 
@@ -46,6 +47,8 @@ export type MarkdownContext = {
   jobs?: readonly string[];
   /** Per post author (an agent id): its own board and jobs, which `withAuthor` puts in place of the room's for that author's posts. */
   authors?: ReadonlyMap<string, AuthorContext> | null;
+  /** The post's box images' sizes by path (Item `imageSizes`), so each draws its box at the final size before its bytes arrive. */
+  imageSizes?: LocalImageSizes;
 };
 export type AuthorContext = { board?: MarkdownContext["board"]; jobs?: readonly string[] };
 
@@ -87,6 +90,22 @@ export function imageSource(href: string, cwd = ""): string | null {
     path = `${cwd.replace(/\/+$/, "")}/${path.replace(/^\.\//, "")}`;
   }
   return `/api/local-image?path=${encodeURIComponent(path)}`;
+}
+
+/**
+ * The widest a post draws an image and a thumb in css px (prose.css `.md-image`), and MessageRow's attached images (`.slack .image img`).
+ * The server sends a copy of the image at that width (server/image-rendition.ts).
+ */
+export const IMAGE_WIDTH = { image: 480, thumb: 160, attached: 360 } as const;
+
+/**
+ * A box image or an upload as a copy at `width` css px and at twice that for a 2x screen, so a thread's screenshots move about a tenth of
+ * their bytes (server/image-rendition.ts); the full file loads only in the lightbox. Null for a web, wiki or data image, which has no copy.
+ */
+export function sizedImage(src: string, width: number): { src: string; srcset: string } | null {
+  const at = (w: number) => (src.startsWith("/api/local-image?") ? `${src}&w=${w}` : /^\/api\/uploads\/[^?#]+$/.test(src) ? `${src}?w=${w}` : null);
+  const one = at(width);
+  return one ? { src: one, srcset: `${one} 1x, ${at(width * 2)} 2x` } : null;
 }
 
 const IMAGE_FILE = /\.(?:png|jpe?g|gif|webp|svg)$/i;
@@ -301,9 +320,17 @@ function conversationName(id: string): string {
   return id;
 }
 
-/** `data-src`: the image loads once the calls he waits on answered (held-images.ts). */
+/**
+ * `data-src` and `data-srcset`: the image loads once the calls he waits on answered (held-images.ts), as its sized copy, and `data-full`
+ * is the file the lightbox opens. A box image whose size the server read (`ctx.imageSizes`) draws its box at the shown size at once.
+ */
 function imageTag(src: string, alt: string, source: string, thumb = false): string {
-  return `<img class="md-image${thumb ? " thumb" : ""}" data-src="${escapeHtml(src)}" alt="${escapeHtml(alt)}" title="${escapeHtml(source)}" loading="lazy" data-source="${escapeHtml(source)}">`;
+  const sized = sizedImage(src, thumb ? IMAGE_WIDTH.thumb : IMAGE_WIDTH.image);
+  const load = sized ? `data-src="${escapeHtml(sized.src)}" data-srcset="${escapeHtml(sized.srcset)}" data-full="${escapeHtml(src)}"` : `data-src="${escapeHtml(src)}"`;
+  const path = src.startsWith("/api/local-image?") ? new URLSearchParams(src.slice(src.indexOf("?") + 1)).get("path") : null;
+  const size = path ? ctx.imageSizes?.[path] : undefined;
+  const box = size ? ` width="${size.width}" height="${size.height}" style="--w: ${size.width}; --h: ${size.height}"` : "";
+  return `<img class="md-image${thumb ? " thumb" : ""}${size ? " sized" : ""}" ${load}${box} alt="${escapeHtml(alt)}" title="${escapeHtml(source)}" loading="lazy" decoding="async" data-source="${escapeHtml(source)}">`;
 }
 
 /** The same 13 px glyph MentionChip draws, from the shared icon set. */
@@ -638,7 +665,7 @@ function cached(key: string, make: () => string): string {
   return html;
 }
 function contextKey(c: MarkdownContext): string {
-  return [c.plain ? (c.bold ? 2 : 1) : 0, c.cwd ?? "", c.board ? `${c.board.chatId}:${c.board.titles.size}` : "", c.mentions ? c.mentions.size : "", c.jobs ? namesKey(c.jobs) : ""].join("|");
+  return [c.plain ? (c.bold ? 2 : 1) : 0, c.cwd ?? "", c.board ? `${c.board.chatId}:${c.board.titles.size}` : "", c.mentions ? c.mentions.size : "", c.jobs ? namesKey(c.jobs) : "", c.imageSizes ? JSON.stringify(c.imageSizes) : ""].join("|");
 }
 
 /** A link a post previews as a card under its text: a wiki page, or a web page as Slack unfurls it. */

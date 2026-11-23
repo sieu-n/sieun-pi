@@ -5,7 +5,9 @@
  * browsers rotate it by default (`image-orientation: from-image`). SVG and anything unknown answer undefined and draw as before.
  */
 import { closeSync, openSync, readSync, statSync } from "node:fs";
-import type { ImageRef } from "../web/src/lib/api/types.ts";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import type { ImageRef, LocalImageSizes } from "../web/src/lib/api/types.ts";
 
 export type ImageSize = { width: number; height: number };
 
@@ -100,6 +102,33 @@ export function fileImageSize(path: string): ImageSize | undefined {
   } finally {
     if (fd !== undefined) closeSync(fd);
   }
+}
+
+/**
+ * An absolute or `~/` image path in a post's text, as `![alt](/abs/shot.png)` or a bare path links it (web/src/lib/ui/markdown.ts
+ * `imageSource`); a slash after a letter, a colon or another slash is part of a URL, not the start of a path.
+ */
+const LOCAL_IMAGE = /(?<![\w.:/~-])(?:~\/|\/(?!\/))[^\s()<>[\]"'`|]*?\.(?:png|jpe?g|gif|webp)(?!\w|\.\w)/gi;
+/** Sizes read before, by path, size and change time, so a post's next read stats each file and reads no header. */
+const localSizes = new Map<string, ImageSize | null>();
+
+/** The sizes of the box images `text` links, for a post's `imageSizes` (types.ts `LocalImageSizes`); absent when it links none that exist. */
+export function localImageSizes(text: string): { imageSizes?: LocalImageSizes } {
+  let sizes: LocalImageSizes | undefined;
+  for (const [path] of text.matchAll(LOCAL_IMAGE)) {
+    const file = path.startsWith("~/") ? join(homedir(), path.slice(1)) : path;
+    let key: string;
+    try {
+      const info = statSync(file);
+      key = `${file}\0${info.size}\0${info.mtimeMs}`;
+    } catch {
+      continue;
+    }
+    let size = localSizes.get(key);
+    if (size === undefined) localSizes.set(key, (size = fileImageSize(file) ?? null));
+    if (size) (sizes ??= {})[path] = size;
+  }
+  return sizes ? { imageSizes: sizes } : {};
 }
 
 /** The ref with its size, from the ref itself or else from `read`; a ref whose size stays unknown comes back unchanged. */

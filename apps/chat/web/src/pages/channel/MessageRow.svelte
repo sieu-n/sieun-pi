@@ -19,7 +19,7 @@
   import LinkCards from "$lib/ui/LinkCards.svelte";
   import TypingDots from "$lib/ui/TypingDots.svelte";
   import { clockLabel, stampLabel, timeLabel } from "$lib/ui/datetime";
-  import { wikiUrl, withAuthor, type MarkdownContext } from "$lib/ui/markdown";
+  import { IMAGE_WIDTH, sizedImage, wikiUrl, withAuthor, type MarkdownContext } from "$lib/ui/markdown";
   import type { Status } from "$lib/ui/types";
   import { conversationHref, router } from "$lib/router.svelte";
   import { profileCard } from "$lib/shell/profile-card.svelte";
@@ -82,7 +82,9 @@
    * Board ids and job names in a post chip against its author's board and jobs, so p12 in vent's post is vent's p12. The owner's own post
    * draws its bold, as he formatted it in the composer; an agent's keeps bold as text.
    */
-  const context = $derived(withAuthor(item.author.kind === "owner" ? { ...roomContext, bold: true } : roomContext, item.author.id));
+  const authored = $derived(withAuthor(item.author.kind === "owner" ? { ...roomContext, bold: true } : roomContext, item.author.id));
+  /** The post's box images' sizes from the server (Item `imageSizes`), so each draws its box before its bytes arrive. */
+  const context = $derived(item.kind !== "system" && item.imageSizes ? { ...authored, imageSizes: item.imageSizes } : authored);
   const slack = $derived(layout === "slack");
   const turn = $derived(item.kind === "turn" ? item : null);
   const message = $derived(item.kind === "message" ? item : null);
@@ -334,11 +336,12 @@
   {#if pictures.length}
     <div class="images">
       {#each pictures as image, index (image.url + index)}
+        {@const sized = sizedImage(image.url, IMAGE_WIDTH.attached)}
         <button type="button" class="image" aria-label="View image {index + 1}" onclick={() => (lightbox = image.url)}>
           {#if image.width && image.height}
-            <img class="sized" data-src={image.url} alt="Attached image {index + 1}" loading="lazy" width={image.width} height={image.height} style:--w={image.width} style:--h={image.height} />
+            <img class="sized" data-src={sized?.src ?? image.url} data-srcset={sized?.srcset} alt="Attached image {index + 1}" loading="lazy" decoding="async" width={image.width} height={image.height} style:--w={image.width} style:--h={image.height} />
           {:else}
-            <img data-src={image.url} alt="Attached image {index + 1}" loading="lazy" />
+            <img data-src={sized?.src ?? image.url} data-srcset={sized?.srcset} alt="Attached image {index + 1}" loading="lazy" decoding="async" />
           {/if}
         </button>
       {/each}

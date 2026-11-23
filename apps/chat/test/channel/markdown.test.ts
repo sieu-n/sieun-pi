@@ -4,7 +4,7 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CODE_FOLD_LINES, columnClass, previewLinks, renderInline, renderMarkdown, wikiLinkPath, withAuthor } from "../../web/src/lib/ui/markdown.ts";
+import { CODE_FOLD_LINES, columnClass, previewLinks, renderInline, renderMarkdown, sizedImage, wikiLinkPath, withAuthor } from "../../web/src/lib/ui/markdown.ts";
 import { readable } from "../../web/src/lib/ui/mermaid.ts";
 
 const board = { chatId: "vent", titles: new Map([["p2", "Watch the week"]]) };
@@ -147,8 +147,22 @@ test("web links carry the site icon and the domain, a bare URL shows host and pa
   assert.doesNotMatch(renderInline("[vite.dev docs](https://vite.dev/)"), /link-domain/, "no domain when the text names it");
 });
 
-test("a local screenshot path loads through /api/local-image", () => {
-  assert.match(renderMarkdown("![Board panel](/tmp/shot.png)"), /<img class="md-image" data-src="\/api\/local-image\?path=%2Ftmp%2Fshot\.png" alt="Board panel"/);
+test("a local screenshot path loads through /api/local-image as a copy at its drawn width, and the lightbox gets the file", () => {
+  const html = renderMarkdown("![Board panel](/tmp/shot.png)");
+  assert.match(html, /<img class="md-image" data-src="\/api\/local-image\?path=%2Ftmp%2Fshot\.png&amp;w=480" data-srcset="\/api\/local-image\?path=%2Ftmp%2Fshot\.png&amp;w=480 1x, \/api\/local-image\?path=%2Ftmp%2Fshot\.png&amp;w=960 2x" data-full="\/api\/local-image\?path=%2Ftmp%2Fshot\.png" alt="Board panel"/);
+  assert.doesNotMatch(html, / width=/, "no box size without the server's imageSizes");
+});
+
+test("a screenshot whose size the server sent draws its box at that size before it loads", () => {
+  const html = renderMarkdown("![Board panel](/tmp/sized.png) and ~/x/thumb.png", { imageSizes: { "/tmp/sized.png": { width: 1280, height: 800 }, "~/x/thumb.png": { width: 300, height: 600 } } });
+  assert.match(html, /<img class="md-image sized" [^>]*width="1280" height="800" style="--w: 1280; --h: 800"/);
+  assert.match(html, /<img class="md-image thumb sized" data-src="\/api\/local-image\?path=~%2Fx%2Fthumb\.png&amp;w=160"[^>]*width="300" height="600"/);
+});
+
+test("an upload loads as its sized copy, and a web image as it is", () => {
+  assert.deepEqual(sizedImage("/api/uploads/ab-12.png", 360), { src: "/api/uploads/ab-12.png?w=360", srcset: "/api/uploads/ab-12.png?w=360 1x, /api/uploads/ab-12.png?w=720 2x" });
+  assert.equal(sizedImage("https://example.com/shot.png", 480), null);
+  assert.equal(sizedImage("/api/uploads/report.pdf?name=report.pdf", 480), null);
 });
 
 test("a wide diagram keeps 80% of its drawn width before it scrolls", () => {
@@ -181,7 +195,7 @@ test("a code span that is one target or one job name is its link, and bare absol
   const html = renderMarkdown("`wiki:a/b.html`, `thread:abc-1`, `job:x`, `fast search` and `npm test`; /home/sieun/work/post-parity/ and ~/work/x, /tmp/shot.png, but not and/or or /s.", { jobs: ["fast search"] });
   for (const target of ["wiki:a/b.html", "thread:abc-1", "job:x", "job:fast search", "file:/home/sieun/work/post-parity/", "file:~/work/x"]) assert.ok(html.includes(`data-target="${target}"`), target);
   assert.ok(html.includes("<code>npm test</code>"));
-  assert.match(html, /<img class="md-image thumb" data-src="\/api\/local-image\?path=%2Ftmp%2Fshot\.png"/);
+  assert.match(html, /<img class="md-image thumb" data-src="\/api\/local-image\?path=%2Ftmp%2Fshot\.png&amp;w=160"/);
   assert.ok(html.includes("but not and/or or /s."));
 });
 

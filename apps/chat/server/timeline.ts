@@ -13,7 +13,7 @@
 import type { ImageRef, Item, JobRef, Principal, RunStatus, Step } from "../web/src/lib/api/types.ts";
 import type { ContentBlock, EntryRecord, Message, TreeNode } from "./host/types.ts";
 import { withFileCards } from "./files.ts";
-import { imageSize, type ImageSize } from "./image-size.ts";
+import { imageSize, localImageSizes, type ImageSize } from "./image-size.ts";
 import { TELL_OWNER_HELD, TELL_OWNER_TOOL } from "../web/src/lib/api/shared/chat-feed.ts";
 
 export const INPUT_KINDS = new Set(["pi.user", "agent.message", "prime.custom"]);
@@ -276,8 +276,9 @@ function buildTurn(draft: TurnDraft, ctx: TimelineContext, live: boolean, firstS
     const node = ctx.tree.find(n => n.id === id);
     jobs.push({ conversation: `${ctx.thread}:${id}`, name: node?.name ?? `job ${id}`, status: ctx.jobStatus(id), replies: 0, lastAt: node?.createdAt ?? at });
   }
+  const text = speaking ? sent.map(m => m.text).join("\n\n") : texts.join("\n\n");
   return {
-    kind: "turn", id: turnKey(draft.key), at, author: ctx.agent, text: speaking ? sent.map(m => m.text).join("\n\n") : texts.join("\n\n"), live, steps, images, jobs,
+    kind: "turn", id: turnKey(draft.key), at, author: ctx.agent, text, live, steps, images, jobs, ...localImageSizes(text),
     ...(speaking ? { sent: sent.map(m => m.text) } : {}),
     ...(stop ? { stop } : {}), ...(error ? { error } : {}), ...(model ? { model } : {}), usage,
   };

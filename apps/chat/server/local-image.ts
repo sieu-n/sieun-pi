@@ -41,10 +41,13 @@ export type LocalImage = { kind: "same"; tag: string } | { kind: "image"; tag: s
 const tagOf = (size: number, mtimeMs: number): string => `"${size.toString(36)}-${Math.round(mtimeMs).toString(36)}"`;
 
 /** Whether an If-None-Match header names `tag`: `*`, or a comma list of tags, weak ones (`W/`) included. */
-const matches = (header: string | undefined, tag: string): boolean =>
+export const matches = (header: string | undefined, tag: string): boolean =>
   !!header && header.split(",").some(one => one.trim() === "*" || one.trim().replace(/^W\//, "") === tag);
 
-export async function readLocalImage(path: string, ifNoneMatch?: string): Promise<LocalImage> {
+/** The image file a path names, checked as GET /api/local-image serves it, with its strong tag and before any read of its bytes. */
+export type LocalImageFile = { path: string; mimeType: string; size: number; mtimeMs: number; tag: string };
+
+export async function localImageFile(path: string): Promise<LocalImageFile> {
   const expanded = path === "~" || path.startsWith("~/") ? join(homedir(), path.slice(1)) : path;
   if (!isAbsolute(expanded) || expanded.includes("\0")) throw new LocalImageError(400, "Give an absolute image path.");
   let file: string;
@@ -58,7 +61,11 @@ export async function readLocalImage(path: string, ifNoneMatch?: string): Promis
   const info = await stat(file);
   if (!info.isFile()) throw new LocalImageError(404, "Image file not found.");
   if (info.size > MAX_LOCAL_IMAGE_BYTES) throw new LocalImageError(413, "Image files over 25 MiB do not show.");
-  const tag = tagOf(info.size, info.mtimeMs);
+  return { path: file, mimeType, size: info.size, mtimeMs: info.mtimeMs, tag: tagOf(info.size, info.mtimeMs) };
+}
+
+export async function readLocalImage(path: string, ifNoneMatch?: string): Promise<LocalImage> {
+  const { path: file, mimeType, tag } = await localImageFile(path);
   if (matches(ifNoneMatch, tag)) return { kind: "same", tag };
   const bytes = await readFile(file);
   if (!hasSignature(bytes, mimeType)) throw new LocalImageError(415, "The file is not the image type its name says.");

@@ -26,6 +26,7 @@ import { doneOf, reopens } from "./thread-done.ts";
 import { pinnedSection, pinOf } from "./pins.ts";
 import { forwardPart, withForward } from "./forward.ts";
 import type { ForwardedPost } from "../web/src/lib/api/types.ts";
+import { localImageSizes } from "./image-size.ts";
 import { join } from "node:path";
 import { writeJsonLater } from "./disk.ts";
 import { readJson, readMark, type Store } from "./store.ts";
@@ -833,7 +834,7 @@ export class Rooms {
     const replies = post.threadRoot ? [] : all.filter(p => p.threadRoot === post.id && p.deletedAt === undefined);
     const authors = [...new Set(replies.map(r => r.author))].slice(0, 3).map(a => this.deps.threads.principal(a));
     const base = {
-      kind: "message" as const, id: post.id, seq: post.seq, at: post.at, text: post.text, images: post.images, mentions: [],
+      kind: "message" as const, id: post.id, seq: post.seq, at: post.at, text: post.text, images: post.images, mentions: [], ...localImageSizes(post.text),
       ...(post.threadRoot ? { threadRoot: post.threadRoot } : {}),
       ...(replies.length ? { thread: { replies: replies.length, lastAt: replies.at(-1)!.at, lastSeq: replies.at(-1)!.seq, authors } } : {}),
       ...reactionsOf(id => this.deps.threads.principal(id), post), ...doneOf(id => this.deps.threads.principal(id), post),

@@ -572,6 +572,15 @@ img[data-src]:not([src]) {
   margin: 0 2px;
   vertical-align: middle;
 }
+/* A box image whose size the server read (markdown.ts `imageTag`) draws its box at the shown size before its bytes arrive, so the rows below never move. */
+.prose .md-image.sized {
+  width: min(calc(var(--w) * 1px), 100%, 480px, calc(360px * var(--w) / var(--h)));
+  height: auto;
+  aspect-ratio: var(--w) / var(--h);
+}
+.prose .md-image.thumb.sized {
+  width: min(calc(var(--w) * 1px), 160px, calc(96px * var(--w) / var(--h)));
+}
 .prose .inert-image {
   color: var(--text-metadata);
   font: var(--text-caption);

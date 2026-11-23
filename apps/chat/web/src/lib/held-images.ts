@@ -9,9 +9,12 @@ import { afterOwnCalls } from "$lib/api/client";
 
 const shown = new Set<string>();
 
+/** `data-srcset` goes in first, so the browser picks the 1x or 2x copy (markdown.ts `sizedImage`) before `src` starts a load. */
 function show(img: HTMLImageElement): void {
   const src = img.dataset.src;
   if (!src || !img.isConnected || img.getAttribute("src") === src) return;
+  if (img.dataset.srcset) img.srcset = img.dataset.srcset;
+  else img.removeAttribute("srcset");
   img.src = src;
   shown.add(src);
 }

@@ -170,7 +170,8 @@
     const img = el.closest<HTMLImageElement>("img.md-image");
     if (img) {
       e.preventDefault();
-      lightbox = { src: img.src || new URL(img.dataset.src ?? "", location.href).href, alt: img.alt };
+      // The post draws a sized copy (markdown.ts `sizedImage`); the lightbox opens the file itself.
+      lightbox = { src: new URL(img.dataset.full ?? (img.src || img.dataset.src || ""), location.href).href, alt: img.alt };
       return;
     }
     const chip = el.closest<HTMLElement>("[data-board-id]");

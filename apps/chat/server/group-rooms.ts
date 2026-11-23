@@ -38,6 +38,7 @@ import { doneOf, reopens } from "./thread-done.ts";
 import { pinnedSection, pinOf } from "./pins.ts";
 import { forwardPart, withForward } from "./forward.ts";
 import type { ForwardedPost } from "../web/src/lib/api/types.ts";
+import { localImageSizes } from "./image-size.ts";
 import { agedPost, agentPostParts, answerThread, CONTEXT_CLIP, CONTEXT_POSTS, queuedNote, keepSeen, readFeedThread, readSeen, type FeedSide, type Spoken } from "./rooms.ts";
 import { readMark, type Store } from "./store.ts";
 import { OWNER, type Threads } from "./threads.ts";
@@ -908,7 +909,7 @@ export class GroupRooms {
     const replies = !post.threadRoot ? all.filter(p => p.threadRoot === post.id && p.deletedAt === undefined) : [];
     const authors = [...new Set(replies.map(r => r.author))].slice(0, 3).map(a => this.deps.threads.principal(a));
     return {
-      kind: "message", id: post.id, seq: post.seq, at: post.at, author: this.deps.threads.principal(post.author), text: post.text, images: post.images,
+      kind: "message", id: post.id, seq: post.seq, at: post.at, author: this.deps.threads.principal(post.author), text: post.text, images: post.images, ...localImageSizes(post.text),
       mentions: (post.mentions ?? []) as AgentId[], ...(post.threadRoot ? { threadRoot: post.threadRoot } : {}), ...(post.answers ? { answers: post.answers } : {}),
       ...(post.threadRoot && post.alsoInChannel ? { alsoInChannel: { rootText: rootText(all.find(p => p.id === post.threadRoot)) } } : {}),
       ...(post.author === "owner" ? { requestId: post.requestId } : agentPostParts(this.deps.threads, post)),

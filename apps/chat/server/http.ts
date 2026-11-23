@@ -17,7 +17,8 @@ import { parseItemId } from "./for-me.ts";
 import type { AgentRecord, WakeOn } from "./agent-store.ts";
 import { App, MODELS, NotFound } from "./app.ts";
 import { uploadHeaders } from "./files.ts";
-import { LocalImageError, readLocalImage, type LocalImage } from "./local-image.ts";
+import { LocalImageError, localImageFile, matches, readLocalImage, type LocalImage } from "./local-image.ts";
+import { renditionWidth, Renditions, takesWebp, type SourceFile } from "./image-rendition.ts";
 import { ReactionError } from "./reactions.ts";
 import { parsePrefsPatch } from "./sidebar-prefs.ts";
 import { LaterError } from "./later.ts";
@@ -62,7 +63,7 @@ export class BadRequest extends Error {}
 type Phase = { body?: number; run?: number; err?: string; split?: SearchSplit };
 const phases = new WeakMap<IncomingMessage, Phase>();
 
-/** A search's or a timeline read's split for its request log line, kept on the request's phase. */
+/** A search's, a timeline read's or a board write's split for its request log line, kept on the request's phase. */
 function splitOf(req: IncomingMessage): SearchSplit {
   const split: SearchSplit = {};
   const phase = phases.get(req);
@@ -476,10 +477,10 @@ export function routes(app: App, parts: SkillsParts): Route[] {
     // aliases, because pi-host's chat_board tool and the duty briefs name the thread.
     ...(["agents", "threads"] as const).flatMap(scope => [
       route("GET", `/api/${scope}/:id/board`, async (_r, p) => app.boards.view(p.id!)),
-      route("POST", `/api/${scope}/:id/board`, async (_r, p, _q, body) => {
+      route("POST", `/api/${scope}/:id/board`, async (r, p, _q, body) => {
         const input = (await body()) as { ops: unknown; actor?: string; base?: unknown };
         // A refused op (a bad shape, or an agent answering a todo) is the caller's error.
-        return app.boards.apply(p.id!, input.ops, input.actor === "agent" ? "agent" : "owner", input.base).catch(error => {
+        return app.boards.apply(p.id!, input.ops, input.actor === "agent" ? "agent" : "owner", input.base, splitOf(r)).catch(error => {
           throw new BadRequest(error instanceof Error ? error.message : String(error));
         });
       }),
@@ -918,8 +919,13 @@ async function handle(app: App, table: Route[], req: IncomingMessage, res: Serve
   try {
     if (await serveWiki(app, req, res, url)) return;
     if (path.startsWith("/api/images/")) return await serveEntryImage(app, path, res);
-    if (path.startsWith("/api/uploads/")) return await serveUpload(res, app.store.imagePath(path.slice("/api/uploads/".length).replace(/[^\w.-]/g, "")), url.searchParams);
-    if (path === "/api/local-image" && req.method === "GET") return await serveLocalImage(url.searchParams.get("path") ?? "", req.headers["if-none-match"], res);
+    if (path.startsWith("/api/uploads/")) return await serveUpload(res, app.store.imagePath(path.slice("/api/uploads/".length).replace(/[^\w.-]/g, "")), url.searchParams, req, renditionsOf(app));
+    if (path === "/api/local-image" && req.method === "GET") {
+      const width = renditionWidth(url.searchParams.get("w"));
+      if (width === undefined) return json(res, 400, { error: "w is a width in px, a whole number over 0." });
+      if (width !== null) return await serveLocalRendition(url.searchParams.get("path") ?? "", width, req, res, renditionsOf(app));
+      return await serveLocalImage(url.searchParams.get("path") ?? "", req.headers["if-none-match"], res);
+    }
     if (path.startsWith("/api/")) {
       for (const r of table) {
         if (r.method !== req.method) continue;
@@ -1030,10 +1036,56 @@ async function serveLocalImage(path: string, ifNoneMatch: string | undefined, re
   res.end(image.bytes);
 }
 
-/** An upload: an image as any served file, and any other file inline or as a download under the name it was attached with (files.ts). */
-function serveUpload(res: ServerResponse, file: string, query: URLSearchParams): void | Promise<void> {
+/** Each app's built image renditions, kept under its data dir (image-rendition.ts). */
+const renditionSets = new WeakMap<App, Renditions>();
+function renditionsOf(app: App): Renditions {
+  let set = renditionSets.get(app);
+  if (!set) renditionSets.set(app, (set = new Renditions(join(app.config.dataDir, "renditions"))));
+  return set;
+}
+
+/** A local image at the width a post draws it (image-rendition.ts); a GIF or SVG answers as the file itself. */
+async function serveLocalRendition(path: string, width: number, req: IncomingMessage, res: ServerResponse, renditions: Renditions): Promise<void> {
+  let file: SourceFile & { tag: string };
+  try {
+    file = await localImageFile(path);
+  } catch (error) {
+    if (error instanceof LocalImageError) return json(res, error.status, { error: error.message });
+    throw error;
+  }
+  const webp = takesWebp(req.headers.accept);
+  const tag = `${file.tag.slice(0, -1)}-${width}${webp ? "-webp" : ""}"`;
+  const cache = { "cache-control": "private, max-age=60", etag: tag, vary: "accept" };
+  if (matches(req.headers["if-none-match"], tag)) {
+    res.writeHead(304, cache);
+    return void res.end();
+  }
+  const made = await renditions.get(file, width, webp).catch(() => null);
+  if (made === null) return json(res, 415, { error: "The file is not the image type its name says." });
+  if (!made) return await serveLocalImage(path, undefined, res);
+  res.writeHead(200, { "content-type": made.mimeType, "content-length": made.bytes.length, ...cache, "x-content-type-options": "nosniff" });
+  res.end(made.bytes);
+}
+
+/**
+ * An upload: an image as any served file, or with `w` at that width (image-rendition.ts), and any other file inline or as a download under
+ * the name it was attached with (files.ts). The upload's own bytes never change, so each answer keeps for a year.
+ */
+async function serveUpload(res: ServerResponse, file: string, query: URLSearchParams, req: IncomingMessage, renditions: Renditions): Promise<void> {
   const ext = extname(file).slice(1).toLowerCase();
-  if (TYPES[`.${ext}`]?.startsWith("image/")) return serveFile(res, file, true);
+  const mimeType = TYPES[`.${ext}`];
+  const width = renditionWidth(query.get("w"));
+  if (mimeType?.startsWith("image/") && width) {
+    const stat = existsSync(file) ? statSync(file) : undefined;
+    if (!stat?.isFile()) throw new NotFound("Not found.");
+    const webp = takesWebp(req.headers.accept);
+    const made = await renditions.get({ path: file, mimeType, size: stat.size, mtimeMs: stat.mtimeMs }, width, webp).catch(() => null);
+    if (made) {
+      res.writeHead(200, { "content-type": made.mimeType, "content-length": made.bytes.length, "cache-control": "private, max-age=31536000, immutable", vary: "accept" });
+      return void res.end(made.bytes);
+    }
+  }
+  if (mimeType?.startsWith("image/")) return serveFile(res, file, true);
   const stat = existsSync(file) ? statSync(file) : undefined;
   if (!stat?.isFile()) throw new NotFound("Not found.");
   res.writeHead(200, { ...uploadHeaders(ext, query.get("name"), query.get("download") === "1"), "content-length": stat.size, "cache-control": "private, max-age=31536000, immutable" });

@@ -215,6 +215,12 @@ export type SavedLayout = SidebarLayout & { rev: number };
 export interface ImageRef { url: string; mimeType: string; width?: number; height?: number; name?: string; size?: number }
 
 /**
+ * The width and height of each box image a post's text links by its absolute or `~/` path, keyed by that path as written, so the page
+ * draws its box at the final size before the bytes arrive (server/image-size.ts `localImageSizes`).
+ */
+export type LocalImageSizes = Record<string, { width: number; height: number }>;
+
+/**
  * Where a conversation's run stands in pi-pool's turn queue: working (kind owner, ahead, slot and so on), queued at a position, marked as
  * the owner's turn and not started yet, or none (no run asks for a slot).
  */
@@ -382,6 +388,7 @@ export interface StepOutputRef { conversation: ConversationId; entry: number }
 export type Item =
   | {
       kind: "message"; id: string; at: Ms; author: Principal; text: string; images: ImageRef[]; mentions: AgentId[];
+      imageSizes?: LocalImageSizes;
       /** Channel posts: the post's place in the channel log. */
       seq?: number;
       /** Channel posts: the root of the Buzz-style thread this reply is in. */
@@ -429,6 +436,7 @@ export type Item =
     }
   | {
       kind: "turn"; id: string; at: Ms; author: Principal; text: string; live: boolean; steps: Step[]; images: ImageRef[]; jobs: JobRef[];
+      imageSizes?: LocalImageSizes;
       /**
        * Set when the agent talks through send_message: each call's text, one bubble each, and `text` is them joined. Empty on a quiet turn,
        * which shows only its fold. Absent on a turn from before the conversation's first send_message call, whose `text` is the bubble.
