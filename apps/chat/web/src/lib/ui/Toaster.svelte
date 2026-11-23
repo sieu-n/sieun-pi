@@ -49,9 +49,12 @@
 {/if}
 
 <style>
+  /* The toaster spans the window less 16 px a side and centers its toasts: placed from the middle with left 50%, it had only half the
+     window to fit in, and in a narrow pane a toast wrapped into a tall round blob. */
   .toaster {
     position: fixed;
-    inset: auto auto 24px 50%;
+    inset: auto 16px 24px 16px;
+    width: auto;
     margin: 0;
     padding: 0;
     border: none;
@@ -62,7 +65,6 @@
     flex-direction: column;
     align-items: center;
     gap: 8px;
-    transform: translateX(-50%);
     pointer-events: none;
   }
   .toast {
