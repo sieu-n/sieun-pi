@@ -68,14 +68,16 @@ after(async () => {
 
 test("the Mac's threads are found and counted from the one index, and a search sends the Mac no call", async () => {
   // The index reads the Mac every 5 s on its own, and in a full suite run on 11-20 one search took 5.2 s, so that read fell inside the
-  // count. With the timer stopped, any call counted is the search's; the next test reads the Mac through `settled`.
+  // count. With the timer stopped, any call counted is the search's; the next test reads the Mac through `settled`. The thread list
+  // still reads the Mac's `durable_threads` every second for the sidebar, and on 11-23 at load 150 three of those fell inside the search.
   app.searchEngine.stop();
   const calls = relay.calls.length;
   const found = await search("quokka");
   assert.equal(found.total, 2);
   assert.deepEqual(found.hits.map(hit => hit.conversation.name).sort(), ["Mac quokka job", "Mac quokka job"]);
   assert.equal(found.missing, undefined);
-  assert.equal(relay.calls.length - calls, 0, "a search asks the index only");
+  const searchCalls = relay.calls.slice(calls).map(call => call.op).filter(op => op !== "durable_threads");
+  assert.deepEqual(searchCalls, [], "a search asks the index only");
   assert.ok(relay.calls.some(call => call.op === "durable_index_read"));
 });
 
