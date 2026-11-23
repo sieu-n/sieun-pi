@@ -35,6 +35,7 @@ import { SPEAKING_TOOLS, type PrimeChat } from "./prime-chat.ts";
 import { PrimeRoots } from "./prime-roots.ts";
 import { jobTitle } from "./job-title.ts";
 import { peekDoc } from "./doc-peek.ts";
+import { chunkScans } from "./chunked-scan.ts";
 import { FirstEntries } from "./first-entry.ts";
 import { loopSlices, rlmChildName, type DurableRlm, type PiRootView, type RlmThread, type RootRow } from "./rlm.ts";
 import type { DurableRules } from "./rules.ts";
@@ -459,7 +460,8 @@ export class DurableThreads {
     let wake: Wake = { active: false };
     let openHarness: Harness | undefined;
     try {
-      const storage = await openNodeSqliteStorage(file);
+      // Entry scans read a few entries per loop turn: one read of a long context held the loop 100 to 300 ms on 11-23 (chunked-scan.ts).
+      const storage = chunkScans(await openNodeSqliteStorage(file));
       const name = () => this.index.get(id)?.name ?? row.name;
       // The row's cwd at each read, so a `set` cwd reaches the open file's tools, prompt, chat extension and kernels from the next call on.
       const cwd = () => this.index.get(id)?.cwd ?? row.cwd;

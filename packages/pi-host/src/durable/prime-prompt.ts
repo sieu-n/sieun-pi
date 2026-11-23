@@ -21,7 +21,7 @@ import { existsSync, opendirSync, readFileSync, realpathSync, statSync } from "n
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { Context } from "@earendil-works/chord";
-import { defineExtension, GenerationTask, hook, LiveDoc, ROOT_CONVERSATION_ID, section, type ConversationId, type Extension, type Harness, type PromptInput } from "@earendil-works/pi-durable";
+import { defineExtension, GenerationTask, hook, LiveDoc, ROOT_CONVERSATION_ID, section, type ContextView, type ConversationId, type Extension, type Harness, type HookApi, type PromptInput } from "@earendil-works/pi-durable";
 import { BRIEF_CORRECTIONS, CHAT_BRIEF, jobReplyGuideline, personaGuideline, skillBody, WRITING_SKILL, writingGuideline } from "../../../../legacy/prime/user-history/src/chat-brief.ts";
 import { commLedgerPrompt, jobLedgerPrompt, ledgerPrompt, parseLedger, type Ledger } from "../../../../legacy/prime/user-history/src/chat-corrections.ts";
 import { SessionRules } from "../../../pi-claude-rules/src/core/rules.ts";
@@ -484,13 +484,23 @@ export function primePrompt(options: PrimePromptOptions): Extension {
         if (api.conversationId !== ROOT_CONVERSATION_ID || !harness) return undefined;
         const doc = await api.snapshot(HarnessDigestDoc, api.conversationId, context);
         if (!doc?.deliveries.length) return undefined;
-        const view = await (await harness.conversation(api.conversationId, context))?.context(context);
+        const view = keepsContext(api) ? await api.context(api.conversationId, context) : await (await harness.conversation(api.conversationId, context))?.context(context);
         const out = view && withDigests(messages, view, doc.deliveries);
         return out ? { messages: out } : undefined;
       },
     })],
   });
 }
+
+/**
+ * The generation task's runtime, which pi-durable passes to a hook as its HookApi, also reads the conversation's context through the
+ * range its scheduler keeps (`readContextFrom`): only the entries after the last read are read and parsed. `Conversation.context` reads
+ * and parses every entry from the head marker on at each call. On 11-23 a request of comm thread 5d50e997, whose root holds 707 entries
+ * and 19.7 MB with no compaction, read them all in the digest hook, about 130 ms of pi-host's loop per request on a copy rig
+ * (~/work/pi-host-stalls/l-untracked/report.md).
+ */
+type KeepsContext = HookApi & { context(conversationId: ConversationId, context: Context): Promise<ContextView> };
+const keepsContext = (api: HookApi): api is KeepsContext => typeof (api as { context?: unknown }).context === "function";
 
 /**
  * Whether the request is a comm thread's root conversation. A comm thread talks in its room and hands each task to its work thread, with no
