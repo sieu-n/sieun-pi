@@ -2471,6 +2471,13 @@ export async function catalogCopies(dataDir: string): Promise<string[]> {
 
 const readJson = async (file: string): Promise<unknown> => JSON.parse(await readFile(file, "utf8").catch(() => "null")) as unknown;
 
+/**
+ * d2's chat page probe (chat-page-mac.ts sendProbe) opens a short thread named "chat page probe HH:MM" at thinking off on purpose, so its
+ * first-token time holds no thinking. It is the duty's own instrument, not a thread or job, and on 11-21 at 22:20Z and 11-23 at 14:11Z
+ * it was the only session sessions_off_high counted, read from the Mac's catalog copy before the probe archived it.
+ */
+export const PROBE_SESSION_PREFIX = "chat page probe ";
+
 /** A session a box's catalog copy lists live with its own model and effort, on another model or effort than the box's default (`effortOffDefault`). */
 export interface OffDefault { host: string; sessionId: string; name: string; model: string; thinking: string }
 
@@ -2495,6 +2502,7 @@ export function effortOffDefault(copies: readonly { host: string; text: string }
       const model = typeof row.model === "string" ? row.model : row.model?.id;
       if (row.lifecycle !== "live" || !model || !row.thinkingLevel || !row.sessionId) continue;
       if (model === want.model && row.thinkingLevel === want.thinking) continue;
+      if (row.sessionName?.startsWith(PROBE_SESSION_PREFIX)) continue;
       off.push({ host: copy.host, sessionId: row.sessionId, name: row.sessionName?.trim() || row.sessionId.slice(0, 8), model, thinking: row.thinkingLevel });
     }
   }

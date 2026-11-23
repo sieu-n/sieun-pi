@@ -29,3 +29,11 @@ test("sessions_off_high reads an offline box as unread, never as 0 off", () => {
   assert.deepEqual(read.read, ["us-metal02"]);
   assert.deepEqual(read.unread, ["mac", "piscratch"]);
 });
+
+test("sessions_off_high leaves out d2's chat page probe thread, which runs at thinking off on purpose", () => {
+  const read = effortOffDefault([copy("mac", [
+    { lifecycle: "live", sessionId: "01a208ba-aaaa", sessionName: "chat page probe 14:06", model: opus, thinkingLevel: "off" },
+    { lifecycle: "live", sessionId: "01a208bb-bbbb", sessionName: "probe notes", model: opus, thinkingLevel: "off" },
+  ])], want, () => false);
+  assert.deepEqual(read.off.map(entry => entry.name), ["probe notes"]);
+});
