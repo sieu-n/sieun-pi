@@ -11,6 +11,13 @@ declare global {
   interface Window { settled: Record<string, string>; ahead: (path: string) => void; page: (path: string) => void }
 }
 
+/**
+ * Keeps the page's lane to the test's own calls. The fixture is shared: with the live socket open, the hello makes the page read ahead the
+ * rooms and boards every other spec made (129 room and 72 agent reads in a failed run on 11-23), 2 at once, so networkidle never came and the
+ * test's released reads waited behind them. Each test's writes read their panel again on their own (membership.ts `refresh`).
+ */
+const noSocket = (page: Page) => page.routeWebSocket(/\/api\/live/, () => {});
+
 /** Holds every request to a path matching `match` until the returned function runs, and lists the ones that went out. */
 async function hold(page: Page, match: RegExp): Promise<{ sent: string[]; release: () => void }> {
   const sent: string[] = [];
@@ -44,6 +51,7 @@ test("the member list after Add reads at once while reads ahead and the page's r
   const t = tag();
   const agent = (await (await page.request.post("/api/agents", { data: { name: `refetch pick ${t}`, test: true } })).json()) as { id: string; name: string };
   const room = (await (await page.request.post("/api/rooms", { data: { kind: "channel", name: `refetch-${t}`, members: [], test: true } })).json()) as { id: string; name: string };
+  await noSocket(page);
   await open(page, `#/c/${room.id}`);
   await page.waitForLoadState("networkidle");
   const count = page.getByTestId("channel-members");
@@ -72,6 +80,7 @@ test("the member list after Add reads at once while reads ahead and the page's r
 });
 
 test("a kept panel's read asked as his write answered leaves at once and does not take a read sent before the write", async ({ page }) => {
+  await noSocket(page);
   await open(page, "#/c/ch_general");
   await page.waitForLoadState("networkidle");
   // The panel's first read stays held; any later read of it passes.
@@ -130,6 +139,7 @@ test("the Work tab's rooms read after a remove and its Undo is logged as a wait,
   const t = tag();
   const agent = (await (await page.request.post("/api/agents", { data: { name: `refetch work ${t}`, test: true } })).json()) as { id: string; name: string };
   const room = (await (await page.request.post("/api/rooms", { data: { kind: "channel", name: `refetch-work-${t}`, members: [agent.id], test: true } })).json()) as { id: string; name: string };
+  await noSocket(page);
   await page.goto(`/#/agents/${agent.id}?section=work`);
   const rooms = page.getByRole("region", { name: "Rooms" });
   const chip = rooms.getByRole("button", { name: room.name, exact: true });
