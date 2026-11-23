@@ -6,7 +6,7 @@
  */
 import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
-import type { Item, TimelinePage } from "../../web/src/lib/api/types.ts";
+import type { Item, Room, TimelinePage } from "../../web/src/lib/api/types.ts";
 import { FIXTURE_AGENTS as agents, FIXTURE_IDS as ids } from "../../server/fixture/seed.ts";
 import { FixtureHost } from "../../server/host/fixture.ts";
 import type { ContentBlock, SubmitInput } from "../../server/host/types.ts";
@@ -16,7 +16,7 @@ type Message = Extract<Item, { kind: "message" }>;
 const ROOM = ids.soloRoom;
 const roots = async (s: Running): Promise<Message[]> => (await s.get<TimelinePage>(`/api/c/${ROOM}/items?limit=200`)).items.filter(i => i.kind === "message") as Message[];
 const thread = (s: Running, root: string) => s.get<{ root: Message; items: Message[] }>(`/api/c/${ROOM}/replies/${root}`);
-const stored = (s: Running) => s.app.agentStore.postsOf(ROOM);
+const stored = (s: Running, room: string) => s.app.agentStore.postsOf(room);
 
 /** A tell_owner call and its result in conversation 1 of `thread`, with `reply_to` when given. */
 function told(host: FixtureHost, thread: string, id: string, text: string, replyTo?: string): void {
@@ -66,19 +66,22 @@ describe("threads in a Solo room", () => {
   });
 
   test("an answer to a root post stays at the root, and one whose reply_to names the root of the turn's thread goes in that thread", async () => {
-    const asked = await s.send("POST", `/api/c/${ROOM}/send`, { text: "quiet, which port?", requestId: "sot-root" });
-    const comm = s.app.agents.record(agents.vent)!.comm![ROOM]!;
+    // A room of its own with Vent alone. In the seeded room the first test's members go on answering each other in post 2's thread for up
+    // to 6 hops, and a tell_owner appended during one of those turns answers that turn's post instead of the owner's.
+    const room: Room = (await s.send("POST", "/api/rooms", { kind: "solo", agenda: "quiet: pick the relay port", members: [agents.vent] })).body;
+    const asked = await s.send("POST", `/api/c/${room.id}/send`, { text: "quiet, which port?", requestId: "sot-root" });
+    const comm = await until(async () => s.app.agents.record(agents.vent)!.comm?.[room.id], id => id !== undefined) as string;
     await until(async () => host.threadsById.get(comm)!.entries.some(e => e.kind === "pi.user" && JSON.stringify(e.model?.[0]?.content).includes("quiet, which port?")), Boolean);
     told(host, comm, "sot-a", "Port 7443, quiet.");
     await s.app.groups.feed(comm);
-    const a = stored(s).find(p => p.requestId === `m:${comm}:sot-a`)!;
+    const a = stored(s, room.id).find(p => p.requestId === `m:${comm}:sot-a`)!;
     assert.deepEqual([a.threadRoot, a.answers], [undefined, asked.body.item.id]);
 
-    const reply = await s.send("POST", `/api/c/${ROOM}/send`, { text: "quiet, and the fallback?", requestId: "sot-thread", threadRoot: a.id });
+    const reply = await s.send("POST", `/api/c/${room.id}/send`, { text: "quiet, and the fallback?", requestId: "sot-thread", threadRoot: a.id });
     await until(async () => host.threadsById.get(comm)!.entries.some(e => e.kind === "pi.user" && JSON.stringify(e.model?.[0]?.content).includes("quiet, and the fallback?")), Boolean);
     told(host, comm, "sot-b", "No fallback, quiet.", `p${a.seq}`);
     await s.app.groups.feed(comm);
-    const b = stored(s).find(p => p.requestId === `m:${comm}:sot-b`)!;
+    const b = stored(s, room.id).find(p => p.requestId === `m:${comm}:sot-b`)!;
     assert.equal(b.threadRoot, a.id, "reply_to the thread's root keeps the answer in the thread");
     assert.ok(reply.body.item.threadRoot === a.id);
   });
