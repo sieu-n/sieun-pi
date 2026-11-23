@@ -54,8 +54,23 @@
   const folder = $derived(config.folder);
   const owner = $derived(folderOwner(config, agent, agentId));
   const setFolder = (next: Parameters<typeof withFolder>[1]) => onconfig(withFolder(config, next));
+  /** A job's first input is the task it was given, so its page opens on it; a chat's sits last, under what it runs on. */
+  const job = $derived(agent?.kind !== "chat");
 </script>
 
+{#snippet firstInput()}
+  {#if config.identity.purpose}
+    <section class="block" aria-label="First input">
+      <h3 class="t-caption heading">First input</h3>
+      <div class="purpose t-body-sm"><Markdown text={config.identity.purpose.text} /></div>
+      <span class="t-caption meta">
+        From {config.identity.purpose.from.name}{config.identity.purpose.via ? ` via ${config.identity.purpose.via}` : ""}, {stampLabel(config.identity.purpose.at)}
+      </span>
+    </section>
+  {/if}
+{/snippet}
+
+{#if job}{@render firstInput()}{/if}
 {#if folder}
   {#if !owner.own}<FolderNote agent={folder.agent} name={owner.name} />{/if}
   <AgentFolderText doc="brief" {folder} name={owner.name} purpose={config.identity.purpose?.text ?? null} readonly={!owner.own} onsaved={setFolder} />
@@ -107,15 +122,7 @@
     </dd>
   {/if}
 </dl>
-{#if config.identity.purpose}
-  <section class="block" aria-label="First input">
-    <h3 class="t-caption heading">First input</h3>
-    <div class="purpose t-body-sm"><Markdown text={config.identity.purpose.text} /></div>
-    <span class="t-caption meta">
-      From {config.identity.purpose.from.name}{config.identity.purpose.via ? ` via ${config.identity.purpose.via}` : ""}, {stampLabel(config.identity.purpose.at)}
-    </span>
-  </section>
-{/if}
+{#if !job}{@render firstInput()}{/if}
 
 <style>
   .cwd {
@@ -123,7 +130,7 @@
     align-items: center;
     gap: var(--space-2);
   }
-  .facts > .folder {
+  .facts > dd.folder {
     flex-direction: column;
     align-items: flex-start;
   }

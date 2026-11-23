@@ -71,6 +71,28 @@ test("the owner writes Vent's brief from its first message, saves it and sees it
   }
 });
 
+test("Vent's working memory shows without its own heading, and the owner edits and saves it", async ({ page, request }) => {
+  const agent = await vent(request);
+  const working = (page: Page) => panel(page).getByTestId("agent-working-memory");
+  const put = async (text: string) => expect((await request.put(`/api/agents/${agent.id}/working-memory`, { data: { text } })).ok()).toBeTruthy();
+  await put("# Vent, working memory\n\nOn now: the canary relay.\n");
+  try {
+    await openCard(page, agent);
+    await expect(working(page)).toContainText("On now: the canary relay.");
+    await expect(working(page).getByRole("heading", { name: /working memory/i, level: 1 })).toHaveCount(0);
+
+    const text = `${uniqueName("Waiting on")} the Mac relay to wake.`;
+    await working(page).getByRole("button", { name: "Edit" }).click();
+    await working(page).getByRole("textbox", { name: `Working memory of ${agent.name}` }).fill(text);
+    await working(page).getByRole("button", { name: "Save" }).click();
+    await expect(working(page)).toContainText(text);
+    const saved = (await (await request.get(`/api/agents/${agent.id}/folder`)).json()) as { workingMemory: { text: string } };
+    expect(saved.workingMemory.text.trim()).toBe(text);
+  } finally {
+    await put("");
+  }
+});
+
 test("the owner adds a memory to Vent, sees it listed and deletes it", async ({ page, request }) => {
   const agent = await vent(request);
   const title = uniqueName("Relay gaps");

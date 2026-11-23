@@ -54,6 +54,8 @@
   let contentHeight = $state(0);
 
   const text = $derived(file.text);
+  /** The text as shown: a working memory's own opening heading, such as "# agent factory, working memory", repeats the label above it. */
+  const shown = $derived(doc === "workingMemory" ? text.replace(/^\s*#{1,3} [^\n]*working memory[^\n]*\n+/i, "") : text);
   /** The collapsed text's height in px; a longer text fades out and opens with Show more instead of scrolling inside the page. */
   const COLLAPSED = 320;
   const long = $derived(contentHeight > COLLAPSED);
@@ -104,7 +106,7 @@
     </div>
     {#if error}<p class="t-caption warn" role="alert">{error}</p>{/if}
   {:else if text}
-    <div class="text" class:clamped={long && !expanded}><div bind:clientHeight={contentHeight}><Markdown {text} /></div></div>
+    <div class="text" class:clamped={long && !expanded}><div bind:clientHeight={contentHeight}><Markdown text={shown} /></div></div>
     {#if long}
       <button type="button" class="link toggle t-caption" aria-expanded={expanded} onclick={() => (expanded = !expanded)}>{expanded ? "Show less" : "Show more"}</button>
     {/if}
