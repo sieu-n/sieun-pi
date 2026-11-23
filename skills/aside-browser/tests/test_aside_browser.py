@@ -53,6 +53,9 @@ class Base(unittest.TestCase):
             "ASIDE_BROWSER_BOX": "0",
         })
         self.env.start()
+        mac = patch.object(ab, "_on_mac", return_value=True)
+        mac.start()
+        self.addCleanup(mac.stop)
         ab._owned.clear()
         ab._browser = "aside"
 
@@ -490,12 +493,57 @@ class BrowserRoutingTests(Base):
                 "https://www.reddit.com/r/Music/",
                 "https://us.posthog.com/project/226805/experiments/476339",
                 "chrome-extension://fjdhphbdlfjogobdofoaagnlnkoibdge/main.html",
-                "about:blank",
             ):
                 self.assertEqual(ab.browser_for(url), "aside", url)
 
-    def test_box_off_sends_everything_to_aside(self):
+    def test_box_off_on_the_mac_sends_everything_to_aside(self):
         self.assertEqual(ab.browser_for("https://example.com/"), "aside")
+
+    def test_urls_with_no_host_go_to_the_box(self):
+        """11-24 08:03 to 08:10 KST: open_tab('about:blank') from a us-metal02 job opened in the owner's Aside, and its later page.goto stayed there."""
+        for mac in (False, True):
+            with patch.object(ab, "_on_mac", return_value=mac), patch.object(ab, "box_available", return_value=True):
+                for url in ("about:blank", "data:text/html,<p>hi</p>", "file:///tmp/page.html", "", None):
+                    self.assertEqual(ab.browser_for(url), "box", (mac, url))
+
+    def test_off_the_mac_a_missing_box_raises_instead_of_opening_aside(self):
+        mcp = self.fake()
+        ab._browser = None
+        with patch.object(ab, "_on_mac", return_value=False):
+            for url in ("about:blank", "https://virev.ai/blog", "http://localhost:5180/"):
+                self.assertEqual(ab.browser_for(url), "box", url)
+                with self.assertRaisesRegex(ab.AsideError, "No box Chrome on .*ASIDE_BROWSER_BOX=0"):
+                    self.call(ab.open_tab(url))
+            with self.assertRaisesRegex(ab.AsideError, "No box Chrome"):
+                self.call(ab.run("await page.goto('https://virev.ai/blog')"))
+            with self.assertRaisesRegex(ab.AsideError, "No box Chrome"):
+                self.call(ab.snapshot())
+            self.assertEqual(self.call(ab.tabs()), [])
+        self.assertEqual(mcp.calls, [])
+
+    def test_off_the_mac_login_pages_and_browser_aside_still_open_in_aside(self):
+        mcp = self.fake(
+            '{"title":"Inbox","url":"https://mail.google.com/mail/u/0/#inbox","targetId":"T1"}',
+            '{"title":"Blog","url":"https://virev.ai/blog","targetId":"T2"}',
+        )
+        with patch.object(ab, "_on_mac", return_value=False):
+            self.assertEqual(ab.browser_for("https://mail.google.com/mail/u/0/#inbox"), "aside")
+            self.call(ab.open_tab("https://mail.google.com/mail/u/0/#inbox"))
+            self.call(ab.open_tab("https://virev.ai/blog", browser="aside"))
+        self.assertEqual(len(mcp.calls), 2)
+
+    def test_a_box_tab_stays_on_the_box(self):
+        mcp = self.fake()
+        ab._browser = None
+        box = AsyncMock(side_effect=lambda code: '{"title":"","url":"about:blank","targetId":"box-1"}' if "__info" in code else "box out")
+        with patch.object(ab, "_on_mac", return_value=False), patch.object(ab, "box_available", return_value=True), patch.object(ab, "_box_call", box):
+            self.assertIn("box-1", self.call(ab.open_tab("about:blank")))
+            self.assertEqual(self.call(ab.run("await page.goto('https://virev.ai/blog'); await page.setViewportSize({width: 390, height: 844})")), "box out")
+            self.assertEqual(self.call(ab.run("const p = await openTab('about:blank'); await p.goto('https://virev.ai/blog')")), "box out")
+            self.assertEqual(self.call(ab.snapshot()), "box out")
+        self.assertEqual(ab._browser, "box")
+        self.assertEqual(box.await_count, 4)
+        self.assertEqual(mcp.calls, [])
 
     def test_box_refuses_platform_pages_under_c230_before_any_runner_starts(self):
         box = AsyncMock(return_value="box out")

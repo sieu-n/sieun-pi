@@ -876,16 +876,21 @@ def _platform_refusal(url: str) -> AsideError:
 _LOGIN_PAGE = re.compile(r"^https?://(?:accounts\.|login\.|auth\.|sso\.)|/(?:log-?in|sign-?in|sign_in|auth|sso|oauth|session)(?:[/?#.]|$)", re.I)
 
 
-def browser_for(url: str) -> str:
-    """'box' for a page that needs none of the owner's logins (our own apps, public pages), else 'aside'."""
+def _needs_login(url: str) -> bool:
+    """Whether url is a page that needs one of the owner's logins: a LOGIN_HOSTS host, a mail, ticket or social page, or a non-http
+    page with a host, such as chrome-extension://<id>/. A URL with no host (about:blank, data:, file:///, '') needs none."""
     try:
         parts = urlsplit(url or "")
         host = parts.hostname or ""
     except ValueError:
-        return "aside"
-    if parts.scheme not in ("http", "https") or not host or not box_available() or LOGIN_HOSTS.search(host) or _host_kind(url):
-        return "aside"
-    return "box"
+        return False
+    return bool(host) and (parts.scheme not in ("http", "https") or bool(LOGIN_HOSTS.search(host)) or bool(_host_kind(url)))
+
+
+def browser_for(url: str) -> str:
+    """'aside' for a page that needs one of the owner's logins, else 'box'. Only a kernel on the Mac with no box runner gets 'aside' for
+    every page; off the Mac a page with no login stays on the box, and a call there raises when the box Chrome cannot start."""
+    return "aside" if _needs_login(url) or _aside_default() else "box"
 
 
 # The Aside REPL's site skill globals (`aside skills list`), which exist only in Aside.
@@ -921,13 +926,41 @@ def _box_host() -> str:
     return os.environ.get("ASIDE_BROWSER_BOX_HOST", "us-metal02" if sys.platform == "darwin" else "")
 
 
+def _box_problem() -> str | None:
+    """Why the box runner cannot start from this kernel, or None when it can."""
+    if os.environ.get("ASIDE_BROWSER_BOX", "1") == "0":
+        return "ASIDE_BROWSER_BOX=0 turns the box Chrome off in this kernel"
+    if _box_host():
+        return None if shutil.which("ssh") else f"no ssh binary to reach the box host {_box_host()}"
+    if not _node():
+        return "no node binary on PATH or at ~/.local/node/bin/node"
+    modules = os.path.join(BOX_DIR, "node_modules", "playwright-core")
+    return None if os.path.isdir(modules) else f"the box runner is not installed ({modules} is missing)"
+
+
 def box_available() -> bool:
     """The box runner works: on the Mac, ssh reaches its host; elsewhere its playwright-core is installed here. ASIDE_BROWSER_BOX=0 turns it off."""
-    if os.environ.get("ASIDE_BROWSER_BOX", "1") == "0":
-        return False
-    if _box_host():
-        return bool(shutil.which("ssh"))
-    return bool(_node()) and os.path.isdir(os.path.join(BOX_DIR, "node_modules", "playwright-core"))
+    return _box_problem() is None
+
+
+def _on_mac() -> bool:
+    return sys.platform == "darwin"
+
+
+def _aside_default() -> bool:
+    """Whether a page with no login goes to Aside: only on the Mac with no box runner. On 11-24 from 08:03 to 08:10 KST two subagents of
+    a us-metal02 job opened about:blank in the owner's Aside, because no-host URLs and a missing box runner both fell back to Aside, and
+    one loaded virev.ai/blog there about 10 times with a 390 px resize and scrolling (c103, c69)."""
+    return _on_mac() and not box_available()
+
+
+def _no_box_error() -> AsideError:
+    return AsideError(
+        f"No box Chrome on {socket.gethostname()}: {_box_problem() or 'the box runner is off'}. A page that needs no login opens only in"
+        " the box Chrome here, never in the owner's Aside on his Mac (c103, c69).",
+        "Install the runner with `cd skills/aside-browser/box && npm ci`, or drop ASIDE_BROWSER_BOX=0. Pass browser='aside' only for a"
+        " page that needs one of the owner's logins.",
+    )
 
 
 def _node() -> str | None:
@@ -1068,7 +1101,7 @@ _browser: str | None = None
 
 def _current() -> str:
     """The browser of the last open_tab, attach or routed run(); before any, the box when it works here, else Aside."""
-    return _browser or ("box" if box_available() else "aside")
+    return _browser or ("aside" if _aside_default() else "box")
 
 
 # ---------------------------------------------------------------- idle tabs
@@ -1189,6 +1222,8 @@ async def _repl_now(code: str, title: str, owner_ok: str | None = None, plain: s
     Every REPL call passes the outside send check here; `plain` is the caller's code before wrapping.
     """
     browser = browser or _current()
+    if browser == "box" and not box_available():
+        raise _no_box_error()
     approved = False
     if _sends(plain or code) or owner_ok:
         info = await _page(browser)
@@ -1277,7 +1312,7 @@ async def tabs(browser: str | None = None) -> list[dict[str, Any]]:
     lister = _scoped(
         "const __tabs = await listBrowserTabs(); console.log(JSON.stringify(__tabs.map(t => ({targetId: t.targetId, active: t.active, title: t.title, url: t.url}))))"
     )
-    wanted = {"aside": ("aside",), "box": ("box",), "all": ("aside", "box")}.get(browser or "", ("box",) if box_available() else ("aside",))
+    wanted = {"aside": ("aside",), "box": ("box",), "all": ("aside", "box")}.get(browser or "", ("aside",) if _aside_default() else ("box",))
     found: list[dict[str, Any]] = []
     owned = _owned_tabs()
     for browser in [b for b in wanted if b == "aside" or _box.running()]:
