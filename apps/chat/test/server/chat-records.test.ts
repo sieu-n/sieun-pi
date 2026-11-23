@@ -1,17 +1,29 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { ChatDb } from "../../server/chat-db.ts";
-import { ChatRecords, docKind, docText, readDoc, type DocSpec } from "../../server/chat-records.ts";
+import type { AgentsFile, RoomsFile } from "../../server/agent-store.ts";
+import { ChatRecords, DbDoc, docKind, docText, readDoc, type DocSpec } from "../../server/chat-records.ts";
 import { drained } from "../../server/disk.ts";
 import { JsonMove } from "../../server/json-move.ts";
-import { AGENTS, CHANNELS, FOR_ME, oldChannelLog, oldChannels, ROOMS, STATE } from "../../server/record-kinds.ts";
+import { AGENTS, CHANNELS, FOR_ME, oldChannelLog, oldChannels, ROOMS, STATE, type ForMeFile } from "../../server/record-kinds.ts";
+import type { StateFile } from "../../server/store.ts";
 
 const dir = () => mkdtempSync(join(tmpdir(), "chat-records-"));
-/** A records set whose writes commit on the calling thread, as a script's do. */
-const records = (data: string) => ChatRecords.standalone(data);
+/** A records set whose writes commit on the calling thread at each save, as a script's do. */
+const KINDS = ["agents", "rooms", "state", "for_me", "channels"];
+const records = (data: string) => ChatRecords.standalone(data, KINDS);
+/** A records set whose saves wait for a flush, as the server's do. */
+function served(data: string): ChatRecords {
+  const chat = new ChatDb(join(data, "chat.sqlite"), { offThread: false });
+  return new ChatRecords(chat, data, kind => {
+    const move = new JsonMove(chat, data, kind);
+    move.open();
+    return move;
+  }, KINDS);
+}
 
 /** Files with what the live ones hold that a round trip could lose: a key no type names, numeric keys, a repeated id, nested key order. */
 const FILES: Record<string, unknown> = {
@@ -65,11 +77,11 @@ test("a boot imports each file once, and each document renders back to the same 
 test("a save writes only the rows that changed, and the DB renders what the old whole-file write wrote", async () => {
   const data = dir();
   writeFiles(data);
-  const set = records(data);
-  const agents = set.doc(AGENTS);
-  const rooms = set.doc(ROOMS);
-  const state = set.doc(STATE);
-  const forMe = set.doc(FOR_ME);
+  const set = served(data);
+  const agents = set.doc(AGENTS) as DbDoc<AgentsFile>;
+  const rooms = set.doc(ROOMS) as DbDoc<RoomsFile>;
+  const state = set.doc(STATE) as DbDoc<StateFile>;
+  const forMe = set.doc(FOR_ME) as DbDoc<ForMeFile>;
   assert.deepEqual(agents.value, FILES["agents.json"]);
   assert.deepEqual(forMe.value, FILES["for-me.json"]);
   assert.equal(agents.changes().length, 0, "an unsaved document writes nothing");
@@ -88,7 +100,7 @@ test("a save writes only the rows that changed, and the DB renders what the old 
     change();
     agents.save();
     const stmts = agents.changes();
-    assert.equal(stmts.length, rows, `${what}: ${stmts.map(s => s.sql.slice(0, 30)).join(" | ")}`);
+    assert.equal(stmts.length, rows, `${what}: ${stmts.map(stmt => stmt.sql.slice(0, 30)).join(" | ")}`);
     await set.chat.write(stmts);
     assert.equal(docKind(AGENTS as unknown as DocSpec<object>).dump(set.chat.db, "agents.json"), docText(agents.value), what);
   }
@@ -118,7 +130,7 @@ test("the JSON export follows a save, and a boot after it imports nothing", asyn
   const data = dir();
   writeFiles(data);
   const set = records(data);
-  const rooms = set.doc(ROOMS);
+  const rooms = set.doc(ROOMS) as DbDoc<RoomsFile>;
   rooms.value.rooms.push({ id: "so_1", createdAt: 3, archived: false, kind: "solo", name: "s", agenda: "", members: [] });
   rooms.save();
   await set.saved();
@@ -157,6 +169,25 @@ test("a missing file reads as the empty document, and its first save writes it",
   const read = records(data).doc(FOR_ME);
   assert.equal(read.stored, true);
   assert.deepEqual(read.value, doc.value);
+});
+
+test("a kind the server does not keep in chat.sqlite reads and writes its JSON file as before the move, and opens no DB", async () => {
+  const data = dir();
+  writeFiles(data);
+  const set = ChatRecords.standalone(data, []);
+  const state = set.doc(STATE);
+  assert.equal(state.stored, true);
+  assert.deepEqual(state.value, FILES["state.json"]);
+  state.value.reads.dm_q = { at: 3 };
+  state.save();
+  await drained();
+  assert.equal(readFileSync(join(data, "state.json"), "utf8"), docText(state.value));
+  const forMe = set.doc(FOR_ME);
+  forMe.value.marks.ag_q = {};
+  forMe.save();
+  assert.equal(readFileSync(join(data, "for-me.json"), "utf8"), docText(forMe.value), "for-me.json is written at the save, as before");
+  set.flushSync();
+  assert.equal(existsSync(join(data, "chat.sqlite")), false);
 });
 
 test("the channel files of before phase 5 import as rows and render back to the same bytes", () => {

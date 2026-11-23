@@ -17,8 +17,9 @@ import { statSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import { ChatDb, type Stmt } from "./chat-db.ts";
-import { drained } from "./disk.ts";
+import { drained, writeJsonLater } from "./disk.ts";
 import { JsonMove, type JsonKind } from "./json-move.ts";
+import { readJson, writeJson } from "./store.ts";
 
 /** Columns a collection's rows carry beside their key, for queries by hand, each worked out from the entry. */
 export type Columns = Readonly<Record<string, (value: unknown) => SQLInputValue>>;
@@ -38,30 +39,41 @@ export interface DocSpec<T extends object> {
   file: string;
   collections: readonly Collection[];
   empty: () => T;
+  /** While the kind is not in chat.sqlite: the file is written at each save on the calling thread, as for-me.json was, not through the disk queue. */
+  syncJson?: true;
 }
 
-/** One row of a collection: its key parts, its place (two parts in a `map2`), its extra columns and its body. */
-type Row = { table: string; keys: string[]; ords: number[]; extra: SQLInputValue[]; body: string | null };
-type Flat = { rows: Map<string, Row & { text: string }>; doc: string; expanded: string };
+/** One row of a collection: its key (two parts in a `map2`, whose outer row has an empty inner key), its place, the entry and its JSON. */
+type Row = { table: string; k1: string; k2?: string; o1: number; o2: number; item: unknown; body: string | null };
+/**
+ * A collection's rows in order, as parallel lists: the keys (`k2` only in a `map2`), the places, the entries and their JSON. `kept` says
+ * the keys are the ones the last save had, in the same order, so each row kept its place and only its JSON can differ.
+ */
+type Part = { table: string; k1: string[]; k2: string[] | null; o1: number[]; o2: number[]; items: unknown[]; bodies: (string | null)[]; kept: boolean };
+type Flat = { parts: Map<string, Part>; doc: string; expanded: string };
 
-const rowId = (table: string, keys: readonly string[]): string => [table, ...keys].join("\u0000");
+const rowKey = (part: Part, i: number): string => (part.k2 ? `${part.k1[i]}\u0000${part.k2[i]}` : part.k1[i]!);
+const rowAt = (part: Part, i: number): Row => ({
+  table: part.table, k1: part.k1[i]!, ...(part.k2 ? { k2: part.k2[i]! } : {}), o1: part.o1[i]!, o2: part.o2[i]!, item: part.items[i], body: part.bodies[i]!,
+});
 const isPlain = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const docTable = (kind: string): string => `${kind}_doc`;
+const sameList = (a: readonly string[] | null | undefined, b: readonly string[] | null): boolean =>
+  a === b || (!!a && !!b && a.length === b.length && a.every((x, i) => x === b[i]));
 
 /**
- * Each key's place: the place its row had when every kept key still comes in the same order and every new key comes after them, which an
+ * Each row's place: the place it had when every kept row still comes in the same order and every new row comes after them, which an
  * append, a new map key or a removal leaves, so those write only their own rows; otherwise 0, 1, 2 ... again.
  */
-function places(keys: readonly string[], old: (key: string) => number | undefined): number[] {
+function places(had: readonly (number | undefined)[]): number[] {
   let last = -1;
   let fresh = false;
-  for (const key of keys) {
-    const at = old(key);
+  for (const at of had) {
     if (at === undefined) fresh = true;
-    else if (fresh || at <= last) return keys.map((_, i) => i);
+    else if (fresh || at <= last) return had.map((_, i) => i);
     else last = at;
   }
-  return keys.map(key => old(key) ?? ++last);
+  return had.map(at => at ?? ++last);
 }
 
 function expands(collection: Collection, value: unknown): boolean {
@@ -70,56 +82,121 @@ function expands(collection: Collection, value: unknown): boolean {
   return collection.shape === "map" || Object.values(value).every(isPlain);
 }
 
-/** A map's entries as JSON, without the keys whose value JSON leaves out. */
-const entries = (value: Record<string, unknown>): [string, string][] =>
-  Object.entries(value).flatMap(([key, item]) => {
-    const body = JSON.stringify(item) as string | undefined;
-    return body === undefined ? [] : [[key, body] as [string, string]];
-  });
+/** A map's keys, entries and their JSON, without the keys whose value JSON leaves out, such as undefined, which the file never holds. */
+function entries(map: Record<string, unknown>, keys: string[], items: unknown[], bodies: (string | null)[]): void {
+  for (const key of Object.keys(map)) {
+    const body = JSON.stringify(map[key]) as string | undefined;
+    if (body === undefined) continue;
+    keys.push(key);
+    items.push(map[key]);
+    bodies.push(body);
+  }
+}
 
-/** `value`'s rows, keeping the places `old` gave the rows it still has. */
-function flatten(spec: DocSpec<object>, value: object, old: ReadonlyMap<string, { ords: number[] }>): Flat {
-  const rows = new Map<string, Row & { text: string }>();
-  const add = (row: Row) => rows.set(rowId(row.table, row.keys), { ...row, text: JSON.stringify([row.ords, row.extra, row.body]) });
+/** A collection's rows in order, before their places. */
+function rowsOf(collection: Collection, part: unknown): Omit<Part, "o1" | "o2" | "kept"> {
+  const k1: string[] = [];
+  const items: unknown[] = [];
+  const bodies: (string | null)[] = [];
+  const { table } = collection;
+  if (collection.shape === "list") {
+    const seen = new Map<string, number>();
+    for (const item of part as unknown[]) {
+      const id = collection.id(item);
+      const n = (seen.get(id) ?? 0) + 1;
+      seen.set(id, n);
+      k1.push(n === 1 ? id : `${id}#${n}`);
+      items.push(item);
+      bodies.push(JSON.stringify(item) ?? "null");
+    }
+    return { table, k1, k2: null, items, bodies };
+  }
+  if (collection.shape === "map") {
+    entries(part as Record<string, unknown>, k1, items, bodies);
+    return { table, k1, k2: null, items, bodies };
+  }
+  // Each outer key has a row of its own with an empty inner key and no body, so an outer key with no entries keeps its place too.
+  const k2: string[] = [];
+  const outer = part as Record<string, Record<string, unknown>>;
+  for (const key of Object.keys(outer)) {
+    k1.push(key);
+    k2.push("");
+    items.push(null);
+    bodies.push(null);
+    const from = k1.length;
+    entries(outer[key]!, k2, items, bodies);
+    for (let i = from; i < k2.length; i++) k1.push(key);
+  }
+  return { table, k1, k2, items, bodies };
+}
+
+/** The places of `rows`, kept from `old` where they can be: an outer key's place in a `map2`, and each inner key's place under it. */
+function placed(rows: Omit<Part, "o1" | "o2" | "kept">, old: Part | undefined): Part {
+  if (old && sameList(old.k1, rows.k1) && sameList(old.k2, rows.k2)) return { ...rows, o1: old.o1, o2: old.o2, kept: true };
+  const had = new Map<string, number>();
+  if (old) for (let i = 0; i < old.k1.length; i++) had.set(rowKey(old, i), i);
+  const at = (key: string) => had.get(key);
+  if (!rows.k2) {
+    const o1 = places(rows.k1.map(key => (at(key) === undefined ? undefined : old!.o1[at(key)!])));
+    return { ...rows, o1, o2: rows.k1.map(() => 0), kept: false };
+  }
+  const o1: number[] = [];
+  const o2: number[] = [];
+  const outer = rows.k1.flatMap((key, i) => (rows.k2![i] === "" ? [i] : []));
+  const outerPlaces = places(outer.map(i => { const j = at(`${rows.k1[i]}\u0000`); return j === undefined ? undefined : old!.o1[j]; }));
+  outer.forEach((start, n) => {
+    const end = outer[n + 1] ?? rows.k1.length;
+    const inner = places(rows.k2!.slice(start + 1, end).map((k, i) => { const j = at(`${rows.k1[start + 1 + i]}\u0000${k}`); return j === undefined ? undefined : old!.o2[j]; }));
+    o1.push(outerPlaces[n]!);
+    o2.push(0);
+    for (const place of inner) {
+      o1.push(outerPlaces[n]!);
+      o2.push(place);
+    }
+  });
+  return { ...rows, o1, o2, kept: false };
+}
+
+/** `value`'s rows, keeping the places `old` gave the rows it still has. One `JSON.stringify` per entry is the cost of a save. */
+function flatten(spec: DocSpec<object>, value: object, old: Flat | null): Flat {
+  const parts = new Map<string, Part>();
   const top = value as Record<string, unknown>;
   const expanded: string[] = [];
   for (const collection of spec.collections) {
     const part = top[collection.key];
     if (!expands(collection, part)) continue;
     expanded.push(collection.key);
-    const { table } = collection;
-    const extra = (item: unknown) => Object.values(collection.shape === "map2" ? {} : collection.columns ?? {}).map(column => column(item) ?? null);
-    if (collection.shape === "list") {
-      const seen = new Map<string, number>();
-      const items = (part as unknown[]).map(item => {
-        const id = collection.id(item);
-        const n = (seen.get(id) ?? 0) + 1;
-        seen.set(id, n);
-        return { key: n === 1 ? id : `${id}#${n}`, item, body: JSON.stringify(item) ?? "null" };
-      });
-      const ords = places(items.map(i => i.key), key => old.get(rowId(table, [key]))?.ords[0]);
-      items.forEach((i, n) => add({ table, keys: [i.key], ords: [ords[n]!], extra: extra(i.item), body: i.body }));
-    } else if (collection.shape === "map") {
-      const list = entries(part as Record<string, unknown>);
-      const ords = places(list.map(([key]) => key), key => old.get(rowId(table, [key]))?.ords[0]);
-      list.forEach(([key, body], n) => add({ table, keys: [key], ords: [ords[n]!], extra: extra((part as Record<string, unknown>)[key]), body }));
-    } else {
-      // Each outer key has a row of its own with an empty inner key and no body, so an outer key with no entries keeps its place too.
-      const outer = Object.entries(part as Record<string, Record<string, unknown>>);
-      const ords = places(outer.map(([key]) => key), key => old.get(rowId(table, [key, ""]))?.ords[0]);
-      outer.forEach(([key, inner], n) => {
-        add({ table, keys: [key, ""], ords: [ords[n]!, 0], extra: [], body: null });
-        const list = entries(inner);
-        const innerOrds = places(list.map(([k]) => k), k => old.get(rowId(table, [key, k]))?.ords[1]);
-        list.forEach(([k, body], i) => add({ table, keys: [key, k], ords: [ords[n]!, innerOrds[i]!], extra: [], body }));
-      });
-    }
+    parts.set(collection.table, placed(rowsOf(collection, part), old?.parts.get(collection.table)));
   }
   const doc = JSON.stringify(Object.fromEntries(Object.entries(top).map(([key, part]) => [key, expanded.includes(key) ? null : part])));
-  return { rows, doc, expanded: JSON.stringify(expanded) };
+  return { parts, doc, expanded: JSON.stringify(expanded) };
 }
 
-const recordsIn = (flat: Flat): number => [...flat.rows.values()].filter(row => row.body !== null).length;
+/** The statements that take the rows of `old` to the rows of `next`. */
+function diff(spec: DocSpec<object>, old: Flat | null, next: Flat): Stmt[] {
+  const stmts: Stmt[] = [];
+  if (next.doc !== old?.doc || next.expanded !== old?.expanded) stmts.push(saveDoc(spec, next));
+  for (const [table, part] of next.parts) {
+    const was = old?.parts.get(table);
+    if (part.kept) {
+      for (let i = 0; i < part.bodies.length; i++) if (part.bodies[i] !== was!.bodies[i]) stmts.push(upsert(spec, rowAt(part, i)));
+      continue;
+    }
+    const had = new Map<string, number>();
+    if (was) for (let i = 0; i < was.k1.length; i++) had.set(rowKey(was, i), i);
+    for (let i = 0; i < part.k1.length; i++) {
+      const j = had.get(rowKey(part, i));
+      if (j !== undefined) had.delete(rowKey(part, i));
+      if (j === undefined || was!.bodies[j] !== part.bodies[i] || was!.o1[j] !== part.o1[i] || was!.o2[j] !== part.o2[i]) stmts.push(upsert(spec, rowAt(part, i)));
+    }
+    for (const j of had.values()) stmts.push(remove(spec, rowAt(was!, j)));
+  }
+  // A collection the document no longer expands, such as one set to null, loses every row it had.
+  for (const [table, was] of old?.parts ?? []) if (!next.parts.has(table)) for (let j = 0; j < was.k1.length; j++) stmts.push(remove(spec, rowAt(was, j)));
+  return stmts;
+}
+
+const recordsIn = (flat: Flat): number => [...flat.parts.values()].reduce((n, part) => n + part.bodies.filter(body => body !== null).length, 0);
 
 /** The SQL that writes `row`, replacing the row with its key. */
 function upsert(spec: DocSpec<object>, row: Row): Stmt {
@@ -128,22 +205,23 @@ function upsert(spec: DocSpec<object>, row: Row): Stmt {
     return {
       sql: `INSERT INTO ${row.table} (${collection.column}, ${collection.inner}, outer_ord, ord, body) VALUES (?, ?, ?, ?, ?) ` +
         `ON CONFLICT (${collection.column}, ${collection.inner}) DO UPDATE SET outer_ord = excluded.outer_ord, ord = excluded.ord, body = excluded.body`,
-      params: [row.keys[0]!, row.keys[1]!, row.ords[0]!, row.ords[1]!, row.body],
+      params: [row.k1, row.k2!, row.o1, row.o2, row.body],
     };
   }
-  const names = Object.keys(collection.columns ?? {});
+  const columns = collection.columns ?? {};
+  const names = Object.keys(columns);
   return {
     sql: `INSERT INTO ${row.table} (${[collection.column, "ord", ...names, "body"].join(", ")}) VALUES (${["?", "?", ...names.map(() => "?"), "?"].join(", ")}) ` +
       `ON CONFLICT (${collection.column}) DO UPDATE SET ${["ord", ...names, "body"].map(n => `${n} = excluded.${n}`).join(", ")}`,
-    params: [row.keys[0]!, row.ords[0]!, ...row.extra, row.body],
+    params: [row.k1, row.o1, ...names.map(name => columns[name]!(row.item) ?? null), row.body],
   };
 }
 
 function remove(spec: DocSpec<object>, row: Row): Stmt {
   const collection = spec.collections.find(c => c.table === row.table)!;
   return collection.shape === "map2"
-    ? { sql: `DELETE FROM ${row.table} WHERE ${collection.column} = ? AND ${collection.inner} = ?`, params: [row.keys[0]!, row.keys[1]!] }
-    : { sql: `DELETE FROM ${row.table} WHERE ${collection.column} = ?`, params: [row.keys[0]!] };
+    ? { sql: `DELETE FROM ${row.table} WHERE ${collection.column} = ? AND ${collection.inner} = ?`, params: [row.k1, row.k2!] }
+    : { sql: `DELETE FROM ${row.table} WHERE ${collection.column} = ?`, params: [row.k1] };
 }
 
 const saveDoc = (spec: DocSpec<object>, flat: Flat): Stmt => ({
@@ -166,32 +244,33 @@ export function docTables(spec: DocSpec<object>): string {
   ].join(";\n");
 }
 
-/** The document as the DB holds it, with each row's place, or null when the DB holds none of it. */
-export function readDoc(db: DatabaseSync, spec: DocSpec<object>): { value: object; ords: Map<string, { ords: number[] }> } | null {
+/** The document as the DB holds it, with its rows in order, or null when the DB holds none of it. */
+export function readDoc(db: DatabaseSync, spec: DocSpec<object>): { value: object; flat: Flat } | null {
   const doc = db.prepare(`SELECT body, expanded FROM ${docTable(spec.kind)} WHERE file = ?`).get(spec.file) as { body: string; expanded: string } | undefined;
   if (!doc) return null;
   const value = JSON.parse(doc.body) as Record<string, unknown>;
   const expanded = JSON.parse(doc.expanded) as string[];
-  const ords = new Map<string, { ords: number[] }>();
+  const parts = new Map<string, Part>();
   for (const c of spec.collections) {
     if (!expanded.includes(c.key)) continue;
-    if (c.shape === "map2") {
-      const rows = db.prepare(`SELECT ${c.column} AS k, ${c.inner} AS i, outer_ord AS o, ord, body FROM ${c.table} ORDER BY outer_ord, ord`).all() as
-        { k: string; i: string; o: number; ord: number; body: string | null }[];
+    const map2 = c.shape === "map2";
+    const rows = db.prepare(map2
+      ? `SELECT ${c.column} AS k, ${c.inner} AS i, outer_ord AS o, ord AS o2, body FROM ${c.table} ORDER BY outer_ord, ord`
+      : `SELECT ${c.column} AS k, ord AS o, 0 AS o2, body FROM ${c.table} ORDER BY o`).all() as { k: string; i?: string; o: number; o2: number; body: string | null }[];
+    const items = rows.map(row => (row.body === null ? null : JSON.parse(row.body)));
+    parts.set(c.table, {
+      table: c.table, k1: rows.map(row => row.k), k2: map2 ? rows.map(row => row.i!) : null, o1: rows.map(row => Number(row.o)), o2: rows.map(row => Number(row.o2)),
+      items, bodies: rows.map(row => row.body), kept: false,
+    });
+    if (c.shape === "list") value[c.key] = items;
+    else if (c.shape === "map") value[c.key] = Object.fromEntries(rows.map((row, i) => [row.k, items[i]]));
+    else {
       const out: [string, [string, unknown][]][] = [];
-      for (const row of rows) {
-        ords.set(rowId(c.table, [row.k, row.i]), { ords: [Number(row.o), Number(row.ord)] });
-        if (row.body === null) out.push([row.k, []]);
-        else out.at(-1)![1].push([row.i, JSON.parse(row.body)]);
-      }
+      rows.forEach((row, i) => (row.body === null ? out.push([row.k, []]) : out.at(-1)![1].push([row.i!, items[i]])));
       value[c.key] = Object.fromEntries(out.map(([k, inner]) => [k, Object.fromEntries(inner)]));
-      continue;
     }
-    const rows = db.prepare(`SELECT ${c.column} AS k, ord, body FROM ${c.table} ORDER BY ord`).all() as { k: string; ord: number; body: string }[];
-    for (const row of rows) ords.set(rowId(c.table, [row.k]), { ords: [Number(row.ord)] });
-    value[c.key] = c.shape === "list" ? rows.map(row => JSON.parse(row.body)) : Object.fromEntries(rows.map(row => [row.k, JSON.parse(row.body)]));
   }
-  return { value, ords };
+  return { value, flat: { parts, doc: doc.body, expanded: doc.expanded } };
 }
 
 /** The file's text, as `writeJson` and `writeJsonLater` write it. */
@@ -199,18 +278,18 @@ export const docText = (value: unknown): string => `${JSON.stringify(value, null
 
 /** Replaces every row of the document with the rows of `value`, inside the caller's transaction, and answers how many records it holds. */
 function replaceDoc(db: DatabaseSync, spec: DocSpec<object>, value: object): number {
-  const flat = flatten(spec, value, new Map());
+  const flat = flatten(spec, value, null);
   for (const c of spec.collections) db.exec(`DELETE FROM ${c.table}`);
   const run = (stmt: Stmt) => db.prepare(stmt.sql).run(...(stmt.params ?? []));
   run(saveDoc(spec, flat));
-  for (const row of flat.rows.values()) run(upsert(spec, row));
+  for (const part of flat.parts.values()) for (let i = 0; i < part.k1.length; i++) run(upsert(spec, rowAt(part, i)));
   return recordsIn(flat);
 }
 
 /** How many records a document's file holds: its collections' entries; a file that does not parse holds none. */
 export function docRecords(spec: DocSpec<object>, text: string): number {
   const value = parse(text);
-  return value ? recordsIn(flatten(spec, value, new Map())) : 0;
+  return value ? recordsIn(flatten(spec, value, null)) : 0;
 }
 
 function parse(text: string): object | null {
@@ -247,8 +326,33 @@ export function docKind(spec: DocSpec<object>): JsonKind {
 
 const existsFile = (path: string): boolean => statSync(path, { throwIfNoEntry: false })?.isFile() ?? false;
 
-/** One document a store holds in memory and saves as rows. */
-export class Doc<T extends object> {
+/** One document a store holds in memory: `value` is read and changed in place, then `save` keeps it. */
+export interface Doc<T extends object> {
+  value: T;
+  /** Whether the document was kept before, so `value` is not `spec.empty()`. */
+  readonly stored: boolean;
+  save(): void;
+}
+
+/** A document of a kind the server does not keep in chat.sqlite (`Config.dbKinds`): its JSON file, read and written as before the move. */
+class JsonDoc<T extends object> implements Doc<T> {
+  value: T;
+  readonly stored: boolean;
+
+  constructor(private readonly path: string, private readonly spec: DocSpec<T>) {
+    const read = readJson<T | undefined>(path, undefined);
+    this.value = read ?? spec.empty();
+    this.stored = read !== undefined;
+  }
+
+  save(): void {
+    if (this.spec.syncJson) writeJson(this.path, this.value);
+    else writeJsonLater(this.path, this.value);
+  }
+}
+
+/** A document of a kind kept in chat.sqlite, as rows. */
+export class DbDoc<T extends object> implements Doc<T> {
   /** The document; code reads and changes it in place, then calls `save`. */
   value: T;
   readonly move: JsonMove;
@@ -256,13 +360,15 @@ export class Doc<T extends object> {
   readonly stored: boolean;
   private last: Flat | null = null;
   private dirty = false;
+  private readonly records: ChatRecords;
 
-  constructor(private readonly records: ChatRecords, readonly spec: DocSpec<T>) {
+  constructor(records: ChatRecords, readonly spec: DocSpec<T>) {
+    this.records = records;
     this.move = records.move(docKind(spec as DocSpec<object>));
     const stored = readDoc(records.chat.db, spec as DocSpec<object>);
     this.value = (stored?.value as T | undefined) ?? spec.empty();
     this.stored = stored !== null;
-    if (stored) this.last = flatten(spec as DocSpec<object>, stored.value, stored.ords);
+    if (stored) this.last = stored.flat;
   }
 
   /** Says the document changed; its changed rows go to the DB with the next flush. */
@@ -276,34 +382,60 @@ export class Doc<T extends object> {
     if (!this.dirty) return [];
     this.dirty = false;
     const spec = this.spec as DocSpec<object>;
-    const old = this.last?.rows ?? new Map();
-    const next = flatten(spec, this.value, old);
-    const stmts: Stmt[] = [];
-    if (next.doc !== this.last?.doc || next.expanded !== this.last?.expanded) stmts.push(saveDoc(spec, next));
-    for (const [id, row] of next.rows) if (old.get(id)?.text !== row.text) stmts.push(upsert(spec, row));
-    for (const [id, row] of old) if (!next.rows.has(id)) stmts.push(remove(spec, row));
-    // A collection the document no longer expands, such as one set to null, loses every row of the ones it had.
+    const next = flatten(spec, this.value, this.last);
+    const stmts = diff(spec, this.last, next);
     this.last = next;
     return stmts;
   }
 }
 
-/** The chat.sqlite connection, the data dir and the moves the documents of one process share. */
+/** The kinds `APPS_CHAT_DB_KINDS` names, a comma list, as config.ts reads them for the server. */
+export const dbKindsOf = (env: NodeJS.ProcessEnv = process.env): string[] =>
+  (env.APPS_CHAT_DB_KINDS ?? "").split(",").map(kind => kind.trim()).filter(Boolean);
+
+/** The chat.sqlite connection, the data dir, the kinds kept in chat.sqlite and the moves the documents of one process share. */
 export class ChatRecords {
-  private readonly docs: Doc<object>[] = [];
+  private readonly docs: DbDoc<object>[] = [];
   private readonly moves = new Map<string, JsonMove>();
   private queued = false;
+  private connection: ChatDb | null;
+  readonly kinds: ReadonlySet<string>;
 
-  constructor(readonly chat: ChatDb, readonly dataDir: string, private readonly open: (kind: JsonKind) => JsonMove) {}
+  /**
+   * `kinds`: the kinds kept in chat.sqlite (`Config.dbKinds`); every other kind keeps its JSON file. `syncSaves`: each save commits before
+   * it returns, as a script's or spec's must, since the next store it opens on the same dir reads the DB; a write of the old files was read
+   * back the same way through the disk queue (disk.ts `readLatest`).
+   */
+  constructor(chat: ChatDb | (() => ChatDb), readonly dataDir: string, private readonly open: (kind: JsonKind) => JsonMove, kinds: Iterable<string>, private readonly syncSaves = false) {
+    this.connection = typeof chat === "function" ? null : chat;
+    this.connect = typeof chat === "function" ? chat : () => chat;
+    this.kinds = new Set(kinds);
+  }
+  private readonly connect: () => ChatDb;
 
-  /** For a script or spec with no App: its own connection, which writes on the calling thread, and its own moves. */
-  static standalone(dataDir: string): ChatRecords {
-    const chat = new ChatDb(join(dataDir, "chat.sqlite"), { offThread: false });
-    return new ChatRecords(chat, dataDir, kind => {
-      const move = new JsonMove(chat, dataDir, kind);
+  /** The chat.sqlite connection, opened on first use, so a script whose kinds all keep their files never opens it. */
+  get chat(): ChatDb {
+    return (this.connection ??= this.connect());
+  }
+
+  /**
+   * For a script or spec with no App: the kinds `APPS_CHAT_DB_KINDS` names, as the server that starts a duty precheck passes them on, and
+   * its own connection, which commits each save on the calling thread at once, and its own moves.
+   */
+  static standalone(dataDir: string, kinds: Iterable<string> = dbKindsOf()): ChatRecords {
+    let chat: ChatDb | undefined;
+    const connect = () => (chat ??= new ChatDb(join(dataDir, "chat.sqlite"), { offThread: false }));
+    const open = (kind: JsonKind) => {
+      const move = new JsonMove(connect(), dataDir, kind);
       move.open();
       return move;
-    });
+    };
+    return new ChatRecords(connect, dataDir, open, kinds, true);
+  }
+
+  /** Whether the server keeps `kind` in chat.sqlite. */
+  inDb(kind: string): boolean {
+    return this.kinds.has(kind);
   }
 
   /** The kind's move, opened on the first call: its tables, then the import of each of its files the DB has not seen. */
@@ -313,20 +445,24 @@ export class ChatRecords {
     return move;
   }
 
+  /** The document of `spec`: rows of chat.sqlite when its kind is kept there, else its JSON file as before the move. */
   doc<T extends object>(spec: DocSpec<T>): Doc<T> {
-    const doc = new Doc(this, spec);
-    this.docs.push(doc as unknown as Doc<object>);
+    if (!this.inDb(spec.kind)) return new JsonDoc(join(this.dataDir, spec.file), spec);
+    const doc = new DbDoc(this, spec);
+    this.docs.push(doc as unknown as DbDoc<object>);
     return doc;
   }
 
-  /** Flushes once the disk queue wrote what was queued before the save. */
+  /** Flushes once the disk queue wrote what was queued before the save, or at once for a script. */
   schedule(): void {
+    if (this.syncSaves) return this.flushSync();
     if (this.queued) return;
     this.queued = true;
-    void drained().then(() => {
+    // The compare runs after the turn that saved, so a route's answer never waits for it.
+    void drained().then(() => setImmediate(() => {
       this.queued = false;
       this.flush();
-    });
+    }));
   }
 
   /** Queues each changed document's rows and its JSON export now. */
@@ -342,12 +478,12 @@ export class ChatRecords {
   /** Settles once every save so far is committed. */
   async saved(): Promise<void> {
     this.flush();
-    await this.chat.written();
+    if (this.connection) await this.connection.written();
   }
 
   /** Commits every save on this thread, for a process that is exiting or a script that is done. */
   flushSync(): void {
     this.flush();
-    this.chat.flushSync();
+    this.connection?.flushSync();
   }
 }

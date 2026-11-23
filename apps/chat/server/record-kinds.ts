@@ -59,6 +59,7 @@ export const FOR_ME: DocSpec<ForMeFile> = {
   file: "for-me.json",
   collections: [{ key: "marks", table: "for_me_marks", shape: "map2", column: "agent", inner: "item" }],
   empty: () => ({ v: 1, since: Date.now(), marks: {} }),
+  syncJson: true,
 };
 
 /** channels.json of before phase 5: each channel, which migrate-channels.ts read into rooms on 10-29. */
