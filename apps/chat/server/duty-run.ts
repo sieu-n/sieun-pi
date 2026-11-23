@@ -99,7 +99,15 @@ const readExit = async (file: string): Promise<number | null> => {
   return text === null ? null : Number(text.trim());
 };
 
-/** Whether the precheck still runs: its unit is active, or its pid runs its wrapper script (a reused pid runs something else). */
+/**
+ * Whether a pid's /proc cmdline (null: no such process) shows the precheck's wrapper; a reused pid runs something else. An empty cmdline is a
+ * process inside its execve, before the kernel has set its new arguments, or one that ended and is not reaped yet. Node's spawn event can
+ * come inside that window: on 11-23, under load, a first read 36 ms after it was empty, and the run recorded "it ended with no exit code"
+ * while its wrapper went on.
+ */
+export const runsScript = (cmdline: string | null, script: string): boolean => cmdline !== null && (cmdline === "" || cmdline.includes(script));
+
+/** Whether the precheck still runs: its unit is active, or its pid runs its wrapper script (`runsScript`). */
 async function running(launch: PrecheckLaunch): Promise<boolean> {
   if (launch.runner.kind === "unit") {
     try {
@@ -109,7 +117,7 @@ async function running(launch: PrecheckLaunch): Promise<boolean> {
       return true;
     }
   }
-  if (existsSync("/proc/self")) return (await readFile(`/proc/${launch.runner.pid}/cmdline`, "utf8").catch(() => "")).includes(launch.script);
+  if (existsSync("/proc/self")) return runsScript(await readFile(`/proc/${launch.runner.pid}/cmdline`, "utf8").catch(() => null), launch.script);
   try {
     process.kill(launch.runner.pid, 0);
     return true;
