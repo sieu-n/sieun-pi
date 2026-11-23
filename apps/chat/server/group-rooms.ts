@@ -3,9 +3,10 @@
  * one post log per room under `rooms/`, written only through `AgentStore`. The owner is in every room; the member rows are registered
  * agents, each with a `wakeOn`.
  *
- * 1. A post wakes every member whose `wakeOn` is `all`, minus its author, as if it tagged each one; in a channel a thread reply wakes them
- *    too. A mentions-only member (`none`) wakes on a post that @mentions it and on a reply in a channel thread it posted in, as Slack's
- *    "mentions only" still follows threads you are in; `setWakeOn` switches it, with no system line. Each woken member gets one delivery
+ * 1. A root post wakes every member whose `wakeOn` is `all`, minus its author, as if it tagged each one. A thread reply wakes only the
+ *    agents involved in that thread, as Slack notifies only those in a thread: its root's author, any agent that replied in it or that its
+ *    root or a reply @mentions, and every agent a root with no mention woke. A mentions-only member (`none`) wakes only on a post that
+ *    @mentions it and in a thread it is involved in; `setWakeOn` switches it, with no system line. Each woken member gets one delivery
  *    to its comm thread for the room (`Agents.ensureComm`), never to its work thread, keyed `d:<room>:<post>:<agent>`, with retries; a restart resubmits every delivery still `sending` with the same key.
  *    Deliveries that waited for an offline box go as one bundled input per member when the box is back, keyed `b:<room>:<first post>:<agent>`.
  * 2. An owner post goes in as the owner's turn; an agent post goes in as an `agent.message` whose data names the author, the room, the post
@@ -522,18 +523,29 @@ export class GroupRooms {
   }
 
   /**
-   * Who a post wakes: every `all` member, every `none` member it mentions or whose thread it replies in, and every registered agent it
-   * mentions that is not a member, minus its author. An archived agent is never woken; it keeps its membership for an unarchive.
+   * Who a post wakes, minus its author, as Slack notifies: a root post wakes every `all` member and every member it mentions; a thread reply
+   * wakes only the agents involved in the thread (`involved`) and those it mentions. A registered agent it mentions that is not a member
+   * wakes too. An archived agent is never woken; it keeps its membership for an unarchive.
    */
   private wakes(row: GroupRoom, draft: Draft): AgentId[] {
-    const root = draft.threadRoot;
-    const inThread = root === undefined ? [] : this.store.postsOf(row.id).filter(p => p.id === root || p.threadRoot === root).map(p => p.author);
-    const hears = (m: RoomMember) => m.wakeOn === "all" || draft.mentions?.includes(m.agent) === true || inThread.includes(m.agent);
+    const named = draft.mentions ?? [];
+    const thread = draft.threadRoot === undefined ? undefined : this.involved(row, draft.threadRoot);
+    const hears = (m: RoomMember) => named.includes(m.agent) || (thread ? thread.has(m.agent) : m.wakeOn === "all");
     const active = (agent: string) => { const record = this.deps.agents.record(agent); return record !== undefined && !record.archived; };
-    const woken = row.members.filter(m => m.agent !== draft.author && hears(m) && active(m.agent)).map(m => m.agent);
-    const outside = (draft.mentions ?? []).filter((agent): agent is AgentId =>
-      agent !== "owner" && agent !== draft.author && !row.members.some(m => m.agent === agent) && active(agent));
-    return [...woken, ...outside];
+    const woken = row.members.filter(m => hears(m)).map(m => m.agent);
+    const outside = [...named, ...(thread ?? [])].filter((agent): agent is AgentId => !row.members.some(m => m.agent === agent));
+    return [...new Set([...woken, ...outside])].filter(agent => agent !== "owner" && agent !== draft.author && active(agent));
+  }
+
+  /**
+   * The agents involved in a thread: the root's author, every agent that replied in it, every agent its root or a reply @mentions, and,
+   * when the root mentions nobody, every agent the root woke, since such a root tags each member.
+   */
+  private involved(row: GroupRoom, root: string): Set<string> {
+    const thread = this.store.postsOf(row.id).filter(p => p.id === root || p.threadRoot === root);
+    const first = thread.find(p => p.id === root);
+    const tagged = first && !first.mentions?.length ? (first.deliveries ?? []).map(d => d.target) : [];
+    return new Set([...thread.flatMap(p => [p.author, ...(p.mentions ?? [])]), ...tagged]);
   }
 
   // Delivery

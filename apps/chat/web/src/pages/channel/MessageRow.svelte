@@ -116,7 +116,7 @@
     ...(waits ? [`${waits.charAt(0).toUpperCase()}${waits.slice(1)} for a working slot.`] : []),
     ...(message?.deliveries
       .filter((delivery) => !(offline && delivery.error === message.sendError))
-      .map(deliveryText)
+      .map((delivery) => deliveryText(delivery, message))
       .filter((text): text is string => !!text) ?? []),
   ]);
   let lightbox = $state<string | null>(null);

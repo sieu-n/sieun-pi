@@ -458,7 +458,7 @@ describe("sequence (d) on the fixture", () => {
     assert.equal(stored(s, room.id).length, all.length);
   });
 
-  test("an agent's echo of a mention wakes no one, so a mentioned outsider answers the owner once", async () => {
+  test("an agent's echo of a mention names no one, and a mentioned outsider hears the thread it is in until the hop cap", async () => {
     const room: Room = (await s.send("POST", "/api/rooms", { kind: "channel", name: "echo-loop", members: [agents.vent, agents.frontend] })).body;
     await s.send("POST", `/api/c/${room.id}/send`, { text: "@Crawler VP is the relay fine?", mentions: [agents.crawler], requestId: "echo-loop-1" });
     // The room is done once no delivery is still sending and no post came in for 1.5 s.
@@ -471,7 +471,10 @@ describe("sequence (d) on the fixture", () => {
     const all = stored(s, room.id);
     const agentPosts = all.filter(p => p.author !== "owner");
     assert.deepEqual(agentPosts.flatMap(p => p.mentions ?? []), [], "no agent post mentions anyone");
-    assert.equal(all.filter(p => p.deliveries?.some(d => d.target === agents.crawler)).length, 1, `Crawler VP hears only the owner's post (${agentPosts.length} agent posts)`);
-    assert.equal(agentPosts.filter(p => p.author === agents.crawler).length, 1);
+    // The root named Crawler VP, so it is involved in the root's thread and hears its replies, as Slack notifies a mentioned person.
+    const root = all.find(p => p.author === "owner")!;
+    assert.ok(agentPosts.every(p => p.threadRoot === root.id), "every answer stays in the owner's thread");
+    assert.ok(all.filter(p => p.deliveries?.some(d => d.target === agents.crawler)).length > 1);
+    assert.ok(agentPosts.some(p => p.hops === MAX_HOPS && p.deliveries?.every(d => d.state === "stopped")), "the hop cap ends the replies");
   });
 });

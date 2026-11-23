@@ -4,7 +4,7 @@
  *
  * 1. In the agent's DM, every post another principal wrote that is not imported is on the list as `dm`.
  * 2. In a channel or Solo room, a post another principal wrote is on it as `mention` when it names the agent, `member` when one of its
- *    deliveries went to the agent, and `thread` when it replies in a channel thread whose root or an earlier reply the agent wrote.
+ *    deliveries went to the agent, and `thread` when it replies in a channel or Solo room thread whose root or an earlier reply the agent wrote.
  * 3. A post the agent wrote is on it as `reaction` once someone else reacted, with the newest such reaction as its activity.
  *
  * `for-me.json` holds `since`, set when the file is first written, and the marks. A mark completes an item until newer activity, such as a
@@ -32,7 +32,7 @@ export function parseItemId(id: unknown): { room: RoomId; post: string } | undef
   return match ? { room: match[1]!, post: match[2]! } : undefined;
 }
 
-/** Why `post` is on `agent`'s list and its activity time, or undefined when it is not on it. `wrote` holds the channel threads the agent posted in. */
+/** Why `post` is on `agent`'s list and its activity time, or undefined when it is not on it. `wrote` holds the channel and Solo room threads the agent posted in. */
 function involvement(agent: AgentId, row: RoomRow, post: RoomPost, wrote: Map<string, number>): { reasons: ForMeReason[]; activityAt: Ms } | undefined {
   if (post.author === agent) {
     const others = (post.reactions ?? []).filter(r => r.by !== agent);
@@ -120,7 +120,7 @@ export class ForMe {
       if (row.archived || (row.kind === "dm" && row.id !== record.room)) continue;
       const posts = this.deps.store.postsOf(row.id);
       const wrote = new Map<string, number>();
-      if (row.kind === "channel") {
+      if (row.kind !== "dm") {
         for (const post of posts) if (post.author === record.id) wrote.set(post.threadRoot ?? post.id, Math.min(wrote.get(post.threadRoot ?? post.id) ?? post.seq, post.seq));
       }
       for (const post of posts) {

@@ -29,8 +29,17 @@ test("a delivery queued on an away box reads as queued, never as a failure", () 
   assert.equal(offlineText("queued, us-metal03 is offline"), "Queued, us-metal03 is offline");
   assert.equal(offlineText("pi-host refused the input"), null);
   assert.equal(offlineText(undefined), null);
-  assert.equal(deliveryText({ target: "ag_scout", name: "Scout", state: "queued", at: 0, error: "queued, mac is offline" }), "Scout was mentioned. Queued, Mac is offline.");
-  assert.equal(deliveryText({ target: "ag_scout", name: "Scout", state: "queued", at: 0 }), "Scout was mentioned and waits for a working slot.");
+  const named = { mentions: ["ag_scout"] };
+  assert.equal(deliveryText({ target: "ag_scout", name: "Scout", state: "queued", at: 0, error: "queued, mac is offline" }, named), "Scout was mentioned. Queued, Mac is offline.");
+  assert.equal(deliveryText({ target: "ag_scout", name: "Scout", state: "queued", at: 0 }, named), "Scout was mentioned and waits for a working slot.");
+});
+
+test("a waiting delivery says why the post woke the agent, and says mentioned only when the post names it", () => {
+  const queued = { target: "ag_scout", name: "Scout", state: "queued", at: 0 } as const;
+  assert.equal(deliveryText(queued, { mentions: [] }), "Scout is a member and waits for a working slot.");
+  assert.equal(deliveryText(queued, { mentions: [], threadRoot: "p1" }), "Scout is in this thread and waits for a working slot.");
+  assert.equal(deliveryText(queued, { mentions: ["ag_scout"], threadRoot: "p1" }), "Scout was mentioned and waits for a working slot.");
+  assert.equal(deliveryText(queued, { mentions: ["ag_other"], threadRoot: "p1" }), "Scout is in this thread and waits for a working slot.");
 });
 
 test("the host picker lists the chat's own box first and marks an away box", () => {

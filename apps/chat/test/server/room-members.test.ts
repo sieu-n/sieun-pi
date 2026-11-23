@@ -160,7 +160,7 @@ describe("a mentions-only member", () => {
     assert.deepEqual((await woken("tagged reply", { threadRoot: plain.id, mentions: [agents.crawler] })).targets, [agents.vent, agents.crawler]);
   });
 
-  test("it keeps waking on replies in a thread it posted in, as an all member does", async () => {
+  test("it keeps waking on replies in a thread it posted in, and an all member the root did not name does not", async () => {
     const root = await woken("thread to join", { mentions: [agents.crawler] });
     const comm = await until(async () => s.app.agents.record(agents.crawler)!.comm?.[room.id], id => id !== undefined);
     const thread = host.threadsById.get(comm!)!;
@@ -172,7 +172,7 @@ describe("a mentions-only member", () => {
     host.append(thread, 1, { kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: "c1", toolName: "tell_owner", content: [{ type: "text", text: "told the owner" }], isError: false, timestamp: Date.now() }] });
     await s.app.groups.feed(comm!);
     assert.equal(s.app.agentStore.postsOf(room.id).find(p => p.requestId === `m:${comm}:c1`)?.threadRoot, root.id);
-    assert.deepEqual((await woken("follow-up in its thread", { threadRoot: root.id })).targets, [agents.vent, agents.crawler]);
+    assert.deepEqual((await woken("follow-up in its thread", { threadRoot: root.id })).targets, [agents.crawler], "Vent never replied in the thread and the root did not name it");
 
     await s.send("PATCH", `/api/rooms/${room.id}/members/${agents.crawler}`, { wakeOn: "all" });
     assert.deepEqual((await woken("back to all")).targets, [agents.vent, agents.crawler]);
