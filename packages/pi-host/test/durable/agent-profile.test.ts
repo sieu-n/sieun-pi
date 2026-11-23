@@ -221,6 +221,17 @@ test("the role text shows real bad and good posts for each case, and the sw-fact
   assert.ok(ROOM_EXAMPLES.some(pair => pair.bad.text.includes('{\\"t\\":\\"post\\"') || pair.bad.text.includes('{"t":"post"')), "raw log lines are a bad example");
 });
 
+test("a post to him says what he would see and names no duty id, metric key, step id or job name (owner, dm_fable-auditor p15 and p16, 11-24)", () => {
+  for (const room of ["dm_vent", "ch_1a2b3c4d"]) {
+    const text = commInstructions({ agent: "ag_vent", room, work: "w1" });
+    assert.match(text, /Say what he would see, in words he uses, one fact per sentence: a post to him never names a duty id, a metric key, a board step id, a job name or another word we made up/);
+    assert.match(text, /Unslop's rule to keep real names verbatim covers a name he uses himself/);
+    assert.equal(text, commInstructions({ agent: "ag_vent", room, work: "w1" }), "the role text is the same on every build, so the cached prefix holds (c41)");
+  }
+  assert.match(workInstructions({ agent: "ag_vent", comm: "c1" }), /An edit reads like the comm thread's posts: what he would see, in his words, with no duty id, metric key, board step id or job name\./);
+  assert.ok(ROOM_EXAMPLES.some(pair => pair.bad.at === "dm_fable-auditor p14"), "the sweep post he called slop is a bad example");
+});
+
 test("an answer to an older post names it with reply_to and quotes nothing (owner, #dev-app-search-prospect p33, 11-21)", () => {
   for (const room of ["dm_vent", "ch_1a2b3c4d"]) {
     const text = commInstructions({ agent: "ag_vent", room, work: "w1" });

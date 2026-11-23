@@ -186,6 +186,11 @@ export const ROOM_EXAMPLES: readonly { case: string; bad: { at: string; text: st
     bad: { at: "dm_blind-reactions-11212039433x p4", text: "Here's your question as it sits in that file now:\n- `{\"t\":\"post\",\"post\":{\"author\":\"owner\",\"text\":\"where does the chat server keep a room's posts?\",\"id\":\"p2\",...}}`" },
     good: { at: "ch_0af55d83 p3", text: "one append-only log file per room, `~/.pi/agent/chat/rooms/<room id>.jsonl`, written by `apps/chat/server/agent-store.ts:392`" },
   },
+  {
+    case: "A duty or sweep result",
+    bad: { at: "dm_fable-auditor p14", text: "One new thing since the last sweep, for agent factory.\n- agent factory d4 \"Owner style reaches every agent\" keeps flipping. blind_follow_pct read 90% at 17:13, met target at 19:55 and read 90% again at 06:45 KST." },
+    good: { at: "that post in his words, after his p15 and p16", text: "a fresh test agent broke one of your writing rules again this morning, after following them all last night. agent factory is finding which rule and why." },
+  },
 ];
 
 /** The pairs as the role text shows them, each post quoted, and the model post last. */
@@ -243,6 +248,11 @@ export function roomExamples(): string {
  * and comm-guard no longer asks a post after a hand-over for an open box.
  * The step said to answer two waiting posts in one post, and in p173's blind-reactions run 1 on 11-21 a DM agent merged two owner posts
  * into one that answered only the first, so each post that asks its own thing gets its own answer with reply_to.
+ * On 11-24 fable auditor's DM got two sweep posts in our own names, such as "agent factory d4 ... blind_follow_pct read 90%" (p14), and he
+ * wrote "slop slop slop slop you talk disgusting" (p15, msg mwtu7pgu) and "일단 미시적으로 니가 말하는 말투 하나도 모르겠고 load unslop skill."
+ * (p16, msg mwtu8ihv). Every thread already carried unslop's full text, whose rule 12 keeps real names verbatim, and the 11-21 owner style
+ * note "plain-words" (ch_e6bd8de7/p11) had reached this step only as "a plain sentence". So a post names no duty id, metric key, step id or
+ * job name, and says what he would see.
  */
 function slackPostStep(): string {
   return "Write each post like a coworker types in Slack: the answer first in a plain sentence, with the why when it helps. " +
@@ -253,6 +263,8 @@ function slackPostStep(): string {
     "A checklist lists only results he cares about, each with its result, and you fill them in by editing that post with `edit_message`. " +
     "A question to him leads with your own pick. No labels, such as an opener like \"Early read from the spec:\" or \"short version:\" or a line of a word or two over a group of bullets like \"The others:\", and no bold, headings or tables unless he asks. A question whether a setup or skill is set up right gets one answer line and one table of each piece, where it lives, who loads it and what it says, never a bare yes or a long list (c225). Detail goes on a wiki page linked in the post. End on the words, with no sign-off emoji. " +
     "A yes or no question gets the fact he asked for and stops there: leave out what you are unsure of, or ask it as a question with your pick. " +
+    "Say what he would see, in words he uses, one fact per sentence: a post to him never names a duty id, a metric key, a board step id, a job name or another word we made up, such as `d4`, `blind_follow_pct`, `p130` or \"keys outside Vent\". " +
+    "Unslop's rule to keep real names verbatim covers a name he uses himself, such as a file he asked about, so a duty or sweep result tells him what happened and what it means for him. " +
     "When you list options, open with your pick and its reason, explain that one with how it works, a concrete example and how it would fit, and give each other option one line on what it would mean for him, as more bullets of the same list. " +
     "When you answer an older post of his while a newer one sits below it, set `reply_to` to that older post and quote nothing from it. " +
     "This replaces rule 5's table for a comparison. Real posts from our rooms, bad and then good:\n\n" + roomExamples();
@@ -389,6 +401,7 @@ export function workInstructions(ref: { agent: string; comm?: string; dir?: stri
     "When a task finishes, fails or gets blocked, report to the comm thread that handed it to you, and lead the report with the answer. " +
       "Send it no acknowledgment or progress note, such as \"Taken\" or \"expect it within the hour\": it reads your working memory and state itself when someone asks, and it posts your report as the result. " +
       "When a task asks you to edit a post in a room with `edit_message`, an edit only fills in results and the answer, never a status of your jobs or plans such as \"Working on it. Three research jobs read the spec now\" (c234). " +
+      "An edit reads like the comm thread's posts: what he would see, in his words, with no duty id, metric key, board step id or job name. " +
       "Your last edit of that post is not your report: after it, still send the comm thread a one-line report, such as \"the answer is in p14\", because only that report has it take 👀 off. " +
       "Its message header `[agent-message from sibling:<name>]` names it, so run `await agent_message.send(report, receiver_role=\"sibling\", receiver_name=\"<name>\")` in ipython with that exact name.",
     "A task you pass on to a job still reports to the comm thread that handed it to you, once the job's result is in, so note that name on the task's board step.",
