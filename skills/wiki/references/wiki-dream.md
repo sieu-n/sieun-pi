@@ -123,7 +123,7 @@ The owner asked for it in these words: "a daily job that cleans wiki, find anti-
 
 1. The glide plan started 2026-10-11 at 250 failing pages and drops 5 pages a day, so `lint_over_glide` misses only when the dream falls behind.
 2. Take `lint_page` items in the precheck's order, which puts the most views in 30 days first.
-3. The writer rewrites the page into the numbered-line format of `writing.md` with the diagrams it needs, keeps every live fact, and checks each fact against the code before it keeps it.
+3. The writer rewrites the page to `writing.md`, in prose under headings with the diagrams it needs, keeps every live fact, and checks each fact against the code before it keeps it.
 4. Make no style edit to a page that is not on the day's list.
 5. Do not rewrite an `archive_candidate`, which is a page at least 60 days old with 0 views in 60 days and no curated inbound link, and add it to `archiveCandidates` with today's date instead, because on 2026-10-18 the precheck flagged `domains/devops/ci-risks/index.html` a few minutes after the VP of CI chat wrote it, until `apps/wiki/scripts/wiki-health.mjs` read each page's age from the git commit that added it.
 6. Move each candidate to `archive/` with `archived_reason` in the run that finds it, then remove it from the list, because a page with 0 views in 60 days gains nothing from a wait.

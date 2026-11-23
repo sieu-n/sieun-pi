@@ -59,4 +59,4 @@ Everything you send another agent (briefs, relays, answers) is in English. After
 2. A brief for a job whose output includes a wiki page names that writer subagent in its `Split:` line, even when the rest of the job stays inline.
 3. The writer follows sieun-pi `skills/wiki/references/writing.md` and makes `node apps/wiki/scripts/prose-lint.mjs <page>` in sieun-pi pass.
 4. The parent reads the page against that file before it links the page to anyone.
-5. The page is in the 메르 style, with numbered short lines of one plain sentence each, many diagrams and images, and no long blog prose.
+5. The page reads as plain prose under headings with a diagram per flow, and a page under `apps/` or `domains/` keeps only the flow, tables and fields in about 800 words, with the rest on the session page (c235, c243).

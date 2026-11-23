@@ -3,70 +3,71 @@
 This file is the HTML shape of a wiki page. The system contract is the wiki page `apps/llm-wiki/index.html`.
 Write every page as HTML. The viewer renders `.md` only for the `@code/` mirror and legacy pages, so never write a `.md` page.
 
-## The format, a numbered statement stream (메르 style)
+## The format, prose under headings
 
-A page with no `doc_kind`, or with `"doc_kind": "design"`, is a stream of numbered one-fact lines, with diagrams, tables, code blocks, images and examples inside the stream.
-`writing.md` holds the rules for lines, visuals and words, and this section is the HTML shape.
+Every page reads as prose under sentence-case headings, with diagrams, tables, code blocks and images where the text describes a flow, fields or a screen.
+`writing.md` holds the rules for paragraphs, diagrams and words, and its section "Pages under apps/ and domains/" says what a curated page keeps. This section is the HTML shape.
 
-1. One line is one fact in one `<li>`, written as one plain sentence, and numbering runs on across sections with `start=`.
-2. A line states a fact ("PG is the source of truth.") and never describes the page ("This page documents...").
-3. Evidence such as the file path, the count or the date sits in the line, never in "see above".
+1. A paragraph is two to four sentences in one `<p>`, and it states facts ("PG is the source of truth.") rather than describing the page ("This page documents...").
+2. Evidence such as the file path, the count or the date sits in the sentence, never in "see above".
+3. An `<ol>` holds only steps in order, such as a call stack, and a `<table>` holds fields and short facts.
 4. A real request, a real row or a before and after goes in a `<pre><code>` block as an example.
 
 ### Worked example, copy this shape
 
 ```html
-<h2 id="why">1 · Why the frontier lives in PG</h2>
-<ol>
-	<li>The frontier is the queue of profiles we know exist but have not crawled.</li>
-	<li>It lives in PostgreSQL in <code>profile_candidates</code> and not in Redis.</li>
-	<li>Redis lost, because the frontier must survive restarts and we triage it with SQL.</li>
-	<li>Workers claim batches with <code>FOR UPDATE SKIP LOCKED</code>, so 12 replicas never fight over a row.</li>
-	<li>Only crawls discover new candidates, so an empty frontier cannot fill itself.</li>
-	<li>A separate seed job puts the first handles in on purpose.</li>
-</ol>
+<h1>Crawl frontier</h1>
+<p>The frontier is the queue of profiles we know exist but have not crawled. It lives in PostgreSQL in
+<code>profile_candidates</code>, and crawl workers claim rows from it in batches.</p>
 
+<h2 id="claim-flow">How a worker claims rows</h2>
+<p>A seed job puts the first handles in, and after that only crawls add new candidates.</p>
 <pre class="mermaid">
 flowchart LR
-  seed["seed job"] --> pc[("profile_candidates")]
-  pc -->|"SKIP LOCKED claim"| w["crawl worker"]
-  w -->|"new handles"| pc
+  seed("seed job") --> pc[("profile_candidates")]
+  pc --> w@{ shape: procs, label: "12 crawl workers" }
   w --> pg[("profiles")]
 </pre>
-
-<h2 id="claiming">2 · How a claim works</h2>
-<ol start="7">
-	<li>A claim takes 64 rows, set by <code>CLAIM_BATCH</code> in <code>src/frontier/claim.py</code>.</li>
-	<li>One batch is about one worker-minute at the per-proxy rate cap.</li>
-	<li>A bigger batch strands more rows when a worker dies.</li>
+<ol>
+	<li>A worker claims <code>CLAIM_BATCH</code> rows, 64 in <code>src/frontier/claim.py</code>, with <code>FOR UPDATE SKIP LOCKED</code>, so two of the 12 workers never take the same row.</li>
+	<li>The worker crawls each profile and writes it to <code>profiles</code>.</li>
 	<li>A claimed row frees itself when its 10-minute lease runs out, so no cleanup job exists.</li>
 </ol>
-```
 
-Every line stands alone and carries its own evidence. At least a quarter of the lines answer why or how, and the diagram sits inside the stream.
+<h2 id="fields">Fields</h2>
+<table>
+	<tr><th>Column</th><th>Type</th><th>Meaning</th></tr>
+	<tr><td><code>handle</code></td><td>text</td><td>The profile handle to crawl</td></tr>
+	<tr><td><code>lease_until</code></td><td>timestamptz</td><td>When a claim runs out</td></tr>
+</table>
+<p>Redis lost to PostgreSQL because the frontier must survive restarts and we triage it with SQL. The
+<a href="/sessions/YYYY/MM/DD/hhmm-frontier/index.html">session log</a> has the measurements behind the batch size.</p>
+```
 
 ### Anti-example, the rejected shapes
 
 ```html
-<h2>Overview</h2>
+<h2>1 · Overview</h2>
 <p>
 	The frontier system is a robust and essential component of the crawler architecture. In this section we will describe
 	how it works and why it is designed the way it is...
 </p>
-<ol>
+<ol start="7">
 	<li><strong>Claiming.</strong> SKIP LOCKED; batch 64; lease 10 min. No janitor.</li>
+	<li>A claim takes 64 rows.</li>
+	<li>One batch is about one worker-minute.</li>
 </ol>
 ```
 
-The paragraph is a prose wall with meta-narration and no numbers. The line is a bold label plus fragments.
+The paragraph is meta-narration with no numbers. The first item is a bold label plus fragments, and the rest is a string of numbered one-sentence lines, which the owner called unreadable on 2026-11-24 (c235).
 
 ### Self-check before publishing
 
 1. `node apps/wiki/scripts/prose-lint.mjs <page>` reports 0 errors and 0 warnings.
-2. The body is `<ol>` lines with `start=` numbering that runs on across sections.
-3. The page has at least one mermaid diagram, and a visual every 4 to 8 lines.
-4. At least a quarter of the lines answer why, how or why not.
-5. Each line reads once at speech pace without a re-read.
+2. The body is prose paragraphs under headings, and an `<ol>` holds only steps in order.
+3. Each flow or structure the page describes has a mermaid diagram laid out as the section "Diagrams drawn for a person" of `writing.md` says.
+4. Every choice the page states carries one sentence of why.
+5. Each sentence reads once at speech pace without a re-read.
 6. Real numbers, `<code>` identifiers and file paths are present.
 7. No full screen of the rendered page is text without a picture, table or code block.
 8. Every heading id on the page is unique, counting both an `id` you write and the slug the renderer makes from a heading's text, because `injectHeadingIds` in `apps/wiki/src/lib/server/render.ts` keeps a written id without checking it against those slugs and the page's table of contents keys its list on the id. On 2026-10-20 a crm-creators page had `<h2 id="header">` and `<h3>Header</h3>`, the table of contents threw Svelte `each_key_duplicate` and the body rendered blank, while prose-lint passed and the page API answered 201. Give a sub-heading its own words, such as `Header checks`, and open the rendered page to see that its contents list has entries.
@@ -205,7 +206,7 @@ A page holds a live view as an empty slot `div` that the page script fills, beca
 
 1. `<div data-wiki-git-status></div>` draws the branch state right now: each dev branch, `staging`, `main`, the newest lands and the release runs going now, refreshed every minute.
 2. It reads `/api/git-status`, which runs auto-sns-agent's `scripts/ci/git-status.mjs` on this box's git refs and the CI cache file, so it makes no GitHub call.
-3. Put a numbered line inside the slot as a fallback, because an agent reading the page as text sees only that line.
+3. Put a plain sentence inside the slot as a fallback, because an agent reading the page as text sees only that line.
 4. The git rules page `sessions/2026/10/27/1107-git-branch-rules-explainer/git-branch-rules.html` holds one.
 
 ## Proof components
@@ -287,7 +288,7 @@ Use inline SVG only for a custom layout, such as precise positioning or an annot
 2. A status lozenge is `<span style="display:inline-block;padding:2px 10px;border-radius:10px;background:rgba(245,158,11,0.18);font-size:12px;font-weight:700">DRAFT</span>`.
 3. An info panel is `<div style="background:rgba(59,130,246,0.08);border-left:3px solid #3b82f6;padding:8px 12px">…</div>`.
 4. Collapsible detail goes in `<details><summary>…</summary>…</details>`.
-5. Enumerable facts such as scope items, acceptance criteria and finding ledgers can go in a `<table>` or `<wiki-table>` with one-line cells, while the reasoning stays in numbered lines.
+5. Enumerable facts such as scope items, acceptance criteria and finding ledgers can go in a `<table>` or `<wiki-table>` with one-line cells, while the reasoning stays in prose paragraphs.
 
 ## Linking
 
