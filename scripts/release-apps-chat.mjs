@@ -17,8 +17,11 @@ The rules follow scripts/release-chat.mjs.
 2. The commit must be on origin's main, fetched at the start: push it first.
 3. A commit that does not descend from the live release's commit is refused, so a late release never rolls back a newer one; --rollback allows it,
    and --rollback onto a release folder already built skips the origin check.
-4. A commit the live release holds already ends as done, and the lock's holder releases the newest commit a waiting release asked for when that
-   one holds its own, so releases queued behind one lock start the unit once.
+4. A commit the live release holds already ends as done once the unit's main process runs from the live release, and the lock's holder releases
+   the newest commit a waiting release asked for when that one holds its own, so releases queued behind one lock start the unit once. When the
+   main process runs from another release, as after a --no-restart release that took a waiting release's commit, the run starts the live one.
+APPS_CHAT_RELEASE_HOME, APPS_CHAT_RELEASE_UNIT and APPS_CHAT_RELEASE_PORT point it at another release folder, unit and port, as the hand-over
+rig's release race does (apps/chat/scripts/handoff-rig/release-race.mjs); the defaults are the live ones.
 The build copies the commit with git archive, runs npm ci, the server typecheck and the fixture specs in apps/chat with a private HOME and TMPDIR,
 and npm ci and npm run build in apps/chat/web. When the release's deploy/linux service or socket unit differs from ~/.config/systemd/user, it
 installs it, runs daemon-reload and restarts the unit instead of a reload, and it removes the socket unit when the release has none. Then it checks
@@ -27,10 +30,10 @@ back to the release before and the command exits 5.
 Prints the live release id on the last line. Exit 1 on a failed build step, 2 on bad usage, 3 on a refused rollback, 4 on a commit not on origin main,
 5 on a start that did not stay up.`;
 
-const UNIT = "sieun-pi-apps-chat.service";
+const UNIT = process.env.APPS_CHAT_RELEASE_UNIT ?? "sieun-pi-apps-chat.service";
 /** The port's socket unit, which keeps 127.0.0.1:5184 open across restarts and hand-overs (deploy/linux/sieun-pi-apps-chat.socket). */
-const SOCKET = "sieun-pi-apps-chat.socket";
-const PORT = 5184;
+const SOCKET = UNIT.replace(/\.service$/, ".socket");
+const PORT = Number(process.env.APPS_CHAT_RELEASE_PORT ?? 5184);
 const RELEASE_NAME = /^release-([0-9a-f]{7,40})$/;
 const gitEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !["GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE"].includes(key)));
 const log = message => process.stderr.write(`release-apps-chat: ${message}\n`);
@@ -39,9 +42,6 @@ class Refused extends Error {}
 class Unpublished extends Error {}
 class UsageError extends Error {}
 class NotUp extends Error {}
-class AlreadyLive extends Error {
-  constructor(live, message) { super(message); this.live = live; }
-}
 
 function parseArgs(argv) {
   const options = { target: null, rollback: false, restart: true, repo: resolve(dirname(fileURLToPath(import.meta.url)), "..") };
@@ -78,16 +78,17 @@ function releaseCommit(repo, dir) {
 }
 
 /**
- * Refused unless `sha` holds the live release's commit, or --rollback. A live release that holds `sha` already, such as one a release
- * queued behind the same lock made, ends this one as done.
+ * Refused unless `sha` holds the live release's commit, or --rollback. Returns the live release when it holds `sha` already, such as one a
+ * release queued behind the same lock made, else null.
  */
 function checkNewer(repo, home, sha, rollback) {
   const live = liveRelease(home);
-  if (!live || rollback) return;
+  if (!live || rollback) return null;
   const liveSha = releaseCommit(repo, resolve(home, live));
   if (!liveSha) throw new Refused(`current points at ${live}, whose commit is not in ${repo}; pass --rollback to replace it anyway`);
-  if (contains(repo, liveSha, sha)) throw new AlreadyLive(live, `${sha.slice(0, 7)} is live already in ${live}`);
+  if (contains(repo, liveSha, sha)) return live;
   if (!contains(repo, sha, liveSha)) throw new Refused(`${sha.slice(0, 7)} does not descend from the live ${live} (${liveSha.slice(0, 7)}); pass --rollback to go back on purpose`);
+  return null;
 }
 
 /** Unpublished unless `sha` is on origin's main as fetched now, into a ref of this process's own. */
@@ -266,6 +267,18 @@ const isActive = () => spawnSync("systemctl", ["--user", "is-active", "--quiet",
 const cwdOf = pid => { try { return realpathSync(`/proc/${pid}/cwd`); } catch { return null; } };
 
 /**
+ * Where the unit's main process runs from, and whether that is the release current names. On 11-23 at 22:43Z a --no-restart release of 01910ba
+ * took f006ef8 from a waiting release, built it and pointed current at it with no reload; the waiting releases of f006ef8 and 76a2860 then
+ * found current holding their commits and ended as live, while the server still ran from release-f6b2825.
+ */
+function serving(home) {
+  const cwd = cwdOf(mainPid());
+  let want = null;
+  try { want = realpathSync(join(home, "current/apps/chat")); } catch {}
+  return { cwd, current: cwd !== null && cwd === want };
+}
+
+/**
  * Starts the release: a reload when the unit runs and its units did not change, so the running server hands the port to a successor and the
  * port never closes (apps/chat/server/handoff.ts), else a restart, during which calls wait in the socket's queue.
  */
@@ -303,28 +316,38 @@ async function upCheck(before, dir) {
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
-  const home = join(homedir(), ".local/share/sieun-pi-apps-chat");
+  const home = process.env.APPS_CHAT_RELEASE_HOME ?? join(homedir(), ".local/share/sieun-pi-apps-chat");
   mkdirSync(home, { recursive: true });
   const prebuilt = options.rollback && RELEASE_NAME.test(options.target) && existsSync(join(home, options.target, "release.json"));
   const sha = prebuilt ? releaseCommit(options.repo, join(home, options.target)) ?? options.target : git(options.repo, ["rev-parse", "--verify", "--quiet", `${options.target}^{commit}`]);
   if (!sha) throw new UsageError(`${options.target} is not a commit in ${options.repo}`);
   const releaseLock = await takeLock(home, { pid: process.pid, sha, startedAt: new Date().toISOString(), rollback: options.rollback });
   try {
-    checkNewer(options.repo, home, sha, options.rollback);
-    let target = sha;
-    const newest = options.rollback ? null : newestWaiting(options.repo, home, sha);
+    const live = checkNewer(options.repo, home, sha, options.rollback);
+    if (live) {
+      const server = serving(home);
+      if (!options.restart || server.current) {
+        log(`${sha.slice(0, 7)} is live already in ${live}`);
+        console.log(live);
+        return;
+      }
+      log(`${sha.slice(0, 7)} is in ${live}, which current names, but ${UNIT}'s main process runs from ${server.cwd ?? "nothing"}; starting ${live}`);
+    }
+    const own = live ? releaseCommit(options.repo, resolve(home, live)) : sha;
+    let target = own;
+    const newest = options.rollback ? null : newestWaiting(options.repo, home, own);
     if (newest) {
       try {
         checkPublished(options.repo, newest);
         target = newest;
-        log(`releasing ${newest.slice(0, 7)}, which a waiting release asked for and which holds ${sha.slice(0, 7)}`);
+        log(`releasing ${newest.slice(0, 7)}, which a waiting release asked for and which holds ${own.slice(0, 7)}`);
       } catch (error) {
-        log(`${error.message}; releasing ${sha.slice(0, 7)} itself`);
+        log(`${error.message}; releasing ${own.slice(0, 7)} itself`);
       }
     }
-    if (!prebuilt && target === sha) checkPublished(options.repo, sha);
+    if (!prebuilt && !live && target === sha) checkPublished(options.repo, sha);
     const before = liveRelease(home);
-    const name = prebuilt ? options.target : await build(options.repo, home, target);
+    const name = prebuilt ? options.target : live && target === own ? live : await build(options.repo, home, target);
     flip(home, name);
     const unitsChanged = installUnits(home);
     if (options.restart) {
@@ -354,9 +377,5 @@ async function main() {
 
 main().catch(error => {
   log(error.message);
-  if (error instanceof AlreadyLive) {
-    console.log(error.live);
-    process.exit(0);
-  }
   process.exit(error instanceof UsageError ? 2 : error instanceof Refused ? 3 : error instanceof Unpublished ? 4 : error instanceof NotUp ? 5 : 1);
 });
