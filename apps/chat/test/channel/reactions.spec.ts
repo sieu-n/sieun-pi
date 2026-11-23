@@ -48,22 +48,32 @@ test("chips show the emoji and its count, the owner's own is highlighted, and an
   expect(await eyes.evaluate((el) => el.getBoundingClientRect().height)).toBe(24);
 });
 
+/**
+ * Hovers `target` until `shown` holds. When the room opens with its New line held in view (other specs leave Vent's DM unread), the hover's
+ * own scroll to a post above is no wheel, touch or key, so the feed keeps holding the line and scrolls back as the rows above draw: in 4 of
+ * 20 probe opens on 11-23 the chip moved 564 px from under the pointer and no card showed. A second hover finds the post where it stays.
+ */
+async function hoverUntil(target: Locator, shown: () => Promise<void>): Promise<void> {
+  await expect(async () => {
+    await target.hover();
+    await shown();
+  }).toPass();
+}
+
 test("the add-reaction chip and the one-click emoji show only on hover", async ({ page }) => {
   const { post } = await dressed(page);
   const add = post.locator("[data-add-reaction-chip]");
   await page.mouse.move(0, 0);
   await expect(add).toHaveCSS("opacity", "0");
-  await post.hover();
-  await expect(add).toHaveCSS("opacity", "1");
+  await hoverUntil(post, () => expect(add).toHaveCSS("opacity", "1"));
   await expect(post.locator("[data-quick-reaction]")).toHaveCount(3);
   await expect(post.locator("[data-quick-reaction]").first()).toHaveAttribute("data-quick-reaction", "✅");
 });
 
 test("the hover card names who reacted with the owner as You and shows the emoji's name", async ({ page }) => {
   const { post } = await dressed(page);
-  await post.locator('[data-reaction="👀"]').hover();
   const card = page.locator("[data-reaction-card]");
-  await expect(card).toBeVisible();
+  await hoverUntil(post.locator('[data-reaction="👀"]'), () => expect(card).toBeVisible());
   await expect(card).toHaveText(/👀\s*You, vent and agent factory reacted with :eyes:/);
   await page.mouse.move(0, 0);
   await expect(card).toHaveCount(0);
