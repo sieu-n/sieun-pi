@@ -49,32 +49,109 @@ export function sendCompressed(res: ServerResponse, status: number, headers: Out
   res.end(out);
 }
 
+/** One entry of a listed answer's list: its id, its JSON text and a hash of that text. */
+export type ListedEntry = { id: string; json: string; hash: string };
+
+/** The entries of a list whose rows carry an `id`, for a `Listed` answer. */
+export function listedEntries(rows: readonly { id: string }[]): ListedEntry[] {
+  return rows.map(row => {
+    const json = JSON.stringify(row);
+    return { id: row.id, json, hash: createHash("sha1").update(json).digest("base64url") };
+  });
+}
+
+/**
+ * A big JSON answer whose bulk is one list of rows by id: `json` is the whole answer, `rest` the answer without the list, which the page
+ * puts back where its read says (web/src/lib/api/shared/listed.ts).
+ */
+export type Listed = { json: string; rest: string; entries: readonly ListedEntry[] };
+
 /**
  * A big JSON answer that changes only when its parts do, such as GET /api/skills, 3.4 MB as JSON for 609 skills on 11-23 and 226 KB as
  * brotli. `parts` say when it changed: each is compared with `===`, so an object part counts as unchanged while the server keeps the same
- * object, and `json` makes the answer's text only after a part changed.
+ * object, and `make` makes the answer only after a part changed. `since` is the `?since=` of a read that asks for the changes since the
+ * version it holds (`sendKeptJson`), and null for a plain read.
  */
 export class KeptJson {
-  constructor(readonly name: string, readonly parts: readonly unknown[], readonly json: () => string) {}
+  constructor(readonly name: string, readonly parts: readonly unknown[], readonly make: () => Listed, readonly since: string | null = null) {}
 }
 
-type Made = { parts: readonly unknown[]; json: string; tag: string; bytes: Map<Encoding, Promise<Buffer>> };
+type Made = { parts: readonly unknown[]; listed: Listed; tag: string; order: string; full: string | null; bytes: Map<string, Promise<Buffer>> };
 const made = new Map<string, Made>();
+/** A version a page may hold: each entry's hash by id, and the ids in order. */
+type Version = { tag: string; hashes: Map<string, string>; order: string };
+/**
+ * Each answer's newest versions, for the changes since one of them. A version of the 609 skills is about 60 KB, and a page that holds an
+ * older one than these gets the whole list, as a first read does. The server took 2 scans an hour on 11-23 (the hourly one and the
+ * owner's or a walk's), so 32 versions reach back more than half a day.
+ */
+const VERSIONS = 32;
+const versions = new Map<string, Version[]>();
+
+function current(answer: KeptJson): Made {
+  const entry = made.get(answer.name);
+  if (entry && entry.parts.length === answer.parts.length && entry.parts.every((part, i) => part === answer.parts[i])) return entry;
+  const listed = answer.make();
+  const tag = createHash("sha1").update(listed.rest).update(listed.entries.map(e => e.hash).join(",")).digest("base64url");
+  const order = listed.entries.map(e => e.id).join("\n");
+  const next: Made = { parts: answer.parts, listed, tag, order, full: null, bytes: new Map() };
+  made.set(answer.name, next);
+  const kept = versions.get(answer.name) ?? [];
+  if (kept.at(-1)?.tag !== tag) kept.push({ tag, hashes: new Map(listed.entries.map(e => [e.id, e.hash])), order });
+  versions.set(answer.name, kept.slice(-VERSIONS));
+  return next;
+}
+
+/** The kept bytes of `text` in `encoding`, compressed once per version at FILE_QUALITY off the event loop. */
+function keptBytes(entry: Made, key: string, encoding: Encoding, text: () => string): Promise<Buffer> {
+  let bytes = entry.bytes.get(`${key}:${encoding}`);
+  if (!bytes) {
+    const plain = Buffer.from(text());
+    bytes = encoding === "br" ? brotliAsync(plain, brotliOptions(FILE_QUALITY, plain.length)) : gzipAsync(plain);
+    entry.bytes.set(`${key}:${encoding}`, bytes);
+    bytes.catch(() => entry.bytes.delete(`${key}:${encoding}`));
+  }
+  return bytes;
+}
 
 /**
- * Sends a `KeptJson` from the bytes made at its first request since its parts changed, with an ETag and `no-cache`, so the browser keeps
- * it and asks again with If-None-Match, which answers 304 with no body. Each GET /api/skills used to stringify and brotli the whole view
- * again, 35 to 50 ms of the event loop on us-metal02 (p50 85 ms, p90 246 ms in requests/2026-11-2*.jsonl), and sent its 252 KB again on
- * every open of the Skills page, about five round trips of the owner's 200 ms link (~/work/p155-sweep/fix-skills/notes.md).
+ * The changes since the version `since` names, as web/src/lib/api/shared/listed.ts `ListedAnswer` reads them: `same` when the page holds
+ * this version, the rest and the entries that differ from that version when the server still knows it, else the whole list.
+ */
+function changesSince(name: string, entry: Made, since: string): { text: string; full: boolean } {
+  if (since === entry.tag) return { text: JSON.stringify({ tag: entry.tag, same: true }), full: false };
+  const old = versions.get(name)?.find(version => version.tag === since);
+  const { rest, entries } = entry.listed;
+  if (!old) return { text: (entry.full ??= `{"tag":${JSON.stringify(entry.tag)},"full":true,"rest":${rest},"entries":[${entries.map(e => e.json).join(",")}]}`), full: true };
+  const ids = new Set(entries.map(e => e.id));
+  const changed = entries.filter(e => old.hashes.get(e.id) !== e.hash).map(e => e.json);
+  const removed = [...old.hashes.keys()].filter(id => !ids.has(id));
+  const order = old.order === entry.order ? "" : `,"order":${JSON.stringify([...ids])}`;
+  return { text: `{"tag":${JSON.stringify(entry.tag)},"rest":${rest},"entries":[${changed.join(",")}],"removed":${JSON.stringify(removed)}${order}}`, full: false };
+}
+
+/**
+ * Sends a `KeptJson`. A plain read gets the bytes made at its first request since its parts changed, with an ETag and `no-cache`, so a
+ * browser that keeps it asks again with If-None-Match and gets 304 with no body. A read with `?since=` gets only what changed since the
+ * version it holds. Each GET /api/skills used to stringify and brotli the whole view again, 35 to 50 ms of the event loop on us-metal02
+ * (p50 85 ms, p90 246 ms in requests/2026-11-2*.jsonl), and sent its 252 KB again on every open of the Skills page. After a scan the
+ * page's refresh of the view still took 1,189 ms in the p155 rig (full2-1119bea), since a scan changed 35 of 609 skills and the whole
+ * view came down again (~/work/p155-sweep/fix-skills/notes.md).
  */
 export async function sendKeptJson(res: ServerResponse, headers: OutgoingHttpHeaders, answer: KeptJson): Promise<void> {
-  let entry = made.get(answer.name);
-  if (!entry || entry.parts.length !== answer.parts.length || entry.parts.some((part, i) => part !== answer.parts[i])) {
-    const json = answer.json();
-    entry = { parts: answer.parts, json, tag: createHash("sha1").update(json).digest("base64url"), bytes: new Map() };
-    made.set(answer.name, entry);
+  const entry = current(answer);
+  if (answer.since !== null) {
+    const { text, full } = changesSince(answer.name, entry, answer.since);
+    const plain = { ...headers, "cache-control": "no-store" };
+    const encoding = full && text.length >= MIN_BYTES ? encodingFor(res.req) : undefined;
+    if (!encoding) return sendCompressed(res, 200, plain, text);
+    const out = await keptBytes(entry, "full", encoding, () => text);
+    res.writeHead(200, { ...plain, vary: "accept-encoding", "content-length": out.length, "content-encoding": encoding });
+    res.end(out);
+    return;
   }
-  const encoding = entry.json.length < MIN_BYTES ? undefined : encodingFor(res.req);
+  const json = entry.listed.json;
+  const encoding = json.length < MIN_BYTES ? undefined : encodingFor(res.req);
   const etag = `"${entry.tag}${encoding ? `-${encoding}` : ""}"`;
   const cached = { ...headers, "cache-control": "no-cache", vary: "accept-encoding", etag };
   const asked = res.req?.headers["if-none-match"];
@@ -84,20 +161,12 @@ export async function sendKeptJson(res: ServerResponse, headers: OutgoingHttpHea
     return;
   }
   if (!encoding) {
-    const bytes = Buffer.from(entry.json);
+    const bytes = Buffer.from(json);
     res.writeHead(200, { ...cached, "content-length": bytes.length });
     res.end(bytes);
     return;
   }
-  let bytes = entry.bytes.get(encoding);
-  if (!bytes) {
-    const plain = Buffer.from(entry.json);
-    bytes = encoding === "br" ? brotliAsync(plain, brotliOptions(FILE_QUALITY, plain.length)) : gzipAsync(plain);
-    entry.bytes.set(encoding, bytes);
-    const kept = entry;
-    bytes.catch(() => kept.bytes.delete(encoding));
-  }
-  const out = await bytes;
+  const out = await keptBytes(entry, "plain", encoding, () => json);
   res.writeHead(200, { ...cached, "content-length": out.length, "content-encoding": encoding });
   res.end(out);
 }

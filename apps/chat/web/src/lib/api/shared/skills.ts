@@ -363,6 +363,36 @@ export type SkillsView = {
 };
 
 /**
+ * GET /api/skills as a `?since=` read sends it (shared/listed.ts): each copy's checkout as `<box>:<root>`, a key into `checkouts`, since a
+ * commit in a checkout changes the headAt of every copy in it. On 11-23 one scan changed 35 of 609 skills, most of them for a new commit
+ * in an auto-sns-agent clone that 31 copies of each sit in, and those changes were 46 KB as brotli; with the checkouts apart, 18 skills and
+ * 17.8 KB (~/work/p155-sweep/fix-skills/notes.md). A copy whose checkout differs from the one its key holds keeps it whole.
+ */
+export type WireCopy = Omit<SkillCopy, "checkout"> & { checkout: SkillCopy["checkout"] | string };
+export type WireSkill = Omit<SkillEntry, "copies"> & { copies: WireCopy[] };
+export type WireView = Omit<SkillsView, "skills"> & { skills: WireSkill[]; checkouts: Record<string, NonNullable<SkillCopy["checkout"]>> };
+
+export function toWire<V extends Omit<SkillsView, "scan">>({ skills, ...rest }: V): Omit<V, "skills"> & { skills: WireSkill[]; checkouts: WireView["checkouts"] } {
+  const checkouts: WireView["checkouts"] = {};
+  const same = (a: SkillCopy["checkout"], b: SkillCopy["checkout"]) => JSON.stringify(a) === JSON.stringify(b);
+  const wire = skills.map(skill => ({
+    ...skill,
+    copies: skill.copies.map((copy): WireCopy => {
+      if (!copy.checkout) return copy;
+      const key = `${copy.box}:${copy.checkout.root}`;
+      checkouts[key] ??= copy.checkout;
+      return same(checkouts[key], copy.checkout) ? { ...copy, checkout: key } : copy;
+    }),
+  }));
+  return { ...rest, skills: wire, checkouts };
+}
+
+export function fromWire({ checkouts, skills, ...rest }: WireView): SkillsView {
+  const copyOf = (copy: WireCopy): SkillCopy => (typeof copy.checkout === "string" ? { ...copy, checkout: checkouts[copy.checkout] ?? null } : (copy as SkillCopy));
+  return { ...rest, skills: skills.map(skill => (skill.copies.some(copy => typeof copy.checkout === "string") ? { ...skill, copies: skill.copies.map(copyOf) } : (skill as SkillEntry))) };
+}
+
+/**
  * One way the disk differs from the DB, which GET /api/skills/check lists. `unowned` is a folder with no row, `missing` an install not on
  * disk, `changed` a copy edited in place, `behind` a copy whose source moved on, and `wrong-link` a link that points elsewhere. Each item
  * names the commands that settle it.

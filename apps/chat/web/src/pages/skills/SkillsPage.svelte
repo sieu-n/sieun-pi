@@ -36,7 +36,7 @@
 
   $effect(() => {
     const shows = drawsView;
-    untrack(() => void (shows ? skillsView.open() : skillsView.ahead()));
+    untrack(() => void (shows ? skillsView.open() : skillsInventory.open().then(() => skillsView.ahead())));
   });
 
   $effect(() =>
@@ -44,7 +44,10 @@
       if (event.type !== "skills") return;
       scanState = event.scan.running;
       if (event.scan.running) return;
-      void skillsView.read(untrack(() => drawsView) ? "shown" : "ahead");
+      // On `current` the view's read ahead goes once the inventory's refresh, which the layout asks for at this event, has its answer:
+      // in full2-1119bea the two left together after each scan, and the inventory's answer waited 868 to 1,236 ms behind the view's.
+      if (untrack(() => drawsView)) void skillsView.read("shown");
+      else void skillsInventory.read("shown").then(() => skillsView.read("ahead"));
     }));
 
   const tabs = $derived(LAYOUTS.map(entry => ({ id: entry.id, label: entry.label })));

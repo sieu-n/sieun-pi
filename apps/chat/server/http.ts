@@ -40,7 +40,7 @@ import { WikiEngine } from "./wiki/engine.ts";
 import { wikiPages } from "./wiki/pages.ts";
 import { sharedIn } from "./wiki/shared.ts";
 import { WORKSPACE_ROUTE } from "./wiki/workspaces.ts";
-import { compressibleFile, KeptJson, sendCompressed, sendFileCompressed, sendKeptJson } from "./compress.ts";
+import { compressibleFile, KeptJson, listedEntries, sendCompressed, sendFileCompressed, sendKeptJson } from "./compress.ts";
 
 type Params = Record<string, string>;
 type Handler = (req: IncomingMessage, params: Params, query: URLSearchParams, body: () => Promise<unknown>) => Promise<unknown>;
@@ -519,14 +519,23 @@ export function routes(app: App, parts: SkillsParts): Route[] {
     ...accountRoutes(app, route),
     route("GET", "/api/hosts", async (_r, _p, q) => hostsReport(app.host, app.threads, app.config.box, app.config.socket, app.config.hostsFile, hostsQuery(q))),
     route("GET", "/api/consoles", async () => consolesReport(app.config.consoles)),
-    route("GET", "/api/skills", async () => {
-      const [{ scan }, view] = await Promise.all([db.skills.report(), db.db.viewJson()]);
+    route("GET", "/api/skills", async (_r, _p, q) => {
+      const [{ scan }, view] = await Promise.all([db.skills.report(), db.db.viewListed()]);
       const state = JSON.stringify(scan);
-      return new KeptJson("skills", [view, state], () => `${view.slice(0, -1)},"scan":${state}}`);
+      return new KeptJson("skills", [view, state], () => ({
+        json: `${view.plain.slice(0, -1)},"scan":${state}}`,
+        rest: `${view.rest.slice(0, -1)},"scan":${state}}`,
+        entries: view.entries,
+      }), q.get("since"));
     }),
-    route("GET", "/api/skills/inventory", async () => {
+    route("GET", "/api/skills/inventory", async (_r, _p, q) => {
       const report = await skills.report();
-      return new KeptJson("skills/inventory", [report.inventory, report.readError, JSON.stringify(report.scan)], () => JSON.stringify(report));
+      const { inventory } = report;
+      return new KeptJson("skills/inventory", [inventory, report.readError, JSON.stringify(report.scan)], () => ({
+        json: JSON.stringify(report),
+        rest: JSON.stringify({ ...report, inventory: inventory && { ...inventory, skills: undefined } }),
+        entries: listedEntries(inventory?.skills ?? []),
+      }), q.get("since"));
     }),
     route("POST", "/api/skills/scan", async () => ({ scan: db.skills.startScan().scan })),
     route("GET", "/api/skills/check", async () => db.db.check()),
@@ -940,7 +949,7 @@ async function readRoute(table: Route[], path: string, upgrade: IncomingMessage 
   const req = { method: "GET", url: `${url.pathname}${url.search}`, headers: upgrade?.headers ?? {} } as IncomingMessage;
   try {
     const value = await r.handler(req, params, url.searchParams, () => Promise.resolve(undefined));
-    return { status: 200, value: value instanceof KeptJson ? JSON.parse(value.json()) : value ?? { ok: true } };
+    return { status: 200, value: value instanceof KeptJson ? JSON.parse(value.make().json) : value ?? { ok: true } };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return { status: error instanceof NotFound || error instanceof EntryMissing ? 404 : isHostAway(error) ? 503 : 500, error: message };

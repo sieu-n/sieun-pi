@@ -9,7 +9,7 @@ import type {
 } from "./types.ts";
 import type {
   AdoptBody, ApplyBody, ApplyResult, InstallBody, MergeBody, MoveBody, OwnBody, RemoveBody, SkillDoc, SkillMoves, SkillScan, SkillsChange, SkillsCheck,
-  SkillsReport, SkillsView, UndoBody,
+  SkillsView, UndoBody,
 } from "./shared/skills.ts";
 import type { ConsolesReport } from "./shared/consoles.ts";
 import type { OwnerSettings, SavedSettings } from "./shared/owner-settings.ts";
@@ -802,9 +802,11 @@ export const api = {
   /** The consoles table from auto-sns-agent's consoles.json, read as the file is now. */
   consoles: () => call<ConsolesReport>("GET", "/api/consoles"),
   /** The skills DB read model, everything a Settings > Skills layout renders. */
-  skills: (wait?: Wait) => call<SkillsView>("GET", "/api/skills", undefined, undefined, wait),
-  /** The scanner's raw inventory, which the `current` layout reads. */
-  skillsInventory: (wait?: Wait) => call<SkillsReport>("GET", "/api/skills/inventory", undefined, undefined, wait),
+  skills: () => call<SkillsView>("GET", "/api/skills"),
+  /** The skills DB view as the changes since the version `since` names, or whole for an empty one (shared/listed.ts). */
+  skillsSince: (since: string, wait?: Wait) => call<import("./shared/listed.ts").ListedAnswer>("GET", `/api/skills?since=${enc(since)}`, undefined, undefined, wait),
+  /** The scanner's raw inventory, which the `current` layout draws, as the changes since the version `since` names (shared/listed.ts). */
+  skillsInventorySince: (since: string, wait?: Wait) => call<import("./shared/listed.ts").ListedAnswer>("GET", `/api/skills/inventory?since=${enc(since)}`, undefined, undefined, wait),
   /** Where the disk differs from the DB: folders with no row and installs the disk does not match. */
   skillsCheck: () => call<SkillsCheck>("GET", "/api/skills/check"),
   /** Makes the disk match the DB; a second run changes nothing. `dryRun` only plans. */

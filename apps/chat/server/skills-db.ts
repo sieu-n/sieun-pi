@@ -14,10 +14,11 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { Worker } from "node:worker_threads";
+import { listedEntries, type ListedEntry } from "./compress.ts";
 import {
   COUNT_RULES, SKILL_RUNTIMES, type VerdictRule, type AdoptBody, type ApplyResult, type ApplyStep, type CopyRole, type InstallBody, type InstallState, type MergeBody, type MoveBody,
   type OwnBody, type RemoveBody, type SkillBoxState, type SkillCopy, type SkillCounts, type SkillEntry, type SkillMove, type SkillSight, type SkillOwner, type SkillRuntime,
-  type SkillScan, type SkillSource, type SkillsChange, type SkillsCheck, type SkillsView, type SkillThresholds, type ThreadKind, type SkillVerdictRow, type UndoBody,
+  type SkillScan, type SkillSource, type SkillsChange, type SkillsCheck, type SkillsView, type SkillThresholds, type ThreadKind, type SkillVerdictRow, type UndoBody, toWire,
 } from "../web/src/lib/api/shared/skills.ts";
 import {
   canonical, changedLines, copyId, drift, extraCopies, identifyFolder, installState, ownerText, parseFacts, parseOwner, plan, roleOf, sameLink, seedOwner, sees, staleCheckouts, sumUse,
@@ -192,12 +193,23 @@ function holder(same: readonly SkillEntry[], use: PathUse, home: string | null):
   return here.length ? here : same.filter(e => e.copies.some(at));
 }
 
+/**
+ * The view without its scan as JSON texts: `plain` whole, and for a `?since=` read the rest without `skills` and each skill as a
+ * `ListedEntry` (compress.ts), in the wire form of shared/skills.ts `toWire`.
+ */
+export type ListedView = { plain: string; rest: string; entries: ListedEntry[] };
+
+export function listedView(view: Omit<SkillsView, "scan">): ListedView {
+  const { skills, ...rest } = toWire(view);
+  return { plain: JSON.stringify(view), rest: JSON.stringify(rest), entries: listedEntries(skills) };
+}
+
 export class SkillsDb {
   private readonly db: DatabaseSync;
   private version = 0;
   private cached: { version: number; view: Omit<SkillsView, "scan"> } | null = null;
-  /** The view without its scan as JSON, by the DB version it was built at (`viewJson`). */
-  private built: { version: number; json: Promise<string> } | null = null;
+  /** The view without its scan as `listedView` texts, by the DB version it was built at (`viewListed`). */
+  private built: { version: number; listed: Promise<ListedView> } | null = null;
   /** Builds the view for GET /api/skills in a worker thread, as the serving process does; the fixture's small view stays inline for the specs. */
   viewsOffThread = false;
 
@@ -586,33 +598,34 @@ export class SkillsDb {
   }
 
   /**
-   * The view without its scan state as JSON, the same string until the DB changes, so GET /api/skills sends kept bytes until then
-   * (compress.ts `sendKeptJson`). The serving process builds it in a worker thread: on us-metal02 the build took 136 to 235 ms and its
-   * JSON 27 to 33 ms (a copy of the live DB on 11-23), and in the 11-21 to 11-23 request logs 154 of 604 GET /api/skills held the event
-   * loop 100 to 400 ms, every call of the server waiting behind it. A worker answered in 269 to 362 ms with its start.
+   * The view without its scan state as `listedView` texts, the same object until the DB changes, so GET /api/skills sends kept bytes and
+   * the changes since a version until then (compress.ts `sendKeptJson`). The serving process builds it in a worker thread: on us-metal02
+   * the build took 136 to 235 ms and its JSON 27 to 33 ms (a copy of the live DB on 11-23), and in the 11-21 to 11-23 request logs 154 of
+   * 604 GET /api/skills held the event loop 100 to 400 ms, every call of the server waiting behind it. A worker answered in 269 to 362 ms
+   * with its start.
    */
-  viewJson(): Promise<string> {
+  viewListed(): Promise<ListedView> {
     if (this.built?.version !== this.version) {
-      const json = this.viewsOffThread ? this.viewOffThread() : Promise.resolve(JSON.stringify(this.viewWithoutScan()));
-      const built = { version: this.version, json };
+      const listed = this.viewsOffThread ? this.viewOffThread() : Promise.resolve(listedView(this.viewWithoutScan()));
+      const built = { version: this.version, listed };
       this.built = built;
-      json.catch(() => {
+      listed.catch(() => {
         if (this.built === built) this.built = null;
       });
     }
-    return this.built.json;
+    return this.built.listed;
   }
 
   /** A change to the DB: a view built in a worker is built again at once, so the next read of the page finds it ready. */
   private bump(): void {
     this.version++;
-    if (this.viewsOffThread && this.built) setImmediate(() => void this.viewJson().catch(() => undefined));
+    if (this.viewsOffThread && this.built) setImmediate(() => void this.viewListed().catch(() => undefined));
   }
 
-  private viewOffThread(): Promise<string> {
+  private viewOffThread(): Promise<ListedView> {
     return new Promise((resolve, reject) => {
       const worker = new Worker(new URL("./skills-db-worker.ts", import.meta.url), { workerData: { config: this.config, view: true } });
-      worker.on("message", (message: { log?: string; view?: string; error?: string }) => {
+      worker.on("message", (message: { log?: string; view?: ListedView; error?: string }) => {
         if (message.log !== undefined) return this.log(message.log);
         if (message.error !== undefined) reject(new Error(message.error));
         else resolve(message.view!);

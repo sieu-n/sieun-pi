@@ -53,8 +53,13 @@ test("a second open and a page load draw the kept inventory while its read is on
   await expect.poll(() => storedKeys(page)).toContain("inventory");
   await slow(page, "/api/skills/inventory", 4000);
   await page.goto("/#/settings/keyboard");
+  // The refresh asks for the changes since the version the page holds, and an unchanged inventory answers `same`.
+  const refresh = page.waitForResponse(response => new URL(response.url()).pathname === "/api/skills/inventory", { timeout: 10_000 });
   await page.goto("/#/settings/skills");
   await expect(page.getByTestId("skills-summary")).toContainText("skills", { timeout: 1500 });
+  const answer = await refresh;
+  expect(new URL(answer.url()).searchParams.get("since")).toMatch(/^[\w-]{20,}$/);
+  expect(await answer.json()).toMatchObject({ same: true });
   await page.reload();
   await expect(page.getByTestId("skills-summary")).toContainText("skills", { timeout: 2500 });
 });
