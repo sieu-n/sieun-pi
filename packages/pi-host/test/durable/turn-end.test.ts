@@ -80,8 +80,3 @@ test("a first checklist with open items and a mark in one round runs on to the h
   assert.equal(roundEndsTurn([input("[agent-message from sibling:w]"), blocked.message], blocked.ids[2]!), true,
     "a last edit with an open item belongs to work handed over earlier, so it ends the turn (blind run 5, 11-21)");
 });
-
-test("a set_thread_done call, a tool agents lost on 11-24 (c236), closes nothing, so a round with it runs on", () => {
-  const old = round(post, eyesOff, { name: "set_thread_done", arguments: { message_id: "p1", done: true } });
-  assert.equal(roundEndsTurn([input("p1"), old.message], old.ids[0]!), false);
-});

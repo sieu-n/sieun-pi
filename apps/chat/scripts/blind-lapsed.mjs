@@ -18,8 +18,7 @@
  * 1. The comm thread handed the task over with more than 1,500 characters, so the trim cut it (else the run is n/a).
  * 2. The first model call after the follow-up read under 20k tokens from the cache, so the follow-up ran on the cold, trimmed path.
  * 3. The follow-up got a reply, and its work ended.
- * A post's work counts as ended once it has a reply with no open `- [ ]` item and no 👀 of the agent's, since agents no longer mark a
- * thread done (c236).
+ * A post's work counts as ended once it has a reply with no open `- [ ]` item and no 👀 of the agent's.
  * 4. The checklist reply to the task still holds its final text, and every reply to the follow-up ends with no open `- [ ]` item.
  * Whether the follow-up answer is right, or asks the work thread instead of making something up, is read by hand against the hand-over and
  * the work thread's report, which the output line holds.

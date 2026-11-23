@@ -1,7 +1,7 @@
 /**
  * When a comm thread's tool round ends its turn. On 11-21 fresh channel agents in four blind runs on live :5184 ended 13 of 28 turns with a
- * summary no room shows, mostly right after a round that posted and closed together, such as tell_owner, set_emoji taking 👀 off,
- * a done mark and mark_message in one round, while their role text and mark_message's answer said to end with no text.
+ * summary no room shows, mostly right after a round that posted and closed together, such as tell_owner, set_emoji taking 👀 off
+ * and mark_message in one round, while their role text and mark_message's answer said to end with no text.
  *
  * A round ends the turn when its calls are only posts and closing calls, at least one call closes, and the turn has its answer: a post in
  * the round itself, or one an earlier round of the turn sent. Each of those calls that goes through returns pi-durable's `terminate` control

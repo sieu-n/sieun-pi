@@ -12,9 +12,7 @@
  *    that post's thread), and at the end neither keeps the agent's 👀 or a ✅.
  * 2. "ok thanks" gets one reaction from the agent and no post.
  * 3. In the channel no agent post is a root post.
- * 4. No thread ends marked done, the comm thread calls no set_thread_done and no post says it marks one done, since the done check is the
- *    owner's alone (#sw-factory-build p177, c236: "Agent가 Done Check하는 기능 없애").
- * 5. No agent post has ✅ or 👀 in its text outside code, unless it names the reaction ("my 👀 reaction on p1"), ends on a sign-off emoji, or
+ * 4. No agent post has ✅ or 👀 in its text outside code, unless it names the reaction ("my 👀 reaction on p1"), ends on a sign-off emoji, or
  *    pastes a raw JSON or log line. On 11-21 a fresh agent, asked where a room's posts live, gave "a `set` line patches a post later, like my
  *    👀 reaction on p1" as its example, which uses no emoji as a status mark.
  * 👀 counts as seen when a poll saw it on the post or the agent's comm thread called set_emoji with eyes on it, since a fast answer can put
@@ -54,9 +52,6 @@ const THANKS = "ok thanks";
 const SIGN_OFF = /\p{Extended_Pictographic}\uFE0F?\s*$/u;
 /** A code span or block that holds a JSON object or array with a key, such as `{"t":"set","post":"p1",...}`, or a timestamped log line. */
 const RAW_LINE = /`{1,3}(?:json)?\s*[{[][^`]*"[^"`]+"\s*:|`{1,3}[^`]*\d{4}-\d\d-\d\dT\d\d:\d\d/;
-
-/** A post that says the agent marks its thread done, such as "marking this done". */
-const MARKS_DONE = /\bmark(?:s|ed|ing)?\b[^.\n]{0,30}\b(?:done|resolved)\b/i;
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -184,8 +179,6 @@ async function runRoom(kind) {
       [`${label} got a reply that answers it`, replies.length > 0],
       ...(kind === "channel" ? [[`${label}'s reply is in its thread`, replies.length > 0 && replies.every(r => r.threadRoot === post.id)]] : []),
       [`${label} keeps no 👀 at the end`, !mine(byId(post.id), EYES)],
-      // The done check is the owner's alone (#sw-factory-build p177, c236), so the thread ends open.
-      [`${label}'s thread is not marked done`, !byId(post.id)?.done],
       [`${label} has no ✅`, !mine(byId(post.id), CHECK)],
     ];
   };
@@ -200,8 +193,6 @@ async function runRoom(kind) {
     ["no ✅ or 👀 in the agent's post text", posts.every(p => p.author?.id !== agent.id || !statusMark(p.text))],
     ["no agent post ends with a sign-off emoji", posts.every(p => p.author?.id !== agent.id || !SIGN_OFF.test(p.text))],
     ["no agent post pastes a raw JSON or log line", posts.every(p => p.author?.id !== agent.id || !RAW_LINE.test(p.text))],
-    ["the comm thread made no set_thread_done call", steps.every(s => s.name !== "set_thread_done")],
-    ["no agent post says it marks the thread done", posts.every(p => p.author?.id !== agent.id || !MARKS_DONE.test(p.text))],
   ];
   const line = {
     room, kind, agent: agent.id, questionSeconds, taskSeconds,

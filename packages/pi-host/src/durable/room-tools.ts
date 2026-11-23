@@ -6,8 +6,7 @@
  * `set_emoji` puts the agent's reaction on a post or takes it off, as Slack's `reactions.add` and `reactions.remove` do. The comm role text
  * asks the agent to mark the post it works on with 👀, keep it on until that work ends (the result or the checklist's last edit), add no
  * ✅ to a post it replied to, and react the way people do in Slack (`agent-profile.ts` workSteps); no code here treats an emoji specially,
- * as the owner asked on 11-03 (contract: /home/sieun/work/slack-reactions/contract.md). No tool marks a thread done: that check is the
- * owner's alone (p177, c236, "Agent가 Done Check하는 기능 없애").
+ * as the owner asked on 11-03 (contract: /home/sieun/work/slack-reactions/contract.md).
  *
  * `set_room_member` (`room-members.ts`) adds an agent to a channel or Solo room or removes it.
  *

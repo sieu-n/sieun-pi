@@ -202,7 +202,6 @@ test("a room post answers first, breaks into lines and keeps the agent's process
   assert.match(EDIT_MESSAGE_DESCRIPTION, /Use it to correct or complete a post[\s\S]*never a status of jobs or plans\. You can edit only your own posts/);
   assert.match(workInstructions({ agent: "ag_vent", comm: "c1" }), /an edit only fills in results and the answer, never a status of your jobs or plans/);
   assert.match(workInstructions({ agent: "ag_vent", comm: "c1" }), /because only that report has it take 👀 off\. /);
-  assert.doesNotMatch(workInstructions({ agent: "ag_vent", comm: "c1" }), /thread done/, "the done check is the owner's alone (c236)");
 });
 
 test("the role text shows real bad and good posts for each case, and the sw-factory skill shows the same pairs (owner, dm_agent-factory msg mwqvt8s4, c234)", () => {

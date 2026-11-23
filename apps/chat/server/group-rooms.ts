@@ -464,7 +464,7 @@ export class GroupRooms {
     this.deps.state.saveState();
     // His reply in a done thread reopens it, as a reply to a resolved Slack thread does (thread-done.ts); `emit` sends the root with the reply.
     const root = input.threadRoot ? this.store.postsOf(row.id).find(p => p.id === input.threadRoot) : undefined;
-    if (root && reopens(root, post)) this.store.set(root, { done: { done: false, by: "owner", at: post.at } });
+    if (root && reopens(root, post)) this.store.set(root, { done: { done: false, at: post.at } });
     this.emit(row, [post]);
     return this.result(row, post);
   }
@@ -915,7 +915,7 @@ export class GroupRooms {
       ...(post.author === "owner" ? { requestId: post.requestId } : agentPostParts(this.deps.threads, post)),
       ...(replies.length ? { thread: { replies: replies.length, lastAt: replies.at(-1)!.at, lastSeq: replies.at(-1)!.seq, authors } } : {}),
       deliveries: (post.deliveries ?? []).map(d => this.publicDelivery(row, post, d, all)), ...reactionsOf(id => this.deps.threads.principal(id), post),
-      ...doneOf(id => this.deps.threads.principal(id), post), ...pinOf(id => this.deps.threads.principal(id), post), ...postState(post), ...this.laterOf(post),
+      ...doneOf(post), ...pinOf(id => this.deps.threads.principal(id), post), ...postState(post), ...this.laterOf(post),
       ...forwardPart(post),
     };
   }

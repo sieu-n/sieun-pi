@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * The blind check for two asks in two threads (skills/sw-factory/SKILL.md, "Reactions and threads" rules 5 and 6, and "How agents should
+ * The blind check for two asks in two threads (skills/sw-factory/SKILL.md, "Reactions and threads" rules 4 and 5, and "How agents should
  * write in a room" rule 4): a fresh test agent in a fresh test channel gets a measuring ask whose answer holds several numbers, then a quick
  * question as a new root post while the first ask runs, with no steering. So the older ask is answered second, in a turn its work thread's
  * report wakes, with a newer root below it.
@@ -124,7 +124,7 @@ const inThread = id => latest.filter(p => isAgent(p) && (p.threadRoot === id || 
 const lastAt = p => versions.get(p.id)?.at(-1)?.at ?? p.at;
 /** The agent post whose last version carries the measuring answer: the one with the most numbers, 3 or more. */
 const measured = () => latest.filter(p => isAgent(p) && numbers(p.text) >= 3 && !/\[ \]/.test(p.text)).sort((a, b) => numbers(b.text) - numbers(a.text))[0];
-/** Whether the agent's 👀 is off a post, its sign that the post's work ended, since agents no longer mark a thread done (c236). */
+/** Whether the agent's 👀 is off a post, its sign that the post's work ended. */
 const eyesOff = id => !(latest.find(p => p.id === id)?.reactions ?? []).some(r => r.emoji === "👀" && r.by.some(b => b.id === agent.id));
 
 const started = Date.now();

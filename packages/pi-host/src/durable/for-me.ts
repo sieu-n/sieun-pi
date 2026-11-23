@@ -48,9 +48,9 @@ export function laterText(item: Pick<ForMeItem, "later">): string {
   return `[saved${item.later.remindAt !== undefined ? ` · reminder ${time(item.later.remindAt)}` : ""}]`;
 }
 
-/** The done flag of the item's thread in the form every agent-facing surface shows it: `[thread done by vent]`. */
+/** The done flag of the item's thread in the form every agent-facing surface shows it: `[thread done]`. */
 export function doneText(item: Pick<ForMeItem, "done">): string {
-  return item.done ? `[thread done by ${who(item.done.by)}]` : "";
+  return item.done ? "[thread done]" : "";
 }
 
 /** One item as the agent reads it: a header line, its reactions, done flag and save when it has any, then the post's text. */

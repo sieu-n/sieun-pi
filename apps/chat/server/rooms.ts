@@ -428,7 +428,7 @@ export class Rooms {
       ...(forward ? { forward } : {}),
     });
     this.store.set(post, { delivery: this.newDelivery(post, record) });
-    if (root && reopens(root, post)) this.store.set(root, { done: { done: false, by: "owner", at: post.at } });
+    if (root && reopens(root, post)) this.store.set(root, { done: { done: false, at: post.at } });
     this.deps.state.state.reads[record.room] = { at: post.at, seq: post.seq };
     this.deps.state.saveState();
     this.changed(record, [post]);
@@ -777,8 +777,7 @@ export class Rooms {
    * A post with no `reply_to` answers the one post its turn's closing calls name (`closedPost`), else its turn's owner post, and in a turn no
    * owner post started, such as one a work thread's report woke, the newest owner post sent here that no post of the agent answers yet.
    * On 11-21 a blind run's comm thread answered the owner's quick question in the turn the work thread's report woke, with no reply_to, and
-   * the answer named no post. In the next run it marked that question's thread done in the step whose post tell_owner held as long, so a
-   * default that skipped done threads named the older task instead.
+   * the answer named no post.
    */
   private dmSide(record: AgentRecord, thread: string): FeedSide {
     const posts = () => this.store.postsOf(record.room);
@@ -833,7 +832,7 @@ export class Rooms {
       kind: "message" as const, id: post.id, seq: post.seq, at: post.at, text: post.text, images: post.images, mentions: [], ...localImageSizes(post.text),
       ...(post.threadRoot ? { threadRoot: post.threadRoot } : {}),
       ...(replies.length ? { thread: { replies: replies.length, lastAt: replies.at(-1)!.at, lastSeq: replies.at(-1)!.seq, authors } } : {}),
-      ...reactionsOf(id => this.deps.threads.principal(id), post), ...doneOf(id => this.deps.threads.principal(id), post),
+      ...reactionsOf(id => this.deps.threads.principal(id), post), ...doneOf(post),
       ...pinOf(id => this.deps.threads.principal(id), post), ...postState(post), ...this.laterOf(post), ...forwardPart(post),
     };
     if (post.author === "owner") {

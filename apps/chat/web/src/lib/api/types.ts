@@ -429,7 +429,7 @@ export type Item =
       editedAt?: Ms;
       /** Room posts: the owner deleted it, so it has no text; the page drops it, or shows a stub on a channel root with replies. */
       deleted?: true;
-      /** A thread's root post the owner or an agent marked done (server/thread-done.ts); absent while the thread is open. */
+      /** A thread's root post the owner marked done (server/thread-done.ts); absent while the thread is open. */
       done?: ThreadDone;
       /** Room posts the owner pinned to the room (server/pins.ts); absent while the post is not pinned. */
       pinned?: PostPin;
@@ -536,8 +536,8 @@ export interface ForwardedPost {
 export interface SendResult { item: Item; deliveries: Delivery[]; queue?: TurnPlace | null }
 /** `POST /api/c/:id/posts/:post/reactions`: the owner adds (`on`, the default) or takes off his own `emoji` on a room post. */
 export interface ReactionRequest { emoji: string; on?: boolean }
-/** Who marked a thread done and when, on its root post. */
-export interface ThreadDone { by: Principal; at: Ms }
+/** When the owner marked a thread done, on its root post. */
+export interface ThreadDone { at: Ms }
 /** `POST /api/c/:id/posts/:post/done`: the owner marks the thread of a post done, or reopens it. */
 export interface ThreadDoneRequest { done: boolean }
 /** Who pinned a room post and when. */

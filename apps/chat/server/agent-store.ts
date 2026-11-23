@@ -121,7 +121,7 @@ export interface RoomPost {
   editedFrom?: string;
   /** When the owner deleted his post; its text and images are gone (post-edits.ts). */
   deletedAt?: Ms;
-  /** A thread's root post: whether its thread is done, who set that last and when (thread-done.ts). */
+  /** A thread's root post: whether the owner marked its thread done, and when he last marked or reopened it (thread-done.ts). */
   done?: StoredDone;
   /** Whether the owner pinned the post to its room, and when he last pinned or un-pinned it (pins.ts). */
   pinned?: StoredPin;
@@ -132,8 +132,8 @@ export interface RoomPost {
 /** The pin flag on a post; un-pinning keeps the row with `pinned: false`, as `done` does. */
 export interface StoredPin { pinned: boolean; by: "owner"; at: Ms }
 
-/** The done flag on a thread's root post; reopening keeps the row with `done: false`, so the log records who reopened it. */
-export interface StoredDone { done: boolean; by: "owner" | AgentId; at: Ms }
+/** The done flag on a thread's root post; reopening keeps the row with `done: false`, as un-pinning does. */
+export interface StoredDone { done: boolean; at: Ms }
 
 /** One emoji one principal put on a post. */
 export interface StoredReaction { emoji: string; by: "owner" | AgentId; at: Ms }

@@ -12,9 +12,9 @@ import type { AgentRecord, RoomId, RoomPost, StoredReaction } from "./agent-stor
 import { doneLine } from "./thread-done.ts";
 import { pinLine } from "./pins.ts";
 
-/** A reaction or flag request the server refuses: 400 for a bad emoji or message id, 403 for an agent's done mark, 404 for a missing room or post. */
+/** A reaction request the server refuses: 400 for a bad emoji or message id, 404 for a room or post that is not there. */
 export class ReactionError extends Error {
-  constructor(readonly status: 400 | 403 | 404, message: string) {
+  constructor(readonly status: 400 | 404, message: string) {
     super(message);
   }
 }
@@ -37,11 +37,11 @@ export function reactionList(principal: (id: string) => Principal, post: RoomPos
 
 /**
  * The one form every agent-facing surface shows a post's reactions in, `[reactions: 👀 vent, agent factory · 👍 Sieun (owner)]`, followed on
- * a done thread's root by its flag (thread-done.ts `doneLine`), `[thread done by vent]`; "" with neither.
+ * a done thread's root by its flag (thread-done.ts `doneLine`), `[thread done]`; "" with neither.
  */
 export function reactionsLine(principal: (id: string) => Principal, post: RoomPost): string {
   const list = reactionList(principal, post);
-  return [list ? `[reactions: ${list}]` : "", doneLine(principal, post), pinLine(post)].filter(Boolean).join(" ");
+  return [list ? `[reactions: ${list}]` : "", doneLine(post), pinLine(post)].filter(Boolean).join(" ");
 }
 
 /** The emoji and direction of a reaction request: a Slack name (`eyes`, `:eyes:`) or the emoji itself, and `on`, true unless given. */

@@ -169,7 +169,7 @@
    */
   const doneable = $derived(reactable && room && !reactable.threadRoot ? reactable : null);
   const done = $derived(message?.done ?? null);
-  const doneLabel = $derived(done ? `Done, marked by ${done.by.kind === "owner" ? "you" : done.by.name} ${stampLabel(done.at)}` : "");
+  const doneLabel = $derived(done ? `Marked done ${stampLabel(done.at)}` : "");
 
   function toggleDone() {
     if (!doneable || !room) return;

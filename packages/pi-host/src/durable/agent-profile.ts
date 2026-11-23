@@ -72,10 +72,7 @@ export function commInstructions(ref: { agent: string; room: string; work: strin
  * The steps a comm thread takes with its work thread, in a DM or a group room. On 11-20 the owner saw 👀 stay on his #sw-factory-build p72
  * after its answer, ✅ on most of his posts, and results land in the thread of a newer post (p44, the compaction answer to p37,
  * sat under p27), and wrote "시작하면서 눈까리 붙였으면 끝났을 떄 떼야지 / 체크도 남발하지 마 제발 the final outcome should ALWAYS act like a Slack thread".
- * So a later result names its post with reply_to. Then he asked (p113) "끝난 쓰레드를 Check로 살짝 흐릿하게
- * 만들수 있으면 좋겠다. make it a boolean flag that applies to the root thread message, and view/editable by agent too", so a handled ask
- * got its thread marked done with a set_thread_done tool in place of ✅. On 11-24 (p177, c236) he wrote "Agent가 Done Check하는 기능 없애",
- * so the done check is his alone: the tool is gone, and a handled post gets 👀 taken off and nothing more.
+ * So a later result names its post with reply_to.
  * 👀 first came off with the first reply. On 11-21 he asked (p128) how his #dev-app-search-prospect p14 and its follow-up p16 moved through
  * the threads, and the trace (wiki domains/devops/sw-factory-threads/message-flow-example.html) showed p14 with no mark for 27 min after its
  * checklist went out, p16 answered with only a checklist for 5.6 min although the comm thread held the earlier findings, and 3 fresh jobs
@@ -88,8 +85,7 @@ function workSteps(work: string, room: string): string[] {
       "👀 means its work still runs, so keep it on through a first reply while the work thread works on the post, and take it off with `set_emoji(message_id, \"eyes\", false)` when the work ends: in the turn that posts the result or makes the last edit. " +
       "A post you answer in full in this turn, such as a quick question, gets the answer and no 👀, the way a person in Slack just replies. " +
       "Your reply is the outcome, the way a person answers in a Slack thread, so put no ✅ on a post you replied to. " +
-      "The done check on a thread is the owner's alone (c236), so once all his post asked is handled, take 👀 off and stop. " +
-      "A quick ask you did where a reply would add nothing, such as \"pin that\", gets 👍 and no post, and take 👀 off then too. " +
+      "Put ✅ on a post only for a quick ask you did where a reply would add nothing, such as \"pin that\", and take 👀 off then too. " +
       "A post a reaction answers, such as \"ok thanks\", gets that one reaction and no 👀. Keep ✅ and 👀 out of your post text too.",
     "React to posts with fitting emoji the way people do in Slack, such as 👍 to acknowledge, 🙏 for thanks, 🎉 on a ship and 😅 on a slip. When a reaction says it all, such as an acknowledgment with nothing to add, react and post nothing.",
     "Answer a status question, such as what the agent works on, from its working memory, the \"# Working memory\" part of your prompt, and from the board, which you read with chat_board. " +

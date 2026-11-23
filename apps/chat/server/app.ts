@@ -1067,7 +1067,7 @@ export class App {
     const post = posts.find(p => p.id === postId);
     if (!post) throw new NotFound(`No post ${postId} in ${id}.`);
     const root = threadRootOf(posts, post);
-    const flag = markDone(root, "owner", doneInput(input));
+    const flag = markDone(root, doneInput(input));
     if (flag) {
       this.agentStore.set(root, { done: flag });
       this.emitPosts(room, [root]);
