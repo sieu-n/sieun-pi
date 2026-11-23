@@ -10,7 +10,7 @@
  */
 import { join } from "node:path";
 import type { AgentId, ConversationId, Delivery, ImageRef, Item, SendState } from "../web/src/lib/api/types.ts";
-import type { EntryRecord, Host, Submitted } from "./host/types.ts";
+import type { EntryRecord, Host, SubmitInput, Submitted } from "./host/types.ts";
 import { appendLater, readLatest, replaceLater, written } from "./disk.ts";
 import { withFileCards } from "./files.ts";
 import { isInput } from "./timeline.ts";
@@ -33,9 +33,16 @@ export interface OutboxRow {
   mentioned?: boolean;
 }
 
+/**
+ * A send to pi-host that no page shows as the owner's pending row: an @mention, the owner's `[board]` line, an edit or delete notice. It
+ * stays in the outbox file until pi-host takes it, and tries again after `retryWait`, after a restart of this server too, under its one
+ * request id, so a try that landed while its answer was lost lands once (`Outbox.submit`).
+ */
+export interface KeptSubmit { thread: string; input: SubmitInput & { requestId: string }; at: number }
+
 /** A `set` patch writes null for a field it clears, since JSON drops undefined. */
 type Patch = { [K in keyof OutboxRow]?: OutboxRow[K] | null };
-type Line = { t: "row"; row: OutboxRow } | { t: "set"; requestId: string; patch: Patch } | { t: "done"; requestId: string; at?: number };
+type Line = { t: "row"; row: OutboxRow } | { t: "set"; requestId: string; patch: Patch } | { t: "done"; requestId: string; at?: number } | { t: "submit"; send: KeptSubmit };
 
 /** Retry waits grow to this and stay there. A soft cap: the send keeps trying until pi-host takes it or refuses it for good. */
 const MAX_BACKOFF_MS = 30_000;
@@ -75,6 +82,7 @@ export interface OutboxDeps {
 
 export class Outbox {
   private readonly rows = new Map<string, OutboxRow>();
+  private readonly kept = new Map<string, KeptSubmit>();
   private readonly done = new Map<string, number>();
   private readonly timers = new Map<string, NodeJS.Timeout>();
   private readonly inflight = new Set<string>();
@@ -104,11 +112,13 @@ export class Outbox {
         continue;
       }
       if (line.t === "row") this.rows.set(line.row.requestId, line.row);
+      else if (line.t === "submit") this.kept.set(line.send.input.requestId, line.send);
       else if (line.t === "set") {
         const row = this.rows.get(line.requestId);
         if (row) patch(row, line.patch);
       } else {
         this.rows.delete(line.requestId);
+        this.kept.delete(line.requestId);
         this.done.set(line.requestId, line.at ?? Date.now());
       }
     }
@@ -122,6 +132,7 @@ export class Outbox {
     const lines: Line[] = [
       ...[...this.done].map(([requestId, at]): Line => ({ t: "done", requestId, at })),
       ...[...this.rows.values()].map((row): Line => ({ t: "row", row })),
+      ...[...this.kept.values()].map((send): Line => ({ t: "submit", send })),
     ];
     replaceLater(this.file, lines.map(line => `${JSON.stringify(line)}\n`).join(""));
   }
@@ -142,6 +153,7 @@ export class Outbox {
       if (row.state === "sending") this.schedule(row, 0);
       else if (row.state === "sent" && row.mentions.length && !row.mentioned) void this.mention(row);
     }
+    for (const send of this.kept.values()) this.timers.set(send.input.requestId, setTimeout(() => void this.submitKept(send, 0).catch(() => undefined), 0));
     this.sweeper = setInterval(() => void this.sweep(), SWEEP_MS);
   }
 
@@ -244,8 +256,54 @@ export class Outbox {
     const at = Date.now();
     this.done.set(row.requestId, at);
     this.write({ t: "done", requestId: row.requestId, at });
-    if (!this.rows.size && this.done.size > 500) this.compact();
+    if (!this.rows.size && !this.kept.size && this.done.size > 500) this.compact();
     return `r:${row.requestId}`;
+  }
+
+  /**
+   * Keeps `input` on disk and hands it to pi-host once `after` settles, then again after `retryWait` until pi-host takes it (`KeptSubmit`).
+   * Answers pi-host's answer when the first try lands, and undefined when the send waits for a retry or its request id was handed already.
+   * Throws when pi-host refuses it for good, which no retry changes.
+   */
+  async submit(thread: string, input: KeptSubmit["input"], after?: Promise<unknown>): Promise<Submitted | undefined> {
+    if (this.kept.has(input.requestId) || this.done.has(input.requestId)) return undefined;
+    const send: KeptSubmit = { thread, input, at: Date.now() };
+    this.kept.set(input.requestId, send);
+    this.write({ t: "submit", send });
+    await after;
+    return this.submitKept(send, 0);
+  }
+
+  private async submitKept(send: KeptSubmit, attempts: number): Promise<Submitted | undefined> {
+    const id = send.input.requestId;
+    this.timers.delete(id);
+    if (this.stopped || !this.kept.has(id) || this.inflight.has(id)) return undefined;
+    this.inflight.add(id);
+    try {
+      const result = await this.deps.host.submit(send.thread, send.input);
+      this.endKept(id);
+      return result;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (refusedForGood(message)) {
+        this.deps.log(`outbox: ${id} to ${send.thread} refused: ${message}`);
+        this.endKept(id);
+        throw error;
+      }
+      const wait = retryWait(attempts + 1);
+      this.deps.log(`outbox: ${id} to ${send.thread} attempt ${attempts + 1} failed, retry in ${wait} ms: ${message}`);
+      if (!this.stopped) this.timers.set(id, setTimeout(() => void this.submitKept(send, attempts + 1).catch(() => undefined), wait));
+      return undefined;
+    } finally {
+      this.inflight.delete(id);
+    }
+  }
+
+  private endKept(requestId: string): void {
+    this.kept.delete(requestId);
+    const at = Date.now();
+    this.done.set(requestId, at);
+    this.write({ t: "done", requestId, at });
   }
 
   private schedule(row: OutboxRow, delay: number): void {

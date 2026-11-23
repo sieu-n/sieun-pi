@@ -361,6 +361,7 @@ export class App {
       fileNotes,
       log,
     });
+    this.boards.sends = this.outbox;
     this.wss.on("connection", (socket: WebSocket, req?: IncomingMessage) => this.connect(socket, req));
   }
 
@@ -952,7 +953,7 @@ export class App {
     for (const d of deliveriesOf(post)) {
       if (d.state !== "delivered" || !d.thread) continue;
       try {
-        await this.host.submit(d.thread, { text, requestId: `${key}:${room}:${post.id}:${d.target}`, whenBusy: "steer", ownerTurn: true });
+        await this.outbox.submit(d.thread, { text, requestId: `${key}:${room}:${post.id}:${d.target}`, whenBusy: "steer", ownerTurn: true });
       } catch (error) {
         this.log(`posts: telling ${d.target} about ${room} ${post.id} failed: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -1077,7 +1078,8 @@ export class App {
   /**
    * Each @mention in a thread send or a DM post goes to the mentioned agent's work thread as an agent message from the owner, once the send
    * reached pi-host. Only a registered agent is a target (`Threads.registered`): a mention of a job, a bare thread, a name only a job has
-   * or an archived agent is not delivered.
+   * or an archived agent is not delivered. A mention pi-host did not take, as while it restarts for an install, stays in the outbox and
+   * goes when pi-host is back (`Outbox.submit`), and reads queued meanwhile.
    */
   private async deliverMentions(row: Pick<OutboxRow, "requestId" | "conversation" | "text" | "mentions">): Promise<Delivery[]> {
     const deliveries: Delivery[] = [];
@@ -1088,10 +1090,14 @@ export class App {
     for (const [target, record] of targets) {
       const name = this.threads.principal(target).name;
       try {
-        const sent = await this.host.submit(record.workThread, {
+        const sent = await this.outbox.submit(record.workThread, {
           text: row.text, requestId: `${row.requestId}:${target}`, whenBusy: "followUp",
           entry: { kind: "agent.message", data: { from: "owner", via: row.conversation } }, ownerTurn: true,
         });
+        if (!sent) {
+          deliveries.push({ target, name, state: "queued", at: Date.now() });
+          continue;
+        }
         const place = waitingPlace(sent.ticket?.place);
         deliveries.push({ target, name, state: place?.state === "queued" ? "queued" : "delivered", at: Date.now(), ...(place ? { queue: place } : {}) });
         this.queues.follow(record.workThread, sent.ticket?.place ?? null);

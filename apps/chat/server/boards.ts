@@ -23,7 +23,7 @@ import { checkInDetail, checkInIdle, checkInJobBrief, checkInJobName, checkInPre
 import type { Host } from "./host/types.ts";
 import { readJson, writeJson, type Store } from "./store.ts";
 import { writeJsonLater, written } from "./disk.ts";
-import { retryWait } from "./outbox.ts";
+import { retryWait, type Outbox } from "./outbox.ts";
 import type { SearchSplit } from "./search-engine.ts";
 import { OWNER_ZONE_OFFSET_MS } from "./search.ts";
 import type { Threads } from "./threads.ts";
@@ -74,6 +74,11 @@ interface CheckInState {
   everyMs: number; pausedUntil: number | "forever" | null; lastAt: number | null;
   /** `submission` is the job's first input and `reported` is set once its report went to the work thread (`reportCheckIn`). */
   job?: { id: string; name: string; submission?: number; reported?: true; archived?: true };
+  /**
+   * A check-in job that did not start yet, until a try lands (`runCheckIn`): `at` is the run whose request id its brief goes under, and
+   * `job` the thread a failed try made, which the next try submits to instead of making another.
+   */
+  start?: { at: number; name: string; job?: { id: string } };
 }
 /**
  * A duty's precheck at work, per duty id, from its launch until the save that records its run (`run`) or its run's after-job measure
@@ -193,6 +198,8 @@ export class Boards {
   checkOn: (thread: string) => BoxCheckRun | undefined = () => undefined;
   /** What a due wake's text becomes before it goes out, and what runs once it went out: Remind me's agent reminders (later-agents.ts). */
   wakeHooks?: Pick<ThreadWakeOptions, "expand" | "delivered">;
+  /** Where the owner's `[board]` line goes: the app's outbox, which keeps it on disk until pi-host takes it. */
+  sends: Pick<Outbox, "submit"> = { submit: async (thread, input, after) => (await after, this.host.submit(thread, input)) };
 
   constructor(
     readonly host: Host,
@@ -350,11 +357,11 @@ export class Boards {
     // own writes, which do not (requests/*.jsonl, ~/work/p231-slow-calls).
     if (summaries.length && actor === "owner") {
       const images = ops.flatMap(op => op.op === "todo_update" && op.reply ? this.replyImages(op.reply) : []);
-      // It follows the board into pi-host, so the turn it starts reads the board it names.
-      void put.then(() => this.host.submit(thread, {
+      // It follows the board into pi-host, so the turn it starts reads the board it names, and waits in the outbox while pi-host is away.
+      void this.sends.submit(thread, {
         text: `${BOARD_PREFIX}${summaries.join("\n")}`, ...(images.length ? { images } : {}), whenBusy: "followUp", requestId: `board:${chat}:${board.rev}`,
         entry: { kind: "agent.message", data: { from: "owner", via: "board" } },
-      })).catch(error => this.log(`board note to ${chat} failed: ${String(error)}`));
+      }, put).catch(error => this.log(`board note to ${chat} failed: ${String(error)}`));
     }
     mark = performance.now();
     await written(this.unputFile);
@@ -1189,10 +1196,11 @@ export class Boards {
   /**
    * One check-in, as Prime's chat runs it (chat-duty-run.ts `Duties.checkIn`): no job while the last check-in job still works, none when
    * nothing is due (`checkInIdle`), else one check-in job filed under the agent as `runDutyOnce` files a duty job, with Prime's brief
-   * (server/check-in-job.ts) and the run's detail file beside the duties.
+   * (server/check-in-job.ts) and the run's detail file beside the duties. A job that did not start is kept in `start` and tried again under
+   * its first run's name and request id, on the thread a failed try made: until 11-23 each try made a new thread and left the last one empty.
    */
   private async runCheckIn(chat: string, at: number): Promise<void> {
-    const last = this.file(chat).checkIn?.job;
+    const { job: last, start: kept } = this.file(chat).checkIn ?? {};
     const working = workingJobs(this.threads.allSummaries(), new Set(this.pendingWakes().map(wake => wake.session)));
     if (last && this.jobBusy(last, working)) {
       this.log(`check-in ${chat.slice(0, 8)}: skipped, the last check-in job ${last.name} still works`);
@@ -1210,7 +1218,8 @@ export class Boards {
     }
     const taken = new Set(this.threads.threadsList().map(thread => thread.name));
     const first = checkInJobName(this.nameOf(chat), at);
-    const name = taken.has(first) ? datedName(first, at) : first;
+    const name = kept?.name ?? (taken.has(first) ? datedName(first, at) : first);
+    const run = kept?.at ?? at;
     const dir = join(this.dir(chat), "check-ins");
     mkdirSync(dir, { recursive: true });
     const detail = join(dir, `checkin-${runStamp(at)}.md`);
@@ -1221,26 +1230,30 @@ export class Boards {
       boardApi: `${this.selfUrl}/api/threads/${thread}/board`, steerApi: `${this.selfUrl}/api/threads/${thread}/job-steer`, itemsApi: `${this.selfUrl}/api/c/${thread}/items`,
     });
     const work = this.threads.thread(thread);
-    let job: { id: string };
+    let job = kept?.job;
     let submitted: { submission: number };
     try {
-      job = await this.threads.create({ name, ...threadModel(work), ...(work?.cwd ? { cwd: work.cwd } : {}) }, made => {
-        this.store.state.threads[made.id] = { kind: "job", parent: chat };
-        this.store.saveState();
-        this.agents.alias(made.id, chat);
-      });
-      await this.threads.refresh().catch(() => undefined);
-      submitted = await this.host.submit(job.id, { text, requestId: `checkin:${chat}:${at}`, entry: { kind: "agent.message", data: { from: chat, via: "check-in" } } });
+      if (!job) {
+        job = await this.threads.create({ name, ...threadModel(work), ...(work?.cwd ? { cwd: work.cwd } : {}) }, made => {
+          this.store.state.threads[made.id] = { kind: "job", parent: chat };
+          this.store.saveState();
+          this.agents.alias(made.id, chat);
+        });
+        await this.threads.refresh().catch(() => undefined);
+      }
+      submitted = await this.host.submit(job.id, { text, requestId: `checkin:${chat}:${run}`, entry: { kind: "agent.message", data: { from: chat, via: "check-in" } } });
     } catch (error) {
       // As Prime's chat does, a job that did not start is tried again in CHECK_IN_RETRY_MS (slack green guy 10-12: "daemon client closed").
       const failed = this.file(chat);
       if (failed.checkIn) {
+        failed.checkIn.start = { at: run, name, ...(job ? { job: { id: job.id } } : {}) };
         failed.checkIn.lastAt = at - this.checkIn(chat).everyMs + CHECK_IN_RETRY_MS;
         this.save(chat, failed);
       }
       throw new Error(`the check-in job did not start, so it tries again in 5 min: ${String(error)}`);
     }
     const file = this.file(chat);
+    delete file.checkIn?.start;
     if (file.checkIn) file.checkIn.job = { id: job.id, name, submission: submitted.submission };
     else file.checkIn = { everyMs: DEFAULT_CHECK_IN_MS, pausedUntil: null, lastAt: at, job: { id: job.id, name, submission: submitted.submission } };
     this.save(chat, file);
