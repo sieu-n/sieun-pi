@@ -410,8 +410,9 @@ export class App {
     this.laterDue.stop();
     this.queues.stop();
     clearTimeout(this.sidebarTimer);
-    // A board put at work lands before the next process can put a later board of the same chat (boards.ts `putBoards`).
-    await this.boards.putsSettled();
+    // The stop leaves a board put at work running. Its board stays in board-writes.json, which `drained` below writes and the next process
+    // puts again, and its newerOnly keeps a later board when it lands after that put (boards.ts `putBoards`). On 11-23 a stop that waited
+    // for it held a hand-over's calls up to 28.6 s behind puts held 35 s (~/work/pi-host-stalls/d-put-wait).
     // The host client closes first: a watch's unwatch sent to a pi-host that restarts beside the chat retried for 30 s, past systemd's
     // 20 s stop timeout, so restarting both services on 10-28 ended in a SIGKILL. pi-host drops a closed connection's watches itself.
     if (!options.keepHost) await this.host.close();

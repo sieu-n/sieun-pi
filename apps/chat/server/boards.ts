@@ -68,14 +68,6 @@ export function workingJobs(summaries: readonly AgentSummary[], waking: Readonly
 const DEFAULT_CHECK_IN_MS = 120 * 60_000;
 /** Prime's CHECK_IN_RETRY_MS (chats.ts): a check-in whose job did not start tries again this soon, not a whole interval later. */
 const CHECK_IN_RETRY_MS = 5 * 60_000;
-/**
- * How long a hand-over's stop waits for a board put at work (`putsSettled`), the same 30 s as its wait for a write in flight (http.ts
- * WRITE_WAIT_MS): the slowest board write on 11-21 took 8.8 s, and on 11-23 the slowest put waited 3.7 s behind pi-host's event loop. Calls
- * wait in the socket's queue meanwhile; in the board hand-over rig with puts held 3 s, the stop took 1.0 to 2.8 s
- * (~/work/p231-slow-calls/p231-board-handler/handoff). A SIGTERM stop ends sooner, at the unit's 20 s TimeoutStopSec. Past it the stop
- * goes on with the board still in board-writes.json; a put cut here could land after the next process's put of a later board of that chat.
- */
-const PUT_WAIT_MS = 30_000;
 
 /** A board's check-in setting, its last run, and the last check-in job it started, which a run skips behind while it works. */
 interface CheckInState {
@@ -397,9 +389,10 @@ export class Boards {
       if (!board || this.putsStopped) return;
       const began = performance.now();
       try {
-        // newerOnly: a put of an older board that lands late, such as one a stop left past PUT_WAIT_MS, never replaces a later one.
+        // newerOnly: a put of an older board that lands late, such as one still at work when this process stopped, never replaces a later one.
         await this.host.docPut(this.threadOf(chat), BOARD_DOC, board, { newerOnly: true });
       } catch (error) {
+        if (this.putsStopped) return;
         failures += 1;
         const wait = retryWait(failures);
         this.log(`board put for ${chat} failed ${failures} times, retry in ${wait} ms: ${String(error)}`);
@@ -409,6 +402,8 @@ export class Boards {
         });
         continue;
       }
+      // After the stop, board-writes.json is the next process's, which puts the board again; this process writes no more to it.
+      if (this.putsStopped) return;
       failures = 0;
       const ms = Math.round(performance.now() - began);
       // Over 1 s is 20 times the 48.5 ms p50 of 11-23's writes, which is worth a line in the log.
@@ -418,19 +413,6 @@ export class Boards {
         writeJsonLater(this.unputFile, Object.fromEntries(this.unput));
       }
     }
-  }
-
-  /**
-   * Waits for the puts at work after `stop`, so the next process, which puts every board still in `board-writes.json` again, starts after
-   * them. A put still at work after `PUT_WAIT_MS` is left to end on its own and logged; its board stays in the file.
-   */
-  async putsSettled(): Promise<void> {
-    if (!this.putting.size) return;
-    let timer: NodeJS.Timeout | undefined;
-    const cut = new Promise<"cut">(resolve => (timer = setTimeout(() => resolve("cut"), PUT_WAIT_MS)));
-    const how = await Promise.race([Promise.all(this.putting.values()).then(() => "done" as const), cut]);
-    clearTimeout(timer);
-    if (how === "cut") this.log(`board puts for ${[...this.putting.keys()].join(", ")} still at work after ${PUT_WAIT_MS / 1000} s; their boards stay in board-writes.json`);
   }
 
   /** Sends the For you count after a write without holding its answer; a count read before a later write's is dropped. */

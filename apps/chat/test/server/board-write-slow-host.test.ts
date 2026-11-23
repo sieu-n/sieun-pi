@@ -170,42 +170,49 @@ test("a write on a board this server read long ago answers with no pi-host read,
   }
 });
 
-test("a put of an older board that lands after the next server's put of a later board leaves the later board in pi-host", async () => {
+test("a stop ends while pi-host holds a board put, and that put, landing after the next server's put of a later board, leaves the later board", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "apps-chat-test-"));
   const first = await start({ wordMs: 0, dataDir });
   const host = first.host as FixtureHost;
   let release: () => void = () => undefined;
   let next: Awaited<ReturnType<typeof start>> | undefined;
+  let firstOpen = true;
   try {
     const agent: AgentSummary = (await first.send("POST", "/api/agents", { name: "late put" })).body;
     await until(async () => first.app.threads.thread(agent.thread)?.status, status => status !== "running");
     const path = `/api/agents/${agent.id}/board`;
     await first.get<BoardView>(path);
-    // The first server's next put is held, as a put a release's stop left running past PUT_WAIT_MS; every later put goes through.
+    // The first server's next put is held, as pi-host holds a put behind its event loop; every later put goes through.
     const gate = new Promise<void>(resolve => (release = resolve));
     const put = host.docPut.bind(host);
     let held = false;
+    let landed: Promise<void> = Promise.resolve();
     host.docPut = async (id, name, value, opts) => {
       if (!held && name === "chat.board") {
         held = true;
-        await gate;
+        landed = gate.then(() => put(id, name, value, opts));
+        return landed;
       }
       return put(id, name, value, opts);
     };
     const older = (await first.send<BoardView>("POST", path, { actor: "agent", ops: [{ op: "plan_add", text: "Older step." }] })).body.board!;
+    // A hand-over's calls wait in the socket's queue while the old server stops, so its stop never waits for pi-host's put.
+    firstOpen = false;
+    assert.notEqual(await within(first.close(), 2_000), "held", "the stop waited for pi-host's put");
     // The next server starts from the same data dir, puts the board the first one left in board-writes.json, and takes a later write.
     next = await start({ wordMs: 0, dataDir, host });
+    await until(async () => (await host.docGet(agent.thread, "chat.board")) as ChatBoard | null, board => board?.rev === older.rev);
     const later = (await next.send<BoardView>("POST", path, { actor: "agent", ops: [{ op: "plan_add", text: "Later step." }] })).body.board!;
     assert.ok(later.rev > older.rev);
     await until(async () => (await host.docGet(agent.thread, "chat.board")) as ChatBoard | null, board => board?.rev === later.rev);
     release();
-    await until(async () => first.app.boards.putsSettled().then(() => true), done => done);
+    await landed;
     const stored = (await host.docGet(agent.thread, "chat.board")) as ChatBoard;
     assert.equal(stored.rev, later.rev, `pi-host holds rev ${stored.rev}, the late put's, over the later board's rev ${later.rev}`);
     assert.deepEqual(stored.plan.map(step => step.text).slice(-2), ["Older step.", "Later step."]);
   } finally {
     release();
-    await first.close();
+    if (firstOpen) await first.close();
     await next?.close();
     rmSync(dataDir, { recursive: true, force: true });
   }
