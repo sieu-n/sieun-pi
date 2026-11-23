@@ -52,6 +52,8 @@ test("the Wiki view's field finds a page by its title, keeps the words in the ad
 test("Cmd K lists a page whose title is typed above the messages, and Enter on it opens the page", async ({ page }) => {
   await stub(page);
   await page.goto("/#/c/ch_general");
+  // main.ts mounts the app, and with it the window's Cmd K listener, only after restorePages, which can end after the load event.
+  await expect(page.getByTestId("nav-capsule")).toBeVisible();
   await page.keyboard.press("ControlOrMeta+k");
   const dialog = page.locator("[data-search-palette]");
   await dialog.getByRole("combobox").fill(TITLE);
