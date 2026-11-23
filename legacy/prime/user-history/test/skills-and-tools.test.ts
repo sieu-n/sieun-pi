@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { CALL_TIMEOUT_MS, CHECKS, type Deps, type ExecResult, runChecks, type SearchFix, searchFixStep, toOutput, withHarness } from "../scripts/duties/skills-and-tools.ts";
 import type { DutyStore } from "../src/chat-duty-store.ts";
 import { parsePrompts } from "../src/sign-in-prompts.ts";
-import { dueAccounts, NO_SEAT } from "../src/claude-grant-renewal.ts";
+import { dueAccounts, NO_SEAT, readAuthorizePage } from "../src/claude-grant-renewal.ts";
 import { dailyRun } from "../src/chat-tools.ts";
 import type { Duty, DutyRunRecord } from "../src/shared/chat-duties.ts";
 import type { ChatBoard, PlanItem } from "../src/shared/types.ts";
@@ -652,6 +652,14 @@ test("the grant renewal signs in live accounts due within RENEW_LEAD_MS, soonest
   const orgs = new Map([["g", "virev"], ["h", "virev"]]);
   const due = dueAccounts(rows, ends, orgs, new Set(["claude8@slack.green"]), now);
   assert.deepEqual(due.map(account => account.email), ["claude22@slack.green", "claude16@slack.green", "claude19@slack.green"]);
+});
+
+// 11-23 19:33Z: claude.ai ignored each Authorize press as "Too soon", and the renewal failed both due accounts with "Authorize gave no code".
+test("the grant renewal presses Authorize again after the page calls a press too soon, and reads the code it shows after one it takes", () => {
+  const consent = "Claude Code would like to connect to your Claude chat account\nApply your privacy settings to coding sessions\nAuthorize\nDecline\nLogged in as claude21@slack.green";
+  assert.deepEqual(readAuthorizePage(consent.replace("Decline", "Too soon. Wait, then press again.\nDecline")), { kind: "too-soon" });
+  assert.deepEqual(readAuthorizePage("Authentication Code\nPaste this into Claude Code:\nabc123#state456\nCopy Code"), { kind: "code", code: "abc123#state456" });
+  assert.deepEqual(readAuthorizePage(consent), { kind: "other" });
 });
 
 // 10-24 00:13 KST: pool_codex waited on the owner's Apple sign-in, and the headline missed for 10 runs that no agent could move.

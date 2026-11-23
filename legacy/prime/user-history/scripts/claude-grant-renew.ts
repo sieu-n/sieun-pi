@@ -3,7 +3,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { parseArgs } from "node:util";
-import { CLI_KEY, dueAccounts, parseRenewal, RENEW_LEAD_MS, type RenewalState, type RenewResult, renewalStateFile, type PoolRow } from "../src/claude-grant-renewal.ts";
+import { AUTHORIZE_REST_MS, CLI_KEY, dueAccounts, parseRenewal, readAuthorizePage, RENEW_LEAD_MS, type RenewalState, type RenewResult, renewalStateFile, type PoolRow } from "../src/claude-grant-renewal.ts";
 import { parsePrompts, type PromptKind, promptsText, signInPromptsFile, withPrompt } from "../src/sign-in-prompts.ts";
 
 /**
@@ -144,10 +144,18 @@ async function emailSignIn(repl: AsideRepl, email: string): Promise<{ url: strin
   const page = await read(repl);
   if (page.text.includes("Logged in as")) await repl.run("await globalThis.renewTab.getByText('Switch account').click(); await sleep(3000);");
   const before = new Set(await magicLinks(repl, email));
-  await repl.run(`const lt = globalThis.renewTab;
-if (!(await lt.getByRole('textbox', { name: 'Email' }).isVisible().catch(() => false))) { await lt.getByText('Continue with email').first().click(); await sleep(1500); }
-await lt.getByRole('textbox', { name: 'Email' }).click(); await lt.keyboard.type(${js(email)}, { delay: 40 }); await sleep(700);
+  // The login page can take longer than the 4 s after openTab to draw its form: at 19:35Z on 11-23 the restore found neither the email box
+  // nor "Continue with email", and the same page drew both when read again later.
+  const form = await repl.run(`const lt = globalThis.renewTab; const box = lt.getByRole('textbox', { name: 'Email' });
+for (let i = 0; i < 30 && !(await box.isVisible().catch(() => false)); i++) {
+  const more = lt.getByText('Continue with email').first();
+  if (await more.isVisible().catch(() => false)) await more.click();
+  await sleep(1000);
+}
+if (!(await box.isVisible().catch(() => false))) { console.log('NOFORM'); return; }
+await box.click(); await lt.keyboard.type(${js(email)}, { delay: 40 }); await sleep(700);
 await lt.getByRole('button', { name: 'Continue with email' }).click(); await sleep(6000);`);
+  if (form.includes("NOFORM")) { const shown = await read(repl); throw promptOn(shown) ?? new Error(`claude.ai's login page showed no email box within 30 s: ${shown.text.slice(0, 300)}`); }
   const sent = await read(repl);
   if (!/link sent to/i.test(sent.text)) throw promptOn(sent) ?? new Error(`claude.ai sent no sign-in link: ${sent.text.slice(0, 300)}`);
   const link = await newMagicLink(repl, email, before);
@@ -166,24 +174,30 @@ async function approve(repl: AsideRepl, url: string, email: string): Promise<str
       page = await emailSignIn(repl, email);
       if (!page.text.includes(`Logged in as ${email}`)) throw promptOn(page) ?? new Error(`the sign-in link did not reach the Authorize page as ${email}: ${page.text.slice(0, 300)}`);
     }
-    // The Authorize button stays disabled until claude.ai's hCaptcha passes, which a reload and mouse moves bring about (11-16).
+    // The Authorize button stays disabled until claude.ai's hCaptcha passes, which a reload and mouse moves bring about (11-16). Since 11-23 the
+    // page also ignores a press that lands within 400 to 700 ms of the pointer entering it, and says "Too soon. Wait, then press again.", which
+    // a mouse.click that moves in and presses at once always did. So the pointer rests on the button for AUTHORIZE_REST_MS before it presses.
     for (let attempt = 0; attempt < 3; attempt++) {
       const out = await repl.run(`const at = globalThis.renewTab; await at.reload(); await sleep(3000);
 if (!(await at.locator('body').innerText()).includes(${js(`Logged in as ${email}`)})) { console.log('WRONG'); return; }
 const button = at.getByRole('button', { name: 'Authorize' });
 for (let i = 0; i < 60; i++) {
-  if (await button.isEnabled()) { const box = await button.boundingBox(); await at.mouse.click(box.x + box.width / 2, box.y + box.height / 2); await sleep(6000); console.log('CLICKED'); return; }
+  if (await button.isEnabled()) {
+    const box = await button.boundingBox(); await at.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 10 }); await sleep(${AUTHORIZE_REST_MS});
+    if (await button.isEnabled()) { await at.mouse.down(); await sleep(90); await at.mouse.up(); await sleep(6000); console.log('CLICKED'); return; }
+  }
   await at.mouse.move(250 + (i % 9) * 31, 280 + (i % 6) * 27, { steps: 5 }); await sleep(700);
 }
 console.log('DISABLED');`);
       if (out.includes("WRONG")) throw new Error(`another sign-in switched the owner's claude.ai to a different account before Authorize`);
       if (!out.includes("CLICKED")) continue;
       page = await read(repl);
-      const code = /Paste this into Claude Code:\s*(\S+#\S+)/.exec(page.text)?.[1];
-      if (code) return code;
+      const shown = readAuthorizePage(page.text);
+      if (shown.kind === "code") return shown.code;
+      if (shown.kind === "too-soon") continue;
       throw promptOn(page) ?? new Error(`Authorize gave no code: ${page.text.slice(0, 300)}`);
     }
-    throw new Error("the Authorize button stayed disabled through 3 reloads");
+    throw new Error("the Authorize button stayed disabled, or the page called each press too soon, through 3 reloads");
   } finally {
     await closeRenewTab(repl);
   }

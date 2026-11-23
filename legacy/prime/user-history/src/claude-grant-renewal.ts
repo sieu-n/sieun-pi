@@ -48,6 +48,18 @@ export function parseRenewal(text: string | undefined): RenewalState | undefined
   } catch { return undefined; }
 }
 
+/** How long the pointer rests on Authorize before it presses: claude.ai's consent page ignores a press within 700 ms of the pointer entering it (11-23). */
+export const AUTHORIZE_REST_MS = 1_500;
+
+/** What claude.ai's authorize page shows after an Authorize press: the code to paste, the "Too soon" note of a press it ignored, or anything else. */
+export type AuthorizePage = { kind: "code"; code: string } | { kind: "too-soon" } | { kind: "other" };
+
+export function readAuthorizePage(text: string): AuthorizePage {
+  const code = /Paste this into Claude Code:\s*(\S+#\S+)/.exec(text)?.[1];
+  if (code) return { kind: "code", code };
+  return /Too soon\. Wait, then press again/.test(text) ? { kind: "too-soon" } : { kind: "other" };
+}
+
 const minute = (ms: number) => `${new Date(ms).toISOString().slice(5, 16).replace("T", " ")}Z`;
 
 /**
