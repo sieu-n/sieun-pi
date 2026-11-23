@@ -1,8 +1,26 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import { composerInput, conversation, CRAWLER, FRONTEND, open, tag, VENT_JOB } from "./helpers";
 
 /** Crawler VP's seeded rich answer (server/host/fixture.ts `richReply`): the row whose bubble holds the Important callout. */
 const rich = (page: Page) => conversation(page).locator("li[data-message-id]").filter({ has: page.locator(".callout-important") });
+
+/**
+ * Scrolls the room's feed with the wheel, as he does, until `target` shows in it. A row off screen skips its layout (content-visibility in
+ * Timeline.svelte), so a scroll straight to an element inside it lands where the row's guessed height puts it: in a full run on 11-23 the
+ * rich post's row then grew 752 px, the feed held the rows under it in place, and the diagram never came near the view.
+ */
+async function wheelTo(page: Page, target: Locator): Promise<void> {
+  await conversation(page).getByTestId("timeline").hover();
+  await expect.poll(async () => {
+    const side = await target.evaluate((el) => {
+      const feed = el.closest("[data-testid=timeline]")!.getBoundingClientRect();
+      const box = el.getBoundingClientRect();
+      return box.bottom < feed.top ? -1 : box.top > feed.bottom ? 1 : 0;
+    });
+    if (side) await page.mouse.wheel(0, side * 300);
+    return side;
+  }, { timeout: 15_000, intervals: [100, 250] }).toBe(0);
+}
 
 test.use({ permissions: ["clipboard-read", "clipboard-write"] });
 // The first mermaid load on a cold dev server takes up to 20 s while four workers start at once.
@@ -11,7 +29,7 @@ test.describe.configure({ timeout: 60_000 });
 test("the rich answer draws its mermaid flow as an SVG in the current theme, and redraws it in dark mode", async ({ page }) => {
   await open(page, `#/c/${CRAWLER}`);
   const block = rich(page).locator(".diagram-block");
-  await block.scrollIntoViewIfNeeded();
+  await wheelTo(page, block);
   const svg = block.locator(".diagram-slot svg");
   await expect(svg).toBeVisible({ timeout: 15_000 });
   await expect(svg.getByText("Browser specs")).toBeVisible();
@@ -23,7 +41,7 @@ test("the rich answer draws its mermaid flow as an SVG in the current theme, and
 test("the diagram's Source shows the mermaid text, Copy copies it, and Expand opens it in the lightbox", async ({ page }) => {
   await open(page, `#/c/${CRAWLER}`);
   const block = rich(page).locator(".diagram-block");
-  await block.scrollIntoViewIfNeeded();
+  await wheelTo(page, block);
   await expect(block.locator(".diagram-slot svg")).toBeVisible({ timeout: 15_000 });
   await block.getByRole("button", { name: "Source" }).click();
   await expect(block.locator("pre")).toContainText("flowchart TD");
@@ -208,7 +226,7 @@ test("opening a thread over the wiki page takes the side panel, and Back brings 
 test("the screenshot loads from the box through /api/local-image and opens in the lightbox", async ({ page }) => {
   await open(page, `#/c/${CRAWLER}`);
   const img = rich(page).locator("img.md-image");
-  await img.scrollIntoViewIfNeeded();
+  await wheelTo(page, img);
   await expect(img).toHaveAttribute("src", /^\/api\/local-image\?path=/);
   await expect.poll(() => img.evaluate((el: HTMLImageElement) => el.complete && el.naturalWidth)).toBeGreaterThan(0);
   await img.click();
@@ -247,7 +265,7 @@ test.describe("on a short screen", () => {
     });
     test.skip(!far, "the diagram already sits near the view at this size");
     await expect(block.locator(".mermaid-view")).toHaveCount(0);
-    await block.scrollIntoViewIfNeeded();
+    await wheelTo(page, block);
     await expect(block.locator(".diagram-slot svg")).toBeVisible({ timeout: 15_000 });
   });
 });
