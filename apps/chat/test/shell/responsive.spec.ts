@@ -25,6 +25,9 @@ test("below 650 px the sidebar is a drawer that the toggle opens and a route cha
 test("Cmd or Ctrl plus and minus change the interface size and 0 resets it", async ({ page }) => {
   const mod = process.platform === "darwin" ? "Meta" : "Control";
   await page.goto("/#/c/ch_general");
+  // goto returns at the load event, which comes before main.ts's top-level await lets the app mount and bind its keys; under a 20x CPU
+  // throttle the app had no element yet and the press was lost (~/work/chat-specs-red/specs-red-shell-responsive/notes.md).
+  await expect(page.getByRole("navigation", { name: "Conversations" })).toBeVisible();
   await page.keyboard.press(`${mod}+=`);
   await expect.poll(() => page.evaluate(() => document.documentElement.style.zoom)).toBe("1.1");
   await page.reload();
