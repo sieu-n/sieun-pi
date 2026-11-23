@@ -167,13 +167,6 @@
       "target": ".prime/agent/skills/unslop"
     },
     {
-      "id": "skill:kst-clock",
-      "kind": "link",
-      "source": "skills/kst-clock",
-      "scope": "home",
-      "target": ".prime/agent/skills/kst-clock"
-    },
-    {
       "id": "skill:mac-screen",
       "kind": "link",
       "source": "skills/mac-screen",
