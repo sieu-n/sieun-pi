@@ -44,6 +44,7 @@ The owner said so on 11-20: "no this is not Chat. this is Slack."
 8. A post holds no table unless he asked for one or asked whether a setup or skill is set up right, which gets one answer line and one table of each piece, where it lives, who loads it and what it says, never a bare yes or a long list (c225). Other detail goes on a wiki page linked in the same post.
    A yes or no question gets the fact he asked for and stops there, and anything the agent is unsure of is left out or asked as a question with its pick.
 9. When a reaction says it all, the agent reacts and posts nothing.
+   An agent never sets a thread's done check, which is the owner's alone ("Agent가 Done Check하는 기능 없애", #sw-factory-build p177, c236), so once a post is handled it takes 👀 off and stops.
 10. A post ends on its words with no sign-off emoji such as 👍 or 🎉, and it says what a JSON or log line shows instead of pasting it, as the last pair below shows.
 11. A list of options, such as products, tools or what other apps do, opens with the agent's pick and its reason, explains that one with how it works, a concrete example and how it would fit us, and gives each other option one line on what it would mean for him, as more bullets of the same list.
 
@@ -220,25 +221,25 @@ He drew the line in p110: a request about one product or scope goes to that agen
 
 The owner wrote on 11-20 in #sw-factory-build: "시작하면서 눈까리 붙였으면 끝났을 떄 떼야지 / 체크도 남발하지 마 제발 the final outcome should ALWAYS act like a Slack thread".
 
-1. An agent puts 👀 on a post when it starts on it and keeps it on while that post's work runs, through a first reply, and takes it off in the turn that posts the result, makes the last edit or marks the thread done.
+1. An agent puts 👀 on a post when it starts on it and keeps it on while that post's work runs, through a first reply, and takes it off in the turn that posts the result or makes the last edit.
    A post answered in full in one turn, such as a quick question, gets the answer and no 👀, the way a person in Slack just replies, so 👀 always means work still runs.
    Until 11-21, 👀 came off with the first reply, and in the owner's p128 trace his #dev-app-search-prospect p14 then showed no mark for 27 min while the work ran ([message flow example](wiki:domains/devops/sw-factory-threads/message-flow-example.html)).
    His p75 words, "끝났을 떄 떼야지", ask for 👀 to come off when the work ends, so it now stays until then.
 2. The reply is the outcome, so once its work ends a post the agent replied to keeps no emoji of the agent's, and no ✅ marks a post finished.
-3. Once an ask is fully handled, the agent marks its thread done with `set_thread_done(message_id, true)` (`packages/pi-host/src/durable/thread-done.ts`), which puts the flag on the thread's root post, and the room shows that root with a check and dimmed (owner p113).
-   A new owner reply in a done thread reopens it, and the agent marks it done again once that reply is handled, or opens it with `done: false` when something is left.
+3. Agents never set a thread's done check, because it is the owner's alone: "Agent가 Done Check하는 기능 없애" (#sw-factory-build p177, c236), so once an ask is handled the agent takes 👀 off and stops.
+   He marks a thread done from the room, which puts the flag on its root post and shows it with a check and dimmed (p113), and his new reply in a done thread reopens it; pi-host has no set_thread_done tool, and apps/chat answers the old agent route with 403.
 4. A post that a reaction answers, such as "ok thanks", gets that one reaction and no post.
 5. A result posts as a reply in the thread of the post it answers, never as a new post in the channel.
 6. A result that comes later, in a work thread's report, names its post with tell_owner's `reply_to`, and apps/chat puts it in that post's thread and sets `answers` (`repliedPost` in `apps/chat/server/reactions.ts`).
    It quotes nothing from his post, because a `> ...` quote is how a chat with no threads marks an older ask, and in a room the post still lands in the thread of his newer post.
    On 11-21 in #dev-app-search-prospect the comm thread answered his p9 "is our API serving?" after his newer cost ask p11, opened with "> is our API serving?" as the role text then said, and set no `reply_to`, so the answer sat under p11 and he wrote "slop slop slop" (p33).
-   A post with no `reply_to` now goes to the post its round's closing calls name, such as `set_emoji` taking 👀 off, `mark_message` completed or `set_thread_done` true, and a resend after a refused post goes where the refused one was aimed (`closedPost` in `apps/chat/server/rooms.ts`).
+   A post with no `reply_to` now goes to the post its round's closing calls name, such as `set_emoji` taking 👀 off or `mark_message` completed, and a resend after a refused post goes where the refused one was aimed (`closedPost` in `apps/chat/server/rooms.ts`).
 7. A follow-up in a thread the agent already worked on, such as "how does it work?", gets its answer within a minute from what the comm thread holds, the thread so far and the earlier report and page, with a mermaid diagram when the flow fits one and a real example such as a saved row (c52, c132).
    The work thread checks what still needs proof, 👀 stays on, and an edit confirms or corrects the answer, with no list of the checks (c234).
    In the trace, p16 "데이터가 & flow가 정확하게 어떤식으로 구성되어있어?" got only a checklist, and its first finding came 5.6 min later.
 8. The work thread steers the job that did the earlier work when it still runs, and otherwise starts one job seeded from that job's findings, never a fresh round of research jobs, because p16 started 3 new jobs that read again what p14's jobs had found.
 9. A job that writes a page from other jobs' findings starts after those jobs report, because p14's writer started beside the researchers, sat idle and exited with no reply.
-10. No code sets or clears an agent's reaction or marks a thread done for it (c210), so these rules live in the comm role text and the blind run checks them.
+10. No code sets or clears an agent's reaction for it (c210), so these rules live in the comm role text and the blind run checks them.
    The one flag change code makes is to reopen a done thread in a channel or Solo room when the owner replies in it (`reopens` in `apps/chat/server/thread-done.ts`).
 
 ## Where reply behavior lives
@@ -251,7 +252,7 @@ Put behavior in code defaults and the tools' own text first, and never in a remi
 | Refusals and notes on a comm post | `packages/pi-host/src/durable/comm-guard.ts`, run from `prime-chat.ts` |
 | When a post runs long | `longReply` in `legacy/prime/user-history/src/shared/reply-lint.ts`, loaded from the live :5182 release (`release-chat.mjs`), which counts words without list markers, with a room's cap of 120 from `ROOM_LONG` in `packages/pi-host/src/durable/room-post.ts` |
 | How a post is stored and which owner post it answers | `apps/chat/server/group-rooms.ts` and `rooms.ts`, `RoomPost.answers`, set from the call's `reply_to`, else the post its round's closing calls name, else the turn's post |
-| When 👀 comes off and when a thread is marked done | `packages/pi-host/src/durable/agent-profile.ts`, `workSteps` |
+| When 👀 comes off | `packages/pi-host/src/durable/agent-profile.ts`, `workSteps` |
 | How posts stack and show what they answer | `apps/chat/web/src/pages/channel/rows.ts` and `MessageRow.svelte` |
 | Prime chat tone | `config/AGENTS.md` rule 5 and the chat brief guidance |
 
@@ -273,7 +274,7 @@ A new param on an agent tool gets the same check: its tool and param text say wh
    For a checklist (rule 5), run `blind-replies.mjs --set checklist --cwd /home/sieun/src/sieun-pi`, which asks for several checks before a ship and a yes or no question.
    For a natural checklist in a DM and a channel with a pick before any question (owner p54), run `blind-replies.mjs --set natural`.
    For 👀 until the work ends, a follow-up answered within a minute and the jobs a follow-up starts, run `node apps/chat/scripts/blind-follow-up.mjs --out ~/work/<job>/blind-runs.jsonl`.
-   For the thread done flag, run `node apps/chat/scripts/blind-thread-done.mjs --out ~/work/<job>/blind-runs.jsonl`, which checks the root reads done after the answer, open after an owner follow-up and done again after its answer.
+   For the thread done flag, `blind-reactions.mjs` checks that no thread ends marked done and no set_thread_done call is made, and `blind-follow-up.mjs` marks the task thread done as the owner and checks that his follow-up reopens it and the thread ends open.
 4. The script makes a `test: true` agent and channel, posts the asks as the owner with no hint about format, and checks each answer for one post, no table, no labels, for a plain reply the room's lengths (120 words, no sentence over 35), and with `--set lists` for a one-line answer over a task list, and for one short line.
    With `--set checklist` it checks that the first version opens with a natural sentence, narrates no plan of the agent's own and holds no open `- [ ]` item (c234), and that the last version opens with a one-line answer, which a later edit may fill in, and that this answer calls nothing all clear over uncommitted files it lists (rule 1).
    `--set natural` runs the same first-version checks in a DM and a channel, plus no bare topic label, a pick with every question and no line of 3 sentences, and `apps/chat/scripts/natural-checks.test.mjs` holds the owner's praised post and p51, p55 and p158 as its cases.

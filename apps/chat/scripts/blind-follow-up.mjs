@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
  * The blind follow-up check of the sw-factory skill (skills/sw-factory/SKILL.md, "Reactions and threads", rules 1, 7, 8 and 9): a fresh test
- * agent gets a multi-part research task in a fresh test channel, and once its thread reads done, a "how is it set up exactly" follow-up in
- * that thread, with no steering. The owner asked in #sw-factory-build p128 (msg mwqg8lug): "if i send a message like this, how does the
+ * agent gets a multi-part research task in a fresh test channel, and once its work ends, the owner marks the thread done as his click does
+ * and posts a "how is it set up exactly" follow-up in that thread, with no steering. The owner asked in #sw-factory-build p128 (msg mwqg8lug): "if i send a message like this, how does the
  * ACTUAL threads look like? ... for the OG message, and the follow-up message and how should it ideally look like", about his
  * #dev-app-search-prospect p14 and p16 (wiki:domains/devops/sw-factory-threads/message-flow-example.html).
  *
@@ -10,8 +10,11 @@
  *     [--threads-dir ~/.prime/agent/pi-host/durable/threads] [--keep]
  *
  * Checks, per run:
- * 1. The task and the follow-up each keep the agent's 👀 from the start until the work ends (the last version of the agent's reply or the
- *    done mark), when the first reply is a checklist with open items, and neither keeps 👀 at the end.
+ * 1. The task and the follow-up each keep the agent's 👀 from the start until the work ends (the last version of the agent's reply), when
+ *    the first reply is a checklist with open items, and neither keeps 👀 at the end.
+ * 1a. The agent leaves the thread open, his follow-up reopens the thread he marked done, the thread ends open, the comm thread calls no
+ *    set_thread_done and no post says it marks one done, since the done check is the owner's alone (#sw-factory-build p177, c236).
+ *    A post's work counts as ended once it has a reply with no open `- [ ]` item and no 👀 of the agent's.
  * 2. The first reply to the task went out with no tell_owner call refused before it in the comm thread.
  * 3. The follow-up gets a reply within 60 s whose first version holds answer text above any `- [ ]` item.
  * 4. After the follow-up the work thread starts at most one job (a steer of a live job starts none).
@@ -21,7 +24,7 @@
  * tell_owner call and cuts tool summaries to one line; those fields are null when the agent runs on another host.
  *
  * The asks are about a repo of the asker's own (SETS), never sw factory, because on 11-20 fresh agents read sw-factory asks as feedback and
- * tagged @agent factory. The task waits up to 45 min for the done mark, since p14 took 27.6 min; the follow-up waits up to 30 min, since
+ * tagged @agent factory. The task waits up to 45 min for its work to end, since p14 took 27.6 min; the follow-up waits up to 30 min, since
  * p16 took 10.2 min with 3 jobs. The agent and room are archived at the end unless --keep.
  */
 import { appendFileSync, existsSync, readlinkSync } from "node:fs";
@@ -155,9 +158,12 @@ async function waitFor(ms, done) {
 
 const send = async (text, key, threadRoot) => (await call("POST", `/api/c/${room}/send`, { text, requestId: `blind-follow-${stamp}-${key}`, ...(threadRoot ? { threadRoot } : {}) })).item;
 const replyTo = id => latest.filter(p => isAgent(p) && p.answers === id);
-/** The root's done mark, `{ by, at }`, or undefined while the thread is open. */
-const doneMark = id => latest.find(p => p.id === id)?.done;
-const rootDone = id => Boolean(doneMark(id));
+/** Whether the root reads done, which only the owner sets (c236). */
+const rootDone = id => Boolean(latest.find(p => p.id === id)?.done);
+/** Whether a post's work ended: replies, none with an open item, and no 👀 of the agent's on it. */
+const settled = (id, replies) => replies.length > 0 && replies.every(r => !OPEN_ITEM.test(r.text)) && !mine(latest.find(p => p.id === id), EYES);
+/** A post that says the agent marks its thread done, such as "marking this done". */
+const MARKS_DONE = /\bmark(?:s|ed|ing)?\b[^.\n]{0,30}\b(?:done|resolved)\b/i;
 
 /** The model entries of conversation 1 of a thread's SQLite file, read-only, or null when the file is not on this box. */
 function entries(thread) {
@@ -243,19 +249,23 @@ const started = Date.now();
 let line;
 try {
   const task = await send(TASK, "task");
-  await waitFor(TASK_MS, () => rootDone(task.id));
-  const taskDone = rootDone(task.id);
-  const taskDoneAt = taskDone ? doneMark(task.id).at ?? Date.now() : null;
-  // Keep polling through the wait, since the last edit can land seconds after the done mark and a gap in the polls dates it late.
+  await waitFor(TASK_MS, () => (eyes.get(task.id) ?? []).some(m => m.on) && settled(task.id, replyTo(task.id)));
+  // Keep polling through the wait, since the last edit can land seconds after 👀 comes off and a gap in the polls dates it late.
   await waitFor(30_000, () => false);
+  const leftOpen = !rootDone(task.id);
+  // The owner's click on the done control (POST /api/c/:id/posts/:post/done), then his follow-up in the thread, which reopens it.
+  await call("POST", `/api/c/${room}/posts/${task.id}/done`, { done: true });
+  await waitFor(10_000, () => rootDone(task.id));
+  const ownerMarked = rootDone(task.id);
 
   const followUp = await send(FOLLOW_UP, "follow-up", task.id);
+  await waitFor(10_000, () => !rootDone(task.id));
+  const reopened = ownerMarked && !rootDone(task.id);
   const followRepliesOf = () => (replyTo(followUp.id).length ? replyTo(followUp.id) : latest.filter(p => isAgent(p) && p.seq > followUp.seq).slice(0, 1));
-  await waitFor(FOLLOW_MS, () => followRepliesOf().length > 0 && rootDone(task.id));
-  const followDone = rootDone(task.id);
-  const followDoneAt = followDone ? doneMark(task.id).at ?? Date.now() : null;
-  // 👀 comes off after the post, and a job's report can land a little after the done mark.
+  await waitFor(FOLLOW_MS, () => settled(followUp.id, followRepliesOf()));
+  // 👀 comes off after the post, and a job's report can land a little after it.
   await waitFor(45_000, () => false);
+  const endsOpen = !rootDone(task.id);
 
   const rec = await record();
   const commThread = rec?.comm?.find(c => c.room === room)?.thread;
@@ -299,12 +309,14 @@ try {
 
   const taskPost = latest.find(p => p.id === task.id);
   const followPost = latest.find(p => p.id === followUp.id);
-  const taskEyes = eyeChecks(taskPost, taskReplies, commCalls, taskDoneAt);
-  const followEyes = eyeChecks(followPost, followReplies, commCalls, followDoneAt);
+  const taskEyes = eyeChecks(taskPost, taskReplies, commCalls, null);
+  const followEyes = eyeChecks(followPost, followReplies, commCalls, null);
   const agentVersions = latest.filter(isAgent).flatMap(p => (versions.get(p.id) ?? [{ text: p.text }]).map(v => v.text));
 
   const checks = [
-    ["the task thread read done", taskDone],
+    ["the agent left the task thread open", leftOpen],
+    ["the owner's mark made the thread read done", ownerMarked],
+    ["his follow-up reopened the thread", reopened],
     ["the task got 👀", taskEyes.seen],
     ["the task kept 👀 until its work ended", taskEyes.kept],
     ["the task keeps no 👀 at the end", taskEyes.noneAtEnd],
@@ -314,7 +326,9 @@ try {
     ["the follow-up got 👀", followEyes.seen],
     ["the follow-up kept 👀 until its work ended", followEyes.kept],
     ["the follow-up keeps no 👀 at the end", followEyes.noneAtEnd],
-    ["the thread read done again after the follow-up", followDone],
+    ["the thread ends open, with no done mark of the agent's", endsOpen],
+    ["the comm thread made no set_thread_done call", commCalls === null ? null : commCalls.every(c => c.name !== "set_thread_done")],
+    ["no agent post says it marks the thread done", agentVersions.every(t => !MARKS_DONE.test(t))],
     ["the follow-up started at most one job", followJobs.length <= 1],
     ["a page writer started after the other jobs reported", writerOrder.every(w => w.after)],
     ["no agent post holds a table", agentVersions.every(t => !TABLE.test(t))],
@@ -324,8 +338,8 @@ try {
   line = {
     at: new Date().toISOString(), set: values.set ?? "symphony", piHost: { start: piHostAtStart, end: piHost() }, agent: agent.id, room, cwd, workThread, commThread, seconds: Math.round((Date.now() - started) / 1000),
     thread: `${server}/#/c/${room}?thread=${task.id}`,
-    task: { id: task.id, at: task.at, doneAt: taskDoneAt, firstReplyAt: firstTaskReply?.at ?? null, firstReplySeconds: firstTaskReply ? Math.round((firstTaskReply.at - task.at) / 1000) : null, eyes: taskEyes },
-    followUp: { id: followUp.id, at: followUp.at, doneAt: followDoneAt, firstReplySeconds: followSeconds, firstReply: firstFollowText, shape: followShape, eyes: followEyes },
+    task: { id: task.id, at: task.at, leftOpen, firstReplyAt: firstTaskReply?.at ?? null, firstReplySeconds: firstTaskReply ? Math.round((firstTaskReply.at - task.at) / 1000) : null, eyes: taskEyes },
+    followUp: { id: followUp.id, at: followUp.at, reopened, endsOpen, firstReplySeconds: followSeconds, firstReply: firstFollowText, shape: followShape, eyes: followEyes },
     refusals: refused.map(c => ({ at: c.at, text: String(c.args.text ?? "").slice(0, 300), result: c.result })), refusedBeforeFirstReply: commCalls === null ? null : refusedBeforeFirst.length,
     jobs: jobList.map(({ statuses, ...j }) => ({ ...j, statuses })), taskJobs: taskJobs.map(j => j.name), followJobs: followJobs.map(j => j.name), writerOrder, steers, edits,
     posts: latest.map(p => ({ id: p.id, author: isAgent(p) ? "agent" : "owner", threadRoot: p.threadRoot, answers: p.answers, done: p.done?.at ?? null, reactions: (p.reactions ?? []).map(r => `${r.emoji} ${r.by.map(b => b.name).join(",")}`), versions: (versions.get(p.id) ?? []).map(v => ({ ...v, words: words(v.text) })) })),

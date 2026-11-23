@@ -3,9 +3,12 @@
  * 살짝 흐릿하게 만들수 있으면 좋겠다. make it a boolean flag that applies to the root thread message, and view/editable by agent too".
  *
  * The flag lives on the thread's root post (`RoomPost.done`). In a channel that is the post a thread hangs off; in a DM, which has no
- * threads, every post is its own root. The owner sets it from the page (`POST /api/c/:id/posts/:post/done`) and an agent with its
- * set_thread_done tool (`POST /api/threads/:thread/done`); both name any post of the thread and go through app.ts `setThreadDone`.
+ * threads, every post is its own root. The owner sets it from the page (`POST /api/c/:id/posts/:post/done`), naming any post of the thread.
  * A new reply of the owner's in a done thread reopens it, as a reply to a resolved Slack thread does; an agent's reply leaves it done.
+ *
+ * The check is his alone. On 11-24 (#sw-factory-build p177, c236) he wrote "Agent가 Done Check하는 기능 없애", so pi-host lost its
+ * set_thread_done tool and the agent route `POST /api/threads/:thread/done` answers 403 with `AGENT_DONE_REFUSED`. A flag an agent set
+ * before then still reads `by` that agent.
  *
  * Every surface that shows a room post to an agent shows the flag next to its reactions as `doneLine` writes it.
  */
@@ -52,9 +55,6 @@ export function reopens(root: RoomPost, reply: RoomPost): boolean {
   return reply.author === "owner" && reply.threadRoot === root.id && root.done?.done === true;
 }
 
-/** The one line set_thread_done answers with, such as `The thread of p12 in ch_1a2b3c4d is done; the room shows it with a check.` */
-export function doneText(root: RoomPost, done: boolean, changed: boolean): string {
-  const where = `The thread of ${root.id} in ${root.room}`;
-  if (!changed) return `${where} is already ${done ? "done" : "open"}; nothing changed.`;
-  return done ? `${where} is done; the room shows it with a check, and a new reply from the owner reopens it.` : `${where} is open again.`;
-}
+/** The 403 an agent's call to the old done route gets. */
+export const AGENT_DONE_REFUSED = "The done check on a thread is the owner's alone, so an agent never marks a thread done or opens one (c236). " +
+  "Take 👀 off the post with set_emoji instead.";

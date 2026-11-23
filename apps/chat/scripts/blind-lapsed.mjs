@@ -2,7 +2,7 @@
 /**
  * The blind check for a comm thread's trimmed history (pi-host `cache-shape.ts` `leanHistory`): once its 1 h cache lapsed, a comm thread's
  * earlier turns lose their thinking and their tool texts over 1,500 characters, which can cut the end of a long hand-over it sent its work
- * thread. A fresh test agent gets a several-checks task in a fresh test channel, with no steering. Once its thread reads done, the script
+ * thread. A fresh test agent gets a several-checks task in a fresh test channel, with no steering. Once its work ends, the script
  * waits until the comm thread has made no model call for 66 min, then asks in that thread about the last thing the agent handed over.
  *
  *   node apps/chat/scripts/blind-lapsed.mjs [--cwd <project>] [--out <file.jsonl>] [--server http://127.0.0.1:5184] [--keep]
@@ -17,7 +17,9 @@
  * Checks:
  * 1. The comm thread handed the task over with more than 1,500 characters, so the trim cut it (else the run is n/a).
  * 2. The first model call after the follow-up read under 20k tokens from the cache, so the follow-up ran on the cold, trimmed path.
- * 3. The follow-up got a reply, and the thread read done again.
+ * 3. The follow-up got a reply, and its work ended.
+ * A post's work counts as ended once it has a reply with no open `- [ ]` item and no 👀 of the agent's, since agents no longer mark a
+ * thread done (c236).
  * 4. The checklist reply to the task still holds its final text, and every reply to the follow-up ends with no open `- [ ]` item.
  * Whether the follow-up answer is right, or asks the work thread instead of making something up, is read by hand against the hand-over and
  * the work thread's report, which the output line holds.
@@ -116,13 +118,17 @@ const commOf = async () => (await record())?.comm?.find(c => c.room === room)?.t
 let line;
 try {
   const task = values.task ? (await posts()).find(p => p.id === values.task) : await send(TASK, "task");
-  // The items API shows a done root's flag as `done: { by, at }` and leaves it out while the thread is open.
-  const done = async id => Boolean((await posts()).find(p => p.id === id)?.done);
-  // A picked-up run waited for its task before the stop, so it reads the done mark once.
+  // A post's work ended: replies, none with an open item, and no 👀 of the agent's on the post.
+  const done = async (id, after = 0) => {
+    const all = await posts();
+    const replies = all.filter(p => isAgent(p) && (after ? p.seq > after : p.answers === id));
+    return replies.length > 0 && replies.every(p => !OPEN_ITEM.test(p.text)) &&
+      !(all.find(p => p.id === id)?.reactions ?? []).some(r => r.emoji === "👀" && r.by.some(b => b.id === agent.id));
+  };
+  // A picked-up run waited for its task before the stop, so it reads the end once.
   const taskDone = values.task ? await done(task.id) : await waitFor(TASK_MS, () => done(task.id));
   for (const [n, question] of QUICK.entries()) {
     const asked = await send(question, `quick-${n}`);
-    // A quick answer often gets no done mark, so the reply alone ends the wait.
     await waitFor(8 * 60_000, async () => (await posts()).some(p => isAgent(p) && p.answers === asked.id));
   }
   // Read after the quick asks, since a later answer may correct the checklist, as one did on 11-22.
@@ -137,7 +143,7 @@ try {
   const idleMinutes = Math.round((Date.now() - lastCall()) / 60_000);
 
   const followUp = await send(FOLLOW_UP, "follow-up", task.id);
-  const replied = async () => (await posts()).some(p => isAgent(p) && p.seq > followUp.seq) && await done(task.id);
+  const replied = () => done(followUp.id, followUp.seq);
   const followDone = await waitFor(FOLLOW_MS, replied);
   await sleep(30_000);
   const after = await posts();
@@ -149,10 +155,10 @@ try {
     .map(b => ({ at: m.timestamp, code: String(b.arguments.code).slice(0, 4000) })));
 
   const checks = [
-    ["the task thread read done", taskDone],
+    ["the task's work ended", taskDone],
     ["the hand-over ran over 1,500 characters, so the trim cut it", handOver.length > 1500 ? true : null],
     ["the follow-up's first call read under 20k tokens from the cache", firstCall ? (firstCall.usage?.cacheRead ?? 0) < 20_000 : false],
-    ["the follow-up got a reply and the thread read done again", Boolean(followDone) && followReplies.length > 0],
+    ["the follow-up got a reply and its work ended", Boolean(followDone) && followReplies.length > 0],
     ...(QUICK.length ? [["the earlier turns passed 60,000 characters, so the cold request left the task's turn out", earlier(followUp.at) > 60_000]] : []),
     ["the checklist reply keeps its final text", Boolean(checklist) && checklistNow?.text === checklist.text],
     ["no reply to the follow-up ends with an open item", followReplies.every(p => !OPEN_ITEM.test(p.text))],

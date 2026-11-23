@@ -20,6 +20,7 @@ import { uploadHeaders } from "./files.ts";
 import { LocalImageError, localImageFile, matches, readLocalImage, type LocalImage } from "./local-image.ts";
 import { renditionWidth, Renditions, takesWebp, type SourceFile } from "./image-rendition.ts";
 import { ReactionError } from "./reactions.ts";
+import { AGENT_DONE_REFUSED } from "./thread-done.ts";
 import { parsePrefsPatch } from "./sidebar-prefs.ts";
 import { LaterError } from "./later.ts";
 import { CwdRefused } from "./projects.ts";
@@ -389,12 +390,12 @@ export function routes(app: App, parts: SkillsParts): Route[] {
     route("POST", "/api/threads/:id/reactions", async (_r, p, _q, body) => {
       return app.reactAsAgent(p.id!, ((await body()) ?? {}) as { message?: unknown; emoji?: unknown; on?: unknown });
     }),
-    // A thread's done flag (thread-done.ts): the owner's from the page and an agent's set_thread_done, through the one app.ts setThreadDone.
+    // A thread's done flag (thread-done.ts), the owner's alone from the page; an agent's call to the old agent route is refused (c236).
     route("POST", "/api/c/:id/posts/:post/done", async (_r, p, _q, body) => app.threadDone(p.id!, p.post!, ((await body()) ?? {}) as { done?: unknown })),
     // A post's pin flag (pins.ts), the owner's from the page.
     route("POST", "/api/c/:id/posts/:post/pin", async (_r, p, _q, body) => app.pin(p.id!, p.post!, ((await body()) ?? {}) as { pinned?: unknown })),
-    route("POST", "/api/threads/:id/done", async (_r, p, _q, body) => {
-      return app.threadDoneAsAgent(p.id!, ((await body()) ?? {}) as { message?: unknown; done?: unknown });
+    route("POST", "/api/threads/:id/done", async () => {
+      throw new ReactionError(403, AGENT_DONE_REFUSED);
     }),
     route("POST", "/api/threads/:id/edits", async (_r, p, _q, body) => {
       return app.editAsAgent(p.id!, ((await body()) ?? {}) as { message?: unknown; text?: unknown });

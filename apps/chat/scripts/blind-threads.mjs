@@ -124,7 +124,8 @@ const inThread = id => latest.filter(p => isAgent(p) && (p.threadRoot === id || 
 const lastAt = p => versions.get(p.id)?.at(-1)?.at ?? p.at;
 /** The agent post whose last version carries the measuring answer: the one with the most numbers, 3 or more. */
 const measured = () => latest.filter(p => isAgent(p) && numbers(p.text) >= 3 && !/\[ \]/.test(p.text)).sort((a, b) => numbers(b.text) - numbers(a.text))[0];
-const doneOf = id => Boolean(latest.find(p => p.id === id)?.done);
+/** Whether the agent's 👀 is off a post, its sign that the post's work ended, since agents no longer mark a thread done (c236). */
+const eyesOff = id => !(latest.find(p => p.id === id)?.reactions ?? []).some(r => r.emoji === "👀" && r.by.some(b => b.id === agent.id));
 
 const started = Date.now();
 let line;
@@ -138,8 +139,8 @@ try {
     await waitFor(QUESTION2_GAP_MS, () => false);
     question2 = await send(QUESTION2, "question2");
   }
-  await waitFor(MEASURE_MS, () => inThread(question.id).length > 0 && (!question2 || inThread(question2.id).length > 0) && measured() !== undefined && (doneOf(measure.id) || lastAt(measured()) > Date.now() - 60_000));
-  // A last edit or a done mark can follow the answer by seconds.
+  await waitFor(MEASURE_MS, () => inThread(question.id).length > 0 && (!question2 || inThread(question2.id).length > 0) && measured() !== undefined && (eyesOff(measure.id) || lastAt(measured()) > Date.now() - 60_000));
+  // A last edit or 👀 coming off can follow the answer by seconds.
   await waitFor(45_000, () => false);
 
   const answer = measured();

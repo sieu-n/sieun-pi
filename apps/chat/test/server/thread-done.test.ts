@@ -1,6 +1,6 @@
 /**
- * A thread's done flag (server/thread-done.ts): the owner and an agent's set_thread_done mark the thread of any of its posts done on its
- * root, the page and agents read it, an owner reply in the thread reopens it, and an agent's reply leaves it done.
+ * A thread's done flag (server/thread-done.ts): the owner marks the thread of any of its posts done on its root, the page and agents read
+ * it, an owner reply in the thread reopens it, an agent's reply leaves it done, and an agent's own mark is refused with 403 (c236).
  * Run: cd apps/chat && node --import tsx --test --test-force-exit --test-isolation=none --test-timeout=120000 test/server/thread-done.test.ts
  */
 import assert from "node:assert/strict";
@@ -9,7 +9,7 @@ import type { ForMeList, Item, Principal, TimelinePage } from "../../web/src/lib
 import type { RoomPost } from "../../server/agent-store.ts";
 import { FIXTURE_AGENTS as agents } from "../../server/fixture/seed.ts";
 import { reactionsLine } from "../../server/reactions.ts";
-import { doneInput, doneLine, doneText, markDone, reopens } from "../../server/thread-done.ts";
+import { AGENT_DONE_REFUSED, doneInput, doneLine, markDone, reopens } from "../../server/thread-done.ts";
 import { start, type Running } from "./helpers.ts";
 
 type Message = Extract<Item, { kind: "message" }>;
@@ -45,7 +45,6 @@ describe("the done model", () => {
     assert.equal(doneLine(principal, root), "[thread done by Sieun (owner)]");
     root.done = { done: false, by: "owner", at: 4 };
     assert.equal(doneLine(principal, root), "");
-    assert.equal(doneText(root, true, false), "The thread of p1 in ch_x is already done; nothing changed.");
   });
 
   test("only the owner's reply in the done thread reopens it", () => {
@@ -62,7 +61,7 @@ describe("thread done on the fixture server", () => {
   const items = async (room: string): Promise<Message[]> => (await s.get<TimelinePage>(`/api/c/${room}/items?limit=200`)).items as Message[];
   const ownerDone = (room: string, postId: string, done: unknown) => s.send<{ item: Message; error?: string }>("POST", `/api/c/${room}/posts/${postId}/done`, { done });
   const agentDone = (thread: string, body: Record<string, unknown>) =>
-    s.send<{ room: string; post: string; done: boolean; text: string; error?: string }>("POST", `/api/threads/${encodeURIComponent(thread)}/done`, body);
+    s.send<{ error?: string }>("POST", `/api/threads/${encodeURIComponent(thread)}/done`, body);
   before(async () => {
     s = await start({ wordMs: 1 });
   });
@@ -90,34 +89,35 @@ describe("thread done on the fixture server", () => {
     live.close();
   });
 
-  test("an agent marks the thread done by its post id; an agent's reply leaves it done and the owner's reply reopens it", async () => {
+  test("an agent's done mark is refused with 403 (c236); his mark stays, an agent's reply leaves it done and his reply reopens it", async () => {
     const crawler = s.app.agents.record(agents.crawler)!;
     const comm = crawler.comm![CH]!;
     const sent = await s.send<{ item: Message }>("POST", `/api/c/${CH}/send`, { text: "thread done walk", requestId: "done-1", mentions: [agents.crawler] });
     const root = sent.body.item.id;
-    const done = await agentDone(comm, { message: root, done: true });
-    assert.equal(done.status, 200, done.body.error);
-    assert.equal(done.body.text, `The thread of ${root} in ${CH} is done; the room shows it with a check, and a new reply from the owner reopens it.`);
-    assert.equal((await agentDone(comm, { message: root, done: true })).body.text, `The thread of ${root} in ${CH} is already done; nothing changed.`);
     const stored = () => s.app.agentStore.postsOf(CH).find(p => p.id === root)!;
-    assert.equal(stored().done?.by, agents.crawler);
+    for (const done of [true, false]) {
+      const refused = await agentDone(comm, { message: root, done });
+      assert.equal(refused.status, 403);
+      assert.equal(refused.body.error, AGENT_DONE_REFUSED);
+    }
+    assert.equal(stored().done, undefined, "the refused mark left the thread open");
+    assert.equal((await ownerDone(CH, root, true)).status, 200);
+    assert.equal((await agentDone(comm, { message: root, done: false })).status, 403, "an agent cannot reopen his done thread either");
+    assert.equal(stored().done?.by, "owner");
 
     const row = s.app.groups.row(CH)!;
     const agentReply = s.app.agentStore.append({ room: CH, author: agents.crawler, text: "a later note", images: [], at: Date.now(), requestId: "m:done-note", threadRoot: root });
     assert.ok(agentReply.created);
     assert.equal(stored().done?.done, true, "an agent's reply leaves it done");
-    assert.match(s.app.groups.envelope(row, { ...agentReply.post, id: "p99999", seq: 99999 }), new RegExp(`^${stored().seq} .*\\[thread done by Crawler VP\\]$`, "m"));
+    assert.match(s.app.groups.envelope(row, { ...agentReply.post, id: "p99999", seq: 99999 }), new RegExp(`^${stored().seq} .*\\[thread done by Sieun \\(owner\\)\\]$`, "m"));
 
     const forMe = await s.get<ForMeList>(`/api/agents/${agents.crawler}/for-me`);
-    assert.equal(forMe.items.find(i => i.post === root)?.done?.by.id, agents.crawler, "the For list carries the flag");
+    assert.equal(forMe.items.find(i => i.post === root)?.done?.by.id, "owner", "the For list carries the flag");
 
     await s.send("POST", `/api/c/${CH}/send`, { text: "one more thing", requestId: "done-2", threadRoot: root });
     assert.equal(stored().done?.done, false, "his reply in the thread reopens it");
     assert.equal(stored().done?.by, "owner");
     assert.equal((await items(CH)).find(i => i.id === root)?.done, undefined);
-
-    assert.equal((await agentDone(comm, { message: root })).status, 400);
-    assert.equal((await agentDone(comm, { message: "dm_vent/p1", done: true })).status, 404);
   });
 
   test("a DM post is its own thread root", async () => {

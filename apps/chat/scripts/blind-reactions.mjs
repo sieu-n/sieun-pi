@@ -12,7 +12,9 @@
  *    that post's thread), and at the end neither keeps the agent's 👀 or a ✅.
  * 2. "ok thanks" gets one reaction from the agent and no post.
  * 3. In the channel no agent post is a root post.
- * 4. No agent post has ✅ or 👀 in its text outside code, unless it names the reaction ("my 👀 reaction on p1"), ends on a sign-off emoji, or
+ * 4. No thread ends marked done, the comm thread calls no set_thread_done and no post says it marks one done, since the done check is the
+ *    owner's alone (#sw-factory-build p177, c236: "Agent가 Done Check하는 기능 없애").
+ * 5. No agent post has ✅ or 👀 in its text outside code, unless it names the reaction ("my 👀 reaction on p1"), ends on a sign-off emoji, or
  *    pastes a raw JSON or log line. On 11-21 a fresh agent, asked where a room's posts live, gave "a `set` line patches a post later, like my
  *    👀 reaction on p1" as its example, which uses no emoji as a status mark.
  * 👀 counts as seen when a poll saw it on the post or the agent's comm thread called set_emoji with eyes on it, since a fast answer can put
@@ -53,6 +55,9 @@ const SIGN_OFF = /\p{Extended_Pictographic}\uFE0F?\s*$/u;
 /** A code span or block that holds a JSON object or array with a key, such as `{"t":"set","post":"p1",...}`, or a timestamped log line. */
 const RAW_LINE = /`{1,3}(?:json)?\s*[{[][^`]*"[^"`]+"\s*:|`{1,3}[^`]*\d{4}-\d\d-\d\dT\d\d:\d\d/;
 
+/** A post that says the agent marks its thread done, such as "marking this done". */
+const MARKS_DONE = /\bmark(?:s|ed|ing)?\b[^.\n]{0,30}\b(?:done|resolved)\b/i;
+
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 /** One API call; while a release restarts the chat server the call is retried for up to 5 min. */
@@ -88,15 +93,20 @@ async function allPosts(room, kind) {
 const mine = (post, emoji) => (post?.reactions ?? []).some(r => r.emoji === emoji && r.by.some(b => b.id === agent.id));
 const agentReactions = post => (post?.reactions ?? []).filter(r => r.by.some(b => b.id === agent.id)).map(r => r.emoji);
 
-/** The set_emoji calls of the agent's comm thread for `room`, as `{message, emoji, on}`. */
-async function emojiCalls(room) {
+/** The tool steps of the agent's comm thread for `room`. */
+async function commSteps(room) {
   const record = (await call("GET", "/api/agents?test=1")).find(a => a.id === agent.id);
   const thread = record?.comm?.find(c => c.room === room)?.thread;
   if (!thread) return [];
   const items = (await call("GET", `/api/c/${thread}/items?limit=200`)).items;
+  return items.flatMap(item => (item.steps ?? []).filter(step => step.kind === "tool"));
+}
+
+/** The set_emoji calls among `steps`, as `{message, emoji, on}`. */
+function emojiCalls(steps) {
   const calls = [];
-  for (const item of items) for (const step of item.steps ?? []) {
-    if (step.kind !== "tool" || step.name !== "set_emoji") continue;
+  for (const step of steps) {
+    if (step.name !== "set_emoji") continue;
     try {
       const args = JSON.parse(step.summary);
       calls.push({ message: String(args.message_id ?? ""), emoji: String(args.emoji ?? ""), on: args.on !== false });
@@ -162,7 +172,8 @@ async function runRoom(kind) {
   posts = await waitFor(Math.max(0, TASK_MS - (Date.now() - started)), ps => !mine(ps.find(p => p.id === task.id), EYES)
     && answersOf(ps, task.id).every(p => !/^\s*[-*+] \[ \] /m.test(p.text)));
 
-  const calls = await emojiCalls(room);
+  const steps = await commSteps(room);
+  const calls = emojiCalls(steps);
   const byId = id => posts.find(p => p.id === id);
   const eyesSeen = post => seen.has(post.id) || calls.some(c => c.on && emojiName(c.emoji) === "eyes" && names(c, room, post, posts));
   // A quick question answered in one turn gets no 👀 (pi-host workSteps), so only the task's 👀 is checked.
@@ -173,8 +184,8 @@ async function runRoom(kind) {
       [`${label} got a reply that answers it`, replies.length > 0],
       ...(kind === "channel" ? [[`${label}'s reply is in its thread`, replies.length > 0 && replies.every(r => r.threadRoot === post.id)]] : []),
       [`${label} keeps no 👀 at the end`, !mine(byId(post.id), EYES)],
-      // On 11-22 a work thread edited the answer in and sent no report, so the comm thread never took 👀 off or marked the thread done.
-      [`${label}'s thread is marked done at the end`, Boolean(byId(post.id)?.done)],
+      // The done check is the owner's alone (#sw-factory-build p177, c236), so the thread ends open.
+      [`${label}'s thread is not marked done`, !byId(post.id)?.done],
       [`${label} has no ✅`, !mine(byId(post.id), CHECK)],
     ];
   };
@@ -189,6 +200,8 @@ async function runRoom(kind) {
     ["no ✅ or 👀 in the agent's post text", posts.every(p => p.author?.id !== agent.id || !statusMark(p.text))],
     ["no agent post ends with a sign-off emoji", posts.every(p => p.author?.id !== agent.id || !SIGN_OFF.test(p.text))],
     ["no agent post pastes a raw JSON or log line", posts.every(p => p.author?.id !== agent.id || !RAW_LINE.test(p.text))],
+    ["the comm thread made no set_thread_done call", steps.every(s => s.name !== "set_thread_done")],
+    ["no agent post says it marks the thread done", posts.every(p => p.author?.id !== agent.id || !MARKS_DONE.test(p.text))],
   ];
   const line = {
     room, kind, agent: agent.id, questionSeconds, taskSeconds,

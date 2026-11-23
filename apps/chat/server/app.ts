@@ -36,7 +36,7 @@ import type { Host } from "./host/types.ts";
 import { Outbox, type OutboxRow } from "./outbox.ts";
 import { boxCwd, projectCwd, projectList } from "./projects.ts";
 import { agentPost, react, ReactionError, reactionInput, reactionList, reactionsOf, reactionText } from "./reactions.ts";
-import { doneInput, doneText, markDone, threadRootOf } from "./thread-done.ts";
+import { doneInput, markDone, threadRootOf } from "./thread-done.ts";
 import { markPin, pinInput, pinnedPosts } from "./pins.ts";
 import { forwardInput, forwardOf } from "./forward.ts";
 import type { ForwardedPost } from "../web/src/lib/api/types.ts";
@@ -1012,7 +1012,11 @@ export class App {
     const post = posts.find(p => p.id === postId);
     if (!post) throw new NotFound(`No post ${postId} in ${id}.`);
     const root = threadRootOf(posts, post);
-    this.setThreadDone(room, root, "owner", doneInput(input));
+    const flag = markDone(root, "owner", doneInput(input));
+    if (flag) {
+      this.agentStore.set(root, { done: flag });
+      this.emitPosts(room, [root]);
+    }
     return { item: this.postItem(room, root) };
   }
 
@@ -1028,24 +1032,6 @@ export class App {
       this.emitPosts(room, [post]);
     }
     return { item: this.postItem(room, post) };
-  }
-
-  /** An agent's set_thread_done: `message` names any post of the thread as set_emoji names a post, and the flag goes on its root. */
-  threadDoneAsAgent(thread: string, input: { message?: unknown; done?: unknown }): { room: string; post: string; done: boolean; text: string } {
-    const done = doneInput(input);
-    const { record, room, post } = this.agentMessage(thread, input.message, "set_thread_done");
-    const root = threadRootOf(this.agentStore.postsOf(room), post);
-    const changed = this.setThreadDone(room, root, record.id, done);
-    return { room, post: root.id, done, text: doneText(root, done, changed) };
-  }
-
-  /** The one change of a thread's done flag, the owner's and an agent's alike; false when the root already reads that way. */
-  private setThreadDone(room: string, root: RoomPost, by: "owner" | AgentRecord["id"], done: boolean): boolean {
-    const flag = markDone(root, by, done);
-    if (!flag) return false;
-    this.agentStore.set(root, { done: flag });
-    this.emitPosts(room, [root]);
-    return true;
   }
 
   private setReaction(room: string, post: RoomPost, by: "owner" | AgentRecord["id"], emoji: string, on: boolean): void {

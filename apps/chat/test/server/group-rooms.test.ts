@@ -332,11 +332,11 @@ describe("a channel on rooms", () => {
       { type: "toolCall", id: "cl-m", name: "mark_message", arguments: { message_id: `${ids.cutoverChannel}/${asked.body.item.id}`, completed: true } },
     ], [["cl-e", "set_emoji", false], ["cl-m", "mark_message", false], ["cl-a", "tell_owner", true]]);
     round([{ type: "toolCall", id: "cl-b", name: "tell_owner", arguments: { text: "yes, 175 of 178 routes work, quiet." } }], [["cl-b", "tell_owner", false]]);
-    // In the next report's turn the post and the done mark of its thread go out in one round.
+    // In the next report's turn the post and 👀 taken off its question go out in one round.
     host.append(t, 1, { kind: "agent.message", model: [{ role: "user", content: [{ type: "text", text: "the cost page is up" }], timestamp: Date.now() }], data: { from: "w-1", via: "agent" } });
     round([
       { type: "toolCall", id: "cl-c", name: "tell_owner", arguments: { text: "about $2k a month, quiet." } },
-      { type: "toolCall", id: "cl-d", name: "set_thread_done", arguments: { message_id: newer.body.item.id, done: true } },
+      { type: "toolCall", id: "cl-d", name: "set_emoji", arguments: { message_id: newer.body.item.id, emoji: "eyes", on: false } },
     ], [["cl-c", "tell_owner", false]]);
     // A round that closes two posts names none, so its post goes where its turn's post is.
     host.append(t, 1, { kind: "agent.message", model: [{ role: "user", content: [{ type: "text", text: "both done" }], timestamp: Date.now() }], data: { from: "w-1", via: "agent" } });

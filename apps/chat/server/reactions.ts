@@ -12,9 +12,9 @@ import type { AgentRecord, RoomId, RoomPost, StoredReaction } from "./agent-stor
 import { doneLine } from "./thread-done.ts";
 import { pinLine } from "./pins.ts";
 
-/** A reaction request the server refuses: 400 for a bad emoji or message id, 404 for a room or post that is not there. */
+/** A reaction or flag request the server refuses: 400 for a bad emoji or message id, 403 for an agent's done mark, 404 for a missing room or post. */
 export class ReactionError extends Error {
-  constructor(readonly status: 400 | 404, message: string) {
+  constructor(readonly status: 400 | 403 | 404, message: string) {
     super(message);
   }
 }

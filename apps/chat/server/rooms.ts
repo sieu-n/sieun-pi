@@ -137,7 +137,7 @@ const held = (message: Message): boolean => message.toolName === TELL_OWNER_TOOL
 const EYES = ["eyes", ":eyes:", "👀"];
 
 /**
- * The post a closing call names: 👀 taken off it, its For item marked completed, its thread marked done, or an edit of the agent's reply to
+ * The post a closing call names: 👀 taken off it, its For item marked completed, or an edit of the agent's reply to
  * it (`reply:<room>/<post>`), as pi-host's turn-end.ts `closes` reads a closing call. On 11-21 in #dev-app-search-prospect a comm thread
  * answered the owner's p9 in a turn its work thread's report woke after his newer p11, with no reply_to, though the same round took 👀 off
  * p9 and marked p9 completed; tell_owner refused that post for a dead link, its resend went out, and the answer landed in p11's thread.
@@ -147,7 +147,7 @@ function closedPost(block: ContentBlock): string | undefined {
   const args = block.arguments ?? {};
   const id = typeof args.message_id === "string" ? args.message_id.trim() : "";
   if (!id) return undefined;
-  if ((block.name === "mark_message" && args.completed === true) || (block.name === "set_thread_done" && args.done === true)) return id;
+  if (block.name === "mark_message" && args.completed === true) return id;
   if (block.name === "set_emoji" && args.on === false && EYES.includes(String(args.emoji).trim())) return id;
   return block.name === "edit_message" && id.startsWith("reply:") ? id.slice("reply:".length) : undefined;
 }
