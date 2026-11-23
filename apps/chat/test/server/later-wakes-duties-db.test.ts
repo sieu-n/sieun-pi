@@ -14,6 +14,7 @@ import type { DutyFile } from "../../server/boards.ts";
 import { FIXTURE_AGENTS as agents, FIXTURE_IDS as ids } from "../../server/fixture/seed.ts";
 import { FixtureHost } from "../../server/host/fixture.ts";
 import { seedFixture } from "../../server/fixture/seed.ts";
+import { owedWakesOf } from "../../server/wakes-db.ts";
 import { start, type Running } from "./helpers.ts";
 
 const KINDS = "later,wakes,duties,board-writes";
@@ -79,4 +80,11 @@ test("a boot imports the JSON files once, the records survive a restart, and an 
   await s.close();
   assert.equal(existsSync(join(dataDir, "wakes", `${thread}-1-b.json`)), true);
   assert.equal(JSON.parse(readFileSync(join(dataDir, "later", "owner.json"), "utf8")).items.length, 1);
+
+  // A duty script run by hand, with no APPS_CHAT_DB_KINDS, reads the rows: a wake file no server imported stays out.
+  writeFileSync(join(dataDir, "wakes", `${thread}-1-z.json`), JSON.stringify({ ...JSON.parse(readFileSync(join(dataDir, "wakes", `${thread}-1-b.json`), "utf8")), note: "z" }));
+  delete process.env.APPS_CHAT_DB_KINDS;
+  const owed = await owedWakesOf(dataDir, Date.now());
+  process.env.APPS_CHAT_DB_KINDS = KINDS;
+  assert.deepEqual(owed.map(wake => wake.note).filter(note => ["a", "b", "z"].includes(note)), ["b"]);
 });

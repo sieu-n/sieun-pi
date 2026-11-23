@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { owedWakes, pendingWakes, TICKED, type WakeFiles } from "../../../legacy/prime/user-history/src/wakes.ts";
 import type { ChatDb } from "./chat-db.ts";
+import { movedKinds } from "./chat-records.ts";
 import type { JsonKind, JsonMove } from "./json-move.ts";
 import { readJson, writeJson } from "./store.ts";
 import { adoptOldWakes, parseArm, parseWake, type Wake } from "./wakes.ts";
@@ -145,10 +146,11 @@ export function tickedAt(dir: string): number | undefined {
 
 /**
  * The wakes a chat server still owes at `now`, read without the server, for a duty precheck that runs beside it, such as
- * scripts/duties/fable-sweep.ts. A precheck inherits the server's environment, so APPS_CHAT_DB_KINDS says where the wakes are.
+ * scripts/duties/fable-sweep.ts. They are chat.sqlite rows once a server moved the kind there (chat-records.ts `movedKinds`), whatever the
+ * caller's environment says, so a precheck run by hand never reads the exports, which stop after a week.
  */
-export async function owedWakesOf(dataDir: string, now: number, kinds = process.env.APPS_CHAT_DB_KINDS ?? ""): Promise<Wake[]> {
-  if (!kinds.split(",").map(kind => kind.trim()).includes(WAKES.kind)) return pendingWakes(join(dataDir, DIR), now);
+export async function owedWakesOf(dataDir: string, now: number, kinds: readonly string[] = movedKinds(dataDir)): Promise<Wake[]> {
+  if (!kinds.includes(WAKES.kind)) return pendingWakes(join(dataDir, DIR), now);
   const db = new DatabaseSync(join(dataDir, "chat.sqlite"), { readOnly: true });
   try {
     const wakes = (db.prepare("SELECT body FROM wakes ORDER BY id").all() as { body: string }[]).flatMap(row => parseWake(JSON.parse(row.body)) ?? []);
