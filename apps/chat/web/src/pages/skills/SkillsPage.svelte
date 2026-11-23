@@ -5,11 +5,11 @@
   import { router } from "$lib/router.svelte";
   import { Button, IconButton, Page, PanelHeader, Tabs } from "$lib/ui";
   import { skillsInventory, skillsView } from "./kept.svelte";
-  import { DEFAULT_LAYOUT, LAYOUTS, layoutOf } from "./layouts/registry";
+  import { INVENTORY_LAYOUT, LAYOUTS, layoutOf } from "./layouts/registry";
 
   /**
    * Settings > Skills: GET /api/skills (the skills DB read model, server/skills-db.ts) handed to the layout that `?layout=<id>` names,
-   * with a switcher in the header. The `current` layout draws the scanner's inventory instead, so there the view is only read ahead, behind
+   * with a switcher in the header; with no `?layout=` it opens `tree`. The `current` layout draws the scanner's inventory instead, so there the view is only read ahead, behind
    * the inventory, for a switch to another layout. Both are kept (kept.svelte.ts), so an open draws the last answer at once and reads it
    * again behind. The header's scan button starts a scan, and the `skills` live event says when it ends; the page reads the view again
    * then, so every layout shows the new scan.
@@ -18,7 +18,7 @@
   let scanState = $state<boolean | null>(null);
 
   const layout = $derived(layoutOf(router.route.params.layout));
-  const drawsView = $derived(layout?.id !== DEFAULT_LAYOUT);
+  const drawsView = $derived(layout?.id !== INVENTORY_LAYOUT);
   const view = $derived(skillsView.value);
   const error = $derived(scanError ?? (drawsView ? skillsView.error : null));
   const scanning = $derived(scanState ?? (drawsView ? view : skillsInventory.value)?.scan.running ?? false);
@@ -65,7 +65,7 @@
   {/snippet}
 
   {#if error}<p class="notice" role="status">The last read failed: {error}</p>{/if}
-  {#if layout && (view || layout.id === "current")}
+  {#if layout && (view || !drawsView)}
     {@const Layout = layout.component}
     <Layout view={view!} {reload} />
   {/if}

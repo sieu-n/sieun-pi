@@ -1,7 +1,9 @@
 /**
  * The Settings > Skills layouts. Each layout lives in its own folder, `layouts/<id>/<Name>Layout.svelte`, whose default export takes
  * `LayoutProps`; the folder name is the id that `#/settings/skills?layout=<id>` picks. Builders add a folder and touch nothing else, since
- * this list finds every folder by its file name. `current` is the page from before the skills DB, kept until the owner picks a layout.
+ * this list finds every folder by its file name. The owner picked `tree` to open with no `?layout=` on 11-23 (For you todo t5, msgs mwtcvfr9
+ * then mwtcwn3p). `current` is the page from before the skills DB, which draws the scanner's inventory instead of the view; it stays as the
+ * last view, because only it shows a skill's SKILL.md text, its last uses linked into their threads and its last commit.
  */
 import type { Component } from "svelte";
 import type { SkillsView } from "$lib/api/shared/skills";
@@ -23,15 +25,23 @@ const MEASURES: Readonly<Record<string, LayoutMeasure>> = { kinds: "full" };
 
 const found = import.meta.glob<Component<LayoutProps>>("./*/*Layout.svelte", { eager: true, import: "default" });
 
-export const DEFAULT_LAYOUT = "current";
+/** The layout that opens when the address names none. */
+export const DEFAULT_LAYOUT = "tree";
+/** The one layout that draws GET /api/skills/inventory; every other layout draws GET /api/skills. */
+export const INVENTORY_LAYOUT = "current";
 
-/** Every layout by id, `current` first and the rest by name, with the id as its label in sentence case. */
+/** Labels that differ from the id: `current` stopped being the current page once the owner picked `tree`. */
+const LABELS: Readonly<Record<string, string>> = { [INVENTORY_LAYOUT]: "Inventory" };
+
+const rank = (id: string): number => (id === DEFAULT_LAYOUT ? 0 : id === INVENTORY_LAYOUT ? 2 : 1);
+
+/** Every layout by id: the default first, the inventory last, and the rest by name, each with its id as its label in sentence case. */
 export const LAYOUTS: readonly LayoutEntry[] = Object.entries(found)
   .map(([path, component]) => {
     const id = path.split("/")[1]!;
-    return { id, label: id.charAt(0).toUpperCase() + id.slice(1).replace(/-/g, " "), measure: MEASURES[id] ?? "wide", component };
+    return { id, label: LABELS[id] ?? id.charAt(0).toUpperCase() + id.slice(1).replace(/-/g, " "), measure: MEASURES[id] ?? "wide", component };
   })
-  .sort((a, b) => Number(b.id === DEFAULT_LAYOUT) - Number(a.id === DEFAULT_LAYOUT) || a.id.localeCompare(b.id));
+  .sort((a, b) => rank(a.id) - rank(b.id) || a.id.localeCompare(b.id));
 
 export function layoutOf(id: string | null | undefined): LayoutEntry | undefined {
   return LAYOUTS.find(layout => layout.id === id) ?? LAYOUTS.find(layout => layout.id === DEFAULT_LAYOUT);
