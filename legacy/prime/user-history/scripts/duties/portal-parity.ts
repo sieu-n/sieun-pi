@@ -15,7 +15,8 @@ import { checkCleanup } from "./test-org-cleanup.ts";
  *    staging-api.virev.ai.
  * 2. On each env it calls every documented non-DM /v1 operation once with its own docs example. Staging calls go out under throwaway test
  *    orgs that it seeds through the staging Convex /api/test/seed route and deletes again through /api/test/cleanup. Prod calls use
- *    VIREV_API_KEY_PROD and skip only the writes SPEC-93 never makes on prod. The paid reads SPEC-93 leaves out of its prod run for cost
+ *    VIREV_API_KEY_PROD_MONITOR, the key of the memberless workspace org_virev_d2_monitoring that the crawl gate lets read
+ *    (auto-sns-agent convex/org/customerWorkspaces.ts MONITORING_ORG_IDS), and skip only the writes SPEC-93 never makes on prod. The paid reads SPEC-93 leaves out of its prod run for cost
  *    (intelligence profile and contact reads) are called here once a UTC day, and the run output lists what each prod call cost.
  * 3. It sorts each answer: 2xx works, an answer that names a proxy supply hold or a paused source is held, an `upstream_*` or `capacity_exhausted`
  *    code is a crawler cause (the portal passes crawler errors on that way), anything else is a portal cause, and a call it could not make or
@@ -43,11 +44,12 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 export const CRAWLER_OPENAPI: Record<"prod" | "staging", string> = { prod: "https://crawler.virev.ai/openapi.json", staging: "https://staging-crawler.virev.ai/openapi.json" };
 const PROD_OPENAPI = "https://api.virev.ai/openapi.json";
 /**
- * The prod org key: VIREV_API_KEY_PROD from the environment, else decrypted from apps/api-portal/.env with the repo's dotenvx.
- * The key source in apps/specs/envs/prod.json exits 1 since auto-sns-agent 4a68dc4b85 (2026-10-18 11:28Z), which left
+ * The prod org key: VIREV_API_KEY_PROD_MONITOR from the environment, else decrypted from apps/api-portal/.env with the repo's dotenvx.
+ * It names org_virev_d2_monitoring, because the crawl gate refuses each live read of a workspace with no customer member, and the old
+ * VIREV_API_KEY_PROD names the demo Cosmetics brands org, whose every live d2 read got 409 crawl_unpaid_paused on 11-23. The key source in apps/specs/envs/prod.json exits 1 since auto-sns-agent 4a68dc4b85 (2026-10-18 11:28Z), which left
  * the 12:36Z run with prod_working_pct -1 and 150 routes unprobed. The key is never printed.
  */
-const PROD_KEY_CMD = "cd apps/api-portal && npx dotenvx get VIREV_API_KEY_PROD -f .env";
+const PROD_KEY_CMD = "cd apps/api-portal && npx dotenvx get VIREV_API_KEY_PROD_MONITOR -f .env";
 /** The "could not measure" value, the same one auto-sns-agent scripts/duties/ci/ci-guarantees.mjs prints. */
 export const UNMEASURED = 999999;
 /**
@@ -1017,7 +1019,7 @@ async function main(): Promise<void> {
     attempt(CRAWLER_OPENAPI.staging, () => getJson(CRAWLER_OPENAPI.staging)),
     attempt(PROD_OPENAPI, () => getJson(PROD_OPENAPI)),
     env ? attempt("CONVEX_WEBHOOK_SECRET key source", () => sh(env.keySources.CONVEX_WEBHOOK_SECRET!.cmd, REPO)) : null,
-    process.env.VIREV_API_KEY_PROD || attempt("VIREV_API_KEY_PROD from apps/api-portal/.env", () => sh(PROD_KEY_CMD, REPO)),
+    process.env.VIREV_API_KEY_PROD_MONITOR || attempt("VIREV_API_KEY_PROD_MONITOR from apps/api-portal/.env", () => sh(PROD_KEY_CMD, REPO)),
     attempt("SPEC-93 prod skips in apps/specs/lib/api-portal", prodSkips),
   ]);
   const [stagingHold, prodHold] = await Promise.all([supplyHold("staging", env), supplyHold("prod", prodEnv)]);
