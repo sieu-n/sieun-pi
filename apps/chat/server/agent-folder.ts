@@ -107,6 +107,8 @@ export function instructionFiles(cwd: string, agentDir: string): ConfigFile[] {
 /** The agent's folder on its host. */
 export const agentFolderDir = (agentsDir: string, record: AgentRecord): string => join(agentsDir, record.slug);
 const briefPath = (dir: string): string => join(dir, "brief.md");
+/** pi-host's `WORKING_MEMORY_FILE`: what the agent knows now across rooms, which its work thread rewrites after each turn. */
+const workingPath = (dir: string): string => join(dir, "working-memory.md");
 /** Prime's `getHarnessStatePath(getLocalHarnessStateDir(<agent folder>))`. */
 export const harnessPath = (dir: string): string => join(dir, "harness", "harness_state.json");
 
@@ -215,22 +217,27 @@ function remoteInfo(label: string, path: string, file: FolderFile, opts: { previ
 }
 
 const BRIEF_NOTE = "Its responsibility in the owner's words. pi-host adds it after the AGENTS.md files as one more Prime context file in every thread of the agent.";
+const WORKING_NOTE = "What the agent knows now across rooms. Its work thread rewrites it after each turn, and every comm thread and job of the agent reads it in full.";
 const MEMORY_NOTE = "Its memory. Every thread of the agent gets Prime's harness digest of Prime's global store merged with this one, and its kernel's rlm.harness writes here.";
 
-/** The folder view from its two files; `local` builds the file rows from this box's disk. */
-function folderView(agent: AgentRecord, dir: string, brief: FolderFile, store: StoreFile, info: (label: string, path: string, opts: { preview?: boolean; loaded: boolean; note: string }) => ConfigFile): AgentFolder {
+/** The folder view from its three files; `info` builds the file rows from this box's disk or from the files another box read. */
+function folderView(agent: AgentRecord, dir: string, brief: FolderFile, working: FolderFile, store: StoreFile, info: (label: string, path: string, opts: { preview?: boolean; loaded: boolean; note: string }) => ConfigFile): AgentFolder {
   const text = brief.text ?? "";
+  const now = working.text ?? "";
   const entries = HARNESS_KINDS.flatMap(kind => Object.entries(store.entries[kind]).flatMap(([id, raw]) => entryView(kind, id, raw) ?? []))
     .sort((a, b) => timeOf(b.updatedAt) - timeOf(a.updatedAt) || b.updatedAt.localeCompare(a.updatedAt));
   const memory = { ...info("the agent's harness store", harnessPath(dir), { loaded: true, note: MEMORY_NOTE }), count: entries.length, entries };
   if (entries.length) memory.preview = entries.slice(0, 3).map(e => `- ${e.title}`).join("\n");
-  return { agent: agent.id, dir, brief: { ...info("brief.md", briefPath(dir), { preview: true, loaded: text.trim() !== "", note: BRIEF_NOTE }), text }, memory };
+  return {
+    agent: agent.id, dir, brief: { ...info("brief.md", briefPath(dir), { preview: true, loaded: text.trim() !== "", note: BRIEF_NOTE }), text },
+    workingMemory: { ...info("working-memory.md", workingPath(dir), { preview: true, loaded: now.trim() !== "", note: WORKING_NOTE }), text: now }, memory,
+  };
 }
 
 /** The agent's brief and memory store, entries of every kind with the newest `updatedAt` first. */
 export function readAgentFolder(agentsDir: string, agent: AgentRecord): AgentFolder {
   const dir = agentFolderDir(agentsDir, agent);
-  return folderView(agent, dir, readLocalFile(briefPath(dir)), readStore(harnessPath(dir)), (label, path, opts) => fileInfo(label, path, opts));
+  return folderView(agent, dir, readLocalFile(briefPath(dir)), readLocalFile(workingPath(dir)), readStore(harnessPath(dir)), (label, path, opts) => fileInfo(label, path, opts));
 }
 
 /** File access on an agent's box: its relay's `file_get` and `file_put`. */
@@ -256,14 +263,21 @@ export class AgentFolders {
     const { agentsDir, files } = this.where(agent);
     if (!files) return readAgentFolder(agentsDir, agent);
     const dir = agentFolderDir(agentsDir, agent);
-    const [brief, store] = await Promise.all([files.get(briefPath(dir)), files.get(harnessPath(dir))]);
-    return folderView(agent, dir, brief, parseStore(store.text), (label, path, opts) => remoteInfo(label, path, path === briefPath(dir) ? brief : store, opts));
+    const [brief, working, store] = await Promise.all([files.get(briefPath(dir)), files.get(workingPath(dir)), files.get(harnessPath(dir))]);
+    const byPath = new Map([[briefPath(dir), brief], [workingPath(dir), working]]);
+    return folderView(agent, dir, brief, working, parseStore(store.text), (label, path, opts) => remoteInfo(label, path, byPath.get(path) ?? store, opts));
   }
 
   async writeBrief(agent: AgentRecord, text: string): Promise<void> {
     const { agentsDir, files } = this.where(agent);
     if (!files) return writeBrief(agentsDir, agent, text);
     await files.put(briefPath(agentFolderDir(agentsDir, agent)), text.trim() ? text : null);
+  }
+
+  async writeWorkingMemory(agent: AgentRecord, text: string): Promise<void> {
+    const { agentsDir, files } = this.where(agent);
+    if (!files) return writeWorkingMemory(agentsDir, agent, text);
+    await files.put(workingPath(agentFolderDir(agentsDir, agent)), text.trim() ? text : null);
   }
 
   async create(agent: AgentRecord, kind: HarnessKind, input: MemoryInput, source = "owner"): Promise<string> {
@@ -297,7 +311,16 @@ export class AgentFolders {
 
 /** Writes `brief.md`; empty text deletes it, since a missing or empty brief is no brief. */
 export function writeBrief(agentsDir: string, agent: AgentRecord, text: string): void {
-  const path = briefPath(agentFolderDir(agentsDir, agent));
+  writeFolderFile(briefPath(agentFolderDir(agentsDir, agent)), text);
+}
+
+/** Writes `working-memory.md`, as the owner edits it on the agent's page; empty text deletes it. */
+export function writeWorkingMemory(agentsDir: string, agent: AgentRecord, text: string): void {
+  writeFolderFile(workingPath(agentFolderDir(agentsDir, agent)), text);
+}
+
+/** Replaces a folder file through a temp file beside it, so a thread that reads it sees the old text or the new; blank text deletes it. */
+function writeFolderFile(path: string, text: string): void {
   if (!text.trim()) {
     rmSync(path, { force: true });
     return;

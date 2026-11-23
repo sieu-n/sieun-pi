@@ -709,6 +709,7 @@ export const api = {
   /** The agent folder: its brief and its memory, which every thread of the agent loads (API.md, Agent folder). */
   agentFolder: (id: AgentId) => call<AgentFolder>("GET", `/api/agents/${enc(id)}/folder`),
   setBrief: (id: AgentId, text: string) => twice<AgentFolder>("PUT", `/api/agents/${enc(id)}/brief`, { text }),
+  setWorkingMemory: (id: AgentId, text: string) => twice<AgentFolder>("PUT", `/api/agents/${enc(id)}/working-memory`, { text }),
   addMemory: (id: AgentId, input: MemoryInput) => call<AgentFolder>("POST", `/api/agents/${enc(id)}/memory`, input),
   updateMemory: (id: AgentId, entry: string, input: MemoryInput, kind: HarnessEntryView["kind"] = "memory") =>
     twice<AgentFolder>("PUT", `/api/agents/${enc(id)}/memory/${enc(entry)}${query({ kind })}`, input),

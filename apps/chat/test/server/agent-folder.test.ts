@@ -238,6 +238,26 @@ test("a folder reads by agent id, DM room, work thread and a job inside it, and 
   assert.equal((await s.send("PUT", "/api/agents/ag_nobody/brief", { text: "x" })).status, 404);
 });
 
+test("the working memory reads as empty with no file, round-trips through its PUT, shows in the config, and deletes with empty text", async () => {
+  const path = join(ventDir(), "working-memory.md");
+  rmSync(path, { force: true });
+  const empty = await folder(agents.vent);
+  assert.deepEqual([empty.workingMemory.text, empty.workingMemory.exists, empty.workingMemory.loaded, empty.workingMemory.path], ["", false, false, path]);
+
+  const text = "# Working on\n\n- The relay page shows Mac uptime; waiting on the Mac relay.\n";
+  const put = await s.send<AgentFolder>("PUT", `/api/agents/dm_vent/working-memory`, { text });
+  assert.equal(put.status, 200);
+  assert.deepEqual([put.body.workingMemory.text, put.body.workingMemory.loaded], [text, true]);
+  assert.equal(readFileSync(path, "utf8"), text);
+  assert.equal((await s.get<AgentConfig>(`/api/agents/${agents.vent}/config`)).folder?.workingMemory.text, text);
+
+  const cleared = await s.send<AgentFolder>("PUT", `/api/agents/${agents.vent}/working-memory`, { text: " " });
+  assert.deepEqual([cleared.body.workingMemory.text, cleared.body.workingMemory.exists], ["", false]);
+  assert.equal(existsSync(path), false);
+  assert.equal((await s.send("PUT", `/api/agents/${agents.vent}/working-memory`, { text: null })).status, 400);
+  assert.equal((await s.send("PUT", "/api/agents/ag_nobody/working-memory", { text: "x" })).status, 404);
+});
+
 test("memory create, update and delete write Prime's harness format, which Prime's reader loads back", async () => {
   const title = "Relay port moved to 7791, see p1128";
   const id = harnessSlug(title, "memory");

@@ -328,6 +328,13 @@ export function routes(app: App, parts: SkillsParts): Route[] {
       await app.folders.writeBrief(agent, text);
       return app.folders.read(agent);
     }),
+    route("PUT", "/api/agents/:id/working-memory", async (_r, p, _q, body) => {
+      const agent = folderAgent(p.id!);
+      const { text } = ((await body()) ?? {}) as { text?: unknown };
+      if (typeof text !== "string") throw new BadRequest("A working memory needs text, a string; empty text deletes it.");
+      await app.folders.writeWorkingMemory(agent, text);
+      return app.folders.read(agent);
+    }),
     route("POST", "/api/agents/:id/memory", async (_r, p, _q, body) => {
       const agent = folderAgent(p.id!);
       await app.folders.create(agent, "memory", memoryInput(await body()));

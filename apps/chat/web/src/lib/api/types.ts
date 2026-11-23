@@ -778,6 +778,11 @@ export interface AgentFolder {
   dir: string;
   /** `brief.md`: the agent's responsibility in the owner's words. `text` is "" when the file is missing. */
   brief: ConfigFile & { text: string };
+  /**
+   * `working-memory.md`: what the agent knows now across rooms. Its work thread rewrites it after each turn, and pi-host gives every comm
+   * thread and job of the agent its whole text. `text` is "" when the file is missing.
+   */
+  workingMemory: ConfigFile & { text: string };
   /** `harness/harness_state.json`: the agent's local harness store; `count` is its entries, newest `updatedAt` first in `entries`. */
   memory: ConfigFile & { entries: HarnessEntryView[] };
 }
