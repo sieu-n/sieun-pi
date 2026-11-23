@@ -7,12 +7,34 @@ import { execFileSync } from "node:child_process";
 import { connect } from "node:net";
 import { readdirSync, readFileSync } from "node:fs";
 import { Agent, createServer, request } from "node:http";
+import { DatabaseSync } from "node:sqlite";
 import { setTimeout as sleep } from "node:timers/promises";
 
 const [unit, portText, dataDir, roundsText = "5"] = process.argv.slice(2);
 const port = Number(portText);
 const rounds = Number(roundsText);
 const show = prop => execFileSync("systemctl", ["--user", "show", "-p", prop, "--value", unit], { encoding: "utf8" }).trim();
+/**
+ * The test room's posts in order: chat.sqlite's rows when APPS_CHAT_DB_KINDS names `posts` (server/post-log.ts), else the room's log. A post
+ * is never deleted, so the one that holds more posts is the one the server writes.
+ */
+const roomPosts = () => {
+  let rows = [];
+  try {
+    const db = new DatabaseSync(`${dataDir}/chat.sqlite`, { readOnly: true });
+    try {
+      rows = db.prepare("SELECT body FROM posts WHERE room = ? ORDER BY ord").all(roomId).map(row => JSON.parse(row.body));
+    } finally {
+      db.close();
+    }
+  } catch {}
+  let log = [];
+  try {
+    log = readFileSync(`${dataDir}/rooms/${roomId}.jsonl`, "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line))
+      .filter(row => row.t === "post").map(row => row.post);
+  } catch {}
+  return rows.length >= log.length ? rows : log;
+};
 
 const call = (method, path, body) => new Promise((resolve, reject) => {
   const started = performance.now();
@@ -200,8 +222,8 @@ for (round = 1; round <= rounds; round++) {
   const rooms = JSON.parse((await call("GET", "/api/rooms?test=1")).text);
   const agenda = (rooms.rooms ?? rooms).find(each => each.id === roomId)?.agenda;
   if (agenda !== `round ${round}`) failures.push(`round ${round}: the successor shows the room's agenda as ${JSON.stringify(agenda)}`);
-  const windowPost = readFileSync(`${dataDir}/rooms/${roomId}.jsonl`, "utf8").includes(`"rig window ${round}"`);
-  if (!windowPost) failures.push(`round ${round}: the post sent in the hand-over window is not in the room's log`);
+  const windowPost = roomPosts().some(post => post.text === `rig window ${round}`);
+  if (!windowPost) failures.push(`round ${round}: the post sent in the hand-over window is not in the room's posts`);
   await sleep(3000);
   idle.destroy();
   const slowAnswer = await slow;
@@ -225,8 +247,7 @@ loading = false;
 await Promise.all(loops);
 await sleep(1000);
 // The room's post log, where the 11-22 split showed: two servers each gave out the same seqs.
-const posts = readFileSync(`${dataDir}/rooms/${roomId}.jsonl`, "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line))
-  .filter(row => row.t === "post" && row.post.text.startsWith("rig send")).map(row => row.post);
+const posts = roomPosts().filter(post => post.text.startsWith("rig send"));
 const seqs = posts.map(post => post.seq);
 const duplicateSeqs = seqs.length - new Set(seqs).size + posts.length - new Set(posts.map(post => post.id)).size;
 const shown = new Set(posts.map(post => post.text));

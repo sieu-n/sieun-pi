@@ -34,6 +34,7 @@ import { execFile, spawn, spawnSync } from "node:child_process";
 import { cpSync, createWriteStream, existsSync, mkdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { appendFile, readFile, writeFile } from "node:fs/promises";
 import net from "node:net";
+import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -310,11 +311,17 @@ async function walk(o) {
       const items = await call(o.base, "GET", `/api/c/${room}/items?limit=500`).catch(() => ({ items: [] }));
       meta.stored.push(...(items.items ?? []).filter(item => item.kind === "message").map(item => item.text ?? item.body ?? ""));
     }
-    // The room's post log, when the server's data dir is on this box: a seq written twice means two servers took posts.
+    // The room's posts, when the server's data dir is on this box: a seq written twice means two servers took posts. They are chat.sqlite's
+    // rows when APPS_CHAT_DB_KINDS names `posts` (server/post-log.ts), else the room's log; a post is never deleted, so the one that holds
+    // more is the one the server writes.
     for (const room of meta.rooms) {
       const logFile = join(o.dataDir, "rooms", `${room}.jsonl`);
-      if (!existsSync(logFile)) continue;
-      const seqs = readFileSync(logFile, "utf8").split("\n").filter(Boolean).flatMap(line => { try { return [JSON.parse(line).post?.seq]; } catch { return []; } }).filter(seq => seq !== undefined);
+      const logSeqs = existsSync(logFile)
+        ? readFileSync(logFile, "utf8").split("\n").filter(Boolean).flatMap(line => { try { return [JSON.parse(line).post?.seq]; } catch { return []; } }).filter(seq => seq !== undefined)
+        : [];
+      const rowSeqs = postRowSeqs(join(o.dataDir, "chat.sqlite"), room);
+      const seqs = rowSeqs.length >= logSeqs.length ? rowSeqs : logSeqs;
+      if (!existsSync(logFile) && !rowSeqs.length) continue;
       meta.postLog ??= { lines: 0, repeatedSeqs: 0 };
       meta.postLog.lines += seqs.length;
       meta.postLog.repeatedSeqs += seqs.length - new Set(seqs).size;
@@ -329,6 +336,21 @@ async function walk(o) {
     rmSync(o.scratch, { recursive: true, force: true });
   }
   return report(o.out);
+}
+
+/** The seqs of a room's post rows in chat.sqlite, or none when the DB or its posts table is not there. */
+function postRowSeqs(file, room) {
+  if (!existsSync(file)) return [];
+  try {
+    const db = new DatabaseSync(file, { readOnly: true });
+    try {
+      return db.prepare("SELECT seq FROM posts WHERE room = ?").all(room.replace(/[^\w.-]/g, "_")).map(row => row.seq);
+    } finally {
+      db.close();
+    }
+  } catch {
+    return [];
+  }
 }
 
 const readJsonl = file => (existsSync(file) ? readFileSync(file, "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line)) : []);
