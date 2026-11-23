@@ -30,6 +30,7 @@ H-->>C: the same submission, nothing admitted twice
    An open file also keeps a timer for its own earliest sleep, because pi-durable arms none once the host takes `onWake`, and a child's turn poll or retry backoff sleeps while the child's `rlm.deliver` task keeps the file active.
 4. One pi-host is the only writer of each file, through a lockfile next to it as for Pi session files.
 5. A repeated `requestId` returns the first submission, so a client that retries after a restart never doubles an input.
+6. From SIGTERM until each file closes, a new model request or tool call waits for the close (`drain-gate.ts`), so the next pi-host sends or runs it once; only those already running are cut.
 
 ## Files
 

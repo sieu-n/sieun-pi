@@ -45,6 +45,8 @@ export interface ThreadExtras {
   comm?: Extension;
   /** sieun-rules' guards around every tool call (`rules.ts` `DurableRules.extension`). */
   rules?: Extension;
+  /** The hooks that hold new requests and tool calls while pi-host stops (`drain-gate.ts`). */
+  gate?: Extension;
 }
 
 export function threadRegistry(prompt?: PrimePromptOptions, chat?: { chat: PrimeChat; thread: ChatThread }, extras: ThreadExtras = {}): Registry {
@@ -60,6 +62,7 @@ export function threadRegistry(prompt?: PrimePromptOptions, chat?: { chat: Prime
   if (extras.rlm) registry.install(extras.rlm);
   if (extras.comm) registry.install(extras.comm);
   if (extras.rules) registry.install(extras.rules);
+  if (extras.gate) registry.install(extras.gate);
   // Last, so the `working` section follows every other extension's section.
   if (prompt) registry.install(workingMemory());
   return registry;

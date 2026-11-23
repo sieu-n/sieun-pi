@@ -43,6 +43,7 @@ import type { PoolLabels } from "./pool-labels.ts";
 import { AGENT_REF_DOC, applyAgentRole, parseAgentRef, threadAgent } from "./agent-profile.ts";
 import { InputDropped, RlmChildDoc } from "./children.ts";
 import { commExtension, noteHanded, noteHeard, type CommHost, type CommSubmit } from "./comm.ts";
+import { drainGate } from "./drain-gate.ts";
 import { deliverHarnessDigest, type PrimePromptOptions } from "./prime-prompt.ts";
 import { liveRetry, retrySince, retryingText } from "./retrying.ts";
 import { failedInputs, failureNotice, rootFailed, failureTarget, isRetry, lastModel, mayRetry, newestRootFailed, retryInput, roomLine, roomLineWrites, roomPost, toldName, TURN_FAILED_VIA, type FailedInput } from "./turn-failed.ts";
@@ -293,6 +294,8 @@ export class DurableThreads {
   private readonly now: () => number;
   private wakeTimer?: NodeJS.Timeout;
   private closing = false;
+  /** Holds each new request and tool call once `shutdown` starts, so the close cuts none of them midway (`drain-gate.ts`). */
+  private readonly gate = drainGate(() => this.closing);
   private readonly primeRoots: PrimeRoots | undefined;
 
   constructor(private readonly options: DurableThreadsOptions) {
@@ -481,6 +484,7 @@ export class DurableThreads {
           thread: { id, file }, comm: comm.extension,
           ...(this.options.rlm ? { rlm: this.options.rlm.extension(this.rlmThread(id, file, name, cwd, () => openHarness, models)) } : {}),
           ...(this.options.rules ? { rules: this.options.rules.extension({ id, file, name, cwd }) } : {}),
+          gate: this.gate,
         }),
         env: threadEnv(id, cwd),
         ...(this.options.settings === undefined ? {} : { settings: this.options.settings(id) }),
