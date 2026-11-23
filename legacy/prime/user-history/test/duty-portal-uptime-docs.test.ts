@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { convexBackend } from "../scripts/duties/convex-admin.ts";
-import { cliEnv, docsIsScalar, rowUptime, uptimeMetrics } from "../scripts/duties/portal-uptime.ts";
+import { docsIsScalar, PROBE_PAGE, probeRows, proxyStopped, rowUptime, uptimeMetrics } from "../scripts/duties/portal-uptime.ts";
 
 const UP = [{ labels: { target: "crawler_health" }, value: 1 }, { labels: { target: "crawler_schema" }, value: 1 }, { labels: { target: "portal_openapi" }, value: 1 }];
 const ANSWERS = { up: UP, uptime: UP, age: UP.map(series => ({ ...series, value: 60 })), p90: [{ labels: { target: "portal_openapi" }, value: 400 }], lastDown: [] };
@@ -93,6 +93,42 @@ test("the probe rows come from the backend the prod VITE_CONVEX_URL row names, w
   const fetcher = (async (url: string) => new Response(url === "https://convex.virev.ai/instance_name" ? "convex-prod" : "", { status: url.endsWith("/instance_name") ? 200 : 404 })) as typeof fetch;
   const rows: Record<string, string> = { "apps/api-portal/.env VITE_CONVEX_URL": "https://convex.virev.ai",
     "apps/ci/.env": JSON.stringify({ CONVEX_DEPLOY_KEY: "prod:befitting-sparrow-356|old", CONVEX_SELF_HOSTED_ADMIN_KEY: "convex-prod|new" }) };
-  const env = cliEnv(await convexBackend("production", fetcher, async (file, name) => rows[name ? `${file} ${name}` : file]!), { CONVEX_DEPLOY_KEY: "prod:x|y", PATH: "/bin" });
-  assert.deepEqual(env, { PATH: "/bin", CONVEX_SELF_HOSTED_URL: "https://convex.virev.ai", CONVEX_SELF_HOSTED_ADMIN_KEY: "convex-prod|new" });
+  const backend = await convexBackend("production", fetcher, async (file, name) => rows[name ? `${file} ${name}` : file]!);
+  assert.deepEqual(backend, { url: "https://convex.virev.ai", instance: "convex-prod", adminKey: "convex-prod|new" });
+});
+
+// 11-23: the probe wrote 6 targets a round since 11-22, the read of 4320 rows reached back 12 h, and d1 read 50% uptime with no failed row.
+test("the probe read pages back to the first row older than 24 h however many targets a round writes", async () => {
+  const minute = 60_000;
+  const now = 24 * 60 * minute;
+  const targets = ["crawler_health", "crawler_schema", "portal_openapi", "portal_auth", "portal_instagram_profile", "portal_docs_inline"];
+  const table = Array.from({ length: 48 * 60 }, (_, index) => targets.map(target => ({ target, ok: true, createdAt: now - index * minute }))).flat();
+  const asked: number[] = [];
+  const query = (async (_path: string, args: { paginationOpts: { cursor: string | null; numItems: number } }) => {
+    const from = Number(args.paginationOpts.cursor ?? 0);
+    asked.push(args.paginationOpts.numItems);
+    const page = table.slice(from, from + args.paginationOpts.numItems);
+    return { page, isDone: from + page.length >= table.length, continueCursor: String(from + page.length) };
+  }) as never;
+  const rows = await probeRows(query, now);
+  assert.ok(asked.every(size => size === PROBE_PAGE));
+  assert.ok(rows.some(row => row.createdAt <= 0) && rows.length < table.length);
+  assert.ok(rowUptime(rows, now).uptime.every(series => series.value === 1));
+});
+
+// 11-23: portal_instagram_profile failed every round with 503 proxy_provider_down while the owner stopped crawling (c230), and probes_down_now read 1.
+test("a target the owner stopped for the lapsed proxy is flagged proxy_stopped and not counted down", () => {
+  const rows = [
+    { target: "portal_instagram_profile", ok: false, errorClass: "proxy_provider_down", createdAt: 2 },
+    { target: "portal_auth", ok: false, errorClass: "upstream_error", createdAt: 2 },
+    { target: "crawler_health", ok: false, errorClass: "proxy_provider_down", createdAt: 1 },
+    { target: "crawler_health", ok: true, createdAt: 2 },
+  ];
+  const stopped = proxyStopped(rows);
+  assert.deepEqual(stopped, ["portal_instagram_profile"]);
+  const up = [...UP, { labels: { target: "portal_instagram_profile" }, value: 0 }];
+  const output = uptimeMetrics({ ...ANSWERS, up }, DIRECT, 0, {}, undefined, undefined, undefined, stopped);
+  assert.equal(output.metrics.probes_down_now, 0);
+  assert.deepEqual(kinds(output).filter(kind => kind === "down" || kind === "proxy_stopped"), ["proxy_stopped"]);
+  assert.equal(uptimeMetrics({ ...ANSWERS, up }, DIRECT, 0).metrics.probes_down_now, 1);
 });

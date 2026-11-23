@@ -6,7 +6,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
-import { type ConvexBackend, convexBackend } from "./convex-admin.ts";
+import { adminQuery, convexBackend } from "./convex-admin.ts";
 import { GRAFANA as GRAFANA_VENT, readGrafanaAuth } from "./estate-reads.ts";
 
 /**
@@ -99,8 +99,23 @@ const SEL = 'env="production",job="api-portal-health"';
  * skips a gap with no scrapes.
  */
 export const PROBE_TABLE = "apiPortalHealthProbes";
-/** One probe run per minute for each target, so 24 h holds at most this many rows (apps/virev-demo/convex/crons.ts "api health probe", every minute). */
-export const ROWS_24H = 1440 * 3;
+/**
+ * Rows per page of the probe read. measured: a Convex function returns at most 8192 array items (convex-prod refused 8641 on 2026-11-23
+ * with "Array length is too long"), and 4000 rows came back in one page that day.
+ */
+export const PROBE_PAGE = 4000;
+/**
+ * The crawler's answer when the owner stopped every crawl because the paid proxy lapsed (owner rule c230, 2026-11-20). A target whose newest
+ * row failed with it is a read the owner stopped, not an outage, so probes_down_now does not count it. measured: every
+ * portal_instagram_profile row on prod on 2026-11-23 06:59Z failed with HTTP 503 and this class.
+ */
+export const PROXY_STOPPED = "proxy_provider_down";
+/** The targets whose newest row failed with PROXY_STOPPED. */
+export function proxyStopped(rows: readonly ProbeRow[]): string[] {
+  const newest = new Map<string, ProbeRow>();
+  for (const row of rows) if ((newest.get(row.target)?.createdAt ?? -1) < row.createdAt) newest.set(row.target, row);
+  return [...newest.values()].filter(row => !row.ok && row.errorClass === PROXY_STOPPED).map(row => row.target).sort();
+}
 const DAY_MS = 24 * 3_600_000;
 /** The PromQL per measure. `age` adds the time since the last scrape, so a scrape that stopped still ages the probe. */
 export const QUERIES = {
@@ -126,7 +141,7 @@ export interface Series { labels: Record<string, string>; value: number }
 export type Answers = Record<Exclude<Measure, "rowUp" | "rowAge">, Series[] | { error: string }> & Partial<Record<"rowUp" | "rowAge", Series[] | { error: string }>>;
 
 /** One apiPortalHealthProbes row, the fields the uptime needs. */
-export interface ProbeRow { target: string; ok: boolean; createdAt: number }
+export interface ProbeRow { target: string; ok: boolean; createdAt: number; errorClass?: string }
 
 const MINUTE_MS = 60_000;
 /**
@@ -216,7 +231,7 @@ export const blobFingerprint = (text: string): string =>
   createHash("sha256").update(`${text.replace(/\s+$/, "")}\n`).digest("hex").slice(0, 16);
 
 /** The duty's metrics from the query answers, the direct GET and the env files, with a flagged slice for each down target, gap and unread source. */
-export function uptimeMetrics(answers: Answers, direct: { status: number; ms: number; error?: string }, at: number, env: EnvFiles = {}, live?: LiveProd, docs?: DocsCheck, auth?: AuthCheck): PrecheckOutput {
+export function uptimeMetrics(answers: Answers, direct: { status: number; ms: number; error?: string }, at: number, env: EnvFiles = {}, live?: LiveProd, docs?: DocsCheck, auth?: AuthCheck, stopped: readonly string[] = []): PrecheckOutput {
   const flagged: FlaggedSlice[] = [];
   let sourceErrors = 0;
   /** The series of one measure, or undefined after flagging why there are none. */
@@ -250,8 +265,10 @@ export function uptimeMetrics(answers: Answers, direct: { status: number; ms: nu
   if (authRead.flag) flagged.push(authRead.flag);
   const known = authRead.down + (docsRead.down === UNMEASURED ? 0 : docsRead.down);
   // A known failure is a floor on probes_down_now even when the probe targets were not read, so a dead Convex never reads as unmeasured only.
-  metrics.probes_down_now = up && docsRead.down !== UNMEASURED ? up.filter(series => series.value < 1).length + known : known > 0 ? known : UNMEASURED;
-  for (const series of up ?? []) if (series.value < 1) flagged.push({ at, kind: "down", excerpt: `prod api probe ${series.labels.target} fails now (api_probe_up 0)` });
+  const down = (up ?? []).filter(series => series.value < 1 && !stopped.includes(series.labels.target ?? ""));
+  metrics.probes_down_now = up && docsRead.down !== UNMEASURED ? down.length + known : known > 0 ? known : UNMEASURED;
+  for (const series of down) flagged.push({ at, kind: "down", excerpt: `prod api probe ${series.labels.target} fails now (api_probe_up 0)` });
+  for (const series of up ?? []) if (series.value < 1 && stopped.includes(series.labels.target ?? "")) flagged.push({ at, kind: "proxy_stopped", excerpt: `prod api probe ${series.labels.target} fails with ${PROXY_STOPPED}: the owner stopped every crawl while the paid proxy is lapsed (c230), so it is not counted and needs no job` });
 
   const uptime = read("uptime", TARGETS);
   metrics.probe_uptime_24h_pct = uptime ? round(100 * uptime.reduce((sum, series) => sum + series.value, 0) / uptime.length, 2) : UNMEASURED_PCT;
@@ -356,26 +373,24 @@ async function liveProdSource(env: EnvFiles): Promise<LiveProd> {
   } catch (error) { return { error: errorText(error) }; }
 }
 
-/** The env the Convex CLI runs with: the backend's URL and admin key, and no deployment keys, so the CLI talks to that backend alone. */
-export const cliEnv = (backend: ConvexBackend, base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv => {
-  const env: NodeJS.ProcessEnv = { ...base, CONVEX_SELF_HOSTED_URL: backend.url, CONVEX_SELF_HOSTED_ADMIN_KEY: backend.adminKey };
-  for (const key of ["CONVEX_DEPLOYMENT", "CONVEX_DEPLOY_KEY"]) delete env[key];
-  return env;
-};
-
+/** One page of `_system/cli/tableData`, the system query `convex data` pages through. */
+interface TablePage { page: ProbeRow[]; isDone: boolean; continueCursor: string }
 /**
- * The newest ROWS_24H apiPortalHealthProbes rows on prod Convex, through the auto-sns-agent Convex CLI as admin of the backend VITE_CONVEX_URL
- * of apps/api-portal/.env names. It runs from the home folder, because the checkout's .env.local names the self-hosted local backend.
- * measured: 4320 rows were 967,955 bytes and 2.8 s on 10-29 from us-metal02.
+ * Every apiPortalHealthProbes row of the 24 h before `now` and the first row older than that, newest first, on the backend `query` runs as
+ * admin. It pages by time, never by a row count, because the probe writes one row per target a round and the count of targets grows: on
+ * 11-22 auto-sns-agent 4b2a21fd59 took it from 3 to 6, a read of 1440 * 3 rows reached back 12 h, and d1 read 50% uptime for every
+ * target with no failed row. The row older than the window lets rowUptime see that the read reached the window's start.
  */
-export const probeRows = (backend: ConvexBackend) => new Promise<ProbeRow[]>((resolve, reject) => {
-  execFile(join(REPO, "node_modules/.bin/convex"), ["data", PROBE_TABLE, "--limit", String(ROWS_24H), "--order", "desc", "--format", "jsonLines"],
-    // measured: 967,955 bytes for 4320 rows on 10-29, so 8 MiB holds eight times that.
-    { cwd: homedir(), env: cliEnv(backend), encoding: "utf8", maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
-      if (error) return reject(new Error(`convex data ${PROBE_TABLE}: ${String(stderr).trim().slice(-160) || error.message}`));
-      resolve(stdout.split("\n").filter(line => line.startsWith("{")).map(line => JSON.parse(line) as ProbeRow));
-    });
-});
+export async function probeRows(query: <T>(path: string, args: unknown) => Promise<T>, now: number): Promise<ProbeRow[]> {
+  const rows: ProbeRow[] = [];
+  let cursor: string | null = null;
+  for (;;) {
+    const { page, isDone, continueCursor }: TablePage = await query<TablePage>("_system/cli/tableData", { table: PROBE_TABLE, order: "desc", paginationOpts: { cursor, numItems: PROBE_PAGE } });
+    rows.push(...page);
+    if (isDone || !page.length || page.at(-1)!.createdAt <= now - DAY_MS) return rows;
+    cursor = continueCursor;
+  }
+}
 
 async function main(): Promise<void> {
   const output = process.env.OUTPUT_FILE;
@@ -383,6 +398,7 @@ async function main(): Promise<void> {
   const now = Date.now();
   const names = Object.keys(QUERIES) as QueryName[];
   let answers: Answers;
+  let stopped: string[] = [];
   try {
     const auth = await readGrafanaAuth();
     const settled = await Promise.all(names.map(name => instant(auth, QUERIES[name], now).catch((error: unknown) => ({ error: errorText(error) }))));
@@ -392,7 +408,9 @@ async function main(): Promise<void> {
     answers = Object.fromEntries(names.map(name => [name, { error: message }])) as Answers;
   }
   try {
-    Object.assign(answers, rowUptime(await probeRows(await convexBackend("production")), now));
+    const rows = await probeRows(adminQuery(await convexBackend("production")), now);
+    Object.assign(answers, rowUptime(rows, now));
+    stopped = proxyStopped(rows);
   } catch (error) {
     const message = errorText(error);
     Object.assign(answers, { uptime: { error: message }, lastDown: { error: message }, rowUp: { error: message }, rowAge: { error: message } });
@@ -419,7 +437,7 @@ async function main(): Promise<void> {
       return [ref, { prod: prod!, staging: staging! }] as const;
     } catch (error) { return [ref, { error: errorText(error) }] as const; }
   })));
-  await writeFile(output, JSON.stringify(uptimeMetrics(answers, direct, now, env, await liveProdSource(env), docs, auth), null, 2) + "\n");
+  await writeFile(output, JSON.stringify(uptimeMetrics(answers, direct, now, env, await liveProdSource(env), docs, auth, stopped), null, 2) + "\n");
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) await main();
