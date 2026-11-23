@@ -45,8 +45,13 @@ test("a command that holds the loop over 500 ms writes a host.log line naming it
     assert.ok(stall >= 600, `stall ${stall} ms`);
     const day = readCounts(join(dataDir, "loop-stalls.json")).days[new Date().toISOString().slice(0, 10)];
     assert.equal(day?.over500, 1);
-    assert.equal(day?.byCause.durable_slow?.count, 1);
-    assert.equal(JSON.parse(readFileSync(join(dataDir, "loop-stalls.json"), "utf8")).days[new Date().toISOString().slice(0, 10)].over1s, 0);
+    // PiHost's profiler counts a stall under the function that held half of it or more (3c33de94), else under the command. Here that is
+    // `block`, or the `now` it calls, or the test file's line when V8 inlines it.
+    const causes = Object.keys(day?.byCause ?? {});
+    assert.equal(causes.length, 1, JSON.stringify(causes));
+    assert.match(causes[0]!, /^(durable_slow|cpu (block|now)\b.*|cpu \S+ pi-host\/test\/loop-stall\.test\.ts:\d+)$/);
+    const written = JSON.parse(readFileSync(join(dataDir, "loop-stalls.json"), "utf8")).days[new Date().toISOString().slice(0, 10)];
+    assert.equal(written.over1s, stall >= 1000 ? 1 : 0, "a 700 ms hold under box load can pass 1 s, and over1s says so");
   } finally {
     await host.shutdown();
   }
@@ -56,6 +61,8 @@ test("a kernel host request in a child conversation names its session and row co
   const lines: string[] = [];
   const stalls = new LoopStalls({ log: line => lines.push(line) });
   try {
+    // The monitor's timer must have run once, or a hold right after the start reads as its first interval and writes no line.
+    await tick();
     await track("agent_observe.list", "72ba1ed2-e04e-4284-a4da-3547edb6a3d9-202116", async () => {
       block(600);
       return { current: {}, agents: Array.from({ length: 40 }, () => ({})) };
@@ -115,7 +122,9 @@ test("a stall says how long the loop thread ran on a CPU in it, so work and GC r
     await tick();
     const cpu = lines.map(line => Number(/loop thread on CPU (\d+) ms/.exec(line)?.[1]));
     assert.equal(cpu.length, 2, JSON.stringify(lines));
-    assert.ok(cpu[0]! >= 500, `a busy stall ran ${cpu[0]} ms on CPU: ${lines[0]}`);
+    // At load average 200 to 265 on 80 cores the busy 600 ms ran only 172 to 473 ms on a core (11-23), so the busy stall is checked
+    // against the waiting one rather than against its own length.
+    assert.ok(cpu[0]! >= cpu[1]! + 100, `a busy stall ran ${cpu[0]} ms on CPU and a waiting one ${cpu[1]} ms: ${lines.join(" / ")}`);
     assert.ok(cpu[1]! < 200, `a waiting stall ran ${cpu[1]} ms on CPU: ${lines[1]}`);
   } finally {
     stalls.stop();
