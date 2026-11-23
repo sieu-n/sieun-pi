@@ -1,5 +1,6 @@
-// The dev instance's compose.yaml: its config resolves with the services the tutorial names, no service listens on a live port, and the
-// fixture profile comes up healthy from an empty volume and answers /api/agents. The start part needs Docker and skips without it.
+// The dev instance's compose.yaml: its config resolves with the services the tutorial names, no service listens on a live port, the
+// fixture profile comes up healthy from an empty volume and answers /api/agents, and the instance with no API key comes up healthy, shows
+// no account pool and logs no failed skills scan. The start parts need Docker and skip without it.
 // Run: node --test --test-force-exit tests/compose-instance.test.mjs
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -36,10 +37,11 @@ const freePort = () => new Promise(resolve => {
 
 const project = `swf-check-${process.pid}`;
 after(() => { if (!noDocker) compose(["-p", project, "--profile", "fixture", "down", "-v", "--remove-orphans"]); });
+const env = {};
 
 test("docker compose up fixture comes up healthy from an empty volume and answers /api/agents", { skip: noDocker }, async () => {
   const port = await freePort();
-  const env = { SWF_FIXTURE_PORT: String(port) };
+  env.SWF_FIXTURE_PORT = String(port);
   const up = compose(["-p", project, "up", "-d", "--build", "--wait", "fixture"], env);
   assert.equal(up.status, 0, `${up.stdout}\n${up.stderr}`);
   const ready = await (await fetch(`http://127.0.0.1:${port}/api/ready`)).json();
@@ -49,4 +51,21 @@ test("docker compose up fixture comes up healthy from an empty volume and answer
   const again = compose(["-p", project, "up", "-d", "--wait", "fixture"], env);
   assert.equal(again.status, 0, again.stderr);
   assert.doesNotMatch(again.stderr, /Recreat|Creating/, "a second up changes nothing");
+});
+
+test("docker compose up with no API key comes up healthy, shows no account pool and logs no failed scan", { skip: noDocker }, async () => {
+  const port = await freePort();
+  env.SWF_PORT = String(port);
+  const up = compose(["-p", project, "up", "-d", "--build", "--wait"], { ...env, ANTHROPIC_API_KEY: "" });
+  assert.equal(up.status, 0, `${up.stdout}\n${up.stderr}`);
+  const accounts = await (await fetch(`http://127.0.0.1:${port}/api/accounts`)).json();
+  assert.equal(accounts.absent, true, "a box with no pi-pool reads as no pool, not as a failed read");
+  // The skills scan of a box with no ssh client ends with one skipped line and no failure (scripts/skills-inventory.py).
+  let logs = "";
+  for (let i = 0; i < 120 && !/skills: (skipped|the scan failed)/.test(logs); i++) {
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    logs = compose(["-p", project, "logs", "--no-color", "chat"], env).stdout;
+  }
+  assert.match(logs, /skills: skipped the Mac scan: this box has no ssh client/);
+  assert.doesNotMatch(logs, /the scan failed/);
 });
