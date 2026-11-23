@@ -45,6 +45,25 @@ test("a due reminder's toast snoozes it from a menu and marks it complete", asyn
   await expect.poll(async () => (await item(page, `${b.room}:${b.id}`))?.state).toBe("done");
 });
 
+test("a due reminder's toast goes away when another tab or the Mac app checks it off or snoozes it", async ({ page }) => {
+  const a = await post(page);
+  const b = await post(page);
+  await open(page, `#/c/${a.room}`);
+  const due = Date.now() + 1500;
+  await page.request.post("/api/later", { data: { room: a.room, post: a.id, remindAt: due } });
+  await page.request.post("/api/later", { data: { room: b.room, post: b.id, remindAt: due } });
+  const toastA = page.locator(".toast").filter({ hasText: a.text });
+  const toastB = page.locator(".toast").filter({ hasText: b.text });
+  await expect(toastA).toBeVisible({ timeout: 10_000 });
+  await expect(toastB).toBeVisible();
+
+  await page.request.patch(`/api/later/${encodeURIComponent(`${a.room}:${a.id}`)}`, { data: { state: "done" } });
+  await expect(toastA).toHaveCount(0);
+  await expect(toastB).toBeVisible();
+  await page.request.patch(`/api/later/${encodeURIComponent(`${b.room}:${b.id}`)}`, { data: { remindAt: Date.now() + 3_600_000 } });
+  await expect(toastB).toHaveCount(0);
+});
+
 test("Undo after Remove from Later brings the row back with its reminder", async ({ page }) => {
   const a = await post(page);
   const remindAt = Date.now() + 2 * 3_600_000;

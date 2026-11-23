@@ -32,6 +32,8 @@ class LaterStore {
   private timer: ReturnType<typeof setTimeout> | undefined;
   /** The last Later toast, which the next one replaces, so three quick saves show one toast as in Slack. */
   private toastId: number | undefined;
+  /** The toast of each due reminder this tab shows, by row id, with the reminder time it fell due at. */
+  private readonly dueToasts = new Map<string, { toast: number; remindAt?: number; test: boolean }>();
 
   private note(text: string, action: { label: string; run: () => void }): void {
     if (this.toastId !== undefined) toast.dismiss(this.toastId);
@@ -76,6 +78,25 @@ class LaterStore {
     this.open = open.open;
     this.archived = open.archived;
     this.done = open.done;
+    this.settleDue(open.items);
+  }
+
+  /** Keeps a due reminder's toast (lib/remind-live.ts) until the reminder is handled, here or in another tab. */
+  showsDue(row: LaterRow, toastId: number): void {
+    this.dueToasts.set(row.id, { toast: toastId, remindAt: row.remindAt, test: row.room !== undefined && !!row.test });
+  }
+
+  /**
+   * Takes away the toast of a reminder that is no longer due: checked off, archived, removed, snoozed or cleared in any tab or the Mac
+   * app's notification, so no tab keeps offering Mark complete on it. A test-room row stays, since a read without `test=1` leaves it out.
+   */
+  private settleDue(open: LaterRow[]): void {
+    for (const [id, shown] of this.dueToasts) {
+      if (shown.test && !this.withTest) continue;
+      if (open.some((row) => row.id === id && row.remindAt === shown.remindAt)) continue;
+      toast.dismiss(shown.toast);
+      this.dueToasts.delete(id);
+    }
   }
 
   /** Open rows whose reminder came due and is not done or snoozed, which the sidebar's Later row counts in red, as Slack's Later badge does. */

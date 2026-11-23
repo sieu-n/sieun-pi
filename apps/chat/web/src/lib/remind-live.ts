@@ -34,7 +34,7 @@ export function laterDue(row: LaterRow): void {
   const body = snippet(row);
   // Slack's reminder message: Mark as complete and a Snooze menu sit on it, so neither needs a trip to Later.
   const snooze = (): MenuEntry[] => remindPresets().map((p): MenuEntry => ({ id: `snooze-${p.id}`, label: p.label, onselect: () => void later.remind(row, p.at) }));
-  toast.show(`${title}: ${body}`, {
+  const shown = toast.show(`${title}: ${body}`, {
     duration: 0,
     actions: [
       { label: "View", run: () => openReminded(row) },
@@ -42,6 +42,7 @@ export function laterDue(row: LaterRow): void {
       { label: "Snooze", menu: snooze },
     ],
   });
+  later.showsDue(row, shown);
   notifyOnce(`later-due:${row.id}:${row.remindAt ?? 0}`, () => void notifySystem(title, body, `later:${row.id}:${row.remindAt ?? 0}`, () => openReminded(row), { type: REMINDER, extra: { row } }));
 }
 
