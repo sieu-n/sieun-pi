@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import type { NoModelRoomSetting } from "../../web/src/lib/api/shared/types.ts";
-import { openAccounts, postedAction, resetPool } from "./helpers.ts";
+import { hideOtherRuns, openAccounts, postedAction, resetPool } from "./helpers.ts";
 
 /** The pool-wide `no_model_room` control on Settings > Accounts, against the fake pi-pool. It changes server-wide state, so it runs in order. */
 test.describe.configure({ mode: "default", timeout: 60_000 });
@@ -10,6 +10,7 @@ const PATH = "/api/accounts/no-model-room";
 const LABEL = "When no account has room for an agent's model";
 
 test("the control shows the pool's value and default, and a choice sets it through the server with the Settings pane as writer", async ({ page, request }) => {
+  await hideOtherRuns(page);
   await openAccounts(page);
   const setting = page.getByTestId("no-model-room");
   await expect(setting.getByText(LABEL, { exact: true })).toBeVisible();

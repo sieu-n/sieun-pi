@@ -102,7 +102,14 @@ export async function serveView(page: Page, view: AccountsView | ((url: URL) => 
     return route.fulfill({ contentType: "application/json", body: JSON.stringify(typeof view === "function" ? view(new URL(route.request().url())) : view) });
   };
   await page.route(url => url.pathname === "/api/accounts" || url.pathname === "/api/pool", answer);
-  // A sign-in or usage read the actions spec runs is server-wide, and the page follows one it sees running, so a frozen page sees none.
+  await hideOtherRuns(page);
+}
+
+/**
+ * A sign-in or usage read the actions spec runs is server-wide, and the page follows one it sees running: it adds the sign-in card, then
+ * switches to that provider's tab and reloads the table. The page here sees no run, so its layout holds still under a hover.
+ */
+export async function hideOtherRuns(page: Page): Promise<void> {
   await page.route(url => url.pathname === "/api/accounts/login" || url.pathname === "/api/accounts/refresh", route =>
     route.request().method() === "GET" ? route.fulfill({ contentType: "application/json", body: idleAnswer(route) }) : route.fallback());
 }
