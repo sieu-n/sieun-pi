@@ -23,6 +23,22 @@ async function search(page: Page, params: Record<string, string>): Promise<Resul
   return (await response.json()) as Result;
 }
 
+/**
+ * A word only this test wrote: `posts` top-level posts in a new channel, and an ask in a new agent's work thread that the agent hands to a
+ * job, whose tool output says the word back. The fixture's agents write "relay" into their threads all through a run, so a search for a
+ * seed word changes its count and its pages while a test reads them.
+ */
+async function ownWord(page: Page, posts: number): Promise<string> {
+  const word = `zq${Array.from({ length: 10 }, () => String.fromCharCode(97 + Math.floor(Math.random() * 26))).join("")}`;
+  // A quiet turn sends nothing to the owner, so the job's ask, its call and its tool output are the agent's only words with the word.
+  const agent = (await (await page.request.post("/api/agents", { data: { kind: "chat", name: `search ${word}` } })).json()) as { thread: string };
+  await page.request.post(`/api/c/${agent.thread}/send`, { data: { text: `quiet spawn ${word}`, requestId: crypto.randomUUID() } });
+  const room = (await (await page.request.post("/api/rooms", { data: { kind: "channel", name: `search-${word}`, members: [] } })).json()) as { id: string };
+  await Promise.all(Array.from({ length: posts }, (_, n) => page.request.post(`/api/c/${room.id}/send`, { data: { text: `${word} post ${n + 1}`, requestId: crypto.randomUUID() } })));
+  await expect.poll(async () => (await search(page, { q: word })).hits.some(hit => hit.kind === "tool")).toBe(true);
+  return word;
+}
+
 test.beforeEach(async ({ page }) => {
   await page.goto("/#/c/ch_general");
   await expect(page.getByTestId("nav-capsule")).toBeVisible();
@@ -49,28 +65,34 @@ test("Cmd K message rows show the author, an AGENT badge, the place and what kin
 });
 
 test("Enter on the query opens the full results page with the exact count and one card per hit", async ({ page }) => {
+  // Three pages of hits, so the page has to read on twice as he scrolls.
+  const word = await ownWord(page, 45);
   await page.keyboard.press(`${mod}+k`);
-  await field(page).fill("relay");
+  await field(page).fill(word);
   await expect(palette(page).getByTestId("search-count")).toBeVisible();
-  await expect(palette(page).locator("[aria-selected=true]")).toContainText("See all results for “relay”");
-  // The fixture's agents keep writing "relay" into their threads, so the count to match is the one in the page's own answer.
+  await expect(palette(page).locator("[aria-selected=true]")).toContainText(`See all results for “${word}”`);
   const answer = page.waitForResponse(r => {
     const url = new URL(r.url());
-    return url.pathname === "/api/search" && url.searchParams.get("q") === "relay" && !url.searchParams.has("local") && !url.searchParams.has("cursor");
+    return url.pathname === "/api/search" && url.searchParams.get("q") === word && !url.searchParams.has("local") && !url.searchParams.has("cursor");
   });
   await page.keyboard.press("Enter");
   const { total, hits } = (await (await answer).json()) as Result;
+  expect(total).toBeGreaterThan(40);
   await expect(palette(page)).toBeHidden();
-  await expect(page).toHaveURL(/#\/search\?q=relay$/);
-  await expect(page.getByRole("heading", { name: "Results for: relay" })).toBeVisible();
+  await expect(page).toHaveURL(new RegExp(`#/search\\?q=${word}$`));
+  await expect(page.getByRole("heading", { name: `Results for: ${word}` })).toBeVisible();
   await expect(count(page)).toHaveText(results(total));
   await expect(cards(page).first()).toBeVisible();
-  // The page scrolls in every hit up to the exact count.
-  await page.locator("[data-search-results]").evaluate(element => element.closest(".scroll")?.scrollTo(0, 1e6));
+  // Each scroll to the bottom reads the next page, until the page says it shows every hit.
+  for (let shown = 0; !(await page.getByText("That's every result.").isVisible()); shown = await cards(page).count()) {
+    await page.locator("[data-search-results]").evaluate(element => element.closest(".scroll")?.scrollTo(0, 1e6));
+    await expect(cards(page)).not.toHaveCount(shown);
+  }
   await expect(cards(page)).toHaveCount(total);
+  await expect(count(page)).toHaveText(results(total));
   const first = cards(page).first();
   await expect(first.locator("[data-hit-author]")).toHaveText(hits[0]!.author.kind === "owner" ? "You" : hits[0]!.author.name);
-  await expect(first.locator("[data-result-snippet] mark").first()).toHaveText(/relay/i);
+  await expect(first.locator("[data-result-snippet] mark").first()).toHaveText(word);
   // Tool output comes after every message by relevance.
   const kinds = await cards(page).evaluateAll(list => list.map(card => card.getAttribute("data-kind")));
   expect(kinds.indexOf("tool")).toBeGreaterThan(0);
@@ -78,14 +100,15 @@ test("Enter on the query opens the full results page with the exact count and on
 });
 
 test("the same filter chips as Cmd K narrow the results through the address, and back undoes them", async ({ page }) => {
-  await page.goto("/#/search?q=relay");
-  const all = await search(page, { q: "relay" });
+  const word = await ownWord(page, 3);
+  await page.goto(`/#/search?q=${word}`);
+  const all = await search(page, { q: word });
   await expect(count(page)).toHaveText(results(all.total));
   await filters(page).getByRole("button", { name: "From", exact: true }).click();
   await page.getByRole("dialog", { name: "From" }).getByRole("option", { name: /You/ }).click();
   await expect(page).toHaveURL(/from=owner/);
   await page.keyboard.press("Escape");
-  const mine = await search(page, { q: "relay", from: "owner" });
+  const mine = await search(page, { q: word, from: "owner" });
   await expect(count(page)).toHaveText(results(mine.total));
   expect(mine.total).toBeLessThan(all.total);
   await expect(cards(page)).toHaveCount(mine.total);
@@ -98,7 +121,7 @@ test("the same filter chips as Cmd K narrow the results through the address, and
   await jobsPill.click();
   await expect(page).toHaveURL(/place=jobs/);
   await expect(jobsPill).toHaveAttribute("aria-pressed", "true");
-  const jobs = await search(page, { q: "relay", place: "jobs" });
+  const jobs = await search(page, { q: word, place: "jobs" });
   expect(jobs.total).toBeGreaterThan(0);
   await expect(count(page)).toHaveText(results(jobs.total));
   await expect(cards(page).first()).toBeVisible();
@@ -125,11 +148,18 @@ test("a card shows the messages around it and opens its message in the conversat
   await page.goto("/#/search?q=relay&in=ch_cutover");
   // A reply lives in its thread, not in the channel's timeline, so the card opened is a top-level post.
   const post = (await search(page, { q: "relay", in: "ch_cutover" })).hits.find(hit => (hit as { where?: string }).where === "root")!;
+  // The flash lasts 2 s (Timeline.svelte), which a check after the scroll can miss on a loaded box, so the page notes each row it flashes.
+  await page.evaluate(() => {
+    const flashed: string[] = ((window as unknown as { flashed: string[] }).flashed = []);
+    new MutationObserver(() => {
+      for (const row of document.querySelectorAll<HTMLElement>("[data-flash]")) flashed.push(row.dataset.messageId ?? "");
+    }).observe(document.body, { subtree: true, childList: true, attributeFilter: ["data-flash"] });
+  });
   await page.locator(`[data-result-card][data-hit-id="${post.id}"] [data-result-open]`).click();
   await expect(page).toHaveURL(new RegExp(`#/c/${post.conversation.id}\\?m=${post.messageId}$`));
   const message = page.locator(`[data-message-id="${post.messageId}"]`);
   await expect(message).toBeInViewport();
-  await expect(message).toHaveAttribute("data-flash", /.*/);
+  await expect.poll(() => page.evaluate(() => (window as unknown as { flashed: string[] }).flashed)).toContain(post.messageId);
 });
 
 test("arrow keys move between cards, the focused card shows its context, and Enter opens it", async ({ page }) => {

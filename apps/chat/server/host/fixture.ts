@@ -207,9 +207,11 @@ export class FixtureHost implements Host {
       const child = this.addChild(thread, conversation, task, this.now(), "running");
       this.append(thread, child.id, { kind: "pi.user", model: [{ role: "user", content: [{ type: "text", text: task }], timestamp: this.now() }] });
       await sleep(this.wordMs * 5);
-      this.append(thread, child.id, { kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "text", text: "The canary relay answers on :7791 and the send key works." }], provider: "anthropic", model: "claude-opus-5-5", usage: USAGE(20), stopReason: "stop", timestamp: this.now() }] });
+      // The job's answer names the ask it answers, so a spec that searches its own words finds this tool output too.
+      const result = `The canary relay answers on :7791 and the send key works (asked: ${text.slice(0, 40)}).`;
+      this.append(thread, child.id, { kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "text", text: result }], provider: "anthropic", model: "claude-opus-5-5", usage: USAGE(20), stopReason: "stop", timestamp: this.now() }] });
       child.status = "idle";
-      this.append(thread, conversation, { kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: callId, toolName: "subagent", content: [{ type: "text", text: "The canary relay answers on :7791 and the send key works." }], details: { conversationId: child.id }, isError: false, timestamp: this.now() }] });
+      this.append(thread, conversation, { kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: callId, toolName: "subagent", content: [{ type: "text", text: result }], details: { conversationId: child.id }, isError: false, timestamp: this.now() }] });
       this.emit(thread, { type: "events", conversation, events: [{ type: "tool_execution_end", toolCallId: callId, toolName: "subagent" }] });
     }
     let sent = "";
