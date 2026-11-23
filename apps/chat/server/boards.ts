@@ -28,6 +28,9 @@ import { armWake, parseWake, startThreadWakes, wakeSession, wakeTarget, type Box
 
 export const BOARD_DOC = "chat.board";
 
+/** The runs that name the duty job `job`, in the order given: the run that started it and each later run measured beside it (`runDutyOnce`). */
+const runsOfJob = (runs: readonly DutyRunRecord[], job: string): DutyRunRecord[] => runs.filter(run => run.job?.id === job);
+
 /**
  * The names of the jobs at work: each summary that works or has a pending wake (its `<thread>--<conversation>` in `waking`), and every summary
  * above it through `parent`. A job that is idle only because it waits on its own working subagents, or on a wake it or a subagent set, counts
@@ -654,8 +657,13 @@ export class Boards {
       ...(resume ? { resume: resume.launch } : {}),
       launched: launch => this.save(chat, Boards.pend(this.file(chat), dutyId, { mode: "run", at, trigger, launch })),
     });
-    if (busy) record.summary += await this.besideBusyJob(chat, duty, busy, record, brief);
-    else if (brief) {
+    if (busy) {
+      record.summary += await this.besideBusyJob(chat, duty, busy, record, brief);
+      // The run names the job it measured beside, so the job's after-job measure lands on it too (`afterJob`) and the card reads the state
+      // after the job's work. On 11-23 the fable auditor's 10:06 and 13:06 KST sweeps handed their briefs to the 07:06 job, which ended at
+      // 15:07 with findings_unposted 0, and d1 still read missed 10, 2 runs in a row, until the next sweep.
+      record.job = { id: busy.id, name: busy.name };
+    } else if (brief) {
       const name = `${duty.name} duty ${runStamp(record.at)}`;
       try {
         // The duty job works where its precheck runs, else in its chat's project folder, so it reads that folder's AGENTS.md chain. It runs on
@@ -680,11 +688,13 @@ export class Boards {
       }
     }
     const after = this.file(chat);
-    // The last job's run with no after-job measure yet takes this run's measure, as Prime's `launch` writes it, unless that job still works
-    // and this run started none, since then the job's own end measures it (`afterJob`).
-    const lastRun = (after.runs[dutyId] ?? []).filter(run => run.job).sort((a, b) => b.at - a.at)[0];
+    // The last job's runs with no after-job measure yet take this run's measure, as Prime's `launch` writes it, unless that job still works
+    // and this run started none, since then the job's own end measures them (`afterJob`).
+    const newestJob = (after.runs[dutyId] ?? []).filter(run => run.job).sort((a, b) => b.at - a.at)[0]?.job;
     const measured = asAfter(record);
-    if (lastRun?.job && !lastRun.after && measured && !busy && (record.job || !working.has(lastRun.job.name))) lastRun.after = measured;
+    if (newestJob && measured && !busy && (record.job || !working.has(newestJob.name))) {
+      for (const run of runsOfJob(after.runs[dutyId] ?? [], newestJob.id)) run.after ??= measured;
+    }
     after.runs[dutyId] = [record, ...(after.runs[dutyId] ?? [])].sort((a, b) => b.at - a.at).slice(0, 20);
     // Only this run's own precheck entry is cleared, with its files, so an entry another measure wrote keeps its files.
     const pending = after.pending?.[dutyId];
@@ -754,7 +764,7 @@ export class Boards {
       await this.host.submit(this.threadOf(chat), { text: `[duty ${dutyId}] ${text}`, whenBusy: "followUp", requestId: `duty-report:${job}`, entry: { kind: "agent.message", data: { from: job, via: `duty ${dutyId}` } } });
     }
     const file = this.file(chat);
-    const run = file.runs[dutyId]?.find(entry => entry.job?.id === job);
+    const run = file.runs[dutyId]?.find(entry => entry.job?.id === job && entry.job.submission === submission);
     if (run?.job && !run.job.reported) {
       run.job.reported = true;
       this.save(chat, file);
@@ -779,9 +789,10 @@ export class Boards {
   }
 
   /**
-   * Measures a duty's last job's run again once that job has ended (Prime's `Duties.endJob` and `measureAfter`), and writes the measure into
-   * the run as `after`, which the card reads as the run's verdict and streak once its job's fixes are in (`effectiveRun`). Only the duty's newest
-   * run with a job is looked at; an older one gets the next run's measure (`runDutyOnce`). One measure goes per duty, and none beside a run of it.
+   * Measures a duty's last job's runs again once that job has ended (Prime's `Duties.endJob` and `measureAfter`), and writes the measure into
+   * each run that names the job as `after`, which the card reads as the run's verdict and streak once its job's fixes are in (`effectiveRun`).
+   * Only the duty's newest job is looked at; an older one's runs get the next run's measure (`runDutyOnce`). One measure goes per duty, and none
+   * beside a run of it.
    */
   afterJob(chat: string, dutyId: string): Promise<void> {
     const key = `${chat}/${dutyId}`;
@@ -794,12 +805,14 @@ export class Boards {
     const run = runs.find(entry => entry.job);
     if (!duty || !run?.job || run.after) return Promise.resolve();
     const job = run.job;
+    // The run that started the job holds its first input; a later run measured beside the job names it with none (`runDutyOnce`).
+    const started = runsOfJob(runs, job.id).at(-1)?.job ?? job;
     this.endChecks.add(key);
     return this.jobEnded(job.id).catch(() => false).then(ended => {
       this.endChecks.delete(key);
       if (!ended || this.dutyRuns.has(key) || this.afters.has(key)) return;
       const task = (async () => {
-        if (job.submission !== undefined && !job.reported) await this.deliverReport(chat, dutyId, job.id, job.submission);
+        if (started.submission !== undefined && !started.reported) await this.deliverReport(chat, dutyId, job.id, started.submission);
         await this.measureAfterJob(chat, duty, runs, run.at, job.name);
       })().catch(error => this.log(`duty ${key}: the after-job measure of ${job.name} failed: ${String(error)}`)).finally(() => this.afters.delete(key));
       this.afters.set(key, task);
@@ -817,11 +830,13 @@ export class Boards {
     const latest = this.file(chat);
     const pending = latest.pending?.[duty.id];
     const launch = pending?.mode === "after" && pending.at === at ? pending.launch : undefined;
-    const target = latest.runs[duty.id]?.find(entry => entry.at === runAt);
-    if (target && !target.after) target.after = after;
+    // The measure goes onto every run that names the job: the run that started it and each later run measured beside it.
+    const job = latest.runs[duty.id]?.find(entry => entry.at === runAt)?.job;
+    const targets = job ? runsOfJob(latest.runs[duty.id] ?? [], job.id).filter(entry => !entry.after) : [];
+    for (const target of targets) target.after = after;
     this.save(chat, launch ? Boards.pend(latest, duty.id, null) : latest);
     if (launch) void clearPrecheck(launch).catch(error => this.log(`duty ${chat.slice(0, 8)}: clearing its precheck files failed: ${String(error)}`));
-    if (target?.after !== after) return;
+    if (!targets.length) return;
     this.log(`duty ${chat.slice(0, 8)}/${duty.id}: after its job ${jobName}, ${after.verdict}, ${after.summary}`);
     this.events.duties(chat, this.duties(chat));
   }
@@ -1099,13 +1114,15 @@ export class Boards {
     if (this.waitReads.has(key)) return;
     this.waitReads.add(key);
     try {
-      const run = [...runs].sort((a, b) => b.at - a.at).find(entry => entry.job);
+      const sorted = [...runs].sort((a, b) => b.at - a.at);
+      const run = sorted.find(entry => entry.job);
       const status = run?.job ? this.threads.thread(run.job.id)?.status : undefined;
       let since: number | undefined;
       if (run?.job && (status === "running" || status === "sleeping")) {
         const job = run.job.id;
         const ticket = await this.host.ticket(job).catch(() => null);
-        if (ticket?.place.state === "queued" || !(await this.answeredOnce(job))) since = run.at;
+        // The job waits since the run that started it, the oldest run that names it.
+        if (ticket?.place.state === "queued" || !(await this.answeredOnce(job))) since = runsOfJob(sorted, job).at(-1)!.at;
       }
       if (since === this.accountWaits.get(key)) return;
       if (since === undefined) this.accountWaits.delete(key);

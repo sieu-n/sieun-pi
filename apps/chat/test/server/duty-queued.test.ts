@@ -2,7 +2,7 @@
  * A due duty behind a job that still works or waits for a model account measures and records its run but starts no second job, as Prime's
  * `Duties.launch` does. A job with no model answer yet gets the newer run's brief, or is stopped when nothing is due: on 11-22 the fable
  * auditor's 16:06Z sweep job waited 3 h 44 min for a Fable account and every sweep behind it skipped its precheck. The card says since when the
- * job waits.
+ * job waits. Such a run names the job, so the job's after-job measure lands on it too and the card reads the state after the job's work.
  * Run: cd apps/chat && node --import tsx --test --test-force-exit --test-isolation=none test/server/duty-queued.test.ts
  */
 import assert from "node:assert/strict";
@@ -38,6 +38,13 @@ fs.appendFileSync(require("path").join(process.cwd(), "${id}.modes"), process.en
 fs.writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { up: ${up} } }));`], cwd: "", timeoutMs: 30_000 },
   onMiss: "fix it", status: "active", createdAt: now - 10 * 24 * HOUR, updatedAt: now, lastRunAt: now, runCount: 1,
 });
+/** A duty like `duty` whose precheck reads `up` from `<id>.up` in its folder. */
+const fixable = (id: string) => {
+  const base = duty(id);
+  return { ...base, precheck: { ...base.precheck, command: ["node", "-e", `const fs = require("fs"), path = require("path");
+fs.appendFileSync(path.join(process.cwd(), "${id}.modes"), process.env.PRECHECK_MODE + "\\n");
+fs.writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { up: Number(fs.readFileSync(path.join(process.cwd(), "${id}.up"), "utf8")) } }));`] } };
+};
 const missed = (id: string, at: number, job: string): DutyRunRecord => ({
   duty: id, at, slot: at, trigger: "schedule", ms: 900, verdict: "missed", metrics: { up: { value: 90, target: 99, op: ">=", met: false } }, summary: "up 90",
   job: { id: job, name: `Duty ${id} job` },
@@ -64,11 +71,17 @@ before(async () => {
   host.append(queued, 1, answer("stop"));
   queued.places.set(1, { state: "queued", position: 4, total: 9 });
   host.addThread({ id: "job-done", name: "Duty d3 job", createdAt: now - HOUR });
+  // d5: its run of an hour ago started a job that pi-pool still holds, and its precheck reads `up` from d5.up, so the test can fix it.
+  const d5job = host.addThread({ id: "job-d5", name: "Duty d5 job", status: "sleeping", createdAt: now - HOUR });
+  host.append(d5job, 1, answer("error"));
+  d5job.running.set(1, { stop: () => aborted.push("job-d5") });
+  writeFileSync(join(work, "d5.up"), "90");
   await s.app.threads.refresh();
   mkdirSync(chatDir(), { recursive: true });
   writeFileSync(dutiesFile(), JSON.stringify({
-    duties: [duty("d1"), duty("d2"), duty("d3"), duty("d4", 100)].map(entry => ({ ...entry, precheck: { ...entry.precheck, cwd: work } })),
-    runs: { d1: [missed("d1", now - HOUR, "job-asleep")], d2: [missed("d2", now - HOUR, "job-queued")], d3: [missed("d3", now - HOUR, "job-done")], d4: [missed("d4", now - HOUR, "job-held")] },
+    duties: [duty("d1"), duty("d2"), duty("d3"), duty("d4", 100), fixable("d5")].map(entry => ({ ...entry, precheck: { ...entry.precheck, cwd: work } })),
+    runs: { d1: [missed("d1", now - HOUR, "job-asleep")], d2: [missed("d2", now - HOUR, "job-queued")], d3: [missed("d3", now - HOUR, "job-done")], d4: [missed("d4", now - HOUR, "job-held")],
+      d5: [missed("d5", now - HOUR, "job-d5")] },
   }));
 });
 after(async () => {
@@ -82,7 +95,7 @@ test("a due duty behind a job that waits for an account measures, starts no job 
   const [measured, older] = runsOf("d1");
   assert.equal(measured!.verdict, "missed");
   assert.equal(measured!.metrics.up?.value, 90);
-  assert.equal(measured!.job, undefined);
+  assert.deepEqual(measured!.job, { id: "job-asleep", name: "Duty d1 job" });
   assert.match(measured!.summary, /its job Duty d1 job still waits for a model account and got this run's brief/);
   assert.equal(older!.job?.id, "job-asleep");
   assert.equal(older!.after, undefined);
@@ -109,7 +122,7 @@ test("a job that answered and waits in the turn queue keeps the next run from st
   await until(() => Promise.resolve(runsOf("d2")), runs => runs.length === 2);
   const [measured] = runsOf("d2");
   assert.equal(measured!.verdict, "missed");
-  assert.equal(measured!.job, undefined);
+  assert.deepEqual(measured!.job, { id: "job-queued", name: "Duty d2 job" });
   assert.match(measured!.summary, /its job Duty d2 job still works, so this run started none/);
   assert.deepEqual(modes("d2"), ["run"]);
   assert.deepEqual(said("job-queued"), []);
@@ -120,7 +133,7 @@ test("a run with nothing due stops the job that still waits for an account", asy
   await until(() => Promise.resolve(runsOf("d4")), runs => runs.length === 2);
   const [measured] = runsOf("d4");
   assert.equal(measured!.verdict, "met");
-  assert.equal(measured!.job, undefined);
+  assert.deepEqual(measured!.job, { id: "job-held", name: "Duty d4 job" });
   assert.match(measured!.summary, /stopped its job Duty d4 job, which still waited for a model account, since nothing is due/);
   assert.deepEqual(aborted, ["job-held"]);
   assert.deepEqual(said("job-held"), []);
@@ -152,4 +165,38 @@ test("the card says since when the duty's job waits for a model account, and dro
   assert.equal(d1.last?.verdict, "missed");
   assert.equal(d1.last?.at, runsOf("d1")[0]!.at);
   assert.equal(d1.card.job?.name, "Duty d1 job");
+});
+
+test("the job's after-job measure lands on every run that handed it a brief, so the card reads met once the job's work is in", async () => {
+  // Run A started job-d5 an hour ago; runs B and C hand it their briefs while pi-pool still holds it.
+  for (const count of [2, 3]) {
+    await until(() => row("d5"), d5 => !d5.running);
+    await new Promise(done => setTimeout(done, 5));
+    await run("d5");
+    await until(() => Promise.resolve(runsOf("d5")), runs => runs.length === count);
+  }
+  assert.deepEqual(runsOf("d5").map(entry => [entry.verdict, entry.job?.id, entry.after]), [["missed", "job-d5", undefined], ["missed", "job-d5", undefined], ["missed", "job-d5", undefined]]);
+  assert.equal((await row("d5")).last?.streak, 3);
+  // The job does its work and ends.
+  writeFileSync(join(work, "d5.up"), "100");
+  const job = (s.host as FixtureHost).threadsById.get("job-d5")!;
+  job.running.delete(1);
+  job.row.status = "idle";
+  await s.app.threads.refresh();
+  await s.app.boards.tick();
+  await until(() => Promise.resolve(runsOf("d5")), runs => runs.every(entry => entry.after));
+  const runs = runsOf("d5");
+  assert.equal(new Set(runs.map(entry => entry.after!.at)).size, 1, "one after-job measure, written onto each run");
+  for (const entry of runs) {
+    assert.equal(entry.after!.verdict, "met");
+    assert.equal(entry.verdict, "missed", "each run keeps its own verdict");
+    assert.equal(entry.metrics.up?.value, 90, "each run keeps its own numbers");
+  }
+  assert.deepEqual(modes("d5"), ["run", "run", "after"]);
+  const d5 = await row("d5");
+  assert.equal(d5.last?.verdict, "met");
+  assert.equal(d5.last?.at, runs[0]!.at);
+  assert.equal(d5.last?.afterJob, true);
+  assert.equal(d5.last?.streak, 0);
+  assert.equal(d5.card.streak, 0);
 });

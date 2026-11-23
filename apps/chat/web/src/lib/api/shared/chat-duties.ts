@@ -148,7 +148,8 @@ export interface MetricResult { value: number; target: number; op: DutyMetric["o
 /** A duty job the server started: its session id and name. */
 /**
  * `submission` is the job's first input; `reported` is set once the job's report reached its chat, so a report that a restart of this server
- * cut off is sent from the after-job measure (`deliverReport` in server/boards.ts).
+ * cut off is sent from the after-job measure (`deliverReport` in server/boards.ts). A later run measured beside the job while it still works
+ * names it with neither, so the job's after-job measure lands on that run too (`runDutyOnce`).
  */
 export interface DutyJobRef { id: string; name: string; submission?: number; reported?: boolean }
 /**
@@ -171,7 +172,7 @@ export interface DutyRunRecord {
   overrun?: PrecheckOverrun;
   /** Per missed metric, the fix step the run found on the chat's board for it (a plan step whose `duty` is `<dutyId>/<metricKey>`). */
   fixes?: Record<string, FixLink>;
-  /** The measure taken after this run's own job ended: the run's verdict once its fixes are in (`effectiveRun`). */
+  /** The measure taken after this run's job ended, the one it started or measured beside: the run's verdict once its fixes are in (`effectiveRun`). */
   after?: AfterMeasure;
   /** Set when the run's job ended cut, so the run did not do its work and reruns (`cutReruns` in src/chat-duty-run.ts). */
   cut?: DutyCut;
