@@ -159,14 +159,19 @@ test("arrow keys move the highlight, Enter opens the hit at its message", async 
 });
 
 test("a hit opens the conversation scrolled to that message with a flash", async ({ page }) => {
+  // The hit is the first post of a new channel with 40 posts after it, so the conversation has to scroll up to it. A seed word such as
+  // "relay" can have no top-level channel post among its 20 newest hits, as other specs' DMs get it back from the fixture's agents.
+  const word = `zq${Array.from({ length: 10 }, () => String.fromCharCode(97 + Math.floor(Math.random() * 26))).join("")}`;
+  const room = (await (await page.request.post("/api/rooms", { data: { kind: "channel", name: `flash-${word}`, members: [] } })).json()) as { id: string };
+  await page.request.post(`/api/c/${room.id}/send`, { data: { text: `${word} is the post to open`, requestId: crypto.randomUUID() } });
+  for (let n = 1; n <= 40; n++) await page.request.post(`/api/c/${room.id}/send`, { data: { text: `later post ${n}`, requestId: crypto.randomUUID() } });
+  await expect.poll(() => total(page, { q: word })).toBe(1);
   await page.keyboard.press(`${mod}+k`);
-  await field(page).fill("relay");
-  // A top-level channel post: its message id is its row's id. A thread hit's row is the turn that holds it, and the fixture's live turn keeps
-  // adding hits; a reply lives in its thread, not in the channel's timeline.
-  const { hits } = (await (await page.request.get("/api/search?q=relay&limit=20")).json()) as { hits: { id: string; kind: string; where: string }[] };
-  const post = hits.find(h => h.kind === "post" && h.id.startsWith("ch_") && h.where === "root")!;
-  const hit = palette(page).locator(`[role=group][aria-label='Messages'] [data-key="hit:${post.id}"]`);
+  await field(page).fill(word);
+  const hit = palette(page).locator("[role=group][aria-label='Messages'] [data-search-result][data-key^='hit:']");
+  await expect(hit).toHaveCount(1);
   await hit.click();
+  await expect(page).toHaveURL(new RegExp(`#/c/${room.id}\\?m=`));
   const id = new URL(page.url().replace("#/", "")).searchParams.get("m");
   expect(id).toBeTruthy();
   const message = page.locator(`[data-message-id="${id}"]`);
@@ -232,7 +237,7 @@ test("the conversation menu's rows above Search stay put when the channel's head
   expect(await above()).toEqual(before);
 });
 
-/** A DM's menu had the same shift: "Open agent" and "Jobs" came in above Search with the header. */
+/** A DM's menu had the same shift: "Open agent" and "Threads and jobs" came in above Search with the header. */
 test("the conversation menu's rows above Search stay put when a DM's header comes in", async ({ page }) => {
   const agent = (await (await page.request.post("/api/agents", { data: { kind: "chat", name: `menu ${crypto.randomUUID().slice(0, 8)}`, test: true } })).json()) as { id: string; room?: string };
   const room = agent.room ?? `dm_${agent.id.slice(3)}`;
@@ -255,7 +260,7 @@ test("the conversation menu's rows above Search stay put when a DM's header come
   release();
   await expect(page.getByTestId("dm-title-button")).toBeVisible();
   expect(await above()).toEqual(before);
-  expect(before).toEqual(["Open agent", "Jobs"]);
+  expect(before).toEqual(["Open agent", "Threads and jobs"]);
 });
 
 test("Show more pages through every hit up to the exact count", async ({ page }) => {
