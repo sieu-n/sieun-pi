@@ -102,13 +102,21 @@ test("a section takes channels by menu and drag, renames, folds to its open and 
   await section(page, "Projects").getByRole("heading", { name: "Projects" }).hover();
   await sidebar(page).getByRole("button", { name: "Projects options" }).click();
   await page.getByRole("menuitem", { name: "Rename section" }).click();
-  await expect(page.getByRole("dialog", { name: "Rename section" }).getByLabel("Name", { exact: true })).toHaveValue("Projects");
+  const renameField = page.getByRole("dialog", { name: "Rename section" }).getByLabel("Name", { exact: true });
+  await expect(renameField).toHaveValue("Projects");
+  await renameField.fill("Work");
+  // Another browser folds Direct messages while the dialog is open, and the typed name stays.
+  const layout = ((await (await page.request.get("/api/sidebar")).json()) as { layout: { collapsed: Record<string, boolean> } }).layout;
+  expect((await page.request.put("/api/sidebar/layout", { data: { ...layout, collapsed: { ...layout.collapsed, dms: true } } })).ok()).toBe(true);
+  await expect(page.locator('button[data-fold="dms"]')).toHaveAttribute("aria-expanded", "false");
+  await expect(renameField).toHaveValue("Work");
   await nameSection(page, "Rename section", "Work");
   await expect(section(page, "Work")).toBeVisible();
+  await expect(fold(page, "Direct messages")).toHaveAttribute("aria-expanded", "false");
 
   await page.goto("/#/c/dm_vent");
   await expect(channel(page, "vent")).toHaveAttribute("aria-current", "page", { timeout: 15_000 });
-  for (const name of ["Work", "Channels", "Direct messages"]) {
+  for (const name of ["Work", "Channels"]) {
     await fold(page, name).click();
     await expect(fold(page, name)).toHaveAttribute("aria-expanded", "false");
   }

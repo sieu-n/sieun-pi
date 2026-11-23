@@ -4,6 +4,7 @@
   import Field from "$lib/ui/Field.svelte";
   import Input from "$lib/ui/Input.svelte";
   import type { ConversationSummary } from "$lib/api";
+  import { untrack } from "svelte";
   import { sidebarSections } from "./sidebar-sections.svelte";
 
   /** The sidebar's section dialogs: name a new section, rename one, or confirm deleting one that still holds channels or DMs. */
@@ -26,9 +27,10 @@
   const section = $derived(target && target.kind !== "new" ? sidebarSections.section(target.id) : undefined);
   const title = $derived(target?.kind === "rename" ? "Rename section" : "New section");
 
+  /** Fills the field once per dialog; a layout update from the server or another browser while it is open keeps what the owner typed. */
   $effect(() => {
     const t = target;
-    name = t?.kind === "rename" ? (sidebarSections.section(t.id)?.name ?? "") : "";
+    name = t?.kind === "rename" ? (untrack(() => sidebarSections.section(t.id)?.name) ?? "") : "";
     error = null;
   });
 
