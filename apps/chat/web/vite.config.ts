@@ -16,6 +16,8 @@ export default defineConfig({
     include: ["marked", "dompurify", "mermaid"],
   },
   server: {
+    // The specs' dev server watches no file, so another session's save under web/ reloads no page mid-run (playwright.config.ts).
+    watch: process.env.CHAT_WEB_NO_WATCH === "1" ? null : undefined,
     proxy: {
       "/api": { target: chatServer, changeOrigin: true, ws: true },
       "/wiki": { target: chatServer, changeOrigin: true },
