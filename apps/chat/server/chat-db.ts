@@ -8,7 +8,8 @@
  * The server stays the one process that writes these records, and each store keeps its records in memory as it did with the JSON files, so
  * a read never waits on the DB. A write goes through `write`, which queues it for a worker thread with its own connection: a commit appends
  * to the WAL file, and on 11-04 at a box load of 300 such ext4 writes held the main thread 60 of a 70 ms send (disk.ts). The worker runs
- * the queued writes in the order they were queued, many in one transaction, and `written` settles once a write is committed.
+ * the queued writes in the order they were queued, many in one transaction, and `written` settles once a write is committed. A second
+ * worker copies the WAL into the database (`CHECKPOINT_MS`), so no commit waits for a checkpoint.
  *
  * Every write carries a sequence number that the same transaction stores in `db_writes`, so applying a write twice changes nothing: a
  * process that exits with writes still queued applies them on its own connection (`flushSync`), and the worker skips any it finds applied.
@@ -32,6 +33,18 @@ CREATE TABLE IF NOT EXISTS db_files (
   records INTEGER, at TEXT NOT NULL, PRIMARY KEY (kind, path, sha256)
 );
 `;
+
+/**
+ * How often the checkpoint thread copies the WAL into chat.sqlite. SQLite's own automatic checkpoint runs on the connection that commits,
+ * inside its COMMIT: on 11-23 at box load 50 to 100 it held the writer thread's commits up to 2,198 ms in a burst of 4,000 writes, and with
+ * the checkpoint on its own thread every 200 ms the slowest commit took 57 ms (~/work/one-db/post-logs/ckpt3.sh).
+ */
+export const CHECKPOINT_MS = 200;
+/**
+ * The WAL size the writer truncates the file back to once a checkpoint let it start over: SQLite's default automatic checkpoint point,
+ * 1,000 pages of 4,096 bytes, which is where the WAL stayed while the writer checkpointed itself.
+ */
+export const WAL_KEEP_BYTES = 1000 * 4096;
 
 /** How long a connection waits for chat.sqlite's write lock. The skills ingest worker held it 6.2 s at box load 234 on 11-22 (skills-db.ts). */
 export const LOCK_WAIT_MS = 30_000;
@@ -112,6 +125,8 @@ export class ChatDb {
   /** How many batches at the head of the queue the worker has now. */
   private sent = 0;
   private worker: Worker | null = null;
+  /** The thread that checkpoints the WAL, which the writer leaves to it (`CHECKPOINT_MS`). */
+  private checkpointer: Worker | null = null;
   private readonly offThread: boolean;
   private readonly log: (line: string) => void;
   private readonly prepared = new Map<string, StatementSync>();
@@ -160,6 +175,7 @@ export class ChatDb {
     if (this.worker) return this.worker;
     const worker = new Worker(new URL("./chat-db-writer.ts", import.meta.url), { workerData: { file: this.file } });
     worker.unref();
+    this.ensureCheckpointer();
     worker.on("message", (message: FromWorker) => {
       if ("error" in message) {
         // The worker could not commit, such as a lock held past LOCK_WAIT_MS; the same writes go to it again.
@@ -183,6 +199,17 @@ export class ChatDb {
       queueMicrotask(() => this.pump());
     });
     return (this.worker = worker);
+  }
+
+  private ensureCheckpointer(): void {
+    if (this.checkpointer || this.closed) return;
+    const checkpointer = new Worker(new URL("./chat-db-checkpoint.ts", import.meta.url), { workerData: { file: this.file, everyMs: CHECKPOINT_MS } });
+    checkpointer.unref();
+    checkpointer.on("error", (error: Error) => this.log(`chat db: the checkpoint thread failed: ${error.stack ?? error.message}`));
+    checkpointer.on("exit", () => {
+      if (this.checkpointer === checkpointer) this.checkpointer = null;
+    });
+    this.checkpointer = checkpointer;
   }
 
   private settle(count: number, failed: readonly Failed[]): void {
@@ -211,8 +238,10 @@ export class ChatDb {
     await this.written();
     this.closed = true;
     const worker = this.worker;
+    const checkpointer = this.checkpointer;
     this.worker = null;
-    await worker?.terminate();
+    this.checkpointer = null;
+    await Promise.all([worker?.terminate(), checkpointer?.terminate()]);
     this.db.close();
   }
 }

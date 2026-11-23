@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { applyBatches, appliedSeq, ChatDb, openDb } from "../../server/chat-db.ts";
+import { applyBatches, appliedSeq, ChatDb, CHECKPOINT_MS, openDb, WAL_KEEP_BYTES } from "../../server/chat-db.ts";
 import { drained } from "../../server/disk.ts";
 import { JsonMove, type JsonKind } from "../../server/json-move.ts";
 
@@ -187,5 +187,20 @@ test("an export writes the kind's exportText after its own delay, and check stil
   await drained();
   assert.equal(readFileSync(join(data, "notes.json"), "utf8"), notesFile([{ id: "memory", text: "" }]), "the kind's own delay of 5 ms ran the export");
   assert.deepEqual(move.check().items.map(i => i.state), ["behind"], "check reads dump, so a render that differs from the DB shows");
+  await chat.close();
+});
+
+test("a write burst leaves the WAL's checkpoints to their own thread, and the writer starts the WAL over after it", async () => {
+  const file = join(dir(), "chat.sqlite");
+  const chat = new ChatDb(file);
+  chat.db.exec("CREATE TABLE burst (id INTEGER PRIMARY KEY, body TEXT NOT NULL)");
+  const body = "x".repeat(1000);
+  const walBytes = () => statSync(`${file}-wal`, { throwIfNoEntry: false })?.size ?? 0;
+  for (let i = 0; i < 3000; i++) await chat.write([{ sql: "INSERT INTO burst (body) VALUES (?)", params: [body] }]);
+  assert.ok(walBytes() > WAL_KEEP_BYTES, `the burst wrote ${walBytes()} bytes of WAL, more than a checkpoint keeps`);
+  await new Promise(resolve => setTimeout(resolve, 3 * CHECKPOINT_MS));
+  await chat.write([{ sql: "INSERT INTO burst (body) VALUES (?)", params: [body] }]);
+  assert.ok(walBytes() <= WAL_KEEP_BYTES, `after a checkpoint the WAL holds ${walBytes()} bytes, at most ${WAL_KEEP_BYTES}`);
+  assert.equal((chat.db.prepare("SELECT count(*) AS n FROM burst").get() as { n: number }).n, 3001);
   await chat.close();
 });
