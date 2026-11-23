@@ -279,7 +279,10 @@ export class Threads {
     for (const thread of listed) {
       const tree = this.trees.get(thread.id);
       // A retrying run sleeps between attempts and writes no newer row, so its tree is read again while the row carries pi-host's flag.
-      if (thread.children > 0 && (!tree || tree.updatedAt !== thread.updatedAt || thread.status === "running" || thread.retrying !== undefined || tree.nodes.some(n => n.retrying))) {
+      // A job run that ends with no root entry leaves the row's updatedAt as it was, so a tree kept with a running job is read again: on
+      // 11-24 a removed job, "thread open walk" (28350de8:73), read working 89 h after its run ended.
+      if (thread.children > 0 && (!tree || tree.updatedAt !== thread.updatedAt || thread.status === "running" || thread.retrying !== undefined
+        || tree.nodes.some(n => n.retrying || n.status === "running"))) {
         const nodes = await this.host.tree(thread.id).catch(() => tree?.nodes ?? []);
         const before = JSON.stringify(tree?.nodes ?? []);
         this.trees.set(thread.id, { updatedAt: thread.updatedAt, nodes });
