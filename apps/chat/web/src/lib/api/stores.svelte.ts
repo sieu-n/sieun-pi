@@ -448,6 +448,7 @@ class Global {
           break;
       }
     });
+    live.start();
   }
 }
 
@@ -733,12 +734,16 @@ const aroundKey = (id: ConversationId, message: string) => `${id}\u0000${message
 const THREADS_AHEAD = 20;
 const repliesPages = new PageCache<RepliesRead, RepliesShown>("replies", 200);
 
-/** Brings back the pages the last page load kept, before the first view mounts (main.ts). */
+/**
+ * Brings back the pages the last page load kept, before the first view mounts (main.ts), and then opens the socket with the page's lists
+ * listening, so its first hello names the kept pages and reaches them (live.svelte.ts `on`).
+ */
 export async function restorePages(): Promise<void> {
   const pages = await pageDb.all();
   timelinePages.restore(pages);
   repliesPages.restore(pages);
   restoreKept(pages);
+  global.start();
 }
 const repliesKey = (channel: ConversationId, root: string) => `${channel}\u0000${root}`;
 

@@ -222,8 +222,13 @@ class Live {
     if (this.socket?.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify(command));
   }
 
+  /**
+   * Hands each event to `listener` from now on. Listening opens no socket: the socket hands each event to the listeners it has when it
+   * comes, and the Skills page's listener, added as its module loads (pages/skills/kept.svelte.ts), opened the socket before the page's
+   * lists listened (stores.svelte.ts `restorePages`). On the fixture on 11-23 a hello that came first left 5 of 40 loads of #/agents with
+   * no sidebar and no reads ahead until the socket opened again (test/shell/first-hello.spec.ts).
+   */
   on(listener: Listener): () => void {
-    this.start();
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   }
