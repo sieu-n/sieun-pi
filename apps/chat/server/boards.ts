@@ -86,7 +86,16 @@ export type PendingPrecheck = { at: number; launch: PrecheckLaunch }
  * `hidden` is when the owner hid the board from All boards and the Board sidebar; it still opens by its link. `lastId` is the number of the
  * highest duty id the board ever gave, which a remove writes, so a new duty never takes a removed duty's id (`dutyIdFloor`).
  */
-export interface DutyFile { duties: Duty[]; runs: Record<string, DutyRunRecord[]>; pending?: Record<string, PendingPrecheck>; checkIn?: CheckInState; hidden?: number; lastId?: number }
+export interface DutyFile {
+  duties: Duty[]; runs: Record<string, DutyRunRecord[]>; pending?: Record<string, PendingPrecheck>; starts?: Record<string, DutyStart>; checkIn?: CheckInState;
+  hidden?: number; lastId?: number;
+}
+/**
+ * A duty job that did not start yet, per duty id, until a try lands (`startDutyJob`): pi-host refused its thread create or its brief's submit,
+ * as it does while it restarts for an install. `run` is the `at` of the run whose record names the job once it starts, `job` the thread a
+ * failed try made, which the next try submits to, and `retryAt` when the tick tries again.
+ */
+export interface DutyStart { run: number; name: string; brief: string; cwd?: string; job?: { id: string; name: string }; failures: number; retryAt: number }
 
 /** The highest duty id number a duties file names: in `lastId`, a duty, its runs or a precheck at work. */
 const dutyIdFloor = (file: DutyFile): number =>
@@ -754,6 +763,7 @@ export class Boards {
     file.duties.splice(at, 1);
     delete file.runs[dutyId];
     delete file.pending?.[dutyId];
+    delete file.starts?.[dutyId];
     this.save(chat, file);
     const stateDir = join(this.dir(chat), "duties");
     let names: string[] = [];
@@ -852,30 +862,22 @@ export class Boards {
       // 15:07 with findings_unposted 0, and d1 still read missed 10, 2 runs in a row, until the next sweep.
       record.job = { id: busy.id, name: busy.name };
     } else if (brief) {
-      const name = `${duty.name} duty ${runStamp(record.at)}`;
-      try {
-        // The duty job works where its precheck runs, else in its chat's project folder, so it reads that folder's AGENTS.md chain. It runs on
-        // its chat's model, so a Fable advisor's sweep judges on Fable and every Opus agent's duty stays on Opus.
-        const work = this.threads.thread(thread);
-        const cwd = duty.precheck.cwd || work?.cwd;
-        // A run resumed after a stop that came after its job was made submits to that job, and the request id lands the brief once.
-        const job = resume?.job ?? await this.threads.create({ name, ...threadModel(work), ...(cwd ? { cwd } : {}) }, made => {
-          this.store.state.threads[made.id] = { kind: "job", parent: chat };
-          this.store.saveState();
-          this.agents.alias(made.id, chat);
-          const file = this.file(chat);
-          const pending = file.pending?.[dutyId];
-          if (pending?.mode === "run") this.save(chat, Boards.pend(file, dutyId, { ...pending, job: { id: made.id, name } }));
-        });
-        await this.threads.refresh().catch(() => undefined);
-        const submitted = await this.host.submit(job.id, { text: brief, requestId: `duty:${chat}:${duty.id}:${record.at}`, entry: { kind: "agent.message", data: { from: chat, via: `duty ${duty.id}` } } });
-        record.job = { id: job.id, name, submission: submitted.submission };
-        void this.reportDutyJob(chat, duty, job.id, submitted.submission);
-      } catch (error) {
-        this.log(`duty ${chat}/${duty.id}: the duty job did not start: ${String(error)}`);
+      // The duty job works where its precheck runs, else in its chat's project folder, so it reads that folder's AGENTS.md chain.
+      const cwd = duty.precheck.cwd || this.threads.thread(thread)?.cwd;
+      // A run resumed after a stop that came after its job was made submits to that job, and the request id lands the brief once.
+      const kept = this.file(chat).starts?.[dutyId];
+      const made = resume?.job ?? (kept?.run === record.at ? kept.job : undefined);
+      const job = await this.startDutyJob(chat, duty, {
+        run: record.at, name: `${duty.name} duty ${runStamp(record.at)}`, brief, ...(cwd ? { cwd } : {}), ...(made ? { job: made } : {}), failures: 0, retryAt: 0,
+      });
+      if (job) {
+        record.job = job;
+        void this.reportDutyJob(chat, duty, job.id, job.submission);
       }
     }
     const after = this.file(chat);
+    // A newer run replaces an older run's job that never started: its brief reads the newer measure.
+    if (after.starts?.[dutyId] && after.starts[dutyId].run !== record.at) Boards.keepStart(after, dutyId, null);
     // The last job's runs with no after-job measure yet take this run's measure, as Prime's `launch` writes it, unless that job still works
     // and this run started none, since then the job's own end measures them (`afterJob`).
     const newestJob = (after.runs[dutyId] ?? []).filter(run => run.job).sort((a, b) => b.at - a.at)[0]?.job;
@@ -890,6 +892,87 @@ export class Boards {
     this.save(chat, launch ? Boards.pend(after, dutyId, null) : after);
     if (launch) void clearPrecheck(launch).catch(error => this.log(`duty ${chat.slice(0, 8)}: clearing its precheck files failed: ${String(error)}`));
     this.log(`duty ${chat.slice(0, 8)}/${duty.id}: ${record.verdict}, ${record.summary}${record.job ? `, job ${record.job.name}` : ""}`);
+  }
+
+  /** Writes a duty job that did not start, or with null clears it, into `file`, which the caller saves. */
+  private static keepStart(file: DutyFile, dutyId: string, entry: DutyStart | null): DutyFile {
+    const starts = { ...file.starts };
+    if (entry) starts[dutyId] = entry;
+    else delete starts[dutyId];
+    if (Object.keys(starts).length) file.starts = starts;
+    else delete file.starts;
+    return file;
+  }
+
+  /**
+   * Makes a duty run's job and submits its brief, or submits to `start.job`, the job an earlier try made. A try that fails keeps the start in
+   * `starts`, and the tick tries again after `retryWait` (`retryDutyStart`) with the same request id, so a submit that did land lands once.
+   * Until 11-23 a failed start was only logged: at 19:07:55Z the fable auditor's sweep job got "pi-host is shutting down" during a pi-host
+   * install, its job thread kept 0 inputs, and d1 read findings_unposted 1 until the next sweep 3 h later.
+   */
+  private async startDutyJob(chat: string, duty: Pick<Duty, "id">, start: DutyStart): Promise<{ id: string; name: string; submission: number } | undefined> {
+    let job = start.job;
+    try {
+      if (!job) {
+        // The job runs on its chat's model, so a Fable advisor's sweep judges on Fable and every Opus agent's duty stays on Opus.
+        const made = await this.threads.create({ name: start.name, ...threadModel(this.threads.thread(this.threadOf(chat))), ...(start.cwd ? { cwd: start.cwd } : {}) }, made => {
+          this.store.state.threads[made.id] = { kind: "job", parent: chat };
+          this.store.saveState();
+          this.agents.alias(made.id, chat);
+          const file = this.file(chat);
+          const pending = file.pending?.[duty.id];
+          if (pending?.mode === "run" && pending.at === start.run) this.save(chat, Boards.pend(file, duty.id, { ...pending, job: { id: made.id, name: start.name } }));
+        });
+        job = { id: made.id, name: start.name };
+        await this.threads.refresh().catch(() => undefined);
+      }
+      const submitted = await this.host.submit(job.id, { text: start.brief, requestId: `duty:${chat}:${duty.id}:${start.run}`, entry: { kind: "agent.message", data: { from: chat, via: `duty ${duty.id}` } } });
+      const file = this.file(chat);
+      if (file.starts?.[duty.id]?.run === start.run) this.save(chat, Boards.keepStart(file, duty.id, null));
+      return { id: job.id, name: start.name, submission: submitted.submission };
+    } catch (error) {
+      const failures = start.failures + 1;
+      const wait = retryWait(failures);
+      this.save(chat, Boards.keepStart(this.file(chat), duty.id, { ...start, ...(job ? { job } : {}), failures, retryAt: Date.now() + wait }));
+      this.log(`duty ${chat}/${duty.id}: the duty job did not start (try ${failures}), it tries again in ${wait} ms: ${String(error)}`);
+      return undefined;
+    }
+  }
+
+  /**
+   * Tries again to start a duty job that did not start (`startDutyJob`) and names it on its run, which then reports and gets its after-job
+   * measure as a run whose job started at once. It goes as the duty's run (`dutyRuns`), so no run of the duty starts beside it.
+   */
+  private retryDutyStart(chat: string, dutyId: string): Promise<void> {
+    const key = `${chat}/${dutyId}`;
+    const going = this.dutyRuns.get(key);
+    if (going) return going;
+    const run = (async () => {
+      const file = this.file(chat);
+      const duty = file.duties.find(d => d.id === dutyId);
+      const start = file.starts?.[dutyId];
+      if (!start) return;
+      if (!duty) {
+        this.save(chat, Boards.keepStart(file, dutyId, null));
+        return;
+      }
+      const job = await this.startDutyJob(chat, duty, start);
+      if (!job) return;
+      const after = this.file(chat);
+      const record = after.runs[dutyId]?.find(entry => entry.at === start.run);
+      if (record) {
+        record.job = job;
+        this.save(chat, after);
+      }
+      this.log(`duty ${chat.slice(0, 8)}/${dutyId}: started its job ${job.name} on try ${start.failures + 1}`);
+      void this.reportDutyJob(chat, duty, job.id, job.submission);
+    })().catch(error => this.log(`duty ${key}: starting its job again failed: ${String(error)}`)).finally(() => {
+      this.dutyRuns.delete(key);
+      this.dutiesChanged(chat);
+    });
+    this.dutyRuns.set(key, run);
+    this.dutiesChanged(chat);
+    return run;
   }
 
   /**
@@ -1281,6 +1364,8 @@ export class Boards {
       }
       // Each due duty runs on its own; runDuty writes the duties file itself, so the tick does not wait for a precheck.
       for (const duty of file.duties) {
+        const start = file.starts?.[duty.id];
+        if (start && start.retryAt <= now) void this.retryDutyStart(chat, duty.id);
         void this.afterJob(chat, duty.id);
         void this.readAccountWait(chat, duty.id, file.runs[duty.id] ?? []);
         if (duty.status !== "active" || this.afters.has(`${chat}/${duty.id}`)) continue;
