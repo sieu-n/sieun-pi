@@ -309,6 +309,8 @@ interface LaterFields {
    * it off, and its reminder marks the room unread from it again.
    */
   unread?: true;
+  /** The owner's own words about the item, which he writes on the Saved page or as he saves it; plain text, never empty. */
+  memo?: string;
 }
 /** A Later item with what its row shows: a post's room, author and text, or a /remind reminder's text under the owner's name. */
 export type LaterRow = PostLaterRow | NoteLaterRow;
@@ -361,9 +363,9 @@ export interface LaterList { items: LaterRow[]; open: number; archived: number; 
 /** What a room post shows its reader about the reader's own save; absent when the reader has no open save of it. */
 export interface LaterMark { saved: boolean; remindAt?: Ms; /** Kept unread: the owner marked it unread and has not handled it. */ unread?: true }
 /** `POST /api/later`: saves a post, where saving a saved post keeps its one item, or sets a /remind reminder of the owner's own text. */
-export type LaterRequest = { room: RoomId; post: string; remindAt?: Ms } | { note: string; remindAt?: Ms };
-/** `PATCH /api/later/:id`: check off, archive or reopen, and set or clear (`null`) the reminder. */
-export interface LaterPatch { state?: LaterState; remindAt?: Ms | null }
+export type LaterRequest = { room: RoomId; post: string; remindAt?: Ms; memo?: string } | { note: string; remindAt?: Ms; memo?: string };
+/** `PATCH /api/later/:id`: check off, archive or reopen, set or clear (`null`) the reminder, and set or clear (`null` or blank) the memo. */
+export interface LaterPatch { state?: LaterState; remindAt?: Ms | null; memo?: string | null }
 
 /** A job a turn spawned, drawn as a thread pill under that turn. */
 export interface JobRef { conversation: ConversationId; name: string; status: RunStatus; replies: number; lastAt: Ms }
