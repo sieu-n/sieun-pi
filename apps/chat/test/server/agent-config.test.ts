@@ -4,13 +4,13 @@
  * Run: cd apps/chat && node --import tsx --test --test-force-exit --test-isolation=none test/server/agent-config.test.ts
  */
 import assert from "node:assert/strict";
-import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import type { AgentConfig, ConversationSummary, Sidebar } from "../../web/src/lib/api/types.ts";
 import { readPreamble } from "../../server/agent-config.ts";
 import { FixtureHost } from "../../server/host/fixture.ts";
 import { FIXTURE_AGENTS as agents, FIXTURE_IDS as ids } from "../../server/fixture/seed.ts";
+import type { Wake } from "../../server/wakes.ts";
 import { start, type Running } from "./helpers.ts";
 
 let s: Running;
@@ -162,6 +162,11 @@ test("a second config read takes its first input and ping from the first, and it
   }
 });
 
+/** Takes a wake the test set away again, from the wake folder or chat.sqlite, as APPS_CHAT_DB_KINDS says. */
+const dropWake = async (wake: Wake): Promise<void> => {
+  for (const kept of s.app.boards.db.wakes.list()) if (kept.wake.session === wake.session && kept.wake.note === wake.note) await s.app.boards.db.wakes.remove(kept.id);
+};
+
 test("an agent's wakes list the board.wakes of its main thread and its root jobs, named as the page names them", async () => {
   const at = Date.now() + 3_600_000;
   const made = [
@@ -179,7 +184,7 @@ test("an agent's wakes list the board.wakes of its main thread and its root jobs
     ]);
     assert.deepEqual((await config(agents.vent)).swarm.wakes, [], "another agent's wakes stay off its page");
   } finally {
-    for (const { path } of made) rmSync(path, { force: true });
+    for (const { wake } of made) await dropWake(wake);
   }
 });
 
