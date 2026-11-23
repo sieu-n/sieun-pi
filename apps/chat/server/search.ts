@@ -17,7 +17,7 @@ import { conversationIdOf, parseConversationId, type Threads } from "./threads.t
 import type { AgentRecord, RoomPost } from "./agent-store.ts";
 import { isAgentId, isRoomId } from "./agents.ts";
 import { reactionList, reactionsLine } from "./reactions.ts";
-import { and, eq, isIn, not, or, type BoxIndexState, type Cond, type EntryDoc, type PostDoc, type PostHas, type SearchDoc, type SearchEngine, type SearchSplit } from "./search-engine.ts";
+import { and, eq, isIn, not, or, type BoxIndexState, type Cond, type EngineAnswer, type EntryDoc, type PostDoc, type PostHas, type SearchDoc, type SearchEngine, type SearchSplit } from "./search-engine.ts";
 
 /** The owner reads dates in KST. */
 export const OWNER_ZONE_OFFSET_MS = 9 * 3600_000;
@@ -222,12 +222,13 @@ function terms(q: string): string[] {
 }
 
 /**
- * A next page's place: the offset of its first hit, and the time its first page read up to, as `run` writes `nextCursor`. A bare offset reads
- * up to now.
+ * A next page's place: the offset of its first hit, the time its first page read up to, and the engine's `since` when the first page had one,
+ * as `run` writes `nextCursor`. A bare offset reads up to now, and a cursor with no `since` ranks by Meilisearch's order alone (null).
  */
-export function readCursor(cursor: string | undefined): { offset: number; asOf?: number } {
-  const match = /^(\d+)(?:\.(\d+))?$/.exec(cursor ?? "");
-  return match ? { offset: Number(match[1]), ...(match[2] ? { asOf: Number(match[2]) } : {}) } : { offset: 0 };
+export function readCursor(cursor: string | undefined): { offset: number; asOf?: number; since?: number | null } {
+  const match = /^(\d+)(?:\.(\d+)(?:\.(\d+))?)?$/.exec(cursor ?? "");
+  if (!match) return { offset: 0 };
+  return { offset: Number(match[1]), ...(match[2] ? { asOf: Number(match[2]), since: match[3] ? Number(match[3]) : null } : {}) };
 }
 
 /** A work-thread input that was a job's test send typed into the owner's DM (rooms.ts `allTestSends`). */
@@ -282,7 +283,7 @@ export class Search {
     const after = query.after ? dayStart(query.after) : undefined;
     const before = query.before ? dayStart(query.before) : undefined;
     const sort = words.length ? query.sort ?? "relevance" : "recent";
-    const { offset, asOf = Date.now() + 1 } = readCursor(query.cursor);
+    const { offset, asOf = Date.now() + 1, since } = readCursor(query.cursor);
     const limit = Math.min(Math.max(query.limit ?? 20, 1), 100);
     // Every page reads only what was written before its first page, so a hit written between two pages neither drops one past the next
     // page's offset nor brings one back: the offsets were dropping hits while the fixture's agents kept writing "relay" (search.spec.ts).
@@ -336,7 +337,7 @@ export class Search {
 
     const asked = performance.now();
     if (split) split.prep = asked - started;
-    const mine = parts.length ? await this.engine.search(words.length ? query.q : "", or(...parts), { sort, limit: offset + limit }, split) : { docs: [], total: 0 };
+    const mine: EngineAnswer = parts.length ? await this.engine.search(words.length ? query.q : "", or(...parts), { sort, limit: offset + limit, since }, split) : { docs: [], total: 0 };
     const answered = performance.now();
     const look = this.lookups();
     const total = mine.total;
@@ -349,7 +350,7 @@ export class Search {
     if (sort === "relevance") hits = [...hits.filter(hit => hit.role !== "tool"), ...hits.filter(hit => hit.role === "tool")];
     if (split) split.hits = performance.now() - answered;
     return {
-      hits, total, ...(offset + limit < total ? { nextCursor: `${offset + limit}.${asOf}` } : {}), ...(missing.length ? { missing } : {}),
+      hits, total, ...(offset + limit < total ? { nextCursor: `${offset + limit}.${asOf}${mine.since === undefined ? "" : `.${mine.since}`}` } : {}), ...(missing.length ? { missing } : {}),
     };
   }
 
