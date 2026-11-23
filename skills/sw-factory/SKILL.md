@@ -13,6 +13,10 @@ Each agent has one comm thread per room that talks there, and a work thread that
 
 Don't put `backdrop-filter` on an element repeated across a list or grid, because in WebKit, the Mac app's engine, it stalls every frame (12 blurred model pills froze `#/agents` for 8 s or more; fix 45b23e9f).
 
+## Running tests while other sessions edit the checkout
+
+About 20 jobs edit `/home/sieun/src/sieun-pi` at once, so run apps/chat server tests and Playwright specs through `node apps/chat/scripts/spec-clean.mjs [--files a.ts,b.ts] -- node --test test/server/x.test.ts` or `-- playwright test test/shell/x.spec.ts` from the repo root with a short TMPDIR such as `/tmp/acr72`. It runs the live release's clean build, the folder `~/.local/share/sieun-pi-apps-chat/current` points at, with every apps/chat file HEAD changed since that release taken from HEAD as committed, plus each file you name in `--files` (relative to apps/chat) taken from the working tree, so another session's uncommitted edits stay out unless you name their file. A web/ file in the overlay gets a vite build of the release's web in the run's own folder, a test file only the overlay has runs from its source path, and `--files path=/abs/source` swaps in any file for a probe. The header of `apps/chat/scripts/spec-clean.mjs` has the details.
+
 ## How agents should write in a room
 
 A room reads like Slack, never like a chat assistant's report.
