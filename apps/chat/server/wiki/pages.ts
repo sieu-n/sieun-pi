@@ -6,6 +6,10 @@
  *
  * Both read the wiki engine's agent API (search, recent, favorites, find) with session and job folders included, because the pages
  * agents write land in their job folders. Only pages are listed, HTML and markdown, so a job's .txt and .json files stay out.
+ *
+ * The list with no words is kept (`WikiPageList`) and answered at once. Read fresh, it took 196 to 260 ms on 11-24 and up to 826 ms on the
+ * owner's own call of 11-23 22:18Z: the engine's recent rows came to 4.6 MB for 160 rows, since a job's harness_state.json carries 320 KB
+ * of search text, and the four favorites were four finds the engine runs one after another (~/work/wiki-page-list/report.md).
  */
 import type { WikiPageRow, WikiPages } from "../../web/src/lib/api/types.ts";
 import type { WikiEngine } from "./engine.ts";
@@ -62,17 +66,53 @@ async function favorites(engine: Engine): Promise<WikiPageRow[]> {
   return found.filter((row): row is WikiPageRow => row !== null);
 }
 
-export async function wikiPages(engine: Engine, q: string, limit = DEFAULT_LIMIT): Promise<WikiPages> {
-  const query = q.trim().slice(0, 256);
-  const size = Math.min(Math.max(1, Math.floor(limit) || DEFAULT_LIMIT), MAX_LIMIT);
-  if (query) {
-    const found = await rows(engine, `/api/agent/search?${new URLSearchParams({ q: query, limit: String(POOL), includeSessions: "true" })}`);
-    const ranked = found.map((row, at) => ({ row, at, rank: titleRank(row.title, query) })).sort((a, b) => a.rank - b.rank || a.at - b.at);
-    return { query, favorites: [], pages: ranked.slice(0, size).map(one => one.row) };
-  }
+/** The favorites and the pages updated last, `MAX_LIMIT` of them, which each answer cuts to its own limit. */
+async function listed(engine: Engine): Promise<Omit<WikiPages, "query" | "refreshing">> {
   const [liked, recent] = await Promise.all([
     favorites(engine),
     rows(engine, `/api/agent/recent?${new URLSearchParams({ limit: String(POOL * 2), includeSessions: "true" })}`),
   ]);
-  return { query, favorites: liked, pages: recent.filter(row => !SESSION_LOG.test(row.path)).slice(0, size) };
+  return { favorites: liked, pages: recent.filter(row => !SESSION_LOG.test(row.path)).slice(0, MAX_LIMIT) };
+}
+
+/** How old the kept list may be before an answer reads the wiki again behind it: the engine's own index is up to 5 s old (apps/wiki wiki.ts `CACHE_TTL_MS`). */
+export const FRESH_MS = 5_000;
+
+/**
+ * GET /api/pages. A search asks the engine each time, so its matches are the engine's own. The list with no words comes from the last read
+ * of it, and an answer from a read older than `FRESH_MS` starts the next read behind it and says so (`refreshing`), so the page asks once
+ * more for the pages written since. Only the first call, or one after a failed first read, waits on the engine.
+ */
+export class WikiPageList {
+  private kept: { at: number; list: Omit<WikiPages, "query" | "refreshing"> } | undefined;
+  private reading: Promise<void> | undefined;
+
+  constructor(private readonly engine: Engine, private readonly now: () => number = Date.now) {}
+
+  async get(q: string, limit = DEFAULT_LIMIT): Promise<WikiPages> {
+    const query = q.trim().slice(0, 256);
+    const size = Math.min(Math.max(1, Math.floor(limit) || DEFAULT_LIMIT), MAX_LIMIT);
+    if (query) {
+      const found = await rows(this.engine, `/api/agent/search?${new URLSearchParams({ q: query, limit: String(POOL), includeSessions: "true" })}`);
+      const ranked = found.map((row, at) => ({ row, at, rank: titleRank(row.title, query) })).sort((a, b) => a.rank - b.rank || a.at - b.at);
+      return { query, favorites: [], pages: ranked.slice(0, size).map(one => one.row), refreshing: false };
+    }
+    if (!this.kept) await this.read();
+    else if (this.now() - this.kept.at >= FRESH_MS) void this.read().catch(() => undefined);
+    const { list } = this.kept!;
+    return { query, favorites: list.favorites, pages: list.pages.slice(0, size), refreshing: this.reading !== undefined };
+  }
+
+  /** One read of the list at a time; a call that comes while one runs shares it. */
+  private read(): Promise<void> {
+    if (this.reading) return this.reading;
+    const at = this.now();
+    const reading = listed(this.engine).then(list => {
+      this.kept = { at, list };
+    }).finally(() => {
+      this.reading = undefined;
+    });
+    this.reading = reading;
+    return reading;
+  }
 }

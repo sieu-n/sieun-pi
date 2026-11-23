@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from "svelte";
-  import { api, type WikiPages } from "$lib/api";
+  import { api, reads, view, type WikiPages } from "$lib/api";
   import { router } from "$lib/router.svelte";
   import { openView } from "$lib/shell/viewer.svelte";
   import { Button, EmptyState, LoadingText, PanelHeader, SearchField } from "$lib/ui";
@@ -12,13 +12,20 @@
    * page by its title or words (`?q=`, so Back and a reload keep the search). A row opens the page in the viewer beside this list.
    */
   const LIMIT = 50;
+  /**
+   * How long after an answer the server marked `refreshing` the view asks again: the server's read of the list behind it took 196 to 260 ms
+   * on 11-24 and 826 ms at most on the owner's calls of 11-23 (~/work/wiki-page-list/report.md).
+   */
+  const AGAIN_MS = 1_000;
   type Load = { state: "loading"; last: WikiPages | null } | { state: "ready"; pages: WikiPages } | { state: "error"; message: string };
 
   const q = $derived(router.route.params.q ?? "");
   let text = $state(untrack(() => router.route.params.q ?? ""));
+  /** A search's answer; the list with no words is kept (`recent`) and drawn at once on each open. */
   let load = $state<Load>({ state: "loading", last: null });
   let attempt = $state(0);
   let field = $state<HTMLInputElement>();
+  const recent = view(() => (q ? null : reads.wikiPages()));
 
   // An address that brings new words, such as Cmd K's "See all pages", puts them in the field; typing a space keeps what is typed.
   $effect(() => {
@@ -29,10 +36,11 @@
   $effect(() => {
     const words = q;
     void attempt;
+    if (!words) return;
     const controller = new AbortController();
     const before = untrack(() => load);
     load = { state: "loading", last: before.state === "ready" ? before.pages : before.state === "loading" ? before.last : null };
-    api.pages(words ? { q: words, limit: LIMIT } : { limit: LIMIT }, { signal: controller.signal }).then(
+    api.pages({ q: words, limit: LIMIT }, { signal: controller.signal }).then(
       pages => (load = { state: "ready", pages }),
       (error: unknown) => {
         if (!controller.signal.aborted) load = { state: "error", message: error instanceof Error ? error.message : String(error) };
@@ -41,9 +49,24 @@
     return () => controller.abort();
   });
 
-  const shown = $derived(load.state === "ready" ? load.pages : load.state === "loading" ? load.last : null);
+  // The server answers the list from its last read and reads the wiki again behind an older one, so an open asks once more for that read.
+  $effect(() => {
+    if (q) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let closed = false;
+    void untrack(() => recent.refresh()).then(() => {
+      if (!closed && untrack(() => recent.value?.refreshing)) timer = setTimeout(() => void recent.refresh(), AGAIN_MS);
+    });
+    return () => {
+      closed = true;
+      clearTimeout(timer);
+    };
+  });
+
+  const error = $derived(q ? (load.state === "error" ? load.message : null) : recent.value ? null : recent.error);
+  const shown = $derived(q ? (load.state === "ready" ? load.pages : load.state === "loading" ? load.last : null) : recent.value);
   /** The rows match what is typed only once the answer for those words is in; until then the last answer stays, dimmed. */
-  const stale = $derived(load.state === "loading" && !!shown);
+  const stale = $derived(!!q && load.state === "loading" && !!shown);
   const sections = $derived.by(() => {
     if (!shown) return [];
     if (shown.query) return [{ id: "matches", label: `${shown.pages.length === LIMIT ? `${LIMIT}+` : shown.pages.length} ${shown.pages.length === 1 ? "page" : "pages"}`, rows: shown.pages }];
@@ -83,10 +106,10 @@
     <SearchField placeholder="Search pages by title or words" label="Search pages" bind:value={() => text, setText} bind:element={field} maxlength={256} />
   </div>
   <div class="scroll">
-    {#if load.state === "error"}
+    {#if error}
       <div class="notice" role="alert">
-        <p class="t-body">The wiki did not answer: {load.message}</p>
-        <Button size="sm" onclick={() => (attempt += 1)}>Try again</Button>
+        <p class="t-body">The wiki did not answer: {error}</p>
+        <Button size="sm" onclick={() => (q ? (attempt += 1) : void recent.refresh())}>Try again</Button>
       </div>
     {:else if !shown}
       <div class="notice"><LoadingText text="Loading pages…" /></div>

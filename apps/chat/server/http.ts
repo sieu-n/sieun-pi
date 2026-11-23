@@ -40,7 +40,7 @@ import { accountRoutes, PoolError } from "./accounts.ts";
 import { chatDbRoutes } from "./chat-db-routes.ts";
 import { serveWiki } from "./wiki/routes.ts";
 import { WikiEngine } from "./wiki/engine.ts";
-import { wikiPages } from "./wiki/pages.ts";
+import { WikiPageList } from "./wiki/pages.ts";
 import { sharedIn } from "./wiki/shared.ts";
 import { WORKSPACE_ROUTE } from "./wiki/workspaces.ts";
 import { compressibleFile, KeptJson, listedEntries, sendCompressed, sendFileCompressed, sendKeptJson, warmKeptJson } from "./compress.ts";
@@ -263,6 +263,7 @@ export function skillsParts(config: Config, log: (line: string) => void, app: ()
 export function routes(app: App, parts: SkillsParts): Route[] {
   const str = (value: string | null): string | undefined => (value === null || value === "" ? undefined : value);
   const { skills, review, db } = parts;
+  const wikiPages = new WikiPageList(new WikiEngine(app.config.wikiEngine));
   const refused = (error: unknown): never => {
     throw error instanceof ReviewRefused || error instanceof SkillsRefused ? new BadRequest(error.message) : error;
   };
@@ -486,7 +487,7 @@ export function routes(app: App, parts: SkillsParts): Route[] {
       throw error instanceof SearchFilterError ? new BadRequest(error.message) : error;
     })),
     route("GET", "/api/search/recent", async (_r, _p, q) => app.search.recent({ after: num(q.get("after")), limit: num(q.get("limit")) })),
-    route("GET", "/api/pages", async (_r, _p, q) => wikiPages(new WikiEngine(app.config.wikiEngine), q.get("q") ?? "", num(q.get("limit")))),
+    route("GET", "/api/pages", async (_r, _p, q) => wikiPages.get(q.get("q") ?? "", num(q.get("limit")))),
     route("GET", "/api/pages/shared", async (_r, _p, q) => sharedIn({
       rooms: () => [...app.groups.rows().map(row => row.id), ...app.agents.list().map(record => record.room)],
       postsOf: room => app.agentStore.postsOf(room), isTest: room => app.agentStore.isTest(room),

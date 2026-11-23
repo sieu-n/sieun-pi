@@ -636,8 +636,12 @@ export interface SearchResult { hits: SearchHit[]; total: number; nextCursor?: s
 
 /** A wiki page as GET /api/pages lists it (server/wiki/pages.ts); `path` opens it in the viewer as `wiki:<path>`. */
 export interface WikiPageRow { path: string; title: string; description: string | null; updated: string }
-/** With `q`, `pages` are the matches with a title match first and `favorites` is empty; without it, the favorites and the pages updated last. */
-export interface WikiPages { query: string; favorites: WikiPageRow[]; pages: WikiPageRow[] }
+/**
+ * With `q`, `pages` are the matches with a title match first and `favorites` is empty; without it, the favorites and the pages updated last,
+ * from the server's last read of them. `refreshing` says the server is reading the list again behind this answer, so asking again in a
+ * moment brings the pages written since.
+ */
+export interface WikiPages { query: string; favorites: WikiPageRow[]; pages: WikiPageRow[]; refreshing: boolean }
 /** A post that links a wiki page, as GET /api/pages/shared lists it (server/wiki/shared.ts), newest first. */
 export interface WikiShare { room: string; post: string; threadRoot?: string; author: string; at: number; snippet: string }
 /**

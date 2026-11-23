@@ -8,7 +8,7 @@ import { expect, test, type Page } from "@playwright/test";
 const IDEAL = "agents/agent-factory/jobs/2026/11/20/1139-slack-style-replies/ideal-replies.html";
 const TITLE = "Ideal Slack replies in sw factory rooms";
 const row = (path: string, title: string, description: string | null = null) => ({ path, title, description, updated: "2026-11-20T10:00:00Z" });
-const HOME = { query: "", favorites: [row("domains/deployment/production-runbook.html", "Production runbook")], pages: [row("domains/devops/sw-factory-threads/index.html", "sw factory threads", "What Solo, Agent and Job mean."), row(IDEAL, TITLE, "Seventeen real before and after pairs.")] };
+const HOME = { query: "", refreshing: false, favorites: [row("domains/deployment/production-runbook.html", "Production runbook")], pages: [row("domains/devops/sw-factory-threads/index.html", "sw factory threads", "What Solo, Agent and Job mean."), row(IDEAL, TITLE, "Seventeen real before and after pairs.")] };
 const FOUND = { query: TITLE, favorites: [], pages: [row(IDEAL, TITLE, "Seventeen real before and after pairs."), row("domains/devops/sw-factory-threads/channel-thread.html", "Channel reply prefill")] };
 
 async function stub(page: Page): Promise<string[]> {
@@ -81,4 +81,19 @@ test("the full results page has a Pages tab that lists the matching pages, a tit
   await expect(rows.first()).toContainText(TITLE);
   await rows.first().click();
   await expect(page.getByTestId("artifact-viewer")).toBeVisible();
+});
+
+test("the Wiki view asks again when the server read the list behind its answer, and the page written since shows up", async ({ page }) => {
+  const NEW = row("domains/devops/new-page.html", "A page written a moment ago");
+  let asked = 0;
+  await page.route(url => url.pathname === "/api/pages", route => {
+    asked += 1;
+    return route.fulfill({ json: asked === 1 ? { ...HOME, refreshing: true } : { ...HOME, pages: [NEW, ...HOME.pages], refreshing: false } });
+  });
+  await page.goto("/#/c/wiki");
+  const view = page.getByTestId("wiki-page");
+  await expect(view.locator(`[data-wiki-page-row="${IDEAL}"]`)).toBeVisible();
+  await expect(view.locator(`[data-wiki-page-row="${NEW.path}"]`)).toBeVisible();
+  await expect(view.locator("[data-wiki-page-row]").first()).toHaveAttribute("data-wiki-page-row", HOME.favorites[0]!.path);
+  expect(asked).toBe(2);
 });

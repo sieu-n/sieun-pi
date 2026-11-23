@@ -703,6 +703,8 @@ export const reads = {
    * (~/work/p155-sweep/fix-pool/notes.md).
    */
   pool: () => read<AccountsView>("/api/pool"),
+  /** The Wiki view's favorites and pages updated last, kept, so an open draws the last list at once and reads it again behind. */
+  wikiPages: () => read<WikiPages>("/api/pages?limit=50"),
 };
 
 export const api = {

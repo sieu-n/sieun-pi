@@ -306,7 +306,7 @@ The page's wiki pickers read the engine through two routes of their own (`server
 
 | Call | Endpoint | Returns |
 |---|---|---|
-| `api.pages({q, limit})` | `GET /api/pages?q=&limit=` | `WikiPages` `{query, favorites, pages}`: with `q`, the pages that match, title matches first, and no favorites; without it, the favorites and the pages updated last. `limit` is 1 to 50 (default 20). |
+| `api.pages({q, limit})` | `GET /api/pages?q=&limit=` | `WikiPages` `{query, favorites, pages}`: with `q`, the pages that match, title matches first, and no favorites; without it, the favorites and the pages updated last, from the server's last read of them, with `refreshing` true when that read was over 5 s old and a new one runs behind the answer. `limit` is 1 to 50 (default 20). |
 | the wiki pane's "Shared in" card | `GET /api/pages/shared?path=` | `WikiShare[]`: the newest 50 posts in a channel, Solo room or DM that link the page as `wiki:<path>`, `[[<path>]]`, a `/wiki/<path>` URL or a bare path, and for a folder's `index.html`, a link to the folder. Test rooms stay out. |
 
 ## Live stores
