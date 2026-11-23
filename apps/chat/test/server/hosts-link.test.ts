@@ -66,7 +66,7 @@ test("the Mac reads up with its last pong, the hello's pi-host and the feed curs
   assert.deepEqual(up.agentRelay!.piHost, { up: true, version: "fake-pi-host" });
   assert.equal(up.agentRelay!.feedCursor, 0);
   assert.deepEqual(up.piHost, { state: "answering", version: "fake-pi-host" });
-  const self = ((await (await fetch(`${base}/api/hosts`)).json()) as HostsReport).hosts[0]!;
+  const self = ((await (await fetch(`${base}/api/hosts?threads=all`)).json()) as HostsReport).hosts[0]!;
   assert.equal(self.name, "test-box");
   assert.equal(self.agentRelay, null, "the chat's own box runs its local host here, so it has no relay link");
   assert.ok(self.threads.length > 0 && up.threads.length === 0, "each box lists only the threads its pi-host holds");
@@ -92,7 +92,30 @@ test("a walk's test agent's threads carry test, and other threads do not", async
   const made = (await (await fetch(`${base}/api/agents`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "hosts walk", test: true }) })).json()) as { workThread?: string; thread?: string };
   const id = made.workThread ?? made.thread;
   assert.ok(id, "the new agent names its work thread");
-  const self = await until(async () => ((await (await fetch(`${base}/api/hosts`)).json()) as HostsReport).hosts[0]!, h => h.threads.some(t => t.id === id));
+  const self = await until(async () => ((await (await fetch(`${base}/api/hosts?threads=all&tests=1`)).json()) as HostsReport).hosts[0]!, h => h.threads.some(t => t.id === id));
   assert.equal(self.threads.find(t => t.id === id)!.test, true);
   assert.ok(self.threads.some(t => t.id !== id && t.test === undefined), "a thread of no test agent has no test flag");
+});
+
+test("each box counts every thread by status, test threads apart, and only the picked box lists the threads its filter shows", async () => {
+  const report = async (query: string) => (await (await fetch(`${base}/api/hosts${query}`)).json()) as HostsReport;
+  const every = (await report("?threads=all&tests=1")).hosts[0]!;
+  const runs = ["working", "idle", "sleeping", "failed"] as const;
+  for (const status of runs) {
+    for (const kind of ["real", "test"] as const) {
+      const listed = every.threads.filter(t => t.status === status && (kind === "test") === (t.test === true)).length;
+      assert.equal(every.counts[kind][status], listed, `${kind} ${status} counts the threads ?threads=all&tests=1 lists`);
+    }
+  }
+  const plain = await report("");
+  assert.deepEqual(plain.hosts[0]!.counts, every.counts, "the counts do not depend on what the page lists (c191)");
+  assert.ok(plain.hosts[0]!.threads.every(t => t.status === "working" && !t.test), "with no query this box lists its working threads, test threads left out");
+  assert.equal(plain.hosts[0]!.threads.length, every.counts.real.working);
+  assert.deepEqual(plain.hosts.find(h => h.name === "mac")!.threads, [], "another box lists no threads unless picked");
+  const idle = (await report("?threads=idle")).hosts[0]!;
+  assert.equal(idle.threads.length, every.counts.real.idle);
+  assert.ok(idle.threads.every((t, i, all) => t.status === "idle" && (i === 0 || all[i - 1]!.updatedAt >= t.updatedAt)), "newest first");
+  assert.deepEqual((await report("?box=mac&threads=all")).hosts[0]!.threads, [], "a pick of another box lists none of this box's threads");
+  const bytes = async (query: string) => (await (await fetch(`${base}/api/hosts${query}`)).text()).length;
+  assert.ok(await bytes("") < await bytes("?threads=all&tests=1"), "the 2 s poll of the default view carries only the threads it shows");
 });

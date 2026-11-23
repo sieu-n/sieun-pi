@@ -1,11 +1,16 @@
 <script lang="ts">
-  import type { HostView } from "$lib/api";
+  import type { HostThreadFilter, HostView } from "$lib/api";
   import { conversationHref } from "$lib/router.svelte";
-  import { ageLabel, Checkbox, Disclosure, IconButton, Menu, StatusDot, Tabs, toast, tooltip, type MenuEntry } from "$lib/ui";
-  import { agentRelayLine, gb, machineRelayLine, piHostLine, RUN_DOT, RUN_LABEL, shownThreads, threadTabs, useRows, type ThreadFilter } from "./hosts";
+  import { ageLabel, Checkbox, Disclosure, IconButton, LoadingText, Menu, StatusDot, Tabs, toast, tooltip, type MenuEntry } from "$lib/ui";
+  import { agentRelayLine, countsOf, gb, machineRelayLine, piHostLine, RUN_DOT, RUN_LABEL, threadTabs, totalOf, useRows } from "./hosts";
 
-  /** The selected box: its memory and CPU by group, its services and the threads its pi-host holds. */
-  let { host, now, onrefresh }: { host: HostView; now: number; onrefresh: () => void } = $props();
+  /**
+   * The selected box: its memory and CPU by group, its services and the threads its pi-host holds. The page reads the threads that `filter`
+   * and `showTests` pick, and `listing` is false while the shown report answers an earlier pick.
+   */
+  let { host, now, onrefresh, filter = $bindable(), showTests = $bindable(), listing }: {
+    host: HostView; now: number; onrefresh: () => void; filter: HostThreadFilter; showTests: boolean; listing: boolean;
+  } = $props();
 
   const machine = $derived(host.machine);
   const rows = $derived(machine ? useRows(machine) : []);
@@ -27,12 +32,9 @@
     host.agentRelay?.state === "away" ? "Posts to its agents wait until the box is back." : host.piHost.state === "down" ? "Its threads can't run until pi-host answers." : null,
   );
 
-  let filter = $state<ThreadFilter>("working");
-  let showTests = $state(false);
-  const testCount = $derived(host.threads.filter(thread => thread.test).length);
-  const pool = $derived(showTests ? host.threads : host.threads.filter(thread => !thread.test));
-  const tabs = $derived(threadTabs(pool));
-  const threads = $derived(shownThreads(pool, filter));
+  const testCount = $derived(totalOf(host.counts.test));
+  const tabs = $derived(threadTabs(countsOf(host, showTests)));
+  const threads = $derived(host.threads);
 
   let menuOpen = $state(false);
   let menuAnchor = $state<HTMLElement | null>(null);
@@ -96,7 +98,9 @@
           <Tabs items={tabs.map(tab => ({ id: tab.id, label: tab.label }))} bind:value={filter} size="sm" label="Show threads" />
         </div>
       </div>
-      {#if threads.length}
+      {#if !listing}
+        <LoadingText text="Reading the threads…" />
+      {:else if threads.length}
         <ul class="list">
           {#each threads as thread (thread.id)}
             <li>

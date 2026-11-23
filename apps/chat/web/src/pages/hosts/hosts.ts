@@ -1,5 +1,5 @@
 /** Pure helpers for the Hosts page: each box's state, its service lines, its memory and CPU groups, and the CPU spark. */
-import type { HostThread, HostView, MachineView, RunStatus } from "$lib/api";
+import type { HostThreadFilter, HostView, MachineView, RunCounts, RunStatus } from "$lib/api";
 import type { Status } from "$lib/ui";
 
 export const gb = (bytes: number): string => (bytes / 1024 ** 3).toFixed(1);
@@ -61,20 +61,22 @@ export function machineRelayLine(host: HostView): ServiceLine {
 export const RUN_LABEL: Readonly<Record<RunStatus, string>> = { working: "Working", idle: "Idle", sleeping: "Sleeping", failed: "Failed" };
 export const RUN_DOT: Readonly<Record<RunStatus, Status>> = { working: "online", idle: "offline", sleeping: "away", failed: "busy" };
 
-/** Which threads the list shows: one run status, or all of them. */
-export type ThreadFilter = RunStatus | "all";
-const FILTER_ORDER: readonly ThreadFilter[] = ["working", "failed", "sleeping", "idle", "all"];
+const FILTER_ORDER: readonly HostThreadFilter[] = ["working", "failed", "sleeping", "idle", "all"];
+
+/** A box's thread counts by run status, its walks' test threads added when `tests`. */
+export const countsOf = (host: HostView, tests: boolean): RunCounts => {
+  const { real, test } = host.counts;
+  return tests ? { working: real.working + test.working, idle: real.idle + test.idle, sleeping: real.sleeping + test.sleeping, failed: real.failed + test.failed } : real;
+};
+
+export const totalOf = (counts: RunCounts): number => counts.working + counts.idle + counts.sleeping + counts.failed;
 
 /** The filter tabs with exact counts (c191). Working and All always show; another status shows only when a thread has it. */
-export function threadTabs(threads: readonly HostThread[]): { id: ThreadFilter; label: string; count: number }[] {
-  const count = (filter: ThreadFilter) => (filter === "all" ? threads.length : threads.filter(thread => thread.status === filter).length);
-  return FILTER_ORDER.map(id => ({ id, count: count(id) }))
+export function threadTabs(counts: RunCounts): { id: HostThreadFilter; label: string; count: number }[] {
+  return FILTER_ORDER.map(id => ({ id, count: id === "all" ? totalOf(counts) : counts[id] }))
     .filter(tab => tab.id === "working" || tab.id === "all" || tab.count > 0)
     .map(tab => ({ ...tab, label: `${tab.id === "all" ? "All" : RUN_LABEL[tab.id]} ${tab.count}` }));
 }
-
-export const shownThreads = (threads: readonly HostThread[], filter: ThreadFilter): HostThread[] =>
-  threads.filter(thread => filter === "all" || thread.status === filter).sort((a, b) => b.updatedAt - a.updatedAt);
 
 /** What a memory group holds in RAM: its bytes less its part in swap, so the groups add up to the used memory. */
 export const ramOf = (item: { bytes: number; swapBytes?: number }): number => item.bytes - (item.swapBytes ?? 0);

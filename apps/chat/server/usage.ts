@@ -8,7 +8,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { openIndexReadOnly, readUsageRows, type UsageRead, type UsageRow as IndexUsageRow } from "../../../packages/pi-host/src/durable/index-db.ts";
 import { BUCKET_MS, bucketFor, isRange, RANGE_BUCKETS, RANGE_MS, USAGE_RANGES } from "../web/src/lib/api/shared/usage-range.ts";
-import type { AgentRelayLink, HostsReport, HostView, MachineView, UsageBucket, UsageBucketSum, UsageLive, UsageRange, UsageReport, UsageRow } from "../web/src/lib/api/types.ts";
+import type { AgentRelayLink, HostsReport, HostThread, HostThreadFilter, HostView, MachineView, RunCounts, RunStatus, UsageBucket, UsageBucketSum, UsageLive, UsageRange, UsageReport, UsageRow } from "../web/src/lib/api/types.ts";
 import { MultiHost } from "./host/multi-host.ts";
 import type { RelayHost } from "./host/relay-host.ts";
 import type { Host, Ping, UsageRange as HostUsageRange, UsageTotal } from "./host/types.ts";
@@ -360,11 +360,27 @@ export function agentRelayLink(relay: RelayHost): AgentRelayLink {
 const piHostView = (ping: NonNullable<Ping["boxes"]>[string], socket?: string): HostView["piHost"] =>
   ping.ok ? { state: "answering", version: ping.version, ...(socket ? { socket } : {}) } : { state: "down", error: ping.error };
 
+/** The box whose threads the Hosts page lists, which of them, and whether walks' test threads count in (`GET /api/hosts?box=&threads=&tests=1`). */
+export interface HostsQuery { box?: string; threads?: HostThreadFilter; tests?: boolean }
+
+const RUN_STATUSES: readonly RunStatus[] = ["working", "idle", "sleeping", "failed"];
+const noRuns = (): RunCounts => ({ working: 0, idle: 0, sleeping: 0, failed: 0 });
+
+export function hostsQuery(params: URLSearchParams): HostsQuery {
+  const threads = params.get("threads");
+  return {
+    ...(params.get("box") ? { box: params.get("box")! } : {}),
+    ...(threads === "all" || RUN_STATUSES.includes(threads as RunStatus) ? { threads: threads as HostThreadFilter } : {}),
+    ...(params.get("tests") === "1" ? { tests: true } : {}),
+  };
+}
+
 /**
  * Every box in the hosts registry and every box the chat server routes agents to, this box first. The machine figures come from each box's
- * machine relay; the agent relay link and a remote pi-host come from the `RelayHost` in memory.
+ * machine relay; the agent relay link and a remote pi-host come from the `RelayHost` in memory. Each box counts its threads, and only the
+ * box `query` picks lists the threads its filter shows.
  */
-export async function hostsReport(host: Host, threads: Threads, box: string, socket: string, hostsFile: string): Promise<HostsReport> {
+export async function hostsReport(host: Host, threads: Threads, box: string, socket: string, hostsFile: string, query: HostsQuery = {}): Promise<HostsReport> {
   let reads = machineReads.get(host);
   if (!reads) machineReads.set(host, reads = new MachineReads());
   let registry: RegistryHost[] = [];
@@ -379,6 +395,8 @@ export async function hostsReport(host: Host, threads: Threads, box: string, soc
   // The link is read in the same tick as the ping, before the machine relay reads, so a box's pi-host and link state agree.
   const ping = await host.ping();
   const rows = threads.threadsList().filter(t => !t.archived);
+  const listed = query.box && names.includes(query.box) ? query.box : box;
+  const filter = query.threads ?? "working";
   const views = await Promise.all(names.map(async (name): Promise<HostView> => {
     const self = name === box;
     const entry = registry.find(h => h.name === name);
@@ -395,14 +413,21 @@ export async function hostsReport(host: Host, threads: Threads, box: string, soc
         if (!self) machineRelay = { state: "up", pingMs: answer.read.pingMs };
       } else if (!self) machineRelay = { state: "unreachable", error: answer.error };
     }
+    const counts = { real: noRuns(), test: noRuns() };
+    const shown: HostThread[] = [];
+    if (piHost.state !== "absent") {
+      for (const t of rows) {
+        if ((t.box ?? box) !== name) continue;
+        const status = statusOf(t.status);
+        const test = threads.agentRecords?.store.isTest(t.id) ?? false;
+        counts[test ? "test" : "real"][status] += 1;
+        if (name !== listed || (test && !query.tests) || (filter !== "all" && filter !== status)) continue;
+        shown.push({ id: t.id, name: t.name, status, model: `${t.provider}/${t.modelId}`, updatedAt: t.updatedAt, children: t.children, ...(test ? { test: true as const } : {}) });
+      }
+    }
     return {
       name, address: entry?.address ?? (self ? "127.0.0.1" : "unknown"), self, relay: machineRelay, piHost,
-      agentRelay, machine,
-      threads: piHost.state === "absent" ? [] : rows.filter(t => (t.box ?? box) === name)
-        .map(t => ({
-          id: t.id, name: t.name, status: statusOf(t.status), model: `${t.provider}/${t.modelId}`, updatedAt: t.updatedAt, children: t.children,
-          ...(threads.agentRecords?.store.isTest(t.id) ? { test: true as const } : {}),
-        })),
+      agentRelay, machine, counts, threads: shown.sort((a, b) => b.updatedAt - a.updatedAt),
     };
   }));
   return { checkedAt: Date.now(), registryError, hosts: views };

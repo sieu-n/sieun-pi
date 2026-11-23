@@ -714,8 +714,19 @@ export interface HostView {
   /** Null when the chat server dials no agent relay for the box. */
   agentRelay: AgentRelayLink | null;
   machine: MachineView | null;
+  /** Every thread the box holds counted by run status, walks' test threads apart, whatever `threads` lists (c191). */
+  counts: { real: RunCounts; test: RunCounts };
+  /**
+   * The threads the page lists: on the box `GET /api/hosts?box=` picks, else the chat server's own box, those in the `threads` status
+   * (working unless asked), and test threads only with `tests=1`; empty on every other box. Until 11-23 each 2 s poll listed every thread of
+   * every box, 1,315 on us-metal02 and 49 KB compressed, which took 3 round trips at the owner's 200 ms (p155-sweep/fix-hosts/notes.md).
+   */
   threads: HostThread[];
 }
+/** How many threads hold each run status. */
+export type RunCounts = Record<RunStatus, number>;
+/** Which threads the Hosts page lists: one run status, or all of them. */
+export type HostThreadFilter = RunStatus | "all";
 export interface HostsReport { checkedAt: Ms; registryError: string | null; hosts: HostView[] }
 
 /** A file the config names: where it is, whether it is there, and a short look inside. `loaded` says whether the agent's model sees it. */

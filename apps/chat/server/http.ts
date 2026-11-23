@@ -26,7 +26,7 @@ import { listValues, SearchFilterError } from "./search.ts";
 import type { SearchSplit } from "./search-engine.ts";
 import { isHostAway } from "./host/types.ts";
 import { readJson } from "./store.ts";
-import { usageLive, usageReport, hostsReport } from "./usage.ts";
+import { usageLive, usageReport, hostsQuery, hostsReport } from "./usage.ts";
 import { Skills } from "./skills.ts";
 import { consolesReport } from "./consoles.ts";
 import { decideBody, ReviewRefused, SkillsReview, undoBody } from "./skills-review.ts";
@@ -516,7 +516,7 @@ export function routes(app: App, parts: SkillsParts): Route[] {
     }),
     route("GET", "/api/usage/live", async (_r, _p, q) => usageLive(app.usage, app.config.box, { thread: str(q.get("thread")), host: str(q.get("host")) })),
     ...accountRoutes(app, route),
-    route("GET", "/api/hosts", async () => hostsReport(app.host, app.threads, app.config.box, app.config.socket, app.config.hostsFile)),
+    route("GET", "/api/hosts", async (_r, _p, q) => hostsReport(app.host, app.threads, app.config.box, app.config.socket, app.config.hostsFile, hostsQuery(q))),
     route("GET", "/api/consoles", async () => consolesReport(app.config.consoles)),
     route("GET", "/api/skills", async () => db.db.view((await db.skills.report()).scan)),
     route("GET", "/api/skills/inventory", async () => skills.report()),

@@ -4,7 +4,7 @@
  */
 import type {
   AgentConfig, AgentFolder, AgentHostList, AgentId, AgentSummary, BoardOp, BoardRow, BoardView, CheckInPatch, CheckInView, ChatAgent, ConversationHeader, ConversationId,
-  ConversationPatch, ConversationSummary, DutyAction, DutyRow, ForMeItem, ForMeList, ForMeStatus, ForYouItem, HarnessEntryView, HostsReport, ImageRef, Item, JobNode, Me, Member, MemoryInput, ModelCatalog, OpenedPage, ProjectList, SearchQuery, SearchResult, SendRequest, WikiPages,
+  ConversationPatch, ConversationSummary, DutyAction, DutyRow, ForMeItem, ForMeList, ForMeStatus, ForYouItem, HarnessEntryView, HostsReport, HostThreadFilter, ImageRef, Item, JobNode, Me, Member, MemoryInput, ModelCatalog, OpenedPage, ProjectList, SearchQuery, SearchResult, SendRequest, WikiPages,
   LaterItem, LaterList, LaterPatch, LaterRequest, LaterState, ReactionRequest, ReadAllRequest, ReadPoint, Room, RoomInput, RoomPatch, SendResult, Sidebar, StepOutputRef, ThinkingLevel, ThreadDoneRequest, TimelinePage, UsageBucket, UsageRange, UsageReport, AccountsView,
 } from "./types.ts";
 import type {
@@ -650,6 +650,12 @@ export const reads = {
   duties: (chat: string) => read<{ duties: DutyRow[] }>(`${boardBase(chat)}/duties`, true),
   checkIn: (chat: string) => read<CheckInView>(`${boardBase(chat)}/check-in`),
   chatAgents: (chat: string) => read<{ agents: ChatAgent[] }>(`${boardBase(chat)}/agents`),
+  /**
+   * The Hosts page: every box's figures and thread counts, and the threads of `box` (this box when unset) that `threads` picks, working
+   * unless asked, test threads only with `tests`. The page keeps it and reads it again every 2 s.
+   */
+  hosts: (opts: { box?: string; threads?: HostThreadFilter; tests?: boolean } = {}) =>
+    read<HostsReport>(`/api/hosts${query({ box: opts.box, threads: opts.threads === "working" ? undefined : opts.threads, tests: opts.tests ? 1 : undefined })}`),
 };
 
 export const api = {
@@ -777,7 +783,6 @@ export const api = {
   /** A poll behind a live rate the card already shows is `shown`; the card's first read is one it waits on. */
   usageLive: (opts: { thread?: string; host?: string }, wait: Wait = { background: "shown" }) => call<import("./types.ts").UsageLive>("GET", `/api/usage/live${query(opts)}`, undefined, undefined, wait),
   pool: () => call<AccountsView>("GET", "/api/pool"),
-  hosts: () => call<HostsReport>("GET", "/api/hosts"),
   /** The consoles table from auto-sns-agent's consoles.json, read as the file is now. */
   consoles: () => call<ConsolesReport>("GET", "/api/consoles"),
   /** The skills DB read model, everything a Settings > Skills layout renders. */
