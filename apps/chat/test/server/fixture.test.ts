@@ -218,7 +218,7 @@ describe("search", () => {
     const all = await s.get<SearchResult>("/api/search?q=relay&limit=5");
     assert.equal(all.hits.length, 5);
     assert.ok(all.total > 5);
-    assert.equal(all.nextCursor, "5");
+    assert.match(all.nextCursor ?? "", /^5\.\d+$/, "the next page starts at 5 and reads up to the first page's time");
     const owner = await s.get<SearchResult>("/api/search?q=relay%20from:owner&limit=100");
     assert.equal(owner.total, owner.hits.length);
     assert.ok(owner.hits.every(h => h.author.id === "owner"));

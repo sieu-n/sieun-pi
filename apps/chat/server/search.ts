@@ -221,6 +221,15 @@ function terms(q: string): string[] {
   return (q.match(/"[^"]*"|\S+/g) ?? []).map(t => t.replace(/^"|"$/g, "").replace(/\*$/, "").toLowerCase()).filter(t => t && !/^(AND|OR|NOT)$/i.test(t));
 }
 
+/**
+ * A next page's place: the offset of its first hit, and the time its first page read up to, as `run` writes `nextCursor`. A bare offset reads
+ * up to now.
+ */
+export function readCursor(cursor: string | undefined): { offset: number; asOf?: number } {
+  const match = /^(\d+)(?:\.(\d+))?$/.exec(cursor ?? "");
+  return match ? { offset: Number(match[1]), ...(match[2] ? { asOf: Number(match[2]) } : {}) } : { offset: 0 };
+}
+
 /** A work-thread input that was a job's test send typed into the owner's DM (rooms.ts `allTestSends`). */
 export interface TestSendEntry { thread: string; entry: number; by: string; reason: string }
 
@@ -273,9 +282,14 @@ export class Search {
     const after = query.after ? dayStart(query.after) : undefined;
     const before = query.before ? dayStart(query.before) : undefined;
     const sort = words.length ? query.sort ?? "relevance" : "recent";
-    const offset = Number(query.cursor ?? 0) || 0;
+    const { offset, asOf = Date.now() + 1 } = readCursor(query.cursor);
     const limit = Math.min(Math.max(query.limit ?? 20, 1), 100);
-    const range: Cond[] = [...(after === undefined ? [] : [{ op: "gte", field: "at", value: after } as Cond]), ...(before === undefined ? [] : [{ op: "lt", field: "at", value: before } as Cond])];
+    // Every page reads only what was written before its first page, so a hit written between two pages neither drops one past the next
+    // page's offset nor brings one back: the offsets were dropping hits while the fixture's agents kept writing "relay" (search.spec.ts).
+    const range: Cond[] = [
+      ...(after === undefined ? [] : [{ op: "gte", field: "at", value: after } as Cond]),
+      { op: "lt", field: "at", value: before === undefined ? asOf : Math.min(before, asOf) },
+    ];
     const parts: Cond[] = [];
 
     const places = parsePlace(query.place, parseWhere(query.where));
@@ -335,7 +349,7 @@ export class Search {
     if (sort === "relevance") hits = [...hits.filter(hit => hit.role !== "tool"), ...hits.filter(hit => hit.role === "tool")];
     if (split) split.hits = performance.now() - answered;
     return {
-      hits, total, ...(offset + limit < total ? { nextCursor: String(offset + limit) } : {}), ...(missing.length ? { missing } : {}),
+      hits, total, ...(offset + limit < total ? { nextCursor: `${offset + limit}.${asOf}` } : {}), ...(missing.length ? { missing } : {}),
     };
   }
 

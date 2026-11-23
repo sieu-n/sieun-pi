@@ -37,7 +37,11 @@ after(async () => {
 });
 
 test("every search answers the same hits, in the same order, with the same snippets and totals", async () => {
-  for (const [query, expected] of Object.entries(EXPECTED)) assert.deepEqual(await s.get<SearchResult>(`/api/search?${query}`), expected, query);
+  for (const [query, expected] of Object.entries(EXPECTED)) {
+    const { nextCursor, ...answer } = await s.get<SearchResult>(`/api/search?${query}`);
+    // A cursor is the next page's offset and the time the first page read up to (search.ts `readCursor`), which reads the run's clock.
+    assert.deepEqual({ ...answer, ...(nextCursor ? { nextCursor: nextCursor.split(".")[0] } : {}) }, expected, query);
+  }
 });
 
 const EXPECTED: Record<string, SearchResult> = {
