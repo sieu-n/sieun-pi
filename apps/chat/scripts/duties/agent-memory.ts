@@ -240,18 +240,26 @@ export function recallCount(rows: readonly RecallRow[]): { asked: number; right:
   return { asked: graded.length, right: graded.filter(g => g.right).length, unmeasured: rows.length - answered.length };
 }
 /**
- * The recall share of the newest earlier run whose detail file holds an answered session, counted the same way, or null when no run
- * measured one. `runs` is LAST_RUNS_FILE, where each run names its detail file.
+ * The share of the newest earlier run whose detail file measured something, or null when no run did. `runs` is LAST_RUNS_FILE, where each
+ * run names its detail file, and `count` reads a detail file as a part of a whole, with a whole of 0 when that run measured nothing. A
+ * blind check that got no model answer keeps this share: the recall check here and the reply check of owner-style.ts.
  */
-export function lastMeasuredRecall(runs: readonly { at: number; detail?: string }[], read: (file: string) => unknown): { pct: number; at: number } | null {
+export function lastMeasured(runs: readonly { at: number; detail?: string }[], read: (file: string) => unknown, count: (detail: unknown) => { part: number; whole: number }): { pct: number; at: number } | null {
   for (const run of runs.filter(run => run.detail).sort((a, b) => b.at - a.at)) {
     let detail: unknown;
     try { detail = read(run.detail!); } catch { continue; }
-    const rows = ((detail as { agents?: { recall?: RecallRow }[] } | null)?.agents ?? []).flatMap(agent => agent.recall ? [agent.recall] : []);
-    const count = recallCount(rows);
-    if (count.asked) return { pct: pct(count.right, count.asked), at: run.at };
+    const { part, whole } = count(detail);
+    if (whole) return { pct: pct(part, whole), at: run.at };
   }
   return null;
+}
+/** The recall share of the newest earlier run whose detail file holds an answered session, counted the same way, or null when no run measured one. */
+export function lastMeasuredRecall(runs: readonly { at: number; detail?: string }[], read: (file: string) => unknown): { pct: number; at: number } | null {
+  return lastMeasured(runs, read, detail => {
+    const rows = ((detail as { agents?: { recall?: RecallRow }[] } | null)?.agents ?? []).flatMap(agent => agent.recall ? [agent.recall] : []);
+    const count = recallCount(rows);
+    return { part: count.right, whole: count.asked };
+  });
 }
 
 /** The name every recall agent starts with; its stamp ends it. */

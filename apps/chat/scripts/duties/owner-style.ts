@@ -11,7 +11,11 @@
  *   style_notes_shared_pct, the headline: of the owner style notes of the last day, the share whose words the live skill or the live role
  *     text holds. A candidate post of the last day that neither list names counts as a note that is not shared yet.
  *   blind_follow_pct: of the notes of the last 7 days with a blind set, the share whose blind run passes; each run is a fresh `test: true`
- *     agent in a fresh channel (apps/chat/scripts/blind-replies.mjs --set <set> --no-reaction), archived after.
+ *     agent in a fresh channel (apps/chat/scripts/blind-replies.mjs --set <set> --no-reaction), archived after. An ask that got no post and
+ *     no reaction before its wait ran out got no model answer (`unanswered`), so it is not measured: a note passes when every answered ask
+ *     of its set passes, a note whose set got no answer at all is left out of the share, `blind_notes_unmeasured` and
+ *     `blind_asks_unmeasured` count what was left out, and when no set got an answer the metric keeps the value of the newest run in
+ *     LAST_RUNS_FILE that measured one (`blind_carried_at`). An answered ask that breaks a rule still fails its note.
  *   shared_all_pct: of every listed note, the share the shared text still holds, so a later edit that drops one shows.
  *   unsorted_candidates: owner posts of the last day in real rooms that read like style feedback and that neither list names.
  *
@@ -29,7 +33,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { holds } from "./agent-memory.ts";
+import { holds, lastMeasured } from "./agent-memory.ts";
 
 const DAY_MS = 86_400_000;
 /** How far back a note's blind check reruns each day; 7 days of notes was 4 sets on 11-20. */
@@ -105,17 +109,62 @@ export async function roleText(profile: string): Promise<string> {
 
 const pct = (part: number, whole: number): number => (whole ? Math.round((1000 * part) / whole) / 10 : 100);
 
-/** One blind-replies.mjs run of a set; answers its summary line, or an error when the run printed none. */
-function blindRun(script: string, set: string, out: string, server: string): Promise<{ pass: boolean; passed?: number; of?: number; room?: string; agent?: string; error?: string }> {
+/** One ask of a blind-replies.mjs --out file. */
+export interface AskLine { ask?: string; expect?: string; replies?: string[]; pass?: boolean; unanswered?: boolean }
+/**
+ * Whether a blind ask got no model answer before its wait ran out, which is no reply that breaks a rule: on 11-23 at 06:45 KST four sets
+ * ended with no reply after about 1,200 s an ask while 3 of 42 accounts took new work and up to 82 sessions waited, and the run stored
+ * 5 of 10 notes as not followed. A file from before the `unanswered` field shows it as an ask that wanted a reply and has none.
+ */
+export const unansweredAsk = (line: AskLine): boolean => line.unanswered ?? (line.expect !== "reaction" && !line.replies?.length);
+/** The asks answered and passed over the asks that got an answer, and the number that did not. */
+export function askCount(lines: readonly AskLine[]): { of: number; passed: number; unmeasured: number } {
+  const answered = lines.filter(line => !unansweredAsk(line));
+  return { of: answered.length, passed: answered.filter(line => line.pass).length, unmeasured: lines.length - answered.length };
+}
+/** The ask lines of a --out file; its last line is the run's summary, which names no ask. */
+export function askLines(text: string): AskLine[] {
+  return text.split("\n").filter(line => line.trim()).map(line => JSON.parse(line) as AskLine).filter(line => line.ask !== undefined);
+}
+
+/** One note's blind run as a run's detail file stores it under `blind`; a row from before `unmeasured` holds only its --out file's counts. */
+export interface BlindRow { note?: string; set?: string; out?: string; passed?: number; of?: number; unmeasured?: number; error?: string }
+/**
+ * The notes whose set got an answer and the ones that pass, the notes whose set got none, and the asks left unmeasured over each set once.
+ * A note passes when every answered ask of its set passes; a run that broke counts as measured and failed. `asks` reads a row's --out
+ * file, which recounts a row from before the `unmeasured` field.
+ */
+export function blindCount(rows: readonly BlindRow[], asks: (out: string) => AskLine[] | undefined = () => undefined): { measured: number; passed: number; unmeasured: number; asksUnmeasured: number } {
+  const count = { measured: 0, passed: 0, unmeasured: 0, asksUnmeasured: 0 };
+  const sets = new Set<string>();
+  for (const row of rows) {
+    const lines = row.unmeasured === undefined && !row.error && row.out ? asks(row.out) : undefined;
+    const { of = 0, passed = 0, unmeasured = 0 } = lines ? askCount(lines) : row;
+    const key = row.out ?? row.set ?? row.note ?? "";
+    if (!sets.has(key)) count.asksUnmeasured += unmeasured;
+    sets.add(key);
+    if (!row.error && !of && unmeasured) count.unmeasured++;
+    else {
+      count.measured++;
+      if (!row.error && of > 0 && passed === of) count.passed++;
+    }
+  }
+  return count;
+}
+
+/** One blind-replies.mjs run of a set; answers the count of its ask lines, or an error when the run wrote none. */
+function blindRun(script: string, set: string, out: string, server: string): Promise<{ pass: boolean; passed?: number; of?: number; unmeasured?: number; room?: string; agent?: string; error?: string }> {
   return new Promise(done => {
     const child = spawn(process.execPath, [script, "--set", set, "--no-reaction", "--out", out, "--server", server], { stdio: ["ignore", "ignore", "pipe"] });
     let err = "";
     child.stderr.on("data", chunk => { err = (err + String(chunk)).slice(-400); });
     child.on("close", () => {
-      const last = existsSync(out) ? readFileSync(out, "utf8").trim().split("\n").at(-1) : undefined;
-      const summary = last ? JSON.parse(last) as { pass?: boolean; passed?: number; of?: number; room?: string; agent?: string; ask?: string } : undefined;
-      if (!summary || summary.ask !== undefined) done({ pass: false, error: err.trim() || "the run wrote no summary" });
-      else done({ pass: !!summary.pass, passed: summary.passed, of: summary.of, room: summary.room, agent: summary.agent });
+      const text = existsSync(out) ? readFileSync(out, "utf8") : "";
+      const last = text.trim().split("\n").at(-1);
+      const summary = last ? JSON.parse(last) as { room?: string; agent?: string; ask?: string } : undefined;
+      if (!summary || summary.ask !== undefined) return done({ pass: false, error: err.trim() || "the run wrote no summary" });
+      const count = askCount(askLines(text));
+      done({ pass: count.of > 0 && count.passed === count.of, ...count, room: summary.room, agent: summary.agent });
     });
   });
 }
@@ -162,8 +211,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const recent = rows.filter(row => row.recent);
   const recentShared = recent.filter(row => row.held.skill || row.held.role).length;
 
-  const blindRows: Record<string, unknown>[] = [];
-  let blindPassed = 0;
+  const blindRows: BlindRow[] = [];
   const blindDue = file.notes.filter(note => note.blind && "set" in note.blind && Date.parse(note.at) >= now - BLIND_DAYS * DAY_MS);
   if (!values["no-blind"] && blindDue.length) {
     mkdirSync(runs, { recursive: true });
@@ -181,10 +229,22 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       }
       const { out, ...result } = results.get(set)!;
       blindRows.push({ note: note.id, set, out, ...result });
-      if (result.pass) blindPassed++;
-      else flagged.push({ kind: result.error ? "blind_error" : "blind_failed", excerpt: `${note.id} --set ${set}: ${result.error ?? `${result.passed} of ${result.of} asks pass`}; replies in ${out}`, sig: `blind:${note.id}` });
+      const none = result.unmeasured ? `${result.unmeasured} ask${result.unmeasured === 1 ? "" : "s"} got no model answer in time and ${result.unmeasured === 1 ? "is" : "are"} not measured` : "";
+      if (!result.error && !result.of && result.unmeasured) flagged.push({ kind: "blind_unmeasured", excerpt: `${note.id} --set ${set}: ${none}; run the set again when a test agent answers within minutes; ${out}`, sig: `blindnone:${note.id}` });
+      else if (!result.pass) flagged.push({ kind: result.error ? "blind_error" : "blind_failed", excerpt: `${note.id} --set ${set}: ${result.error ?? `${result.passed} of ${result.of} asks pass${none ? `, and ${none}` : ""}`}; replies in ${out}`, sig: `blind:${note.id}` });
+      else if (none) flagged.push({ kind: "blind_unmeasured", excerpt: `${note.id} --set ${set}: ${result.passed} of ${result.of} asks pass, and ${none}; ${out}`, sig: `blindnone:${note.id}` });
     }
   }
+  const outAsks = (out: string): AskLine[] | undefined => {
+    try { return askLines(readFileSync(out, "utf8")); } catch { return undefined; }
+  };
+  const blind = blindCount(blindRows);
+  const lastRuns = !blind.measured && blind.unmeasured && process.env.LAST_RUNS_FILE && existsSync(process.env.LAST_RUNS_FILE)
+    ? JSON.parse(readFileSync(process.env.LAST_RUNS_FILE, "utf8") || "[]") as { at: number; detail?: string }[] : [];
+  const carried = lastMeasured(lastRuns, file => JSON.parse(readFileSync(file, "utf8")), detail => {
+    const count = blindCount((detail as { blind?: BlindRow[] } | null)?.blind ?? [], outAsks);
+    return { part: count.passed, whole: count.measured };
+  });
 
   const metrics: Record<string, number> = {
     style_notes_shared_pct: pct(recentShared, recent.length + unsorted.length),
@@ -195,14 +255,25 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     candidates_last_day: candidates.length,
   };
   if (!values["no-blind"]) {
-    metrics.blind_follow_pct = pct(blindPassed, blindDue.length);
+    if (blind.measured || !blind.unmeasured) metrics.blind_follow_pct = pct(blind.passed, blind.measured);
+    else if (carried) {
+      metrics.blind_follow_pct = carried.pct;
+      metrics.blind_carried_at = carried.at;
+    }
     metrics.blind_runs = blindDue.length;
+    metrics.blind_notes_unmeasured = blind.unmeasured;
+    metrics.blind_asks_unmeasured = blind.asksUnmeasured;
   }
+  const notes = (n: number): string => `${n} note${n === 1 ? "" : "s"}`;
+  const blindWords = blind.measured || !blind.unmeasured
+    ? `${blind.passed} of ${blind.measured} blind runs pass${blind.unmeasured ? `, and the sets of ${notes(blind.unmeasured)} got no model answer in time and are not measured` : ""}`
+    : `blind follow not measured, since no set of the ${notes(blind.unmeasured)} got a model answer in time` +
+      (carried ? `, so blind_follow_pct keeps the ${carried.pct}% measured at ${new Date(carried.at).toISOString().slice(0, 16)}Z` : ", and no earlier run measured it");
   const output = {
     metrics,
     flagged: [{ kind: "summary", excerpt: `${recentShared} of ${recent.length + unsorted.length} style notes of the last day are in the shared text (${unsorted.length} unsorted); ` +
       `${rows.filter(row => row.held.skill || row.held.role).length} of ${rows.length} notes in all; ` +
-      `${values["no-blind"] ? "no blind run" : `${blindPassed} of ${blindDue.length} blind runs pass`}`, sig: "summary" }, ...flagged],
+      `${values["no-blind"] ? "no blind run" : blindWords}`, sig: "summary" }, ...flagged],
     notesFile, skillFile, profile,
     notes: rows.map(({ note, held, recent }) => ({ id: note.id, posts: note.posts, recent, skill: held.skill, role: held.role, ...(note.owner ? { owner: note.owner } : {}) })),
     blind: blindRows,

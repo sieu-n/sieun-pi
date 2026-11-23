@@ -19,6 +19,12 @@
  * Waits: an ask waits up to 20 min for its first answer, since of 45 owner posts in channel threads by 11-20 the agent's first post came
  * at p50 36 s and p90 1,082 s, the slow ones after a hand-over to the work thread. After a post it waits 60 s with no new post before it
  * reads the answer as whole, since the gaps between one turn's posts in #dev-search-general on 11-20 were 65 ms to 7 s.
+ *
+ * An ask the agent neither posted on nor reacted to within those 20 min got no model answer, which is no reply that breaks a rule: its
+ * line says `unanswered: true`, the asks after it are not sent and say the same, and the summary counts them as `unmeasured`, with
+ * `passed` and `of` over the answered asks only. On 11-23 at 06:45 KST four sets ended with no reply after about 1,200 s an ask while 3 of
+ * 42 model accounts took new work and up to 82 sessions waited, and the duty read them as 5 style notes not followed. The run exits 0 on
+ * a pass, 1 on a failed answered ask and 2 when no ask was answered.
  */
 import { appendFileSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -26,11 +32,13 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { hasOpenItem, naturalChecks, naturalLine, narrates, words } from "./natural-checks.mjs";
 
-const { values } = parseArgs({ options: { asks: { type: "string" }, set: { type: "string" }, cwd: { type: "string" }, host: { type: "string" }, out: { type: "string" }, server: { type: "string" }, "no-reaction": { type: "boolean" } } });
+const { values } = parseArgs({ options: { asks: { type: "string" }, set: { type: "string" }, cwd: { type: "string" }, host: { type: "string" }, out: { type: "string" }, server: { type: "string" }, "no-reaction": { type: "boolean" },
+  "first-ms": { type: "string" }, "poll-ms": { type: "string" } } });
 const server = values.server ?? "http://127.0.0.1:5184";
-const FIRST_MS = 20 * 60_000;
+/** `--first-ms` and `--poll-ms` shorten the first wait and the poll for test/server/owner-style.test.ts, which runs this file against a server that never answers. */
+const FIRST_MS = Number(values["first-ms"] ?? 20 * 60_000);
 const QUIET_MS = 60_000;
-const POLL_MS = 3_000;
+const POLL_MS = Number(values["poll-ms"] ?? 3_000);
 /** A checklist post's edits come as the work thread finishes items, minutes apart, so its answer counts as whole only after this long with no edit. */
 const CHECKLIST_QUIET_MS = 5 * 60_000;
 /**
@@ -221,8 +229,19 @@ let root;
 const results = [];
 /** Asks sent with `wait: false` go out at once, and the next ask waits for the answers to all of them, as when he sends two posts in a row. */
 let group = [];
+/** Set once an ask got no post and no reaction within its first wait; a later ask would wait behind the same turn, so it is not sent. */
+let starved = false;
+const write = line => {
+  results.push(line);
+  if (values.out) appendFileSync(values.out, `${JSON.stringify({ agent: agent.id, set: values.set ?? "default", ...line })}\n`);
+};
 for (const [index, ask] of asks.entries()) {
   const dm = ask.room === "dm";
+  if (starved) {
+    write({ ask: ask.text, askIds: [], room: dm ? agent.room : room.id, expect: ask.expect, seconds: 0, replies: [], versions: [], checks: {}, pass: false, unanswered: true });
+    console.log(`\nNOT MEASURED ${ask.text}\n  (not sent, since the ask before it got no answer)`);
+    continue;
+  }
   const sent = await call("POST", `/api/c/${dm ? agent.room : room.id}/send`, { text: ask.text, requestId: `blind-${stamp}-${index}`, ...(root && !dm ? { threadRoot: root } : {}) });
   if (!dm) root ??= sent.item.id;
   group.push({ ...ask, id: sent.item.id, seq: sent.item.seq });
@@ -231,6 +250,9 @@ for (const [index, ask] of asks.entries()) {
   const started = Date.now();
   let posts = [];
   let lastNew = 0;
+  /** Whether the agent reacted to a post of this ask, and when it first posted or reacted, which shows its model answered. */
+  let reacted = false;
+  let first;
   /** Every text each answer post had, in order, so a checklist's first version and its edits can be checked. */
   const versions = new Map();
   const edited = ask.expect === "checklist" || ask.expect === "natural";
@@ -250,22 +272,27 @@ for (const [index, ask] of asks.entries()) {
       }
     }
     posts = now;
-    const reacted = [thread.root, ...thread.items].find(i => i?.id === ask.id)?.reactions?.some(r => r.by.some(b => b.id === agent.id));
+    reacted = [thread.root, ...thread.items].some(i => i && ids.has(i.id) && i.reactions?.some(r => r.by.some(b => b.id === agent.id)));
+    if (posts.length || reacted) first ??= Math.round((Date.now() - started) / 1000);
     const open = edited && posts.some(post => /^\s*[-*+] \[ \] /m.test(post.text));
     if (posts.length && Date.now() - lastNew > (open ? OPEN_QUIET_MS : quiet)) break;
     if (!posts.length && ask.expect === "reaction" && reacted && Date.now() - started > QUIET_MS) break;
+    if (first === undefined && Date.now() - started > FIRST_MS) break;
     // A natural ask is a research task, and both after runs at 20:39Z on 11-21 still worked on it at 44 min.
     if (Date.now() - started > (ask.expect === "natural" ? 3 * FIRST_MS : edited ? 2 * FIRST_MS : FIRST_MS)) break;
   }
   const text = group.map(g => g.text).join(" / ");
   const result = checks(ask, posts, group.length, versions);
-  const line = { ask: text, askIds: [...ids], room: dm ? agent.room : room.id, expect: ask.expect, seconds: Math.round((Date.now() - started) / 1000), replies: posts.map(p => p.text), versions: posts.map(p => versions.get(p.id) ?? [p.text]), checks: Object.fromEntries(result), pass: result.every(([, ok]) => ok) };
-  results.push(line);
-  console.log(`\n${line.pass ? "PASS" : "FAIL"} ${text}\n${posts.map(p => `  > ${p.text.replace(/\n/g, "\n    ")}`).join("\n") || "  (no post)"}\n  ${result.filter(([, ok]) => !ok).map(([name]) => `failed: ${name}`).join(", ")}`);
-  if (values.out) appendFileSync(values.out, `${JSON.stringify({ agent: agent.id, set: values.set ?? "default", ...line })}\n`);
+  // An ask that wants a reply and got no post and no reaction is not measured; a thanks that got neither is a pass, as before.
+  const unanswered = first === undefined && ask.expect !== "reaction";
+  if (unanswered) starved = true;
+  const line = { ask: text, askIds: [...ids], room: dm ? agent.room : room.id, expect: ask.expect, seconds: Math.round((Date.now() - started) / 1000), ...(first === undefined ? {} : { first }), replies: posts.map(p => p.text), versions: posts.map(p => versions.get(p.id) ?? [p.text]), checks: Object.fromEntries(result), pass: !unanswered && result.every(([, ok]) => ok), ...(unanswered ? { unanswered: true } : {}) };
+  console.log(`\n${unanswered ? "NOT MEASURED" : line.pass ? "PASS" : "FAIL"} ${text}\n${posts.map(p => `  > ${p.text.replace(/\n/g, "\n    ")}`).join("\n") || "  (no post)"}\n  ${unanswered ? `no post and no reaction within ${line.seconds} s` : result.filter(([, ok]) => !ok).map(([name]) => `failed: ${name}`).join(", ")}`);
+  write(line);
   group = [];
 }
-const summary = { room: room.id, root, agent: agent.id, passed: results.filter(r => r.pass).length, of: results.length, pass: results.every(r => r.pass) };
+const answered = results.filter(r => !r.unanswered);
+const summary = { room: room.id, root, agent: agent.id, passed: answered.filter(r => r.pass).length, of: answered.length, unmeasured: results.length - answered.length, pass: answered.length > 0 && answered.every(r => r.pass) };
 if (values.out) appendFileSync(values.out, `${JSON.stringify(summary)}\n`);
-console.log(`\n${summary.pass ? "PASS" : "FAIL"} ${summary.passed}/${summary.of}, thread ${server}/#/c/${room.id}?thread=${root}`);
-process.exit(summary.pass ? 0 : 1);
+console.log(`\n${!summary.of ? "NOT MEASURED" : summary.pass ? "PASS" : "FAIL"} ${summary.passed}/${summary.of}${summary.unmeasured ? `, ${summary.unmeasured} not measured` : ""}, thread ${server}/#/c/${room.id}?thread=${root}`);
+process.exit(!summary.of ? 2 : summary.pass ? 0 : 1);
