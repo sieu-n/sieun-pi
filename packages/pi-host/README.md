@@ -24,7 +24,7 @@ Beside the Pi sessions, pi-host serves durable threads: one pi-durable Harness p
 The chat reaches them through the `durable_*` commands on the same socket.
 `src/durable/README.md` describes the files, the commands and the crash tests.
 
-`pi-host.service.template` is a systemd user unit for later, and nothing enables it.
+`scripts/install-pi-host-box.mjs` writes and starts pi-host's unit: the systemd user unit `pi-host.service` on Linux and the launchd job `com.sieun.pi-host` on macOS.
 
 ## Files
 
