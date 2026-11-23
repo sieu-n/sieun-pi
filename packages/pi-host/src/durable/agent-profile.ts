@@ -184,7 +184,7 @@ export const ROOM_EXAMPLES: readonly { case: string; bad: { at: string; text: st
   {
     case: "Data from a file or log",
     bad: { at: "dm_blind-reactions-11212039433x p4", text: "Here's your question as it sits in that file now:\n- `{\"t\":\"post\",\"post\":{\"author\":\"owner\",\"text\":\"where does the chat server keep a room's posts?\",\"id\":\"p2\",...}}`" },
-    good: { at: "ch_0af55d83 p3", text: "one append-only log file per room, `~/.pi/agent/chat/rooms/<room id>.jsonl`, written by `apps/chat/server/agent-store.ts:392`" },
+    good: { at: "ch_0af55d83 p3", text: "one append-only log file per room, `~/.pi/agent/chat/rooms/<room id>.jsonl`, written by `apps/chat/server/post-log.ts:135`" },
   },
   {
     case: "A duty or sweep result",

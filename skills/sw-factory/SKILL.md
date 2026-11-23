@@ -9,6 +9,14 @@ sw factory is the Slack-like app on :5184, `apps/chat` in sieun-pi, over pi-host
 The Prime agent chat on :5182 is its older sibling, `legacy/prime/user-history`.
 Each agent has one comm thread per room that talks there, and a work thread that does the work (`apps/chat/docs/agent-model.md`).
 
+## Where the chat server keeps its data
+
+The chat server's data dir is `~/.pi/agent/chat` on us-metal02.
+Its `chat.sqlite` holds the agents, rooms, read marks, For lists, channels, caches, host routes, Later, wakes, duties, board writes and the skills DB.
+Room posts stay in `rooms/<room id>.jsonl` and the outbox in `outbox.jsonl` until their own move.
+The JSON files of the kinds that moved are rollback exports until 2026-11-30, so read the rows, not those files.
+`sw db` lists the kinds chat.sqlite holds right now, and wiki:domains/devops/sw-factory/explanation/storage.html explains every store.
+
 ## Building the UI
 
 Don't put `backdrop-filter` on an element repeated across a list or grid, because in WebKit, the Mac app's engine, it stalls every frame (12 blurred model pills froze `#/agents` for 8 s or more; fix 45b23e9f).
@@ -204,7 +212,7 @@ Here's your question as it sits in that file now:
 ```
 
 ```markdown
-one append-only log file per room, `~/.pi/agent/chat/rooms/<room id>.jsonl`, written by `apps/chat/server/agent-store.ts:392`
+one append-only log file per room, `~/.pi/agent/chat/rooms/<room id>.jsonl`, written by `apps/chat/server/post-log.ts:135`
 ```
 
 A duty or sweep result, bad (dm_fable-auditor p14) and then good (that post in his words, after his p15 and p16).
