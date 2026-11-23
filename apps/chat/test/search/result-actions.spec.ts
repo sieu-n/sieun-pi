@@ -30,13 +30,13 @@ test("hovering a channel post's result saves it for later, copies its link and o
   await expect(bar.getByRole("button")).toHaveCount(5);
   await expect(bar.getByRole("button", { name: "Add reaction" })).toBeVisible();
 
-  await bar.getByRole("button", { name: "Save for later" }).click();
-  await expect(bar.getByRole("button", { name: "Remove from Later" })).toHaveAttribute("aria-pressed", "true");
+  await bar.getByRole("button", { name: "Save" }).click();
+  await expect(bar.getByRole("button", { name: "Remove from Saved" })).toHaveAttribute("aria-pressed", "true");
   const saved = await (await page.request.get("/api/later?state=open")).json() as { items: { id: string }[] };
   expect(saved.items.map(item => item.id)).toContain(`${hit.conversation.id}:${hit.messageId}`);
-  await bar.getByRole("button", { name: "Remove from Later" }).click();
-  await expect(page.getByText("Removed from Later")).toBeVisible();
-  await expect(bar.getByRole("button", { name: "Save for later" })).toHaveAttribute("aria-pressed", "false");
+  await bar.getByRole("button", { name: "Remove from Saved" }).click();
+  await expect(page.getByText("Removed from Saved")).toBeVisible();
+  await expect(bar.getByRole("button", { name: "Save" })).toHaveAttribute("aria-pressed", "false");
 
   await bar.getByRole("button", { name: "Copy link" }).click();
   await expect(page.getByText("Link copied")).toBeVisible();
@@ -53,7 +53,7 @@ test("a right-click on a result opens every action at the pointer, and a job's r
   await card.scrollIntoViewIfNeeded();
   await card.locator("[data-result-snippet]").click({ button: "right" });
   const menu = page.getByRole("menu", { name: "Message actions" });
-  await expect(menu.getByRole("menuitem")).toHaveText(["Reply in thread", "Save for later", "Copy link", "Mark unread", /Remind me about this/]);
+  await expect(menu.getByRole("menuitem")).toHaveText(["Reply in thread", "Save", "Copy link", "Mark unread", /Remind me about this/]);
   await page.keyboard.press("Escape");
   await expect(menu).toBeHidden();
 

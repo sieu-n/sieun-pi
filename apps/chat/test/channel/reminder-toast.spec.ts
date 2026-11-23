@@ -3,11 +3,11 @@ import { open, tag } from "./helpers.ts";
 
 /**
  * A due reminder as Slack's Slackbot message has it: the toast carries View, Mark complete and a Snooze menu (lib/remind-live.ts). Undo
- * after Remove from Later puts the row back with its reminder (server/later.ts `restore`), and a post kept unread reads as coming back
+ * after Remove from Saved puts the row back with its reminder (server/later.ts `restore`), and a post kept unread reads as coming back
  * unread, never as a reminder he set. Each run makes its own test channel on the fixture server. The server sends a test room's due
  * reminder only to the pages that have that room open (server/app.ts `later_due`), so the toasts of one test never land on another
- * test's page, where four due reminders at once pushed out a "Removed from Later" toast before its Undo was clicked. The pages open
- * with `?test=1`, as a walk does, so Later reads keep the test room's rows.
+ * test's page, where four due reminders at once pushed out a "Removed from Saved" toast before its Undo was clicked. The pages open
+ * with `?test=1`, as a walk does, so Saved reads keep the test room's rows.
  */
 type Sent = { room: string; id: string; text: string };
 async function posts(page: Page, count: number): Promise<Sent[]> {
@@ -76,26 +76,26 @@ test("a due reminder's toast goes away when another tab or the Mac app checks it
   await expect(toastB).toHaveCount(0);
 });
 
-test("Undo after Remove from Later brings the row back with its reminder", async ({ page }) => {
+test("Undo after Remove from Saved brings the row back with its reminder", async ({ page }) => {
   const a = await post(page);
   const remindAt = Date.now() + 2 * 3_600_000;
   await page.request.post("/api/later", { data: { room: a.room, post: a.id, remindAt } });
-  await open(page, "#/c/later?test=1", "later-page");
+  await open(page, "#/c/saved?test=1", "later-page");
   const row = page.locator(`[data-later-id="${a.room}:${a.id}"]`);
   await expect(row.locator("[data-later-due]")).toContainText("Due");
   await row.hover();
   await row.locator("[data-later-remove]").click();
   await expect(row).toHaveCount(0);
-  await page.locator(".toast").filter({ hasText: "Removed from Later" }).getByRole("button", { name: "Undo" }).click();
+  await page.locator(".toast").filter({ hasText: "Removed from Saved" }).getByRole("button", { name: "Undo" }).click();
   await expect(row.locator("[data-later-due]")).toContainText("Due");
-  await expect(page.locator(".toast").filter({ hasText: "Saved for later" })).toHaveCount(0);
+  await expect(page.locator(".toast").filter({ hasText: "Add memo" })).toHaveCount(0);
   expect((await item(page, `${a.room}:${a.id}`))?.remindAt).toBe(remindAt);
 });
 
 test("a post kept unread says when it comes back unread, not a due time", async ({ page }) => {
   const a = await post(page);
   await page.request.post(`/api/c/${a.room}/read`, { data: { unreadFrom: a.id } });
-  await open(page, "#/c/later?test=1", "later-page");
+  await open(page, "#/c/saved?test=1", "later-page");
   const row = page.locator(`[data-later-id="${a.room}:${a.id}"]`);
   await expect(row.locator("[data-later-due]")).toContainText("Comes back unread");
   await row.hover();

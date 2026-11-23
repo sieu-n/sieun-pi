@@ -41,7 +41,7 @@ test("a room post's bar holds Slack's seven buttons and Mark as done, and sits a
   await post.evaluate((el) => el.scrollIntoView({ block: "center" }));
   await post.hover();
   await expect(post.locator("[data-quick-reaction]")).toHaveCount(3);
-  expect((await labels(post)).slice(3)).toEqual(["Add reaction", "Reply in thread", "Save for later", "Mark as done", "More actions"]);
+  expect((await labels(post)).slice(3)).toEqual(["Add reaction", "Reply in thread", "Save", "Mark as done", "More actions"]);
   const { bar, text } = await geometry(post);
   expect(bar.y + bar.height).toBeLessThanOrEqual(text.top + 1);
 });
@@ -72,7 +72,7 @@ test("a thread reply's bar in the narrow pane keeps Add reaction, Save and More,
   await expect(reply).toBeVisible();
   await reply.hover();
   await expect(reply.locator("[data-message-menu]")).toBeVisible();
-  expect(await labels(reply)).toEqual(["Add reaction", "Save for later", "More actions"]);
+  expect(await labels(reply)).toEqual(["Add reaction", "Save", "More actions"]);
   const { bar, text } = await geometry(reply);
   expect(bar.y + bar.height).toBeLessThanOrEqual(text.top + 1);
 });

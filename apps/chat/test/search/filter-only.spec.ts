@@ -65,7 +65,7 @@ test("has:, is:, on: and during: become chips, and has: prompts its choices", as
   await bar(page).locator("[data-chip=has]").click();
   const menu = page.getByRole("menu", { name: "Has" });
   await expect(menu.getByRole("menuitemcheckbox", { name: /Has a link/ })).toHaveAttribute("aria-checked", "true");
-  await expect(menu.getByRole("menuitemcheckbox", { name: /Saved for later/ })).toHaveAttribute("aria-checked", "true");
+  await expect(menu.getByRole("menuitemcheckbox", { name: /^Saved/ })).toHaveAttribute("aria-checked", "true");
 });
 
 test("a search with no hits offers to search everywhere, then to drop the filters", async ({ page }) => {

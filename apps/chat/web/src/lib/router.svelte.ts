@@ -8,7 +8,8 @@
  *   #/c/for-you, #/c/for-you/<chat>/<todo>  Messages, For you, optionally with one ask open
  *   #/agents, #/agents/<sub>                Agents
  *   #/board, #/board/<chat>                 Board, the index or one chat's board
- *   #/c/later, #/c/later/done               Messages, Later: the posts the owner saved, In progress or Completed
+ *   #/c/saved, #/c/saved/archived, /done    Messages, Saved: the posts, wiki pages and reminders the owner saved, by tab;
+ *                                           ?q= searches them, ?kind=message|page|reminder and ?in=<room> filter them
  *   #/c/wiki?q=                             Messages, Wiki: favorite and recent wiki pages, and a search by title (pages/wiki)
  *   #/c/unreads                             Messages, All unreads: the new posts of every unread room in one scroll (Cmd+Shift+A)
  *   #/c/drafts                              Messages, Drafts: every unsent draft in this browser (lib/drafts.svelte.ts)
@@ -19,8 +20,8 @@
  *   #/ui                                    The lib/ui gallery, not in the top bar
  *
  * Messages, Agents and Board are the roots in the top bar; each picks its own left sidebar in lib/shell/Shell.svelte.
- * The old #/usage, #/hosts, #/accounts, #/board/for-you and #/later links redirect to #/settings/usage, #/settings/hosts,
- * #/settings/accounts, #/c/for-you and #/c/later with the rest of their path and their query kept.
+ * The old #/usage, #/hosts, #/accounts, #/board/for-you, #/later and #/c/later links redirect to #/settings/usage, #/settings/hosts,
+ * #/settings/accounts, #/c/for-you and #/c/saved with the rest of their path and their query kept.
  */
 
 export type PageId = "messages" | "agents" | "board" | "settings" | "search" | "ui";
@@ -53,7 +54,8 @@ const MOVED: readonly (readonly [from: string, to: string])[] = [
   ["hosts", "settings/hosts"],
   ["accounts", "settings/accounts"],
   ["board/for-you", "c/for-you"],
-  ["later", "c/later"],
+  ["later", "c/saved"],
+  ["c/later", "c/saved"],
 ];
 
 /** The new link for an old hash such as `#/usage`, `#/accounts/codex` or `#/board/for-you/<chat>/<todo>`, or null when the hash did not move. */
@@ -67,7 +69,7 @@ export function movedHash(hash: string): string | null {
 }
 
 /** First segments under `#/c/` that open a Messages view instead of a conversation. */
-export const MESSAGES_VIEWS = ["new", "for-you", "later", "wiki", "drafts", "unreads"] as const;
+export const MESSAGES_VIEWS = ["new", "for-you", "saved", "wiki", "drafts", "unreads"] as const;
 export type MessagesView = (typeof MESSAGES_VIEWS)[number];
 
 const isMessagesView = (segment: string | undefined): segment is MessagesView => (MESSAGES_VIEWS as readonly (string | undefined)[]).includes(segment);

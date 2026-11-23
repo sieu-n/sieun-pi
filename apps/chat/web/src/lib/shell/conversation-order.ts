@@ -45,7 +45,7 @@ export function sidebarStops(): SidebarStop[] {
 
 /** The view rows at the top of the Messages sidebar, in its order. */
 const VIEW_ROWS: readonly (readonly [MessagesView, () => string])[] = [
-  ["later", laterHref],
+  ["saved", laterHref],
   ["drafts", draftsHref],
   ["for-you", () => forYouHref()],
   ["wiki", wikiHref],

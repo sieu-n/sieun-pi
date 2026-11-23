@@ -63,10 +63,10 @@ test("A saves the hovered post for later, M opens Remind me, U marks it unread, 
   const post = row(page, posts[2]!);
   await post.hover();
   await page.keyboard.press("a");
-  await expect(post.locator("[data-saved-label]")).toContainText("Saved for later");
+  await expect(post.locator("[data-saved-label]")).toContainText("Saved");
 
   await post.locator("[data-save-later]").hover();
-  await expect(page.locator("[role=tooltip]").filter({ hasText: "Remove from Later" }).locator("kbd")).toHaveText("A");
+  await expect(page.locator("[role=tooltip]").filter({ hasText: "Remove from Saved" }).locator("kbd")).toHaveText("A");
 
   await post.hover({ position: { x: 60, y: 10 } });
   await page.keyboard.press("m");

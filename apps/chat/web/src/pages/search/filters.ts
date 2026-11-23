@@ -24,7 +24,7 @@ export const MARKS: readonly { id: SearchHas; label: string; short: string; type
   { id: "link", label: "Has a link", short: "Link", typed: "has:link" },
   { id: "reaction", label: "Has a reaction", short: "Reaction", typed: "has:reaction" },
   { id: "pin", label: "Pinned", short: "Pinned", typed: "has:pin" },
-  { id: "saved", label: "Saved for later", short: "Saved", typed: "is:saved" },
+  { id: "saved", label: "Saved", short: "Saved", typed: "is:saved" },
 ];
 
 /**

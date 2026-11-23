@@ -12,7 +12,7 @@ test.afterAll(({ request }) => resetOwnerSettings(request));
 
 test.beforeEach(async ({ page }) => {
   await resetOwnerSettings(page.request);
-  await page.goto("/#/c/later");
+  await page.goto("/#/c/saved");
   await expect(profile(page)).toBeVisible({ timeout: 20_000 });
 });
 
@@ -75,7 +75,7 @@ test("Back and Forward grey out at the ends, and History lists the places opened
   await page.evaluate(() => (location.hash = "#/c/for-you"));
   await expect(back).toBeEnabled();
   await back.click();
-  await expect.poll(() => page.evaluate(() => location.hash)).toBe("#/c/later");
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe("#/c/saved");
   await expect(back).toBeDisabled();
   await expect(forward).toBeEnabled();
   await forward.click();
@@ -83,8 +83,8 @@ test("Back and Forward grey out at the ends, and History lists the places opened
 
   await page.locator("header.topbar").getByRole("button", { name: "History" }).click();
   const history = page.getByRole("menu", { name: "History" });
-  await history.getByRole("menuitem", { name: /Later/ }).click();
-  await expect.poll(() => page.evaluate(() => location.hash)).toBe("#/c/later");
+  await history.getByRole("menuitem", { name: /Saved/ }).click();
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe("#/c/saved");
 });
 
 test("At 110% in a 900 px window the History button stays clear of the capsule", async ({ page }) => {

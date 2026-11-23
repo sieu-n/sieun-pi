@@ -17,7 +17,7 @@ const profile = (page: Page) => page.locator("header.topbar button.profile");
 const recent = (page: Page) => page.locator("[data-search-palette] [role=group][aria-label='Recent searches'] [data-search-result]");
 
 async function openApp(page: Page): Promise<void> {
-  await page.goto("/#/c/later");
+  await page.goto("/#/c/saved");
   await expect(profile(page)).toBeVisible({ timeout: 20_000 });
 }
 

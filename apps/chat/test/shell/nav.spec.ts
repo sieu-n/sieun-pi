@@ -30,24 +30,24 @@ test("the top bar holds only Messages, Agents and Board, with Usage, Hosts and A
   await expect(bar.getByText("Accounts")).toHaveCount(0);
 });
 
-test("Later is the first row of the Messages sidebar, opens In progress and Completed in the main pane, and old #/later links land there", async ({ page }) => {
+test("Saved is the first row of the Messages sidebar, opens In progress and Completed in the main pane, and old #/later links land there", async ({ page }) => {
   const rows = page.getByRole("navigation", { name: "Conversations" }).locator("[data-sidebar-row]");
   const row = rows.first();
-  await expect(row).toHaveText(/^\s*Later\b/);
+  await expect(row).toHaveText(/^\s*Saved\b/);
   await row.click();
-  await expect(page).toHaveURL(/#\/c\/later$/);
+  await expect(page).toHaveURL(/#\/c\/saved$/);
   await expect(row).toHaveAttribute("aria-current", "page");
   await expect(page.getByRole("navigation", { name: "Pages" }).getByRole("tab", { name: "Messages" })).toHaveAttribute("aria-selected", "true");
-  const tabs = page.getByRole("tablist", { name: "Later" });
+  const tabs = page.getByRole("tablist", { name: "Saved" });
   await expect(tabs.getByRole("tab", { name: /In progress/ })).toHaveAttribute("aria-selected", "true");
   await tabs.getByRole("tab", { name: "Completed" }).click();
-  await expect(page).toHaveURL(/#\/c\/later\/done$/);
+  await expect(page).toHaveURL(/#\/c\/saved\/done$/);
   await expect(row).toHaveAttribute("aria-current", "page");
   await page.goto("/#/later/done");
-  await expect(page).toHaveURL(/#\/c\/later\/done$/);
+  await expect(page).toHaveURL(/#\/c\/saved\/done$/);
   await expect(tabs.getByRole("tab", { name: "Completed" })).toHaveAttribute("aria-selected", "true");
   await page.goto("/#/later");
-  await expect(page).toHaveURL(/#\/c\/later$/);
+  await expect(page).toHaveURL(/#\/c\/saved$/);
   await expect(row).toHaveAttribute("aria-current", "page");
 });
 

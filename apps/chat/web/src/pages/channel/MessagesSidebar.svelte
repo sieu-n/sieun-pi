@@ -272,7 +272,7 @@
   {/snippet}
 
   <div class="rows">
-    <SidebarRow href={laterHref()} label="Later" icon="bookmark" selected={router.messagesView === "later"}>
+    <SidebarRow href={laterHref()} label="Saved" icon="bookmark" selected={router.messagesView === "saved"}>
       {#snippet trailing()}
         {#if later.open}<span class="count" title="{later.open} in progress">{later.open}</span>{/if}
         {#if later.due}<Badge value={later.due} tone="danger" title="{later.due} due" />{/if}

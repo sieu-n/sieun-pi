@@ -80,7 +80,7 @@
   function unread() {
     if (!room) return;
     markUnread(room, hit.messageId, hit.thread?.root).then(
-      () => toast.show("Marked as unread. It stays in Later until you reply, react or check it off."),
+      () => toast.show("Marked as unread. It stays in Saved until you reply, react or check it off."),
       () => toast.error("Could not mark the message unread"),
     );
   }
@@ -99,7 +99,7 @@
       ? [
           ...(threadKey ? [{ id: "reply", label: "Reply in thread", icon: "reply", onselect: reply } satisfies MenuEntry] : []),
           ...(room
-            ? [{ id: "later", label: saved ? "Remove from Later" : "Save for later", icon: saved ? "bookmark-filled" : "bookmark", onselect: () => void later.toggle(room!, post) } satisfies MenuEntry]
+            ? [{ id: "later", label: saved ? "Remove from Saved" : "Save", icon: saved ? "bookmark-filled" : "bookmark", onselect: () => void later.toggle(room!, post) } satisfies MenuEntry]
             : []),
           ...moreItems,
         ]
@@ -162,7 +162,7 @@
     {/if}
     {#if threadKey}<IconButton icon="reply" label="Reply in thread" size="sm" onclick={reply} data-result-reply />{/if}
     {#if room}
-      <IconButton icon={saved ? "bookmark-filled" : "bookmark"} label={saved ? "Remove from Later" : "Save for later"} size="sm" pressed={saved} onclick={() => room && void later.toggle(room, post)} data-save-later />
+      <IconButton icon={saved ? "bookmark-filled" : "bookmark"} label={saved ? "Remove from Saved" : "Save"} size="sm" pressed={saved} onclick={() => room && void later.toggle(room, post)} data-save-later />
     {/if}
     <IconButton icon="link" label="Copy link" size="sm" onclick={copyLink} data-result-copy-link />
     {#if room}

@@ -65,14 +65,14 @@ test.beforeEach(async ({ page }) => {
   // Opening a row marks it read on the one fixture server, and a walk opens every row, so the specs that count on the seeded unread rows
   // would find them read. The page keeps its own read marks; the server keeps the seed's.
   await page.route(/\/api\/c\/[^/]+\/read$/, (route) => (route.request().method() === "POST" ? route.fulfill({ json: { ok: true } }) : route.fallback()));
-  await page.goto("/#/c/later");
+  await page.goto("/#/c/saved");
   await expect(rows(page).first()).toBeVisible({ timeout: 20_000 });
 });
 
 test("Alt+Down and Alt+Up step through the sidebar rows in the order they are drawn", async ({ page }) => {
   const hrefs = (await sidebarHrefs(page)).map((r) => r.href);
   expect(hrefs.length).toBeGreaterThan(3);
-  expect(hrefs[0]).toBe("#/c/later");
+  expect(hrefs[0]).toBe("#/c/saved");
   // The walk opens every row, and other specs keep adding rooms: a full run drew 68 rows, and under its load 24 steps took 26 s.
   test.setTimeout(30_000 + hrefs.length * 1_100);
   while (await step(page, 1));
@@ -108,7 +108,7 @@ test("Alt+Shift+Down jumps to the next unread conversation drawn, past an unread
   }
 });
 
-test("Alt+Shift+Down from Later reaches the first unread row drawn, or says there is none", async ({ page }) => {
+test("Alt+Shift+Down from Saved reaches the first unread row drawn, or says there is none", async ({ page }) => {
   const target = await nextUnreadTarget(page);
   await page.keyboard.press("Alt+Shift+ArrowDown");
   if (target) await expect.poll(() => hash(page)).toBe(target);
@@ -122,7 +122,7 @@ test("Cmd+/ opens the shortcuts sheet, and Esc closes it", async ({ page }) => {
   await expect(sheet.locator('[data-shortcut="next-unread"]')).toContainText("Next unread conversation");
   await expect(sheet.locator('[data-shortcut="mark-unread"]')).toContainText("on a focused or hovered message");
   await page.keyboard.press("Alt+ArrowDown");
-  expect(await hash(page)).toBe("#/c/later");
+  expect(await hash(page)).toBe("#/c/saved");
   await page.keyboard.press("Escape");
   await expect(sheet).toBeHidden();
 });
@@ -141,11 +141,11 @@ test("Cmd+2, Cmd+3, Cmd+1, Cmd+comma, Cmd+Shift+K, Cmd+Shift+M and Cmd+Shift+S o
   const cases: [string, RegExp][] = [
     ["ControlOrMeta+2", /^#\/agents/],
     ["ControlOrMeta+3", /^#\/board/],
-    ["ControlOrMeta+1", /^#\/c\/later/],
+    ["ControlOrMeta+1", /^#\/c\/saved/],
     ["ControlOrMeta+,", /^#\/settings/],
     ["ControlOrMeta+Shift+K", /^#\/c\/new\?kind=dm/],
     ["ControlOrMeta+Shift+M", /^#\/c\/for-you/],
-    ["ControlOrMeta+Shift+S", /^#\/c\/later/],
+    ["ControlOrMeta+Shift+S", /^#\/c\/saved/],
   ];
   for (const [keys, want] of cases) {
     await page.keyboard.press(keys);

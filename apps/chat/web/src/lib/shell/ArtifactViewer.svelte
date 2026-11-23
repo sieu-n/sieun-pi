@@ -452,7 +452,7 @@
   {#if view?.kind === "wiki"}<IconButton icon="forward" label="Share" size="sm" onclick={() => (sharing = true)} data-share-page />{/if}
   {#if view?.kind === "wiki" && wikiPath}
     {@const pageSaved = !!later.pageRow(framePath ?? wikiPath)}
-    <IconButton icon={pageSaved ? "bookmark-filled" : "bookmark"} label={pageSaved ? "Remove from Later" : "Save for later"} size="sm" pressed={pageSaved} onclick={() => wikiPath && void later.togglePage(framePath ?? wikiPath, title)} data-save-page />
+    <IconButton icon={pageSaved ? "bookmark-filled" : "bookmark"} label={pageSaved ? "Remove from Saved" : "Save"} size="sm" pressed={pageSaved} onclick={() => wikiPath && void later.togglePage(framePath ?? wikiPath, title)} data-save-page />
   {/if}
   <IconButton icon="link" label="Copy link" size="sm" onclick={copyLink} />
   {#if view?.kind === "wiki"}<IconButton icon="external" label="Open in new tab" size="sm" href={tabHref} target="_blank" />{:else}<Button size="sm" variant="ghost" icon="external" href={tabHref} target="_blank">Open in new tab</Button>{/if}

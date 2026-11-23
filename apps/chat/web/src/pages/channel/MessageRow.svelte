@@ -235,7 +235,7 @@
   function unread() {
     if (!reactable || !room) return;
     markUnread(room, reactable.id, reactable.threadRoot).then(
-      () => toast.show("Marked as unread. It stays in Later until you reply, react or check it off."),
+      () => toast.show("Marked as unread. It stays in Saved until you reply, react or check it off."),
       () => toast.error("Could not mark the message unread"),
     );
     dropBar();
@@ -315,7 +315,7 @@
     {#if canReply}<IconButton icon="reply" label="Reply in thread" shortcut="T" size="sm" onclick={() => onthread(replyKey)} />{/if}
     {#if reactable && room}
       <IconButton icon="forward" label="Forward message" size="sm" onclick={() => (forwarding = true)} data-forward-message />
-      <IconButton icon={saved ? "bookmark-filled" : "bookmark"} label={saved ? "Remove from Later" : "Save for later"} shortcut="A" size="sm" pressed={saved} onclick={() => room && reactable && later.toggle(room, reactable)} data-save-later />
+      <IconButton icon={saved ? "bookmark-filled" : "bookmark"} label={saved ? "Remove from Saved" : "Save"} shortcut="A" size="sm" pressed={saved} onclick={() => room && reactable && later.toggle(room, reactable)} data-save-later />
     {/if}
     {#if doneable}<IconButton icon="check" label={done ? "Reopen thread" : "Mark as done"} size="sm" pressed={!!done} onclick={toggleDone} data-thread-done-toggle />{/if}
     <IconButton icon="more" label="More actions" size="sm" aria-haspopup="menu" aria-expanded={menuOpen} bind:element={moreButton} onclick={() => (menuOpen = !menuOpen)} data-message-menu />
@@ -330,7 +330,7 @@
 {/snippet}
 
 {#snippet savedLabel()}
-  <p class="saved-label" data-saved-label><Icon name="bookmark-filled" size={12} /><a href={laterHref()}>{reactable?.later?.unread ? "Kept unread in Later" : "Saved for later"}</a>{#if reactable?.later?.remindAt !== undefined}{@const due = dueLabel(reactable.later.remindAt, Date.now(), !!reactable.later.unread)}<span aria-hidden="true">·</span><span class="saved-due" class:overdue={due.due} data-saved-due>{due.text}</span>{/if}</p>
+  <p class="saved-label" data-saved-label><Icon name="bookmark-filled" size={12} /><a href={laterHref()}>{reactable?.later?.unread ? "Kept unread in Saved" : "Saved"}</a>{#if reactable?.later?.remindAt !== undefined}{@const due = dueLabel(reactable.later.remindAt, Date.now(), !!reactable.later.unread)}<span aria-hidden="true">·</span><span class="saved-due" class:overdue={due.due} data-saved-due>{due.text}</span>{/if}</p>
 {/snippet}
 
 {#snippet images()}

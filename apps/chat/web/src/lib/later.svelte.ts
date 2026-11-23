@@ -1,7 +1,7 @@
 /**
- * Slack's Save for later on the page: the owner's Later list for the Later page, and the save and unsave every message's bookmark button
- * and menu item call (server/later.ts). A post's own `later` mark says whether it is saved; `optimistic` covers the moment between his
- * click and the post the server sends back, so the bookmark fills at once.
+ * Slack's saved items on the page: the owner's Saved list for the Saved page, the save and unsave every message's bookmark button and menu
+ * item call, and the memo he writes on a saved item (server/later.ts). A post's own `later` mark says whether it is saved; `optimistic`
+ * covers the moment between his click and the post the server sends back, so the bookmark fills at once.
  */
 import { SvelteMap } from "svelte/reactivity";
 import { api, type Item, type LaterItem, type LaterList, type LaterMark, type LaterRow, type LaterState, type Wait } from "$lib/api";
@@ -9,6 +9,7 @@ import { live } from "$lib/api/live.svelte";
 import { hrefFor, router } from "$lib/router.svelte";
 import { isOverdue, remindedText } from "$lib/remind";
 import { askNotifyPermission } from "$lib/remind-notify";
+import { savedPage } from "$lib/saved-items";
 import type { MenuEntry } from "$lib/ui/menu";
 import { toast } from "$lib/ui/toast.svelte";
 
@@ -23,21 +24,32 @@ class LaterStore {
   archived = $state(0);
   done = $state(0);
   error = $state<string | null>(null);
-  /** Whether the last read kept test-room posts, for `#/c/later?test=1`. */
+  /** Whether the last read kept test-room posts, for `#/c/saved?test=1`. */
   withTest = $state(false);
   /** Saves and unsaves on their way, by `<room>:<post>`, which the bookmark shows before the server's answer. */
   readonly optimistic = new SvelteMap<string, boolean>();
   private started = false;
   private latest = 0;
   private timer: ReturnType<typeof setTimeout> | undefined;
-  /** The last Later toast, which the next one replaces, so three quick saves show one toast as in Slack. */
+  /** The last Saved toast, which the next one replaces, so three quick saves show one toast as in Slack. */
   private toastId: number | undefined;
+  /** The item whose memo the save toast's Add memo is writing (lib/MemoPrompt.svelte), or null. */
+  memoPrompt = $state<{ id: string; memo: string } | null>(null);
   /** The toast of each due reminder this tab shows, by row id, with the reminder time it fell due at. */
   private readonly dueToasts = new Map<string, { toast: number; remindAt?: number; test: boolean }>();
 
-  private note(text: string, action: { label: string; run: () => void }): void {
+  private note(text: string, ...actions: { label: string; run: () => void }[]): void {
     if (this.toastId !== undefined) toast.dismiss(this.toastId);
-    this.toastId = toast.show(text, { action });
+    this.toastId = toast.show(text, { actions });
+  }
+
+  /** The toast after a save: Add memo opens the memo field over where the toast sat, and View opens Saved. */
+  private savedToast(item: Pick<LaterItem, "id" | "memo">): void {
+    this.note(
+      "Saved",
+      { label: item.memo ? "Edit memo" : "Add memo", run: () => (this.memoPrompt = { id: item.id, memo: item.memo ?? "" }) },
+      { label: "View", run: () => router.navigate(laterHref()) },
+    );
   }
 
   start(): void {
@@ -55,8 +67,8 @@ class LaterStore {
   }
 
   /**
-   * Reads every tab; only the newest read writes. A walk opens `#/c/later?test=1` to see the posts it saved in its test rooms, which the
-   * owner's Later leaves out. `behind` reads behind what the page shows, after a reconnect, in the lane behind his calls (client.ts).
+   * Reads every tab; only the newest read writes. A walk opens `#/c/saved?test=1` to see the posts it saved in its test rooms, which the
+   * owner's Saved list leaves out. `behind` reads behind what the page shows, after a reconnect, in the lane behind his calls (client.ts).
    */
   async refresh(behind = false): Promise<void> {
     const mine = ++this.latest;
@@ -69,7 +81,7 @@ class LaterStore {
       this.set(open, archived, done);
       this.error = null;
     } catch (error) {
-      if (mine === this.latest) this.error = error instanceof Error ? error.message : "Could not read Later.";
+      if (mine === this.latest) this.error = error instanceof Error ? error.message : "Could not read your saved items.";
     }
   }
 
@@ -99,7 +111,7 @@ class LaterStore {
     }
   }
 
-  /** Open rows whose reminder came due and is not done or snoozed, which the sidebar's Later row counts in red, as Slack's Later badge does. */
+  /** Open rows whose reminder came due and is not done or snoozed, which the sidebar's Saved row counts in red, as Slack's Later badge does. */
   get due(): number {
     return this.lists.open?.filter((row) => isOverdue(row)).length ?? 0;
   }
@@ -115,7 +127,7 @@ class LaterStore {
     return row ? { saved: true, ...(row.remindAt !== undefined ? { remindAt: row.remindAt } : {}) } : undefined;
   }
 
-  /** Remind me about this on a post: saves it for later with the reminder, or clears the reminder and keeps the save. */
+  /** Remind me about this on a post: saves it with the reminder, or clears the reminder and keeps the save. */
   async remindPost(room: string, post: string, at: number | null): Promise<void> {
     try {
       if (at === null) await api.patchLater(key(room, post), { remindAt: null });
@@ -132,8 +144,8 @@ class LaterStore {
   async save(room: string, post: string): Promise<void> {
     this.optimistic.set(key(room, post), true);
     try {
-      await api.saveLater(room, post);
-      this.note("Saved for later", { label: "View", run: () => router.navigate(laterHref()) });
+      const { item } = await api.saveLater(room, post);
+      this.savedToast(item);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not save the message");
     } finally {
@@ -146,9 +158,9 @@ class LaterStore {
     this.optimistic.set(key(room, post), false);
     try {
       const { item } = await api.unsaveLater(key(room, post));
-      this.note("Removed from Later", { label: "Undo", run: () => void (item ? this.restore(item) : this.save(room, post)) });
+      this.note("Removed from Saved", { label: "Undo", run: () => void (item ? this.restore(item) : this.save(room, post)) });
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not remove the message from Later");
+      toast.error(error instanceof Error ? error.message : "Could not remove the message from Saved");
     } finally {
       this.optimistic.delete(key(room, post));
     }
@@ -160,24 +172,24 @@ class LaterStore {
     try {
       await api.restoreLater(item);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not put the message back in Later");
+      toast.error(error instanceof Error ? error.message : "Could not put the message back in Saved");
     } finally {
       if (saved) this.optimistic.delete(saved);
     }
   }
 
-  /** The open Later row that saves this wiki page, a note whose text is the page's link. */
+  /** The open Saved row that saves this wiki page, a note whose text is the page's link. */
   pageRow(path: string): LaterRow | undefined {
     return this.lists.open?.find((row) => row.room === undefined && savedPage(row.text)?.path === path);
   }
 
-  /** A canvas's Save for later on a wiki page: a Later note whose text is the page's link, or Remove from Later when the page is saved. */
+  /** A canvas's Save on a wiki page: a saved note whose text is the page's link, or Remove from Saved when the page is saved. */
   async togglePage(path: string, title: string): Promise<void> {
     const row = this.pageRow(path);
     if (row) return this.remove(row);
     try {
-      await api.remindNote(`[${title.replace(/[[\]]/g, "") || path}](wiki:${path})`);
-      this.note("Saved for later", { label: "View", run: () => router.navigate(laterHref()) });
+      const { item } = await api.remindNote(`[${title.replace(/[[\]]/g, "") || path}](wiki:${path})`);
+      this.savedToast(item);
       void this.refresh();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not save the page");
@@ -220,15 +232,34 @@ class LaterStore {
     if (from !== state) void this.refresh();
   }
 
-  /** Unsaves a row from the Later page. */
+  /** Sets an item's memo, or clears it when the text is blank; its row shows the new memo at once and goes back if the write fails. */
+  async setMemo(id: string, text: string): Promise<void> {
+    const memo = text.trim() || undefined;
+    const before = [this.lists.open, this.lists.archived, this.lists.done].flatMap((list) => list ?? []).find((r) => r.id === id);
+    if (before && before.memo === memo) return;
+    this.memoOf(id, memo);
+    try {
+      await api.patchLater(id, { memo: memo ?? null });
+    } catch (error) {
+      if (before) this.memoOf(id, before.memo);
+      toast.error(error instanceof Error ? error.message : "Could not save the memo");
+    }
+  }
+
+  private memoOf(id: string, memo: string | undefined): void {
+    const set = (list: LaterRow[] | null) => list?.map((r) => (r.id === id ? { ...r, memo } : r)) ?? null;
+    this.lists = { open: set(this.lists.open), archived: set(this.lists.archived), done: set(this.lists.done) };
+  }
+
+  /** Unsaves a row from the Saved page. */
   async remove(row: LaterRow): Promise<void> {
     this.lists = { ...this.lists, [row.state]: this.lists[row.state]?.filter((r) => r.id !== row.id) ?? null };
     if (row.room !== undefined) return this.unsave(row.room, row.post);
     try {
       const { item } = await api.unsaveLater(row.id);
-      if (item) this.note("Removed from Later", { label: "Undo", run: () => void this.restore(item) });
+      if (item) this.note("Removed from Saved", { label: "Undo", run: () => void this.restore(item) });
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not remove the reminder from Later");
+      toast.error(error instanceof Error ? error.message : "Could not remove the item from Saved");
     }
   }
 
@@ -244,20 +275,14 @@ class LaterStore {
 
 export const later = new LaterStore();
 
-/** Later is a Messages view: `#/c/later` is In progress, `#/c/later/archived` Archived and `#/c/later/done` Completed. */
-export const laterHref = (state: LaterState = "open"): string => hrefFor("messages", state === "open" ? ["later"] : ["later", state]);
+/** Saved is a Messages view: `#/c/saved` is In progress, `#/c/saved/archived` Archived and `#/c/saved/done` Completed. */
+export const laterHref = (state: LaterState = "open"): string => hrefFor("messages", state === "open" ? ["saved"] : ["saved", state]);
 
-/** The wiki page a Later note saves, when its text is the `[title](wiki:path)` link the viewer's Save for later writes. */
-export function savedPage(text: string): { title: string; path: string } | null {
-  const match = /^\[([^\]]*)\]\(wiki:([^)\s]+)\)$/.exec(text.trim());
-  return match ? { title: match[1]!, path: match[2]! } : null;
-}
-
-/** The message menu's Save for later item, or Remove from Later on a saved post. */
+/** The message menu's Save item, or Remove from Saved on a saved post. */
 export function laterMenuItem(room: string, message: Pick<Message, "id" | "later">): MenuEntry {
   const saved = later.saved(room, message);
   return {
-    id: "later", label: saved ? "Remove from Later" : "Save for later", icon: saved ? "bookmark-filled" : "bookmark",
+    id: "later", label: saved ? "Remove from Saved" : "Save", icon: saved ? "bookmark-filled" : "bookmark",
     onselect: () => void later.toggle(room, message),
   };
 }

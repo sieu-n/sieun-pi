@@ -62,7 +62,7 @@ export function unreadCount(rows: readonly ConversationSummary[]): number {
   return rows.reduce((sum, row) => (row.archived || row.hidden === "left" ? sum : sum + rowUnread(row).unread), 0);
 }
 
-const VIEW_LABELS: Record<string, string> = { new: "New message", "for-you": "For you", later: "Later" };
+const VIEW_LABELS: Record<string, string> = { new: "New message", "for-you": "For you", saved: "Saved" };
 
 /** The open place, as the title names it: `#channel`, the agent of a DM, a Messages view or a top bar page. */
 function placeLabel(): string {

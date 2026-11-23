@@ -8,6 +8,7 @@
   import { shortcutsSheet } from "$lib/shell/shortcuts-sheet.svelte";
   import ShortcutsSheet from "$lib/shell/ShortcutsSheet.svelte";
   import { laterHref } from "$lib/later.svelte";
+  import MemoPrompt from "$lib/MemoPrompt.svelte";
   import { markAllRead, unreadsHref } from "$lib/unreads.svelte";
   import { forYouHref } from "$pages/board/chips";
   import { router, hrefFor } from "$lib/router.svelte";
@@ -106,7 +107,7 @@
 
 <Shell>
   {#if router.route.page === "messages"}
-    {#if router.messagesView === "for-you"}<ForYouPage />{:else if router.messagesView === "later"}<LaterPage />{:else if router.messagesView === "wiki"}<WikiPage />{:else if router.messagesView === "drafts"}<DraftsPage />{:else if router.messagesView === "unreads"}<UnreadsPage />{:else}<ChannelPage />{/if}
+    {#if router.messagesView === "for-you"}<ForYouPage />{:else if router.messagesView === "saved"}<LaterPage />{:else if router.messagesView === "wiki"}<WikiPage />{:else if router.messagesView === "drafts"}<DraftsPage />{:else if router.messagesView === "unreads"}<UnreadsPage />{:else}<ChannelPage />{/if}
   {:else if router.route.page === "agents"}
     <AgentsPage />
   {:else if router.route.page === "board"}
@@ -126,3 +127,4 @@
 <ArtifactViewer />
 <ShortcutsSheet />
 <Toaster />
+<MemoPrompt />

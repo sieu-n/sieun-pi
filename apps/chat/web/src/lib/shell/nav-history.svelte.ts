@@ -103,7 +103,7 @@ export const navHistory = new NavHistory();
 const VIEW_LABELS: Record<string, { label: string; icon: string }> = {
   new: { label: "New message", icon: "edit" },
   "for-you": { label: "For you", icon: "inbox" },
-  later: { label: "Later", icon: "bookmark" },
+  saved: { label: "Saved", icon: "bookmark" },
   wiki: { label: "Wiki", icon: "file" },
   unreads: { label: "All unreads", icon: "messages" },
   drafts: { label: "Drafts", icon: "edit" },

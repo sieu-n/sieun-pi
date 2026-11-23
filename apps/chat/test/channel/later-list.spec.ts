@@ -2,7 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { open, tag } from "./helpers.ts";
 
 /**
- * Later's rows as Slack's Later list has them: a More actions menu, an Archived tab between In progress and Completed, the channel name as
+ * Saved's rows as Slack's Later list has them: a More actions menu, an Archived tab between In progress and Completed, the channel name as
  * its own link, and a keyboard path where the arrow keys move between rows and the menu's letters act on the focused one. Each run makes
  * its own channel on the fixture server.
  */
@@ -18,7 +18,7 @@ async function saved(page: Page, count: number): Promise<{ room: string; name: s
   return { room, name, ids };
 }
 
-// Each test saves posts that land on top of the one shared Later list, so they run one at a time.
+// Each test saves posts that land on top of the one shared Saved list, so they run one at a time.
 test.describe.configure({ mode: "serial" });
 
 type Item = { id: string; state: string };
@@ -28,19 +28,19 @@ const stateOf = async (page: Page, id: string): Promise<string | undefined> =>
 test("a row's More actions menu archives it, Archived lists it, and Undo brings it back", async ({ page }) => {
   const { ids } = await saved(page, 1);
   const id = ids[0]!;
-  await open(page, "#/c/later", "later-page");
+  await open(page, "#/c/saved", "later-page");
   await expect(page.getByTestId("later-page").getByRole("tab")).toHaveText([/In progress/, "Archived", "Completed"]);
   const row = page.locator(`[data-later-id="${id}"]`);
   await row.hover();
   await row.locator("[data-later-more]").click();
   const menu = page.getByRole("menu", { name: "More actions" });
-  await expect(menu.getByRole("menuitem")).toHaveText([/Open message/, /Go to #later-/, /Mark complete/, /Archive/, /Remind me/, /Mark unread/, /Copy link/, /Remove from Later/]);
+  await expect(menu.getByRole("menuitem")).toHaveText([/Open message/, /Go to #later-/, /Mark complete/, /Archive/, /Remind me/, /Add memo/, /Mark unread/, /Copy link/, /Remove from Saved/]);
   await menu.getByRole("menuitem", { name: /Archive/ }).click();
   await expect(row).toHaveCount(0);
   await expect.poll(() => stateOf(page, id)).toBe("archived");
 
   await page.getByRole("tab", { name: "Archived" }).click();
-  await expect(page).toHaveURL(/#\/c\/later\/archived$/);
+  await expect(page).toHaveURL(/#\/c\/saved\/archived$/);
   await expect(row).toBeVisible();
   await page.locator(".toast").filter({ hasText: "Archived" }).getByRole("button", { name: "Undo" }).click();
   await expect(row).toHaveCount(0);
@@ -49,7 +49,7 @@ test("a row's More actions menu archives it, Archived lists it, and Undo brings 
 
 test("arrow keys move between rows, E archives the focused row, and focus lands on the next one", async ({ page }) => {
   const { ids } = await saved(page, 3);
-  await open(page, "#/c/later", "later-page");
+  await open(page, "#/c/saved", "later-page");
   const link = (id: string) => page.locator(`[data-later-id="${id}"] a[data-later-open]`);
   const focused = () => page.evaluate(() => document.activeElement?.closest<HTMLElement>("[data-later-id]")?.dataset.laterId);
   await link(ids[2]!).focus();
@@ -71,7 +71,7 @@ test("arrow keys move between rows, E archives the focused row, and focus lands 
 
 test("the channel name on a row opens the channel", async ({ page }) => {
   const { room, name, ids } = await saved(page, 1);
-  await open(page, "#/c/later", "later-page");
+  await open(page, "#/c/saved", "later-page");
   await page.locator(`[data-later-id="${ids[0]}"] [data-later-room]`).click();
   await expect(page).toHaveURL(new RegExp(`#/c/${room}$`));
   await expect(page.locator("section.conversation")).toContainText(`${name} post 1`);

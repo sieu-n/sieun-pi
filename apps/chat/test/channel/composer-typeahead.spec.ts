@@ -101,7 +101,7 @@ test("/invite @agent adds it, /remove @agent takes it out with Undo, and /archiv
   await expect(page.getByText(/Archived #slash-members/)).toBeVisible();
 });
 
-test("/remind me <what> <when> sets a Later reminder of his own text, and Later lists it under Reminder", async ({ page, request }) => {
+test("/remind me <what> <when> sets a reminder of his own text, and Saved lists it under Reminder", async ({ page, request }) => {
   const word = tag();
   const created = await request.post("/api/rooms", { data: { kind: "channel", name: `slash-remind-${word}`, members: [], test: true } });
   const { id } = (await created.json()) as { id: string };
@@ -121,7 +121,7 @@ test("/remind me <what> <when> sets a Later reminder of his own text, and Later 
   const item = list.items.find((i) => i.text === `call the bank ${word}`)!;
   expect(item.room).toBeUndefined();
   expect(item.remindAt! - Date.now()).toBeGreaterThan(18 * 60_000);
-  await open(page, "#/c/later", "later-page");
+  await open(page, "#/c/saved", "later-page");
   const row = page.locator(`[data-later-id="${item.id}"]`);
   await expect(row).toContainText(`call the bank ${word}`);
   await expect(row.locator("[data-later-note]")).toHaveText("Reminder");

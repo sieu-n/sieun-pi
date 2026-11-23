@@ -1,9 +1,11 @@
 <script lang="ts">
   import { onDestroy, tick } from "svelte";
   import { markUnread, type LaterRow, type LaterState } from "$lib/api";
-  import { later, laterHref, savedPage } from "$lib/later.svelte";
+  import { later } from "$lib/later.svelte";
+  import { SAVED_KINDS, filterOf, filteredCounts, filtering, kindOf, matches, savedPage, savedRooms } from "$lib/saved-items";
+  import MemoField from "$lib/MemoField.svelte";
   import { conversationHref, hrefFor, router } from "$lib/router.svelte";
-  import { Avatar, Button, EmptyState, Icon, IconButton, LoadingText, PanelHeader, Tabs, stampLabel } from "$lib/ui";
+  import { Avatar, Button, Chip, EmptyState, Icon, IconButton, LoadingText, PanelHeader, Picker, SearchField, Tabs, stampLabel, type PickerItem } from "$lib/ui";
   import { previewText } from "$pages/agents/agents-model";
   import { avatarOf } from "$pages/channel/present";
   import Menu from "$lib/ui/Menu.svelte";
@@ -28,9 +30,14 @@
     if (test !== later.withTest) void later.refresh();
   });
 
-  /** `#/c/later` is In progress, `#/c/later/archived` Archived and `#/c/later/done` Completed, so back and a link keep the tab. */
+  /** `#/c/saved` is In progress, `#/c/saved/archived` Archived and `#/c/saved/done` Completed, so back and a link keep the tab. */
   const tab = $derived<LaterState>(router.route.rest[1] === "done" ? "done" : router.route.rest[1] === "archived" ? "archived" : "open");
-  const rows = $derived(tab === "open" && later.lists.open ? dueFirst(later.lists.open, now) : later.lists[tab]);
+  /** The search box and the Kind and In filters, kept in the URL (`?q=`, `?kind=`, `?in=`), so reload and back keep them. */
+  const filter = $derived(filterOf(router.route.params));
+  const filtered = $derived(filtering(filter));
+  const counts = $derived(filteredCounts(later.lists, filter));
+  const tabRows = $derived(tab === "open" && later.lists.open ? dueFirst(later.lists.open, now) : later.lists[tab]);
+  const rows = $derived(tabRows && filtered ? tabRows.filter((row) => matches(row, filter)) : tabRows);
   /** In progress pins the posts he marked unread on top, as their own Keep unread stack, until he handles each one (server/keep-unread.ts). */
   const stacks = $derived.by(() => {
     if (!rows) return [];
@@ -40,21 +47,60 @@
     const saved = rows.filter((r) => !r.unread);
     return [{ id: "unread", label: "Keep unread", rows: kept }, ...(saved.length ? [{ id: "saved", label: "Saved", rows: saved }] : [])];
   });
-  /** Slack's three Later tabs, in its order. */
+  /** Slack's three Later tabs, in its order; with a search or filter on, each counts the items it keeps. */
   const tabs = $derived([
-    { id: "open" as const, label: "In progress", badge: later.open || null },
-    { id: "archived" as const, label: "Archived" },
-    { id: "done" as const, label: "Completed" },
+    { id: "open" as const, label: "In progress", badge: filtered ? counts.open : later.open || null },
+    { id: "archived" as const, label: "Archived", badge: filtered ? counts.archived : null },
+    { id: "done" as const, label: "Completed", badge: filtered ? counts.done : null },
   ]);
   const tabLabel: Record<LaterState, string> = { open: "In progress", archived: "Archived", done: "Completed" };
-  const showTab = (id: LaterState) => router.navigate(`${laterHref(id)}${test ? "?test=1" : ""}`, { replace: true });
+  /** A tab's path; the walk's `?test=1` and the search and filters carry over to every link the page makes. */
+  const tabPath = (state: LaterState) => (state === "open" ? ["saved"] : ["saved", state]);
+  const kept = () => ({ test: test ? "1" : null, q: filter.q || null, kind: filter.kind, in: filter.room });
+  const showTab = (id: LaterState) => router.navigate(hrefFor("messages", tabPath(id), kept()), { replace: true });
+  const setFilter = (patch: Record<string, string | null>) => router.setParams(patch, { replace: true });
+  const clearFilters = () => setFilter({ q: null, kind: null, in: null });
+
+  let kindOpen = $state(false);
+  let roomOpen = $state(false);
+  let kindChip = $state<HTMLSpanElement>();
+  let roomChip = $state<HTMLSpanElement>();
+  const kindLabel = $derived(SAVED_KINDS.find((k) => k.id === filter.kind)?.label);
+  const kindItems = $derived<MenuEntry[]>([
+    { type: "radio", id: "all", group: "kind", label: "All", checked: !filter.kind, onselect: () => setFilter({ kind: null }) },
+    ...SAVED_KINDS.map((k): MenuEntry => ({ type: "radio", id: k.id, group: "kind", label: k.label, checked: filter.kind === k.id, onselect: () => setFilter({ kind: k.id }) })),
+  ]);
+  const rooms = $derived(savedRooms(later.lists));
+  const roomName = $derived(rooms.find((r) => r.id === filter.room)?.name ?? filter.room);
+  const roomItems = $derived<PickerItem[]>([
+    { id: "", label: "Anywhere", icon: "search" },
+    ...rooms.map((r) => ({ id: r.id, label: r.name, icon: r.kind === "channel" ? "hash" : r.kind === "dm" ? "user" : "chat" })),
+  ]);
+  /** What an empty filtered tab says matched nothing, and which other tab has matches. */
+  const noMatch = $derived.by(() => {
+    const noun = kindLabel?.toLowerCase() ?? "saved items";
+    const title = `No ${noun}${filter.room ? ` in ${roomName}` : ""}${filter.q.trim() ? ` match "${filter.q.trim()}"` : ""}`;
+    const elsewhere = (["open", "archived", "done"] as const).filter((s) => s !== tab && counts[s]).map((s) => `${counts[s]} in ${tabLabel[s]}`);
+    return { title, description: elsewhere.length ? `Nothing in ${tabLabel[tab]} matches. ${elsewhere.join(", ")}.` : `Nothing in ${tabLabel[tab]} matches.` };
+  });
+  function onsearchkey(e: KeyboardEvent) {
+    if (e.key === "Escape" && filter.q) {
+      e.preventDefault();
+      setFilter({ q: null });
+    } else if (e.key === "ArrowDown") {
+      const first = list?.querySelector<HTMLAnchorElement>(`[data-later-id="${tabStop}"] a[data-later-open]`) ?? links()[0];
+      if (!first) return;
+      e.preventDefault();
+      first.focus();
+    }
+  }
   /** A saved reply opens its thread at the reply, and any other post its room at the post. */
   const hrefOf = (row: LaterRow) =>
     row.room === undefined ? pageHref(row) : conversationHref(row.room, row.threadRoot ? { thread: row.threadRoot, messageId: row.post } : { messageId: row.post });
-  /** A saved wiki page opens beside Later in the viewer; a /remind reminder opens nothing. */
+  /** A saved wiki page opens beside Saved in the viewer; a /remind reminder opens nothing. */
   function pageHref(row: LaterRow): string {
     const page = savedPage(row.text);
-    return page ? hrefFor("messages", row.state === "open" ? ["later"] : ["later", row.state], { view: `wiki:${page.path}` }) : laterHref(row.state);
+    return hrefFor("messages", tabPath(row.state), { ...kept(), ...(page ? { view: `wiki:${page.path}` } : {}) });
   }
   /** A room that is gone keeps only its id as its name, and has nothing to open; a /remind reminder has no room. */
   const roomHref = (row: LaterRow) => (row.room === undefined || row.roomName === row.room ? null : conversationHref(row.room));
@@ -105,10 +151,29 @@
   const archive = (row: LaterRow) => leave(row, () => later.setState(row, row.state === "archived" ? "open" : "archived"));
   const complete = (row: LaterRow) => leave(row, () => later.setState(row, row.state === "done" ? "open" : "done"));
   const remove = (row: LaterRow) => leave(row, () => later.remove(row));
+  /** The row whose memo field is open in place of its memo. */
+  let memoRow = $state<string | null>(null);
+  /** Opens the memo field after the menu that asked for it has closed and handed focus back, so that hand-back does not end the edit. */
+  async function editMemo(row: LaterRow) {
+    await tick();
+    memoRow = row.id;
+  }
+  /** Enter and Esc leave focus on nothing once the field goes, so it comes back to the row; a click elsewhere keeps its own focus. */
+  async function endMemo(row: LaterRow, text: string | null) {
+    memoRow = null;
+    if (text !== null) void later.setMemo(row.id, text);
+    await tick();
+    if (document.activeElement && document.activeElement !== document.body) return;
+    const link = list?.querySelector<HTMLAnchorElement>(`[data-later-id="${row.id}"] a[data-later-open]`);
+    if (link) {
+      focusId = row.id;
+      link.focus();
+    }
+  }
   function unread(row: LaterRow) {
     if (row.room === undefined) return;
     markUnread(row.room, row.post, row.threadRoot).then(
-      () => toast.show("Marked as unread. It stays in Later until you reply, react or check it off."),
+      () => toast.show("Marked as unread. It stays in Saved until you reply, react or check it off."),
       () => toast.error("Could not mark the message unread"),
     );
   }
@@ -119,7 +184,7 @@
     );
   }
 
-  /** Slack's More actions on a Later item: open it, move it between tabs, remind, mark unread, copy its link, or take it out of Later. */
+  /** Slack's More actions on a saved item: open it, move it between tabs, remind, write its memo, mark unread, copy its link, or unsave it. */
   function rowMenu(row: LaterRow): MenuEntry[] {
     const room = roomHref(row);
     return [
@@ -133,12 +198,13 @@
         ? { id: "archive", label: "Move to In progress", icon: "unarchive", shortcut: "E", onselect: () => archive(row) }
         : { id: "archive", label: "Archive", icon: "archive", shortcut: "E", onselect: () => archive(row) },
       ...(row.state === "open" ? [{ ...remindMenu({ label: "Remind me", remindAt: row.remindAt, kept: !!row.unread, set: (at) => later.remind(row, at), custom: () => (customRow = row), clear: () => later.remind(row, null) }), detail: "M" }] : []),
+      { id: "memo", label: row.memo ? "Edit memo" : "Add memo", icon: "edit", onselect: () => void editMemo(row) },
       ...(row.gone || row.room === undefined ? [] : [
         { id: "unread", label: "Mark unread", icon: "dot", shortcut: "U", onselect: () => unread(row) },
         { id: "link", label: "Copy link", icon: "link", shortcut: "L", onselect: () => copyLink(row) },
       ]),
       { type: "separator" },
-      { id: "remove", label: "Remove from Later", icon: "bookmark-filled", shortcut: isMac ? "⌫" : "Del", tone: "danger", onselect: () => remove(row) },
+      { id: "remove", label: "Remove from Saved", icon: "bookmark-filled", shortcut: isMac ? "⌫" : "Del", tone: "danger", onselect: () => remove(row) },
     ];
   }
   let menuOpen = $state(false);
@@ -186,19 +252,44 @@
 </script>
 
 <div class="page" data-testid="later-page">
-  <PanelHeader title="Later" icon="bookmark" level={1} />
+  <PanelHeader title="Saved" icon="bookmark" level={1} />
   <div class="tabs">
-    <Tabs items={tabs} value={tab} variant="underline" size="sm" label="Later" onchange={(id: LaterState) => showTab(id)} />
+    <Tabs items={tabs} value={tab} variant="underline" size="sm" label="Saved" onchange={(id: LaterState) => showTab(id)} />
+  </div>
+  <div class="toolbar" data-saved-filters>
+    <span class="search"><SearchField value={filter.q} placeholder="Search saved items" label="Search saved items" oninput={(q: string) => setFilter({ q: q || null })} onkeydown={onsearchkey} data-saved-search /></span>
+    <Chip
+      bind:element={kindChip}
+      size="md"
+      selected={!!filter.kind}
+      popup={{ kind: "menu", open: kindOpen }}
+      onclick={() => (kindOpen = !kindOpen)}
+      onremove={filter.kind ? () => setFilter({ kind: null }) : undefined}
+      removeLabel="Remove the Kind filter"
+    ><span class="chip-value" data-chip="kind">{kindLabel ?? "Kind"}</span></Chip>
+    <Chip
+      bind:element={roomChip}
+      size="md"
+      selected={!!filter.room}
+      popup={{ kind: "dialog", open: roomOpen }}
+      onclick={() => (roomOpen = !roomOpen)}
+      onremove={filter.room ? () => setFilter({ in: null }) : undefined}
+      removeLabel="Remove the In filter"
+    ><span class="chip-value" data-chip="in">{filter.room ? `In: ${roomName}` : "In"}</span></Chip>
   </div>
   <div class="scroll">
     {#if later.error && !rows}
       <div class="notice" role="alert"><p class="t-body">{later.error}</p><Button size="sm" onclick={() => later.refresh()}>Try again</Button></div>
     {:else if !rows}
-      <div class="notice"><LoadingText text="Loading Later…" /></div>
+      <div class="notice"><LoadingText text="Loading saved items…" /></div>
     {:else if !rows.length}
       <div class="empty" role="status">
-        {#if tab === "open"}
-          <EmptyState icon="bookmark" title="Nothing saved for later" description="Hover over a message and click the bookmark to save it here. Check it off once you are done with it." />
+        {#if filtered}
+          <EmptyState icon="search" title={noMatch.title} description={noMatch.description}>
+            {#snippet action()}<Button size="sm" onclick={clearFilters} data-saved-clear>Clear filters</Button>{/snippet}
+          </EmptyState>
+        {:else if tab === "open"}
+          <EmptyState icon="bookmark" title="Nothing saved yet" description="Hover over a message and click the bookmark to save it here. Check it off once you are done with it." />
         {:else}
           <EmptyState
             icon={tab === "archived" ? "archive" : "check"}
@@ -223,7 +314,9 @@
               class:overdue
               data-later-id={row.id}
               data-overdue={overdue || undefined}
+              data-kind={kindOf(row)}
               oncontextmenu={(e) => {
+                if (e.target instanceof HTMLTextAreaElement) return;
                 e.preventDefault();
                 openMenu(row, { x: e.clientX, y: e.clientY });
               }}
@@ -255,6 +348,11 @@
                     <span class="preview t-body">{savedPage(row.text)?.title || previewText(row.text) || (row.images ? `${row.images} image${row.images === 1 ? "" : "s"}` : "")}</span>
                   {/if}
                 </a>
+                {#if memoRow === row.id}
+                  <span class="memo-edit"><MemoField value={row.memo ?? ""} label="Memo" onsave={(text) => endMemo(row, text)} oncancel={() => endMemo(row, null)} /></span>
+                {:else if row.memo}
+                  <button type="button" class="memo t-body-sm" tabindex="-1" title="Edit memo" onclick={() => void editMemo(row)} data-later-memo>{row.memo}</button>
+                {/if}
               </span>
               <span class="row-actions">
                 {#if row.state === "done"}
@@ -265,7 +363,8 @@
                 {#if row.state === "open"}
                   <IconButton size="sm" icon="clock" label={row.unread && row.remindAt !== undefined ? "Change when it comes back" : overdue ? "Snooze" : row.remindAt !== undefined ? "Change reminder" : "Remind me"} shortcut="M" tabindex={active ? 0 : -1} aria-haspopup="menu" onclick={(e: MouseEvent) => openRemind(row, e.currentTarget as HTMLElement)} data-later-remind />
                 {/if}
-                <IconButton size="sm" icon="bookmark-filled" label="Remove from Later" shortcut={isMac ? "⌫" : "Del"} tabindex={active ? 0 : -1} onclick={() => remove(row)} data-later-remove />
+                <IconButton size="sm" icon="edit" label={row.memo ? "Edit memo" : "Add memo"} tabindex={active ? 0 : -1} onclick={() => void editMemo(row)} data-later-memo-edit />
+                <IconButton size="sm" icon="bookmark-filled" label="Remove from Saved" shortcut={isMac ? "⌫" : "Del"} tabindex={active ? 0 : -1} onclick={() => remove(row)} data-later-remove />
                 <IconButton size="sm" icon="more" label="More actions" tabindex={active ? 0 : -1} aria-haspopup="menu" onclick={(e: MouseEvent) => openMenu(row, e.currentTarget as HTMLElement)} data-later-more />
               </span>
             </li>
@@ -277,11 +376,16 @@
 </div>
 {#if remindOpen}<Menu bind:open={remindOpen} anchor={remindAnchor} items={remindItems} placement="bottom-end" label={remindRow?.unread ? "Change when it comes back" : remindRow && isOverdue(remindRow, now) ? "Snooze" : "Remind me"} />{/if}
 {#if menuOpen}<Menu bind:open={menuOpen} anchor={menuAnchor} items={menuItems} placement="bottom-end" label="More actions" />{/if}
+{#if kindOpen}<Menu bind:open={kindOpen} anchor={kindChip} items={kindItems} label="Kind" />{/if}
+<Picker bind:open={roomOpen} anchor={roomChip} items={roomItems} value={filter.room ?? ""} searchable label="In" placeholder="Find a room" onselect={(id: string) => setFilter({ in: id || null })} />
 {#if customRow}<RemindDialog title="Remind me" at={customRow.remindAt} onpick={(at) => (customRow ? later.remind(customRow, at) : undefined)} onclose={() => (customRow = null)} />{/if}
 
 <style>
   .page { display: flex; flex-direction: column; height: 100%; min-height: 0; }
   .tabs { flex: none; padding-inline: var(--space-panel-inset); border-bottom: 1px solid var(--border-standard); }
+  .toolbar { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-panel-inset); }
+  .search { flex: 1 1 16rem; max-inline-size: 28rem; min-inline-size: 12rem; }
+  .chip-value { max-width: 16rem; overflow: hidden; text-overflow: ellipsis; }
   .scroll { flex: 1; min-height: 0; overflow: auto; }
   .notice { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); padding: var(--space-3) var(--space-panel-inset); }
   .notice p { margin: 0; }
@@ -307,6 +411,10 @@
   .preview { display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; max-inline-size: 72ch; white-space: pre-line; color: var(--text-standard); }
   .preview.gone { color: var(--text-subtle); font-style: italic; }
   .due { display: flex; align-items: center; gap: 4px; color: var(--text-metadata); }
+  /* The memo sits above the row's link, so a click on it edits the memo instead of opening the post. */
+  .memo { position: relative; z-index: 1; justify-self: start; max-inline-size: 72ch; margin: 2px 0 0; padding: 2px 8px; border: 0; border-left: 2px solid var(--border-prominent); border-radius: 0 var(--radius-row) var(--radius-row) 0; background: var(--neutral-2); color: var(--text-subtle); font: var(--text-body-sm); text-align: start; white-space: pre-line; overflow-wrap: anywhere; cursor: text; }
+  .memo:hover { color: var(--text-standard); }
+  .memo-edit { position: relative; z-index: 2; display: block; max-inline-size: 72ch; margin-top: 2px; }
   .due.overdue { color: var(--text-danger); font-weight: 600; }
   .row-actions { position: absolute; top: 8px; right: var(--space-3); display: flex; gap: 2px; padding: 2px; border-radius: 8px; background: var(--surface-panel); box-shadow: var(--shadow-float); opacity: 0; z-index: 1; }
   .row:hover .row-actions, .row:focus-within .row-actions { opacity: 1; }

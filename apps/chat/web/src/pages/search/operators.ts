@@ -85,7 +85,7 @@ export const MARK_CHOICES: Readonly<Record<"has" | "is", readonly { value: strin
   ],
   is: [
     { value: "thread", detail: "Replies in threads" },
-    { value: "saved", detail: "Messages saved for later" },
+    { value: "saved", detail: "Saved messages" },
   ],
 };
 
