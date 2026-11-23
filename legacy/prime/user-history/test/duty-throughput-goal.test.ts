@@ -4,7 +4,7 @@
 // drawing ("Check the Observability and Metrics"), where on 10-19 at 15:55Z two panels read No data.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type BoardItem, COUNTED_BYTES, IG_PROFILES_PER_MIN, laneMonthGb, META_WALKS_PER_MIN, MONTH_MINUTES, PLAN_MONTH_GB, planRate, PROD_PAID_MONTH_GB, STAGING_MONTH_GB, TTS_PRODUCTS_PER_MIN, sampledMetaDue, GOOD_ROWS, META_FINISHED_EXPR, META_SAMPLE_PCT, META_SAMPLE_RUNS, REFRESH_SAMPLE_PCT, REFRESH_SAMPLE_RUNS, type ThroughputData, backlogged, blankPanels, boardGoal, deploySlots, goalLine, goalRows, grew, interpolate, lastHalfHour,
+import { type BoardItem, COUNTED_BYTES, IG_PROFILES_PER_MIN, laneMonthGb, META_WALKS_PER_MIN, MONTH_MINUTES, PLAN_MONTH_GB, planRate, PROD_PAID_MONTH_GB, STAGING_MONTH_GB, WATCHLIST_MONTH_GB, WATCHLIST_WALKS_IN_PAID_GB, TTS_PRODUCTS_PER_MIN, sampledMetaDue, GOOD_ROWS, META_FINISHED_EXPR, META_SAMPLE_PCT, META_SAMPLE_RUNS, REFRESH_SAMPLE_PCT, REFRESH_SAMPLE_RUNS, type ThroughputData, backlogged, blankPanels, boardGoal, deploySlots, goalLine, goalRows, grew, interpolate, lastHalfHour,
   type Dashboard, folderBoards, folderFiles, lagSlots, metaDueSql, PROVIDERS, QUEUES, missed, readPanels, pageRuns, panelQueries, panelState, refreshShares, refreshSql, report, scaleDue, slowestHour, writerLagAtRate } from "../scripts/duties/throughput-goal.ts";
 import type { DutyMetric } from "../src/shared/chat-duties.ts";
 
@@ -78,12 +78,14 @@ test("TikTok Shop reads ok products a minute against its share of the 250 GB pla
   assert.equal(goalRows(base({ board: BOARD, ttsWeekly: { read: 1, live: 2 } })).find(row => row.platform === "TikTok Shop products")!.value, null);
 });
 
-test("the three lane lines spend no more of the 250 GB month than staging and prod paid reads leave (lane-pricing.html, 11-24)", () => {
+test("the three lane lines spend no more of the 250 GB month than staging, prod paid reads and the demo Watchlist leave, counted once (11-24)", () => {
   const lanes = ["instagram", "tiktokShop", "metaAds"] as const;
   const spent = lanes.reduce((sum, lane) => sum + (planRate(lane) * MONTH_MINUTES * COUNTED_BYTES[lane]) / 1e9, 0);
-  assert.ok(spent <= PLAN_MONTH_GB - STAGING_MONTH_GB - PROD_PAID_MONTH_GB, `${spent} GB`);
-  assert.deepEqual([IG_PROFILES_PER_MIN, TTS_PRODUCTS_PER_MIN, META_WALKS_PER_MIN], [14.3, 1.3, 3.2]);
-  assert.equal(Math.round(laneMonthGb("instagram") * 10) / 10, 29.7);
+  const room = PLAN_MONTH_GB - STAGING_MONTH_GB - (PROD_PAID_MONTH_GB - WATCHLIST_WALKS_IN_PAID_GB) - WATCHLIST_MONTH_GB;
+  assert.equal(room, 99);
+  assert.ok(spent <= room, `${spent} GB`);
+  assert.deepEqual([IG_PROFILES_PER_MIN, TTS_PRODUCTS_PER_MIN, META_WALKS_PER_MIN], [17.5, 1.6, 3.9]);
+  assert.equal(Math.round(laneMonthGb("instagram") * 10) / 10, 36.3);
 });
 
 test("Instagram counts profile rows on every read path, the table its plan line reads, and TikTok Shop its good products", () => {
@@ -101,7 +103,7 @@ test("every throughput goal is one row, and the headline counts the rows prod mi
   assert.equal(rows[2]!.goal, META_WALKS_PER_MIN);
   const out = report(data, METRICS);
   assert.equal(out.metrics.throughput_goals_missed, 3);
-  assert.ok(out.flagged!.some(item => item.excerpt.startsWith("TikTok Shop products: 1 good a minute") && item.excerpt.includes("at least 1.3")));
+  assert.ok(out.flagged!.some(item => item.excerpt.startsWith("TikTok Shop products: 1 good a minute") && item.excerpt.includes("at least 1.6")));
   const met = report(base({ ...data, igSlowest: 20, ttsSlowest: 2, meta: { due: 300_000, finished24h: 53_570 } }), METRICS);
   assert.equal(met.metrics.throughput_goals_missed, 0);
 });
@@ -324,7 +326,7 @@ test("the Meta Ads row reads finished walks from the crawler gauge and due walks
   assert.equal(Math.round(row.value!), 553);
   assert.equal(row.goal, META_WALKS_PER_MIN);
   assert.equal(missed(row), false);
-  assert.match(row.extra!, /about 4\.1M advertiser walks due now from a 1% page sample, 895 days at the plan line/);
+  assert.match(row.extra!, /about 4\.1M advertiser walks due now from a 1% page sample, 734 days at the plan line/);
 });
 
 test("the search sync outbox reads its live rows only", () => {

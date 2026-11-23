@@ -46,13 +46,21 @@ export const CENSUS_HOURS = 24;
 /**
  * The 250 GB GeoNode month the owner bought on 11-24 ("i got 250GB plan. hook it up, and keep monitoring"), split for the house lanes this duty
  * judges. measured: lane-pricing.html of 11-24 (wiki session 0717-price-every-crawl-lane-on-the-250-gb-geonode-plan-prod-and-s), prod and
- * staging crawler.proxy_wire_reads at the 11-01 to 11-09 pace: staging up to 40 GB and prod paid and upkeep reads 129 GB leave 81 GB for the
- * prod house lanes, which ran 65,354 GB a month, so every house lane keeps 81 / 65,354 of its old pace. The census ran 23,979 GB, TikTok Shop
- * 4,010 GB and Meta Ads 1,583 GB. The lines are a floor on each lane's share; d4 of Search product, misc. watches the month's total.
+ * staging crawler.proxy_wire_reads at the 11-01 to 11-09 pace, with three later corrections. Staging is about 13 GB a month after the Bing
+ * one-warm-session change 7b4031931c and the media_refresh pause 247e77103a. Prod paid and upkeep reads are about 91 GB after the Bing cut and
+ * the 7-day doc-ids sweep c637e1856c; that 91 GB still holds the demo Watchlist's 30 GB of Instagram walks and 24 GB of collab walks, and no
+ * census read, because the pricing page counts the census lane as house with a paid part of 0. The demo Watchlist costs 93 to 101 GB a month
+ * with its own engage, anon and census reads (brand-monitor-cost.html of Search product, misc., 11-24), so its 54 GB of walks leave the 91 GB
+ * and its high end of 101 GB comes in once: 250 - 13 - (91 - 54) - 101 = 99 GB for the prod house lanes, the low end of 99 to 107. They ran
+ * 65,354 GB a month, so every house lane keeps 99 / 65,354 of its old pace. The census ran 23,979 GB, TikTok Shop 4,010 GB and Meta Ads
+ * 1,583 GB. The lines are a floor on each lane's share; d4 of Search product, misc. watches the month's total.
  */
 export const PLAN_MONTH_GB = 250;
-export const STAGING_MONTH_GB = 40;
-export const PROD_PAID_MONTH_GB = 129;
+export const STAGING_MONTH_GB = 13;
+export const PROD_PAID_MONTH_GB = 91;
+export const WATCHLIST_MONTH_GB = 101;
+export const WATCHLIST_WALKS_IN_PAID_GB = 54;
+export const HOUSE_MONTH_GB = PLAN_MONTH_GB - STAGING_MONTH_GB - (PROD_PAID_MONTH_GB - WATCHLIST_WALKS_IN_PAID_GB) - WATCHLIST_MONTH_GB;
 export const HOUSE_PACE_MONTH_GB = 65_354;
 export const LANE_PACE_MONTH_GB = { instagram: 23_979, tiktokShop: 4_010, metaAds: 1_583 } as const;
 /**
@@ -66,9 +74,9 @@ export const COUNTED_BYTES = { instagram: 48_112, tiktokShop: 86_830, metaAds: 1
 export const MONTH_MINUTES = 30 * 24 * 60;
 /** A lane's share of the plan in GB a month, and the units a minute that share buys. */
 export const laneMonthGb = (lane: keyof typeof LANE_PACE_MONTH_GB): number =>
-  (LANE_PACE_MONTH_GB[lane] * (PLAN_MONTH_GB - STAGING_MONTH_GB - PROD_PAID_MONTH_GB)) / HOUSE_PACE_MONTH_GB;
+  (LANE_PACE_MONTH_GB[lane] * HOUSE_MONTH_GB) / HOUSE_PACE_MONTH_GB;
 export const planRate = (lane: keyof typeof LANE_PACE_MONTH_GB): number => round1((laneMonthGb(lane) * 1e9) / COUNTED_BYTES[lane] / MONTH_MINUTES);
-/** Instagram profiles, TikTok Shop good products and Meta advertiser walks a minute that fit the plan: 14.3, 1.3 and 3.2. */
+/** Instagram profiles, TikTok Shop good products and Meta advertiser walks a minute that fit the plan: 17.5, 1.6 and 3.9. */
 export const IG_PROFILES_PER_MIN = planRate("instagram");
 export const TTS_PRODUCTS_PER_MIN = planRate("tiktokShop");
 export const META_WALKS_PER_MIN = planRate("metaAds");
