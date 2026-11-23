@@ -41,3 +41,20 @@ test('an "item N" that two lines shared is ambiguous, and the page is left as it
 	const html = `<ol>${lines(2)}</ol><ol start="2">${lines(1)}</ol><p>As item 2 says.</p>`;
 	assert.deepEqual(renumberLists(html), { html, moved: 0, ambiguous: [2] });
 });
+
+// On 2026-11-23 the page API gave the second and third step lists of a how-to start="6" and start="10", and undid an edit
+// back to start="1" on save.
+test('a documentation page keeps each step list numbered from 1, and a design or plain page still runs on', () => {
+	const head = (kind) => `<!--wiki\n${JSON.stringify({ title: 'Run it', ...(kind ? { doc_kind: kind } : {}) })}\n-->\n`;
+	const body = `<h1>Run it</h1><ol>${lines(5)}</ol><h2 id="b">Check it</h2><ol>${lines(4)}</ol><p>As item 2 says.</p>`;
+	for (const kind of ['start', 'tutorial', 'how-to', 'reference', 'explanation']) {
+		const html = head(kind) + body;
+		assert.deepEqual(renumberLists(html), { html, moved: 0, ambiguous: [] }, kind);
+		assert.deepEqual(numberBreaks(html), [], kind);
+	}
+	for (const kind of ['design', null]) {
+		const out = renumberLists(head(kind) + body.replace('<p>As item 2 says.</p>', ''));
+		assert.equal(out.moved, 1, String(kind));
+		assert.match(out.html, /<ol start="6">/);
+	}
+});

@@ -3,6 +3,8 @@
 // dream found 115 of 410 curated pages where one did not, such as apps/crawler-v3/workers.html showing 58 twice. The page
 // API now sets each top-level start= on every curated write, and moves an in-page "item N" reference with its line.
 
+import { isProseDocPage } from '../src/lib/prose-lint.mjs';
+
 const SKIP = /<!--[\s\S]*?-->|<(pre|script|style|code|textarea)\b[\s\S]*?<\/\1\s*>/gi;
 const TAG = /<(\/?)(ol|ul|li|table)\b([^>]*)>/gi;
 const START = /\sstart\s*=\s*(["']?)(-?\d+)\1/i;
@@ -45,6 +47,7 @@ export function topLists(html) {
 
 /** The (expected, actual) start of each top-level list that does not run on from the list before it. */
 export function numberBreaks(html) {
+	if (isProseDocPage(html)) return [];
 	const breaks = [];
 	let next = null;
 	for (const list of topLists(html)) {
@@ -66,6 +69,8 @@ function withStart(tag, start) {
  * one target, so it lands in `ambiguous` and the page is left as it was. `moved` counts the lists whose start= changed.
  */
 export function renumberLists(html) {
+	// A tutorial or how-to numbers each section's steps from 1, so a documentation page keeps its own start= values.
+	if (isProseDocPage(html)) return { html, moved: 0, ambiguous: [] };
 	const lists = topLists(html);
 	const plan = [];
 	const old = new Map();

@@ -71,6 +71,16 @@ const isProse = (k) => k !== null && PROSE_KINDS.has(k);
 const isMer = (k) => !isProse(k);
 
 /**
+ * True when a page's header sets a prose doc_kind. Such a page numbers each step list from 1, so the page API leaves
+ * its <ol> start= values as written (scripts/ol-numbering.mjs).
+ * @param {string} html
+ */
+export function isProseDocPage(html) {
+	const k = wikiMeta(html).doc_kind;
+	return typeof k === 'string' && PROSE_KINDS.has(k);
+}
+
+/**
  * The headings a documentation page must have, by doc_kind, matched on the heading text in lower case.
  * @type {Record<string, { name: string, rx: RegExp }[]>}
  */

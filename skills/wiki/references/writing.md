@@ -60,8 +60,9 @@ A tutorial or how-to step works like this.
 
 1. Each step is one `<li>` in an `<ol>`, with a sentence or two on what to do and why, then the real command in `<pre><code>`, then what it printed or a screenshot.
 2. Copy the output from a real run on this box, trimmed with `...`, and never write output you did not see.
-3. "Check it worked" shows the command or screen that proves the result and says what the reader should see.
-4. "When it goes wrong" names each real error seen while you wrote the page, with its cause and its fix.
+3. Each section's step list starts at 1, and the page API leaves a documentation page's `start=` values as written.
+4. "Check it worked" shows the command or screen that proves the result and says what the reader should see.
+5. "When it goes wrong" names each real error seen while you wrote the page, with its cause and its fix.
 
 The structure comes from these pages, which a writer reads for shape, never for words.
 
