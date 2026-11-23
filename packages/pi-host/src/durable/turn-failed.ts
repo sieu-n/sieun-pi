@@ -152,7 +152,7 @@ export async function lastModel(harness: Harness, context: Context): Promise<{ a
   }
 }
 
-const POST_CALLS = new Set(["tell_owner", "send_message", "edit_message", "mark_message", "set_thread_done", "set_emoji"]);
+const POST_CALLS = new Set(["tell_owner", "send_message", "edit_message", "mark_message", "set_emoji"]);
 
 /** Whether an assistant message after the post's input replies to the post, edits its reply, or marks or reacts to it; the room line is no answer. */
 function names(message: Message | undefined, post: string): boolean {

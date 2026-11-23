@@ -74,7 +74,8 @@ export function commInstructions(ref: { agent: string; room: string; work: strin
  * sat under p27), and wrote "시작하면서 눈까리 붙였으면 끝났을 떄 떼야지 / 체크도 남발하지 마 제발 the final outcome should ALWAYS act like a Slack thread".
  * So a later result names its post with reply_to. Then he asked (p113) "끝난 쓰레드를 Check로 살짝 흐릿하게
  * 만들수 있으면 좋겠다. make it a boolean flag that applies to the root thread message, and view/editable by agent too", so a handled ask
- * gets its thread marked done with set_thread_done (`thread-done.ts`) in place of ✅.
+ * got its thread marked done with a set_thread_done tool in place of ✅. On 11-24 (p177, c236) he wrote "Agent가 Done Check하는 기능 없애",
+ * so the done check is his alone: the tool is gone, and a handled post gets 👀 taken off and nothing more.
  * 👀 first came off with the first reply. On 11-21 he asked (p128) how his #dev-app-search-prospect p14 and its follow-up p16 moved through
  * the threads, and the trace (wiki domains/devops/sw-factory-threads/message-flow-example.html) showed p14 with no mark for 27 min after its
  * checklist went out, p16 answered with only a checklist for 5.6 min although the comm thread held the earlier findings, and 3 fresh jobs
@@ -84,12 +85,11 @@ export function commInstructions(ref: { agent: string; room: string; work: strin
 function workSteps(work: string, room: string): string[] {
   return [
     "When you start on a post whose work runs past this turn, put 👀 on it with `set_emoji(message_id, \"eyes\", true)`. " +
-      "👀 means its work still runs, so keep it on through a first reply while the work thread works on the post, and take it off with `set_emoji(message_id, \"eyes\", false)` when the work ends: in the turn that posts the result, makes the last edit or marks the thread done. " +
+      "👀 means its work still runs, so keep it on through a first reply while the work thread works on the post, and take it off with `set_emoji(message_id, \"eyes\", false)` when the work ends: in the turn that posts the result or makes the last edit. " +
       "A post you answer in full in this turn, such as a quick question, gets the answer and no 👀, the way a person in Slack just replies. " +
       "Your reply is the outcome, the way a person answers in a Slack thread, so put no ✅ on a post you replied to. " +
-      "Once all his post asked is handled, its answer or result posted or the quick ask done, mark its thread done with `set_thread_done(message_id, true)`, never while the work thread still works on it. " +
-      "The room shows a done thread with a check, so that mark is the finished signal and no ✅ is. A quick ask you did where a reply would add nothing, such as \"pin that\", gets the done mark and no post, and take 👀 off then too. " +
-      "His new post in a done thread opens it again, so mark it done again once that post is handled, and open a thread yourself with `set_thread_done(message_id, false)` when something in it is still left to do. " +
+      "The done check on a thread is the owner's alone (c236), so once all his post asked is handled, take 👀 off and stop. " +
+      "A quick ask you did where a reply would add nothing, such as \"pin that\", gets 👍 and no post, and take 👀 off then too. " +
       "A post a reaction answers, such as \"ok thanks\", gets that one reaction and no 👀. Keep ✅ and 👀 out of your post text too.",
     "React to posts with fitting emoji the way people do in Slack, such as 👍 to acknowledge, 🙏 for thanks, 🎉 on a ship and 😅 on a slip. When a reaction says it all, such as an acknowledgment with nothing to add, react and post nothing.",
     `Answer a status question from the work thread's state. Read it in ipython with \`await agent_observe.get_agent(${work})\` or \`await agent_observe.recent_messages(${work})\`, and read the board with chat_board. Never ask the work thread for its status.`,
@@ -97,7 +97,7 @@ function workSteps(work: string, room: string): string[] {
     "When you hand a task over, name his post's [message id] in the task, and post nothing that only reports the hand-over: your 👀 already shows it. " +
       "Within about a minute (c224), reply with what you already know or one plain line on what he will get, such as \"pass and fail per test file coming here\", with tell_owner's `reply_to` set to his post, never an ack such as \"on it\" and never what you are doing, such as \"running the tests now\" or \"I'll run the tests\". " +
       "That first reply is the one post for his ask: a question the work needs goes at its end, after your pick, never as a post of its own. " +
-      "The work thread edits that post into the answer when its work ends. When its report or the work-done notice comes, read the post, edit it yourself only if the answer is missing, and post again only for a new question to him; then take 👀 off and mark the thread done. " +
+      "The work thread edits that post into the answer when its work ends. When its report or the work-done notice comes, read the post, edit it yourself only if the answer is missing, and post again only for a new question to him; then take 👀 off. " +
       "A `[work-done: no-reply]` that comes while the work thread's jobs still run, with the post still unanswered, ends only its first turn, so keep 👀 on and wait for its report. " +
       "If you can answer in full yourself, answer and hand nothing over. This replaces the base prompt's progress updates. " +
       `Tell the work thread that its last edit of your post, \`edit_message("reply:${room}/<his post's [message id]>", <the whole post>)\`, carries the answer, that an edit only fills in results and the answer, never a status of its jobs or plans, and that it posts nothing new, ` +
@@ -359,7 +359,7 @@ function groupCommInstructions(ref: { agent: string; room: string; work: string 
     "1. Each post arrives with a header that names the room, the post's author and its hops. A Solo room's header also gives its agenda and members.",
     "2. Every post reaches every member. Speak in the room only when the post concerns your agent or you add something no one said. Otherwise end the turn without a message, also when the owner's post is for another member or an agent's post needs nothing from you.",
     "3. Speak only with tell_owner, one post per answer (step 13). Name another member as @<name> to hand that member something. " +
-      "The room shows nothing else you write, so end every turn with no text, also after a post, a reaction, a hand-over or marking a thread done, and never sum up what you did. " +
+      "The room shows nothing else you write, so end every turn with no text, also after a post, a reaction or a hand-over, and never sum up what you did. " +
       "This replaces the base prompt's \"state your final answer\": in this room your last message after your tool calls is empty, such as after mark_message, because the post already was the answer.",
     "4. An agent's post or a notice is not the owner's turn, so set why and about there. A message that answers the agenda or a question put to your agent is why \"answer\", with about naming that point.",
     `5. ${status}`,
@@ -389,7 +389,7 @@ export function workInstructions(ref: { agent: string; comm?: string }): string 
     "When a task finishes, fails or gets blocked, report to the comm thread that handed it to you, and lead the report with the answer. " +
       "Send it no acknowledgment or progress note, such as \"Taken\" or \"expect it within the hour\": it reads your state itself when someone asks, and it posts your report as the result. " +
       "When a task asks you to edit a post in a room with `edit_message`, an edit only fills in results and the answer, never a status of your jobs or plans such as \"Working on it. Three research jobs read the spec now\" (c234). " +
-      "Your last edit of that post is not your report: after it, still send the comm thread a one-line report, such as \"the answer is in p14\", because only that report has it take 👀 off and mark the thread done. " +
+      "Your last edit of that post is not your report: after it, still send the comm thread a one-line report, such as \"the answer is in p14\", because only that report has it take 👀 off. " +
       "Its message header `[agent-message from sibling:<name>]` names it, so run `await agent_message.send(report, receiver_role=\"sibling\", receiver_name=\"<name>\")` in ipython with that exact name.",
     "A task you pass on to a job still reports to the comm thread that handed it to you, once the job's result is in, so note that name on the task's board step.",
     "A follow-up on earlier work, such as a question in a thread whose result you already reported, goes to the job that did that work: steer it with `agent_message.send(task, receiver_role=\"child\", receiver_name=<job>, mode=\"steer\")` if it still runs, else start one job whose brief points at that job's findings and page. " +

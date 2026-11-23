@@ -144,7 +144,7 @@ test("owner feedback on how agents write reaches every agent: others bring it to
 
 test("a group comm thread, like a DM one, ends every turn with no text, since the room shows only its posts (p128 trace, 11-21)", () => {
   const group = commInstructions({ agent: "ag_search-product-misc", room: "ch_4c388a00", work: "w1" });
-  assert.match(group, /The room shows nothing else you write, so end every turn with no text, also after a post, a reaction, a hand-over or marking a thread done[\s\S]*replaces the base prompt's "state your final answer": in this room your last message after your tool calls is empty/);
+  assert.match(group, /The room shows nothing else you write, so end every turn with no text, also after a post, a reaction or a hand-over, and never sum up[\s\S]*replaces the base prompt's "state your final answer": in this room your last message after your tool calls is empty/);
   assert.match(commInstructions({ agent: "ag_vent", room: "dm_vent", work: "w1" }), /End a turn that posts nothing, such as one your reaction answers, with no text/);
 });
 
@@ -201,6 +201,8 @@ test("a room post answers first, breaks into lines and keeps the agent's process
   assert.doesNotMatch(EDIT_MESSAGE_DESCRIPTION, /checklist of what you will check|topic|at most 20/);
   assert.match(EDIT_MESSAGE_DESCRIPTION, /Use it to correct or complete a post[\s\S]*never a status of jobs or plans\. You can edit only your own posts/);
   assert.match(workInstructions({ agent: "ag_vent", comm: "c1" }), /an edit only fills in results and the answer, never a status of your jobs or plans/);
+  assert.match(workInstructions({ agent: "ag_vent", comm: "c1" }), /because only that report has it take 👀 off\. /);
+  assert.doesNotMatch(workInstructions({ agent: "ag_vent", comm: "c1" }), /thread done/, "the done check is the owner's alone (c236)");
 });
 
 test("the role text shows real bad and good posts for each case, and the sw-factory skill shows the same pairs (owner, dm_agent-factory msg mwqvt8s4, c234)", () => {

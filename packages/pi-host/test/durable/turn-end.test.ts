@@ -27,22 +27,21 @@ const post = { name: "tell_owner", arguments: { text: "yes" } };
 const eyesOff = { name: "set_emoji", arguments: { message_id: "p1", emoji: "eyes", on: false } };
 const eyesOn = { name: "set_emoji", arguments: { message_id: "p1", emoji: "eyes", on: true } };
 const pray = { name: "set_emoji", arguments: { message_id: "p1", emoji: "pray", on: true } };
-const done = { name: "set_thread_done", arguments: { message_id: "p1", done: true } };
 const mark = { name: "mark_message", arguments: { message_id: "ch_1/p1", completed: true } };
 const ipython = { name: "ipython", arguments: { code: "await agent_message.send('task')" } };
 
 test("a round that posts and closes together ends the turn, as fresh agents most often finish", () => {
-  const r = round(post, eyesOff, done, mark);
+  const r = round(post, eyesOff, mark);
   assert.equal(roundEndsTurn([input("p1"), r.message], r.ids[0]!), true);
-  assert.equal(roundEndsTurn([input("p1"), r.message], r.ids[3]!), true);
+  assert.equal(roundEndsTurn([input("p1"), r.message], r.ids[2]!), true);
 });
 
 test("a closing round after a post that went out earlier in the turn ends it, and one after a held or refused post does not", () => {
   const p = round(post);
-  const c = round(eyesOff, done, mark);
-  assert.equal(roundEndsTurn([input("p1"), p.message, result(p.ids[0]!, "tell_owner", TOLD), c.message], c.ids[2]!), true);
-  assert.equal(roundEndsTurn([input("p1"), p.message, result(p.ids[0]!, "tell_owner", "Held: it reads long. Send the same text again to post it."), c.message], c.ids[2]!), false);
-  assert.equal(roundEndsTurn([input("p1"), p.message, result(p.ids[0]!, "tell_owner", "Not sent: it splits one answer.", true), c.message], c.ids[2]!), false);
+  const c = round(eyesOff, mark);
+  assert.equal(roundEndsTurn([input("p1"), p.message, result(p.ids[0]!, "tell_owner", TOLD), c.message], c.ids[1]!), true);
+  assert.equal(roundEndsTurn([input("p1"), p.message, result(p.ids[0]!, "tell_owner", "Held: it reads long. Send the same text again to post it."), c.message], c.ids[1]!), false);
+  assert.equal(roundEndsTurn([input("p1"), p.message, result(p.ids[0]!, "tell_owner", "Not sent: it splits one answer.", true), c.message], c.ids[1]!), false);
 });
 
 test("👀 taken off before the reply leaves the turn running, so the reply still goes out", () => {
@@ -54,8 +53,8 @@ test("👀 taken off before the reply leaves the turn running, so the reply stil
 });
 
 test("a reaction answers a post that needs no words, and a round with any other call, or with no closing call, runs on", () => {
-  const thanks = round(pray, done, mark);
-  assert.equal(roundEndsTurn([input("ok thanks"), thanks.message], thanks.ids[2]!), true);
+  const thanks = round(pray, mark);
+  assert.equal(roundEndsTurn([input("ok thanks"), thanks.message], thanks.ids[1]!), true);
   const handOver = round(post, ipython);
   assert.equal(roundEndsTurn([input("p1"), handOver.message], handOver.ids[0]!), false);
   const checklist = round(post, eyesOn);
@@ -75,16 +74,14 @@ test("a first checklist with open items and a mark in one round runs on to the h
     hand.message, result(hand.ids[0]!, "ipython", "{'id': 'agentmsg_1'}"), closing.message], closing.ids[0]!), true);
   assert.equal(roundEndsTurn([input("p1"), first.message, result(first.ids[0]!, "tell_owner", TOLD), hand.message, result(hand.ids[0]!, "ipython", "NameError", true), closing.message], closing.ids[0]!), false,
     "a hand-over that failed does not count");
-  const ticked = round({ name: "edit_message", arguments: { message_id: "reply:ch_1/p1", text: "ready to ship\n- git\n  - [x] main vs origin" } }, eyesOff, done);
+  const ticked = round({ name: "edit_message", arguments: { message_id: "reply:ch_1/p1", text: "ready to ship\n- git\n  - [x] main vs origin" } }, eyesOff);
   assert.equal(roundEndsTurn([input("[agent-message from sibling:w]"), ticked.message], ticked.ids[0]!), true, "a checklist with every item ticked ends it");
-  const blocked = round({ name: "edit_message", arguments: { message_id: "reply:ch_1/p1", text: "not ready to ship\n- git\n  - [x] main vs origin\n  - [ ] 9 uncommitted files" } }, eyesOff, done, mark);
-  assert.equal(roundEndsTurn([input("[agent-message from sibling:w]"), blocked.message], blocked.ids[3]!), true,
+  const blocked = round({ name: "edit_message", arguments: { message_id: "reply:ch_1/p1", text: "not ready to ship\n- git\n  - [x] main vs origin\n  - [ ] 9 uncommitted files" } }, eyesOff, mark);
+  assert.equal(roundEndsTurn([input("[agent-message from sibling:w]"), blocked.message], blocked.ids[2]!), true,
     "a last edit with an open item belongs to work handed over earlier, so it ends the turn (blind run 5, 11-21)");
 });
 
-test("a post with set_thread_done(false), which reopens the thread, runs on", () => {
-  const reopen = round(post, { name: "set_thread_done", arguments: { message_id: "p1", done: false } });
-  assert.equal(roundEndsTurn([input("p1"), reopen.message], reopen.ids[0]!), false);
-  const both = round(post, { name: "set_thread_done", arguments: { message_id: "p1", done: false } }, mark);
-  assert.equal(roundEndsTurn([input("p1"), both.message], both.ids[2]!), false);
+test("a set_thread_done call, a tool agents lost on 11-24 (c236), closes nothing, so a round with it runs on", () => {
+  const old = round(post, eyesOff, { name: "set_thread_done", arguments: { message_id: "p1", done: true } });
+  assert.equal(roundEndsTurn([input("p1"), old.message], old.ids[0]!), false);
 });

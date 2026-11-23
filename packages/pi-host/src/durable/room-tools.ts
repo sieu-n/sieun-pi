@@ -4,11 +4,10 @@
  * drops the chat's own tools.
  *
  * `set_emoji` puts the agent's reaction on a post or takes it off, as Slack's `reactions.add` and `reactions.remove` do. The comm role text
- * asks the agent to mark the post it works on with 👀, keep it on until that work ends (the result, the checklist's last edit or the done
- * mark), mark the thread done instead of adding ✅, and react the way people do in Slack (`agent-profile.ts` workSteps); no code here
- * treats an emoji specially, as the owner asked on 11-03 (contract: /home/sieun/work/slack-reactions/contract.md).
- *
- * `set_thread_done` (`thread-done.ts`) marks a thread done or open again with the flag on its root post, which the room shows with a check.
+ * asks the agent to mark the post it works on with 👀, keep it on until that work ends (the result or the checklist's last edit), add no
+ * ✅ to a post it replied to, and react the way people do in Slack (`agent-profile.ts` workSteps); no code here treats an emoji specially,
+ * as the owner asked on 11-03 (contract: /home/sieun/work/slack-reactions/contract.md). No tool marks a thread done: that check is the
+ * owner's alone (p177, c236, "Agent가 Done Check하는 기능 없애").
  *
  * `set_room_member` (`room-members.ts`) adds an agent to a channel or Solo room or removes it.
  *
@@ -30,7 +29,6 @@ import { ROOM_LONG_WORDS } from "./room-post.ts";
 import { laterTools } from "./later.ts";
 import { searchTools } from "./search-messages.ts";
 import { roomMemberTools } from "./room-members.ts";
-import { threadDoneTools } from "./thread-done.ts";
 
 export const ROOM_TOOLS_EXTENSION = "room-tools";
 export const SET_EMOJI_TOOL = "set_emoji";
@@ -151,7 +149,6 @@ export function roomTools(app: ChatApp, thread: string): Extension {
           }
         },
       }),
-      ...threadDoneTools(app, thread),
       ...roomMemberTools(app, thread),
       ...forMeTools(app, thread),
       ...laterTools(app, thread),

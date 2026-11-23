@@ -1,7 +1,7 @@
 /**
  * An agent's comm thread and work thread (`comm.ts`, `agent-profile.ts`), on DurableThreads with a real kernel and the faux model:
  * 1. An `agent.ref` parses in its three shapes, and writing one sets the root's tools filter and instructions for the role in the same
- *    commit, again with no change, and never clears a value pi-host did not set. Both comm texts ask for 👀 with set_emoji on the post, kept until its work ends, no ✅ on a post they replied to, its thread marked done with set_thread_done once handled, a later result posted with
+ *    commit, again with no change, and never clears a value pi-host did not set. Both comm texts ask for 👀 with set_emoji on the post, kept until its work ends, no ✅ on a post they replied to, no done mark on its thread, which is the owner's alone (c236), a later result posted with
  *    reply_to naming its post, and a fitting reaction in place of a post that only acknowledges.
  * 2. While the work thread runs a slow turn, a status turn of the comm thread reads it with agent_observe (status, messages, live rlm
  *    child with its progress note), and the work conversation's entries and inputs do not change; stop_work then ends the work turn.
@@ -168,10 +168,9 @@ test("an agent.ref sets the root's tools and instructions for its role in its co
       assert.match(commInstructions({ ...comm, room }), /A follow-up in a thread you already worked on[\s\S]*within a minute from what you already hold[\s\S]*```mermaid block[\s\S]*Keep 👀 on[\s\S]*steer the job that did it if that job still runs, else to start one job that starts from its findings, never a fresh round of research jobs/, room);
       assert.match(commInstructions({ ...comm, room }), /a job that writes a page or report from other jobs' findings starts only after those jobs report, never beside them/, room);
       assert.match(commInstructions({ ...comm, room }), /one plain line on what he will get, such as "pass and fail per test file coming here", with tell_owner's `reply_to` set to his post, never an ack such as "on it"/, room);
-      assert.match(commInstructions({ ...comm, room }), /put no ✅ on a post you replied to\. Once all his post asked is handled[\s\S]*mark its thread done with `set_thread_done\(message_id, true\)`, never while the work thread still works on it/, room);
-      assert.match(commInstructions({ ...comm, room }), /that mark is the finished signal and no ✅ is\. A quick ask[\s\S]*gets the done mark and no post/, room);
-      assert.match(commInstructions({ ...comm, room }), /His new post in a done thread opens it again, so mark it done again once that post is handled[\s\S]*`set_thread_done\(message_id, false\)`/, room);
-      assert.match(commInstructions({ ...comm, room }), /then take 👀 off and mark the thread done\./, room);
+      assert.match(commInstructions({ ...comm, room }), /put no ✅ on a post you replied to\. The done check on a thread is the owner's alone \(c236\), so once all his post asked is handled, take 👀 off and stop\. A quick ask[\s\S]*gets 👍 and no post/, room);
+      assert.doesNotMatch(commInstructions({ ...comm, room }), /set_thread_done|mark (its|the) thread done|marking a thread done|done mark/, room);
+      assert.match(commInstructions({ ...comm, room }), /then take 👀 off\./, room);
       assert.doesNotMatch(commInstructions({ ...comm, room }), /white_check_mark|swap 👀 for ✅/, room);
       assert.match(commInstructions({ ...comm, room }), /Keep ✅ and 👀 out of your post text too/, room);
       assert.match(commInstructions({ ...comm, room }), /End on the words, with no sign-off emoji[\s\S]*Data from a file or log\. Bad/, room);

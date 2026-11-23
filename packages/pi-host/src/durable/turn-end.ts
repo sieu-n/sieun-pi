@@ -1,7 +1,7 @@
 /**
  * When a comm thread's tool round ends its turn. On 11-21 fresh channel agents in four blind runs on live :5184 ended 13 of 28 turns with a
  * summary no room shows, mostly right after a round that posted and closed together, such as tell_owner, set_emoji taking 👀 off,
- * set_thread_done and mark_message in one round, while their role text and mark_message's answer said to end with no text.
+ * a done mark and mark_message in one round, while their role text and mark_message's answer said to end with no text.
  *
  * A round ends the turn when its calls are only posts and closing calls, at least one call closes, and the turn has its answer: a post in
  * the round itself, or one an earlier round of the turn sent. Each of those calls that goes through returns pi-durable's `terminate` control
@@ -23,9 +23,9 @@ const isEyes = (emoji: unknown): boolean => EYES.includes(String(emoji).trim());
 export const posts = (call: Omit<Call, "id">): boolean =>
   call.name === "tell_owner" || call.name === "edit_message" || (call.name === "set_emoji" && call.arguments.on === true && !isEyes(call.arguments.emoji));
 
-/** A call that closes a handled post: the mark that completes it, the thread's done flag, or 👀 taken off. */
+/** A call that closes a handled post: the mark that completes its For item, or 👀 taken off. */
 export const closes = (call: Omit<Call, "id">): boolean =>
-  (call.name === "mark_message" && call.arguments.completed === true) || (call.name === "set_thread_done" && call.arguments.done === true) ||
+  (call.name === "mark_message" && call.arguments.completed === true) ||
   (call.name === "set_emoji" && call.arguments.on === false && isEyes(call.arguments.emoji));
 
 const callsOf = (message: Message): Call[] =>
