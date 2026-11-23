@@ -10,7 +10,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { apiSpeed, finding, MIN_NETWORK_LINES, probeRoutes, probeSpeed, readTimings, routeSpeeds, unmeasured } from "../../scripts/duties/api-speed.ts";
+import { apiSpeed, finding, MIN_NETWORK_LINES, MIN_OWN_CALLS, ownBefore, probeRoutes, probeSpeed, readTimings, routeSpeeds, unmeasured } from "../../scripts/duties/api-speed.ts";
 import { parseStarts } from "../../scripts/restart-walk-hits.ts";
 import { dayOf, LoopStalls, RequestLog, type RequestTiming } from "../../server/request-log.ts";
 import { start } from "./helpers.ts";
@@ -185,9 +185,9 @@ test("the precheck reads each metric from the owner's lines, falls back to the s
     row("server", "local", "POST", "/api/c/:id/send", 40),
     row("client", "local", "GET", "/api/me", 3),
     ...Array.from({ length: 18 }, () => row("client", "tailnet", "GET", "/api/rooms", 20, at, 20)),
-    row("client", "tailnet", "GET", "/api/search", 99_000, now - 30 * 3600_000),
+    row("client", "tailnet", "GET", "/api/search", 99_000, now - 80 * 3600_000),
   ];
-  writeFileSync(join(dir, "requests", "2026-11-02.jsonl"), `${rows.at(-1)}\n`);
+  writeFileSync(join(dir, "requests", "2026-10-30.jsonl"), `${rows.at(-1)}\n`);
   writeFileSync(join(dir, "requests", "2026-11-03.jsonl"), `${rows.slice(0, -1).join("\n")}\n{"torn`);
   const out = apiSpeed(dir, now, 24 * 3600_000);
   // The network p50 is 20 ms over the owner's 30 lines, so search reads 5 + 20 and send 40 + 20; the walks' 900 and 288 set nothing.
@@ -196,15 +196,16 @@ test("the precheck reads each metric from the owner's lines, falls back to the s
     failed_sends_24h: 0,
   });
   assert.equal(out.metricSources.messages, "GET /api/c/:id/items: the owner's devices, 10 requests");
-  assert.equal(out.metricSources.send, "POST /api/c/:id/send: no request of the owner's in the window, so the server's handler p90 40 ms over 1 requests plus his network p50 20 ms over 30 tailnet requests");
+  assert.equal(out.metricSources.send, "POST /api/c/:id/send: an estimate, since the owner made no request of this route in the request log's last 72 h: the server's handler p90 40 ms over 1 requests plus his network p50 20 ms over 30 tailnet requests");
   assert.deepEqual(out.slowest.map(s => s.route), ["GET /api/c/:id/replies/:root", "GET /api/c/:id/items", "POST /api/c/:id/send"]);
   assert.deepEqual(out.flagged.map(row => `${row.kind} ${row.sig}`), [
     "slow_api tailnet:GET /api/c/:id/replies/:root", "slow_api tailnet:GET /api/c/:id/items", "slow_api server:POST /api/c/:id/send",
-    "walk_slow_api client:GET /api/search", "walk_slow_api client:POST /api/c/:id/send", "walk_slow_api client:GET /api/me",
+    "slow_call slow_call:GET /api/c/:id/items", "walk_slow_api client:GET /api/search", "walk_slow_api client:POST /api/c/:id/send", "walk_slow_api client:GET /api/me",
   ]);
   assert.equal(out.flagged[0]!.excerpt, "GET /api/c/:id/replies/:root p90 2500 ms, p50 10 ms, max 2500 ms over 2 requests from the owner's devices; on the 2 lines that carry the network time, the network and the server took p90 30 ms, p50 8 ms, so the page's main thread held the rest in long tasks; trace a page load in the box Chrome to find them; the slowest was /api/c/dm_x/replies/p1");
-  assert.match(out.flagged[2]!.excerpt, /^POST \/api\/c\/:id\/send p90 about 60 ms for the owner: no request of the owner's/);
-  assert.match(out.flagged[3]!.excerpt, /from browsers on the box, such as job walks.*no line carries the network time yet/);
+  assert.match(out.flagged[2]!.excerpt, /^POST \/api\/c\/:id\/send p90 about 60 ms for the owner: an estimate, since the owner made no request/);
+  assert.equal(out.flagged[3]!.excerpt, "2026-11-03T08:00:00.000Z GET /api/c/dm_x/items waited 2000 ms on the owner's page, 20 ms of it on the network, above the p90 of 190 ms its route reads");
+  assert.match(out.flagged[4]!.excerpt, /from browsers on the box, such as job walks.*no line carries the network time yet/);
 });
 
 test("a read ahead of any view counts in no speed, and a refresh behind a page the screen already showed counts as a 0 ms wait", async () => {
@@ -288,7 +289,7 @@ test("a network time from too few of the owner's lines sets no metric, and the s
   assert.deepEqual(one.network, { count: 1, p50: 793 });
   assert.equal(one.metrics.search_p90_ms, 105, "one waking call's 793 ms adds to no handler time");
   assert.equal(one.metrics.thread_open_p90_ms, 22);
-  assert.equal(one.metricSources.search, "GET /api/search: no request of the owner's in the window, so the server's handler p90 105 ms over 1 requests alone, since only 1 tailnet requests in the window carry the network time (p50 793 ms) and fewer than 30 set no metric");
+  assert.equal(one.metricSources.search, "GET /api/search: an estimate, since the owner made no request of this route in the request log's last 72 h: the server's handler p90 105 ms over 1 requests alone, since only 1 tailnet requests in the window carry the network time (p50 793 ms) and fewer than 30 set no metric");
   const probe = { route: "GET /api/search", at: now, path: "/api/search?q=duty", ms: [40, 50] };
   assert.equal(probeSpeed(probe, one.network)!.p90, 50, "a probe stands alone the same way");
   assert.match(probeSpeed(probe, one.network)!.source, /took p90 50 ms alone, since only 1 tailnet requests .* fewer than 30 set no metric$/);
@@ -444,4 +445,83 @@ test("the ms a page was hidden count in no wait, and an old line without them co
   } finally {
     await chat.close();
   }
+});
+
+test("a route the owner used little in the window reads over his newest 10 requests on it, his window's among them", () => {
+  const dir = tempDir();
+  mkdirSync(join(dir, "requests"));
+  // 11-24 06:30 KST, the first run after a day he used the page little (requests/2026-11-22.jsonl and 2026-11-23.jsonl).
+  const now = Date.UTC(2026, 10, 23, 21, 30);
+  const hours = (h: number) => now - h * 3600_000;
+  const row = (r: string, ms: number, at: number, more: Record<string, unknown> = {}) =>
+    JSON.stringify({ at, src: "client", via: "tailnet", m: "GET", r, p: r.replace(":id", "dm_x").replace(":root", "p1"), s: 200, ms, net: Math.min(ms, 212), ...more });
+  const shown = (r: string, at: number) => row(r, 230, at, { bg: "shown" });
+  const older = [
+    row("/api/c/:id/items", 900, hours(60)), row("/api/c/:id/items", 230, hours(40)), row("/api/c/:id/items", 240, hours(39)),
+    ...[38, 37, 36, 35, 34].map(h => shown("/api/c/:id/items", hours(h))),
+    row("/api/c/:id/replies/:root", 300, hours(40)), shown("/api/c/:id/replies/:root", hours(39)), shown("/api/c/:id/replies/:root", hours(38)), row("/api/c/:id/replies/:root", 350, hours(37)),
+    row("/api/search", 5000, hours(30)),
+    ...[32, 31, 30, 29, 28, 27, 26, 25].map(h => row("/api/agents/:id/board", 0, hours(h), { bg: "shown" })),
+    row("/api/later", 4067, hours(30)), row("/api/later", 4067, hours(29)), row("/api/later", 4067, hours(28)),
+    row("/api/c/:id/items", 800, hours(30), { via: "local" }),
+    row("/api/c/:id/items", 800, hours(30), { bg: "ahead" }),
+  ];
+  const window = [
+    shown("/api/c/:id/items", hours(5)), shown("/api/c/:id/items", hours(4)), row("/api/c/:id/items", 270, hours(3)),
+    JSON.stringify({ at: hours(3), src: "server", m: "GET", r: "/api/c/:id/replies/:root", p: "/api/c/dm_x/replies/p1", s: 200, ms: 2 }),
+    ...[100, 101, 102, 103, 104, 105, 106, 107, 108, 109].map(ms => row("/api/search", ms, hours(2))),
+    row("/api/agents/:id/board", 1500, hours(2)), row("/api/agents/:id/board", 1200, hours(1)),
+    JSON.stringify({ at: hours(2), src: "server", m: "POST", r: "/api/c/:id/send", p: "/api/c/dm_x/send", s: 200, ms: 40 }),
+  ];
+  const day = (line: string) => new Date((JSON.parse(line) as { at: number }).at).toISOString().slice(0, 10);
+  for (const name of ["2026-11-21", "2026-11-22", "2026-11-23"]) {
+    const rows = [...older, ...window].filter(line => day(line) === name);
+    if (rows.length) writeFileSync(join(dir, "requests", `${name}.jsonl`), `${rows.join("\n")}\n`);
+  }
+  const out = apiSpeed(dir, now, 24 * 3600_000);
+  assert.equal(MIN_OWN_CALLS, 10);
+  // Messages: his 3 opens of the window and his newest 7 before it (230, 240 and 5 shown); the 900 ms open is older than those 10, and a
+  // box walk's and a read ahead's lines count nowhere.
+  assert.equal(out.metrics.thread_open_p90_ms_messages, 240);
+  assert.equal(out.metricSources.messages, "GET /api/c/:id/items: the owner's devices, his newest 10 requests, from 2026-11-22 05:30Z to 2026-11-23 18:30Z, since only 3 of his requests in the window reached it, 7 of them behind a page the screen already showed (0 ms)");
+  // Replies: no open of his in the window, so his 4 of the log's days, never the server's 2 ms plus a network time.
+  assert.equal(out.metrics.thread_open_p90_ms_replies, 350);
+  assert.equal(out.metricSources.replies, "GET /api/c/:id/replies/:root: the owner's devices, his newest 4 requests, from 2026-11-22 05:30Z to 2026-11-22 08:30Z, since he made none in the window, 2 of them behind a page the screen already showed (0 ms)");
+  // Search: 10 of his in the window are enough, so his 5,000 ms search of the day before counts nowhere.
+  assert.equal(out.metrics.search_p90_ms, 108);
+  assert.equal(out.metricSources.search, "GET /api/search: the owner's devices, 10 requests");
+  // Send: no send of his in the log's days, so an estimate that says so.
+  assert.match(out.metricSources.send!, /^POST \/api\/c\/:id\/send: an estimate, since the owner made no request of this route in the request log's last 72 h: /);
+  // A route out of every metric that he called in the window reads the same way, and /api/later, which he did not call in it, sets nothing.
+  assert.equal(out.slowest[0]!.route, "GET /api/agents/:id/board");
+  assert.equal(out.slowest[0]!.p90, 1200, "his newest 10 board reads: 8 shown at 0 ms, 1,200 and 1,500 ms");
+  assert.ok(!out.slowest.some(s => s.route === "GET /api/later"));
+  // His 1,500 ms wait, above the 1,200 ms p90 of its route, shows as a slow_call row.
+  assert.deepEqual(out.flagged.filter(row => row.kind === "slow_call").map(row => row.excerpt), [
+    `${new Date(hours(2)).toISOString()} GET /api/agents/dm_x/board waited 1500 ms on the owner's page, 212 ms of it on the network, above the p90 of 1200 ms its route reads`,
+  ]);
+  // A route with a line of his in the log's days gets no probe of the live server.
+  const all = readTimings(dir, now, 72 * 3600_000);
+  const before = ownBefore(all, hours(24));
+  assert.deepEqual(unmeasured(routeSpeeds(all.filter(t => t.at >= hours(24))), before), []);
+  assert.deepEqual(unmeasured(routeSpeeds([]), before), []);
+  assert.deepEqual(unmeasured(routeSpeeds([]), []), ["GET /api/search", "GET /api/c/:id/items", "GET /api/c/:id/replies/:root"]);
+});
+
+test("a wait of the owner's over 1 s that his route's p90 hides is one slow_call row per route, with how many passed 1 s", () => {
+  const dir = tempDir();
+  mkdirSync(join(dir, "requests"));
+  const now = Date.UTC(2026, 10, 23, 21, 30);
+  const row = (r: string, ms: number, more: Record<string, unknown> = {}) =>
+    JSON.stringify({ at: now - 3600_000, src: "client", via: "tailnet", m: "GET", r, p: r, s: 200, ms, net: 220, ...more });
+  writeFileSync(join(dir, "requests", "2026-11-23.jsonl"), `${[
+    ...Array.from({ length: 20 }, () => row("/api/later", 220)), row("/api/later", 4067), row("/api/later", 3000),
+    row("/api/rooms", 5000, { hid: 4500 }), row("/api/me", 9000, { bg: "shown" }), row("/api/me", 9000, { via: "local" }),
+  ].join("\n")}\n`);
+  const out = apiSpeed(dir, now, 24 * 3600_000);
+  assert.equal(out.routes.find(s => s.route === "GET /api/later")?.p90, 220);
+  assert.deepEqual(out.flagged.filter(row => row.kind === "slow_call").map(row => [row.sig, row.excerpt]), [[
+    "slow_call:GET /api/later",
+    `${new Date(now - 3600_000).toISOString()} GET /api/later waited 4067 ms on the owner's page, 220 ms of it on the network, above the p90 of 220 ms its route reads; 2 of his waits on this route in the window passed 1000 ms`,
+  ]]);
 });

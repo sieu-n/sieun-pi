@@ -1,6 +1,6 @@
 <script lang="ts">
   import { tick, type Snippet } from "svelte";
-  import { newestReply, type Item, type TurnPlace } from "$lib/api";
+  import { newestReply, type Item, type TurnPlace, type Wait } from "$lib/api";
   import Avatar from "$lib/ui/Avatar.svelte";
   import Button from "$lib/ui/Button.svelte";
   import Icon from "$lib/ui/Icon.svelte";
@@ -21,7 +21,8 @@
     error: string | null;
     hasOlder: boolean;
     loadingOlder: boolean;
-    loadOlder: () => Promise<void>;
+    /** Reads the page above the first row; `wait` tags a read the view asked for on its own, which no one waits on (api `Wait`). */
+    loadOlder: (wait?: Wait) => Promise<void>;
     /** The item to scroll to and flash, from a search hit or a link. */
     focus?: string;
     /** False scrolls to `focus` without flashing it, as the room under a thread pane does when the link names a reply. */
@@ -157,10 +158,16 @@
    * only through noteAnchor still lost it in 6 of 10 opens.
    */
   let held: { row: Element; top: number } | null = null;
+  /** When his hand last moved the feed (a wheel, a touch, a key or a press in it), so a scroll within HAND_MS of it is his own. */
+  let handAt = -Infinity;
+  const HAND_MS = 1000;
   $effect(() => {
     const feed = scroller;
     if (!feed) return;
-    const release = () => (held = null);
+    const release = () => {
+      held = null;
+      handAt = performance.now();
+    };
     const events = ["wheel", "touchstart", "keydown", "pointerdown"] as const;
     for (const type of events) feed.addEventListener(type, release, { passive: true });
     return () => events.forEach((type) => feed.removeEventListener(type, release));
@@ -242,10 +249,14 @@
     if (scroller) scroller.scrollTop += scroller.scrollHeight - before;
   }
 
-  async function older() {
+  /**
+   * Loads the rows above. A load he did not scroll for, such as the fill after a short job page opens at its bottom, goes as a read ahead,
+   * since the open's rows already show: on 11-23 one such read of 564 ms counted as a wait on the open in the d2 duty (p215 walk).
+   */
+  async function older(byHand = true) {
     if (!scroller || loadingOlder || !hasOlder) return;
     const before = scroller.scrollHeight;
-    await loadOlder();
+    await loadOlder(byHand ? undefined : { background: "ahead", first: true });
     await tick();
     if (scroller) scroller.scrollTop += scroller.scrollHeight - before;
   }
@@ -259,7 +270,7 @@
     // Reaching the bottom is his own read, except while the post he marked unread is still on screen: only scrolling past it reads it.
     if (stick && !wasStuck) onbottom?.(!lineOnScreen());
     if (!stick && !held) noteAnchor();
-    if (scroller.scrollTop < 240 && full && hasOlder && !loadingOlder) void older();
+    if (scroller.scrollTop < 240 && full && hasOlder && !loadingOlder) void older(performance.now() - handAt < HAND_MS);
   }
 
   function lineOnScreen(): boolean {
@@ -381,7 +392,7 @@
         {#if full && loadingOlder}
           <LoadingText text="Loading older…" delay={300} />
         {:else if full && hasOlder}
-          <Button variant="ghost" size="sm" onclick={older}>Load older messages</Button>
+          <Button variant="ghost" size="sm" onclick={() => older()}>Load older messages</Button>
         {/if}
       </div>
       {#if intro?.kind === "dm"}

@@ -1214,11 +1214,11 @@ export class Timeline {
     return true;
   }
 
-  async loadOlder(): Promise<void> {
+  async loadOlder(wait?: Wait): Promise<void> {
     if (!this.older || this.loadingOlder) return;
     this.loadingOlder = true;
     try {
-      const page = await api.items(this.id, { before: this.older });
+      const page = await api.items(this.id, { before: this.older }, wait);
       this.upsert(page.items);
       this.older = page.older;
     } catch (error) {

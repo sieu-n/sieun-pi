@@ -86,7 +86,7 @@
       error={job ? job.error : (posts?.error ?? null)}
       hasOlder={!!job?.older}
       loadingOlder={job?.loadingOlder ?? false}
-      loadOlder={() => job?.loadOlder() ?? Promise.resolve()}
+      loadOlder={(wait) => job?.loadOlder(wait) ?? Promise.resolve()}
       {focus}
       {context}
       queue={job?.queue ?? null}

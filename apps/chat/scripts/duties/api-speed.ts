@@ -1,9 +1,11 @@
 /**
  * Duty precheck: sw factory stays snappy (owner's words, #sw-factory-build, 11-03, msg mw0et67o: "Thread > load messages 이것도 진짜 너무
  * 느리거든? 이거 계속 느린 api 뭔지 꾸준히 (daily) monitoring 하는걸 add to duty and keep it snappy"). It reads the request log
- * (server/request-log.ts) of the last 24 h and gives each route's p90 as the owner waits for it: his own devices' lines (via tailnet), else
- * the server's handler time plus his network p50 from his other tailnet lines (the handler time alone when fewer than MIN_NETWORK_LINES of
- * them carry a network time), and each metric says which in `metricSources`. A box
+ * (server/request-log.ts) of the last 24 h and gives each route's p90 as the owner waits for it: his own devices' lines (via tailnet), with
+ * his newest MIN_OWN_CALLS on the route from the log's older lines when the window holds fewer, else, for a route he made no request of
+ * in the log's last 72 h, an estimate from the server's handler time plus his network p50 from his other tailnet lines (the handler time
+ * alone when fewer than MIN_NETWORK_LINES of them carry a network time), and each metric says which in `metricSources`. A wait of his over
+ * 1 s that his route's p90 does not show is a slow_call row. A box
  * browser's line, such as a job's walk, never sets a metric; its slowest routes are walk_slow_api rows apart. A call the screen did not
  * wait on says so in `bg` (request-log.ts): a read ahead of any view counts nowhere, and a refresh behind a page already on the screen
  * counts as a 0 ms wait. A client line's `net` is the
@@ -12,7 +14,8 @@
  * live server itself and says so in `metricSources`; a probe that fails gives no value and a probe_failed row.
  * failed_sends_24h also counts the owner's calls that failed within 20 s of an apps/chat restart or hand-over (the service's Started and
  * Reloading lines in the user journal, scripts/restart-walk-hits.ts), each a restart_hit row apart from the failed_send rows.
- * Usage: OUTPUT_FILE=<file> node --import tsx scripts/duties/api-speed.ts [--data-dir <dir>] [--hours 24] [--server http://127.0.0.1:5184]
+ * Usage: OUTPUT_FILE=<file> node --import tsx scripts/duties/api-speed.ts [--data-dir <dir>] [--hours 24] [--server http://127.0.0.1:5184] [--now <ISO time>]
+ * With --now the window ends then, as for a replay of a stored run, and the precheck sends no probe, since a probe times the server now.
  * The data dir defaults to APPS_CHAT_DATA_DIR, else ~/.pi/agent/chat, and the server to APPS_CHAT_URL, else http://127.0.0.1:5184.
  * Without OUTPUT_FILE the result prints to stdout.
  */
@@ -82,27 +85,33 @@ export function readTimings(dir: string, now: number, windowMs: number): Request
   return out;
 }
 
+/** A line some view waited on, or showed at once: a call that reached the server and was neither a read ahead nor a Not delivered line. */
+const counted = (t: RequestTiming): boolean => t.s !== 0 && !t.shown && t.bg !== "ahead";
+
+/** One route's speed from one source's lines, all of the same route and source. */
+function summarize(group: readonly RequestTiming[]): RouteSpeed {
+  const sorted = group.map(waitOf).sort((a, b) => a - b);
+  const slowest = group.reduce((a, b) => (waitOf(b) > waitOf(a) ? b : a));
+  const shown = group.filter(t => t.bg === "shown").length;
+  const net = group.flatMap(t => (t.net === undefined ? [] : [t.net])).sort((a, b) => a - b);
+  return {
+    route: `${group[0]!.m} ${group[0]!.r}`, src: sourceOf(group[0]!), count: group.length, p50: percentile(sorted, 0.5), p90: percentile(sorted, 0.9), max: sorted.at(-1)!, slowestPath: slowest.p,
+    ...(net.length ? { netCount: net.length, netP50: percentile(net, 0.5), netP90: percentile(net, 0.9) } : {}),
+    ...(shown ? { shown } : {}),
+  };
+}
+
 /** Each route's speed per source, slowest p90 first. */
 export function routeSpeeds(timings: readonly RequestTiming[]): RouteSpeed[] {
   const groups = new Map<string, RequestTiming[]>();
   for (const timing of timings) {
-    if (timing.s === 0 || timing.shown || timing.bg === "ahead") continue;
+    if (!counted(timing)) continue;
     const key = `${sourceOf(timing)} ${timing.m} ${timing.r}`;
     const group = groups.get(key);
     if (group) group.push(timing);
     else groups.set(key, [timing]);
   }
-  return [...groups.values()].map(group => {
-    const sorted = group.map(waitOf).sort((a, b) => a - b);
-    const slowest = group.reduce((a, b) => (waitOf(b) > waitOf(a) ? b : a));
-    const shown = group.filter(t => t.bg === "shown").length;
-    const net = group.flatMap(t => (t.net === undefined ? [] : [t.net])).sort((a, b) => a - b);
-    return {
-      route: `${group[0]!.m} ${group[0]!.r}`, src: sourceOf(group[0]!), count: group.length, p50: percentile(sorted, 0.5), p90: percentile(sorted, 0.9), max: sorted.at(-1)!, slowestPath: slowest.p,
-      ...(net.length ? { netCount: net.length, netP50: percentile(net, 0.5), netP90: percentile(net, 0.9) } : {}),
-      ...(shown ? { shown } : {}),
-    };
-  }).sort((a, b) => b.p90 - a.p90);
+  return [...groups.values()].map(summarize).sort((a, b) => b.p90 - a.p90);
 }
 
 /** The owner's network time: the p50 of `net` on his own devices' answered calls, which also holds those calls' few ms of handler time. */
@@ -131,18 +140,46 @@ function withNetwork(p90: number, head: string, net: OwnerNetwork | undefined): 
 }
 
 /**
- * A route's p90 as the owner waits for it, and the text that says where it came from: his own devices' lines, else the server's handler p90
- * plus his network p50 from his other calls when at least MIN_NETWORK_LINES of them carry one. A box browser's line never sets it. On 11-05 the send metric read 288 ms from 255 job walks in
- * the box Chrome, which waits for the box's CPU, while the server answered sends at 15 ms p90 and the owner made no send over the tailnet.
+ * The fewest of the owner's own requests a route's p90 reads over. On a day he uses the page little, a route with fewer of his requests in
+ * the window reads over his newest MIN_OWN_CALLS on it from the LOOKBACK_MS before, the window's all among them, since a p90 over 3 requests
+ * is their slowest one. At 16:00 KST 11-23 thread open read 270 ms from 3 opens of his, 2 of them at 0 ms, and replies read 251.6 ms from
+ * the server's 1.6 ms plus his 250 ms network with no reply open of his in the window.
+ */
+export const MIN_OWN_CALLS = 10;
+
+/**
+ * How far back from now the owner's own requests fill a quiet window. The request log keeps today and the 2 UTC days before, so it holds
+ * 48 to 72 h of it.
+ */
+export const LOOKBACK_MS = 72 * 3_600_000;
+
+const iso = (at: number): string => new Date(at).toISOString().slice(0, 16).replace("T", " ") + "Z";
+
+/**
+ * A route's p90 as the owner waits for it, and the text that says where it came from. His own devices' lines set it: the window's, and
+ * when the window holds fewer than MIN_OWN_CALLS, his newest MIN_OWN_CALLS on the route from the LOOKBACK_MS before the window too. Only a
+ * route he made no request of in all that time reads an estimate, the server's handler p90 plus his network p50 from his other calls when
+ * at least MIN_NETWORK_LINES of them carry one, and its source says it is an estimate. A box browser's line never sets it. On 11-05 the
+ * send metric read 288 ms from 255 job walks in the box Chrome, which waits for the box's CPU, while the server answered sends at 15 ms p90
+ * and the owner made no send over the tailnet. `before` holds his counted tailnet lines of the lookback that came before the window.
  */
 export interface OwnerSpeed { route: string; p90: number; source: string; speed: RouteSpeed }
 
-export function ownerSpeed(speeds: readonly RouteSpeed[], route: string, net: OwnerNetwork | undefined): OwnerSpeed | undefined {
+export function ownerSpeed(speeds: readonly RouteSpeed[], route: string, net: OwnerNetwork | undefined, window: readonly RequestTiming[] = [], before: readonly RequestTiming[] = []): OwnerSpeed | undefined {
   const own = speeds.find(s => s.src === "tailnet" && s.route === route);
-  if (own) return { route, p90: own.p90, source: `the owner's devices, ${own.count} requests${own.shown ? `, ${own.shown} of them behind a page the screen already showed (0 ms)` : ""}`, speed: own };
+  const shownNote = (s: RouteSpeed): string => (s.shown ? `, ${s.shown} of them behind a page the screen already showed (0 ms)` : "");
+  const count = own?.count ?? 0;
+  const older = count >= MIN_OWN_CALLS ? [] : before.filter(t => `${t.m} ${t.r}` === route).sort((a, b) => a.at - b.at).slice(-(MIN_OWN_CALLS - count));
+  if (older.length) {
+    const lines = [...older, ...window.filter(t => sourceOf(t) === "tailnet" && counted(t) && `${t.m} ${t.r}` === route)];
+    const speed = summarize(lines);
+    const why = count ? `only ${count} of his requests in the window reached it` : "he made none in the window";
+    return { route, p90: speed.p90, source: `the owner's devices, his newest ${speed.count} requests, from ${iso(lines[0]!.at)} to ${iso(Math.max(...lines.map(t => t.at)))}, since ${why}${shownNote(speed)}`, speed };
+  }
+  if (own) return { route, p90: own.p90, source: `the owner's devices, ${own.count} requests${shownNote(own)}`, speed: own };
   const server = speeds.find(s => s.src === "server" && s.route === route);
   if (!server) return undefined;
-  const handler = `no request of the owner's in the window, so the server's handler p90 ${server.p90} ms over ${server.count} requests`;
+  const handler = `an estimate, since the owner made no request of this route in the request log's last ${LOOKBACK_MS / 3_600_000} h: the server's handler p90 ${server.p90} ms over ${server.count} requests`;
   return { route, ...withNetwork(server.p90, handler, net), speed: server };
 }
 
@@ -204,7 +241,9 @@ export type Probe = { route: string; at: number; path: string; ms: number[] } | 
 /** The metric routes the precheck probes when the window holds no tailnet or server line of theirs. */
 export const PROBED = [ROUTES.search, ROUTES.messages, ROUTES.replies] as const;
 
-export const unmeasured = (speeds: readonly RouteSpeed[]): string[] => PROBED.filter(route => !speeds.some(s => s.route === route && s.src !== "client"));
+/** The metric routes no server or owner line of the window reached and no owner line of the lookback (`before`) reached either. */
+export const unmeasured = (speeds: readonly RouteSpeed[], before: readonly RequestTiming[] = []): string[] =>
+  PROBED.filter(route => !speeds.some(s => s.route === route && s.src !== "client") && !before.some(t => `${t.m} ${t.r}` === route));
 
 /** A probed route's p90 as the owner would wait for it: the probe's wall-time p90 plus his network p50 when enough of the window's lines give one. */
 export function probeSpeed(probe: Probe, net: OwnerNetwork | undefined): OwnerSpeed | undefined {
@@ -292,20 +331,45 @@ export function readRestarts(since: number, unit = "sieun-pi-apps-chat.service")
   return out.status === 0 ? parseStarts(out.stdout) : [];
 }
 
+/** The owner's counted tailnet lines from before `from`, the start of the window, which fill a route he used little in it (ownerSpeed). */
+export const ownBefore = (all: readonly RequestTiming[], from: number): RequestTiming[] => all.filter(t => t.at < from && sourceOf(t) === "tailnet" && counted(t));
+
+/** A wait of the owner's this long shows as a slow_call row when the p90 of its route reads lower, as on a day he made a few calls. */
+export const SLOW_CALL_MS = 1000;
+const SLOW_CALL_ROWS = 5;
+
+/**
+ * The owner's own waits of SLOW_CALL_MS or more in the window that the p90 of their route does not show: the slowest of each route, with
+ * how many of that route's waits passed SLOW_CALL_MS, slowest first. A p90 over his newest MIN_OWN_CALLS requests is the second slowest of
+ * 10, so one slow call of a quiet day would show in no metric.
+ */
+export function slowCalls(timings: readonly RequestTiming[], p90Of: (route: string) => number | undefined): { line: RequestTiming; count: number }[] {
+  const byRoute = new Map<string, { line: RequestTiming; count: number }>();
+  for (const t of timings) {
+    const route = `${t.m} ${t.r}`;
+    if (sourceOf(t) !== "tailnet" || !counted(t) || waitOf(t) < SLOW_CALL_MS || waitOf(t) <= (p90Of(route) ?? 0)) continue;
+    const seen = byRoute.get(route);
+    byRoute.set(route, { line: seen && waitOf(seen.line) >= waitOf(t) ? seen.line : t, count: (seen?.count ?? 0) + 1 });
+  }
+  return [...byRoute.values()].sort((a, b) => waitOf(b.line) - waitOf(a.line)).slice(0, SLOW_CALL_ROWS);
+}
+
 /**
  * `restarts` are the service's restart and hand-over times (readRestarts). The owner's tailnet calls that failed within 20 s of one count in
  * failed_sends_24h beside his Not delivered sends, each as a restart_hit row: on 11-22 his page logged 152 failed calls within 20 s of a
  * restart, across 32 of 94 restarts, mostly GET /api/later ('TypeError: Load failed'), and no metric counted them.
  */
 export function apiSpeed(dir: string, now: number, windowMs: number, probes: readonly Probe[] = [], restarts: readonly number[] = []) {
-  const timings = readTimings(dir, now, windowMs);
+  const all = readTimings(dir, now, Math.max(windowMs, LOOKBACK_MS));
+  const timings = all.filter(t => t.at >= now - windowMs);
+  const before = ownBefore(all, now - windowMs);
   const speeds = routeSpeeds(timings);
   const net = ownerNetwork(timings);
   const probed = (route: string): OwnerSpeed | undefined => {
     const probe = probes.find(p => p.route === route);
     return probe && probeSpeed(probe, net);
   };
-  const speedOf = (route: string): OwnerSpeed | undefined => ownerSpeed(speeds, route, net) ?? probed(route);
+  const speedOf = (route: string): OwnerSpeed | undefined => ownerSpeed(speeds, route, net, timings, before) ?? probed(route);
   const failed = failedSends(timings);
   const owners = failed.filter(t => !fromBox(t));
   const walks = failed.filter(fromBox);
@@ -340,19 +404,25 @@ export function apiSpeed(dir: string, now: number, windowMs: number, probes: rea
       })),
       ...probes.flatMap(p => ("error" in p ? [{ kind: "probe_failed", sig: `probe:${p.route}`, excerpt: `${p.route} has no value: a probe from the box at ${new Date(p.at).toISOString()} failed: ${p.error}` }] : [])),
       ...slowest.map(o => ({ kind: "slow_api", sig: `${o.speed.src}:${o.route}`, excerpt: slowExcerpt(o) })),
+      ...slowCalls(timings, route => speedOf(route)?.p90).map(({ line: t, count }) => ({
+        kind: "slow_call", sig: `slow_call:${t.m} ${t.r}`,
+        excerpt: `${new Date(t.at).toISOString()} ${t.m} ${t.p} waited ${waitOf(t)} ms on the owner's page${t.net === undefined ? "" : `, ${t.net} ms of it on the network`}, above the p90 of ${
+          speedOf(`${t.m} ${t.r}`)?.p90 ?? 0} ms its route reads${count > 1 ? `; ${count} of his waits on this route in the window passed ${SLOW_CALL_MS} ms` : ""}`,
+      })),
       ...walkSlowest.map(s => ({ kind: "walk_slow_api", sig: `${s.src}:${s.route}`, excerpt: finding(s) })),
     ],
   };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const { values } = parseArgs({ options: { "data-dir": { type: "string" }, hours: { type: "string" }, server: { type: "string" } } });
+  const { values } = parseArgs({ options: { "data-dir": { type: "string" }, hours: { type: "string" }, server: { type: "string" }, now: { type: "string" } } });
   const dir = resolve(values["data-dir"] ?? process.env.APPS_CHAT_DATA_DIR ?? join(homedir(), ".pi/agent/chat"));
   const base = values.server ?? process.env.APPS_CHAT_URL ?? "http://127.0.0.1:5184";
-  const now = Date.now();
+  const now = values.now ? Date.parse(values.now) : Date.now();
   const windowMs = Number(values.hours ?? 24) * 3600_000;
-  const timings = readTimings(dir, now, windowMs);
-  const probes = await probeRoutes(base, unmeasured(routeSpeeds(timings)), timings);
+  const all = readTimings(dir, now, Math.max(windowMs, LOOKBACK_MS));
+  const timings = all.filter(t => t.at >= now - windowMs);
+  const probes = values.now ? [] : await probeRoutes(base, unmeasured(routeSpeeds(timings), ownBefore(all, now - windowMs)), timings);
   const json = JSON.stringify(apiSpeed(dir, now, windowMs, probes, readRestarts(now - windowMs - RESTART_WINDOW_MS)), null, 1);
   if (process.env.OUTPUT_FILE) writeFileSync(process.env.OUTPUT_FILE, json);
   else process.stdout.write(`${json}\n`);

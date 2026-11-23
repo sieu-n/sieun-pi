@@ -638,7 +638,7 @@
     error={store.error}
     hasOlder={!!store.older}
     loadingOlder={store.loadingOlder}
-    loadOlder={() => store.loadOlder()}
+    loadOlder={(wait) => store.loadOlder(wait)}
     focus={store.focus}
     flashFocus={!replyFocus}
     {context}
