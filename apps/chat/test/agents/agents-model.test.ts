@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { ACTION_LABEL, actionsFor, agentFromRoute, agentGroups, agentOfRoute, agentsFilterFromParams, agentsShown, bytesLabel, canRename, everyLabel, forCount, forTarget, hasForList, jobCounts, jobsLabel, levelsFor, modelOptions, openTarget, previewText, reasonChips, renamedSection, sectionFromParams, shortPath } from "../../web/src/pages/agents/agents-model.ts";
+import { ACTION_LABEL, actionsFor, agentFromRoute, agentGroups, agentOfRoute, agentsFilterFromParams, agentsShown, bytesLabel, canRename, everyLabel, forCount, forTarget, hasForList, jobCounts, jobsLabel, levelsFor, modelOptions, openTarget, previewText, reasonChips, renamedSection, SECTIONS, sectionFromParams, shortPath } from "../../web/src/pages/agents/agents-model.ts";
 
 type Agent = Parameters<typeof agentsShown>[0][number];
 const agent = (over: Partial<Agent>): Agent => ({
@@ -125,4 +126,10 @@ test("the For tab shows for a registered agent only, counts each filter, and ope
   assert.deepEqual(reasonChips({ roomKind: "dm", reasons: ["dm", "reaction"] }), ["reaction"]);
   assert.deepEqual(reasonChips({ roomKind: "channel", reasons: ["mention", "member"] }), ["mention", "member"]);
   assert.equal(previewText("Check the **relay**\n\nSee [three drops](https://x.test) and `p12`.\n```\nlog\n```"), "Check the relay\nSee three drops and p12.\n[code]");
+});
+
+test("docs/agent-model.md names every tab of an agent's page, in the page's order", () => {
+  const doc = readFileSync(new URL("../../docs/agent-model.md", import.meta.url), "utf8");
+  const tabs = /Agents page \(tabs ([^)]*?)(?:, where [^)]*)?\)/.exec(doc)?.[1]?.split(", ").map((tab) => tab.replace(/ <agent name>$/, ""));
+  assert.deepEqual(tabs, SECTIONS.map((section) => section.label));
 });

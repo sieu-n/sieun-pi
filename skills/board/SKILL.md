@@ -5,7 +5,7 @@ description: Read a browser chat's board, corrections and the log of outside sen
 
 # Board
 
-A chat's board holds the plan of goals and steps and the owner's todos. The chat server keeps it in `~/.prime/agent/browser-chat/boards/<chat session id>.json`. The `chat_board` tool shows only the open checklist, so read the rest with this module.
+A chat's board holds the plan of goals and steps and the owner's todos. A Prime browser chat's server keeps it in `~/.prime/agent/browser-chat/boards/<chat session id>.json`. An sw factory agent's board is the `chat.board` document of its work thread's root conversation in pi-host, which apps/chat on :5184 serves (`apps/chat/server/boards.ts`). The `chat_board` tool shows only the open checklist, so read the rest with this module.
 
 ## Read the board
 
@@ -170,7 +170,7 @@ The check-in lists every goal short of its target or not measured. Push the step
 
 ### Duty fix steps
 
-`duty: "<dutyId>/<metricKey>"`, like `"d6/usable_pct_24h"` or `"checkin/stuck_steps"`, marks a step as the fix for one duty metric. Give it a job that works on a code change. Each duty run reads these steps for its missed metrics, and closing one starts a verify run of the duty. The rules are in [check-ins](references/check-ins.md).
+`duty: "<dutyId>/<metricKey>"`, like `"d6/usable_pct_24h"` or `"checkin/stuck_steps"`, marks a step as the fix for one duty metric. Give it a job that works on a code change. Each duty run reads these steps for its missed metrics. In a Prime browser chat, closing one starts a verify run of the duty. sw factory starts a duty run only on its schedule, on the owner's Run now or to finish a run a restart cut, so there the duty's next run measures the fix. The rules are in [check-ins](references/check-ins.md).
 
 ### Waits
 

@@ -24,7 +24,7 @@ The owner set the split on 11-20 in #sw-factory-build p110: a decision about one
 
 Four cases look alike and are not.
 
-1. "When you list options, explain the most interesting one properly" (p97) was said to agent factory, but it is how every agent writes, so it is rule 10 of the sw-factory skill. Agent factory keeps its own case in memory as well.
+1. "When you list options, explain the most interesting one properly" (p97) was said to agent factory, but it is how every agent writes, so it is rule 11 of the sw-factory skill, the options rule. Agent factory keeps its own case in memory as well.
 2. c195 came from one app screen, but it holds for every screen of that app, so it goes into that repo's rules and not into the job's memory.
 3. A rule about one agent's product, such as how vent triages an alert, stays in that agent's memory even when it is strict and repeated.
 4. When a general rule moves out of an agent's memory into a skill, rewrite the entry as the agent's own case and keep it, never delete it. On 11-20 a move deleted seo's copied-cookies incident and search-product-misc's c226 and c191 entries, and the next d3 memory run found all three lost from their ideal in `~/work/agent-memory/ideal.json`.
