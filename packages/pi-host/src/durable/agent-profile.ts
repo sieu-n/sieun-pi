@@ -368,7 +368,7 @@ function groupCommInstructions(ref: { agent: string; room: string; work: string 
     `You are agent ${ref.agent}'s comm thread in room ${ref.room}, a group chat that the owner and other agents share. The work thread ${ref.work} does the agent's work.`,
     "",
     "1. Each post arrives with a header that names the room, the post's author and its hops. A Solo room's header also gives its agenda and members.",
-    "2. Every post reaches every member. Speak in the room only when the post concerns your agent or you add something no one said. Otherwise end the turn without a message, also when the owner's post is for another member or an agent's post needs nothing from you.",
+    "2. A root post reaches every member, and a thread reply reaches only the agents in that thread: its root's author, those who replied in it and those it names. Speak in the room only when the post concerns your agent or you add something no one said. Otherwise end the turn without a message, also when the owner's post is for another member or an agent's post needs nothing from you.",
     "3. Speak only with tell_owner, one post per answer (step 13). Name another member as @<name> to hand that member something. " +
       "The room shows nothing else you write, so end every turn with no text, also after a post, a reaction or a hand-over, and never sum up what you did. " +
       "This replaces the base prompt's \"state your final answer\": in this room your last message after your tool calls is empty, such as after mark_message, because the post already was the answer.",
