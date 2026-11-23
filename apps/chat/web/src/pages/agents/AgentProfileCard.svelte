@@ -57,7 +57,7 @@
       <dl class="facts t-body-sm">
         {#if model}<dt>Model</dt><dd>{model}</dd>{/if}
         <dt>Jobs</dt>
-        <dd><a href={hrefFor("agents", [agentId], { section: "jobs" })} onclick={(e) => (e.preventDefault(), go(hrefFor("agents", [agentId], { section: "jobs" })))} data-testid="profile-jobs">{jobsText}</a></dd>
+        <dd><a href={hrefFor("agents", [agentId], { section: "threads" })} onclick={(e) => (e.preventDefault(), go(hrefFor("agents", [agentId], { section: "threads" })))} data-testid="profile-jobs">{jobsText}</a></dd>
       </dl>
     {/if}
     <div class="actions">

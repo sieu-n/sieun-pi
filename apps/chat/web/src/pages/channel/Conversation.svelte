@@ -355,7 +355,7 @@
     ...(isDm && dmAgent
       ? [
           { id: "agent", label: "Open agent", icon: "robot", onselect: () => router.navigate(hrefFor("agents", [dmAgent])) },
-          { id: "jobs", label: "Jobs", icon: "terminal", onselect: () => router.navigate(hrefFor("agents", [dmAgent], { section: "jobs" })) },
+          { id: "threads", label: "Threads and jobs", icon: "terminal", onselect: () => router.navigate(hrefFor("agents", [dmAgent], { section: "threads" })) },
           { type: "separator" as const },
         ]
       : []),
@@ -572,7 +572,7 @@
     </span>
   {/if}
   {#if workThread}
-    <span class="work-thread" data-work-thread title="Open work thread"><Button variant="ghost" size="sm" icon="robot" href={conversationHref(workThread)}>Open work thread</Button></span>
+    <span class="work-thread" data-work-thread title="Open main thread"><Button variant="ghost" size="sm" icon="robot" href={conversationHref(workThread)}>Open main thread</Button></span>
   {/if}
   {#if header?.pins}
     <PinnedButton room={id} pins={header.pins} {items} refresh={() => void store.refreshHeader()} />
@@ -678,7 +678,7 @@
       <span>{agent.name} waits for a model slot</span>
     {/if}
     {#if workRunning && workThread}
-      <a class="work-pill" href={conversationHref(workThread)} title="Open the work thread" data-testid="work-pill"><TypingDots mode="working" size={3} />Work</a>
+      <a class="work-pill" href={conversationHref(workThread)} title="Open the main thread" data-testid="work-pill"><TypingDots mode="working" size={3} />Main thread</a>
     {/if}
   </div>
   {#if closedAt}

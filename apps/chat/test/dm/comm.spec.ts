@@ -49,7 +49,7 @@ const ownerPost = (text: string) => ({
   text, images: [], mentions: [], deliveries: [],
 });
 
-test("the 👀 an agent puts on the owner's post shows as a plain chip with no typing line, and the Work pill shows while the work thread runs", async ({ page }) => {
+test("the 👀 an agent puts on the owner's post shows as a plain chip with no typing line, and the Main thread pill shows while the main thread runs", async ({ page }) => {
   const vent = await splitVent(page);
   await open(page, `#/c/${DM}`);
   const typing = page.locator(".typing");

@@ -43,10 +43,10 @@ export type Location = {
 
 export function location(conversation: HitConversation): Location {
   const archived = !!conversation.archived;
-  // An agent's work thread sits under the agent of the same name, and "vent › vent" says nothing, so it reads "vent's work thread", as
-  // the agent page's "Work thread" link names it, and never like the agent's DM.
+  // An agent's main thread sits under the agent of the same name, and "vent › vent" says nothing, so it reads "vent's main thread", as
+  // the agent page's "Main thread" link names it, and never like the agent's DM.
   if (conversation.parent && conversation.parent.name === conversation.name && (conversation.kind === "job" || conversation.kind === "dm"))
-    return { icon: "robot", name: `${conversation.name}'s work thread`, kind: "Work thread", archived };
+    return { icon: "robot", name: `${conversation.name}'s main thread`, kind: "Main thread", archived };
   const parent = conversation.parent;
   switch (conversation.kind) {
     case "channel":

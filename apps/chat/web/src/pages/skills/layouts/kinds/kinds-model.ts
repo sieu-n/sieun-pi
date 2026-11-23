@@ -44,7 +44,7 @@ export type Family = "sw factory" | "Prime" | "Claude Code" | "Codex";
 
 export const KIND_META: Record<ThreadKind, { family: Family; label: string; name: string }> = {
   "sw-comm": { family: "sw factory", label: "comm", name: "sw factory comm thread" },
-  "sw-work": { family: "sw factory", label: "work", name: "sw factory work thread" },
+  "sw-work": { family: "sw factory", label: "main", name: "sw factory main thread" },
   "sw-job": { family: "sw factory", label: "job", name: "sw factory job" },
   "sw-subagent": { family: "sw factory", label: "subagent", name: "sw factory subagent" },
   "sw-duty": { family: "sw factory", label: "duty run", name: "sw factory duty run" },

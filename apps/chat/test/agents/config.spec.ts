@@ -55,6 +55,8 @@ test("the agent's page shows its host, home directory, board and memory, and eac
 
   await section(page, "Threads").click();
   await expect(page).toHaveURL(/section=threads/);
+  await expect(panel(page).getByRole("tabpanel")).not.toContainText(config.runs.thread);
+  await panel(page).getByRole("button", { name: /Where it runs/ }).click();
   await expect(panel(page).getByRole("tabpanel")).toContainText(config.runs.thread);
   for (const room of config.swarm.rooms) await expect(panel(page).getByRole("button", { name: room.name, exact: true })).toBeVisible();
 

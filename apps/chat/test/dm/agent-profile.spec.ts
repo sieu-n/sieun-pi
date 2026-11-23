@@ -41,7 +41,7 @@ test("the DM menu opens the agent and its Threads tab", async ({ page }) => {
   const agent = (await (await page.request.post("/api/agents", { data: { name: `menu agent ${tag()}`, test: true } })).json()) as { id: string; room: string };
   await open(page, `#/c/${agent.room}`);
   await conversation(page).getByRole("button", { name: "Conversation actions" }).click();
-  await page.getByRole("menuitem", { name: "Jobs" }).click();
+  await page.getByRole("menuitem", { name: "Threads and jobs" }).click();
   await expect(page).toHaveURL(new RegExp(`#/agents/${agent.id}\\?section=threads$`));
   await open(page, `#/c/${agent.room}`);
   await conversation(page).getByRole("button", { name: "Conversation actions" }).click();

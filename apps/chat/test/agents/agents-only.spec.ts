@@ -101,7 +101,7 @@ test("the Agents page shows agent cards only, and a job shows inside its agent's
     expect(config.swarm.jobs.length).toBeGreaterThan(0);
     let listed = 0;
     for (const filter of ["active", "finished", "archived"]) {
-      await page.goto(`/#/agents/${encodeURIComponent(busiest.agent.id)}?section=jobs&jobs=${filter}`);
+      await page.goto(`/#/agents/${encodeURIComponent(busiest.agent.id)}?section=threads&jobs=${filter}`);
       await expect(swarm.getByTestId("agent-jobs")).toHaveAttribute("data-filter", filter);
       listed += await swarm.locator("li[data-job-id]").count();
     }

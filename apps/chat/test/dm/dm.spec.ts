@@ -96,9 +96,9 @@ test("the owner reacts through the hover bar's picker, his chip is highlighted, 
   await expect(thumbs).toHaveCount(0);
 });
 
-test("Open work thread opens the agent's transcript", async ({ page }) => {
+test("Open main thread opens the agent's transcript", async ({ page }) => {
   await open(page, `#/c/${DM}`);
-  await page.getByRole("link", { name: "Open work thread" }).click();
+  await page.getByRole("link", { name: "Open main thread" }).click();
   await expect(page).toHaveURL(new RegExp(`#/c/${VENT}$`));
   await expect(conversation(page)).toHaveAttribute("data-conversation", VENT);
   await expect(conversation(page).locator('[data-kind="turn"]').first()).toBeVisible({ timeout: 10_000 });
