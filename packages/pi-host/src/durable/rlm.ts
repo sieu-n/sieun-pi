@@ -301,6 +301,9 @@ export class DurableRlm {
   }
 
   static async load(options: DurableRlmOptions): Promise<DurableRlm> {
+    // Prime's job-leftovers module, which `endJob` imports, loads here, before pi-host listens: its first import held the loop 250 to 270 ms
+    // in one turn on us-metal02 on 11-23, inside the first rlm.delete_subagent or archive after a restart (h-restart-resume/report.md).
+    await import("../../../../legacy/prime/user-history/src/job-leftovers.ts");
     return new DurableRlm(await loadIpythonTool(), options);
   }
 
