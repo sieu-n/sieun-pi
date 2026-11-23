@@ -232,6 +232,32 @@ test("the conversation menu's rows above Search stay put when the channel's head
   expect(await above()).toEqual(before);
 });
 
+/** A DM's menu had the same shift: "Open agent" and "Jobs" came in above Search with the header. */
+test("the conversation menu's rows above Search stay put when a DM's header comes in", async ({ page }) => {
+  const agent = (await (await page.request.post("/api/agents", { data: { kind: "chat", name: `menu ${crypto.randomUUID().slice(0, 8)}`, test: true } })).json()) as { id: string; room?: string };
+  const room = agent.room ?? `dm_${agent.id.slice(3)}`;
+  let release = () => {};
+  const held = new Promise<void>(resolve => (release = resolve));
+  await page.route(new RegExp(`/api/c/${room}(\\?|$)`), async route => {
+    await held;
+    await route.continue();
+  });
+  await page.goto(`/#/c/${room}`);
+  await page.getByRole("button", { name: "Conversation actions" }).click();
+  const items = page.getByRole("menuitem");
+  const above = async () => {
+    const labels = await items.allInnerTexts();
+    return labels.slice(0, labels.indexOf("Search in this conversation"));
+  };
+  await expect(page.getByRole("menuitem", { name: "Search in this conversation" })).toBeVisible();
+  await expect(page.getByTestId("dm-title-button")).toHaveCount(0);
+  const before = await above();
+  release();
+  await expect(page.getByTestId("dm-title-button")).toBeVisible();
+  expect(await above()).toEqual(before);
+  expect(before).toEqual(["Open agent", "Jobs"]);
+});
+
 test("Show more pages through every hit up to the exact count", async ({ page }) => {
   // Three pages of 20, 20 and 5: a seed word's count grows while the pages load, as the fixture's agents keep writing it.
   const all = 45;

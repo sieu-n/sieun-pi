@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy, tick } from "svelte";
-  import { agents, api, boardStore, expectCall, isSoloRoom, jobs, me, prefetchThread, reads, timeline, view, type Item } from "$lib/api";
+  import { agents, api, boardStore, conversations, expectCall, isSoloRoom, jobs, me, prefetchThread, reads, timeline, view, type Item } from "$lib/api";
   import BoardPanel from "$pages/board/BoardPanel.svelte";
   import { boardHref, boardTitles, rememberTitles } from "$pages/board/chips";
   import { conversationHref, hrefFor, router } from "$lib/router.svelte";
@@ -64,7 +64,9 @@
 
   const header = $derived(store.header);
   const summary = $derived(header?.summary ?? null);
-  const kind = $derived(summary?.kind ?? (id.startsWith("ch_") ? "channel" : "solo"));
+  /** The sidebar's row names the kind and a DM's agent before the header is in, so the header's menu does not change when it lands. */
+  const listed = $derived(conversations.byId(id));
+  const kind = $derived(summary?.kind ?? listed?.kind ?? (id.startsWith("ch_") ? "channel" : id.startsWith("dm_") ? "dm" : "solo"));
   const isChannel = $derived(kind === "channel");
   const isDm = $derived(kind === "dm");
   /** A Solo room (`so_<id>`): its agenda is pinned on top, its members are edited here, and the owner closes it when the agenda is done. */
@@ -80,6 +82,7 @@
   const workThread = $derived(header?.workThread ?? null);
   const name = $derived(summary?.name ?? "");
   const agent = $derived(header?.agent ?? null);
+  const dmAgent = $derived(agent?.id ?? listed?.agent ?? (id.startsWith("dm_") ? `ag_${id.slice(3)}` : undefined));
   const items = $derived(store.items);
   const waiting = $derived(store.status === "sleeping");
   const waitText = $derived(placeText(store.queue));
@@ -349,10 +352,10 @@
   }
 
   const menuItems = $derived<MenuEntry[]>([
-    ...(isDm && agent
+    ...(isDm && dmAgent
       ? [
-          { id: "agent", label: "Open agent", icon: "robot", onselect: () => router.navigate(hrefFor("agents", [agent.id])) },
-          { id: "jobs", label: "Jobs", icon: "terminal", onselect: () => router.navigate(hrefFor("agents", [agent.id], { section: "jobs" })) },
+          { id: "agent", label: "Open agent", icon: "robot", onselect: () => router.navigate(hrefFor("agents", [dmAgent])) },
+          { id: "jobs", label: "Jobs", icon: "terminal", onselect: () => router.navigate(hrefFor("agents", [dmAgent], { section: "jobs" })) },
           { type: "separator" as const },
         ]
       : []),
