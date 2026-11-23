@@ -166,6 +166,8 @@ async function archive(repo, sha, into) {
     "packages/pi-host/src/durable/comm-guard.ts",
     // server/agent-folder.ts lists a folder's instruction files with the function pi-host's prompt loads them by.
     "packages/pi-host/src/durable/context-files.ts",
+    // server/app.ts holds an agent's long edit with the room's word cap and note that tell_owner uses (long-edit.ts).
+    "packages/pi-host/src/durable/long-edit.ts",
     // server/skills-review.ts deletes and restores harness notes through pi-harness's store, under the lock every harness writer takes.
     "packages/pi-harness/src/core/store.ts", "packages/pi-harness/src/core/lock.ts",
     // The fixture server's skills DB scans its throwaway tree with the real scanner (server/skills-db-fixture.ts).
