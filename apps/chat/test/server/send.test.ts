@@ -14,6 +14,7 @@ import { FIXTURE_AGENTS as agents, FIXTURE_IDS as ids } from "../../server/fixtu
 import { start, until, type Running } from "./helpers.ts";
 
 type Message = Extract<Item, { kind: "message" }>;
+type Turn = Extract<Item, { kind: "turn" }>;
 const owned = (page: TimelinePage, text: string): Message[] =>
   page.items.filter((i): i is Message => i.kind === "message" && !i.id.startsWith("r:") && i.author.id === "owner" && i.text === text);
 const timed = async <T>(run: () => Promise<T>): Promise<{ value: T; ms: number }> => {
@@ -112,19 +113,52 @@ describe("thread sends", () => {
     assert.equal(sent.status, 404);
   });
 
-  test("a live turn sends no partial text and no item per tool call", async () => {
+  test("a live turn sends no partial text, and a work thread's turn goes out once per step that lands", async () => {
     const thread = ((await s.send("POST", "/api/agents", { name: "no stream" })).body as { thread: string }).thread;
     const live = await s.live();
     live.watch(thread);
     await live.waitFor(e => e.type === "status" && e.conversation === thread);
     const text = `spawn a job ${Date.now()}`;
     await s.send("POST", `/api/c/${thread}/send`, { text, requestId: "nostream-1" });
-    await live.waitFor(e => e.type === "items" && e.items.some(i => i.kind === "turn" && !i.live && i.text.includes(text)));
-    const mine = live.events.filter((e): e is Extract<LiveEvent, { type: "items" }> => e.type === "items" && e.conversation === thread);
-    assert.ok(!live.events.some(e => (e.type as string) === "partial"), "no partial text");
-    // The input, the run's start, the one answer with text before the job, each of its two send_message calls, and the run's end.
-    assert.ok(mine.filter(e => e.items.some(i => i.kind === "turn")).length <= 6, `${mine.length} item events`);
+    const done = await live.waitFor((e): e is Extract<LiveEvent, { type: "items" }> => e.type === "items" && e.items.some(i => i.kind === "turn" && !i.live && i.text.includes(text)));
     live.close();
+    assert.ok(!live.events.some(e => (e.type as string) === "partial"), "no partial text");
+    const final = done.items.find((i): i is Turn => i.kind === "turn" && !i.live)!;
+    const pushed = live.events.flatMap(e => (e.type === "items" && e.conversation === thread ? e.items.filter((i): i is Turn => i.kind === "turn" && i.id === final.id) : []));
+    // The fixture streams the answer word by word; a page sees only whole messages, never a cut one.
+    for (const turn of pushed) for (const said of turn.sent ?? []) assert.ok(final.sent!.includes(said), `a cut message went out: ${said}`);
+    // Since d93cf6c8 a work thread's turn goes out with each entry that lands (the input, the job call and its result, each send_message
+    // call and result, the answer), plus the run's start and end, so a page kept from the socket holds the steps the next read brings.
+    const fake = host.threadsById.get(thread)!;
+    const input = fake.entries.find(e => e.conversationId === 1 && JSON.stringify(e.model).includes(text))!;
+    const landed = fake.entries.filter(e => e.conversationId === 1 && e.id > input.id).length;
+    assert.ok(pushed.length <= landed + 2, `${pushed.length} pushes of the turn for ${landed} entries that landed`);
+    const page = await s.get<TimelinePage>(`/api/c/${thread}/items`);
+    assert.deepEqual(final.steps, (page.items.find(i => i.id === final.id) as Turn).steps);
+  });
+
+  test("a job's live turn sends no item per tool call", async () => {
+    const thread = ((await s.send("POST", "/api/agents", { name: "quiet job" })).body as { thread: string }).thread;
+    const fake = host.threadsById.get(thread)!;
+    const job = host.addChild(fake, 1, "tail the relay log", Date.now(), "running");
+    const id = `${thread}:${job.id}`;
+    const live = await s.live();
+    live.watch(id);
+    await live.waitFor(e => e.type === "status" && e.conversation === id);
+    const at = Date.now();
+    host.append(fake, job.id, { kind: "pi.user", model: [{ role: "user", content: [{ type: "text", text: "tail the relay log" }], timestamp: at }] });
+    for (const call of ["b1", "b2"]) {
+      host.append(fake, job.id, { kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "toolCall", id: call, name: "bash", arguments: { command: "tail relay.log" } }], provider: "anthropic", model: "claude-opus-5-5", stopReason: "toolUse", timestamp: at }] });
+      host.append(fake, job.id, { kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: call, toolName: "bash", content: [{ type: "text", text: "relay up" }], isError: false, timestamp: at }] });
+    }
+    host.append(fake, job.id, { kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "text", text: "The relay is up." }], provider: "anthropic", model: "claude-opus-5-5", stopReason: "stop", timestamp: at }] });
+    const answered = await live.waitFor((e): e is Extract<LiveEvent, { type: "items" }> => e.type === "items" && e.conversation === id && e.items.some(i => i.kind === "turn" && i.text === "The relay is up."));
+    live.close();
+    const turn = answered.items.find((i): i is Turn => i.kind === "turn")!;
+    assert.equal(turn.steps.filter(step => step.kind === "tool" && step.name === "bash").length, 2, "the answer brings the job's steps");
+    const before = live.events.slice(0, live.events.indexOf(answered));
+    const early = before.filter(e => e.type === "items" && e.conversation === id && e.items.some(i => i.kind === "turn" && i.steps.some(step => step.kind === "tool")));
+    assert.equal(early.length, 0, `${early.length} pushes of the job's turn per tool call`);
   });
 });
 
