@@ -95,6 +95,22 @@ test("a :5184 red duty counts in duties_green_pct alone: no stuck_duties, no red
   assert.match(out.flagged![0]!.excerpt, /^vent \(:5184\) d2, seo \(:5184\) d1, seo \(:5184\) d2 are red .* message, steer or change the board of none of them\.$/);
 });
 
+test("a :5184 duty red from an older run's newer after-job measure names that metric", () => {
+  // agent factory d4, 11-23: the 21:45Z run's after-job measure, taken at 07:40Z, read blind_follow_pct 40, while the 07:06Z run, newer by
+  // start, read met, so d9 called d4 red and named no metric.
+  const after = { at: now - 600_000, verdict: "missed", summary: "blind_follow_pct 40",
+    metrics: { blind_follow_pct: { value: 1, target: 0, op: "<=", met: false }, shared_all_pct: { value: 0, target: 0, op: "<=", met: true } } };
+  const factory = { id: "ag_agent-factory", name: "agent factory", board: null, jobs: [], duties: [duty("d4", "Owner style", ["shared_all_pct", "blind_follow_pct"], [
+    run("d4", now - 2_400_000, { shared_all_pct: 0, blind_follow_pct: 0 }),
+    run("d4", now - 10 * 3_600_000, { shared_all_pct: 0, blind_follow_pct: 1 }, { job: { id: "j", name: "d4 job" }, after }),
+  ])] } as unknown as AppsChat;
+  const [d4] = appsChatDuties(factory, now);
+  assert.equal(d4!.green, false);
+  assert.equal(d4!.metric?.key, "blind_follow_pct");
+  assert.equal(d4!.misses, 1);
+  assert.equal(d4!.stuck, true);
+});
+
 test("an seo duty whose fix has not moved its number over 10 runs is on no list that asks the run to act", () => {
   // 11-09 01:13Z: d9 read fix_not_moving 1 from seo d1 dropped_pages, and its job dropped p117 on seo's board and started a session for a new seo step.
   const fix = { step: "p117", job: "seo dropped pages", live: true };

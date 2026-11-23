@@ -57,7 +57,9 @@ export function appsChatDuties(chat: AppsChat, now: number, reads: AppsOwnerRead
     (item.job !== undefined && (working.has(item.job) || Date.parse(item.waitUntil ?? "") > now)));
   return chat.duties.filter(row => !row.paused && row.duty.status === "active").map(row => {
     const runs = [...row.runs].sort((a, b) => b.at - a.at);
-    const own = runs.filter(measured);
+    // Streaks start at the newest reading, as `verdictNow` reads it, so a red duty names its metric. On 11-23 agent factory's d4 read red from
+    // its 21:45Z run's after-job measure taken at 07:40Z, while its 07:06Z run, newer by start, read met, and d9 found no metric to name.
+    const own = runs.filter(measured).sort((a, b) => (b.after?.at ?? b.at) - (a.after?.at ?? a.at));
     const verdict = verdictNow(runs);
     const entry: AppsDuty = { chat: chat.id, duty: row.duty.id, name: row.duty.name, green: verdict === "met", misses: missStreak(own), stuck: false,
       ...verdict === undefined ? { pending: true as const } : {} };
