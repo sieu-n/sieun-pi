@@ -17,7 +17,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import type { ForMeItem } from "../../../../apps/chat/web/src/lib/api/types.ts";
 import { ChatApp } from "../../src/durable/chat-app.ts";
 import { itemText, laterText } from "../../src/durable/for-me.ts";
-import { LIST_SAVED_TOOL, REMIND_ME_DESCRIPTION, REMIND_ME_TOOL, reminderTime, SAVE_MESSAGE_TOOL } from "../../src/durable/later.ts";
+import { LIST_SAVED_DESCRIPTION, LIST_SAVED_TOOL, REMIND_ME_DESCRIPTION, REMIND_ME_TOOL, reminderTime, SAVE_MESSAGE_DESCRIPTION, SAVE_MESSAGE_TOOL } from "../../src/durable/later.ts";
 import { roomTools } from "../../src/durable/room-tools.ts";
 import { MODEL, textOf } from "./crash-scenario.ts";
 
@@ -42,9 +42,9 @@ before(async () => {
     const url = new URL(req.url!, "http://x");
     if (!url.pathname.endsWith("/later")) return answer(404, { error: "No such route." });
     if (req.method === "GET") return answer(200, { text: `1 open, 0 done. state=${url.searchParams.get("state")}` });
-    const change = body as { message: string; state?: string; remindAt?: number | null };
+    const change = body as { message: string; state?: string; remindAt?: number | null; memo?: string };
     if (change.message === "p404") return answer(404, { error: "No post p404 in ch_test." });
-    return answer(200, { text: `ok ${change.message} ${change.state ?? "-"} ${change.remindAt === undefined ? "-" : String(change.remindAt)}` });
+    return answer(200, { text: `ok ${change.message} ${change.state ?? "-"} ${change.remindAt === undefined ? "-" : String(change.remindAt)}${"memo" in change ? ` memo=${String(change.memo)}` : ""}` });
   });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   app = new ChatApp(`http://127.0.0.1:${(server.address() as { port: number }).port}`);
@@ -124,13 +124,26 @@ test("the tools post each change as the thread, list with the state asked, and a
   assert.equal(out[8]!.text, "1 open, 0 done. state=done");
 });
 
+test("save_message sends the agent's memo with a save only, and its text names the Saved list and the memo", async () => {
+  const out = await run("th_memo", [
+    { name: SAVE_MESSAGE_TOOL, args: { message_id: "p12", memo: "check the retry count" } },
+    { name: SAVE_MESSAGE_TOOL, args: { message_id: "p12", state: "done", memo: "ignored" } },
+  ]);
+  const posts = calls.filter(call => call.path === "/api/threads/th_memo/later").map(call => call.body as Record<string, unknown>);
+  assert.deepEqual(posts, [{ message: "p12", state: "open", memo: "check the retry count" }, { message: "p12", state: "done" }]);
+  assert.equal(out[0]!.text, "ok p12 open - memo=check the retry count");
+  assert.match(SAVE_MESSAGE_DESCRIPTION, /Saved list/);
+  assert.match(SAVE_MESSAGE_DESCRIPTION, /memo/);
+  assert.doesNotMatch(`${SAVE_MESSAGE_DESCRIPTION} ${REMIND_ME_DESCRIPTION} ${LIST_SAVED_DESCRIPTION}`, /for later/i);
+});
+
 test("a For list item the agent saved shows it beside its reactions", () => {
   const item = {
     id: "dm_vent/p41", room: "dm_vent", roomKind: "dm", roomName: "DM", post: "p41", author: { id: "owner", kind: "owner", name: "Sieun", avatar: { initials: "SP", hue: 1 } },
     text: "Ship it.", at: Date.UTC(2026, 10, 3, 4, 12), activityAt: Date.UTC(2026, 10, 3, 4, 12), reasons: ["dm"], status: "pending",
     later: { saved: true, remindAt: Date.UTC(2026, 10, 3, 6, 0) },
   } as unknown as ForMeItem;
-  assert.equal(laterText(item), "[saved for later · reminder 2026-11-03 06:00Z]");
-  assert.equal(itemText(item), "dm_vent/p41 in DM · from Sieun (owner) · 2026-11-03 04:12Z · dm · pending\n[saved for later · reminder 2026-11-03 06:00Z]\nShip it.");
+  assert.equal(laterText(item), "[saved · reminder 2026-11-03 06:00Z]");
+  assert.equal(itemText(item), "dm_vent/p41 in DM · from Sieun (owner) · 2026-11-03 04:12Z · dm · pending\n[saved · reminder 2026-11-03 06:00Z]\nShip it.");
   assert.equal(laterText({}), "");
 });

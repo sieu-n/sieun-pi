@@ -42,10 +42,10 @@ export function reactionsText(item: Pick<ForMeItem, "reactions">): string {
   return rows.length ? `[reactions: ${rows.map(row => `${row.emoji} ${row.by.map(who).join(", ")}`).join(" · ")}]` : "";
 }
 
-/** The agent's own save of an item, in the form every agent-facing surface shows it: `[saved for later · reminder 2026-11-20 05:42Z]`. */
+/** The agent's own save of an item, in the form every agent-facing surface shows it: `[saved · reminder 2026-11-20 05:42Z]`. */
 export function laterText(item: Pick<ForMeItem, "later">): string {
   if (!item.later?.saved) return "";
-  return `[saved for later${item.later.remindAt !== undefined ? ` · reminder ${time(item.later.remindAt)}` : ""}]`;
+  return `[saved${item.later.remindAt !== undefined ? ` · reminder ${time(item.later.remindAt)}` : ""}]`;
 }
 
 /** The done flag of the item's thread in the form every agent-facing surface shows it: `[thread done by vent]`. */

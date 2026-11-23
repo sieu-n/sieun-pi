@@ -1,9 +1,9 @@
 /**
- * An agent's Later list, as Slack's Save for later and Remind me give a person, through apps/chat's HTTP API (`chat-app.ts`). The chat server
+ * An agent's Saved list, as Slack's saved items and Remind me give a person, through apps/chat's HTTP API (`chat-app.ts`). The chat server
  * keeps the items, keyed by the agent (apps/chat/server/later.ts), and answers each call with the line the tool returns
  * (apps/chat/server/later-agents.ts).
  *
- * `save_message` saves a post, marks it done or takes it off the list, `remind_me` sets or clears a post's reminder, and `list_saved_messages`
+ * `save_message` saves a post with an optional memo, marks it done or takes it off the list, `remind_me` sets or clears a post's reminder, and `list_saved_messages`
  * reads the list. A due reminder wakes the comm thread of the post's room through the board's wake files, with the post and its thread, so an
  * agent can use remind_me to come back to a thread itself. Only the tool text says so; no server rule makes an agent set one (c130, c210).
  *
@@ -19,17 +19,18 @@ export const REMIND_ME_TOOL = "remind_me";
 export const LIST_SAVED_TOOL = "list_saved_messages";
 
 export const SAVE_MESSAGE_DESCRIPTION =
-  "Save a message for later, as Slack's Save for later does, mark a saved message done, or take it off your saved list. Saving it the same " +
-  "way twice changes nothing. A post you saved shows [saved for later] when you read it. To come back to it at a set time, use remind_me.";
+  "Save a message to your Saved list, as Slack's Save does, mark a saved message done, or take it off your Saved list. A memo keeps your " +
+  "own note on why you saved it. Saving it the same way twice changes nothing. A post you saved shows [saved] when you read it. To come " +
+  "back to it at a set time, use remind_me.";
 
 export const REMIND_ME_DESCRIPTION =
-  "Set a reminder on a message, as Slack's Remind me does, or clear it. The message is saved for later too. When the reminder is due, you " +
+  "Set a reminder on a message, as Slack's Remind me does, or clear it. The message goes on your Saved list too. When the reminder is due, you " +
   "get a [wake] in this agent's thread for the message's room, with a link to the message and its thread as they read then, and what you " +
   "post in that turn goes in the message's thread. Use it to come back to something yourself, such as to check a thread again in 30 " +
   "minutes or to follow up tomorrow on what you promised. Setting a new time replaces the old one.";
 
 export const LIST_SAVED_DESCRIPTION =
-  "List the messages you saved for later, with each one's room, author, when you saved it, its reminder and its text. Open lists what is " +
+  "List the messages on your Saved list, with each one's room, author, when you saved it, its reminder, your memo and its text. Open lists what is " +
   "still to do, the default, and done lists what you marked done.";
 
 const MESSAGE_ID = Type.String({
@@ -43,6 +44,8 @@ export interface LaterChange {
   state?: "open" | "done" | "removed";
   /** Epoch ms of the reminder, or null to clear it. */
   remindAt?: number | null;
+  /** The agent's own note on the saved post; a save with none keeps the one it has. */
+  memo?: string;
 }
 
 /**
@@ -88,6 +91,10 @@ export function laterTools(app: ChatApp, thread: string) {
         state: Type.Optional(Type.Union([Type.Literal("saved"), Type.Literal("done"), Type.Literal("removed")], {
           description: "saved (the default) keeps it on your list, done marks it done and stops its reminder, removed takes it off the list.",
         })),
+        memo: Type.Optional(Type.String({
+          description: "Your own note on why you saved it or what to do with it, plain text, shown with it in list_saved_messages. A new memo " +
+            "replaces the old one; leave it out to keep the old one.",
+        })),
       }),
       // The server sets the item to the state given, so a rerun after a crash leaves the same item.
       replay: "safe",
@@ -95,7 +102,7 @@ export function laterTools(app: ChatApp, thread: string) {
         // A job made before its conversation dropped this extension still lists it, so the call refuses there.
         if (api.conversationId !== ROOT_CONVERSATION_ID) return { output: ROOT_ONLY(SAVE_MESSAGE_TOOL), isError: true };
         const state = args.state === "done" ? "done" : args.state === "removed" ? "removed" : "open";
-        return call({ message: args.message_id, state }, context.abortSignal);
+        return call({ message: args.message_id, state, ...(state === "open" && args.memo !== undefined ? { memo: args.memo } : {}) }, context.abortSignal);
       },
     }),
     defineTool({
