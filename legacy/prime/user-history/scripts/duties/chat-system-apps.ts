@@ -1,8 +1,11 @@
+import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import type { AppsChat, AppsDutyRow, AppsJobRow, AppsSession } from "../../src/apps-step-owners.ts";
 import type { ChatBoard } from "../../src/shared/types.ts";
-import { pendingWakes, type Wake } from "../../src/wakes.ts";
+import { owedWakes, parseWake, pendingWakes, TICKED, type Wake } from "../../src/wakes.ts";
 import { BASE } from "./apps-chat.ts";
 import type { FleetDuty } from "./duty-fleet.ts";
 
@@ -13,8 +16,10 @@ import type { FleetDuty } from "./duty-fleet.ts";
  * no push (AI harness VP, 11-03).
  */
 
-/** The app's wakes folder (apps/chat server/wakes.ts, `<data dir>/wakes`), read only. */
-export const APPS_WAKES_DIR = join(process.env.APPS_CHAT_DATA_DIR ?? join(homedir(), ".pi/agent/chat"), "wakes");
+/** The app's data dir, read only. */
+export const APPS_DATA_DIR = process.env.APPS_CHAT_DATA_DIR ?? join(homedir(), ".pi/agent/chat");
+/** The app's wakes folder (apps/chat server/wakes.ts, `<data dir>/wakes`), which keeps the wakes until the app moves them into chat.sqlite. */
+export const APPS_WAKES_DIR = join(APPS_DATA_DIR, "wakes");
 
 type Get = (url: string) => Promise<unknown>;
 const getJson: Get = async url => {
@@ -64,5 +69,28 @@ export function greenPct(duties: readonly Pick<FleetDuty, "green" | "pending">[]
   return judged.length ? Math.floor(1000 * judged.filter(duty => duty.green).length / judged.length) / 10 : 100;
 }
 
-/** The wakes the app still owes, from its wakes folder. */
-export const appsWakes = (now: number, dir = APPS_WAKES_DIR): Promise<Wake[]> => pendingWakes(dir, now);
+/**
+ * The wakes the app still owes: chat.sqlite's `wakes` rows once the app moved its wakes there (a `wakes` row of db_kinds with imported_at, as
+ * apps/chat server/chat-records.ts `movedKinds` reads it), else the wakes folder's files. The folder's `.ticked` stamp counts either way.
+ */
+export async function appsWakes(now: number, dataDir = APPS_DATA_DIR): Promise<Wake[]> {
+  const rows = wakeRows(join(dataDir, "chat.sqlite"));
+  if (!rows) return pendingWakes(join(dataDir, "wakes"), now);
+  const ticked = Date.parse(await readFile(join(dataDir, "wakes", TICKED), "utf8").catch(() => ""));
+  return owedWakes(rows, Number.isFinite(ticked) ? ticked : undefined, now);
+}
+
+/** The wakes in the app's chat.sqlite, or null while the app keeps them as files. */
+function wakeRows(file: string): Wake[] | null {
+  if (!existsSync(file)) return null;
+  const db = new DatabaseSync(file, { readOnly: true });
+  try {
+    if (!db.prepare("SELECT 1 FROM db_kinds WHERE kind = 'wakes' AND imported_at IS NOT NULL").get()) return null;
+    return (db.prepare("SELECT body FROM wakes ORDER BY id").all() as { body: string }[]).flatMap(row => parseWake(JSON.parse(row.body)) ?? []);
+  } catch (error) {
+    if (/no such table: db_kinds/.test(String((error as Error).message))) return null;
+    throw error;
+  } finally {
+    db.close();
+  }
+}

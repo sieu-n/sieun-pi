@@ -2,8 +2,12 @@
 // showed vent d2 (old_model_calls_24h 8 against 0) and seo d1 and d2 red. d9 reads those chats' duties through the app's own API, counts them
 // in duties_green_pct alone, since sw factory runs them, and stops counting the paused Prime copy of each chat that moved.
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { greenPct, movedPrimeChats, readAppsChats } from "../scripts/duties/chat-system-apps.ts";
+import { appsWakes, greenPct, movedPrimeChats, readAppsChats } from "../scripts/duties/chat-system-apps.ts";
 import { appsChatDuties, appsOwnerReads, appsStuckSteps, type AppsChat, type AppsSession } from "../src/apps-step-owners.ts";
 import type { Wake } from "../src/wakes.ts";
 import { chatSystemOutput, type RedDuty } from "../scripts/duties/chat-system.ts";
@@ -199,4 +203,25 @@ test("a :5184 step whose job is a subagent of the chat's own duty job moves whil
   assert.deepEqual(stuck(sessions("working", at), at), []);
   // An hour after the subagents went idle nobody moves either step, and a job of the same name under another chat does not move p72.
   assert.deepEqual(stuck(sessions("idle", at), at + 3_600_000), ["p72", "p73"]);
+});
+
+test("d9 reads the app's owed wakes from chat.sqlite once the app moved them there, and from the wakes folder before", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "d9-apps-wakes-"));
+  try {
+    const at = now + 3_600_000;
+    const wake = (note: string) => ({ session: PRIME_VENT, on: { kind: "time", at }, note, since: now });
+    mkdirSync(join(dir, "wakes"));
+    writeFileSync(join(dir, "wakes", `${PRIME_VENT}-time-a.json`), JSON.stringify(wake("file")));
+    assert.deepEqual((await appsWakes(now, dir)).map(w => w.note), ["file"], "no chat.sqlite: the folder");
+    const db = new DatabaseSync(join(dir, "chat.sqlite"));
+    db.exec("CREATE TABLE db_kinds (kind TEXT PRIMARY KEY, version INTEGER NOT NULL, imported_at TEXT, export_until TEXT)");
+    db.exec("CREATE TABLE wakes (id TEXT PRIMARY KEY, session TEXT NOT NULL, body TEXT NOT NULL)");
+    db.prepare("INSERT INTO wakes VALUES (?, ?, ?)").run(`${PRIME_VENT}-time-b`, PRIME_VENT, JSON.stringify(wake("row")));
+    assert.deepEqual((await appsWakes(now, dir)).map(w => w.note), ["file"], "wakes not moved yet: the folder");
+    db.prepare("INSERT INTO db_kinds VALUES ('wakes', 1, ?, NULL)").run(new Date(now).toISOString());
+    db.close();
+    assert.deepEqual((await appsWakes(now, dir)).map(w => w.note), ["row"], "wakes moved: the rows, and a file no server imported stays out");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
