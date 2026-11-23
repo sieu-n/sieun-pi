@@ -92,6 +92,20 @@ test("model.info answers as Prime does, with the model's input types, so attach_
   assert.deepEqual(JSON.parse(out[0]!.text), { id: MODEL.modelId, provider: MODEL.provider, input: ["text", "image"] });
 });
 
+test("an attach_image attachment reaches the model as an image in the ipython result (11-24, inventory-5186 saw none)", async () => {
+  let seen: unknown[] = [];
+  const { harness, root } = await openThread(join(dir, "threads", "attach.sqlite"), "attach", rlm, ({ messages }) => {
+    if (lastText(messages) === "look") return cell("from rlm import emit\nemit({'application/vnd.prime-agent.attachment+json': {'mime_type': 'image/png', 'data': 'iVBORw0KGgo=', 'path': '/tmp/a.png'}, 'text/plain': 'Loaded image'})");
+    const result = messages.at(-1) as { role: string; content?: { type: string }[] };
+    if (result.role === "toolResult") seen = (result.content ?? []).filter(part => part.type === "image");
+    return say("done");
+  }, dir);
+  await (await root.submit({ type: "input", content: "look" }, context)).wait(context);
+  await harness.close(context);
+  await rlm.closeThread("attach", "idle");
+  assert.deepEqual(seen, [{ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }]);
+});
+
 test("the kernel's RLM_HARNESS_STATE_DIR is the agent's store in an agent's thread and the thread's own store otherwise", async () => {
   const where = async (id: string, ref?: unknown) => {
     const { harness, root } = await openThread(join(dir, "threads", `${id}.sqlite`), id, rlm, ({ messages }) => {

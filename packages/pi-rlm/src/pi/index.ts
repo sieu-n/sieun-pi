@@ -39,7 +39,7 @@ function imageOf(mimeType: unknown, data: unknown): ImageBlock[] {
   return typeof mimeType === "string" && IMAGE_MIMES.has(mimeType) && typeof data === "string" ? [{ type: "image", data, mimeType }] : [];
 }
 
-function cellImages(displays: Record<string, unknown>[]): ImageBlock[] {
+export function cellImages(displays: Record<string, unknown>[]): ImageBlock[] {
   return displays.flatMap(d => {
     const attachment = d[ATTACHMENT_MIME] as { mime_type?: unknown; data?: unknown } | undefined;
     return [

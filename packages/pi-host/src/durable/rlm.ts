@@ -43,7 +43,7 @@ import { bootstrapCode, parseSkillImportErrors } from "../../../pi-rlm/src/core/
 import { Kernel, KernelBusyError, relayPaths, type CellResult, type HostRequest, type RestoreResult } from "../../../pi-rlm/src/core/kernel.ts";
 import { BUS_SKILLS, kernelPython, pythonSkillOf, RLM_SKILLS, RUNTIME_SRC, type PythonSkill } from "../../../pi-rlm/src/core/python.ts";
 import { NOTE_INTERVAL_MS } from "../../../pi-rlm/src/pi/children.ts";
-import piRlm, { baseEnv, BUSY_NO_UI, formatCell, KERNEL_RESET, noticeMessage, restoreLine, SNAPSHOT_LIMITS, STILL_RUNNING, type Notice } from "../../../pi-rlm/src/pi/index.ts";
+import piRlm, { baseEnv, BUSY_NO_UI, cellImages, formatCell, KERNEL_RESET, noticeMessage, restoreLine, SNAPSHOT_LIMITS, STILL_RUNNING, type Notice } from "../../../pi-rlm/src/pi/index.ts";
 import type { Leftovers, LeftoverSource } from "../../../../legacy/prime/user-history/src/job-leftovers.ts";
 import { withKernelGuard } from "../../../sieun-rules/src/kernel-guard.ts";
 import { enabled } from "../../../sieun-rules/src/log.ts";
@@ -73,7 +73,6 @@ import type { Scheduler } from "../scheduler.ts";
 const context: Context = BACKGROUND_CONTEXT;
 export const RLM_EXTENSION = "rlm";
 export const IPYTHON_TOOL = "ipython";
-const IMAGE_MIMES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 /** The display record `rlm.bash` emits when a `bash()` handle starts, ends or turns out to be a detached service. */
 const BASH_ACTIVITY = "application/vnd.prime-agent.bash-activity+json";
 const MARKER = "kernel-started";
@@ -486,9 +485,7 @@ export class DurableRlm {
       if (start.restore) notes.push(restoreLine(start.restore));
       if (start.skillErrors) notes.push(`[python-skills-unavailable]\n${Object.entries(start.skillErrors).map(([k, v]) => `- ${k}: ${v}`).join("\n")}`);
       if (notes.length) text = `${notes.join("\n\n")}${text ? `\n\n${text}` : ""}`;
-      const images = r.displays.flatMap(d => Object.entries(d)
-        .filter(([mime, data]) => IMAGE_MIMES.has(mime) && typeof data === "string")
-        .map(([mimeType, data]) => ({ type: "image" as const, data: data as string, mimeType })));
+      const images = cellImages(r.displays);
       return {
         content: [{ type: "text", text }, ...images],
         ...(call.spawned.length ? { details: { conversationId: call.spawned[0]!, conversations: call.spawned } } : {}),
