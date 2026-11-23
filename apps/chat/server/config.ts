@@ -71,6 +71,12 @@ export interface Config {
    * Without it, as on the fixture or in a test, the server starts a Meilisearch of its own with a temp folder.
    */
   meili?: { url: string; keyFile: string };
+  /**
+   * The kinds of record this server keeps in chat.sqlite (json-move.ts), from `APPS_CHAT_DB_KINDS`, a comma list. A kind not named runs its
+   * JSON path as before the move, so each move goes live on its own, by a release that names it in the unit's environment
+   * (deploy/linux/sieun-pi-apps-chat.service), and leaves the tree green while its code lands.
+   */
+  dbKinds?: readonly string[];
 }
 
 /**
@@ -188,6 +194,7 @@ export function readConfig(argv = process.argv.slice(2), env = process.env): Con
     consoles: fixture
       ? join(appDir, "server/fixture/consoles.json")
       : resolve(env.APPS_CHAT_CONSOLES ?? join(home, "Documents/Github/auto-sns-agent/apps/infra/metal/config/consoles.json")),
+    dbKinds: (env.APPS_CHAT_DB_KINDS ?? "").split(",").map(kind => kind.trim()).filter(Boolean),
     ...(!fixture && env.APPS_CHAT_MEILI_URL ? { meili: { url: env.APPS_CHAT_MEILI_URL, keyFile: resolve(env.APPS_CHAT_MEILI_KEY_FILE ?? join(home, ".config/meilisearch/master.key")) } } : {}),
   };
 }
