@@ -19,6 +19,8 @@ export const DURABLE_COMMANDS = new Set([
 
 type Command = { id?: string; type: string; [key: string]: unknown };
 
+const THREAD_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
 function modelRef(value: unknown): ModelRef | undefined {
   if (value === undefined || value === null) return undefined;
   if (typeof value === "object" && typeof (value as ModelRef).provider === "string" && typeof (value as ModelRef).modelId === "string") return value as ModelRef;
@@ -74,7 +76,11 @@ export class DurableCommands {
           return done({ threads: this.threads.list(typeof command.archived === "boolean" ? { archived: command.archived } : {}) });
         case "durable_create": {
           const model = modelRef(command.model);
+          // `thread` names the new thread's id, so the same create sent again answers that thread instead of making another.
+          const threadId = optStr(command, "thread");
+          if (threadId !== undefined && !THREAD_ID.test(threadId)) throw new Error(`durable_create thread must be a uuid, got ${JSON.stringify(threadId)}`);
           return done({ thread: await this.threads.create({
+            ...(threadId === undefined ? {} : { id: threadId }),
             ...(optStr(command, "name") ? { name: optStr(command, "name")! } : {}),
             ...(model ? { model } : {}),
             ...(optStr(command, "thinkingLevel") ? { thinkingLevel: optStr(command, "thinkingLevel") as ModelThinkingLevel } : {}),

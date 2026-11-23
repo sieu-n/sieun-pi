@@ -132,7 +132,7 @@ Each command is one JSON line with `type` and `id`, and the response is a v7 `re
 | Command | Fields | Data |
 |---|---|---|
 | `durable_threads` | `archived?` | `threads`: id, name, provider, modelId, cwd, createdAt, updatedAt, status (idle, running, sleeping, failed), wakeAt, preview, children. |
-| `durable_create` | `name?`, `model?` ("provider/id"), `thinkingLevel?`, `cwd?` | `thread` |
+| `durable_create` | `thread?` (a uuid for the new thread's id), `name?`, `model?` ("provider/id"), `thinkingLevel?`, `cwd?` | `thread`; with `thread` set and that thread there, the existing thread and nothing made, so a create sent again after a timeout makes one thread |
 | `durable_submit` | `thread`, `conversation?`, `text?`, `images?` ({data, mimeType}), `requestId?`, `whenBusy?` (steer, followUp, reject), `entry?` ({kind: "agent.message", data: {from, via?}}), `ownerTurn?` | `submission`, `requestId`, `status`, `ticket` ({session, tree, place}), `owner?` ({state: marked, off or failed, ahead?}); `{dropped, requestId}` and no run for a wake or heartbeat to a job conversation that was removed or does not exist |
 | `durable_ticket` | `thread`, `conversation?` | `ticket`: the conversation's run in pi-pool's turn queue, read from `turns.json`. |
 | `durable_wait` | `thread`, `submission` | `settled`: the submission record once done or unanswered. |

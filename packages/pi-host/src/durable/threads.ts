@@ -426,13 +426,21 @@ export class DurableThreads {
     }).catch(error => this.log(`${open.id} retry start read failed: ${error instanceof Error ? error.message : String(error)}`)));
   }
 
+  /**
+   * Makes a thread, or answers the thread `input.id` names when one exists, so a create sent again with the same id makes nothing. On 11-23
+   * apps/chat's comm thread create for a room timed out three times during a 14 min loop freeze, and each try made its own thread.
+   */
   async create(input: { name?: string; model?: ModelRef; thinkingLevel?: ModelThinkingLevel; cwd?: string; id?: string } = {}): Promise<ThreadInfo> {
     const id = input.id ?? randomUUID();
+    const known = this.index.get(id);
+    if (known) {
+      await this.thread(id, { agent: { model: { provider: known.provider, modelId: known.modelId }, thinkingLevel: known.thinkingLevel as ModelThinkingLevel, cwd: known.cwd } });
+      return this.info(id);
+    }
     const model = input.model ?? this.defaultModel();
     const thinkingLevel = input.thinkingLevel ?? this.defaultThinkingLevel();
     const cwd = input.cwd ?? this.options.defaultCwd;
     const at = this.now();
-    if (this.index.get(id)) throw new Error(`Durable thread ${id} exists`);
     this.index.insertThread({ id, name: input.name ?? "New thread", provider: model.provider, modelId: model.modelId, thinkingLevel, cwd, createdAt: at, updatedAt: at });
     await this.thread(id, { agent: { model, thinkingLevel, cwd } });
     return this.info(id);
