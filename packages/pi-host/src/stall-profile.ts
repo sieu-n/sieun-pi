@@ -174,9 +174,11 @@ export class StallProfiler {
     }
   }
 
+  /** Ends the running profile and closes the session; a second call does nothing, since a closed session throws ERR_INSPECTOR_NOT_CONNECTED. */
   stop(): void {
+    if (this.current === undefined) return;
     clearInterval(this.timer);
-    if (this.current !== undefined) inspectorConsole.profileEnd(this.current);
+    inspectorConsole.profileEnd(this.current);
     this.current = undefined;
     this.session.post("Profiler.disable");
     this.session.disconnect();

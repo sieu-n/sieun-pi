@@ -156,6 +156,13 @@ test("a stall no tracked work explains names the function that held the loop, an
   }
 });
 
+test("a profiler stopped twice ends quietly, as LoopStalls.stop after its own profiler.stop does", () => {
+  const profiler = new StallProfiler();
+  profiler.stop();
+  assert.doesNotThrow(() => profiler.stop());
+  assert.equal(profiler.take(0, performance.now(), "after-stop"), undefined);
+});
+
 test("a loop held under 500 ms writes no line", async () => {
   const lines: string[] = [];
   const stalls = new LoopStalls({ log: line => lines.push(line) });
