@@ -126,6 +126,35 @@ test("a new agent's work thread and a root job filed under an agent get their re
   assert.deepEqual(refOf(host(), job.body.thread), { agent: agents.vent, dir: ventDir(), role: "job" });
 });
 
+test("a new agent's first agent.ref write that lands late leaves its work thread's ref naming the comm thread", async () => {
+  const docPut = host().docPut.bind(host());
+  let release!: () => void;
+  const held = new Promise<void>(resolve => (release = resolve));
+  let holding = true;
+  host().docPut = async (id, name, value, opts) => {
+    if (name === AGENT_REF_DOC && holding && (value as { agent?: string }).agent === "ag_late-ref-probe") {
+      holding = false;
+      await held;
+    }
+    return docPut(id, name, value, opts);
+  };
+  try {
+    const made = await s.send<AgentSummary>("POST", "/api/agents", { name: "Late ref probe" });
+    assert.equal(made.status, 200);
+    const ensured = s.app.ensureComms();
+    await sleep(100);
+    release();
+    await ensured;
+    await until(async () => s.app.agents.refWritten(made.body.thread), wrote => wrote);
+    const comm = s.app.agents.record("ag_late-ref-probe")!.comm!["dm_late-ref-probe"];
+    assert.ok(comm);
+    assert.equal((refOf(host(), made.body.thread) as { comm?: string } | undefined)?.comm, comm);
+  } finally {
+    release();
+    host().docPut = docPut;
+  }
+});
+
 test("POST /api/agents answers while the new thread's agent.ref write waits, and a send right after it reaches pi-host once the ref lands", async () => {
   // Until 11-23 the answer waited for the ref write, two pi-host round trips, and a thread list read that answered meanwhile held the
   // event loop before the answer went out: the create's handler took p50 476 ms and p90 1,039 ms over 422 calls.

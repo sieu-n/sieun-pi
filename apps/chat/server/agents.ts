@@ -109,6 +109,8 @@ export class Agents {
   private verifying?: Promise<void>;
   /** The first agent.ref writes in flight (`firstRef`), by thread. */
   private readonly writingRefs = new Map<string, Promise<boolean>>();
+  /** The last agent.ref write queued per thread (`putRef`). */
+  private readonly refQueue = new Map<string, Promise<boolean>>();
   private sweeping?: Promise<void>;
   /**
    * The threads whose agent.ref read or write failed, by box. A box's first failure logs and its last thread's success logs, and the
@@ -364,8 +366,29 @@ export class Agents {
    * Reads the thread's `agent.ref` and writes `ref` only when it is missing or different; answers whether the thread holds it now. A failure
    * logs and never throws. With `agentRefs` off, no ref is written and every thread counts as holding it.
    */
-  private async putRef(thread: string, ref: AgentRef): Promise<boolean> {
-    if (!this.config.agentRefs || this.holds(thread, ref)) return true;
+  private putRef(thread: string, ref: AgentRef): Promise<boolean> {
+    if (!this.config.agentRefs) return Promise.resolve(true);
+    // One write per thread at a time, in call order, so a slow first write cannot land over a later one. On 11-23 a new agent's first
+    // work ref, with no comm thread, landed after `ensureComm` wrote the one that names its DM's comm thread, and stayed until a sweep.
+    const queued = (this.refQueue.get(thread) ?? Promise.resolve(true)).then(() => this.writeRef(thread, this.currentRef(thread, ref)));
+    this.refQueue.set(thread, queued);
+    void queued.then(() => {
+      if (this.refQueue.get(thread) === queued) this.refQueue.delete(thread);
+    });
+    return queued;
+  }
+
+  /**
+   * The ref to write when the write's turn comes: a work thread's ref names the agent's comm thread, which can be made after a caller (a
+   * sweep's list, a new agent's first write) built `ref`, so it is built again from the record.
+   */
+  private currentRef(thread: string, ref: AgentRef): AgentRef {
+    const record = ref.role === "work" ? this.record(ref.agent) : undefined;
+    return record?.workThread === thread ? agentRef(this.agentsDirOf(record), record, "work") : ref;
+  }
+
+  private async writeRef(thread: string, ref: AgentRef): Promise<boolean> {
+    if (this.holds(thread, ref)) return true;
     try {
       if (!sameRef(await this.host.docGet(thread, AGENT_REF_DOC), ref)) await this.host.docPut(thread, AGENT_REF_DOC, ref);
       this.refs.set(thread, { host: this.boxOf(ref), ref });
