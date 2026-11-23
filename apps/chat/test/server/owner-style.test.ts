@@ -18,7 +18,7 @@ import { join, resolve } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { lastMeasured } from "../../scripts/duties/agent-memory.ts";
-import { askCount, askLines, blindCount, ownerPosts, roleText, shared, STYLE_WORDS, unansweredAsk, type AskLine, type BlindRow, type Note } from "../../scripts/duties/owner-style.ts";
+import { askCount, askLines, blindCount, errorLine, ownerPosts, roleText, shared, STYLE_WORDS, unansweredAsk, type AskLine, type BlindRow, type Note } from "../../scripts/duties/owner-style.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "owner-style-"));
 after(() => rmSync(dir, { recursive: true, force: true }));
@@ -86,9 +86,27 @@ test("blind follow is over the notes whose set got an answer, and two notes on o
     { note: "options", set: "options", out: "options.jsonl", of: 1, passed: 0, unmeasured: 0 },
     { note: "checklist-then-edit", set: "checklist", out: "checklist.jsonl", error: "the run wrote no summary" },
   ];
-  assert.deepEqual(blindCount(rows), { measured: 4, passed: 2, unmeasured: 2, asksUnmeasured: 4 });
-  assert.deepEqual(blindCount(rows.slice(0, 2)), { measured: 0, passed: 0, unmeasured: 2, asksUnmeasured: 3 });
-  assert.deepEqual(blindCount([]), { measured: 0, passed: 0, unmeasured: 0, asksUnmeasured: 0 });
+  assert.deepEqual(blindCount(rows), { measured: 3, passed: 2, unmeasured: 2, errored: 1, asksUnmeasured: 4 });
+  assert.deepEqual(blindCount(rows.slice(0, 2)), { measured: 0, passed: 0, unmeasured: 2, errored: 0, asksUnmeasured: 3 });
+  assert.deepEqual(blindCount([]), { measured: 0, passed: 0, unmeasured: 0, errored: 0, asksUnmeasured: 0 });
+});
+
+test("a set whose runner broke is not measured and never a failed note, and its error is named", () => {
+  // The 16:40 KST measure of 11-23: a chat release pruned the release folder it ran from, so the natural set's 5 notes ended MODULE_NOT_FOUND.
+  const stderr = "node:internal/modules/cjs/loader:1386\n  throw err;\n  ^\n\nError: Cannot find module '/home/sieun/.local/share/sieun-pi-apps-chat/release-7ec9800/apps/chat/scripts/blind-replies.mjs'\n" +
+    "    at Module._resolveFilename (node:internal/modules/cjs/loader:1383:15)\n    at node:internal/main/run_main_module:33:47 {\n  code: 'MODULE_NOT_FOUND',\n  requireStack: []\n}\n\nNode.js v26.12.1\n";
+  assert.equal(errorLine(stderr), "Error: Cannot find module '/home/sieun/.local/share/sieun-pi-apps-chat/release-7ec9800/apps/chat/scripts/blind-replies.mjs'");
+  assert.equal(errorLine("  code: 'ERR_X',\n}"), "code: 'ERR_X',");
+  assert.equal(errorLine("POST /api/agents: 500 boom\n"), "POST /api/agents: 500 boom");
+  assert.equal(errorLine(""), "");
+  const broke = (note: string): BlindRow => ({ note, set: "natural", out: "natural.jsonl", error: errorLine(stderr) });
+  const rows: BlindRow[] = [
+    { note: "slack-not-chat", set: "default", out: "default.jsonl", of: 3, passed: 3, unmeasured: 0 },
+    { note: "options", set: "options", out: "options.jsonl", of: 1, passed: 0, unmeasured: 0 },
+    ...["natural-checklist", "line-breaks", "few-shot", "no-process", "intent-then-status"].map(broke),
+  ];
+  assert.deepEqual(blindCount(rows), { measured: 2, passed: 1, unmeasured: 0, errored: 5, asksUnmeasured: 0 });
+  assert.deepEqual(blindCount(rows.slice(2)), { measured: 0, passed: 0, unmeasured: 0, errored: 5, asksUnmeasured: 0 });
 });
 
 test("a run where no blind set got an answer keeps the share of the newest run that measured one, read from its reply files", () => {
