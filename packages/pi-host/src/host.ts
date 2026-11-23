@@ -229,6 +229,8 @@ export class PiHost implements HostApi {
     } else {
       manager = SessionManager.create(fallbackCwd, this.options.sessionDir);
     }
+    // SessionManager.open parses the whole file in one call (42 ms for 01a17e5d's 3.1 MB), so the runtime build starts in a later loop turn.
+    await new Promise(resolve => setImmediate(resolve));
     const sessionId = manager.getSessionId();
     const file = manager.getSessionFile();
     const realPath = file ? this.leases.acquire(file, sessionId) : undefined;

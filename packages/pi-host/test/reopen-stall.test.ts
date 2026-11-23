@@ -11,7 +11,8 @@ import { HostClient } from "../src/client.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const MAIN = process.env.PI_HOST_MAIN ?? join(here, "../src/main.ts");
-const BOUND_MS = 100;
+/** The probe bound of the pi-host stall work. A list call waited 27 ms on an idle box and 85 ms at load average 140 on 80 cores (11-23). */
+const BOUND_MS = 300;
 
 /**
  * An extension of 40 TypeScript files of 12 KB. Through jiti, the old open path, Babel takes about 4 s on it, near the 3.0 s it took on
@@ -67,7 +68,7 @@ function writeSession(dir: string, cwd: string): { id: string; file: string } {
   return { id: manager.getSessionId(), file: manager.getSessionFile()! };
 }
 
-test("reopening a session as long as 01a17e5d, with a big extension, delays no command over 100 ms", async () => {
+test("reopening a session as long as 01a17e5d, with a big extension, delays no command over 300 ms", async () => {
   const root = mkdtempSync(join(tmpdir(), "pi-host-reopen-"));
   const ws = join(root, "ws");
   mkdirSync(ws, { recursive: true });

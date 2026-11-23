@@ -340,6 +340,8 @@ export class Scheduler {
         }
         this.deps.log(`scheduler: reopening ${job.activeSessionId.slice(0, 8)} for ${job.source} ${job.id.slice(0, 8)}`);
         await this.deps.reopen(job);
+        // The send starts a run, whose start (a compaction check over every message) gets its own loop turn after the reopen's.
+        await new Promise(resolve => setImmediate(resolve));
         handle = this.handles.get(job.activeSessionId);
         if (!handle) throw new Error(`session ${job.activeSessionId} opened but attached no scheduler handle; is the scheduler extension loaded?`);
       }
