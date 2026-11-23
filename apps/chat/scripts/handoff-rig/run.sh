@@ -21,7 +21,8 @@ systemctl --user restart apps-chat-handoff-copy.socket "$U"
 sleep 6
 systemd-run --user --unit=apps-chat-handoff-mover --collect -E PATH python3 -u "$HERE/mover.py" "$U"
 sleep 6
-node "$HERE/rig-test.mjs" "$U" "$PORT" "$DATA" 5 > "$OUT/report.json" 2>&1
+# TEST=race-test.mjs TEST_ARGS="race 3 10" runs the release race instead (race-test.mjs).
+node "$HERE/${TEST:-rig-test.mjs}" "$U" "$PORT" "$DATA" ${TEST_ARGS:-5} > "$OUT/report.json" 2>&1
 code=$?
 systemctl --user stop apps-chat-handoff-mover "$U" apps-chat-handoff-copy.socket
 systemctl --user stop apps-chat-handoff-copy-core.scope 2>/dev/null

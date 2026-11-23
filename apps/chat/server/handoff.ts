@@ -18,12 +18,13 @@
  * by then, takes the lock the kernel dropped and serves.
  *
  * Two App instances never run at once, so nothing in the data dir, the wakes, the duties or the search index is written by both, and a
- * second server started on the same data dir by any other path finds the lock held and exits. Without a
+ * second server started on the same data dir by any other path finds the lock held and exits. A start of the unit that finds the lock held
+ * by a server systemd lost track of ends that server and serves (`takeFromStray`). Without a
  * passed fd (a hand run, the fixture specs) the server listens on its port itself and a SIGHUP does nothing.
  */
 import { execFile, spawn } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { Server } from "node:http";
 import { promisify } from "node:util";
@@ -102,10 +103,32 @@ export function serveArgs(cmdline = (() => { try { return readFileSync("/proc/se
   return parts && parts.length > 1 ? parts.slice(1) : [...process.execArgv, ...process.argv.slice(1)];
 }
 
+/** The variables systemd gives the unit's process for its notify socket and watchdog. */
+const UNIT_VARS = ["NOTIFY_SOCKET", "WATCHDOG_USEC", "WATCHDOG_PID"] as const;
+const unitEnv: NodeJS.ProcessEnv = {};
+
+/**
+ * Takes systemd's notify and watchdog variables out of process.env, so a command this server runs never talks to the unit's notify socket,
+ * and keeps them for this process's own notify, watchdog and successor (`systemdEnv`). Every READY=1 here carries MAINPID= of its sender,
+ * and systemd takes a MAINPID= from any process in the unit (NotifyAccess=all): at 21:24:22Z on 11-23 a wake check that boots a fixture
+ * server (`node --import tsx server/main.ts --fixture`) ran in the unit with these variables, became the unit's main process with its
+ * READY=1, and the check's kill of it read to systemd as the unit's end, while the real server kept the data dir from <unit>-core.scope.
+ */
+export function keepUnitEnv(env: NodeJS.ProcessEnv = process.env): void {
+  for (const name of UNIT_VARS) {
+    if (env[name] === undefined) continue;
+    unitEnv[name] = env[name];
+    delete env[name];
+  }
+}
+
+/** process.env with the unit's variables `keepUnitEnv` took out of it. */
+export const systemdEnv = (): NodeJS.ProcessEnv => ({ ...process.env, ...unitEnv });
+
 /** sd_notify through systemd-notify, as chat-handoff.ts `notifySystemd` does. */
-async function notify(fields: readonly string[]): Promise<void> {
+async function notify(fields: readonly string[], env: NodeJS.ProcessEnv): Promise<void> {
   // systemd-notify answered in 13 ms from a test unit on us-metal02 on 11-08 (chat-handoff.ts); 30 s fails only one that hangs.
-  await promisify(execFile)("systemd-notify", [`--pid=${process.pid}`, ...fields], { timeout: 30_000 });
+  await promisify(execFile)("systemd-notify", [`--pid=${process.pid}`, ...fields], { env, timeout: 30_000 });
 }
 
 /** The unit's MainPID as systemd has it now, or 0. */
@@ -150,7 +173,7 @@ const BOOST_MS = 10_000;
  * leaves the scope in the same pass and serves outside it until it stopped. Without a core scope around the running server (no
  * cpu-protect.py, or a box without it) the wait is left out. Throws when systemd did not take this process in TAKE_MS.
  */
-export async function boostBeforeStop(log: (line: string) => void, env: NodeJS.ProcessEnv = process.env): Promise<void> {
+export async function boostBeforeStop(log: (line: string) => void, env: NodeJS.ProcessEnv = systemdEnv()): Promise<void> {
   if (!env.NOTIFY_SOCKET) return;
   const scope = `${(env[UNIT_ENV] ?? "").replace(/\.service$/, "")}-core.scope`;
   const protectedRunning = cgroupOf(process.ppid).endsWith(`/${scope}`);
@@ -190,7 +213,7 @@ function nudgeCpuProtect(): () => void {
  * process again, find the successor there and move this process back to the unit, where its MAINPID= counts; a second one brings it into
  * the scope again.
  */
-export async function reclaimMain(log: (line: string) => void, env: NodeJS.ProcessEnv = process.env): Promise<void> {
+export async function reclaimMain(log: (line: string) => void, env: NodeJS.ProcessEnv = systemdEnv()): Promise<void> {
   if (!env.NOTIFY_SOCKET) return;
   const endNudge = nudgeCpuProtect();
   try {
@@ -201,17 +224,17 @@ export async function reclaimMain(log: (line: string) => void, env: NodeJS.Proce
   nudgeCpuProtect();
 }
 
-export async function tellSystemd(successor: boolean, log: (line: string) => void, env: NodeJS.ProcessEnv = process.env): Promise<void> {
+export async function tellSystemd(successor: boolean, log: (line: string) => void, env: NodeJS.ProcessEnv = systemdEnv()): Promise<void> {
   if (!env.NOTIFY_SOCKET) return;
   const began = Date.now();
   if (!successor) {
-    await notify(["READY=1"]);
+    await notify(["READY=1"], env);
     return log(`systemd: told it READY=1 in ${Date.now() - began} ms`);
   }
   const unit = env[UNIT_ENV];
   if (!unit) throw new Error(`${UNIT_ENV} is not set, so this successor cannot see whether systemd took it as the main process`);
   for (let tries = 1; ; tries += 1) {
-    await notify([`MAINPID=${process.pid}`, "READY=1"]);
+    await notify([`MAINPID=${process.pid}`, "READY=1"], env);
     if ((await mainPidOf(unit)) === process.pid) return log(`systemd: took this process as ${unit}'s main one after ${tries} MAINPID= in ${Date.now() - began} ms`);
     if (Date.now() - began > TAKE_MS) throw new Error(`systemd did not take this process as ${unit}'s main one in ${TAKE_MS / 1000} s of MAINPID=`);
     await new Promise(resolve => setTimeout(resolve, 250));
@@ -225,10 +248,10 @@ export async function tellSystemd(successor: boolean, log: (line: string) => voi
  * --user drops a notify from outside the unit. A ping from a systemd-notify the main process ran would start in the scope. The shell
  * pings only on a line from this process, so a hung event loop sends none. Returns the stop.
  */
-export function startWatchdog(log: (line: string) => void, env: NodeJS.ProcessEnv = process.env): () => void {
+export function startWatchdog(log: (line: string) => void, env: NodeJS.ProcessEnv = systemdEnv()): () => void {
   const usec = Number(env.WATCHDOG_USEC);
   if (!env.NOTIFY_SOCKET || !Number.isFinite(usec) || usec <= 0) return () => {};
-  const pinger = spawn("sh", ["-c", "while read -r _; do systemd-notify WATCHDOG=1; done"], { stdio: ["pipe", "ignore", "inherit"] });
+  const pinger = spawn("sh", ["-c", "while read -r _; do systemd-notify WATCHDOG=1; done"], { env, stdio: ["pipe", "ignore", "inherit"] });
   pinger.on("error", error => log(`watchdog: the pinger: ${error.message}`));
   pinger.stdin.on("error", () => {});
   const ping = () => { if (pinger.stdin.writable) pinger.stdin.write("\n"); };
@@ -276,6 +299,55 @@ export class DataLock {
     this.db?.close();
     this.db = null;
   }
+
+  /** The pid the holder wrote beside the lock when it took it, or 0. */
+  holder(): number {
+    try { return Number(readFileSync(`${this.file}.pid`, "utf8").trim()) || 0; } catch { return 0; }
+  }
+}
+
+/** Whether the process runs this server's command on the given data dir, from /proc/<pid>/cmdline. */
+function servesDataDir(pid: number, dataDir: string): boolean {
+  let args: string[];
+  try { args = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0"); } catch { return false; }
+  const at = args.indexOf("--data-dir");
+  return args.some(arg => arg.endsWith("server/main.ts")) && at > 0 && resolve(args[at + 1] ?? "") === resolve(dataDir);
+}
+
+const alive = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; } };
+
+/**
+ * How long a start of the unit waits for a stray holder of the data dir's lock to end after SIGTERM before it sends SIGKILL: the unit's
+ * TimeoutStopSec=20, the time systemd gives the same server to stop.
+ */
+const STRAY_STOP_MS = 20_000;
+
+/**
+ * A start of the unit that finds the data dir's lock held ends the holder when it is a server of this data dir, and takes the lock. systemd
+ * starts the unit only once it holds no main process, so a server that still holds the lock then runs where systemd no longer sees it: at
+ * 21:24Z on 11-23 a wake check's fixture server became the main process (`keepUnitEnv`), its end read as the unit's end, and the unit's 27
+ * restarts in 2 min each exited on "pid 885883 holds server.lock", while 885883 served from <unit>-core.scope until a builder ended it. The holder gets SIGTERM, which
+ * drains and stops it as a unit stop does, and SIGKILL after STRAY_STOP_MS. A hand run or a second server outside systemd still exits on a
+ * held lock (`DataLock.take`). Returns what `take` returns after the end: null once this process holds the lock.
+ */
+export async function takeFromStray(lock: DataLock, dataDir: string, log: (line: string) => void, env: NodeJS.ProcessEnv = systemdEnv()): Promise<string | null> {
+  let held = lock.take();
+  const pid = lock.holder();
+  if (!held || !pid || pid === process.pid || !servesDataDir(pid, dataDir)) return held;
+  const where = cgroupOf(pid) || "an unknown cgroup";
+  const began = Date.now();
+  let signal: NodeJS.Signals = "SIGTERM";
+  try { process.kill(pid, signal); } catch { /* ended meanwhile */ }
+  for (held = lock.take(); held && alive(pid); held = lock.take()) {
+    if (signal === "SIGTERM" && Date.now() - began > STRAY_STOP_MS) {
+      signal = "SIGKILL";
+      try { process.kill(pid, signal); } catch { /* ended meanwhile */ }
+    }
+    await new Promise(done => setTimeout(done, 100));
+  }
+  log(`data dir: pid ${pid} held ${dataDir}/server.lock from ${where} while systemd started ${env[UNIT_ENV] ?? "the unit"} with no main process; ` +
+    `this start ended it with ${signal} in ${Date.now() - began} ms and ${held ? `still finds the lock held (${held})` : "serves the data dir"}`);
+  return held;
 }
 
 /** The running server's side. */
@@ -322,7 +394,7 @@ const LOAD_MS = 60_000;
 /** One hand-over; resolves once the successor took the port, or once it ended before that. */
 export async function handOver(side: Running, args: string[] = serveArgs(), cwd = process.env[CURRENT_ENV] ?? process.cwd()): Promise<void> {
   const began = Date.now();
-  const child = spawn(process.execPath, args, { cwd, env: { ...process.env, [HANDOFF_ENV]: "1" }, stdio: ["ignore", "inherit", "inherit", side.fd, "ipc"] });
+  const child = spawn(process.execPath, args, { cwd, env: { ...systemdEnv(), [HANDOFF_ENV]: "1" }, stdio: ["ignore", "inherit", "inherit", side.fd, "ipc"] });
   side.log(`handoff: started the successor ${child.pid} in ${cwd}; this process serves until it loaded`);
   side.windDown?.(true);
   let stoppedAt = 0, taken = false;

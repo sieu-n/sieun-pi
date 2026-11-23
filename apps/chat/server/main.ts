@@ -17,13 +17,14 @@ import { projectList } from "./projects.ts";
 import { drain, lingerForwarding, serve, skillsParts, windDown, WRITE_WAIT_MS } from "./http.ts";
 import { seedFixture } from "./fixture/seed.ts";
 import { warmPrompts } from "./agent-prompt.ts";
-import { boostBeforeStop, DataLock, handOverOnHangup, listening, reclaimMain, startWatchdog, tellSystemd } from "./handoff.ts";
+import { boostBeforeStop, DataLock, handOverOnHangup, keepUnitEnv, listening, reclaimMain, startWatchdog, systemdEnv, takeFromStray, tellSystemd } from "./handoff.ts";
 
 const loadedMs = Math.round(performance.now());
 const config = readConfig();
 const log = (line: string) => console.log(`${new Date().toISOString()} ${line}`);
 onWriteError(log);
 process.on("exit", () => {
+  app?.records.flushSync();
   app?.chatDb.flushSync();
   flushSync();
 });
@@ -45,15 +46,16 @@ process.on("SIGTERM", () => void shutdown());
 process.on("SIGINT", () => void shutdown());
 if (config.fixture && !process.argv.includes("--data-dir")) config.dataDir = mkdtempSync(join(tmpdir(), "apps-chat-fixture-"));
 if (config.fixture) Object.assign(config, fixtureFolders(config.dataDir));
+keepUnitEnv();
 const port = listening();
 const lock = new DataLock(join(config.dataDir, "server.lock"));
-const takeLock = () => {
-  const held = lock.take();
+const takeLock = (held = lock.take()) => {
   if (!held) return;
   log(`data dir: ${held}; this server does not serve it and exits`);
   process.exit(1);
 };
-if (!port.predecessor) takeLock();
+// A start of the unit ends a server of this data dir that systemd lost track of (handoff.ts takeFromStray); any other start exits on a held lock.
+if (!port.predecessor) takeLock(port.fd !== null && systemdEnv().NOTIFY_SOCKET ? await takeFromStray(lock, config.dataDir, log) : lock.take());
 // The skills DB's first ingest runs before the port is taken, and for a successor while the old server still serves (http.ts skillsParts).
 const skillsAt = performance.now();
 const skills = skillsParts(config, log, () => app);
