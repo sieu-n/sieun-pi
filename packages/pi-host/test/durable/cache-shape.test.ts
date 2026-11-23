@@ -5,7 +5,7 @@
  */
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import type { Message, Provider, Tool } from "@earendil-works/pi-ai";
+import { getSystemMessageText, type Message, type Provider, type Tool } from "@earendil-works/pi-ai";
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
 import { cacheableBreakpoints, COLD_MS, foldPoint, foldSystem, KEEP_CHARS, LEAN_CHARS, LEFT_OUT_NOTE, leanHistory, sniffImage, thawArrays, viewableImages, withCacheShape } from "../../src/durable/cache-shape.ts";
 
@@ -63,7 +63,7 @@ test("a breakpoint on a tool change block moves to the text block before it, or 
 });
 
 /** The body pi-ai's Anthropic provider sends for `messages`, caught by a fetch that answers 400. */
-async function wire(provider: Provider, messages: Message[]): Promise<{ messages: { role: string; content: { type: string; cache_control?: unknown }[] | string }[]; system: { text: string }[] }> {
+async function wire(provider: Provider, messages: Message[], apiKey = "sk-ant-api-test"): Promise<{ messages: { role: string; content: { type: string; cache_control?: unknown }[] | string }[]; system: { text: string }[] }> {
   const model = provider.getModels().find(m => {
     const compat = m.compat as { supportsMidConvoSystemMessages?: boolean; supportsMidConvoToolChanges?: boolean } | undefined;
     return compat?.supportsMidConvoSystemMessages && compat.supportsMidConvoToolChanges;
@@ -74,7 +74,7 @@ async function wire(provider: Provider, messages: Message[]): Promise<{ messages
     body = JSON.parse(String(init?.body));
     return new Response(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "test" } }), { status: 400, headers: { "content-type": "application/json" } });
   };
-  await provider.stream(model, { messages } as never, { apiKey: "sk-ant-api-test", fetch, cacheRetention: "long", maxRetries: 0 } as never).result();
+  await provider.stream(model, { messages } as never, { apiKey, fetch, cacheRetention: "long", maxRetries: 0 } as never).result();
   return body as never;
 }
 const marks = (body: Awaited<ReturnType<typeof wire>>) =>
@@ -251,4 +251,38 @@ test("a cold comm request keeps only the newest earlier turns that fit KEEP_CHAR
   assert.deepEqual(lean.at(-1), now.at(-1));
   const next = [...now, answer("ok", cold + 1000), user("more", cold + 2 * MIN)];
   assert.deepEqual(leanHistory(next, cold + 2 * MIN).slice(0, lean.length), lean, "the next request keeps the same part");
+});
+
+type TextBlock = { text: string; cache_control?: unknown };
+/** A job's first system message as prime-prompt renders it, in its order: the per-conversation sections sit 4th, 7th and 10th. */
+const jobStart = (conversation: number, digest: string, working: string): Message => system({ sections: {
+  preamble: "P: You are a general purpose agent.", delegation: "D: delegate.", mcp: "M: mcp.",
+  guidance: `G: put scratch under ~/scratch/72ba1ed2-${conversation}/, your own folder.`,
+  context: "C: project context.", skills: "S: <available_skills/>", harness: `H: ${digest}`, corrections: "K: c37.", writing: "W: unslop.", working: `WM: ${working}`,
+}, toolsAdded: [tool("ipython"), tool("job_reply")] }, 0);
+
+test("two job starts of one agent send the same tools and system blocks up to the stable block's breakpoint, which holds every shared section", async () => {
+  const inner = anthropicProvider();
+  const starts = [
+    [jobStart(252087, "digest ranked for the first task", "memory at 23:10"), user("first task", t0)],
+    [jobStart(252176, "digest ranked for the second task", "memory at 23:40"), user("second task", t0 + 20 * MIN)],
+  ];
+  for (const apiKey of ["sk-ant-api-test", "sk-ant-oat01-test"]) {
+    const bodies = [];
+    for (const [index, messages] of starts.entries()) bodies.push(await wire(withCacheShape(inner, () => t0 + index * 20 * MIN), messages, apiKey) as unknown as { tools: unknown; system: TextBlock[]; messages: unknown[] });
+    const prefixes = bodies.map(body => {
+      const at = body.system.findIndex(block => block.cache_control && block.text.includes("C: project context."));
+      assert.ok(at >= 0, `${apiKey}: a system block with a breakpoint holds the shared sections after guidance`);
+      return { tools: body.tools, system: body.system.slice(0, at + 1) };
+    });
+    assert.deepEqual(prefixes[1], prefixes[0], `${apiKey}: the second start's cached prefix is byte for byte the first's`);
+    const stable = prefixes[0]!.system.at(-1)!.text;
+    for (const shared of ["P:", "D:", "M:", "C:", "S:", "K:", "W:"]) assert.ok(stable.includes(shared), `${apiKey}: the stable block holds ${shared}`);
+    for (const own of ["G:", "H:", "WM:"]) assert.ok(!stable.includes(own), `${apiKey}: the stable block leaves out ${own}`);
+    const [first] = bodies;
+    const prompt = first!.system.filter(block => !block.text.startsWith("You are Claude Code")).map(block => block.text).join("\n\n");
+    assert.equal(prompt.length, getSystemMessageText(starts[0]![0] as never).length, `${apiKey}: the request still sends every section once`);
+    const breakpoints = JSON.stringify(first).split('"cache_control"').length - 1;
+    assert.ok(breakpoints <= 4, `${apiKey}: ${breakpoints} breakpoints, Anthropic takes 4`);
+  }
 });

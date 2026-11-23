@@ -14,8 +14,10 @@
  * 3. Lean history. A comm thread's turns before that point lose their thinking and long tool texts (`leanHistory`, comm threads only).
  * 4. Images. An image part whose bytes are no type Anthropic takes goes out as a text line (`viewableImages`).
  * 5. Encode. The payload the SDK encodes holds no frozen array, which would push V8's JSON.stringify off its fast path (`thawArrays`).
+ * 6. Stable first. The sections that differ between two conversations of one agent go last, after a breakpoint of their own, so a new job
+ *    reads the rest of its system prompt from an earlier job's cache (`stableFirst`, `splitSystem`).
  */
-import { getCurrentSystemMessage, type Message, type Provider } from "@earendil-works/pi-ai";
+import { getCurrentSystemMessage, getSystemMessageText, type Message, type Provider } from "@earendil-works/pi-ai";
 
 type ImagePart = { type: "image"; data: string; mimeType: string };
 
@@ -235,16 +237,67 @@ export function thawArrays<T>(value: T): T {
   return out as T;
 }
 
+/**
+ * The sections of a leading system message that differ between two conversations of one agent started minutes apart: `guidance` names the
+ * conversation's own scratch folder, `harness` is the digest ranked for its first input, and `working` is the agent's working memory, which
+ * its work thread rewrites after each turn. In 40 job starts of thread 72ba1ed2 on 11-23, every other section hashed the same, and these three
+ * sat at the 4th, 7th and 10th of 10 places, so each start wrote about 98k of its 111k characters to the cache again, and starts read only the
+ * tools from the cache: 770 starts in 24 h wrote $283.6 of cache (~/work/tokens-slow-parallel/job-prefix.md).
+ */
+export const PER_CONVERSATION_SECTIONS: ReadonlySet<string> = new Set(["guidance", "harness", "working"]);
+
+type SystemMessage = Extract<Message, { role: "system" }>;
+
+/**
+ * `messages` with the leading system message's PER_CONVERSATION_SECTIONS moved after its other sections, each text unchanged, and `stable`,
+ * the prompt text of the sections before them; the same array and no `stable` when the message has none of those sections or nothing before them.
+ */
+export function stableFirst(messages: readonly Message[]): { messages: readonly Message[]; stable?: string } {
+  const head = messages[0];
+  if (head?.role !== "system" || !head.sections) return { messages };
+  const entries = Object.entries(head.sections);
+  const own = entries.filter(([key]) => PER_CONVERSATION_SECTIONS.has(key));
+  const shared = entries.filter(([key]) => !PER_CONVERSATION_SECTIONS.has(key));
+  const stable = getSystemMessageText({ ...head, sections: Object.fromEntries(shared) } as SystemMessage);
+  if (!own.some(([, text]) => text !== null) || stable.length === 0) return { messages };
+  const lead = { ...head, sections: Object.fromEntries([...shared, ...own]) } as SystemMessage;
+  return { messages: [lead, ...messages.slice(1)], stable };
+}
+
+type TextBlock = { type?: string; text?: unknown; cache_control?: unknown };
+
+/**
+ * Splits an Anthropic request's system prompt block, the last `system` block, into `stable` and the rest, and puts a copy of its breakpoint on
+ * `stable`. The breakpoint on pi-ai's OAuth identity line goes, since the one on `stable` caches the same prefix and more, so the request keeps
+ * Anthropic's limit of 4 breakpoints: tools, `stable`, the rest and the last message. Returns the payload, changed in place, or undefined when
+ * the block does not start with `stable` or has no breakpoint.
+ */
+export function splitSystem(payload: unknown, stable: string): unknown {
+  const system = (payload as { system?: unknown } | undefined)?.system;
+  if (!Array.isArray(system) || system.length === 0) return undefined;
+  const last = system.at(-1) as TextBlock;
+  if (last?.type !== "text" || !last.cache_control || typeof last.text !== "string" || !last.text.startsWith(`${stable}\n\n`)) return undefined;
+  for (const block of system.slice(0, -1) as TextBlock[]) delete block.cache_control;
+  system.splice(-1, 1, { type: "text", text: stable, cache_control: { ...last.cache_control } }, { ...last, text: last.text.slice(stable.length + 2) });
+  return payload;
+}
+
 type StreamOptions = { onPayload?: (payload: unknown, model: never) => unknown } | undefined;
 
-/** `inner` with each request's images viewable, its transcript folded and its breakpoints on cacheable blocks; `now` is the clock the fold reads. */
+/**
+ * `inner` with each request's images viewable, its transcript folded, its stable system sections first and its breakpoints on cacheable blocks;
+ * `now` is the clock the fold reads.
+ */
 export function withCacheShape(inner: Provider, now: () => number = Date.now): Provider {
   const shape = <O extends StreamOptions>(context: { messages: Message[] }, options: O): [{ messages: Message[] }, O] => {
-    const messages = foldSystem(viewableImages(context.messages), now());
+    const { messages, stable } = stableFirst(foldSystem(viewableImages(context.messages), now()));
     const own = options?.onPayload;
     const onPayload = async (payload: unknown, model: never): Promise<unknown> => {
       const next = (await own?.(payload, model)) ?? undefined;
-      const shaped = cacheableBreakpoints(next ?? payload) ?? next;
+      const base = next ?? payload;
+      const moved = cacheableBreakpoints(base);
+      const split = stable === undefined ? undefined : splitSystem(base, stable);
+      const shaped = moved ?? split ?? next;
       const sent = shaped ?? payload;
       const thawed = thawArrays(sent);
       return thawed === sent ? shaped : thawed;
