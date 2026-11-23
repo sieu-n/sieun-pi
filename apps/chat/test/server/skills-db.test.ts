@@ -200,7 +200,7 @@ test("a skill deleted from its repo's main branch shows as gone while an old clo
   await db.remove({ target: "git:tools/.agents/skills/deploy-notes" });
   assert.ok(present(clone), "the old clone keeps its folder");
   scan();
-  assert.deepEqual(db.check().items.filter(i => i.kind === "gone" || i.kind === "missing"), []);
+  assert.deepEqual(db.check().items, [], "the old clone's folder, now with no row, is no drift either");
 });
 
 test("adopting a new skill's source also adopts the links that point at it, so one adopt leaves no drift", async t => {
