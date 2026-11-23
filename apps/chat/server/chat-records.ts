@@ -364,7 +364,9 @@ export class DbDoc<T extends object> implements Doc<T> {
 
   constructor(records: ChatRecords, readonly spec: DocSpec<T>) {
     this.records = records;
-    this.move = records.move(docKind(spec as DocSpec<object>));
+    // The export renders the document from memory, as kept-json.ts's do: on the one-db rig on 11-23 reading the rows back for each export
+    // took two thirds of its time, about 8 ms of each agent create, while `check` still compares the file with the rows' `dump`.
+    this.move = records.move({ ...docKind(spec as DocSpec<object>), exportText: () => docText(this.value) });
     const stored = readDoc(records.chat.db, spec as DocSpec<object>);
     this.value = (stored?.value as T | undefined) ?? spec.empty();
     this.stored = stored !== null;

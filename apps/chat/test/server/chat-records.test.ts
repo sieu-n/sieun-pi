@@ -134,6 +134,7 @@ test("the JSON export follows a save, and a boot after it imports nothing", asyn
   rooms.value.rooms.push({ id: "so_1", createdAt: 3, archived: false, kind: "solo", name: "s", agenda: "", members: [] });
   rooms.save();
   await set.saved();
+  assert.equal(rooms.move.kind.exportText?.("rooms.json"), docKind(ROOMS as unknown as DocSpec<object>).dump(set.chat.db, "rooms.json"), "the export renders from memory what the rows hold");
   await rooms.move.flushExports();
   await drained();
   assert.equal(readFileSync(join(data, "rooms.json"), "utf8"), docText(rooms.value));
