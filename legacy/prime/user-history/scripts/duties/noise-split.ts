@@ -44,6 +44,8 @@ export const NOISE_FIXES: readonly { kind: string; fix: string }[] = [
   { kind: "progress on a goal still going", fix: "958ccd0a" },
   // The running step count and the version-apart check of 11-08, after two landing versions went out alone (~/work/tell-owner-split-landing/replay.md).
   { kind: "progress on a goal still going", fix: "1462a85d" },
+  // The re-ask refusal text fix of 11-24, after ops guy flipped its own pick on t81 and resent the Vercel ask (~/work/tell-owner-pick-flip-resend/replay.md).
+  { kind: "repeat of a decision already on For you", fix: "d11f8252" },
 ];
 
 /** A labelled noise line: `at` is when it went out, `labelled` when the duty run wrote its label (the LABELS row's `at`). */

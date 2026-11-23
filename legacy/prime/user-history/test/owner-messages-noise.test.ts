@@ -133,6 +133,15 @@ test("the 10-25 10:57Z t34 nudge, resent after the re-ask refusal, went out befo
   assert.deepEqual(split.map(line => [line.side, line.fix]), [["before_fix", "c083958b"], ["after_fix", "c083958b"]]);
 });
 
+test("the 11-23 15:13Z t81 resend went out before d11f8252, and a later repeat reads after it", async () => {
+  const fixed = { ...commits, d11f8252: "2026-11-24T06:30:00Z" };
+  const split = await splitNoise([
+    { at: at("2026-11-23T15:13:36Z"), case: "repeat of a decision already on For you (ops guy resent its t81 Vercel ask past the re-ask refusal after flipping its pick)" },
+    { at: at("2026-11-25T01:00:00Z"), case: "repeat of a decision already on For you" },
+  ], async hash => fixed[hash as keyof typeof fixed] ? at(fixed[hash as keyof typeof fixed]!) : undefined);
+  assert.deepEqual(split.map(line => [line.side, line.fix]), [["before_fix", "d11f8252"], ["after_fix", "d11f8252"]]);
+});
+
 test("no noise line gives no lastEventAt", () => {
   assert.deepEqual(noiseLastEvent([]), {});
 });
