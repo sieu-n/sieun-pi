@@ -14,6 +14,8 @@
 //   --cuts <list>      seconds of each cut, in order; 0 is a control with the network up [0,5,60,5,60]
 //   --browsers <list>  [chromium,webkit]
 //   --freeze           also freeze the Chromium page for the cut (CDP Page.setWebLifecycleState), as a Mac sleep stops its timers
+//   --wake             cut as a Mac sleep does: besides the dropped packets, the page is hidden, offline and (Chromium) frozen, shows
+//                      again 2 s before the return and goes online at it (wake-walk-page.mjs)
 //   --label <name>, --out <dir>  [wake-<time>, ~/work/p209-wake/<label>]
 //   --scratch <dir>    the rig's throwaway folder, deleted at the end; put it under your job's own scratch folder [~/scratch/wake-walk-<label>]
 //   --report <out dir> only rebuild the report of a finished walk
@@ -44,6 +46,7 @@ function parseArgs(argv) {
     else if (flag === "--cuts") o.cuts = value();
     else if (flag === "--browsers") o.browsers = value();
     else if (flag === "--freeze") o.freeze = true;
+    else if (flag === "--wake") o.wake = true;
     else if (flag === "--label") o.label = value();
     else if (flag === "--out") o.out = resolve(value());
     else if (flag === "--scratch") o.scratch = resolve(value());
@@ -86,7 +89,7 @@ async function walk(o) {
   const tc = `${rig}-tc`;
   const socket = join(o.scratch, "chat.sock");
   const cleanups = [];
-  const meta = { label: o.label, base: o.base, browsers, cuts, freeze: o.freeze, probes: [], startedAt: Date.now() };
+  const meta = { label: o.label, base: o.base, browsers, cuts, freeze: o.freeze, wake: !!o.wake, probes: [], startedAt: Date.now() };
   try {
     const stamp = o.label.replace(/[^a-z0-9-]/gi, "-").toLowerCase();
     const agent = await call(o.base, "POST", "/api/agents", { name: `wake walk ${stamp}`, test: true, thinkingLevel: "low", cwd: repo, brief: "A throwaway test agent of the wake walk. Do nothing." });
@@ -136,7 +139,7 @@ async function walk(o) {
     front.stdout.on("data", chunk => appendFileSync(join(o.out, "front.log"), chunk));
     front.stderr.on("data", chunk => appendFileSync(join(o.out, "front.log"), chunk));
     await sleep(1500);
-    const page = spawn("docker", ["exec", rig, "node", join(here, "wake-walk-page.mjs"), `https://127.0.0.1:${FRONT_PORT}`, o.scratch, o.browsers, room.id, o.freeze ? "freeze" : "awake"], { stdio: ["ignore", "pipe", "pipe"] });
+    const page = spawn("docker", ["exec", rig, "node", join(here, "wake-walk-page.mjs"), `https://127.0.0.1:${FRONT_PORT}`, o.scratch, o.browsers, room.id, o.wake ? "wake" : o.freeze ? "freeze" : "awake"], { stdio: ["ignore", "pipe", "pipe"] });
     page.stdout.on("data", chunk => appendFileSync(join(o.out, "page.log"), chunk));
     page.stderr.on("data", chunk => appendFileSync(join(o.out, "page.log"), chunk));
     const pageDone = new Promise(done => page.on("exit", done));
@@ -206,7 +209,7 @@ async function walk(o) {
 /** Builds report.md in a walk's out dir: per probe and browser, the seconds from the network's return until each change showed. */
 export function report(out) {
   const meta = JSON.parse(readFileSync(join(out, "meta.json"), "utf8"));
-  const lines = [`# Wake walk ${meta.label}`, "", `Base ${meta.base}, browsers ${meta.browsers.join(", ")}, Chromium frozen during the cut: ${meta.freeze ? "yes" : "no"}.`, "",
+  const lines = [`# Wake walk ${meta.label}`, "", `Base ${meta.base}, browsers ${meta.browsers.join(", ")}, Chromium frozen during the cut: ${meta.freeze ? "yes" : "no"}, wake-like cut: ${meta.wake ? "yes" : "no"}.`, "",
     `| probe | cut s | load | browser | ${MARKERS.join(" | ")} |`, `|---|---|---|---|${MARKERS.map(() => "---").join("|")}|`];
   for (const probe of meta.probes) {
     for (const browser of meta.browsers) {

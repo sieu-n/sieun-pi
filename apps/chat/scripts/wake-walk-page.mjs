@@ -1,17 +1,28 @@
 // The browser half of the wake walk (wake-walk.mjs). It opens the walk's test room in Chromium and WebKit side by side, and for each
 // probe the host writes (<dir>/probe-<n>.json) it checks the page every 50 ms for the probe's four changes and writes, per browser, when
 // each first showed (<dir>/result-<n>-<browser>.json, Date.now() stamps); the room's new name counts once the page or a GET /api/rooms answer shows it. With "freeze" it freezes the Chromium page from the probe until
-// the host's back mark (<dir>/back-<n>.json), as a Mac sleep stops the page's timers. The init script of restart-walk-page.mjs records
+// the host's back mark (<dir>/back-<n>.json), as a Mac sleep stops the page's timers. With "wake" it does what a Mac sleep and wake do to the
+// page: at the probe it hides the page, sets the context offline and freezes the Chromium page; 2 s before the network's return it unfreezes
+// and shows the page, as the lid opens while Wi-Fi still joins, and at the return it sets the context online, which fires 'online'. The init script of restart-walk-page.mjs records
 // every /api/ fetch and every /api/live socket open and close to <dir>/page-<browser>.jsonl.
-// Usage: node wake-walk-page.mjs <front url> <dir> <browsers, comma separated> <room> <freeze|awake>
+// Usage: node wake-walk-page.mjs <front url> <dir> <browsers, comma separated> <room> <freeze|wake|awake>
 import { createRequire } from "node:module";
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 
 const require = createRequire(new URL("../package.json", import.meta.url));
 const playwright = require("@playwright/test");
 const [front, dir, browserList, room, mode] = process.argv.slice(2);
-if (!room) throw new Error("usage: node wake-walk-page.mjs <front url> <dir> <browsers> <room> <freeze|awake>");
+if (!room) throw new Error("usage: node wake-walk-page.mjs <front url> <dir> <browsers> <room> <freeze|wake|awake>");
 const GIVE_UP_MS = 90_000;
+/** How long before the network's return a "wake" walk shows the page again: the lid opens before Wi-Fi has joined. */
+const SHOWN_BEFORE_MS = 2000;
+
+/** Sets what document.visibilityState says and fires visibilitychange, as a Mac sleep and wake do to a page. */
+const visibility = (page, state) => page.evaluate(state => {
+  Object.defineProperty(document, "visibilityState", { configurable: true, get: () => state });
+  Object.defineProperty(document, "hidden", { configurable: true, get: () => state === "hidden" });
+  document.dispatchEvent(new Event("visibilitychange"));
+}, state);
 
 const instrument = () => {
   window.__walk = [];
@@ -74,7 +85,8 @@ async function walk(name) {
   }
   await page.addInitScript(instrument);
   page.on("pageerror", error => write({ kind: "pageerror", at: Date.now(), err: String(error.message).slice(0, 300) }));
-  const cdp = name === "chromium" && mode === "freeze" ? await context.newCDPSession(page) : null;
+  const wake = mode === "wake";
+  const cdp = name === "chromium" && (mode === "freeze" || wake) ? await context.newCDPSession(page) : null;
   const take = async () => {
     const records = await page.evaluate(() => {
       const done = window.__walk.filter(r => r.kind !== "fetch" || r.end !== undefined);
@@ -97,10 +109,19 @@ async function walk(name) {
       await sleep(200);
     }
     if (existsSync(`${dir}/stop`)) break;
-    const { markers } = readJson(`${dir}/probe-${n}.json`);
+    const { markers, seconds } = readJson(`${dir}/probe-${n}.json`);
     const seen = {};
     let frozen = false;
-    if (cdp) {
+    let hidden = false;
+    let offline = false;
+    const showAt = Date.now() + seconds * 1000 - SHOWN_BEFORE_MS;
+    if (wake && seconds) {
+      await visibility(page, "hidden");
+      await context.setOffline(true);
+      hidden = offline = true;
+      write({ kind: "asleep", at: Date.now(), n });
+    }
+    if (cdp && (!wake || seconds)) {
       await cdp.send("Page.setWebLifecycleState", { state: "frozen" });
       frozen = true;
       write({ kind: "frozen", at: Date.now(), n });
@@ -108,10 +129,20 @@ async function walk(name) {
     let backAt;
     for (;;) {
       if (backAt === undefined && existsSync(`${dir}/back-${n}.json`)) backAt = readJson(`${dir}/back-${n}.json`).backAt;
-      if (frozen && backAt !== undefined) {
+      if (frozen && (wake ? Date.now() >= showAt || backAt !== undefined : backAt !== undefined)) {
         await cdp.send("Page.setWebLifecycleState", { state: "active" });
         frozen = false;
         write({ kind: "active", at: Date.now(), n });
+      }
+      if (hidden && !frozen && (Date.now() >= showAt || backAt !== undefined)) {
+        await visibility(page, "visible");
+        hidden = false;
+        write({ kind: "shown", at: Date.now(), n });
+      }
+      if (offline && backAt !== undefined) {
+        await context.setOffline(false);
+        offline = false;
+        write({ kind: "online", at: Date.now(), n });
       }
       if (!frozen) {
         const shown = await page.evaluate(list => list.map(([key, text]) => (key === "room" ? `${document.body.textContent}${window.__rooms ?? ""}` : document.body.textContent).includes(text)), Object.entries(markers)).catch(() => []);
