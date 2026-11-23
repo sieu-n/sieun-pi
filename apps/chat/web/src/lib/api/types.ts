@@ -821,6 +821,16 @@ export interface AgentPrompt {
   away?: string;
 }
 
+/** A section as the outline lists it: its size in characters in place of its text. */
+export type PromptSectionOutline = Omit<PromptSection, "text"> & { chars: number };
+/**
+ * `GET /api/agents/:id/prompt/outline`: the prompt answer without the sections' text, which the Prompt tab draws first and the Knowledge
+ * tab reads for the skills. On 11-24 it was 3.9 KB as brotli for agent factory, against 63 KB for the whole answer.
+ */
+export type AgentPromptOutline = Omit<AgentPrompt, "kinds"> & {
+  kinds: (Omit<AgentPrompt["kinds"][number], "sections"> & { sections: PromptSectionOutline[] })[];
+};
+
 /**
  * `GET /api/agents/:id/config`: one agent as a role, not a thread. Who it is and what it is for, where it runs, the data it shares with its
  * jobs (board, memory, instructions), and its swarm (jobs, channels, duties, check-in). Every field is read from where it lives; see API.md.

@@ -8,7 +8,7 @@ import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { builderStarts } from "../../server/agent-prompt.ts";
-import type { AgentPrompt } from "../../web/src/lib/api/types.ts";
+import type { AgentPrompt, AgentPromptOutline } from "../../web/src/lib/api/types.ts";
 import { FIXTURE_AGENTS as agents, FIXTURE_IDS as ids } from "../../server/fixture/seed.ts";
 import { start, type Running } from "./helpers.ts";
 
@@ -86,4 +86,13 @@ test("a page that holds the newest answer gets 304 with no body", async () => {
   const again = await fetch(s.base + path, { headers: { "accept-encoding": "br", "if-none-match": etag } });
   assert.equal(again.status, 304);
   assert.equal((await again.arrayBuffer()).byteLength, 0);
+});
+
+test("the outline lists each section's key, source and size with no text, of the same build as the whole answer", async () => {
+  const whole = await prompt(agents.harness);
+  const outline = await s.get<AgentPromptOutline>(`/api/agents/${encodeURIComponent(agents.harness)}/prompt/outline`);
+  assert.equal(outline.builtAt, whole.builtAt);
+  assert.deepEqual(outline.kinds.map(k => k.sections.map(sec => [sec.key, sec.chars])), whole.kinds.map(k => k.sections.map(sec => [sec.key, sec.text.length])));
+  assert.equal(outline.kinds.some(k => k.sections.some(sec => "text" in sec)), false);
+  assert.deepEqual(outline.skills, whole.skills);
 });

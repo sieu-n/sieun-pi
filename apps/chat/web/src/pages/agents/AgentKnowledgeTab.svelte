@@ -22,7 +22,7 @@
   /** The entries, which the config counts but does not send, read while the tab shows and kept for its next open. */
   const memoryFolder = view(() => (folder ? reads.agentFolder(folder.agent) : null));
   /** The skills come with its prompts, which take pi-host a few seconds to build, so they read while the rest of the tab shows. */
-  const prompt = view(() => reads.agentPrompt(agentId));
+  const prompt = view(() => reads.agentPromptOutline(agentId));
   const skills = $derived(prompt.value?.skills ?? []);
   /** Prime's global store, and a thread's own store when no agent holds it, which load into every thread; the Duties tab lists precheck state. */
   const stores = $derived(config.memory.related.filter((file) => file.loaded !== false));

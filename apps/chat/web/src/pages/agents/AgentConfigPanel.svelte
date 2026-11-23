@@ -28,10 +28,13 @@
   const answer = view(() => reads.agentConfig(agentId));
   const config = $derived(answer.value);
   const error = $derived(answer.error ?? "");
-  /** The Prompt and Knowledge tabs show the agent's prompt, 67 to 102 KB as brotli on 11-24; read ahead once the config came, a click on either finds it kept. */
+  /**
+   * The Prompt and Knowledge tabs draw the prompt's outline, 3.9 KB as brotli, and the Prompt tab shows each section's text from the whole
+   * answer, 63 to 94 KB on 11-24; both are read ahead once the config came, so a click on either finds them kept.
+   */
   const configShown = $derived(config !== null);
   $effect(() => {
-    if (configShown) void kept(reads.agentPrompt(agentId)).ahead();
+    if (configShown) void kept(reads.agentPromptOutline(agentId)).ahead().then(() => kept(reads.agentPrompt(agentId)).ahead());
   });
 
   const load = () => answer.refresh();

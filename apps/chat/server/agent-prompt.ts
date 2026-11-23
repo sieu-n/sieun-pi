@@ -18,7 +18,7 @@ import { existsSync, realpathSync, watch } from "node:fs";
 import { createInterface } from "node:readline";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import type { AgentId, AgentPrompt, PromptKind, PromptSection } from "../web/src/lib/api/types.ts";
+import type { AgentId, AgentPrompt, AgentPromptOutline, PromptKind, PromptSection } from "../web/src/lib/api/types.ts";
 import { agentRef, commRef, type AgentRef } from "./agent-folder.ts";
 import { primeAgentDir } from "./agent-config.ts";
 import { NotFound, type App } from "./app.ts";
@@ -173,6 +173,24 @@ export async function agentPromptAnswer(app: App, id: AgentId): Promise<KeptJson
   const answer = await agentPrompt(app, id);
   return new KeptJson(`prompt:${id}`, [answer], () => {
     const json = JSON.stringify(answer);
+    return { json, rest: json, entries: [] };
+  });
+}
+
+/** The answer without the sections' text (`AgentPromptOutline`), which fits one round trip where the whole answer took four or five. */
+export const promptOutline = (answer: AgentPrompt): AgentPromptOutline => ({
+  ...answer,
+  kinds: answer.kinds.map(kind => ({ ...kind, sections: kind.sections.map(({ text, ...section }) => ({ ...section, chars: text.length })) })),
+});
+
+/**
+ * GET /api/agents/:id/prompt/outline as a `KeptJson`, kept by the answer it outlines. At a 200 ms round trip in a walk on 11-24, a first
+ * open that read the whole answer, 63 to 94 KB as brotli, drew the tab 1.4 s after the click once the page had sat idle.
+ */
+export async function agentPromptOutlineAnswer(app: App, id: AgentId): Promise<KeptJson> {
+  const answer = await agentPrompt(app, id);
+  return new KeptJson(`prompt-outline:${id}`, [answer], () => {
+    const json = JSON.stringify(promptOutline(answer));
     return { json, rest: json, entries: [] };
   });
 }

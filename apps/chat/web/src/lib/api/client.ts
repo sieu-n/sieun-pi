@@ -3,7 +3,7 @@
  * message. Paths are relative, so the page works behind Vite's proxy on :5185 and from the server on :5184 alike.
  */
 import type {
-  AgentConfig, AgentFolder, AgentHostList, AgentPrompt, AgentId, AgentSummary, BoardOp, BoardRow, BoardView, BoardWrite, CheckInPatch, CheckInView, ChatAgent, ConversationHeader, ConversationId,
+  AgentConfig, AgentFolder, AgentHostList, AgentPrompt, AgentPromptOutline, AgentId, AgentSummary, BoardOp, BoardRow, BoardView, BoardWrite, CheckInPatch, CheckInView, ChatAgent, ConversationHeader, ConversationId,
   ConversationPatch, ConversationSummary, DutyAction, DutyRow, ForMeItem, ForMeList, ForMeStatus, ForYouItem, HarnessEntryView, HostsReport, HostThreadFilter, ImageRef, Item, JobNode, Me, Member, MemoryInput, ModelCatalog, OpenedPage, ProjectList, SearchQuery, SearchResult, SendRequest, WikiPages,
   LaterItem, LaterList, LaterPatch, LaterRequest, LaterState, ReactionRequest, ReadAllRequest, ReadPoint, Room, RoomInput, RoomPatch, SendResult, Sidebar, StepOutputRef, ThinkingLevel, ThreadDoneRequest, TimelinePage, UsageBucket, UsageRange, UsageReport, AccountsView,
 } from "./types.ts";
@@ -682,6 +682,8 @@ export const reads = {
   agentFolder: (id: AgentId) => read<AgentFolder>(`/api/agents/${enc(id)}/folder`),
   /** The prompt each kind of the agent's threads runs with and the skills it lists, built by the pi-host code that runs them (API.md, Agent prompt). */
   agentPrompt: (id: AgentId) => read<AgentPrompt>(`/api/agents/${enc(id)}/prompt`),
+  /** The same without the sections' text, which the Prompt tab draws first and the Knowledge tab reads for the skills (API.md, Agent prompt). */
+  agentPromptOutline: (id: AgentId) => read<AgentPromptOutline>(`/api/agents/${enc(id)}/prompt/outline`),
   /** An agent's For list, newest activity first; the counts cover the whole list whatever `status` picks (API.md, For <agent>). */
   forMe: (agent: AgentId, status: ForMeStatus | "all" = "pending") => read<ForMeList>(`/api/agents/${enc(agent)}/for-me${query({ status })}`),
   board: (chat: string) => read<BoardView>(`${boardBase(chat)}/board`, true),

@@ -11,7 +11,7 @@ import { extname, join, normalize } from "node:path";
 import type { AgentId, ConversationPatch, DutyAction, LaterPatch, MemoryInput, ReadPoint, RoomInput, RoomPatch, SendRequest } from "../web/src/lib/api/types.ts";
 import { parseSchedule } from "../web/src/lib/api/shared/chat-duties.ts";
 import { agentConfig, agentRecordOf } from "./agent-config.ts";
-import { agentPromptAnswer } from "./agent-prompt.ts";
+import { agentPromptAnswer, agentPromptOutlineAnswer } from "./agent-prompt.ts";
 import type { Config } from "./config.ts";
 import { EntryExists, EntryMissing, HARNESS_KINDS, type HarnessKind } from "./agent-folder.ts";
 import { parseItemId } from "./for-me.ts";
@@ -304,6 +304,7 @@ export function routes(app: App, parts: SkillsParts): Route[] {
     }),
     route("GET", "/api/agents/:id/config", async (_r, p) => agentConfig(app, p.id!)),
     route("GET", "/api/agents/:id/prompt", async (_r, p) => agentPromptAnswer(app, p.id!)),
+    route("GET", "/api/agents/:id/prompt/outline", async (_r, p) => agentPromptOutlineAnswer(app, p.id!)),
     route("GET", "/api/agents/:id/for-me", async (_r, p, q) => {
       const status = q.get("status") ?? "pending";
       if (status !== "pending" && status !== "completed" && status !== "all") throw new BadRequest("A For list's status is pending, completed or all.");
