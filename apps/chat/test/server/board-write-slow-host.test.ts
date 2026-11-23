@@ -5,12 +5,15 @@
  * Run: cd apps/chat && node --import tsx --test --test-force-exit --test-isolation=none test/server/board-write-slow-host.test.ts
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import type { AgentSummary, BoardView, ChatBoard } from "../../web/src/lib/api/types.ts";
 import { FixtureHost } from "../../server/host/fixture.ts";
+import { seedFixture } from "../../server/fixture/seed.ts";
 import { start, until } from "./helpers.ts";
 
 /** Answers in time, or "held" after `ms`. */
@@ -91,5 +94,41 @@ test("a write answered while pi-host refused its put reaches pi-host from the ne
   } finally {
     await second.close();
     rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("a server killed with -9 after it answered a write, before its put, leaves the board for the next start to put, and a reload shows it", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "apps-chat-test-"));
+  const dataDir = join(dir, "data");
+  // .mts: a file outside the package is CommonJS to tsx, which has no top-level await.
+  const child = join(dir, "crash.mts");
+  // The first server runs in a child process whose put never ends, so the kill lands between the answer and the put.
+  writeFileSync(child, [
+    `import { start } from ${JSON.stringify(new URL("./helpers.ts", import.meta.url).href)};`,
+    "const s = await start({ wordMs: 0, dataDir: process.argv[2] });",
+    "s.host.docPut = () => new Promise(() => undefined);",
+    `const written = await s.send("POST", "/api/agents/ag_crawler-vp/board", { actor: "agent", ops: [{ op: "plan_add", text: "Kept through a crash." }] });`,
+    "process.stdout.write(`${JSON.stringify(written.body.board)}\\n`);",
+    "setInterval(() => undefined, 1_000);",
+  ].join("\n"));
+  const server = spawn(process.execPath, ["--import", "tsx", child, dataDir], { cwd: fileURLToPath(new URL("../..", import.meta.url)), stdio: ["ignore", "pipe", "inherit"] });
+  let out = "";
+  server.stdout.on("data", chunk => (out += String(chunk)));
+  const answered = await until(async () => out, text => text.includes("\n"), 60_000);
+  const board = JSON.parse(answered.split("\n")[0]!) as ChatBoard;
+  assert.equal(board.plan.at(-1)?.text, "Kept through a crash.");
+  server.kill("SIGKILL");
+  await new Promise(resolve => server.once("exit", resolve));
+
+  const host = new FixtureHost();
+  seedFixture(host, join(dir, "seed"));
+  const next = await start({ wordMs: 0, dataDir, host });
+  try {
+    const thread = next.app.boards.threadOf("ag_crawler-vp");
+    assert.deepEqual(await until(async () => host.docGet(thread, "chat.board"), stored => JSON.stringify(stored) === JSON.stringify(board)), board);
+    assert.deepEqual((await next.get<BoardView>("/api/agents/ag_crawler-vp/board")).board, board);
+  } finally {
+    await next.close();
+    rmSync(dir, { recursive: true, force: true });
   }
 });

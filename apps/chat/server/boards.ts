@@ -69,6 +69,12 @@ const DEFAULT_CHECK_IN_MS = 120 * 60_000;
 /** Prime's CHECK_IN_RETRY_MS (chats.ts): a check-in whose job did not start tries again this soon, not a whole interval later. */
 const CHECK_IN_RETRY_MS = 5 * 60_000;
 const BOARD_TTL_MS = 15_000;
+/**
+ * How long a stop waits for a board put at work (`putsSettled`), as a hand-over waits for a write in flight (http.ts WRITE_WAIT_MS, sized from
+ * the 8.8 s slowest write of 11-21). Past it the stop goes on, so calls stop waiting in the socket's queue; a put cut here could still land
+ * after the next process's put of a later board of the same chat.
+ */
+const PUT_WAIT_MS = 30_000;
 
 /** A board's check-in setting, its last run, and the last check-in job it started, which a run skips behind while it works. */
 interface CheckInState {
@@ -323,9 +329,7 @@ export class Boards {
       summaries.push(result.summary);
     }
     // The write answers once it is on this server's disk; pi-host gets it behind, in order (`putBoards`).
-    this.unput.set(chat, board);
-    writeJsonLater(this.unputFile, Object.fromEntries(this.unput));
-    const put = this.putBoards(chat);
+    const put = this.keep(chat, board);
     this.changed(chat, board, this.remember(chat, board));
     this.sendForYou();
     // The chat's `[board]` line goes after the answer: no part of the answer waits on it, and a pi-host submit waits behind every command
@@ -349,6 +353,13 @@ export class Boards {
   /** Where the board writes not yet in pi-host wait (`unput`). */
   private get unputFile(): string {
     return join(this.store.dir, "board-writes.json");
+  }
+
+  /** Keeps a board in `board-writes.json` until pi-host has it, and starts its put; settles once no board of the chat waits for a put. */
+  private keep(chat: string, board: ChatBoard): Promise<void> {
+    this.unput.set(chat, board);
+    writeJsonLater(this.unputFile, Object.fromEntries(this.unput));
+    return this.putBoards(chat);
   }
 
   /**
@@ -396,9 +407,17 @@ export class Boards {
     }
   }
 
-  /** Waits for the puts at work after `stop`, so a later process's put of the same board never lands before this one's. */
+  /**
+   * Waits for the puts at work after `stop`, so the next process, which puts every board still in `board-writes.json` again, starts after
+   * them. A put still at work after `PUT_WAIT_MS` is left to end on its own and logged; its board stays in the file.
+   */
   async putsSettled(): Promise<void> {
-    await Promise.all(this.putting.values());
+    if (!this.putting.size) return;
+    let timer: NodeJS.Timeout | undefined;
+    const cut = new Promise<"cut">(resolve => (timer = setTimeout(() => resolve("cut"), PUT_WAIT_MS)));
+    const how = await Promise.race([Promise.all(this.putting.values()).then(() => "done" as const), cut]);
+    clearTimeout(timer);
+    if (how === "cut") this.log(`board puts for ${[...this.putting.keys()].join(", ")} still at work after ${PUT_WAIT_MS / 1000} s; their boards stay in board-writes.json`);
   }
 
   /** Sends the For you count after a write without holding its answer; a count read before a later write's is dropped. */
@@ -540,7 +559,9 @@ export class Boards {
     const boardFile = join(primeDir, "boards", `${primeId}.json`);
     const board = existsSync(boardFile) ? parseBoard(JSON.parse(readFileSync(boardFile, "utf8"))) : null;
     if (board) {
-      await this.host.docPut(this.threadOf(chat), BOARD_DOC, board);
+      // Through the same journal and put loop as a write, so a put of an older board still waiting never lands over it.
+      void this.keep(chat, board);
+      await written(this.unputFile);
       this.changed(chat, board, this.remember(chat, board));
       this.events.forYou(await this.forYouCount());
     }

@@ -11,6 +11,7 @@
  * The seeded conversations keep their plain-text answers, and the AI harness VP answers in plain text, as threads from before the tool do.
  */
 import { randomUUID } from "node:crypto";
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import type { TurnPlace } from "../../web/src/lib/api/types.ts";
 import { DEFAULT_MODEL } from "../config.ts";
 import type { IndexRead } from "../../../../packages/pi-host/src/durable/index-db.ts";
@@ -351,10 +352,24 @@ export class FixtureHost implements Host {
   }
 
   async docGet(id: string, name: string): Promise<unknown> {
+    const shared = process.env.APPS_CHAT_FIXTURE_DOCS;
+    if (shared && existsSync(shared)) {
+      const last = readFileSync(shared, "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line) as { thread: string; name: string; value: unknown })
+        .findLast(put => put.thread === id && put.name === name);
+      if (last) return last.value;
+    }
     return this.get(id).docs.get(name) ?? null;
   }
 
+  /**
+   * With APPS_CHAT_FIXTURE_PUT_MS a put waits that long, as a put behind a busy pi-host does, and with APPS_CHAT_FIXTURE_DOCS each put also
+   * lands as a line in that file, which every fixture server on it reads its docs from, so the hand-over rig sees one pi-host across processes.
+   */
   async docPut(id: string, name: string, value: unknown): Promise<void> {
+    const hold = Number(process.env.APPS_CHAT_FIXTURE_PUT_MS);
+    if (hold > 0) await new Promise(resolve => setTimeout(resolve, hold));
+    const shared = process.env.APPS_CHAT_FIXTURE_DOCS;
+    if (shared) appendFileSync(shared, `${JSON.stringify({ at: Date.now(), pid: process.pid, thread: id, name, value })}\n`);
     const thread = this.get(id);
     thread.docs.set(name, value);
     this.emit(thread, { type: "doc", conversation: 1, name, value });
