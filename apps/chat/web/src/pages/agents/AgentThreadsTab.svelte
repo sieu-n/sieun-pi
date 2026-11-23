@@ -48,7 +48,7 @@
   {@const rows = usageRows(config.usage)}
   <section class="block" aria-label="Last 7 days" data-testid="agent-usage">
     <h3 class="t-caption heading">Last 7 days</h3>
-    <p class="t-body-sm total" data-usage-total>{money(config.usage.cost)} over {plural(config.usage.turns, "turn")}</p>
+    <p class="t-body-sm total" data-usage-total>{config.usage.turns ? `${money(config.usage.cost)} over ${plural(config.usage.turns, "turn")}` : "No turns in the last 7 days."}</p>
     {#if rows.length > 1}
       <dl class="facts">
         {#each rows as row (row.kind)}
@@ -115,7 +115,11 @@
 {/if}
 <section class="block" aria-label="Jobs list">
   <h3 class="t-caption heading">Jobs</h3>
-  <AgentJobs jobs={config.swarm.jobs} onchanged={reload} />
+  {#if config.swarm.jobs.length}
+    <AgentJobs jobs={config.swarm.jobs} onchanged={reload} />
+  {:else}
+    <span class="t-caption meta" data-testid="no-jobs">{config.agent.name} has started no jobs yet.</span>
+  {/if}
 </section>
 <section class="where" aria-label="Where it runs" data-testid="where-it-runs">
   <Disclosure title="Where it runs" detail={whereDetail} bind:open={whereOpen}>

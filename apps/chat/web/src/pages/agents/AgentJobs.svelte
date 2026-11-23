@@ -4,6 +4,7 @@
   import { hrefFor, router } from "$lib/router.svelte";
   import { archiveAgent, messageAgent, onAgentsChanged, stopAgent, unarchiveAgent } from "./agent-actions.svelte";
   import { JOB_KIND_LABEL, STATUS_LABEL, jobFilterCounts, jobFilterOf, jobsShown, type JobFilter } from "./agents-model";
+  import { capped, ROWS_SHOWN } from "./threads-tab";
 
   type Job = AgentConfig["swarm"]["jobs"][number];
   type Props = {
@@ -27,6 +28,10 @@
   const counts = $derived(jobFilterCounts(list, query));
   const filter = $derived(jobFilterOf(router.route.params.jobs, jobFilterCounts(list, "")));
   const shown = $derived(jobsShown(list, filter, query));
+  /** The view whose whole list shows; another filter or search starts again at 10 rows (owner rule c123). */
+  let allOf = $state<string | null>(null);
+  const view = $derived(`${filter}\u0000${query}`);
+  const rows = $derived(capped(shown, allOf === view));
   const names = $derived(new Map(list.map((job) => [job.id, job.name])));
   /** Each count shows in full, as a string, since a number badge stops at 99+ and agent factory has over 300 finished jobs. */
   const count = (n: number) => (n ? String(n) : null);
@@ -83,7 +88,7 @@
   </div>
   {#if shown.length}
     <ul class="list">
-      {#each shown as job (job.id)}
+      {#each rows as job (job.id)}
         {@const parent = job.depth > 1 && job.parent ? names.get(job.parent) : undefined}
         <li data-job-id={job.id} data-status={job.status} data-archived={job.archived || undefined} class:open={menuOpen && menu?.job.id === job.id}>
           <StatusDot status={dotOf(job.status)} label={STATUS_LABEL[job.status]} />
@@ -104,6 +109,9 @@
           </span>
         </li>
       {/each}
+      {#if shown.length > ROWS_SHOWN}
+        <li><button type="button" class="more t-caption" data-testid="jobs-show-all" onclick={() => (allOf = allOf === view ? null : view)}>{allOf === view ? "Show fewer" : `Show all ${shown.length.toLocaleString("en-US")} jobs`}</button></li>
+      {/if}
     </ul>
   {:else if query}
     <EmptyState icon="search" title="No {filter} job matches “{query}”" description="Search looks at job names." size="sm">
