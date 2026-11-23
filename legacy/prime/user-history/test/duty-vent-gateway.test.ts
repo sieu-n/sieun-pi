@@ -104,6 +104,21 @@ test("slack.green, tokscale and the CLIProxy servers keep their keys out of the 
   assert.equal(output.metrics.provider_keys_outside_vent, 3);
 });
 
+// d1 of 11-24 read 3 more after the Komodo move: komodo.env now carries the names release.env and obs.env used to (auto-sns-agent 096ed58f93).
+test("the Komodo env files keep the CLIProxy server keys and Grafana's Slack fallback, and other keys there still count", () => {
+  const keys = { locations: {
+    "box /srv/staging/secrets/komodo.env": ["CLIPROXY_API_KEY", "CLIPROXY_MANAGEMENT_PASSWORD", "STRIPE_SECRET_KEY"],
+    "box /srv/prod/secrets/komodo.env": ["CLIPROXY_API_KEY", "CLIPROXY_MANAGEMENT_PASSWORD"],
+    "box /srv/obs/secrets/komodo.env": ["SLACK_ALERT_WEBHOOK_GRAFANA", "CLIPROXY_API_KEY"],
+  }, unreadable: {} };
+  const output = ventMetrics(reads({ keys }), 0);
+  assert.deepEqual(output.flagged!.filter(slice => slice.kind === "key_outside_vent").map(slice => slice.excerpt), [
+    "box /srv/staging/secrets/komodo.env still holds STRIPE_SECRET_KEY",
+    "box /srv/obs/secrets/komodo.env still holds CLIPROXY_API_KEY",
+  ]);
+  assert.equal(output.metrics.provider_keys_outside_vent, 2);
+});
+
 test("the box reader's stopped containers, host units and services.env tokens count (p61 audit, 10-22)", () => {
   const locations: Record<string, string[]> = {};
   boxLocations({

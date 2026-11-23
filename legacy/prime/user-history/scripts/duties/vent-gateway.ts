@@ -112,7 +112,8 @@ const onBox = (location: string) => /^(box|container|unit) /.test(location);
 
 /**
  * Where the ALARM_SLACK keys may stay: the alarm paths of rows 69 (metal watch dead-man), 70 (Grafana contact points) and 71 (ci_watch), which
- * keep a direct Slack fallback for when Vent is down, and the files they read it from.
+ * keep a direct Slack fallback for when Vent is down, and the files they read it from. /srv/obs/secrets/komodo.env is the Stack virev-obs's
+ * env file, which takes obs.env's place for the names its Komodo Variables set, and compose.obs.yml hands SLACK_ALERT_WEBHOOK_GRAFANA to grafana alone.
  */
 /** The repo secret CLERK_SECRET_KEY reaches only the CI job-local Vent: auto-sns-agent scripts/ci/tasks/search-e2e.sh unsets it
  *  and passes it to `vent-mock up` alone (26a36a614f; search / e2e green in verify run 39284928208), as vent-key-scan.mjs exempts it
@@ -121,7 +122,7 @@ const onBox = (location: string) => /^(box|container|unit) /.test(location);
 export const CI_VENT_INPUT = (location: string, name: string) =>
   (location === "github secrets repo" && name === "CLERK_SECRET_KEY")
   || (name === "CLERK_CI_SECRET_KEY" && (location === "github secrets repo" || location === "tier apps/ci-e2e/.env.staging"));
-export const ALARM_FALLBACK = /^(unit (opensearch|pgbackrest|redis|clickhouse)[a-z0-9-]*@[a-z]+\.service|tier apps\/infra\/\.env|unit virev-services\.service|box \/usr\/local\/lib\/virev-services\/infra\.env|tier apps\/infra\/metal\/watch\/\.env\.watch|box \/srv\/obs\/secrets\/obs\.env|box \/srv\/[^/]+\/current\/apps\/infra\/metal\/watch\/\.env\.watch|container virev-obs-grafana|railway auto-sns-crawler\/[^/]+\/metal-watch)$/;
+export const ALARM_FALLBACK = /^(unit (opensearch|pgbackrest|redis|clickhouse)[a-z0-9-]*@[a-z]+\.service|tier apps\/infra\/\.env|unit virev-services\.service|box \/usr\/local\/lib\/virev-services\/infra\.env|tier apps\/infra\/metal\/watch\/\.env\.watch|box \/srv\/obs\/secrets\/(obs|komodo)\.env|box \/srv\/[^/]+\/current\/apps\/infra\/metal\/watch\/\.env\.watch|container virev-obs-grafana|railway auto-sns-crawler\/[^/]+\/metal-watch)$/;
 
 /** Vent's own homes: its Railway service, its tier files, its secrets on the box and its containers. */
 export const VENT_OWN = /^(railway .*\/vent|tier apps\/vent\/.*|box .*\/vent[^/]*|container .*-vent(-.*)?)$/;
@@ -147,11 +148,11 @@ export const OTHER_PROJECT_KEY = /^(TOKSCALE_[A-Z0-9_]+|SLACK_GREEN_[A-Z0-9_]+|C
 
 /**
  * The CLIProxy gateway's server keys where compose.yml's cliproxy service takes them: each tier's infra tier, its release.env copy on
- * the box and the container. Staging's moved to metal on 11-04 and prod's on 11-22 (6b087534ff). They stay counted anywhere else, because Vent (tables.py) and the virev-demo record scripts
+ * the box, the komodo.env that a Komodo deploy writes from the Stack's Variables in release.env's place, and the container. Staging's moved to metal on 11-04 and prod's on 11-22 (6b087534ff). They stay counted anywhere else, because Vent (tables.py) and the virev-demo record scripts
  * read CLIPROXY_API_KEY to call the gateway, so a copy in another app's store is a way around Vent.
  */
 export const CLIPROXY_SERVER = (location: string, name: string) => /^CLIPROXY_(API_KEY|MANAGEMENT_PASSWORD)$/.test(name)
-  && /^(tier apps\/infra\/\.env(\.staging)?|box \/srv\/(prod|staging)\/secrets\/release\.env|container virev-(prod|staging)-cliproxy)$/.test(location);
+  && /^(tier apps\/infra\/\.env(\.staging)?|box \/srv\/(prod|staging)\/secrets\/(release|komodo)\.env|container virev-(prod|staging)-cliproxy)$/.test(location);
 
 /**
  * Whether a lister location is a deployment of this system other than Vent: Convex, the auto-sns-crawler Railway project, the auto-sns-*
