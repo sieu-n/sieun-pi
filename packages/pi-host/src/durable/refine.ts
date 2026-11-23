@@ -116,6 +116,21 @@ function identityOf(file: string): string {
 }
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
+let usageSeq = 0;
+/**
+ * Puts a review or plan call in the usage ledger under its conversation. Its reply is no entry, so the row takes a negative id, unique per
+ * millisecond and call; before this the ledger left these calls out (11-23: 214 calls in 1.9 h, about 165k tokens each for agent factory).
+ */
+function recordCall(call: HostCall, reply: AssistantMessage): void {
+  const usage = reply.usage;
+  if (!usage) return;
+  call.recordUsage?.({
+    entryId: -(Date.now() * 1000 + (usageSeq++ % 1000)), model: `${reply.provider}/${reply.model}`, at: Date.now(),
+    input: usage.input, output: usage.output, cacheRead: usage.cacheRead, cacheWrite: usage.cacheWrite, cost: usage.cost.total,
+    costInput: usage.cost.input, costOutput: usage.cost.output, costCacheRead: usage.cost.cacheRead, costCacheWrite: usage.cost.cacheWrite,
+  });
+}
+
 /** The conversation's model reply to one planner prompt, with Prime's auxiliary reasoning level (`getAuxiliaryThinkingLevel`). */
 const modelPlanner: PlannerCall = async (call, systemPrompt, conversation, build, signal, noThinkingCap = NO_THINKING_PLANNER_TOKENS) => {
   const agent = await (await call.harness.conversation(call.conversation as ConversationId, context))?.agent(context);
@@ -132,6 +147,7 @@ const modelPlanner: PlannerCall = async (call, systemPrompt, conversation, build
     // Each review and plan prompt goes out once, so a cache write of it (1 h at PI_CACHE_RETENTION=long) is never read back.
     { ...(reasoning === "off" ? {} : { reasoning }), maxTokens, signal, sessionId: call.session, cacheRetention: "none" },
   );
+  recordCall(call, reply);
   if (reply.stopReason === "error") throw new Error(reply.errorMessage || "Unknown error");
   if (reply.stopReason === "aborted") throw new Error("aborted");
   if (reply.stopReason === "length") throw new Error("the model stopped before completing its JSON object. This usually means the output budget was exhausted; retry with a smaller request.");

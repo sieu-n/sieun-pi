@@ -3,7 +3,8 @@
  * 1. `refine.run` in a cell schedules, `refine.status` shows it pending, and when the run settles the planner runs on the conversation's model,
  *    the edit lands in the thread's local store with its refinement event, and the `[self-refinement]` notice arrives as a refine input.
  * 2. `refine.run(global=True)` writes the global store and appends Prime's `refinements.jsonl`.
- * 3. In an agent's thread, Prime's auto-refine reviews after the turn interval and writes the agent's store, told it is the agent's memory.
+ * 3. In an agent's thread, Prime's auto-refine reviews after the turn interval and writes the agent's store, told it is the agent's memory;
+ *    the review and the plan each leave a usage row.
  * 4. Outside a run it answers Prime's "no active turn", and a child conversation gets no refine, as Prime registers it only at depth 0, unless
  *    the thread belongs to an agent, whose store outlives the job. A job gets no auto-refine review, as Prime reviews only at depth 0.
  * 5. A walk's test agent (`agent.ref` `test: true`) gets no skill route, and its refine writes its own store even when asked for global.
@@ -21,6 +22,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { poolProvider, TurnQueue } from "@sieun-pi/pi-pool/durable";
 import { testPython } from "@sieun-pi/pi-rlm/test-helpers";
 import type { HostCall } from "../../src/durable/host-modules.ts";
+import { openIndexReadOnly, readUsageRows } from "../../src/durable/index-db.ts";
 import { threadHarnessDir } from "../../src/durable/prime-harness.ts";
 import { NO_ACTIVE_TURN, refineModule } from "../../src/durable/refine.ts";
 import { DurableRlm } from "../../src/durable/rlm.ts";
@@ -169,6 +171,9 @@ test("in an agent's thread, auto-refine reviews after the turn interval and writ
     assert.match(planned.at(-1)!, /Requested refinement scope: agent vent's memory/);
     assert.match(planned.at(-1)!, /Automatic refine review triggered by turn_interval\. Only create\/update\/delete entries of agent vent's memory/);
     assert.equal(reviewed.length, 1, "the next settle counts turns after the review");
+    const ledger = readUsageRows(openIndexReadOnly(join(dir, "threads-auto", "index.sqlite")), undefined).rows.filter(row => row.entryId < 0);
+    assert.equal(ledger.length, 2, "the review and the plan each leave a usage row");
+    assert.ok(ledger.every(row => row.thread === id && row.conversation === 1 && row.model === `${MODEL.provider}/${MODEL.modelId}`), JSON.stringify(ledger));
   } finally {
     await threads.shutdown();
     if (kept === undefined) rmSync(settings, { force: true });

@@ -60,6 +60,7 @@ import { bundledSkillsDir, primeResources } from "./prime-prompt.ts";
 import { SendMessage } from "./send-message.ts";
 import { Subagent } from "./subagent.ts";
 import type { HostCall, HostModule } from "./host-modules.ts";
+import type { UsageRow } from "./index-db.ts";
 import { goalModule } from "./goal.ts";
 import { heartbeatModule } from "./heartbeat.ts";
 import { mcpModule, primeMcp } from "./mcp.ts";
@@ -116,6 +117,8 @@ export interface RlmThread {
   createSession?: (input: { prompt: string; name?: string; model?: ModelRef; thinking?: string; cwd: string }) => Promise<{ id: string; name: string; file: string; model: string }>;
   /** Gives back the pi-pool working slot of `session`, a session that no settle releases; pi-host passes its turn queue's release. */
   releaseSlot?: (session: string) => Promise<void>;
+  /** Records a model call that leaves no entry in the usage ledger; pi-host passes its index's `addUsage`. */
+  recordUsage?: (row: UsageRow) => void;
   log?: (line: string) => void;
 }
 
@@ -626,6 +629,7 @@ export class DurableRlm {
     const session = harnessSessionOf(thread.id, slot.conversation);
     return {
       thread, conversation: slot.conversation, session, harness, releaseSlot: async () => { await thread.releaseSlot?.(session); },
+      recordUsage: row => thread.recordUsage?.({ ...row, thread: thread.id, conversation: slot.conversation }),
       harnessDir: conversationHarnessDir(thread, slot.conversation, agent), ...(agent ? { agent: agentName(agent) } : {}),
       ...(agent?.test ? { test: true as const } : {}), ...(api ? { api } : {}), ...(models ? { models } : {}),
       running: () => this.running(slot),

@@ -535,6 +535,7 @@ export class DurableThreads {
       },
       observeRoot: (root, open) => this.observe(root, { open }),
       releaseSlot: async session => { await this.options.turns?.release(id, session); },
+      recordUsage: row => this.index.addUsage(row),
       createSession: async input => {
         const created = await this.create({
           ...(input.name ? { name: input.name } : {}), ...(input.model ? { model: input.model } : {}), cwd: input.cwd,

@@ -5,6 +5,7 @@
  */
 import type { Harness, ToolExecutionApi } from "@earendil-works/pi-durable";
 import type { Models } from "@earendil-works/pi-ai/models";
+import type { UsageRow } from "./index-db.ts";
 import type { RlmSubmit, RlmThread } from "./rlm.ts";
 
 /** One conversation of a thread as a module reaches it. */
@@ -28,6 +29,8 @@ export interface HostCall {
    * no settle releases, so the module releases it when its calls end.
    */
   releaseSlot(): Promise<void>;
+  /** Records a model call of the module, which leaves no entry, in the usage ledger under this conversation. */
+  recordUsage?(row: Omit<UsageRow, "thread" | "conversation">): void;
   /** Whether a run of the conversation is going now. */
   running(): Promise<boolean>;
   /** Whether the conversation still has work out: an rlm child that runs or a live `bash()` handle in its kernel. */

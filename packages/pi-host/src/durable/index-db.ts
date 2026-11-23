@@ -529,6 +529,17 @@ export class ThreadIndex {
   }
 
   /**
+   * Adds one usage row of a model call that leaves no entry, such as refine's review and plan, with a negative `entryId` so it never meets an
+   * entry's row. The thread's indexed mark stays, so the entries after it still come in.
+   */
+  addUsage(row: UsageRow): void {
+    this.db.prepare(`INSERT OR IGNORE INTO usage (thread, conversation, entry_id, model, at, input, output, cache_read, cache_write, cost,
+      cost_input, cost_output, cost_cache_read, cost_cache_write) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(row.thread, row.conversation,
+      row.entryId, row.model, row.at, row.input, row.output, row.cacheRead, row.cacheWrite, row.cost, row.costInput, row.costOutput, row.costCacheRead,
+      row.costCacheWrite);
+  }
+
+  /**
    * Adds entries and usage rows once each: an entry at or below the thread's indexed mark is already in. A speaking call waits in
    * `outbox_calls` until its result, and a sent result adds its outbox row once per requestId; listeners hear each new row after the commit.
    */
