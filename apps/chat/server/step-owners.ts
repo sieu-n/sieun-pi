@@ -7,7 +7,6 @@
  */
 import { appsGapsKey, appsOwnerGaps, appsOwnerNotice, type AppsChat } from "../../../legacy/prime/user-history/src/apps-step-owners.ts";
 import { liveWindowMs } from "../../../legacy/prime/user-history/src/checkin-steps.ts";
-import { pendingWakes } from "../../../legacy/prime/user-history/src/wakes.ts";
 import type { Boards } from "./boards.ts";
 
 const TOLD_CACHE = "step-owners";
@@ -44,7 +43,7 @@ export class StepOwners {
     try {
       const chats = await this.chats();
       const sessions = this.boards.threads.conversations();
-      const wakes = await pendingWakes(this.boards.wakeDir, now);
+      const wakes = await this.boards.owedWakes(now);
       const links = { others: new Map(chats.map(chat => [chat.id, chat.board] as const)), chats: chats.map(chat => ({ id: chat.id, name: chat.name })) };
       for (const chat of chats) {
         // A chat whose own conversation runs a turn, or waits in pi-pool's queue for one, is told on the first tick after it ends, built from

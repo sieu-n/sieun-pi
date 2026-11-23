@@ -25,6 +25,7 @@ import { assertEditable, deleteNotice, deliveriesOf, editNotice } from "./post-e
 import { ForMe } from "./for-me.ts";
 import { Later } from "./later.ts";
 import { LATER, LaterFiles, LaterRows } from "./later-db.ts";
+import { FolderWakes, WAKES, WakeRows } from "./wakes-db.ts";
 import { LaterDue } from "./later-due.ts";
 import { answers, nextMorning } from "./keep-unread.ts";
 import { AgentLater } from "./later-agents.ts";
@@ -181,6 +182,8 @@ export class App {
     }
     this.folders = new AgentFolders(record => ({ agentsDir: this.agents.agentsDirOf(record), ...(routing && record.host !== config.box ? { files: this.boxFiles(record.host) } : {}) }));
     this.forMe = new ForMe({ store: this.agentStore, item: (row, post) => (row.kind === "dm" ? this.rooms.item(post) : this.groups.item(row, post)) });
+    const wakeDir = join(config.dataDir, "wakes");
+    const wakes = config.dbKinds?.includes(WAKES.kind) ? new WakeRows(this.chatDb, this.move(WAKES), wakeDir, log) : new FolderWakes(wakeDir);
     this.later = new Later({
       store: this.agentStore, principal: id => this.threads.principal(id),
       lists: config.dbKinds?.includes(LATER.kind) ? new LaterRows(this.chatDb, this.move(LATER)) : new LaterFiles(config.dataDir),
@@ -298,7 +301,7 @@ export class App {
     });
     this.threads.groupSummaries = () => this.groups.summaries().filter(c => !this.agentStore.isTest(c.id));
     this.threads.roomsOf = agent => this.groups.memberRooms(agent).map(row => row.id);
-    this.boards = new Boards(host, this.store, this.threads, this.agents, {
+    this.boards = new Boards(host, this.store, this.threads, this.agents, { wakes }, {
       board: (chatId, board, awaitingGo, lists, before) => this.boardChanged(chatId, board, before, { awaitingGo, ...lists }),
       row: (chatId, row) => this.broadcast({ type: "board_row", chatId, row }),
       forYou: count => {
@@ -312,7 +315,7 @@ export class App {
     }, log);
     this.boards.selfUrl = `http://127.0.0.1:${config.port}`;
     this.agentLater = new AgentLater({
-      later: this.later, wakeDir: this.boards.wakeDir, postsOf: room => this.agentStore.postsOf(room), principal: id => this.threads.principal(id),
+      later: this.later, wakes, postsOf: room => this.agentStore.postsOf(room), principal: id => this.threads.principal(id),
       label: (record, room) => {
         const row = this.groups.row(room);
         return row ? roomLabel(row) : room === record.room ? "DM" : room;

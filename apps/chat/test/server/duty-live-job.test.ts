@@ -37,7 +37,7 @@ before(async () => {
   // "waiting fix" is idle, and its idle subagent "waiting walk" sleeps on a check wake until its netem walk ends, as p155-fix did on 11-21.
   const waiting = host.addChild(thread, 1, "waiting fix", now, "idle");
   const waitingWalk = host.addChild(thread, waiting.id, "waiting walk", now, "idle");
-  armWake(s.app.boards.wakeDir, ids.vent, { conversation: waitingWalk.id, on: { kind: "time", at: now + 10 * HOUR }, note: "walk done" });
+  await armWake(s.app.boards.db.wakes, ids.vent, { conversation: waitingWalk.id, on: { kind: "time", at: now + 10 * HOUR }, note: "walk done" });
   // pi-host bumps a thread's updatedAt when its tree changes, and the chat server reads the tree again only then.
   thread.row.updatedAt = now + 1;
   await s.app.threads.refresh();

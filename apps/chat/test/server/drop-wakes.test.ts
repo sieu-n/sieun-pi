@@ -26,6 +26,9 @@ test("deleting a job's wakes drops only that conversation's, and a root conversa
   assert.deepEqual(dropped.body, { dropped: 2 });
   assert.deepEqual((await chat.send("GET", `/api/threads/${thread}/wakes?conversation=4`)).body, { wakes: [] });
   assert.equal(((await chat.send("GET", `/api/threads/${thread}/wakes?conversation=5`)).body as { wakes: unknown[] }).wakes.length, 1);
+  assert.deepEqual(chat.app.boards.db.wakes.list().map(({ id }) => id), [`${thread}-5-c`]);
+  // With the kind in chat.sqlite, the JSON exports of the week after the move follow: the dropped wakes' files go.
+  await chat.app.moves.get("wakes")?.flushExports();
   assert.deepEqual(readdirSync(join(dataDir, "wakes")).filter(name => name.endsWith(".json")), [`${thread}-5-c.json`]);
   assert.equal((await chat.send("DELETE", `/api/threads/${thread}/wakes?conversation=1`)).status, 400);
 });

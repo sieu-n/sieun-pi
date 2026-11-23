@@ -45,7 +45,7 @@
  * Usage: OUTPUT_FILE=<file> [STATE_FILE=<file>] [LAST_RUNS_FILE=<file>] [PRECHECK_MODE=run|after|peek] node --import tsx scripts/duties/fable-sweep.ts
  *   --agent <agent id> [--server http://127.0.0.1:5184] [--threads-dir <dir>] [--data-dir <dir>]
  * Defaults: APPS_CHAT_URL else http://127.0.0.1:5184, ~/.prime/agent/pi-host/durable/threads, APPS_CHAT_DATA_DIR else ~/.pi/agent/chat, whose
- * wakes folder is read only. The detail file is OUTPUT_FILE with
+ * wakes, in its folder or its chat.sqlite as the server's APPS_CHAT_DB_KINDS says, are read only. The detail file is OUTPUT_FILE with
  * `.items.md` in place of `.json`, else ~/work/fable-sweep/<stamp>.items.md, and the summary goes to OUTPUT_FILE, else stdout.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -54,7 +54,8 @@ import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { parseArgs } from "node:util";
 import { appsOwnerReads, wokenStep, type AppsChat } from "../../../../legacy/prime/user-history/src/apps-step-owners.ts";
-import { pendingWakes, type Wake } from "../../../../legacy/prime/user-history/src/wakes.ts";
+import type { Wake } from "../../../../legacy/prime/user-history/src/wakes.ts";
+import { owedWakesOf } from "../../server/wakes-db.ts";
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -319,7 +320,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 
   const [agents, jobs, recent, wakes] = await Promise.all([
     get<Agent[]>(server, "/api/agents"), get<Job[]>(server, "/api/jobs"), get<{ hits: Hit[] }>(server, `/api/search/recent?after=${now - POST_WINDOW_MS}`),
-    pendingWakes(join(values["data-dir"] ?? process.env.APPS_CHAT_DATA_DIR ?? join(homedir(), ".pi/agent/chat"), "wakes"), now),
+    owedWakesOf(values["data-dir"] ?? process.env.APPS_CHAT_DATA_DIR ?? join(homedir(), ".pi/agent/chat"), now),
   ]);
   const agentIds = new Set(agents.map(agent => agent.id));
   const liveJobs = jobs.filter(job => job.agent && agentIds.has(job.agent.id));

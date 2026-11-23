@@ -1,17 +1,14 @@
 /**
  * Save for later and Remind me for agents (server/later-agents.ts) on the fixture server: a comm thread's save_message and remind_me calls
- * (`POST /api/threads/:thread/later`) keep the agent's own items, a reminder that waits is a time wake for that comm thread in the board's
- * wake folder, its due text names the post and shows its thread, and the agent's room reads show its own save.
+ * (`POST /api/threads/:thread/later`) keep the agent's own items, a reminder that waits is a time wake for that comm thread among the
+ * board's wakes, its due text names the post and shows its thread, and the agent's room reads show its own save.
  * Run: cd apps/chat && node --import tsx --test --test-force-exit --test-isolation=none --test-timeout=120000 test/server/later-agents.test.ts
  */
 import assert from "node:assert/strict";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { wakeText } from "../../../../legacy/prime/user-history/src/wakes.ts";
 import { FIXTURE_AGENTS as agents } from "../../server/fixture/seed.ts";
 import { laterLine, reminderPost } from "../../server/later-agents.ts";
-import { parseWake } from "../../server/wakes.ts";
 import { start, until, type Running } from "./helpers.ts";
 
 describe("an agent's Later list on the fixture server", () => {
@@ -19,7 +16,7 @@ describe("an agent's Later list on the fixture server", () => {
   let comm: string;
   const set = (body: Record<string, unknown>, thread = comm) =>
     s.send<{ text: string; error?: string }>("POST", `/api/threads/${encodeURIComponent(thread)}/later`, body);
-  const wakeFiles = () => readdirSync(s.app.boards.wakeDir).filter(name => name.startsWith("later-"));
+  const wakeIds = () => s.app.boards.db.wakes.list().map(({ id }) => id).filter(id => id.startsWith("later-"));
   before(async () => {
     s = await start({ wordMs: 1 });
     comm = s.app.agents.record(agents.crawler)!.comm!.ch_cutover!;
@@ -44,37 +41,37 @@ describe("an agent's Later list on the fixture server", () => {
     assert.doesNotMatch(s.app.groups.envelope(row, reply), /saved for later/);
   });
 
-  test("remind_me puts one time wake for the room's comm thread in the wake folder, and done, clear and removed take it away", async () => {
+  test("remind_me sets one time wake for the room's comm thread, and done, clear and removed take it away", async () => {
     const at = Date.now() + 120_000;
     const reminded = await set({ message: "p5", remindAt: at });
     assert.match(reminded.body.text, /^Reminder set on ch_cutover\/p5 for \d{4}-\d\d-\d\d \d\d:\d\dZ, in 2 min\. Then you get a \[reminder\] in your #pi-cutover thread/);
-    assert.deepEqual(wakeFiles(), [`later-${agents.crawler}-ch_cutover-p5.json`]);
-    const wake = parseWake(JSON.parse(readFileSync(join(s.app.boards.wakeDir, wakeFiles()[0]!), "utf8")))!;
+    assert.deepEqual(wakeIds(), [`later-${agents.crawler}-ch_cutover-p5`]);
+    const wake = s.app.boards.db.wakes.get(wakeIds()[0]!)!;
     assert.equal(wake.session, `${comm}--1`);
     assert.deepEqual(wake.on, { kind: "time", at });
     await set({ message: "p5", remindAt: at + 60_000 });
-    assert.equal(wakeFiles().length, 1, "a new time replaces the wake");
+    assert.equal(wakeIds().length, 1, "a new time replaces the wake");
 
     const row = s.app.groups.row("ch_cutover")!;
     const p5 = s.app.agentStore.postsOf("ch_cutover").find(p => p.id === "p5")!;
     assert.match(s.app.groups.envelope(row, { ...p5, id: "p99", seq: 99, threadRoot: "p5", reactions: [] }, [], agents.crawler), /\[saved for later · reminder \d{4}-\d\d-\d\d \d\d:\d\dZ\]$/m);
 
     assert.match((await set({ message: "p5", state: "done" })).body.text, /^Marked ch_cutover\/p5 done; its reminder will not go off\./);
-    assert.deepEqual(wakeFiles(), []);
+    assert.deepEqual(wakeIds(), []);
     await set({ message: "p5", state: "open" });
-    assert.equal(wakeFiles().length, 1, "opening it again sets the reminder that never went off");
+    assert.equal(wakeIds().length, 1, "opening it again sets the reminder that never went off");
     assert.equal((await set({ message: "p5", remindAt: null })).body.text, "Cleared the reminder on ch_cutover/p5; it stays saved.");
-    assert.deepEqual(wakeFiles(), []);
+    assert.deepEqual(wakeIds(), []);
     await set({ message: "p5", remindAt: at });
     assert.equal((await set({ message: "p5", state: "removed" })).body.text, "Took ch_cutover/p5 off your saved list, and its reminder with it.");
-    assert.deepEqual(wakeFiles(), []);
+    assert.deepEqual(wakeIds(), []);
     assert.equal((await set({ message: "p5", state: "removed" })).body.text, "ch_cutover/p5 was not on your saved list.");
   });
 
   test("a due reminder reads as the post and its thread now, names its post for the feed, and stamps notifiedAt once it went out", async () => {
     await set({ message: "p5", remindAt: Date.now() + 60_000 });
-    const path = join(s.app.boards.wakeDir, wakeFiles()[0]!);
-    const wake = parseWake(JSON.parse(readFileSync(path, "utf8")))!;
+    const id = wakeIds()[0]!;
+    const wake = s.app.boards.db.wakes.get(id)!;
     const ticker = wakeText(wake, null, wake.on.kind === "time" ? wake.on.at : 0);
     const text = s.app.agentLater.expand(`[wake] another wake\n${ticker}`);
     const [first, head, ...thread] = text.split("\n");
@@ -88,7 +85,7 @@ describe("an agent's Later list on the fixture server", () => {
     s.app.agentLater.delivered(ticker);
     const item = s.app.later.items(agents.crawler).find(i => i.post === "p5")!;
     assert.ok(item.notifiedAt !== undefined && item.notifiedAt >= item.remindAt!);
-    assert.equal(existsSync(path), false, "a reminder that went off leaves no wake");
+    assert.equal(s.app.boards.db.wakes.get(id), undefined, "a reminder that went off leaves no wake");
     const list = await s.get<{ text: string }>(`/api/threads/${encodeURIComponent(comm)}/later?state=open`);
     assert.match(list.text, /^1 open, 0 done\. Showing the 1 open\.\n\nch_cutover\/p5 in #pi-cutover · from .* · saved .* · reminder .*, went off\n/);
   });

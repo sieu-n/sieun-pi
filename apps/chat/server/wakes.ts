@@ -1,7 +1,8 @@
 /**
  * board.wake for pi threads. The wake files, the 30 s ticker, the CI reads and the `[wake]` texts are today's chat's own
- * (legacy/prime/user-history/src/wakes.ts), imported as they are. This file only names a thread's conversation as a wake "session", arms a wake
- * from the board skill's request, and hands a due wake to pi-host as an agent message from "board", which the turn wrappers mark as not the owner's.
+ * (legacy/prime/user-history/src/wakes.ts), imported as they are, and the wakes live where a `WakeStore` keeps them (wakes-db.ts). This file
+ * only names a thread's conversation as a wake "session", arms a wake from the board skill's request, and hands a due wake to pi-host as an
+ * agent message from "board", which the turn wrappers mark as not the owner's.
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -10,6 +11,7 @@ import {
 } from "../../../legacy/prime/user-history/src/wakes.ts";
 import type { Host } from "./host/types.ts";
 import { writeJson } from "./store.ts";
+import type { WakeStore } from "./wakes-db.ts";
 
 export { parseWake };
 export type { CheckResult, Wake } from "../../../legacy/prime/user-history/src/wakes.ts";
@@ -44,22 +46,21 @@ export function parseArm(thread: string, body: Record<string, unknown>, now: num
 }
 
 /**
- * Writes the wake's file, where the ticker finds it after a restart too. Arming runs no check: board.wake runs a check once in the caller's
- * kernel, on the box that runs it later, to warn that it already exits 0. On 11-04 the arm request ran it here and took 6.1 s at p90 and
- * 14.7 s at most over 98 calls, since checks run git fetch, ssh and curl.
+ * Stores the wake, where the ticker finds it after a restart too, and settles once it is stored. Arming runs no check: board.wake runs a
+ * check once in the caller's kernel, on the box that runs it later, to warn that it already exits 0. On 11-04 the arm request ran it here
+ * and took 6.1 s at p90 and 14.7 s at most over 98 calls, since checks run git fetch, ssh and curl.
  */
-export function armWake(dir: string, thread: string, body: Record<string, unknown>, now = Date.now()): { wake: Wake; path: string } {
+export async function armWake(store: WakeStore, thread: string, body: Record<string, unknown>, now = Date.now()): Promise<{ wake: Wake; path: string }> {
   const { id, wake } = parseArm(thread, body, now);
-  const path = join(dir, `${id}.json`);
-  writeJson(path, wake);
-  return { wake, path };
+  await store.put(id, wake);
+  return { wake, path: store.where(id) };
 }
 
 /** Runs a check's command on a thread's box for `thread`, whose id tags what the command starts. */
 export type BoxCheckRun = (command: string, timeoutMs: number, thread: string) => Promise<CheckResult>;
 
 export interface ThreadWakeOptions {
-  dir: string;
+  wakes: WakeStore;
   host: Pick<Host, "submit">;
   log: (line: string) => void;
   now?: () => number;
@@ -107,12 +108,13 @@ export function adoptOldWakes(dir: string, log: (line: string) => void): void {
   }
 }
 
-/** Starts the legacy ticker on `dir`, delivering to pi-host threads; returns its stop. */
+/** Starts the legacy ticker on the store's wakes, delivering to pi-host threads; returns its stop. */
 export function startThreadWakes(options: ThreadWakeOptions): () => void {
-  adoptOldWakes(options.dir, options.log);
+  options.wakes.adopt(options.log);
   const stale = cacheWatch(options.log);
+  const files = options.wakes.files;
   return startWakes({
-    dir: options.dir, log: options.log, ...(options.now ? { now: options.now } : {}),
+    dir: options.wakes.dir, ...(files ? { files } : {}), log: options.log, ...(options.now ? { now: options.now } : {}),
     check: options.check ?? boxCheck(options.checkOn ?? (() => undefined)),
     runState: options.runState ?? (on => readRunState(on, undefined, stale)),
     stamp: options.stamp ?? runStamp,

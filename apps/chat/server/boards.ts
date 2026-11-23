@@ -28,7 +28,8 @@ import type { SearchSplit } from "./search-engine.ts";
 import { OWNER_ZONE_OFFSET_MS } from "./search.ts";
 import type { Threads } from "./threads.ts";
 import { StepOwners } from "./step-owners.ts";
-import { armWake, parseWake, startThreadWakes, wakeSession, wakeTarget, type BoxCheckRun, type ThreadWakeOptions, type Wake } from "./wakes.ts";
+import { armWake, startThreadWakes, wakeSession, wakeTarget, type BoxCheckRun, type ThreadWakeOptions, type Wake } from "./wakes.ts";
+import type { WakeStore } from "./wakes-db.ts";
 
 export const BOARD_DOC = "chat.board";
 
@@ -113,6 +114,9 @@ const dutyIdFloor = (file: DutyFile): number =>
  * behind 5 to 8 For you reads at a time (requests/2026-11-21.jsonl).
  */
 export interface BoardLists { row: BoardRow | null; forYou: ForYouItem[] }
+
+/** Where the boards keep their records, in JSON files or chat.sqlite as APPS_CHAT_DB_KINDS says: the wakes. */
+export interface BoardsDb { wakes: WakeStore }
 
 export interface BoardEvents {
   /** `before` is the board kept before the change, null for a chat read for the first time. */
@@ -206,6 +210,7 @@ export class Boards {
     readonly store: Store,
     readonly threads: Threads,
     readonly agents: Agents,
+    readonly db: BoardsDb,
     readonly events: BoardEvents,
     private readonly log: (line: string) => void = () => {},
   ) {
@@ -1051,17 +1056,12 @@ export class Boards {
 
   /**
    * Whether a duty job has ended, as Prime's `jobs.ended` reads it: its thread is listed and idle with no wake set on it, in pi-host or in this
-   * server's wake files, and every conversation of its tree is idle, read from pi-host now. A failed job is not ended: its run keeps its own verdict.
+   * server's wakes, and every conversation of its tree is idle, read from pi-host now. A failed job is not ended: its run keeps its own verdict.
    */
   private async jobEnded(job: string): Promise<boolean> {
     const row = this.threads.thread(job);
     if (!row || row.status !== "idle" || row.wakeAt !== undefined || this.waiting.has(job)) return false;
-    let names: string[] = [];
-    try { names = readdirSync(this.wakeDir).filter(name => name.endsWith(".json")); } catch { names = []; }
-    for (const name of names) {
-      const session = readJson<{ session?: unknown }>(join(this.wakeDir, name), {}).session;
-      if (typeof session === "string" && wakeTarget(session).thread === job) return false;
-    }
+    if (this.pendingWakes().some(wake => wakeTarget(wake.session).thread === job)) return false;
     const nodes = await this.host.tree(job).catch(() => null);
     return nodes !== null && nodes.every(node => node.status === "idle");
   }
@@ -1347,7 +1347,7 @@ export class Boards {
     for (const chat of this.unput.keys()) void this.putBoards(chat);
     this.resumePrechecks();
     this.timer = setInterval(() => void this.tick().catch(error => this.log(`board tick failed: ${String(error)}`)), everyMs);
-    this.stopWakes = startThreadWakes({ dir: this.wakeDir, host: this.host, log: this.log, checkOn: thread => this.checkOn(thread), ...this.wakeHooks });
+    this.stopWakes = startThreadWakes({ wakes: this.db.wakes, host: this.host, log: this.log, checkOn: thread => this.checkOn(thread), ...this.wakeHooks });
   }
   stop(): void {
     // A precheck at work runs on outside this process, and its wait ends here with its pending entry kept for the next server process.
@@ -1431,8 +1431,9 @@ export class Boards {
     return root ? root.status === "running" : this.threads.thread(thread)?.status === "running";
   }
 
-  get wakeDir(): string {
-    return join(this.store.dir, "wakes");
+  /** The wakes the ticker still owes at `now` (`owedWakes`), as the step owners read them. */
+  owedWakes(now: number): Promise<Wake[]> {
+    return this.db.wakes.owed(now);
   }
 
   /**
@@ -1445,7 +1446,7 @@ export class Boards {
     const thread = this.wakeThread(id);
     if (!this.threads.thread(thread)) await this.threads.refresh().catch(() => undefined);
     if (!this.threads.thread(thread)) throw new Error(`No thread ${thread}.`);
-    return armWake(this.wakeDir, thread, body);
+    return armWake(this.db.wakes, thread, body);
   }
 
   /** The wakes set on a thread's conversation that have not gone out yet, which pi-host reads to keep a child running until they do. */
@@ -1460,10 +1461,10 @@ export class Boards {
    */
   dropWakes(id: string, conversation: number): number {
     const session = wakeSession(this.wakeThread(id), conversation);
-    const files = this.pendingWakeFiles().filter(({ wake }) => wake.session === session);
-    for (const { file } of files) rmSync(file, { force: true });
-    if (files.length) this.log(`wakes: dropped ${files.length} of ${session}, a removed job`);
-    return files.length;
+    const dropped = this.db.wakes.list().filter(({ wake }) => wake.session === session);
+    for (const { id } of dropped) void this.db.wakes.remove(id);
+    if (dropped.length) this.log(`wakes: dropped ${dropped.length} of ${session}, a removed job`);
+    return dropped.length;
   }
 
   /** The wakes not gone out yet on any conversation of these threads, as an agent's Threads tab lists them. */
@@ -1471,19 +1472,9 @@ export class Boards {
     return this.pendingWakes().filter(wake => threads.has(wakeTarget(wake.session).thread));
   }
 
-  /** Every wake that has not gone out yet, one per file in the wake folder. */
+  /** Every wake that has not gone out yet. */
   private pendingWakes(): Wake[] {
-    return this.pendingWakeFiles().map(({ wake }) => wake);
-  }
-
-  private pendingWakeFiles(): { file: string; wake: Wake }[] {
-    let names: string[] = [];
-    try { names = readdirSync(this.wakeDir).filter(name => name.endsWith(".json")); } catch { names = []; }
-    return names.flatMap(name => {
-      const file = join(this.wakeDir, name);
-      const wake = parseWake(readJson<unknown>(file, null));
-      return wake ? [{ file, wake }] : [];
-    });
+    return this.db.wakes.list().map(({ wake }) => wake);
   }
 
   /** The thread a wake request names: a thread id as it is, and an agent id as the agent's work thread. */

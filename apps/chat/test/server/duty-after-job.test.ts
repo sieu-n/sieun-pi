@@ -61,8 +61,7 @@ before(async () => {
     d4: [missed("d4", now - 25 * HOUR, "job-gone")],
     d5: [{ ...missed("d5", now - HOUR, "job-lost"), job: { id: "job-lost", name: "Duty d5 job", submission: lostSubmission } }],
   } }));
-  mkdirSync(s.app.boards.wakeDir, { recursive: true });
-  writeFileSync(join(s.app.boards.wakeDir, "job-waking--1-time-1.json"), JSON.stringify({ session: "job-waking--1", on: { kind: "time", at: now + HOUR }, note: "", since: now }));
+  await s.app.boards.db.wakes.put("job-waking--1-time-1", { session: "job-waking--1", on: { kind: "time", at: now + HOUR }, note: "", since: now });
 });
 after(async () => {
   await s.close();

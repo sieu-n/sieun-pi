@@ -11,16 +11,32 @@ import { test } from "node:test";
 import { POLL_HINT, readRunState, REAL_GH } from "../../../../legacy/prime/user-history/src/wakes.ts";
 import { FIXTURE_IDS } from "../../server/fixture/seed.ts";
 import type { SubmitInput } from "../../server/host/types.ts";
+import { ChatDb } from "../../server/chat-db.ts";
+import { JsonMove } from "../../server/json-move.ts";
 import { armWake, startThreadWakes, wakeSession, wakeTarget } from "../../server/wakes.ts";
+import { FolderWakes, WAKES, WakeRows, type WakeStore } from "../../server/wakes-db.ts";
+import { readConfig } from "../../server/config.ts";
 import { start } from "./helpers.ts";
 
 const THREAD = "0f3c2a51-7d1e-4b8a-9c55-1d2e3f4a5b6c";
 const MIN = 60_000;
 
-/** A temp wake dir, a host that records each submit, and a waiter for the next one. */
-function rig(t: { after(fn: () => void): void }) {
+/**
+ * A temp data dir with its wakes, in the folder or, when APPS_CHAT_DB_KINDS names wakes, in its chat.sqlite, a host that records each
+ * submit, and a waiter for the next one.
+ */
+function rig(t: { after(fn: () => Promise<void> | void): void }) {
   const dir = mkdtempSync(join(tmpdir(), "apps-chat-wakes-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const inDb = (readConfig([]).dbKinds ?? []).includes(WAKES.kind);
+  const chat = inDb ? new ChatDb(join(dir, "chat.sqlite"), { offThread: false }) : undefined;
+  const move = chat ? new JsonMove(chat, dir, WAKES) : undefined;
+  move?.open();
+  const wakes: WakeStore = chat && move ? new WakeRows(chat, move, join(dir, "wakes")) : new FolderWakes(join(dir, "wakes"));
+  t.after(async () => {
+    await move?.flushExports();
+    await chat?.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
   const sent: { thread: string; input: SubmitInput }[] = [];
   const host = { submit: async (thread: string, input: SubmitInput) => { sent.push({ thread, input }); return { submission: sent.length, status: "placed" as const, ticket: { session: "", tree: "", place: { state: "none" as const } } }; } };
   const until = async (count: number, ms = 10_000) => {
@@ -28,7 +44,7 @@ function rig(t: { after(fn: () => void): void }) {
     while (sent.length < count && Date.now() < end) await new Promise(done => setTimeout(done, 20));
     assert.equal(sent.length, count, `expected ${count} wake sends, got ${sent.length}`);
   };
-  return { dir, sent, host, until };
+  return { dir, wakes, sent, host, until };
 }
 
 test("a session key names the thread and its conversation", () => {
@@ -38,12 +54,12 @@ test("a session key names the thread and its conversation", () => {
 });
 
 test("a check wake runs sh from home at its pace and wakes the conversation once it exits 0, with its output", async t => {
-  const { dir, sent, host, until } = rig(t);
+  const { dir, wakes, sent, host, until } = rig(t);
   const flag = join(dir, "flag");
   const command = `test -f ${flag} && echo landed`;
-  const armed = armWake(dir, THREAD, { conversation: 2, on: { kind: "check", command, every: 100, at: Date.now() + 10 * MIN }, note: "p12" });
-  assert.ok(existsSync(armed.path));
-  const stop = startThreadWakes({ dir, host, log: () => {}, everyMs: 50 });
+  await armWake(wakes, THREAD, { conversation: 2, on: { kind: "check", command, every: 100, at: Date.now() + 10 * MIN }, note: "p12" });
+  assert.equal(wakes.list().length, 1);
+  const stop = startThreadWakes({ wakes, host, log: () => {}, everyMs: 50 });
   t.after(stop);
   await new Promise(done => setTimeout(done, 400));
   assert.equal(sent.length, 0);
@@ -55,22 +71,22 @@ test("a check wake runs sh from home at its pace and wakes the conversation once
   assert.match(sent[0]!.input.text!, new RegExp(`^\\[wake\\] Your board\\.wake check passed at \\S+: \`${command.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\` exited 0\\. It printed: landed Your note: p12$`));
   await new Promise(done => setTimeout(done, 200));
   assert.equal(sent.length, 1);
-  assert.deepEqual(readdirSync(dir).filter(name => name.endsWith(".json")), []);
+  assert.deepEqual(wakes.list(), []);
 });
 
-test("arming a check writes its wake without running the command, which board.wake runs in the caller's kernel", t => {
-  const { dir } = rig(t);
+test("arming a check writes its wake without running the command, which board.wake runs in the caller's kernel", async t => {
+  const { dir, wakes } = rig(t);
   const ran = join(dir, "ran");
-  const armed = armWake(dir, THREAD, { on: { kind: "check", command: `touch ${ran}; sleep 5`, every: 5 * MIN, at: Date.now() + MIN }, note: "" });
-  assert.ok(existsSync(armed.path));
+  const armed = await armWake(wakes, THREAD, { on: { kind: "check", command: `touch ${ran}; sleep 5`, every: 5 * MIN, at: Date.now() + MIN }, note: "" });
+  assert.deepEqual(wakes.list().map(({ wake }) => wake), [armed.wake]);
   assert.equal(existsSync(ran), false);
   assert.deepEqual(Object.keys(armed).sort(), ["path", "wake"]);
 });
 
 test("a check that never passes wakes the conversation at its deadline with its last output", async t => {
-  const { dir, sent, host, until } = rig(t);
-  armWake(dir, THREAD, { on: { kind: "check", command: "echo 416fae9; exit 1", every: 100, at: Date.now() + 300 }, note: "" });
-  const stop = startThreadWakes({ dir, host, log: () => {}, everyMs: 50 });
+  const { wakes, sent, host, until } = rig(t);
+  await armWake(wakes, THREAD, { on: { kind: "check", command: "echo 416fae9; exit 1", every: 100, at: Date.now() + 300 }, note: "" });
+  const stop = startThreadWakes({ wakes, host, log: () => {}, everyMs: 50 });
   t.after(stop);
   await until(1);
   assert.equal(sent[0]!.input.conversation, undefined);
@@ -78,10 +94,10 @@ test("a check that never passes wakes the conversation at its deadline with its 
 });
 
 test("a time wake goes out at its time with Prime's text", async t => {
-  const { dir, sent, host, until } = rig(t);
+  const { wakes, sent, host, until } = rig(t);
   const at = Date.now() + 200;
-  armWake(dir, THREAD, { on: { kind: "time", at }, note: "remeasure" });
-  const stop = startThreadWakes({ dir, host, log: () => {}, everyMs: 50 });
+  await armWake(wakes, THREAD, { on: { kind: "time", at }, note: "remeasure" });
+  const stop = startThreadWakes({ wakes, host, log: () => {}, everyMs: 50 });
   t.after(stop);
   await until(1);
   assert.match(sent[0]!.input.text!, new RegExp(`^\\[wake\\] It is \\S+, the time you set with board\\.wake \\(${new Date(at).toISOString().replace(/\./g, "\\.")}\\)\\. Your note: remeasure `));
@@ -106,12 +122,12 @@ function ciFixture(run: number) {
 }
 
 test("a run wake follows the latest attempt, waits for attempt= on a rerun, and names the attempt", async t => {
-  const { dir, sent, host, until } = rig(t);
+  const { wakes, sent, host, until } = rig(t);
   const ci = ciFixture(39493311906);
   let now = Date.now();
-  armWake(dir, THREAD, { on: { kind: "run", run: 39493311906, attempt: 2 }, note: "land r11" }, now);
+  await armWake(wakes, THREAD, { on: { kind: "run", run: 39493311906, attempt: 2 }, note: "land r11" }, now);
   let passes = 0;
-  const stop = startThreadWakes({ dir, host, log: () => {}, everyMs: 50, now: () => now, stamp: async () => { passes += 1; return null; }, runState: on => readRunState(on, ci.exec) });
+  const stop = startThreadWakes({ wakes, host, log: () => {}, everyMs: 50, now: () => now, stamp: async () => { passes += 1; return null; }, runState: on => readRunState(on, ci.exec) });
   t.after(stop);
   const waitFor = async (done: () => boolean, what: string) => {
     const end = Date.now() + 10_000;
@@ -144,11 +160,11 @@ test("a run wake follows the latest attempt, waits for attempt= on a rerun, and 
 });
 
 test("a run wake in another repo reads gh with that repo", async t => {
-  const { dir, sent, host, until } = rig(t);
+  const { wakes, sent, host, until } = rig(t);
   const ci = ciFixture(123);
   Object.assign(ci.state, { status: "completed", conclusion: "failure", attempt: 1 });
-  armWake(dir, THREAD, { on: { kind: "run", run: 123, repo: "sieu-n/sieun-pi" }, note: "" });
-  const stop = startThreadWakes({ dir, host, log: () => {}, everyMs: 50, runState: on => readRunState(on, ci.exec) });
+  await armWake(wakes, THREAD, { on: { kind: "run", run: 123, repo: "sieu-n/sieun-pi" }, note: "" });
+  const stop = startThreadWakes({ wakes, host, log: () => {}, everyMs: 50, runState: on => readRunState(on, ci.exec) });
   t.after(stop);
   await until(1);
   assert.deepEqual(ci.calls, ["gh run view 123 --repo sieu-n/sieun-pi --json status,conclusion,attempt,url,workflowName,headBranch,updatedAt"]);
@@ -173,6 +189,7 @@ test("wakes set through the route survive a restart of the chat server", async t
   const none = await first.send("POST", "/api/threads/no-such-thread/wakes", { on: { kind: "time", at } });
   assert.equal(none.status, 400);
   await first.close();
+  // For the week after the move each wake also has its JSON export; a file an older release writes after a rollback imports at the next boot.
   assert.equal(readdirSync(join(dataDir, "wakes")).filter(name => name.endsWith(".json")).length, 3);
   writeFileSync(join(dataDir, "wakes", `${thread}-1-time-old.json`), JSON.stringify({ id: `${thread}-1-time-old`, thread, at, text: `It is ${new Date(at).toISOString()}. file of the old chat` }));
   await new Promise(done => setTimeout(done, Math.max(0, at - Date.now()) + 100));
@@ -190,11 +207,11 @@ test("wakes set through the route survive a restart of the chat server", async t
   assert.ok(lines.every(line => line.startsWith("[wake] It is ")));
   assert.ok(lines.some(line => line.includes("Your note: after restart")) && lines.some(line => line.includes("Your note: old kernel"))
     && lines.some(line => line.includes("Your note: file of the old chat")));
-  // The ticker removes the delivered files after the submit answers, so under a full suite's load the message can show first.
-  const files = () => readdirSync(join(dataDir, "wakes")).filter(name => name.endsWith(".json")).length;
+  // The ticker removes the delivered wakes after the submit answers, so under a full suite's load the message can show first.
+  const left = () => second.app.boards.db.wakes.list().length;
   const gone = Date.now() + 10_000;
-  while (files() > 1 && Date.now() < gone) await new Promise(done => setTimeout(done, 50));
-  assert.equal(files(), 1, "the check wake waits on");
+  while (left() > 1 && Date.now() < gone) await new Promise(done => setTimeout(done, 50));
+  assert.equal(left(), 1, "the check wake waits on");
 });
 
 test("a job thread aliased to an agent gets its wakes itself, not the agent's work thread, and the route lists a conversation's pending wakes", async t => {

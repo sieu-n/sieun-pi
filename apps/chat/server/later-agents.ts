@@ -2,19 +2,17 @@
  * Save for later and Remind me for agents: the server side of pi-host's `save_message`, `remind_me` and `list_saved_messages` tools
  * (packages/pi-host/src/durable/later.ts), over the one Later store keyed by the agent (later.ts).
  *
- * A due reminder goes out through the board's wake files, the ticker that already wakes threads (wakes.ts): while an agent's item is open
- * with a reminder that has not fired, a time wake for the comm thread of the post's room sits in the wake folder, and any other state takes
- * it away (`syncWake`). When it fires, `expand` swaps the ticker's `[wake]` line for the post and its thread as they read now, `delivered`
+ * A due reminder goes out through the board's wakes, the ticker that already wakes threads (wakes.ts): while an agent's item is open
+ * with a reminder that has not fired, a time wake for the comm thread of the post's room sits among the wakes (wakes-db.ts), and any other
+ * state takes it away (`syncWake`). When it fires, `expand` swaps the ticker's `[wake]` line for the post and its thread as they read now, `delivered`
  * stamps the item's notifiedAt, and the room's feed puts the agent's answer in that post's thread (`reminderPost`, group-rooms.ts).
  */
-import { rmSync } from "node:fs";
-import { join } from "node:path";
 import type { LaterItem, LaterMark, LaterRow, Principal } from "../web/src/lib/api/types.ts";
 import type { AgentRecord, RoomId, RoomPost } from "./agent-store.ts";
 import { type Later, laterId, LaterError } from "./later.ts";
 import { reactionsLine } from "./reactions.ts";
-import { writeJson } from "./store.ts";
 import { parseWake, wakeSession } from "./wakes.ts";
+import type { WakeStore } from "./wakes-db.ts";
 
 /** The text a reminder wake carries as its note, which `expand` finds in the ticker's `[wake]` line. */
 const NOTE = "remind_me is due on";
@@ -28,7 +26,7 @@ const THREAD_POSTS = 12;
 
 export interface AgentLaterDeps {
   later: Later;
-  wakeDir: string;
+  wakes: WakeStore;
   postsOf(room: RoomId): RoomPost[];
   principal(id: string): Principal;
   /** `#name`, `Solo "name"`, or "your DM" for the agent's own DM. */
@@ -75,26 +73,26 @@ export class AgentLater {
     return p.kind === "owner" ? "Sieun (owner)" : p.name;
   }
 
-  /** The wake file of an agent's item; one per saved post, so a new time replaces the old wake. */
-  private wakePath(item: LaterItem): string {
-    return join(this.deps.wakeDir, `later-${item.by}-${item.room}-${item.post}.json`);
+  /** The wake id of an agent's item; one per saved post, so a new time replaces the old wake. */
+  private wakeId(item: LaterItem): string {
+    return `later-${item.by}-${item.room}-${item.post}`;
   }
 
-  /** Puts the item's wake in the folder while its reminder waits, and takes it away otherwise. The owner's reminders are later-due.ts's. */
+  /** Sets the item's wake while its reminder waits, and takes it away otherwise. The owner's reminders are later-due.ts's. */
   syncWake(item: LaterItem, removed = false): void {
     if (item.by === "owner" || item.room === undefined) return;
-    const path = this.wakePath(item);
+    const id = this.wakeId(item);
     const record = this.deps.record(item.by);
     const thread = record && this.deps.thread(record, item.room);
     if (removed || item.state !== "open" || item.remindAt === undefined || fired(item) || !thread) {
-      rmSync(path, { force: true });
+      void this.deps.wakes.remove(id);
       return;
     }
     const wake = parseWake({
       session: wakeSession(thread, 1), on: { kind: "time", at: item.remindAt }, since: this.now(),
       note: `${NOTE} ${item.room}/${item.post} for ${item.by}.`,
     });
-    if (wake) writeJson(path, wake);
+    if (wake) void this.deps.wakes.put(id, wake);
   }
 
   /** The ticker's text with each reminder's `[wake]` line swapped for the reminder as the agent reads it: the post and its thread now. */
