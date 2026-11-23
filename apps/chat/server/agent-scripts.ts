@@ -68,7 +68,8 @@ export function agentScripts(input: ScriptInput): AgentScript[] {
     const file = fileAt(path);
     if (!file || seen.has(file.real)) continue;
     seen.add(file.real);
-    out.push({ path, from, modifiedAt: file.modifiedAt });
+    // A file in a release folder (`.../current` -> `release-<sha>`) carries the time the release was built, not when the script changed.
+    out.push({ path, from, modifiedAt: /\/release-[^/]+\//.test(file.real) ? null : file.modifiedAt });
   }
   return out;
 }

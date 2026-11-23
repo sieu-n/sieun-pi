@@ -45,7 +45,17 @@ test("lists the folder's scripts, the brief's and the duties' prechecks, once ea
     [release, { kind: "brief" }],
     [precheck, { kind: "duty", duty: "d1", name: "duty d1" }],
   ]);
-  assert.ok(scripts.every(s => s.modifiedAt > 0));
+  assert.ok(scripts.every(s => (s.modifiedAt ?? 0) > 0));
+});
+
+test("a script in a release folder has no change time, since its file time is the release's build", () => {
+  const releases = join(root, "releases");
+  const script = file(join(releases, "release-abc1234", "scripts", "duties", "check.ts"));
+  symlinkSync("release-abc1234", join(releases, "current"));
+  const [found] = agentScripts({ folderDir: null, brief: "", cwd: root, home: root, duties: [duty("d1", ["node", "scripts/duties/check.ts"], join(releases, "current"))] });
+  assert.equal(found?.path, join(releases, "current", "scripts", "duties", "check.ts"));
+  assert.equal(found?.modifiedAt, null);
+  assert.ok(script);
 });
 
 test("an agent with no folder, brief or duties has no scripts", () => {

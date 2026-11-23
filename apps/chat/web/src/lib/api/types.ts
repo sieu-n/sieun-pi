@@ -909,7 +909,8 @@ export interface AgentConfig {
 export interface AgentScript {
   path: string;
   from: { kind: "folder" } | { kind: "brief" } | { kind: "duty"; duty: string; name: string };
-  modifiedAt: Ms;
+  /** Null for a file in a release folder, whose time is the release's build. */
+  modifiedAt: Ms | null;
 }
 
 /** The kinds of thread an agent runs: its main thread, one comm thread per room, and root job threads. */
