@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { agents, api, connection, jobs, kept, panelsAhead, reads, view, type AgentSummary, type ThinkingLevel } from "$lib/api";
+  import { agents, connection, jobs, kept, panelsAhead, reads, view, type AgentSummary, type ThinkingLevel } from "$lib/api";
   import { Button, EmptyState, Menu, PanelHeader, Skeleton, Tabs, renderMarkdown, toast, type Anchor, type MenuEntry } from "$lib/ui";
   import { router, hrefFor } from "$lib/router.svelte";
   import AgentCard from "./AgentCard.svelte";
@@ -8,7 +8,7 @@
   import CreateAgentDialog from "./CreateAgentDialog.svelte";
   import NewAgentTile from "./NewAgentTile.svelte";
   import { agentFromRoute, agentsFilterFromParams, agentsShown, hasForList, jobCounts, jobsLabel, renamedSection, sectionFromParams, type AgentsFilter, type ConfigSection } from "./agents-model";
-  import { agentMenu, messageAgent, onAgentsChanged } from "./agent-actions.svelte";
+  import { agentMenu, changeModel, messageAgent, onAgentsChanged } from "./agent-actions.svelte";
   import { createAgent } from "./create-agent.svelte";
 
   /** `#/agents/<id>` opens that agent's page in place of the grid, or a job's, which its agent's Jobs tab links to. */
@@ -89,18 +89,7 @@
   function setSection(next: ConfigSection) {
     router.setParams({ section: next === "brief" ? null : next }, { replace: true });
   }
-  async function run(label: string, action: () => Promise<unknown>, done: string) {
-    try {
-      await action();
-      toast.success(done);
-    } catch (reason) {
-      toast.error(`${label} failed: ${reason instanceof Error ? reason.message : String(reason)}`);
-    }
-  }
-  function setModel(agent: AgentSummary, model: string, level: ThinkingLevel | undefined) {
-    const label = catalog?.models.find((m) => `${m.provider}/${m.id}` === model)?.label ?? model;
-    void run("Change model", () => api.setAgentModel(agent.id, model, level), `${agent.name} now runs ${label}${level ? ` · ${level}` : ""}`);
-  }
+  const setModel = (agent: AgentSummary, model: string, level: ThinkingLevel | undefined) => void changeModel(agent, model, level, catalog);
 
   const menuItems = $derived.by((): MenuEntry[] => {
     if (!menu) return [];

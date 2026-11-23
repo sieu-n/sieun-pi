@@ -45,7 +45,7 @@ test("the owner writes Vent's brief from its first message, saves it and sees it
   try {
     const purpose = ((await (await request.get(`/api/agents/${agent.id}/config`)).json()) as { identity: { purpose: { text: string } | null } }).identity.purpose;
     await openCard(page, agent);
-    await expect(brief(page)).toHaveAttribute("data-brief", "empty");
+    await expect(brief(page)).toHaveAttribute("data-doc", "empty");
     await expect(brief(page)).toContainText(`Loaded into every thread of ${agent.name}`);
 
     await brief(page).getByRole("button", { name: "Write a brief" }).click();
@@ -58,7 +58,7 @@ test("the owner writes Vent's brief from its first message, saves it and sees it
     await brief(page).getByRole("button", { name: "Write a brief" }).click();
     await editor.fill(text);
     await brief(page).getByRole("button", { name: "Save" }).click();
-    await expect(brief(page)).toHaveAttribute("data-brief", "set");
+    await expect(brief(page)).toHaveAttribute("data-doc", "set");
     await expect(brief(page)).toContainText(text);
     expect((await folderOf(request, agent.id)).brief.text.trim()).toBe(text);
 

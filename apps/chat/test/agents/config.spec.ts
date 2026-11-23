@@ -49,9 +49,9 @@ test("the agent's page shows its host, home directory, board and memory, and eac
   await expect(panel(page).locator('[data-fact="host"]')).toContainText(config.runs.host);
   await expect(panel(page).locator('[data-fact="cwd"] code')).toHaveAttribute("title", config.runs.cwd);
   await expect(panel(page).locator('[data-fact="cwd"]').getByRole("button", { name: "Copy working directory" })).toBeVisible();
-  await expect(panel(page).locator('[data-fact="memory"]')).toContainText(config.folder ? "memor" : "None of its own");
-  if (config.board) await expect(panel(page).locator('[data-fact="board"]')).toContainText(`${config.board.steps.open} open`);
-  else await expect(panel(page).locator('[data-fact="board"]')).toContainText("None yet");
+  await expect(panel(page).getByTestId("agent-brief")).toHaveCount(config.folder ? 1 : 0);
+  await expect(panel(page).getByTestId("agent-working-memory")).toHaveCount(config.folder ? 1 : 0);
+  if (chat.model) await expect(panel(page).locator('[data-fact="model"]')).toContainText(chat.model.label);
 
   await section(page, "Threads").click();
   await expect(page).toHaveURL(/section=threads/);
@@ -142,13 +142,14 @@ test("a duty run's configuration names its coordinator and shares its chat's boa
   await expect(panel(page)).toBeVisible({ timeout: 20_000 });
   await expect(card(page, { id: duty!.id })).toHaveCount(0);
   await expect(panel(page)).toContainText("duty run");
-  await expect(panel(page).locator('[data-fact="board"]')).toContainText(`Board of ${duty!.chat.name}`);
+  await expect(panel(page).getByTestId("folder-owner")).toContainText(`belongs to ${duty!.chat.name}`);
+  await expect(panel(page).getByTestId("agent-brief").getByRole("button", { name: /^(Edit|Write a brief)$/ })).toHaveCount(0);
   await section(page, "Threads").click();
   await panel(page).getByRole("tabpanel").getByRole("link", { name: duty!.chat.name }).click();
   await expect(page).toHaveURL(new RegExp(`#/agents/${duty!.chat.id}$`));
 });
 
-test("a new agent's overview names the next step for its board and duties, and a comm thread in an archived channel keeps the channel's name", async ({ page, request }) => {
+test("a new agent's Brief tab shows an empty brief and working memory, its model change moves each comm thread, and a comm thread in an archived channel keeps the channel's name", async ({ page, request }) => {
   const stamp = Date.now().toString(36);
   const agent = (await (await request.post("/api/agents", { data: { name: `panel lists ${stamp}`, test: true } })).json()) as { id: string; name: string };
   const name = `panel-lists-${stamp}`;
@@ -158,11 +159,19 @@ test("a new agent's overview names the next step for its board and duties, and a
   await request.patch(`/api/rooms/${room.id}`, { data: { archived: true } });
 
   await page.goto(`/#/agents/${agent.id}`);
-  await expect(panel(page).locator('[data-fact="board"]')).toContainText("None yet", { timeout: 20_000 });
-  await expect(panel(page).locator('[data-fact="board"]').getByRole("button", { name: `Message ${agent.name}` })).toBeVisible();
+  await expect(panel(page).getByTestId("agent-brief")).toHaveAttribute("data-doc", "empty", { timeout: 20_000 });
+  await expect(panel(page).getByTestId("agent-working-memory")).toContainText("No working memory yet");
   await expect(panel(page).locator('[data-fact="host"]').getByRole("link")).toHaveAttribute("href", "#/settings/hosts");
-  await panel(page).locator('[data-fact="duties"]').getByRole("button", { name: "Add a duty" }).click();
-  await expect(section(page, "Duties")).toHaveAttribute("aria-selected", "true");
+
+  const model = panel(page).locator('[data-fact="model"]');
+  await expect(model).toContainText("Its main thread and its 2 comm threads run on it");
+  await model.getByRole("button", { name: /Opus 5\.5/ }).click();
+  await page.getByRole("option", { name: /Fable 5\.2/ }).click();
+  await expect(model).toContainText("Fable 5.2");
+  const comms = ((await (await request.get(`/api/agents/${agent.id}/config`)).json()) as { agent: { comm: { thread: string }[] } }).agent.comm;
+  for (const { thread } of comms) {
+    await expect.poll(async () => ((await (await request.get(`/api/c/${thread}`)).json()) as { model: { id: string } }).model.id).toBe("claude-fable-5-2");
+  }
 
   await section(page, "Threads").click();
   const comm = panel(page).locator(`li[data-room="${room.id}"]`);

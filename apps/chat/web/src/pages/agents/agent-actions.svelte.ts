@@ -1,4 +1,4 @@
-import { agents, api, type AgentSummary } from "$lib/api";
+import { agents, api, type AgentSummary, type ModelCatalog, type ThinkingLevel } from "$lib/api";
 import { hrefFor, router } from "$lib/router.svelte";
 import { renameDialog } from "$lib/shell/rename-dialog.svelte";
 import type { MenuEntry } from "$lib/ui/menu";
@@ -55,6 +55,22 @@ export function stopAgent(agent: Named): void {
     () => toast.success(`Stopped ${agent.name}`),
     (error: unknown) => toast.error(`Could not stop ${agent.name}: ${reason(error)}`),
   );
+}
+
+/**
+ * Moves the agent's main thread and each of its comm threads to `model` at `level`, with a toast that names the model by its label. A test
+ * agent gets no live event, so a page that shows it reads its config again when this answers true.
+ */
+export async function changeModel(agent: Named, model: string, level: ThinkingLevel | undefined, catalog: ModelCatalog | null): Promise<boolean> {
+  const label = catalog?.models.find((m) => `${m.provider}/${m.id}` === model)?.label ?? model;
+  try {
+    await api.setAgentModel(agent.id, model, level);
+  } catch (error) {
+    toast.error(`Could not change the model of ${agent.name}: ${reason(error)}`);
+    return false;
+  }
+  toast.success(`${agent.name} now runs ${label}${level ? ` · ${level}` : ""}`);
+  return true;
 }
 
 export function renameAgent(agent: Named): void {

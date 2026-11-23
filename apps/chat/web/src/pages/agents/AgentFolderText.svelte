@@ -1,24 +1,49 @@
+<script lang="ts" module>
+  import type { AgentFolder } from "$lib/api";
+
+  /** The markdown files of an agent's folder that the Brief tab shows and edits, each with its own words and save call. */
+  export type FolderText = "brief" | "workingMemory";
+</script>
+
 <script lang="ts">
   /**
-   * An agent's brief (`brief.md` in its folder), shown as markdown with an Edit button. Every thread of the agent loads it as a context
-   * file, so a save shows in each thread's next request. An empty brief offers the agent's first message as starting text, and nothing is
-   * written until the owner presses Save.
+   * One markdown file of an agent's folder, its brief (`brief.md`) or its working memory (`working-memory.md`), shown with an Edit button.
+   * Every thread of the agent loads the brief as a context file, and its main thread rewrites its working memory after each turn. An empty
+   * brief offers the agent's first message as starting text, and nothing is written until the owner presses Save.
    */
-  import { api, type AgentFolder } from "$lib/api";
+  import { api } from "$lib/api";
   import { Button, Markdown, TextArea, stampLabel, toast } from "$lib/ui";
   import { shortPath } from "./agents-model";
 
   type Props = {
-    /** Its config's folder, whose brief this shows; a save answers with the whole folder. */
-    folder: Pick<AgentFolder, "agent" | "brief">;
+    /** Its config's folder, whose file this shows; a save answers with the whole folder. */
+    folder: Pick<AgentFolder, "agent" | FolderText>;
+    doc: FolderText;
     name: string;
     /** The agent's first message, offered as starting text for an empty brief. */
-    purpose: string | null;
-    /** A job's card shows its agent's brief without editing. */
+    purpose?: string | null;
+    /** A job's page shows its agent's files without editing. */
     readonly?: boolean;
     onsaved: (folder: AgentFolder) => void;
   };
-  let { folder, name, purpose, readonly = false, onsaved }: Props = $props();
+  let { folder, doc, name, purpose = null, readonly = false, onsaved }: Props = $props();
+
+  const COPY: Record<FolderText, { title: string; testid: string; write: string; empty: string; placeholder: string; noun: string; save: (agent: string, text: string) => Promise<AgentFolder> }> = {
+    brief: {
+      title: "Brief", testid: "agent-brief", write: "Write a brief", noun: "the brief",
+      empty: "No brief yet. Write what this agent is responsible for.",
+      placeholder: "What {name} is responsible for, in your words.",
+      save: api.setBrief,
+    },
+    workingMemory: {
+      title: "Working memory", testid: "agent-working-memory", write: "Write it", noun: "the working memory",
+      empty: "No working memory yet. Its main thread writes down what it is on after its next turn.",
+      placeholder: "What {name} is on now, what it waits for and what comes next.",
+      save: api.setWorkingMemory,
+    },
+  };
+  const copy = $derived(COPY[doc]);
+  const file = $derived(folder[doc]);
 
   let editing = $state(false);
   let draft = $state("");
@@ -28,14 +53,14 @@
   let expanded = $state(false);
   let contentHeight = $state(0);
 
-  const text = $derived(folder.brief.text);
-  /** The collapsed brief's height in px; a longer brief fades out and opens with Show more instead of scrolling inside the page. */
+  const text = $derived(file.text);
+  /** The collapsed text's height in px; a longer text fades out and opens with Show more instead of scrolling inside the page. */
   const COLLAPSED = 320;
   const long = $derived(contentHeight > COLLAPSED);
 
   function edit() {
     error = "";
-    fromPurpose = !text.trim() && !!purpose?.trim();
+    fromPurpose = doc === "brief" && !text.trim() && !!purpose?.trim();
     draft = fromPurpose ? purpose!.trim() : text;
     editing = true;
   }
@@ -48,10 +73,10 @@
     saving = true;
     error = "";
     try {
-      const next = await api.setBrief(folder.agent, draft.trim() ? draft : "");
+      const next = await copy.save(folder.agent, draft.trim() ? draft : "");
       editing = false;
       onsaved(next);
-      toast.success(next.brief.text ? "Saved the brief" : "Removed the brief");
+      toast.success(next[doc].text ? `Saved ${copy.noun}` : `Removed ${copy.noun}`);
     } catch (reason) {
       error = reason instanceof Error ? reason.message : String(reason);
     } finally {
@@ -60,10 +85,10 @@
   }
 </script>
 
-<section class="brief" aria-label="Brief" data-testid="agent-brief" data-brief={text ? "set" : "empty"}>
+<section class="doc" aria-label={copy.title} data-testid={copy.testid} data-doc={text ? "set" : "empty"}>
   <div class="head">
-    <h3 class="t-caption heading">Brief</h3>
-    {#if !readonly && !editing}<Button size="sm" variant="ghost" icon="edit" onclick={edit}>{text ? "Edit" : "Write a brief"}</Button>{/if}
+    <h3 class="t-caption heading">{copy.title}</h3>
+    {#if !readonly && !editing}<Button size="sm" variant="ghost" icon="edit" onclick={edit}>{text ? "Edit" : copy.write}</Button>{/if}
   </div>
   {#if editing}
     {#if fromPurpose}
@@ -72,7 +97,7 @@
         <button type="button" class="link t-caption" onclick={() => ((draft = ""), (fromPurpose = false))}>Clear</button>
       </div>
     {/if}
-    <TextArea bind:value={draft} rows={8} maxRows={24} aria-label="Brief of {name}" placeholder="What {name} is responsible for, in your words." disabled={saving} />
+    <TextArea bind:value={draft} rows={8} maxRows={24} aria-label="{copy.title} of {name}" placeholder={copy.placeholder.replace("{name}", name)} disabled={saving} />
     <div class="actions">
       <Button size="sm" variant="ghost" onclick={cancel} disabled={saving}>Cancel</Button>
       <Button size="sm" variant="primary" onclick={save} loading={saving} disabled={saving || draft === text}>Save</Button>
@@ -84,15 +109,16 @@
       <button type="button" class="link toggle t-caption" aria-expanded={expanded} onclick={() => (expanded = !expanded)}>{expanded ? "Show less" : "Show more"}</button>
     {/if}
   {:else}
-    <p class="t-caption meta">{readonly ? `${name} has no brief yet.` : "No brief yet. Write what this agent is responsible for."}</p>
+    <p class="t-caption meta">{readonly ? `${name} has no ${copy.title.toLowerCase()} yet.` : copy.empty}</p>
   {/if}
-  <span class="t-caption meta" data-path={folder.brief.path}>
-    Loaded into every thread of {name} from <code class="t-mono" title={folder.brief.path}>{shortPath(folder.brief.path)}</code>{folder.brief.modifiedAt ? `, changed ${stampLabel(folder.brief.modifiedAt)}` : ""}
+  <span class="t-caption meta" data-path={file.path}>
+    {doc === "brief" ? `Loaded into every thread of ${name} from` : `Rewritten by the main thread of ${name} after each turn, in`}
+    <code class="t-mono" title={file.path}>{shortPath(file.path)}</code>{file.modifiedAt ? `, changed ${stampLabel(file.modifiedAt)}` : ""}
   </span>
 </section>
 
 <style>
-  .brief {
+  .doc {
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
