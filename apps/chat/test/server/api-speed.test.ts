@@ -4,7 +4,7 @@
  * server's handler time plus his network p50 as the fallback.
  */
 import { strict as assert } from "node:assert";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -13,7 +13,7 @@ import { after, test } from "node:test";
 import { apiSpeed, finding, MIN_NETWORK_LINES, MIN_OWN_CALLS, ownBefore, probeRoutes, probeSpeed, readTimings, routeSpeeds, unmeasured } from "../../scripts/duties/api-speed.ts";
 import { parseStarts } from "../../scripts/restart-walk-hits.ts";
 import { dayOf, LoopStalls, RequestLog, type RequestTiming } from "../../server/request-log.ts";
-import { start } from "./helpers.ts";
+import { start, until } from "./helpers.ts";
 
 const dirs: string[] = [];
 const tempDir = (): string => {
@@ -24,7 +24,16 @@ const tempDir = (): string => {
 after(() => dirs.forEach(dir => rmSync(dir, { recursive: true, force: true })));
 
 const lines = (dir: string): RequestTiming[] =>
-  readdirSync(join(dir, "requests")).flatMap(name => readFileSync(join(dir, "requests", name), "utf8").trim().split("\n").map(line => JSON.parse(line) as RequestTiming));
+  existsSync(join(dir, "requests"))
+    ? readdirSync(join(dir, "requests")).flatMap(name => readFileSync(join(dir, "requests", name), "utf8").split("\n").slice(0, -1).map(line => JSON.parse(line) as RequestTiming))
+    : [];
+
+/**
+ * The server appends a line on its request log's own queue after it answers, so a test reads the log once the lines it expects are there.
+ * In a full parallel server run at a box load of about 150 on 11-23, three client lines were not yet written 50 ms after their POST.
+ */
+const logged = (dir: string, ready: (logged: RequestTiming[]) => boolean): Promise<RequestTiming[]> => until(async () => lines(dir), ready);
+const clientLines = (count: number) => (logged: RequestTiming[]) => logged.filter(line => line.src === "client").length >= count;
 
 test("the server logs each /api request by route and takes the client's waits", async () => {
   const dataDir = tempDir();
@@ -46,14 +55,13 @@ test("the server logs each /api request by route and takes the client's waits", 
       body: JSON.stringify({ samples: [{ m: "GET", p: "/api/rooms", s: 200, ms: 30, net: 4 }] }),
     });
     assert.equal(viaTailnet.status, 200);
-    await new Promise(resolve => setTimeout(resolve, 50));
-    const logged = lines(dataDir);
-    const server = logged.find(line => line.src === "server" && line.p === `/api/c/${room}/items`);
+    const all = await logged(dataDir, got => clientLines(4)(got) && got.some(line => line.src === "server" && line.r === "/api/c/:id/items"));
+    const server = all.find(line => line.src === "server" && line.p === `/api/c/${room}/items`);
     assert.equal(server?.r, "/api/c/:id/items");
     assert.equal(server?.s, 200);
     assert.ok(server!.ms >= 0);
-    assert.ok(!logged.some(line => line.p === "/api/timings"), "the timings post itself is not logged");
-    const client = logged.filter(line => line.src === "client");
+    assert.ok(!all.some(line => line.p === "/api/timings"), "the timings post itself is not logged");
+    const client = all.filter(line => line.src === "client");
     assert.deepEqual(client.map(line => [line.r, line.p, line.ms, line.net, line.via]), [
       ["/api/c/:id/items", `/api/c/${room}/items`, 420, 12, "local"], ["/api/search", "/api/search", 90, undefined, "local"],
       ["/api/c/:id/workspace/close", `/api/c/${room}%3A12/workspace/close`, 40, undefined, "local"], ["/api/rooms", "/api/rooms", 30, 4, "tailnet"],
@@ -80,8 +88,8 @@ test("a server line splits its time into the body wait, the handler and the long
   try {
     const room = (await chat.get("/api/sidebar")).dms[0].id;
     await chat.send("POST", `/api/c/${room}/read`, {});
-    await new Promise(resolve => setTimeout(resolve, 50));
-    const read = lines(dataDir).find(line => line.src === "server" && line.r === "/api/c/:id/read");
+    const isRead = (line: RequestTiming) => line.src === "server" && line.r === "/api/c/:id/read";
+    const read = (await logged(dataDir, got => got.some(isRead))).find(isRead);
     assert.ok(read?.body !== undefined && read.run !== undefined && read.body + read.run <= read.ms + 0.2, JSON.stringify(read));
   } finally {
     await chat.close();
@@ -106,7 +114,7 @@ test("a refused send logs its route, status and reason, and a page's failed call
       { m: "POST", p, s: 0, ms: 0, err: "TypeError: Failed to fetch", shown: true },
     ];
     assert.deepEqual(await chat.send("POST", "/api/timings", { samples }), { status: 200, body: { taken: 4 } });
-    await new Promise(resolve => setTimeout(resolve, 50));
+    await logged(dataDir, got => got.filter(line => line.r === "/api/c/:id/send").length >= 6);
     assert.ok(logs.some(line => line.startsWith(`POST /api/c/:id/send ${p} 400: No upload blob:x;`)), logs.join("\n"));
     assert.ok(logs.includes(`POST /api/c/:id/send ${p} 400: A message needs text, an image or a forwarded post.`), logs.join("\n"));
     assert.ok(logs.includes(`client POST /api/c/:id/send ${p} unreached (local): TypeError: Failed to fetch`), logs.join("\n"));
@@ -140,8 +148,7 @@ test("failed_sends_24h counts the owner's failed sends and flags a box walk's ap
       body: JSON.stringify({ text: " ", requestId: `r-${tailnet}` }),
     });
     assert.deepEqual([(await send(true)).status, (await send(false)).status], [400, 400]);
-    await new Promise(resolve => setTimeout(resolve, 50));
-    assert.deepEqual(lines(dataDir).filter(line => line.r === "/api/c/:id/send").map(line => [line.src, line.s, line.via]), [["server", 400, "tailnet"], ["server", 400, "local"]]);
+    assert.deepEqual((await logged(dataDir, got => got.filter(line => line.r === "/api/c/:id/send").length >= 2)).filter(line => line.r === "/api/c/:id/send").map(line => [line.src, line.s, line.via]), [["server", 400, "tailnet"], ["server", 400, "local"]]);
     const p = `/api/c/${channel}/send`;
     const old = { at: Date.now() - 1000, src: "server", m: "POST", r: "/api/c/:id/send", p, s: 400, ms: 3, err: "No upload blob:x" };
     const shown = (via: string) => ({ at: Date.now() - 1000, src: "client", m: "POST", r: "/api/c/:id/send", p, s: 0, ms: 0, err: "TypeError: Failed to fetch", shown: true, via });
@@ -233,8 +240,7 @@ test("a read ahead of any view counts in no speed, and a refresh behind a page t
     await chat.send("POST", "/api/timings", { samples: [
       { m: "GET", p: "/api/rooms", s: 200, ms: 200, bg: "ahead" }, { m: "GET", p: "/api/rooms", s: 200, ms: 201, bg: "shown" }, { m: "GET", p: "/api/rooms", s: 200, ms: 202, bg: true },
     ] });
-    await new Promise(resolve => setTimeout(resolve, 50));
-    assert.deepEqual(lines(dataDir).filter(line => line.src === "client").map(line => [line.ms, line.bg]), [[200, "ahead"], [201, "shown"], [202, undefined]]);
+    assert.deepEqual((await logged(dataDir, clientLines(3))).filter(line => line.src === "client").map(line => [line.ms, line.bg]), [[200, "ahead"], [201, "shown"], [202, undefined]]);
   } finally {
     await chat.close();
   }
@@ -248,8 +254,7 @@ test("an upload's client line keeps the ms its image encode took, and an image s
       { m: "POST", p: "/api/uploads", s: 200, ms: 800, enc: 412, bg: "shown" }, { m: "POST", p: "/api/uploads", s: 200, ms: 801, enc: "slow" },
       { m: "POST", p: "/api/c/dm_x/send", s: 200, ms: 12, stored: 1900 },
     ] });
-    await new Promise(resolve => setTimeout(resolve, 50));
-    assert.deepEqual(lines(dataDir).filter(line => line.src === "client").map(line => [line.ms, line.enc, line.stored, line.bg]),
+    assert.deepEqual((await logged(dataDir, clientLines(3))).filter(line => line.src === "client").map(line => [line.ms, line.enc, line.stored, line.bg]),
       [[800, 412, undefined, "shown"], [801, undefined, undefined, undefined], [12, undefined, 1900, undefined]]);
   } finally {
     await chat.close();
@@ -403,8 +408,7 @@ test("the server keeps what a failed call's page was doing, and drops a value it
       { m: "GET", p: "/api/later", s: 0, ms: 41, err: "TypeError: Load failed", page: "visible" },
       { m: "GET", p: "/api/later", s: 0, ms: 42, err: "TypeError: Load failed", page: "gone" },
     ] });
-    await new Promise(resolve => setTimeout(resolve, 50));
-    assert.deepEqual(lines(dataDir).filter(line => line.src === "client").map(line => [line.ms, line.page]), [[40, "leaving"], [41, "visible"], [42, undefined]]);
+    assert.deepEqual((await logged(dataDir, clientLines(3))).filter(line => line.src === "client").map(line => [line.ms, line.page]), [[40, "leaving"], [41, "visible"], [42, undefined]]);
   } finally {
     await chat.close();
   }
@@ -440,8 +444,7 @@ test("the ms a page was hidden count in no wait, and an old line without them co
       { m: "GET", p: "/api/rooms", s: 200, ms: 900, hid: 700 }, { m: "GET", p: "/api/rooms", s: 200, ms: 901, hid: 5000 },
       { m: "GET", p: "/api/rooms", s: 200, ms: 902, hid: "long" }, { m: "GET", p: "/api/rooms", s: 200, ms: 903, hid: -1 },
     ] });
-    await new Promise(resolve => setTimeout(resolve, 50));
-    assert.deepEqual(lines(dataDir).filter(line => line.src === "client").map(line => [line.ms, line.hid]), [[900, 700], [901, 901], [902, undefined], [903, undefined]]);
+    assert.deepEqual((await logged(dataDir, clientLines(4))).filter(line => line.src === "client").map(line => [line.ms, line.hid]), [[900, 700], [901, 901], [902, undefined], [903, undefined]]);
   } finally {
     await chat.close();
   }
