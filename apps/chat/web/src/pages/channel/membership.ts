@@ -59,17 +59,22 @@ export async function setWakeOn(m: Membership, wakeOn: Member["wakeOn"], opts: P
   }
 }
 
-/** Removes at once and offers Undo, which adds the agent back with the wake setting it had. Resolves false when the remove failed. */
+/**
+ * Removes at once and offers Undo, which adds the agent back with the wake setting it had: the one the server's answer names, since the page
+ * may show a kept answer from before a change of it, or `opts.wakeOn` when a second try of the call found the agent gone already.
+ * Resolves false when the remove failed.
+ */
 export async function removeMembership(m: Membership, opts: MembershipOpts): Promise<boolean> {
+  let wakeOn = opts.wakeOn;
   try {
-    await api.removeMember(m.room, m.agent);
+    wakeOn = (await api.removeMember(m.room, m.agent)).removed?.wakeOn ?? wakeOn;
     await opts.refresh();
   } catch (error) {
     return failed(error);
   }
   const undo = async () => {
     try {
-      await api.addMembers(m.room, [m.agent], opts.wakeOn);
+      await api.addMembers(m.room, [m.agent], wakeOn);
       await opts.refresh();
       toast.show(`${m.agentName} is back in ${where(m)}`);
     } catch (error) {

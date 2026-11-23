@@ -364,11 +364,12 @@ export class GroupRooms {
    * non-member's does (rule 5). Its comm thread for the room stays in its record, so adding it again goes on in the same thread. Removing a
    * non-member changes nothing, and the owner is in every room.
    */
-  removeMember(id: string, agent: string, by: MemberChange["by"] = "owner"): { room: Room; removed: boolean } {
+  removeMember(id: string, agent: string, by: MemberChange["by"] = "owner"): { room: Room; removed: boolean; wakeOn?: WakeOn } {
     const row = this.require(id);
     if (agent === OWNER.id || agent === OWNER.name) throw new Error(`A room always has the owner; only an agent leaves ${roomLabel(row)}.`);
     const key = this.deps.threads.registered(agent)?.id ?? agent;
-    if (!row.members.some(m => m.agent === key)) return { room: this.view(row), removed: false };
+    const member = row.members.find(m => m.agent === key);
+    if (!member) return { room: this.view(row), removed: false };
     row.members = row.members.filter(m => m.agent !== key);
     const now = Date.now();
     const stopped = this.store.postsOf(row.id).filter(post => post.deliveries?.some(d => d.target === key && d.state === "sending"));
@@ -377,7 +378,7 @@ export class GroupRooms {
       this.setDelivery(post, key, { ...post.deliveries!.find(d => d.target === key)!, state: "stopped", at: now, error: `Left ${roomLabel(row)} before this post reached it.` });
     }
     if (stopped.length) this.emit(row, stopped);
-    return { room: this.memberChanged(row, [{ at: now, agent: key, by, change: "removed" }]), removed: true };
+    return { room: this.memberChanged(row, [{ at: now, agent: key, by, change: "removed" }]), removed: true, wakeOn: member.wakeOn };
   }
 
   /**

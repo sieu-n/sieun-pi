@@ -173,8 +173,22 @@ test("a test agent's Threads tab adds it to a test channel and a test Solo room 
   await expect(soloChip).toHaveCount(0);
   await page.getByRole("button", { name: "Undo" }).click();
   await expect(soloChip).toBeVisible();
-  // Undo brings a mentions-only member back as mentions only.
+  // Undo brings a mentions-only member back as mentions only, also when the page shows the answer it kept from before the change: the
+  // reload's first read of the config waits until the remove went out, as a slow read does (release-d38fdb7 at load 90, 11-23).
   expect((await page.request.patch(`/api/rooms/${room.id}/members/${agent.id}`, { data: { wakeOn: "none" } })).ok()).toBe(true);
+  let removeSent!: () => void;
+  const removing = new Promise<void>((resolve) => (removeSent = resolve));
+  page.on("request", (request) => {
+    if (request.method() === "DELETE" && request.url().includes(`/api/rooms/${room.id}/members/`)) removeSent();
+  });
+  let held = false;
+  await page.route(`**/api/agents/${agent.id}/config`, async (route) => {
+    if (!held) {
+      held = true;
+      await removing;
+    }
+    await route.continue();
+  });
   await page.reload();
   await rooms.getByRole("button", { name: `Remove ${agent.name} from #${room.name}` }).click();
   await expect(chip).toHaveCount(0);

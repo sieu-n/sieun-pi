@@ -1035,7 +1035,7 @@ export class App {
    * Takes an agent out of a channel or Solo room (group-rooms.ts `removeMember`) and stops its comm thread there, as the room's Stop does,
    * so a turn it was in, or one waiting for a slot in pi-pool's queue, posts nothing after the remove. A later @mention starts a new turn.
    */
-  async removeMember(id: ConversationId, agent: string, by: MemberChange["by"] = "owner"): Promise<{ room: Room; removed: boolean }> {
+  async removeMember(id: ConversationId, agent: string, by: MemberChange["by"] = "owner"): Promise<{ room: Room; removed: boolean; wakeOn?: WakeOn }> {
     const result = this.groups.removeMember(id, agent, by);
     const thread = result.removed ? this.threads.registered(agent)?.comm?.[result.room.id] : undefined;
     if (thread) await this.host.abort(thread).catch(error => this.log(`rooms: stopping ${agent}'s comm thread ${thread} after its remove from ${result.room.id} failed: ${String(error)}`));

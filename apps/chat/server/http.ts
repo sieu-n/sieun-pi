@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { Server as NetServer, type AddressInfo, type Socket } from "node:net";
 import { extname, join, normalize } from "node:path";
-import type { AgentId, ConversationPatch, DutyAction, LaterPatch, MemoryInput, ReadPoint, RoomInput, RoomPatch, SendRequest } from "../web/src/lib/api/types.ts";
+import type { AgentId, ConversationPatch, DutyAction, LaterPatch, MemoryInput, ReadPoint, RoomAfterRemove, RoomInput, RoomPatch, SendRequest } from "../web/src/lib/api/types.ts";
 import { parseSchedule } from "../web/src/lib/api/shared/chat-duties.ts";
 import { agentConfig, agentRecordOf } from "./agent-config.ts";
 import { agentPromptAnswer, agentPromptOutlineAnswer } from "./agent-prompt.ts";
@@ -465,7 +465,11 @@ export function routes(app: App, parts: SkillsParts): Route[] {
       const input = ((await body()) ?? {}) as { agents?: string[]; wakeOn?: WakeOn };
       return app.addMembers(p.id!, input.agents ?? [], input.wakeOn).room;
     }),
-    route("DELETE", "/api/rooms/:id/members/:agent", async (_r, p) => (await app.removeMember(p.id!, p.agent!)).room),
+    // A remove names the wakeOn the member had, which the page's Undo adds it back with (`RoomAfterRemove`).
+    route("DELETE", "/api/rooms/:id/members/:agent", async (_r, p): Promise<RoomAfterRemove> => {
+      const { room, wakeOn } = await app.removeMember(p.id!, p.agent!);
+      return wakeOn ? { ...room, removed: { wakeOn } } : room;
+    }),
     route("PATCH", "/api/rooms/:id/members/:agent", async (_r, p, _q, body) =>
       app.groups.setWakeOn(p.id!, p.agent!, ((await body()) as { wakeOn?: unknown } | undefined)?.wakeOn)),
     route("POST", "/api/threads/:id/members", async (_r, p, _q, body) => {

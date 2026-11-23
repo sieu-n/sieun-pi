@@ -5,7 +5,7 @@
 import type {
   AgentConfig, AgentFolder, AgentHostList, AgentPrompt, AgentPromptOutline, AgentId, AgentSummary, BoardOp, BoardRow, BoardView, BoardWrite, CheckInPatch, CheckInView, ChatAgent, ConversationHeader, ConversationId,
   ConversationPatch, ConversationSummary, DutyAction, DutyRow, ForMeItem, ForMeList, ForMeStatus, ForYouItem, HarnessEntryView, HostsReport, HostThreadFilter, ImageRef, Item, JobNode, Me, Member, MemoryInput, ModelCatalog, OpenedPage, ProjectList, SearchQuery, SearchResult, SendRequest, WikiPages,
-  LaterItem, LaterList, LaterPatch, LaterRequest, LaterState, ReactionRequest, ReadAllRequest, ReadPoint, Room, RoomInput, RoomPatch, SendResult, Sidebar, StepOutputRef, ThinkingLevel, ThreadDoneRequest, TimelinePage, UsageBucket, UsageRange, UsageReport, AccountsView,
+  LaterItem, LaterList, LaterPatch, LaterRequest, LaterState, ReactionRequest, ReadAllRequest, ReadPoint, Room, RoomAfterRemove, RoomInput, RoomPatch, SendResult, Sidebar, StepOutputRef, ThinkingLevel, ThreadDoneRequest, TimelinePage, UsageBucket, UsageRange, UsageReport, AccountsView,
 } from "./types.ts";
 import type {
   AdoptBody, ApplyBody, ApplyResult, InstallBody, MergeBody, MoveBody, OwnBody, RemoveBody, SkillDoc, SkillMoves, SkillScan, SkillsChange, SkillsCheck,
@@ -798,7 +798,7 @@ export const api = {
   setPrefs: (id: ConversationId, patch: PrefsPatch) => twice<ConversationPrefs>("PUT", `/api/c/${enc(id)}/prefs`, patch),
   /** Only registered agents join; the server refuses a job, a work thread or a comm thread. */
   addMembers: (id: string, agents: AgentId[], wakeOn?: "all" | "none") => twice<Room>("POST", `/api/rooms/${enc(id)}/members`, { agents, ...(wakeOn ? { wakeOn } : {}) }),
-  removeMember: (id: string, agent: AgentId) => twice<Room>("DELETE", `/api/rooms/${enc(id)}/members/${enc(agent)}`),
+  removeMember: (id: string, agent: AgentId) => twice<RoomAfterRemove>("DELETE", `/api/rooms/${enc(id)}/members/${enc(agent)}`),
   /** `none` is Mentions only: the member wakes on an @mention or a reply in a thread it posted in. */
   setMemberWakeOn: (id: string, agent: AgentId, wakeOn: Member["wakeOn"]) => twice<Room>("PATCH", `/api/rooms/${enc(id)}/members/${enc(agent)}`, { wakeOn }),
 

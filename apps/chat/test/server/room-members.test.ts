@@ -51,11 +51,14 @@ describe("channel members", () => {
     const removed = await s.send("DELETE", `/api/rooms/${room.id}/members/${agents.crawler}`);
     assert.equal(removed.status, 200, JSON.stringify(removed.body));
     assert.deepEqual(memberIds(removed.body), [agents.vent]);
+    assert.deepEqual(removed.body.removed, { wakeOn: "all" }, "the answer names the wakeOn the member had, which Undo adds it back with");
     assert.equal(s.app.agents.record(agents.crawler)!.comm?.[room.id], comm);
     const sent = await s.send("POST", `/api/c/${room.id}/send`, { text: "quiet, after the remove", requestId: "members-1" });
     assert.deepEqual(sent.body.deliveries.map((d: { target: string }) => d.target), [agents.vent]);
 
-    assert.equal((await s.send("DELETE", `/api/rooms/${room.id}/members/${agents.crawler}`)).status, 200, "removing a non-member is a no-op");
+    const again = await s.send("DELETE", `/api/rooms/${room.id}/members/${agents.crawler}`);
+    assert.equal(again.status, 200, "removing a non-member is a no-op");
+    assert.equal(again.body.removed, undefined, "a no-op remove names no wakeOn");
     assert.equal((await s.send("DELETE", `/api/rooms/${room.id}/members/owner`)).status, 400);
     assert.deepEqual(await lines(s, room.id), ["You added Crawler VP", "You removed Crawler VP"]);
 
@@ -176,5 +179,14 @@ describe("a mentions-only member", () => {
 
     await s.send("PATCH", `/api/rooms/${room.id}/members/${agents.crawler}`, { wakeOn: "all" });
     assert.deepEqual((await woken("back to all")).targets, [agents.vent, agents.crawler]);
+  });
+
+  test("a remove of a mentions-only member answers its wakeOn, so an add with it brings the member back as mentions only", async () => {
+    const path = `/api/rooms/${room.id}/members`;
+    await s.send("PATCH", `${path}/${agents.crawler}`, { wakeOn: "none" });
+    const removed = await s.send("DELETE", `${path}/${agents.crawler}`);
+    assert.deepEqual(removed.body.removed, { wakeOn: "none" });
+    const back = await s.send("POST", path, { agents: [agents.crawler], wakeOn: removed.body.removed.wakeOn });
+    assert.equal(wakeOn(back.body, agents.crawler), "none");
   });
 });

@@ -555,6 +555,11 @@ export interface Room {
   /** A walk's throwaway room, which only `GET /api/rooms?test=1` lists. */
   test?: true;
 }
+/**
+ * `DELETE /api/rooms/:id/members/:agent`: the room, and when the agent was a member, the wakeOn it had, so an Undo adds it back as it was
+ * even when the page showed a kept answer from before a change of it.
+ */
+export interface RoomAfterRemove extends Room { removed?: { wakeOn: Member["wakeOn"] } }
 /** `POST /api/rooms`. A Solo room needs an agenda and at least one agent, and its name defaults to the agenda's start; a channel needs a name. */
 export interface RoomInput {
   kind: "channel" | "solo"; name?: string; agenda?: string; members?: AgentId[]; homeChat?: string;
