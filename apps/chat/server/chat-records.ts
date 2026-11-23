@@ -421,7 +421,7 @@ export class ChatRecords {
    * it returns, as a script's or spec's must, since the next store it opens on the same dir reads the DB; a write of the old files was read
    * back the same way through the disk queue (disk.ts `readLatest`).
    */
-  constructor(chat: ChatDb | (() => ChatDb), readonly dataDir: string, private readonly open: (kind: JsonKind) => JsonMove, kinds: Iterable<string>, private readonly syncSaves = false) {
+  constructor(chat: ChatDb | (() => ChatDb), readonly dataDir: string, private readonly open: (kind: JsonKind) => JsonMove, kinds: Iterable<string>, readonly syncSaves = false) {
     this.connection = typeof chat === "function" ? null : chat;
     this.connect = typeof chat === "function" ? chat : () => chat;
     this.kinds = new Set(kinds);
