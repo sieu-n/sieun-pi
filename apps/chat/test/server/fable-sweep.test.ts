@@ -2,7 +2,7 @@
  * `scripts/duties/fable-sweep.ts`, the fable auditor's 3-hourly sweep:
  * 1. An owner post counts as answered once an agent posts after it in its scope, a later answered post of his covers it, or a reaction
  *    other than 👀 says it all; a post that reached no agent in a channel is a delivery error.
- * 2. A step is stalled only when no live job, running wait, open todo or recent job entry moves it.
+ * 2. A step is stalled only when no live job, running wait, board.wake the app owes, open todo or recent job entry moves it.
  * 3. A working job with no entry for 45 min is stuck, and a job that failed in the last 24 h is listed.
  * 4. An item is worth a look when it is new or was last raised 24 h ago, so a quiet run starts no job.
  * 5. A sweep's findings count as passed on once the agent posts in its DM after the run or its job answered "nothing to report"; a sweep
@@ -74,6 +74,23 @@ test("a step is stalled only when nothing moves it", () => {
   const last = (j: Job) => (j.name === "c" ? now - 5 * MIN : now - 120 * MIN);
   const items = stalledSteps({ agent: theAgent, plan, todos: [{ id: "t1", step: "p4" }], jobs, now, seen: { "ag_x/p7": now - 600 * MIN }, last });
   assert.deepEqual(items.map(i => [i.sig, (now - i.at!) / MIN]), [["step:ag_x/p2", 300], ["step:ag_x/p7", 600]], "a step with a job is as old as its job");
+});
+
+test("a step whose idle job sleeps on a board.wake the app owes moves, and one whose idle job has no wake is stalled", () => {
+  const plan = [
+    { id: "p1", text: "job asleep on a wake", status: "doing", job: "a" },
+    { id: "p2", text: "job with no wake", status: "doing", job: "b" },
+    { id: "p3", text: "a work thread wake names it", status: "todo" },
+  ];
+  const jobs = [job("a", "idle", { id: "t:2", conversation: 2 }), job("b", "idle", { id: "t:3", conversation: 3 })];
+  const last = () => now - 120 * MIN;
+  const check = { kind: "check" as const, command: "true", every: 10 * MIN, at: now + 60 * MIN };
+  const wakes = [
+    { session: "t--2", note: "a: waits on staging", since: now - 150 * MIN, on: check },
+    { session: "t--1", note: "p3: release lands", since: now - 150 * MIN, on: check },
+  ];
+  assert.deepEqual(stalledSteps({ agent: theAgent, plan, todos: [], jobs, now, seen: {}, last, wakes }).map(i => i.sig), ["step:ag_x/p2"]);
+  assert.deepEqual(stalledSteps({ agent: theAgent, plan, todos: [], jobs, now, seen: {}, last }).map(i => i.sig), ["step:ag_x/p1", "step:ag_x/p2", "step:ag_x/p3"]);
 });
 
 test("a working job with no entry for 45 min is stuck, and a failure is listed for 24 h", () => {

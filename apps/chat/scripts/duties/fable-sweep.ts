@@ -15,8 +15,9 @@
  *     keeps retrying, which is no stall (packages/pi-host/src/durable/retrying.ts).
  *   job_failed: a job whose last turn failed, with an entry in the last 24 h, and an agent's work or comm thread that failed.
  *   duty_off: a duty, not paused, whose last run missed its target or errored.
- *   step_stalled: an open board step with no live job on it, no wait still running and no open owner todo that holds it. A step whose job
- *     wrote in the last 45 min still moves, since its parent often closes the step right after the job reports (the 45 min of rule 6).
+ *   step_stalled: an open board step with no live job on it, no wait still running, no board.wake the app owes its job or that names it, and
+ *     no open owner todo that holds it. A step whose job wrote in the last 45 min still moves, since its parent often closes the step right
+ *     after the job reports (the 45 min of rule 6).
  *   model_off: an agent other than this one whose work thread runs on Fable, which the owner keeps for this advisor (msg mwqwsgx9: "main
  *     worker들은 opus가 되면 좋겠거든? 워낙 비용이 비싸니까").
  *
@@ -42,8 +43,9 @@
  * thread shares one `updatedAt` in the :5184 lists. A step's age is the start of the job on it, else the first run that saw it open.
  *
  * Usage: OUTPUT_FILE=<file> [STATE_FILE=<file>] [LAST_RUNS_FILE=<file>] [PRECHECK_MODE=run|after|peek] node --import tsx scripts/duties/fable-sweep.ts
- *   --agent <agent id> [--server http://127.0.0.1:5184] [--threads-dir <dir>]
- * Defaults: APPS_CHAT_URL else http://127.0.0.1:5184, ~/.prime/agent/pi-host/durable/threads. The detail file is OUTPUT_FILE with
+ *   --agent <agent id> [--server http://127.0.0.1:5184] [--threads-dir <dir>] [--data-dir <dir>]
+ * Defaults: APPS_CHAT_URL else http://127.0.0.1:5184, ~/.prime/agent/pi-host/durable/threads, APPS_CHAT_DATA_DIR else ~/.pi/agent/chat, whose
+ * wakes folder is read only. The detail file is OUTPUT_FILE with
  * `.items.md` in place of `.json`, else ~/work/fable-sweep/<stamp>.items.md, and the summary goes to OUTPUT_FILE, else stdout.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -51,6 +53,8 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { parseArgs } from "node:util";
+import { appsOwnerReads, wokenStep, type AppsChat } from "../../../../legacy/prime/user-history/src/apps-step-owners.ts";
+import { pendingWakes, type Wake } from "../../../../legacy/prime/user-history/src/wakes.ts";
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -134,13 +138,20 @@ export function postFindings(input: {
   return items;
 }
 
-/** The open steps of a plan with no live job, no running wait and no open owner todo; `last` gives a job's newest entry time when known. */
+/**
+ * The open steps of a plan with no live job, no running wait, no board.wake the app still owes for it and no open owner todo; `last` gives a
+ * job's newest entry time when known. A step's wakes are read as the board tells a chat its unowned steps (`wokenStep` in
+ * legacy/prime/user-history/src/apps-step-owners.ts), from the wakes in `wakes`.
+ */
 export function stalledSteps(input: {
   agent: Agent; plan: readonly PlanItem[]; todos: readonly Todo[]; jobs: readonly Job[]; now: number; seen: Record<string, number>; last?: (job: Job) => number | undefined;
+  wakes?: readonly Wake[];
 }): Item[] {
   const { agent, todos, jobs, now, seen } = input;
   const held = new Set(todos.filter(t => !t.done && t.step).map(t => t.step!));
   const mine = jobs.filter(job => job.agent?.id === agent.id);
+  const chat: AppsChat = { id: agent.id, name: agent.name, board: null, duties: [], thread: agent.thread, jobs: mine.map(job => ({ name: job.name, state: job.status, sessionId: job.id })) };
+  const reads = appsOwnerReads(chat, [], input.wakes ?? [], now);
   const items: Item[] = [];
   const visit = (list: readonly PlanItem[]): void => {
     for (const step of list) {
@@ -149,6 +160,7 @@ export function stalledSteps(input: {
       if ((step.children ?? []).some(child => child.status !== "done" && child.status !== "dropped")) continue;
       const until = typeof step.waitUntil === "string" ? Date.parse(step.waitUntil) : step.waitUntil;
       if ((until && until > now) || step.waitFor || held.has(step.id)) continue;
+      if (wokenStep({ id: step.id, job: step.job, waitUntil: typeof step.waitUntil === "string" ? step.waitUntil : undefined }, reads)) continue;
       const named = step.job ? mine.filter(job => job.name === step.job) : [];
       if (named.some(job => job.status === "working" || job.status === "sleeping" || now - (input.last?.(job) ?? 0) < STUCK_MS)) continue;
       const key = `${agent.id}/${step.id}`;
@@ -294,7 +306,7 @@ async function get<T>(server: string, path: string): Promise<T> {
 interface Hit { conversation: { id: string; kind: string; name: string }; messageId: string; threadRoot?: string; kind: string; role: string; at: number; link: string }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const { values } = parseArgs({ options: { agent: { type: "string" }, server: { type: "string" }, "threads-dir": { type: "string" } } });
+  const { values } = parseArgs({ options: { agent: { type: "string" }, server: { type: "string" }, "threads-dir": { type: "string" }, "data-dir": { type: "string" } } });
   // peek reads like run and writes no state: the judging turn runs it when it starts late, so it judges fresh data (PRECHECK_MODE=peek).
   const mode = process.env.PRECHECK_MODE === "after" ? "after" : process.env.PRECHECK_MODE === "peek" ? "peek" : "run";
   const lastRuns: RunRecord[] = process.env.LAST_RUNS_FILE && existsSync(process.env.LAST_RUNS_FILE) ? JSON.parse(readFileSync(process.env.LAST_RUNS_FILE, "utf8") || "[]") : [];
@@ -305,8 +317,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const state: SweepState & { seen?: Record<string, number> } = process.env.STATE_FILE && existsSync(process.env.STATE_FILE)
     ? JSON.parse(readFileSync(process.env.STATE_FILE, "utf8") || "{}") : {};
 
-  const [agents, jobs, recent] = await Promise.all([
+  const [agents, jobs, recent, wakes] = await Promise.all([
     get<Agent[]>(server, "/api/agents"), get<Job[]>(server, "/api/jobs"), get<{ hits: Hit[] }>(server, `/api/search/recent?after=${now - POST_WINDOW_MS}`),
+    pendingWakes(join(values["data-dir"] ?? process.env.APPS_CHAT_DATA_DIR ?? join(homedir(), ".pi/agent/chat"), "wakes"), now),
   ]);
   const agentIds = new Set(agents.map(agent => agent.id));
   const liveJobs = jobs.filter(job => job.agent && agentIds.has(job.agent.id));
@@ -357,7 +370,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       get<{ duties: { duty: { id: string; name: string }; paused: boolean; last: { verdict: string; at: number; streak: number } | null; runs: DutyRunView[] }[] }>(server, `/api/agents/${agent.id}/duties`).catch(() => ({ duties: [] })),
     ]);
     if (board.board) {
-      const steps = stalledSteps({ agent, plan: board.board.plan, todos: board.board.todos ?? [], jobs: liveJobs, now, seen: state.seen ?? {}, last: lastOf });
+      const steps = stalledSteps({ agent, plan: board.board.plan, todos: board.board.todos ?? [], jobs: liveJobs, now, seen: state.seen ?? {}, last: lastOf, wakes });
       for (const step of steps) seen[step.sig.slice("step:".length)] = Math.min(state.seen?.[step.sig.slice("step:".length)] ?? now, step.at ?? now);
       items.push(...steps);
     }

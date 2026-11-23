@@ -141,14 +141,30 @@ const SCHEDULE_MS = (schedule: DutySchedule): number => schedule.kind === "daily
  * waited until 21:50Z for d2's 21:44Z run.
  */
 export function heldByChat(item: PlanItem, chat: AppsChat, threadWakes: readonly Wake[], now: number): boolean {
+  if (chatWakeNames(item, threadWakes)) return true;
   const until = Date.parse(item.waitUntil ?? "");
-  const named = new RegExp(`\\b${item.id.replace(/[^\w-]/g, "")}\\b`);
-  if (threadWakes.some(wake => named.test(wake.note) || (wake.on.kind === "time" && wake.on.at === until))) return true;
   if (!(until > now) || !item.duty) return false;
   const row = chat.duties.find(entry => item.duty!.startsWith(`${entry.duty.id}/`));
   if (!row || row.paused || row.duty.status !== "active" || verdictNow([...row.runs].sort((a, b) => b.at - a.at)) === "met") return false;
   if (row.running) return true;
   return row.nextAt !== undefined && row.schedule !== undefined && row.nextAt <= until && until < row.nextAt + SCHEDULE_MS(row.schedule);
+}
+
+/** Whether a wake the chat's own thread still owes names the step in its note or goes off at the step's waitUntil. */
+const chatWakeNames = (item: Pick<PlanItem, "id" | "waitUntil">, threadWakes: readonly Wake[]): boolean => {
+  const until = Date.parse(item.waitUntil ?? "");
+  const named = new RegExp(`\\b${item.id.replace(/[^\w-]/g, "")}\\b`);
+  return threadWakes.some(wake => named.test(wake.note) || (wake.on.kind === "time" && wake.on.at === until));
+};
+
+/**
+ * Whether a board.wake the app still owes moves a step: one of its owners (`stepSessions`) sleeps on it, or the chat's own thread owes one
+ * that names the step (`chatWakeNames`), as the board skill's waits rule 2 reads it. The fable auditor's sweep (apps/chat
+ * scripts/duties/fable-sweep.ts) reads a step's wakes with it: at 04:08 KST on 11-24 it flagged Search product, misc.'s p96 as nobody moving
+ * while its job komodo resource sync slept on a check wake whose note named p96.
+ */
+export function wokenStep(item: Pick<PlanItem, "id" | "job" | "sessionId" | "waitUntil">, reads: AppsOwnerReads): boolean {
+  return stepSessions(item, reads.named).some(session => reads.live.has(session)) || chatWakeNames(item, reads.threadWakes);
 }
 
 /** The open steps of a :5184 chat that nobody moves, read as a paused Prime chat's are (`unmovedSteps`), with its own owner reads. */
