@@ -84,17 +84,25 @@ export function readable(svg: string): string {
 /**
  * Draw mermaid source to an SVG string. Calls run one at a time, because mermaid keeps global state while it renders. Source that does not
  * parse rejects before mermaid draws, so no error graphic is left in the page.
+ *
+ * Mermaid draws in a box it adds to the page to measure the labels. Left to itself it adds that box at the end of body, under the app, and
+ * while it draws the page is taller than the window, so any scrollIntoView, such as a jump to a linked post, scrolls the whole app up by up
+ * to the diagram's height. The box here is fixed and 0 px tall, so the page never grows.
  */
 export function drawMermaid(source: string): Promise<string> {
   const run = queue.then(async () => {
     const mermaid = await load();
     await mermaid.parse(source);
     const id = `mmd-${++seq}`;
+    const stage = document.createElement("div");
+    stage.style.cssText = "position: fixed; top: 0; left: 0; width: 100%; height: 0; overflow: hidden; pointer-events: none;";
+    stage.setAttribute("aria-hidden", "true");
+    document.body.append(stage);
     try {
-      const { svg } = await mermaid.render(id, source);
+      const { svg } = await mermaid.render(id, source, stage);
       return readable(svg);
     } finally {
-      document.getElementById(`d${id}`)?.remove();
+      stage.remove();
     }
   });
   queue = run.catch(() => undefined);

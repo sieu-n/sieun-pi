@@ -29,6 +29,21 @@ async function inside(page: Page, locator: Locator) {
   return b;
 }
 
+/**
+ * A channel of the test's own with a few owner posts, so no other spec's send and no fixture agent's reply lands in it and moves the post out
+ * from under the pointer between the hover and the click on its hover bar.
+ */
+async function channel(page: Page): Promise<{ room: string; post: string }> {
+  const name = `popover-${Math.random().toString(36).slice(2, 8)}`;
+  const room = ((await (await page.request.post("/api/rooms", { data: { kind: "channel", name, members: [] } })).json()) as { id: string }).id;
+  const ids: string[] = [];
+  for (let n = 1; n <= 5; n++) {
+    const sent = await page.request.post(`/api/c/${room}/send`, { data: { text: `post ${n} of ${name}: the census for lane ${n} finished`, requestId: crypto.randomUUID() } });
+    ids.push(((await sent.json()) as { item: { id: string } }).item.id);
+  }
+  return { room, post: ids[2]! };
+}
+
 async function open(page: Page, scale: number, hash: string) {
   await page.addInitScript((value) => {
     if (value === 1) localStorage.removeItem("chat.interfaceScale");
@@ -83,11 +98,9 @@ for (const size of WINDOWS) {
       });
 
       test("the emoji picker and the profile menu stay in the window", async ({ page }) => {
-        // The link names p10, because other specs post into Vent's DM and push it behind "Load older messages" on a plain open.
-        await open(page, scale, "/#/c/dm_vent?m=p10");
-        const post = page.locator('section.conversation [data-message-id="p10"]');
-        // A linked post lands at the top edge, where the byline above it covers its hover toolbar.
-        await post.evaluate((el) => el.scrollIntoView({ block: "center" }));
+        const { room, post: id } = await channel(page);
+        await open(page, scale, `/#/c/${room}`);
+        const post = page.locator(`section.conversation [data-message-id="${id}"]`);
         await post.hover();
         await post.getByRole("toolbar", { name: "Message actions" }).getByRole("button", { name: "Add reaction" }).click();
         const picker = page.locator("[data-emoji-picker]");
