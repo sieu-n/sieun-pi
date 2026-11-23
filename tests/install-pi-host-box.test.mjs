@@ -6,7 +6,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { installPiHost, layout, serviceEnv, systemdUnit } from "../scripts/install-pi-host-box.mjs";
+import { chatUrlFor, installPiHost, layout, plist, serviceEnv, systemdUnit } from "../scripts/install-pi-host-box.mjs";
 
 const dirs = [];
 const temp = name => { const dir = mkdtempSync(join(tmpdir(), `${name}-`)); dirs.push(dir); return dir; };
@@ -75,4 +75,15 @@ test("a live commit whose unit changed or whose socket does not answer goes thro
   }
   const silent = liveBox();
   await assert.rejects(installPiHost({ repo: silent.repo, ref: silent.sha, home: silent.home, node: process.execPath, socket: silent.socket, restart: false }), /during the boot check/);
+});
+
+test("a Mac install points PI_HOST_CHAT_URL at the agent relay's chat proxy", () => {
+  const home = temp("mac");
+  assert.equal(chatUrlFor(home, "darwin"), "http://127.0.0.1:7792");
+  mkdirSync(join(home, ".config/pi-host-relay"), { recursive: true });
+  writeFileSync(join(home, ".config/pi-host-relay/relay.json"), JSON.stringify({ chatProxyPort: 7799 }));
+  assert.equal(chatUrlFor(home, "darwin"), "http://127.0.0.1:7799");
+  assert.equal(chatUrlFor(home, "linux"), undefined);
+  const rendered = plist(layout(home, "darwin"), "/usr/local/bin/node", serviceEnv(home, "/usr/local/bin/node", chatUrlFor(home, "darwin")));
+  assert.match(rendered, /<key>PI_HOST_CHAT_URL<\/key><string>http:\/\/127\.0\.0\.1:7799<\/string>/);
 });

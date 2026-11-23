@@ -12,7 +12,8 @@
  *    a pi-host thread that runs this command can still answer before its host restarts. Durable threads resume after the restart.
  *
  * When `current` already points at the commit's release, the unit or plist it would write is the one on disk and the live socket answers
- * `durable_threads`, the install changes nothing and restarts nothing.
+ * `durable_threads`, the install changes nothing and restarts nothing. On macOS, where no apps/chat runs, PI_HOST_CHAT_URL defaults to the
+ * agent relay's chat proxy on 127.0.0.1 (`chatProxyPort` in ~/.config/pi-host-relay/relay.json, 7792 when unset).
  *
  * The service runs `node --import tsx pi-host/src/main.ts` from current/packages with Prime's agent dir ~/.prime/agent, the sessions in
  * ~/.prime/agent/pi-sessions and the durable threads in ~/.prime/agent/pi-host/durable, as pi-host.service on us-metal02 does. Rollback is
@@ -67,6 +68,14 @@ export function serviceEnv(home, node, chatUrl) {
     PI_AGENT_BUS_BOXES: join(home, ".config/pi-host-relay/boxes.json"),
     ...(chatUrl ? { PI_HOST_CHAT_URL: chatUrl } : {}),
   };
+}
+
+/** The chat URL a box's threads use: on macOS the agent relay's chat proxy, elsewhere none, so pi-host keeps its :5184 default. */
+export function chatUrlFor(home, platform = process.platform) {
+  if (platform !== "darwin") return undefined;
+  let port = 7792;
+  try { port = JSON.parse(readFileSync(join(home, ".config/pi-host-relay/relay.json"), "utf8")).chatProxyPort ?? port; } catch { /* no relay.json: the relay's default */ }
+  return `http://127.0.0.1:${port}`;
 }
 
 function hostArgs(paths) {
@@ -250,7 +259,7 @@ function delayedRestart(platform, sha7, unitFile, delaySec = 5) {
 const readText = path => { try { return readFileSync(path, "utf8"); } catch { return undefined; } };
 const linkOf = path => { try { return readlinkSync(path); } catch { return undefined; } };
 
-export async function installPiHost({ repo = checkout, ref = "origin/main", home = homedir(), node = process.execPath, chatUrl, prepareOnly = false, restart = true, socket } = {}) {
+export async function installPiHost({ repo = checkout, ref = "origin/main", home = homedir(), node = process.execPath, chatUrl = chatUrlFor(home), prepareOnly = false, restart = true, socket } = {}) {
   const platform = process.platform;
   if (platform !== "darwin" && platform !== "linux") throw new Error(`pi-host installs on Linux and macOS, not ${platform}`);
   // prime-sync fetches every box's checkout each minute, so a failed fetch (the Mac reached no github.com on 10-30) builds the last fetched ref.
