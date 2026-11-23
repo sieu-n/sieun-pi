@@ -6,6 +6,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { measure, readSmoothness } from "../scripts/duties/whole-system.ts";
 
+// readSmoothness dates each entry (`end`, `at`) for queue_holds_30's lastEventAt; these checks compare the rest.
+const bare = (value: unknown): unknown => Array.isArray(value) ? value.map(bare) : value !== null && typeof value === "object"
+  ? Object.fromEntries(Object.entries(value).filter(([key]) => key !== "end" && key !== "at")) : value;
+
 const RUN = Date.parse("2026-11-01T09:32:00Z");
 const FROM = RUN - 30 * 60_000;
 const SEO = "01a11a24-a46e-77ff-adf7-671d01d462e2", LATER = "01a19659-11bd-70be-9c9d-db53e1f84008", AHEAD = "01a1963d-9f8f-7674-b82b-caf22b7c1c19";
@@ -51,7 +55,7 @@ const pool = [
 
 test("a park whose tree asked nothing after its own cell came due counts none of that time as passed", () => {
   const smooth = readSmoothness(pool, new Set(), FROM, RUN);
-  assert.deepEqual(smooth.overtaken.find(entry => entry.session === SEO), { session: SEO, minutes: 0.8, asleep: 10.4 });
+  assert.deepEqual(bare(smooth.overtaken.find(entry => entry.session === SEO)), { session: SEO, minutes: 0.8, asleep: 10.4 });
   const { metrics, flagged } = measure({ now: RUN, watch: [], log: { holds: [] }, chats: [], smooth });
   assert.equal(metrics.parked_overtaken_over_10min, 0);
   assert.equal(metrics.queue_holds_30, 0);
@@ -61,6 +65,6 @@ test("a park whose tree asked nothing after its own cell came due counts none of
 test("a park whose tree asked at each cell and was refused is still passed", () => {
   const asked = [...pool.slice(0, -1), park(SEO, "09:15:31", "claude16", "09:20:00"), park(SEO, "09:20:01", "claude16", "09:25:30"), park(SEO, "09:25:31", "claude16", "09:26:00"), enter(SEO, "09:25:42")];
   const smooth = readSmoothness(asked, new Set(), FROM, RUN);
-  assert.deepEqual(smooth.overtaken.find(entry => entry.session === SEO), { session: SEO, minutes: 11, asleep: 0.2 });
+  assert.deepEqual(bare(smooth.overtaken.find(entry => entry.session === SEO)), { session: SEO, minutes: 11, asleep: 0.2 });
   assert.equal(measure({ now: RUN, watch: [], log: { holds: [] }, chats: [], smooth }).metrics.queue_holds_30, 1);
 });

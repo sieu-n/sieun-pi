@@ -6,6 +6,10 @@ import { test } from "node:test";
 import { measure, offlineMs, readSmoothness, treeOffline } from "../scripts/duties/whole-system.ts";
 import type { WatchLine } from "../src/mac-usable-watch.ts";
 
+// readSmoothness dates each entry (`end`, `at`) for queue_holds_30's lastEventAt; these checks compare the rest.
+const bare = (value: unknown): unknown => Array.isArray(value) ? value.map(bare) : value !== null && typeof value === "object"
+  ? Object.fromEntries(Object.entries(value).filter(([key]) => key !== "end" && key !== "at")) : value;
+
 const RUN = Date.parse("2026-10-30T01:22:00Z");
 const FROM = RUN - 30 * 60_000;
 const SEP = "01a15427-145f-751d-ba15-d27b6c30f65f";
@@ -33,7 +37,7 @@ const hosts = new Map([[SEP, "mac"]]);
 test("a park of a tree whose box Tailscale read offline the whole time it was passed counts no minutes", () => {
   const watch = minutes("00:40:30", "01:21:30").map(clock => watchLine(clock, true));
   const smooth = readSmoothness(pool, new Set(), FROM, RUN, treeOffline(watch, hosts));
-  assert.deepEqual(smooth.overtaken.find(park => park.session === SEP), { session: SEP, minutes: 0, offline: 27.9 });
+  assert.deepEqual(bare(smooth.overtaken.find(park => park.session === SEP)), { session: SEP, minutes: 0, offline: 27.9 });
   const { metrics, flagged } = measure({ now: RUN, watch: [], log: { holds: [] }, chats: [], smooth });
   assert.equal(metrics.parked_overtaken_over_10min, 0);
   assert.equal(metrics.queue_holds_30, 0);

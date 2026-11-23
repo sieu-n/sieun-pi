@@ -4,6 +4,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { measure, readPoolLog, readSmoothness } from "../scripts/duties/whole-system.ts";
 
+// readSmoothness dates each entry (`end`, `at`) for queue_holds_30's lastEventAt; these checks compare the rest.
+const bare = (value: unknown): unknown => Array.isArray(value) ? value.map(bare) : value !== null && typeof value === "object"
+  ? Object.fromEntries(Object.entries(value).filter(([key]) => key !== "end" && key !== "at")) : value;
+
 const RUN = Date.parse("2026-10-21T11:00:00Z");
 const FROM = RUN - 30 * 60_000;
 const at = (clock: string): number => Date.parse(`2026-10-21T${clock}Z`) / 1000;
@@ -41,7 +45,7 @@ test("a park counts the minutes after a later tree of its priority or lower got 
     parked("b", "10:05:00", "low"), unparked("b", "10:40:00"),
     unparked("a", "10:50:00"),
   ], new Set(), FROM, RUN);
-  assert.deepEqual(smooth.overtaken, [{ session: "hi", minutes: 0 }, { session: "b", minutes: 0 }, { session: "a", minutes: 10 }]);
+  assert.deepEqual(bare(smooth.overtaken), [{ session: "hi", minutes: 0 }, { session: "b", minutes: 0 }, { session: "a", minutes: 10 }]);
   const { metrics, flagged } = measure({ now: RUN, watch: [], log: { holds: [] }, chats: [], smooth });
   assert.equal(metrics.parked_overtaken_min_p90, 10);
   // a waited exactly 10 min past b, which is not over HOLD_MS.
@@ -57,7 +61,7 @@ test("a park reads its tree's priority at the time a later tree got in, since a 
     parked("a", "10:00:00"), parked("a", "10:04:00", "low"), parked("b", "10:05:00"), unparked("b", "10:13:00"),
     parked("c", "10:06:00", "low"), unparked("c", "10:31:00"), parked("a", "10:40:00"), unparked("a", "10:52:00"),
   ], new Set(), FROM, RUN);
-  assert.deepEqual(smooth.overtaken, [{ session: "c", minutes: 0 }, { session: "a", minutes: 21 }]);
+  assert.deepEqual(bare(smooth.overtaken), [{ session: "c", minutes: 0 }, { session: "a", minutes: 21 }]);
 });
 
 test("a chat head's or an owner's turn starts first by design, so its tree passes no parked job tree", () => {
@@ -69,7 +73,7 @@ test("a chat head's or an owner's turn starts first by design, so its tree passe
     parked("o", "10:15:00"), owner, unparked("o", "10:20:00"), unparked("a", "10:45:00"),
     parked("b", "10:46:00"), parked("j", "10:47:00"), admitted("j", "2026-10-21T10:48:00", 0), unparked("j", "10:48:00"), unparked("b", "10:59:00"),
   ], new Set([HEAD]), FROM, RUN);
-  assert.deepEqual(smooth.overtaken.filter(park => park.minutes > 0), [{ session: "b", minutes: 11 }]);
+  assert.deepEqual(bare(smooth.overtaken.filter(park => park.minutes > 0)), [{ session: "b", minutes: 11 }]);
 });
 
 test("a park passed by a later tree for over 10 min is a hold in queue_holds_30", () => {
@@ -91,7 +95,7 @@ test("a chat head that waited for a free slot while no job run started ahead of 
     JSON.stringify({ ts: "2026-10-21T10:39:00", event: "turn_admitted", session: "owner-run", tree: "owner-run", kind: "owner", waited_s: 0 }),
     admitted(HEAD, "2026-10-21T10:40:00", 195),
   ], new Set([HEAD]), FROM, RUN);
-  assert.deepEqual(smooth.headWaits, [{ session: HEAD, waitedS: 195, passed: false }]);
+  assert.deepEqual(bare(smooth.headWaits), [{ session: HEAD, waitedS: 195, passed: false }]);
   const { metrics, flagged } = measure({ now: RUN, watch: [], log: { holds: [] }, chats: [], smooth });
   assert.equal(metrics.head_waits_over_30s, 0);
   assert.equal(metrics.head_waits_full_box, 1);
@@ -106,7 +110,7 @@ test("a tree that a Manual pin let in passes no parked tree, as sieunpark77's pi
     parked("b", "10:06:00"), unparked("b", "10:35:00"), vend("b", "switch"),
     unparked("a", "10:52:00"), vend("a", "switch"),
   ], new Set(), FROM, RUN);
-  assert.deepEqual(smooth.overtaken, [{ session: "b", minutes: 0 }, { session: "a", minutes: 17 }]);
+  assert.deepEqual(bare(smooth.overtaken), [{ session: "b", minutes: 0 }, { session: "a", minutes: 17 }]);
 });
 
 test("a job run that took the slot a head's own run let go, before the head's next run queued, passes nobody, as at 15:16:00Z on 10-22", () => {
@@ -116,7 +120,7 @@ test("a job run that took the slot a head's own run let go, before the head's ne
     queued(HEAD, "2026-10-21T10:39:00"),
     admitted(HEAD, "2026-10-21T10:40:16", 76.6),
   ], new Set([HEAD]), FROM, RUN);
-  assert.deepEqual(smooth.headWaits, [{ session: HEAD, waitedS: 76.6, passed: false }]);
+  assert.deepEqual(bare(smooth.headWaits), [{ session: HEAD, waitedS: 76.6, passed: false }]);
   const { metrics } = measure({ now: RUN, watch: [], log: { holds: [] }, chats: [], smooth });
   assert.equal(metrics.head_waits_over_30s, 0);
   assert.equal(metrics.queue_holds_30, 0);
@@ -125,7 +129,7 @@ test("a job run that took the slot a head's own run let go, before the head's ne
 test("a job run the queue started while a head waited in line passes it", () => {
   const smooth = readSmoothness([queued(HEAD, "2026-10-21T10:39:00"), admitted("job", "2026-10-21T10:39:30", 900), admitted(HEAD, "2026-10-21T10:40:16", 76.6)],
     new Set([HEAD]), FROM, RUN);
-  assert.deepEqual(smooth.headWaits, [{ session: HEAD, waitedS: 76.6, passed: true }]);
+  assert.deepEqual(bare(smooth.headWaits), [{ session: HEAD, waitedS: 76.6, passed: true }]);
 });
 
 test("a tree pinned to its account neither passes nor is passed, as 01a11ba8 on claude8 from 15:19Z to 16:30Z on 10-22", () => {
@@ -135,7 +139,7 @@ test("a tree pinned to its account neither passes nor is passed, as 01a11ba8 on 
     parked("b", "10:03:00"), manual(parked("pin2", "10:04:00")), manual(unparked("pin2", "10:05:00")),
     unparked("b", "10:40:00"), manual(unparked("pin", "10:50:00")),
   ], new Set(), FROM, RUN);
-  assert.deepEqual(smooth.overtaken, [{ session: "b", minutes: 0 }]);
+  assert.deepEqual(bare(smooth.overtaken), [{ session: "b", minutes: 0 }]);
 });
 
 test("a park R6 held on its own account is not passed while held, as 01a17e52 waiting for claude-virev12 from 19:15Z on 10-29", () => {
@@ -146,7 +150,7 @@ test("a park R6 held on its own account is not passed while held, as 01a17e52 wa
     budget(parked("c", "10:00:00")), budget(parked("c", "10:21:00")), parked("c", "10:25:00"), parked("d", "10:22:00"), unparked("d", "10:30:00"),
     unparked("c", "10:55:00"),
   ], new Set(), FROM, RUN);
-  assert.deepEqual(smooth.overtaken, [{ session: "a", minutes: 0 }, { session: "d", minutes: 0 }, { session: "c", minutes: 25 }]);
+  assert.deepEqual(bare(smooth.overtaken), [{ session: "a", minutes: 0 }, { session: "d", minutes: 0 }, { session: "c", minutes: 25 }]);
 });
 
 test("a vend with no unparked line before it ends the park, as 01a15ede's claude19 vend at 16:28Z on 10-22", () => {
@@ -156,7 +160,7 @@ test("a vend with no unparked line before it ends the park, as 01a15ede's claude
     parked("b", "10:05:00"), unparked("b", "10:06:00"), vend("b"),
     parked("a", "10:40:00"), unparked("a", "10:41:00"), vend("a"),
   ], new Set(), FROM, RUN);
-  assert.deepEqual(smooth.overtaken, [{ session: "a", minutes: 0 }]);
+  assert.deepEqual(bare(smooth.overtaken), [{ session: "a", minutes: 0 }]);
 });
 
 // 10-24 on us-metal02: the ops guy chat 01a11af8 parked at 00:59:37Z for claude-virev7 at 01:00Z, and the wait line named vend claude20, so its
@@ -181,9 +185,9 @@ test("a park whose wait vends the tree's own account meanwhile is served, and a 
     enter(OPS, "01:12:27", "claude-virev7@slack.green")];
   const window = [Date.parse("2026-10-24T01:01:00Z"), Date.parse("2026-10-24T01:31:00Z")] as const;
   const served = readSmoothness(lines([]), new Set(), ...window);
-  assert.deepEqual(served.overtaken, [{ session: LATER, minutes: 0 }, { session: OPS, minutes: 0 }]);
+  assert.deepEqual(bare(served.overtaken), [{ session: LATER, minutes: 0 }, { session: OPS, minutes: 0 }]);
   const refused = readSmoothness(lines([limited(OPS, "00:59:58")]), new Set(), ...window);
-  assert.deepEqual(refused.overtaken, [{ session: LATER, minutes: 0 }, { session: OPS, minutes: 5.7 }]);
+  assert.deepEqual(bare(refused.overtaken), [{ session: LATER, minutes: 0 }, { session: OPS, minutes: 5.7 }]);
 });
 
 
@@ -197,7 +201,7 @@ test("a park reads the priority line its chat wrote while it waited", () => {
     parked("a", "10:00:00", "high"), parked("hi", "10:05:00", "high"), priority("a", "2026-10-21T10:09:00", "normal", "high"),
     unparked("hi", "10:10:00"), unparked("a", "10:52:00"),
   ], new Set(), FROM, RUN);
-  assert.deepEqual(smooth.overtaken, [{ session: "a", minutes: 0 }]);
+  assert.deepEqual(bare(smooth.overtaken), [{ session: "a", minutes: 0 }]);
 });
 
 // 10-28 on us-metal02: 01a11d25 parked at 21:12:02Z for claude-virev5's 21:20Z cell with vend claude5, its turn ran on claude5 and ended at
@@ -213,14 +217,14 @@ test("a park that ran on its own account is held only from the 429 on that accou
     parked("b", "10:02:00"), unparked("b", "10:05:00"),
     parked("a", "10:40:00"), wait("a", "10:40:00", "claude21@slack.green"), limited("a", "10:40:00"), unparked("a", "10:41:00"),
   ], new Set(), FROM, RUN).overtaken;
-  assert.deepEqual(idle, [{ session: "a", minutes: 0 }]);
+  assert.deepEqual(bare(idle), [{ session: "a", minutes: 0 }]);
   // A tree that parked later and got in after the 429 still passes it.
   const passed = readSmoothness([
     parked("a", "10:00:00"), wait("a", "10:00:00", "claude21@slack.green"), parked("c", "10:03:00"),
     parked("a", "10:20:00"), wait("a", "10:20:00", "claude21@slack.green"), limited("a", "10:20:00"),
     unparked("c", "10:30:00"), unparked("a", "10:45:00"),
   ], new Set(), FROM, RUN).overtaken;
-  assert.deepEqual(passed, [{ session: "c", minutes: 0 }, { session: "a", minutes: 15 }]);
+  assert.deepEqual(bare(passed), [{ session: "c", minutes: 0 }, { session: "a", minutes: 15 }]);
 });
 
 // 11-03 on us-metal02: d7's 14:18Z run took pi-pool's lead list of that moment as the heads. pi-host had put 46 comm threads on it from
@@ -239,7 +243,7 @@ test("a run is a head's only from when pi-pool's log marks it led, never by the 
     line({ ts: "2026-10-21T10:42:00", event: "turn_admitted", session: LED, tree: LED, kind: "slot", waited_s: 659, lead_s: 659 }),
     line({ ts: "2026-10-21T10:42:30", event: "turn_admitted", session: LATE, tree: LATE, kind: "slot", waited_s: 688, lead_s: 90 }),
   ], new Set(), FROM, RUN);
-  assert.deepEqual(smooth.headWaits, [{ session: LED, waitedS: 659, passed: true }, { session: LATE, waitedS: 90, passed: false }]);
+  assert.deepEqual(bare(smooth.headWaits), [{ session: LED, waitedS: 659, passed: true }, { session: LATE, waitedS: 90, passed: false }]);
   const { metrics } = measure({ now: RUN, watch: [], log: { holds: [] }, chats: [], smooth });
   assert.equal(metrics.head_waits_over_30s, 1);
 });

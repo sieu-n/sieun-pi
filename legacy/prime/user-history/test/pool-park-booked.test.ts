@@ -7,6 +7,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { measure, readSmoothness } from "../scripts/duties/whole-system.ts";
 
+// readSmoothness dates each entry (`end`, `at`) for queue_holds_30's lastEventAt; these checks compare the rest.
+const bare = (value: unknown): unknown => Array.isArray(value) ? value.map(bare) : value !== null && typeof value === "object"
+  ? Object.fromEntries(Object.entries(value).filter(([key]) => key !== "end" && key !== "at")) : value;
+
 const RUN = Date.parse("2026-11-22T05:07:00Z");
 const FROM = RUN - 30 * 60_000;
 const MAC = "01a0cc38-4679-76da-8bbc-c5d5cb779908", LATER = "01a10810-34b5-710f-88fe-3d369f89a8c9";
@@ -71,7 +75,7 @@ const read = (lines: string[]) => {
 
 test("a tree that slept past the cell a booked line gave it counts that time as its own wait", () => {
   const { park, metrics } = read(pool(true));
-  assert.deepEqual(park, { session: MAC, minutes: 0.5, asleep: 16 });
+  assert.deepEqual(bare(park), { session: MAC, minutes: 0.5, asleep: 16 });
   assert.equal(metrics.parked_overtaken_over_10min, 0);
   assert.equal(metrics.queue_holds_30, 0);
 });

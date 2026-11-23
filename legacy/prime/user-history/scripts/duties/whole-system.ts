@@ -758,13 +758,13 @@ export interface Smoothness {
    * Each chat head run pi-pool admitted in the window, with its queue wait, and whether a job run started from the queue while it waited: the
    * queue's order at fault, since chat heads go first (pi-pool lead). A head that waited with no such start waited for the box's slot count.
    */
-  headWaits: { session: string; waitedS: number; passed: boolean }[];
+  headWaits: { session: string; waitedS: number; passed: boolean; at: number }[];
   /**
    * Per park that ended in the window: minutes it stayed parked after a tree of its priority or lower that parked later got an account, less the
    * minutes its tree's box read offline (`offline`, set when there were any) and the minutes its tree asked pi-pool nothing after the cell it
    * was given came due (`asleep`, set when there were any).
    */
-  overtaken: { session: string; minutes: number; offline?: number; asleep?: number }[];
+  overtaken: { session: string; minutes: number; offline?: number; asleep?: number; end: number }[];
 }
 
 /** How long a tree's box read offline in [from, to) (`treeOffline`); absent: every tree's box read online throughout. */
@@ -904,7 +904,7 @@ export function readSmoothness(lines: readonly string[], heads: ReadonlySet<stri
         const passed = inLine.get(entry.session) ?? false;
         inLine.delete(entry.session);
         const waited = heads.has(entry.session) ? entry.waited_s : entry.lead_s;
-        if (typeof waited === "number" && at >= from && at < to) headWaits.push({ session: entry.session, waitedS: waited, passed });
+        if (typeof waited === "number" && at >= from && at < to) headWaits.push({ session: entry.session, waitedS: waited, passed, at });
       }
       continue;
     }
@@ -964,10 +964,10 @@ export function readSmoothness(lines: readonly string[], heads: ReadonlySet<stri
   // 19:19Z until its own entry at 23:15Z.
   const asleepAt = (park: (typeof ended)[number], at: number) => park.asleep.some(([a, b]) => a + CELL_STALE_MS <= at && at < b);
   const overtaken = ended.filter(park => park.end >= from && park.end < to).map(park => {
-    if (park.served) return { session: park.session, minutes: 0 };
+    if (park.served) return { session: park.session, minutes: 0, end: park.end };
     const passed = ended.find(other => !other.led && other.end < park.end && other.end > park.from && other.start > park.start &&
       rankAt(other, other.end) >= rankAt(park, other.end) && !heldAt(park, other.end) && !asleepAt(park, other.end));
-    if (!passed) return { session: park.session, minutes: 0 };
+    if (!passed) return { session: park.session, minutes: 0, end: park.end };
     const away = offline?.(park.session, passed.end, park.end) ?? 0;
     // A span the box read offline counts once, as offline.
     const asleep = park.asleep.reduce((sum, [a, b]) => {
@@ -975,7 +975,7 @@ export function readSmoothness(lines: readonly string[], heads: ReadonlySet<stri
       return to > from ? sum + to - from - (offline?.(park.session, from, to) ?? 0) : sum;
     }, 0);
     const tenths = (ms: number) => Math.round(ms / MINUTE * 10) / 10;
-    return { session: park.session, minutes: tenths(Math.max(0, park.end - passed.end - away - asleep)), ...away > 0 ? { offline: tenths(away) } : {},
+    return { session: park.session, end: park.end, minutes: tenths(Math.max(0, park.end - passed.end - away - asleep)), ...away > 0 ? { offline: tenths(away) } : {},
       ...asleep > 0 ? { asleep: tenths(asleep) } : {} };
   });
   return { headWaits, overtaken };
@@ -2187,7 +2187,13 @@ export function measure(input: Inputs): PrecheckOutput {
   // clean_min_30 dates its newest dirty or unknown minute by the minute's end, when a run's window first holds it, so the duty runner reads a
   // minute that only waits to leave the window as quiet (`metricStreaks`). On 11-19 the Mac's 20:33Z minute alone held the headline at 29 in
   // the 20:35Z, 20:39Z and 20:54Z runs, and the 20:54Z run read 3 misses that did not move and asked for a new root-cause job.
-  return { metrics, flagged, windowMs: { clean_min_30: WINDOW_MS }, ...uncleanUntil === undefined ? {} : { lastEventAt: { clean_min_30: uncleanUntil } } };
+  // queue_holds_30 dates its newest counted event the same way: a hold's end (now for one still open), a passed head's admission and an
+  // overtaken park's end. On 11-23 one park, 01a205b5 overtaken 18 min until 06:32Z, held it at 1 in d7's 06:50Z, 06:57Z and 07:05Z runs,
+  // and d9 read three misses that did not move after p1649's fix a13be025 went live at 07:08:47Z.
+  const holdEnds = [...queueHolds.map(hold => hold.to), ...poolHeld.filter(hold => !hold.cell).map(hold => hold.to), ...slowHeads.map(run => run.at),
+    ...overtakenLong.map(park => park.end)];
+  const lastEventAt = { ...uncleanUntil === undefined ? {} : { clean_min_30: uncleanUntil }, ...holdEnds.length ? { queue_holds_30: Math.max(...holdEnds) } : {} };
+  return { metrics, flagged, windowMs: { clean_min_30: WINDOW_MS, queue_holds_30: WINDOW_MS }, ...Object.keys(lastEventAt).length ? { lastEventAt } : {} };
 }
 
 /**
