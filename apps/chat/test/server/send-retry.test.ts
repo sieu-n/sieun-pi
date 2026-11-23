@@ -5,7 +5,7 @@
  * Run: cd apps/chat && node --import tsx --test --test-force-exit --test-isolation=none test/server/send-retry.test.ts
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -101,7 +101,7 @@ test("a check-in job whose brief pi-host refused starts on the next try with one
     await until(async () => s.app.threads.thread(agent.thread)?.status, status => status !== "running");
     await s.app.boards.apply(agent.id, [{ op: "plan_add", text: "Ship the relay" }], "agent");
     type CheckIn = { lastAt: number; start?: { at: number; name: string; job?: { id: string } }; job?: { id: string; name: string } };
-    const checkIn = () => (JSON.parse(readFileSync(s.app.boards.dutiesPath(agent.id), "utf8")) as { checkIn?: CheckIn }).checkIn;
+    const checkIn = () => s.app.boards.dutyFile(agent.id).checkIn as CheckIn | undefined;
     const refused = refuse(host, id => id.startsWith(`checkin:${agent.id}:`));
     const first = (await s.get<CheckInView>(`/api/agents/${agent.id}/check-in`)).nextAt!;
     await s.app.boards.tick(first);

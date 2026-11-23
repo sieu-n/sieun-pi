@@ -6,9 +6,8 @@
  * Run: cd apps/chat && node --import tsx --test --test-force-exit --test-isolation=none test/server/duties-job-event.test.ts
  */
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { after, before, test } from "node:test";
+import type { DutyFile } from "../../server/boards.ts";
 import type { DutyRow, LiveEvent } from "../../web/src/lib/api/types.ts";
 import { FIXTURE_AGENTS as agents, FIXTURE_IDS as ids } from "../../server/fixture/seed.ts";
 import type { FixtureHost } from "../../server/host/fixture.ts";
@@ -36,8 +35,7 @@ before(async () => {
     onMiss: "fix it", status: "active", createdAt: now - 10 * 24 * HOUR, updatedAt: now, lastRunAt: now - HOUR, runCount: 1 };
   const run = { duty: "d1", at: now - HOUR, slot: now - HOUR, trigger: "schedule", ms: 900, verdict: "missed", summary: "up 90",
     metrics: { up: { value: 90, target: 99, op: ">=", met: false } }, job: { id: "uptime-fix", name: "uptime fix" } };
-  mkdirSync(s.app.boards.dir(agents.vent), { recursive: true });
-  writeFileSync(join(s.app.boards.dir(agents.vent), "duties.json"), JSON.stringify({ duties: [duty], runs: { d1: [run] } }));
+  await s.app.boards.saveDuties(agents.vent, { duties: [duty], runs: { d1: [run] } } as unknown as DutyFile);
 });
 after(async () => {
   await s.close();

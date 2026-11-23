@@ -5,13 +5,16 @@
  */
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
 import { test } from "node:test";
+import type { DutyFile } from "../../server/boards.ts";
 import type { DutyRunRecord } from "../../web/src/lib/api/shared/chat-duties.ts";
+import { readConfig } from "../../server/config.ts";
 import { FIXTURE_AGENTS as agents } from "../../server/fixture/seed.ts";
 import { FixtureHost } from "../../server/host/fixture.ts";
 import { seedFixture } from "../../server/fixture/seed.ts";
@@ -42,9 +45,8 @@ const jobRun = (at: number): DutyRunRecord => ({
 async function firstServer(mode: string, dataDir: string, work: string): Promise<void> {
   const now = Date.now();
   const s = await start({ dataDir });
-  mkdirSync(s.app.boards.dir(agents.vent), { recursive: true });
-  writeFileSync(join(work, "duties-path"), s.app.boards.dutiesPath(agents.vent));
-  writeFileSync(s.app.boards.dutiesPath(agents.vent), JSON.stringify({ duties: [duty(work, now, mode === "ended" ? 90 : 99.5)], runs: mode === "after" ? { d1: [jobRun(now - HOUR)] } : {} }));
+  writeFileSync(join(work, "duties-path"), relative(dataDir, s.app.boards.dutiesPath(agents.vent)));
+  await s.app.boards.saveDuties(agents.vent, { duties: [duty(work, now, mode === "ended" ? 90 : 99.5)], runs: mode === "after" ? { d1: [jobRun(now - HOUR)] } : {} } as DutyFile);
   if (mode === "ended") {
     (s.host as FixtureHost).beforeSubmit = async (_thread, input) => {
       if (!input.requestId?.startsWith("duty:")) return;
@@ -66,8 +68,18 @@ if (child) await firstServer(child, process.env.DUTY_RESTART_DATA!, process.env.
 
 const modes = (work: string): string[] => { try { return readFileSync(join(work, "modes"), "utf8").trim().split("\n"); } catch { return []; } };
 type Pending = { launch: { exit: string; script: string; output: string }; job?: { id: string; name: string } };
-const readFile = (path: string) => JSON.parse(readFileSync(path, "utf8")) as { runs: Record<string, DutyRunRecord[]>; pending?: Record<string, Pending> };
-const fileOf = (s: Running) => readFile(s.app.boards.dutiesPath(agents.vent));
+type File = { runs: Record<string, DutyRunRecord[]>; pending?: Record<string, Pending> };
+/** The duties file the killed first server kept, in its JSON file or chat.sqlite as APPS_CHAT_DB_KINDS says, read while no server runs. */
+const keptFile = (dataDir: string, key: string): File => {
+  if (!(readConfig([]).dbKinds ?? []).includes("duties")) return JSON.parse(readFileSync(join(dataDir, key), "utf8")) as File;
+  const db = new DatabaseSync(join(dataDir, "chat.sqlite"), { readOnly: true });
+  try {
+    return JSON.parse((db.prepare("SELECT body FROM duties_files WHERE path = ?").get(key) as { body: string }).body) as File;
+  } finally {
+    db.close();
+  }
+};
+const fileOf = (s: Running) => s.app.boards.dutyFile(agents.vent) as unknown as File;
 
 /**
  * Starts the first server in its own process group, waits until its precheck started (or for `ended` until it hangs in the job's submit),
@@ -145,7 +157,7 @@ if (!child) test("an after-job measure whose server dies during its precheck lan
 if (!child) test("a run whose server dies after its precheck ended and its job was made reads the same output and submits to the same job", async () => {
   let pending: Pending | undefined;
   const { s, work, cleanup } = await restartMidPrecheck("ended", (dataDir, work) => {
-    pending = readFile(readFileSync(join(work, "duties-path"), "utf8")).pending?.d1;
+    pending = keptFile(dataDir, readFileSync(join(work, "duties-path"), "utf8")).pending?.d1;
     const host = new FixtureHost();
     host.wordMs = 0;
     seedFixture(host, dataDir);

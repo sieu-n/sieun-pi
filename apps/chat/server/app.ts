@@ -26,6 +26,8 @@ import { ForMe } from "./for-me.ts";
 import { Later } from "./later.ts";
 import { LATER, LaterFiles, LaterRows } from "./later-db.ts";
 import { FolderWakes, WAKES, WakeRows } from "./wakes-db.ts";
+import { DUTIES, DutyFiles, DutyJsonFiles } from "./duties-db.ts";
+import { BOARD_WRITES, BoardWrites, BoardWritesFile } from "./board-writes-db.ts";
 import { LaterDue } from "./later-due.ts";
 import { answers, nextMorning } from "./keep-unread.ts";
 import { AgentLater } from "./later-agents.ts";
@@ -59,9 +61,9 @@ import type { FixtureHost } from "./host/fixture.ts";
 import { drained } from "./disk.ts";
 import { ChatDb } from "./chat-db.ts";
 import { JsonMove, type JsonKind } from "./json-move.ts";
+import { CACHE_KIND, HOST_ROUTES_KIND, KeptJson } from "./kept-json.ts";
 import { ChatRecords } from "./chat-records.ts";
 import { CHANNELS } from "./record-kinds.ts";
-import { CACHE_KIND, HOST_ROUTES_KIND, KeptJson } from "./kept-json.ts";
 import { readJson, Store, writeJson } from "./store.ts";
 import { modelRef, OWNER, parseConversationId, Threads, type ItemsSplit } from "./threads.ts";
 import { QueueWatch, waitingPlace } from "./queue.ts";
@@ -301,7 +303,12 @@ export class App {
     });
     this.threads.groupSummaries = () => this.groups.summaries().filter(c => !this.agentStore.isTest(c.id));
     this.threads.roomsOf = agent => this.groups.memberRooms(agent).map(row => row.id);
-    this.boards = new Boards(host, this.store, this.threads, this.agents, { wakes }, {
+    const inDb = (kind: JsonKind) => config.dbKinds?.includes(kind.kind) === true;
+    this.boards = new Boards(host, this.store, this.threads, this.agents, {
+      duties: inDb(DUTIES) ? new DutyFiles(this.chatDb, this.move(DUTIES)) : new DutyJsonFiles(config.dataDir),
+      writes: inDb(BOARD_WRITES) ? new BoardWrites(this.chatDb, this.move(BOARD_WRITES)) : new BoardWritesFile(config.dataDir),
+      wakes,
+    }, {
       board: (chatId, board, awaitingGo, lists, before) => this.boardChanged(chatId, board, before, { awaitingGo, ...lists }),
       row: (chatId, row) => this.broadcast({ type: "board_row", chatId, row }),
       forYou: count => {
@@ -445,8 +452,8 @@ export class App {
     this.laterDue.stop();
     this.queues.stop();
     clearTimeout(this.sidebarTimer);
-    // The stop leaves a board put at work running. Its board stays in board-writes.json, which `drained` below writes and the next process
-    // puts again, and its newerOnly keeps a later board when it lands after that put (boards.ts `putBoards`). On 11-23 a stop that waited
+    // The stop leaves a board put at work running. Its board stays in board-writes.json or chat.sqlite, which `drained` and `chatDb.written`
+    // below write, and the next process puts it again, and its newerOnly keeps a later board when it lands after that put (boards.ts `putBoards`). On 11-23 a stop that waited
     // for it held a hand-over's calls up to 28.6 s behind puts held 35 s (~/work/pi-host-stalls/d-put-wait).
     // The host client closes first: a watch's unwatch sent to a pi-host that restarts beside the chat retried for 30 s, past systemd's
     // 20 s stop timeout, so restarting both services on 10-28 ended in a SIGKILL. pi-host drops a closed connection's watches itself.

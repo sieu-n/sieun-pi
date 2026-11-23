@@ -4,12 +4,12 @@
  * Run: cd apps/chat && node --import tsx --test --test-force-exit --test-isolation=none test/server/duty-start-retry.test.ts
  */
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { DutyRunRecord } from "../../web/src/lib/api/shared/chat-duties.ts";
-import type { DutyStart } from "../../server/boards.ts";
+import type { DutyFile, DutyStart } from "../../server/boards.ts";
 import { FIXTURE_AGENTS as agents } from "../../server/fixture/seed.ts";
 import type { FixtureHost } from "../../server/host/fixture.ts";
 import { start, until, type Running } from "./helpers.ts";
@@ -17,18 +17,17 @@ import { start, until, type Running } from "./helpers.ts";
 const HOUR = 3_600_000;
 const NAME = "Retry duty";
 type File = { runs: Record<string, DutyRunRecord[]>; starts?: Record<string, DutyStart> };
-const fileOf = (s: Running): File => JSON.parse(readFileSync(s.app.boards.dutiesPath(agents.vent), "utf8")) as File;
+const fileOf = (s: Running): File => s.app.boards.dutyFile(agents.vent);
 
 /** Writes a duty whose precheck misses, so its run has a brief and starts a job. */
-function seedDuty(s: Running, work: string): void {
+async function seedDuty(s: Running, work: string): Promise<void> {
   const now = Date.now();
   const duty = {
     id: "d1", name: NAME, ownerWords: "keep it up", goal: "it stays up", metrics: [{ key: "up", label: "Up", op: ">=", target: 99, headline: true }],
     schedule: { kind: "daily", at: "07:04" }, onMiss: "fix it", status: "active", createdAt: now - 10 * 24 * HOUR, updatedAt: now, lastRunAt: now - HOUR, runCount: 1,
     precheck: { command: ["node", "-e", `require("fs").writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { up: 90 } }))`], cwd: work, timeoutMs: 30_000 },
   };
-  mkdirSync(s.app.boards.dir(agents.vent), { recursive: true });
-  writeFileSync(s.app.boards.dutiesPath(agents.vent), JSON.stringify({ duties: [duty], runs: {} }));
+  await s.app.boards.saveDuties(agents.vent, { duties: [duty], runs: {} } as DutyFile);
 }
 
 /** pi-host refuses the next `n` calls of `method`, as it does while it shuts down. */
@@ -80,7 +79,7 @@ async function withServer(body: (s: Running, work: string) => Promise<void>): Pr
   const s = await start();
   const work = mkdtempSync(join(tmpdir(), "duty-start-retry-"));
   try {
-    seedDuty(s, work);
+    await seedDuty(s, work);
     await body(s, work);
   } finally {
     await s.close();
@@ -107,7 +106,7 @@ test("a duty job that did not start while pi-host restarted starts after the cha
   const work = mkdtempSync(join(tmpdir(), "duty-start-retry-"));
   let s = await start({ dataDir });
   try {
-    seedDuty(s, work);
+    await seedDuty(s, work);
     const host = s.host as FixtureHost;
     // pi-host is down for a whole install: the create and the next tries fail, then one made thread's submit fails once more.
     refuse(host, "create", 3);

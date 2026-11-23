@@ -4,13 +4,13 @@
  * Run: cd apps/chat && node --import tsx --test --test-force-exit --test-isolation=none test/server/duty-runs.test.ts
  */
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import type { DutyRow, LiveEvent } from "../../web/src/lib/api/types.ts";
 import type { DutyRunRecord } from "../../web/src/lib/api/shared/chat-duties.ts";
-import { nextRun } from "../../server/boards.ts";
+import { nextRun, type DutyFile } from "../../server/boards.ts";
 import { FIXTURE_AGENTS as agents, FIXTURE_IDS as ids } from "../../server/fixture/seed.ts";
 import { start, until, type Running } from "./helpers.ts";
 
@@ -45,10 +45,9 @@ before(async () => {
   const old = [imported(now - 10 * 24 * HOUR, 100), imported(now - 6 * 24 * HOUR, 90, 100)];
   writeFileSync(join(prime, "duties", `${PRIME_ID}.runs.jsonl`), old.map(run => JSON.stringify(run)).join("\n"));
   // The chat server's own file after the move: the imported runs plus one run it recorded an hour ago, in the order the file holds them.
-  mkdirSync(chatDir(), { recursive: true });
   const recorded = { duty: "d1", at: now - HOUR, slot: now - HOUR, trigger: "schedule", ms: 1200, verdict: "missed", metrics: result(95), summary: "up 95",
     detail: join(chatDir(), "duties", "d1-recorded.json"), job: { id: "job-1", name: "Vent gateway duty recorded" } };
-  writeFileSync(join(chatDir(), "duties.json"), JSON.stringify({ duties: [duty], runs: { d1: [...old, recorded] } }));
+  await s.app.boards.saveDuties(agents.vent, { duties: [duty], runs: { d1: [...old, recorded] } } as DutyFile);
 });
 after(async () => {
   await s.close();
@@ -90,8 +89,7 @@ test("an import run again keeps the runs this server recorded", async () => {
   assert.equal(imported.status, 200, JSON.stringify(imported.body));
   assert.equal(imported.body.runs, 4);
   assert.deepEqual((await duties())[0]!.runs.map(run => run.at), before);
-  const file = JSON.parse(readFileSync(join(chatDir(), "duties.json"), "utf8")) as { runs: Record<string, DutyRunRecord[]> };
-  assert.equal(file.runs.d1!.length, 4);
+  assert.equal(s.app.boards.dutyFile(agents.vent).runs.d1!.length, 4);
 });
 
 test("the agent's config reads the same judged verdict as the Duties card", async () => {

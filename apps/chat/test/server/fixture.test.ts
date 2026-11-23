@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import type { ConversationSummary, Item, SearchResult, Sidebar, TimelinePage } from "../../web/src/lib/api/types.ts";
 import { FIXTURE_AGENTS as agents, FIXTURE_IDS as ids } from "../../server/fixture/seed.ts";
+import type { DutyFile } from "../../server/boards.ts";
 import type { FixtureHost } from "../../server/host/fixture.ts";
 import { start, until, type Running } from "./helpers.ts";
 
@@ -293,14 +294,12 @@ describe("boards", () => {
 
   test("a duty run runs its precheck, records the judged run, and a miss starts a duty job whose answer reaches the chat", async () => {
     const dir = mkdtempSync(join(tmpdir(), "duty-"));
-    const file = s.app.boards.dutiesPath(agents.frontend);
-    mkdirSync(join(file, ".."), { recursive: true });
     const script = `const fs = require("fs"); const seen = JSON.parse(fs.readFileSync(process.env.STATE_FILE, "utf8")); ` +
       `fs.writeFileSync(process.env.STATE_FILE, JSON.stringify({ runs: (seen.runs ?? 0) + 1 })); ` +
       `fs.writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { up: (seen.runs ?? 0) === 0 ? 90 : 100 }, flagged: [] }))`;
     const duty = { id: "d9", name: "Spec uptime", ownerWords: "keep it up", goal: "it stays up", metrics: [{ key: "up", label: "Up", op: ">=", target: 99, headline: true }],
       schedule: { kind: "daily", at: "07:00" }, precheck: { command: ["node", "-e", script], cwd: dir, timeoutMs: 30_000 }, onMiss: "fix it", status: "active", createdAt: Date.now(), updatedAt: Date.now(), lastRunAt: Date.now(), runCount: 0 };
-    writeFileSync(file, JSON.stringify({ duties: [duty], runs: {} }));
+    await s.app.boards.saveDuties(agents.frontend, { duties: [duty], runs: {} } as DutyFile);
     const ran = await s.send("POST", `/api/threads/${ids.frontend}/duties`, { duty: "d9", action: "run" });
     assert.equal(ran.status, 200);
     const missed = await until(() => s.get(`/api/threads/${ids.frontend}/duties`), v => v.duties[0].runs.length === 1);

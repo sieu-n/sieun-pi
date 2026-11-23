@@ -5,12 +5,13 @@
  * Run: cd apps/chat && node --import tsx --test --test-force-exit --test-isolation=none test/server/duty-live-job.test.ts
  */
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import type { ChatBoard } from "../../web/src/lib/api/types.ts";
 import type { DutyRunRecord } from "../../web/src/lib/api/shared/chat-duties.ts";
+import type { DutyFile } from "../../server/boards.ts";
 import { armWake } from "../../server/wakes.ts";
 import { FIXTURE_AGENTS as agents, FIXTURE_IDS as ids } from "../../server/fixture/seed.ts";
 import type { FixtureHost } from "../../server/host/fixture.ts";
@@ -22,7 +23,7 @@ let s: Running;
 let work: string;
 const briefs: string[] = [];
 const steps: Record<string, string> = {};
-const runsOf = (): DutyRunRecord[] => (JSON.parse(readFileSync(join(s.app.boards.dir(agents.vent), "duties.json"), "utf8")) as { runs: Record<string, DutyRunRecord[]> }).runs.d1 ?? [];
+const runsOf = (): DutyRunRecord[] => s.app.boards.dutyFile(agents.vent).runs.d1 ?? [];
 
 before(async () => {
   s = await start();
@@ -48,8 +49,7 @@ before(async () => {
   const duty = { id: "d1", name: "Snappy", ownerWords: "keep it snappy", goal: "it stays snappy", metrics: [metric("up", true), metric("down", false), metric("side", false)],
     schedule: { kind: "daily", at: "07:04" }, onMiss: "fix it", status: "active", createdAt: now - 10 * 24 * HOUR, updatedAt: now, lastRunAt: now - HOUR, runCount: 1,
     precheck: { command: ["node", "-e", `require("fs").writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { up: 90, down: 90, side: 90 } }))`], cwd: work, timeoutMs: 30_000 } };
-  mkdirSync(s.app.boards.dir(agents.vent), { recursive: true });
-  writeFileSync(join(s.app.boards.dir(agents.vent), "duties.json"), JSON.stringify({ duties: [duty], runs: {} }));
+  await s.app.boards.saveDuties(agents.vent, { duties: [duty], runs: {} } as DutyFile);
   // The fix steps go in through the board API, as the chat's chat_board call writes them. A doc put straight into the fixture host reached the
   // server only if it had not read the board yet: in 2 of 24 copies run beside the full suite, a read during start() kept the seeded board
   // first, the run saw no fix step, and the run's fixes read undefined.

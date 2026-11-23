@@ -8,12 +8,12 @@
  * | system text | pi-host's durable Preamble, `PRIME_BASE_PROMPT` in packages/pi-family/preamble.ts of the pi-host that runs |
  * | thread file | `<durable dir>/threads/<thread>.sqlite`, beside pi-host's `index.sqlite` |
  * | board | the `chat.board` document of its chat's root conversation, the last read of it through `Boards.latest` |
- * | duties, check-in | `<data dir>/agents/<agent>/duties.json`, and each duty's precheck state in `<data dir>/agents/<agent>/duties/` |
+ * | duties, check-in | `<data dir>/agents/<agent>/duties.json`, or chat.sqlite's `duties_files` when APPS_CHAT_DB_KINDS names duties (`duties-db.ts`), and each duty's precheck state in `<data dir>/agents/<agent>/duties/` |
  * | folder | its agent's folder, `<agents dir>/<slug>/` with `brief.md` and the harness store's file and entry count (`agent-folder.ts`); `GET /api/agents/:id/folder` gives the entries |
  * | memory | Prime's harness digest in pi-host: Prime's global store merged with the agent's store, or with the thread's own store when no agent holds it |
  * | instructions | AGENTS.md and CLAUDE.md in its cwd and each folder above it, and `<agent dir>/AGENTS.md`, which pi-host loads through Prime's resource loader plus the CLAUDE.md beside each AGENTS.md (`context-files.ts`), read on the box that runs the thread |
  * | usage | the sums over the Usage page's 7 days by hour of its main thread, comm threads and root job threads, from the kept hour sums (`KeptUsage`) or pi-host's `durable_usage` |
- * | wakes | the board.wake files of those threads in `<data dir>/wakes/` that have not gone out yet (`Boards.wakesOn`) |
+ * | wakes | the board.wakes of those threads that have not gone out yet, in `<data dir>/wakes/` or chat.sqlite's `wakes` (`Boards.wakesOn`) |
  */
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -29,7 +29,6 @@ import { awaitingGo, BOARD_DOC, nextRun, type DutyFile } from "./boards.ts";
 import { isNoProject } from "./projects.ts";
 import type { EntryRecord, Ping, UsageTotal } from "./host/types.ts";
 import { ownerText } from "./rooms.ts";
-import { readJson } from "./store.ts";
 import { conversationIdOf, parseConversationId } from "./threads.ts";
 import { bucketStart } from "./usage.ts";
 import { BUCKET_MS, RANGE_MS } from "../web/src/lib/api/shared/usage-range.ts";
@@ -335,7 +334,7 @@ export async function agentConfig(app: App, id: AgentId): Promise<AgentConfig> {
   const agentDir = primeAgentDir(app);
   const chat = homeChat(app, agent.id);
   const dutiesPath = chat ? app.boards.dutiesPath(chat) : null;
-  const dutyFile = dutiesPath ? readJson<DutyFile>(dutiesPath, { duties: [], runs: {} }) : null;
+  const dutyFile: DutyFile | null = chat ? app.boards.dutyFile(chat) : null;
 
   // Which duty run started each root job, from the run records' `job`.
   const dutyJobs = new Map<string, { chat: string; id: string; name: string }>();
@@ -470,7 +469,9 @@ export async function agentConfig(app: App, id: AgentId): Promise<AgentConfig> {
       }),
       duties, checkIn,
       dutiesOf: !isChatRoot && chat ? { id: chat, name: app.boards.nameOf(chat) } : null,
-      dutiesFile: isChatRoot && dutiesPath ? fileInfo("duties, runs and check-in", dutiesPath) : null,
+      dutiesFile: isChatRoot && dutiesPath
+        ? fileInfo("duties, runs and check-in", dutiesPath, app.config.dbKinds?.includes("duties") ? { note: "Kept in chat.sqlite's duties_files; this file is its JSON export for a week after the move." } : {})
+        : null,
       dutyStates,
       wakes: app.boards.wakesOn(new Set(kinds.keys())).map(wake => agentWake(app, wake, kinds, agent, jobs)).sort(wakeOrder),
     },

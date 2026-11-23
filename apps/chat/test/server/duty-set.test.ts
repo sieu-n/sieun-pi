@@ -104,7 +104,7 @@ test("a set after a remove of the highest duty takes a new id, never the removed
   assert.deepEqual(await duties(), []);
   assert.equal((await set(definition)).body.result, "added d2");
   assert.equal((await s.send<{ result: string }>("POST", `/api/agents/${agent}/duties`, { action: "remove", duty: "d2" })).body.result, "removed d2");
-  assert.equal(JSON.parse(readFileSync(s.app.boards.dutiesPath(agent), "utf8")).lastId, 2);
+  assert.equal(s.app.boards.dutyFile(agent).lastId, 2);
 });
 
 test("a relative precheck cwd, a bad definition and an unknown agent are refused", async () => {
@@ -132,7 +132,7 @@ test("add.ts and remove.ts send a duty for an agent of this chat here, with its 
   assert.match(await run([script("add.ts"), agent, join(folder, "probe.duty.json")]), /^added d\d+ "Probe by script" in ag_duty-set-probe daily \d\d:\d\d, on the new chat /);
   const [row] = (await duties()).filter(duty => duty.duty.name === "Probe by script");
   assert.ok(row);
-  const file = JSON.parse(readFileSync(s.app.boards.dutiesPath(agent), "utf8")) as { duties: { name: string; precheck: { cwd: string } }[] };
+  const file = s.app.boards.dutyFile(agent) as unknown as { duties: { name: string; precheck: { cwd: string } }[] };
   assert.equal(file.duties.find(duty => duty.name === "Probe by script")!.precheck.cwd, work);
   assert.ok(!existsSync(join(primeData, ".prime")), "Prime's store stays untouched for an agent of this chat");
   assert.match(await run([script("remove.ts"), "--name", "Probe by script", "--chat", agent]), /^removed d\d+ "Probe by script" from ag_duty-set-probe, on the new chat\n1 removed\n$/);

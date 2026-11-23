@@ -4,10 +4,11 @@
  * Run: cd apps/chat && node --import tsx --test --test-force-exit --test-isolation=none --test-timeout=120000 test/server/agent-model.test.ts
  */
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
+import type { DutyFile } from "../../server/boards.ts";
 import type { AgentSummary } from "../../web/src/lib/api/types.ts";
 import type { FixtureHost } from "../../server/host/fixture.ts";
 import { start, until, type Running } from "./helpers.ts";
@@ -48,9 +49,7 @@ test("a duty job of a Fable agent runs on Fable at its thinking level", async ()
     schedule: { kind: "daily", at: "07:04" }, onMiss: "report it", status: "active", createdAt: now, updatedAt: now, runCount: 0,
     precheck: { command: ["node", "-e", `require("fs").writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { up: 90 } }))`], cwd: work, timeoutMs: 30_000 },
   };
-  const dir = s.app.boards.dir(fable.id);
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "duties.json"), JSON.stringify({ duties: [duty], runs: {} }));
+  await s.app.boards.saveDuties(fable.id, { duties: [duty], runs: {} } as DutyFile);
   assert.equal((await s.send("POST", `/api/threads/${fable.thread}/duties`, { duty: "f1", action: "run" })).status, 200);
   const job = await until(async () => [...host().threadsById.values()].find(t => t.row.name.startsWith("Fable sweep probe duty")), found => Boolean(found));
   assert.deepEqual(modelOf(job!.row.id), [FABLE, "xhigh"]);

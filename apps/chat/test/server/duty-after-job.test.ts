@@ -5,13 +5,14 @@
  * Run: cd apps/chat && node --import tsx --test --test-force-exit --test-isolation=none test/server/duty-after-job.test.ts
  */
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import type { DutyRow } from "../../web/src/lib/api/types.ts";
 import type { DutyRunRecord } from "../../web/src/lib/api/shared/chat-duties.ts";
 import { FIXTURE_IDS as ids } from "../../server/fixture/seed.ts";
+import type { DutyFile } from "../../server/boards.ts";
 import type { FixtureHost } from "../../server/host/fixture.ts";
 import { start, until, type Running } from "./helpers.ts";
 
@@ -24,8 +25,7 @@ let work: string;
 let lostSubmission = 0;
 const now = Date.now();
 const chatDir = () => join(s.app.store.dir, "boards", ids.vent);
-const dutiesFile = () => join(chatDir(), "duties.json");
-const runsOf = (duty: string): DutyRunRecord[] => (JSON.parse(readFileSync(dutiesFile(), "utf8")) as { runs: Record<string, DutyRunRecord[]> }).runs[duty] ?? [];
+const runsOf = (duty: string): DutyRunRecord[] => s.app.boards.dutyFile(ids.vent).runs[duty] ?? [];
 const row = async (duty: string): Promise<DutyRow> => (await s.get<{ duties: DutyRow[] }>(`/api/threads/${ids.vent}/duties`)).duties.find(d => d.duty.id === duty)!;
 
 /** A precheck that reads 90 on a run and 100 after its job, as when the job fixed the metric, and logs each mode it ran in. */
@@ -53,14 +53,13 @@ before(async () => {
   await host.wait("job-lost", lostSubmission);
   await s.app.threads.refresh();
   const duties = ["d1", "d2", "d3", "d4", "d5"].map(id => ({ ...duty(id), precheck: { ...duty(id).precheck, cwd: work } }));
-  mkdirSync(chatDir(), { recursive: true });
-  writeFileSync(dutiesFile(), JSON.stringify({ duties, runs: {
+  await s.app.boards.saveDuties(ids.vent, { duties, runs: {
     d1: [missed("d1", now - HOUR, "job-ended"), missed("d1", now - 25 * HOUR)],
     d2: [missed("d2", now - HOUR, "job-working")],
     d3: [missed("d3", now - HOUR, "job-waking")],
     d4: [missed("d4", now - 25 * HOUR, "job-gone")],
     d5: [{ ...missed("d5", now - HOUR, "job-lost"), job: { id: "job-lost", name: "Duty d5 job", submission: lostSubmission } }],
-  } }));
+  } } as DutyFile);
   await s.app.boards.db.wakes.put("job-waking--1-time-1", { session: "job-waking--1", on: { kind: "time", at: now + HOUR }, note: "", since: now });
 });
 after(async () => {

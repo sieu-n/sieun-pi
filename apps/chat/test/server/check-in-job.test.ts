@@ -95,7 +95,7 @@ after(async () => {
   await s.close();
 });
 
-const dutyFile = (agent: AgentSummary) => JSON.parse(readFileSync(s.app.boards.dutiesPath(agent.id), "utf8")) as { checkIn?: { lastAt: number; job?: { id: string; name: string; reported?: true; archived?: true } } };
+const dutyFile = (agent: AgentSummary) => s.app.boards.dutyFile(agent.id) as { checkIn?: { lastAt: number; job?: { id: string; name: string; reported?: true; archived?: true } } };
 const jobsOf = (agent: AgentSummary) => s.app.boards.chatAgents(agent.id).map(job => job.name).filter(name => name.startsWith("check-in "));
 const nextAt = async (agent: AgentSummary) => (await s.get<CheckInView>(`/api/agents/${agent.id}/check-in`)).nextAt!;
 

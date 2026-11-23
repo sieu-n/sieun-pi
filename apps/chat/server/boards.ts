@@ -2,12 +2,13 @@
  * Boards, For you, duties and check-ins, keyed by agent id (`ag_<slug>`), or by thread id for a root chat no agent holds yet; a thread id
  * of an agent's work thread or root job resolves to the agent. An agent's board is the `chat.board` document of its work thread's root
  * conversation in pi-host, changed through the board reducer copied from today's chat (web/src/lib/api/shared/chat-board.ts), because
- * pi-host's `chat_board` tool reads it there. Duties and the check-in clock live in the chat server's data dir under `agents/<agent id>/`.
+ * pi-host's `chat_board` tool reads it there. Duties and the check-in clock live in a duties file per board (duties-db.ts), and their
+ * precheck files in the chat server's data dir under `agents/<agent id>/`.
  * A due duty or check-in starts a job filed under the agent, whose report reaches the work thread as an input from that job, and a due wake
  * reaches the thread that set it. Check-in jobs are server/check-in-job.ts, wakes server/wakes.ts.
  */
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 import type { AgentSummary, BoardOp, BoardRow, BoardView, BoardWrite, ChatBoard, CheckInPatch, CheckInView, DutyAction, DutyRow, DutyView, ForYouItem, PlanItem } from "../web/src/lib/api/types.ts";
 import { applyBoardOp, BOARD_PREFIX, emptyBoard, needsGo, nextIds, parseBoard, parseBoardOps, stepGo } from "../web/src/lib/api/shared/chat-board.ts";
 import { snoozed, waitingAsks } from "../web/src/lib/api/shared/snooze.ts";
@@ -21,8 +22,9 @@ import { threadModel, type Agents } from "./agents.ts";
 import { agentFolderDir } from "./agent-folder.ts";
 import { checkInDetail, checkInIdle, checkInJobBrief, checkInJobName, checkInPrecheck, checkInPrompt, datedName, planEveryMs, planHasOpenStep } from "./check-in-job.ts";
 import type { Host } from "./host/types.ts";
-import { readJson, writeJson, type Store } from "./store.ts";
-import { writeJsonLater, written } from "./disk.ts";
+import { readJson, type Store } from "./store.ts";
+import type { BoardWriteStore } from "./board-writes-db.ts";
+import type { DutyStore } from "./duties-db.ts";
 import { retryWait, type Outbox } from "./outbox.ts";
 import type { SearchSplit } from "./search-engine.ts";
 import { OWNER_ZONE_OFFSET_MS } from "./search.ts";
@@ -115,8 +117,11 @@ const dutyIdFloor = (file: DutyFile): number =>
  */
 export interface BoardLists { row: BoardRow | null; forYou: ForYouItem[] }
 
-/** Where the boards keep their records, in JSON files or chat.sqlite as APPS_CHAT_DB_KINDS says: the wakes. */
-export interface BoardsDb { wakes: WakeStore }
+/**
+ * Where the boards keep their records, in JSON files or chat.sqlite as APPS_CHAT_DB_KINDS says: the duties files, the board writes pi-host
+ * has not taken and the wakes.
+ */
+export interface BoardsDb { duties: DutyStore; writes: BoardWriteStore; wakes: WakeStore }
 
 export interface BoardEvents {
   /** `before` is the board kept before the change, null for a chat read for the first time. */
@@ -177,7 +182,7 @@ export class Boards {
   /** The one pi-host read in flight per chat, which every caller shares. */
   private readonly reading = new Map<string, Promise<ChatBoard | null>>();
   /**
-   * Board writes answered but not yet in pi-host, by chat, kept in `board-writes.json` until their put lands (`putBoards`). A put waits behind
+   * Board writes answered but not yet in pi-host, by chat, kept in `db.writes` until their put lands (`putBoards`). A put waits behind
    * every command on pi-host's event loop: on 11-23 two of 100 walk writes waited 3,495 and 3,725 ms in the handler (p50 48.5 ms) while pi-host
    * reopened a session for a heartbeat and built 2,558 rows for an `agent_observe.list_agents()` (~/work/p231-slow-calls/p231-board-handler).
    */
@@ -217,7 +222,7 @@ export class Boards {
     // The boards of the last run, read again on first use, so For you and the sidebar count answer while pi-host starts.
     for (const [chat, board] of Object.entries(store.cache<Record<string, ChatBoard | null>>(BOARDS_CACHE, {}))) this.cache.set(chat, { board, at: 0 });
     // The writes the last process answered and had not put into pi-host yet; `start` puts them, and every read answers them meanwhile.
-    for (const [chat, board] of Object.entries(readJson<Record<string, ChatBoard>>(this.unputFile, {}))) {
+    for (const [chat, board] of db.writes.all()) {
       this.unput.set(chat, board);
       this.cache.set(chat, { board, at: Date.now() });
     }
@@ -353,8 +358,8 @@ export class Boards {
       board = result.board;
       summaries.push(result.summary);
     }
-    // The write answers once it is on this server's disk; pi-host gets it behind, in order (`putBoards`).
-    const put = this.keep(chat, board);
+    // The write answers once it is stored on this server; pi-host gets it behind, in order (`putBoards`).
+    const { put, kept } = this.keep(chat, board);
     this.changed(chat, board, this.remember(chat, board));
     this.sendForYou();
     // The chat's `[board]` line goes after the answer: no part of the answer waits on it, and a pi-host submit waits behind every command
@@ -369,27 +374,25 @@ export class Boards {
       }, put).catch(error => this.log(`board note to ${chat} failed: ${String(error)}`));
     }
     mark = performance.now();
-    await written(this.unputFile);
+    await kept;
     if (split) split.journal = performance.now() - mark;
     const step = before && typeof base === "string" && base === boardKey(before) ? boardStep(before, board) : null;
     return step ? { delta: boardDelta(base as string, board, [step]), awaitingGo: awaitingGo(board), summaries } : { board, awaitingGo: awaitingGo(board), summaries };
   }
 
-  /** Where the board writes not yet in pi-host wait (`unput`). */
-  private get unputFile(): string {
-    return join(this.store.dir, "board-writes.json");
-  }
-
-  /** Keeps a board in `board-writes.json` until pi-host has it, and starts its put; settles once no board of the chat waits for a put. */
-  private keep(chat: string, board: ChatBoard): Promise<void> {
+  /**
+   * Keeps a board in `db.writes` until pi-host has it, and starts its put: `kept` settles once the board is stored, and `put` once no board
+   * of the chat waits for a put.
+   */
+  private keep(chat: string, board: ChatBoard): { kept: Promise<void>; put: Promise<void> } {
     this.unput.set(chat, board);
-    writeJsonLater(this.unputFile, Object.fromEntries(this.unput));
-    return this.putBoards(chat);
+    const kept = this.db.writes.put(chat, board, this.unput);
+    return { kept, put: this.putBoards(chat) };
   }
 
   /**
    * Puts a chat's newest unput board into pi-host until none is left, and settles then. Each put writes the whole board, so a board a later
-   * write replaced before its put started is never sent. A failed put tries again (`retryWait`) and keeps the board in `board-writes.json`.
+   * write replaced before its put started is never sent. A failed put tries again (`retryWait`) and keeps the board in `db.writes`.
    */
   private putBoards(chat: string): Promise<void> {
     let running = this.putting.get(chat);
@@ -423,7 +426,7 @@ export class Boards {
         });
         continue;
       }
-      // After the stop, board-writes.json is the next process's, which puts the board again; this process writes no more to it.
+      // After the stop, the kept boards are the next process's, which puts them again; this process writes no more to them.
       if (this.putsStopped) return;
       failures = 0;
       const ms = Math.round(performance.now() - began);
@@ -431,7 +434,7 @@ export class Boards {
       if (ms > 1_000) this.log(`board put for ${chat} took ${ms} ms in pi-host`);
       if (this.unput.get(chat) === board) {
         this.unput.delete(chat);
-        writeJsonLater(this.unputFile, Object.fromEntries(this.unput));
+        void this.db.writes.remove(chat, this.unput);
       }
     }
   }
@@ -548,7 +551,7 @@ export class Boards {
       openAsks: waitingAsks(board.todos, Date.now()), needsGo: awaitingGo(board).length,
       checkIn: { nextAt: checkIn.nextAt, paused: checkIn.paused },
       duties: this.duties(chat).map(d => ({ id: d.duty.id, name: d.duty.name, nextAt: d.nextAt, lastVerdict: d.last?.verdict ?? null })),
-      ...(this.file(chat).hidden ? { hidden: true } : {}),
+      ...(this.peek(chat)?.hidden ? { hidden: true } : {}),
     };
   }
 
@@ -558,7 +561,7 @@ export class Boards {
     const file = this.file(chat);
     if (hidden) file.hidden = Date.now();
     else delete file.hidden;
-    this.save(chat, file);
+    await this.save(chat, file);
     const board = await this.known(chat);
     if (board) this.changed(chat, board, board);
     return { hidden };
@@ -583,8 +586,7 @@ export class Boards {
     const board = imported && { ...imported, rev: Math.max(imported.rev, (current?.rev ?? -1) + 1) };
     if (board) {
       // Through the same journal and put loop as a write, so a put of an older board still waiting never lands over it.
-      void this.keep(chat, board);
-      await written(this.unputFile);
+      await this.keep(chat, board).kept;
       this.changed(chat, board, this.remember(chat, board));
       this.events.forYou(await this.forYouCount());
     }
@@ -629,17 +631,34 @@ export class Boards {
 
   // Duties and check-ins
 
-  /** The file of a board's duties, their runs and its check-in. */
+  /** The file of a board's duties, their runs and its check-in, or with the kind in chat.sqlite its export for the week after the move. */
   dutiesPath(id: string): string {
     return join(this.dir(this.chatId(id)), "duties.json");
   }
-  private file(chat: string): DutyFile {
-    return readJson<DutyFile>(this.dutiesPath(chat), { duties: [], runs: {} });
+  /** The duties file's key in `db.duties`: its path in the data dir. */
+  private dutiesKey(chat: string): string {
+    return relative(this.store.dir, this.dutiesPath(chat));
   }
-  private save(chat: string, file: DutyFile): void {
-    writeJson(this.dutiesPath(chat), file);
+  /** A board's duties, their runs and its check-in, as a copy to change and save. */
+  dutyFile(id: string): DutyFile {
+    return this.file(this.chatId(id));
+  }
+  /** Stores a board's duties file; the promise settles once it is stored. */
+  saveDuties(id: string, file: DutyFile): Promise<void> {
+    return this.save(this.chatId(id), file);
+  }
+  private file(chat: string): DutyFile {
+    return this.db.duties.get(this.dutiesKey(chat));
+  }
+  /** The duties file as kept, for a read that changes nothing. */
+  private peek(chat: string): DutyFile | undefined {
+    return this.db.duties.peek(this.dutiesKey(chat));
+  }
+  private save(chat: string, file: DutyFile): Promise<void> {
+    const done = this.db.duties.save(this.dutiesKey(chat), file);
     this.rowChanged(chat);
     this.dutiesChanged(chat);
+    return done;
   }
 
   /** Each chat's duty rows as the page last got them from an event, so a change that alters no row sends nothing. */
@@ -705,7 +724,7 @@ export class Boards {
 
   duties(id: string): DutyRow[] {
     const chat = this.chatId(id);
-    const file = this.file(chat);
+    const file = this.peek(chat) ?? { duties: [], runs: {} };
     const agents = this.chatAgents(chat);
     return file.duties.map(duty => {
       const runs = [...(file.runs[duty.id] ?? [])].sort((a, b) => b.at - a.at).slice(0, 20);
@@ -733,8 +752,11 @@ export class Boards {
   }
 
   async dutyAction(id: string, action: DutyAction): Promise<{ duties: DutyRow[]; result?: string }> {
-    if (action.action === "set") return this.setDuty(id, action.duty);
-    if (action.action === "remove") return this.removeDuty(id, action.duty);
+    if (action.action === "set" || action.action === "remove") {
+      const out = action.action === "set" ? this.setDuty(id, action.duty) : this.removeDuty(id, action.duty);
+      await this.db.duties.written();
+      return out;
+    }
     const chat = this.chatId(id);
     const file = this.file(chat);
     const duty = file.duties.find(d => d.id === action.duty);
@@ -744,7 +766,7 @@ export class Boards {
     else if (action.action === "schedule") duty.schedule = action.schedule;
     else if (action.action === "goal") duty.goal = action.goal;
     duty.updatedAt = Date.now();
-    this.save(chat, file);
+    await this.save(chat, file);
     if (action.action === "run") void this.runDuty(chat, duty, "owner");
     return { duties: this.duties(chat) };
   }
@@ -758,7 +780,7 @@ export class Boards {
     const cwd = (definition as { precheck?: { cwd?: unknown } } | null)?.precheck?.cwd;
     if (typeof cwd === "string" && !isAbsolute(cwd)) throw new Error(`precheck.cwd ${cwd} is relative; add.ts resolves it against the duty file's folder.`);
     const chat = this.chatId(id);
-    const taken = new Set(this.chats().flatMap(other => this.file(other).duties.flatMap(duty => duty.schedule.kind === "daily" ? [duty.schedule.at] : [])));
+    const taken = new Set(this.chats().flatMap(other => (this.peek(other)?.duties ?? []).flatMap(duty => duty.schedule.kind === "daily" ? [duty.schedule.at] : [])));
     const file = this.file(chat);
     const result = upsertDuty(file.duties, definition, now, morningTime(taken, "high", Math.random), dutyIdFloor(file));
     if (!result.startsWith("unchanged")) this.save(chat, file);

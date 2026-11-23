@@ -6,7 +6,7 @@
  * Run: cd apps/chat && node --import tsx --test --test-force-exit --test-isolation=none test/server/duty-queued.test.ts
  */
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
@@ -14,7 +14,7 @@ import type { DutyRow } from "../../web/src/lib/api/types.ts";
 import type { Duty, DutyRunRecord } from "../../web/src/lib/api/shared/chat-duties.ts";
 import { FIXTURE_IDS as ids } from "../../server/fixture/seed.ts";
 import type { FixtureHost } from "../../server/host/fixture.ts";
-import { landAfter } from "../../server/boards.ts";
+import { landAfter, type DutyFile } from "../../server/boards.ts";
 import { start, until, type Running } from "./helpers.ts";
 
 const HOUR = 3_600_000;
@@ -23,9 +23,7 @@ const metric = { key: "up", label: "Up", op: ">=" as const, target: 99, headline
 let s: Running;
 let work: string;
 const now = Date.now();
-const chatDir = () => join(s.app.store.dir, "boards", ids.vent);
-const dutiesFile = () => join(chatDir(), "duties.json");
-const file = () => JSON.parse(readFileSync(dutiesFile(), "utf8")) as { duties: Duty[]; runs: Record<string, DutyRunRecord[]> };
+const file = (): { duties: Duty[]; runs: Record<string, DutyRunRecord[]> } => s.app.boards.dutyFile(ids.vent);
 const runsOf = (duty: string): DutyRunRecord[] => file().runs[duty] ?? [];
 const row = async (duty: string): Promise<DutyRow> => (await s.get<{ duties: DutyRow[] }>(`/api/threads/${ids.vent}/duties`)).duties.find(d => d.duty.id === duty)!;
 const modes = (id: string): string[] => { try { return readFileSync(join(work, `${id}.modes`), "utf8").trim().split("\n"); } catch { return []; } };
@@ -78,12 +76,11 @@ before(async () => {
   d5job.running.set(1, { stop: () => aborted.push("job-d5") });
   writeFileSync(join(work, "d5.up"), "90");
   await s.app.threads.refresh();
-  mkdirSync(chatDir(), { recursive: true });
-  writeFileSync(dutiesFile(), JSON.stringify({
+  await s.app.boards.saveDuties(ids.vent, {
     duties: [duty("d1"), duty("d2"), duty("d3"), duty("d4", 100), fixable("d5")].map(entry => ({ ...entry, precheck: { ...entry.precheck, cwd: work } })),
     runs: { d1: [missed("d1", now - HOUR, "job-asleep")], d2: [missed("d2", now - HOUR, "job-queued")], d3: [missed("d3", now - HOUR, "job-done")], d4: [missed("d4", now - HOUR, "job-held")],
       d5: [missed("d5", now - HOUR, "job-d5")] },
-  }));
+  } as DutyFile);
 });
 after(async () => {
   await s.close();

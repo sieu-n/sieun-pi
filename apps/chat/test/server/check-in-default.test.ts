@@ -5,7 +5,6 @@
  * Run: cd apps/chat && node --import tsx --test --test-force-exit --test-isolation=none test/server/check-in-default.test.ts
  */
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { after, before, test } from "node:test";
 import type { AgentSummary, CheckInView } from "../../web/src/lib/api/types.ts";
 import { FixtureHost } from "../../server/host/fixture.ts";
@@ -38,7 +37,7 @@ after(async () => {
 
 const of = (agent: AgentSummary) => checkIns.filter(c => c.agent === agent.id).map(c => c.at);
 /** Waits until the last check-in job reported, so the next check-in does not skip behind it. */
-const reported = (agent: AgentSummary) => until(async () => (JSON.parse(readFileSync(s.app.boards.dutiesPath(agent.id), "utf8")) as { checkIn?: { job?: { reported?: true } } }).checkIn?.job?.reported, done => done === true);
+const reported = (agent: AgentSummary) => until(async () => s.app.boards.dutyFile(agent.id).checkIn?.job?.reported, done => done === true);
 
 test("a fresh agent's first check-in job comes at its createdAt plus the interval, as its check-in view says", async () => {
   const createdAt = s.app.agents.record(fresh.id)!.createdAt;
