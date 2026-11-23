@@ -11,7 +11,12 @@ type Pending = { resolve: (data: unknown) => void; reject: (error: Error) => voi
 type Watch = { thread: string; conversation?: number; fromEntry?: number; sink: (event: DurableEvent) => void; hostId?: string; stopped: boolean };
 
 const COMMAND_TIMEOUT_MS = 120_000;
-/** How long a call waits for pi-host to come back after a restart; its unit restarts in about 2 s. */
+/**
+ * How long a call waits for pi-host to come back after a restart. On us-metal02, a restart took 13.4 s median and 23.5 s p90 from SIGTERM
+ * to `listening` (121 restarts from 10-27 to 11-23 in host.log). The wait starts only when the old process drops the socket, and from its
+ * exit to the new `listening` line 63 restarts from 11-10 took 5.1 s median, 8.5 s p90 and 13.7 s max
+ * (python3 ~/work/sw-factory-fixes/restart-split.py, which reads journalctl --user -u pi-host.service and host.log).
+ */
 const RESTART_WAIT_MS = 30_000;
 
 class ConnectionLost extends Error {
