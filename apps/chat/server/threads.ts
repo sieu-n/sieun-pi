@@ -125,6 +125,8 @@ export class Threads {
   private readonly summaries = new Map<string, { row: DurableThread; out: AgentSummary[] }>();
   private summariesKey = "";
   private jobCache = new Map<AgentId, string>();
+  /** Each job's time and the run status, name and retry note it was taken at, by conversation id (`jobTime`). */
+  private readonly jobTimes = new Map<ConversationId, { seen: string; at: number }>();
   private convCache = new Map<ConversationId, string>();
   private readonly live = new Map<ConversationId, LiveConversation>();
   /** Each conversation's first entry id, which never changes once it exists. */
@@ -499,6 +501,21 @@ export class Threads {
     return out;
   }
 
+  /**
+   * A job's time (`AgentSummary.updatedAt`, its conversation's `lastActivityAt`): its thread's while it runs, else the thread's time when its
+   * run status, name or retry note last changed. pi-host's tree has no time per conversation. When every job carried its thread's time, each
+   * change of agent factory's work thread sent its 390 jobs again as 780 job and conversation events within 1 s, and a page that took them
+   * held a ⌘K answer up to 950 ms after its network ended (11-23, ~/work/p224-search-page).
+   */
+  private jobTime(row: DurableThread, node: TreeNode): number {
+    const key = conversationIdOf(row.id, node.id);
+    const seen = `${node.status}\u0000${node.name}\u0000${node.retrying ?? ""}`;
+    const known = this.jobTimes.get(key);
+    if (node.status !== "running" && known?.seen === seen) return known.at;
+    this.jobTimes.set(key, { seen, at: row.updatedAt });
+    return row.updatedAt;
+  }
+
   private buildAgentsOf(row: DurableThread): AgentSummary[] {
     const meta = this.meta(row.id);
     const rootModel = modelRef(`${row.provider}/${row.modelId}`);
@@ -531,7 +548,7 @@ export class Threads {
       out.push({
         id, kind: "job", name: node.name, avatar: avatarOf(node.name), model: modelRef(node.model), thinkingLevel: root.thinkingLevel,
         status: statusOf(node.status), parent: { id: parentId, name: parentName }, thread: row.id, conversation: node.id, archived: row.archived || this.jobArchived(row.id, node.id),
-        createdAt: node.createdAt ?? row.createdAt, updatedAt: row.updatedAt, preview: "", rooms: [], host: this.box,
+        createdAt: node.createdAt ?? row.createdAt, updatedAt: this.jobTime(row, node), preview: "", rooms: [], host: this.box,
         ...(worksFor ? { agent: worksFor } : {}), ...(node.retrying ? { retrying: node.retrying } : {}),
       });
     }

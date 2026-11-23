@@ -3,9 +3,9 @@
  * of JSON (jobs 959 KB, conversations 609 KB) and reached the owner's page about 1 s after each socket open at a 200 ms round trip
  * (~/work/p209-wake/after2), and every apps/chat release reopens every page's socket.
  *
- * A job's `updatedAt` and a thread's conversations' `lastActivityAt` are their thread's time (server/threads.ts `buildAgentsOf`), so one
- * turn of a thread with 588 jobs changed 588 rows (11-22, ~/work/p209-wake/hello-diff60.json). The hello therefore carries each thread's
- * time once in `times`, and an item whose time is its thread's goes as its `Timed` form, without the time and marked `"@t": 1`.
+ * Many jobs and conversations of a thread share one time: a running job's `updatedAt` is its thread's time, and an idle one keeps the
+ * thread's time when it last changed (server/threads.ts `jobTime`). The hello therefore carries each thread's newest job time once in
+ * `times`, and an item with that time goes as its `Timed` form, without the time and marked `"@t": 1`.
  *
  * Each list splits by id into `HELLO_BUCKETS` buckets, and a bucket's digest is FNV-1a over its timed items' JSON in id order. The page
  * sends the digests of the timed items of its last hello when it opens the socket (live.svelte.ts), and the hello carries the items of
@@ -30,7 +30,7 @@ const TIME_FIELD: Record<PartialList, "updatedAt" | "lastActivityAt"> = { jobs: 
 /** The thread of a job (`thread`) or of a conversation, whose id is the thread's or `<thread>:<conversation>`. */
 const threadOf = (item: Keyed & { thread?: string }): string => item.thread ?? item.id.split(":")[0]!;
 
-/** Each thread's time, read from its jobs, which all carry it. */
+/** Each thread's newest job time, which its running jobs carry. */
 export function threadTimes(jobs: readonly (Keyed & { thread: string; updatedAt: number })[]): ThreadTimes {
   const times: ThreadTimes = {};
   for (const job of jobs) times[job.thread] = Math.max(times[job.thread] ?? 0, job.updatedAt);
