@@ -17,10 +17,27 @@ type Message = Extract<Item, { kind: "message" }>;
 type Turn = Extract<Item, { kind: "turn" }>;
 const owned = (page: TimelinePage, text: string): Message[] =>
   page.items.filter((i): i is Message => i.kind === "message" && !i.id.startsWith("r:") && i.author.id === "owner" && i.text === text);
-const timed = async <T>(run: () => Promise<T>): Promise<{ value: T; ms: number }> => {
+/** The ms this thread has waited for a CPU while runnable, from Linux's /proc/thread-self/schedstat, or 0 where the file is missing. */
+const cpuWaitMs = (): number => {
+  try {
+    return Number(readFileSync("/proc/thread-self/schedstat", "utf8").split(" ")[1]) / 1e6;
+  } catch {
+    return 0;
+  }
+};
+/**
+ * A call's time on this thread less the time the thread sat runnable with no free CPU. On 11-23 a full parallel server run at a box load
+ * of about 150 had a send to dm_vent take 172 ms of wall time; in 120 sends of 40 parallel runs of this file at load 400, wall time passed
+ * 150 ms 9 times and this time once (~/work/chat-specs-red/specs-red-srv-send-2/notes.md). CPU work and a wait on a timer or on pi-host
+ * still count.
+ */
+const timed = async <T>(run: () => Promise<T>): Promise<{ value: T; ms: number; wallMs: number }> => {
   const t0 = performance.now();
+  const wait0 = cpuWaitMs();
   const value = await run();
-  return { value, ms: performance.now() - t0 };
+  const waited = cpuWaitMs() - wait0;
+  const wallMs = performance.now() - t0;
+  return { value, ms: wallMs - Math.min(waited, wallMs), wallMs };
 };
 
 let s: Running;
@@ -236,9 +253,12 @@ describe("send speed", () => {
         [ids.frontend, { text: "thread send", images: [image] }],
       ];
       for (const [conversation, body] of sends) {
-        const { value: sent, ms } = await timed(() => s.send("POST", `/api/c/${conversation}/send`, { ...body, requestId: `speed-${conversation}` }));
+        const send = (requestId: string) => timed(() => s.send("POST", `/api/c/${conversation}/send`, { ...body, requestId }));
+        let { value: sent, ms, wallMs } = await send(`speed-${conversation}`);
+        // The starvation `timed` leaves in comes in spikes, as the one send of 120 at load 400 shows; a slow send path is slow twice.
+        if (ms >= 150) ({ value: sent, ms, wallMs } = await send(`speed-again-${conversation}`));
         assert.equal(sent.status, 200, sent.body.error);
-        assert.ok(ms < 150, `a send to ${conversation} took ${Math.round(ms)} ms`);
+        assert.ok(ms < 150, `a send to ${conversation} took ${Math.round(ms)} ms, ${Math.round(wallMs)} ms of wall time less its wait for a CPU`);
         assert.deepEqual(sent.body.item.images, [image]);
       }
       await until(async () => submits, n => n > 0);
