@@ -337,7 +337,7 @@ export function dutyJobBrief(input: { duty: Duty; chat: { id: string; name: stri
   const when = new Date(at + 9 * 3600_000).toISOString().slice(0, 16).replace("T", " ");
   return [
     `# The ${duty.name} duty of the chat "${chat.name}"`,
-    `You are the duty job of the chat "${chat.name}" (thread ${chat.id}), started ${when} KST. The chat server starts one duty job on each run of this duty that ` +
+    `You are the duty job of the chat "${chat.name}" (${chat.id.startsWith("ag_") ? "agent" : "thread"} ${chat.id}), started ${when} KST. The chat server starts one duty job on each run of this duty that ` +
       "has something due, with the precheck below as context. Act as the chat's VP for this duty.",
     "## The duty",
     `Goal: ${duty.goal}`,
