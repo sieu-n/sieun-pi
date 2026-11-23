@@ -11,7 +11,7 @@ import { extname, join, normalize } from "node:path";
 import type { AgentId, ConversationPatch, DutyAction, LaterPatch, MemoryInput, ReadPoint, RoomInput, RoomPatch, SendRequest } from "../web/src/lib/api/types.ts";
 import { parseSchedule } from "../web/src/lib/api/shared/chat-duties.ts";
 import { agentConfig, agentRecordOf } from "./agent-config.ts";
-import { agentPrompt, warmPrompts } from "./agent-prompt.ts";
+import { agentPrompt } from "./agent-prompt.ts";
 import type { Config } from "./config.ts";
 import { EntryExists, EntryMissing, HARNESS_KINDS, type HarnessKind } from "./agent-folder.ts";
 import { parseItemId } from "./for-me.ts";
@@ -636,7 +636,6 @@ export const KEEP_ALIVE_MS = 100_000;
 export function serve(app: App, parts: SkillsParts = skillsParts(app.config, app.log, () => app)): Server {
   const table = routes(app, parts);
   app.socketRead = (path, req) => readRoute(table, path, req);
-  warmPrompts(app);
   const requests = new RequestLog(join(app.config.dataDir, "requests"), app.log);
   const stalls = new LoopStalls();
   const server = createServer((req, res) => {

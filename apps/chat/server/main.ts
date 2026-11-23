@@ -16,6 +16,7 @@ import type { Host } from "./host/types.ts";
 import { projectList } from "./projects.ts";
 import { drain, lingerForwarding, serve, skillsParts, windDown, WRITE_WAIT_MS } from "./http.ts";
 import { seedFixture } from "./fixture/seed.ts";
+import { warmPrompts } from "./agent-prompt.ts";
 import { boostBeforeStop, DataLock, handOverOnHangup, listening, reclaimMain, startWatchdog, tellSystemd } from "./handoff.ts";
 
 const loadedMs = Math.round(performance.now());
@@ -104,6 +105,7 @@ const started = await app.start({ loops: false });
 if (config.fixture) void app.searchEngine.start().catch(() => undefined);
 const servedAt = performance.now();
 const http = (server = serve(app, skills));
+warmPrompts(app);
 const routesMs = Math.round(performance.now() - servedAt);
 const fd = port.fd;
 await new Promise<void>(resolve => (fd === null ? http.listen(config.port, config.listen, resolve) : http.listen({ fd }, resolve)));

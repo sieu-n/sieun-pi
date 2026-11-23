@@ -118,8 +118,8 @@ function builderFor(tree: string): Builder {
 }
 
 /**
- * Starts the builder of the live server, with one build that loads Prime's modules, and again when the box's pi-host tree changes, which
- * `install-pi-host-box.mjs` does by moving its `current` link. The fixture's builder starts at its first call.
+ * Starts the builder of the live server (main.ts), with one build that loads Prime's modules, and again when the box's pi-host tree
+ * changes, which `install-pi-host-box.mjs` does by moving its `current` link. A fixture's, a test's or a rig's builder starts at its first call.
  */
 export function warmPrompts(app: App): void {
   if (app.config.fixture) return;
