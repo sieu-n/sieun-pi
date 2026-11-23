@@ -10,7 +10,7 @@ test("a chat's board shows its asks, the plan by status, its duties and its chec
   await expect(page.getByRole("region", { name: "In progress" })).toContainText("1 of 4 done");
   await expect(page.getByRole("region", { name: "To do" })).toContainText("waits until");
   await expect(page.getByRole("region", { name: "Duties" })).toContainText("2 duties, 1 off target");
-  await expect(page.getByRole("region", { name: "Check-in" })).toContainText("Check-in every 120 min");
+  await expect(page.getByRole("region", { name: "Check-in" })).toContainText("Check-in every 2 hours");
   await expect(page.locator('[data-board-id="p1"]')).toHaveAttribute("href", `#/board/${HARNESS}?focus=p1`);
 });
 
@@ -61,7 +61,7 @@ test("the check-in menu pauses check-ins and resumes them", async ({ page }) => 
   await expect(checkIn.getByRole("button", { name: "Check-in settings" })).toHaveText(/Paused/);
   await checkIn.getByRole("button", { name: "Check-in settings" }).click();
   await page.getByRole("menuitem", { name: "Resume check-ins" }).click();
-  await expect(checkIn).toContainText("Check-in every 120 min");
+  await expect(checkIn).toContainText("Check-in every 2 hours");
 });
 
 test("the board index lists every chat's plan, then duties and check-ins by when they are due", async ({ page }) => {
