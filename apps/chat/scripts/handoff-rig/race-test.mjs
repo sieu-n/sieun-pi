@@ -11,7 +11,7 @@
  * call refused, reset or answered with an error. It prints a JSON report and exits 1 when a round failed.
  * Usage: race-test.mjs <unit> <port> <data dir> <race|stray> <releases> <rounds>
  */
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { Agent, request } from "node:http";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -115,17 +115,20 @@ const release = async (name, buildMs) => {
   }
 };
 
-/** Makes systemd take a short-lived process in the unit as its main one, then ends it, as pid 888497 did at 21:24:22Z on 11-23. */
+/**
+ * Makes systemd take a short-lived process in the unit as its main one, then ends it, as the wake check's fixture server 888497 did at
+ * 21:24:22Z on 11-23: it told systemd READY=1 with MAINPID= of itself, and its shell killed it and exited, so the user manager reaped it
+ * and read that as the main process's end. The stand-in is an orphan the user manager adopts, which the same way reaps it.
+ */
 const loseServer = async () => {
-  const sleeper = spawn("sleep", ["60"], { stdio: "ignore" });
-  await new Promise(resolve => sleeper.once("spawn", resolve));
-  writeFileSync(`${unitCgroup}/cgroup.procs`, String(sleeper.pid));
+  const sleeper = Number(execFileSync("sh", ["-c", "sleep 120 >/dev/null 2>&1 & echo $!"], { encoding: "utf8" }).trim());
+  writeFileSync(`${unitCgroup}/cgroup.procs`, String(sleeper));
   const notify = `${process.env.XDG_RUNTIME_DIR ?? `/run/user/${uid}`}/systemd/notify`;
-  execFileSync("sh", ["-c", `echo $$ > ${unitCgroup}/cgroup.procs && exec systemd-notify --pid=${sleeper.pid} READY=1`], { env: { ...process.env, NOTIFY_SOCKET: notify } });
-  for (let at = Date.now(); mainPid() !== sleeper.pid; await sleep(50)) if (Date.now() - at > 5000) throw new Error(`systemd did not take ${sleeper.pid} as the main process`);
+  execFileSync("sh", ["-c", `echo $$ > ${unitCgroup}/cgroup.procs && exec systemd-notify --pid=${sleeper} READY=1`], { env: { ...process.env, NOTIFY_SOCKET: notify } });
+  for (let at = Date.now(); mainPid() !== sleeper; await sleep(50)) if (Date.now() - at > 5000) throw new Error(`systemd did not take ${sleeper} as the main process`);
   const server = lockPid();
-  sleeper.kill("SIGKILL");
-  return { sleeper: sleeper.pid, server };
+  process.kill(sleeper, "SIGTERM");
+  return { sleeper, server };
 };
 
 const settle = async (restartsBefore, allowed) => {
