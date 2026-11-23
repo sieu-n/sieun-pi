@@ -83,6 +83,23 @@ test("P1: state across cells, live output, and a finished bash() handle starts a
   }
 });
 
+test("an attach_image attachment reaches the model as an image block (11-24, inventory-5186 saw none)", async () => {
+  const faux = fauxProvider();
+  faux.queue([
+    cell("from rlm import emit\nemit({'application/vnd.prime-agent.attachment+json': {'mime_type': 'image/jpeg', 'data': 'aGVsbG8=', 'path': '/tmp/a.png'}, 'text/plain': 'Loaded image'})"),
+    say("seen"),
+  ]);
+  const rt = await openRuntime({ root: join(root, "attach"), provider: faux, extensionFactories: [piRlm] });
+  try {
+    await rt.session.prompt("go");
+    await settle(rt, faux, 0);
+    const result = rt.session.messages.find(m => m.role === "toolResult") as { content: { type: string; data?: string; mimeType?: string }[] };
+    assert.deepEqual(result.content.filter(c => c.type === "image"), [{ type: "image", data: "aGVsbG8=", mimeType: "image/jpeg" }]);
+  } finally {
+    await rt.dispose();
+  }
+});
+
 test("a handle read in a later cell of the same run sends no notice", async () => {
   const faux = fauxProvider();
   faux.queue([

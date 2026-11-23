@@ -30,7 +30,25 @@ import { kernelPython, pythonSkillOf, RLM_SKILLS, RUNTIME_SRC, type PythonSkill 
 export { setChildLoaderOptions } from "./children.ts";
 
 const AGENT_MESSAGE_MIME = "application/vnd.prime-agent.agent-message+json";
+const ATTACHMENT_MIME = "application/vnd.prime-agent.attachment+json";
 const IMAGE_MIMES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+
+type ImageBlock = { type: "image"; data: string; mimeType: string };
+
+function imageOf(mimeType: unknown, data: unknown): ImageBlock[] {
+  return typeof mimeType === "string" && IMAGE_MIMES.has(mimeType) && typeof data === "string" ? [{ type: "image", data, mimeType }] : [];
+}
+
+function cellImages(displays: Record<string, unknown>[]): ImageBlock[] {
+  return displays.flatMap(d => {
+    const attachment = d[ATTACHMENT_MIME] as { mime_type?: unknown; data?: unknown } | undefined;
+    return [
+      ...Object.entries(d).flatMap(([mime, data]) => imageOf(mime, data)),
+      ...(attachment ? imageOf(attachment.mime_type, attachment.data) : []),
+    ];
+  });
+}
+
 export const SNAPSHOT_LIMITS = { maxBytes: 256 * 1024 * 1024, maxVariableBytes: 16 * 1024 * 1024, pruneOversized: true };
 const BUSY_WAIT = "Wait and preserve state";
 const BUSY_KILL = "Kill kernel and restart";
@@ -568,11 +586,7 @@ export default function piRlm(pi: ExtensionAPI): void {
       if (restore) notes.push(restoreLine(restore));
       if (skillErrors) notes.push(`[python-skills-unavailable]\n${Object.entries(skillErrors).map(([k, v]) => `- ${k}: ${v}`).join("\n")}`);
       if (notes.length) text = `${notes.join("\n\n")}${text ? `\n\n${text}` : ""}`;
-      const images = r.displays.flatMap(d =>
-        Object.entries(d)
-          .filter(([mime, data]) => IMAGE_MIMES.has(mime) && typeof data === "string")
-          .map(([mimeType, data]) => ({ type: "image" as const, data: data as string, mimeType })),
-      );
+      const images = cellImages(r.displays);
       const sentAgentMessages = r.displays.filter(d => AGENT_MESSAGE_MIME in d).map(d => d[AGENT_MESSAGE_MIME]);
       return {
         content: [{ type: "text", text }, ...images],
