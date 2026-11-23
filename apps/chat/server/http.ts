@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { Server as NetServer, type AddressInfo, type Socket } from "node:net";
 import { extname, join, normalize } from "node:path";
-import type { ConversationPatch, DutyAction, LaterPatch, MemoryInput, ReadPoint, RoomInput, RoomPatch, SendRequest } from "../web/src/lib/api/types.ts";
+import type { AgentId, ConversationPatch, DutyAction, LaterPatch, MemoryInput, ReadPoint, RoomInput, RoomPatch, SendRequest } from "../web/src/lib/api/types.ts";
 import { parseSchedule } from "../web/src/lib/api/shared/chat-duties.ts";
 import { agentConfig, agentRecordOf } from "./agent-config.ts";
 import type { Config } from "./config.ts";
@@ -294,7 +294,11 @@ export function routes(app: App, parts: SkillsParts): Route[] {
     route("GET", "/api/directory", async () => ({ agents: app.threads.agents(), jobs: app.threads.jobList(), rooms: app.groups.list() })),
     route("GET", "/api/models", async () => MODELS),
     route("GET", "/api/agents", async (_r, _p, q) => app.threads.agents({ archived: q.get("archived") === "1", test: q.get("test") === "1" })),
-    route("GET", "/api/jobs", async (_r, _p, q) => app.threads.jobList({ archived: q.get("archived") === "1" })),
+    route("GET", "/api/jobs", async (_r, _p, q) => {
+      const agent = q.get("agent") as AgentId | null;
+      if (agent && !app.threads.agent(agent)) throw new NotFound(`No agent ${agent}.`);
+      return app.threads.jobList({ archived: q.get("archived") === "1", ...(agent ? { agent } : {}) });
+    }),
     route("GET", "/api/agents/:id/config", async (_r, p) => agentConfig(app, p.id!)),
     route("GET", "/api/agents/:id/for-me", async (_r, p, q) => {
       const status = q.get("status") ?? "pending";

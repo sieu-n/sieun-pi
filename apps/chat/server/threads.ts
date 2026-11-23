@@ -579,18 +579,17 @@ export class Threads {
 
   /**
    * The jobs of registered agents, newest first: each child conversation of an agent's work thread or of its root job threads, and each root
-   * job thread, with `agent` set. A job of a thread no agent owns is not in it.
+   * job thread, with `agent` set. A job of a thread no agent owns is not in it. With `agent` it holds that agent's jobs only, a test
+   * agent's too, though the whole list leaves them out.
    */
-  jobList(opts: { archived?: boolean } = {}): AgentSummary[] {
-    return this.allSummaries(opts).filter(a => a.kind === "job" && a.agent !== undefined && !this.agentRecords?.record(a.agent.id)?.test);
+  jobList(opts: { archived?: boolean; agent?: AgentId } = {}): AgentSummary[] {
+    const jobs = this.allSummaries(opts).filter(a => a.kind === "job" && a.agent !== undefined);
+    return opts.agent ? jobs.filter(a => a.agent!.id === opts.agent) : jobs.filter(a => !this.agentRecords?.record(a.agent!.id)?.test);
   }
 
-  /**
-   * One registered agent's jobs, archived ones too: the same rows `jobList` holds for it, so its Jobs tab and its card count the same jobs.
-   * A test agent has them too, though `jobList` leaves them out.
-   */
+  /** One registered agent's jobs, archived ones too: the same rows `jobList` holds for it, so its Jobs tab and its card count the same jobs. */
   jobsOf(agent: AgentId): AgentSummary[] {
-    return this.allSummaries({ archived: true }).filter(a => a.kind === "job" && a.agent?.id === agent);
+    return this.jobList({ archived: true, agent });
   }
 
   jobs(thread: string): JobNode[] {

@@ -62,6 +62,20 @@ describe("lists", () => {
     assert.deepEqual(directory.jobs.map(j => j.id), jobs.map(j => j.id));
   });
 
+  test("/api/jobs?agent= holds that agent's jobs only, archived ones with archived=1, and answers 404 for an id no agent has", async () => {
+    // On 11-24 live GET /api/jobs?agent=ag_agent-factory answered every agent's 1,925 jobs, 1.1 MB, because the route read no agent.
+    for (const archived of ["", "&archived=1"]) {
+      const all = await s.get<AgentSummary[]>(`/api/jobs?${archived.slice(1)}`);
+      for (const agent of REGISTERED) {
+        const mine = await s.get<AgentSummary[]>(`/api/jobs?agent=${agent}${archived}`);
+        assert.deepEqual(mine.map(j => j.id), all.filter(j => j.agent?.id === agent).map(j => j.id), `${agent}${archived}`);
+      }
+    }
+    const vent = await s.get<AgentSummary[]>(`/api/jobs?agent=${agents.vent}`);
+    assert.ok(vent.length > 0 && vent.length < (await s.get<AgentSummary[]>("/api/jobs")).length);
+    assert.equal((await s.send("GET", "/api/jobs?agent=ag_nobody")).status, 404);
+  });
+
   test("the sidebar's Solo group holds Solo rooms only, never a root chat no agent holds", async () => {
     const sidebar = await s.get<Sidebar>("/api/sidebar");
     assert.ok(sidebar.solo.every(c => c.id.startsWith("so_")));
