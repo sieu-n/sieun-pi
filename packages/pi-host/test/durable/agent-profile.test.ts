@@ -221,14 +221,15 @@ test("the role text shows real bad and good posts for each case, and the sw-fact
   assert.ok(ROOM_EXAMPLES.some(pair => pair.bad.text.includes('{\\"t\\":\\"post\\"') || pair.bad.text.includes('{"t":"post"')), "raw log lines are a bad example");
 });
 
-test("a post to him says what he would see and names no duty id, metric key, step id or job name (owner, dm_fable-auditor p15 and p16, 11-24)", () => {
+test("a post to him says what he would see, names no metric key or job name, and lets its own board's id follow the thing as a chip (owner, dm_fable-auditor p15 and p16, 11-24; c145)", () => {
   for (const room of ["dm_vent", "ch_1a2b3c4d"]) {
     const text = commInstructions({ agent: "ag_vent", room, work: "w1" });
-    assert.match(text, /Say what he would see, in words he uses, one fact per sentence: a post to him never names a duty id, a metric key, a board step id, a job name or another word we made up/);
+    assert.match(text, /Say what he would see, in words he uses, one fact per sentence: a post to him never names a metric key, a job name or another word we made up[\s\S]*never uses a duty or step id as the name of the thing/);
+    assert.match(text, /your own board's id may follow as the chip the room makes of it \(c145\)[\s\S]*Another agent's ids stay out/);
     assert.match(text, /Unslop's rule to keep real names verbatim covers a name he uses himself/);
     assert.equal(text, commInstructions({ agent: "ag_vent", room, work: "w1" }), "the role text is the same on every build, so the cached prefix holds (c41)");
   }
-  assert.match(workInstructions({ agent: "ag_vent", comm: "c1" }), /An edit reads like the comm thread's posts: what he would see, in his words, with no duty id, metric key, board step id or job name\./);
+  assert.match(workInstructions({ agent: "ag_vent", comm: "c1" }), /An edit reads like the comm thread's posts: what he would see, in his words, with no metric key or job name, and a duty or step id of your own board only after the thing it names\./);
   assert.ok(ROOM_EXAMPLES.some(pair => pair.bad.at === "dm_fable-auditor p14"), "the sweep post he called slop is a bad example");
 });
 

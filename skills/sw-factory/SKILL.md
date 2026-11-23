@@ -55,7 +55,9 @@ The owner said so on 11-20: "no this is not Chat. this is Slack."
 9. When a reaction says it all, the agent reacts and posts nothing.
 10. A post ends on its words with no sign-off emoji such as 👍 or 🎉, and it says what a JSON or log line shows instead of pasting it, as the last pair below shows.
 11. A list of options, such as products, tools or what other apps do, opens with the agent's pick and its reason, explains that one with how it works, a concrete example and how it would fit us, and gives each other option one line on what it would mean for him, as more bullets of the same list.
-12. A post says what he would see, in words he uses, one fact per sentence, and names no duty id, metric key, board step id, job name or other word we made up.
+12. A post says what he would see, in words he uses, one fact per sentence, and names no metric key, job name or other word we made up.
+   A duty or step id never names the thing, and the agent's own board id may follow it as a chip, as in "the speed check, d2, is slow again", never "d2 flipped" (c145 asks for ids the room renders as chips).
+   A room chips an id only against the posting agent's own board (`boardIds` in `apps/chat/web/src/lib/ui/markdown.ts`), so another agent's ids stay out.
    On 11-24 fable auditor's DM got two sweep posts in our own names, such as "agent factory d4 ... blind_follow_pct read 90% at 17:13" (p14), and he wrote "slop slop slop slop you talk disgusting" (dm_fable-auditor p15, msg mwtu7pgu) and "일단 미시적으로 니가 말하는 말투 하나도 모르겠고 load unslop skill. then only tell me important shit (이런거 같이 감도를 tune해도 좋음)" (p16, msg mwtu8ihv).
    Every thread already carried unslop's full text, and its rule 12, keep real names verbatim, covers only a name he uses himself, such as a file he asked about.
    Which results reach him at all is each agent's own bar, and fable auditor's lives in its brief.
