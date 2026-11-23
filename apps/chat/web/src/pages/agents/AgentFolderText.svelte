@@ -12,8 +12,9 @@
    * brief offers the agent's first message as starting text, and nothing is written until the owner presses Save.
    */
   import { api } from "$lib/api";
-  import { Button, Markdown, TextArea, stampLabel, toast } from "$lib/ui";
+  import { Button, TextArea, stampLabel, toast } from "$lib/ui";
   import { shortPath } from "./agents-model";
+  import FoldedMarkdown from "./FoldedMarkdown.svelte";
 
   type Props = {
     /** Its config's folder, whose file this shows; a save answers with the whole folder. */
@@ -50,15 +51,10 @@
   let fromPurpose = $state(false);
   let saving = $state(false);
   let error = $state("");
-  let expanded = $state(false);
-  let contentHeight = $state(0);
 
   const text = $derived(file.text);
   /** The text as shown: a working memory's own opening heading, such as "# agent factory, working memory", repeats the label above it. */
   const shown = $derived(doc === "workingMemory" ? text.replace(/^\s*#{1,3} [^\n]*working memory[^\n]*\n+/i, "") : text);
-  /** The collapsed text's height in px; a longer text fades out and opens with Show more instead of scrolling inside the page. */
-  const COLLAPSED = 320;
-  const long = $derived(contentHeight > COLLAPSED);
 
   function edit() {
     error = "";
@@ -106,10 +102,7 @@
     </div>
     {#if error}<p class="t-caption warn" role="alert">{error}</p>{/if}
   {:else if text}
-    <div class="text" class:clamped={long && !expanded}><div bind:clientHeight={contentHeight}><Markdown text={shown} /></div></div>
-    {#if long}
-      <button type="button" class="link toggle t-caption" aria-expanded={expanded} onclick={() => (expanded = !expanded)}>{expanded ? "Show less" : "Show more"}</button>
-    {/if}
+    <FoldedMarkdown text={shown} />
   {:else}
     <p class="t-caption meta">{readonly ? `${name} has no ${copy.title.toLowerCase()} yet.` : copy.empty}</p>
   {/if}
@@ -143,22 +136,6 @@
   .hint {
     flex-wrap: wrap;
     color: var(--text-subtle);
-  }
-  .text {
-    overflow: hidden;
-    padding: var(--space-3) var(--space-4);
-    border-radius: var(--radius-row);
-    background: var(--surface-inset);
-    font: var(--text-body-sm);
-    color: var(--text-standard);
-  }
-  .text.clamped {
-    max-height: 320px;
-    mask-image: linear-gradient(to bottom, #000 calc(100% - 72px), transparent);
-  }
-  .toggle {
-    align-self: flex-start;
-    color: var(--text-standard);
   }
   .meta {
     margin: 0;

@@ -1,11 +1,12 @@
 <script lang="ts">
   import { api, type ProjectList } from "$lib/api";
-  import { Badge, Button, Markdown, stampLabel, toast } from "$lib/ui";
+  import { Badge, Button, stampLabel, toast } from "$lib/ui";
   import { hrefFor } from "$lib/router.svelte";
   import { folderOwner, money, plural, withFolder, type AgentTabProps } from "./agent-tab";
   import AgentFolderText from "./AgentFolderText.svelte";
   import CopyPath from "./CopyPath.svelte";
   import FolderNote from "./FolderNote.svelte";
+  import FoldedMarkdown from "./FoldedMarkdown.svelte";
   import ProjectPicker from "./ProjectPicker.svelte";
 
   /**
@@ -62,7 +63,7 @@
   {#if config.identity.purpose}
     <section class="block" aria-label="First input">
       <h3 class="t-caption heading">First input</h3>
-      <div class="purpose t-body-sm"><Markdown text={config.identity.purpose.text} /></div>
+      <FoldedMarkdown text={config.identity.purpose.text} />
       <span class="t-caption meta">
         From {config.identity.purpose.from.name}{config.identity.purpose.via ? ` via ${config.identity.purpose.via}` : ""}, {stampLabel(config.identity.purpose.at)}
       </span>

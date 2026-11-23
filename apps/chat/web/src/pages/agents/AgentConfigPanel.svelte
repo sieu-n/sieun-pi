@@ -271,13 +271,6 @@
     margin: 0;
     color: var(--text-metadata);
   }
-  .body :global(.purpose) {
-    margin: 0;
-    max-height: 240px;
-    overflow: auto;
-    overflow-wrap: anywhere;
-    color: var(--text-standard);
-  }
   .body :global(.meta) {
     color: var(--text-metadata);
   }
