@@ -865,6 +865,8 @@ export interface AgentConfig {
     dutiesOf: { id: AgentId; name: string } | null;
     /** The file that holds the duties, their runs and the check-in. */
     dutiesFile: ConfigFile | null;
+    /** Each duty's `<duty>.state.json`: what its last precheck saw, which the next precheck reads and no thread loads. */
+    dutyStates: ConfigFile[];
     /** The board.wakes set on any of its threads that have not gone out yet, the soonest first and run wakes before them. */
     wakes: AgentWake[];
   };

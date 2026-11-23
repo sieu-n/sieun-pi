@@ -40,9 +40,12 @@
     <CheckInControl chatId={chatId} view={checkIn.value} onchange={next => checkIn.set(next)} {now} />
   </section>
   {#if config.swarm.dutiesFile}
-    <section class="block" aria-label="Duties file">
+    <section class="block" aria-label="Duty files">
       <h3 class="t-caption heading">Where they live</h3>
-      <ul class="files"><ConfigFileRow item={config.swarm.dutiesFile} /></ul>
+      <ul class="files">
+        <ConfigFileRow item={config.swarm.dutiesFile} />
+        {#each config.swarm.dutyStates as file (file.path)}<ConfigFileRow item={file} />{/each}
+      </ul>
     </section>
   {/if}
 {:else}

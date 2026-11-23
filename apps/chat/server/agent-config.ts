@@ -393,8 +393,8 @@ export async function agentConfig(app: App, id: AgentId): Promise<AgentConfig> {
     folder = { ...read, memory: { ...memory, count: entries.length } };
   }
 
-  // Data that outlives a turn: Prime's global store, which pi-host's digest merges into every thread, the thread's own store when no agent
-  // holds it, and the duty precheck state files of its chat.
+  // Data that outlives a turn: Prime's global store, which pi-host's digest merges into every thread, and the thread's own store when no agent
+  // holds it.
   const related: ConfigFile[] = [harnessStore("Prime's continual harness (global)", join(agentDir, "harness", "harness_state.json"),
     "Prime's global store. pi-host merges it into every thread's harness digest, as Prime does for its own sessions, and a kernel writes it with global_=True.")];
   if (!record && durableDir) {
@@ -402,6 +402,8 @@ export async function agentConfig(app: App, id: AgentId): Promise<AgentConfig> {
     related.push(harnessStore("its own harness store", join(durableDir, "session-artifacts", session, "harness", "harness_state.json"),
       "No agent holds this thread, so its local store is its own, by Prime's rule for a session; its kernel's rlm.harness writes here."));
   }
+  // Each duty's precheck state, which the Duties tab lists beside the duties file.
+  const dutyStates: ConfigFile[] = [];
   if (chat && isChatRoot) {
     const stateDir = join(app.boards.dir(chat), "duties");
     let names: string[] = [];
@@ -411,7 +413,7 @@ export async function agentConfig(app: App, id: AgentId): Promise<AgentConfig> {
       names = [];
     }
     for (const name of names) {
-      related.push(fileInfo(`duty ${name.replace(".state.json", "")} precheck state`, join(stateDir, name), {
+      dutyStates.push(fileInfo(`duty ${name.replace(".state.json", "")} precheck state`, join(stateDir, name), {
         preview: true, loaded: false, note: "What the duty's last precheck saw; the precheck reads it, the agent does not.",
       }));
     }
@@ -466,6 +468,7 @@ export async function agentConfig(app: App, id: AgentId): Promise<AgentConfig> {
       duties, checkIn,
       dutiesOf: !isChatRoot && chat ? { id: chat, name: app.boards.nameOf(chat) } : null,
       dutiesFile: isChatRoot && dutiesPath ? fileInfo("duties, runs and check-in", dutiesPath) : null,
+      dutyStates,
       wakes: app.boards.wakesOn(new Set(kinds.keys())).map(wake => agentWake(app, wake, kinds, agent, jobs)).sort(wakeOrder),
     },
     usage: usage === null ? null : {

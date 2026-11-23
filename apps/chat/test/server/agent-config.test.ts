@@ -62,7 +62,8 @@ test("a chat's config names its purpose, host, cwd, board, memory, instructions 
   assert.equal(harness?.count, 2);
   assert.equal(harness?.loaded, true, "pi-host's digest merges Prime's global store");
   assert.match(harness?.preview ?? "", /pi-pool slots free up/);
-  assert.ok(c.memory.related.some(f => f.label === "duty d1 precheck state" && f.exists && /downMinutes/.test(f.preview ?? "")));
+  assert.ok(c.swarm.dutyStates.some(f => f.label === "duty d1 precheck state" && f.exists && /downMinutes/.test(f.preview ?? "")));
+  assert.ok(!c.memory.related.some(f => f.label.endsWith("precheck state")), "the Duties tab lists them, not Knowledge");
 
   const paths = c.instructions.files.map(f => f.path);
   assert.equal(paths[0], join(s.app.config.dataDir, "work", "harness", "AGENTS.md"), "the cwd's AGENTS.md comes first");
