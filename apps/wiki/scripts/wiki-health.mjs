@@ -755,6 +755,18 @@ export function addLandedClaims(stale, claims) {
 	return stale;
 }
 
+/**
+ * The stale report minus pages whose status is settled. A superseded page sends readers to its survivor, so a code change behind it
+ * is no wiki problem, yet the engine report lists it. The 2026-11-23T16:09Z dream run flagged 40 pages and 5 were superseded, and a
+ * writer rechecked each one. GET /api/agent/stale keeps them, because it reports refs and is no to-do list.
+ */
+export function liveStale(stale, pages) {
+	const settled = new Set(pages.filter((p) => SETTLED_STATUS.has(String(p.status).toLowerCase())).map((p) => p.path));
+	stale.stale = stale.stale.filter((s) => !settled.has(s.path));
+	stale.count = stale.stale.length;
+	return stale;
+}
+
 // Node strips the engine's types; this hook adds the `.ts` its extensionless relative imports leave out.
 const ENGINE_RUN = `
 import { registerHooks } from 'node:module';
@@ -976,6 +988,7 @@ async function measure(args, root, rel) {
 	} catch (error) {
 		errors.push(`landed claims: ${error.message}`);
 	}
+	liveStale(stale, curated);
 
 	const sinceMs = args.since.getTime();
 	const days = Math.max(7, Math.ceil((Date.now() - sinceMs) / DAY) + 1);
