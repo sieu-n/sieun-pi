@@ -109,14 +109,15 @@ test("Cmd K and the search pill open search, and Esc closes it", async ({ page }
   await expect(page.getByRole("dialog", { name: "Search" })).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("dialog", { name: "Search" })).toBeHidden();
-  await page.getByRole("button", { name: "Search" }).click();
+  await page.locator("header.topbar").getByRole("button", { name: "Search", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "Search" })).toBeVisible();
 });
 
 test("browser back returns to the previous page", async ({ page }) => {
-  await page.getByRole("tab", { name: "Agents" }).click();
+  const bar = page.locator("header.topbar");
+  await bar.getByRole("tab", { name: "Agents", exact: true }).click();
   await expect(page).toHaveURL(/#\/agents$/);
-  await page.getByRole("button", { name: "Back" }).click();
+  await bar.getByRole("button", { name: "Back", exact: true }).click();
   await expect(page).toHaveURL(/#\/c\/ch_general$/);
 });
 
