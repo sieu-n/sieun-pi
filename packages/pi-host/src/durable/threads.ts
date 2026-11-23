@@ -34,6 +34,7 @@ import { AgentMessageEntry, ChatDoc, threadEnv, threadRegistry } from "./registr
 import { SPEAKING_TOOLS, type PrimeChat } from "./prime-chat.ts";
 import { PrimeRoots } from "./prime-roots.ts";
 import { jobTitle } from "./job-title.ts";
+import { peekDoc } from "./doc-peek.ts";
 import { FirstEntries } from "./first-entry.ts";
 import { loopSlices, rlmChildName, type DurableRlm, type PiRootView, type RlmThread, type RootRow } from "./rlm.ts";
 import type { DurableRules } from "./rules.ts";
@@ -276,6 +277,8 @@ function usageOf(entry: EntryRecord, thread: string, now: number): UsageRow | un
 export class DurableThreads {
   readonly index: ThreadIndex;
   private readonly open = new Map<string, Promise<OpenThread>>();
+  /** Each closed thread's doc reads in flight (`docGet`), one after another; an open of the thread waits for them, so one file never has two connections. */
+  private readonly peeks = new Map<string, Promise<void>>();
   /** The slot release of each conversation's last settled input, by `<thread>:<conversation>`, until it is done. */
   private readonly releasing = new Map<string, Promise<void>>();
   /** Each open thread's conversations whose run sleeps on a retry, with the retrying's start once read and the last error. */
@@ -433,7 +436,8 @@ export class DurableThreads {
     if (this.closing) return Promise.reject(new Error("pi-host is shutting down"));
     let opening = this.open.get(id);
     if (!opening) {
-      opening = this.openThread(id, init);
+      const peek = this.peeks.get(id);
+      opening = peek ? peek.then(() => this.openThread(id, init)) : this.openThread(id, init);
       this.open.set(id, opening);
       opening.catch(() => this.open.delete(id));
     }
@@ -1129,11 +1133,27 @@ export class DurableThreads {
     });
   }
 
+  /** A chat.doc's value, or null. A thread that is not open answers from its file and stays closed (`doc-peek.ts`). */
   async docGet(id: string, name: string, conversation?: number): Promise<unknown> {
-    const open = await this.thread(id);
     const target = (conversation ?? ROOT_CONVERSATION_ID) as ConversationId;
+    if (!this.closing && !this.open.has(id)) {
+      if (!this.index.get(id)) throw new Error(`No durable thread ${id}`);
+      const file = this.fileOf(id);
+      // A row with no file yet: the open below makes it, as before.
+      if (existsSync(file)) return this.peek(id, () => peekDoc(file, target, name, context));
+    }
+    const open = await this.thread(id);
     const doc = await open.harness.snapshot(ChatDoc, target, name, context);
     return doc?.value ?? null;
+  }
+
+  /** Runs a read of a closed thread's file after the thread's earlier ones; `thread()` waits for the last before it opens the file. */
+  private peek<T>(id: string, read: () => Promise<T>): Promise<T> {
+    const result = (this.peeks.get(id) ?? Promise.resolve()).then(read);
+    const done = result.then(() => undefined, () => undefined);
+    this.peeks.set(id, done);
+    void done.then(() => { if (this.peeks.get(id) === done) this.peeks.delete(id); });
+    return result;
   }
 
   /**
