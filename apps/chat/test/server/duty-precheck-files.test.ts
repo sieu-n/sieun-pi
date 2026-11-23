@@ -37,10 +37,12 @@ test("a wrapper pid whose cmdline reads empty, as inside its execve, still runs,
   assert.equal(runsScript("/bin/sh\0/d/d1.sh\0", "/d/d1.sh"), true);
   assert.equal(runsScript("node\0server.js\0", "/d/d1.sh"), false, "a reused pid");
   assert.equal(runsScript("", "/d/d1.sh"), true, "inside its execve, or ended and not reaped yet");
-  // A process with an empty cmdline that stays: a child the exec'd sleep never reaps. Until 11-23 the first poll read it as ended, and the
-  // run recorded "it ended with no exit code" while the wrapper went on (duty-queued.test.ts in a parallel run, 3 of 32 files).
+  // A process with an empty cmdline that stays: a child perl never reaps. Until 11-23 the first poll read it as ended, and the run recorded
+  // "it ended with no exit code" while the wrapper went on (duty-queued.test.ts in a parallel run, 3 of 32 files). The holder is no dash
+  // script: dash catches SIGCHLD and reaps a child that exits before its `exec sleep` with wait4(-1, WNOHANG), so under load the pid went
+  // away after the loop below saw it empty, and this test failed in a parallel run at load 150.
   const dir = mkdtempSync(join(tmpdir(), "duty-precheck-exec-"));
-  const holder = spawn("/bin/sh", ["-c", "sh -c 'exit 0' & echo $!; exec sleep 5"], { stdio: ["ignore", "pipe", "ignore"] });
+  const holder = spawn("perl", ["-e", "$| = 1; my $pid = fork() // die; if (!$pid) { exit 0 } print \"$pid\\n\"; sleep 5"], { stdio: ["ignore", "pipe", "ignore"] });
   try {
     const pid = Number(await new Promise<string>(done => holder.stdout!.once("data", chunk => done(String(chunk)))));
     while (readFileSync(`/proc/${pid}/cmdline`, "utf8") !== "") await new Promise(done => setTimeout(done, 10));
