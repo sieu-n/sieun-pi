@@ -94,7 +94,7 @@ test("Stop sends the abort for that agent", async ({ page, request }) => {
   const target = agents[0];
   test.skip(!target, "no agents on this server");
   const working = { ...target!, status: "working" as const };
-  await page.route("**/api/agents", (route) => route.fulfill({ json: agents.map((agent) => (agent.id === working.id ? working : agent)) }));
+  await page.route(/\/api\/agents\?archived=1$/, (route) => route.fulfill({ json: agents.map((agent) => (agent.id === working.id ? working : agent)) }));
   await page.routeWebSocket(/\/api\/live/, () => {});
   let aborted = "";
   await page.route("**/api/c/*/abort", (route) => {

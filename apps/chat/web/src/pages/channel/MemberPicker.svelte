@@ -24,7 +24,7 @@
   let { open = $bindable(), anchor, target, refresh, onpick, placement = "bottom-end" }: Props = $props();
 
   const statusText: Record<RunStatus, string> = { working: "Working now", idle: "Idle", sleeping: "Waiting for a model slot", failed: "Last run failed" };
-  const testAgents = view(() => (open && target.kind === "room" && target.test ? reads.agents({ test: true }) : null));
+  const testAgents = view(() => (open && target.kind === "room" && target.test ? reads.testAgents() : null));
   const testRooms = view(() => (open && target.kind === "agent" && target.test ? reads.testRooms() : null));
   const where = $derived(target.kind === "room" && target.room.startsWith("ch_") ? `#${target.name}` : target.name);
   /** Picks wait as checked rows and chips until Add, as in Slack's add dialog. */
@@ -42,7 +42,7 @@
   const items = $derived.by((): PickerItem[] => {
     if (target.kind === "room") {
       // A walk's test room lists only test agents, so a walk never adds a real agent.
-      const pool = target.test ? (testAgents.value ?? []).filter((a) => a.test) : agents.list;
+      const pool = target.test ? (testAgents.value ?? []) : agents.list;
       const members = target.members;
       return agentPickerItems(pool)
         .filter((item) => !members.includes(item.id))

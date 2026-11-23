@@ -1,4 +1,4 @@
-import type { AgentSummary, Attached, Delivery, Item, Room, Step, TurnPlace } from "$lib/api";
+import type { AgentSummary, Attached, Delivery, Item, PickerAgent, Room, Step, TurnPlace } from "$lib/api";
 import type { MarkdownContext } from "$lib/ui/markdown";
 import { offlineText } from "../agents/host-badge.ts";
 import type { PickerItem } from "$lib/ui/types";
@@ -95,7 +95,7 @@ export function waitingSend(items: readonly Item[]): string | null {
  * The rows of every agent picker (channel and Solo members, a DM's To): registered agents (`ag_<slug>`) that are not archived. A job, a work
  * thread or a comm thread is never an agent, so none of them is ever a row; the owner's 10-29 complaint was a picker that listed them.
  */
-export function agentPickerItems(agents: readonly AgentSummary[]): PickerItem[] {
+export function agentPickerItems(agents: readonly PickerAgent[]): PickerItem[] {
   return agents
     .filter((a) => a.id.startsWith("ag_") && !a.archived)
     .map((a) => ({ id: a.id, label: a.name, ...(a.status === "working" ? { detail: "working now" } : {}), avatar: { name: a.name, kind: "agent" as const, seed: a.id } }));

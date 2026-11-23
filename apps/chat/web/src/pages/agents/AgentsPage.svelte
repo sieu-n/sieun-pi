@@ -16,15 +16,18 @@
   const section = $derived(sectionFromParams(router.route.params));
   const models = view(() => reads.models());
   const catalog = $derived(models.value);
-  /** The list of registered agents over HTTP, so the page can show an error when the live socket never connects. */
-  const listed = view(() => reads.agents());
-  const fetched = $derived(listed.value);
+  /**
+   * Live and archived agents over HTTP, one read for the Archived tab and its count and for the list while the live socket has not
+   * connected, so the page can show an error when it never does. It is read again after an archive, an unarchive or a rename. Two reads,
+   * of the live and of the whole list, went at each rename before: in the p155 sweep at a 200 ms round trip the second answer took a
+   * second round trip, 406 to 428 ms (~/work/p155-sweep/fix-agents-list/notes.md).
+   */
+  const listed = view(() => reads.allAgents());
+  const fetched = $derived(listed.value?.filter((agent) => !agent.archived) ?? null);
   const loadError = $derived(agents.ready ? "" : (listed.error ?? ""));
   const filter = $derived(agentsFilterFromParams(router.route.params));
-  /** Live and archived agents, read for the Archived tab and its count, and again after an archive, an unarchive or a rename. */
-  const withArchived = view(() => reads.allAgents());
-  const archived = $derived((withArchived.value ?? []).filter((agent) => agent.archived));
-  onMount(() => onAgentsChanged(() => void Promise.all([withArchived.refresh(), listed.refresh()])));
+  const archived = $derived((listed.value ?? []).filter((agent) => agent.archived));
+  onMount(() => onAgentsChanged(() => void listed.refresh()));
   let menu = $state<{ agent: AgentSummary; anchor: Anchor } | null>(null);
   let focused = $state<string | null>(null);
   let now = $state(Date.now());

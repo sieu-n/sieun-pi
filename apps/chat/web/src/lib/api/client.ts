@@ -612,6 +612,9 @@ export function get<T>(of: Read<T>, wait?: Wait): Promise<T> {
 /** How long For you waits for /api/for-you before it shows an error with Retry; with board reads cached it answered in 10 to 680 ms during searches on 10-28. */
 export const FOR_YOU_DEADLINE_MS = 10_000;
 
+/** An agent as a picker lists it: its name and run status. */
+export type PickerAgent = Pick<AgentSummary, "id" | "name" | "status" | "archived">;
+
 /**
  * A channel or Solo room as the page lists it, for the # typeahead, mention chips and pickers (pages/channel/directory.svelte.ts):
  * without its `lastSeq` and its members' run status, which change with every post and turn and which no list shows. On 11-21 his
@@ -623,11 +626,18 @@ export const listedRoom = ({ lastSeq: _lastSeq, members, ...room }: Room): Liste
 
 /** The reads of the panels the owner opens: the Agents page, an agent's page, and a chat's board with its duties, check-in and jobs. */
 export const reads = {
-  /** `test` adds the test agents of walks, for a test room's member picker. */
-  agents: (opts: { test?: boolean } = {}) => read<AgentSummary[]>(opts.test ? "/api/agents?test=1" : "/api/agents"),
+  /**
+   * A walk's test agents, for a test room's member picker, with only what the picker shows. Each add or remove changes the agent's `rooms`
+   * and `updatedAt`, so in the p155 sweep at a 200 ms round trip every refresh of the whole list differed, counted as his wait and took
+   * 1,601 to 1,930 ms from the picker's open, while its network took 410 to 421 ms (~/work/p155-sweep/fix-agents-list/notes.md).
+   */
+  testAgents: (): Read<PickerAgent[]> => ({
+    path: "/api/agents?test=1",
+    pick: (agents: AgentSummary[]) => agents.filter(agent => agent.test).map(({ id, name, status, archived }) => ({ id, name, status, archived })),
+  }),
   /** Every open room with walks' test rooms, for a test agent's channel picker. */
   testRooms: () => read<Room[]>("/api/rooms?test=1"),
-  /** Live and archived agents, for the Agents page's Archived tab. */
+  /** Live and archived agents, for the Agents page: its Archived tab, and its list while the live socket has not connected. */
   allAgents: () => read<AgentSummary[]>("/api/agents?archived=1"),
   models: () => read<ModelCatalog>("/api/models"),
   /** Channels and Solo rooms; a DM is listed by agent, never here. */

@@ -472,7 +472,7 @@ export const sidebar = {
   },
 };
 
-/** Registered agents (`ag_<slug>`), newest first, live: the Agents cards and every agent picker. Archived ones come from `api.agents({ archived: true })`. */
+/** Registered agents (`ag_<slug>`), newest first, live: the Agents cards and every agent picker. Archived ones come from `reads.allAgents()`. */
 export const agents = {
   get list() {
     global.start();
