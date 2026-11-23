@@ -62,6 +62,7 @@ test("the precheck asks for a target, a push step and each stuck step, and an ow
   assert.ok(!prompt.includes("push step under p3"));
   assert.ok(prompt.includes('Give "Write the docs" a target from the owner\'s words, with plan_update target.'));
   assert.ok(prompt.includes("2 open steps have no live owner."));
+  assert.ok(prompt.includes("A step that waits on a time or on another agent's work still needs a job of its own that sleeps on a board.wake"));
   assert.equal(checkInIdle(precheck), false);
   const measured = checkInMeasure(precheck);
   assert.equal(measured.verdict, "missed");

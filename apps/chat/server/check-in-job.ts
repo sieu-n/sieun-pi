@@ -179,7 +179,9 @@ function dueItems(precheck: CheckInPrecheck, extras: CheckInExtras): string[] {
   return [
     ...due.slice(0, BRIEF_ITEMS), ...due.length > BRIEF_ITEMS ? [`${due.length - BRIEF_ITEMS} more goals need the same, listed in the detail file.`] : [],
     ...stuck ? [`${stuck} open ${stuck === 1 ? "step has" : "steps have"} no live owner. Push each one toward done in this run: resume its job, start a fix job, ` +
-      "or close it with the evidence you checked, and give a step only the owner can unblock a For you todo. The detail file lists them."] : [],
+      "or close it with the evidence you checked, and give a step only the owner can unblock a For you todo. A step that waits on a time or on another " +
+      "agent's work still needs a job of its own that sleeps on a board.wake for that time or event and acts when it wakes, since a wait alone moves " +
+      "nothing: on 11-24, 6 of the 7 steps nobody moved across the agents waited that way with no job. The detail file lists them."] : [],
     ...metGoals.length ? [`${metGoals.length === 1 ? `${metGoals[0]!.id} ${quote(metGoals[0]!.text)} meets its target. Close it now` : `${metGoals.length} open items, like ` +
       `${metGoals[0]!.id} ${quote(metGoals[0]!.text)}, meet their target. Close each now`} with a note that names the reading, and wait for no further run: ` +
       `a duty keeps the metric from here and puts a fix step back when it slips (c110). ${keepers.length ? `${keepers.join(", ").replace(/^d/, "D")} ${keepers.length === 1 ? "keeps" : "keep"} ` +
