@@ -48,6 +48,18 @@
   }
 </script>
 
+{#snippet sectionRow(section: PromptSection)}
+  <li class="section" data-key={section.key}>
+    <Disclosure title={sectionName(section.key)} detail={chars(section.text.length)}>
+      {#snippet actions()}
+        <IconButton icon="copy" label="Copy {sectionName(section.key)}" size="xs" onclick={() => copy(section.text, sectionName(section.key))} />
+      {/snippet}
+      <pre class="text t-mono">{section.text}</pre>
+      <span class="t-caption meta source">{section.source}</span>
+    </Disclosure>
+  </li>
+{/snippet}
+
 {#if answer.value}
   {@const prompt = answer.value}
   {#if prompt.away}
@@ -62,19 +74,11 @@
         <IconButton icon="copy" label="Copy the {title.toLowerCase()} prompt" size="xs" onclick={() => copy(whole(kind.sections), `the ${title.toLowerCase()} prompt`)} />
       </div>
       <p class="t-caption meta">{jobNote(kind)}</p>
-      <ShowAllList items={kind.sections} key={section => section.key} noun="sections" label="{title} sections" dense>
-        {#snippet row(section)}
-          <li class="section" data-key={section.key}>
-            <Disclosure title={sectionName(section.key)} detail={`${chars(section.text.length)}${section.message ? " · sent before each turn" : ""}`}>
-              {#snippet actions()}
-                <IconButton icon="copy" label="Copy {sectionName(section.key)}" size="xs" onclick={() => copy(section.text, sectionName(section.key))} />
-              {/snippet}
-              <pre class="text t-mono">{section.text}</pre>
-              <span class="t-caption meta source">{section.source}</span>
-            </Disclosure>
-          </li>
-        {/snippet}
-      </ShowAllList>
+      <ShowAllList items={kind.sections.filter(s => !s.message)} key={section => section.key} noun="sections" label="{title} system prompt" row={sectionRow} dense />
+      {#if kind.sections.some(s => s.message)}
+        <p class="t-caption meta turn">Sent as a message before each turn's input</p>
+        <ShowAllList items={kind.sections.filter(s => s.message)} key={section => section.key} noun="sections" label="{title} messages" row={sectionRow} dense />
+      {/if}
     </section>
   {/each}
   {#if prompt.builtBy}
@@ -105,6 +109,9 @@
   }
   .section {
     min-width: 0;
+  }
+  .turn {
+    margin: var(--space-1) 0 0;
   }
   .text {
     margin: 0;
