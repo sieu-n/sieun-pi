@@ -13,7 +13,7 @@ import type { Store } from "./store.ts";
 import type { AgentRecord } from "./agent-store.ts";
 import { agentSummary, isAgentId, isRoomId, rootRetrying, type AgentRows, type Agents } from "./agents.ts";
 import { TailCache } from "./tail-cache.ts";
-import { wakeSession } from "./wakes.ts";
+import { wakeSession, wakeTarget } from "./wakes.ts";
 import { buildItems, earliest, entryOf, firstSendIn, isInput, openSendIn, itemIdFor, sentMessages, speaks, speaksThroughSendMessage, stepOutputOf, type TimelineContext } from "./timeline.ts";
 
 export const OWNER: Principal = { id: "owner", kind: "owner", name: "You", avatar: { initials: "Me", hue: 210 } };
@@ -124,10 +124,28 @@ export class Threads {
   /** Each thread's summaries (`agentsOf`) with the row they were built from, under `summariesKey`, the store versions they read. */
   private readonly summaries = new Map<string, { row: DurableThread; out: AgentSummary[] }>();
   private summariesKey = "";
-  private jobCache = new Map<AgentId, string>();
+  /** The agent records' and the state's save counts and the box links `summariesKey` was made of. */
+  private keyRecords = -1;
+  private keyState = -1;
+  private keyHosts = "\u0000";
+  /** Each thread's conversation rows (`rowConversations`), kept while its summaries and the store versions they read stay the same. */
+  private readonly convRows = new Map<string, { out: AgentSummary[]; key: string; rows: ConversationSummary[] }>();
+  /** The link state of each box the agents run on, read at each thread list read; a change builds every summary again (`hostState`). */
+  private hostKey = "";
+  /**
+   * What changed since the list cache was last saved (`saveListCache`): "threads" for a thread made, gone, renamed or archived or a tree
+   * changed, which a list read saves at once, and "rows" for any other field, which only the stop saves. Saving the whole list at each read
+   * a row changed took about 25 ms of CPU every 2 s on 11-24, since a running thread's row changes at nearly every read.
+   */
+  private listChanged: "no" | "rows" | "threads" = "no";
+  /** The job rows (`jobList`) and conversation rows (`threadConversations`) the last read sent, by thread, each with its JSON. */
+  private readonly jobCache = new Map<string, Map<AgentId, string>>();
   /** Each job's time and the run status, name and retry note it was taken at, by conversation id (`jobTime`). */
   private readonly jobTimes = new Map<ConversationId, { seen: string; at: number }>();
-  private convCache = new Map<ConversationId, string>();
+  private readonly convCache = new Map<string, Map<ConversationId, string>>();
+  /** The threads whose summaries `agentsOf` built since the last thread list read compared them, or all of them (`rebuiltAll`). */
+  private readonly rebuilt = new Set<string>();
+  private rebuiltAll = true;
   private readonly live = new Map<ConversationId, LiveConversation>();
   /** Each conversation's first entry id, which never changes once it exists. */
   private readonly firstEntries = new Map<ConversationId, number>();
@@ -198,7 +216,7 @@ export class Threads {
   async stop(): Promise<void> {
     clearInterval(this.timer);
     for (const live of this.live.values()) await live.stop?.().catch(() => undefined);
-    this.saveListCache();
+    this.saveListCache(true);
     this.tails.stop();
   }
 
@@ -207,7 +225,9 @@ export class Threads {
    * The cache held only what the last read listed: on 11-22 a hand-over came 3 s after the Agent memory duty made 12 test agents, the new
    * server served a cache without them, and the duty's 12 sends got 404 "No thread" (~/work/agent-memory/d3-hand-2611220900.json).
    */
-  private saveListCache(): void {
+  private saveListCache(atStop = false): void {
+    if (this.listChanged === "no" || (this.listChanged === "rows" && !atStop)) return;
+    this.listChanged = "no";
     const cache = JSON.stringify({ threads: [...this.list.values()], trees: [...this.trees] } satisfies ThreadsCache);
     if (cache === this.cached) return;
     this.cached = cache;
@@ -236,10 +256,11 @@ export class Threads {
    * threads (467 KB from the box's pi-host, 50 to 530 ms) and waits for the Mac's relay as well. The row stays over any list read older than it.
    */
   put(row: DurableThread): void {
+    const before = this.list.get(row.id);
     this.fresh.set(row.id, row);
     this.list.set(row.id, row);
-    this.names = undefined;
-    this.roots = undefined;
+    this.forget(new Set([row.id]), before !== undefined && before.name !== row.name);
+    this.listChanged = "threads";
     this.agentRecords?.follow(this.list);
     void this.poll();
   }
@@ -276,8 +297,11 @@ export class Threads {
   /** Reads the thread list, and the tree of every thread whose file changed, and sends what changed. */
   async refresh(): Promise<void> {
     // A box link that went up or down reads in hostState before the list does.
-    this.summaries.clear();
-    this.waking = new Set(this.pendingWakes());
+    this.hostKey = this.hostStates();
+    // A job whose board.wake went out or came reads another status (`jobStatus`).
+    const waking = new Set(this.pendingWakes());
+    const changed = new Set([...waking].filter(w => !this.waking.has(w)).concat([...this.waking].filter(w => !waking.has(w))).map(w => wakeTarget(w).thread));
+    this.waking = waking;
     const known = new Set(this.list.keys());
     const read = await this.host.threads();
     // A thread new to this read may be one a create in flight has not claimed yet; the next read lists it.
@@ -288,30 +312,46 @@ export class Threads {
       // A job run that ends with no root entry leaves the row's updatedAt as it was, so a tree kept with a running job is read again: on
       // 11-24 a removed job, "thread open walk" (28350de8:73), read working 89 h after its run ended.
       if (thread.children > 0 && (!tree || tree.updatedAt !== thread.updatedAt || thread.status === "running" || thread.retrying !== undefined
-        || tree.nodes.some(n => n.retrying || n.status === "running"))) {
+        || liveNodes(tree.nodes))) {
         const nodes = await this.host.tree(thread.id).catch(() => tree?.nodes ?? []);
-        const before = JSON.stringify(tree?.nodes ?? []);
-        this.trees.set(thread.id, { updatedAt: thread.updatedAt, nodes });
-        this.summaries.delete(thread.id);
-        if (JSON.stringify(nodes) !== before) this.events.jobs(thread.id, this.jobs(thread.id));
+        const same = !!tree && JSON.stringify(nodes) === JSON.stringify(tree.nodes);
+        // A tree read again with the same nodes keeps its node objects, so the thread's summaries stay.
+        this.trees.set(thread.id, { updatedAt: thread.updatedAt, nodes: same ? tree.nodes : nodes });
+        if (!same) {
+          changed.add(thread.id);
+          // A job made, gone or renamed is a change the next server must start with; a run status is read again at its first list read.
+          const shape = (list: readonly TreeNode[]) => list.map(n => `${n.id}:${n.name}`).join("\n");
+          this.listChanged = !tree || shape(tree.nodes) !== shape(nodes) ? "threads" : this.listChanged === "threads" ? "threads" : "rows";
+          this.events.jobs(thread.id, this.jobs(thread.id));
+        }
       }
     }
     // A row `put` while this read ran is newer than the read's, so it stays, as does a change the host has not answered yet.
+    // A row with the same fields as the listed one stays the same object, so its thread's summaries and conversation rows stay (`agentsOf`).
+    let renamed = false;
     const threads = listed.map(t => {
-      const known = this.fresh.get(t.id);
-      if (!known) return t;
-      if (this.changing.has(t.id) || known.updatedAt > t.updatedAt) return known;
-      this.fresh.delete(t.id);
-      return t;
+      const kept = this.fresh.get(t.id);
+      let row = t;
+      if (kept && (this.changing.has(t.id) || kept.updatedAt > t.updatedAt)) row = kept;
+      else if (kept) this.fresh.delete(t.id);
+      const before = this.list.get(row.id);
+      if (before && (before === row || sameRow(before, row))) return before;
+      changed.add(row.id);
+      if (before && before.name !== row.name) renamed = true;
+      if (!before || before.name !== row.name || before.archived !== row.archived) this.listChanged = "threads";
+      return row;
     });
     const next = new Map(threads.map(t => [t.id, t]));
     // A thread `put` while this read ran is one the read began too early to list. On 11-22 such reads dropped 6 of 8 agents the Agent memory
     // duty made at once, and each send to them right after answered 404.
     for (const [id, row] of this.list) if (!known.has(id) && !next.has(id)) next.set(id, row);
+    for (const id of this.list.keys()) {
+      if (next.has(id)) continue;
+      changed.add(id);
+      this.listChanged = "threads";
+    }
     this.list = next;
-    this.names = undefined;
-    this.roots = undefined;
-    this.summaries.clear();
+    this.forget(changed, renamed);
     this.agentRecords?.dropUntitled(next);
     this.agentRecords?.follow(next);
     await this.agentRecords?.fileSpawned(next);
@@ -323,17 +363,17 @@ export class Threads {
     this.agentCache = agents.cache;
     if (agents.changed.length || agents.removed.length) this.events.agents(agents.changed, agents.removed);
     await yieldLoop();
-    const jobs = diff(this.jobCache, this.jobList({ archived: true }));
-    this.jobCache = jobs.cache;
-    if (jobs.changed.length || jobs.removed.length) this.events.jobList(jobs.changed, jobs.removed);
+    // Only the threads whose summaries were built again since the last read can send a changed job or conversation row, and every thread
+    // when all were built again (`agentsOf`).
+    const compared = this.rebuiltAll ? new Set([...this.list.keys(), ...this.jobCache.keys(), ...this.convCache.keys()]) : new Set([...this.rebuilt, ...changed]);
+    this.rebuiltAll = false;
+    this.rebuilt.clear();
+    const jobs = diffThreads(this.jobCache, compared, thread => this.threadJobs(thread));
+    if (jobs.changed.length || jobs.removed.length) this.events.jobList(jobs.changed.sort(newestFirst), jobs.removed);
     await yieldLoop();
-    const conversations = this.threadConversations();
-    const convChanged = conversations.filter(c => this.convCache.get(c.id) !== JSON.stringify(c));
-    const convNext = new Map(conversations.map(c => [c.id, JSON.stringify(c)]));
-    const convGone = [...this.convCache.keys()].some(id => !convNext.has(id));
-    this.convCache = convNext;
+    const conversations = diffThreads(this.convCache, compared, thread => this.rowsOfThread(thread));
     // A row that leaves the list (a thread an agent claimed) sends the sidebar again too.
-    if (convChanged.length || convGone) this.events.conversations(convChanged);
+    if (conversations.changed.length || conversations.removed.length) this.events.conversations(conversations.changed);
     for (const live of this.live.values()) {
       const status = this.statusOfConversation(live.thread, live.conversation);
       if ((status === "working") !== live.running && !live.recent.length) {
@@ -494,21 +534,58 @@ export class Threads {
   }
 
   /**
-   * A thread's summaries, built once until the next thread list read, a tree read of that thread, or a save of the agent records, the rooms or
-   * the thread kinds. On 11-03 the 2 s thread list read, each board, duty and For you read and the step owners' tick built every thread's
-   * summaries again, up to once per chat, and held the event loop for 250 to 310 ms at a time.
+   * A thread's summaries, built once until its row, its tree or its pending wakes change, a row they read changes (`forget`), the agent records,
+   * the rooms or the thread kinds are saved, or a box's link changes. On 11-03 the 2 s thread list read, each board, duty and For you read and
+   * the step owners' tick built every thread's summaries again, up to once per chat, and held the event loop for 250 to 310 ms at a time. Until
+   * p276 each thread list read built every summary again, about 140 ms of CPU every 2 s on 11-24 with 2,300 threads.
    */
   private agentsOf(row: DurableThread): AgentSummary[] {
-    const key = `${this.agentRecords?.store.version ?? 0}:${this.store.version}`;
-    if (key !== this.summariesKey) {
+    const records = this.agentRecords?.store.version ?? 0;
+    if (records !== this.keyRecords || this.store.version !== this.keyState || this.hostKey !== this.keyHosts) {
+      this.keyRecords = records;
+      this.keyState = this.store.version;
+      this.keyHosts = this.hostKey;
+      const key = `${records}:${this.store.version}:${this.hostKey}`;
       this.summaries.clear();
       this.summariesKey = key;
+      this.rebuiltAll = true;
     }
     const hit = this.summaries.get(row.id);
     if (hit?.row === row) return hit.out;
+    this.rebuilt.add(row.id);
     const out = this.buildAgentsOf(row);
     this.summaries.set(row.id, { row, out });
     return out;
+  }
+
+  /**
+   * Drops the summaries a change of the threads `ids` makes old: their own, and those of each agent whose root job threads or comm threads
+   * they are, which carry those rows. A renamed thread drops every summary, since a job names its agent and its parent by their threads' names.
+   */
+  private forget(ids: ReadonlySet<string>, renamed: boolean): void {
+    if (!ids.size) return;
+    this.names = undefined;
+    this.roots = undefined;
+    if (this.listChanged === "no") this.listChanged = "rows";
+    if (renamed) {
+      this.summaries.clear();
+      this.rebuiltAll = true;
+      return;
+    }
+    for (const id of ids) this.summaries.delete(id);
+    const records = this.agentRecords;
+    for (const record of records?.list() ?? []) {
+      if (records!.jobThreads(record).some(thread => ids.has(thread)) || Object.values(record.comm ?? {}).some(thread => ids.has(thread))) {
+        this.summaries.delete(record.workThread);
+      }
+    }
+  }
+
+  /** Each box the agents run on with its link state, which their summaries carry. */
+  private hostStates(): string {
+    const records = this.agentRecords;
+    if (!records) return "";
+    return [...new Set(records.list().map(record => record.host))].map(box => `${box}=${records.hostState(box) ?? ""}`).join(",");
   }
 
   /**
@@ -594,6 +671,19 @@ export class Threads {
     return opts.agent ? jobs.filter(a => a.agent!.id === opts.agent) : jobs.filter(a => !this.agentRecords?.record(a.agent!.id)?.test);
   }
 
+  /** A thread's rows of `jobList({ archived: true })`. */
+  private threadJobs(thread: string): AgentSummary[] {
+    const row = this.list.get(thread);
+    if (!row || this.isComm(thread)) return [];
+    return this.agentsOf(row).filter(a => a.kind === "job" && a.agent !== undefined && !this.agentRecords?.record(a.agent.id)?.test);
+  }
+
+  /** A thread's rows of `threadConversations`. */
+  private rowsOfThread(thread: string): ConversationSummary[] {
+    const row = this.list.get(thread);
+    return row && !this.isComm(thread) && !this.agentRecords?.store.isTest(thread) ? this.rowConversations(row) : [];
+  }
+
   /** One registered agent's jobs, archived ones too: the same rows `jobList` holds for it, so its Jobs tab and its card count the same jobs. */
   jobsOf(agent: AgentId): AgentSummary[] {
     return this.jobList({ archived: true, agent });
@@ -659,7 +749,11 @@ export class Threads {
 
   private rowConversations(row: DurableThread): ConversationSummary[] {
     const agents = this.agentsOf(row);
-    return [this.rootConversation(row, agents), ...agents.slice(1).map(Threads.jobConversation)];
+    const kept = this.convRows.get(row.id);
+    if (kept?.out === agents && kept.key === this.summariesKey) return kept.rows;
+    const rows = [this.rootConversation(row, agents), ...agents.slice(1).map(Threads.jobConversation)];
+    this.convRows.set(row.id, { out: agents, key: this.summariesKey, rows });
+    return rows;
   }
 
   private rootConversation(row: DurableThread, agents: readonly AgentSummary[]): ConversationSummary {
@@ -1052,8 +1146,55 @@ function firstSendScans(cache: FirstSendsCache | Record<string, FirstSendScan>):
 }
 
 /** The summaries that differ from `cache`, the ids gone from it, and the next cache. */
+/** Whether a tree holds a running or retrying conversation, kept per node list, which a list read keeps while the tree is the same. */
+const liveKept = new WeakMap<readonly TreeNode[], boolean>();
+function liveNodes(nodes: readonly TreeNode[]): boolean {
+  let live = liveKept.get(nodes);
+  if (live === undefined) liveKept.set(nodes, live = nodes.some(n => n.retrying || n.status === "running"));
+  return live;
+}
+
+/** Whether two rows of a thread list carry the same fields, each a string, number or boolean. */
+function sameRow(a: DurableThread, b: DurableThread): boolean {
+  const keys = Object.keys(a) as (keyof DurableThread)[];
+  if (keys.length !== Object.keys(b).length) return false;
+  for (const key of keys) if (a[key] !== b[key]) return false;
+  return true;
+}
+
+/** A summary's JSON, kept with the summary object: a thread list read sends what changed and writes JSON only for the summaries it built again. */
+const jsonKept = new WeakMap<object, string>();
+function jsonOf(value: object): string {
+  let text = jsonKept.get(value);
+  if (text === undefined) jsonKept.set(value, text = JSON.stringify(value));
+  return text;
+}
+
+/**
+ * The rows of `threads` that changed since `cache` took them, and the ids of those gone, with `cache` set to the rows now. A thread list read
+ * compares the threads whose summaries were built again only: comparing every job and conversation row took about 30 ms of each 2 s read on
+ * 11-24.
+ */
+function diffThreads<T extends { id: string }>(cache: Map<string, Map<string, string>>, threads: Iterable<string>, rowsOf: (thread: string) => T[]): { changed: T[]; removed: string[] } {
+  const changed: T[] = [];
+  const removed: string[] = [];
+  for (const thread of threads) {
+    const before = cache.get(thread);
+    const next = new Map<string, string>();
+    for (const row of rowsOf(thread)) {
+      const text = jsonOf(row);
+      next.set(row.id, text);
+      if (before?.get(row.id) !== text) changed.push(row);
+    }
+    for (const id of before?.keys() ?? []) if (!next.has(id)) removed.push(id);
+    if (next.size) cache.set(thread, next);
+    else cache.delete(thread);
+  }
+  return { changed, removed };
+}
+
 function diff(cache: ReadonlyMap<AgentId, string>, list: AgentSummary[]): { changed: AgentSummary[]; removed: AgentId[]; cache: Map<AgentId, string> } {
-  const next = new Map(list.map(a => [a.id, JSON.stringify(a)]));
+  const next = new Map(list.map(a => [a.id, jsonOf(a)]));
   return { changed: list.filter(a => cache.get(a.id) !== next.get(a.id)), removed: [...cache.keys()].filter(id => !next.has(id)), cache: next };
 }
 

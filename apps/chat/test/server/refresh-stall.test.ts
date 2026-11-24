@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import type { RoomPost } from "../../server/agent-store.ts";
 import { isGroupRoom } from "../../server/agent-store.ts";
+import type { FixtureHost } from "../../server/host/fixture.ts";
 import { readFeedThread, type FeedSide } from "../../server/rooms.ts";
 import { start, type Running } from "./helpers.ts";
 
@@ -81,4 +82,34 @@ test("the poll after each list read finds each comm thread's room by id, with no
     store.groupRooms = groupRooms;
   }
   assert.equal(scans, 1, "one read of the rooms for the status pass; on 11-23 each of 598 DM entries scanned 216 channels by name");
+});
+
+test("a list read that finds a thread unchanged keeps its summaries and saves no list cache, and a changed root job thread builds its agent again", async () => {
+  const threads = s.app.threads;
+  await threads.refresh();
+  const record = s.app.agents.list().find(r => s.app.agents.jobThreads(r).some(id => threads.thread(id)))!;
+  assert.ok(record, "the fixture holds an agent with a root job thread");
+  const before = threads.agent(record.id)!;
+  const others = s.app.agents.list().filter(r => r.id !== record.id && threads.thread(r.workThread)).map(r => threads.agent(r.id));
+  const saveCache = s.app.store.saveCache.bind(s.app.store);
+  const saved: string[] = [];
+  s.app.store.saveCache = (name, value) => { saved.push(name); saveCache(name, value); };
+  try {
+    await threads.refresh();
+    assert.equal(threads.agent(record.id), before, "a read with no change keeps the summary it built");
+    assert.ok(!saved.includes("threads"), "and writes no list cache");
+
+    const job = (s.host as FixtureHost).threadsById.get(s.app.agents.jobThreads(record).find(id => threads.thread(id))!)!;
+    job.row.status = "running";
+    job.row.updatedAt = Math.max(Date.now(), before.updatedAt + 1);
+    await threads.refresh();
+    const after = threads.agent(record.id)!;
+    assert.notEqual(after, before, "a root job thread's change builds its agent's summary again");
+    assert.equal(after.status, "working");
+    assert.equal(after.updatedAt, job.row.updatedAt);
+    assert.ok(!saved.includes("threads"), "a run status is no change the list cache keeps at once");
+    s.app.agents.list().filter(r => r.id !== record.id && threads.thread(r.workThread)).forEach((r, i) => assert.equal(threads.agent(r.id), others[i], `${r.id} is not built again`));
+  } finally {
+    s.app.store.saveCache = saveCache;
+  }
 });
