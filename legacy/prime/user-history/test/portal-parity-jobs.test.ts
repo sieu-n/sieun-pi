@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { JOB_POLL_MS, jobLedger, jobVerdict, leftoverJobs, untilJobEnds } from "../scripts/duties/portal-parity.ts";
+import { JOB_POLL_MS, jobLedger, jobVerdict, leftoverJobs, routeVerdict, untilJobEnds, type ProbeResult, type Route } from "../scripts/duties/portal-parity.ts";
 
 test("a run's ledger holds each job it opened until the cancel lands, then deletes its file", async () => {
   const dir = mkdtempSync(join(tmpdir(), "parity-jobs-"));
@@ -50,4 +50,14 @@ test("the job watch reads until the job ends or the deadline passes", async () =
   clock = 0;
   const late = await untilJobEnds(async () => read("queued"), 3 * JOB_POLL_MS, () => clock, sleep);
   assert.deepEqual([late.reads, late.last], [4, read("queued")]);
+});
+
+test("a route whose job-mode call got no job does not work on its page-mode call alone", () => {
+  // 11-24 06:11Z: four prod job calls answered 429 while another run held the org's job slots, and their routes scored working.
+  const route: Route = { crawler: "GET /api/live/youtube/channel_videos", group: "youtube", portal: ["GET /v1/youtube/channel_videos", "GET /v1/youtube/channel_videos job"] };
+  const ops = new Map([["GET /v1/youtube/channel_videos", {}]]);
+  const page: ProbeResult = { op: route.portal[0]!, verdict: "ok", status: 200, ms: 1, note: "" };
+  const job = (verdict: ProbeResult["verdict"], status: number): ProbeResult => ({ op: route.portal[1]!, verdict, status, ms: 1, note: "" });
+  assert.equal(routeVerdict(route, ops, new Map([[page.op, page], [route.portal[1]!, job("unprobed", 429)]])), "unprobed");
+  assert.equal(routeVerdict(route, ops, new Map([[page.op, page], [route.portal[1]!, job("ok", 202)]])), "works");
 });

@@ -605,6 +605,9 @@ export function routeVerdict(route: Route, ops: Map<string, Operation> | null, b
   if (results.some(result => result?.verdict === "portal")) return "portal";
   if (results.some(result => result?.verdict === "crawler")) return "crawler";
   if (results.some(result => result?.verdict === "held")) return "held";
+  // A job-mode call that got no job, such as a 429 when another run held the org's job slots, leaves the route unproven: on 11-24 at
+  // 06:11Z four prod job calls answered 429 and their routes scored working on the page-mode call alone.
+  if (listed.some((op, index) => op.endsWith(JOB) && results[index]?.verdict === "unprobed")) return "unprobed";
   if (results.some(result => result?.verdict === "ok")) return "works";
   if (results.every(result => result?.verdict === "skipped")) return "skipped";
   return "unprobed";
