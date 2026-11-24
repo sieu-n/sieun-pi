@@ -151,6 +151,34 @@ test("a first message the relay could not deliver fails the create with the rela
   await assert.rejects(hub.create({ cwd: "/Users/sieunpark", host: "mac", first: { message: "hi", mode: "followUp" } }), /Session is busy/);
 });
 
+test("a hand-over waits for a named create under way to send its rename, so the fence after it cannot leave the new thread unnamed", async (t: TestContext) => {
+  // At 22:07:47.787Z on 11-24 a release hand-over began while d2's probe thread was made; the fence (src/chat-handoff.ts) answers every daemon
+  // write after it with a refusal, so a rename that left after the fence was lost while the thread's first message had gone.
+  const dir = await mkdtemp(join(tmpdir(), "remote-create-"));
+  const sent: string[] = [];
+  let fenced = false;
+  let answerCreate: () => void = () => {};
+  const created = new Promise<void>(resolve => { answerCreate = resolve; });
+  const mac = { request: async (command: Record<string, unknown>) => {
+    if (fenced) { sent.push(`${String(command.type)} refused`); return { success: false, error: "This chat process handed over to its successor and only reads." }; }
+    sent.push(String(command.type));
+    if (command.type === "create") { await created; return { success: true, data: { sessionId: ID, activeSessionId: "fe473a344ace" } }; }
+    return { success: true, data: undefined };
+  } };
+  const catalog = { hostClient: async () => mac, isOtherHost: (name: string) => name === "mac", place: () => {}, hostOf: () => null,
+    socketPathFor: () => join(dir, "missing.sock"), refresh: async () => {} } as unknown as Catalog;
+  const hub = new ThreadHub(join(dir, "box.sock"), catalog, () => ({ provider: null, modelId: null, thinkingLevel: null }));
+  t.after(() => hub.close());
+  const create = hub.create({ cwd: "/Users/sieunpark", host: "mac", name: "chat page probe 7ce5bdb5", first: { message: "hi", mode: "followUp" } });
+  create.catch(() => {});
+  while (!sent.includes("create")) await new Promise(resolve => setImmediate(resolve));
+  const quiet = hub.quiesce().then(() => { fenced = true; });
+  setTimeout(answerCreate, 20);
+  await quiet;
+  await assert.rejects(create, "the attach to the missing socket still fails");
+  assert.deepEqual(sent.slice(0, 3), ["create", "prompt", "rename"], "the rename reached the daemon before the fence");
+});
+
 const spareHub = async (t: TestContext, answer: (command: Record<string, unknown>) => Record<string, unknown> = () => ({ success: true, data: undefined })) => {
   const dir = await mkdtemp(join(tmpdir(), "remote-create-"));
   const sent: Record<string, unknown>[] = [];

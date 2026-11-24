@@ -2,12 +2,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { once } from "node:events";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { hostname, tmpdir } from "node:os";
+import { join } from "node:path";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { WebSocketServer } from "ws";
 import type { Repl } from "../scripts/duties/aside-repl.ts";
 import { browseInAside, PROBE_LIB, type ProbeConfig } from "../scripts/duties/chat-page-mac-probe.ts";
-import { browserReadings, droppedBeforeLogin, median, parseLoadavg, parsePing, releaseBreaks, replyExtra, runAway, sendProbe, type SendTiming } from "../scripts/duties/chat-page-mac.ts";
+import { archiveLeftovers, browserReadings, droppedBeforeLogin, median, parseLoadavg, parsePing, probeLeftovers, probeName, releaseBreaks, replyExtra, runAway, sendProbe, type SendTiming } from "../scripts/duties/chat-page-mac.ts";
 import { MAC_HOST, macAwayItem, macTailnet } from "../scripts/duties/mac-reach.ts";
 import { HOST_AWAY } from "../src/shared/chat-duties.ts";
 
@@ -348,6 +351,47 @@ test("the new-thread send asks for the spare first and starts with the start ski
   const { sends } = await sendProbe({ port: (server.address() as AddressInfo).port, capability: "cap", csrfToken: "token" }, 1_000, "poteto-mode");
   assert.deepEqual(prewarms, [{ host: "mac", cwd: "/Users/sieunpark", provider: "anthropic", modelId: "claude-opus-5-5", thinkingLevel: "off" }], "the spare is asked for before the send");
   assert.match(String(bodies[0]!.message), new RegExp(`^/skill:poteto-mode ${sends[0]!.marker.replace(".", "\\.")} Reply with exactly: ok$`));
+  // The daemon refuses a rename to a taken name, and the minute-only "chat page probe 22:07" of 11-24 was an earlier day's.
+  assert.equal(bodies[0]!.name, probeName(sends[0]!.marker.slice("chat page probe ".length, -1)), "the name carries the run's marker, so no other probe has it");
+  assert.equal(bodies[0]!.name, `${sends[0]!.marker.slice(0, -1)} ${hostname()}:${process.pid}`);
+});
+
+// Rows as the Mac's catalog copy listed them on 11-24 (~/.cache/sieun-pi/hosts/mac.sessions.json), cut to the fields the sweep reads.
+const copyRows = [
+  { lifecycle: "live", sessionId: "01a1f0b2-77e2-75ff-837b-4c709d3c0bb2", firstMessage: "chat page probe 9a397786. Reply with exactly: ok" },
+  { lifecycle: "live", sessionId: "01a157f7-6314-7133-b8f3-195f3f0f4a7d", sessionName: "chat page probe 06:19", firstMessage: "chat page probe 072038bf. Reply with exactly: ok" },
+  { lifecycle: "archived", sessionId: "01a20a74-5f19-752f-ab88-d775f8b07f1c", firstMessage: "chat page probe c530facc. Reply with exactly: ok" },
+  { lifecycle: "live", sessionId: "01a15427-145f-751d-ba15-d27b6c30f65f", sessionName: "sep launch!! (product guy)", firstMessage: "[check-in] Check-in: nudged job mac cell tables wipe" },
+  { lifecycle: "live", sessionId: "01a20f9b-d1a7-7608-9c25-566b2967cf30", sessionName: "chat page probe 7ce5bdb5 us-metal02:4242", firstMessage: "" },
+  { lifecycle: "live", sessionId: "01a20f9c-0000-7000-8000-000000000001", sessionName: "chat page probe 1a2b3c4d us-metal02:4343", firstMessage: "" },
+];
+
+test("the sweep takes live probe threads whose run is gone and keeps a live run's thread, an archived one and the owner's", () => {
+  const alive = (host: string, pid: number) => host === "us-metal02" && pid === 4343;
+  assert.deepEqual(probeLeftovers(JSON.stringify({ version: 1, rows: copyRows }), alive),
+    ["01a1f0b2-77e2-75ff-837b-4c709d3c0bb2", "01a157f7-6314-7133-b8f3-195f3f0f4a7d", "01a20f9b-d1a7-7608-9c25-566b2967cf30"]);
+  assert.deepEqual(probeLeftovers("", alive), [], "a copy that is missing or cut reads as no leftovers");
+});
+
+test("a run archives the probe threads earlier runs left live through the chat service", async t => {
+  const archived: string[] = [];
+  const server = createServer((req, res) => {
+    req.resume();
+    req.on("end", () => {
+      archived.push(req.url!.replace(/^.*\/api\/threads\/|\/archive$/g, ""));
+      res.writeHead(200, { "Content-Type": "application/json" }); res.end("{}");
+    });
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => server.close());
+  const dir = await mkdtemp(join(tmpdir(), "probe-leftovers-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const copy = join(dir, "mac.sessions.json");
+  await writeFile(copy, JSON.stringify({ version: 1, rows: copyRows }));
+  const ids = await archiveLeftovers({ port: (server.address() as AddressInfo).port, capability: "cap", csrfToken: "token" }, copy, (_host, pid) => pid === 4343);
+  assert.deepEqual(ids, ["01a1f0b2-77e2-75ff-837b-4c709d3c0bb2", "01a157f7-6314-7133-b8f3-195f3f0f4a7d", "01a20f9b-d1a7-7608-9c25-566b2967cf30"]);
+  assert.deepEqual(archived.sort(), [...ids].sort());
 });
 
 test("a subscribe that answers after the first turn ended reads its end from the snapshot and sends the follow-ups", async t => {

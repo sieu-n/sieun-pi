@@ -2,7 +2,7 @@ import { realpathSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { homedir, hostname } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import WebSocket from "ws";
@@ -50,6 +50,71 @@ const SWITCHES = 10;
 const SENDS = 4;
 /** pi-pool can hold a new thread's first turn with no frame at all: over 2 min on the Mac at 15:41Z on 10-19, while at 15:17Z it answered an error in 3 s. */
 const FIRST_REPLY_MS = 10 * 60_000;
+/** The Mac's catalog copy, which this box's chat writes (src/host-catalogs.ts `copyPath`) and d7's sessions_off_high reads. */
+const MAC_COPY = join(homedir(), ".cache/sieun-pi/hosts/mac.sessions.json");
+
+/**
+ * A probe thread's name: the id of its first marker and the host and pid of the run that made it, so a later run tells a thread whose run
+ * died from one a live run still uses (`probeLeftovers`). The daemon refuses a rename to a name any saved root has, and until 11-24 the name
+ * was "chat page probe HH:MM": the daily run at 22:06Z met the name an earlier day's run took in the same minute, so 18 of the 125 probe
+ * threads in the Mac's catalog copy that day had no name, such as 01a20f99, whose rename prime-calls.jsonl logs refused at 22:07:48.872Z.
+ */
+export const probeName = (tag: string, host = hostname(), pid = process.pid): string => `chat page probe ${tag} ${host}:${pid}`;
+const PROBE_NAME = /^chat page probe [0-9a-f]{8} (\S+):(\d+)$/;
+const PROBE_FIRST = /chat page probe [0-9a-f]{8}\. Reply with exactly: ok/;
+
+/**
+ * The live probe threads in a catalog copy whose run is gone. A name from `probeName` says which run made the thread, and `alive` says whether
+ * that run still lives. A thread with an older probe name, or with none and the probe's first message, has no run that could still use it.
+ * The hand-over of a release kills a running precheck before its own archive (fenceHandedOver in src/chat-handoff.ts): at 22:07:50Z on 11-24
+ * that left 01a20f99 live at thinking off, and d7 counted it in sessions_off_high at 22:14Z.
+ */
+export function probeLeftovers(copy: string, alive: (host: string, pid: number) => boolean): string[] {
+  let rows: unknown;
+  try { rows = (JSON.parse(copy) as { rows?: unknown }).rows; } catch { return []; }
+  if (!Array.isArray(rows)) return [];
+  const out: string[] = [];
+  for (const row of rows as { lifecycle?: unknown; sessionId?: unknown; sessionName?: unknown; firstMessage?: unknown }[]) {
+    if (row.lifecycle !== "live" || typeof row.sessionId !== "string") continue;
+    const name = typeof row.sessionName === "string" ? row.sessionName.trim() : "";
+    const run = PROBE_NAME.exec(name);
+    if (run ? !alive(run[1]!, Number(run[2])) : name ? name.startsWith("chat page probe ") : typeof row.firstMessage === "string" && PROBE_FIRST.test(row.firstMessage)) {
+      out.push(row.sessionId);
+    }
+  }
+  return out;
+}
+
+/** Whether the run `probeName` names still lives: a run on another box cannot, since only the chat's box reads configuration.json. */
+function runAlive(host: string, pid: number): boolean {
+  if (host !== hostname()) return false;
+  try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
+}
+
+/** Archives each probe thread a gone run left live (`probeLeftovers`) through the chat service, and returns their ids. */
+export async function archiveLeftovers(config: ChatConfig, copyFile = MAC_COPY, alive = runAlive): Promise<string[]> {
+  const ids = probeLeftovers(await readFile(copyFile, "utf8").catch(() => ""), alive);
+  const post = chatPost(config);
+  const done = await Promise.all(ids.map(id => post(`api/threads/${encodeURIComponent(id)}/archive`, { by: "service_cleanup" }).then(() => id, (error: Error) => {
+    process.stderr.write(`archive of the probe leftover ${id}: ${error.message}\n`);
+    return null;
+  })));
+  return done.filter((id): id is string => id !== null);
+}
+
+/** A POST to the chat service's API, as the page sends it. */
+function chatPost(config: ChatConfig): (route: string, body: unknown) => Promise<Record<string, unknown>> {
+  const origin = `http://127.0.0.1:${config.port}`;
+  const base = `${origin}/${config.capability}/`;
+  return async (route, body) => {
+    const res = await fetch(base + route, { method: "POST", headers: { "Content-Type": "application/json", "X-Chat-Token": config.csrfToken, Origin: origin },
+      body: JSON.stringify(body), signal: AbortSignal.timeout(60_000) });
+    const text = await res.text();
+    if (!res.ok) throw new Error(`${route} ${res.status} ${text.slice(0, 200)}`);
+    return JSON.parse(text) as Record<string, unknown>;
+  };
+}
+
 /** On 10-19 the 01:14:15Z release crash-looped from 7 s after it to past 01:18:52Z (p72), so a break up to 10 min after a release is its break. */
 export const RELEASE_WINDOW_MS = 10 * 60_000;
 
@@ -306,13 +371,7 @@ async function browse(config: ChatConfig, chatId: string): Promise<BrowserOutput
 export async function sendProbe(config: ChatConfig, firstReplyMs = FIRST_REPLY_MS, startSkill: string | null = null): Promise<{ id: string; sends: SendTiming[] }> {
   const origin = `http://127.0.0.1:${config.port}`;
   const base = `${origin}/${config.capability}/`;
-  const post = async (route: string, body: unknown): Promise<Record<string, unknown>> => {
-    const res = await fetch(base + route, { method: "POST", headers: { "Content-Type": "application/json", "X-Chat-Token": config.csrfToken, Origin: origin },
-      body: JSON.stringify(body), signal: AbortSignal.timeout(60_000) });
-    const text = await res.text();
-    if (!res.ok) throw new Error(`${route} ${res.status} ${text.slice(0, 200)}`);
-    return JSON.parse(text) as Record<string, unknown>;
-  };
+  const post = chatPost(config);
   type Message = { role?: string; content?: unknown; stopReason?: string; errorMessage?: unknown; diagnostics?: unknown };
   type Frame = { event?: string; sub?: number; data?: { type?: string; event?: { type?: string; message?: Message }; snapshot?: { messages?: Message[]; streaming?: boolean } } };
   const ws = new WebSocket(`${base.replace("http", "ws")}api/ws?token=${config.csrfToken}`, { headers: { Origin: origin } });
@@ -327,14 +386,15 @@ export async function sendProbe(config: ChatConfig, firstReplyMs = FIRST_REPLY_M
       await new Promise(resolve => setTimeout(resolve, 20));
     }
   };
-  const marker = () => `chat page probe ${randomUUID().slice(0, 8)}.`;
-  const firstText = marker();
+  const marker = (tag = randomUUID().slice(0, 8)) => `chat page probe ${tag}.`;
+  const tag = randomUUID().slice(0, 8);
+  const firstText = marker(tag);
   // The New chat box asks the Mac for a spare session while the owner writes (ThreadHub.prewarm), and his writing takes longer than the spare's
   // start, so the send is timed once the spare is ready, as his is.
   await post("api/new-chat/prewarm", { host: "mac", cwd: "/Users/sieunpark", ...MODEL, thinkingLevel: "off" });
   const createdAt = Date.now();
   const created = await post("api/threads", { requestId: randomUUID().replaceAll("-", ""), host: "mac", cwd: "/Users/sieunpark", kind: "thread", ...MODEL, thinkingLevel: "off",
-    name: `chat page probe ${new Date().toISOString().slice(11, 16)}`, message: startMessage(`${firstText} Reply with exactly: ok`, startSkill) });
+    name: probeName(tag), message: startMessage(`${firstText} Reply with exactly: ok`, startSkill) });
   const id = String(created.id);
   const sends: SendTiming[] = [];
   try {
@@ -437,6 +497,8 @@ export async function measure(chatId: string): Promise<PrecheckOutput> {
   const early = await runAway(away, [browser, ping], silent);
   const startSkill = await readFile(join(DATA_DIR, "new-chat.json"), "utf8").then(text => parseStartSkill((JSON.parse(text) as { startSkill?: unknown }).startSkill ?? null), () => null);
   const replies = early ? new Error(early.excerpt) : await settle(sendProbe(config, FIRST_REPLY_MS, startSkill));
+  // After this run's own archive, so the leftovers of a run the hand-over cut go at the next run, its rerun included.
+  if (!early) await archiveLeftovers(config).catch((error: Error) => { process.stderr.write(`probe leftovers: ${error.message}\n`); });
   const macSession = replies instanceof Error ? replies : await settle(onMac(`cat .prime/agent/sessions/${replies.id.replace(/[^0-9a-f-]/g, "")}.jsonl`, 40));
   const gone = early ?? await runAway(undefined, [replies, macSession], silent);
   const metrics: Record<string, number> = {};

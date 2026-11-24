@@ -2472,9 +2472,9 @@ export async function catalogCopies(dataDir: string): Promise<string[]> {
 const readJson = async (file: string): Promise<unknown> => JSON.parse(await readFile(file, "utf8").catch(() => "null")) as unknown;
 
 /**
- * d2's chat page probe (chat-page-mac.ts sendProbe) opens a short thread named "chat page probe HH:MM" at thinking off on purpose, so its
- * first-token time holds no thinking. It is the duty's own instrument, not a thread or job, and on 11-21 at 22:20Z and 11-23 at 14:11Z
- * it was the only session sessions_off_high counted, read from the Mac's catalog copy before the probe archived it.
+ * d2's chat page probe (chat-page-mac.ts sendProbe) opens a short thread named "chat page probe <tag> <host>:<pid>" at thinking off on
+ * purpose, so its first-token time holds no thinking. It is the duty's own instrument, not a thread or job, and on 11-21 at 22:20Z and 11-23
+ * at 14:11Z it was the only session sessions_off_high counted, read from the Mac's catalog copy before the probe archived it.
  */
 export const PROBE_SESSION_PREFIX = "chat page probe ";
 

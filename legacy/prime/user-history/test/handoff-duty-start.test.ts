@@ -38,7 +38,7 @@ test("a create after the hub quiesced for a hand-over sends no daemon command an
   const client = { request: async (command: { type: string }) => { sent.push(command.type); return { success: true, data: { sessionId: "s", activeSessionId: "a" } }; } };
   const catalog = { connect: async () => {}, client, hostOf: () => null, isOtherHost: () => false } as unknown as Catalog;
   const threads = new ThreadHub("/nonexistent.sock", catalog, () => ({ provider: null, modelId: null, thinkingLevel: null }), (async () => undefined) as never);
-  threads.quiesce();
+  await threads.quiesce();
   await assert.rejects(threads.create({ cwd: "/repo", name: NAME }), error => error instanceof Error && error.message === HANDED_OVER_REASON);
   assert.deepEqual(sent, []);
 });

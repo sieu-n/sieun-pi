@@ -323,6 +323,8 @@ export interface SpareInput { host: string; cwd: string; provider?: string; mode
 interface ServiceOperation { op: string; file: string | undefined; after: string | null }
 
 interface Spare { key: string; host: string; created: Promise<SessionSummary | null>; timer: ReturnType<typeof setTimeout> }
+type CreateInput = { cwd: string; provider?: string; modelId?: string; thinkingLevel?: ThinkingLevel; name?: string; kind?: "chat"; host?: string; first?: FirstMessage;
+  nameBeforeFirst?: boolean };
 const spareKey = (input: SpareInput): string => JSON.stringify([input.host, input.cwd, input.provider && input.modelId ? `${input.provider}/${input.modelId}` : null, input.thinkingLevel ?? null]);
 
 /** The create field another box's relay reads to send the first prompt itself (components/prime-relay/first-prompt.mjs FIRST_PROMPT_FIELD). */
@@ -376,6 +378,8 @@ export class ThreadHub {
   private closed = false;
   /** Set when the chat starts to hand over (`quiesce`): from then a worker start sends nothing, so none reaches the daemon or its fence. */
   private handedOver = false;
+  /** Named creates under way whose rename has not come back (`create`); `quiesce` waits for them. */
+  private readonly naming = new Set<Promise<void>>();
 
   /**
    * `board` reads a chat's board when the thread opens: null for a chat with no board yet, undefined for a thread that is not a chat.
@@ -1505,7 +1509,17 @@ export class ThreadHub {
    * its trial harness store is filed under its name (src/trial-harness.ts), and with the rename after the message its first cells ran unnamed
    * and wrote the published store.
    */
-  async create(input: { cwd: string; provider?: string; modelId?: string; thinkingLevel?: ThinkingLevel; name?: string; kind?: "chat"; host?: string; first?: FirstMessage; nameBeforeFirst?: boolean }): Promise<Thread> {
+  async create(input: CreateInput): Promise<Thread> {
+    if (!input.name) return this.make(input, () => {});
+    let resolve!: () => void;
+    const naming = new Promise<void>(done => { resolve = done; });
+    this.naming.add(naming);
+    const named = () => { this.naming.delete(naming); resolve(); };
+    try { return await this.make(input, named); } finally { named(); }
+  }
+
+  /** `create`'s work; `onNamed` runs once the new session's name went to the daemon and came back, or no rename follows. */
+  private async make(input: CreateInput, onNamed: () => void): Promise<Thread> {
     const client = await this.hostDaemon(input.host ?? null);
     const renamed = input.first && input.kind !== "chat" && !input.nameBeforeFirst ? input.name : undefined;
     const named = renamed ? undefined : input.name;
@@ -1514,7 +1528,7 @@ export class ThreadHub {
     if (spare && input.first) {
       const fields = promptFields(spare.sessionId, { ...input.first, images: [], owner: true }, true);
       const answer = await client.request({ type: "prompt", activeSessionId: spare.activeSessionId!, ...fields } as never, PROMPT_REQUEST_MS, { recoverable: false }).catch(() => null);
-      if (answer?.success) return this.opened(client, spare, input, input.name, null);
+      if (answer?.success) return this.opened(client, spare, input, input.name, null, onNamed);
       void this.serviceKill(client, spare.sessionId, spare.activeSessionId!);
     }
     const flags = { ...(input.kind === "chat" ? { [CHAT_FLAG]: true } : {}), ...(input.first ? { [OWNER_THREAD_FLAG]: true } : {}) };
@@ -1555,13 +1569,18 @@ export class ThreadHub {
         .then(answer => { if (!answer.success) throw new ThreadError(502, answer.error); });
       sent.catch(() => {});
     }
-    return this.opened(client, data as SessionSummary, input, renamed, sent);
+    return this.opened(client, data as SessionSummary, input, renamed, sent, onNamed);
   }
 
-  /** The new session `data` named by `renamed` (a failed rename leaves it unnamed and the message sent) and attached; waits for `sent`. */
-  private async opened(client: DaemonClient, data: SessionSummary, input: { host?: string }, renamed: string | undefined, sent: Promise<void> | null): Promise<Thread> {
+  /**
+   * The new session `data` named by `renamed` (a failed rename leaves it unnamed and the message sent) and attached; waits for `sent`.
+   * `onNamed` runs once the rename came back.
+   */
+  private async opened(client: DaemonClient, data: SessionSummary, input: { host?: string }, renamed: string | undefined, sent: Promise<void> | null,
+    onNamed: () => void): Promise<Thread> {
     const activeSessionId = data.activeSessionId!;
     const naming = renamed ? client.request({ type: "rename", activeSessionId, name: renamed } as never, undefined, { recoverable: false }).catch(() => {}) : null;
+    void (naming ?? Promise.resolve()).then(onNamed);
     this.evict("live");
     const connection = await this.attach(activeSessionId, input.host ?? null);
     let thread: Thread;
@@ -2192,8 +2211,13 @@ export class ThreadHub {
   /**
    * Stops this hub's worker starts as the chat hands over: a create, resume or reload not sent yet answers `handedOverAnswer` without a
    * daemon call, and one already sent finishes. The successor then starts what this process left, such as a duty job's pending start.
+   * Resolves once each named create under way sent its rename and got the answer, because the fence after it (src/chat-handoff.ts) answers
+   * every later rename `handedOverAnswer`, and a thread whose first message already went would stay unnamed.
    */
-  quiesce(): void { this.handedOver = true; }
+  async quiesce(): Promise<void> {
+    this.handedOver = true;
+    while (this.naming.size) await Promise.allSettled([...this.naming]);
+  }
 
   async close(): Promise<void> {
     this.closed = true;
