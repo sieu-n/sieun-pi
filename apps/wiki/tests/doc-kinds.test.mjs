@@ -125,6 +125,25 @@ test('an apps/ or domains/ page over the size target gets a core-length warning,
 	assert.equal(errors(page('reference', drawn)).includes('core-length'), false, 'the length rule only warns (c98)');
 });
 
+// On 2026-11-24 contact-finder's write v22 took apps/crawler-v3/workers/singletons.html from 780 to 825 words past the
+// core-length warning, and the 05:38Z wiki dream precheck counted it in wiki_problems.
+test('the page API ratchet refuses a write that first takes an apps/ or domains/ page past 800 words, and keeps a page already past it editable', () => {
+	const table = '<table><tr><th>Key</th><th>Value</th></tr><tr><td>root</td><td>content</td></tr></table>\n';
+	const sized = (n) => page('reference', `${Array.from({ length: n }, () => `<p>${para(4)}</p>`).join('\n')}\n${table}`);
+	const at = 'apps/crawler-v3/workers/thing.html';
+	const under = sized(19);
+	const over = sized(21);
+	assert.ok(!core('core-length', under, at) && core('core-length', over, at), 'the fixture straddles the line');
+	const crossed = ratchet(under, over, { now: NOW, path: at });
+	assert.equal(crossed.ok, false, 'a write that crosses the line is refused');
+	assert.deepEqual(crossed.grown, { 'core-length': { before: 0, after: 1 } });
+	assert.deepEqual(crossed.newFindings.map((f) => f.rule), ['core-length']);
+	assert.equal(ratchet(null, over, { now: NOW, path: at }).ok, false, 'a new page past the line is refused');
+	assert.equal(ratchet(over, sized(23), { now: NOW, path: at }).ok, true, 'a page already past the line stays editable');
+	assert.equal(ratchet(over, under, { now: NOW, path: at }).ok, true, 'a cut below the line saves');
+	assert.equal(ratchet(under, over, { now: NOW, path: 'sessions/2026/11/24/0900-thing/thing.html' }).ok, true);
+});
+
 test('an apps/ or domains/ page with no flow, table, field list or code gets a core-layers warning', () => {
 	const prose = page('explanation', `<p>${para(3)}</p>\n<p>${para(2)}</p>`);
 	assert.ok(core('core-layers', prose, 'domains/devops/thing.html'));

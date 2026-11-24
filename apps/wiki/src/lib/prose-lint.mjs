@@ -1051,7 +1051,7 @@ const WORD_RULES = [
  * @typedef {'error' | 'warn'} Severity
  * @typedef {'text' | 'prose' | 'bullet' | 'paragraph' | 'cell' | 'heading' | 'page'} Scope
  * @typedef {{ excerpt: string, line?: number }} Hit
- * @typedef {{ id: string, unslop: string, severity: Severity, scope: Scope, fix: string, check: (unit: any, page: Page) => Hit[], when?: (docKind: string | null) => boolean }} Rule
+ * @typedef {{ id: string, unslop: string, severity: Severity, scope: Scope, fix: string, check: (unit: any, page: Page) => Hit[], when?: (docKind: string | null) => boolean, refuseFirst?: boolean }} Rule
  * @typedef {{ rule: string, unslop: string, severity: Severity, line: number, excerpt: string, fix: string }} Finding
  */
 
@@ -1629,6 +1629,7 @@ export const RULES = [
 		unslop: 'wiki',
 		severity: 'warn',
 		scope: 'page',
+		refuseFirst: true,
 		when: (k) => k !== 'start' && k !== 'tutorial' && k !== 'how-to',
 		fix: `Keep an apps/ or domains/ page near ${LIMITS.CURATED_MAX_WORDS} words of the layers a reader can check (flow or call stack, tables, fields), and move the rest to a session page you link.`,
 		check: (_u, page) => {
@@ -1781,8 +1782,19 @@ export function lintHtml(html, opts = {}) {
 }
 
 /**
+ * The warning rules (`refuseFirst`) whose first finding on a page refuses the write, while a page that already held one
+ * stays editable. Why: from the core-length rule's start at 00:40Z on 2026-11-24 to 05:38Z, 10 page API writes took an
+ * apps/ or domains/ page from at or under 800 words to over it and 2 created one over it. Their own writers cut 6 of
+ * them again within 5 min, other sessions cut 5 after 6 min to 4 h 16 min, and contact-finder's v22 of
+ * apps/crawler-v3/workers/singletons.html (780 to 825 words) kept the warning, so the 05:38Z wiki dream precheck counted
+ * it in wiki_problems.
+ */
+const REFUSE_FIRST = new Set(RULES.filter((r) => r.refuseFirst).map((r) => r.id));
+
+/**
  * Compare a write against the content it replaces. The write passes unless some rule has
- * more errors after than before; a new file counts as before = 0 errors. Pages with old
+ * more errors after than before, or a `refuseFirst` warning rule finds the page that had none
+ * of its findings before; a new file counts as before = 0 errors. Pages with old
  * debt stay editable, and no edit can add debt.
  * @param {string | null} before
  * @param {string} after
@@ -1797,6 +1809,8 @@ export function ratchet(before, after, opts = {}) {
 	for (const [rule, row] of Object.entries(cur.counts.byRule)) {
 		const was = old.counts.byRule[rule]?.errors ?? 0;
 		if (row.errors > was) grown[rule] = { before: was, after: row.errors };
+		else if (REFUSE_FIRST.has(rule) && row.warns > 0 && !old.counts.byRule[rule])
+			grown[rule] = { before: 0, after: row.warns };
 	}
 	// Name the new findings: errors of a grown rule whose excerpt the old page did not have.
 	/** @type {Map<string, number>} */
@@ -1805,14 +1819,15 @@ export function ratchet(before, after, opts = {}) {
 		if (f.severity === 'error') seen.set(`${f.rule}\n${f.excerpt}`, (seen.get(`${f.rule}\n${f.excerpt}`) ?? 0) + 1);
 	/** @type {Finding[]} */
 	let newFindings = [];
+	const refused = (/** @type {Finding} */ f) => (f.severity === 'error' || REFUSE_FIRST.has(f.rule)) && !!grown[f.rule];
 	for (const f of cur.findings) {
-		if (f.severity !== 'error' || !grown[f.rule]) continue;
+		if (!refused(f)) continue;
 		const key = `${f.rule}\n${f.excerpt}`;
 		const left = seen.get(key) ?? 0;
 		if (left > 0) seen.set(key, left - 1);
 		else newFindings.push(f);
 	}
-	if (!newFindings.length) newFindings = cur.findings.filter((f) => f.severity === 'error' && grown[f.rule]);
+	if (!newFindings.length) newFindings = cur.findings.filter(refused);
 	return {
 		ok: Object.keys(grown).length === 0,
 		grown,

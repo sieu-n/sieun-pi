@@ -226,7 +226,7 @@ async function checkWrite(
 			const grown = Object.entries(result.grown).map(([rule, g]) => `${rule} ${g.before} -> ${g.after}`);
 			return {
 				rejected: fail(
-					`prose lint: this write adds errors (${grown.join(', ')}). Fix each finding below and write again. ` +
+					`prose lint: this write adds findings the lint refuses (${grown.join(', ')}). Fix each finding below and write again. ` +
 						`The standard is ${STANDARD_FILE}; run node apps/wiki/scripts/prose-lint.mjs <file> to check a draft.`,
 					422,
 					{

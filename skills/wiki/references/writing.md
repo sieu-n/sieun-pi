@@ -14,7 +14,7 @@ The owner's words, #dev-crawler p23 on 2026-11-24: "sessions/ under에 적는건
 
 1. A curated page under `apps/` or `domains/` holds only the layers a reader can check against the system: the flow or call stack, the tables and the fields.
 2. Each layer names the real things as the code spells them, such as the function, file, service, port, database, table and column, and says where each one lives: the host, the path or the container.
-3. Keep the page near 800 words outside link-only lines, and the lint warns with `core-length` past that. 800 is the design page size the owner accepted under c201, and `domains/devops/clickhouse-layout.html` had 1,761 words in 10 sections when he called it far too long. The target is soft (c98), so a page whose fields table runs long may pass it.
+3. Keep the page near 800 words outside link-only lines, and the lint warns with `core-length` past that. 800 is the design page size the owner accepted under c201, and `domains/devops/clickhouse-layout.html` had 1,761 words in 10 sections when he called it far too long. The page API answers 422 on a write that takes a page from 800 words or fewer past the line or creates one past it, and a page already past the line saves with the warning, so a writer cuts it in a later write.
 4. The question that started the work, the options weighed, what was dropped, the measurements, the history and the calls left for the owner go in the session page. The curated page keeps one sentence of why per choice and links the session log.
 5. Link the session log `index.html`, which lists the write-up, because `session-link` refuses a curated link to any other file in a session folder.
 6. A page with no diagram, numbered steps, table, field list (`<dl>`) or code block gets a `core-layers` warning, and a hub page of links is exempt.
@@ -107,7 +107,7 @@ The structure comes from these pages, which a writer reads for shape, never for 
 | `doc-diagram`    | explanation           | a page over 300 words with fewer than one diagram or image per 800 words         |
 | `design-length`  | design                | a page over 800 words (c83, c201)                                                |
 | `doc-kind`       | any                   | a `doc_kind` value outside the six kinds                                         |
-| `core-length`    | all but start, tutorial, how-to | a warning on an `apps/` or `domains/` page past 800 words outside link-only lines (c243) |
+| `core-length`    | all but start, tutorial, how-to | a warning on an `apps/` or `domains/` page past 800 words outside link-only lines, and a 422 on the write that first takes it past (c243) |
 | `core-layers`    | all but start         | a warning on an `apps/` or `domains/` page with no diagram, steps, table, field list or code (c243) |
 | `diagram-shape`  | any                   | a warning on an `apps/` or `domains/` flowchart that counts 2 to 4 instances in one node, or has over 12 nodes and no subgraph (c243) |
 
