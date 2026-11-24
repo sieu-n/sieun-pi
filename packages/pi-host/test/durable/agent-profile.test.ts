@@ -194,6 +194,8 @@ test("a room post answers first, breaks into lines and keeps the agent's process
     assert.match(text, /No labels, such as an opener like "Early read from the spec:"/);
     // A d4 blind run on 11-23 (ch_7c688239's set, 16:40 KST) put "The others:" over its other options, a label by the owner's "no labels".
     assert.match(text, /or a line of a word or two over a group of bullets like "The others:"/);
+    // d4 blind runs on 11-23 and 11-25 opened "Not clean yet: ...", "Yes on this box: ..." and "Not quite in sync: ...", a verdict as a label.
+    assert.match(text, /The answer line is a full sentence, never a short verdict before a colon: write "Local main is 1 commit ahead of origin\/main, so push first\.", never "Not quite in sync: /);
     assert.match(text, /give each other option one line on what it would mean for him, as more bullets of the same list\./);
     assert.match(text, /Keep ✅ and 👀 out of your post text too\./);
     assert.doesNotMatch(text, /your first post is the plan|tick each item|item per step|list what still needs proof|in the first few words|topic bullets|\b80 words|\b120 words/);
