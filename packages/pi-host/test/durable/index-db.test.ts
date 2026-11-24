@@ -220,3 +220,26 @@ test("a rebuild of the index and a thread's reset keep the usage rows of calls t
   assert.deepEqual(ids(), [-7], "the rebuild keeps the refine row");
   index.close();
 });
+
+test("an index from before the move to the usage store loses usage_hours and its triggers, and keeps its usage rows", () => {
+  const path = join(dir, "hours-gone.sqlite");
+  const usage = (entryId: number) => ({ thread: "h1", conversation: 1, entryId, model: "anthropic/claude-opus-5-5", at: 3_600_000 * entryId, input: 1, output: 2,
+    cacheRead: 3, cacheWrite: 4, cost: 1.5, costInput: 0.1, costOutput: 0.2, costCacheRead: 0.3, costCacheWrite: 0.9 });
+  let index = new ThreadIndex(path);
+  index.insertThread({ id: "h1", name: "hours", provider: "anthropic", modelId: "claude-opus-5-5", thinkingLevel: "high", cwd: "/", createdAt: 1, updatedAt: 1 });
+  index.addEntries("h1", [], [usage(1), usage(2)]);
+  index.close();
+  const old = new DatabaseSync(path);
+  old.exec(`CREATE TABLE usage_hours (thread TEXT NOT NULL, model TEXT NOT NULL, hour INTEGER NOT NULL, turns INTEGER NOT NULL, PRIMARY KEY (hour, thread, model)) WITHOUT ROWID;
+    CREATE TRIGGER usage_hours_add AFTER INSERT ON usage BEGIN INSERT INTO usage_hours (thread, model, hour, turns) VALUES (NEW.thread, NEW.model, NEW.at / 3600000, 1); END;
+    CREATE TRIGGER usage_hours_drop AFTER DELETE ON usage BEGIN DELETE FROM usage_hours WHERE thread = OLD.thread; END;`);
+  old.close();
+  index = new ThreadIndex(path);
+  index.addEntries("h1", [], [usage(3)]);
+  index.close();
+  const db = openIndexReadOnly(path);
+  const names = (db.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'usage_hours%'").all() as { name: string }[]).map(row => row.name);
+  assert.deepEqual(names, [], "the table and both triggers are gone");
+  assert.deepEqual(readUsageRows(db, undefined).rows.map(row => row.entryId), [1, 2, 3], "the usage rows stay, and a new one is written");
+  db.close();
+});

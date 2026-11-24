@@ -365,32 +365,6 @@ export function openIndexReadOnly(path: string): DatabaseSync {
 /** The index version whose rows credit a child conversation's task input to the conversation that wrote it (threads.ts `taskAuthor`). */
 const TASK_AUTHOR_VERSION = 1;
 
-const HOUR_MS = 3_600_000;
-const USAGE_SUMS = ["input", "output", "cache_read", "cache_write", "cost", "cost_input", "cost_output", "cost_cache_read", "cost_cache_write"];
-
-/**
- * The usage rows summed per thread, model and UTC hour, kept by triggers in the same write as each usage row, so a range on whole hours sums
- * at most one row per thread, model and hour. On us-metal02 on 11-03 the chat's Usage page asked `usage` 9 times for 7 days, and each GROUP BY
- * over the 36k usage rows took 23 to 276 ms under load; the same sums from this table took 0.6 to 33 ms.
- */
-const USAGE_HOURS = `
-CREATE TABLE IF NOT EXISTS usage_hours (
-  thread TEXT NOT NULL, model TEXT NOT NULL, hour INTEGER NOT NULL, turns INTEGER NOT NULL,
-  ${USAGE_SUMS.map(name => `${name} ${name.startsWith("cost") ? "REAL" : "INTEGER"} NOT NULL`).join(", ")},
-  PRIMARY KEY (hour, thread, model)
-) WITHOUT ROWID;
-CREATE TRIGGER IF NOT EXISTS usage_hours_add AFTER INSERT ON usage BEGIN
-  INSERT INTO usage_hours (thread, model, hour, turns, ${USAGE_SUMS.join(", ")})
-    VALUES (NEW.thread, NEW.model, NEW.at / ${HOUR_MS}, 1, ${USAGE_SUMS.map(name => `NEW.${name}`).join(", ")})
-    ON CONFLICT (hour, thread, model) DO UPDATE SET turns = turns + 1, ${USAGE_SUMS.map(name => `${name} = ${name} + excluded.${name}`).join(", ")};
-END;
-CREATE TRIGGER IF NOT EXISTS usage_hours_drop AFTER DELETE ON usage BEGIN
-  UPDATE usage_hours SET turns = turns - 1, ${USAGE_SUMS.map(name => `${name} = ${name} - OLD.${name}`).join(", ")}
-    WHERE hour = OLD.at / ${HOUR_MS} AND thread = OLD.thread AND model = OLD.model;
-  DELETE FROM usage_hours WHERE hour = OLD.at / ${HOUR_MS} AND thread = OLD.thread AND model = OLD.model AND turns <= 0;
-END;
-`;
-
 export class ThreadIndex {
   private readonly db: DatabaseSync;
   /** Set when this open changed the schema of derived rows, so every thread's search and usage rows are read again. */
@@ -419,11 +393,8 @@ export class ThreadIndex {
       this.db.exec(`DELETE FROM entries; DELETE FROM usage WHERE entry_id >= 0; UPDATE threads SET indexed_entry = 0; PRAGMA user_version = ${TASK_AUTHOR_VERSION};`);
       this.rebuilt = true;
     }
-    if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'usage_hours'").get()) {
-      // An index from before the hourly sums: they start from the usage rows it holds, in the same write that adds the triggers.
-      this.db.exec(`BEGIN; ${USAGE_HOURS} INSERT INTO usage_hours (thread, model, hour, turns, ${USAGE_SUMS.join(", ")})
-        SELECT thread, model, at / ${HOUR_MS}, COUNT(*), ${USAGE_SUMS.map(name => `SUM(${name})`).join(", ")} FROM usage GROUP BY thread, model, at / ${HOUR_MS}; COMMIT;`);
-    }
+    // usage_hours and its triggers summed usage per hour for durable_usage, which left with apps/chat's move to the ClickHouse store.
+    this.db.exec("DROP TRIGGER IF EXISTS usage_hours_add; DROP TRIGGER IF EXISTS usage_hours_drop; DROP TABLE IF EXISTS usage_hours;");
     this.db.prepare("INSERT OR IGNORE INTO outbox_meta (id, since) VALUES (1, ?)").run(Date.now());
     this.outboxSince = Number((this.db.prepare("SELECT since FROM outbox_meta WHERE id = 1").get() as Row).since);
   }
