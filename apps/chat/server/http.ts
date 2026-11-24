@@ -37,6 +37,7 @@ import { SkillsDb, SkillsRefused, SkillsStepFailed } from "./skills-db.ts";
 import { fixtureScanner, writeSkillsDbFixture } from "./skills-db-fixture.ts";
 import type { InstallBody } from "../web/src/lib/api/shared/skills.ts";
 import { type ClientVia, clientTimings, LoopStalls, RequestLog } from "./request-log.ts";
+import { StallProfiler } from "../../../packages/pi-host/src/stall-profile.ts";
 import { accountRoutes, PoolError } from "./accounts.ts";
 import { chatDbRoutes } from "./chat-db-routes.ts";
 import { serveWiki } from "./wiki/routes.ts";
@@ -643,7 +644,9 @@ export function serve(app: App, parts: SkillsParts = skillsParts(app.config, app
   const table = routes(app, parts, wikiPages);
   app.socketRead = (path, req) => readRoute(table, path, req);
   const requests = new RequestLog(join(app.config.dataDir, "requests"), app.log);
-  const stalls = new LoopStalls();
+  // A profiler samples the loop every 20 ms, so each stall line names the code that held it; pi-host measured 0.3 s of CPU a minute for it
+  // (stall-profile.ts). The fixture and the tests run without it.
+  const stalls = new LoopStalls(app.config.fixture ? undefined : new StallProfiler());
   const server = createServer((req, res) => {
     const target = forwarding.get(server);
     if (target) {
@@ -662,7 +665,7 @@ export function serve(app: App, parts: SkillsParts = skillsParts(app.config, app
       phases.set(req, phase);
       res.once("close", () => requests.write({
         at: Date.now(), src: "server", m: method, r: routeLabel(table, method, path), p: path, s: res.writableFinished ? res.statusCode : 0, ms: performance.now() - started,
-        ...phase, stall: stalls.longest(started), via: viaOf(req),
+        ...phase, ...stalls.worst(started), via: viaOf(req),
       }));
     }
     void handle(app, table, req, res);

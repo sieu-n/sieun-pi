@@ -8,6 +8,8 @@
  */
 import { appendFile, mkdir, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { PerformanceObserver } from "node:perf_hooks";
+import type { StallProfiler } from "../../../packages/pi-host/src/stall-profile.ts";
 
 export type TimingSource = "server" | "client";
 
@@ -30,6 +32,8 @@ export interface RequestTiming {
   stored?: number;
   /** A server line's split of `ms`: the wait for the request body, the handler's own time after it, and the longest event-loop stall in it. */
   body?: number; run?: number; stall?: number;
+  /** On a server line with a stall, the parts of it `LoopStalls.worst` names. */
+  stallCpu?: number; stallGc?: number; stallBy?: string;
   /** On a server line of GET /api/search, where its handler time went by part, with its pending count and filter size (search-engine.ts `SearchSplit`). */
   split?: Record<string, number>;
   /**
@@ -62,35 +66,82 @@ export interface RequestTiming {
  * request means nothing in the process ran. A timer every 20 ms keeps the stalls over 50 ms from the last minute. On 11-04 at a box load of
  * 200 to 280, an idle node process on us-metal02 stalled over 50 ms 53 times in 120 s, up to 365 ms, while a send and a /read on :5184 took
  * 2,564 ms and 1,880 ms with no other request ending inside them.
+ *
+ * Each stall also keeps how much of it the loop thread ran on CPU, how much of it was GC, and with a `StallProfiler` the functions that ran
+ * in it. On 11-23 and 11-24 the owner's five slowest searches spent 75 to 126 ms in the Meilisearch call while Meilisearch itself answered
+ * every one of 1,048 probe searches in 32 ms or less, and in the 50 search lines with a stall the call took 15 ms at the median once the stall
+ * was taken out (~/work/p279-search/p279-meili.md): the time was this process's, held by work no request line named.
  */
 export class LoopStalls {
-  private readonly stalls: { end: number; ms: number }[] = [];
+  private readonly stalls: Stall[] = [];
+  private readonly gc: { start: number; ms: number }[] = [];
   private last = performance.now();
+  private cpu = process.threadCpuUsage();
+  private readonly gcObserver = new PerformanceObserver(list => {
+    for (const entry of list.getEntries()) this.gc.push({ start: entry.startTime, ms: entry.duration });
+  });
   private readonly timer = setInterval(() => this.tick(), 20);
 
-  constructor() {
+  constructor(private readonly profiler?: StallProfiler) {
+    this.gcObserver.observe({ entryTypes: ["gc"] });
     this.timer.unref();
   }
 
   private tick(): void {
     const now = performance.now();
-    const ms = now - this.last - 20;
+    const cpu = process.threadCpuUsage();
+    const from = this.last;
+    const ms = now - from - 20;
+    if (ms > 50) {
+      const slice = this.profiler?.take(from, now, "");
+      this.stalls.push({ end: now, ms, cpu: (cpu.user + cpu.system - this.cpu.user - this.cpu.system) / 1000, ...(slice ? { by: slice.text.slice(0, STALL_TEXT) } : {}) });
+    }
     this.last = now;
-    if (ms > 50) this.stalls.push({ end: now, ms });
+    this.cpu = cpu;
     while (this.stalls.length && this.stalls[0]!.end < now - 60_000) this.stalls.shift();
+    while (this.gc.length && this.gc[0]!.start < now - 60_000) this.gc.shift();
   }
 
   /** The longest stall that ended after `since` (performance.now()), counting one still running now. */
   longest(since: number): number {
+    return this.worst(since).stall;
+  }
+
+  /**
+   * The longest stall that ended after `since`, with the ms of it the loop thread ran on CPU and spent in GC, and what the profiler saw run
+   * in it. GC pauses reach the observer a turn after they end, so a request line asks once its response closed.
+   */
+  worst(since: number): StallPart {
     const now = performance.now();
     const open = Math.min(now - this.last - 20, now - since);
-    return Math.max(open > 50 ? open : 0, ...this.stalls.filter(stall => stall.end > since).map(stall => Math.min(stall.ms, stall.end - since)));
+    let worst: Stall | undefined;
+    for (const stall of this.stalls) if (stall.end > since && (!worst || Math.min(stall.ms, stall.end - since) > Math.min(worst.ms, worst.end - since))) worst = stall;
+    const ms = worst ? Math.min(worst.ms, worst.end - since) : 0;
+    if (open > 50 && open >= ms) return { stall: open };
+    if (!worst) return { stall: 0 };
+    const start = worst.end - worst.ms - 20;
+    const gc = this.gc.filter(pause => pause.start < worst.end && pause.start + pause.ms > start).reduce((sum, pause) => sum + pause.ms, 0);
+    return { stall: ms, stallCpu: Math.round(worst.cpu), ...(gc ? { stallGc: Math.round(gc) } : {}), ...(worst.by ? { stallBy: worst.by } : {}) };
   }
 
   stop(): void {
     clearInterval(this.timer);
+    this.gcObserver.disconnect();
+    this.profiler?.stop();
   }
 }
+
+/** One stall: when it ended, its length and the loop thread's CPU ms in it (performance.now() ms), and the profiler's summary of it. */
+interface Stall { end: number; ms: number; cpu: number; by?: string }
+
+/** A stall's profile summary is cut to this many characters on a request line: 5 functions and a 12-frame stack fit in about 900. */
+const STALL_TEXT = 1_000;
+
+/**
+ * A server line's longest stall: its ms, the ms of it the loop thread ran on CPU (much less than `stall` means it waited for a core or on a
+ * blocking call) and spent in GC, and the functions with the most self time in it and the stack under the top one (pi-host stall-profile.ts).
+ */
+export interface StallPart { stall: number; stallCpu?: number; stallGc?: number; stallBy?: string }
 
 /** A client sample as POST /api/timings takes it; the server names its route. */
 export interface ClientTiming {

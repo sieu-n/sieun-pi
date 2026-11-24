@@ -13,6 +13,7 @@ import { after, test } from "node:test";
 import { apiSpeed, finding, MIN_NETWORK_LINES, MIN_OWN_CALLS, ownBefore, probeRoutes, probeSpeed, readTimings, routeSpeeds, unmeasured } from "../../scripts/duties/api-speed.ts";
 import { parseStarts } from "../../scripts/restart-walk-hits.ts";
 import { dayOf, LoopStalls, RequestLog, type RequestTiming } from "../../server/request-log.ts";
+import { StallProfiler } from "../../../../packages/pi-host/src/stall-profile.ts";
 import { start, until } from "./helpers.ts";
 
 const dirs: string[] = [];
@@ -101,6 +102,26 @@ test("a server line splits its time into the body wait, the handler and the long
     assert.ok(read?.body !== undefined && read.run !== undefined && read.body + read.run <= read.ms + 0.2, JSON.stringify(read));
   } finally {
     await chat.close();
+  }
+});
+
+test("a stall names the loop thread's CPU in it and the function that held the loop", async () => {
+  const stalls = new LoopStalls(new StallProfiler({ intervalUs: 5_000 }));
+  try {
+    await new Promise(resolve => setTimeout(resolve, 60));
+    const since = performance.now();
+    function holdTheLoopForSearch(): void {
+      const blocked = performance.now();
+      while (performance.now() - blocked < 200) { /* holds the loop */ }
+    }
+    holdTheLoopForSearch();
+    await new Promise(resolve => setTimeout(resolve, 60));
+    const worst = stalls.worst(since);
+    assert.ok(worst.stall >= 150, JSON.stringify(worst));
+    assert.ok((worst.stallCpu ?? 0) >= 120, `a loop held on CPU reads as CPU time: ${JSON.stringify(worst)}`);
+    assert.match(worst.stallBy ?? "", /holdTheLoopForSearch/);
+  } finally {
+    stalls.stop();
   }
 });
 
