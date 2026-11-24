@@ -22,7 +22,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { dupPairs, parseMeta } from './wiki-health.mjs';
+import { dupPairs, isRedirect, parseMeta } from './wiki-health.mjs';
 
 const CONTENT = 'apps/llm-wiki/content/';
 const SPACES = ['apps', 'domains', 'projects', 'experiments'].map((space) => `${CONTENT}${space}/`);
@@ -36,10 +36,14 @@ export function isCuratedPath(rel) {
 	);
 }
 
-/** The dupPairs row for one page, or null when its meta block does not parse. */
+/**
+ * The dupPairs row for one page, or null when its meta block does not parse or the page is a move redirect, which only
+ * sends readers on: on 2026-11-24 the stubs of 24 pages moved to archive/ held a rewrite of crawler-risks/index.html on
+ * the snapchat-risks and vimeo-risks stubs, whose titles it shares.
+ */
 export function pageRow(rel, html) {
 	const meta = parseMeta(html);
-	if (meta === null) return null;
+	if (meta === null || isRedirect(meta)) return null;
 	return {
 		path: rel.slice(CONTENT.length),
 		title: meta.title,
