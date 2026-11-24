@@ -44,6 +44,13 @@ const QUIET_MS = 2_000;
 /** How long a ping waits for any answer before the page drops the socket: about 7 of the owner's round trips. */
 const PONG_WITHIN_MS = 1_500;
 
+/**
+ * How often the page checks its socket. The ping and the drop both run on this tick, so the drop's check allows half a tick: a timer that
+ * fired 1 ms early read 1,499 ms since the ping and waited a whole tick more, and 12 of 60 drops in wake-fresh.spec.ts took 2,000 ms
+ * (~/work/chat-specs-red/specs-red-channel-wake-fresh/notes.md).
+ */
+const TICK_MS = 500;
+
 type Listener = (event: LiveEvent) => void;
 type Opener = () => void;
 
@@ -89,7 +96,7 @@ class Live {
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible") this.check();
     });
-    setInterval(() => this.tick(), 500);
+    setInterval(() => this.tick(), TICK_MS);
   }
 
   /** The browser is online again or the page shows again: a dead socket is found now, and a new try goes now. */
@@ -109,7 +116,7 @@ class Live {
     if (!socket || document.visibilityState !== "visible") return;
     const now = Date.now();
     if (now - this.heardAt >= QUIET_MS) this.ping();
-    if (this.askedAt !== undefined && this.heardAt < this.askedAt && now - this.askedAt >= PONG_WITHIN_MS) this.drop(socket);
+    if (this.askedAt !== undefined && this.heardAt < this.askedAt && now - this.askedAt >= PONG_WITHIN_MS - TICK_MS / 2) this.drop(socket);
   }
 
   /** Asks the server for a pong; the oldest ping that nothing answered yet starts the drop's clock. */

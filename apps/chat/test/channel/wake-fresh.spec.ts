@@ -1,4 +1,5 @@
 import { createServer, connect, type Server, type Socket } from "node:net";
+import { readdirSync, readFileSync } from "node:fs";
 import { expect, test, type APIRequestContext, type Locator, type Page } from "@playwright/test";
 import { open, tag } from "./helpers";
 
@@ -158,12 +159,92 @@ async function openThrough(page: Page, cut: Cut, room: string, t: string): Promi
   await page.waitForTimeout(1_000);
 }
 
-/** Waits for each change to show and answers the ms from `since` until it did. */
-const shownAfter = (since: number, locators: Locator[]): Promise<number[]> =>
-  Promise.all(locators.map(async locator => {
-    await locator.waitFor({ timeout: 10_000 });
-    return Date.now() - since;
-  }));
+/**
+ * Starts the page's own watch for each change, `[container selector, text]`, and answers a wait for the `Date.now()` at which each showed.
+ * The page notes the time of the DOM change that showed it, on the machine's one clock: a locator's wait polls each 500 ms once it has
+ * waited 270 ms (playwright-core's retryWithProgressAndBackoff), which added 30 to 470 ms to each time the test read on 11-24
+ * (~/work/chat-specs-red/specs-red-channel-wake-fresh/notes.md).
+ */
+async function watchShown(page: Page, wanted: [string, string][]): Promise<(locators: Locator[]) => Promise<number[]>> {
+  await page.evaluate(wanted => {
+    const shown: (number | undefined)[] = wanted.map(() => undefined);
+    const look = () => wanted.forEach(([selector, text], i) => {
+      if (shown[i] === undefined && document.querySelector(selector)?.textContent?.includes(text)) shown[i] = Date.now();
+    });
+    (window as unknown as { __shown: typeof shown }).__shown = shown;
+    new MutationObserver(look).observe(document, { subtree: true, childList: true, characterData: true });
+    look();
+  }, wanted);
+  return async locators => {
+    await Promise.all(locators.map(locator => locator.waitFor({ timeout: 10_000 })));
+    const shown = await page.evaluate(() => (window as unknown as { __shown: (number | undefined)[] }).__shown);
+    return shown.map(at => at ?? Infinity);
+  };
+}
+
+/** The ms a process's main thread has waited for a CPU while runnable: the second field of /proc/<pid>/schedstat (ns), 0 once it ended. */
+const cpuWaited = (pid: number): number => {
+  try {
+    return Number(readFileSync(`/proc/${pid}/schedstat`, "utf8").split(" ")[1]) / 1e6;
+  } catch {
+    return 0;
+  }
+};
+
+/** The Chrome renderers this test worker's browser runs: the processes under this one whose command line has `--type=renderer`. */
+function renderers(): number[] {
+  const kids = new Map<number, number[]>();
+  for (const name of readdirSync("/proc")) {
+    if (!/^\d+$/.test(name)) continue;
+    try {
+      const stat = readFileSync(`/proc/${name}/stat`, "utf8");
+      const ppid = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]);
+      kids.set(ppid, [...(kids.get(ppid) ?? []), Number(name)]);
+    } catch {
+      // The process ended while the scan ran.
+    }
+  }
+  const found: number[] = [];
+  const walk = (pid: number): void => {
+    for (const kid of kids.get(pid) ?? []) {
+      try {
+        if (readFileSync(`/proc/${kid}/cmdline`, "utf8").includes("--type=renderer")) found.push(kid);
+      } catch {
+        // The process ended while the scan ran.
+      }
+      walk(kid);
+    }
+  };
+  walk(process.pid);
+  return found;
+}
+
+/**
+ * The CPU wait on a change's way to the screen, sampled each 50 ms: this test process, which runs the relay, plus the fixture server, which
+ * answers the page's reads, plus the renderer that waited most, as the page's one renderer cannot be told from the browser's others. In a
+ * run on 11-24 that took 15 s where a quiet one takes 8 s, the new socket opened 0.67 s after the network came back and the panels showed
+ * 1.0 to 1.6 s after that, where they show 60 ms after it on a quiet box (~/work/chat-specs-red/specs-red-channel-wake-fresh/notes.md), so
+ * each bound applies to the time less this wait, the way test/server/send.test.ts and handoff.test.ts subtract theirs.
+ */
+async function cpuWait(request: APIRequestContext): Promise<{ between: (from: number, to: number) => number; stop: () => void; pids: number[] }> {
+  const server = ((await (await request.get("/api/ready")).json()) as { pid: number }).pid;
+  const pids = [process.pid, server, ...renderers()];
+  const samples: [number, number[]][] = [];
+  const sample = () => samples.push([Date.now(), pids.map(cpuWaited)]);
+  sample();
+  const timer = setInterval(sample, 50);
+  // The last sample at or before `at`, so a wait after the change showed never counts.
+  const at = (when: number) => (samples.filter(([taken]) => taken <= when).at(-1) ?? samples[0])[1];
+  return {
+    pids,
+    between: (from, to) => {
+      const [start, end] = [at(from), at(to)];
+      const waited = end.map((ms, i) => ms - start[i]);
+      return waited[0] + waited[1] + Math.max(0, ...waited.slice(2));
+    },
+    stop: () => clearInterval(timer),
+  };
+}
 
 /** Changes the board, the duty's time and the room while the page cannot hear it. */
 async function change(request: APIRequestContext, s: { agent: string; duty: { id: string }; room: string }, t: string, at: string): Promise<void> {
@@ -178,6 +259,13 @@ const changes = (page: Page, t: string, at: string): Locator[] => [
   page.locator("section.conversation").getByText(`message in the cut ${t}`),
 ];
 
+/** The same three changes for the page's own watch. */
+const changeTexts = (t: string, at: string): [string, string][] => [
+  ['[data-testid="board-pane"]', `step in the cut ${t}`],
+  ['[data-testid="board-pane"]', `Daily at ${at}`],
+  ["section.conversation", `message in the cut ${t}`],
+];
+
 test("after a 5 s network cut the open room, its board and its duties show what changed within 2 s of the network's return", async ({ page, request }) => {
   test.setTimeout(90_000);
   const t = tag();
@@ -186,15 +274,19 @@ test("after a 5 s network cut the open room, its board and its duties show what 
   await cut.listen();
   try {
     await openThrough(page, cut, s.room, t);
+    const shownAfter = await watchShown(page, changeTexts(t, "21:37"));
+    const cpu = await cpuWait(request);
     cut.start();
     await page.waitForTimeout(1_000);
     await change(request, s, t, "21:37");
     await page.waitForTimeout(4_000);
     const backAt = Date.now();
     cut.end();
-    const after = await shownAfter(backAt, changes(page, t, "21:37"));
-    test.info().annotations.push({ type: "ms after the network came back (board, duty, message)", description: after.join(", ") });
-    for (const ms of after) expect(ms).toBeLessThan(2_000);
+    const shown = await shownAfter(changes(page, t, "21:37")).finally(cpu.stop);
+    const after = shown.map(at => at - backAt);
+    const waited = shown.map(at => Math.round(cpu.between(backAt, at)));
+    test.info().annotations.push({ type: "ms after the network came back (board, duty, message), and the CPU wait in them", description: `${after.join(", ")}; ${waited.join(", ")} (pids ${cpu.pids.join(" ")})` });
+    after.forEach((ms, i) => expect(ms - waited[i]).toBeLessThan(2_000));
   } finally {
     cut.close();
     await request.patch(`/api/c/${s.room}`, { data: { archived: true } }).catch(() => undefined);
@@ -209,16 +301,20 @@ test("a live socket whose server side closed while the page heard nothing on it 
   await cut.listen();
   try {
     await openThrough(page, cut, s.room, t);
+    const shownAfter = await watchShown(page, changeTexts(t, "22:41"));
     const before = cut.connections;
+    const cpu = await cpuWait(request);
     const closedAt = Date.now();
     cut.stallAndClose();
     await change(request, s, t, "22:41");
     // A page that waits for the socket's own close event never opens a new one: the held close never comes.
-    const after = await shownAfter(closedAt, changes(page, t, "22:41"));
-    test.info().annotations.push({ type: "ms after the server closed the socket (board, duty, message)", description: after.join(", ") });
+    const shown = await shownAfter(changes(page, t, "22:41")).finally(cpu.stop);
+    const after = shown.map(at => at - closedAt);
+    const waited = shown.map(at => Math.round(cpu.between(closedAt, at)));
+    test.info().annotations.push({ type: "ms after the server closed the socket (board, duty, message), and the CPU wait in them", description: `${after.join(", ")}; ${waited.join(", ")} (pids ${cpu.pids.join(" ")})` });
     expect(cut.connections).toBeGreaterThan(before);
     // The ping waits 2 s of quiet and 1.5 s for its pong (live.svelte.ts), then a new socket opens and reads in about 0.5 s.
-    for (const ms of after) expect(ms).toBeLessThan(4_500);
+    after.forEach((ms, i) => expect(ms - waited[i]).toBeLessThan(4_500));
   } finally {
     cut.close();
     await request.patch(`/api/c/${s.room}`, { data: { archived: true } }).catch(() => undefined);
