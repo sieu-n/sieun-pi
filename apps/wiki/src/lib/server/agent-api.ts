@@ -662,7 +662,7 @@ const API = {
 			}),
 			run: async (c) => {
 				const category = param(c, 'category');
-				return json({ category, results: await getRecent(category, limit(c), authorityOptsFrom(c.url)) });
+				return json({ category, results: rowsFor(await getRecent(category, limit(c), authorityOptsFrom(c.url))) });
 			},
 		},
 	},

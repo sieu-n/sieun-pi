@@ -191,11 +191,20 @@ export async function searchPages(
 ): Promise<WikiPageSummary[]> {
 	const index = await getWikiIndex();
 	const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
-	const pool = index.pages.filter((page) => authorityAllows(page.path, authority));
 
-	if (terms.length === 0) return pool.slice(0, limit);
+	if (terms.length === 0) return index.pages.filter((page) => authorityAllows(page.path, authority)).slice(0, limit);
 
-	return pool
+	// Only a page that holds a term in some field can score, so the rest are skipped before any scoring. A term has no
+	// whitespace, so it is in the joined fields only when it is in one of them, and the matches are the same as scoring
+	// every page.
+	const hits: WikiPageSummary[] = [];
+	for (const page of index.pages) {
+		const { joined } = haystacksOf(page);
+		if (terms.some((term) => joined.includes(term) || page.searchText.includes(term)) && authorityAllows(page.path, authority)) {
+			hits.push(page);
+		}
+	}
+	return hits
 		.map((page) => ({ page, ...scorePage(page, terms) }))
 		.filter((item) => item.matched > 0)
 		.sort((a, b) => b.matched - a.matched || b.score - a.score || b.page.updated.localeCompare(a.page.updated))
@@ -835,7 +844,26 @@ function isMissing(error: unknown): boolean {
 	return error instanceof Error && 'code' in error && error.code === 'ENOENT';
 }
 
-/** The fields a query is matched against, most authoritative first. */
+type Haystacks = { fields: Array<{ value: string; weight: number }>; joined: string };
+
+/**
+ * Each page's fields in lower case, made once per summary: the index swaps in a new summary when a page changes. A search
+ * made them again for all 98k pages on every call, 90 to 180 ms of its 250 to 650 ms on 2026-11-24
+ * (~/work/wiki-page-list/report.md).
+ */
+const haystacks = new WeakMap<WikiPageSummary, Haystacks>();
+
+function haystacksOf(page: WikiPageSummary): Haystacks {
+	let made = haystacks.get(page);
+	if (!made) {
+		const fields = haystacksFor(page);
+		made = { fields, joined: fields.slice(0, -1).map((field) => field.value).join('\n') };
+		haystacks.set(page, made);
+	}
+	return made;
+}
+
+/** The fields a query is matched against, most authoritative first; `searchText` is last. */
 function haystacksFor(page: WikiPageSummary): Array<{ value: string; weight: number }> {
 	const facets = [...page.meta.tags, ...page.meta.apps, ...(page.meta.projects ?? []), ...(page.meta.domains ?? [])];
 	return [
@@ -867,7 +895,7 @@ function fieldScore(haystack: string, term: string): number {
  * so a page loud on one term does not outrank a page with every term.
  */
 function scorePage(page: WikiPageSummary, terms: string[]): { score: number; matched: number } {
-	const haystacks = haystacksFor(page);
+	const haystacks = haystacksOf(page).fields;
 	let score = 0;
 	let matched = 0;
 
