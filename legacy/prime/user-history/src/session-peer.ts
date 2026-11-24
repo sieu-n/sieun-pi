@@ -27,10 +27,17 @@ const LIVE_FIELDS = ["activeSessionId", "rosterStatus", "isStreaming", "isCompac
 /** The key the daemon merges its own `list all` by, so a live roster row replaces the saved row of the same session. */
 export const rowKey = (row: SessionSummary): string => row.sessionFile ?? `id:${row.sessionId}`;
 
+/**
+ * What a session's worker holds while it is loaded, which the daemon's full list leaves off a saved row. A row the roster dropped kept them
+ * until 11-24, so the Mac's copy listed 01a20f99 on claude-opus-5-5/off from its unload at 22:09:52Z and its archive at 22:16Z until the full
+ * list at 22:30:52Z, and d7 counted it in sessions_off_high at 22:14Z and 22:30Z.
+ */
+const LOADED_FIELDS = ["model", "thinkingLevel"] as const;
+
 /** A row as saved: the daemon's passivated form of a session whose worker stopped. */
 export function saved(row: SessionSummary): SessionSummary {
   const copy: Record<string, unknown> = { ...row, activity: "idle" };
-  for (const field of LIVE_FIELDS) delete copy[field];
+  for (const field of [...LIVE_FIELDS, ...LOADED_FIELDS]) delete copy[field];
   return copy as unknown as SessionSummary;
 }
 
