@@ -43,7 +43,9 @@ test("saving a post offers Add memo in the toast, and the memo shows on its Save
   await expect(prompt.locator("[data-memo-title]")).toHaveText("Memo for this saved message");
   const promptBox = (await prompt.boundingBox())!;
   const composerBox = (await page.locator("[data-composer]").first().boundingBox())!;
+  const postBox = (await post.boundingBox())!;
   expect(promptBox.y + promptBox.height).toBeLessThanOrEqual(composerBox.y);
+  expect(promptBox.y + promptBox.height <= postBox.y || promptBox.y >= postBox.y + postBox.height).toBe(true);
   await field.fill(`call the vendor ${word}`);
   await page.keyboard.press("Enter");
   await expect(field).toHaveCount(0);

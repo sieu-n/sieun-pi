@@ -27,6 +27,12 @@ test("the owner saves a wiki page with a memo, Saved lists it as a Wiki page tha
   await expect(toast).toBeVisible();
   await expect(save).toHaveAttribute("aria-label", "Remove from Saved");
   await toast.getByRole("button", { name: "Add memo" }).click();
+  const prompt = page.getByRole("dialog", { name: "Memo for this saved page" });
+  await expect(prompt).toBeVisible();
+  const saveBox = (await save.boundingBox())!;
+  const promptBox = (await prompt.boundingBox())!;
+  expect(promptBox.y).toBeGreaterThanOrEqual(saveBox.y + saveBox.height);
+  expect(Math.abs(promptBox.x + promptBox.width - (saveBox.x + saveBox.width))).toBeLessThan(2);
   await page.locator("[data-memo-field]").fill(`reread before ${word}`);
   await page.keyboard.press("Enter");
   await expect(page.locator("[data-memo-field]")).toHaveCount(0);
