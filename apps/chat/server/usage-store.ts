@@ -123,6 +123,8 @@ const GRAIN_MS: Readonly<Record<GrainName, number>> = { hour: 3_600_000, minute:
 const KEPT_MS: Readonly<Record<GrainName, number>> = { hour: HOURS_KEPT_MS, minute: MINUTES_KEPT_MS, tick: TICKS_KEPT_MS };
 /** Coarsest first: a range reads the coarsest grain its bounds and buckets fall on. */
 const GRAIN_NAMES: readonly GrainName[] = ["hour", "minute", "tick"];
+/** A snapshot this young answers calls before the tail read after it lands: a stopping server's, written seconds before. */
+const FRESH_SNAPSHOT_MS = 10_000;
 /** Sums per line of the snapshot file, and so per turn of the event loop when it is written or read. */
 const SNAPSHOT_CHUNK = 2_000;
 const DAY_MS = 86_400_000;
@@ -243,6 +245,7 @@ export class StoreUsage implements UsageSums {
   private restored = false;
   private saving = false;
   private restoredAt: number | undefined;
+  private restoring: Promise<void> | undefined;
 
   // Plain fields, not parameter properties: pi-host-relay loads this file through config.ts with node's type stripping, which refuses them.
   /** `snapshot` is a file the sums are written to after each full read and at stop, and read back by the next server (`restore`). */
@@ -350,6 +353,12 @@ export class StoreUsage implements UsageSums {
       this.fullAt = kept.fullAt;
       this.restoredAt = kept.at;
       this.sumDays(-Infinity);
+      // A server at its stop writes the sums of its last pull, seconds before its successor reads them: those answer at once, as a 2 s
+      // pull's would, and the tail read brings them up to now behind the calls. On 11-24 the first call after a release waited 3.1 s for it.
+      if (this.now() - kept.at < FRESH_SNAPSHOT_MS) {
+        this.read = true;
+        this.goodAt = kept.at;
+      }
       this.log(`usage: read the kept sums of ${new Date(kept.at).toISOString()}, ${count} sums, from ${this.snapshot} in ${Math.round(performance.now() - started)} ms`);
     } catch (error) {
       this.log(`usage: the snapshot ${this.snapshot} did not read: ${error instanceof Error ? error.message : String(error)}`);
@@ -363,7 +372,7 @@ export class StoreUsage implements UsageSums {
   }
 
   private async pullOnce(): Promise<void> {
-    if (!this.restored && this.snapshot) await this.restore();
+    if (!this.restored && this.snapshot) await (this.restoring ??= this.restore());
     const now = this.now();
     const full = now - this.fullAt >= this.fullEvery;
     const from = Object.fromEntries(GRAIN_NAMES.map(grain => {
@@ -443,6 +452,8 @@ export class StoreUsage implements UsageSums {
    */
   async usage(range: UsageRange): Promise<UsageTotal[]> {
     const { since, until, bucketMs } = range;
+    // A fresh snapshot answers once it is read, before the tail read behind it (`restore`).
+    if (!this.read && this.restoring) await this.restoring;
     if (!this.read) await this.pull();
     if (!this.read) throw new Error(`usage: the store is not reachable: ${this.lastError ?? "no read yet"}`);
     const byDay = bucketMs % DAY_MS === 0 && dayOf(since) === since && dayOf(until) === until && since >= this.days.covered;

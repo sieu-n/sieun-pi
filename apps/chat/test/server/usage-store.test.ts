@@ -299,6 +299,15 @@ test("a server starts from the snapshot the last one wrote, and its first read i
   assert.equal(report.rows[0]!.cost.total, 3);
   assert.match(lines[0]!, /read the kept sums of/);
 
+  next.stop();
+  now += 3_000;
+  let reads = 0;
+  const slow = { query: (sql: string) => (reads++, asked.push(sql), new Promise<Columns>(() => {})) };
+  const handOver = new StoreUsage(slow, "t", () => {}, () => now, 600_000, snapshot);
+  void handOver.pull();
+  assert.equal((await handOver.usage({ since: hour, until: hour + HOUR, bucketMs: HOUR }))[0]!.cost, 3, "a snapshot written seconds ago answers before the tail read lands");
+  assert.equal(reads, 1, "the tail read went out and has not answered");
+
   now += 11 * 60_000;
   const late = new StoreUsage(reader, "t", () => {}, () => now, 600_000, snapshot);
   await late.pull();
