@@ -61,6 +61,21 @@ test("a wrapper pid whose cmdline reads empty, as inside its execve, still runs,
   }
 });
 
+test("a run's precheck reads its trigger in PRECHECK_TRIGGER, so the fable sweep's verify run confirms the last sweep instead of starting one", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "duty-precheck-trigger-"));
+  try {
+    const script = `require("fs").writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { verify: process.env.PRECHECK_TRIGGER === "verify" ? 1 : 0 } }));`;
+    const duty = { id: "d1", name: "Trigger", ownerWords: "w", goal: "g", onMiss: "m", metrics: [{ key: "verify", label: "Verify", op: ">=", target: 1, headline: true }],
+      schedule: { kind: "every", minutes: 60 }, precheck: { command: ["node", "-e", script], cwd: dir, timeoutMs: 30_000 } } as unknown as Duty;
+    const of = async (trigger: "verify" | "schedule") => (await measure({ duty, chat: { id: "ag_t", name: "T" }, dir, trigger, previous: [], board: null, liveJob: () => false,
+      boardApi: "http://x", now: Date.now() + (trigger === "verify" ? 0 : 1000) })).record.metrics.verify?.value;
+    assert.equal(await of("verify"), 1);
+    assert.equal(await of("schedule"), 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("a precheck that crashes with a stack shows its error line, and the run's detail is its whole stderr", async () => {
   const dir = mkdtempSync(join(tmpdir(), "duty-precheck-crash-"));
   try {

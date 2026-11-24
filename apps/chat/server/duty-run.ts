@@ -54,10 +54,11 @@ const envQuote = (text: string): string => '"' + text.replace(/[\\"$`]/g, char =
 const UNIT_ENV = new Set(["INVOCATION_ID", "JOURNAL_STREAM", "SYSTEMD_EXEC_PID", "MANAGERPID"]);
 
 /**
- * Starts the precheck in its cwd with STATE_FILE, LAST_RUNS_FILE, OUTPUT_FILE and PRECHECK_MODE. An after-job measure (`after`) has its own
- * files, so it can run beside a run of the same duty. `tag` names the transient unit, such as `ag_agent-d3-251122-153000-run`.
+ * Starts the precheck in its cwd with STATE_FILE, LAST_RUNS_FILE, OUTPUT_FILE and PRECHECK_MODE, and a run's PRECHECK_TRIGGER, such as
+ * `verify` for the run a closed fix step starts. An after-job measure (`after`) has its own files, so it can run beside a run of the same
+ * duty. `tag` names the transient unit, such as `ag_agent-d3-251122-153000-run`.
  */
-export async function launchPrecheck(duty: Duty, dir: string, outputFile: string, lastRuns: readonly DutyRunRecord[], mode: "run" | "after", tag: string): Promise<PrecheckLaunch> {
+export async function launchPrecheck(duty: Duty, dir: string, outputFile: string, lastRuns: readonly DutyRunRecord[], mode: "run" | "after", tag: string, trigger?: DutyTrigger): Promise<PrecheckLaunch> {
   await mkdir(dir, { recursive: true, mode: 0o700 });
   const stateFile = join(dir, `${duty.id}.state.json`);
   const base = outputFile.replace(/\.json$/, "");
@@ -71,7 +72,8 @@ export async function launchPrecheck(duty: Duty, dir: string, outputFile: string
   await Promise.all([rm(outputFile, { force: true }), rm(files.exit, { force: true })]);
   const [command, ...args] = duty.precheck.command;
   const file = command === "node" ? process.execPath : command!;
-  const env = { ...process.env, STATE_FILE: nextState, LAST_RUNS_FILE: lastRunsFile, OUTPUT_FILE: outputFile, PRECHECK_MODE: mode, PRECHECK_STDERR_FILE: files.stderr };
+  const env = { ...process.env, STATE_FILE: nextState, LAST_RUNS_FILE: lastRunsFile, OUTPUT_FILE: outputFile, PRECHECK_MODE: mode, PRECHECK_STDERR_FILE: files.stderr,
+    ...(trigger ? { PRECHECK_TRIGGER: trigger } : {}) };
   await writeFile(files.script, [
     `${[file, ...args].map(shellQuote).join(" ")} </dev/null >/dev/null 2>${shellQuote(files.stderr)}`,
     `printf '%s\\n' "$?" >${shellQuote(`${files.exit}.part`)}`,
@@ -205,10 +207,10 @@ export interface PrecheckHooks {
 }
 
 /** The precheck's output: of the launch a stopped server left (`resume`), else of a new launch, which `launched` hears of before the wait. */
-async function precheckOf(duty: Duty, dir: string, outputFile: string, lastRuns: readonly DutyRunRecord[], mode: "run" | "after", tag: string, hooks: PrecheckHooks): Promise<PrecheckOutput> {
+async function precheckOf(duty: Duty, dir: string, outputFile: string, lastRuns: readonly DutyRunRecord[], mode: "run" | "after", tag: string, hooks: PrecheckHooks, trigger?: DutyTrigger): Promise<PrecheckOutput> {
   let launch = hooks.resume;
   if (!launch) {
-    launch = await launchPrecheck(duty, dir, outputFile, lastRuns, mode, tag);
+    launch = await launchPrecheck(duty, dir, outputFile, lastRuns, mode, tag, trigger);
     hooks.launched?.(launch);
   }
   return waitPrecheck(duty, launch, hooks.log, hooks.signal);
@@ -292,7 +294,7 @@ export async function measure(input: {
   let record: DutyRunRecord;
   let flagged: FlaggedSlice[] = [];
   try {
-    const output = await precheckOf(duty, dir, detail, previous.slice(0, 10), "run", `${input.chat.id.slice(0, 8)}-${duty.id}-${runStamp(started)}-run`, input);
+    const output = await precheckOf(duty, dir, detail, previous.slice(0, 10), "run", `${input.chat.id.slice(0, 8)}-${duty.id}-${runStamp(started)}-run`, input, trigger);
     const judged = judge(duty.metrics, output, { now: started, runs: previous });
     const readings = outputReadings(duty.readings, output);
     const hostAway = hostAwayOf(output);

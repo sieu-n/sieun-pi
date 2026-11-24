@@ -39,13 +39,17 @@
  *     record, else from the state file. While the last sweep's job has had no model turn, since it waits for a model account (`noModelTurn`),
  *     a run leaves the headline out, so it reads not measured with an `outside_wait` item and starts no job, and its fresh items stay
  *     unraised so they carry to the next run.
+ *     A verify run (PRECHECK_TRIGGER=verify, which the board starts when the sweep's fix step closes) measures as after mode does, so it
+ *     confirms the last sweep's items reached the owner, raises nothing and starts no new sweep; its fresh items wait for the next scheduled
+ *     run (`sweepMode`). A duty miss whose owner has it already, a fix step with a working or sleeping job or a board.wake, or the duty's
+ *     first run, is listed as passed on and is never fresh (`passedOn`).
  *   sweep_age_min: minutes since the sweep before this one ran, target 195, the 180 min schedule plus 15 min.
  *   items_fresh, items_open and a count per kind are detail with no target.
  *
  * Job entry times come from the job's pi-host thread file, read only (`<threads dir>/<thread>.sqlite`), because every conversation of a
  * thread shares one `updatedAt` in the :5184 lists. A step's age is the start of the job on it, else the first run that saw it open.
  *
- * Usage: OUTPUT_FILE=<file> [STATE_FILE=<file>] [LAST_RUNS_FILE=<file>] [PRECHECK_MODE=run|after|peek] node --import tsx scripts/duties/fable-sweep.ts
+ * Usage: OUTPUT_FILE=<file> [STATE_FILE=<file>] [LAST_RUNS_FILE=<file>] [PRECHECK_MODE=run|after|peek] [PRECHECK_TRIGGER=<trigger>] node --import tsx scripts/duties/fable-sweep.ts
  *   --agent <agent id> [--server http://127.0.0.1:5184] [--threads-dir <dir>] [--data-dir <dir>]
  * Defaults: APPS_CHAT_URL else http://127.0.0.1:5184, ~/.prime/agent/pi-host/durable/threads, APPS_CHAT_DATA_DIR else ~/.pi/agent/chat, whose
  * wakes, in its folder or its chat.sqlite as the server's APPS_CHAT_DB_KINDS says, are read only. The detail file is OUTPUT_FILE with
@@ -78,7 +82,11 @@ const KIND_WORDS: Record<Kind, [string, string]> = {
 };
 const counted = (kind: Kind, n: number): string => `${n} ${KIND_WORDS[kind][n === 1 ? 0 : 1]}`;
 
-export interface Item { kind: Kind; sig: string; agent: string; text: string; link: string; at?: number; context?: string[] }
+export interface Item {
+  kind: Kind; sig: string; agent: string; text: string; link: string; at?: number; context?: string[];
+  /** Why its owner already has it (`passedOn`): such an item is listed but is never fresh, so it counts toward no findings_unposted. */
+  passedOn?: string;
+}
 export interface SweepState { raised?: Record<string, number>; seen?: Record<string, number>; lastRun?: { at: number; fresh: number } }
 /** The part of a duty run record (LAST_RUNS_FILE) this precheck reads. */
 export interface RunRecord { at: number; job?: { id: string; name: string }; metrics?: Record<string, { value: number }> }
@@ -91,8 +99,11 @@ export interface Post {
 }
 export interface Job { id: string; name: string; status: string; thread: string; conversation: number; createdAt: number; agent?: { id: string; name: string }; retrying?: string }
 interface Agent { id: string; name: string; status: string; thread: string; room?: string; model?: { id: string; label?: string }; comm?: { room: string; thread: string; status: string }[] }
-interface PlanItem { id: string; text: string; status: string; note?: string; job?: string; waitUntil?: string | number; waitFor?: unknown; children?: PlanItem[] }
-export interface DutyRunView { at: number; verdict: string; summary?: string; error?: string; after?: { verdict?: string; summary?: string }; fixes?: Record<string, { step: string; job?: string; live: boolean }> | null }
+export interface PlanItem { id: string; text: string; status: string; note?: string; job?: string; duty?: string; waitUntil?: string | number; waitFor?: unknown; children?: PlanItem[] }
+export interface DutyRunView {
+  at: number; verdict: string; summary?: string; error?: string; after?: { verdict?: string; summary?: string }; fixes?: Record<string, { step: string; job?: string; live: boolean }> | null;
+  job?: { id: string; name: string };
+}
 interface Todo { id: string; done?: boolean; step?: string }
 
 const isAgent = (author: Author): boolean => author.kind !== "owner";
@@ -296,12 +307,42 @@ export function dutyContext(runs: readonly DutyRunView[]): string[] {
 }
 
 /**
+ * Why a duty's miss is with its owner already, or undefined: the duty's first measured run, whose own duty job got its brief, or an open fix
+ * step of the duty (`duty` is `<dutyId>/<metric>`) whose job works or sleeps or that a board.wake moves (`wokenStep`). On 11-24 Crawler guy's
+ * d1 and d2 missed on their first runs at 15:00 KST, each with fix steps (p48, p50, p42) whose jobs worked, and the auditor's 15:32 KST
+ * verify run still counted both as findings nobody had passed on.
+ */
+export function passedOn(input: {
+  agent: Agent; dutyId: string; runs: readonly DutyRunView[]; plan: readonly PlanItem[]; jobs: readonly Job[]; now: number; wakes?: readonly Wake[];
+}): string | undefined {
+  const { agent, dutyId, now } = input;
+  const measured = input.runs.filter(run => run.verdict !== "skipped");
+  if (measured.length === 1 && measured[0]!.job) return `first run of the duty, its job ${measured[0]!.job.name} has it`;
+  const mine = input.jobs.filter(job => job.agent?.id === agent.id);
+  const chat: AppsChat = { id: agent.id, name: agent.name, board: null, duties: [], thread: agent.thread, jobs: mine.map(job => ({ name: job.name, state: job.status, sessionId: job.id })) };
+  const reads = appsOwnerReads(chat, [], input.wakes ?? [], now);
+  let found: string | undefined;
+  const visit = (list: readonly PlanItem[]): void => {
+    for (const step of list) {
+      if (found) return;
+      visit(step.children ?? []);
+      if (found || step.status === "done" || step.status === "dropped" || step.duty?.split("/")[0] !== dutyId) continue;
+      const live = step.job ? mine.find(job => job.name === step.job && (job.status === "working" || job.status === "sleeping")) : undefined;
+      if (live) found = `fix step ${step.id}, job ${live.name} ${live.status}`;
+      else if (wokenStep({ id: step.id, job: step.job, waitUntil: typeof step.waitUntil === "string" ? step.waitUntil : undefined }, reads)) found = `fix step ${step.id}, a board.wake moves it`;
+    }
+  };
+  visit(input.plan);
+  return found;
+}
+
+/**
  * Splits items into the ones worth a look now (new, or last raised 24 h ago or more) and the state the next run reads. With `mark` false the
  * fresh items stay unraised, so they carry to the next run, as while an earlier sweep's job has had no model turn (`noModelTurn`).
  */
 export function worthALook(items: readonly Item[], state: SweepState, now: number, mark = true): { fresh: Item[]; next: SweepState } {
   const raised = state.raised ?? {};
-  const fresh = items.filter(item => raised[item.sig] === undefined || now - raised[item.sig]! >= RERAISE_MS);
+  const fresh = items.filter(item => !item.passedOn && (raised[item.sig] === undefined || now - raised[item.sig]! >= RERAISE_MS));
   const keep = new Set(items.map(item => item.sig));
   const nextRaised = Object.fromEntries(Object.entries(raised).filter(([sig]) => keep.has(sig)));
   if (mark) for (const item of fresh) nextRaised[item.sig] = now;
@@ -329,6 +370,18 @@ export function answerOf(items: readonly { kind: string; live?: boolean; text?: 
   return turn ? [...(turn.sent ?? []), turn.text ?? ""] : [];
 }
 
+/**
+ * How a run of the sweep counts, from PRECHECK_MODE and PRECHECK_TRIGGER. `confirm`: the headline asks whether the last sweep's findings
+ * were passed on (after mode, and a verify run, which the board starts when the sweep's fix step closes). `mark`: this run's fresh items are
+ * raised and the state moves on, which only a scheduled, owner or push run does. A verify run that marked its items started a new sweep job:
+ * on 11-24 the auditor closed p18 at 15:32 KST with d1 at 0, and the verify run found 2 fresh items and read red until that job got a turn.
+ */
+export function sweepMode(mode: string | undefined, trigger: string | undefined): { mode: "run" | "after" | "peek"; confirm: boolean; mark: boolean } {
+  if (mode === "after") return { mode: "after", confirm: true, mark: false };
+  if (mode === "peek") return { mode: "peek", confirm: false, mark: false };
+  return trigger === "verify" ? { mode: "run", confirm: true, mark: false } : { mode: "run", confirm: false, mark: true };
+}
+
 async function get<T>(server: string, path: string): Promise<T> {
   const res = await fetch(`${server}${path}`);
   if (!res.ok) throw new Error(`GET ${path} answered ${res.status}`);
@@ -340,7 +393,7 @@ interface Hit { conversation: { id: string; kind: string; name: string }; messag
 if (import.meta.url === `file://${process.argv[1]}`) {
   const { values } = parseArgs({ options: { agent: { type: "string" }, server: { type: "string" }, "threads-dir": { type: "string" }, "data-dir": { type: "string" } } });
   // peek reads like run and writes no state: the judging turn runs it when it starts late, so it judges fresh data (PRECHECK_MODE=peek).
-  const mode = process.env.PRECHECK_MODE === "after" ? "after" : process.env.PRECHECK_MODE === "peek" ? "peek" : "run";
+  const { mode, confirm, mark } = sweepMode(process.env.PRECHECK_MODE, process.env.PRECHECK_TRIGGER);
   const lastRuns: RunRecord[] = process.env.LAST_RUNS_FILE && existsSync(process.env.LAST_RUNS_FILE) ? JSON.parse(readFileSync(process.env.LAST_RUNS_FILE, "utf8") || "[]") : [];
   const server = values.server ?? process.env.APPS_CHAT_URL ?? "http://127.0.0.1:5184";
   const threadsDir = values["threads-dir"] ?? join(homedir(), ".prime/agent/pi-host/durable/threads");
@@ -417,7 +470,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       if (agent.id === values.agent || row.paused || !row.last || (row.last.verdict !== "missed" && row.last.verdict !== "error")) continue;
       const run = row.runs[0];
       const why = oneLine(run?.after?.summary ?? run?.error ?? run?.summary ?? "", 110);
-      items.push({ kind: "duty_off", sig: `duty:${agent.id}/${row.duty.id}`, agent: agent.name, text: `${agent.name} ${row.duty.id} "${row.duty.name}" ${row.last.verdict}${row.last.streak > 1 ? `, ${row.last.streak} runs in a row` : ""}: ${why}`, link: `#/agents/${agent.id}`, at: row.last.at, context: dutyContext(row.runs) });
+      const has = passedOn({ agent, dutyId: row.duty.id, runs: row.runs, plan: board.board?.plan ?? [], jobs: liveJobs, now, wakes });
+      items.push({ kind: "duty_off", sig: `duty:${agent.id}/${row.duty.id}`, agent: agent.name, text: `${agent.name} ${row.duty.id} "${row.duty.name}" ${row.last.verdict}${row.last.streak > 1 ? `, ${row.last.streak} runs in a row` : ""}: ${why}`, link: `#/agents/${agent.id}`, at: row.last.at,
+        context: [...dutyContext(row.runs), ...(has ? [`passed on: ${has}`] : [])], ...(has ? { passedOn: has } : {}) });
     }
   }));
 
@@ -425,23 +480,25 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   // fresh items stay unraised so they carry to the next run, and the job reads them when its turn comes (its brief's peek).
   const waiting = mode === "run" ? lastRuns.find(run => run.job) : undefined;
   const waits = waiting?.job && noModelTurn(join(threadsDir, `${waiting.job.id}.sqlite`)) ? waiting : undefined;
-  const { fresh, next } = worthALook(items, state, now, mode === "run" && !waits);
+  const { fresh, next } = worthALook(items, state, now, mark && !waits);
   const freshSigs = new Set(fresh.map(item => item.sig));
   const stamp = new Date(now).toISOString().slice(0, 19).replace(/[-T:]/g, "");
   const detailFile = process.env.OUTPUT_FILE ? process.env.OUTPUT_FILE.replace(/\.json$/, "") + ".items.md" : join(homedir(), "work/fable-sweep", `${stamp}.items.md`);
   mkdirSync(dirname(detailFile), { recursive: true });
   const sections = KINDS.map(kind => {
     const list = items.filter(item => item.kind === kind).sort((a, b) => (a.at ?? now) - (b.at ?? now));
-    return list.length ? [`## ${KIND_WORDS[kind][1]} (${list.length})`, ...list.map(item => [`- ${freshSigs.has(item.sig) ? "" : "(raised before) "}${item.text} [open](${item.link})`, ...(item.context ?? []).map(line => `  - ${line}`)].join("\n"))].join("\n") : "";
+    return list.length ? [`## ${KIND_WORDS[kind][1]} (${list.length})`, ...list.map(item => [`- ${freshSigs.has(item.sig) ? "" : item.passedOn ? "(passed on) " : "(raised before) "}${item.text} [open](${item.link})`, ...(item.context ?? []).map(line => `  - ${line}`)].join("\n"))].join("\n") : "";
   }).filter(Boolean);
   writeFileSync(detailFile, [`# Everything at a glance, ${new Date(now).toISOString().slice(0, 16)}Z`,
-    `${fresh.length} items worth a look of ${items.length} open. Items marked "raised before" were in a sweep less than 24 h ago. Links open on :5184.`, ...sections].join("\n\n") + "\n");
+    `${fresh.length} items worth a look of ${items.length} open. Items marked "raised before" were in a sweep less than 24 h ago, and items marked "passed on" ` +
+    "have a fix step its owner works on or are a duty's first run. Links open on :5184.", ...sections].join("\n\n") + "\n");
 
-  // The headline: in run mode this sweep's fresh findings; in after mode the measured run's findings until the owner's DM has them.
+  // The headline: in run mode this sweep's fresh findings; in after mode and a verify run the measured run's findings until the owner's DM
+  // has them, so a verify run's fresh items wait for the next scheduled sweep.
   let unposted = fresh.length;
   let report = "";
   const measured = lastRuns.find(run => run.job);
-  if (mode === "after") {
+  if (confirm) {
     const runFresh = measured ? measured.metrics?.findings_unposted?.value ?? state.lastRun?.fresh ?? 0 : 0;
     unposted = runFresh;
     const agent = agents.find(a => a.id === values.agent);
@@ -462,7 +519,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const previous = lastRuns[0];
 
   const counts = (list: readonly Item[]) => KINDS.map(kind => [kind, list.filter(item => item.kind === kind).length] as const).filter(([, n]) => n);
-  const flagged = mode === "after"
+  const flagged = confirm
     ? [{ kind: "findings_unposted", sig: "unposted", excerpt: `The sweep of ${measured ? new Date(measured.at).toISOString().slice(0, 16) : "?"}Z found ${unposted} items, and its report ${report === "none" ? "was empty" : "is not in the owner's DM yet"}. Every item is in ${detailFile}.` }]
     : [
       { kind: "findings_unposted", sig: "summary", excerpt: `${fresh.length} worth a look of ${items.length} open: ${counts(fresh).map(([kind, n]) => counted(kind, n)).join(", ") || "nothing new"}. Every item with its link is in ${detailFile}.` },
@@ -482,7 +539,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     mode, ...(report ? { report } : {}), detailFile, ms: Date.now() - started,
     items: items.map(item => ({ ...item, fresh: freshSigs.has(item.sig) })),
   };
-  if (process.env.STATE_FILE && mode === "run") writeFileSync(process.env.STATE_FILE, JSON.stringify({ ...next, seen, lastRun: { at: now, fresh: fresh.length } }));
+  if (process.env.STATE_FILE && mark) writeFileSync(process.env.STATE_FILE, JSON.stringify({ ...next, seen, lastRun: { at: now, fresh: fresh.length } }));
   const json = JSON.stringify(output, null, 1);
   if (process.env.OUTPUT_FILE) writeFileSync(process.env.OUTPUT_FILE, json);
   else process.stdout.write(`${json}\n`);

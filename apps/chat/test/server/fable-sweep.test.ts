@@ -9,15 +9,24 @@
  *    that finds things is the duty working, so after mode reads 0 then (c67).
  * 6. Each item carries what a reviewer needs to judge it, so the Fable turn reads one file: a duty's last three runs and fix step, and three or
  *    more jobs that wait for a model account as one item.
+ * 7. A duty miss its owner has already, a fix step with a working or sleeping job or a board.wake, or the duty's first run, is passed on and
+ *    never fresh, and a verify run (a closed fix step) confirms the last sweep's items and starts no new sweep (11-24, 15:32 KST).
  */
 import { strict as assert } from "node:assert";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { fileURLToPath } from "node:url";
 import { after, test } from "node:test";
-import { answerOf, dutyContext, jobFindings, lastEntries, noModelTurn, poolWaits, postFindings, reportState, stalledSteps, worthALook, type Item, type Job, type Post } from "../../scripts/duties/fable-sweep.ts";
-import { judge, type DutyMetric } from "../../web/src/lib/api/shared/chat-duties.ts";
+import { measure } from "../../server/duty-run.ts";
+import {
+  answerOf, dutyContext, jobFindings, lastEntries, noModelTurn, passedOn, poolWaits, postFindings, reportState, stalledSteps, sweepMode, worthALook, type DutyRunView, type Item, type Job,
+  type PlanItem, type Post,
+} from "../../scripts/duties/fable-sweep.ts";
+import { judge, type Duty, type DutyMetric, type DutyRunRecord } from "../../web/src/lib/api/shared/chat-duties.ts";
 
 const MIN = 60_000;
 const now = Date.parse("2026-11-22T12:00:00Z");
@@ -214,4 +223,110 @@ test("three or more jobs that wait for a model account fold into one item, and f
   assert.deepEqual(folded.map(item => item.sig), ["stuck:k", "stuck:pool"]);
   assert.equal(folded[1]!.text, "3 jobs wait for a model account, the oldest with no new entry for 3 min");
   assert.equal(folded[1]!.context?.length, 3);
+});
+
+const crawler = { id: "ag_crawler-guy", name: "Crawler guy", status: "idle", thread: "tc" };
+const missedRun = (minutesAgo: number, job?: string): DutyRunView => ({ at: now - minutesAgo * MIN, verdict: "missed", summary: "proxy_kb_per_read 109.8 KB", ...(job ? { job: { id: `j:${job}`, name: job } } : {}) });
+const crawlerJob = (name: string, status: string): Job => ({ id: `tc:${name}`, name, status, thread: "tc", conversation: 4, createdAt: now - 60 * MIN, agent: { id: crawler.id, name: crawler.name } });
+
+test("a duty miss with a fix step whose job works, or on the duty's first run, is passed on (Crawler guy d1 and d2, 11-24 15:00 KST)", () => {
+  const plan: PlanItem[] = [{ id: "p5", text: "Whole pipeline", status: "blocked", children: [
+    { id: "p48", text: "Bring a paid Instagram profile read back to 50 KB", status: "doing", duty: "d1/proxy_kb_per_read", job: "crawler ops train" },
+    { id: "p50", text: "Crawler duties measure what they claim", status: "doing", duty: "d1/cpu_ms_per_read", job: "crawler duty prechecks" },
+  ] }];
+  const older = [missedRun(30, "Crawler read cost duty"), missedRun(200, "Crawler read cost duty")];
+  const of = (runs: DutyRunView[], jobs: Job[], wakes = [] as Parameters<typeof passedOn>[0]["wakes"]) =>
+    passedOn({ agent: crawler, dutyId: "d1", runs, plan, jobs, now, wakes });
+  assert.equal(of(older, [crawlerJob("crawler ops train", "working")]), "fix step p48, job crawler ops train working");
+  assert.equal(of(older, [crawlerJob("crawler duty prechecks", "sleeping")]), "fix step p50, job crawler duty prechecks sleeping");
+  assert.equal(of(older, [crawlerJob("crawler ops train", "idle")]), undefined, "an idle job with no wake moves nothing");
+  assert.equal(of([missedRun(30, "Crawler read cost duty 261124-150043")], []), "first run of the duty, its job Crawler read cost duty 261124-150043 has it");
+  assert.equal(of([missedRun(30, "a"), { at: now - 60 * MIN, verdict: "skipped" }], []), "first run of the duty, its job a has it", "a skipped run measured nothing");
+  assert.equal(passedOn({ agent: crawler, dutyId: "d2", runs: older, plan, jobs: [crawlerJob("crawler ops train", "working")], now }), undefined, "a step of another duty");
+  const check = { kind: "check" as const, command: "true", every: 10 * MIN, at: now + 60 * MIN };
+  assert.equal(of(older, [{ ...crawlerJob("crawler ops train", "idle"), id: "tc:4" }], [{ session: "tc--4", note: "crawler ops train: cut lands", since: now - 90 * MIN, on: check }]),
+    "fix step p48, a board.wake moves it");
+
+  const items: Item[] = [
+    { kind: "duty_off", sig: "duty:ag_crawler-guy/d1", agent: "Crawler guy", text: "d1", link: "#", passedOn: "fix step p48" },
+    { kind: "duty_off", sig: "duty:ag_seo/d1", agent: "seo", text: "seo d1", link: "#" },
+  ];
+  const looked = worthALook(items, {}, now);
+  assert.deepEqual(looked.fresh.map(i => i.sig), ["duty:ag_seo/d1"], "a passed-on item is never fresh");
+  assert.deepEqual(Object.keys(looked.next.raised ?? {}), ["duty:ag_seo/d1"], "nor raised, so it shows once its step closes with the miss still there");
+});
+
+test("a verify run confirms the last sweep and raises nothing; scheduled runs mark, after and peek runs do not", () => {
+  assert.deepEqual(sweepMode("run", "verify"), { mode: "run", confirm: true, mark: false });
+  assert.deepEqual(sweepMode("run", "schedule"), { mode: "run", confirm: false, mark: true });
+  assert.deepEqual(sweepMode(undefined, undefined), { mode: "run", confirm: false, mark: true });
+  assert.deepEqual(sweepMode("after", undefined), { mode: "after", confirm: true, mark: false });
+  assert.deepEqual(sweepMode("peek", "verify"), { mode: "peek", confirm: false, mark: false });
+});
+
+/**
+ * The 11-24 15:32 KST case through the duty runner and the real precheck: the auditor closed its fix step after its 13:24 sweep's report
+ * reached the DM, and the board's verify run found Crawler guy's two first-run misses, both with working fix jobs, and one older miss nobody
+ * has. The verify run reads 0 and starts no job; the next scheduled run counts the one item nobody has.
+ */
+test("a verify run after a posted sweep reads met with no job, and passed-on misses never count (11-24 15:32 KST)", async () => {
+  delete process.env.INVOCATION_ID;
+  const live = Date.now();
+  const sweepAt = live - 130 * MIN;
+  const auditor = { id: "ag_fable-auditor", name: "fable auditor", status: "idle", thread: "ta", room: "dm_fable-auditor" };
+  const run = (id: string, minutesAgo: number, job?: string) => ({ at: live - minutesAgo * MIN, verdict: "missed", summary: `${id} missed`, ...(job ? { job: { id: `j-${job}`, name: job } } : {}) });
+  const routes: Record<string, unknown> = {
+    "/api/agents": [auditor, crawler, { id: "ag_seo", name: "seo", status: "idle", thread: "ts" }],
+    "/api/jobs": [{ ...crawlerJob("crawler ops train", "working"), createdAt: live - 20 * MIN }],
+    "/api/search/recent": { hits: [] },
+    "/api/agents/ag_crawler-guy/board": { board: { todos: [], plan: [{ id: "p48", text: "read KB", status: "doing", duty: "d1/proxy_kb_per_read", job: "crawler ops train" }] } },
+    "/api/agents/ag_crawler-guy/duties": { duties: [
+      { duty: { id: "d1", name: "Crawler read cost" }, paused: false, last: { verdict: "missed", at: live - 32 * MIN, streak: 2 }, runs: [run("d1", 32, "cost 1"), run("d1", 200, "cost 0")] },
+      { duty: { id: "d2", name: "GeoNode proxy use" }, paused: false, last: { verdict: "missed", at: live - 32 * MIN, streak: 1 }, runs: [run("d2", 32, "GeoNode proxy use duty")] },
+    ] },
+    "/api/agents/ag_seo/board": { board: { todos: [], plan: [] } },
+    "/api/agents/ag_seo/duties": { duties: [
+      { duty: { id: "d1", name: "Search traffic" }, paused: false, last: { verdict: "missed", at: live - 60 * MIN, streak: 2 }, runs: [run("seo", 60, "t1"), run("seo", 1500, "t0")] },
+    ] },
+    "/api/agents/ag_fable-auditor/board": { board: null },
+    "/api/agents/ag_fable-auditor/duties": { duties: [] },
+    "/api/c/dm_fable-auditor/items": { items: [{ id: "p1", at: sweepAt + 60 * MIN, author: { id: auditor.id, kind: "chat" }, text: "2 things" }] },
+    "/api/c/j-sweep/items": { items: [{ kind: "turn", text: "2 things", sent: ["2 things"] }] },
+  };
+  const server = createServer((req, res) => {
+    const body = routes[new URL(req.url ?? "/", "http://x").pathname];
+    res.writeHead(body === undefined ? 404 : 200, { "content-type": "application/json" }).end(JSON.stringify(body ?? {}));
+  });
+  await new Promise<void>(done => server.listen(0, "127.0.0.1", done));
+  const work = mkdtempSync(join(tmpdir(), "fable-sweep-verify-"));
+  try {
+    const appDir = join(dirname(fileURLToPath(import.meta.url)), "../..");
+    const spec = JSON.parse(readFileSync(join(appDir, "scripts/duties/fable-sweep.duty.json"), "utf8")) as Omit<Duty, "id">;
+    const duty = { ...spec, id: "d1", precheck: { ...spec.precheck, cwd: appDir, command: [...spec.precheck.command, "--server", `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+      "--threads-dir", join(work, "threads"), "--data-dir", join(work, "data")] } } as Duty;
+    const state = JSON.stringify({ raised: { "duty:ag_seo/d1": sweepAt - 1500 * MIN }, seen: {}, lastRun: { at: sweepAt, fresh: 2 } });
+    writeFileSync(join(work, "d1.state.json"), state);
+    const sweep = { duty: "d1", at: sweepAt, slot: sweepAt, trigger: "schedule", ms: 1, verdict: "missed", summary: "findings_unposted 2", job: { id: "j-sweep", name: "Everything at a glance duty" },
+      metrics: { findings_unposted: { value: 2, target: 0, op: "<=", met: false }, sweep_age_min: { value: 180, target: 195, op: "<=", met: true } } } as DutyRunRecord;
+    const measureAs = (trigger: "verify" | "schedule") => measure({ duty, chat: { id: "ag_fable-auditor", name: "fable auditor" }, dir: work, trigger, previous: [sweep],
+      board: null, liveJob: () => false, boardApi: "http://x", now: Date.now() });
+
+    const verify = await measureAs("verify");
+    assert.equal(verify.record.verdict, "met", verify.record.summary);
+    assert.equal(verify.record.metrics.findings_unposted?.value, 0, "the 13:24 sweep's report is in the DM");
+    assert.equal(verify.brief, null, "no new sweep job");
+    assert.equal(readFileSync(join(work, "d1.state.json"), "utf8"), state, "a verify run raises nothing");
+
+    const scheduled = await measureAs("schedule");
+    assert.equal(scheduled.record.metrics.findings_unposted?.value, 1, "only seo d1, which nobody has; Crawler guy's d1 and d2 are passed on");
+    const items = (JSON.parse(readFileSync(scheduled.record.detail!, "utf8")) as { items: (Item & { fresh: boolean })[] }).items;
+    assert.deepEqual(items.map(i => [i.sig, i.fresh, i.passedOn]).sort(), [
+      ["duty:ag_crawler-guy/d1", false, "fix step p48, job crawler ops train working"],
+      ["duty:ag_crawler-guy/d2", false, "first run of the duty, its job GeoNode proxy use duty has it"],
+      ["duty:ag_seo/d1", true, undefined],
+    ]);
+  } finally {
+    server.close();
+    rmSync(work, { recursive: true, force: true });
+  }
 });
