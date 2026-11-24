@@ -1,7 +1,7 @@
 /**
- * chat.sqlite, which holds each kind of record the chat server's APPS_CHAT_DB_KINDS names (json-move.ts), such as agents, rooms, read marks,
- * Later, wakes and the host routes, beside the skills DB (skills-db.ts). A kind the env leaves out, such as posts and the outbox on the live
- * unit until their move, stays in its JSON files; `GET /api/db` lists the kinds a server holds here. The owner asked for it in
+ * chat.sqlite, which holds each kind of record the chat server's APPS_CHAT_DB_KINDS names (json-move.ts), such as agents, rooms, posts,
+ * read marks, Later, wakes and the host routes, beside the skills DB (skills-db.ts). The live unit names every kind; a kind the env leaves
+ * out stays in its JSON files, and `GET /api/db` lists the kinds a server holds here. The owner asked for it in
  * #sw-factory-build: "so idempotent, db owns ownership" (11-22, msg mwqwgfsi) and "idempotent and clean (like docker compose up -> goes up)"
  * (11-23, msg mwtd0iuy). The plan is wiki:domains/devops/sw-factory/design/one-database.html.
  *

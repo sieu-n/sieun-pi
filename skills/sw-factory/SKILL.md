@@ -12,9 +12,8 @@ Each agent has one comm thread per room that talks there, and a work thread that
 ## Where the chat server keeps its data
 
 The chat server's data dir is `~/.pi/agent/chat` on us-metal02.
-Its `chat.sqlite` holds the agents, rooms, read marks, For lists, channels, caches, host routes, Later, wakes, duties, board writes and the skills DB.
-Room posts stay in `rooms/<room id>.jsonl` and the outbox in `outbox.jsonl` until their own move.
-The JSON files of the kinds that moved are rollback exports until 2026-11-30, so read the rows, not those files.
+Its `chat.sqlite` holds the agents, rooms, room posts, the outbox, read marks, For lists, channels, caches, host routes, Later, wakes, duties, board writes and the skills DB.
+The JSON and JSONL files of each kind that moved, such as `rooms/<room id>.jsonl`, are rollback exports for a week after its move, so read the rows, not those files.
 `sw db` lists the kinds chat.sqlite holds right now, and wiki:domains/devops/sw-factory/explanation/storage.html explains every store.
 
 ## Building the UI
@@ -218,7 +217,7 @@ Here's your question as it sits in that file now:
 ```
 
 ```markdown
-one append-only log file per room, `~/.pi/agent/chat/rooms/<room id>.jsonl`, written by `apps/chat/server/post-log.ts:135`
+one row per post in the `posts` table of `~/.pi/agent/chat/chat.sqlite`, written by `apps/chat/server/post-log.ts:192`
 ```
 
 A duty or sweep result, bad (dm_fable-auditor p14) and then good (that post in his words, after his p15 and p16).
