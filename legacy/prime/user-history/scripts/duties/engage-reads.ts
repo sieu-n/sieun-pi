@@ -6,13 +6,14 @@ import type { DutyMetric, FlaggedSlice, PrecheckOutput } from "../../src/shared/
 import {
   type DsQuery, DAY, HOUR, PG, PROM, SOURCE_DEADLINE_MS, UNMEASURED, grafanaClient, missValue, num, promInstant, promRange, readGrafanaAuth, round1, sqlRows, utc, type ProdRead, prodReader,
 } from "./estate-reads.ts";
+import { readCrawlerKey } from "./watchlist-green.ts";
 
 /**
  * The Engage reads working duty's precheck for launch main bro (`node --import tsx scripts/duties/engage-reads.ts`). Code only, no model
  * call, reads only. It measures goal p1, whether prod HAS THE CAPACITY to read 100k logged-in pages a day, years deep, without accounts dying
  * (the owner, 10-14: "i said 'Have the capacity to' which is what you should check"), and his standing canary rule, from:
  * - estate_pg_prod and estate_pg_stg through Grafana (grafana_ro): ig_engage_read_log, ig_engage_accounts, ig_engage_account_events, the
- *   config keys engage.canary* (canaryOf below), engage.rate_test_stop_deaths and pause.engage*, and on staging every pause.* row that reads 'true'
+ *   config keys engage.canary* (canaryOf below) and pause.engage*, and on staging every pause.* row that reads 'true'
  *   with its last config_audit writer;
  * - estate_prometheus: crawler_v3_engage_admissible_now{world="prod"} (the accounts that can read now: active, bound and passing egress admission,
  *   GET /ops/engage/health admissible_now), and crawler_v3_engage_deaths_24h{cause} to cross-check the death count;
@@ -37,7 +38,7 @@ const DUTY_FILE = join(dirname(fileURLToPath(import.meta.url)), "engage-reads.du
  *   active accounts. His canary number stays as the run detail canary_ig_deaths_1h, the most canary accounts Instagram killed in any 60 minutes of
  *   the last 24 h, so a daily run sees an hour it did not run in: on 11-18 Instagram suspended 23 canary accounts from 23:13Z to 00:02Z, and the
  *   11-19 run read 0 for its own last hour. The canary flag line carries it, and the crawler stops the canary itself at
- *   engage.rate_test_stop_deaths. Its judged slot went to engage_accounts_stuck on 10-18 (c75 keeps 3 supporting metrics).
+ *   engage.canary_stop_deaths. Its judged slot went to engage_accounts_stuck on 10-18 (c75 keeps 3 supporting metrics).
  * - engage_accounts_stuck <= 0: "without accounts dieing" (10-09). It counts the prod accounts that sit out of reading for over STUCK_HOURS
  *   on a fault our code is meant to heal, the two standing risks on the chat's risk page (wiki apps/crawler-v3/engage-reads-and-watchlist-risks):
  *   frozen for a shared exit IP and not healed (p103), active and reading only lost-session 302s, or parked with an invalid jar and not re-logged (p105).
@@ -50,17 +51,17 @@ const DUTY_FILE = join(dirname(fileURLToPath(import.meta.url)), "engage-reads.du
  *   run until it moves on: on 10-19 the metric read 100% while 32 open walks sat on cursor_provenance_missing. The run detail
  *   deep_walks_open_stuck counts them. An open walk that errored and started inside one cadence is retrying, so it is left out, and the
  *   deep_walks flag shows those as their own count with their codes. NOT_PAGINATION below names the codes left out of the stops.
- * - canary_ig_deaths_1h, canary_accounts_short, staging_due_wait_min, deep_walks_open_stuck, paced_busy_hour_share, paced_accts_200plus, paced_serveable_hours, best_proven_rate and source_errors are run detail:
+ * - canary_ig_deaths_1h, canary_accounts_short, staging_tagged_overdue_24h, deep_walks_open_stuck, paced_busy_hour_share, paced_accts_200plus, paced_serveable_hours, best_proven_rate and source_errors are run detail:
  *   report() writes them to the output, the server does not judge them, and the canary_short, staging_stall and busy_hour_share flags carry them to the fix jobs.
  * - paced_busy_hour_share keeps closed goal p229 ("Engage accounts spread their pages across the day on prod, busiest hour at most a tenth of the
  *   day", 0.074 on 10-28) as run detail, because c75 holds d1 at one headline and 3 supporting metrics. Over BUSY_HOUR_SHARE_MAX the busy_hour_share
  *   flag is a handOff, so a run whose metrics read met still starts or steers a fix job. It counts serveable hours as servedDays() does, and a day
  *   with fewer than PACED_HOURS_FLOOR of them, such as the GeoNode hold of 11-09, is not scored.
  * - canary_accounts_short: the owner, 10-12 13:33Z, "ALWAYS RUN ~10% account as CANARY"; CANARY_SHARE below.
- * - staging_due_wait_min: staging stays a working test bed, so a due staging collab read starts within STAGING_WAIT_MIN. The owner keeps about
- *   10 monitored accounts on staging (t17, 10-12), so staging reads come in bursts hours apart by design, and the time since the last read
- *   says nothing; the wait of the oldest due, unpaused, unclaimed tagged row does, counted from its due time or its last settled claim
- *   (STAGING_DUE_SQL). The 60 min is the launch VP's number, not the owner's.
+ * - staging_tagged_overdue_24h: staging stays a working test bed, so no staging collab read is overdue past 24 h. It is overdue_24h.tagged on
+ *   staging's /ops/watch-targets/health, the crawler's own count, which leaves out the rows the crawler refuses by design. Until 11-24 this read
+ *   its own SQL over watch_targets, which counted 369 house-group tagged rows that paid_only refuses (crawl_unpaid_paused) and flagged a 5,547 min
+ *   stall while the route read overdue_24h tagged 0.
  * - A source that failed fails the run: every metric it feeds (FEEDS below) reads unmeasured() and a source_error flag names it.
  * The schedule is daily (owner rule c66). The duty's timeoutMs 120000 is the runner's soft target, PRECHECK_TARGET_MS in src/shared/chat-duties.ts.
  */
@@ -108,9 +109,7 @@ export const CODE_CAUSES: Readonly<Record<string, Cause>> = {
   relogin_account_not_found: "instagram", relogin_challenge: "instagram", relogin_disabled: "instagram", relogin_gone: "instagram", relogin_suspended: "instagram",
   relogin_bad_password: "bad_password", relogin_two_factor: "ours",
 };
-/** The staging stall line's limit: the oldest due staging collab read waits at most this long. The launch VP's number. */
-export const STAGING_WAIT_MIN = 60;
-export type Source = "grafana auth" | "prod read log" | "prod supply holds" | "staging read log" | "staging due reads" | "staging config" | "prod accounts" | "prod config" | "prod healthy gauge" | "prod lapsed bindings" | "prod death gauge" | "prod deep walks" | "prod stuck accounts";
+export type Source = "grafana auth" | "prod read log" | "prod supply holds" | "staging read log" | "staging watch health" | "staging config" | "prod accounts" | "prod config" | "prod healthy gauge" | "prod lapsed bindings" | "prod death gauge" | "prod deep walks" | "prod stuck accounts";
 /**
  * How long an account may sit frozen for a shared exit, on 302s, or parked with a dead jar before it counts as stuck. The launch VP's number
  * (10-18): the accounts job wakes every 2 h, and jar account 16 sat active on 302s for 24 h (55 of 55 reads, 10-14 13:16Z to 10-15 12:00Z).
@@ -128,7 +127,7 @@ export const FEEDS: Readonly<Record<Source, readonly string[]>> = {
   "prod accounts": ["prod_capacity_pages_day", "fleet_ig_killed_pct", "canary_ig_deaths_1h"],
   "prod config": ["prod_capacity_pages_day", "fleet_ig_killed_pct", "canary_ig_deaths_1h"],
   "prod death gauge": ["fleet_ig_killed_pct", "canary_ig_deaths_1h"],
-  "staging read log": ["prod_capacity_pages_day"], "staging due reads": ["prod_capacity_pages_day"], "staging config": ["prod_capacity_pages_day"],
+  "staging read log": ["prod_capacity_pages_day"], "staging watch health": ["prod_capacity_pages_day"], "staging config": ["prod_capacity_pages_day"],
   "prod deep walks": ["deep_walk_ok_pct"],
   "prod stuck accounts": ["engage_accounts_stuck"],
 };
@@ -148,8 +147,8 @@ export interface AccountHour { day: string; hour: number; accountId: number; pag
  */
 export interface Death { accountId: number; at: number; status: string; code: string | null; readBefore: boolean; pages24h: number; transition: boolean }
 export interface Account { id: number; status: string; reason?: string }
-/** Staging's due collab reads: tagged rows past next_due_at, unpaused and with no open claim, and the oldest one's wait in minutes. */
-export interface StagingDue { due: number; waitMin: number }
+/** Staging's collab reads as its crawler counts them on /ops/watch-targets/health: tagged rows overdue past 24 h and tagged rows due now. */
+export interface StagingOverdue { overdue: number; due: number }
 /** A staging pause row that reads 'true', with the config_audit row that last wrote its key (null fields when none did). */
 export interface StagingPause { key: string; auditId: number | null; at: number | null; actor: string | null; reason: string | null }
 /**
@@ -169,46 +168,37 @@ export type StuckKind = "frozen_shared_exit" | "active_302s" | "parked_dead_jar"
 export interface StuckAccount { kind: StuckKind; accountId: number; since: number }
 export interface EngageData {
   now: number;
-  days?: DayPages[]; hours?: AccountHour[]; heldHours?: Set<string>; stagingLastReadAt?: number | null; stagingDue?: StagingDue; stagingPauses?: StagingPause[]; accounts?: Account[]; deaths?: Death[]; config?: Record<string, string>;
+  days?: DayPages[]; hours?: AccountHour[]; heldHours?: Set<string>; stagingLastReadAt?: number | null; stagingOverdue?: StagingOverdue; stagingPauses?: StagingPause[]; accounts?: Account[]; deaths?: Death[]; config?: Record<string, string>;
   healthy?: number; lapsed?: Lapsed; deepWalks?: DeepWalks; stuck?: StuckAccount[]; paced?: Paced;
   /** crawler_v3_engage_deaths_24h by cause. */
   deathGauge?: Record<string, number>;
   errors: { source: Source; message: string }[];
 }
 
-/** COHORT_HASH in apps/crawler-v3/src/platforms/instagram/engage/tuning.py, the id hash the hash-picked canary cohort uses. */
-export const COHORT_HASH = 2654435761n;
+/** Prod's canary: its accounts (dead ones too, so their deaths count as canary deaths) and why it is empty. */
+export interface Canary { ids: Set<number>; empty?: string }
 
-/** Prod's canary: its accounts (dead ones too, so their deaths count as canary deaths), where the ids came from, which key resizes it, and why it is empty. */
-export interface Canary { ids: Set<number>; source: string; resize: string; empty?: string }
+/** The key the crawler's canary roster keeper (apps/crawler-v3/src/platforms/instagram/engage/canary_roster.py) sizes the roster by. */
+export const CANARY_SHARE_KEY = "engage.canary_roster_pct";
 
 /**
- * The canary accounts as the crawler picks them (`_running_canary` in apps/crawler-v3/src/platforms/instagram/engage/experiment.py): the id roster
- * engage.canary_accounts once it is set (auto-sns-agent 4012d607b9, which retires the hash keys into it), else the hash cohort of
- * engage.canary_pct and engage.canary_offset over prod's accounts, and none while engage.canary_started_at is empty. Until 10-18 this read
- * engage.rate_test_arms, which prod leaves empty on purpose, so d1 said no canary ran while 15 of 169 active accounts ran the hash cohort
- * (canary_pct 10, canary_offset 65, config_audit 13970 and 13994) at 2,000 pages a day.
+ * The canary accounts as the crawler reads them (`running_canary` in apps/crawler-v3/src/platforms/instagram/engage/experiment.py): the id roster
+ * engage.canary_accounts, and none while it or engage.canary_started_at is empty. The roster keeper fills the roster to engage.canary_roster_pct of
+ * the active accounts, and an empty row there is the crawler's default. Until 11-24 this read the retired hash keys engage.canary_pct and
+ * engage.canary_offset when the roster was empty, so the 07:00Z run said "canary_pct is 0" while an 11-20 canary_roster_pct row of 0 had
+ * emptied it (prod audit 49120 dropped that row, and the keeper refilled 8 members at the default).
  */
-export function canaryOf(config: Readonly<Record<string, string>>, accounts: readonly Pick<Account, "id">[]): Canary {
+export function canaryOf(config: Readonly<Record<string, string>>): Canary {
   const roster = (config["engage.canary_accounts"] ?? "").trim();
   const started = (config["engage.canary_started_at"] ?? "").trim();
-  let canary: Canary;
-  if (roster) {
-    const ids = roster.split(",").filter(text => text.trim()).map(Number);
-    if (ids.some(id => !Number.isInteger(id)) || new Set(ids).size !== ids.length)
-      return { ids: new Set(), source: "engage.canary_accounts", resize: "engage.canary_accounts", empty: `engage.canary_accounts "${roster.slice(0, 80)}" is refused: a bad or repeated id` };
-    canary = { ids: new Set(ids), source: "engage.canary_accounts", resize: "engage.canary_accounts" };
-  } else {
-    const pct = Number((config["engage.canary_pct"] ?? "").trim() || 0);
-    const offset = Number((config["engage.canary_offset"] ?? "").trim() || 0);
-    if (!Number.isInteger(pct) || !Number.isInteger(offset)) return { ids: new Set(), source: "engage.canary_pct", resize: "engage.canary_pct", empty: `engage.canary_pct "${config["engage.canary_pct"]}" or engage.canary_offset "${config["engage.canary_offset"]}" is not a whole number` };
-    const ids = accounts.filter(account => (BigInt(account.id) * COHORT_HASH + BigInt(offset)) % 100n < BigInt(pct)).map(account => account.id);
-    canary = { ids: new Set(ids), source: `the hash cohort engage.canary_pct ${pct}, engage.canary_offset ${offset}`, resize: "engage.canary_pct",
-      ...(pct > 0 ? {} : { empty: "engage.canary_accounts is empty and engage.canary_pct is 0" }) };
-  }
-  if (!canary.empty && !Number.isFinite(Date.parse(started))) return { ...canary, ids: new Set(),
-    empty: `${canary.source} names accounts, but engage.canary_started_at "${started}" is ${started ? "not a time" : "empty"}, so the crawler runs no canary` };
-  return canary;
+  const share = (config[CANARY_SHARE_KEY] ?? "").trim();
+  if (!roster) return { ids: new Set(), empty: `engage.canary_accounts is empty and ${CANARY_SHARE_KEY} reads ${share ? `"${share}"` : "its default (empty row)"}` };
+  const ids = roster.split(",").filter(text => text.trim()).map(Number);
+  if (ids.some(id => !Number.isInteger(id)) || new Set(ids).size !== ids.length)
+    return { ids: new Set(), empty: `engage.canary_accounts "${roster.slice(0, 80)}" is refused: a bad or repeated id` };
+  if (!Number.isFinite(Date.parse(started)))
+    return { ids: new Set(), empty: `engage.canary_accounts names accounts, but engage.canary_started_at "${started}" is ${started ? "not a time" : "empty"}, so the crawler runs no canary` };
+  return { ids: new Set(ids) };
 }
 
 /**
@@ -419,16 +409,15 @@ export function provenRates(days: readonly DayPages[], deaths: readonly Death[],
 const fmt = (value: number): string => value.toLocaleString("en-US");
 
 /**
- * When the oldest due staging collab read has waited past its target, the staging pause rows that read 'true' and who last wrote each. A deploy that
+ * When staging's crawler counts a collab read overdue past 24 h, the staging pause rows that read 'true' and who last wrote each. A deploy that
  * closes admissions writes pause rows as actor metal-deploy, and on 2026-10-14 staging's pause.crawl and pause.refresh had read 'true' since a
  * 2026-09-23 deploy (config_audit 13588, 13589) that never reopened them (owner rule c63). This line names such a row so the duty run clears
  * it instead of finding it weeks later.
  */
 export function stagingStallFlag(data: EngageData): FlaggedSlice | null {
-  const target = STAGING_WAIT_MIN;
-  if (!data.stagingDue || data.stagingDue.waitMin <= target || !data.stagingPauses) return null;
+  if (!data.stagingOverdue || data.stagingOverdue.overdue === 0 || !data.stagingPauses) return null;
   const lastRead = data.stagingLastReadAt ? `last staging page read ${utc(data.stagingLastReadAt)}` : data.stagingLastReadAt === null ? "staging has never read a page" : "last staging read not measured";
-  const late = `the oldest of ${data.stagingDue.due} due staging collab reads has waited ${data.stagingDue.waitMin} min (target ${target}), ${lastRead}`;
+  const late = `staging's crawler counts ${data.stagingOverdue.overdue} collab reads overdue past 24 h (target 0, ${data.stagingOverdue.due} due now), ${lastRead}`;
   const rows = data.stagingPauses.map(pause => `${pause.key}${pause.auditId === null ? " (no config_audit row)"
     : ` (audit ${pause.auditId}, ${utc(pause.at!)}, ${pause.actor === "metal-deploy" ? "LEFT BY A DEPLOY, " : ""}${pause.actor}: ${(pause.reason ?? "").slice(0, 90)})`}`);
   const excerpt = `${late}. ${rows.length ? `Staging pause rows on: ${rows.join("; ")}. A row a deploy or a stale job left on goes back to its prior value (c63, c72); a row with an owner's reason stays.` : "No staging pause row is 'true'."} `
@@ -458,12 +447,12 @@ export function report(data: EngageData, dutyMetrics: readonly DutyMetric[]): Pr
   const lastEventAt: Record<string, number> = {};
   const flagged: FlaggedSlice[] = data.errors.map(error => ({ at, kind: "source_error", excerpt: `${error.source}: ${error.message}`.slice(0, 400) }));
   if (data.stagingLastReadAt === null) flagged.push({ at, kind: "never_read", excerpt: "staging ig_engage_read_log has no read with pages > 0 at all" });
-  if (data.stagingDue) metrics.staging_due_wait_min = data.stagingDue.waitMin;
+  if (data.stagingOverdue) metrics.staging_tagged_overdue_24h = data.stagingOverdue.overdue;
   const stagingStall = stagingStallFlag(data);
   if (stagingStall) flagged.push(stagingStall);
   if (data.accounts && data.config && data.deaths) {
     const active = data.accounts.filter(account => account.status === "active");
-    const roster = canaryOf(data.config, data.accounts);
+    const roster = canaryOf(data.config);
     const want = canaryWant(active.length);
     const have = active.filter(account => roster.ids.has(account.id)).length;
     metrics.canary_accounts_short = Math.max(0, want - have);
@@ -479,12 +468,12 @@ export function report(data: EngageData, dutyMetrics: readonly DutyMetric[]): Pr
       ? `they read ${fmt(canaryPages.reduce((sum, pages) => sum + pages, 0))} pages on ${lastDay}, the busiest ${fmt(Math.max(0, ...canaryPages))}` : "no prod account read a page on a full UTC day";
     const startAt = Date.parse((data.config["engage.canary_started_at"] ?? "").trim());
     const sinceStart = Number.isFinite(startAt) ? killed(data.deaths.filter(death => death.at >= startAt && roster.ids.has(death.accountId))) : 0;
-    const stop = data.config["engage.rate_test_stop_deaths"]?.trim();
+    const stop = data.config["engage.canary_stop_deaths"]?.trim();
     flagged.push({ at, kind: metrics.canary_accounts_short ? "canary_short" : "canary", excerpt: (roster.empty
       ? `no canary runs: ${roster.empty}; 0 of ${active.length} active prod accounts are in it, and ~10% is ${want}`
-      : `canary from ${roster.source}, started ${utc(startAt)}: ${have} of ${active.length} active prod accounts (${roster.ids.size} in it with the dead), ~10% is ${want}; ${pagesText}; `
+      : `canary from engage.canary_accounts, started ${utc(startAt)}: ${have} of ${active.length} active prod accounts (${roster.ids.size} in it with the dead), ~10% is ${want}; ${pagesText}; `
         + `Instagram killed ${killed(canaryDay)} of them in 24 h, at most ${metrics.canary_ig_deaths_1h} in any 60 minutes, and ${sinceStart} since the start${stop ? ` (the canary stops at ${stop})` : ""}`)
-      + (metrics.canary_accounts_short ? `: add ${metrics.canary_accounts_short} active accounts through ${roster.resize}` : "") });
+      + (metrics.canary_accounts_short ? `: add ${metrics.canary_accounts_short} active accounts through ${CANARY_SHARE_KEY}` : "") });
     const oversize = data.days && lastDay ? canaryOversizeFlag(roster.ids, data.days, lastDay, at) : null;
     if (oversize) flagged.push(oversize);
     const reasonOf = (id: number): string => { const reason = data.accounts!.find(account => account.id === id)?.reason; return reason ? `; status_reason: ${reason}` : ""; };
@@ -613,7 +602,7 @@ export function lapsedOf(tsv: string): Lapsed {
   return { waiting, blocked, oldestAt: waiting + blocked ? oldest : null };
 }
 
-const CONFIG_SQL = "select key, value from config where key like 'engage.canary%' or key = 'engage.rate_test_stop_deaths' or key like 'pause.engage%'";
+const CONFIG_SQL = "select key, value from config where key like 'engage.canary%' or key like 'pause.engage%'";
 /**
  * The deep collab walks on prod: watch_targets kind tagged (the logged-in usertags route) at depth 365. A walk done in the duty's 24 h window
  * is reached when it ended since or exhausted, and an error stop under its walk_end otherwise. An open walk whose last chunk errored is
@@ -707,22 +696,14 @@ export function stuckOf(tsv: string): StuckAccount[] {
   return stuck;
 }
 
-/**
- * The oldest due staging collab read, as stagingDueOf parses it: tagged rows past next_due_at, unpaused and with no open claim. A row waits from
- * its due time or its last settled claim, whichever is later, because a walk chunk settles due again at once and keeps the walk's first due time
- * as next_due_at until the walk ends. On staging 10-31 00:2xZ viralnation kept next_due_at 10-28 20:11 after an ok chunk at 10-30 20:38, so the
- * plain next_due_at read 3,115 min where the longest real wait was 1,782 min.
- */
-export const STAGING_DUE_SQL = `select count(*) as due, coalesce(round((extract(epoch from now() - min(greatest(w.next_due_at, s.settled_at))) / 60)::numeric, 1), 0) as wait_min
-from watch_targets w left join lateral (select max(c.settled_at) as settled_at from watch_target_claims c
-  where c.platform = w.platform and c.kind = w.kind and c.target = w.target) s on true
-where w.platform = 'instagram' and w.kind = 'tagged' and not w.paused and w.next_due_at < now()
-  and not exists (select 1 from watch_target_claims c where c.platform = w.platform and c.kind = w.kind and c.target = w.target and c.settled_at is null)`;
+/** Staging's watch health route, which the crawler's own CRAWLER_API_KEY of apps/crawler-v3/.env.staging reads. */
+export const STAGING_WATCH_HEALTH = "https://staging-crawler.virev.ai/ops/watch-targets/health";
 
-export function stagingDueOf(rows: Record<string, unknown>[]): StagingDue {
-  const due = num(rows[0]?.due), waitMin = num(rows[0]?.wait_min);
-  if (rows.length !== 1 || due === null || waitMin === null || !Number.isFinite(due) || !Number.isFinite(waitMin)) throw new Error(`staging due reads: unexpected answer ${JSON.stringify(rows).slice(0, 80)}`);
-  return { due, waitMin };
+export function stagingOverdueOf(body: unknown): StagingOverdue {
+  const data = (body as { data?: { overdue_24h?: { tagged?: unknown }; due_now?: { tagged?: unknown } } } | null)?.data;
+  const overdue = num(data?.overdue_24h?.tagged), due = num(data?.due_now?.tagged);
+  if (overdue === null || due === null || !Number.isFinite(overdue) || !Number.isFinite(due)) throw new Error(`staging watch health: unexpected answer ${JSON.stringify(body).slice(0, 80)}`);
+  return { overdue, due };
 }
 
 /** Goal p229's target: the median paced account's busiest hour holds at most this share of its day's sends. */
@@ -809,11 +790,17 @@ export async function measure(query: DsQuery | null, authError: string | null, n
   const deepWalks = step("prod deep walks", async () => deepWalksOf(await prodRead(DEEP_WALKS_SQL)));
   const lapsedBindings = step("prod lapsed bindings", async () => lapsedOf(await prodRead(LAPSED_SQL)));
   const stuckAccounts = step("prod stuck accounts", async () => stuckOf(await prodRead(STUCK_SQL)));
+  const stagingOverdue = step("staging watch health", async () => {
+    const response = await fetch(STAGING_WATCH_HEALTH, { headers: { "x-api-key": await readCrawlerKey("apps/crawler-v3/.env.staging") }, signal: AbortSignal.timeout(SOURCE_DEADLINE_MS) });
+    if (!response.ok) throw new Error(`staging watch health: HTTP ${response.status}`);
+    return stagingOverdueOf(await response.json());
+  });
   if (!query) {
     data.errors.push({ source: "grafana auth", message: authError ?? "no Grafana login" });
-    for (const source of ["prod read log", "prod supply holds", "staging read log", "staging due reads", "staging config", "prod accounts", "prod config", "prod healthy gauge"] as const) data.errors.push({ source, message: "not read: no Grafana login" });
-    const [walks, lapsed, stuck] = await Promise.all([deepWalks, lapsedBindings, stuckAccounts]);
+    for (const source of ["prod read log", "prod supply holds", "staging read log", "staging config", "prod accounts", "prod config", "prod healthy gauge"] as const) data.errors.push({ source, message: "not read: no Grafana login" });
+    const [walks, lapsed, stuck, due] = await Promise.all([deepWalks, lapsedBindings, stuckAccounts, stagingOverdue]);
     if (walks) data.deepWalks = walks;
+    if (due) data.stagingOverdue = due;
     if (stuck) data.stuck = stuck;
     if (lapsed) data.lapsed = lapsed;
     return data;
@@ -835,12 +822,12 @@ export async function measure(query: DsQuery | null, authError: string | null, n
     }),
     step("prod death gauge", async () => Object.fromEntries((await promInstant(query, PROM.prod, 'max by (cause)(crawler_v3_engage_deaths_24h{world="prod"})')).map(series => [series.labels.cause ?? "?", series.value]))),
     deepWalks,
-    step("staging due reads", async () => stagingDueOf(await sqlRows(query, PG.staging, STAGING_DUE_SQL))),
+    stagingOverdue,
     lapsedBindings,
     stuckAccounts,
   ]);
   Object.assign(data, days && { days }, hours && { hours }, heldHours && { heldHours }, staging !== undefined && { stagingLastReadAt: staging }, stagingPauses && { stagingPauses }, accounts && { accounts }, deaths && { deaths }, config && { config },
-    healthy !== undefined && { healthy }, lapsed && { lapsed }, gauge && { deathGauge: gauge }, walks && { deepWalks: walks }, due && { stagingDue: due }, stuck && { stuck },
+    healthy !== undefined && { healthy }, lapsed && { lapsed }, gauge && { deathGauge: gauge }, walks && { deepWalks: walks }, due && { stagingOverdue: due }, stuck && { stuck },
     hours && heldHours && { paced: pacedOf(hours, new Date(today - DAY).toISOString().slice(0, 10), heldHours) });
   return data;
 }
