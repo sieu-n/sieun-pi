@@ -49,6 +49,11 @@ const PAYLOAD_BYTES = 100_000_000;
 const TASK_KEEP_MS = 24 * 60 * 60 * 1000;
 /** How often the tasks older than `TASK_KEEP_MS` go, so the task file holds at most an hour more than a day of them. */
 const TASK_SWEEP_MS = 60 * 60 * 1000;
+/**
+ * How long a search waits on Meilisearch before it answers from memory, marked partial. Over the 1,719 searches of 11-24 that wait (ready,
+ * held and meili in the request log) was p99 187 ms and at most 469 ms, so only a Meilisearch that hangs reaches it.
+ */
+const MEILI_WAIT_MS = 1_000;
 
 /** One row of a box's pi-host search index. */
 export type EntryRow = IndexRow;
@@ -237,10 +242,10 @@ export interface EngineDeps {
 }
 
 /**
- * `since` names the documents a relevance search's first page drew that Meilisearch did not hold yet, which its next pages pass back.
- * `partial` marks an answer from memory alone, while Meilisearch did not answer.
+ * `since` is the key of the documents a relevance search's first page drew that Meilisearch did not hold yet, which its next pages pass
+ * back. `partial` marks an answer from memory alone, while Meilisearch did not answer in `MEILI_WAIT_MS`.
  */
-export interface EngineAnswer { docs: SearchDoc[]; total: number; since?: readonly string[]; partial?: true }
+export interface EngineAnswer { docs: SearchDoc[]; total: number; since?: string; partial?: true }
 
 /** Where one search's handler time went, in ms by part, with the pending count and filter size, for its request log line (request-log.ts `split`). */
 export type SearchSplit = Record<string, number>;
@@ -284,6 +289,15 @@ export class SearchEngine {
   /** The newest task a send got, and the sends still on their way, so `flagHidden` reads the index only after every earlier send. */
   private lastTask?: number;
   private readonly sending = new Set<Promise<unknown>>();
+
+  /** `MEILI_WAIT_MS`, which a test shortens. */
+  meiliWaitMs = MEILI_WAIT_MS;
+  /**
+   * The ids behind each `since` key a next page passes back. The cursor carried the ids themselves until p281, about 27 bytes each, so a
+   * backlog past about 600 of them passed node's 16 KB header limit. A key is the hash of its ids, so a search typed again keeps one entry,
+   * and an entry refers to the id strings `pending` holds. A server start forgets them, and a next page then ranks by Meilisearch alone.
+   */
+  private readonly sinces = new Map<string, readonly string[]>();
 
   constructor(private readonly deps: EngineDeps) {}
 
@@ -779,7 +793,7 @@ export class SearchEngine {
    * between two pages; an empty `since` ranks every document by Meilisearch's order. While Meilisearch does not answer, the answer comes
    * from memory and is `partial`.
    */
-  async search(q: string, where: Cond, opts: { sort: "relevance" | "recent"; limit: number; since?: readonly string[] }, split?: SearchSplit): Promise<EngineAnswer> {
+  async search(q: string, where: Cond, opts: { sort: "relevance" | "recent"; limit: number; since?: string }, split?: SearchSplit): Promise<EngineAnswer> {
     let mark = performance.now();
     const took = (part: string) => {
       const now = performance.now();
@@ -787,42 +801,52 @@ export class SearchEngine {
       mark = now;
     };
     if (!this.ready) void this.start().catch(() => undefined);
-    // This box's rows written since the last read are found at once; other boxes' rows come with their read every `SEND_SPACING_MS`.
-    await Promise.all(this.own.filter(source => this.readCursors.has(source.box)).map(source => this.readBox(source)))
-      .catch(error => this.deps.log(`search: ${String(error)}`));
-    took("read");
-    if (this.unsent.size) this.scheduleRefresh();
-    // A first fill is waited for, so every answer comes from Meilisearch's matching, typo tolerance included; memory answers only while
-    // Meilisearch cannot start, as on a box without its binary.
-    if (this.filling) {
-      try {
-        await this.ready;
-        for (const uid of this.fillTasks ?? []) await this.meili.waitTask({ taskUid: uid });
-        await this.checkFill();
-      } catch {
-        // Meilisearch did not open; `start` logged why.
-      }
-    }
     const words = queryWords(q);
-    try {
+    const work = (async () => {
+      // This box's rows written since the last read are found at once; other boxes' rows come with their read every `SEND_SPACING_MS`.
+      await Promise.all(this.own.filter(source => this.readCursors.has(source.box)).map(source => this.readBox(source)))
+        .catch(error => this.deps.log(`search: ${String(error)}`));
+      took("read");
+      if (this.unsent.size) this.scheduleRefresh();
+      // A first fill is waited for, so every answer comes from Meilisearch's matching, typo tolerance included; memory answers only while
+      // Meilisearch cannot start, as on a box without its binary.
+      if (this.filling) {
+        try {
+          await this.ready;
+          for (const uid of this.fillTasks ?? []) await this.meili.waitTask({ taskUid: uid });
+          await this.checkFill();
+        } catch {
+          // Meilisearch did not open; `start` logged why.
+        }
+      }
       if (!this.filling) {
         await this.ready;
         // The pending list as it stands is enough for this answer: a document Meilisearch already holds is read from memory once more.
         void this.settle().catch(error => this.deps.log(`search: ${String(error)}`));
       }
       took("ready");
-      return await this.meiliSearch(q, words, where, opts, took, split);
+      return this.meiliSearch(q, words, where, opts, took, split);
+    })();
+    work.catch(() => undefined);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([work, new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new MeiliError(`no answer in ${this.meiliWaitMs} ms`)), this.meiliWaitMs);
+      })]);
     } catch (error) {
       this.deps.log(`search: Meilisearch did not answer (${String(error)}), so this search answers from memory`);
       const answer = this.memoryAnswer(words, where, opts);
       took("memory");
       return answer;
+    } finally {
+      clearTimeout(timer);
     }
   }
 
   /**
-   * The answer from memory while Meilisearch does not answer: every room post, built again from the rooms, and the pending documents. It
-   * misses the thread entries only Meilisearch holds, so it is `partial`. /api/search answered 500 instead until p281.
+   * The answer from memory while Meilisearch fails or does not answer in `meiliWaitMs`: every room post, built again from the rooms, and the
+   * pending documents. It misses the thread entries only Meilisearch holds, so it is `partial`. Until p281 a refused connection made
+   * /api/search fail, and a hung Meilisearch held it until Meilisearch answered.
    */
   private memoryAnswer(words: readonly string[], where: Cond, opts: { sort: "relevance" | "recent"; limit: number }): EngineAnswer {
     const docs = new Map(this.deps.allPosts().map(doc => [doc.id, doc]));
@@ -838,7 +862,7 @@ export class SearchEngine {
     return { docs: found.slice(0, opts.limit).map(m => m.doc), total: found.length, partial: true };
   }
 
-  private async meiliSearch(q: string, words: readonly string[], where: Cond, opts: { sort: "relevance" | "recent"; limit: number; since?: readonly string[] },
+  private async meiliSearch(q: string, words: readonly string[], where: Cond, opts: { sort: "relevance" | "recent"; limit: number; since?: string },
     took: (part: string) => void, split?: SearchSplit): Promise<EngineAnswer> {
     const local = [...this.pending.values()].flatMap(p => (p.doc && holds(where, p.doc) ? [{ doc: p.doc, score: words.length ? docMatches(p.doc, words) : 1 }] : [])).filter(m => m.score > 0);
     local.sort((a, b) => (opts.sort === "recent" ? b.doc.at - a.doc.at : a.doc.tier - b.doc.tier || b.score - a.score || b.doc.at - a.doc.at));
@@ -868,7 +892,8 @@ export class SearchEngine {
     // 13.2 s for "vent" while a row weeks old waited, and one answer of 326 MB that ended release af53200 (~/work/meili-memory/p281-summary.md).
     const ids = fresh.map(doc => doc.id);
     const freshIds = new Set(ids);
-    const unheld = (inIndex: (id: string) => boolean): readonly string[] => opts.since ?? ids.filter(id => !inIndex(id));
+    const kept = opts.since === undefined ? undefined : this.sinces.get(opts.since) ?? [];
+    const unheld = (inIndex: (id: string) => boolean): readonly string[] => kept ?? ids.filter(id => !inIndex(id));
     // A pending document that no longer matches leaves Meilisearch's answer now, as it will once indexed. A matching pending document whose
     // copy in Meilisearch no longer matches is out of that answer already, so only the pending documents that match nowhere are named.
     const elsewhere = pendingIds.filter(id => !freshIds.has(id));
@@ -886,7 +911,7 @@ export class SearchEngine {
     const first = answerOut(guess);
     first.catch(() => undefined);
     // A document of `since` that Meilisearch indexed after the first page left memory, so it is read back by id.
-    const gone = (opts.since ?? []).filter(id => !freshIds.has(id) && !this.pending.has(id));
+    const gone = (kept ?? []).filter(id => !freshIds.has(id) && !this.pending.has(id));
     const [held, matched, back] = await Promise.all([
       ids.length ? this.meili.fetch<{ id: string }>(SEARCH_INDEX, ids, ["id"]).then(docs => new Set(docs.map(doc => doc.id))) : new Set<string>(),
       ids.length ? ask(filterText(and(where, isIn("id", ids))), ids.length, undefined, ["id"]).then(answer => new Set(answer.hits.map(doc => doc.id))) : new Set<string>(),
@@ -915,6 +940,12 @@ export class SearchEngine {
       if (rank < recent.length) docs.push(recent[rank]!);
     }
     docs.sort((a, b) => a.tier - b.tier);
-    return { docs: docs.slice(0, opts.limit), total: answer.totalHits + own.length, ...(since.length ? { since } : {}) };
+    return { docs: docs.slice(0, opts.limit), total: answer.totalHits + own.length, ...(since.length ? { since: this.keep(since) } : {}) };
+  }
+
+  private keep(ids: readonly string[]): string {
+    const key = createHash("sha1").update([...ids].sort().join(".")).digest("base64url").slice(0, 16);
+    if (!this.sinces.has(key)) this.sinces.set(key, ids);
+    return key;
   }
 }

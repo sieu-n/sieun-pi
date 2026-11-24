@@ -1,7 +1,8 @@
 /**
  * Release af53200 ended twice on 11-24 with ERR_STRING_TOO_LONG: a search asked Meilisearch for every hit written since a cut weeks old, and
  * the answer passed V8's longest string. Meili.call now refuses an answer longer than it may hold. A waiting document weeks old no longer
- * makes a search read every newer hit (13.2 s for "vent"), and a search while Meilisearch is down answers from memory instead of a 500.
+ * makes a search read every newer hit (13.2 s for "vent"), its next-page cursor stays short however many documents wait, and a search while
+ * Meilisearch is down or hung answers from memory, marked partial.
  */
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
@@ -72,12 +73,14 @@ test("a waiting document weeks old asks Meilisearch for one page, and every page
   };
   const where = and(eq("source", "post"), eq("room", room));
   const shown: string[] = [];
+  let since = "";
   try {
     s.app.searchEngine.postChanged(old.id, old);
     const first = await s.app.searchEngine.search(word, where, { sort: "relevance", limit: 10 });
     assert.ok(Math.max(...asked) <= 10, `one Meilisearch answer was asked for ${Math.max(...asked)} hits`);
     assert.equal(first.total, 31);
-    assert.deepEqual(first.since, [old.id]);
+    assert.ok(first.since);
+    since = first.since;
     shown.push(...first.docs.map(doc => doc.id));
   } finally {
     meili.put = put;
@@ -86,7 +89,7 @@ test("a waiting document weeks old asks Meilisearch for one page, and every page
   for (const release of held) release();
   await s.app.searchEngine.settled();
   for (const limit of [20, 30, 40]) {
-    const page = await s.app.searchEngine.search(word, where, { sort: "relevance", limit, since: [old.id] });
+    const page = await s.app.searchEngine.search(word, where, { sort: "relevance", limit, since });
     assert.equal(page.total, 31);
     shown.push(...page.docs.slice(limit - 10).map(doc => doc.id));
   }
@@ -116,4 +119,56 @@ test("a search while Meilisearch does not answer finds room posts from memory an
   const back = await s.send<SearchResult>("GET", `/api/search?${new URLSearchParams({ q: word })}`);
   assert.equal(back.body.partial, undefined);
   assert.equal(back.body.total, 3);
+});
+
+test("a next-page cursor stays short however many matching documents wait for Meilisearch", async () => {
+  const word = `zqwait${Math.random().toString(36).slice(2, 8)}`;
+  const room = (await s.send<{ id: string }>("POST", "/api/rooms", { kind: "channel", name: `wait-${word}`, members: [] })).body.id;
+  for (let n = 1; n <= 5; n += 1) await post(room, `${word} post ${n}`);
+  await s.app.searchEngine.settled();
+  const meili = (s.app.searchEngine as unknown as { meili: Meili }).meili;
+  const put = meili.put.bind(meili);
+  const held: (() => void)[] = [];
+  meili.put = (uid, docs) => new Promise(resolve => held.push(() => resolve(put(uid, docs))));
+  try {
+    for (let n = 6; n <= 45; n += 1) await post(room, `${word} post ${n}`);
+  } finally {
+    meili.put = put;
+  }
+  const ask = (cursor?: string) => s.get<SearchResult>(`/api/search?${new URLSearchParams({ q: word, limit: "10", ...(cursor ? { cursor } : {}) })}`);
+  const pages = [await ask()];
+  assert.equal(pages[0]!.total, 45);
+  assert.ok(pages[0]!.nextCursor!.length < 64, `the cursor is ${pages[0]!.nextCursor!.length} characters`);
+  for (const release of held) release();
+  await s.app.searchEngine.settled();
+  while (pages.at(-1)!.nextCursor) pages.push(await ask(pages.at(-1)!.nextCursor));
+  const shown = pages.flatMap(page => page.hits.map(hit => Number(/post (\d+)/.exec(hit.snippet.replace(/<\/?mark>/g, ""))![1])));
+  assert.equal(new Set(shown).size, shown.length, `a hit came twice: ${shown.join(" ")}`);
+  assert.equal(shown.length, 45);
+});
+
+test("a search while Meilisearch hangs answers from memory, marked partial, after the engine's wait", async () => {
+  const word = `zqhang${Math.random().toString(36).slice(2, 8)}`;
+  const room = (await s.send<{ id: string }>("POST", "/api/rooms", { kind: "channel", name: `hang-${word}`, members: [] })).body.id;
+  for (let n = 1; n <= 3; n += 1) await post(room, `${word} post ${n}`);
+  await s.app.searchEngine.settled();
+  const engine = s.app.searchEngine as unknown as { meili: Meili; meiliWaitMs: number };
+  const call = engine.meili.call.bind(engine.meili);
+  const wait = engine.meiliWaitMs;
+  engine.meili.call = (() => new Promise(() => undefined)) as Meili["call"];
+  engine.meiliWaitMs = 200;
+  try {
+    const started = performance.now();
+    const answer = await Promise.race([
+      s.send<SearchResult>("GET", `/api/search?${new URLSearchParams({ q: word })}`),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("the search waited 5 s on a hung Meilisearch")), 5_000)),
+    ]);
+    assert.equal(answer.status, 200, JSON.stringify(answer.body));
+    assert.equal(answer.body.partial, true);
+    assert.equal(answer.body.total, 3);
+    assert.ok(performance.now() - started < 2_000);
+  } finally {
+    engine.meili.call = call;
+    engine.meiliWaitMs = wait;
+  }
 });

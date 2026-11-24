@@ -467,6 +467,9 @@
                   <Button variant="plain" size="sm" class="clear-recent" onclick={clearRecent}>Clear all</Button>
                 {/if}
               </h2>
+              {#if group.label === messageLabel && messages.state === "ready"}
+                {#each missing as box (box.box)}<p class="empty" data-testid="search-missing">{box.note}</p>{/each}
+              {/if}
               {#each group.rows as row (row.key)}
                 {#if row.action.type === "recall"}
                   {@const search = row.action.search}
@@ -480,9 +483,6 @@
                   {@render result(row)}
                 {/if}
               {/each}
-              {#if group.label === messageLabel && messages.state === "ready"}
-                {#each missing as box (box.box)}<p class="empty" data-testid="search-missing">{box.note}</p>{/each}
-              {/if}
               {#if !group.rows.length && group.empty}
                 {#if messages.state === "loading" && group.label === messageLabel}
                   <p class="empty"><LoadingText text={group.empty} /></p>

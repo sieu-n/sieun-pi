@@ -222,14 +222,13 @@ function terms(q: string): string[] {
 }
 
 /**
- * A next page's place: the offset of its first hit, the time its first page read up to, and the ids of the engine's `since` when the first page
- * had them, as `run` writes `nextCursor`. A bare offset reads up to now, and a cursor with no ids ranks by Meilisearch's order alone. A
- * Meilisearch id holds only letters, digits, `-` and `_`, so a dot parts them.
+ * A next page's place: the offset of its first hit, the time its first page read up to, and the engine's `since` key when the first page had
+ * one, as `run` writes `nextCursor`. A bare offset reads up to now, and a cursor with no key ranks by Meilisearch's order alone.
  */
-export function readCursor(cursor: string | undefined): { offset: number; asOf?: number; since?: string[] } {
-  const match = /^(\d+)(?:\.(\d+)((?:\.[\w-]+)*))?$/.exec(cursor ?? "");
+export function readCursor(cursor: string | undefined): { offset: number; asOf?: number; since?: string } {
+  const match = /^(\d+)(?:\.(\d+)(?:\.([\w-]+))?)?$/.exec(cursor ?? "");
   if (!match) return { offset: 0 };
-  return { offset: Number(match[1]), ...(match[2] ? { asOf: Number(match[2]), since: match[3] ? match[3].slice(1).split(".") : [] } : {}) };
+  return { offset: Number(match[1]), ...(match[2] ? { asOf: Number(match[2]), since: match[3] ?? "" } : {}) };
 }
 
 /** A work-thread input that was a job's test send typed into the owner's DM (rooms.ts `allTestSends`). */
@@ -354,7 +353,7 @@ export class Search {
     if (sort === "relevance") hits = [...hits.filter(hit => hit.role !== "tool"), ...hits.filter(hit => hit.role === "tool")];
     if (split) split.hits = performance.now() - answered;
     return {
-      hits, total, ...(offset + limit < total ? { nextCursor: [offset + limit, asOf, ...(mine.since ?? [])].join(".") } : {}), ...(missing.length ? { missing } : {}), ...(mine.partial ? { partial: true } : {}),
+      hits, total, ...(offset + limit < total ? { nextCursor: [offset + limit, asOf, ...(mine.since ? [mine.since] : [])].join(".") } : {}), ...(missing.length ? { missing } : {}), ...(mine.partial ? { partial: true } : {}),
     };
   }
 
