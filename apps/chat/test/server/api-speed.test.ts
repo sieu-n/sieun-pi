@@ -10,7 +10,10 @@ import type { AddressInfo } from "node:net";
 import { networkInterfaces, tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { apiSpeed, finding, MIN_NETWORK_LINES, MIN_OWN_CALLS, ownBefore, probeRoutes, probeSpeed, readTimings, routeSpeeds, unmeasured } from "../../scripts/duties/api-speed.ts";
+import { agedOut, agingSince, overdueWindow, pushMisses } from "../../../../legacy/prime/user-history/src/duty-push.ts";
+import { metricStreaks } from "../../../../legacy/prime/user-history/src/shared/duty-streak.ts";
+import { judge, type DutyMetric, type DutyRunRecord } from "../../web/src/lib/api/shared/chat-duties.ts";
+import { apiSpeed, finding, LOOKBACK_MS, MIN_NETWORK_LINES, MIN_OWN_CALLS, ownBefore, probeRoutes, probeSpeed, readTimings, routeSpeeds, unmeasured } from "../../scripts/duties/api-speed.ts";
 import { parseStarts } from "../../scripts/restart-walk-hits.ts";
 import { dayOf, LoopStalls, RequestLog, type RequestTiming } from "../../server/request-log.ts";
 import { StallProfiler } from "../../../../packages/pi-host/src/stall-profile.ts";
@@ -560,4 +563,67 @@ test("a wait of the owner's over 1 s that his route's p90 hides is one slow_call
     "slow_call:GET /api/later",
     `${new Date(now - 3600_000).toISOString()} GET /api/later waited 4067 ms on the owner's page, 220 ms of it on the network, above the p90 of 220 ms its route reads; 2 of his waits on this route in the window passed 1000 ms`,
   ]]);
+});
+
+test("a red reading with no call of the owner's since the run before gets no push until his newest line leaves the 72 h lookback", () => {
+  const dir = tempDir();
+  mkdirSync(join(dir, "requests"));
+  const metrics: DutyMetric[] = [
+    { key: "slowest_api_p90_ms", label: "slowest", op: "<=", target: 1000, headline: true },
+    { key: "search_p90_ms", label: "search", op: "<=", target: 260 },
+    { key: "failed_sends_24h", label: "failed", op: "<=", target: 0 },
+  ];
+  const counted = new Set(metrics.map(metric => metric.key));
+  const minute = 60_000;
+  // His GET /api/usage waits of 23:27 KST on 11-23 and 7 searches of that day, then no call: the push runs of 19:32 and 20:03 KST on 11-24.
+  const usageAt = Date.UTC(2026, 10, 23, 14, 27);
+  const row = (r: string, ms: number, at: number) => ({ at, src: "client", via: "tailnet", m: "GET", r, p: r, s: 200, ms, net: 212 });
+  const rows = [
+    ...[3631, 3500, 3400].map((ms, i) => row("/api/usage", ms, usageAt + i * 1000)),
+    ...[293, 280, 270, 250, 240, 230, 220].map((ms, i) => row("/api/search", ms, usageAt - (i + 1) * minute)),
+  ];
+  const write = (): void => {
+    for (const name of new Set(rows.map(line => new Date(line.at).toISOString().slice(0, 10))))
+      writeFileSync(join(dir, "requests", `${name}.jsonl`), `${rows.filter(line => new Date(line.at).toISOString().startsWith(name)).map(line => JSON.stringify(line)).join("\n")}\n`);
+  };
+  write();
+  const runAt = (at: number): DutyRunRecord => {
+    const out = apiSpeed(dir, at, 24 * 3600_000);
+    const judged = judge(metrics, out);
+    return { duty: "d2", at, trigger: "push", ms: 1, verdict: judged.verdict, metrics: judged.metrics, summary: judged.summary };
+  };
+  const first = runAt(Date.UTC(2026, 10, 24, 10, 32));
+  const out = apiSpeed(dir, first.at, 24 * 3600_000);
+  assert.deepEqual(out.lastEventAt, { slowest_api_p90_ms: usageAt + 2000, search_p90_ms: usageAt - minute });
+  assert.deepEqual(out.windowMs, { slowest_api_p90_ms: LOOKBACK_MS, search_p90_ms: LOOKBACK_MS });
+  const second = runAt(first.at + 31 * minute);
+  assert.equal(second.verdict, "missed");
+  const quiet = [second, first];
+  assert.deepEqual(metricStreaks(quiet).map(streak => [streak.key, streak.quietSince]), [["slowest_api_p90_ms", usageAt + 2000], ["search_p90_ms", usageAt - minute]]);
+  assert.equal(pushMisses(quiet, counted, 30 * minute, second.at + 30 * minute), null, "no new call of his, so the interval push skips both misses");
+  assert.equal(agingSince(quiet), usageAt + 2000, "the duty owes no fix job while it ages");
+  const streak = metricStreaks(quiet)[0]!;
+  assert.equal(overdueWindow(streak, second.at), false);
+  assert.equal(overdueWindow(streak, usageAt + 2000 + LOOKBACK_MS), true, "a quiet miss still red past its window owes a fix job");
+  assert.equal(agedOut(quiet, counted, second.at + 30 * minute), undefined);
+  assert.equal(agedOut(quiet, counted, usageAt + 2000 + LOOKBACK_MS), usageAt + 2000 + LOOKBACK_MS, "once his newest line left the lookback, the duty gets a push");
+
+  // Past the lookback his lines set nothing: the server's handler time is an estimate with no lastEventAt, and its red reading pushes.
+  const later = usageAt + LOOKBACK_MS + 2 * 3600_000;
+  rows.push({ at: later - 3600_000, src: "server", m: "GET", r: "/api/search", p: "/api/search", s: 200, ms: 1500 } as ReturnType<typeof row>);
+  write();
+  const estimate = runAt(later);
+  assert.equal(estimate.metrics.slowest_api_p90_ms?.value, 1500);
+  assert.equal(estimate.metrics.slowest_api_p90_ms?.lastEventAt, undefined);
+  assert.deepEqual(pushMisses([estimate, second, first], counted, 30 * minute, later + 30 * minute), ["slowest_api_p90_ms", "search_p90_ms"]);
+  rows.pop();
+
+  // A new call of his on the route that sets the number makes the next run push again.
+  rows.push(row("/api/usage", 4000, second.at + 10 * minute));
+  write();
+  const third = runAt(second.at + 31 * minute);
+  assert.equal(third.metrics.slowest_api_p90_ms?.lastEventAt, second.at + 10 * minute);
+  assert.equal(metricStreaks([third, second, first]).find(one => one.key === "slowest_api_p90_ms")?.quietSince, undefined);
+  assert.deepEqual(pushMisses([third, second, first], counted, 30 * minute, third.at + 30 * minute), ["slowest_api_p90_ms"]);
+  assert.equal(agingSince([third, second, first]), undefined);
 });

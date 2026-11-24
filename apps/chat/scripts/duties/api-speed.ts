@@ -163,20 +163,26 @@ const iso = (at: number): string => new Date(at).toISOString().slice(0, 16).repl
  * send metric read 288 ms from 255 job walks in the box Chrome, which waits for the box's CPU, while the server answered sends at 15 ms p90
  * and the owner made no send over the tailnet. `before` holds his counted tailnet lines of the lookback that came before the window.
  */
-export interface OwnerSpeed { route: string; p90: number; source: string; speed: RouteSpeed }
+export interface OwnerSpeed {
+  route: string; p90: number; source: string; speed: RouteSpeed;
+  /** The newest of the owner's lines that set `p90`; an estimate or a probe has none. */
+  lastAt?: number;
+}
 
 export function ownerSpeed(speeds: readonly RouteSpeed[], route: string, net: OwnerNetwork | undefined, window: readonly RequestTiming[] = [], before: readonly RequestTiming[] = []): OwnerSpeed | undefined {
   const own = speeds.find(s => s.src === "tailnet" && s.route === route);
   const shownNote = (s: RouteSpeed): string => (s.shown ? `, ${s.shown} of them behind a page the screen already showed (0 ms)` : "");
   const count = own?.count ?? 0;
+  const mine = window.filter(t => sourceOf(t) === "tailnet" && counted(t) && `${t.m} ${t.r}` === route);
   const older = count >= MIN_OWN_CALLS ? [] : before.filter(t => `${t.m} ${t.r}` === route).sort((a, b) => a.at - b.at).slice(-(MIN_OWN_CALLS - count));
   if (older.length) {
-    const lines = [...older, ...window.filter(t => sourceOf(t) === "tailnet" && counted(t) && `${t.m} ${t.r}` === route)];
+    const lines = [...older, ...mine];
     const speed = summarize(lines);
+    const lastAt = Math.max(...lines.map(t => t.at));
     const why = count ? `only ${count} of his requests in the window reached it` : "he made none in the window";
-    return { route, p90: speed.p90, source: `the owner's devices, his newest ${speed.count} requests, from ${iso(lines[0]!.at)} to ${iso(Math.max(...lines.map(t => t.at)))}, since ${why}${shownNote(speed)}`, speed };
+    return { route, p90: speed.p90, source: `the owner's devices, his newest ${speed.count} requests, from ${iso(lines[0]!.at)} to ${iso(lastAt)}, since ${why}${shownNote(speed)}`, speed, lastAt };
   }
-  if (own) return { route, p90: own.p90, source: `the owner's devices, ${own.count} requests${shownNote(own)}`, speed: own };
+  if (own) return { route, p90: own.p90, source: `the owner's devices, ${own.count} requests${shownNote(own)}`, speed: own, ...(mine.length ? { lastAt: Math.max(...mine.map(t => t.at)) } : {}) };
   const server = speeds.find(s => s.src === "server" && s.route === route);
   if (!server) return undefined;
   const handler = `an estimate, since the owner made no request of this route in the request log's last ${LOOKBACK_MS / 3_600_000} h: the server's handler p90 ${server.p90} ms over ${server.count} requests`;
@@ -358,6 +364,12 @@ export function slowCalls(timings: readonly RequestTiming[], p90Of: (route: stri
  * `restarts` are the service's restart and hand-over times (readRestarts). The owner's tailnet calls that failed within 20 s of one count in
  * failed_sends_24h beside his Not delivered sends, each as a restart_hit row: on 11-22 his page logged 152 failed calls within 20 s of a
  * restart, across 32 of 94 restarts, mostly GET /api/later ('TypeError: Load failed'), and no metric counted them.
+ *
+ * `lastEventAt` names, per metric the owner's own lines set, the newest of those lines (`PrecheckOutput.lastEventAt`), so a red reading with
+ * no call of his since the run before reads as quiet and the duty's push skips it (`pushMisses`). Its `windowMs` is LOOKBACK_MS, since his
+ * newest line sets the route's p90 among his newest MIN_OWN_CALLS until it leaves the lookback. An estimate or a probe has no `lastEventAt`
+ * and pushes as before. On 11-24 he made no call after 19:30 KST, and the push runs of 19:32 and 20:03 KST each started a duty job on
+ * slowest_api_p90_ms 3,631 ms from his GET /api/usage waits of 23:27 KST on 11-23. failed_sends_24h dates its newest counted failure.
  */
 export function apiSpeed(dir: string, now: number, windowMs: number, probes: readonly Probe[] = [], restarts: readonly number[] = []) {
   const all = readTimings(dir, now, Math.max(windowMs, LOOKBACK_MS));
@@ -387,8 +399,23 @@ export function apiSpeed(dir: string, now: number, windowMs: number, probes: rea
   if (messages || replies) metrics.thread_open_p90_ms = Math.max(messages?.p90 ?? 0, replies?.p90 ?? 0);
   if (send) metrics.send_p90_ms = send.p90;
   metrics.failed_sends_24h = owners.length + hits.length;
+  const lastEventAt: Record<string, number> = {};
+  const eventWindowMs: Record<string, number> = {};
+  const dated = (key: string, at: number | undefined, window: number): void => {
+    if (at === undefined || !(key in metrics)) return;
+    lastEventAt[key] = at;
+    eventWindowMs[key] = window;
+  };
+  const ownerLookback = Math.max(windowMs, LOOKBACK_MS);
+  const threadOpen = [messages, replies].filter(o => o !== undefined).sort((a, b) => b.p90 - a.p90)[0];
+  for (const [key, o] of [["slowest_api_p90_ms", slowest[0]], ["search_p90_ms", search], ["thread_open_p90_ms_messages", messages],
+    ["thread_open_p90_ms_replies", replies], ["thread_open_p90_ms", threadOpen], ["send_p90_ms", send]] as const) dated(key, o?.lastAt, ownerLookback);
+  const failures = [...owners, ...hits.map(hit => hit.line)];
+  if (failures.length) dated("failed_sends_24h", Math.max(...failures.map(t => t.at)), windowMs);
   return {
     metrics,
+    lastEventAt,
+    windowMs: eventWindowMs,
     slowest,
     metricSources: Object.fromEntries(Object.entries({ slowest: slowest[0], search, messages, replies, send }).flatMap(([key, speed]) => (speed ? [[key, `${speed.route}: ${speed.source}`]] : []))),
     network: net,
