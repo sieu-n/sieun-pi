@@ -51,6 +51,7 @@ The owner said so on 11-20: "no this is not Chat. this is Slack."
 3. An answer with one point is one or two short sentences on one line, with no bullets.
 4. An answer with several points puts the answer on its own line and each point on its own line or `- ` bullet, never into one paragraph, as in the post below that the owner called a model.
    Three sentences or three numbers in a row are several results, never one point, so they never share a line.
+   In a reply of more than one line, the first line holds the answer alone, and the first fact behind it goes on the next line, so "The invoice export works again." opens and "It broke when the date column moved." follows on its own line. d4's natural set put both on a first line of 37 to 40 words in 4 of 6 runs on 11-24 and 11-25.
    A bullet stops at two sentences, also one that opens with yes or no: the yes or no and one fact that backs it are the two, and a further fact, such as one part of a count split by kind, goes in a nested bullet or is left out, as the #vent-dev p3 pair below shows.
    Rescored with the line checks of 2561162c, 4 of 13 checklist and 5 of 13 list replies in the blind runs of 11-23 held a bullet of three sentences, and on 11-24 1 of 5 lists runs still opened a bullet "Yes, ..." and added two facts.
    On 11-20 Search product, misc. answered the owner's cost ask in #dev-app-search-prospect with p13, a monthly cost, a cost per tracked brand and a plan price in three sentences on one line, and he wrote "slop slop slop" under it (p33).
