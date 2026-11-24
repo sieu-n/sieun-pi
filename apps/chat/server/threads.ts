@@ -314,7 +314,7 @@ export class Threads {
       if (thread.children > 0 && (!tree || tree.updatedAt !== thread.updatedAt || thread.status === "running" || thread.retrying !== undefined
         || liveNodes(tree.nodes))) {
         const nodes = await this.host.tree(thread.id).catch(() => tree?.nodes ?? []);
-        const same = !!tree && JSON.stringify(nodes) === JSON.stringify(tree.nodes);
+        const same = !!tree && sameNodes(nodes, tree.nodes);
         // A tree read again with the same nodes keeps its node objects, so the thread's summaries stay.
         this.trees.set(thread.id, { updatedAt: thread.updatedAt, nodes: same ? tree.nodes : nodes });
         if (!same) {
@@ -1154,11 +1154,21 @@ function liveNodes(nodes: readonly TreeNode[]): boolean {
   return live;
 }
 
-/** Whether two rows of a thread list carry the same fields, each a string, number or boolean. */
-function sameRow(a: DurableThread, b: DurableThread): boolean {
-  const keys = Object.keys(a) as (keyof DurableThread)[];
+/** Whether two rows of a thread list, or two tree nodes, carry the same fields, each a string, number, boolean or null. */
+function sameRow<T extends DurableThread | TreeNode>(a: T, b: T): boolean {
+  const keys = Object.keys(a) as (keyof T)[];
   if (keys.length !== Object.keys(b).length) return false;
   for (const key of keys) if (a[key] !== b[key]) return false;
+  return true;
+}
+
+/**
+ * Whether two reads of a tree hold the same nodes. A JSON compare of both took most of a list read's own CPU on 11-24, since each read
+ * reads again the tree of every running thread, and agent factory's work thread holds over 400 jobs.
+ */
+function sameNodes(a: readonly TreeNode[], b: readonly TreeNode[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (!sameRow(a[i]!, b[i]!)) return false;
   return true;
 }
 
