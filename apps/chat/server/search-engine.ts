@@ -78,12 +78,18 @@ export interface PostDoc {
   /** A DM post; `listed` is false for a DM post search leaves out (rooms.ts `searchListed`); `ownerPost` is the owner's and no test send. */
   dm: boolean; listed: boolean; ownerPost: boolean;
   /**
-   * `room.reply` for a reply in a thread (`RoomPost.threadRoot`), `room.post` for a top-level post (search.ts `POST_KINDS`). Every start
-   * sends every post again, so a post Meilisearch holds without it gains it then, and `pending` answers for it meanwhile.
+   * `room.reply` for a reply in a thread (`RoomPost.threadRoot`), `room.post` for a top-level post (search.ts `POST_KINDS`). A start sends
+   * each post whose `sum` Meilisearch does not hold, so a post Meilisearch holds without it gains it then, and `pending` answers for it meanwhile.
    */
   kind: "room.post" | "room.reply";
-  /** The marks `has` filters on (search.ts `parseHas`). Every start sends every post again, so a post indexed without them gains them then. */
+  /** The marks `has` filters on (search.ts `parseHas`). A start sends a post indexed without them again, since its `sum` differs. */
   has: PostHas[];
+  /**
+   * `postSum` of the rest of the document, set as it is sent, so a start sends only the posts that changed since Meilisearch got them. Until
+   * 11-24 every start sent all 7,441 posts, and the 121 searches of that day that came before Meilisearch had indexed them all took 138 ms at
+   * the median, with every post in `pending` and a 280 KB filter, against 20 ms for the other 342 (~/work/p279-search/p279-meili.md).
+   */
+  sum?: string;
 }
 /** A post's marks: it holds a link, it has a reaction, or the owner pinned it. */
 export type PostHas = "link" | "reaction" | "pin";
@@ -197,6 +203,12 @@ function mergeCopies(was: Pick<EntryDoc, "threads" | "convs" | "keys" | "hidden"
   return { ...doc, threads: union(was.threads, doc.threads), convs: union(was.convs, doc.convs), keys: union(was.keys, doc.keys), hidden: !!(was.hidden || doc.hidden) };
 }
 
+/** A post document's content as a short hash, `sum` left out, which tells a start whether Meilisearch holds the post as it is now. */
+export function postSum(doc: PostDoc): string {
+  const { sum: _sum, ...rest } = doc;
+  return createHash("sha1").update(JSON.stringify(rest)).digest("base64url").slice(0, 16);
+}
+
 export interface EngineDeps {
   /** The Meilisearch to use, asked for once when search starts. */
   connect: () => Promise<Meili>;
@@ -269,8 +281,8 @@ export class SearchEngine {
 
   /**
    * Opens the index. An empty index gets this box's entries and every post, which search reads in memory until Meilisearch has them all;
-   * an index that has documents gets the entries after the saved cursors and every post again, so a change made while this server was down
-   * is found. Every other box is read after it, and again every `SEND_SPACING_MS`.
+   * an index that has documents gets the entries after the saved cursors and every post that changed since Meilisearch got it
+   * (`changedPosts`), so a change made while this server was down is found. Every other box is read after it, and again every `SEND_SPACING_MS`.
    */
   start(): Promise<void> {
     if (this.ready) return this.ready;
@@ -288,7 +300,7 @@ export class SearchEngine {
       const stats = await this.openIndex();
       if (!first) {
         if (stats.numberOfDocuments > 0) {
-          await this.putDocs(posts);
+          await this.putDocs(await this.changedPosts(posts));
           void this.markSystemInputs().catch(error => this.deps.log(`search: ${String(error)}`));
         } else {
           // Meilisearch lost its documents: fill it again, and read every other box again from its first row.
@@ -345,6 +357,18 @@ export class SearchEngine {
       const cursor = this.readCursors.get(source.box);
       if (cursor !== undefined && cursor !== this.deps.cursors.get(source.box)) this.deps.cursors.set(source.box, cursor);
     }
+  }
+
+  /** The posts whose `postSum` Meilisearch does not hold: new posts, changed ones, and those it got before posts carried a sum. */
+  private async changedPosts(posts: SearchDoc[]): Promise<SearchDoc[]> {
+    const held = new Map<string, string | undefined>();
+    const PAGE = 5_000;
+    for (let offset = 0; ; offset += PAGE) {
+      const page = await this.meili.call<{ results: Pick<PostDoc, "id" | "sum">[] }>("POST", `/indexes/${SEARCH_INDEX}/documents/fetch`, { filter: `source = "post"`, fields: ["id", "sum"], limit: PAGE, offset });
+      for (const doc of page.results) held.set(doc.id, doc.sum);
+      if (page.results.length < PAGE) break;
+    }
+    return posts.filter(post => post.source !== "post" || held.get(post.id) !== postSum(post));
   }
 
   /**
@@ -536,6 +560,7 @@ export class SearchEngine {
       const was = doc.source === "entry" ? known.get(doc.id) : undefined;
       const one = was && doc.source === "entry" ? mergeCopies(was, doc) : doc;
       if (one.source === "entry") one.hidden = one.threads.some(thread => hidden.has(thread));
+      else one.sum = postSum(one);
       return one;
     });
     // A document `pending` holds already stays there in its merged form, so memory never shows an older copy than Meilisearch.
