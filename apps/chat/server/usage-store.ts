@@ -348,13 +348,23 @@ export class StoreUsage implements UsageSums {
     if (!this.snapshot || !existsSync(this.snapshot)) return;
     const started = performance.now();
     try {
-      const [head, ...chunks] = (await readFile(this.snapshot, "utf8")).split("\n");
-      const kept = JSON.parse(head!) as { at: number; fullAt: number; covered: Record<GrainName, number> };
+      // Each line is decoded on its own turn: decoding the whole file and splitting it held the loop 95 to 108 ms in one turn for the
+      // 31 MB snapshot of 11-24 (~/work/p279-search/restore-bench.mts).
+      const data = await readFile(this.snapshot);
+      const lineAt = (from: number): { text: string; next: number } => {
+        const end = data.indexOf(10, from);
+        const stop = end < 0 ? data.length : end;
+        return { text: data.toString("utf8", from, stop), next: stop + 1 };
+      };
+      const head = lineAt(0);
+      const kept = JSON.parse(head.text) as { at: number; fullAt: number; covered: Record<GrainName, number> };
       if (!kept.covered || this.now() - kept.at >= TICKS_KEPT_MS - USAGE_PULL_MS) return;
       const fresh = Object.fromEntries(GRAIN_NAMES.map(grain => [grain, new Map<number, UsageTotal[]>()])) as Record<GrainName, Map<number, UsageTotal[]>>;
       let count = 0;
-      for (const chunk of chunks) {
-        const [name, sums] = JSON.parse(chunk) as [GrainName, UsageTotal[]];
+      for (let at = head.next; at < data.length;) {
+        const line = lineAt(at);
+        at = line.next;
+        const [name, sums] = JSON.parse(line.text) as [GrainName, UsageTotal[]];
         for (const sum of sums) {
           sum.chat = `${sum.host}\u0000${sum.client}\u0000${sum.agent}\u0000${sum.thread}`;
           sum.series = `${sum.chat}\u0000${sum.model}`;
