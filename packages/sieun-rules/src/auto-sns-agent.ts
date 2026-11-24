@@ -3,8 +3,10 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync 
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { isMainThread, parentPort, SHARE_ENV, threadId, Worker, workerData } from "node:worker_threads";
 import type { ExtensionAPI, ToolCallEvent } from "prime-agent";
-import { cellStart, cellSteps } from "./kernel-cwd.ts";
+import { cellStart, cellSteps, type CellStep } from "./kernel-cwd.ts";
+import { log } from "./log.ts";
 
 /*
  * auto-sns-agent's repo guard for every Prime session, whatever its cwd. The rules live in that repo's
@@ -73,7 +75,7 @@ async function snapshot(head: string): Promise<string> {
 	const tree = (await git("rev-parse", `${head}:${GUARDS_PATH}`)).toString().trim();
 	const dir = join(CHECKOUT, ".cache/repo-guard", tree.slice(0, 16));
 	if (!existsSync(join(dir, "guards/prime.mjs"))) {
-		const tmp = `${dir}.${process.pid}.${++copies}`;
+		const tmp = `${dir}.${process.pid}.${threadId}.${++copies}`;
 		mkdirSync(join(tmp, "guards"), { recursive: true });
 		for (const entry of (await git("ls-tree", "-z", tree)).toString().split("\0")) {
 			const [meta, name] = entry.split("\t");
@@ -141,10 +143,139 @@ export async function register(pi: Pick<ExtensionAPI, "on">): Promise<void> {
 	const target = pi as unknown as { on(name: string, handler: Handler): void };
 	for (const name of (await handlers()).keys()) {
 		target.on(name, async (event, ctx) => {
-			const handler = (await handlers()).get(name);
-			return name === "tool_call" ? judgeWhereItRuns(handler, event, ctx) : handler?.(event, ctx);
+			const ask = offLoopAsk(name, event, ctx);
+			if (ask) {
+				const answer = await askWorker(ask);
+				if (answer.ok) return answer.verdict;
+			}
+			return judgeOnLoop(name, event, ctx);
 		});
 	}
+}
+
+async function judgeOnLoop(name: string, event: unknown, ctx: unknown): Promise<unknown> {
+	const handler = (await handlers()).get(name);
+	return name === "tool_call" ? judgeWhereItRuns(handler, event, ctx) : handler?.(event, ctx);
+}
+
+/*
+ * The guard's bash and ipython judging runs on a worker thread. In pi-host one process hosts every session, and the guard's sync work
+ * held its loop for all of them: on 11-24 at 12:41:17Z a judge held it 1313 ms, in a spawn of git log per path (403 ms), a read of the
+ * never-pruned 138 MB write journal (396 ms) and a regex over it (work/pi-host-stalls/u-repo-guard/report.md). The worker loads the same
+ * HEAD guard copy with this file's loadGuard and gets a plain copy of the event, the cwd of each cell part and the session's id and file,
+ * which is all the guard's callerOf reads from ctx. tool_result goes there too, since the guard keeps a call's warn note in its own module
+ * until that call's result. Other tools and events stay on the loop, where the guard answers them at once.
+ */
+type Caller = { cwd: string | null; sessionId: string | null; sessionFile: string | null };
+type Ask = { name: string; event: unknown; caller: Caller; steps: CellStep[] | null };
+type Answer = { ok: true; verdict: unknown } | { ok: false };
+type Reply = { id: number; verdict: unknown } | { id: number; error: string };
+
+const OFF_LOOP_EVENTS = new Set(["tool_call", "tool_result"]);
+const OFF_LOOP_TOOLS = new Set(["bash", "ipython"]);
+const WORKER_MARK = "sieun-rules auto-sns-agent repo guard";
+
+/** The question for the worker, or null for an event the loop judges. A stale ctx throws on every read, as the guard's own read() expects. */
+function offLoopAsk(name: string, event: unknown, ctx: unknown): Ask | null {
+	const call = event as { toolName?: unknown; input?: { code?: unknown } } | null | undefined;
+	if (!OFF_LOOP_EVENTS.has(name) || typeof call?.toolName !== "string" || !OFF_LOOP_TOOLS.has(call.toolName)) return null;
+	const c = ctx as { cwd?: string; sessionManager?: { getSessionId(): string | null; getSessionFile(): string | null } };
+	const read = <T>(get: () => T | undefined): T | null => {
+		try {
+			return get() ?? null;
+		} catch {
+			return null;
+		}
+	};
+	const caller = { cwd: read(() => c.cwd), sessionId: read(() => c.sessionManager!.getSessionId()), sessionFile: read(() => c.sessionManager!.getSessionFile()) };
+	const split = name === "tool_call" && call.toolName === "ipython" && typeof call.input?.code === "string" && !!ctx && typeof ctx === "object";
+	return { name, event, caller, steps: split ? cellSteps(call.input!.code as string, cellStart(ctx)) : null };
+}
+
+/** The worker's half: the same judging as judgeWhereItRuns, with ctx rebuilt from the caller. */
+async function judgeAsk({ name, event, caller, steps }: Ask): Promise<unknown> {
+	const handler = (await handlers()).get(name);
+	if (!handler) return undefined;
+	const ctxAt = (cwd: string | null) => ({ cwd: cwd ?? undefined, sessionManager: { getSessionId: () => caller.sessionId, getSessionFile: () => caller.sessionFile } });
+	if (!steps) return handler(event, ctxAt(caller.cwd));
+	const call = event as { input: Record<string, unknown> };
+	for (const step of steps) {
+		const verdict = (await handler({ ...call, input: { ...call.input, code: step.code } }, ctxAt(step.cwd))) as { block?: boolean } | undefined;
+		if (verdict?.block) return verdict;
+	}
+	return undefined;
+}
+
+if (!isMainThread && workerData === WORKER_MARK && parentPort) {
+	const port = parentPort;
+	port.on("message", async ({ id, ask }: { id: number; ask: Ask }) => {
+		let reply: Reply;
+		try {
+			reply = { id, verdict: await judgeAsk(ask) };
+		} catch (error) {
+			reply = { id, error: error instanceof Error ? error.message : String(error) };
+		}
+		port.postMessage(reply);
+	});
+}
+
+type Waiter = (reply: Reply | { error: string }) => void;
+let worker: Worker | undefined;
+/** Set when the worker failed before its first answer, so this runtime cannot run it and every call stays on the loop. */
+let noWorker = false;
+let answered = false;
+let nextId = 0;
+const waiting = new Map<number, Waiter>();
+
+function failAll(error: string): void {
+	worker = undefined;
+	if (!answered) noWorker = true;
+	log("auto-sns-agent", `the repo guard's worker failed (${error}), so ${noWorker ? "every call in this process" : "its waiting calls"} will be judged on the loop`);
+	for (const waiter of waiting.values()) waiter({ error });
+	waiting.clear();
+}
+
+function started(): Worker {
+	if (worker) return worker;
+	const fresh = new Worker(new URL(import.meta.url), { workerData: WORKER_MARK, env: SHARE_ENV });
+	fresh.unref();
+	fresh.on("message", (reply: Reply) => {
+		answered = true;
+		const waiter = waiting.get(reply.id);
+		waiting.delete(reply.id);
+		if (!waiting.size) fresh.unref();
+		waiter?.(reply);
+	});
+	fresh.on("error", error => worker === fresh && failAll(error.message));
+	fresh.on("exit", code => worker === fresh && failAll(`exited with code ${code}`));
+	worker = fresh;
+	return fresh;
+}
+
+/** The worker's verdict, or ok: false when the loop must judge: no worker here, the worker failed, or the guard threw there. */
+async function askWorker(ask: Ask): Promise<Answer> {
+	if (noWorker) return { ok: false };
+	const id = nextId++;
+	let target: Worker;
+	try {
+		target = started();
+	} catch (error) {
+		failAll(error instanceof Error ? error.message : String(error));
+		return { ok: false };
+	}
+	const reply = await new Promise<Reply | { error: string }>(resolve => {
+		waiting.set(id, resolve);
+		try {
+			target.ref();
+			target.postMessage({ id, ask });
+		} catch (error) {
+			waiting.delete(id);
+			resolve({ id, error: error instanceof Error ? error.message : String(error) });
+		}
+	});
+	if (!("error" in reply)) return { ok: true, verdict: reply.verdict };
+	if ("id" in reply) log("auto-sns-agent", `the repo guard's worker did not judge a ${ask.name} (${reply.error}), so the loop judges it`);
+	return { ok: false };
 }
 
 /**
