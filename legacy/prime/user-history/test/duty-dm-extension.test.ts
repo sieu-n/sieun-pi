@@ -156,11 +156,11 @@ test("jars writes each account as the crawler answers it, names its world and ex
   }
 });
 
-// Crawler 698493e50d (11-20): browser-jar answers 503 proxy_required for an account on a box route instead of a box proxy.
-test("a 503 proxy_required from browser-jar reads as no residential exit with no jar file, and any other non-200 throws", async () => {
+// Crawler 698493e50d (11-20): browser-jar answers 409 proxy_required (503 before 11-24) for an account on a box route instead of a box proxy.
+test("a 409 proxy_required from browser-jar reads as no residential exit with no jar file, and any other non-200 throws", async () => {
   const tmp = await mkdtemp(join(tmpdir(), "dm-ext-held-"));
   const answers: Record<string, Response> = {
-    caiyiting8674: new Response(JSON.stringify({ error: "c229: engage route on server address 64.34.205.244 refused; it waits for a proxy", error_type: "proxy_required" }), { status: 503 }),
+    caiyiting8674: new Response(JSON.stringify({ error: "c229: engage route on server address 64.34.205.244 refused; it waits for a proxy", error_type: "proxy_required" }), { status: 409 }),
     gimnayeon1396: new Response(JSON.stringify({ ok: true, data: { world: "prod", username: "gimnayeon1396", ig_user_id: "2", cookies: [], user_agent: "ua", valid: true, proxy_url: "http://u:p@gw.example:12001" } })),
     down: new Response(JSON.stringify({ error: "supply down", error_type: "provider_down" }), { status: 503 }),
     parked: new Response(JSON.stringify({ ok: false, error: { code: "not_found", message: "neither world holds a serving jar of @parked" } }), { status: 404 }),
@@ -170,7 +170,7 @@ test("a 503 proxy_required from browser-jar reads as no residential exit with no
   try {
     const out = await jars(tmp, read);
     assert.equal(out.files, undefined);
-    assert.deepEqual(out.boxed, ["sender @caiyiting8674: the crawler holds its jar, browser-jar answered 503 proxy_required (c229: engage route on server address 64.34.205.244 refused; it waits for a proxy)"]);
+    assert.deepEqual(out.boxed, ["sender @caiyiting8674: the crawler holds its jar, browser-jar answered 409 proxy_required (c229: engage route on server address 64.34.205.244 refused; it waits for a proxy)"]);
     const slices = report({ now: NOW, accounts: out.accounts, boxed: out.boxed, errors: [] }, METRICS).flagged ?? [];
     assert.ok(slices.some(s => s.kind === "exit_down" && s.excerpt.startsWith("no residential exit: sender @caiyiting8674: the crawler holds its jar")));
     assert.ok(!slices.some(s => s.kind === "source_error"));
@@ -233,7 +233,7 @@ test("a test account on a box exit reads exit_down with no residential exit and 
 });
 
 test("with no residential exit the unmeasured slice says the run waits on a paid proxy, not on a source_error (d1, 11-22)", () => {
-  const boxed = ["sender @caiyiting8674: the crawler holds its jar, browser-jar answered 503 proxy_required"];
+  const boxed = ["sender @caiyiting8674: the crawler holds its jar, browser-jar answered 409 proxy_required"];
   const rows = { messages: [], devices: [], truncated: false };
   const alone = report({ now: NOW, boxed, rows, errors: [] }, METRICS).flagged?.find(s => s.kind === "unmeasured")?.excerpt ?? "";
   assert.match(alone, /e2e_pass waits on a paid proxy/);
