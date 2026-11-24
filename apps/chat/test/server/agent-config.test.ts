@@ -4,6 +4,7 @@
  * Run: cd apps/chat && node --import tsx --test --test-force-exit --test-isolation=none test/server/agent-config.test.ts
  */
 import assert from "node:assert/strict";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import type { AgentConfig, ConversationSummary, Sidebar } from "../../web/src/lib/api/types.ts";
@@ -226,7 +227,11 @@ test("Direct messages hold one row per agent; work threads, a duty thread, a roo
 });
 
 test("the preamble parses from pi-family's source", () => {
-  const got = readPreamble([join(import.meta.dirname, "../../../../packages/pi-family/preamble.ts")]);
+  // The repo copy is absent from a release folder, where spec-clean runs this file, so the pi-host install's copy comes first, as for the server.
+  const got = readPreamble([
+    join(process.env.PI_HOST_DIR ?? join(homedir(), ".local/share/pi-host/current"), "packages/pi-family/preamble.ts"),
+    join(import.meta.dirname, "../../../../packages/pi-family/preamble.ts"),
+  ]);
   assert.match(got.text ?? "", /^You are a general purpose agent/);
   assert.equal(got.text?.split("\n").length, 3);
   assert.equal(readPreamble(["/no/such/file"]).text, null);
