@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { DurableThreads } from "../../src/durable/index.ts";
+import { openIndexReadOnly, readUsageRows } from "../../src/durable/index-db.ts";
 import { textOf } from "./crash-scenario.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "pi-host-import-"));
@@ -58,9 +59,13 @@ test("a Prime session imports as a thread, and the next input sees the summary a
     assert.deepEqual(entries.reverse().map(entry => entry.kind), ["pi.user", "pi.assistant", "pi.user", "pi.assistant", "pi.compaction", "prime.custom", "pi.assistant"]);
     assert.equal(threads.search({ q: "zebras" }).total, 0);
     assert.equal(threads.search({ q: "alpacas" }).total >= 2, true);
-    const [usageRow] = threads.usage({ threads: [thread.id] });
-    assert.equal(usageRow?.turns, 3);
-    assert.deepEqual([usageRow!.costInput, usageRow!.costOutput, usageRow!.costCacheRead, usageRow!.costCacheWrite, usageRow!.cost].map(n => Math.round(n * 100) / 100), [0.3, 0.6, 0.09, 0.12, 1.11]);
+    // The usage collector reads these rows from index.sqlite (components/usage-collector clients/pi_host.py).
+    const db = openIndexReadOnly(join(dir, "durable", "index.sqlite"));
+    const usageRows = readUsageRows(db, undefined).rows.filter(row => row.thread === thread.id);
+    db.close();
+    assert.equal(usageRows.length, 3);
+    const sum = (pick: (row: (typeof usageRows)[number]) => number) => Math.round(usageRows.reduce((total, row) => total + pick(row), 0) * 100) / 100;
+    assert.deepEqual([sum(r => r.costInput), sum(r => r.costOutput), sum(r => r.costCacheRead), sum(r => r.costCacheWrite), sum(r => r.cost)], [0.3, 0.6, 0.09, 0.12, 1.11]);
 
     const { submission } = await threads.submit(thread.id, { text: "what next?", requestId: "after-import" });
     const settled = await threads.wait(thread.id, submission);

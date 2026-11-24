@@ -118,29 +118,6 @@ export interface UsageRow {
   costCacheWrite: number;
 }
 
-/**
- * A `durable_usage` range. With `bucketMs` and `since`, each row also sums one bucket of that length from `since` on and names its start
- * in `bucket`, so the chat's usage page reads its period, each day and the period before in one call instead of 32 for 30 days.
- */
-export interface UsageRange { since?: number; until?: number; threads?: string[]; bucketMs?: number }
-
-export interface UsageTotal {
-  /** The start of the row's bucket, epoch ms, when the range asked for buckets. */
-  bucket?: number;
-  thread: string;
-  model: string;
-  turns: number;
-  input: number;
-  output: number;
-  cacheRead: number;
-  cacheWrite: number;
-  cost: number;
-  costInput: number;
-  costOutput: number;
-  costCacheRead: number;
-  costCacheWrite: number;
-}
-
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS threads (
   id TEXT PRIMARY KEY, name TEXT NOT NULL, provider TEXT NOT NULL, model_id TEXT NOT NULL, thinking TEXT NOT NULL, cwd TEXT NOT NULL,
@@ -338,7 +315,7 @@ export function readIndexRows(db: DatabaseSync, cursor: string | undefined, maxB
   return { rows, cursor: String(top), more: false };
 }
 
-/** Usage rows after a cursor, as `durable_usage_read` gives them: the chat keeps every box's rows in memory (apps/chat/server/usage.ts). */
+/** Usage rows after a cursor, read as the usage collector reads them (components/usage-collector clients/pi_host.py). */
 export interface UsageRead { rows: UsageRow[]; cursor: string; more: boolean; restart: boolean }
 
 /** A usage row's JSON is under 500 bytes, so a page stays under `INDEX_READ_BYTES` of the relay's frame. */
@@ -617,37 +594,6 @@ export class ThreadIndex {
   /** `durable_index_read`: the rows after `cursor`, a page at a time. */
   read(cursor: string | undefined): IndexRead {
     return readIndexRows(this.db, cursor);
-  }
-
-  /** `durable_usage_read`: the usage rows after `cursor` from `since` on, a page at a time. */
-  readUsage(cursor: string | undefined, since?: number): UsageRead {
-    return readUsageRows(this.db, cursor, since);
-  }
-
-  /**
-   * Sums per thread and model, and per bucket when the range asks for one; a range on whole hours, as the chat's days are, reads the hourly
-   * sums instead of every usage row.
-   */
-  usage(range: UsageRange): UsageTotal[] {
-    const bucketMs = range.since !== undefined && range.bucketMs !== undefined && range.bucketMs > 0 ? range.bucketMs : undefined;
-    const hours = (range.since ?? 0) % HOUR_MS === 0 && (range.until ?? 0) % HOUR_MS === 0 && (bucketMs ?? 0) % HOUR_MS === 0;
-    const where: string[] = [];
-    const values: (string | number)[] = [];
-    const time = hours ? "hour" : "at";
-    const scale = hours ? HOUR_MS : 1;
-    const bucket = bucketMs === undefined ? "" : `CAST((${time} - ${Math.trunc(range.since! / scale)}) / ${Math.trunc(bucketMs / scale)} AS INTEGER)`;
-    if (range.since !== undefined) { where.push(`${time} >= ?`); values.push(range.since / scale); }
-    if (range.until !== undefined) { where.push(`${time} < ?`); values.push(range.until / scale); }
-    if (range.threads?.length) { where.push(`thread IN (${range.threads.map(() => "?").join(", ")})`); values.push(...range.threads); }
-    const sql = `SELECT ${bucket ? `${bucket} AS bucket, ` : ""}thread, model, ${hours ? "SUM(turns)" : "COUNT(*)"} AS turns, ${USAGE_SUMS.map(name => `SUM(${name}) AS ${name}`).join(", ")}
-      FROM ${hours ? "usage_hours" : "usage"} ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
-      GROUP BY ${bucket ? "bucket, " : ""}thread, model ORDER BY ${bucket ? "bucket, " : ""}thread, model`;
-    return (this.db.prepare(sql).all(...values) as Row[]).map(row => ({
-      ...(bucketMs === undefined ? {} : { bucket: range.since! + Number(row.bucket) * bucketMs }),
-      thread: String(row.thread), model: String(row.model), turns: Number(row.turns), input: Number(row.input), output: Number(row.output),
-      cacheRead: Number(row.cache_read), cacheWrite: Number(row.cache_write), cost: Number(row.cost),
-      costInput: Number(row.cost_input), costOutput: Number(row.cost_output), costCacheRead: Number(row.cost_cache_read), costCacheWrite: Number(row.cost_cache_write),
-    }));
   }
 
   /**

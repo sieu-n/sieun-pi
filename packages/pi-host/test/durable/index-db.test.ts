@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { ThreadIndex } from "../../src/durable/index.ts";
-import { readIndexRows, readUsageRows, snippetOf, snippetTerms, statusOf } from "../../src/durable/index-db.ts";
+import { openIndexReadOnly, readIndexRows, readUsageRows, snippetOf, snippetTerms, statusOf } from "../../src/durable/index-db.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "pi-host-index-"));
 after(() => rmSync(dir, { recursive: true, force: true }));
@@ -26,85 +26,14 @@ test("an index without the cost split is rebuilt, and a current one is not", () 
   const migrated = new ThreadIndex(path);
   assert.equal(migrated.rebuilt, true);
   assert.equal(migrated.indexedEntry("t1"), 0);
-  assert.deepEqual(migrated.usage({}), []);
   migrated.close();
+  const readBack = openIndexReadOnly(path);
+  assert.deepEqual(readUsageRows(readBack, undefined).rows, [], "the rebuilt index drops the usage rows its threads backfill again");
+  readBack.close();
 
   const again = new ThreadIndex(path);
   assert.equal(again.rebuilt, false);
   again.close();
-});
-
-// 11-03 on us-metal02: the chat's Usage page asked `usage` 9 times for 7 days, and each GROUP BY over the 36k usage rows took 23 to 276 ms.
-test("a range on whole hours sums the hourly table to the same totals as the usage rows, through adds, a reset and a reopen", () => {
-  const H = 3_600_000;
-  const path = join(dir, "hours.sqlite");
-  const index = new ThreadIndex(path);
-  for (const id of ["a", "b"]) index.insertThread({ id, name: id, provider: "anthropic", modelId: "m", thinkingLevel: "high", cwd: "/", createdAt: 1, updatedAt: 1 });
-  const row = (thread: string, entryId: number, at: number, model = "anthropic/m") => ({ thread, conversation: 1, entryId, model, at, input: entryId * 3,
-    output: entryId * 5, cacheRead: entryId * 7, cacheWrite: entryId, cost: entryId * 0.013, costInput: entryId * 0.001, costOutput: entryId * 0.01,
-    costCacheRead: entryId * 0.0007, costCacheWrite: entryId * 0.0013 });
-  const rows = Array.from({ length: 60 }, (_, i) => row(i % 2 ? "a" : "b", i + 1, 10 * H + i * 997_331, i % 3 ? "anthropic/m" : "openai/n"));
-  index.addEntries("a", [], rows.filter(r => r.thread === "a"));
-  index.addEntries("b", [], rows.filter(r => r.thread === "b"));
-  index.addEntries("a", [], rows.filter(r => r.thread === "a"));
-  const raw = (since: number, until: number, threads?: string[]) => index.usage({ since: since + 1, until: until + 1, ...(threads ? { threads } : {}) });
-  const expected = (since: number, until: number, threads?: string[]) => {
-    const kept = rows.filter(r => r.at >= since && r.at < until && (!threads || threads.includes(r.thread)));
-    const seen = new Map<string, { thread: string; model: string; turns: number; input: number; cost: number }>();
-    for (const r of kept) {
-      const sum = seen.get(`${r.thread}|${r.model}`) ?? { thread: r.thread, model: r.model, turns: 0, input: 0, cost: 0 };
-      seen.set(`${r.thread}|${r.model}`, { ...sum, turns: sum.turns + 1, input: sum.input + r.input, cost: sum.cost + r.cost });
-    }
-    return [...seen.values()].sort((x, y) => x.thread.localeCompare(y.thread) || x.model.localeCompare(y.model));
-  };
-  const check = (since: number, until: number, threads?: string[], idx: ThreadIndex = index) => {
-    const got = idx.usage({ since, until, ...(threads ? { threads } : {}) });
-    const want = expected(since, until, threads);
-    assert.deepEqual(got.map(t => [t.thread, t.model, t.turns, t.input]), want.map(t => [t.thread, t.model, t.turns, t.input]));
-    for (const [n, t] of got.entries()) assert.ok(Math.abs(t.cost - want[n]!.cost) < 1e-9, `${t.thread} ${t.model} cost ${t.cost} against ${want[n]!.cost}`);
-  };
-  check(10 * H, 27 * H);
-  check(12 * H, 15 * H);
-  check(11 * H, 20 * H, ["a"]);
-  assert.deepEqual(index.usage({ since: 13 * H, until: 14 * H }).map(t => t.turns), expected(13 * H, 14 * H).map(t => t.turns));
-  assert.ok(raw(12 * H, 15 * H).length > 0, "a range off the hour still reads the usage rows");
-  index.resetEntries("a");
-  rows.splice(0, rows.length, ...rows.filter(r => r.thread === "b"));
-  check(10 * H, 27 * H);
-  index.close();
-
-  const old = new DatabaseSync(path);
-  old.exec("DROP TRIGGER usage_hours_add; DROP TRIGGER usage_hours_drop; DROP TABLE usage_hours;");
-  old.close();
-  const reopened = new ThreadIndex(path);
-  assert.equal(reopened.rebuilt, false);
-  check(10 * H, 27 * H, undefined, reopened);
-  reopened.close();
-});
-
-// 11-03 on us-metal02: the chat's Usage page asked `usage` 32 times for its 30-day default, one call per day, the period and the one before.
-test("a range with buckets sums each bucket apart, from the hourly table and from the usage rows alike", () => {
-  const H = 3_600_000;
-  const D = 24 * H;
-  const index = new ThreadIndex(join(dir, "buckets.sqlite"));
-  index.insertThread({ id: "a", name: "a", provider: "anthropic", modelId: "m", thinkingLevel: "high", cwd: "/", createdAt: 1, updatedAt: 1 });
-  const rows = Array.from({ length: 40 }, (_, i) => ({ thread: "a", conversation: 1, entryId: i + 1, model: i % 4 ? "anthropic/m" : "openai/n", at: 5 * H + i * 7_777_777,
-    input: i + 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: (i + 1) * 0.01, costInput: 0, costOutput: 0, costCacheRead: 0, costCacheWrite: 0 }));
-  index.addEntries("a", [], rows);
-  const want = (since: number, bucketMs: number, until: number) => {
-    const seen = new Map<string, { bucket: number; model: string; turns: number; input: number }>();
-    for (const r of rows.filter(r => r.at >= since && r.at < until)) {
-      const bucket = since + Math.floor((r.at - since) / bucketMs) * bucketMs;
-      const sum = seen.get(`${bucket}|${r.model}`) ?? { bucket, model: r.model, turns: 0, input: 0 };
-      seen.set(`${bucket}|${r.model}`, { ...sum, turns: sum.turns + 1, input: sum.input + r.input });
-    }
-    return [...seen.values()].sort((x, y) => x.bucket - y.bucket || x.model.localeCompare(y.model)).map(s => [s.bucket, s.model, s.turns, s.input]);
-  };
-  const got = (since: number, bucketMs: number, until: number) => index.usage({ since, until, bucketMs }).map(t => [t.bucket, t.model, t.turns, t.input]);
-  assert.deepEqual(got(2 * H, D, 2 * H + 4 * D), want(2 * H, D, 2 * H + 4 * D), "whole-hour days read the hourly table");
-  assert.deepEqual(got(2 * H + 5, D, 2 * H + 4 * D + 5), want(2 * H + 5, D, 2 * H + 4 * D + 5), "a range off the hour reads the usage rows");
-  assert.ok(index.usage({ since: 2 * H, until: 2 * H + 4 * D }).every(t => t.bucket === undefined), "no bucket asked, none named");
-  index.close();
 });
 
 test("a search returns one page with snippets and the exact count, and narrows to a conversation or to what one agent said", () => {
@@ -155,25 +84,30 @@ test("durable_index_read gives the rows after a cursor a page at a time, and rea
   db.close();
 });
 
-test("durable_usage_read gives the usage rows after a cursor from a time on, and starts again from the first row once a row is deleted", () => {
-  const index = new ThreadIndex(join(dir, "usage-read.sqlite"));
+test("readUsageRows gives the usage rows after a cursor from a time on, and starts again from the first row once a row is deleted", () => {
+  const path = join(dir, "usage-read.sqlite");
+  const index = new ThreadIndex(path);
+  const readUsage = (cursor: string | undefined, since?: number) => {
+    const db = openIndexReadOnly(path);
+    try { return readUsageRows(db, cursor, since); } finally { db.close(); }
+  };
   index.insertThread({ id: "u1", name: "usage", provider: "anthropic", modelId: "claude-opus-5-5", thinkingLevel: "high", cwd: "/", createdAt: 1, updatedAt: 1 });
   const usage = (entryId: number, at: number) => ({ thread: "u1", conversation: 1, entryId, model: "anthropic/claude-opus-5-5", at, input: 1, output: 2, cacheRead: 3,
     cacheWrite: 4, cost: 1.5, costInput: 0.1, costOutput: 0.2, costCacheRead: 0.3, costCacheWrite: 0.9 });
   index.addEntries("u1", [], [usage(1, 100), usage(2, 5000), usage(3, 6000)]);
-  const first = index.readUsage(undefined, 1000);
+  const first = readUsage(undefined, 1000);
   assert.equal(first.restart, true);
   assert.equal(first.more, false);
   assert.deepEqual(first.rows.map(row => row.entryId), [2, 3], "a row older than since is left out");
   assert.deepEqual(first.rows[0], usage(2, 5000));
-  const quiet = index.readUsage(first.cursor, 1000);
+  const quiet = readUsage(first.cursor, 1000);
   assert.deepEqual([quiet.rows, quiet.restart, quiet.cursor], [[], false, first.cursor]);
   index.addEntries("u1", [], [usage(4, 7000)]);
-  assert.deepEqual(index.readUsage(first.cursor, 1000).rows.map(row => row.entryId), [4]);
-  const before = index.readUsage(undefined).cursor;
+  assert.deepEqual(readUsage(first.cursor, 1000).rows.map(row => row.entryId), [4]);
+  const before = readUsage(undefined).cursor;
   index.resetEntries("u1");
   index.addEntries("u1", [], [usage(1, 100), usage(2, 5000)]);
-  const again = index.readUsage(before);
+  const again = readUsage(before);
   assert.equal(again.restart, true, "the delete changed the drop count, so the rows read from the first one");
   assert.deepEqual(again.rows.map(row => row.entryId), [1, 2]);
   index.close();
@@ -265,14 +199,17 @@ test("a rebuild of the index and a thread's reset keep the usage rows of calls t
   const path = join(dir, "usage-keep.sqlite");
   const usage = (entryId: number) => ({ thread: "k1", conversation: 1, entryId, model: "anthropic/claude-opus-5-5", at: 100, input: 1, output: 2, cacheRead: 3,
     cacheWrite: 4, cost: 1.5, costInput: 0.1, costOutput: 0.2, costCacheRead: 0.3, costCacheWrite: 0.9 });
-  const ids = (index: ThreadIndex) => index.readUsage(undefined).rows.map(row => row.entryId).sort((a, b) => a - b);
+  const ids = () => {
+    const db = openIndexReadOnly(path);
+    try { return readUsageRows(db, undefined).rows.map(row => row.entryId).sort((a, b) => a - b); } finally { db.close(); }
+  };
   let index = new ThreadIndex(path);
   index.insertThread({ id: "k1", name: "keep", provider: "anthropic", modelId: "claude-opus-5-5", thinkingLevel: "high", cwd: "/", createdAt: 1, updatedAt: 1 });
   index.addEntries("k1", [], [usage(1), usage(2)]);
   index.addUsage(usage(-7));
-  assert.deepEqual(ids(index), [-7, 1, 2]);
+  assert.deepEqual(ids(), [-7, 1, 2]);
   index.resetEntries("k1");
-  assert.deepEqual(ids(index), [-7], "a thread's reset drops only the rows its backfill writes again");
+  assert.deepEqual(ids(), [-7], "a thread's reset drops only the rows its backfill writes again");
   index.addEntries("k1", [], [usage(1)]);
   index.close();
   const raw = new DatabaseSync(path);
@@ -280,6 +217,6 @@ test("a rebuild of the index and a thread's reset keep the usage rows of calls t
   raw.close();
   index = new ThreadIndex(path);
   assert.equal(index.rebuilt, true);
-  assert.deepEqual(ids(index), [-7], "the rebuild keeps the refine row");
+  assert.deepEqual(ids(), [-7], "the rebuild keeps the refine row");
   index.close();
 });

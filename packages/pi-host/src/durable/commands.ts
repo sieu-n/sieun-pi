@@ -13,8 +13,8 @@ import type { DurableThreads, SubmitInput } from "./threads.ts";
 
 export const DURABLE_COMMANDS = new Set([
   "durable_threads", "durable_create", "durable_submit", "durable_wait", "durable_watch", "durable_unwatch", "durable_abort", "durable_tree",
-  "durable_entries", "durable_search", "durable_usage", "durable_doc_get", "durable_doc_put", "durable_set", "durable_import", "durable_ticket",
-  "durable_feed", "durable_feed_stop", "durable_feed_read", "durable_index_read", "durable_usage_read",
+  "durable_entries", "durable_search", "durable_doc_get", "durable_doc_put", "durable_set", "durable_import", "durable_ticket",
+  "durable_feed", "durable_feed_stop", "durable_feed_read", "durable_index_read",
 ]);
 
 type Command = { id?: string; type: string; [key: string]: unknown };
@@ -158,8 +158,6 @@ export class DurableCommands {
           }));
         case "durable_index_read":
           return done(this.threads.indexRead(optStr(command, "cursor")));
-        case "durable_usage_read":
-          return done(this.threads.usageRead(optStr(command, "cursor"), optNum(command, "since")));
         case "durable_search":
           return done(this.threads.search({
             q: str(command, "q"),
@@ -179,13 +177,6 @@ export class DurableCommands {
             ...(optNum(command, "offset") === undefined ? {} : { offset: optNum(command, "offset")! }),
             ...(command.sort === "recent" || command.sort === "relevance" ? { sort: command.sort } : {}),
           }));
-        case "durable_usage":
-          return done({ usage: this.threads.usage({
-            ...(optNum(command, "since") === undefined ? {} : { since: optNum(command, "since")! }),
-            ...(optNum(command, "until") === undefined ? {} : { until: optNum(command, "until")! }),
-            ...(Array.isArray(command.threads) ? { threads: command.threads as string[] } : {}),
-            ...(optNum(command, "bucketMs") === undefined ? {} : { bucketMs: optNum(command, "bucketMs")! }),
-          }) });
         case "durable_doc_get":
           return done({ value: await this.threads.docGet(str(command, "thread"), str(command, "name"), optNum(command, "conversation")) });
         case "durable_doc_put":

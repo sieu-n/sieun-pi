@@ -26,7 +26,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, statSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { Leases, SessionLockedError } from "../lease.ts";
-import { statusOf, ThreadIndex, type IndexedEntry, type IndexRead, type SearchPage, type SearchQuery, type ThreadRow, type ThreadStatus, type UsageRange, type UsageRead, type UsageRow, type UsageTotal } from "./index-db.ts";
+import { statusOf, ThreadIndex, type IndexedEntry, type IndexRead, type SearchPage, type SearchQuery, type ThreadRow, type ThreadStatus, type UsageRow } from "./index-db.ts";
 import { speechOf } from "./feed.ts";
 import { leanEntry } from "./lean.ts";
 import { headFor, parseSession } from "./import.ts";
@@ -1267,15 +1267,6 @@ export class DurableThreads {
   /** The index rows after `cursor`, which the chat reads into its one Meilisearch index for every box. */
   indexRead(cursor: string | undefined): IndexRead {
     return this.index.read(cursor);
-  }
-
-  usage(range: UsageRange): UsageTotal[] {
-    return this.index.usage(range);
-  }
-
-  /** The usage rows after `cursor` from `since` on, which the chat keeps in memory for every box. */
-  usageRead(cursor: string | undefined, since?: number): UsageRead {
-    return this.index.readUsage(cursor, since);
   }
 
   isLocked(error: unknown): error is SessionLockedError {

@@ -20,6 +20,7 @@ import { label } from "../../../pi-rlm/src/pi/children.ts";
 import { HostClient } from "../../src/client.ts";
 import type { HostCommand } from "../../src/protocol.ts";
 import type { ThreadInfo, TreeNode } from "../../src/durable/index.ts";
+import { openIndexReadOnly, readUsageRows } from "../../src/durable/index-db.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const PI_STACK = join(here, "..", "..", "..");
@@ -143,8 +144,11 @@ async function crashCase(name: string, mode: "faux" | "real", killOn: "child-str
     const { hits } = await call<{ hits: { conversation: number; snippet: string }[] }>(b, { type: "durable_search", q: "prime numbers", threads: [thread.id] });
     assert.ok(hits.some(hit => hit.conversation === childNode.id), JSON.stringify(hits));
     assert.ok(hits.every(hit => hit.snippet.includes("<mark>")));
-    const { usage } = await call<{ usage: { thread: string; model: string; turns: number }[] }>(b, { type: "durable_usage", threads: [thread.id] });
-    const turns = usage.filter(row => row.model === "anthropic/claude-opus-5-5").reduce((sum, row) => sum + row.turns, 0);
+    // The usage collector reads the thread's usage rows from index.sqlite (components/usage-collector clients/pi_host.py), one row per call.
+    const db = openIndexReadOnly(join(dir, "durable", "index.sqlite"));
+    const usage = readUsageRows(db, undefined).rows.filter(row => row.thread === thread.id);
+    db.close();
+    const turns = usage.filter(row => row.model === "anthropic/claude-opus-5-5").length;
     assert.ok(turns >= 3, JSON.stringify(usage));
     const listed = await call<{ threads: ThreadInfo[] }>(b, { type: "durable_threads" });
     const row = listed.threads.find(t => t.id === thread.id)!;

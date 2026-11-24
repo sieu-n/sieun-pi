@@ -16,6 +16,7 @@ import { PLAIN_INPUT } from "./crash-scenario.ts";
 import { HostClient } from "../../src/client.ts";
 import type { HostCommand } from "../../src/protocol.ts";
 import type { ThreadInfo } from "../../src/durable/index.ts";
+import { openIndexReadOnly, readUsageRows } from "../../src/durable/index-db.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const PACKAGES = join(here, "..", "..", "..");
@@ -93,7 +94,10 @@ test("an owner durable_submit behind queued work is admitted first and returns i
     assert.deepEqual(queue.working.map(w => w.session), ["blocker"]);
     assert.deepEqual(queue.queued.map(q => q.session), ["queued-1", "queued-2", agentSent.ticket.session], "the owner went first, and the line kept its order");
 
-    const { usage } = await call<{ usage: Record<string, unknown>[] }>(client, { type: "durable_usage", threads: [mine.id] });
+    // The usage collector reads the thread's usage rows from index.sqlite (components/usage-collector clients/pi_host.py).
+    const db = openIndexReadOnly(join(scratch, "durable", "index.sqlite"));
+    const usage = readUsageRows(db, undefined).rows.filter(row => row.thread === mine.id) as unknown as Record<string, unknown>[];
+    db.close();
     assert.equal(usage.length, 1, JSON.stringify(usage));
     for (const key of ["cost", "costInput", "costOutput", "costCacheRead", "costCacheWrite"]) assert.equal(typeof usage[0]![key], "number", `${key} in ${JSON.stringify(usage[0])}`);
 
