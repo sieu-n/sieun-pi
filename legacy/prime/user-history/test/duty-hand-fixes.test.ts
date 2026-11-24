@@ -588,6 +588,13 @@ test("the canary share and hour writes of 11-02 are F15, wait on its prod releas
   assert.ok(cap.test("engage.canary_roster_pct") && cap.test("engage.canary_hourly_divisor") && !cap.test("engage.canary_daily_pages"));
 });
 
+// Prod audit 49054 (11-24 00:06Z) sized the census rates to d8's GeoNode lines by hand; their settings.py defaults make such a write design (p379).
+test("the census rates sized to the GeoNode plan are declared caps, and the controller's TikTok Shop product rate is not", async () => {
+  const cap = new RegExp((await registry()).exempt.declared_cap_regex!);
+  for (const key of ["instagram_census.new_per_minute", "instagram_census.profile_per_minute", "instagram_census.history_per_minute", "instagram_census.backlog_front_per_minute"]) assert.ok(cap.test(key), key);
+  assert.ok(!cap.test("tiktok_shop.product_per_minute"));
+});
+
 test("the audit read selects each row's new value", () => {
   assert.match(auditSql(undefined, AT), /coalesce\(new_value, ''\) as new_value/);
 });
