@@ -8,7 +8,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import type { DutyMetric, FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { checkCleanup } from "./test-org-cleanup.ts";
 import { adminQuery, convexBackend, type EnvRead, readEnvRow } from "./convex-admin.ts";
-import { DAY, MINUTE, REPO, SOURCE_DEADLINE_MS, frameRows, grafanaClient, readGrafanaAuth, settle, unmeasuredFlag, utc } from "./estate-reads.ts";
+import { setTimeout as sleep } from "node:timers/promises";
+import { DAY, type DsQuery, MINUTE, REPO, SOURCE_DEADLINE_MS, frameRows, grafanaClient, readGrafanaAuth, settle, sqlRows, unmeasuredFlag, utc } from "./estate-reads.ts";
 
 /**
  * The api portal vp chat's "Portal billing" precheck (`node --import tsx scripts/duties/portal-billing.ts`). No model call. It reads prod and
@@ -19,7 +20,7 @@ import { DAY, MINUTE, REPO, SOURCE_DEADLINE_MS, frameRows, grafanaClient, readGr
  * (cb6b4904eb, 0982ee03ca), and Hacker News presets charged $0.0005 for a missing user, a missing item and a zero-hit search (a07e3b3337).
  * 1. billing_mismatches_24h, the headline: prod /v1 calls of the last 24 h whose charge does not match the answer. It pairs each api-portal
  *    request line the Vercel drain writes to otel_logs (ClickHouse, ServiceName api-portal, one START line per request with its status and
- *    duration) with the prod Convex apiPortalUsage row of the same catalog operation written inside that request. A 2xx of a priced operation
+ *    duration) with the prod ledger charge of the same catalog operation written inside that request. A 2xx of a priced operation
  *    with no row is a call served free; a priced row that pairs only with a non-2xx answer is a charge for an error. Operations come from
  *    apps/api-portal/src/lib/server/operations.ts at the commit prod runs (newest READY api-portal production deployment). 202 job answers
  *    are left out, since their charge is the crawlJob row written when the job ends.
@@ -28,7 +29,10 @@ import { DAY, MINUTE, REPO, SOURCE_DEADLINE_MS, frameRows, grafanaClient, readGr
  * 3. empty_charged_probe: one call each to a missing Hacker News user, a zero-hit Hacker News search and a missing Instagram profile, which
  *    must cost $0, and to Hacker News user pg, which must cost the price its openapi x-dashboard-cost names when it answers 2xx and $0 when it
  *    does not, on staging-api.virev.ai (a seeded test org) and api.virev.ai (VIREV_API_KEY_PROD). The charge is the sum of that env's
- *    apiPortalUsage rows for the answer's request_id, so it reads the ledger, never the answer's own meta.cost.
+ *    ledger rows for the answer's request_id, so it reads the ledger, never the answer's own meta.cost.
+ * The ledger is the ClickHouse table of usage events on each tier (estate_ch_prod, estate_ch_stg): usage.events once the rename of the
+ * ledger database (auto-sns-agent 5bd7834fa3) reached that tier, ledger.events before it, picked from the tier's table list on each run.
+ * Convex writes a Data API charge there through its ledgerOutbox (convex/ledger/outbox.ts) and stopped writing apiPortalUsage on 11-07.
  *
  * Targets in portal-billing.duty.json (the JSON cannot hold comments): all three are <= 0, because a mismatch is money the customer should
  * not pay or a call the portal gave away, and the gateway's own rule since 10-18 is that both never happen.
@@ -42,6 +46,8 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const DUTY_FILE = join(HERE, "portal-billing.duty.json");
 const OPERATIONS = "apps/api-portal/src/lib/server/operations.ts";
 const CLICKHOUSE = { uid: "grafana_clickhouse", type: "grafana-clickhouse-datasource" };
+/** The Grafana ClickHouse datasource of each tier, which holds that tier's usage events. */
+export const LEDGER_DS: Readonly<Record<Env, string>> = { staging: "estate_ch_stg", prod: "estate_ch_prod" };
 /**
  * A request's row lands while it runs, and the request line's duration leaves out the hop from Vercel's proxy and a cold start. On 10-19 every
  * prod row of the last 24 h paired within 3 s past the line's end and 1 s left 173 unpaired, so 10 s holds with room.
@@ -64,8 +70,12 @@ export const PROBE_DEADLINE_MS = 60_000;
 export interface Operation { id: string; path: string; method: string; costMicros: number }
 /** One prod request line: its Vercel request id, method, path without query, status, start (proxy timestamp) and duration in ms. */
 export interface RequestLine { rid: string; method: string; path: string; status: number; start: number; durationMs: number }
-/** One apiPortalUsage row. `source.kind` is batch, crawlJob, reversal or void, or absent for a plain /v1 call. */
-export interface UsageRow { requestId: string; operation: string; costMicros: number; createdAt: number; orgId?: string; source?: { kind: string } }
+/**
+ * One Data API charge in the ledger, its rows summed by charge_id. `kind` is call for a /v1 or batch item charge, crawlJob for a crawl job's
+ * settle (charge_id `crawl-job:<id>`), refund for a reversal or void refund (requestId is the reversed charge's), and void for the zero-cost
+ * 503 row a void writes when no charge committed.
+ */
+export interface UsageRow { requestId: string; operation: string; costMicros: number; createdAt: number; kind: "call" | "crawlJob" | "refund" | "void" }
 export interface Probe { name: string; path: string; query: Record<string, string>; empty: boolean }
 export interface ProbeResult { env: Env; probe: string; status: number; requestId?: string; expected: number; charged?: number; error?: string }
 export type Env = "staging" | "prod";
@@ -139,7 +149,7 @@ export function reconcile(operations: readonly Operation[], requests: readonly R
   const inWindow = (at: number) => at >= from && at <= to;
   const opOf = operationMatcher(operations);
   const price = new Map(operations.map(op => [op.id, op.costMicros]));
-  const undone = new Set(ledger.filter(row => row.source?.kind === "reversal" || row.source?.kind === "void").map(row => row.requestId));
+  const undone = new Set(ledger.filter(row => row.kind === "refund" || row.kind === "void").map(row => row.requestId));
   const lines = new Map<string, RequestLine[]>();
   for (const line of requests) {
     if (line.status === 202) continue;
@@ -147,7 +157,7 @@ export function reconcile(operations: readonly Operation[], requests: readonly R
     if (op) lines.set(op.id, [...lines.get(op.id) ?? [], line]);
   }
   const rows = new Map<string, UsageRow[]>();
-  for (const row of ledger) if (!row.source || row.source.kind === "batch") rows.set(row.operation, [...rows.get(row.operation) ?? [], row]);
+  for (const row of ledger) if (row.kind === "call") rows.set(row.operation, [...rows.get(row.operation) ?? [], row]);
   const result: Reconciled = { servedFree: [], chargedOnError: [], paired: 0, rows: 0, lineless: 0 };
   for (const op of new Set([...lines.keys(), ...rows.keys()])) {
     const all = lines.get(op) ?? [];
@@ -163,7 +173,7 @@ export function reconcile(operations: readonly Operation[], requests: readonly R
   return result;
 }
 
-/** "$0.0005" as micros, the unit apiPortalUsage stores. */
+/** "$0.0005" as micros, the unit the duty counts in. */
 export const micros = (cost: string): number => {
   const match = /^\$(\d+(?:\.\d+)?)$/.exec(cost.trim());
   if (!match) throw new Error(`unreadable x-dashboard-cost ${cost}`);
@@ -197,7 +207,7 @@ export function report(data: BillingData, dutyMetrics: readonly DutyMetric[]): P
     else {
       metrics.billing_mismatches_24h = result.servedFree.length + result.chargedOnError.length;
       if (metrics.billing_mismatches_24h) lastEventAt.billing_mismatches_24h = Math.max(...result.servedFree.map(entry => entry.line.start), ...result.chargedOnError.map(entry => entry.row.createdAt));
-      if (result.servedFree.length) flagged.push({ at, kind: "served_free", excerpt: `${result.servedFree.length} prod 2xx answers of priced operations have no apiPortalUsage row at prod's ${data.sha?.slice(0, 10) ?? "deployed commit"}: ${counts(result.servedFree, entry => entry.op)}; e.g. ${result.servedFree.slice(0, 3).map(entry => `${entry.line.rid} ${entry.line.path} ${utc(entry.line.start)}`).join(", ")}`.slice(0, 300) });
+      if (result.servedFree.length) flagged.push({ at, kind: "served_free", excerpt: `${result.servedFree.length} prod 2xx answers of priced operations have no ledger charge at prod's ${data.sha?.slice(0, 10) ?? "deployed commit"}: ${counts(result.servedFree, entry => entry.op)}; e.g. ${result.servedFree.slice(0, 3).map(entry => `${entry.line.rid} ${entry.line.path} ${utc(entry.line.start)}`).join(", ")}`.slice(0, 300) });
       if (result.chargedOnError.length) flagged.push({ at, kind: "charged_on_error", excerpt: `${result.chargedOnError.length} prod charges pair only with an error answer: ${counts(result.chargedOnError, entry => `${entry.op} ${entry.line.status}`)}; e.g. ${result.chargedOnError.slice(0, 3).map(entry => `${entry.row.requestId} ${entry.row.costMicros} micros ${utc(entry.row.createdAt)}`).join(", ")}`.slice(0, 300) });
     }
   }
@@ -241,16 +251,54 @@ const envFile = async (name: Env): Promise<EnvFile> => JSON.parse(await readFile
 export const convexAdmin = async (env: Env, signal: AbortSignal, fetcher: typeof fetch = fetch, read: EnvRead = readEnvRow) =>
   adminQuery(await convexBackend(env === "prod" ? "production" : "staging", fetcher, read, signal), fetcher, signal);
 
-/** apiPortalUsage rows created at or after `since`, newest first, through the CLI's table reader. */
-async function ledgerSince(query: (path: string, args: unknown) => Promise<unknown>, since: number): Promise<UsageRow[]> {
-  const rows: UsageRow[] = [];
-  let cursor: string | null = null;
+export type SqlRead = (sql: string) => Promise<Record<string, unknown>[]>;
+/** A tier's ledger: its usage events table and a read on that tier's ClickHouse. */
+export interface Ledger { table: string; read: SqlRead }
+
+export const EVENTS_TABLES_SQL = "SELECT database FROM system.tables WHERE name = 'events' AND database IN ('usage', 'ledger')";
+/** usage.events where the rename reached the tier, else ledger.events. */
+export function eventsTable(databases: readonly string[]): string {
+  if (databases.includes("usage")) return "usage.events";
+  if (databases.includes("ledger")) return "ledger.events";
+  throw new Error("ClickHouse holds neither usage.events nor ledger.events");
+}
+
+export async function ledgerOf(env: Env, query: DsQuery): Promise<Ledger> {
+  const read: SqlRead = sql => sqlRows(query, LEDGER_DS[env], sql);
+  return { table: eventsTable((await read(EVENTS_TABLES_SQL)).map(row => String(row.database))), read };
+}
+
+const CALLS = "producer = 'convex' AND action = 'data_api_call'";
+const quote = (value: string) => `'${value.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`;
+/** Data API charges at or after `since`, one row per charge_id and row kind (a multi-part charge has event ids `<requestId>|<unitKind>`). */
+export const CHARGES_SQL = (table: string, since: number) => `SELECT charge_id, any(route) AS operation, toInt64(sum(charge_usd) * 1000000) AS micros,
+ min(toUnixTimestamp64Milli(ts)) AS created, multiIf(kind = 'refund', 'refund', startsWith(charge_id, 'crawl-job:'), 'crawlJob',
+ sum(charge_usd) = 0 AND any(http_status) = 503, 'void', 'call') AS role
+FROM ${table} WHERE ${CALLS} AND ts >= fromUnixTimestamp64Milli(${since}) GROUP BY charge_id, kind`;
+/** What each request id paid net at or after `since`: its charge rows plus the refunds that name it. */
+export const PROBE_CHARGES_SQL = (table: string, since: number, requestIds: readonly string[]) => `SELECT charge_id, toInt64(sum(charge_usd) * 1000000) AS micros
+FROM ${table} WHERE ${CALLS} AND ts >= fromUnixTimestamp64Milli(${since}) AND charge_id IN (${requestIds.map(quote).join(", ")}) GROUP BY charge_id`;
+
+export const usageRow = (row: Record<string, unknown>): UsageRow => ({
+  requestId: String(row.charge_id), operation: String(row.operation), costMicros: Number(row.micros), createdAt: Number(row.created), kind: row.role as UsageRow["kind"],
+});
+
+async function chargesSince(ledger: Ledger, since: number): Promise<UsageRow[]> {
+  return (await ledger.read(CHARGES_SQL(ledger.table, since))).map(usageRow);
+}
+
+// measured: on 2026-11-24 at 01:55Z, 30 reads 0.5 s apart found the staging and prod outboxes empty each time, and the 01:38Z run found
+// its prod probe charge at its first ledger read, so a wait is rare and each 1 s step costs one tableData read.
+const OUTBOX_POLL_MS = 1_000;
+/**
+ * Waits until the env's Convex ledgerOutbox holds no row created before `before`. The outbox deletes a row only after the crawler's
+ * synchronous ClickHouse insert answered, so then every charge written before `before` is in the ledger.
+ */
+async function outboxSent(query: (path: string, args: unknown) => Promise<unknown>, before: number, signal: AbortSignal): Promise<void> {
   for (;;) {
-    const page = await query("_system/cli/tableData", { table: "apiPortalUsage", order: "desc", paginationOpts: { numItems: 1000, cursor } }) as
-      { page: (UsageRow & { _creationTime: number })[]; isDone: boolean; continueCursor: string };
-    for (const row of page.page) if (row._creationTime >= since) rows.push(row);
-    if (page.isDone || !page.page.length || page.page.at(-1)!._creationTime < since) return rows;
-    cursor = page.continueCursor;
+    const page = await query("_system/cli/tableData", { table: "ledgerOutbox", order: "asc", paginationOpts: { numItems: 1, cursor: null } }) as { page: { _creationTime: number }[] };
+    if (!page.page.length || page.page[0]!._creationTime >= before) return;
+    await sleep(OUTBOX_POLL_MS, undefined, { signal });
   }
 }
 
@@ -302,8 +350,8 @@ LEFT JOIN
  AND LogAttributes['vercel.type'] = 'stdout' AND Body LIKE 'START RequestId%' GROUP BY rid) AS r
 ON f.rid = r.rid GROUP BY kind, status, path`;
 
-/** Calls the probes on one env and reads that env's ledger for each answer's request_id. */
-async function probeEnv(env: Env, key: string, query: (path: string, args: unknown) => Promise<unknown>, signal: AbortSignal): Promise<ProbeResult[]> {
+/** Calls the probes on one env and reads that env's ledger for each answer's request_id, once the env's outbox sent every charge they wrote. */
+async function probeEnv(env: Env, key: string, query: (path: string, args: unknown) => Promise<unknown>, ledger: Ledger, signal: AbortSignal): Promise<ProbeResult[]> {
   const file = await envFile(env);
   const doc = await (await fetch(`${file.urls.apiPortal}/openapi.json`, { signal })).json() as { paths: Record<string, { get?: { "x-dashboard-cost"?: string } }> };
   const started = Date.now();
@@ -324,13 +372,15 @@ async function probeEnv(env: Env, key: string, query: (path: string, args: unkno
       return { env, probe: probe.name, status: 0, expected: 0, error: timedOut ? `no answer in ${PROBE_DEADLINE_MS / 1000} s` : error instanceof Error ? error.message : String(error) };
     }
   }));
-  const rows = await ledgerSince(query, started - MINUTE);
-  return results.map(result => result.requestId === undefined ? result
-    : { ...result, charged: rows.filter(row => row.requestId === result.requestId).reduce((sum, row) => sum + row.costMicros, 0) });
+  const ids = results.flatMap(result => result.requestId === undefined ? [] : [result.requestId]);
+  if (!ids.length) return results;
+  await outboxSent(query, Date.now(), signal);
+  const paid = new Map((await ledger.read(PROBE_CHARGES_SQL(ledger.table, started - MINUTE, ids))).map(row => [String(row.charge_id), Number(row.micros)]));
+  return results.map(result => result.requestId === undefined ? result : { ...result, charged: paid.get(result.requestId) ?? 0 });
 }
 
 /** Staging probes run under a throwaway org seeded through the staging Convex test routes, deleted again at the end. */
-async function stagingProbes(signal: AbortSignal): Promise<ProbeResult[]> {
+async function stagingProbes(ledger: Ledger, signal: AbortSignal): Promise<ProbeResult[]> {
   const file = await envFile("staging");
   const secret = lastLine(await sh(file.keySources.CONVEX_WEBHOOK_SECRET!.cmd, REPO, signal));
   if (!secret) throw new Error("the staging CONVEX_WEBHOOK_SECRET is empty");
@@ -343,7 +393,7 @@ async function stagingProbes(signal: AbortSignal): Promise<ProbeResult[]> {
   if (!seeded.ok) throw new Error(`staging /api/test/seed gave HTTP ${seeded.status}: ${(await seeded.text()).slice(0, 160)}`);
   const keyId = ((await seeded.json()) as { keyId?: string }).keyId;
   try {
-    return await probeEnv("staging", key, query, signal);
+    return await probeEnv("staging", key, query, ledger, signal);
   } finally {
     if (keyId) await post("/api/test/revoke-key", { keyId }).catch(() => undefined);
     // A cleanup that fails throws here, so "staging probes" becomes a source error naming the org and its metrics are unmeasured, never a pass.
@@ -351,10 +401,10 @@ async function stagingProbes(signal: AbortSignal): Promise<ProbeResult[]> {
   }
 }
 
-async function prodProbes(signal: AbortSignal): Promise<ProbeResult[]> {
+async function prodProbes(ledger: Ledger, signal: AbortSignal): Promise<ProbeResult[]> {
   const key = process.env.VIREV_API_KEY_PROD || lastLine(await sh("cd apps/api-portal && npx --no-install dotenvx get VIREV_API_KEY_PROD -f .env", REPO, signal));
   if (!key.startsWith("kb_live_")) throw new Error("VIREV_API_KEY_PROD from apps/api-portal/.env is not a kb_live_ key");
-  return probeEnv("prod", key, await convexAdmin("prod", signal), signal);
+  return probeEnv("prod", key, await convexAdmin("prod", signal), ledger, signal);
 }
 
 async function measure(now: number, signal: AbortSignal): Promise<BillingData> {
@@ -362,21 +412,23 @@ async function measure(now: number, signal: AbortSignal): Promise<BillingData> {
   const step = async <T>(source: Source, run: () => Promise<T>): Promise<T | undefined> => {
     try { return await run(); } catch (error) { data.errors.push({ source, message: error instanceof Error ? error.message : String(error) }); return undefined; }
   };
+  const grafana = readGrafanaAuth().then(auth => grafanaClient(fetch, auth, now, signal));
   const clickhouse = step("prod requests", async () => {
-    const query = grafanaClient(fetch, await readGrafanaAuth(), now, signal);
+    const query = await grafana;
     return async (rawSql: string) => frameRows(await query({ datasource: CLICKHOUSE, rawSql, format: 1, queryType: "sql" }));
   });
+  const prodLedger = grafana.then(query => ledgerOf("prod", query));
   const [operations, requests, ledger, uncounted, staging, prod] = await Promise.all([
     step("prod catalog", async () => { const sha = await prodSha(); data.sha = sha; return catalogAt(sha, signal); }),
     clickhouse.then(read => read && step("prod requests", async () => (await read(REQUESTS_SQL(now))).map((row): RequestLine => ({
       rid: String(row.rid), method: String(row.method), path: String(row.path), status: Number(row.status), start: Number(row.start), durationMs: Number(row.duration) || 0,
     })).filter(line => Number.isFinite(line.start) && line.status > 0))),
-    step("prod ledger", async () => ledgerSince(await convexAdmin("prod", signal), now - DAY - EDGE_MS)),
+    step("prod ledger", async () => chargesSince(await prodLedger, now - DAY - EDGE_MS)),
     clickhouse.then(read => read ? step("gateway failures", async () => (await read(UNCOUNTED_SQL(now))).map((row): Uncounted => ({
       kind: String(row.kind), status: String(row.status ?? ""), path: String(row.path ?? ""), calls: Number(row.calls), lastAt: Number(row.last),
     }))) : (data.errors.push({ source: "gateway failures", message: "no ClickHouse read" }), undefined)),
-    step("staging probes", () => stagingProbes(signal)),
-    step("prod probes", () => prodProbes(signal)),
+    step("staging probes", async () => stagingProbes(await ledgerOf("staging", await grafana), signal)),
+    step("prod probes", async () => prodProbes(await prodLedger, signal)),
   ]);
   if (operations) data.operations = operations;
   if (requests) {

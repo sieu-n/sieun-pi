@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { DutyMetric } from "../src/shared/chat-duties.ts";
-import { type BillingData, convexAdmin, type Operation, type RequestLine, type UsageRow, expectedCharge, micros, PROBES, reconcile, report } from "../scripts/duties/portal-billing.ts";
+import { type BillingData, convexAdmin, eventsTable, type Operation, type RequestLine, type UsageRow, expectedCharge, micros, PROBES, reconcile, report } from "../scripts/duties/portal-billing.ts";
 
 const NOW = Date.parse("2026-10-19T16:00:00Z");
 const AT = NOW - 6 * 3_600_000;
@@ -19,7 +19,7 @@ const METRICS: DutyMetric[] = [
   { key: "empty_charged_probe", label: "", op: "<=", target: 0 },
 ];
 const line = (rid: string, path: string, status: number, start: number, durationMs = 3_000): RequestLine => ({ rid, method: "GET", path, status, start, durationMs });
-const row = (requestId: string, operation: string, createdAt: number, costMicros = 500): UsageRow => ({ requestId, operation, createdAt, costMicros });
+const row = (requestId: string, operation: string, createdAt: number, costMicros = 500, kind: UsageRow["kind"] = "call"): UsageRow => ({ requestId, operation, createdAt, costMicros, kind });
 
 test("a priced 2xx with no ledger row is served free, and a free route or a 202 job answer is not", () => {
   const result = reconcile(OPERATIONS, [
@@ -38,13 +38,22 @@ test("a 202 job answer that ends first does not take the row of the 200 beside i
   assert.equal(result.servedFree.length, 0);
 });
 
-test("a charge that pairs only with a 404 is a charge for an error, and a voided one is not", () => {
-  const result = reconcile(OPERATIONS, [line("x", "/v1/youtube/live/channel/shorts", 404, AT), line("y", "/v1/youtube/live/channel/shorts", 404, AT + 60_000)], [
+test("a charge that pairs only with a 404 is a charge for an error, and a voided, refunded or crawl job charge is not", () => {
+  const result = reconcile(OPERATIONS, [0, 1, 2, 3].map(i => line(`x${i}`, "/v1/youtube/live/channel/shorts", 404, AT + i * 60_000)), [
     row("r1", "live.youtube.channel_shorts", AT + 1_000),
     row("r2", "live.youtube.channel_shorts", AT + 61_000),
-    { ...row("r2", "live.youtube.channel_shorts", AT + 62_000, 0), source: { kind: "void" } },
+    row("r2", "live.youtube.channel_shorts", AT + 62_000, 0, "void"),
+    row("r3", "live.youtube.channel_shorts", AT + 121_000),
+    row("r3", "live.youtube.channel_shorts", AT + 122_000, -500, "refund"),
+    row("crawl-job:j1", "live.youtube.channel_shorts", AT + 181_000, 500, "crawlJob"),
   ], NOW);
   assert.deepEqual(result.chargedOnError.map(entry => entry.row.requestId), ["r1"]);
+});
+
+test("the ledger is usage.events once the rename reached a tier and ledger.events before it (apiPortalUsage frozen since 11-07)", () => {
+  assert.equal(eventsTable(["ledger"]), "ledger.events");
+  assert.equal(eventsTable(["ledger", "usage"]), "usage.events");
+  assert.throws(() => eventsTable([]), /neither/);
 });
 
 test("the report counts uncounted 2xx calls and probe charges, and a failed source never reads green", () => {
@@ -94,7 +103,7 @@ test("each 24 h count gives the time of its newest counted call, and a zero coun
   assert.equal(broken.lastEventAt?.uncounted_calls_24h, undefined);
 });
 
-test("the prod ledger reads the backend the prod VITE_CONVEX_URL row names, with that instance's admin key (prod cutover 11-04)", async () => {
+test("the prod Convex admin client reads the backend the prod VITE_CONVEX_URL row names, with that instance's admin key (prod cutover 11-04)", async () => {
   const calls: { url: string; authorization: string | undefined }[] = [];
   const fetcher = (async (url: string, init?: RequestInit) => {
     calls.push({ url, authorization: (init?.headers as Record<string, string> | undefined)?.authorization });
