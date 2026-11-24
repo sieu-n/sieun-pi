@@ -13,6 +13,7 @@ import json
 import pkgutil
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -101,10 +102,11 @@ def encode(row: Dict[str, Any]) -> bytes:
 
 class Batch:
     """Encoded rows waiting for the sink. Each POST holds at most max_bytes, and its insert_deduplication_token is the sha256 of its
-    body: a retried POST of the same rows is dropped, while a later POST that reprices the same keys has another body and lands."""
+    body: a retried POST of the same rows is dropped, while a later POST that reprices the same keys has another body and lands.
+    A batch fills to `parallel` POSTs and sends them at once; the keys fix each row, so their order does not matter."""
 
-    def __init__(self, sink: Optional[Sink], max_bytes: int) -> None:
-        self.sink, self.max_bytes = sink, max_bytes
+    def __init__(self, sink: Optional[Sink], max_bytes: int, parallel: int = 1) -> None:
+        self.sink, self.max_bytes, self.parallel = sink, max_bytes, max(1, parallel)
         self.lines: List[bytes] = []
         self.size = 0
 
@@ -113,24 +115,30 @@ class Batch:
         self.size += len(line)
 
     def full(self) -> bool:
-        return self.size >= self.max_bytes
+        return self.size >= self.max_bytes * self.parallel
 
     def flush(self) -> int:
-        posts = 0
+        bodies: List[bytes] = []
         chunk: List[bytes] = []
         size = 0
         for line in self.lines + [b""]:
             if chunk and (not line or size + len(line) > self.max_bytes):
-                body = b"".join(chunk)
-                if self.sink is not None:
-                    self.sink.insert(body, hashlib.sha256(body).hexdigest())
-                posts += 1
+                bodies.append(b"".join(chunk))
                 chunk, size = [], 0
             if line:
                 chunk.append(line)
                 size += len(line)
+        if self.sink is not None and bodies:
+            sink = self.sink
+            send = lambda body: sink.insert(body, hashlib.sha256(body).hexdigest())
+            if len(bodies) == 1 or self.parallel == 1:
+                for body in bodies:
+                    send(body)
+            else:
+                with ThreadPoolExecutor(max_workers=self.parallel) as pool:
+                    list(pool.map(send, bodies))
         self.lines, self.size = [], 0
-        return posts
+        return len(bodies)
 
 
 @dataclass
@@ -154,11 +162,11 @@ class Stats:
         self.cost_usd += sum(float(row[name]) for name in COSTS)
 
 
-def run_client(module: ModuleType, ctx: Context, sink: Optional[Sink], store: Optional[StateStore], max_bytes: int) -> Stats:
+def run_client(module: ModuleType, ctx: Context, sink: Optional[Sink], store: Optional[StateStore], max_bytes: int, parallel: int = 1) -> Stats:
     """One pass of one client. Without a store or sink (dry run) nothing is written or saved."""
     stats = Stats()
     started = time.time()
-    batch = Batch(sink, max_bytes)
+    batch = Batch(sink, max_bytes, parallel)
 
     def commit() -> None:
         stats.posts += batch.flush()
@@ -194,6 +202,7 @@ class Settings:
     store: StateStore
     dry_run: bool = False
     max_bytes: int = 1_000_000
+    parallel: int = 1
 
 
 def client_loop(module: ModuleType, settings: Settings, every: Optional[float], report: Callable[[str, Stats], None], failed: List[str]) -> None:
@@ -209,7 +218,7 @@ def client_loop(module: ModuleType, settings: Settings, every: Optional[float], 
                     state = settings.store.load(module.CLIENT)
                 ctx = Context(settings.host, settings.since_ms(), settings.home, state, cache)
                 stats = run_client(module, ctx, None if settings.dry_run else settings.sink,
-                                   None if settings.dry_run else settings.store, settings.max_bytes)
+                                   None if settings.dry_run else settings.store, settings.max_bytes, settings.parallel)
                 report(module.CLIENT, stats)
             except Exception as error:  # a client's failure must not stop the others
                 log(f"{module.CLIENT}: pass failed, cursor kept: {type(error).__name__}: {error}")

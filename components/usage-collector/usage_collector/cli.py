@@ -73,7 +73,7 @@ def main(argv: Optional[list] = None) -> int:
         return 2
     settings = Settings(host=host, since_ms=lambda: since_ms(args.since, int(time.time() * 1000)), home=Path(args.home).expanduser(),
                         sink=sink, store=StateStore(Path(args.state_dir).expanduser() / sink.id), dry_run=args.dry_run,
-                        max_bytes=sink.max_body_bytes)
+                        max_bytes=sink.max_body_bytes, parallel=sink.parallel_posts)
     def report(client: str, stats: Stats) -> None:
         if args.loop and not stats.rows:
             return

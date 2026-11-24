@@ -7,6 +7,7 @@ sink.json (default ~/.config/usage-collector/sink.json):
   headers         extra headers, such as {"Authorization": "Bearer ..."} for a door
   token_file      a file whose text is sent as "Authorization: Bearer <text>", so the secret stays in the file it already lives in
   max_body_bytes  default 1000000, the body cap of the devbox-push door (store.md section 3)
+  parallel_posts  default 4, POSTs a client sends at once
 
 The prod store takes writes through the devbox-push door, which forwards a fixed INSERT as usage_writer and passes
 insert_deduplication_token through; on us-metal02 its sink.json is
@@ -41,6 +42,9 @@ class Sink:
         self.url = str(config["url"])
         self.table = str(config.get("table") or TABLE)
         self.max_body_bytes = int(config.get("max_body_bytes") or 1_000_000)
+        # measured on 11-24 01:29Z: one POST at a time to the devbox-push door took about 1.2 s and moved Prime's backfill at 688
+        # rows/s, so the 90-day backfill would take about 77 min; the rig took 14 min.
+        self.parallel_posts = int(config.get("parallel_posts") or 4)
         self.timeout = float(config.get("timeout_s") or 60)
         self.headers = {"Content-Type": "application/x-ndjson", **{str(k): str(v) for k, v in (config.get("headers") or {}).items()}}
         if config.get("user"):

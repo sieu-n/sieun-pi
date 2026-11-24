@@ -95,6 +95,13 @@ class CoreTest(unittest.TestCase):
         self.assertTrue(all(len(body) <= 1000 for body, _ in sink.posts))
         self.assertEqual(len(sink.rows()), 50)
 
+    def test_parallel_posts_send_every_row_once(self) -> None:
+        sink = FakeSink()
+        stats = core.run_client(numbered(200, 7), context(self.store), sink, self.store, 1000, parallel=4)
+        self.assertEqual(sorted(r["source_key"] for r in sink.rows()), sorted(f"test:h1:{n}" for n in range(200)))
+        self.assertEqual(stats.posts, len(sink.posts))
+        self.assertEqual(self.store.load("test")["next"], 200)
+
     def test_dry_run_saves_nothing(self) -> None:
         stats = core.run_client(numbered(5, 2), context(self.store), None, None, 500)
         self.assertEqual(stats.rows, 5)
