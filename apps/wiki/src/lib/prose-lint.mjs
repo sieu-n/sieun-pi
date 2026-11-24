@@ -123,8 +123,16 @@ function contentRel(relPath) {
 }
 
 const CURATED_PAGE = /^(?:apps|domains|projects|experiments)\/(?!.*\/(?:data|assets)\/).*\.html$/;
-/** A page under apps/ or domains/, which holds only the layers a reader can check (owner, #dev-crawler p23, c243). */
-const isCoreLayerPath = (/** @type {string} */ rel) => /^(?:apps|domains)\/(?!.*\/(?:data|assets)\/).*\.html$/.test(rel);
+/**
+ * A live page under apps/ or domains/, which holds only the layers a reader can check (owner, #dev-crawler p23, c243).
+ * A page that moved, was superseded or is archived keeps a stub or its old text, so the core rules skip it.
+ * @param {Page} page
+ */
+const isCoreLayerPage = (page) =>
+	/^(?:apps|domains)\/(?!.*\/(?:data|assets)\/).*\.html$/.test(page.path) &&
+	!page.meta.moved_to &&
+	!page.meta.superseded_by &&
+	!['superseded', 'archived', 'deprecated'].includes(String(page.meta.status ?? ''));
 /** A page's words outside link-only lines, such as a hub's list of pages. @param {Page} page */
 const coreWords = (page) => page.units.reduce((n, u) => n + (u.linkOnly || u.inTldr ? 0 : u.words), 0);
 /** A wiki URL on any host that serves it on :5176: the server in hosts.json, or the Mac's old localhost wiki. */
@@ -432,12 +440,18 @@ const NUMBER_WORD = { two: 2, three: 3, four: 4, five: 5, six: 6 };
  */
 function readFlowchart(src) {
 	const flowchart = /^\s*(?:%%[^\n]*\n\s*)*(?:flowchart|graph)\b/i.test(src);
-	const labels = [...src.matchAll(/"([^"]*)"|\[([^\]"]*)\]|\(([^)"]*)\)|\{([^}"]*)\}|\|([^|"]*)\|/g)].map((m) =>
+	// A subgraph title names a group, such as "rows of all three tiers", so only node and edge labels are read.
+	const body = src
+		.split('\n')
+		.filter((line) => !/^\s*subgraph\b/i.test(line))
+		.join('\n');
+	const labels = [...body.matchAll(/"([^"]*)"|\[([^\]"]*)\]|\(([^)"]*)\)|\{([^}"]*)\}|\|([^|"]*)\|/g)].map((m) =>
 		(m[1] ?? m[2] ?? m[3] ?? m[4] ?? m[5] ?? '').trim(),
 	);
 	const counted = labels.filter((label) => {
 		const words = new RegExp(`\\b([2-9]|two|three|four|five|six)\\s+${INSTANCE_NOUN}\\b`, 'i').exec(label);
-		const times = /(?:^|\s)[x\u00d7]\s?([2-9])(?:\s|$)|(?:^|\s)([2-9])\s?[x\u00d7](?:\s|$)/i.exec(label);
+		// "relay x2" counts relays, while "3x faster" is a ratio, so a bare N-x form counts only at the end of a label.
+		const times = /(?:^|\s)[x\u00d7]\s?([2-9])(?:\s|$)|(?:^|\s)([2-9])\s?[x\u00d7]$/i.exec(label);
 		const n = words ? (NUMBER_WORD[/** @type {keyof NUMBER_WORD} */ (words[1].toLowerCase())] ?? Number(words[1])) : times ? Number(times[1] ?? times[2]) : 0;
 		return n >= 2 && n <= LIMITS.DIAGRAM_MAX_DRAWN;
 	});
@@ -1618,7 +1632,7 @@ export const RULES = [
 		when: (k) => k !== 'start' && k !== 'tutorial' && k !== 'how-to',
 		fix: `Keep an apps/ or domains/ page near ${LIMITS.CURATED_MAX_WORDS} words of the layers a reader can check (flow or call stack, tables, fields), and move the rest to a session page you link.`,
 		check: (_u, page) => {
-			if (!isCoreLayerPath(page.path)) return [];
+			if (!isCoreLayerPage(page)) return [];
 			const words = coreWords(page);
 			return words > LIMITS.CURATED_MAX_WORDS
 				? [{ excerpt: `${words} words, target ${LIMITS.CURATED_MAX_WORDS}`, line: 1 }]
@@ -1634,7 +1648,7 @@ export const RULES = [
 		when: (k) => k !== 'start',
 		fix: 'Show a layer a reader can check against the system: a flow or call stack as a diagram or numbered steps, a table, a field list or a code block.',
 		check: (_u, page) => {
-			if (!isCoreLayerPath(page.path)) return [];
+			if (!isCoreLayerPage(page)) return [];
 			const linkOnly = page.units.filter((u) => u.linkOnly).length;
 			if (linkOnly * 2 >= page.units.length) return [];
 			const layer = page.tables.length > 0 || page.proofs.length > 0 || page.hasDl || page.units.some((u) => u.numbered);
@@ -1650,7 +1664,7 @@ export const RULES = [
 		scope: 'page',
 		fix: `Draw a few instances as that many nodes instead of one node with a count, and group a flowchart over ${LIMITS.DIAGRAM_FLAT_NODES} nodes in subgraphs or split it into two diagrams.`,
 		check: (_u, page) => {
-			if (!isCoreLayerPath(page.path)) return [];
+			if (!isCoreLayerPage(page)) return [];
 			/** @type {Hit[]} */
 			const hits = [];
 			for (const d of page.diagrams) {

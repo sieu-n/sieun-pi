@@ -133,6 +133,8 @@ test('an apps/ or domains/ page with no flow, table, field list or code gets a c
 	assert.ok(!core('core-layers', withTable, 'domains/devops/thing.html'));
 	const withFields = page('reference', `<p>${para(3)}</p>\n<dl><dt>path</dt><dd>The page path.</dd></dl>`);
 	assert.ok(!core('core-layers', withFields, 'domains/devops/thing.html'));
+	const moved = `<!--wiki\n{"title": "Thing", "moved_to": "archive/domains/devops/thing.html"}\n-->\n<h1>Thing</h1>\n<p>This page moved to the archive.</p>`;
+	assert.ok(!core('core-layers', moved, 'domains/devops/thing.html'), 'a moved stub is exempt');
 	const hub = page(null, `<ul>${Array.from({ length: 6 }, (_, i) => `<li><a href="p${i}.html">Page ${i}</a></li>`).join('')}</ul>`);
 	assert.ok(!core('core-layers', hub, 'domains/devops/index.html'), 'a hub of links is exempt');
 });
@@ -148,4 +150,8 @@ test('a diagram that counts a few instances in one node, or a flat graph of many
 	assert.ok(core('diagram-shape', draw(`flowchart TD\n${flat}`), at));
 	assert.ok(!core('diagram-shape', draw(`flowchart TD\n  subgraph box["us-metal02"]\n${flat}\n  end`), at));
 	assert.ok(!core('diagram-shape', draw('sequenceDiagram\n  A->>B: 3 workers'), at), 'only flowcharts are read');
+	assert.ok(!core('diagram-shape', draw('flowchart LR\n  q{"login wall?"} -- "no, readers ran 3x faster" --> r["readers"]'), at), 'a ratio is not a count');
+	assert.ok(core('diagram-shape', draw('flowchart LR\n  s["chat server"] --> r["relay 2x"]'), at));
+	const titled = 'flowchart LR\n  subgraph MON["monitoring, rows of all three tiers"]\n    o[("otel")]\n  end\n  s("prod services") --> MON';
+	assert.ok(!core('diagram-shape', draw(titled), at), 'a subgraph title names a group, not instances');
 });
