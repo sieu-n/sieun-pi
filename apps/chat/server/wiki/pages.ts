@@ -84,10 +84,15 @@ export const FRESH_MS = 5_000;
  * more for the pages written since. Only the first call, or one after a failed first read, waits on the engine.
  */
 export class WikiPageList {
+  private readonly engine: Engine;
+  private readonly now: () => number;
   private kept: { at: number; list: Omit<WikiPages, "query" | "refreshing"> } | undefined;
   private reading: Promise<void> | undefined;
 
-  constructor(private readonly engine: Engine, private readonly now: () => number = Date.now) {}
+  constructor(engine: Engine, now: () => number = Date.now) {
+    this.engine = engine;
+    this.now = now;
+  }
 
   async get(q: string, limit = DEFAULT_LIMIT): Promise<WikiPages> {
     const query = q.trim().slice(0, 256);
