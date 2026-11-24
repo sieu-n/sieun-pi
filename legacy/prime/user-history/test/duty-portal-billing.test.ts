@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { DutyMetric } from "../src/shared/chat-duties.ts";
-import { type BillingData, convexAdmin, eventsTable, type Operation, type RequestLine, type UsageRow, expectedCharge, micros, PROBES, reconcile, report } from "../scripts/duties/portal-billing.ts";
+import { type BillingData, convexAdmin, eventsTable, type Operation, type RequestLine, type UsageRow, expectedCharge, micros, PAIR_LEAD_MS, PROBES, reconcile, report } from "../scripts/duties/portal-billing.ts";
 
 const NOW = Date.parse("2026-10-19T16:00:00Z");
 const AT = NOW - 6 * 3_600_000;
@@ -36,6 +36,12 @@ test("a 202 job answer that ends first does not take the row of the 200 beside i
     line("job", "/v1/youtube/live/channel/shorts", 202, AT + 1_060, 287),
   ], [row("r1", "live.youtube.channel_shorts", AT + 3_045)], NOW);
   assert.equal(result.servedFree.length, 0);
+});
+
+test("a charge that lands up to PAIR_LEAD_MS before its line's proxy start still pairs (11-24: 57 charged calls read as served free)", () => {
+  const result = reconcile(OPERATIONS, [line("a", "/v1/intelligence/profile", 200, AT), line("b", "/v1/intelligence/profile", 200, AT + 60_000)],
+    [row("r1", "intelligence.profile", AT - 627, 50_000), row("r2", "intelligence.profile", AT + 60_000 - PAIR_LEAD_MS - 1, 50_000)], NOW);
+  assert.deepEqual(result.servedFree.map(entry => entry.line.rid), ["b"]);
 });
 
 test("a charge that pairs only with a 404 is a charge for an error, and a voided, refunded or crawl job charge is not", () => {

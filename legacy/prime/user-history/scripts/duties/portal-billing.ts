@@ -53,6 +53,8 @@ export const LEDGER_DS: Readonly<Record<Env, string>> = { staging: "estate_ch_st
  * prod row of the last 24 h paired within 3 s past the line's end and 1 s left 173 unpaired, so 10 s holds with room.
  */
 export const PAIR_SLACK_MS = 10_000;
+// measured: on 2026-11-24 the earliest of 1,020 prod charges (self-hosted convex-prod) landed 627 ms before its line's Vercel proxy start, and 0 left 57 unpaired.
+export const PAIR_LEAD_MS = 1_000;
 /** Calls this close to either end of the 24 h window may have their row or line outside it, so they are not judged. */
 export const EDGE_MS = 10 * MINUTE;
 /**
@@ -122,10 +124,10 @@ export function operationMatcher(operations: readonly Operation[]): (method: str
 }
 
 /**
- * Pairs request intervals [start, start + duration + slack] with row times, one row each: requests in order of their end, each taking the
- * earliest free row at or after its start. That order pairs the most requests possible. Returns the pairs, the unpaired requests and rows.
+ * Pairs request intervals [start - lead, start + duration + slack] with row times, one row each: requests in order of their end, each taking
+ * the earliest free row at or after the interval's start. That order pairs the most requests possible. Returns the pairs, the unpaired requests and rows.
  */
-export function pair<R extends { start: number; durationMs: number }, U extends { createdAt: number }>(requests: readonly R[], rows: readonly U[], slackMs: number) {
+export function pair<R extends { start: number; durationMs: number }, U extends { createdAt: number }>(requests: readonly R[], rows: readonly U[], slackMs: number, leadMs = 0) {
   const sortedRows = [...rows].sort((a, b) => a.createdAt - b.createdAt);
   const used = new Array<boolean>(sortedRows.length).fill(false);
   const pairs: [R, U][] = [];
@@ -133,7 +135,7 @@ export function pair<R extends { start: number; durationMs: number }, U extends 
   for (const request of [...requests].sort((a, b) => (a.start + a.durationMs) - (b.start + b.durationMs))) {
     const end = request.start + request.durationMs + slackMs;
     let low = 0, high = sortedRows.length;
-    while (low < high) { const mid = (low + high) >> 1; if (sortedRows[mid]!.createdAt < request.start) low = mid + 1; else high = mid; }
+    while (low < high) { const mid = (low + high) >> 1; if (sortedRows[mid]!.createdAt < request.start - leadMs) low = mid + 1; else high = mid; }
     while (low < sortedRows.length && used[low]) low++;
     if (low < sortedRows.length && sortedRows[low]!.createdAt <= end) { used[low] = true; pairs.push([request, sortedRows[low]!]); }
     else unpaired.push(request);
@@ -161,8 +163,8 @@ export function reconcile(operations: readonly Operation[], requests: readonly R
   const result: Reconciled = { servedFree: [], chargedOnError: [], paired: 0, rows: 0, lineless: 0 };
   for (const op of new Set([...lines.keys(), ...rows.keys()])) {
     const all = lines.get(op) ?? [];
-    const ok = pair(all.filter(line => line.status >= 200 && line.status < 300), rows.get(op) ?? [], PAIR_SLACK_MS);
-    const failed = pair(all.filter(line => line.status >= 300), ok.rowsLeft, PAIR_SLACK_MS);
+    const ok = pair(all.filter(line => line.status >= 200 && line.status < 300), rows.get(op) ?? [], PAIR_SLACK_MS, PAIR_LEAD_MS);
+    const failed = pair(all.filter(line => line.status >= 300), ok.rowsLeft, PAIR_SLACK_MS, PAIR_LEAD_MS);
     if ((price.get(op) ?? 0) > 0) for (const line of ok.unpaired) if (inWindow(line.start)) result.servedFree.push({ op, line });
     for (const [line, row] of failed.pairs)
       if (row.costMicros > 0 && !undone.has(row.requestId) && inWindow(row.createdAt)) result.chargedOnError.push({ op, line, row });
