@@ -260,10 +260,9 @@ export function skillsParts(config: Config, log: (line: string) => void, app: ()
   return { skills, review, db, ready };
 }
 
-export function routes(app: App, parts: SkillsParts): Route[] {
+export function routes(app: App, parts: SkillsParts, wikiPages = new WikiPageList(new WikiEngine(app.config.wikiEngine))): Route[] {
   const str = (value: string | null): string | undefined => (value === null || value === "" ? undefined : value);
   const { skills, review, db } = parts;
-  const wikiPages = new WikiPageList(new WikiEngine(app.config.wikiEngine));
   const refused = (error: unknown): never => {
     throw error instanceof ReviewRefused || error instanceof SkillsRefused ? new BadRequest(error.message) : error;
   };
@@ -638,8 +637,9 @@ export const WRITE_WAIT_MS = 30_000;
 /** How long the server keeps an idle keep-alive connection open; see `serve`. */
 export const KEEP_ALIVE_MS = 100_000;
 
-export function serve(app: App, parts: SkillsParts = skillsParts(app.config, app.log, () => app)): Server {
-  const table = routes(app, parts);
+/** `wikiPages` is the Wiki view's list, which main.ts reads while the server it follows still serves, so a release's first open finds it. */
+export function serve(app: App, parts: SkillsParts = skillsParts(app.config, app.log, () => app), wikiPages?: WikiPageList): Server {
+  const table = routes(app, parts, wikiPages);
   app.socketRead = (path, req) => readRoute(table, path, req);
   const requests = new RequestLog(join(app.config.dataDir, "requests"), app.log);
   const stalls = new LoopStalls();

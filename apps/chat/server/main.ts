@@ -17,6 +17,8 @@ import { projectList } from "./projects.ts";
 import { drain, lingerForwarding, serve, skillsParts, windDown, WRITE_WAIT_MS } from "./http.ts";
 import { seedFixture } from "./fixture/seed.ts";
 import { warmPrompts } from "./agent-prompt.ts";
+import { WikiEngine } from "./wiki/engine.ts";
+import { WikiPageList } from "./wiki/pages.ts";
 import { boostBeforeStop, DataLock, handOverOnHangup, keepUnitEnv, listening, reclaimMain, startWatchdog, systemdEnv, takeFromStray, tellSystemd } from "./handoff.ts";
 
 const loadedMs = Math.round(performance.now());
@@ -59,6 +61,9 @@ if (!port.predecessor) takeLock(port.fd !== null && systemdEnv().NOTIFY_SOCKET ?
 // The skills DB's first ingest runs before the port is taken, and for a successor while the old server still serves (http.ts skillsParts).
 const skillsAt = performance.now();
 const skills = skillsParts(config, log, () => app);
+// Each release starts a new process, and its first Wiki view open waited 230 to 650 ms on the engine on 11-24 (~/work/wiki-page-list/report.md).
+const wikiPages = new WikiPageList(new WikiEngine(config.wikiEngine));
+if (!config.fixture) void wikiPages.get("").catch(() => undefined);
 await skills.ready;
 const skillsMs = Math.round(performance.now() - skillsAt);
 // A successor reads the data dir only once the server it follows stopped and wrote its files (server/handoff.ts).
@@ -106,7 +111,7 @@ const started = await app.start({ loops: false });
 // A fixture server fills its own search index at once, so its first search does not wait for it.
 if (config.fixture) void app.searchEngine.start().catch(() => undefined);
 const servedAt = performance.now();
-const http = (server = serve(app, skills));
+const http = (server = serve(app, skills, wikiPages));
 warmPrompts(app);
 const routesMs = Math.round(performance.now() - servedAt);
 const fd = port.fd;
