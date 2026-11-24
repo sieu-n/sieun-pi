@@ -20,7 +20,8 @@ import { checkCleanup } from "./test-org-cleanup.ts";
  *    (intelligence profile and contact reads) are called here once a UTC day, and the run output lists what each prod call cost.
  * 3. It sorts each answer: 2xx works, an answer that names a proxy supply hold or a paused source is held, an `upstream_*` or `capacity_exhausted`
  *    code is a crawler cause (the portal passes crawler errors on that way), anything else is a portal cause, and a call it could not make or
- *    judge is unprobed. A page-1 answer with a cursor gets one page-2 call. A held route counts as not working in its env's share.
+ *    judge is unprobed. A page-1 answer with a cursor gets one page-2 call. A held route counts as not working in its env's share. A job-mode
+ *    call works only when its job ends ready, never on its 202 receipt alone (jobVerdict).
  * 4. It maps answers to crawler routes through portal-parity.routes.json: an env scores a route its own crawler lists, the route works there
  *    when one of its /v1 operations works there, and a route with no /v1 operation in that env's openapi is missing there.
  * A source it cannot read, an env's crawler openapi included, gives -1 for that env's share, a source_errors count and a flagged slice.
@@ -224,6 +225,70 @@ const BATCH_RUNNING = new Set(["starting", "running"]);
 export const SNAPSHOT_READ = "GET /v1/batch/snapshot/{snapshot_id}";
 /** One progress read a second keeps a job's polls at 60 a minute, under the 100 calls a minute its org may make (ORG_PER_MINUTE). */
 export const BATCH_POLL_MS = 1_000;
+
+/** The open crawl jobs the portal allows one org (MAX_ACTIVE_JOBS_PER_ORG in auto-sns-agent convex/apiPortal/batch/model.ts). */
+export const JOB_SLOTS = 5;
+/**
+ * How long a job-mode probe watches its job before it judges it. Until 11-24 the run cancelled every job but the first about 0.15 s after
+ * its 202 receipt (staging apiPortalCrawlJobs, 05:58Z run) and scored the receipt, so it never saw a job end. A submit that Vent or the
+ * crawler holds keeps its job queued for 30 min since auto-sns-agent f07311cf80, and such a job read as working.
+ */
+export const JOB_DEADLINE_MS = 100_000; // measured: 37 ready 2-page prod jobs ended 2 to 63 s after submit (convex-prod apiPortalCrawlJobs, 11-24), d2's 16 ready staging jobs of 11-08 8 to 96 s, one at 384 s
+export const JOB_POLL_MS = 10_000; // measured: 90% of those 37 prod jobs ended within 20 s, and 5 open jobs read every 10 s take 30 of the org's 100 calls a minute
+const JOB_ENDED = new Set(["ready", "failed"]);
+
+/** The fields of a GET /v1/jobs/{job_id} answer this run reads. */
+export interface JobState { status?: unknown; error?: unknown }
+
+/**
+ * Reads GET /v1/jobs/{job_id} every JOB_POLL_MS until the job is ready or failed, an answer is not 2xx, or `deadline` passes, and gives the
+ * last answer and the number of reads.
+ */
+export async function untilJobEnds(read: () => Promise<{ status: number; body: unknown }>, deadline: number, now: () => number = Date.now,
+  sleep: (ms: number) => Promise<unknown> = ms => new Promise(resolve => setTimeout(resolve, ms))): Promise<{ reads: number; last: { status: number; body: unknown } }> {
+  for (let reads = 1; ; reads++) {
+    const last = await read();
+    const status = (last.body as { data?: JobState } | null)?.data?.status;
+    if (last.status < 200 || last.status >= 300 || JOB_ENDED.has(String(status)) || now() >= deadline) return { reads, last };
+    await sleep(JOB_POLL_MS);
+  }
+}
+
+/**
+ * A job-mode probe's verdict from what its job did, never from the 202 receipt alone: a ready job works; a failed one is the crawler's, or
+ * held when the env's proxy supply is held or its error names a hold; a job someone else cancelled is unprobed. A job still queued at the
+ * deadline was never taken by the crawler, and one still running did not end its 2 pages, so both are the crawler's, or held under a supply
+ * hold. A status read that is not 2xx is sorted as any other answer.
+ */
+export function jobVerdict(last: { status: number; body: unknown }, waitedMs: number, hold: string | null | undefined): { verdict: Verdict; code?: string | undefined; note: string; ended: boolean } {
+  const after = `${Math.round(waitedMs / 1000)} s after its submit`;
+  if (last.status < 200 || last.status >= 300) {
+    const { verdict, code } = classify(last.status, last.body);
+    return { verdict: verdict === "ok" ? "unprobed" : verdict, code, note: `the job's status read answered ${last.status} ${code ?? ""}`.trim(), ended: false };
+  }
+  const job = (last.body as { data?: JobState } | null)?.data;
+  const status = String(job?.status);
+  const error = typeof job?.error === "string" ? job.error : undefined;
+  const heldBy = (code: string, why: string) => hold ? { verdict: "held" as const, code, note: `${why} while the proxy supply is held (${hold})` } : { verdict: "crawler" as const, code, note: why };
+  if (status === "ready") return { verdict: "ok", note: `job ready ${after}`, ended: true };
+  if (status === "failed" && error === "cancelled") return { verdict: "unprobed", code: "job_cancelled", note: `job cancelled ${after} by a caller other than this run`, ended: true };
+  if (status === "failed") {
+    const why = `job failed ${error ?? "with no error"} ${after}`;
+    return error && HELD_ANSWER.test(error) ? { verdict: "held", code: error, note: why, ended: true } : { ...heldBy(error ?? "job_failed", why), ended: true };
+  }
+  if (status === "queued") return { ...heldBy("job_not_started", `job still queued ${after}: the crawler never took its submit`), ended: false };
+  return { ...heldBy("job_not_finished", `job still ${status} ${after}`), ended: false };
+}
+
+/** A count of free slots that `take` waits on and `give` frees, one per open crawl job of an org. */
+export function slotPool(size: number): { take(): Promise<void>; give(): void } {
+  let free = size;
+  const waiting: (() => void)[] = [];
+  return {
+    take: () => free > 0 ? (free--, Promise.resolve()) : new Promise<void>(resolve => waiting.push(resolve)),
+    give: () => { const next = waiting.shift(); if (next) next(); else free++; },
+  };
+}
 /**
  * The longest a docs-example job can run: its 3 rows run at once (MAX_INFLIGHT_PER_ORG is 8 in auto-sns-agent convex/apiPortal/batch/model.ts),
  * and each row makes at most MAX_ITEM_ATTEMPTS 3 calls, each ended by Vercel's 300 s function limit, with retry waits of 10 s and 20 s
@@ -845,29 +910,42 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[]): Promise<
   first.sort(([a], [b]) => lastMs(b) - lastMs(a));
   // A job entry this env does not document is not called: the map holds both grammars' job rows, and each env documents one of them.
   const jobOps = [...new Set(routes.flatMap(route => route.portal).filter(op => op.endsWith(JOB) && all.has(baseOp(op)) && !notScored.has(baseOp(op))))];
-  // The portal allows an org 5 open crawl jobs (the 429 rate_limited message, measured on staging 10-12 and prod 10-15), and a run has more
-  // job-mode entries than that. So job calls go one at a time, and every job after the first, which the chained calls read, is cancelled
-  // as soon as its receipt comes back. The first one is cancelled once the chained calls have read it: on 2026-10-18 a prod run 8 min
-  // after another got 429 'At most 5 crawl jobs' on 8 job rows, because the earlier run's jobs still held the org's slots.
+  // The portal allows an org JOB_SLOTS open crawl jobs (the 429 rate_limited message, measured on staging 10-12 and prod 10-15), and a run
+  // has more job-mode entries than that. So job calls go one at a time, each waits for a free slot of its org, and each job is watched until
+  // it ends or JOB_DEADLINE_MS passes (jobVerdict). A job that has not ended by then is cancelled, except the first, which the chained calls
+  // read and which is cancelled at the run's end: on 2026-10-18 a prod run 8 min after another got 429 'At most 5 crawl jobs' on 8 job rows,
+  // because the earlier run's jobs still held the org's slots.
   const opened: { org: Org; id: string }[] = [];
   const cancel = async (org: Org, id: string) => { if (await cancelJob(base, org, id)) await target.ledger?.drop(id); };
+  const slots = new Map(orgs.map(org => [org, slotPool(JOB_SLOTS)]));
+  const watch = async (org: Org, id: string, receipt: Answer, keep: boolean): Promise<Answer> => {
+    const start = Date.now();
+    const { last } = await untilJobEnds(() => call(org, "GET /v1/jobs/{job_id}", { method: "GET", path: `/v1/jobs/${encodeURIComponent(id)}`, query: {} }, "job status read"), start + JOB_DEADLINE_MS);
+    const { ended, ...judged } = jobVerdict(last, Date.now() - start, target.hold);
+    if (ended) await target.ledger?.drop(id);
+    else if (!keep) await cancel(org, id);
+    if (ended || !keep) slots.get(org)!.give();
+    return { ...receipt, ...judged, note: `${receipt.note}: ${judged.note}` };
+  };
   const jobsRun = (async () => {
-    const results: (ProbeResult & { body: unknown })[] = [];
+    const results: Promise<Answer>[] = [];
     for (const [index, op] of jobOps.entries()) {
       const before = preset(op);
-      if (before) { results.push(before); continue; }
+      if (before) { results.push(Promise.resolve(before)); continue; }
       const operation = all.get(baseOp(op));
       const request = operation && buildRequest(baseOp(op), operation);
-      if (!request || "missing" in request) { results.push({ op, verdict: "unprobed" as const, status: 0, ms: 0, note: request ? request.missing : `not in the ${env} openapi`, body: null }); continue; }
+      if (!request || "missing" in request) { results.push(Promise.resolve({ op, verdict: "unprobed" as const, status: 0, ms: 0, note: request ? request.missing : `not in the ${env} openapi`, body: null })); continue; }
       const org = orgs[index % orgs.length]!;
+      await slots.get(org)!.take();
       const result = await call(org, op, jobRequest(request), "docs example in job mode");
-      const id = chainIds([result.body]).job_id?.value;
-      if (id) await target.ledger?.add(id);
-      if (id && results.some(earlier => chainIds([earlier.body]).job_id)) await cancel(org, id);
-      else if (id) opened.push({ org, id });
-      results.push(result);
+      const id = result.verdict === "ok" ? chainIds([result.body]).job_id?.value : undefined;
+      if (!id) { slots.get(org)!.give(); results.push(Promise.resolve(result)); continue; }
+      await target.ledger?.add(id);
+      const keep = !opened.length;
+      if (keep) opened.push({ org, id });
+      results.push(watch(org, id, result, keep));
     }
-    return results;
+    return Promise.all(results);
   })();
   // Page 2 starts as soon as its own page 1 answers. Waiting for the slowest page 1 left page 2 as little as 30 s on 10-17, and a
   // staging page 2 that answers in 1.5 s alone took over 30 s under the run's own load.

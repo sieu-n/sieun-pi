@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { jobLedger, leftoverJobs } from "../scripts/duties/portal-parity.ts";
+import { JOB_POLL_MS, jobLedger, jobVerdict, leftoverJobs, untilJobEnds } from "../scripts/duties/portal-parity.ts";
 
 test("a run's ledger holds each job it opened until the cancel lands, then deletes its file", async () => {
   const dir = mkdtempSync(join(tmpdir(), "parity-jobs-"));
@@ -25,4 +25,29 @@ test("the next run reads the open jobs of runs whose process is gone and leaves 
   writeFileSync(join(dir, "notes.txt"), "x");
   assert.deepEqual(await leftoverJobs(dir, pid => pid === 222), [{ file: join(dir, "111.json"), ids: ["job_dead"] }]);
   assert.deepEqual(await leftoverJobs(join(dir, "none")), []);
+});
+
+const read = (status: string, error?: string) => ({ status: 200, body: { data: { batch_id: "job_a", status, ...(error ? { error } : {}) } } });
+
+test("a job-mode probe works only once its job ends ready, never on a held, cancelled or unfinished job", () => {
+  // 11-24: d2 cancelled each job 0.15 s after its 202 receipt and scored the receipt, so a held submit would have read as working.
+  assert.equal(jobVerdict(read("ready"), 12_000, null).verdict, "ok");
+  assert.deepEqual(jobVerdict(read("queued"), 100_000, null), { verdict: "crawler", code: "job_not_started", note: "job still queued 100 s after its submit: the crawler never took its submit", ended: false });
+  assert.equal(jobVerdict(read("queued"), 100_000, "geonode lapsed").verdict, "held");
+  assert.equal(jobVerdict(read("running"), 100_000, null).verdict, "crawler");
+  assert.deepEqual(jobVerdict(read("failed", "cancelled"), 3_000, null).verdict, "unprobed");
+  assert.deepEqual(jobVerdict(read("failed", "vent_crawl_paused"), 3_000, null).verdict, "held");
+  assert.deepEqual(jobVerdict(read("failed", "temporarily_unavailable"), 3_000, null), { verdict: "crawler", code: "temporarily_unavailable", note: "job failed temporarily_unavailable 3 s after its submit", ended: true });
+  assert.equal(jobVerdict({ status: 402, body: { error: { code: "insufficient_balance" } } }, 1_000, null).verdict, "unprobed");
+});
+
+test("the job watch reads until the job ends or the deadline passes", async () => {
+  let clock = 0;
+  const sleep = async (ms: number) => { clock += ms; };
+  const answers = [read("queued"), read("running"), read("ready")];
+  const ended = await untilJobEnds(async () => answers.shift()!, 100_000, () => clock, sleep);
+  assert.deepEqual([ended.reads, ended.last], [3, read("ready")]);
+  clock = 0;
+  const late = await untilJobEnds(async () => read("queued"), 3 * JOB_POLL_MS, () => clock, sleep);
+  assert.deepEqual([late.reads, late.last], [4, read("queued")]);
 });
