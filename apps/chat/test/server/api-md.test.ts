@@ -1,6 +1,7 @@
 /**
- * API.md lists every route and live socket message the server has, and only those. A route is each `route(...)` in server/http.ts and
- * server/accounts.ts plus each handler outside that table (OUTSIDE), and it is listed when an API.md table row's endpoint cell starts with
+ * API.md lists every route and live socket message the server has, and only those. A route is each `route(...)` in server/http.ts and in
+ * each file whose route builder http.ts spreads into its table (`...accountRoutes(app, route)`, `routeFiles`), plus each handler outside that
+ * table (OUTSIDE), and it is listed when an API.md table row's endpoint cell starts with
  * `METHOD /path`. A `/api/threads/:id/...` route whose `/api/agents/:id/...` twin exists is listed by either row. The live socket's events
  * and commands are the `type` names of `LiveEvent` and `LiveCommand` in web/src/lib/api/types.ts, listed by the first cell of a row in
  * API.md's "Live socket" tables.
@@ -31,12 +32,28 @@ const OUTSIDE: Array<[route: string, file: string, marker: string]> = [
   ["PATCH /wiki/<path>", "server/wiki/routes.ts", 'req.method === "PATCH"'],
 ];
 
+/**
+ * server/http.ts and the file of each route builder it spreads into its route table with its own `route`, read from its imports, so a new
+ * builder file is read with no change here. The /api/db routes of server/chat-db-routes.ts (dabb9658) are mounted this way.
+ */
+function routeFiles(http: string): string[] {
+  const builders = [...http.matchAll(/^\s*\.\.\.(\w+)\([^\n]*\broute\),$/gm)].map(m => m[1]!);
+  assert.ok(builders.length > 0, "http.ts spreads route builders into its route table");
+  return ["server/http.ts", ...builders.map(name => {
+    const from = new RegExp(`^import \\{[^}]*\\b${name}\\b[^}]*\\} from "\\./([\\w/-]+\\.ts)";$`, "m").exec(http);
+    assert.ok(from, `http.ts imports the route builder ${name} from a server file`);
+    const file = `server/${from[1]}`;
+    assert.ok(read(file).includes(`export function ${name}`), `${file} defines ${name}`);
+    return file;
+  })];
+}
+
 /** Every `METHOD /path` in the route tables, with the board routes built per scope written out for both scopes. */
 function codeRoutes(): Set<string> {
   const http = read("server/http.ts");
   assert.ok(http.includes('(["agents", "threads"] as const).flatMap(scope =>'), "http.ts builds its board routes from the scopes agents and threads");
   const routes = new Set<string>();
-  for (const file of ["server/http.ts", "server/accounts.ts", "server/chat-db-routes.ts"]) {
+  for (const file of routeFiles(http)) {
     const text = read(file);
     const calls = [...text.matchAll(/\broute\(/g)].filter(m => !text.slice(Math.max(0, m.index - 9), m.index).endsWith("function "));
     const found = [...text.matchAll(ROUTE_CALL)];
@@ -99,11 +116,20 @@ function liveRows(md: string, heading: string): Set<string> {
   return rows;
 }
 
+/** The routes in `routes` that have no row in `md`, by their own row or their `/api/agents/:id/...` twin's. */
+function missingRows(routes: Set<string>, md: string): string[] {
+  const listed = listedRoutes(md);
+  return [...routes].filter(r => !listed.has(r) && !(twinOf(r) && routes.has(twinOf(r)!) && listed.has(twinOf(r)!))).sort();
+}
+
 test("API.md has a row for every route the server has", () => {
-  const routes = codeRoutes();
-  const listed = listedRoutes(read("API.md"));
-  const missing = [...routes].filter(r => !listed.has(r) && !(twinOf(r) && routes.has(twinOf(r)!) && listed.has(twinOf(r)!)));
-  assert.deepEqual(missing.sort(), [], "routes with no row in API.md");
+  assert.deepEqual(missingRows(codeRoutes(), read("API.md")), [], "routes with no row in API.md");
+});
+
+test("a route a builder file mounts fails the check when its row is gone (server/chat-db-routes.ts, 11-24)", () => {
+  assert.ok(routeFiles(read("server/http.ts")).includes("server/chat-db-routes.ts"), "the /api/db routes are read from the file http.ts mounts them from");
+  const md = read("API.md").split("\n").filter(line => !/^\| [^|]* \| `(GET|POST) \/api\/db[/`]/.test(line)).join("\n");
+  assert.deepEqual(missingRows(codeRoutes(), md), ["GET /api/db", "GET /api/db/:kind/check", "POST /api/db/:kind/apply"]);
 });
 
 test("every route API.md lists is one the server has", () => {
