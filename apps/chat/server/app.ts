@@ -56,7 +56,7 @@ import { OwnerSettingsStore } from "./owner-settings.ts";
 import { Unfurler } from "./unfurl.ts";
 import { POST_KINDS, postHas, Search } from "./search.ts";
 import { likeRegex, postDocId, SEARCH_DOC_VERSION, SearchEngine, SqliteEntries, type EntrySource, type PostDoc } from "./search-engine.ts";
-import { StoreUsage, storeReader, type UsageSums } from "./usage-store.ts";
+import { STORE_FULL_PULL_MS, StoreUsage, storeReader, type UsageSums } from "./usage-store.ts";
 import { Meili, startOwnMeili, type OwnMeili } from "./meili.ts";
 import type { FixtureHost } from "./host/fixture.ts";
 import { drained } from "./disk.ts";
@@ -362,7 +362,10 @@ export class App {
       if (name === "chat.board") this.boards.docChanged(thread, value);
     };
     this.searchEngine = this.newSearchEngine(routing?.list()[0]!.host ?? host, routing);
-    if (config.usageStore) this.usage = this.storeUsage = new StoreUsage(storeReader(config.usageStore), config.usageStore.table, log);
+    if (config.usageStore) {
+      this.usage = this.storeUsage = new StoreUsage(storeReader(config.usageStore), config.usageStore.table, log, Date.now, STORE_FULL_PULL_MS,
+        join(config.dataDir, "usage-sums.json"));
+    }
     else if (config.fixture && (host as Partial<UsageSums>).usage) this.usage = host as Host & UsageSums;
     else this.usage = { usage: () => Promise.reject(new Error("no usage store: APPS_CHAT_USAGE_STORE names none")) };
     this.search = new Search(this.threads, this.groups, this.searchEngine, room => this.agentStore.postsOf(room));

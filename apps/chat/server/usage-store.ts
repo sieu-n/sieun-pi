@@ -2,7 +2,7 @@
  * Usage from the one store of model calls, the ClickHouse table `ai_usage.model_calls` that a collector on each host fills from every chat client
  * (components/usage-collector). The chat keeps its sums by hour, minute and 10 s in memory, so api/usage answers with no call to the store.
  */
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { BUCKET_MS, RANGE_BUCKETS, RANGE_MS, USAGE_RANGES } from "../web/src/lib/api/shared/usage-range.ts";
 
 /**
@@ -236,14 +236,20 @@ export class StoreUsage implements UsageSums {
   private readonly log: (line: string) => void;
   private readonly now: () => number;
   private readonly fullEvery: number;
+  private readonly snapshot: string | undefined;
+  private restored = false;
+  private restoredAt: number | undefined;
 
   // Plain fields, not parameter properties: pi-host-relay loads this file through config.ts with node's type stripping, which refuses them.
-  constructor(reader: StoreReader, table: string, log: (line: string) => void = () => {}, now: () => number = Date.now, fullEvery: number = STORE_FULL_PULL_MS) {
+  /** `snapshot` is a file the sums are written to after each full read and at stop, and read back by the next server (`restore`). */
+  constructor(reader: StoreReader, table: string, log: (line: string) => void = () => {}, now: () => number = Date.now, fullEvery: number = STORE_FULL_PULL_MS,
+    snapshot?: string) {
     this.reader = reader;
     this.table = table;
     this.log = log;
     this.now = now;
     this.fullEvery = fullEvery;
+    this.snapshot = snapshot;
   }
 
   start(ms = USAGE_PULL_MS): void {
@@ -253,6 +259,49 @@ export class StoreUsage implements UsageSums {
 
   stop(): void {
     clearInterval(this.timer);
+    if (this.read && this.lastError === undefined) this.save(this.goodAt!);
+  }
+
+  /**
+   * Writes the kept sums as of `at` to the snapshot file. A full read of prod through Grafana took 7.4 s at the 11-24 release, and every
+   * call to api/usage after a server start waited for it, so the next server starts from this file instead.
+   */
+  private save(at: number): void {
+    if (!this.snapshot) return;
+    const started = performance.now();
+    const grains = Object.fromEntries(GRAIN_NAMES.map(name => [name, { covered: this.grains[name].covered, sums: [...this.grains[name].sums.values()].flat() }]));
+    writeFileSync(`${this.snapshot}.tmp`, JSON.stringify({ at, fullAt: this.fullAt, grains }));
+    renameSync(`${this.snapshot}.tmp`, this.snapshot);
+    this.log(`usage: wrote the kept sums of ${new Date(at).toISOString()} to ${this.snapshot} in ${Math.round(performance.now() - started)} ms`);
+  }
+
+  /**
+   * Reads the snapshot a server before this one wrote, when it is younger than the tail read's span: the first pull is then a tail read,
+   * which replaces every bucket from the snapshot's time on, so the sums are exact after it and no call waits for a full read.
+   */
+  private restore(): void {
+    this.restored = true;
+    if (!this.snapshot || !existsSync(this.snapshot)) return;
+    const started = performance.now();
+    try {
+      const kept = JSON.parse(readFileSync(this.snapshot, "utf8")) as { at: number; fullAt: number; grains: Record<GrainName, { covered: number; sums: UsageTotal[] }> };
+      if (this.now() - kept.at >= TICKS_KEPT_MS - USAGE_PULL_MS) return;
+      for (const name of GRAIN_NAMES) {
+        const grain = this.grains[name];
+        grain.covered = kept.grains[name].covered;
+        for (const sum of kept.grains[name].sums) {
+          const list = grain.sums.get(sum.bucket);
+          if (list) list.push(sum);
+          else grain.sums.set(sum.bucket, [sum]);
+        }
+      }
+      this.fullAt = kept.fullAt;
+      this.restoredAt = kept.at;
+      this.sumDays(-Infinity);
+      this.log(`usage: read the kept sums of ${new Date(kept.at).toISOString()} from ${this.snapshot} in ${Math.round(performance.now() - started)} ms`);
+    } catch (error) {
+      this.log(`usage: the snapshot ${this.snapshot} did not read: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   /** Reads the store; a pull while one runs waits for that one. */
@@ -262,6 +311,7 @@ export class StoreUsage implements UsageSums {
   }
 
   private async pullOnce(): Promise<void> {
+    if (!this.restored) this.restore();
     const now = this.now();
     const full = now - this.fullAt >= this.fullEvery;
     const from = Object.fromEntries(GRAIN_NAMES.map(grain => {
@@ -274,6 +324,11 @@ export class StoreUsage implements UsageSums {
       rows = rowsOf(await this.reader.query(pullSql(this.table, from, full)));
     } catch (error) {
       // Logged once as the store stops answering, not at each 2 s pull. The kept sums stay, and a report says how old they are.
+      // A store that fails the first tail read after a restore leaves the snapshot's sums, shown as of their time.
+      if (!this.read && this.restoredAt !== undefined) {
+        this.read = true;
+        this.goodAt = this.restoredAt;
+      }
       if (this.lastError === undefined) {
         const message = error instanceof Error ? error.message : String(error);
         this.log(this.read ? `usage: the store stopped answering, so reports carry the sums of ${new Date(this.goodAt!).toISOString()}: ${message}` : `usage: the store is not reachable: ${message}`);
@@ -302,6 +357,7 @@ export class StoreUsage implements UsageSums {
     this.read = true;
     this.lastError = undefined;
     this.goodAt = now;
+    if (full) this.save(now);
   }
 
   /** When the kept sums were last read, while the store has failed every read since; else undefined. */

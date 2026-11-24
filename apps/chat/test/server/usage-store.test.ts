@@ -5,8 +5,8 @@
  * Run from the repo root: node apps/chat/scripts/spec-clean.mjs --files <changed files> -- node --test --test-force-exit test/server/usage-store.test.ts
  */
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { createServer, type Server } from "node:http";
 import { after, before, test } from "node:test";
 import { join } from "node:path";
@@ -275,4 +275,32 @@ test("a failed read keeps the last sums and marks them stale, logged once, and t
   fail = false;
   await fresh.pull();
   assert.equal((await fresh.usage({ since: hour, until: hour + HOUR, bucketMs: HOUR }))[0]!.cost, 3, "a failed first read keeps retrying");
+});
+
+test("a server starts from the snapshot the last one wrote, and its first read is a tail read, so no call waits for a full read", async () => {
+  const hour = NOW - (NOW % HOUR);
+  const columns: Columns = {
+    grain: ["hour"], bucket: [hour], host: ["us-metal02"], client: ["prime"], agent: [""], thread_or_session: ["t1"], thread_name: [""], model: ["m"],
+    turns: [3], input: [10], output: [20], cache_read: [0], cache_write: [0], cost_input: [1], cost_output: [2], cost_cache_read: [0], cost_cache_write: [0], unpriced: [0],
+  };
+  const snapshot = join(mkdtempSync(join(tmpdir(), "usage-snapshot-")), "usage-sums.json");
+  let now = NOW;
+  const asked: string[] = [];
+  const reader = { query: async (sql: string) => (asked.push(sql), columns) };
+  const first = new StoreUsage(reader, "t", () => {}, () => now, 600_000, snapshot);
+  await first.pull();
+  assert.match(asked[0]!, /FINAL/, "the first server's first read is a full read");
+  first.stop();
+  now += 60_000;
+  const lines: string[] = [];
+  const next = new StoreUsage(reader, "t", line => lines.push(line), () => now, 600_000, snapshot);
+  const report = await usageReport(next, threads, { range: "24h" }, now);
+  assert.doesNotMatch(asked[1]!, /FINAL/, "the next server's first read is a tail read");
+  assert.equal(report.rows[0]!.cost.total, 3);
+  assert.match(lines[0]!, /read the kept sums of/);
+
+  now += 11 * 60_000;
+  const late = new StoreUsage(reader, "t", () => {}, () => now, 600_000, snapshot);
+  await late.pull();
+  assert.match(asked.at(-1)!, /FINAL/, "a snapshot older than the tail read's span is left, and the first read is a full read");
 });
