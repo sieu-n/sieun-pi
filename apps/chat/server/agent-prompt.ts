@@ -59,7 +59,10 @@ class Builder {
   /** Whether it answered a build: until then a call waits for node, tsx and the imports, 3 to 9 s at load 120 to 235 on 11-24. */
   ready = false;
 
-  constructor(readonly tree: string) {
+  readonly tree: string;
+
+  constructor(tree: string) {
+    this.tree = tree;
     builderStarts += 1;
     this.child = spawn(process.execPath, ["--import", "tsx", join(import.meta.dirname, "agent-prompt-child.ts"), tree], { cwd: join(tree, "packages"), stdio: ["pipe", "pipe", "pipe"] });
     createInterface({ input: this.child.stdout, crlfDelay: Infinity }).on("line", line => this.answer(line));
@@ -131,19 +134,19 @@ function builderWarm(app: App): boolean {
 }
 
 /**
- * Starts the builder of the live server (main.ts) and builds each of this box's agents once, which stores each answer for the next start,
- * and does it again when the box's pi-host tree changes, which `install-pi-host-box.mjs` does by moving its `current` link. A fixture's, a
- * test's or a rig's builder starts at its first call.
+ * Starts the builder of the live server (main.ts) with one build of one of this box's agents, which loads Prime's modules, and does it
+ * again when the box's pi-host tree changes, which `install-pi-host-box.mjs` does by moving its `current` link. Every other agent's first
+ * read meanwhile answers from its stored answer. A build of each of the 234 agents at each start, walks' test agents included, held
+ * 75 MB of stored answers on 11-24 and queued a page's build behind them in the child. A fixture's, a test's or a rig's builder starts at
+ * its first call.
  */
 export function warmPrompts(app: App): void {
   if (app.config.fixture) return;
-  const warm = async () => {
-    for (const record of app.agents.list()) {
-      if (record.archived || !app.threads.agent(record.id) || (app.routing?.boxOf(record.workThread) ?? app.config.box) !== app.config.box) continue;
-      await agentPrompt(app, record.id).catch(error => app.log(`prompt: ${record.id} did not build: ${error instanceof Error ? error.message : String(error)}`));
-    }
+  const warm = () => {
+    const first = app.agents.list().find(record => !record.archived && !record.test && app.threads.agent(record.id) && (app.routing?.boxOf(record.workThread) ?? app.config.box) === app.config.box);
+    if (first) void agentPrompt(app, first.id).catch(error => app.log(`prompt: the builder did not warm: ${error instanceof Error ? error.message : String(error)}`));
   };
-  void warm();
+  warm();
   const installed = process.env.PI_HOST_DIR ?? join(homedir(), ".local/share/pi-host/current");
   try {
     watch(dirname(installed), (_event, name) => {
@@ -154,7 +157,7 @@ export function warmPrompts(app: App): void {
       } catch {
         return;
       }
-      if (builder?.tree !== tree) void warm();
+      if (builder?.tree !== tree) warm();
     }).unref();
   } catch (error) {
     app.log(`prompt: no watch on ${dirname(installed)}: ${error instanceof Error ? error.message : String(error)}`);
