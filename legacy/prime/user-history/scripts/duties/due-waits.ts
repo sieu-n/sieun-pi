@@ -1,9 +1,9 @@
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { WAIT_COMMIT } from "../../src/checkin-load.ts";
-import { OPEN, parkedBy, walk } from "../../src/checkin-steps.ts";
+import { OPEN, walk } from "../../src/checkin-steps.ts";
 import { firstClause } from "../../src/shared/chat-board.ts";
-import { heldByTodo } from "../../src/shared/todo-hold.ts";
+import { ownerHold } from "../../src/shared/todo-hold.ts";
 import type { ChatBoard } from "../../src/shared/types.ts";
 
 /**
@@ -119,8 +119,9 @@ export function landCarry(repo: string, ref: (branch: WaitBranch) => string = br
 export interface DueWait { chat: string; id: string; text: string; waitFor: string; branch: WaitBranch; commits: string[]; land?: Land }
 
 /**
- * The open leaf steps of each board whose wait on a land or promote (`waitOnCommits`) came true. A step an open For you todo holds
- * (`heldByTodo`, or a todo's step field) or an owner correction parks (`parkedBy`) waits on the owner, not the land, and is left out.
+ * The open leaf steps of each board whose wait on a land or promote (`waitOnCommits`) came true. A step that `ownerHold` holds (an open For
+ * you todo, the owner's own sign-in prompt or an owner correction that parks it) or a todo's step field links waits on the owner, not the
+ * land, and is left out.
  * A commit in staging's own history is a land commit, which exists only once it landed, so a staging wait that names one names the build its
  * work runs on and waits on no land: product guy's p170 on 11-09 waited for "16 re-walkers ... recheck every first-walk defect on staging
  * 10a9ac9 (land 10a9ac9deb holds all 24 fixes)". The wait's time cannot tell this apart, since metal-management's p232 wrote its promote wait
@@ -135,7 +136,7 @@ export async function dueWaits(boards: ReadonlyMap<string, ChatBoard | null | un
     walk(board?.plan ?? [], item => {
       const on = waitOnCommits(item.waitFor);
       if (!on || !OPEN.has(item.status) || item.children.some(child => OPEN.has(child.status))) return;
-      if (asked.has(item.id) || heldByTodo(item, todos) || parkedBy(item) !== undefined) return;
+      if (asked.has(item.id) || ownerHold(item, todos) !== undefined) return;
       steps.push({ id: item.id, text: item.text, waitFor: item.waitFor!, on });
     });
     for (const step of steps) {

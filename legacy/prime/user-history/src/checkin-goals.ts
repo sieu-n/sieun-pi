@@ -2,7 +2,7 @@ import type { MetricFact } from "./checkin-done.ts";
 import { keyNamesGoal } from "./goal-readings.ts";
 import { stepCarrier, stepCarriers } from "./checkin-end-state.ts";
 import { type HostHold, holdWords } from "./shared/host-hold.ts";
-import { heldByTodo } from "./shared/todo-hold.ts";
+import { type HoldingTodo, ownerHold } from "./shared/todo-hold.ts";
 import { GOAL_PUSH_LINK, openGoals, targetOp, targetStaleMs, walkGoal } from "./shared/chat-board.ts";
 import { CHECK_IN_DUTY_ID } from "./shared/chat-duties.ts";
 import { parseDutyLink, sessionBornAt } from "./shared/duty-fixes.ts";
@@ -312,18 +312,18 @@ export function goalOwner(goal: PlanItem, views: readonly StepView[], items: Ite
 
 /**
  * The items that hold a goal on the owner's answer, or undefined. The goal is held when its own wait or its push step is held by an open For you
- * todo (`heldByTodo`), whatever its other steps do: AI harness p453 "duties green" waited on t51 through its push step p530 from 10-17 23:10Z,
+ * todo or the owner's own sign-in prompt (`ownerHold`), whatever its other steps do: AI harness p453 "duties green" waited on t51 through its push step p530 from 10-17 23:10Z,
  * while p523 and p528 under it were live, and goal_gaps flagged it 27 times in a row. It is also held when every open step under it besides its
  * push step is For you or parked by his correction, with at least one For you. frontend bro 10-16 to 10-18: p106 "Connections parts the owner
  * accepts" 0 of 5 and p118 "Email parts the owner accepts" 0 of 3 waited on For you t28 and t25, with every part built and walked on Staging,
  * and goal_gaps counted both in 14 check-ins in a row, each one steering the push jobs again. A goal whose open steps are all parked by his
  * correction is held the same way: frontend bro p62 kept no number on purpose, because with one its c40-parked p52 and p31 read as no live job.
  */
-export function ownerHeld(goal: PlanItem, views: readonly StepView[], todos: Parameters<typeof heldByTodo>[1] = []): string[] | undefined {
+export function ownerHeld(goal: PlanItem, views: readonly StepView[], todos: readonly HoldingTodo[] = []): string[] | undefined {
   const named = new Set(goal.waitFor?.match(/\bt\d+\b/g) ?? []);
   if (todos.some(todo => todo.from === "agent" && !todo.done && (todo.step === goal.id || (todo.id !== undefined && named.has(todo.id))))) return [goal.id];
   const push = views.find(view => view.goal?.id === goal.id && view.item.duty === GOAL_PUSH_LINK);
-  if (push && heldByTodo(push.item, todos)) return [push.item.id];
+  if (push && ownerHold(push.item, todos) !== undefined) return [push.item.id];
   const open = views.filter(view => view.goal?.id === goal.id && view.item.duty !== GOAL_PUSH_LINK);
   const held = open.filter(view => view.cls === "foryou" || view.cls === "parked");
   return held.length && held.length === open.length ? held.map(view => view.cls === "parked" ? `${view.item.id} (parked by ${view.parked})` : view.item.id) : undefined;

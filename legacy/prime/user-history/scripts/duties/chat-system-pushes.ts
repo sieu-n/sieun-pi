@@ -1,7 +1,7 @@
 import { LIVE_GAP_MS, OPEN, walk } from "../../src/checkin-steps.ts";
 import { listedSessions } from "../../src/daemon-faults.ts";
 import { turnError } from "../../src/shared/credential-wait.ts";
-import { heldByTodo } from "../../src/shared/todo-hold.ts";
+import { ownerHold } from "../../src/shared/todo-hold.ts";
 import type { ChatBoard, PlanItem } from "../../src/shared/types.ts";
 
 /**
@@ -26,7 +26,7 @@ export interface Push { at: number; chat: string; tag: string; items: string[]; 
 export interface PushCheck { push: Push; delivered: boolean; read: boolean; jobStarted: boolean; away?: string; settled?: boolean }
 
 /**
- * Whether every step a push named has closed on the chat's board since, or waits on an open For you todo (`heldByTodo`), and every duty it
+ * Whether every step a push named has closed on the chat's board since, or the owner holds it (`ownerHold`), and every duty it
  * named is no longer red (`redDuties`, the chat's red duty ids, less those red only on counts that age out): then the chat acted and owes no followup. On 10-24 the 23:10 run asked to steer ops guy again about p475, which the chat had dropped as a duplicate of p450,
  * whose job sleeps on a wake, and the 20:53Z run asked to steer ops guy again about p518, which waited only on the owner's t34.
  */
@@ -39,7 +39,7 @@ export function pushSettled(board: ChatBoard | null, items: readonly string[], r
     // "p30, p38, checkin" after its check-in went green at 10:02Z and both steps were done or held on For you t11.
     if (/^(?:d\d+|checkin)$/.test(id)) return !redDuties.has(id);
     const step = steps.get(id);
-    return step !== undefined && (!OPEN.has(step.status) || heldByTodo(step, board.todos));
+    return step !== undefined && (!OPEN.has(step.status) || ownerHold(step, board.todos) !== undefined);
   });
 }
 

@@ -5,7 +5,7 @@ import { savedStatePath } from "./job-resume.ts";
 import type { OwnerMessage } from "./shared/brief-check.ts";
 import type { StalledCall } from "./shared/stalled-calls.ts";
 import { stepIds } from "./shared/step-ids.ts";
-import { parkedBy } from "./shared/todo-hold.ts";
+import { ownerPromptWait, parkedBy } from "./shared/todo-hold.ts";
 import { slotParkWords, type SlotPark } from "./slot-park.ts";
 
 export { parkedBy };
@@ -465,7 +465,8 @@ const reportedWait = (job: JobFact): boolean => job.state === "ended" && job.can
 /**
  * The class of one open leaf step at a tick; every chat converges to steps that are `live`, `foryou` or `waiting`. `live`: its owner is a job
  * at work, a thread active in the last STEP_STALE_MS, or the chat itself on a step it changed in that time. `foryou`: an open owner todo covers
- * it (`todoForStep`). `waiting`: its `waitUntil` is ahead, or its `waitFor` (or thread owner) has seen progress within STEP_STALE_MS. The three
+ * it (`todoForStep`), or its wait names the owner's own sign-in prompt (`ownerPromptWait`, c178), which takes no todo. AI harness p1664 waited
+ * for "the owner's own password for krenerd77@naver.com's Naver mail", and two check-ins in a row on 11-24 flagged it in stalled_steps. `waiting`: its `waitUntil` is ahead, or its `waitFor` (or thread owner) has seen progress within STEP_STALE_MS. The three
  * the chat must act on at once: `due` (its `waitUntil` passed and it has not changed since), `stale-chase` (it waits on another thread or an
  * event with no progress for STEP_STALE_MS), `orphan` (no live owner, no todo, no wait).
  */
@@ -485,7 +486,7 @@ export function stepClass({ item, changedAt, mine, owner, openTodos, parked }: S
   if (owner?.state === "working") return "live";
   if (parked !== undefined) return "parked";
   if (thread && owner!.state !== "failed" && now - (owner!.activityAt ?? 0) < STEP_STALE_MS) return "live";
-  if (todoForStep(item, openTodos)) return "foryou";
+  if (todoForStep(item, openTodos) || ownerPromptWait(item)) return "foryou";
   const until = Date.parse(item.waitUntil ?? "");
   if (Number.isFinite(until) && until > now) return "waiting";
   if (Number.isFinite(until) && changedAt < until) return "due";

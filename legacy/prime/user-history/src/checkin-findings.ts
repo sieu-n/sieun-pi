@@ -11,7 +11,7 @@ import { ago, clip, CLOSED, type JobFact, OPEN, ownerLabel, ownerFact, ownerOf, 
 import type { CiRun, Train, TrainRun } from "./checkin-load.ts";
 import { type Movers, outsideMover, stepCarrier } from "./checkin-end-state.ts";
 import { stepSessions } from "./unmoved-steps.ts";
-import { heldByTodo, type HoldingTodo, waitRefs } from "./shared/todo-hold.ts";
+import { type HoldingTodo, ownerHold, waitRefs } from "./shared/todo-hold.ts";
 import { localTime } from "./checkin-settings.ts";
 import { GOAL_PUSH_LINK, type GoalPush } from "./checkin-goals.ts";
 
@@ -145,7 +145,7 @@ export function heldElsewhere(views: readonly StepView[], board: ChatBoard | nul
   // threads asleep on their own CI runs 39081582639 and 39072950667, and p200 was flagged 13 more times.
   const todos = board?.todos ?? [];
   const holder = (view: StepView): { id: string; name: string } | undefined => {
-    if (view.mine || view.cls === "foryou" || view.owner?.wake !== undefined || heldByTodo(view.item, todos)) return undefined;
+    if (view.mine || view.cls === "foryou" || view.owner?.wake !== undefined || ownerHold(view.item, todos) !== undefined) return undefined;
     const thread = view.owner ? view.owner.key.startsWith("thread:") ? { id: view.owner.key.slice("thread:".length), name: view.owner.name } : undefined
       : waitTarget(view.item.waitFor, rows, self);
     return thread && !paused.has(thread.id) ? other(thread) : undefined;
@@ -778,8 +778,8 @@ const othersWord = (text: string | undefined): string | undefined =>
 /**
  * An open step blocked on CI, the release queue or another thread with nobody fixing it (W56, owner 10-10: when CI or the like blocks
  * a step, work out how to fix it and get involved): it waits (a waitFor, or blocked), its waitFor names such a blocker or another thread, it has not changed for BLOCKED_MS, and no job of it is working (an owner thread whose heartbeats keep it
- * live works, `liveThreads`). The step's own owner thread is never its blocker; a CI run id its waitFor names is named as the blocker. A step an open For you todo covers
- * (`heldByTodo`, whatever its class) waits on the owner, not on others (AI harness 10-12: p288 on t41 and p277 on t42 read as blocked on a release and on SEO guy). A step parked on
+ * live works, `liveThreads`). The step's own owner thread is never its blocker; a CI run id its waitFor names is named as the blocker. A step an open For you todo or
+ * the owner's own sign-in prompt holds (`ownerHold`, whatever its class) waits on the owner, not on others (AI harness 10-12: p288 on t41 and p277 on t42 read as blocked on a release and on SEO guy). A step parked on
  * schedule or on a release train that moves (`parkedWait`) is not blocked yet, and neither is a step whose owner or blocker thread sleeps on a
  * board.wake the service still owes (`asleep`; launch main bro 10-14: "release driver thread is idle" on p53 and p75 while the release driver
  * waited on its 14:40Z wake). `on` names the blocker.
@@ -906,7 +906,7 @@ export function queueHolds(view: Pick<StepView, "item" | "owner" | "mine">, queu
   return target !== undefined && queued.has(target.id);
 }
 export function blockedOnOthers(views: readonly StepView[], rows: readonly Pick<SessionRow, "id" | "name" | "archived">[], self: ReadonlySet<string>, now: number,
-  train?: Train, queued: ReadonlyMap<string, unknown> = new Map(), asleep: ReadonlySet<string> = new Set(), todos: Parameters<typeof heldByTodo>[1] = [],
+  train?: Train, queued: ReadonlyMap<string, unknown> = new Map(), asleep: ReadonlySet<string> = new Set(), todos: readonly HoldingTodo[] = [],
   movers: Pick<Movers, "steps"> = {}): BlockedStep[] {
   return views.flatMap(view => {
     const { item, owner } = view;
@@ -916,7 +916,7 @@ export function blockedOnOthers(views: readonly StepView[], rows: readonly Pick<
     // A step an open For you todo holds waits on the owner even when `stepClass` reads it live first, for an owner thread active in the last
     // STEP_STALE_MS (vent 10-21, p7 waits for "t13 answer from the owner ..." and read "blocked on promote for 3 d" in 10 check-ins in a row).
     if ((item.waitFor === undefined && item.status !== "blocked") || owner?.state === "working" || view.cls === "parked" || view.cls === "foryou" ||
-      heldByTodo(item, todos) || now - view.changedAt <= BLOCKED_MS || parkedWait(item, view.changedAt, now, train, rows, self) || queueHolds(view, queued, rows, self)) return [];
+      ownerHold(item, todos) !== undefined || now - view.changedAt <= BLOCKED_MS || parkedWait(item, view.changedAt, now, train, rows, self) || queueHolds(view, queued, rows, self)) return [];
     // The step's own owner thread is never its blocker (Crawler VP 10-13, p147 read "blocked on the meta ads thread", its owner); a thread its
     // waitFor names is.
     const thread = waitTarget(item.waitFor, rows, self);

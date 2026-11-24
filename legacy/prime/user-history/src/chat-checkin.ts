@@ -20,7 +20,7 @@ import { upkeepWords } from "./shared/upkeep-title.ts";
 import { CHECK_IN_MS, clockTime, localTime } from "./checkin-settings.ts";
 import { turnErrorCause } from "./turn-error.ts";
 import { agentMessageHead } from "./no-report.ts";
-import { heldByTodo, ownerPromptWait } from "./shared/todo-hold.ts";
+import { ownerHold, ownerPromptWait } from "./shared/todo-hold.ts";
 import { endState, endStateKpi, endStateLine, type EndStateView, hostHeld, type Movers, OK_STATES, stepCarrier, stepCarriers, stuckLine, withWaitHolds } from "./checkin-end-state.ts";
 import { goalDueLine, goalGap, type GoalMemo, goalLine, goalPromptLine, type GoalPush, goalPushes, goalsDetail, goalsHeadline, pushNeeded, threadPaused } from "./checkin-goals.ts";
 import { type JobMemo, type JobPush, jobPushes } from "./checkin-jobs.ts";
@@ -196,7 +196,7 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
       fact => !fact.name.startsWith("check-in ") && ownJob(fact),
       view => steps[view.item.id] ? recordedAt(steps[view.item.id]!) : view.changedAt,
       { job: fact => threadPaused(fact, fact, paused),
-        step: view => view.cls === "foryou" || view.cls === "parked" || waitBound(view) || heldByTodo(view.item, openTodos) || Date.parse(view.item.waitUntil ?? "") > now ||
+        step: view => view.cls === "foryou" || view.cls === "parked" || waitBound(view) || ownerHold(view.item, openTodos, active) !== undefined || Date.parse(view.item.waitUntil ?? "") > now ||
           threadPaused(view.owner, view.item, paused) });
   const end = context.boardError ? [] : withWaitHolds(goaled.map(view => endState(view, board?.todos ?? [], context.rows ?? [], self, now, facts, movers)));
   // A step held on an offline box (`host_held`) is listed there alone: no job of the chat can be started, steered or read on that box until it is
