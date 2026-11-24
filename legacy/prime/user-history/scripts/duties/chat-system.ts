@@ -448,11 +448,14 @@ export function withCatalogOwners(plan: { ownerActivity?: ReadonlyMap<string, nu
  * way: at 07:01Z d9 counted CI and RepoOps' d4, whose 06:56Z verify job got a slot wait as its first reply and was parked to 08:16Z.
  * So does a job whose tree has a turn working or queued in pi-pool (`poolTrees`), as the duty runner's `treeWait` reads a subagent's wait: at
  * 16:03Z on 10-22 d9 counted Prospect feature bro's d2 while its 21:00 job waited on a subagent queued in pi-pool from 15:17Z to 16:05Z.
+ * So does a run the duty runner is measuring now (`measuringRuns`), whose record will judge the duty again.
  */
 export function withoutWorkingRuns<T extends { chat: string; duty: string }>(stuck: readonly T[], runs: ReadonlyMap<string, readonly DutyRunRecord[]>,
-  rows: readonly CatalogRow[], now: number, poolCut: ReadonlySet<string> = new Set(), poolTrees: ReadonlySet<string> = new Set()): T[] {
+  rows: readonly CatalogRow[], now: number, poolCut: ReadonlySet<string> = new Set(), poolTrees: ReadonlySet<string> = new Set(),
+  measuring: ReadonlySet<string> = new Set()): T[] {
   const at = new Map(rows.map(row => [row.sessionId, rowWorks(row, now) ? now : ms(row.lastActivityAt)] as const));
   return stuck.filter(entry => {
+    if (measuring.has(`${entry.chat}/${entry.duty}`)) return false;
     const own = (runs.get(entry.chat) ?? []).filter(run => run.duty === entry.duty);
     const last = own.find(run => run.job !== undefined);
     const wrote = last?.job ? at.get(last.job.id) ?? 0 : 0;
@@ -461,6 +464,29 @@ export function withoutWorkingRuns<T extends { chat: string; duty: string }>(stu
     const cut = last?.cut ?? (last?.job && !last.after && poolCut.has(last.job.id) ? true : undefined);
     return !(cut && (last!.trigger !== "rerun" || cut === true || transientTurnError(cut.error)) && !own.some(run => run.rerunOf === last!.at));
   });
+}
+
+/**
+ * How long a duty run's `<dutyId>.measuring.json` marker reads as a run still measuring. The longest finished run in the runs files of every
+ * chat on 11-24 took 6,316,531 ms (105 min, CI and RepoOps' d2 rerun on 10-20) over 14,082 measured runs of standing duties, and the next took 936,424 ms.
+ * A marker older than this belongs to a run the server lost, and the duty counts as stuck again.
+ */
+export const MEASURING_FRESH_MS = 106 * 60_000;
+
+/**
+ * The `<chat>/<duty>` keys of the duties whose own run measures now: the duty runner writes `<dutyId>.measuring.json` at the start of the
+ * measure and removes it at the record. At 15:12:22Z on 11-24 d9 read api portal vp's d2 as stuck on its 11:06Z miss while its verify run,
+ * measuring since 15:08:15Z, recorded met at 15:13:00Z, so d9 pushed the chat and asked for a root-cause job on duties_green_pct for nothing.
+ */
+export async function measuringRuns(dataDir: string, duties: readonly { chat: string; duty: string }[], now: number): Promise<Set<string>> {
+  const store = new DutyStore(dataDir);
+  const out = new Set<string>();
+  for (const { chat, duty } of duties) {
+    const text = await readFile(join(store.chatDir(chat), `${duty}.measuring.json`), "utf8").catch(() => null);
+    const at = text === null ? undefined : (() => { try { return (JSON.parse(text) as { at?: unknown }).at; } catch { return undefined; } })();
+    if (typeof at === "number" && now - at <= MEASURING_FRESH_MS) out.add(`${chat}/${duty}`);
+  }
+  return out;
 }
 
 /** The jobs of the stuck duties' newest runs, with no after-job measure and no recorded cut, whose transcript on either box ends on a pool wait. */
@@ -1010,7 +1036,8 @@ async function main(): Promise<void> {
   const owned = planCounts({ ...plan, ...owners, away: new Set(away.map(host => host.name)), hosts: copyHosts([...parsed, ...await mirroredSessions()], self), holds: hostHolds(away) });
   const runsByChat = new Map(plan.chats.map(chat => [chat.id, chat.runs]));
   const poolCut = await poolCutJobs(owned.redDuties, runsByChat, id => listedSessions(copies, [id]).get(id)?.file);
-  const counts = { ...owned, redDuties: withoutWorkingRuns(owned.redDuties, runsByChat, rows, now, poolCut, await poolTrees()) };
+  const measuring = await measuringRuns(dataDir, owned.redDuties, now);
+  const counts = { ...owned, redDuties: withoutWorkingRuns(owned.redDuties, runsByChat, rows, now, poolCut, await poolTrees(), measuring) };
   const text = (chat: string, id: string): string | undefined => {
     let found: string | undefined;
     walk(plan.boards.get(chat)?.plan ?? [], item => { if (item.id === id) found = item.text; });
