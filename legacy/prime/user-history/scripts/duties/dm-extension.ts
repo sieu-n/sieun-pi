@@ -52,16 +52,16 @@ import { DAY, REPO, settle, SOURCE_DEADLINE_MS, unmeasuredFlag, utc } from "./es
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DUTY_FILE = join(HERE, "dm-extension.duty.json");
 /**
- * The two test accounts by handle. The replier was @glenmyftiu945 (prod 264) until 11-20, when Instagram answered each of its sends
- * with field_exception and sentry_block_user_info from two exits (wiki agents/chrome-extension/jobs/2026/11/20/0640-dm-ext-205-thread-check).
- * @gimnayeon1396 (prod 285) sent to the sender from its box exit on 11-20 (wiki agents/chrome-extension/jobs/2026/11/20/0707-dm-extension-new-replier-account).
- * The sender was @caiyiting8674 (prod 206) until 11-24, when Instagram answered its sends to 285 with field_exception at 05:56Z and
- * again at 13:53Z (wiki agents/chrome-extension/jobs/2026/11/24/1445-dm-extension-prod-link-check). @sena354689 (prod 56) holds
- * only our session (Crawler guy, 11-24), but Instagram sent its first d1 run to /accounts/suspended/ at 14:09Z on 11-24, so the
- * second spare @andishyti693 (prod 212) sends.
+ * The two test accounts by handle: @eugene66511 (prod 254) sends and @luishoxha86939 (prod 251) replies since 11-25, both of lot
+ * g2g-PAWQ, never read through our own server IPs, with no quarantine event, only our sessions, and kept from fleet use through
+ * engage.reserved_accounts (Crawler guy, wiki agents/crawler-guy/jobs/2026/11/25/0015-dm-test-pair). Every test sender of 11-24
+ * got limited by Instagram within an hour of its first rig use: @caiyiting8674 (206) with field_exception after the replier
+ * @gimnayeon1396 (285), which another party also used, blocked it, @sena354689 (56) with /accounts/suspended/ and @andishyti693
+ * (212) with send_restricted after its first DM (wiki agents/chrome-extension/jobs/2026/11/25/0007-dm-test-sender-limits).
+ * Backups are 257 and 270.
  */
-export const SENDER = "andishyti693";
-export const REPLIER = "gimnayeon1396";
+export const SENDER = "eugene66511";
+export const REPLIER = "luishoxha86939";
 /** GET /ops/engage/browser-jar on the staging crawler (crawler-v3 engage/browser_jar.py), which asks prod for an account staging does not hold. */
 export const BROWSER_JAR = "https://staging-crawler.virev.ai/ops/engage/browser-jar";
 export const WORLD = "dm-ext-duty";
