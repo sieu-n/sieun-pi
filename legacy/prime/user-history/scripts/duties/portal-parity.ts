@@ -339,6 +339,8 @@ const CRAWLER_CAPACITY = "capacity_exhausted";
  */
 const CRAWLER_CLOSED = "temporarily_unavailable";
 const JOB_FINISHED = "job_finished";
+/** The crawl gate's refusal of an org it does not admit; every org this run calls is admitted, so the fix is in the crawler. */
+const CRAWL_UNPAID = "crawl_unpaid_paused";
 /**
  * The portal's unbilled 503 when the crawler paused the source on purpose: a crawler `pipeline_paused`, or a /v1/media slot whose page refresh
  * an operator pause holds, which the crawler marks with x-crawler-held (auto-sns-agent apps/api-portal media route). On 11-20 at 11:05Z a
@@ -359,11 +361,12 @@ export function errorCode(body: unknown): string | undefined {
  * 503 proxy_provider_down says "upstream temporarily unavailable" (crawler-v3 http/errors.py PUBLIC_SUPPLY_ERROR), which the portal passes on
  * as 503 upstream_error, and a switched-off Vent integration says "is switched off on this Vent" (vent proxy.py). On 11-20 at 11:21Z prod
  * answered 35 calls this way, 18 of them /v1/crawl presets, and staging 20, and d2 read them as 20 routes failing in the crawler.
- * The crawler's crawl gate (crawler-v3 control/crawl_gate.py, owner p42 on 2026-11-22) refuses each crawl read of a workspace Convex does
- * not list as a customer with 409 crawl_unpaid_paused, and the portal passes it on as 502 upstream_error with the gate's words. Every test org this run calls is one of Virev's own, so on 11-23 at
- * 06:04Z each tier answered 34 YouTube, LinkedIn, TikTok and Xiaohongshu reads this way and d2 read them as 34 routes failing in the crawler.
+ * The crawler's crawl gate (crawler-v3 control/crawl_gate.py, owner p42 on 2026-11-22) refuses a crawl read of a workspace Convex does not
+ * list as a customer with 409 crawl_unpaid_paused, which the portal passes on unchanged since auto-sns-agent 40d4571ef. The gate admits every
+ * org this run calls (org_virev_d2_monitoring on prod, the monitoring prefix on staging), so that answer is a crawler failure, not a hold: on
+ * 11-24 at 02:39Z the same org read 109 live routes and its Xiaohongshu explore page 2 alone got 409 in 8 ms (CRAWL_UNPAID).
  */
-export const HELD_ANSWER = /\b(proxy_provider_down|proxy_auth_failed|proxy_quota_exhausted|proxy_unreachable|vent_integration_disabled|vent_crawl_paused|crawl_unpaid_paused)\b|crawl_gate\.paid_only|upstream temporarily unavailable|is switched off on this Vent/;
+export const HELD_ANSWER = /\b(proxy_provider_down|proxy_auth_failed|proxy_quota_exhausted|proxy_unreachable|vent_integration_disabled|vent_crawl_paused)\b|upstream temporarily unavailable|is switched off on this Vent/;
 
 /**
  * Who a probe answer blames. 2xx works. An answer that names a proxy supply hold or a paused source (source_paused) is held: nobody fixes it
@@ -378,6 +381,7 @@ export function classify(status: number, body: unknown): { verdict: Verdict; cod
   // A cancel of a job that already ended answers 409 job_finished with the job's real state, which is the route working.
   if (status === 409 && code === JOB_FINISHED) return { verdict: "ok", code };
   if (status === 0 || status === 429 || status === 402) return { verdict: "unprobed", code };
+  if (code === CRAWL_UNPAID || JSON.stringify(body ?? null).includes(CRAWL_UNPAID)) return { verdict: "crawler", code };
   if (code === CRAWLER_PAUSED || HELD_ANSWER.test(JSON.stringify(body ?? null))) return { verdict: "held", code };
   if (code?.startsWith("upstream_") || code === CRAWLER_CAPACITY || code === CRAWLER_CLOSED) return { verdict: "crawler", code };
   return { verdict: "portal", code };

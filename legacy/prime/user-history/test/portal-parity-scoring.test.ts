@@ -169,8 +169,9 @@ test("an answer that names a proxy supply hold or a switched-off Vent is held, n
   assert.equal(classify(503, error("upstream_error", "integration crawler is switched off on this Vent: c230")).verdict, "held");
   assert.equal(classify(503, error("upstream_error", "vent_integration_disabled")).verdict, "held");
   assert.equal(classify(403, error("upstream_error", "vent_crawl_paused")).verdict, "held");
-  // 11-23 06:04Z: the crawl gate refused 34 reads of each tier's test orgs, which d2 read as 34 routes failing in the crawler.
-  assert.equal(classify(502, error("upstream_error", "only paid reads may crawl: this read names no customer workspace and no paid work (crawl_gate.paid_only, owner p42 2026-11-22)")).verdict, "held");
+  // 11-24 02:39Z: the gate admits every org d2 calls, yet prod refused its Xiaohongshu explore page 2 with 409 crawl_unpaid_paused, a crawler failure.
+  assert.equal(classify(409, error("crawl_unpaid_paused", "Live reads need a paid workspace. Add credit or contact support. You are not charged.")).verdict, "crawler");
+  assert.equal(classify(502, error("upstream_error", "only paid reads may crawl: this read names no customer workspace and no paid work (crawl_gate.paid_only, owner p42 2026-11-22)")).verdict, "crawler");
   assert.equal(classify(502, error("upstream_error", "The crawl job failed")).verdict, "crawler");
 });
 
