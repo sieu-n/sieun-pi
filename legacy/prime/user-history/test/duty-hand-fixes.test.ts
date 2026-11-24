@@ -264,36 +264,50 @@ test("with no deploy read a commit design falls back to done_at, and with no don
   assert.equal(report(dated, await metrics(dated.now)).metrics.repeats_after_design, 1);
 });
 
-test("the box read lists each ok prod deploy from deploy.log, and a release holds a commit by its tree's pinned tip, the pinned tip of the land a crawler cut sits on, a Replayed-From trailer or a crawler cut's Crawler-Cut-Pick trailer", async () => {
+test("the box read lists each ok prod deploy from deploy.log, and a release holds a commit below any commit with the tree of one in its history, or one a held Replayed-From or Crawler-Cut-Pick trailer names", async () => {
   const { deploys } = parseBox(["D\t2026-10-15T10:24:30Z\ta8f85b420699", "D\t2026-10-18T12:31:13Z\t43490e7e9f94", "D\tnot-a-time\tabc"].join("\n"));
   assert.deepEqual(deploys, DEPLOYS);
   assert.equal(releaseAt(DEPLOYS, Date.parse("2026-10-18T12:31:12Z"))!.release, "a8f85b420699");
-  const object = "0b".repeat(20), picked = "c1".repeat(20), other = "d2".repeat(20);
-  const ancestors: Record<string, string[]> = { land38: ["land37"], pin: ["e0d09f5a42", "replay"], cut2: ["cut1", "land38", "land37"] };
-  // Crawler cut p2034 (b3a40bbe11) sits on cut p2033 and land 35158d6955, and holds what that land's pinned dev tip holds.
-  const firstParent: Record<string, string[]> = { land38: ["land38 T38", "land37 T37"], cut2: ["cut2 TC2", "cut1 TC1", "land38 T38", "land37 T37"] };
-  const bodies: Record<string, string> = { pin: `fix: x\n\nReplayed-From: ${object}\n`, land38: `land 38\n\nCrawler-Cut-Pick: ${picked} (p1026)\n`, land37: "" };
+  const object = "0b".repeat(20), picked = "c1".repeat(20), pinned = "9a".repeat(20), other = "d2".repeat(20);
+  // Prod's line is lands and crawler cuts: land 38 has the tree of the dev tip `pin`, as land 38 (43490e7e9f) had d2119eae32's. Cut p2034
+  // (b3a40bbe11) sits on a cut and a land, so it holds what that land's dev tip holds. F2's 98c14dbd1a sits on dev/release-pin-16, which no later
+  // dev tip descends from, and land 37 has that pin's tree.
+  const graph: Record<string, { parents: string[]; tree: string; body?: string }> = {
+    land37: { parents: [], tree: "T37" }, land38: { parents: ["land37"], tree: "T38" },
+    cut1: { parents: ["land38"], tree: "TC1", body: `crawler cut\n\nCrawler-Cut-Pick: ${picked}\n` }, cut2: { parents: ["cut1"], tree: "TC2" },
+    e0d09f5a42: { parents: [], tree: "TE" }, replay: { parents: ["e0d09f5a42"], tree: "TR", body: `fix: x\n\nReplayed-From: ${object}\n` },
+    pin: { parents: ["replay"], tree: "T38" }, [pinned]: { parents: [], tree: "TP" }, pin16: { parents: [pinned], tree: "T37" },
+    [other]: { parents: [], tree: "TX" },
+  };
+  const below = (heads: string[]) => { const seen = new Set<string>(); const walk = (sha: string): void => { if (!seen.has(sha)) { seen.add(sha); graph[sha]!.parents.forEach(walk); } }; heads.forEach(walk); return [...seen]; };
   const calls: string[] = [];
   const git = async (args: string[]): Promise<string> => {
-    calls.push(args[0]!);
-    if (args[0] === "log" && args[1] === "--all") return "cut2 TC2\ncut1 TC1\nland38 T38\npin T38\nland37 T37\n";
-    if (args[0] === "log" && args[1] === "--first-parent") return `${firstParent[args[3]!]!.join("\n")}\n`;
-    if (args[0] === "rev-parse") return `${args[2]!.split("^")[0]}\n`;
-    if (args[0] === "rev-list") return [args[1]!, ...ancestors[args[1]!] ?? []].join("\n") + "\n";
-    if (args[0] === "log" && args[1] === "--format=%B") return bodies[args[2]!] ?? "";
+    calls.push(args.join(" "));
+    const [command, first] = args;
+    if (command === "rev-parse") return `${args[2]!.split("^")[0]}\n`;
+    if (command === "rev-list") return `${below(args.slice(1)).join("\n")}\n`;
+    if (command === "log" && first === "--all" && args[2] === "--format=%H %T") return Object.entries(graph).map(([sha, node]) => `${sha} ${node.tree}\n`).join("");
+    if (command === "log" && first === "--all") return Object.entries(graph).filter(([, node]) => node.body).map(([sha, node]) => `\0${sha}\n${node.body}`).join("");
+    if (command === "log" && first === "--format=%T") return below([args[2]!]).map(sha => `${graph[sha]!.tree}\n`).join("");
+    if (command === "log" && first === "--format=%B") return below([args[2]!]).map(sha => graph[sha]!.body ?? "\n").join("");
     throw new Error(`unexpected git ${args.join(" ")}`);
   };
   const holds = gitReleaseHolds(git);
   assert.equal(await holds("land38", "e0d09f5a42"), true);
   assert.equal(await holds("land38", object), true);
-  assert.equal(await holds("land38", picked), true);
+  assert.equal(await holds("land38", pinned), true);
+  assert.equal(await holds("land38", picked), false);
   assert.equal(await holds("land38", other), false);
   assert.equal(await holds("cut2", "e0d09f5a42"), true);
+  assert.equal(await holds("cut2", object), true);
+  assert.equal(await holds("cut2", picked), true);
+  assert.equal(await holds("cut2", pinned), true);
   assert.equal(await holds("cut2", other), false);
-  // One git call per release, head and commit for the whole run: 465 calls for 40 commits on two releases ran the 10-31 02:07Z run past its deadline.
+  // A few git calls per release and per run: a rev-list and a message log per pinned tip were 53 s of a 90 s run on 11-24.
   const before = calls.length;
   assert.equal(await holds("land38", other), false);
   assert.equal(calls.length, before);
+  assert.equal(calls.filter(call => call.startsWith("log --all")).length, 2);
 });
 
 // Guards the d3 read of 10-19 15:35Z: the Crawler VP closed F1's p170 at 15:15Z, and repeats_after_design read 588, every F1 row of the day
@@ -663,4 +677,20 @@ test("a fleet-wide engage.daily_pages step is fault F41", async () => {
   const verdict = classifyConfig({ actor: "api-key", writer: "ops-api", keys: ["engage.daily_pages"],
     text: "Engage deaths 11-24: accounts back from 4-24 days idle died at a median 23 pages a reading account-hour" }, await registry());
   assert.equal(verdict.kind === "fault" && verdict.fault.id, "F41");
+});
+
+test("a paid-read sizing write is design when it writes the committed tier default, and an F1 hand step at any other value", async () => {
+  // d3 at 11-24 07:12Z read prod 49061, 49085, 49086 and 49090 and staging 25753, 25759 and 26010, all sized to the 250 GB GeoNode plan, as F1 repeats.
+  const reg = await registry();
+  const settings = `_PROD_CONTROL_DEFAULTS: tuple[tuple[str, int], ...] = (
+    ("instagram_census.crawl_backlog_max", 30_000),
+    ("tiktok_shop.search_per_minute", 640),
+)
+`;
+  const git = async (args: string[]) => args[0] === "log" ? `a1 ${AT / 1000 - 60}\n` : args[1] === "a1:apps/crawler-v3/src/settings.py" ? settings : "";
+  const write = (id: number, key: string, value: string): AuditRow => ({ id, ts: AT + id * 120_000, actor: "api-key", source: "ops-api", key, reason: "sized to the 250 GB GeoNode plan", value });
+  const data: HandData = { now: AT, audit: { prod: [write(1, "instagram_census.crawl_backlog_max", "30000"), write(2, "instagram_census.crawl_backlog_max", "2"), write(3, "tiktok_shop.search_per_minute", "640")], staging: [] }, events: {}, errors: [] };
+  await markDeclared(data, new RegExp(reg.exempt.declared_cap_regex!), gitDeclaredCaps(git));
+  const verdicts = groupAudit("prod", data.audit.prod!).map(fix => { const verdict = classifyConfig(fix, reg); return verdict.kind === "fault" ? verdict.fault.id : verdict.kind; });
+  assert.deepEqual(verdicts, ["exempt", "F1", "exempt"]);
 });

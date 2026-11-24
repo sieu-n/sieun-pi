@@ -700,11 +700,6 @@ export async function macProcesses(signal: AbortSignal): Promise<MacProcess[]> {
   return found;
 }
 
-/**
- * Whether a prod release holds a commit, in the auto-sns-agent checkout. A land squashes its pinned dev/sieun tip into one staging commit with
- * the same tree (land 38, 43490e7e9f, is d2119eae32's tree), so the commit counts when it is an ancestor of the release or of a commit with the
- * release's tree, or when one of those holds a commit whose `Replayed-From` trailer names it (land-object.mjs replays an object onto the tip).
- */
 /** The crawler-v3 files that hold each tier's control defaults and the constants they name. */
 const SETTINGS_PATH = "apps/crawler-v3/src/settings.py";
 const TUNING_PATH = "apps/crawler-v3/src/control/tuning.py";
@@ -751,41 +746,47 @@ export function gitDeclaredCaps(git: (args: string[]) => Promise<string>): (worl
   };
 }
 
+/**
+ * Whether a prod release holds a commit, in the auto-sns-agent checkout. A land squashes its pinned dev/sieun tip into one staging commit with
+ * the same tree (land 38, 43490e7e9f, is d2119eae32's tree), and a land's own history holds only lands, so the release holds every ancestor of
+ * a commit whose tree is the tree of a commit in the release's history. That reads a crawler cut through the dev tip of the land it sits on
+ * (cut p2034, b3a40bbe11, on land 35158d6955, dev 7de694135, held F5's doc commit d8842b2ce, 11-24) and an old pin line no later dev tip
+ * descends from (dev/release-pin-16 holds F2's 98c14dbd1a). A commit also counts when a held commit names it in a `Replayed-From` trailer
+ * (land-object.mjs replays an object onto the tip) or a `Crawler-Cut-Pick` trailer (a crawler-only cut, p1026, 7d0de6ae3d, 10-28).
+ */
 export function gitReleaseHolds(git: (args: string[]) => Promise<string>): (release: string, commit: string) => Promise<boolean> {
-  let trees: Promise<Map<string, string[]>> | undefined;
-  const byTree = () => trees ??= git(["log", "--all", "--format=%H %T"]).then(out => {
+  const TRAILER = /(?:Replayed-From|Crawler-Cut-Pick): ([0-9a-f]{40})/g;
+  // Each read is one git call per release or per run, kept for the run: one rev-list and one message log per pinned tip were 53 s of a
+  // 90 s run for two releases on us-metal02 at 11-24 08:00Z, and 465 calls per commit and head ran the 10-31 02:07Z run past its deadline.
+  const once = <T>(cache: Map<string, Promise<T>>, key: string, read: () => Promise<T>) => cache.get(key) ?? cache.set(key, read()).get(key)!;
+  let twins: Promise<Map<string, string[]>> | undefined, namers: Promise<Map<string, string[]>> | undefined;
+  const byTree = () => twins ??= git(["log", "--all", "--format=%H %T"]).then(out => {
     const map = new Map<string, string[]>();
     for (const [sha, tree] of out.split("\n").map(line => line.split(" "))) if (sha && tree) map.set(tree, [...map.get(tree) ?? [], sha]);
     return map;
   });
-  // Each read is one git call per release, head or commit, kept for the run: a merge-base and a grep log per commit and head were 465 git
-  // calls and 22 s for 40 design commits on two releases on us-metal02 at 10-31 02:20Z, and the run's deadline cut them off ("prod deploys:
-  // The operation was aborted", d3 at 02:07Z).
-  const once = <T>(cache: Map<string, Promise<T>>, key: string, read: () => Promise<T>) => cache.get(key) ?? cache.set(key, read()).get(key)!;
-  const shas = new Map<string, Promise<string>>(), heads = new Map<string, Promise<string[]>>();
-  const ancestors = new Map<string, Promise<Set<string>>>(), picks = new Map<string, Promise<Set<string>>>();
-  const full = (ref: string) => once(shas, ref, async () => (await git(["rev-parse", "--verify", `${ref}^{commit}`])).trim());
-  // A crawler-only cut is a commit on the land it was cut from, and a land's history holds only lands, so the dev commits behind a cut are
-  // read from the pinned tip of its nearest first-parent land: cut p2034 (b3a40bbe11) sits on land 35158d6955, whose tree is dev 7de694135,
-  // and on 11-24 the precheck read F5's d8842b2ce and every other landed design as in no prod release.
-  const headsOf = (release: string) => once(heads, release, async () => {
-    const tip = await full(release);
-    const twins = await byTree();
-    for (const line of (await git(["log", "--first-parent", "--format=%H %T", tip])).split("\n")) {
-      const [sha, tree] = line.split(" ");
-      const same = sha && tree ? twins.get(tree) ?? [] : [];
-      if (same.some(other => other !== sha)) return [...new Set([tip, sha!, ...same])];
+  const named = () => namers ??= git(["log", "--all", "-E", "--grep=(Replayed-From|Crawler-Cut-Pick): [0-9a-f]{40}", "--format=%x00%H%n%B"]).then(out => {
+    const map = new Map<string, string[]>();
+    for (const entry of out.split("\0")) {
+      const [namer, ...body] = entry.split("\n");
+      if (namer) for (const match of body.join("\n").matchAll(TRAILER)) map.set(match[1]!, [...map.get(match[1]!) ?? [], namer]);
     }
-    return [tip];
+    return map;
   });
-  const below = (head: string) => once(ancestors, head, async () => new Set((await git(["rev-list", head])).split("\n").filter(Boolean)));
-  // A crawler-only cut picks dev commits onto prod's line and names each one in a Crawler-Cut-Pick trailer (cut p1026, 7d0de6ae3d, 10-28).
-  const picked = (head: string) => once(picks, head, async () =>
-    new Set([...(await git(["log", "--format=%B", head])).matchAll(/(?:Replayed-From|Crawler-Cut-Pick): ([0-9a-f]{40})/g)].map(match => match[1]!)));
+  const shas = new Map<string, Promise<string>>(), reaches = new Map<string, Promise<Set<string>>>();
+  const full = (ref: string) => once(shas, ref, async () => (await git(["rev-parse", "--verify", `${ref}^{commit}`])).trim());
+  const reach = (release: string) => once(reaches, release, async () => {
+    const tip = await full(release);
+    const map = await byTree();
+    const heads = new Set([tip]);
+    for (const tree of (await git(["log", "--format=%T", tip])).split("\n")) for (const sha of map.get(tree) ?? []) heads.add(sha);
+    const held = new Set((await git(["rev-list", ...heads])).split("\n").filter(Boolean));
+    for (const match of (await git(["log", "--format=%B", tip])).matchAll(TRAILER)) held.add(match[1]!);
+    return held;
+  });
   return async (release, commit) => {
-    const sha = await full(commit);
-    for (const head of await headsOf(release)) if ((await below(head)).has(sha) || (await picked(head)).has(sha)) return true;
-    return false;
+    const [sha, held] = await Promise.all([full(commit), reach(release)]);
+    return held.has(sha) || ((await named()).get(sha) ?? []).some(namer => held.has(namer));
   };
 }
 
