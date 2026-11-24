@@ -19,8 +19,10 @@
  * is the private sieun-sw-factory-chat-backups, made in the B2 console on 11-23 with a lifecycle rule that hides a file 30 days after upload
  * and deletes it a day later, and its key (sw-factory-chat-backup-metal) reads and writes that bucket only.
  *
- * `install` writes the systemd user units from deploy/linux/sieun-pi-chat-backup.{service,timer}, rewrites a unit only when its text differs
- * and enables the timer; a second install changes nothing.
+ * The nightly run is the Komodo Procedure m02-chat-backup on us-metal02 (04:30 KST), which runs the service chat-backup of
+ * auto-sns-agent apps/infra/box/compose.sieun-pi.yml: `run --b2` with the installed release's copy of this script, under a flock. Its output
+ * and exit code are in the Procedure's Update in Komodo. `install` only makes the encryption key once and copies it to the Mac; a second
+ * install changes nothing.
  */
 import { spawn, spawnSync } from "node:child_process";
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
@@ -33,7 +35,7 @@ import { dirname, join, resolve } from "node:path";
 import { backup, DatabaseSync } from "node:sqlite";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 
 const HOME = homedir();
@@ -456,40 +458,11 @@ export async function fetchB2({ stamp, into, envFile = DEFAULTS.envFile, keyFile
 
 // ---- install ----
 
-const UNITS = ["sieun-pi-chat-backup.service", "sieun-pi-chat-backup.timer"];
-const here = dirname(fileURLToPath(import.meta.url));
-const RELEASE_SCRIPT = join(HOME, ".local/share/sieun-pi-apps-chat/current/apps/chat/scripts/chat-backup.mjs");
-
-/** Writes the units, makes the encryption key once and copies it to the Mac. A second run changes nothing. */
-export function install({ unitDir = join(HOME, ".config/systemd/user"), templateDir = resolve(here, "../../../deploy/linux"), log = console.log } = {}) {
-  // The installed release's copy keeps working after releases; until a release carries this script, the checkout's copy runs.
-  const script = existsSync(RELEASE_SCRIPT) ? RELEASE_SCRIPT : join(here, "chat-backup.mjs");
-  mkdirSync(unitDir, { recursive: true });
-  let changed = 0;
-  for (const unit of UNITS) {
-    const text = readFileSync(join(templateDir, unit), "utf8").replaceAll("@SCRIPT@", script);
-    const file = join(unitDir, unit);
-    if (existsSync(file) && readFileSync(file, "utf8") === text) continue;
-    writeFileSync(file, text);
-    changed += 1;
-    log(`Wrote ${file}.`);
-  }
-  if (changed) systemctl(["daemon-reload"]);
-  const enabled = spawnSync("systemctl", ["--user", "is-enabled", "sieun-pi-chat-backup.timer"], { encoding: "utf8" }).stdout.trim() === "enabled";
-  const active = spawnSync("systemctl", ["--user", "is-active", "sieun-pi-chat-backup.timer"], { encoding: "utf8" }).stdout.trim() === "active";
-  if (!enabled || !active) {
-    systemctl(["enable", "--now", "sieun-pi-chat-backup.timer"]);
-    log("Enabled and started sieun-pi-chat-backup.timer.");
-  }
+/** Makes the encryption key once and copies it to the Mac. A second run changes nothing. */
+export function install({ log = console.log } = {}) {
   const keyMade = ensureKey(DEFAULTS.keyFile, log);
   const mac = keyToMac(DEFAULTS.keyFile, log);
-  if (!changed && enabled && active && !keyMade && mac !== "copied") log(`Nothing changed: the units, the timer and the key are in place (runs ${script}).`);
-  return { changed, script };
-}
-
-function systemctl(args) {
-  const r = spawnSync("systemctl", ["--user", ...args], { stdio: "inherit" });
-  if (r.status !== 0) throw new Error(`systemctl --user ${args.join(" ")} exited ${r.status}`);
+  if (!keyMade && mac !== "copied") log(`Nothing changed: ${DEFAULTS.keyFile} is in place. Komodo's Procedure m02-chat-backup runs the nightly backup.`);
 }
 
 function ensureKey(file, log) {
@@ -524,7 +497,7 @@ const HELP = `chat-backup.mjs <command>
   run [--data-dir D] [--to DIR] [--b2]       make a backup of the data dir, prune old ones, and with --b2 upload the newest to B2
   restore <backup dir> --to <empty dir>      rebuild a data dir from a backup and check it against the manifest
   check [--to DIR]                           the newest complete backup and its age; exits 1 past ${MAX_AGE_H} h or with none
-  install                                    write and enable the nightly systemd user timer; a second run changes nothing
+  install                                    make the B2 encryption key once and copy it to the Mac; a second run changes nothing
   fetch-b2 [<stamp>] --to <dir>              download and decrypt a B2 backup into <dir>/<stamp>/, which restore takes
 
 The default data dir is ${DEFAULTS.dataDir} and the default backup folder is ${DEFAULTS.to}.`;
@@ -564,7 +537,7 @@ async function main(argv) {
   }
 }
 
-// realpath, because the nightly unit runs the script through the release's `current` symlink and import.meta.url names the real file.
+// realpath, because the nightly job runs the script through the release's `current` symlink and import.meta.url names the real file.
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   main(process.argv.slice(2)).then(code => {
     process.exitCode = code;

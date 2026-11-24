@@ -122,7 +122,7 @@ test("a B2 file decrypts back to the bytes it was made from, and a changed byte 
   }
 });
 
-test("the script runs its command when started through a symlink, as the nightly unit starts the release's copy", () => {
+test("the script runs its command when started through a symlink, as the nightly Komodo job starts the release's copy", () => {
   const root = mkdtempSync(join(tmpdir(), "chat-backup-"));
   try {
     const script = fileURLToPath(new URL("../../scripts/chat-backup.mjs", import.meta.url));
