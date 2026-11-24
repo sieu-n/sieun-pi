@@ -140,11 +140,12 @@ test("the Threads tab's rooms read after a remove and its Undo is logged as a wa
   const agent = (await (await page.request.post("/api/agents", { data: { name: `refetch work ${t}`, test: true } })).json()) as { id: string; name: string };
   const room = (await (await page.request.post("/api/rooms", { data: { kind: "channel", name: `refetch-work-${t}`, members: [agent.id], test: true } })).json()) as { id: string; name: string };
   await noSocket(page);
-  await page.goto(`/#/agents/${agent.id}?section=threads`);
+  // The test waits on what the screen shows, never on networkidle: once the config came, the page reads the agent's prompt ahead, a build
+  // that took 3 s alone and more than 30 s in a loaded full run on 11-24, so networkidle never came. The Wakes section draws with the config.
+  await open(page, `#/agents/${agent.id}?section=threads`, "agent-wakes");
   const rooms = page.getByRole("region", { name: "Rooms" });
   const chip = rooms.getByRole("button", { name: room.name, exact: true });
   await expect(chip).toBeVisible();
-  await page.waitForLoadState("networkidle");
   const config = `/api/agents/${agent.id}/config`;
   const batches: { p: string; m: string; bg?: string }[][] = [];
   page.on("request", (r) => {
@@ -158,10 +159,12 @@ test("the Threads tab's rooms read after a remove and its Undo is logged as a wa
   await flush();
   const from = batches.length;
   await rooms.getByRole("button", { name: `Remove ${agent.name} from #${room.name}` }).click();
+  // Each toast shows after its write's rooms read answered (membership.ts), so both reads are logged by then.
   await expect(chip).toHaveCount(0);
+  await expect(page.getByText(`Removed ${agent.name} from #${room.name}`)).toBeVisible();
   await page.getByRole("button", { name: "Undo" }).last().click();
   await expect(chip).toBeVisible();
-  await page.waitForLoadState("networkidle");
+  await expect(page.getByText(`${agent.name} is back in #${room.name}`)).toBeVisible();
   await flush();
   const lines = batches.slice(from).flat();
   const writes = lines.filter((s) => s.p.startsWith(`/api/rooms/${room.id}/members`));
