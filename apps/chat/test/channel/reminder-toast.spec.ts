@@ -68,16 +68,18 @@ test("a due reminder's toast snoozes it from a menu and marks it complete", asyn
   await expect.poll(async () => (await item(page, `${b.room}:${b.id}`))?.state).toBe("done");
 });
 
-test("a due reminder's toast goes away when another tab or the Mac app checks it off or snoozes it", async ({ page }) => {
+test("a due reminder's toast shows its memo, and goes away when another tab or the Mac app checks it off or snoozes it", async ({ page }) => {
   const [a, b] = await twoPosts(page);
   await open(page, `#/c/${a.room}?test=1`);
   const due = Date.now() + 1500;
-  await page.request.post("/api/later", { data: { room: a.room, post: a.id, remindAt: due } });
+  await page.request.post("/api/later", { data: { room: a.room, post: a.id, remindAt: due, memo: "bring the invoice" } });
   await page.request.post("/api/later", { data: { room: b.room, post: b.id, remindAt: due } });
   const toastA = page.locator(".toast").filter({ hasText: a.text });
   const toastB = page.locator(".toast").filter({ hasText: b.text });
   await expect(toastA).toBeVisible({ timeout: 10_000 });
   await expect(toastB).toBeVisible();
+  await expect(toastA.locator("[data-toast-note]")).toHaveText("bring the invoice");
+  await expect(toastB.locator("[data-toast-note]")).toHaveCount(0);
 
   await page.request.patch(`/api/later/${encodeURIComponent(`${a.room}:${a.id}`)}`, { data: { state: "done" } });
   await expect(toastA).toHaveCount(0);
