@@ -168,6 +168,8 @@ async function archive(repo, sha, into) {
     "packages/pi-host/src/durable/context-files.ts",
     // server/app.ts holds an agent's long or table edit with the room's word cap and note that tell_owner uses (long-edit.ts).
     "packages/pi-host/src/durable/long-edit.ts",
+    // server/http.ts and server/request-log.ts name the code that held a stalled loop with pi-host's stall profiler.
+    "packages/pi-host/src/stall-profile.ts",
     // server/skills-review.ts deletes and restores harness notes through pi-harness's store, under the lock every harness writer takes.
     "packages/pi-harness/src/core/store.ts", "packages/pi-harness/src/core/lock.ts",
     // The fixture server's skills DB scans its throwaway tree with the real scanner (server/skills-db-fixture.ts).
