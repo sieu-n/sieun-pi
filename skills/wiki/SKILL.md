@@ -66,6 +66,7 @@ Before you write a page, read `references/writing.md` and the format section of 
 A plan, spec, design or status page also follows the "Plan, spec and status pages" section of `references/writing.md`.
 The page API refuses a write that adds errors from `node apps/wiki/scripts/prose-lint.mjs <page>`, run from the sieun-pi checkout, and its 422 names `references/writing.md`.
 The lint reads HTML only, so a markdown draft prints `skipped` and checks nothing.
+To lint a draft file outside the content root, pass `--path <wiki path>` of the page it will replace, or the apps/ and domains/ rules such as `core-length` do not run.
 
 ## The rules
 

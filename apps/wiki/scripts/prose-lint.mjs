@@ -3,6 +3,9 @@
 //
 //   node apps/wiki/scripts/prose-lint.mjs <file|dir|wiki path>...  lint pages, exit 1 on any error; a target that is
 //        not an existing path is read from the content root (wikiConfig().contentRoot), so apps/search/campaigns.html works
+//   node apps/wiki/scripts/prose-lint.mjs --path domains/devops/aws-estate.html draft.html
+//        lint a draft outside the content root as the page it will replace, so the apps/ and domains/ rules such as
+//        core-length run; without --path a draft is judged by the `path` field of its `<!--wiki {json}-->` header, if any
 //   node apps/wiki/scripts/prose-lint.mjs --recent 20              the 20 newest session pages of the newest month folder
 //   node apps/wiki/scripts/prose-lint.mjs --json ...           JSON instead of text
 //   node apps/wiki/scripts/prose-lint.mjs --ratchet <before|-> <file>
@@ -41,6 +44,7 @@ let json = false;
 let recent = 0;
 let ratchetBefore = null;
 let ratchetRev = null;
+let pagePath = null;
 const targets = [];
 for (let i = 0; i < argv.length; i++) {
 	const a = argv[i];
@@ -48,6 +52,7 @@ for (let i = 0; i < argv.length; i++) {
 	else if (a === '--recent') recent = Number(argv[++i]);
 	else if (a === '--ratchet') ratchetBefore = argv[++i];
 	else if (a === '--ratchet-git') ratchetRev = argv[++i];
+	else if (a === '--path') pagePath = argv[++i];
 	else if (a === '-h' || a === '--help') usage('help');
 	else if (a.startsWith('--')) usage(`unknown option ${a}`);
 	else targets.push(a);
@@ -55,11 +60,31 @@ for (let i = 0; i < argv.length; i++) {
 if (argv.includes('--recent') && !(recent > 0)) usage('--recent needs a positive number');
 if (argv.includes('--ratchet') && !ratchetBefore) usage('--ratchet needs <before-file|->');
 if (argv.includes('--ratchet-git') && !ratchetRev) usage('--ratchet-git needs <rev>');
+if (argv.includes('--path') && !pagePath) usage('--path needs a wiki path such as domains/devops/aws-estate.html');
+if (pagePath !== null && targets.length !== 1) usage('--path takes exactly one draft file');
+
+const inContent = (file) => path.resolve(file).startsWith(CONTENT + path.sep);
 
 /** Content-relative path when the file sits under the content root, else the path as given. */
 function relOf(file) {
-	const abs = path.resolve(file);
-	return abs.startsWith(CONTENT + path.sep) ? path.relative(CONTENT, abs) : file;
+	return inContent(file) ? path.relative(CONTENT, path.resolve(file)) : file;
+}
+
+/**
+ * The wiki path a file is judged as: its content-relative path under the content root, else `--path`, else the `path` field
+ * of its `<!--wiki {json}-->` header, else the file path. Why: on 2026-11-24 three wiki dream writers linted a clean draft in
+ * /tmp, got `core-length` from the page API on the write and wrote again (gauges-alerts.html v8 to v9, aws-estate.html v94
+ * to v95 and v96 to v97), because a /tmp path never matched the apps/ and domains/ rules.
+ */
+function pathOf(file) {
+	if (inContent(file)) return relOf(file);
+	if (pagePath !== null) return pagePath.replace(/^(?:apps\/llm-wiki\/)?content\//, '');
+	const header = /^\s*<!--wiki((?:(?!-->)[\s\S])*)-->/.exec(readOrNull(file)?.slice(0, 20000) ?? '');
+	try {
+		const declared = header && JSON.parse(header[1]).path;
+		if (typeof declared === 'string' && declared.endsWith('.html')) return declared;
+	} catch {}
+	return file;
 }
 
 /** A wiki page opens with `<!--wiki {json}-->`; copied repo files and exports do not. */
@@ -101,8 +126,8 @@ function recentPages(n) {
  * writer lints before its one write of a curated page.
  */
 function isDraftOrCurated(file) {
-	const abs = path.resolve(file);
-	return !abs.startsWith(CONTENT + path.sep) || isCuratedPath(`apps/llm-wiki/content/${path.relative(CONTENT, abs)}`);
+	const rel = pathOf(file);
+	return (!inContent(file) && rel === file) || isCuratedPath(`apps/llm-wiki/content/${rel}`);
 }
 
 /**
@@ -170,7 +195,7 @@ if (ratchetBefore !== null || ratchetRev !== null) {
 	if (ratchetBefore !== null && targets.length !== 1) usage('--ratchet takes exactly one <file>');
 	const results = [];
 	for (const file of targets) {
-		const rel = relOf(file);
+		const rel = pathOf(file);
 		if (!isLintedPath(rel)) continue;
 		const after = readOrNull(file);
 		if (after === null) continue; // a deleted page adds nothing
@@ -237,7 +262,7 @@ if (!files.length) usage('nothing to lint; pass files, directories or --recent N
 
 const results = [];
 for (const file of files) {
-	const rel = relOf(file);
+	const rel = pathOf(file);
 	if (!isLintedPath(rel)) {
 		results.push({ file, skipped: true, findings: [], counts: { errors: 0, warns: 0, byRule: {} } });
 		continue;

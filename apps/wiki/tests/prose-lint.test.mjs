@@ -147,6 +147,33 @@ test('the CLI warns on a draft line that says a commit has not landed, as the pa
 	}
 });
 
+// On 2026-11-24 three wiki dream writers linted a clean draft in /tmp, got core-length from the page API on the write and
+// wrote again (gauges-alerts.html v8 to v9, aws-estate.html v94 to v95 and v96 to v97), because the CLI judged a draft by its
+// /tmp path, which never matched the apps/ and domains/ rules.
+test('the CLI judges a draft outside the content root by its front matter path or --path, so core-length fires', () => {
+	const dir = mkdtempSync(path.join(tmpdir(), 'prose-lint-core-'));
+	try {
+		const body = Array.from({ length: 70 }, () => '<p>The worker reads one row from the queue table and writes it back.</p>').join('\n');
+		const page = (meta) =>
+			`<!--wiki ${JSON.stringify({ title: 'Queue', description: 'The queue.', ...meta })}-->\n<h1>Queue</h1>\n${body}\n`;
+		writeFileSync(path.join(dir, 'declared.html'), page({ path: 'domains/devops/queue.html' }));
+		writeFileSync(path.join(dir, 'plain.html'), page({}));
+		const cli = fileURLToPath(new URL('../scripts/prose-lint.mjs', import.meta.url));
+		const coreLength = (...args) => {
+			const out = spawnSync(process.execPath, [cli, '--json', ...args], { cwd: dir, encoding: 'utf8' });
+			assert.ok(out.status === 0 || out.status === 1, out.stderr);
+			const [result] = JSON.parse(out.stdout).results;
+			return result.findings.filter((f) => f.rule === 'core-length').map((f) => f.excerpt);
+		};
+		assert.deepEqual(coreLength('declared.html'), ['911 words, target 800']);
+		assert.deepEqual(coreLength('--path', 'domains/devops/queue.html', 'plain.html'), ['911 words, target 800']);
+		assert.deepEqual(coreLength('--path', 'projects/x/queue.html', 'plain.html'), []);
+		assert.deepEqual(coreLength('plain.html'), []);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test('the lint skips API-managed session and job logs but judges other pages in their folders', () => {
 	// 2026-11-21: job logs under agents/<slug>/jobs/ were linted while session logs were skipped.
 	assert.equal(isLintedPath('sessions/2026/11/21/0101-x/index.html'), false);
