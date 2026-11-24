@@ -2,7 +2,9 @@
 (legacy/prime/usage-feed/feed.py Usage.record and backfill.py calls_in), so the totals equal Prime Usage's LGTM series for the same calls.
 
 Files: ~/.prime/agent/sessions/*.jsonl, upstream Pi's sessions/--<cwd slug>--/*.jsonl, and each RLM child's
-session-artifacts/<root>/sub-*/.../*.jsonl, the same walk as feed.py transcripts(). Like usage-feed, this counts only `type: message`
+session-artifacts/<root>/sub-*/.../*.jsonl, the same walk as feed.py transcripts(), plus sessions-archive/**/*.jsonl as
+usage-feed's backfill.py reads it: an archived session may be gone from sessions/, and the key drops the copies of one still there. On
+the Mac on 11-24, leaving the archive out put 11-18, 11-20 and 11-21 at 7% to 9% under LGTM. Like usage-feed, this counts only `type: message`
 assistant entries: child_usage_attributed entries repeat a child's usage that the child's own transcript already holds, and refinement
 calls in `prime-agent.refinement` custom entries are left out, as usage-feed leaves them out.
 
@@ -50,6 +52,11 @@ def transcripts(prime: Path) -> List[Tuple[Path, Optional[str]]]:
                 for inner in os.scandir(entry.path):
                     if inner.name.endswith(".jsonl") and inner.is_file():
                         roots.append((Path(inner.path), None))
+    archive = prime / "sessions-archive"
+    for folder, _, names in os.walk(archive):
+        for name in names:
+            if name.endswith(".jsonl"):
+                roots.append((Path(folder) / name, None))
     children: List[Tuple[Path, Optional[str]]] = []
     artifacts = prime / "session-artifacts"
     if artifacts.is_dir():

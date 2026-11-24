@@ -157,6 +157,13 @@ class PrimeTest(ClientCase):
         self.assertEqual({row["call_at"] for row in copies}, {first["call_at"]})
         self.assertEqual({row["source_key"] for row in copies}, {"prime:h1:msg_1"})
 
+    def test_the_archive_counts_once_beside_sessions(self) -> None:
+        transcript(self.prime / "sessions/s-live.jsonl", "s-live", [assistant("l1", T0, "msg_live")])
+        transcript(self.prime / "sessions-archive/2026-11/s-old.jsonl", "s-old", [assistant("o1", T0 + 1, "msg_old")])
+        transcript(self.prime / "sessions-archive/2026-11/s-live.jsonl", "s-live", [assistant("l1", T0, "msg_live")])
+        self.run_once(prime, cache={})
+        self.assertEqual(sorted({r["source_key"] for r in self.sink.rows()}), ["prime:h1:msg_live", "prime:h1:msg_old"])
+
     def test_old_files_are_skipped_and_a_replaced_file_is_read_again(self) -> None:
         old = self.prime / "sessions/s-old.jsonl"
         transcript(old, "s-old", [assistant("o1", T0, "msg_o")])
