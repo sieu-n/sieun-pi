@@ -20,7 +20,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { call, EMPTY_TURN, emptyTurn, finishedReply, holds, idealUnwritten, lastMeasuredRecall, recall, recallCount, scratchReason, secretReason, splitAnswers, sweepRecallAgents, unanswered } from "../../scripts/duties/agent-memory.ts";
+import { call, EMPTY_TURN, emptyTurn, finishedReply, holds, idealUnwritten, lastMeasuredRecall, onIdealStore, recall, recallCount, scratchReason, secretReason, splitAnswers, sweepRecallAgents, unanswered } from "../../scripts/duties/agent-memory.ts";
 
 const ask = { kind: "message", text: "Quick questions" };
 
@@ -102,6 +102,18 @@ test("a Komodo variable reference after a secret word is a name, not a secret", 
   assert.equal(secretReason(entry("Stack env", "token: [[STAGING__GRAFANA_TOKEN]]")), null);
   assert.equal(secretReason(entry("Prod key", "secret=[[prod-9f3a2c71e0]]")), "secret written out");
   assert.equal(secretReason(entry("Prod key", "secret=[[9F3A2C71E0AB]]")), "secret written out");
+});
+
+// 11-24: the duty showed 5 metrics against the shape of one headline and 3 more; scratch is a must-not of the ideal, so the headline carries it.
+test("a store with a scratch entry is off its ideal even when it holds every expected entry", () => {
+  const want = { expected: [{ title: "Release command", match: ["release-apps-chat.mjs"] }] };
+  assert.equal(onIdealStore(want, { entries: 4, missing: 0, mustNot: 0, scratch: 0 }), true);
+  assert.equal(onIdealStore(want, { entries: 5, missing: 0, mustNot: 0, scratch: 1 }), false);
+  assert.equal(onIdealStore(want, { entries: 4, missing: 1, mustNot: 0, scratch: 0 }), false);
+  assert.equal(onIdealStore(want, { entries: 4, missing: 0, mustNot: 1, scratch: 0 }), false);
+  assert.equal(onIdealStore({ expected: [] }, { entries: 0, missing: 0, mustNot: 0, scratch: 0 }), true);
+  assert.equal(onIdealStore({ expected: [] }, { entries: 2, missing: 0, mustNot: 0, scratch: 0 }), false);
+  assert.equal(onIdealStore(undefined, { entries: 0, missing: 0, mustNot: 0, scratch: 0 }), false);
 });
 
 // 11-24: crawler-guy, made 3 h before the 07:31 KST run, read as off its ideal because nobody had written its ideal.json row yet.

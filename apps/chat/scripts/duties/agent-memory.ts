@@ -7,13 +7,14 @@
  * words a right answer holds, the old chats whose corrections belong to the agent, and what a store must not hold.
  *
  * Metrics:
- *   agents_on_ideal_pct, the headline: the share of real agents whose store holds every expected entry and no secret value or must-not
- *     entry with `match` words; an agent whose ideal expects nothing matches while its store is empty. An agent made under a day ago with
+ *   agents_on_ideal_pct, the headline: the share of real agents whose store holds every expected entry and no secret value, must-not
+ *     entry with `match` words or scratch entry; an agent whose ideal expects nothing matches while its store is empty. An agent made under a day ago with
  *     no ideal.json row yet is not measured (`agents_ideal_unwritten`, flag `ideal_unwritten`), like a correction under a day old: on 11-24
  *     crawler-guy, made 3 h before the run, read as off its ideal. After a day a missing row is a miss.
  *   corrections_captured_pct: the share of the owner's corrections about an agent, at least a day old, that its store names by id or msg id;
  *     a correction ideal.json lists in `general_corrections` binds every agent, reaches it through the ledger and is left out.
- *   scratch_entries: entries in the agents' stores that are session state or step status instead of lasting knowledge (target 0).
+ *   scratch_entries: entries in the agents' stores that are session state or step status instead of lasting knowledge. Each one puts its
+ *     agent off its ideal, since ideal.json rules.must_not names both, so the headline carries it and the duty lists no metric for it.
  *   recall_right_pct: a blind fresh session of each agent answers its 3 questions; the share whose answer holds the expected words. A
  *     session whose wait ran out with no reply got no model answer (`unanswered`), so its questions are not measured: the share is over
  *     the sessions that answered, `recall_agents_unmeasured` counts the rest, and when none answered the metric keeps the value of the
@@ -165,6 +166,13 @@ const captured = (c: Correction, text: string): boolean => new RegExp(`\\b${c.id
 /** An agent made under a day ago with no ideal.json row yet: the duty job writes the row on the agent's first day, so it is not measured. */
 export const idealUnwritten = (record: { createdAt?: number }, want: unknown, now: number): boolean =>
   !want && record.createdAt !== undefined && record.createdAt > now - DAY_MS;
+
+/**
+ * A store is on its ideal when its agent has a row, it holds every expected entry and it holds no must-not or scratch entry; a row that
+ * expects nothing wants an empty store. ideal.json rules.must_not names session scratch and step status, so a scratch entry is a miss here.
+ */
+export const onIdealStore = (want: { expected?: readonly unknown[] } | undefined, counts: { entries: number; missing: number; mustNot: number; scratch: number }): boolean =>
+  !!want && !counts.mustNot && !counts.scratch && (want.expected?.length ? !counts.missing : !counts.entries);
 
 const pct = (part: number, whole: number): number => (whole ? Math.round((1000 * part) / whole) / 10 : 100);
 
@@ -427,19 +435,26 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     const missing = (want?.expected ?? []).filter(exp => !entries.some(entry => (!exp.kind || exp.kind === entry.kind) && holds(entryText(entry), exp.match)));
     const forbidden = mustNotHits(entries, want?.must_not ?? [], publicValues);
     const expected = want?.expected ?? [];
-    const matches = !!want && !forbidden.length && (expected.length ? !missing.length : !entries.length);
+    const scratchHits = entries.flatMap(entry => {
+      const reason = scratchReason(entry);
+      return reason ? [{ entry, reason }] : [];
+    });
+    const matches = onIdealStore(want, { entries: entries.length, missing: missing.length, mustNot: forbidden.length, scratch: scratchHits.length });
     const fresh = idealUnwritten(record, want, now) && !forbidden.length;
     if (matches) onIdeal++;
     if (fresh) {
       unwritten++;
       flagged.push({ kind: "ideal_unwritten", excerpt: `${record.slug} was made ${Math.round((now - record.createdAt!) / 3_600_000)} h ago and ideal.json has no entry for it yet, so it is not measured; write its row from its brief and store`, sig: `idealnew:${record.slug}` });
     }
-    row.ideal = fresh ? "no ideal yet for this agent, made under a day ago" : want ? { expected: want.expected?.length ?? 0, missing: missing.map(exp => exp.title), mustNot: forbidden.map(hit => `${hit.entry.title} (${hit.rule})`) } : "no ideal for this agent";
+    row.ideal = fresh ? "no ideal yet for this agent, made under a day ago" : want ? { expected: want.expected?.length ?? 0, missing: missing.map(exp => exp.title), mustNot: [...forbidden.map(hit => `${hit.entry.title} (${hit.rule})`), ...scratchHits.map(hit => `${hit.entry.title} (scratch: ${hit.reason})`)] } : "no ideal for this agent";
     if (!matches && !fresh) {
-      const held = forbidden.length ? `holds ${forbidden.length} must-not entr${forbidden.length === 1 ? "y" : "ies"}: ${forbidden[0]!.entry.title}` : "";
+      const held = [
+        forbidden.length ? `holds ${forbidden.length} must-not entr${forbidden.length === 1 ? "y" : "ies"}: ${forbidden[0]!.entry.title}` : "",
+        scratchHits.length ? `holds ${scratchHits.length} scratch entr${scratchHits.length === 1 ? "y" : "ies"}: ${scratchHits[0]!.entry.title}` : "",
+      ].filter(Boolean).join(" and ");
       const why = !want ? ["ideal.json has no entry for it", held].filter(Boolean).join(" and it ") : !expected.length && entries.length ? `its ideal store is empty and it holds ${entries.length} entries`
         : [missing.length ? `misses ${missing.length} of ${want.expected!.length}: ${missing.slice(0, 3).map(exp => exp.title).join("; ")}` : "", held].filter(Boolean).join(", ");
-      flagged.push({ kind: "off_ideal", excerpt: `${record.slug} ${why}`, sig: `ideal:${record.slug}:${missing.map(exp => exp.title).join("|")}:${forbidden.length}` });
+      flagged.push({ kind: "off_ideal", excerpt: `${record.slug} ${why}`, sig: `ideal:${record.slug}:${missing.map(exp => exp.title).join("|")}:${forbidden.length}:${scratchHits.length}` });
     }
 
     const about = correctionsOf(record, corrections, want?.chats ?? []);
@@ -452,9 +467,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     row.corrections = { about: about.map(c => c.id), general: about.filter(c => general.has(c.id)).map(c => c.id), due: due.length, captured: kept.map(c => c.id) };
     for (const c of due.filter(c => !kept.includes(c))) flagged.push({ kind: "correction_not_kept", excerpt: `${record.slug} ${c.id} (${c.at.slice(0, 10)}): ${c.rule.slice(0, 160)}`, sig: `corr:${record.slug}:${c.id}` });
 
-    for (const entry of entries) {
-      const reason = scratchReason(entry);
-      if (!reason) continue;
+    for (const { entry, reason } of scratchHits) {
       scratch++;
       flagged.push({ kind: "scratch_entry", excerpt: `${record.slug} ${entry.kind} "${entry.title.slice(0, 120)}" (${reason})`, sig: `scratch:${record.slug}:${entry.id}` });
     }

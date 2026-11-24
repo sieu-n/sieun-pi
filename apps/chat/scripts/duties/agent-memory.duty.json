@@ -1,11 +1,11 @@
 {
  "name": "Agent memory",
- "ownerWords": "is memory working as intended? what is the memory system built based on and what features does it have? can you compare it with SOTA agent-memory frameworks, …. ??\n(#sw-factory-build p72, 11-20, msg mwojbdrv)\n\nideal하게 어떤 데이터가 각각 있을거 같냐니까? 그리고 그렇게 자동적으로 알아서 시스템이 굴러갈때까지 계속 감시하고 고치라니까? you fucking suck compared to prime-agent-chat's agent. grind until it actually works. MAKE SURE I NEVER PASTE THIS EVER AGAIN\n(#sw-factory-build p74, 11-20, msg mwojhtg4, c228)",
- "goal": "Every real sw factory agent keeps its own memory with no steering: its folder's Prime harness store (<agents dir>/<slug>/harness/harness_state.json, which pi-host loads into each of its threads) holds the lasting facts, owner rules and procedures only that agent needs, each with its source, and no session scratch, step status or secret value. What each store should hold is ~/work/agent-memory/ideal.json, written by the memory review job on 11-20 (wiki domains/devops/agent-memory): expected entries with the words a right entry holds, 3 recall questions per agent and must-not rules. The precheck (apps/chat/scripts/duties/agent-memory.ts) reads every store against it, counts the owner's corrections from each agent's own threads that its store names by id after a day, finds scratch entries, and asks a blind fresh session of each agent its 3 questions: a throwaway test agent with a copy of the agent's brief and store, archived and deleted after, so the check never writes into the real store. The first run on 11-20, before any fix, read 1 of 8 agents on their ideal, 0 of 19 corrections kept, 1 scratch entry and 11 of 21 recall answers right, and took 17 s with the 7 recall sessions in parallel. On 11-22 every Opus account was at its limit until 22:44Z and 22:46Z, so pi-pool parked the seo and vent sessions for 754 s and 874 s and vent answered 898 s after its send; the precheck gives each session 20 min and has a 21 min target.",
+ "ownerWords": "is memory working as intended? what is the memory system built based on and what features does it have? can you compare it with SOTA agent-memory frameworks, …. ??\n(#sw-factory-build p72, 11-20, msg mwojbdrv)\n\nideal하게 어떤 데이터가 각각 있을거 같냐니까? 그리고 그렇게 자동적으로 알아서 시스템이 굴러갈때까지 계속 감시하고 고치라니까? you fucking suck compared to prime-agent-chat's agent. grind until it actually works. MAKE SURE I NEVER PASTE THIS EVER AGAIN\n(#sw-factory-build p74, 11-20, msg mwojhtg4, c228)\n\n지금 skills sdk가 제대로 적용된거야?\n(#sw-factory-build p193, 11-24, msg mwttyqa9)",
+ "goal": "Every real sw factory agent keeps its own memory with no steering: its folder's Prime harness store (<agents dir>/<slug>/harness/harness_state.json, which pi-host loads into each of its threads) holds the lasting facts, owner rules and procedures only that agent needs, each with its source, and no session scratch, step status or secret value. What each store should hold is ~/work/agent-memory/ideal.json, written by the memory review job on 11-20 (wiki domains/devops/agent-memory): expected entries with the words a right entry holds, 3 recall questions per agent and must-not rules. The precheck (apps/chat/scripts/duties/agent-memory.ts) reads every store against it, counts the owner's corrections from each agent's own threads that its store names by id after a day, finds scratch entries, and asks a blind fresh session of each agent its 3 questions: a throwaway test agent with a copy of the agent's brief and store, archived and deleted after, so the check never writes into the real store. The first run on 11-20, before any fix, read 1 of 8 agents on their ideal, 0 of 19 corrections kept, 1 scratch entry and 11 of 21 recall answers right, and took 17 s with the 7 recall sessions in parallel. On 11-22 every Opus account was at its limit until 22:44Z and 22:46Z, so pi-pool parked the seo and vent sessions for 754 s and 874 s and vent answered 898 s after its send; the precheck gives each session 20 min and has a 21 min target. Skills are what every agent keeps, so the same precheck reads `sw skills check` (GET /api/skills/check) as skills_drift: each skill folder no row owns, each row whose git folder left main and each install the disk lacks, target 0 (p193, 11-24).",
  "metrics": [
   {
    "key": "agents_on_ideal_pct",
-   "label": "Real agents whose own memory store holds every entry its ideal expects and nothing it must not (count in agents_on_ideal of agents_real)",
+   "label": "Real agents whose own memory store holds every entry its ideal expects and nothing it must not, such as a secret value or session scratch (count in agents_on_ideal of agents_real)",
    "op": ">=",
    "target": 100,
    "unit": "%",
@@ -19,18 +19,18 @@
    "unit": "%"
   },
   {
-   "key": "scratch_entries",
-   "label": "Session state or step status entries in the agents' own stores",
-   "op": "<=",
-   "target": 0,
-   "unit": " entries"
-  },
-  {
    "key": "recall_right_pct",
    "label": "Recall questions a blind fresh session of each agent answers right from memory",
    "op": ">=",
    "target": 100,
    "unit": "%"
+  },
+  {
+   "key": "skills_drift",
+   "label": "Places sw skills check lists where the skill folders on the boxes differ from the skills DB, such as a folder no row owns or a row whose git folder left main",
+   "op": "<=",
+   "target": 0,
+   "unit": " items"
   }
  ],
  "precheck": {
