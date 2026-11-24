@@ -765,10 +765,18 @@ export function gitReleaseHolds(git: (args: string[]) => Promise<string>): (rele
   const shas = new Map<string, Promise<string>>(), heads = new Map<string, Promise<string[]>>();
   const ancestors = new Map<string, Promise<Set<string>>>(), picks = new Map<string, Promise<Set<string>>>();
   const full = (ref: string) => once(shas, ref, async () => (await git(["rev-parse", "--verify", `${ref}^{commit}`])).trim());
+  // A crawler-only cut is a commit on the land it was cut from, and a land's history holds only lands, so the dev commits behind a cut are
+  // read from the pinned tip of its nearest first-parent land: cut p2034 (b3a40bbe11) sits on land 35158d6955, whose tree is dev 7de694135,
+  // and on 11-24 the precheck read F5's d8842b2ce and every other landed design as in no prod release.
   const headsOf = (release: string) => once(heads, release, async () => {
     const tip = await full(release);
-    const tree = (await git(["rev-parse", "--verify", `${tip}^{tree}`])).trim();
-    return [...new Set([tip, ...(await byTree()).get(tree) ?? []])];
+    const twins = await byTree();
+    for (const line of (await git(["log", "--first-parent", "--format=%H %T", tip])).split("\n")) {
+      const [sha, tree] = line.split(" ");
+      const same = sha && tree ? twins.get(tree) ?? [] : [];
+      if (same.some(other => other !== sha)) return [...new Set([tip, sha!, ...same])];
+    }
+    return [tip];
   });
   const below = (head: string) => once(ancestors, head, async () => new Set((await git(["rev-list", head])).split("\n").filter(Boolean)));
   // A crawler-only cut picks dev commits onto prod's line and names each one in a Crawler-Cut-Pick trailer (cut p1026, 7d0de6ae3d, 10-28).

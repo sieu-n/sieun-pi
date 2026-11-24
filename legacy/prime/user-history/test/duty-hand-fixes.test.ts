@@ -264,18 +264,21 @@ test("with no deploy read a commit design falls back to done_at, and with no don
   assert.equal(report(dated, await metrics(dated.now)).metrics.repeats_after_design, 1);
 });
 
-test("the box read lists each ok prod deploy from deploy.log, and a release holds a commit by its tree's pinned tip, a Replayed-From trailer or a crawler cut's Crawler-Cut-Pick trailer", async () => {
+test("the box read lists each ok prod deploy from deploy.log, and a release holds a commit by its tree's pinned tip, the pinned tip of the land a crawler cut sits on, a Replayed-From trailer or a crawler cut's Crawler-Cut-Pick trailer", async () => {
   const { deploys } = parseBox(["D\t2026-10-15T10:24:30Z\ta8f85b420699", "D\t2026-10-18T12:31:13Z\t43490e7e9f94", "D\tnot-a-time\tabc"].join("\n"));
   assert.deepEqual(deploys, DEPLOYS);
   assert.equal(releaseAt(DEPLOYS, Date.parse("2026-10-18T12:31:12Z"))!.release, "a8f85b420699");
   const object = "0b".repeat(20), picked = "c1".repeat(20), other = "d2".repeat(20);
-  const ancestors: Record<string, string[]> = { land38: ["land37"], pin: ["e0d09f5a42", "replay"] };
+  const ancestors: Record<string, string[]> = { land38: ["land37"], pin: ["e0d09f5a42", "replay"], cut2: ["cut1", "land38", "land37"] };
+  // Crawler cut p2034 (b3a40bbe11) sits on cut p2033 and land 35158d6955, and holds what that land's pinned dev tip holds.
+  const firstParent: Record<string, string[]> = { land38: ["land38 T38", "land37 T37"], cut2: ["cut2 TC2", "cut1 TC1", "land38 T38", "land37 T37"] };
   const bodies: Record<string, string> = { pin: `fix: x\n\nReplayed-From: ${object}\n`, land38: `land 38\n\nCrawler-Cut-Pick: ${picked} (p1026)\n`, land37: "" };
   const calls: string[] = [];
   const git = async (args: string[]): Promise<string> => {
     calls.push(args[0]!);
-    if (args[0] === "log" && args[1] === "--all") return "land38 T38\npin T38\nland37 T37\n";
-    if (args[0] === "rev-parse") { const [ref, kind] = args[2]!.split("^"); return `${kind === "{tree}" ? "T38" : ref}\n`; }
+    if (args[0] === "log" && args[1] === "--all") return "cut2 TC2\ncut1 TC1\nland38 T38\npin T38\nland37 T37\n";
+    if (args[0] === "log" && args[1] === "--first-parent") return `${firstParent[args[3]!]!.join("\n")}\n`;
+    if (args[0] === "rev-parse") return `${args[2]!.split("^")[0]}\n`;
     if (args[0] === "rev-list") return [args[1]!, ...ancestors[args[1]!] ?? []].join("\n") + "\n";
     if (args[0] === "log" && args[1] === "--format=%B") return bodies[args[2]!] ?? "";
     throw new Error(`unexpected git ${args.join(" ")}`);
@@ -285,6 +288,8 @@ test("the box read lists each ok prod deploy from deploy.log, and a release hold
   assert.equal(await holds("land38", object), true);
   assert.equal(await holds("land38", picked), true);
   assert.equal(await holds("land38", other), false);
+  assert.equal(await holds("cut2", "e0d09f5a42"), true);
+  assert.equal(await holds("cut2", other), false);
   // One git call per release, head and commit for the whole run: 465 calls for 40 commits on two releases ran the 10-31 02:07Z run past its deadline.
   const before = calls.length;
   assert.equal(await holds("land38", other), false);
@@ -628,4 +633,34 @@ test("the Meta Ads scheduler's supply-hold pause and the gateway failover's row 
   assert.equal(classifyConfig({ ...move, actor: "gateway_failover", writer: "crawler" }, reg).kind, "automatic");
   const switched = classifyConfig({ ...move, actor: "proxy_gateway_switch", writer: "ops-cli" }, reg);
   assert.equal(switched.kind === "fault" && switched.fault.id, "F5");
+});
+
+test("the box keeper's release of an account onto a live proxy route is the product's own", async () => {
+  // d3 at 11-24 06:33Z read box_keeper.py's 54 prod activations of 11-23 23:00:49Z and 8 staging ones of 22:23:47Z as 62 F5 repeats.
+  const reg = await registry();
+  const at = Date.parse("2026-11-23T23:00:49Z");
+  assert.equal(classifyEvent({ accountId: 206, at, outcome: "active", errorCode: "", actor: "box-keeper" }, reg)?.kind, "automatic");
+});
+
+test("a write that cites the owner's room message by its id is exempt, and one that names the room with no message id still counts", async () => {
+  // Prod audits 48997 and 48953 and their staging twins 25689 and 25690 (11-23) read as F5 repeats and a fault without a job.
+  const reg = await registry();
+  const cited = classifyConfig({ actor: "api-key", writer: "ops-api", keys: ["proxy_endpoints.gateway"],
+    text: "owner #1124-cost-management p1 mwtt7orl: GeoNode 250 GB plan, same login on proxy.geonode.io" }, reg);
+  assert.equal(cited.kind, "exempt");
+  // The clears 48954 and 25691 cite the owner's message alone.
+  const cleared = classifyConfig({ actor: "api-key", writer: "ops-api", keys: ["crawl_gate.monthly_gb"], cleared: true,
+    text: "owner mwttk8y6 (11-24): no byte cap in code" }, reg);
+  assert.equal(cleared.kind, "exempt");
+  // The census and TikTok Shop sizing rows 49054 to 49062 name the room and step only.
+  const bare = classifyConfig({ actor: "api-key", writer: "ops-api", keys: ["tiktok_shop.search_per_minute"],
+    text: "owner #1124-cost-management p1; sized to 1.6 TikTok Shop product rows/min on the 250 GB GeoNode plan" }, reg);
+  assert.equal(bare.kind === "fault" && bare.fault.id, "F1");
+});
+
+test("a fleet-wide engage.daily_pages step is fault F41", async () => {
+  // Prod audit 49104 (11-24 06:16Z) matched no fault and was filed as a fault without a job.
+  const verdict = classifyConfig({ actor: "api-key", writer: "ops-api", keys: ["engage.daily_pages"],
+    text: "Engage deaths 11-24: accounts back from 4-24 days idle died at a median 23 pages a reading account-hour" }, await registry());
+  assert.equal(verdict.kind === "fault" && verdict.fault.id, "F41");
 });
