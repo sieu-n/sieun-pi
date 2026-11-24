@@ -34,7 +34,8 @@ export interface Running {
 
 export interface LiveClient {
   events: LiveEvent[];
-  watch(conversation: string): void;
+  /** `after` names the newest post the page holds, as a page that comes back names it. */
+  watch(conversation: string, after?: string): void;
   waitFor<E extends LiveEvent>(match: (event: LiveEvent) => event is E, timeoutMs?: number): Promise<E>;
   waitFor(match: (event: LiveEvent) => boolean, timeoutMs?: number): Promise<LiveEvent>;
   close(): void;
@@ -111,7 +112,7 @@ function client(base: string, sockets: WebSocket[]) {
       await new Promise(resolve => socket.once("open", resolve));
       return {
         events,
-        watch: (conversation: string) => socket.send(JSON.stringify({ type: "watch", conversation })),
+        watch: (conversation: string, after?: string) => socket.send(JSON.stringify({ type: "watch", conversation, ...(after ? { after } : {}) })),
         waitFor: (match: (event: LiveEvent) => boolean, timeoutMs = 20_000) => {
           const seen = events.find(match);
           if (seen) return Promise.resolve(seen);

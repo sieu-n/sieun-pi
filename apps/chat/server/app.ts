@@ -1516,8 +1516,8 @@ export class App {
       if (isRoomId(command.conversation)) {
         const record = this.roomAgent(command.conversation);
         if (command.after) {
-          const page = this.rooms.timeline(record, { after: command.after, limit: 200 });
-          if (page.items.length) this.send1(client, { type: "items", conversation: command.conversation, items: page.items });
+          const items = this.rooms.since(record, command.after);
+          if (items.length) this.send1(client, { type: "items", conversation: command.conversation, items });
         }
         this.send1(client, { type: "status", conversation: command.conversation, status: this.rooms.status(record) });
         this.send1(client, { type: "queue", conversation: command.conversation, place: this.queues.place(this.agents.roomThread(record)) });
@@ -1530,8 +1530,8 @@ export class App {
       const group = this.groups.row(command.conversation);
       if (group) {
         if (command.after) {
-          const page = this.groups.timeline(group.id, { after: command.after, limit: 200 });
-          if (page.items.length) this.send1(client, { type: "items", conversation: command.conversation, items: page.items });
+          const items = this.groups.since(group.id, command.after);
+          if (items.length) this.send1(client, { type: "items", conversation: command.conversation, items });
         }
         this.send1(client, { type: "status", conversation: command.conversation, status: this.groups.status(group) });
         // The members' comm threads for the room, whose speaking calls are its posts; a comm thread made later joins through `thread`.

@@ -48,6 +48,8 @@ import { OWNER, type Threads } from "./threads.ts";
 export const MAX_HOPS = 6;
 const AGENDA_CLIP = 300;
 const PAGE = 50;
+/** How many posts behind a page that comes back on the socket may be and get only what it missed; the watch read 200 after its post before p278. */
+const MISSED_POSTS = 200;
 
 /**
  * A LIKE pattern for the copy of a channel post that the router before phase 5 sent into a work thread; search finds the post itself in its
@@ -971,6 +973,23 @@ export class GroupRooms {
     const lines = (row.memberLog ?? []).filter(c => c.at >= from && c.at < to).map(c => this.memberLine(c));
     const items = [...roots.slice(start, end).map(p => this.item(row, p, all)), ...lines].sort((a, b) => a.at - b.at);
     return { items, ...(start > 0 ? { older: roots[start]!.id } : {}), ...(end < roots.length ? { newer: roots[end - 1]!.id } : {}), ...(focus ? { focus } : {}) };
+  }
+
+  /**
+   * What a page that holds the room up to the post `after` missed, as `emit` and the member lines would have sent it: each newer post with
+   * the roots of the replies and the posts they answer, so a kept root shows its new replies. A page of only the newer roots left each
+   * kept root's thread pill as it was, and on 11-23 two of his opens after a reload waited a round trip for it (work/p278-thread-open).
+   * An `after` the room holds no post of, such as a member line's id, or one more than a page behind, gets the newest page.
+   */
+  since(id: string, after: string): Item[] {
+    const row = this.require(id);
+    const all = this.store.postsOf(row.id);
+    const from = all.find(p => p.id === after);
+    const newer = from ? all.filter(p => p.seq > from.seq) : [];
+    if (!from || newer.length > MISSED_POSTS) return this.timeline(id, {}).items;
+    const ids = new Set(newer.flatMap(p => [p.id, ...(p.threadRoot ? [p.threadRoot] : []), ...(p.answers ? [p.answers] : [])]));
+    const lines = (row.memberLog ?? []).filter(c => c.at > from.at).map(c => this.memberLine(c));
+    return [...all.filter(p => ids.has(p.id)).map(p => this.item(row, p, all)), ...lines].sort((a, b) => a.at - b.at);
   }
 
   /** A thread in a channel or a Solo room: the root post and every reply, oldest first. */

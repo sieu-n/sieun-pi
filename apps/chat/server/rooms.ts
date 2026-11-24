@@ -33,6 +33,8 @@ import type { TestSendEntry } from "./search.ts";
 import { isInput, sentMessage } from "./timeline.ts";
 
 const PAGE = 40;
+/** How many posts behind a page that comes back on the socket may be and get only what it missed (`since`). */
+const MISSED_POSTS = 200;
 /** How many earlier posts of a thread a reply's input carries, and how much of each; group-rooms.ts `envelope` reads them too. */
 export const CONTEXT_POSTS = 5;
 export const CONTEXT_CLIP = 2048;
@@ -884,6 +886,20 @@ export class Rooms {
       ...(end < posts.length && page.at(-1) ? { newer: page.at(-1)!.id } : {}),
       ...(focus ? { focus } : {}),
     };
+  }
+
+  /**
+   * What a page that holds the DM up to the post `after` missed, as `changed` would have sent it: each newer post with the roots of the
+   * replies among them, so a kept root shows its new replies (group-rooms.ts `since`). An `after` the DM holds no post of, or one more than
+   * a page behind, gets the newest page; the watch's read of the roots after it threw on an unknown post.
+   */
+  since(record: AgentRecord, after: string): Item[] {
+    const all = this.store.postsOf(record.room);
+    const from = all.find(p => p.id === after);
+    const newer = from ? all.filter(p => p.seq > from.seq) : [];
+    if (!from || newer.length > MISSED_POSTS) return this.timeline(record, {}).items;
+    const ids = new Set(newer.flatMap(p => (p.threadRoot ? [p.id, p.threadRoot] : [p.id])));
+    return all.filter(p => ids.has(p.id)).map(post => this.item(post, all));
   }
 
   /** A thread in the DM: the root post and every reply, oldest first. */
