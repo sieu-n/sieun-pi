@@ -365,6 +365,9 @@ export class App {
     if (config.usageStore) {
       this.usage = this.storeUsage = new StoreUsage(storeReader(config.usageStore), config.usageStore.table, log, Date.now, STORE_FULL_PULL_MS,
         join(config.dataDir, "usage-sums.json"));
+      // The first read starts with the server rather than with the loops 2 s after the listen: a restart's first api/usage call waited
+      // 1.2 s for the snapshot and the tail read on 11-24, and they now run while the server starts.
+      void this.storeUsage.pull();
     }
     else if (config.fixture && (host as Partial<UsageSums>).usage) this.usage = host as Host & UsageSums;
     else this.usage = { usage: () => Promise.reject(new Error("no usage store: APPS_CHAT_USAGE_STORE names none")) };
