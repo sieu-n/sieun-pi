@@ -119,8 +119,9 @@ test('a write that drops updated leaves the page with one: the old value for a m
 	assert.equal(/"updated"\s*:\s*"([^"]*)"/.exec(await raw(PAGE))?.[1], updated[1], 'a meta-only write keeps the old updated');
 	const h1 = firstH1(original);
 	const started = Date.now() - 1000;
+	const kept = /,?\s*"updated"\s*:\s*"[^"]*"/.exec(await raw(PAGE));
 	const res = await patch([
-		{ old_string: updated[0], new_string: '' },
+		{ old_string: kept[0], new_string: '' },
 		{ old_string: `<h1>${h1}</h1>`, new_string: `<h1>${h1}</h1>\n<p>The page API test adds this line.</p>` },
 	]);
 	assert.equal(res.status, 200, await res.clone().text());
