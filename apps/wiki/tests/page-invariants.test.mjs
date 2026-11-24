@@ -31,7 +31,8 @@ after(async () => {
 	await send('POST', '/api/agent/page', { path: PAGE, content: original, author: 'page-invariants test restore' });
 });
 
-const metaTitle = (html) => /"title"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(html)?.[1];
+// The page's own "title" field text, so the edit matches the JSON spacing the page uses ("title": "x" or "title":"x").
+const metaTitle = (html) => /"title"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(html);
 const firstH1 = (html) => /<h1\b[^>]*>([\s\S]*?)<\/h1>/i.exec(html)?.[1];
 const metaStatus = (html) => /"status"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(html);
 
@@ -39,7 +40,8 @@ test('a write that changes the meta title and not the first <h1> is refused', as
 	if (!BASE) return t.skip('llm-wiki dev server unreachable, SKIPPED, not passed');
 	const title = metaTitle(original);
 	assert.ok(title, `${PAGE} needs a meta title`);
-	const res = await patch([{ old_string: `"title":"${title}"`, new_string: `"title":"${title} (test output)"` }]);
+	const field = title[0];
+	const res = await patch([{ old_string: field, new_string: `${field.slice(0, -1)} (test output)"` }]);
 	assert.equal(res.status, 422, await res.clone().text());
 	const { error } = await res.json();
 	assert.match(error, /first <h1>/, error);
