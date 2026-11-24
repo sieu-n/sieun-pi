@@ -126,6 +126,10 @@ test("the precheck waits on another copy of itself or a rig, never on itself or 
   ].join("\n");
   assert.deepEqual(otherRuns(lines, new Set([100, 90])).map(line => line.split(" ")[0]), ["200", "300", "500"]);
   assert.deepEqual(otherRuns(lines.split("\n").slice(0, 2).join("\n"), new Set([100, 90])), []);
+  // 11-24: a run from 15:27Z and the d1 rerun from 15:31Z each waited on the other for 47 min; only the later one waits now.
+  const started = (pid: number) => ({ 100: 50, 200: 60 } as Record<number, number>)[pid] ?? 0;
+  assert.deepEqual(otherRuns(lines, new Set([100, 90]), started, started(100)).map(line => line.split(" ")[0]), ["300", "500"]);
+  assert.deepEqual(otherRuns(lines, new Set([200]), started, started(200)).map(line => line.split(" ")[0]), ["100", "90", "300", "500"]);
   const out = report({ now: NOW, autopair: AUTOPAIR, e2e: E2E, waited: { ms: 332_400, on: ["node --import tsx scripts/duties/dm-extension.ts"] }, errors: [] }, METRICS);
   assert.equal(out.metrics.e2e_pass, 1);
   assert.ok(out.flagged?.some(slice => slice.kind === "waited" && slice.excerpt.startsWith("waited 332 s")));

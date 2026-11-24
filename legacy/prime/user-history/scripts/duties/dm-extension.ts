@@ -1,5 +1,5 @@
 import { execFile, spawn } from "node:child_process";
-import { createWriteStream, realpathSync } from "node:fs";
+import { createWriteStream, readFileSync, realpathSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -421,12 +421,28 @@ async function senderCount(igUserId: string): Promise<Sender> {
   return { username: row.username, sentToday: row.sentToday, dailyLimit: row.dailyLimit };
 }
 
-/** The `pgrep -af node` lines of another copy of this precheck or a real-Instagram rig, leaving out this run and its parents. */
-export function otherRuns(pgrepLines: string, own: ReadonlySet<number>): string[] {
+/**
+ * The `pgrep -af node` lines of another copy of this precheck or a real-Instagram rig, leaving out this run and its parents, and a copy of
+ * this precheck that started after this run (`startedAt` orders pids by their start, `ownStart` is this run's). Two copies that each waited on the
+ * other waited for good: on 11-24 a manual run from 15:27:27Z and the d1 rerun from 15:31:30Z each sat in this wait for 47 min.
+ */
+export function otherRuns(pgrepLines: string, own: ReadonlySet<number>, startedAt: (pid: number) => number = () => 0, ownStart = Infinity): string[] {
   return pgrepLines.split("\n").filter(line => {
     const pid = Number(/^\s*(\d+)\s/.exec(line)?.[1]);
-    return Number.isInteger(pid) && !own.has(pid) && (RIG.test(line) || DUTY_RUN.test(line));
+    if (!Number.isInteger(pid) || own.has(pid)) return false;
+    return RIG.test(line) || (DUTY_RUN.test(line) && startedAt(pid) < ownStart);
   });
+}
+
+/** A process's start in clock ticks since boot (/proc/<pid>/stat field 22) plus pid / 1e7, so two runs started in one tick still order
+ *  (Linux pids stay under 2^22), or Infinity when it is gone. */
+function startTicks(pid: number): number {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    return Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19]) + pid / 1e7;
+  } catch {
+    return Infinity;
+  }
 }
 
 /** This process and its parents, so a run started through `sh -c '... dm-extension.ts'` does not wait on its own shell. */
@@ -449,7 +465,7 @@ async function waitForOtherRuns(): Promise<{ ms: number; on: string[] }> {
   const own = await ownPids();
   const on = new Set<string>();
   for (;;) {
-    const others = otherRuns(await sh("pgrep", ["-af", "node"]).catch(() => ""), own);
+    const others = otherRuns(await sh("pgrep", ["-af", "node"]).catch(() => ""), own, startTicks, startTicks(process.pid));
     if (!others.length) return { ms: Date.now() - start, on: [...on] };
     for (const line of others) on.add(line.replace(/^\s*\d+\s+/, "").replace(REPO + "/", "").slice(0, 80));
     // measured: one rig run took 56 s (autopair) to 278 s (staging-real-ig) on 10-30, so a look every 30 s adds little to the wait.
