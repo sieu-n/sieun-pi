@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { DutyMetric } from "../src/shared/chat-duties.ts";
-import { type BillingData, convexAdmin, eventsTable, type Operation, type RequestLine, type UsageRow, expectedCharge, micros, PAIR_LEAD_MS, PROBES, reconcile, report } from "../scripts/duties/portal-billing.ts";
+import { type BillingData, convexAdmin, type Operation, type RequestLine, type UsageRow, expectedCharge, micros, PAIR_LEAD_MS, PROBES, reconcile, report } from "../scripts/duties/portal-billing.ts";
 
 const NOW = Date.parse("2026-10-19T16:00:00Z");
 const AT = NOW - 6 * 3_600_000;
@@ -54,12 +54,6 @@ test("a charge that pairs only with a 404 is a charge for an error, and a voided
     row("crawl-job:j1", "live.youtube.channel_shorts", AT + 181_000, 500, "crawlJob"),
   ], NOW);
   assert.deepEqual(result.chargedOnError.map(entry => entry.row.requestId), ["r1"]);
-});
-
-test("the ledger is usage.events once the rename reached a tier and ledger.events before it (apiPortalUsage frozen since 11-07)", () => {
-  assert.equal(eventsTable(["ledger"]), "ledger.events");
-  assert.equal(eventsTable(["ledger", "usage"]), "usage.events");
-  assert.throws(() => eventsTable([]), /neither/);
 });
 
 test("the report counts uncounted 2xx calls and probe charges, and a failed source never reads green", () => {

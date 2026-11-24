@@ -30,8 +30,7 @@ import { DAY, type DsQuery, MINUTE, REPO, SOURCE_DEADLINE_MS, frameRows, grafana
  *    must cost $0, and to Hacker News user pg, which must cost the price its openapi x-dashboard-cost names when it answers 2xx and $0 when it
  *    does not, on staging-api.virev.ai (a seeded test org) and api.virev.ai (VIREV_API_KEY_PROD). The charge is the sum of that env's
  *    ledger rows for the answer's request_id, so it reads the ledger, never the answer's own meta.cost.
- * The ledger is the ClickHouse table of usage events on each tier (estate_ch_prod, estate_ch_stg): usage.events once the rename of the
- * ledger database (auto-sns-agent 5bd7834fa3) reached that tier, ledger.events before it, picked from the tier's table list on each run.
+ * The ledger is the ClickHouse table usage.events on each tier (estate_ch_prod, estate_ch_stg).
  * Convex writes a Data API charge there through its ledgerOutbox (convex/ledger/outbox.ts) and stopped writing apiPortalUsage on 11-07.
  *
  * Targets in portal-billing.duty.json (the JSON cannot hold comments): all three are <= 0, because a mismatch is money the customer should
@@ -254,39 +253,26 @@ export const convexAdmin = async (env: Env, signal: AbortSignal, fetcher: typeof
   adminQuery(await convexBackend(env === "prod" ? "production" : "staging", fetcher, read, signal), fetcher, signal);
 
 export type SqlRead = (sql: string) => Promise<Record<string, unknown>[]>;
-/** A tier's ledger: its usage events table and a read on that tier's ClickHouse. */
-export interface Ledger { table: string; read: SqlRead }
-
-export const EVENTS_TABLES_SQL = "SELECT database FROM system.tables WHERE name = 'events' AND database IN ('usage', 'ledger')";
-/** usage.events where the rename reached the tier, else ledger.events. */
-export function eventsTable(databases: readonly string[]): string {
-  if (databases.includes("usage")) return "usage.events";
-  if (databases.includes("ledger")) return "ledger.events";
-  throw new Error("ClickHouse holds neither usage.events nor ledger.events");
-}
-
-export async function ledgerOf(env: Env, query: DsQuery): Promise<Ledger> {
-  const read: SqlRead = sql => sqlRows(query, LEDGER_DS[env], sql);
-  return { table: eventsTable((await read(EVENTS_TABLES_SQL)).map(row => String(row.database))), read };
-}
+/** A read on one tier's ClickHouse, which holds the ledger table usage.events. */
+export const ledgerOf = (env: Env, query: DsQuery): SqlRead => sql => sqlRows(query, LEDGER_DS[env], sql);
 
 const CALLS = "producer = 'convex' AND action = 'data_api_call'";
 const quote = (value: string) => `'${value.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`;
 /** Data API charges at or after `since`, one row per charge_id and row kind (a multi-part charge has event ids `<requestId>|<unitKind>`). */
-export const CHARGES_SQL = (table: string, since: number) => `SELECT charge_id, any(route) AS operation, toInt64(sum(charge_usd) * 1000000) AS micros,
+export const CHARGES_SQL = (since: number) => `SELECT charge_id, any(route) AS operation, toInt64(sum(charge_usd) * 1000000) AS micros,
  min(toUnixTimestamp64Milli(ts)) AS created, multiIf(kind = 'refund', 'refund', startsWith(charge_id, 'crawl-job:'), 'crawlJob',
  sum(charge_usd) = 0 AND any(http_status) = 503, 'void', 'call') AS role
-FROM ${table} WHERE ${CALLS} AND ts >= fromUnixTimestamp64Milli(${since}) GROUP BY charge_id, kind`;
+FROM usage.events WHERE ${CALLS} AND ts >= fromUnixTimestamp64Milli(${since}) GROUP BY charge_id, kind`;
 /** What each request id paid net at or after `since`: its charge rows plus the refunds that name it. */
-export const PROBE_CHARGES_SQL = (table: string, since: number, requestIds: readonly string[]) => `SELECT charge_id, toInt64(sum(charge_usd) * 1000000) AS micros
-FROM ${table} WHERE ${CALLS} AND ts >= fromUnixTimestamp64Milli(${since}) AND charge_id IN (${requestIds.map(quote).join(", ")}) GROUP BY charge_id`;
+export const PROBE_CHARGES_SQL = (since: number, requestIds: readonly string[]) => `SELECT charge_id, toInt64(sum(charge_usd) * 1000000) AS micros
+FROM usage.events WHERE ${CALLS} AND ts >= fromUnixTimestamp64Milli(${since}) AND charge_id IN (${requestIds.map(quote).join(", ")}) GROUP BY charge_id`;
 
 export const usageRow = (row: Record<string, unknown>): UsageRow => ({
   requestId: String(row.charge_id), operation: String(row.operation), costMicros: Number(row.micros), createdAt: Number(row.created), kind: row.role as UsageRow["kind"],
 });
 
-async function chargesSince(ledger: Ledger, since: number): Promise<UsageRow[]> {
-  return (await ledger.read(CHARGES_SQL(ledger.table, since))).map(usageRow);
+async function chargesSince(ledger: SqlRead, since: number): Promise<UsageRow[]> {
+  return (await ledger(CHARGES_SQL(since))).map(usageRow);
 }
 
 // measured: on 2026-11-24 at 01:55Z, 30 reads 0.5 s apart found the staging and prod outboxes empty each time, and the 01:38Z run found
@@ -353,7 +339,7 @@ LEFT JOIN
 ON f.rid = r.rid GROUP BY kind, status, path`;
 
 /** Calls the probes on one env and reads that env's ledger for each answer's request_id, once the env's outbox sent every charge they wrote. */
-async function probeEnv(env: Env, key: string, query: (path: string, args: unknown) => Promise<unknown>, ledger: Ledger, signal: AbortSignal): Promise<ProbeResult[]> {
+async function probeEnv(env: Env, key: string, query: (path: string, args: unknown) => Promise<unknown>, ledger: SqlRead, signal: AbortSignal): Promise<ProbeResult[]> {
   const file = await envFile(env);
   const doc = await (await fetch(`${file.urls.apiPortal}/openapi.json`, { signal })).json() as { paths: Record<string, { get?: { "x-dashboard-cost"?: string } }> };
   const started = Date.now();
@@ -377,12 +363,12 @@ async function probeEnv(env: Env, key: string, query: (path: string, args: unkno
   const ids = results.flatMap(result => result.requestId === undefined ? [] : [result.requestId]);
   if (!ids.length) return results;
   await outboxSent(query, Date.now(), signal);
-  const paid = new Map((await ledger.read(PROBE_CHARGES_SQL(ledger.table, started - MINUTE, ids))).map(row => [String(row.charge_id), Number(row.micros)]));
+  const paid = new Map((await ledger(PROBE_CHARGES_SQL(started - MINUTE, ids))).map(row => [String(row.charge_id), Number(row.micros)]));
   return results.map(result => result.requestId === undefined ? result : { ...result, charged: paid.get(result.requestId) ?? 0 });
 }
 
 /** Staging probes run under a throwaway org seeded through the staging Convex test routes, deleted again at the end. */
-async function stagingProbes(ledger: Ledger, signal: AbortSignal): Promise<ProbeResult[]> {
+async function stagingProbes(ledger: SqlRead, signal: AbortSignal): Promise<ProbeResult[]> {
   const file = await envFile("staging");
   const secret = lastLine(await sh(file.keySources.CONVEX_WEBHOOK_SECRET!.cmd, REPO, signal));
   if (!secret) throw new Error("the staging CONVEX_WEBHOOK_SECRET is empty");
@@ -403,7 +389,7 @@ async function stagingProbes(ledger: Ledger, signal: AbortSignal): Promise<Probe
   }
 }
 
-async function prodProbes(ledger: Ledger, signal: AbortSignal): Promise<ProbeResult[]> {
+async function prodProbes(ledger: SqlRead, signal: AbortSignal): Promise<ProbeResult[]> {
   const key = process.env.VIREV_API_KEY_PROD || lastLine(await sh("cd apps/api-portal && npx --no-install dotenvx get VIREV_API_KEY_PROD -f .env", REPO, signal));
   if (!key.startsWith("kb_live_")) throw new Error("VIREV_API_KEY_PROD from apps/api-portal/.env is not a kb_live_ key");
   return probeEnv("prod", key, await convexAdmin("prod", signal), ledger, signal);
@@ -429,7 +415,7 @@ async function measure(now: number, signal: AbortSignal): Promise<BillingData> {
     clickhouse.then(read => read ? step("gateway failures", async () => (await read(UNCOUNTED_SQL(now))).map((row): Uncounted => ({
       kind: String(row.kind), status: String(row.status ?? ""), path: String(row.path ?? ""), calls: Number(row.calls), lastAt: Number(row.last),
     }))) : (data.errors.push({ source: "gateway failures", message: "no ClickHouse read" }), undefined)),
-    step("staging probes", async () => stagingProbes(await ledgerOf("staging", await grafana), signal)),
+    step("staging probes", async () => stagingProbes(ledgerOf("staging", await grafana), signal)),
     step("prod probes", async () => prodProbes(await prodLedger, signal)),
   ]);
   if (operations) data.operations = operations;
