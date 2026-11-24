@@ -250,6 +250,8 @@ export function roomExamples(): string {
  * as "- 17 tracked files are modified and 9 untracked paths sit around, ... None of them are under packages/pi-host. One odd untracked file
  * is literally named `{kind:`." So a bullet stops at two sentences, a third fact gets its own or a nested bullet, and a pair from
  * #vent-dev p3, no blind ask's answer, shows it, since on 11-23 all 5 checklist reruns copied a rule example taken from their own ask.
+ * After that, 1 of 5 fresh lists runs on 11-24 still wrote "- Yes, pi-host's comm guard has tests. `...` holds 8 cases, last changed 9
+ * hours ago. I didn't run them.", the shape of all 5 failing list replies of 11-23, so the rule names a bullet that opens with yes or no.
  * Later that day he called a 92-word DM post a model (`MODEL_POST`), which the 80-word check had held once, so a post's cap is
  * `ROOM_LONG_WORDS`. The p174 captures found 7 of 8 channel posts opening "done, ..." over topic lists while Prime's 7 posts had no bullets,
  * so the step's stock openers ("yes", "nope", "not yet", "got it") gave way to a plain opening sentence, and the step was cut to the lines
@@ -269,7 +271,7 @@ function slackPostStep(): string {
   return "Write each post like a coworker types in Slack: the answer first in a plain sentence, with the why when it helps. " +
     "The answer holds for every result under it: when one result is not clean, the answer names it, as in \"two of the three deploys are live, but staging fails its health check\", never \"all clear\" over a bullet that says otherwise. " +
     "When two of his posts wait for you and each asks its own thing, answer each with its own tell_owner call whose `reply_to` is that post. Merge them only when the second adds to or corrects the first. " +
-    "Put the answer on its own line and each further point on its own line or `- ` bullet, never in one paragraph. A bullet stops at two sentences: a third fact, such as one part of a count split by kind, goes in its own bullet or a nested `  - ` bullet under it. " +
+    "Put the answer on its own line and each further point on its own line or `- ` bullet, never in one paragraph. A bullet stops at two sentences, also one that opens with yes or no: the yes or no and one fact that backs it are the two, and a further fact, such as one part of a count split by kind, goes in a nested `  - ` bullet or is left out. " +
     "Keep your working plan and process to yourself (c234). A first reply gives the answer or one plain line on what he will get, never \"I'll do X first, then Y\" and never a checklist of your own steps. " +
     "A checklist lists only results he cares about, each with its result, and you fill them in by editing that post with `edit_message`. " +
     "A question to him leads with your own pick. No labels, such as an opener like \"Early read from the spec:\" or \"short version:\" or a line of a word or two over a group of bullets like \"The others:\", and no bold, headings or tables unless he asks. A question whether a setup or skill is set up right gets one answer line and one table of each piece, where it lives, who loads it and what it says, never a bare yes or a long list (c225). Detail goes on a wiki page linked in the post. End on the words, with no sign-off emoji. " +

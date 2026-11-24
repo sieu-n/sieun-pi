@@ -180,7 +180,7 @@ test("a room post answers first, breaks into lines and keeps the agent's process
     // reruns at 18:26 KST opened on those words, so they showed a copied line and not the rule.
     assert.match(text, /The answer holds for every result under it: when one result is not clean, the answer names it, as in "two of the three deploys are live, but staging fails its health check", never "all clear" over a bullet that says otherwise\./);
     assert.doesNotMatch(text, /three of the four are clear/);
-    assert.match(text, /Put the answer on its own line and each further point on its own line or `- ` bullet, never in one paragraph\. A bullet stops at two sentences: a third fact, such as one part of a count split by kind, goes in its own bullet or a nested `  - ` bullet under it\./);
+    assert.match(text, /Put the answer on its own line and each further point on its own line or `- ` bullet, never in one paragraph\. A bullet stops at two sentences, also one that opens with yes or no: the yes or no and one fact that backs it are the two, and a further fact, such as one part of a count split by kind, goes in a nested `  - ` bullet or is left out\./);
     assert.match(text, /Keep your working plan and process to yourself \(c234\)\. A first reply gives the answer or one plain line on what he will get, never "I'll do X first, then Y" and never a checklist of your own steps\./);
     assert.match(text, /A checklist lists only results he cares about, each with its result, and you fill them in by editing that post with `edit_message`\./);
     assert.match(text, /A question to him leads with your own pick\./);
