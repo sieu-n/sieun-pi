@@ -41,8 +41,8 @@
  *     unraised so they carry to the next run.
  *     A verify run (PRECHECK_TRIGGER=verify, which the board starts when the sweep's fix step closes) measures as after mode does, so it
  *     confirms the last sweep's items reached the owner, raises nothing and starts no new sweep; its fresh items wait for the next scheduled
- *     run (`sweepMode`). A duty miss whose owner has it already, a fix step with a working or sleeping job or a board.wake, or the duty's
- *     first run, is listed as passed on and is never fresh (`passedOn`).
+ *     run (`sweepMode`). A duty miss whose owner has it already, a fix step for each missed metric with a working or sleeping job or a
+ *     board.wake, or the duty's first run, is listed as passed on and is never fresh (`passedOn`).
  *   sweep_age_min: minutes since the sweep before this one ran, target 195, the 180 min schedule plus 15 min.
  *   items_fresh, items_open and a count per kind are detail with no target.
  *
@@ -101,7 +101,8 @@ export interface Job { id: string; name: string; status: string; thread: string;
 interface Agent { id: string; name: string; status: string; thread: string; room?: string; model?: { id: string; label?: string }; comm?: { room: string; thread: string; status: string }[] }
 export interface PlanItem { id: string; text: string; status: string; note?: string; job?: string; duty?: string; waitUntil?: string | number; waitFor?: unknown; children?: PlanItem[] }
 export interface DutyRunView {
-  at: number; verdict: string; summary?: string; error?: string; after?: { verdict?: string; summary?: string }; fixes?: Record<string, { step: string; job?: string; live: boolean }> | null;
+  at: number; verdict: string; summary?: string; error?: string; metrics?: Record<string, { met: boolean }>;
+  after?: { verdict?: string; summary?: string; metrics?: Record<string, { met: boolean }> }; fixes?: Record<string, { step: string; job?: string; live: boolean }> | null;
   job?: { id: string; name: string };
 }
 interface Todo { id: string; done?: boolean; step?: string }
@@ -307,10 +308,12 @@ export function dutyContext(runs: readonly DutyRunView[]): string[] {
 }
 
 /**
- * Why a duty's miss is with its owner already, or undefined: the duty's first measured run, whose own duty job got its brief, or an open fix
- * step of the duty (`duty` is `<dutyId>/<metric>`) whose job works or sleeps or that a board.wake moves (`wokenStep`). On 11-24 Crawler guy's
- * d1 and d2 missed on their first runs at 15:00 KST, each with fix steps (p48, p50, p42) whose jobs worked, and the auditor's 15:32 KST
- * verify run still counted both as findings nobody had passed on.
+ * Why a duty's miss is with its owner already, or undefined: the duty's first measured run, whose own duty job got its brief, or for each
+ * metric the newest run missed an open fix step that names that duty and metric (`duty` is `<dutyId>/<metric>`) whose job works or sleeps
+ * or that a board.wake or a working subagent moves (`wokenStep`). A step for another metric of the duty covers nothing: agent factory d2
+ * read passed on through p235 while its slowest_api_p90_ms step p155 had no job. On 11-24 Crawler guy's d1 and d2 missed on their first
+ * runs at 15:00 KST, each with fix steps (p48, p50, p42) whose jobs worked, and the auditor's 15:32 KST verify run still counted both as
+ * findings nobody had passed on.
  */
 export function passedOn(input: {
   agent: Agent; dutyId: string; runs: readonly DutyRunView[]; plan: readonly PlanItem[]; jobs: readonly Job[]; now: number; wakes?: readonly Wake[];
@@ -318,22 +321,27 @@ export function passedOn(input: {
   const { agent, dutyId, now } = input;
   const measured = input.runs.filter(run => run.verdict !== "skipped");
   if (measured.length === 1 && measured[0]!.job) return `first run of the duty, its job ${measured[0]!.job.name} has it`;
+  const newest = measured[0];
+  const metrics = newest?.after?.metrics ?? newest?.metrics ?? {};
+  const missed = Object.entries(metrics).filter(([, result]) => !result.met).map(([key]) => key);
+  if (!missed.length) return undefined;
   const mine = input.jobs.filter(job => job.agent?.id === agent.id);
   const chat: AppsChat = { id: agent.id, name: agent.name, board: null, duties: [], thread: agent.thread, jobs: mine.map(job => ({ name: job.name, state: job.status, sessionId: job.id })) };
   const reads = appsOwnerReads(chat, [], input.wakes ?? [], now);
-  let found: string | undefined;
+  const moved = new Map<string, string>();
   const visit = (list: readonly PlanItem[]): void => {
     for (const step of list) {
-      if (found) return;
       visit(step.children ?? []);
-      if (found || step.status === "done" || step.status === "dropped" || step.duty?.split("/")[0] !== dutyId) continue;
+      if (step.status === "done" || step.status === "dropped" || !step.duty) continue;
+      const [id, key] = step.duty.split("/");
+      if (id !== dutyId || !key || !missed.includes(key) || moved.has(key)) continue;
       const live = step.job ? mine.find(job => job.name === step.job && (job.status === "working" || job.status === "sleeping")) : undefined;
-      if (live) found = `fix step ${step.id}, job ${live.name} ${live.status}`;
-      else if (wokenStep({ id: step.id, job: step.job, waitUntil: typeof step.waitUntil === "string" ? step.waitUntil : undefined }, reads)) found = `fix step ${step.id}, a board.wake moves it`;
+      if (live) moved.set(key, `${key} fix step ${step.id}, job ${live.name} ${live.status}`);
+      else if (wokenStep({ id: step.id, job: step.job, waitUntil: typeof step.waitUntil === "string" ? step.waitUntil : undefined }, reads)) moved.set(key, `${key} fix step ${step.id}, a board.wake or subagent moves it`);
     }
   };
   visit(input.plan);
-  return found;
+  return missed.every(key => moved.has(key)) ? missed.map(key => moved.get(key)!).join("; ") : undefined;
 }
 
 /**

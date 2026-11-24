@@ -226,10 +226,11 @@ test("three or more jobs that wait for a model account fold into one item, and f
 });
 
 const crawler = { id: "ag_crawler-guy", name: "Crawler guy", status: "idle", thread: "tc" };
-const missedRun = (minutesAgo: number, job?: string): DutyRunView => ({ at: now - minutesAgo * MIN, verdict: "missed", summary: "proxy_kb_per_read 109.8 KB", ...(job ? { job: { id: `j:${job}`, name: job } } : {}) });
+const missedRun = (minutesAgo: number, job?: string, missed: string[] = ["proxy_kb_per_read"]): DutyRunView => ({ at: now - minutesAgo * MIN, verdict: "missed", summary: missed.join(", "),
+  metrics: { sweep_age_min: { met: true }, ...Object.fromEntries(missed.map(key => [key, { met: false }])) }, ...(job ? { job: { id: `j:${job}`, name: job } } : {}) });
 const crawlerJob = (name: string, status: string): Job => ({ id: `tc:${name}`, name, status, thread: "tc", conversation: 4, createdAt: now - 60 * MIN, agent: { id: crawler.id, name: crawler.name } });
 
-test("a duty miss with a fix step whose job works, or on the duty's first run, is passed on (Crawler guy d1 and d2, 11-24 15:00 KST)", () => {
+test("a duty miss is passed on when each missed metric has its own fix step that moves, or on the duty's first run (Crawler guy d1 and d2, 11-24 15:00 KST)", () => {
   const plan: PlanItem[] = [{ id: "p5", text: "Whole pipeline", status: "blocked", children: [
     { id: "p48", text: "Bring a paid Instagram profile read back to 50 KB", status: "doing", duty: "d1/proxy_kb_per_read", job: "crawler ops train" },
     { id: "p50", text: "Crawler duties measure what they claim", status: "doing", duty: "d1/cpu_ms_per_read", job: "crawler duty prechecks" },
@@ -237,15 +238,31 @@ test("a duty miss with a fix step whose job works, or on the duty's first run, i
   const older = [missedRun(30, "Crawler read cost duty"), missedRun(200, "Crawler read cost duty")];
   const of = (runs: DutyRunView[], jobs: Job[], wakes = [] as Parameters<typeof passedOn>[0]["wakes"]) =>
     passedOn({ agent: crawler, dutyId: "d1", runs, plan, jobs, now, wakes });
-  assert.equal(of(older, [crawlerJob("crawler ops train", "working")]), "fix step p48, job crawler ops train working");
-  assert.equal(of(older, [crawlerJob("crawler duty prechecks", "sleeping")]), "fix step p50, job crawler duty prechecks sleeping");
+  assert.equal(of(older, [crawlerJob("crawler ops train", "working")]), "proxy_kb_per_read fix step p48, job crawler ops train working");
+  assert.equal(of(older, [crawlerJob("crawler duty prechecks", "sleeping")]), undefined, "p50 is for cpu_ms_per_read, which this run did not miss");
   assert.equal(of(older, [crawlerJob("crawler ops train", "idle")]), undefined, "an idle job with no wake moves nothing");
+  const both = [missedRun(30, "c", ["proxy_kb_per_read", "cpu_ms_per_read"]), missedRun(200, "c")];
+  assert.equal(of(both, [crawlerJob("crawler ops train", "working"), crawlerJob("crawler duty prechecks", "sleeping")]),
+    "proxy_kb_per_read fix step p48, job crawler ops train working; cpu_ms_per_read fix step p50, job crawler duty prechecks sleeping");
+  assert.equal(of(both, [crawlerJob("crawler ops train", "working")]), undefined, "every missed metric needs its own moving step");
+  assert.equal(of([{ ...missedRun(30, "c"), after: { verdict: "missed", metrics: { cpu_ms_per_read: { met: false } } } }, missedRun(200, "c")], [crawlerJob("crawler ops train", "working")]),
+    undefined, "the after-job measure's misses count");
   assert.equal(of([missedRun(30, "Crawler read cost duty 261124-150043")], []), "first run of the duty, its job Crawler read cost duty 261124-150043 has it");
   assert.equal(of([missedRun(30, "a"), { at: now - 60 * MIN, verdict: "skipped" }], []), "first run of the duty, its job a has it", "a skipped run measured nothing");
   assert.equal(passedOn({ agent: crawler, dutyId: "d2", runs: older, plan, jobs: [crawlerJob("crawler ops train", "working")], now }), undefined, "a step of another duty");
   const check = { kind: "check" as const, command: "true", every: 10 * MIN, at: now + 60 * MIN };
   assert.equal(of(older, [{ ...crawlerJob("crawler ops train", "idle"), id: "tc:4" }], [{ session: "tc--4", note: "crawler ops train: cut lands", since: now - 90 * MIN, on: check }]),
-    "fix step p48, a board.wake moves it");
+    "proxy_kb_per_read fix step p48, a board.wake or subagent moves it");
+
+  // agent factory d2 on 11-24: its p235 for another metric had a working job, and its slowest_api_p90_ms step p155 had no job.
+  const factory = { id: "ag_agent-factory", name: "agent factory", status: "idle", thread: "tf" };
+  const factoryPlan: PlanItem[] = [
+    { id: "p155", text: "slowest call under 1 s", status: "doing", duty: "d2/slowest_api_p90_ms" },
+    { id: "p235", text: "pi-host loop stalls", status: "doing", duty: "d2/thread_open_p90_ms", job: "pi-host loop stalls" },
+  ];
+  const factoryRuns = [missedRun(30, "s", ["slowest_api_p90_ms"]), missedRun(200, "s", ["slowest_api_p90_ms"])];
+  const stalls: Job = { ...crawlerJob("pi-host loop stalls", "sleeping"), agent: { id: factory.id, name: factory.name } };
+  assert.equal(passedOn({ agent: factory, dutyId: "d2", runs: factoryRuns, plan: factoryPlan, jobs: [stalls], now }), undefined, "a step for another metric covers nothing");
 
   const items: Item[] = [
     { kind: "duty_off", sig: "duty:ag_crawler-guy/d1", agent: "Crawler guy", text: "d1", link: "#", passedOn: "fix step p48" },
@@ -274,7 +291,8 @@ test("a verify run after a posted sweep reads met with no job, and passed-on mis
   const live = Date.now();
   const sweepAt = live - 130 * MIN;
   const auditor = { id: "ag_fable-auditor", name: "fable auditor", status: "idle", thread: "ta", room: "dm_fable-auditor" };
-  const run = (id: string, minutesAgo: number, job?: string) => ({ at: live - minutesAgo * MIN, verdict: "missed", summary: `${id} missed`, ...(job ? { job: { id: `j-${job}`, name: job } } : {}) });
+  const run = (id: string, minutesAgo: number, job?: string) => ({ at: live - minutesAgo * MIN, verdict: "missed", summary: `${id} missed`, metrics: { proxy_kb_per_read: { met: false } },
+    ...(job ? { job: { id: `j-${job}`, name: job } } : {}) });
   const routes: Record<string, unknown> = {
     "/api/agents": [auditor, crawler, { id: "ag_seo", name: "seo", status: "idle", thread: "ts" }],
     "/api/jobs": [{ ...crawlerJob("crawler ops train", "working"), createdAt: live - 20 * MIN }],
@@ -321,7 +339,7 @@ test("a verify run after a posted sweep reads met with no job, and passed-on mis
     assert.equal(scheduled.record.metrics.findings_unposted?.value, 1, "only seo d1, which nobody has; Crawler guy's d1 and d2 are passed on");
     const items = (JSON.parse(readFileSync(scheduled.record.detail!, "utf8")) as { items: (Item & { fresh: boolean })[] }).items;
     assert.deepEqual(items.map(i => [i.sig, i.fresh, i.passedOn]).sort(), [
-      ["duty:ag_crawler-guy/d1", false, "fix step p48, job crawler ops train working"],
+      ["duty:ag_crawler-guy/d1", false, "proxy_kb_per_read fix step p48, job crawler ops train working"],
       ["duty:ag_crawler-guy/d2", false, "first run of the duty, its job GeoNode proxy use duty has it"],
       ["duty:ag_seo/d1", true, undefined],
     ]);
