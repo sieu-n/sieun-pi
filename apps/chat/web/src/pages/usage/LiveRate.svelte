@@ -9,7 +9,7 @@
    * token kind beside it and a spark of that rate every 10 s over 10 min, in one line for the chart's header row. It opens with the rate
    * its report brought (`initial`), then reads api/usage/live every 5 s, the cadence of Prime's usage feed.
    */
-  let { initial, metric, thread, host }: { initial: UsageLive | null; metric: Metric; thread?: string; host?: string } = $props();
+  let { initial, metric, thread, host, client }: { initial: UsageLive | null; metric: Metric; thread?: string; host?: string; client?: string } = $props();
 
   const POLL_MS = 5_000;
   const SPARK = { width: 96, height: 20 };
@@ -22,7 +22,7 @@
     const id = ++request;
     try {
       const shown = untrack(() => live !== null);
-      const next = await api.usageLive({ ...(thread ? { thread } : {}), ...(host ? { host } : {}) }, shown ? { background: "shown" } : {});
+      const next = await api.usageLive({ ...(thread ? { thread } : {}), ...(host ? { host } : {}), ...(client ? { client } : {}) }, shown ? { background: "shown" } : {});
       if (id !== request) return;
       live = next;
       error = null;
@@ -30,11 +30,12 @@
       if (id === request) error = reason instanceof Error ? reason.message : String(reason);
     }
   }
-  /** The rate the report brought shows until the first poll; a new chat or host filter waits for its own. */
+  /** The rate the report brought shows until the first poll; a new chat, host or client filter waits for its own. */
   let mounted = false;
   $effect(() => {
     void thread;
     void host;
+    void client;
     live = mounted ? null : untrack(() => initial);
     mounted = true;
     void poll();

@@ -1,4 +1,4 @@
-/** Pure sums for the Usage page: totals, per chat, per model, per kind and the chart series. Every sum is exact (c191). */
+/** Pure sums for the Usage page: totals, per chat, per model, per client, per kind and the chart series. Every sum is exact (c191). */
 import type { UsageReport, UsageRow } from "$lib/api";
 
 export const KINDS = ["input", "output", "cacheRead", "cacheWrite"] as const;
@@ -9,14 +9,18 @@ export type UsageBucketSum = UsageReport["buckets"][number];
 
 export interface Total {
   readonly turns: number;
+  /** Turns with no recorded cost and no price: their tokens count, and their cost is unknown, not zero. */
+  readonly unpriced: number;
   readonly tokens: Tokens;
   readonly cost: Cost;
 }
 
 export interface ChatTotal extends Total {
+  /** "" for the row that holds every chat past the report's costliest. */
   readonly thread: string;
   readonly name: string;
   readonly host: string;
+  readonly client: string;
   /** The model that cost the most in this chat. */
   readonly model: string;
 }
@@ -25,13 +29,20 @@ export interface ModelTotal extends Total {
   readonly model: string;
 }
 
+/** One chat client on one host: pi-host, prime, claude-code, codex, aside, vent and more. */
+export interface ClientTotal extends Total {
+  readonly client: string;
+  readonly host: string;
+}
+
 export const KIND_LABEL: Readonly<Record<Kind, string>> = { input: "Input", output: "Output", cacheRead: "Cache read", cacheWrite: "Cache write" };
 
-export const ZERO: Total = { turns: 0, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+export const ZERO: Total = { turns: 0, unpriced: 0, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 
 export function add(a: Total, b: Total): Total {
   return {
     turns: a.turns + b.turns,
+    unpriced: a.unpriced + b.unpriced,
     tokens: { input: a.tokens.input + b.tokens.input, output: a.tokens.output + b.tokens.output, cacheRead: a.tokens.cacheRead + b.tokens.cacheRead, cacheWrite: a.tokens.cacheWrite + b.tokens.cacheWrite },
     cost: {
       input: a.cost.input + b.cost.input, output: a.cost.output + b.cost.output, cacheRead: a.cost.cacheRead + b.cost.cacheRead,
@@ -52,28 +63,37 @@ export interface Summary {
   readonly total: Total;
   readonly chats: readonly ChatTotal[];
   readonly models: readonly ModelTotal[];
+  readonly clients: readonly ClientTotal[];
 }
 
-/** Every row summed once, then grouped per chat and per model, costliest first. */
+/** Every row summed once, then grouped per chat, per model and per client on its host, costliest first. */
 export function summarize(rows: readonly UsageRow[]): Summary {
   let total = ZERO;
-  const chats = new Map<string, { name: string; host: string; total: Total; byModel: Map<string, number> }>();
+  const chats = new Map<string, { name: string; host: string; client: string; total: Total; byModel: Map<string, number> }>();
   const models = new Map<string, Total>();
+  const clients = new Map<string, { client: string; host: string; total: Total }>();
   for (const row of rows) {
-    const part: Total = { turns: row.turns, tokens: row.tokens, cost: row.cost };
+    // A report stored before 11-24 has rows with no client and no unpriced count; every such row came from pi-host with its own cost.
+    const client = row.client ?? "pi-host";
+    const part: Total = { turns: row.turns, unpriced: row.unpriced ?? 0, tokens: row.tokens, cost: row.cost };
     total = add(total, part);
-    const chat = chats.get(row.thread) ?? { name: row.threadName, host: row.host, total: ZERO, byModel: new Map<string, number>() };
+    const chat = chats.get(row.thread) ?? { name: row.threadName, host: row.host, client, total: ZERO, byModel: new Map<string, number>() };
     chat.total = add(chat.total, part);
     chat.byModel.set(row.model, (chat.byModel.get(row.model) ?? 0) + row.cost.total);
     chats.set(row.thread, chat);
     models.set(row.model, add(models.get(row.model) ?? ZERO, part));
+    const at = `${client}\u0000${row.host}`;
+    const own = clients.get(at) ?? { client, host: row.host, total: ZERO };
+    own.total = add(own.total, part);
+    clients.set(at, own);
   }
   const costliest = (a: Total, b: Total) => b.cost.total - a.cost.total || tokenSum(b.tokens) - tokenSum(a.tokens);
   const top = (byModel: Map<string, number>) => [...byModel].reduce((best, entry) => (entry[1] > best[1] ? entry : best), ["", -1] as [string, number])[0];
   return {
     total,
-    chats: [...chats].map(([thread, chat]) => ({ thread, name: chat.name, host: chat.host, ...chat.total, model: top(chat.byModel) })).sort(costliest),
+    chats: [...chats].map(([thread, chat]) => ({ thread, name: chat.name, host: chat.host, client: chat.client, ...chat.total, model: top(chat.byModel) })).sort(costliest),
     models: [...models].map(([model, sum]) => ({ model, ...sum })).sort(costliest),
+    clients: [...clients.values()].map(({ client, host, total: sum }) => ({ client, host, ...sum })).sort(costliest),
   };
 }
 
@@ -84,15 +104,18 @@ export interface Series {
   readonly models: readonly string[];
 }
 
-/** The chart's own colors; a fourth model and later share the last one as Other. */
+/** The chart's own colors; a fourth model or client and later share the last one as Other. */
 export const SERIES = 4;
 
-/** One series per model, costliest first, with every model past the third folded into Other. */
-export function seriesOf(models: readonly string[]): Series[] {
-  const own = models.length > SERIES ? models.slice(0, SERIES - 1) : models;
-  const rest = models.slice(own.length);
+/** What the chart's stacks split by: each model, or each chat client. */
+export type Split = "model" | "client";
+
+/** One series per model or client, costliest first, with every one past the third folded into Other. */
+export function seriesOf(keys: readonly string[], split: Split = "model"): Series[] {
+  const own = keys.length > SERIES ? keys.slice(0, SERIES - 1) : keys;
+  const rest = keys.slice(own.length);
   return [
-    ...own.map((model, index) => ({ key: model, label: modelName(model), color: `var(--chart-series-${index + 1})`, models: [model] })),
+    ...own.map((key, index) => ({ key, label: split === "model" ? modelName(key) : key, color: `var(--chart-series-${index + 1})`, models: [key] })),
     ...(rest.length ? [{ key: "other", label: "Other", color: `var(--chart-series-${SERIES})`, models: rest }] : []),
   ];
 }
@@ -106,23 +129,38 @@ export type Measure = { readonly unit: "usd" } | { readonly unit: "tokens"; read
 export const METRIC_LABEL: Readonly<Record<Metric, string>> = { total: "Total", output: "Output" };
 export const metricOf = (tokens: Tokens, metric: Metric): number => (metric === "output" ? tokens.output : tokenSum(tokens));
 
-/** One model's measure in a bucket. */
-const modelValue = (bucket: UsageBucketSum, model: string, measure: Measure): number => {
-  if (measure.unit === "usd") return bucket.byModel[model] ?? 0;
-  const tokens = bucket.tokensByModel[model];
+/** A bucket's cost and tokens per model or per client; a report stored before 11-24 has no client split, and its every call was pi-host's. */
+const costsOf = (bucket: UsageBucketSum, split: Split): Record<string, number> => (split === "model" ? bucket.byModel : (bucket.byClient ?? { "pi-host": bucket.cost.total }));
+const tokensOf = (bucket: UsageBucketSum, split: Split): Record<string, Tokens> => (split === "model" ? bucket.tokensByModel : (bucket.tokensByClient ?? { "pi-host": bucket.tokens }));
+
+/** One model's or client's measure in a bucket. */
+const keyValue = (bucket: UsageBucketSum, key: string, measure: Measure, split: Split): number => {
+  if (measure.unit === "usd") return costsOf(bucket, split)[key] ?? 0;
+  const tokens = tokensOf(bucket, split)[key];
   return tokens ? metricOf(tokens, measure.metric) : 0;
 };
 
 /** Each bucket's measure per series, in series order. */
-export function cellsOf(buckets: readonly UsageBucketSum[], series: readonly Series[], measure: Measure): number[][] {
-  return buckets.map(bucket => series.map(line => line.models.reduce((sum, model) => sum + modelValue(bucket, model, measure), 0)));
+export function cellsOf(buckets: readonly UsageBucketSum[], series: readonly Series[], measure: Measure, split: Split = "model"): number[][] {
+  return buckets.map(bucket => series.map(line => line.models.reduce((sum, key) => sum + keyValue(bucket, key, measure, split), 0)));
 }
 
-/** Models by their cost over the buckets, costliest first, for a stable color per model. */
-export function modelsByCost(buckets: readonly UsageBucketSum[]): string[] {
-  const sums = new Map<string, number>();
-  for (const bucket of buckets) for (const [model, cost] of Object.entries(bucket.byModel)) sums.set(model, (sums.get(model) ?? 0) + cost);
-  return [...sums].sort((a, b) => b[1] - a[1]).map(([model]) => model);
+/** Models or clients by their cost over the buckets, then by their tokens, so an unpriced client still gets a stable color. */
+export function keysByCost(buckets: readonly UsageBucketSum[], split: Split = "model"): string[] {
+  const sums = new Map<string, [number, number]>();
+  for (const bucket of buckets) {
+    for (const [key, cost] of Object.entries(costsOf(bucket, split))) {
+      const sum = sums.get(key) ?? [0, 0];
+      sum[0] += cost;
+      sums.set(key, sum);
+    }
+    for (const [key, tokens] of Object.entries(tokensOf(bucket, split))) {
+      const sum = sums.get(key) ?? [0, 0];
+      sum[1] += tokenSum(tokens);
+      sums.set(key, sum);
+    }
+  }
+  return [...sums].sort((a, b) => b[1][0] - a[1][0] || b[1][1] - a[1][1]).map(([key]) => key);
 }
 
 /** The axis top and its ticks: the smallest 1, 2, 2.5 or 5 times a power of ten at or above `max`, cut in four. */

@@ -7,11 +7,11 @@
   import { axis, type Series, type UsageBucketSum } from "./stats";
 
   /**
-   * One value per minute, hour or day, stacked by model, as Prime's chat Usage chart groups it: cost or tokens, as the caller's `cells` and
+   * One value per minute, hour or day, stacked by model or by client (`legend` names which), as Prime's chat Usage chart groups it: cost or tokens, as the caller's `cells` and
    * `format` say. A hover shows the bucket's split and sum, then the caller's own rows (`tip`), and every bucket that ran a call is in a
    * table one click away with the range's total under it, each figure exact (c191). The caller's `header` sits at the end of the legend row.
    */
-  let { buckets, series, bucket, cells, format, header, tip }: {
+  let { buckets, series, bucket, cells, format, header, tip, legend = "Models" }: {
     buckets: readonly UsageBucketSum[];
     series: readonly Series[];
     bucket: UsageBucket;
@@ -21,6 +21,8 @@
     header?: Snippet;
     /** More tip rows for the bucket at this index, muted, under its split and sum. */
     tip?: (index: number) => readonly TipRow[];
+    /** What the stacks split by, as the legend's name. */
+    legend?: string;
   } = $props();
 
   const HEIGHT = 200;
@@ -99,7 +101,7 @@
 <div class="chart">
   <div class="legend-row">
     {#if stacked}
-      <ul class="legend" aria-label="Models">
+      <ul class="legend" aria-label={legend}>
         {#each series as line (line.key)}<li><span class="swatch" style:background={line.color}></span>{line.label}</li>{/each}
       </ul>
     {/if}

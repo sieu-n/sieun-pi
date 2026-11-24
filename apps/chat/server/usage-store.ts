@@ -1,5 +1,5 @@
 /**
- * Usage from the one store of model calls, the ClickHouse table `usage.model_calls` that a collector on each host fills from every chat client
+ * Usage from the one store of model calls, the ClickHouse table `ai_usage.model_calls` that a collector on each host fills from every chat client
  * (components/usage-collector). The chat keeps its sums by hour, minute and 10 s in memory, so api/usage answers with no call to the store.
  */
 import { readFileSync } from "node:fs";
@@ -115,10 +115,11 @@ export function addSums(into: UsageTotal, from: UsageTotal): void {
   into.costOutput += from.costOutput;
   into.costCacheRead += from.costCacheRead;
   into.costCacheWrite += from.costCacheWrite;
+  into.unpriced = (into.unpriced ?? 0) + (from.unpriced ?? 0);
 }
 
 const CALL_COLUMNS = `call_at, host, client, agent, thread, thread_name, session, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-  cost_input_usd, cost_output_usd, cost_cache_read_usd, cost_cache_write_usd`;
+  cost_input_usd, cost_output_usd, cost_cache_read_usd, cost_cache_write_usd, cost_source`;
 
 /**
  * The store's calls from `from` on, each call once. A full read takes FINAL. A tail read keeps each row_id's latest copy instead, since the
@@ -143,7 +144,8 @@ export function pullSql(table: string, from: Readonly<Record<GrainName, number>>
   if(thread = '', session, thread) AS thread_or_session, argMax(thread_name, call_at) AS thread_name, model, toFloat64(count()) AS turns,
   toFloat64(sum(input_tokens)) AS input, toFloat64(sum(output_tokens)) AS output, toFloat64(sum(cache_read_tokens)) AS cache_read,
   toFloat64(sum(cache_write_tokens)) AS cache_write, toFloat64(sum(cost_input_usd)) AS cost_input, toFloat64(sum(cost_output_usd)) AS cost_output,
-  toFloat64(sum(cost_cache_read_usd)) AS cost_cache_read, toFloat64(sum(cost_cache_write_usd)) AS cost_cache_write
+  toFloat64(sum(cost_cache_read_usd)) AS cost_cache_read, toFloat64(sum(cost_cache_write_usd)) AS cost_cache_write,
+  toFloat64(countIf(startsWith(cost_source, 'unpriced'))) AS unpriced
 FROM ${callsFrom(table, Math.min(...Object.values(from)), full)} ARRAY JOIN [${grains}] AS g
 WHERE toUnixTimestamp64Milli(call_at) >= g.3
 GROUP BY grain, bucket, host, client, agent, thread_or_session, model`;
@@ -157,16 +159,16 @@ function rowsOf(columns: Columns): { grain: GrainName; sum: Sum }[] {
     if (!values || values.length !== grains.length) throw new Error(`usage store: the answer has no column ${name} of ${grains.length} values`);
     return values;
   };
-  const [bucket, host, client, agent, thread, threadName, model, turns, input, output, cacheRead, cacheWrite, costInput, costOutput, costCacheRead, costCacheWrite] =
+  const [bucket, host, client, agent, thread, threadName, model, turns, input, output, cacheRead, cacheWrite, costInput, costOutput, costCacheRead, costCacheWrite, unpriced] =
     ["bucket", "host", "client", "agent", "thread_or_session", "thread_name", "model", "turns", "input", "output", "cache_read", "cache_write", "cost_input", "cost_output",
-      "cost_cache_read", "cost_cache_write"].map(col);
+      "cost_cache_read", "cost_cache_write", "unpriced"].map(col);
   return grains.map((grain, i) => {
     if (grain !== "hour" && grain !== "minute" && grain !== "tick") throw new Error(`usage store: unknown grain ${String(grain)}`);
     const n = (values: readonly unknown[] | undefined) => Number(values![i]);
     const sum: Sum = {
       bucket: n(bucket), host: String(host![i]), client: String(client![i]), agent: String(agent![i]), thread: String(thread![i]), threadName: String(threadName![i]), model: String(model![i]),
       turns: n(turns), input: n(input), output: n(output), cacheRead: n(cacheRead), cacheWrite: n(cacheWrite), costInput: n(costInput), costOutput: n(costOutput),
-      costCacheRead: n(costCacheRead), costCacheWrite: n(costCacheWrite), cost: 0, series: "",
+      costCacheRead: n(costCacheRead), costCacheWrite: n(costCacheWrite), unpriced: n(unpriced), cost: 0, series: "",
     };
     sum.cost = sum.costInput + sum.costOutput + sum.costCacheRead + sum.costCacheWrite;
     sum.series = `${sum.host}\u0000${sum.client}\u0000${sum.agent}\u0000${sum.thread}\u0000${sum.model}`;

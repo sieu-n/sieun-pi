@@ -9,20 +9,24 @@
   import UsageChart from "./UsageChart.svelte";
   import { chartFormat, cost, exactCost, full, percent, type TipRow } from "./format";
   import { isCurrent, keptReport, readAhead, readReport, REFRESH_MS, restoreReport, type ReadMode, type UsageFilters } from "./reports";
-  import { cacheHit, cellsOf, KIND_LABEL, KINDS, METRIC_LABEL, modelName, modelsByCost, seriesOf, summarize, tokenSum, type Measure, type Metric, type Unit } from "./stats";
+  import { cacheHit, cellsOf, keysByCost, KIND_LABEL, KINDS, METRIC_LABEL, modelName, seriesOf, summarize, tokenSum, type Measure, type Metric, type Split, type Total, type Unit } from "./stats";
 
   /**
-   * Usage: what every chat spent, from pi-host's own usage rows, with each token kind priced apart (c157) and every count exact (c191),
-   * plus the account pool. The chart comes first, grouped by minute, hour or day over a range, as Prime's chat Usage page draws it (owner
+   * Usage: what every host and chat client spent (pi-host, Prime, Claude Code, Codex, Aside, Vent and more), from the one store of model
+   * calls, with each token kind priced apart (c157) and every count exact (c191), plus the account pool. A call with no cost and no price
+   * reads as unpriced, never as free. The chart comes first, grouped by minute, hour or day over a range, as Prime's chat Usage page draws it (owner
    * p132). The chart counts dollars or tokens, all of them or output only, and tokens per second now sit in its header row, so the page
-   * draws one chart (owner p162, p192). The unit, the token kind, the range, the grouping and the chat and host filters live in the URL, as
-   * #/settings/usage?unit=tokens&metric=output&range=7d&by=hour&thread=<id>&host=<box>.
+   * draws one chart (owner p162, p192). The stacks split by model or by client. The unit, the token kind, the range, the grouping, the split and
+   * the chat, host and client filters live in the URL, as #/settings/usage?unit=tokens&metric=output&range=7d&by=hour&split=client&thread=<id>&host=<box>&client=<name>.
    */
   const RANGE_LABEL: Record<UsageRange, string> = { "1h": "the last hour", "24h": "the last 24 hours", "7d": "the last 7 days", "30d": "the last 30 days", "90d": "the last 90 days" };
   const BUCKET_LABEL: Record<UsageBucket, string> = { minute: "Minute", hour: "Hour", day: "Day" };
   const BUCKETS: readonly UsageBucket[] = ["minute", "hour", "day"];
   const UNIT_ITEMS: { id: Unit; label: string }[] = [{ id: "usd", label: "$" }, { id: "tokens", label: "Tokens" }];
   const METRIC_ITEMS: { id: Metric; label: string }[] = [{ id: "total", label: METRIC_LABEL.total }, { id: "output", label: METRIC_LABEL.output }];
+  const SPLIT_ITEMS: { id: Split; label: string }[] = [{ id: "model", label: "Model" }, { id: "client", label: "Client" }];
+  /** The chats the By chat list shows before "Show all" (c123). */
+  const CHATS_SHOWN = 10;
   /** An old #/settings/usage?days=7 link opens the range it meant. */
   const OLD_DAYS: Record<string, UsageRange> = { "1": "24h", "7": "7d", "30": "30d", "90": "90d" };
   const ALL = "all";
@@ -36,6 +40,9 @@
   const metric = $derived<Metric>(params.metric === "output" ? "output" : "total");
   const thread = $derived(params.thread ?? ALL);
   const host = $derived(params.host ?? ALL);
+  const client = $derived(params.client ?? ALL);
+  const split = $derived<Split>(params.split === "client" ? "client" : "model");
+  let allChats = $state(false);
 
   let report = $state<UsageReport | null>(null);
   let error = $state<string | null>(null);
@@ -52,6 +59,7 @@
   /** Every chat and host seen in a report, so a filter keeps its other choices. */
   let chats = $state<Record<string, string>>({});
   let hosts = $state<string[]>([]);
+  let clients = $state<string[]>([]);
   let request = 0;
 
   const message = (reason: unknown): string => (reason instanceof Error ? reason.message : String(reason));
@@ -59,9 +67,10 @@
   function show(next: UsageReport): void {
     report = next;
     const seen = { ...chats };
-    for (const row of next.rows) seen[row.thread] = row.threadName;
+    for (const row of next.rows) if (row.thread) seen[row.thread] = row.threadName;
     chats = seen;
     hosts = [...new Set([...hosts, ...next.rows.map(row => row.host)])].sort();
+    clients = [...new Set([...clients, ...next.rows.map(row => row.client ?? "pi-host")])].sort();
   }
 
   /** When the shown report is refreshed: once it is `REFRESH_MS` old. */
@@ -79,7 +88,7 @@
   async function load(mode: ReadMode = "view"): Promise<void> {
     const id = ++request;
     loading = true;
-    const filters: UsageFilters = { range, bucket, ...(thread === ALL ? {} : { thread }), ...(host === ALL ? {} : { host }) };
+    const filters: UsageFilters = { range, bucket, ...(thread === ALL ? {} : { thread }), ...(host === ALL ? {} : { host }), ...(client === ALL ? {} : { client }) };
     const before = keptReport(filters) ?? (mode === "view" ? await restoreReport(filters) : null);
     if (id !== request) return;
     if (before && before !== report) show(before);
@@ -122,6 +131,7 @@
     void bucket;
     void thread;
     void host;
+    void client;
     untrack(() => void load());
   });
   $effect(() => {
@@ -133,19 +143,20 @@
   });
 
   const setParams = (next: Record<string, string | null>) => router.setParams({ days: null, ...next }, { replace: true });
-  const setFilter = (key: "thread" | "host", value: string) => setParams({ [key]: value === ALL ? null : value });
+  const setFilter = (key: "thread" | "host" | "client", value: string) => setParams({ [key]: value === ALL ? null : value });
   /** A new range keeps the grouping when it offers it, as Prime's page does not; else the range's own default. */
   const pickRange = (next: UsageRange) => setParams({ range: next, by: RANGE_BUCKETS[next].includes(bucket) ? bucket : null });
   const pickBucket = (next: UsageBucket) => setParams({ range, by: next });
   const pickUnit = (next: Unit) => setParams({ unit: next === "usd" ? null : next });
   const pickMetric = (next: Metric) => setParams({ metric: next === "total" ? null : next });
+  const pickSplit = (next: Split) => setParams({ split: next === "model" ? null : next });
 
   const summary = $derived(report ? summarize(report.rows) : null);
   const total = $derived(summary?.total ?? null);
-  const series = $derived(report ? seriesOf(modelsByCost(report.buckets)) : []);
+  const series = $derived(report ? seriesOf(keysByCost(report.buckets, split), split) : []);
   const measure = $derived<Measure>(unit === "usd" ? { unit } : { unit, metric });
   const format = $derived(chartFormat(measure));
-  const cells = $derived(report ? cellsOf(report.buckets, series, measure) : []);
+  const cells = $derived(report ? cellsOf(report.buckets, series, measure, split) : []);
   /** The tip's rows under the split: in dollars the cache reads, in tokens the other token kind and the cost, then turns and cache hit. */
   function tipRows(index: number): TipRow[] {
     const entry = report?.buckets[index];
@@ -155,11 +166,19 @@
     const kind = unit === "usd"
       ? [{ label: "Cache reads", value: cost(entry.cost.cacheRead), title: exactCost(entry.cost.cacheRead) }]
       : [metric === "total" ? { label: "Output", value: full(entry.tokens.output) } : { label: "All tokens", value: full(tokenSum(entry.tokens)) }, priced];
-    return [...kind, { label: "Turns", value: full(entry.turns) }, { label: "Cache hit", value: hit === null ? "–" : percent(hit) }];
+    const unpriced = entry.unpriced ? [{ label: "Unpriced turns", value: full(entry.unpriced) }] : [];
+    return [...kind, { label: "Turns", value: full(entry.turns) }, ...unpriced, { label: "Cache hit", value: hit === null ? "–" : percent(hit) }];
   }
   const maxChat = $derived(Math.max(0, ...(summary?.chats ?? []).map(chat => chat.cost.total)));
   const chatOptions = $derived([{ value: ALL, label: "All chats" }, ...Object.entries(chats).sort((a, b) => a[1].localeCompare(b[1])).map(([value, label]) => ({ value, label }))]);
   const hostOptions = $derived([{ value: ALL, label: "All hosts" }, ...hosts.map(value => ({ value, label: value }))]);
+  const clientOptions = $derived([{ value: ALL, label: "All clients" }, ...clients.map(value => ({ value, label: value }))]);
+  /** A cost that leaves out unpriced turns says so: "Unpriced" when no turn had a price, else the priced sum and a count of the rest. */
+  const costLabel = (sum: Total) => (sum.unpriced && sum.unpriced === sum.turns ? "Unpriced" : cost(sum.cost.total));
+  const unpricedNote = (sum: Total) => (sum.unpriced && sum.unpriced < sum.turns ? `${full(sum.unpriced)} unpriced` : null);
+  const maxClient = $derived(Math.max(0, ...(summary?.clients ?? []).map(row => row.cost.total)));
+  const shownChats = $derived(allChats ? (summary?.chats ?? []) : (summary?.chats ?? []).slice(0, CHATS_SHOWN));
+  const chatName = (chat: { thread: string; name: string }) => (chat.thread ? chat.name : `${full(report?.otherChats ?? 0)} more chats`);
   const rangeItems = $derived(USAGE_RANGES.map(id => ({ id, label: id })));
   const bucketItems = $derived(BUCKETS.map(id => ({ id, label: BUCKET_LABEL[id], disabled: !RANGE_BUCKETS[range].includes(id) })));
   const kindTitle = (tokens: number, usd: number) => `${full(tokens)} tokens, ${exactCost(usd)}`;
@@ -180,6 +199,10 @@
   <div class="controls" role="group" aria-label="Unit, range and grouping" data-testid="usage-filters">
     <Tabs label="Unit" size="sm" items={UNIT_ITEMS} value={unit} onchange={pickUnit} />
     <Tabs label="Token kind" size="sm" items={METRIC_ITEMS} value={metric} onchange={pickMetric} />
+    <span class="control">
+      <span class="caption" aria-hidden="true">Split by</span>
+      <Tabs label="Split by" size="sm" items={SPLIT_ITEMS} value={split} onchange={pickSplit} />
+    </span>
     <Tabs label="Range" size="sm" items={rangeItems} value={range} onchange={pickRange} />
     <span class="control">
       <span class="caption" aria-hidden="true">Group by</span>
@@ -190,6 +213,9 @@
     {/if}
     {#if hostOptions.length > 2}
       <Select label="Host" size="sm" value={host} options={hostOptions} onchange={value => setFilter("host", value)} />
+    {/if}
+    {#if clientOptions.length > 2}
+      <Select label="Client" size="sm" value={client} options={clientOptions} onchange={value => setFilter("client", value)} />
     {/if}
   </div>
 
@@ -208,9 +234,9 @@
       <EmptyState icon="chart-bar" title="No usage in this range" description="No chat ran a model call in {RANGE_LABEL[report.range]}. Choose a longer range or another chat." />
     {:else}
       <section class="section" aria-label="{format.label} per {report.bucket}" aria-busy={loading}>
-        <UsageChart buckets={report.buckets} {series} bucket={report.bucket} {cells} {format} tip={tipRows}>
+        <UsageChart buckets={report.buckets} {series} bucket={report.bucket} {cells} {format} tip={tipRows} legend={split === "client" ? "Clients" : "Models"}>
           {#snippet header()}
-            <LiveRate initial={report?.live ?? null} {metric} thread={thread === ALL ? undefined : thread} host={host === ALL ? undefined : host} />
+            <LiveRate initial={report?.live ?? null} {metric} thread={thread === ALL ? undefined : thread} host={host === ALL ? undefined : host} client={client === ALL ? undefined : client} />
           {/snippet}
         </UsageChart>
       </section>
@@ -230,9 +256,12 @@
             <span>Total, {full(total.turns)} {total.turns === 1 ? "turn" : "turns"}</span>
             <span class="num">{full(total.tokens.input + total.tokens.output + total.tokens.cacheRead + total.tokens.cacheWrite)}</span>
             <span class="num share">{total.cost.total > 0 ? "100%" : "—"}</span>
-            <span class="num" data-testid="usage-cost">{cost(total.cost.total)}</span>
+            <span class="num" data-testid="usage-cost">{costLabel(total)}</span>
           </div>
         </div>
+        {#if total.unpriced}
+          <p class="caption unpriced" data-testid="usage-unpriced">{full(total.unpriced)} of {full(total.turns)} turns ran a model with no price and no recorded cost. Their tokens count above, and their cost is unknown, not $0.</p>
+        {/if}
       </CardGroup>
     {/if}
 
@@ -242,21 +271,31 @@
         <section class="section">
           <PageHeader title="By chat" size="section" />
           <ul class="list" data-testid="usage-by-chat">
-            {#each summary.chats as chat (chat.thread)}
+            {#each shownChats as chat (chat.thread)}
               {@const owner = ownerOf(chat.thread)}
+              {@const name = chatName(chat)}
+              {@const note = unpricedNote(chat)}
+              {#snippet row()}
+                <Avatar name={name} seed={owner?.id ?? (chat.thread || "other")} kind="agent" size={24} />
+                <span class="row-text">
+                  <span class="name">{name}{#if owner && owner.thread !== chat.thread}<span class="role"> · comm thread</span>{/if}</span>
+                  <span class="caption">{[chat.thread ? modelName(chat.model) : null, chat.client, chat.host, `${full(chat.turns)} ${chat.turns === 1 ? "turn" : "turns"}`, note].filter(Boolean).join(" · ")}</span>
+                  <span class="track" aria-hidden="true"><span class="bar" style:width="{maxChat ? (chat.cost.total / maxChat) * 100 : 0}%"></span></span>
+                </span>
+                <span class="value">{costLabel(chat)}</span>
+              {/snippet}
               <li>
-                <a class="chat-row" href={hrefFor("messages", [chat.thread])} title="{chat.name}, {full(chat.turns)} turns, {exactCost(chat.cost.total)}. Open chat">
-                  <Avatar name={chat.name} seed={owner?.id ?? chat.thread} kind="agent" size={24} />
-                  <span class="row-text">
-                    <span class="name">{chat.name}{#if owner && owner.thread !== chat.thread}<span class="role"> · comm thread</span>{/if}</span>
-                    <span class="caption">{[modelName(chat.model), chat.host, `${full(chat.turns)} ${chat.turns === 1 ? "turn" : "turns"}`].join(" · ")}</span>
-                    <span class="track" aria-hidden="true"><span class="bar" style:width="{maxChat ? (chat.cost.total / maxChat) * 100 : 0}%"></span></span>
-                  </span>
-                  <span class="value">{cost(chat.cost.total)}</span>
-                </a>
+                {#if chat.thread && chat.client === "pi-host"}
+                  <a class="chat-row" href={hrefFor("messages", [chat.thread])} title="{name}, {full(chat.turns)} turns, {exactCost(chat.cost.total)}. Open chat">{@render row()}</a>
+                {:else}
+                  <div class="chat-row" title="{name}, {full(chat.turns)} turns, {exactCost(chat.cost.total)}">{@render row()}</div>
+                {/if}
               </li>
             {/each}
           </ul>
+          {#if summary.chats.length > CHATS_SHOWN}
+            <Button variant="ghost" size="sm" onclick={() => (allChats = !allChats)}>{allChats ? "Show fewer" : `Show all ${full(summary.chats.length)}`}</Button>
+          {/if}
         </section>
         <section class="section">
           <PageHeader title="By model" size="section" />
@@ -267,7 +306,23 @@
                   <span class="name">{modelName(model.model)}</span>
                   <span class="caption">{full(model.turns)} {model.turns === 1 ? "turn" : "turns"} · {full(model.tokens.input + model.tokens.output + model.tokens.cacheRead + model.tokens.cacheWrite)} tokens · {full(model.tokens.output)} output</span>
                 </span>
-                <span class="value" title={exactCost(model.cost.total)}>{cost(model.cost.total)}</span>
+                <span class="value" title={exactCost(model.cost.total)}>{costLabel(model)}</span>
+              </li>
+            {/each}
+          </ul>
+        </section>
+        <section class="section">
+          <PageHeader title="By client" size="section" />
+          <ul class="list" data-testid="usage-by-client">
+            {#each summary.clients as row (`${row.client} ${row.host}`)}
+              {@const note = unpricedNote(row)}
+              <li class="model-row" title="{row.client} on {row.host}, {full(row.turns)} turns, {exactCost(row.cost.total)}">
+                <span class="row-text">
+                  <span class="name">{row.client}</span>
+                  <span class="caption">{[row.host, `${full(row.turns)} ${row.turns === 1 ? "turn" : "turns"}`, `${full(tokenSum(row.tokens))} tokens`, note].filter(Boolean).join(" · ")}</span>
+                  <span class="track" aria-hidden="true"><span class="bar" style:width="{maxClient ? (row.cost.total / maxClient) * 100 : 0}%"></span></span>
+                </span>
+                <span class="value">{costLabel(row)}</span>
               </li>
             {/each}
           </ul>
@@ -313,5 +368,6 @@
   .row-text .caption { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .track { display: block; margin-top: var(--space-1); height: 4px; }
   .bar { display: block; min-width: 4px; height: 100%; border-radius: 0 2px 2px 0; background: var(--chart-series-1); }
+  .unpriced { margin: var(--space-2) var(--space-4) 0; }
   .value { color: var(--text-standard); font: var(--text-body); font-variant-numeric: tabular-nums; white-space: nowrap; }
 </style>

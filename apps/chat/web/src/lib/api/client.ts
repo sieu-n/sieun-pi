@@ -837,9 +837,9 @@ export const api = {
   markForMeMany: (agent: AgentId, messageIds: string[], completed: boolean) =>
     call<{ changed: string[]; pending: number }>("POST", `/api/agents/${enc(agent)}/for-me`, { messageIds, completed }),
 
-  usage: (opts: { range: UsageRange; bucket: UsageBucket; thread?: string; host?: string }, wait?: Wait) => call<UsageReport>("GET", `/api/usage${query(opts)}`, undefined, undefined, wait),
+  usage: (opts: { range: UsageRange; bucket: UsageBucket; thread?: string; host?: string; client?: string }, wait?: Wait) => call<UsageReport>("GET", `/api/usage${query(opts)}`, undefined, undefined, wait),
   /** A poll behind a live rate the card already shows is `shown`; the card's first read is one it waits on. */
-  usageLive: (opts: { thread?: string; host?: string }, wait: Wait = { background: "shown" }) => call<import("./types.ts").UsageLive>("GET", `/api/usage/live${query(opts)}`, undefined, undefined, wait),
+  usageLive: (opts: { thread?: string; host?: string; client?: string }, wait: Wait = { background: "shown" }) => call<import("./types.ts").UsageLive>("GET", `/api/usage/live${query(opts)}`, undefined, undefined, wait),
   /** The consoles table from auto-sns-agent's consoles.json, read as the file is now. */
   consoles: () => call<ConsolesReport>("GET", "/api/consoles"),
   /** The skills DB read model, everything a Settings > Skills layout renders. */

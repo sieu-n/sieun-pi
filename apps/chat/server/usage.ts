@@ -35,7 +35,7 @@ function fold(rows: readonly UsageTotal[], since: number, step: number, count: n
   const totals = new Map<string, UsageTotal>();
   const buckets: UsageBucketSum[] = Array.from({ length: count }, (_, i) => ({
     start: since + i * step, turns: 0, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }, byModel: {}, tokensByModel: {},
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }, unpriced: 0, byModel: {}, tokensByModel: {}, byClient: {}, tokensByClient: {},
   }));
   for (const row of rows) {
     const sum = buckets[Math.round((row.bucket! - since) / step)];
@@ -56,6 +56,14 @@ function fold(rows: readonly UsageTotal[], since: number, step: number, count: n
     tokens.output += row.output;
     tokens.cacheRead += row.cacheRead;
     tokens.cacheWrite += row.cacheWrite;
+    const client = row.client ?? "pi-host";
+    sum.unpriced += row.unpriced ?? 0;
+    sum.byClient[client] = (sum.byClient[client] ?? 0) + row.cost;
+    const clientTokens = sum.tokensByClient[client] ??= { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+    clientTokens.input += row.input;
+    clientTokens.output += row.output;
+    clientTokens.cacheRead += row.cacheRead;
+    clientTokens.cacheWrite += row.cacheWrite;
     const key = row.series ?? `${row.host ?? ""}\u0000${row.client ?? ""}\u0000${row.agent ?? ""}\u0000${row.thread}\u0000${row.model}`;
     const total = totals.get(key);
     if (!total) totals.set(key, { ...row });
@@ -73,6 +81,41 @@ async function byCalls(host: Pick<Host, "usage">, since: number, step: number, c
   return answers.flat();
 }
 
+/** The chats a report names one by one, costliest first; the rest fold into one row per host, client, agent and model (`otherChats`). */
+export const REPORT_CHATS = 50;
+
+/**
+ * Keeps the `REPORT_CHATS` costliest chats as they are and folds every other chat's rows into one row per host, client, agent and model, with
+ * no thread, so every total stays exact (c191). With every client's sessions in the store a 90-day report held 14,482 rows, 891 KB over the
+ * Korea rig, and api/usage took 5.1 s there at p50 (~/work/usage-one-source/usage-read-path/report.md).
+ */
+function foldChats(rows: UsageRow[]): { rows: UsageRow[]; otherChats: number } {
+  const chatOf = (row: UsageRow) => `${row.host}\u0000${row.client}\u0000${row.agent}\u0000${row.thread}`;
+  const costs = new Map<string, number>();
+  for (const row of rows) costs.set(chatOf(row), (costs.get(chatOf(row)) ?? 0) + row.cost.total);
+  if (costs.size <= REPORT_CHATS) return { rows, otherChats: 0 };
+  const kept = new Set([...costs].sort((a, b) => b[1] - a[1]).slice(0, REPORT_CHATS).map(([chat]) => chat));
+  const out: UsageRow[] = [];
+  const rest = new Map<string, UsageRow>();
+  for (const row of rows) {
+    if (kept.has(chatOf(row))) {
+      out.push(row);
+      continue;
+    }
+    const key = `${row.host}\u0000${row.client}\u0000${row.agent}\u0000${row.model}`;
+    const other = rest.get(key);
+    if (!other) {
+      rest.set(key, { ...row, thread: "", threadName: "", tokens: { ...row.tokens }, cost: { ...row.cost } });
+      continue;
+    }
+    other.turns += row.turns;
+    other.unpriced += row.unpriced;
+    for (const kind of ["input", "output", "cacheRead", "cacheWrite"] as const) other.tokens[kind] += row.tokens[kind];
+    for (const kind of ["input", "output", "cacheRead", "cacheWrite", "total"] as const) other.cost[kind] += row.cost[kind];
+  }
+  return { rows: [...out, ...rest.values()], otherChats: costs.size - REPORT_CHATS };
+}
+
 /** The first moment of the bucket that holds `at`: a clock minute or hour, or the owner's local midnight. */
 export const bucketStart = (bucket: UsageBucket, at: number): number => (bucket === "day" ? localDayStart(at) : Math.floor(at / BUCKET_MS[bucket]) * BUCKET_MS[bucket]);
 
@@ -80,7 +123,7 @@ export const bucketStart = (bucket: UsageBucket, at: number): number => (bucket 
  * The range as whole buckets that end with the one holding now, as Prime's chat Usage page draws it: 24 hours for 24h by hour, 1,440 minutes
  * for 24h by minute. A range or bucket the page does not offer reads as 24h and the range's default bucket.
  */
-export async function usageReport(host: Pick<Host, "usage">, threads: Threads, box: string, opts: { range?: string; bucket?: string; thread?: string; host?: string }, now = Date.now()): Promise<UsageReport> {
+export async function usageReport(host: Pick<Host, "usage">, threads: Threads, box: string, opts: { range?: string; bucket?: string; thread?: string; host?: string; client?: string }, now = Date.now()): Promise<UsageReport> {
   const range: UsageRange = isRange(opts.range) ? opts.range : "24h";
   const bucket = bucketFor(range, opts.bucket);
   const step = BUCKET_MS[bucket];
@@ -90,16 +133,16 @@ export async function usageReport(host: Pick<Host, "usage">, threads: Threads, b
   const scope = opts.thread ? { threads: [opts.thread] } : {};
   // Each row names the box that answered it (MultiHost), and a single host's rows are this box's; the host filter keeps one box's rows.
   const hostOf = (row: UsageTotal): string => row.host ?? box;
-  const keep = (row: UsageTotal): boolean => !opts.host || hostOf(row) === opts.host;
+  const keep = (row: UsageTotal): boolean => (!opts.host || hostOf(row) === opts.host) && (!opts.client || (row.client ?? "pi-host") === opts.client);
   // One call with a bucket each: on 11-03 the 30-day page asked pi-host 32 times, and api/usage took 380 to 400 ms on us-metal02.
   const answer = (await host.usage({ since, until, bucketMs: step, ...scope })).filter(keep);
   const rowsByBucket = answer.every(row => row.bucket !== undefined) ? answer : await byCalls(host, since, step, count, scope, keep);
   const { totals, buckets } = fold(rowsByBucket, since, step, count);
   const rows: UsageRow[] = totals.map(t => ({
-    thread: t.thread, threadName: threads.thread(t.thread)?.name ?? (t.threadName || t.thread), host: hostOf(t), client: t.client ?? "pi-host", agent: t.agent ?? "", model: t.model, turns: t.turns,
+    thread: t.thread, threadName: threads.thread(t.thread)?.name ?? (t.threadName || t.thread), host: hostOf(t), client: t.client ?? "pi-host", agent: t.agent ?? "", model: t.model, turns: t.turns, unpriced: t.unpriced ?? 0,
     tokens: { input: t.input, output: t.output, cacheRead: t.cacheRead, cacheWrite: t.cacheWrite }, cost: costOf(t),
   }));
-  return { at: now, since, until, range, bucket, rows, buckets };
+  return { at: now, since, until, range, bucket, ...foldChats(rows), buckets };
 }
 
 /** One box's usage rows: this box's index.sqlite on a read-only connection, or another box's through its relay's `durable_usage_read`. */
@@ -255,14 +298,14 @@ export class KeptUsage implements Pick<Host, "usage"> {
  * same rate every 10 s over the last 10 min, 61 points ending with the live one. The minute ends on the 10 s tick before now, as LGTM's
  * 10 s export does, so the kept 10 s sums answer it with no call to any box.
  */
-export async function usageLive(host: Pick<Host, "usage">, box: string, opts: { thread?: string; host?: string }, now = Date.now()): Promise<UsageLive> {
+export async function usageLive(host: Pick<Host, "usage">, box: string, opts: { thread?: string; host?: string; client?: string }, now = Date.now()): Promise<UsageLive> {
   const at = Math.floor(now / LIVE_TICK_MS) * LIVE_TICK_MS;
   const window = BUCKET_MS.minute / LIVE_TICK_MS;
   const points = LIVE_SPAN_MS / LIVE_TICK_MS + 1;
   const count = points - 1 + window;
   const since = at - count * LIVE_TICK_MS;
   const scope = opts.thread ? { threads: [opts.thread] } : {};
-  const keep = (row: UsageTotal): boolean => !opts.host || (row.host ?? box) === opts.host;
+  const keep = (row: UsageTotal): boolean => (!opts.host || (row.host ?? box) === opts.host) && (!opts.client || (row.client ?? "pi-host") === opts.client);
   const answer = (await host.usage({ since, until: at, bucketMs: LIVE_TICK_MS, ...scope })).filter(keep);
   const rows = answer.every(row => row.bucket !== undefined) ? answer : await byCalls(host, since, LIVE_TICK_MS, count, scope, keep);
   const ticks = { output: new Array<number>(count).fill(0), total: new Array<number>(count).fill(0) };

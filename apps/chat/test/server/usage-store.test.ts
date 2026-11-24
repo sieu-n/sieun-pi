@@ -34,7 +34,9 @@ before(async () => {
   if (!reachable) return;
   // A spec-clean run loads this file from a release folder, which holds apps/chat only, so the schema comes from the checkout then.
   const schemaPath = [join(import.meta.dirname, "../../../../components/usage-collector/schema.sql"), join(homedir(), "src/sieun-pi/components/usage-collector/schema.sql")].find(existsSync)!;
-  const schema = readFileSync(schemaPath, "utf8").replaceAll("usage.", `${DB}.`).replace(/^CREATE DATABASE.*$/m, "");
+  const text = readFileSync(schemaPath, "utf8");
+  const database = /CREATE DATABASE IF NOT EXISTS (\w+)/.exec(text)![1]!;
+  const schema = text.replaceAll(`${database}.`, `${DB}.`).replace(/^CREATE DATABASE.*$/m, "");
   await ch(`CREATE DATABASE ${DB}`);
   for (const statement of schema.replace(/--.*$/gm, "").split(";").map(s => s.trim()).filter(Boolean)) await ch(statement);
 });
@@ -44,7 +46,7 @@ after(async () => {
 
 type Call = { source_key: string; call_at: number; host: string; client: string; agent: string; thread: string; thread_name: string; session: string; model: string;
   input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_write_tokens: number; cost_input_usd: string; cost_output_usd: string;
-  cost_cache_read_usd: string; cost_cache_write_usd: string };
+  cost_cache_read_usd: string; cost_cache_write_usd: string; cost_source: string };
 
 const NOW = Date.UTC(2026, 10, 23, 22, 37, 41, 512);
 const HOSTS = ["us-metal02", "mbp"], CLIENTS = ["pi-host", "prime", "claude-code", "codex"], MODELS = ["anthropic/claude-opus-5-5", "openai/gpt-5.5"];
@@ -57,23 +59,25 @@ function calls(count: number, seed: number): Call[] {
     const span = i % 3 === 0 ? 95 * DAY : i % 3 === 1 ? DAY : 15 * MIN;
     const client = CLIENTS[i % CLIENTS.length]!;
     const threadless = client === "claude-code" || client === "codex";
-    const cost = (n: number) => (Math.round(rand() * 1e9 * n) / 1e9).toFixed(9);
+    const unpriced = client === "codex" && i % 9 === 0;
+    const cost = (n: number) => (unpriced ? "0" : (Math.round(rand() * 1e9 * n) / 1e9).toFixed(9));
     return {
       source_key: `${client}:${seed}:${i}`, call_at: Math.floor(NOW - rand() * span), host: HOSTS[i % 2]!, client, agent: i % 5 === 0 ? "agent factory" : "",
-      thread: threadless ? "" : `t${i % 7}`, thread_name: threadless ? "" : `thread ${i % 7}`, session: `s${i % 11}`, model: MODELS[i % 2]!,
+      thread: threadless ? "" : `t${i % 7}`, thread_name: threadless ? "" : `thread ${i % 7}`, session: `s${i % 211}`, model: MODELS[i % 2]!,
       input_tokens: 1 + Math.floor(rand() * 5000), output_tokens: Math.floor(rand() * 900), cache_read_tokens: Math.floor(rand() * 90_000),
-      cache_write_tokens: Math.floor(rand() * 9000), cost_input_usd: cost(0.02), cost_output_usd: cost(0.05), cost_cache_read_usd: cost(0.03), cost_cache_write_usd: cost(0.04),
+      cache_write_tokens: Math.floor(rand() * 9000), cost_input_usd: cost(0.02), cost_output_usd: cost(0.05), cost_cache_read_usd: cost(0.03), cost_cache_write_usd: unpriced ? "0" : cost(0.04), cost_source: unpriced ? "unpriced:test" : "reported",
     };
   });
 }
 
 const insert = (rows: Call[]) =>
   ch(`INSERT INTO ${TABLE} (source_key, call_at, host, client, agent, thread, thread_name, session, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_input_usd, cost_output_usd, cost_cache_read_usd, cost_cache_write_usd, cost_source) FORMAT JSONEachRow`,
-    rows.map(row => JSON.stringify({ ...row, call_at: new Date(row.call_at).toISOString().replace("T", " ").replace("Z", ""), provider: row.model.split("/")[0], cost_source: "reported" })).join("\n"));
+    rows.map(row => JSON.stringify({ ...row, call_at: new Date(row.call_at).toISOString().replace("T", " ").replace("Z", ""), provider: row.model.split("/")[0] })).join("\n"));
 
 const SUMS = `toFloat64(count()) AS turns, toFloat64(sum(input_tokens)) AS input, toFloat64(sum(output_tokens)) AS output, toFloat64(sum(cache_read_tokens)) AS cache_read,
   toFloat64(sum(cache_write_tokens)) AS cache_write, toFloat64(sum(cost_input_usd)) AS cost_input, toFloat64(sum(cost_output_usd)) AS cost_output,
-  toFloat64(sum(cost_cache_read_usd)) AS cost_cache_read, toFloat64(sum(cost_cache_write_usd)) AS cost_cache_write, toFloat64(sum(cost_usd)) AS cost`;
+  toFloat64(sum(cost_cache_read_usd)) AS cost_cache_read, toFloat64(sum(cost_cache_write_usd)) AS cost_cache_write, toFloat64(sum(cost_usd)) AS cost,
+  toFloat64(countIf(startsWith(cost_source, 'unpriced'))) AS unpriced`;
 const ms = (at: number) => `fromUnixTimestamp64Milli(toInt64(${at}))`;
 async function query(sql: string): Promise<Record<string, number>[]> {
   const text = await ch(`${sql} FORMAT JSONEachRow`);
@@ -82,8 +86,9 @@ async function query(sql: string): Promise<Record<string, number>[]> {
 
 const round = (n: number) => Math.round(n * 1e6) / 1e6;
 const totalsOf = (report: UsageReport) => {
-  const t = { turns: 0, input: 0, output: 0, cache_read: 0, cache_write: 0, cost_input: 0, cost_output: 0, cost_cache_read: 0, cost_cache_write: 0, cost: 0 };
+  const t = { turns: 0, input: 0, output: 0, cache_read: 0, cache_write: 0, cost_input: 0, cost_output: 0, cost_cache_read: 0, cost_cache_write: 0, cost: 0, unpriced: 0 };
   for (const row of report.rows) {
+    t.unpriced += row.unpriced;
     t.turns += row.turns; t.input += row.tokens.input; t.output += row.tokens.output; t.cache_read += row.tokens.cacheRead; t.cache_write += row.tokens.cacheWrite;
     t.cost_input += row.cost.input; t.cost_output += row.cost.output; t.cost_cache_read += row.cost.cacheRead; t.cost_cache_write += row.cost.cacheWrite; t.cost += row.cost.total;
   }
@@ -115,9 +120,16 @@ test("the kept sums equal the store's own sums for every range, and each minute,
   const day = await usageReport(store, threads, "us-metal02", { range: "24h" }, NOW);
   assert.deepEqual([...new Set(day.rows.map(r => r.client))].sort(), [...CLIENTS].sort(), "every client is its own row");
   assert.ok(day.rows.some(r => r.agent === "agent factory"));
-  const codex = day.rows.filter(r => r.client === "codex");
+  const codex = day.rows.filter(r => r.client === "codex" && r.thread);
   assert.ok(codex.length && codex.every(r => /^s\d+$/.test(r.thread) && r.threadName === r.thread), "a client with no threads names its session as the thread");
-  assert.ok(day.rows.filter(r => r.client === "prime").every(r => r.threadName === `thread ${r.thread.slice(1)}`), "a thread this chat does not list keeps the store's name");
+  const chats = new Set(day.rows.filter(r => r.thread).map(r => `${r.host} ${r.client} ${r.agent} ${r.thread}`));
+  assert.equal(chats.size, 50, "the 50 costliest chats keep their own rows");
+  assert.ok(day.otherChats > 0 && day.rows.some(r => !r.thread), "every other chat folds into a row with no thread, and the totals above stay exact");
+  assert.ok(day.rows.some(r => r.unpriced > 0) && day.buckets.some(b => b.unpriced > 0), "unpriced calls are counted apart, not as free");
+  const byClient = await usageReport(store, threads, "us-metal02", { range: "24h", client: "codex" }, NOW);
+  assert.ok(byClient.rows.length && byClient.rows.every(r => r.client === "codex"), "the client filter keeps one client's rows");
+  assert.equal(round(day.buckets.reduce((sum, b) => sum + (b.byClient.codex ?? 0), 0)), round(byClient.rows.reduce((sum, r) => sum + r.cost.total, 0)), "each bucket splits its cost by client");
+  assert.ok(day.rows.filter(r => r.client === "prime" && r.thread).every(r => r.threadName === `thread ${r.thread.slice(1)}`), "a thread this chat does not list keeps the store's name");
   const mbp = await usageReport(store, threads, "us-metal02", { range: "24h", host: "mbp" }, NOW);
   assert.ok(mbp.rows.length && mbp.rows.every(r => r.host === "mbp"));
   const one = await usageReport(store, threads, "us-metal02", { range: "7d", thread: "s3" }, NOW);

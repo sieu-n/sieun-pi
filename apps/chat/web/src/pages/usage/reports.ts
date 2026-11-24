@@ -18,7 +18,7 @@ import { api, takeOver, type Wait } from "$lib/api/client";
 import { RANGE_BUCKETS, USAGE_RANGES } from "$lib/api/shared/usage-range";
 import type { UsageBucket, UsageRange, UsageReport } from "$lib/api/types";
 
-export type UsageFilters = { range: UsageRange; bucket: UsageBucket; thread?: string; host?: string };
+export type UsageFilters = { range: UsageRange; bucket: UsageBucket; thread?: string; host?: string; client?: string };
 
 /** The page's refresh period, and how long a kept report counts as current. */
 export const REFRESH_MS = 60_000;
@@ -29,10 +29,10 @@ type Flight = { promise: Promise<KeptReport>; wait: Wait };
 
 const kept = new Map<string, KeptReport>();
 const flights = new Map<string, Flight>();
-const keyOf = (filters: UsageFilters): string => JSON.stringify([filters.range, filters.bucket, filters.thread ?? "", filters.host ?? ""]);
+const keyOf = (filters: UsageFilters): string => JSON.stringify([filters.range, filters.bucket, filters.thread ?? "", filters.host ?? "", filters.client ?? ""]);
 const current = (entry: KeptReport | undefined): boolean => !!entry && performance.now() - entry.read < REFRESH_MS;
-/** Where a report with no chat or host filter is stored, else null. */
-const storedKey = (filters: UsageFilters): string | null => (filters.thread || filters.host ? null : `${filters.range}:${filters.bucket}`);
+/** Where a report with no chat, host or client filter is stored, else null. */
+const storedKey = (filters: UsageFilters): string | null => (filters.thread || filters.host || filters.client ? null : `${filters.range}:${filters.bucket}`);
 
 /** The IndexedDB store of the reports, apart from page-db.ts, whose every kept page each page load reads before it mounts. */
 const DB = "chat.usage";

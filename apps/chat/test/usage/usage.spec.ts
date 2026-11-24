@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 type Kind = "input" | "output" | "cacheRead" | "cacheWrite";
-type Row = { thread: string; threadName: string; host: string; model: string; turns: number; tokens: Record<Kind, number>; cost: Record<Kind | "total", number> };
+type Row = { thread: string; threadName: string; host: string; client?: string; agent?: string; model: string; turns: number; unpriced?: number; tokens: Record<Kind, number>; cost: Record<Kind | "total", number> };
 type Bucket = { start: number; turns: number; tokens: Record<Kind, number>; cost: Record<Kind | "total", number>; byModel: Record<string, number> };
 type Report = { range: string; bucket: string; rows: Row[]; buckets: Bucket[] };
 
@@ -85,6 +85,36 @@ test("a range whose sum sits on a half of a hundredth of a cent shows one exact 
   await expect(mainChart(page).getByTestId("usage-figures-total")).toHaveText("$2.3001");
   await expect(page.getByTestId("usage-kind-total")).toHaveAttribute("title", /, \$2\.3001$/);
   await expect(page.getByTestId("usage-kind-output")).toHaveAttribute("title", /, \$2\.3001$/);
+});
+
+test("the chart splits by client, By client lists each client on its host, and an unpriced call reads as unpriced, not free", async ({ page }) => {
+  const base = await report(page, "7d", "&bucket=day");
+  const tokens = { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 };
+  const costOf = (usd: number) => ({ input: usd / 2, output: usd / 2, cacheRead: 0, cacheWrite: 0, total: usd });
+  const model = "anthropic/claude-opus-5-5";
+  const row = (thread: string, client: string, host: string, usd: number, turns: number, unpriced: number): Row =>
+    ({ thread, threadName: thread, host, client, agent: "", model, turns, unpriced, tokens, cost: costOf(usd) });
+  const rows = [row("t1", "pi-host", "us-metal02", 3, 2, 0), row("s1", "codex", "mbp", 0, 4, 4), row("s2", "prime", "mbp", 1, 3, 1)];
+  const last = base.buckets.length - 1;
+  const buckets = base.buckets.map((bucket, i) => (i !== last ? { ...bucket, turns: 0, unpriced: 0, cost: costOf(0), byModel: {}, tokensByModel: {}, byClient: {}, tokensByClient: {} } : {
+    ...bucket, turns: 9, unpriced: 5, tokens: { input: 300, output: 150, cacheRead: 0, cacheWrite: 0 }, cost: costOf(4), byModel: { [model]: 4 },
+    tokensByModel: { [model]: { input: 300, output: 150, cacheRead: 0, cacheWrite: 0 } }, byClient: { "pi-host": 3, codex: 0, prime: 1 },
+    tokensByClient: { "pi-host": tokens, codex: tokens, prime: tokens },
+  }));
+  await page.route("**/api/usage?range=7d&bucket=day*", route => route.fulfill({ json: { ...base, rows, buckets, otherChats: 0 } }));
+  await page.goto("/#/settings/usage?range=7d&by=day");
+  const byClient = page.getByTestId("usage-by-client");
+  await expect(byClient.locator("li")).toHaveCount(3);
+  await expect(byClient.locator("li").first()).toContainText("pi-host");
+  await expect(byClient.locator("li", { hasText: "codex" })).toContainText("Unpriced");
+  await expect(byClient.locator("li", { hasText: "prime" })).toContainText("1 unpriced");
+  await expect(page.getByTestId("usage-unpriced")).toContainText("5 of 9 turns");
+  await expect(page.getByTestId("usage-cost")).toHaveText("$4.00");
+  await page.getByRole("tablist", { name: "Split by" }).getByRole("tab", { name: "Client" }).click();
+  await expect(page).toHaveURL(/split=client/);
+  await expect(mainChart(page).getByRole("list", { name: "Clients" })).toContainText("codex");
+  await page.getByRole("combobox", { name: "Client" }).selectOption("codex");
+  await expect(page).toHaveURL(/client=codex/);
 });
 
 test("the page draws one chart, with tokens per second now in its header row, and the unit and token kind toggles drive both", async ({ page }) => {
