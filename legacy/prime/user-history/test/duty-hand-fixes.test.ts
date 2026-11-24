@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { parseDutyInput } from "../src/shared/chat-duties.ts";
+import { type DutyRunRecord, judge, parseDutyInput } from "../src/shared/chat-duties.ts";
+import { metricStreaks } from "../src/shared/duty-streak.ts";
 import { type AuditRow, type Deploy, type Fault, type HandData, type RefState, auditSql, classifyConfig, classifyEvent, designOnProd, gitDeclaredCaps, gitReleaseHolds, markDeclared, parseControlDefaults, groupAudit, handExecs, experimentExecs, filedAfter, isSessionProcess, nextState, startedByTest, hostWriters, oneOffs, parseBox, parseRegistry, releaseAt, report, WRITES, HOST_WRITES } from "../scripts/duties/hand-fixes.ts";
 
 const DIR = join(import.meta.dirname, "..", "scripts", "duties");
@@ -49,6 +50,28 @@ test("the 24 h metrics leave out a 48 h old fix and say so, and the read reaches
   assert.equal(output.metrics.repeats_after_design, 0);
   assert.match(output.flagged!.find(slice => slice.kind === "hand_fixes")!.excerpt, /1 older changes since the last run are outside the 24 h metrics/);
   assert.match(auditSql(14021, now), /\(id > 14021 or ts >= to_timestamp\(\d+\)\) order by id$/);
+});
+
+// Prospect feature bro's d3 on 11-24: verify runs at 08:23Z, 08:24Z and 08:38Z read repeats_after_design 4, all four F31 writes of 00:06Z to
+// 05:01Z, and the 08:38Z run's job brief asked for a new root-cause job because p379 "did not move it".
+test("the 24 h counts give their window and newest fix, so three runs with no new repeat read as aging out, not stuck", async () => {
+  const tagged = rows(AT).map(row => ({ ...row, reason: "watch_proxy abort: transport 12% of 626 attempts" }));
+  const first = AT + 3_600_000;
+  const output = report(await data(first, tagged), await metrics(first));
+  assert.equal(output.metrics.repeats_after_design, 1);
+  assert.equal(output.lastEventAt?.repeats_after_design, AT);
+  assert.equal(output.windowMs?.repeats_after_design, 24 * 3_600_000);
+  const fix = { step: "p379", job: "d3 GeoNode sizing as committed defaults", live: true };
+  const runs: DutyRunRecord[] = [];
+  for (const at of [first, first + 60_000, first + 15 * 60_000]) {
+    const judged = judge(await metrics(at), report(await data(at, tagged), await metrics(at)));
+    runs.unshift({ duty: "d3", at, slot: at, trigger: "verify", ms: 1, verdict: judged.verdict, metrics: judged.metrics, summary: judged.summary,
+      fixes: { repeats_after_design: fix } } as DutyRunRecord);
+  }
+  const streak = metricStreaks(runs).find(entry => entry.key === "repeats_after_design")!;
+  assert.equal(streak.misses, 3);
+  assert.equal(streak.quietSince, AT);
+  assert.equal(streak.stuck, false);
 });
 
 // Guards d3 p146: audits 13970, 13971 and 13994 (10-17 and 10-18) had no fault for 3 runs, and an undesigned write was gone by the next run.

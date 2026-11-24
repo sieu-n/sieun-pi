@@ -40,6 +40,9 @@ const BOX = "root@us-metal01.tail0c093d.ts.net";
  *   step done, every `commit:` design in the release prod ran at the fix (afterDesign), and the fix not before done_at, or with no done_at
  *   not before the run that first read the steps done (doneSeenAfter). Both 24 h metrics
  *   count the fixes since 24 h ago, as the duty labels say, while the read also reaches back to the last run's mark after a skipped day.
+ *   Each gives its 24 h window and `lastEventAt`, the newest fix it counts, so a run that read no new fix since the run before reads the count
+ *   as aging out (`MetricStreak.quietSince`) and asks for no new root-cause job. On 11-24 this chat's d3 verify runs of 08:23Z, 08:24Z and
+ *   08:38Z read repeats_after_design 4, all four F31 writes of 00:06Z to 05:01Z, and the 08:38Z run's job brief said p379 did not move it.
  * - hand_run_processes: session_loops_writing plus unsupervised_box_processes, both kept in the run detail. The box stop loop ran in an agent
  *   session and was down 08:50-13:52Z on 10-13 when that session hung (board s165); the hand-started acquisition writer (docker exec) died in
  *   promote 9's restart and the writer fell 66 min behind (s160); the one-off copy container's idle prod session held promote 9 (s154).
@@ -482,6 +485,7 @@ export function report(data: HandData, dutyMetrics: readonly DutyMetric[]): Prec
   const unmeasured = new Set(Object.keys(NEEDS).filter(key => NEEDS[key]!.some(source => failed.has(source))));
   const registry = data.registry;
   const refs = data.refs ?? new Map<string, RefState>();
+  const lastEventAt: Record<string, number> = {};
   if (registry) {
     const fixes = handFixes(data, registry);
     const recent = fixes.filter(item => item.fix.at >= at - DAY);
@@ -501,6 +505,8 @@ export function report(data: HandData, dutyMetrics: readonly DutyMetric[]): Prec
     if (pending.length) flagged.push({ at, kind: "design_not_on_prod", excerpt: `Design steps done, but a commit is in no prod release yet, so their hand fixes are not repeats: ${pending.map(fault => `${fault.id} ${fault.designs.filter(ref => ref.startsWith("commit:")).join(" ")}`).join("; ")}`.slice(0, 600) });
     metrics.undesigned_hand_fixes = undesigned.length;
     metrics.repeats_after_design = repeats.length;
+    if (undesigned.length) lastEventAt.undesigned_hand_fixes = Math.max(...undesigned.map(item => item.fix.at));
+    if (repeats.length) lastEventAt.repeats_after_design = Math.max(...repeats.map(item => item.fix.at));
     const byFault = new Map<string, number>();
     for (const item of counted) if (item.verdict.kind === "fault") byFault.set(item.verdict.fault.id, (byFault.get(item.verdict.fault.id) ?? 0) + 1);
     const skipped = recent.length - counted.length;
@@ -539,7 +545,10 @@ export function report(data: HandData, dutyMetrics: readonly DutyMetric[]): Prec
   for (const key of ["session_loops_writing", "unsupervised_box_processes"]) if (key in metrics) detail[key] = metrics[key]!;
   const replaced = settle(dutyMetrics, metrics, unmeasured);
   if (replaced.length) flagged.push(unmeasuredFlag(replaced, at));
-  return { metrics: { ...metrics, ...detail }, flagged };
+  for (const key of replaced) delete lastEventAt[key];
+  const windowed = Object.keys(lastEventAt);
+  return { metrics: { ...metrics, ...detail }, flagged,
+    ...windowed.length ? { lastEventAt, windowMs: Object.fromEntries(windowed.map(key => [key, DAY])) } : {} };
 }
 
 /**
