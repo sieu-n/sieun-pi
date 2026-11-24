@@ -639,9 +639,10 @@
       "id": "F41",
       "title": "Engage pace stepped by hand fleet-wide after idle accounts die",
       "designs": [
-        "01a11bd7-072f-7591-ad1d-f123c276cde5/p377"
+        "01a11bd7-072f-7591-ad1d-f123c276cde5/p377",
+        "commit:be61dd24ef4c9436309093aed4db8271f2125bf0"
       ],
-      "owner": "Prospect feature bro (01a11bd7), job 'd3 engage idle-return pace', step p377, filed by d3 at 11-24 06:33Z. Prod audit 49104 (11-24 06:16Z) cut engage.daily_pages for the whole fleet by hand after accounts back from 4 to 24 days idle died at a median 23 pages a reading account-hour (13 deaths 03:09-04:43Z), while the fleet had read about 5.7 pages an account-hour with 0 deaths in 255k pages from 10-28 to 11-08. The design paces an account that returns from idle by itself, so no fleet-wide hand step is needed.",
+      "owner": "Prospect feature bro (01a11bd7), job 'd3 engage idle-return pace', step p377, filed by d3 at 11-24 06:33Z. Prod audit 49104 (11-24 06:16Z) cut engage.daily_pages for the whole fleet by hand after accounts back from 4 to 24 days idle died at a median 23 pages a reading account-hour (13 deaths 03:09-04:43Z), while the fleet had read about 5.7 pages an account-hour with 0 deaths in 255k pages from 10-28 to 11-08. The design paces an account that returns from idle by itself, so no fleet-wide hand step is needed. Its commit be61dd24ef has an account back from idle read at most 12 pages an hour until its own ledger shows 40 served pages in a day. A dev/sieun replay of it counts through its Replayed-From trailer.",
       "match": {
         "config_key_prefixes": [
           "engage.daily_pages"
