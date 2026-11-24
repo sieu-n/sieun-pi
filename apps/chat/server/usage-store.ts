@@ -3,6 +3,7 @@
  * (components/usage-collector). The chat keeps its sums by hour, minute and 10 s in memory, so api/usage answers with no call to the store.
  */
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { readFile, rename, writeFile } from "node:fs/promises";
 import { BUCKET_MS, RANGE_BUCKETS, RANGE_MS, USAGE_RANGES } from "../web/src/lib/api/shared/usage-range.ts";
 
 /**
@@ -122,6 +123,8 @@ const GRAIN_MS: Readonly<Record<GrainName, number>> = { hour: 3_600_000, minute:
 const KEPT_MS: Readonly<Record<GrainName, number>> = { hour: HOURS_KEPT_MS, minute: MINUTES_KEPT_MS, tick: TICKS_KEPT_MS };
 /** Coarsest first: a range reads the coarsest grain its bounds and buckets fall on. */
 const GRAIN_NAMES: readonly GrainName[] = ["hour", "minute", "tick"];
+/** Sums per line of the snapshot file, and so per turn of the event loop when it is written or read. */
+const SNAPSHOT_CHUNK = 2_000;
 const DAY_MS = 86_400_000;
 /** The page's days are the owner's, Asia/Seoul, which has no daylight saving: a day starts at 15:00 UTC. */
 const SEOUL_MS = 9 * 3_600_000;
@@ -238,6 +241,7 @@ export class StoreUsage implements UsageSums {
   private readonly fullEvery: number;
   private readonly snapshot: string | undefined;
   private restored = false;
+  private saving = false;
   private restoredAt: number | undefined;
 
   // Plain fields, not parameter properties: pi-host-relay loads this file through config.ts with node's type stripping, which refuses them.
@@ -259,46 +263,94 @@ export class StoreUsage implements UsageSums {
 
   stop(): void {
     clearInterval(this.timer);
-    if (this.read && this.lastError === undefined) this.save(this.goodAt!);
+    if (this.read && this.lastError === undefined) this.saveNow(this.goodAt!);
   }
 
   /**
-   * Writes the kept sums as of `at` to the snapshot file. A full read of prod through Grafana took 7.4 s at the 11-24 release, and every
-   * call to api/usage after a server start waited for it, so the next server starts from this file instead.
+   * The snapshot's lines as of `at`: a header, then each grain's sums in chunks of `SNAPSHOT_CHUNK`, without the keys `rowsOf` makes again.
+   * A full read of prod through Grafana took 7.4 s at the 11-24 release, and every call to api/usage after a server start waited for it,
+   * so the next server starts from this file instead.
    */
-  private save(at: number): void {
-    if (!this.snapshot) return;
+  private *snapshotLines(at: number): Generator<string> {
+    yield JSON.stringify({ at, fullAt: this.fullAt, covered: Object.fromEntries(GRAIN_NAMES.map(name => [name, this.grains[name].covered])) });
+    for (const name of GRAIN_NAMES) {
+      const sums = [...this.grains[name].sums.values()].flat();
+      for (let i = 0; i < sums.length; i += SNAPSHOT_CHUNK) {
+        yield JSON.stringify([name, sums.slice(i, i + SNAPSHOT_CHUNK).map(({ series: _series, chat: _chat, ...sum }) => sum)]);
+      }
+    }
+  }
+
+  /**
+   * Writes the snapshot after a full read, a chunk per turn of the event loop: one JSON.stringify of all 74,155 sums held a copy server's
+   * loop 2.2 s at box load 100 on 11-24.
+   */
+  private async save(at: number): Promise<void> {
+    if (!this.snapshot || this.saving) return;
+    this.saving = true;
     const started = performance.now();
-    const grains = Object.fromEntries(GRAIN_NAMES.map(name => [name, { covered: this.grains[name].covered, sums: [...this.grains[name].sums.values()].flat() }]));
-    writeFileSync(`${this.snapshot}.tmp`, JSON.stringify({ at, fullAt: this.fullAt, grains }));
-    renameSync(`${this.snapshot}.tmp`, this.snapshot);
-    this.log(`usage: wrote the kept sums of ${new Date(at).toISOString()} to ${this.snapshot} in ${Math.round(performance.now() - started)} ms`);
+    try {
+      const lines: string[] = [];
+      for (const line of this.snapshotLines(at)) {
+        lines.push(line);
+        await new Promise(resolve => setImmediate(resolve));
+      }
+      await writeFile(`${this.snapshot}.tmp`, lines.join("\n"));
+      await rename(`${this.snapshot}.tmp`, this.snapshot);
+      this.log(`usage: wrote the kept sums of ${new Date(at).toISOString()} to ${this.snapshot} in ${Math.round(performance.now() - started)} ms`);
+    } catch (error) {
+      this.log(`usage: writing ${this.snapshot} failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      this.saving = false;
+    }
+  }
+
+  /** The same file at stop, written at once, since the process ends next and its successor reads it. */
+  private saveNow(at: number): void {
+    if (!this.snapshot) return;
+    try {
+      writeFileSync(`${this.snapshot}.tmp`, [...this.snapshotLines(at)].join("\n"));
+      renameSync(`${this.snapshot}.tmp`, this.snapshot);
+    } catch (error) {
+      this.log(`usage: writing ${this.snapshot} failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   /**
-   * Reads the snapshot a server before this one wrote, when it is younger than the tail read's span: the first pull is then a tail read,
-   * which replaces every bucket from the snapshot's time on, so the sums are exact after it and no call waits for a full read.
+   * Reads the snapshot a server before this one wrote, when it is younger than the tail read's span, a chunk per turn of the event loop:
+   * the first pull is then a tail read, which replaces every bucket from the snapshot's time on, so the sums are exact after it and no call
+   * waits for a full read.
    */
-  private restore(): void {
+  private async restore(): Promise<void> {
     this.restored = true;
     if (!this.snapshot || !existsSync(this.snapshot)) return;
     const started = performance.now();
     try {
-      const kept = JSON.parse(readFileSync(this.snapshot, "utf8")) as { at: number; fullAt: number; grains: Record<GrainName, { covered: number; sums: UsageTotal[] }> };
-      if (this.now() - kept.at >= TICKS_KEPT_MS - USAGE_PULL_MS) return;
-      for (const name of GRAIN_NAMES) {
-        const grain = this.grains[name];
-        grain.covered = kept.grains[name].covered;
-        for (const sum of kept.grains[name].sums) {
-          const list = grain.sums.get(sum.bucket);
+      const [head, ...chunks] = (await readFile(this.snapshot, "utf8")).split("\n");
+      const kept = JSON.parse(head!) as { at: number; fullAt: number; covered: Record<GrainName, number> };
+      if (!kept.covered || this.now() - kept.at >= TICKS_KEPT_MS - USAGE_PULL_MS) return;
+      const fresh = Object.fromEntries(GRAIN_NAMES.map(grain => [grain, new Map<number, UsageTotal[]>()])) as Record<GrainName, Map<number, UsageTotal[]>>;
+      let count = 0;
+      for (const chunk of chunks) {
+        const [name, sums] = JSON.parse(chunk) as [GrainName, UsageTotal[]];
+        for (const sum of sums) {
+          sum.chat = `${sum.host}\u0000${sum.client}\u0000${sum.agent}\u0000${sum.thread}`;
+          sum.series = `${sum.chat}\u0000${sum.model}`;
+          const list = fresh[name].get(sum.bucket);
           if (list) list.push(sum);
-          else grain.sums.set(sum.bucket, [sum]);
+          else fresh[name].set(sum.bucket, [sum]);
         }
+        count += sums.length;
+        await new Promise(resolve => setImmediate(resolve));
+      }
+      for (const name of GRAIN_NAMES) {
+        this.grains[name].sums = fresh[name];
+        this.grains[name].covered = kept.covered[name];
       }
       this.fullAt = kept.fullAt;
       this.restoredAt = kept.at;
       this.sumDays(-Infinity);
-      this.log(`usage: read the kept sums of ${new Date(kept.at).toISOString()} from ${this.snapshot} in ${Math.round(performance.now() - started)} ms`);
+      this.log(`usage: read the kept sums of ${new Date(kept.at).toISOString()}, ${count} sums, from ${this.snapshot} in ${Math.round(performance.now() - started)} ms`);
     } catch (error) {
       this.log(`usage: the snapshot ${this.snapshot} did not read: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -311,7 +363,7 @@ export class StoreUsage implements UsageSums {
   }
 
   private async pullOnce(): Promise<void> {
-    if (!this.restored) this.restore();
+    if (!this.restored && this.snapshot) await this.restore();
     const now = this.now();
     const full = now - this.fullAt >= this.fullEvery;
     const from = Object.fromEntries(GRAIN_NAMES.map(grain => {
@@ -357,7 +409,7 @@ export class StoreUsage implements UsageSums {
     this.read = true;
     this.lastError = undefined;
     this.goodAt = now;
-    if (full) this.save(now);
+    if (full) void this.save(now);
   }
 
   /** When the kept sums were last read, while the store has failed every read since; else undefined. */
