@@ -337,9 +337,12 @@ export const OUTSIDE_WAIT = "outside_wait";
 export const outsideWaitOf = (output: PrecheckOutput): string | undefined =>
   (output.flagged ?? []).find(slice => slice.kind === OUTSIDE_WAIT && slice.excerpt.trim().length > 0)?.excerpt.trim();
 
-/** Why the precheck could not read its inputs, from its `source_error`, `gap` and `host_away` items, for the summary of a run with unmeasured metrics. */
+/**
+ * Why the precheck could not read its inputs, from its `source_error`, `gap`, `host_away` and `outside_wait` items, for the summary of a run
+ * with unmeasured metrics, so a headline left out for a wait outside the code says so beside "not measured".
+ */
 function sourceReasons(output: PrecheckOutput): string {
-  const reasons = [...new Set((output.flagged ?? []).filter(slice => slice.kind === "source_error" || slice.kind === "gap" || slice.kind === HOST_AWAY).map(slice => slice.excerpt.trim()))];
+  const reasons = [...new Set((output.flagged ?? []).filter(slice => slice.kind === "source_error" || slice.kind === "gap" || slice.kind === HOST_AWAY || slice.kind === OUTSIDE_WAIT).map(slice => slice.excerpt.trim()))];
   const text = reasons.slice(0, 4).join("; ");
   return text.length > 300 ? `${text.slice(0, 299)}…` : text;
 }

@@ -36,7 +36,9 @@
  *     agent's DM holds a post of the agent's after the run's start or the job's last answer was "nothing to report", and else the run's
  *     fresh count again. The work thread posts the report after the job ends, so after mode waits up to 10 min for that post, ten times the
  *     about one minute a comm thread takes to post (c224). The run and its job come from LAST_RUNS_FILE, and the run's fresh count from its
- *     record, else from the state file.
+ *     record, else from the state file. While the last sweep's job has had no model turn, since it waits for a model account (`noModelTurn`),
+ *     a run leaves the headline out, so it reads not measured with an `outside_wait` item and starts no job, and its fresh items stay
+ *     unraised so they carry to the next run.
  *   sweep_age_min: minutes since the sweep before this one ran, target 195, the 180 min schedule plus 15 min.
  *   items_fresh, items_open and a count per kind are detail with no target.
  *
@@ -226,6 +228,25 @@ export function taskState(file: string, conversation: number): string | undefine
 }
 
 /**
+ * Whether a duty job's thread has had no model turn yet while its newest task still runs, read only from its thread file: it waits for a
+ * model account. On 11-24 the 10:23 KST sweep's job waited from 10:24 KST past 13:40 KST, and the 13:24 run read findings_unposted 2 as a
+ * miss, which a sweep nobody could judge does not earn.
+ */
+export function noModelTurn(file: string): boolean {
+  if (!existsSync(file)) return false;
+  const db = new DatabaseSync(file, { readOnly: true });
+  try {
+    const answered = db.prepare("SELECT 1 FROM entries WHERE json_extract(record, '$.kind') = 'pi.assistant' LIMIT 1").get();
+    const task = db.prepare("SELECT status FROM tasks WHERE conversation_id = 1 ORDER BY id DESC LIMIT 1").get() as { status: string } | undefined;
+    return !answered && !!task && task.status !== "terminal";
+  } catch {
+    return false;
+  } finally {
+    db.close();
+  }
+}
+
+/**
  * The jobs pi-host flags as retrying, the working jobs with no entry for 45 min and the jobs that failed in the last 24 h; `task` gives a
  * stuck job's pi-host task state. A retrying job reads as retrying, never as stuck, since its run still tries.
  */
@@ -274,13 +295,16 @@ export function dutyContext(runs: readonly DutyRunView[]): string[] {
   return [...lines, ...fixes];
 }
 
-/** Splits items into the ones worth a look now (new, or last raised 24 h ago or more) and the state the next run reads. */
-export function worthALook(items: readonly Item[], state: SweepState, now: number): { fresh: Item[]; next: SweepState } {
+/**
+ * Splits items into the ones worth a look now (new, or last raised 24 h ago or more) and the state the next run reads. With `mark` false the
+ * fresh items stay unraised, so they carry to the next run, as while an earlier sweep's job has had no model turn (`noModelTurn`).
+ */
+export function worthALook(items: readonly Item[], state: SweepState, now: number, mark = true): { fresh: Item[]; next: SweepState } {
   const raised = state.raised ?? {};
   const fresh = items.filter(item => raised[item.sig] === undefined || now - raised[item.sig]! >= RERAISE_MS);
   const keep = new Set(items.map(item => item.sig));
   const nextRaised = Object.fromEntries(Object.entries(raised).filter(([sig]) => keep.has(sig)));
-  for (const item of fresh) nextRaised[item.sig] = now;
+  if (mark) for (const item of fresh) nextRaised[item.sig] = now;
   return { fresh, next: { raised: nextRaised } };
 }
 
@@ -397,7 +421,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     }
   }));
 
-  const { fresh, next } = worthALook(items, state, now);
+  // A run while the last sweep's job has had no model turn measures nothing it could pass on: the headline is left out (not measured), the
+  // fresh items stay unraised so they carry to the next run, and the job reads them when its turn comes (its brief's peek).
+  const waiting = mode === "run" ? lastRuns.find(run => run.job) : undefined;
+  const waits = waiting?.job && noModelTurn(join(threadsDir, `${waiting.job.id}.sqlite`)) ? waiting : undefined;
+  const { fresh, next } = worthALook(items, state, now, mode === "run" && !waits);
   const freshSigs = new Set(fresh.map(item => item.sig));
   const stamp = new Date(now).toISOString().slice(0, 19).replace(/[-T:]/g, "");
   const detailFile = process.env.OUTPUT_FILE ? process.env.OUTPUT_FILE.replace(/\.json$/, "") + ".items.md" : join(homedir(), "work/fable-sweep", `${stamp}.items.md`);
@@ -443,12 +471,14 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         return list.length ? [{ kind, sig: kind, excerpt: `${oneLine(list[0]!.text, 150)} (${list[0]!.link})${list.length > 1 ? `, and ${list.length - 1} more` : ""}` }] : [];
       }),
     ];
+  const held = waits ? [{ kind: "outside_wait", sig: "account", excerpt: `the sweep job ${waits.job!.name} has had no model turn since ${new Date(waits.at).toISOString().slice(0, 16)}Z ` +
+    `(${taskState(join(threadsDir, `${waits.job!.id}.sqlite`), 1) ?? "no task state"}), so its ${fresh.length} fresh items carry to the next run` }] : [];
   const output = {
     metrics: {
-      findings_unposted: unposted, sweep_age_min: previous ? Math.round((now - previous.at) / MIN) : 0,
+      ...waits ? {} : { findings_unposted: unposted }, sweep_age_min: previous ? Math.round((now - previous.at) / MIN) : 0,
       items_fresh: fresh.length, items_open: items.length, ...Object.fromEntries(counts(items)),
     },
-    flagged: unposted ? flagged : [],
+    flagged: waits ? held : unposted ? flagged : [],
     mode, ...(report ? { report } : {}), detailFile, ms: Date.now() - started,
     items: items.map(item => ({ ...item, fresh: freshSigs.has(item.sig) })),
   };

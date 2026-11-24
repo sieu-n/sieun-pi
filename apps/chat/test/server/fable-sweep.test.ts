@@ -16,7 +16,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
-import { answerOf, dutyContext, jobFindings, lastEntries, poolWaits, postFindings, reportState, stalledSteps, worthALook, type Item, type Job, type Post } from "../../scripts/duties/fable-sweep.ts";
+import { answerOf, dutyContext, jobFindings, lastEntries, noModelTurn, poolWaits, postFindings, reportState, stalledSteps, worthALook, type Item, type Job, type Post } from "../../scripts/duties/fable-sweep.ts";
+import { judge, type DutyMetric } from "../../web/src/lib/api/shared/chat-duties.ts";
 
 const MIN = 60_000;
 const now = Date.parse("2026-11-22T12:00:00Z");
@@ -149,6 +150,33 @@ test("a job's newest entry time comes from its thread file", () => {
   db.close();
   assert.deepEqual([...lastEntries(file, [2, 4])], [[2, 200]]);
   assert.equal(lastEntries(join(dir, "missing.sqlite"), [2]).size, 0);
+});
+
+test("a sweep while the last sweep's job has had no model turn reads not measured, starts nothing and carries its items (11-24, 10:23 to 13:40 KST)", () => {
+  const file = join(dir, "waiting.sqlite");
+  const db = new DatabaseSync(file);
+  db.exec("CREATE TABLE entries (id INTEGER PRIMARY KEY, conversation_id INTEGER NOT NULL, head INTEGER, commit_seq INTEGER NOT NULL, record TEXT NOT NULL)");
+  db.exec("CREATE TABLE tasks (id INTEGER PRIMARY KEY, conversation_id INTEGER NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL, record TEXT NOT NULL)");
+  db.prepare("INSERT INTO entries (conversation_id, commit_seq, record) VALUES (1, 0, ?)").run(JSON.stringify({ kind: "agent.message", model: [{ role: "user" }] }));
+  db.prepare("INSERT INTO tasks (conversation_id, kind, status, record) VALUES (1, 'pi.generation', 'sleeping', ?)").run(JSON.stringify({ state: { checkpoint: { handle: { data: { message: "waiting for an account slot" } } } } }));
+  assert.equal(noModelTurn(file), true);
+  db.prepare("INSERT INTO entries (conversation_id, commit_seq, record) VALUES (1, 0, ?)").run(JSON.stringify({ kind: "pi.assistant", model: [{ role: "assistant" }] }));
+  assert.equal(noModelTurn(file), false, "a job that had its turn is measured as before");
+  db.close();
+  assert.equal(noModelTurn(join(dir, "missing.sqlite")), false);
+
+  const items: Item[] = [{ kind: "duty_off", sig: "duty:a/d1", agent: "a", text: "t", link: "l" }];
+  assert.deepEqual(worthALook(items, {}, now, false).next.raised, {}, "unraised, so the next run sees the item fresh");
+  assert.equal(worthALook(items, worthALook(items, {}, now, false).next, now + 180 * MIN).fresh.length, 1);
+
+  const metrics: DutyMetric[] = [
+    { key: "findings_unposted", label: "unposted", op: "<=", target: 0, headline: true },
+    { key: "sweep_age_min", label: "age", op: "<=", target: 195 },
+  ];
+  const judged = judge(metrics, { metrics: { sweep_age_min: 180 }, flagged: [{ kind: "outside_wait", excerpt: "the sweep job of 01:23Z has had no model turn" }] });
+  assert.equal(judged.verdict, "met", "not red");
+  assert.equal(judged.metrics.findings_unposted, undefined);
+  assert.match(judged.summary, /not measured: the precheck gave no value for findings_unposted \(the sweep job of 01:23Z has had no model turn\)/);
 });
 
 test("findings count as passed on once the DM has the agent's post or the job found nothing", () => {
