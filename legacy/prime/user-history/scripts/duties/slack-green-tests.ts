@@ -129,9 +129,15 @@ export function testsMetrics(experiments: readonly Experiment[], arms: readonly 
 const EXPERIMENTS = `SELECT e.id, e.name, f.key, e.start_date, e.end_date, e.archived, f.deleted, e.description
 FROM system.experiments AS e LEFT JOIN system.feature_flags AS f ON f.id = e.feature_flag_id ORDER BY e.id`;
 
+/**
+ * A day before the first sg-exp- exposure ever, 2026-10-10 03:41 UTC (sg-exp-home-1, read 11-24), so min(timestamp) stays every flag's first exposure.
+ * Without it the scan read 11.5M rows on 11-24, and with it 1.5M.
+ */
+export const SG_EXP_SINCE = "2026-10-01";
+
 /** Every sg-exp- flag that got an exposure in the last UNTRACKED_DAYS days, with its first exposure ever. */
 const EXPOSURES = `SELECT toString(properties.$feature_flag) AS flag, toString(min(timestamp)), toString(max(timestamp)), count() FROM events
-WHERE event = '$feature_flag_called' AND toString(properties.$feature_flag) LIKE 'sg-exp-%'
+WHERE event = '$feature_flag_called' AND timestamp >= toDateTime('${SG_EXP_SINCE}') AND toString(properties.$feature_flag) LIKE 'sg-exp-%'
 GROUP BY flag HAVING max(timestamp) >= now() - INTERVAL ${UNTRACKED_DAYS} DAY ORDER BY flag`;
 
 /**
@@ -205,22 +211,41 @@ export async function measureTests(query: Query, now: number): Promise<PrecheckO
 
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error)).replace(/phx_[A-Za-z0-9]+/g, "phx_***");
 
+interface QueryStatus { id: string; complete?: boolean; error?: boolean; error_message?: string | null; results?: { results?: unknown[][]; error?: string | null } }
+
 /**
- * A HogQL query through PostHog's query API, every row of it (allRows), failing on any non-200 or query error. It forces a fresh read, because on 11-13 the run right
+ * A HogQL query through PostHog's query API, every row of it (allRows), failing on any non-2xx or query error. It forces a fresh read, because on 11-13 the run right
  * after seven experiments were ended at 12:54Z got the cached system.experiments rows and still read them as overdue.
+ * It runs async and polls, because a blocking query stops at about 10 s: on 11-24 at 00:20Z the exposures and arms queries ended with TIMEOUT_EXCEEDED
+ * after 10.2 to 10.8 s in two runs 30 s apart (HTTP 504, PostHog query_log), while async queries from the same key ran 17 and 26 s and finished.
  */
-export function posthogQuery(key: string, project: string, host = "https://us.posthog.com"): Query {
+export function posthogQuery(key: string, project: string, host = "https://us.posthog.com", fetcher: typeof fetch = fetch): Query {
   return hogql => allRows(hogql, async limited => {
-    const response = await fetch(`${host}/api/projects/${project}/query/`, {
-      method: "POST", headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ query: { kind: "HogQLQuery", query: limited }, refresh: "force_blocking" }),
-      signal: AbortSignal.timeout(PRECHECK_TARGET_MS / 3),
-    });
-    const body = await response.json() as { results?: unknown[][]; error?: string; detail?: string };
-    if (!response.ok || !body.results) throw new Error(`HTTP ${response.status}: ${String(body.detail ?? body.error ?? "no results").slice(0, 300)}`);
-    return body.results;
+    const signal = AbortSignal.timeout(PRECHECK_TARGET_MS / 3);
+    const call = async <T>(path: string, body?: unknown): Promise<T> => {
+      const response = await fetcher(`${host}/api/projects/${project}/${path}`, {
+        method: body ? "POST" : "GET", headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+        ...body ? { body: JSON.stringify(body) } : {}, signal,
+      });
+      const answer = await response.json() as T & { error?: string; detail?: string };
+      if (!response.ok) throw new Error(`HTTP ${response.status}: ${String(answer.detail ?? answer.error ?? "no results").slice(0, 300)}`);
+      return answer;
+    };
+    const first = await call<{ results?: unknown[][]; query_status?: QueryStatus }>("query/", { query: { kind: "HogQLQuery", query: limited }, refresh: "force_async" });
+    if (first.results) return first.results;
+    let status = first.query_status;
+    while (status && !status.complete) {
+      await new Promise(resolve => setTimeout(resolve, POLL_MS));
+      status = (await call<{ query_status: QueryStatus }>(`query/${status.id}/`)).query_status;
+    }
+    if (status?.error || status?.results?.error) throw new Error(String(status.error_message || status.results?.error || "query error").slice(0, 300));
+    if (!status?.results?.results) throw new Error("no results and no query status");
+    return status.results.results;
   });
 }
+
+/** How often a running query is asked for; the exposures query finished 0.8 s after it started async on 11-24. */
+const POLL_MS = 1000;
 
 async function main(): Promise<void> {
   const output = process.env.OUTPUT_FILE;

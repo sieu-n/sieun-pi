@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type ArmRow, armsQuery, type Experiment, fisherP, isLive, measureTests, readDate, testsMetrics, toExperiment } from "../scripts/duties/slack-green-tests.ts";
+import { type ArmRow, armsQuery, type Experiment, fisherP, isLive, measureTests, posthogQuery, readDate, testsMetrics, toExperiment } from "../scripts/duties/slack-green-tests.ts";
 
 const NOW = Date.parse("2026-11-13T12:00:00Z");
 const experiment = (id: number, flag: string, start: string, extra: Partial<Experiment> = {}): Experiment =>
@@ -84,4 +84,28 @@ test("every started experiment and every untracked exposed flag is in the preche
   assert.equal(output.metrics.tests_live, started.length);
   assert.equal(output.metrics.tests_untracked, 2);
   assert.equal(output.flagged!.length, started.length + 2);
+});
+
+test("posthogQuery runs async and polls until the query finishes, so a query past PostHog's 10 s blocking limit still reads", async () => {
+  const calls: { url: string; body: string | undefined }[] = [];
+  const answers = [
+    { status: 202, body: { query_status: { id: "q1", complete: false } } },
+    { status: 200, body: { query_status: { id: "q1", complete: true, error: false, results: { results: [["sg-exp-a", "2026-11-01", "2026-11-13", 5]] } } } },
+  ];
+  const fetcher = (async (url: string, init?: RequestInit) => {
+    calls.push({ url, body: init?.body as string | undefined });
+    const answer = answers.shift()!;
+    return new Response(JSON.stringify(answer.body), { status: answer.status });
+  }) as typeof fetch;
+  const rows = await posthogQuery("phx_key", "226805", "https://ph.test", fetcher)("SELECT 1");
+  assert.deepEqual(rows, [["sg-exp-a", "2026-11-01", "2026-11-13", 5]]);
+  assert.equal(JSON.parse(calls[0]!.body!).refresh, "force_async");
+  assert.equal(calls[1]!.url, "https://ph.test/api/projects/226805/query/q1/");
+});
+
+test("posthogQuery fails on a query error and on a non-2xx answer", async () => {
+  const failing = (status: number, body: unknown) => (async () => new Response(JSON.stringify(body), { status })) as unknown as typeof fetch;
+  await assert.rejects(posthogQuery("k", "1", "https://ph.test", failing(200, { query_status: { id: "q", complete: true, error: true, error_message: "Query has hit the max execution time" } }))("SELECT 1"),
+    /max execution time/);
+  await assert.rejects(posthogQuery("k", "1", "https://ph.test", failing(504, { detail: "Query has hit the max execution time" }))("SELECT 1"), /HTTP 504/);
 });
