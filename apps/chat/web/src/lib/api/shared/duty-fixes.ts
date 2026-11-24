@@ -114,21 +114,37 @@ function stepTarget(item: PlanItem): { target: NonNullable<FixLink["target"]> } 
     ...(target.measuredAt ? { measuredAt: target.measuredAt } : {}) } };
 }
 
-/** Prime's `closedFixes`: the steps with a duty link that were open or absent before and are done after; each starts one verify run of its duty. */
+/**
+ * Prime's `closedFixes` (sieun-pi da8c8665): the steps with a duty link that were open before, or new on the board, and are done after; each
+ * starts one verify run of its duty. A step absent before whose id the board had already given (`lastIds`) was removed and put back, so it is
+ * no close: on 11-23 at 22:46:32Z a hand-over on Crawler VP removed its old steps and a plan_set put them back, and about 100 done fix steps
+ * started verify runs of 8 duties.
+ */
 export function closedFixes(before: ChatBoard | null, after: ChatBoard): { step: string; duty: string; metric: string }[] {
   const was = new Map<string, PlanItem["status"]>();
-  const seen = (items: readonly PlanItem[]) => { for (const item of items) { was.set(item.id, item.status); seen(item.children); } };
+  let given = before?.lastIds?.p ?? 0;
+  const seen = (items: readonly PlanItem[]) => {
+    for (const item of items) { was.set(item.id, item.status); given = Math.max(given, planNumber(item.id) ?? 0); seen(item.children); }
+  };
   seen(before?.plan ?? []);
   const closed: { step: string; duty: string; metric: string }[] = [];
   const visit = (items: readonly PlanItem[]) => {
     for (const item of items) {
       const link = item.duty ? parseDutyLink(item.duty) : null;
-      if (link && item.status === "done" && was.get(item.id) !== "done") closed.push({ step: item.id, ...link });
+      const status = was.get(item.id);
+      const closes = status === undefined ? (planNumber(item.id) ?? Infinity) > given : status !== "done";
+      if (link && item.status === "done" && closes) closed.push({ step: item.id, ...link });
       visit(item.children);
     }
   };
   visit(after.plan);
   return closed;
+}
+
+/** The number of a `p<n>` plan id; null for any other id. */
+function planNumber(id: string): number | null {
+  const match = /^p(\d+)$/.exec(id);
+  return match ? Number(match[1]) : null;
 }
 
 export const missedKeys = (run: Pick<DutyRunRecord, "metrics">): string[] => Object.entries(run.metrics).filter(([, result]) => !result.met).map(([key]) => key);

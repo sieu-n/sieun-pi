@@ -85,3 +85,25 @@ test("a fix step of the duty that closes starts a verify run at once", () => wit
   assert.equal(file.runs.d1![0]!.trigger, "verify");
   assert.equal(file.duties[0]!.lastRunAt, duty.lastRunAt);
 }));
+
+test("a done fix step that a board write removes and puts back starts no verify run, and a step marked done still does (Crawler VP, 11-23 22:46Z)", () => withServer(async (s, work) => {
+  const duty = await seedRedDuty(s, work, 60_000);
+  const saved = fileOf(s);
+  const setStatus = (status: Duty["status"]) => s.app.boards.saveDuties(agents.vent, { ...fileOf(s), duties: [{ ...duty, status }] } as DutyFile);
+  await setStatus("paused");
+  await s.app.boards.apply(agents.vent, [{ op: "plan_add", text: "Bring uptime back", duty: "d1/up", status: "done" }], "agent");
+  const step = (await s.app.boards.board(agents.vent))!.plan.find(item => item.duty === "d1/up")!;
+  await setStatus("active");
+  const restore = { op: "plan_set" as const, items: [{ id: step.id, text: step.text, status: "done" as const, duty: "d1/up" }] };
+  await s.app.boards.apply(agents.vent, [{ op: "plan_remove", id: step.id }], "agent");
+  await s.app.boards.apply(agents.vent, [restore], "agent");
+  await s.app.boards.apply(agents.vent, [{ op: "plan_set", items: [] }], "agent");
+  await s.app.boards.apply(agents.vent, [restore], "agent");
+  await new Promise(resolve => setTimeout(resolve, 300));
+  assert.equal(fileOf(s).runs.d1!.length, saved.runs.d1!.length, "a removed and restored step is no close");
+  await s.app.boards.apply(agents.vent, [{ op: "plan_add", text: "Move the probe", duty: "d1/up" }], "agent");
+  const next = (await s.app.boards.board(agents.vent))!.plan.find(item => item.text === "Move the probe")!.id;
+  await s.app.boards.apply(agents.vent, [{ op: "plan_update", id: next, status: "done" }], "agent");
+  const file = await until(() => Promise.resolve(fileOf(s)), f => (f.runs.d1?.length ?? 0) === 2);
+  assert.equal(file.runs.d1![0]!.trigger, "verify");
+}));

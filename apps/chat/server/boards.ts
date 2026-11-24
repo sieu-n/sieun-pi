@@ -10,7 +10,7 @@
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import type { AgentSummary, BoardOp, BoardRow, BoardView, BoardWrite, ChatBoard, CheckInPatch, CheckInView, DutyAction, DutyRow, DutyView, ForYouItem, PlanItem } from "../web/src/lib/api/types.ts";
-import { applyBoardOp, BOARD_PREFIX, emptyBoard, needsGo, nextIds, parseBoard, parseBoardOps, stepGo } from "../web/src/lib/api/shared/chat-board.ts";
+import { applyBoardOp, BOARD_PREFIX, emptyBoard, idsTop, needsGo, nextIds, parseBoard, parseBoardOps, stepGo } from "../web/src/lib/api/shared/chat-board.ts";
 import { snoozed, waitingAsks } from "../web/src/lib/api/shared/snooze.ts";
 import { newestAskFirst } from "../web/src/lib/api/shared/board-lists.ts";
 import { boardDelta, boardKey, boardStep } from "../web/src/lib/api/shared/board-delta.ts";
@@ -355,9 +355,13 @@ export class Boards {
     const before = this.unput.get(chat) ?? (this.cache.has(chat) ? this.cache.get(chat)!.board : read);
     let board = before ?? emptyBoard(now);
     const summaries: string[] = [];
+    // Each write keeps the highest ids the board has given (`lastIds`), as Prime's board store does, so a removed id never goes to a new item
+    // and `closedFixes` reads a removed and restored step as no close.
     for (const op of ops) {
+      const given = idsTop(board);
       const result = applyBoardOp(board, op, actor, now, nextIds(board));
-      board = result.board;
+      const top = idsTop(result.board);
+      board = { ...result.board, lastIds: { p: Math.max(given.p, top.p), t: Math.max(given.t, top.t) } };
       summaries.push(result.summary);
     }
     // The write answers once it is stored on this server; pi-host gets it behind, in order (`putBoards`).
