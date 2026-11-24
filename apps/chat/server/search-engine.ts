@@ -203,6 +203,11 @@ function docMatches(doc: SearchDoc, words: readonly string[]): number {
 
 type Pending = { doc: SearchDoc | null; task?: number };
 
+/** The engine's rule for hits Meilisearch did not rank: tier, then how often the words occur, then newest first. */
+type Ranked = { doc: SearchDoc; score: number };
+const byRule = (a: Ranked, b: Ranked): number =>
+  a.doc.tier - b.doc.tier || b.score - a.score || b.doc.at - a.doc.at || (a.doc.id < b.doc.id ? -1 : a.doc.id > b.doc.id ? 1 : 0);
+
 /** `SearchEngine.hiddenThreads` as a set, with the `hiddenFilter` answer for the `flagged` changes it was built at. */
 type HiddenKept = { threads: readonly string[]; set: ReadonlySet<string>; filter?: { flags: number; conds: Cond[]; unflagged: boolean } };
 
@@ -837,7 +842,7 @@ export class SearchEngine {
       const newerFilter = cut === null ? undefined : filterText(and(where, { op: "gte", field: "at", value: cut }, ...(pendingIds.length ? [not(isIn("id", pendingIds))] : [])));
       return Promise.all([
         ask(filterAt(cut), opts.limit).then(found => ({ ...found, hits: found.hits.map(doc => this.pending.get(doc.id)?.doc ?? doc) })),
-        newerFilter === undefined ? undefined : ask(newerFilter, opts.limit).then(first => (first.totalHits > first.hits.length ? ask(newerFilter, first.totalHits) : first)),
+        newerFilter === undefined ? undefined : ask(newerFilter, opts.limit).then(first => (first.totalHits > first.hits.length ? this.newest(q, newerFilter, words, opts.limit) : first)),
       ]);
     };
     // Which fresh documents Meilisearch holds is asked beside the answer, which goes with the cut the documents it was seen to hold give.
@@ -863,7 +868,7 @@ export class SearchEngine {
     took("meili");
     const recent = [...(newer?.hits ?? []), ...own]
       .map(doc => ({ doc, score: words.length ? docMatches(doc, words) : 1 }))
-      .sort((a, b) => a.doc.tier - b.doc.tier || b.score - a.score || b.doc.at - a.doc.at || (a.doc.id < b.doc.id ? -1 : a.doc.id > b.doc.id ? 1 : 0))
+      .sort(byRule)
       .map(m => m.doc);
     const docs: SearchDoc[] = [];
     // Meilisearch's hit leads each rank, so a document that is only waiting to be indexed never moves the top hit between two searches.
@@ -872,6 +877,18 @@ export class SearchEngine {
       if (rank < recent.length) docs.push(recent[rank]!);
     }
     docs.sort((a, b) => a.tier - b.tier);
-    return { docs: docs.slice(0, opts.limit), total: answer.totalHits + recent.length, ...(cut === null ? {} : { since: cut }) };
+    return { docs: docs.slice(0, opts.limit), total: answer.totalHits + (newer?.totalHits ?? 0) + own.length, ...(cut === null ? {} : { since: cut }) };
+  }
+
+  /**
+   * The first `limit` of the hits written since a cut, by the engine's rule, and how many there are. Only those can reach a page, while all
+   * of them in one answer passed V8's longest string on 11-24 when a post weeks old waited in memory: meili.ts `ANSWER_BYTES`.
+   */
+  private async newest(q: string, filter: string, words: readonly string[], limit: number): Promise<{ hits: SearchDoc[]; totalHits: number }> {
+    let top: Ranked[] = [];
+    const totalHits = await this.meili.searchEach<SearchDoc>(SEARCH_INDEX, { q, filter, matchingStrategy: "all" }, hits => {
+      top = [...top, ...hits.map(doc => ({ doc, score: words.length ? docMatches(doc, words) : 1 }))].sort(byRule).slice(0, limit);
+    });
+    return { hits: top.map(m => m.doc), totalHits };
   }
 }
