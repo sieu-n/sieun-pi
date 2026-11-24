@@ -17,6 +17,8 @@
  * A test file only the overlay has runs from its source path; a new spec runs in an extra project "chrome-added" with the "chrome" project's
  * settings, so a new spec that must run one at a time or on the dev server waits for a release that lists it in playwright.config.ts.
  * The run's folder sits under TMPDIR, which must be short (Chrome refuses long socket paths), and is deleted after a run that passed.
+ * SPEC_CLEAN_REPO names the checkout, for a test that runs a script the release leaves out with that script's own node_modules, such as
+ * duty-set.test.ts with legacy/prime/user-history/scripts/duties/add.ts.
  */
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -106,6 +108,7 @@ async function main() {
     SPEC_CLEAN_RELEASE: release,
     SPEC_CLEAN_OVERLAY: JSON.stringify(Object.fromEntries(files)),
     SPEC_CLEAN_RUN_DIR: runDir,
+    SPEC_CLEAN_REPO: repo,
     NODE_OPTIONS: `--import ${join(here, "spec-clean/register.mjs")} ${process.env.NODE_OPTIONS ?? ""}`.trim(),
   };
   let code;

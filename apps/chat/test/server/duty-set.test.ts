@@ -121,7 +121,9 @@ test("a relative precheck cwd, a bad definition and an unknown agent are refused
 });
 
 test("add.ts and remove.ts send a duty for an agent of this chat here, with its precheck cwd resolved against the duty file, and keep Prime's store for a Prime chat", async () => {
-  const userHistory = fileURLToPath(new URL("../../../../legacy/prime/user-history/", import.meta.url));
+  // A spec-clean run loads this file from the apps/chat release, which holds legacy/prime/user-history/src only, with no scripts and no tsx.
+  const userHistory = process.env.SPEC_CLEAN_REPO ? join(process.env.SPEC_CLEAN_REPO, "legacy/prime/user-history/")
+    : fileURLToPath(new URL("../../../../legacy/prime/user-history/", import.meta.url));
   const script = (name: string) => join(userHistory, "scripts/duties", name);
   const primeData = mkdtempSync(join(tmpdir(), "duty-set-prime-"));
   const folder = join(work, "duties");
