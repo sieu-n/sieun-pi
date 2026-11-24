@@ -184,12 +184,14 @@ export interface VentReads {
 
 /**
  * test_calls_real_24h (goal p85, owner rule c174: "these shouldn't be actually being sent"): the calls Vent sent a real provider in the last
- * 24 h on any tier but production, which has no real customers, on the sends that carry test traffic: Resend and Gmail sends, Langfuse trace
- * export and Slack sales pings. Each of those is test traffic Vent should have answered from its fake, except a send whose every recipient
- * domain (vent.recipient_domains, a82dcd731) is one of SINK_DOMAINS, the mail checks' own real targets, which prove real delivery on purpose.
+ * 24 h on any tier but production, which has no real customers, on the sends that carry test traffic: Resend and Gmail sends and Slack
+ * sales pings. Each of those is test traffic Vent should have answered from its fake, except a send whose every recipient domain
+ * (vent.recipient_domains, a82dcd731) is one of SINK_DOMAINS, the mail checks' own real targets, which prove real delivery on purpose.
  * Stripe stays out: its staging calls run in test mode, which never charges, and its browser elements need the objects at Stripe, so the
- * specs billing and card checks keep them real by decision. Before Vent wrote vent.recipient_domains, a mail check's send counts here too.
- * Last week this read about 470 a day (Resend 405, Langfuse 61, Slack sales 5), from the test traffic audit of 10-27.
+ * specs billing and card checks keep them real by decision. Langfuse stays out too: since 10-09 it is our own instance on prod obs
+ * (compose.obs.yml), so a staging trace export or media upload lands in our own sink, kept apart from prod's by LANGFUSE_TRACING_ENVIRONMENT.
+ * auto-sns-agent 56fad58301 (11-24) removed Vent's off-production Langfuse fake on purpose, and after it this read 2352 a day, all of them
+ * research-agent-be trace exports from staging. Before Vent wrote vent.recipient_domains, a mail check's send counts here too.
  */
 export const SINK_DOMAINS = ["mailsink.virev.ai", "nomail.virev.ai"] as const;
 export const TEST_SENDS_SQL = `SELECT \`vent.integration\` AS integration, \`vent.caller\` AS caller, \`vent.method\` AS method,
@@ -200,7 +202,6 @@ WHERE Timestamp > now() - INTERVAL 24 HOUR AND ServiceName = 'vent' AND Body = '
   AND \`vent.route\` != 'webhook' AND \`vent.outcome\` != 'refused' AND \`vent.mock\` != 'true'
   AND ((\`vent.integration\` = 'resend' AND \`vent.method\` IN ('POST /emails', 'POST /emails/batch'))
     OR (\`vent.integration\` = 'gmail' AND \`vent.method\` = 'POST /gmail/v1/users/me/messages/send')
-    OR (\`vent.integration\` = 'langfuse' AND \`vent.method\` LIKE 'POST /api/public/otel%')
     OR \`vent.integration\` = 'slack-sales')
   AND NOT (LogAttributes['vent.recipient_domains'] != ''
     AND arrayAll(d -> d IN (${SINK_DOMAINS.map(domain => `'${domain}'`).join(", ")}), splitByChar(',', LogAttributes['vent.recipient_domains'])))

@@ -455,11 +455,11 @@ test("the gateway and vent-share.py read the tip at origin/dev/sieun", () => {
 test("test sends that reached a provider off production sum into test_calls_real_24h, one row each, and a failed read is unmeasured (p85, c174)", () => {
   const testSends = [
     { integration: "resend", caller: "convex", method: "POST /emails", calls: 26, last: 0 },
-    { integration: "langfuse", caller: "research-agent-be", method: "POST /api/public/otel/v1/traces", calls: 30, last: 0 },
+    { integration: "slack-sales", caller: "convex", method: "POST /chat.postMessage", calls: 30, last: 0 },
   ];
   const output = ventMetrics(reads({ testSends }), 0);
   assert.equal(output.metrics.test_calls_real_24h, 56);
-  assert.deepEqual(output.flagged!.filter(flag => flag.kind === "test_send_real").map(flag => flag.item), ["resend POST /emails", "langfuse POST /api/public/otel/v1/traces"]);
+  assert.deepEqual(output.flagged!.filter(flag => flag.kind === "test_send_real").map(flag => flag.item), ["resend POST /emails", "slack-sales POST /chat.postMessage"]);
   assert.equal(ventMetrics(reads({ testSends: [] }), 0).metrics.test_calls_real_24h, 0);
   const unread = ventMetrics(reads({ testSends: { error: "HTTP 502" } }), 0);
   assert.equal(unread.metrics.test_calls_real_24h, UNMEASURED);
@@ -471,6 +471,7 @@ test("the test send query leaves out production, faked calls and sends whose eve
   assert.match(TEST_SENDS_SQL, /`vent\.mock` != 'true'/);
   assert.match(TEST_SENDS_SQL, /arrayAll\(d -> d IN \('mailsink\.virev\.ai', 'nomail\.virev\.ai'\)/);
   assert.doesNotMatch(TEST_SENDS_SQL, /stripe/);
+  assert.doesNotMatch(TEST_SENDS_SQL, /langfuse/);
 });
 
 // On 10-28 the chat system duty's quiet-spot audit found goal p85 linked to d1/test_calls_real_24h while d1 kept it as a reading with no target,
