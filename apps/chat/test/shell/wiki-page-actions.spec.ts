@@ -97,6 +97,19 @@ test("Edit turns the page editable in the pane, Save stores it with its base ver
   await expect(frame.locator(".prose")).not.toContainText("Added in place.");
 });
 
+test("a page with an entity-encoded javascript: link edits in the wiki's own editor, and a page that only names javascript: edits in place", async ({ page: p }) => {
+  const words = `<!--wiki\n{"title":"Edit me"}\n-->\n<h1>Edit me</h1>\n<p>A javascript: link runs script.</p>\n`;
+  const encoded = `<!--wiki\n{"title":"Edit me"}\n-->\n<h1>Edit me</h1>\n<p><a href="jav&#x61;script:alert(1)">Open</a></p>\n`;
+  await mockWiki(p, { [PATH]: encoded, "sessions/2026/11/22/words.html": words });
+  let pane = await openPage(p, PATH);
+  await pane.locator("[data-wiki-edit]").click();
+  await expect(p.getByText("This page runs scripts, so it edits in the wiki's own editor")).toBeVisible();
+  await expect(pane.locator("iframe.wiki-frame").contentFrame().locator(".prose")).not.toHaveAttribute("contenteditable", "true");
+  pane = await openPage(p, "sessions/2026/11/22/words.html");
+  await pane.locator("[data-wiki-edit]").click();
+  await expect(pane.locator("iframe.wiki-frame").contentFrame().locator(".prose")).toHaveAttribute("contenteditable", "true");
+});
+
 test("a new first heading renames the page, and Esc in an unchanged edit leaves it without a write", async ({ page: p }) => {
   const wiki = await mockWiki(p, { [PATH]: RAW });
   const pane = await openPage(p, PATH);

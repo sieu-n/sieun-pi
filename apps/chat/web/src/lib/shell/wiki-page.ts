@@ -26,11 +26,25 @@ async function versionOf(path: string): Promise<number | null> {
   return match ? Number(match[1]) : null;
 }
 
+/** Elements that run script, load another document or move the page when they are inserted; a `<meta>` does so only with http-equiv. */
+const SCRIPT_TAGS = new Set(["script", "iframe", "frame", "object", "embed", "base"]);
+/** Attributes whose value a browser follows or applies as a URL, where a `javascript:` value runs script. */
+const URL_ATTRIBUTES = new Set(["href", "xlink:href", "src", "action", "formaction", "data", "to", "from", "values"]);
+/** A browser drops ASCII whitespace and control characters before it reads a URL's scheme, so `java&#9;script:` runs too. */
+const scriptUrl = (value: string): boolean => /^(?:javascript|vbscript):/i.test(value.replace(/[\u0000-\u0020]/g, ""));
+
 /**
  * Whether stored HTML carries script, an event handler or an embedded frame. Stored HTML goes into the page unsanitized while it is edited,
- * so such a page opens in the wiki's own editor instead.
+ * so such a page opens in the wiki's own editor instead. The check reads the HTML as the browser parses it, in an inert document, so an
+ * entity-encoded `javascript:` link counts as one (fable check, 11-24).
  */
-export const runsScript = (html: string): boolean => /<(?:script|iframe|object|embed)\b|\son[a-z]+\s*=|javascript:/i.test(html);
+export function runsScript(html: string): boolean {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  return [...doc.querySelectorAll("*")].some((el) =>
+    SCRIPT_TAGS.has(el.localName) ||
+    (el.localName === "meta" && el.hasAttribute("http-equiv")) ||
+    [...el.attributes].some((a) => /^on/i.test(a.name) || (URL_ATTRIBUTES.has(a.name.toLowerCase()) && scriptUrl(a.value))));
+}
 
 /** Only an HTML page, or a folder's index.html, edits in place; `@code/` mirrors repo files and is read-only. */
 export function editable(path: string): boolean {
