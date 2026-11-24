@@ -218,6 +218,8 @@ export type SearchSplit = Record<string, number>;
 
 export class SearchEngine {
   private readonly pending = new Map<string, Pending>();
+  /** The pending documents Meilisearch was seen to hold a copy of, which a relevance search's first page takes as its guess of the cut. */
+  private readonly inIndex = new Set<string>();
   private ready?: Promise<void>;
   private sync?: Promise<void>;
   private resync = false;
@@ -468,6 +470,7 @@ export class SearchEngine {
   postChanged(id: string, doc: PostDoc | null): void {
     if (!this.ready) return;
     this.pending.set(id, { doc });
+    if (!doc) this.inIndex.delete(id);
     void this.ready.then(async () => void (doc ? await this.putDocs([doc]) : await this.deleteDocs([id]))).catch(error => this.deps.log(`search: post ${id} not indexed: ${String(error)}`));
   }
 
@@ -521,7 +524,13 @@ export class SearchEngine {
       if (held?.source === "entry" && held !== doc) known.set(doc.id, held);
     }
     const lookup = entries.filter(doc => !known.has(doc.id)).map(doc => doc.id);
-    if (lookup.length && !this.filling) for (const doc of await this.meili.fetch<EntryDoc>(SEARCH_INDEX, lookup, ["id", "threads", "convs", "keys"])) known.set(doc.id, doc);
+    const copies: string[] = [];
+    if (lookup.length && !this.filling) {
+      for (const doc of await this.meili.fetch<EntryDoc>(SEARCH_INDEX, lookup, ["id", "threads", "convs", "keys"])) {
+        known.set(doc.id, doc);
+        copies.push(doc.id);
+      }
+    }
     const hidden = this.hiddenKept().set;
     const merged = docs.map(doc => {
       const was = doc.source === "entry" ? known.get(doc.id) : undefined;
@@ -531,6 +540,7 @@ export class SearchEngine {
     });
     // A document `pending` holds already stays there in its merged form, so memory never shows an older copy than Meilisearch.
     for (const doc of merged) if (opts.hold || this.pending.has(doc.id)) this.pending.set(doc.id, { doc });
+    for (const id of copies) if (this.pending.has(id)) this.inIndex.add(id);
     const tasks: number[] = [];
     for (let at = 0; at < merged.length;) {
       // The array's brackets and one comma per document count toward the limit too.
@@ -671,7 +681,10 @@ export class SearchEngine {
       for (const [id, p] of this.pending) {
         const task = p.task === undefined ? undefined : done.get(p.task);
         if (!task) continue;
-        if (task.status === "succeeded") this.pending.delete(id);
+        if (task.status === "succeeded") {
+          this.pending.delete(id);
+          this.inIndex.delete(id);
+        }
         else this.deps.log(`search: Meilisearch task ${task.uid} ${task.status} (${task.error?.message ?? "no message"}); ${id} stays in memory`);
       }
     }
@@ -756,6 +769,27 @@ export class SearchEngine {
     // and listed 4 hits twice and 4 never (search-page.spec.ts, 11-23). So the documents written since `since`, the oldest one Meilisearch
     // did not hold at the first page, rank by the engine's own rule wherever they sit, and the older ones by Meilisearch's.
     const ids = fresh.map(doc => doc.id);
+    const freshIds = new Set(ids);
+    const cutBy = (inIndex: (id: string) => boolean): number | null =>
+      opts.since !== undefined ? opts.since : fresh.reduce<number | null>((oldest, doc) => (inIndex(doc.id) || (oldest !== null && oldest <= doc.at) ? oldest : doc.at), null);
+    // A pending document that no longer matches leaves Meilisearch's answer now, as it will once indexed. A matching pending document whose
+    // copy in Meilisearch no longer matches is out of that answer already, so only the pending documents that match nowhere are named.
+    const elsewhere = pendingIds.filter(id => !freshIds.has(id));
+    const filterAt = (cut: number | null) => filterText(and(where, ...(cut === null ? [] : [{ op: "lt", field: "at", value: cut } as Cond]), ...(elsewhere.length ? [not(isIn("id", elsewhere))] : [])));
+    const answers = (cut: number | null) => {
+      const newerFilter = cut === null ? undefined : filterText(and(where, { op: "gte", field: "at", value: cut }, ...(pendingIds.length ? [not(isIn("id", pendingIds))] : [])));
+      return Promise.all([
+        ask(filterAt(cut), opts.limit).then(found => ({ ...found, hits: found.hits.map(doc => this.pending.get(doc.id)?.doc ?? doc) })),
+        newerFilter === undefined ? undefined : ask(newerFilter, opts.limit).then(first => (first.totalHits > first.hits.length ? ask(newerFilter, first.totalHits) : first)),
+      ]);
+    };
+    // Which fresh documents Meilisearch holds is asked beside the answer, which goes with the cut the documents it was seen to hold give.
+    // Asked before it, that round trip took p50 10.7 ms and up to 189 ms of the 54 searches that had one in 11-23 21:50Z to 11-24 07:00Z.
+    // A guess the held answer proves wrong, such as a post edited since the server started, asks again with the right cut.
+    const guess = cutBy(id => this.inIndex.has(id));
+    noteFilter(filterAt(guess));
+    const first = answers(guess);
+    first.catch(() => undefined);
     const [held, matched] = ids.length
       ? await Promise.all([
         this.meili.fetch<{ id: string }>(SEARCH_INDEX, ids, ["id"]).then(docs => new Set(docs.map(doc => doc.id))),
@@ -763,19 +797,12 @@ export class SearchEngine {
       ])
       : [new Set<string>(), new Set<string>()];
     took("held");
-    const cut = opts.since !== undefined ? opts.since : fresh.reduce<number | null>((oldest, doc) => (held.has(doc.id) || (oldest !== null && oldest <= doc.at) ? oldest : doc.at), null);
-    // A pending document whose copy in Meilisearch matches keeps that copy's rank and shows its own text; one that no longer matches leaves
-    // Meilisearch's answer now, as it will once indexed, and one that matches only now, such as a post just reacted to under has:reaction,
-    // ranks by the engine's rule.
-    const gone = pendingIds.filter(id => !matched.has(id));
+    for (const id of held) if (this.pending.has(id)) this.inIndex.add(id);
+    const cut = cutBy(id => held.has(id));
+    // A pending document whose copy in Meilisearch matches keeps that copy's rank and shows its own text, and one that matches only now,
+    // such as a post just reacted to under has:reaction, ranks by the engine's rule.
     const own = fresh.filter(doc => !matched.has(doc.id) || (cut !== null && doc.at >= cut));
-    const filter = filterText(and(where, ...(cut === null ? [] : [{ op: "lt", field: "at", value: cut } as Cond]), ...(gone.length ? [not(isIn("id", gone))] : [])));
-    noteFilter(filter);
-    const newerFilter = cut === null ? undefined : filterText(and(where, { op: "gte", field: "at", value: cut }, ...(pendingIds.length ? [not(isIn("id", pendingIds))] : [])));
-    const [answer, newer] = await Promise.all([
-      ask(filter, opts.limit).then(found => ({ ...found, hits: found.hits.map(doc => this.pending.get(doc.id)?.doc ?? doc) })),
-      newerFilter === undefined ? undefined : ask(newerFilter, opts.limit).then(first => (first.totalHits > first.hits.length ? ask(newerFilter, first.totalHits) : first)),
-    ]);
+    const [answer, newer] = await (cut === guess ? first : answers(cut));
     took("meili");
     const recent = [...(newer?.hits ?? []), ...own]
       .map(doc => ({ doc, score: words.length ? docMatches(doc, words) : 1 }))
