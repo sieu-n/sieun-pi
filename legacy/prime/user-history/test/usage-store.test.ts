@@ -99,6 +99,32 @@ test("a store that never answered reaches the feed as its error, never as zeros"
   usage.close();
 });
 
+test("a failed read keeps the last sums and marks them stale, logged once, and the next good read clears it", async () => {
+  const calls: Call[] = [{ at: now - 30 * 60_000, host: "us-metal02", client: "prime", model: "m", input: 10, output: 20, cost: 3 }];
+  const good = store(calls);
+  let fail = false;
+  const lines: string[] = [];
+  let clock = now;
+  const usage = new Usage(() => ({ query: async sql => { if (fail) throw new Error("Code: 497. DB::Exception: grafana_ro: Not enough privileges. (ACCESS_DENIED)"); return good.query(sql); } }), () => clock, line => lines.push(line));
+  try {
+    const first = await usage.series("24h", "hour", "none");
+    assert.equal(first.staleSince, undefined);
+    fail = true;
+    clock += 2_000;
+    const stale = await usage.series("24h", "hour", "none");
+    assert.deepEqual(stale.points.map(p => p.tokens.output), first.points.map(p => p.tokens.output), "the last good sums stay");
+    assert.equal(stale.staleSince, now, "the reading says when the sums were read");
+    const summary = await usage.reading();
+    assert.equal(summary.state === "live" ? summary.staleSince : null, now, "the headline says it too, so the rate reads as unknown");
+    assert.equal(lines.filter(line => line.includes("stopped answering")).length, 1, "the failure is logged once, not at each read");
+    assert.match(lines.find(line => line.includes("stopped answering"))!, /Code: 497/);
+    fail = false;
+    clock += 2_000;
+    assert.equal((await usage.series("24h", "hour", "none")).staleSince, undefined);
+    assert.equal(lines.at(-1), "usage: the store answers again");
+  } finally { usage.close(); }
+});
+
 test("a missing Grafana token is a 503 on the page, not a failed chat start", async () => {
   const usage = new Usage(() => { throw new Error("ENOENT: grafana-alerts.json"); }, () => now);
   await assert.rejects(usage.models("24h"), (error: Error & { status?: number }) => error.status === 503);

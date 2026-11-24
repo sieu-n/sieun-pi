@@ -31,6 +31,8 @@ export type UsageSummary = {
   sparkMinutes: Record<UsageMetric, number[]>;
   /** USD since midnight in Seoul (Asia/Seoul), whatever zone the chat's box runs in. */
   costToday: number;
+  /** When the chat last read the store, while the store has not answered since: every figure is as of then, and the rate now is unknown. */
+  staleSince?: number;
 };
 /** The `usage` feed payload when the store has not answered: the page shows the error, never zeros. */
 export type UsageDown = { state: "error"; at: number; error: string };
@@ -58,6 +60,8 @@ export type UsageSeries = {
   keys: string[];
   /** One point per bucket that saw tokens or calls; `t` is the bucket start. */
   points: { t: number; tokens: UsageTokens; costUsd: number | null; calls: number; byKey?: Record<string, number> }[];
+  /** When the chat last read the store, while the store has not answered since; the points are as of then. */
+  staleSince?: number;
 };
 
 /** GET api/usage/models?window=&bucket= : one row per host, client and model over the chart's range, for the table under the chart. */

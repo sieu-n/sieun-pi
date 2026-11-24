@@ -1,6 +1,5 @@
 import { readFileSync } from "node:fs";
-import { grafanaReader, LIVE_SPAN_MS, LIVE_TICK_MS, StoreUsage, type StoreReader } from "./store-sums.ts";
-import type { UsageTotal } from "../../../../../apps/chat/server/host/types.ts";
+import { grafanaReader, LIVE_SPAN_MS, LIVE_TICK_MS, StoreUsage, type StoreReader, type UsageTotal } from "./store-sums.ts";
 import { BUCKET_MS, bucketFor, RANGE_MS } from "../../../../../apps/chat/web/src/lib/api/shared/usage-range.ts";
 import { type UsageBucket, type UsageFeed, type UsageGroup, type UsageMetric, type UsageModelRow, type UsageRate, type UsageSeries, type UsageSummary, type UsageTokens, type UsageWindow, USAGE_BUCKETS, USAGE_GROUPS, USAGE_METRICS, USAGE_WINDOWS } from "../shared/usage.ts";
 import { waitedOnHost } from "../chat-latency.ts";
@@ -124,9 +123,10 @@ export class Usage {
     const sparkMinutes = Object.fromEntries(USAGE_METRICS.map(metric => [metric, minuteSums.map(sum => sum[metric])])) as Record<UsageMetric, number[]>;
     const lastHour = zeroTokens();
     for (const each of minuteSums.slice(1)) for (const metric of USAGE_METRICS) lastHour[metric] += each[metric];
+    const staleSince = this.store?.staleSince();
     return {
       state: "live", at: now, perSecond: rateAt(points - 1), perMinute: scale(lastHour, 60), perDay: tokensOf(dayRows),
-      costToday: todayRows.reduce((sum, row) => sum + row.cost, 0), spark, sparkMinutes,
+      costToday: todayRows.reduce((sum, row) => sum + row.cost, 0), spark, sparkMinutes, ...(staleSince === undefined ? {} : { staleSince }),
     };
   }
 
@@ -163,7 +163,8 @@ export class Usage {
       keys = [...kept, "other"];
     }
     const points = [...at.values()].filter(p => p.tokens.total > 0 || p.calls > 0).sort((a, b) => a.t - b.t);
-    return { window, bucket, group, metric, since, until, keys, points };
+    const staleSince = this.store?.staleSince();
+    return { window, bucket, group, metric, since, until, keys, points, ...(staleSince === undefined ? {} : { staleSince }) };
   }
 
   /** One row per host, client and model that used tokens in the chart's range, with calls and cost. */

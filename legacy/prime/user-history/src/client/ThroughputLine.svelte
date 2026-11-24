@@ -34,11 +34,15 @@
 
   const metric = $derived(usageMetric.value);
   const name = $derived(METRICS.find(entry => entry.id === metric)?.short ?? "Tokens");
-  const stale = $derived(feed !== null && clock.now - feed.at > 15_000);
+  /** The store has not answered since this time, so the rate now is unknown: the figure reads "–", never the old rate or 0. */
+  const storeStale = $derived(summary?.staleSince ?? null);
+  const stale = $derived((feed !== null && clock.now - feed.at > 15_000) || storeStale !== null);
   const line = $derived(summary ? sparkPath(summary.spark[metric], W, H) : "");
   const area = $derived(line ? line + `L${W} ${H}L0 ${H}Z` : "");
   const other = $derived(metric === "total" ? "output" : "total");
-  const title = $derived(summary
+  const title = $derived(storeStale !== null
+    ? `Numbers from ${new Date(storeStale).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}; the store did not answer since\nOpen usage`
+    : summary
     ? [`Every chat client on every host, right now`, `${METRIC_LABEL[metric]} tokens, over the last 60 s`,
       `${fullTokens(summary.perSecond[metric])} per second (${fullTokens(summary.perSecond[other])} ${other})`,
       `${fullTokens(summary.perMinute[metric])} per minute over the last 60 min`, `${fullTokens(summary.perDay[metric])} over the last 24 h`, "Open usage"].join("\n")
@@ -59,7 +63,7 @@
       </svg>
     {/if}
   </span>
-  <span class="figure">{summary ? tokens(summary.perSecond[metric]) : down ? "err" : "–"}<span class="unit">tok/s</span></span>
+  <span class="figure">{summary && storeStale === null ? tokens(summary.perSecond[metric]) : down ? "err" : "–"}<span class="unit">tok/s</span></span>
 </button>
 
 <style>

@@ -5,8 +5,22 @@
  * SQL here and there part. Only the Grafana transport is kept, since prod ClickHouse binds only 127.0.0.1 on us-metal01.
  */
 import { readFileSync } from "node:fs";
-import type { UsageRange, UsageTotal } from "../../../../../apps/chat/server/host/types.ts";
 import { BUCKET_MS, RANGE_BUCKETS, RANGE_MS, USAGE_RANGES } from "../../../../../apps/chat/web/src/lib/api/shared/usage-range.ts";
+
+/** A range of the kept sums, in buckets of `bucketMs` from `since`, of every thread or only `threads`. */
+export type UsageRange = { since?: number; until?: number; threads?: string[]; bucketMs?: number };
+/**
+ * One bucket's sums for one host, client, agent, thread and model, with the optional fields of apps/chat's old pi-host row, which this
+ * copy kept when apps/chat moved its own UsageTotal into usage-store.ts with every field required.
+ */
+export interface UsageTotal {
+  bucket?: number; host?: string; client?: string; agent?: string; threadName?: string;
+  /** host, client, agent, thread and model as one key, made once per read so a fold keys each row with no new string. */
+  series?: string;
+  unpriced?: number;
+  thread: string; model: string; turns: number; input: number; output: number; cacheRead: number; cacheWrite: number;
+  cost: number; costInput: number; costOutput: number; costCacheRead: number; costCacheWrite: number;
+}
 
 /** One answer column by column, as ClickHouse's JSONColumns and Grafana's data frames both give it. */
 export type Columns = Record<string, readonly unknown[]>;
@@ -158,6 +172,7 @@ export class StoreUsage {
   private fullAt = -Infinity;
   private read = false;
   private lastError: string | undefined;
+  private goodAt: number | undefined;
   private timer: NodeJS.Timeout | undefined;
 
   private readonly reader: StoreReader;
@@ -201,10 +216,15 @@ export class StoreUsage {
     try {
       rows = rowsOf(await this.reader.query(pullSql(this.table, from, full)));
     } catch (error) {
-      this.lastError = error instanceof Error ? error.message : String(error);
-      this.log(`usage: reading the store failed: ${this.lastError}`);
+      // Logged once as the store stops answering, not at each 2 s pull. The kept sums stay, and a reading says how old they are.
+      const message = error instanceof Error ? error.message : String(error);
+      if (this.lastError === undefined) {
+        this.log(this.read ? `usage: the store stopped answering, so readings carry the sums of ${new Date(this.goodAt!).toISOString()}: ${message}` : `usage: the store is not reachable: ${message}`);
+      }
+      this.lastError = message;
       return;
     }
+    if (this.lastError !== undefined) this.log("usage: the store answers again");
     if (full) this.log(`usage: the full read of the store took ${Math.round(performance.now() - started)} ms for ${rows.length} sums`);
     const fresh = Object.fromEntries(GRAIN_NAMES.map(grain => [grain, new Map<number, Sum[]>()])) as Record<GrainName, Map<number, Sum[]>>;
     for (const { grain, sum } of rows) {
@@ -223,6 +243,12 @@ export class StoreUsage {
     if (full) this.fullAt = now;
     this.read = true;
     this.lastError = undefined;
+    this.goodAt = now;
+  }
+
+  /** When the kept sums were last read, while the store has failed every read since; else undefined. */
+  staleSince(): number | undefined {
+    return this.read && this.lastError !== undefined ? this.goodAt : undefined;
   }
 
   /**
@@ -233,7 +259,7 @@ export class StoreUsage {
     const { since, until, bucketMs } = range;
     if (since === undefined || until === undefined || !bucketMs) throw new RangeError("usage: a range needs since, until and bucketMs");
     if (!this.read) await this.pull();
-    if (!this.read) throw new Error(`usage: the store has not answered: ${this.lastError ?? "no read yet"}`);
+    if (!this.read) throw new Error(`usage: the store is not reachable: ${this.lastError ?? "no read yet"}`);
     const name = GRAIN_NAMES.find(g => since % GRAIN_MS[g] === 0 && until % GRAIN_MS[g] === 0 && bucketMs % GRAIN_MS[g] === 0);
     if (!name) throw new RangeError(`usage: ${since} to ${until} by ${bucketMs} ms falls on no kept grain`);
     const grain = this.grains[name];

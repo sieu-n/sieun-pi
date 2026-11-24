@@ -34,6 +34,8 @@
   let shares = $state(localStorage.getItem("usage.share") === "1");
   const metric = $derived(usageMetric.value);
   let series = $state<UsageSeries | null>(null);
+  /** When the chat last read the store, while the store has not answered since; every figure on the page is as of then. */
+  const staleAt = $derived(summary?.staleSince ?? series?.staleSince ?? null);
   let models = $state<UsageModelRow[] | null>(null);
   let error = $state<string | null>(null);
   let modelsError = $state<string | null>(null);
@@ -276,6 +278,7 @@
       <div class="empty"><div class="error"><Icon name="alert" size={16} /> {modelsError}</div><button class="button small" onclick={() => void loadModels()}>Retry</button></div>
     {/if}
 
+    {#if staleAt !== null}<p class="ingest faint" role="status" data-testid="usage-stale">Numbers from {new Date(staleAt).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}; the store did not answer since</p>{/if}
     {#if feedDown}<p class="ingest faint">Feed reconnecting</p>{/if}
   {/if}
 </section>
