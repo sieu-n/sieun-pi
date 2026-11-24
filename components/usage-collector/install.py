@@ -5,9 +5,11 @@ usage: python3 -B components/usage-collector/install.py [--ref REF] [--dry-run] 
 
 1. Copies usage_collector/ as committed at --ref (default HEAD) into ~/.local/share/usage-collector/app, so the service never reads the checkout, which prime-sync moves
    every minute and which macOS keeps launchd jobs out of under Documents.
-2. Writes the systemd user unit usage-collector.service on Linux, or the launchd agent com.sieun.usage-collector on macOS, running
-   `collect --loop 10`.
-3. Enables and starts it, and restarts it only when the copy or the unit changed.
+2. On macOS, writes the launchd agent com.sieun.usage-collector running `collect --loop 10`, loads it, and restarts it only when the
+   copy or the plist changed.
+3. On Linux, the collector is the container box-sieun-pi-usage-collector-1 of the Komodo Stack box-sieun-pi (auto-sns-agent
+   apps/infra/box/compose.sieun-pi.yml), which runs this copy, so the install restarts that container when the copy changed. No
+   sieun-pi installer writes a systemd user unit on Linux (deploy/linux/komodo_stack.py says why).
 
 The first pass of a client with no cursor reads back 90 days, so the service's first pass is the backfill. Each client runs in its own
 thread, so the Prime backfill never holds back pi-host's live rows, and a separate backfill unit would only race the service for the
@@ -26,8 +28,10 @@ from pathlib import Path
 from typing import Dict, List
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parents[1] / "deploy/linux"))
+import komodo_stack  # noqa: E402
+
 LABEL = "com.sieun.usage-collector"
-UNIT = "usage-collector.service"
 LOOP_S = "10"
 
 
@@ -43,23 +47,6 @@ def app_files(ref: str) -> Dict[str, bytes]:
     prefix = git("rev-parse", "--show-prefix").decode().strip()
     names = git("ls-tree", "-r", "--name-only", "--full-name", ref, "--", "usage_collector", "schema.sql").decode().split("\n")
     return {name[len(prefix):]: git("cat-file", "blob", f"{ref}:{name}") for name in names if name}
-
-
-def systemd_unit(app: Path) -> str:
-    return f"""[Unit]
-Description=usage-collector: this box's model calls into the model_calls store
-After=network-online.target
-
-[Service]
-WorkingDirectory={app}
-ExecStart={python()} -B -m usage_collector collect --loop {LOOP_S}
-UnsetEnvironment=PYTHONPATH
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=default.target
-"""
 
 
 def launchd_plist(app: Path, home: Path) -> str:
@@ -120,7 +107,7 @@ def main() -> int:
     parser.add_argument("--ref", default="HEAD", help="the commit whose usage_collector/ is installed")
     parser.add_argument("--dry-run", action="store_true", help="print what would change, change nothing")
     parser.add_argument("--home", default=str(Path.home()), help="install under this home (a test home needs --no-service)")
-    parser.add_argument("--no-service", action="store_true", help="write the files only; never call systemctl or launchctl")
+    parser.add_argument("--no-service", action="store_true", help="write the files only; never call launchctl or restart the container")
     args = parser.parse_args()
     home = Path(args.home).expanduser()
     if not (home / ".config/usage-collector/sink.json").exists():
@@ -130,19 +117,16 @@ def main() -> int:
     app = home / ".local/share/usage-collector/app"
     code = sync(app, app_files(args.ref), args.dry_run)
     service: List[str] = []
+    changes = code
     if sys.platform == "darwin":
         unit_path = home / "Library/LaunchAgents" / f"{LABEL}.plist"
         unit = launchd_plist(app, home)
-    else:
-        unit_path = home / ".config/systemd/user" / UNIT
-        unit = systemd_unit(app)
-    unit_changed = [] if unit_path.exists() and unit_path.read_text() == unit else [f"write {unit_path}"]
-    if unit_changed and not args.dry_run:
-        unit_path.parent.mkdir(parents=True, exist_ok=True)
-        unit_path.write_text(unit)
-    changes = code + unit_changed
-    if not args.no_service:
-        if sys.platform == "darwin":
+        unit_changed = [] if unit_path.exists() and unit_path.read_text() == unit else [f"write {unit_path}"]
+        if unit_changed and not args.dry_run:
+            unit_path.parent.mkdir(parents=True, exist_ok=True)
+            unit_path.write_text(unit)
+        changes = code + unit_changed
+        if not args.no_service:
             domain = f"gui/{os.getuid()}"
             loaded = subprocess.run(["launchctl", "print", f"{domain}/{LABEL}"], capture_output=True).returncode == 0
             if loaded and unit_changed:
@@ -152,15 +136,14 @@ def main() -> int:
                 run(["launchctl", "bootstrap", domain, str(unit_path)], args.dry_run, service)
             elif code:
                 run(["launchctl", "kickstart", "-k", f"{domain}/{LABEL}"], args.dry_run, service)
-        else:
-            if unit_changed:
-                run(["systemctl", "--user", "daemon-reload"], args.dry_run, service)
-            enabled = subprocess.run(["systemctl", "--user", "is-enabled", "-q", UNIT]).returncode == 0
-            active = subprocess.run(["systemctl", "--user", "is-active", "-q", UNIT]).returncode == 0
-            if not enabled or not active:
-                run(["systemctl", "--user", "enable", "--now", UNIT], args.dry_run, service)
-            elif code or unit_changed:
-                run(["systemctl", "--user", "restart", UNIT], args.dry_run, service)
+    elif code and not args.no_service:
+        service.append(f"restart the container {komodo_stack.STACK}-usage-collector-1")
+        if not args.dry_run:
+            try:
+                komodo_stack.restart("usage-collector")
+            except subprocess.CalledProcessError as error:
+                print(f"the Stack has no running usage-collector container yet ({error.stderr.decode().strip()}); it runs this copy when "
+                      "Komodo deploys it", file=sys.stderr)
     for line in changes + service:
         print(("would " if args.dry_run else "") + line)
     if not changes and not service:
