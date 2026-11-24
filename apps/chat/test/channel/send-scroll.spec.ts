@@ -9,12 +9,12 @@ import { composerInput, open, tag } from "./helpers";
 test.describe.configure({ timeout: 90_000 });
 
 const CODE = "```ts\n" + Array.from({ length: 12 }, (_, i) => `const line${i} = compute(${i});`).join("\n") + "\n```";
-const textOf = (n: number, name: string) => (n % 4 === 0 ? `quiet post ${n} of ${name}\n\n${CODE}` : `quiet post ${n} of ${name}`);
+const textOf = (n: number, name: string, word: string) => (n % 4 === 0 ? `${word} post ${n} of ${name}\n\n${CODE}` : `${word} post ${n} of ${name}`);
 
-/** Sends `count` posts at once into `room` (or under `threadRoot`); the server orders them by seq. */
-async function fill(page: Page, room: string, name: string, count: number, threadRoot?: string): Promise<void> {
+/** Sends `count` posts that start with `word` at once into `room` (or under `threadRoot`); the server orders them by seq. */
+async function fill(page: Page, room: string, name: string, count: number, threadRoot?: string, word = "quiet"): Promise<void> {
   await Promise.all(Array.from({ length: count }, (_, n) =>
-    page.request.post(`/api/c/${room}/send`, { data: { text: textOf(n, name), requestId: crypto.randomUUID(), ...(threadRoot ? { threadRoot } : {}) } })));
+    page.request.post(`/api/c/${room}/send`, { data: { text: textOf(n, name, word), requestId: crypto.randomUUID(), ...(threadRoot ? { threadRoot } : {}) } })));
 }
 
 /** A plain grey PNG of `width` by `height` px. */
@@ -44,10 +44,16 @@ function png(width: number, height: number): Buffer {
   return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk("IHDR", header), chunk("IDAT", pixels), chunk("IEND", Buffer.alloc(0))]);
 }
 
+/**
+ * A test channel with 40 posts, and `members` added after them. A fixture member takes its inputs one turn at a time, about 0.8 s for a
+ * quiet post, so 40 posts it heard held its next answer 31 s (pi-host steers an owner post into a busy turn instead). The posts it did not
+ * hear go with its next input as channel context, and a "quiet" there would hush that input too, so they say "earlier" instead.
+ */
 async function channel(page: Page, members: string[] = []): Promise<{ room: string; name: string }> {
   const name = `send-scroll-${tag()}`;
-  const room = ((await (await page.request.post("/api/rooms", { data: { kind: "channel", name, members, test: true } })).json()) as { id: string }).id;
-  await fill(page, room, name, 40);
+  const room = ((await (await page.request.post("/api/rooms", { data: { kind: "channel", name, members: [], test: true } })).json()) as { id: string }).id;
+  await fill(page, room, name, 40, undefined, members.length ? "earlier" : "quiet");
+  if (members.length) expect((await page.request.post(`/api/rooms/${room}/members`, { data: { agents: members } })).ok()).toBe(true);
   return { room, name };
 }
 
@@ -167,7 +173,7 @@ test("a post from elsewhere and an agent's answer to it leave the feed where he 
   await expect.poll(() => gap(feed)).toBeLessThan(4);
   await wheelUp(page, feed, 1500);
   const top = await feed.evaluate((el) => el.scrollTop);
-  // A post without "quiet" wakes the fixture member, whose answer lands in that post's thread while he reads above.
+  // A post without "quiet" wakes the fixture member, whose answer lands in that post's thread while he reads above, a second or two later.
   const asked = `please answer ${tag()}`;
   await page.request.post(`/api/c/${room}/send`, { data: { text: asked, requestId: crypto.randomUUID() } });
   const post = feed.locator("li[data-message-id]").filter({ hasText: asked });
