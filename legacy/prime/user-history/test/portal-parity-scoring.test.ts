@@ -175,6 +175,15 @@ test("an answer that names a proxy supply hold or a switched-off Vent is held, n
   assert.equal(classify(502, error("upstream_error", "The crawl job failed")).verdict, "crawler");
 });
 
+test("a 502 scrape_blocked the crawler answered counts as a crawler failure, not the portal's", () => {
+  // 11-24 05:57Z: prod's Google search got /sorry/ on 24 exits and d2 read routes_failing_portal 1.
+  const blocked: ProbeResult = { op: "GET /v1/tiktok/live/profile", ...classify(502, { ok: false, error: { code: "scrape_blocked", message: "The platform blocked this read. Retry it. You are not charged." } }), status: 502, ms: 59404, note: "docs example" };
+  const { metrics } = run({ probes: { ...probes, prod: [blocked, ok("GET /v1/youtube/live/channel")] } });
+  assert.equal(blocked.verdict, "crawler");
+  assert.equal(metrics.prod_routes_crawler, 1);
+  assert.equal(metrics.routes_failing_portal, 0);
+});
+
 test("a held route counts as not working in its share and as a crawler failure, and the run counts it apart as held", () => {
   // 11-20 d9 audit: d2 left held routes out of the shares and read 100% while 18 prod routes did not answer (145 of 165 worked).
   const notSent: ProbeResult = { op: "GET /v1/youtube/live/channel", verdict: "held", status: 0, ms: 0, note: "not sent: held" };

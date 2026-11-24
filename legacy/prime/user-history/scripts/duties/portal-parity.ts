@@ -338,6 +338,12 @@ const CRAWLER_CAPACITY = "capacity_exhausted";
  * 2a71670a01, apps/api-portal/src/lib/server/crawl-jobs.ts): the fix is in the crawler.
  */
 const CRAWLER_CLOSED = "temporarily_unavailable";
+/**
+ * The portal's 502 when the crawler answered 502 scrape_blocked, the platform's refusal of every exit the read tried (auto-sns-agent
+ * apps/api-portal/src/lib/server/gateway.ts): the fix is in the crawler. On 11-24 at 05:57Z prod's Google search got /sorry/ on 24 exits
+ * and d2 read routes_failing_portal 1.
+ */
+const CRAWLER_BLOCKED = "scrape_blocked";
 const JOB_FINISHED = "job_finished";
 /** The crawl gate's refusal of an org it does not admit; every org this run calls is admitted, so the fix is in the crawler. */
 const CRAWL_UNPAID = "crawl_unpaid_paused";
@@ -371,7 +377,7 @@ export const HELD_ANSWER = /\b(proxy_provider_down|proxy_auth_failed|proxy_quota
 /**
  * Who a probe answer blames. 2xx works. An answer that names a proxy supply hold or a paused source (source_paused) is held: nobody fixes it
  * while the hold lasts. `upstream_*` is the crawler, because the portal passes crawler failures on with that code (audit findings-brief.md),
- * and so are capacity_exhausted and temporarily_unavailable. 429 and 402 come from this run's own test orgs, and status 0 is a call that got
+ * and so are capacity_exhausted, temporarily_unavailable and scrape_blocked. 429 and 402 come from this run's own test orgs, and status 0 is a call that got
  * no answer, so those are unprobed. Every other answer is the portal's: a 503 batch_unavailable, a 400 on the docs example or on the
  * portal's own cursor, a 5xx of its own.
  */
@@ -383,7 +389,7 @@ export function classify(status: number, body: unknown): { verdict: Verdict; cod
   if (status === 0 || status === 429 || status === 402) return { verdict: "unprobed", code };
   if (code === CRAWL_UNPAID || JSON.stringify(body ?? null).includes(CRAWL_UNPAID)) return { verdict: "crawler", code };
   if (code === CRAWLER_PAUSED || HELD_ANSWER.test(JSON.stringify(body ?? null))) return { verdict: "held", code };
-  if (code?.startsWith("upstream_") || code === CRAWLER_CAPACITY || code === CRAWLER_CLOSED) return { verdict: "crawler", code };
+  if (code?.startsWith("upstream_") || code === CRAWLER_CAPACITY || code === CRAWLER_CLOSED || code === CRAWLER_BLOCKED) return { verdict: "crawler", code };
   return { verdict: "portal", code };
 }
 
