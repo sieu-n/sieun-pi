@@ -28,14 +28,18 @@ export function overlayHooks({ release, files }, mode) {
   const targetOf = new Map([...sourceOf].map(([target, source]) => [source, target]));
   const isSwapped = path => sourceOf.has(path);
 
-  /** The swapped release path a relative specifier names, for a file the overlay adds that the release folder lacks. */
+  /**
+   * The swapped release path a relative specifier names, for a file the overlay adds that the release folder lacks, or the release file an
+   * extensionless specifier such as "./helpers" names, which Node's resolver never completes once the parent is moved to its release path.
+   */
   function added(specifier, parentPath) {
     const base = specifier.startsWith("file:") ? fileURLToPath(specifier)
       : specifier.startsWith("/") ? specifier
       : specifier.startsWith(".") && parentPath ? resolve(dirname(parentPath), specifier)
       : null;
     if (!base) return null;
-    return [base, base.replace(/\.js$/, ".ts"), `${base}.ts`].find(isSwapped) ?? null;
+    const candidates = [base, base.replace(/\.js$/, ".ts"), `${base}.ts`];
+    return candidates.find(isSwapped) ?? candidates.slice(1).find(path => path !== base && existsSync(path)) ?? null;
   }
 
   /** Resolves through `next`, and falls back to a swapped file the release lacks. */

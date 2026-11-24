@@ -114,13 +114,23 @@ test("/remind me <what> <when> sets a reminder of his own text, and Saved lists 
   await expect(input).toHaveText("/remind me sometime");
   await input.evaluate((e) => { e.textContent = ""; e.dispatchEvent(new InputEvent("input", { bubbles: true })); });
   await page.keyboard.type(`/remind me call the bank ${word} in 20 min`);
+  const before = Date.now();
   await page.keyboard.press("Enter");
-  await expect(page.getByText(/We'll remind you at/)).toBeVisible();
+  // From 23:40 the 20 minutes cross midnight and the toast says "tomorrow at 12:05 AM" (lib/remind.ts whenPhrase), so the spec reads
+  // the toast, then checks its words against the day and time of the remindAt the server stored.
+  const toast = page.getByText(/We'll remind you /);
+  await expect(toast).toBeVisible();
+  const said = await toast.textContent();
   await expect(input).toHaveText("");
   const list = (await (await request.get("/api/later?state=open")).json()) as { items: { id: string; text: string; remindAt?: number; room?: string }[] };
   const item = list.items.find((i) => i.text === `call the bank ${word}`)!;
   expect(item.room).toBeUndefined();
   expect(item.remindAt! - Date.now()).toBeGreaterThan(18 * 60_000);
+  const expected = await page.evaluate(([at, before]) => {
+    const time = new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" }).format(at);
+    return new Date(at).toDateString() === new Date(before).toDateString() ? `We'll remind you at ${time}` : `We'll remind you tomorrow at ${time}`;
+  }, [item.remindAt!, before]);
+  expect(said).toContain(expected);
   await open(page, "#/c/saved", "later-page");
   const row = page.locator(`[data-later-id="${item.id}"]`);
   await expect(row).toContainText(`call the bank ${word}`);

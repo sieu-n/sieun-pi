@@ -42,6 +42,11 @@ test("redirect mode resolves a swapped test file to its source, and the source's
   const next = (specifier: string, context?: { parentURL?: string | undefined }) => ({ url: new URL(specifier, context?.parentURL).href, format: "module-typescript" as const });
   assert.equal(resolve(url("test/x.spec.ts"), from(), next).url, pathToFileURL(spec).href);
   assert.equal(resolve("./helpers.ts", from(pathToFileURL(spec).href), next).url, url("test/helpers.ts"), "a relative import resolves beside the release path");
+  const strict = (specifier: string, context?: { parentURL?: string | undefined }) => {
+    if (!/\.[cm]?[jt]s$/.test(specifier)) throw Object.assign(new Error(`Cannot find module ${specifier}`), { code: "ERR_MODULE_NOT_FOUND" });
+    return next(specifier, context);
+  };
+  assert.equal(resolve("./helpers", from(pathToFileURL(spec).href), strict).url, url("test/helpers.ts"), "an extensionless import resolves to the release's .ts file");
   assert.equal(resolve(url("server/kept.ts"), from(), next).url, url("server/kept.ts"));
 });
 
