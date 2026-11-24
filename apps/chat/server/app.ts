@@ -57,6 +57,7 @@ import { Unfurler } from "./unfurl.ts";
 import { POST_KINDS, postHas, Search } from "./search.ts";
 import { likeRegex, postDocId, SEARCH_DOC_VERSION, SearchEngine, SqliteEntries, type EntrySource, type PostDoc } from "./search-engine.ts";
 import { STORE_FULL_PULL_MS, StoreUsage, storeReader, type UsageSums } from "./usage-store.ts";
+import { UsageAnswers } from "./usage-answers.ts";
 import { Meili, startOwnMeili, type OwnMeili } from "./meili.ts";
 import type { FixtureHost } from "./host/fixture.ts";
 import { drained } from "./disk.ts";
@@ -132,6 +133,8 @@ export class App {
   /** api/usage's sums: the usage store's, kept in memory, or the fixture's own. */
   readonly usage: UsageSums;
   private readonly storeUsage?: StoreUsage;
+  /** api/usage's answers, kept between changes of the sums (server/usage-answers.ts). */
+  readonly usageAnswers: UsageAnswers;
   readonly outbox: Outbox;
   /** The boxes agents run on, when the host is a `MultiHost` (server/host/multi-host.ts); a fixture or test host has one box. */
   readonly routing?: MultiHost;
@@ -371,6 +374,7 @@ export class App {
     }
     else if (config.fixture && (host as Partial<UsageSums>).usage) this.usage = host as Host & UsageSums;
     else this.usage = { usage: () => Promise.reject(new Error("no usage store: APPS_CHAT_USAGE_STORE names none")) };
+    this.usageAnswers = new UsageAnswers(this.usage, this.threads);
     this.search = new Search(this.threads, this.groups, this.searchEngine, room => this.agentStore.postsOf(room));
     if (routing) {
       this.search.boxes = () => routing.list().filter(b => b.box !== config.box).map(b => ({ box: b.box, link: () => routing.link(b.box) }));
@@ -432,6 +436,7 @@ export class App {
     this.outbox.start();
     this.laterDue.arm();
     this.storeUsage?.start();
+    this.usageAnswers.start();
     if (this.config.meili) void this.searchEngine.refresh().catch(error => this.log(`search: ${String(error)}`));
     return Math.round(performance.now() - began);
   }
@@ -469,6 +474,7 @@ export class App {
     for (const client of this.clients) client.socket.close();
     this.searchStop();
     this.storeUsage?.stop();
+    this.usageAnswers.stop();
     this.records.flush();
     await Promise.all([...this.moves.values()].map(move => move.flushExports()));
     await this.chatDb.written();

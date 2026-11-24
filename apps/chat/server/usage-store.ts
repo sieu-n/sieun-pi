@@ -38,6 +38,8 @@ export interface UsageSums {
   usage(range: UsageRange): Promise<UsageTotal[]>;
   /** When the sums were last read, while the store has not answered since; else undefined. */
   staleSince?(): number | undefined;
+  /** A count that moves each time the sums or `staleSince` change, so an answer built from them stays good until it moves. */
+  version?(): number;
 }
 
 /** One answer column by column, as ClickHouse's JSONColumns and Grafana's data frames both give it. */
@@ -246,6 +248,7 @@ export class StoreUsage implements UsageSums {
   private saving = false;
   private restoredAt: number | undefined;
   private restoring: Promise<void> | undefined;
+  private changes = 0;
 
   // Plain fields, not parameter properties: pi-host-relay loads this file through config.ts with node's type stripping, which refuses them.
   /** `snapshot` is a file the sums are written to after each full read and at stop, and read back by the next server (`restore`). */
@@ -257,6 +260,10 @@ export class StoreUsage implements UsageSums {
     this.now = now;
     this.fullEvery = fullEvery;
     this.snapshot = snapshot;
+  }
+
+  version(): number {
+    return this.changes;
   }
 
   start(ms = USAGE_PULL_MS): void {
@@ -358,6 +365,7 @@ export class StoreUsage implements UsageSums {
       if (this.now() - kept.at < FRESH_SNAPSHOT_MS) {
         this.read = true;
         this.goodAt = kept.at;
+        this.changes++;
       }
       this.log(`usage: read the kept sums of ${new Date(kept.at).toISOString()}, ${count} sums, from ${this.snapshot} in ${Math.round(performance.now() - started)} ms`);
     } catch (error) {
@@ -391,6 +399,7 @@ export class StoreUsage implements UsageSums {
         this.goodAt = this.restoredAt;
       }
       if (this.lastError === undefined) {
+        this.changes++;
         const message = error instanceof Error ? error.message : String(error);
         this.log(this.read ? `usage: the store stopped answering, so reports carry the sums of ${new Date(this.goodAt!).toISOString()}: ${message}` : `usage: the store is not reachable: ${message}`);
       }
@@ -398,12 +407,23 @@ export class StoreUsage implements UsageSums {
       return;
     }
     if (this.lastError !== undefined) this.log("usage: the store answers again");
+    let changed = full || !this.read || this.lastError !== undefined;
     if (full) this.log(`usage: the full read of the store took ${Math.round(performance.now() - started)} ms for ${rows.length} sums`);
     const fresh = Object.fromEntries(GRAIN_NAMES.map(grain => [grain, new Map<number, UsageTotal[]>()])) as Record<GrainName, Map<number, UsageTotal[]>>;
     for (const { grain, sum } of rows) {
       const list = fresh[grain].get(sum.bucket);
       if (list) list.push(sum);
       else fresh[grain].set(sum.bucket, [sum]);
+    }
+    // Most 2 s tail reads bring no new call: 41 of 300 had one in 10 min on 11-24. Each call adds to every grain, so the hour sums from the
+    // tail's first hour say whether anything changed.
+    if (!changed) {
+      const tally = (lists: Iterable<[number, UsageTotal[]]>) => {
+        let all = 0;
+        for (const [start, sums] of lists) if (start >= from.hour) for (const sum of sums) all += sum.turns + sum.input + sum.output + sum.cacheRead + sum.cacheWrite + sum.cost;
+        return all;
+      };
+      changed = tally(this.grains.hour.sums) !== tally(fresh.hour);
     }
     for (const name of GRAIN_NAMES) {
       const grain = this.grains[name];
@@ -418,6 +438,7 @@ export class StoreUsage implements UsageSums {
     this.read = true;
     this.lastError = undefined;
     this.goodAt = now;
+    if (changed) this.changes++;
     if (full) void this.save(now);
   }
 

@@ -117,7 +117,10 @@ export const bucketStart = (bucket: UsageBucket, at: number): number => (bucket 
  * The range as whole buckets that end with the one holding now, as Prime's chat Usage page draws it: 24 hours for 24h by hour, 1,440 minutes
  * for 24h by minute. A range or bucket the page does not offer reads as 24h and the range's default bucket. `host` keeps one host's rows.
  */
-export async function usageReport(sums: UsageSums, threads: Threads, opts: { range?: string; bucket?: string; thread?: string; host?: string; client?: string; split?: string }, now = Date.now()): Promise<UsageReport> {
+/** What GET /api/usage asks for, as its query gives it. */
+export type UsageReportOptions = { range?: string; bucket?: string; thread?: string; host?: string; client?: string; split?: string };
+
+export async function usageReport(sums: UsageSums, threads: Threads, opts: UsageReportOptions, now = Date.now()): Promise<UsageReport> {
   const split: UsageSplit = opts.split === "client" ? "client" : "model";
   const range: UsageRange = isRange(opts.range) ? opts.range : "24h";
   const bucket = bucketFor(range, opts.bucket);
