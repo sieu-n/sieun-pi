@@ -125,15 +125,16 @@ export function scratchReason(entry: StoreEntry): string | null {
  * copies entries into prompts, so a store names where a secret lives and never holds its value (ideal.json rules.must_not). A value
  * ideal.json lists in public_values is committed in plaintext, such as auto-sns-agent's local-agent-key, and is no secret. Neither is
  * the name of an env variable, which says where the value lives: on 11-23 search-product-misc's "x-agent-secret = STAGING_AGENT_SECRET in
- * apps/search/.env.staging" and "X-API-Key = CRAWLER_API_KEY" read as two secrets written out.
+ * apps/search/.env.staging" and "X-API-Key = CRAWLER_API_KEY" read as two secrets written out. A Komodo variable reference is such a name
+ * in double brackets: on 11-24 devops-guy's "/alerts?secret=[[PROD__OPS_GATEWAY_SECRET]]" read as a secret written out.
  */
-const ENV_NAME = /^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/;
+const ENV_NAME = /^[A-Z][A-Z0-9]*(?:_+[A-Z0-9]+)+$/;
 export function secretReason(entry: StoreEntry, publicValues: ReadonlySet<string> = new Set()): string | null {
   const text = entryText(entry);
   const token = text.match(/\b(sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{30,}|xox[abp]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{30,}\.[A-Za-z0-9_-]+)/);
   if (token) return `token ${token[0].slice(0, 6)}...`;
   const pair = text.match(/\b(password|passwd|secret|api[_ -]?key|token)\s*[:=]\s*["'`]?([^\s"'`]{8,})/i);
-  const value = pair?.[2]!.replace(/[.,;:)\]]+$/, "");
+  const value = pair?.[2]!.replace(/[.,;:)\]]+$/, "").replace(/^\[\[/, "");
   return pair && !publicValues.has(value!) && !ENV_NAME.test(value!) && !/^(<|\$|\{|process\.env|env\.|see\b|in\b)/i.test(pair[2]!) ? `${pair[1]} written out` : null;
 }
 

@@ -97,6 +97,13 @@ test("an env variable's name after a secret word is where the value lives, not a
   assert.equal(secretReason(entry("Prod key", "secret = Prod_9f3a_2c71")), "secret written out");
 });
 
+test("a Komodo variable reference after a secret word is a name, not a secret", () => {
+  assert.equal(secretReason(entry("Komodo alerts", "sends to ops-gateway virev-obs-ops-gateway:9490/alerts?secret=[[PROD__OPS_GATEWAY_SECRET]]. The gateway writes a ticket.")), null);
+  assert.equal(secretReason(entry("Stack env", "token: [[STAGING__GRAFANA_TOKEN]]")), null);
+  assert.equal(secretReason(entry("Prod key", "secret=[[prod-9f3a2c71e0]]")), "secret written out");
+  assert.equal(secretReason(entry("Prod key", "secret=[[9F3A2C71E0AB]]")), "secret written out");
+});
+
 // 11-24: crawler-guy, made 3 h before the 07:31 KST run, read as off its ideal because nobody had written its ideal.json row yet.
 test("an agent made under a day ago with no ideal row is not measured, and after a day a missing row is a miss", () => {
   const now = Date.UTC(2026, 10, 23, 22, 31);
