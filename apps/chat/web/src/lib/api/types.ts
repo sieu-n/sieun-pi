@@ -715,7 +715,7 @@ export interface UsageBucketSum {
 /** `buckets` holds every bucket of the range, empty ones too, and its sums equal the sums of `rows` (c191). */
 export interface UsageReport {
   at: Ms; since: Ms; until: Ms; range: UsageRange; bucket: UsageBucket; rows: UsageRow[]; buckets: UsageBucketSum[];
-  /** How many chats past the 50 costliest fold into rows with no thread, one per host, client, agent and model. */
+  /** How many chats past the 50 costliest fold into rows with no thread or agent, one per host, client and model. */
   otherChats: number;
   /** The live rate as of the answer, which GET /api/usage adds so the chart's tokens per second readout opens with no second round trip. */
   live?: UsageLive;

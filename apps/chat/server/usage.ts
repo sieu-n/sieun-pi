@@ -81,13 +81,14 @@ async function byCalls(host: Pick<Host, "usage">, since: number, step: number, c
   return answers.flat();
 }
 
-/** The chats a report names one by one, costliest first; the rest fold into one row per host, client, agent and model (`otherChats`). */
+/** The chats a report names one by one, costliest first; the rest fold into one row per host, client and model (`otherChats`). */
 export const REPORT_CHATS = 50;
 
 /**
- * Keeps the `REPORT_CHATS` costliest chats as they are and folds every other chat's rows into one row per host, client, agent and model, with
- * no thread, so every total stays exact (c191). With every client's sessions in the store a 90-day report held 14,482 rows, 891 KB over the
- * Korea rig, and api/usage took 5.1 s there at p50 (~/work/usage-one-source/usage-read-path/report.md).
+ * Keeps the `REPORT_CHATS` costliest chats as they are and folds every other chat's rows into one row per host, client and model, with no
+ * thread or agent, so every total stays exact (c191). With every client's sessions in the store a 90-day report held 14,482 rows, 891 KB
+ * over the Korea rig, and api/usage took 5.1 s there at p50. Prime names about 10,700 agents in 90 days, so a fold that kept the agent still
+ * sent 11,026 rows (~/work/usage-one-source/usage-read-path/report.md).
  */
 function foldChats(rows: UsageRow[]): { rows: UsageRow[]; otherChats: number } {
   const chatOf = (row: UsageRow) => `${row.host}\u0000${row.client}\u0000${row.agent}\u0000${row.thread}`;
@@ -102,10 +103,10 @@ function foldChats(rows: UsageRow[]): { rows: UsageRow[]; otherChats: number } {
       out.push(row);
       continue;
     }
-    const key = `${row.host}\u0000${row.client}\u0000${row.agent}\u0000${row.model}`;
+    const key = `${row.host}\u0000${row.client}\u0000${row.model}`;
     const other = rest.get(key);
     if (!other) {
-      rest.set(key, { ...row, thread: "", threadName: "", tokens: { ...row.tokens }, cost: { ...row.cost } });
+      rest.set(key, { ...row, thread: "", threadName: "", agent: "", tokens: { ...row.tokens }, cost: { ...row.cost } });
       continue;
     }
     other.turns += row.turns;
