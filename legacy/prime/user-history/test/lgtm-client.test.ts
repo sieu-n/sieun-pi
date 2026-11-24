@@ -1,11 +1,11 @@
-// Owner 10-19 'Output tokens/sec is not counting properly': the sidebar meter now reads LGTM, and fails here if it stops counting output tokens.
+// The PromQL client behind the Agents card's tok/s and the duties: how a failed or dropped LGTM query reaches the caller.
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { createServer } from "node:http";
-import { grafanaPrometheus, Usage } from "../src/usage/lgtm.ts";
+import { grafanaPrometheus } from "../src/usage/lgtm.ts";
 
 const config = join(mkdtempSync(join(tmpdir(), "usage-lgtm-")), "grafana-alerts.json");
 writeFileSync(config, JSON.stringify({ url: "https://obs.example", token: "viewer" }));
@@ -24,35 +24,24 @@ function stub(perKind: Record<string, string>, status = 200) {
     const result = url.pathname.endsWith("/query_range") ? [{ metric: { kind: "output" }, values: [[now / 1000, "7"]] }] : vector;
     return Response.json({ status: "success", data: { resultType: url.pathname.endsWith("/query_range") ? "matrix" : "vector", result } });
   }) as typeof fetch;
-  return { asked, fetcher, usage: new Usage(grafanaPrometheus(config, fetcher), () => now) };
+  return { asked, fetcher, prometheus: grafanaPrometheus(config, fetcher) };
 }
 
-test("the per-second output figure is what LGTM answers for prime_agent_tokens_total kind output", async () => {
-  const { asked, usage } = stub({ output: "1234.5", input: "10", cache_read: "50000", cache_write: "300" });
-  const summary = await usage.summary();
-  assert.equal(summary.perSecond.output, 1234.5);
-  assert.equal(summary.perSecond.cacheRead, 50000);
-  assert.equal(summary.perSecond.cacheWrite, 300);
-  assert.equal(summary.perSecond.total, 1234.5 + 10 + 50000 + 300);
-  assert.equal(summary.spark.output.at(-1), 7);
-  const perSecond = asked.map(url => url.searchParams.get("query") ?? "").find(query => query.includes("rate(") && !query.includes("increase("));
-  assert.equal(perSecond, 'sum by (kind) (rate(prime_agent_tokens_total{job="prime-agent"}[1m]))');
+test("a query goes through the Grafana proxy of the staging Prometheus with the Viewer token", async () => {
+  const { asked, prometheus } = stub({ output: "1234.5", input: "10" });
+  const samples = await prometheus.query('sum by (kind) (rate(prime_agent_tokens_total{job="prime-agent"}[1m]))');
+  assert.deepEqual(samples.find(sample => sample.labels.kind === "output")?.value, 1234.5);
   assert.ok(asked.every(url => url.pathname.startsWith("/api/datasources/proxy/uid/estate_prometheus_stg/api/v1/")));
-  assert.ok(asked.every(url => (url.searchParams.get("query") ?? "").includes('job="prime-agent"')));
 });
 
-test("a failed LGTM query reaches the feed as an error, never as zeros", async () => {
-  const { usage } = stub({}, 502);
-  const reading = await usage.reading();
-  assert.equal(reading.state, "error");
-  assert.match(reading.state === "error" ? reading.error : "", /HTTP 502/);
-  assert.equal("perSecond" in reading, false);
+test("a failed LGTM query throws its status, never answers zeros", async () => {
+  const { prometheus } = stub({}, 502);
+  await assert.rejects(prometheus.query("up"), /HTTP 502/);
 });
 
 test("an unreachable LGTM names the network cause, not only fetch failed", async () => {
   const fetcher = (async () => { throw new TypeError("fetch failed", { cause: Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }) }); }) as typeof fetch;
-  const reading = await new Usage(grafanaPrometheus(config, fetcher), () => now).reading();
-  assert.equal(reading.state === "error" ? reading.error : "", "LGTM unreachable: fetch failed (ECONNRESET: read ECONNRESET)");
+  await assert.rejects(grafanaPrometheus(config, fetcher).query("up"), { message: "LGTM unreachable: fetch failed (ECONNRESET: read ECONNRESET)" });
 });
 
 test("a query on an HTTP/2 session that LGTM's proxy closed is asked again on a new one", async () => {
@@ -63,9 +52,8 @@ test("a query on an HTTP/2 session that LGTM's proxy closed is asked again on a 
     if (calls === 1) throw new TypeError("fetch failed", { cause: Object.assign(new Error("New streams cannot be created after receiving a GOAWAY"), { code: "ERR_HTTP2_GOAWAY_SESSION" }) });
     return good.fetcher(input, init);
   }) as typeof fetch;
-  const reading = await new Usage(grafanaPrometheus(config, fetcher), () => now).reading();
-  assert.equal(reading.state === "error" ? reading.error : "ok", "ok");
-  assert.equal(reading.state === "error" ? 0 : reading.perSecond.output, 812);
+  const samples = await grafanaPrometheus(config, fetcher).query("sum by (kind) (x)");
+  assert.equal(samples.find(sample => sample.labels.kind === "output")?.value, 812);
 });
 
 test("the default LGTM client asks over HTTP/1.1, which has no HTTP/2 session for the proxy to close", async () => {
@@ -84,17 +72,8 @@ test("the default LGTM client asks over HTTP/1.1, which has no HTTP/2 session fo
   const local = join(mkdtempSync(join(tmpdir(), "usage-lgtm-h1-")), "grafana-alerts.json");
   writeFileSync(local, JSON.stringify({ url: `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`, token: "viewer" }));
   try {
-    const reading = await new Usage(grafanaPrometheus(local), () => now).reading();
-    assert.equal(reading.state === "error" ? reading.error : "ok", "ok");
-    assert.equal(reading.state === "error" ? 0 : reading.perSecond.output, 640);
+    const samples = await grafanaPrometheus(local).query("sum by (kind) (x)");
+    assert.equal(samples.find(sample => sample.labels.kind === "output")?.value, 640);
     assert.ok(versions.length > 0 && versions.every(version => version === "1.1"));
   } finally { server.close(); }
-});
-
-test("the table's speed column reads per-model counters, never the per-session series that took 15 s for 24h on 10-23", async () => {
-  const { asked, usage } = stub({ output: "812" });
-  await usage.models("30d");
-  const queries = asked.map(url => url.searchParams.get("query") ?? "");
-  assert.ok(queries.some(query => query.includes("prime_agent_generation_seconds_total")), queries.join("\n"));
-  assert.ok(queries.every(query => !query.includes("prime_agent_session_")), queries.join("\n"));
 });

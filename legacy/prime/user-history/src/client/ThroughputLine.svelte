@@ -7,8 +7,8 @@
   import { fullTokens, METRIC_LABEL, METRICS, sparkPath, tokens } from "./usage.ts";
 
   /**
-   * One footer row: a live trace of tokens per second of every agent on every box, from the `usage` feed (LGTM), with the current figure, for the
-   * token kind picked in Settings > Usage (output unless changed). A failed LGTM query shows "err" in red with the error on hover, never 0.
+   * One footer row: a live trace of tokens per second of every chat client on every host, from the `usage` feed (the usage store), with the current
+   * figure, for the token kind picked in Settings > Usage (output unless changed). A store that never answered shows "err" in red with the error on hover, never 0.
    * A click opens Settings > Usage. The feed is subscribed only while the tab is visible. The trace has no motion: a 2 s slide per update kept a
    * transform animation running almost all the time, and Chromium ticks the main thread at 60 frames a second for it while the page has an
    * IntersectionObserver.
@@ -39,10 +39,10 @@
   const area = $derived(line ? line + `L${W} ${H}L0 ${H}Z` : "");
   const other = $derived(metric === "total" ? "output" : "total");
   const title = $derived(summary
-    ? [`All agents on every box, right now`, `${METRIC_LABEL[metric]} tokens, over the last 60 s`,
+    ? [`Every chat client on every host, right now`, `${METRIC_LABEL[metric]} tokens, over the last 60 s`,
       `${fullTokens(summary.perSecond[metric])} per second (${fullTokens(summary.perSecond[other])} ${other})`,
       `${fullTokens(summary.perMinute[metric])} per minute over the last 60 min`, `${fullTokens(summary.perDay[metric])} over the last 24 h`, "Open usage"].join("\n")
-    : down ? `Usage from LGTM failed: ${down}\nOpen usage` : unreadable ? "The chat service runs another build than this page. Reload the page to see usage." : "Usage of all agents on every box\nOpen usage");
+    : down ? `Usage from the store failed: ${down}\nOpen usage` : unreadable ? "The chat service runs another build than this page. Reload the page to see usage." : "Usage of every chat client on every host\nOpen usage");
 </script>
 
 <button type="button" class="line" class:stale class:down={down !== null} title={title} aria-label="{METRIC_LABEL[metric]} tokens per second, all agents" onclick={() => { store.drawer = "usage"; }}>

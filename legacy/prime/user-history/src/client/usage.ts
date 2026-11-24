@@ -1,4 +1,5 @@
 import { cacheHitShare } from "../shared/cache-health.ts";
+import { BUCKET_MS, RANGE_BUCKETS } from "../../../../../apps/chat/web/src/lib/api/shared/usage-range.ts";
 import { USAGE_METRICS, USAGE_WINDOWS, type UsageBucket, type UsageFeed, type UsageMetric, type UsageSeries, type UsageTokens, type UsageWindow } from "../shared/usage.ts";
 
 /** Pure helpers for Settings > Usage: number formats, the token kind (metric) choices, the window and bucket choices and the chart layout. */
@@ -17,7 +18,7 @@ export const KIND_KEYS: readonly string[] = ["output", "input", "cacheWrite", "c
 export const kindLabel = (key: string): string => isMetric(key) ? METRIC_LABEL[key] : key;
 
 /**
- * A `usage` feed payload this page can draw: the error LGTM gave, or a rate and both sparks for every metric. The page and the server can come
+ * A `usage` feed payload this page can draw: the error the store gave, or a rate and both sparks for every metric. The page and the server can come
  * from different builds (a tab left open across a restart). A summary in a shape the page did not know used to throw inside the render, and
  * Settings > Usage then stayed on "Loading usage" with "– tok/s" in the sidebar. Such a payload is now null, and the page says to reload.
  */
@@ -32,20 +33,10 @@ export function readFeed(value: unknown): UsageFeed | null {
   return value as UsageFeed;
 }
 
-export const BUCKET_MS: Record<UsageBucket, number> = { minute: 60_000, hour: 3_600_000, day: 86_400_000 };
-export const WINDOW_MS: Record<UsageWindow, number> = { "1h": 3_600_000, "24h": 86_400_000, "7d": 7 * 86_400_000, "30d": 30 * 86_400_000, "90d": 90 * 86_400_000 };
 export const WINDOWS: readonly UsageWindow[] = USAGE_WINDOWS;
 
-/** The buckets a window offers, the default first. A choice never draws more than about 1,500 bars. */
-export function bucketsFor(window: UsageWindow): readonly UsageBucket[] {
-  switch (window) {
-    case "1h": return ["minute"];
-    case "24h": return ["hour", "minute"];
-    case "7d": return ["hour", "day"];
-    case "30d": return ["day", "hour"];
-    case "90d": return ["day"];
-  }
-}
+/** The buckets a window offers, the default first, as sw factory's Usage page offers them. */
+export const bucketsFor = (window: UsageWindow): readonly UsageBucket[] => RANGE_BUCKETS[window];
 export const defaultBucket = (window: UsageWindow): UsageBucket => bucketsFor(window)[0]!;
 export const BUCKET_LABEL: Record<UsageBucket, string> = { minute: "Minute", hour: "Hour", day: "Day" };
 
@@ -69,12 +60,6 @@ export function cost(usd: number | null): string {
   if (usd === 0) return "$0.00";
   if (usd < 0.01) return "$" + usd.toFixed(3);
   return "$" + usd.toFixed(2);
-}
-
-/** Output tokens per second: 42.3, 128, or a dash when no call was timed. */
-export function tps(value: number | null): string {
-  if (value === null || !Number.isFinite(value)) return "–";
-  return value < 100 ? value.toFixed(1) : String(Math.round(value));
 }
 
 /** A cache hit rate for a card, a cell or the hover: "96.8%", "100%", or a dash when nothing was prompted. */
@@ -125,18 +110,16 @@ export function tickLabel(t: number, bucket: UsageBucket, spanMs: number): strin
 
 /**
  * Places every bucket by time inside the plot (`width` by `height` px, origin top left), so a quiet hour shows as a gap, never as a
- * collapsed step. The window spans [now - window, now]. A bar is the series metric
+ * collapsed step. The plot spans the series' range, whole buckets that end with the one holding now. A bar is the series metric
  * (every kind for group "kind"). Stacks follow `series.keys`; tokens not covered by the listed keys fold into "other".
  * `share` draws every stacked bar at full height with its parts as fractions, so the mix of a quiet bucket reads like a busy one.
  * A stacked part that was used at all is at least 1 px tall.
  */
-export function layout(series: UsageSeries, width: number, height: number, now: number, share = false): Layout {
+export function layout(series: UsageSeries, width: number, height: number, share = false): Layout {
   const step = BUCKET_MS[series.bucket];
   const points = [...series.points].sort((a, b) => a.t - b.t);
-  const first = points[0]?.t ?? now - step;
-  const last = (points.at(-1)?.t ?? now - step) + step;
-  const from = Math.min(now - WINDOW_MS[series.window], first);
-  const to = Math.max(now, last);
+  const from = series.since;
+  const to = series.until;
   const span = Math.max(step, to - from);
   const value = (point: UsageSeries["points"][number]) => barValue(series, point.tokens);
   const stacked = series.group !== "none";

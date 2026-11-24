@@ -35,7 +35,8 @@ import { OutboxConflict } from "./outbox.ts";
 import { planHasOpenStep } from "./checkin-steps.ts";
 import { chatCheckIn, checkInLine, checkInSettings, type CheckInActor, type CheckInChange, CheckInRefused, OWNER_UI, parseChatCheckIn, UNKNOWN_AGENT, validCheckInEvery } from "./checkin-settings.ts";
 import { chooseFolder, resolveWorkspace, WorkspaceError } from "./chat-workspace.ts";
-import { parseBucket, parseGroup, parseMetric, parseWindow, UsageError } from "./usage/lgtm.ts";
+import { UsageError } from "./usage/lgtm.ts";
+import { parseBucket, parseGroup, parseMetric, parseWindow } from "./usage/store.ts";
 import { interruptedRuns } from "./chat-resume.ts";
 import type { RemoteControl } from "./chat-remote.ts";
 import type { SlackControl } from "./chat-slack.ts";
@@ -852,7 +853,7 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
           if (!analytics) throw new RequestError(503, "Usage analytics is off in this chat.");
           const query = url.searchParams;
           if (route === "api/usage/series") { json(res, 200, await analytics.series(parseWindow(query.get("window")), parseBucket(query.get("bucket")), parseGroup(query.get("group")), parseMetric(query.get("metric")))); return; }
-          if (route === "api/usage/models") { json(res, 200, await analytics.models(parseWindow(query.get("window")))); return; }
+          if (route === "api/usage/models") { json(res, 200, await analytics.models(parseWindow(query.get("window")), query.get("bucket") === null ? null : parseBucket(query.get("bucket")))); return; }
         }
         if (route === "api/accounts") {
           const id = url.searchParams.get("id");

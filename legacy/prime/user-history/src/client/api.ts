@@ -172,7 +172,7 @@ export const api = {
   },
   startRefresh: (provider: string, account: string | null) => post<UsageRefresh>("api/accounts/refresh", { provider, account }),
   /**
-   * Settings > Usage and the sidebar Throughput line: the throughput of every box from LGTM, or the error that kept it, pushed every 5 s while
+   * Settings > Usage and the sidebar Throughput line: the throughput of every host and client from the usage store, or the error that kept it, pushed every 5 s while
    * subscribed (`src/shared/usage.ts`). `onUnreadable` gets a payload from a server build whose shape this page does not know (see `readFeed`); a
    * reload fixes it.
    */
@@ -184,7 +184,7 @@ export const api = {
     }, onError);
   },
   usageSeries: (window: UsageWindow, bucket: UsageBucket, group: UsageGroup, metric: UsageMetric) => get<UsageSeries>(`api/usage/series?window=${window}&bucket=${bucket}&group=${group}&metric=${metric}`, 30000),
-  usageModels: (window: UsageWindow) => get<{ models: UsageModelRow[] }>(`api/usage/models?window=${window}`, 30000).then(body => body.models),
+  usageModels: (window: UsageWindow, bucket: UsageBucket) => get<{ models: UsageModelRow[] }>(`api/usage/models?window=${window}&bucket=${bucket}`, 30000).then(body => body.models),
   startLogin: (provider: string, account: string | null) => post<AccountLogin>("api/accounts/login", { provider, account }),
   pasteLogin: (id: string, code: string) => post<AccountLogin>("api/accounts/login/paste", { id, code }),
   cancelLogin: (id: string) => post<AccountLogin>("api/accounts/login/cancel", { id }),

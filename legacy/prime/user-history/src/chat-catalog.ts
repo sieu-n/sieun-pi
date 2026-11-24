@@ -1427,7 +1427,7 @@ export class Catalog {
   }
 
   /**
-   * Output rates per session from LGTM (src/usage/lgtm.ts), asked at most once per RATES_MS for the same ids; nothing when no source is wired. A
+   * Output rates per session from LGTM (src/usage/lgtm.ts sessionRates), asked at most once per RATES_MS for the same ids; nothing when no source is wired. A
    * projection never waits for the answer: it takes the last answer and asks again in the background, and the next frame, which comes within
    * RATES_MS while an agent works (`scheduleRates`), carries the new one. On 10-18 a scratch serve at the live rate waited about 225 ms for
    * the usage worker on every fourth projection, and those waits were the projections' whole 90th percentile (300 ms against 60 ms median).

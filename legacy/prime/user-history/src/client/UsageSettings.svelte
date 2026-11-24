@@ -2,21 +2,21 @@
   import Spinner from "./Spinner.svelte";
   import { untrack } from "svelte";
   import { api } from "./api.ts";
-  import { clock } from "./clock.svelte.ts";
   import Icon from "./Icon.svelte";
   import Select from "./ui/Select.svelte";
-    import type { UsageBucket, UsageFeed, UsageGroup, UsageMetric, UsageModelRow, UsageSeries, UsageWindow } from "../shared/usage.ts";
+  import type { UsageBucket, UsageFeed, UsageGroup, UsageMetric, UsageModelRow, UsageSeries, UsageWindow } from "../shared/usage.ts";
   import { usageMetric } from "./usage-metric.svelte.ts";
   import SettingsActions from "./SettingsActions.svelte";
-  import { barAt, BUCKET_LABEL, bucketsFor, bucketTitle, cost, defaultBucket, fullTokens, hitRate, hitSpark, kindLabel, layout, METRIC_LABEL, METRICS, metricOf, modelLabel, share, sparkPath, tokens, tps, WINDOWS, type Bar } from "./usage.ts";
+  import { barAt, BUCKET_LABEL, bucketsFor, bucketTitle, cost, defaultBucket, fullTokens, hitRate, hitSpark, kindLabel, layout, METRIC_LABEL, METRICS, metricOf, modelLabel, share, sparkPath, tokens, WINDOWS, type Bar } from "./usage.ts";
 
   /**
-   * Settings > Usage: every agent on every box together, from LGTM. One token kind (the metric, output by default) drives the headline cards, the
-   * chart and the table; "By kind" stacks all four kinds. The headline is live from the `usage` feed; the chart and table come from
-   * api/usage/series and api/usage/models. A failed LGTM query shows its error, never zeros.
+   * Settings > Usage: every chat client on every host together, from the usage store that sw factory's Usage page reads too. One token kind
+   * (the metric, output by default) drives the headline cards, the chart and the table; "By kind" stacks all four kinds. The headline is live
+   * from the `usage` feed; the chart and table come from api/usage/series and api/usage/models over the same range. A store that never
+   * answered shows its error, never zeros.
    */
   const PLOT = { left: 44, right: 8, top: 10, bottom: 22, height: 190 };
-  const GROUPS: { id: UsageGroup; label: string }[] = [{ id: "none", label: "All" }, { id: "box", label: "By host" }, { id: "model", label: "By model" }, { id: "kind", label: "By kind" }];
+  const GROUPS: { id: UsageGroup; label: string }[] = [{ id: "none", label: "All" }, { id: "box", label: "By host" }, { id: "client", label: "By client" }, { id: "model", label: "By model" }, { id: "kind", label: "By kind" }];
   const WINDOW_LABEL: Record<UsageWindow, string> = { "1h": "1h", "24h": "24h", "7d": "7d", "30d": "30d", "90d": "90d" };
   const isWindow = (value: string | null): value is UsageWindow => WINDOWS.includes(value as UsageWindow);
   const isGroup = (value: string | null): value is UsageGroup => GROUPS.some(entry => entry.id === value);
@@ -71,7 +71,7 @@
     const id = ++modelsRequest;
     modelsLoading = true;
     try {
-      const next = await api.usageModels(window_);
+      const next = await api.usageModels(window_, bucket);
       if (id !== modelsRequest) return;
       models = next;
       modelsError = null;
@@ -82,7 +82,7 @@
     }
   }
   $effect(() => { void window_; void bucket; void group; void metric; hover = null; void load(); });
-  $effect(() => { void window_; void loadModels(); });
+  $effect(() => { void window_; void bucket; void loadModels(); });
   $effect(() => {
     const at = summary?.at ?? null;
     untrack(() => {
@@ -109,7 +109,7 @@
 
   const bucketOptions = $derived(bucketsFor(window_).map(value => ({ value, label: BUCKET_LABEL[value] })));
   const plotWidth = $derived(Math.max(0, chartWidth - PLOT.left - PLOT.right));
-  const chart = $derived(series && plotWidth > 0 ? layout(series, plotWidth, PLOT.height, clock.now, group === "kind" && shares) : null);
+  const chart = $derived(series && plotWidth > 0 ? layout(series, plotWidth, PLOT.height, group === "kind" && shares) : null);
   const rows = $derived([...(models ?? [])].sort((a, b) => metricOf(b.tokens, metric) - metricOf(a.tokens, metric)));
   /** The small line under each card: the total beside one kind, or output beside the total. */
   const other = $derived<UsageMetric>(metric === "total" ? "output" : "total");
@@ -152,7 +152,7 @@
   {#if unreadable}
     <div class="empty"><div class="error"><Icon name="alert" size={16} /> The chat service runs another build than this page. <button type="button" class="reload" onclick={() => location.reload()}>Reload</button></div></div>
   {:else if down}
-    <div class="empty"><div class="error"><Icon name="alert" size={16} /> Usage from LGTM failed: {down}</div></div>
+    <div class="empty"><div class="error"><Icon name="alert" size={16} /> Usage from the store failed: {down}</div></div>
   {:else if !summary && feedDown}
     <div class="empty"><div class="error"><Icon name="alert" size={16} /> Usage feed unavailable. Reconnecting.</div></div>
   {:else if !summary}
@@ -170,7 +170,7 @@
         </div>
       {/each}
       {#if cache}
-        <div class="stat" title="Cache read / (input + cache read + cache write), all agents on every box">
+        <div class="stat" title="Cache read / (input + cache read + cache write), every client on every host">
           <div class="stat-label">Cache hit</div>
           <div class="stat-value tabular">{cache.hour}</div>
           <div class="stat-sub tabular">24 h {cache.day}<br />last 60 min</div>
@@ -180,7 +180,7 @@
       <div class="stat">
         <div class="stat-label">Cost today</div>
         <div class="stat-value tabular">{cost(summary.costToday)}</div>
-        <div class="stat-sub">since midnight</div>
+        <div class="stat-sub">since 00:00 KST</div>
       </div>
     </div>
 
@@ -257,17 +257,17 @@
 
     {#if rows.length}
       <table class="models">
-        <thead><tr><th>Host</th><th>Model</th><th class="num">Calls</th><th class="num" title="Hover a count for every kind">{cardLabel}</th><th class="num" title="Cache read / (input + cache read + cache write)">Cache hit</th><th class="num">Cost</th><th class="num" title="Output tokens per second of generation time">Out tok/s</th></tr></thead>
+        <thead><tr><th>Host</th><th>Client</th><th>Model</th><th class="num">Calls</th><th class="num" title="Hover a count for every kind">{cardLabel}</th><th class="num" title="Cache read / (input + cache read + cache write)">Cache hit</th><th class="num">Cost</th></tr></thead>
         <tbody>
-          {#each rows as row (row.box + " " + row.model)}
+          {#each rows as row (row.box + " " + row.client + " " + row.model)}
             <tr>
               <td class="muted">{row.box}</td>
+              <td class="muted">{row.client}</td>
               <td class="model" title={row.model}>{modelLabel(row.model)}</td>
               <td class="num tabular">{fullTokens(row.calls)}</td>
               <td class="num tabular" title={splitTitle(row)}>{tokens(metricOf(row.tokens, metric))}</td>
               <td class="num tabular">{hitRate(row.tokens)}</td>
               <td class="num tabular">{cost(row.costUsd)}</td>
-              <td class="num tabular">{tps(row.outputTps)}</td>
             </tr>
           {/each}
         </tbody>

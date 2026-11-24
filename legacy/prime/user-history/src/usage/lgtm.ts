@@ -1,48 +1,26 @@
 import { readFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
-import { type UsageBucket, type UsageFeed, type UsageGroup, type UsageKind, type UsageMetric, type UsageModelRow, type UsageRate, type UsageSeries, type UsageSummary, type UsageTokens, type UsageWindow, USAGE_BUCKETS, USAGE_GROUPS, USAGE_METRICS, USAGE_WINDOWS } from "../shared/usage.ts";
 import type { TokenRate } from "../shared/types.ts";
 import { waitedOnHost } from "../chat-latency.ts";
 
 /**
- * Settings > Usage, the sidebar Throughput line and the Agents card tok/s, all read from LGTM. Each Prime process on every box exports its model
- * calls as OTLP counters, and Alloy writes them to the staging estate Prometheus (~/work/otel-tok-meter/CONTRACT.md). This module runs PromQL
- * through the Grafana datasource proxy with the Viewer token in `<data dir>/grafana-alerts.json`. Every query filters job="prime-agent", because
- * test runs export the same series under another job. A failed query reaches the page as an error, never as zeros.
+ * PromQL on LGTM for the Agents card's tok/s per session and the duties that read Prime's own counters. Each Prime process on every box
+ * exports its model calls as OTLP counters, and Alloy writes them to the staging estate Prometheus (~/work/otel-tok-meter/CONTRACT.md). This
+ * module runs PromQL through the Grafana datasource proxy with the Viewer token in `<data dir>/grafana-alerts.json`. Settings > Usage reads
+ * the store of every client's model calls instead (src/usage/store.ts).
  */
 
 export const DATASOURCE = "estate_prometheus_stg";
 const JOB = 'job="prime-agent"';
-const TOKENS = "prime_agent_tokens_total";
-const CALLS = `prime_agent_calls_total{${JOB}}`;
-const COST = `prime_agent_cost_USD_total{${JOB}}`;
 const SESSION_OUTPUT = "prime_agent_session_output_tokens_total";
 const SESSION_SECONDS = "prime_agent_session_generation_seconds_total";
-/**
- * Output tokens and generation seconds per box and model with no session label, for the table's speed column. On 10-23 the same sum over the
- * session series read 70.7M samples from 4,280 session series and took 15 s for 24h, and 7d and up passed the Grafana proxy's 30 s and got 502.
- */
-const GENERATION_OUTPUT = `prime_agent_generation_output_tokens_total{${JOB}}`;
-const GENERATION_SECONDS = `prime_agent_generation_seconds_total{${JOB}}`;
-/** The exporter's kind label to the page's name for it. */
-const KIND_OF: Record<string, UsageKind> = { input: "input", output: "output", cache_read: "cacheRead", cache_write: "cacheWrite" };
-const LABEL_OF: Record<UsageKind, string> = { input: "input", output: "output", cacheRead: "cache_read", cacheWrite: "cache_write" };
-/** The token counter for one metric: one kind, or every kind for total. */
-const tokens = (metric: UsageMetric): string => metric === "total" ? `${TOKENS}{${JOB}}` : `${TOKENS}{${JOB},kind="${LABEL_OF[metric]}"}`;
+/** A session that made no call in the last minute gets its rate over the last 24 h instead (CONTRACT.md: a longer window as the fallback). */
+const RATE_FALLBACK = "24h";
 
 export class UsageError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
 }
-
-const pick = <T extends string>(list: readonly T[], name: string) => (value: string | null): T => {
-  if (value !== null && (list as readonly string[]).includes(value)) return value as T;
-  throw new UsageError(400, `Use ${name} ${list.join(", ")}.`);
-};
-export const parseWindow = pick(USAGE_WINDOWS, "window");
-export const parseBucket = pick(USAGE_BUCKETS, "bucket");
-export const parseGroup = (value: string | null): UsageGroup => value === null ? "none" : pick(USAGE_GROUPS, "group")(value);
-export const parseMetric = (value: string | null): UsageMetric => value === null ? "output" : pick(USAGE_METRICS, "metric")(value);
 
 export type Labels = Record<string, string>;
 export type Sample = { labels: Labels; value: number };
@@ -128,199 +106,15 @@ export function grafanaPrometheus(config: string, fetcher: typeof fetch = http1F
   };
 }
 
-const zeroTokens = (): UsageTokens => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 });
-/** Per-kind samples (label `kind`) as one count per metric; a kind the page does not know is left out of every metric. */
-function byKind(samples: readonly Sample[]): UsageRate {
-  const rate = zeroTokens();
-  for (const sample of samples) {
-    const kind = KIND_OF[sample.labels.kind ?? ""];
-    if (!kind) continue;
-    rate[kind] += sample.value;
-    rate.total += sample.value;
-  }
-  return rate;
-}
-const sum = (samples: readonly Sample[]): number => samples.reduce((total, sample) => total + sample.value, 0);
-
-/** Per-kind range series on the grid start, start + step, ... end, one array per metric; a step with no sample is 0. */
-function sparks(series: readonly Range[], start: number, end: number, stepS: number): Record<UsageMetric, number[]> {
-  const count = Math.round((end - start) / (stepS * 1000)) + 1;
-  const out = Object.fromEntries(USAGE_METRICS.map(metric => [metric, new Array<number>(count).fill(0)])) as Record<UsageMetric, number[]>;
-  for (const row of series) {
-    const kind = KIND_OF[row.labels.kind ?? ""];
-    if (!kind) continue;
-    for (const point of row.points) {
-      const at = Math.round((point.t - start) / (stepS * 1000));
-      if (at < 0 || at >= count) continue;
-      out[kind][at]! += point.value;
-      out.total[at]! += point.value;
-    }
-  }
-  return out;
-}
-
-const STEP_S: Record<UsageBucket, number> = { minute: 60, hour: 3600, day: 86_400 };
-const WINDOW_S: Record<UsageWindow, number> = { "1h": 3600, "24h": 86_400, "7d": 7 * 86_400, "30d": 30 * 86_400, "90d": 90 * 86_400 };
-/** The most keys a stacked chart lists; the rest fold into "other". */
-const MAX_KEYS = 8;
-/** The spark of the per-second card and the sidebar: the rate over the last 10 min at the 10 s export interval of CONTRACT.md. */
-const SPARK_S = 10;
-const SPARK_SPAN_S = 600;
-/** The feed asks again every 5 s, half the 10 s export interval, so a new export shows within 5 s plus LGTM's 0.5 to 5 s delay. */
-const FEED_MS = 5000;
-/** A session that made no call in the last minute gets its rate over the last 24 h instead (CONTRACT.md: a longer window as the fallback). */
-const RATE_FALLBACK = "24h";
-
-/** The end of the bucket that holds `now`: the next local midnight for days, else the next multiple of the step. */
-function bucketEnd(now: number, bucket: UsageBucket): number {
-  if (bucket !== "day") { const step = STEP_S[bucket] * 1000; return Math.ceil(now / step) * step; }
-  const midnight = new Date(now);
-  midnight.setHours(24, 0, 0, 0);
-  return midnight.getTime();
-}
-
-export class Usage {
-  private readonly listeners = new Set<(feed: UsageFeed) => void>();
-  private feed: ReturnType<typeof setInterval> | null = null;
-
-  constructor(private readonly prometheus: Prometheus, private readonly now: () => number = Date.now) {}
-
-  /** The headline numbers of every box together; throws when any query fails. */
-  async summary(): Promise<UsageSummary> {
-    const now = this.now();
-    const midnight = new Date(now);
-    midnight.setHours(0, 0, 0, 0);
-    const sinceMidnight = Math.max(1, Math.floor((now - midnight.getTime()) / 1000));
-    const all = tokens("total");
-    const sparkStart = now - SPARK_SPAN_S * 1000;
-    const hourStart = now - 3600_000;
-    const [perSecond, perMinute, perDay, cost, spark, sparkMinutes] = await Promise.all([
-      this.prometheus.query(`sum by (kind) (rate(${all}[1m]))`),
-      this.prometheus.query(`sum by (kind) (increase(${all}[1h])) / 60`),
-      this.prometheus.query(`sum by (kind) (increase(${all}[24h]))`),
-      this.prometheus.query(`sum(increase(${COST}[${sinceMidnight}s]))`),
-      this.prometheus.range(`sum by (kind) (rate(${all}[1m]))`, sparkStart, now, SPARK_S),
-      this.prometheus.range(`sum by (kind) (increase(${all}[1m]))`, hourStart, now, 60),
-    ]);
-    return { state: "live", at: now, perSecond: byKind(perSecond), perMinute: byKind(perMinute), perDay: byKind(perDay), costToday: sum(cost),
-      spark: sparks(spark, sparkStart, now, SPARK_S), sparkMinutes: sparks(sparkMinutes, hourStart, now, 60) };
-  }
-
-  /** Tokens over time for the chart, one point per bucket that saw tokens or calls; `t` is the bucket start. */
-  async series(window: UsageWindow, bucket: UsageBucket, group: UsageGroup, metric: UsageMetric = "output"): Promise<UsageSeries> {
-    const stepS = STEP_S[bucket];
-    const end = bucketEnd(this.now(), bucket);
-    const start = end - WINDOW_S[window] * 1000 + stepS * 1000;
-    const over = (series: string) => `increase(${series}[${stepS}s])`;
-    const [kinds, calls, cost, keyed] = await Promise.all([
-      this.prometheus.range(`sum by (kind) (${over(tokens("total"))})`, start, end, stepS),
-      this.prometheus.range(`sum(${over(CALLS)})`, start, end, stepS),
-      this.prometheus.range(`sum(${over(COST)})`, start, end, stepS),
-      group === "box" || group === "model" ? this.prometheus.range(`sum by (${group}) (${over(tokens(metric))})`, start, end, stepS) : Promise.resolve([]),
-    ]);
-    const at = new Map<number, UsageSeries["points"][number]>();
-    const point = (t: number) => {
-      let found = at.get(t);
-      if (!found) at.set(t, found = { t: t - stepS * 1000, tokens: zeroTokens(), costUsd: 0, calls: 0, ...group === "none" ? {} : { byKey: {} } });
-      return found;
-    };
-    for (const row of kinds) {
-      const kind = KIND_OF[row.labels.kind ?? ""];
-      if (!kind) continue;
-      for (const { t, value } of row.points) { const p = point(t); p.tokens[kind] += value; p.tokens.total += value; if (group === "kind") p.byKey![kind] = (p.byKey![kind] ?? 0) + value; }
-    }
-    for (const row of calls) for (const { t, value } of row.points) point(t).calls += value;
-    for (const row of cost) for (const { t, value } of row.points) point(t).costUsd = (point(t).costUsd ?? 0) + value;
-    const totals = new Map<string, number>();
-    for (const row of keyed) {
-      const key = row.labels[group] || "unknown";
-      for (const { t, value } of row.points) { const p = point(t); p.byKey![key] = (p.byKey![key] ?? 0) + value; totals.set(key, (totals.get(key) ?? 0) + value); }
-    }
-    let keys = group === "kind" ? ["output", "input", "cacheWrite", "cacheRead"] : [...totals].sort((a, b) => b[1] - a[1]).map(([key]) => key);
-    if (keys.length > MAX_KEYS && group !== "kind") {
-      const kept = new Set(keys.slice(0, MAX_KEYS - 1));
-      for (const p of at.values()) for (const [key, value] of Object.entries(p.byKey ?? {})) {
-        if (kept.has(key)) continue;
-        delete p.byKey![key];
-        p.byKey!.other = (p.byKey!.other ?? 0) + value;
-      }
-      keys = [...kept, "other"];
-    }
-    const points = [...at.values()].filter(p => p.tokens.total > 0 || p.calls > 0).sort((a, b) => a.t - b.t);
-    return { window, bucket, group, metric, keys, points };
-  }
-
-  /** One row per box and model that used tokens in the window, with calls, cost and output tokens per second of generation time. */
-  async models(window: UsageWindow): Promise<{ models: UsageModelRow[] }> {
-    const span = WINDOW_S[window];
-    const by = "box, model";
-    const [kinds, calls, cost, speed] = await Promise.all([
-      this.prometheus.query(`sum by (${by}, kind) (increase(${tokens("total")}[${span}s]))`),
-      this.prometheus.query(`sum by (${by}) (increase(${CALLS}[${span}s]))`),
-      this.prometheus.query(`sum by (${by}) (increase(${COST}[${span}s]))`),
-      this.prometheus.query(`sum by (${by}) (increase(${GENERATION_OUTPUT}[${span}s])) / sum by (${by}) (increase(${GENERATION_SECONDS}[${span}s]))`),
-    ]);
-    const rows = new Map<string, UsageModelRow>();
-    const row = (labels: Labels) => {
-      const box = labels.box || "unknown", model = labels.model || "unknown", key = `${box}\n${model}`;
-      let found = rows.get(key);
-      if (!found) rows.set(key, found = { box, model, calls: 0, tokens: zeroTokens(), costUsd: 0, outputTps: null });
-      return found;
-    };
-    for (const sample of kinds) {
-      const kind = KIND_OF[sample.labels.kind ?? ""];
-      if (!kind) continue;
-      const found = row(sample.labels);
-      found.tokens[kind] += sample.value;
-      found.tokens.total += sample.value;
-    }
-    for (const sample of calls) row(sample.labels).calls += sample.value;
-    for (const sample of cost) row(sample.labels).costUsd += sample.value;
-    for (const sample of speed) row(sample.labels).outputTps = sample.value;
-    return { models: [...rows.values()].filter(found => found.tokens.total > 0 || found.calls > 0) };
-  }
-
-  /** Output tokens per second of generation time per session id: over the last minute (live), else over the last 24 h. */
-  async rates(sessionIds: readonly string[]): Promise<Record<string, TokenRate>> {
-    const ids = [...new Set(sessionIds)].filter(id => /^[\w-]+$/.test(id));
-    if (!ids.length) return {};
-    const match = `${JOB},session=~"${ids.join("|")}"`;
-    const speed = (range: string) => this.prometheus.query(`sum by (session) (increase(${SESSION_OUTPUT}{${match}}[${range}])) / sum by (session) (increase(${SESSION_SECONDS}{${match}}[${range}]))`);
-    const [live, longer] = await Promise.all([speed("1m"), speed(RATE_FALLBACK)]);
-    const rates: Record<string, TokenRate> = {};
-    for (const sample of longer) if (sample.labels.session) rates[sample.labels.session] = { tps: Math.round(sample.value * 10) / 10, live: false };
-    for (const sample of live) if (sample.labels.session) rates[sample.labels.session] = { tps: Math.round(sample.value * 10) / 10, live: true };
-    return rates;
-  }
-
-  /** The feed payload now: the summary, or the error that kept it from LGTM. */
-  async reading(): Promise<UsageFeed> {
-    try { return await this.summary(); }
-    catch (error) { return { state: "error", at: this.now(), error: error instanceof Error ? error.message : String(error) }; }
-  }
-
-  /** The `usage` feed: one reading now, then one every FEED_MS while anyone listens. */
-  subscribe(listener: (feed: UsageFeed) => void): () => void {
-    this.listeners.add(listener);
-    void this.reading().then(feed => { if (this.listeners.has(listener)) listener(feed); });
-    if (!this.feed) {
-      let busy = false;
-      this.feed = setInterval(() => {
-        if (busy) return;
-        busy = true;
-        void this.reading().then(feed => { for (const each of this.listeners) each(feed); }).finally(() => { busy = false; });
-      }, FEED_MS);
-      this.feed.unref();
-    }
-    return () => {
-      this.listeners.delete(listener);
-      if (this.listeners.size === 0 && this.feed) { clearInterval(this.feed); this.feed = null; }
-    };
-  }
-
-  close(): void {
-    if (this.feed) clearInterval(this.feed);
-    this.feed = null;
-    this.listeners.clear();
-  }
+/** Output tokens per second of generation time per session id: over the last minute (live), else over the last 24 h. */
+export async function sessionRates(prometheus: Prometheus, sessionIds: readonly string[]): Promise<Record<string, TokenRate>> {
+  const ids = [...new Set(sessionIds)].filter(id => /^[\w-]+$/.test(id));
+  if (!ids.length) return {};
+  const match = `${JOB},session=~"${ids.join("|")}"`;
+  const speed = (range: string) => prometheus.query(`sum by (session) (increase(${SESSION_OUTPUT}{${match}}[${range}])) / sum by (session) (increase(${SESSION_SECONDS}{${match}}[${range}]))`);
+  const [live, longer] = await Promise.all([speed("1m"), speed(RATE_FALLBACK)]);
+  const rates: Record<string, TokenRate> = {};
+  for (const sample of longer) if (sample.labels.session) rates[sample.labels.session] = { tps: Math.round(sample.value * 10) / 10, live: false };
+  for (const sample of live) if (sample.labels.session) rates[sample.labels.session] = { tps: Math.round(sample.value * 10) / 10, live: true };
+  return rates;
 }

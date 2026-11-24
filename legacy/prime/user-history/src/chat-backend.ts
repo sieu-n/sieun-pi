@@ -62,7 +62,8 @@ import { IdIndex } from "./id-index.ts";
 import { newChatStore, type NewChatStore } from "./chat-new-chat.ts";
 import { ThreadOrigins } from "./thread-origin.ts";
 import { isThinkingLevel, type ChatDefaults, type ChatDefaultsInput, type IdleEvictionMinutes } from "./shared/types.ts";
-import { grafanaPrometheus, Usage } from "./usage/lgtm.ts";
+import { grafanaPrometheus, sessionRates } from "./usage/lgtm.ts";
+import { grafanaStore, Usage } from "./usage/store.ts";
 import { cacheWatch, pendingWakes, readRunState, runStamp, startWakes, wakeLabel, waking } from "./wakes.ts";
 import { BRIEFS_DIR, primeWorkers, recordModel, serviceBriefs, startBriefKeeper, unstartedJobs } from "./brief-keeper.ts";
 import { readOwnersFor, readSetStates, startAlertBridge } from "./alert-bridge.ts";
@@ -101,7 +102,7 @@ export interface ChatBackend {
   boards: BoardStore;
   /** `<dataDir>/threads.json`: every thread `POST api/threads` created, both kinds. A listed id is `origin: "user"`. */
   created: IdIndex;
-  /** Settings > Usage, the Throughput line and the Agents card tok/s: token usage of every box, read from LGTM. Absent in tests that fake a backend. */
+  /** Settings > Usage and the Throughput line: every host's and client's model calls, read from the usage store. Absent in tests that fake a backend. */
   usage?: Usage;
   /** `<dataDir>/duties/`: each chat's standing duties and their runs; the runner ticks every 30 s. Absent in tests that fake a backend. */
   duties?: Duties;
@@ -372,9 +373,12 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       if (catalog.hostOf(id) !== null) return;
       void chats.ids().then(ids => ids.has(id) ? autoCompact.compacted(id, file) : null).catch(error => dutyLog(`session compact ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`));
     } });
-  // Token usage of every box comes from LGTM only (src/usage/lgtm.ts); nothing is queried until a page subscribes or the Agents card asks for rates.
-  const usage = new Usage(grafanaPrometheus(join(sharedDataDir(dataDir), "grafana-alerts.json")));
-  catalog.ratesSource = ids => usage.rates(ids);
+  // Settings > Usage reads every host's and client's calls from the usage store (src/usage/store.ts), the Agents card's per-session tok/s
+  // reads Prime's own counters on LGTM (src/usage/lgtm.ts); neither is queried until a page subscribes or the Agents card asks for rates.
+  const grafana = join(sharedDataDir(dataDir), "grafana-alerts.json");
+  const usage = new Usage(grafanaStore(grafana), Date.now, line => process.stderr.write(`${line}\n`));
+  const prometheus = grafanaPrometheus(grafana);
+  catalog.ratesSource = ids => sessionRates(prometheus, ids);
   catalog.queueSource = async () => (await queued()).queued;
   catalog.accountWaitSource = (asks, now) => treeAccountWaits(asks, now);
   catalog.wakesSource = now => pendingWakes(join(dataDir, "wakes"), now);
