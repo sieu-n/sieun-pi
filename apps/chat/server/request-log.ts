@@ -26,6 +26,8 @@ export type ClientVia = "tailnet" | "local";
  */
 export interface RequestTiming {
   at: number; src: TimingSource; m: string; r: string; p: string; s: number; ms: number; net?: number; via?: ClientVia;
+  /** On a server line, the first word of a caller's User-Agent when it is no browser, such as `node` (http.ts `uaOf`). */
+  ua?: string;
   /** On a client upload line, the ms the page spent encoding the image before the call (web shrink.ts); `ms` leaves it out. */
   enc?: number;
   /** On a client line of an image send, the ms from the owner's Enter until the server stored the message; `ms` is Enter to its bubble. */

@@ -63,11 +63,15 @@ test("the server logs each /api request by route and takes the client's waits", 
       body: JSON.stringify({ samples: [{ m: "GET", p: "/api/me", s: 200, ms: 38, net: 9 }] }),
     });
     assert.equal(fromBox.status, 200);
-    const all = await logged(dataDir, got => clientLines(5)(got) && got.some(line => line.src === "server" && line.r === "/api/c/:id/items"));
+    const browser = await fetch(`${chat.base}/api/me`, { headers: { "user-agent": "Mozilla/5.0 (Macintosh) Chrome/131.0" } });
+    assert.equal(browser.status, 200);
+    const all = await logged(dataDir, got => clientLines(5)(got) && got.some(line => line.src === "server" && line.r === "/api/c/:id/items") && got.some(line => line.src === "server" && line.p === "/api/me"));
+    assert.equal(all.find(line => line.src === "server" && line.p === "/api/me")?.ua, undefined, "a browser's call carries no ua");
     const server = all.find(line => line.src === "server" && line.p === `/api/c/${room}/items`);
     assert.equal(server?.r, "/api/c/:id/items");
     assert.equal(server?.s, 200);
     assert.ok(server!.ms >= 0);
+    assert.equal(server?.ua, "node", "a script's call names its User-Agent");
     assert.ok(!all.some(line => line.p === "/api/timings"), "the timings post itself is not logged");
     const client = all.filter(line => line.src === "client");
     assert.deepEqual(client.map(line => [line.r, line.p, line.ms, line.net, line.via]), [

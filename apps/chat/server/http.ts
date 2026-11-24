@@ -665,7 +665,7 @@ export function serve(app: App, parts: SkillsParts = skillsParts(app.config, app
       phases.set(req, phase);
       res.once("close", () => requests.write({
         at: Date.now(), src: "server", m: method, r: routeLabel(table, method, path), p: path, s: res.writableFinished ? res.statusCode : 0, ms: performance.now() - started,
-        ...phase, ...stalls.worst(started), via: viaOf(req),
+        ...phase, ...stalls.worst(started), via: viaOf(req), ...uaOf(req),
       }));
     }
     void handle(app, table, req, res);
@@ -940,6 +940,16 @@ const viaOf = (req: IncomingMessage): ClientVia => {
   if (!req.headers["tailscale-user-login"]) return "local";
   const from = String(req.headers["x-forwarded-for"] ?? "").split(",")[0]!.trim();
   return from && ownAddress(from) ? "local" : "tailnet";
+};
+
+/**
+ * A caller that is no browser, named by the first word of its User-Agent, such as `node` for a pi-host tool call. tailscale serve puts the
+ * owner's login on any of his nodes' calls, so on 11-23 a search line via tailnet could be his Cmd K or a script, and 86 of 93 had no
+ * page timing beside them (~/work/p279-search/p279-held.md).
+ */
+const uaOf = (req: IncomingMessage): { ua?: string } => {
+  const agent = req.headers["user-agent"] ?? "";
+  return agent.startsWith("Mozilla/") ? {} : { ua: (agent.split(/[\s/]/)[0] || "none").toLowerCase().slice(0, 40) };
 };
 
 /** POST /api/timings: the web client's wait for each call it made (request-log.ts), with each path named by its route. */
