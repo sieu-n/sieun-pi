@@ -13,7 +13,7 @@ export const CHANGE_APPROACH_MISSES = 3;
 export interface MetricStreak {
   key: string;
   misses: number;
-  /** The newest value is closer to the target than the value at the start of the streak. */
+  /** The newest value is closer to the target than the value CHANGE_APPROACH_MISSES - 1 runs back, or at the start of a shorter streak (`movedOverTail`). */
   moved: boolean;
   /** The time of the oldest run in the streak. */
   since: number;
@@ -65,6 +65,18 @@ export function newestReading(runs: readonly DutyRunRecord[]): DutyRunRecord | u
 const gap = (result: MetricResult): number => Math.abs(result.value - result.target);
 
 /**
+ * Whether a streak moved toward its target, from its gaps to the target newest first: the newest gap is smaller than the one
+ * CHANGE_APPROACH_MISSES - 1 measured runs back, or than the streak's first when the streak is shorter. A streak of CHANGE_APPROACH_MISSES runs
+ * judges as before, and a longer one judges only its last CHANGE_APPROACH_MISSES runs, so a flat or rising tail stays stuck however far the
+ * number fell before it. Judging from the streak's first reading read a falling number as stuck after a jump: on 11-24 sieun-pi 6ac4ef14 added
+ * pages_over_core_length to the Wiki dream's wiki_problems, its 00:30Z run read 9, the runs read 333, 309, 292, 277 and 265 against that 9, and
+ * the run's after-job measure of 02:03Z then read 242, the same as the 02:03Z run, so each of those runs asked for a new root-cause job while
+ * the job cutting those pages kept the number falling. The streak's peak would read a number that jumped and then stayed flat as moving for as
+ * long as the streak lasts, and a one-run bump such as 6.48, 6.5, 6.48 as moving.
+ */
+export const movedOverTail = (gaps: readonly number[]): boolean => gaps.length > 1 && gaps[0]! < gaps[Math.min(gaps.length, CHANGE_APPROACH_MISSES) - 1]!;
+
+/**
  * The measured runs a streak counts, newest first: each met or missed run except an older one whose job was cut (`DutyRunRecord.cut`). A cut
  * job did no work, so its run tried no fix, and its after-job measure is mostly the next run's own measure written again (`launch`; 549 of
  * 585 cut runs with one on 10-21). The newest run stays, since it reads the duty's state now. AI harness d11 10-21: the 21:31Z verify run and
@@ -99,8 +111,8 @@ export interface FixJudging { own?: readonly string[]; windowMs?: number }
 
 /**
  * The misses of `key`'s current streak (`streakRuns`) whose run named `step` as its fix, and whether the value is closer to the target now than
- * at the first of them. A fix is judged on its own runs: the whole streak counted the misses before it too, so the root-cause step a chat
- * started on d9's push read as a fix that does not move from its first run. SEO guy 10-23: d9's 04:07Z push replaced p83 with p90, whose job
+ * CHANGE_APPROACH_MISSES - 1 of them back (`movedOverTail`). A fix is judged on its own runs: the whole streak counted the
+ * misses before it too, so the root-cause step a chat started on d9's push read as a fix that does not move from its first run. SEO guy 10-23: d9's 04:07Z push replaced p83 with p90, whose job
  * started at 04:10Z, and the 05:06Z d2 run, the first to name p90, made it 18 misses with no move, so d9 asked again to replace p90.
  * A run that found the step held by an open For you todo (`FixLink.hold`) ends the count, since the fix waited on the owner and starts again
  * once he answers: AI harness p919 waited on Railway Breach's t11 at 08:37Z on 10-23, t11 closed, and its job started on it again by 09:11Z,
@@ -138,15 +150,16 @@ function workedReading(run: DutyRunRecord, fix: FixLink | undefined, step: strin
 
 /**
  * The misses of `key`'s current streak (`streakRuns`) whose run named `step` as its fix, and whether the value is closer to the target now than
- * at the first of them. A fix is judged on its own runs: the whole streak counted the misses before it too, so the root-cause step a chat
- * started on d9's push read as a fix that does not move from its first run. SEO guy 10-23: d9's 04:07Z push replaced p83 with p90, whose job
+ * CHANGE_APPROACH_MISSES - 1 of them back (`movedOverTail`). A fix is judged on its own runs: the whole streak counted the
+ * misses before it too, so the root-cause step a chat started on d9's push read as a fix that does not move from its first run. SEO guy 10-23: d9's 04:07Z push replaced p83 with p90, whose job
  * started at 04:10Z, and the 05:06Z d2 run, the first to name p90, made it 18 misses with no move, so d9 asked again to replace p90.
  * A run that found the step held by an open For you todo (`FixLink.hold`) ends the count, since the fix waited on the owner and starts again
  * once he answers: AI harness p919 waited on Railway Breach's t11 at 08:37Z on 10-23, t11 closed, and its job started on it again by 09:11Z,
  * which d9 read as 6 misses under p919 counting 4 from before the hold.
  * When the newest named run reads a number for what the step works (`workedReading`: the step's item, its own target, or the item above it
- * in `above`, nearest first), the fix is judged on that number: its misses are the runs in a row that read it, and the move runs from the
- * oldest of them, which `worked` names. A count or a 0-or-1 metric moves only when a whole item clears: on 10-24 Crawler VP's d9 read
+ * in `above`, nearest first), the fix is judged on that number: its misses are the runs in a row that read it, `worked` names its value at the
+ * oldest of them, and the move is judged over their last CHANGE_APPROACH_MISSES readings. A count or a 0-or-1 metric moves only when a whole
+ * item clears: on 10-24 Crawler VP's d9 read
  * throughput_goals_missed 3 then 4 under p942, so d9 asked to replace it, while p850, the goal above p942, went from 135 to 159 walks a minute
  * against 252. A fix first measured this way starts its count, as a new step does, since Crawler VP's runs before 21:24Z on 10-24 kept no
  * such number. A number on its own target counts as moved, since its fix did its part while a windowed duty metric still lags: p952's
@@ -182,10 +195,10 @@ export function fixStepStreak(runs: readonly DutyRunRecord[], key: string, step:
   if (now && first) {
     const onTarget = (reading: WorkedReading): boolean => reading.op === "<=" ? reading.value <= reading.target : reading.op === ">=" && reading.value >= reading.target;
     const distance = (reading: WorkedReading): number => onTarget(reading) ? 0 : Math.abs(reading.value - reading.target);
-    return { misses: readings.length, moved: onTarget(now) || distance(now) < distance(first),
+    return { misses: readings.length, moved: onTarget(now) || movedOverTail(readings.map(distance)),
       worked: { item: now.item, from: first.value, to: now.value, target: now.target }, ...from };
   }
-  return { misses, moved: misses > 0 && gap(named[0]!) < gap(named[misses - 1]!), ...from };
+  return { misses, moved: movedOverTail(named.map(gap)), ...from };
 }
 
 /** The current miss streak of every metric the newest measured run missed, from runs newest first. */
@@ -196,14 +209,14 @@ export function metricStreaks(runs: readonly DutyRunRecord[]): MetricStreak[] {
   const streaks: MetricStreak[] = [];
   for (const [key, result] of Object.entries(effectiveRun(newest).metrics)) {
     if (result.met) continue;
-    let oldest = result;
     let since = newest.at;
+    const gaps: number[] = [];
     const streak: DutyRunRecord[] = [];
     for (const run of ordered) {
       const found = effectiveRun(run).metrics[key];
       if (!found || found.met) break;
       streak.push(run);
-      oldest = found;
+      gaps.push(gap(found));
       // A run whose own reading met and whose after-job measure missed first missed when that measure was taken. On 11-20 Slack green's
       // d3 run of 01:00Z on 11-19 read met, its stalled job's after measure was written at 01:00Z on 11-20 with a send of 19:17Z on 11-19,
       // and the streak dated from 01:00Z on 11-19, so d9 read that send as landing after the first miss and called the aging red chronic.
@@ -211,7 +224,7 @@ export function metricStreaks(runs: readonly DutyRunRecord[]): MetricStreak[] {
       since = run.after && (!own || own.met) ? run.after.at : run.at;
     }
     const misses = streak.length;
-    const moved = gap(result) < gap(oldest);
+    const moved = movedOverTail(gaps);
     const fix = newest.fixes?.[key];
     const judged = fix ? fixMisses(streak, key, fix) : misses;
     const previous = runs.filter(measured).find(run => run.at < newest.at);
