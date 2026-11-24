@@ -473,8 +473,8 @@ export function namedEnv(definition, keys) {
 /**
  * What a page's `path::name` ref follows of a version of the definition, given its text at the page's check: for a table
  * only the entries the page names and for a keyword call the one argument it names (`entryKeys`), for a class all but a field added with a default the page does not name
- * (`memberKeys`), for a YAML block with an env map all but the entries whose key the page does not name (`envKeys`), else
- * the whole text.
+ * (`memberKeys`), for a YAML block with an env map all but the entries whose key the page does not name (`envKeys`), for a
+ * Markdown heading all but the subsections whose heading the page does not name (`namedSubsections`), else the whole text.
  * @param {string} source
  * @param {string | null} atCheck
  * @returns {(definition: string | null) => string | null}
@@ -485,7 +485,58 @@ export function followed(source, atCheck) {
 	const members = atCheck === null ? [] : memberKeys(source, atCheck);
 	if (members.length) return (definition) => knownMembers(definition, members);
 	const env = atCheck === null ? null : envKeys(source, atCheck);
-	return env ? (definition) => namedEnv(definition, env) : (definition) => definition;
+	if (env) return (definition) => namedEnv(definition, env);
+	return atCheck !== null && MD_HEADING.test(atCheck.split('\n', 1)[0] ?? '')
+		? (definition) => namedSubsections(source, definition)
+		: (definition) => definition;
+}
+
+/** A Markdown heading line, with its `#` run in group 1 and its text in group 2. */
+const MD_HEADING = /^(#{1,6})\s+(.*?)\s*#*\s*$/;
+/** @param {string} text */
+const plain = (text) => text.replace(/`/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+
+/**
+ * A Markdown section `definition` without each subsection, a deeper heading through the next heading of its level or
+ * higher, whose heading text the page body does not hold (case and backticks aside), or null for a null definition. A kept
+ * subsection's own subsections are judged the same way. A `path::name` heading ref (definitions.mjs) runs through its
+ * subsections, so a page that states one section of a README followed every subsection under it. On 2026-11-23 and 11-24
+ * auto-sns-agent 384298d8e5, f1792f19e0 and 19b0969bb5 changed only the "Grafana production read identity" and "Query MCP
+ * read layer" subsections under apps/infra/metal/README.md::Staging crawler containers and flagged the three pages citing
+ * it, own-containers.html, media-and-search-sync.html and deploys-crawler.html, and all 6 rechecks changed only
+ * `last_verified`. On a replay of the 480 dream rechecks behind a Markdown heading ref in the 7 days to 2026-11-24 01:00Z,
+ * 460 behind a flag, this drops 11, all `last_verified` only, and no body change. Ending a heading at its first subheading
+ * instead dropped 12 and lost the apps/vent/index.html fix for 56fad58301, which changed the "Test targets" subsection of
+ * apps/vent/README.md::Mock mode that the page names, and also keeping a subsection whose backtick words the page names
+ * kept those 6 flags, since an aside such as `crawler-worker` sat in it (~/work/wiki-stale-md-subsections/).
+ * @param {string} source
+ * @param {string | null} definition
+ * @returns {string | null}
+ */
+export function namedSubsections(source, definition) {
+	if (definition === null) return null;
+	const body = plain(
+		pageBody(source)
+			.replace(/<[^>]+>/g, ' ')
+			.replace(/&(?:lt|gt|amp|quot|#39);/g, (entity) => ENTITIES[entity] ?? entity),
+	);
+	const lines = definition.split('\n');
+	const level = MD_HEADING.exec(lines[0] ?? '')?.[1]?.length ?? 0;
+	/** @type {string[]} */
+	const kept = [];
+	for (let at = 0; at < lines.length; ) {
+		const line = lines[at] ?? '';
+		const sub = at > 0 ? MD_HEADING.exec(line) : null;
+		const depth = sub?.[1]?.length ?? 0;
+		if (!sub || depth <= level || body.includes(plain(sub[2] ?? '') || '\0')) {
+			kept.push(line);
+			at += 1;
+			continue;
+		}
+		at += 1;
+		while (at < lines.length && (MD_HEADING.exec(lines[at] ?? '')?.[1]?.length ?? 7) > depth) at += 1;
+	}
+	return kept.join('\n');
 }
 
 /** Whether the page states line numbers or a line count of `ref`, such as `fast.py:380` or `convex/crons.ts at lines 120, 126`, which any edit can move.
