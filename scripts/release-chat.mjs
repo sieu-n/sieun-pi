@@ -388,6 +388,10 @@ async function build(options, home, sha, dir, plan = null) {
     // tsc in the release folder follows the chat's imports into packages/pi-rlm, which finds @sieun-pi/pi-family in packages/node_modules.
     if (existsSync(join(options.repo, "packages/node_modules")) && existsSync(join(scratch, "packages")))
       symlinkSync(join(options.repo, "packages/node_modules"), join(scratch, "packages/node_modules"));
+    // The chat service bundle imports apps/chat/web's usage-range.ts (3982e9f2), and esbuild reads apps/chat/web/tsconfig.json, which extends
+    // @tsconfig/svelte from apps/chat/web/node_modules: without the link, the releases of 4ced2722 failed with "chat service bundle: 1 warnings".
+    if (existsSync(join(options.repo, "apps/chat/web/node_modules")) && existsSync(join(scratch, "apps/chat/web")))
+      symlinkSync(join(options.repo, "apps/chat/web/node_modules"), join(scratch, "apps/chat/web/node_modules"));
     const appPath = chatAppPath(scratch);
     symlinkSync(join(options.repo, appPath, "node_modules"), join(scratch, appPath, "node_modules"));
     if (appPath === LEGACY_APP && !existsSync(join(scratch, OLD_APP))) {

@@ -132,18 +132,20 @@ async function d11RerunAt(now: string, hold: PoolHold) {
     try {
       await duties.tick();
       await duties.settled();
-      const rerun = (await store.runs(CHAT)).find(record => record.rerunOf === D11_AT);
-      return { rerun, retired, started, logs };
+      const replaced = (await store.runs(CHAT)).find(record => record.job?.id === "new-1");
+      return { replaced, retired, started, logs };
     } finally { duties.close(); }
   } finally { await rm(dir, { recursive: true, force: true }); }
 }
 
+// The scan starts the push check beside `rerunCut`, and both replace a cut job once no line holds it, so whichever reaches `start` first
+// runs: in the release of a5cde0d6 on 11-24 at concurrency 20 the push won and the test, which looked only for the rerun, failed.
 for (const hold of ["admits", "line"] as const) {
   test(`the rerun of a cut run replaces its archived job while pi-pool reads its tree as ${hold} (d11 of the AI harness chat, 11-07 23:26Z)`, async () => {
-    const { rerun, retired, started, logs } = await d11RerunAt("2026-11-07T23:26:19.054Z", hold);
-    assert.ok(rerun, logs.join("\n"));
-    assert.ok(!rerun.summary.includes(IN_POOL_LINE), rerun.summary);
-    assert.equal(rerun.job?.id, "new-1", rerun.summary);
+    const { replaced, retired, started, logs } = await d11RerunAt("2026-11-07T23:26:19.054Z", hold);
+    assert.ok(replaced, logs.join("\n"));
+    assert.ok(replaced.rerunOf === D11_AT || replaced.trigger === "push", JSON.stringify(replaced));
+    assert.ok(!replaced.summary.includes(IN_POOL_LINE), replaced.summary);
     assert.deepEqual(retired, [D11_JOB.id]);
     assert.equal(started.length, 1);
   });
