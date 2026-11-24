@@ -42,7 +42,7 @@
   $effect(() => {
     const first = answer.value;
     if (!first?.pending) return;
-    void get<AgentConfig>({ path: `${reads.agentConfig(agentId).path}?wait=1` }, { background: "ahead" }).then(fresh => {
+    void get<AgentConfig>({ path: `${reads.agentConfig(agentId).path}?wait=1` }, { background: "shown" }).then(fresh => {
       if (answer.value === first) answer.set(fresh);
     }, () => undefined);
   });

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Badge, Button, Chip, Disclosure, LoadingText, StatusDot, stampLabel } from "$lib/ui";
+  import { Badge, Button, Chip, Disclosure, StatusDot, stampLabel } from "$lib/ui";
   import { conversationHref, hrefFor, router } from "$lib/router.svelte";
   import type { AgentWake } from "$lib/api";
   import MemberPicker from "$pages/channel/MemberPicker.svelte";
@@ -62,7 +62,7 @@
 {:else if config.pending}
   <section class="block" aria-label="Last 7 days" data-testid="agent-usage" data-pending>
     <h3 class="t-caption heading">Last 7 days</h3>
-    <p class="t-body-sm total"><LoadingText /></p>
+    <p class="t-body-sm total meta">Reading…</p>
   </section>
 {/if}
 <section class="block" aria-label="Wakes" data-testid="agent-wakes">

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { api, type ProjectList } from "$lib/api";
-  import { Badge, Button, LoadingText, stampLabel, toast } from "$lib/ui";
+  import { Badge, Button, stampLabel, toast } from "$lib/ui";
   import { hrefFor } from "$lib/router.svelte";
   import { folderOwner, money, plural, withFolder, type AgentTabProps } from "./agent-tab";
   import AgentFolderText from "./AgentFolderText.svelte";
@@ -123,7 +123,7 @@
     </dd>
   {:else if config.pending}
     <dt>Last 7 days</dt>
-    <dd data-fact="usage" data-pending><LoadingText /></dd>
+    <dd data-fact="usage" data-pending><span class="t-caption meta">Reading…</span></dd>
   {/if}
 </dl>
 {#if !job}{@render firstInput()}{/if}
