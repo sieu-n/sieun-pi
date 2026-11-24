@@ -25,12 +25,8 @@ export class MeiliError extends Error {}
  */
 export const ANSWER_BYTES = bufferConstants.MAX_STRING_LENGTH;
 
-/** Hits a page of `searchEach` asks for: 2,000 of the newest documents came to 4.1 MB on 11-24, so a page stays near 2 MB. */
-const PAGE_HITS = 1_000;
-
 export class Meili {
   private readonly agent = new Agent({ keepAlive: true });
-  pageHits = PAGE_HITS;
   constructor(readonly url: string, private readonly key: string, readonly answerBytes = ANSWER_BYTES) {}
 
   /**
@@ -94,34 +90,14 @@ export class Meili {
     return this.call<MeiliTask>("POST", `/indexes/${uid}/documents/delete-batch`, ids);
   }
 
-  async fetch<T>(uid: string, ids: readonly string[], fields: readonly string[]): Promise<T[]> {
+  /** The documents of `ids` that the index holds, with only `fields` of each, or every field without them. */
+  async fetch<T>(uid: string, ids: readonly string[], fields?: readonly string[]): Promise<T[]> {
     if (!ids.length) return [];
-    return (await this.call<{ results: T[] }>("POST", `/indexes/${uid}/documents/fetch`, { ids, fields, limit: ids.length })).results;
+    return (await this.call<{ results: T[] }>("POST", `/indexes/${uid}/documents/fetch`, { ids, ...(fields ? { fields } : {}), limit: ids.length })).results;
   }
 
   search<T>(uid: string, body: Record<string, unknown>): Promise<MeiliSearchAnswer<T>> {
     return this.call<MeiliSearchAnswer<T>>("POST", `/indexes/${uid}/search`, body);
-  }
-
-  /**
-   * Every hit of a search, newest first, `pageHits` at a time, handed to `each`; answers how many there were. Each page starts below the last
-   * one's oldest `at`, since an offset makes Meilisearch walk the hits before it: page 200 of 2,000 took 14.6 s on 11-24 and page 1 0.18 s.
-   */
-  async searchEach<T extends { id: string; at: number }>(uid: string, body: { q: string; filter: string } & Record<string, unknown>, each: (hits: T[]) => void): Promise<number> {
-    let count = 0;
-    let last: number | undefined;
-    let atLast: string[] = [];
-    for (;;) {
-      const below = last === undefined ? [] : [`at <= ${last}`, ...(atLast.length ? [`NOT id IN [${atLast.map(id => JSON.stringify(id)).join(", ")}]`] : [])];
-      const filter = [...(body.filter ? [`(${body.filter})`] : []), ...below].join(" AND ");
-      const { hits } = await this.search<T>(uid, { ...body, filter, sort: ["at:desc"], offset: 0, limit: this.pageHits });
-      count += hits.length;
-      each(hits);
-      if (hits.length < this.pageHits) return count;
-      const at = hits.at(-1)!.at;
-      atLast = [...(at === last ? atLast : []), ...hits.filter(hit => hit.at === at).map(hit => hit.id)];
-      last = at;
-    }
   }
 
   /** The tasks among `uids` that are done, succeeded or not. */

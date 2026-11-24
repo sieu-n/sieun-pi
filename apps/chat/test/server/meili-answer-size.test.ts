@@ -1,13 +1,14 @@
 /**
  * Release af53200 ended twice on 11-24 with ERR_STRING_TOO_LONG: a search asked Meilisearch for every hit written since a cut weeks old, and
- * the answer passed V8's longest string. Meili.call now refuses an answer longer than it may hold, and that search reads its hits a page at a
- * time, with the same results.
+ * the answer passed V8's longest string. Meili.call now refuses an answer longer than it may hold. A waiting document weeks old no longer
+ * makes a search read every newer hit (13.2 s for "vent"), and a search while Meilisearch is down answers from memory instead of a 500.
  */
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import { after, before, test } from "node:test";
 import { Meili, MeiliError } from "../../server/meili.ts";
-import { eq } from "../../server/search-engine.ts";
+import { and, eq, postDocId, type PostDoc } from "../../server/search-engine.ts";
+import type { SearchResult } from "../../web/src/lib/api/types.ts";
 import { start, type Running } from "./helpers.ts";
 
 async function answering(body: string, chunked: boolean): Promise<{ server: Server; url: string }> {
@@ -45,35 +46,74 @@ async function post(room: string, text: string): Promise<void> {
   assert.equal(sent.status, 200, JSON.stringify(sent.body));
 }
 
-test("the hits written since an old cut come a page at a time and rank as they did in one answer", async () => {
-  const word = `zqpage${Math.random().toString(36).slice(2, 8)}`;
-  const room = (await s.send<{ id: string }>("POST", "/api/rooms", { kind: "channel", name: `page-${word}`, members: [] })).body.id;
-  // One to three words start with the searched one, so the engine's rule ranks by how many before how new.
-  for (let n = 1; n <= 30; n += 1) await post(room, `${["a", "b", "c"].slice(0, 1 + (n % 3)).map(end => word + end).join(" ")} post ${n}`);
-  await s.app.searchEngine.settled();
+function spy(): { meili: Meili; asked: number[]; restore(): void } {
   const meili = (s.app.searchEngine as unknown as { meili: Meili }).meili;
   const search = meili.search.bind(meili);
-  const answers: number[] = [];
+  const asked: number[] = [];
   meili.search = (async (uid: string, body: Record<string, unknown>) => {
-    const answer = await search(uid, body);
-    answers.push(answer.hits.length);
-    return answer;
+    asked.push(Number(body.hitsPerPage ?? body.limit ?? 0));
+    return search(uid, body);
   }) as Meili["search"];
-  const ask = () => s.app.searchEngine.search(word, eq("source", "post"), { sort: "relevance", limit: 5, since: 0 });
+  return { meili, asked, restore: () => void (meili.search = search) };
+}
+
+test("a waiting document weeks old asks Meilisearch for one page, and every page ranks the same documents once it is indexed", async () => {
+  const word = `zqold${Math.random().toString(36).slice(2, 8)}`;
+  const room = (await s.send<{ id: string }>("POST", "/api/rooms", { kind: "channel", name: `old-${word}`, members: [] })).body.id;
+  for (let n = 1; n <= 30; n += 1) await post(room, `${word} post ${n}`);
+  await s.app.searchEngine.settled();
+  const { meili, asked, restore } = spy();
+  const put = meili.put.bind(meili);
+  const held: (() => void)[] = [];
+  meili.put = (uid, docs) => new Promise(resolve => held.push(() => resolve(put(uid, docs))));
+  const old: PostDoc = {
+    id: postDocId(room, `old-${word}`), source: "post", text: `${word} post 0`, reactions: "", at: Date.now() - 21 * 24 * 60 * 60 * 1000, tier: 0,
+    author: "owner", room, post: `old-${word}`, dm: false, listed: true, ownerPost: true, kind: "room.post", has: [],
+  };
+  const where = and(eq("source", "post"), eq("room", room));
+  const shown: string[] = [];
   try {
-    const whole = await ask();
-    meili.pageHits = 4;
-    answers.length = 0;
-    const paged = await ask();
-    assert.ok(answers.length > 30 / 4, `${answers.length} answers`);
-    assert.ok(Math.max(...answers) <= 5, `one answer held ${Math.max(...answers)} hits`);
-    assert.equal(paged.total, 30);
-    assert.deepEqual(paged.docs.map(doc => doc.id), whole.docs.map(doc => doc.id));
-    assert.equal(paged.total, whole.total);
-    const shown = paged.docs.map(doc => Number(/post (\d+)/.exec(doc.text)![1]));
-    assert.deepEqual(shown, [29, 26, 23, 20, 17]);
+    s.app.searchEngine.postChanged(old.id, old);
+    const first = await s.app.searchEngine.search(word, where, { sort: "relevance", limit: 10 });
+    assert.ok(Math.max(...asked) <= 10, `one Meilisearch answer was asked for ${Math.max(...asked)} hits`);
+    assert.equal(first.total, 31);
+    assert.deepEqual(first.since, [old.id]);
+    shown.push(...first.docs.map(doc => doc.id));
   } finally {
-    meili.search = search;
-    meili.pageHits = 1_000;
+    meili.put = put;
+    restore();
   }
+  for (const release of held) release();
+  await s.app.searchEngine.settled();
+  for (const limit of [20, 30, 40]) {
+    const page = await s.app.searchEngine.search(word, where, { sort: "relevance", limit, since: [old.id] });
+    assert.equal(page.total, 31);
+    shown.push(...page.docs.slice(limit - 10).map(doc => doc.id));
+  }
+  assert.equal(new Set(shown).size, shown.length, "a hit came twice");
+  assert.equal(shown.length, 31);
+  assert.ok(shown.includes(old.id));
+});
+
+test("a search while Meilisearch does not answer finds room posts from memory and says it is partial", async () => {
+  const word = `zqdown${Math.random().toString(36).slice(2, 8)}`;
+  const room = (await s.send<{ id: string }>("POST", "/api/rooms", { kind: "channel", name: `down-${word}`, members: [] })).body.id;
+  for (let n = 1; n <= 3; n += 1) await post(room, `${word} post ${n}`);
+  await s.app.searchEngine.settled();
+  const meili = (s.app.searchEngine as unknown as { meili: Meili }).meili;
+  const call = meili.call.bind(meili);
+  meili.call = (() => Promise.reject(Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:7700"), { code: "ECONNREFUSED" }))) as Meili["call"];
+  try {
+    const answer = await s.send<SearchResult>("GET", `/api/search?${new URLSearchParams({ q: word })}`);
+    assert.equal(answer.status, 200, JSON.stringify(answer.body));
+    assert.equal(answer.body.partial, true);
+    assert.equal(answer.body.total, 3);
+    assert.deepEqual(answer.body.hits.map(hit => hit.snippet.replace(/<\/?mark>/g, "")).sort(), [1, 2, 3].map(n => `${word} post ${n}`));
+    assert.ok(answer.body.missing?.some(line => line.box === "index"));
+  } finally {
+    meili.call = call;
+  }
+  const back = await s.send<SearchResult>("GET", `/api/search?${new URLSearchParams({ q: word })}`);
+  assert.equal(back.body.partial, undefined);
+  assert.equal(back.body.total, 3);
 });

@@ -222,13 +222,14 @@ function terms(q: string): string[] {
 }
 
 /**
- * A next page's place: the offset of its first hit, the time its first page read up to, and the engine's `since` when the first page had one,
- * as `run` writes `nextCursor`. A bare offset reads up to now, and a cursor with no `since` ranks by Meilisearch's order alone (null).
+ * A next page's place: the offset of its first hit, the time its first page read up to, and the ids of the engine's `since` when the first page
+ * had them, as `run` writes `nextCursor`. A bare offset reads up to now, and a cursor with no ids ranks by Meilisearch's order alone. A
+ * Meilisearch id holds only letters, digits, `-` and `_`, so a dot parts them.
  */
-export function readCursor(cursor: string | undefined): { offset: number; asOf?: number; since?: number | null } {
-  const match = /^(\d+)(?:\.(\d+)(?:\.(\d+))?)?$/.exec(cursor ?? "");
+export function readCursor(cursor: string | undefined): { offset: number; asOf?: number; since?: string[] } {
+  const match = /^(\d+)(?:\.(\d+)((?:\.[\w-]+)*))?$/.exec(cursor ?? "");
   if (!match) return { offset: 0 };
-  return { offset: Number(match[1]), ...(match[2] ? { asOf: Number(match[2]), since: match[3] ? Number(match[3]) : null } : {}) };
+  return { offset: Number(match[1]), ...(match[2] ? { asOf: Number(match[2]), since: match[3] ? match[3].slice(1).split(".") : [] } : {}) };
 }
 
 /** A work-thread input that was a job's test send typed into the owner's DM (rooms.ts `allTestSends`). */
@@ -341,16 +342,19 @@ export class Search {
     const answered = performance.now();
     const look = this.lookups();
     const total = mine.total;
-    const missing: SearchMissing[] = inChannel ? [] : this.boxes().flatMap(box => {
-      const note = boxNote(box, this.engine.boxState(box.box));
-      return note ? [{ box: box.box, note }] : [];
-    });
+    const missing: SearchMissing[] = [
+      ...(mine.partial ? [{ box: "index", note: "Search could not reach its index, so these hits hold only room posts and the newest thread messages." }] : []),
+      ...(inChannel ? [] : this.boxes().flatMap(box => {
+        const note = boxNote(box, this.engine.boxState(box.box));
+        return note ? [{ box: box.box, note }] : [];
+      })),
+    ];
     let hits = mine.docs.slice(offset, offset + limit).flatMap(doc => this.docHit(doc, scope?.thread, look, marks, testOf, rootChats.sets, !!query.brief) ?? []);
     // An answer whose match sits only in a tool call's arguments is found by its text, so it sinks below the messages of its own page.
     if (sort === "relevance") hits = [...hits.filter(hit => hit.role !== "tool"), ...hits.filter(hit => hit.role === "tool")];
     if (split) split.hits = performance.now() - answered;
     return {
-      hits, total, ...(offset + limit < total ? { nextCursor: `${offset + limit}.${asOf}${mine.since === undefined ? "" : `.${mine.since}`}` } : {}), ...(missing.length ? { missing } : {}),
+      hits, total, ...(offset + limit < total ? { nextCursor: [offset + limit, asOf, ...(mine.since ?? [])].join(".") } : {}), ...(missing.length ? { missing } : {}), ...(mine.partial ? { partial: true } : {}),
     };
   }
 

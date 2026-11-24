@@ -203,7 +203,7 @@ function docMatches(doc: SearchDoc, words: readonly string[]): number {
 
 type Pending = { doc: SearchDoc | null; task?: number };
 
-/** The engine's rule for hits Meilisearch did not rank: tier, then how often the words occur, then newest first. */
+/** The engine's rule for the hits Meilisearch does not rank: tier, then how often the words occur, then newest first. */
 type Ranked = { doc: SearchDoc; score: number };
 const byRule = (a: Ranked, b: Ranked): number =>
   a.doc.tier - b.doc.tier || b.score - a.score || b.doc.at - a.doc.at || (a.doc.id < b.doc.id ? -1 : a.doc.id > b.doc.id ? 1 : 0);
@@ -236,8 +236,11 @@ export interface EngineDeps {
   log: (line: string) => void;
 }
 
-/** `since` is the time the next pages of a relevance search pass back, when its first page drew documents Meilisearch did not hold yet. */
-export interface EngineAnswer { docs: SearchDoc[]; total: number; since?: number }
+/**
+ * `since` names the documents a relevance search's first page drew that Meilisearch did not hold yet, which its next pages pass back.
+ * `partial` marks an answer from memory alone, while Meilisearch did not answer.
+ */
+export interface EngineAnswer { docs: SearchDoc[]; total: number; since?: readonly string[]; partial?: true }
 
 /** Where one search's handler time went, in ms by part, with the pending count and filter size, for its request log line (request-log.ts `split`). */
 export type SearchSplit = Record<string, number>;
@@ -773,9 +776,10 @@ export class SearchEngine {
    * The first `limit` documents that hold every word of `q` and meet `where`, and the exact count of all of them: Meilisearch's for the
    * documents it holds, with the pending ones read here and merged by rank. A relevance search's first page leaves `since` out and answers
    * the one its next pages pass back, so every page ranks the same documents in the same order however many of them Meilisearch indexed
-   * between two pages; `null` ranks every document by Meilisearch's order.
+   * between two pages; an empty `since` ranks every document by Meilisearch's order. While Meilisearch does not answer, the answer comes
+   * from memory and is `partial`.
    */
-  async search(q: string, where: Cond, opts: { sort: "relevance" | "recent"; limit: number; since?: number | null }, split?: SearchSplit): Promise<EngineAnswer> {
+  async search(q: string, where: Cond, opts: { sort: "relevance" | "recent"; limit: number; since?: readonly string[] }, split?: SearchSplit): Promise<EngineAnswer> {
     let mark = performance.now();
     const took = (part: string) => {
       const now = performance.now();
@@ -799,13 +803,43 @@ export class SearchEngine {
         // Meilisearch did not open; `start` logged why.
       }
     }
-    if (!this.filling) {
-      await this.ready;
-      // The pending list as it stands is enough for this answer: a document Meilisearch already holds is read from memory once more.
-      void this.settle().catch(error => this.deps.log(`search: ${String(error)}`));
-    }
-    took("ready");
     const words = queryWords(q);
+    try {
+      if (!this.filling) {
+        await this.ready;
+        // The pending list as it stands is enough for this answer: a document Meilisearch already holds is read from memory once more.
+        void this.settle().catch(error => this.deps.log(`search: ${String(error)}`));
+      }
+      took("ready");
+      return await this.meiliSearch(q, words, where, opts, took, split);
+    } catch (error) {
+      this.deps.log(`search: Meilisearch did not answer (${String(error)}), so this search answers from memory`);
+      const answer = this.memoryAnswer(words, where, opts);
+      took("memory");
+      return answer;
+    }
+  }
+
+  /**
+   * The answer from memory while Meilisearch does not answer: every room post, built again from the rooms, and the pending documents. It
+   * misses the thread entries only Meilisearch holds, so it is `partial`. /api/search answered 500 instead until p281.
+   */
+  private memoryAnswer(words: readonly string[], where: Cond, opts: { sort: "relevance" | "recent"; limit: number }): EngineAnswer {
+    const docs = new Map(this.deps.allPosts().map(doc => [doc.id, doc]));
+    for (const [id, p] of this.pending) {
+      if (p.doc) docs.set(id, p.doc);
+      else docs.delete(id);
+    }
+    const found = [...docs.values()].flatMap(doc => {
+      const score = !holds(where, doc) ? 0 : words.length ? docMatches(doc, words) : 1;
+      return score > 0 ? [{ doc, score }] : [];
+    });
+    found.sort(opts.sort === "recent" ? (a, b) => b.doc.at - a.doc.at : byRule);
+    return { docs: found.slice(0, opts.limit).map(m => m.doc), total: found.length, partial: true };
+  }
+
+  private async meiliSearch(q: string, words: readonly string[], where: Cond, opts: { sort: "relevance" | "recent"; limit: number; since?: readonly string[] },
+    took: (part: string) => void, split?: SearchSplit): Promise<EngineAnswer> {
     const local = [...this.pending.values()].flatMap(p => (p.doc && holds(where, p.doc) ? [{ doc: p.doc, score: words.length ? docMatches(p.doc, words) : 1 }] : [])).filter(m => m.score > 0);
     local.sort((a, b) => (opts.sort === "recent" ? b.doc.at - a.doc.at : a.doc.tier - b.doc.tier || b.score - a.score || b.doc.at - a.doc.at));
     const fresh = local.map(m => m.doc);
@@ -828,45 +862,49 @@ export class SearchEngine {
       return { docs: [...answer.hits, ...fresh].sort((a, b) => b.at - a.at).slice(0, opts.limit), total: answer.totalHits + fresh.length };
     }
     // A page's order cannot hang on which hits Meilisearch holds yet: the next page, read once it held them, found them at its own ranks
-    // and listed 4 hits twice and 4 never (search-page.spec.ts, 11-23). So the documents written since `since`, the oldest one Meilisearch
-    // did not hold at the first page, rank by the engine's own rule wherever they sit, and the older ones by Meilisearch's.
+    // and listed 4 hits twice and 4 never (search-page.spec.ts, 11-23). So the matching documents Meilisearch did not hold at the first page,
+    // `since`, rank by the engine's own rule on every page and stay out of Meilisearch's answer, which ranks the rest. `since` was the time of
+    // the oldest of them until p281, and every document written after it ranked by the engine's rule, which read all of them from Meilisearch:
+    // 13.2 s for "vent" while a row weeks old waited, and one answer of 326 MB that ended release af53200 (~/work/meili-memory/p281-summary.md).
     const ids = fresh.map(doc => doc.id);
     const freshIds = new Set(ids);
-    const cutBy = (inIndex: (id: string) => boolean): number | null =>
-      opts.since !== undefined ? opts.since : fresh.reduce<number | null>((oldest, doc) => (inIndex(doc.id) || (oldest !== null && oldest <= doc.at) ? oldest : doc.at), null);
+    const unheld = (inIndex: (id: string) => boolean): readonly string[] => opts.since ?? ids.filter(id => !inIndex(id));
     // A pending document that no longer matches leaves Meilisearch's answer now, as it will once indexed. A matching pending document whose
     // copy in Meilisearch no longer matches is out of that answer already, so only the pending documents that match nowhere are named.
     const elsewhere = pendingIds.filter(id => !freshIds.has(id));
-    const filterAt = (cut: number | null) => filterText(and(where, ...(cut === null ? [] : [{ op: "lt", field: "at", value: cut } as Cond]), ...(elsewhere.length ? [not(isIn("id", elsewhere))] : [])));
-    const answers = (cut: number | null) => {
-      const newerFilter = cut === null ? undefined : filterText(and(where, { op: "gte", field: "at", value: cut }, ...(pendingIds.length ? [not(isIn("id", pendingIds))] : [])));
-      return Promise.all([
-        ask(filterAt(cut), opts.limit).then(found => ({ ...found, hits: found.hits.map(doc => this.pending.get(doc.id)?.doc ?? doc) })),
-        newerFilter === undefined ? undefined : ask(newerFilter, opts.limit).then(first => (first.totalHits > first.hits.length ? this.newest(q, newerFilter, words, opts.limit) : first)),
-      ]);
+    const filterOut = (since: readonly string[]) => {
+      const out = [...new Set([...elsewhere, ...since])];
+      return filterText(out.length ? and(where, not(isIn("id", out))) : where);
     };
-    // Which fresh documents Meilisearch holds is asked beside the answer, which goes with the cut the documents it was seen to hold give.
+    const answerOut = (since: readonly string[]) =>
+      ask(filterOut(since), opts.limit).then(found => ({ ...found, hits: found.hits.map(doc => this.pending.get(doc.id)?.doc ?? doc) }));
+    // Which fresh documents Meilisearch holds is asked beside the answer, which goes with the `since` the documents it was seen to hold give.
     // Asked before it, that round trip took p50 10.7 ms and up to 189 ms of the 54 searches that had one in 11-23 21:50Z to 11-24 07:00Z.
-    // A guess the held answer proves wrong, such as a post edited since the server started, asks again with the right cut.
-    const guess = cutBy(id => this.inIndex.has(id));
-    noteFilter(filterAt(guess));
-    const first = answers(guess);
+    // A guess the held answer proves wrong, such as a post edited since the server started, asks again.
+    const guess = unheld(id => this.inIndex.has(id));
+    noteFilter(filterOut(guess));
+    const first = answerOut(guess);
     first.catch(() => undefined);
-    const [held, matched] = ids.length
-      ? await Promise.all([
-        this.meili.fetch<{ id: string }>(SEARCH_INDEX, ids, ["id"]).then(docs => new Set(docs.map(doc => doc.id))),
-        ask(filterText(and(where, isIn("id", ids))), ids.length, undefined, ["id"]).then(answer => new Set(answer.hits.map(doc => doc.id))),
-      ])
-      : [new Set<string>(), new Set<string>()];
+    // A document of `since` that Meilisearch indexed after the first page left memory, so it is read back by id.
+    const gone = (opts.since ?? []).filter(id => !freshIds.has(id) && !this.pending.has(id));
+    const [held, matched, back] = await Promise.all([
+      ids.length ? this.meili.fetch<{ id: string }>(SEARCH_INDEX, ids, ["id"]).then(docs => new Set(docs.map(doc => doc.id))) : new Set<string>(),
+      ids.length ? ask(filterText(and(where, isIn("id", ids))), ids.length, undefined, ["id"]).then(answer => new Set(answer.hits.map(doc => doc.id))) : new Set<string>(),
+      gone.length ? this.meili.fetch<SearchDoc>(SEARCH_INDEX, gone) : [],
+    ]);
     took("held");
     for (const id of held) if (this.pending.has(id)) this.inIndex.add(id);
-    const cut = cutBy(id => held.has(id));
+    const since = unheld(id => held.has(id));
+    const sinceSet = new Set(since);
     // A pending document whose copy in Meilisearch matches keeps that copy's rank and shows its own text, and one that matches only now,
     // such as a post just reacted to under has:reaction, ranks by the engine's rule.
-    const own = fresh.filter(doc => !matched.has(doc.id) || (cut !== null && doc.at >= cut));
-    const [answer, newer] = await (cut === guess ? first : answers(cut));
+    const own = [
+      ...fresh.filter(doc => !matched.has(doc.id) || sinceSet.has(doc.id)),
+      ...back.filter(doc => holds(where, doc) && (!words.length || docMatches(doc, words) > 0)),
+    ];
+    const answer = await (since === guess || (since.length === guess.length && since.every(id => guess.includes(id))) ? first : answerOut(since));
     took("meili");
-    const recent = [...(newer?.hits ?? []), ...own]
+    const recent = own
       .map(doc => ({ doc, score: words.length ? docMatches(doc, words) : 1 }))
       .sort(byRule)
       .map(m => m.doc);
@@ -877,18 +915,6 @@ export class SearchEngine {
       if (rank < recent.length) docs.push(recent[rank]!);
     }
     docs.sort((a, b) => a.tier - b.tier);
-    return { docs: docs.slice(0, opts.limit), total: answer.totalHits + (newer?.totalHits ?? 0) + own.length, ...(cut === null ? {} : { since: cut }) };
-  }
-
-  /**
-   * The first `limit` of the hits written since a cut, by the engine's rule, and how many there are. Only those can reach a page, while all
-   * of them in one answer passed V8's longest string on 11-24 when a post weeks old waited in memory: meili.ts `ANSWER_BYTES`.
-   */
-  private async newest(q: string, filter: string, words: readonly string[], limit: number): Promise<{ hits: SearchDoc[]; totalHits: number }> {
-    let top: Ranked[] = [];
-    const totalHits = await this.meili.searchEach<SearchDoc>(SEARCH_INDEX, { q, filter, matchingStrategy: "all" }, hits => {
-      top = [...top, ...hits.map(doc => ({ doc, score: words.length ? docMatches(doc, words) : 1 }))].sort(byRule).slice(0, limit);
-    });
-    return { hits: top.map(m => m.doc), totalHits };
+    return { docs: docs.slice(0, opts.limit), total: answer.totalHits + own.length, ...(since.length ? { since } : {}) };
   }
 }

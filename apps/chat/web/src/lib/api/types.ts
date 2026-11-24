@@ -630,9 +630,10 @@ export interface SearchHit {
 export interface SearchMissing { box: string; note: string }
 /**
  * `missing` names each box whose threads are not in `hits` or `total`. `pending`, only in a `local=1` answer, names the boxes whose hits
- * and count are still to come, so `total` is not final until the same request without `local=1` answers.
+ * and count are still to come, so `total` is not final until the same request without `local=1` answers. `partial` marks an answer the
+ * server read from memory while its search index did not answer, with a `missing` line that says so.
  */
-export interface SearchResult { hits: SearchHit[]; total: number; nextCursor?: string; missing?: SearchMissing[] }
+export interface SearchResult { hits: SearchHit[]; total: number; nextCursor?: string; missing?: SearchMissing[]; partial?: boolean }
 
 /** A wiki page as GET /api/pages lists it (server/wiki/pages.ts); `path` opens it in the viewer as `wiki:<path>`. */
 export interface WikiPageRow { path: string; title: string; description: string | null; updated: string }
