@@ -226,7 +226,7 @@ export class GroupRooms {
 
   /** The rooms an agent is a member of, not archived. */
   memberRooms(agent: AgentId): GroupRoom[] {
-    return this.rows().filter(r => !r.archived && r.members.some(m => m.agent === agent));
+    return [...this.store.memberRooms(agent)];
   }
 
   /** The comm threads the room's members have for it. */

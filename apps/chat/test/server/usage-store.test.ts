@@ -308,8 +308,39 @@ test("a server starts from the snapshot the last one wrote, and its first read i
   assert.equal((await handOver.usage({ since: hour, until: hour + HOUR, bucketMs: HOUR }))[0]!.cost, 3, "a snapshot written seconds ago answers before the tail read lands");
   assert.equal(reads, 1, "the tail read went out and has not answered");
 
-  now += 11 * 60_000;
+  now += 12 * 60_000;
   const late = new StoreUsage(reader, "t", () => {}, () => now, 600_000, snapshot);
   await late.pull();
   assert.match(asked.at(-1)!, /FINAL/, "a snapshot older than the tail read's span is left, and the first read is a full read");
+});
+
+test("a hand-over's stop writes no snapshot, and its successor reads the last full read's before the port, so its first read is a tail read", async () => {
+  const hour = NOW - (NOW % HOUR);
+  const columns: Columns = {
+    grain: ["hour"], bucket: [hour], host: ["us-metal02"], client: ["prime"], agent: [""], thread_or_session: ["t1"], thread_name: [""], model: ["m"],
+    turns: [3], input: [10], output: [20], cache_read: [0], cache_write: [0], cost_input: [1], cost_output: [2], cost_cache_read: [0], cost_cache_write: [0], unpriced: [0],
+  };
+  const snapshot = join(mkdtempSync(join(tmpdir(), "usage-snapshot-")), "usage-sums.json");
+  let now = NOW;
+  const asked: string[] = [];
+  const reader = { query: async (sql: string) => (asked.push(sql), columns) };
+  const old = new StoreUsage(reader, "t", () => {}, () => now, 600_000, snapshot);
+  await old.pull();
+  while (!existsSync(snapshot)) await new Promise(resolve => setImmediate(resolve));
+  const written = readFileSync(snapshot, "utf8");
+  now += 5 * 60_000;
+  await old.pull();
+  old.stop(false);
+  assert.equal(readFileSync(snapshot, "utf8"), written, "the hand-over's stop left the full read's snapshot as it was");
+
+  now += 2_000;
+  const next = new StoreUsage(reader, "t", () => {}, () => now, 600_000, snapshot);
+  const reads = asked.length;
+  await next.prepare();
+  assert.equal(asked.length, reads, "the snapshot read asks the store nothing");
+  assert.equal(next.ready(), false, "a snapshot 5 min old waits for the tail read");
+  await next.pull();
+  assert.doesNotMatch(asked.at(-1)!, /FINAL/, "the first read is a tail read from the snapshot's time");
+  assert.equal(next.ready(), true);
+  assert.equal((await next.usage({ since: hour, until: hour + HOUR, bucketMs: HOUR }))[0]!.cost, 3);
 });

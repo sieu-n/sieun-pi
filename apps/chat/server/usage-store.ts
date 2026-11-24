@@ -246,7 +246,6 @@ export class StoreUsage implements UsageSums {
   private readonly now: () => number;
   private readonly fullEvery: number;
   private readonly snapshot: string | undefined;
-  private restored = false;
   private saving = false;
   private restoredAt: number | undefined;
   private restoring: Promise<void> | undefined;
@@ -273,9 +272,21 @@ export class StoreUsage implements UsageSums {
     this.timer = setInterval(() => void this.pull(), ms);
   }
 
-  stop(): void {
+  /**
+   * `save` false is a hand-over's stop, which writes no snapshot: the successor read the one the last full read wrote while this server still
+   * answered (`prepare`), and this stop's sync write of every sum held the port closed 0.6 to 0.9 s of each hand-over on 11-24.
+   */
+  stop(save = true): void {
     clearInterval(this.timer);
-    if (this.read && this.lastError === undefined) this.saveNow(this.goodAt!);
+    if (save && this.read && this.lastError === undefined) this.saveNow(this.goodAt!);
+  }
+
+  /**
+   * Reads the snapshot without a store read, for a successor while the server it follows still answers. Its first pull is then a tail read
+   * from the snapshot's time, and no call after the port is taken pays the snapshot's parse, about 540 ms of a new server's first 3 s on 11-24.
+   */
+  prepare(): Promise<void> {
+    return this.snapshot ? (this.restoring ??= this.restore()) : Promise.resolve();
   }
 
   /**
@@ -334,7 +345,6 @@ export class StoreUsage implements UsageSums {
    * waits for a full read.
    */
   private async restore(): Promise<void> {
-    this.restored = true;
     if (!this.snapshot || !existsSync(this.snapshot)) return;
     const started = performance.now();
     try {
@@ -382,9 +392,11 @@ export class StoreUsage implements UsageSums {
   }
 
   private async pullOnce(): Promise<void> {
-    if (!this.restored && this.snapshot) await (this.restoring ??= this.restore());
+    if (this.snapshot) await (this.restoring ??= this.restore());
     const now = this.now();
-    const full = now - this.fullAt >= this.fullEvery;
+    // Before the first read, a snapshot the tail read still covers needs only the tail; the full read, if due, follows at the next pull.
+    const tailCovers = this.restoredAt !== undefined && now - this.restoredAt < TICKS_KEPT_MS - USAGE_PULL_MS;
+    const full = this.read || !tailCovers ? now - this.fullAt >= this.fullEvery : false;
     const from = Object.fromEntries(GRAIN_NAMES.map(grain => {
       const ms = GRAIN_MS[grain];
       return [grain, Math.floor((now - (full ? KEPT_MS[grain] : TICKS_KEPT_MS)) / ms) * ms];

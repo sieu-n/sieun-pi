@@ -5,7 +5,7 @@
 import { mkdtempSync } from "node:fs";
 import { homedir, platform, tmpdir } from "node:os";
 import { join } from "node:path";
-import { App } from "./app.ts";
+import { App, storeUsageOf } from "./app.ts";
 import { flushSync, onWriteError, seal } from "./disk.ts";
 import { fixtureFolders, readAgentHosts, readConfig, type Config } from "./config.ts";
 import { FixtureHost } from "./host/fixture.ts";
@@ -64,6 +64,10 @@ const skills = skillsParts(config, log, () => app);
 // Each release starts a new process, and its first Wiki view open waited 230 to 650 ms on the engine on 11-24 (~/work/wiki-page-list/report.md).
 const wikiPages = new WikiPageList(new WikiEngine(config.wikiEngine));
 if (!config.fixture) void wikiPages.get("").catch(() => undefined);
+// A successor reads the usage snapshot while the server it follows still answers, so no call after the listen pays its parse (usage-store.ts
+// `prepare`).
+const storeUsage = storeUsageOf(config, log);
+void storeUsage?.prepare();
 await skills.ready;
 const skillsMs = Math.round(performance.now() - skillsAt);
 // A successor reads the data dir only once the server it follows stopped and wrote its files (server/handoff.ts).
@@ -105,7 +109,7 @@ function boxes(config: Config): Host {
 const host = config.fixture ? new FixtureHost() : boxes(config);
 if (config.fixture) seedFixture(host as FixtureHost, config.dataDir, Date.now(), config.box);
 const startAt = performance.now();
-app = new App(config, host, log);
+app = new App(config, host, log, { storeUsage });
 const builtMs = Math.round(performance.now() - startAt);
 const started = await app.start({ loops: false });
 // A fixture server fills its own search index at once, so its first search does not wait for it.

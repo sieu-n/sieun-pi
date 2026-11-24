@@ -112,6 +112,13 @@ type Client = { socket: WebSocket; watching: Map<ConversationId, ConversationId[
  */
 export type SocketRead = (path: string, req: IncomingMessage | undefined) => Promise<{ status: number; value?: unknown; error?: string }>;
 
+/** The usage store `APPS_CHAT_USAGE_STORE` names, keeping its snapshot in the data dir; undefined when it names none. */
+export function storeUsageOf(config: Config, log: (line: string) => void): StoreUsage | undefined {
+  return config.usageStore
+    ? new StoreUsage(storeReader(config.usageStore), config.usageStore.table, log, Date.now, STORE_FULL_PULL_MS, join(config.dataDir, "usage-sums.json"))
+    : undefined;
+}
+
 export class App {
   /** chat.sqlite, which holds each kind of record moved out of the JSON files (chat-db.ts), and those moves by kind (json-move.ts). */
   readonly chatDb: ChatDb;
@@ -170,7 +177,8 @@ export class App {
   /** Slack-style link previews of the web links posts hold (unfurl.ts). */
   readonly unfurl = new Unfurler();
 
-  constructor(readonly config: Config, readonly host: Host, readonly log: (line: string) => void = line => console.log(line)) {
+  /** `early.storeUsage` is the usage store a successor made and `prepare`d before the server it follows stopped (main.ts). */
+  constructor(readonly config: Config, readonly host: Host, readonly log: (line: string) => void = line => console.log(line), early: { storeUsage?: StoreUsage } = {}) {
     this.chatDb = new ChatDb(join(config.dataDir, "chat.sqlite"), { log });
     // A kind a server moved that APPS_CHAT_DB_KINDS no longer names, a rollback by kind, goes back to its files before any store reads them.
     const kinds: JsonKind[] = [AGENTS, ROOMS, STATE, FOR_ME].map(spec => docKind(spec as unknown as DocSpec<object>));
@@ -366,8 +374,7 @@ export class App {
     };
     this.searchEngine = this.newSearchEngine(routing?.list()[0]!.host ?? host, routing);
     if (config.usageStore) {
-      this.usage = this.storeUsage = new StoreUsage(storeReader(config.usageStore), config.usageStore.table, log, Date.now, STORE_FULL_PULL_MS,
-        join(config.dataDir, "usage-sums.json"));
+      this.usage = this.storeUsage = early.storeUsage ?? storeUsageOf(config, log)!;
       // The first read starts with the server rather than with the loops 2 s after the listen: a restart's first api/usage call waited
       // 1.2 s for the snapshot and the tail read on 11-24, and they now run while the server starts.
       void this.storeUsage.pull();
@@ -457,6 +464,7 @@ export class App {
    * still finishes after the stop (http.ts `passThrough`), and closes when the process exits.
    */
   async stop(options: { keepHost?: boolean } = {}): Promise<void> {
+    // A hand-over's stop writes no usage snapshot: its successor read the last full read's before this stop (usage-store.ts `prepare`).
     this.rooms.stop();
     this.groups.stop();
     this.boards.stop();
@@ -473,7 +481,7 @@ export class App {
     await this.threads.stop();
     for (const client of this.clients) client.socket.close();
     this.searchStop();
-    this.storeUsage?.stop();
+    this.storeUsage?.stop(!options.keepHost);
     this.usageAnswers.stop();
     this.records.flush();
     await Promise.all([...this.moves.values()].map(move => move.flushExports()));
