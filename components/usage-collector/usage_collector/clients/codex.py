@@ -15,7 +15,7 @@ import os
 from datetime import datetime, timezone
 from typing import Iterable, Optional
 
-from usage_collector.outside import changed_files, parse_ts, read_text, row, walk_files
+from usage_collector.outside import changed_files, mark_read, parse_ts, read_text, row, walk_files
 
 CLIENT = "codex"
 MAX_DECODED_BYTES = 1024 * 1024 * 1024
@@ -55,7 +55,7 @@ def collect(ctx) -> Iterable[dict]:
                 seen.add(key)
             if m["ts"] >= ctx.since:
                 yield to_row(m, ctx.host)
-        ctx.state["mtime_cursor_ms"] = mtime
+        mark_read(ctx.state, mtime, path)
         if n % CHECKPOINT_FILES == 0:
             yield CHECKPOINT
 

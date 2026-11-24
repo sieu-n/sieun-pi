@@ -108,21 +108,33 @@ def walk_files(root: str, keep: Callable[[str], bool]) -> Iterator[str]:
 def changed_files(paths, state: dict, since_ms: int) -> list:
     """(mtime ms, path) of files at or after the saved cursor and since_ms, oldest first.
 
-    A caller saves each file's mtime as state["mtime_cursor_ms"] once its rows are in the sink. The cursor
-    is inclusive, so a file written in the same millisecond as the last one read is read again, which
-    only resends rows with the same keys.
+    A caller passes each file it read to mark_read once its rows are in the sink. The cursor is inclusive,
+    so a file written in the same millisecond as the last one read is still read, but a file already read
+    at that mtime is skipped: before, the newest file was read again on every 10 s pass, and aside on the Mac
+    posted the same 2 rows 61 times on 11-24.
     """
     floor = max(state.get("mtime_cursor_ms", 0), since_ms)
+    done = set(state.get("read_at_cursor") or ()) if floor == state.get("mtime_cursor_ms") else set()
     picked = []
     for p in paths:
         try:
             m = mtime_ms(p)
         except OSError:
             continue
-        if m >= floor:
+        if m > floor or (m == floor and p not in done):
             picked.append((m, p))
     picked.sort()
     return picked
+
+
+def mark_read(state: dict, mtime: int, path: str) -> None:
+    """Moves the cursor of changed_files to a file the caller has read: its mtime, and the paths read at that mtime."""
+    cursor = state.get("mtime_cursor_ms", 0)
+    if mtime > cursor:
+        state["mtime_cursor_ms"] = mtime
+        state["read_at_cursor"] = [path]
+    elif mtime == cursor and path not in (state.get("read_at_cursor") or []):
+        state["read_at_cursor"] = list(state.get("read_at_cursor") or []) + [path]
 
 
 def read_text(path: str) -> io.TextIOBase:

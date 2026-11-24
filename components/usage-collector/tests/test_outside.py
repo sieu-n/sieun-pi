@@ -199,7 +199,40 @@ class SqliteClientsTest(unittest.TestCase):
         self.assertEqual([r["source_key"] for r in sink.rows()], ["hermes:h1:b"])
 
 
+class FileCursorTest(unittest.TestCase):
+    def test_a_second_pass_over_unchanged_files_posts_nothing(self):
+        """aside, codex and claude-code keep an mtime cursor; the newest file used to be read again on every pass."""
+        from helpers import FakeSink
+        from usage_collector.state import StateStore
+
+        with tempfile.TemporaryDirectory() as folder:
+            for module, home in ((aside, FIXTURES / "aside"), (codex, FIXTURES / "codex"), (claude_code, FIXTURES / "claude_code")):
+                store = StateStore(Path(folder) / module.CLIENT)
+                passes = []
+                for _ in range(3):
+                    c = core.Context(host="h1", since=0, home=home, state=store.load(module.CLIENT))
+                    passes.append(core.run_client(module, c, FakeSink(), store, 1_000_000).rows)
+                self.assertGreater(passes[0], 0, module.CLIENT)
+                self.assertEqual(passes[1:], [0, 0], module.CLIENT)
+
+    def test_a_file_written_in_the_cursors_millisecond_is_still_read(self):
+        from usage_collector.outside import changed_files, mark_read
+
+        with tempfile.TemporaryDirectory() as folder:
+            a, b = Path(folder) / "a", Path(folder) / "b"
+            a.write_text("x")
+            b.write_text("y")
+            os.utime(a, ns=(1_793_000_000_000_000_000,) * 2)
+            os.utime(b, ns=(1_793_000_000_000_000_000,) * 2)
+            state = {}
+            mark_read(state, 1_793_000_000_000, str(a))
+            self.assertEqual([p for _, p in changed_files([str(a), str(b)], state, 0)], [str(b)])
+
+
 class VentTest(unittest.TestCase):
+    def test_only_one_host_reads_vent(self):
+        self.assertEqual(list(vent.collect(ctx("/nonexistent", host="mbp"), query=lambda sql: self.fail(sql))), [])
+
     def page(self, ns, env="staging", model="claude-opus-5-5(high)"):
         return {"ns": str(ns), "trace": "t1", "span": f"s{ns}", "env": env, "caller": "convex", "operation": "search_x",
                 "integration": "cliproxy-anthropic", "provider": "anthropic", "model": model, "input": 2, "output": 10,
@@ -306,7 +339,7 @@ class StableCallAtTest(unittest.TestCase):
         self.assertEqual(self.assert_stable(goose), {"goose:h1:g1": 1793491200000})
         self.assertEqual(self.assert_stable(opencode), {"opencode:h1:m1": 1793000000000})
         page = VentTest.page(None, 1795400000123456789)
-        runs = [[r["call_at"] for r in vent.collect(ctx(self.home, since=1795400000000), query=lambda sql: [page], now_ns=1795400000200000000)
+        runs = [[r["call_at"] for r in vent.collect(ctx(self.home, host=vent.READER, since=1795400000000), query=lambda sql: [page], now_ns=1795400000200000000)
                  if r is not core.CHECKPOINT] for _ in range(2)]
         self.assertEqual(runs, [[1795400000123], [1795400000123]])
 

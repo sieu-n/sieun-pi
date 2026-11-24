@@ -15,7 +15,7 @@ import json
 import os
 from typing import Iterable, Optional
 
-from usage_collector.outside import changed_files, parse_ts, row, walk_files
+from usage_collector.outside import changed_files, mark_read, parse_ts, row, walk_files
 
 CLIENT = "claude-code"
 SUBAGENT = "claude-code-subagent"
@@ -72,8 +72,8 @@ def collect(ctx) -> Iterable[dict]:
         if m["path"] in wanted or m["paths"] & wanted:
             if m["ts"] >= ctx.since:
                 yield to_row(m, ctx.host)
-    if changed:
-        ctx.state["mtime_cursor_ms"] = changed[-1][0]
+    for mtime, path in changed:
+        mark_read(ctx.state, mtime, path)
 
 
 def merge(per_file) -> tuple:

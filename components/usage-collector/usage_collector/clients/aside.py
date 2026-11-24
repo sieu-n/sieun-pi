@@ -12,7 +12,7 @@ import json
 import os
 from typing import Iterable
 
-from usage_collector.outside import changed_files, parse_ts, reported, row
+from usage_collector.outside import changed_files, mark_read, parse_ts, reported, row
 
 CLIENT = "aside"
 # Aside's provider field names the route it took; these routes name no vendor or name Anthropic.
@@ -43,7 +43,7 @@ def collect(ctx) -> Iterable[dict]:
                 continue
             seen.add(r["source_key"])
             yield r
-        ctx.state["mtime_cursor_ms"] = mtime
+        mark_read(ctx.state, mtime, path)
 
 
 def _vendor(provider, model: str) -> str:

@@ -19,6 +19,9 @@ from typing import Iterable
 from usage_collector.outside import row
 
 CLIENT = "vent"
+# One collector reads otel.vent_calls for every host. The Mac's collector read it too on 11-24, and each pass there either
+# failed (14 of them while the Mac slept) or would have resent the rows us-metal02 had already sent.
+READER = "us-metal02"
 CONFIG = os.environ.get("USAGE_VENT_GRAFANA", os.path.expanduser("~/.prime/agent/browser-chat/grafana-alerts.json"))
 DATASOURCE = "grafana_clickhouse"
 HOSTS = {"production": "us-metal01", "staging": "us-metal02"}
@@ -68,6 +71,8 @@ def grafana_query(sql: str) -> list:
 def collect(ctx, query=grafana_query, now_ns=None) -> Iterable[dict]:
     from usage_collector.core import CHECKPOINT
 
+    if ctx.host != READER:
+        return
     end = now_ns if now_ns is not None else time.time_ns()
     lo = max(int(ctx.state.get("ns_cursor", 0)) - OVERLAP_NS, ctx.since * 10**6)
     seen = set()
