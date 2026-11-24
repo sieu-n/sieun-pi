@@ -34,7 +34,7 @@ test("the flagged list names a class back after its current fix and leaves out o
       fix_failed_again: { status: "fixed", fixedAt: "2026-10-18T06:00:00Z", recurred: ["2026-10-18T05:00:00Z", "2026-10-18T07:30:00Z"] },
     },
   };
-  const facts = { hub_orphans: 0, dead_links: 0, session_links: 0, superseded_linked: 0, missing_meta: 0, stale_vs_code: 0, lint_failing_pages: 0 };
+  const facts = { hub_orphans: 0, dead_links: 0, session_links: 0, superseded_linked: 0, missing_meta: 0, stale_vs_code: 0, lint_failing_pages: 0, over_core_length: 0 };
   const files: Record<string, string> = {
     corrections: JSON.stringify({ corrections: [] }),
     harness: JSON.stringify({ entries: { memory: {} }, refinements: [] }),
@@ -69,7 +69,7 @@ test("a Dream-class trailer commit newer than the ledger's fix is the class's cu
       + `\x1eeaca53de00000000000000000000000000000000\x1f${at("2026-11-04T12:13:00Z")}\x1fdream_second_writes\n`,
     "auto-sns-agent": `\x1eabc1230000000000000000000000000000000000\x1f${at("2026-11-04T18:30:00Z")}\x1fback_after_trailer\x1dother_class\n`,
   };
-  const facts = { hub_orphans: 0, dead_links: 0, session_links: 0, superseded_linked: 0, missing_meta: 0, stale_vs_code: 0, lint_failing_pages: 0 };
+  const facts = { hub_orphans: 0, dead_links: 0, session_links: 0, superseded_linked: 0, missing_meta: 0, stale_vs_code: 0, lint_failing_pages: 0, over_core_length: 0 };
   const files: Record<string, string> = {
     corrections: JSON.stringify({ corrections: [] }),
     harness: JSON.stringify({ entries: { memory: {} }, refinements: [] }),
@@ -96,7 +96,7 @@ test("a Dream-class trailer commit newer than the ledger's fix is the class's cu
 });
 
 test("a failed Dream-class read leaves mistakes_back unmeasured", async () => {
-  const facts = { hub_orphans: 0, dead_links: 0, session_links: 0, superseded_linked: 0, missing_meta: 0, stale_vs_code: 0, lint_failing_pages: 0 };
+  const facts = { hub_orphans: 0, dead_links: 0, session_links: 0, superseded_linked: 0, missing_meta: 0, stale_vs_code: 0, lint_failing_pages: 0, over_core_length: 0 };
   const files: Record<string, string> = {
     corrections: JSON.stringify({ corrections: [] }), harness: JSON.stringify({ entries: { memory: {} }, refinements: [] }), ledger: JSON.stringify({ classes: {} }),
   };

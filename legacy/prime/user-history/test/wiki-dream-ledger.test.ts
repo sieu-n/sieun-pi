@@ -60,7 +60,7 @@ test("open_mistakes leaves out a landed fix and the flagged list names it once f
     },
   };
   const secs = (iso: string): number => at(iso) / 1000;
-  const facts = { hub_orphans: 0, dead_links: 0, session_links: 0, superseded_linked: 0, missing_meta: 0, stale_vs_code: 0, lint_failing_pages: 0 };
+  const facts = { hub_orphans: 0, dead_links: 0, session_links: 0, superseded_linked: 0, missing_meta: 0, stale_vs_code: 0, lint_failing_pages: 0, over_core_length: 0 };
   const files: Record<string, string> = {
     corrections: JSON.stringify({ corrections: [] }), harness: JSON.stringify({ entries: { memory: {} }, refinements: [] }), ledger: JSON.stringify(ledger),
   };

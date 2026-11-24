@@ -13,7 +13,7 @@ const page = (path: string, behindMin: number) => ({ path, title: path, last_ver
   staleRefs: [{ ref: `apps/x/${path}.ts`, modified: ago(behindMin), since: ago(behindMin) }] });
 
 function deps(stale: object[]): DreamDeps {
-  const facts = { hub_orphans: 0, dead_links: 0, session_links: 0, superseded_linked: 0, missing_meta: 0, stale_vs_code: stale.length, lint_failing_pages: 0 };
+  const facts = { hub_orphans: 0, dead_links: 0, session_links: 0, superseded_linked: 0, missing_meta: 0, stale_vs_code: stale.length, lint_failing_pages: 0, over_core_length: 0 };
   const files: Record<string, string> = {
     corrections: JSON.stringify({ corrections: [] }), harness: JSON.stringify({ entries: { memory: {} }, refinements: [] }), ledger: JSON.stringify({ classes: {} }),
   };

@@ -57,7 +57,7 @@ export interface DreamDeps {
   /** `wiki` is the code repo the pages describe (auto-sns-agent), whose git dates deletions and dream commits; `pi` runs wiki-health. */
   repos: { wiki: string; pi: string };
   /** `agentDir` is Prime's agent folder, which holds the clean-room indexes under browser-chat and the session transcripts. */
-  files: { corrections: string; harness: string; ledger: string; agentDir: string };
+  files: { corrections: string; harness: string; ledger: string; agentDir: string; claims?: string };
   /** The page revisions the wiki recorded since an ISO time (wiki.db `revisions`); left out, the precheck reads no page churn and follows no near-cap page. */
   revisions?: (sinceIso: string) => Promise<PageRevision[]>;
   /** The root of the Prime session tree that holds a session (`sessionTree`); left out, no page names its maker. */
@@ -69,6 +69,21 @@ export interface DreamDeps {
 export interface PageSize { path: string; bytes: number; status?: string }
 /** One row of the wiki's `revisions` table: the page's wiki path, who wrote it, the write's summary, its ISO time and the page's stored bytes around it. */
 export interface PageRevision { path: string; author: string; summary: string; ts?: string; bytesBefore?: number | null; bytesAfter?: number | null; version?: number }
+
+/**
+ * One row of the claims file (`files.claims`): a session outside the dream that holds a flagged item until `until`, keyed `kind|item`. The
+ * precheck still counts the item and leaves it out of the flagged list, so no dream job, hand-off or chat notice starts a writer for it. On
+ * 2026-11-24 a job of the chat rewrote 343 long apps/ and domains/ pages in waves, while each new dream job clears `<dutyId>.chat-handed.json`
+ * and would have started writers on the same pages.
+ */
+export interface Claim { key: string; by: string; until: string }
+
+/** The `kind|item` keys of the claims whose `until` is still ahead of `now`; a missing file holds none. */
+export function liveClaims(file: unknown, now: number): Set<string> {
+  if (!isRecord(file) || !Array.isArray(file.claims)) throw new Error("claims file has no claims list");
+  return new Set((file.claims.filter(isRecord) as unknown as Claim[])
+    .filter(row => typeof row.key === "string" && typeof row.by === "string" && Date.parse(row.until) > now).map(row => row.key));
+}
 
 /** What `wiki-health.mjs` prints (build contract part A). */
 export interface HealthItem { kind: string; path: string; excerpt?: string; target?: string }
@@ -664,7 +679,7 @@ export function freshCorrections(file: unknown, since: number): FlaggedSlice[] {
  */
 export const FLAG_ORDER: readonly [string, number][] = [
   ["source_error", 6], ["recurred", 8], ["open_class", 10], ["hub_orphan", Infinity], ["dead_link", Infinity],
-  ["superseded_linked", Infinity], ["session_link", Infinity], ["missing_meta", Infinity], ["stale_vs_code", Infinity], ["near_read_cap", Infinity], ["dup_pair", 5], ["revert", 5], ["retouched", 5],
+  ["superseded_linked", Infinity], ["session_link", Infinity], ["missing_meta", Infinity], ["stale_vs_code", Infinity], ["near_read_cap", Infinity], ["over_core_length", Infinity], ["dup_pair", 5], ["revert", 5], ["retouched", 5],
   ["correction", 10], ["signal", 6], ["refinement", 6], ["trial_memory", 10], ["memory", 10], ["lint_page", 5], ["archive_candidate", 3],
 ];
 
@@ -698,9 +713,11 @@ const HEALTH_METRICS = ["hub_orphans", "dead_links", "session_links", "supersede
 /**
  * The sync problems wiki_problems adds up; pages_behind_code counts the pages of wiki-health's stale list (parseStale) behind for longer than
  * FOLLOW_WINDOW_MS, pages_near_read_cap the current curated pages at NEAR_READ_CAP bytes or more that crossed it longer ago (`nearCapSince`),
- * and hub_orphans wiki-health's hub orphans less those created within FOLLOW_WINDOW_MS (`createdAt`).
+ * hub_orphans wiki-health's hub orphans less those created within FOLLOW_WINDOW_MS (`createdAt`), and pages_over_core_length the live apps/ and
+ * domains/ pages past the prose lint's core-length line, because the owner called a 1,800-word curated page far too long on 2026-11-24 (c243)
+ * and 391 of 548 such pages were over it that day.
  */
-const PROBLEM_METRICS = ["hub_orphans", "dead_links", "session_links", "superseded_linked", "missing_meta", "pages_behind_code", "pages_near_read_cap"] as const;
+const PROBLEM_METRICS = ["hub_orphans", "dead_links", "session_links", "superseded_linked", "missing_meta", "pages_behind_code", "pages_near_read_cap", "pages_over_core_length"] as const;
 
 /**
  * Measures everything and builds the precheck output. Each input that fails to run or to parse adds a source_error item and 999999 for
@@ -716,6 +733,12 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
   const health = await deps.exec(deps.node, ["apps/wiki/scripts/wiki-health.mjs", "--since", new Date(since).toISOString()], { cwd: deps.repos.pi, timeoutMs: HEALTH_TIMEOUT_MS })
     .then(parseHealth).catch(error => fail("wiki-health.mjs", error));
   const ledger = await readJson(deps.files.ledger).then(value => { if (!isRecord(value)) throw new Error("not an object"); return value as Ledger; }).catch(error => fail("ledger", error));
+  const claimsFile = deps.files.claims;
+  const claimed = claimsFile ? await deps.readText(claimsFile).then(text => liveClaims(JSON.parse(text) as unknown, now)).catch((error: unknown) => {
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return new Set<string>();
+    fail("claims", error);
+    return new Set<string>();
+  }) : new Set<string>();
   const corrections = await readJson(deps.files.corrections).then(value => freshCorrections(value, since)).catch(error => fail("corrections.json", error));
   const harness = await readJson(deps.files.harness)
     .then(async value => harnessSignal(value, ledger ?? {}, since, await trialWrites(harnessMemories(value), deps.files.agentDir)))
@@ -773,6 +796,7 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
   if (following || capFollowed.size || orphanFollowed.size) {
     metrics.wiki_problems_following = (following ? following.length - waiting.size : 0) + capFollowed.size + orphanFollowed.size;
   }
+  metrics.pages_over_core_length = health?.facts.over_core_length ?? UNMEASURED;
   metrics.wiki_problems = PROBLEM_METRICS.some(key => metrics[key] === UNMEASURED) ? UNMEASURED : PROBLEM_METRICS.reduce((sum, key) => sum + metrics[key]!, 0);
   const lintFailing = health?.facts.lint_failing_pages;
   metrics.lint_over_glide = lintFailing === undefined ? UNMEASURED : lintFailing - glide(LINT_GLIDE, now);
@@ -787,7 +811,7 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
   metrics.pages_retouched = gitOk && pagesRetouched ? dream.retouched.length + pagesRetouched.length : UNMEASURED;
   for (const input of health?.errors ?? []) fail("wiki-health.mjs", new Error(`could not read ${input}`));
   if (health && !health.errors.length) {
-    for (const key of [...HEALTH_METRICS, "lint_failing_pages"]) if (health.facts[key] === undefined) fail("wiki-health.mjs", new Error(`no fact ${key}`));
+    for (const key of [...HEALTH_METRICS, "lint_failing_pages", "over_core_length"]) if (health.facts[key] === undefined) fail("wiki-health.mjs", new Error(`no fact ${key}`));
   }
   metrics.source_errors = errors.length;
 
@@ -855,7 +879,9 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
     const maker = slice.kind === "stale_vs_code" ? makers.get(slice.item ?? "") : undefined;
     return { ...slice, ...handOff(slice) ? { handOff: true as const } : {}, ...maker ? { maker } : {} };
   };
-  return { metrics: { ...metrics }, flagged: pickFlagged(slices).map(marked), info };
+  const unclaimed = slices.filter(slice => !claimed.has(`${slice.kind}|${slice.item ?? ""}`));
+  info.claimed_items = slices.length - unclaimed.length;
+  return { metrics: { ...metrics }, flagged: pickFlagged(unclaimed).map(marked), info };
 }
 
 /** The metrics the duty judges (wiki-dream.duty.json). A run that cannot measure one of them fails, so the runner records an error, not 999999. */
@@ -913,6 +939,7 @@ async function main(): Promise<void> {
       agentDir: join(home, ".prime/agent"),
       // The ledger sits in the duty chat's own duties folder, the folder the runner keeps LAST_RUNS_FILE in.
       ledger: process.env.WIKI_DREAM_LEDGER || join(dirname(process.env.LAST_RUNS_FILE || "."), "wiki-dream-ledger.json"),
+      claims: process.env.WIKI_DREAM_CLAIMS || join(dirname(process.env.LAST_RUNS_FILE || "."), "wiki-dream-claims.json"),
     },
     revisions: sinceIso => readRevisions(join(wikiContentDir(), ".wiki/wiki.db"), sinceIso),
     treeOf: session => sessionTree(join(home, ".prime/agent"), session),

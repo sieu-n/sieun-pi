@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { FOLLOW_WINDOW_MS, measureDream, NEAR_READ_CAP, PAGE_READ_CAP, readPageSizes, type DreamDeps } from "../scripts/duties/wiki-dream.ts";
 
-const facts = { hub_orphans: 0, dead_links: 0, session_links: 0, superseded_linked: 0, missing_meta: 0, stale_vs_code: 0, lint_failing_pages: 0 };
+const facts = { hub_orphans: 0, dead_links: 0, session_links: 0, superseded_linked: 0, missing_meta: 0, stale_vs_code: 0, lint_failing_pages: 0, over_core_length: 0 };
 const deps: DreamDeps = {
   now: Date.parse("2026-11-09T06:00:00Z"), node: "node", repos: { wiki: "/wiki", pi: "/pi" },
   files: { corrections: "corrections", harness: "harness", ledger: "ledger", agentDir: "/nonexistent-agent-dir" },

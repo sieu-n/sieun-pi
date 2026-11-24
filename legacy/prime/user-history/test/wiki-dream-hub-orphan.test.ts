@@ -6,7 +6,7 @@ import { FOLLOW_WINDOW_MS, measureDream, type DreamDeps } from "../scripts/dutie
 
 const page = "domains/devops/sw-factory-threads/architecture.html";
 const old = "domains/devops/old-orphan.html";
-const facts = { hub_orphans: 3, dead_links: 0, session_links: 0, superseded_linked: 0, missing_meta: 0, stale_vs_code: 0, lint_failing_pages: 0 };
+const facts = { hub_orphans: 3, dead_links: 0, session_links: 0, superseded_linked: 0, missing_meta: 0, stale_vs_code: 0, lint_failing_pages: 0, over_core_length: 0 };
 const items = [page, old, "domains/devops/hand-made.html"].map(path => ({ kind: "hub_orphan", path, excerpt: "no ancestor hub lists it (nearest hub domains/devops/index.html)" }));
 const deps: DreamDeps = {
   now: 0, node: "node", repos: { wiki: "/wiki", pi: "/pi" },

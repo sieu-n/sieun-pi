@@ -17,6 +17,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { kstDayFolder, kstWallClock } from '../src/lib/kst.mjs';
+import { LIMITS } from '../src/lib/prose-lint.mjs';
 import { siblingRef, siblingRepos } from '../src/lib/sibling-repos.mjs';
 import { codeRepoDir, wikiConfig } from '../src/lib/wiki-config.mjs';
 
@@ -77,6 +78,9 @@ export function parseMeta(html) {
 		return null;
 	}
 }
+
+/** A page the move API left behind, which only sends readers to `moved_to`. */
+export const isRedirect = (meta) => typeof meta?.moved_to === 'string';
 
 export function stripTags(html) {
 	return html
@@ -201,6 +205,24 @@ export function liveLintRows(rows, pages) {
 /** Worst first: pages people read most, then the most errors. */
 export function rankLintPages(rows, views30) {
 	return [...rows].sort((a, b) => (views30.get(b.path) ?? 0) - (views30.get(a.path) ?? 0) || b.errors - a.errors);
+}
+
+/**
+ * The pages the prose lint's core-length rule flags, an apps/ or domains/ page past 800 words of checkable layers (owner, #dev-crawler p23,
+ * c243), with settled pages left out, most read first. `root` is the folder the lint ran in, for a result whose file is absolute.
+ */
+export function overCoreLength(results, root, pages, views30) {
+	const rows = results
+		.filter((r) => !r.skipped)
+		.flatMap((r) => {
+			const finding = r.findings.find((f) => f.rule === 'core-length');
+			if (!finding) return [];
+			const rel = path.isAbsolute(r.file) ? path.relative(root, r.file) : r.file;
+			return [{ path: rel.split(path.sep).join('/'), words: Number.parseInt(finding.excerpt, 10) }];
+		});
+	return liveLintRows(rows, pages).sort(
+		(a, b) => (views30.get(b.path) ?? 0) - (views30.get(a.path) ?? 0) || b.words - a.words,
+	);
 }
 
 /** A session log's start time from its folder name `sessions/YYYY/MM/DD/hhmm-slug/`, which is Korea time on any host. */
@@ -902,7 +924,9 @@ async function measure(args, root, rel) {
 	const { lint, stale } = engineReports(root, REPO, rel);
 	const errors = [];
 	const curated = readCurated(committed);
-	const pages = curated.filter((p) => p.path !== HOME);
+	// A move leaves a redirect stub with `moved_to` and no description at the old path (movePage in wiki-write.ts), which sends readers on and
+	// is no page to check: the 24 retired pages moved to archive/ on 2026-11-24 put 24 missing_meta and 2 hub_orphans on the dream at once.
+	const pages = curated.filter((p) => p.path !== HOME && !isRedirect(p.meta));
 	const pagePaths = new Set(pages.map((p) => p.path));
 	const isCuratedSource = (p) => pagePaths.has(p) || p === HOME;
 
@@ -922,6 +946,7 @@ async function measure(args, root, rel) {
 	}
 
 	const deadLinks = deadLinksOf(lint.brokenLinks, isCuratedSource);
+	const hubOrphans = lint.hubOrphans.filter((f) => pagePaths.has(f.path));
 
 	const lintReasons = new Map();
 	const addReason = (p, reason) => lintReasons.set(p, [...(lintReasons.get(p) ?? []), reason]);
@@ -954,6 +979,8 @@ async function measure(args, root, rel) {
 			views30,
 		);
 	}
+
+	const overCore = prose ? overCoreLength(prose.results, committed, curated, views30) : null;
 
 	const exists = (p) => pagePaths.has(p) || p === HOME || existsSync(path.join(committed, p));
 	const inbound = new Map();
@@ -1008,7 +1035,7 @@ async function measure(args, root, rel) {
 
 	const dups = dupPairs(pages.filter((p) => p.meta));
 	const items = [
-		...itemsFor('hub_orphan', lint.hubOrphans, (f) => ({ path: f.path, excerpt: excerpt(f.detail) })),
+		...itemsFor('hub_orphan', hubOrphans, (f) => ({ path: f.path, excerpt: excerpt(f.detail) })),
 		...itemsFor('dead_link', deadLinks, (f) => ({ path: f.path, target: f.target, excerpt: excerpt(f.detail) })),
 		...itemsFor('session_link', lint.sessionLinks, (f) => ({
 			path: f.path,
@@ -1039,6 +1066,10 @@ async function measure(args, root, rel) {
 					.join(', ')}`,
 			),
 		})),
+		...itemsFor('over_core_length', overCore ?? [], (r) => ({
+			path: r.path,
+			excerpt: excerpt(`${r.words} words, target ${LIMITS.CURATED_MAX_WORDS}, ${views30.get(r.path) ?? 0} views in 30 days`),
+		})),
 		...itemsFor('archive_candidate', archive, (p) => ({
 			path: p.path,
 			excerpt: excerpt(`0 views in 60 days, no curated inbound link: ${p.title ?? ''}`),
@@ -1051,7 +1082,7 @@ async function measure(args, root, rel) {
 		since: args.since.toISOString(),
 		curatedPages: pages.length,
 		facts: {
-			hub_orphans: lint.counts.hubOrphans,
+			hub_orphans: hubOrphans.length,
 			dead_links: deadLinks.length,
 			session_links: lint.counts.sessionLinks,
 			superseded_linked: lint.counts.supersededLinked,
@@ -1059,6 +1090,7 @@ async function measure(args, root, rel) {
 			stale_vs_code: stale.count,
 			lint_failing_pages: prose ? lintRows.length : null,
 			lint_errors: lintErrors,
+			over_core_length: overCore ? overCore.length : null,
 			open_session_logs: openLogs,
 			unread_unlinked_60d: views60 ? archive.length : null,
 		},

@@ -155,7 +155,7 @@ test("the precheck names the commit, its Session-Id and the session's tree for e
 
 test("measureDream puts the maker on the flagged page it handed off", async () => {
   const now = Date.parse("2026-11-07T22:55:39Z");
-  const facts = { hub_orphans: 0, dead_links: 0, session_links: 0, superseded_linked: 0, missing_meta: 0, stale_vs_code: 3, lint_failing_pages: 0 };
+  const facts = { hub_orphans: 0, dead_links: 0, session_links: 0, superseded_linked: 0, missing_meta: 0, stale_vs_code: 3, lint_failing_pages: 0, over_core_length: 0 };
   const deps: DreamDeps = {
     now, node: "node", repos: { wiki: "/wiki", pi: "/pi" },
     files: { corrections: "corrections", harness: "harness", ledger: "ledger", agentDir: "/nonexistent-agent-dir" },

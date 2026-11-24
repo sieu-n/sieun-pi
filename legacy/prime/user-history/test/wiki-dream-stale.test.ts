@@ -27,7 +27,7 @@ const STALE = {
 };
 
 function deps(): DreamDeps {
-  const facts = { hub_orphans: 0, dead_links: 0, session_links: 0, superseded_linked: 0, missing_meta: 0, stale_vs_code: 2, lint_failing_pages: 0 };
+  const facts = { hub_orphans: 0, dead_links: 0, session_links: 0, superseded_linked: 0, missing_meta: 0, stale_vs_code: 2, lint_failing_pages: 0, over_core_length: 0 };
   const files: Record<string, string> = {
     corrections: JSON.stringify({ corrections: [] }),
     harness: JSON.stringify({ entries: { memory: {} }, refinements: [] }),
@@ -132,7 +132,7 @@ test("a missing definition is followed from the commit that removed it in either
   const base = deps();
   const removals: string[][] = [];
   const result = await measureDream({ ...base, now, exec: async (file, args, options) => {
-    if (file === "node") return JSON.stringify({ facts: { hub_orphans: 0, dead_links: 0, session_links: 0, superseded_linked: 0, missing_meta: 0, stale_vs_code: 3, lint_failing_pages: 0 },
+    if (file === "node") return JSON.stringify({ facts: { hub_orphans: 0, dead_links: 0, session_links: 0, superseded_linked: 0, missing_meta: 0, stale_vs_code: 3, lint_failing_pages: 0, over_core_length: 0 },
       items: [], errors: [], dupPairs: [], signals: [], stale });
     if (file === "git" && args.includes("-n1")) {
       removals.push([...args]);
