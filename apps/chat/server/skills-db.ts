@@ -12,7 +12,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, type SQLInputValue, type StatementSync } from "node:sqlite";
 import { Worker } from "node:worker_threads";
 import { listedEntries, type ListedEntry } from "./compress.ts";
 import {
@@ -21,7 +21,7 @@ import {
   type SkillScan, type SkillSource, type SkillsChange, type SkillsCheck, type SkillsView, type SkillThresholds, type ThreadKind, type SkillVerdictRow, type UndoBody, skillTexts, toWire,
 } from "../web/src/lib/api/shared/skills.ts";
 import {
-  canonical, changedLines, copyId, drift, extraCopies, identifyFolder, installState, ownerText, parseFacts, parseOwner, plan, roleOf, sameLink, seedOwner, sees, staleCheckouts, sumUse,
+  canonical, changedLines, copyId, drift, extraCopies, goneSkills, identifyFolder, installState, ownerText, parseFacts, parseOwner, plan, roleOf, sameLink, seedOwner, sees, staleCheckouts, sumUse,
   thresholds, tree, verdicts, type BoxScan, type CopyFact, type FactCopy, type Facts, type FactUse, type InstallRecord, type PathUse, type SkillRecord,
 } from "./skills-model.ts";
 
@@ -56,7 +56,7 @@ export class SkillsRefused extends Error {}
 export class SkillsBusy extends SkillsRefused {}
 
 /** How long a skills change waits for chat.sqlite's write lock, off the event loop, before it answers busy: the ingest worker's own
- *  busy_timeout, so a change made while an ingest holds the lock waits that ingest out (2.4 s on a copy of the live DB at load 234). */
+ *  busy_timeout. An ingest holds the lock one `land` transaction at a time, so a change waits at most one of those behind it. */
 const WRITE_WAIT_MS = 5_000;
 
 /** A disk step that did not take effect; the change answers an error with the step's reason, and its move stays for undo. */
@@ -68,11 +68,69 @@ function failure(what: string, moveId: string, results: readonly { box: string; 
   return new SkillsStepFailed(`${what} failed on ${failed.length} of ${results.length} steps (move ${moveId}): ${failed.map(r => `${r.box}:${r.path}: ${r.note ?? "no reason given"}`).join("; ")}`);
 }
 
+/** How long one of an ingest's write transactions runs its statements before it commits (`land`): a room send waits for chat.sqlite's
+ *  write lock at most one such transaction, and the target is a hold of about 50 ms at box load, commit included. */
+const LAND_MS = 10;
+
+/** The tables an ingest writes, in the order `land` writes them; meta goes last, so its `ingested` row lands with the last rows. */
+const INGESTED = ["skill_copies", "skill_scans", "skills", "skill_installs", "skill_use_box", "skill_use", "skill_verdicts", "meta"] as const;
+type IngestedTable = (typeof INGESTED)[number];
+/** The tables a route writes besides skill_moves, which no ingest reads. */
+const ROUTE_WRITTEN = ["skills", "skill_installs", "skill_copies"] as const;
+
+/**
+ * Each keyed table's key, by which a changed row is written alone. The other tables are read in rowid order with no ORDER BY, which
+ * decides the order of a skill's verdicts and of the use summed over boxes, so a change there writes the whole table again in the
+ * ingest's order.
+ */
+const KEYS: Partial<Record<IngestedTable, readonly string[]>> = { skill_copies: ["box", "path"], skill_scans: ["box"], skills: ["id"], skill_installs: ["id"], meta: ["key"] };
+
+type TableRows = { columns: string[]; rows: Row[] };
+type Statement = [sql: string, params: SQLInputValue[]];
+/** Statements that land in one transaction, so no read sees part of them: one keyed row, or a whole table in rowid order. */
+type Unit = Statement[];
+type IngestPlan = { rev: number; seeded: boolean; units: Unit[] };
+
+/** The writes that turn a table's rows `before` into its rows `after`, the ingest's. */
+function changedRows(table: IngestedTable, before: TableRows, after: TableRows): Unit[] {
+  const { columns } = after;
+  const same = (a: Row, b: Row) => columns.every(c => a[c] === b[c]);
+  const insert = `INSERT OR REPLACE INTO ${table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`;
+  const put = (row: Row): Statement => [insert, columns.map(c => row[c] as SQLInputValue)];
+  const keys = KEYS[table];
+  if (!keys) {
+    if (before.rows.length === after.rows.length && before.rows.every((row, i) => same(row, after.rows[i]!))) return [];
+    const batches: Statement[] = [];
+    for (let at = 0; at < after.rows.length; at += 100) {
+      const batch = after.rows.slice(at, at + 100);
+      const values = batch.map(() => `(${columns.map(() => "?").join(", ")})`).join(", ");
+      batches.push([`INSERT INTO ${table} (${columns.join(", ")}) VALUES ${values}`, batch.flatMap(row => columns.map(c => row[c] as SQLInputValue))]);
+    }
+    return [[[`DELETE FROM ${table}`, []], ...batches]];
+  }
+  const keyOf = (row: Row) => JSON.stringify(keys.map(k => row[k]));
+  const was = new Map(before.rows.map(row => [keyOf(row), row]));
+  const kept = new Set(after.rows.map(keyOf));
+  const remove = `DELETE FROM ${table} WHERE ${keys.map(k => `${k} = ?`).join(" AND ")}`;
+  const gone = before.rows.filter(row => !kept.has(keyOf(row))).map((row): Unit => [[remove, keys.map(k => row[k] as SQLInputValue)]]);
+  const changed = after.rows.filter(row => {
+    const prior = was.get(keyOf(row));
+    return !prior || !same(prior, row);
+  });
+  if (table === "meta") changed.sort((a, b) => Number(a.key === "ingested") - Number(b.key === "ingested"));
+  return [...gone, ...changed.map((row): Unit => [put(row)])];
+}
+
 type StoredCopy = { box: string; path: string; fact: FactCopy; key: string; changed: number | null; stale: boolean };
 type Snapshot = { skills: SkillRecord[]; installs: InstallRecord[]; copies: StoredCopy[] };
 type Touched = { skills: string[]; installs: string[]; copies: string[] };
 type MoveRow = SkillMove & { item: string | null; before: Snapshot; touched: Touched };
 
+/**
+ * skill_rev moves with each row change a route can make, by triggers, so an older server's routes move it too, and with each of an
+ * ingest's write transactions (`land`). The tables only an ingest writes have no triggers: a trigger runs per row, and the whole-table
+ * rewrite of skill_verdicts would run 1,800 of them inside one transaction.
+ */
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS skills (id TEXT PRIMARY KEY, name TEXT NOT NULL, owner TEXT NOT NULL, source TEXT NOT NULL, created_at TEXT NOT NULL);
@@ -93,6 +151,10 @@ CREATE TABLE IF NOT EXISTS skill_use_box (box TEXT NOT NULL, name TEXT NOT NULL,
 CREATE TABLE IF NOT EXISTS skill_moves (
   id TEXT PRIMARY KEY, at TEXT NOT NULL, kind TEXT NOT NULL, summary TEXT NOT NULL, item TEXT, before TEXT NOT NULL, touched TEXT NOT NULL, undone_at TEXT
 );
+CREATE TABLE IF NOT EXISTS skill_rev (id INTEGER PRIMARY KEY CHECK (id = 1), n INTEGER NOT NULL);
+${ROUTE_WRITTEN.flatMap(table => ["insert", "update", "delete"].map(op => `CREATE TRIGGER IF NOT EXISTS ${table}_rev_${op} AFTER ${op.toUpperCase()} ON ${table} BEGIN
+  UPDATE skill_rev SET n = n + 1 WHERE id = 1;
+END;`)).join("\n")}
 `;
 
 const now = (): string => new Date().toISOString();
@@ -213,6 +275,8 @@ export class SkillsDb {
   private built: { version: number; listed: Promise<ListedView> } | null = null;
   /** Builds the view for GET /api/skills in a worker thread, as the serving process does; the fixture's small view stays inline for the specs. */
   viewsOffThread = false;
+  /** LAND_MS; a test sets 0 to land one unit per transaction and read the view between them. */
+  landMs = LAND_MS;
 
   /**
    * `busyMs` is how long a write waits for chat.sqlite's write lock inside the call. The serving process passes 0: node:sqlite waits on its
@@ -222,10 +286,13 @@ export class SkillsDb {
   constructor(private readonly config: SkillsDbConfig, private readonly disk: DiskSteps, private readonly log: (line: string) => void = () => {}, busyMs = 0) {
     mkdirSync(dirname(config.file), { recursive: true });
     this.db = new DatabaseSync(config.file);
-    this.db.exec(`PRAGMA journal_mode = WAL; PRAGMA busy_timeout = ${busyMs};`);
+    // A new table, column or trigger needs the write lock once, at the first start that has it, so that start waits for it.
+    this.db.exec(`PRAGMA journal_mode = WAL; PRAGMA busy_timeout = ${WRITE_WAIT_MS};`);
     this.db.exec(SCHEMA);
     const useColumns = (this.db.prepare("PRAGMA table_info(skill_use)").all() as Row[]).map(r => s(r.name));
     if (!useColumns.includes("by_path")) this.db.exec("ALTER TABLE skill_use ADD COLUMN by_path TEXT NOT NULL DEFAULT '[]'");
+    if (!this.db.prepare("SELECT 1 FROM skill_rev").get()) this.db.exec("INSERT OR IGNORE INTO skill_rev (id, n) VALUES (1, 0)");
+    this.db.exec(`PRAGMA busy_timeout = ${busyMs};`);
   }
 
   close(): void {
@@ -324,14 +391,125 @@ export class SkillsDb {
   /**
    * Takes one scan's inventory.json: replaces the copies of each box that scanned, keeps the last good copies of a box that did not (an
    * asleep Mac), seeds the rows on the first ingest, and recomputes drift against the source, the verdicts and the use counts.
+   *
+   * Every room send waits for chat.sqlite's write lock, so the ingest does its work without it. `planIngest` reads the tables in one read
+   * transaction, runs `take` on an in-memory copy of them and lists the rows that differ; `land` writes those rows in transactions of about
+   * LAND_MS each. Taken in one transaction, the ingest held the lock 1.6 to 14.4 s on a copy of the live DB at box load about 600, and a
+   * send waited up to 13.7 s (~/work/one-db/post-logs/NOTES.md, 11-23). A change a route makes meanwhile moves skill_rev, and the ingest
+   * then plans again from the rows as they are, so it never writes over that change; its own rows landed so far plan to the same end,
+   * because an inventory taken twice ends where one take ends.
    */
   ingest(raw: unknown): { seeded: boolean; copies: number } | null {
     const facts = parseFacts(raw);
     if (!facts) return null;
     // Each start takes the inventory again, and a hand-over's successor does it while the old server still serves from the same DB. An
-    // inventory this DB took already changes nothing, so its write transaction, which held chat.sqlite's write lock for seconds at box
-    // load over 200, is left out.
+    // inventory this DB took already changes nothing, so it is left out before any work.
     if (facts.generatedAt && this.meta("ingested") === facts.generatedAt) return { seeded: false, copies: facts.copies.length };
+    let seeded = false;
+    for (;;) {
+      const plan = this.planIngest(facts);
+      if (!plan) return { seeded, copies: facts.copies.length };
+      seeded ||= plan.seeded;
+      if (this.land(plan)) return { seeded, copies: facts.copies.length };
+    }
+  }
+
+  /** The ingest's rows against the rows as they are, or null when another server took the same inventory meanwhile. */
+  private planIngest(facts: Facts): IngestPlan | null {
+    const before = new Map<IngestedTable, TableRows>();
+    let rev: number;
+    this.db.exec("BEGIN");
+    try {
+      rev = this.rev();
+      for (const table of INGESTED) before.set(table, this.tableRows(table));
+    } finally {
+      this.db.exec("COMMIT");
+    }
+    const ingested = before.get("meta")!.rows.find(r => r.key === "ingested");
+    if (facts.generatedAt && ingested?.value === facts.generatedAt) return null;
+    const scratch = new SkillsDb({ ...this.config, file: ":memory:" }, this.disk);
+    try {
+      for (const [table, rows] of before) scratch.fill(table, rows);
+      const seeded = scratch.take(facts);
+      return { rev, seeded, units: INGESTED.flatMap(table => changedRows(table, before.get(table)!, scratch.tableRows(table))) };
+    } finally {
+      scratch.close();
+    }
+  }
+
+  private rev(): number {
+    return nn((this.db.prepare("SELECT n FROM skill_rev WHERE id = 1").get() as Row | undefined)?.n) ?? 0;
+  }
+
+  /** A table's rows in rowid order, the order its reads without ORDER BY see. */
+  private tableRows(table: IngestedTable): TableRows {
+    const columns = (this.db.prepare(`PRAGMA table_info(${table})`).all() as Row[]).map(r => s(r.name));
+    return { columns, rows: this.db.prepare(`SELECT ${columns.join(", ")} FROM ${table} ORDER BY rowid`).all() as Row[] };
+  }
+
+  private fill(table: IngestedTable, { columns, rows }: TableRows): void {
+    const insert = this.db.prepare(`INSERT INTO ${table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`);
+    this.db.exec("BEGIN");
+    for (const row of rows) insert.run(...columns.map(c => row[c] as SQLInputValue));
+    this.db.exec("COMMIT");
+  }
+
+  /**
+   * Writes a plan's rows in transactions of about LAND_MS each, a send's longest wait for the lock. Each one first checks that skill_rev is
+   * where the plan or this ingest's last transaction left it; false means another writer changed a table the plan read, so the plan is stale.
+   *
+   * Between two transactions it sleeps as long as the last one held the lock. A writer that finds the lock held sleeps in SQLite's busy handler
+   * between tries, up to 100 ms a sleep, and back-to-back transactions left it no free moment: on a copy of the live DB at load 114, a
+   * writer making 20 commits a second waited up to 333 ms behind transactions that each held the lock 71 ms or less.
+   */
+  private land(plan: IngestPlan): boolean {
+    // In WAL mode synchronous NORMAL skips the fsync at each commit and keeps every commit whole; a power cut loses at most the last ones,
+    // and the next start takes the inventory again, since meta's `ingested` row lands last. With the fsync, commits at load 200 to 260 took
+    // up to 175 ms and one transaction held the lock 780 ms; without it the longest hold over 6 ingests was 102 ms.
+    // A commit that grows the WAL past its limit copies it into the DB inside that commit, which took 670 to 780 ms in a seed at load 200
+    // to 300. The ingest copies it once at its end instead, in a passive checkpoint that takes no write lock.
+    const synchronous = nn((this.db.prepare("PRAGMA synchronous").get() as Row).synchronous);
+    const autocheckpoint = nn((this.db.prepare("PRAGMA wal_autocheckpoint").get() as Row).wal_autocheckpoint);
+    this.db.exec("PRAGMA synchronous = NORMAL; PRAGMA wal_autocheckpoint = 0");
+    try {
+      return this.landAll(plan);
+    } finally {
+      this.db.exec(`PRAGMA synchronous = ${synchronous ?? 2}; PRAGMA wal_autocheckpoint = ${autocheckpoint ?? 1000}`);
+      this.db.exec("PRAGMA wal_checkpoint(PASSIVE)");
+    }
+  }
+
+  private landAll(plan: IngestPlan): boolean {
+    const statements = new Map<string, StatementSync>();
+    let rev = plan.rev;
+    let held = 0;
+    for (let at = 0; at < plan.units.length; ) {
+      if (at > 0) sleep(held);
+      let locked = 0;
+      const landed = this.tx(() => {
+        locked = performance.now();
+        if (this.rev() !== rev) return false;
+        const began = performance.now();
+        do {
+          for (const [sql, params] of plan.units[at]!) {
+            let statement = statements.get(sql);
+            if (!statement) statements.set(sql, (statement = this.db.prepare(sql)));
+            statement.run(...params);
+          }
+          at++;
+        } while (at < plan.units.length && performance.now() - began < this.landMs);
+        this.db.exec("UPDATE skill_rev SET n = n + 1 WHERE id = 1");
+        rev = this.rev();
+        return true;
+      }, "ingest");
+      held = performance.now() - locked;
+      if (!landed) return false;
+    }
+    return true;
+  }
+
+  /** The ingest itself, on the in-memory copy `planIngest` made; true when it seeded a box. */
+  private take(facts: Facts): boolean {
     const insertCopy = this.db.prepare(
       "INSERT OR REPLACE INTO skill_copies (box, path, real_path, link_target, hash, lines, bytes, mtime, skill_key, changed_lines, stale, fact) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     );
@@ -374,7 +552,7 @@ export class SkillsDb {
       this.rules(this.storeUse(facts), facts.usageCounted);
       this.setMeta("ingested", facts.generatedAt ?? now());
     }, "ingest");
-    return { seeded, copies: facts.copies.length };
+    return seeded;
   }
 
   /**
@@ -773,7 +951,9 @@ export class SkillsDb {
   /** Makes the disk match the installs: creates what is missing, points wrong links back and refreshes copies left behind. */
   async apply(opts: { dryRun?: boolean; only?: string[]; moveId?: string; kind?: SkillMove["kind"]; summary?: string; before?: Snapshot; touched?: Touched; keepFailures?: boolean } = {}): Promise<ApplyResult> {
     const st = this.state();
-    const installs = st.installs.filter(i => !opts.only || opts.only.includes(i.id));
+    // An install of a skill whose git folder left main is not put back; `sw skills remove` settles it.
+    const gone = new Set(goneSkills(st.skills, st.copies).map(skill => skill.id));
+    const installs = st.installs.filter(i => !gone.has(i.skillId) && (!opts.only || opts.only.includes(i.id)));
     const pending = installs.filter(i => i.pending);
     const planned = plan(installs, st.states);
     const queuedNote = pending.map(i => ({ installId: i.id, box: i.box, path: i.path, step: "create" as const, result: "queued" as const, note: `Waits for ${i.box} (move ${i.pending}).` }));
@@ -1090,6 +1270,9 @@ export class SkillsDb {
     return row ? { id: row.id, at: row.at, kind: row.kind, summary: row.summary, undoneAt: row.undoneAt } : null;
   }
 }
+
+/** Sleeps this thread. `land` runs in the ingest worker, where no event loop waits on it; the fixture's inline ingest lands in one transaction. */
+const sleep = (ms: number): void => void Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
 const newMove = (): string => `mv_${Date.now().toString(36)}${randomBytes(3).toString("hex")}`;
 const emptySnapshot = (): Snapshot => ({ skills: [], installs: [], copies: [] });

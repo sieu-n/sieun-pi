@@ -437,10 +437,12 @@ export function drift(copies: readonly CopyFact[], roles: ReadonlyMap<string, Co
     // A folder in a stale checkout is an old clone no runtime loads, so a skill its repo dropped leaves no drift behind in it.
     if (roles.get(copyId(c)) === "unowned" && !c.stale) items.push({ kind: "unowned", copyId: copyId(c), box: c.box, path: c.path, name: c.name, fix: ["adopt", "remove"] });
   }
-  for (const skill of goneSkills(skills, copies)) items.push({ kind: "gone", skillId: skill.id, name: skill.name, fix: ["remove"] });
+  const gone = goneSkills(skills, copies);
+  for (const skill of gone) items.push({ kind: "gone", skillId: skill.id, name: skill.name, fix: ["remove"] });
+  const goneIds = new Set(gone.map(skill => skill.id));
   for (const install of installs) {
     const state = states.get(install.id);
-    if (!state) continue;
+    if (!state || goneIds.has(install.skillId)) continue;
     const base = { installId: install.id, skillId: install.skillId, box: install.box, path: install.path };
     if (state.kind === "missing" || state.kind === "wrong-link" || state.kind === "behind") items.push({ kind: state.kind, ...base, fix: ["apply", "remove"] });
     else if (state.kind === "changed") items.push({ kind: "changed", ...base, changedLines: state.changedLines, fix: ["adopt", "remove"] });

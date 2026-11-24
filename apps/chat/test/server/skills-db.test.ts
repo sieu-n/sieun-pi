@@ -197,6 +197,9 @@ test("a skill deleted from its repo's main branch shows as gone while an old clo
   scan();
   const gone = db.check().items.filter(i => i.kind === "gone");
   assert.deepEqual(gone.map(i => i.kind === "gone" && i.skillId), ["git:tools/.agents/skills/deploy-notes"]);
+  assert.deepEqual(db.check().items.filter(i => i.kind === "missing"), [], "the gone skill's unlinked install is part of gone, not missing");
+  assert.equal((await db.apply()).changes, 0, "apply never puts back a link of a gone skill");
+  assert.equal(present(join(fixture.home, ".prime/agent/skills/deploy-notes")), false);
   await db.remove({ target: "git:tools/.agents/skills/deploy-notes" });
   assert.ok(present(clone), "the old clone keeps its folder");
   scan();
@@ -562,6 +565,66 @@ test("an inventory the DB took already writes nothing, and a write that finds ch
   assert.ok(performance.now() - began < 1000, "the serving connection does not wait for the lock");
   other.exec("ROLLBACK");
   assert.ok(db.ingest(macScan("2026-11-22T01:00:00Z", [macCopy("/Users/o/.claude/skills/deploy-notes")])));
+});
+
+test("an ingest whose rows a route changed while it planned plans again, so the route's change stays and the scan still lands", t => {
+  const dir = mkdtempSync(join(tmpdir(), "skills-db-replan-"));
+  const file = join(dir, "chat.sqlite");
+  const db = new SkillsDb({ file, box: BOX, home: "/home/x", piHostPrompt: null }, { run: async () => [], undo: async () => [] });
+  const other = new DatabaseSync(file);
+  t.after(() => {
+    other.close();
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const copy = macCopy("/Users/o/.claude/skills/deploy-notes");
+  db.ingest(macScan("2026-11-22T00:00:00Z", [copy]));
+  const skill = db.view(IDLE).skills[0]!;
+  other.prepare(
+    "INSERT INTO skill_installs (id, skill_id, box, path, mode, target, runtimes, agent, applied_hash, source_hash, pending) VALUES ('inst_q', ?, 'mac', '/Users/o/.codex/skills/deploy-notes', 'copy', ?, '[\"codex\"]', NULL, NULL, NULL, 'mv_q')",
+  ).run(skill.id, copy.path);
+  const ingest = db as unknown as { planIngest: (facts: unknown) => unknown };
+  const planIngest = ingest.planIngest.bind(db);
+  let plans = 0;
+  ingest.planIngest = facts => {
+    const plan = planIngest(facts);
+    // A route's change after the plan read the rows, as a change made while the worker plans: the queued install gets an agent.
+    if (++plans === 1) other.prepare("UPDATE skill_installs SET agent = 'ag_agent-factory' WHERE id = 'inst_q'").run();
+    return plan;
+  };
+  assert.ok(db.ingest(macScan("2026-11-22T01:00:00Z", [copy])));
+  assert.equal(plans, 2, "the plan made before the change was made again");
+  const row = other.prepare("SELECT agent, pending FROM skill_installs WHERE id = 'inst_q'").get();
+  assert.deepEqual({ ...row }, { agent: "ag_agent-factory", pending: null }, "the route's agent stays, and the Mac's good scan cleared pending");
+});
+
+test("an ingest landed one row per transaction leaves a view that builds after each, and ends where an ingest in one transaction ends", t => {
+  const { fixture, db, scan } = rig(t);
+  scan();
+  const raw = JSON.parse(readFileSync(fixture.inventory, "utf8"));
+  const config = { file: join(dirname(fixture.root), "step.sqlite"), box: BOX, home: fixture.home, piHostPrompt: null };
+  const step = new SkillsDb(config, { run: async () => [], undo: async () => [] });
+  const reader = new SkillsDb(config, { run: async () => [], undo: async () => [] });
+  t.after(() => {
+    reader.close();
+    step.close();
+  });
+  step.landMs = 0;
+  const hooks = step as unknown as { bump: () => void };
+  const bump = hooks.bump.bind(step);
+  const counts: number[] = [];
+  hooks.bump = () => {
+    bump();
+    (reader as unknown as { version: number }).version++;
+    const view = reader.view(IDLE);
+    assert.ok(JSON.stringify(view));
+    counts.push(view.counts.copies);
+  };
+  assert.ok(step.ingest(raw));
+  assert.ok(counts.length > 10, `the ingest landed in ${counts.length} transactions`);
+  assert.ok(counts.some(n => n > 0 && n < counts.at(-1)!), "a reader saw the ingest part way");
+  const kept = (view: ReturnType<SkillsDb["view"]>) => ({ ...view, seededAt: null });
+  assert.deepEqual(kept(step.view(IDLE)), kept(db.view(IDLE)));
 });
 
 test("each skills change made while another connection holds chat.sqlite's write lock waits it out off the event loop and succeeds", async t => {
