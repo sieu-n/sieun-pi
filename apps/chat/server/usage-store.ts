@@ -38,6 +38,8 @@ export interface UsageSums {
   usage(range: UsageRange): Promise<UsageTotal[]>;
   /** When the sums were last read, while the store has not answered since; else undefined. */
   staleSince?(): number | undefined;
+  /** False until the first read or a fresh snapshot gives sums, while a `usage` call waits for them. */
+  ready?(): boolean;
   /** A count that moves each time the sums or `staleSince` change, so an answer built from them stays good until it moves. */
   version?(): number;
 }
@@ -440,6 +442,10 @@ export class StoreUsage implements UsageSums {
     this.goodAt = now;
     if (changed) this.changes++;
     if (full) void this.save(now);
+  }
+
+  ready(): boolean {
+    return this.read;
   }
 
   /** When the kept sums were last read, while the store has failed every read since; else undefined. */

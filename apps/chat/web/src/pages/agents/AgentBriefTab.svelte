@@ -1,6 +1,6 @@
 <script lang="ts">
   import { api, type ProjectList } from "$lib/api";
-  import { Badge, Button, stampLabel, toast } from "$lib/ui";
+  import { Badge, Button, LoadingText, stampLabel, toast } from "$lib/ui";
   import { hrefFor } from "$lib/router.svelte";
   import { folderOwner, money, plural, withFolder, type AgentTabProps } from "./agent-tab";
   import AgentFolderText from "./AgentFolderText.svelte";
@@ -121,6 +121,9 @@
       {money(config.usage.cost)} over {plural(config.usage.turns, "turn")}
       <button type="button" class="more t-caption" onclick={() => onsection("threads")}>By thread</button>
     </dd>
+  {:else if config.pending}
+    <dt>Last 7 days</dt>
+    <dd data-fact="usage" data-pending><LoadingText /></dd>
   {/if}
 </dl>
 {#if !job}{@render firstInput()}{/if}

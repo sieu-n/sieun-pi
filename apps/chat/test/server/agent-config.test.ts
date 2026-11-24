@@ -11,6 +11,7 @@ import type { AgentConfig, ConversationSummary, Sidebar } from "../../web/src/li
 import { readPreamble } from "../../server/agent-config.ts";
 import { FixtureHost } from "../../server/host/fixture.ts";
 import { FIXTURE_AGENTS as agents, FIXTURE_IDS as ids } from "../../server/fixture/seed.ts";
+import type { UsageSums } from "../../server/usage-store.ts";
 import type { Wake } from "../../server/wakes.ts";
 import { start, type Running } from "./helpers.ts";
 
@@ -160,6 +161,39 @@ test("a second config read takes its first input and ping from the first, and it
   } finally {
     host.entries = originals.entries;
     host.ping = originals.ping;
+  }
+});
+
+test("before a new server has read the usage sums, a config read answers at once marked pending, and ?wait=1 waits for the sums", async () => {
+  const app = s.app as unknown as { usage: UsageSums };
+  const real = app.usage;
+  let read = false;
+  let land!: () => void;
+  const landed = new Promise<void>(resolve => (land = resolve));
+  app.usage = {
+    ready: () => read,
+    usage: async range => {
+      await landed;
+      return real.usage(range);
+    },
+  };
+  try {
+    const timer = new Promise<"waited">(resolve => setTimeout(resolve, 2000, "waited").unref());
+    const first = await Promise.race([config(agents.harness), timer]);
+    assert.notEqual(first, "waited", "the read does not wait for the usage sums");
+    assert.equal(first.pending, true);
+    assert.equal(first.usage, null);
+    assert.equal(first.identity.purpose?.text, "What still blocks the migration to pi-host?", "every other part is in the first answer");
+    const waited = s.get<AgentConfig>(`/api/agents/${encodeURIComponent(agents.harness)}/config?wait=1`);
+    read = true;
+    land();
+    const full = await waited;
+    assert.equal(full.pending, undefined);
+    assert.ok(full.usage && full.usage.turns > 0);
+    assert.equal((await config(agents.harness)).pending, undefined, "a server with its sums sends no pending");
+  } finally {
+    land();
+    app.usage = real;
   }
 });
 

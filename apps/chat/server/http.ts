@@ -301,7 +301,7 @@ export function routes(app: App, parts: SkillsParts, wikiPages = new WikiPageLis
       if (agent && !app.threads.agent(agent)) throw new NotFound(`No agent ${agent}.`);
       return app.threads.jobList({ archived: q.get("archived") === "1", ...(agent ? { agent } : {}) });
     }),
-    route("GET", "/api/agents/:id/config", async (_r, p) => agentConfig(app, p.id!)),
+    route("GET", "/api/agents/:id/config", async (_r, p, q) => agentConfig(app, p.id!, q.get("wait") === "1")),
     route("GET", "/api/agents/:id/prompt", async (_r, p) => agentPromptAnswer(app, p.id!)),
     route("GET", "/api/agents/:id/prompt/outline", async (_r, p, q) => agentPromptOutlineAnswer(app, p.id!, q.get("wait") === "1")),
     route("GET", "/api/agents/:id/for-me", async (_r, p, q) => {

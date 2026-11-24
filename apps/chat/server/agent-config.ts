@@ -222,13 +222,16 @@ async function firstInput(app: App, thread: string, conversation: number): Promi
 
 /**
  * The thread's usage over the Usage page's 7 days by hour: the 168 clock hours that end with the one holding now, which fall on the kept
- * hour sums (usage-store.ts `StoreUsage`), so the read calls no store. Null while the store does not answer.
+ * hour sums (usage-store.ts `StoreUsage`), so the read calls no store. Null while the store does not answer, and "pending" while a new
+ * server has no sums yet and the read does not `wait`: the snapshot read and the tail read behind it end 0.5 to 6 s after a start takes
+ * the port, and on 11-23 and 11-24 every one of the 28 config reads over 1 s waited for them.
  */
-function weekUsage(app: App, threads: readonly string[], now = Date.now()): Promise<UsageTotal[] | null> {
+function weekUsage(app: App, threads: readonly string[], wait: boolean, now = Date.now()): Promise<UsageTotal[] | null | "pending"> {
   const until = bucketStart("hour", now) + BUCKET_MS.hour;
   const since = until - RANGE_MS["7d"];
   // Sums the store has not refreshed are unknown here, as an unreachable store's are: this card has no line that says how old they are.
   if (app.usage.staleSince?.() !== undefined) return Promise.resolve(null);
+  if (!wait && app.usage.ready?.() === false) return Promise.resolve("pending");
   return app.usage.usage({ since, until, bucketMs: until - since, threads: [...threads] }).catch(() => null);
 }
 
@@ -330,7 +333,8 @@ function jobJobs(app: App, id: AgentId, thread: string, conversation: number, du
   return jobs;
 }
 
-export async function agentConfig(app: App, id: AgentId): Promise<AgentConfig> {
+/** `wait` holds the answer until the usage sums are read; without it a new server answers at once, marked `pending`. */
+export async function agentConfig(app: App, id: AgentId, wait = false): Promise<AgentConfig> {
   let agent = app.threads.agent(id);
   if (!agent) {
     await app.threads.refresh().catch(() => undefined);
@@ -363,10 +367,10 @@ export async function agentConfig(app: App, id: AgentId): Promise<AgentConfig> {
   jobs.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
   const kinds = threadKinds(agent, jobs);
 
-  const [first, ping, usage, board, instructions] = await Promise.all([
+  const [first, ping, week, board, instructions] = await Promise.all([
     firstInput(app, thread, conversation),
     lastPing(app),
-    weekUsage(app, [...kinds.keys()]),
+    weekUsage(app, [...kinds.keys()], wait),
     chat ? app.boards.latest(chat).catch(() => null) : Promise.resolve(null),
     instructionsOn(app, thread, row.cwd, agentDir),
   ]);
@@ -431,6 +435,7 @@ export async function agentConfig(app: App, id: AgentId): Promise<AgentConfig> {
     }
   }
 
+  const usage = week === "pending" ? null : week;
   const totals = usage ?? [];
   const parentName = agent.parent?.name ?? null;
   return {
@@ -497,5 +502,6 @@ export async function agentConfig(app: App, id: AgentId): Promise<AgentConfig> {
         : `thread ${thread}, which ${parentName ?? "its chat"} and its jobs share`,
       split: usageSplit(totals, kinds),
     },
+    ...(week === "pending" ? { pending: true as const } : {}),
   };
 }

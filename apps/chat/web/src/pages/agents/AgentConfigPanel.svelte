@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { kept, reads, view, type AgentSummary, type ModelCatalog, type RunStatus, type ThinkingLevel } from "$lib/api";
+  import { kept, reads, view, type AgentConfig, type AgentSummary, type ModelCatalog, type RunStatus, type ThinkingLevel } from "$lib/api";
+  import { get } from "$lib/api/client";
   import { Avatar, Badge, Button, EmptyState, IconButton, LoadingText, Menu, Meter, ModelPicker, PanelHeader, Tabs, TypingDots, stampLabel, type MenuEntry } from "$lib/ui";
   import { hrefFor, router } from "$lib/router.svelte";
   import { SECTIONS, STATUS_LABEL, canRename, forLabel, hasForList, levelsFor, modelKey, modelOptions, type ConfigSection } from "./agents-model";
@@ -35,6 +36,15 @@
   const configShown = $derived(config !== null);
   $effect(() => {
     if (configShown) void kept(reads.agentPromptOutline(agentId)).ahead().then(() => kept(reads.agentPrompt(agentId)).ahead());
+  });
+
+  /** A new server's first answer comes before its usage sums, marked pending; the read that waits for them takes its place. */
+  $effect(() => {
+    const first = answer.value;
+    if (!first?.pending) return;
+    void get<AgentConfig>({ path: `${reads.agentConfig(agentId).path}?wait=1` }, { background: "ahead" }).then(fresh => {
+      if (answer.value === first) answer.set(fresh);
+    }, () => undefined);
   });
 
   const load = () => answer.refresh();

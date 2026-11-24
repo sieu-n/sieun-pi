@@ -949,12 +949,14 @@ export interface AgentConfig {
   };
   /**
    * The Usage page's last 7 days over every thread of the agent: its main thread with the jobs inside it, its comm threads, and the root job
-   * threads filed under it, with the same sums split by those three kinds. Null when the host does not answer.
+   * threads filed under it, with the same sums split by those three kinds. Null when the host does not answer, and while `pending`.
    */
   usage: {
     days: number; turns: number; cost: number; tokens: { input: number; output: number; cacheRead: number; cacheWrite: number }; scope: string;
     split: Record<ThreadKind, UsagePart>;
   } | null;
+  /** Sent by a server that has not read the usage sums yet, in its first seconds after a start; `?wait=1` waits for them and brings `usage`. */
+  pending?: true;
 }
 
 /** A script file the agent keeps in its folder, that its brief names, or that one of its duties runs as its precheck. */
