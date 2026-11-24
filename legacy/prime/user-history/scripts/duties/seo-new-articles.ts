@@ -85,7 +85,10 @@ export const seoulDay = (at: number): string => new Date(at + 9 * 3_600_000).toI
  * 13 d2 runs that asked about all 144 to 146 counted articles each, 2,001 calls by 19:01Z, when Google began answering 429
  * "Quota exceeded for sc-domain:virev.ai.", and it still answered 429 at 2026-10-26 00:08Z (Vent prod otel.vent_calls).
  */
-export const REASK_AFTER_MS = 24 * 3_600_000;
+/** 23 h, not 24: the duty runs once a day and its start moves by seconds, so a 24 h rule kept every second day's verdict. The 11-24 run
+ * started 25 s under 24 h after the 11-23 run (10:20:04 against 10:20:29 KST), kept "URL is unknown to Google" for 4 pages Google had
+ * indexed on 11-23, and read new_unindexed_3d 5 where 1 page was out. */
+export const REASK_AFTER_MS = 23 * 3_600_000;
 /**
  * The Request indexing log of the daily Search Console window (second google user's windows.py), one JSON row per attempt, under the program
  * folder. An article with an accepted request is asked again at every run until it reads indexed, so the drop shows at the next run instead
