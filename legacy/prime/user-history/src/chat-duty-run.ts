@@ -298,9 +298,13 @@ const cutReruns = (run: DutyRunRecord, cut: DutyCut): boolean => run.trigger !==
 /** The keys of the metrics a duty's verdict counts (`verdictMetrics`); old run records still carry every metric the duty once had. */
 const verdictKeys = (metrics: readonly DutyMetric[]): Set<string> => new Set(verdictMetrics(metrics).map(metric => metric.key));
 
-/** The findings line for the stuck metrics (`MetricStreak.stuck`): each one names its streak and the fix that did not move it. Empty when none is stuck. */
+/**
+ * The findings line for the stuck metrics (`MetricStreak.stuck`): each one names its streak and the fix that did not move it. Empty when none is stuck.
+ * A metric whose every counted red has an owner (`redOwners.none` 0) or whose fix waits on the owner gets no line, since its missed-metrics line
+ * says to start no job: on 11-25 d9's brief told its job both "starts a new root-cause job" and "Start no job" for duties_green_pct.
+ */
 export function stuckFindings(misses: readonly MetricStreak[]): string {
-  const stuck = misses.filter(miss => miss.stuck);
+  const stuck = misses.filter(miss => miss.stuck && miss.redOwners?.none !== 0 && !(miss.fix?.hold !== undefined && !miss.fix.live));
   if (!stuck.length) return "";
   return `### Change approach\n${stuck.map(miss => `- ${miss.key} missed ${miss.misses} runs in a row and did not move toward its target` +
     `${miss.fix ? `; the fix ${miss.fix.step}${miss.fix.job ? ` by ${miss.fix.job}` : ""} did not move it` : ""}. This run starts a new root-cause job for it, not the same fix again.`).join("\n")}`;
