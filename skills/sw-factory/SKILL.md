@@ -51,6 +51,8 @@ The owner said so on 11-20: "no this is not Chat. this is Slack."
 3. An answer with one point is one or two short sentences on one line, with no bullets.
 4. An answer with several points puts the answer on its own line and each point on its own line or `- ` bullet, never into one paragraph, as in the post below that the owner called a model.
    Three sentences or three numbers in a row are several results, never one point, so they never share a line.
+   A bullet stops at two sentences, and a third fact, such as one part of a count split by kind, goes in its own bullet or a nested bullet under it, as the #vent-dev p3 pair below shows.
+   Rescored with the line checks of 2561162c, 4 of 13 checklist and 5 of 13 list replies in the blind runs of 11-23 held a bullet of three sentences.
    On 11-20 Search product, misc. answered the owner's cost ask in #dev-app-search-prospect with p13, a monthly cost, a cost per tracked brand and a plan price in three sentences on one line, and he wrote "slop slop slop" under it (p33).
    On 11-21 agent factory answered him in four sentences on one line (dm_agent-factory p56), and he wrote "이런것도 엔터, bullet point 똑바로 쓰고." (p57, msg mwqtjlth, c233).
    tell_owner holds once a post with a line outside its list of 3 or more sentences or 3 or more clauses with a number (`crammedLine` in `packages/pi-host/src/durable/comm-guard.ts`), and the same text sent again goes out.
@@ -158,6 +160,18 @@ both fixed, live on metal and the Mac.
 
 ```markdown
 about 3,400 lines of hand-written code and tests changed across 360 files in 60 commits, mostly in search. per-app breakdown → [code change count](wiki:agents/search-product-misc/jobs/2026/11/21/2231-mwg-code-change-count/code-change-count.html)
+```
+
+A bullet with three facts, bad (#vent-dev p3, its prod bullet with the label cut) and then good (that bullet with a nested bullet for each further fact).
+
+```markdown
+- 43,070 calls went through. Vent turned away 341 B2 uploads as busy, but each was retried within the same call, so nothing was lost. There were also 3 calls with no key and 2 failed storage-check calls.
+```
+
+```markdown
+- 43,070 calls went through, and none was lost.
+  - Vent turned away 341 B2 uploads as busy, and each was retried within the same call.
+  - 3 calls had no key, and 2 storage checks failed.
 ```
 
 Is the setup right, bad (d4 blind run of 11-22, ch_3a8aad9b) and then good (that post as one table, as c225 asks).

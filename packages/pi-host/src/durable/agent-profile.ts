@@ -167,6 +167,11 @@ export const ROOM_EXAMPLES: readonly { case: string; bad: { at: string; text: st
     good: { at: "#dev-search-general p33", text: "about 3,400 lines of hand-written code and tests changed across 360 files in 60 commits, mostly in search. per-app breakdown → [code change count](wiki:agents/search-product-misc/jobs/2026/11/21/2231-mwg-code-change-count/code-change-count.html)" },
   },
   {
+    case: "A bullet with three facts",
+    bad: { at: "#vent-dev p3, its prod bullet with the label cut", text: "- 43,070 calls went through. Vent turned away 341 B2 uploads as busy, but each was retried within the same call, so nothing was lost. There were also 3 calls with no key and 2 failed storage-check calls." },
+    good: { at: "that bullet with a nested bullet for each further fact", text: "- 43,070 calls went through, and none was lost.\n  - Vent turned away 341 B2 uploads as busy, and each was retried within the same call.\n  - 3 calls had no key, and 2 storage checks failed." },
+  },
+  {
     case: "Is the setup right",
     bad: { at: "d4 blind run of 11-22, ch_3a8aad9b", text: "Agents get skills from three places, and only the first is this repo.\n- Each skill is a folder with a SKILL.md under `skills/`, 28 in all, plus `resume-paused-sessions` in `legacy/prime/skills/`.\n- websearch, aside-browser, board and wiki also ship Python code that loads into every agent's kernel.\n- `install-manifest.json` links each skill into `~/.prime/agent/skills/<name>`, and agents read skills from there." },
     good: { at: "that post as one table, as c225 asks", text: "it's set up right, and agents get skills from three places.\n\n| piece | where | who loads it |\n|---|---|---|\n| 28 skills | `skills/` in this repo | prime-sync links them into `~/.prime/agent/skills` each minute |\n| built-ins such as edit and goal | the Prime install | Prime at start |\n| skills an agent saves | `sieu-n/prime-shared-state` | the harness sync, none today |" },
@@ -240,6 +245,11 @@ export function roomExamples(): string {
  * On 11-21 agent factory answered him in dm_agent-factory p56 with one paragraph of four sentences (its guess, the cause, the plan and its
  * pick), and he wrote (p57, msg mwqtjlth, c233) "이런것도 엔터, bullet point 똑바로 쓰고." So the answer goes on its own line and each point on
  * its own line or bullet, and tell_owner's `crammedLine` hold already holds such a paragraph once.
+ * The step then said to keep each bullet to one point in one or two sentences, and fresh agents still wrote a third: rescored with the
+ * list and checklist line checks of 2561162c, 4 of 13 checklist and 5 of 13 list replies of 11-23 held a bullet of three sentences, such
+ * as "- 17 tracked files are modified and 9 untracked paths sit around, ... None of them are under packages/pi-host. One odd untracked file
+ * is literally named `{kind:`." So a bullet stops at two sentences, a third fact gets its own or a nested bullet, and a pair from
+ * #vent-dev p3, no blind ask's answer, shows it, since on 11-23 all 5 checklist reruns copied a rule example taken from their own ask.
  * Later that day he called a 92-word DM post a model (`MODEL_POST`), which the 80-word check had held once, so a post's cap is
  * `ROOM_LONG_WORDS`. The p174 captures found 7 of 8 channel posts opening "done, ..." over topic lists while Prime's 7 posts had no bullets,
  * so the step's stock openers ("yes", "nope", "not yet", "got it") gave way to a plain opening sentence, and the step was cut to the lines
@@ -259,7 +269,7 @@ function slackPostStep(): string {
   return "Write each post like a coworker types in Slack: the answer first in a plain sentence, with the why when it helps. " +
     "The answer holds for every result under it: when one result is not clean, the answer names it, as in \"two of the three deploys are live, but staging fails its health check\", never \"all clear\" over a bullet that says otherwise. " +
     "When two of his posts wait for you and each asks its own thing, answer each with its own tell_owner call whose `reply_to` is that post. Merge them only when the second adds to or corrects the first. " +
-    "Put the answer on its own line and each further point on its own line or `- ` bullet, never in one paragraph, and keep each bullet to one point in one or two sentences. " +
+    "Put the answer on its own line and each further point on its own line or `- ` bullet, never in one paragraph. A bullet stops at two sentences: a third fact, such as one part of a count split by kind, goes in its own bullet or a nested `  - ` bullet under it. " +
     "Keep your working plan and process to yourself (c234). A first reply gives the answer or one plain line on what he will get, never \"I'll do X first, then Y\" and never a checklist of your own steps. " +
     "A checklist lists only results he cares about, each with its result, and you fill them in by editing that post with `edit_message`. " +
     "A question to him leads with your own pick. No labels, such as an opener like \"Early read from the spec:\" or \"short version:\" or a line of a word or two over a group of bullets like \"The others:\", and no bold, headings or tables unless he asks. A question whether a setup or skill is set up right gets one answer line and one table of each piece, where it lives, who loads it and what it says, never a bare yes or a long list (c225). Detail goes on a wiki page linked in the post. End on the words, with no sign-off emoji. " +

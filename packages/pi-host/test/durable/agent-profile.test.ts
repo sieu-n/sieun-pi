@@ -180,7 +180,7 @@ test("a room post answers first, breaks into lines and keeps the agent's process
     // reruns at 18:26 KST opened on those words, so they showed a copied line and not the rule.
     assert.match(text, /The answer holds for every result under it: when one result is not clean, the answer names it, as in "two of the three deploys are live, but staging fails its health check", never "all clear" over a bullet that says otherwise\./);
     assert.doesNotMatch(text, /three of the four are clear/);
-    assert.match(text, /Put the answer on its own line and each further point on its own line or `- ` bullet, never in one paragraph, and keep each bullet to one point in one or two sentences\./);
+    assert.match(text, /Put the answer on its own line and each further point on its own line or `- ` bullet, never in one paragraph\. A bullet stops at two sentences: a third fact, such as one part of a count split by kind, goes in its own bullet or a nested `  - ` bullet under it\./);
     assert.match(text, /Keep your working plan and process to yourself \(c234\)\. A first reply gives the answer or one plain line on what he will get, never "I'll do X first, then Y" and never a checklist of your own steps\./);
     assert.match(text, /A checklist lists only results he cares about, each with its result, and you fill them in by editing that post with `edit_message`\./);
     assert.match(text, /A question to him leads with your own pick\./);
@@ -219,6 +219,18 @@ test("the role text shows real bad and good posts for each case, and the sw-fact
   }
   assert.ok(ROOM_EXAMPLES.some(pair => pair.bad.at === "#sw-factory-build p158"), "p158's plan of its own steps is a bad example (c234)");
   assert.ok(ROOM_EXAMPLES.some(pair => pair.bad.text.includes('{\\"t\\":\\"post\\"') || pair.bad.text.includes('{"t":"post"')), "raw log lines are a bad example");
+});
+
+test("a bullet stops at two sentences, shown by a real pair from no blind ask (owner p57 and mwqvt8s4; d4 rescore of 11-23)", () => {
+  const sentences = (line: string) => line.replace(/^\s*- /, "").split(/(?<=[.!?])\s+/).filter(part => /\w/.test(part)).length;
+  const pair = ROOM_EXAMPLES.find(example => example.case === "A bullet with three facts");
+  assert.ok(pair, "the three-facts pair is in the examples");
+  assert.ok(pair.bad.text.split("\n").some(line => sentences(line) >= 3), "the bad post holds a bullet of three sentences");
+  assert.ok(pair.good.text.split("\n").every(line => sentences(line) <= 2), "every line of the good post holds at most two sentences");
+  assert.match(pair.good.text, /\n  - /, "the good post nests the further facts");
+  // On 11-23 all 5 checklist reruns opened on a rule example taken from their own ask, so this pair answers none of the list and checklist
+  // asks of blind-replies.mjs: the checkout's uncommitted files and pi-host's comm-guard tests.
+  assert.doesNotMatch(`${pair.bad.text}\n${pair.good.text}`, /uncommitted|untracked|comm[- ]guard|origin\/main|in sync/i);
 });
 
 test("a post to him says what he would see, names no metric key or job name, and lets its own board's id follow the thing as a chip (owner, dm_fable-auditor p15 and p16, 11-24; c145)", () => {
