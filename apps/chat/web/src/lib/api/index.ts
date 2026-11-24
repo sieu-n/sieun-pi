@@ -2,4 +2,4 @@ export * from "./types.ts";
 export { api, ApiError, attach, expectCall, isSoloRoom, listedRoom, reads, requestId, roomOf, type Attached, type ListedRoom, type PickerAgent, type Read, type Wait } from "./client.ts";
 export { kept, view, type Kept } from "./kept.svelte.ts";
 export { live } from "./live.svelte.ts";
-export { agents, applyBoard, boardReads, boardStore, BoardStore, connection, conversations, keepOpened, listedAhead, forYou, jobs, markedUnread, markUnread, me, newestReply, threadMarkKey, panelsAhead, prefetchThread, replies, Replies, restorePages, sidebar, timeline, Timeline } from "./stores.svelte.ts";
+export { agents, applyBoard, boardReads, boardStore, BoardStore, connection, conversations, keepOpened, listedAhead, forYou, jobs, markedUnread, markUnread, me, newestReply, threadMarkKey, panelsAhead, prefetchThread, replies, Replies, restorePages, roomPage, sidebar, timeline, Timeline, type RoomPage } from "./stores.svelte.ts";

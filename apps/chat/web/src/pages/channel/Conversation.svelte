@@ -51,7 +51,7 @@
   let { id, around }: Props = $props();
 
   // svelte-ignore state_referenced_locally
-  const store = timeline(id, around ? { around } : {});
+  const store = timeline(id, around ? { around, ...(router.route.params.thread ? { root: router.route.params.thread } : {}) } : {});
   let leaving = false;
   onDestroy(() => {
     leaving = true;
@@ -309,13 +309,11 @@
   let inviteOpen = $state(false);
   let inviteAnchor = $state<HTMLElement>();
   /**
-   * A test room sends no live room event, and on 11-21 a remove's system line reached the open room only with the next post, so a member
-   * change reads the header and the newest items again itself.
+   * A test room sends no live room event, so a member change reads the header again itself. Its system line comes on the socket, which
+   * the room's watchers get from group-rooms.ts `memberChanged`; a read of the newest items beside it counted as his wait for the room, 3
+   * of his 17 on 11-23 (work/p278-thread-open/census.md).
    */
-  const refreshHeader = async () => {
-    const [page] = await Promise.all([api.items(id, { limit: 20 }), store.refreshHeader()]);
-    store.upsert(page.items);
-  };
+  const refreshHeader = () => store.refreshHeader();
 
   let agendaOpen = $state(false);
 

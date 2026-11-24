@@ -4,6 +4,8 @@
  * from the box, four such loads from 06:43 to 06:58 KST each waited 204 to 222 ms for the room's items and for the replies of the thread
  * that was open, with nothing on the screen (requests/2026-11-19.jsonl). Every call settles, also where IndexedDB is closed to the page.
  */
+import { holdReload, releaseReload } from "./reload.ts";
+
 const DB = "chat.pages";
 const STORE = "pages";
 /** The shape of a kept page. A release that changes `Item` or a header so that an older page no longer renders raises it, which drops every kept page. */
@@ -13,6 +15,7 @@ const SHAPE = 1;
 export interface KeptPage { cache: string; key: string; at: number; value: unknown }
 
 let opened: Promise<IDBDatabase> | undefined;
+let writes = 0;
 
 function open(): Promise<IDBDatabase> {
   return (opened ??= new Promise<IDBDatabase>((resolve, reject) => {
@@ -50,7 +53,15 @@ export const pageDb = {
   /** Every kept page, the oldest first. */
   all: (): Promise<KeptPage[]> =>
     run<unknown[]>("readonly", store => store.getAll()).then(pages => pages.filter(isKept).sort((a, b) => a.at - b.at), () => []),
-  put: (cache: string, key: string, value: unknown): Promise<void> =>
-    run("readwrite", store => store.put({ cache, key, at: Date.now(), value } satisfies KeptPage)).then(() => undefined, () => undefined),
+  /**
+   * A write holds a reload for a newer build until it lands, since a write started as the page goes away never does: on 11-23 a reload as
+   * his thread reply landed brought back the room without the root's new thread pill, and its open waited a round trip (work/p278-thread-open).
+   */
+  put: (cache: string, key: string, value: unknown): Promise<void> => {
+    const write = `page:${++writes}`;
+    holdReload(write);
+    return run("readwrite", store => store.put({ cache, key, at: Date.now(), value } satisfies KeptPage))
+      .then(() => undefined, () => undefined).finally(() => releaseReload(write));
+  },
   drop: (cache: string, key: string): Promise<void> => run("readwrite", store => store.delete([cache, key])).then(() => undefined, () => undefined),
 };

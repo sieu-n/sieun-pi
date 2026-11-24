@@ -1,6 +1,6 @@
 <script lang="ts">
   import { SvelteMap } from "svelte/reactivity";
-  import { agents, api, me, type ConversationSummary, type Item } from "$lib/api";
+  import { agents, me, roomPage, type ConversationSummary, type Item, type RoomPage } from "$lib/api";
   import { conversationHref, hrefFor, router } from "$lib/router.svelte";
   import { Avatar, Button, EmptyState, Icon, LoadingText, PanelHeader } from "$lib/ui";
   import { toast } from "$lib/ui/toast.svelte";
@@ -22,18 +22,29 @@
   const context = $derived({ mentions: mentionContext(directory.agents, directory.channels, me.value?.owner.name ?? ""), plain: true });
 
   /** The posts after the room's read point, top-level only, from its newest page; `earlier` when the page starts past the read point. */
+  function ready(page: RoomPage, row: ConversationSummary): Extract<Section, { state: "ready" }> {
+    const at = row.lastActivityAt;
+    // A Mark unread moves the read point back to the post the room's row names, which a page kept before the mark does not know.
+    const marked = row.unreadFrom ? page.items.find((item) => item.id === row.unreadFrom) : undefined;
+    const read = marked?.kind === "message" && marked.seq !== undefined ? marked.seq - 1 : (page.header.readSeq ?? 0);
+    const posts = page.items.filter((item): item is Post => item.kind === "message" && !item.threadRoot && !item.deleted && (item.seq ?? 0) > read);
+    const first = page.items.find((item) => item.kind === "message" && item.seq !== undefined);
+    const earlier = !!page.older && first?.kind === "message" && (first.seq ?? 0) > read + 1;
+    return { state: "ready", at, posts, earlier };
+  }
+
+  /** Shows the room's kept page at once and its newest page when the read behind it lands. */
   async function load(row: ConversationSummary): Promise<void> {
     const at = row.lastActivityAt;
-    sections.set(row.id, { state: "loading", at });
+    const { kept, fresh, waited } = roomPage(row.id);
+    const shown = kept ? ready(kept, row) : undefined;
+    sections.set(row.id, shown ?? { state: "loading", at });
     try {
-      const [header, page] = await Promise.all([api.header(row.id), api.items(row.id)]);
-      const read = header.readSeq ?? 0;
-      const posts = page.items.filter((item): item is Post => item.kind === "message" && !item.threadRoot && !item.deleted && (item.seq ?? 0) > read);
-      const first = page.items.find((item) => item.kind === "message" && item.seq !== undefined);
-      const earlier = !!page.older && first?.kind === "message" && (first.seq ?? 0) > read + 1;
-      if (sections.get(row.id)?.at === at) sections.set(row.id, { state: "ready", at, posts, earlier });
+      const next = ready(await fresh, row);
+      if (shown && JSON.stringify([shown.posts, shown.earlier]) !== JSON.stringify([next.posts, next.earlier])) waited();
+      if (sections.get(row.id)?.at === at) sections.set(row.id, next);
     } catch (error) {
-      if (sections.get(row.id)?.at === at) sections.set(row.id, { state: "failed", at, error: error instanceof Error ? error.message : "Could not load the new posts" });
+      if (!shown && sections.get(row.id)?.at === at) sections.set(row.id, { state: "failed", at, error: error instanceof Error ? error.message : "Could not load the new posts" });
     }
   }
 

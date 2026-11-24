@@ -1111,7 +1111,8 @@ export class Timeline {
   /** The post marked unread when the view opened, which its first read clears, as opening a room in Slack does; a mark after that holds. */
   private openedFrom: string | undefined;
 
-  constructor(readonly id: ConversationId, opts: { around?: string } = {}) {
+  /** `root` is the thread the address opens beside `around`, whose root the room's kept page may hold when the reply is not in it. */
+  constructor(readonly id: ConversationId, opts: { around?: string; root?: string } = {}) {
     this.isChannel = id.startsWith("ch_");
     this.isRoom = isRoom(id);
     this.sends = new Sends(id, () => this.items, items => (this.items = items));
@@ -1124,7 +1125,7 @@ export class Timeline {
     this.stopOpen = live.onOpen(() => this.missed());
     timelinePages.open(id, () => this.showing());
     this.openedFrom = markedUnread.get(id);
-    this.loaded = this.load(opts.around);
+    this.loaded = this.load(opts.around, opts.root);
     for (const id of this.sends.restore()) this.retrySend(id);
   }
 
@@ -1132,13 +1133,26 @@ export class Timeline {
   /** The size of the short page this view opened from, kept with the page it leaves. */
   private limit: number | undefined;
 
-  private async load(around?: string): Promise<void> {
+  /**
+   * The message an address names that the room's kept newest page holds, `around` or else the thread's `root`. On 11-23 his open of a
+   * Later row at a reply in a room the page had read 10 min before waited a round trip for the page around it (work/p278-thread-open).
+   */
+  private keptAround(around: string, root: string | undefined): string | undefined {
+    if (aroundPages.last(aroundKey(this.id, around))) return undefined;
+    const items = timelinePages.last(this.id)?.items;
+    return [around, root].find(id => id !== undefined && !!items?.some(item => item.id === id));
+  }
+
+  private async load(named?: string, root?: string): Promise<void> {
+    // A message the kept newest page holds opens that page at it, and its refresh reads the newest page behind it.
+    const held = named ? this.keptAround(named, root) : undefined;
+    const around = held ? undefined : named;
     this.around = around;
     const pages = around ? aroundPages : timelinePages;
     const key = around ? aroundKey(this.id, around) : this.id;
     const last = pages.last(key);
     if (last) {
-      this.focus = last.focus;
+      this.focus = held ?? last.focus;
       this.header = last.header;
       this.status = last.header.summary.status;
       this.items = last.items;
@@ -1179,7 +1193,7 @@ export class Timeline {
       }
       this.upsert(page.items);
       this.older = older;
-      this.focus = page.focus;
+      this.focus = held ?? page.focus;
       this.stopWatch = live.watch(this.id, () => this.items.findLast(i => !isPending(i))?.id);
     } catch (error) {
       this.error = message(error);
@@ -1334,7 +1348,11 @@ export class Timeline {
     this.openedFrom = undefined;
     const last = this.items.findLast(i => i.kind === "message" && i.seq !== undefined);
     const seq = last?.kind === "message" ? Math.max(last.seq!, replySeq) : replySeq >= 0 ? replySeq : undefined;
-    return api.read(this.id, seq).catch(error => {
+    // The page this view keeps reads to here too, so the All unreads page draws from it what is still new (UnreadsPage.svelte).
+    return api.read(this.id, seq).then(answer => {
+      if (seq !== undefined && this.header && (this.header.readSeq ?? -1) < seq) this.header = { ...this.header, readSeq: seq };
+      return answer;
+    }, error => {
       if (this.marked === newest) this.marked = undefined;
       this.markedReply = -1;
       throw error;
@@ -1371,7 +1389,29 @@ export class Timeline {
   }
 }
 
-export const timeline = (id: ConversationId, opts: { around?: string } = {}): Timeline => new Timeline(id, opts);
+export const timeline = (id: ConversationId, opts: { around?: string; root?: string } = {}): Timeline => new Timeline(id, opts);
+
+/** A room's newest page as the cache keeps it: what its open shows first. */
+export type RoomPage = Pick<TimelineShown, "items" | "older" | "header">;
+
+/**
+ * A room's newest page for the All unreads page: the page the cache keeps, to show at once, and a read of it behind that the cache takes
+ * when it kept none. `waited` says the read changed what the page showed, so its line counts as a wait. On 11-23 the page read each unread
+ * room as his call, and stepping through the sidebar's views with Alt+Down logged 8 of his 17 waits for rooms that the page had read
+ * 8 s to 6 min before (work/p278-thread-open/census.md).
+ */
+export function roomPage(id: ConversationId): { kept: RoomPage | undefined; fresh: Promise<RoomPage>; waited: () => void } {
+  const kept = timelinePages.last(id);
+  const asked: Wait = kept ? { background: "shown", first: true } : {};
+  const taken = timelinePages.take(id, asked, () => readTimeline(id, undefined, asked, kept?.limit));
+  const fresh = taken.read.then(({ page, header }) => {
+    sawHeader(header);
+    const shown = { items: shownItems(id, page.items), older: page.older, header };
+    if (!kept && !timelinePages.viewing(id)) timelinePages.remember(id, shown);
+    return shown;
+  });
+  return { kept, fresh, waited: () => void (taken.wait.background = undefined) };
+}
 
 /** A channel thread (root post and replies), live. A reply shows at once as sending, as in the main timeline. */
 export class Replies {

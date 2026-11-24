@@ -100,10 +100,15 @@ test("an agent row shows Remove on hover and keyboard focus, removes at once and
   await expect(list.getByRole("button", { name: "Mentions only for Crawler VP" })).toBeFocused();
   await page.keyboard.press("Tab");
   await expect(remove).toBeFocused();
+  // The system line comes on the socket, so no read of the room's items waits behind the remove: on 11-23 that read counted as one of his
+  // waits for the room 3 times in a minute (work/p278-thread-open/census.md).
+  const reads: string[] = [];
+  page.on("request", (r) => r.method() === "GET" && r.url().includes(`/api/c/${room.id}/items`) && reads.push(r.url()));
   await page.keyboard.press("Enter");
   await expect(count(page)).toHaveAttribute("aria-label", "Members, 2 members");
   await expect(list.locator('[data-member="ag_frontend-bro"] .main')).toBeFocused();
   await expect(page.locator("section.conversation").getByText("You removed Crawler VP")).toBeVisible();
+  expect(reads).toEqual([]);
   await page.getByRole("button", { name: "Undo" }).click();
   await expect(count(page)).toHaveAttribute("aria-label", "Members, 3 members");
 
