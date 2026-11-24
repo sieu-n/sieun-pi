@@ -334,13 +334,17 @@ export function jarIgUserId(jar: BrowserJar): string {
 /** The crawler's 409 proxy_required for an account on a box route (crawler-v3 fleet/box_exit.py, since 698493e50d; 503 before 11-24): it hands out no
  *  jar there, which owner rule c229 keeps test accounts off, so the run reads it as no residential exit and waits on the proxy (t112). */
 export interface HeldJar { username: string; held: string }
-/** Reads the BrowserJar of one handle, or the crawler's hold on it. */
-export type ReadJar = (username: string) => Promise<BrowserJar | HeldJar>;
+/** The role a rig's browser drives an account in. A read with hold=<role> makes the crawler keep that account from outreach,
+ *  pool keeper loans and canary refills, and frees the account the role held before (crawler-v3 engage/browser_jar.py). */
+export type HoldRole = "dm-extension-sender" | "dm-extension-replier";
+/** Reads the BrowserJar of one handle, or the crawler's hold on it; `hold` names the role a rig drives it in. */
+export type ReadJar = (username: string, hold?: HoldRole) => Promise<BrowserJar | HeldJar>;
 
 /** The BROWSER_JAR reader with `key`. A 409 whose error_type is proxy_required is a HeldJar, and any other non-200 throws. */
 export function jarReader(key: string, fetcher: typeof fetch = fetch): ReadJar {
-  return async username => {
-    const response = await fetcher(`${BROWSER_JAR}?username=${encodeURIComponent(username)}`, { headers: { "X-API-Key": key }, signal: AbortSignal.timeout(SOURCE_DEADLINE_MS) });
+  return async (username, hold) => {
+    const query = new URLSearchParams({ username, ...(hold ? { hold } : {}) });
+    const response = await fetcher(`${BROWSER_JAR}?${query}`, { headers: { "X-API-Key": key }, signal: AbortSignal.timeout(SOURCE_DEADLINE_MS) });
     const body = await response.text();
     if (response.status === 409) {
       const error = (() => { try { return JSON.parse(body) as { error_type?: string; error?: string }; } catch { return {}; } })();
@@ -375,8 +379,8 @@ export async function jars(tmp: string, read: ReadJar): Promise<{ accounts: stri
     if (!jar.valid) notes.push(`${jar.world} @${jar.username} has a jar the crawler marked invalid`);
     return path;
   };
-  const sender = await read(SENDER);
-  const replier = await read(REPLIER);
+  const sender = await read(SENDER, "dm-extension-sender");
+  const replier = await read(REPLIER, "dm-extension-replier");
   const describe = (role: string, jar: BrowserJar | HeldJar) =>
     "held" in jar ? `${role} @${jar.username}: ${jar.held}` : `${role} @${jar.username} is ${jar.world} on exit ${new URL(jar.proxy_url).host}`;
   const accounts = `${describe("sender", sender)}; ${describe("replier", replier)}`;

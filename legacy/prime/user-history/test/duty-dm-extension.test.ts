@@ -166,9 +166,15 @@ test("a 409 proxy_required from browser-jar reads as no residential exit with no
     parked: new Response(JSON.stringify({ ok: false, error: { code: "not_found", message: "neither world holds a serving jar of @parked" } }), { status: 404 }),
     broken: new Response("oops", { status: 500 }),
   };
-  const read = jarReader("key", (async (url: string) => answers[new URL(url).searchParams.get("username") ?? ""]) as typeof fetch);
+  const holds: Record<string, string | null> = {};
+  const read = jarReader("key", (async (url: string) => {
+    const params = new URL(url).searchParams;
+    holds[params.get("username") ?? ""] = params.get("hold");
+    return answers[params.get("username") ?? ""];
+  }) as typeof fetch);
   try {
     const out = await jars(tmp, read);
+    assert.deepEqual(holds, { caiyiting8674: "dm-extension-sender", gimnayeon1396: "dm-extension-replier" });
     assert.equal(out.files, undefined);
     assert.deepEqual(out.boxed, ["sender @caiyiting8674: the crawler holds its jar, browser-jar answered 409 proxy_required (c229: engage route on server address 64.34.205.244 refused; it waits for a proxy)"]);
     const slices = report({ now: NOW, accounts: out.accounts, boxed: out.boxed, errors: [] }, METRICS).flagged ?? [];
