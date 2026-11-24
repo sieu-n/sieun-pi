@@ -5,7 +5,10 @@
 import { randomUUID } from "node:crypto";
 import { connect, type Socket } from "node:net";
 import type { IndexRead } from "../../../../packages/pi-host/src/durable/index-db.ts";
-import type { CreateOptions, DurableEvent, DurableThread, EntriesQuery, EntryRecord, Host, SubmissionRecord, Submitted, SubmitInput, Ticket, TreeNode } from "./types.ts";
+import {
+  threadPageOf, type CreateOptions, type DurableEvent, type DurableThread, type EntriesQuery, type EntryRecord, type Host, type SubmissionRecord,
+  type Submitted, type SubmitInput, type ThreadPage, type Ticket, type TreeNode,
+} from "./types.ts";
 
 type Pending = { resolve: (data: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout };
 type Watch = { thread: string; conversation?: number; fromEntry?: number; sink: (event: DurableEvent) => void; hostId?: string; stopped: boolean };
@@ -167,6 +170,9 @@ export class PiHost implements Host {
 
   async threads(opts: { archived?: boolean } = {}): Promise<DurableThread[]> {
     return ((await this.call("durable_threads", opts)) as { threads: DurableThread[] }).threads;
+  }
+  async threadPage(cursor: string | null): Promise<ThreadPage> {
+    return threadPageOf(await this.call("durable_threads", { cursor }));
   }
   async create(opts: Omit<CreateOptions, "box">): Promise<DurableThread> {
     return ((await this.call("durable_create", opts)) as { thread: DurableThread }).thread;

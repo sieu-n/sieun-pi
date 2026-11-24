@@ -103,9 +103,24 @@ export const isHostAway = (error: unknown): error is HostAway => error instanceo
  */
 export interface EntriesQuery { conversation?: number; before?: number; after?: number; limit?: number; lean?: boolean }
 
+/**
+ * One `durable_threads` answer to a cursor (packages/pi-host durable `listSince`): the rows changed since the cursor and the ids that left the
+ * list, or every row with `full`. A pi-host from before 11-24 ignores the cursor and sends every row with no cursor, which reads as full.
+ */
+export interface ThreadPage { threads: DurableThread[]; removed: string[]; cursor: string | null; full: boolean }
+
+/** A `durable_threads` answer to a call that sent `cursor`, as a `ThreadPage`. */
+export function threadPageOf(data: unknown): ThreadPage {
+  const answer = data as { threads: DurableThread[]; removed?: string[]; cursor?: string; full?: boolean };
+  const cursor = typeof answer.cursor === "string" ? answer.cursor : null;
+  return { threads: answer.threads, removed: answer.removed ?? [], cursor, full: cursor === null || answer.full !== false };
+}
+
 export interface Host {
   readonly name: string;
   threads(opts?: { archived?: boolean }): Promise<DurableThread[]>;
+  /** Every thread, archived ones too, as the rows changed since `cursor` (null for a first read); a host without it answers `threads()`. */
+  threadPage?(cursor: string | null): Promise<ThreadPage>;
   /** `box` names the box to make the thread on, for a host over several boxes (`MultiHost`); a host with one box ignores it. */
   create(opts: CreateOptions): Promise<DurableThread>;
   submit(thread: string, input: SubmitInput): Promise<Submitted>;

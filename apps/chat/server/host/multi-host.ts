@@ -3,7 +3,8 @@
  * first, which is a `RelayHost` once that box runs an agent relay and the local `PiHost` until then.
  *
  * 1. `threads()` asks every box and tags each row with its `box`. A box that does not answer gives its last good rows, kept in memory and in
- *    `<data dir>/host-routes.json`, or in chat.sqlite once the App calls `keep`, so its agents stay listed while it is away.
+ *    `<data dir>/host-routes.json`, or in chat.sqlite once the App calls `keep`, so its agents stay listed while it is away. With no
+ *    `archived` option it sends each box's cursor and merges the rows changed since it into the rows it keeps (`BoxRows`).
  * 2. Each call about one thread goes to the box that listed it (the same file keeps the map), else to the box of the agent record that holds
  *    the thread (`agentHost`), else to the chat's own box.
  * 3. `create` makes the thread on the box it names, the chat's own box by default.
@@ -30,6 +31,13 @@ interface RoutesFile {
   rows: Record<string, { live?: DurableThread[]; all?: DurableThread[] }>;
 }
 
+/** One box's rows as its last `durable_threads` answers left them, by id and newest first, with the cursor to send next. */
+interface BoxRows {
+  cursor: string | null;
+  byId: Map<string, DurableThread>;
+  rows: DurableThread[];
+}
+
 export interface Box {
   box: string;
   label: string;
@@ -46,6 +54,8 @@ export class MultiHost implements Host {
   private kept?: Kept;
   private saving = false;
   private readonly started = Date.now();
+  /** Each box's rows of `threads()` with no option, kept between reads with the cursor of the box's last answer. */
+  private readonly pages = new Map<string, BoxRows>();
   /** The box of the agent record that holds a thread, which the App sets once it has its records. */
   agentHost: (thread: string) => string | undefined = () => undefined;
 
@@ -137,17 +147,21 @@ export class MultiHost implements Host {
   async threads(opts: { archived?: boolean } = {}): Promise<DurableThread[]> {
     const key = opts.archived ? "all" : "live";
     const boxes = this.list();
-    const answers = await Promise.allSettled(boxes.map(b => b.host.threads(opts)));
+    const answers = await Promise.allSettled(boxes.map(b => this.boxThreads(b, opts)));
     const out: DurableThread[] = [];
     let firstError: unknown;
     let answered = 0;
+    let changed = false;
     answers.forEach((answer, i) => {
       const { box } = boxes[i]!;
       if (answer.status === "fulfilled") {
         answered += 1;
-        const rows = answer.value.map(row => ({ ...row, box }));
-        for (const row of rows) this.remember(row.id, box);
-        (this.routes.rows[box] ??= {})[key] = rows;
+        const { rows, touched } = answer.value;
+        for (const row of touched) this.remember(row.id, box);
+        if (touched.length || (this.routes.rows[box] ??= {})[key] !== rows) {
+          (this.routes.rows[box] ??= {})[key] = rows;
+          changed = true;
+        }
         out.push(...rows);
       } else {
         firstError ??= answer.reason;
@@ -155,8 +169,37 @@ export class MultiHost implements Host {
       }
     });
     if (!answered) throw firstError;
-    this.save();
+    if (changed) this.save();
     return out;
+  }
+
+  /**
+   * One box's rows tagged with the box, and the rows new to this read, whose routes are noted. With no option and a host that takes a cursor,
+   * the box answers only the rows changed since its last answer: parsing all 2,300 rows every 2 s took about 28 ms of the chat's loop on 11-24
+   * (p276). A row no answer changed stays the same object, so the thread list read keeps its summaries without comparing it. A cursor the
+   * box does not know, such as one from before its pi-host restarted, gets every row with `full`, and so does a pi-host from before 11-24.
+   */
+  private async boxThreads(b: Box, opts: { archived?: boolean }): Promise<{ rows: DurableThread[]; touched: DurableThread[] }> {
+    const tag = (rows: DurableThread[]) => rows.map(row => ({ ...row, box: b.box }));
+    if (opts.archived !== undefined || !b.host.threadPage) {
+      const rows = tag(await b.host.threads(opts));
+      return { rows, touched: rows };
+    }
+    const kept = this.pages.get(b.box);
+    const page = await b.host.threadPage(kept?.cursor ?? null);
+    if (page.full || !kept) {
+      const rows = tag(page.threads);
+      this.pages.set(b.box, { cursor: page.cursor, byId: new Map(rows.map(row => [row.id, row])), rows });
+      return { rows, touched: rows };
+    }
+    kept.cursor = page.cursor;
+    if (!page.threads.length && !page.removed.length) return { rows: kept.rows, touched: [] };
+    const touched = tag(page.threads);
+    for (const row of touched) kept.byId.set(row.id, row);
+    for (const id of page.removed) kept.byId.delete(id);
+    // pi-host lists threads newest first, and the merged rows keep that order.
+    kept.rows = [...kept.byId.values()].sort((x, y) => y.updatedAt - x.updatedAt);
+    return { rows: kept.rows, touched };
   }
 
   async create(opts: CreateOptions): Promise<DurableThread> {

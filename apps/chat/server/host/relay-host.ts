@@ -22,8 +22,8 @@ import {
 import { readLatest, writeJsonLater } from "../disk.ts";
 import type { Kept } from "../kept-json.ts";
 import {
-  HostAway, type CreateOptions, type DurableEvent, type DurableThread, type EntriesQuery, type EntryRecord, type Host, type Ping,
-  type SubmissionRecord, type Submitted, type SubmitInput, type Ticket, type TreeNode,
+  HostAway, threadPageOf, type CreateOptions, type DurableEvent, type DurableThread, type EntriesQuery, type EntryRecord, type Host, type Ping,
+  type SubmissionRecord, type Submitted, type SubmitInput, type ThreadPage, type Ticket, type TreeNode,
 } from "./types.ts";
 
 /** The same answer limit PiHost gives a pi-host command. */
@@ -464,6 +464,9 @@ export class RelayHost implements Host {
 
   async threads(opts: { archived?: boolean } = {}): Promise<DurableThread[]> {
     return ((await this.call("durable_threads", opts)) as { threads: DurableThread[] }).threads;
+  }
+  async threadPage(cursor: string | null): Promise<ThreadPage> {
+    return threadPageOf(await this.call("durable_threads", { cursor }));
   }
   async create(opts: CreateOptions): Promise<DurableThread> {
     const { box: _box, ...fields } = opts;
