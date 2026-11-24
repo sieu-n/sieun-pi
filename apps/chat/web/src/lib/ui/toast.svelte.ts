@@ -6,6 +6,8 @@ export type ToastAction = { label: string; run: () => void } | { label: string; 
 export type ToastItem = {
   id: number;
   text: string;
+  /** A second line under the text in a quote, such as the memo of a due reminder's saved item. */
+  note?: string;
   tone: ToastTone;
   /** Its buttons, for example Undo or Retry, or a reminder's View, Mark complete and Snooze. */
   actions: ToastAction[];
@@ -18,10 +20,10 @@ class Toasts {
   private next = 1;
 
   /** `action` is one button; `actions` is several, in order. */
-  show(text: string, opts: { tone?: ToastTone; action?: ToastAction; actions?: ToastAction[]; duration?: number } = {}): number {
+  show(text: string, opts: { tone?: ToastTone; note?: string; action?: ToastAction; actions?: ToastAction[]; duration?: number } = {}): number {
     const id = this.next++;
     const actions = opts.actions ?? (opts.action ? [opts.action] : []);
-    const item: ToastItem = { id, text, tone: opts.tone ?? "neutral", actions, duration: opts.duration ?? (opts.tone === "danger" ? 8000 : 4000) };
+    const item: ToastItem = { id, text, ...(opts.note ? { note: opts.note } : {}), tone: opts.tone ?? "neutral", actions, duration: opts.duration ?? (opts.tone === "danger" ? 8000 : 4000) };
     // Four show at once. A fifth pushes out the oldest toast that hides by itself, so a toast that waits for him, such as a due reminder,
     // stays until he acts on it.
     const items = [...this.items, item];

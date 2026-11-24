@@ -13,9 +13,10 @@ import { toast } from "./ui/toast.svelte";
 
 const SNIPPET = 140;
 
+const clip = (text: string): string => (text.length > SNIPPET ? `${text.slice(0, SNIPPET - 1)}…` : text);
+
 function snippet(row: LaterRow): string {
-  const text = row.gone ? "This message was deleted." : row.text.replace(/\s+/g, " ").trim() || (row.images ? "Image" : "");
-  return text.length > SNIPPET ? `${text.slice(0, SNIPPET - 1)}…` : text;
+  return clip(row.gone ? "This message was deleted." : row.text.replace(/\s+/g, " ").trim() || (row.images ? "Image" : ""));
 }
 
 /** Opens the reminded post where it sits: in its thread when it is a reply, else in its room; a /remind reminder opens Later. */
@@ -32,10 +33,12 @@ export function laterDue(row: LaterRow): void {
   // A post he marked unread and has not handled comes back each morning (server/keep-unread.ts).
   const title = row.unread ? `Still unread: ${from}` : row.room === undefined ? "Reminder" : `Reminder: ${from}`;
   const body = snippet(row);
+  const memo = row.memo ? clip(row.memo.replace(/\s+/g, " ").trim()) : "";
   // Slack's reminder message: Mark as complete and a Snooze menu sit on it, so neither needs a trip to Later.
   const snooze = (): MenuEntry[] => remindPresets().map((p): MenuEntry => ({ id: `snooze-${p.id}`, label: p.label, onselect: () => void later.remind(row, p.at) }));
   const shown = toast.show(`${title}: ${body}`, {
     duration: 0,
+    note: memo,
     actions: [
       { label: "View", run: () => openReminded(row) },
       { label: "Mark complete", run: () => void later.setState(row, "done") },
@@ -43,7 +46,7 @@ export function laterDue(row: LaterRow): void {
     ],
   });
   later.showsDue(row, shown);
-  notifyOnce(`later-due:${row.id}:${row.remindAt ?? 0}`, () => void notifySystem(title, body, `later:${row.id}:${row.remindAt ?? 0}`, () => openReminded(row), { type: REMINDER, extra: { row } }));
+  notifyOnce(`later-due:${row.id}:${row.remindAt ?? 0}`, () => void notifySystem(title, memo ? `${body}\nMemo: ${memo}` : body, `later:${row.id}:${row.remindAt ?? 0}`, () => openReminded(row), { type: REMINDER, extra: { row } }));
 }
 
 /** The Mac app notification's buttons for a due reminder; Snooze 20 minutes leads, since a click on macOS's Options button picks the first. */

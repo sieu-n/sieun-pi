@@ -388,6 +388,7 @@
   class:compact
   class:dragging
   data-testid="composer"
+  data-composer
   role="group"
   aria-label="Message composer"
   ondragover={(e) => {

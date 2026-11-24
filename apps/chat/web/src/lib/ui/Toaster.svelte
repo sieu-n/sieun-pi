@@ -33,9 +33,9 @@
 
 <div bind:this={toaster} popover="manual" class="toaster" role="region" aria-label="Notifications" aria-live="polite">
   {#each toast.items as t (t.id)}
-    <div class="toast {t.tone}" role={t.tone === "danger" ? "alert" : "status"}>
+    <div class="toast {t.tone}" class:noted={!!t.note} role={t.tone === "danger" ? "alert" : "status"}>
       {#if t.tone === "success"}<Icon name="check" size={16} />{:else if t.tone === "danger"}<Icon name="warning" size={16} />{/if}
-      <span class="text">{t.text}</span>
+      <span class="text">{t.text}{#if t.note}<span class="note" data-toast-note>{t.note}</span>{/if}</span>
       {#each t.actions as action (action.label)}
         <button type="button" class="action" aria-haspopup={"menu" in action ? "menu" : undefined} onclick={(e) => press(t.id, action, e)}>{action.label}</button>
       {/each}
@@ -82,6 +82,10 @@
     pointer-events: auto;
     animation: rise var(--duration-slow) var(--ease-enter);
   }
+  /* A toast with a quoted second line runs three or four lines high, where a pill's ends would cut into the text. */
+  .noted {
+    border-radius: var(--radius-container);
+  }
   .success :global(.icon) {
     color: var(--accent-9);
   }
@@ -90,6 +94,15 @@
   }
   .text {
     flex: 1;
+  }
+  /* The quote look of a memo on a Saved row (pages/later/LaterPage.svelte `.memo`), in the toast's own colours. */
+  .note {
+    display: block;
+    margin: 4px 0 2px;
+    padding: 0 0 0 8px;
+    border-left: 2px solid color-mix(in srgb, var(--text-on-prominent) 40%, transparent);
+    color: color-mix(in srgb, var(--text-on-prominent) 75%, transparent);
+    overflow-wrap: anywhere;
   }
   .action {
     border: 0;

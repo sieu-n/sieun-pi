@@ -39,6 +39,11 @@ test("saving a post offers Add memo in the toast, and the memo shows on its Save
   await toast.getByRole("button", { name: "Add memo" }).click();
   const field = page.locator("[data-memo-field]");
   await expect(field).toBeFocused();
+  const prompt = page.getByRole("dialog", { name: "Memo for this saved message" });
+  await expect(prompt.locator("[data-memo-title]")).toHaveText("Memo for this saved message");
+  const promptBox = (await prompt.boundingBox())!;
+  const composerBox = (await page.locator("[data-composer]").first().boundingBox())!;
+  expect(promptBox.y + promptBox.height).toBeLessThanOrEqual(composerBox.y);
   await field.fill(`call the vendor ${word}`);
   await page.keyboard.press("Enter");
   await expect(field).toHaveCount(0);
@@ -67,8 +72,14 @@ test("a row's memo is added from More actions, edited by a click, kept over a re
 
   await page.reload();
   await expect(row.locator("[data-later-memo]")).toHaveText(`first ${word}`);
+  const shown = (await row.locator("[data-later-memo]").boundingBox())!;
+  const rowHeight = (await row.boundingBox())!.height;
   await row.locator("[data-later-memo]").click();
   await expect(field).toHaveValue(`first ${word}`);
+  const editing = (await field.boundingBox())!;
+  expect(Math.abs(editing.y - shown.y)).toBeLessThan(1);
+  expect(Math.abs(editing.height - shown.height)).toBeLessThan(1);
+  expect(Math.abs((await row.boundingBox())!.height - rowHeight)).toBeLessThan(1);
   await field.fill(`second ${word}`);
   await page.keyboard.press("Escape");
   await expect(row.locator("[data-later-memo]")).toHaveText(`first ${word}`);
@@ -108,8 +119,14 @@ test("the search finds an item by a word only in its memo, keeps it over a reloa
   await expect(page.locator("[data-later-id]")).toHaveCount(0);
   await expect(page.locator("[data-saved-clear]")).toBeVisible();
   await page.keyboard.press("Backspace");
+  await page.keyboard.press("ArrowRight");
+  const ring = (selector: string) => page.locator(selector).evaluate((el) => getComputedStyle(el).outlineStyle);
+  expect(await ring("[data-saved-search]")).toBe("none");
+  expect(await ring("[data-saved-filters] .search .inline")).toBe("solid");
   await page.keyboard.press("ArrowDown");
   await expect(page.locator(`[data-later-id="${s.ids[1]}"] a[data-later-open]`)).toBeFocused();
+  expect(await ring(`[data-later-id="${s.ids[1]}"] a[data-later-open]`)).toBe("none");
+  expect(await ring(`[data-later-id="${s.ids[1]}"]`)).toBe("solid");
   await page.locator("[data-saved-search]").focus();
   await page.keyboard.press("Escape");
   await expect(search).toHaveValue("");
@@ -155,12 +172,37 @@ test("Kind and In narrow the list and each tab's count, and Clear filters brings
   await page.getByRole("tab", { name: /Archived/ }).click();
   await expect(page).toHaveURL(new RegExp(`#/c/saved/archived\\?.*in=${a.room}`));
   await expect(page.locator(`[data-later-id="${a.ids[1]}"]`)).toBeVisible();
+  await page.getByRole("tab", { name: /Completed/ }).click();
+  await expect(rows).toHaveCount(0);
+  await expect(page.getByTestId("later-page").getByRole("status")).toContainText("1 match in In progress and 1 in Archived.");
+  await page.locator('[data-saved-other-tab="archived"]').click();
+  await expect(page).toHaveURL(new RegExp(`#/c/saved/archived\\?.*in=${a.room}`));
+  await expect(page.locator(`[data-later-id="${a.ids[1]}"]`)).toBeVisible();
 
   await page.locator("[data-saved-search]").fill(`nothing${word}`);
   await expect(rows).toHaveCount(0);
   await page.locator("[data-saved-clear]").click();
   await expect(page).not.toHaveURL(/[?&](q|in|kind)=/);
   await expect(page.locator(`[data-later-id="${a.ids[1]}"]`)).toBeVisible();
+});
+
+test("a saved DM post says Direct message on its room line, and Remind me shows its M key on the right", async ({ page }) => {
+  const word = tag();
+  const post = ((await (await page.request.post("/api/c/dm_vent/send", { data: { text: `dm save ${word}`, requestId: crypto.randomUUID() } })).json()) as { item: { id: string } }).item.id;
+  await page.request.post("/api/later", { data: { room: "dm_vent", post } });
+  await open(page, `#/c/saved?q=${encodeURIComponent(`dm save ${word}`)}`, "later-page");
+  const row = page.locator(`[data-later-id="dm_vent:${post}"]`);
+  await expect(row.locator("[data-later-room]")).toHaveText("Direct message");
+  await row.hover();
+  await row.locator("[data-later-more]").click();
+  const remind = page.getByRole("menu", { name: "More actions" }).getByRole("menuitem", { name: /Remind me/ });
+  await expect(remind.locator("kbd")).toHaveText("M");
+  const label = (await remind.locator(".label").boundingBox())!;
+  const key = (await remind.locator("kbd").boundingBox())!;
+  expect(key.x).toBeGreaterThan(label.x + label.width);
+  expect(Math.abs(key.y + key.height / 2 - (label.y + label.height / 2))).toBeLessThan(3);
+  await page.keyboard.press("Escape");
+  await page.request.delete(`/api/later/${encodeURIComponent(`dm_vent:${post}`)}`);
 });
 
 test("an old #/c/later link lands on Saved with its tab and query", async ({ page }) => {

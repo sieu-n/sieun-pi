@@ -76,12 +76,12 @@
     { id: "", label: "Anywhere", icon: "search" },
     ...rooms.map((r) => ({ id: r.id, label: r.name, icon: r.kind === "channel" ? "hash" : r.kind === "dm" ? "user" : "chat" })),
   ]);
-  /** What an empty filtered tab says matched nothing, and which other tab has matches. */
+  /** What an empty filtered tab says matched nothing, and the other tabs with matches, each a link to that tab: "1 match in In progress." */
   const noMatch = $derived.by(() => {
     const noun = kindLabel?.toLowerCase() ?? "saved items";
     const title = `No ${noun}${filter.room ? ` in ${roomName}` : ""}${filter.q.trim() ? ` match "${filter.q.trim()}"` : ""}`;
-    const elsewhere = (["open", "archived", "done"] as const).filter((s) => s !== tab && counts[s]).map((s) => `${counts[s]} in ${tabLabel[s]}`);
-    return { title, description: elsewhere.length ? `Other tabs have matches: ${elsewhere.join(", ")}.` : "No tab has a match." };
+    const elsewhere = (["open", "archived", "done"] as const).filter((s) => s !== tab && counts[s]).map((s) => ({ state: s, count: counts[s] }));
+    return { title, elsewhere };
   });
   function onsearchkey(e: KeyboardEvent) {
     if (e.key === "Escape" && filter.q) {
@@ -197,7 +197,7 @@
       row.state === "archived"
         ? { id: "archive", label: "Move to In progress", icon: "unarchive", shortcut: "E", onselect: () => archive(row) }
         : { id: "archive", label: "Archive", icon: "archive", shortcut: "E", onselect: () => archive(row) },
-      ...(row.state === "open" ? [{ ...remindMenu({ label: "Remind me", remindAt: row.remindAt, kept: !!row.unread, set: (at) => later.remind(row, at), custom: () => (customRow = row), clear: () => later.remind(row, null) }), detail: "M" }] : []),
+      ...(row.state === "open" ? [{ ...remindMenu({ label: "Remind me", remindAt: row.remindAt, kept: !!row.unread, set: (at) => later.remind(row, at), custom: () => (customRow = row), clear: () => later.remind(row, null) }), shortcut: "M" }] : []),
       { id: "memo", label: row.memo ? "Edit memo" : "Add memo", icon: "edit", onselect: () => void editMemo(row) },
       ...(row.gone || row.room === undefined ? [] : [
         { id: "unread", label: "Mark unread", icon: "dot", shortcut: "U", onselect: () => unread(row) },
@@ -285,7 +285,8 @@
     {:else if !rows.length}
       <div class="empty" role="status">
         {#if filtered}
-          <EmptyState icon="search" title={noMatch.title} description={noMatch.description}>
+          {#snippet elsewhere()}{#each noMatch.elsewhere as other, i (other.state)}{i === 0 ? "" : i === noMatch.elsewhere.length - 1 ? " and " : ", "}{other.count}{i === 0 ? (other.count === 1 ? " match" : " matches") : ""} in <button type="button" class="tab-link" onclick={() => showTab(other.state)} data-saved-other-tab={other.state}>{tabLabel[other.state]}</button>{/each}.{/snippet}
+          <EmptyState icon="search" title={noMatch.title} description={noMatch.elsewhere.length ? elsewhere : "No tab has a match."}>
             {#snippet action()}<Button size="sm" onclick={clearFilters} data-saved-clear>Clear filters</Button>{/snippet}
           </EmptyState>
         {:else if tab === "open"}
@@ -329,8 +330,9 @@
                   {#if row.room === undefined && savedPage(row.text)}<Icon name="file" size={12} /><span class="room" data-later-page>Wiki page</span>
                   {:else if row.room === undefined}<Icon name="clock" size={12} /><span class="room" data-later-note>Reminder</span>
                   {:else}
+                  {@const where = row.roomKind === "dm" ? "Direct message" : row.roomName}
                   {#if roomIcon(row)}<Icon name={roomIcon(row)!} size={12} />{/if}
-                  {#if room}<a class="room" href={room} tabindex="-1" data-later-room>{row.roomName}</a>{:else}<span class="room">{row.roomName}</span>{/if}
+                  {#if room}<a class="room" href={room} tabindex="-1" data-later-room>{where}</a>{:else}<span class="room">{where}</span>{/if}
                   {/if}
                   {#if row.threadRoot}<span aria-hidden="true">·</span><span>Thread</span>{/if}
                 </span>
@@ -397,6 +399,8 @@
   /* The post link covers the whole row, and the room link and the hover buttons sit above it. */
   .open { display: grid; gap: 2px; min-width: 0; color: inherit; text-decoration: none; outline: none; }
   .open::before { content: ""; position: absolute; inset: 0; border-radius: inherit; }
+  /* The row draws the one ring, so the link inside it draws none of its own. */
+  .open:focus-visible { outline: none; }
   :global(html[data-keyboard-navigation]) .row:has(.open:focus-visible) { outline: 2px solid var(--border-focus); outline-offset: -2px; }
   .avatar { padding-top: 2px; }
   .no-author { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 10px; background: var(--neutral-3); color: var(--text-subtle); }
@@ -412,10 +416,11 @@
   .preview.gone { color: var(--text-subtle); font-style: italic; }
   .due { display: flex; align-items: center; gap: 4px; color: var(--text-metadata); }
   /* The memo sits above the row's link, so a click on it edits the memo instead of opening the post. */
-  .memo { position: relative; z-index: 1; justify-self: start; max-inline-size: 72ch; margin: 2px 0 0; padding: 2px 8px; border: 0; border-left: 2px solid var(--border-prominent); border-radius: 0 var(--radius-row) var(--radius-row) 0; background: var(--neutral-2); color: var(--text-subtle); font: var(--text-body-sm); text-align: start; white-space: pre-line; overflow-wrap: anywhere; cursor: text; }
+  .memo { position: relative; z-index: 1; justify-self: start; max-inline-size: 72ch; margin: 2px 0 0; padding: 4px 8px; border: 0; border-left: 2px solid var(--border-prominent); border-radius: 0 var(--radius-row) var(--radius-row) 0; background: var(--neutral-2); color: var(--text-subtle); font: var(--text-body-sm); text-align: start; white-space: pre-line; overflow-wrap: anywhere; cursor: text; }
   .memo:hover { color: var(--text-standard); }
   .memo-edit { position: relative; z-index: 2; display: block; max-inline-size: 72ch; margin-top: 2px; }
   .due.overdue { color: var(--text-danger); font-weight: 600; }
+  .tab-link { padding: 0; border: 0; background: none; color: var(--text-standard); font: inherit; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
   .row-actions { position: absolute; top: 8px; right: var(--space-3); display: flex; gap: 2px; padding: 2px; border-radius: 8px; background: var(--surface-panel); box-shadow: var(--shadow-float); opacity: 0; z-index: 1; }
   .row:hover .row-actions, .row:focus-within .row-actions { opacity: 1; }
 </style>

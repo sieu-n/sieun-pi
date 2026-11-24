@@ -34,7 +34,7 @@ class LaterStore {
   /** The last Saved toast, which the next one replaces, so three quick saves show one toast as in Slack. */
   private toastId: number | undefined;
   /** The item whose memo the save toast's Add memo is writing (lib/MemoPrompt.svelte), or null. */
-  memoPrompt = $state<{ id: string; memo: string } | null>(null);
+  memoPrompt = $state<{ id: string; memo: string; kind: "message" | "page" } | null>(null);
   /** The toast of each due reminder this tab shows, by row id, with the reminder time it fell due at. */
   private readonly dueToasts = new Map<string, { toast: number; remindAt?: number; test: boolean }>();
 
@@ -44,10 +44,11 @@ class LaterStore {
   }
 
   /** The toast after a save: Add memo opens the memo field over where the toast sat, and View opens Saved. */
-  private savedToast(item: Pick<LaterItem, "id" | "memo">): void {
+  private savedToast(item: Pick<LaterItem, "id" | "memo" | "room">): void {
+    const kind = item.room === undefined ? "page" : "message";
     this.note(
       "Saved",
-      { label: item.memo ? "Edit memo" : "Add memo", run: () => (this.memoPrompt = { id: item.id, memo: item.memo ?? "" }) },
+      { label: item.memo ? "Edit memo" : "Add memo", run: () => (this.memoPrompt = { id: item.id, memo: item.memo ?? "", kind }) },
       { label: "View", run: () => router.navigate(laterHref()) },
     );
   }

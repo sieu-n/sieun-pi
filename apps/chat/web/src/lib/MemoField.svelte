@@ -42,8 +42,9 @@
 <TextArea bind:element bind:value rows={1} maxRows={6} class="memo-field" placeholder="Add a memo" aria-label={label} {onkeydown} onblur={() => end(true)} data-memo-field />
 
 <style>
+  /* The field's text sits where the shown memo's text sits (LaterPage `.memo`), and the box is as tall, so opening the edit moves nothing. */
   :global(.memo-field.textarea) {
-    padding: 6px 10px;
+    padding: 3px 9px;
     font: var(--text-body-sm);
   }
 </style>

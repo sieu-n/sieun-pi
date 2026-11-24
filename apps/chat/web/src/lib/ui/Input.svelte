@@ -40,6 +40,14 @@
   .input:focus-within {
     border-color: var(--border-prominent);
   }
+  /* The keyboard ring goes around the whole field and follows its corners, not around the bare input inside it. */
+  .input input:focus-visible {
+    outline: none;
+  }
+  :global(html[data-keyboard-navigation]) .input:has(input:focus-visible) {
+    outline: 2px solid var(--border-focus);
+    outline-offset: 2px;
+  }
   .input :global(.icon) {
     color: var(--text-metadata);
   }

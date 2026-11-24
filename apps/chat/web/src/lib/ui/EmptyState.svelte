@@ -4,7 +4,8 @@
 
   type Props = {
     title: string;
-    description?: string;
+    /** A line of text, or a snippet for a line that holds a control, such as a link to another tab. */
+    description?: string | Snippet;
     icon?: string;
     /** Buttons under the text. */
     action?: Snippet;
@@ -18,7 +19,7 @@
 <div class="empty {size}">
   {#if art}{@render art()}{:else if icon}<span class="icon-wrap"><Icon name={icon} size={size === "sm" ? 20 : 24} /></span>{/if}
   <p class="title">{title}</p>
-  {#if description}<p class="desc">{description}</p>{/if}
+  {#if typeof description === "function"}<p class="desc">{@render description()}</p>{:else if description}<p class="desc">{description}</p>{/if}
   {#if action}<div class="actions">{@render action()}</div>{/if}
 </div>
 

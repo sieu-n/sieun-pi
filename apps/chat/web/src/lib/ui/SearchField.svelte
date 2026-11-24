@@ -87,6 +87,14 @@
   .inline:focus-within {
     box-shadow: inset 0 0 0 1px var(--border-prominent);
   }
+  /* The keyboard ring goes around the whole field and follows its pill, not around the bare input inside it. */
+  .search input:focus-visible {
+    outline: none;
+  }
+  :global(html[data-keyboard-navigation]) .inline:has(input:focus-visible) {
+    outline: 2px solid var(--border-focus);
+    outline-offset: 2px;
+  }
   .palette {
     min-height: 48px;
     padding: 8px 8px;

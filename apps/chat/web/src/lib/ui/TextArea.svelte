@@ -19,12 +19,17 @@
       return;
     }
     element.style.height = "auto";
-    const line = parseFloat(getComputedStyle(element).lineHeight) || 20;
-    element.style.height = `${Math.min(element.scrollHeight, line * maxRows + 20)}px`;
+    const style = getComputedStyle(element);
+    const line = parseFloat(style.lineHeight) || 20;
+    // scrollHeight leaves out the borders of this border-box field; short by them, the text overflowed 2 px and WebKit drew a scrollbar.
+    const border = parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth);
+    const cap = line * maxRows + 20;
+    element.style.height = `${Math.min(element.scrollHeight, cap) + border}px`;
+    element.style.overflowY = element.scrollHeight > cap ? "auto" : "hidden";
   });
 </script>
 
-<textarea bind:this={element} bind:value class="textarea {className}" class:invalid {rows} aria-invalid={invalid || undefined} {...rest}></textarea>
+<textarea bind:this={element} bind:value class="textarea {className}" class:invalid class:one-row={rows === 1} {rows} aria-invalid={invalid || undefined} {...rest}></textarea>
 
 <style>
   .textarea {
@@ -37,6 +42,10 @@
     font: var(--text-body);
     letter-spacing: var(--tracking-body);
     resize: none;
+  }
+  /* A field that opens one line high and grows takes the corners of a text area, not a pill, so it reads as one that holds lines. */
+  .one-row {
+    border-radius: 8px;
   }
   .textarea:focus {
     border-color: var(--border-prominent);
