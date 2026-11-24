@@ -1,5 +1,6 @@
 import { cacheHitShare } from "../shared/cache-health.ts";
 import { BUCKET_MS, RANGE_BUCKETS } from "../../../../../apps/chat/web/src/lib/api/shared/usage-range.ts";
+import { barPath, barWidth, LABEL_PX, onStride, tickStride, USAGE_BAR, usageAxis, usageTick } from "../../../../../apps/chat/web/src/lib/api/shared/usage-chart.ts";
 import { USAGE_METRICS, USAGE_WINDOWS, type UsageBucket, type UsageFeed, type UsageMetric, type UsageSeries, type UsageTokens, type UsageWindow } from "../shared/usage.ts";
 
 /** Pure helpers for Settings > Usage: number formats, the token kind (metric) choices, the window and bucket choices and the chart layout. */
@@ -85,33 +86,22 @@ export function sparkPath(values: readonly number[], width: number, height: numb
   return values.map((v, i) => (i === 0 ? "M" : "L") + (i * step).toFixed(1) + " " + y(v).toFixed(1)).join("");
 }
 
-/** The y axis top: the smallest 1, 2, 2.5 or 5 times a power of ten at or above `max`; 1 when nothing was used (the labels stay blank then). */
-export function niceMax(max: number): number {
-  if (!(max > 0)) return 1;
-  const power = 10 ** Math.floor(Math.log10(max));
-  for (const step of [1, 2, 2.5, 5, 10]) if (step * power >= max) return step * power;
-  return 10 * power;
-}
-
-/** `total` is the bar's height in tokens: the series metric, or every kind for group "kind". `tokens` keeps the full split for the hover. */
-export type Bar = { t: number; x: number; w: number; total: number; tokens: UsageTokens; calls: number; costUsd: number | null; stack: { key: string; value: number; y: number; h: number }[] };
-export type Layout = { bars: Bar[]; from: number; to: number; top: number; keys: string[]; ticks: { x: number; label: string }[]; grid: { y: number; label: string }[] };
+/**
+ * `total` is the bar's height in tokens: the series metric, or every kind for group "kind". `tokens` keeps the full split for the hover.
+ * `x` and `w` are the drawn bar, `slot` the bucket's whole column from its left edge, which the hover answers in. Each stack part's `d` is its
+ * drawn path, sw factory's bar shape (shared/usage-chart.ts).
+ */
+export type Bar = { t: number; x: number; w: number; slot: number; total: number; tokens: UsageTokens; calls: number; costUsd: number | null; stack: { key: string; value: number; y: number; h: number; d: string }[] };
+export type Layout = { bars: Bar[]; from: number; to: number; top: number; step: number; keys: string[]; ticks: { x: number; label: string; anchor: "start" | "middle" | "end" }[]; grid: { y: number; label: string }[] };
 
 /** The tokens one bar stands for: the series metric, or the sum of every kind when the kinds are stacked. */
 export const barValue = (series: Pick<UsageSeries, "group" | "metric">, tokens: UsageTokens): number => series.group === "kind" ? tokens.total : metricOf(tokens, series.metric);
 
-/** Time axis label for a bucket start, per bucket size. */
-export function tickLabel(t: number, bucket: UsageBucket, spanMs: number): string {
-  const date = new Date(t);
-  if (bucket === "day" || spanMs > 3 * BUCKET_MS.day) return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-  const time = date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
-  return spanMs > BUCKET_MS.day ? date.toLocaleDateString(undefined, { weekday: "short" }) + " " + time : time;
-}
-
 /**
  * Places every bucket by time inside the plot (`width` by `height` px, origin top left), so a quiet hour shows as a gap, never as a
  * collapsed step. The plot spans the series' range, whole buckets that end with the one holding now. A bar is the series metric
- * (every kind for group "kind"). Stacks follow `series.keys`; tokens not covered by the listed keys fold into "other".
+ * (every kind for group "kind"). Stacks follow `series.keys`; tokens not covered by the listed keys fold into "other". The y axis steps,
+ * the bar width and shape and the time labels are sw factory's (shared/usage-chart.ts), so both Usage pages draw a range alike.
  * `share` draws every stacked bar at full height with its parts as fractions, so the mix of a quiet bucket reads like a busy one.
  * A stacked part that was used at all is at least 1 px tall.
  */
@@ -125,15 +115,19 @@ export function layout(series: UsageSeries, width: number, height: number, share
   const stacked = series.group !== "none";
   const shares = share && stacked;
   const most = Math.max(0, ...points.map(value));
-  const top = shares ? 1 : niceMax(most);
+  const axis = usageAxis(most);
+  const top = shares ? 1 : axis.top;
   const scaleX = (t: number) => ((t - from) / span) * width;
+  const stepPx = (width / span) * step;
+  const barW = barWidth(stepPx);
   const listed = (point: UsageSeries["points"][number]) => series.keys.reduce((sum, key) => sum + (point.byKey?.[key] ?? 0), 0);
   // A real fold is the server's "other" key; this only catches a server that listed fewer keys than it summed (rounding never counts).
   const foldsOther = stacked && points.some(point => value(point) - listed(point) > Math.max(1, value(point) * 0.01));
   const keys = foldsOther && !series.keys.includes("other") ? [...series.keys, "other"] : [...series.keys];
   const bars = points.map(point => {
-    const x = scaleX(point.t);
-    const w = Math.max(1, scaleX(point.t + step) - x - (width / span * step > 4 ? 1 : 0));
+    const slot = scaleX(point.t);
+    const x = slot + (stepPx - barW) / 2;
+    const w = barW;
     const total = value(point);
     const parts = stacked ? keys.map(key => ({ key, value: point.byKey?.[key] ?? 0 })) : [{ key: "", value: total }];
     if (foldsOther) parts.find(part => part.key === "other")!.value += Math.max(0, total - listed(point));
@@ -143,19 +137,24 @@ export function layout(series: UsageSeries, width: number, height: number, share
     const excess = heights.reduce((sum, part) => sum + part.h, 0) - total * scale;
     if (excess > 0 && heights.length > 1) { const largest = heights.reduce((a, b) => (b.h > a.h ? b : a)); largest.h = Math.max(1, largest.h - excess); }
     let used = 0;
-    const stack = heights.map(part => {
+    const stack = heights.map((part, index) => {
       used += part.h;
-      return { key: part.key, value: part.value, y: height - used, h: part.h };
+      const y = height - used;
+      const last = index === heights.length - 1;
+      const drawn = Math.max(1, part.h - (!last && w > 4 ? USAGE_BAR.gap : 0));
+      return { key: part.key, value: part.value, y, h: part.h, d: barPath(x, y + part.h - drawn, w, drawn, last && w > 4) };
     });
-    return { t: point.t, x, w, total, tokens: point.tokens, calls: point.calls, costUsd: point.costUsd, stack };
+    return { t: point.t, x, w, slot, total, tokens: point.tokens, calls: point.calls, costUsd: point.costUsd, stack };
   });
-  const tickCount = Math.max(2, Math.min(6, Math.floor(width / 110)));
-  const ticks = Array.from({ length: tickCount }, (_, i) => {
-    const t = from + (span * i) / (tickCount - 1);
-    return { x: scaleX(t), label: tickLabel(t, series.bucket, span) };
-  });
-  const grid = [0.25, 0.5, 0.75, 1].map(f => ({ y: height - f * height, label: shares ? `${f * 100}%` : most > 0 ? tokens(top * f) : "" }));
-  return { bars, from, to, top, keys, ticks, grid };
+  const stride = tickStride(series.bucket, Math.round(span / step), width);
+  const ticks: Layout["ticks"] = [];
+  for (let t = from; t < to; t += step) {
+    if (!onStride(t, series.bucket, stride)) continue;
+    const x = scaleX(t) + stepPx / 2;
+    ticks.push({ x, label: usageTick(t, series.bucket), anchor: x < LABEL_PX / 2 ? "start" : x > width - LABEL_PX / 2 ? "end" : "middle" });
+  }
+  const grid = shares ? [0.25, 0.5, 0.75, 1].map(f => ({ y: height - f * height, label: `${f * 100}%` })) : axis.ticks.map(value => ({ y: height - (value / top) * height, label: tokens(value) }));
+  return { bars, from, to, top, step: stepPx, keys, ticks, grid };
 }
 
 /** A part's share of its bar for the hover: "63%", "0.4%", or "<0.1%". */
@@ -166,9 +165,9 @@ export function share(value: number, total: number): string {
   return (pct < 10 ? pct.toFixed(1).replace(/\.0$/, "") : String(Math.round(pct))) + "%";
 }
 
-/** The bar under a pointer at plot x, if the pointer sits inside a bucket. */
-export function barAt(bars: readonly Bar[], x: number): Bar | null {
-  return bars.find(bar => x >= bar.x && x < bar.x + Math.max(bar.w, 2)) ?? null;
+/** The bar under a pointer at plot x, if the pointer sits inside a bucket's column (`step` px wide). */
+export function barAt(bars: readonly Bar[], x: number, step: number): Bar | null {
+  return bars.find(bar => x >= bar.slot && x < bar.slot + Math.max(step, 2)) ?? null;
 }
 
 /** The time a hover shows for one bucket: its start, or its day for day buckets. */

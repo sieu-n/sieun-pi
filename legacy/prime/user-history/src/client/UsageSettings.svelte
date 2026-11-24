@@ -7,6 +7,7 @@
   import type { UsageBucket, UsageFeed, UsageGroup, UsageMetric, UsageModelRow, UsageSeries, UsageWindow } from "../shared/usage.ts";
   import { usageMetric } from "./usage-metric.svelte.ts";
   import SettingsActions from "./SettingsActions.svelte";
+  import { usageColor } from "../../../../../apps/chat/web/src/lib/api/shared/usage-chart.ts";
   import { barAt, BUCKET_LABEL, bucketsFor, bucketTitle, cost, defaultBucket, fullTokens, hitRate, hitSpark, kindLabel, layout, METRIC_LABEL, METRICS, metricOf, modelLabel, share, sparkPath, tokens, WINDOWS, type Bar } from "./usage.ts";
 
   /**
@@ -130,15 +131,16 @@
     const rect = event.currentTarget instanceof Element ? event.currentTarget.getBoundingClientRect() : null;
     if (!rect) return;
     const px = event.clientX - rect.left - PLOT.left;
-    const bar = barAt(chart.bars, px);
+    const bar = barAt(chart.bars, px, chart.step);
     hover = bar ? { bar, px: px + PLOT.left } : null;
   }
-  /** The fill class of one stack part: the kind's own tone in By kind, else one of nine key colours. */
+  /** The fill class of one stack part: the accent in All and the kind's own tone in By kind; a host, client or model gets its color from `partColor`. */
   function partClass(key: string): string {
     if (!series || series.group === "none") return "k0";
-    if (series.group === "kind") return "kind-" + key;
-    return "k" + (chart ? Math.max(0, chart.keys.indexOf(key)) % 9 : 0);
+    return series.group === "kind" ? "kind-" + key : "";
   }
+  /** A host's, client's or model's own color, the one sw factory's chart gives it too (shared/usage-chart.ts). */
+  const partColor = (key: string): string | undefined => series && series.group !== "none" && series.group !== "kind" ? usageColor(key) : undefined;
   const keyLabel = (key: string): string => series?.group === "model" ? modelLabel(key) : series?.group === "kind" ? kindLabel(key) : key;
   const splitTitle = (row: UsageModelRow): string =>
     `output ${fullTokens(row.tokens.output)} · in ${fullTokens(row.tokens.input)} · cache read ${fullTokens(row.tokens.cacheRead)} · cache write ${fullTokens(row.tokens.cacheWrite)} · total ${fullTokens(row.tokens.total)}`;
@@ -210,11 +212,11 @@
             <line class="base" x1="0" x2={plotWidth} y1={PLOT.height} y2={PLOT.height} />
             {#each chart.bars as bar (bar.t)}
               {#each bar.stack as part (part.key)}
-                <rect x={bar.x} y={part.y} width={bar.w} height={part.h} class={partClass(part.key)} class:dim={hover !== null && hover.bar !== bar} />
+                <path d={part.d} class={partClass(part.key)} class:dim={hover !== null && hover.bar !== bar} style:fill={partColor(part.key)} />
               {/each}
             {/each}
             {#each chart.ticks as tick, index (index)}
-              <text class="axis" x={tick.x} y={PLOT.height + 15} text-anchor={index === 0 ? "start" : index === chart.ticks.length - 1 ? "end" : "middle"}>{tick.label}</text>
+              <text class="axis" x={tick.x} y={PLOT.height + 15} text-anchor={tick.anchor}>{tick.label}</text>
             {/each}
           </g>
         </svg>
@@ -232,14 +234,14 @@
             <div class="hover-row"><span>Cost</span><span class="tabular">{cost(hover.bar.costUsd)}</span></div>
             {#if series.group !== "none"}
               {#each [...hover.bar.stack].reverse() as part (part.key)}
-                <div class="hover-row key"><span><i class="swatch {partClass(part.key)}"></i>{keyLabel(part.key)}</span><span class="tabular"><span class="share">{share(part.value, hover.bar.total)}</span>{fullTokens(part.value)}</span></div>
+                <div class="hover-row key"><span><i class="swatch {partClass(part.key)}" style:background={partColor(part.key)}></i>{keyLabel(part.key)}</span><span class="tabular"><span class="share">{share(part.value, hover.bar.total)}</span>{fullTokens(part.value)}</span></div>
               {/each}
             {/if}
           </div>
         {/if}
         {#if chart.keys.length && series?.group !== "none"}
           <div class="legend">
-            {#each chart.keys as key (key)}<span class="legend-item"><i class="swatch {partClass(key)}"></i>{keyLabel(key)}</span>{/each}
+            {#each chart.keys as key (key)}<span class="legend-item"><i class="swatch {partClass(key)}" style:background={partColor(key)}></i>{keyLabel(key)}</span>{/each}
             {#if series?.group === "kind"}
               <span class="spacer"></span>
               <div class="segmented" role="radiogroup" aria-label="Scale">
@@ -249,7 +251,7 @@
             {/if}
           </div>
         {/if}
-        {#if !chart.bars.length}<div class="chart-empty faint">No calls in this window</div>{/if}
+        {#if !chart.bars.some(bar => bar.calls > 0 || bar.total > 0)}<div class="chart-empty faint">No calls in this window</div>{/if}
       {:else if error}
         <div class="empty"><div class="error"><Icon name="alert" size={16} /> {error}</div><button class="button small" onclick={() => void load()}>Retry</button></div>
       {:else}
@@ -285,8 +287,7 @@
 
 <style>
   .usage { display: flex; flex-direction: column; gap: 14px; padding: 12px 18px 18px; font-size: 13px; container-type: inline-size;
-    --k0: var(--accent); --k1: light-dark(#0f9d8a, #2fc4ad); --k2: light-dark(#7c5cd6, #a68bff); --k3: light-dark(#d97706, #f5b544); --k4: light-dark(#db4f7f, #f279a3);
-    --k5: light-dark(#4f7fdb, #86a8f5); --k6: light-dark(#5f9e2e, #8fd24f); --k7: light-dark(#c2612e, #f08a52); --k8: light-dark(#8a919c, #6a7180);
+    --k0: var(--accent);
     /* By kind: output is the accent; the other kinds fade toward the panel in one family, cache read (the bulk) the lightest. */
     --kind-output: var(--accent); --kind-input: color-mix(in oklab, var(--accent) 64%, var(--bg-elevated));
     --kind-cacheWrite: color-mix(in oklab, var(--accent) 44%, var(--bg-elevated)); --kind-cacheRead: color-mix(in oklab, var(--accent) 26%, var(--bg-elevated)); }
@@ -306,11 +307,9 @@
   .grid { stroke: var(--border); }
   .base { stroke: var(--border-strong); }
   .axis { fill: var(--text-faint); font-size: 10.5px; font-variant-numeric: tabular-nums; }
-  rect { transition: opacity 0.12s; }
-  rect.dim { opacity: 0.45; }
-  .k0 { fill: var(--k0); background: var(--k0); } .k1 { fill: var(--k1); background: var(--k1); } .k2 { fill: var(--k2); background: var(--k2); }
-  .k3 { fill: var(--k3); background: var(--k3); } .k4 { fill: var(--k4); background: var(--k4); } .k5 { fill: var(--k5); background: var(--k5); }
-  .k6 { fill: var(--k6); background: var(--k6); } .k7 { fill: var(--k7); background: var(--k7); } .k8 { fill: var(--k8); background: var(--k8); }
+  .plot path { transition: opacity 0.12s; }
+  .plot path.dim { opacity: 0.45; }
+  .k0 { fill: var(--k0); background: var(--k0); }
   .kind-output { fill: var(--kind-output); background: var(--kind-output); } .kind-input { fill: var(--kind-input); background: var(--kind-input); }
   .kind-cacheWrite { fill: var(--kind-cacheWrite); background: var(--kind-cacheWrite); } .kind-cacheRead { fill: var(--kind-cacheRead); background: var(--kind-cacheRead); }
   .hover { position: absolute; top: 8px; width: 236px; padding: 6px 10px; margin-left: 14px; font-size: 12px; line-height: 1.5; pointer-events: none; }

@@ -56,7 +56,7 @@ export type UsageSeries = {
   /** The range in epoch ms: whole buckets that end with the one holding now, a day starting at Seoul midnight. */
   since: number;
   until: number;
-  /** Group keys in display order (largest first, at most 8, the rest folded into "other"). Empty for group "none". */
+  /** Group keys in display order: the costliest up to sw factory's `USAGE_CHART_SERIES`, largest of the metric first, the rest folded into "other" last. Empty for group "none". */
   keys: string[];
   /** One point per bucket that saw tokens or calls; `t` is the bucket start. */
   points: { t: number; tokens: UsageTokens; costUsd: number | null; calls: number; byKey?: Record<string, number> }[];

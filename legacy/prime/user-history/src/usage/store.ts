@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { grafanaReader, LIVE_SPAN_MS, LIVE_TICK_MS, StoreUsage, type StoreReader, type UsageTotal } from "./store-sums.ts";
-import { BUCKET_MS, bucketFor, RANGE_MS } from "../../../../../apps/chat/web/src/lib/api/shared/usage-range.ts";
+import { BUCKET_MS, bucketFor, RANGE_MS, USAGE_CHART_SERIES } from "../../../../../apps/chat/web/src/lib/api/shared/usage-range.ts";
 import { type UsageBucket, type UsageFeed, type UsageGroup, type UsageMetric, type UsageModelRow, type UsageRate, type UsageSeries, type UsageSummary, type UsageTokens, type UsageWindow, USAGE_BUCKETS, USAGE_GROUPS, USAGE_METRICS, USAGE_WINDOWS } from "../shared/usage.ts";
 import { waitedOnHost } from "../chat-latency.ts";
 import { UsageError } from "./lgtm.ts";
@@ -53,8 +53,6 @@ function addTokens(into: UsageTokens, row: UsageTotal): void {
 const tokensOf = (rows: readonly UsageTotal[]): UsageTokens => { const sum = zeroTokens(); for (const row of rows) addTokens(sum, row); return sum; };
 const scale = (tokens: UsageTokens, by: number): UsageRate => ({ input: tokens.input / by, output: tokens.output / by, cacheRead: tokens.cacheRead / by, cacheWrite: tokens.cacheWrite / by, total: tokens.total / by });
 
-/** The most keys a stacked chart lists; the rest fold into "other". */
-const MAX_KEYS = 8;
 /** The feed asks again every 5 s; the store's sums are read again every 2 s while it has a listener, so each reading is at most 2 s old. */
 const FEED_MS = 5000;
 /** The group key of one store row. */
@@ -130,15 +128,17 @@ export class Usage {
     };
   }
 
-  /** Tokens over time for the chart, one point per bucket that saw tokens or calls; `t` is the bucket start. */
+  /** Tokens over time for the chart, one point per bucket of the range, empty ones too, as sw factory's chart has; `t` is the bucket start. */
   async series(window: UsageWindow, asked: UsageBucket, group: UsageGroup, metric: UsageMetric = "output"): Promise<UsageSeries> {
     const { bucket, since, until, step } = windowRange(window, asked, this.now());
     const rows = await this.rows(since, until, step);
     const at = new Map<number, UsageSeries["points"][number]>();
+    for (let t = since; t < until; t += step) at.set(t, { t, tokens: zeroTokens(), costUsd: 0, calls: 0, ...group === "none" ? {} : { byKey: {} } });
     const totals = new Map<string, number>();
+    const costs = new Map<string, { cost: number; tokens: number }>();
     for (const row of rows) {
-      let point = at.get(row.bucket!);
-      if (!point) at.set(row.bucket!, point = { t: row.bucket!, tokens: zeroTokens(), costUsd: 0, calls: 0, ...group === "none" ? {} : { byKey: {} } });
+      const point = at.get(since + Math.round((row.bucket! - since) / step) * step);
+      if (!point) continue;
       addTokens(point.tokens, row);
       point.calls += row.turns;
       point.costUsd = (point.costUsd ?? 0) + row.cost;
@@ -151,18 +151,25 @@ export class Usage {
       const value = metric === "total" ? row.input + row.output + row.cacheRead + row.cacheWrite : row[metric];
       point.byKey![key] = (point.byKey![key] ?? 0) + value;
       totals.set(key, (totals.get(key) ?? 0) + value);
+      const spent = costs.get(key) ?? { cost: 0, tokens: 0 };
+      spent.cost += row.cost;
+      spent.tokens += row.input + row.output + row.cacheRead + row.cacheWrite;
+      costs.set(key, spent);
     }
-    let keys = group === "kind" ? ["output", "input", "cacheWrite", "cacheRead"] : [...totals].filter(([, value]) => value > 0).sort((a, b) => b[1] - a[1]).map(([key]) => key);
-    if (keys.length > MAX_KEYS && group !== "kind") {
-      const kept = new Set(keys.slice(0, MAX_KEYS - 1));
+    // sw factory's report (apps/chat/server/usage.ts fold) keeps the costliest keys up to its colors and folds the rest into one Other, so
+    // both charts fold the same keys; the kept keys then go largest of the metric first.
+    const costliest = [...costs].sort((a, b) => b[1].cost - a[1].cost || b[1].tokens - a[1].tokens).map(([key]) => key);
+    const kept = new Set(costliest.length > USAGE_CHART_SERIES ? costliest.slice(0, USAGE_CHART_SERIES - 1) : costliest);
+    if (group !== "kind" && kept.size < costliest.length) {
       for (const p of at.values()) for (const [key, value] of Object.entries(p.byKey ?? {})) {
         if (kept.has(key)) continue;
         delete p.byKey![key];
         p.byKey!.other = (p.byKey!.other ?? 0) + value;
       }
-      keys = [...kept, "other"];
     }
-    const points = [...at.values()].filter(p => p.tokens.total > 0 || p.calls > 0).sort((a, b) => a.t - b.t);
+    const byMetric = [...kept].sort((a, b) => (totals.get(b) ?? 0) - (totals.get(a) ?? 0));
+    const keys = group === "kind" ? ["output", "input", "cacheWrite", "cacheRead"] : kept.size < costliest.length ? [...byMetric, "other"] : byMetric;
+    const points = [...at.values()];
     const staleSince = this.store?.staleSince();
     return { window, bucket, group, metric, since, until, keys, points, ...(staleSince === undefined ? {} : { staleSince }) };
   }

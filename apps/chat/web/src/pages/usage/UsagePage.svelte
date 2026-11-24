@@ -16,7 +16,7 @@
    * calls, with each token kind priced apart (c157) and every count exact (c191), plus the account pool. A call with no cost and no price
    * reads as unpriced, never as free. The chart comes first, grouped by minute, hour or day over a range, as Prime's chat Usage page draws it (owner
    * p132). The chart counts dollars or tokens, all of them or output only, and tokens per second now sit in its header row, so the page
-   * draws one chart (owner p162, p192). The stacks split by model or by client. The unit, the token kind, the range, the grouping, the split and
+   * draws one chart (owner p162, p192). The stacks split by model, by client or by host, each key in the color Prime chat's chart gives it. The unit, the token kind, the range, the grouping, the split and
    * the chat, host and client filters live in the URL, as #/settings/usage?unit=tokens&metric=output&range=7d&by=hour&split=client&thread=<id>&host=<box>&client=<name>.
    */
   const RANGE_LABEL: Record<UsageRange, string> = { "1h": "the last hour", "24h": "the last 24 hours", "7d": "the last 7 days", "30d": "the last 30 days", "90d": "the last 90 days" };
@@ -24,7 +24,8 @@
   const BUCKETS: readonly UsageBucket[] = ["minute", "hour", "day"];
   const UNIT_ITEMS: { id: Unit; label: string }[] = [{ id: "usd", label: "$" }, { id: "tokens", label: "Tokens" }];
   const METRIC_ITEMS: { id: Metric; label: string }[] = [{ id: "total", label: METRIC_LABEL.total }, { id: "output", label: METRIC_LABEL.output }];
-  const SPLIT_ITEMS: { id: Split; label: string }[] = [{ id: "model", label: "Model" }, { id: "client", label: "Client" }];
+  const SPLIT_ITEMS: { id: Split; label: string }[] = [{ id: "model", label: "Model" }, { id: "client", label: "Client" }, { id: "host", label: "Host" }];
+  const SPLIT_LEGEND: Record<Split, string> = { model: "Models", client: "Clients", host: "Hosts" };
   /** The chats the By chat list shows before "Show all" (c123). */
   const CHATS_SHOWN = 10;
   /** An old #/settings/usage?days=7 link opens the range it meant. */
@@ -41,7 +42,7 @@
   const thread = $derived(params.thread ?? ALL);
   const host = $derived(params.host ?? ALL);
   const client = $derived(params.client ?? ALL);
-  const split = $derived<Split>(params.split === "client" ? "client" : "model");
+  const split = $derived<Split>(params.split === "client" || params.split === "host" ? params.split : "model");
   let allChats = $state(false);
 
   let report = $state<UsageReport | null>(null);
@@ -154,8 +155,8 @@
 
   const summary = $derived(report ? summarize(report.rows) : null);
   const total = $derived(summary?.total ?? null);
-  const series = $derived(report ? seriesOf(report.series ?? [], report.split ?? "model") : []);
   const measure = $derived<Measure>(unit === "usd" ? { unit } : { unit, metric });
+  const series = $derived(report ? seriesOf(report.series ?? [], report.split ?? "model", measure) : []);
   const format = $derived(chartFormat(measure));
   const cells = $derived(report ? cellsOf(report, series, measure) : []);
   /** The tip's rows under the split: in dollars the cache reads, in tokens the other token kind and the cost, then turns and cache hit. */
@@ -239,7 +240,7 @@
       <EmptyState icon="chart-bar" title="No usage in this range" description="No chat ran a model call in {RANGE_LABEL[report.range]}. Choose a longer range or another chat." />
     {:else}
       <section class="section" aria-label="{format.label} per {report.bucket}" aria-busy={loading}>
-        <UsageChart buckets={report.buckets} {series} bucket={report.bucket} {cells} {format} tip={tipRows} legend={report.split === "client" ? "Clients" : "Models"}>
+        <UsageChart buckets={report.buckets} {series} bucket={report.bucket} {cells} {format} tip={tipRows} legend={SPLIT_LEGEND[report.split ?? "model"]}>
           {#snippet header()}
             <LiveRate initial={report?.live ?? null} {metric} thread={thread === ALL ? undefined : thread} host={host === ALL ? undefined : host} client={client === ALL ? undefined : client} />
           {/snippet}

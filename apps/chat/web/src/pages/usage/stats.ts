@@ -1,6 +1,6 @@
 /** Pure sums for the Usage page: totals, per chat, per model, per client, per kind and the chart series. Every sum is exact (c191). */
 import type { UsageReport, UsageRow, UsageSeries, UsageSplit } from "$lib/api";
-import { USAGE_CHART_SERIES } from "$lib/api/shared/usage-range";
+import { usageColor } from "$lib/api/shared/usage-chart";
 
 export const KINDS = ["input", "output", "cacheRead", "cacheWrite"] as const;
 export type Kind = (typeof KINDS)[number];
@@ -105,17 +105,18 @@ export interface Series {
   readonly models: readonly string[];
 }
 
-/** The chart's own colors; the report folds a fourth model or client and later into one Other series. */
-export const SERIES = USAGE_CHART_SERIES;
-
-/** What the chart's stacks split by: each model, or each chat client. */
+/** What the chart's stacks split by: each model, each chat client or each host. */
 export type Split = UsageSplit;
 
-/** One chart series per report series, costliest first, with the report's Other last. */
-export function seriesOf(lines: readonly Pick<UsageSeries, "key" | "others">[], split: Split = "model"): Series[] {
-  return lines.map((line, index) => (line.others
-    ? { key: "other", label: "Other", color: `var(--chart-series-${SERIES})`, models: [line.key] }
-    : { key: line.key, label: split === "model" ? modelName(line.key) : line.key, color: `var(--chart-series-${index + 1})`, models: [line.key] }));
+/**
+ * One chart series per report series, the largest of the shown measure first and the report's Other last, as Prime chat's chart orders
+ * them, each in its key's own color (shared/usage-chart.ts), so both pages draw a key alike.
+ */
+export function seriesOf(lines: readonly UsageSeries[], split: Split, measure: Measure): Series[] {
+  const sum = (line: UsageSeries) => columnOf(line, measure).reduce((all, value) => all + value, 0);
+  return [...lines].sort((a, b) => Number(Boolean(a.others)) - Number(Boolean(b.others)) || sum(b) - sum(a)).map(line => (line.others
+    ? { key: "other", label: "Other", color: usageColor("other"), models: [line.key] }
+    : { key: line.key, label: split === "model" ? modelName(line.key) : line.key, color: usageColor(line.key), models: [line.key] }));
 }
 
 /** What the chart counts: dollars, or tokens. */
@@ -127,22 +128,13 @@ export type Measure = { readonly unit: "usd" } | { readonly unit: "tokens"; read
 export const METRIC_LABEL: Readonly<Record<Metric, string>> = { total: "Total", output: "Output" };
 export const metricOf = (tokens: Tokens, metric: Metric): number => (metric === "output" ? tokens.output : tokenSum(tokens));
 
+/** A report series' column of the measure. */
+const columnOf = (line: UsageSeries, measure: Measure): readonly number[] => (measure.unit === "usd" ? line.cost : measure.metric === "output" ? line.output : line.tokens);
+
 /** Each bucket's measure per chart series, in series order, from the report's columns for its own split. */
 export function cellsOf(report: UsageReport, series: readonly Series[], measure: Measure): number[][] {
-  const columns = new Map((report.series ?? []).map(line => [line.key, measure.unit === "usd" ? line.cost : measure.metric === "output" ? line.output : line.tokens]));
+  const columns = new Map((report.series ?? []).map(line => [line.key, columnOf(line, measure)]));
   return report.buckets.map((_, index) => series.map(line => line.models.reduce((sum, key) => sum + (columns.get(key)?.[index] ?? 0), 0)));
-}
-
-/** The axis top and its ticks: the smallest 1, 2, 2.5 or 5 times a power of ten at or above `max`, cut in four. */
-export function axis(max: number): { top: number; ticks: number[] } {
-  if (!(max > 0)) return { top: 1, ticks: [0] };
-  const quarter = max / 4;
-  const power = 10 ** Math.floor(Math.log10(quarter));
-  const step = [1, 2, 2.5, 5, 10].map(m => m * power).find(s => s >= quarter) ?? 10 * power;
-  const top = step * Math.ceil(max / step - 1e-9);
-  const ticks: number[] = [];
-  for (let t = 0; t <= top + step / 2; t += step) ticks.push(Number(t.toPrecision(12)));
-  return { top, ticks };
 }
 
 /** A model id as people say it: the provider prefix and a date suffix dropped, "claude-opus-5-5" as "Opus 5.5". */

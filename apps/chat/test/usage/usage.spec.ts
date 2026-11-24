@@ -103,12 +103,14 @@ test("the chart splits by client, By client lists each client on its host, and a
   }));
   const column = (value: number) => buckets.map((_, i) => (i === last ? value : 0));
   const byModel = [{ key: model, cost: column(4), tokens: column(450), output: column(150) }];
-  const clientColumns = [["pi-host", 3], ["prime", 1], ["codex", 0]].map(([key, usd]) => ({ key: key as string, cost: column(usd as number), tokens: column(150), output: column(50) }));
+  const clientColumns = [["codex", 0], ["pi-host", 3], ["prime", 1]].map(([key, usd]) => ({ key: key as string, cost: column(usd as number), tokens: column(150), output: column(50) }));
+  const hostColumns = [["mbp", 1], ["us-metal02", 3]].map(([key, usd]) => ({ key: key as string, cost: column(usd as number), tokens: column(225), output: column(75) }));
   const asked: string[] = [];
   await page.route("**/api/usage?range=7d&bucket=day*", route => {
-    const split = new URL(route.request().url()).searchParams.get("split") === "client";
+    const split = new URL(route.request().url()).searchParams.get("split") ?? "model";
     asked.push(new URL(route.request().url()).search);
-    return route.fulfill({ json: { ...base, rows, buckets, otherChats: 0, split: split ? "client" : "model", series: split ? clientColumns : byModel } });
+    const series = split === "client" ? clientColumns : split === "host" ? hostColumns : byModel;
+    return route.fulfill({ json: { ...base, rows, buckets, otherChats: 0, split, series } });
   });
   await page.goto("/#/settings/usage?range=7d&by=day");
   const byClient = page.getByTestId("usage-by-client");
@@ -120,8 +122,16 @@ test("the chart splits by client, By client lists each client on its host, and a
   await expect(page.getByTestId("usage-cost")).toHaveText("$4.00");
   await page.getByRole("tablist", { name: "Split by" }).getByRole("tab", { name: "Client" }).click();
   await expect(page).toHaveURL(/split=client/);
-  await expect(mainChart(page).getByRole("list", { name: "Clients" })).toContainText("codex");
+  const legend = mainChart(page).getByRole("list", { name: "Clients" });
+  await expect(legend.locator("li")).toHaveText(["pi-host", "prime", "codex"], { useInnerText: true });
+  // Each key keeps the color Prime chat's chart gives it too (shared/usage-chart.ts): pi-host #0d74ce, prime #ef5f00.
+  await expect(legend.locator("li").nth(0).locator(".swatch")).toHaveCSS("background-color", "rgb(13, 116, 206)");
+  await expect(legend.locator("li").nth(1).locator(".swatch")).toHaveCSS("background-color", "rgb(239, 95, 0)");
   expect(asked.some(query => query.includes("split=client")), "a client split asks the server for that split's columns").toBe(true);
+  await page.getByRole("tablist", { name: "Split by" }).getByRole("tab", { name: "Host" }).click();
+  await expect(page).toHaveURL(/split=host/);
+  await expect(mainChart(page).getByRole("list", { name: "Hosts" }).locator("li")).toHaveText(["us-metal02", "mbp"], { useInnerText: true });
+  await page.getByRole("tablist", { name: "Split by" }).getByRole("tab", { name: "Client" }).click();
   await page.getByRole("combobox", { name: "Client" }).selectOption("codex");
   await expect(page).toHaveURL(/client=codex/);
 });

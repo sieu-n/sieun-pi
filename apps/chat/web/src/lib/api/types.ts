@@ -708,8 +708,8 @@ export interface UsageBucketSum {
   start: Ms; turns: number; unpriced: number;
   tokens: UsageRow["tokens"]; cost: UsageRow["cost"];
 }
-/** What the chart's stacks split by: each model, or each chat client. */
-export type UsageSplit = "model" | "client";
+/** What the chart's stacks split by: each model, each chat client or each host. */
+export type UsageSplit = "model" | "client" | "host";
 /**
  * One model's or client's values per bucket, in bucket order: dollars, tokens of all four kinds, and output tokens. A report sends these
  * columns for its own split only: per-bucket maps of every model and client made 24h by minute 1.1 MB.

@@ -127,4 +127,7 @@ test("api/usage keeps each host and client apart, and the host filter keeps that
   assert.deepEqual(mac.series.map(line => [line.key, line.cost[0], line.cost[6], line.tokens[6], line.output[6]]), [["m", 10, 4, 2, 1]]);
   const clients = await usageReport(sums, threads, { range: "7d", bucket: "day", split: "client" });
   assert.deepEqual(clients.series.map(line => [line.key, line.cost[0]]), [["codex", 8], ["pi-host", 3]], "a client split sends one series per client, costliest first");
+  const hosts = await usageReport(sums, threads, { range: "7d", bucket: "day", split: "host" });
+  assert.equal(hosts.split, "host");
+  assert.deepEqual(hosts.series.map(line => [line.key, line.cost[0], line.cost[6]]), [["mbp", 10, 4], ["us-metal02", 1, 0]], "a host split sends one series per host, as Prime chat's By host");
 });

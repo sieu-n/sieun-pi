@@ -91,6 +91,20 @@ test("the chart, the table and the headline sum every host and client of the sto
   } finally { usage.close(); }
 });
 
+test("the chart sends every bucket, empty ones too, and folds the keys past sw factory's colors by cost, as its report does", async () => {
+  const calls: Call[] = ["a", "b", "c", "d", "e"].map((client, i) => ({ at: now - (i + 1) * H, host: "us-metal02", client, model: "m", input: 0, output: 100 * (i + 1), cost: 5 - i }));
+  const usage = new Usage(() => store(calls), () => now);
+  try {
+    const series = await usage.series("24h", "hour", "client", "output");
+    assert.equal(series.points.length, 24, "a quiet hour is a point of its own");
+    assert.deepEqual(series.points.map(p => p.t), Array.from({ length: 24 }, (_, i) => series.since + i * H));
+    assert.deepEqual(series.keys, ["c", "b", "a", "other"], "the 3 costliest kept, largest output first, then other");
+    assert.equal(series.points.reduce((sum, p) => sum + (p.byKey?.other ?? 0), 0), 900);
+    const days = await usage.series("90d", "day", "none");
+    assert.equal(days.points.length, 90);
+  } finally { usage.close(); }
+});
+
 test("a store that never answered reaches the feed as its error, never as zeros", async () => {
   const usage = new Usage(() => ({ query: async () => { throw new Error("grafana 502: bad gateway"); } }), () => now);
   const reading = await usage.reading();

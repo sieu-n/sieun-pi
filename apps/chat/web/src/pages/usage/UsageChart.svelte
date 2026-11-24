@@ -1,13 +1,13 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
   import type { UsageBucket } from "$lib/api";
-  import { BUCKET_MS } from "$lib/api/shared/usage-range";
+  import { barPath, barWidth, LABEL_PX, onStride, tickStride, USAGE_BAR, usageAxis, usageTick } from "$lib/api/shared/usage-chart";
   import { Button, Popover } from "$lib/ui";
-  import { bucketName, bucketTick, full, onStride, type ChartFormat, type TipRow } from "./format";
-  import { axis, type Series, type UsageBucketSum } from "./stats";
+  import { bucketName, full, type ChartFormat, type TipRow } from "./format";
+  import type { Series, UsageBucketSum } from "./stats";
 
   /**
-   * One value per minute, hour or day, stacked by model or by client (`legend` names which), as Prime's chat Usage chart groups it: cost or tokens, as the caller's `cells` and
+   * One value per minute, hour or day, stacked by model, client or host (`legend` names which), in the colors, y axis steps, bar shape and time labels Prime's chat chart draws too (shared/usage-chart.ts), as Prime's chat Usage chart groups it: cost or tokens, as the caller's `cells` and
    * `format` say. A hover shows the bucket's split and sum, then the caller's own rows (`tip`), and every bucket that ran a call is in a
    * table one click away with the range's total under it, each figure exact (c191). The caller's `header` sits at the end of the legend row.
    */
@@ -28,17 +28,6 @@
   const HEIGHT = 200;
   const AXIS = 44;
   const LABELS = 20;
-  const BAR = 24;
-  const GAP = 2;
-  const RADIUS = 4;
-  /** The least room an axis label takes, in px. */
-  const LABEL_PX = 72;
-  /** Label strides in buckets, so labels land on round local times: 15 min, 6 h, 7 days. */
-  const STRIDES: Record<UsageBucket, readonly number[]> = {
-    minute: [1, 5, 10, 15, 30, 60, 120, 180, 360, 720, 1440],
-    hour: [1, 2, 3, 6, 12, 24, 48, 72, 168, 336],
-    day: [1, 2, 7, 14, 30],
-  };
   const UNIT: Record<UsageBucket, string> = { minute: "minute", hour: "hour", day: "day" };
 
   let width = $state(0);
@@ -47,40 +36,31 @@
   let figures = $state(false);
 
   const totals = $derived(cells.map(row => row.reduce((sum, value) => sum + value, 0)));
-  const scale = $derived(axis(Math.max(0, ...totals)));
+  const scale = $derived(usageAxis(Math.max(0, ...totals)));
   const plotTop = 8;
   const plotBottom = HEIGHT - LABELS;
   const y = (value: number) => plotBottom - (value / scale.top) * (plotBottom - plotTop);
   const step = $derived(buckets.length ? Math.max(0, width - AXIS) / buckets.length : 0);
-  const bar = $derived(Math.max(1, Math.min(BAR, step > 4 ? step * 0.75 : step)));
+  const bar = $derived(barWidth(step));
   const left = (index: number) => AXIS + step * index + (step - bar) / 2;
-  const stride = $derived.by(() => {
-    const room = Math.max(2, Math.floor(Math.max(0, width - AXIS) / LABEL_PX));
-    const options = STRIDES[bucket];
-    return options.find(option => buckets.length / option <= room) ?? options[options.length - 1]!;
-  });
-  const labelled = (start: number) => onStride(start, BUCKET_MS[bucket], stride);
+  const stride = $derived(tickStride(bucket, buckets.length, width - AXIS));
+  const labelled = (start: number) => onStride(start, bucket, stride);
   const anchorAt = (x: number) => (x < AXIS + LABEL_PX / 2 ? "start" : x > width - LABEL_PX / 2 ? "end" : "middle");
   const stacked = $derived(series.length > 1);
   const used = $derived(buckets.map((entry, index) => ({ entry, index })).filter(({ entry }) => entry.turns > 0));
   const sum = $derived(totals.reduce((all, value) => all + value, 0));
 
-  /** A bar segment, its top corners rounded when it ends the stack. */
-  function segment(x: number, top: number, w: number, h: number, round: boolean): string {
-    const r = round ? Math.min(RADIUS, h, w / 2) : 0;
-    return `M${x},${top + h}V${top + r}Q${x},${top} ${x + r},${top}H${x + w - r}Q${x + w},${top} ${x + w},${top + r}V${top + h}Z`;
-  }
   function stack(index: number): { key: string; d: string; color: string }[] {
     const row = cells[index] ?? [];
     const last = row.reduce((found, value, line) => (value > 0 ? line : found), -1);
-    const gap = bar > 4 ? GAP : 0;
+    const gap = bar > 4 ? USAGE_BAR.gap : 0;
     let base = y(0);
     const parts: { key: string; d: string; color: string }[] = [];
     row.forEach((value, line) => {
       if (value <= 0) return;
       const top = y(value) - y(0) + base;
       const h = Math.max(1, base - top - (line < last ? gap : 0));
-      parts.push({ key: series[line]!.key, d: segment(left(index), base - h, bar, h, line === last && bar > 4), color: series[line]!.color });
+      parts.push({ key: series[line]!.key, d: barPath(left(index), base - h, bar, h, line === last && bar > 4), color: series[line]!.color });
       base = top;
     });
     return parts;
@@ -121,7 +101,7 @@
           {#if labelled(entry.start)}
             {@const x = left(index) + bar / 2}
             <line x1={x} x2={x} y1={plotBottom} y2={plotBottom + 4} class="mark" />
-            <text {x} y={HEIGHT - 4} text-anchor={anchorAt(x)} class="tick">{bucketTick(entry.start, bucket)}</text>
+            <text {x} y={HEIGHT - 4} text-anchor={anchorAt(x)} class="tick">{usageTick(entry.start, bucket)}</text>
           {/if}
         {/each}
       </svg>

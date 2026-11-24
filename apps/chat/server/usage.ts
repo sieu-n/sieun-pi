@@ -49,7 +49,7 @@ function fold(rows: readonly UsageTotal[], since: number, step: number, count: n
     sum.cost.cacheWrite += row.costCacheWrite;
     sum.cost.total += row.cost;
     sum.unpriced += row.unpriced;
-    const name = split === "model" ? row.model : row.client;
+    const name = split === "model" ? row.model : split === "host" ? (row.host || "unknown") : row.client;
     let line = lines.get(name);
     if (!line) lines.set(name, line = { key: name, cost: new Array<number>(count).fill(0), tokens: new Array<number>(count).fill(0), output: new Array<number>(count).fill(0) });
     line.cost[at]! += row.cost;
@@ -121,7 +121,7 @@ export const bucketStart = (bucket: UsageBucket, at: number): number => (bucket 
 export type UsageReportOptions = { range?: string; bucket?: string; thread?: string; host?: string; client?: string; split?: string };
 
 export async function usageReport(sums: UsageSums, threads: Threads, opts: UsageReportOptions, now = Date.now()): Promise<UsageReport> {
-  const split: UsageSplit = opts.split === "client" ? "client" : "model";
+  const split: UsageSplit = opts.split === "client" || opts.split === "host" ? opts.split : "model";
   const range: UsageRange = isRange(opts.range) ? opts.range : "24h";
   const bucket = bucketFor(range, opts.bucket);
   const step = BUCKET_MS[bucket];
