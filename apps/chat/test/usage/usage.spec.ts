@@ -411,6 +411,18 @@ test("a failed read shows the reason and Try again reads again", async ({ page }
   await expect(page.getByTestId("usage-filters")).toBeVisible();
 });
 
+test("sums the store has not refreshed name their time, and the live rate reads as unknown, not 0", async ({ page }) => {
+  const base = await report(page, "24h");
+  const staleSince = Date.UTC(2026, 10, 24, 2, 19);
+  await page.route("**/api/usage?range=24h&bucket=hour*", route => route.fulfill({ json: { ...base, staleSince, live: { ...(base as unknown as { live: object }).live, staleSince } } }));
+  await page.route("**/api/usage/live*", route => route.fulfill({ json: { at: Date.now(), perSecond: { output: 0, total: 0 }, spark: { output: [], total: [] }, staleSince } }));
+  await page.goto("/#/settings/usage");
+  const clock = new Date(staleSince).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+  await expect(page.getByTestId("usage-stale")).toHaveText(`Numbers from ${clock}; the store did not answer since`);
+  await expect(page.getByTestId("usage-tps-stale")).toContainText(clock);
+  await expect(page.getByTestId("usage-tps-value")).toHaveCount(0);
+});
+
 test("a period with no calls says so instead of showing zeros", async ({ page }) => {
   await page.route("**/api/usage?*", route =>
     route.fulfill({ contentType: "application/json", body: JSON.stringify({ at: Date.now(), since: 0, until: Date.now(), range: "24h", bucket: "hour", rows: [], buckets: [] }) }));

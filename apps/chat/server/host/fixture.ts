@@ -16,7 +16,8 @@ import type { TurnPlace } from "../../web/src/lib/api/types.ts";
 import { DEFAULT_MODEL } from "../config.ts";
 import type { IndexRead } from "../../../../packages/pi-host/src/durable/index-db.ts";
 import type { EntryRow } from "../search-engine.ts";
-import type { ContentBlock, CreateOptions, DurableEvent, DurableThread, EntryRecord, Host, Message, SubmissionRecord, Submitted, SubmitInput, Ticket, TreeNode, UsageRange, UsageTotal } from "./types.ts";
+import type { ContentBlock, CreateOptions, DurableEvent, DurableThread, EntryRecord, Host, Message, SubmissionRecord, Submitted, SubmitInput, Ticket, TreeNode } from "./types.ts";
+import type { UsageRange, UsageSums, UsageTotal } from "../usage-store.ts";
 
 interface FakeThread {
   row: DurableThread;
@@ -46,7 +47,7 @@ const revOf = (value: unknown): number =>
 
 const USAGE = (output: number) => ({ input: 40, output, cacheRead: 12_000, cacheWrite: 800, cost: { input: 0.00016, output: output * 0.00002, cacheRead: 0.0024, cacheWrite: 0.0064, total: 0.00896 + output * 0.00002 } });
 
-export class FixtureHost implements Host {
+export class FixtureHost implements Host, UsageSums {
   readonly name = "fixture";
   readonly threadsById = new Map<string, FakeThread>();
   private readonly sinks = new Map<string, Set<Sink>>();
@@ -328,6 +329,7 @@ export class FixtureHost implements Host {
     return this.readIndex(cursor);
   }
 
+  /** The fixture's own usage sums, from its assistant messages, which the fixture server's Usage page reads in place of the store's. */
   async usage(range: UsageRange): Promise<UsageTotal[]> {
     const rows = new Map<string, UsageTotal>();
     for (const thread of this.threadsById.values()) {
@@ -336,12 +338,11 @@ export class FixtureHost implements Host {
         const message = entry.model?.[0];
         if (message?.role !== "assistant" || !message.usage) continue;
         const at = message.timestamp ?? 0;
-        if (range.since !== undefined && at < range.since) continue;
-        if (range.until !== undefined && at >= range.until) continue;
+        if (at < range.since || at >= range.until) continue;
         const model = `${message.provider}/${message.model}`;
-        const bucket = range.bucketMs && range.since !== undefined ? range.since + Math.floor((at - range.since) / range.bucketMs) * range.bucketMs : undefined;
-        const key = `${bucket ?? ""} ${thread.row.id} ${model}`;
-        const row = rows.get(key) ?? { ...(bucket === undefined ? {} : { bucket }), thread: thread.row.id, model, turns: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, costInput: 0, costOutput: 0, costCacheRead: 0, costCacheWrite: 0 };
+        const bucket = range.since + Math.floor((at - range.since) / range.bucketMs) * range.bucketMs;
+        const key = `${bucket} ${thread.row.id} ${model}`;
+        const row = rows.get(key) ?? { bucket, host: this.name, client: "pi-host", agent: "", thread: thread.row.id, threadName: "", model, unpriced: 0, series: `${this.name}\u0000pi-host\u0000\u0000${thread.row.id}\u0000${model}`, chat: `${this.name}\u0000pi-host\u0000\u0000${thread.row.id}`, turns: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, costInput: 0, costOutput: 0, costCacheRead: 0, costCacheWrite: 0 };
         row.turns += 1;
         row.input += message.usage.input;
         row.output += message.usage.output;

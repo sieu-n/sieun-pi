@@ -65,7 +65,9 @@
 
 <div class="live" role="group" aria-label="{label} now" data-testid="usage-tps">
   <span class="label">{label}</span>
-  {#if live}
+  {#if live?.staleSince}
+    <span class="sub" data-testid="usage-tps-stale" title="The usage store has not answered since then, so the rate now is unknown">no reading since {new Date(live.staleSince).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}</span>
+  {:else if live}
     <span class="value" data-testid="usage-tps-value" title={liveTitle(live.perSecond[metric], metric)}>{rate(live.perSecond[metric])}</span>
     <svg class="spark" viewBox="0 0 {SPARK.width} {SPARK.height}" preserveAspectRatio="none" role="img" aria-label="{label} every 10 s over the last 10 minutes" data-testid="usage-tps-spark">
       <path d={sparkPath(live.spark[metric])} />

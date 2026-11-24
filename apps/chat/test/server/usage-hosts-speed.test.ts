@@ -1,20 +1,15 @@
 /**
  * api/hosts answers from each box's last machine reading and reads it again behind the answer (server/usage.ts `MachineReads`), and
- * api/usage reads a range in one bucketed call (`usageReport`). On 11-03 on us-metal02 the two took 1.1 s and 2.4 s. Since 11-22 api/usage
- * sums every box's usage rows kept in memory (`KeptUsage`), since each call still waited 205 to 220 ms for the Mac's pi-host.
+ * api/usage folds one bucketed read of the kept sums into rows and buckets (`usageReport`). On 11-03 on us-metal02 the two took 1.1 s and
+ * 2.4 s. test/server/usage-store.test.ts checks the kept sums against a real ClickHouse.
  * Run: cd apps/chat && node --import tsx --test --test-force-exit --test-isolation=none test/server/usage-hosts-speed.test.ts
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { MachineView } from "../../web/src/lib/api/types.ts";
-import type { Host, UsageTotal } from "../../server/host/types.ts";
 import type { Threads } from "../../server/threads.ts";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { ThreadIndex, type UsageRow } from "../../../../packages/pi-host/src/durable/index-db.ts";
-import type { UsageRange } from "../../server/host/types.ts";
-import { KeptUsage, MACHINE_TICK_MS, MachineReads, SqliteUsage, usageReport } from "../../server/usage.ts";
+import type { UsageRange, UsageTotal } from "../../server/usage-store.ts";
+import { MACHINE_TICK_MS, MachineReads, usageReport } from "../../server/usage.ts";
 
 const settle = () => new Promise(resolve => setImmediate(resolve));
 const machine = (percent: number) => ({ platform: "linux", cpu: { percent, cores: 8, load: [1, 1, 1] }, memory: { usedBytes: 1, totalBytes: 2 } }) as unknown as MachineView;
@@ -69,24 +64,30 @@ test("the last machine readings stay on disk, so a restarted server answers its 
   assert.equal(reads, 0, "a reading younger than the tick reads no relay");
 });
 
+
+const threads = { thread: () => undefined, threadsList: () => [] } as unknown as Threads;
+const total = (bucket: number, over: Partial<UsageTotal>): UsageTotal => {
+  const row = { bucket, host: "us-metal02", client: "pi-host", agent: "", thread: "t", threadName: "", model: "m", series: "", turns: 1, input: 1, output: 1, cacheRead: 0,
+    cacheWrite: 0, cost: 0, costInput: 0, costOutput: 0, costCacheRead: 0, costCacheWrite: 0, unpriced: 0, ...over };
+  const chat = [row.host, row.client, row.agent, row.thread].join("\u0000");
+  return { ...row, chat, series: `${chat}\u0000${row.model}` };
+};
+
 test("api/usage reads the range in one bucketed call, each bucket summed apart and the totals equal to their sum", async () => {
   const HOUR = 3_600_000;
   const now = Date.UTC(2026, 10, 22, 5, 30);
-  const calls: { since?: number; until?: number; bucketMs?: number }[] = [];
-  const row = (bucket: number, thread: string, cost: number): UsageTotal => ({ bucket, thread, model: "m", turns: 1, input: 1, output: 1, cacheRead: 2, cacheWrite: 0, cost,
-    costInput: 0, costOutput: 0, costCacheRead: cost, costCacheWrite: 0 });
-  const host = {
-    async usage(range: { since?: number; until?: number; bucketMs?: number }): Promise<UsageTotal[]> {
+  const calls: UsageRange[] = [];
+  const row = (bucket: number, thread: string, cost: number) => total(bucket, { thread, cacheRead: 2, cost, costCacheRead: cost });
+  const sums = {
+    async usage(range: UsageRange): Promise<UsageTotal[]> {
       calls.push(range);
-      const since = range.since!;
-      return [row(since, "t", 5), row(since + 23 * HOUR, "t", 1), row(since + 23 * HOUR, "u", 2)];
+      return [row(range.since, "t", 5), row(range.since + 23 * HOUR, "t", 1), row(range.since + 23 * HOUR, "u", 2)];
     },
-  } as unknown as Host;
-  const threads = { thread: () => undefined, threadsList: () => [] } as unknown as Threads;
-  const report = await usageReport(host, threads, "box", { range: "24h", bucket: "hour" }, now);
+  };
+  const report = await usageReport(sums, threads, { range: "24h", bucket: "hour" }, now);
   assert.deepEqual(calls.map(call => call.bucketMs), [HOUR, 24 * HOUR], "one call by the hour for the buckets, one over the range for the chat table");
   assert.equal(calls[0]!.until, Date.UTC(2026, 10, 22, 6), "the range ends with the hour that holds now");
-  assert.equal(calls[0]!.until! - calls[0]!.since!, 24 * HOUR);
+  assert.equal(calls[0]!.until - calls[0]!.since, 24 * HOUR);
   assert.equal(report.buckets.length, 24);
   assert.deepEqual(report.buckets.map(b => b.cost.total).filter(Boolean), [5, 3]);
   assert.equal(report.buckets[23]!.turns, 2);
@@ -98,112 +99,32 @@ test("api/usage reads the range in one bucketed call, each bucket summed apart a
 });
 
 test("api/usage offers each range only its own buckets, a day starting at the owner's midnight", async () => {
-  const calls: { since?: number; until?: number; bucketMs?: number }[] = [];
-  const host = { async usage(range: { since?: number; until?: number; bucketMs?: number }) { calls.push(range); return []; } } as unknown as Host;
-  const threads = { thread: () => undefined, threadsList: () => [] } as unknown as Threads;
+  const sums = { async usage(): Promise<UsageTotal[]> { return []; } };
   const now = Date.UTC(2026, 10, 22, 5, 30, 12);
-  const minute = await usageReport(host, threads, "box", { range: "1h", bucket: "day" }, now);
+  const minute = await usageReport(sums, threads, { range: "1h", bucket: "day" }, now);
   assert.equal(minute.bucket, "minute", "1h has minutes only");
   assert.equal(minute.buckets.length, 60);
   assert.equal(minute.until, Date.UTC(2026, 10, 22, 5, 31));
-  const week = await usageReport(host, threads, "box", { range: "7d", bucket: "day" }, now);
+  const week = await usageReport(sums, threads, { range: "7d", bucket: "day" }, now);
   assert.equal(week.buckets.length, 7);
   assert.equal(week.until, Date.UTC(2026, 10, 22, 15), "the day after now starts at KST midnight");
-  const fallback = await usageReport(host, threads, "box", { range: "nope" }, now);
+  const fallback = await usageReport(sums, threads, { range: "nope" }, now);
   assert.deepEqual([fallback.range, fallback.bucket, fallback.buckets.length], ["24h", "hour", 24]);
 });
 
-test("api/usage from a pi-host without buckets asks each bucket in one round", async () => {
-  let open = 0, most = 0;
-  const host = {
-    async usage(range: { since?: number; until?: number; bucketMs?: number }): Promise<UsageTotal[]> {
-      open++;
-      most = Math.max(most, open);
-      await new Promise(resolve => setTimeout(resolve, 20));
-      open--;
-      // A pi-host without buckets answers the range's sum: one per day.
-      return [{ thread: "t", model: "m", turns: 1, input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: (range.until! - range.since!) / 86_400_000, costInput: 0, costOutput: 0, costCacheRead: 0, costCacheWrite: 0 }];
-    },
-  } as unknown as Host;
-  const threads = { thread: () => undefined, threadsList: () => [] } as unknown as Threads;
-  const report = await usageReport(host, threads, "box", { range: "7d", bucket: "day" });
-  assert.equal(most, 7, "the bucketed call answered without buckets, then all 7 days go out before any answers");
-  assert.deepEqual(report.series.map(line => [line.key, line.cost]), [["m", [1, 1, 1, 1, 1, 1, 1]]]);
-  assert.ok(report.buckets.every((b, i) => report.series[0]!.tokens[i] === b.tokens.input + b.tokens.output), "one model's tokens per bucket equal the bucket's tokens");
-  assert.equal(report.rows[0]!.cost.total, 7);
-});
-
-test("api/usage labels each row with the box that answered it, and the host filter keeps that box's rows", async () => {
+test("api/usage keeps each host and client apart, and the host filter keeps that host's rows", async () => {
   const DAY = 86_400_000;
-  const row = (bucket: number, host: string, cost: number): UsageTotal => ({ bucket, host, thread: "t", model: "m", turns: 1, input: 1, output: 1, cacheRead: 0, cacheWrite: 0,
-    cost, costInput: 0, costOutput: 0, costCacheRead: 0, costCacheWrite: 0 });
-  const host = {
-    async usage(range: { since?: number }): Promise<UsageTotal[]> {
-      return [row(range.since!, "us-metal02", 1), row(range.since!, "mac", 2), row(range.since! + 6 * DAY, "mac", 4)];
+  const sums = {
+    async usage(range: UsageRange): Promise<UsageTotal[]> {
+      return [total(range.since, { cost: 1 }), total(range.since, { host: "mbp", cost: 2 }), total(range.since + 6 * DAY, { host: "mbp", cost: 4 }),
+        total(range.since, { host: "mbp", client: "codex", thread: "s1", cost: 8 })];
     },
-  } as unknown as Host;
-  const threads = { thread: () => undefined, threadsList: () => [] } as unknown as Threads;
-  const all = await usageReport(host, threads, "us-metal02", { range: "7d", bucket: "day" });
-  assert.deepEqual(all.rows.map(r => [r.host, r.cost.total]), [["us-metal02", 1], ["mac", 6]]);
-  const mac = await usageReport(host, threads, "us-metal02", { range: "7d", bucket: "day", host: "mac" });
-  assert.deepEqual(mac.rows.map(r => [r.host, r.cost.total]), [["mac", 6]]);
-  assert.deepEqual(mac.series.map(line => [line.key, line.cost[0], line.cost[6], line.tokens[6], line.output[6]]), [["m", 2, 4, 2, 1]]);
-});
-
-test("api/usage answers from the kept rows with no call to any box, with the same sums as pi-host's own query, and follows new and dropped rows", async () => {
-  const HOUR = 3_600_000;
-  const dir = mkdtempSync(join(tmpdir(), "kept-usage-"));
-  const index = new ThreadIndex(join(dir, "index.sqlite"));
-  const now = Date.UTC(2026, 10, 22, 5, 30, 12);
-  index.insertThread({ id: "t", name: "t", provider: "anthropic", modelId: "m", thinkingLevel: "high", cwd: "/", createdAt: 1, updatedAt: 1 });
-  let entry = 0;
-  const usage = (thread: string, at: number, cost: number) => ({ thread, conversation: 1, entryId: ++entry, model: cost > 1 ? "big" : "small", at, input: 3, output: 5,
-    cacheRead: 7, cacheWrite: 11, cost, costInput: cost / 4, costOutput: cost / 4, costCacheRead: cost / 4, costCacheWrite: cost / 4 });
-  const rows = Array.from({ length: 400 }, (_, i) => usage(i % 3 ? "t" : "u", now - (i * 7919 * 1000) % (95 * 24 * HOUR), (i % 5) * 0.5 + 0.25));
-  index.addEntries("t", [], rows.filter(row => row.thread === "t"));
-  index.addEntries("u", [], rows.filter(row => row.thread === "u"));
-  const asked: unknown[] = [];
-  const live = { async usage(range: UsageRange) { asked.push(range); return index.usage(range); } };
-  const direct = { usage: async (range: UsageRange) => index.usage(range) };
-  const own = new SqliteUsage("box", join(dir, "index.sqlite"));
-  const mac: UsageRow[] = [usage("m", now - 5 * 60_000, 2)];
-  let macUp = true;
-  const kept = new KeptUsage(() => [own, { box: "mac", up: () => macUp, read: (cursor, since) => ({ rows: cursor ? [] : mac.filter(row => row.at >= since), cursor: "0:1", more: false, restart: !cursor }) }],
-    live, () => {}, () => now);
-  const threads = { thread: () => undefined, threadsList: () => [] } as unknown as Threads;
-  const cases = [["1h", "minute"], ["24h", "hour"], ["24h", "minute"], ["7d", "hour"], ["7d", "day"], ["30d", "day"], ["90d", "day"]] as const;
-
-  const hour = { since: now - HOUR - (now % HOUR), until: now - (now % HOUR) + HOUR, bucketMs: HOUR };
-  await kept.usage(hour);
-  assert.equal(asked.length, 1, "before the first read, with no read on its way, the range reads the boxes as before");
-  const first = kept.pull();
-  await kept.usage(hour);
-  assert.equal(asked.length, 1, "a call while the first read is on its way waits for it and reads no box");
-  await first;
-  asked.length = 0;
-  for (const [range, bucket] of cases) {
-    const got = await usageReport(kept, threads, "box", { range, bucket, host: "box" }, now);
-    const want = await usageReport(direct, threads, "box", { range, bucket }, now);
-    const round = (report: typeof got) => JSON.stringify(report, (_key, value) => (typeof value === "number" ? Math.round(value * 1e9) / 1e9 : value));
-    assert.equal(round(got), round(want), `${range} by ${bucket}`);
-    const one = await usageReport(kept, threads, "box", { range, bucket, thread: "u", host: "box" }, now);
-    assert.equal(round(one), round(await usageReport(direct, threads, "box", { range, bucket, thread: "u" }, now)));
-  }
-  assert.equal(asked.length, 0, "no range asked a box");
-  const both = await usageReport(kept, threads, "box", { range: "1h", bucket: "minute" }, now);
-  assert.deepEqual(both.rows.filter(row => row.host === "mac").map(row => [row.thread, row.cost.total]), [["m", 2]]);
-
-  index.addEntries("t", [], [usage("t", now - 1000, 3)]);
-  index.resetEntries("u");
-  await kept.pull();
-  const after = await usageReport(kept, threads, "box", { range: "1h", bucket: "minute", host: "box" }, now);
-  assert.equal(JSON.stringify(after.buckets), JSON.stringify((await usageReport(direct, threads, "box", { range: "1h", bucket: "minute" }, now)).buckets),
-    "a new row counts and a dropped thread's rows leave at the next pull");
-  macUp = false;
-  await kept.pull();
-  assert.ok((await usageReport(kept, threads, "box", { range: "1h", bucket: "minute" }, now)).rows.some(row => row.host === "mac"), "a box whose link went down keeps its read rows");
-  assert.equal(asked.length, 0);
-  own.close();
-  index.close();
-  rmSync(dir, { recursive: true, force: true });
+  };
+  const all = await usageReport(sums, threads, { range: "7d", bucket: "day" });
+  assert.deepEqual(all.rows.map(r => [r.host, r.client, r.cost.total]), [["us-metal02", "pi-host", 1], ["mbp", "pi-host", 6], ["mbp", "codex", 8]]);
+  const mac = await usageReport(sums, threads, { range: "7d", bucket: "day", host: "mbp" });
+  assert.deepEqual(mac.rows.map(r => [r.host, r.cost.total]), [["mbp", 6], ["mbp", 8]]);
+  assert.deepEqual(mac.series.map(line => [line.key, line.cost[0], line.cost[6], line.tokens[6], line.output[6]]), [["m", 10, 4, 2, 1]]);
+  const clients = await usageReport(sums, threads, { range: "7d", bucket: "day", split: "client" });
+  assert.deepEqual(clients.series.map(line => [line.key, line.cost[0]]), [["codex", 8], ["pi-host", 3]], "a client split sends one series per client, costliest first");
 });

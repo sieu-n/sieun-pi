@@ -7,7 +7,7 @@
  * 2. Each call about one thread goes to the box that listed it (the same file keeps the map), else to the box of the agent record that holds
  *    the thread (`agentHost`), else to the chat's own box.
  * 3. `create` makes the thread on the box it names, the chat's own box by default.
- * 4. `search` and `usage` ask the boxes whose link is up and merge the answers; `ping` answers for the chat's box with every box beside it.
+ * 4. `ping` answers for the chat's box with every box beside it.
  */
 import type { BoxInfo } from "../../../../components/prime-relay/agents/protocol.ts";
 import { replaceLater } from "../disk.ts";
@@ -16,7 +16,7 @@ import { readJson } from "../store.ts";
 import { join } from "node:path";
 import { RelayHost, type LinkState } from "./relay-host.ts";
 import type {
-  CreateOptions, DurableEvent, DurableThread, EntriesQuery, EntryRecord, Host, Ping, SubmissionRecord, Submitted, SubmitInput, Ticket, TreeNode, UsageRange, UsageTotal,
+  CreateOptions, DurableEvent, DurableThread, EntriesQuery, EntryRecord, Host, Ping, SubmissionRecord, Submitted, SubmitInput, Ticket, TreeNode,
 } from "./types.ts";
 
 /** The routes' file, which also names their rows in chat.sqlite (kept-json.ts HOST_ROUTES_KIND). */
@@ -200,22 +200,6 @@ export class MultiHost implements Host {
   async set(thread: string, patch: { name?: string; model?: string; thinkingLevel?: string; archived?: boolean; cwd?: string }): Promise<DurableThread> {
     const box = this.boxOf(thread);
     return { ...(await this.boxes.get(box)!.host.set(thread, patch)), box };
-  }
-
-  /** The boxes whose link is up, for the calls that fan out. */
-  private upBoxes(): Box[] {
-    return this.list().filter(b => this.link(b.box).state === "up");
-  }
-
-  /** Every up box's hits: the newest first for `sort: "recent"`, else each box's in its own rank order, the chat's box first. */
-  async usage(range: UsageRange): Promise<UsageTotal[]> {
-    const boxes = this.upBoxes();
-    const answers = await Promise.allSettled(boxes.map(b => b.host.usage(range)));
-    return answers.flatMap((answer, i) => {
-      if (answer.status === "fulfilled") return answer.value.map(row => ({ ...row, host: boxes[i]!.box }));
-      this.log(`usage on ${boxes[i]!.box} failed: ${String(answer.reason)}`);
-      return [];
-    });
   }
 
   async ping(): Promise<Ping> {

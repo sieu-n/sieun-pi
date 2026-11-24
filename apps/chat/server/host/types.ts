@@ -66,26 +66,6 @@ export type DurableEvent =
 
 /** One entry search found, as search.ts builds its hit from an index document. */
 export interface SearchHit { thread: string; conversation: number; entryId: number; kind: string; author: string; at: number; snippet: string; text?: string }
-/** pi-host's `durable_usage` range; with `bucketMs` and `since` each row sums one bucket of that length and names its start in `bucket`. */
-export type UsageRange = { since?: number; until?: number; threads?: string[]; bucketMs?: number };
-export interface UsageTotal {
-  bucket?: number;
-  /** The box whose pi-host answered the row; MultiHost sets it, and a single host's rows leave it to the caller. */
-  host?: string;
-  /** The chat client and agent that made the calls, from the usage store (server/usage-store.ts); pi-host's own rows leave them out. */
-  client?: string; agent?: string;
-  /** The thread's name as the store's collector saw it, for a client whose threads this chat does not list. */
-  threadName?: string;
-  /** host, client, agent, thread and model as one key, which the store makes once per read so a fold keys each row with no new string. */
-  series?: string;
-  /** host, client, agent and thread as one key, made with `series`, so the chat table keys each row with no new string. */
-  chat?: string;
-  /** The calls with no recorded cost and no price, from the usage store; pi-host's own rows leave it out. */
-  unpriced?: number;
-  thread: string; model: string; turns: number; input: number; output: number; cacheRead: number; cacheWrite: number;
-  cost: number; costInput: number; costOutput: number; costCacheRead: number; costCacheWrite: number;
-}
-
 export interface Ticket { session: string; tree: string; place: TurnPlace }
 export interface Submitted {
   submission: number; requestId?: string; status: string; ticket?: Ticket | null;
@@ -138,7 +118,6 @@ export interface Host {
   /** Newest first with `before`, oldest first with `after`. */
   entries(thread: string, opts: EntriesQuery): Promise<{ entries: EntryRecord[]; more: boolean }>;
   watch(thread: string, opts: { conversation?: number; fromEntry?: number }, sink: (event: DurableEvent) => void): Promise<() => Promise<void>>;
-  usage(range: UsageRange): Promise<UsageTotal[]>;
   docGet(thread: string, name: string): Promise<unknown>;
   /**
    * `newerOnly`: pi-host keeps the doc it holds when that doc's `rev` is above `value.rev`, so a board put that lands late never replaces a

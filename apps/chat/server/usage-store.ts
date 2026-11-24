@@ -3,17 +3,41 @@
  * (components/usage-collector). The chat keeps its sums by hour, minute and 10 s in memory, so api/usage answers with no call to the store.
  */
 import { readFileSync } from "node:fs";
-import type { UsageRange, UsageTotal } from "./host/types.ts";
 import { BUCKET_MS, RANGE_BUCKETS, RANGE_MS, USAGE_RANGES } from "../web/src/lib/api/shared/usage-range.ts";
 
 /**
- * Where the store is and how to read it, from the JSON file `APPS_CHAT_USAGE_STORE` names. `clickhouse` posts SQL to a ClickHouse HTTP port;
+ * Where the store is and how to read it, from the JSON file `APPS_CHAT_USAGE_STORE` names (the live unit names
+ * ~/.config/sieun-pi/usage-store.json). `clickhouse` posts SQL to a ClickHouse HTTP port;
  * `grafana` sends it through Grafana's `/api/ds/query` to the ClickHouse datasource `datasource`, which is how prod reads it, since prod
  * ClickHouse binds only 127.0.0.1 on us-metal01. A secret is read from a file: the whole file, or the JSON key `tokenKey` or `passwordKey`.
  */
 export type UsageStoreConfig =
   | { transport: "clickhouse"; url: string; table: string; user?: string; passwordFile?: string; passwordKey?: string }
   | { transport: "grafana"; url: string; table: string; datasource: string; tokenFile: string; tokenKey?: string };
+
+/** A range of the kept sums, in buckets of `bucketMs` from `since`, of every thread or only `threads`. */
+export type UsageRange = { since: number; until: number; bucketMs: number; threads?: string[] };
+/**
+ * One bucket's sums for one host, client, agent, thread and model; `bucket` is the bucket's first epoch ms. `client` is the chat client
+ * (pi-host, prime, claude-code, codex, aside, vent and more), `agent` the agent when the client knows it, else "", and a client with no
+ * threads names its session as the thread. `threadName` is the name the collector saw, else "".
+ */
+export interface UsageTotal {
+  bucket: number; host: string; client: string; agent: string; thread: string; threadName: string; model: string;
+  /** host, client, agent, thread and model as one key, made once per read so a fold keys each row with no new string. */
+  series: string;
+  /** host, client, agent and thread as one key, made with `series`, so the chat table keys each row with no new string. */
+  chat: string; turns: number;
+  input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; costInput: number; costOutput: number; costCacheRead: number; costCacheWrite: number;
+  /** The calls with no recorded cost and no price (cost_source "unpriced:..."), which count in the tokens and not in the cost. */
+  unpriced: number;
+}
+/** What api/usage and an agent's config read: the kept sums of `StoreUsage`, or the fixture's own. */
+export interface UsageSums {
+  usage(range: UsageRange): Promise<UsageTotal[]>;
+  /** When the sums were last read, while the store has not answered since; else undefined. */
+  staleSince?(): number | undefined;
+}
 
 /** One answer column by column, as ClickHouse's JSONColumns and Grafana's data frames both give it. */
 export type Columns = Record<string, readonly unknown[]>;
@@ -104,8 +128,7 @@ const SEOUL_MS = 9 * 3_600_000;
 const dayOf = (at: number): number => Math.floor((at + SEOUL_MS) / DAY_MS) * DAY_MS - SEOUL_MS;
 
 /** One bucket's sums for one host, client, agent, thread and model; `bucket` is the bucket's first epoch ms. */
-type Sum = Required<Pick<UsageTotal, "bucket" | "host" | "client" | "agent" | "series">> & Omit<UsageTotal, "bucket" | "host" | "client" | "agent" | "series">;
-type Grain = { sums: Map<number, Sum[]>; covered: number };
+type Grain = { sums: Map<number, UsageTotal[]>; covered: number };
 
 /** Adds one sum's counts into another, field by field, which keeps the fold's property reads monomorphic. */
 export function addSums(into: UsageTotal, from: UsageTotal): void {
@@ -119,7 +142,7 @@ export function addSums(into: UsageTotal, from: UsageTotal): void {
   into.costOutput += from.costOutput;
   into.costCacheRead += from.costCacheRead;
   into.costCacheWrite += from.costCacheWrite;
-  into.unpriced = (into.unpriced ?? 0) + (from.unpriced ?? 0);
+  into.unpriced += from.unpriced;
 }
 
 const CALL_COLUMNS = `call_at, host, client, agent, thread, thread_name, session, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
@@ -155,7 +178,7 @@ WHERE toUnixTimestamp64Milli(call_at) >= g.3
 GROUP BY grain, bucket, host, client, agent, thread_or_session, model`;
 }
 
-function rowsOf(columns: Columns): { grain: GrainName; sum: Sum }[] {
+function rowsOf(columns: Columns): { grain: GrainName; sum: UsageTotal }[] {
   const grains = columns.grain ?? [];
   if (!grains.length) return [];
   const col = (name: string): readonly unknown[] => {
@@ -169,7 +192,7 @@ function rowsOf(columns: Columns): { grain: GrainName; sum: Sum }[] {
   return grains.map((grain, i) => {
     if (grain !== "hour" && grain !== "minute" && grain !== "tick") throw new Error(`usage store: unknown grain ${String(grain)}`);
     const n = (values: readonly unknown[] | undefined) => Number(values![i]);
-    const sum: Sum = {
+    const sum: UsageTotal = {
       bucket: n(bucket), host: String(host![i]), client: String(client![i]), agent: String(agent![i]), thread: String(thread![i]), threadName: String(threadName![i]), model: String(model![i]),
       turns: n(turns), input: n(input), output: n(output), cacheRead: n(cacheRead), cacheWrite: n(cacheWrite), costInput: n(costInput), costOutput: n(costOutput),
       costCacheRead: n(costCacheRead), costCacheWrite: n(costCacheWrite), unpriced: n(unpriced), cost: 0, series: "", chat: "",
@@ -194,7 +217,7 @@ export const STORE_FULL_PULL_MS = 600_000;
  * `STORE_FULL_PULL_MS`, reads every grain over its whole kept span; every other pull reads only the buckets since the hour, minute and 10 s
  * tick that held now minus 11 min.
  */
-export class StoreUsage {
+export class StoreUsage implements UsageSums {
   private readonly grains: Record<GrainName, Grain> = { hour: { sums: new Map(), covered: Infinity }, minute: { sums: new Map(), covered: Infinity }, tick: { sums: new Map(), covered: Infinity } };
   /**
    * Seoul-day sums, summed here from the hour sums after each read, since the tail's 11 min cannot replace a whole day. On the rig's 5.0 M
@@ -205,6 +228,7 @@ export class StoreUsage {
   private fullAt = -Infinity;
   private read = false;
   private lastError?: string;
+  private goodAt?: number;
   private timer?: NodeJS.Timeout;
 
   private readonly reader: StoreReader;
@@ -245,16 +269,21 @@ export class StoreUsage {
       return [grain, Math.floor((now - (full ? KEPT_MS[grain] : TICKS_KEPT_MS)) / ms) * ms];
     })) as Record<GrainName, number>;
     const started = performance.now();
-    let rows: { grain: GrainName; sum: Sum }[];
+    let rows: { grain: GrainName; sum: UsageTotal }[];
     try {
       rows = rowsOf(await this.reader.query(pullSql(this.table, from, full)));
     } catch (error) {
+      // Logged once as the store stops answering, not at each 2 s pull. The kept sums stay, and a report says how old they are.
+      if (this.lastError === undefined) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.log(this.read ? `usage: the store stopped answering, so reports carry the sums of ${new Date(this.goodAt!).toISOString()}: ${message}` : `usage: the store is not reachable: ${message}`);
+      }
       this.lastError = error instanceof Error ? error.message : String(error);
-      this.log(`usage: reading the store failed: ${this.lastError}`);
       return;
     }
+    if (this.lastError !== undefined) this.log("usage: the store answers again");
     if (full) this.log(`usage: the full read of the store took ${Math.round(performance.now() - started)} ms for ${rows.length} sums`);
-    const fresh = Object.fromEntries(GRAIN_NAMES.map(grain => [grain, new Map<number, Sum[]>()])) as Record<GrainName, Map<number, Sum[]>>;
+    const fresh = Object.fromEntries(GRAIN_NAMES.map(grain => [grain, new Map<number, UsageTotal[]>()])) as Record<GrainName, Map<number, UsageTotal[]>>;
     for (const { grain, sum } of rows) {
       const list = fresh[grain].get(sum.bucket);
       if (list) list.push(sum);
@@ -272,6 +301,12 @@ export class StoreUsage {
     if (full) this.fullAt = now;
     this.read = true;
     this.lastError = undefined;
+    this.goodAt = now;
+  }
+
+  /** When the kept sums were last read, while the store has failed every read since; else undefined. */
+  staleSince(): number | undefined {
+    return this.read && this.lastError !== undefined ? this.goodAt : undefined;
   }
 
   /** Sums again each whole Seoul day that holds an hour from `changed` on, and drops the days the hour sums no longer cover. */
@@ -282,7 +317,7 @@ export class StoreUsage {
     this.days.covered = covered;
     const last = dayOf(this.now());
     for (let start = Math.max(covered, dayOf(changed)); start <= last; start += DAY_MS) {
-      const merged = new Map<string, Sum>();
+      const merged = new Map<string, UsageTotal>();
       for (let hour = start; hour < start + DAY_MS; hour += GRAIN_MS.hour) {
         for (const sum of hours.sums.get(hour) ?? []) {
           const row = merged.get(sum.series);
@@ -300,9 +335,8 @@ export class StoreUsage {
    */
   async usage(range: UsageRange): Promise<UsageTotal[]> {
     const { since, until, bucketMs } = range;
-    if (since === undefined || until === undefined || !bucketMs) throw new RangeError("usage: a range needs since, until and bucketMs");
     if (!this.read) await this.pull();
-    if (!this.read) throw new Error(`usage: the store has not answered: ${this.lastError ?? "no read yet"}`);
+    if (!this.read) throw new Error(`usage: the store is not reachable: ${this.lastError ?? "no read yet"}`);
     const byDay = bucketMs % DAY_MS === 0 && dayOf(since) === since && dayOf(until) === until && since >= this.days.covered;
     const name = byDay ? "day" : GRAIN_NAMES.find(g => since % GRAIN_MS[g] === 0 && until % GRAIN_MS[g] === 0 && bucketMs % GRAIN_MS[g] === 0);
     if (!name) throw new RangeError(`usage: ${since} to ${until} by ${bucketMs} ms falls on no kept grain`);
@@ -322,7 +356,7 @@ export class StoreUsage {
     const lastDay = dayOf(until);
     if (name === "hour" && bucketMs === until - since && firstDay < lastDay) {
       const open = new Map<string, UsageTotal>();
-      const add = (sums: Map<number, Sum[]>, from: number, to: number, by: number) => {
+      const add = (sums: Map<number, UsageTotal[]>, from: number, to: number, by: number) => {
         for (let start = from; start < to; start += by) {
           for (const sum of sums.get(start) ?? []) {
             if (only && !only.has(sum.thread)) continue;

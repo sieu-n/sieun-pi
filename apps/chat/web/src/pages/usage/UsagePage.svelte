@@ -183,12 +183,16 @@
   const rangeItems = $derived(USAGE_RANGES.map(id => ({ id, label: id })));
   const bucketItems = $derived(BUCKETS.map(id => ({ id, label: BUCKET_LABEL[id], disabled: !RANGE_BUCKETS[range].includes(id) })));
   const kindTitle = (tokens: number, usd: number) => `${full(tokens)} tokens, ${exactCost(usd)}`;
+  const clock = (at: number) => new Date(at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
 </script>
 
 <Page measure="wide">
   {#snippet header()}
     <PanelHeader title="Usage" icon="chart-bar" level={1}>
       {#snippet actions()}
+        {#if report?.staleSince}
+          <span class="caption" role="status" data-testid="usage-stale" title="The usage store has not answered the server's reads since then, so every figure is as of that time">Numbers from {clock(report.staleSince)}; the store did not answer since</span>
+        {/if}
         {#if asOf !== null}
           <span class="caption" role="status" data-testid="usage-as-of" title="Every figure is as of this time, and the latest is on its way">As of {stamp(asOf)}</span>
         {/if}

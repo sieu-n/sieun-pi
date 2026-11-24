@@ -114,11 +114,11 @@ test("the kept sums equal the store's own sums for every range, and each minute,
   await insert(calls(6000, 7));
   const store = new StoreUsage(clickhouseReader({ transport: "clickhouse", url: URL_, table: TABLE }), TABLE, () => {}, () => NOW);
   for (const [range, bucket] of CASES) {
-    const report = await usageReport(store, threads, "us-metal02", { range, bucket }, NOW);
+    const report = await usageReport(store, threads, { range, bucket }, NOW);
     assert.deepEqual(totalsOf(report), await storeTotals(report.since, report.until), `${range} by ${bucket} totals`);
     assert.deepEqual(reportBuckets(report), await storeBuckets(bucket, report.since, report.until), `${range} by ${bucket} buckets`);
   }
-  const day = await usageReport(store, threads, "us-metal02", { range: "24h" }, NOW);
+  const day = await usageReport(store, threads, { range: "24h" }, NOW);
   assert.deepEqual([...new Set(day.rows.map(r => r.client))].sort(), [...CLIENTS].sort(), "every client is its own row");
   assert.ok(day.rows.some(r => r.agent === "agent factory"));
   const codex = day.rows.filter(r => r.client === "codex" && r.thread);
@@ -127,9 +127,9 @@ test("the kept sums equal the store's own sums for every range, and each minute,
   assert.equal(chats.size, 50, "the 50 costliest chats keep their own rows");
   assert.ok(day.otherChats > 0 && day.rows.some(r => !r.thread), "every other chat folds into a row with no thread, and the totals above stay exact");
   assert.ok(day.rows.some(r => r.unpriced > 0) && day.buckets.some(b => b.unpriced > 0), "unpriced calls are counted apart, not as free");
-  const byClient = await usageReport(store, threads, "us-metal02", { range: "24h", client: "codex" }, NOW);
+  const byClient = await usageReport(store, threads, { range: "24h", client: "codex" }, NOW);
   assert.ok(byClient.rows.length && byClient.rows.every(r => r.client === "codex"), "the client filter keeps one client's rows");
-  const split = await usageReport(store, threads, "us-metal02", { range: "24h", split: "client" }, NOW);
+  const split = await usageReport(store, threads, { range: "24h", split: "client" }, NOW);
   const clientCost = new Map<string, number>();
   for (const r of day.rows) clientCost.set(r.client, (clientCost.get(r.client) ?? 0) + r.cost.total);
   const costliest = [...clientCost].sort((a, b) => b[1] - a[1]);
@@ -143,12 +143,12 @@ test("the kept sums equal the store's own sums for every range, and each minute,
   const wire = JSON.parse(JSON.stringify(toColumns(split))) as UsageReportWire;
   assert.deepEqual(fromColumns(wire), split, "the answer's columns give back every bucket");
   assert.ok(day.rows.filter(r => r.client === "prime" && r.thread).every(r => r.threadName === `thread ${r.thread.slice(1)}`), "a thread this chat does not list keeps the store's name");
-  const mbp = await usageReport(store, threads, "us-metal02", { range: "24h", host: "mbp" }, NOW);
+  const mbp = await usageReport(store, threads, { range: "24h", host: "mbp" }, NOW);
   assert.ok(mbp.rows.length && mbp.rows.every(r => r.host === "mbp"));
-  const one = await usageReport(store, threads, "us-metal02", { range: "7d", thread: "s3" }, NOW);
+  const one = await usageReport(store, threads, { range: "7d", thread: "s3" }, NOW);
   assert.deepEqual(totalsOf(one), await query(`SELECT ${SUMS} FROM ${TABLE} FINAL WHERE call_at >= ${ms(one.since)} AND call_at < ${ms(one.until)} AND thread = '' AND session = 's3'`)
     .then(([row]) => Object.fromEntries(Object.entries(row!).map(([k, v]) => [k, round(v)]))), "a session-only thread filters like a thread");
-  const live = await usageLive(store, "us-metal02", {}, NOW);
+  const live = await usageLive(store, {}, NOW);
   const at = Math.floor(NOW / 10_000) * 10_000;
   const [lastMinute] = await query(`SELECT toFloat64(sum(input_tokens + output_tokens + cache_read_tokens + cache_write_tokens)) AS total FROM ${TABLE} FINAL WHERE call_at >= ${ms(at - MIN)} AND call_at < ${ms(at)}`);
   assert.equal(round(live.perSecond.total), round(lastMinute!.total! / 60), "the live rate is the last minute's tokens over 60 s");
@@ -162,7 +162,7 @@ test("a resent or repriced row never counts twice: a tail read replaces the last
   let full = 0;
   const store = new StoreUsage(clickhouseReader({ transport: "clickhouse", url: URL_, table: TABLE }), TABLE, line => { if (line.includes("full read")) full++; }, () => now, 10 * MIN);
   await store.pull();
-  const before90 = await usageReport(store, threads, "us-metal02", { range: "90d" }, now);
+  const before90 = await usageReport(store, threads, { range: "90d" }, now);
   assert.deepEqual(totalsOf(before90), await storeTotals(before90.since, before90.until));
 
   // Every row again in another block, so ClickHouse's block dedup drops none; one recent row and one old row repriced.
@@ -172,16 +172,16 @@ test("a resent or repriced row never counts twice: a tail read replaces the last
   now += 2_000;
   await store.pull();
   assert.equal(full, 1, "the second pull is a tail read");
-  const tail = await usageReport(store, threads, "us-metal02", { range: "1h", bucket: "minute" }, now);
+  const tail = await usageReport(store, threads, { range: "1h", bucket: "minute" }, now);
   assert.deepEqual(totalsOf(tail), await storeTotals(tail.since, tail.until), "the last hour, resent and repriced, counts each call once at its new cost");
-  const stale = await usageReport(store, threads, "us-metal02", { range: "90d" }, now);
+  const stale = await usageReport(store, threads, { range: "90d" }, now);
   assert.equal(totalsOf(stale).turns, totalsOf(before90).turns, "a resent row adds no turn");
   assert.ok(Math.abs(totalsOf(stale).cost! - totalsOf(before90).cost! - (7 - Number(recent.cost_output_usd))) < 1e-5, "an old repricing waits for the full read");
 
   now += 10 * MIN;
   await store.pull();
   assert.equal(full, 2);
-  const after90 = await usageReport(store, threads, "us-metal02", { range: "90d" }, now);
+  const after90 = await usageReport(store, threads, { range: "90d" }, now);
   assert.deepEqual(totalsOf(after90), await storeTotals(after90.since, after90.until), "the full read takes the old repricing");
   assert.equal(totalsOf(after90).turns, totalsOf(before90).turns);
 });
@@ -211,7 +211,7 @@ test("the Grafana transport reads the same sums as ClickHouse HTTP, from Grafana
     const viaGrafana = new StoreUsage(grafanaReader({ transport: "grafana", url: `http://127.0.0.1:${port}/`, table: TABLE, datasource: "usage_ch", tokenFile, tokenKey: "token" }), TABLE, () => {}, () => NOW);
     const direct = new StoreUsage(clickhouseReader({ transport: "clickhouse", url: URL_, table: TABLE }), TABLE, () => {}, () => NOW);
     for (const [range, bucket] of CASES) {
-      assert.deepEqual(await usageReport(viaGrafana, threads, "us-metal02", { range, bucket }, NOW), await usageReport(direct, threads, "us-metal02", { range, bucket }, NOW));
+      assert.deepEqual(await usageReport(viaGrafana, threads, { range, bucket }, NOW), await usageReport(direct, threads, { range, bucket }, NOW));
     }
     assert.equal(asked[0], "POST /api/ds/query Bearer viewer-token");
   } finally {
@@ -233,4 +233,46 @@ test("before the store first answers a call waits for that read, and a store tha
   const down = new StoreUsage({ query: async () => { throw new Error("connect ECONNREFUSED 127.0.0.1:18123"); } }, "t", () => {}, () => NOW);
   await assert.rejects(down.usage(range), /ECONNREFUSED/);
   await assert.rejects(store.usage({ since: range.since + 1, until: range.until, bucketMs: HOUR }), RangeError);
+});
+
+test("a failed read keeps the last sums and marks them stale, logged once, and the next good read clears it", async () => {
+  const hour = NOW - (NOW % HOUR);
+  const columns: Columns = {
+    grain: ["hour"], bucket: [hour], host: ["us-metal02"], client: ["prime"], agent: [""], thread_or_session: ["t1"], thread_name: [""], model: ["m"],
+    turns: [3], input: [10], output: [20], cache_read: [0], cache_write: [0], cost_input: [1], cost_output: [2], cost_cache_read: [0], cost_cache_write: [0], unpriced: [0],
+  };
+  let fail = false;
+  let now = NOW;
+  const lines: string[] = [];
+  const reader = { query: async () => { if (fail) throw new Error("Code: 497. DB::Exception: grafana_ro: Not enough privileges. (ACCESS_DENIED)"); return columns; } };
+  const store = new StoreUsage(reader, "t", line => lines.push(line), () => now);
+  await store.pull();
+  const good = await usageReport(store, threads, { range: "24h" }, now);
+  assert.equal(good.rows[0]!.cost.total, 3);
+  assert.equal(good.staleSince, undefined);
+
+  fail = true;
+  now += 2_000;
+  await store.pull();
+  now += 2_000;
+  await store.pull();
+  const stale = await usageReport(store, threads, { range: "24h" }, now);
+  assert.equal(stale.rows[0]!.cost.total, 3, "the last good sums stay");
+  assert.equal(stale.staleSince, NOW, "the report says when the sums were read");
+  assert.equal((await usageLive(store, {}, now)).staleSince, NOW, "the live rate says it is unknown, not 0");
+  assert.equal(lines.filter(line => line.includes("stopped answering")).length, 1, "the failure is logged once, not at each pull");
+  assert.match(lines.at(-1)!, /Code: 497/);
+
+  fail = false;
+  now += 2_000;
+  await store.pull();
+  assert.equal((await usageReport(store, threads, { range: "24h" }, now)).staleSince, undefined);
+  assert.equal(lines.at(-1), "usage: the store answers again");
+
+  fail = true;
+  const fresh = new StoreUsage(reader, "t", line => lines.push(line), () => now);
+  await assert.rejects(fresh.usage({ since: hour, until: hour + HOUR, bucketMs: HOUR }), /the store is not reachable: Code: 497/);
+  fail = false;
+  await fresh.pull();
+  assert.equal((await fresh.usage({ since: hour, until: hour + HOUR, bucketMs: HOUR }))[0]!.cost, 3, "a failed first read keeps retrying");
 });

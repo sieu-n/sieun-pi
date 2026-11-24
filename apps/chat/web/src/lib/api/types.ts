@@ -726,6 +726,8 @@ export interface UsageReport {
   otherChats: number;
   /** The chart's stacks, costliest first: one series per model or per client, as `split` says. */
   split: UsageSplit; series: UsageSeries[];
+  /** When the server last read the usage store, while the store has not answered since; the numbers are then as of that time. */
+  staleSince?: Ms;
   /** The live rate as of the answer, which GET /api/usage adds so the chart's tokens per second readout opens with no second round trip. */
   live?: UsageLive;
 }
@@ -733,7 +735,11 @@ export interface UsageReport {
  * `GET /api/usage/live`: tokens per second over the minute that ends at `at` (a 10 s tick), for output and for all four kinds, and that rate
  * every 10 s over the 10 min before, 61 points oldest first, the last one `perSecond`, as Prime's chat usage card reads it.
  */
-export interface UsageLive { at: Ms; perSecond: { output: number; total: number }; spark: { output: number[]; total: number[] } }
+export interface UsageLive {
+  at: Ms; perSecond: { output: number; total: number }; spark: { output: number[]; total: number[] };
+  /** When the sums were last read, while the usage store has not answered since: the rate is then unknown, not 0. */
+  staleSince?: Ms;
+}
 
 /** `test` marks a thread of a walk's test agent or test room (agent-store.ts `isTest`), which the Hosts page leaves out unless asked. */
 export interface HostThread { id: string; name: string; status: RunStatus; model: string | null; updatedAt: Ms; children: number; test?: true }

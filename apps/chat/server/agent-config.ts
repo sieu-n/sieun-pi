@@ -12,7 +12,7 @@
  * | folder | its agent's folder, `<agents dir>/<slug>/` with `brief.md` and the harness store's file and entry count (`agent-folder.ts`); `GET /api/agents/:id/folder` gives the entries |
  * | memory | Prime's harness digest in pi-host: Prime's global store merged with the agent's store, or with the thread's own store when no agent holds it |
  * | instructions | AGENTS.md and CLAUDE.md in its cwd and each folder above it, and `<agent dir>/AGENTS.md`, which pi-host loads through Prime's resource loader plus the CLAUDE.md beside each AGENTS.md (`context-files.ts`), read on the box that runs the thread |
- * | usage | the sums over the Usage page's 7 days by hour of its main thread, comm threads and root job threads, from the kept hour sums (`KeptUsage`) or pi-host's `durable_usage` |
+ * | usage | the sums over the Usage page's 7 days by hour of its main thread, comm threads and root job threads, from the usage store's kept hour sums (`StoreUsage`) |
  * | wakes | the board.wakes of those threads that have not gone out yet, in `<data dir>/wakes/` or chat.sqlite's `wakes` (`Boards.wakesOn`) |
  */
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
@@ -27,7 +27,8 @@ import { NotFound, type App } from "./app.ts";
 import { judgedRun } from "../web/src/lib/api/shared/duty-card.ts";
 import { awaitingGo, BOARD_DOC, nextRun, type DutyFile } from "./boards.ts";
 import { isNoProject } from "./projects.ts";
-import type { EntryRecord, Ping, UsageTotal } from "./host/types.ts";
+import type { EntryRecord, Ping } from "./host/types.ts";
+import type { UsageTotal } from "./usage-store.ts";
 import { ownerText } from "./rooms.ts";
 import { conversationIdOf, parseConversationId } from "./threads.ts";
 import { bucketStart } from "./usage.ts";
@@ -220,13 +221,14 @@ async function firstInput(app: App, thread: string, conversation: number): Promi
 }
 
 /**
- * The thread's usage over the Usage page's 7 days by hour: the 168 clock hours that end with the one holding now. Those bounds fall on the
- * kept hour sums (usage.ts `KeptUsage`), so the read calls no box; a 7 days ending at this moment ended off every grain and read pi-host,
- * 161 ms at p50 and 486 ms at p90 at box load 190 to 220 (~/work/p155-config).
+ * The thread's usage over the Usage page's 7 days by hour: the 168 clock hours that end with the one holding now, which fall on the kept
+ * hour sums (usage-store.ts `StoreUsage`), so the read calls no store. Null while the store does not answer.
  */
 function weekUsage(app: App, threads: readonly string[], now = Date.now()): Promise<UsageTotal[] | null> {
   const until = bucketStart("hour", now) + BUCKET_MS.hour;
   const since = until - RANGE_MS["7d"];
+  // Sums the store has not refreshed are unknown here, as an unreachable store's are: this card has no line that says how old they are.
+  if (app.usage.staleSince?.() !== undefined) return Promise.resolve(null);
   return app.usage.usage({ since, until, bucketMs: until - since, threads: [...threads] }).catch(() => null);
 }
 
