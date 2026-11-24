@@ -75,8 +75,11 @@ async function listed(engine: Engine): Promise<Omit<WikiPages, "query" | "refres
   return { favorites: liked, pages: recent.filter(row => !SESSION_LOG.test(row.path)).slice(0, MAX_LIMIT) };
 }
 
-/** How old the kept list may be before an answer reads the wiki again behind it: the engine's own index is up to 5 s old (apps/wiki wiki.ts `CACHE_TTL_MS`). */
-export const FRESH_MS = 5_000;
+/**
+ * How old the kept list may be before an answer reads the wiki again behind it. On 11-24 a page written at 05:25:13Z was missing from an
+ * open at 05:25:18Z when this was 5 s, because the list read 4 s before did not hold it yet. The read costs the engine about 50 ms.
+ */
+export const FRESH_MS = 1_000;
 
 /**
  * GET /api/pages. A search asks the engine each time, so its matches are the engine's own. The list with no words comes from the last read
