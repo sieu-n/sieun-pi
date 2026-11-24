@@ -12,6 +12,8 @@
  * 7. A recall whose wait ran out got no model answer and is not measured, where a turn that ended wrong or empty still counts wrong: on
  *    11-23 all 12 sessions waited 1,200 s on the account pool and the run stored recall 0 of 31.
  * 8. The name of an env variable after "secret =" says where a value lives and is no secret written out.
+ * 9. A correction whose fix was recorded is still kept by an entry that names its old ref or the owner's msg id: on 11-25 the ledger
+ *    moved c236's "ch_14ad7a70/p177 (mwtofxek)" into pastRefs, and agent factory read 14 of 16 corrections kept.
  */
 import { strict as assert } from "node:assert";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
@@ -20,7 +22,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { call, EMPTY_TURN, emptyTurn, finishedReply, holds, idealUnwritten, lastMeasuredRecall, onIdealStore, recall, recallCount, scratchReason, secretReason, splitAnswers, sweepRecallAgents, unanswered } from "../../scripts/duties/agent-memory.ts";
+import { call, captured, EMPTY_TURN, emptyTurn, finishedReply, holds, idealUnwritten, lastMeasuredRecall, onIdealStore, recall, recallCount, scratchReason, secretReason, splitAnswers, sweepRecallAgents, unanswered } from "../../scripts/duties/agent-memory.ts";
 
 const ask = { kind: "message", text: "Quick questions" };
 
@@ -327,4 +329,15 @@ test("a call waits for a chat server that restarts, and an HTTP error still thro
     await new Promise<void>(done => late.close(() => done()));
   }
   await assert.rejects(call(`http://127.0.0.1:${port}`, "GET", "/ok", undefined, 0));
+});
+
+test("a correction is kept by its id, its ref, a past ref or an owner msg id in one of them", () => {
+  const c = { id: "c236", at: "2026-11-23T20:00:00Z", chat: { id: "x" }, rule: "r", ref: "pi-host a740b40a (role text)", pastRefs: [{ ref: "ch_14ad7a70/p177 (mwtofxek)" }] };
+  assert.equal(captured(c, "the owner's rule c236"), true);
+  assert.equal(captured(c, "c2361 is another rule"), false);
+  assert.equal(captured(c, "fixed in pi-host a740b40a (role text)"), true);
+  assert.equal(captured(c, "owner, #sw-factory-build ch_14ad7a70/p177 (mwtofxek)"), true);
+  assert.equal(captured(c, "owner msg mwtofxek: no done marks"), true);
+  assert.equal(captured(c, "owner msg mwtofxekz"), false);
+  assert.equal(captured({ ...c, pastRefs: [{ ref: "ch_14ad7a70/p187" }] }, "#sw-factory-build ch_14ad7a70/p187"), true);
 });

@@ -191,6 +191,7 @@ test("a room post answers first, breaks into lines and keeps the agent's process
     assert.match(text, /A question whether a setup or skill is set up right gets one answer line and one table of each piece[\s\S]*\(c225\)/);
     assert.match(text, /A yes or no question gets the fact he asked for and stops there: leave out what you are unsure of, or ask it as a question with your pick\./);
     assert.match(text, /A standing ask, such as "keep advising X", "always do Y" or "from now on Z", is such a rule, so save it the same way; a one-off task or answer is not memory\./);
+    assert.match(text, /When the same turn also records the rule with correction_add, call correction_add first and name the id it returns, such as c238, in the memory entry\./);
     assert.match(text, /No labels, such as an opener like "Early read from the spec:"/);
     // A d4 blind run on 11-23 (ch_7c688239's set, 16:40 KST) put "The others:" over its other options, a label by the owner's "no labels".
     assert.match(text, /or a line of a word or two over a group of bullets like "The others:"/);

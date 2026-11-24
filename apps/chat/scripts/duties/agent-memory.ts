@@ -67,7 +67,7 @@ interface IdealAgent { agent?: string; slug?: string; expected?: Expected[]; que
 /** A `public_values` row: a fixed dev-only credential committed in plaintext (`where`), which an entry may write out. */
 interface PublicValue { value: string; where: string }
 interface Ideal { agents?: IdealAgent[]; general_corrections?: string[]; public_values?: PublicValue[] }
-interface Correction { id: string; at: string; chat: { id: string; name?: string }; rule: string; ref?: string; status?: string }
+interface Correction { id: string; at: string; chat: { id: string; name?: string }; rule: string; ref?: string; pastRefs?: { ref?: string }[]; status?: string }
 
 export interface Finding { kind: string; excerpt: string; sig: string }
 
@@ -161,7 +161,18 @@ export function correctionsOf(record: AgentRecord, corrections: readonly Correct
   return corrections.filter(c => c.status !== "retired" && (threads.has(c.chat.id) || (c.chat.name ?? "").startsWith(`${record.name} · `)));
 }
 
-const captured = (c: Correction, text: string): boolean => new RegExp(`\\b${c.id}\\b`).test(text) || (!!c.ref && text.includes(c.ref));
+/**
+ * A store keeps a correction when it names the correction's id, one of its refs, or an owner msg id in one of them. Recording a fix
+ * moves the owner's post into `pastRefs` and sets `ref` to the fix, so on 11-25 entries that named "ch_14ad7a70/p177 (mwtofxek)" for
+ * c236 read as not kept.
+ */
+export const captured = (c: Correction, text: string): boolean => {
+  if (new RegExp(`\\b${c.id}\\b`).test(text)) return true;
+  const refs = [c.ref, ...(c.pastRefs ?? []).map(p => p.ref)].filter((r): r is string => !!r);
+  if (refs.some(r => text.includes(r))) return true;
+  const msgIds = refs.flatMap(r => r.match(/\bmw[0-9a-z]{6}\b/g) ?? []);
+  return msgIds.some(m => new RegExp(`\\b${m}\\b`).test(text));
+};
 
 /** An agent made under a day ago with no ideal.json row yet: the duty job writes the row on the agent's first day, so it is not measured. */
 export const idealUnwritten = (record: { createdAt?: number }, want: unknown, now: number): boolean =>
