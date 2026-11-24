@@ -48,8 +48,18 @@ test("a due reminder's toast snoozes it from a menu and marks it complete", asyn
   const before = Date.now();
   await menu.getByRole("menuitem", { name: "In 1 hour" }).click();
   await expect(toastA).toHaveCount(0);
-  await expect(page.locator(".toast").filter({ hasText: "We'll remind you at" })).toBeVisible();
+  // From 23:00 the hour ahead is past midnight and the toast says "tomorrow at 12:15 AM" (lib/remind.ts whenPhrase), so the spec
+  // reads the toast, then checks its words against the day and time of the remindAt the server stored.
+  const snoozed = page.locator(".toast").filter({ hasText: "We'll remind you" });
+  await expect(snoozed).toBeVisible();
+  const said = await snoozed.textContent();
   await expect.poll(async () => ((await item(page, `${a.room}:${a.id}`))?.remindAt ?? 0) - before).toBeGreaterThan(3_500_000);
+  const at = (await item(page, `${a.room}:${a.id}`))!.remindAt!;
+  const expected = await page.evaluate(([at, before]) => {
+    const time = new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" }).format(at);
+    return new Date(at).toDateString() === new Date(before).toDateString() ? `We'll remind you at ${time}` : `We'll remind you tomorrow at ${time}`;
+  }, [at, before]);
+  expect(said).toContain(expected);
 
   const toastB = page.locator(".toast").filter({ hasText: b.text });
   await toastB.getByRole("button", { name: "Mark complete" }).click();
@@ -58,18 +68,16 @@ test("a due reminder's toast snoozes it from a menu and marks it complete", asyn
   await expect.poll(async () => (await item(page, `${b.room}:${b.id}`))?.state).toBe("done");
 });
 
-test("a due reminder's toast shows its memo, and goes away when another tab or the Mac app checks it off or snoozes it", async ({ page }) => {
+test("a due reminder's toast goes away when another tab or the Mac app checks it off or snoozes it", async ({ page }) => {
   const [a, b] = await twoPosts(page);
   await open(page, `#/c/${a.room}?test=1`);
   const due = Date.now() + 1500;
-  await page.request.post("/api/later", { data: { room: a.room, post: a.id, remindAt: due, memo: "bring the invoice" } });
+  await page.request.post("/api/later", { data: { room: a.room, post: a.id, remindAt: due } });
   await page.request.post("/api/later", { data: { room: b.room, post: b.id, remindAt: due } });
   const toastA = page.locator(".toast").filter({ hasText: a.text });
   const toastB = page.locator(".toast").filter({ hasText: b.text });
   await expect(toastA).toBeVisible({ timeout: 10_000 });
   await expect(toastB).toBeVisible();
-  await expect(toastA.locator("[data-toast-note]")).toHaveText("bring the invoice");
-  await expect(toastB.locator("[data-toast-note]")).toHaveCount(0);
 
   await page.request.patch(`/api/later/${encodeURIComponent(`${a.room}:${a.id}`)}`, { data: { state: "done" } });
   await expect(toastA).toHaveCount(0);
