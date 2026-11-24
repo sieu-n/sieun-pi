@@ -12,6 +12,7 @@ import { FIXTURE_AGENTS as agents, FIXTURE_IDS as ids } from "../../server/fixtu
 import type { DutyFile } from "../../server/boards.ts";
 import type { FixtureHost } from "../../server/host/fixture.ts";
 import { start, until, type Running } from "./helpers.ts";
+import { fromColumns } from "../../web/src/lib/api/shared/usage-columns.ts";
 
 let s: Running;
 before(async () => {
@@ -364,7 +365,8 @@ describe("agents, usage and hosts", () => {
   });
 
   test("usage sums by thread and model and splits cost by kind", async () => {
-    const report = await s.get("/api/usage?range=7d&bucket=hour");
+    // The answer sends each bucket's sums as columns (shared/usage-columns.ts); the page reads it back as buckets.
+    const report = fromColumns(await s.get("/api/usage?range=7d&bucket=hour"));
     assert.ok(report.rows.length > 0);
     for (const row of report.rows) {
       const parts = row.cost.input + row.cost.output + row.cost.cacheRead + row.cost.cacheWrite;
@@ -372,7 +374,7 @@ describe("agents, usage and hosts", () => {
     }
     assert.equal(report.buckets.length, 7 * 24);
     const sum = (values: number[]) => values.reduce((a, b) => a + b, 0);
-    assert.ok(Math.abs(sum(report.buckets.map((b: { cost: { total: number } }) => b.cost.total)) - sum(report.rows.map((r: { cost: { total: number } }) => r.cost.total))) < 1e-9);
+    assert.ok(Math.abs(sum(report.buckets.map(b => b.cost.total)) - sum(report.rows.map(r => r.cost.total))) < 1e-9);
     const pool = await s.get("/api/pool");
     assert.equal(pool.providers.length, 2);
   });
