@@ -180,7 +180,7 @@ test("before a new server has read the usage sums, a config read answers at once
   try {
     const timer = new Promise<"waited">(resolve => setTimeout(resolve, 2000, "waited").unref());
     const first = await Promise.race([config(agents.harness), timer]);
-    assert.notEqual(first, "waited", "the read does not wait for the usage sums");
+    if (first === "waited") assert.fail("the read does not wait for the usage sums");
     assert.equal(first.pending, true);
     assert.equal(first.usage, null);
     assert.equal(first.identity.purpose?.text, "What still blocks the migration to pi-host?", "every other part is in the first answer");
