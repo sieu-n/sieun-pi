@@ -71,13 +71,13 @@ writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { duties_green_
 
 // 11-04: d9's 03:33Z run asked to replace Prospect feature bro's p291 from d2 runs read before p291's fix served at 03:25Z, and d2 did not run
 // again. A precheck's `verify` now starts a verify run of each duty it names, so the next d9 run judges the fix on a fresh reading.
-test("a precheck's verify list starts a verify run of each named duty, and skips one that is not a duty", async () => {
+test("a precheck's verify list starts a verify run of each named active duty, and skips a paused one and one that is not a duty", async () => {
   const dir = await mkdtemp(join(tmpdir(), "duty-precheck-verify-"));
   try {
     const PFB = "01a11bd7-072f-7591-ad1d-f123c276cde5";
     const d9 = join(dir, "d9.mjs");
     await writeFile(d9, `import { writeFileSync } from "node:fs";
-writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { duties_green_pct: 45.7 }, verify: [{ chat: ${JSON.stringify(PFB)}, duty: "d2" }, { chat: ${JSON.stringify(PFB)}, duty: "d404" }] }));`);
+writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { duties_green_pct: 45.7 }, verify: [{ chat: ${JSON.stringify(PFB)}, duty: "d2" }, { chat: ${JSON.stringify(PFB)}, duty: "d3" }, { chat: ${JSON.stringify(PFB)}, duty: "d404" }] }));`);
     const d2 = join(dir, "d2.mjs");
     await writeFile(d2, `import { writeFileSync } from "node:fs";
 writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { owner_green_pct: 100 } }));`);
@@ -86,9 +86,10 @@ writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { owner_green_p
     await store.update(CHAT, duties => { duties.push({ ...base, id: "d9", name: "Chat system", status: "active",
       metrics: [{ key: "duties_green_pct", label: "Duties green", op: ">=", target: 100, headline: true }],
       schedule: { kind: "every", minutes: 60 }, precheck: { command: ["node", d9], cwd: dir, timeoutMs: 30_000 } }); });
-    await store.update(PFB, duties => { duties.push({ ...base, id: "d2", name: "Watchlist green", status: "paused",
-      metrics: [{ key: "owner_green_pct", label: "Owner Watchlist green", op: ">=", target: 100, headline: true }],
-      schedule: { kind: "every", minutes: 24 * 60 }, precheck: { command: ["node", d2], cwd: dir, timeoutMs: 30_000 } }); });
+    const watchlist = { metrics: [{ key: "owner_green_pct", label: "Owner Watchlist green", op: ">=" as const, target: 100, headline: true as const }],
+      schedule: { kind: "every" as const, minutes: 24 * 60 }, precheck: { command: ["node", d2], cwd: dir, timeoutMs: 30_000 }, lastRunAt: NOW - MIN };
+    await store.update(PFB, duties => { duties.push({ ...base, ...watchlist, id: "d2", name: "Watchlist green", status: "active" },
+      { ...base, ...watchlist, id: "d3", name: "Watchlist green, paused", status: "paused" }); });
     const duties = new Duties(store, {
       isChat: async () => true, now: () => NOW, tickMs: 0, node: process.execPath,
       jobs: {
@@ -107,8 +108,8 @@ writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { owner_green_p
     await duties.settled();
     await duties.settled();
     duties.close();
-    const runs = (await store.runs(PFB)).filter(run => run.duty === "d2");
-    assert.deepEqual(runs.map(run => [run.trigger, run.verdict, run.metrics.owner_green_pct?.value]), [["verify", "met", 100]]);
+    const runs = await store.runs(PFB);
+    assert.deepEqual(runs.map(run => [run.duty, run.trigger, run.verdict, run.metrics.owner_green_pct?.value]), [["d2", "verify", "met", 100]]);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 

@@ -807,8 +807,9 @@ export class Duties {
   }
 
   /**
-   * A change to a chat's board, from its watch: each duty with a fix step that closed in it (`closedFixes`) starts one verify run, so the land is
-   * measured at once instead of at the next slot. The first board seen for a chat only sets the base.
+   * A change to a chat's board, from its watch: each active duty with a fix step that closed in it (`closedFixes`) starts one verify run, so the
+   * land is measured at once instead of at the next slot. A paused duty or a paused check-in starts none: on 11-23 at 22:46:32Z Crawler VP's
+   * paused d1, d2, d9 and d10 ran verify runs, and their 4 jobs worked until 05:01Z. The first board seen for a chat only sets the base.
    */
   async boardChanged(chatId: string, board: ChatBoard): Promise<void> {
     const before = this.boards.get(chatId);
@@ -817,13 +818,15 @@ export class Duties {
     const closed = closedFixes(before, board);
     for (const dutyId of new Set(closed.map(fix => fix.duty))) {
       const steps = closed.filter(fix => fix.duty === dutyId).map(fix => fix.step).join(", ");
-      if (dutyId === CHECK_IN_DUTY_ID) {
-        if (!this.host.checkIn) continue;
-        this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: fix ${steps} closed; a verify run starts`);
-        void this.host.checkIn.run(chatId, "verify").catch(error => this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: verify: ${message(error)}`));
+      if (!(await this.dutyActive(chatId, dutyId))) {
+        this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: fix ${steps} closed; the duty is paused or gone, so no verify run starts`);
         continue;
       }
-      if (!(await this.store.list(chatId)).some(duty => duty.id === dutyId)) continue;
+      if (dutyId === CHECK_IN_DUTY_ID) {
+        this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: fix ${steps} closed; a verify run starts`);
+        void this.host.checkIn?.run(chatId, "verify").catch(error => this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: verify: ${message(error)}`));
+        continue;
+      }
       const own = (await this.store.runs(chatId)).filter(run => run.duty === dutyId);
       const until = closedUntil(own, closed.filter(fix => fix.duty === dutyId).map(fix => fix.metric), this.now());
       if (until !== undefined) {
@@ -943,6 +946,15 @@ export class Duties {
     }
     if (!(await this.store.list(chatId)).some(duty => duty.id === dutyId)) return false;
     return this.start(chatId, dutyId, "owner", null);
+  }
+
+  /**
+   * Deletes a standing duty: its definition, its run records and its saved state (`DutyStore.remove`, as scripts/duties/remove.ts does). False
+   * when the duty is unknown. The check-in is built into every chat and has no definition to delete, so pausing is its only stop.
+   */
+  async remove(chatId: string, dutyId: string): Promise<boolean> {
+    if (dutyId === CHECK_IN_DUTY_ID) return false;
+    return this.store.remove(chatId, dutyId);
   }
 
   /**
@@ -1720,19 +1732,21 @@ export class Duties {
       brief: { measure: record.verdict === "error" ? `no measure (${record.summary})` : record.summary, findings, misses, ...record.parts ? { parts: record.parts } : {} }, ...handOff ? { handOff } : {} });
   }
 
-  /** Starts a verify run of each duty a precheck's `verify` names (`PrecheckOutput.verify`), the check-in through the chat server's queue. */
+  /**
+   * Starts a verify run of each active duty a precheck's `verify` names (`PrecheckOutput.verify`), the check-in through the chat server's queue.
+   * A paused duty or check-in starts none, as in `boardChanged`.
+   */
   private async startVerifies(chatId: string, dutyId: string, asks: PrecheckOutput["verify"]): Promise<void> {
     if (!Array.isArray(asks)) return;
     for (const ask of asks) {
       if (typeof ask?.chat !== "string" || typeof ask.duty !== "string") continue;
+      if (!(await this.dutyActive(ask.chat, ask.duty).catch(() => false))) continue;
       const by = `duty ${chatId.slice(0, 8)}/${dutyId}`;
       if (ask.duty === CHECK_IN_DUTY_ID) {
-        if (!this.host.checkIn) continue;
         this.log(`${by}: ${ask.chat.slice(0, 8)}/${ask.duty} has fix work no reading has judged; a verify run starts`);
-        void this.host.checkIn.run(ask.chat, "verify").catch(error => this.log(`duty ${ask.chat.slice(0, 8)}/${ask.duty}: verify: ${message(error)}`));
+        void this.host.checkIn?.run(ask.chat, "verify").catch(error => this.log(`duty ${ask.chat.slice(0, 8)}/${ask.duty}: verify: ${message(error)}`));
         continue;
       }
-      if (!(await this.store.list(ask.chat).catch(() => [])).some(duty => duty.id === ask.duty)) continue;
       const started = this.start(ask.chat, ask.duty, "verify", null);
       this.log(`${by}: ${ask.chat.slice(0, 8)}/${ask.duty} has fix work no reading has judged; ${started ? "a verify run starts" : "a run is going, so no verify run starts"}`);
     }

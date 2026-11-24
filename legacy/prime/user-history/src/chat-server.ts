@@ -52,6 +52,7 @@ import { firstScreen, type PromptFrame } from "./shared/prompt-view.ts";
 import { feedBoard } from "./shared/board-delta.ts";
 import { CHECK_IN_MIN_MINUTES, CHECK_IN_PAUSES, isThinkingLevel, type AccountAction, type AgentQueueInput, type AgentQueuePool, type ChatDefaultsInput, type HostQueueInput, type LabelAction, type ModelCatalog, type RemoteAccessInput, type SendMode, type SlackChannelSetup, type SlackChatInput, type SlackInput, type ThinkingLevel } from "./shared/types.ts";
 import { channelNameError } from "./shared/slack-channel.ts";
+import { CHECK_IN_DUTY_ID } from "./shared/chat-duties.ts";
 import { parseStartSkill } from "./shared/start-skill.ts";
 import { timeRead, waitedOnHost } from "./chat-latency.ts";
 import { SLOW_READ_MS } from "./harness-slow.ts";
@@ -1324,14 +1325,19 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
           }
         }
         case "duties": {
-          // The owner's Run now, Pause, Resume and cadence on the Duties card; the reply is the chat's duties after the change. The check-in duty's
-          // pause and cadence are the chat's check-in setting, the one the header's control sets.
+          // The owner's Run now, Pause, Resume and cadence on the Duties card, and Remove, which deletes a standing duty as scripts/duties/remove.ts
+          // does; the reply is the chat's duties after the change. The check-in duty's pause and cadence are the chat's check-in setting, the one
+          // the header's control sets, and it has no remove.
           if (!backend.duties || !(await backend.chats.ids()).has(id)) throw new RequestError(404, "This thread is not a chat.");
           const duty = text(body.duty, "duty", 16);
           const action = body.action;
-          if (action !== "run" && action !== "pause" && action !== "resume" && action !== "schedule") throw new RequestError(400, "Choose run, pause, resume or schedule.");
+          if (action !== "run" && action !== "pause" && action !== "resume" && action !== "schedule" && action !== "remove") {
+            throw new RequestError(400, "Choose run, pause, resume, schedule or remove.");
+          }
+          if (action === "remove" && duty === CHECK_IN_DUTY_ID) throw new RequestError(400, "The check-in is built into every chat and cannot be removed; pause it instead.");
           let found: boolean;
-          if (action === "schedule") {
+          if (action === "remove") found = await backend.duties.remove(id, duty);
+          else if (action === "schedule") {
             try { found = await backend.duties.setSchedule(id, duty, body.schedule, checkInActor(req)); }
             catch (error) { throw new RequestError(400, error instanceof Error ? error.message : String(error)); }
           } else found = action === "run" ? await backend.duties.runNow(id, duty) || (await backend.duties.view(id)).some(view => view.duty.id === duty)
