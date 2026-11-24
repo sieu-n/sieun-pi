@@ -7,7 +7,7 @@ import { strict as assert } from "node:assert";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { tmpdir } from "node:os";
+import { networkInterfaces, tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { apiSpeed, finding, MIN_NETWORK_LINES, MIN_OWN_CALLS, ownBefore, probeRoutes, probeSpeed, readTimings, routeSpeeds, unmeasured } from "../../scripts/duties/api-speed.ts";
@@ -55,7 +55,14 @@ test("the server logs each /api request by route and takes the client's waits", 
       body: JSON.stringify({ samples: [{ m: "GET", p: "/api/rooms", s: 200, ms: 30, net: 4 }] }),
     });
     assert.equal(viaTailnet.status, 200);
-    const all = await logged(dataDir, got => clientLines(4)(got) && got.some(line => line.src === "server" && line.r === "/api/c/:id/items"));
+    // A job's box Chrome on the tailnet URL carries his login too, with one of the box's own addresses as the caller (p278).
+    const own = Object.values(networkInterfaces()).flatMap(list => list ?? []).find(one => !one.internal)?.address ?? "127.0.0.1";
+    const fromBox = await fetch(`${chat.base}/api/timings`, {
+      method: "POST", headers: { "content-type": "application/json", "tailscale-user-login": "owner@example.com", "x-forwarded-for": own },
+      body: JSON.stringify({ samples: [{ m: "GET", p: "/api/me", s: 200, ms: 38, net: 9 }] }),
+    });
+    assert.equal(fromBox.status, 200);
+    const all = await logged(dataDir, got => clientLines(5)(got) && got.some(line => line.src === "server" && line.r === "/api/c/:id/items"));
     const server = all.find(line => line.src === "server" && line.p === `/api/c/${room}/items`);
     assert.equal(server?.r, "/api/c/:id/items");
     assert.equal(server?.s, 200);
@@ -65,6 +72,7 @@ test("the server logs each /api request by route and takes the client's waits", 
     assert.deepEqual(client.map(line => [line.r, line.p, line.ms, line.net, line.via]), [
       ["/api/c/:id/items", `/api/c/${room}/items`, 420, 12, "local"], ["/api/search", "/api/search", 90, undefined, "local"],
       ["/api/c/:id/workspace/close", `/api/c/${room}%3A12/workspace/close`, 40, undefined, "local"], ["/api/rooms", "/api/rooms", 30, 4, "tailnet"],
+      ["/api/me", "/api/me", 38, 9, "local"],
     ]);
   } finally {
     await chat.close();

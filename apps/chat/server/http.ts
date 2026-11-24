@@ -7,6 +7,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { Server as NetServer, type AddressInfo, type Socket } from "node:net";
+import { networkInterfaces } from "node:os";
 import { extname, join, normalize } from "node:path";
 import type { AgentId, ConversationPatch, DutyAction, LaterPatch, MemoryInput, ReadPoint, RoomAfterRemove, RoomInput, RoomPatch, SendRequest } from "../web/src/lib/api/types.ts";
 import { parseSchedule } from "../web/src/lib/api/shared/chat-duties.ts";
@@ -925,7 +926,18 @@ const netClose = NetServer.prototype.close;
  */
 const SILENT_MS = 100;
 
-const viaOf = (req: IncomingMessage): ClientVia => (req.headers["tailscale-user-login"] ? "tailnet" : "local");
+/** Whether `address` is one of this box's own, read on each call, since tailscale0 can come up after the server starts. */
+const ownAddress = (address: string): boolean => Object.values(networkInterfaces()).some(list => list?.some(one => one.address === address));
+
+/**
+ * Tailscale serve puts the owner's login on a call from any of his nodes, this box too, and the caller's address in X-Forwarded-For. On
+ * 11-24 a job's box Chrome opened the tailnet URL at #/c/ch_general, a fixture room, and its three failed opens counted as his (p278).
+ */
+const viaOf = (req: IncomingMessage): ClientVia => {
+  if (!req.headers["tailscale-user-login"]) return "local";
+  const from = String(req.headers["x-forwarded-for"] ?? "").split(",")[0]!.trim();
+  return from && ownAddress(from) ? "local" : "tailnet";
+};
 
 /** POST /api/timings: the web client's wait for each call it made (request-log.ts), with each path named by its route. */
 async function takeTimings(table: Route[], requests: RequestLog, log: (line: string) => void, req: IncomingMessage, res: ServerResponse): Promise<void> {
