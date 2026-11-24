@@ -55,8 +55,11 @@ const DUTY_FILE = join(HERE, "dm-extension.duty.json");
  * The two test accounts by handle. The replier was @glenmyftiu945 (prod 264) until 11-20, when Instagram answered each of its sends
  * with field_exception and sentry_block_user_info from two exits (wiki agents/chrome-extension/jobs/2026/11/20/0640-dm-ext-205-thread-check).
  * @gimnayeon1396 (prod 285) sent to the sender from its box exit on 11-20 (wiki agents/chrome-extension/jobs/2026/11/20/0707-dm-extension-new-replier-account).
+ * The sender was @caiyiting8674 (prod 206) until 11-24, when Instagram answered its sends to 285 with field_exception at 05:56Z and
+ * again at 13:53Z (wiki agents/chrome-extension/jobs/2026/11/24/1445-dm-extension-prod-link-check). @sena354689 (prod 56) holds
+ * only our session (Crawler guy, 11-24).
  */
-export const SENDER = "caiyiting8674";
+export const SENDER = "sena354689";
 export const REPLIER = "gimnayeon1396";
 /** GET /ops/engage/browser-jar on the staging crawler (crawler-v3 engage/browser_jar.py), which asks prod for an account staging does not hold. */
 export const BROWSER_JAR = "https://staging-crawler.virev.ai/ops/engage/browser-jar";
