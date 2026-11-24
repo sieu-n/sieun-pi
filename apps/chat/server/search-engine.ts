@@ -41,6 +41,15 @@ const SEND_SPACING_MS = 5_000;
 /** Meilisearch's default http-payload-size-limit is 100 MB, so one request of documents stays under it. */
 const PAYLOAD_BYTES = 100_000_000;
 
+/**
+ * Meilisearch keeps every finished task until it holds a million of them, about 6.9 KB each in its task file. On 11-24 it held 80,885 tasks
+ * and its task file had grown to 4.38 GB, with 2.4 GB of it in the process's memory after a read of them. A day of tasks is kept, which
+ * ~/work/meili-memory/summary.md read to count the documents each start sent; 13,493 tasks on 11-23, the busiest day, are about 93 MB.
+ */
+const TASK_KEEP_MS = 24 * 60 * 60 * 1000;
+/** How often the tasks older than `TASK_KEEP_MS` go, so the task file holds at most an hour more than a day of them. */
+const TASK_SWEEP_MS = 60 * 60 * 1000;
+
 /** One row of a box's pi-host search index. */
 export type EntryRow = IndexRow;
 
@@ -237,6 +246,7 @@ export class SearchEngine {
   private resync = false;
   private sendTimer?: ReturnType<typeof setTimeout>;
   private pullTimer?: ReturnType<typeof setInterval>;
+  private sweepTimer?: ReturnType<typeof setInterval>;
   private lastSend = 0;
   private meili!: Meili;
   /** While an empty index fills, every document is in `pending` and search reads only memory until the fill's tasks are done. */
@@ -318,6 +328,9 @@ export class SearchEngine {
         this.fillTasks = await this.putDocs([...first, ...posts]);
         this.saveCursors(this.own);
       }
+      void this.sweepTasks();
+      this.sweepTimer = setInterval(() => void this.sweepTasks(), TASK_SWEEP_MS);
+      this.sweepTimer.unref?.();
       if (this.deps.sources.some(source => !source.atSearch)) {
         this.pullTimer = setInterval(() => void this.pullOthers(), SEND_SPACING_MS);
         this.pullTimer.unref?.();
@@ -333,7 +346,22 @@ export class SearchEngine {
 
   stop(): void {
     clearInterval(this.pullTimer);
+    clearInterval(this.sweepTimer);
     clearTimeout(this.sendTimer);
+  }
+
+  /**
+   * Deletes the tasks that finished more than `TASK_KEEP_MS` before `now`. Search waits only on tasks it sent seconds ago, so none of them
+   * goes. A deletion is a task that holds up indexing while it runs (15.5 s for 64,414 tasks on 11-24), so none is sent when no task is old enough.
+   */
+  private async sweepTasks(now = Date.now()): Promise<void> {
+    const old = `statuses=succeeded,failed,canceled&beforeFinishedAt=${new Date(now - TASK_KEEP_MS).toISOString()}`;
+    try {
+      const { total } = await this.meili.call<{ total: number }>("GET", `/tasks?${old}&limit=0`);
+      if (total) await this.meili.waitTask(await this.meili.call<MeiliTask>("DELETE", `/tasks?${old}`));
+    } catch (error) {
+      this.deps.log(`search: deleting Meilisearch's finished tasks failed (${String(error)})`);
+    }
   }
 
   /** Every row of these sources from their first, as documents with the copies of all of them merged, and each box's cursor after them. */
@@ -480,7 +508,11 @@ export class SearchEngine {
           const cursors = new Map(this.readCursors);
           const docs = [...this.unsent.values()];
           this.unsent.clear();
-          if (docs.length) await this.putDocs(docs);
+          // A send Meilisearch refused, as while it restarts, goes again with the next refresh; until then search reads the documents in memory.
+          if (docs.length) await this.putDocs(docs).catch((error: unknown) => {
+            for (const doc of docs) if (!this.unsent.has(doc.id)) this.unsent.set(doc.id, doc);
+            throw error;
+          });
           for (const [box, cursor] of cursors) if (cursor !== this.deps.cursors.get(box)) this.deps.cursors.set(box, cursor);
         } while (this.resync);
       } finally {
