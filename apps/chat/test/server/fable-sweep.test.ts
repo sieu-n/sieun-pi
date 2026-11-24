@@ -57,6 +57,21 @@ test("a channel root post is answered in its own thread, and one that reached no
   assert.deepEqual(run([post("p4", 12, { deliveries: [{ target: "ag_x", name: "x", state: "queued", at: 0 }] })]).map(i => i.kind), ["delivery_error", "owner_unanswered"]);
 });
 
+test("a thread reply is owed by the agents its root names or that replied, and an edit of their earlier reply after it answers it (#komodo p3, p4, 11-24)", () => {
+  const factory = { id: "ag_agent-factory", kind: "chat", name: "agent factory" };
+  const misc = [{ target: "ag_search-product-misc", name: "Search product, misc.", state: "delivered", at: 0 }];
+  const run = (scope: Post[]) => postFindings({ room: "ch_k", roomName: "#komodo", kind: "channel", scope, link: p => p.id, now,
+    involved: [{ id: "ag_agent-factory", name: "agent factory" }] });
+  const p2 = (editedMinutesAgo?: number) => reply("p2", 40, { author: factory, answers: "p1", ...editedMinutesAgo === undefined ? {} : { editedAt: now - editedMinutesAgo * MIN } });
+  assert.deepEqual(run([p2(5), post("p3", 39, { deliveries: misc }), post("p4", 38, { deliveries: misc })]), [], "p2's edit after p3 and p4 answers both");
+  const open = run([p2(), post("p3", 39, { deliveries: misc })]);
+  assert.deepEqual(open.map(i => [i.kind, i.agent]), [["owner_unanswered", "agent factory"]], "the thread's agent owes it, not the room member it reached");
+  assert.equal(run([p2(45), post("p3", 39, { deliveries: misc })]).length, 1, "an edit before his post answers nothing");
+  const other = postFindings({ room: "ch_k", roomName: "#komodo", kind: "channel", scope: [reply("p2", 40, { editedAt: now - 5 * MIN }), post("p3", 39)], link: p => p.id, now,
+    involved: [{ id: "ag_agent-factory", name: "agent factory" }] });
+  assert.equal(other.length, 1, "an edit by an agent outside the thread answers nothing");
+});
+
 const job = (name: string, status: string, extra: Partial<Job> = {}): Job => ({ id: `t:${name}`, name, status, thread: "t", conversation: 2, createdAt: now - 300 * MIN, agent: { id: "ag_x", name: "x" }, ...extra });
 const theAgent = { id: "ag_x", name: "x", status: "idle", thread: "t" };
 

@@ -7,8 +7,9 @@
  * Kinds of items:
  *   owner_unanswered: an owner post of the last 3 h in a channel, Solo room or DM, 10 min old or more, that no agent answered: no agent post
  *     after it in its scope (its DM or thread, or for a channel root post its own thread and the channel root), no post that `answers` it, no
- *     delivery read as answered or no_reply, no agent reaction other than 👀 and no done flag. The 10 min are ten times the about one minute
- *     a comm thread takes to ack (c224).
+ *     delivery read as answered or no_reply, no agent reaction other than 👀, no done flag and, in a thread, no edit made after it of an
+ *     earlier reply by one of the thread's agents. A thread reply is owed by the agents its root names or that replied in it, not by every
+ *     member the room delivered it to. The 10 min are ten times the about one minute a comm thread takes to ack (c224).
  *   delivery_error: an owner post of the last 3 h whose delivery to an agent failed, still queued after 10 min, or that reached no agent.
  *   job_stuck: a job that reads working whose newest entry is 45 min old or more (sieun-pi AGENTS.md rule 6 reads that as stalled).
  *   job_retrying: a job whose run pi-host flags "retrying since HH:MM: <error kind>", a transient error it has retried past 5 minutes and
@@ -83,7 +84,7 @@ export interface RunRecord { at: number; job?: { id: string; name: string }; met
 interface Author { id: string; kind: string; name?: string }
 interface Delivery { target: string; name: string; state: string; at: number }
 export interface Post {
-  id: string; at: number; author: Author; text?: string; answers?: string; deliveries?: Delivery[];
+  id: string; at: number; author: Author; text?: string; answers?: string; deliveries?: Delivery[]; editedAt?: number; mentions?: string[];
   reactions?: { emoji: string; by: Author[] }[]; done?: { at: number }; thread?: { authors?: Author[]; lastAt?: number } | null;
 }
 export interface Job { id: string; name: string; status: string; thread: string; conversation: number; createdAt: number; agent?: { id: string; name: string }; retrying?: string }
@@ -104,12 +105,17 @@ const oneLine = (text: string, max: number): string => {
 
 /**
  * The owner posts of one room's scope (its DM root, a thread, or a channel's root) that no agent answered, and their delivery errors.
- * `scope` holds the scope's posts oldest first; `ownThread` gives a channel root post's own thread replies.
+ * `scope` holds the scope's posts oldest first; `ownThread` gives a channel root post's own thread replies. `involved` are a thread's agents,
+ * the ones its root names or that replied in it: a reply in the thread is theirs to answer, and an edit one of them makes of its earlier
+ * reply after his post answers it, as a comm thread fills in its first reply (#komodo p2 answered p3 and p4 by edit on 11-24).
  */
 export function postFindings(input: {
   room: string; roomName: string; kind: "dm" | "channel"; scope: readonly Post[]; ownThread?: (root: string) => readonly Post[]; link: (post: Post) => string; now: number;
+  involved?: readonly { id: string; name: string }[];
 }): Item[] {
   const { room, roomName, kind, scope, now } = input;
+  const involved = input.involved?.length ? input.involved : undefined;
+  const theirs = (author: Author): boolean => isAgent(author) && (!involved || involved.some(agent => agent.id === author.id));
   const items: Item[] = [];
   const answeredIds = new Set(scope.filter(p => isAgent(p.author) && p.answers).map(p => p.answers!));
   const direct = (post: Post): boolean => answeredIds.has(post.id) || !!post.done
@@ -127,13 +133,14 @@ export function postFindings(input: {
       }
     }
     if (now - post.at < ANSWER_GRACE_MS) return;
-    const covered = direct(post) || later.some(next => isAgent(next.author) || direct(next));
+    const edited = scope.slice(0, at).some(prev => theirs(prev.author) && (prev.editedAt ?? 0) > post.at);
+    const covered = direct(post) || edited || later.some(next => isAgent(next.author) || direct(next));
     if (covered) return;
     if (!deliveries.length && kind === "channel") {
       items.push({ kind: "delivery_error", sig: `delivery:${room}/${post.id}/none`, agent: "", text: `${where} reached no agent: "${oneLine(post.text ?? "", 60)}"`, link: input.link(post), at: post.at });
       return;
     }
-    const to = deliveries.map(d => d.name).join(", ") || roomName;
+    const to = involved?.map(agent => agent.name).join(", ") || deliveries.map(d => d.name).join(", ") || roomName;
     items.push({ kind: "owner_unanswered", sig: `post:${room}/${post.id}`, agent: to, text: `${where}, ${ago(now - post.at)} with no answer from ${to}: "${oneLine(post.text ?? "", 70)}"`, link: input.link(post), at: post.at });
   });
   return items;
@@ -341,7 +348,13 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       [root, (await get<{ items: Post[] }>(server, `/api/c/${room}/replies/${root}`)).items.filter(p => p.id !== root)] as const)));
     const link = (root?: string) => (post: Post) => `#/c/${room}${root ? `?thread=${root}&m=${post.id}` : `?m=${post.id}`}`;
     items.push(...postFindings({ room, roomName: name, kind, scope: roots, ownThread: kind === "channel" ? root => threads.get(root) ?? [] : undefined, link: link(), now }));
-    for (const [root, replies] of threads) items.push(...postFindings({ room, roomName: name, kind, scope: replies, link: link(root), now }));
+    const names = new Map(agents.map(agent => [agent.id, agent.name]));
+    for (const [root, replies] of threads) {
+      const head = roots.find(p => p.id === root);
+      const ids = new Set([...head?.author && isAgent(head.author) ? [head.author.id] : [], ...head?.mentions ?? [], ...replies.filter(p => isAgent(p.author)).map(p => p.author.id)]);
+      const involved = [...ids].flatMap(id => names.has(id) ? [{ id, name: names.get(id)! }] : []);
+      items.push(...postFindings({ room, roomName: name, kind, scope: replies, link: link(root), now, involved }));
+    }
   }));
 
   // Jobs: entry times from each thread file, read once per job.
