@@ -784,7 +784,9 @@ export function addLandedClaims(stale, claims) {
  */
 export function liveStale(stale, pages) {
 	const settled = new Set(pages.filter((p) => SETTLED_STATUS.has(String(p.status).toLowerCase())).map((p) => p.path));
-	stale.stale = stale.stale.filter((s) => !settled.has(s.path));
+	// A page under archive/ is history: the 24 retired pages moved there on 2026-11-24 kept their source_refs, and 4 of them
+	// counted as pages behind code in the next precheck.
+	stale.stale = stale.stale.filter((s) => !settled.has(s.path) && !s.path.startsWith('archive/'));
 	stale.count = stale.stale.length;
 	return stale;
 }

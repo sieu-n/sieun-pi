@@ -21,3 +21,15 @@ test('a superseded, deprecated or archived page leaves the stale report, and a l
 	);
 	assert.equal(stale.count, 1);
 });
+
+// 2026-11-24: four of the 24 retired pages moved to archive/ counted as pages behind code in the next precheck.
+test('a page under archive/ leaves the stale report', () => {
+	const row = (p) => ({ path: p, title: p, last_verified: '2026-11-22', staleRefs: [{ ref: 'apps/a.ts', modified: '2026-11-24T01:00:00Z' }] });
+	const stale = { count: 2, stale: [row('archive/domains/devops/agent-memory.html'), row('domains/a/live.html')] };
+	liveStale(stale, [{ path: 'domains/a/live.html', status: 'current' }]);
+	assert.deepEqual(
+		stale.stale.map((s) => s.path),
+		['domains/a/live.html'],
+	);
+	assert.equal(stale.count, 1);
+});
