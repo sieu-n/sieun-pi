@@ -27,9 +27,9 @@ test('the tutorial fixture, in paragraphs and steps with commands and output, ha
 	assert.deepEqual(findings, []);
 });
 
-test('the same tutorial with no doc_kind falls back to the numbered-line rules', () => {
-	const mer = tutorial.replace('"doc_kind": "tutorial", ', '');
-	assert.ok(errors(mer).includes('bullet-one-sentence'), errors(mer).join(', '));
+test('the same tutorial with no doc_kind passes too, because no page kind asks for numbered one-sentence lines', () => {
+	const plain = tutorial.replace('"doc_kind": "tutorial", ', '');
+	assert.deepEqual(errors(plain), []);
 });
 
 test('a tutorial step with no code block or image, and a missing section, are refused', () => {
@@ -64,7 +64,7 @@ test('an explanation over 300 words needs a diagram, and prose paragraphs pass t
 	assert.deepEqual(errors(page('explanation', body)), ['doc-diagram']);
 	const drawn = `${body}\n<pre class="mermaid">flowchart LR\n  a --> b</pre>\n`;
 	assert.deepEqual(errors(page('explanation', drawn)), []);
-	assert.ok(errors(page(null, drawn)).includes('paragraph-share'), 'the same prose fails as a numbered-line page');
+	assert.deepEqual(errors(page(null, drawn)), [], 'the same prose passes with no doc_kind');
 });
 
 test('a reference page may be mostly tables', () => {
@@ -80,7 +80,7 @@ test('a start page needs a Start here section', () => {
 	assert.deepEqual(errors(page('start', `${intro}<h2 id="start-here">Start here</h2>\n<p>Read the three pages below first.</p>\n`)), []);
 });
 
-test('an unknown doc_kind is refused, and a design page keeps the short numbered form', () => {
+test('an unknown doc_kind is refused, and a design page stays short', () => {
 	assert.deepEqual(errors(page('howto', '<p>One line.</p>')), ['doc-kind']);
 	const lines = (n) =>
 		`<ol>${Array.from({ length: n }, (_, i) => `<li>The design keeps option ${i + 1} on the table.</li>`).join('')}</ol>\n<pre class="mermaid">flowchart LR\n  a --> b</pre>\n<pre class="mermaid">flowchart LR\n  c --> d</pre>\n`;
@@ -89,11 +89,63 @@ test('an unknown doc_kind is refused, and a design page keeps the short numbered
 		`<ol>${Array.from({ length: n }, (_, i) => `<li>The design keeps option ${i + 1} of the plan on the table for now.</li>`).join('')}</ol>\n<pre class="mermaid">flowchart LR\n  a --> b</pre>\n`;
 	assert.deepEqual(errors(page('design', oneDiagram(20))), [], 'one diagram is enough at the design-length limit');
 	assert.deepEqual(errors(page('design', oneDiagram(20).replace(/<pre[^]*<\/pre>/, ''))), ['visuals']);
-	assert.ok(errors(page(null, oneDiagram(20))).includes('visuals'), 'a numbered-line page of 20 lines still wants 2');
-	assert.deepEqual(errors(page('design', lines(22))), ['design-length']);
-	assert.ok(errors(page('design', `<p>${para(4)} ${para(2)}</p>`)).includes('paragraph-blob'));
+	assert.deepEqual(errors(page(null, oneDiagram(20))), [], 'numbered lines no longer set the diagram count');
+	assert.deepEqual(errors(page('design', lines(22))), [], 'a design page is cut by words, not by numbered lines');
+	const long = Array.from({ length: 20 }, () => `<p>${para(4)}</p>`).join('\n');
+	assert.deepEqual(errors(page('design', `${long}\n<pre class="mermaid">flowchart LR\n  a --> b</pre>\n`)), ['design-length']);
+	assert.ok(errors(page('design', `<p>${para(4)} ${para(2)}</p>`)).includes('doc-paragraph'));
 });
 
-test('a page whose older kind field says reference, with no doc_kind, keeps the numbered-line rules', () => {
-	assert.ok(errors(page(null, `<p>${para(5)}</p>`)).includes('paragraph-blob'));
+test('a page with no doc_kind gets the same paragraph rule as a documentation page', () => {
+	assert.deepEqual(errors(page(null, `<p>${para(5)}</p>`)), ['doc-paragraph']);
+	assert.deepEqual(errors(page(null, `<p>${para(4)}</p>`)), []);
+});
+
+/** Warning rule ids of a page at a wiki path. */
+const warns = (html, path) => [
+	...new Set(
+		lintHtml(html, { now: NOW, path })
+			.findings.filter((f) => f.severity === 'warn')
+			.map((f) => f.rule),
+	),
+].sort();
+const core = (rule, html, path) => warns(html, path).includes(rule);
+
+// Owner, 2026-11-24 (#dev-crawler p23, c243): a page under apps/ or domains/ holds only the core a reader can check.
+test('an apps/ or domains/ page over the size target gets a core-length warning, and a session page does not', () => {
+	const body = Array.from({ length: 22 }, () => `<p>${para(4)}</p>`).join('\n');
+	const table = '<table><tr><th>Key</th><th>Value</th></tr><tr><td>root</td><td>content</td></tr></table>\n';
+	const drawn = `${body}\n${table}<pre class="mermaid">flowchart LR\n  a --> b</pre>\n`;
+	assert.ok(core('core-length', page('reference', drawn), 'domains/devops/thing.html'));
+	assert.ok(core('core-length', page(null, drawn), 'apps/search/thing.html'));
+	assert.ok(!core('core-length', page(null, drawn), 'sessions/2026/11/24/0900-thing/thing.html'));
+	assert.ok(!core('core-length', page('tutorial', drawn), 'domains/devops/thing.html'), 'a tutorial is as long as its steps');
+	const short = `<p>${para(4)}</p>\n${table}`;
+	assert.ok(!core('core-length', page('reference', short), 'domains/devops/thing.html'));
+	assert.equal(errors(page('reference', drawn)).includes('core-length'), false, 'the length rule only warns (c98)');
+});
+
+test('an apps/ or domains/ page with no flow, table, field list or code gets a core-layers warning', () => {
+	const prose = page('explanation', `<p>${para(3)}</p>\n<p>${para(2)}</p>`);
+	assert.ok(core('core-layers', prose, 'domains/devops/thing.html'));
+	assert.ok(!core('core-layers', prose, 'sessions/2026/11/24/0900-thing/thing.html'));
+	const withTable = page('explanation', `<p>${para(3)}</p>\n<table><tr><td>chat.sqlite</td><td>posts</td></tr></table>`);
+	assert.ok(!core('core-layers', withTable, 'domains/devops/thing.html'));
+	const withFields = page('reference', `<p>${para(3)}</p>\n<dl><dt>path</dt><dd>The page path.</dd></dl>`);
+	assert.ok(!core('core-layers', withFields, 'domains/devops/thing.html'));
+	const hub = page(null, `<ul>${Array.from({ length: 6 }, (_, i) => `<li><a href="p${i}.html">Page ${i}</a></li>`).join('')}</ul>`);
+	assert.ok(!core('core-layers', hub, 'domains/devops/index.html'), 'a hub of links is exempt');
+});
+
+test('a diagram that counts a few instances in one node, or a flat graph of many nodes, gets a diagram-shape warning', () => {
+	const draw = (src) => page('explanation', `<p>${para(3)}</p>\n<pre class="mermaid">\n${src}\n</pre>\n`);
+	const at = 'domains/devops/thing.html';
+	assert.ok(core('diagram-shape', draw('flowchart LR\n  chat["chat server"] --> relays["relay x2"]'), at));
+	assert.ok(core('diagram-shape', draw('flowchart LR\n  s["chat server"] --> t["3 tiers"]'), at));
+	assert.ok(!core('diagram-shape', draw('flowchart LR\n  s["chat server"] --> r1["relay"]\n  s --> r2["relay"]'), at));
+	assert.ok(!core('diagram-shape', draw('flowchart LR\n  s["scheduler"] --> w@{ shape: procs, label: "24 workers" }'), at), 'many instances may stack');
+	const flat = Array.from({ length: 14 }, (_, i) => `  n${i}["step ${i}"] --> n${i + 1}["step ${i + 1}"]`).join('\n');
+	assert.ok(core('diagram-shape', draw(`flowchart TD\n${flat}`), at));
+	assert.ok(!core('diagram-shape', draw(`flowchart TD\n  subgraph box["us-metal02"]\n${flat}\n  end`), at));
+	assert.ok(!core('diagram-shape', draw('sequenceDiagram\n  A->>B: 3 workers'), at), 'only flowcharts are read');
 });

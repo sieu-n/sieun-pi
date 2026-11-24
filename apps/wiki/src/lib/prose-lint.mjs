@@ -12,22 +12,10 @@ export const LIMITS = Object.freeze({
 	BULLET_MIN_WORDS: 4,
 	/** A sentence longer than this is hard to read at speech pace (warn). */
 	SENTENCE_MAX_WORDS: 30,
-	/** A paragraph with more sentences than this is a wall of text. */
-	PARAGRAPH_MAX_SENTENCES: 3,
-	/** A paragraph with more words than this is a wall of text. */
-	PARAGRAPH_MAX_WORDS: 70,
-	/** Paragraphs may hold at most this share of the body's prose words; the rest is numbered lines... */
-	PARAGRAPH_MAX_SHARE: 0.4,
-	/** ...once the body holds at least this many prose words. */
-	PARAGRAPH_SHARE_MIN_WORDS: 250,
 	/** A page over this many words needs a diagram or image... */
 	VISUAL_MIN_WORDS: 300,
-	/** ...and one more for every this many words... */
+	/** ...and one more for every this many words. */
 	WORDS_PER_VISUAL: 400,
-	/** ...and one for every this many numbered lines. */
-	LINES_PER_VISUAL: 10,
-	/** A run of more numbered lines than this with no diagram or image between them is a wall. */
-	MAX_LINES_WITHOUT_VISUAL: 24,
 	/** A label prefix before a colon has at most this many words. */
 	LABEL_MAX_WORDS: 6,
 	/** Bold spans allowed per page: max(BOLD_MIN_PER_PAGE, words / BOLD_WORDS_PER_SPAN). */
@@ -45,30 +33,40 @@ export const LIMITS = Object.freeze({
 	TABLE_SHARE_MIN_WORDS: 150,
 	/** Excerpt length in characters. */
 	EXCERPT_CHARS: 90,
-	/** A documentation page paragraph (doc_kind start, tutorial, how-to, reference or explanation) holds 2 to 4 sentences. */
+	/** A paragraph, or a step of a numbered list, holds at most this many sentences... */
 	DOC_PARAGRAPH_MAX_SENTENCES: 4,
 	/** ...and at most this many words, 4 sentences of about 25. */
 	DOC_PARAGRAPH_MAX_WORDS: 100,
 	/** An explanation page over VISUAL_MIN_WORDS needs one diagram or image per this many words. */
 	DOC_WORDS_PER_VISUAL: 800,
-	/** An owner design page (doc_kind design) stays under these, per owner rules c83 and c201. */
-	DESIGN_MAX_LINES: 20,
+	/** An owner design page (doc_kind design) stays under this many words, per owner rules c83 and c201. */
 	DESIGN_MAX_WORDS: 800,
+	/**
+	 * An apps/ or domains/ page past this many words, outside link-only lines, gets a soft core-length warning (c98).
+	 * Owner, 2026-11-24 (#dev-crawler p23, c243): such a page holds only the layers a reader can check. 800 is the design
+	 * page size he accepted under c201, and the 2,267-word domains/devops/clickhouse-layout.html drew "겁나 길어".
+	 */
+	CURATED_MAX_WORDS: 800,
+	/** A mermaid flowchart with more nodes than this and no subgraph is a flat graph a person cannot place (warn). */
+	DIAGRAM_FLAT_NODES: 12,
+	/** A diagram label that counts this few things of one kind names instances the diagram should draw one by one (warn). */
+	DIAGRAM_MAX_DRAWN: 4,
 });
 
 /**
- * The page kinds a page declares in the `doc_kind` field of its `<!--wiki {json}-->` header. The first five are plain
- * documentation pages in prose, which the owner asked for on 2026-11-23 (#sw-factory-build p174, msg mwtd0iuy); design
- * keeps the short numbered-line form of owner rules c83 and c201. A page with no doc_kind keeps the numbered-line rules.
- * The header's older `kind` field is a free label that 550 numbered-line pages set to "reference", so it decides nothing here.
+ * The page kinds a page declares in the `doc_kind` field of its `<!--wiki {json}-->` header. Every page reads as plain
+ * prose under headings, because the owner finds strings of numbered one-sentence lines unreadable (c235, c243; #dev-crawler
+ * p19 "no the llm-wiki is unreadable", 2026-11-24). The first five kinds are the documentation pages he asked for on
+ * 2026-11-23 (#sw-factory-build p174, msg mwtd0iuy) and add their section rules; design is a short page for his decision
+ * (c83, c201). The header's older `kind` field is a free label that 550 pages set to "reference", so it decides nothing here.
  */
 export const DOC_KINDS = Object.freeze(['start', 'tutorial', 'how-to', 'reference', 'explanation', 'design']);
-/** The documentation kinds that read as prose paragraphs instead of numbered lines. */
+/** The documentation kinds, which open with an intro paragraph and carry their own section and diagram rules. */
 const PROSE_KINDS = new Set(['start', 'tutorial', 'how-to', 'reference', 'explanation']);
 /** @param {string | null} k */
 const isProse = (k) => k !== null && PROSE_KINDS.has(k);
-/** @param {string | null} k */
-const isMer = (k) => !isProse(k);
+/** A page with no doc_kind, or a design page, keeps the page-wide diagram count of `visuals`. @param {string | null} k */
+const countsVisuals = (k) => !isProse(k);
 
 /**
  * True when a page's header sets a prose doc_kind. Such a page numbers each step list from 1, so the page API leaves
@@ -125,6 +123,10 @@ function contentRel(relPath) {
 }
 
 const CURATED_PAGE = /^(?:apps|domains|projects|experiments)\/(?!.*\/(?:data|assets)\/).*\.html$/;
+/** A page under apps/ or domains/, which holds only the layers a reader can check (owner, #dev-crawler p23, c243). */
+const isCoreLayerPath = (/** @type {string} */ rel) => /^(?:apps|domains)\/(?!.*\/(?:data|assets)\/).*\.html$/.test(rel);
+/** A page's words outside link-only lines, such as a hub's list of pages. @param {Page} page */
+const coreWords = (page) => page.units.reduce((n, u) => n + (u.linkOnly || u.inTldr ? 0 : u.words), 0);
 /** A wiki URL on any host that serves it on :5176: the server in hosts.json, or the Mac's old localhost wiki. */
 const WIKI_ORIGIN = /^https?:\/\/[^/\s]+:5176(?=\/)/i;
 
@@ -339,6 +341,7 @@ export function decodeEntities(s) {
  *   visuals: number[], words: number, lineOf: (offset: number) => number, ko: boolean,
  *   links: { href: string, line: number }[], now: number, meta: Record<string, unknown>,
  *   docKind: string | null, steps: { line: number, text: string, proof: boolean }[], proofs: number[],
+ *   diagrams: { src: string, line: number }[], hasDl: boolean,
  * }} Page
  */
 
@@ -394,6 +397,57 @@ function findVisuals(el, out = []) {
 		else findVisuals(node, out);
 	}
 	return out;
+}
+
+/**
+ * The source of every mermaid block outside an HTML comment, entities decoded, with the line it starts on.
+ * @param {string} html
+ * @param {(offset: number) => number} lineOf
+ * @returns {{ src: string, line: number }[]}
+ */
+function mermaidSources(html, lineOf) {
+	const comments = [...html.matchAll(/<!--[\s\S]*?-->/g)].map((m) => [m.index ?? 0, (m.index ?? 0) + m[0].length]);
+	const block = /<pre\b([^>]*)>([\s\S]*?)<\/pre\s*>|<wiki-mermaid\b[^>]*>([\s\S]*?)<\/wiki-mermaid\s*>/gi;
+	/** @type {{ src: string, line: number }[]} */
+	const out = [];
+	for (const m of html.matchAll(block)) {
+		const at = m.index ?? 0;
+		if (comments.some(([from, to]) => at >= from && at < to)) continue;
+		if (m[2] !== undefined && !/\bclass\s*=\s*["']?[^"'>]*\bmermaid\b/i.test(m[1])) continue;
+		out.push({ src: decodeEntities((m[2] ?? m[3] ?? '').replace(/<br\s*\/?>/gi, ' ')), line: lineOf(at) });
+	}
+	return out;
+}
+
+/** Plural nouns that name things a diagram should draw one by one when there are only a few of them. */
+const INSTANCE_NOUN =
+	'(?:boxes|hosts|machines|servers|tiers|workers|replicas|shards|instances|nodes|pods|containers|threads|agents|accounts|copies|regions|clusters|databases|queues|services|processes|relays|browsers|tabs|sessions)';
+const NUMBER_WORD = { two: 2, three: 3, four: 4, five: 5, six: 6 };
+
+/**
+ * A flowchart's node ids, whether it groups nodes in a subgraph, and each node label that counts a few instances of
+ * one kind ("3 tiers", "workers x3"), which a person reads faster as that many boxes (owner, #dev-crawler p23).
+ * @param {string} src
+ * @returns {{ flowchart: boolean, nodes: number, subgraph: boolean, counted: string[] }}
+ */
+function readFlowchart(src) {
+	const flowchart = /^\s*(?:%%[^\n]*\n\s*)*(?:flowchart|graph)\b/i.test(src);
+	const labels = [...src.matchAll(/"([^"]*)"|\[([^\]"]*)\]|\(([^)"]*)\)|\{([^}"]*)\}|\|([^|"]*)\|/g)].map((m) =>
+		(m[1] ?? m[2] ?? m[3] ?? m[4] ?? m[5] ?? '').trim(),
+	);
+	const counted = labels.filter((label) => {
+		const words = new RegExp(`\\b([2-9]|two|three|four|five|six)\\s+${INSTANCE_NOUN}\\b`, 'i').exec(label);
+		const times = /(?:^|\s)[x\u00d7]\s?([2-9])(?:\s|$)|(?:^|\s)([2-9])\s?[x\u00d7](?:\s|$)/i.exec(label);
+		const n = words ? (NUMBER_WORD[/** @type {keyof NUMBER_WORD} */ (words[1].toLowerCase())] ?? Number(words[1])) : times ? Number(times[1] ?? times[2]) : 0;
+		return n >= 2 && n <= LIMITS.DIAGRAM_MAX_DRAWN;
+	});
+	const bare = src.replace(/"[^"]*"/g, '""').replace(/\|[^|]*\|/g, '');
+	const ids = new Set();
+	for (const line of bare.split('\n')) {
+		if (/^\s*(?:flowchart|graph|subgraph|end\b|direction|classDef|class\s|style|linkStyle|click|%%)/i.test(line)) continue;
+		for (const m of line.matchAll(/(?:^|[\s;&>-])([A-Za-z_][\w]*)\s*(?=\[|\(|\{|>|@\{)/g)) ids.add(m[1]);
+	}
+	return { flowchart, nodes: ids.size, subgraph: /^\s*subgraph\b/im.test(src), counted };
 }
 
 /**
@@ -599,11 +653,15 @@ export function parsePage(html, opts = {}) {
 		docKind: null,
 		steps: [],
 		proofs: [],
+		diagrams: [],
+		hasDl: false,
 	};
 	page.docKind = typeof page.meta.doc_kind === 'string' ? page.meta.doc_kind : null;
 	const root = parseHtml(html);
 	page.visuals = findVisuals(root);
 	page.proofs = findProofs(root);
+	page.diagrams = mermaidSources(html, lineOf);
+	page.hasDl = /<dl\b/i.test(html.replace(/<!--[\s\S]*?-->/g, ''));
 	if (isProse(page.docKind)) page.steps = findSteps(root, lineOf);
 
 	/**
@@ -637,8 +695,8 @@ export function parsePage(html, opts = {}) {
 			kind = 'bullet';
 			numbered = true;
 		}
-		// A numbered item of a documentation page is a step, which holds a short paragraph, not a one-sentence line.
-		if (numbered && tag === 'li' && isProse(page.docKind)) kind = 'step';
+		// A numbered item is a step in order, which holds a short paragraph, not a one-sentence line (c243).
+		if (numbered && tag === 'li') kind = 'step';
 		const firstPiece = acc.pieces.find((p) => /\S/.test(p.text));
 		const line = lineOf(
 			firstPiece ? firstPiece.start + (firstPiece.text.length - firstPiece.text.trimStart().length) : start,
@@ -1242,46 +1300,6 @@ export const RULES = [
 		},
 	},
 	{
-		id: 'paragraph-blob',
-		unslop: '22',
-		severity: 'error',
-		scope: 'paragraph',
-		when: isMer,
-		fix: `Split the paragraph: at most ${LIMITS.PARAGRAPH_MAX_SENTENCES} sentences and ${LIMITS.PARAGRAPH_MAX_WORDS} words each.`,
-		check: (/** @type {Unit} */ u) => {
-			if (u.inTldr) return [];
-			const n = sentencesOf(u).length;
-			if (n > LIMITS.PARAGRAPH_MAX_SENTENCES || u.words > LIMITS.PARAGRAPH_MAX_WORDS)
-				return [{ excerpt: `${n} sentences, ${u.words} words: ${excerpt(u.text)}` }];
-			return [];
-		},
-	},
-	{
-		id: 'paragraph-share',
-		unslop: '4a',
-		severity: 'error',
-		scope: 'page',
-		when: isMer,
-		fix: `Write the body as numbered one-sentence lines in <ol>; paragraphs and <ul> bullets may hold at most ${Math.round(LIMITS.PARAGRAPH_MAX_SHARE * 100)}% of its words.`,
-		check: (_u, page) => {
-			const body = page.units.filter(
-				(u) => !u.inTldr && !u.linkOnly && (u.kind === 'paragraph' || u.kind === 'loose' || u.kind === 'bullet'),
-			);
-			const total = body.reduce((n, u) => n + u.words, 0);
-			if (total < LIMITS.PARAGRAPH_SHARE_MIN_WORDS) return [];
-			const prose = body.filter((u) => !u.numbered);
-			const share = prose.reduce((n, u) => n + u.words, 0) / total;
-			return share > LIMITS.PARAGRAPH_MAX_SHARE
-				? [
-						{
-							excerpt: `paragraphs and unnumbered bullets hold ${Math.round(share * 100)}% of ${total} body words`,
-							line: prose[0].line,
-						},
-					]
-				: [];
-		},
-	},
-	{
 		id: 'long-sentence',
 		unslop: '22',
 		severity: 'warn',
@@ -1362,55 +1380,16 @@ export const RULES = [
 		unslop: '24',
 		severity: 'error',
 		scope: 'page',
-		when: isMer,
-		fix: `Add mermaid diagrams or images: one per ${LIMITS.LINES_PER_VISUAL} numbered lines, and one per ${LIMITS.WORDS_PER_VISUAL} words once a page passes ${LIMITS.VISUAL_MIN_WORDS} words.`,
+		when: countsVisuals,
+		fix: `Add a mermaid diagram or image: one per ${LIMITS.WORDS_PER_VISUAL} words once a page passes ${LIMITS.VISUAL_MIN_WORDS} words.`,
 		check: (_u, page) => {
-			const lines = page.units.filter((u) => u.numbered).length;
 			const byWords =
 				page.words > LIMITS.VISUAL_MIN_WORDS ? Math.max(1, Math.floor(page.words / LIMITS.WORDS_PER_VISUAL)) : 0;
 			// Owner rule c83 gives a design page one diagram, and design-length already caps its size.
-			const need =
-				page.docKind === 'design' ? 1 : Math.max(byWords, Math.floor(lines / LIMITS.LINES_PER_VISUAL));
+			const need = page.docKind === 'design' ? 1 : byWords;
 			return page.visuals.length < need
-				? [
-						{
-							excerpt: `${page.visuals.length} diagrams or images for ${lines} numbered lines and ${page.words} words, want ${need}`,
-							line: 1,
-						},
-					]
+				? [{ excerpt: `${page.visuals.length} diagrams or images for ${page.words} words, want ${need}`, line: 1 }]
 				: [];
-		},
-	},
-	{
-		id: 'visual-gap',
-		unslop: '24',
-		severity: 'error',
-		scope: 'page',
-		when: isMer,
-		fix: `Put a diagram or image between numbered lines at least every ${LIMITS.MAX_LINES_WITHOUT_VISUAL} lines.`,
-		check: (_u, page) => {
-			/** @type {Hit[]} */
-			const hits = [];
-			const lines = page.units.filter((u) => u.numbered).sort((a, b) => a.start - b.start);
-			let v = 0;
-			/** @type {Unit[]} */
-			let run = [];
-			const close = () => {
-				if (run.length > LIMITS.MAX_LINES_WITHOUT_VISUAL)
-					hits.push({ excerpt: `${run.length} numbered lines with no diagram or image`, line: run[0].line });
-				run = [];
-			};
-			for (const u of lines) {
-				let crossed = false;
-				while (v < page.visuals.length && page.visuals[v] < u.start) {
-					v += 1;
-					crossed = true;
-				}
-				if (crossed) close();
-				run.push(u);
-			}
-			close();
-			return hits;
 		},
 	},
 	{
@@ -1528,12 +1507,12 @@ export const RULES = [
 	},
 	{
 		// Owner, 2026-11-23 (#sw-factory-build p174, msg mwtd0iuy): "think of writing an actual confluence tutorial page
-		// like as to onboard me". A documentation page reads as paragraphs of two to four sentences.
+		// like as to onboard me", and 2026-11-24 (#dev-crawler p19): "the llm-wiki is unreadable". Every page reads as
+		// paragraphs of two to four sentences, and a numbered step holds the same.
 		id: 'doc-paragraph',
 		unslop: '20',
 		severity: 'error',
 		scope: 'paragraph',
-		when: isProse,
 		fix: `Keep a paragraph or step to ${LIMITS.DOC_PARAGRAPH_MAX_SENTENCES} sentences and ${LIMITS.DOC_PARAGRAPH_MAX_WORDS} words; start a new paragraph for the next idea.`,
 		check: (/** @type {Unit} */ u) => {
 			if (u.inTldr) return [];
@@ -1625,12 +1604,63 @@ export const RULES = [
 		severity: 'error',
 		scope: 'page',
 		when: (k) => k === 'design',
-		fix: `Cut the design page to ${LIMITS.DESIGN_MAX_LINES} numbered lines and ${LIMITS.DESIGN_MAX_WORDS} words; move detail to a reference or explanation page and link it.`,
+		fix: `Cut the design page to ${LIMITS.DESIGN_MAX_WORDS} words; move detail to a reference or explanation page and link it.`,
+		check: (_u, page) =>
+			page.words > LIMITS.DESIGN_MAX_WORDS ? [{ excerpt: `${page.words} words`, line: 1 }] : [],
+	},
+	{
+		// Owner, 2026-11-24 (#dev-crawler p23, msg mwtwsw4j, c243): a page under apps/ or domains/ holds only the core a
+		// reader can check, and the long write-up stays in the writer's session folder.
+		id: 'core-length',
+		unslop: 'wiki',
+		severity: 'warn',
+		scope: 'page',
+		when: (k) => k !== 'start' && k !== 'tutorial' && k !== 'how-to',
+		fix: `Keep an apps/ or domains/ page near ${LIMITS.CURATED_MAX_WORDS} words of the layers a reader can check (flow or call stack, tables, fields), and move the rest to a session page you link.`,
 		check: (_u, page) => {
-			const n = page.units.filter((u) => u.numbered).length;
-			return n > LIMITS.DESIGN_MAX_LINES || page.words > LIMITS.DESIGN_MAX_WORDS
-				? [{ excerpt: `${n} numbered lines and ${page.words} words`, line: 1 }]
+			if (!isCoreLayerPath(page.path)) return [];
+			const words = coreWords(page);
+			return words > LIMITS.CURATED_MAX_WORDS
+				? [{ excerpt: `${words} words, target ${LIMITS.CURATED_MAX_WORDS}`, line: 1 }]
 				: [];
+		},
+	},
+	{
+		// Owner, 2026-11-24 (#dev-crawler p23, c243): "확인 가능한 실질적인 레이어 (flow/call stack, tables, fields)".
+		id: 'core-layers',
+		unslop: 'wiki',
+		severity: 'warn',
+		scope: 'page',
+		when: (k) => k !== 'start',
+		fix: 'Show a layer a reader can check against the system: a flow or call stack as a diagram or numbered steps, a table, a field list or a code block.',
+		check: (_u, page) => {
+			if (!isCoreLayerPath(page.path)) return [];
+			const linkOnly = page.units.filter((u) => u.linkOnly).length;
+			if (linkOnly * 2 >= page.units.length) return [];
+			const layer = page.tables.length > 0 || page.proofs.length > 0 || page.hasDl || page.units.some((u) => u.numbered);
+			return layer ? [] : [{ excerpt: 'no diagram, numbered steps, table, field list or code block', line: 1 }];
+		},
+	},
+	{
+		// Owner, 2026-11-24 (#dev-crawler p23, c243): a diagram is drawn for a person, with "proper placing & hierarchy,
+		// shapes, things that are multiple -> 여러개".
+		id: 'diagram-shape',
+		unslop: 'wiki',
+		severity: 'warn',
+		scope: 'page',
+		fix: `Draw a few instances as that many nodes instead of one node with a count, and group a flowchart over ${LIMITS.DIAGRAM_FLAT_NODES} nodes in subgraphs or split it into two diagrams.`,
+		check: (_u, page) => {
+			if (!isCoreLayerPath(page.path)) return [];
+			/** @type {Hit[]} */
+			const hits = [];
+			for (const d of page.diagrams) {
+				const f = readFlowchart(d.src);
+				if (!f.flowchart) continue;
+				for (const label of f.counted) hits.push({ excerpt: `one node counts instances: "${excerpt(label)}"`, line: d.line });
+				if (f.nodes > LIMITS.DIAGRAM_FLAT_NODES && !f.subgraph)
+					hits.push({ excerpt: `${f.nodes} nodes with no subgraph`, line: d.line });
+			}
+			return hits;
 		},
 	},
 	...WORD_RULES.map(

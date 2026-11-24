@@ -20,22 +20,23 @@ test('the rejected gateway-v2 draft fails on structure rules', () => {
 	const { counts } = lintHtml(fixture('bad-gateway-v2.html'));
 	const ids = Object.keys(counts.byRule).filter((id) => counts.byRule[id].errors > 0);
 	assert.ok(ids.includes('em-dash') || ids.includes('label-opener'), ids.join(', '));
-	for (const id of ['bullet-one-sentence', 'bold-overuse', 'table-wall'])
+	for (const id of ['doc-paragraph', 'bold-overuse', 'table-wall'])
 		assert.ok(ids.includes(id), `${id} missing: ${ids.join(', ')}`);
 	assert.ok(counts.errors >= 20, `only ${counts.errors} errors`);
 });
 
-test('the rejected prose-paragraph gateway-v2 rewrite fails on paragraph rules', () => {
+// The owner rejected this prose rewrite on 2026-10-10, and on 2026-11-24 called the numbered-line form unreadable
+// (#dev-crawler p19, c235, c243), so its paragraphs of up to 4 sentences now pass and only its missing diagram fails.
+test('the prose-paragraph gateway-v2 rewrite passes the paragraph rules and still wants a diagram', () => {
 	const { counts } = lintHtml(fixture('bad-gateway-v2-prose.html'));
-	assert.ok(counts.byRule['paragraph-share']?.errors === 1, JSON.stringify(counts.byRule));
-	assert.ok((counts.byRule['paragraph-blob']?.errors ?? 0) >= 3, JSON.stringify(counts.byRule));
-	assert.ok(counts.byRule.visuals?.errors === 1, JSON.stringify(counts.byRule));
+	const ids = Object.keys(counts.byRule).filter((id) => counts.byRule[id].errors > 0);
+	assert.deepEqual(ids, ['visuals'], JSON.stringify(counts.byRule));
 });
 
-test('a prose wall with no diagram fails on paragraphs and visuals', () => {
+test('a prose wall with no diagram fails on visuals, and no rule asks for numbered lines', () => {
 	const ids = errors(fixture('bad-prose-wall-no-diagram.html'));
-	for (const id of ['paragraph-share', 'paragraph-blob', 'visuals'])
-		assert.ok(ids.includes(id), `${id} missing: ${ids}`);
+	assert.deepEqual(ids, ['visuals']);
+	assert.ok(!ids.includes('paragraph-share'));
 });
 
 test('the accepted 메르-style gateway-v2 page passes with zero findings', () => {
