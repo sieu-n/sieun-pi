@@ -29,6 +29,7 @@ import type { SearchSplit } from "./search-engine.ts";
 import { isHostAway } from "./host/types.ts";
 import { readJson } from "./store.ts";
 import { usageLive, usageReport, hostsQuery, hostsReport } from "./usage.ts";
+import { toColumns } from "../web/src/lib/api/shared/usage-columns.ts";
 import { Skills } from "./skills.ts";
 import { consolesReport } from "./consoles.ts";
 import { decideBody, ReviewRefused, SkillsReview, undoBody } from "./skills-review.ts";
@@ -565,8 +566,8 @@ export function routes(app: App, parts: SkillsParts): Route[] {
     route("GET", "/api/boards", async () => app.boards.index()),
     route("GET", "/api/usage", async (_r, _p, q) => {
       const filters = { thread: str(q.get("thread")), host: str(q.get("host")), client: str(q.get("client")) };
-      const [report, live] = await Promise.all([usageReport(app.usage, app.threads, app.config.box, { range: str(q.get("range")), bucket: str(q.get("bucket")), ...filters }), usageLive(app.usage, app.config.box, filters)]);
-      return { ...report, live };
+      const [report, live] = await Promise.all([usageReport(app.usage, app.threads, app.config.box, { range: str(q.get("range")), bucket: str(q.get("bucket")), split: str(q.get("split")), ...filters }), usageLive(app.usage, app.config.box, filters)]);
+      return { ...toColumns(report), live };
     }),
     route("GET", "/api/usage/live", async (_r, _p, q) => usageLive(app.usage, app.config.box, { thread: str(q.get("thread")), host: str(q.get("host")), client: str(q.get("client")) })),
     ...accountRoutes(app, route),

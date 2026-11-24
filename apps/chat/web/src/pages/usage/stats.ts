@@ -1,5 +1,6 @@
 /** Pure sums for the Usage page: totals, per chat, per model, per client, per kind and the chart series. Every sum is exact (c191). */
-import type { UsageReport, UsageRow } from "$lib/api";
+import type { UsageReport, UsageRow, UsageSeries, UsageSplit } from "$lib/api";
+import { USAGE_CHART_SERIES } from "$lib/api/shared/usage-range";
 
 export const KINDS = ["input", "output", "cacheRead", "cacheWrite"] as const;
 export type Kind = (typeof KINDS)[number];
@@ -104,20 +105,17 @@ export interface Series {
   readonly models: readonly string[];
 }
 
-/** The chart's own colors; a fourth model or client and later share the last one as Other. */
-export const SERIES = 4;
+/** The chart's own colors; the report folds a fourth model or client and later into one Other series. */
+export const SERIES = USAGE_CHART_SERIES;
 
 /** What the chart's stacks split by: each model, or each chat client. */
-export type Split = "model" | "client";
+export type Split = UsageSplit;
 
-/** One series per model or client, costliest first, with every one past the third folded into Other. */
-export function seriesOf(keys: readonly string[], split: Split = "model"): Series[] {
-  const own = keys.length > SERIES ? keys.slice(0, SERIES - 1) : keys;
-  const rest = keys.slice(own.length);
-  return [
-    ...own.map((key, index) => ({ key, label: split === "model" ? modelName(key) : key, color: `var(--chart-series-${index + 1})`, models: [key] })),
-    ...(rest.length ? [{ key: "other", label: "Other", color: `var(--chart-series-${SERIES})`, models: rest }] : []),
-  ];
+/** One chart series per report series, costliest first, with the report's Other last. */
+export function seriesOf(lines: readonly Pick<UsageSeries, "key" | "others">[], split: Split = "model"): Series[] {
+  return lines.map((line, index) => (line.others
+    ? { key: "other", label: "Other", color: `var(--chart-series-${SERIES})`, models: [line.key] }
+    : { key: line.key, label: split === "model" ? modelName(line.key) : line.key, color: `var(--chart-series-${index + 1})`, models: [line.key] }));
 }
 
 /** What the chart counts: dollars, or tokens. */
@@ -129,38 +127,10 @@ export type Measure = { readonly unit: "usd" } | { readonly unit: "tokens"; read
 export const METRIC_LABEL: Readonly<Record<Metric, string>> = { total: "Total", output: "Output" };
 export const metricOf = (tokens: Tokens, metric: Metric): number => (metric === "output" ? tokens.output : tokenSum(tokens));
 
-/** A bucket's cost and tokens per model or per client; a report stored before 11-24 has no client split, and its every call was pi-host's. */
-const costsOf = (bucket: UsageBucketSum, split: Split): Record<string, number> => (split === "model" ? bucket.byModel : (bucket.byClient ?? { "pi-host": bucket.cost.total }));
-const tokensOf = (bucket: UsageBucketSum, split: Split): Record<string, Tokens> => (split === "model" ? bucket.tokensByModel : (bucket.tokensByClient ?? { "pi-host": bucket.tokens }));
-
-/** One model's or client's measure in a bucket. */
-const keyValue = (bucket: UsageBucketSum, key: string, measure: Measure, split: Split): number => {
-  if (measure.unit === "usd") return costsOf(bucket, split)[key] ?? 0;
-  const tokens = tokensOf(bucket, split)[key];
-  return tokens ? metricOf(tokens, measure.metric) : 0;
-};
-
-/** Each bucket's measure per series, in series order. */
-export function cellsOf(buckets: readonly UsageBucketSum[], series: readonly Series[], measure: Measure, split: Split = "model"): number[][] {
-  return buckets.map(bucket => series.map(line => line.models.reduce((sum, key) => sum + keyValue(bucket, key, measure, split), 0)));
-}
-
-/** Models or clients by their cost over the buckets, then by their tokens, so an unpriced client still gets a stable color. */
-export function keysByCost(buckets: readonly UsageBucketSum[], split: Split = "model"): string[] {
-  const sums = new Map<string, [number, number]>();
-  for (const bucket of buckets) {
-    for (const [key, cost] of Object.entries(costsOf(bucket, split))) {
-      const sum = sums.get(key) ?? [0, 0];
-      sum[0] += cost;
-      sums.set(key, sum);
-    }
-    for (const [key, tokens] of Object.entries(tokensOf(bucket, split))) {
-      const sum = sums.get(key) ?? [0, 0];
-      sum[1] += tokenSum(tokens);
-      sums.set(key, sum);
-    }
-  }
-  return [...sums].sort((a, b) => b[1][0] - a[1][0] || b[1][1] - a[1][1]).map(([key]) => key);
+/** Each bucket's measure per chart series, in series order, from the report's columns for its own split. */
+export function cellsOf(report: UsageReport, series: readonly Series[], measure: Measure): number[][] {
+  const columns = new Map((report.series ?? []).map(line => [line.key, measure.unit === "usd" ? line.cost : measure.metric === "output" ? line.output : line.tokens]));
+  return report.buckets.map((_, index) => series.map(line => line.models.reduce((sum, key) => sum + (columns.get(key)?.[index] ?? 0), 0)));
 }
 
 /** The axis top and its ticks: the smallest 1, 2, 2.5 or 5 times a power of ten at or above `max`, cut in four. */

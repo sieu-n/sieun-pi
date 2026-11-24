@@ -98,6 +98,10 @@ const GRAIN_MS: Readonly<Record<GrainName, number>> = { hour: 3_600_000, minute:
 const KEPT_MS: Readonly<Record<GrainName, number>> = { hour: HOURS_KEPT_MS, minute: MINUTES_KEPT_MS, tick: TICKS_KEPT_MS };
 /** Coarsest first: a range reads the coarsest grain its bounds and buckets fall on. */
 const GRAIN_NAMES: readonly GrainName[] = ["hour", "minute", "tick"];
+const DAY_MS = 86_400_000;
+/** The page's days are the owner's, Asia/Seoul, which has no daylight saving: a day starts at 15:00 UTC. */
+const SEOUL_MS = 9 * 3_600_000;
+const dayOf = (at: number): number => Math.floor((at + SEOUL_MS) / DAY_MS) * DAY_MS - SEOUL_MS;
 
 /** One bucket's sums for one host, client, agent, thread and model; `bucket` is the bucket's first epoch ms. */
 type Sum = Required<Pick<UsageTotal, "bucket" | "host" | "client" | "agent" | "series">> & Omit<UsageTotal, "bucket" | "host" | "client" | "agent" | "series">;
@@ -168,10 +172,11 @@ function rowsOf(columns: Columns): { grain: GrainName; sum: Sum }[] {
     const sum: Sum = {
       bucket: n(bucket), host: String(host![i]), client: String(client![i]), agent: String(agent![i]), thread: String(thread![i]), threadName: String(threadName![i]), model: String(model![i]),
       turns: n(turns), input: n(input), output: n(output), cacheRead: n(cacheRead), cacheWrite: n(cacheWrite), costInput: n(costInput), costOutput: n(costOutput),
-      costCacheRead: n(costCacheRead), costCacheWrite: n(costCacheWrite), unpriced: n(unpriced), cost: 0, series: "",
+      costCacheRead: n(costCacheRead), costCacheWrite: n(costCacheWrite), unpriced: n(unpriced), cost: 0, series: "", chat: "",
     };
     sum.cost = sum.costInput + sum.costOutput + sum.costCacheRead + sum.costCacheWrite;
-    sum.series = `${sum.host}\u0000${sum.client}\u0000${sum.agent}\u0000${sum.thread}\u0000${sum.model}`;
+    sum.chat = `${sum.host}\u0000${sum.client}\u0000${sum.agent}\u0000${sum.thread}`;
+    sum.series = `${sum.chat}\u0000${sum.model}`;
     return { grain, sum };
   });
 }
@@ -191,6 +196,11 @@ export const STORE_FULL_PULL_MS = 600_000;
  */
 export class StoreUsage {
   private readonly grains: Record<GrainName, Grain> = { hour: { sums: new Map(), covered: Infinity }, minute: { sums: new Map(), covered: Infinity }, tick: { sums: new Map(), covered: Infinity } };
+  /**
+   * Seoul-day sums, summed here from the hour sums after each read, since the tail's 11 min cannot replace a whole day. On the rig's 5.0 M
+   * calls a 90-day report merged 61k hour sums in each call, and api/usage took 244 ms at p50 on the box.
+   */
+  private readonly days: Grain = { sums: new Map(), covered: Infinity };
   private pulling?: Promise<void>;
   private fullAt = -Infinity;
   private read = false;
@@ -258,9 +268,30 @@ export class StoreUsage {
       if (full) grain.covered = from[name];
       else grain.covered = Math.max(grain.covered, Math.floor(oldest / GRAIN_MS[name]) * GRAIN_MS[name]);
     }
+    this.sumDays(full ? -Infinity : from.hour);
     if (full) this.fullAt = now;
     this.read = true;
     this.lastError = undefined;
+  }
+
+  /** Sums again each whole Seoul day that holds an hour from `changed` on, and drops the days the hour sums no longer cover. */
+  private sumDays(changed: number): void {
+    const hours = this.grains.hour;
+    const covered = hours.covered === Infinity ? Infinity : dayOf(hours.covered + DAY_MS - 1);
+    for (const start of this.days.sums.keys()) if (start < covered || start >= dayOf(changed)) this.days.sums.delete(start);
+    this.days.covered = covered;
+    const last = dayOf(this.now());
+    for (let start = Math.max(covered, dayOf(changed)); start <= last; start += DAY_MS) {
+      const merged = new Map<string, Sum>();
+      for (let hour = start; hour < start + DAY_MS; hour += GRAIN_MS.hour) {
+        for (const sum of hours.sums.get(hour) ?? []) {
+          const row = merged.get(sum.series);
+          if (!row) merged.set(sum.series, { ...sum, bucket: start });
+          else addSums(row, sum);
+        }
+      }
+      if (merged.size) this.days.sums.set(start, [...merged.values()]);
+    }
   }
 
   /**
@@ -272,21 +303,44 @@ export class StoreUsage {
     if (since === undefined || until === undefined || !bucketMs) throw new RangeError("usage: a range needs since, until and bucketMs");
     if (!this.read) await this.pull();
     if (!this.read) throw new Error(`usage: the store has not answered: ${this.lastError ?? "no read yet"}`);
-    const name = GRAIN_NAMES.find(g => since % GRAIN_MS[g] === 0 && until % GRAIN_MS[g] === 0 && bucketMs % GRAIN_MS[g] === 0);
+    const byDay = bucketMs % DAY_MS === 0 && dayOf(since) === since && dayOf(until) === until && since >= this.days.covered;
+    const name = byDay ? "day" : GRAIN_NAMES.find(g => since % GRAIN_MS[g] === 0 && until % GRAIN_MS[g] === 0 && bucketMs % GRAIN_MS[g] === 0);
     if (!name) throw new RangeError(`usage: ${since} to ${until} by ${bucketMs} ms falls on no kept grain`);
-    const grain = this.grains[name];
+    const grain = name === "day" ? this.days : this.grains[name];
+    const step = name === "day" ? DAY_MS : GRAIN_MS[name];
     if (since < grain.covered) throw new RangeError(`usage: ${since} is older than the kept ${name} sums, which start at ${grain.covered}`);
     const only = range.threads?.length ? new Set(range.threads) : undefined;
     const out: UsageTotal[] = [];
     // A bucket of the grain's own length is the kept sums as they are: no copy, which on 61k hour sums was most of a 30-day read.
-    if (bucketMs === GRAIN_MS[name]) {
+    if (bucketMs === step) {
       for (let start = since; start < until; start += bucketMs) for (const sum of grain.sums.get(start) ?? []) if (!only || only.has(sum.thread)) out.push(sum);
       return out;
+    }
+    // One bucket over a range of hours takes its whole Seoul days from the day sums and only the edge hours from the hour sums: the chat table
+    // of a 30-day report by hour merged 39k hour sums per call on the rig, and 12k day sums cover the same days.
+    const firstDay = Math.max(dayOf(since + DAY_MS - 1), this.days.covered);
+    const lastDay = dayOf(until);
+    if (name === "hour" && bucketMs === until - since && firstDay < lastDay) {
+      const open = new Map<string, UsageTotal>();
+      const add = (sums: Map<number, Sum[]>, from: number, to: number, by: number) => {
+        for (let start = from; start < to; start += by) {
+          for (const sum of sums.get(start) ?? []) {
+            if (only && !only.has(sum.thread)) continue;
+            const row = open.get(sum.series);
+            if (!row) open.set(sum.series, { ...sum, bucket: since });
+            else addSums(row, sum);
+          }
+        }
+      };
+      add(grain.sums, since, firstDay, step);
+      add(this.days.sums, firstDay, lastDay, DAY_MS);
+      add(grain.sums, lastDay, until, step);
+      return [...open.values()];
     }
     let bucket = since;
     let open = new Map<string, UsageTotal>();
     const close = () => { for (const row of open.values()) out.push(row); };
-    for (let start = since; start < until; start += GRAIN_MS[name]) {
+    for (let start = since; start < until; start += step) {
       const at = since + Math.floor((start - since) / bucketMs) * bucketMs;
       if (at !== bucket) {
         close();

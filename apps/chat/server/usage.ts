@@ -7,8 +7,8 @@ import type { DatabaseSync } from "node:sqlite";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { openIndexReadOnly, readUsageRows, type UsageRead, type UsageRow as IndexUsageRow } from "../../../packages/pi-host/src/durable/index-db.ts";
-import { BUCKET_MS, bucketFor, isRange, RANGE_MS } from "../web/src/lib/api/shared/usage-range.ts";
-import type { AgentRelayLink, HostsReport, HostThread, HostThreadFilter, HostView, MachineView, RunCounts, RunStatus, UsageBucket, UsageBucketSum, UsageLive, UsageRange, UsageReport, UsageRow } from "../web/src/lib/api/types.ts";
+import { BUCKET_MS, bucketFor, isRange, RANGE_MS, USAGE_CHART_SERIES } from "../web/src/lib/api/shared/usage-range.ts";
+import type { AgentRelayLink, HostsReport, HostThread, HostThreadFilter, HostView, MachineView, RunCounts, RunStatus, UsageBucket, UsageBucketSum, UsageLive, UsageRange, UsageReport, UsageRow, UsageSeries, UsageSplit } from "../web/src/lib/api/types.ts";
 import { MultiHost } from "./host/multi-host.ts";
 import type { RelayHost } from "./host/relay-host.ts";
 import type { Host, Ping, UsageRange as HostUsageRange, UsageTotal } from "./host/types.ts";
@@ -25,20 +25,22 @@ export const costOf = (total: UsageTotal): UsageRow["cost"] => ({
 const DAY = 86_400_000;
 export const localDayStart = (at: number): number => Math.floor((at + OWNER_ZONE_OFFSET_MS) / DAY) * DAY - OWNER_ZONE_OFFSET_MS;
 
-type UsageFold = { totals: UsageTotal[]; buckets: UsageBucketSum[] };
+type UsageFold = { buckets: UsageBucketSum[]; series: UsageSeries[] };
+/** Rounds a dollar sum to the page's grid of a billionth (web/src/pages/usage/format.ts), which also cuts float noise from the answer. */
+const grid = (usd: number): number => Math.round(usd * 1e9) / 1e9;
 const ROW_SUMS = ["input", "output", "cacheRead", "cacheWrite", "cost", "costInput", "costOutput", "costCacheRead", "costCacheWrite"] as const;
 const SUMS = ["turns", ...ROW_SUMS] as const;
 
 /** The range's totals per thread and model, and each bucket's sums, from one bucketed answer whose every row names its bucket. */
-function fold(rows: readonly UsageTotal[], since: number, step: number, count: number): UsageFold {
-  // The same thread and model on two boxes, or from two clients, are two rows.
-  const totals = new Map<string, UsageTotal>();
+function fold(rows: readonly UsageTotal[], since: number, step: number, count: number, split: UsageSplit): UsageFold {
   const buckets: UsageBucketSum[] = Array.from({ length: count }, (_, i) => ({
     start: since + i * step, turns: 0, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }, unpriced: 0, byModel: {}, tokensByModel: {}, byClient: {}, tokensByClient: {},
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }, unpriced: 0,
   }));
+  const lines = new Map<string, UsageSeries>();
   for (const row of rows) {
-    const sum = buckets[Math.round((row.bucket! - since) / step)];
+    const at = Math.round((row.bucket! - since) / step);
+    const sum = buckets[at];
     if (!sum) continue;
     sum.turns += row.turns;
     sum.tokens.input += row.input;
@@ -50,26 +52,26 @@ function fold(rows: readonly UsageTotal[], since: number, step: number, count: n
     sum.cost.cacheRead += row.costCacheRead;
     sum.cost.cacheWrite += row.costCacheWrite;
     sum.cost.total += row.cost;
-    sum.byModel[row.model] = (sum.byModel[row.model] ?? 0) + row.cost;
-    const tokens = sum.tokensByModel[row.model] ??= { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-    tokens.input += row.input;
-    tokens.output += row.output;
-    tokens.cacheRead += row.cacheRead;
-    tokens.cacheWrite += row.cacheWrite;
-    const client = row.client ?? "pi-host";
     sum.unpriced += row.unpriced ?? 0;
-    sum.byClient[client] = (sum.byClient[client] ?? 0) + row.cost;
-    const clientTokens = sum.tokensByClient[client] ??= { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-    clientTokens.input += row.input;
-    clientTokens.output += row.output;
-    clientTokens.cacheRead += row.cacheRead;
-    clientTokens.cacheWrite += row.cacheWrite;
-    const key = row.series ?? `${row.host ?? ""}\u0000${row.client ?? ""}\u0000${row.agent ?? ""}\u0000${row.thread}\u0000${row.model}`;
-    const total = totals.get(key);
-    if (!total) totals.set(key, { ...row });
-    else addSums(total, row);
+    const name = split === "model" ? row.model : row.client ?? "pi-host";
+    let line = lines.get(name);
+    if (!line) lines.set(name, line = { key: name, cost: new Array<number>(count).fill(0), tokens: new Array<number>(count).fill(0), output: new Array<number>(count).fill(0) });
+    line.cost[at]! += row.cost;
+    line.tokens[at]! += row.input + row.output + row.cacheRead + row.cacheWrite;
+    line.output[at]! += row.output;
   }
-  return { totals: [...totals.values()], buckets };
+  for (const sum of buckets) for (const kind of ["input", "output", "cacheRead", "cacheWrite", "total"] as const) sum.cost[kind] = grid(sum.cost[kind]);
+  const total = (values: readonly number[]) => values.reduce((a, b) => a + b, 0);
+  const sorted = [...lines.values()].sort((a, b) => total(b.cost) - total(a.cost) || total(b.tokens) - total(a.tokens));
+  // The chart draws USAGE_CHART_SERIES colors, so the rest go as one Other: 32 models' columns were 45 KB of a 30-day report by hour.
+  const series = sorted.length > USAGE_CHART_SERIES ? sorted.slice(0, USAGE_CHART_SERIES - 1) : sorted;
+  const rest = sorted.slice(series.length);
+  if (rest.length) {
+    const sum = (pick: (line: UsageSeries) => number[]) => Array.from({ length: count }, (_, i) => rest.reduce((all, line) => all + pick(line)[i]!, 0));
+    series.push({ key: "Other", others: rest.length, cost: sum(line => line.cost), tokens: sum(line => line.tokens), output: sum(line => line.output) });
+  }
+  for (const line of series) line.cost = line.cost.map(grid);
+  return { buckets, series };
 }
 
 /** For a pi-host without `bucketMs`: one call per bucket, sent in one round, each answer named with its bucket and folded the same way. */
@@ -90,31 +92,35 @@ export const REPORT_CHATS = 50;
  * over the Korea rig, and api/usage took 5.1 s there at p50. Prime names about 10,700 agents in 90 days, so a fold that kept the agent still
  * sent 11,026 rows (~/work/usage-one-source/usage-read-path/report.md).
  */
-function foldChats(rows: UsageRow[]): { rows: UsageRow[]; otherChats: number } {
-  const chatOf = (row: UsageRow) => `${row.host}\u0000${row.client}\u0000${row.agent}\u0000${row.thread}`;
+function foldChats(totals: readonly UsageTotal[], toRow: (total: UsageTotal) => UsageRow): { rows: UsageRow[]; otherChats: number } {
+  // Rows are built only for what the answer sends: building every total's row first took most of a 30-day report's 150 to 200 ms on the rig.
+  const chats = totals.map(t => t.chat ?? `${t.host ?? ""}\u0000${t.client ?? ""}\u0000${t.agent ?? ""}\u0000${t.thread}`);
   const costs = new Map<string, number>();
-  for (const row of rows) costs.set(chatOf(row), (costs.get(chatOf(row)) ?? 0) + row.cost.total);
-  if (costs.size <= REPORT_CHATS) return { rows, otherChats: 0 };
-  const kept = new Set([...costs].sort((a, b) => b[1] - a[1]).slice(0, REPORT_CHATS).map(([chat]) => chat));
-  const out: UsageRow[] = [];
-  const rest = new Map<string, UsageRow>();
-  for (const row of rows) {
-    if (kept.has(chatOf(row))) {
-      out.push(row);
-      continue;
-    }
-    const key = `${row.host}\u0000${row.client}\u0000${row.model}`;
-    const other = rest.get(key);
-    if (!other) {
-      rest.set(key, { ...row, thread: "", threadName: "", agent: "", tokens: { ...row.tokens }, cost: { ...row.cost } });
-      continue;
-    }
-    other.turns += row.turns;
-    other.unpriced += row.unpriced;
-    for (const kind of ["input", "output", "cacheRead", "cacheWrite"] as const) other.tokens[kind] += row.tokens[kind];
-    for (const kind of ["input", "output", "cacheRead", "cacheWrite", "total"] as const) other.cost[kind] += row.cost[kind];
+  totals.forEach((t, i) => costs.set(chats[i]!, (costs.get(chats[i]!) ?? 0) + t.cost));
+  if (costs.size <= REPORT_CHATS) return { rows: totals.map(toRow), otherChats: 0 };
+  // The costliest chats by one pass that keeps a sorted top list, as a stable sort would order them: a 90-day report has about 15,000 chats.
+  const top: [string, number][] = [];
+  for (const entry of costs) {
+    if (top.length === REPORT_CHATS && entry[1] <= top[top.length - 1]![1]) continue;
+    let at = top.length;
+    while (at > 0 && top[at - 1]![1] < entry[1]) at--;
+    top.splice(at, 0, entry);
+    if (top.length > REPORT_CHATS) top.pop();
   }
-  return { rows: [...out, ...rest.values()], otherChats: costs.size - REPORT_CHATS };
+  const kept = new Set(top.map(([chat]) => chat));
+  const out: UsageRow[] = [];
+  const rest = new Map<string, UsageTotal>();
+  totals.forEach((t, i) => {
+    if (kept.has(chats[i]!)) {
+      out.push(toRow(t));
+      return;
+    }
+    const key = `${t.host ?? ""}\u0000${t.client ?? ""}\u0000${t.model}`;
+    const other = rest.get(key);
+    if (!other) rest.set(key, { ...t, thread: "", threadName: "", agent: "" });
+    else addSums(other, t);
+  });
+  return { rows: [...out, ...[...rest.values()].map(toRow)], otherChats: costs.size - REPORT_CHATS };
 }
 
 /** The first moment of the bucket that holds `at`: a clock minute or hour, or the owner's local midnight. */
@@ -124,7 +130,8 @@ export const bucketStart = (bucket: UsageBucket, at: number): number => (bucket 
  * The range as whole buckets that end with the one holding now, as Prime's chat Usage page draws it: 24 hours for 24h by hour, 1,440 minutes
  * for 24h by minute. A range or bucket the page does not offer reads as 24h and the range's default bucket.
  */
-export async function usageReport(host: Pick<Host, "usage">, threads: Threads, box: string, opts: { range?: string; bucket?: string; thread?: string; host?: string; client?: string }, now = Date.now()): Promise<UsageReport> {
+export async function usageReport(host: Pick<Host, "usage">, threads: Threads, box: string, opts: { range?: string; bucket?: string; thread?: string; host?: string; client?: string; split?: string }, now = Date.now()): Promise<UsageReport> {
+  const split: UsageSplit = opts.split === "client" ? "client" : "model";
   const range: UsageRange = isRange(opts.range) ? opts.range : "24h";
   const bucket = bucketFor(range, opts.bucket);
   const step = BUCKET_MS[bucket];
@@ -138,12 +145,27 @@ export async function usageReport(host: Pick<Host, "usage">, threads: Threads, b
   // One call with a bucket each: on 11-03 the 30-day page asked pi-host 32 times, and api/usage took 380 to 400 ms on us-metal02.
   const answer = (await host.usage({ since, until, bucketMs: step, ...scope })).filter(keep);
   const rowsByBucket = answer.every(row => row.bucket !== undefined) ? answer : await byCalls(host, since, step, count, scope, keep);
-  const { totals, buckets } = fold(rowsByBucket, since, step, count);
-  const rows: UsageRow[] = totals.map(t => ({
+  const { buckets, series } = fold(rowsByBucket, since, step, count, split);
+  // The chat table's sums come from one bucket over the whole range, which the store sums from its day sums (usage-store.ts): summing the
+  // hourly rows here took most of a 30-day report by hour, 140 to 200 ms at box load 150 on 11-24. The same chat on two hosts or from two
+  // clients is two rows.
+  const totals = new Map<string, UsageTotal>();
+  for (const row of (await host.usage({ since, until, bucketMs: until - since, ...scope })).filter(keep)) {
+    const key = row.series ?? `${row.host ?? ""}\u0000${row.client ?? ""}\u0000${row.agent ?? ""}\u0000${row.thread}\u0000${row.model}`;
+    const total = totals.get(key);
+    // The store answers each chat and model once, in rows of its own; a second row for one key is summed into a copy, never into the first.
+    if (!total) totals.set(key, row);
+    else {
+      const sum = { ...total };
+      addSums(sum, row);
+      totals.set(key, sum);
+    }
+  }
+  const toRow = (t: UsageTotal): UsageRow => ({
     thread: t.thread, threadName: threads.thread(t.thread)?.name ?? (t.threadName || t.thread), host: hostOf(t), client: t.client ?? "pi-host", agent: t.agent ?? "", model: t.model, turns: t.turns, unpriced: t.unpriced ?? 0,
     tokens: { input: t.input, output: t.output, cacheRead: t.cacheRead, cacheWrite: t.cacheWrite }, cost: costOf(t),
-  }));
-  return { at: now, since, until, range, bucket, ...foldChats(rows), buckets };
+  });
+  return { at: now, since, until, range, bucket, ...foldChats([...totals.values()], toRow), buckets, split, series };
 }
 
 /** One box's usage rows: this box's index.sqlite on a read-only connection, or another box's through its relay's `durable_usage_read`. */

@@ -9,6 +9,9 @@ export const RANGE_BUCKETS: Readonly<Record<UsageRange, readonly UsageBucket[]>>
   "1h": ["minute"], "24h": ["hour", "minute"], "7d": ["hour", "day"], "30d": ["day", "hour"], "90d": ["day"],
 };
 
+/** The chart's own series colors: the report sends the costliest series past the one before the last folded into one Other. */
+export const USAGE_CHART_SERIES = 4;
+
 export const isRange = (value: unknown): value is UsageRange => USAGE_RANGES.includes(value as UsageRange);
 /** The bucket asked for when the range offers it, else the range's default. */
 export const bucketFor = (range: UsageRange, asked: unknown): UsageBucket =>

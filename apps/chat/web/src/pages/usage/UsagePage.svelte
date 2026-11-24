@@ -9,7 +9,7 @@
   import UsageChart from "./UsageChart.svelte";
   import { chartFormat, cost, exactCost, full, percent, type TipRow } from "./format";
   import { isCurrent, keptReport, readAhead, readReport, REFRESH_MS, restoreReport, type ReadMode, type UsageFilters } from "./reports";
-  import { cacheHit, cellsOf, keysByCost, KIND_LABEL, KINDS, METRIC_LABEL, modelName, seriesOf, summarize, tokenSum, type Measure, type Metric, type Split, type Total, type Unit } from "./stats";
+  import { cacheHit, cellsOf, KIND_LABEL, KINDS, METRIC_LABEL, modelName, seriesOf, summarize, tokenSum, type Measure, type Metric, type Split, type Total, type Unit } from "./stats";
 
   /**
    * Usage: what every host and chat client spent (pi-host, Prime, Claude Code, Codex, Aside, Vent and more), from the one store of model
@@ -88,7 +88,7 @@
   async function load(mode: ReadMode = "view"): Promise<void> {
     const id = ++request;
     loading = true;
-    const filters: UsageFilters = { range, bucket, ...(thread === ALL ? {} : { thread }), ...(host === ALL ? {} : { host }), ...(client === ALL ? {} : { client }) };
+    const filters: UsageFilters = { range, bucket, ...(split === "model" ? {} : { split }), ...(thread === ALL ? {} : { thread }), ...(host === ALL ? {} : { host }), ...(client === ALL ? {} : { client }) };
     const before = keptReport(filters) ?? (mode === "view" ? await restoreReport(filters) : null);
     if (id !== request) return;
     if (before && before !== report) show(before);
@@ -132,6 +132,7 @@
     void thread;
     void host;
     void client;
+    void split;
     untrack(() => void load());
   });
   $effect(() => {
@@ -153,10 +154,10 @@
 
   const summary = $derived(report ? summarize(report.rows) : null);
   const total = $derived(summary?.total ?? null);
-  const series = $derived(report ? seriesOf(keysByCost(report.buckets, split), split) : []);
+  const series = $derived(report ? seriesOf(report.series ?? [], report.split ?? "model") : []);
   const measure = $derived<Measure>(unit === "usd" ? { unit } : { unit, metric });
   const format = $derived(chartFormat(measure));
-  const cells = $derived(report ? cellsOf(report.buckets, series, measure, split) : []);
+  const cells = $derived(report ? cellsOf(report, series, measure) : []);
   /** The tip's rows under the split: in dollars the cache reads, in tokens the other token kind and the cost, then turns and cache hit. */
   function tipRows(index: number): TipRow[] {
     const entry = report?.buckets[index];
@@ -234,7 +235,7 @@
       <EmptyState icon="chart-bar" title="No usage in this range" description="No chat ran a model call in {RANGE_LABEL[report.range]}. Choose a longer range or another chat." />
     {:else}
       <section class="section" aria-label="{format.label} per {report.bucket}" aria-busy={loading}>
-        <UsageChart buckets={report.buckets} {series} bucket={report.bucket} {cells} {format} tip={tipRows} legend={split === "client" ? "Clients" : "Models"}>
+        <UsageChart buckets={report.buckets} {series} bucket={report.bucket} {cells} {format} tip={tipRows} legend={report.split === "client" ? "Clients" : "Models"}>
           {#snippet header()}
             <LiveRate initial={report?.live ?? null} {metric} thread={thread === ALL ? undefined : thread} host={host === ALL ? undefined : host} client={client === ALL ? undefined : client} />
           {/snippet}

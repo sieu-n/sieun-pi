@@ -78,6 +78,8 @@ export interface UsageTotal {
   threadName?: string;
   /** host, client, agent, thread and model as one key, which the store makes once per read so a fold keys each row with no new string. */
   series?: string;
+  /** host, client, agent and thread as one key, made with `series`, so the chat table keys each row with no new string. */
+  chat?: string;
   /** The calls with no recorded cost and no price, from the usage store; pi-host's own rows leave it out. */
   unpriced?: number;
   thread: string; model: string; turns: number; input: number; output: number; cacheRead: number; cacheWrite: number;

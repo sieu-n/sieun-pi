@@ -84,8 +84,7 @@ test("api/usage reads the range in one bucketed call, each bucket summed apart a
   } as unknown as Host;
   const threads = { thread: () => undefined, threadsList: () => [] } as unknown as Threads;
   const report = await usageReport(host, threads, "box", { range: "24h", bucket: "hour" }, now);
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0]!.bucketMs, HOUR);
+  assert.deepEqual(calls.map(call => call.bucketMs), [HOUR, 24 * HOUR], "one call by the hour for the buckets, one over the range for the chat table");
   assert.equal(calls[0]!.until, Date.UTC(2026, 10, 22, 6), "the range ends with the hour that holds now");
   assert.equal(calls[0]!.until! - calls[0]!.since!, 24 * HOUR);
   assert.equal(report.buckets.length, 24);
@@ -122,14 +121,15 @@ test("api/usage from a pi-host without buckets asks each bucket in one round", a
       most = Math.max(most, open);
       await new Promise(resolve => setTimeout(resolve, 20));
       open--;
-      return [{ thread: "t", model: "m", turns: 1, input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 1, costInput: 0, costOutput: 0, costCacheRead: 0, costCacheWrite: 0 }];
+      // A pi-host without buckets answers the range's sum: one per day.
+      return [{ thread: "t", model: "m", turns: 1, input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: (range.until! - range.since!) / 86_400_000, costInput: 0, costOutput: 0, costCacheRead: 0, costCacheWrite: 0 }];
     },
   } as unknown as Host;
   const threads = { thread: () => undefined, threadsList: () => [] } as unknown as Threads;
   const report = await usageReport(host, threads, "box", { range: "7d", bucket: "day" });
   assert.equal(most, 7, "the bucketed call answered without buckets, then all 7 days go out before any answers");
-  assert.ok(report.buckets.every(b => b.byModel.m === 1));
-  assert.ok(report.buckets.every(b => JSON.stringify(b.tokensByModel.m) === JSON.stringify(b.tokens)), "one model's tokens per bucket equal the bucket's tokens");
+  assert.deepEqual(report.series.map(line => [line.key, line.cost]), [["m", [1, 1, 1, 1, 1, 1, 1]]]);
+  assert.ok(report.buckets.every((b, i) => report.series[0]!.tokens[i] === b.tokens.input + b.tokens.output), "one model's tokens per bucket equal the bucket's tokens");
   assert.equal(report.rows[0]!.cost.total, 7);
 });
 
@@ -147,9 +147,7 @@ test("api/usage labels each row with the box that answered it, and the host filt
   assert.deepEqual(all.rows.map(r => [r.host, r.cost.total]), [["us-metal02", 1], ["mac", 6]]);
   const mac = await usageReport(host, threads, "us-metal02", { range: "7d", bucket: "day", host: "mac" });
   assert.deepEqual(mac.rows.map(r => [r.host, r.cost.total]), [["mac", 6]]);
-  assert.equal(mac.buckets[0]!.byModel.m, 2);
-  assert.equal(mac.buckets[6]!.byModel.m, 4);
-  assert.deepEqual(mac.buckets[6]!.tokensByModel.m, { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 });
+  assert.deepEqual(mac.series.map(line => [line.key, line.cost[0], line.cost[6], line.tokens[6], line.output[6]]), [["m", 2, 4, 2, 1]]);
 });
 
 test("api/usage answers from the kept rows with no call to any box, with the same sums as pi-host's own query, and follows new and dropped rows", async () => {

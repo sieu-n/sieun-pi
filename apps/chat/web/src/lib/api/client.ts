@@ -5,7 +5,7 @@
 import type {
   AgentConfig, AgentFolder, AgentHostList, AgentPrompt, AgentPromptOutline, AgentId, AgentSummary, BoardOp, BoardRow, BoardView, BoardWrite, CheckInPatch, CheckInView, ChatAgent, ConversationHeader, ConversationId,
   ConversationPatch, ConversationSummary, DutyAction, DutyRow, ForMeItem, ForMeList, ForMeStatus, ForYouItem, HarnessEntryView, HostsReport, HostThreadFilter, ImageRef, Item, JobNode, Me, Member, MemoryInput, ModelCatalog, OpenedPage, ProjectList, SearchQuery, SearchResult, SendRequest, WikiPages,
-  LaterItem, LaterList, LaterPatch, LaterRequest, LaterState, ReactionRequest, ReadAllRequest, ReadPoint, Room, RoomAfterRemove, RoomInput, RoomPatch, SendResult, Sidebar, StepOutputRef, ThinkingLevel, ThreadDoneRequest, TimelinePage, UsageBucket, UsageRange, UsageReport, AccountsView,
+  LaterItem, LaterList, LaterPatch, LaterRequest, LaterState, ReactionRequest, ReadAllRequest, ReadPoint, Room, RoomAfterRemove, RoomInput, RoomPatch, SendResult, Sidebar, StepOutputRef, ThinkingLevel, ThreadDoneRequest, TimelinePage, UsageBucket, UsageRange, UsageReport, UsageSplit, AccountsView,
 } from "./types.ts";
 import type {
   AdoptBody, ApplyBody, ApplyResult, InstallBody, MergeBody, MoveBody, OwnBody, RemoveBody, SkillDoc, SkillMoves, SkillScan, SkillsChange, SkillsCheck,
@@ -14,6 +14,7 @@ import type {
 import type { ConsolesReport } from "./shared/consoles.ts";
 import type { OwnerSettings, SavedSettings } from "./shared/owner-settings.ts";
 import type { ReviewDecideBody, ReviewItem, ReviewReport, ReviewResult, ReviewUndoBody } from "./shared/skills-review.ts";
+import { fromColumns, type UsageReportWire } from "./shared/usage-columns.ts";
 import type { PinRequest } from "./types.ts";
 import type { SavedLayout, SidebarLayout } from "./types.ts";
 import type { ConversationPrefs, PrefsPatch } from "./types.ts";
@@ -837,7 +838,8 @@ export const api = {
   markForMeMany: (agent: AgentId, messageIds: string[], completed: boolean) =>
     call<{ changed: string[]; pending: number }>("POST", `/api/agents/${enc(agent)}/for-me`, { messageIds, completed }),
 
-  usage: (opts: { range: UsageRange; bucket: UsageBucket; thread?: string; host?: string; client?: string }, wait?: Wait) => call<UsageReport>("GET", `/api/usage${query(opts)}`, undefined, undefined, wait),
+  usage: (opts: { range: UsageRange; bucket: UsageBucket; split?: UsageSplit; thread?: string; host?: string; client?: string }, wait?: Wait) =>
+    call<UsageReportWire | UsageReport>("GET", `/api/usage${query(opts)}`, undefined, undefined, wait).then(fromColumns),
   /** A poll behind a live rate the card already shows is `shown`; the card's first read is one it waits on. */
   usageLive: (opts: { thread?: string; host?: string; client?: string }, wait: Wait = { background: "shown" }) => call<import("./types.ts").UsageLive>("GET", `/api/usage/live${query(opts)}`, undefined, undefined, wait),
   /** The consoles table from auto-sns-agent's consoles.json, read as the file is now. */

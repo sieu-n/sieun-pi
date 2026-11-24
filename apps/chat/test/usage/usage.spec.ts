@@ -1,8 +1,9 @@
 import { expect, test, type Page } from "@playwright/test";
+import { fromColumns } from "../../web/src/lib/api/shared/usage-columns.ts";
 
 type Kind = "input" | "output" | "cacheRead" | "cacheWrite";
 type Row = { thread: string; threadName: string; host: string; client?: string; agent?: string; model: string; turns: number; unpriced?: number; tokens: Record<Kind, number>; cost: Record<Kind | "total", number> };
-type Bucket = { start: number; turns: number; tokens: Record<Kind, number>; cost: Record<Kind | "total", number>; byModel: Record<string, number> };
+type Bucket = { start: number; turns: number; tokens: Record<Kind, number>; cost: Record<Kind | "total", number> };
 type Report = { range: string; bucket: string; rows: Row[]; buckets: Bucket[] };
 
 const KINDS: Kind[] = ["input", "output", "cacheRead", "cacheWrite"];
@@ -14,7 +15,7 @@ const dollars = (n: number) => (n > 0 && n < 0.005 ? "<$0.01" : new Intl.NumberF
 async function report(page: Page, range = "24h", extra = ""): Promise<Report> {
   const response = await page.request.get(`/api/usage?range=${range}${extra}`);
   expect(response.ok()).toBe(true);
-  return (await response.json()) as Report;
+  return fromColumns(await response.json()) as unknown as Report;
 }
 
 /**
@@ -25,7 +26,7 @@ function shown(page: Page, query: string): Promise<Report> {
   return page.waitForResponse(response => {
     const url = new URL(response.url());
     return url.pathname === "/api/usage" && url.search === `?${query}`;
-  }).then(async response => (await response.json()) as Report);
+  }).then(async response => fromColumns(await response.json()) as unknown as Report);
 }
 
 /** The page's one chart, by its region "Cost per day" or "Output tokens per hour". */
@@ -78,9 +79,10 @@ test("a range whose sum sits on a half of a hundredth of a cent shows one exact 
   const buckets = base.buckets.map((bucket, i) => {
     const day = days[i - (base.buckets.length - days.length)] ?? [];
     const usd = day.reduce((sum, value) => sum + value, 0);
-    return { ...bucket, turns: day.length, tokens, cost: costOf(usd), byModel: day.length ? { [model]: usd } : {}, tokensByModel: day.length ? { [model]: tokens } : {} };
+    return { ...bucket, turns: day.length, tokens, cost: costOf(usd) };
   });
-  await page.route("**/api/usage?range=7d&bucket=day*", route => route.fulfill({ json: { ...base, rows, buckets } }));
+  const series = [{ key: model, cost: buckets.map(b => b.cost.total), tokens: buckets.map(() => 0), output: buckets.map(() => 0) }];
+  await page.route("**/api/usage?range=7d&bucket=day*", route => route.fulfill({ json: { ...base, rows, buckets, split: "model", series } }));
   await page.goto("/#/settings/usage?range=7d&by=day");
   await expect(mainChart(page).getByTestId("usage-figures-total")).toHaveText("$2.3001");
   await expect(page.getByTestId("usage-kind-total")).toHaveAttribute("title", /, \$2\.3001$/);
@@ -96,12 +98,18 @@ test("the chart splits by client, By client lists each client on its host, and a
     ({ thread, threadName: thread, host, client, agent: "", model, turns, unpriced, tokens, cost: costOf(usd) });
   const rows = [row("t1", "pi-host", "us-metal02", 3, 2, 0), row("s1", "codex", "mbp", 0, 4, 4), row("s2", "prime", "mbp", 1, 3, 1)];
   const last = base.buckets.length - 1;
-  const buckets = base.buckets.map((bucket, i) => (i !== last ? { ...bucket, turns: 0, unpriced: 0, cost: costOf(0), byModel: {}, tokensByModel: {}, byClient: {}, tokensByClient: {} } : {
-    ...bucket, turns: 9, unpriced: 5, tokens: { input: 300, output: 150, cacheRead: 0, cacheWrite: 0 }, cost: costOf(4), byModel: { [model]: 4 },
-    tokensByModel: { [model]: { input: 300, output: 150, cacheRead: 0, cacheWrite: 0 } }, byClient: { "pi-host": 3, codex: 0, prime: 1 },
-    tokensByClient: { "pi-host": tokens, codex: tokens, prime: tokens },
+  const buckets = base.buckets.map((bucket, i) => (i !== last ? { ...bucket, turns: 0, unpriced: 0, cost: costOf(0) } : {
+    ...bucket, turns: 9, unpriced: 5, tokens: { input: 300, output: 150, cacheRead: 0, cacheWrite: 0 }, cost: costOf(4),
   }));
-  await page.route("**/api/usage?range=7d&bucket=day*", route => route.fulfill({ json: { ...base, rows, buckets, otherChats: 0 } }));
+  const column = (value: number) => buckets.map((_, i) => (i === last ? value : 0));
+  const byModel = [{ key: model, cost: column(4), tokens: column(450), output: column(150) }];
+  const clientColumns = [["pi-host", 3], ["prime", 1], ["codex", 0]].map(([key, usd]) => ({ key: key as string, cost: column(usd as number), tokens: column(150), output: column(50) }));
+  const asked: string[] = [];
+  await page.route("**/api/usage?range=7d&bucket=day*", route => {
+    const split = new URL(route.request().url()).searchParams.get("split") === "client";
+    asked.push(new URL(route.request().url()).search);
+    return route.fulfill({ json: { ...base, rows, buckets, otherChats: 0, split: split ? "client" : "model", series: split ? clientColumns : byModel } });
+  });
   await page.goto("/#/settings/usage?range=7d&by=day");
   const byClient = page.getByTestId("usage-by-client");
   await expect(byClient.locator("li")).toHaveCount(3);
@@ -113,6 +121,7 @@ test("the chart splits by client, By client lists each client on its host, and a
   await page.getByRole("tablist", { name: "Split by" }).getByRole("tab", { name: "Client" }).click();
   await expect(page).toHaveURL(/split=client/);
   await expect(mainChart(page).getByRole("list", { name: "Clients" })).toContainText("codex");
+  expect(asked.some(query => query.includes("split=client")), "a client split asks the server for that split's columns").toBe(true);
   await page.getByRole("combobox", { name: "Client" }).selectOption("codex");
   await expect(page).toHaveURL(/client=codex/);
 });
@@ -178,19 +187,23 @@ test("a hover names the bucket and its total, as its figures row has it", async 
   await expect(tip).toContainText(`Turns${whole(data.buckets[index]!.turns)}`);
 });
 
-test("By chat lists every chat, costliest first, and a row opens its channel", async ({ page }) => {
-  const read = shown(page, "range=24h&bucket=hour");
+test("By chat shows the 10 costliest chats, Show all lists every chat, and a row opens its channel", async ({ page }) => {
+  const base = await report(page, "24h");
+  const model = "anthropic/claude-opus-5-5";
+  const tokens = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 };
+  const rows = Array.from({ length: 12 }, (_, i) => ({ thread: `chat-${i}`, threadName: `chat ${i}`, host: "us-metal02", client: "pi-host", agent: "", model, turns: 1,
+    unpriced: 0, tokens, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: i + 1 } }));
+  await page.route("**/api/usage?range=24h&bucket=hour*", route => route.fulfill({ json: { ...base, rows, otherChats: 0 } }));
   await page.goto("/#/settings/usage");
-  const data = await read;
-  test.skip(!data.rows.length, "no usage in the last 24 hours on this server");
-  const byThread = new Map<string, { name: string; cost: number }>();
-  for (const row of data.rows) byThread.set(row.thread, { name: row.threadName, cost: (byThread.get(row.thread)?.cost ?? 0) + row.cost.total });
+  // The list shows the 10 costliest chats and a "Show all" button for the rest (UsagePage.svelte `CHATS_SHOWN`, c123).
   const list = page.getByTestId("usage-by-chat").getByRole("link");
-  await expect(list).toHaveCount(byThread.size);
-  const first = [...byThread].sort((a, b) => b[1].cost - a[1].cost)[0]!;
-  await expect(list.first()).toContainText(first[1].name);
+  await expect(list).toHaveCount(10);
+  await expect(list.first()).toContainText("chat 11");
+  await expect(list.last()).toContainText("chat 2");
+  await page.getByRole("button", { name: "Show all 12" }).click();
+  await expect(list).toHaveCount(12);
   await list.first().click();
-  await expect(page).toHaveURL(new RegExp(`#/c/${first[0]}$`));
+  await expect(page).toHaveURL(/#\/c\/chat-11$/);
 });
 
 test("the range and the grouping live in the URL, ask the server again, and a range offers only its own groupings", async ({ page }) => {
@@ -228,7 +241,7 @@ test("the page reads every other range ahead, so a pick shows its chart with no 
   await page.goto("/#/settings/usage");
   await expect(page.getByTestId("usage-filters")).toBeVisible();
   const responses = await Promise.all(read);
-  const data = (await responses[ahead.indexOf("range=7d&bucket=day")]!.json()) as Report;
+  const data = fromColumns(await responses[ahead.indexOf("range=7d&bucket=day")]!.json()) as unknown as Report;
   test.skip(!data.rows.length, "no usage in the last 7 days on this server");
   let release = () => {};
   const held = new Promise<void>(resolve => (release = resolve));
@@ -263,7 +276,7 @@ test("each other range is read ahead once and stored, so a page load or a minute
   });
   await page.goto("/#/settings/usage");
   await expect(mainChart(page)).toBeVisible();
-  const all = ["1h:minute", "24h:hour", "24h:minute", "30d:day", "30d:hour", "7d:day", "7d:hour", "90d:day"];
+  const all = ["1h:minute", "24h:hour", "24h:minute", "30d:day", "30d:hour", "7d:day", "7d:hour", "90d:day"].map(key => `${key}:model`);
   // The lane sends reads ahead 2 at a time behind the sidebar's (client.ts `AHEAD_LANE`), and they settle 11.5 s after a load in the walk of
   // ~/work/p155-readahead/lane-summary.md. At box load 313 on 11-23 only 5 of the 7 had left 6 s after the chart drew
   // (~/work/chat-specs-red/specs-red-usage-usage/notes.md).
@@ -289,7 +302,7 @@ test("a page load draws the report the last load stored at once, names its time,
   await expect.poll(() => page.evaluate(() => new Promise<boolean>(resolve => {
     const open = indexedDB.open("chat.usage");
     open.onsuccess = () => {
-      const get = open.result.transaction("reports").objectStore("reports").get("24h:hour");
+      const get = open.result.transaction("reports").objectStore("reports").get("24h:hour:model");
       get.onsuccess = () => resolve(get.result !== undefined);
       get.onerror = () => resolve(false);
     };

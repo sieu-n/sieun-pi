@@ -703,20 +703,29 @@ export interface UsageRow {
 export type UsageRange = "1h" | "24h" | "7d" | "30d" | "90d";
 /** What one chart bar sums. A minute and an hour start on the clock, and a day starts at the owner's local midnight. */
 export type UsageBucket = "minute" | "hour" | "day";
-/** One bucket's sums: turns, tokens and cost of each kind, and each model's and each client's cost and tokens for the chart's stacks. */
+/** One bucket's sums: turns, unpriced turns, and tokens and cost of each kind. */
 export interface UsageBucketSum {
   start: Ms; turns: number; unpriced: number;
   tokens: UsageRow["tokens"]; cost: UsageRow["cost"];
-  byModel: Record<string, number>;
-  tokensByModel: Record<string, UsageRow["tokens"]>;
-  byClient: Record<string, number>;
-  tokensByClient: Record<string, UsageRow["tokens"]>;
+}
+/** What the chart's stacks split by: each model, or each chat client. */
+export type UsageSplit = "model" | "client";
+/**
+ * One model's or client's values per bucket, in bucket order: dollars, tokens of all four kinds, and output tokens. A report sends these
+ * columns for its own split only: per-bucket maps of every model and client made 24h by minute 1.1 MB.
+ */
+export interface UsageSeries {
+  key: string; cost: number[]; tokens: number[]; output: number[];
+  /** How many models or clients past the chart's colors this one series sums (shared/usage-range.ts `USAGE_CHART_SERIES`). */
+  others?: number;
 }
 /** `buckets` holds every bucket of the range, empty ones too, and its sums equal the sums of `rows` (c191). */
 export interface UsageReport {
   at: Ms; since: Ms; until: Ms; range: UsageRange; bucket: UsageBucket; rows: UsageRow[]; buckets: UsageBucketSum[];
   /** How many chats past the 50 costliest fold into rows with no thread or agent, one per host, client and model. */
   otherChats: number;
+  /** The chart's stacks, costliest first: one series per model or per client, as `split` says. */
+  split: UsageSplit; series: UsageSeries[];
   /** The live rate as of the answer, which GET /api/usage adds so the chart's tokens per second readout opens with no second round trip. */
   live?: UsageLive;
 }

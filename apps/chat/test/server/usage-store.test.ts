@@ -13,6 +13,7 @@ import { join } from "node:path";
 import type { Threads } from "../../server/threads.ts";
 import { clickhouseReader, grafanaReader, StoreUsage, type Columns } from "../../server/usage-store.ts";
 import { usageLive, usageReport } from "../../server/usage.ts";
+import { fromColumns, toColumns, type UsageReportWire } from "../../web/src/lib/api/shared/usage-columns.ts";
 import type { UsageReport } from "../../web/src/lib/api/types.ts";
 
 const URL_ = process.env.USAGE_STORE_TEST_URL ?? "http://127.0.0.1:18123/";
@@ -49,7 +50,7 @@ type Call = { source_key: string; call_at: number; host: string; client: string;
   cost_cache_read_usd: string; cost_cache_write_usd: string; cost_source: string };
 
 const NOW = Date.UTC(2026, 10, 23, 22, 37, 41, 512);
-const HOSTS = ["us-metal02", "mbp"], CLIENTS = ["pi-host", "prime", "claude-code", "codex"], MODELS = ["anthropic/claude-opus-5-5", "openai/gpt-5.5"];
+const HOSTS = ["us-metal02", "mbp"], CLIENTS = ["pi-host", "prime", "claude-code", "codex", "hermes"], MODELS = ["anthropic/claude-opus-5-5", "openai/gpt-5.5"];
 
 /** Calls spread over 95 days before NOW, denser in the last day and the last 15 min; a claude-code or codex call names only a session. */
 function calls(count: number, seed: number): Call[] {
@@ -128,7 +129,19 @@ test("the kept sums equal the store's own sums for every range, and each minute,
   assert.ok(day.rows.some(r => r.unpriced > 0) && day.buckets.some(b => b.unpriced > 0), "unpriced calls are counted apart, not as free");
   const byClient = await usageReport(store, threads, "us-metal02", { range: "24h", client: "codex" }, NOW);
   assert.ok(byClient.rows.length && byClient.rows.every(r => r.client === "codex"), "the client filter keeps one client's rows");
-  assert.equal(round(day.buckets.reduce((sum, b) => sum + (b.byClient.codex ?? 0), 0)), round(byClient.rows.reduce((sum, r) => sum + r.cost.total, 0)), "each bucket splits its cost by client");
+  const split = await usageReport(store, threads, "us-metal02", { range: "24h", split: "client" }, NOW);
+  const clientCost = new Map<string, number>();
+  for (const r of day.rows) clientCost.set(r.client, (clientCost.get(r.client) ?? 0) + r.cost.total);
+  const costliest = [...clientCost].sort((a, b) => b[1] - a[1]);
+  const columnSum = (values: number[]) => round(values.reduce((sum, n) => sum + n, 0));
+  assert.deepEqual(split.series.map(line => [line.key, columnSum(line.cost)]),
+    [...costliest.slice(0, 3).map(([client, usd]) => [client, round(usd)]), ["Other", round(costliest.slice(3).reduce((sum, [, usd]) => sum + usd, 0))]],
+    "the client split sends the 3 costliest clients' columns and one Other for the rest");
+  assert.equal(split.series.at(-1)!.others, CLIENTS.length - 3);
+  assert.deepEqual(split.buckets.map((b, i) => round(split.series.reduce((sum, line) => sum + line.tokens[i]!, 0))), split.buckets.map(b => round(b.tokens.input + b.tokens.output + b.tokens.cacheRead + b.tokens.cacheWrite)),
+    "each bucket's columns sum to its tokens");
+  const wire = JSON.parse(JSON.stringify(toColumns(split))) as UsageReportWire;
+  assert.deepEqual(fromColumns(wire), split, "the answer's columns give back every bucket");
   assert.ok(day.rows.filter(r => r.client === "prime" && r.thread).every(r => r.threadName === `thread ${r.thread.slice(1)}`), "a thread this chat does not list keeps the store's name");
   const mbp = await usageReport(store, threads, "us-metal02", { range: "24h", host: "mbp" }, NOW);
   assert.ok(mbp.rows.length && mbp.rows.every(r => r.host === "mbp"));
