@@ -39,6 +39,8 @@ user_ctl=(systemctl --user "--machine=$DEV_USER@")
 # 14 Prime stalls of 5 s or more followed, up to 65.6 s, and at 02:34Z the workers' main threads waited 2.09 s per CPU-second used.
 # user-serve.slice and user-devservers.slice hold the Komodo containers that were 10000-weight user units until 11-21, each at the
 # weight its units had: user-serve.slice the wiki, Meilisearch and pi-history (auto-sns-agent apps/infra/box/compose.sieun-pi.yml), and
+# since 11-24 the Komodo Periphery (apps/infra/komodo/us-metal02.compose.yml, 215a44c62), because Komodo Core 2.3.4 fails a Periphery
+# request after 10 s with no message (measured: in dev.slice at 400, the 11-23 load spikes to 870 and 603 failed 24 runs, 19 timeouts), and
 # user-devservers.slice the dev servers of auto-sns-dev-pm2 (compose.dev.yml). Docker puts a container in the slice its compose
 # cgroup_parent names, and a docker --cpu-shares is no option, because the sieun-rules cap guard refuses it (c107). Both slices sit beside
 # user-1001.slice in user.slice, so each weighs against the user's own work as the units did inside user@1001.service.
