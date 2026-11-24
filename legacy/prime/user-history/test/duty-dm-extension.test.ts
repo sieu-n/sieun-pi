@@ -57,8 +57,8 @@ test("a sender with too few sends left reads sender_daily_limit and an unmeasure
 });
 
 test("a fresh org's sender row fits a run, and the four parts decide e2e_pass", () => {
-  assert.equal(senderFits({ username: "andishyti693", sentToday: 5, dailyLimit: 8 }), true);
-  assert.equal(senderFits({ username: "andishyti693", sentToday: 6, dailyLimit: 8 }), false);
+  assert.equal(senderFits({ username: "andishyti693", sentToday: 7, dailyLimit: 8 }), true);
+  assert.equal(senderFits({ username: "andishyti693", sentToday: 8, dailyLimit: 8 }), false);
   const out = report({ now: NOW, autopair: AUTOPAIR, e2e: E2E, sender: { username: "andishyti693", sentToday: 0, dailyLimit: 8 }, errors: [] }, METRICS);
   assert.equal(out.metrics.e2e_pass, 1);
 });

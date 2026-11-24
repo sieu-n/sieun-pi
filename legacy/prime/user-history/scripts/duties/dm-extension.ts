@@ -74,9 +74,11 @@ export const WORLD = "dm-ext-duty";
  * (@caiyiting8674) read sentToday 8 of dailyLimit 8 and 285 (@gimnayeon1396) 4 of 8 (search/dmSenders:listOutreach), and the queued
  * Inbox reply of that day's proof stayed scheduled.
  */
-/** Sends one run makes from the sender in staging-real-ig.mjs: the test DM from Connections, the Inbox DM window send (?outreach=1) and
- *  the Inbox reply. The autopair rig sends none. */
-export const SENDS_PER_RUN = 3;
+/** Sends one run makes from the sender: staging-real-ig.mjs --one-dm sends only the test DM from Connections, and the autopair rig
+ *  sends none. The run sent 3 until 11-25: every test sender of 11-24 got limited by Instagram within an hour of its first rig use
+ *  (wiki agents/chrome-extension/jobs/2026/11/25/0007-dm-test-sender-limits), and the Inbox DM window and Inbox reply sends are not
+ *  among the four parts. */
+export const SENDS_PER_RUN = 1;
 /** Staging Convex, self-hosted on us-metal01 since auto-sns-agent 83014234182e (11-08), the name scripts/repo/convex/call.mjs knows. */
 export const STAGING_DEPLOYMENT = "convex-staging";
 /** Connections' read of the paired browsers and their Instagram accounts. It moved here from search/dmDevices, which convex-staging
@@ -523,7 +525,7 @@ async function measure(now: number, budgetMs: number): Promise<DutyData> {
         if (sender) data.sender = sender;
         if (!sender || senderFits(sender)) {
           // --accept-first, because a new replier's first DM to the sender waits as a request the sender never accepted (11-20).
-          data.e2eExit = await run("staging-real-ig.mjs", ["--a", files.sender, "--b", files.replier, "--accept-first"], "e2e");
+          data.e2eExit = await run("staging-real-ig.mjs", ["--a", files.sender, "--b", files.replier, "--accept-first", "--one-dm"], "e2e");
           const e2e = await step("e2e", async () => JSON.parse(await readFile(join(OUT, "e2e/evidence.json"), "utf8")) as E2eEvidence);
           if (e2e) data.e2e = e2e;
         }
