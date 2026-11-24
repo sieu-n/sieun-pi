@@ -13,8 +13,8 @@
  * `edit_message` replaces the text of one of the agent's own posts, as Slack's `chat.update` does, through apps/chat's edit of the owner's
  * posts (app.ts `rewrite`): the room shows it with (edited) at once and no new post. An agent fills in results and the answer on its own
  * post instead of a new post per step (owner p106, c207), and never edits in a status of its jobs or plans (c234).
- * An edit that runs long by tell_owner's check is held once with a note by apps/chat, which runs `longEdit` on every agent edit, and the same
- * text sent again goes out (c98).
+ * An edit that runs long by tell_owner's check or holds a table is held once with a note by apps/chat, which runs `editHold` on every agent
+ * edit, and the same text sent again goes out (c98).
  * An edit with hand-over words is refused and one with progress words is held once (comm-guard.ts `relayEdit`).
  *
  * `list_for_me_messages` and `mark_message` (`for-me.ts`) read the agent's For list and mark its items, and `save_message`, `remind_me` and
@@ -23,7 +23,7 @@
 import { Type } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool, ROOT_CONVERSATION_ID, type Extension } from "@earendil-works/pi-durable";
 import type { ChatApp } from "./chat-app.ts";
-import { crammedEdit, hasTable, relayEdit } from "./comm-guard.ts";
+import { crammedEdit, relayEdit } from "./comm-guard.ts";
 import { closingControl, forMeTools } from "./for-me.ts";
 import { laterTools } from "./later.ts";
 import { searchTools } from "./search-messages.ts";
@@ -48,20 +48,6 @@ export const EDIT_MESSAGE_DESCRIPTION =
 
 export interface EditMessageArgs { message_id: string; text: string }
 
-export const TABLE_EDIT_MARK = "Not edited, it holds a table";
-
-/**
- * The note for an edit whose text holds a markdown table, once, or undefined; the same text sent again edits it (c98). A post with a table is
- * held once (comm-guard.ts), and on 11-22 a blind-reactions run's work thread put a pass and fail table into the result by editing the
- * comm thread's first reply, which no check held.
- */
-export function tableEdit(edit: string, held: Set<string>): string | undefined {
-  if (held.has(edit) || !hasTable(edit)) return undefined;
-  held.add(edit);
-  return `${TABLE_EDIT_MARK}, and a room's thread pane cuts a table off. Say the result in a line or a few short bullets, and put a table he ` +
-    "must see on a wiki page you link. Sending the very same text again edits it as it is (c98).";
-}
-
 export interface SetEmojiArgs { message_id: string; emoji: string; on: boolean }
 
 const text = (value: string) => [{ type: "text" as const, text: value }];
@@ -72,7 +58,6 @@ const isEyes = (emoji: string): boolean => ["eyes", ":eyes:", "👀"].includes(e
 /** The room tools of one thread, which call apps/chat as that thread. */
 export function roomTools(app: ChatApp, thread: string): Extension {
   const heldCrammed = new Set<string>();
-  const heldTables = new Set<string>();
   const heldRelays = new Set<string>();
   return defineExtension({
     name: ROOM_TOOLS_EXTENSION,
@@ -121,8 +106,6 @@ export function roomTools(app: ChatApp, thread: string): Extension {
           if (relay) return { output: text(relay), isError: true };
           const crammed = crammedEdit(args.text.trim(), heldCrammed);
           if (crammed) return { output: text(crammed), isError: true };
-          const table = tableEdit(args.text.trim(), heldTables);
-          if (table) return { output: text(table), isError: true };
           try {
             const answer = await app.editPost(thread, { message: args.message_id, text: args.text }, context.abortSignal);
             return { output: text(answer.text), ...await closingControl(true, api, context) };

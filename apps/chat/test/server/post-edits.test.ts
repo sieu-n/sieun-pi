@@ -145,18 +145,30 @@ describe("an agent editing its own posts", () => {
     assert.equal(told.length, 0, "an agent's edit tells no one");
   });
 
-  test("an agent edit over a room's 120 words is held once with a 400 note, from edit_message or a kernel's own call, and the same text again edits it", async () => {
+  test("an agent edit of 121 words or with a table is held once with a 400 note, from edit_message or a kernel's own call, the same text again edits it, and a short edit goes at once", async () => {
     const record = s.app.agents.record(agents.vent)!;
     const thread = s.app.agents.roomThread(record);
     const mine = s.app.agentStore.postsOf(ROOM).findLast(p => p.author === agents.vent && !p.imported && p.deletedAt === undefined)!;
-    const long = ["prod has 339 tables, and most are helpers", ...Array.from({ length: 16 }, (_, i) => `- database ${i + 1} holds nine data tables and four helper views on prod`)].join("\n");
+    const text = () => s.app.agentStore.postsOf(ROOM).find(p => p.id === mine.id)!.text;
+    const long = Array.from({ length: 11 }, (_, i) => `Box ${i + 1} holds nine data tables and four views on prod.`).join(" ");
     const held = await agentEdit(thread, { message: mine.id, text: long });
     assert.equal(held.status, 400);
-    assert.match(held.body.error ?? "", /^Not edited, it runs long, with \d+ words in all\. Keep the post within 120 words/);
-    assert.equal(s.app.agentStore.postsOf(ROOM).find(p => p.id === mine.id)!.text, mine.text, "a held edit changes nothing");
+    assert.match(held.body.error ?? "", /^Not edited, it runs long, with 121 words in all\. Keep the post within 120 words/);
+    assert.equal(text(), mine.text, "a held edit changes nothing");
     const resent = await agentEdit(thread, { message: mine.id, text: long });
     assert.equal(resent.status, 200, resent.body.error);
-    assert.equal(s.app.agentStore.postsOf(ROOM).find(p => p.id === mine.id)!.text, long);
+    assert.equal(text(), long);
+    const table = "Both pass, 10 of 10 green.\n\n| Test file | Pass |\n|---|---|\n| reactions.test.ts | 6 |";
+    const heldTable = await agentEdit(thread, { message: mine.id, text: table });
+    assert.equal(heldTable.status, 400);
+    assert.match(heldTable.body.error ?? "", /^Not edited, it holds a table, which a room's thread pane cuts off\. Say the result in a line/);
+    assert.equal(text(), long);
+    assert.equal((await agentEdit(thread, { message: mine.id, text: table })).status, 200);
+    assert.equal(text(), table);
+    const short = "Both pass, 10 of 10 green; the table is on the wiki page.";
+    const once = await agentEdit(thread, { message: mine.id, text: short });
+    assert.equal(once.status, 200, once.body.error);
+    assert.equal(text(), short);
   });
 
   test("edit_message refuses a post that is not the agent's own, a blank edit, and a post or room that is not there", async () => {

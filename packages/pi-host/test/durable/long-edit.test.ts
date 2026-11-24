@@ -1,12 +1,11 @@
 /**
- * apps/chat holds an agent's edit that runs long once, as tell_owner does (`longEdit`, c98): on 11-21 a blind run's work thread grew a
- * checklist over its edits from 54 to 78 to 86 words, and on 11-24 a job's own call of the edit route made #dev-crawler p5 251 words.
+ * apps/chat holds an agent's edit that runs long or holds a table once, as tell_owner does (`editHold`, c98): on 11-21 a blind run's work
+ * thread grew a checklist over its edits from 54 to 78 to 86 words, and on 11-24 a job's own call of the edit route made #dev-crawler p5 251 words.
  */
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import { MODEL_POST } from "../../src/durable/agent-profile.ts";
-import { LONG_EDIT_MARK, longEdit } from "../../src/durable/long-edit.ts";
-import { TABLE_EDIT_MARK, tableEdit } from "../../src/durable/room-tools.ts";
+import { editHold } from "../../src/durable/long-edit.ts";
 
 const checklist = (items: number) => ["yes, both boxes match main and every link resolves", "- this box",
   ...Array.from({ length: items }, (_, i) => `  - [x] check ${i + 1} passed on the box with nothing left`)].join("\n");
@@ -14,10 +13,8 @@ const checklist = (items: number) => ["yes, both boxes match main and every link
 test("an edit over a room's 120 words is held once with a note, and the very same text sent again goes out", () => {
   const held = new Set<string>();
   const long = checklist(16);
-  const note = longEdit(long, held);
-  assert.ok(note?.startsWith(LONG_EDIT_MARK), note);
-  assert.match(note!, /words in all\. Keep the post within 120 words: the answer on its own line/);
-  assert.equal(longEdit(long, held), undefined, "the resend edits the post");
+  assert.match(editHold(long, held) ?? "", /^Not edited, it runs long, with \d+ words in all\. Keep the post within 120 words: the answer on its own line/);
+  assert.equal(editHold(long, held), undefined, "the resend edits the post");
 });
 
 /** #dev-crawler p5 as a job of Search product, misc. edited it on 11-24 through the edit route, past edit_message's check. */
@@ -25,25 +22,34 @@ const P5_EDIT = "Most of it is helper objects, not data. Prod has 339 objects, a
 
 test("the 11-24 p5 edit counts 251 words and is held once", () => {
   const held = new Set<string>();
-  assert.match(longEdit(P5_EDIT, held) ?? "", /^Not edited, it runs long, with .*251 words in all\./);
-  assert.equal(longEdit(P5_EDIT, held), undefined, "the resend edits the post");
+  assert.match(editHold(P5_EDIT, held) ?? "", /^Not edited, it runs long, with .*251 words in all\./);
+  assert.equal(editHold(P5_EDIT, held), undefined, "the resend edits the post");
 });
 
 test("list and task markers are no words, so a checklist of 74 words that is 96 tokens with them passes", () => {
   const held = new Set<string>();
-  assert.equal(longEdit(checklist(7), held), undefined);
+  assert.equal(editHold(checklist(7), held), undefined);
   assert.equal(held.size, 0);
 });
 
 test("the post the owner called a model, 92 words, edits on the first try (msg mwqtp2l1)", () => {
   const held = new Set<string>();
-  assert.equal(longEdit(MODEL_POST, held), undefined);
+  assert.equal(editHold(MODEL_POST, held), undefined);
 });
 
 test("an edit with a table is held once, and the very same text sent again goes out (11-22 blind-reactions run)", () => {
   const held = new Set<string>();
   const result = "Yes, both pass, with 10 of 10 tests green.\n\n| Test file | Pass | Fail |\n|---|---|---|\n| `reactions.test.ts` | 6 | 0 |";
-  assert.ok(tableEdit(result, held)?.startsWith(TABLE_EDIT_MARK));
-  assert.equal(tableEdit(result, held), undefined, "the resend edits the post");
-  assert.equal(tableEdit(MODEL_POST, new Set()), undefined, "a post with bullets and no table edits at once");
+  assert.match(editHold(result, held) ?? "", /^Not edited, it holds a table, which a room's thread pane cuts off\. Say the result/);
+  assert.equal(editHold(result, held), undefined, "the resend edits the post");
+  assert.equal(editHold(MODEL_POST, new Set()), undefined, "a post with bullets and no table edits at once");
+});
+
+test("an edit that runs long and holds a table gets one note with both, and one resend edits it", () => {
+  const held = new Set<string>();
+  const both = `${P5_EDIT}\n\n| Database | Tables |\n|---|---|\n| crawler | 79 |`;
+  const note = editHold(both, held) ?? "";
+  assert.match(note, /^Not edited, it runs long, with .* words in all, and it holds a table, which a room's thread pane cuts off\. Keep the post within 120 words/);
+  assert.equal(note.match(/Sending the very same text again/g)?.length, 1);
+  assert.equal(editHold(both, held), undefined, "the resend edits the post");
 });
