@@ -5,6 +5,7 @@
  * backfill writes them again. The thread rows, with each name and archived flag, live only here, and no code lists the thread files
  * again, so a lost index loses the thread list.
  */
+import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import type { FeedRow } from "../../../../components/prime-relay/agents/protocol.ts";
 
@@ -149,6 +150,36 @@ CREATE TABLE IF NOT EXISTS usage_drops (id INTEGER PRIMARY KEY CHECK (id = 1), c
 INSERT OR IGNORE INTO usage_drops (id, count) VALUES (1, 0);
 CREATE TRIGGER IF NOT EXISTS usage_drops_count AFTER DELETE ON usage BEGIN UPDATE usage_drops SET count = count + 1 WHERE id = 1; END;
 `;
+
+/** The thread row columns a `durable_threads` caller sees; `indexed_entry` and `seq` are pi-host's own. */
+const SHOWN_COLUMNS = ["name", "provider", "model_id", "thinking", "cwd", "created_at", "updated_at", "wake_active", "wake_at", "failed", "archived", "preview", "children"];
+
+/**
+ * Each thread row's change number for `ThreadIndex.changedSince`. The triggers give a row the next number whenever a shown column changes
+ * or the row is made, and keep a removed row's number in `threads_gone`, so every writer, present or later, moves it.
+ */
+const CHANGES_SCHEMA = `
+CREATE TABLE IF NOT EXISTS thread_changes (id INTEGER PRIMARY KEY CHECK (id = 1), list_id TEXT NOT NULL, seq INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS threads_gone (id TEXT PRIMARY KEY, seq INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS threads_seq ON threads (seq);
+CREATE TRIGGER IF NOT EXISTS threads_seq_insert AFTER INSERT ON threads BEGIN
+  UPDATE thread_changes SET seq = seq + 1 WHERE id = 1;
+  UPDATE threads SET seq = (SELECT seq FROM thread_changes WHERE id = 1) WHERE id = NEW.id;
+  DELETE FROM threads_gone WHERE id = NEW.id;
+END;
+CREATE TRIGGER IF NOT EXISTS threads_seq_update AFTER UPDATE OF ${SHOWN_COLUMNS.join(", ")} ON threads
+WHEN ${SHOWN_COLUMNS.map(column => `NEW.${column} IS NOT OLD.${column}`).join(" OR ")} BEGIN
+  UPDATE thread_changes SET seq = seq + 1 WHERE id = 1;
+  UPDATE threads SET seq = (SELECT seq FROM thread_changes WHERE id = 1) WHERE id = NEW.id;
+END;
+CREATE TRIGGER IF NOT EXISTS threads_seq_delete AFTER DELETE ON threads BEGIN
+  UPDATE thread_changes SET seq = seq + 1 WHERE id = 1;
+  INSERT OR REPLACE INTO threads_gone (id, seq) VALUES (OLD.id, (SELECT seq FROM thread_changes WHERE id = 1));
+END;
+`;
+
+/** The thread rows that changed after a change number, the ids of rows removed after it, and the number now. */
+export interface ThreadChanges { rows: ThreadRow[]; gone: string[]; seq: number }
 
 type Row = Record<string, string | number | bigint | null | Uint8Array>;
 
@@ -375,6 +406,8 @@ export class ThreadIndex {
    */
   readonly outboxSince: number;
   private readonly outboxListeners = new Set<(row: FeedRow) => void>();
+  /** This index file's id, so a change number from another index never reads as one of this one's. */
+  readonly listId: string;
 
   constructor(path: string) {
     this.db = new DatabaseSync(path);
@@ -395,6 +428,10 @@ export class ThreadIndex {
     }
     // usage_hours and its triggers summed usage per hour for durable_usage, which left with apps/chat's move to the ClickHouse store.
     this.db.exec("DROP TRIGGER IF EXISTS usage_hours_add; DROP TRIGGER IF EXISTS usage_hours_drop; DROP TABLE IF EXISTS usage_hours;");
+    if (!(this.db.prepare("PRAGMA table_info(threads)").all() as Row[]).some(row => row.name === "seq")) this.db.exec("ALTER TABLE threads ADD COLUMN seq INTEGER NOT NULL DEFAULT 0");
+    this.db.exec(CHANGES_SCHEMA);
+    this.db.prepare("INSERT OR IGNORE INTO thread_changes (id, list_id, seq) VALUES (1, ?, 0)").run(randomUUID());
+    this.listId = String((this.db.prepare("SELECT list_id FROM thread_changes WHERE id = 1").get() as Row).list_id);
     this.db.prepare("INSERT OR IGNORE INTO outbox_meta (id, since) VALUES (1, ?)").run(Date.now());
     this.outboxSince = Number((this.db.prepare("SELECT since FROM outbox_meta WHERE id = 1").get() as Row).since);
   }
@@ -418,6 +455,18 @@ export class ThreadIndex {
       ? this.db.prepare("SELECT * FROM threads ORDER BY updated_at DESC").all()
       : this.db.prepare("SELECT * FROM threads WHERE archived = ? ORDER BY updated_at DESC").all(options.archived ? 1 : 0);
     return (rows as Row[]).map(threadOf);
+  }
+
+  /** The last change number given to a thread row (`CHANGES_SCHEMA`). */
+  changeSeq(): number {
+    return Number((this.db.prepare("SELECT seq FROM thread_changes WHERE id = 1").get() as Row).seq);
+  }
+
+  /** The rows whose shown columns changed after change number `seq`, newest first, and the ids removed after it, in one read on `threads_seq`. */
+  changedSince(seq: number): ThreadChanges {
+    const rows = (this.db.prepare("SELECT * FROM threads WHERE seq > ? ORDER BY updated_at DESC").all(seq) as Row[]).map(threadOf);
+    const gone = (this.db.prepare("SELECT id FROM threads_gone WHERE seq > ?").all(seq) as Row[]).map(row => String(row.id));
+    return { rows, gone, seq: this.changeSeq() };
   }
 
   /** Threads a fresh process must open: work could run, or a sleep is due by `now`. */

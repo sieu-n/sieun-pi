@@ -106,6 +106,14 @@ export interface ThreadInfo extends ThreadRow {
   retrying?: string;
 }
 
+/** One `durable_threads` answer to a cursor: every row with `full`, else the rows that changed and the ids that left the list. */
+export interface ThreadListPage {
+  threads: ThreadInfo[];
+  removed: string[];
+  cursor: string;
+  full: boolean;
+}
+
 export interface TreeNode {
   id: number;
   parent: number | null;
@@ -289,6 +297,11 @@ export class DurableThreads {
   private readonly releasing = new Map<string, Promise<void>>();
   /** Each open thread's conversations whose run sleeps on a retry, with the retrying's start once read and the last error. */
   private readonly retries = new Map<string, Map<number, { since?: number; error: string }>>();
+  /** Each thread's retrying flag as `listSince` last saw it, with the retry change number it got then. */
+  private readonly retryFlags = new Map<string, { text: string | undefined; seq: number }>();
+  private retrySeq = 0;
+  /** This process's id in `listSince` cursors: the retrying flags live only in memory, so a cursor from another process reads every row. */
+  private readonly boot = randomUUID();
   private readonly leases = new Leases("pi-host-durable");
   private readonly threadsDir: string;
   private readonly idleCloseMs: number;
@@ -385,6 +398,46 @@ export class DurableThreads {
     return this.index.list(options).map(row => this.withRetry({ ...row, status: statusOf(row) }));
   }
 
+  /**
+   * `durable_threads` with a cursor: the rows that changed since the cursor's read and the ids that left the list, newest first, with the
+   * cursor of this read. A cursor of another index or another process, or one ahead of this index, answers every row with `full`. A row
+   * changes when the index gives it a change number (`CHANGES_SCHEMA`) or its retrying flag changes (`noteRetryFlags`). The apps/chat
+   * thread list read every 2 s parsed all 2,300 rows each time, 28 ms of its loop on 11-24 (p276).
+   */
+  listSince(cursor: string | undefined, options: { archived?: boolean } = {}): ThreadListPage {
+    const retrySeq = this.noteRetryFlags();
+    const seq = this.index.changeSeq();
+    const next = `${this.index.listId}:${this.boot}:${seq}:${retrySeq}`;
+    const [listId, boot, since, retryMark] = (cursor ?? "").split(":");
+    const known = listId === this.index.listId && boot === this.boot && Number(since) <= seq && Number(retryMark) <= retrySeq;
+    if (!known) return { threads: this.list(options), removed: [], cursor: next, full: true };
+    const changed = this.index.changedSince(Number(since));
+    const rows = new Map(changed.rows.map(row => [row.id, row]));
+    for (const [id, flag] of this.retryFlags) {
+      if (flag.seq <= Number(retryMark) || rows.has(id)) continue;
+      const row = this.index.get(id);
+      if (row) rows.set(id, row);
+    }
+    const threads: ThreadInfo[] = [];
+    const removed = changed.gone.filter(id => !rows.has(id));
+    for (const row of [...rows.values()].sort((a, b) => b.updatedAt - a.updatedAt)) {
+      if (options.archived !== undefined && row.archived !== options.archived) removed.push(row.id);
+      else threads.push(this.withRetry({ ...row, status: statusOf(row) }));
+    }
+    return { threads, removed, cursor: next, full: false };
+  }
+
+  /** Gives each thread whose retrying flag changed since the last call the next retry change number, and answers the last number. */
+  private noteRetryFlags(): number {
+    for (const id of new Set([...this.retries.keys(), ...this.retryFlags.keys()])) {
+      const text = this.retryingOf(id);
+      if (text === this.retryFlags.get(id)?.text) continue;
+      this.retrySeq++;
+      this.retryFlags.set(id, { text, seq: this.retrySeq });
+    }
+    return this.retrySeq;
+  }
+
   private defaultModel(): ModelRef {
     const value = this.options.defaultModel;
     return typeof value === "function" ? value() : value;
@@ -403,9 +456,13 @@ export class DurableThreads {
 
   /** The row with the retrying flag of its longest-retrying conversation, when one has retried past `RETRY_FLAG_MS`. */
   private withRetry(info: ThreadInfo): ThreadInfo {
-    const oldest = [...(this.retries.get(info.id)?.values() ?? [])].filter(retry => retry.since !== undefined).sort((a, b) => a.since! - b.since!)[0];
-    const text = oldest ? retryingText(oldest.since!, oldest.error, this.now()) : undefined;
+    const text = this.retryingOf(info.id);
     return text ? { ...info, retrying: text } : info;
+  }
+
+  private retryingOf(id: string): string | undefined {
+    const oldest = [...(this.retries.get(id)?.values() ?? [])].filter(retry => retry.since !== undefined).sort((a, b) => a.since! - b.since!)[0];
+    return oldest ? retryingText(oldest.since!, oldest.error, this.now()) : undefined;
   }
 
   /** Notes a conversation's `pi.live` change: a retry starts or goes on, and reads its start once; no retry drops it. */

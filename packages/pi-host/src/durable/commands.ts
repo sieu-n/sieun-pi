@@ -72,8 +72,12 @@ export class DurableCommands {
     const done = (data?: unknown) => ok(id, command.type, data);
     try {
       switch (command.type) {
-        case "durable_threads":
-          return done({ threads: this.threads.list(typeof command.archived === "boolean" ? { archived: command.archived } : {}) });
+        case "durable_threads": {
+          const options = typeof command.archived === "boolean" ? { archived: command.archived } : {};
+          // A caller that sends `cursor` (a string, or null for its first read) gets `listSince`'s page; one that sends none gets every row as before.
+          if (command.cursor === undefined) return done({ threads: this.threads.list(options) });
+          return done(this.threads.listSince(typeof command.cursor === "string" ? command.cursor : undefined, options));
+        }
         case "durable_create": {
           const model = modelRef(command.model);
           // `thread` names the new thread's id, so the same create sent again answers that thread instead of making another.
