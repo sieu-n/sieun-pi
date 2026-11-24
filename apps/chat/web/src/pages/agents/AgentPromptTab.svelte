@@ -2,7 +2,6 @@
   import { kept, reads, view, type AgentPrompt, type AgentPromptOutline, type PromptKind } from "$lib/api";
   import { get } from "$lib/api/client";
   import { Button, Disclosure, IconButton, LoadingText, ShowAllList, stampLabel, toast } from "$lib/ui";
-  import type { AgentTabProps } from "./agent-tab";
 
   /**
    * The Prompt tab: the whole prompt each kind of the agent's threads runs with, as pi-host's builder makes it (GET /api/agents/:id/prompt),
@@ -11,7 +10,11 @@
    * copies before it came. Both are kept (kept.svelte.ts), so an open draws the last build with its time at once, and the build the open
    * asks for, 50 to 80 ms on the server, replaces it when its text changed.
    */
-  let { agentId }: AgentTabProps = $props();
+  /**
+   * Only the agent's id, so the tab draws before the agent's config came: on a new server after a hand-over that read took 1.6 to 3.4 s on
+   * 11-24, and the tab waited for it.
+   */
+  let { agentId }: { agentId: string } = $props();
   const outline = view(() => reads.agentPromptOutline(agentId));
   const texts = $derived(kept(reads.agentPrompt(agentId)));
   /** One section as the tab shows it: its text once the whole answer of the same build came. */

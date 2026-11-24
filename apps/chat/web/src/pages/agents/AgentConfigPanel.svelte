@@ -123,6 +123,8 @@
   <div class="body" role="tabpanel" aria-label={tabs.find((s) => s.id === section)?.label}>
     {#if section === "for" && forList}
       <AgentForMe {agentId} name={forName || agentId} />
+    {:else if section === "prompt"}
+      <AgentPromptTab {agentId} />
     {:else if error && !config}
       <EmptyState icon="warning" title="The configuration could not load" description={error} size="sm">
         {#snippet action()}<Button size="sm" icon="refresh" onclick={load}>Retry</Button>{/snippet}
@@ -174,8 +176,6 @@
       <AgentKnowledgeTab {...tabProps} />
     {:else if section === "duties" && tabProps}
       <AgentDutiesTab {...tabProps} />
-    {:else if section === "prompt" && tabProps}
-      <AgentPromptTab {...tabProps} />
     {/if}
   </div>
 </div>
