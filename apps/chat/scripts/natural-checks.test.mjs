@@ -109,3 +109,8 @@ test("a period inside a code span, a link target or an abbreviation ends no sent
   // #sw-factory-build p199 on 11-24, two sentences with an agent name that ends on a period.
   assert.deepEqual(lineFails("It was a freeze.\n- Tokens: $2,984 in the last 24 h. Search product, misc. used $808 over 8,836 turns."), []);
 });
+
+test("an answer line that names the uncommitted files itself does not overstate", () => {
+  assert.ok(!overstates("You're clear to ship on main. The only thing to look at is 22 uncommitted files.\n- Local main matches origin/main.\n- 22 things are uncommitted."));
+  assert.ok(overstates("You're clear to ship on main.\n- 22 things are uncommitted."));
+});

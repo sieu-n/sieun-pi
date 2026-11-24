@@ -56,12 +56,14 @@ export const naturalLine = line => !BULLET.test(line) && (words(line) >= 5 ? VER
  * Whether a post's first line calls everything clear while a line under it counts uncommitted files, as the 17:41 KST checklist run of
  * 11-23 did: "All clear to ship." over "7 tracked files have uncommitted edits ... There are also 8 untracked paths". The other 6
  * answered runs of that ask since 11-22 named the files in the answer, such as "Three of the four are clear, but 15 files are uncommitted".
- * A negated line says the opposite, as the 11-24 hand run's "Not ready to ship yet." over its 66 uncommitted entries did.
+ * A negated line says the opposite, as the 11-24 hand run's "Not ready to ship yet." over its 66 uncommitted entries did. An answer line
+ * that names the uncommitted files itself hides nothing, as the 11-24 14:26 KST checklist run's "You're clear to ship on main. The only
+ * thing to look at is 22 uncommitted files." did.
  */
 export const overstates = text => {
   const [first = "", ...rest] = text.split("\n").filter(line => line.trim());
   const clear = /\b(all (?:\w+ ){0,3}?(?:clear|clean|good|fine|green)|(?:good|clear|ready|safe) to (?:go|ship)|nothing (?:blocks|is blocking|to fix)|no blockers?)\b/i.test(first) && !/\b(but|except|apart from|other than|aside from|though|besides|not|never)\b|n't\b/i.test(first);
-  return clear && rest.some(line => /\b[1-9]\d*\b[^.\n]*\buncommitted\b|\buncommitted\b[^.\n]*\b[1-9]\d*\b/i.test(line));
+  return clear && !/\buncommitted\b/i.test(first) && rest.some(line => /\b[1-9]\d*\b[^.\n]*\buncommitted\b|\buncommitted\b[^.\n]*\b[1-9]\d*\b/i.test(line));
 };
 /**
  * The sentences of each line of a text, with code and link targets left out. A wall of text, such as dm_agent-factory p55 on 11-21, a
