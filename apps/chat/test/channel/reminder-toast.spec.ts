@@ -55,10 +55,10 @@ test("a due reminder's toast snoozes it from a menu and marks it complete", asyn
   const said = await snoozed.textContent();
   await expect.poll(async () => ((await item(page, `${a.room}:${a.id}`))?.remindAt ?? 0) - before).toBeGreaterThan(3_500_000);
   const at = (await item(page, `${a.room}:${a.id}`))!.remindAt!;
-  const expected = await page.evaluate(([at, before]) => {
+  const expected = await page.evaluate(({ at, before }) => {
     const time = new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" }).format(at);
     return new Date(at).toDateString() === new Date(before).toDateString() ? `We'll remind you at ${time}` : `We'll remind you tomorrow at ${time}`;
-  }, [at, before]);
+  }, { at, before });
   expect(said).toContain(expected);
 
   const toastB = page.locator(".toast").filter({ hasText: b.text });

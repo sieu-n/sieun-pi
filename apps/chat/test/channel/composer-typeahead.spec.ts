@@ -126,10 +126,10 @@ test("/remind me <what> <when> sets a reminder of his own text, and Saved lists 
   const item = list.items.find((i) => i.text === `call the bank ${word}`)!;
   expect(item.room).toBeUndefined();
   expect(item.remindAt! - Date.now()).toBeGreaterThan(18 * 60_000);
-  const expected = await page.evaluate(([at, before]) => {
+  const expected = await page.evaluate(({ at, before }) => {
     const time = new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" }).format(at);
     return new Date(at).toDateString() === new Date(before).toDateString() ? `We'll remind you at ${time}` : `We'll remind you tomorrow at ${time}`;
-  }, [item.remindAt!, before]);
+  }, { at: item.remindAt!, before });
   expect(said).toContain(expected);
   await open(page, "#/c/saved", "later-page");
   const row = page.locator(`[data-later-id="${item.id}"]`);
