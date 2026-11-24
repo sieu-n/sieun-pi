@@ -49,7 +49,7 @@ import type { ForwardedPost } from "../web/src/lib/api/types.ts";
 import { Rooms } from "./rooms.ts";
 import { applyPrefs, withPrefs } from "./sidebar-prefs.ts";
 import { parseLayout } from "../web/src/lib/api/shared/sidebar-layout.ts";
-import { bucketOf, changedBuckets, digests, PARTIAL_LISTS, threadTimes, timed, type PartialList } from "../web/src/lib/api/shared/hello-buckets.ts";
+import { bucketOf, changedBuckets, digests, PARTIAL_LISTS, threadTimes, timed, type PartialList, type ThreadTimes, type Timed } from "../web/src/lib/api/shared/hello-buckets.ts";
 import { boardDelta, boardKey, boardStep, parseBoardsParam } from "../web/src/lib/api/shared/board-delta.ts";
 import type { ChatBoard } from "../web/src/lib/api/shared/types.ts";
 import { OwnerSettingsStore } from "./owner-settings.ts";
@@ -1472,12 +1472,14 @@ export class App {
 
   /** http.ts `serve` sets it; without it a page's socket read answers 503 and the page reads over HTTP. */
   socketRead: SocketRead | undefined;
+  /** The last hello's lists, which the next hello reuses while they hold the same items (`helloLists`). */
+  private readonly hello: { base?: HelloBase } = {};
 
   private connect(socket: WebSocket, req?: IncomingMessage): void {
     const held = new URL(req?.url ?? "/", "http://x").searchParams;
     const client: Client = { socket, watching: new Map(), req, boards: parseBoardsParam(held.get("boards")) };
     this.clients.add(client);
-    void this.sidebar().then(sidebar => this.send1(client, { type: "hello", me: this.me(), sidebar, agents: this.threads.agents(), ...helloLists(held, { jobs: this.threads.jobList(), conversations: this.threads.conversations() }) }));
+    void this.sidebar().then(sidebar => this.send1(client, { type: "hello", me: this.me(), sidebar, agents: this.threads.agents(), ...helloLists(held, { jobs: this.threads.jobList(), conversations: this.threads.conversations() }, this.hello) }));
     socket.on("message", data => {
       let command: LiveCommand;
       try {
@@ -1626,20 +1628,42 @@ export class NotFound extends Error {}
 
 export { modelRef };
 
+/** A hello's lists as `helloLists` last built them: the lists it read, each thread's time, their `Timed` form and each digest a page asked for. */
+type HelloBase = {
+  jobs: AgentSummary[]; conversations: ConversationSummary[]; times: ThreadTimes;
+  timed: { jobs: Timed<AgentSummary>[]; conversations: Timed<ConversationSummary>[] }; digests: Partial<Record<PartialList, string>>;
+};
+
+/** The two lists hold the same items in the same order: the same objects, or equal JSON for the few a list builds anew at each read. */
+function sameItems(a: readonly object[], b: readonly object[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i] && JSON.stringify(a[i]) !== JSON.stringify(b[i])) return false;
+  return true;
+}
+
 /**
  * The hello's jobs and conversations in their `Timed` form with each thread's time in `times`: whole for a page that named nothing it
  * holds, else only the buckets whose digest differs from the page's (shared/hello-buckets.ts), with their numbers in `partial`.
+ *
+ * `kept` holds the last hello's lists, timed forms and digests, which the next hello reuses while the lists hold the same items. Every page
+ * opens its socket again at each release, and in the first seconds after the 10:02Z start on 11-24 each hello held the loop 130 to 150 ms,
+ * `digests` the top function (~/work/p279-search/p279-meili.md).
  */
-function helloLists(held: URLSearchParams, lists: { jobs: AgentSummary[]; conversations: ConversationSummary[] }): Pick<Extract<LiveEvent, { type: "hello" }>, PartialList | "partial" | "times"> {
-  const times = threadTimes(lists.jobs);
-  const out = { jobs: timed("jobs", lists.jobs, times), conversations: timed("conversations", lists.conversations, times) };
+function helloLists(held: URLSearchParams, lists: { jobs: AgentSummary[]; conversations: ConversationSummary[] }, kept: { base?: HelloBase } = {}):
+  Pick<Extract<LiveEvent, { type: "hello" }>, PartialList | "partial" | "times"> {
+  let base = kept.base;
+  if (!base || !sameItems(base.jobs, lists.jobs) || !sameItems(base.conversations, lists.conversations)) {
+    const times = threadTimes(lists.jobs);
+    base = kept.base = { ...lists, times, timed: { jobs: timed("jobs", lists.jobs, times), conversations: timed("conversations", lists.conversations, times) }, digests: {} };
+  }
+  const out = { ...base.timed };
   const partial: Partial<Record<PartialList, number[]>> = {};
   for (const name of PARTIAL_LISTS) {
     const page = held.get(name);
-    const changed = page ? changedBuckets(page, digests(out[name])) : null;
+    const changed = page ? changedBuckets(page, base.digests[name] ??= digests(out[name])) : null;
     if (!changed) continue;
     partial[name] = [...changed];
     out[name] = (out[name] as { id: string }[]).filter(item => changed.has(bucketOf(item.id))) as never;
   }
-  return { ...out, times, ...(Object.keys(partial).length ? { partial } : {}) };
+  return { ...out, times: base.times, ...(Object.keys(partial).length ? { partial } : {}) };
 }

@@ -79,6 +79,34 @@ test("a page that names what it holds gets only the changed buckets, and merging
   for (const socket of [first, same, changed, whole, broken]) socket.close();
 });
 
+test("a hello reuses the last hello's timed lists and digests while the lists hold the same items", async t => {
+  // After the 10:02Z start on 11-24 every page opened its socket again and each hello held the loop 130 to 150 ms, digests the top function.
+  chat ??= await start();
+  const first = await open(chat.base);
+  const held = `?jobs=${digests(first.hello.jobs)}&conversations=${digests(first.hello.conversations)}`;
+  first.close();
+  const stringify = JSON.stringify;
+  let calls = 0;
+  t.mock.method(JSON, "stringify", function (this: unknown, ...args: Parameters<typeof JSON.stringify>) {
+    calls += 1;
+    return stringify.apply(this, args);
+  });
+  const counted = async (): Promise<{ calls: number; hello: Hello }> => {
+    calls = 0;
+    const page = await open(chat!.base, held);
+    page.close();
+    return { calls, hello: page.hello };
+  };
+  assert.equal((await chat.send("POST", "/api/rooms", { kind: "channel", name: "hello-reuse", members: [] })).status, 200);
+  const built = await counted();
+  const reused = await counted();
+  t.mock.restoreAll();
+  const items = first.hello.jobs.length + first.hello.conversations.length;
+  assert.deepEqual(reused.hello.partial, built.hello.partial);
+  assert.deepEqual([reused.hello.jobs, reused.hello.conversations, reused.hello.times], [built.hello.jobs, built.hello.conversations, built.hello.times]);
+  assert.ok(built.calls - reused.calls >= items / 2, `the second hello stringified ${reused.calls} values and the first ${built.calls}, for ${items} items`);
+});
+
 test("a page reads a GET route over its socket, and an unknown route answers 404", async () => {
   chat ??= await start();
   const socket = await open(chat.base);
