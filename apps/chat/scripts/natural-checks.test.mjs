@@ -103,3 +103,9 @@ test("a bullet with one 40-word sentence fails the line checks", () => {
   const long = Array.from({ length: 40 }, (_, i) => `w${i}`).join(" ");
   assert.deepEqual(lineFails(`Two of the three are clean.\n- ${long}.`), ["no sentence over 35 words"]);
 });
+
+test("a period inside a code span, a link target or an abbreviation ends no sentence in the line checks", () => {
+  assert.deepEqual(lineFails("Two of the three are clean.\n- `comm-guard.test.ts` holds 7 cases. See [the log](wiki:a/b.c.html) for e.g. the last run."), []);
+  // #sw-factory-build p199 on 11-24, two sentences with an agent name that ends on a period.
+  assert.deepEqual(lineFails("It was a freeze.\n- Tokens: $2,984 in the last 24 h. Search product, misc. used $808 over 8,836 turns."), []);
+});

@@ -11,14 +11,24 @@ export const words = text => text.replace(/\]\([^)]*\)/g, "]").replace(/^[ \t]*(
 const BULLET = /^\s*[-*+] /;
 /** A post's sentences; a line break ends one too, since a bullet line seldom ends on a period and 3 bullets read as one 40-word sentence on 11-20. */
 export const sentences = text => text.replace(/\]\([^)]*\)/g, "]").split(/(?<=[.!?])\s+|\n+/).filter(line => line.trim());
+/** An abbreviation whose period ends no sentence, such as the agent name "Search product, misc." in "Search product, misc. used $808". */
+const ABBREVIATION = /(?:^|[\s(])(?:e\.g|i\.e|vs|misc|al|approx)\.$/i;
 /**
- * The line checks of a list or checklist reply. Since a1005148 the comm role text keeps each bullet to one point in one or two sentences,
- * so a line holds at most two sentences and the 35-word cap holds per sentence. d4's 11-24 06:45 KST checklist run failed the old
- * 35-word cap per line on one bullet of two sentences, 14 and 27 words, that followed that rule.
+ * One line's sentences, split where a period, "!" or "?" meets a space outside a code span or link target and after no abbreviation. On
+ * 11-24 #sw-factory-build p199 held "Tokens: $2,984 in the last 24 h. Search product, misc. used $808 ..." as two sentences, and a plain
+ * split read three.
+ */
+export const lineParts = line => line.replace(/`[^`\n]*`|\]\([^)]*\)/g, span => span.replace(/[.!?]/g, "_")).split(/(?<=[.!?])\s+/)
+  .reduce((parts, part) => (parts.length && ABBREVIATION.test(parts.at(-1)) ? parts.with(-1, `${parts.at(-1)} ${part}`) : [...parts, part]), [])
+  .filter(part => /\w/.test(part));
+/**
+ * The line checks of a list or checklist reply. The comm role text says a bullet stops at two sentences and a third fact gets its own or
+ * a nested bullet, so a line holds at most two sentences and the 35-word cap holds per sentence. d4's 11-24 06:45 KST checklist run
+ * failed the old 35-word cap per line on one bullet of two sentences, 14 and 27 words, that followed that rule.
  */
 export const lineChecks = lines => [
-  ["no line holds more than two sentences", lines.every(line => sentences(line).length <= 2)],
-  ["no sentence over 35 words", lines.every(line => sentences(line).every(sentence => words(sentence) <= 35))],
+  ["no line holds more than two sentences", lines.every(line => lineParts(line).length <= 2)],
+  ["no sentence over 35 words", lines.every(line => lineParts(line).every(sentence => words(sentence) <= 35))],
 ];
 /** A word that makes a line a sentence: a pronoun, an auxiliary, a common verb, or a word ending in -ed or -ing. */
 const VERB = /\b(i|i'll|i'm|i've|i'd|we|we'll|we're|we'd|you|you'd|it|it's|they|here's|there's|let's|let me|is|are|was|were|be|been|has|have|had|do|does|did|can|can't|could|will|won't|would|should|need|needs|check|look|pull|read|reads|diff|compare|run|runs|ran|find|found|work|works|go|goes|start|dig|see|map|trace|test|write|pass|passes|fail|fails|pick|picks|keep|keeps|use|uses|handle|handles|get|gets|got|show|shows|take|takes|make|makes|stay|stays|lives|sits|holds|\w+ed|\w+ing)\b/i;
@@ -57,8 +67,7 @@ export const overstates = text => {
  * The sentences of each line of a text, with code and link targets left out. A wall of text, such as dm_agent-factory p55 on 11-21, a
  * paragraph of the guess, the cause, the plan and the pick, holds 3 or more on one line.
  */
-export const lineSentences = text => text.replace(/```[\s\S]*?```/g, "").replace(/`[^`\n]*`|\]\([^)]*\)/g, "x").split("\n").filter(line => line.trim())
-  .map(line => item(line).split(/(?<=[.!?])\s+/).filter(part => /\w/.test(part)).length);
+export const lineSentences = text => text.replace(/```[\s\S]*?```/g, "").split("\n").filter(line => line.trim()).map(line => lineParts(item(line)).length);
 /** Words that state the agent's own pick, such as "I'd plan around ..." in an after run on 11-21. */
 const PICK = /\b(i'd|my pick|i'll|i'm going|i suggest|suggest|recommend|unless you'd rather|i lean|lean toward|my vote|going with|default to)\b/i;
 /** Whether every question in a text comes with a pick in or before the paragraph that asks it; code, links and URLs hold no question. */
