@@ -1,6 +1,7 @@
 /** The durable side of pi-host: per-root pi-durable threads on SQLite, and the `durable_*` socket commands over them. */
 export { DurableCommands, DURABLE_COMMANDS } from "./commands.ts";
 export { ThreadIndex, statusOf, type SearchHit, type SearchPage, type SearchQuery, type ThreadRow, type ThreadStatus, type UsageTotal } from "./index-db.ts";
-export { AgentMessageEntry, ChatDoc, threadRegistry } from "./registry.ts";
+export { ChatDoc } from "./chat-doc.ts";
+export { AgentMessageEntry, threadRegistry } from "./registry.ts";
 export { SEND_MESSAGE_DESCRIPTION, SEND_MESSAGE_RESULT, SEND_MESSAGE_TOOL, SendMessage, type SendMessageArgs } from "./send-message.ts";
 export { describeEntry, DurableThreads, type DurableEvent, type DurableThreadsOptions, type SubmitInput, type ThreadInfo, type TreeNode } from "./threads.ts";

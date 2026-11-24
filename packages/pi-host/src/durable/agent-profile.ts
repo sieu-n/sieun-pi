@@ -18,7 +18,7 @@ import { AgentDoc, defineDoc, ROOT_CONVERSATION_ID, type AgentState, type Conver
 import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { threadHarnessDir } from "./prime-harness.ts";
-import { ChatDoc } from "./registry.ts";
+import { ChatDoc } from "./chat-doc.ts";
 import { getHarnessStatePath, getLocalHarnessStateDir } from "./vendor/prime-harness.ts";
 
 /**

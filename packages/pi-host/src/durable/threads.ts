@@ -30,7 +30,8 @@ import { statusOf, ThreadIndex, type IndexedEntry, type IndexRead, type SearchPa
 import { speechOf } from "./feed.ts";
 import { leanEntry } from "./lean.ts";
 import { headFor, parseSession } from "./import.ts";
-import { AgentMessageEntry, ChatDoc, threadEnv, threadRegistry } from "./registry.ts";
+import { ChatDoc } from "./chat-doc.ts";
+import { AgentMessageEntry, threadEnv, threadRegistry } from "./registry.ts";
 import { SPEAKING_TOOLS, type PrimeChat } from "./prime-chat.ts";
 import { PrimeRoots } from "./prime-roots.ts";
 import { jobTitle } from "./job-title.ts";
@@ -1188,7 +1189,7 @@ export class DurableThreads {
       if (!this.index.get(id)) throw new Error(`No durable thread ${id}`);
       const file = this.fileOf(id);
       // A row with no file yet: the open below makes it, as before.
-      if (existsSync(file)) return this.peek(id, () => peekDoc(file, target, name, context));
+      if (existsSync(file)) return this.peek(id, () => peekDoc({ file, conversation: target, name }, line => this.log(line)));
     }
     const open = await this.thread(id);
     const doc = await open.harness.snapshot(ChatDoc, target, name, context);

@@ -33,7 +33,8 @@ import { LIST_SAVED_TOOL, REMIND_ME_TOOL, SAVE_MESSAGE_TOOL } from "../../src/du
 import { SEARCH_MESSAGES_TOOL } from "../../src/durable/search-messages.ts";
 import { loadPrimeChat, PRIME_CHAT_TOOLS, withTurnWrappers, type ChatThread, type PrimeChat } from "../../src/durable/prime-chat.ts";
 import { guidelines, WRITING_SKILL } from "../../src/durable/prime-prompt.ts";
-import { ChatDoc, threadRegistry } from "../../src/durable/registry.ts";
+import { ChatDoc } from "../../src/durable/chat-doc.ts";
+import { threadRegistry } from "../../src/durable/registry.ts";
 import { ROOM_TELL_OWNER_DESCRIPTION, ROOM_TELL_OWNER_PARAMETERS, roomIdNote } from "../../src/durable/room-post.ts";
 import { EDIT_MESSAGE_DESCRIPTION, EDIT_MESSAGE_TOOL, SET_EMOJI_TOOL } from "../../src/durable/room-tools.ts";
 import { SEND_MESSAGE_TOOL } from "../../src/durable/send-message.ts";

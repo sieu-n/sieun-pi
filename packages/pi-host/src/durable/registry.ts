@@ -7,8 +7,7 @@
  * Each thread file gets its own registry, so its prompt can name its file.
  */
 import { delimiter } from "node:path";
-import type { JsonValue } from "@earendil-works/chord";
-import { createRegistry, defineDocFamily, defineEntry, type Extension, type Registry } from "@earendil-works/pi-durable";
+import { createRegistry, defineEntry, type Extension, type Registry } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { Preamble } from "./open.ts";
@@ -23,18 +22,6 @@ import { workingMemory } from "./working-memory.ts";
 
 /** A message one agent or the owner sends another thread, placed as the input's entry so the transcript shows who sent it. */
 export const AgentMessageEntry = defineEntry<{ from: string; via?: string }>("agent.message");
-
-/** Named JSON documents the chat keeps per conversation, such as `chat.meta` and `chat.board`. */
-export const ChatDoc = defineDocFamily<{ value: JsonValue }, null>({
-  kind: "chat.doc",
-  version: 1,
-  scope: "conversation",
-  history: "latest",
-  fork: "initial",
-  family: true,
-  initial: () => ({ value: null }),
-  checkpointWhen: () => true,
-});
 
 export interface ThreadExtras {
   /** The thread a subagent's notice names as its sender; default none. */

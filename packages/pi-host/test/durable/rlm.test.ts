@@ -27,7 +27,7 @@ import { getCurrentTools, toToolDeclaration } from "@earendil-works/pi-ai/utils/
 import { LiveDoc, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { testPython } from "@sieun-pi/pi-rlm/test-helpers";
 import { KERNEL_RESET } from "../../../pi-rlm/src/pi/index.ts";
-import { ChatDoc } from "../../src/durable/registry.ts";
+import { ChatDoc } from "../../src/durable/chat-doc.ts";
 import { artifactDirOf } from "../../src/durable/children.ts";
 import { DurableRlm, IPYTHON_TOOL, loadIpythonTool } from "../../src/durable/rlm.ts";
 import { SUBAGENT_STARTED } from "../../src/durable/subagent.ts";

@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { testPython } from "@sieun-pi/pi-rlm/test-helpers";
-import { ChatDoc } from "../../src/durable/registry.ts";
+import { ChatDoc } from "../../src/durable/chat-doc.ts";
 import { DurableRlm } from "../../src/durable/rlm.ts";
 import { cell, context, entriesOf, lastText, openThread, results, rlmOptions, say } from "./rlm-rig.ts";
 

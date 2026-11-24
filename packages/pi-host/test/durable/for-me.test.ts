@@ -18,7 +18,7 @@ import type { ForMeItem, ForMeList, Principal } from "../../../../apps/chat/web/
 import { AGENT_REF_DOC, commInstructions } from "../../src/durable/agent-profile.ts";
 import { ChatApp } from "../../src/durable/chat-app.ts";
 import { itemText, LIST_FOR_ME_TOOL, listText, MARK_MESSAGE_TOOL } from "../../src/durable/for-me.ts";
-import { ChatDoc } from "../../src/durable/registry.ts";
+import { ChatDoc } from "../../src/durable/chat-doc.ts";
 import { roomTools } from "../../src/durable/room-tools.ts";
 import { MODEL, textOf } from "./crash-scenario.ts";
 
