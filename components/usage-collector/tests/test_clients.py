@@ -164,6 +164,23 @@ class PrimeTest(ClientCase):
         self.run_once(prime, cache={})
         self.assertEqual(sorted({r["source_key"] for r in self.sink.rows()}), ["prime:h1:msg_live", "prime:h1:msg_old"])
 
+    def test_a_thread_moved_here_keeps_its_old_host_before_the_move(self) -> None:
+        moved = "s-moved"
+        transcript(self.prime / f"sessions/{moved}.jsonl", moved, [assistant("m1", T0, "msg_before"), assistant("m2", T0 + 5000, "msg_after")])
+        transcript(self.prime / f"session-artifacts/{moved}/sub-a/s-kid.jsonl", "s-kid", [assistant("k1", T0 + 1, "msg_kid")])
+        self.run_once(prime, cache={})
+        self.assertEqual(sorted(r["source_key"] for r in self.sink.rows()), ["prime:h1:msg_after", "prime:h1:msg_before", "prime:h1:msg_kid"])
+        stamp = assistant("x", T0 + 2000, None)["timestamp"]
+        (self.prime / "thread-moves.jsonl").write_text(json.dumps({"at": stamp, "thread": moved, "from": "mac", "to": "box", "outcome": "moved"}) + "\n")
+        self.sink.posts.clear()
+        self.store = StateStore(self.store.folder)
+        ctx = core.Context(host="us-metal02", since=0, home=self.home, state=self.store.load(prime.CLIENT), cache={})
+        core.run_client(prime, ctx, self.sink, self.store, 1_000_000)
+        rows = {r["source_key"]: r["host"] for r in self.sink.rows()}
+        self.assertEqual(rows, {"prime:mbp:msg_before": "mbp", "prime:mbp:msg_kid": "mbp", "prime:us-metal02:msg_after": "us-metal02"})
+        ctx = core.Context(host="us-metal02", since=0, home=self.home, state=self.store.load(prime.CLIENT), cache={})
+        self.assertEqual(core.run_client(prime, ctx, self.sink, self.store, 1_000_000).rows, 0, "the move is applied once")
+
     def test_old_files_are_skipped_and_a_replaced_file_is_read_again(self) -> None:
         old = self.prime / "sessions/s-old.jsonl"
         transcript(old, "s-old", [assistant("o1", T0, "msg_o")])

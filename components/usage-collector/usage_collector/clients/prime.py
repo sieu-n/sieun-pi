@@ -78,6 +78,33 @@ def transcripts(prime: Path) -> List[Tuple[Path, Optional[str]]]:
     return sorted(roots) + sorted(children)
 
 
+# How move-thread-host.py names the boxes in thread-moves.jsonl.
+MOVE_HOSTS = {"mac": "mbp", "box": "us-metal02"}
+
+
+def moves_to(prime: Path, host: str) -> Dict[str, List[Any]]:
+    """thread -> [move time ms, the host it ran on before] for each thread move-thread-host.py moved to this host. Its transcripts came
+    along, so their calls before the move ran on the other host and keep that host and its key: the same key the other host's collector
+    gives them if it still holds a copy. Before this, the 28,726 calls slack green guy made on the Mac counted as us-metal02 after its
+    move on 11-21."""
+    out: Dict[str, List[Any]] = {}
+    try:
+        lines = (prime / "thread-moves.jsonl").read_text().splitlines()
+    except (FileNotFoundError, UnicodeDecodeError):
+        return out
+    for line in lines:
+        try:
+            move = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(move, dict) or move.get("outcome") != "moved" or not move.get("thread"):
+            continue
+        before, at = MOVE_HOSTS.get(str(move.get("from"))), epoch_ms(move.get("at"))
+        if MOVE_HOSTS.get(str(move.get("to"))) == host and before and before != host and at is not None:
+            out[str(move["thread"])] = [at, before]
+    return out
+
+
 def job_chats(prime: Path) -> Dict[str, str]:
     """Root job name -> the Prime chat that started it, from the browser chat's chat-jobs.json."""
     try:
@@ -169,9 +196,21 @@ def collect(ctx: Any) -> Iterator[Any]:
     if walk:
         files = transcripts(prime)
         cache["jobs"] = job_chats(prime)
+        moves = moves_to(prime, ctx.host)
+        known = ctx.state.get("moves") or {}
+        if moves != known:
+            # a newly recorded move changes the host and key of calls already sent, so its thread's files are read again
+            changed = {t for t in set(moves) | set(known) if moves.get(t) != known.get(t)}
+            for name in [k for k in ctx.state if k.startswith("f:")]:
+                rest = name[2:]
+                if any(rest == f"sessions/{t}.jsonl" or rest.startswith(f"session-artifacts/{t}/") for t in changed):
+                    del ctx.state[name]
+            ctx.state["moves"] = moves
+        cache["moves"] = moves
     else:
         files = sorted(cache.get("hot", ()), key=lambda item: (item[1] is not None, item))
     jobs: Dict[str, str] = cache.get("jobs", {})
+    moved: Dict[str, List[Any]] = cache.get("moves", {})
     grew = cache.setdefault("grew", set())
     for path, root in files:
         key = "f:" + str(path.relative_to(prime))
@@ -198,8 +237,12 @@ def collect(ctx: Any) -> Iterator[Any]:
             root_cursor = ctx.state.get(f"f:sessions/{root}.jsonl")
             thread, thread_name = root, (root_cursor[4] if root_cursor else None) or ""
         agent = jobs.get(thread_name, thread_name)
+        move = moved.get(thread)
         for call in calls:
             call.update(agent=agent, thread=thread, thread_name=thread_name, session=session or path.stem)
+            if move and call["call_at"] < move[0]:
+                call["host"] = move[1]
+                call["source_key"] = f"{CLIENT}:{move[1]}:" + call["source_key"][len(f"{CLIENT}:{ctx.host}:"):]
             yield call
         ctx.state[key] = [info.st_size, end, info.st_ino, session, name]
         yield CHECKPOINT
