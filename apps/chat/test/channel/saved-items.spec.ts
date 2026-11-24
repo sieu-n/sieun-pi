@@ -74,14 +74,18 @@ test("a row's memo is added from More actions, edited by a click, kept over a re
 
   await page.reload();
   await expect(row.locator("[data-later-memo]")).toHaveText(`first ${word}`);
+  // Other specs' saved and kept-unread rows can sit above this one, so bring the memo into view as he sees it before he clicks it, and
+  // measure the field against its own row, which rows saved meanwhile elsewhere cannot move.
+  await row.locator("[data-later-memo]").scrollIntoViewIfNeeded();
+  const before = (await row.boundingBox())!;
   const shown = (await row.locator("[data-later-memo]").boundingBox())!;
-  const rowHeight = (await row.boundingBox())!.height;
   await row.locator("[data-later-memo]").click();
   await expect(field).toHaveValue(`first ${word}`);
   const editing = (await field.boundingBox())!;
-  expect(Math.abs(editing.y - shown.y)).toBeLessThan(1);
+  const after = (await row.boundingBox())!;
+  expect(Math.abs(editing.y - after.y - (shown.y - before.y))).toBeLessThan(1);
   expect(Math.abs(editing.height - shown.height)).toBeLessThan(1);
-  expect(Math.abs((await row.boundingBox())!.height - rowHeight)).toBeLessThan(1);
+  expect(Math.abs(after.height - before.height)).toBeLessThan(1);
   await field.fill(`second ${word}`);
   await page.keyboard.press("Escape");
   await expect(row.locator("[data-later-memo]")).toHaveText(`first ${word}`);
