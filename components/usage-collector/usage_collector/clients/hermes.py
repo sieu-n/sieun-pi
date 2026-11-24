@@ -13,7 +13,7 @@ import os
 import sqlite3
 from typing import Iterable
 
-from usage_collector.outside import open_sqlite_ro, reported, row
+from usage_collector.outside import open_sqlite_ro, reported, row, changed_only
 
 CLIENT = "hermes"
 AGENT = "Hermes Agent"
@@ -50,6 +50,10 @@ def databases(home: str) -> list:
 
 
 def collect(ctx) -> Iterable[dict]:
+    return changed_only(ctx, _rows(ctx))
+
+
+def _rows(ctx) -> Iterable[dict]:
     seen = set()
     for db in databases(str(ctx.home)):
         for r in read_db(db, ctx.host):

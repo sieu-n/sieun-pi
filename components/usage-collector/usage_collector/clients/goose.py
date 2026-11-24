@@ -14,7 +14,7 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Iterable
 
-from usage_collector.outside import open_sqlite_ro, parse_ts, row
+from usage_collector.outside import open_sqlite_ro, parse_ts, row, changed_only
 
 CLIENT = "goose"
 QUERY = """
@@ -52,6 +52,10 @@ def _created(s) -> int:
 
 
 def collect(ctx) -> Iterable[dict]:
+    return changed_only(ctx, _rows(ctx))
+
+
+def _rows(ctx) -> Iterable[dict]:
     seen = set()
     for db in databases(str(ctx.home)):
         try:

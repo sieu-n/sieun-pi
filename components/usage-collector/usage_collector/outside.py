@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
+import json
 import os
 import shutil
 import subprocess
 from datetime import datetime, timezone
-from typing import Callable, Iterator, Optional
+from typing import Callable, Iterable, Iterator, Optional
 
 from usage_collector import prices
 
@@ -33,6 +35,20 @@ def row(**fields) -> dict:
         if k not in out:
             raise KeyError(f"row is missing {k}")
     return {k: out[k] for k in COLUMNS}
+
+
+def changed_only(ctx, rows: Iterable[dict]) -> Iterator[dict]:
+    """The rows whose content differs from what the last saved pass sent, for a client whose source keeps totals that can grow
+    in place (a session's sums) and no per-call cursor. Without it such a client posts every row again on each 10 s pass."""
+    sent = ctx.state.get("sent") or {}
+    now = {}
+    for r in rows:
+        digest = hashlib.sha256(json.dumps(r, sort_keys=True, default=str).encode()).hexdigest()[:16]
+        now[r["source_key"]] = digest
+        if sent.get(r["source_key"]) != digest:
+            yield r
+    if now != sent:
+        ctx.state["sent"] = now
 
 
 def reported(total: float, model: str, provider: str, input_tokens: int, output_tokens: int, cache_read_tokens: int,

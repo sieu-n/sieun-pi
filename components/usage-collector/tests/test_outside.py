@@ -172,6 +172,32 @@ class SqliteClientsTest(unittest.TestCase):
         self.assertEqual((r["source_key"], r["output_tokens"], r["reasoning_tokens"], r["duration_ms"], r["cost_source"]),
                          ("opencode:h1:m1", 25, 5, 2000, "reported"))
 
+    def test_a_second_pass_over_unchanged_totals_posts_nothing(self):
+        """hermes, goose and opencode keep sums per session and no per-call cursor. Before changed_only the service posted
+        the same 3 hermes rows from 2026-10-18 on every 10 s pass on us-metal02."""
+        from helpers import FakeSink
+        from usage_collector.state import StateStore
+
+        self.test_hermes_per_model_rows_and_uncovered_session_totals()
+        self.test_goose_uses_accumulated_counters_and_gap_as_reasoning()
+        self.test_opencode_assistant_rows_with_reported_cost()
+        store = StateStore(self.home / "state")
+        for module, first in ((hermes, 2), (goose, 1), (opencode, 1)):
+            sink = FakeSink()
+            passes = []
+            for _ in range(3):
+                c = core.Context(host="h1", since=0, home=self.home, state=store.load(module.CLIENT))
+                passes.append(core.run_client(module, c, sink, store, 1_000_000).rows)
+            self.assertEqual(passes, [first, 0, 0], module.CLIENT)
+        conn = sqlite3.connect(str(self.home / ".hermes/state.db"))
+        conn.execute("UPDATE sessions SET input_tokens = 60 WHERE id = 'b'")
+        conn.commit()
+        conn.close()
+        sink = FakeSink()
+        c = core.Context(host="h1", since=0, home=self.home, state=store.load("hermes"))
+        self.assertEqual(core.run_client(hermes, c, sink, store, 1_000_000).rows, 1)
+        self.assertEqual([r["source_key"] for r in sink.rows()], ["hermes:h1:b"])
+
 
 class VentTest(unittest.TestCase):
     def page(self, ns, env="staging", model="claude-opus-5-5(high)"):

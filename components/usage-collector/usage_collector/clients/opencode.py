@@ -13,7 +13,7 @@ import os
 import sqlite3
 from typing import Iterable, Optional
 
-from usage_collector.outside import open_sqlite_ro, reported, row, walk_files
+from usage_collector.outside import open_sqlite_ro, reported, row, walk_files, changed_only
 
 CLIENT = "opencode"
 QUERIES = (
@@ -27,6 +27,10 @@ def base(home: str) -> str:
 
 
 def collect(ctx) -> Iterable[dict]:
+    return changed_only(ctx, _rows(ctx))
+
+
+def _rows(ctx) -> Iterable[dict]:
     seen = set()
     root = base(str(ctx.home))
     for db in sorted(glob.glob(os.path.join(root, "opencode*.db"))):
