@@ -12,7 +12,7 @@ import { getContentRoot, indexWrittenPage, normalizeLinkTarget, normalizeRequest
 import { extractHtmlTitle, META_COMMENT, parseHtmlMeta } from './wiki-html';
 import { hubsLinking, isCuratedPath, missingHubRow, isRetiredStatus, retiredLinksAdded, titleMatchesH1 } from './wiki-lint';
 import { addRevision, currentVersion } from './wiki-store';
-import { deadLinkReason, deadLinksAdded } from '../../../scripts/page-gate.mjs';
+import { deadLinkReason, deadLinksAdded, updatedFill, withMetaKey } from '../../../scripts/page-gate.mjs';
 import { staleWrite } from './stale-base.mjs';
 import { mermaidWriteCheck } from '../../../scripts/mermaid-check.mjs';
 import { renumberLists } from '../../../scripts/ol-numbering.mjs';
@@ -256,7 +256,7 @@ async function commitPageLocked(input: {
 	linesRemoved: number;
 	/** False when the content equals the stored page: the answer names the current version and no revision is logged. */
 	changed: boolean;
-	/** Page gate warnings (rules 6, 7 and 9): a source_ref this write adds, or a commit its new last_verified hides, changed after the page's last_verified; a not-landed line the write adds; a broken mermaid block the page already held; a page the write leaves past its whole-read cap; and a created curated page no hub lists. */
+	/** Page gate warnings (rules 6, 7 and 9): a source_ref this write adds, or a commit its new last_verified hides, changed after the page's last_verified; a not-landed line the write adds; an `updated` the write left out, which the page API filled (rule 10); a broken mermaid block the page already held; a page the write leaves past its whole-read cap; and a created curated page no hub lists. */
 	warnings?: string[];
 }> {
 	const { rel, full } = resolveWritePath(input.rawPath);
@@ -295,8 +295,10 @@ async function commitPageLocked(input: {
 			);
 	}
 	const numbered = renumberedPage(rel, input.content);
-	const content = numbered.content;
 	// A write of the bytes already stored logs no revision. On 2026-11-04 golden-and-release v71 and v72 had one hash.
+	if (exists && numbered.content === before) return unchangedWrite(rel, before);
+	const stamped = withUpdated(rel, exists ? before : null, numbered.content);
+	const content = stamped.content;
 	if (exists && content === before) return unchangedWrite(rel, before);
 	if (exists && input.refuseStaleCopy && (input.baseVersion === undefined || input.baseVersion === null)) {
 		const reason = staleCopyReason(rel, input.content);
@@ -311,6 +313,7 @@ async function commitPageLocked(input: {
 			? await inWriteWorker('gateWarnings', { code, rel, before: exists ? before : null, after: content, summary: input.summary })
 			: []),
 		...numbered.warnings,
+		...stamped.warnings,
 		...mermaid.warnings,
 		...readCapWarning(rel, content),
 		...(exists ? [] : await hubRowWarning(rel, content)),
@@ -363,6 +366,18 @@ function renumberedPage(rel: string, content: string): { content: string; warnin
 			`the page API set start= on ${result.moved} numbered list(s) of ${rel} so its line numbers run on, and moved each ` +
 				`"item N" with its line. Read the page again before your next edit`,
 		],
+	};
+}
+
+/** A curated page or the home page with the `updated` its write left out (page gate rule 10), and the warning that says so. */
+function withUpdated(rel: string, before: string | null, content: string): { content: string; warnings: string[] } {
+	if (!rel.endsWith('.html') || !(isCuratedPath(rel) || rel === 'index.html')) return { content, warnings: [] };
+	const fill = updatedFill(before, content, Date.now());
+	if (!fill) return { content, warnings: [] };
+	const why = fill.kept ? 'the old value, because only the meta changed' : 'the UTC time of this write, because the body changed';
+	return {
+		content: fill.html,
+		warnings: [`the write left "updated" out of the meta of ${rel}, so the page API set it to "${fill.updated}", ${why}. Keep "updated" in the meta you send`],
 	};
 }
 
@@ -582,30 +597,6 @@ function writePageFile(full: string, content: string, gated: boolean): void {
 	}
 }
 
-/**
- * The frontmatter JSON with `superseded_by` set, keeping the author's own layout: the key's
- * value is replaced in place, or the key is added before the closing brace. The text edit
- * must parse back to exactly `{ ...meta, superseded_by }`; if it does not, re-serialize.
- */
-function withSupersededBy(jsonText: string, meta: Record<string, unknown>, target: string): string {
-	const value = JSON.stringify(target);
-	const existing = /("superseded_by"\s*:\s*)"(?:[^"\\]|\\.)*"/;
-	const close = jsonText.lastIndexOf('}');
-	const head = jsonText.slice(0, close).trimEnd();
-	const separator = jsonText.includes('\n') ? `,\n${/\n([ \t]*)"/.exec(jsonText)?.[1] ?? '\t'}` : ', ';
-	const edited =
-		'superseded_by' in meta
-			? jsonText.replace(existing, (_m, key: string) => `${key}${value}`)
-			: `${head}${head.endsWith('{') ? '' : separator}"superseded_by": ${value}${jsonText.slice(head.length)}`;
-	const expected = JSON.stringify({ ...meta, superseded_by: target });
-	try {
-		if (JSON.stringify(JSON.parse(edited)) === expected) return edited;
-	} catch {
-		// fall through to a clean re-serialize
-	}
-	return JSON.stringify({ ...meta, superseded_by: target });
-}
-
 /** The content-root path of an existing page that `by` names, read as content-root first, then page-relative. */
 async function resolveSupersedeTarget(by: string, fromRel: string): Promise<string> {
 	const stripped = by
@@ -673,7 +664,7 @@ async function supersedePageLocked(input: Parameters<typeof supersedePage>[0]): 
 	if (!meta || typeof meta !== 'object' || Array.isArray(meta))
 		throw new WriteError(422, `${rel} frontmatter is not a JSON object`);
 	if (meta.superseded_by === target) return { ...unchangedWrite(rel, before), superseded_by: target };
-	const nextJson = withSupersededBy(jsonText, meta, target);
+	const nextJson = withMetaKey(jsonText, meta, 'superseded_by', target);
 	const jsonStart = match.index + match[0].length - '-->'.length - match[1].length + match[1].indexOf(jsonText);
 	const content = before.slice(0, jsonStart) + nextJson + before.slice(jsonStart + jsonText.length);
 	const result = await writeLogged({

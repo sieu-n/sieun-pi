@@ -16,3 +16,9 @@ export function deadLinksAdded(
 
 /** The refusal reason for dead link targets, which the page API and the page gate both print. */
 export function deadLinkReason(dead: string[]): string;
+
+/** The meta JSON text with `key` set to `value`, keeping the author's layout where the edit parses back. */
+export function withMetaKey(jsonText: string, meta: Record<string, unknown>, key: string, value: string): string;
+
+/** Rule 10: `after` with the `updated` the write left out of its meta, or null when it needs none. */
+export function updatedFill(before: string | null, after: string, now: number): { html: string; updated: string; kept: boolean } | null;

@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import './no-wiki-config.mjs';
 import { assertFixtureRepo, fixtureGitEnv } from './test-git-env.mjs';
-import { pageStackRefusal, pageWriteReasons, pageWriteWarnings } from '../scripts/page-gate.mjs';
+import { pageStackRefusal, pageWriteReasons, pageWriteWarnings, updatedFill } from '../scripts/page-gate.mjs';
 
 const LINT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../scripts/prose-lint.mjs');
 const DROPS = 'apps/crawler-v3/tiktok-shop-listing-drops/index.html';
@@ -383,4 +383,21 @@ test('the page API warns on a write that adds a not-landed line, names the dev-s
 		[],
 		'the dev-sha phrasing passes',
 	);
+});
+
+test('a write that leaves out updated keeps the old one when only the meta changed, and gets the write time when the body changed', () => {
+	// 2026-11-24 02:27Z to 03:00Z: w088, w114 and w115 rewrote 8 curated pages with no updated.
+	const meta = { title: 'Discovery', description: 'd', updated: '2026-11-23T15:11:05Z', last_verified: '2026-11-23T15:11Z' };
+	const { updated: _dropped, ...rest } = meta;
+	const old = html(meta, '<p>Old body.</p>');
+	const now = Date.parse('2026-11-24T02:32:57.386Z');
+	const stamp = updatedFill(old, html({ ...rest, last_verified: '2026-11-24T02:30Z' }, '<p>Old body.</p>'), now);
+	assert.deepEqual(JSON.parse(/<!--wiki (.*)-->/.exec(stamp.html)[1]), { ...rest, last_verified: '2026-11-24T02:30Z', updated: meta.updated });
+	assert.equal(stamp.kept, true);
+	const body = updatedFill(old, html(rest, '<p>New body.</p>'), now);
+	assert.equal(body.updated, '2026-11-24T02:32:57Z');
+	assert.equal(body.kept, false);
+	assert.ok(body.html.endsWith('<h1>Discovery</h1>\n<p>New body.</p>\n'), body.html);
+	assert.equal(updatedFill(null, html(rest), now).updated, '2026-11-24T02:32:57Z');
+	assert.equal(updatedFill(old, html({ ...meta, updated: '2026-11-24T02:00Z' }, '<p>New body.</p>'), now), null);
 });

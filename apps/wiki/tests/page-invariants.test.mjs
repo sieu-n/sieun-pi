@@ -108,3 +108,24 @@ test('a write that drops last_verified is refused, and a new curated page needs 
 	assert.match((await created.json()).error, /new page with no last_verified/);
 	assert.equal((await fetch(`${BASE}/raw/${fresh}`)).status, 404, 'a refused page is never written');
 });
+
+test('a write that drops updated leaves the page with one: the old value for a meta-only edit, the write time for a body edit', async (t) => {
+	// 2026-11-24 02:27Z to 03:00Z: 8 curated rewrites dropped updated and the d4 precheck counted 8 missing_meta items.
+	if (!BASE) return t.skip('llm-wiki dev server unreachable, SKIPPED, not passed');
+	const updated = /"updated"\s*:\s*"([^"]*)",?/.exec(original);
+	assert.ok(updated, `${PAGE} needs an updated`);
+	const metaOnly = await patch([{ old_string: updated[0], new_string: '' }]);
+	assert.equal(metaOnly.status, 200, await metaOnly.clone().text());
+	assert.equal(/"updated"\s*:\s*"([^"]*)"/.exec(await raw(PAGE))?.[1], updated[1], 'a meta-only write keeps the old updated');
+	const h1 = firstH1(original);
+	const started = Date.now() - 1000;
+	const res = await patch([
+		{ old_string: updated[0], new_string: '' },
+		{ old_string: `<h1>${h1}</h1>`, new_string: `<h1>${h1}</h1>\n<p>The page API test adds this line.</p>` },
+	]);
+	assert.equal(res.status, 200, await res.clone().text());
+	const answer = await res.json();
+	assert.ok(answer.warnings?.some((w) => w.includes('the page API set it to')), JSON.stringify(answer.warnings));
+	const stamped = /"updated"\s*:\s*"([^"]*)"/.exec(await raw(PAGE))?.[1];
+	assert.ok(stamped && Date.parse(stamped) >= started, `updated is the write time, got ${stamped}`);
+});

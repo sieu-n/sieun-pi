@@ -28,6 +28,8 @@
  *   9. A warning, not a refusal, in the page API answer only: every other not-landed line a write adds (notLandedWarnings) names the
  *      dev-sha phrasing to use instead, "on dev/sieun since <sha>", because the next land makes such a line false and costs the page
  *      another write. A stale line guards no data, money, auth, outside send or vendor limit (owner rule c98).
+ *  10. In the page API only, a write of a curated page or the home page whose meta leaves out `updated` gets one (updatedFill):
+ *      the old value when only the meta changed, and the UTC time of the write when the body changed. The answer says so.
  * Rules 3 to 6, 8 and 9 judge only what the write adds, because 265 of 296 curated pages had no `last_verified` on 2026-10-19
  * and a rule on the whole page would refuse every edit to them.
  *
@@ -94,6 +96,62 @@ export function titleGap(html) {
 }
 
 const VERIFIED = /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?Z)?$/;
+
+const META_JSON = /<!--wiki\s*(\{[\s\S]*?\})\s*-->/;
+
+/**
+ * The meta JSON text with `key` set to `value`, keeping the author's layout: a string, number, boolean or null value is
+ * replaced in place, or the key goes in before the closing brace. When the edited text does not parse back to
+ * `{ ...meta, [key]: value }`, the meta is serialized again.
+ * @param {string} jsonText @param {Record<string, unknown>} meta @param {string} key @param {string} value
+ */
+export function withMetaKey(jsonText, meta, key, value) {
+	const literal = JSON.stringify(value);
+	const existing = new RegExp(`(${JSON.stringify(key)}\\s*:\\s*)(?:"(?:[^"\\\\]|\\\\.)*"|null|true|false|-?\\d[\\d.eE+-]*)`);
+	const close = jsonText.lastIndexOf('}');
+	const head = jsonText.slice(0, close).trimEnd();
+	const separator = jsonText.includes('\n') ? `,\n${/\n([ \t]*)"/.exec(jsonText)?.[1] ?? '\t'}` : ', ';
+	const edited =
+		key in meta
+			? jsonText.replace(existing, (_m, prefix) => `${prefix}${literal}`)
+			: `${head}${head.endsWith('{') ? '' : separator}${JSON.stringify(key)}: ${literal}${jsonText.slice(head.length)}`;
+	const expected = JSON.stringify({ ...meta, [key]: value });
+	try {
+		if (JSON.stringify(JSON.parse(edited)) === expected) return edited;
+	} catch {
+		// fall through to a clean serialize
+	}
+	return JSON.stringify({ ...meta, [key]: value });
+}
+
+/**
+ * Rule 10: `after` with `updated` filled in its meta when the write leaves it out, or null when it has one, has no meta
+ * object, or equals `before`. A write that changes only the meta keeps the old `updated`, and one that changes the body,
+ * or a new page, gets the UTC time `now` (ms). The wiki dream precheck counts a page with no `updated` in missing_meta.
+ * Why: on 2026-11-24 from 02:27Z to 03:00Z the "wiki pages to the core" writers w088, w114 and w115 rewrote 8 curated
+ * pages, such as apps/search/discovery.html v67, with no `updated`, and the d4 precheck counted 8 missing_meta items.
+ * @param {string | null} before @param {string} after @param {number} now
+ * @returns {{ html: string, updated: string, kept: boolean } | null}
+ */
+export function updatedFill(before, after, now) {
+	if (after === before) return null;
+	const match = META_JSON.exec(after.slice(0, 20000));
+	if (!match) return null;
+	let meta;
+	try {
+		meta = JSON.parse(match[1]);
+	} catch {
+		return null;
+	}
+	if (!meta || typeof meta !== 'object' || Array.isArray(meta) || (typeof meta.updated === 'string' && meta.updated)) return null;
+	const body = (html) => html.replace(META_JSON, '');
+	const old = before === null ? undefined : parseMeta(before)?.updated;
+	const kept = before !== null && typeof old === 'string' && old !== '' && body(before) === body(after);
+	const updated = kept ? old : new Date(now).toISOString().replace(/\.\d{3}Z$/, 'Z');
+	const start = match.index + match[0].indexOf(match[1]);
+	const html = after.slice(0, start) + withMetaKey(match[1], meta, 'updated', updated) + after.slice(start + match[1].length);
+	return { html, updated, kept };
+}
 
 /** True when the page's meta has a `last_verified` UTC time or day in a form wiki-stale.ts parses. */
 function isVerified(html) {
