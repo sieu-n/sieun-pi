@@ -465,6 +465,18 @@ test("removed_provider_refs skips api-portal's blog and docs copy that names Met
   assert.deepEqual(result.flagged.map(flag => flag.item), ["apps/api-portal/src/lib/server/meta.ts"]);
 });
 
+test("removed_provider_refs skips the crawler's pinned tech fingerprints and the adblock rules fixture and still counts a call beside them (d1, 11-26)", () => {
+  const line = (path: string, text: string) => `origin/dev/sieun:${path}\0${1}\0${text}`;
+  const grep = [
+    line("apps/crawler-v3/src/companies/stack_data/technologies.json", '\t"ElevenLabs": {'),
+    line("packages/ui/tests/fixtures/adblock-rules.txt", "/e/*^ip=$domain=heygen.com"),
+    line("apps/crawler-v3/src/companies/voice.py", "requests.post('https://api.elevenlabs.io/v1/text-to-speech')"),
+  ].join("\n");
+  const result = removedProviderRefs({ grep, tables: TABLES }, 0);
+  assert.ok(!("error" in result));
+  assert.deepEqual(result.flagged.map(flag => flag.item), ["apps/crawler-v3/src/companies/voice.py"]);
+});
+
 test("the store lister ships beside the duty, because the wiki session copy stopped resolving its repo imports on 11-04", () => {
   assert.ok(existsSync(STORE_NAMES));
   assert.doesNotMatch(STORE_NAMES, /llm-wiki/);
