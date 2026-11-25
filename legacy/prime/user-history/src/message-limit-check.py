@@ -94,6 +94,8 @@ HELD_NOTE = (
 UNCONFIRMED = {}
 CROSS_HOST = os.path.join(os.path.dirname(os.path.realpath(__file__)), "cross-host-message.ts")
 NO_SIBLING = "No sibling matches"
+# The chat service's answer for a sender root no box's daemon lists (cross-host-message.ts sendCrossHost).
+UNLISTED_ROOT = "No box lists root session"
 # A root whose worker died or that the daemon dropped refuses every send until it is opened again from its file (src/reopen-send.ts).
 REOPENABLE = re.compile(r"Session worker is failed|Unknown active session")
 FULL = re.compile(r"too many pending messages: (\d+) unfinished, limit is (\d+)")
@@ -503,9 +505,10 @@ async def send_other_box(real, payload, error, resend):
     except RuntimeError as other:
         if SEND_TIMEOUT in str(other) or CLIENT_CLOSED in str(other):
             raise
-        if NO_SIBLING not in str(other):
+        if NO_SIBLING not in str(other) and UNLISTED_ROOT not in str(other):
             raise RuntimeError(f"{error}; {other}") from None
         # On 11-26 frontend bro on the Mac could not reach agent factory, a pi-host thread on us-metal02: no pi-host route on the Mac listed it.
+        # A sender no box's daemon lists, such as a `prime-agent -p` run, reaches a thread the same way, since apps/chat does not need it listed.
         try:
             return await send_pi_thread(real, payload, {"sessionId": payload.get("receiver_name")})
         except RuntimeError as thread:

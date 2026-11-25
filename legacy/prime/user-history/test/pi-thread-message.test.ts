@@ -204,7 +204,7 @@ test("on the Mac the pi-host socket and the chat proxy come from relay.json, sin
   }
 });
 
-test("a Mac root's send to a pi-host thread on another box goes through apps/chat once the daemon and the chat service find no sibling", async () => {
+test("a Mac root's send to a pi-host thread on another box goes through apps/chat once the daemon and the chat service find no sibling or no listed sender", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pi-thread-across-"));
   // The Mac chat service lists no other root and refuses the send, as :5182 answered frontend bro on 11-26.
   const chat = createHttpServer((req, res) => {
@@ -213,11 +213,13 @@ test("a Mac root's send to a pi-host thread on another box goes through apps/cha
     req.on("end", () => {
       const to = body ? (JSON.parse(body) as { to?: string }).to : "";
       const siblings = req.url!.includes("api/agent/siblings");
+      // A `prime-agent -p` sender is a root no daemon lists, and the service refuses it before it looks for the target.
+      const refused = to === VENT ? `No box lists root session ${MAC_ROOT.slice(0, 8)}.` : `No sibling matches "${to}" on any box either.`;
       res.writeHead(siblings ? 200 : 409, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(siblings ? { agents: [] } : { error: `No sibling matches "${to}" on any box either.` }));
+      res.end(JSON.stringify(siblings ? { agents: [] } : { error: refused }));
     });
   });
-  // apps/chat knows agent factory on us-metal02 and no "nobody".
+  // apps/chat knows agent factory and vent on us-metal02 and no "nobody".
   const posts: { url: string; body: Record<string, unknown> }[] = [];
   const app = createHttpServer((req, res) => {
     let body = "";
@@ -225,9 +227,9 @@ test("a Mac root's send to a pi-host thread on another box goes through apps/cha
     req.on("end", () => {
       const parsed = JSON.parse(body) as Record<string, unknown>;
       posts.push({ url: req.url!, body: parsed });
-      const found = parsed.to === FACTORY;
+      const found = THREADS.find(thread => thread.id === parsed.to);
       res.writeHead(found ? 200 : 404, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(found ? { thread: FACTORY, name: "agent factory", box: "us-metal02", submission: 7 }
+      res.end(JSON.stringify(found ? { thread: found.id, name: found.name, box: "us-metal02", submission: 7 }
         : { error: `No thread on any box has the id or name ${JSON.stringify(parsed.to)}.` }));
     });
   });
@@ -251,7 +253,7 @@ test("a Mac root's send to a pi-host thread on another box goes through apps/cha
     "    except Exception as error:",
     "        return {'error': str(error)}",
     "async def main():",
-    `    print(json.dumps({'factory': await send('${FACTORY}'), 'nobody': await send('nobody')}))`,
+    `    print(json.dumps({'factory': await send('${FACTORY}'), 'vent': await send('${VENT}'), 'nobody': await send('nobody')}))`,
     "asyncio.run(main())",
   ].join("\n");
   try {
@@ -268,6 +270,7 @@ test("a Mac root's send to a pi-host thread on another box goes through apps/cha
     assert.deepEqual([posts[0]!.body.to, posts[0]!.body.whenBusy], [FACTORY, "steer"]);
     assert.match(String(posts[0]!.body.requestId), /^agentmsg:/);
     assert.match(String(posts[0]!.body.text), new RegExp(`^\\[agent-message from sibling:frontend bro \\(${MAC_ROOT}, a Prime session on [\\w.-]+\\); answer with .*\\]\\n\\ndelivery test$`));
+    assert.deepEqual([out.vent.deliveryStatus, out.vent.target?.sessionId, posts[1]!.body.to], ["delivered", VENT, VENT]);
     assert.match(out.nobody.error, /No sibling matches nobody; .*No sibling matches "nobody" on any box either.*No thread on any box has the id or name "nobody"/);
   } finally {
     chat.close();
