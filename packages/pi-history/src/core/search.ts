@@ -247,10 +247,29 @@ export function primeHits(db: DatabaseSync, box: string, query: Query, ask: Page
       continue;
     }
     const snippet = `snippet(fts, 0, '${OPEN}', '${CLOSE}', '…', ${SNIPPET_TOKENS}) AS snippet`;
+    // Builds hit rows and snippets for a page's ids only. A prefix term is expanded for each id an IN list hands FTS5 (compac* took 232 ms
+    // for 21 ids at load 160 on 10-28), so its page reads one rowid range and filters the ids outside FTS5 (16 ms). A phrase or plain term
+    // seeks each id faster (board.wake 17 ms against 89 ms).
+    const pageRows = (ids: number[]): Row[] => {
+      const pick = part.match!.includes("*")
+        ? { sql: "fts.rowid BETWEEN ? AND ? AND (fts.rowid + 0) IN (SELECT value FROM json_each(?))", values: [Math.min(...ids), Math.max(...ids), JSON.stringify(ids)] }
+        : { sql: "fts.rowid IN (SELECT value FROM json_each(?))", values: [JSON.stringify(ids)] };
+      return prepare(db, `SELECT ${HIT_COLUMNS}, ${snippet} FROM fts JOIN docs d ON d.id = fts.rowid JOIN files f ON f.id = d.file
+        WHERE fts MATCH ? AND ${pick.sql}`).all(part.match, ...pick.values) as Row[];
+    };
     if (ask.sort === "newest") {
       const before = ask.before ? [`${part.id} <= ?`] : [];
-      const sql = `SELECT ${HIT_COLUMNS}, ${snippet} FROM ${part.from} ${whereSql(part.where, before)} ORDER BY ${part.id} DESC LIMIT ?`;
-      for (const row of prepare(db, sql).all(...part.where.values, ...ask.before ? [ask.before.k] : [], want) as Row[]) add(row, true, 0);
+      const values = [...part.where.values, ...ask.before ? [ask.before.k] : [], want];
+      if (!part.where.rows) {
+        const sql = `SELECT ${HIT_COLUMNS}, ${snippet} FROM ${part.from} ${whereSql(part.where, before)} ORDER BY ${part.id} DESC LIMIT ?`;
+        for (const row of prepare(db, sql).all(...values) as Row[]) add(row, true, 0);
+        continue;
+      }
+      // A filter on the docs row picks the page's ids through docs_meta first. Read with the whole docs row, each match that the filter then
+      // dropped cost a read of its text: "staging convex reads" in ops guy's chat read 4,444 docs rows for 36 hits, 1.4 s on 11-25.
+      const ids = (prepare(db, `SELECT fts.rowid AS id FROM ${part.countFrom} ${whereSql(part.where, before)} ORDER BY fts.rowid DESC LIMIT ?`)
+        .all(...values) as Row[]).map(row => Number(row.id));
+      if (ids.length) for (const row of pageRows(ids).sort((a, b) => Number(b.id) - Number(a.id))) add(row, true, 0);
       continue;
     }
     // Scores the newest RANK_WINDOW hits in one pass and sorts them here, then builds hit rows and snippets for the page's ids only. On 10-28
@@ -261,16 +280,9 @@ export function primeHits(db: DatabaseSync, box: string, query: Query, ask: Page
       .sort((a, b) => Number(a.score) - Number(b.score) || Number(b.id) - Number(a.id)).slice(0, want);
     if (!scored.length) continue;
     const scores = new Map(scored.map(row => [Number(row.id), Number(row.score)]));
-    // A prefix term is expanded for each id an IN list hands FTS5 (compac* took 232 ms for 21 ids at load 160 on 10-28), so its page reads
-    // one rowid range and filters the ids outside FTS5 (16 ms). A phrase or plain term seeks each id faster (board.wake 17 ms against 89 ms).
-    const ids = [...scores.keys()];
-    const pick = part.match!.includes("*")
-      ? { sql: "fts.rowid BETWEEN ? AND ? AND (fts.rowid + 0) IN (SELECT value FROM json_each(?))", values: [Math.min(...ids), Math.max(...ids), JSON.stringify(ids)] }
-      : { sql: "fts.rowid IN (SELECT value FROM json_each(?))", values: [JSON.stringify(ids)] };
-    const rows = prepare(db, `SELECT ${HIT_COLUMNS}, ${snippet} FROM fts JOIN docs d ON d.id = fts.rowid JOIN files f ON f.id = d.file
-      WHERE fts MATCH ? AND ${pick.sql}`).all(part.match, ...pick.values) as Row[];
-    for (const row of rows) add(row, true, scores.get(Number(row.id)) ?? 0);
+    for (const row of pageRows([...scores.keys()])) add(row, true, scores.get(Number(row.id)) ?? 0);
   }
+
   const out = [...hits.values()];
   return ask.sort === "relevant" ? out.sort((a, b) => a.score - b.score || b.key - a.key) : out;
 }

@@ -67,6 +67,23 @@ test("a chat, session or scope filter under fts seeks each hit's docs row by its
   }
 });
 
+// The same searches read each match's whole docs row, text included, to test its file: "staging convex reads" in ops guy's chat read 4,444
+// rows for 36 hits on 11-25. A newest search with a docs filter picks its ids through docs_meta and makes snippets for the page alone.
+test("a newest search with a docs filter makes snippets only for the page it picked", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-history-pick-"));
+  const db = makeIndex(join(dir, "h.db"), [{ session: CHAT, name: "ops guy (+observability)" }, { session: OTHER, name: "AI harness developer environment VP" }],
+    Array.from({ length: 40 }, (_, n) => ({ session: n % 4 ? OTHER : CHAT, at: T + n * 1000, kind: n % 2 ? "assistant" : "user", text: `staging convex reads ${n}` })),
+    { ftsKind: true, docsMeta: true });
+  const sqls: string[] = [];
+  const prepare = db.prepare.bind(db);
+  db.prepare = (sql: string): StatementSync => { sqls.push(sql); return prepare(sql); };
+  const page = searchPrime(db, "us-metal02", parseQuery({ q: "staging convex reads", chat: CHAT, kind: "user" }), pageAsk("newest", 3, null), null);
+  assert.equal(page.total, 10);
+  assert.deepEqual(page.hits.map(item => item.hit.at), [T + 36_000, T + 32_000, T + 28_000, T + 24_000]);
+  assert.ok(page.hits.every(item => item.hit.session === CHAT && item.hit.snippet.includes("<mark>staging</mark>")));
+  assert.deepEqual(sqls.filter(sql => /snippet\(/.test(sql) && /ORDER BY/.test(sql)), [], "no query that sorts makes snippets");
+});
+
 // On 11-25 at 22:06Z a durable search for "search" (102,796 matches in pi-host's index) took 15.9 to 26.7 s, because its sorting query made a
 // snippet for every match before the sort kept a page. Only the page's rows may get a snippet, in a query that sorts nothing.
 test("a durable search makes snippets only for the page it picked, in both sorts, and keeps its order, scores and exact total", () => {
