@@ -356,31 +356,39 @@ export function searchDurable(db: DatabaseSync, index: number, box: string, quer
   if (roots) { where.sql.push("e.thread IN (SELECT value FROM json_each(?))"); where.values.push(JSON.stringify(roots)); }
   const from = "entries e LEFT JOIN threads t ON t.id = e.thread";
   const key = "(CAST(e.at AS INTEGER) * 1024 + e.rowid % 1024)";
-  const columns = `e.rowid AS id, e.thread AS thread, CAST(e.entry_id AS INTEGER) AS entry, e.kind AS kind, e.author AS author, CAST(e.at AS INTEGER) AS at, t.name AS name,
-    snippet(entries, 0, '${OPEN}', '${CLOSE}', '…', ${SNIPPET_TOKENS}) AS snippet, ${key} AS k`;
-  let sql: string;
+  // The page's ids are picked first by key or score alone, and only they get their columns and snippet. With the snippet in the sorting
+  // query SQLite made one for every match before the sort kept 21: "search" (102,796 durable matches) took 15.9 to 26.7 s that way on
+  // 11-25 at 22:06Z, against 2.0 to 2.9 s for the same pick by key alone.
+  let pick: string;
   let values: SQLInputValue[];
   if (ask.sort === "newest") {
-    sql = `SELECT ${columns}, 0 AS score FROM ${from} ${whereSql(where, ask.before ? [`${key} <= ?`] : [])} ORDER BY k DESC LIMIT ?`;
+    pick = `SELECT e.rowid AS id, ${key} AS k, 0 AS score FROM ${from} ${whereSql(where, ask.before ? [`${key} <= ?`] : [])} ORDER BY k DESC LIMIT ?`;
     values = [...where.values, ...ask.before ? [ask.before.k] : [], ask.limit + (ask.before?.seen.length ?? 0) + 1];
   } else {
     const floor = `SELECT min(r) FROM (SELECT e.rowid AS r FROM ${from} ${whereSql(where)} ORDER BY e.rowid DESC LIMIT ${RANK_WINDOW})`;
     const weight = `CASE e.kind ${Object.entries(DURABLE_KINDS).map(([name, kind]) => `WHEN '${name}' THEN ${KIND_WEIGHT[kind]}`).join(" ")} ELSE 1 END`;
-    sql = `SELECT ${columns}, bm25(entries) * ${weight} AS score FROM ${from} ${whereSql(where, [`e.rowid >= (${floor})`])} ORDER BY score LIMIT ?`;
+    pick = `SELECT e.rowid AS id, ${key} AS k, bm25(entries) * ${weight} AS score FROM ${from} ${whereSql(where, [`e.rowid >= (${floor})`])} ORDER BY score LIMIT ?`;
     values = [...where.values, ...where.values, ask.offset + ask.limit + 1];
   }
-  const hits = (prepare(db, sql).all(...values) as Row[]).map((row): Ranked => {
+  const picked = prepare(db, pick).all(...values) as Row[];
+  const rows = new Map(picked.length ? (prepare(db, `SELECT e.rowid AS id, e.thread AS thread, CAST(e.entry_id AS INTEGER) AS entry, e.kind AS kind, e.author AS author,
+    CAST(e.at AS INTEGER) AS at, t.name AS name, snippet(entries, 0, '${OPEN}', '${CLOSE}', '…', ${SNIPPET_TOKENS}) AS snippet FROM ${from}
+    WHERE entries MATCH ? AND e.rowid IN (SELECT value FROM json_each(?))`).all(where.values[0]!, JSON.stringify(picked.map(row => Number(row.id)))) as Row[])
+    .map(row => [Number(row.id), row]) : []);
+  const hits = picked.flatMap((ranked): Ranked[] => {
+    const row = rows.get(Number(ranked.id));
+    if (!row) return [];
     const thread = String(row.thread);
     const at = Number(row.at);
     const test = row.kind === "pi.user" ? testSends.find(t => t.thread === thread && t.entry === Number(row.entry)) : undefined;
-    return {
-      key: Number(row.k), score: Number(row.score),
+    return [{
+      key: Number(ranked.k), score: Number(ranked.score),
       hit: {
         ref: `${box}:${thread}@${at}#d${index}.${Number(row.id)}`, box, source: "durable", session: thread, root: thread, depth: 0,
         thread: row.name ? String(row.name) : thread, kind: durableKind(String(row.kind)), author: test ? test.by : String(row.author ?? ""), at,
         snippet: markSnippet(String(row.snippet ?? "")), ...test ? { testSend: test.reason } : {},
       },
-    };
+    }];
   });
   const total = Number((prepare(db, `SELECT count(*) AS n FROM ${from} ${whereSql(where)}`).get(...where.values) as Row).n);
   return { hits, total };

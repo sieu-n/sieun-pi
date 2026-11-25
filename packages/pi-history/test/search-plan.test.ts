@@ -5,8 +5,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { DatabaseSync, SQLInputValue, StatementSync } from "node:sqlite";
 import { parseQuery } from "../src/core/query.ts";
-import { pageAsk, searchPrime } from "../src/core/search.ts";
-import { makeIndex } from "./fixture.ts";
+import { mergePages, pageAsk, searchDurable, searchPrime } from "../src/core/search.ts";
+import { makeDurable, makeIndex } from "./fixture.ts";
 
 const T = Date.parse("2026-11-25T21:00:00Z");
 const CHAT = "01a11af8-962e-773d-a19a-ee4104011987";
@@ -65,4 +65,31 @@ test("a chat, session or scope filter under fts seeks each hit's docs row by its
       }
     }
   }
+});
+
+// On 11-25 at 22:06Z a durable search for "search" (102,796 matches in pi-host's index) took 15.9 to 26.7 s, because its sorting query made a
+// snippet for every match before the sort kept a page. Only the page's rows may get a snippet, in a query that sorts nothing.
+test("a durable search makes snippets only for the page it picked, in both sorts, and keeps its order, scores and exact total", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-history-durable-plan-"));
+  const db = makeDurable(join(dir, "d.sqlite"), [{ id: "t1", name: "ops guy" }], Array.from({ length: 30 }, (_, n) => ({
+    thread: "t1", kind: n % 3 ? "pi.assistant" : "pi.user", author: n % 3 ? "ops guy" : "owner", at: T + n * 1000, text: `mac vent ${"step ".repeat(n)}${n}`,
+  })));
+  const sqls: string[] = [];
+  const prepare = db.prepare.bind(db);
+  db.prepare = (sql: string): StatementSync => { sqls.push(sql); return prepare(sql); };
+  for (const sort of ["newest", "relevant"] as const) {
+    const ask = pageAsk(sort, 5, null);
+    const page = searchDurable(db, 0, "us-metal02", parseQuery({ q: "mac vent" }), ask, null);
+    assert.equal(page.total, 30, `${sort}: the exact total`);
+    assert.equal(page.hits.length, 6, `${sort}: a page and one more`);
+    assert.ok(page.hits.every(item => item.hit.snippet.includes("<mark>mac</mark>")), `${sort}: each hit has its snippet`);
+    if (sort === "newest") assert.deepEqual(page.hits.map(item => item.hit.at), Array.from({ length: 6 }, (_, n) => T + (29 - n) * 1000));
+    else {
+      const scores = page.hits.map(item => item.score);
+      assert.deepEqual(scores, [...scores].sort((a, b) => a - b), "relevant: lower scores first");
+      assert.equal(mergePages([page], ask).hits.length, 5);
+    }
+  }
+  const sorted = sqls.filter(sql => /snippet\(/.test(sql) && /ORDER BY/.test(sql));
+  assert.deepEqual(sorted, [], "no query that sorts makes snippets");
 });
