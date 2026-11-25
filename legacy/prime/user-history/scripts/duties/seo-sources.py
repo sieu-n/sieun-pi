@@ -1,11 +1,13 @@
-"""Reads for the SEO guy's duty prechecks (scripts/duties/seo-search-visits.ts and seo-new-articles.ts). No model call, no writes
+"""Reads for the SEO guy's duty prechecks (scripts/duties/seo-search-visits.ts, seo-new-articles.ts and seo-api-site.ts). No model call, no writes
 to the program's daily metrics file. Run inside auto-sns-agent's SEO CLI project, from that repo's root:
-`uv run --project scripts/seo --frozen python <this file> visits|inspect`. Prints one JSON object on stdout.
+`uv run --project scripts/seo --frozen python <this file> visits|inspect|api`. Prints one JSON object on stdout.
 
 visits: PostHog blog and tool visits (virev_seo.traffic), Search Console totals and impressions per page (virev_seo.gsc), 28-day
 sign-ups with their first page (virev_seo.signups and virev_seo.goal) and the state of the Request indexing window. Each source is read on its own, so one failure leaves the others.
 inspect: URL Inspection for the URLs on stdin (one per line), each POST, re-asks included, counted in metrics/inspect-quota.json by
 virev_seo.gsc.VentSession.post like every other caller.
+api: the api.virev.ai goal line that `seo api` prints (virev_seo.api_goal.collect: PostHog visits, API sign-ups, Search Console), for
+seo-api-site.ts, without the per-day rows and without `seo api`'s write to the metrics file.
 """
 
 from __future__ import annotations
@@ -226,8 +228,12 @@ def main() -> None:
         result = visits()
     elif command == "inspect":
         result = inspect([line.strip() for line in sys.stdin if line.strip()])
+    elif command == "api":
+        from virev_seo import api_goal
+
+        result = {k: v for k, v in api_goal.collect().items() if k not in ("daily", "definition")}
     else:
-        sys.exit("usage: seo-sources.py visits|inspect")
+        sys.exit("usage: seo-sources.py visits|inspect|api")
     print(json.dumps(result, ensure_ascii=False))
 
 
