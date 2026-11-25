@@ -26,7 +26,12 @@ export async function GET({ params }) {
 	try {
 		data = (await readWikiFile({ wikiPath: relativePath, contentRoot: getContentRoot() })).bytes;
 	} catch {
-		error(404, 'Asset not found');
+		// A moved file keeps its links working both ways, because pages under archive/ cannot be edited: an old /raw/ link finds the
+		// archived copy, and a relative link from an archived page finds the file that still lives outside archive/.
+		const other = relativePath.startsWith('archive/') ? relativePath.slice('archive/'.length) : `archive/${relativePath}`;
+		const copy = await readWikiFile({ wikiPath: other, contentRoot: getContentRoot() }).catch(() => null);
+		if (!copy) error(404, 'Asset not found');
+		data = copy.bytes;
 	}
 	const type = CONTENT_TYPES[path.extname(relativePath).toLowerCase()] ?? 'application/octet-stream';
 	return new Response(new Uint8Array(data), {

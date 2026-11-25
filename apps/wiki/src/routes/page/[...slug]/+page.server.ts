@@ -7,7 +7,13 @@ import { getMirrorHistory } from '$lib/server/wiki-git-history';
 
 export async function load({ params }) {
 	const page = await readPage(params.slug);
-	if (!page) error(404, 'Wiki page not found');
+	if (!page) {
+		// A relative link from an archived page to a page that was never archived lands under archive/, and an archived page cannot
+		// be edited to fix it, so send the reader to the live page at the same path.
+		const live = params.slug.startsWith('archive/') ? params.slug.slice('archive/'.length) : null;
+		if (live && (await readPage(live).catch(() => null))) redirect(308, `${base}/page/${live.split('/').map(encodeURIComponent).join('/')}`);
+		error(404, 'Wiki page not found');
+	}
 	// A moved page's old path sends the reader on (wiki-write.ts movePage), so every link to it still opens the page.
 	if (page.meta.moved_to && page.meta.moved_to !== page.path) redirect(308, `${base}/page/${page.meta.moved_to.split('/').map(encodeURIComponent).join('/')}`);
 	recordView({ path: page.path, viewerKind: 'human', source: 'wiki-page' });
