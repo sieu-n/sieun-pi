@@ -30,7 +30,8 @@ import { DAY, type DsQuery, MINUTE, REPO, SOURCE_DEADLINE_MS, frameRows, grafana
  *    must cost $0, and to Hacker News user pg, which must cost the price its openapi x-dashboard-cost names when it answers 2xx and $0 when it
  *    does not, on staging-api.virev.ai (a seeded test org) and api.virev.ai (VIREV_API_KEY_PROD). The charge is the sum of that env's
  *    ledger rows for the answer's request_id, so it reads the ledger, never the answer's own meta.cost.
- * The ledger is the ClickHouse table usage.events on each tier (estate_ch_prod, estate_ch_stg).
+ * The ledger is the ClickHouse table usage.events on prod until the promote that moves it into the product database, and
+ * product.usage_events on staging and on prod after it (estate_ch_prod, estate_ch_stg). LEDGER_TABLE reads whichever exists.
  * Convex writes a Data API charge there through its ledgerOutbox (convex/ledger/outbox.ts) and stopped writing apiPortalUsage on 11-07.
  *
  * Targets in portal-billing.duty.json (the JSON cannot hold comments): all three are <= 0, because a mismatch is money the customer should
@@ -253,19 +254,21 @@ export const convexAdmin = async (env: Env, signal: AbortSignal, fetcher: typeof
   adminQuery(await convexBackend(env === "prod" ? "production" : "staging", fetcher, read, signal), fetcher, signal);
 
 export type SqlRead = (sql: string) => Promise<Record<string, unknown>[]>;
-/** A read on one tier's ClickHouse, which holds the ledger table usage.events. */
+/** A read on one tier's ClickHouse, which holds the ledger table. */
 export const ledgerOf = (env: Env, query: DsQuery): SqlRead => sql => sqlRows(query, LEDGER_DS[env], sql);
 
+/** usage.events or product.usage_events, whichever the tier has; name product.usage_events once prod has moved. */
+const LEDGER_TABLE = "merge(REGEXP('^(usage|product)$'), '^(events|usage_events)$')";
 const CALLS = "producer = 'convex' AND action = 'data_api_call'";
 const quote = (value: string) => `'${value.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`;
 /** Data API charges at or after `since`, one row per charge_id and row kind (a multi-part charge has event ids `<requestId>|<unitKind>`). */
 export const CHARGES_SQL = (since: number) => `SELECT charge_id, any(route) AS operation, toInt64(sum(charge_usd) * 1000000) AS micros,
  min(toUnixTimestamp64Milli(ts)) AS created, multiIf(kind = 'refund', 'refund', startsWith(charge_id, 'crawl-job:'), 'crawlJob',
  sum(charge_usd) = 0 AND any(http_status) = 503, 'void', 'call') AS role
-FROM usage.events WHERE ${CALLS} AND ts >= fromUnixTimestamp64Milli(${since}) GROUP BY charge_id, kind`;
+FROM ${LEDGER_TABLE} WHERE ${CALLS} AND ts >= fromUnixTimestamp64Milli(${since}) GROUP BY charge_id, kind`;
 /** What each request id paid net at or after `since`: its charge rows plus the refunds that name it. */
 export const PROBE_CHARGES_SQL = (since: number, requestIds: readonly string[]) => `SELECT charge_id, toInt64(sum(charge_usd) * 1000000) AS micros
-FROM usage.events WHERE ${CALLS} AND ts >= fromUnixTimestamp64Milli(${since}) AND charge_id IN (${requestIds.map(quote).join(", ")}) GROUP BY charge_id`;
+FROM ${LEDGER_TABLE} WHERE ${CALLS} AND ts >= fromUnixTimestamp64Milli(${since}) AND charge_id IN (${requestIds.map(quote).join(", ")}) GROUP BY charge_id`;
 
 export const usageRow = (row: Record<string, unknown>): UsageRow => ({
   requestId: String(row.charge_id), operation: String(row.operation), costMicros: Number(row.micros), createdAt: Number(row.created), kind: row.role as UsageRow["kind"],
