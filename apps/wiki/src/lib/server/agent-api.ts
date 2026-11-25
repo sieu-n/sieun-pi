@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { access, mkdir, writeFile } from 'node:fs/promises';
 import { json, text } from '@sveltejs/kit';
 import { dev } from '$app/environment';
 import { base } from '$app/paths';
@@ -9,7 +9,7 @@ import { savedLintAnswer, STANDARD_FILE } from '$lib/prose-lint.mjs';
 import type { HeldRow } from '../../../scripts/dup-held.mjs';
 import { codeRepoDir } from '../wiki-config.mjs';
 import { isSessionPath } from './session-artifact-index';
-import { rootOf } from './wiki-mounts';
+import { diskPath, rootOf } from './wiki-mounts';
 import { inWriteWorker } from './write-worker';
 import { renderWikiPage } from './render';
 import { sharedRuns } from './shared-runs';
@@ -319,7 +319,9 @@ async function uploadAsset(c: Ctx): Promise<Response> {
 	try {
 		assertContentRelative(rel);
 		if (rel.startsWith('@code/')) return fail('@code/ is read-only', 403);
-		if (rel.startsWith('archive/')) return fail('archive/ is frozen — no new assets', 403);
+		// archive/ takes a file only where none is yet, so a data file can be archived beside its page and no archived file changes.
+		if (rel.startsWith('archive/') && (await access(diskPath(rel)).then(() => true, () => false)))
+			return fail('archive/ is frozen: this file is already archived', 403);
 		// Session folders take assets only while the session is open, frozen after close.
 		if (isSessionPath(rel)) await assertSessionWorkspaceWritable(rel);
 	} catch (error) {
