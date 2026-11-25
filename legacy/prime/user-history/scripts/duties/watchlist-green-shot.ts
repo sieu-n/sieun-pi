@@ -46,37 +46,73 @@ export async function signInTicket(fetcher: typeof fetch, secret: string, orgId:
   return { id: ticket.id, token: ticket.token, userId };
 }
 
-export interface ShotRead { url?: string; orgId?: string; sessionId?: string; tones: Record<string, number>; notGreen: string[]; error?: string }
+export interface ShotRead {
+  url?: string;
+  orgId?: string;
+  sessionId?: string;
+  tones: Record<string, number>;
+  notGreen: string[];
+  /** Rows whose Followers cell shows a number, and rows whose cell still draws a skeleton or a counting spinner. */
+  followers: { shown: number; pending: number };
+  followersMs?: number;
+  error?: string;
+}
 
-/** The shot is good when the page is the Watchlist of the org it should read and at least one row shows the green tracking chip. */
+/** The shot is good when the page is the Watchlist of the org it should read, at least one row shows the green tracking chip, and every row's follower count has loaded. */
 export function shotProblem(read: ShotRead, env: ShotEnv): string | null {
   if (read.error) return read.error;
   if (!read.url || new URL(read.url).pathname !== "/app/watchlist") return `the page ended on ${read.url ?? "no url"}, not /app/watchlist`;
   if (read.orgId !== env.orgId) return `the session reads org ${read.orgId ?? "none"}, not ${env.orgId}`;
   if (!read.tones.tracking) return `no row shows the green tracking chip (${JSON.stringify(read.tones)})`;
+  if (read.followers.pending > 0 || read.followers.shown === 0) return `follower counts had not loaded: ${read.followers.shown} rows show one, ${read.followers.pending} still load`;
   return null;
 }
 
-/** Box runner code: sign in by ticket, switch to the org, open the Watchlist, wait for its chips and save the screenshot. */
+/** Box runner code: sign in by ticket, make the owner org active, open the Watchlist, wait for its chips and follower counts, then save the screenshot. */
 export function shotCode(env: ShotEnv, token: string, path: string): string {
   return `
 const p = await openTab();
-const read = { tones: {}, notGreen: [] };
+const read = { tones: {}, notGreen: [], followers: { shown: 0, pending: 0 } };
+const orgId = ${JSON.stringify(env.orgId)};
+const watchlist = ${JSON.stringify(`${env.base}/app/watchlist`)};
+const clerkReady = () => p.waitForFunction(() => window.Clerk && window.Clerk.loaded && window.Clerk.session, null, { timeout: 60000 });
 try {
   await p.goto(${JSON.stringify(`${env.base}/sign-in?__clerk_ticket=`)} + ${JSON.stringify(token)}, { waitUntil: "load", timeout: 60000 });
   await p.waitForURL(u => new URL(String(u)).pathname.startsWith("/app"), { timeout: 60000 });
-  await p.waitForFunction(() => window.Clerk && window.Clerk.session, null, { timeout: 30000 });
-  await p.evaluate(async orgId => { if (window.Clerk.organization?.id !== orgId) await window.Clerk.setActive({ organization: orgId }); }, ${JSON.stringify(env.orgId)});
-  await p.goto(${JSON.stringify(`${env.base}/app/watchlist`)}, { waitUntil: "load", timeout: 60000 });
+  // The org is set again on the Watchlist page itself, because on 11-25 a staging shot loaded /app/watchlist with no active org.
+  for (let tries = 0; tries < 3; tries++) {
+    await clerkReady();
+    const active = await p.evaluate(() => window.Clerk.organization?.id ?? null);
+    if (active === orgId && new URL(p.url()).pathname === "/app/watchlist") break;
+    if (active !== orgId) {
+      await p.evaluate(async id => { await window.Clerk.setActive({ organization: id }); }, orgId);
+      await p.waitForFunction(id => window.Clerk.organization?.id === id, orgId, { timeout: 30000 });
+    }
+    await p.goto(watchlist, { waitUntil: "load", timeout: 60000 });
+  }
   try { await p.waitForFunction(() => document.querySelector("main [data-status]:not([data-status=loading])"), null, { timeout: 60000 }); } catch {}
-  await sleep(5000);
+  // Follower counts draw after the chips; wait until no row's Followers cell still holds a skeleton or a counting spinner.
+  // measured: on 11-25 the staging counts drew 49 ms after the chips, so this wait shares the chip wait's 60 s.
+  const followersFrom = Date.now();
+  try {
+    await p.waitForFunction(() => {
+      const cells = [...document.querySelectorAll("main [data-followers]")];
+      return cells.length > 0 && !cells.some(cell => cell.querySelector("[data-fact-pending], [data-score-counting]")) && cells.some(cell => /\\d/.test(cell.textContent || ""));
+    }, null, { timeout: 60000 });
+  } catch {}
+  read.followersMs = Date.now() - followersFrom;
   await p.screenshot({ path: ${JSON.stringify(path)} });
   Object.assign(read, await p.evaluate(() => {
     const cells = [...document.querySelectorAll("main [data-status]")];
     const tones = {};
     for (const cell of cells) tones[cell.dataset.status] = (tones[cell.dataset.status] || 0) + 1;
     const notGreen = cells.filter(cell => !["tracking", "loading"].includes(cell.dataset.status)).map(cell => cell.querySelector("[aria-label]")?.getAttribute("aria-label") || cell.dataset.status);
-    return { url: location.href, orgId: window.Clerk.organization?.id, sessionId: window.Clerk.session?.id, tones, notGreen };
+    const followerCells = [...document.querySelectorAll("main [data-followers]")];
+    const followers = {
+      shown: followerCells.filter(cell => /\\d/.test(cell.textContent || "")).length,
+      pending: followerCells.filter(cell => cell.querySelector("[data-fact-pending], [data-score-counting]")).length,
+    };
+    return { url: location.href, orgId: window.Clerk.organization?.id, sessionId: window.Clerk.session?.id, tones, notGreen, followers };
   }));
 } catch (e) { read.error = String(e && e.message || e).split("\\n")[0]; read.url = p.url(); }
 await p.close();

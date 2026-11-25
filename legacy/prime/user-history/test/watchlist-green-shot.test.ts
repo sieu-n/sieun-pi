@@ -25,10 +25,13 @@ test("a ticket is minted only for the test admin of the org the shot reads", asy
   assert.ok(!outsider.calls.some(call => call.includes("sign_in_tokens")));
 });
 
-test("the shot counts only when it shows the owner org's Watchlist with a green chip", () => {
-  const read = { url: "https://virev.ai/app/watchlist", orgId: ENVS.prod.orgId, tones: { tracking: 23, stopped: 3 }, notGreen: [] };
+test("the shot counts only when it shows the owner org's Watchlist with a green chip and loaded follower counts", () => {
+  const read = { url: "https://virev.ai/app/watchlist", orgId: ENVS.prod.orgId, tones: { tracking: 23, stopped: 3 }, notGreen: [], followers: { shown: 26, pending: 0 } };
   assert.equal(shotProblem(read, ENVS.prod), null);
   assert.match(shotProblem({ ...read, url: "https://virev.ai/sign-in" }, ENVS.prod)!, /not \/app\/watchlist/);
   assert.match(shotProblem({ ...read, orgId: "org_other" }, ENVS.prod)!, /not org_3Irto/);
   assert.match(shotProblem({ ...read, tones: { loading: 30 } }, ENVS.prod)!, /no row shows the green/);
+  // Staging 11-25: the shot caught the rows before their follower counts drew.
+  assert.match(shotProblem({ ...read, followers: { shown: 20, pending: 6 } }, ENVS.prod)!, /follower counts had not loaded/);
+  assert.match(shotProblem({ ...read, followers: { shown: 0, pending: 0 } }, ENVS.prod)!, /follower counts had not loaded/);
 });
