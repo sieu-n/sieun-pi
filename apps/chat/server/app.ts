@@ -921,16 +921,22 @@ export class App {
    * The agent and post an agent's room tool names: the thread names the agent and its room (a comm thread its room's, the work thread the
    * DM), and `message` names a post there, or `<room>/<post>` in another room the agent is in (reactions.ts `agentPost`).
    */
-  private agentMessage(thread: string, message: unknown, tool: string): { record: AgentRecord; room: RoomId; post: RoomPost } {
-    const { record, room, via, id } = this.agentTarget(thread, message, tool);
+  private agentMessage(thread: string, message: unknown, tool: string, read = false): { record: AgentRecord; room: RoomId; post: RoomPost } {
+    const { record, room, via, id } = this.agentTarget(thread, message, tool, read);
     return { record, room, post: agentPost(this.agentStore.postsOf(room), record, via, room, id) };
   }
 
-  /** The agent, room and post id `message` names, with the thread the agent reads that room's posts through. */
-  private agentTarget(thread: string, message: unknown, tool: string): { record: AgentRecord; room: RoomId; via: string; id: string } {
+  /**
+   * The agent, room and post id `message` names, with the thread the agent reads that room's posts through. A read-only tool (`read`) also
+   * takes a root job filed under the agent, such as its duty job, which reads the agent's rooms as its work thread does: on 11-26 fable
+   * auditor's first Area review job failed 6 read_post calls here. A tool that writes, such as edit_message or set_emoji, still takes only
+   * the agent's own threads.
+   */
+  private agentTarget(thread: string, message: unknown, tool: string, read = false): { record: AgentRecord; room: RoomId; via: string; id: string } {
     const comm = this.agents.ofComm(thread);
-    const record = comm?.record ?? this.agents.ofWorkThread(thread);
-    if (!record) throw new ReactionError(404, `Thread ${thread} is no agent's comm thread or work thread; call ${tool} from the agent's own thread.`);
+    const own = comm?.record ?? this.agents.ofWorkThread(thread);
+    const record = own ?? (read ? this.agents.record(thread) : undefined);
+    if (!record) throw new ReactionError(404, `Thread ${thread} is no agent's comm thread or work thread${read ? " or job" : ""}; call ${tool} from the agent's own thread.`);
     if (typeof message !== "string" || !message.trim()) {
       throw new ReactionError(400, `${tool} names its post as message, such as p12, dm_vent/p12 or the [message id: ...] value after an owner message.`);
     }
@@ -938,7 +944,7 @@ export class App {
     const room = (slash < 0 ? comm?.room ?? record.room : message.slice(0, slash).trim()) as RoomId;
     const roomThread = room === record.room ? this.agents.roomThread(record) : this.groups.row(room) ? record.comm?.[room] : undefined;
     if (!roomThread) throw new ReactionError(404, `${record.name} is not in room ${room}; name a post in its DM ${record.room} or in a channel it is in, such as ${record.room}/p12.`);
-    return { record, room, via: slash < 0 ? thread : roomThread, id: message.slice(slash + 1) };
+    return { record, room, via: slash < 0 && own ? thread : roomThread, id: message.slice(slash + 1) };
   }
 
   /**
@@ -1041,9 +1047,9 @@ export class App {
 
   /** An agent's read_post (later-agents.ts `read`): the post `message` names, as set_emoji names it, and its thread. The feed is read first, so a post its turn made a moment ago is there. */
   async readAsAgent(thread: string, message: unknown): Promise<{ room: string; post: string; text: string }> {
-    const { record, room } = this.agentTarget(thread, message, "read_post");
+    const { record, room } = this.agentTarget(thread, message, "read_post", true);
     await (this.groups.row(room) ? this.groups.feed(record.comm?.[room] ?? "") : this.rooms.feed(record));
-    const { post } = this.agentMessage(thread, message, "read_post");
+    const { post } = this.agentMessage(thread, message, "read_post", true);
     const { text, shown } = this.agentLater.read(record, room, post);
     // The posts a comm thread read count as read, as a hold's do (`movedSinceRead`), so its send right after is not held for them.
     const group = this.groups.row(room);
@@ -1058,8 +1064,9 @@ export class App {
 
   /** An agent's list_saved_messages (later-agents.ts `listText`). */
   laterListAsAgent(thread: string, state: string | null): { text: string } {
-    const record = this.agents.ofComm(thread)?.record ?? this.agents.ofWorkThread(thread);
-    if (!record) throw new ReactionError(404, `Thread ${thread} is no agent's comm thread or work thread; call list_saved_messages from the agent's own thread.`);
+    // A read, so a root job filed under the agent, such as its duty job, lists the agent's saves too (`agentTarget`).
+    const record = this.agents.ofComm(thread)?.record ?? this.agents.ofWorkThread(thread) ?? this.agents.record(thread);
+    if (!record) throw new ReactionError(404, `Thread ${thread} is no agent's comm thread, work thread or job; call list_saved_messages from the agent's own thread.`);
     if (state !== null && state !== "open" && state !== "done") throw new ReactionError(400, "A saved list's state is open or done.");
     return { text: this.agentLater.listText(record, state ?? "open") };
   }

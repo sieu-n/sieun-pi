@@ -43,6 +43,17 @@ describe("an agent's read_post on the fixture server", () => {
     assert.equal((await read(`ch_cutover/${reply.id}`)).body.text, (await read(reply.id)).body.text);
   });
 
+  test("a root job filed under the agent, such as its duty job, reads the agent's posts, and still sets no reaction (fable auditor's Area review, 11-26)", async () => {
+    const job = (await s.send<{ thread: string }>("POST", "/api/agents", { name: "Area review duty 261126-0650", kind: "job", parent: agents.crawler })).body.thread;
+    const reply = s.app.agentStore.postsOf("ch_cutover").find(p => p.threadRoot && p.deletedAt === undefined)!;
+    const answer = await read(`ch_cutover/${reply.id}`, job);
+    assert.equal(answer.status, 200, answer.body.error);
+    assert.equal(answer.body.text, (await read(`ch_cutover/${reply.id}`)).body.text, "the job reads the post as the agent's comm thread does");
+    const react = await s.send<{ error?: string }>("POST", `/api/threads/${encodeURIComponent(job)}/reactions`, { message: `ch_cutover/${reply.id}`, emoji: "👀", on: true });
+    assert.equal(react.status, 404, JSON.stringify(react.body));
+    assert.match(react.body.error!, /is no agent's comm thread or work thread; call set_emoji from the agent's own thread\./);
+  });
+
   test("an unknown post, a missing id and a thread that is no agent's answer one sentence each", async () => {
     for (const [answer, status] of [[await read("p9999"), 404], [await read(undefined), 400], [await read("p1", "no-such-thread"), 404]] as const) {
       assert.equal(answer.status, status, JSON.stringify(answer.body));
