@@ -157,6 +157,8 @@ export function mermaidBlocks(html) {
 export function checkPage(html, known) {
 	const findings = [];
 	const meta = frontmatter(html);
+	// A moved page leaves a redirect stub that names its new path in moved_to and holds no diagram to check.
+	if (meta?.moved_to) return { checked: 0, findings };
 	if (!meta) findings.push({ kind: 'frontmatter', detail: 'no readable <!--wiki {json}--> frontmatter' });
 	else
 		for (const key of ['owner', 'last_checked'])
