@@ -4,7 +4,7 @@ import { execFile } from "node:child_process";
 import { homedir, hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { type FiringAlert, readGrafanaAlerts, setKey } from "../../src/alert-bridge.ts";
+import { type FiringAlert, readGrafanaAlerts, readOwnersFor, setKey } from "../../src/alert-bridge.ts";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { BRIDGE_FILE, alertsFiring } from "./prod-alerts.ts";
 import { readFiringRules } from "../../src/alert-bridge.ts";
@@ -12,15 +12,16 @@ import { loadHosts, selfHost } from "../../src/hosts.ts";
 import { type Reading, defaultContext, describe, hostMatcher, liveStopSource, missedByReaper, readOrphans, stopGroups } from "../../src/orphan-reaper.ts";
 
 /**
- * The precheck of the ops chat's duty "VPS and dev boxes" (`node --import tsx scripts/duties/vps-boxes.ts`). The chat's risk list
- * (infra-risks.json, written with the wiki risk page) names each standing risk of the boxes with the Grafana alert rules that check it.
+ * The precheck of the duty "VPS and dev boxes" (`node --import tsx scripts/duties/vps-boxes.ts <owner>`), where <owner> is the duty owner's
+ * name in auto-sns-agent ops/alert-relay/owners.json, such as "devops guy". The risk list infra-risks.json, written with the wiki risk page,
+ * sits in the duty folder the runner keeps LAST_RUNS_FILE in, and names each standing risk of the boxes with the Grafana alert rules that check it.
  * risks_firing counts the risks with a rule in Grafana's firing list, read like the alert bridge does (grafana-alerts.json, a Viewer token),
  * and only the label sets the rule list holds Alerting: Alertmanager keeps a Recovering set active for the rule's keep_firing_for, and on 11-08
  * metal-backup-ch-redis-age, Recovering at value 0 from 20:48:30Z after its fix, held the 21:14Z run at 1 (p791, and p747 on 11-04).
  * air_runners_online counts the M1 Air's runners up from prod otel through Grafana ds/query. disk_days_min, the fewest days until a
  * disk of us-metal01 or us-metal02 filled, left on 10-27 with the 30-day fill rules, after the owner answered todo t78 with "stop worrying about
  * storage being used up" (c187); a disk that is really full still fires metal-host-disk-85.
- * alerts_firing counts the rules the alert bridge holds as firing for this chat, each held by its triage job (prod-alerts.ts). oom_kills_24h sums the OOM kills on us-metal01 and us-metal02 in the last 24 h from node_vmstat_oom_kill,
+ * alerts_firing counts the rules the alert bridge holds as firing for the owner's session in owners.json (prod-alerts.ts). oom_kills_24h sums the OOM kills on us-metal01 and us-metal02 in the last 24 h from node_vmstat_oom_kill,
  * and reads this box's /proc/vmstat when otel has no series for it; it keeps the hold of p456, after us-metal02 had 45 kills since its
  * 10-14 boot, 40 of them from 13:14Z to 16:52Z on 10-19. It leaves out heavy_scope_kills, the kills on this box inside a scope of the `heavy`
  * wrapper (deploy/linux/memory/heavy), which hit the MemoryMax that job chose, not box pressure: two 8G scopes died at 17:26Z and 17:27Z on 10-19
@@ -38,8 +39,6 @@ import { type Reading, defaultContext, describe, hostMatcher, liveStopSource, mi
  */
 
 const DATA_DIR = join(homedir(), ".prime/agent/browser-chat");
-const CHAT = "01a11af8-962e-773d-a19a-ee4104011987";
-export const RISKS_FILE = join(DATA_DIR, "duties", CHAT, "infra-risks.json");
 const GRAFANA_CONFIG = join(DATA_DIR, "grafana-alerts.json");
 /** Prod otel on ClickHouse, where every box's node_exporter series land with the box in host.name and the tier 'shared' (AGENTS rule 10). */
 const CLICKHOUSE = { uid: "grafana_clickhouse", type: "grafana-clickhouse-datasource" };
@@ -316,7 +315,8 @@ async function orphans(at: number): Promise<{ reading: Reading; lines: FlaggedSl
  */
 async function main(): Promise<void> {
   const output = process.env.OUTPUT_FILE;
-  if (!output) { process.stderr.write("vps-boxes: OUTPUT_FILE is not set\n"); process.exit(2); }
+  const owner = process.argv[2];
+  if (!output || !owner) { process.stderr.write("vps-boxes: needs OUTPUT_FILE and the owner's name in owners.json\n"); process.exit(2); }
   const at = Date.now();
   const n: Record<(typeof SAMPLE_KEYS)[number], number> = { risks_firing: 0, air_runners_online: 0, oom_kills_24h: 0, orphan_processes: 0 };
   const result: PrecheckOutput = { metrics: {}, flagged: [], n };
@@ -328,7 +328,8 @@ async function main(): Promise<void> {
   };
   const sections = await Promise.all([
     section("risks_firing", async flagged => {
-      const file = parseRisks(JSON.parse(await readFile(RISKS_FILE, "utf8")));
+      if (!process.env.LAST_RUNS_FILE) throw new Error("LAST_RUNS_FILE is not set, so the duty folder that holds infra-risks.json is unknown");
+      const file = parseRisks(JSON.parse(await readFile(join(dirname(process.env.LAST_RUNS_FILE), "infra-risks.json"), "utf8")));
       const active = await readGrafanaAlerts(GRAFANA_CONFIG);
       if (!active) throw new Error(`${GRAFANA_CONFIG} is missing`);
       const { firing, recovering } = splitByRuleState(active, parseAlertingSets(await grafana("/api/prometheus/grafana/api/v1/rules?state=firing")));
@@ -340,7 +341,9 @@ async function main(): Promise<void> {
       n.risks_firing = file.risks.length;
     }),
     section("alerts_firing", async flagged => {
-      const counted = alertsFiring(await readFiringRules(BRIDGE_FILE, CHAT), at);
+      const session = (await readOwnersFor(GRAFANA_CONFIG, homedir()))?.owners[owner];
+      if (!session) throw new Error(`owners.json names no session for owner ${JSON.stringify(owner)}`);
+      const counted = alertsFiring(await readFiringRules(BRIDGE_FILE, session), at);
       result.metrics.alerts_firing = counted.count;
       flagged.push(...counted.flagged);
     }),
