@@ -231,3 +231,23 @@ test("a read mark about to go holds the reads ahead, but no refresh", async ({ p
   await page.evaluate(() => (window as unknown as { release: () => void }).release());
   await expect.poll(() => order).toEqual(["?lane=8", "?lane=7", "?lane=9"]);
 });
+
+test("a panel refresh goes beside the refresh of the page he looks at", async ({ page }) => {
+  await lane(page);
+  const order: string[] = [];
+  page.on("request", (r) => (r.url().includes("lane=") ? order.push(new URL(r.url()).search) : undefined));
+  const pageRead = await hold(page, /\/api\/rooms\?lane=10$/);
+  await page.evaluate(async () => {
+    const client = "/src/lib/api/client.ts";
+    const keptModule = "/src/lib/api/kept.svelte.ts";
+    const { get } = await import(/* @vite-ignore */ client);
+    const { kept } = await import(/* @vite-ignore */ keptModule);
+    void get({ path: "/api/rooms?lane=10" }, { background: "shown", first: true });
+    kept({ path: "/api/rooms?lane=11" }).set([]);
+    void window.lane.keptRead("/api/rooms?lane=11");
+  });
+  await expect.poll(() => pageRead.sent.length).toBe(1);
+  await expect.poll(() => settled(page, "/api/rooms?lane=11 read")).toBe("ok");
+  expect(order).toEqual(["?lane=10", "?lane=11"]);
+  pageRead.release();
+});

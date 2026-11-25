@@ -25,6 +25,9 @@ class OpenTestRoom {
   private asked: ConversationId | null = null;
 
   async load(id: ConversationId | null, again = false): Promise<void> {
+    // Until the sidebar's first answer every room looks missing from it. On 11-25 each reload of his page read the open channel's header
+    // here beside the room's own read of it, and Chrome held the room's read until this one ended (~/work/p300-channel-open/report.md).
+    if (sidebar.state === "loading") return;
     if (!id || inSidebar(id)) {
       this.asked = null;
       this.row = null;

@@ -193,10 +193,11 @@ export function reportNotDelivered(conversation: ConversationId, status: number,
  * end. Refreshes go before reads ahead and stop the reads ahead on their way; a read ahead goes only when no refresh is on its way, what
  * he looks at now (`Wait.first`) before the rest, and at most `AHEAD_LANE` at once. Every call in the lane goes at fetch priority low.
  *
- * A refresh waits only for the refresh of the page he opened, which shares its connection, once his calls go on a connection of their
- * own (`ownConnection`); before that it waits for his calls as a read ahead does. On 11-25 at 20:28 KST each reload of his page held the
- * rooms, board and duties refreshes about 940 ms behind the open's calls and the read mark's 400 ms timer while their network took 197 to
- * 800 ms, and in a box Chrome trace of the same reload the page's main thread was idle for all of it (~/work/p300-channel-open).
+ * A refresh waits for none of his calls once they go on a connection of their own (`ownConnection`); before that it waits for them as a
+ * read ahead does. On 11-25 at 20:28 KST each reload of his page held the rooms, board and duties refreshes about 940 ms behind the open's
+ * calls and the read mark's 400 ms timer while their network took 197 to 800 ms, and in a box Chrome trace of the same reload the page's
+ * main thread was idle for all of it (~/work/p300-channel-open). In a walk at a 200 ms round trip they then waited about 450 ms more for
+ * the room's own refresh; sent beside it, they ended 43 to 94 ms after their network time, and the room's items did not slow (rig/out2).
  *
  * A stopped read ahead's bytes already in the pipe still arrive before his answer, so fewer at once serve him better. In a walk of live
  * data over HTTP/2 and TLS at a 200 ms round trip, MTU 1280 and TCP slow start after idle (~/work/p155-readahead/lane-summary.md, 12 page
@@ -228,22 +229,21 @@ const pageRefresh = (ticket: Ticket): boolean => refresh(ticket) && !!ticket.wai
 const yields = (ticket: Ticket): boolean => !pageRefresh(ticket) && !(ownConnection && refresh(ticket));
 
 /**
- * The queued call to send next, or -1. The refresh of the page he looks at goes first, also while one of his calls is on its way, the
- * other refreshes, such as a panel's, once it ended and, while his calls share their connection, none of his calls is on its way, and a
- * read ahead once no refresh and none of his calls is on its way and the lane has room. On 11-21 in the walk of lane-summary.md, a board
- * refresh (42 KB) sent beside the room's refresh was still arriving when the room's read mark went 26 ms after the room's answer, and
- * held the mark 375 ms; the mark shared the refresh's connection then. On 11-21 at 21:47 UTC the refresh of the work
- * thread he opened waited 218 ms behind the Hosts page's 2 s poll of GET /api/hosts and then changed the screen, a wait of 431 ms where
- * the network took 213 (requests/2026-11-21.jsonl).
+ * The queued call to send next, or -1. The refresh of the page he looks at goes first, also while one of his calls is on its way. Once his
+ * calls have their own connection the other refreshes, such as a panel's, go next at once; before that, only once the page's refresh ended
+ * and none of his calls is on its way. A read ahead goes once no refresh and none of his calls is on its way and the lane has room. On
+ * 11-21 in the walk of lane-summary.md, a board refresh (42 KB) sent beside the room's refresh was still arriving when the room's read
+ * mark went 26 ms after the room's answer, and held the mark 375 ms; the mark shared the refresh's connection then. On 11-21 at 21:47 UTC
+ * the refresh of the work thread he opened waited 218 ms behind the Hosts page's 2 s poll of GET /api/hosts and then changed the screen,
+ * a wait of 431 ms where the network took 213 (requests/2026-11-21.jsonl).
  */
 function next(): number {
   const sent = [...flying];
   const page = queued.findIndex(pageRefresh);
   if (page >= 0) return page;
-  if (sent.some(pageRefresh)) return -1;
   const shown = queued.findIndex(refresh);
   if (shown >= 0 && ownConnection) return shown;
-  if (busy || expected) return -1;
+  if (busy || expected || sent.some(pageRefresh)) return -1;
   if (shown >= 0 || !queued.length) return shown;
   if (sent.some(refresh) || sent.length >= AHEAD_LANE) return -1;
   return Math.max(queued.findIndex(ticket => ticket.wait.first), 0);

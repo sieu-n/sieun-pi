@@ -98,6 +98,18 @@ test("a reload shows the room and its open thread from the pages the last load k
   expect(of((path) => path.startsWith("/api/c/ch_general/replies/"))).not.toContain("waited");
 });
 
+test("a reload reads the open room's header once, as the room's own refresh", async ({ page }) => {
+  await open(page, "#/c/ch_general");
+  await expect.poll(() => keeps(page, "timeline", (key) => key === "ch_general", '"kind":"message"')).toBe(true);
+  const headers: string[] = [];
+  page.on("request", (r) => (new URL(r.url()).pathname === "/api/c/ch_general" && r.method() === "GET" ? headers.push(r.url()) : undefined));
+  await page.reload();
+  await expect(conversation(page).locator("[data-message-id]").first()).toBeVisible();
+  await page.waitForLoadState("networkidle");
+  // A second read of the header beside the room's refresh, once asked by the sidebar's test room check, made Chrome hold the refresh.
+  expect(headers).toHaveLength(1);
+});
+
 test("a room Cmd K lists is read before the owner picks it", async ({ page, request }) => {
   const sidebar = (await (await request.get("/api/sidebar")).json()) as Record<"solo" | "channels", { id: string; name: string; lastActivityAt: number }[]>;
   // The room the sidebar's read ahead reaches last, one at a time; with every such read held, it never gets there.
