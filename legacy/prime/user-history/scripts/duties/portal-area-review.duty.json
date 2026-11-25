@@ -1,0 +1,48 @@
+{
+  "name": "Area review",
+  "ownerWords": "messy as fuck. 이걸 그냥 한번만 정리하라는게 아니라, ALL THREADS SHOULD COMMONLY have 2 duties that \n- every 3 hour push completing tasks in the TODO board\n- every day checks their area of responsiblity and proactively  (as an actual person would) watch and maintain dashboards, identify issues, act on issues, clean up (so product and codebase is always state-of-the-art) and self-improve: llm-wiki, agent file update & stale 쳐내고, common user frustration point들 반복하지 않도록\n(#sw-factory-build p234, 11-26, msg mwwklmfk, c249) / look, your duty is to keep watching and monitoring this. think of duty as copy pasting this prompt every day. (#dev-api-portal p25, mwwk8mcw, 2026-11-25)",
+  "goal": "Every day, look after api.virev.ai the way the person who owns it would. Watch the Grafana board https://obs.virev.ai/d/virev-api-portal and the live portal, docs and dashboard, find issues and act on each one, clean up product and code so both stay current, and update the agent's wiki pages, brief and memory so the owner's frustrations do not repeat. d1 to d6 already measure uptime, crawler parity, DM sends, customer failures, architecture and the status board, so this review reads their latest results and never measures those again. issues_not_acted_on counts what the area holds that nobody acts on: a red metric of d1 to d6 with no live job and no moving step linked to it, an open step the board reads as stuck and unchanged for 2 days, a page under agents/api-portal/ or apps/api-portal/ last checked over 7 days ago or failing the wiki prose lint, and an owner correction from the agent's rooms that its memory names nowhere.",
+  "metrics": [
+    {
+      "key": "issues_not_acted_on",
+      "label": "Issues in the api.virev.ai area nobody acts on (red duties with no fix, stuck steps, stale or failing wiki pages, unsaved corrections)",
+      "op": "<=",
+      "target": 0,
+      "unit": " issues",
+      "headline": true
+    }
+  ],
+  "readings": [
+    {
+      "key": "red_duties_unowned",
+      "label": "Red metrics of d1 to d6 with no live job and no moving step",
+      "unit": " metrics"
+    },
+    {
+      "key": "steps_unmoved_2d",
+      "label": "Open steps stuck and unchanged for 2 days",
+      "unit": " steps"
+    },
+    {
+      "key": "wiki_pages_off",
+      "label": "Portal wiki pages over 7 days unchecked or failing the prose lint",
+      "unit": " pages"
+    },
+    {
+      "key": "corrections_unsaved",
+      "label": "Owner corrections from this agent's rooms its memory names nowhere",
+      "unit": " corrections"
+    }
+  ],
+  "precheck": {
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "scripts/duties/portal-area-review.ts"
+    ],
+    "cwd": "../..",
+    "timeoutMs": 120000
+  },
+  "onMiss": "Do the whole review in the area_review item every run, as the owner of api.virev.ai, and act like an engineer who owns it, not a reporter. 1. Read the brief /home/sieun/.pi/agent/agents/api-portal/brief.md, memory, working memory and wiki agents/api-portal/identity.html. 2. Open https://obs.virev.ai/d/virev-api-portal (sign-in in the screenshot memory), https://api.virev.ai, its /docs and the dashboard, and read the latest runs of d1 to d6; use their findings and do not measure what they cover again. 3. For each real issue, one that hurts a customer, loses money, hides a failure or leaves product or code stale, add one plan step on ag_api-portal's board with duty \"<this duty id>/issues_not_acted_on\" and start one fix job for it that lands on dev/sieun with a test and proves it on staging (c50); prod follows the release owner's promote (c154). An issue a live step already covers gets a note on that step and no second job. Skip nitpicks and style-only changes. 4. For each red_duty_unowned, start the fix job that duty's onMiss names, or add the missing step link. For each step_unmoved, push it to done, give it a job, or drop it with the reason in its note. For each wiki_page_off, fix the page to the wiki writing standard through the wiki skill and stamp last_verified, one subagent per page (c20). For each correction_unsaved, save the rule to memory with its id and change what let it happen. Read each owner_post for an ask still open and act on it. 5. Clean up: cut dead code, stale memory entries and stale lines in the brief and working memory you find on the way. 6. Tell the owner nothing unless a customer is hurt now, money is lost now, or he must decide (c241); send nothing outside (c37). All on target and the review done: end the turn with no message."
+}
