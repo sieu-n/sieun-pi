@@ -95,9 +95,9 @@ function argsFlags(page: Page, tools: ToolArgs): { flags: Flag[]; checked: numbe
 
 /**
  * The precheck output for `pages`, each with the newest commit that touched its code. `tools` holds the comm tools' args from the code, which
- * each page's Args rows must match.
+ * each page's Args rows must match. `n` is the count of pages it read.
  */
-export function docsCurrent(pages: readonly { page: Page; change: Change | undefined }[], tools: ToolArgs = {}): { metrics: Record<string, number>; flagged: Flag[] } {
+export function docsCurrent(pages: readonly { page: Page; change: Change | undefined }[], tools: ToolArgs = {}): { n: number; metrics: Record<string, number>; flagged: Flag[] } {
   const flagged: Flag[] = [];
   let mismatched = 0;
   let toolsChecked = 0;
@@ -134,6 +134,7 @@ export function docsCurrent(pages: readonly { page: Page; change: Change | undef
     });
   }
   return {
+    n: pages.length,
     metrics: {
       reference_current_pct: reference ? Math.round((referenceCurrent / reference) * 1000) / 10 : 100,
       stale_pages: stale,

@@ -6,6 +6,8 @@
  * progress post unless the owner's newest post before it in the same reply thread (else the room) asks a question. The target is 0. A walk's
  * test rooms and test agents, and archived rooms, are left out.
  *
+ * Its output's `n` is the count of agent posts it read in the window.
+ *
  * Usage: OUTPUT_FILE=<file> node --import tsx scripts/duties/relay-posts.ts [--data-dir <dir>] [--hours 24]
  * The data dir defaults to APPS_CHAT_DATA_DIR, else ~/.pi/agent/chat. Without OUTPUT_FILE the result prints to stdout.
  */
@@ -51,6 +53,7 @@ if (isMain(import.meta.url)) {
   const windowMs = Number(values.hours ?? 24) * 3600_000;
   const { findings, agentPosts } = relayPosts(dir, Date.now(), windowMs);
   const output = {
+    n: agentPosts,
     metrics: { relay_posts_24h: findings.length, agent_posts_24h: agentPosts },
     windowMs: { relay_posts_24h: windowMs },
     flagged: findings.map(f => ({

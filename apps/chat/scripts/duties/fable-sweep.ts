@@ -49,6 +49,8 @@
  * Job entry times come from the job's pi-host thread file, read only (`<threads dir>/<thread>.sqlite`), because every conversation of a
  * thread shares one `updatedAt` in the :5184 lists. A step's age is the start of the job on it, else the first run that saw it open.
  *
+ * Its output's `n` counts what it read, one count per kind: agents, owner posts of the window, live jobs, duties and board steps.
+ *
  * Usage: OUTPUT_FILE=<file> [STATE_FILE=<file>] [LAST_RUNS_FILE=<file>] [PRECHECK_MODE=run|after|peek] [PRECHECK_TRIGGER=<trigger>] node --import tsx scripts/duties/fable-sweep.ts
  *   --agent <agent id> [--server http://127.0.0.1:5184] [--threads-dir <dir>] [--data-dir <dir>]
  * Defaults: APPS_CHAT_URL else http://127.0.0.1:5184, ~/.prime/agent/pi-host/durable/threads, APPS_CHAT_DATA_DIR else ~/.pi/agent/chat, whose
@@ -483,11 +485,14 @@ if (isMain(import.meta.url)) {
 
   // Boards and duties, per agent.
   const seen: Record<string, number> = {};
+  const read = { agents: agents.length, posts: ownerHits.length, jobs: liveJobs.length, duties: 0, steps: 0 };
   await Promise.all(agents.map(async agent => {
     const [board, duties] = await Promise.all([
       get<{ board: { plan: PlanItem[]; todos: Todo[] } | null }>(server, `/api/agents/${agent.id}/board`).catch(() => ({ board: null })),
       get<{ duties: { duty: { id: string; name: string }; paused: boolean; last: { verdict: string; at: number; streak: number } | null; runs: DutyRunView[] }[] }>(server, `/api/agents/${agent.id}/duties`).catch(() => ({ duties: [] })),
     ]);
+    read.duties += duties.duties.length;
+    read.steps += board.board?.plan.length ?? 0;
     if (board.board) {
       const steps = stalledSteps({ agent, plan: board.board.plan, todos: board.board.todos ?? [], jobs: liveJobs, now, seen: state.seen ?? {}, last: lastOf, wakes });
       for (const step of steps) seen[step.sig.slice("step:".length)] = Math.min(state.seen?.[step.sig.slice("step:".length)] ?? now, step.at ?? now);
@@ -561,6 +566,7 @@ if (isMain(import.meta.url)) {
   const held = waits ? [{ kind: "outside_wait", sig: "account", excerpt: `the sweep job ${waits.job!.name} has had no model turn since ${new Date(waits.at).toISOString().slice(0, 16)}Z ` +
     `(${taskState(join(threadsDir, `${waits.job!.id}.sqlite`), 1) ?? "no task state"}), so its ${fresh.length} fresh items carry to the next run` }] : [];
   const output = {
+    n: read,
     metrics: {
       ...waits ? {} : { findings_unposted: unposted }, sweep_age_min: previous ? Math.round((now - previous.at) / MIN) : 0,
       items_fresh: fresh.length, items_open: items.length, ...Object.fromEntries(counts(items)),

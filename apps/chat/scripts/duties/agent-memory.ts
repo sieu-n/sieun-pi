@@ -27,6 +27,8 @@
  *     DB, such as a folder no row owns or a row whose git folder left main (target 0). Memory is what one agent keeps and a skill is what every
  *     agent keeps, so this duty watches both (#sw-factory-build p193, 11-24: "지금 skills sdk가 제대로 적용된거야?").
  *
+ * Its output's `n` is the count of real agents it measured: the agents read, less those on another box or made under a day ago with no ideal.
+ *
  * A match word list is all-of, case-insensitive, and a word written "a|b" takes either form. A form starts at a word start, and a form of
  * up to 3 characters is a whole word, so "no" does not match "now"; a longer form may run on, so "revok" matches "revoked".
  *
@@ -548,6 +550,7 @@ if (isMain(import.meta.url)) {
       (carried ? `, so recall_right_pct keeps the ${carried.pct}% measured at ${new Date(carried.at).toISOString().slice(0, 16)}Z` : ", and no earlier run measured it");
   const skillsWords = "error" in skills ? "sw skills check failed" : `${skills.items.length} skills drift item${skills.items.length === 1 ? "" : "s"}`;
   const output = {
+    n: measured,
     metrics,
     flagged: [...(ideal ? [] : [{ kind: "source_error", excerpt: `no ideal file at ${idealFile}`, sig: "no-ideal" }]), { kind: "summary", excerpt: `${onIdeal} of ${measured} agents hold their ideal memory${unwritten ? ` (${unwritten} made under a day ago ${unwritten === 1 ? "has" : "have"} no ideal yet and ${unwritten === 1 ? "is" : "are"} not measured)` : ""}; ${correctionsKept} of ${correctionsDue} corrections a day old are kept; ` +
       `${scratch} scratch entries; ${recallWords}; ${skillsWords}`, sig: "summary" }, ...flagged],

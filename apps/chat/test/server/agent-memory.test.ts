@@ -16,7 +16,8 @@
  *    moved c236's "ch_14ad7a70/p177 (mwtofxek)" into pastRefs, and agent factory read 14 of 16 corrections kept.
  */
 import { strict as assert } from "node:assert";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -340,4 +341,28 @@ test("a correction is kept by its id, its ref, a past ref or an owner msg id in 
   assert.equal(captured(c, "owner msg mwtofxek: no done marks"), true);
   assert.equal(captured(c, "owner msg mwtofxekz"), false);
   assert.equal(captured({ ...c, pastRefs: [{ ref: "ch_14ad7a70/p187" }] }, "#sw-factory-build ch_14ad7a70/p187"), true);
+});
+
+test("the precheck writes n, the real agents it measured, beside its metrics", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agent-memory-n-"));
+  try {
+    const agent = (id: string, extra: Record<string, unknown> = {}) => ({ id, slug: id.slice(3), name: id.slice(3), room: `dm_${id}`, workThread: `w-${id}`, host: "us-metal02", home: "/tmp", createdAt: 0, archived: false, ...extra });
+    mkdirSync(join(dir, "data"));
+    writeFileSync(join(dir, "data", "agents.json"), JSON.stringify({ v: 1, aliases: {}, agents: [
+      agent("ag_a"), agent("ag_mac", { agentsDir: "/Users/x/.pi/agent/agents" }), agent("ag_new", { createdAt: Date.now() }),
+      agent("ag_walk", { test: true }), agent("ag_old", { archived: true }),
+    ] }));
+    writeFileSync(join(dir, "ideal.json"), JSON.stringify({ agents: [{ agent: "ag_a", expected: [] }] }));
+    writeFileSync(join(dir, "corrections.json"), JSON.stringify({ corrections: [] }));
+    const out = join(dir, "out.json");
+    execFileSync(process.execPath, ["--import", "tsx", join(import.meta.dirname, "../../scripts/duties/agent-memory.ts"), "--no-recall", "--data-dir", join(dir, "data"),
+      "--agents-dir", join(dir, "agents"), "--ideal", join(dir, "ideal.json"), "--corrections", join(dir, "corrections.json"), "--server", "http://127.0.0.1:9"], {
+      env: { ...process.env, OUTPUT_FILE: out },
+    });
+    const output = JSON.parse(readFileSync(out, "utf8")) as { n: number; metrics: Record<string, number> };
+    assert.equal(output.n, 1, "ag_a only: ag_mac keeps its folder on another box and ag_new has no ideal row yet");
+    assert.equal(output.metrics.agents_real, 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

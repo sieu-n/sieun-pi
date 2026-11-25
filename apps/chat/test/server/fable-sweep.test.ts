@@ -357,7 +357,9 @@ test("a verify run after a posted sweep reads met with no job, and passed-on mis
 
     const scheduled = await measureAs("schedule");
     assert.equal(scheduled.record.metrics.findings_unposted?.value, 1, "only seo d1, which nobody has; Crawler guy's d1 and d2 are passed on");
-    const items = (JSON.parse(readFileSync(scheduled.record.detail!, "utf8")) as { items: (Item & { fresh: boolean })[] }).items;
+    const detail = JSON.parse(readFileSync(scheduled.record.detail!, "utf8")) as { n: Record<string, number>; items: (Item & { fresh: boolean })[] };
+    assert.deepEqual(detail.n, { agents: 3, posts: 0, jobs: 1, duties: 3, steps: 1 }, "n counts each kind the sweep read");
+    const items = detail.items;
     assert.deepEqual(items.map(i => [i.sig, i.fresh, i.passedOn]).sort(), [
       ["duty:ag_crawler-guy/d1", false, "proxy_kb_per_read fix step p48, job crawler ops train working"],
       ["duty:ag_crawler-guy/d2", false, "first run of the duty, its job GeoNode proxy use duty has it"],

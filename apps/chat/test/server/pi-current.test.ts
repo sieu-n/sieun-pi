@@ -26,11 +26,13 @@ test("the headline is the package furthest behind, with a flag per package behin
   const out = piCurrent([pkg("@earendil-works/pi-ai", "1.4.0"), pkg("@earendil-works/chord", "1.6.0"), pkg("@earendil-works/pi-durable", "1.6.1")],
     { behind: true, line: "vendor/prime-harness.ts differs from d5d28f65cf82b5d71a41eea1e583a5dc495871be (test.52); run node scripts/vendor-prime-harness.mjs" });
   assert.deepEqual(out.metrics, { pi_releases_behind: 5, packages_behind: 2, prime_vendor_behind: 1, packages_checked: 3 });
+  assert.equal(out.n, 3, "n is the pinned packages read");
   assert.deepEqual(out.flagged.map(f => f.sig), ["@earendil-works/pi-ai@1.6.1", "@earendil-works/chord@1.6.1", "prime@d5d28f65cf82b5d71a41eea1e583a5dc495871be"]);
   assert.equal(out.flagged[1]!.excerpt, "@earendil-works/chord is pinned at 1.6.0 in packages/pi-host/package.json, 1 release behind npm latest 1.6.1 (1.6.1)");
 });
 
-test("everything at latest with vendored Prime matching reads 0 behind and no flag", () => {
+test("everything at latest with vendored Prime matching reads 0 behind and no flag, and a run that read no package has n 0", () => {
+  assert.equal(piCurrent([], { behind: false, line: "match" }).n, 0);
   const out = piCurrent([pkg("@earendil-works/pi-ai", "1.6.1")], { behind: false, line: "match" });
-  assert.deepEqual(out, { metrics: { pi_releases_behind: 0, packages_behind: 0, prime_vendor_behind: 0, packages_checked: 1 }, flagged: [] });
+  assert.deepEqual(out, { n: 1, metrics: { pi_releases_behind: 0, packages_behind: 0, prime_vendor_behind: 0, packages_checked: 1 }, flagged: [] });
 });

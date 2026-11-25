@@ -31,6 +31,8 @@ test("a page with a code list is stale once a commit to that code is newer than 
     { page: { path: `${SPACE}/how-to/loose.html`, lastVerified: at("2026-11-25T12:00Z"), code: ["apps/chat/server/app.ts"], declared: false }, change: undefined },
   ]);
   assert.deepEqual(out.metrics, { reference_current_pct: 66.7, stale_pages: 1, pages_without_code: 1, args_mismatch: 0, args_tools_checked: 0, reference_pages_checked: 3, pages_checked: 4 });
+  assert.equal(out.n, 4, "n is the pages read");
+  assert.equal(docsCurrent([]).n, 0);
   assert.deepEqual(out.flagged.map(f => f.kind), ["stale_page", "no_code"]);
   assert.match(out.flagged[0]!.excerpt, /reference\/stale\.html \(last_verified 2026-11-24T12:00Z\) is older than 590b9abc "feat: a change"/);
   assert.match(out.flagged[1]!.excerpt, /its text cites apps\/chat\/server\/app\.ts$/);

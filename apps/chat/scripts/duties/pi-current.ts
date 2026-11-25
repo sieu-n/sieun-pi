@@ -47,8 +47,8 @@ export function newer(pkg: PiPackage): string[] {
   return pkg.versions.filter(v => /^\d+\.\d+\.\d+$/.test(v) && compare(v, pkg.pinned) > 0 && compare(v, pkg.latest) <= 0).sort(compare);
 }
 
-/** The precheck output for the pinned packages and the vendored Prime check. */
-export function piCurrent(packages: readonly PiPackage[], prime: PrimeCheck): { metrics: Record<string, number>; flagged: Flag[] } {
+/** The precheck output for the pinned packages and the vendored Prime check; `n` is the count of pinned packages it read. */
+export function piCurrent(packages: readonly PiPackage[], prime: PrimeCheck): { n: number; metrics: Record<string, number>; flagged: Flag[] } {
   const flagged: Flag[] = [];
   let most = 0;
   let behind = 0;
@@ -67,6 +67,7 @@ export function piCurrent(packages: readonly PiPackage[], prime: PrimeCheck): { 
     flagged.push({ kind: "prime_vendor_behind", sig: `prime@${sha}`, excerpt: `vendored Prime is behind the daemon's Prime release: ${prime.line}` });
   }
   return {
+    n: packages.length,
     metrics: { pi_releases_behind: most, packages_behind: behind, prime_vendor_behind: prime.behind ? 1 : 0, packages_checked: packages.length },
     flagged,
   };

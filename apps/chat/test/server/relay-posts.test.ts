@@ -65,13 +65,14 @@ test("relay posts count only an agent's relay lines of the window in real rooms"
   assert.equal(agentPosts, 7, "the result and the answer count as agent posts, the walk's and the old ones do not");
 });
 
-test("the precheck writes the count, the window and one flagged row per relay post to OUTPUT_FILE", () => {
+test("the precheck writes n, the count, the window and one flagged row per relay post to OUTPUT_FILE", () => {
   const out = join(dir, "out.json");
   execFileSync(process.execPath, ["--import", "tsx", join(import.meta.dirname, "../../scripts/duties/relay-posts.ts"), "--data-dir", dir, "--hours", "1000000"], {
     env: { ...process.env, OUTPUT_FILE: out },
   });
-  const output = JSON.parse(readFileSync(out, "utf8")) as { metrics: Record<string, number>; flagged: { kind: string; sig: string; excerpt: string }[] };
+  const output = JSON.parse(readFileSync(out, "utf8")) as { n: number; metrics: Record<string, number>; flagged: { kind: string; sig: string; excerpt: string }[] };
   assert.equal(output.metrics.relay_posts_24h, 6);
+  assert.equal(output.n, 8, "n is the agent posts read: the 7 of the last day and the one 30 h old");
   assert.deepEqual(output.flagged.map(f => [f.kind, f.sig]), [
     ["relay_handoff", "ch_real:p4"], ["relay_progress", "ch_ask:p5"], ["relay_progress", "ch_ask:p6"], ["relay_handoff", "ch_ask:p7"],
     ["relay_handoff", "dm_vent:p1"], ["relay_progress", "ch_real:p2"],
