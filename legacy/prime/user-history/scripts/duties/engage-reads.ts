@@ -82,10 +82,19 @@ export const DEAD = ["challenged", "frozen", "disabled"] as const;
 /** A prod row parked by auto-sns-agent's scripts/engage_world_move.py export: the account reads in another world now, so prod no longer has it on hand.
  * The same prefix as NOT_MOVED in apps/crawler-v3/src/platforms/instagram/engage/relogin_codes.py. */
 export const MOVED_PREFIX = "engage-world-move ";
-/** The prod accounts on hand: not dead and not moved to another world. On 10-19 15:06Z the capacity line counted 170 on hand and 165 healthy, and 3 of the
- * 5 it called unable to read (23, 27 and 28) had moved to staging on 10-18 16:54Z, where 245 and 246 read on. */
+/**
+ * A parked row whose password Instagram refused: the re-login worker's stop (BAD_PASSWORD in apps/crawler-v3/src/platforms/instagram/engage/relogin_codes.py,
+ * "final for that password") or the intake's refusal. No code logs such a row in again, and the owner answered t34 "Neither, 158 accounts are close
+ * enough" to a seller ask for new passwords, so it is no capacity: prod 24 and 280 and the 10 g2g-T8KX imports 282 to 294 sat parked on it from 10-28
+ * to 11-25 with 0 pages read, counted on hand.
+ */
+export const PASSWORD_REFUSED = /^(relogin_)?bad_password\b/;
+/** The prod accounts on hand: not dead, not moved to another world and not parked on a refused password (PASSWORD_REFUSED). On 10-19 15:06Z the
+ * capacity line counted 170 on hand and 165 healthy, and 3 of the 5 it called unable to read (23, 27 and 28) had moved to staging on 10-18 16:54Z,
+ * where 245 and 246 read on. */
 export const onHandOf = (accounts: readonly Account[]): Account[] =>
-  accounts.filter(account => !(DEAD as readonly string[]).includes(account.status) && !(account.reason ?? "").startsWith(MOVED_PREFIX));
+  accounts.filter(account => !(DEAD as readonly string[]).includes(account.status) && !(account.reason ?? "").startsWith(MOVED_PREFIX)
+    && !(account.status === "parked" && PASSWORD_REFUSED.test(account.reason ?? "")));
 export type Cause = "instagram" | "first_login" | "found_idle" | "bad_password" | "ours" | "unknown";
 /**
  * A copy of CODE_CAUSES in apps/crawler-v3/src/control/metrics/engage_deaths.py (auto-sns-agent dev/sieun, 2026-10-28), which also holds the two codes
@@ -513,7 +522,7 @@ export function report(data: EngageData, dutyMetrics: readonly DutyMetric[]): Pr
       flagged.push({ at, kind: "capacity", excerpt: (proof
         ? `${counted} x ${fmt(rate)} pages a day per account, proven on the newest window ${proof.days.join(" and ")} (the ${want}th account could serve that much each day, at its median pages in hours its pace was full times its serveable hours; since then ${proof.hiDeaths} Instagram verdicts in ${fmt(proof.hiDays)} account-days at or over it and ${proof.loDeaths} in ${fmt(proof.loDays)} under it, p ${proof.p.toFixed(2)}) = ${fmt(healthy * rate)} pages a day.${waiting} `
           + `${need! > healthy ? `${need! - healthy} more accounts that can read at that rate, or ${fmt(Math.ceil(PAGES_A_DAY_GOAL / Math.max(1, healthy)))} pages a day on these, reach ${fmt(PAGES_A_DAY_GOAL)}. ` : ""}`
-          + `${onHand} prod accounts on hand (not dead, not moved to another world) x ${fmt(rate)} = ${fmt(onHand * rate)}${onHand * rate < PAGES_A_DAY_GOAL ? `, short of ${fmt(PAGES_A_DAY_GOAL)}` : ", enough once they can read"}.${mass}${lag}${older}`
+          + `${onHand} prod accounts on hand (not dead, not moved to another world, not parked on a refused password) x ${fmt(rate)} = ${fmt(onHand * rate)}${onHand * rate < PAGES_A_DAY_GOAL ? `, short of ${fmt(PAGES_A_DAY_GOAL)}` : ", enough once they can read"}.${mass}${lag}${older}`
         : `${counted}, and the newest window ${newestDays ? newestDays.join(" and ") : "(none)"} proves no rate: it had no ${want} accounts read at one rate whose readers did not die more often than the rest.${mass}${lag}${older}`).slice(0, 1200) });
     }
     if (data.lapsed && (data.lapsed.waiting || data.lapsed.blocked)) flagged.push({ at, kind: "lapsed_bindings", excerpt: (`${data.lapsed.waiting + data.lapsed.blocked} active prod accounts have no live proxy session binding, the oldest since ${utc(data.lapsed.oldestAt!)}. `

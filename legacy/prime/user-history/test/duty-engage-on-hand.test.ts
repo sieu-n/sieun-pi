@@ -20,3 +20,13 @@ test("a row parked by a world move is not on hand, and a hand-parked or active o
   assert.equal(onHand.length - 165, 2, "prod 10-19: 2 on hand that cannot read, 73 and 75");
   assert.deepEqual(onHand.filter(account => account.status === "parked").map(account => account.id), [73, 75]);
 });
+
+test("a row parked on a refused password is not on hand, since no code logs it in again (prod 24, 280 and 282 to 294, 10-28 to 11-25)", () => {
+  const accounts: Account[] = [
+    { id: 15, status: "active" },
+    { id: 24, status: "parked", reason: "relogin_bad_password: phase refused" },
+    { id: 282, status: "parked", reason: "bad_password from a burst of new-IP intake logins; stored password matches the vendor file (rule 4)" },
+    { id: 21, status: "parked", reason: "valid jar, no live route: account_authority_changed" },
+  ];
+  assert.deepEqual(onHandOf(accounts).map(account => account.id), [15, 21]);
+});
