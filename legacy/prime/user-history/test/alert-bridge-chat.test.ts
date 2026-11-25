@@ -266,6 +266,22 @@ test("11-26: an open rule ops guy's thread held moves to devops guy, which gets 
   assert.deepEqual([firingRules(state, OLD).length, firingRules(state, OPS).length], [0, 1]);
 });
 
+test("11-26: an open rule of ops guy joins devops guy's open entry of the same rule, whose thread gets its label sets once", async () => {
+  const OLD = "01a11af8-962e-773d-a19a-ee4104011987";
+  const [old, fresh] = parseAlerts([alert(0, "metal02-convex-push-failing", "search"), alert(1, "metal02-convex-push-failing", "search")]);
+  const entry = (chat: string, one: FiringAlert) => ({ chat, rule: "metal02-convex-push-failing", alertname: one.alertname, startsAt: one.startsAt, wokeAt: NOW - 60_000,
+    firstWokeAt: NOW - 60_000, instances: { [`${one.fingerprint}@${one.startsAt}`]: { startsAt: one.startsAt, labels: one.labels, seenAt: NOW - 60_000 } },
+    job: { id: chat, name: chat, at: NOW - 60_000 } });
+  const f = await fixture({ state: { v: 4, chats: { [OLD]: OLD, [OPS]: OPS }, jobs: { [OLD]: { id: OLD, name: "ops guy", chat: OLD, at: NOW - 60_000, ranAt: NOW - 30_000 },
+    [OPS]: { id: OPS, name: "devops guy", chat: OPS, at: NOW - 60_000, ranAt: NOW - 30_000 } },
+    rules: { [ruleKey(OLD, "metal02-convex-push-failing")]: entry(OLD, old!), [ruleKey(OPS, "metal02-convex-push-failing")]: entry(OPS, fresh!) } } });
+  f.set([alert(0, "metal02-convex-push-failing", "search"), alert(1, "metal02-convex-push-failing", "search")]);
+  for (const tick of [0, 1, 2]) { f.at(NOW + tick * 30_000); await f.bridge.tick(); }
+  assert.deepEqual(f.sent.map(({ session: id }) => id), [OPS]);
+  const state = await f.state();
+  assert.deepEqual([firingRules(state, OLD).length, Object.keys(firingRules(state, OPS)[0]!.instances).length], [0, 2]);
+});
+
 test("a fetch failure names its cause code", () => {
   const cause = Object.assign(new Error("getaddrinfo ENOTFOUND obs.virev.ai"), { code: "ENOTFOUND" });
   assert.equal(errorText(new TypeError("fetch failed", { cause })), "fetch failed (ENOTFOUND: getaddrinfo ENOTFOUND obs.virev.ai)");

@@ -320,7 +320,11 @@ export function advance(alerts: readonly FiringAlert[], state: BridgeState, rout
   return { state: { ...state, rules }, fired: new Set([...fired].filter(key => rules[key] && !isResolved(rules[key]!))) };
 }
 
-/** `advance` step 6: each open rule moves to the chat the routes give its newest firing alert, when that is another chat with no open entry of the rule. */
+/**
+ * `advance` step 6: each open rule moves to the chat the routes give its newest firing alert, when that is another chat, and joins that chat's
+ * open entry of the rule when it has one. On 11-26 metal02-convex-push-failing was open for ops guy and, from a label set that fired after the
+ * owners.json change, for devops guy too.
+ */
 function rehome(rules: Record<string, Tracked>, alerts: readonly FiringAlert[], route: Router, now: number, fired: Set<string>): Record<string, Tracked> {
   const newest = new Map<string, FiringAlert>();
   for (const [key, rule] of Object.entries(rules)) {
@@ -332,11 +336,13 @@ function rehome(rules: Record<string, Tracked>, alerts: readonly FiringAlert[], 
   for (const [key, alert] of newest) {
     const rule = rules[key]!;
     const chat = route(alert);
+    if (chat === rule.chat) continue;
     const target = ruleKey(chat, rule.rule);
-    if (chat === rule.chat || (rules[target] && !isResolved(rules[target]!))) continue;
+    const open = rules[target] && !isResolved(rules[target]!) ? rules[target] : undefined;
+    const instances = Object.fromEntries(Object.entries(rule.instances).map(([id, instance]) => [id, { ...instance, seenAt: now }]));
     const { job: _job, escalatedAt: _escalated, toldAt: _told, ...kept } = rule;
     delete rules[key];
-    rules[target] = { ...kept, chat, wokeAt: now };
+    rules[target] = open ? { ...open, instances: { ...open.instances, ...instances } } : { ...kept, chat, instances, wokeAt: now };
     fired.add(target);
   }
   return rules;
