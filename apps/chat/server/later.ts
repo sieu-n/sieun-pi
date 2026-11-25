@@ -219,26 +219,6 @@ export class Later {
   }
 
   /**
-   * Unsaves what finished walks left: every item of an archived test agent, and each owner item in an archived test room. The owner's lists
-   * leave those rooms out and an archived agent saves nothing, so nobody reads them; on 11-25 they were 46 of the 54 rows in chat.sqlite.
-   * Answers how many it unsaved.
-   */
-  dropWalkLeftovers(): number {
-    const { store } = this.deps;
-    const ended = new Set(store.rooms.rooms.filter(r => r.test && r.archived).map(r => r.id));
-    let dropped = 0;
-    for (const by of this.deps.lists.principals()) {
-      const agent = by === "owner" ? undefined : store.agentOf(by);
-      const all = !!(agent?.test && agent.archived);
-      for (const item of this.load(by).filter(i => all || (by === "owner" && i.room !== undefined && ended.has(i.room)))) {
-        this.remove(by, item.id);
-        dropped += 1;
-      }
-    }
-    return dropped;
-  }
-
-  /**
    * Undo of an unsave: puts the item `remove` answered back as it was, with its state, reminder, Keep unread mark, memo and save time, which
    * is its place in the list. It replaces a save of the post made since.
    */

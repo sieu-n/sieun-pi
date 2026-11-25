@@ -432,10 +432,9 @@ export class App {
   }
 
   /**
-   * Starts the rooms' deliveries, the boards, the outbox, Later (which first unsaves what finished walks left) and usage, and returns how
-   * many ms that took. A send that comes before this waits as "sending" in its room's log, and the rooms' start schedules every such post.
-   * At load 110 to 125 on 11-22 this took 1,256 ms of a successor's 1,518 ms between the old server's stop and its listen, mostly the rooms'
-   * scan of every agent room's posts.
+   * Starts the rooms' deliveries, the boards, the outbox, Later and usage, and returns how many ms that took. A send that comes before
+   * this waits as "sending" in its room's log, and the rooms' start schedules every such post. At load 110 to 125 on 11-22 this took
+   * 1,256 ms of a successor's 1,518 ms between the old server's stop and its listen, mostly the rooms' scan of every agent room's posts.
    */
   startLoops(): number {
     const began = performance.now();
@@ -443,8 +442,6 @@ export class App {
     this.groups.start();
     this.boards.start();
     this.outbox.start();
-    const dropped = this.later.dropWalkLeftovers();
-    if (dropped) this.log(`later: unsaved ${dropped} items finished walks left`);
     this.laterDue.arm();
     this.storeUsage?.start();
     this.usageAnswers.start();

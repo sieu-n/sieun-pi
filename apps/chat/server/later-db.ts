@@ -8,7 +8,7 @@
  * `later_principals` names each principal that has a list, so the export of a list whose last item went still writes `{"v": 1, "items": []}`.
  */
 import { readdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import type { LaterItem } from "../web/src/lib/api/types.ts";
 import type { ChatDb, Stmt } from "./chat-db.ts";
@@ -33,8 +33,6 @@ export interface LaterLists {
   put(by: string, list: readonly LaterItem[], item: LaterItem): void;
   /** Takes the item `id` away; `list` is the principal's list without it. */
   remove(by: string, list: readonly LaterItem[], id: string): void;
-  /** Every principal that has a list, empty ones included. */
-  principals(): string[];
 }
 
 /** The lists as JSON files, one per principal, each rewritten whole on a change. */
@@ -55,10 +53,6 @@ export class LaterFiles implements LaterLists {
 
   remove(by: string, list: readonly LaterItem[]): void {
     this.put(by, list);
-  }
-
-  principals(): string[] {
-    return LATER.files(dirname(this.dir)).flatMap(file => principalOf(file) ?? []);
   }
 }
 
@@ -153,10 +147,6 @@ export class LaterRows implements LaterLists {
       { sql: "INSERT OR IGNORE INTO later_principals (by) VALUES (?)", params: [by] },
       { sql: "INSERT INTO later_items (by, id, ord, body) VALUES (?, ?, ?, ?) ON CONFLICT (by, id) DO UPDATE SET ord = excluded.ord, body = excluded.body", params: [by, item.id, ord, JSON.stringify(item)] },
     ], by);
-  }
-
-  principals(): string[] {
-    return [...new Set([...this.lists.keys(), ...this.ords.keys()])];
   }
 
   remove(by: string, _list: readonly LaterItem[], id: string): void {
