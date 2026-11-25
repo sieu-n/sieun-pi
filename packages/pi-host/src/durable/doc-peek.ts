@@ -14,7 +14,7 @@
  * reads waiting on it and later ones run on the loop as before.
  */
 import { isMainThread, parentPort, Worker, workerData } from "node:worker_threads";
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createSession, type ConversationId } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";

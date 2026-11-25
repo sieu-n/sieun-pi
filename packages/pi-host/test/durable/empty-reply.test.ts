@@ -60,9 +60,10 @@ const refused = (body: Awaited<ReturnType<typeof wire>>): number[] => body.messa
 const texts = (body: Awaited<ReturnType<typeof wire>>): string =>
   body.messages.flatMap(message => typeof message.content === "string" ? [message.content] : message.content.map(block => block.text ?? "")).join("\n");
 
-test("pi-ai alone puts the update held before an empty reply right before the next input, the shape Anthropic refused in 64bc3ad1", async () => {
+test("pi-ai 1.6 alone no longer puts the update held before an empty reply right before the next input, the shape Anthropic refused in 64bc3ad1", async () => {
+  // pi-ai 1.4.0 sent it; withCacheShape's withoutEmptyReplies kept 64bc3ad1 working, and stays for a pin moved back.
   const body = await wire(anthropicProvider(), komodo);
-  assert.notDeepEqual(refused(body), [], "without the shape, a system update sits before a user message");
+  assert.deepEqual(refused(body), []);
 });
 
 test("through withCacheShape, 64bc3ad1's entry order sends every system update before an assistant message or at the end", async () => {

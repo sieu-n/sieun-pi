@@ -8,7 +8,7 @@
  * failed attempt as an assistant entry with `stopReason: "error"`, so the run's retrying start is the oldest of the error entries that end
  * the conversation, which a restart reads back the same.
  */
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import type { Message } from "@earendil-works/pi-ai";
 import type { ConversationId, Cursor, Harness } from "@earendil-works/pi-durable";
 

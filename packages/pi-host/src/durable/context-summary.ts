@@ -11,7 +11,7 @@
  * the way `readContextFrom` extends a range: an added entry with edits or a head marker, or one an earlier edit targets, reads the whole
  * context again.
  */
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import type { Message } from "@earendil-works/pi-ai";
 import type { ContextView, ConversationId, EntryId, EntryRecord, Harness } from "@earendil-works/pi-durable";
 import { queryText } from "./prime-harness.ts";

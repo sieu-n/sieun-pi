@@ -6,7 +6,7 @@
  * It takes the one message id every room tool takes (`MESSAGE_ID` in later.ts). The room-tools extension lists it beside `set_emoji`
  * (`room-tools.ts`), so a job's child conversation drops it with the others. Reading changes nothing, so a rerun after a crash is safe.
  */
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { defineTool, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import type { ChatApp } from "./chat-app.ts";
 import { MESSAGE_ID } from "./later.ts";

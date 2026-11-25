@@ -14,7 +14,7 @@ import { performance } from "node:perf_hooks";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { ROOT_CONVERSATION_ID, type ConversationId, type Harness } from "@earendil-works/pi-durable";
+import { ROOT_CONVERSATION_ID, type ConversationId, type Harness, type TaskId } from "@earendil-works/pi-durable";
 import { DeliverTask, RlmChildDoc } from "../../src/durable/children.ts";
 import { DurableRlm, type RlmThread } from "../../src/durable/rlm.ts";
 import { DurableThreads } from "../../src/durable/threads.ts";
@@ -77,15 +77,20 @@ after(async () => {
 
 const harnessOf = async (id: string) => (await (threads as unknown as { thread(id: string): Promise<{ harness: Harness }> }).thread(id)).harness;
 
-/** `count` job conversations of the root, each with a task, a done status and two messages. */
+/**
+ * `count` job conversations of the root, each with a task, a done status and two messages. It resolves once every task ended: since
+ * pi-durable 1.5 the scheduler ends 2,500 such tasks in one pass of about 1 s, which would otherwise land inside the timed listing.
+ */
 async function addJobs(harness: Harness, thread: string, count: number): Promise<number[]> {
-  return harness.commit(async tx => {
+  const tasks: TaskId[] = [];
+  const jobs = await harness.commit(async tx => {
     const ids: number[] = [];
     for (let i = 0; i < count; i++) {
       // A delivery to no conversation ends at once, so the job owns its conversation and nothing runs in it.
       const task = await tx.createTask(DeliverTask, {
         parent: ROOT_CONVERSATION_ID, child: 0, thread, name: `job ${i}`, content: "", from: thread, via: "rlm.spawn", requestId: `rlm-task:${i}`, whenBusy: "steer",
       }, { ownership: { kind: "conversation" }, conversationId: ROOT_CONVERSATION_ID, background: true });
+      tasks.push(task);
       const job = await tx.createConversation({ ownership: { kind: "task", taskId: task } });
       Object.assign(await tx.doc(RlmChildDoc, job.id), { id: `sub-${i}`, name: `job ${i}`, task: `Build page ${i}.`, createdAt: 1, status: "done" });
       await tx.appendEntry(job.id, user(`[task from parent]\n\nBuild page ${i}.`));
@@ -94,6 +99,8 @@ async function addJobs(harness: Harness, thread: string, count: number): Promise
     }
     return ids;
   }, BACKGROUND_CONTEXT);
+  for (const task of tasks) await harness.waitForTask(task, BACKGROUND_CONTEXT);
+  return jobs;
 }
 
 /** One list_agents of the work thread's root, with how late a 10 ms timer ran while it went. */

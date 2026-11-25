@@ -11,7 +11,7 @@
  * records intent after `beforeTool`), so the next pi-host runs it once instead of reporting it interrupted. Requests and calls already
  * running at SIGTERM go on as before.
  */
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { defineExtension, GenerationTask, hook, ToolTask, type Extension } from "@earendil-works/pi-durable";
 
 /** Resolves never: rejects with the close's abort, which pi-durable takes as the end of the invocation and writes back no result. */

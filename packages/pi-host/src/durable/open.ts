@@ -1,7 +1,7 @@
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { Models } from "@earendil-works/pi-ai/models";
-import { createRegistry, defineExtension, Harness, ROOT_CONVERSATION_ID, section, type Conversation, type HarnessSettings, type ReportInfo } from "@earendil-works/pi-durable";
+import { createRegistry, defineExtension, Harness, ROOT_CONVERSATION_ID, section, type Conversation, type HarnessSettings, type Report } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { PRIME_BASE_PROMPT } from "@sieun-pi/pi-family/preamble";
 import { ForegroundSubagent } from "./subagent.ts";
@@ -17,7 +17,7 @@ export interface OpenOptions {
   thinkingLevel?: ModelThinkingLevel;
   settings?: HarnessSettings;
   readOnly?: boolean;
-  onReport?: (error: unknown, info: ReportInfo) => void;
+  onReport?: (report: Report) => void;
 }
 
 export interface DurableHost {

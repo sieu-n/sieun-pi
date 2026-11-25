@@ -16,7 +16,8 @@
  * Replay safety is the binding's choice per tool (`replay: "safe"` only for idempotent ones); unset, a call a restart interrupts gets
  * pi-durable's `interrupted` result.
  */
-import type { Context, JsonValue } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
+import type { JsonValue } from "@earendil-works/chord/json";
 import type { TextContent, ImageContent } from "@earendil-works/pi-ai";
 import { defineTool, type ToolExecutionApi, type ToolExecutionResult, type ToolRegistration } from "@earendil-works/pi-durable";
 

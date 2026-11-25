@@ -18,25 +18,13 @@ type Json = Record<string, unknown>;
 const isRecord = (value: unknown): value is Json => typeof value === "object" && value !== null && !Array.isArray(value);
 
 /**
- * Prime's `models.json` model entries that pi-host ships for a host whose file lacks them, as PRIME_WINDOWS ships windows. Claude Fable 5.2
- * came out on 2026-11-09, pi-ai 1.4.0's catalog lacks it, and it became every thread's default on 11-10 (c221). Anthropic answers it
- * with 400 claude_code_version_too_old under pi-ai's user-agent claude-cli/2.1.280 and with 200 from claude-cli/2.1.290 on, so the entry
- * sends claude-cli/2.1.311 as us-metal02's models.json does.
+ * The host's `models.json` `models` entries of `provider`. pi-ai's catalog has had Claude Fable 5.2 since 1.6, with a user-agent
+ * (claude-cli/2.1.322) Anthropic accepts for it, so pi-host ships no entry of its own any more.
  */
-export const PRIME_MODELS: Readonly<Record<string, readonly Json[]>> = {
-  anthropic: [{
-    id: "claude-fable-5-2", name: "Claude Fable 5.2", reasoning: true, input: ["text", "image"], contextWindow: 500_000, maxTokens: 128_000,
-    cost: { input: 8, output: 40, cacheRead: 0.2, cacheWrite: 10 }, headers: { "user-agent": "claude-cli/2.1.311" },
-    thinkingLevelMap: { off: null, minimal: null, low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" },
-  }],
-};
-
-/** The host's `models.json` `models` entries of `provider`, then each PRIME_MODELS entry the file does not name. */
 function primeEntries(agentDir: string | undefined, provider: string): Json[] {
   const file = agentDir === undefined ? undefined : readJson(join(agentDir, "models.json"));
   const config = isRecord(file) && isRecord(file.providers) ? file.providers[provider] : undefined;
-  const own = isRecord(config) && Array.isArray(config.models) ? config.models.filter(isRecord).filter(entry => typeof entry.id === "string") : [];
-  return [...own, ...(PRIME_MODELS[provider] ?? []).filter(entry => !own.some(o => o.id === entry.id))];
+  return isRecord(config) && Array.isArray(config.models) ? config.models.filter(isRecord).filter(entry => typeof entry.id === "string") : [];
 }
 
 const sharedPrefix = (a: string, b: string): number => {

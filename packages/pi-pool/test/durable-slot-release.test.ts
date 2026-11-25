@@ -52,8 +52,8 @@ test("a run in an account slot wait holds no working slot, and the next run take
   harness.resume();
   const root = await harness.root(context, { agent: { model: { provider: "anthropic", modelId: "claude-opus-5-5" }, thinkingLevel: "off" } });
   const watch = await root.watch(context);
-  const sleeping = new Promise<void>(resolve => watch.start(async value => {
-    if ((value.docs["pi.live"] as LiveState | undefined)?.generation?.deferred) resolve();
+  const sleeping = new Promise<void>(resolve => watch.start(async call => {
+    if (call.kind === "value" && (call.value.docs["pi.live"] as LiveState | undefined)?.generation?.deferred) resolve();
   }));
   const submission = await root.submit({ type: "input", content: "hello", requestId: "slot-release-1" }, context);
   await sleeping;

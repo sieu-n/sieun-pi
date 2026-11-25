@@ -20,7 +20,7 @@
 import { existsSync, opendirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { defineExtension, GenerationTask, hook, LiveDoc, ROOT_CONVERSATION_ID, section, type ContextView, type ConversationId, type Extension, type Harness, type HookApi, type PromptInput } from "@earendil-works/pi-durable";
 import { BRIEF_CORRECTIONS, CHAT_BRIEF, jobReplyGuideline, personaGuideline, skillBody, WRITING_SKILL, writingGuideline } from "../../../../legacy/prime/user-history/src/chat-brief.ts";
 import { commLedgerPrompt, jobLedgerPrompt, ledgerPrompt, parseLedger, type Ledger } from "../../../../legacy/prime/user-history/src/chat-corrections.ts";

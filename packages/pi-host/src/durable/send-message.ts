@@ -12,7 +12,7 @@
  * tell_owner) for what apps/chat still asks for by this name: a check-in job's report (apps/chat/server/check-in-job.ts), which a guard built
  * for the owner's DM would hold. apps/chat draws both tools' calls as the agent's bubbles.
  */
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { defineExtension, defineTool, type Extension } from "@earendil-works/pi-durable";
 import type { ChatApp } from "./chat-app.ts";
 import { speak } from "./speak.ts";

@@ -17,8 +17,9 @@
  * same answer of the work thread send one notice, and `comm.noticed` drops a notice whose text the newest notice already carried. `stop_work` aborts the work thread's root conversation; it is a deferred tool that only a comm
  * thread's agent loads (`agent-profile.ts` `roleFields`).
  */
-import type { Context } from "@earendil-works/chord";
-import { Type, type Message } from "@earendil-works/pi-ai";
+import type { Context } from "@earendil-works/chord/context";
+import type { Message } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import {
   defineDoc, defineExtension, defineTask, defineTool, ROOT_CONVERSATION_ID, type Extension, type SettledSubmissionRecord, type SubmissionId, type Task, type Tx,
 } from "@earendil-works/pi-durable";

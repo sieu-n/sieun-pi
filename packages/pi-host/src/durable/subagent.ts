@@ -1,5 +1,6 @@
-import type { Context } from "@earendil-works/chord";
-import { Type, type AssistantMessage } from "@earendil-works/pi-ai";
+import type { Context } from "@earendil-works/chord/context";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { AssistantEntry, configure, defineExtension, defineTool, type ConversationId, type EntryId, type Extension, type ToolExecutionApi } from "@earendil-works/pi-durable";
 import { randomBytes } from "node:crypto";
 import { dropAgentRole } from "./agent-profile.ts";

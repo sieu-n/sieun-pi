@@ -34,7 +34,7 @@
  * - Commands (`what-did-i-say`, `agent-chat`): they open the legacy chat.
  * - The `[correction check]` line: the legacy chat server adds it to an owner message (chats.ts `correctionStep`), not the extension.
  */
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import type { Message } from "@earendil-works/pi-ai";
 import {
   defineExtension, GenerationTask, hook, ROOT_CONVERSATION_ID, ToolTask, type ContextView, type ConversationId, type EntryRecord, type Extension, type Harness, type ToolExecutionApi,

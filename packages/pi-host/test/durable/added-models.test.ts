@@ -1,6 +1,7 @@
-// Guards c221 (2026-11-10): every thread and job runs Claude Fable 5.2 at medium thinking. pi-ai 1.4.0's catalog lacks Fable 5.2, and
-// Anthropic refuses it under pi-ai's user-agent claude-cli/2.1.280 with 400 claude_code_version_too_old, so pi-host takes the entry from
-// Prime's models.json. pi-host reads its default model and thinking level from Prime's settings.json, so the two cannot drift.
+// Guards c221 (2026-11-10): every thread and job runs Claude Fable 5.2 at medium thinking. pi-ai's catalog has Fable 5.2 since 1.6, and
+// pi-ai sends it under claude-cli/2.1.322, which Anthropic accepts (it refused 2.1.280 with 400 claude_code_version_too_old). A model the
+// catalog lacks comes from Prime's models.json. pi-host reads its default model and thinking level from Prime's settings.json, so the two
+// cannot drift.
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -21,25 +22,26 @@ const agentDir = (name: string, files: { settings?: unknown; models?: unknown })
   return path;
 };
 
-test("durable threads run Claude Fable 5.2 with a user-agent Anthropic accepts, every thinking level from low to max, and Fable 5.1's adaptive thinking", () => {
+test("durable threads run Claude Fable 5.2 from pi-ai's catalog with Prime's window and adaptive thinking", () => {
   const model = durableModels("added-models-test").getModel("anthropic", "claude-fable-5-2");
   assert.ok(model, "anthropic/claude-fable-5-2 is in the registry");
   assert.equal(model.api, "anthropic-messages");
-  assert.equal(model.headers?.["user-agent"], "claude-cli/2.1.311");
+  assert.equal(model.headers?.["user-agent"], undefined, "pi-ai's own claude-cli user-agent goes out");
   assert.deepEqual(model.input, ["text", "image"]);
   assert.equal(model.contextWindow, 500_000);
-  assert.deepEqual(model.thinkingLevelMap, { off: null, minimal: null, low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" });
-  assert.equal(model.compat?.forceAdaptiveThinking, true, "medium reaches Anthropic as effort, not a token budget");
+  assert.deepEqual(model.thinkingLevelMap, { xhigh: "xhigh", max: "max", off: null });
+  assert.equal((model.compat as { forceAdaptiveThinking?: boolean } | undefined)?.forceAdaptiveThinking, true, "medium reaches Anthropic as effort, not a token budget");
 });
 
 test("a models.json entry of a model the catalog lacks wins over pi-host's shipped one and is read again when the file changes", () => {
-  const entry = (agent: string) => ({ providers: { anthropic: { models: [{ id: "claude-fable-5-2", name: "Claude Fable 5.2", contextWindow: 400_000, headers: { "user-agent": agent } }] } } });
+  const entry = (agent: string) => ({ providers: { anthropic: { models: [{ id: "claude-fable-5-9", name: "Claude Fable 5.9", contextWindow: 400_000, headers: { "user-agent": agent } }] } } });
   const path = agentDir("models-json", { models: entry("claude-cli/2.1.400") });
   const models = durableModels("models-json-test", { agentDir: path });
-  assert.equal(models.getModel("anthropic", "claude-fable-5-2")?.headers?.["user-agent"], "claude-cli/2.1.400");
-  assert.equal(models.getModel("anthropic", "claude-fable-5-2")?.contextWindow, 400_000);
+  assert.equal(models.getModel("anthropic", "claude-fable-5-9")?.headers?.["user-agent"], "claude-cli/2.1.400");
+  assert.equal(models.getModel("anthropic", "claude-fable-5-9")?.contextWindow, 400_000);
+  assert.equal((models.getModel("anthropic", "claude-fable-5-9")?.compat as { forceAdaptiveThinking?: boolean } | undefined)?.forceAdaptiveThinking, true, "Fable 5.2's compat");
   writeFileSync(join(path, "models.json"), JSON.stringify(entry("claude-cli/2.1.401")) + "\n");
-  assert.equal(models.getModel("anthropic", "claude-fable-5-2")?.headers?.["user-agent"], "claude-cli/2.1.401");
+  assert.equal(models.getModel("anthropic", "claude-fable-5-9")?.headers?.["user-agent"], "claude-cli/2.1.401");
   assert.equal(models.getModel("anthropic", "claude-opus-5-5")?.headers, undefined, "a catalog model keeps pi-ai's entry");
 });
 

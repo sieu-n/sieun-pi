@@ -13,7 +13,8 @@
  * coding tools that change files and gets `stop_work` (`comm.ts`), and a work thread loses `tell_owner`, also before its comm thread exists.
  * pi-host keeps what it wrote in the `agent.role` document, so it changes or clears only a value it set itself.
  */
-import type { Context, JsonValue } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
+import type { JsonValue } from "@earendil-works/chord/json";
 import { AgentDoc, defineDoc, ROOT_CONVERSATION_ID, type AgentState, type ConversationId, type DocumentReader, type Tx } from "@earendil-works/pi-durable";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { isAbsolute, join } from "node:path";

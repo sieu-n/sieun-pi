@@ -10,7 +10,7 @@
  * `laterTools` returns the three definitions, which the `room-tools` extension lists beside `set_emoji` (`room-tools.ts`), so a job's child
  * conversation drops them with it.
  */
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { defineTool, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import type { ChatApp } from "./chat-app.ts";
 

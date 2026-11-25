@@ -21,7 +21,7 @@
  * `list_saved_messages` (`later.ts`) keep its Later list, `read_post` (`read-post.ts`) reads one post and its thread by id, and
  * `search_messages` (`search-messages.ts`) runs the owner's Cmd K search with his filters. Every tool that names a post takes later.ts's `MESSAGE_ID`.
  */
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { defineExtension, defineTool, ROOT_CONVERSATION_ID, type Extension } from "@earendil-works/pi-durable";
 import type { ChatApp } from "./chat-app.ts";
 import { crammedEdit, relayEdit } from "./comm-guard.ts";

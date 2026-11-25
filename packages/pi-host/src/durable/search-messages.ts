@@ -8,7 +8,7 @@
  * Each hit prints as one line that says where it sits, who wrote it, its words and the id other room tools take, with the link that opens it.
  * The room-tools extension lists it beside `set_emoji` (`room-tools.ts`). Searching only reads, so a rerun after a crash is safe.
  */
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { defineTool } from "@earendil-works/pi-durable";
 import type { SearchHit, SearchResult } from "../../../../apps/chat/web/src/lib/api/types.ts";
 import type { ChatApp } from "./chat-app.ts";

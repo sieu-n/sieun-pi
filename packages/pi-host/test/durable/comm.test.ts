@@ -148,8 +148,11 @@ test("an agent.ref sets the root's tools and instructions for its role in its co
     const state = async () => ({ ...(await open.harness.snapshot(AgentDoc, ROOT_CONVERSATION_ID, context)) });
     const offered = async () => (await open.root.agent(context)).tools.map(tool => tool.name);
     const changes: string[] = [];
-    open.harness.subscribeCommits((publication: CommitPublication) => {
-      for (const change of publication.changes) if (change.type === "document" && change.conversationId === ROOT_CONVERSATION_ID) changes.push(change.record.kind);
+    open.harness.observeCommits({
+      advance: (publication: CommitPublication) => {
+        for (const change of publication.changes) if (change.type === "document" && change.conversationId === ROOT_CONVERSATION_ID) changes.push(change.record.kind);
+      },
+      end: () => {},
     });
     assert.ok(!(await offered()).includes(STOP_WORK_TOOL), "a thread with no role is not offered stop_work");
 

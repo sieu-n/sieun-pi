@@ -9,8 +9,9 @@
  * `forMeTools` returns the two tool definitions, which the `room-tools` extension lists beside `set_emoji` (`room-tools.ts`), so a job's
  * child conversation drops them with it.
  */
-import type { Context } from "@earendil-works/chord";
-import { Type, type Message } from "@earendil-works/pi-ai";
+import type { Context } from "@earendil-works/chord/context";
+import type { Message } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { defineTool, ROOT_CONVERSATION_ID, type Cursor, type ToolControl, type ToolExecutionApi } from "@earendil-works/pi-durable";
 import type { ForMeItem, ForMeList, ForMeStatus, Principal } from "../../../../apps/chat/web/src/lib/api/types.ts";
 import { threadAgent } from "./agent-profile.ts";

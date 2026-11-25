@@ -9,7 +9,7 @@
  * an abort, and no rlm child or `bash()` handle out gets the continuation as a follow-up input; a child's notice or a bash notice starts a
  * later run whose settle sends it instead. Crossing the budget marks the goal budget_limited and steers Prime's budget-limit text in once.
  */
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Message } from "@earendil-works/pi-ai";
 import { defineDoc, type ConversationId, type EntryRecord, type Harness } from "@earendil-works/pi-durable";

@@ -11,13 +11,13 @@
  * leaves to the host: which files to reopen after a crash (`markActive` before an admit, then the Harness's `onWake`),
  * a timer for sleeping tasks in closed files, and closing idle files.
  */
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ImageContent, Message, ModelThinkingLevel, TextContent, Usage } from "@earendil-works/pi-ai";
 import type { Models } from "@earendil-works/pi-ai/models";
 import {
-  Harness, LiveDoc, ProviderDoc, ROOT_CONVERSATION_ID, watchEvents, type AgentEvent, type AgentEventStream, type CommitChange, type CommitPublication, type Conversation,
-  type ConversationId, type ConversationRecord, type EntryDraft, type EntryId, type EntryRecord, type HarnessSettings, type ModelRef, type ReportInfo, type SettledSubmissionRecord,
+  Harness, LiveDoc, ProviderDoc, ROOT_CONVERSATION_ID, type CommitChange, type CommitPublication, type Conversation,
+  type ConversationId, type ConversationRecord, type EntryDraft, type EntryId, type EntryRecord, type HarnessSettings, type ModelRef, type Report, type SettledSubmissionRecord,
   type Storage, type SubmissionId, type SubmissionRecord, type Wake,
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
@@ -28,6 +28,7 @@ import { isAbsolute, join } from "node:path";
 import { Leases, SessionLockedError } from "../lease.ts";
 import { statusOf, ThreadIndex, type IndexedEntry, type IndexRead, type SearchPage, type SearchQuery, type ThreadRow, type ThreadStatus, type UsageRow } from "./index-db.ts";
 import { speechOf } from "./feed.ts";
+import { watchEvents, type AgentEvent, type AgentEventStream } from "./agent-events.ts";
 import { leanEntry } from "./lean.ts";
 import { headFor, parseSession } from "./import.ts";
 import { ChatDoc } from "./chat-doc.ts";
@@ -559,7 +560,7 @@ export class DurableThreads {
           if (state) this.onWake(state, next);
           else this.index.setWake(id, next, this.now());
         },
-        onReport: (error: unknown, info: ReportInfo) => this.log(`${id} ${info.type}${"reason" in info && info.reason ? ` ${String(info.reason)}` : ""}: ${error instanceof Error ? error.message : String(error)}`),
+        onReport: (report: Report) => this.log(`${id} ${report.kind}${"reason" in report && report.reason ? ` ${String(report.reason)}` : ""}: ${report.error instanceof Error ? report.error.message : String(report.error)}`),
       }, context);
       openHarness = harness;
       const root = await harness.root(context, init ? { agent: init.agent } : undefined);
@@ -572,7 +573,8 @@ export class DurableThreads {
       const tasks = await this.backfill(id, harness);
       state = { id, file, harness, root, watchers: new Set(), wake, stopCommits: () => {}, ...(prompt ? { prompt } : {}), digesting: Promise.resolve(), tasks, comm, storage, treeNodes: new Map(), treeTouches: new Map() };
       const opened = state;
-      opened.stopCommits = harness.subscribeCommits(publication => this.onCommit(opened, publication));
+      const commits = harness.observeCommits({ advance: publication => this.onCommit(opened, publication), end: () => {} });
+      opened.stopCommits = () => commits.detach();
       this.onWake(opened, harness.wake());
       harness.resume();
       return opened;
@@ -779,7 +781,7 @@ export class DurableThreads {
         if (record.type === "input" && (record.status === "done" || record.status === "unanswered")) this.settle(open, record.conversationId);
       } else if (change.type === "conversation") {
         void this.announceConversation(open, change.value);
-      } else if (change.type === "document" && change.record.kind === "pi.live" && change.conversationId !== undefined) {
+      } else if (change.type === "document" && change.kind === "change" && change.record.kind === "pi.live" && change.conversationId !== undefined) {
         this.noteRetry(open, change.conversationId, change.value);
       }
     }
@@ -1218,12 +1220,12 @@ export class DurableThreads {
 
   private async attachStream(open: OpenThread, watcher: Watcher, conversation: number, fromEntry?: number): Promise<void> {
     if (watcher.streams.has(conversation)) return;
-    const stream = await watchEvents(open.harness, conversation as ConversationId, context);
+    const handle = await this.conversation(open, conversation);
+    const stream = await watchEvents(handle, context);
     watcher.streams.set(conversation, stream);
     const { entries: _entries, ...snapshot } = stream.snapshot;
     const first: AgentEvent[] = [{ ...snapshot, entries: [] }];
     if (fromEntry !== undefined) {
-      const handle = await this.conversation(open, conversation);
       let cursor: Parameters<Conversation["entries"]>[2];
       do {
         const page = await handle.entries({ order: "ascending", minEntryId: (fromEntry + 1) as EntryRecord["id"] }, PAGE_MAX, cursor, context);

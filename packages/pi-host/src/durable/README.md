@@ -153,7 +153,7 @@ Each command is one JSON line with `type` and `id`, and the response is a v7 `re
 
 A `durable_event` line is `{type: "durable_event", thread, watch, event}`, and `event` is one of these.
 
-1. `{type: "events", conversation, events}` carries pi-durable's agent events for one conversation, starting with a `snapshot` without its entries, then `entry_appended` for each entry after `fromEntry`, then every later batch.
+1. `{type: "events", conversation, events}` carries the agent events of one conversation, starting with a `snapshot` without its entries, then `entry_appended` for each entry after `fromEntry`, then every later batch. pi-durable 1.5 dropped its `watchEvents()`, so `agent-events.ts` derives these events from the conversation's view watch: run_start, run_end, entry_appended, tool_execution_start and _end, message_update without text, auto_retry_start and _end, and deferred_poll.
 2. `{type: "conversation", node}` says a subagent created a child conversation, and a watch on the whole file attaches to it.
 3. `{type: "status", status, wakeAt?}` follows the thread's wake.
 4. `{type: "doc", conversation, name, value}` follows `durable_doc_put`.

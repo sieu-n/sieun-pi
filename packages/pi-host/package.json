@@ -21,15 +21,16 @@
     "test:real": "PI_DURABLE_REAL=1 node --import tsx --test --test-force-exit --test-isolation=none --test-name-pattern=\"real\" test/durable/host-crash.test.ts"
   },
   "dependencies": {
-    "@earendil-works/chord": "1.4.0",
-    "@earendil-works/pi-agent-core": "1.4.0",
-    "@earendil-works/pi-ai": "1.4.0",
-    "@earendil-works/pi-coding-agent": "1.4.0",
-    "@earendil-works/pi-durable": "1.4.0",
+    "@earendil-works/chord": "1.6.1",
+    "@earendil-works/pi-agent-core": "1.6.1",
+    "@earendil-works/pi-ai": "1.6.1",
+    "@earendil-works/pi-coding-agent": "1.6.1",
+    "@earendil-works/pi-durable": "1.6.1",
     "@sieun-pi/pi-family": "0.1.0",
     "@sieun-pi/pi-pool": "0.1.0",
     "@sieun-pi/pi-rlm": "0.1.0",
-    "tsx": "4.23.13"
+    "tsx": "4.23.13",
+    "typebox": "1.3.27"
   },
   "devDependencies": {
     "@sieun-pi/pi-testkit": "0.1.0"

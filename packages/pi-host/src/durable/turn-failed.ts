@@ -22,7 +22,7 @@
  * call of the thread answered or closed it; the retry's request id `retry:<the post's request id>` keeps it to one retry per post. A post
  * whose run failed on an error that clears on its own gets that retry at once (`clearsOnItsOwn`).
  */
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import type { ImageContent, Message, TextContent } from "@earendil-works/pi-ai";
 import { AssistantEntry, ROOT_CONVERSATION_ID, ToolResultEntry, type CommitChange, type Cursor, type EntryRecord, type Harness, type Storage, type SubmissionDraft, type SubmissionRecord } from "@earendil-works/pi-durable";
 import { DatabaseSync } from "node:sqlite";

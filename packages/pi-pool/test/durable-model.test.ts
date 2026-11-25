@@ -61,8 +61,9 @@ test("a turn on a model only a full account serves sleeps on the slot, survives 
   const { open, ran } = rig("wait", { modelWait: { [MODEL.modelId]: until } });
   const first = await open();
   const watch = await first.root.watch(context);
-  const deferred = new Promise<number>(resolve => watch.start(async value => {
-    const pollAt = (value.docs["pi.live"] as LiveState | undefined)?.generation?.deferred?.pollAt;
+  const deferred = new Promise<number>(resolve => watch.start(async call => {
+    if (call.kind !== "value") return;
+    const pollAt = (call.value.docs["pi.live"] as LiveState | undefined)?.generation?.deferred?.pollAt;
     if (pollAt !== undefined) resolve(pollAt);
   }));
   const submission = await first.root.submit({ type: "input", content: "Which model?", requestId: "wait-1" }, context);
