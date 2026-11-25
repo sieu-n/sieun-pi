@@ -18,11 +18,11 @@ const AUTOPAIR: AutopairEvidence = { checks: [
   { name: "2 the signed-in /app page paired the extension with no click", ok: true, detail: { pairStatus: 200 } },
   { name: "3 the account in front is listed with a Link button, and the heartbeat added no workspace row", ok: true },
   { name: "3a Link registers the account in the org and the popup says so", ok: true },
-  { name: "3b Connections lists @eugene66511", ok: true },
+  { name: "3b Connections lists @temariyunori", ok: true },
   { name: "5a an Instagram sign-out reaches the popup in seconds", ok: false },
 ] };
 const E2E: E2eEvidence = {
-  connectionsRow: "@eugene66511",
+  connectionsRow: "@temariyunori",
   firstOutreach: { id: "m1", status: "sent", threadId: "t1" },
   bReply: { text: "reply from @glenmyftiu945 09:52Z", onInstagram: true },
   replyInStore: { threadId: "t1", messageId: "m2" },
@@ -48,7 +48,7 @@ test("all four parts hold: e2e_pass 1, and an unrelated autopair check is a slic
 });
 
 test("a sender with too few sends left reads sender_daily_limit and an unmeasured e2e_pass, never a fake 0", () => {
-  const sender = { username: "eugene66511", sentToday: 8, dailyLimit: 8 };
+  const sender = { username: "temariyunori", sentToday: 8, dailyLimit: 8 };
   assert.equal(senderFits(sender), false);
   const out = report({ now: NOW, autopair: AUTOPAIR, sender, rows: { messages: [], devices: [], truncated: false }, errors: [] }, METRICS);
   assert.ok(out.metrics.e2e_pass! < 0);
@@ -57,9 +57,9 @@ test("a sender with too few sends left reads sender_daily_limit and an unmeasure
 });
 
 test("a fresh org's sender row fits a run, and the four parts decide e2e_pass", () => {
-  assert.equal(senderFits({ username: "eugene66511", sentToday: 7, dailyLimit: 8 }), true);
-  assert.equal(senderFits({ username: "eugene66511", sentToday: 8, dailyLimit: 8 }), false);
-  const out = report({ now: NOW, autopair: AUTOPAIR, e2e: E2E, sender: { username: "eugene66511", sentToday: 0, dailyLimit: 8 }, errors: [] }, METRICS);
+  assert.equal(senderFits({ username: "temariyunori", sentToday: 7, dailyLimit: 8 }), true);
+  assert.equal(senderFits({ username: "temariyunori", sentToday: 8, dailyLimit: 8 }), false);
+  const out = report({ now: NOW, autopair: AUTOPAIR, e2e: E2E, sender: { username: "temariyunori", sentToday: 0, dailyLimit: 8 }, errors: [] }, METRICS);
   assert.equal(out.metrics.e2e_pass, 1);
 });
 
@@ -109,7 +109,7 @@ test("24 h counts take extension rows of the last day by their last attempt", ()
 });
 
 test("a jar with a null ig_user_id is named by its ds_user_id cookie, as on 10-31 for 206", () => {
-  const jar = (ig_user_id: string | null, cookies: BrowserJar["cookies"]): BrowserJar => ({ world: "prod", username: "eugene66511", ig_user_id, cookies, user_agent: "ua", valid: true, proxy_url: "http://exit:1" });
+  const jar = (ig_user_id: string | null, cookies: BrowserJar["cookies"]): BrowserJar => ({ world: "prod", username: "temariyunori", ig_user_id, cookies, user_agent: "ua", valid: true, proxy_url: "http://exit:1" });
   assert.equal(jarIgUserId(jar(null, [{ name: "csrftoken", value: "x" }, { name: "ds_user_id", value: "29063885913" }])), "29063885913");
   assert.equal(jarIgUserId(jar("29063885913", null)), "29063885913");
   assert.throws(() => jarIgUserId(jar(null, [])), /no ds_user_id/);
@@ -142,18 +142,18 @@ test("jars writes each account as the crawler answers it, names its world and ex
   const asked: string[] = [];
   const read = (replierExit: string) => async (username: string) => {
     asked.push(username);
-    return username === "eugene66511" ? answer(username, "http://u:p@gw.example:12001") : answer(username, replierExit, false);
+    return username === "temariyunori" ? answer(username, "http://u:p@gw.example:12001") : answer(username, replierExit, false);
   };
   try {
     const boxed = await jars(tmp, read("http://box:pw@us-metal01.example:7244"));
-    assert.deepEqual(asked, ["eugene66511", "luishoxha86939"]);
-    assert.equal(boxed.accounts, "sender @eugene66511 is prod on exit gw.example:12001; replier @luishoxha86939 is prod on exit us-metal01.example:7244");
-    assert.deepEqual(boxed.boxed, ["replier @luishoxha86939 is prod on exit us-metal01.example:7244"]);
+    assert.deepEqual(asked, ["temariyunori", "kokomi.yua"]);
+    assert.equal(boxed.accounts, "sender @temariyunori is prod on exit gw.example:12001; replier @kokomi.yua is prod on exit us-metal01.example:7244");
+    assert.deepEqual(boxed.boxed, ["replier @kokomi.yua is prod on exit us-metal01.example:7244"]);
     assert.equal(boxed.files, undefined);
     const out = await jars(tmp, read("http://u:p@gw.example:12002"));
-    assert.equal(out.files?.senderIgId, "eugene66511-id");
+    assert.equal(out.files?.senderIgId, "temariyunori-id");
     assert.equal(JSON.parse(await readFile(out.files?.replier ?? "", "utf8")).proxy_url, "http://u:p@gw.example:12002");
-    assert.deepEqual(out.notes, ["prod @luishoxha86939 has a jar the crawler marked invalid"]);
+    assert.deepEqual(out.notes, ["prod @kokomi.yua has a jar the crawler marked invalid"]);
     assert.deepEqual(out.boxed, []);
   } finally {
     await rm(tmp, { recursive: true, force: true });
@@ -164,8 +164,8 @@ test("jars writes each account as the crawler answers it, names its world and ex
 test("a 409 proxy_required from browser-jar reads as no residential exit with no jar file, and any other non-200 throws", async () => {
   const tmp = await mkdtemp(join(tmpdir(), "dm-ext-held-"));
   const answers: Record<string, Response> = {
-    eugene66511: new Response(JSON.stringify({ error: "c229: engage route on server address 64.34.205.244 refused; it waits for a proxy", error_type: "proxy_required" }), { status: 409 }),
-    luishoxha86939: new Response(JSON.stringify({ ok: true, data: { world: "prod", username: "luishoxha86939", ig_user_id: "2", cookies: [], user_agent: "ua", valid: true, proxy_url: "http://u:p@gw.example:12001" } })),
+    temariyunori: new Response(JSON.stringify({ error: "c229: engage route on server address 64.34.205.244 refused; it waits for a proxy", error_type: "proxy_required" }), { status: 409 }),
+    "kokomi.yua": new Response(JSON.stringify({ ok: true, data: { world: "prod", username: "kokomi.yua", ig_user_id: "2", cookies: [], user_agent: "ua", valid: true, proxy_url: "http://u:p@gw.example:12001" } })),
     down: new Response(JSON.stringify({ error: "supply down", error_type: "provider_down" }), { status: 503 }),
     parked: new Response(JSON.stringify({ ok: false, error: { code: "not_found", message: "neither world holds a serving jar of @parked" } }), { status: 404 }),
     broken: new Response("oops", { status: 500 }),
@@ -178,11 +178,11 @@ test("a 409 proxy_required from browser-jar reads as no residential exit with no
   }) as typeof fetch);
   try {
     const out = await jars(tmp, read);
-    assert.deepEqual(holds, { eugene66511: "dm-extension-sender", luishoxha86939: "dm-extension-replier" });
+    assert.deepEqual(holds, { temariyunori: "dm-extension-sender", "kokomi.yua": "dm-extension-replier" });
     assert.equal(out.files, undefined);
-    assert.deepEqual(out.boxed, ["sender @eugene66511: the crawler holds its jar, browser-jar answered 409 proxy_required (c229: engage route on server address 64.34.205.244 refused; it waits for a proxy)"]);
+    assert.deepEqual(out.boxed, ["sender @temariyunori: the crawler holds its jar, browser-jar answered 409 proxy_required (c229: engage route on server address 64.34.205.244 refused; it waits for a proxy)"]);
     const slices = report({ now: NOW, accounts: out.accounts, boxed: out.boxed, errors: [] }, METRICS).flagged ?? [];
-    assert.ok(slices.some(s => s.kind === "exit_down" && s.excerpt.startsWith("no residential exit: sender @eugene66511: the crawler holds its jar")));
+    assert.ok(slices.some(s => s.kind === "exit_down" && s.excerpt.startsWith("no residential exit: sender @temariyunori: the crawler holds its jar")));
     assert.ok(!slices.some(s => s.kind === "source_error"));
     const parked = await read("parked");
     assert.ok("held" in parked && /404 not_found \(parked/.test(parked.held));
@@ -195,7 +195,7 @@ test("a 409 proxy_required from browser-jar reads as no residential exit with no
 
 test("a run stopped by a slow exit names it in a slow_exit slice and in each failed part, and a refusal in an instagram_refused slice", () => {
   const slow: E2eEvidence = {
-    connectionsRow: "@eugene66511",
+    connectionsRow: "@temariyunori",
     firstOutreach: { id: "m1", status: "scheduled", threadId: "t1" },
     stoppedOn: { kind: "slow_exit", step: "test DM", causeStep: "test DM", code: 11, exit: "residential-unlimited-us-08-proxy.geonode.io", reason: "A's Instagram tab was still loading when the wait ended" },
   };
@@ -235,15 +235,15 @@ test("a test account on a box exit reads exit_down with no residential exit and 
   assert.equal(boxExit("box://64.34.205.244/206"), true);
   assert.equal(boxExit("http://box:pw@us-metal01.tail0c093d.ts.net:7244"), true);
   assert.equal(boxExit("http://user:pw@residential-unlimited-us-08-proxy.geonode.io:12001"), false);
-  const out = report({ now: NOW, boxed: ["sender @eugene66511 is prod on exit us-metal01.tail0c093d.ts.net:7244"], errors: [] }, METRICS);
+  const out = report({ now: NOW, boxed: ["sender @temariyunori is prod on exit us-metal01.tail0c093d.ts.net:7244"], errors: [] }, METRICS);
   assert.notEqual(out.metrics.e2e_pass, 1);
   const slice = out.flagged?.find(s => s.kind === "exit_down");
-  assert.ok(slice?.excerpt.startsWith("no residential exit: sender @eugene66511 is prod on exit us-metal01"));
+  assert.ok(slice?.excerpt.startsWith("no residential exit: sender @temariyunori is prod on exit us-metal01"));
   assert.ok(!out.flagged?.some(s => s.kind === "e2e_part"));
 });
 
 test("with no residential exit the unmeasured slice says the run waits on a paid proxy, not on a source_error (d1, 11-22)", () => {
-  const boxed = ["sender @eugene66511: the crawler holds its jar, browser-jar answered 409 proxy_required"];
+  const boxed = ["sender @temariyunori: the crawler holds its jar, browser-jar answered 409 proxy_required"];
   const rows = { messages: [], devices: [], truncated: false };
   const alone = report({ now: NOW, boxed, rows, errors: [] }, METRICS).flagged?.find(s => s.kind === "unmeasured")?.excerpt ?? "";
   assert.match(alone, /e2e_pass waits on a paid proxy/);
@@ -256,7 +256,7 @@ test("with no residential exit the unmeasured slice says the run waits on a paid
 });
 
 test("a paid-proxy wait alone counts toward no error streak, and a source_error beside it still does (d1, 11-23)", () => {
-  const boxed = ["sender @eugene66511: the crawler serves no jar of it, browser-jar answered 404 not_found"];
+  const boxed = ["sender @temariyunori: the crawler serves no jar of it, browser-jar answered 404 not_found"];
   const rows = { messages: [], devices: [], truncated: false };
   const run = (errors: { source: "staging rows"; message: string }[]): DutyRunRecord => {
     const waitsOn = outsideWaitOf(report({ now: NOW, boxed, rows, errors }, METRICS));

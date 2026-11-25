@@ -52,16 +52,17 @@ import { DAY, REPO, settle, SOURCE_DEADLINE_MS, unmeasuredFlag, utc } from "./es
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DUTY_FILE = join(HERE, "dm-extension.duty.json");
 /**
- * The two test accounts by handle: @eugene66511 (prod 254) sends and @luishoxha86939 (prod 251) replies since 11-25, both of lot
- * g2g-PAWQ, never read through our own server IPs, with no quarantine event, only our sessions, and kept from fleet use through
- * engage.reserved_accounts (Crawler guy, wiki agents/crawler-guy/jobs/2026/11/25/0015-dm-test-pair). Every test sender of 11-24
- * got limited by Instagram within an hour of its first rig use: @caiyiting8674 (206) with field_exception after the replier
- * @gimnayeon1396 (285), which another party also used, blocked it, @sena354689 (56) with /accounts/suspended/ and @andishyti693
- * (212) with send_restricted after its first DM (wiki agents/chrome-extension/jobs/2026/11/25/0007-dm-test-sender-limits).
- * Backups are 257 and 270.
+ * The two test accounts by handle: @temariyunori (prod 279) sends and @kokomi.yua (prod 33) replies since 11-25 14:48Z, both of lot
+ * g2g-1787367634022Q5N5-1, with no box-keeper event, no read or binding through 64.34.205.x and no quarantine event (Crawler guy,
+ * audit 49192). The PAWQ pair before them, @eugene66511 (254) and @luishoxha86939 (251), had box-keeper route moves before 11-20,
+ * and that group lost 13 of 37 accounts in prod on 11-25 against 2 of 23 clean ones. 33 listed two seller Windows logins from
+ * July and August, which a password change with "Log out of other devices" and a device log-out removed on 11-25; 279 listed only
+ * our login. The rigs read them with hold=dm-extension-sender and hold=dm-extension-replier, which keeps them from fleet use
+ * (wiki agents/chrome-extension/jobs/2026/11/25/2335-dm-test-clean-pair-switch). Backup is 21 (@aoi.otoha), whose seller
+ * logins we logged out but whose password we could not change, because no crawler read we hold returns it.
  */
-export const SENDER = "eugene66511";
-export const REPLIER = "luishoxha86939";
+export const SENDER = "temariyunori";
+export const REPLIER = "kokomi.yua";
 /** GET /ops/engage/browser-jar on the staging crawler (crawler-v3 engage/browser_jar.py), which asks prod for an account staging does not hold. */
 export const BROWSER_JAR = "https://staging-crawler.virev.ai/ops/engage/browser-jar";
 export const WORLD = "dm-ext-duty";
