@@ -230,3 +230,11 @@ test("the media read is held when no working answer linked a media URL and the a
   assert.equal(heldMedia(url, [held]), null);
   assert.equal(heldMedia(null, [ok("GET /v1/search/languages")]), null);
 });
+
+test("n is the routes each env judged and the routes judged on either env, and a run that probed nothing reads n 0 and says so (c249)", () => {
+  assert.deepEqual(parityMetrics({ routes: ROUTES, crawler, docs, probes, sourceErrors: [], at: 1 }).output.n,
+    { prod_working_pct: 2, staging_working_pct: 3, routes_failing_portal: 4, routes_failing_crawler: 4 });
+  const empty = parityMetrics({ routes: ROUTES, crawler, docs, probes: { prod: [], staging: [] }, sourceErrors: [], at: 1 }).output;
+  assert.deepEqual(empty.n, { prod_working_pct: 0, staging_working_pct: 0, routes_failing_portal: 0, routes_failing_crawler: 0 });
+  assert.match(empty.flagged!.find(slice => slice.kind === "no_routes")!.excerpt, /read 0 judged routes/);
+});

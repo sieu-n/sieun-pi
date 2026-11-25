@@ -135,8 +135,8 @@ export const SOURCES: Record<Measure, string> = {
   rowAge: `the age of the newest ${PROBE_TABLE} row per target on prod Convex`,
 };
 
-/** One Prometheus series from an instant query: its labels and its value. */
-export interface Series { labels: Record<string, string>; value: number }
+/** One Prometheus series from an instant query: its labels and its value; an uptime series from the Convex rows adds the probe rounds it judged. */
+export interface Series { labels: Record<string, string>; value: number; rounds?: number }
 /** The answer to each measure, or the error text when its source gave none. */
 export type Answers = Record<Exclude<Measure, "rowUp" | "rowAge">, Series[] | { error: string }> & Partial<Record<"rowUp" | "rowAge", Series[] | { error: string }>>;
 
@@ -176,7 +176,7 @@ export function rowUptime(rows: readonly ProbeRow[], now: number): { uptime: Ser
       if (gap) lastBad = Math.max(lastBad, mine[index]!.createdAt - MINUTE_MS);
     }
     const passed = mine.filter(row => row.ok).length;
-    uptime.push({ labels: { target }, value: passed / (mine.length + skipped) });
+    uptime.push({ labels: { target }, value: passed / (mine.length + skipped), rounds: mine.length + skipped });
     if (lastBad) lastDown.push({ labels: { target }, value: lastBad / 1000 });
     rowUp.push({ labels: { target }, value: newest.ok ? 1 : 0 });
     rowAge.push({ labels: { target }, value: (now - newest.createdAt) / 1000 });
@@ -230,8 +230,15 @@ export type LiveProd = { ref: string; text: string; staging: string } | { error:
 export const blobFingerprint = (text: string): string =>
   createHash("sha256").update(`${text.replace(/\s+$/, "")}\n`).digest("hex").slice(0, 16);
 
+/**
+ * The precheck output with `n`, what each duty metric read (agent factory's sampleSize in apps/chat/scripts/duties/agent-boards.ts): the probe
+ * rounds the 24 h uptime judged, the checks probes_down_now read (probe targets, /docs and the key check), the probe series whose age was read,
+ * and the staging key names compared against prod. A metric that was not measured reads 0.
+ */
+export type UptimeOutput = PrecheckOutput & { n: Record<string, number> };
+
 /** The duty's metrics from the query answers, the direct GET and the env files, with a flagged slice for each down target, gap and unread source. */
-export function uptimeMetrics(answers: Answers, direct: { status: number; ms: number; error?: string }, at: number, env: EnvFiles = {}, live?: LiveProd, docs?: DocsCheck, auth?: AuthCheck, stopped: readonly string[] = []): PrecheckOutput {
+export function uptimeMetrics(answers: Answers, direct: { status: number; ms: number; error?: string }, at: number, env: EnvFiles = {}, live?: LiveProd, docs?: DocsCheck, auth?: AuthCheck, stopped: readonly string[] = []): UptimeOutput {
   const flagged: FlaggedSlice[] = [];
   let sourceErrors = 0;
   /** The series of one measure, or undefined after flagging why there are none. */
@@ -298,6 +305,7 @@ export function uptimeMetrics(answers: Answers, direct: { status: number; ms: nu
   }
   const stagingOnly = new Set<string>();
   let envRead = true;
+  let keysCompared = 0;
   for (const ref of ENV_REFS) {
     const files = env[ref];
     if (!files || "error" in files) {
@@ -311,13 +319,23 @@ export function uptimeMetrics(answers: Answers, direct: { status: number; ms: nu
     const prod = envKeys(liveText ? liveText.text : files.prod);
     const prodName = liveText ? `the live prod blob (apps/api-portal/.env at ${liveText.ref})` : `apps/api-portal/.env at ${ref}`;
     const stagingRef = liveText ? liveText.ref : ref;
-    const missing = [...envKeys(liveText ? liveText.staging : files.staging)].filter(name => !prod.has(name));
+    const stagingKeys = [...envKeys(liveText ? liveText.staging : files.staging)];
+    keysCompared += stagingKeys.length;
+    const missing = stagingKeys.filter(name => !prod.has(name));
     for (const name of missing) stagingOnly.add(name);
     if (missing.length) flagged.push({ at, kind: "env_staging_only", excerpt: `apps/api-portal/.env.staging at ${stagingRef} has ${missing.join(", ")}, which ${prodName} lacks, so prod runs without ${missing.length > 1 ? "them" : "it"}` });
   }
   metrics.env_keys_staging_only = envRead ? stagingOnly.size : UNMEASURED;
   metrics.source_errors = sourceErrors;
-  return { metrics, flagged, ...Object.keys(lastEventAt).length ? { lastEventAt } : {} };
+  const checksRead = (up?.length ?? 0) + (!offline && docs !== undefined ? 1 : 0) + (!offline && auth !== undefined ? 1 : 0);
+  const n = {
+    probe_uptime_24h_pct: (uptime ?? []).reduce((sum, series) => sum + (series.rounds ?? 0), 0),
+    probes_down_now: metrics.probes_down_now === UNMEASURED ? 0 : checksRead,
+    probe_age_min: metrics.probe_age_min === UNMEASURED ? 0 : (age?.length ?? 0) + (rowAge?.length ?? 0),
+    env_keys_staging_only: envRead ? keysCompared : 0,
+  };
+  if (envRead && !keysCompared) flagged.push({ at, kind: "env_empty", excerpt: "env_keys_staging_only read 0 staging key names: apps/api-portal/.env.staging had none at any ref, so its 0 measured nothing" });
+  return { metrics, flagged, n, ...Object.keys(lastEventAt).length ? { lastEventAt } : {} };
 }
 
 

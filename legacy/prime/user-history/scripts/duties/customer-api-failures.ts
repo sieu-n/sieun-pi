@@ -90,8 +90,11 @@ const latencyLine = (rows: RouteLatency[]): string => SLOW_ROUTES.map(endpoint =
 }).join(", ");
 
 /** The day's metrics and one flagged slice per 5xx, grouped in the excerpt by operation and error code. */
+/** The precheck output with `n`, the calls each duty metric read (agent factory's sampleSize in apps/chat/scripts/duties/agent-boards.ts). */
+export type FailuresOutput = PrecheckOutput & { n: Record<string, number> };
+
 export function report(counts: DayCounts, failed: FailedCall[], day: { start: string }, gapMin: number | null,
-  latency: RouteLatency[]): PrecheckOutput {
+  latency: RouteLatency[]): FailuresOutput {
   const attempts = counts.completed + counts.failed;
   const share = attempts > 0 ? Math.round((counts.failed5xx / attempts) * 10_000) / 100 : 0;
   const flagged: FlaggedSlice[] = failed.map(call => ({
@@ -99,7 +102,7 @@ export function report(counts: DayCounts, failed: FailedCall[], day: { start: st
     kind: `customer_5xx ${call.endpoint} ${call.status} ${call.errorCode}`,
     excerpt: `${call.endpoint} ${call.status} ${call.errorCode}${call.handle ? ` @${call.handle}` : ""} ${call.requestId} (org ${call.orgId})`,
   }));
-  flagged.unshift({ kind: "day", excerpt: `${day.start.slice(0, 10)} UTC: ${counts.failed5xx} customer 5xx of ${attempts} attempts (${share}%); ` +
+  flagged.unshift({ kind: "day", excerpt: `${day.start.slice(0, 10)} UTC: ${counts.failed5xx} customer 5xx of ${attempts} attempts (${share}%${attempts ? "" : ", so the share read 0 calls and measured nothing"}); ` +
     `longest stretch with no api_request event: ${gapMin === null ? "not read" : `${gapMin} min`}` });
   const slow = slowRouteP90(latency);
   flagged.splice(1, 0, { kind: "slow_routes", excerpt: `slowest p90, all orgs: ${slow === UNMEASURED ? `unknown, a route has under ${MIN_ROUTE_CALLS} answered calls` : `${slow} s`}; ` +
@@ -110,7 +113,9 @@ export function report(counts: DayCounts, failed: FailedCall[], day: { start: st
     ...routeLasts.length ? { slow_route_p90_s: Math.max(...routeLasts) } : {} };
   // The window each newest call waits to leave ends when the day rolls, so d9's aging time (`agingUntil`) is the next UTC midnight.
   const windowMs = Object.fromEntries(Object.entries(lastEventAt).map(([key, at]) => [key, rollsAt - at]));
+  const routeCalls = slow === UNMEASURED ? 0 : SLOW_ROUTES.reduce((sum, endpoint) => sum + (basis(latency.find(row => row.endpoint === endpoint))?.calls ?? 0), 0);
   return { metrics: { customer_5xx_share_pct: share, slow_route_p90_s: slow, source_errors: 0 }, flagged,
+    n: { customer_5xx_share_pct: attempts, slow_route_p90_s: routeCalls, source_errors: 1 },
     rollsAt: { customer_5xx_share_pct: rollsAt, slow_route_p90_s: rollsAt }, ...Object.keys(lastEventAt).length ? { lastEventAt, windowMs } : {} };
 }
 
@@ -138,7 +143,7 @@ export async function hog(key: string, query: string, send: typeof fetch = fetch
   }
 }
 
-export async function measure(now: number): Promise<PrecheckOutput> {
+export async function measure(now: number): Promise<FailuresOutput> {
   const day = lastFullDay(now);
   const window = `timestamp >= toDateTime('${day.start}') and timestamp < toDateTime('${day.end}')`;
   const calls = "event in ('api_request_completed', 'api_request_failed')";
@@ -182,6 +187,7 @@ export async function measure(now: number): Promise<PrecheckOutput> {
     return report({ completed: Number(completed), failed: Number(failed), failed5xx: Number(failed5xx), ...inDay(lastCall) }, failedCalls, day, gapMin, latency);
   } catch (error) {
     return { metrics: { customer_5xx_share_pct: UNMEASURED, slow_route_p90_s: UNMEASURED, source_errors: 1 },
+      n: { customer_5xx_share_pct: 0, slow_route_p90_s: 0, source_errors: 0 },
       flagged: [{ kind: "source_error", excerpt: `PostHog read failed: ${error instanceof Error ? error.message : String(error)}` }] };
   }
 }

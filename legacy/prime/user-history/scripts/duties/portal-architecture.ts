@@ -49,7 +49,13 @@ export function parseStatus(text: string): Status {
 /** The page's last_verified front matter as epoch ms, or NaN when it has none. */
 export const lastVerified = (markdown: string): number => Date.parse(/^last_verified:\s*"?([^"\n]+)"?\s*$/m.exec(markdown)?.[1] ?? "");
 
-export function report(status: Status, verifiedAt: number, now: number): PrecheckOutput {
+/**
+ * The precheck output with `n`, what each duty metric read (agent factory's sampleSize in apps/chat/scripts/duties/agent-boards.ts): the
+ * problem rows of STATUS_FILE, fixed ones included, for the two counts, and the two review times (checkedAt and last_verified) for the age.
+ */
+export type ArchitectureOutput = PrecheckOutput & { n: Record<string, number> };
+
+export function report(status: Status, verifiedAt: number, now: number): ArchitectureOutput {
   const open = status.problems.filter(problem => problem.status !== "fixed");
   const high = open.filter(problem => problem.severity === "high");
   const reviewedAt = Number.isNaN(verifiedAt) ? Number.NaN : Math.min(status.checkedAt, verifiedAt);
@@ -69,11 +75,14 @@ export function report(status: Status, verifiedAt: number, now: number): Prechec
       : `The review is ${ageH} h old: ${STATUS_FILE} checkedAt ${new Date(status.checkedAt).toISOString()}, wiki ${PAGE} last_verified ${new Date(verifiedAt).toISOString()}.` });
   }
   const counts = SEVERITIES.map(severity => `${open.filter(problem => problem.severity === severity).length} ${severity}`).join(", ");
-  flagged.push({ kind: "summary", excerpt: `${open.length} open problems (${counts}) in ${STATUS_FILE}; page ${PAGE}.` });
-  return { metrics: { high_problems_open: high.length, review_age_h: ageH, problems_open: open.length }, flagged };
+  const empty = status.problems.length ? "" : " The file lists no problem rows, so both problem counts read 0 rows and measured nothing.";
+  flagged.push({ kind: "summary", excerpt: `${open.length} open problems (${counts}) in ${STATUS_FILE}; page ${PAGE}.${empty}` });
+  const rows = status.problems.length;
+  return { metrics: { high_problems_open: high.length, review_age_h: ageH, problems_open: open.length }, flagged,
+    n: { high_problems_open: rows, review_age_h: ageH === UNMEASURED ? 0 : 2, problems_open: rows } };
 }
 
-export async function measure(now: number, send: typeof fetch = fetch): Promise<PrecheckOutput> {
+export async function measure(now: number, send: typeof fetch = fetch): Promise<ArchitectureOutput> {
   try {
     const status = parseStatus(await readFile(STATUS_FILE, "utf8"));
     const response = await send(`${BASE}/wiki/${PAGE}?format=md`, { headers: { accept: "text/markdown" }, signal: AbortSignal.timeout(30_000) });
@@ -81,6 +90,7 @@ export async function measure(now: number, send: typeof fetch = fetch): Promise<
     return report(status, lastVerified(await response.text()), now);
   } catch (error) {
     return { metrics: { high_problems_open: UNMEASURED, review_age_h: UNMEASURED, problems_open: UNMEASURED },
+      n: { high_problems_open: 0, review_age_h: 0, problems_open: 0 },
       flagged: [{ kind: "source_error", excerpt: `${error instanceof Error ? error.message : String(error)} (status ${STATUS_FILE}, page ${PAGE})` }] };
   }
 }

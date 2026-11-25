@@ -49,6 +49,10 @@ export interface DmData {
   sending?: Sending;
   sendable?: number;
   failed?: FailedSend[];
+  /** The prod outbound sends of the last 24 h that failed_sends_24h judged (SENT_SQL), its sample size. */
+  sent?: number;
+  /** The prod accounts /ops/engage/health judged for sendable_now: the sum of its census, the sample size of the two sending metrics. */
+  accounts?: number;
   errors: { source: Source; message: string }[];
 }
 
@@ -93,12 +97,24 @@ export function sendableOf(body: unknown): number {
   return sendable;
 }
 
+/** The prod accounts a /ops/engage/health answer judged: the sum of its census by status, 0 when it has none. */
+export function accountsOf(body: unknown): number {
+  const data = (body as { data?: unknown } | null)?.data ?? body;
+  const census = (data as { census?: Record<string, unknown> } | null)?.census ?? {};
+  return Object.values(census).reduce<number>((sum, count) => sum + (typeof count === "number" && Number.isFinite(count) ? count : 0), 0);
+}
+
 /** The outbound sends of the last 24 h that did not go out, as one TSV row each: id, status, code, created_at in ms. */
 export const FAILED_SQL = `select m.id, m.status, coalesce(nullif(m.last_error_code, ''), nullif(m.error, ''), 'none') as error, round(extract(epoch from m.created_at) * 1000) as at
 from ig_engage_messages m join ig_engage_accounts a on a.id = m.account_id
 where a.world = 'prod' and m.direction = 'out' and m.status in ('failed', 'delivery_unknown') and m.created_at > now() - interval '24 hours'
   and coalesce(m.last_error_code, m.error, '') not like '${DAILY_LIMIT_CODE}%'
 order by m.id`;
+
+/** The outbound sends of the last 24 h that FAILED_SQL judges, failed or not: one row with the count. */
+export const SENT_SQL = `select count(*) from ig_engage_messages m join ig_engage_accounts a on a.id = m.account_id
+where a.world = 'prod' and m.direction = 'out' and m.created_at > now() - interval '24 hours'
+  and coalesce(m.last_error_code, m.error, '') not like '${DAILY_LIMIT_CODE}%'`;
 
 /** The short code of a stored error: "WebSendError: ui_no_compose: no New message control" becomes "WebSendError: ui_no_compose". */
 export const codeOf = (error: string): string => error.split(": ").slice(0, 2).join(": ").slice(0, 80);
@@ -112,7 +128,7 @@ export function failedOf(tsv: string): FailedSend[] {
 }
 
 /** The duty's metrics and flags from what the sources returned. */
-export function report(data: DmData, dutyMetrics: readonly DutyMetric[]): PrecheckOutput {
+export function report(data: DmData, dutyMetrics: readonly DutyMetric[]): PrecheckOutput & { n: Record<string, number> } {
   const at = data.now;
   const flagged: FlaggedSlice[] = [];
   const metrics: Record<string, number> = {};
@@ -136,11 +152,14 @@ export function report(data: DmData, dutyMetrics: readonly DutyMetric[]): Preche
     metrics.failed_sends_24h = data.failed.length;
     const codes = new Map<string, number>();
     for (const send of data.failed) codes.set(send.code, (codes.get(send.code) ?? 0) + 1);
+    if (!data.sent) flagged.push({ at, kind: "no_sends", excerpt: "failed_sends_24h read 0 sends: prod sent no outbound DM in 24 h, so its 0 failures measured nothing" });
     if (data.failed.length) flagged.push({ at, kind: "failed_sends", excerpt: `${data.failed.length} prod DM sends did not go out in 24 h: ${[...codes].map(([code, count]) => `${code} x${count}`).join(", ")}; messages ${data.failed.map(send => `${send.id} ${send.status} ${utc(send.at)}`).join(", ")}`.slice(0, 300) });
   }
   const replaced = settle(dutyMetrics, metrics, unmeasured);
   if (replaced.length) flagged.push(unmeasuredFlag(replaced, at));
-  return { metrics, flagged };
+  const accounts = data.sendable === undefined ? 0 : data.accounts ?? 0;
+  const n = { sending_available: accounts, sendable_accounts: accounts, failed_sends_24h: data.failed ? data.sent ?? 0 : 0 };
+  return { metrics, flagged, n };
 }
 
 // ---- I/O ----
@@ -174,13 +193,19 @@ async function measure(now: number, signal: AbortSignal): Promise<DmData> {
       if (response.status !== 200) throw new Error(`GET ${prod.urls.crawler}/ops/engage/health gave HTTP ${response.status}`);
       return { status: response.status, body };
     }),
-    step("prod sends", async () => failedOf(await prodReader(grafanaClient(fetch, await readGrafanaAuth(), now, signal))(FAILED_SQL))),
+    step("prod sends", async () => {
+      const read = prodReader(grafanaClient(fetch, await readGrafanaAuth(), now, signal));
+      const [rows, count] = await Promise.all([read(FAILED_SQL), read(SENT_SQL)]);
+      const sent = Number(count.trim());
+      if (!count.trim() || !Number.isFinite(sent)) throw new Error(`prod sends: the count of 24 h sends read ${count.slice(0, 80)}`);
+      return { failed: failedOf(rows), sent };
+    }),
   ]);
   if (sha) data.sha = sha;
-  if (failed) data.failed = failed;
+  if (failed) { data.failed = failed.failed; data.sent = failed.sent; }
   if (health) {
     const sendable = await step("crawler engage health", async () => sendableOf(health.body));
-    if (sendable !== undefined) data.sendable = sendable;
+    if (sendable !== undefined) { data.sendable = sendable; data.accounts = accountsOf(health.body); }
   }
   if (sha && health) {
     const sending = await step("prod sendingState", async () => {

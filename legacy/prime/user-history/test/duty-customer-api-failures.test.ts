@@ -104,3 +104,11 @@ test("a PostHog 503 or 504 is sent once more, and a 4xx or a second 5xx still th
   await assert.rejects(hog("k", "select 1", denied.send), /answered 403/);
   assert.equal(denied.seen.length, 1);
 });
+
+test("n is the day's attempts and the calls behind the route p90s, and a day with no calls reads n 0 and says so (c249)", () => {
+  const out = report({ completed: 1_452, failed: 124, failed5xx: 5 }, [], { start: "2026-11-01 00:00:00" }, 151, []);
+  assert.deepEqual(out.n, { customer_5xx_share_pct: 1_576, slow_route_p90_s: 0, source_errors: 1 });
+  const empty = report({ completed: 0, failed: 0, failed5xx: 0 }, [], { start: "2026-11-03 00:00:00" }, null, []);
+  assert.equal(empty.n.customer_5xx_share_pct, 0);
+  assert.match(empty.flagged![0]!.excerpt, /read 0 calls and measured nothing/);
+});

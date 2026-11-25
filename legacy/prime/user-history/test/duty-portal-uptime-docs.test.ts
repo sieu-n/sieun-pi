@@ -132,3 +132,15 @@ test("a target the owner stopped for the lapsed proxy is flagged proxy_stopped a
   assert.deepEqual(kinds(output).filter(kind => kind === "down" || kind === "proxy_stopped"), ["proxy_stopped"]);
   assert.equal(uptimeMetrics({ ...ANSWERS, up }, DIRECT, 0).metrics.probes_down_now, 1);
 });
+
+test("n names what each metric read, and probe rows of no round read n 0 for the uptime (agent factory's sampleSize, c249)", () => {
+  const files = { prod: "A=1\nB=2\n", staging: "A=1\nB=2\n" };
+  const env = { main: files, "dev/sieun": files };
+  const uptime = UP.map(series => ({ ...series, rounds: 1440 }));
+  const read = uptimeMetrics({ ...ANSWERS, uptime }, DIRECT, 0, env);
+  assert.deepEqual(read.n, { probe_uptime_24h_pct: 4320, probes_down_now: 3, probe_age_min: 3, env_keys_staging_only: 4 });
+  const empty = uptimeMetrics(ANSWERS, DIRECT, 0, { main: { prod: "", staging: "" }, "dev/sieun": { prod: "", staging: "" } });
+  assert.equal(empty.n.probe_uptime_24h_pct, 0);
+  assert.equal(empty.n.env_keys_staging_only, 0);
+  assert.ok(kinds(empty).includes("env_empty"));
+});

@@ -38,3 +38,11 @@ test("a panel that errors or answers nothing is broken, unless its noValue text 
   assert.deepEqual(checks.map(check => check.problem), ["no_data", undefined, "error"]);
   assert.equal(panelSpanMs("1h"), 3_600_000);
 });
+
+test("n is the customer calls behind the endpoint rows and the panels checked, and no rows read n 0 and say so (c249)", () => {
+  const out = report([{ endpoint: "youtube/channel_shorts", calls: 323, oursFailed: 3, p90S: 26.24, topError: "", lastMs: 2 }], [{ id: 13, title: "x" }], []);
+  assert.deepEqual(out.n, { slow_endpoints_24h: 323, failing_endpoints_24h: 323, broken_panels_24h: 1 });
+  const empty = report([], [], []);
+  assert.deepEqual(empty.n, { slow_endpoints_24h: 0, failing_endpoints_24h: 0, broken_panels_24h: 0 });
+  assert.deepEqual(empty.flagged!.map(slice => slice.kind), ["no_calls", "no_panels"]);
+});

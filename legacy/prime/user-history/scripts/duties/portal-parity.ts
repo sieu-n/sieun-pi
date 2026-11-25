@@ -121,6 +121,8 @@ export interface ProbeResult { op: string; verdict: Verdict; status: number; ms:
  * `ms` holds each "<env> <op>" call's last answer time, which orders the next run's page-1 calls slowest first. `paidAt` holds when each
  * paid prod read last got a working answer, so the run calls it once a UTC day while it works.
  */
+/** The precheck output with `n`, the routes each duty metric judged (agent factory's sampleSize in apps/chat/scripts/duties/agent-boards.ts). */
+export type ParityOutput = PrecheckOutput & { n: Record<string, number> };
 export interface ParityState { verdicts: Record<string, Verdict>; ms?: Record<string, number>; paidAt?: Record<string, number> }
 /** The saved state, or undefined for none. The duty runner seeds STATE_FILE with "{}" before the first run, which has no verdicts. */
 export function parseState(text: string): ParityState | undefined {
@@ -661,7 +663,7 @@ export function parityMetrics(input: {
   routes: readonly Route[]; crawler: Record<Env, OpenApi | null>; docs: Record<Env, OpenApi | null>; probes: Record<Env, readonly ProbeResult[]>;
   sourceErrors: readonly string[]; previous?: ParityState | undefined; at: number; prodCostUsd?: number; paid?: ReadonlySet<string>;
   cleanupErrors?: readonly string[];
-}): { output: PrecheckOutput; state: ParityState } {
+}): { output: ParityOutput; state: ParityState } {
   const { routes, at } = input;
   const cleanupErrors = input.cleanupErrors ?? [];
   const flagged: FlaggedSlice[] = [...input.sourceErrors, ...cleanupErrors].map(excerpt => ({ at, kind: "source_error", excerpt: excerpt.slice(0, 300) }));
@@ -672,6 +674,7 @@ export function parityMetrics(input: {
   const scoredBy = Object.fromEntries(ENVS.map(env => [env, scoredRoutes(routes, env, crawlerOps[env])])) as Record<Env, Route[]>;
   const scored = routes.filter(route => ENVS.some(env => scoredBy[env].includes(route)));
   const metrics: Record<string, number> = {};
+  const n: Record<string, number> = { prod_working_pct: 0, staging_working_pct: 0, routes_failing_portal: 0, routes_failing_crawler: 0 };
   const verdicts: Record<Env, Map<Route, RouteVerdict>> = { prod: new Map(), staging: new Map() };
   for (const env of ENVS) {
     const doc = input.docs[env];
@@ -682,6 +685,7 @@ export function parityMetrics(input: {
     const judged = scoredBy[env].length - count("skipped");
     metrics[`${env}_routes_scored`] = scoredBy[env].length;
     metrics[`${env}_working_pct`] = ops && crawlerOps[env] && input.probes[env].length && judged ? Math.round(1000 * count("works") / judged) / 10 : UNMEASURED_PCT;
+    n[`${env}_working_pct`] = metrics[`${env}_working_pct`] === UNMEASURED_PCT ? 0 : judged;
     for (const verdict of ["works", "missing", "portal", "crawler", "held", "unprobed", "skipped"] as const) metrics[`${env}_routes_${verdict}`] = count(verdict);
     const notSent = (probe: ProbeResult) => probe.verdict === "skipped" || (probe.verdict === "held" && probe.status === 0);
     metrics[`${env}_v1_ops_called`] = input.probes[env].filter(probe => !notSent(probe)).length;
@@ -714,9 +718,11 @@ export function parityMetrics(input: {
   const failing = new Set(either(["missing", "portal", "crawler"]));
   metrics.routes_held = either(["held"]).filter(route => !failing.has(route)).length;
   metrics.routes_scored = scored.length;
+  n.routes_failing_portal = n.routes_failing_crawler = either(["works", "missing", "portal", "crawler", "held"]).length;
+  if (!n.routes_failing_portal) flagged.push({ at, kind: "no_routes", excerpt: "routes_failing_portal and routes_failing_crawler read 0 judged routes: no route got a verdict on either env, so their 0 measured nothing" });
   metrics.source_errors = input.sourceErrors.length + cleanupErrors.length;
   // A run whose staging test orgs were not deleted never passes: its staging share is unmeasured (test-org-cleanup.ts).
-  if (cleanupErrors.length) metrics.staging_working_pct = UNMEASURED_PCT;
+  if (cleanupErrors.length) { metrics.staging_working_pct = UNMEASURED_PCT; n.staging_working_pct = 0; }
   if (input.prodCostUsd !== undefined) metrics.prod_cost_usd = Math.round(input.prodCostUsd * 10_000) / 10_000;
   const paid = input.probes.prod.filter(probe => probe.costUsd).sort((a, b) => b.costUsd! - a.costUsd!);
   if (paid.length) flagged.push({ at, kind: "prod_cost", excerpt: `Prod cost per call, highest first: ${paid.map(probe => `${probe.op} $${probe.costUsd}`).join(", ")}`.slice(0, 600) });
@@ -731,7 +737,7 @@ export function parityMetrics(input: {
     if (probe.verdict === "ok") state.paidAt[probe.op] = at;
     else delete state.paidAt[probe.op];
   }
-  return { output: { metrics, flagged }, state };
+  return { output: { metrics, flagged, n }, state };
 }
 
 const utcDay = (ms: number) => Math.floor(ms / 86_400_000);

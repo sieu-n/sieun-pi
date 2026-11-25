@@ -55,7 +55,13 @@ export const endpointSql = (house: HouseOrgs): string => [
   `GROUP BY endpoint HAVING calls >= ${MIN_CALLS} ORDER BY p90_s DESC`,
 ].join("\n");
 
-export function report(rows: EndpointRow[], panels: PanelCheck[], errors: string[]): PrecheckOutput {
+/**
+ * The precheck output with `n`, what each duty metric read (agent factory's sampleSize in apps/chat/scripts/duties/agent-boards.ts): the
+ * customer calls of the endpoints with MIN_CALLS or more for the two endpoint counts, and the panels checked for broken_panels_24h.
+ */
+export type StatusBoardOutput = PrecheckOutput & { n: Record<string, number> };
+
+export function report(rows: EndpointRow[], panels: PanelCheck[], errors: string[]): StatusBoardOutput {
   const slow = rows.filter(row => row.p90S > SLOW_P90_S);
   const failing = rows.filter(row => (100 * row.oursFailed) / row.calls > FAILED_PCT);
   const broken = panels.filter(panel => panel.problem);
@@ -75,12 +81,16 @@ export function report(rows: EndpointRow[], panels: PanelCheck[], errors: string
     ...broken.map(panel => ({ kind: `panel_${panel.problem}`, excerpt: `Panel ${panel.id} "${panel.title}" on https://obs.virev.ai/d/${BOARD_UID}: ${panel.detail ?? panel.problem}`.slice(0, 300) })),
     ...errors.map(error => ({ kind: "source_error", excerpt: error.slice(0, 300) })),
   ];
+  const calls = sourceDown("endpoints") ? 0 : rows.reduce((sum, row) => sum + row.calls, 0);
+  if (!sourceDown("endpoints") && !calls) flagged.push({ kind: "no_calls", excerpt: `No endpoint had ${MIN_CALLS} or more customer calls in 24 h, so slow_endpoints_24h and failing_endpoints_24h read 0 calls and measured nothing.` });
+  if (!sourceDown("board") && !panels.length) flagged.push({ kind: "no_panels", excerpt: `The board ${BOARD_UID} has no panel with a query, so broken_panels_24h read 0 panels and measured nothing.` });
+  const n = { slow_endpoints_24h: calls, failing_endpoints_24h: calls, broken_panels_24h: sourceDown("board") ? 0 : panels.length };
   const lastEventAt: Record<string, number> = {};
   const slowAt = newest(slow);
   const failingAt = newest(failing);
   if (slowAt) lastEventAt.slow_endpoints_24h = slowAt;
   if (failingAt) lastEventAt.failing_endpoints_24h = failingAt;
-  return { metrics, flagged, lastEventAt, windowMs: { slow_endpoints_24h: DAY, failing_endpoints_24h: DAY } };
+  return { metrics, flagged, lastEventAt, windowMs: { slow_endpoints_24h: DAY, failing_endpoints_24h: DAY }, n };
 }
 
 interface Frame { schema: { fields: { name: string }[] }; data: { values: unknown[][] } }
@@ -146,7 +156,7 @@ export async function checkPanels(dashboard: { panels: Panel[]; templating?: { l
   return checks;
 }
 
-export async function measure(now: number): Promise<PrecheckOutput> {
+export async function measure(now: number): Promise<StatusBoardOutput> {
   const errors: string[] = [];
   let rows: EndpointRow[] = [];
   let panels: PanelCheck[] = [];

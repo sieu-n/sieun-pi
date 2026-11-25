@@ -47,7 +47,7 @@ test("with an account to send from the duty reads green, and a page that shows P
   const output = report({ now: NOW, sha: SHA, sending: "paused", sendable: 3, failed: [], errors: [] }, METRICS);
   assert.deepEqual(output.metrics, { sending_available: 1, sendable_accounts: 3, failed_sends_24h: 0 });
   assert.match(output.flagged!.find(flag => flag.kind === "paused")!.excerpt, /answers paused while sendable_now is 3/);
-  assert.deepEqual(report({ now: NOW, sha: SHA, sending: "available", sendable: 3, failed: [], errors: [] }, METRICS).flagged, []);
+  assert.deepEqual(report({ now: NOW, sha: SHA, sending: "available", sendable: 3, failed: [], sent: 4, errors: [] }, METRICS).flagged, []);
 });
 
 test("the 10-15 ui_no_compose send counts as failed", () => {
@@ -66,4 +66,12 @@ test("an unread source misses every metric it feeds instead of reading green, an
   assert.ok(output.metrics.sendable_accounts! < 1);
   assert.equal(output.metrics.failed_sends_24h, 0);
   assert.ok(output.flagged!.some(flag => flag.kind === "source_error"));
+});
+
+test("n is the census accounts health judged and the 24 h sends read, and a day with no send reads n 0 and says so (c249)", () => {
+  const out = report({ now: NOW, sendable: 0, accounts: 161, failed: [], sent: 0, errors: [] }, METRICS);
+  assert.deepEqual(out.n, { sending_available: 161, sendable_accounts: 161, failed_sends_24h: 0 });
+  assert.match(out.flagged!.find(slice => slice.kind === "no_sends")!.excerpt, /read 0 sends/);
+  const unread = report({ now: NOW, errors: [{ source: "crawler engage health", message: "HTTP 502" }, { source: "prod sends", message: "HTTP 500" }] }, METRICS);
+  assert.deepEqual(unread.n, { sending_available: 0, sendable_accounts: 0, failed_sends_24h: 0 });
 });

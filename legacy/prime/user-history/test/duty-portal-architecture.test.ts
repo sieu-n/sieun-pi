@@ -33,3 +33,11 @@ test("the page's last_verified line is read with or without quotes, and a bad se
   assert.throws(() => parseStatus(JSON.stringify({ checkedAt: "2026-11-25T19:18:05Z", problems: [{ id: "x", title: "y", severity: "urgent", status: "open" }] })),
     /severity urgent/);
 });
+
+test("n counts the status file's problem rows, and an empty file reads n 0 and says so (c249)", () => {
+  const out = report(status("2026-11-25T19:18:05Z"), Date.parse("2026-11-25T19:18:05Z"), Date.parse("2026-11-25T21:18:05Z"));
+  assert.deepEqual(out.n, { high_problems_open: 4, review_age_h: 2, problems_open: 4 });
+  const empty = report(parseStatus(JSON.stringify({ checkedAt: "2026-11-25T19:18:05Z", problems: [] })), Date.parse("2026-11-25T19:18:05Z"), Date.parse("2026-11-25T21:18:05Z"));
+  assert.deepEqual(empty.n, { high_problems_open: 0, review_age_h: 2, problems_open: 0 });
+  assert.match(empty.flagged!.at(-1)!.excerpt, /read 0 rows and measured nothing/);
+});
