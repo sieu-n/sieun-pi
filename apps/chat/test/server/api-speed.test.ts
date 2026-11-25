@@ -53,7 +53,7 @@ test("the server logs each /api request by route and takes the client's waits", 
       { m: "GET", p: "/api/me", s: 200, ms: "slow" },
       { m: "POST", p: `/api/c/${room}%3A12/workspace/close`, s: 200, ms: 40 },
     ] });
-    assert.deepEqual(posted, { status: 200, body: { taken: 3 } });
+    assert.deepEqual(posted, { status: 200, body: { taken: 3, again: 0 } });
     const viaTailnet = await fetch(`${chat.base}/api/timings`, {
       method: "POST", headers: { "content-type": "application/json", "tailscale-user-login": "owner@example.com" },
       body: JSON.stringify({ samples: [{ m: "GET", p: "/api/rooms", s: 200, ms: 30, net: 4 }] }),
@@ -149,7 +149,7 @@ test("a refused send logs its route, status and reason, and a page's failed call
       { m: "POST", p, s: 400, ms: 0, err: "No upload blob:x", shown: true },
       { m: "POST", p, s: 0, ms: 0, err: "TypeError: Failed to fetch", shown: true },
     ];
-    assert.deepEqual(await chat.send("POST", "/api/timings", { samples }), { status: 200, body: { taken: 4 } });
+    assert.deepEqual(await chat.send("POST", "/api/timings", { samples }), { status: 200, body: { taken: 4, again: 0 } });
     await logged(dataDir, got => got.filter(line => line.r === "/api/c/:id/send").length >= 6);
     assert.ok(logs.some(line => line.startsWith(`POST /api/c/:id/send ${p} 400: No upload blob:x;`)), logs.join("\n"));
     assert.ok(logs.includes(`POST /api/c/:id/send ${p} 400: A message needs text, an image or a forwarded post.`), logs.join("\n"));
@@ -387,7 +387,7 @@ test("with no line of the owner's or the server's on a metric route, the CLI's p
     assert.equal(out.metrics.search_p90_ms, undefined, "a failed probe gives no value");
     assert.equal(out.metrics.thread_open_p90_ms_messages, Math.round((p90("GET /api/c/:id/items") + 12) * 10) / 10, "the probe's p90 plus the owner's network p50");
     assert.equal(out.metrics.thread_open_p90_ms_replies, Math.round((p90("GET /api/c/:id/replies/:root") + 12) * 10) / 10);
-    assert.ok(out.metrics.slowest_api_p90_ms! >= out.metrics.thread_open_p90_ms!);
+    assert.equal(out.metrics.slowest_api_p90_ms, 30, "the headline reads only routes the owner called, here GET /api/rooms, so a probe sets none of it");
     assert.match(out.metricSources.messages!, /^GET \/api\/c\/:id\/items: a probe from the box at \d{4}-\d\d-\d\dT[\d:.]+Z, since the owner made no call in the window: 5 GETs of \/api\/c\/dm_busy\/items took p90 [\d.]+ ms plus his network p50 12 ms over 30 tailnet requests$/);
     assert.deepEqual(out.flagged.filter(f => f.kind === "probe_failed").map(f => f.sig), ["probe:GET /api/search"]);
     assert.match(out.flagged.find(f => f.kind === "probe_failed")!.excerpt, /^GET \/api\/search has no value: a probe from the box at .* failed: GET \/api\/search\?q=duty answered 500/);

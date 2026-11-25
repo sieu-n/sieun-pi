@@ -209,15 +209,17 @@ export function stalePause(pause: { since: number; reason?: string }, now: numbe
 }
 
 /**
- * The sample size a run's detail file names: its `n`, or the smallest value of an `n` object per metric. A met run on 0 samples measured
- * nothing, as mcp's d1 read 100% success on 6 of 7 days with no customer call (fable auditor 11-26). Null when the detail names no `n`.
+ * The sample size a run's detail file names: its `n`, or the largest value of an `n` object per metric. A met run on 0 samples measured
+ * nothing, as mcp's d1 read 100% success on 6 of 7 days with no customer call (fable auditor 11-26). Each metric of an object counts on its
+ * own, so a metric with no input is covered when another one measured something: mcp's quiet_day_checks_failing on a day with no customer
+ * call, or fable auditor's sweep in a quiet 3 h with no owner post that still read 18 agents. Null when the detail names no `n`.
  */
 export function sampleSize(detail: unknown): number | null {
   const n = (detail as { n?: unknown } | null)?.n;
   if (typeof n === "number" && Number.isFinite(n)) return n;
   if (n && typeof n === "object") {
     const values = Object.values(n).filter((value): value is number => typeof value === "number" && Number.isFinite(value));
-    if (values.length) return Math.min(...values);
+    if (values.length) return Math.max(...values);
   }
   return null;
 }

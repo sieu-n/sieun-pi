@@ -246,9 +246,12 @@ test("fable auditor's misses: an ongoing ask after the brief no duty names, a st
   assert.equal(stalePause({ since: NOW - 8 * 24 * HOUR }, NOW), true);
   const paused = { duty: { id: "d6", name: "Meta Ads crawl", status: "paused" }, paused: true, runs: [] } satisfies DutyRow;
   assert.equal(pauseReason(paused, { plan: [{ text: "Crawl", children: [{ text: "Hold lanes", note: "Done. d6 stays paused until the paid proxy is back. Next." }] }] }), "d6 stays paused until the paid proxy is back.");
-  // 3. n from a detail file: a number, or the smallest of a per-metric object; none is null.
+  // 3. n from a detail file: a number, or the largest of a per-metric object, so a metric with no input is covered by one that measured
+  // something; all zero is 0, and none is null.
   assert.equal(sampleSize({ n: 0 }), 0);
-  assert.equal(sampleSize({ n: { success_pct: 0, p95_ms: 12 } }), 0);
+  assert.equal(sampleSize({ n: { success_pct: 0, quiet_day_checks_failing: 3 } }), 3, "mcp's quiet-day check covers a day with no customer call");
+  assert.equal(sampleSize({ n: { agents: 18, posts: 0, jobs: 4, duties: 60, steps: 90 } }), 90, "fable auditor's sweep in a quiet 3 h with no owner post");
+  assert.equal(sampleSize({ n: { success_pct: 0, p95_ms: 0 } }), 0);
   assert.equal(sampleSize({ metrics: {} }), null);
   const out = agentPattern([
     {
