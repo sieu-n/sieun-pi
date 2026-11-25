@@ -5,6 +5,7 @@ import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { parseArgs } from "node:util";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { checkCleanup } from "./test-org-cleanup.ts";
 
@@ -32,6 +33,11 @@ import { checkCleanup } from "./test-org-cleanup.ts";
  * - routes_failing_portal <= 0 and routes_failing_crawler <= 0: the same ask, split by who fixes it.
  * Comparing a body against the crawler's own answer is left out: it needs a matched crawler call per route with the portal's parameter
  * renames, which this precheck does not rebuild. Board item p11 owns the 5 differing routes.
+ *
+ * To check one or two operations after a fix, run a scoped run (parseScope), never the whole precheck:
+ * `node --import tsx scripts/duties/portal-parity.ts --only "GET /v1/search/google" [--only "<METHOD /path>"] [--env prod|staging]`.
+ * It calls only the named operations, their page 2 and the calls that feed them, prints each answer and the /v1 call count to stdout, and
+ * writes no OUTPUT_FILE or STATE_FILE, so it never stands in for a d2 reading.
  */
 
 const REPO = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto-sns-agent");
@@ -532,6 +538,33 @@ export function chainIds(bodies: readonly unknown[]): Record<string, { value: st
 /** The two envs the duty measures, as the owner asked ("all working in prod?", "local-staging-prod"). */
 export const ENVS = ["prod", "staging"] as const;
 export type Env = typeof ENVS[number];
+
+/**
+ * The operations and envs of a scoped run, from `--only "<METHOD /path>"` (one or more) and `--env prod|staging`, or null with no --only.
+ * The scope adds the operation each named one takes its query from (QUERY_CHAINS). From 11-24 05:57Z to 11-25 05:49Z sessions reran the
+ * whole precheck 11 times besides the daily run, 9 of them to check one or two routes, and each rerun made about 1,300 /v1 calls per env,
+ * which took keys:authorize and rateLimits:windowCount to 101 and 107 MB a day of prod Convex reads.
+ */
+export function parseScope(args: readonly string[]): { only: ReadonlySet<string>; envs: readonly Env[] } | null {
+  const { values } = parseArgs({ args: [...args], options: { only: { type: "string", multiple: true }, env: { type: "string" } }, strict: true });
+  if (!values.only?.length) {
+    if (values.env) throw new Error("--env needs at least one --only operation");
+    return null;
+  }
+  const only = new Set<string>();
+  for (const raw of values.only) {
+    const op = raw.trim().replace(/^(\S+)\s+/, (_, method: string) => `${method.toUpperCase()} `);
+    if (!/^(GET|POST|PUT|PATCH|DELETE) \/v1\/\S+$/.test(op)) throw new Error(`--only takes "METHOD /v1/path", such as "GET /v1/search/google", not ${JSON.stringify(raw)}`);
+    only.add(op);
+    const feeder = QUERY_CHAINS[op]?.from;
+    if (feeder) only.add(feeder);
+  }
+  if (values.env !== undefined && !(ENVS as readonly string[]).includes(values.env)) throw new Error(`--env takes ${ENVS.join(" or ")}, not ${values.env}`);
+  return { only, envs: values.env ? [values.env as Env] : ENVS };
+}
+
+/** Whether a scoped run calls an operation or job-mode route entry: every one with no scope. */
+export const inScope = (op: string, only: ReadonlySet<string> | undefined) => !only || only.has(baseOp(op));
 /** The "could not measure" value of a share: below any target, so a run that measured nothing never looks on target. */
 export const UNMEASURED_PCT = -1;
 /** How one crawler route does through the portal on one env. `skipped` is a route SPEC-93 does not call on prod because it is a write. */
@@ -861,13 +894,14 @@ export function pacedSlot(perMinute: number, now: () => number = Date.now, sleep
   };
 }
 
-interface ProbeTarget { env: Env; base: string; doc: OpenApi; orgs: Org[]; skip: ReadonlyMap<string, string>; held?: ReadonlyMap<string, ProbeResult>; hold?: string | null; perMinute?: number; spend?: { usd: number }; lastMs?: Record<string, number> | undefined; ledger?: JobLedger }
+interface ProbeTarget { env: Env; base: string; doc: OpenApi; orgs: Org[]; skip: ReadonlyMap<string, string>; held?: ReadonlyMap<string, ProbeResult>; hold?: string | null; perMinute?: number; spend?: { usd: number }; lastMs?: Record<string, number> | undefined; ledger?: JobLedger; only?: ReadonlySet<string> | undefined; calls?: { n: number } }
 
 /**
  * Calls every documented non-DM operation of one env once with its docs example, the job-mode route entries with max_pages 2, the chained
  * operations with ids from this run, and page 2 of each page-1 answer with a cursor. An operation in `skip` is not called, and one in `held`
  * gives its held result without a call. With `perMinute`, calls start one every 60 s / perMinute (pacedSlot), inside the limit the portal
- * counts per clock minute. With `spend`, each call's meta.cost goes on its result and into the run's total.
+ * counts per clock minute. With `spend`, each call's meta.cost goes on its result and into the run's total. With `only`, it calls only those
+ * operations (inScope) and reads no media unless MEDIA_OP is named. With `calls`, it counts each /v1 call it sends, job polls and cancels included.
  */
 async function probeEnv(target: ProbeTarget, routes: readonly Route[]): Promise<ProbeResult[]> {
   const { env, base, doc, orgs, skip } = target;
@@ -877,10 +911,12 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[]): Promise<
   // and a hand run together got 52 prod answers of 429 rate_limit_exceeded. So a 429 rate_limit_exceeded waits its Retry-After and calls again.
   const call = async (org: Org, op: string, request: ProbeRequest, note: string): Promise<Answer> => {
     await slot();
+    if (target.calls) target.calls.n++;
     let result = await probe(base, org, op, request, note);
     for (let waits = 1; result.status === 429 && result.code === RATE_LIMITED; waits++) {
       await new Promise(resolve => setTimeout(resolve, (result.retryAfterS ?? 1) * 1000));
       await slot();
+      if (target.calls) target.calls.n++;
       const again = await probe(base, org, op, request, note);
       result = { ...again, note: `${again.note}, after ${waits} rate limit wait${waits === 1 ? "" : "s"}` };
     }
@@ -899,7 +935,7 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[]): Promise<
   // the slowest of the run, and the precheck took 168 s.
   const scoredOps = new Set(routes.filter(route => !route.byDesign).flatMap(route => route.portal.map(baseOp)));
   const notScored = new Set(routes.filter(route => route.byDesign).flatMap(route => route.portal.map(baseOp)).filter(op => !scoredOps.has(op)));
-  const ops = [...all].filter(([op]) => !isDm(op) && !notScored.has(op));
+  const ops = [...all].filter(([op]) => !isDm(op) && !notScored.has(op) && inScope(op, target.only));
   const later: [string, Operation][] = [];
   const fedLater: [string, Operation][] = [];
   const first = ops.filter(([op, operation]) => {
@@ -912,14 +948,17 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[]): Promise<
   const lastMs = (op: string) => target.lastMs?.[`${env} ${op}`] ?? Number.POSITIVE_INFINITY;
   first.sort(([a], [b]) => lastMs(b) - lastMs(a));
   // A job entry this env does not document is not called: the map holds both grammars' job rows, and each env documents one of them.
-  const jobOps = [...new Set(routes.flatMap(route => route.portal).filter(op => op.endsWith(JOB) && all.has(baseOp(op)) && !notScored.has(baseOp(op))))];
+  const jobOps = [...new Set(routes.flatMap(route => route.portal).filter(op => op.endsWith(JOB) && all.has(baseOp(op)) && !notScored.has(baseOp(op)) && inScope(op, target.only)))];
   // The portal allows an org JOB_SLOTS open crawl jobs (the 429 rate_limited message, measured on staging 10-12 and prod 10-15), and a run
   // has more job-mode entries than that. So job calls go one at a time, each waits for a free slot of its org, and each job is watched until
   // it ends or JOB_DEADLINE_MS passes (jobVerdict). A job that has not ended by then is cancelled, except the first, which the chained calls
   // read and which is cancelled at the run's end: on 2026-10-18 a prod run 8 min after another got 429 'At most 5 crawl jobs' on 8 job rows,
   // because the earlier run's jobs still held the org's slots.
   const opened: { org: Org; id: string }[] = [];
-  const cancel = async (org: Org, id: string) => { if (await cancelJob(base, org, id)) await target.ledger?.drop(id); };
+  const cancel = async (org: Org, id: string) => {
+    if (target.calls) target.calls.n++;
+    if (await cancelJob(base, org, id)) await target.ledger?.drop(id);
+  };
   const slots = new Map(orgs.map(org => [org, slotPool(JOB_SLOTS)]));
   const watch = async (org: Org, id: string, receipt: Answer, keep: boolean): Promise<Answer> => {
     const start = Date.now();
@@ -1011,7 +1050,7 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[]): Promise<
   }));
   const mediaUrl = firstMediaUrl([...phase1, ...fed].filter(result => result.verdict === "ok").map(result => result.body));
   const mediaHeld = heldMedia(mediaUrl, [...phase1, ...fed]);
-  const media = mediaHeld ? Promise.resolve(mediaHeld) : probeMedia(mediaUrl);
+  const media = target.only && !target.only.has(MEDIA_OP) ? null : mediaHeld ? Promise.resolve(mediaHeld) : probeMedia(mediaUrl);
   await Promise.all([...pageTwoRuns, ...opened.map(job => cancel(job.org, job.id))]);
   // A page-2 failure counts against the operation, and a held page 2 holds it: a customer cannot get past page 1. A page 2 the run did not
   // reach leaves page 1's verdict.
@@ -1022,7 +1061,7 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[]): Promise<
     const { body: _body, ...plain } = failed ? { ...second, op: result.op, note: `page 1 worked, ${second.note}` } : result;
     out.push(plain);
   }
-  out.push(await media);
+  if (media) out.push(await media);
   return out;
 }
 
@@ -1064,10 +1103,14 @@ async function prodSkips(): Promise<{ skip: Map<string, string>; paid: Set<strin
 }
 
 async function main(): Promise<void> {
+  const scope = parseScope(process.argv.slice(2));
   const output = process.env.OUTPUT_FILE;
-  if (!output) { process.stderr.write("portal-parity: OUTPUT_FILE is not set\n"); process.exit(2); }
-  const start = Date.now();
   const stateFile = process.env.STATE_FILE;
+  // A scoped run's partial answers must never read as a d2 run, so it prints them and refuses the duty runner's files.
+  if (scope && (output || stateFile)) { process.stderr.write("portal-parity: a --only run prints its answers to stdout; unset OUTPUT_FILE and STATE_FILE\n"); process.exit(2); }
+  if (!scope && !output) { process.stderr.write("portal-parity: OUTPUT_FILE is not set\n"); process.exit(2); }
+  const runs = (env: Env) => !scope || scope.envs.includes(env);
+  const start = Date.now();
   const previous = stateFile ? await readFile(stateFile, "utf8").then(parseState).catch(() => undefined) : undefined;
   const routes = (JSON.parse(await readFile(join(HERE, "portal-parity.routes.json"), "utf8")) as { routes: Route[] }).routes;
   const sourceErrors: string[] = [];
@@ -1091,39 +1134,46 @@ async function main(): Promise<void> {
     JSON.parse(await readFile(join(REPO, `apps/specs/envs/${name}.json`), "utf8")) as EnvFile);
   const [env, prodEnv] = await Promise.all([readEnv("staging"), readEnv("prod")]);
   const [crawlerProd, crawlerStaging, prod, secret, prodKey, skips] = await Promise.all([
-    attempt(CRAWLER_OPENAPI.prod, () => getJson(CRAWLER_OPENAPI.prod)),
-    attempt(CRAWLER_OPENAPI.staging, () => getJson(CRAWLER_OPENAPI.staging)),
-    attempt(PROD_OPENAPI, () => getJson(PROD_OPENAPI)),
-    env ? attempt("CONVEX_WEBHOOK_SECRET key source", () => sh(env.keySources.CONVEX_WEBHOOK_SECRET!.cmd, REPO)) : null,
-    process.env.VIREV_API_KEY_PROD_MONITOR || attempt("VIREV_API_KEY_PROD_MONITOR from apps/api-portal/.env", () => sh(PROD_KEY_CMD, REPO)),
-    attempt("SPEC-93 prod skips in apps/specs/lib/api-portal", prodSkips),
+    scope ? null : attempt(CRAWLER_OPENAPI.prod, () => getJson(CRAWLER_OPENAPI.prod)),
+    scope ? null : attempt(CRAWLER_OPENAPI.staging, () => getJson(CRAWLER_OPENAPI.staging)),
+    runs("prod") ? attempt(PROD_OPENAPI, () => getJson(PROD_OPENAPI)) : null,
+    env && runs("staging") ? attempt("CONVEX_WEBHOOK_SECRET key source", () => sh(env.keySources.CONVEX_WEBHOOK_SECRET!.cmd, REPO)) : null,
+    !runs("prod") ? null : process.env.VIREV_API_KEY_PROD_MONITOR || attempt("VIREV_API_KEY_PROD_MONITOR from apps/api-portal/.env", () => sh(PROD_KEY_CMD, REPO)),
+    runs("prod") ? attempt("SPEC-93 prod skips in apps/specs/lib/api-portal", prodSkips) : null,
   ]);
-  const [stagingHold, prodHold] = await Promise.all([supplyHold("staging", env), supplyHold("prod", prodEnv)]);
+  const [stagingHold, prodHold] = await Promise.all([runs("staging") ? supplyHold("staging", env) : null, runs("prod") ? supplyHold("prod", prodEnv) : null]);
   const base = env?.urls.apiPortal ?? "";
-  const staging = env ? await attempt(`${base}/openapi.json`, () => getJson(`${base}/openapi.json`)) : null;
+  const staging = env && runs("staging") ? await attempt(`${base}/openapi.json`, () => getJson(`${base}/openapi.json`)) : null;
   const probes: Record<Env, ProbeResult[]> = { prod: [], staging: [] };
   const orgs: Org[] = [];
   const spend = { usd: 0 };
+  const calls: Record<Env, { n: number }> = { prod: { n: 0 }, staging: { n: 0 } };
   const held = heldPaidReads(skips?.paid ?? [], previous, start);
   const prodOrg: Org | null = prodKey ? { id: "prod", key: prodKey } : null;
   if (prodOrg && prodEnv) await attempt("cancel of prod jobs that earlier runs left open", () => cancelLeftovers(prodEnv.urls.apiPortal!, prodOrg));
   try {
     if (env && staging && secret) {
-      const seeded = await attempt("staging test org seed", () => Promise.all(Array.from({ length: ORGS }, (_, index) => seedOrg(env.urls.convex!, secret, index, start))));
+      // A scoped run makes a few calls, so one test org stays far under its limits.
+      const seeded = await attempt("staging test org seed", () => Promise.all(Array.from({ length: scope ? 1 : ORGS }, (_, index) => seedOrg(env.urls.convex!, secret, index, start))));
       if (seeded) orgs.push(...seeded);
     }
     await Promise.all([
-      orgs.length && staging ? probeEnv({ env: "staging", base, doc: staging, orgs, skip: new Map(), hold: stagingHold, perMinute: perMinute(orgs), lastMs: previous?.ms }, routes)
+      orgs.length && staging ? probeEnv({ env: "staging", base, doc: staging, orgs, skip: new Map(), hold: stagingHold, perMinute: perMinute(orgs), lastMs: previous?.ms, only: scope?.only, calls: calls.staging }, routes)
         .then(results => { probes.staging = results; }) : null,
-      prod && prodOrg && skips && prodEnv ? probeEnv({ env: "prod", base: prodEnv.urls.apiPortal!, doc: prod, orgs: [prodOrg], skip: skips.skip, held, hold: prodHold, perMinute: perMinute([prodOrg]), spend, lastMs: previous?.ms, ledger: jobLedger(JOBS_DIR) }, routes)
+      prod && prodOrg && skips && prodEnv ? probeEnv({ env: "prod", base: prodEnv.urls.apiPortal!, doc: prod, orgs: [prodOrg], skip: skips.skip, held, hold: prodHold, perMinute: perMinute([prodOrg]), spend, lastMs: previous?.ms, ledger: jobLedger(JOBS_DIR), only: scope?.only, calls: calls.prod }, routes)
         .then(results => { probes.prod = results; }) : null,
     ]);
   } finally {
     if (env && secret) await Promise.all(orgs.map(org => cleanupOrg(env.urls.convex!, secret, org).catch((error: unknown) =>
       cleanupErrors.push(error instanceof Error ? error.message : `cleanup of test org ${org.id} failed: ${String(error)}`))));
   }
+  if (scope) {
+    const envs = Object.fromEntries(scope.envs.map(name => [name, { v1_calls: calls[name].n, results: probes[name] }]));
+    process.stdout.write(JSON.stringify({ only: [...scope.only], envs, sourceErrors, cleanupErrors, ...(probes.prod.length ? { prodCostUsd: spend.usd } : {}) }, null, 2) + "\n");
+    return;
+  }
   const result = parityMetrics({ routes, cleanupErrors, crawler: { prod: crawlerProd, staging: crawlerStaging }, docs: { prod, staging }, probes, sourceErrors, previous, at: start, ...(skips ? { paid: skips.paid } : {}), ...(probes.prod.length ? { prodCostUsd: spend.usd } : {}) });
-  await writeFile(output, JSON.stringify(result.output, null, 2) + "\n");
+  await writeFile(output!, JSON.stringify(result.output, null, 2) + "\n");
   if (stateFile && (probes.prod.length || probes.staging.length)) await writeFile(stateFile, JSON.stringify(result.state) + "\n");
 }
 

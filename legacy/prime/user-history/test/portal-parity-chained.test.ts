@@ -1,7 +1,7 @@
 // 10-20: staging runs of Portal matches crawler started POST /v1/jobs/{job_id}/cancel together with the reads of the same job, and when the cancel won, GET /v1/jobs/{job_id}/results read a cancelled job and answered 502 upstream_error, so staging_working_pct read 99.4%.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { BATCH_DEADLINE_MS, BATCH_POLL_MS, QUERY_CHAINS, batchRowsBroken, buildRequest, firstItemId, readsThenWrites, untilBatchEnds, type Operation } from "../scripts/duties/portal-parity.ts";
+import { BATCH_DEADLINE_MS, BATCH_POLL_MS, QUERY_CHAINS, batchRowsBroken, buildRequest, firstItemId, inScope, parseScope, readsThenWrites, untilBatchEnds, type Operation } from "../scripts/duties/portal-parity.ts";
 
 test("no chained write starts before every chained read of the run has answered", async () => {
   const log: string[] = [];
@@ -72,4 +72,22 @@ test("the snapshot read sends no optional default, and a one-of example with no 
   assert.deepEqual(buildRequest("GET /v1/batch/snapshot/{snapshot_id}", snapshot, { snapshot_id: "s_1" }), { method: "GET", path: "/v1/batch/snapshot/s_1", query: {} });
   const event: Operation = { parameters: [{ name: "id", in: "query", examples: { default: { value: "298448234317243" } } }, { name: "url", in: "query", example: "https://facebook.com/events/1" }] };
   assert.deepEqual(buildRequest("GET /v1/facebook/live/event", event), { method: "GET", path: "/v1/facebook/live/event", query: { id: "298448234317243" } });
+});
+
+test("a scoped run calls only the named operations, their job mode and the call that feeds them", () => {
+  // 11-25: 9 of 11 whole reruns in a day wanted one or two routes and made about 1,300 /v1 calls per env each.
+  assert.equal(parseScope([]), null);
+  const google = parseScope(["--only", "get /v1/search/google", "--env", "prod"])!;
+  assert.deepEqual([...google.only], ["GET /v1/search/google"]);
+  assert.deepEqual(google.envs, ["prod"]);
+  assert.ok(inScope("GET /v1/search/google", google.only));
+  assert.ok(!inScope("GET /v1/search/bing", google.only));
+  assert.ok(inScope("GET /v1/anything", undefined));
+  const note = parseScope(["--only", "GET /v1/xiaohongshu/note_detail", "--only", "GET /v1/instagram/user_feed"])!;
+  assert.deepEqual(note.envs, ["prod", "staging"]);
+  assert.ok(inScope("GET /v1/xiaohongshu/explore", note.only));
+  assert.ok(inScope("GET /v1/instagram/user_feed job", note.only));
+  assert.throws(() => parseScope(["--only", "/v1/search/google"]), /METHOD \/v1\/path/);
+  assert.throws(() => parseScope(["--only", "GET /v1/search/google", "--env", "local"]), /--env takes prod or staging/);
+  assert.throws(() => parseScope(["--env", "prod"]), /needs at least one --only/);
 });
