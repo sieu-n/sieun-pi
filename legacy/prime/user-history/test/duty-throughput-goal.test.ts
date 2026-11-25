@@ -200,8 +200,11 @@ test("No data panels under prod's deploy lock are left out of crawler_panels_bla
   for (const lock of [0, 7_200, undefined]) assert.deepEqual(blankPanels(panels, lock), { blank: panels.slice(0, 3), leftOut: 0 });
   const out = report(base({ panels, panelDeployLock: 240 }), METRICS);
   assert.equal(out.metrics.crawler_panels_blank, 1);
-  assert.match(out.flagged!.find(item => item.kind === "dashboards")!.excerpt, /^1 of 4 panels .*, leaving out 2 No data panels because prod was under its deploy lock: Crawler · Sources \/ Sources \(error/);
+  assert.match(out.flagged!.find(item => item.kind === "dashboards")!.excerpt, /^1 of 4 panels .*, leaving out 2 No data panels because prod was under its deploy lock, each in a blank_panel line\.$/);
+  assert.deepEqual(out.flagged!.filter(item => item.kind === "blank_panel").map(item => item.excerpt), ["Crawler · Sources / Sources (error: Data source not found)"]);
   assert.equal(report(base({ panels }), METRICS).metrics.crawler_panels_blank, 3);
+  // The 11-26 d8 run's findings cut the one dashboards line at 300 characters and lost blank panel names, so each panel gets its own line.
+  assert.equal(report(base({ panels }), METRICS).flagged!.filter(item => item.kind === "blank_panel").length, 3);
 });
 
 test("a capped Kafka buffer counts only past its byte cap, however its lag grows (11-04 20:3xZ, instagram.crawl_counts at 4M)", () => {

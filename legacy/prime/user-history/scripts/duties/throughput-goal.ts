@@ -547,7 +547,8 @@ export function report(d: ThroughputData, dutyMetrics: readonly DutyMetric[]): P
     metrics.crawler_panels_blank = blank.length;
     const dashboards = new Set(d.panels.map(panel => panel.dashboard)).size;
     const locked = leftOut ? `, leaving out ${leftOut} No data panels because prod was under its deploy lock` : "";
-    flagged.push({ at: d.now, kind: "dashboards", excerpt: `${blank.length} of ${d.panels.length} panels on ${dashboards} crawler dashboards show an error or No data${locked}${blank.length ? `: ${blank.map(panel => `${panel.dashboard} / ${panel.title} (${panel.state}${panel.detail ? `: ${panel.detail}` : ""})`).join("; ")}` : ""}.`.slice(0, 300) });
+    flagged.push({ at: d.now, kind: "dashboards", excerpt: `${blank.length} of ${d.panels.length} panels on ${dashboards} crawler dashboards show an error or No data${locked}${blank.length ? ", each in a blank_panel line" : ""}.` });
+    for (const panel of blank) flagged.push({ at: d.now, kind: "blank_panel", excerpt: `${panel.dashboard} / ${panel.title} (${panel.state}${panel.detail ? `: ${panel.detail}` : ""})`.slice(0, 300) });
   }
   for (const error of d.errors) flagged.push({ at: d.now, kind: "source_error", excerpt: `${error.source}: ${error.message}`.slice(0, 300) });
   const replaced = settle(dutyMetrics, metrics, unmeasured);
