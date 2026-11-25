@@ -145,16 +145,39 @@ function jaccard(a, b) {
 }
 
 /**
+ * Where each move stub sends a reader, as a map from the stub's path to the page at the end of its `moved_to` chain. `pages` are
+ * rows with `path` and, for a stub, `movedTo`.
+ */
+export function movedPaths(pages) {
+	const next = new Map(pages.filter((p) => typeof p.movedTo === 'string').map((p) => [p.path, p.movedTo]));
+	const ends = new Map();
+	for (const [from, to] of next) {
+		const seen = new Set([from]);
+		let end = to;
+		while (next.has(end) && !seen.has(end)) {
+			seen.add(end);
+			end = next.get(end);
+		}
+		ends.set(from, end);
+	}
+	return ends;
+}
+
+/**
  * Duplicate-topic candidates: 0.5 x title Jaccard + (title+description) Jaccard. A folder page and a page under its folder are not a pair,
  * and a superseded, deprecated or archived page is already settled. A page whose meta `distinct_from` names the
  * other page, with a sentence on how they differ, settles the pair at write time (dup-gate.mjs asks for that line on
  * commit). Every pair is listed, because the
  * dream counts the ones its ledger has not judged: on 2026-10-15 a top-30 cap let one retitled page
  * push 6 judged pairs out and 6 unjudged ones in, so dup_unjudged read 6 of 21.
+ * A move stub (a row with `movedTo`) is no candidate, and a `distinct_from` key that names a stub counts for the page the stub
+ * sends readers to: on 2026-11-25 the move API took 9 settled pairs to unjudged between 20:31Z and 20:36Z, because each
+ * `distinct_from` still named a page's path from before the move.
  */
 export function dupPairs(pages, min = DUP_MIN) {
+	const moved = movedPaths(pages);
 	const rows = pages
-		.filter((p) => !SETTLED_STATUS.has(String(p.status).toLowerCase()))
+		.filter((p) => typeof p.movedTo !== 'string' && !SETTLED_STATUS.has(String(p.status).toLowerCase()))
 		.map((p) => {
 			const title = dupTokens(p.title);
 			const distinct = p.distinctFrom && typeof p.distinctFrom === 'object' ? Object.keys(p.distinctFrom) : [];
@@ -162,7 +185,7 @@ export function dupPairs(pages, min = DUP_MIN) {
 				path: p.path,
 				title,
 				all: new Set([...title, ...dupTokens(p.description)]),
-				distinct: new Set(distinct),
+				distinct: new Set(distinct.map((other) => moved.get(other) ?? other)),
 			};
 		});
 	const pairs = [];
@@ -852,6 +875,7 @@ function readCurated(content) {
 			description: meta?.description || meta?.summary,
 			status: meta?.status,
 			distinctFrom: meta?.distinct_from,
+			...(isRedirect(meta) ? { movedTo: meta.moved_to } : {}),
 		};
 	});
 }
@@ -1035,7 +1059,8 @@ async function measure(args, root, rel) {
 		if (started && started.getTime() > sinceMs) signals.push(...matchSignals(log, stripTags(html)));
 	}
 
-	const dups = dupPairs(pages.filter((p) => p.meta));
+	const withStubs = curated.filter((p) => p.path !== HOME && p.meta);
+	const dups = dupPairs(withStubs);
 	const items = [
 		...itemsFor('hub_orphan', hubOrphans, (f) => ({ path: f.path, excerpt: excerpt(f.detail) })),
 		...itemsFor('dead_link', deadLinks, (f) => ({ path: f.path, target: f.target, excerpt: excerpt(f.detail) })),
@@ -1098,6 +1123,7 @@ async function measure(args, root, rel) {
 		},
 		items,
 		dupPairs: dups,
+		moved: Object.fromEntries(movedPaths(withStubs)),
 		signals,
 		stale,
 		errors,

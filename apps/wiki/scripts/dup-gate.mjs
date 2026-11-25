@@ -37,13 +37,15 @@ export function isCuratedPath(rel) {
 }
 
 /**
- * The dupPairs row for one page, or null when its meta block does not parse or the page is a move redirect, which only
- * sends readers on: on 2026-11-24 the stubs of 24 pages moved to archive/ held a rewrite of crawler-risks/index.html on
+ * The dupPairs row for one page, or null when its meta block does not parse. A move redirect, which only sends readers on,
+ * gives a row with only `movedTo`, so dupPairs pairs it with nothing and reads a `distinct_from` naming its path as naming the
+ * page it moved to: on 2026-11-24 the stubs of 24 pages moved to archive/ held a rewrite of crawler-risks/index.html on
  * the snapchat-risks and vimeo-risks stubs, whose titles it shares.
  */
 export function pageRow(rel, html) {
 	const meta = parseMeta(html);
-	if (meta === null || isRedirect(meta)) return null;
+	if (meta === null) return null;
+	if (isRedirect(meta)) return { path: rel.slice(CONTENT.length), movedTo: meta.moved_to };
 	return {
 		path: rel.slice(CONTENT.length),
 		title: meta.title,
@@ -57,16 +59,7 @@ export function pageRow(rel, html) {
 export function newPairs(before, after, changed) {
 	const touched = new Set(changed);
 	const old = new Set(dupPairs(before).map((p) => `${p.a}|${p.b}`));
-	const names = (row, other) =>
-		Boolean(row?.distinctFrom && typeof row.distinctFrom === 'object' && other in row.distinctFrom);
-	const byPath = new Map(after.map((row) => [row.path, row]));
-	return dupPairs(after).filter(
-		(p) =>
-			(touched.has(p.a) || touched.has(p.b)) &&
-			!old.has(`${p.a}|${p.b}`) &&
-			!names(byPath.get(p.a), p.b) &&
-			!names(byPath.get(p.b), p.a),
-	);
+	return dupPairs(after).filter((p) => (touched.has(p.a) || touched.has(p.b)) && !old.has(`${p.a}|${p.b}`));
 }
 
 /** One line per new pair, naming the changed page, the page it looks like and the score. */

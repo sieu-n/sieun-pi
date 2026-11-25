@@ -94,6 +94,8 @@ export interface Health {
   /** The inputs wiki-health could not read (for example views, prose-lint). */
   errors: string[];
   dupPairs: { a: string; b: string; score: number }[];
+  /** Each move stub's path and the page at the end of its `moved_to` chain. */
+  moved: Record<string, string>;
   signals: { path: string; phrase: string; excerpt?: string }[];
   /** The engine's stale report over the committed pages, read by parseStale. */
   stale: unknown;
@@ -144,6 +146,7 @@ export function parseHealth(text: string): Health {
     errors: Array.isArray(value.errors) ? value.errors.filter((row): row is string => typeof row === "string") : [],
     items: list<HealthItem>(value.items, row => typeof row.kind === "string" && typeof row.path === "string"),
     dupPairs: list<Health["dupPairs"][number]>(value.dupPairs, row => typeof row.a === "string" && typeof row.b === "string" && typeof row.score === "number"),
+    moved: isRecord(value.moved) ? Object.fromEntries(Object.entries(value.moved).filter((row): row is [string, string] => typeof row[1] === "string")) : {},
     signals: list<Health["signals"][number]>(value.signals, row => typeof row.path === "string" && typeof row.phrase === "string"),
     stale: value.stale,
   };
@@ -155,10 +158,18 @@ export const pairKey = (a: string, b: string): string => [a, b].sort().join("|")
  * Duplicate pairs with no ledger verdict, or whose score rose above the score the verdict recorded. A verdict has no
  * expiry, because the score reads only the two titles and descriptions: re-judging an unchanged pair gives the same
  * answer, and a 30-day expiry would have reopened the 29 pairs judged 2026-10-14 on 11-13 and 20 more on 11-14.
+ * A verdict keyed by a page's path from before a move counts for the page `moved` says it went to, so a move through the
+ * page API reopens no judged pair; a verdict keyed by the pair's own paths wins over one carried through a move.
  */
-export function unjudgedPairs(pairs: Health["dupPairs"], ledger: Ledger): Health["dupPairs"] {
+export function unjudgedPairs(pairs: Health["dupPairs"], ledger: Ledger, moved: Record<string, string> = {}): Health["dupPairs"] {
+  const verdicts = new Map<string, NonNullable<Ledger["pairs"]>[string]>();
+  for (const [key, verdict] of Object.entries(ledger.pairs ?? {})) {
+    const [a = "", b = ""] = key.split("|");
+    const now = pairKey(moved[a] ?? a, moved[b] ?? b);
+    if (now === key || !verdicts.has(now)) verdicts.set(now, verdict);
+  }
   return pairs.filter(pair => {
-    const verdict = ledger.pairs?.[pairKey(pair.a, pair.b)];
+    const verdict = verdicts.get(pairKey(pair.a, pair.b));
     return !(verdict?.verdict && (typeof verdict.score !== "number" || pair.score <= verdict.score));
   });
 }
@@ -800,7 +811,7 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
   metrics.wiki_problems = PROBLEM_METRICS.some(key => metrics[key] === UNMEASURED) ? UNMEASURED : PROBLEM_METRICS.reduce((sum, key) => sum + metrics[key]!, 0);
   const lintFailing = health?.facts.lint_failing_pages;
   metrics.lint_over_glide = lintFailing === undefined ? UNMEASURED : lintFailing - glide(LINT_GLIDE, now);
-  const unjudged = health && ledger ? unjudgedPairs(health.dupPairs, ledger) : undefined;
+  const unjudged = health && ledger ? unjudgedPairs(health.dupPairs, ledger, health.moved) : undefined;
   metrics.dup_unjudged = unjudged?.length ?? UNMEASURED;
   metrics.memory_rules_over_glide = harness ? harness.repoFacts - glide(MEMORY_GLIDE, now) : UNMEASURED;
   const classes = ledger ? classStates(ledger, now, since, fixes) : undefined;
