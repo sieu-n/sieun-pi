@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  agentBoards, agentPattern, askHeld, asksTo, ongoingAsk, dutyCoverage, liveDuty, overdueDuty, pauseReason, readAreas, readWiki, sampleSize, stalePause, unfixedMisses, wikiClutter,
+  agentBoards, agentPattern, askHeld, asksTo, duplicateJobs, ongoingAsk, dutyCoverage, liveDuty, overdueDuty, pauseReason, readAreas, readWiki, sampleSize, stalePause, unfixedMisses, wikiClutter,
   type Ask, type DutyRow,
 } from "../../scripts/duties/agent-boards.ts";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
@@ -50,7 +50,7 @@ test("a duty is live only when it is not paused and has a run that measured some
 
 test("agents with no live duty, or with an area no live duty watches, are uncovered and each is named once", () => {
   const out = dutyCoverage([
-    { agent: { id: "ag_mcp", name: "mcp" }, duties: [duty("d1", "Prod MCP", ["met"])] },
+    { agent: { id: "ag_mcp", name: "mcp" }, duties: [duty("d1", "Prod MCP", ["met"])], brief: "Prod MCP" },
     { agent: { id: "ag_api-portal", name: "API portal" }, duties: [], brief: "Keep api.virev.ai up." },
     { agent: { id: "ag_crawler-guy", name: "Crawler guy" }, duties: [duty("d1", "Crawler read cost", ["met"]), duty("d6", "Meta Ads crawl", ["missed"], true)] },
     { agent: { id: "ag_gpt-guy", name: "gpt guy" }, duties: [duty("d1", "New duty", [])], brief: "Keep the repo clean." },
@@ -138,7 +138,7 @@ test("c249: each agent with an area keeps a 3-hourly board push and a daily Area
   assert.deepEqual(out.metrics, {
     agents_off_pattern: 2, common_duties_missing: 2, common_duties_late: 1, empty_runs: 2,
     agents_uncovered: 0, areas_uncovered: 0, agents_without_area: 1, duties_paused: 0, duties_overdue: 0, asks_unheld: 0, pauses_stale: 0, met_on_zero: 0,
-    runs_without_n: 0, duties_stopped: 0,
+    runs_without_n: 0, duplicate_jobs: 0, duties_stopped: 0,
   });
   assert.deepEqual(out.flagged.filter(flag => flag.kind !== "no_area").map(flag => [flag.kind, flag.sig]), [
     ["common_missing", "ag_mcp/push"], ["common_missing", "ag_mcp/review"],
@@ -307,4 +307,34 @@ test("asksTo reads the owner's ongoing asks after the brief: DM posts, and group
   const asks = asksTo(store, { id: "ag_mcp", name: "mcp" }, NOW - 24 * HOUR);
   assert.deepEqual(asks.map(item => item.ref), ["dm_mcp p1", "#dev-mcp p8"]);
   assert.deepEqual(asks[0]!.ids, [(NOW - 10 * HOUR + 5).toString(36)]);
+});
+
+
+test("no brief, no area and no owner ask is no area whatever duties another job gave it; a missing n does not put an agent off the pattern", () => {
+  const push = { everyMs: 180 * 60_000, planEveryMs: 180 * 60_000, paused: false, lastAt: NOW - HOUR, runs: [{ at: NOW - HOUR }] };
+  const review: DutyRow = {
+    duty: { id: "d1", name: "Area review", status: "active" }, paused: false, schedule: { kind: "daily", at: "05:40" }, nextAt: NOW + 20 * HOUR,
+    runs: [{ verdict: "met", at: NOW - HOUR, metrics: { corrections_unsaved: { value: 0 } }, job: { id: "j" } }],
+  };
+  const out = agentPattern([
+    { agent: { id: "ag_feature-probe", name: "feature probe" }, duties: [review], checkIn: push },
+    { agent: { id: "ag_seo", name: "seo" }, brief: "SEO", duties: [review], checkIn: push, outputs: { d1: true }, samples: { d1: null } },
+  ], [], NOW);
+  assert.deepEqual(out.flagged.filter(flag => flag.item === "ag_feature-probe").map(flag => flag.kind), ["no_area"]);
+  assert.equal(out.metrics.agents_without_area, 1);
+  assert.equal(out.metrics.runs_without_n, 1);
+  assert.equal(out.metrics.agents_off_pattern, 0);
+  // seo still gets a nudge to add n, though it is on the pattern.
+  assert.deepEqual(out.messages.map(message => message.agent), ["ag_seo"]);
+});
+
+test("d7 counts more than one job for the same duty and hand-off sig as duplicate jobs, and nudges nobody for it", () => {
+  assert.deepEqual(duplicateJobs([["ag_vp-of-gtm:2026-11-25"], ["ag_vp-of-gtm:2026-11-25"], [], ["ag_vp-of-gtm:2026-11-25"], ["ag_vp-of-gtm:2026-11-24"]]), [["ag_vp-of-gtm:2026-11-25", 3]]);
+  const out = agentPattern([{
+    agent: { id: "ag_vp-of-gtm", name: "VP of GTM" }, brief: "GTM", duties: [duty("d3", "Area review", ["met"])],
+    handOffJobs: { d3: [["ag_vp-of-gtm:2026-11-25"], ["ag_vp-of-gtm:2026-11-25"]] },
+  }], [], NOW);
+  assert.equal(out.metrics.duplicate_jobs, 1);
+  assert.deepEqual(out.flagged.filter(flag => flag.kind === "duplicate_job").map(flag => flag.sig), ["ag_vp-of-gtm/d3/ag_vp-of-gtm:2026-11-25"]);
+  assert.equal(out.metrics.agents_off_pattern, 0);
 });

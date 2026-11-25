@@ -337,7 +337,12 @@ export async function measure(input: {
     findings = [briefFindings({ headline: headline && value ? `${headline.label} ${value.value}${headline.unit ?? ""} against ${headline.op} ${headline.target}${headline.unit ?? ""}` : null,
       flagged, ...(headline ? { headlineKey: headline.key } : {}), detail: findingsFile }), overrunLine].filter(Boolean).join("\n\n");
   }
-  const acts = flagged.some(slice => slice.item !== undefined || slice.handOff);
+  // A hand-off with a sig that an earlier run of this duty already gave a job is not handed again: on 11-26 VP of GTM's Area review started
+  // three jobs for the one daily sig ag_vp-of-gtm:2026-11-25. The run keeps its hand-offs with a sig in `flagged` for the next run to read.
+  const handed = new Set(previous.filter(run => run.job).flatMap(run => (run.flagged ?? []).flatMap(slice => slice.handOff && slice.sig ? [slice.sig] : [])));
+  const handOffs = flagged.filter(slice => slice.handOff && slice.sig);
+  if (handOffs.length) record.flagged = handOffs;
+  const acts = flagged.some(slice => slice.item !== undefined || (slice.handOff && !(slice.sig && handed.has(slice.sig))));
   // A run that reads error only because its headline waits outside the precheck, with every number it read on target, has nothing a job can do.
   const waits = record.verdict === "error" && record.waitsOn !== undefined && Object.values(record.metrics).every(result => result.met);
   const idle = (record.verdict === "met" || waits) && !misses.length && !record.overrun && !acts;

@@ -107,7 +107,8 @@ test("the area review always hands off the review, counts corrections its memory
     folderTimes: [{ path: "/a/seo/notes.html", mtimeMs: now - 60_000 }, { path: "/a/seo/old.md", mtimeMs: now - 3 * 86_400_000 }, { path: "/a/seo/x.json", mtimeMs: now }],
     now,
   });
-  assert.deepEqual(review.metrics, { corrections_unsaved: 1, owner_posts_24h: 2, wiki_pages_touched_24h: 1, memory_changed_24h: 1 });
+  // p5, the agent's DM post after p1, answers p1, so only p2 counts (owner_posts_answered_24h).
+  assert.deepEqual(review.metrics, { corrections_unsaved: 1, owner_posts_24h: 1, owner_posts_answered_24h: 1, wiki_pages_touched_24h: 1, memory_changed_24h: 1 });
   assert.equal(review.flagged[0]!.kind, "area_review");
   assert.equal(review.flagged[0]!.handOff, true);
   assert.deepEqual(review.flagged.slice(1).map(f => f.sig), ["c11", "dm_seo/p1", "ch_1/p2"]);

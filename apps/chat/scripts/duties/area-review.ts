@@ -8,7 +8,9 @@
  * that job what a person would read first:
  *   corrections_unsaved, the headline: the owner's corrections in force (corrections ledger) made in this agent's rooms, whose id the agent's
  *     own memory store names nowhere, so the same frustration can come back (target 0). Each one is flagged with its rule.
- *   owner_posts_24h: the owner's posts of the last 24 h in the agent's DM, or naming the agent in its rooms, each flagged with its text.
+ *   owner_posts_24h: the owner's posts of the last 24 h in the agent's DM, or naming the agent in its rooms, that the agent has not answered
+ *     (`answeredBy`). Each of his posts is flagged with its text and its state, answered with the reply's post id or not, and
+ *     owner_posts_answered_24h counts the answered ones.
  *   wiki_pages_touched_24h and memory_changed_24h: files in the agent's folder (its llm-wiki space agents/<slug>/) and memory entries
  *     changed in the last 24 h, so agent factory's d7 can read whether yesterday's review left work behind.
  *
@@ -27,11 +29,11 @@ import { parseArgs } from "node:util";
 
 const DAY_MS = 86_400_000;
 
-interface Flag { kind: string; at?: number; sig?: string; excerpt: string; handOff?: true; host?: string }
+interface Flag { kind: string; at?: number; sig?: string; excerpt: string; handOff?: true; host?: string; answeredBy?: string | null }
 interface Correction { id: string; status?: string; rule: string; at?: string; chat?: { name?: string } }
 interface AgentRow { id: string; slug: string; name: string; room?: string; comm?: Record<string, string>; host?: string }
 interface MemoryEntry { title?: string; content?: string; updated_at?: string }
-interface Post { author?: string; text?: string; at?: number; mentions?: string[]; id?: string }
+interface Post { author?: string; text?: string; at?: number; mentions?: string[]; id?: string; threadRoot?: string; answers?: string; testSend?: unknown }
 export interface AreaReview { metrics: Record<string, number>; flagged: Flag[] }
 
 /** The corrections in force made in this agent's rooms: the ledger names each by its chat, "<agent name> · <room>". */
@@ -41,6 +43,18 @@ export function agentCorrections(ledger: readonly Correction[], agentName: strin
 }
 
 /** The review's measure, from what the agent's store, folder and rooms hold, as of `now`. */
+/**
+ * The agent's post that answers an owner post: one that names it in `answers` (the turn's or its reply_to's owner post), else the agent's
+ * first later post in the same thread. On 11-26 fable auditor's first Area review flagged 12 owner posts, and the agent had answered all 12.
+ */
+export function answeredBy(post: Post & { room: string }, posts: readonly (Post & { room: string })[], agent: string): string | undefined {
+  const thread = post.threadRoot ?? post.id;
+  const mine = posts.filter(p => p.room === post.room && p.author === agent && p.id).sort((a, b) => (a.at ?? 0) - (b.at ?? 0));
+  // A reply to a thread post sits in that thread; a reply to a top-level post sits in its thread or at the top level after it.
+  const inThread = (p: Post): boolean => post.threadRoot ? p.threadRoot === thread : p.threadRoot === post.id || !p.threadRoot;
+  return (mine.find(p => p.answers === post.id) ?? mine.find(p => (p.at ?? 0) > (post.at ?? 0) && inThread(p)))?.id;
+}
+
 export function areaReview(input: {
   agent: AgentRow; corrections: readonly Correction[]; memory: Record<string, MemoryEntry>; posts: readonly (Post & { room: string })[];
   folderTimes: readonly { path: string; mtimeMs: number }[]; now: number;
@@ -49,8 +63,10 @@ export function areaReview(input: {
   const day = new Date(now).toISOString().slice(0, 10);
   const memoryText = Object.entries(input.memory).map(([id, e]) => `${id} ${e.title ?? ""} ${e.content ?? ""}`).join("\n");
   const unsaved = agentCorrections(input.corrections, agent.name).filter(c => !new RegExp(`\\b${c.id}\\b`).test(memoryText));
-  const ownerPosts = input.posts.filter(p => p.author === "owner" && typeof p.at === "number" && now - p.at <= DAY_MS &&
+  const ownerPosts = input.posts.filter(p => p.author === "owner" && !p.testSend && typeof p.at === "number" && now - p.at <= DAY_MS &&
     (p.room === agent.room || (p.mentions ?? []).includes(agent.id)));
+  const answers = new Map(ownerPosts.map(p => [`${p.room}/${p.id}`, answeredBy(p, input.posts, agent.id)]));
+  const unanswered = ownerPosts.filter(p => !answers.get(`${p.room}/${p.id}`));
   const flagged: Flag[] = [
     {
       kind: "area_review", sig: `${agent.id}:${day}`, handOff: true,
@@ -58,12 +74,19 @@ export function areaReview(input: {
         "and self-improve: update its llm-wiki pages, agent files and memory, prune stale entries, and keep the owner's corrections and frustrations below from repeating.",
     },
     ...unsaved.map((c): Flag => ({ kind: "correction_unsaved", sig: c.id, ...(c.at ? { at: Date.parse(c.at) } : {}), excerpt: `${c.id}: ${c.rule}`.slice(0, 400) })),
-    ...ownerPosts.map((p): Flag => ({ kind: "owner_post", at: p.at, sig: `${p.room}/${p.id}`, excerpt: `${p.room} ${p.id}: ${(p.text ?? "").replace(/\s+/g, " ").slice(0, 300)}` })),
+    ...ownerPosts.map((p): Flag => {
+      const reply = answers.get(`${p.room}/${p.id}`);
+      return {
+        kind: "owner_post", at: p.at, sig: `${p.room}/${p.id}`, answeredBy: reply ?? null,
+        excerpt: `${p.room} ${p.id} (${reply ? `answered by ${agent.name} in ${reply}` : "not answered"}): ${(p.text ?? "").replace(/\s+/g, " ").slice(0, 300)}`,
+      };
+    }),
   ];
   return {
     metrics: {
       corrections_unsaved: unsaved.length,
-      owner_posts_24h: ownerPosts.length,
+      owner_posts_24h: unanswered.length,
+      owner_posts_answered_24h: ownerPosts.length - unanswered.length,
       wiki_pages_touched_24h: input.folderTimes.filter(f => now - f.mtimeMs <= DAY_MS && /\.(html|md)$/.test(f.path)).length,
       memory_changed_24h: Object.values(input.memory).filter(e => e.updated_at && now - Date.parse(e.updated_at) <= DAY_MS).length,
     },

@@ -38,7 +38,10 @@ interface CheckIn { everyMs: number; paused: boolean; lastAt: number | null; run
 /** A row of `GET /api/agents/:id/duties`, the fields this check reads. */
 export interface DutyRow {
   duty: { id: string; name: string; status?: string; ownerWords?: string; goal?: string }; paused: boolean;
-  runs: { verdict: string; at?: number; job?: { id: string }; readings?: Record<string, number>; metrics?: Record<string, { value?: number }>; detail?: string; hostAway?: string }[];
+  runs: {
+    verdict: string; at?: number; job?: { id: string }; readings?: Record<string, number>; metrics?: Record<string, { value?: number }>; detail?: string; hostAway?: string;
+    flagged?: { handOff?: true; sig?: string }[];
+  }[];
   schedule?: { kind: string; at?: string; minutes?: number }; nextAt?: number | null;
 }
 /** One entry of the areas file: the areas the owner made an agent responsible for, each with the duty that watches it, if any. */
@@ -92,7 +95,9 @@ export function dutyCoverage(agents: readonly { agent: Agent; duties: readonly D
     const live = duties.filter(row => liveDuty(row, now));
     // An area whose source is "none found" is the file's placeholder for an agent no owner post gave an area, not an ask of his.
     const given = areas.filter(entry => entry.agent === agent.id || entry.agent === agent.name).flatMap(entry => entry.areas).filter(area => area.source?.trim().toLowerCase() !== "none found");
-    if (live.length === 0 && given.length === 0 && !brief?.trim() && asks.length === 0) {
+    // No brief, no area in the file and no ongoing ask of the owner means no area, whatever duties another job gave it: on 11-26 d7's own
+    // duty job gave feature probe an Area review and a 180 min check-in, and feature probe then read as covered.
+    if (given.length === 0 && !brief?.trim() && asks.length === 0) {
       noArea += 1;
       flagged.push({ kind: "no_area", sig: `${agent.id}/no-area`, item: agent.id, excerpt: `${agent.name} (${agent.id}) has no brief and no area from the owner, so it owns nothing to watch` });
       continue;
@@ -128,11 +133,23 @@ export interface AgentRead {
   pauses?: Readonly<Record<string, { since: number; reason?: string }>>;
   /** Per duty id, the sample size its newest measured run's detail file names (`sampleSize`), or null when the file names none. */
   samples?: Readonly<Record<string, number | null>>;
+  /** Per duty id, the hand-off sigs of each of its runs that started a job, one list per run (`duplicateJobs`). */
+  handOffJobs?: Readonly<Record<string, readonly (readonly string[])[]>>;
   /** Per duty id, whether its newest measured run's detail file holds the precheck's JSON output; absent when that was not read. */
   outputs?: Readonly<Record<string, boolean>>;
 }
 /** An owner post to an agent: `ref` is "#room pN", `ids` the Prime message ids its inputs carried, which an agent quotes as "msg <id>". */
 export interface Ask { ref: string; ids: readonly string[]; at: number; text: string }
+
+/**
+ * The hand-off sigs that more than one job of a duty got, with how many: the duty runner's bug, not the agent's, so it nudges nobody. Before
+ * 11-26 a run handed the same daily sig to a new job on every rerun (server/duty-run.ts `measure`).
+ */
+export function duplicateJobs(runs: readonly (readonly string[])[]): [string, number][] {
+  const counts = new Map<string, number>();
+  for (const sigs of runs) for (const sig of new Set(sigs)) counts.set(sig, (counts.get(sig) ?? 0) + 1);
+  return [...counts].filter(([, jobs]) => jobs > 1);
+}
 
 /**
  * Words of an owner post that ask for ongoing care rather than one task (fable auditor's 11-26 audit; the owner's p25 "keep watching").
@@ -202,6 +219,11 @@ export interface Nudge { agent: string; name: string; workThreadId: string | nul
 
 /** Flag kinds that mean the agent itself has to act, each named in its nudge. */
 const NUDGE_KINDS = new Set(["uncovered_agent", "duty_paused", "duty_overdue", "common_missing", "common_late", "empty_run", "ask_unheld", "pause_stale", "met_on_zero", "no_sample_size"]);
+/**
+ * The kinds that put an agent off the pattern. A missing sample size n is left out: on 11-26 no precheck wrote n yet, so all 18 agents read
+ * off the pattern on it alone and hid the real misses; runs_without_n is a metric of its own.
+ */
+const OFF_PATTERN_KINDS = new Set([...NUDGE_KINDS].filter(kind => kind !== "no_sample_size"));
 
 /**
  * Agent factory's meta check of c249: every live agent with an area keeps a 3-hourly board push (its check-in) and a daily "Area review"
@@ -220,7 +242,14 @@ export function agentPattern(agents: readonly AgentRead[], areas: readonly Agent
   let stale = 0;
   let zero = 0;
   let noN = 0;
-  for (const { agent, duties, checkIn, stuck = 0, boardAt, asks = [], pauses = {}, samples = {}, outputs = {} } of agents) {
+  let duplicates = 0;
+  for (const { agent, duties, checkIn, stuck = 0, boardAt, asks = [], pauses = {}, samples = {}, outputs = {}, handOffJobs = {} } of agents) {
+    for (const row of duties) {
+      for (const [sig, jobs] of duplicateJobs(handOffJobs[row.duty.id] ?? [])) {
+        duplicates += jobs - 1;
+        flagged.push({ kind: "duplicate_job", sig: `${agent.id}/${row.duty.id}/${sig}`, item: agent.id, excerpt: `${agent.name}: ${row.duty.id} "${row.duty.name}" started ${jobs} jobs for the one hand-off ${sig}` });
+      }
+    }
     if (noArea.has(agent.id)) continue;
     const flag = (kind: string, key: string, excerpt: string) => flagged.push({ kind, sig: `${agent.id}/${key}`, item: agent.id, excerpt: `${agent.name}: ${excerpt}` });
     for (const ask of asks) {
@@ -295,8 +324,8 @@ export function agentPattern(agents: readonly AgentRead[], areas: readonly Agent
   }
   return {
     metrics: {
-      agents_off_pattern: messages.length, common_duties_missing: missing, common_duties_late: late, empty_runs: empty, ...coverage.metrics,
-      asks_unheld: unheld, pauses_stale: stale, met_on_zero: zero, runs_without_n: noN,
+      agents_off_pattern: new Set(flagged.filter(flag => OFF_PATTERN_KINDS.has(flag.kind)).map(flag => flag.item)).size, common_duties_missing: missing, common_duties_late: late, empty_runs: empty, ...coverage.metrics,
+      asks_unheld: unheld, pauses_stale: stale, met_on_zero: zero, runs_without_n: noN, duplicate_jobs: duplicates,
       duties_stopped: coverage.metrics.duties_paused! + coverage.metrics.duties_overdue!,
     },
     flagged, messages,
@@ -500,6 +529,11 @@ if (isMain(import.meta.url)) {
         const pauses = Object.fromEntries(duties.filter(pausedDuty).map(row => [row.duty.id, {
           since: stored.find(duty => duty.id === row.duty.id)?.updatedAt ?? now, ...pauseReason(row, board) ? { reason: pauseReason(row, board)! } : {},
         }]));
+        // Each run that started a job, with the hand-off sigs it gave: from the record since 11-26, else from its precheck output.
+        const handOffJobs = Object.fromEntries(duties.map(row => [row.duty.id, row.runs.filter(run => run.job).map(run => {
+          const slices = run.flagged ?? (run.detail?.endsWith(".json") && existsSync(run.detail) ? readJson<{ flagged?: { handOff?: true; sig?: string }[] }>(run.detail)?.flagged : undefined) ?? [];
+          return slices.flatMap(slice => slice.handOff && slice.sig ? [slice.sig] : []);
+        })]));
         const samples: Record<string, number | null> = {};
         const outputs: Record<string, boolean> = {};
         for (const row of duties) {
@@ -516,7 +550,7 @@ if (isMain(import.meta.url)) {
         return {
           read: {
             agent, duties, brief: folder.brief?.text ?? "", checkIn, stuck: steps.stuck.length, boardAt: board?.updatedAt ? Date.parse(board.updatedAt) : null,
-            asks: asksTo(store, agent, folder.brief?.text?.trim() ? folder.brief.modifiedAt ?? 0 : 0), pauses, samples, outputs,
+            asks: asksTo(store, agent, folder.brief?.text?.trim() ? folder.brief.modifiedAt ?? 0 : 0), pauses, samples, outputs, handOffJobs,
           } satisfies AgentRead,
           jobsAt,
         };

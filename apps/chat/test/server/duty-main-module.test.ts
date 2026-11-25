@@ -14,7 +14,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { PLACEHOLDER, remoteFolder, reviewOf, runAreaReview } from "../../scripts/duties/area-review.ts";
+import { answeredBy, areaReview, PLACEHOLDER, remoteFolder, reviewOf, runAreaReview } from "../../scripts/duties/area-review.ts";
 import { realAgents } from "../../scripts/duties/real-agents.ts";
 
 const duties = fileURLToPath(new URL("../../scripts/duties/", import.meta.url));
@@ -75,7 +75,7 @@ test("an agent on another box has its folder read through the chat server's fold
   const agent = { id: "ag_5180-designer", slug: "5180-designer", name: "5180 designer", room: "dm_5180-designer", host: "mac" };
   const ledger = [{ id: "c249", rule: "two common duties", chat: { name: "5180 designer · #search-design" } }, { id: "c250", rule: "other", chat: { name: "5180 designer" } }];
   const review = reviewOf({ agent, corrections: ledger, posts: [], folder: mac, now });
-  assert.deepEqual(review.metrics, { corrections_unsaved: 1, owner_posts_24h: 0, wiki_pages_touched_24h: 1, memory_changed_24h: 1 });
+  assert.deepEqual(review.metrics, { corrections_unsaved: 1, owner_posts_24h: 0, owner_posts_answered_24h: 0, wiki_pages_touched_24h: 1, memory_changed_24h: 1 });
   assert.equal(review.n, 3);
   const away = await remoteFolder("http://chat", { id: "ag_5180-designer", host: "mac" }, (async () => { throw new Error("connect ECONNREFUSED"); }) as typeof fetch);
   assert.deepEqual(away, { away: "mac" });
@@ -114,4 +114,28 @@ test("runAreaReview reads a Mac agent's folder through the server, and importing
 
 test("realAgents leaves out test and archived agents", () => {
   assert.deepEqual(realAgents([{ id: "ag_seo" }, { id: "ag_walk", test: true }, { id: "ag_old", archived: true }, { id: "ag_vent", archived: false, test: false }]).map(agent => agent.id), ["ag_seo", "ag_vent"]);
+});
+
+test("an owner post the agent answered reads as answered with the reply's id, and only unanswered posts count", () => {
+  const now = Date.now();
+  const agent = { id: "ag_fable-auditor", slug: "fable-auditor", name: "fable auditor", room: "dm_fable-auditor" };
+  const posts = [
+    { room: "dm_fable-auditor", id: "p1", author: "owner", text: "sweep again", at: now - 5 * 3_600_000 },
+    { room: "dm_fable-auditor", id: "p2", author: "ag_fable-auditor", text: "done", at: now - 4 * 3_600_000, answers: "p1" },
+    { room: "dm_fable-auditor", id: "p3", author: "owner", text: "and the boards?", at: now - 3 * 3_600_000 },
+    { room: "dm_fable-auditor", id: "p4", author: "ag_fable-auditor", text: "boards read fine", at: now - 2 * 3_600_000 },
+    { room: "ch_1", id: "p10", author: "owner", text: "@fable auditor check this", at: now - 3 * 3_600_000, mentions: ["ag_fable-auditor"] },
+    { room: "ch_1", id: "p11", author: "ag_seo", text: "not me", at: now - 2 * 3_600_000, threadRoot: "p10" },
+    { room: "ch_1", id: "p12", author: "owner", text: "@fable auditor in thread", at: now - 2 * 3_600_000, mentions: ["ag_fable-auditor"], threadRoot: "p10" },
+    { room: "ch_1", id: "p13", author: "ag_fable-auditor", text: "top-level, not in the thread", at: now - 3_600_000 },
+  ];
+  assert.equal(answeredBy(posts[0]!, posts, agent.id), "p2");
+  assert.equal(answeredBy(posts[2]!, posts, agent.id), "p4");
+  assert.equal(answeredBy(posts[6]!, posts, agent.id), undefined);
+  const review = areaReview({ agent, corrections: [], memory: {}, posts, folderTimes: [], now });
+  assert.equal(review.metrics.owner_posts_24h, 1);
+  assert.equal(review.metrics.owner_posts_answered_24h, 3);
+  const owner = review.flagged.filter(flag => flag.kind === "owner_post");
+  assert.deepEqual(owner.map(flag => [flag.sig, flag.answeredBy]), [["dm_fable-auditor/p1", "p2"], ["dm_fable-auditor/p3", "p4"], ["ch_1/p10", "p13"], ["ch_1/p12", null]]);
+  assert.match(owner[3]!.excerpt, /ch_1 p12 \(not answered\)/);
 });
