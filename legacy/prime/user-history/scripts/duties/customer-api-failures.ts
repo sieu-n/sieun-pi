@@ -38,7 +38,8 @@ function houseOrgSql(column: string): string {
   const ids = Object.keys(house.ids).map((id) => `'${id}'`).join(", ");
   return `(${column} in (${ids}) or ${Object.keys(house.prefixes).map((prefix) => `startsWith(${column}, '${prefix}')`).join(" or ")})`;
 }
-const CUSTOMER_ORGS = `select org_id from api_portal_orgs where is_internal = 0 and not ${houseOrgSql("org_id")}`;
+/** Read at query time, so a release check, whose fresh HOME holds no auto-sns-agent checkout, can import this module. */
+const customerOrgs = (): string => `select org_id from api_portal_orgs where is_internal = 0 and not ${houseOrgSql("org_id")}`;
 /** The "could not measure" value, the same one portal-uptime.ts prints, so a missing source can never look on target. */
 export const UNMEASURED = 999999;
 const DAY_MS = 86_400_000;
@@ -145,7 +146,7 @@ export async function measure(now: number): Promise<PrecheckOutput> {
     const key = (await sh("node_modules/.bin/dotenvx get POSTHOG_PERSONAL_API_KEY -f apps/vent/.env", REPO)).trim().split("\n").at(-1)!.trim();
     const [[completed, failed, failed5xx, lastCall]] = (await hog(key, `select uniqIf(uuid, event = 'api_request_completed'), uniqIf(uuid, event = 'api_request_failed'), ` +
       `uniqIf(uuid, event = 'api_request_failed' and toInt(properties.status) >= 500), max(timestamp) from events where ${calls} and ${window} ` +
-      `and properties.orgId in (${CUSTOMER_ORGS})`)) as [[number, number, number, unknown]];
+      `and properties.orgId in (${customerOrgs()})`)) as [[number, number, number, unknown]];
     // HogQL's max over no rows is the epoch, so a time before the day reads as no call.
     const inDay = (at: unknown): { lastAt?: number } => {
       const ms = Date.parse(String(at));
@@ -153,7 +154,7 @@ export async function measure(now: number): Promise<PrecheckOutput> {
     };
     const rows = await hog(key, `select timestamp, properties.endpoint, toInt(properties.status), properties.errorCode, properties.crawlerPath, ` +
       `properties.requestId, properties.orgId from events where event = 'api_request_failed' and toInt(properties.status) >= 500 and ${window} ` +
-      `and properties.orgId in (${CUSTOMER_ORGS}) order by timestamp limit 1 by uuid`);
+      `and properties.orgId in (${customerOrgs()}) order by timestamp limit 1 by uuid`);
     const gap = await hog(key, `select max(gap) from (select dateDiff('minute', lagInFrame(timestamp, 1, timestamp) over (order by timestamp rows between 1 preceding and current row), timestamp) as gap ` +
       `from events where ${calls} and ${window})`).catch(() => [[null]]);
     const failedCalls = rows.map(([at, endpoint, status, errorCode, path, requestId, orgId]) => ({
