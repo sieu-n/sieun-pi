@@ -358,6 +358,7 @@ The word rules are the `unslop` skill's, and the lint checks these on every page
 ## The prose lint
 
 `node apps/wiki/scripts/prose-lint.mjs <file-or-folder>` prints each finding with its line, rule and fix, and exits 1 on any error.
+It reads the stored HTML, so lint a saved `wiki.read(path, html=True)`, because it refuses the markdown view with exit 2.
 `--recent 20` lints the 20 newest session pages.
 
 1. The lint reads an `<ol>` item as a step, which `doc-paragraph` holds to 2 sentences and 50 words like any paragraph, and no rule asks for numbered lines.

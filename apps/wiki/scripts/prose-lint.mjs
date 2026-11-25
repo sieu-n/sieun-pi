@@ -16,7 +16,9 @@
 //        page that newly looks like another page with no `distinct_from` line (dup-gate.mjs), and a page that adds a
 //        title/h1 mismatch or a current hub link to a retired page (page-gate.mjs)
 //
-// Exit codes: 0 clean or no growth, 1 errors (or errors grew), 2 usage or read failure.
+// A markdown file, such as the view wiki.read(path) returns by default, exits 2 and names wiki.read(path, html=True).
+//
+// Exit codes: 0 clean or no growth, 1 errors (or errors grew), 2 usage, read failure or markdown input.
 import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
@@ -171,6 +173,27 @@ function table(rows, head) {
 	return [line(head), '|' + widths.map((w) => '-'.repeat(w + 2)).join('|') + '|', ...rows.map(line)].join('\n') + '\n';
 }
 
+/**
+ * True when a file holds markdown, such as the view wiki.read(path) returns by default, instead of stored page HTML:
+ * no `<!--wiki {json}-->` header, and a `---` front matter block or no HTML block tag. Why: on 2026-11-25 the lint read
+ * API portal's architecture page v7 from that markdown, took mermaid `--` arrows and `- ` list dashes for em dashes and
+ * saw one block with no diagram, and gave 13 errors the stored HTML does not have.
+ */
+function isMarkdown(text) {
+	if (/^\s*<!--wiki/.test(text)) return false;
+	return /^\s*---\r?\n/.test(text) || !/<(?:h[1-6]|p|pre|table|ul|ol|div|section|details|figure|wiki-[\w-]+)\b/i.test(text);
+}
+
+/** Exit 2 on a markdown file, naming the HTML read to lint instead. */
+function refuseMarkdown(file, text) {
+	if (text === null || !isMarkdown(text)) return;
+	process.stderr.write(
+		`prose-lint: ${file} is markdown, as wiki.read(path) returns it, and the lint reads only the stored HTML.\n` +
+			'Lint the HTML instead: save wiki.read(path, html=True), or GET /wiki/raw/<path>, and run the lint on that file.\n',
+	);
+	process.exit(2);
+}
+
 function readOrNull(file) {
 	try {
 		return readFileSync(file, 'utf8');
@@ -199,6 +222,7 @@ if (ratchetBefore !== null || ratchetRev !== null) {
 		if (!isLintedPath(rel)) continue;
 		const after = readOrNull(file);
 		if (after === null) continue; // a deleted page adds nothing
+		refuseMarkdown(file, after);
 		let before;
 		if (ratchetBefore === '-') before = readFileSync(0, 'utf8');
 		else if (ratchetBefore !== null) before = readOrNull(ratchetBefore);
@@ -268,6 +292,7 @@ for (const file of files) {
 		continue;
 	}
 	const html = readFileSync(file, 'utf8');
+	refuseMarkdown(file, html);
 	const { findings } = lintHtml(html, { path: rel });
 	if (isDraftOrCurated(file)) findings.push(...notLandedFindings(html));
 	results.push({ file, skipped: false, findings, counts: countFindings(findings) });

@@ -65,7 +65,7 @@ A subagent writes every page, one page per subagent, and the parent reviews it.
 Before you write a page, read `references/writing.md` and the format section of `references/page-authoring.md`.
 A plan, spec, design or status page also follows the "Plan, spec and status pages" section of `references/writing.md`.
 The page API refuses a write that adds errors from `node apps/wiki/scripts/prose-lint.mjs <page>`, run from the sieun-pi checkout, and its 422 names `references/writing.md`.
-The lint reads HTML only, so a markdown draft prints `skipped` and checks nothing.
+The lint reads HTML only, so a `.md` file prints `skipped`, and a markdown page saved under another name, such as the view `wiki.read(path)` returns, exits 2. To lint a stored page, save `wiki.read(path, html=True)` to a file and lint that file, because on 2026-11-25 the markdown view of a clean page gave 13 false errors.
 To lint a draft file outside the content root, pass `--path <wiki path>` of the page it will replace, or the apps/ and domains/ rules such as `core-length` do not run.
 
 ## The rules

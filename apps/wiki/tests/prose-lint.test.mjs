@@ -272,6 +272,54 @@ test('the CLI judges a draft outside the content root by its front matter path o
 	}
 });
 
+// On 2026-11-25 a job linted the markdown view wiki.read(path) returns for API portal's architecture page v7, and the lint
+// read its mermaid `--` arrows and `- ` list dashes as em dashes: 13 errors the stored HTML does not have.
+test('the CLI refuses a markdown page with a mermaid block and a list, names wiki.read(path, html=True), and lints the HTML', () => {
+	const dir = mkdtempSync(path.join(tmpdir(), 'prose-lint-md-'));
+	try {
+		const md = [
+			'---',
+			'path: "domains/bakery/tickets.html"',
+			'title: "Tickets"',
+			'---',
+			'',
+			'# Tickets',
+			'',
+			'This page is for a new teammate on the bakery orders.',
+			'',
+			'```mermaid',
+			'flowchart LR',
+			'  site("order site") -- "queue" --> relay("print relay")',
+			'```',
+			'',
+			'- The relay prints each ticket.',
+			'- A failed ticket tries again after 30 s.',
+			'',
+		].join('\n');
+		const html =
+			'<!--wiki {"title":"Tickets","description":"tickets"} -->\n<h1>Tickets</h1>\n' +
+			'<p>This page is for a new teammate on the bakery orders.</p>\n' +
+			'<pre class="mermaid">flowchart LR\n  site("order site") -- "queue" --> relay("print relay")</pre>\n' +
+			'<ul><li>The relay prints each ticket.</li><li>A failed ticket tries again after 30 s.</li></ul>\n';
+		writeFileSync(path.join(dir, 'tickets-md.html'), md);
+		writeFileSync(path.join(dir, 'tickets.html'), html);
+		writeFileSync(path.join(dir, 'bare-md.html'), md.split('---\n').pop());
+		const cli = fileURLToPath(new URL('../scripts/prose-lint.mjs', import.meta.url));
+		const run = (...args) => spawnSync(process.execPath, [cli, ...args], { cwd: dir, encoding: 'utf8' });
+		for (const args of [['tickets-md.html'], ['bare-md.html'], ['--ratchet', 'tickets.html', 'tickets-md.html']]) {
+			const out = run(...args);
+			assert.equal(out.status, 2, `${args.join(' ')}: ${out.stdout}`);
+			assert.match(out.stderr, /is markdown/);
+			assert.match(out.stderr, /wiki\.read\(path, html=True\)/);
+		}
+		const ok = run('--json', 'tickets.html');
+		assert.equal(ok.status, 0, ok.stdout);
+		assert.deepEqual(JSON.parse(ok.stdout).results[0].findings, []);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test('the lint skips API-managed session and job logs but judges other pages in their folders', () => {
 	// 2026-11-21: job logs under agents/<slug>/jobs/ were linted while session logs were skipped.
 	assert.equal(isLintedPath('sessions/2026/11/21/0101-x/index.html'), false);
