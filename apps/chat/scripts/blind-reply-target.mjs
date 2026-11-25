@@ -6,7 +6,12 @@
  * #dev-app-search-prospect) with reply_to mwto4rot, the id Search product's thread got for p65 before Crawler guy joined, and both posts
  * (p80, p86) went in the thread of the newer p76.
  *
- *   node apps/chat/scripts/blind-reply-target.mjs [--cwd <project>] [--out <file.jsonl>] [--server http://127.0.0.1:5184] [--keep]
+ *   node apps/chat/scripts/blind-reply-target.mjs [--out <file.jsonl>] [--server http://127.0.0.1:5184] [--keep]
+ *
+ * Both test agents work in a made-up project, lantern, that the run writes to a temp folder: a README, an Apache LICENSE and a CI log
+ * with each job's time, so the topic and the question are answered from local files. On 11-25 the topic was symphony's CI, and helpers
+ * of runs side by side paged `gh api repos/openai/symphony/actions/runs` and each run's jobs until us-metal02's shared GitHub token had
+ * 120 of 5,000 calls left (devbox-github-quota-low), after which every gh call on the box answers 403 until the reset.
  *
  * 1. A helper test agent is the channel's only member when the owner posts a root topic and the ask as a reply in its thread, as p42 and
  *    p65 were, so the ask's message id is the helper thread's stamp.
@@ -19,27 +24,40 @@
  * too, sits in the question's thread. The line also records the post's reply_to, read from the
  * comm thread's entries, so a run that named the ask by post id and a run that used the other thread's message id show apart.
  */
-import { appendFileSync, readlinkSync } from "node:fs";
+import { appendFileSync, mkdirSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { parseArgs } from "node:util";
 
-const { values } = parseArgs({ options: { cwd: { type: "string" }, out: { type: "string" }, server: { type: "string" }, keep: { type: "boolean" } } });
+const { values } = parseArgs({ options: { out: { type: "string" }, server: { type: "string" }, keep: { type: "boolean" } } });
 const server = values.server ?? "http://127.0.0.1:5184";
-const cwd = values.cwd ?? join(homedir(), "code/symphony");
 const chatDb = join(homedir(), ".pi/agent/chat/chat.sqlite");
 const socketPath = join(process.env.XDG_RUNTIME_DIR ?? `/run/user/${process.getuid()}`, "pi-host/host.sock");
 const ANSWER_MS = 20 * 60_000;
 const QUIET_MS = 60_000;
 const POLL_MS = 2_000;
 
-const TOPIC = "let's cut what symphony's CI costs us. first we need to know where the time goes.";
-const ASK = "we need someone to measure how long symphony's elixir test suite takes to run. i'll set up a separate agent for that.";
-const QUESTION = "unrelated quick one, what license is symphony under?";
-const REPORT = (root, room) => `Result for thread ${root} of #${room}: symphony's elixir test suite took 41 s, 39 s and 40 s over three runs.\n` +
-  "- 214 tests ran, with 0 failures and 2 skipped.\n- The slowest file was test/symphony/orchestrator_test.exs at 11 s.";
+const TOPIC = "let's cut what lantern's CI costs us. first we need to know where the time goes.";
+const ASK = "we need someone to measure how long lantern's test suite takes to run. i'll set up a separate agent for that.";
+const QUESTION = "unrelated quick one, what license is lantern under?";
+const REPORT = (root, room) => `Result for thread ${root} of #${room}: lantern's test suite took 41 s, 39 s and 40 s over three runs.\n` +
+  "- 214 tests ran, with 0 failures and 2 skipped.\n- The slowest file was tests/test_scheduler.py at 11 s.";
+/** The project folder both agents work in. Its numbers stay clear of 41 and 214, which mark the report's result. */
+const FIXTURE = {
+  "README.md": "# lantern\n\nA small job queue in Python. CI runs lint, typecheck and the pytest suite on every push.\n" +
+    "The last CI run's job times are in logs/ci-run.log.\n",
+  "LICENSE": "                                 Apache License\n                           Version 2.0, January 2004\n" +
+    "                        http://www.apache.org/licenses/\n\n   Copyright 2026 The lantern authors\n\n" +
+    "   Licensed under the Apache License, Version 2.0 (the \"License\");\n   you may not use this file except in compliance with the License.\n",
+  "logs/ci-run.log": "ci run 1123 on push to main, 2026-11-23 09:12 UTC\n" +
+    "job lint        started 09:12:05  finished 09:13:17  1m12s\n" +
+    "job typecheck   started 09:12:05  finished 09:14:10  2m05s\n" +
+    "job test        started 09:12:05  finished 09:18:35  6m30s  (setup 2m50s, pip install 1m55s, pytest 1m45s)\n" +
+    "job build-image started 09:18:36  finished 09:22:08  3m32s\n" +
+    "total 10m03s, billed 13m19s\n",
+};
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -110,6 +128,12 @@ function replyTos(thread) {
 }
 
 const stamp = `${new Date().toISOString().slice(5, 19).replace(/[-T:]/g, "")}${Math.random().toString(36).slice(2, 4)}`;
+const fixtureRoot = join(tmpdir(), `blind-reply-target-${stamp}`);
+const cwd = join(fixtureRoot, "lantern");
+for (const [file, text] of Object.entries(FIXTURE)) {
+  mkdirSync(join(cwd, file, ".."), { recursive: true });
+  writeFileSync(join(cwd, file), text);
+}
 const roomName = `blind-reply-target-${stamp}`;
 const helper = await call("POST", "/api/agents", { name: `blind rt helper ${stamp}`, test: true, cwd });
 const room = (await call("POST", "/api/rooms", { kind: "channel", name: roomName, agenda: "", members: [helper.id], test: true })).id;
@@ -147,7 +171,7 @@ try {
 
   agent = await call("POST", "/api/agents", {
     name: `blind rt ${stamp}`, test: true, cwd,
-    brief: `# blind rt ${stamp}\n\nYou measure things in the symphony repo (${cwd}) for the owner.\n\n` +
+    brief: `# blind rt ${stamp}\n\nYou measure things in the lantern project (${cwd}) for the owner.\n\n` +
       `Owner ask: #${roomName} ${ask.id} (message id ${askId}), in thread ${topic.id}: "${ASK}" Your work thread is measuring it.\n`,
   });
   await call("POST", `/api/rooms/${room}/members`, { agents: [agent.id] });
@@ -202,6 +226,7 @@ try {
       if (thread) await call("PATCH", `/api/c/${thread}`, { archived: true }).catch(e => console.error(`archive agent: ${e}`));
     }
     await call("PATCH", `/api/rooms/${room}`, { archived: true }).catch(e => console.error(`archive room: ${e}`));
+    rmSync(fixtureRoot, { recursive: true, force: true });
   }
 }
 process.exit(line?.pass ? 0 : 1);
