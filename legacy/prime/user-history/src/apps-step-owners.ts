@@ -167,9 +167,18 @@ export function wokenStep(item: Pick<PlanItem, "id" | "job" | "sessionId" | "wai
   return stepSessions(item, reads.named).some(session => reads.live.has(session)) || chatWakeNames(item, reads.threadWakes);
 }
 
-/** The open steps of a :5184 chat that nobody moves, read as a paused Prime chat's are (`unmovedSteps`), with its own owner reads. */
+/**
+ * The open steps of a :5184 chat that nobody moves, read as a paused Prime chat's are (`unmovedSteps`), with its own owner reads. A blocked
+ * step only waits, so its owner's last write within the live window does not move it: it moves while an owner works now or sleeps on a
+ * board.wake or pool slot, while a wake of the chat's thread names it, or while an open For you todo or another chat's named step carries its
+ * wait. Until 11-26 a blocked step whose idle job wrote within the window read as moving with nothing set to wake it, and fable auditor's
+ * duty audit for the owner's c249 (#sw-factory-build p234, msg mwwklmfk) asked d5 to count such a step stuck.
+ */
 export function appsStuckSteps(chat: AppsChat, reads: AppsOwnerReads, now: number, links?: WaitLinks): PlanItem[] {
-  return unmovedSteps(chat.board, now, chat.everyMs, reads, links).filter(item => !heldByChat(item, chat, reads.threadWakes, now));
+  const unmoved = new Set(unmovedSteps(chat.board, now, chat.everyMs, reads, links).map(item => item.id));
+  const working: AppsOwnerReads = { ...reads, activity: new Map([...reads.activity].filter(([, at]) => at >= now)) };
+  return unmovedSteps(chat.board, now, chat.everyMs, working, links)
+    .filter(item => (item.status === "blocked" || unmoved.has(item.id)) && !heldByChat(item, chat, reads.threadWakes, now));
 }
 
 /** What nobody owns in a :5184 chat: its open steps nobody moves (`appsStuckSteps`) and its red duties with no live fix (`appsChatDuties` stuck). */

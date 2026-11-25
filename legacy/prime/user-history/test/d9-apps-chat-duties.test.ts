@@ -205,6 +205,30 @@ test("a :5184 step whose job is a subagent of the chat's own duty job moves whil
   assert.deepEqual(stuck(sessions("idle", at), at + 3_600_000), ["p72", "p73"]);
 });
 
+test("a blocked :5184 step moves only on a job at work, a wake, an open For you todo or another chat's step, not on a recent write", () => {
+  // 11-26: fable auditor's duty audit for c249 asked d5 to count a blocked step stuck when nothing would wake it, though its job wrote lately.
+  const at = Date.parse("2026-11-26T05:00:00Z");
+  const step = (id: string, status: string, extra: Record<string, unknown> = {}) => ({ id, text: id, status, children: [], ...extra });
+  const job = (name: string, sessionId: string) => ({ name, state: "idle", sessionId, lastActivityAt: new Date(at - 10 * 60_000).toISOString() });
+  const chat: AppsChat = { id: "ag_crawler-guy", name: "Crawler guy", thread: "12ebf3bd", duties: [], everyMs: 3 * 3_600_000,
+    board: { plan: [
+      step("p17", "blocked", { job: "meta walks", waitFor: "a paid proxy" }),
+      step("p18", "blocked", { job: "parity", waitFor: "t4" }),
+      step("p19", "blocked", { job: "reels", waitFor: "devops guy's p2" }),
+      step("p20", "blocked", { job: "posts", waitFor: "the next census run" }),
+      step("p21", "doing", { job: "meta walks" }),
+    ], todos: [{ id: "t4", text: "Restart house crawling?", done: false, from: "agent" }] } as never,
+    jobs: [job("meta walks", "s17"), job("parity", "s18"), job("reels", "s19"), job("posts", "s20")] };
+  const links = { self: chat.id, others: new Map([["ag_devops-guy", { plan: [step("p2", "doing")], todos: [] } as never]]),
+    chats: [{ id: chat.id, name: chat.name }, { id: "ag_devops-guy", name: "devops guy" }] };
+  const stuck = (wakes: readonly Wake[], sessions: AppsSession[] = []) =>
+    appsStuckSteps(chat, appsOwnerReads(chat, sessions, wakes, at), at, links).map(item => item.id);
+  // p17 and p20 only wait, with jobs that wrote 10 min ago; p21 is at work by the same rule as before; t4 holds p18 and devops guy's p2 holds p19.
+  assert.deepEqual(stuck([]), ["p17", "p20"]);
+  assert.deepEqual(stuck([{ session: "s20--1", on: { kind: "time", at: at + 3_600_000 }, note: "", since: at } as Wake]), ["p17"]);
+  assert.deepEqual(stuck([], [{ id: "s17", name: "meta walks", status: "working", lastActivityAt: at }]), ["p20"]);
+});
+
 test("d9 reads the app's owed wakes from chat.sqlite once the app moved them there, and from the wakes folder before", async () => {
   const dir = mkdtempSync(join(tmpdir(), "d9-apps-wakes-"));
   try {
