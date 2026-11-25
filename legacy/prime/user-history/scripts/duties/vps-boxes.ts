@@ -71,7 +71,7 @@ export const OOM_LAST_QUERY = `SELECT box, max(arrayMax(arrayMap(p -> p.1, array
 export const oomSinceQuery = (box: string, seconds: number): string => oomRiseQuery([box], seconds);
 export const DUTY_FILE = join(dirname(fileURLToPath(import.meta.url)), "vps-boxes.duty.json");
 /** The M1 Air's runners up: each runner's newest devbox_runner_up of the last 5 min summed; no row in that time is no sample. */
-export const AIR_RUNNERS_QUERY = `SELECT toFloat64(sum(up)) AS value FROM (
+export const AIR_RUNNERS_QUERY = `SELECT toFloat64(sum(up)) AS value, toFloat64(count()) AS series FROM (
   SELECT argMax(Value, TimeUnix) AS up FROM otel.otel_metrics_gauge
   WHERE ServiceName = 'node-exporter' AND ResourceAttributes['deployment.environment.name'] = 'shared' AND ${BOX} = 'm1-air'
     AND MetricName = 'devbox_runner_up' AND TimeUnix > now() - INTERVAL 5 MINUTE AND ${RECORDED}
@@ -236,11 +236,14 @@ async function rows(rawSql: string): Promise<Record<string, unknown>[]> {
   return Array.from({ length: frame?.data?.values?.[0]?.length ?? 0 }, (_, i) => Object.fromEntries(names.map((name, column) => [name, frame?.data?.values?.[column]?.[i]])));
 }
 
-async function instant(rawSql: string): Promise<number> {
-  const value = (await rows(rawSql))[0]?.value;
-  if (typeof value !== "number") throw new Error(`${rawSql.split("\n")[0]}: no sample`);
-  return value;
+/** The runners up and the runner series read, from the one row of AIR_RUNNERS_QUERY; no row or no number is no sample. */
+export function airRunners(row: Record<string, unknown> | undefined): { online: number; series: number } {
+  if (typeof row?.value !== "number" || typeof row.series !== "number") throw new Error(`${AIR_RUNNERS_QUERY.split("\n")[0]}: no sample`);
+  return { online: row.value, series: row.series };
 }
+
+/** n, the sample size of each duty metric: risks read, runner series seen, boxes with an OOM reading, process groups scanned. A failed read stays 0. */
+export const SAMPLE_KEYS = ["risks_firing", "air_runners_online", "oom_kills_24h", "orphan_processes"] as const;
 
 async function byBox(rawSql: string): Promise<Map<string, number>> {
   return new Map((await rows(rawSql)).flatMap((row): [string, number][] => typeof row.box === "string" && typeof row.value === "number" ? [[row.box, row.value]] : []));
@@ -315,7 +318,8 @@ async function main(): Promise<void> {
   const output = process.env.OUTPUT_FILE;
   if (!output) { process.stderr.write("vps-boxes: OUTPUT_FILE is not set\n"); process.exit(2); }
   const at = Date.now();
-  const result: PrecheckOutput = { metrics: {}, flagged: [] };
+  const n: Record<(typeof SAMPLE_KEYS)[number], number> = { risks_firing: 0, air_runners_online: 0, oom_kills_24h: 0, orphan_processes: 0 };
+  const result: PrecheckOutput = { metrics: {}, flagged: [], n };
   const section = async (name: string, read: (flagged: FlaggedSlice[]) => Promise<void>): Promise<FlaggedSlice[]> => {
     const flagged: FlaggedSlice[] = [];
     try { await read(flagged); }
@@ -333,6 +337,7 @@ async function main(): Promise<void> {
       result.metrics.risks_firing = counted.firing;
       flagged.push(...counted.flagged);
       if (file.page) flagged.push({ at, kind: "page", excerpt: `risk page: ${file.page}` });
+      n.risks_firing = file.risks.length;
     }),
     section("alerts_firing", async flagged => {
       const counted = alertsFiring(await readFiringRules(BRIDGE_FILE, CHAT), at);
@@ -340,13 +345,15 @@ async function main(): Promise<void> {
       flagged.push(...counted.flagged);
     }),
     section("oom_kills_24h", async flagged => {
-      const counted = oomKills24h(await oomBoxes(at), at);
+      const boxes = await oomBoxes(at);
+      const counted = oomKills24h(boxes, at);
       result.metrics.oom_kills_24h = counted.kills;
       result.metrics.heavy_scope_kills = counted.heavy;
       result.metrics.oom_kills_explained = counted.explained;
       result.windowMs = { oom_kills_24h: counted.windowMs };
       if (counted.lastEventAt !== undefined) result.lastEventAt = { oom_kills_24h: counted.lastEventAt };
       flagged.push(...counted.flagged);
+      n.oom_kills_24h = boxes.length;
     }),
     section("orphan_processes", async flagged => {
       const found = await orphans(at);
@@ -355,8 +362,13 @@ async function main(): Promise<void> {
       result.metrics.orphan_processes_due = found.reading.orphan_due;
       result.metrics.orphan_processes_unknown = found.reading.orphan_unknown;
       flagged.push(...found.lines);
+      n.orphan_processes = found.reading.groups;
     }),
-    section("air_runners_online", async () => { result.metrics.air_runners_online = await instant(AIR_RUNNERS_QUERY); }),
+    section("air_runners_online", async () => {
+      const runners = airRunners((await rows(AIR_RUNNERS_QUERY))[0]);
+      result.metrics.air_runners_online = runners.online;
+      n.air_runners_online = runners.series;
+    }),
   ]);
   result.flagged!.push(...sections.flat());
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");

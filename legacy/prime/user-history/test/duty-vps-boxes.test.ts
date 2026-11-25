@@ -4,7 +4,7 @@ import { test } from "node:test";
 import type { FiringAlert } from "../src/alert-bridge.ts";
 import { readFile } from "node:fs/promises";
 import { claudeUsableSql } from "../scripts/duties/cache-ratio.ts";
-import { AIR_RUNNERS_QUERY, DUTY_FILE, OOM_KILLS_QUERY, OOM_LAST_QUERY, OOM_WINDOW_MS, countRisks, oomSinceQuery, oomKills24h, parseAlertingSets, parseExplained, parseRisks, splitByRuleState, splitOomLines } from "../scripts/duties/vps-boxes.ts";
+import { AIR_RUNNERS_QUERY, DUTY_FILE, SAMPLE_KEYS, airRunners, OOM_KILLS_QUERY, OOM_LAST_QUERY, OOM_WINDOW_MS, countRisks, oomSinceQuery, oomKills24h, parseAlertingSets, parseExplained, parseRisks, splitByRuleState, splitOomLines } from "../scripts/duties/vps-boxes.ts";
 
 const alert = (uid: string, startsAt: string): FiringAlert =>
   ({ fingerprint: `${uid}-${startsAt}`, startsAt, alertname: uid, labels: { __alert_rule_uid__: uid }, summary: "", url: "" });
@@ -167,4 +167,13 @@ test("every gauge read skips OTel staleness points", () => {
   for (const sql of [OOM_KILLS_QUERY, OOM_LAST_QUERY, oomSinceQuery("us-metal02", 3600), AIR_RUNNERS_QUERY, claudeUsableSql(0, 60_000)]) {
     assert.match(sql, /bitAnd\(Flags, 1\) = 0/);
   }
+});
+
+// Guards c249's sample size: agent factory's duty check flags a precheck whose output has no top-level n.
+test("n has one sample size per duty metric, and the runner read counts its series and fails with no row", async () => {
+  const duty = JSON.parse(await readFile(DUTY_FILE, "utf8")) as { metrics: { key: string }[] };
+  assert.deepEqual([...SAMPLE_KEYS].sort(), duty.metrics.map(metric => metric.key).sort());
+  assert.match(AIR_RUNNERS_QUERY, /count\(\)\) AS series/);
+  assert.deepEqual(airRunners({ value: 8, series: 9 }), { online: 8, series: 9 });
+  assert.throws(() => airRunners(undefined), /no sample/);
 });

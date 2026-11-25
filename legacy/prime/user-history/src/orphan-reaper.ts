@@ -509,7 +509,7 @@ export const liveStopSource: StopSource = {
  * orphan_processes counts the processes of the stop groups the 15 min reaper missed (missedByReaper), and orphan_due those it had not reached yet.
  */
 export interface Reading { orphan_processes: number; orphan_due: number; orphan_unknown: number; stop: Group[]; held: { group: Group; why: string }[]; unknown: Group[]; verdicts: Map<string, Verdict>;
-  listFailure: string | null }
+  listFailure: string | null; groups: number }
 
 const age = (group: Group, now: number): string => group.started === null ? "?" : `${((now / 1000 - group.started) / 3600).toFixed(1)} h`;
 const mb = (bytes: number): string => `${Math.round(bytes / 1048576)} MB`;
@@ -552,7 +552,7 @@ export async function readOrphans(context: ReadContext, hostOf: (address: string
   const pids = (groups: readonly Group[]): number => groups.reduce((sum, group) => sum + group.pids.length, 0);
   const missed = decision.stop.filter(group => missedByReaper(group, verdicts, context.now));
   return { rows, reading: { orphan_processes: pids(missed), orphan_due: pids(decision.stop) - pids(missed), orphan_unknown: pids(unknown),
-    stop: decision.stop, held: decision.held, unknown, verdicts, listFailure: read.failure() } };
+    stop: decision.stop, held: decision.held, unknown, verdicts, listFailure: read.failure(), groups: groups.length } };
 }
 
 /** The box's own Prime is `prime-agent` on PATH; another box's wrapper is not on its ssh PATH, so it runs by its install path there. */
