@@ -1023,8 +1023,10 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
       if (route === "api/agent/notice") {
         const session = threadId(text(body.to, "to", 128));
         if (body.kind !== undefined && body.kind !== "retry") throw new RequestError(400, "Choose kind retry or leave it out.");
-        await backend.messages.deliver(session, text(body.message, "message"), typeof body.root === "string" ? threadId(body.root) : undefined,
-          body.kind === "retry" ? "retry" : "message");
+        const root = typeof body.root === "string" ? threadId(body.root) : undefined;
+        // A notice to a pi-host thread, such as repl_guard.py's to devops guy since 11-26, goes through pi-host, which the outbox cannot reach.
+        if (body.kind === undefined && backend.notice) { json(res, 200, { deliveryStatus: await backend.notice(session, text(body.message, "message"), root), session }); return; }
+        await backend.messages.deliver(session, text(body.message, "message"), root, body.kind === "retry" ? "retry" : "message");
         json(res, 200, { deliveryStatus: "queued", session }); return;
       }
       // The chat tools of a session on a box without the chat role (src/chat-host.ts): its check-in setting, the job registry and the ledger.

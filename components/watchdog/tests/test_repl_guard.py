@@ -52,6 +52,20 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(self.run_check()['status'], 'failed')
         self.assertEqual(len(self.sent), 1, 'one alert per repl.py version')
 
+    def test_a_refused_alert_goes_again_next_cycle_to_devops_guy(self):
+        # 11-26: the alert moved from ops guy to devops guy's pi-host thread through the chat service's notice route.
+        self.repl.write_text("something else entirely\n")
+        answers = [{'error': 'chat service answered 502'}, {'deliveryStatus': 'delivered'}]
+        sent = []
+        def send(session, message):
+            sent.append(session)
+            return answers.pop(0)
+        run = lambda cmd, **kw: subprocess.run(cmd, **kw)
+        first = g.check(repl=self.repl, patches=[self.patch], py=Path('/bin/true'), run=run, send=send, state_file=self.d / 'state.json')
+        second = g.check(repl=self.repl, patches=[self.patch], py=Path('/bin/true'), run=run, send=send, state_file=self.d / 'state.json')
+        self.assertEqual((first.get('alert_error'), second.get('alerted')), ('chat service answered 502', True))
+        self.assertEqual(sent, ['76b58e4d-b23b-49f9-aa73-625b4bbcdd64'] * 2)
+
     def test_a_patch_that_breaks_the_import_is_rolled_back(self):
         self.repl.write_text(ORIG)
         res = self.run_check(py_ok=False)

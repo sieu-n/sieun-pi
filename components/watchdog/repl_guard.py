@@ -16,7 +16,9 @@ HERE = Path(__file__).resolve().parent
 PATCHES = (HERE / 'repl-guard.patch', HERE / 'repl-guard-pre-mem.patch')
 MARKER = '_reopen_is_unsafe'
 STATE = WATCH / 'repl_guard_state.json'
-ALERT_SESSION = '01a11af8-962e-773d-a19a-ee4104011987'   # ops guy (+observability): told once per failed repl.py version
+# devops guy's pi-host work thread, told once per failed repl.py version through the chat service's api/agent/notice (cron_cycle.py), which
+# reaches a pi-host thread; ops guy (+observability) handed this over on 11-26 (owner, t10, mwwlt2rm).
+ALERT_SESSION = '76b58e4d-b23b-49f9-aa73-625b4bbcdd64'
 
 
 def _log(entry):
@@ -55,10 +57,13 @@ def check(repl=REPL, patches=PATCHES, py=PY, run=subprocess.run, send=None, stat
     except Exception:
         pass
     if seen.get('alerted_mtime') != mtime and send is not None:
-        send(ALERT_SESSION, '[watchdog] The kernel revive guard (prime-agent#3447) is missing from ' + str(repl) +
+        answer = send(ALERT_SESSION, '[watchdog] The kernel revive guard (prime-agent#3447) is missing from ' + str(repl) +
              ' after a prime-agent update or rollback, and it could not be re-applied automatically (' + result['why'][:160] +
              '). Until it is back, a kernel revive can truncate a tracked file to 0 bytes. Re-port components/watchdog/repl-guard.patch in sieun-pi' +
              ', or rebuild Prime from a tree that carries the guard (fix1-mem commit 61a7730).')
-        state_file.write_text(json.dumps({'alerted_mtime': mtime}))
-        result['alerted'] = True
+        if isinstance(answer, dict) and answer.get('error'):
+            result['alert_error'] = str(answer['error'])[:200]   # not marked as told, so the next cycle sends again
+        else:
+            state_file.write_text(json.dumps({'alerted_mtime': mtime}))
+            result['alerted'] = True
     return _log(result)

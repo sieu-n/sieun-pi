@@ -33,7 +33,7 @@ def main():
 
     # The local kernel revive guard (prime-agent#3447) is lost on every prime-agent update or rollback: re-apply it first.
     try:
-        guard = repl_guard.check(send=lambda sid, msg: wd.pa('send', sid, msg))
+        guard = repl_guard.check(send=lambda sid, msg: wd.outbox_notice(sid, None, msg))
     except Exception as e:  # the guard check must never stop a cycle
         guard = {'status': 'error', 'why': str(e)[:200]}
 

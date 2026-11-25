@@ -60,3 +60,22 @@ test("a resume continue whose send timed out but landed goes once, and a second 
   assert.ok(lines.some(line => line.includes("is landed from the send at")), lines.join("\n"));
   assert.equal((await post({ ...pass, kind: "wake" })).status, 400, "the route takes only the resume's kind");
 });
+
+test("11-26: a notice with no kind goes through the backend's notice, which reaches devops guy's pi-host thread, and never the outbox", async t => {
+  const dir = await mkdtemp(join(tmpdir(), "notice-pi-thread-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const DEVOPS = "76b58e4d-b23b-49f9-aa73-625b4bbcdd64";
+  const notices: [string, string][] = [];
+  const outboxed: string[] = [];
+  const backend = { close: async () => {}, messages: { deliver: async (session: string) => { outboxed.push(session); } },
+    notice: async (session: string, text: string) => { notices.push([session, text]); return "delivered" as const } } as unknown as ChatBackend;
+  const empty = asset(Buffer.from(""), "text/plain");
+  const server = await startChatServer({ backend, bundle: { js: empty, css: empty, version: "notice-pi-thread" }, port: 0, capability: "cap", csrfToken: "token",
+    stopToken: "stop", identity: { pid: process.pid, instanceId: "notice-pi-thread", socketPath: join(dir, "no-daemon.sock") }, onStop: async () => {} });
+  t.after(() => server.close());
+  const response = await fetch(new URL("api/agent/notice", server.url), { method: "POST",
+    headers: { "content-type": "application/json", "x-chat-token": "token", origin: new URL(server.url).origin },
+    body: JSON.stringify({ to: DEVOPS, message: "[watchdog] The kernel revive guard is missing." }) });
+  assert.deepEqual([response.status, await response.json()], [200, { deliveryStatus: "delivered", session: DEVOPS }]);
+  assert.deepEqual([notices, outboxed], [[[DEVOPS, "[watchdog] The kernel revive guard is missing."]], []]);
+});

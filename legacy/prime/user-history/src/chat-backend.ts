@@ -121,6 +121,11 @@ export interface ChatBackend {
   outbox: OwnerOutbox;
   /** `<dataDir>/agent-outbox/`: every agent message the service sends, on disk until the daemon takes it (src/agent-outbox.ts). */
   messages: AgentOutbox;
+  /**
+   * A notice to a session: through pi-host when a live pi-host thread has the id (`sendNotice`), else through the agent outbox. The alert
+   * bridge, its watchdog, the uptime watch and `api/agent/notice` send this way; absent in tests that fake a backend.
+   */
+  notice?: (session: string, text: string, root?: string) => Promise<"delivered" | "queued">;
   /** Stops the wake ticker and the agent outbox and waits for its disk writes; the service runs it before it closes its daemon links. */
   drainSends?: () => Promise<void>;
   /**
@@ -460,8 +465,10 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     } });
   // The bridge's escalations, tells, watchdog lines and uptime pages go to a pi-host thread through pi-host and to a Prime session through the
   // agent outbox: OPS_ROUTE has been devops guy's pi-host thread since 11-26.
-  const notice = { deliver: async (session: string, text: string, root?: string) => {
-    if (!await sendNotice(await piHostRoutes(), session, text)) await agentOutbox.deliver(session, text, root);
+  const notice = { deliver: async (session: string, text: string, root?: string): Promise<"delivered" | "queued"> => {
+    if (await sendNotice(await piHostRoutes(), session, text)) return "delivered";
+    await agentOutbox.deliver(session, text, root);
+    return "queued";
   } };
   const grafanaConfig = join(sharedDataDir(dataDir), "grafana-alerts.json");
   const statusFile = join(homedir(), ".cache/virev/alert-bridge-status.json");
@@ -637,7 +644,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       const remote = await capture;
       return sessionFile ? promptView(id, { sessionFile, dataDir, agentDir, chat: (await chats.ids()).has(id), ...(title ? { title } : {}), ...(remote ? { readCapture: () => remote.read } : {}) }) : null;
     },
-    outbox, messages: agentOutbox,
+    outbox, messages: agentOutbox, notice: notice.deliver,
     async close() {
       if (closed) return;
       closed = true;
