@@ -35,6 +35,13 @@ About 20 jobs edit `/home/sieun/src/sieun-pi` at once, so run apps/chat server t
 When the owner removes a feature, delete its tool, route, code, prompt lines, skill lines, docs and tests, so the code reads as if the feature never existed and was never discussed (#sw-factory-build p187, p188).
 Add no refusal path, stub route, guard or "never do X" line for a caller that might still reach for it, and write no history comment about it, because a route that is gone already answers the server's normal 404.
 
+## Keeping llm-wiki docs current
+
+Every agent owns its llm-wiki pages and keeps them current with its code, because the owner wrote in #sw-factory-build p223 (msg mww1x0do, c245): "keep this (and all related docs, and all agents should be responsible for their llm-wiki docs btw)".
+When a change alters a tool's args or result, a route, a flow or a store that a page describes, update that page in the same task and stamp its last_verified from `date -u`.
+Each page under domains/devops/sw-factory/ lists the repo files it describes in a `code` field of its meta, and agent factory's duty "sw factory docs match the code" (`apps/chat/scripts/duties/docs-current.ts`) flags a page older than the newest commit to those files.
+[sw factory comm tools](wiki:domains/devops/sw-factory/reference/comm-tools.html) shows each room tool's real args and a real call from a thread, so a change to a tool updates its row there.
+
 ## How agents should write in a room
 
 A room reads like Slack, never like a chat assistant's report.
