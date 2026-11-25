@@ -38,5 +38,6 @@ node components/harness-feed/install.mjs uninstall                           # t
 ```
 
 The install unpacks `components/harness-feed`, `components/prime-relay` and `legacy/prime/user-history/src` from the commit into `~/.local/share/harness-feed/release-<sha7>` and points `current` at it, so a checkout change does not alter the running copy.
+Before the swap it imports the release's `feed.ts` module graph with the service's loader, plus the modules the duties reader loads lazily, and on a failed import it prints node's error and exits 1 with `current` and the service untouched. On 11-25 release 39923ec lacked `apps/chat`, which `store-sums.ts` imported, and the feed was down for 16 s until a rollback.
 On us-metal02 the `harness-feed` service of the Komodo Stack `box-sieun-pi` (auto-sns-agent `apps/infra/box/compose.sieun-pi.yml`) runs `current`, so the install restarts the container `box-sieun-pi-harness-feed-1`.
 On 10-19 the whole feed used about 0.03 core on us-metal02 in steady state, measured over 199 s with systemd's CPUUsageNSec when it ran as a unit, and about 200 MB of memory.

@@ -17,7 +17,8 @@ export const OVERDUE_GRACE_MS = 15 * 60_000;
 const DAY_MS = 24 * 60 * 60_000;
 
 type App = Awaited<ReturnType<typeof loadApp>>;
-async function loadApp() {
+/** Imports the app modules this reader loads lazily on the chat host; install.mjs's load check calls it before a release goes live. */
+export async function loadApp() {
   const [duties, streak, card, settings, board, store, owners] = await Promise.all([
     import(SRC + "shared/chat-duties.ts"), import(SRC + "shared/duty-streak.ts"), import(SRC + "client/duty-card.ts"), import(SRC + "checkin-settings.ts"),
     import(SRC + "shared/chat-board.ts"), import(SRC + "chat-board-store.ts"), import(SRC + "owner-chats.ts"),

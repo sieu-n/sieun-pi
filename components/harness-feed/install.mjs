@@ -4,14 +4,16 @@
 //   node components/harness-feed/install.mjs --ref <commit>
 //   node components/harness-feed/install.mjs uninstall      (macOS; on Linux remove the service from the compose file)
 // It unpacks the feed and the app files its readers import (components/prime-relay, legacy/prime/user-history/src) from <commit> into
-// ~/.local/share/harness-feed/release-<sha7>, points `current` at it with one rename and restarts the service, so a later checkout
-// change cannot alter the running copy. On the Mac the feed logs to ~/.local/share/harness-feed/feed.log, and on Linux to the
+// ~/.local/share/harness-feed/release-<sha7>, imports its feed.ts module graph there with the service's loader, and only when every module loads
+// points `current` at it with one rename and restarts the service, so a later checkout change cannot alter the running copy and a
+// release that cannot load never replaces one that runs. On 11-25 release 39923ec swapped in with apps/chat missing from PATHS and
+// the feed was down 14:10:50 to 14:11:06Z on ERR_MODULE_NOT_FOUND. On the Mac the feed logs to ~/.local/share/harness-feed/feed.log, and on Linux to the
 // container's stdout (`docker logs box-sieun-pi-harness-feed-1`).
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, platform, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { restart } from "../../deploy/linux/komodo-stack.mjs";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -21,7 +23,39 @@ const log = join(share, "feed.log");
 const label = "com.sieun.harness-feed";
 const plist = join(home, "Library/LaunchAgents", `${label}.plist`);
 const gitEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
-const PATHS = ["package.json", "components/harness-feed", "components/prime-relay", "legacy/prime/user-history/package.json", "legacy/prime/user-history/src"];
+export const PATHS = ["package.json", "components/harness-feed", "components/prime-relay", "legacy/prime/user-history/package.json", "legacy/prime/user-history/src"];
+
+// The loader the service runs feed.ts with: the Komodo container runs `node --import tsx` from the checkout (compose.sieun-pi.yml),
+// launchd runs plain node (launchdPlist below).
+const LOADER = platform() === "linux" ? ["--import", "tsx"] : [];
+
+/**
+ * Imports the release's feed.ts module graph with the service's loader, from the checkout as the container does, plus the app modules the
+ * duties reader loads lazily (its `loadApp`, which a release before this check does not export). feed.ts starts its loop only when it is
+ * node's entry script, so the import runs no round. Returns null when every module loads, else node's error.
+ */
+export function loadCheck(release, { cwd = repo, loader = LOADER } = {}) {
+  const feed = pathToFileURL(join(release, "components/harness-feed/feed.ts")).href;
+  const duties = pathToFileURL(join(release, "components/harness-feed/readers/duties.ts")).href;
+  const code = `await import(${JSON.stringify(feed)}); const duties = await import(${JSON.stringify(duties)}); await duties.loadApp?.();`;
+  const result = spawnSync(process.execPath, [...loader, "--input-type=module", "-e", code], { cwd, encoding: "utf8" });
+  if (result.status === 0) return null;
+  const output = `${result.stderr ?? ""}${result.stdout ?? ""}`.trim();
+  const reason = output.split("\n").find(line => /^\w*Error\b/.test(line));
+  return reason ?? (output || `exit ${result.status ?? result.signal}`);
+}
+
+/** Points `<share>/current` at the release with one rename and restarts the service, only after the release passed loadCheck. */
+export function activate(release, share, restartService, check = loadCheck) {
+  const failure = check(release);
+  if (failure) throw new Error(`${release} does not load, so current and the service stay as they were: ${failure}`);
+  const link = join(share, "current");
+  const next = `${link}.${process.pid}`;
+  rmSync(next, { force: true });
+  symlinkSync(release, next);
+  renameSync(next, link);
+  restartService(link);
+}
 
 function write(path, text, mode = 0o644) {
   mkdirSync(dirname(path), { recursive: true });
@@ -78,19 +112,16 @@ function main() {
     write(join(staging, "release.json"), `${JSON.stringify({ sha, installedAt: new Date().toISOString() })}\n`);
     renameSync(staging, release);
   }
-  const link = join(share, "current");
-  const next = `${link}.${process.pid}`;
-  rmSync(next, { force: true });
-  symlinkSync(release, next);
-  renameSync(next, link);
   if (platform() === "linux") {
-    restart("harness-feed");
+    activate(release, share, () => restart("harness-feed"));
     console.log(`harness-feed ${sha.slice(0, 7)} installed; the Komodo container box-sieun-pi-harness-feed-1 runs it`);
     return;
   }
-  stop();
-  start(join(link, "components/harness-feed/feed.ts"));
+  activate(release, share, link => {
+    stop();
+    start(join(link, "components/harness-feed/feed.ts"));
+  });
   console.log(`harness-feed ${sha.slice(0, 7)} installed as ${label}; log in ${log}`);
 }
 
-try { main(); } catch (error) { process.stderr.write(`harness-feed install: ${error instanceof Error ? error.message : String(error)}\n`); process.exitCode = 1; }
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) try { main(); } catch (error) { process.stderr.write(`harness-feed install: ${error instanceof Error ? error.message : String(error)}\n`); process.exitCode = 1; }
