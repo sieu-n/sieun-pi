@@ -33,13 +33,22 @@ const SHAPE_LINE = "How a post reads, from one short line to a short list or a c
 export const MOVED_LINE = "If the thread got new posts since you last read it, the call posts nothing and returns them; read them, then send " +
   "the same text again or a rewrite. A post that goes out comes back by its id, like ch_1a2b3c4d/p12, which edit_message takes.";
 
+/**
+ * The holds on a post's length and lines (`longReply` at `ROOM_LONG_WORDS`, comm-guard.ts `crammedLine`), which tell_owner and edit_message
+ * name: in the 7 days to 11-25 they held 517 tell_owner and edit_message calls, 75,821 words, while neither description named them
+ * (~/work/comm-tools-doc/inefficiencies.md).
+ */
+export const CAP_LINE = `A post or an edit over ${ROOM_LONG_WORDS} words, with a sentence over 35 words, or with a line outside a list, quote ` +
+  "or code block that holds 3 or more sentences or 3 or more clauses with a number each is held once, and the same text again goes out; " +
+  "put such results on their own list lines and the rest on a wiki page you link.";
+
 /** tell_owner's description in a room: Prime's rules for when to post and why, with its shape rules left to the role text. */
 export const ROOM_TELL_OWNER_DESCRIPTION = [
   (text: string) => cut(text, "Send the owner one chat message, its own bubble, like a VP's Slack DM to his CTO. ", "On a turn he started",
     "Post one message to the owner in the room, as a coworker posts in Slack. "),
   (text: string) => cut(text, "A question is its own call", "Any other call there"),
   (text: string) => cut(text, "Write one point, best as one dry", "Use the plain words he would use"),
-  (text: string) => cut(text, "Count its sentences and words", "", `${SHAPE_LINE} ${MOVED_LINE}`),
+  (text: string) => cut(text, "Count its sentences and words", "", `${SHAPE_LINE} ${CAP_LINE} ${MOVED_LINE}`),
 ].reduce((text, step) => step(text), TELL_OWNER_DESCRIPTION);
 
 /** tell_owner's parameters in a room: `reply_to` names the post the message answers, which puts it in that post's thread. */

@@ -28,6 +28,7 @@ import { crammedEdit, relayEdit } from "./comm-guard.ts";
 import { closingControl, forMeTools } from "./for-me.ts";
 import { laterTools, MESSAGE_ID } from "./later.ts";
 import { readPostTools } from "./read-post.ts";
+import { CAP_LINE } from "./room-post.ts";
 import { searchTools } from "./search-messages.ts";
 import { roomMemberTools } from "./room-members.ts";
 
@@ -47,7 +48,7 @@ export const EDIT_MESSAGE_DESCRIPTION =
   "it with (edited) at once, with no new post and no notification. Use it to correct or complete a post instead of posting again, such as " +
   "filling in each result on a list of findings he asked for, so the last edit carries the answer. An edit adds results and the answer, " +
   "never a status of jobs or plans. You can edit only your own posts. The result names the post, such as p14, so a later edit can use that id. " +
-  "If the post's thread got new posts since you last read it, the edit is held once and returns them; read them, then edit again.";
+  "If the post's thread got new posts since you last read it, the edit is held once and returns them; read them, then edit again. " + CAP_LINE;
 
 export interface EditMessageArgs { message_id: string; text: string }
 

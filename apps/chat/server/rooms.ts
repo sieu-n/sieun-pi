@@ -300,6 +300,11 @@ export function speakNow(store: AgentStore, side: FeedSide, thread: string, curs
   // A call pi-durable runs again after a crash answers the post its first run made.
   const made = store.byRequestId(side.room, spoken.requestId);
   if (made) return { kind: "posted", room: side.room, id: made.id };
+  // A reply_to in another room named no post here, and the post went in the turn's thread with no word: 4 times in the 7 days to 11-25.
+  const elsewhere = spoken.replyTo?.includes("/") ? spoken.replyTo.slice(0, spoken.replyTo.indexOf("/")).trim() : undefined;
+  if (elsewhere && elsewhere !== side.room) {
+    return { kind: "held", text: `Not sent: reply_to names ${spoken.replyTo}, a post in another room, and this call posts only in ${side.room}. Leave reply_to out, or name a post of this room, such as ${side.room}/p12.` };
+  }
   const moved = movedPosts(store.postsOf(side.room), agent, thread, cursor.read, side.target(spoken, cursor.turn));
   if (moved.length) {
     cursor.read = readMoved(cursor.read!, moved, now);

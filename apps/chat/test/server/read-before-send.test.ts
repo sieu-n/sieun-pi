@@ -125,6 +125,17 @@ describe("a speaking call posts while it runs, after the read-before-send check"
     release();
   });
 
+  test("a reply_to that names a post in another room holds the call with a note that says so, and posts nothing", async () => {
+    const thread = s.app.agents.roomThread(s.app.agents.record(agents.vent)!);
+    fx().append(fx().threadsById.get(thread)!, 1, {
+      kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "toolCall", id: "call_far", name: "send_message", arguments: { text: "answer", reply_to: "ch_elsewhere/p3" } }], stopReason: "toolUse", timestamp: Date.now() }],
+    } as never);
+    const answer = await speak(thread, "call_far");
+    assert.equal(answer.body.kind, "held");
+    assert.match(answer.body.text!, /^Not sent: reply_to names ch_elsewhere\/p3, a post in another room, and this call posts only in dm_vent\./);
+    assert.equal(s.app.agentStore.postsOf(ROOM).some(p => p.requestId === `m:${thread}:call_far`), false);
+  });
+
   test("a call the feed has not read, or a thread that is no comm thread, answers unknown and leaves the post to the feed", async () => {
     const thread = s.app.agents.roomThread(s.app.agents.record(agents.vent)!);
     assert.equal((await speak(thread, "call_nowhere")).body.kind, "unknown");

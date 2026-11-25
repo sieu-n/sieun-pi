@@ -15,7 +15,8 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness, type EntryRecord } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { ChatApp } from "../../src/durable/chat-app.ts";
-import { MOVED_LINE, ROOM_TELL_OWNER_DESCRIPTION } from "../../src/durable/room-post.ts";
+import { CAP_LINE, MOVED_LINE, ROOM_TELL_OWNER_DESCRIPTION } from "../../src/durable/room-post.ts";
+import { EDIT_MESSAGE_DESCRIPTION } from "../../src/durable/room-tools.ts";
 import { SEND_MESSAGE_TOOL, sendMessageAlias } from "../../src/durable/send-message.ts";
 import { TOLD, toldText } from "../../src/durable/turn-end.ts";
 import { MODEL, textOf } from "./crash-scenario.ts";
@@ -84,9 +85,10 @@ test("a chat server with no speak route, or no such call in its feed, leaves the
   assert.deepEqual(await run(unknown, "thread-unknown", ["hi"]), [{ text: "Sent.", isError: false }]);
 });
 
-test("tell_owner's answer that names its post counts as sent, and its room description says what a moved thread does", () => {
+test("tell_owner's answer that names its post counts as sent, and the room descriptions name the holds", () => {
   assert.equal(toldText(TOLD), true);
   assert.equal(toldText(`${TOLD}, posted as ch_14ad7a70/p223.`), true);
   assert.equal(toldText("Kept as a note, not sent."), false);
-  assert.ok(ROOM_TELL_OWNER_DESCRIPTION.endsWith(MOVED_LINE));
+  assert.ok(ROOM_TELL_OWNER_DESCRIPTION.endsWith(`${CAP_LINE} ${MOVED_LINE}`), "tell_owner names the word cap and the crammed-line hold");
+  assert.ok(EDIT_MESSAGE_DESCRIPTION.endsWith(CAP_LINE), "and so does edit_message");
 });
