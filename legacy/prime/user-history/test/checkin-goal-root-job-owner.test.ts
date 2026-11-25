@@ -38,11 +38,14 @@ test("a root job that is no chat and works on the goal's only open step owns the
   assert.deepEqual(flagged.filter(slice => slice.kind === "goal_gaps"), []);
 });
 
-test("a thread that is a chat still owns no goal of this board", () => {
+// A live chat thread on the goal's only open step owns no goal of this board, so the check-in steers nothing into it, and the goal waits on that
+// step's work (`settledWait`): sep launch!! p2 on 11-25, whose p225 the designer bro thread worked on.
+test("a thread that is a chat owns no goal of this board, and the goal waits on its live work", () => {
   const [fact] = jobFacts([], board(), [row(G2G, "2026-10-28T04:12:00Z", { name: "another chat", chat: true })], CHAT);
   assert.equal(fact?.chat, true);
   const precheck = checkInPrecheck(memory as never, [{ ...fact!, state: "working" }], board(), NOW, { self: [CHAT, "Prospect feature bro"], jobs: registry });
   const p229 = precheck.goals.find(push => push.goal.id === "p229")!;
   assert.equal(p229.owner, undefined);
-  assert.equal(p229.act, "start");
+  assert.equal(p229.act, "waiting");
+  assert.equal(goalGap(p229), false);
 });

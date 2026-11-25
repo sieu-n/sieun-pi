@@ -1,6 +1,6 @@
 import type { MetricFact } from "./checkin-done.ts";
 import { keyNamesGoal } from "./goal-readings.ts";
-import { stepCarrier, stepCarriers } from "./checkin-end-state.ts";
+import { type EndStateView, OK_STATES, stepCarrier, stepCarriers } from "./checkin-end-state.ts";
 import { type HostHold, holdWords } from "./shared/host-hold.ts";
 import { type HoldingTodo, ownerHold } from "./shared/todo-hold.ts";
 import { GOAL_PUSH_LINK, openGoals, targetOp, targetStaleMs, walkGoal } from "./shared/chat-board.ts";
@@ -329,6 +329,26 @@ export function ownerHeld(goal: PlanItem, views: readonly StepView[], todos: rea
   return held.length && held.length === open.length ? held.map(view => view.cls === "parked" ? `${view.item.id} (parked by ${view.parked})` : view.item.id) : undefined;
 }
 
+/**
+ * What a goal with no live job of this chat waits on when every open leaf step under it is in the owner's end state (`endState`, OK_STATES):
+ * moved by a live owner of any chat, held by an open For you todo or the owner's own sign-in prompt (`ownerHold`), parked by his correction, or
+ * held on an offline box. Undefined when a step is stuck or none is open. A push job on such a goal can only nag the owner: on 11-25 sep launch!!'s
+ * p2 (176 of 181 steps) had p199, p218, p223 and p224 waiting on For you t93, t91, t95 and t96, and p225 on designer bro's live render-check
+ * job, while the end state read 5 of 5 open steps moving or held, and goal_gaps asked for a push job on p2 in 3 check-ins in a row.
+ */
+export function settledWait(goal: PlanItem, ends: readonly Pick<EndStateView, "view" | "state">[]): string | undefined {
+  const under = new Set([goal.id]);
+  walk(goal.children, item => under.add(item.id));
+  const open = ends.filter(entry => under.has(entry.view.item.id));
+  if (!open.length || open.some(entry => !OK_STATES.has(entry.state))) return undefined;
+  const words: Record<string, string> = { moving: "with a live owner", foryou: "on the owner in For you", parked: "parked by his correction", host: "on an offline box" };
+  const parts = Object.entries(words).flatMap(([state, word]) => {
+    const ids = open.filter(entry => entry.state === state).map(entry => entry.view.item.id);
+    return ids.length ? [`${ids.length > 1 ? `${ids.slice(0, -1).join(", ")} and ${ids.at(-1)}` : ids[0]} ${word}`] : [];
+  });
+  return `on its open steps, each moved or held: ${parts.join(", ")}`;
+}
+
 /** Whether a thread's chat is paused by the owner: the thread is in `paused`, by the `thread:` key of its owner or by the step's session id. */
 export const threadPaused = (owner: Pick<JobFact, "key"> | undefined, item: Pick<PlanItem, "sessionId">, paused: ReadonlySet<string>): boolean =>
   (owner?.key.startsWith("thread:") === true && paused.has(owner.key.slice("thread:".length))) || (item.sessionId !== undefined && paused.has(item.sessionId));
@@ -459,7 +479,7 @@ export function goalPushes(board: ChatBoard | null, views: readonly StepView[], 
   everyMs: number, now: number, metrics: ReadonlyMap<string, MetricFact> = new Map(),
   folded: ReadonlySet<string> = new Set(), paused: ReadonlySet<string> = new Set(),
   ownJob: (fact: JobFact) => boolean = () => true, carriers: ReadonlyMap<string, readonly JobFact[]> = stepCarriers(board, views),
-  said: readonly OwnerMessage[] = [], items: ItemOwners = {}): { pushes: GoalPush[]; memos: Record<string, GoalMemo> } {
+  said: readonly OwnerMessage[] = [], items: ItemOwners = {}, ends: readonly Pick<EndStateView, "view" | "state">[] = []): { pushes: GoalPush[]; memos: Record<string, GoalMemo> } {
   const todos: readonly OwnerTodo[] = board?.todos ?? [];
   const kept: Record<string, GoalMemo> = {};
   // The goal's message goes only to a job of this chat, so a step another chat owns names no owner or holder.
@@ -488,7 +508,7 @@ export function goalPushes(board: ChatBoard | null, views: readonly StepView[], 
     const asks = trend.kind !== "met" || left.length ? held : undefined;
     const handed = owner ? undefined : handedOwner(goal, views, items, ownJob);
     const waits = trend.kind === "met" || asks ? undefined : goalWait(goal, pushView, now, paused, views, carriers) ?? slotWait(owner ?? holder?.owner, now) ??
-      hostWait(owner, goal, items) ?? (handed && `on ${ownerLabel(handed)} of another chat, which owns ${step ?? goal.id}`);
+      hostWait(owner, goal, items) ?? (handed && `on ${ownerLabel(handed)} of another chat, which owns ${step ?? goal.id}`) ?? (owner ? undefined : settledWait(goal, ends));
     const act: GoalAct = trend.kind === "met" ? "on_pace" : asks ? "owner" : waits ? "waiting" : !owner ? "start" : offPace(trend, stale) ? "steer" : "on_pace";
     // goalTrend's memo is a new object, so the push time carries over from the saved one.
     const before = memos?.[goal.id]?.pushed;

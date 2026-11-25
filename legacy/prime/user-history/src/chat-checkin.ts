@@ -188,9 +188,10 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
   // under p229 was owned by "g2g accounts setup 10-20", a root the AI harness chat started on 10-20, queued 64th of 66 for a slot, and goal_gaps
   // read p229 "no live job owns it" in two check-ins in a row, after the chat dropped the push step p241 the first one added for that same job.
   const ownJob = (fact: JobFact): boolean => fact.chat !== true || roots.has(fact.name) || roots.has(fact.key.slice("thread:".length));
+  const end = context.boardError ? [] : withWaitHolds(goaled.map(view => endState(view, board?.todos ?? [], context.rows ?? [], self, now, facts, movers)));
   const goals = context.boardError ? { pushes: [], memos: previous?.goals ?? {} }
     : goalPushes(board, goaled, previous?.goals, context.everyMs ?? CHECK_IN_MS, now, doneFacts.metrics, new Set(fold.map(entry => entry.goal.id)), paused, ownJob, carriers, context.owner ?? [],
-      { ownerOf: itemOwner, held: view => hostHeld(view, context.rows ?? [], context.hosts) });
+      { ownerOf: itemOwner, held: view => hostHeld(view, context.rows ?? [], context.hosts) }, end);
   const pushed = context.boardError ? { pushes: [], memos: previous?.jobs ?? {} }
     : jobPushes(facts, goaled, previous?.jobs, context.everyMs ?? CHECK_IN_MS, now,
       fact => !fact.name.startsWith("check-in ") && ownJob(fact),
@@ -198,7 +199,6 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
       { job: fact => threadPaused(fact, fact, paused),
         step: view => view.cls === "foryou" || view.cls === "parked" || waitBound(view) || ownerHold(view.item, openTodos, active) !== undefined || Date.parse(view.item.waitUntil ?? "") > now ||
           threadPaused(view.owner, view.item, paused) });
-  const end = context.boardError ? [] : withWaitHolds(goaled.map(view => endState(view, board?.todos ?? [], context.rows ?? [], self, now, facts, movers)));
   // A step held on an offline box (`host_held`) is listed there alone: no job of the chat can be started, steered or read on that box until it is
   // back, so every other per-step finding on it asks for what nobody can do. sep launch!!'s p124, whose job "5180 port plan" ran on the Mac,
   // off Tailscale from 18:53Z on 10-29, read both host_held and stalled_steps ("act on it in this run") in 4 check-ins in a row.
