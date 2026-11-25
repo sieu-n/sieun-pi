@@ -6,13 +6,14 @@
  * lands; nothing waits on the network before the composer takes the next message. An attached image shows from its preview while its
  * upload ends, and the post names the uploaded ref.
  */
-import { AHEAD_LANE, api, ApiError, attach, attachedFacts, dropAhead, isSoloRoom, reads, reportNotDelivered, roomOf, shownRef, takeOver, type Attached, type Read, type Wait } from "./client.ts";
+import { api, ApiError, attach, attachedFacts, dropAhead, isSoloRoom, reads, reportNotDelivered, roomOf, shownRef, takeOver, type Attached, type Read, type Wait } from "./client.ts";
 import { heldBoards, kept, restoreKept, STORED as KEPT_CACHE, type Kept } from "./kept.svelte.ts";
 import { heldImages } from "./held-images.ts";
 import { pageDb, type KeptPage } from "./page-db.ts";
 import { heldSends, type HeldSend } from "./held-sends.ts";
 import { holdReload, releaseReload } from "./reload.ts";
 import { live } from "./live.svelte.ts";
+import { ReadAhead, type Ahead } from "./read-ahead.ts";
 import { HELLO_BUCKET_CACHE, HeldList, keepBuckets, keptLists, OLD_RECORD } from "./hello-keep.ts";
 import { mergeBuckets, untimed, type Timed } from "./shared/hello-buckets.ts";
 import { boardAfterDelta, boardKey, boardsParam } from "./shared/board-delta.ts";
@@ -813,62 +814,6 @@ export function prefetchThread(channel: ConversationId | null, key: string, root
   } else if (!timelinePages.has(key)) timelinePages.prefetch(key, () => readTimeline(key));
 }
 
-/** What a read ahead needs to know of a conversation or a chat: when it last changed, and whether a run is changing it now. */
-type Ahead = { id: string; at: number; working: boolean };
-
-/**
- * Reads conversations and panels before the owner opens them, as many at once as the lane sends (client.ts `AHEAD_LANE`), so a first open
- * shows from the page's cache with no call in front of it. One is read again when it shows activity newer than what the page kept, once it is idle: a working one changes with every
- * step, and its open view reads it live. A hidden page reads nothing until it shows again; those first reads also open the connection
- * again after a sleep, where on 11-19 a lone replies call 29 min after the last one took 3 round trips. A socket that comes back reads
- * again only the ones its hello shows newer, and each open panel its own (kept.svelte.ts `missed`): on 11-22 a reconnect that read all
- * 12 agents' four board reads again sent 48 calls, and in walks of 5 restarts two WebKit board reads in that burst took 2.1 s.
- */
-class ReadAhead<Wanted extends Ahead = Ahead> {
-  /** Each one's `at` when its kept answer was read. */
-  private readonly readAt = new Map<string, number>();
-  private wanted: Wanted[] = [];
-  private reading = 0;
-
-  /** `warm` reads one and keeps the answer; one that `viewing` names has an open view, which keeps it current itself. */
-  constructor(private readonly warm: (wanted: Wanted) => Promise<unknown>, private readonly viewing: (id: string) => boolean = () => false) {
-    if (typeof document !== "undefined") document.addEventListener("visibilitychange", () => this.run());
-  }
-
-  /** What to keep read, the first one first. */
-  want(list: Wanted[]): void {
-    this.wanted = list;
-    this.run();
-  }
-
-  /** A view of the conversation closed with its page current as of its newest activity. */
-  seen(id: string): void {
-    const found = this.wanted.find(c => c.id === id);
-    if (found) this.readAt.set(id, found.at);
-  }
-
-  private next(): Wanted | undefined {
-    return this.wanted.find(c => {
-      const readAt = this.readAt.get(c.id);
-      return !this.viewing(c.id) && (readAt === undefined || (!c.working && c.at > readAt));
-    });
-  }
-
-  private run(): void {
-    if (typeof document === "undefined") return;
-    while (this.reading < AHEAD_LANE && document.visibilityState === "visible") {
-      const c = this.next();
-      if (!c) return;
-      this.readAt.set(c.id, c.at);
-      this.reading += 1;
-      void this.warm(c).catch(() => undefined).finally(() => {
-        this.reading -= 1;
-        this.run();
-      });
-    }
-  }
-}
-
 /**
  * Reads a conversation's newest page ahead and keeps it as the page to show; `limit` is the page size, the server's own when absent, and
  * `opts` say whether the owner looks at it now (`PageCache.warm`).
@@ -918,8 +863,8 @@ function sawHeader(header: ConversationHeader): void {
 /** Every registered agent's board panel and each channel's home chat's, the agent that worked last first. */
 function boardsAhead(agents: readonly AgentSummary[] = global.agents): void {
   const chats = agents.filter(agent => agent.kind === "chat" && !agent.archived).sort((a, b) => b.updatedAt - a.updatedAt)
-    .map(agent => ({ id: agent.id, at: agent.updatedAt, working: agent.status === "working" }));
-  const homes = [...homeChats].filter(chat => !chats.some(agent => agent.id === chat)).map(chat => ({ id: chat, at: 0, working: false }));
+    .map(agent => ({ id: agent.id, at: agent.updatedAt, status: agent.status }));
+  const homes = [...homeChats].filter(chat => !chats.some(agent => agent.id === chat)).map(chat => ({ id: chat, at: 0, status: "idle" }));
   panelsAhead("boards", [...chats, ...homes].slice(0, BOARDS_AHEAD).map(chat => ({ ...chat, reads: boardReads(chat.id) })));
 }
 
@@ -934,10 +879,10 @@ function roomsAhead(sidebar: Sidebar | null = global.sidebar): void {
   const unread = (room: ConversationSummary) => Number(room.unread > 0 || room.hasNew);
   const list = [...sidebar.solo, ...sidebar.channels, ...sidebar.dms]
     .sort((a, b) => unread(b) - unread(a) || b.lastActivityAt - a.lastActivityAt).slice(0, ROOMS_AHEAD)
-    .map(room => ({ id: room.id, at: room.lastActivityAt, working: room.status === "working" }));
+    .map(room => ({ id: room.id, at: room.lastActivityAt, status: room.status }));
   const work = global.agents.filter(agent => agent.kind === "chat" && !agent.archived && agent.conversation === 1)
     .sort((a, b) => b.updatedAt - a.updatedAt).slice(0, WORK_AHEAD)
-    .map(agent => ({ id: agent.thread, at: agent.updatedAt, working: agent.status === "working" }));
+    .map(agent => ({ id: agent.thread, at: agent.updatedAt, status: agent.status }));
   const wanted = [...list, ...work.filter(thread => !list.some(room => room.id === thread.id))];
   rooms.want(wanted);
   follow("rooms", wanted.map(room => room.id));
@@ -1006,7 +951,7 @@ export function listedAhead(listed: readonly { conversation: ConversationId; mes
   listedPages = next;
   for (const { conversation: id, messageId } of listed) {
     if (!messageId) {
-      if (!timelinePages.has(id)) void warmTimeline(undefined, { first: true, listed: true })({ id, at: 0, working: false });
+      if (!timelinePages.has(id)) void warmTimeline(undefined, { first: true, listed: true })({ id, at: 0, status: "idle" });
     } else if (!aroundPages.has(aroundKey(id, messageId))) {
       void aroundPages.warm(aroundKey(id, messageId), wait => readTimeline(id, messageId, wait),
         ({ page, header }) => ({ items: shownItems(id, page.items), older: page.older, header, ...(page.focus ? { focus: page.focus } : {}) }),
@@ -1024,12 +969,12 @@ const JOB_PAGE = 10;
 const jobPills = new ReadAhead(warmTimeline(JOB_PAGE, { first: true }), viewingTimeline);
 function jobsAhead(id: ConversationId, items: readonly Item[]): void {
   const refs = items.flatMap(item => (item.kind === "turn" ? item.jobs : item.kind === "message" ? item.jobs ?? [] : []));
-  const pills = refs.reverse().slice(0, JOBS_AHEAD).map(job => ({ id: job.conversation, at: job.lastAt, working: job.status === "working" }));
+  const pills = refs.reverse().slice(0, JOBS_AHEAD).map(job => ({ id: job.conversation, at: job.lastAt, status: job.status }));
   // A work thread's jobs at every depth, or a job's own subagents, which the page's jobs list names before any pill does.
   const mine = global.jobs.filter(job => !job.archived && (id.includes(":") ? job.parent?.id === id : job.thread === id))
     .sort((a, b) => b.createdAt - a.createdAt).slice(0, THREAD_JOBS_AHEAD)
     .filter(job => !pills.some(pill => pill.id === job.id))
-    .map(job => ({ id: job.id, at: job.updatedAt, working: job.status === "working" }));
+    .map(job => ({ id: job.id, at: job.updatedAt, status: job.status }));
   jobPills.want([...pills, ...mine]);
 }
 
@@ -1042,7 +987,7 @@ const liveJobs = new ReadAhead(warmTimeline(JOB_PAGE), viewingTimeline);
 function liveJobsAhead(list: readonly AgentSummary[]): void {
   const wanted = list.filter(job => !job.archived && (job.status === "working" || job.status === "sleeping"))
     .sort((a, b) => b.createdAt - a.createdAt).slice(0, LIVE_JOBS_AHEAD)
-    .map(job => ({ id: job.id, at: job.updatedAt, working: job.status === "working" }));
+    .map(job => ({ id: job.id, at: job.updatedAt, status: job.status }));
   liveJobs.want(wanted);
   follow("jobs", wanted.map(job => job.id));
 }
