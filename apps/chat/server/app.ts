@@ -19,7 +19,7 @@ import { AgentFolders, type BoxFiles } from "./agent-folder.ts";
 import { AgentStore, type AgentRecord, type MemberChange, type RoomDelivery, type RoomId, type RoomPost, type WakeOn } from "./agent-store.ts";
 import { Agents, isGroupRoomId, isRoomId } from "./agents.ts";
 import { Boards } from "./boards.ts";
-import { AREA_REVIEW_NAME, areaReviewDuty } from "./common-duties.ts";
+import { AREA_REVIEW_NAME, areaReviewUpdate } from "./common-duties.ts";
 import { MIN_BYTES } from "./compress.ts";
 import { CHANNEL_COPY_LIKE, GroupRooms, roomLabel } from "./group-rooms.ts";
 import { assertEditable, deleteNotice, deliveriesOf, editNotice } from "./post-edits.ts";
@@ -1481,9 +1481,12 @@ export class App {
    */
   private async commonDuties(agent: string, cwd: string, test: boolean): Promise<void> {
     try {
-      const { duties } = await this.boards.dutyAction(agent, { action: "set", duty: areaReviewDuty(agent, cwd) });
+      const existing = this.boards.dutyFile(agent).duties.find(duty => duty.name === AREA_REVIEW_NAME);
+      const duty = areaReviewUpdate(existing, agent, cwd);
+      if (!duty) return;
+      const { duties } = await this.boards.dutyAction(agent, { action: "set", duty });
       const review = duties.find(row => row.duty.name === AREA_REVIEW_NAME);
-      if (test && review) await this.boards.dutyAction(agent, { action: "pause", duty: review.duty.id });
+      if (test && review && !existing) await this.boards.dutyAction(agent, { action: "pause", duty: review.duty.id });
     } catch (error) {
       this.log(`agent ${agent}: setting its common duties failed: ${String(error)}`);
     }

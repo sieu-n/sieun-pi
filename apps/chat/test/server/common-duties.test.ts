@@ -10,7 +10,7 @@ import type { AgentSummary, CheckInView, DutyRow } from "../../web/src/lib/api/t
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AREA_REVIEW_NAME, areaReviewDuty, BOARD_PUSH_EVERY_MS, hostCwd, liveAppDir } from "../../server/common-duties.ts";
+import { AREA_REVIEW_NAME, areaReviewDuty, areaReviewUpdate, BOARD_PUSH_EVERY_MS, hostCwd, liveAppDir } from "../../server/common-duties.ts";
 import { areaReview } from "../../scripts/duties/area-review.ts";
 import { start, type Running } from "./helpers.ts";
 
@@ -37,7 +37,9 @@ test("a new agent has the daily Area review duty and a check-in every 3 hours fr
   const stored = s.app.boards.dutyFile(fresh.id).duties.find(d => d.name === AREA_REVIEW_NAME)!;
   assert.equal(stored.schedule.kind, "daily");
   assert.deepEqual(stored.precheck.command, ["node", `${liveAppDir()}/scripts/duties/area-review.ts`, "--agent", fresh.id]);
-  assert.equal((await s.get<CheckInView>(`/api/agents/${fresh.id}/check-in`)).everyMs, BOARD_PUSH_EVERY_MS);
+  // With no open step the view reads the daily interval as everyMs and the setting as planEveryMs (boards.ts `checkIn`).
+  const view = await s.get<CheckInView>(`/api/agents/${fresh.id}/check-in`);
+  assert.equal(view.planEveryMs ?? view.everyMs, BOARD_PUSH_EVERY_MS);
   assert.equal(BOARD_PUSH_EVERY_MS, 180 * 60_000);
 });
 
@@ -61,6 +63,24 @@ test("the duty runs where the chat host keeps the agent's project: a metal agent
     assert.equal(mac.precheck.cwd, repo);
     assert.equal(hostCwd("/Users/sieunpark/Documents/Github/nothing-here", "/app", home), "/app");
     assert.equal(hostCwd(undefined, "/app", home), "/app");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("a backfill or rerun keeps an agent's own Area review whole and moves only a cwd the chat host lacks (API portal's d7, 42b2a65e9)", () => {
+  const home = mkdtempSync(join(tmpdir(), "common-duties-keep-"));
+  const repo = join(home, "src/sieun-pi");
+  mkdirSync(repo, { recursive: true });
+  try {
+    const own = { name: AREA_REVIEW_NAME, ownerWords: "his words", goal: "the portal's own review", onMiss: "act",
+      metrics: [{ key: "portal_errors", label: "Errors", op: "<=", target: 0 }], precheck: { command: ["node", "--import", "tsx", "scripts/duties/portal-area-review.ts"], cwd: repo, timeoutMs: 120_000 } };
+    assert.equal(areaReviewUpdate(own, "ag_api-portal", repo, "/app", home), null, "a review whose cwd this box has stays as it is");
+    const moved = areaReviewUpdate({ ...own, precheck: { ...own.precheck, cwd: "/Users/sieunpark/src/sieun-pi" } }, "ag_api-portal", repo, "/app", home) as typeof own;
+    assert.deepEqual(moved, { ...own, precheck: { ...own.precheck, cwd: repo } });
+    const fresh = areaReviewUpdate(undefined, "ag_new", repo, "/app", home) as { name: string; precheck: { command: string[] } };
+    assert.equal(fresh.name, AREA_REVIEW_NAME);
+    assert.deepEqual(fresh.precheck.command, ["node", "/app/scripts/duties/area-review.ts", "--agent", "ag_new"]);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

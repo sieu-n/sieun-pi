@@ -43,6 +43,25 @@ export function hostCwd(cwd: string | undefined, appDir: string, home = homedir(
   return existsSync(cwd) ? realpathSync(cwd) : appDir;
 }
 
+/** A stored duty as far as `areaReviewUpdate` reads it. */
+export interface StoredDuty { name: string; precheck: { command: string[]; cwd: string; timeoutMs?: number } }
+const DEFINITION_FIELDS = ["name", "ownerWords", "goal", "metrics", "readings", "precheck", "onMiss", "boardGoal", "firingCall"] as const;
+
+/**
+ * What a create, backfill or rerun sets for an agent's "Area review": the default when the agent has none, and for one it has, matched by
+ * name, the same definition with only its precheck cwd moved to the folder `hostCwd` picks, or null when that cwd is already right. An
+ * agent's own review keeps its precheck, prompt and schedule: on 11-26 API portal gave its d7 its own precheck,
+ * scripts/duties/portal-area-review.ts, which runs the shared one and adds the portal's readings (sieun-pi 42b2a65e9).
+ */
+export function areaReviewUpdate(existing: StoredDuty | undefined, agentId: string, cwd: string | undefined, appDir = liveAppDir(), home = homedir()): Record<string, unknown> | null {
+  if (!existing) return areaReviewDuty(agentId, cwd, appDir, home);
+  const want = hostCwd(existing.precheck.cwd, appDir, home);
+  if (want === existing.precheck.cwd) return null;
+  const fields = existing as unknown as Record<string, unknown>;
+  const definition = Object.fromEntries(DEFINITION_FIELDS.filter(field => fields[field] !== undefined).map(field => [field, fields[field]]));
+  return { ...definition, precheck: { ...existing.precheck, cwd: want } };
+}
+
 /** The "Area review" duty of agent `agentId`, whose project folder is `cwd` on the agent's own box (`hostCwd` picks the folder here). */
 export function areaReviewDuty(agentId: string, cwd: string | undefined, appDir = liveAppDir(), home = homedir()): Record<string, unknown> {
   return {
