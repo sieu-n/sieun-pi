@@ -36,7 +36,7 @@
     {
       "key": "api_visits_day",
       "label": "api.virev.ai public visits a day, 7-day average (PostHog, no bots or team; p144 target 500)",
-      "unit": " visits"
+      "unit": "visits/day"
     },
     {
       "key": "api_signups_month",
