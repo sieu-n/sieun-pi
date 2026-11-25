@@ -18,7 +18,9 @@
  * had no brief, steps, jobs or owner post, and said it owns nothing. On 11-26 at 05:13 KST, 6 of 17 agents had no duty at all.
  *
  * Usage: OUTPUT_FILE=<file> node --import tsx scripts/duties/agent-boards.ts [--part boards|duties] [--server http://127.0.0.1:5184] [--areas <file>]
- * `--part duties` is the precheck of agent factory's duty "Agents keep their duties" (agent-duties.duty.json); the default is d5's.
+ * `--part duties` is the precheck of agent factory's duty "Agents keep their duties" (agent-duties.duty.json, d7); the default is d5's. Since
+ * c249 (#sw-factory-build p234, msg mwwklmfk, 11-26) d7 also checks each agent's two common duties (`agentPattern`) and its output carries
+ * `messages`, one nudge per agent off the pattern in the shape of ~/work/agent-duties/messages.json, which the work thread relays.
  * Without OUTPUT_FILE the result prints to stdout.
  */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -26,13 +28,14 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 
-interface Agent { id: string; name: string; archived?: boolean; hostState?: string }
+interface Agent { id: string; name: string; archived?: boolean; hostState?: string; thread?: string }
 interface Step { id: string; text: string; status: string; job?: string; waitFor?: string; waitUntil?: string }
 interface Steps { open: number; stuck: Step[]; gaps: { id: string; text: string }[] }
 interface CheckIn { everyMs: number; paused: boolean; lastAt: number | null; runs?: { at: number; verdict: string; summary: string }[] }
 /** A row of `GET /api/agents/:id/duties`, the fields this check reads. */
 export interface DutyRow {
-  duty: { id: string; name: string; status?: string }; paused: boolean; runs: { verdict: string; at?: number }[];
+  duty: { id: string; name: string; status?: string }; paused: boolean;
+  runs: { verdict: string; at?: number; job?: { id: string }; readings?: Record<string, number>; metrics?: Record<string, { value?: number }> }[];
   schedule?: { kind: string; at?: string; minutes?: number }; nextAt?: number | null;
 }
 /** One entry of the areas file: the areas the owner made an agent responsible for, each with the duty that watches it, if any. */
@@ -103,6 +106,84 @@ export function dutyCoverage(agents: readonly { agent: Agent; duties: readonly D
     flagged.push({ kind: "uncovered_agent", sig: `${agent.id}/duties`, item: agent.id, excerpt: `${agent.name} (${agent.id}): ${why.join("; ")}` });
   }
   return { metrics: { agents_uncovered: uncoveredAgents, areas_uncovered: uncoveredAreas, agents_without_area: noArea, duties_paused: paused, duties_overdue: overdue }, flagged };
+}
+
+/** The daily area review every agent keeps by the owner's c249 (#sw-factory-build p234, msg mwwklmfk); duty-rule seeds it by this name. */
+export const AREA_REVIEW = "Area review";
+/** c249's board push runs every 3 hours: the agent's check-in at 180 min or less. */
+export const PUSH_MAX_MS = 180 * 60_000;
+/** The readings area-review.ts writes for the agent's own wiki pages and memory changed in the last 24 h. */
+export const REVIEW_READINGS = ["wiki_pages_touched_24h", "memory_changed_24h"] as const;
+
+/** An agent's check-in: `everyMs` is its interval now (daily while its plan is empty), `planEveryMs` the interval it keeps for a plan. */
+export interface PushRead { everyMs: number; planEveryMs?: number; paused: boolean; lastAt: number | null; runs?: { at: number }[] }
+export interface AgentRead { agent: Agent; duties: readonly DutyRow[]; brief?: string; checkIn?: PushRead; stuck?: number; boardAt?: number | null }
+/** A nudge for the work thread's relay, in the shape of ~/work/agent-duties/messages.json. */
+export interface Nudge { agent: string; name: string; workThreadId: string | null; text: string }
+
+/** Flag kinds that mean the agent itself has to act, each named in its nudge. */
+const NUDGE_KINDS = new Set(["uncovered_agent", "duty_paused", "duty_overdue", "common_missing", "common_late", "empty_run"]);
+
+/**
+ * Agent factory's meta check of c249: every live agent with an area keeps a 3-hourly board push (its check-in) and a daily "Area review"
+ * duty, both run on time and produce work, no duty is paused or overdue, and a live duty covers each area it was given (`dutyCoverage`).
+ * A board push is empty when the board has stuck steps and has not changed in 24 h. An area review run is empty when it started no job
+ * and its readings (`REVIEW_READINGS`) are 0. Each agent off the pattern gets one nudge listing its misses.
+ */
+export function agentPattern(agents: readonly AgentRead[], areas: readonly AgentAreas[] = [], now = Date.now()): { metrics: Record<string, number>; flagged: Flag[]; messages: Nudge[] } {
+  const coverage = dutyCoverage(agents, areas, now);
+  const flagged = [...coverage.flagged];
+  const noArea = new Set(coverage.flagged.filter(flag => flag.kind === "no_area").map(flag => flag.item));
+  let missing = 0;
+  let late = 0;
+  let empty = 0;
+  for (const { agent, duties, checkIn, stuck = 0, boardAt } of agents) {
+    if (noArea.has(agent.id) || !checkIn) continue;
+    const flag = (kind: string, key: string, excerpt: string) => flagged.push({ kind, sig: `${agent.id}/${key}`, item: agent.id, excerpt: `${agent.name}: ${excerpt}` });
+    const pushMs = checkIn.planEveryMs ?? checkIn.everyMs;
+    if (checkIn.paused || pushMs > PUSH_MAX_MS) {
+      missing += 1;
+      flag("common_missing", "push", checkIn.paused ? "its check-in, the 3-hourly board push, is paused" : `its check-in, the board push, runs every ${Math.round(pushMs / 60_000)} min, not every 180 min or less`);
+    } else {
+      const newest = checkIn.runs?.[0]?.at ?? checkIn.lastAt;
+      if (newest === null || now - newest > 2 * checkIn.everyMs) {
+        late += 1;
+        flag("common_late", "push/late", newest === null ? "its check-in has never run" : `its check-in last ran ${Math.round((now - newest) / 3_600_000)} h ago on a ${Math.round(checkIn.everyMs / 60_000)} min interval`);
+      }
+      if (stuck > 0 && (boardAt === null || boardAt === undefined || now - boardAt > DAY_MS)) {
+        empty += 1;
+        flag("empty_run", "push/empty", `its board push left ${stuck} stuck steps and the board has not changed in 24 h`);
+      }
+    }
+    const review = duties.find(row => row.duty.name.trim().toLowerCase() === AREA_REVIEW.toLowerCase());
+    if (!review) {
+      missing += 1;
+      flag("common_missing", "review", `it has no daily "${AREA_REVIEW}" duty`);
+      continue;
+    }
+    if (pausedDuty(review) || overdueDuty(review, now)) continue; // flagged as duty_paused or duty_overdue
+    const run = review.runs.find(item => item.verdict !== "skipped");
+    if (!run) continue; // a review that never ran is new, and turns overdue after 2 days
+    const readings = REVIEW_READINGS.reduce((sum, key) => sum + (run.readings?.[key] ?? run.metrics?.[key]?.value ?? 0), 0);
+    if (!run.job && readings === 0) {
+      empty += 1;
+      flag("empty_run", `review/${review.duty.id}/empty`, `its ${review.duty.id} "${review.duty.name}" ran with no job, no wiki page and no memory change`);
+    }
+  }
+  const messages: Nudge[] = [];
+  for (const { agent } of agents) {
+    const misses = flagged.filter(flag => flag.item === agent.id && NUDGE_KINDS.has(flag.kind)).map(flag => flag.excerpt.replace(/^[^:]*:\s*/, ""));
+    if (!misses.length) continue;
+    messages.push({
+      agent: agent.id, name: agent.name, workThreadId: agent.thread ?? null,
+      text: [`${agent.name}, the owner wants every agent to keep two common duties (#sw-factory-build p234, c249): a board push every 3 hours that moves the open steps on your board, which is your check-in at 180 min, and a daily "${AREA_REVIEW}" that watches your area, acts on issues, cleans up and updates your llm-wiki pages and agent files. Each has to run on time and produce work, no duty stays paused or overdue, and a duty covers each area he gave you. Today's check found:`,
+        ...misses.map((miss, at) => `${at + 1}. ${miss}`), "Please fix each one yourself, then reply with what you changed and the duty ids."].join("\n"),
+    });
+  }
+  return {
+    metrics: { agents_off_pattern: messages.length, common_duties_missing: missing, common_duties_late: late, empty_runs: empty, ...coverage.metrics },
+    flagged, messages,
+  };
 }
 
 /**
@@ -178,10 +259,16 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       agent, steps: await get<Steps>(server, `/api/agents/${agent.id}/steps`), checkIn: await get<CheckIn>(server, `/api/agents/${agent.id}/check-in`),
     }))), Date.now()), null, 1)
     : JSON.stringify({
-      ...dutyCoverage(await Promise.all(agents.map(async agent => ({
-        agent, duties: (await get<{ duties: DutyRow[] }>(server, `/api/agents/${agent.id}/duties`)).duties,
-        brief: (await get<{ brief?: { text?: string } }>(server, `/api/agents/${agent.id}/folder`)).brief?.text ?? "",
-      }))), readAreas(areasFile), Date.now()),
+      ...agentPattern(await Promise.all(agents.map(async agent => {
+        const board = (await get<{ board?: { updatedAt?: string } }>(server, `/api/agents/${agent.id}/board`)).board;
+        return {
+          agent, duties: (await get<{ duties: DutyRow[] }>(server, `/api/agents/${agent.id}/duties`)).duties,
+          brief: (await get<{ brief?: { text?: string } }>(server, `/api/agents/${agent.id}/folder`)).brief?.text ?? "",
+          checkIn: await get<PushRead>(server, `/api/agents/${agent.id}/check-in`),
+          stuck: (await get<Steps>(server, `/api/agents/${agent.id}/steps`)).stuck.length,
+          boardAt: board?.updatedAt ? Date.parse(board.updatedAt) : null,
+        };
+      })), readAreas(areasFile), Date.now()),
       areasFile: existsSync(areasFile) ? areasFile : null,
     }, null, 1);
   if (process.env.OUTPUT_FILE) writeFileSync(process.env.OUTPUT_FILE, json);

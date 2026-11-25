@@ -5,7 +5,7 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { agentBoards, dutyCoverage, liveDuty, overdueDuty, readAreas, type DutyRow } from "../../scripts/duties/agent-boards.ts";
+import { agentBoards, agentPattern, dutyCoverage, liveDuty, overdueDuty, readAreas, type DutyRow } from "../../scripts/duties/agent-boards.ts";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -111,4 +111,36 @@ test("the areas file is optional and a malformed one throws", () => {
   assert.deepEqual(readAreas(join(dir, "keyed.json")), [{ agent: "ag_gpt-guy", areas: [{ area: "repo free of slop", source: "dm_gpt-guy p1" }] }]);
   writeFileSync(join(dir, "keyed-bad.json"), JSON.stringify({ "ag_gpt-guy": { missing: [{ what: "x" }] } }));
   assert.throws(() => readAreas(join(dir, "keyed-bad.json")), /not a list/);
+});
+
+
+test("c249: each agent with an area keeps a 3-hourly board push and a daily Area review that run on time and produce work, and gets one nudge", () => {
+  const review = (lastAt: number | null, extra: Partial<DutyRow["runs"][number]> = {}): DutyRow => ({
+    duty: { id: "d9", name: "Area review", status: "active" }, paused: false,
+    runs: lastAt === null ? [] : [{ verdict: "met", at: lastAt, ...extra }], schedule: { kind: "daily", at: "07:00" }, nextAt: (lastAt ?? NOW - HOUR) + 24 * HOUR,
+  });
+  const push = (everyMin: number, lastAt: number | null, paused = false) => ({ everyMs: everyMin * 60_000, planEveryMs: everyMin * 60_000, paused, lastAt, runs: lastAt === null ? [] : [{ at: lastAt }] });
+  const out = agentPattern([
+    // On the pattern: 180 min push that ran, a review whose run started a job.
+    { agent: { id: "ag_seo", name: "seo", thread: "t-seo" }, brief: "SEO", duties: [review(NOW - 3 * HOUR, { job: { id: "j1" } })], checkIn: push(180, NOW - HOUR), stuck: 2, boardAt: NOW - 2 * HOUR },
+    // Push at 120 min is fine too; review that only wrote wiki pages produced work.
+    { agent: { id: "ag_vent", name: "vent", thread: "t-vent" }, brief: "Vent", duties: [review(NOW - 3 * HOUR, { readings: { wiki_pages_touched_24h: 2, memory_changed_24h: 0 } })], checkIn: push(120, NOW - HOUR), stuck: 0, boardAt: NOW - 50 * HOUR },
+    // Off: push every 360 min, no Area review.
+    { agent: { id: "ag_mcp", name: "mcp", thread: "t-mcp" }, brief: "MCP", duties: [duty("d1", "Prod MCP", ["met"])], checkIn: push(360, NOW - HOUR) },
+    // Off: push late, board stuck and unchanged, review ran empty.
+    { agent: { id: "ag_crawler-guy", name: "Crawler guy", thread: "t-crawler" }, brief: "Crawler", duties: [review(NOW - 3 * HOUR, { readings: { wiki_pages_touched_24h: 0, memory_changed_24h: 0 } })], checkIn: push(180, NOW - 7 * HOUR), stuck: 3, boardAt: NOW - 30 * HOUR },
+    // No area: left out of every count.
+    { agent: { id: "ag_feature-probe", name: "feature probe", thread: "t-fp" }, duties: [], checkIn: push(1440, null) },
+  ], [], NOW);
+  assert.deepEqual(out.metrics, {
+    agents_off_pattern: 2, common_duties_missing: 2, common_duties_late: 1, empty_runs: 2,
+    agents_uncovered: 0, areas_uncovered: 0, agents_without_area: 1, duties_paused: 0, duties_overdue: 0,
+  });
+  assert.deepEqual(out.flagged.filter(flag => flag.kind !== "no_area").map(flag => [flag.kind, flag.sig]), [
+    ["common_missing", "ag_mcp/push"], ["common_missing", "ag_mcp/review"],
+    ["common_late", "ag_crawler-guy/push/late"], ["empty_run", "ag_crawler-guy/push/empty"], ["empty_run", "ag_crawler-guy/review/d9/empty"],
+  ]);
+  assert.deepEqual(out.messages.map(message => [message.agent, message.workThreadId]), [["ag_mcp", "t-mcp"], ["ag_crawler-guy", "t-crawler"]]);
+  assert.match(out.messages[0]!.text, /c249[\s\S]*1\. its check-in, the board push, runs every 360 min[\s\S]*2\. it has no daily "Area review" duty/);
+  assert.match(out.messages[1]!.text, /3\. its d9 "Area review" ran with no job, no wiki page and no memory change/);
 });
