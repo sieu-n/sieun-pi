@@ -166,10 +166,15 @@ const squash = (text: string): string => text.toLowerCase().replace(/\s+/g, " ")
 
 /** Whether a duty names the ask: its message id, its "#room pN" ref or its first 40 characters, in the duty's name, owner words or goal. */
 export function askHeld(ask: Ask, duties: readonly DutyRow[]): boolean {
+  return askHolder(ask, duties) !== undefined;
+}
+
+/** The first duty that names the ask, as `askHeld` reads it. */
+export function askHolder<R extends DutyRow>(ask: Ask, duties: readonly R[]): R | undefined {
   const [room, post] = ask.ref.replace(/^#/, "").split(" ");
   const ref = new RegExp(`${room!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\W+${post}\\b`, "i");
   const quote = squash(ask.text).slice(0, 40);
-  return duties.some(row => {
+  return duties.find(row => {
     const text = [row.duty.name, row.duty.ownerWords ?? "", row.duty.goal ?? ""].join("\n");
     return ask.ids.some(id => text.includes(id)) || ref.test(text) || (quote.length >= 20 && squash(text).includes(quote));
   });
@@ -243,6 +248,7 @@ export function agentPattern(agents: readonly AgentRead[], areas: readonly Agent
   let zero = 0;
   let noN = 0;
   let duplicates = 0;
+  const everyDuty = agents.flatMap(({ agent, duties }) => duties.map(row => ({ ...row, agent })));
   for (const { agent, duties, checkIn, stuck = 0, boardAt, asks = [], pauses = {}, samples = {}, outputs = {}, handOffJobs = {} } of agents) {
     for (const row of duties) {
       for (const [sig, jobs] of duplicateJobs(handOffJobs[row.duty.id] ?? [])) {
@@ -254,6 +260,13 @@ export function agentPattern(agents: readonly AgentRead[], areas: readonly Agent
     const flag = (kind: string, key: string, excerpt: string) => flagged.push({ kind, sig: `${agent.id}/${key}`, item: agent.id, excerpt: `${agent.name}: ${excerpt}` });
     for (const ask of asks) {
       if (askHeld(ask, duties)) continue;
+      // An ask another agent's live duty holds is held: on 11-26 product analytics bot's d3 "API portal usage" quoted #api-portal-outreach p1,
+      // which d7 had given to VP of GTM and API portal as members of that room.
+      const other = askHolder(ask, everyDuty.filter(entry => entry.agent.id !== agent.id && liveDuty(entry, now)));
+      if (other) {
+        flag("ask_held_elsewhere", `ask/${ask.ref}`, `the owner's ongoing ask ${ask.ref} is held by ${other.agent.name}'s ${other.duty.id} "${other.duty.name}"`);
+        continue;
+      }
       unheld += 1;
       flag("ask_unheld", `ask/${ask.ref}`, `the owner's ongoing ask ${ask.ref}${ask.ids[0] ? ` (msg ${ask.ids.at(-1)})` : ""}, "${squash(ask.text).slice(0, 140)}", is named by no duty`);
     }

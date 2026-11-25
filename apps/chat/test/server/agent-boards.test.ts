@@ -338,3 +338,24 @@ test("d7 counts more than one job for the same duty and hand-off sig as duplicat
   assert.deepEqual(out.flagged.filter(flag => flag.kind === "duplicate_job").map(flag => flag.sig), ["ag_vp-of-gtm/d3/ag_vp-of-gtm:2026-11-25"]);
   assert.equal(out.metrics.agents_off_pattern, 0);
 });
+
+test("an ask another agent's live duty quotes is held, and its item names that agent and duty", () => {
+  const ask: Ask = { ref: "#api-portal-outreach p1", ids: ["mwwfkgw4"], at: NOW - HOUR, text: "how much ppl use/signup/visit .. for api portal every day?" };
+  const usage: DutyRow = {
+    duty: { id: "d3", name: "API portal usage", status: "active", ownerWords: "how much ppl use/signup/visit .. for api portal every day? (#api-portal-outreach p1, msg mwwfkgw4)" },
+    paused: false, runs: [{ verdict: "met", at: NOW - HOUR }],
+  };
+  const out = agentPattern([
+    { agent: { id: "ag_vp-of-gtm", name: "VP of GTM" }, brief: "GTM", duties: [duty("d1", "Outreach campaigns", ["met"])], asks: [ask] },
+    { agent: { id: "ag_product-analytics-bot", name: "product analytics bot" }, brief: "Analytics", duties: [usage] },
+  ], [], NOW);
+  assert.equal(out.metrics.asks_unheld, 0);
+  assert.deepEqual(out.flagged.filter(flag => flag.kind.startsWith("ask_")).map(flag => flag.excerpt),
+    ['VP of GTM: the owner\'s ongoing ask #api-portal-outreach p1 is held by product analytics bot\'s d3 "API portal usage"']);
+  // A paused holder holds nothing.
+  const paused = agentPattern([
+    { agent: { id: "ag_vp-of-gtm", name: "VP of GTM" }, brief: "GTM", duties: [duty("d1", "Outreach campaigns", ["met"])], asks: [ask] },
+    { agent: { id: "ag_product-analytics-bot", name: "product analytics bot" }, brief: "Analytics", duties: [{ ...usage, paused: true }] },
+  ], [], NOW);
+  assert.equal(paused.metrics.asks_unheld, 1);
+});
