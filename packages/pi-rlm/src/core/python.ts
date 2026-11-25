@@ -23,6 +23,13 @@ export async function kernelPackages(): Promise<string[]> {
   return [RUNTIME_DIR, "dill", ...bootstrap.DEFAULT_RLM_EXTRA_UV_ARGS];
 }
 
+/**
+ * Floors on dependencies of Prime's packages, installed with them. `uv pip install` keeps a dependency that already satisfies the set, so the
+ * durable venv kept python-dateutil 3.0.0, which still requires six, while Prime's newer venv has 4.0.0; kernel-venv.test.ts then failed on
+ * the extra six (11-25). A pin here also changes the fingerprint, so the next start installs it into an existing venv.
+ */
+export const KERNEL_PINS: readonly string[] = ["python-dateutil>=4"];
+
 /** A loaded Pi skill that carries a Python package, so the kernel imports it by name at start. */
 export interface PythonSkill {
   name: string;
@@ -103,7 +110,7 @@ export async function kernelPython(agentDir: string, skills: PythonSkill[], onPr
   const venv = join(agentDir, "rlm", "kernel-venv");
   const python = join(venv, "bin", "python");
   const marker = join(venv, ".pi-rlm-fingerprint");
-  const packages = await kernelPackages();
+  const packages = [...await kernelPackages(), ...KERNEL_PINS];
   const want = kernelFingerprint(packages, skills);
   const current = () => existsSync(python) && existsSync(marker) && readFileSync(marker, "utf8") === want;
   if (current()) return { python, binDir: join(venv, "bin") };
