@@ -1,18 +1,18 @@
 <script lang="ts">
-  import { Mascot } from "$lib/ui";
+  import { AgentPicture } from "$lib/ui";
 
   type Props = {
     label: string;
     onclick: () => void;
   };
-  /** Seeds for the mascots scattered behind the label. */
+  /** Seeds for the agent pictures scattered behind the label. */
   const SEEDS = ["Vent", "Crawler VP", "frontend bro", "slack green guy", "chat shell", "search page", "pi durable fit", "usage and hosts"];
   let { label, onclick }: Props = $props();
 </script>
 
 <button type="button" class="tile" {onclick}>
   <span class="art" aria-hidden="true">
-    {#each SEEDS as seed, i (seed)}<span class="m m{i + 1}"><Mascot {seed} size={72} id="tile-{i}" /></span>{/each}
+    {#each SEEDS as seed, i (seed)}<span class="m m{i + 1}"><AgentPicture {seed} size={72} /></span>{/each}
   </span>
   <span class="label t-label-sm">{label}</span>
 </button>

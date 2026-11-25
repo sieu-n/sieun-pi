@@ -1,11 +1,14 @@
 <script lang="ts">
-  import { CardGroup, IconButton, Button, Page, PanelHeader, Select } from "$lib/ui";
+  import { CardGroup, IconButton, Button, PICTURE_STYLES, Page, PanelHeader, Select, pictureStyle } from "$lib/ui";
   import { theme, type ColorMode } from "$lib/shell/theme.svelte";
   import { ZOOM_MAX, ZOOM_MIN, setZoom, zoom } from "$lib/shell/zoom.svelte";
   import { shortcutLabel } from "$lib/shortcuts";
   import SettingRow from "$pages/settings/SettingRow.svelte";
 
-  /** Preferences: this browser's color mode and interface size, the same settings the avatar menu and Cmd +, Cmd - and Cmd 0 change. */
+  /**
+   * Preferences: this browser's color mode, interface size and agent picture style. The avatar menu and Cmd +, Cmd - and Cmd 0 change the
+   * first two as well.
+   */
   const MODES: { value: ColorMode; label: string }[] = [
     { value: "system", label: "System" },
     { value: "light", label: "Light" },
@@ -25,6 +28,9 @@
   <CardGroup>
     <SettingRow label="Color mode" for="pref-color-mode">
       <Select id="pref-color-mode" label="Color mode" size="sm" value={theme.mode} options={MODES} onchange={(mode) => theme.set(mode)} />
+    </SettingRow>
+    <SettingRow label="Agent pictures" for="pref-agent-pictures">
+      <Select id="pref-agent-pictures" label="Agent pictures" size="sm" value={pictureStyle.value} options={PICTURE_STYLES} onchange={(style) => pictureStyle.set(style)} />
     </SettingRow>
     <SettingRow label="Interface size">
       {#if percent !== 100}<Button variant="ghost" size="sm" onclick={() => size(1)}>Reset</Button>{/if}

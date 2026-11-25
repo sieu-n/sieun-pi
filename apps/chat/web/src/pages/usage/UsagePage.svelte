@@ -31,7 +31,7 @@
   /** An old #/settings/usage?days=7 link opens the range it meant. */
   const OLD_DAYS: Record<string, UsageRange> = { "1": "24h", "7": "7d", "30": "30d", "90": "90d" };
   const ALL = "all";
-  /** The agent a pi-host thread belongs to, as its work thread or one of its comm threads, so its row shows that agent's mascot. */
+  /** The agent a pi-host thread belongs to, as its work thread or one of its comm threads, so its row shows that agent's picture. */
   const ownerOf = (thread: string) => agents.list.find((agent) => agent.thread === thread || agent.comm?.some((comm) => comm.thread === thread));
 
   const params = $derived(router.route.params);

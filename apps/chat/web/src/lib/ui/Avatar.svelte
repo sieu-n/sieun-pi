@@ -1,13 +1,14 @@
 <script lang="ts">
+  import { pictureNode, pictureSwatch } from "./agent-picture";
   import { hueFor, initials } from "./hash";
-  import { mascotNode, mascotParts } from "./mascot";
+  import { pictureStyle } from "./picture-style.svelte";
   import type { Status } from "./types";
 
   type Props = {
     name: string;
     /** person is a circle (the owner, people); agent is a squircle (chats and jobs). */
     kind?: "person" | "agent";
-    /** Image URL. Without it, people show initials and agents show generated art from `seed`. */
+    /** Image URL. Without it, people show initials and agents show their picture drawn from `seed` and `name`. */
     src?: string | null;
     /** Seed for generated art and color, defaults to name. Use the agent id for stable art. */
     seed?: string;
@@ -23,10 +24,9 @@
 
   const key = $derived(seed ?? name);
   const hue = $derived(hueFor(key));
-  const tint = $derived(mascotParts(key).body);
+  const tint = $derived(pictureSwatch(key).bg);
   const radius = $derived(kind === "person" ? "50%" : `${Math.round(size * 0.32)}px`);
   const dot = $derived(Math.max(6, Math.round(size * 0.28)));
-  const uid = Math.random().toString(36).slice(2, 8);
 </script>
 
 <span
@@ -46,7 +46,7 @@
   {:else if kind === "person"}
     <span class="initials" style:font-size="{Math.max(9, Math.round(size * 0.4))}px">{initials(name)}</span>
   {:else}
-    <span class="figure" {@attach (figure) => figure.replaceChildren(mascotNode(key, `av-${uid}`))}></span>
+    <span class="figure" {@attach (figure) => figure.replaceChildren(pictureNode(pictureStyle.value, key, name))}></span>
     {#if !decorative}<span class="sr-only">{name}</span>{/if}
   {/if}
   {#if status}
@@ -71,7 +71,7 @@
   }
   .agent,
   :global(:root[data-color-mode="dark"]) .agent {
-    background: color-mix(in srgb, var(--tint) 28%, var(--surface-panel));
+    background: var(--tint);
   }
   .figure {
     width: 100%;
@@ -83,7 +83,6 @@
   .figure :global(svg) {
     width: 100%;
     height: 100%;
-    transform: translateY(6%) scale(1.12);
   }
   .ring {
     box-shadow: 0 0 0 2px var(--surface-panel);

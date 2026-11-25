@@ -1,6 +1,6 @@
 <script lang="ts">
   import { api, keepOpened, type AgentHost, type AgentSummary, type ModelCatalog, type ProjectList, type ThinkingLevel } from "$lib/api";
-  import { Button, Dialog, Field, Input, ModelPicker, Select, mascotSvg } from "$lib/ui";
+  import { Button, Dialog, Field, Input, ModelPicker, Select, pictureStyle, pictureSvg } from "$lib/ui";
   import { levelsFor, modelOptions } from "./agents-model";
   import { defaultHost, hostOptions, hostProjects } from "./host-badge";
   import ProjectPicker from "./ProjectPicker.svelte";
@@ -75,7 +75,7 @@
     }
   });
   const options = $derived(modelOptions(catalog));
-  const preview = $derived(mascotSvg(name.trim() || "New agent", "create-preview"));
+  const preview = $derived(pictureSvg(pictureStyle.value, name.trim() || "New agent"));
 
   function reset() {
     name = "";
@@ -123,7 +123,7 @@
 <Dialog bind:open title="Create agent" width={532} dirty={touched} initialFocus="#create-agent-name" onclose={close}>
   <form id="create-agent-form" class="form" onsubmit={create} aria-label="New agent">
     <div class="stage" aria-hidden="true">
-      <span class="stage-label t-body-sm">Its mascot follows its name</span>
+      <span class="stage-label t-body-sm">Its picture follows its name</span>
       <span class="stage-art">{@html preview}</span>
     </div>
     <Field label="Name" id="create-agent-name" error={nameError}>

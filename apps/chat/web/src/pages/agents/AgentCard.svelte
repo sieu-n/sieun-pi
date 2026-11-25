@@ -1,6 +1,6 @@
 <script lang="ts">
   import { me, type AgentSummary, type ModelCatalog, type ThinkingLevel } from "$lib/api";
-  import { ModelPicker, IconButton, TypingDots, ageLabel, mascotSvg } from "$lib/ui";
+  import { ModelPicker, IconButton, TypingDots, ageLabel, pictureStyle, pictureSvg } from "$lib/ui";
   import { STATUS_LABEL, levelsFor, modelKey, modelOptions } from "./agents-model";
   import HostBadge from "./HostBadge.svelte";
 
@@ -22,8 +22,8 @@
   };
   let { agent, catalog, focusable, selected = false, now, onopen, onmenu, onmodel, onfocus, element = $bindable(), jobs = null }: Props = $props();
 
-  const art = $derived(mascotSvg(agent.id, `card-${agent.id.replace(/[^a-z0-9]/gi, "")}`));
-  const backdrop = $derived(`url("data:image/svg+xml;utf8,${encodeURIComponent(mascotSvg(agent.id, "bd"))}")`);
+  const art = $derived(pictureSvg(pictureStyle.value, agent.id, agent.name));
+  const backdrop = $derived(`url("data:image/svg+xml;utf8,${encodeURIComponent(art)}")`);
   const current = $derived(agent.model ? modelKey(agent.model) : "");
   const options = $derived.by(() => {
     const list = modelOptions(catalog);
@@ -142,7 +142,7 @@
   .card:hover .wash {
     opacity: 0.76;
   }
-  /* The mascot itself, blurred and saturated, gives each card its color and fades out toward the bottom. */
+  /* The picture itself, blurred and saturated, gives each card its color and fades out toward the bottom. */
   .wash {
     position: absolute;
     inset: 0;

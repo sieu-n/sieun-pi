@@ -18,7 +18,7 @@
     Input,
     LoadingText,
     Markdown,
-    Mascot,
+    AgentPicture,
     MentionChip,
     Menu,
     Meter,
@@ -178,7 +178,7 @@ flowchart LR
         <Avatar name={s} seed={s} size={32} status={s === "vent" ? "online" : s === "wiki" ? "away" : null} />
       {/each}
       <Avatar name="big" seed="honey" size={96} status="online" />
-      <Mascot seed="chat shell" size={96} label="chat shell" />
+      <AgentPicture seed="chat shell" size={96} label="chat shell" />
       <AvatarStack members={[{ id: "a", name: "Bumble" }, { id: "b", name: "Fizz" }, { id: "c", name: "Honey" }, { id: "d", name: "Sieun", kind: "person" }]} size={20} />
       <TypingDots /><TypingDots mode="waiting" /><Spinner />
     </div>

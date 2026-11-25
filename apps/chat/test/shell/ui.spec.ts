@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { DEFAULT_PICTURE_STYLE, PICTURE_STYLES } from "../../web/src/lib/ui/agent-picture";
 
 test.beforeEach(async ({ page }) => {
   await page.goto("/#/ui");
@@ -37,7 +38,12 @@ test("the model picker shows every thinking level inside the popover", async ({ 
   }
 });
 
-test("agent avatars draw the seeded mascot", async ({ page }) => {
+test("agent avatars draw the default picture style, and ?avatars= shows another", async ({ page }) => {
   const svg = page.locator('[data-gallery="avatars"] .avatar.agent svg').first();
-  await expect(svg).toHaveAttribute("viewBox", "0 0 128 128");
+  await expect(svg).toHaveAttribute("viewBox", "0 0 32 32");
+  await expect(svg).toHaveAttribute("data-picture", DEFAULT_PICTURE_STYLE);
+  for (const { value } of PICTURE_STYLES) {
+    await page.goto(`/?avatars=${value}#/ui`);
+    await expect(page.locator('[data-gallery="avatars"] .avatar.agent svg').first()).toHaveAttribute("data-picture", value);
+  }
 });

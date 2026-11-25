@@ -36,8 +36,8 @@ Colors, chart series (`--chart-series-1` to `4`), type, radii, shadows, spacing,
 
 | Part | What it is | Main props |
 |---|---|---|
-| `Avatar` | A circle for the owner and people, a squircle for agents that draws the seeded mascot. | `name`, `kind` person or agent, `src`, `seed`, `size`, `status` |
-| `Mascot` | The seeded agent figure with no clip, for agent cards and backdrops. `mascotSvg(seed, id?)` returns the same SVG as a string. | `seed`, `size`, `id`, `label` |
+| `Avatar` | A circle for the owner and people, a squircle for agents that draws its picture in the chosen style (Preferences, Agent pictures). | `name`, `kind` person or agent, `src`, `seed`, `size`, `status` |
+| `AgentPicture` | The agent's picture at any size, for agent cards and backdrops. `pictureSvg(style, seed, name?)` returns the same SVG as a string. | `seed`, `name`, `size`, `label` |
 | `AvatarStack` | Overlapping small avatars with a "+N". | `members`, `size`, `max` |
 | `StatusDot` | Online, away, offline or busy. | `status`, `size` |
 | `TypingDots` | The agent working signal. | `mode` working or waiting, `label` |
