@@ -79,7 +79,9 @@ export function agentPost(posts: readonly RoomPost[], record: AgentRecord, threa
   if (!Number.isFinite(at)) {
     throw new ReactionError(400, `${JSON.stringify(id)} names no message; pass a post id such as p12, a room-qualified id such as ${room}/p12, or the [message id: ...] value after an owner message.`);
   }
-  const entered = posts.find(p => p.inputs?.some(i => i.thread === thread && i.at === at));
+  // An id stamped on another thread's input names that post too. On 11-24 Crawler guy's comm thread answered the owner's p65 with
+  // reply_to mwto4rot, the id Search product's thread got for p65 before Crawler guy joined the room, and the result went in p76's thread.
+  const entered = posts.find(p => p.inputs?.some(i => i.thread === thread && i.at === at)) ?? posts.find(p => p.inputs?.some(i => i.at === at));
   if (entered) return entered;
   let within: RoomPost | undefined;
   let before: RoomPost | undefined;

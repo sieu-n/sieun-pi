@@ -91,6 +91,14 @@ describe("the reaction model", () => {
     assert.equal(agentPost(posts, record, "C", "dm_vent", (t0 + 668_000).toString(36)).id, "p3");
     assert.equal(agentPost(posts, record, "C", "dm_vent", (t0 + 650_000).toString(36)).id, "p3", "a stamp no input holds keeps the time match");
   });
+
+  test("a message id stamped on another agent's thread names that post", () => {
+    // On 11-24 Crawler guy's comm thread answered p65 with the id Search product's thread got for it, and the post went in a newer thread.
+    const t0 = Date.UTC(2026, 10, 24);
+    const p65 = { ...post(65, t0 + 1_000), inputs: [{ thread: "S", at: t0 + 1_200 }] };
+    const posts = [p65, post(72, t0 + 600_000, t0 + 600_500), post(76, t0 + 900_000, t0 + 900_500)];
+    assert.equal(agentPost(posts, record, "C", "dm_vent", (t0 + 1_200).toString(36)).id, "p65");
+  });
 });
 
 describe("reactions on the fixture server", () => {
