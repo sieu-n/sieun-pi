@@ -15,7 +15,8 @@
  * 3. The owner posts a newer, unrelated root question, and the test agent answers it.
  * 4. The run submits the work thread's report to the test agent's comm thread through pi-host's socket, as `agent_message.send` from the
  *    work thread does: "Result for thread pN of #room: ...", with no steering on where to post.
- * The check: the agent's post that carries the result sits in the topic's thread. The line also records the post's reply_to, read from the
+ * The check: the agent's post that carries the result sits in the topic's thread, and every agent's answer to the question, the helper's
+ * too, sits in the question's thread. The line also records the post's reply_to, read from the
  * comm thread's entries, so a run that named the ask by post id and a run that used the other thread's message id show apart.
  */
 import { appendFileSync, readlinkSync } from "node:fs";
@@ -174,6 +175,9 @@ try {
     ["the result came", Boolean(result)],
     ["the result sits in the ask's thread", result?.threadRoot === topic.id],
     ["no result sits in the question's thread", !posts.some(p => isAgent(p) && p.threadRoot === question.id && /\b41\b|\b214\b/.test(p.text))],
+    // The helper gets the question mid-turn, and on 11-25 it answered it in one round with its reply_to answer to the topic and a mark of
+    // the ask, which put the license answer in the topic's thread (blind-old2, blind-new2).
+    ["every license answer, the helper's too, sits in the question's thread", posts.filter(p => p.author?.id !== "owner" && /apache/i.test(p.text)).every(p => p.threadRoot === question.id)],
   ];
   line = {
     at: new Date().toISOString(), piHost: piHostRelease(), chat: chatRelease(), helper: helper.id, agent: agent.id, room, comm, seconds: Math.round((Date.now() - started) / 1000),

@@ -355,6 +355,36 @@ describe("a channel on rooms", () => {
     host.beforeSubmit = undefined;
   });
 
+  test("in a round whose other post sets reply_to, a post with no reply_to goes where its turn's post is, not where a closing call points", async () => {
+    // A blind run on 11-25: the owner's newer root p3 reached the comm thread mid-turn, and one round answered p1 with reply_to, answered p3
+    // with no reply_to and marked p2 (in p1's thread) completed. The answer to p3 landed in p1's thread.
+    const submits: { thread: string; input: SubmitInput }[] = [];
+    host.beforeSubmit = (thread, input) => void submits.push({ thread, input });
+    const comm = commOf(s, agents.crawler, ids.cutoverChannel)!;
+    const t = host.threadsById.get(comm)!;
+    const toComm = () => submits.filter(x => x.thread === comm).length;
+    const topic = await s.send("POST", `/api/c/${ids.cutoverChannel}/send`, { text: "quiet, where does CI time go?", requestId: "am-topic" });
+    await until(async () => toComm(), n => n === 1);
+    const ask = await s.send("POST", `/api/c/${ids.cutoverChannel}/send`, { text: "quiet, someone else times the suite", requestId: "am-ask", threadRoot: topic.body.item.id });
+    await until(async () => toComm(), n => n === 2);
+    const newer = await s.send("POST", `/api/c/${ids.cutoverChannel}/send`, { text: "quiet, what license is it under?", requestId: "am-newer" });
+    await until(async () => toComm(), n => n === 3);
+    const stamp = stored(s, ids.cutoverChannel).find(p => p.id === topic.body.item.id)!.at.toString(36);
+    host.append(t, 1, { kind: "pi.assistant", model: [{ role: "assistant", content: [
+      { type: "toolCall", id: "am-a", name: "tell_owner", arguments: { text: "CI is one make job, quiet.", reply_to: stamp } },
+      { type: "toolCall", id: "am-b", name: "tell_owner", arguments: { text: "Apache 2.0, quiet." } },
+      { type: "toolCall", id: "am-m", name: "mark_message", arguments: { message_id: `${ids.cutoverChannel}/${ask.body.item.id}`, completed: true } },
+    ], provider: "anthropic", model: "claude-opus-5-5", stopReason: "toolUse", timestamp: Date.now() }] });
+    for (const [id, name] of [["am-a", "tell_owner"], ["am-b", "tell_owner"], ["am-m", "mark_message"]]) {
+      host.append(t, 1, { kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: id, toolName: name, content: [{ type: "text", text: "told the owner" }], isError: false, timestamp: Date.now() }] });
+    }
+    await s.app.groups.feed(comm);
+    const [a, b] = ["am-a", "am-b"].map(id => stored(s, ids.cutoverChannel).find(p => p.requestId === `m:${comm}:${id}`)!);
+    assert.deepEqual([a!.threadRoot, a!.answers], [topic.body.item.id, topic.body.item.id]);
+    assert.deepEqual([b!.threadRoot, b!.answers], [newer.body.item.id, newer.body.item.id]);
+    host.beforeSubmit = undefined;
+  });
+
   test("an agent's mention of an agent outside the channel reaches that agent's comm thread for the channel, and it stays out of the members", async () => {
     const submits: { thread: string; input: SubmitInput }[] = [];
     host.beforeSubmit = (thread, input) => void submits.push({ thread, input });

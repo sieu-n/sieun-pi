@@ -152,6 +152,12 @@ function closedPost(block: ContentBlock): string | undefined {
   return block.name === "edit_message" && id.startsWith("reply:") ? id.slice("reply:".length) : undefined;
 }
 
+/** A speaking call's `reply_to`, trimmed, or undefined when it sets none. */
+function replyToOf(block: ContentBlock): string | undefined {
+  const value = block.type === "toolCall" ? block.arguments?.reply_to : undefined;
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
 /** What the feed knows of a speaking call that went out: the post's text, time, dedup key, why, the entry that holds it, and the turn's jobs. */
 export interface Spoken {
   text: string;
@@ -215,14 +221,18 @@ function readFeedEntry(store: AgentStore, side: FeedSide, thread: string, cursor
   }
   if (!side.speaks(cursor.turn)) return;
   if (message?.role === "assistant") {
-    // A speaking call with no reply_to answers the post its own round closes, else the post a refused post of the turn was for.
-    const closed = blocks(message).flatMap(block => closedPost(block) ?? []);
+    // A speaking call with no reply_to answers the post its own round closes, else the post a refused post of the turn was for. A round
+    // whose other speaking call sets reply_to aims its posts itself, so its closing calls name nothing: on 11-25 a blind run's comm thread
+    // answered p1 with reply_to and the newer p3 with none in one round that marked p2 completed, and the answer to p3 landed in p1's thread.
+    const speaking = blocks(message).filter(block => block.type === "toolCall" && sentMessage(block) !== undefined);
+    const aimed = speaking.some(block => replyToOf(block) !== undefined);
+    const closed = aimed ? [] : blocks(message).flatMap(block => closedPost(block) ?? []);
     const named = closed.length ? closed : cursor.turn?.named;
-    for (const block of blocks(message)) {
-      const sent = sentMessage(block);
-      if (!sent || (sent.to && !side.aimedHere(sent.to)) || block.type !== "toolCall") continue;
+    for (const block of speaking) {
+      const sent = sentMessage(block)!;
+      if ((sent.to && !side.aimedHere(sent.to)) || block.type !== "toolCall") continue;
       const why = typeof block.arguments?.why === "string" && block.arguments.why.trim() ? block.arguments.why.trim() : undefined;
-      const replyTo = typeof block.arguments?.reply_to === "string" && block.arguments.reply_to.trim() ? block.arguments.reply_to.trim() : undefined;
+      const replyTo = replyToOf(block);
       cursor.open[sent.id] = { text: sent.text, entry: entry.id, ...(why ? { why } : {}), ...(replyTo ? { replyTo } : named?.length ? { named } : {}) };
     }
     return;
