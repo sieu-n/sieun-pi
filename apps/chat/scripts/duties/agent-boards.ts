@@ -13,7 +13,8 @@
  * A duty is live when it is not paused and has at least one run that measured something; a paused or never-run duty counts as none. An agent
  * with no live duty is uncovered. An areas file (AREAS_FILE, default ~/work/agent-duties/areas.json, `[{agent, areas: [{area, source, duty?}]}]`,
  * agent by id or name, duty by id or name) lists the areas the owner gave each agent, and an area is uncovered while it names no duty or its
- * duty is not live. On 11-26 at 05:13 KST, 6 of 17 agents had no duty at all.
+ * duty is not live. An agent with no brief and no area in the file has no area, so it is left out and listed apart: on 11-26 feature probe
+ * had no brief, steps, jobs or owner post, and said it owns nothing. On 11-26 at 05:13 KST, 6 of 17 agents had no duty at all.
  *
  * Usage: OUTPUT_FILE=<file> node --import tsx scripts/duties/agent-boards.ts [--server http://127.0.0.1:5184] [--areas <file>]
  * Without OUTPUT_FILE the result prints to stdout.
@@ -41,13 +42,20 @@ export function liveDuty(row: DutyRow): boolean {
  * The agents that keep no live duty over their responsibilities: an agent with no live duty, and each area of the areas file whose duty is
  * missing or not live. Each uncovered agent gets one `uncovered_agent` flag that names it and its uncovered areas, so the duty job can tell it.
  */
-export function dutyCoverage(agents: readonly { agent: Agent; duties: readonly DutyRow[] }[], areas: readonly AgentAreas[] = []): { metrics: Record<string, number>; flagged: Flag[] } {
+export function dutyCoverage(agents: readonly { agent: Agent; duties: readonly DutyRow[]; brief?: string }[], areas: readonly AgentAreas[] = []): { metrics: Record<string, number>; flagged: Flag[] } {
   const flagged: Flag[] = [];
   let uncoveredAgents = 0;
   let uncoveredAreas = 0;
-  for (const { agent, duties } of agents) {
+  let noArea = 0;
+  for (const { agent, duties, brief } of agents) {
     const live = duties.filter(liveDuty);
-    const given = areas.filter(entry => entry.agent === agent.id || entry.agent === agent.name).flatMap(entry => entry.areas);
+    // An area whose source is "none found" is the file's placeholder for an agent no owner post gave an area, not an ask of his.
+    const given = areas.filter(entry => entry.agent === agent.id || entry.agent === agent.name).flatMap(entry => entry.areas).filter(area => area.source?.trim().toLowerCase() !== "none found");
+    if (live.length === 0 && given.length === 0 && !brief?.trim()) {
+      noArea += 1;
+      flagged.push({ kind: "no_area", sig: `${agent.id}/no-area`, item: agent.id, excerpt: `${agent.name} (${agent.id}) has no brief and no area from the owner, so it owns nothing to watch` });
+      continue;
+    }
     const missed = given.filter(area => !area.duty || !live.some(row => row.duty.id === area.duty || row.duty.name === area.duty));
     uncoveredAreas += missed.length;
     if (live.length > 0 && missed.length === 0) continue;
@@ -59,7 +67,7 @@ export function dutyCoverage(agents: readonly { agent: Agent; duties: readonly D
     ];
     flagged.push({ kind: "uncovered_agent", sig: `${agent.id}/duties`, item: agent.id, excerpt: `${agent.name} (${agent.id}): ${why.join("; ")}` });
   }
-  return { metrics: { agents_uncovered: uncoveredAgents, areas_uncovered: uncoveredAreas }, flagged };
+  return { metrics: { agents_uncovered: uncoveredAgents, areas_uncovered: uncoveredAreas, agents_without_area: noArea }, flagged };
 }
 
 /**
@@ -129,6 +137,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const read = await Promise.all(agents.map(async agent => ({
     agent, steps: await get<Steps>(server, `/api/agents/${agent.id}/steps`), checkIn: await get<CheckIn>(server, `/api/agents/${agent.id}/check-in`),
     duties: (await get<{ duties: DutyRow[] }>(server, `/api/agents/${agent.id}/duties`)).duties,
+    brief: (await get<{ brief?: { text?: string } }>(server, `/api/agents/${agent.id}/folder`)).brief?.text ?? "",
   })));
   const boards = agentBoards(read, Date.now());
   const coverage = dutyCoverage(read, readAreas(areasFile));

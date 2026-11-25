@@ -48,19 +48,32 @@ test("a duty is live only when it is not paused and has a run that measured some
 test("agents with no live duty, or with an area no live duty watches, are uncovered and each is named once", () => {
   const out = dutyCoverage([
     { agent: { id: "ag_mcp", name: "mcp" }, duties: [duty("d1", "Prod MCP", ["met"])] },
-    { agent: { id: "ag_api-portal", name: "API portal" }, duties: [] },
+    { agent: { id: "ag_api-portal", name: "API portal" }, duties: [], brief: "Keep api.virev.ai up." },
     { agent: { id: "ag_crawler-guy", name: "Crawler guy" }, duties: [duty("d1", "Crawler read cost", ["met"]), duty("d6", "Meta Ads crawl", ["missed"], true)] },
-    { agent: { id: "ag_gpt-guy", name: "gpt guy" }, duties: [duty("d1", "New duty", [])] },
+    { agent: { id: "ag_gpt-guy", name: "gpt guy" }, duties: [duty("d1", "New duty", [])], brief: "Keep the repo clean." },
     { agent: { id: "ag_seo", name: "seo" }, duties: [duty("d1", "Search traffic", ["met"])] },
   ], [
     { agent: "ag_crawler-guy", areas: [{ area: "Read cost", duty: "d1" }, { area: "Meta Ads", source: "msg mw1", duty: "d6" }, { area: "TikTok parity", source: "msg mw2" }] },
     { agent: "seo", areas: [{ area: "Search traffic", duty: "Search traffic" }] },
   ]);
-  assert.deepEqual(out.metrics, { agents_uncovered: 3, areas_uncovered: 2 });
+  assert.deepEqual(out.metrics, { agents_uncovered: 3, areas_uncovered: 2, agents_without_area: 0 });
   assert.deepEqual(out.flagged.map(flag => flag.item), ["ag_api-portal", "ag_crawler-guy", "ag_gpt-guy"]);
   assert.match(out.flagged[0]!.excerpt, /API portal \(ag_api-portal\): no duty/);
   assert.match(out.flagged[1]!.excerpt, /area "Meta Ads" \(msg mw1\) has duty d6, not live; area "TikTok parity" \(msg mw2\) has no duty/);
   assert.match(out.flagged[2]!.excerpt, /no live duty \(d1 never ran\)/);
+});
+
+test("an agent with no brief and no area from the owner has no area, so it is left out of the gap count and listed apart", () => {
+  const out = dutyCoverage([
+    { agent: { id: "ag_feature-probe", name: "feature probe" }, duties: [] },
+    { agent: { id: "ag_api-portal", name: "API portal" }, duties: [], brief: "# API portal\nKeep api.virev.ai up." },
+    { agent: { id: "ag_gpt-guy", name: "gpt guy" }, duties: [], brief: "  " },
+  ], [
+    { agent: "ag_gpt-guy", areas: [{ area: "repo free of slop", source: "dm_gpt-guy p1" }] },
+    { agent: "ag_feature-probe", areas: [{ area: "whatever area you were made for", source: "none found" }] },
+  ]);
+  assert.deepEqual(out.metrics, { agents_uncovered: 2, areas_uncovered: 1, agents_without_area: 1 });
+  assert.deepEqual(out.flagged.map(flag => [flag.kind, flag.item]), [["no_area", "ag_feature-probe"], ["uncovered_agent", "ag_api-portal"], ["uncovered_agent", "ag_gpt-guy"]]);
 });
 
 test("the areas file is optional and a malformed one throws", () => {
