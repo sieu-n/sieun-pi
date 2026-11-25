@@ -1,19 +1,61 @@
 # Writing a wiki page
 
-This is the owner's standard for every wiki page.
-A page reads as plain prose under sentence-case headings, like a Confluence page, with a diagram for each flow or structure it describes.
+This is the owner's standard for every wiki page, agent pages under `agents/` included.
+Every page reads as an onboarding doc for a new teammate, with its diagrams and tables first and short lines of prose under sentence-case headings.
 A page under `apps/` or `domains/` holds only the layers a reader can check, as the section "Pages under apps/ and domains/" says, and what a job writes in its own session folder is the job's call.
 
 On 2026-11-24 the owner called the numbered one-sentence-line form of the older wiki unreadable (#dev-crawler p19, "no the llm-wiki is unreadable", c235), and a curated page of about 1,800 words far too long (p23, msg mwtwsw4j, c243).
 So no page is a string of numbered one-sentence lines, and a numbered list holds only steps in order.
 The older lessons still hold: a bullet is one normal sentence (c20), and a line never opens with a bold label.
 
+## Diagrams and tables first, short lines after
+
+On 2026-11-25 the owner read the API portal architecture page, whose paragraphs ran 3 to 5 sentences with paths such as `apps/api-portal/src/lib/server/gateway.ts:752` inside them, and wrote "slop slop slop slop blocks of text" (#dev-api-portal p33, msg mwwkczkq, c247).
+Of a bullet that ended in `(api-portal.yaml:141)` he wrote "api-portal.yaml:141 이따구로 쓰면 아무것도 모른다니까?????" (p35, msg mwwkdhwy, c248).
+Then he named the page to copy: "onboarding document를 쓴다고 생각해봐^^ https://us-metal02-dev.tail0c093d.ts.net:5184/wiki/page/domains/devops/clickhouse-layout.html 얼마나 좋니" (p37, msg mwwkfhz9).
+These rules hold on every page, not only under `apps/` and `domains/`.
+
+- The page opens with its `<h1>`, one lead paragraph that says who the page is for and what they get, and then its main diagram or table.
+- At most one short paragraph may sit between the lead and that first diagram, to state the diagram's point under a heading.
+- Each section leads with its diagram or table, and its prose explains only what the picture cannot show.
+- A prose paragraph is 1 or 2 short sentences and at most 50 words, which a reader takes in at one glance.
+- A code or config spot is named first in plain words, such as "the stuck-ticket alert rule", never by its path.
+- File paths, commit ids and message ids stay out of running prose and go in a refs table or list at the end of the page, or in a `<details>` fold.
+- A path with a line number, such as `alerts.yaml:141`, sits only in a table column next to its plain name or in a `<details>` fold.
+- A set of facts goes in a table, because the c235 rule against strings of numbered one-sentence lines still holds.
+
+This paragraph is out, because it is a block with a path:line and a commit id in its sentences:
+
+```html
+<p>The stuck-ticket alert skips any hour under 20 orders (<code>infra/alerts/tickets.yaml:144</code>), so it missed 41
+failed prints last week. The relay fix landed in <code>4c6056652f</code>, and the alert fix is next. The south shop saw
+most of the misses, because its printer jams on cold mornings.</p>
+```
+
+This is the same fact in the new shape, with the code spot named in words and its path in the refs table at the end:
+
+```html
+<p>The stuck-ticket alert skips any hour under 20 orders, so it missed 41 failed prints last week.</p>
+
+<h2>Where the code lives</h2>
+<table>
+	<tr><th>Part</th><th>File</th></tr>
+	<tr><td>the stuck-ticket alert rule</td><td><code>infra/alerts/tickets.yaml:144</code></td></tr>
+	<tr><td>the relay fix</td><td>commit <code>4c6056652f</code></td></tr>
+</table>
+```
+
+The page the owner named, [ClickHouse layout](wiki:domains/devops/clickhouse-layout.html), shows three things to copy.
+Its first line says who the page is for and what they get, its diagrams are laid out by box and tier with a subgraph for each box and each ClickHouse server, and its tables put plain words before the code names.
+Its paragraphs of 3 and 4 sentences, the 4-sentence paragraph before its first diagram and the commit ids in its prose are not the model, and the lint flags them.
+`apps/wiki/tests/fixtures/prose-lint/good-onboarding.html` is a whole page in this shape about a made-up bakery, and it passes the lint with no findings.
+
 ## Pages under apps/ and domains/
 
 The owner's words, #dev-crawler p23 on 2026-11-24: "sessions/ under에 적는건 적는건 알아서 하는데, apps/domains 등에 들어가는건 핵심, 확인 가능한 실질적인 레이어 (flow/call stack, tables, fields) 만 따로 말해".
 
 1. A curated page under `apps/` or `domains/` holds only the layers a reader can check against the system: the flow or call stack, the tables and the fields.
-2. Each layer names the real things as the code spells them, such as the function, file, service, port, database, table and column, and says where each one lives: the host, the path or the container.
+2. Each layer names the real things as the code spells them, such as the service, port, database, table and column, after a plain word for what each one is, and a table says where each one lives, by host, container or file.
 3. Keep the page near 800 words outside link-only lines, and the lint warns with `core-length` past that. 800 is the design page size the owner accepted under c201, and `domains/devops/clickhouse-layout.html` had 1,761 words in 10 sections when he called it far too long. The page API answers 422 on a write that takes a page from 800 words or fewer past the line or creates one past it, and a page already past the line saves with the warning, so a writer cuts it in a later write.
 4. The question that started the work, the options weighed, what was dropped, the measurements, the history and the calls left for the owner go in the session page. The curated page keeps one sentence of why per choice and links the session log.
 5. Link the session log `index.html`, which lists the write-up, because `session-link` refuses a curated link to any other file in a session folder.
@@ -26,10 +68,11 @@ A page under `apps/` or `domains/` has these sections, in this order.
 
 | Section | What it holds |
 | --- | --- |
-| intro paragraph | what the system is, where it runs, and what the page holds |
-| the flow | one diagram, then the call stack or pipeline as numbered steps with real names |
+| lead | one or two sentences on who the page is for and what they get |
+| the flow | one diagram first, then the call stack or pipeline as a table or numbered steps with real names |
 | tables and fields | one table per store or config file, with name, type and meaning columns |
 | check it | the commands or queries that show each layer on the live system |
+| refs | file paths, commit ids and message ids, in a table or a `<details>` fold |
 | links | the session log and the pages next to this one |
 
 This file is the only source for how a page reads.
@@ -62,10 +105,10 @@ On 2026-11-23 the owner asked for the sw factory docs as a Confluence space that
 
 Every documentation page has these parts.
 
-1. The `<h1>` comes first, then one intro paragraph that says who the page is for and what they will have or know at the end.
+1. The `<h1>` comes first, then one intro paragraph of one or two sentences that says who the page is for and what they will have or know at the end.
 2. The page has no `<wiki-tldr>`, because the intro paragraph and the header's `description` do that job.
 3. Headings are sentence case and name what the section holds, such as "Run the lint", never "1 · Overview".
-4. Paragraphs hold two to four sentences and at most 100 words.
+4. Paragraphs hold one or two short sentences and at most 50 words (c247).
 5. A bullet list holds parallel items only, each one full sentence, and no bullet opens with a bold label.
 6. Numbered steps appear only where the reader does things in order.
 7. A flow or structure the page describes gets a mermaid diagram, and a screen it describes gets a screenshot.
@@ -78,7 +121,7 @@ Every documentation page has these parts.
 | `tutorial`    | is new and learns by doing             | intro, "Before you start", stages of steps, "Check it worked", "When it goes wrong", "Next steps" |
 | `how-to`      | knows the basics and has one task      | intro, "Before you start", steps, "Check it worked", "When it goes wrong"          |
 | `reference`   | looks up one fact                      | intro, then tables with a sentence or two before each                              |
-| `explanation` | wants to know how parts fit and why    | intro, prose sections with a diagram per flow, links to tutorials and reference    |
+| `explanation` | wants to know how parts fit and why    | intro, a diagram first, then sections that each lead with a diagram or table       |
 | `design`      | the owner, deciding                    | short prose that answers his questions in order, as "Plan, spec and status pages" says |
 
 A `reference` page that documents a tool, command, function or API shows for each entry one real call with its actual arguments and the output it returned on this box, trimmed with `...`, and never a description alone. On 2026-11-25 the owner asked this of the sw factory tool docs (#sw-factory-build p223, msg mww1x0do, c245): "actual args, examples 실제로 뽑아봐 how does it look like and whether there is inefficiencies. in documentation it's super important".
@@ -102,7 +145,10 @@ The structure comes from these pages, which a writer reads for shape, never for 
 
 | Rule             | Kinds                 | What it refuses                                                                  |
 | ---------------- | --------------------- | -------------------------------------------------------------------------------- |
-| `doc-paragraph`  | every page            | a paragraph or step over 4 sentences or 100 words                                |
+| `doc-paragraph`  | every page            | a paragraph or step over 2 sentences or 50 words (c247)                          |
+| `line-ref-in-prose` | every page         | a path:line in a paragraph, step or bullet outside a table or `<details>` (c248) |
+| `ref-in-prose`   | every page            | a warning on a file path, commit id or message id in a paragraph outside `<details>` |
+| `lead-visual`    | all but start, tutorial, how-to | more than the lead and one short paragraph before the first diagram, image or table, or no such block on a page over 300 words (c247) |
 | `doc-intro`      | the five prose kinds  | a `<wiki-tldr>`, or anything but a `<p>` right under the `<h1>`                  |
 | `doc-sections`   | start, tutorial, how-to | a missing section from the table, or a "Check it worked" with no code or image |
 | `doc-step-proof` | tutorial, how-to      | a step `<li>` with no `<pre>` block, diagram or image inside it                  |
@@ -124,19 +170,19 @@ The structure comes from these pages, which a writer reads for shape, never for 
 The reader is the owner, who reads as a busy manager.
 He should scan the page once, top to bottom, and come away with the answer and the reasons for it.
 
-1. The page opens with the `<h1>` and an intro paragraph of two or three sentences that gives the answer: what the thing is, where it runs and what the page holds.
-2. The body is prose paragraphs of two to four sentences and at most 100 words each, under sentence-case headings that name what each section holds.
-3. A numbered list holds only steps a reader does or a system runs in order, such as a call stack or a deploy, and each step may hold two or three sentences.
+1. The page opens with the `<h1>`, a lead of one or two sentences that says who the page is for and what they get, and then its main diagram or table.
+2. The body is diagrams and tables, each with one or two short sentences that say what the picture cannot, under sentence-case headings that name what each section holds.
+3. A numbered list holds only steps a reader does or a system runs in order, such as a call stack or a deploy, and each step holds one or two sentences.
 4. Never write a page or a section as a string of numbered one-sentence lines, because the owner called that form unreadable on 2026-11-24 (c235, c243).
 5. Fields, keys, ports and other facts a reader looks up go in a table, with a sentence before it that says what the table lists.
 6. A design or plan page for the owner is about 1/10 the length of a full spec and answers his questions in the order he asked them, each in a short plain sentence with one concrete example, before any options, tables or numbers.
 7. On 2026-10-29 the owner could not follow the long spec at `sessions/2026/10/30/0215-wiki-in-sw-factory-design/design.html`, asked his seven questions again, and asked for a 1/10 plan in 메르 style (c201). Since c235 and c243 that style means short plain sentences that answer his questions in order, written as prose paragraphs, never as numbered lines.
 8. Set `doc_kind` on every new page, so the page API leaves each list's `start=` as written. On a page with no `doc_kind` the API still numbers top-level lists on across sections and moves an in-page "item N" with its line (`apps/wiki/scripts/ol-numbering.mjs`), which keeps older numbered-line pages whole, and a write whose "item N" names a number two lines share is refused with a 422.
-9. Numbers, file paths and dates sit inside the line as evidence, with identifiers in `<code>`, and every date and time is UTC, which for a commit is its own day from `git log -1 --format=%cI <sha>`, never the owner's KST day. On 2026-10-27 four curated pages, such as `domains/architecture/ci-deploy.html`, dated `3abfc49767`, committed at 20:11Z on 10-27, as 2026-10-28 or "04:26Z on 10-28", and the prose lint rule `future-utc-time` now refuses a Z time or a "since" day later than the write. On 2026-10-28 a job wrote `"updated": "2026-10-29"` and "removed on 2026-10-29" into `apps/crawler-v3/platforms/linkedin/fields.html` at 15:30Z, so `future-utc-time` also refuses a day after a past-tense verb, such as "removed on" or "landed on", and `future-meta-date` refuses a header `date`, `updated` or `last_verified` later than the write, while a plan day such as "expires on 2026-11-30" passes.
+9. Numbers and dates sit inside the line as evidence, file paths, commit ids and message ids go in the refs table at the end, and every date and time is UTC, which for a commit is its own day from `git log -1 --format=%cI <sha>`, never the owner's KST day. On 2026-10-27 four curated pages, such as `domains/architecture/ci-deploy.html`, dated `3abfc49767`, committed at 20:11Z on 10-27, as 2026-10-28 or "04:26Z on 10-28", and the prose lint rule `future-utc-time` now refuses a Z time or a "since" day later than the write. On 2026-10-28 a job wrote `"updated": "2026-10-29"` and "removed on 2026-10-29" into `apps/crawler-v3/platforms/linkedin/fields.html` at 15:30Z, so `future-utc-time` also refuses a day after a past-tense verb, such as "removed on" or "landed on", and `future-meta-date` refuses a header `date`, `updated` or `last_verified` later than the write, while a plan day such as "expires on 2026-11-30" passes.
 10. A line about a commit that has not reached staging or prod goes stale at the next land, so state what dev/sieun runs and name the dev sha instead, because on the 2026-11-09 05:02 dream run writers added 3 such lines that land 5e967cb262 made false minutes later. A dated line such as "At 14:38Z on 2026-11-08 `9cf9e582c6` had not landed" goes stale the same way, because wiki-health flags it from the land that carries the commit, as it flagged retrieval-profile-pass.html on 2026-11-17. So once a commit has landed, name the land that carried it, as in "staging land bff022d7b6 carried `4a9b3a985c` at 23:49Z on 2026-11-16", and write no "neither ... nor ... had landed", "when no staging land carried", "until a promote carries" or "still needs a promote" clause. Find that land in auto-sns-agent with `git merge-base --is-ancestor <sha> <dev sha a land names>`, and for prod with `git merge-base --is-ancestor <land> origin/main`. `git merge-base --is-ancestor <sha> origin/staging` fails even after a land, because a land is a one-parent commit titled `land: dev/sieun <tip>`, and on 2026-11-16 at 08:01Z a session wrote that `d60109b34` had not landed on `domains/architecture/telemetry-map.html`, though land c2cb3f9c81 had carried it since 06:18Z. The page API refuses (422) a write that adds such a line about a commit a staging land already carries, or for prod, whose land `origin/main` holds, and its answer names the first land that carried the commit, so rewrite the line with that land. Every other such line a write adds gets a warning in the answer's `warnings` that names the dev-sha phrasing, as in "on dev/sieun since `8c1f60df87`", and the write saves, because in the 2026-11-17 wiki dream runs at 00:19Z and 01:06Z the same 5 pages, such as `census-scheduling.html`, were rewritten again only because the land after each write had made such a line false. A value only a dev branch runs, as in a table cell "4, or up to 84 on dev/sieun", names its sha in the same cell, because on 2026-11-08 such a cell outlived the land of `42d3206e43` by 9 days. wiki-health (`apps/wiki/scripts/wiki-health.mjs` `landedClaims`) flags a line a later land makes false, from the first land whose dev tip holds the sha, and a prod line once `main` holds that land, as a `landed:` ref in the stale list, and the wiki dream rewrites it. A line in the dev-sha phrasing, as in "On dev/sieun since `6f8c28973d`, ...", stays true after every land, so leave it as written and do not rewrite it to name the land, because on 2026-11-18 writers spent up to 82 line rewrites on 30 pages doing that, and the dream reports counted them as false lines.
 11. Every number a reader may question shows its source on hover in a `<wiki-cite src="..." note="...">`, and a number nobody measured is written as unknown or a range in a cite with only a `note` that states the assumption, as the hover section of `page-authoring.md` shows.
 12. On 2026-10-29 a plan page stated "$5,714 of StepFun list-price API usage" with no source behind it, and nobody could say where the number came from when the owner asked (c202).
-13. Sections are short, a few paragraphs with one diagram or table each, under a sentence-case heading that names what they hold.
+13. Each section is short, with its diagram or table first and one or two short paragraphs after it, under a sentence-case heading that names what it holds.
 14. Agent-only detail, such as raw counts and file lists, goes on the session page, and a session page may keep it in a collapsed `<details>` block at the end.
 
 ## Diagrams drawn for a person
@@ -152,15 +198,15 @@ The owner's words, #dev-crawler p23 on 2026-11-24: "그냥 relation을 diagram�
 7. Shapes tell kinds apart, and one kind keeps one shape across the page, as the table below lists.
 8. A thing that exists several times is drawn several times, so three tiers are three boxes side by side, each with its own copy inside. A count inside one label, such as "relay x2" or "3 tiers", is the defect, and the lint warns with `diagram-shape` for a count of 2 to 4.
 9. Past four of the same thing, draw one stacked node with the count, such as `w@{ shape: procs, label: "24 workers" }`.
-10. Labels are one to three words and use the real name, such as `chat.sqlite` or `relay :7791`, and the paragraph under the diagram carries the detail.
+10. Labels are one to three words and use the real name, such as `orders.db` or `print relay :9100`, and the paragraph under the diagram carries the detail.
 11. Keep a diagram to about 8 to 12 nodes, and split a larger one into two, such as one for the hosts and one for a request's path. The lint warns with `diagram-shape` on a flowchart over 12 nodes with no subgraph.
 12. A diagram makes one point, which the sentence before it states, and a diagram that needs a legend gets redrawn.
 13. On 2026-11-23 the tier diagram on `domains/devops/clickhouse-layout.html` drew one box "same on every tier" where local, staging and prod each hold the `crawler` database, and 6 of its 8 diagrams were left-to-right chains of names (c243).
 
 | Kind | Mermaid shape |
 | --- | --- |
-| a service, job or process | rounded box `("chat server :5184")` |
-| a database, table or store | cylinder `[("chat.sqlite")]` |
+| a service, job or process | rounded box `("order site :8080")` |
+| a database, table or store | cylinder `[("orders.db")]` |
 | a queue | horizontal cylinder `q@{ shape: h-cyl, label: "outbox" }` |
 | a person | stadium `(["owner"])` |
 | a decision or check | diamond `{"prose lint"}` |
@@ -168,21 +214,24 @@ The owner's words, #dev-crawler p23 on 2026-11-24: "그냥 relation을 diagram�
 
 ### Worked example: hosts as boxes, one node per instance
 
-The chat server runs on us-metal02 only, and each box with agents runs its own relay and pi-host (`apps/chat/docs/agent-model.md`, "The three tiers").
-Each host is a subgraph, the two relays are two nodes, and the reading goes top down from the owner.
+The bakery's order site runs on the cloud box only, and each shop runs its own print relay and printer.
+Each host is a subgraph, the two relays are two nodes, and the reading goes top down from the customer.
 
 ```html
 <pre class="mermaid">
 flowchart TD
-  owner(["owner"]) --> chat
-  subgraph m02["us-metal02"]
-    chat("chat server :5184") --> db[("chat.sqlite")]
-    chat --> r1("relay :7791") --> p1("pi-host")
+  buyer(["customer"]) --> site
+  subgraph cloud["cloud box"]
+    site("order site :8080") --> db[("orders.db")]
   end
-  subgraph mac["Mac"]
-    r2("relay :7791") --> p2("pi-host")
+  subgraph north["north shop"]
+    r1("print relay :9100") --> p1("printer")
   end
-  chat --> r2
+  subgraph south["south shop"]
+    r2("print relay :9100") --> p2("printer")
+  end
+  site --> r1
+  site --> r2
 </pre>
 ```
 
@@ -202,38 +251,38 @@ flowchart LR
 </pre>
 ```
 
-### Worked example: repeated threads and a stack of jobs
+### Worked example: repeated screens and a stack of jobs
 
-An agent has one comm thread per room and one work thread, and the work thread starts jobs.
-The three comm threads are three boxes, because there are three rooms, while the jobs, whose number changes, are one stacked node.
+The bakery has one order screen per shop and one kitchen queue, and the queue starts print jobs.
+The three screens are three boxes, because there are three shops, while the print jobs, whose number changes, are one stacked node.
 
 ```html
 <pre class="mermaid">
 flowchart TD
-  subgraph rooms["rooms"]
+  subgraph shops["shops"]
     direction LR
-    r1["#sw-factory-build"]
-    r2["#dev-crawler"]
-    r3["DM"]
+    s1["north shop"]
+    s2["south shop"]
+    s3["harbour shop"]
   end
-  subgraph agent["agent factory on pi-host"]
-    c1("comm thread")
-    c2("comm thread")
-    c3("comm thread")
-    w("work thread")
-    jobs@{ shape: procs, label: "jobs" }
+  subgraph cloud["order site on the cloud box"]
+    c1("order screen")
+    c2("order screen")
+    c3("order screen")
+    q("kitchen queue")
+    jobs@{ shape: procs, label: "print jobs" }
   end
-  r1 --> c1
-  r2 --> c2
-  r3 --> c3
-  c1 & c2 & c3 --> w
-  w --> jobs
+  s1 --> c1
+  s2 --> c2
+  s3 --> c3
+  c1 & c2 & c3 --> q
+  q --> jobs
 </pre>
 ```
 
 ## Paragraphs, not strings of numbered lines
 
-On 2026-10-09 the owner asked for numbered lines in 메르 style (c20), and on 2026-10-10 he rejected a prose rewrite of the gateway page. On 2026-11-24 he called the numbered lines unreadable (c235, c243), so the same facts now read as a short paragraph.
+On 2026-10-09 the owner asked for numbered lines in 메르 style (c20), and on 2026-10-10 he rejected a prose rewrite of the gateway page. On 2026-11-24 he called the numbered lines unreadable (c235, c243), and on 2026-11-25 he called paragraphs of 3 to 5 sentences blocks of text (c247), so the same facts now read as a paragraph of two short sentences or a table.
 
 This form is out:
 
@@ -249,9 +298,8 @@ This form is in:
 
 ```html
 <p>
-	The gateway forwards requests and never translates them. It retries only calls that are safe to repeat, which are
-	calls with an idempotency key and 429 answers that say when to try again. The caller sets a deadline, 10 seconds by
-	default, and the gateway never waits past it.
+	The gateway forwards requests as they came and retries only calls with an idempotency key or a 429 that says when to
+	try again. The caller sets a deadline, 10 seconds by default, and the gateway never waits past it.
 </p>
 ```
 
@@ -312,22 +360,25 @@ The word rules are the `unslop` skill's, and the lint checks these on every page
 `node apps/wiki/scripts/prose-lint.mjs <file-or-folder>` prints each finding with its line, rule and fix, and exits 1 on any error.
 `--recent 20` lints the 20 newest session pages.
 
-1. The lint reads an `<ol>` item as a step, which `doc-paragraph` holds to 4 sentences and 100 words like any paragraph, and no rule asks for numbered lines.
-2. `label-opener` refuses `label: value` lines and bold openers.
-3. `visuals` refuses a page with no `doc_kind`, or a design page, that has too few diagrams or images for its words.
-4. A page with a prose `doc_kind` gets the rules of the section "Documentation pages" in place of `visuals`, and `core-length`, `core-layers` and `diagram-shape` warn on `apps/` and `domains/` pages only.
-5. `session-link` refuses a link from a curated page to a file in a session folder other than the session log `index.html`.
-6. `job-folder-link` warns on the same kind of link into a pi-host job folder `agents/<slug>/jobs/YYYY/MM/DD/<job>/`, and the finding names the job log `index.html` to link instead.
-7. When a page needs the fact from such a file, move the fact into the line itself or into the curated page that owns it, and link the log.
-8. `english-only` refuses each Korean sentence outside a quote of the owner (`"..."`, `<q>`, `<blockquote>`) or code, per owner rules c2 and c102, and Korean kept on purpose passes under `lang="ko"` or a `ko/` folder.
-9. The rule exists because the bloat, soft-caps and multi-box design pages of 2026-10-18 were written in Korean.
-10. `apps/wiki/tests/fixtures/prose-lint/good-tutorial.html` is the passing prose example, and `domains/devops/clickhouse-layout.html` as rewritten on 2026-11-23 is a short curated page.
-11. The page write API (`POST` and `PATCH /api/agent/page`) answers 422 when a write adds lint errors.
-12. The lint warns on size only through `core-length`, and the write API accepts a page over the 64 KiB `PAGE_READ_LIMIT` in `apps/wiki/src/lib/server/wiki.ts`, but the reader then shows a "truncated preview" cut mid-page and `GET /api/agent/page` answers 413.
-13. On 2026-10-19 a lint rewrite of `experiments/2026-08-16-email-finder-round2` grew about 30% and passed 64 KiB, so keep a rewrite under about 62 KB by moving detail to the session page and stripping indentation inside mermaid blocks.
-14. The engine runs the same lint on every write, and no page reaches git except through the backup timer, which commits what the engine wrote.
-15. An edit to an old page passes when it adds no new errors, so legacy pages stay editable.
-16. The lint skips `requests.html` and session log `index.html` files, because they hold verbatim text, and it skips `archive/` and `@code/`.
-17. Write pages through the page API so the write check runs, and never write page files directly.
-18. On 2026-10-28 parallel dream writers kept their page write bodies in the machine's shared temp folder, so a writer that ran `curl --data @r7-patch.json` there sent another job's body under the same name and applied that edit to `apps/search/onboarding-orgs.html` instead of its own page.
-19. Write a page write body to `$SESSION/<uuid>-patch.json` in your workspace folder, or pass the JSON on stdin with `--data @-`, and check that the `path` field of the response names your page.
+1. The lint reads an `<ol>` item as a step, which `doc-paragraph` holds to 2 sentences and 50 words like any paragraph, and no rule asks for numbered lines.
+2. `line-ref-in-prose` refuses a path with a line number, such as `alerts.yaml:141`, in a paragraph, step or bullet, and passes it in a table cell or a `<details>` fold (c248).
+3. `ref-in-prose` warns on a file path, commit id or message id in a paragraph, because one such ref reads fine and older pages cite the owner's message ids in their lines.
+4. `lead-visual` refuses a page whose first diagram, image or table comes after more than the lead and one short paragraph, and a page over 300 words with none, while a hub of links and a start, tutorial or how-to page skip it (c247).
+5. `label-opener` refuses `label: value` lines and bold openers.
+6. `visuals` refuses a page with no `doc_kind`, or a design page, that has too few diagrams or images for its words.
+7. A page with a prose `doc_kind` gets the rules of the section "Documentation pages" in place of `visuals`, and `core-length`, `core-layers` and `diagram-shape` warn on `apps/` and `domains/` pages only.
+8. `session-link` refuses a link from a curated page to a file in a session folder other than the session log `index.html`.
+9. `job-folder-link` warns on the same kind of link into a pi-host job folder `agents/<slug>/jobs/YYYY/MM/DD/<job>/`, and the finding names the job log `index.html` to link instead.
+10. When a page needs the fact from such a file, move the fact into the line itself or into the curated page that owns it, and link the log.
+11. `english-only` refuses each Korean sentence outside a quote of the owner (`"..."`, `<q>`, `<blockquote>`) or code, per owner rules c2 and c102, and Korean kept on purpose passes under `lang="ko"` or a `ko/` folder.
+12. The rule exists because the bloat, soft-caps and multi-box design pages of 2026-10-18 were written in Korean.
+13. `apps/wiki/tests/fixtures/prose-lint/good-onboarding.html` is the passing onboarding example, and `good-tutorial.html` next to it is the passing tutorial.
+14. The page write API (`POST` and `PATCH /api/agent/page`) answers 422 when a write adds lint errors.
+15. The lint warns on size only through `core-length`, and the write API accepts a page over the 64 KiB `PAGE_READ_LIMIT` in `apps/wiki/src/lib/server/wiki.ts`, but the reader then shows a "truncated preview" cut mid-page and `GET /api/agent/page` answers 413.
+16. On 2026-10-19 a lint rewrite of `experiments/2026-08-16-email-finder-round2` grew about 30% and passed 64 KiB, so keep a rewrite under about 62 KB by moving detail to the session page and stripping indentation inside mermaid blocks.
+17. The engine runs the same lint on every write, and no page reaches git except through the backup timer, which commits what the engine wrote.
+18. An edit to an old page passes when it adds no new errors, so legacy pages stay editable, and a write that lowers a rule's errors passes too, so a writer fixes an old page in place, such as by splitting a 4-sentence paragraph into a table and one of 2.
+19. The lint skips `requests.html` and session log `index.html` files, because they hold verbatim text, and it skips `archive/` and `@code/`.
+20. Write pages through the page API so the write check runs, and never write page files directly.
+21. On 2026-10-28 parallel dream writers kept their page write bodies in the machine's shared temp folder, so a writer that ran `curl --data @r7-patch.json` there sent another job's body under the same name and applied that edit to `apps/search/onboarding-orgs.html` instead of its own page.
+22. Write a page write body to `$SESSION/<uuid>-patch.json` in your workspace folder, or pass the JSON on stdin with `--data @-`, and check that the `path` field of the response names your page.

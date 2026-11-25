@@ -58,7 +58,7 @@ A name that starts with `sessions/`, `agents/`, `apps/`, `domains/`, `projects/`
 
 ## The page format
 
-Every page reads as plain prose under sentence-case headings, with a mermaid diagram laid out for a person for each flow or structure, and a numbered list only for steps in order, because the owner called the older numbered one-sentence lines unreadable on 2026-11-24 (c235).
+Every page reads as an onboarding doc for a new teammate, with its diagrams and tables first, paragraphs of one or two short sentences under sentence-case headings, file paths and commit ids in a refs table at the end, and a numbered list only for steps in order, because the owner called numbered one-sentence lines unreadable on 2026-11-24 (c235) and paragraphs with path:line refs blocks of text on 2026-11-25 (c247, c248).
 A curated page under `apps/` or `domains/` holds only the layers a reader can check, the flow or call stack, the tables and the fields, in about 800 words, and the long write-up stays on a page in the writer's session folder, which is the writer's own call (c243, section "Pages under apps/ and domains/" of `references/writing.md`).
 A page sets `"doc_kind"` in its header, and the five documentation kinds `start`, `tutorial`, `how-to`, `reference` and `explanation` add the section rules of "Documentation pages", which the owner asked for on 2026-11-23 (p174).
 A subagent writes every page, one page per subagent, and the parent reviews it.

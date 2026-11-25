@@ -5,11 +5,11 @@ Write every page as HTML. The viewer renders `.md` only for the `@code/` mirror 
 
 ## The format, prose under headings
 
-Every page reads as prose under sentence-case headings, with diagrams, tables, code blocks and images where the text describes a flow, fields or a screen.
+Every page reads as an onboarding doc for a new teammate, with its diagram or table first and short paragraphs under sentence-case headings, as the section "Diagrams and tables first, short lines after" of `writing.md` says.
 `writing.md` holds the rules for paragraphs, diagrams and words, and its section "Pages under apps/ and domains/" says what a curated page keeps. This section is the HTML shape.
 
-1. A paragraph is two to four sentences in one `<p>`, and it states facts ("PG is the source of truth.") rather than describing the page ("This page documents...").
-2. Evidence such as the file path, the count or the date sits in the sentence, never in "see above".
+1. A paragraph is one or two short sentences in one `<p>`, and it states facts ("PG is the source of truth.") rather than describing the page ("This page documents...").
+2. Evidence such as the count or the date sits in the sentence, never in "see above", and a file path, commit id or message id goes in the refs table at the end.
 3. An `<ol>` holds only steps in order, such as a call stack, and a `<table>` holds fields and short facts.
 4. A real request, a real row or a before and after goes in a `<pre><code>` block as an example.
 
@@ -29,7 +29,7 @@ flowchart LR
   w --> pg[("profiles")]
 </pre>
 <ol>
-	<li>A worker claims <code>CLAIM_BATCH</code> rows, 64 in <code>src/frontier/claim.py</code>, with <code>FOR UPDATE SKIP LOCKED</code>, so two of the 12 workers never take the same row.</li>
+	<li>A worker claims 64 rows, the <code>CLAIM_BATCH</code> setting, with <code>FOR UPDATE SKIP LOCKED</code>, so two of the 12 workers never take the same row.</li>
 	<li>The worker crawls each profile and writes it to <code>profiles</code>.</li>
 	<li>A claimed row frees itself when its 10-minute lease runs out, so no cleanup job exists.</li>
 </ol>
@@ -64,11 +64,11 @@ The paragraph is meta-narration with no numbers. The first item is a bold label 
 ### Self-check before publishing
 
 1. `node apps/wiki/scripts/prose-lint.mjs <page>` reports 0 errors and 0 warnings.
-2. The body is prose paragraphs under headings, and an `<ol>` holds only steps in order.
+2. The page leads with a diagram or table after its lead, paragraphs hold one or two short sentences, and an `<ol>` holds only steps in order.
 3. Each flow or structure the page describes has a mermaid diagram laid out as the section "Diagrams drawn for a person" of `writing.md` says.
 4. Every choice the page states carries one sentence of why.
 5. Each sentence reads once at speech pace without a re-read.
-6. Real numbers, `<code>` identifiers and file paths are present.
+6. Real numbers and `<code>` identifiers are present, and file paths sit in the refs table at the end.
 7. No full screen of the rendered page is text without a picture, table or code block.
 8. Every heading id on the page is unique, counting both an `id` you write and the slug the renderer makes from a heading's text, because `injectHeadingIds` in `apps/wiki/src/lib/server/render.ts` keeps a written id without checking it against those slugs and the page's table of contents keys its list on the id. On 2026-10-20 a crm-creators page had `<h2 id="header">` and `<h3>Header</h3>`, the table of contents threw Svelte `each_key_duplicate` and the body rendered blank, while prose-lint passed and the page API answered 201. Give a sub-heading its own words, such as `Header checks`, and open the rendered page to see that its contents list has entries.
 9. Never use a one-word heading id that names a DOM or form property, such as `target`, `action`, `name` or `title`, because DOMPurify, which `render.ts` runs through `sanitizeHtml` in `apps/wiki/src/lib/server/sanitize-html.mjs`, strips an id that could clobber `document` or a form, and use two words such as `target-model`. On 2026-10-27 a brand-watch session page had `<h2 id="target">`, which rendered with an empty id and left a blank entry in its contents list, while the page API answered 201 and prose-lint passed. After a page write, read `document.querySelectorAll('h2')` ids in Aside and check that each `pre.mermaid` holds an `svg`.
@@ -76,7 +76,7 @@ The paragraph is meta-narration with no numbers. The first item is a bold label 
 ## Documentation pages, plain prose
 
 A page with `"doc_kind"` set to `start`, `tutorial`, `how-to`, `reference` or `explanation` is a documentation page, and the section "Documentation pages" of `writing.md` holds its rules and the sections each kind needs.
-Its HTML is ordinary prose: `<p>` paragraphs of two to four sentences, sentence-case `<h2>` headings with no `1 ·` number, `<ul>` for parallel items, and an `<ol>` only for steps.
+Its HTML is ordinary prose: `<p>` paragraphs of one or two short sentences, sentence-case `<h2>` headings with no `1 ·` number, `<ul>` for parallel items, and an `<ol>` only for steps.
 The full passing tutorial is `apps/wiki/tests/fixtures/prose-lint/good-tutorial.html`, and this is its shape.
 
 ```html
@@ -122,7 +122,7 @@ lint on a draft, read its findings and fixed one of them.</p>
 2. A screenshot goes in the page's `assets/` folder through `wiki.put` and shows with `<wiki-figure src="assets/x.png" caption="...">`.
 3. A start page is the intro paragraph, a "Start here" section that links 3 pages, then one `<h2>` per folder with a `<ul>` of one line per page, or a `<wiki-children>` list.
 4. A reference page is the intro, then `<h2>` sections that each hold a sentence or two and a `<table>`.
-5. An explanation page is the intro, then `<h2>` sections of paragraphs, with a `<pre class="mermaid">` diagram beside each flow it describes.
+5. An explanation page is the intro, then its main `<pre class="mermaid">` diagram, then `<h2>` sections that each lead with a diagram or table.
 
 ## Current state only
 

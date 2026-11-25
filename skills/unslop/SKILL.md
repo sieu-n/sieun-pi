@@ -9,7 +9,7 @@ Apply this to any text a human will read. Published text matters most, because a
 
 This file is the one writing standard. If another writing rule disagrees, this file wins.
 
-An llm-wiki page reads as plain prose under sentence-case headings, and a subagent writes each page. It draws each flow or structure as a mermaid diagram laid out for a person, and it uses a numbered list only for steps in order, never as a string of one-sentence lines. A page under `apps/` or `domains/` holds only the layers a reader can check, the flow or call stack, the tables and the fields, in about 800 words, and the rest goes on the writer's session page. That standard lives only in sieun-pi `skills/wiki/references/writing.md`, and sieun-pi `apps/wiki/scripts/prose-lint.mjs` enforces both files on every page write.
+An llm-wiki page reads as an onboarding doc for a new teammate, and a subagent writes each page. It leads with a mermaid diagram laid out for a person or a table, keeps each paragraph to one or two short sentences, names a code spot in plain words with its path in a refs table at the end, and uses a numbered list only for steps in order, never as a string of one-sentence lines. A page under `apps/` or `domains/` holds only the layers a reader can check, the flow or call stack, the tables and the fields, in about 800 words, and the rest goes on the writer's session page. That standard lives only in sieun-pi `skills/wiki/references/writing.md`, and sieun-pi `apps/wiki/scripts/prose-lint.mjs` enforces both files on every page write.
 
 ## The one test
 
