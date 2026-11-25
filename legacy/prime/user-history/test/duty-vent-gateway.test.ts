@@ -440,6 +440,18 @@ test("removed_provider_refs skips the billing mail reader's SETTLED notes of old
   assert.deepEqual(result.flagged.map(flag => flag.excerpt.split(": ")[0]), [`AIMLAPI named at origin/dev/sieun ${path}:1`]);
 });
 
+test("removed_provider_refs skips api-portal's blog and docs copy that names Meta's Graph API and still counts a Graph call in api-portal code (d1, 11-26)", () => {
+  const line = (path: string, text: string) => `origin/dev/sieun:${path}\0${1}\0${text}`;
+  const grep = [
+    line("apps/api-portal/src/lib/blog/articles/meta-ad-library-api.ts", "'Create an app, then call `https://graph.facebook.com/<version>/me` with its access token.',"),
+    line("apps/api-portal/src/lib/docs/endpoint-copy/instagram.ts", "md: \"Meta's [IG User reference](https://developers.facebook.com/docs/instagram-platform/instagram-graph-api/reference/ig-user)\","),
+    line("apps/api-portal/src/lib/server/meta.ts", "await fetch('https://graph.facebook.com/v21.0/me?fields=followers_count')"),
+  ].join("\n");
+  const result = removedProviderRefs({ grep, tables: TABLES }, 0);
+  assert.ok(!("error" in result));
+  assert.deepEqual(result.flagged.map(flag => flag.item), ["apps/api-portal/src/lib/server/meta.ts"]);
+});
+
 test("the store lister ships beside the duty, because the wiki session copy stopped resolving its repo imports on 11-04", () => {
   assert.ok(existsSync(STORE_NAMES));
   assert.doesNotMatch(STORE_NAMES, /llm-wiki/);

@@ -27,7 +27,7 @@ import { clickhouse } from "./vent-integrations.ts";
  *   the tip, so the cutover's code progress reads before prod runs it; new_direct_sites and tip_removed_sites count the sites the tip added
  *   and dropped.
  * - removed_provider_refs: (provider, file) pairs at the tip that name a provider goal p22 removed (REMOVED_PROVIDERS) outside the guards
- *   that keep it out (KEPT_GUARDS), plus each removed integration tables.py lists again, so removed code or a removed Vent row that comes back misses.
+ *   that keep it out (KEPT_GUARDS) and the article copy that names it to readers (ARTICLE_COPY), plus each removed integration tables.py lists again, so removed code or a removed Vent row that comes back misses.
  * - test_calls_real_24h: test sends off production that reached a real provider in 24 h (TEST_SENDS_SQL, goal p85), one test_send_real row
  *   per integration, caller and method.
  * A source it cannot read gives a source_error flagged slice with its reason, counted in source_errors, and leaves each metric it feeds out of
@@ -261,7 +261,13 @@ export const KEPT_GUARDS: readonly { path: string; reason: string }[] = [
   { path: "apps/llm-wiki/tests/fixtures/prose-lint/", reason: "copies of old wiki pages the prose lint tests on" },
   { path: "ops/health/requests.yaml", reason: "the log of past health requests" },
 ];
-const kept = (path: string) => KEPT_GUARDS.some(guard => guard.path.endsWith("/") ? path.startsWith(guard.path) : path === guard.path);
+/**
+ * Tip folders of article copy that names a removed provider to readers and calls nothing: api-portal's SEO blog and its endpoint docs link
+ * Meta's Graph API references when they compare our API with Meta's. On 11-26 d1 counted 10 such files as removed provider refs.
+ */
+export const ARTICLE_COPY: readonly string[] = ["apps/api-portal/src/lib/blog/", "apps/api-portal/src/lib/docs/endpoint-copy/"];
+const kept = (path: string) => ARTICLE_COPY.some(folder => path.startsWith(folder))
+  || KEPT_GUARDS.some(guard => guard.path.endsWith("/") ? path.startsWith(guard.path) : path === guard.path);
 
 /**
  * Tip lines that record a past vendor's bills and call or configure nothing: the vendor-usage billing mail reader's SETTLED and DUE
