@@ -11,7 +11,7 @@ import { type Battery, CPU_SIDES, type CpuSides, FEED_FRESH_MS, macBattery, PRES
 import { type AgentCounts, agentCounts, agentState } from "./agent-states.ts";
 import { busyAncestors, type UnloadRow } from "./idle-unload.ts";
 import { QUIET_MINUTES } from "./quiet-minutes.ts";
-import { type CallMark, callMarks, CallWatch, type HungCall, PROGRESS_WINDOW_MS } from "./hung-calls.ts";
+import { type CallMark, callMarks, CallWatch, type HungCall, PROGRESS_CORES, PROGRESS_WINDOW_MS } from "./hung-calls.ts";
 import type { CallHandle, CallStopper, StoppedCall } from "./hung-stop.ts";
 import type { AgentQueueReading, MemoryGroupId } from "./shared/types.ts";
 import { readUplinkDark } from "./uplink-dark.ts";
@@ -48,7 +48,12 @@ export interface UsableReading { pressureLevel: number; swapoutsPerS: number; ke
   /** Every feed owner summed by Settings > Hosts' groups (components/prime-relay/host-stats.ts), in GB; absent on lines written before 10-18 01:40Z. */
   groups?: Partial<Record<MemoryGroupId, number>>;
   /** The Mac's battery from pmset (host-stats.ts `macBattery`); absent on a Mac with none, when pmset failed and on lines written before 11-02. */
-  battery?: Battery }
+  battery?: Battery;
+  /**
+   * The root ids of the feed's `chat:` owners whose processes used PROGRESS_CORES or more over the feed's last interval (its `cpu_pct`), so
+   * `threadsAtWork` can see a sw factory thread at work; absent when none did and on lines written before 11-26.
+   */
+  busyChats?: string[] }
 /** One feed owner: `chat:<root>`, `pm2:<app>`, `browser:<name>` or `other:<name>`, its label and its footprint. */
 export interface FeedOwner { owner: string; label: string; gb: number }
 /** Owners kept a minute: the feed lists about 50, and the largest 8 held 41 of its 57 GB at 08:52Z on 10-15. */
@@ -63,12 +68,14 @@ export function parseFeed(value: unknown, now: number): UsableReading | null {
   const all = Array.isArray(value.owners) ? value.owners.flatMap(item => isRecord(item) && typeof item.owner === "string" && typeof item.mem_gb === "number"
     ? [{ owner: item.owner, label: typeof item.label === "string" ? item.label : item.owner, gb: item.mem_gb }] : []).sort((a, b) => b.gb - a.gb) : [];
   const owners = all.slice(0, FEED_OWNERS);
+  const busyChats = Array.isArray(value.owners) ? value.owners.flatMap(item => isRecord(item) && typeof item.owner === "string" && item.owner.startsWith("chat:") &&
+    typeof item.cpu_pct === "number" && item.cpu_pct >= PROGRESS_CORES * 100 ? [item.owner.slice("chat:".length)] : []) : [];
   const groups: Partial<Record<MemoryGroupId, number>> = {};
   for (const owner of all) groups[groupOf(owner.owner)] = (groups[groupOf(owner.owner)] ?? 0) + owner.gb;
   const wired = isRecord(value.mem_gb) ? value.mem_gb.wired : undefined;
   if (typeof wired === "number") groups.system = (groups.system ?? 0) + wired;
   for (const id of Object.keys(groups) as MemoryGroupId[]) groups[id] = round(groups[id]!);
-  return { pressureLevel, swapoutsPerS, kernelTaskPct, ...owners.length ? { owners } : {}, ...all.length ? { groups } : {} };
+  return { pressureLevel, swapoutsPerS, kernelTaskPct, ...owners.length ? { owners } : {}, ...all.length ? { groups } : {}, ...busyChats.length ? { busyChats } : {} };
 }
 export const readPressureFeed = async (now: number, path = PRESSURE_FEED): Promise<UsableReading | null> =>
   parseFeed(await readFile(path, "utf8").then(text => JSON.parse(text) as unknown).catch(() => null), now);
@@ -320,7 +327,26 @@ export function servicesLine(services: readonly OrphanServiceLine[]): ServicesLi
  */
 export interface AgentLine extends AgentCounts { gb: number | null; swapGb?: number; cacheGb?: number; servicesGb?: number;
   /** The group that held the most of the box's memory that minute, which the Whole system duty books a memory stall to (whole-system.ts `minuteSide`). */
-  largest?: MemoryGroupId }
+  largest?: MemoryGroupId;
+  /** The sw factory threads at work this minute (`threadsAtWork`), which the Prime rows behind the counts never list; absent when none. */
+  threadsWorking?: number }
+
+/**
+ * How many of the feed's busy `chat:` owners (`UsableReading.busyChats`) no Prime row names: sw factory (pi-host) threads, whose kernels the
+ * feed folds into `chat:<thread>` by their RLM_SESSION_DIR and Settings > Hosts counts as Agent sessions, while the Prime daemon has no row
+ * for them. At 20:56:30Z on 11-25 thread 4f9dad47 ("5180 designer") held 5.32 GB of the Mac's 5.83 GB while its jobs ran commit.mjs and
+ * Aside reads, the Mac read 0 sessions working, and d7's quiet_agent_gb_mac read 5.83 GB against its 5 GB target.
+ */
+export function threadsAtWork(usable: HostUsable | null | undefined, rows: readonly unknown[]): number {
+  if (!usable || isLinuxReading(usable) || !usable.busyChats) return 0;
+  const prime = new Set(rows.map(parseRow).flatMap(row => row ? [row.id] : []));
+  return usable.busyChats.filter(id => !prime.has(id)).length;
+}
+/** `agents` with `threadsWorking` when a sw factory thread works. */
+const withThreads = (agents: AgentLine, usable: HostUsable | null | undefined, rows: readonly unknown[]): AgentLine => {
+  const threads = threadsAtWork(usable, rows);
+  return threads ? { ...agents, threadsWorking: threads } : agents;
+};
 
 /** The agents group of a memory reading and the session counts of `rows`, as one AgentLine. */
 export function agentLine(memory: { groups: readonly MemoryGroup[] | null; cacheBytes?: number | null } | null, rows: readonly unknown[], hung?: ReadonlySet<string>): AgentLine {
@@ -519,7 +545,7 @@ export function watchLine(input: { now: number; rows: readonly unknown[]; footpr
     ...input.footprints.stray_servers?.length ? { strayServers: strayLines(input.footprints) } : {},
     ...idlePm2.length ? { idlePm2 } : {},
     ...lingering.length ? { lingering } : {},
-    ...input.memory !== undefined ? { agents: agentLine(input.memory, input.rows, input.hung) } : {},
+    ...input.memory !== undefined ? { agents: withThreads(agentLine(input.memory, input.rows, input.hung), input.usable, input.rows) } : {},
     mac: { swapGb: input.footprints.swap_used_bytes === null ? null : round(input.footprints.swap_used_bytes / GB, 1), pressureLevel: input.footprints.pressure_level },
     cpuMs: Math.round(input.cpuMs + input.footprints.cpu_s * 1000),
   };
@@ -743,8 +769,8 @@ export async function hostWatchLine(remote: RemoteWatch, input: { now: number; c
       return { name: remote.name, usable: null, workers: 0, workerGb: 0, top: [], live: 0, working: 0, swapGb: null, offline: true, error: `offline, Tailscale last seen ${seenAgo(input.now, reach.lastSeen)}` };
     const answer = await remote.read(workerPids(remote.rows));
     const usable = parseUsableRaw(answer.usable, input.now);
-    const agents = agentLine(usable && !isLinuxReading(usable) && usable.groups ? { groups: [{ id: "agents", label: "", bytes: (usable.groups.agents ?? 0) * GB, top: [] },
-      ...usable.groups.services !== undefined ? [{ id: "services" as const, label: "", bytes: usable.groups.services * GB, top: [] }] : []] } : null, remote.rows);
+    const agents = withThreads(agentLine(usable && !isLinuxReading(usable) && usable.groups ? { groups: [{ id: "agents", label: "", bytes: (usable.groups.agents ?? 0) * GB, top: [] },
+      ...usable.groups.services !== undefined ? [{ id: "services" as const, label: "", bytes: usable.groups.services * GB, top: [] }] : []] } : null, remote.rows), usable, remote.rows);
     if (answer.footprints === null) return { name: remote.name, usable, workers: 0, workerGb: 0, top: [], live: 0, working: 0, agents, swapGb: null, error: answer.error.slice(0, 200) };
     const line = watchLine({ now: input.now, rows: remote.rows, footprints: answer.footprints, queue: null, chats: input.chats, title: input.title, cpuMs: 0, usable,
       ...input.idleClock ? { idleClock: input.idleClock } : {} });

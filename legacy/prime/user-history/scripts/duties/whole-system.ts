@@ -1150,7 +1150,7 @@ const QUIET_GAP_MS = 2 * MINUTE;
 
 /**
  * Every minute in [`from`, `to`) where a box had sat quiet for `quietMs`, read from each box's `agents` (absent on lines before 10-19). A
- * stretch starts at the first line after one with a session at work, after a line with no `agents` or no `gb`, or after a gap over
+ * stretch starts at the first line after one with a session or a sw factory thread at work (`threadsWorking`), after a line with no `agents` or no `gb`, or after a gap over
  * QUIET_GAP_MS; lines from before `from` count toward it, so the caller reads back at least `quietMs` further.
  */
 export function quietAgents(lines: readonly WatchLine[], from: number, to: number, quietMs: number): QuietMinute[] {
@@ -1164,7 +1164,7 @@ export function quietAgents(lines: readonly WatchLine[], from: number, to: numbe
       const agents = view.agents;
       const before = last.get(view.name);
       last.set(view.name, at);
-      if (!agents || agents.gb === null || agents.working > 0) { since.set(view.name, null); continue; }
+      if (!agents || agents.gb === null || agents.working > 0 || agents.threadsWorking) { since.set(view.name, null); continue; }
       const start = before !== undefined && at - before <= QUIET_GAP_MS ? since.get(view.name) ?? at : at;
       since.set(view.name, start);
       if (at >= from && at - start >= quietMs) found.push({ host: view.name, at, since: start, agents: { ...agents, gb: agents.gb } });
@@ -1380,7 +1380,7 @@ const clock = (at: number): string => new Date(at).toISOString().slice(11, 16) +
 const agentWords = (agents: AgentLine): string => `${agents.gb === null ? "an unread number of" : agents.gb} GB` +
   (agents.swapGb ? ` (${agents.swapGb} GB of it in swap)` : "") + (agents.cacheGb !== undefined ? ` with ${agents.cacheGb} GB of file cache beside it` : "") +
   (agents.servicesGb !== undefined ? ` and ${agents.servicesGb} GB in Agent services (the chat service, relay, pi-pool and Prime supervisor), counted apart` : "") +
-  `, with ${agents.working} sessions working, ${agents.retry} waiting on the provider or the pool, ${agents.children} on their subagents` +
+  `, with ${agents.working} sessions working${agents.threadsWorking ? `, ${agents.threadsWorking} sw factory threads working` : ""}, ${agents.retry} waiting on the provider or the pool, ${agents.children} on their subagents` +
   (agents.hung ? `, ${agents.idle} idle and ${agents.hung} in a hung tool call` : ` and ${agents.idle} idle`);
 /**
  * A box minute's quiet trees in the flag's words: their GB, the 5 largest by tree, pid, GB and the time their stretch began, and the workers
