@@ -217,6 +217,49 @@ test("after a scan the server removes a dead link and a pushed old clone's copy 
   assert.ok(present(deadLink));
 });
 
+test("a dead link in an old worktree keeps its install's skill and goes as broken with its row, and a row with nothing left on any box goes too", async t => {
+  const dir = mkdtempSync(join(tmpdir(), "skills-db-dead-"));
+  const db = new SkillsDb({ file: join(dir, "chat.sqlite"), box: BOX, home: "/home/x", piHostPrompt: null }, {
+    run: async (_item, steps) => steps.map(s => ({ box: s.box, path: s.path, state: "applied" as const, note: null })),
+    undo: async () => [],
+  });
+  t.after(() => {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const checkout = { root: "/Users/o/wt", remote: "git@github.com:o/app.git", branch: "main", headAt: "2026-11-20T00:00:00Z", tracked: true, dirty: 0, unpushed: 0 };
+  const folder = (path: string, name: string, more: object = {}) => ({ box: "mac", path, realPath: path, linkTarget: null, exists: true, name, source: "user-dir", root: dirname(path), runtimes: [], hash: `h-${name}`, text: name, ...more });
+  const link = (path: string, target: string, realPath: string, name: string, exists = true) =>
+    ({ box: "mac", path, realPath, linkTarget: target, exists, name, source: "user-dir", root: dirname(path), runtimes: ["claude"], hash: exists ? `h-${name}` : null, text: null });
+  const wtLink = "/Users/o/wt/.claude/skills/notes";
+  const toolLink = "/Users/o/.pi/agent/skills/kbo";
+  db.ingest(macScan("2026-11-25T10:00:00Z", [
+    folder("/Users/o/wt/.agents/skills/notes", "notes", { checkout }),
+    link(wtLink, "../../.agents/skills/notes", "/Users/o/wt/.agents/skills/notes", "notes"),
+    folder("/Users/o/tools/kbo", "kbo"),
+    link(toolLink, "/Users/o/tools/kbo", "/Users/o/tools/kbo", "kbo"),
+    folder("/Users/o/tools/orphan", "orphan"),
+  ]));
+  const ids = () => db.view(IDLE).skills.map(s => s.id).sort();
+  assert.deepEqual(ids(), ["git:app/.agents/skills/notes", "local:mac:/Users/o/tools/kbo", "local:mac:/Users/o/tools/orphan"]);
+
+  db.ingest(macScan("2026-11-25T11:00:00Z", [
+    link(wtLink, "../../.agents/skills/notes", "/Users/o/wt/.agents/skills/notes", "notes", false),
+    link(toolLink, "/Users/o/tools/kbo", "/Users/o/tools/kbo", "kbo", false),
+  ]));
+  const verdicts = db.view(IDLE).skills.flatMap(s => s.verdicts.map(v => [s.id, v.rule, v.action, v.copyId, v.auto ?? false])).sort();
+  assert.deepEqual(verdicts, [
+    ["git:app/.agents/skills/notes", "broken", "remove", `mac:${wtLink}`, true],
+    ["local:mac:/Users/o/tools/kbo", "broken", "remove", `mac:${toolLink}`, true],
+    ["local:mac:/Users/o/tools/orphan", "broken", "remove", null, true],
+  ]);
+  const change = await db.autoAct();
+  assert.match(change!.move.summary, /^auto: remove 3 \(3 broken\)/);
+  assert.deepEqual(ids(), []);
+  db.ingest(macScan("2026-11-25T12:00:00Z", []));
+  assert.equal(await db.autoAct(), null, "the next scan finds nothing left to remove");
+});
+
 test("merge of a skill whose every line the target says removes it, and an unclear merge still goes to agent factory", async t => {
   const { fixture, db, scan, present, review } = rig(t);
   scan();

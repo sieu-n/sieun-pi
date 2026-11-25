@@ -535,6 +535,12 @@ export function verdicts(input: VerdictInput): Map<string, SkillVerdictRow[]> {
     }
   }
   for (const skill of input.skills) {
+    // A row with no folder, link or install left on any box names nothing. On 11-25 37 such rows, kept after the dead links that were their
+    // last installs went, each asked for a description review.
+    if (!copiesOf.has(skill.id) && !input.installed.has(skill.id) && !isUpstream(skill.source)) {
+      add(skill.id, { rule: "broken", action: "remove", detail: "No folder, link or install of it is left on any box, so the server drops its row.", copyId: null, other: null }, true);
+      continue;
+    }
     const canon = input.canon.get(skill.id);
     const copies = real.filter(c => c.key === skill.id);
     for (const c of copies) {

@@ -612,9 +612,14 @@ export class SkillsDb {
       realKey.set(`${f.box}:${f.realPath}`, key);
       return { f, key };
     });
+    // A dead link keeps the skill of its install: its target's folder is gone, so the target's path alone names a source no row has, and
+    // the link would get no broken verdict. On 11-25 79 Mac links into old auto-sns-agent worktrees whose folders the stale-clone rule
+    // removed read as local sources and stayed.
+    const installed = new Map(this.installs().map(i => [`${i.box}:${i.path}`, i.skillId]));
     for (const entry of keyed) {
       if (entry.f.linkTarget === null) continue;
-      entry.key = realKey.get(`${entry.f.box}:${entry.f.realPath}`) ?? identifyFolder({ ...entry.f, path: entry.f.realPath, source: "", checkout: null }).key;
+      const dead = entry.f.exists ? undefined : installed.get(`${entry.f.box}:${entry.f.path}`);
+      entry.key = realKey.get(`${entry.f.box}:${entry.f.realPath}`) ?? dead ?? identifyFolder({ ...entry.f, path: entry.f.realPath, source: "", checkout: null }).key;
     }
     const copies: CopyFact[] = keyed.map(({ f, key }) => ({ ...f, key, changedLines: null, stale: stale.has(f) }));
     const canon = canonical(copies, this.config.box);
@@ -1110,7 +1115,11 @@ export class SkillsDb {
     const skill = st.skillMap.get(target);
     const copy = st.copyAt.get(target);
     if (install) {
-      return { steps: [{ box: install.box, path: install.path, name: st.skillMap.get(install.skillId)?.name ?? "" }], installs: [install], dropSkills: [], summary: `remove install ${install.id} at ${install.box}:${install.path}` };
+      // The last install of a skill with no folder left on any box takes the row with it, in the same move, so undo puts both back.
+      const left = (i: { box: string; path: string }) => !batch.has(`${i.box}:${i.path}`);
+      const last = !st.installs.some(i => i.skillId === install.skillId && i.id !== install.id && left(i))
+        && !st.copies.some(c => c.key === install.skillId && c.linkTarget === null && left(c)) && st.skillMap.has(install.skillId);
+      return { steps: [{ box: install.box, path: install.path, name: st.skillMap.get(install.skillId)?.name ?? "" }], installs: [install], dropSkills: last ? [install.skillId] : [], summary: `remove install ${install.id} at ${install.box}:${install.path}` };
     }
     if (skill) {
       const installs = st.installs.filter(i => i.skillId === skill.id);
