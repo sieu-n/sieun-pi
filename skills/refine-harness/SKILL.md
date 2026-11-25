@@ -53,11 +53,12 @@ A global prompt note is never the place for a general standard, because a note r
 
 The text of a skill lives in git, and its row, owner and installs live in the skills DB, so a new or deleted skill takes a commit and a `sw skills` command.
 Prime's skill-creator skill gives the frontmatter and layout rules, but its locations do not apply here: a folder under `~/.prime/agent/skills` or `~/.claude/skills` that no row owns shows as `unowned` drift.
+Nobody writes a skill's verdict by hand, because the chat server's hourly scan runs the rules in `apps/chat/server/skills-model.ts`, which mark each skill duplicated, outdated, bloated or never used (p146).
 
-1. To add a skill, write `skills/<name>/SKILL.md` in `/home/sieun/src/sieun-pi`, add `<name>` to `install-manifest.json`, `package.json`'s skill list and `config/skills-health.json`, commit only those files and push to `main`.
+1. To add a skill, write `skills/<name>/SKILL.md` in `/home/sieun/src/sieun-pi`, add `<name>` to `install-manifest.json` and `package.json`'s skill list, commit only those files and push to `main`.
 2. Wait a minute for prime-sync to link it on each box, then run `sw skills scan --wait` and `sw skills adopt us-metal02:/home/sieun/src/sieun-pi/skills/<name>`. The adopt makes the skill's row and takes the links that already point at it.
 3. Set the owner with `sw skills own git:sieun-pi/skills/<name> <agent id>` when the skill is not agent factory's.
-4. To remove a skill, delete its folder and its three manifest entries in one commit and push it. After the next scan, `sw skills check` lists the skill as `gone`, and `sw skills remove git:sieun-pi/skills/<name>` drops its row and installs and leaves old clones alone.
+4. To remove a skill, delete its folder and its two manifest entries in one commit and push it. After the next scan, `sw skills check` lists the skill as `gone`, and `sw skills remove git:sieun-pi/skills/<name>` drops its row and installs and leaves old clones alone.
 5. To install a skill for another runtime, such as Claude Code, run `sw skills install <name> --box <box> --runtime claude`, never a hand-made link or copy.
 6. The change is done when `sw skills check` prints "No drift". Agent factory's d3 duty reads the same check every day.
 
