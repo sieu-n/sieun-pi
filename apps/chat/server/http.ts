@@ -442,7 +442,7 @@ export function routes(app: App, parts: SkillsParts, wikiPages = new WikiPageLis
     route("POST", "/api/c/:id/read", async (_r, p, _q, body) => {
       const { seq, unreadFrom } = ((await body()) ?? {}) as { seq?: number; unreadFrom?: string };
       if (typeof unreadFrom === "string") app.markUnread(p.id!, unreadFrom);
-      else app.markRead(p.id!, typeof seq === "number" ? seq : undefined);
+      else app.readShown(p.id!, typeof seq === "number" ? seq : undefined);
       return { ok: true };
     }),
     route("POST", "/api/read", async (_r, _p, _q, body) => {

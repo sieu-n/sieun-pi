@@ -251,9 +251,11 @@ export class GroupRooms {
     const read = this.deps.state.state.reads[row.id];
     const mark = read?.seq ?? 0;
     const last = posts.at(-1);
-    // As in Slack, a thread reply leaves the room read: the thread's reply count and For you show it, and opening the room marks read only its top-level posts.
+    // A thread reply counts in a thread he is in: one he started or replied in, or a reply that names him (#sw-factory-build p213).
     // The post he marked unread counts, his own or a thread reply too.
-    const unseen = posts.filter(p => p.seq > mark && ((p.author !== "owner" && !p.threadRoot) || p.id === read?.from));
+    const his = new Set(posts.flatMap(p => (p.author === "owner" ? [p.threadRoot ?? p.id] : [])));
+    const counts = (p: RoomPost): boolean => !p.threadRoot || his.has(p.threadRoot) || !!p.mentions?.includes("owner");
+    const unseen = posts.filter(p => p.seq > mark && ((p.author !== "owner" && counts(p)) || p.id === read?.from));
     const working = this.commThreads(row).filter(c => this.deps.threads.runStatus(c.thread, 1) === "working")
       .map(c => ({ id: c.agent.id, name: this.deps.threads.principal(c.agent.id).name }));
     // In a Solo room every post is about the owner's agenda; in a channel only a post that names him counts as unread.

@@ -21,13 +21,21 @@
   const sections = new SvelteMap<string, Section>();
   const context = $derived({ mentions: mentionContext(directory.agents, directory.channels, me.value?.owner.name ?? ""), plain: true });
 
-  /** The posts after the room's read point, top-level only, from its newest page; `earlier` when the page starts past the read point. */
+  /** A root post whose thread is his, which he started or replied in, as the room's bold counts it (server/group-rooms.ts `summary`). */
+  const his = (item: Post): boolean => item.author.id === "owner" || !!item.thread?.authors.some((author) => author.id === "owner");
+
+  /**
+   * The posts after the room's read point from its newest page: top-level ones, and the root of each thread of his with a reply after it.
+   * `earlier` when the page starts past the read point.
+   */
   function ready(page: RoomPage, row: ConversationSummary): Extract<Section, { state: "ready" }> {
     const at = row.lastActivityAt;
     // A Mark unread moves the read point back to the post the room's row names, which a page kept before the mark does not know.
     const marked = row.unreadFrom ? page.items.find((item) => item.id === row.unreadFrom) : undefined;
     const read = marked?.kind === "message" && marked.seq !== undefined ? marked.seq - 1 : (page.header.readSeq ?? 0);
-    const posts = page.items.filter((item): item is Post => item.kind === "message" && !item.threadRoot && !item.deleted && (item.seq ?? 0) > read);
+    const posts = page.items.filter(
+      (item): item is Post => item.kind === "message" && !item.threadRoot && !item.deleted && ((item.seq ?? 0) > read || ((item.thread?.lastSeq ?? 0) > read && his(item))),
+    );
     const first = page.items.find((item) => item.kind === "message" && item.seq !== undefined);
     const earlier = !!page.older && first?.kind === "message" && (first.seq ?? 0) > read + 1;
     return { state: "ready", at, posts, earlier };

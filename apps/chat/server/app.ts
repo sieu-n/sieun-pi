@@ -1451,6 +1451,16 @@ export class App {
     void this.threads.refresh();
   }
 
+  /**
+   * The owner's page read to `seq`. A DM, channel or Solo room shows a thread reply only as its root's count, so a read past every post the
+   * room shows reads the thread replies after them too, and a reply in a thread whose root is off the page clears with the room.
+   */
+  readShown(id: ConversationId, seq?: number): void {
+    const shown = (p: RoomPost): boolean => !p.threadRoot || !!p.alsoInChannel;
+    const rooms = seq !== undefined && (isRoomId(id) || this.isGroup(id));
+    this.markRead(id, rooms && !this.agentStore.postsOf(id as RoomId).some(p => p.seq > seq && shown(p)) ? undefined : seq);
+  }
+
   /** Mark all as read: reads each room to its newest post and answers where each read point was, which `restoreReads` puts back for Undo. */
   markAllRead(ids: readonly ConversationId[]): ReadPoint[] {
     return ids.map(id => {
