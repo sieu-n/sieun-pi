@@ -9,7 +9,20 @@ on 11-06. An existing NODE_OPTIONS keeps its options, and a command that sets it
 
 import os
 
-PRELOAD = os.path.join(os.path.dirname(os.path.realpath(__file__)), "node-child", "epipe.cjs")
+
+def stable(path: str) -> str:
+    """<runtime>/releases/<sha>/<rest> as <runtime>/current/<rest> when that file exists. prime-sync prunes a retired release, and a Node
+    process a kernel started keeps its NODE_OPTIONS for life: on the Mac pm2's Vent, started from a kernel, died at preload with
+    MODULE_NOT_FOUND from 11-21 to 11-26 after its release was pruned. install-runtime swaps current by rename, so the path stays valid."""
+    parts = path.split(os.sep)
+    for i in range(len(parts) - 2):
+        if parts[i] == "sieun-pi-runtime" and parts[i + 1] == "releases":
+            moved = os.sep.join(parts[: i + 1] + ["current"] + parts[i + 3 :])
+            return moved if os.path.isfile(moved) else path
+    return path
+
+
+PRELOAD = stable(os.path.join(os.path.dirname(os.path.realpath(__file__)), "node-child", "epipe.cjs"))
 
 
 def install() -> None:

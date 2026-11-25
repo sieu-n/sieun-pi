@@ -30,13 +30,13 @@ const timer = setInterval(() => {
 """
 
 
-def loaded(base: dict) -> dict:
-    """The environment after kernel-node.py runs in a kernel whose environment was base."""
+def loaded(base: dict, file: Path = NODE_FILE) -> dict:
+    """The environment after kernel-node.py, loaded from file, runs in a kernel whose environment was base."""
     saved = dict(os.environ)
     try:
         os.environ.clear()
         os.environ.update(base)
-        exec(compile(NODE_FILE.read_text(), str(NODE_FILE), "exec"), {"__name__": "global_rules_kernel_node", "__file__": str(NODE_FILE)})
+        exec(compile(NODE_FILE.read_text(), str(file), "exec"), {"__name__": "global_rules_kernel_node", "__file__": str(file)})
         return dict(os.environ)
     finally:
         os.environ.clear()
@@ -81,6 +81,16 @@ class KernelNode(unittest.TestCase):
         once = loaded(base)["NODE_OPTIONS"]
         self.assertTrue(once.startswith("--max-old-space-size=2048 --require "))
         self.assertEqual(loaded({**base, "NODE_OPTIONS": once})["NODE_OPTIONS"], once)
+
+    def test_a_runtime_kernel_names_the_preload_through_current(self) -> None:
+        """11-21 to 11-26: the Mac's pm2 Vent kept a pruned release's epipe.cjs in NODE_OPTIONS and died at preload."""
+        src = Path("packages/sieun-rules/src")
+        runtime = Path(self.tmp) / "sieun-pi-runtime"
+        (runtime / "releases/abc" / src / "node-child").mkdir(parents=True)
+        (runtime / "releases/abc" / src / "node-child/epipe.cjs").write_text("")
+        (runtime / "current").symlink_to("releases/abc")
+        options = loaded({}, runtime / "current" / src / "kernel-node.py")["NODE_OPTIONS"]
+        self.assertEqual(options, f'--require "{runtime / "current" / src / "node-child/epipe.cjs"}"')
 
     def test_the_kernel_prelude_loads_kernel_node(self) -> None:
         self.assertTrue("kernel-node.py" in PRELUDE.read_text(), "kernel-guard.ts does not load kernel-node.py")
