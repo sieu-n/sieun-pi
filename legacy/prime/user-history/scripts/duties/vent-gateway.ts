@@ -122,8 +122,9 @@ const onBox = (location: string) => /^(box|container|unit) /.test(location);
 export const CI_VENT_INPUT = (location: string, name: string) =>
   (location === "github secrets repo" && name === "CLERK_SECRET_KEY")
   || (name === "CLERK_CI_SECRET_KEY" && (location === "github secrets repo" || location === "tier apps/ci-e2e/.env.staging"));
-/** CLOUDFLARE_COLD_SITE_TOKEN is the cold-site Worker's deploy token, which only the by-hand `wrangler deploy -c apps/cold-site/wrangler.json`
- *  in auto-sns-agent apps/cold-site/README.md reads (85f40944ff, 11-25). No app makes an outside call with it, so it stays in the infra tier. */
+/** CLOUDFLARE_COLD_SITE_TOKEN is the cold domains' ops token (85f40944ff, 11-25). Two by-hand commands in auto-sns-agent read it as
+ *  CLOUDFLARE_API_TOKEN: the cold-site Worker's `wrangler deploy -c apps/cold-site/wrangler.json` and the DNS record script
+ *  `apps/infra/mail/dns.mjs --apply` (36910a1598). No service reads it, so it stays in the infra tier. */
 export const DEPLOY_CREDENTIAL = (location: string, name: string) =>
   location === "tier apps/infra/.env" && name === "CLOUDFLARE_COLD_SITE_TOKEN";
 export const ALARM_FALLBACK = /^(unit (opensearch|pgbackrest|redis|clickhouse)[a-z0-9-]*@[a-z]+\.service|tier apps\/infra\/\.env|unit virev-services\.service|box \/usr\/local\/lib\/virev-services\/infra\.env|tier apps\/infra\/metal\/watch\/\.env\.watch|box \/srv\/obs\/secrets\/(obs|komodo)\.env|box \/srv\/[^/]+\/current\/apps\/infra\/metal\/watch\/\.env\.watch|container virev-obs-grafana|railway auto-sns-crawler\/[^/]+\/metal-watch)$/;
