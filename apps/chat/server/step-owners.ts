@@ -1,9 +1,9 @@
 /**
  * Tells each chat what nobody owns on its board: its open steps nobody moves and its red duties with no live fix, by the rules the Chat system
  * duty (d9) counts them with (legacy/prime/user-history/src/apps-step-owners.ts), as today's chat service tells a Prime chat its unmoved steps
- * (`Chats.unmoved`). A chat is told when a gap appears and again each live window while the same gaps stay, only while its own conversation is
- * idle, so the notice it reads is the board it acts on, and never while a duty run of it works. Until 11-03 the :5184 check-in only said "move each open step", and d9 found vent's p126 and chrome
- * extension's p20 each waiting with no wake and no job, which no part of the app had named to its chat.
+ * (`Chats.unmoved`). A chat is told when a gap appears and again each live window while the same gaps stay, and holds at most one notice it
+ * has not answered yet. Until 11-03 the :5184 check-in only said "move each open step", and d9 found vent's p126 and chrome extension's p20
+ * each waiting with no wake and no job, which no part of the app had named to its chat.
  */
 import { appsGapsKey, appsOwnerGaps, appsOwnerNotice, appsOwnerReads, appsStuckSteps, type AppsChat } from "../../../legacy/prime/user-history/src/apps-step-owners.ts";
 import type { PlanItem } from "../web/src/lib/api/shared/types.ts";
@@ -15,6 +15,8 @@ const TOLD_CACHE = "step-owners";
 export class StepOwners {
   /** What each chat was last told and when, kept across restarts, so a release does not tell the same gaps again inside their window. */
   private readonly told: Map<string, { key: string; at: number }>;
+  /** The chats holding a notice they have not answered yet (`Host.wait`), which get no second one. */
+  private readonly unanswered = new Set<string>();
   private running = false;
 
   constructor(private readonly boards: Boards, private readonly log: (line: string) => void = () => {}) {
@@ -73,23 +75,26 @@ export class StepOwners {
       const wakes = await this.boards.owedWakes(now);
       const links = { others: new Map(chats.map(chat => [chat.id, chat.board] as const)), chats: chats.map(chat => ({ id: chat.id, name: chat.name })) };
       for (const chat of chats) {
-        // A chat whose own conversation runs a turn, or waits in pi-pool's queue for one, is told on the first tick after it ends, built from
-        // the board as it is then. pi-host cannot take back an input it holds: from 14:13Z to 17:56Z on 11-07 vent's run waited for a slot, the
-        // app queued 10 notices as follow-ups, and all 10 reached vent at 18:00Z after its first turn had given p143, p144 and p152 a job,
-        // each quoting a waitFor that turn had cleared. A tick every 30 s finds the idle moment between turns, as the check-in does.
-        if (!chat.thread || chat.duties.some(row => row.running) || this.boards.rootRunning(chat.thread)) continue;
+        // A busy chat is told too, as one follow-up its next turn reads, and gets no second notice until it has answered that one. Until
+        // 11-26 a chat was told only while its thread and every duty run of it were idle: devops guy's 18 duties and its own turns left 22 of
+        // the 168 ticks from 20:45Z to 22:08Z on 11-25 idle, none after 21:06Z, so it was never told about p30, p53, p56 or p61. The one-notice
+        // rule keeps 11-07 from repeating, when vent's run waited for a pi-pool slot for 3 h 47 min and 10 queued notices reached it at once.
+        if (!chat.thread || this.unanswered.has(chat.id)) continue;
         const gaps = appsOwnerGaps(chat, sessions, wakes, now, { self: chat.id, ...links });
         const key = appsGapsKey(gaps);
         if (!key) { this.remember(chat.id, null); continue; }
         const window = liveWindowMs(chat.everyMs ?? Infinity);
         const last = this.told.get(chat.id);
         if (last?.key === key && now - last.at < window) continue;
-        await this.boards.host.submit(chat.thread, {
+        const thread = chat.thread;
+        await this.boards.host.submit(thread, {
           text: appsOwnerNotice(gaps, window), whenBusy: "followUp", requestId: `owners:${chat.id}:${now}`,
           entry: { kind: "agent.message", data: { from: "board", via: "owners" } },
-        }).then(() => {
+        }).then(sent => {
           this.remember(chat.id, { key, at: now });
           this.log(`owners: told ${chat.name} nobody owns ${key}`);
+          this.unanswered.add(chat.id);
+          void this.boards.host.wait(thread, sent.submission).catch(() => undefined).finally(() => this.unanswered.delete(chat.id));
         }, error => this.log(`owners: telling ${chat.name} failed: ${String(error)}`));
       }
     } finally {
