@@ -866,6 +866,12 @@ def _defuse_unsafe_handle_loads(dill: Any, defused: list[str]) -> Callable[[], N
     return undo
 
 
+def _is_builtin_alias(name: str, value: Any) -> bool:
+    import builtins
+
+    return getattr(builtins, name, _NOT_LAZY) is value
+
+
 class _SnapshotTimeExceeded(Exception):
     pass
 
@@ -1078,6 +1084,9 @@ def _snapshot_state(
                     # pruned-ness, and the write always re-measures — in-place mutation
                     # defeats any name-based size tracking from an earlier dump.
                     limit = max_variable_bytes if prune_oversized else min(max_variable_bytes, budget)
+                    if _is_builtin_alias(name, value):
+                        # print = print in globals is no user state: builtins come back on their own.
+                        continue
                     if _is_file_handle(value):
                         # A revived handle reopens its target, and a write mode truncates it (prime-agent#3447).
                         skipped.append({"name": name, "reason": "open file handle"})
@@ -1235,7 +1244,6 @@ def _revive_with_live_globals(
     """Rebind restored __main__ callables onto the live namespace, collecting
     names their saved globals carry but ns lacks as backfill for the caller
     to apply at commit (live ns values always win)."""
-    import builtins
     import functools
 
     if memo is None:
@@ -1298,7 +1306,7 @@ def _revive_with_live_globals(
                 continue
             # dill saves the builtins a function reads among its globals; written into ns, every later save and
             # revive carried print, str and len as user names (devops guy's kernels on 11-25).
-            if getattr(builtins, name, _NOT_LAZY) is dep:
+            if _is_builtin_alias(name, dep):
                 continue
             backfill.append((name, revive(dep)))
     if value.__defaults__:
@@ -1372,6 +1380,9 @@ def _restore_state(
                 value = dill.loads(blob)
             except Exception as err:  # noqa: BLE001 - revive every other name regardless
                 failed.append({"name": name, "reason": f"{type(err).__name__}: {_safe_str(err)[:200]}"})
+                continue
+            if _is_builtin_alias(name, value):
+                # Saves before 1b6c2748 carried print, str and len as user names: never write them back into globals.
                 continue
             if not defused:
                 staged[name] = value

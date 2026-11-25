@@ -1828,6 +1828,22 @@ class SnapshotSaveLoopTest(unittest.TestCase):
         done = self.snapshot(fresh, "s2")
         self.assertEqual(done["saved"], ["show"])
 
+    def test_builtins_in_globals_are_neither_saved_nor_revived(self):
+        # Saves before the fix held print, str and len as user names, and each revive wrote them back (agent factory, 11-25).
+        import dill
+
+        with open(self.path, "wb") as fh:
+            fh.write(b"PRIME-AGENT-KERNEL-SNAPSHOT-V2\n")
+            for name, value in [("print", print), ("len", len), ("x", 1)]:
+                blob = dill.dumps(value)
+                fh.write(len(name).to_bytes(4, "little") + name.encode() + len(blob).to_bytes(8, "little") + blob)
+        self.repl.send({"type": "restore", "id": "r1", "path": self.path})
+        done = one(self.repl.until_done("r1"), "done")
+        self.assertEqual(done["restored"], ["x"])
+        events = self.run_ok(self.repl, "c1", "str = str\nsorted(n for n in globals() if not n.startswith('_'))")
+        self.assertEqual(one(events, "result")["text"], "['str', 'x']")
+        self.assertEqual(self.snapshot(self.repl, "s1")["saved"], ["x"])
+
     def test_a_second_save_with_no_cell_between_is_unchanged(self):
         self.run_ok(self.repl, "c1", "x = 1")
         first = self.snapshot(self.repl, "s1")
