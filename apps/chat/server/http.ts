@@ -29,6 +29,7 @@ import type { SearchSplit } from "./search-engine.ts";
 import { isHostAway } from "./host/types.ts";
 import { readJson } from "./store.ts";
 import { usageLive, hostsQuery, hostsReport } from "./usage.ts";
+import { aboutReport } from "./about.ts";
 import { Skills } from "./skills.ts";
 import { consolesReport } from "./consoles.ts";
 import { decideBody, ReviewRefused, SkillsReview, undoBody } from "./skills-review.ts";
@@ -578,6 +579,7 @@ export function routes(app: App, parts: SkillsParts, wikiPages = new WikiPageLis
     ...accountRoutes(app, route),
     ...chatDbRoutes(() => app.moves, route),
     route("GET", "/api/hosts", async (_r, _p, q) => hostsReport(app.host, app.threads, app.config.box, app.config.socket, app.config.hostsFile, hostsQuery(q))),
+    route("GET", "/api/about", async () => aboutReport(app.host, app.config.box, app.config.dataDir)),
     route("GET", "/api/consoles", async () => consolesReport(app.config.consoles)),
     route("GET", "/api/skills", async (_r, _p, q) => viewAnswer(db, q.get("since"))),
     route("GET", "/api/skills/text", async (_r, _p, q) => textAnswer(db, q.get("since"))),

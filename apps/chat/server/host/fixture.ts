@@ -12,7 +12,8 @@
  */
 import { randomUUID } from "node:crypto";
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
-import type { TurnPlace } from "../../web/src/lib/api/types.ts";
+import type { BoxVersions, TurnPlace } from "../../web/src/lib/api/types.ts";
+import type { AboutBox } from "../about.ts";
 import { DEFAULT_MODEL } from "../config.ts";
 import type { IndexRead } from "../../../../packages/pi-host/src/durable/index-db.ts";
 import type { EntryRow } from "../search-engine.ts";
@@ -47,6 +48,32 @@ const revOf = (value: unknown): number =>
 
 const USAGE = (output: number) => ({ input: 40, output, cacheRead: 12_000, cacheWrite: 800, cost: { input: 0.00016, output: output * 0.00002, cacheRead: 0.0024, cacheWrite: 0.0064, total: 0.00896 + output * 0.00002 } });
 
+const VENDORED = { version: "0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-load.2.1-upd.3-load.3.9-test.51", sha: "d5d28f65cf82b5d71a41eea1e583a5dc495871be" };
+
+/**
+ * The fixture's About page: us-metal02 is up and answers the version read with what the real one printed on 11-25, the Mac is away, and
+ * seed.ts writes the Mac's last read 3 hours before the seed into about.json. The newest Pi on npm reads as `piLatest`.
+ */
+export const FIXTURE_ABOUT = {
+  metal: "us-metal02",
+  mac: "mac",
+  piLatest: "1.6.1",
+  metalOutput: [
+    `piHost\trelease-8ceff51\t{"sha":"8ceff51020b9667bdf0361adeb19a80083ed0f33","builtAt":"2026-11-25T20:31:22.299Z"}`,
+    `appsChat\trelease-37a7d69\t{"sha":"37a7d69023c2a5e01f17cd6e6938edd791de38a1","builtAt":"2026-11-25T20:34:54.365Z"}`,
+    `pi\t\t"version": "1.4.0",`,
+    `vendored\t * Prime's harness digest code, copied verbatim from Prime's source at ${VENDORED.sha} * (${VENDORED.version}), the release the daemon ran when this file was made:`,
+    `prime\t"version":"${VENDORED.version}","isDefault":true,`,
+  ].join("\n"),
+  macVersions: {
+    pi: "1.4.0",
+    piHost: { release: "release-05d8665", sha: "05d8665f1c2a9b8e7d6c5b4a39281706f5e4d3c2", builtAt: "2026-11-25T20:20:11.000Z" },
+    appsChat: null,
+    primeVendored: VENDORED,
+    primeDaemon: "0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-load.2.1-upd.3-load.3.9-darwin-test.51",
+  } satisfies BoxVersions,
+};
+
 export class FixtureHost implements Host, UsageSums {
   readonly name = "fixture";
   readonly threadsById = new Map<string, FakeThread>();
@@ -60,6 +87,14 @@ export class FixtureHost implements Host, UsageSums {
   /** The image the "rich" answer embeds: a file the seed wrote, or a data URL when nothing was seeded. */
   richImage = `data:image/png;base64,${TINY_PNG}`;
   now = () => Date.now();
+  readonly piLatest = async (): Promise<string> => FIXTURE_ABOUT.piLatest;
+
+  aboutBoxes(): AboutBox[] {
+    return [
+      { box: FIXTURE_ABOUT.metal, up: true, check: async () => ({ ok: true, output: FIXTURE_ABOUT.metalOutput }) },
+      { box: FIXTURE_ABOUT.mac, up: false, check: async () => { throw new Error("mac is away"); } },
+    ];
+  }
 
   // Seeding
 

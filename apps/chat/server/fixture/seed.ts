@@ -8,7 +8,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ChatBoard, PlanItem } from "../../web/src/lib/api/types.ts";
 import type { Duty, DutyRunRecord } from "../../web/src/lib/api/shared/chat-duties.ts";
-import { richReply, type FixtureHost } from "../host/fixture.ts";
+import { FIXTURE_ABOUT, richReply, type FixtureHost } from "../host/fixture.ts";
+import { ABOUT_FILE } from "../about.ts";
 import type { ContentBlock, EntryRecord, Message } from "../host/types.ts";
 import { runStamp } from "../duty-run.ts";
 import { agentFolderDir, harnessNow, harnessPath, harnessSlug, writeBrief } from "../agent-folder.ts";
@@ -68,6 +69,7 @@ const usage = (output: number) => ({ input: 40, output, cacheRead: 12_000, cache
 export function seedFixture(host: FixtureHost, dataDir: string, now = Date.now(), box = "fixture"): void {
   const ids = FIXTURE_IDS;
   const at = (daysAgo: number, hours = 0) => now - daysAgo * DAY + hours * HOUR;
+  writeJson(join(dataDir, ABOUT_FILE), { boxes: { [FIXTURE_ABOUT.mac]: { readAt: now - 3 * HOUR, versions: FIXTURE_ABOUT.macVersions } }, piLatest: null });
   type T = ReturnType<FixtureHost["addThread"]>;
   const user = (t: T, conv: number, text: string, when: number, images = false): EntryRecord =>
     host.append(t, conv, { kind: "pi.user", model: [{ role: "user", content: [{ type: "text", text }, ...(images ? [{ type: "image" as const, data: PNG, mimeType: "image/png" }] : [])], timestamp: when }] });
