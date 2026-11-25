@@ -142,6 +142,21 @@ class WaitForASlot(unittest.TestCase):
         self.assertIn("this session waits for its slot at 1970-01-01T00:39:33.000Z", message["errorMessage"])
         self.assertIn("Try again in 23 minutes.", message["errorMessage"])
 
+    def test_a_hook_failure_retries_when_who_gives_no_answer(self):
+        """11-25 17:24:34Z: the Mac slept 579 s inside a hook run, Prime's 10 s timeout killed it on wake, and the
+        `who` run that should clear the failure gave no answer either. The tag stayed on, so designer bro's turn
+        ended until a new message came 16 min later. A failed `who` now gives the plain hook retry."""
+        text = 'Failed to resolve API key for provider "anthropic" from shell command: /Users/x/.config/pi-pool/bin/pi-pool-token'
+        run = drive({"op": "start", "name": "ui"},
+                    {"op": "fail", "verb": "who"},
+                    {"op": "message", "name": "ui", "message": {
+                        "role": "assistant", "stopReason": "error", "provider": "anthropic", "errorMessage": text,
+                        "diagnostics": [{"type": "agent_lifecycle_failure"}]}})
+        [message] = run["messages"]
+        self.assertIsNotNone(message)
+        self.assertEqual(message["diagnostics"], [])
+        self.assertIn("the retry uses a new hook run", message["errorMessage"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -138,7 +138,7 @@ interface WhoProvider {
 type WhoReply = { providers?: Record<string, WhoProvider> };
 
 /** One `who` run, shared by every session in this process. */
-interface WhoRun { startedAt: number; done: boolean; reply: Promise<WhoReply | undefined> }
+interface WhoRun { startedAt: number; done: boolean; answered: boolean; reply: Promise<WhoReply | undefined> }
 
 // On globalThis, so every load of this extension in one process shares the run.
 const WHO_RUN: unique symbol = Symbol.for("pi-pool.who-run");
@@ -150,14 +150,21 @@ const shared = globalThis as typeof globalThis & { [WHO_RUN]?: WhoRun };
  * this session just made.
  */
 function who(fresh: boolean): Promise<WhoReply | undefined> {
+	return whoRun(fresh).reply;
+}
+
+/** `answered` stays false when the CLI printed no JSON, as when its timeout killed it; a reply that breaks the contract still counts as answered. */
+function whoRun(fresh: boolean): WhoRun {
 	const last = shared[WHO_RUN];
-	if (last && !fresh && (!last.done || Date.now() - last.startedAt < STATUS_REFRESH_MS)) return last.reply;
+	if (last && !fresh && (!last.done || Date.now() - last.startedAt < STATUS_REFRESH_MS)) return last;
 	const run: WhoRun = {
 		startedAt: Date.now(),
 		done: false,
+		answered: false,
 		reply: pool(["who", "--json"])
 			.then((res) => {
 				const reply = JSON.parse(res.out) as WhoReply;
+				run.answered = true;
 				if (Object.values(reply.providers ?? {}).some((info) => !isSelection(info.selection))) return undefined;
 				return reply;
 			})
@@ -167,7 +174,7 @@ function who(fresh: boolean): Promise<WhoReply | undefined> {
 			}),
 	};
 	shared[WHO_RUN] = run;
-	return run.reply;
+	return run;
 }
 
 /** A person can see this session's widget: a UI is bound and the session is no RLM child. */
@@ -407,8 +414,10 @@ async function retryHookFailure(message: AgentMessage, slotWait: SlotWait = plai
 	if (message.role !== "assistant" || message.stopReason !== "error" || !POOLED_PROVIDERS.has(message.provider)) return undefined;
 	if (!HOOK_FAILED.test(message.errorMessage ?? "")) return undefined;
 	if (!message.diagnostics?.some((diagnostic) => diagnostic.type === "agent_lifecycle_failure")) return undefined;
-	const info = (await who(true))?.providers?.[message.provider];
-	if (!info) return undefined;
+	const run = whoRun(true);
+	const info = (await run.reply)?.providers?.[message.provider];
+	// A `who` run that printed nothing says nothing about a wait. On 11-25 the Mac slept through the hook and this run, and a kept tag ended the turn.
+	if (!info) return run.answered ? undefined : hookRetry(message);
 	const wait = info.wait;
 	if (info.selection.mode === "manual") {
 		// A wait for this exact pin is transient; an old wait or an auth refusal is not.
@@ -426,10 +435,14 @@ async function retryHookFailure(message: AgentMessage, slotWait: SlotWait = plai
 		const said = `pi-pool: this session waits for its slot at ${new Date(wait.slot_at * 1000).toISOString()}.`;
 		return slotWait(message, message.errorMessage ?? "", said, {}, wait.slot_at, undefined);
 	}
+	return hookRetry(message);
+}
+
+function hookRetry(message: AssistantMessage): AgentMessage {
 	return {
 		...message,
 		errorMessage: `${message.errorMessage} pi-pool: the token hook gave no token; the retry uses a new hook run.`,
-		diagnostics: message.diagnostics.filter((diagnostic) => diagnostic.type !== "agent_lifecycle_failure"),
+		diagnostics: (message.diagnostics ?? []).filter((diagnostic) => diagnostic.type !== "agent_lifecycle_failure"),
 	};
 }
 

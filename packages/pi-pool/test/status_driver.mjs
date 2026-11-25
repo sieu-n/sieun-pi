@@ -10,6 +10,7 @@ const calls = [];
 const messages = [];
 const times = [];
 let pending = 0;
+const failing = new Set();
 const replies = {
   who: { providers: { anthropic: { selection: { mode: 'auto' }, current: { id: 'a', email: 'a@x', label: 'a@x', session_pct: 10, weekly_pct: 5, gated_pct: 1, next: false } } } },
   ls: { provider: 'anthropic', session: null, selection: { mode: 'auto' }, rows: [{ id: 'a', email: 'a@x', label: 'a@x', usage: '', session_pct: 10, weekly_pct: 5, gated_pct: 1, disabled: false, usable: true, reason: null, current: true, pinned: false, live: false, score: 1 }] },
@@ -22,7 +23,8 @@ childProcess.execFile = (_bin, args, _options, callback) => {
   pending += 1;
   setImmediate(() => {
     pending -= 1;
-    callback(null, JSON.stringify(replies[verb] ?? {}), '');
+    if (failing.has(verb)) callback(Object.assign(new Error(`Command failed: ${verb}`), { killed: true, signal: 'SIGTERM' }), '', '');
+    else callback(null, JSON.stringify(replies[verb] ?? {}), '');
   });
 };
 syncBuiltinESMExports();
@@ -103,6 +105,9 @@ for (const step of steps) {
     now += step.ms;
   } else if (step.op === 'reply') {
     replies[step.verb] = step.reply;
+  } else if (step.op === 'fail') {
+    // The CLI run ends with no answer, as when its 10 s timeout kills it after the Mac slept.
+    failing.add(step.verb);
   } else if (step.op === 'message') {
     const session = sessions.get(step.name);
     const message = { ...step.message, timestamp: now };
