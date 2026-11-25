@@ -122,6 +122,10 @@ const onBox = (location: string) => /^(box|container|unit) /.test(location);
 export const CI_VENT_INPUT = (location: string, name: string) =>
   (location === "github secrets repo" && name === "CLERK_SECRET_KEY")
   || (name === "CLERK_CI_SECRET_KEY" && (location === "github secrets repo" || location === "tier apps/ci-e2e/.env.staging"));
+/** CLOUDFLARE_COLD_SITE_TOKEN is the cold-site Worker's deploy token, which only the by-hand `wrangler deploy -c apps/cold-site/wrangler.json`
+ *  in auto-sns-agent apps/cold-site/README.md reads (85f40944ff, 11-25). No app makes an outside call with it, so it stays in the infra tier. */
+export const DEPLOY_CREDENTIAL = (location: string, name: string) =>
+  location === "tier apps/infra/.env" && name === "CLOUDFLARE_COLD_SITE_TOKEN";
 export const ALARM_FALLBACK = /^(unit (opensearch|pgbackrest|redis|clickhouse)[a-z0-9-]*@[a-z]+\.service|tier apps\/infra\/\.env|unit virev-services\.service|box \/usr\/local\/lib\/virev-services\/infra\.env|tier apps\/infra\/metal\/watch\/\.env\.watch|box \/srv\/obs\/secrets\/(obs|komodo)\.env|box \/srv\/[^/]+\/current\/apps\/infra\/metal\/watch\/\.env\.watch|container virev-obs-grafana|railway auto-sns-crawler\/[^/]+\/metal-watch)$/;
 
 /** Vent's own homes: its Railway service, its tier files, its secrets on the box and its containers. */
@@ -426,7 +430,7 @@ export function ventMetrics(reads: VentReads, at: number): VentGatewayOutput {
     if (!inScope(location)) continue;
     n.provider_keys_outside_vent += names.length;
     const here = names.filter(name => (providerKey(name, reads.keys.classOf) || (BOX_PLATFORM.test(name) && onBox(location))) && !(ALARM_SLACK.test(name) && ALARM_FALLBACK.test(location)) && !CI_VENT_INPUT(location, name)
-      && !OTHER_PROJECT_KEY.test(name) && !CLIPROXY_SERVER(location, name));
+      && !OTHER_PROJECT_KEY.test(name) && !CLIPROXY_SERVER(location, name) && !DEPLOY_CREDENTIAL(location, name));
     for (const name of here) leaks.push(`${location} ${name}`);
     if (here.length) flagged.push({ at, kind: "key_outside_vent", item: location, excerpt: `${location} still holds ${here.join(", ")}`.slice(0, 300) });
   }

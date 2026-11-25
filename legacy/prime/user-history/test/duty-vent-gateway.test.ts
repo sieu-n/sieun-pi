@@ -104,6 +104,19 @@ test("slack.green, tokscale and the CLIProxy servers keep their keys out of the 
   assert.equal(output.metrics.provider_keys_outside_vent, 3);
 });
 
+// d1 of 11-26 read 1 from CLOUDFLARE_COLD_SITE_TOKEN, the cold-site Worker's wrangler deploy token (auto-sns-agent 85f40944ff).
+test("the cold-site deploy token counts only outside the infra tier", () => {
+  const keys = { locations: {
+    "tier apps/infra/.env": ["CLOUDFLARE_COLD_SITE_TOKEN"],
+    "tier apps/search/.env": ["CLOUDFLARE_COLD_SITE_TOKEN"],
+  }, unreadable: {}, classOf: () => "provider" };
+  const output = ventMetrics(reads({ keys }), 0);
+  assert.deepEqual(output.flagged!.filter(slice => slice.kind === "key_outside_vent").map(slice => slice.excerpt), [
+    "tier apps/search/.env still holds CLOUDFLARE_COLD_SITE_TOKEN",
+  ]);
+  assert.equal(output.metrics.provider_keys_outside_vent, 1);
+});
+
 // d1 of 11-24 read 3 more after the Komodo move: komodo.env now carries the names release.env and obs.env used to (auto-sns-agent 096ed58f93).
 test("the Komodo env files keep the CLIProxy server keys and Grafana's Slack fallback, and other keys there still count", () => {
   const keys = { locations: {
