@@ -256,6 +256,9 @@ test("rules: a clear merge read by the kept skill's runtimes and an unused skill
       copy("/home/x/.codex/skills/ship-old", "ship", body("ship"), ["codex"]),
       copy("/home/x/.claude/skills/ship-again", "ship", body("ship"), ["claude"]),
       copy("/home/x/notes/skills/lonely", "lonely", body("lonely"), []),
+      copy("/home/x/code/kit-old/notes/stray", "stray", body("stray"), [], {
+        checkout: { ...checkout, root: "/home/x/code/kit-old", headAt: "2026-09-01T00:00:00Z", upstreamAt: null, fetchedAt: null, tracked: false, dirty: 1 },
+      }),
       copy("/home/x/.claude/skills/weak", "weak", body("weak"), ["claude"]),
     ],
   });
@@ -265,6 +268,7 @@ test("rules: a clear merge read by the kept skill's runtimes and an unused skill
   assert.ok(shown("/home/x/.claude/skills/ship-again", "duplicate").includes("remove:auto"), "Claude Code reads the kept ship through its link");
   assert.ok(shown("/home/x/.codex/skills/ship-old", "duplicate").every(a => a === "remove"), "no kept folder outside the repo is one Codex reads");
   assert.deepEqual(shown("/home/x/notes/skills/lonely", "unused"), ["remove:auto"]);
+  assert.deepEqual(shown("/home/x/code/kit-old/notes/stray", "unused"), ["review-description"], "a skill in a stale clone with work in it is the stale-clone rule's, never a whole-skill removal");
   assert.deepEqual(shown("/home/x/.claude/skills/weak", "unused"), ["review-description"]);
   assert.deepEqual(shown(src, "unused"), [], "a used skill carries no unused verdict");
 });

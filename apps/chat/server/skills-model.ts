@@ -522,6 +522,9 @@ export function verdicts(input: VerdictInput): Map<string, SkillVerdictRow[]> {
   const copiesOf = new Map<string, CopyFact[]>();
   for (const c of input.copies) copiesOf.set(c.key, [...(copiesOf.get(c.key) ?? []), c]);
   const canTrash = (c: CopyFact) => trashable(c);
+  // A whole skill goes only when no folder of it sits in a stale clone: `sw skills remove` of a skill leaves a stale source in place and
+  // drops the row, so its folders there would lose their row while a clone with unpushed work keeps them. The stale-clone rule takes those.
+  const wholeSkill = (folders: readonly CopyFact[]) => folders.length > 0 && folders.every(c => !c.stale && trashable(c));
   for (const c of input.copies) {
     if (c.linkTarget !== null && !c.exists) {
       const skill = byId.has(c.key) ? c.key : null;
@@ -563,7 +566,7 @@ export function verdicts(input: VerdictInput): Map<string, SkillVerdictRow[]> {
       const mine = copiesOf.get(skill.id) ?? [];
       const read = input.installed.has(skill.id) || mine.some(c => c.runtimes.length > 0);
       if (isUpstream(skill.source)) add(skill.id, { rule: "unused", action: "note", detail: "No session opened or called it in 30 days.", copyId: null, other: null });
-      else if (!read && mine.length && mine.every(canTrash)) {
+      else if (!read && wholeSkill(mine)) {
         add(skill.id, { rule: "unused", action: "remove", detail: "No session opened or called it in 30 days, and no runtime reads any folder of it, so the server removes it.", copyId: null, other: null }, true);
       } else add(skill.id, { rule: "unused", action: "review-description", detail: "No session opened or called it in 30 days; its description may be too weak for agents to pick it, so review it before any removal.", copyId: null, other: null });
     }
@@ -604,7 +607,7 @@ export function verdicts(input: VerdictInput): Map<string, SkillVerdictRow[]> {
           const unread = !input.installed.has(extra.skill.id) && folders.every(c => !c.runtimes.length);
           const keptReads = new Set((copiesOf.get(keep.skill.id) ?? []).filter(c => c.exists && !c.checkout).flatMap(c => c.runtimes.map(r => `${c.box}:${r}`)));
           const covered = folders.filter(c => !c.checkout).every(c => c.runtimes.every(r => keptReads.has(`${c.box}:${r}`)));
-          const auto = !isUpstream(extra.skill.source) && folders.every(canTrash) && (unread || (sameName && covered));
+          const auto = !isUpstream(extra.skill.source) && wholeSkill(folders) && (unread || (sameName && covered));
           add(extra.skill.id, {
             rule, action: "remove", copyId: copyId(extra.copy), other: keep.skill.id,
             detail: `${detail} It adds no line ${keep.skill.id} lacks, so ${auto ? "the server removes it" : "removing it leaves one skill; it needs a commit or an install move, so remove it with sw skills remove"}.`,
