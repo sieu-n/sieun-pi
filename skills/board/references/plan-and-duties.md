@@ -118,6 +118,7 @@ The duties hold the upkeep in his words.
 6. A miss it cannot fix inside the run becomes a fix step on the plan with a job, which closes when the metric is met again.
 7. A precheck that cannot read a box because Tailscale lists it offline, such as the owner's sleeping MacBook Pro, flags a `host_away` item with the box's hosts.json name. In a Prime chat the runner reruns the duty at the first tick Tailscale reads that box online, so nobody wakes it, and in sw factory the duty's next scheduled run reads the box again.
 8. A headline metric with no value for over 24 h makes every run read error, red on the card, whatever the other metrics read.
+9. A precheck writes `n` at the top of its JSON output, the count of things the run measured (calls, pages, rows or posts read), or an object of one count per metric. A met run on n = 0 measured nothing, as mcp's d1 read 100% success on 6 of 7 days with no customer call, and agent factory's d7 flags each run with no `n`.
 
 ## Pursue completion
 
