@@ -1,0 +1,38 @@
+{
+  "name": "5180 parity",
+  "ownerWords": "#search-design (ch_6ce9929c) p3, 11-25: \"@5180 designer is 5180 5174 staging prod in parity? 지금 온보딩 등등 개선하고 싶은데 어디서부터 봐야 해?\"\n\n#search-design purpose (p1): \"make the UI mockup in demo (5180) app which gets released periodically\"\n\n#dev-api-portal p25: \"your duty is to keep watching and monitoring this. think of duty as copy pasting this prompt every day.\"",
+  "goal": "Each day, answer the owner's p3 again: is 5180 in parity with 5174, staging and prod, onboarding first. Prod, staging and 5174 run the same apps/search code, so the answer is about 5180. 5180's pin trails staging by at most 4 days, onboarding runs end to end with no broken step on 5180 and on staging.virev.ai, and 5180's Shipped line shows the same onboarding and Home as staging. 5180's uptime and page speed are frontend bro's d1, so this duty does not count them.",
+  "metrics": [
+    {
+      "key": "pin_behind_h",
+      "label": "Hours since the oldest staging land on apps/search or convex that 5180's pin lacks (0 when it lacks none)",
+      "op": "<=",
+      "target": 96,
+      "unit": " h",
+      "headline": true
+    },
+    {
+      "key": "onboarding_problems",
+      "label": "Broken onboarding steps in the last walk on 5180 and staging.virev.ai, plus 1 while no walk in 48 h",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "shipped_differences",
+      "label": "Differences between 5180's Shipped line and staging on onboarding and Home in the last walk, plus 1 while no walk in 48 h",
+      "op": "<=",
+      "target": 0
+    }
+  ],
+  "precheck": {
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "scripts/duties/demo-parity-box.ts"
+    ],
+    "cwd": "../..",
+    "timeoutMs": 120000
+  },
+  "onMiss": "The duty belongs to the agent 5180 designer. 5180 and its checkout live on the owner's Mac (~/Documents/Github/auto-sns-agent, branch dev/sieun-mac), so the precheck runs sieun-pi's legacy/prime/user-history/scripts/duties/demo-parity.ts there over `ssh mac` (demo-parity-box.ts). pin_behind_h target 96 h: the last four pin moves (11-18, 11-20, 11-22, 11-25 KST) came 1.5, 2.4 and 3.4 days apart, and each pinned a staging land under 8 h old, so the oldest missing land was at most about 89 h old before a move. A pin_behind_h miss is never fixed by this agent: 5180 designer never edits apps/virev-demo/PIN or FOLLOW and never runs pin:refresh. Send 5180 port metal (Prime session 01a18aaa-e5b2-7668-9088-8a5700e00882) one message with the pin_behind slice (pin, commits behind, staging tip) and the ask to move the pin to the staging tip; reach it with agent_message.send(receiver_role='sibling', receiver_name='5180 port metal') when agent_observe.list_agents lists it, else send the ask to the 5180 designer work thread 4f9dad47-ee36-446b-a689-7611335e0354 to pass on. A pin_not_live slice means the move is committed but 5180 did not restart onto it; tell port metal the same way. A walk_due slice (no walk, a walk over 20 h old, or a walk on another pin) means walk now, the way the 11-25 parity walk did (~/.pi/agent/agents/5180-designer/work/parity-walk/compare.md on the Mac): a headful aside-browser walk, never headless (c177). Walk onboarding end to end on staging.virev.ai as a throwaway Clerk user signed in with a sign-in ticket and deleted after, and on http://<job>.localhost:5180/app/welcome on both the Shipped line (v.onboarding=shipped) and the Staging line, then Home on staging and on 5180's Shipped line. Open each shot and compare 5180 Shipped with staging screen by screen. Save the walk as JSON to ~/.pi/agent/agents/5180-designer/work/duties/parity-walk.json on the Mac: {at (ISO), pin (the sha /__demo/health names), staging (the revision staging.virev.ai/health names), onboardingProblems: [{env: '5180-shipped'|'5180-staging'|'staging', step, what, shot?}], shippedDifferences: [{screen: 'onboarding'|'home', what, shot5180?, shotStaging?}]}, with shots beside it under work/duties/parity-walk/<date>/. Count as a problem only a step that breaks, shows wrong data or copy, or cannot be reached, and as a difference only what the owner would see differ between 5180 Shipped and staging, never data that differs by world. Each 5180 problem or difference is 5180 designer's to fix on dev/sieun-mac: start one fix job per screen, or steer its live one. A problem that shows on staging too is the real app's, so name it in the report for the owner and leave it to sep launch bro; never port anything to 5174, staging or prod (c24, c179). After the walk, post one short line to the 5180 designer work thread with the three numbers and where the owner should start, so p3 gets its daily answer. A Mac that Tailscale lists asleep gives a host_away item and the duty reruns once it is back; never wake the Mac."
+}
