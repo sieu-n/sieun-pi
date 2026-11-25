@@ -19,7 +19,7 @@ import { boardAfterDelta, boardKey, boardsParam } from "./shared/board-delta.ts"
 import type { BoardView, LiveEvent } from "./types.ts";
 
 /** The page-db.ts cache the answers go to, so a page load shows them at once and its first read of each is a refresh behind them. */
-const STORED = "kept";
+export const STORED = "kept";
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 /**

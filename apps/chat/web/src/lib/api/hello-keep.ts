@@ -17,7 +17,7 @@ type Keyed = { readonly id: string };
 /** The page-db.ts cache of the kept buckets; a record's key is `<list>/<bucket>`. */
 export const HELLO_BUCKET_CACHE = "hello-bucket";
 /** The one record that held both whole lists before, under cache and key `hello`, which a page load drops. */
-const OLD_RECORD = "hello";
+export const OLD_RECORD = "hello";
 
 /** One kept bucket: its items in list order and its digest. */
 interface KeptBucket { items: Keyed[]; digest: string }

@@ -49,10 +49,18 @@ const isKept = (value: unknown): value is KeptPage => {
   return typeof page?.cache === "string" && typeof page.key === "string" && typeof page.at === "number" && page.value !== undefined;
 };
 
+/** The kept pages of one cache, read in a transaction of their own. */
+const cachePages = (cache: string): Promise<unknown[]> =>
+  run<unknown[]>("readonly", store => store.getAll(IDBKeyRange.bound([cache], [cache, []]))).catch(() => []);
+
 export const pageDb = {
-  /** Every kept page, the oldest first. */
-  all: (): Promise<KeptPage[]> =>
-    run<unknown[]>("readonly", store => store.getAll()).then(pages => pages.filter(isKept).sort((a, b) => a.at - b.at), () => []),
+  /**
+   * Every kept page of `caches`, the oldest first. Each cache is read in its own transaction, so the browser takes each one's records in a
+   * task of its own: on 11-25 one read of all 652 records (2.6 MB of hello buckets, 2.1 MB of panels, 0.7 MB of timelines) took 36 to
+   * 45 ms of a reload's first task at CPU rate 1 and 159 ms at rate 4 (~/work/p300-channel-open/trace-summary.md).
+   */
+  all: (caches: readonly string[]): Promise<KeptPage[]> =>
+    Promise.all(caches.map(cachePages)).then(lists => lists.flat().filter(isKept).sort((a, b) => a.at - b.at)),
   /**
    * A write holds a reload for a newer build until it lands, since a write started as the page goes away never does: on 11-23 a reload as
    * his thread reply landed brought back the room without the root's new thread pill, and its open waited a round trip (work/p278-thread-open).

@@ -30,7 +30,17 @@
     return [...shownNavs];
   });
 
-  let bodyWidth = $state(1440);
+  /**
+   * The body's width, from a ResizeObserver, which reports it after the browser's own layout before the first paint. A `bind:clientWidth`
+   * also read it as the app mounted, which forced a layout of the whole new page inside the mount's task: 22 ms at CPU rate 1 and 120 ms
+   * at rate 4 on 11-25 (~/work/p300-channel-open/trace-summary.md).
+   */
+  let bodyWidth = $state(window.innerWidth);
+  function observeWidth(body: HTMLElement) {
+    const observer = new ResizeObserver(() => (bodyWidth = body.clientWidth));
+    observer.observe(body);
+    return () => observer.disconnect();
+  }
   /** The main panel keeps at least this much room when the side panel grows. */
   const MAIN_MIN = 420;
   /** Below this window width the side panel floats over the main panel. */
@@ -55,7 +65,7 @@
 
 <div class="shell texture-dots" data-layout={narrow ? "narrow" : overlay ? "overlay" : "wide"}>
   <TopBar {ownerName} hasSidebar={Nav !== null} />
-  <div class="body" bind:clientWidth={bodyWidth}>
+  <div class="body" {@attach observeWidth}>
     {#if Nav}
       {#if narrow && sidebar.drawerOpen}
         <button class="scrim" type="button" aria-label="Close sidebar" onclick={() => (sidebar.drawerOpen = false)}></button>

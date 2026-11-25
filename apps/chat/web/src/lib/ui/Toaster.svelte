@@ -7,13 +7,14 @@
   let toaster = $state<HTMLDivElement>();
   /**
    * The toaster is a manual popover in the top layer, shown again for each new toast, so a toast lands above an open modal dialog instead
-   * of under its backdrop.
+   * of under its backdrop. With no toast it stays closed: showing it as the app mounted forced a layout of the whole new page inside the
+   * mount's task, 17 ms on the fixture (test/shell/mount-tasks.spec.ts).
    */
   $effect(() => {
-    void toast.items.length;
+    const shown = toast.items.length > 0;
     if (!toaster?.showPopover) return;
     if (toaster.matches(":popover-open")) toaster.hidePopover();
-    toaster.showPopover();
+    if (shown) toaster.showPopover();
   });
 
   /** The toast whose button menu is open, such as a reminder's Snooze, with the button it opens above. */

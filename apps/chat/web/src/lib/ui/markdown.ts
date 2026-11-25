@@ -733,6 +733,31 @@ export function renderMarkdown(text: string, context: MarkdownContext = {}): str
   });
 }
 
+/** A post with each kind of block and inline markdown, which `warmMarkdown` renders once. */
+const WARM_TEXT = [
+  "# Heading", "Some **bold**, _em_, ~~gone~~, `code`, a [link](https://example.com), <https://example.com/x>, wiki:notes/a, [[notes/b]], :eyes:, p12 and @someone.",
+  "- one\n- [ ] two\n  1. three", "> [!NOTE]\n> quote", "| a | b |\n|---|---|\n| 1 | 2 |", "```ts\nconst x = 1;\n```", "<details><summary>more</summary>\n\ntext\n</details>",
+  "apps/chat/server/http.ts:42 and localhost:5180/x", "---", "Line one\nline two",
+].join("\n\n");
+
+/**
+ * Renders `WARM_TEXT` once in each mode and keeps nothing, so the page's first posts find marked's rules and DOMPurify set up. main.ts runs
+ * it in a task of its own while IndexedDB reads the kept pages: on 11-25 the first render of a reload's 3 posts took 30 ms of the 164 to
+ * 196 ms task that mounted #1124-cost-management at CPU rate 1, and 40 ms of 800 ms at rate 4 (~/work/p300-channel-open/trace-summary.md).
+ */
+export function warmMarkdown(): void {
+  const modes: MarkdownContext[] = [{}, { plain: true }];
+  for (const context of modes) {
+    ctx = context;
+    try {
+      sanitize(marked.parse(WARM_TEXT, { async: false, breaks: !!context.plain }));
+      sanitize(marked.parseInline(WARM_TEXT, { async: false, breaks: true }));
+    } finally {
+      ctx = {};
+    }
+  }
+}
+
 /** Inline markdown only (links, code, bold, chips, line breaks), for one-line rows and the owner's own bubbles. */
 export function renderInline(text: string, context: MarkdownContext = {}): string {
   return cached(`i${contextKey(context)}\0${text}`, () => {

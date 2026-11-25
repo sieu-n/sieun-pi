@@ -7,13 +7,13 @@
  * upload ends, and the post names the uploaded ref.
  */
 import { AHEAD_LANE, api, ApiError, attach, attachedFacts, dropAhead, isSoloRoom, reads, reportNotDelivered, roomOf, shownRef, takeOver, type Attached, type Read, type Wait } from "./client.ts";
-import { heldBoards, kept, restoreKept, type Kept } from "./kept.svelte.ts";
+import { heldBoards, kept, restoreKept, STORED as KEPT_CACHE, type Kept } from "./kept.svelte.ts";
 import { heldImages } from "./held-images.ts";
 import { pageDb, type KeptPage } from "./page-db.ts";
 import { heldSends, type HeldSend } from "./held-sends.ts";
 import { holdReload, releaseReload } from "./reload.ts";
 import { live } from "./live.svelte.ts";
-import { HeldList, keepBuckets, keptLists } from "./hello-keep.ts";
+import { HELLO_BUCKET_CACHE, HeldList, keepBuckets, keptLists, OLD_RECORD } from "./hello-keep.ts";
 import { mergeBuckets, untimed, type Timed } from "./shared/hello-buckets.ts";
 import { boardAfterDelta, boardKey, boardsParam } from "./shared/board-delta.ts";
 import { SvelteMap } from "svelte/reactivity";
@@ -789,7 +789,7 @@ const repliesPages = new PageCache<RepliesRead, RepliesShown>("replies", 200);
  * listening, so its first hello names the kept pages and reaches them (live.svelte.ts `on`).
  */
 export async function restorePages(): Promise<void> {
-  const pages = await pageDb.all();
+  const pages = await pageDb.all([timelinePages.name, repliesPages.name, KEPT_CACHE, HELLO_BUCKET_CACHE, OLD_RECORD]);
   timelinePages.restore(pages);
   repliesPages.restore(pages);
   restoreKept(pages);
