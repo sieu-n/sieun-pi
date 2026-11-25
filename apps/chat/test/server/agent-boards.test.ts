@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  agentBoards, agentPattern, askHeld, asksTo, duplicateJobs, ongoingAsk, dutyCoverage, liveDuty, overdueDuty, pauseReason, readAreas, readWiki, sampleSize, stalePause, unfixedMisses, wikiClutter,
+  AREA_REVIEW_N_SINCE, agentBoards, agentPattern, askHeld, asksTo, duplicateJobs, ongoingAsk, dutyCoverage, liveDuty, overdueDuty, pauseReason, readAreas, readWiki, sampleSize, stalePause, unfixedMisses, wikiClutter,
   type Ask, type DutyRow,
 } from "../../scripts/duties/agent-boards.ts";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
@@ -318,7 +318,8 @@ test("no brief, no area and no owner ask is no area whatever duties another job 
   };
   const out = agentPattern([
     { agent: { id: "ag_feature-probe", name: "feature probe" }, duties: [review], checkIn: push },
-    { agent: { id: "ag_seo", name: "seo" }, brief: "SEO", duties: [review], checkIn: push, outputs: { d1: true }, samples: { d1: null } },
+    // A review run after release-11e4c28, so its missing n counts (AREA_REVIEW_N_SINCE).
+    { agent: { id: "ag_seo", name: "seo" }, brief: "SEO", duties: [{ ...review, runs: [{ ...review.runs[0]!, at: AREA_REVIEW_N_SINCE + HOUR }] }], checkIn: push, outputs: { d1: true }, samples: { d1: null } },
   ], [], NOW);
   assert.deepEqual(out.flagged.filter(flag => flag.item === "ag_feature-probe").map(flag => flag.kind), ["no_area"]);
   assert.equal(out.metrics.agents_without_area, 1);
@@ -358,4 +359,15 @@ test("an ask another agent's live duty quotes is held, and its item names that a
     { agent: { id: "ag_product-analytics-bot", name: "product analytics bot" }, brief: "Analytics", duties: [{ ...usage, paused: true }] },
   ], [], NOW);
   assert.equal(paused.metrics.asks_unheld, 1);
+});
+
+test("a missing n on an Area review run from before release-11e4c28 is not flagged; a later one and any other duty's newest run are", () => {
+  const review = (at: number): DutyRow => ({ duty: { id: "d2", name: "Area review", status: "active" }, paused: false, runs: [{ verdict: "met", at, metrics: { corrections_unsaved: { value: 0 } } }] });
+  const other: DutyRow = { duty: { id: "d1", name: "Prod MCP", status: "active" }, paused: false, runs: [{ verdict: "met", at: AREA_REVIEW_N_SINCE - HOUR }] };
+  const out = agentPattern([
+    { agent: { id: "ag_mcp", name: "mcp" }, brief: "MCP", duties: [review(AREA_REVIEW_N_SINCE - HOUR), other], samples: { d2: null, d1: null } },
+    { agent: { id: "ag_seo", name: "seo" }, brief: "SEO", duties: [review(AREA_REVIEW_N_SINCE + HOUR)], samples: { d2: null } },
+  ], [], AREA_REVIEW_N_SINCE + 2 * HOUR);
+  assert.deepEqual(out.flagged.filter(flag => flag.kind === "no_sample_size").map(flag => flag.sig), ["ag_mcp/d1/n", "ag_seo/d2/n"]);
+  assert.equal(out.metrics.runs_without_n, 2);
 });

@@ -122,6 +122,8 @@ export const AREA_REVIEW = "Area review";
 export const PUSH_MAX_MS = 180 * 60_000;
 /** The readings area-review.ts writes for the agent's own wiki pages and memory changed in the last 24 h. */
 export const REVIEW_READINGS = ["wiki_pages_touched_24h", "memory_changed_24h"] as const;
+/** When the shared Area review precheck began to write n: release-11e4c28 of apps/chat went live at 2026-11-25 20:54Z. */
+export const AREA_REVIEW_N_SINCE = Date.parse("2026-11-25T20:54:00Z");
 
 /** An agent's check-in: `everyMs` is its interval now (daily while its plan is empty), `planEveryMs` the interval it keeps for a plan. */
 export interface PushRead { everyMs: number; planEveryMs?: number; paused: boolean; lastAt: number | null; runs?: { at: number }[] }
@@ -278,6 +280,9 @@ export function agentPattern(agents: readonly AgentRead[], areas: readonly Agent
       }
       if (pausedDuty(row) || !(row.duty.id in samples)) continue;
       const n = samples[row.duty.id];
+      const newest = row.runs.find(run => run.verdict !== "skipped");
+      // The shared Area review precheck writes n since release-11e4c28, live at 2026-11-25 20:54Z; an older review run cannot hold it.
+      if (n === null && row.duty.name === AREA_REVIEW && (newest?.at ?? 0) < AREA_REVIEW_N_SINCE) continue;
       if (n === null) {
         noN += 1;
         flag("no_sample_size", `${row.duty.id}/n`, `${row.duty.id} "${row.duty.name}" writes no sample size n in its precheck output, so a met run on no input looks green`);
