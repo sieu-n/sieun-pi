@@ -28,12 +28,14 @@ describe("an agent's read_post on the fixture server", () => {
     assert.equal(answer.status, 200, answer.body.error);
     assert.equal(answer.body.room, "ch_cutover");
     assert.equal(answer.body.post, reply.id);
-    const [head, ...rest] = answer.body.text.split("\n");
-    assert.match(head!, new RegExp(`^ch_cutover/${reply.id} in #pi-cutover, a reply in the thread of ${reply.threadRoot} · from .+ · \\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\dZ`));
-    assert.ok(rest.join("\n").includes(reply.text), "the post's whole text follows its head line");
+    const [where, header, ...rest] = answer.body.text.split("\n");
+    assert.match(where!, new RegExp(`^ch_cutover/${reply.id} in #pi-cutover, a reply in the thread of ${reply.threadRoot}, \\d{4}-\\d\\d-\\d\\d\\.$`));
+    assert.match(header!, new RegExp(`^\\[post ${reply.seq} \\(${reply.id}\\) from .+, at \\d\\d:\\d\\d:\\d\\dZ\\]$`), "the header a held call uses (moved.ts postHeader)");
+    assert.ok(rest.join("\n").includes(reply.text), "the post's whole text follows its header");
     const root = posts.find(p => p.id === reply.threadRoot)!;
-    assert.match(answer.body.text, /\nIts thread, \d+ repl(y|ies):\n/);
-    assert.match(answer.body.text, new RegExp(`^${root.seq} `, "m"), "the thread starts at its root");
+    assert.match(answer.body.text, /\n\nThe rest of its thread, \d+ repl(y|ies) in all:\n/);
+    assert.match(answer.body.text, new RegExp(`^\\[post ${root.seq} \\(${root.id}\\) from `, "m"), "the thread shows its root under the same header");
+    assert.equal(answer.body.text.split(`(${reply.id}) from`).length, 2, "the named post shows once");
   });
 
   test("a room-qualified id names the same post", async () => {

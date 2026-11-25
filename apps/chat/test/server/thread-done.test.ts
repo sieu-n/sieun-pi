@@ -97,7 +97,8 @@ describe("thread done on the fixture server", () => {
     assert.equal(stored().done?.done, true, "an agent's reply leaves it done");
     assert.match(s.app.groups.envelope(row, { ...agentReply.post, id: "p99999", seq: 99999 }), new RegExp(`^${stored().seq} .*\\[thread done\\]$`, "m"));
 
-    const forMe = await s.get<ForMeList>(`/api/agents/${agents.crawler}/for-me`);
+    // Its reply in the thread completes the root on its For list (for-me.ts), so the flag is read from the whole list.
+    const forMe = await s.get<ForMeList>(`/api/agents/${agents.crawler}/for-me?status=all`);
     assert.ok(forMe.items.find(i => i.post === root)?.done, "the For list carries the flag");
 
     await s.send("POST", `/api/c/${CH}/send`, { text: "one more thing", requestId: "done-2", threadRoot: root });

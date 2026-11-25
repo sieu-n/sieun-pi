@@ -9,6 +9,9 @@
  *
  * `for-me.json` holds `since`, set when the file is first written, and the marks. A mark completes an item until newer activity, such as a
  * new reaction, opens it again. With no mark, an item from before `since` reads as completed, so the backlog does not flood the list.
+ * The agent's own answer completes an item the way a mark does: a post of its that answers the item's post (`RoomPost.answers`), or, in a
+ * channel or Solo room thread, a later reply of its in the item's thread, as replying in Slack clears the thread from Activity. In the 7 days to
+ * 11-25, 412 of 1,087 items real agents' list_for_me_messages calls returned were posts the agent had already answered.
  */
 import type { AgentId, ForMeItem, ForMeList, ForMeReason, ForMeStatus, Item, Ms } from "../web/src/lib/api/types.ts";
 import { isGroupRoom, type AgentRecord, type AgentStore, type RoomId, type RoomPost, type RoomRow } from "./agent-store.ts";
@@ -120,12 +123,23 @@ export class ForMe {
       if (row.archived || (row.kind === "dm" && row.id !== record.room)) continue;
       const posts = this.deps.store.postsOf(row.id);
       const wrote = new Map<string, number>();
-      if (row.kind !== "dm") {
-        for (const post of posts) if (post.author === record.id) wrote.set(post.threadRoot ?? post.id, Math.min(wrote.get(post.threadRoot ?? post.id) ?? post.seq, post.seq));
+      /** The agent's newest answer by the post it answers, and its newest reply by thread root. */
+      const answered = new Map<string, Ms>();
+      const replied = new Map<string, Ms>();
+      for (const post of posts) {
+        if (post.author !== record.id || post.deletedAt !== undefined) continue;
+        if (post.answers) answered.set(post.answers, Math.max(answered.get(post.answers) ?? 0, post.at));
+        if (row.kind !== "dm") {
+          wrote.set(post.threadRoot ?? post.id, Math.min(wrote.get(post.threadRoot ?? post.id) ?? post.seq, post.seq));
+          if (post.threadRoot) replied.set(post.threadRoot, Math.max(replied.get(post.threadRoot) ?? 0, post.at));
+        }
       }
       for (const post of posts) {
         const found = involvement(record.id, row, post, wrote);
-        if (found) out.push(this.withStatus(this.view(row, post, found.reasons, found.activityAt), this.file.marks[record.id]?.[`${row.id}/${post.id}`]));
+        if (!found) continue;
+        const answer = Math.max(answered.get(post.id) ?? 0, post.author === record.id ? 0 : replied.get(post.threadRoot ?? post.id) ?? 0);
+        const mark = this.file.marks[record.id]?.[`${row.id}/${post.id}`];
+        out.push(this.withStatus(this.view(row, post, found.reasons, found.activityAt), answer > 0 && answer >= (mark?.at ?? 0) ? { completed: true, at: answer } : mark));
       }
     }
     return out.sort((a, b) => b.activityAt - a.activityAt);

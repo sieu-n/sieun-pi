@@ -1015,7 +1015,16 @@ export class App {
     const { record, room } = this.agentTarget(thread, message, "read_post");
     await (this.groups.row(room) ? this.groups.feed(record.comm?.[room] ?? "") : this.rooms.feed(record));
     const { post } = this.agentMessage(thread, message, "read_post");
-    return { room, post: post.id, text: this.agentLater.read(record, room, post) };
+    const { text, shown } = this.agentLater.read(record, room, post);
+    // The posts a comm thread read count as read, as a hold's do (`movedSinceRead`), so its send right after is not held for them.
+    const group = this.groups.row(room);
+    const comm = group ? record.comm?.[room] : this.agents.roomThread(record);
+    const cursor = group ? this.agentStore.rooms.commFeed?.[comm ?? ""] : this.agentStore.rooms.feed[record.id];
+    if (comm === thread && cursor?.read && !cursor.read.ended) {
+      cursor.read = readMoved(cursor.read, shown.map(p => ({ post: p, edited: false })), Date.now());
+      this.agentStore.saveRooms();
+    }
+    return { room, post: post.id, text };
   }
 
   /** An agent's list_saved_messages (later-agents.ts `listText`). */
@@ -1455,23 +1464,38 @@ export class App {
    */
   markForMe(id: string, message: unknown, completed: boolean): { item: ForMeItem; pending: number } {
     const record = this.forMeAgent(id);
-    const named = parseItemId(message);
-    const thread = this.agents.ofComm(id) ?? this.agents.ofWorkThread(id);
-    if (!named && !thread) throw new ReactionError(400, `${JSON.stringify(message ?? "")} is no For item id; pass messageId as <room id>/<post id>, such as dm_vent/p41 or ch_1a2b3c4d/p12.`);
-    const messageId = named ? `${named.room}/${named.post}` : (({ room, post }) => `${room}/${post.id}`)(this.agentMessage(id, message, "mark_message"));
+    const messageId = this.forMeItemId(id, message);
     const marked = this.forMe.mark(record, messageId, completed);
     if (!marked) throw new NotFound(`${messageId} is not on ${record.name}'s For list; pass an id that GET /api/agents/${record.id}/for-me?status=all lists.`);
     if (marked.changed) this.forMeChanged(record.id);
     return { item: marked.item, pending: marked.pending };
   }
 
-  /** Marks several items of the agent's For list at once, for Mark all completed and its Undo. */
-  markManyForMe(id: string, messageIds: readonly string[], completed: boolean): { changed: string[]; pending: number } {
+  /**
+   * Marks several items of the agent's For list at once, for Mark all completed and its Undo and for mark_message's message_ids, each named
+   * as `markForMe` takes it: in 7 days to 11-25 real agents made 590 mark_message calls that one call with a list would have made.
+   */
+  markManyForMe(id: string, messages: readonly unknown[], completed: boolean): { changed: string[]; missing: string[]; pending: number } {
     const record = this.forMeAgent(id);
+    const messageIds = [...new Set(messages.map(message => this.forMeItemId(id, message)))];
     const { changed, missing, pending } = this.forMe.markMany(record, messageIds, completed);
     if (missing.length === messageIds.length && missing.length) throw new NotFound(`None of ${missing.slice(0, 3).join(", ")} is on ${record.name}'s For list; pass ids that GET /api/agents/${record.id}/for-me?status=all lists.`);
     if (changed.length) this.forMeChanged(record.id);
-    return { changed, pending };
+    return { changed, missing, pending };
+  }
+
+  /**
+   * The For item id `<room>/<post>` that `message` names: that form itself, or, when `id` is one of the agent's threads, any id its other room
+   * tools take (`agentPost`), such as p12 or the [message id: ...] value.
+   */
+  private forMeItemId(id: string, message: unknown): string {
+    const named = parseItemId(message);
+    if (named) return `${named.room}/${named.post}`;
+    if (!this.agents.ofComm(id) && !this.agents.ofWorkThread(id)) {
+      throw new ReactionError(400, `${JSON.stringify(message ?? "")} is no For item id; pass messageId as <room id>/<post id>, such as dm_vent/p41 or ch_1a2b3c4d/p12.`);
+    }
+    const { room, post } = this.agentMessage(id, message, "mark_message");
+    return `${room}/${post.id}`;
   }
 
   private forMeAgent(id: string): AgentRecord {

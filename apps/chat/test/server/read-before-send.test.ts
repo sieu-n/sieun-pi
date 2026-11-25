@@ -113,6 +113,14 @@ describe("a speaking call posts while it runs, after the read-before-send check"
     assert.equal(s.app.agentStore.postsOf(ROOM).find(p => p.id === made.id)!.text, "the answer that takes the staging box into account");
     const resent = await edit("the answer, with the staging box and the Mac");
     assert.equal(resent.status, 200, resent.body.error);
+
+    // A post the run read with read_post (later-agents.ts `read`) counts as read, so the next edit is not held for it.
+    await s.send("POST", `/api/c/${ROOM}/send`, { text: "and keep the logs", requestId: "speak-4" });
+    const fourth = s.app.agentStore.postsOf(ROOM).find(p => p.requestId === "speak-4")!;
+    const read = await s.send<{ text: string }>("GET", `/api/threads/${encodeURIComponent(thread)}/post?message=${fourth.id}`);
+    assert.match(read.body.text, new RegExp(`^\\[post ${fourth.seq} \\(${fourth.id}\\) from `, "m"));
+    const afterRead = await edit("the answer, with the staging box, the Mac and the logs");
+    assert.equal(afterRead.status, 200, afterRead.body.error);
     fx().beforeSubmit = undefined;
     release();
   });

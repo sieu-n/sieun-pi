@@ -168,6 +168,35 @@ describe("an agent's For list", () => {
     assert.match((missing.body as { error: string }).error, /^No post p9999 in dm_vent/);
   });
 
+  test("the agent's answer completes an item as a mark does, and newer activity or a pending mark opens it again", async () => {
+    const asked = post(GENERAL, "owner", { mentions: [VENT] });
+    const id = `${GENERAL}/${asked.id}`;
+    assert.equal((await find(id))!.status, "pending");
+    await tick();
+    const answer = post(GENERAL, VENT, { threadRoot: asked.id, answers: asked.id });
+    const done = (await find(id))!;
+    assert.equal(done.status, "completed", "Vent's reply that answers the post completes it");
+    assert.equal(done.completedAt, answer.at);
+    await tick();
+    assert.equal((await mark(id, false)).body.item.status, "pending", "a pending mark after the answer opens it again");
+    await tick();
+    post(GENERAL, VENT, { threadRoot: asked.id });
+    assert.equal((await find(id))!.status, "completed", "a later reply of Vent's in the thread completes it again");
+    await tick();
+    const followUp = post(GENERAL, "owner", { threadRoot: asked.id, mentions: [VENT] });
+    assert.equal((await find(`${GENERAL}/${followUp.id}`))!.status, "pending", "his newer reply in the thread is new activity Vent has not answered");
+  });
+
+  test("from the agent's own thread, a list of bare ids marks several items in one write", async () => {
+    const crawlerComm = s.app.agents.record(agents.crawler)!.comm![ids.cutoverChannel]!;
+    const both = await s.send<{ changed: string[]; missing: string[]; pending: number; error?: string }>("POST", `/api/agents/${crawlerComm}/for-me`, { messageIds: ["p5", `${ids.cutoverChannel}/p5`], completed: false });
+    assert.equal(both.status, 200, JSON.stringify(both.body));
+    assert.deepEqual(both.body.missing, []);
+    assert.ok(both.body.changed.every(id => id === `${ids.cutoverChannel}/p5`), "the bare and the qualified id name one item, marked once");
+    const again = await s.send<{ changed: string[] }>("POST", `/api/agents/${crawlerComm}/for-me`, { messageIds: ["p5"], completed: true });
+    assert.deepEqual(again.body.changed, [`${ids.cutoverChannel}/p5`]);
+  });
+
   test("Mark all completed marks several items in one write, answers only the changed ids, and its Undo makes them pending again", async () => {
     const a = post(GENERAL, "owner", { mentions: [VENT] });
     const b = post(GENERAL, "owner", { mentions: [VENT] });

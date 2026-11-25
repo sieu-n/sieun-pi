@@ -104,13 +104,15 @@ export function readMoved(mark: ReadMark, moved: readonly Moved[], now: number):
 
 const clock = (at: number): string => new Date(at).toISOString().slice(11, 19) + "Z";
 
+/** The header a held call and read_post (later-agents.ts `read`) put over each post they show: `[post 47 (p47) from devops guy, at 11:02:24Z]`. */
+export function postHeader(post: RoomPost, name: string, edited = false): string {
+  return `[post ${post.seq} (${post.id}) from ${name}, ${edited ? `edited at ${clock(post.editedAt!)}` : `at ${clock(post.at)}`}]`;
+}
+
 /** The held call's answer: the new posts, each under a header that names it, and what to do next. */
 export function movedNote(moved: readonly Moved[], name: (author: string) => string, what: "post" | "edit"): string {
-  const lines = moved.map(({ post, edited }) => {
-    // Each post whole, not clipped as the envelope's thread lines are: a hold carried a median of 2 posts and a p90 of 5 on 11-25 (fable auditor).
-    const how = edited ? `edited at ${clock(post.editedAt!)}` : `at ${clock(post.at)}`;
-    return `[post ${post.seq} (${post.id}) from ${name(post.author)}, ${how}]\n${post.text}`;
-  });
+  // Each post whole, not clipped as the envelope's thread lines are: a hold carried a median of 2 posts and a p90 of 5 on 11-25 (fable auditor).
+  const lines = moved.map(({ post, edited }) => `${postHeader(post, name(post.author), edited)}\n${post.text}`);
   return [
     `Not ${what === "post" ? "sent" : "edited"}: the thread moved since you last read it. ${moved.length === 1 ? "This post is" : `These ${moved.length} posts are`} new to you:`,
     "", ...lines, "",

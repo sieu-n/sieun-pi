@@ -15,7 +15,6 @@ import { agentConfig, agentRecordOf } from "./agent-config.ts";
 import { agentPromptAnswer, agentPromptOutlineAnswer } from "./agent-prompt.ts";
 import type { Config } from "./config.ts";
 import { EntryExists, EntryMissing, HARNESS_KINDS, type HarnessKind } from "./agent-folder.ts";
-import { parseItemId } from "./for-me.ts";
 import type { AgentRecord, WakeOn } from "./agent-store.ts";
 import { App, MODELS, NotFound } from "./app.ts";
 import { uploadHeaders } from "./files.ts";
@@ -315,10 +314,9 @@ export function routes(app: App, parts: SkillsParts, wikiPages = new WikiPageLis
     route("POST", "/api/agents/:id/for-me", async (_r, p, _q, body) => {
       const { messageId, messageIds, completed } = ((await body()) ?? {}) as { messageId?: unknown; messageIds?: unknown; completed?: unknown };
       if (messageIds !== undefined) {
-        const items = Array.isArray(messageIds) ? messageIds.map(parseItemId) : [];
-        if (!items.length || items.some(i => !i)) throw new BadRequest("messageIds is a list of For item ids, each <room id>/<post id>, such as [\"dm_vent/p41\", \"ch_1a2b3c4d/p12\"].");
+        if (!Array.isArray(messageIds) || !messageIds.length) throw new BadRequest("messageIds is a list of For item ids, each <room id>/<post id>, such as [\"dm_vent/p41\", \"ch_1a2b3c4d/p12\"].");
         if (typeof completed !== "boolean") throw new BadRequest("A mark's completed is true to mark the items completed or false to make them pending again.");
-        return app.markManyForMe(p.id!, items.map(i => `${i!.room}/${i!.post}`), completed);
+        return app.markManyForMe(p.id!, messageIds, completed);
       }
       if (typeof completed !== "boolean") throw new BadRequest("A mark's completed is true to mark the item completed or false to make it pending again.");
       return app.markForMe(p.id!, messageId, completed);
