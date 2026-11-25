@@ -1569,12 +1569,19 @@ export class App {
   socketRead: SocketRead | undefined;
   /** The last hello's lists, which the next hello reuses while they hold the same items (`helloLists`). */
   private readonly hello: { base?: HelloBase } = {};
+  /** The most characters of list items one hello message carries (`helloMessages`); a spec sets it lower to split a fixture's hello. */
+  helloPartChars = HELLO_PART_CHARS;
 
   private connect(socket: WebSocket, req?: IncomingMessage): void {
     const held = new URL(req?.url ?? "/", "http://x").searchParams;
     const client: Client = { socket, watching: new Map(), req, boards: parseBoardsParam(held.get("boards")) };
     this.clients.add(client);
-    void this.sidebar().then(sidebar => this.send1(client, { type: "hello", me: this.me(), sidebar, agents: this.threads.agents(), ...helloLists(held, { jobs: this.threads.jobList(), conversations: this.threads.conversations() }, this.hello) }));
+    void this.sidebar().then(sidebar => {
+      const lists = helloLists(held, { jobs: this.threads.jobList(), conversations: this.threads.conversations() }, this.hello);
+      for (const message of helloMessages({ type: "hello", me: this.me(), sidebar, agents: this.threads.agents() }, lists, this.helloPartChars)) {
+        if (client.socket.readyState === WebSocket.OPEN) client.socket.send(message);
+      }
+    });
     socket.on("message", data => {
       let command: LiveCommand;
       try {
@@ -1723,11 +1730,51 @@ export class NotFound extends Error {}
 
 export { modelRef };
 
-/** A hello's lists as `helloLists` last built them: the lists it read, each thread's time, their `Timed` form and each digest a page asked for. */
+/**
+ * A hello's lists as `helloLists` last built them: the lists it read, each thread's time, their `Timed` form, each timed item's JSON and
+ * each digest a page asked for.
+ */
 type HelloBase = {
   jobs: AgentSummary[]; conversations: ConversationSummary[]; times: ThreadTimes;
-  timed: { jobs: Timed<AgentSummary>[]; conversations: Timed<ConversationSummary>[] }; digests: Partial<Record<PartialList, string>>;
+  timed: { jobs: Timed<AgentSummary>[]; conversations: Timed<ConversationSummary>[] }; json: Record<PartialList, string[]>;
+  digests: Partial<Record<PartialList, string>>;
 };
+
+/** A hello's lists as `helloMessages` sends them: each item's JSON, each thread's time and the buckets a partial hello carries. */
+type HelloLists = Record<PartialList, string[]> & Pick<Extract<LiveEvent, { type: "hello" }>, "partial" | "times">;
+
+/**
+ * The most characters of list items one hello message carries. A browser builds each socket message's string in one task before any
+ * script runs: on 11-25 a cold load of live :5184 got a 2.5 MB hello (2,731 jobs, 3,025 conversations), and Chrome built its string for
+ * 130 to 145 ms and the whole task took 528 to 697 ms at CPU rate 1 and 2,101 ms at rate 4 (~/work/p300-channel-open/trace-summary.md).
+ * At 128 KB a part is about 7 ms of that string work at rate 1, and a reload's partial hello of 81 to 146 KB stays one or two messages.
+ */
+export const HELLO_PART_CHARS = 128 * 1024;
+
+/**
+ * The hello as socket messages. While its lists' items fit in `budget` characters it is one whole hello. Else the hello carries the first
+ * part of the items and `parts`, the number of `list_part` messages that follow it with the rest, in list order, which the page joins
+ * before it takes the lists (stores.svelte.ts). The item JSON comes from `helloLists`, so no item is stringified again here.
+ */
+export function helloMessages(head: Pick<Extract<LiveEvent, { type: "hello" }>, "type" | "me" | "sidebar" | "agents">, lists: HelloLists, budget: number): string[] {
+  const empty = (): Record<PartialList, string[]> => ({ jobs: [], conversations: [] });
+  const parts = [empty()];
+  let size = 0;
+  for (const name of PARTIAL_LISTS) {
+    for (const item of lists[name]) {
+      if (size && size + item.length > budget) {
+        parts.push(empty());
+        size = 0;
+      }
+      parts.at(-1)![name].push(item);
+      size += item.length + 1;
+    }
+  }
+  const body = (part: Record<PartialList, string[]>): string => `"jobs":[${part.jobs.join(",")}],"conversations":[${part.conversations.join(",")}]`;
+  const [first, ...rest] = parts;
+  const hello = JSON.stringify({ ...head, times: lists.times, ...(lists.partial ? { partial: lists.partial } : {}), ...(rest.length ? { parts: rest.length } : {}) });
+  return [`${hello.slice(0, -1)},${body(first!)}}`, ...rest.map(part => `{"type":"list_part",${body(part)}}`)];
+}
 
 /** The two lists hold the same items in the same order: the same objects, or equal JSON for the few a list builds anew at each read. */
 function sameItems(a: readonly object[], b: readonly object[]): boolean {
@@ -1744,21 +1791,23 @@ function sameItems(a: readonly object[], b: readonly object[]): boolean {
  * opens its socket again at each release, and in the first seconds after the 10:02Z start on 11-24 each hello held the loop 130 to 150 ms,
  * `digests` the top function (~/work/p279-search/p279-meili.md).
  */
-function helloLists(held: URLSearchParams, lists: { jobs: AgentSummary[]; conversations: ConversationSummary[] }, kept: { base?: HelloBase } = {}):
-  Pick<Extract<LiveEvent, { type: "hello" }>, PartialList | "partial" | "times"> {
+function helloLists(held: URLSearchParams, lists: { jobs: AgentSummary[]; conversations: ConversationSummary[] }, kept: { base?: HelloBase } = {}): HelloLists {
   let base = kept.base;
   if (!base || !sameItems(base.jobs, lists.jobs) || !sameItems(base.conversations, lists.conversations)) {
     const times = threadTimes(lists.jobs);
-    base = kept.base = { ...lists, times, timed: { jobs: timed("jobs", lists.jobs, times), conversations: timed("conversations", lists.conversations, times) }, digests: {} };
+    const timedLists = { jobs: timed("jobs", lists.jobs, times), conversations: timed("conversations", lists.conversations, times) };
+    const json = { jobs: timedLists.jobs.map(item => JSON.stringify(item)), conversations: timedLists.conversations.map(item => JSON.stringify(item)) };
+    base = kept.base = { ...lists, times, timed: timedLists, json, digests: {} };
   }
-  const out = { ...base.timed };
+  const out = { ...base.json };
   const partial: Partial<Record<PartialList, number[]>> = {};
   for (const name of PARTIAL_LISTS) {
     const page = held.get(name);
-    const changed = page ? changedBuckets(page, base.digests[name] ??= digests(out[name])) : null;
+    const items: readonly { id: string }[] = base.timed[name];
+    const changed = page ? changedBuckets(page, base.digests[name] ??= digests(items)) : null;
     if (!changed) continue;
     partial[name] = [...changed];
-    out[name] = (out[name] as { id: string }[]).filter(item => changed.has(bucketOf(item.id))) as never;
+    out[name] = out[name].filter((_, index) => changed.has(bucketOf(items[index]!.id)));
   }
   return { ...out, times: base.times, ...(Object.keys(partial).length ? { partial } : {}) };
 }

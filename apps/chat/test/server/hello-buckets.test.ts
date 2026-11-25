@@ -8,6 +8,7 @@ import WebSocket from "ws";
 import { HeldList } from "../../web/src/lib/api/hello-keep.ts";
 import { digests, mergeBuckets, untimed } from "../../web/src/lib/api/shared/hello-buckets.ts";
 import type { LiveEvent } from "../../web/src/lib/api/types.ts";
+import { HELLO_PART_CHARS } from "../../server/app.ts";
 import { start, type Running } from "./helpers.ts";
 
 type Hello = Extract<LiveEvent, { type: "hello" }>;
@@ -126,6 +127,59 @@ test("a held list redigests only the buckets a partial hello changed, and its di
   assert.equal(nextJobs.held(), digests(whole.hello.jobs));
   assert.equal(nextConversations.held(), digests(whole.hello.conversations));
   for (const socket of [first, changed, whole]) socket.close();
+});
+
+/** Opens a socket and returns every message up to the hello's last `list_part`, as the page gets them. */
+async function helloFrames(base: string): Promise<string[]> {
+  const socket = new WebSocket(`${base.replace(/^http/, "ws")}/api/live`);
+  const frames: string[] = [];
+  await new Promise<void>((resolve, reject) => {
+    let left = -1;
+    socket.on("error", reject);
+    socket.on("message", data => {
+      const text = String(data);
+      const event = JSON.parse(text) as LiveEvent;
+      if (event.type === "hello") left = event.parts ?? 0;
+      else if (event.type === "list_part") left -= 1;
+      else return;
+      frames.push(text);
+      if (left === 0) resolve();
+    });
+  });
+  socket.close();
+  return frames;
+}
+
+test("a big hello goes in parts that each fit the budget, and joining them gives the whole hello's lists", async () => {
+  // A browser builds each socket message's string in one task: the 2.5 MB cold hello of 11-25 held the page 528 to 697 ms at CPU rate 1.
+  chat ??= await start();
+  const [whole, ...none] = await helloFrames(chat.base);
+  assert.deepEqual(none, []);
+  const hello = JSON.parse(whole!) as Hello;
+  assert.equal(hello.parts, undefined);
+  const items = [...hello.jobs, ...hello.conversations].map(item => JSON.stringify(item).length);
+  const budget = Math.max(...items) * 3;
+  chat.app.helloPartChars = budget;
+  try {
+    const frames = await helloFrames(chat.base);
+    const [head, ...parts] = frames.map(frame => JSON.parse(frame) as LiveEvent);
+    assert.equal(head!.type, "hello");
+    const first = head as Hello;
+    assert.ok(parts.length >= 2 && first.parts === parts.length, `${parts.length} parts for ${items.length} items`);
+    assert.ok(parts.every(part => part.type === "list_part"));
+    const lists = (event: LiveEvent): string => JSON.stringify(event.type === "hello" || event.type === "list_part" ? [event.jobs, event.conversations] : null);
+    for (const event of [first, ...parts]) assert.ok(lists(event).length <= budget + 64, `${lists(event).length} characters of items against ${budget}`);
+    const joined = (parts as Extract<LiveEvent, { type: "list_part" }>[]).reduce(
+      (all, part) => ({ jobs: [...all.jobs, ...part.jobs], conversations: [...all.conversations, ...part.conversations] }),
+      { jobs: first.jobs, conversations: first.conversations },
+    );
+    assert.deepEqual(joined, { jobs: hello.jobs, conversations: hello.conversations });
+    const { jobs: _j, conversations: _c, parts: _p, ...rest } = first;
+    const { jobs: _wj, conversations: _wc, ...wholeRest } = hello;
+    assert.deepEqual(rest, wholeRest);
+  } finally {
+    chat.app.helloPartChars = HELLO_PART_CHARS;
+  }
 });
 
 test("a page reads a GET route over its socket, and an unknown route answers 404", async () => {

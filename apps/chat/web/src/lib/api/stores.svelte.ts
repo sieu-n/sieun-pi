@@ -379,6 +379,19 @@ class Global {
   private lastHello: HeldLists | undefined;
 
   /**
+   * A big hello and the items of its `list_part` messages so far, with the number still to come (server/app.ts `helloMessages`). The lists,
+   * and `ready`, wait for the last part, so no count shows a list that is half there.
+   */
+  private parts: { hello: Extract<LiveEvent, { type: "hello" }>; left: number; jobs: Timed<AgentSummary>[]; conversations: Timed<ConversationSummary>[] } | undefined;
+
+  /** Takes the hello's whole lists, from one message or joined from its parts. */
+  private takeHello(event: Extract<LiveEvent, { type: "hello" }>): void {
+    this.takeLists(event);
+    this.ready = true;
+    liveJobsAhead(this.jobs);
+  }
+
+  /**
    * Merges the hello's buckets into the held lists. Only the buckets it changed lose their digests, and those buckets go to IndexedDB later,
    * in idle time (hello-keep.ts), so this task digests and copies nothing.
    */
@@ -423,13 +436,22 @@ class Global {
           this.sidebar = event.sidebar;
           syncMarked(event.sidebar);
           this.agents = event.agents;
-          this.takeLists(event);
           this.forYouCount = event.sidebar.forYou;
-          this.ready = true;
           roomsAhead(event.sidebar);
           boardsAhead(this.agents);
-          liveJobsAhead(this.jobs);
+          this.parts = event.parts ? { hello: event, left: event.parts, jobs: [...event.jobs], conversations: [...event.conversations] } : undefined;
+          if (!this.parts) this.takeHello(event);
           break;
+        case "list_part": {
+          const parts = this.parts;
+          if (!parts) break;
+          for (const job of event.jobs) parts.jobs.push(job);
+          for (const conversation of event.conversations) parts.conversations.push(conversation);
+          if (--parts.left > 0) break;
+          this.parts = undefined;
+          this.takeHello({ ...parts.hello, jobs: parts.jobs, conversations: parts.conversations });
+          break;
+        }
         case "sidebar":
           this.sidebar = event.sidebar;
           syncMarked(event.sidebar);

@@ -338,7 +338,7 @@ The page's wiki pickers read the engine through two routes of their own (`server
 
 | Event | Goes to | Means |
 |---|---|---|
-| `hello` | the tab that connected | Sent once on connect: me, the sidebar, agents, jobs and conversations. A tab that sends the digests of what it holds gets only the buckets that changed, named in `partial` (`shared/hello-buckets.ts`). The socket's `boards=` names the `boardKey` of each board the tab keeps, for the `board` event. |
+| `hello` | the tab that connected | Sent once on connect: me, the sidebar, agents, jobs and conversations. A tab that sends the digests of what it holds gets only the buckets that changed, named in `partial` (`shared/hello-buckets.ts`). A hello whose list items pass 128 KB carries the first part of them and `parts`, the count of `list_part` messages that follow at once with the rest, and the tab takes the lists after the last one (`helloMessages` in `server/app.ts`). The socket's `boards=` names the `boardKey` of each board the tab keeps, for the `board` event. |
 | `sidebar` | every tab | The sidebar changed. |
 | `owner_settings` | every tab | The owner's status, notification setting or recent searches changed in some browser. |
 | `agent` | every tab | A registered agent's card changed. |

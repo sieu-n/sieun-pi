@@ -1008,12 +1008,15 @@ export type LiveEvent =
   /**
    * `jobs` and `conversations` are in their `Timed` form, an item whose time is its thread's without it, and `times` holds each thread's
    * time. `partial` names, per list, the buckets whose items they hold, for a page that sent the digests of what it holds
-   * (shared/hello-buckets.ts); a list it does not name is whole.
+   * (shared/hello-buckets.ts); a list it does not name is whole. A big hello carries only the first part of its lists' items, and `parts`
+   * is the number of `list_part` messages right after it that carry the rest (server/app.ts `helloMessages`).
    */
   | {
     type: "hello"; me: Me; sidebar: Sidebar; agents: AgentSummary[]; jobs: Timed<AgentSummary>[]; conversations: Timed<ConversationSummary>[]; times: ThreadTimes;
-    partial?: Partial<Record<"jobs" | "conversations", number[]>>;
+    partial?: Partial<Record<"jobs" | "conversations", number[]>>; parts?: number;
   }
+  /** More items of the hello's lists, in their order; the page takes the lists once the hello's last part came. */
+  | { type: "list_part"; jobs: Timed<AgentSummary>[]; conversations: Timed<ConversationSummary>[] }
   | { type: "sidebar"; sidebar: Sidebar }
   /** The owner's status, notification setting or recent searches changed in some browser (server/owner-settings.ts). */
   | { type: "owner_settings"; settings: SavedSettings }
