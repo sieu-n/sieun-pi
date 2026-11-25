@@ -27,7 +27,9 @@ export const DAY_MS = 24 * 60 * 60_000;
  * - bad_sends_24h <= 0 is the headline: the owner asked that no false-positive or annoying email goes out (2026-10-14). It counts each send in
  *   the last 24 h that is a false positive or annoying, once, plus 1 for each data source that failed, since an unread source cannot show a clean day.
  * - false_positive_sends <= 0 and annoying_sends_24h <= 0 split the headline into his two words. Annoying is a repeat of the same email within
- *   24 h or a connect nudge past NUDGE_CAP for that person, sent in the last 24 h.
+ *   24 h or a connect nudge past NUDGE_CAP for that person, sent in the last 24 h. A send to an address an earlier email in Resend's log
+ *   bounced from, soft or hard, or was marked as spam by is a false positive: Resend's 30-day log on 2026-11-25 held 6 trial emails to 3 such
+ *   addresses, and slack-green #656 stopped them. A send Resend dropped as suppressed did not go out and does not count.
  * - users_over_cap (the whole Resend log), repeat_sends_24h, unsubscribes_24h and source_errors are run detail: written to the output, not judged.
  * - users_over_cap counts connect nudges above NUDGE_CAP. PR #247 (packages/frontend/src/lib/setup-link-email.ts) sets MAX_SETUP_EMAILS = 2
  *   for the setup link and the 24 h connect reminder together.
@@ -148,8 +150,14 @@ export function emailMetrics(sources: Sources, now: number, previous: EmailState
       flagged.push({ at: now, kind: "new_template", item: "p68", excerpt: `an email this precheck does not know went out: "${subject}"; add its subject to SUBJECTS and check who should get it` });
   }
   if (sources.sends && sources.recipients) {
+    const firstBounce = new Map<string, Send>();
+    for (const send of [...all].sort((a, b) => a.at - b.at))
+      if ([...BAD_EVENTS, "soft_bounced"].includes(send.lastEvent) && !firstBounce.has(send.to)) firstBounce.set(send.to, send);
     for (const send of day) {
-      const why = wrongSend(send, recipients[send.to], previous);
+      const bounce = firstBounce.get(send.to);
+      const why = bounce && bounce.at < send.at && send.lastEvent !== "suppressed"
+        ? `an earlier email to this address ended ${bounce.lastEvent} at ${iso(bounce.at)} (Resend ${bounce.id})`
+        : wrongSend(send, recipients[send.to], previous);
       if (!why) continue;
       wrong.add(send);
       flagged.push({ at: send.at, kind: "false_positive", item: "p68", excerpt: `${send.template} to user ${who(send, recipients)} at ${iso(send.at)} (Resend ${send.id}): ${why}` });

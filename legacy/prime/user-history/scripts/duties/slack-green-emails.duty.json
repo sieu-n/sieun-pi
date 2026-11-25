@@ -1,7 +1,7 @@
 {
   "name": "Slack green emails",
   "ownerWords": "also your duty is to keep monitor Resend if there are no false-positive emails being sent or we're being annoying.",
-  "goal": "No Slack Green email is wrong or annoying. Wrong is a connect nudge after a workspace is connected, an email to a deleted account, a removed email, or marketing after an opt-out. Annoying is the same email twice in a day or over 2 connect nudges per person. Bounces plus complaints stay under Resend's 4% guide.",
+  "goal": "No Slack Green email is wrong or annoying. Wrong is a connect nudge after a workspace is connected, an email to a deleted account, a removed email, marketing after an opt-out, or any email to an address an earlier email bounced from or was marked as spam by. Annoying is the same email twice in a day or over 2 connect nudges per person. Bounces plus complaints stay under Resend's 4% guide.",
   "metrics": [
     {
       "key": "bad_sends_24h",
