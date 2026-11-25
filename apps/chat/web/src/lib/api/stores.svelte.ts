@@ -13,7 +13,8 @@ import { pageDb, type KeptPage } from "./page-db.ts";
 import { heldSends, type HeldSend } from "./held-sends.ts";
 import { holdReload, releaseReload } from "./reload.ts";
 import { live } from "./live.svelte.ts";
-import { digests, mergeBuckets, untimed, type PartialList, type Timed } from "./shared/hello-buckets.ts";
+import { HeldList, keepBuckets, keptLists } from "./hello-keep.ts";
+import { mergeBuckets, untimed, type Timed } from "./shared/hello-buckets.ts";
 import { boardAfterDelta, boardKey, boardsParam } from "./shared/board-delta.ts";
 import { SvelteMap } from "svelte/reactivity";
 import type {
@@ -337,10 +338,11 @@ const withStatus = <T extends { status: RunStatus }>(list: T[], item: T | undefi
   item && item.status !== status ? list.map(x => (x === item ? { ...x, status } : x)) : list;
 
 const indexBy = <T extends { id: string }>(list: readonly T[]): Map<string, T> => new Map(list.map(item => [item.id, item]));
-/** The IndexedDB cache and key (page-db.ts) of the last hello's timed lists. */
-const HELLO_LISTS = "hello";
 /** The server's order of the job list (threads.ts `newestFirst`), which a hello's merged buckets keep. */
 const newestFirst = (a: AgentSummary, b: AgentSummary): number => b.updatedAt - a.updatedAt;
+
+/** The hello's timed lists as the page holds them, with their bucket digests (hello-keep.ts). */
+type HeldLists = { jobs: HeldList<Timed<AgentSummary>>; conversations: HeldList<Timed<ConversationSummary>> };
 
 /**
  * The hello snapshot and its live updates. The lists are raw state, replaced whole on each change: on 11-03 the hello held 349 jobs and
@@ -371,39 +373,48 @@ class Global {
   private started = false;
 
   /**
-   * The timed lists of the last hello and their digests, which the next socket open names so its hello carries only the buckets that
-   * changed (shared/hello-buckets.ts); none before the first hello.
+   * The timed lists of the last hello with their bucket digests, which the next socket open names so its hello carries only the buckets
+   * that changed (shared/hello-buckets.ts); none before the first hello.
    */
-  private lastHello: { jobs: Timed<AgentSummary>[]; conversations: Timed<ConversationSummary>[]; held: Record<string, string> } | undefined;
+  private lastHello: HeldLists | undefined;
 
+  /**
+   * Merges the hello's buckets into the held lists. Only the buckets it changed lose their digests, and those buckets go to IndexedDB later,
+   * in idle time (hello-keep.ts), so this task digests and copies nothing.
+   */
   private takeLists(event: Extract<LiveEvent, { type: "hello" }>): void {
-    const jobs = event.partial?.jobs && this.lastHello ? mergeBuckets(this.lastHello.jobs, event.partial.jobs, event.jobs) : event.jobs;
-    const conversations = event.partial?.conversations && this.lastHello
-      ? mergeBuckets(this.lastHello.conversations, event.partial.conversations, event.conversations) : event.conversations;
-    this.holdLists(jobs, conversations);
-    if (!event.partial || Object.values(event.partial).some(buckets => buckets.length)) void pageDb.put(HELLO_LISTS, HELLO_LISTS, { jobs, conversations });
-    this.jobs = untimed("jobs", jobs, event.times).sort(newestFirst);
-    this.conversations = untimed("conversations", conversations, event.times);
-  }
-
-  private holdLists(jobs: Timed<AgentSummary>[], conversations: Timed<ConversationSummary>[]): void {
-    this.lastHello = { jobs, conversations, held: { jobs: digests(jobs), conversations: digests(conversations) } };
+    const last = this.lastHello;
+    const jobsChanged = last ? event.partial?.jobs : undefined;
+    const conversationsChanged = last ? event.partial?.conversations : undefined;
+    const jobs = last && jobsChanged ? last.jobs.next(mergeBuckets(last.jobs.items, jobsChanged, event.jobs), jobsChanged) : new HeldList(event.jobs);
+    const conversations = last && conversationsChanged
+      ? last.conversations.next(mergeBuckets(last.conversations.items, conversationsChanged, event.conversations), conversationsChanged)
+      : new HeldList(event.conversations);
+    this.lastHello = { jobs, conversations };
+    keepBuckets("jobs", jobs, jobsChanged);
+    keepBuckets("conversations", conversations, conversationsChanged);
+    this.jobs = untimed("jobs", jobs.items, event.times).sort(newestFirst);
+    this.conversations = untimed("conversations", conversations.items, event.times);
   }
 
   /**
-   * Takes the timed lists the last page load's hello left in IndexedDB, so this load's first hello carries only the buckets that changed
-   * since. A whole hello was 1.8 MB of JSON and 196 KB on the wire on 11-24 (1,925 jobs, 2,157 conversations), and a release reloads the page.
+   * Takes the timed lists and digests the last page load's hellos left in IndexedDB, so this load's first hello carries only the buckets
+   * that changed since. A whole hello was 2.5 MB of JSON on 11-25 (2,716 jobs, 3,006 conversations), and a release reloads the page.
    */
   restoreLists(pages: readonly KeptPage[]): void {
-    const kept = pages.find(page => page.cache === HELLO_LISTS && page.key === HELLO_LISTS)?.value as Partial<Record<PartialList, unknown>> | undefined;
-    if (this.lastHello || !Array.isArray(kept?.jobs) || !Array.isArray(kept.conversations)) return;
-    this.holdLists(kept.jobs, kept.conversations);
+    const kept = keptLists(pages);
+    if (this.lastHello || !kept) return;
+    // The kept items are what an earlier hello sent, so they are in its Timed form.
+    this.lastHello = kept as unknown as HeldLists;
   }
 
   start(): void {
     if (this.started) return;
     this.started = true;
-    live.holding(() => ({ ...this.lastHello?.held, boards: boardsParam(heldBoards()) }));
+    live.holding(() => ({
+      ...(this.lastHello ? { jobs: this.lastHello.jobs.held(), conversations: this.lastHello.conversations.held() } : {}),
+      boards: boardsParam(heldBoards()),
+    }));
     live.on(event => {
       switch (event.type) {
         case "hello":

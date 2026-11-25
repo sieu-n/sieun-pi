@@ -63,5 +63,20 @@ export const pageDb = {
     return run("readwrite", store => store.put({ cache, key, at: Date.now(), value } satisfies KeptPage))
       .then(() => undefined, () => undefined).finally(() => releaseReload(write));
   },
+  /** Puts several pages of one cache in one transaction, holding a reload the same way. */
+  putMany: (cache: string, pages: readonly { key: string; value: unknown }[]): Promise<void> => {
+    const write = `page:${++writes}`;
+    holdReload(write);
+    return open()
+      .then(db => new Promise<void>((resolve, reject) => {
+        const tx = db.transaction(STORE, "readwrite");
+        const store = tx.objectStore(STORE);
+        const at = Date.now();
+        for (const { key, value } of pages) store.put({ cache, key, at, value } satisfies KeptPage);
+        tx.oncomplete = () => resolve();
+        tx.onerror = tx.onabort = () => reject(tx.error ?? new Error("IndexedDB refused the call"));
+      }))
+      .then(() => undefined, () => undefined).finally(() => releaseReload(write));
+  },
   drop: (cache: string, key: string): Promise<void> => run("readwrite", store => store.delete([cache, key])).then(() => undefined, () => undefined),
 };

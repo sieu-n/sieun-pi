@@ -69,11 +69,23 @@ function fnv(text: string): number {
 
 export const bucketOf = (id: string): number => fnv(id) % HELLO_BUCKETS;
 
+const byId = (a: Keyed, b: Keyed): number => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+
+/** The items of each bucket, in list order. */
+export function byBucket<T extends Keyed>(items: readonly T[]): T[][] {
+  const groups: T[][] = Array.from({ length: HELLO_BUCKETS }, () => []);
+  for (const item of items) groups[bucketOf(item.id)]!.push(item);
+  return groups;
+}
+
+/** One bucket's digest as 8 hex digits: FNV-1a over its items' JSON in id order. */
+export function bucketDigest(items: readonly Keyed[]): string {
+  return fnv([...items].sort(byId).map(item => JSON.stringify(item)).join("\n")).toString(16).padStart(8, "0");
+}
+
 /** Each bucket's digest as 8 hex digits, all in one string. */
 export function digests(items: readonly Keyed[]): string {
-  const groups: string[][] = Array.from({ length: HELLO_BUCKETS }, () => []);
-  for (const item of [...items].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) groups[bucketOf(item.id)]!.push(JSON.stringify(item));
-  return groups.map(group => fnv(group.join("\n")).toString(16).padStart(8, "0")).join("");
+  return byBucket(items).map(bucketDigest).join("");
 }
 
 /** The buckets whose digest differs from the page's, or null when the page's string is not a set of digests, which gets the whole list. */

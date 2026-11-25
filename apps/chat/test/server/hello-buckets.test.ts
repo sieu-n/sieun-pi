@@ -5,6 +5,7 @@
 import { strict as assert } from "node:assert";
 import { after, test } from "node:test";
 import WebSocket from "ws";
+import { HeldList } from "../../web/src/lib/api/hello-keep.ts";
 import { digests, mergeBuckets, untimed } from "../../web/src/lib/api/shared/hello-buckets.ts";
 import type { LiveEvent } from "../../web/src/lib/api/types.ts";
 import { start, type Running } from "./helpers.ts";
@@ -105,6 +106,26 @@ test("a hello reuses the last hello's timed lists and digests while the lists ho
   assert.deepEqual(reused.hello.partial, built.hello.partial);
   assert.deepEqual([reused.hello.jobs, reused.hello.conversations, reused.hello.times], [built.hello.jobs, built.hello.conversations, built.hello.times]);
   assert.ok(built.calls - reused.calls >= items / 2, `the second hello stringified ${reused.calls} values and the first ${built.calls}, for ${items} items`);
+});
+
+test("a held list redigests only the buckets a partial hello changed, and its digests equal the whole hello's", async () => {
+  chat ??= await start();
+  const first = await open(chat.base);
+  const jobs = new HeldList(first.hello.jobs);
+  const conversations = new HeldList(first.hello.conversations);
+  assert.equal(jobs.held(), digests(first.hello.jobs));
+  assert.equal(conversations.held(), digests(first.hello.conversations));
+  const held = `?jobs=${jobs.held()}&conversations=${conversations.held()}`;
+  assert.equal((await chat.send("POST", "/api/rooms", { kind: "channel", name: "hello-held-list", members: [] })).status, 200);
+  const changed = await open(chat.base, held);
+  const whole = await open(chat.base);
+  const partial = changed.hello.partial!;
+  assert.ok(partial.conversations!.length >= 1 && partial.conversations!.length < 256);
+  const nextJobs = jobs.next(mergeBuckets(jobs.items, partial.jobs!, changed.hello.jobs), partial.jobs!);
+  const nextConversations = conversations.next(mergeBuckets(conversations.items, partial.conversations!, changed.hello.conversations), partial.conversations!);
+  assert.equal(nextJobs.held(), digests(whole.hello.jobs));
+  assert.equal(nextConversations.held(), digests(whole.hello.conversations));
+  for (const socket of [first, changed, whole]) socket.close();
 });
 
 test("a page reads a GET route over its socket, and an unknown route answers 404", async () => {
