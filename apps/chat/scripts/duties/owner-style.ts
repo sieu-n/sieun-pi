@@ -21,6 +21,13 @@
  *   shared_all_pct: of every listed note, the share the shared text still holds, so a later edit that drops one shows.
  *   unsorted_candidates: owner posts of the last day in real rooms that read like style feedback and that neither list names.
  *
+ * The notes of his p75 (#sw-factory-build, 11-20: "시작하면서 눈까리 붙였으면 끝났을 떄 떼야지 / 체크도 남발하지 마 제발 the final outcome should
+ * ALWAYS act like a Slack thread") use the set "reactions", which runs blind-reactions.mjs: in a channel and a DM, 👀 goes on while the work
+ * runs and comes off at its end, no ✅ is left, and each reply sits in its post's thread. Each room is one ask line. The set is daily, so it
+ * reruns every day as a standing check rather than only in its note's first 7 days.
+ *
+ * The output's `n` is the count of style notes the run checked against the shared text: every listed note plus each unsorted candidate.
+ *
  * A candidate is an owner post in a room that is not a test or archived room, whose text matches STYLE_WORDS. A note's `match` words use
  * agent-memory.ts `holds`: all of them, each form "a|b" taking either.
  *
@@ -53,8 +60,11 @@ export interface Note {
   /** Words the skill holds for it, and words the rendered role text holds for it. */
   skill?: string[];
   role?: string[];
-  /** The blind-replies.mjs set that checks it, or the reason it has none. */
-  blind?: { set: string } | { none: string };
+  /**
+   * The blind set that checks it, or the reason it has none. The set "reactions" runs blind-reactions.mjs, every other set blind-replies.mjs.
+   * A `daily` set reruns every day, not only in the note's first 7 days, for a standing ask such as his p75 on reactions.
+   */
+  blind?: { set: string; daily?: boolean } | { none: string };
   /** The job that owns its text, when another job does. */
   owner?: string;
 }
@@ -158,10 +168,25 @@ export function errorLine(stderr: string): string {
   return (lines.find(line => /^\w*Error\b/.test(line)) ?? lines.find(line => /\bcode: '/.test(line)) ?? lines.at(-1) ?? "").slice(0, 240);
 }
 
-/** One blind-replies.mjs run of a set; answers the count of its ask lines, or an error when the run wrote none. */
-function blindRun(script: string, set: string, out: string, server: string): Promise<{ pass: boolean; passed?: number; of?: number; unmeasured?: number; room?: string; agent?: string; error?: string }> {
+/** The blind set that runs blind-reactions.mjs, whose --out file holds one ask line per room. */
+export const REACTIONS_SET = "reactions";
+
+/** The script and args of one blind run of `set`. */
+export function blindCommand(scripts: string, set: string, out: string, server: string): string[] {
+  return set === REACTIONS_SET
+    ? [join(scripts, "blind-reactions.mjs"), "--out", out, "--server", server]
+    : [join(scripts, "blind-replies.mjs"), "--set", set, "--no-reaction", "--out", out, "--server", server];
+}
+
+/** Whether a note's blind set reruns in a run at `now`: a daily set always, any other in the note's first 7 days. */
+export function blindDueAt(note: Note, now: number): boolean {
+  return !!note.blind && "set" in note.blind && (!!note.blind.daily || Date.parse(note.at) >= now - BLIND_DAYS * DAY_MS);
+}
+
+/** One blind run of a set; answers the count of its ask lines, or an error when the run wrote none. */
+function blindRun(scripts: string, set: string, out: string, server: string): Promise<{ pass: boolean; passed?: number; of?: number; unmeasured?: number; room?: string; agent?: string; error?: string }> {
   return new Promise(done => {
-    const child = spawn(process.execPath, [script, "--set", set, "--no-reaction", "--out", out, "--server", server], { stdio: ["ignore", "ignore", "pipe"] });
+    const child = spawn(process.execPath, blindCommand(scripts, set, out, server), { stdio: ["ignore", "ignore", "pipe"] });
     let err = "";
     child.stderr.on("data", chunk => { err = (err + String(chunk)).slice(-4000); });
     child.on("error", error => done({ pass: false, error: `the runner did not start: ${error.message}`.slice(0, 240) }));
@@ -219,10 +244,10 @@ if (isMain(import.meta.url)) {
   const recentShared = recent.filter(row => row.held.skill || row.held.role).length;
 
   const blindRows: BlindRow[] = [];
-  const blindDue = file.notes.filter(note => note.blind && "set" in note.blind && Date.parse(note.at) >= now - BLIND_DAYS * DAY_MS);
+  const blindDue = file.notes.filter(note => blindDueAt(note, now));
   if (!values["no-blind"] && blindDue.length) {
     mkdirSync(runs, { recursive: true });
-    const script = join(dirname(fileURLToPath(import.meta.url)), "..", "blind-replies.mjs");
+    const scripts = join(dirname(fileURLToPath(import.meta.url)), "..");
     // One run per set, one set at a time: on 11-22 the 8 notes' runs started together beside 4 hand runs, about 24 test sessions joined a
     // pool queue of 57, and no test agent got a turn for 3.6 h, so every run failed with no reply.
     const results = new Map<string, Awaited<ReturnType<typeof blindRun>> & { out: string }>();
@@ -230,7 +255,7 @@ if (isMain(import.meta.url)) {
       const set = (note.blind as { set: string }).set;
       if (!results.has(set)) {
         const out = join(runs, `${set}.jsonl`);
-        const result = await blindRun(script, set, out, server);
+        const result = await blindRun(scripts, set, out, server);
         if (result.agent) await archiveAgent(server, result.agent).catch(() => undefined);
         results.set(set, { ...result, out });
       }
@@ -281,6 +306,7 @@ if (isMain(import.meta.url)) {
     : `blind follow not measured, since ${leftWords}` +
       (carried ? `, so blind_follow_pct keeps the ${carried.pct}% measured at ${new Date(carried.at).toISOString().slice(0, 16)}Z` : ", and no earlier run measured it");
   const output = {
+    n: rows.length + unsorted.length,
     metrics,
     flagged: [{ kind: "summary", excerpt: `${recentShared} of ${recent.length + unsorted.length} style notes of the last day are in the shared text (${unsorted.length} unsorted); ` +
       `${rows.filter(row => row.held.skill || row.held.role).length} of ${rows.length} notes in all; ` +

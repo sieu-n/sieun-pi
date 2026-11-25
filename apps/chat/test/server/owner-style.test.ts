@@ -18,7 +18,7 @@ import { join, resolve } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { lastMeasured } from "../../scripts/duties/agent-memory.ts";
-import { askCount, askLines, blindCount, errorLine, ownerPosts, roleText, shared, STYLE_WORDS, unansweredAsk, type AskLine, type BlindRow, type Note } from "../../scripts/duties/owner-style.ts";
+import { askCount, askLines, blindCommand, blindCount, blindDueAt, errorLine, ownerPosts, REACTIONS_SET, roleText, shared, STYLE_WORDS, unansweredAsk, type AskLine, type BlindRow, type Note } from "../../scripts/duties/owner-style.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "owner-style-"));
 after(() => rmSync(dir, { recursive: true, force: true }));
@@ -172,4 +172,43 @@ test("blind-replies.mjs marks an ask with no post and no reaction unanswered, se
   assert.deepEqual(askCount(lines), { of: 0, passed: 0, unmeasured: 2 });
   const summary = JSON.parse(text.trim().split("\n").at(-1)!) as Record<string, unknown>;
   assert.deepEqual({ passed: summary.passed, of: summary.of, unmeasured: summary.unmeasured, pass: summary.pass }, { passed: 0, of: 0, unmeasured: 2, pass: false });
+});
+
+test("his p75 notes run blind-reactions.mjs every day, and each of its rooms is one ask line", () => {
+  assert.deepEqual(blindCommand("/s", REACTIONS_SET, "/o.jsonl", "http://x"), ["/s/blind-reactions.mjs", "--out", "/o.jsonl", "--server", "http://x"]);
+  assert.deepEqual(blindCommand("/s", "lists", "/o.jsonl", "http://x"), ["/s/blind-replies.mjs", "--set", "lists", "--no-reaction", "--out", "/o.jsonl", "--server", "http://x"]);
+  const now = Date.parse("2026-11-26T06:00:00Z");
+  const note: Note = { id: "reactions", posts: ["ch_14ad7a70/p75"], at: "2026-11-20T03:31:00Z", words: "", rule: "", blind: { set: REACTIONS_SET, daily: true } };
+  assert.equal(blindDueAt(note, now + 30 * 86_400_000), true, "a daily set reruns long after its note's first 7 days");
+  assert.equal(blindDueAt({ ...note, blind: { set: "lists" } }, now + 30 * 86_400_000), false);
+  assert.equal(blindDueAt({ ...note, blind: { set: "lists" } }, now), true);
+  assert.equal(blindDueAt({ ...note, blind: { none: "no set" } }, now), false);
+  const room = (kind: string, pass: boolean, unanswered: boolean) => JSON.stringify({ ask: `${kind}: a task, a question while it runs, then ok thanks`, unanswered, room: kind, kind, pass, checks: {} });
+  const text = [room("channel", true, false), room("dm", false, true), JSON.stringify({ agent: "ag_x", rooms: [], pass: false })].join("\n");
+  assert.deepEqual(askCount(askLines(text)), { of: 1, passed: 1, unmeasured: 1 });
+});
+
+test("the precheck writes n, the listed notes plus the unsorted candidates it checked", async () => {
+  const work = mkdtempSync(join(tmpdir(), "owner-style-n-"));
+  try {
+    const data = join(work, "chat");
+    mkdirSync(join(data, "rooms"), { recursive: true });
+    writeFileSync(join(data, "rooms.json"), JSON.stringify({ v: 1, feed: {}, rooms: [{ id: "ch_real", kind: "channel", name: "real", purpose: "", members: [], createdAt: 0, archived: false }] }));
+    writeFileSync(join(data, "rooms", "ch_real.jsonl"), JSON.stringify({ t: "post", post: { id: "p1", seq: 1, author: "owner", at: Date.now() - 3_600_000, text: "too much slop" } }));
+    const note = (id: string): Note => ({ id, posts: [`ch_real/${id}`], at: "2026-11-20T03:31:00Z", words: "", rule: "", skill: ["thread"] });
+    writeFileSync(join(work, "notes.json"), JSON.stringify({ notes: [note("a"), note("b")] }));
+    writeFileSync(join(work, "skill.md"), "a reply goes in its thread");
+    const profile = join(work, "agent-profile.mjs");
+    writeFileSync(profile, "export const commInstructions = () => 'comm'; export const workInstructions = () => 'work';");
+    const out = join(work, "out.json");
+    const script = resolve(fileURLToPath(import.meta.url), "../../../scripts/duties/owner-style.ts");
+    const child = spawn(process.execPath, ["--import", "tsx", script, "--no-blind", "--notes", join(work, "notes.json"), "--skill", join(work, "skill.md"), "--profile", profile, "--data-dir", data],
+      { env: { ...process.env, OUTPUT_FILE: out }, stdio: "ignore" });
+    assert.equal(await new Promise(done => child.on("close", done)), 0);
+    const output = JSON.parse(readFileSync(out, "utf8")) as { n: number; metrics: Record<string, number> };
+    assert.equal(output.n, 3, "two listed notes and one unsorted candidate");
+    assert.equal(output.metrics.unsorted_candidates, 1);
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
 });

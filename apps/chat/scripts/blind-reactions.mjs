@@ -196,7 +196,10 @@ async function runRoom(kind) {
     ["no agent post ends with a sign-off emoji", posts.every(p => p.author?.id !== agent.id || !SIGN_OFF.test(p.text))],
     ["no agent post pastes a raw JSON or log line", posts.every(p => p.author?.id !== agent.id || !RAW_LINE.test(p.text))],
   ];
+  // One ask line per room for the owner-style duty (askLines): a room where the agent neither posted nor reacted got no model answer.
+  const unanswered = posts.every(p => p.author?.id !== agent.id && !agentReactions(p).length);
   const line = {
+    ask: `${kind}: a task, a question while it runs, then ok thanks`, unanswered,
     room, kind, agent: agent.id, questionSeconds, taskSeconds,
     posts: posts.map(p => ({ id: p.id, author: p.author?.id === agent.id ? "agent" : "owner", threadRoot: p.threadRoot, answers: p.answers, reactions: (p.reactions ?? []).map(r => `${r.emoji} ${r.by.map(b => b.name).join(",")}`), text: p.text })),
     emojiCalls: calls, checks: Object.fromEntries(checks), pass: checks.every(([, ok]) => ok),
