@@ -22,11 +22,19 @@ const nextHello = (page: Page): Promise<{ url: string; hello: Hello }> => new Pr
   page.on("websocket", take);
 });
 
+/**
+ * The jobs the page keeps in IndexedDB, one record per bucket under cache `hello-bucket` and key `jobs/<bucket>` (hello-keep.ts), or 0 until
+ * all 256 job buckets are there, since a page load uses the kept lists only when every bucket is.
+ */
 const keptLists = (page: Page): Promise<number> => page.evaluate(() => new Promise<number>(resolve => {
   const open = indexedDB.open("chat.pages");
   open.onsuccess = () => {
-    const get = open.result.transaction("pages").objectStore("pages").get(["hello", "hello"]);
-    get.onsuccess = () => resolve((get.result?.value?.jobs as unknown[] | undefined)?.length ?? 0);
+    const range = IDBKeyRange.bound(["hello-bucket", "jobs/"], ["hello-bucket", "jobs/\uffff"]);
+    const get = open.result.transaction("pages").objectStore("pages").getAll(range);
+    get.onsuccess = () => {
+      const buckets = get.result as { value: { items: unknown[] } }[];
+      resolve(buckets.length === 256 ? buckets.reduce((sum, bucket) => sum + bucket.value.items.length, 0) : 0);
+    };
     get.onerror = () => resolve(0);
   };
   open.onerror = () => resolve(0);
