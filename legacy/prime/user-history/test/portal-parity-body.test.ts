@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { test } from "node:test";
-import { bodyGap, nextPage, pageTwoRequest, probe, type Operation } from "../scripts/duties/portal-parity.ts";
+import { bodyGap, nextPage, pageTwoRequest, probe, retryDropped, type Operation } from "../scripts/duties/portal-parity.ts";
 
 const documented = (data: unknown): Operation => ({ responses: { "200": { content: { "application/json": { example: { data, meta: {} } } } } } });
 const profile = documented({ platform: "tiktok", username: "flighthouse", follower_count: 1 });
@@ -66,4 +66,44 @@ test("a call with no answer by its deadline fails for the portal as no answer", 
     server.closeAllConnections();
     server.close();
   }
+});
+
+// 11-25 21:32:19Z: us-metal02's uplink failover moved the default route and ended every socket on 155.254.27.166 with ss -K, and the d2 run
+// then in flight read 40 prod and 114 staging calls as unprobed, "fetch failed (ECONNABORTED read ECONNABORTED)", prod 80% and staging 35.3%.
+const dropped = (code: string) => new TypeError("fetch failed", { cause: Object.assign(new Error(`read ${code}`), { code }) });
+
+test("a call whose connection this box dropped goes out again and is scored on the answer it gets", async (t) => {
+  let sent = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    if (++sent === 1) throw dropped("ECONNABORTED");
+    return new Response(JSON.stringify({ data: { username: "natgeo" }, meta: {} }), { status: 200 });
+  });
+  let resent = 0;
+  const answer = await probe("https://api.test", { id: "org_1", key: "kb_live_x" }, "GET /v1/instagram/profile",
+    { method: "GET", path: "/v1/instagram/profile", query: { username: "natgeo" } }, "docs example", 10_000, [0, 0], async () => { resent++; });
+  assert.equal(sent, 2);
+  assert.equal(resent, 1);
+  assert.equal(answer.verdict, "ok");
+  assert.equal(answer.status, 200);
+  assert.match(answer.note, /after 1 dropped connection \(ECONNABORTED\)/);
+});
+
+test("a call whose connection drops on every try stays unprobed after the last wait and names each drop", async (t) => {
+  let sent = 0;
+  t.mock.method(globalThis, "fetch", async () => { sent++; throw dropped("ECONNRESET"); });
+  const answer = await probe("https://api.test", { id: "org_1", key: "kb_live_x" }, "GET /v1/x", { method: "GET", path: "/v1/x", query: {} }, "docs example", 10_000, [0, 0]);
+  assert.equal(sent, 3);
+  assert.equal(answer.verdict, "unprobed");
+  assert.match(answer.note, /ECONNRESET read ECONNRESET.*after 2 dropped connections \(ECONNRESET, ECONNRESET\)/);
+});
+
+test("an answer of any status and a fetch error that is not a drop go out once", async (t) => {
+  let sent = 0;
+  t.mock.method(globalThis, "fetch", async () => { sent++; return new Response(JSON.stringify({ error: { code: "upstream_error" } }), { status: 502 }); });
+  const answer = await probe("https://api.test", { id: "org_1", key: "kb_live_x" }, "GET /v1/x", { method: "GET", path: "/v1/x", query: {} }, "docs example", 10_000, [0, 0]);
+  assert.equal(sent, 1);
+  assert.equal(answer.status, 502);
+  let tries = 0;
+  await assert.rejects(retryDropped(async () => { tries++; throw new TypeError("fetch failed", { cause: Object.assign(new Error("getaddrinfo ENOTFOUND api.test"), { code: "ENOTFOUND" }) }); }, [0, 0]));
+  assert.equal(tries, 1);
 });

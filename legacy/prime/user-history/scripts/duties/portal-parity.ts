@@ -764,9 +764,11 @@ const sh = (command: string, cwd: string) => new Promise<string>((resolve, rejec
 });
 
 async function getJson(url: string): Promise<OpenApi> {
-  const response = await fetch(url, { redirect: "manual" });
-  if (response.status !== 200) throw new Error(`GET ${url} gave HTTP ${response.status}`);
-  return await response.json() as OpenApi;
+  return retryDropped(async () => {
+    const response = await fetch(url, { redirect: "manual" });
+    if (response.status !== 200) throw new Error(`GET ${url} gave HTTP ${response.status}`);
+    return await response.json() as OpenApi;
+  }, DROP_WAITS_MS);
 }
 
 interface Org { id: string; key: string; keyId?: string | undefined }
@@ -792,41 +794,92 @@ async function cleanupOrg(convex: string, secret: string, org: Org): Promise<voi
 type Answer = ProbeResult & { body: unknown; retryAfterS?: number };
 
 /**
+ * Socket errors that say this box lost the connection, not that the env answered: us-metal02's uplink failover
+ * (auto-sns-agent apps/infra/metal/config/host/uplink-failover) destroys every TCP socket on the primary address with `ss -K` when it moves
+ * the default route. At 21:32:19Z on 11-25 it did, and the d2 run of 21:31:34Z lost 40 prod and 114 staging calls that had waited 0.2 to
+ * 31 s, each "fetch failed (ECONNABORTED read ECONNABORTED)", so d2 read prod 80% and staging 35.3% while no customer call failed.
+ */
+const DROPPED = new Set(["ECONNABORTED", "ECONNRESET", "EPIPE", "UND_ERR_SOCKET", "ENETUNREACH", "EHOSTUNREACH", "EAI_AGAIN", "UND_ERR_CONNECT_TIMEOUT"]);
+/**
+ * The waits before each new try of a call whose connection dropped: one 5 s failover round, then 20 s, past the failover's 3 failed
+ * rounds (15 s) that move the route off a dark address (ROUND_SECONDS and SWITCH_AFTER in uplink_failover.py).
+ */
+export const DROP_WAITS_MS: readonly number[] = [5_000, 20_000];
+
+/** The cause code of a fetch error that is a dropped connection, else undefined. */
+export function droppedCode(error: unknown): string | undefined {
+  const code = (error as { cause?: { code?: unknown }; code?: unknown } | null)?.cause?.code ?? (error as { code?: unknown } | null)?.code;
+  return typeof code === "string" && DROPPED.has(code) ? code : undefined;
+}
+
+function errorText(error: unknown): string {
+  const cause = (error as { cause?: { code?: unknown; message?: unknown } } | null)?.cause;
+  const code = typeof cause?.code === "string" ? `${cause.code} ` : "";
+  return `${error instanceof Error ? error.message : String(error)}${typeof cause?.message === "string" ? ` (${code}${cause.message})` : ""}`;
+}
+
+const droppedNote = (drops: readonly string[]) => drops.length ? `, after ${drops.length} dropped connection${drops.length === 1 ? "" : "s"} (${drops.join(", ")})` : "";
+
+/**
+ * Runs `once` and runs it again after each wait in `waits` while it throws a dropped connection (droppedCode), and pushes each drop's code
+ * onto `drops`, and awaits `before` ahead of each new try. Another error, an answer of any status, or `signal` ending stops it, and it
+ * throws the last error.
+ */
+export async function retryDropped<T>(once: () => Promise<T>, waits: readonly number[], drops: string[] = [], signal?: AbortSignal,
+  before: () => Promise<void> = async () => {}): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await once();
+    } catch (error) {
+      const code = droppedCode(error);
+      if (!code || attempt >= waits.length || signal?.aborted) throw error;
+      drops.push(code);
+      await new Promise(resolve => setTimeout(resolve, waits[attempt]));
+      await before();
+      if (signal?.aborted) throw error;
+    }
+  }
+}
+
+/**
  * The X-Virev-Caller of every call this duty makes. The portal passes a probe: label on to the crawler, which counts it out of its latency
  * SLO (auto-sns-agent 2435aff5e): on prod on 11-04 from 01:30 to 05:30Z d2 reruns sent 19 unlabeled profile searches at a p50 of 13.9 s.
  */
 const CALLER = { "x-virev-caller": "probe:portal-parity" };
 
 export async function probe(base: string, org: Org, op: string, request: ProbeRequest, note: string,
-  deadlineMs = PROBE_DEADLINE_MS): Promise<Answer> {
+  deadlineMs = PROBE_DEADLINE_MS, waits: readonly number[] = DROP_WAITS_MS, resend?: () => Promise<void>): Promise<Answer> {
   const url = new URL(base + request.path);
   for (const [key, value] of Object.entries(request.query)) url.searchParams.set(key, value);
   const start = Date.now();
   const signal = AbortSignal.timeout(deadlineMs);
+  const drops: string[] = [];
   try {
-    const response = await fetch(url, {
-      method: request.method,
-      headers: { authorization: `Bearer ${org.key}`, ...CALLER, ...(request.body === undefined ? {} : { "content-type": "application/json" }) },
-      body: request.body === undefined ? null : JSON.stringify(request.body),
-      redirect: "manual",
-      signal,
-    });
-    const text = await response.text();
+    const { response, text } = await retryDropped(async () => {
+      const response = await fetch(url, {
+        method: request.method,
+        headers: { authorization: `Bearer ${org.key}`, ...CALLER, ...(request.body === undefined ? {} : { "content-type": "application/json" }) },
+        body: request.body === undefined ? null : JSON.stringify(request.body),
+        redirect: "manual",
+        signal,
+      });
+      return { response, text: await response.text() };
+    }, waits, drops, signal, resend);
     let body: unknown = null;
     try { body = JSON.parse(text); } catch { body = null; }
     const { verdict, code } = classify(response.status, body);
     const message = (body as { error?: { message?: string } } | null)?.error?.message;
     const retryAfterS = Number(response.headers.get("retry-after"));
-    return { op, verdict, status: response.status, ms: Date.now() - start, code, note: message ? `${note}: ${message}` : body === null && text ? `${note}: not JSON: ${text.slice(0, 80)}` : note, body,
+    const said = message ? `${note}: ${message}` : body === null && text ? `${note}: not JSON: ${text.slice(0, 80)}` : note;
+    return { op, verdict, status: response.status, ms: Date.now() - start, code, note: said + droppedNote(drops), body,
       ...(Number.isFinite(retryAfterS) && retryAfterS > 0 ? { retryAfterS } : {}) };
   } catch (error) {
     const ms = Date.now() - start;
-    if (signal.aborted) return { op, verdict: "portal", status: 0, ms, code: "no_answer", note: `${note}: no answer in ${deadlineMs / 1000} s`, body: null };
+    if (signal.aborted && !droppedCode(error)) return { op, verdict: "portal", status: 0, ms, code: "no_answer", note: `${note}: no answer in ${deadlineMs / 1000} s`, body: null };
     const cause = (error as { cause?: { code?: unknown } } | null)?.cause?.code;
     if (typeof cause === "string" && NO_ANSWER.has(cause))
       return { op, verdict: "portal", status: 0, ms, code: "no_answer", note: `${note}: the portal sent no answer in ${Math.round(ms / 1000)} s (${cause})`, body: null };
-    const why = (error as { cause?: { message?: unknown } } | null)?.cause?.message;
-    return { op, verdict: "unprobed", status: 0, ms, note: `${note}: ${error instanceof Error ? error.message : String(error)}${typeof why === "string" ? ` (${typeof cause === "string" ? `${cause} ` : ""}${why})` : ""}`, body: null };
+    return { op, verdict: "unprobed", status: 0, ms, note: `${note}: ${errorText(error)}${droppedNote(drops)}`, body: null };
   }
 }
 
@@ -919,15 +972,15 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[]): Promise<
   const slot = target.perMinute ? pacedSlot(target.perMinute) : async () => {};
   // Another caller on the same key, such as a second run of this duty, also fills the portal's minute: on 10-19 at 15:10Z a push run of d2
   // and a hand run together got 52 prod answers of 429 rate_limit_exceeded. So a 429 rate_limit_exceeded waits its Retry-After and calls again.
+  // A call whose connection dropped goes out again through the same start gate (retryDropped), so the run's new tries keep its pace.
+  const send = async () => { await slot(); if (target.calls) target.calls.n++; };
   const call = async (org: Org, op: string, request: ProbeRequest, note: string): Promise<Answer> => {
-    await slot();
-    if (target.calls) target.calls.n++;
-    let result = await probe(base, org, op, request, note);
+    await send();
+    let result = await probe(base, org, op, request, note, PROBE_DEADLINE_MS, DROP_WAITS_MS, send);
     for (let waits = 1; result.status === 429 && result.code === RATE_LIMITED; waits++) {
       await new Promise(resolve => setTimeout(resolve, (result.retryAfterS ?? 1) * 1000));
-      await slot();
-      if (target.calls) target.calls.n++;
-      const again = await probe(base, org, op, request, note);
+      await send();
+      const again = await probe(base, org, op, request, note, PROBE_DEADLINE_MS, DROP_WAITS_MS, send);
       result = { ...again, note: `${again.note}, after ${waits} rate limit wait${waits === 1 ? "" : "s"}` };
     }
     if (!target.spend) return result;
@@ -1126,7 +1179,7 @@ async function main(): Promise<void> {
   const sourceErrors: string[] = [];
   const cleanupErrors: string[] = [];
   const attempt = async <T>(what: string, run: () => Promise<T>): Promise<T | null> => {
-    try { return await run(); } catch (error) { sourceErrors.push(`${what}: ${error instanceof Error ? error.message : String(error)}`); return null; }
+    try { return await run(); } catch (error) { sourceErrors.push(`${what}: ${errorText(error)}`); return null; }
   };
   type EnvFile = { urls: Record<string, string>; keySources: Record<string, { cmd: string }> };
   // A supply hold the run cannot read counts as held, so a batch whose rows all failed under an unread /ops/status reads held.
