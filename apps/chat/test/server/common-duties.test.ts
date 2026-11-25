@@ -7,7 +7,10 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import type { AgentSummary, CheckInView, DutyRow } from "../../web/src/lib/api/types.ts";
-import { AREA_REVIEW_NAME, areaReviewDuty, BOARD_PUSH_EVERY_MS, liveAppDir } from "../../server/common-duties.ts";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { AREA_REVIEW_NAME, areaReviewDuty, BOARD_PUSH_EVERY_MS, hostCwd, liveAppDir } from "../../server/common-duties.ts";
 import { areaReview } from "../../scripts/duties/area-review.ts";
 import { start, type Running } from "./helpers.ts";
 
@@ -44,12 +47,23 @@ test("a walk's test agent shows the Area review duty paused", async () => {
   assert.equal(review[0]!.paused, true);
 });
 
-test("the duty runs its precheck in the agent's own folder, and in the apps/chat folder when this box lacks it", () => {
-  const here = areaReviewDuty("ag_x", "/tmp", "/app") as { precheck: { cwd: string; command: string[] } };
-  assert.equal(here.precheck.cwd, "/tmp");
-  assert.deepEqual(here.precheck.command, ["node", "/app/scripts/duties/area-review.ts", "--agent", "ag_x"]);
-  const away = areaReviewDuty("ag_x", "/Users/nobody/project", "/app") as { precheck: { cwd: string } };
-  assert.equal(away.precheck.cwd, "/app");
+test("the duty runs where the chat host keeps the agent's project: a metal agent's own folder, a Mac path's copy under this box's home, else apps/chat", () => {
+  const home = mkdtempSync(join(tmpdir(), "common-duties-home-"));
+  const repo = join(home, "Documents/Github/auto-sns-agent");
+  mkdirSync(repo, { recursive: true });
+  try {
+    // A us-metal02 agent such as seo: its home is a folder on this box.
+    const metal = areaReviewDuty("ag_seo", repo, "/app", home) as { precheck: { cwd: string; command: string[] } };
+    assert.equal(metal.precheck.cwd, repo);
+    assert.deepEqual(metal.precheck.command, ["node", "/app/scripts/duties/area-review.ts", "--agent", "ag_seo"]);
+    // A Mac agent such as 5180 designer, or vent with its Mac home: the same repo under this box's home.
+    const mac = areaReviewDuty("ag_5180-designer", "/Users/sieunpark/Documents/Github/auto-sns-agent", "/app", home) as { precheck: { cwd: string } };
+    assert.equal(mac.precheck.cwd, repo);
+    assert.equal(hostCwd("/Users/sieunpark/Documents/Github/nothing-here", "/app", home), "/app");
+    assert.equal(hostCwd(undefined, "/app", home), "/app");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
 });
 
 test("the area review always hands off the review, counts corrections its memory misses, and the owner's posts of the day to it", () => {

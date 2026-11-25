@@ -9,7 +9,8 @@
  * test agent so no throwaway agent starts a daily job. Its precheck, scripts/duties/area-review.ts, runs with plain node from the agent's
  * own project folder, so the duty job works there.
  */
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
 export const AREA_REVIEW_NAME = "Area review";
@@ -30,10 +31,20 @@ export function liveAppDir(dir = resolve(import.meta.dirname, "..")): string {
 }
 
 /**
- * The "Area review" duty of agent `agentId`, whose project folder is `cwd`. A folder this box lacks, such as a Mac agent's, runs the precheck
- * from the apps/chat folder instead, since a precheck always runs on the chat host.
+ * The folder on the chat host where an agent's duty precheck and duty job run: both run on this box, since `startDutyJob` makes the job's
+ * thread with no box. A Mac path such as `/Users/<user>/Documents/Github/auto-sns-agent` maps to the same path under this box's home, the
+ * copy the agent's other duties on this box use; on 11-26 the backfill gave vent, a us-metal02 agent with a Mac home, that Mac path. A
+ * folder with no copy here falls back to the apps/chat folder.
  */
-export function areaReviewDuty(agentId: string, cwd: string | undefined, appDir = liveAppDir()): Record<string, unknown> {
+export function hostCwd(cwd: string | undefined, appDir: string, home = homedir()): string {
+  if (!cwd) return appDir;
+  const mac = /^\/Users\/[^/]+\/(.+)$/.exec(cwd);
+  if (mac && existsSync(join(home, mac[1]!))) return join(home, mac[1]!);
+  return existsSync(cwd) ? realpathSync(cwd) : appDir;
+}
+
+/** The "Area review" duty of agent `agentId`, whose project folder is `cwd` on the agent's own box (`hostCwd` picks the folder here). */
+export function areaReviewDuty(agentId: string, cwd: string | undefined, appDir = liveAppDir(), home = homedir()): Record<string, unknown> {
   return {
     name: AREA_REVIEW_NAME,
     ownerWords: COMMON_DUTIES_WORDS,
@@ -50,7 +61,7 @@ export function areaReviewDuty(agentId: string, cwd: string | undefined, appDir 
     ],
     precheck: {
       command: ["node", join(appDir, "scripts/duties/area-review.ts"), "--agent", agentId],
-      cwd: cwd && existsSync(cwd) ? cwd : appDir,
+      cwd: hostCwd(cwd, appDir, home),
       timeoutMs: 60_000,
     },
     onMiss: "Do the review in the area_review item first, in this order: read the brief, memory and working memory for the area, open its dashboards and live product, " +
