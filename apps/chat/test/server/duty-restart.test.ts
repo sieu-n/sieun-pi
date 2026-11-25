@@ -31,7 +31,7 @@ const duty = (work: string, now: number, run: number) => ({
   id: "d1", name: "Restart duty", ownerWords: "keep it up", goal: "it stays up", metrics: [metric], schedule: { kind: "daily", at: "07:04" },
   precheck: { command: ["node", "-e", `const fs = require("fs"); const mode = process.env.PRECHECK_MODE;
 fs.appendFileSync(require("path").join(process.cwd(), "modes"), mode + "\\n");
-setTimeout(() => fs.writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { up: mode === "after" ? 100 : ${run} } })), 1500);`], cwd: work, timeoutMs: 30_000 },
+setTimeout(() => fs.writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ n: 1, metrics: { up: mode === "after" ? 100 : ${run} } })), 1500);`], cwd: work, timeoutMs: 30_000 },
   onMiss: "fix it", status: "active", createdAt: now - 10 * 24 * HOUR, updatedAt: now, lastRunAt: now - HOUR, runCount: 2,
 });
 const jobRun = (at: number): DutyRunRecord => ({

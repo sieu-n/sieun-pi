@@ -20,7 +20,7 @@ test("a hand-off sig an earlier run gave a job starts no second job; a new sig o
     const duty = (sig: string, unsaved = 0) => ({
       id: "d3", name: "Area review", ownerWords: "w", goal: "g", onMiss: "m", metrics: [{ key: "corrections_unsaved", label: "Unsaved", op: "<=", target: 0, headline: true }],
       schedule: { kind: "daily", at: "05:39" },
-      precheck: { command: ["node", "-e", `require("fs").writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { corrections_unsaved: ${unsaved} }, ` +
+      precheck: { command: ["node", "-e", `require("fs").writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ n: 1, metrics: { corrections_unsaved: ${unsaved} }, ` +
         `flagged: [{ kind: "area_review", sig: ${JSON.stringify(sig)}, handOff: true, excerpt: "review" }] }))`], cwd: dir, timeoutMs: 30_000 },
     }) as unknown as Duty;
     let at = Date.now();

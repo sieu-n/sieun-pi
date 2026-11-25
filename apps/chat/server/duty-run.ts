@@ -276,6 +276,16 @@ export interface DutyRunResult {
   brief: string | null;
 }
 
+/**
+ * A precheck output names its sample size as a top-level `n`, one number or one count per metric, so a met run on no input reads as such.
+ * On 11-26 agent factory's d7 found 47 duties in 13 agents with no n (skills/board/references/plan-and-duties.md item 9).
+ */
+const namesN = (output: PrecheckOutput): boolean => {
+  const n = (output as { n?: unknown }).n;
+  return typeof n === "number" ? Number.isFinite(n) : !!n && typeof n === "object" && Object.values(n).some(value => typeof value === "number" && Number.isFinite(value));
+};
+export const NO_N_LINE = "This duty's precheck output has no top-level n. In this run, add n, the count of things the run measured, to its output.";
+
 /** Measures one run and writes its detail and findings files into `dir`. */
 export async function measure(input: {
   duty: Duty; chat: { id: string; name: string }; dir: string; trigger: DutyTrigger; previous: readonly DutyRunRecord[]; board: ChatBoard | null;
@@ -293,6 +303,7 @@ export async function measure(input: {
   };
   let record: DutyRunRecord;
   let flagged: FlaggedSlice[] = [];
+  let noN = false;
   try {
     const output = await precheckOf(duty, dir, detail, previous.slice(0, 10), "run", `${input.chat.id.slice(0, 8)}-${duty.id}-${runStamp(started)}-run`, input, trigger);
     const judged = judge(duty.metrics, output, { now: started, runs: previous });
@@ -300,6 +311,7 @@ export async function measure(input: {
     const hostAway = hostAwayOf(output);
     const waitsOn = judged.verdict === "error" ? outsideWaitOf(output) : undefined;
     flagged = output.flagged ?? [];
+    noN = !namesN(output);
     record = {
       duty: duty.id, at: started, slot: started, trigger, ms: Date.now() - wall, verdict: judged.verdict, metrics: judged.metrics, summary: judged.summary, detail,
       ...(judged.parts ? { parts: judged.parts } : {}), ...(judged.items ? { items: judged.items } : {}), ...(readings ? { readings } : {}),
@@ -320,30 +332,33 @@ export async function measure(input: {
     if (Object.keys(fixes).length) record.fixes = fixes;
   }
   const misses: MetricStreak[] = record.verdict === "missed" ? metricStreaks([record, ...previous]).filter(streak => counted.has(streak.key)) : [];
-  const overrunLine = record.overrun ? `This run went over: ${overrunWords(record.overrun)}. Make the precheck faster or set its timeoutMs to what it needs.` : "";
+  const runNotes = [record.overrun ? `This run went over: ${overrunWords(record.overrun)}. Make the precheck faster or set its timeoutMs to what it needs.` : "",
+    noN ? NO_N_LINE : ""].filter(Boolean).join("\n\n");
   let findings: string;
   if (record.verdict === "error" && record.waitsOn) {
     findings = [`No measure: ${record.summary}. It waits on something outside the precheck: ${record.waitsOn} The precheck is not broken, so leave it as it is ` +
-      "and start no fix job for it; this run counts toward no error streak.", overrunLine].filter(Boolean).join("\n\n");
+      "and start no fix job for it; this run counts toward no error streak.", runNotes].filter(Boolean).join("\n\n");
   } else if (record.verdict === "error") {
     const streak = errorStreak([record, ...previous]);
-    findings = [`The precheck failed: ${record.error ?? record.summary}. ${streak >= ERROR_RUNS_TARGET ? `It failed ${streak} runs in a row, over the target of ${ERROR_RUNS_TARGET}: fix the precheck first.` : "Fix the precheck or check the duty by hand."}`, overrunLine].filter(Boolean).join("\n\n");
+    findings = [`The precheck failed: ${record.error ?? record.summary}. ${streak >= ERROR_RUNS_TARGET ? `It failed ${streak} runs in a row, over the target of ${ERROR_RUNS_TARGET}: fix the precheck first.` : "Fix the precheck or check the duty by hand."}`, runNotes].filter(Boolean).join("\n\n");
   } else {
     const findingsFile = join(dir, `${duty.id}-${runStamp(started)}.findings.md`);
-    await writeFile(findingsFile, [`# ${duty.name} run of ${new Date(started).toISOString()}`, `Measured against the targets: ${record.summary}.`, overrunLine,
+    await writeFile(findingsFile, [`# ${duty.name} run of ${new Date(started).toISOString()}`, `Measured against the targets: ${record.summary}.`, runNotes,
       `The full precheck output is ${detail}.`, flaggedSection(flagged)].filter(Boolean).join("\n\n") + "\n", { mode: 0o600 });
     const headline = headlineMetric(duty.metrics);
     const value = headline ? record.metrics[headline.key] : undefined;
     findings = [briefFindings({ headline: headline && value ? `${headline.label} ${value.value}${headline.unit ?? ""} against ${headline.op} ${headline.target}${headline.unit ?? ""}` : null,
-      flagged, ...(headline ? { headlineKey: headline.key } : {}), detail: findingsFile }), overrunLine].filter(Boolean).join("\n\n");
+      flagged, ...(headline ? { headlineKey: headline.key } : {}), detail: findingsFile }), runNotes].filter(Boolean).join("\n\n");
   }
   // A hand-off with a sig that an earlier run of this duty already gave a job is not handed again: on 11-26 VP of GTM's Area review started
   // three jobs for the one daily sig ag_vp-of-gtm:2026-11-25. The run keeps its hand-offs with a sig in `flagged` for the next run to read.
   // Only a job of the last day counts, so a finding that is still open a day later, such as a page Wiki tidiness flags each day, goes out again.
   const handed = new Set(previous.filter(run => run.job && started - run.at < 86_400_000).flatMap(run => (run.flagged ?? []).flatMap(slice => slice.handOff && slice.sig ? [slice.sig] : [])));
-  const handOffs = flagged.filter(slice => slice.handOff && slice.sig);
+  // A precheck output with no n hands its fix to one job a day, as a hand-off sig does.
+  const nSlice: FlaggedSlice[] = noN ? [{ kind: "no_sample_size", excerpt: NO_N_LINE, handOff: true, sig: `${duty.id}/n` }] : [];
+  const handOffs = [...flagged.filter(slice => slice.handOff && slice.sig), ...nSlice];
   if (handOffs.length) record.flagged = handOffs;
-  const acts = flagged.some(slice => slice.item !== undefined || (slice.handOff && !(slice.sig && handed.has(slice.sig))));
+  const acts = [...flagged, ...nSlice].some(slice => slice.item !== undefined || (slice.handOff && !(slice.sig && handed.has(slice.sig))));
   // A run that reads error only because its headline waits outside the precheck, with every number it read on target, has nothing a job can do.
   const waits = record.verdict === "error" && record.waitsOn !== undefined && Object.values(record.metrics).every(result => result.met);
   const idle = (record.verdict === "met" || waits) && !misses.length && !record.overrun && !acts;

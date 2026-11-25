@@ -135,30 +135,38 @@ export interface AgentRead {
   pauses?: Readonly<Record<string, { since: number; reason?: string }>>;
   /** Per duty id, the sample size its newest measured run's detail file names (`sampleSize`), or null when the file names none. */
   samples?: Readonly<Record<string, number | null>>;
-  /** Per duty id, the hand-off sigs of each of its runs that started a job, one list per run (`duplicateJobs`). */
-  handOffJobs?: Readonly<Record<string, readonly { at: number; sigs: readonly string[] }[]>>;
+  /** Per duty id, the hand-off sigs of each of its runs that named a job, with that job's id, one list per run (`duplicateJobs`). */
+  handOffJobs?: Readonly<Record<string, readonly HandOffRun[]>>;
   /** Per duty id, whether its newest measured run's detail file holds the precheck's JSON output; absent when that was not read. */
   outputs?: Readonly<Record<string, boolean>>;
 }
 /** An owner post to an agent: `ref` is "#room pN", `ids` the Prime message ids its inputs carried, which an agent quotes as "msg <id>". */
 export interface Ask { ref: string; ids: readonly string[]; at: number; text: string }
 
+/** A duty run that named a job, the id of that job, and the hand-off sigs the run gave. */
+export interface HandOffRun { at: number; job?: string; sigs: readonly string[] }
+
 /**
- * The hand-off sigs that more than one job of a duty got, with how many: the duty runner's bug, not the agent's, so it nudges nobody. Before
- * 11-26 a run handed the same daily sig to a new job on every rerun (server/duty-run.ts `measure`).
+ * The hand-off sigs that more than one job of a duty got, with how many distinct jobs: the duty runner's bug, not the agent's, so it nudges
+ * nobody. Before 11-26 a run handed the same daily sig to a new job on every rerun (server/duty-run.ts `measure`). A verify or busy run
+ * names the job still at work, so runs are counted by job id: counting runs read 179 on 11-26 against 57 real repeats.
  */
-export function duplicateJobs(runs: readonly { at: number; sigs: readonly string[] }[]): [string, number][] {
-  // A job counts twice only within a day of the last job for its sig: a page Wiki tidiness still flags the next day is a new day's work.
+export function duplicateJobs(runs: readonly HandOffRun[]): [string, number][] {
+  // A job counts twice only within a day of the last run for its sig: a page Wiki tidiness still flags the next day is a new day's work.
   const last = new Map<string, number>();
+  const jobs = new Map<string, Set<string>>();
   const counts = new Map<string, number>();
   for (const run of [...runs].sort((a, b) => a.at - b.at)) {
     for (const sig of new Set(run.sigs)) {
       const before = last.get(sig);
-      counts.set(sig, before !== undefined && run.at - before < DAY_MS ? (counts.get(sig) ?? 1) + 1 : counts.get(sig) ?? 1);
+      const ids = before !== undefined && run.at - before < DAY_MS ? jobs.get(sig)! : new Set<string>();
+      ids.add(run.job ?? `run@${run.at}`);
+      jobs.set(sig, ids);
+      counts.set(sig, Math.max(counts.get(sig) ?? 0, ids.size));
       last.set(sig, run.at);
     }
   }
-  return [...counts].filter(([, jobs]) => jobs > 1);
+  return [...counts].filter(([, count]) => count > 1);
 }
 
 /**
@@ -562,7 +570,7 @@ if (isMain(import.meta.url)) {
         // Each run that started a job, with the hand-off sigs it gave: from the record since 11-26, else from its precheck output.
         const handOffJobs = Object.fromEntries(duties.map(row => [row.duty.id, row.runs.filter(run => run.job).map(run => {
           const slices = run.flagged ?? (run.detail?.endsWith(".json") && existsSync(run.detail) ? readJson<{ flagged?: { handOff?: true; sig?: string }[] }>(run.detail)?.flagged : undefined) ?? [];
-          return { at: run.at ?? 0, sigs: slices.flatMap(slice => slice.handOff && slice.sig ? [slice.sig] : []) };
+          return { at: run.at ?? 0, ...(run.job?.id ? { job: run.job.id } : {}), sigs: slices.flatMap(slice => slice.handOff && slice.sig ? [slice.sig] : []) };
         })]));
         const samples: Record<string, number | null> = {};
         const outputs: Record<string, boolean> = {};

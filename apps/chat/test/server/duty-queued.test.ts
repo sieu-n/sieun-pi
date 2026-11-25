@@ -34,7 +34,7 @@ const duty = (id: string, up = 90) => ({
   id, name: `Duty ${id}`, ownerWords: "keep it up", goal: "it stays up", metrics: [metric], schedule: { kind: "every", minutes: 10_000 },
   precheck: { command: ["node", "-e", `const fs = require("fs");
 fs.appendFileSync(require("path").join(process.cwd(), "${id}.modes"), process.env.PRECHECK_MODE + "\\n");
-fs.writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { up: ${up} } }));`], cwd: "", timeoutMs: 30_000 },
+fs.writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ n: 1, metrics: { up: ${up} } }));`], cwd: "", timeoutMs: 30_000 },
   onMiss: "fix it", status: "active", createdAt: now - 10 * 24 * HOUR, updatedAt: now, lastRunAt: now, runCount: 1,
 });
 /** A duty like `duty` whose precheck reads `up` from `<id>.up` in its folder. */
@@ -42,7 +42,7 @@ const fixable = (id: string) => {
   const base = duty(id);
   return { ...base, precheck: { ...base.precheck, command: ["node", "-e", `const fs = require("fs"), path = require("path");
 fs.appendFileSync(path.join(process.cwd(), "${id}.modes"), process.env.PRECHECK_MODE + "\\n");
-fs.writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { up: Number(fs.readFileSync(path.join(process.cwd(), "${id}.up"), "utf8")) } }));`] } };
+fs.writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ n: 1, metrics: { up: Number(fs.readFileSync(path.join(process.cwd(), "${id}.up"), "utf8")) } }));`] } };
 };
 const missed = (id: string, at: number, job: string): DutyRunRecord => ({
   duty: id, at, slot: at, trigger: "schedule", ms: 900, verdict: "missed", metrics: { up: { value: 90, target: 99, op: ">=", met: false } }, summary: "up 90",

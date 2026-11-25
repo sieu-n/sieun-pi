@@ -336,6 +336,10 @@ test("d7 counts more than one job for the same duty and hand-off sig as duplicat
     sigs(NOW, "ag_vp-of-gtm:2026-11-24")]), [["ag_vp-of-gtm:2026-11-25", 3]]);
   // The same page sig handed once a day for three days is no duplicate.
   assert.deepEqual(duplicateJobs([sigs(NOW, "off_shape:20"), sigs(NOW + 25 * HOUR, "off_shape:20"), sigs(NOW + 50 * HOUR, "off_shape:20")]), []);
+  // Verify and busy runs that name the job still at work are one job, not three (179 read against 57 real repeats on 11-26).
+  const ran = (at: number, job: string, sig: string) => ({ at, job, sigs: [sig] });
+  assert.deepEqual(duplicateJobs([ran(NOW, "j1", "a"), ran(NOW + HOUR, "j1", "a"), ran(NOW + 2 * HOUR, "j1", "a")]), []);
+  assert.deepEqual(duplicateJobs([ran(NOW, "j1", "a"), ran(NOW + HOUR, "j1", "a"), ran(NOW + 2 * HOUR, "j2", "a")]), [["a", 2]]);
   const out = agentPattern([{
     agent: { id: "ag_vp-of-gtm", name: "VP of GTM" }, brief: "GTM", duties: [duty("d3", "Area review", ["met"])],
     handOffJobs: { d3: [sigs(NOW - HOUR, "ag_vp-of-gtm:2026-11-25"), sigs(NOW - 2 * HOUR, "ag_vp-of-gtm:2026-11-25")] },
