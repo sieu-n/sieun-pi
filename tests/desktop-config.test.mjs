@@ -28,6 +28,11 @@ test("the box's chat page may drag the window", () => {
   assert.ok(capability.permissions.includes("core:window:allow-start-dragging"));
 });
 
+test("the chat page gets the window's drags and drops, so a file drops into the composer", () => {
+  const main = config.app.windows.find((window) => window.label === "main");
+  assert.equal(main.dragDropEnabled, false, "Tauri's own drop handler answers every drag, so WebKit never sends the page dragover or drop");
+});
+
 test("the desktop Tauri config points at files that exist", () => {
   assert.ok(existsSync(join(app, "src-tauri", config.build.frontendDist, "index.html")));
   for (const icon of config.bundle.icon) assert.ok(existsSync(join(app, "src-tauri", icon)), icon);

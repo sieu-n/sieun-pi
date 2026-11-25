@@ -13,6 +13,7 @@
         "title": "sw factory",
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
+        "dragDropEnabled": false,
         "trafficLightPosition": { "x": 20, "y": 30 },
         "url": "https://us-metal02-dev.tail0c093d.ts.net:5184",
         "create": false,
