@@ -8,7 +8,7 @@ import { mkdir, readFile, stat } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import { getContentRoot, indexWrittenPage, normalizeLinkTarget, normalizeRequestedPath, PAGE_READ_LIMIT, readLimitFor } from './wiki';
+import { getContentRoot, getWikiIndex, indexWrittenPage, normalizeLinkTarget, normalizeRequestedPath, PAGE_READ_LIMIT, readLimitFor, type WikiIndex } from './wiki';
 import { extractHtmlTitle, META_COMMENT, parseHtmlMeta } from './wiki-html';
 import { hubsLinking, isCuratedPath, missingHubRow, isRetiredStatus, retiredLinksAdded, titleMatchesH1 } from './wiki-lint';
 import { addRevision, currentVersion } from './wiki-store';
@@ -22,6 +22,7 @@ import { diskPath, rootOf } from './wiki-mounts';
 import { isSessionPath, sessionFolderOf as folderOfSession } from './session-artifact-index';
 import { shouldSkip } from './wiki-paths';
 import { inWriteWorker } from './write-worker';
+import { resolveLink } from './wiki-index';
 
 const WRITABLE = /\.(md|mdx|txt|ya?ml|json|html)$/i;
 
@@ -800,15 +801,103 @@ function metaOf(content: string): Record<string, unknown> {
 	}
 }
 
+/** Every `href` and `src` value in the tags of an HTML page, or every link target of a markdown page, passed through `rewrite`; null keeps it. */
+function rewriteLinks(content: string, rel: string, rewrite: (href: string) => string | null): string {
+	const swap = (whole: string, lead: string, href: string, tail: string) => {
+		const next = rewrite(href);
+		return next === null ? whole : `${lead}${next}${tail}`;
+	};
+	if (!/\.html?$/i.test(rel)) return content.replace(/(\]\()([^)\s]+)()/g, swap);
+	return content.replace(/<[a-zA-Z][^>]*>/g, (tag) =>
+		tag.replace(/(\s(?:href|src)\s*=\s*(["']))([^"']*)(\2)/gi, (whole, lead: string, _q, href: string, tail: string) => swap(whole, lead, href, tail)),
+	);
+}
+
+/** The page a wiki path ends at once each `moved_to` redirect on the way is followed. */
+function followMoves(rel: string, byPath: WikiIndex['byPath']): string {
+	const seen = new Set<string>();
+	let at = rel;
+	for (let moved = byPath.get(at)?.meta?.moved_to; typeof moved === 'string' && !seen.has(at); moved = byPath.get(at)?.meta?.moved_to) {
+		seen.add(at);
+		at = moved;
+	}
+	return at;
+}
+
+/** `href` written from page `from` so it opens the wiki path `target`, keeping its ?query and #fragment and a folder's trailing slash. */
+function hrefFrom(from: string, target: string, suffix: string): string {
+	const relative = path.posix.relative(path.posix.dirname(from), target) || '.';
+	const slash = target.endsWith('/') && !relative.endsWith('/') ? '/' : '';
+	return relative.split('/').map(encodeURIComponent).join('/') + slash + suffix;
+}
+
 /**
- * Move a page to a new path. The page lands at `to` as it was, and the old path keeps a short page whose `moved_to` sends a reader on
- * (the page view redirects), so every link to the old path still opens it. A move onto a page that only redirects back to `rawPath` is
+ * The moved page's bytes with every relative link rebased from `from` to `to`, so each one opens the page it opened before. A
+ * link to a page that moved earlier names that page's new path, and a link to the page itself names `to`.
+ */
+function rebaseLinks(content: string, from: string, to: string, byPath: WikiIndex['byPath']): string {
+	return rewriteLinks(content, from, (href) => {
+		const target = normalizeLinkTarget(href, from);
+		if (!target) return null;
+		const resolved = resolveLink(target, byPath);
+		const page = resolved === from ? to : followMoves(resolved, byPath);
+		const dest = page === resolved ? target : page;
+		if (dest === target && path.posix.dirname(from) === path.posix.dirname(to)) return null;
+		return hrefFrom(to, dest, /[?#].*$/.exec(href.trim())?.[0] ?? '');
+	});
+}
+
+/** True when a write may change `rel` to repoint a link: not archive/, not the @code mirror, not a session log or a closed session's page. */
+async function relinkable(rel: string): Promise<boolean> {
+	if (rel.startsWith('archive/') || rel.startsWith('@code/')) return false;
+	if (!isSessionPath(rel)) return true;
+	return assertSessionWorkspaceWritable(rel).then(
+		() => true,
+		() => false,
+	);
+}
+
+/**
+ * Repoint the links in `sources` that open `from` so they name `to`, one logged revision per page that changed, and answer those
+ * pages. Why: on 2026-11-25 a batch of moves under domains/devops/ci-cd-pipeline left hubs that still linked the old paths, so 12
+ * pages read as hub orphans until the moving job fixed each link by hand.
+ */
+async function relinkSources(sources: string[], from: string, to: string, author: string | undefined): Promise<string[]> {
+	const changed: string[] = [];
+	for (const source of sources) {
+		if (source === from || source === to || !(await relinkable(source))) continue;
+		try {
+			await withPageLock(source, async () => {
+				const { rel, full } = resolveWritePath(source);
+				const before = await readForEdit(rel);
+				if (before === null) return;
+				const { byPath } = await getWikiIndex();
+				const content = rewriteLinks(before, rel, (href) => {
+					const target = normalizeLinkTarget(href, rel);
+					if (!target || (target !== from && resolveLink(target, byPath) !== from)) return null;
+					return hrefFrom(rel, to, /[?#].*$/.exec(href.trim())?.[0] ?? '');
+				});
+				if (content === before) return;
+				await writeLogged({ rel, full, before, existed: true, content, author, summary: `link to ${from} now names ${to}, where it moved`, baseVersion: null });
+				changed.push(rel);
+			});
+		} catch (error) {
+			console.error(`page API: the move of ${from} to ${to} left the link in ${source} on the old path: ${error}`);
+		}
+	}
+	return changed;
+}
+
+/**
+ * Move a page to a new path. The page lands at `to` with its relative links rebased to its new folder, every other page that linked
+ * the old path links `to` instead (`relinked`), and the old path keeps a short page whose `moved_to` sends a reader on (the page view
+ * redirects), so a link the move could not change still opens it. A move onto a page that only redirects back to `rawPath` is
  * allowed, which is how a move is undone, and the path it leaves is then removed instead of redirecting. 409 when `to` holds another page, 404 when the page is missing, 400 for the same path or a
  * page that is itself a redirect.
  */
-export function movePage(input: { rawPath: string; to: string; author?: string }): Promise<{ path: string; to: string; version: number; moved: true }> {
+export async function movePage(input: { rawPath: string; to: string; author?: string }): Promise<{ path: string; to: string; version: number; moved: true; relinked: string[] }> {
 	const [first, second] = [input.rawPath, input.to].sort();
-	return withPageLock(first, () => withPageLock(second, async () => {
+	const moved = await withPageLock(first, () => withPageLock(second, async () => {
 		const from = resolveWritePath(input.rawPath);
 		const to = resolveWritePath(input.to);
 		if (from.rel === to.rel) throw new WriteError(400, 'a page cannot move onto itself');
@@ -820,12 +909,14 @@ export function movePage(input: { rawPath: string; to: string; author?: string }
 		if (typeof metaOf(before).moved_to === 'string') throw new WriteError(400, `${from.rel} only redirects; move the page it points to`);
 		const there = await readForEdit(to.rel);
 		if (there !== null && metaOf(there).moved_to !== from.rel) throw new WriteError(409, `${to.rel} exists; pick another path`);
+		const index = await getWikiIndex();
+		const sources = [...(index.backlinks.get(from.rel) ?? [])];
 		const result = await writeLogged({
 			rel: to.rel,
 			full: to.full,
 			before: there ?? '',
 			existed: there !== null,
-			content: before,
+			content: rebaseLinks(before, from.rel, to.rel, index.byPath),
 			author: input.author,
 			summary: `moved from ${from.rel}`,
 			baseVersion: null,
@@ -841,7 +932,7 @@ export function movePage(input: { rawPath: string; to: string; author?: string }
 				baseVersion: null,
 				change: { write: () => rmSync(from.full), restore: () => writePageFile(from.full, before, gatedFile(from.rel)) },
 			});
-			return { path: from.rel, to: to.rel, version: result.version, moved: true };
+			return { path: from.rel, to: to.rel, version: result.version, sources };
 		}
 		const title = (typeof metaOf(before).title === 'string' ? (metaOf(before).title as string) : null) ?? extractHtmlTitle(before) ?? path.basename(from.rel);
 		const safe = title.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
@@ -856,6 +947,8 @@ export function movePage(input: { rawPath: string; to: string; author?: string }
 			summary: `moved to ${to.rel}`,
 			baseVersion: null,
 		});
-		return { path: from.rel, to: to.rel, version: result.version, moved: true };
+		return { path: from.rel, to: to.rel, version: result.version, sources };
 	}));
+	const relinked = await relinkSources(moved.sources, moved.path, moved.to, input.author);
+	return { path: moved.path, to: moved.to, version: moved.version, moved: true, relinked };
 }

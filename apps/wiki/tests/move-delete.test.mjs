@@ -1,6 +1,6 @@
 /**
  * A page can be deleted and restored as it was, and moved to a new path that the old path redirects to, with a move back that undoes it
- * (wiki-write.ts deletePage, restorePage, movePage). The calls run in a child node over a content root the test builds, like
+ * (wiki-write.ts deletePage, restorePage, movePage). A move rebases the page's own relative links and repoints the links of other pages. The calls run in a child node over a content root the test builds, like
  * identical-write.test.mjs.
  */
 import assert from 'node:assert/strict';
@@ -21,7 +21,8 @@ const out = [];
 for (const [verb, input] of JSON.parse(script)) {
 	try {
 		const r = await write[verb](input);
-		out.push({ ok: true, ...r, revisions: listRevisions(input.rawPath).length });
+		const relinkLog = (r.relinked ?? []).map((p) => ({ path: p, author: listRevisions(p)[0]?.author, summary: listRevisions(p)[0]?.summary }));
+		out.push({ ok: true, ...r, revisions: listRevisions(input.rawPath).length, relinkLog });
 	} catch (error) {
 		out.push({ ok: false, status: error.status, message: error.message });
 	}
@@ -98,4 +99,40 @@ test('the old path of a moved page names the new one in moved_to', (t) => {
 	assert.equal(file('plans/b.html'), NOTES);
 	const meta = JSON.parse(/<!--wiki\s*([\s\S]*?)-->/.exec(file('notes/a.html'))[1]);
 	assert.deepEqual(meta, { title: 'Notes', moved_to: 'plans/b.html', superseded_by: 'plans/b.html' });
+});
+
+const HUB = page('Hub', '<p><a href="hub/child.html">Child</a>, <a href="sibling.html#top">Sibling</a>, <a href="old.html">Old</a>, <a href="#here">here</a>, <a href="/page/x.html">x</a>.</p><img src="pic.png">');
+
+test('a page moved one folder down keeps every relative link on the page it opened, and a link to a moved page names its new path', (t) => {
+	const files = {
+		'index.html': page('Home', ''),
+		'ops/hub.html': HUB,
+		'ops/hub/child.html': page('Child', ''),
+		'ops/sibling.html': page('Sibling', ''),
+		'ops/old.html': `<!--wiki ${JSON.stringify({ title: 'Old', moved_to: 'ops/new/index.html' })}-->\n<h1>Old</h1>\n`,
+		'ops/new/index.html': page('Old', ''),
+	};
+	const { answers, file } = run(t, files, [['movePage', { rawPath: 'ops/hub.html', to: 'ops/hub/index.html' }]]);
+	assert.equal(answers[0].ok, true, answers[0].message);
+	const moved = file('ops/hub/index.html');
+	for (const href of ['href="child.html"', 'href="../sibling.html#top"', 'href="../new/index.html"', 'href="#here"', 'href="/page/x.html"', 'src="../pic.png"'])
+		assert.ok(moved.includes(href), `${href} missing from ${moved}`);
+});
+
+test('a page that linked the old path links the new one after the move, in a revision by the moving author', (t) => {
+	const files = {
+		'index.html': page('Home', '<p><a href="ops/hub.html">Hub</a></p>'),
+		'ops/hub.html': page('Hub', ''),
+		'ops/other.html': page('Other', '<p><a href="hub.html#part">Hub part</a>, <a href="other.html">self</a></p>'),
+	};
+	const { answers, file } = run(t, files, [['movePage', { rawPath: 'ops/hub.html', to: 'ops/hub/index.html', author: 'mover' }]]);
+	assert.equal(answers[0].ok, true, answers[0].message);
+	assert.ok(file('index.html').includes('href="ops/hub/index.html"'));
+	assert.ok(file('ops/other.html').includes('href="hub/index.html#part"'));
+	assert.ok(file('ops/other.html').includes('href="other.html"'));
+	assert.deepEqual(answers[0].relinked.sort(), ['index.html', 'ops/other.html']);
+	for (const entry of answers[0].relinkLog) {
+		assert.equal(entry.author, 'mover');
+		assert.equal(entry.summary, 'link to ops/hub.html now names ops/hub/index.html, where it moved');
+	}
 });

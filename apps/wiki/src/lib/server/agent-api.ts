@@ -840,7 +840,7 @@ const API = {
 	move: {
 		POST: {
 			doc: doc(
-				'Move a page to a new path; the old path keeps a page with moved_to, which the page view redirects, and a move back onto that redirect undoes the move. 409 target exists, 404 missing page, 400 same path, non-HTML or a redirect page',
+				'Move a page to a new path; its relative links are rebased to the new folder, every page that linked the old path links the new one (relinked, one revision each), the old path keeps a page with moved_to, which the page view redirects, and a move back onto that redirect undoes the move. 409 target exists, 404 missing page, 400 same path, non-HTML or a redirect page',
 				{ requestBody: body(['path', 'to'], { path: str, to: str, author: str }) },
 			),
 			run: write('move failed', async (c) => {
