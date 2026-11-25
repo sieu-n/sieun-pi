@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
-import { reason as fetchReason } from "../../src/usage/lgtm.ts";
+import { reason as fetchReason } from "../../src/usage/otel.ts";
 import { parseEnv } from "./local-dev-uptime.ts";
 
 /**

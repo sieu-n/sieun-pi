@@ -5,7 +5,7 @@ usage: python3 -B cache_writes.py calls --since <ISO UTC> --until <ISO UTC> --bo
        python3 -B cache_writes.py rank calls.jsonl [more.jsonl] [--pool-log ~/.config/pi-pool/pi-pool.log] [--pool-utc-offset-h 0]
 
 The Skills and tools duty flags an hour whose cache read share is under 90% (owner c41) and names the box and model pairs that wrote
-the most. LGTM has no session label on token counts, so this script reads the transcripts' usage numbers (never their text) and
+the most. Prime's token counters in prod otel carry no session label, so this script reads the transcripts' usage numbers (never their text) and
 splits each call's cache write into two parts:
 
 - growth, the new turn appended after the prefix the previous call of the same session cached, which every call pays;

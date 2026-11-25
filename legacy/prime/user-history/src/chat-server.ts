@@ -35,7 +35,7 @@ import { OutboxConflict } from "./outbox.ts";
 import { planHasOpenStep } from "./checkin-steps.ts";
 import { chatCheckIn, checkInLine, checkInSettings, type CheckInActor, type CheckInChange, CheckInRefused, OWNER_UI, parseChatCheckIn, UNKNOWN_AGENT, validCheckInEvery } from "./checkin-settings.ts";
 import { chooseFolder, resolveWorkspace, WorkspaceError } from "./chat-workspace.ts";
-import { UsageError } from "./usage/lgtm.ts";
+import { UsageError } from "./usage/otel.ts";
 import { parseBucket, parseGroup, parseMetric, parseWindow } from "./usage/store.ts";
 import { interruptedRuns } from "./chat-resume.ts";
 import type { RemoteControl } from "./chat-remote.ts";

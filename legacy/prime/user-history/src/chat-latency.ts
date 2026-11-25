@@ -13,7 +13,7 @@ export interface ChatLatency {
   readMs: number;
   /** That read's route under the chat's base path, with asset hashes cut. */
   read?: string;
-  /** The slowest GET that waited on another box (its relay, its daemon through the bridge or LGTM's Prometheus), in ms, and its route; absent when none did. */
+  /** The slowest GET that waited on another box (its relay, its daemon through the bridge or Grafana on obs.virev.ai), in ms, and its route; absent when none did. */
   remoteMs?: number;
   remote?: string;
   /**
@@ -87,7 +87,7 @@ const reading = new AsyncLocalStorage<Reading>();
 
 /**
  * Marks the request in progress as one that waited on another box, so its time goes to `remoteMs` and not to this box's `readMs`. The relay
- * calls (hosts.ts), a copy brought up to date (host-catalogs.ts), a remote daemon attach (chat-threads.ts) and each LGTM query (usage/lgtm.ts)
+ * calls (hosts.ts), a copy brought up to date (host-catalogs.ts), a remote daemon attach (chat-threads.ts), each otel query (usage/otel.ts) and each usage store read (usage/store.ts)
  * call it. On 10-22 d7 counted 15:01, 15:16 and 15:27Z as us-metal02 CPU minutes from a Mac chat's older page that waited 1.6 to 2.4 s on
  * the Mac relay, and 16:29 and 16:30Z from a Prompt view that read a 5 MB capture through it (1.2 to 16.6 s in three reads on 10-22 with the box at its usual load). On 10-23
  * the slowest read of 130 watch minutes was an api/usage read waiting on LGTM's Prometheus at obs.virev.ai, 12 to 30 s in 117 of them, with

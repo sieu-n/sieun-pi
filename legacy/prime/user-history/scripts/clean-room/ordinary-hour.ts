@@ -1,14 +1,14 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
-import { grafanaPrometheus } from "../../src/usage/lgtm.ts";
+import { grafanaOtel, PRIME, quote, risesSql } from "../../src/usage/otel.ts";
 import { readSessionFile, sessionFile, sessionFiles, type RunState, type Scenario, type SessionEvent, type Verdict } from "./session-read.ts";
 
 /**
  * The clean-room scenario for the slop cuts of 10-16 (owner: "scrap all that slop", and before it tokens per second fell from 500k-600k to
  * about 100k). A fresh chat in auto-sns-agent gets one ordinary read-only question with a number and runs an hour alone. The judge reads the
  * family's session files for the server notices the cuts removed, the chat's first [corrections] block, the chat's turn waits, and system
- * tokens per second from LGTM. The criteria live in the run folder's criteria.md.
+ * tokens per second from prod otel. The criteria live in the run folder's criteria.md.
  */
 /** One ordinary task per chat name, so each run gets a new chat and a new task; `counts` and `section` find the answer in its first reply. */
 export const TASKS: Record<string, { message: string; counts: RegExp; section: RegExp; drop: RegExp }> = {
@@ -184,24 +184,23 @@ function firstReply(events: readonly SessionEvent[], since: number, task: string
 
 interface Usage { system: number; family: number; chat: number; calls: number; chatCalls: { start: number; end: number }[]; error?: string }
 /**
- * Tokens in the window from LGTM (src/usage/lgtm.ts): every kind of every box, and output tokens of the family and of the chat from the
- * per-session series. The chat's call times come from its own session file: each assistant message's request start and its entry time.
+ * Tokens in the window from Prime's counters in prod otel (src/usage/otel.ts): every kind of every box, and output tokens of the family and of
+ * the chat from the per-session series. The chat's call times come from its own session file: each assistant message's request start and its
+ * entry time.
  */
 async function usage(start: number, end: number, ids: readonly string[], chat: string, chatFile: string): Promise<Usage> {
   const chatCalls = callTimes(chatFile, start - HOUR);
   try {
-    const prometheus = grafanaPrometheus(join(DATA, "grafana-alerts.json"));
-    const span = `${Math.max(1, Math.round((end - start) / 1000))}s`;
-    const job = 'job="prime-agent"';
-    const list = ids.filter(id => /^[0-9a-f-]{36}$/.test(id)).join("|") || "none";
-    const total = async (promql: string) => (await prometheus.query(promql, end)).reduce((sum, sample) => sum + sample.value, 0);
-    const [system, calls, family, chatOutput] = await Promise.all([
-      total(`sum(increase(prime_agent_tokens_total{${job}}[${span}]))`),
-      total(`sum(increase(prime_agent_calls_total{${job}}[${span}]))`),
-      total(`sum(increase(prime_agent_session_output_tokens_total{${job},session=~"${list}"}[${span}]))`),
-      total(`sum(increase(prime_agent_session_output_tokens_total{${job},session="${chat}"}[${span}]))`),
-    ]);
-    return { system, calls: Math.round(calls), family, chat: chatOutput, chatCalls };
+    const otel = grafanaOtel(join(DATA, "grafana-alerts.json"));
+    const from = end - Math.max(1, Math.round((end - start) / 1000)) * 1000;
+    const family = ids.filter(id => /^[0-9a-f-]{36}$/.test(id)).map(quote).join(", ") || "''";
+    const session = /^[0-9a-f-]{36}$/.test(chat) ? quote(chat) : "''";
+    const [row] = await otel.rows(`SELECT toFloat64(sumIf(rise, metric = 'prime_agent.tokens')) AS system, toFloat64(sumIf(rise, metric = 'prime_agent.calls')) AS calls,
+      toFloat64(sumIf(rise, metric = 'prime_agent.session.output_tokens' AND attributes['session'] IN (${family}))) AS family,
+      toFloat64(sumIf(rise, metric = 'prime_agent.session.output_tokens' AND attributes['session'] = ${session})) AS chat
+      FROM (${risesSql({ service: PRIME, metrics: ["prime_agent.tokens", "prime_agent.calls", "prime_agent.session.output_tokens"], from, to: end })})`);
+    const value = (key: string) => Number(row?.[key] ?? 0);
+    return { system: value("system"), calls: Math.round(value("calls")), family: value("family"), chat: value("chat"), chatCalls };
   } catch (error) { return { system: 0, family: 0, chat: 0, calls: 0, chatCalls, error: error instanceof Error ? error.message : String(error) }; }
 }
 
@@ -279,7 +278,7 @@ async function judge(run: string, state: RunState): Promise<{ verdict: Verdict; 
   const used = await usage(start, end, [...ids], state.chat.id, chatFile);
   const seconds = Math.max(1, (end - start) / 1000);
   const rate = (tokens: number): string => `${(tokens / seconds / 1000).toFixed(1)}k/s`;
-  checks.push({ id: "d", ok: used.error ? false : true, detail: used.error ? `LGTM could not be read: ${used.error}`
+  checks.push({ id: "d", ok: used.error ? false : true, detail: used.error ? `otel could not be read: ${used.error}`
     : `system ${rate(used.system)} on every box over ${Math.round(seconds / 60)} min (${used.calls} calls), against ${BEFORE.day1013}k/s on 10-13 and ${BEFORE.last12h}k/s in the 12 h before the cuts; ` +
       `output of the chat's family ${rate(used.family)}, of the chat ${rate(used.chat)}` });
 

@@ -4,19 +4,20 @@ import { join } from "node:path";
 import { fileLines } from "../../../legacy/prime/user-history/src/file-lines.ts";
 import { cacheHealth } from "../../../legacy/prime/user-history/src/shared/cache-health.ts";
 import type { ThreadMessage } from "../../../legacy/prime/user-history/src/shared/types.ts";
+import { grafanaOtel, type Otel, ratesSql, samples as otelSamples } from "../../../legacy/prime/user-history/src/usage/otel.ts";
 import { promisify } from "node:util";
 import type { Context, Sample } from "../otlp.ts";
 import { copyIndex, type CopyRow } from "./session-copy.ts";
 
 /**
- * The tokens group. Token, cost, cache and throughput numbers are in LGTM already: legacy/prime/usage-feed sends Prime's five prime_agent_*
- * counters from the transcripts (feed="transcripts") until Prime's own exporter ships, and the dashboard copies the PromQL of
- * legacy/prime/user-history/src/usage/lgtm.ts. This reader adds what LGTM lacks:
+ * The tokens group. Token, cost, cache and throughput numbers are in prod otel already: legacy/prime/usage-feed sends Prime's prime_agent.*
+ * counters from the transcripts (feed="transcripts") until Prime's own exporter ships, and the dashboard reads them as
+ * legacy/prime/user-history/src/usage/otel.ts does. This reader adds what those counters lack:
  * 1. usage-feed's own health on every box: running, handed off, release, start time, CPU, memory and the errors in its log.
  * 2. On the chat host, each chat's lifetime cost and tokens as the chat app shows them: the thread's own session usage (the ContextMeter's
  *    session cost), its subagents (the child-usage job costs, chat-catalog.ts childUsage) and the root job sessions chat-jobs.json gives it.
  *    It reads the session copies the chat service saves (session-peer.ts, at most every 5 min) one row at a time, and only after a copy changed.
- * 3. On the chat host, the numbers the app computes from files or one query: the Settings > Usage query health, the Agents card rates (top 10),
+ * 3. On the chat host, the numbers the app computes from files or one query: the Agents card rates (top 10),
  *    each chat's context ring, cache warning, compactions and Prompt view parts, and the Tools page's skills tokens.
  */
 
@@ -528,66 +529,9 @@ export async function captureKinds(file: string): Promise<PromptKinds | null> {
   }
 }
 
-/** The Grafana datasource and job of the chat's usage queries (usage/lgtm.ts DATASOURCE and JOB). */
-const DATASOURCE = "estate_prometheus_stg";
-const JOB = 'job="prime-agent"';
-const ALL = `prime_agent_tokens_total{${JOB}}`;
-/** The six queries of usage/lgtm.ts Usage.summary, the Settings > Usage feed; `since` is the seconds since the chat's local midnight. */
-export const summaryQueries = (since: number): { promql: string; range: boolean }[] => [
-  { promql: `sum by (kind) (rate(${ALL}[1m]))`, range: false },
-  { promql: `sum by (kind) (increase(${ALL}[1h])) / 60`, range: false },
-  { promql: `sum by (kind) (increase(${ALL}[24h]))`, range: false },
-  { promql: `sum(increase(prime_agent_cost_USD_total{${JOB}}[${since}s]))`, range: false },
-  { promql: `sum by (kind) (rate(${ALL}[1m]))`, range: true },
-  { promql: `sum by (kind) (increase(${ALL}[1m]))`, range: true },
-];
-/**
- * Usage.rates over the last minute: output tokens per second of generation time for every session that made a call. `> 0` drops the idle sessions'
- * 0 / 0, which were 739 of 810 answers on 10-19 and which the reader skipped anyway.
- */
-const LIVE_RATES = `sum by (session) (increase(prime_agent_session_output_tokens_total{${JOB}}[1m])) / sum by (session) (increase(prime_agent_session_generation_seconds_total{${JOB}}[1m])) > 0`;
 /** How many live agents the Agents card rates go out as, by rank. */
 export const TOP_AGENTS = 10;
-
-type Grafana = (path: "query" | "query_range", params: Record<string, string>) => Promise<{ status: number; result: unknown }>;
-
-/** The Grafana proxy call of usage/lgtm.ts grafanaPrometheus, with the token file the chat reads; status 0 is a network failure, 503 no token. */
-function grafana(config: string): Grafana {
-  return async (path, params) => {
-    let url: unknown, token: unknown;
-    try { ({ url, token } = JSON.parse(await readFile(config, "utf8")) as Record<string, unknown>); } catch { return { status: 503, result: null }; }
-    if (typeof url !== "string" || typeof token !== "string") return { status: 503, result: null };
-    try {
-      const response = await fetch(`${url.replace(/\/$/, "")}/api/datasources/proxy/uid/${DATASOURCE}/api/v1/${path}?${new URLSearchParams(params)}`, { headers: { authorization: `Bearer ${token}` } });
-      const body = await response.json().catch(() => null) as { status?: string; data?: { result?: unknown } } | null;
-      return body?.status === "success" && response.ok ? { status: 200, result: body.data?.result } : { status: response.status === 200 ? 502 : response.status, result: null };
-    } catch {
-      return { status: 0, result: null };
-    }
-  };
-}
-
-/** The chat's local midnight: the chat service runs with TZ=Asia/Seoul, so Usage.summary counts cost today from KST midnight. */
-export function secondsSinceKstMidnight(now: number): number {
-  const kst = now + 9 * 3_600_000;
-  return Math.max(1, Math.floor((kst % 86_400_000) / 1000));
-}
-
-/** Whether the six Settings > Usage queries answer as the chat would ask them now, how long they took, and the worst HTTP status. */
-async function appQuery(ctx: Context, ask: Grafana): Promise<Sample[]> {
-  const started = performance.now();
-  const end = ctx.now / 1000;
-  const answers = await Promise.all(summaryQueries(secondsSinceKstMidnight(ctx.now)).map(({ promql, range }) => range
-    ? ask("query_range", { query: promql, start: String(end - (promql.includes("rate(") ? 600 : 3600)), end: String(end), step: promql.includes("rate(") ? "10" : "60" })
-    : ask("query", { query: promql, time: String(end) })));
-  const failed = answers.filter(answer => answer.status !== 200);
-  return [
-    { name: "harness.tokens.app_usage_query_ok", kind: "gauge", help: "1 when the six queries of Settings > Usage (usage/lgtm.ts Usage.summary) all answer from LGTM.", value: failed.length ? 0 : 1 },
-    { name: "harness.tokens.app_usage_query_failed", kind: "gauge", help: "How many of the six Settings > Usage queries failed this round.", value: failed.length },
-    { name: "harness.tokens.app_usage_query_duration", kind: "gauge", unit: "s", help: "How long the six Settings > Usage queries took together.", value: (performance.now() - started) / 1000 },
-    ...failed.length ? [{ name: "harness.tokens.app_usage_query_status", kind: "gauge" as const, help: "The HTTP status of a failed Settings > Usage query: 0 no answer, 503 no Grafana token.", value: failed[0]!.status }] : [],
-  ];
-}
+const MINUTE = 60_000;
 
 /** The chat a session belongs to: itself, its parent chain's top, or the chat chat-jobs.json gives that top. */
 export function chatOf(id: string, rows: Rows, byId: Map<string, Row>, names: Map<string, string>): string | null {
@@ -601,18 +545,20 @@ export function chatOf(id: string, rows: Rows, byId: Map<string, Row>, names: Ma
   return job.chatId ? names.get(job.chatId) ?? job.chat ?? null : job.chat ?? null;
 }
 
-/** The Agents card rates: the TOP_AGENTS fastest sessions of the last minute by rank, named by session and chat. */
-async function agentRates(ask: Grafana, rows: Rows, chats: { id: string; chat: string }[]): Promise<Sample[]> {
-  const answer = await ask("query", { query: LIVE_RATES });
-  if (answer.status !== 200 || !Array.isArray(answer.result)) return [];
+/**
+ * The Agents card rates: the TOP_AGENTS fastest sessions of the last minute by rank, named by session and chat, from Prime's session counters
+ * in prod otel (usage/otel.ts sessionRates). A session with no output in the minute is left out: idle sessions' 0 were 739 of 810 rates on 10-19.
+ */
+async function agentRates(otel: Otel, now: number, rows: Rows, chats: { id: string; chat: string }[]): Promise<Sample[]> {
+  const answer = await otel.rows(ratesSql(MINUTE, now, null)).catch(() => null);
+  if (!answer) return [];
   const byId = new Map<string, Row>();
   for (const { rows: list } of rows.boxes) for (const row of list) if (!byId.has(row.id)) byId.set(row.id, row);
   const names = new Map(chats.map(chat => [chat.id, chat.chat]));
-  const live = (answer.result as { metric?: { session?: string }; value?: [number, string] }[])
-    .map(item => ({ session: item.metric?.session ?? "", tps: Number(item.value?.[1]) }))
-    .filter(item => item.session && Number.isFinite(item.tps))
+  const live = otelSamples(answer).map(sample => ({ session: sample.labels.session ?? "", tps: sample.value }))
+    .filter(item => item.session && item.tps > 0)
     .sort((a, b) => b.tps - a.tps);
-  const help = "Output tokens per second of generation time over the last minute of the fastest live agents, as the Agents card rates them (usage/lgtm.ts Usage.rates).";
+  const help = "Output tokens per second of generation time over the last minute of the fastest live agents, as the Agents card rates them (usage/otel.ts sessionRates).";
   return [
     { name: "harness.tokens.live_agents", kind: "gauge", help: "Sessions that finished a model call in the last minute, on every box.", value: live.length },
     ...live.slice(0, TOP_AGENTS).map((item, index) => ({ name: "harness.tokens.agent_output_tps", kind: "gauge" as const, help, value: Math.round(item.tps * 10) / 10,
@@ -749,14 +695,13 @@ async function toolsPage(ctx: Context): Promise<Sample[]> {
 
 export async function read(ctx: Context): Promise<Sample[]> {
   if (!ctx.chatHost) return feedHealth(ctx);
-  const ask = grafana(join(ctx.home, ".prime/agent/browser-chat/grafana-alerts.json"));
-  const rowsLoaded = loadRows(ctx);
-  const [health, app, rows] = await Promise.all([feedHealth(ctx), appQuery(ctx, ask), rowsLoaded]);
+  const otel = grafanaOtel(join(ctx.home, ".prime/agent/browser-chat/grafana-alerts.json"));
+  const [health, rows] = await Promise.all([feedHealth(ctx), loadRows(ctx)]);
   const chats = chatList(rows);
   const windows = new Map<string, number>();
   for (const { rows: list } of rows.boxes) for (const row of list) if (row.model && row.window > 0) windows.set(row.model, row.window);
-  const [agents, tails] = await Promise.all([agentRates(ask, rows, chats), chatTails(ctx, chats, windows)]);
+  const [agents, tails] = await Promise.all([agentRates(otel, ctx.now, rows, chats), chatTails(ctx, chats, windows)]);
   const measured = new Map(tails.filter(s => s.name === "harness.tokens.prompt_measured").map(s => [s.labels!.chat!, s.value]));
   const [prompts, tools] = await Promise.all([chatPrompts(ctx, chats, measured), toolsPage(ctx)]);
-  return [...health, ...costs(ctx, rows), ...app, ...agents, ...tails, ...prompts, ...tools];
+  return [...health, ...costs(ctx, rows), ...agents, ...tails, ...prompts, ...tools];
 }

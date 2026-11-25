@@ -156,9 +156,9 @@ export async function usageReport(sums: UsageSums, threads: Threads, opts: Usage
 }
 
 /**
- * Prime's per-second card (user-history lgtm.ts `summary`): the tokens of the last 60 s over 60, for output and for all four kinds, and that
- * same rate every 10 s over the last 10 min, 61 points ending with the live one. The minute ends on the 10 s tick before now, as LGTM's
- * 10 s export does, so the kept 10 s sums answer it with no call to the store.
+ * Prime's per-second card: the tokens of the last 60 s over 60, for output and for all four kinds, and that
+ * same rate every 10 s over the last 10 min, 61 points ending with the live one. The minute ends on the 10 s tick before now, as Prime's
+ * 10 s OTLP export does, so the kept 10 s sums answer it with no call to the store.
  */
 export async function usageLive(sums: UsageSums, opts: { thread?: string; host?: string; client?: string }, now = Date.now()): Promise<UsageLive> {
   const at = Math.floor(now / LIVE_TICK_MS) * LIVE_TICK_MS;

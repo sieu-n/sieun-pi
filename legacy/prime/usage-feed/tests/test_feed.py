@@ -71,7 +71,7 @@ class Feed(unittest.TestCase):
         self.usage.settle()
         self.assertEqual(values(self.usage, "prime_agent.tokens")[(("kind", "cache_read"),)], "636")
 
-    def test_series_carry_the_feed_label_and_the_names_lgtm_reads(self):
+    def test_series_carry_the_feed_label_and_the_names_otel_reads(self):
         self.tail.read(self.usage)
         self.transcript("new.jsonl", lines(HEADER, call()))
         self.tail.read(self.usage)
@@ -109,10 +109,12 @@ class Feed(unittest.TestCase):
         self.assertAlmostEqual(metrics["prime_agent.generation.seconds"]["sum"]["dataPoints"][0]["asDouble"], 5.0, places=3)
 
     def test_the_feed_hands_off_when_another_source_writes_this_box(self):
-        answers = {"group": [{"metric": {"box": "us-metal02"}}], "count": [{"metric": {}, "value": [0, "3"]}]}
-        self.assertEqual(feed.prime_exporter_box("i", lambda q: answers[q.split(" ")[0].split("(")[0]]), "us-metal02")
-        answers["count"] = []
-        self.assertIsNone(feed.prime_exporter_box("i", lambda q: answers[q.split(" ")[0].split("(")[0]]))
+        answers = {"DISTINCT": [{"box": "us-metal02"}], "count()": [{"points": 3}]}
+        self.assertEqual(feed.prime_exporter_box("i", lambda q: answers[q.split(" ")[1]]), "us-metal02")
+        answers["count()"] = [{"points": 0}]
+        self.assertIsNone(feed.prime_exporter_box("i", lambda q: answers[q.split(" ")[1]]))
+        answers["DISTINCT"] = []
+        self.assertIsNone(feed.prime_exporter_box("i", lambda q: answers[q.split(" ")[1]]))
 
 
     def test_transcripts_finds_prime_files_pi_host_cwd_folders_and_rlm_children(self):

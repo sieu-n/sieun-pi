@@ -8,7 +8,7 @@ import { createServer } from "node:http";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { grafanaPrometheus } from "../src/usage/lgtm.ts";
+import { grafanaOtel } from "../src/usage/otel.ts";
 import { readRoute, takeLatency, timeRead, waitedOnHost } from "../src/chat-latency.ts";
 import { chatLatency, harnessSlow, waitedOnCpu, workerMisses } from "../src/harness-slow.ts";
 import type { UsableReading, WatchLine } from "../src/mac-usable-watch.ts";
@@ -97,15 +97,16 @@ test("a GET that waited on another box is timed apart from this box's reads, so 
     "a read that waited 2.1 s on the Mac relay does not make a busy us-metal02 minute dirty");
 });
 
-test("a Settings > Usage read that waits on LGTM's Prometheus is timed as a remote wait, so d7 does not count it as this box's CPU", async () => {
+test("an Agents card read that waits on prod otel is timed as a remote wait, so d7 does not count it as this box's CPU", async () => {
   // As 10-23 08:09 to 08:18Z: api/usage/models waited 12 to 14.5 s on obs.virev.ai with the loop under 1 s, and d7 counted ten busy minutes dirty.
-  const config = join(await mkdtemp(join(tmpdir(), "lgtm-latency-")), "grafana.json");
-  await writeFile(config, JSON.stringify({ url: "https://obs.example", token: "t" }));
-  const slowLgtm = (() => new Promise<Response>(done => setTimeout(() => done(new Response(JSON.stringify({ status: "success", data: { resultType: "vector", result: [] } }))), 150))) as typeof fetch;
-  const prometheus = grafanaPrometheus(config, slowLgtm);
+  const obs = createServer((_req, res) => setTimeout(() => res.end(JSON.stringify({ results: { A: { frames: [] } } })), 150));
+  await new Promise<void>(done => obs.listen(0, "127.0.0.1", done));
+  const config = join(await mkdtemp(join(tmpdir(), "otel-latency-")), "grafana.json");
+  await writeFile(config, JSON.stringify({ url: `http://127.0.0.1:${(obs.address() as { port: number }).port}`, token: "t" }));
+  const otel = grafanaOtel(config);
   const server = createServer((req, res) => {
     timeRead(req, res, "/cap/");
-    if (req.url?.includes("usage")) void prometheus.query("up").then(() => res.end("ok"));
+    if (req.url?.includes("usage")) void otel.rows("SELECT 1").then(() => res.end("ok"));
     else setTimeout(() => res.end("ok"), 30);
   });
   await new Promise<void>(done => server.listen(0, "127.0.0.1", done));
@@ -118,5 +119,5 @@ test("a Settings > Usage read that waits on LGTM's Prometheus is timed as a remo
     assert.ok(taken.readMs < 140, JSON.stringify(taken));
     assert.equal(taken.remote, "api/usage/models");
     assert.ok(taken.remoteMs! >= 140, JSON.stringify(taken));
-  } finally { server.close(); }
+  } finally { server.close(); obs.close(); }
 });

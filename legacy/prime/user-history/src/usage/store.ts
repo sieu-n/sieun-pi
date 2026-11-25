@@ -3,7 +3,7 @@ import { grafanaReader, LIVE_SPAN_MS, LIVE_TICK_MS, StoreUsage, type StoreReader
 import { BUCKET_MS, bucketFor, RANGE_MS, USAGE_CHART_SERIES } from "../../../../../apps/chat/web/src/lib/api/shared/usage-range.ts";
 import { type UsageBucket, type UsageFeed, type UsageGroup, type UsageMetric, type UsageModelRow, type UsageRate, type UsageSeries, type UsageSummary, type UsageTokens, type UsageWindow, USAGE_BUCKETS, USAGE_GROUPS, USAGE_METRICS, USAGE_WINDOWS } from "../shared/usage.ts";
 import { waitedOnHost } from "../chat-latency.ts";
-import { UsageError } from "./lgtm.ts";
+import { UsageError } from "./otel.ts";
 
 /**
  * Settings > Usage and the sidebar Throughput line, read from the one store of model calls, ClickHouse `ai_usage.model_calls`, which a

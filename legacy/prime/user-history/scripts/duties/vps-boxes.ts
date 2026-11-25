@@ -17,11 +17,11 @@ import { type Reading, defaultContext, describe, hostMatcher, liveStopSource, mi
  * risks_firing counts the risks with a rule in Grafana's firing list, read like the alert bridge does (grafana-alerts.json, a Viewer token),
  * and only the label sets the rule list holds Alerting: Alertmanager keeps a Recovering set active for the rule's keep_firing_for, and on 11-08
  * metal-backup-ch-redis-age, Recovering at value 0 from 20:48:30Z after its fix, held the 21:14Z run at 1 (p791, and p747 on 11-04).
- * air_runners_online counts the M1 Air's runners up from the box Prometheus through Grafana ds/query. disk_days_min, the fewest days until a
+ * air_runners_online counts the M1 Air's runners up from prod otel through Grafana ds/query. disk_days_min, the fewest days until a
  * disk of us-metal01 or us-metal02 filled, left on 10-27 with the 30-day fill rules, after the owner answered todo t78 with "stop worrying about
  * storage being used up" (c187); a disk that is really full still fires metal-host-disk-85.
  * alerts_firing counts the rules the alert bridge holds as firing for this chat, each held by its triage job (prod-alerts.ts). oom_kills_24h sums the OOM kills on us-metal01 and us-metal02 in the last 24 h from node_vmstat_oom_kill,
- * and reads this box's /proc/vmstat when Prometheus has no series for it; it keeps the hold of p456, after us-metal02 had 45 kills since its
+ * and reads this box's /proc/vmstat when otel has no series for it; it keeps the hold of p456, after us-metal02 had 45 kills since its
  * 10-14 boot, 40 of them from 13:14Z to 16:52Z on 10-19. It leaves out heavy_scope_kills, the kills on this box inside a scope of the `heavy`
  * wrapper (deploy/linux/memory/heavy), which hit the MemoryMax that job chose, not box pressure: two 8G scopes died at 17:26Z and 17:27Z on 10-19
  * with memory pressure full at 0.00. The kernel log's oom-kill lines name the cgroup of each killed process, one line per kill, so a kill
@@ -41,21 +41,39 @@ const DATA_DIR = join(homedir(), ".prime/agent/browser-chat");
 const CHAT = "01a11af8-962e-773d-a19a-ee4104011987";
 export const RISKS_FILE = join(DATA_DIR, "duties", CHAT, "infra-risks.json");
 const GRAFANA_CONFIG = join(DATA_DIR, "grafana-alerts.json");
-const PROMETHEUS = { uid: "estate_prometheus_stg", type: "prometheus" };
+/** Prod otel on ClickHouse, where every box's node_exporter series land with the box in host.name and the tier 'shared' (AGENTS rule 10). */
+const CLICKHOUSE = { uid: "grafana_clickhouse", type: "grafana-clickhouse-datasource" };
 const BOXES = ["us-metal01", "us-metal02"] as const;
-const OOM = `node_vmstat_oom_kill{box=~"${BOXES.join("|")}"}`;
-export const OOM_KILLS_QUERY = `round(increase(${OOM}[1d]))`;
+const BOX = "ResourceAttributes['host.name']";
+/** The rows of one series of `metric` on `boxes`, a node_exporter gauge such as node_vmstat_oom_kill, from `seconds` ago to now, sorted by time. */
+const series = (metric: string, boxes: readonly string[], seconds: number): string => `SELECT ${BOX} AS box,
+    arraySort(p -> p.1, groupArray((toUnixTimestamp(TimeUnix) * 1000, Value))) AS points,
+    arrayDifference(arrayMap(p -> p.2, points)) AS steps
+  FROM otel.otel_metrics_gauge
+  WHERE ServiceName = 'node-exporter' AND ResourceAttributes['deployment.environment.name'] = 'shared' AND MetricName = '${metric}'
+    AND ${BOX} IN (${boxes.map(box => `'${box}'`).join(", ")}) AND TimeUnix > now() - INTERVAL ${seconds} SECOND
+  GROUP BY ResourceAttributes, Attributes`;
+/** Each box's kills over the last `seconds`, the counter's steps up summed, where a step down is a reboot that counts the new value. */
+const oomRiseQuery = (boxes: readonly string[], seconds: number): string => `SELECT box, round(sum(arraySum(arrayMap((d, p) -> if(d < 0, p.2, d), steps, points)))) AS value
+  FROM (${series("node_vmstat_oom_kill", boxes, seconds)}) GROUP BY box`;
+export const OOM_KILLS_QUERY = oomRiseQuery(BOXES, 86_400);
 /** oom_kills_24h counts a trailing day, so d9 reads a red count whose newest kill is old as a lagging window (`PrecheckOutput.windowMs`). */
 export const OOM_WINDOW_MS = 86_400_000;
 /**
- * The minute of each box's newest kill in the last day: the minute its last sample of the day rose over the one a minute before. last_over_time
- * reaches across a missed scrape, which changes() over 2 minutes did not: the global OOM on us-metal01 at 02:31:24Z on 10-28 stopped its
- * scrapes from 02:28:03Z to 02:31:33Z, so the 16:50 KST run had no last kill for it and dated the kill to the run itself.
+ * The time (epoch ms) of each box's newest kill in the last day: the newest point that rose over the point before it. The point before can be
+ * minutes older: the global OOM on us-metal01 at 02:31:24Z on 10-28 stopped its scrapes from 02:28:03Z to 02:31:33Z, and a read that looked
+ * only one minute back had no last kill for it and dated the kill to the run itself.
  */
-export const OOM_LAST_QUERY = `max_over_time(timestamp(last_over_time(${OOM}[1d]) > last_over_time(${OOM}[1d] offset 1m))[1d:1m])`;
-export const oomSinceQuery = (box: string, seconds: number): string => `round(increase(node_vmstat_oom_kill{box="${box}"}[${seconds}s]))`;
+export const OOM_LAST_QUERY = `SELECT box, max(arrayMax(arrayMap(p -> p.1, arrayFilter((p, d) -> d > 0, points, steps)))) AS value
+  FROM (${series("node_vmstat_oom_kill", BOXES, 86_400)}) GROUP BY box HAVING value > 0`;
+export const oomSinceQuery = (box: string, seconds: number): string => oomRiseQuery([box], seconds);
 export const DUTY_FILE = join(dirname(fileURLToPath(import.meta.url)), "vps-boxes.duty.json");
-export const AIR_RUNNERS_QUERY = 'sum(devbox_runner_up{job="devbox",box="m1-air"})';
+/** The M1 Air's runners up: each runner's newest devbox_runner_up of the last 5 min summed; no row in that time is no sample. */
+export const AIR_RUNNERS_QUERY = `SELECT toFloat64(sum(up)) AS value FROM (
+  SELECT argMax(Value, TimeUnix) AS up FROM otel.otel_metrics_gauge
+  WHERE ServiceName = 'node-exporter' AND ResourceAttributes['deployment.environment.name'] = 'shared' AND ${BOX} = 'm1-air'
+    AND MetricName = 'devbox_runner_up' AND TimeUnix > now() - INTERVAL 5 MINUTE
+  GROUP BY Attributes) HAVING count() > 0`;
 
 /** match narrows a shared rule to this risk: each key the alert carries must match its pattern, and an alert without the key still counts.
  * measured: on 10-26 metal-host-disk-fill-30d fired on us-metal01's / and /ci, and the cold-disk risk read as firing with /hdd.raid10 at 7.6 TB free. */
@@ -177,7 +195,7 @@ const stamp = (ms: number): string => `${new Date(ms).toISOString().slice(11, 16
  * The OOM kills of both boxes outside heavy scopes and after the time a fix step explains summed, the heavy scope and explained kills apart, and
  * one line for each box with a kill outside or an explained kill, naming its count, its last kill, the cgroups the kernel log names and the step.
  * `lastEventAt` is the newest counted kill over the boxes with one: the newest outside journal line on this box, else the box's newest kill in
- * Prometheus, else this run when only /proc/vmstat counts it. A count of 0 gives none. AI harness d9 asked for it on 10-22, because without it
+ * otel, else this run when only /proc/vmstat counts it. A count of 0 gives none. AI harness d9 asked for it on 10-22, because without it
  * a count of old kills read the same as a fresh one. `windowMs` is the day the count covers, which d9 needs with `lastEventAt` to read a red
  * count as lagging; the 16:50 KST run on 10-28 gave only lastEventAt, and d9 flagged d2 at 09:30Z as off target with no live fix step.
  */
@@ -191,7 +209,7 @@ export function oomKills24h(boxes: readonly OomKills[], at: number): { kills: nu
     const fix = entry.explained && entry.by ? `${entry.by.step} explains ${entry.explained === 1 ? "the 1 kill" : `the ${entry.explained} kills`} up to ${stamp(entry.by.until)}` : "";
     if (!entry.outside && fix) return [{ at, kind: "oom_explained", excerpt: `${entry.box}: no OOM kill outside heavy scopes${entry.heavy ? ` (${entry.heavy} inside)` : ""} since ${stamp(entry.by!.until)}; ${fix}` }];
     if (!entry.outside) return entry.heavy ? [{ at, kind: "oom_heavy", excerpt: `${entry.box}: ${entry.heavy} OOM kills in the last 24 h, all inside heavy scopes that hit their own MemoryMax` }] : [];
-    const window = entry.sinceBootAt ? ` in /proc/vmstat since its boot at ${stamp(entry.sinceBootAt)}, because Prometheus has no node_vmstat_oom_kill for it`
+    const window = entry.sinceBootAt ? ` in /proc/vmstat since its boot at ${stamp(entry.sinceBootAt)}, because otel has no node_vmstat_oom_kill for it`
       : `${fix ? ` since ${stamp(entry.by!.until)}` : " in the last 24 h"}${entry.lastAt ? `, the last kill of any kind at about ${stamp(entry.lastAt)}` : ""}`;
     return [{ at, kind: "oom", excerpt: `${entry.box}: ${entry.outside} OOM kills outside heavy scopes${heavy}${window}${units}${fix ? `; ${fix}` : ""}` }];
   });
@@ -201,30 +219,29 @@ export function oomKills24h(boxes: readonly OomKills[], at: number): { kills: nu
     ...newest.length ? { lastEventAt: Math.max(...newest) } : {} };
 }
 
-type Frame = { schema?: { fields?: { labels?: Record<string, string> }[] }; data?: { values?: unknown[][] } };
+type Frame = { schema?: { fields?: { name: string }[] }; data?: { values?: unknown[][] } };
 
-async function query(expr: string): Promise<Frame[]> {
+/** The rows of one SQL query on prod otel, by column name. */
+async function rows(rawSql: string): Promise<Record<string, unknown>[]> {
   const now = Date.now();
   const body = await grafana("/api/ds/query", { method: "POST",
-    body: JSON.stringify({ queries: [{ refId: "A", datasource: PROMETHEUS, expr, instant: true, range: false }], from: String(now - 300_000), to: String(now) }) }) as
+    body: JSON.stringify({ queries: [{ refId: "A", datasource: CLICKHOUSE, rawSql, format: 1 }], from: String(now - 300_000), to: String(now) }) }) as
     { results?: { A?: { error?: string; frames?: Frame[] } } };
   const result = body.results?.A;
-  if (!result || result.error) throw new Error(`${expr}: ${result?.error ?? "no result"}`);
-  return result.frames ?? [];
+  if (!result || result.error) throw new Error(`${rawSql.split("\n")[0]}: ${result?.error ?? "no result"}`);
+  const frame = result.frames?.[0];
+  const names = frame?.schema?.fields?.map(field => field.name) ?? [];
+  return Array.from({ length: frame?.data?.values?.[0]?.length ?? 0 }, (_, i) => Object.fromEntries(names.map((name, column) => [name, frame?.data?.values?.[column]?.[i]])));
 }
 
-async function instant(expr: string): Promise<number> {
-  const value = (await query(expr))[0]?.data?.values?.[1]?.at(-1);
-  if (typeof value !== "number") throw new Error(`${expr}: no sample`);
+async function instant(rawSql: string): Promise<number> {
+  const value = (await rows(rawSql))[0]?.value;
+  if (typeof value !== "number") throw new Error(`${rawSql.split("\n")[0]}: no sample`);
   return value;
 }
 
-async function byBox(expr: string): Promise<Map<string, number>> {
-  return new Map((await query(expr)).flatMap((frame): [string, number][] => {
-    const box = frame.schema?.fields?.[1]?.labels?.box;
-    const value = frame.data?.values?.[1]?.at(-1);
-    return box && typeof value === "number" ? [[box, value]] : [];
-  }));
+async function byBox(rawSql: string): Promise<Map<string, number>> {
+  return new Map((await rows(rawSql)).flatMap((row): [string, number][] => typeof row.box === "string" && typeof row.value === "number" ? [[row.box, row.value]] : []));
 }
 
 function run(command: string, args: string[]): Promise<string> {
@@ -253,7 +270,7 @@ async function explain(boxes: OomKills[], explained: Map<string, Explained>, at:
  * 23:48Z heavy scope kill of 11-07 read as outside heavy scopes. */
 async function oomBoxes(at: number): Promise<OomKills[]> {
   const [kills, last, explained] = await Promise.all([byBox(OOM_KILLS_QUERY), byBox(OOM_LAST_QUERY), readFile(DUTY_FILE, "utf8").then(text => parseExplained(JSON.parse(text)))]);
-  const boxes: OomKills[] = [...kills].map(([box, count]) => ({ box, kills: count, ...last.has(box) ? { lastAt: last.get(box)! * 1000 } : {} }));
+  const boxes: OomKills[] = [...kills].map(([box, count]) => ({ box, kills: count, ...last.has(box) ? { lastAt: last.get(box)! } : {} }));
   await explain(boxes, explained, at);
   const here = hostname().split(".")[0]!;
   if (!(BOXES as readonly string[]).includes(here)) return boxes;

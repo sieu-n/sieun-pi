@@ -1,12 +1,12 @@
 # harness-feed
 
-harness-feed sends the coding harness's health to LGTM as OTLP metrics, every 30 s, from each box. Grafana draws them on the "Coding harness health" board (https://obs.virev.ai/d/harness-health/coding-harness-health), whose JSON lives in auto-sns-agent at `apps/infra/grafana/dashboards/estate/68-harness-health.json`.
+harness-feed sends the coding harness's health to prod otel as OTLP metrics, every 30 s, from each box. Grafana draws them on the "Coding harness health" board (https://obs.virev.ai/d/harness-health/coding-harness-health), whose JSON lives in auto-sns-agent at `apps/infra/grafana/dashboards/estate/68-harness-health.json`.
 The owner asked for it on 10-19 (AI harness chat, msgs mvfhd7q5 and mvfhfzby): every number the AI harness chat tracks, and every number and chart the :5182 chat app shows, goes into OTEL with a Grafana board.
 
 ## What it does
 
 1. `feed.ts` runs every reader in `readers/` at once, every 30 s, and posts one OTLP/HTTP JSON body to the box's Alloy on 127.0.0.1:14318.
-2. Alloy writes the series to the staging Prometheus (Grafana datasource `estate_prometheus_stg`) with `job="harness"` and `box`.
+2. Alloy sends them to the prod collector, which writes them to prod ClickHouse `otel.otel_metrics_gauge` and `otel.otel_metrics_sum` under their dotted OTLP names, with ServiceName `harness`, the tier `shared` and the box in `host.name`.
 3. Each reader returns gauges, or counters for sources that are cumulative already, with low-cardinality labels such as `chat`, `kind`, `account` and `host`. Top-N holders go out as separate series with a `rank` label.
 4. Readers of the chat's own files (`~/.prime/agent/browser-chat`) return nothing unless `instance.json` names a live pid, so only the chat host sends them.
 5. Every reader reports `harness_feed_reader_ok` and `harness_feed_reader_duration_seconds`, and the feed reports its own CPU per round and RSS.

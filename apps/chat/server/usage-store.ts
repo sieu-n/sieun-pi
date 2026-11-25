@@ -114,7 +114,7 @@ export const storeReader = (config: UsageStoreConfig): StoreReader => (config.tr
 /** How far back the kept sums go: the longest range and one more bucket, since a range ends with the bucket that holds now. */
 export const HOURS_KEPT_MS = Math.max(...USAGE_RANGES.map(range => RANGE_MS[range] + Math.max(...RANGE_BUCKETS[range].map(bucket => BUCKET_MS[bucket]))));
 export const MINUTES_KEPT_MS = Math.max(...USAGE_RANGES.filter(range => RANGE_BUCKETS[range].includes("minute")).map(range => RANGE_MS[range])) + BUCKET_MS.minute;
-/** The live rate's grain: Prime's per-second card reads LGTM's 10 s export interval (user-history lgtm.ts SPARK_S). */
+/** The live rate's grain: Prime's OTLP exporter and usage-feed send Prime's counters every 10 s, the interval Prime's per-second card read. */
 export const LIVE_TICK_MS = 10_000;
 /** The live spark's span, 10 min as Prime's card draws it; its first point looks back one more minute. */
 export const LIVE_SPAN_MS = 600_000;

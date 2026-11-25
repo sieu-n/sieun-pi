@@ -8,7 +8,7 @@ import { test } from "node:test";
 import { promName, type Context, type Sample } from "../otlp.ts";
 import { copyIndex } from "../readers/session-copy.ts";
 import { captureKinds, emptyTail, estimateMessage, firstPrompt, firstUsage, foldLine, messageKinds, parseLogLine, psSeconds, read, readLog, readTail,
-  secondsSinceKstMidnight, skillTokens, summaryQueries, systemKinds, toolTokens } from "../readers/tokens.ts";
+  skillTokens, systemKinds, toolTokens } from "../readers/tokens.ts";
 
 const home = join(import.meta.dirname, "fixtures/tokens/home");
 const at = (text: string) => Date.parse(text);
@@ -211,14 +211,15 @@ test("firstPrompt: the newest root session in the repo with a first reply; child
   }
 });
 
-/** A chat host home with one chat, its session file and capture, a repo session, and a Grafana that answers from `answer`. */
-async function chatHome(answer: (query: string) => { status: number; result: unknown }) {
+/** A chat host home with one chat, its session file and capture, a repo session, and a Grafana /api/ds/query that answers each SQL with `answer`. */
+async function chatHome(answer: (sql: string) => { status: number; columns: Record<string, unknown[]> }) {
   const dir = await mkdtemp(join(tmpdir(), "tokens-home-"));
-  const server = createServer((req, res) => {
-    const query = new URL(req.url ?? "", "http://x").searchParams.get("query") ?? "";
-    const { status, result } = answer(query);
+  const server = createServer(async (req, res) => {
+    let body = "";
+    for await (const chunk of req) body += String(chunk);
+    const { status, columns } = answer((JSON.parse(body) as { queries: { rawSql: string }[] }).queries[0]!.rawSql);
     res.writeHead(status, { "content-type": "application/json" });
-    res.end(JSON.stringify(status === 200 ? { status: "success", data: { resultType: "vector", result } } : { status: "error" }));
+    res.end(JSON.stringify(status === 200 ? { results: { A: { frames: [{ schema: { fields: Object.keys(columns).map(name => ({ name })) }, data: { values: Object.values(columns) } }] } } } : { message: "error" }));
   });
   await new Promise<void>(done => server.listen(0, "127.0.0.1", done));
   const port = (server.address() as AddressInfo).port;
@@ -245,16 +246,13 @@ async function chatHome(answer: (query: string) => { status: number; result: unk
   return { ctx, close: async () => { server.close(); delete process.env.HARNESS_REPO; await rm(dir, { recursive: true, force: true }); } };
 }
 
-test("chat host: usage query health, Agents card rates, context ring, cache, compaction, prompt parts and the Tools page skills", async () => {
-  const { ctx, close } = await chatHome(query => query.includes("prime_agent_session_output_tokens_total")
-    ? { status: 200, result: [{ metric: { session: "job-x" }, value: [1, "80.04"] }, { metric: { session: "chat-a" }, value: [1, "95.5"] }, { metric: { session: "zz-unknown-session" }, value: [1, "10"] }] }
-    : { status: 200, result: [] });
+test("chat host: Agents card rates, context ring, cache, compaction, prompt parts and the Tools page skills", async () => {
+  const { ctx, close } = await chatHome(sql => sql.includes("prime_agent.session.output_tokens")
+    ? { status: 200, columns: { session: ["job-x", "chat-a", "zz-unknown-session", "idle"], value: [80.04, 95.5, 10, 0] } }
+    : { status: 200, columns: {} });
   try {
     const samples = await read(ctx);
-    assert.equal(value(samples, "harness.tokens.app_usage_query_ok"), 1);
-    assert.equal(value(samples, "harness.tokens.app_usage_query_failed"), 0);
-    assert.equal(find(samples, "harness.tokens.app_usage_query_status").length, 0);
-    assert.equal(value(samples, "harness.tokens.live_agents"), 3);
+    assert.equal(value(samples, "harness.tokens.live_agents"), 3, "a session with no output in the minute is not live");
     assert.deepEqual(find(samples, "harness.tokens.agent_output_tps").map(s => [s.labels!.rank, s.labels!.agent, s.labels!.chat, s.value]),
       [["1", "Alpha", "Alpha", 95.5], ["2", "worker", "Alpha", 80], ["3", "zz-unkno", "none", 10]]);
     assert.equal(find(samples, "harness.tokens.context_share", { chat: "Alpha" }).length, 0, "no ring after a compaction until the next reply");
@@ -278,21 +276,14 @@ test("chat host: usage query health, Agents card rates, context ring, cache, com
   }
 });
 
-test("chat host: a failing LGTM shows as a failed usage query with its status, and no agent rates", async () => {
-  const { ctx, close } = await chatHome(() => ({ status: 500, result: null }));
+test("chat host: a failing otel read gives no agent rates and keeps the other numbers", async () => {
+  const { ctx, close } = await chatHome(() => ({ status: 500, columns: {} }));
   try {
     const samples = await read(ctx);
-    assert.equal(value(samples, "harness.tokens.app_usage_query_ok"), 0);
-    assert.equal(value(samples, "harness.tokens.app_usage_query_failed"), 6);
-    assert.equal(value(samples, "harness.tokens.app_usage_query_status"), 500);
     assert.equal(find(samples, "harness.tokens.agent_output_tps").length, 0);
+    assert.equal(value(samples, "harness.tokens.prompt_measured", { chat: "Alpha" }), 99_900);
   } finally {
     await close();
   }
 });
 
-test("Cost today counts from the chat's KST midnight", () => {
-  assert.equal(secondsSinceKstMidnight(at("2026-10-19T15:00:00Z")), 1);
-  assert.equal(secondsSinceKstMidnight(at("2026-10-19T17:00:00Z")), 7200);
-  assert.equal(summaryQueries(7200)[3]!.promql, 'sum(increase(prime_agent_cost_USD_total{job="prime-agent"}[7200s]))');
-});

@@ -1,15 +1,15 @@
 """Prime chats and jobs: each assistant message with usage in the Prime transcripts is one call, read as usage-feed reads it
-(legacy/prime/usage-feed/feed.py Usage.record and backfill.py calls_in), so the totals equal Prime Usage's LGTM series for the same calls.
+(legacy/prime/usage-feed/feed.py Usage.record), so the totals equal usage-feed's prime_agent counters for the same calls.
 
 Files: ~/.prime/agent/sessions/*.jsonl, upstream Pi's sessions/--<cwd slug>--/*.jsonl, and each RLM child's
-session-artifacts/<root>/sub-*/.../*.jsonl, the same walk as feed.py transcripts(), plus sessions-archive/**/*.jsonl as
-usage-feed's backfill.py reads it: an archived session may be gone from sessions/, and the key drops the copies of one still there. On
-the Mac on 11-24, leaving the archive out put 11-18, 11-20 and 11-21 at 7% to 9% under LGTM. Like usage-feed, this counts only `type: message`
+session-artifacts/<root>/sub-*/.../*.jsonl, the same walk as feed.py transcripts(), plus sessions-archive/**/*.jsonl,
+because an archived session may be gone from sessions/, and the key drops the copies of one still there. On
+the Mac on 11-24, leaving the archive out put 11-18, 11-20 and 11-21 at 7% to 9% under usage-feed's counters. Like usage-feed, this counts only `type: message`
 assistant entries: child_usage_attributed entries repeat a child's usage that the child's own transcript already holds, and refinement
 calls in `prime-agent.refinement` custom entries are left out, as usage-feed leaves them out.
 
 Key: the answer's responseId, so a forked or copied transcript that repeats an answer adds no row; without one, the entry id and its time,
-the call id of backfill.py and otel-tok-meter's truth.py.
+the call id of otel-tok-meter's truth.py.
 
 Cursor per file: [size, offset, inode, session id, session name]. A file is read once from its start, then only the bytes it gained. A
 file whose inode changed or that shrank is read again from its start; its rows keep their keys.
