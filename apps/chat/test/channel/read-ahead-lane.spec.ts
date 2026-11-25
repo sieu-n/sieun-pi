@@ -188,7 +188,7 @@ test("a new Cmd K list drops the queued reads of the rows it no longer shows", a
   expect(around.some((hit) => hits.board!.includes(hit))).toBe(true);
 });
 
-test("a refresh behind a shown panel waits behind the owner's call and goes before the reads ahead", async ({ page }) => {
+test("a refresh behind a shown panel goes beside the owner's call on its own connection, and the read ahead waits", async ({ page }) => {
   await lane(page);
   const order: string[] = [];
   page.on("request", (r) => (r.url().includes("lane=") ? order.push(new URL(r.url()).search) : undefined));
@@ -202,15 +202,15 @@ test("a refresh behind a shown panel waits behind the owner's call and goes befo
     void window.lane.ahead("/api/rooms?lane=5");
     void window.lane.keptRead("/api/rooms?lane=6");
   });
-  await page.waitForTimeout(300);
-  expect(order).toEqual([]);
-  later.release();
   await expect.poll(() => settled(page, "/api/rooms?lane=6 read")).toBe("ok");
+  await page.waitForTimeout(300);
+  expect(order).toEqual(["?lane=6"]);
+  later.release();
   await expect.poll(() => settled(page, "/api/rooms?lane=5")).toBe("ok");
   expect(order).toEqual(["?lane=6", "?lane=5"]);
 });
 
-test("a read mark about to go holds the panel refreshes, but not the refresh of the page he looks at", async ({ page }) => {
+test("a read mark about to go holds the reads ahead, but no refresh", async ({ page }) => {
   await lane(page);
   const order: string[] = [];
   page.on("request", (r) => (r.url().includes("lane=") ? order.push(new URL(r.url()).search) : undefined));
@@ -223,10 +223,11 @@ test("a read mark about to go holds the panel refreshes, but not the refresh of 
     kept({ path: "/api/rooms?lane=7" }).set([]);
     void window.lane.keptRead("/api/rooms?lane=7");
     void get({ path: "/api/rooms?lane=8" }, { background: "shown", first: true });
+    void window.lane.ahead("/api/rooms?lane=9");
   });
-  await expect.poll(() => order).toEqual(["?lane=8"]);
-  await page.waitForTimeout(300);
-  expect(order).toEqual(["?lane=8"]);
-  await page.evaluate(() => (window as unknown as { release: () => void }).release());
   await expect.poll(() => order).toEqual(["?lane=8", "?lane=7"]);
+  await page.waitForTimeout(300);
+  expect(order).toEqual(["?lane=8", "?lane=7"]);
+  await page.evaluate(() => (window as unknown as { release: () => void }).release());
+  await expect.poll(() => order).toEqual(["?lane=8", "?lane=7", "?lane=9"]);
 });

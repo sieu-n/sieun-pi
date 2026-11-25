@@ -194,7 +194,7 @@
   let menuAnchor = $state<HTMLButtonElement>();
   let readTimer: ReturnType<typeof setTimeout> | undefined;
   let readByUser = false;
-  /** The read mark about to go holds the page's other refreshes and reads ahead until it went (client.ts `expectCall`). */
+  /** The read mark about to go holds the page's reads ahead until it went (client.ts `expectCall`). */
   let readExpected: (() => void) | undefined;
 
   /** `byUser` when the owner himself scrolled to the bottom, which reads past a post he marked unread. */
