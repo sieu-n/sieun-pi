@@ -507,8 +507,17 @@ function igExtra(d: ThroughputData): string | undefined {
 /** A time for a line, "10:55Z 10-26". */
 const when = (t: number): string => `${utc(t).slice(6)} ${utc(t).slice(0, 5)}`;
 
+/**
+ * The sample size of each metric, which agent factory's daily check reads as `n` (sieun-pi apps/chat agent-boards.ts `sampleSize`): the goal
+ * rows read with a value and a goal, the Instagram queues read, and the crawler dashboard panels read. A source that failed counts 0.
+ */
+export function sampleSizes(d: ThroughputData): Record<string, number> {
+  return { throughput_goals_missed: goalRows(d).filter(row => row.value !== null && row.goal !== null).length,
+    ig_queues_growing_6h: d.queues?.length ?? 0, crawler_panels_blank: d.panels?.length ?? 0 };
+}
+
 /** The metrics and flagged lines from what measure() read. A source that failed leaves its metric unmeasured, which misses. */
-export function report(d: ThroughputData, dutyMetrics: readonly DutyMetric[]): PrecheckOutput {
+export function report(d: ThroughputData, dutyMetrics: readonly DutyMetric[]): PrecheckOutput & { n: Record<string, number> } {
   const metrics: Record<string, number> = {};
   const flagged: FlaggedSlice[] = [];
   const unmeasured = new Set<string>();
@@ -554,7 +563,7 @@ export function report(d: ThroughputData, dutyMetrics: readonly DutyMetric[]): P
   const replaced = settle(dutyMetrics, metrics, unmeasured);
   if (replaced.length) flagged.unshift(unmeasuredFlag(replaced, d.now));
   if (metrics.ig_queues_growing_6h! > 0) lastEventAt.ig_queues_growing_6h = d.now;
-  return { metrics, flagged, ...Object.keys(items).length ? { items } : {}, ...Object.keys(lastEventAt).length ? { lastEventAt } : {},
+  return { metrics, flagged, n: sampleSizes(d), ...Object.keys(items).length ? { items } : {}, ...Object.keys(lastEventAt).length ? { lastEventAt } : {},
     ...Object.keys(windowMs).length ? { windowMs } : {} };
 }
 

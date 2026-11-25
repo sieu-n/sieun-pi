@@ -118,6 +118,14 @@ test("every throughput goal is one row, and the headline counts the rows prod mi
   assert.equal(met.metrics.throughput_goals_missed, 0);
 });
 
+test("the output names its sample size n per metric: goal rows read, queues read and panels read (c249 sample check)", () => {
+  const queues = [{ family: "census", name: "a", now: 1, ago6h: 1, slope6h: 0 }, { family: "census", name: "b", now: 1, ago6h: 1, slope6h: 0 }];
+  const panels = [{ dashboard: "d", title: "t", state: "ok" }] as unknown as NonNullable<ThroughputData["panels"]>;
+  const out = report(base({ board: BOARD, igSlowest: 10_400, ttsSlowest: 2_100, meta: { due: 300_000, finished24h: 53_570 }, refresh: [HALF], queues, panels, ...LAG_OK }), METRICS);
+  assert.deepEqual(out.n, { throughput_goals_missed: 6, ig_queues_growing_6h: 2, crawler_panels_blank: 1 });
+  assert.deepEqual(report(base({}), METRICS).n, { throughput_goals_missed: 0, ig_queues_growing_6h: 0, crawler_panels_blank: 0 });
+});
+
 test("an item with two rows reports its missed row, so the 10k+ slip is not hidden by the met under-10k row (11-05 d9: items.p683 read 0)", () => {
   const out = report(base({ board: BOARD, igSlowest: 10_400, refresh: [{ ...HALF, past7Big: 5_000 }], ...LAG_OK }), METRICS);
   assert.equal(out.items!.p8!.op, "<=");
