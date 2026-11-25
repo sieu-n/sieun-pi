@@ -11,7 +11,7 @@ import { codeSpans, listCuratedPages, measureFacts, readFacts, runNoShell } from
 
 const DUTY = JSON.parse(readFileSync(new URL("../scripts/duties/wiki-skill-facts.duty.json", import.meta.url), "utf8")) as { metrics: DutyMetric[] };
 
-function world(extra: Record<string, string> = {}): { repo: string; piRepo: string; content: string; done: () => void } {
+function world(extra: Record<string, string> = {}, later: Record<string, string> = {}): { repo: string; piRepo: string; content: string; done: () => void } {
   const root = mkdtempSync(join(tmpdir(), "wiki-skill-facts-"));
   const repo = join(root, "repo"), piRepo = join(root, "sieun-pi"), content = join(root, "content");
   const write = (base: string, path: string, text: string): void => { mkdirSync(dirname(join(base, path)), { recursive: true }); writeFileSync(join(base, path), text); };
@@ -44,6 +44,7 @@ function world(extra: Record<string, string> = {}): { repo: string; piRepo: stri
   write(repo, "scripts/tool.mjs", "if (process.argv.includes('--new')) run();\n");
   rmSync(join(repo, "ops/gone.sh"));
   write(repo, "package.json", JSON.stringify({ scripts: { dev: "y" } }));
+  for (const [path, text] of Object.entries(later)) write(repo, path, text);
   git(["add", "-A"], "2026-11-05T00:00:00Z");
   git(["commit", "-q", "-m", "two"], "2026-11-05T00:00:00Z");
   const page = (kind: string, updated: string) => `<!--wiki {"title":"t","kind":"${kind}","status":"current","updated":"${updated}"}-->\n<p>Set <code>OLD_LIMIT</code> and run <code>ops/gone.sh</code>.</p>\n`;
@@ -142,5 +143,26 @@ test("the curated pages include projects/ beside apps/ and domains/", async () =
     writeFileSync(join(content, "projects/p/index.html"), "<p></p>");
     writeFileSync(join(content, "projects/p/data/x.html"), "<p></p>");
     assert.deepEqual((await listCuratedPages(content)).filter(path => path.startsWith("projects/")), ["projects/p/index.html"]);
+  } finally { done(); }
+});
+
+test("a page that names a ClickHouse table a later commit moved counts with the new name, and a table no commit ever made does not", async () => {
+  // 2026-11-26: apps/search/pricing-billing.html named usage.events a day after bd2cb5b1b3 moved it to product.usage_events, and d1 stayed green.
+  const ddl = (table: string): string => `LEDGER_DDL = """CREATE TABLE IF NOT EXISTS ${table} (event_id String)"""\nLEDGER_TABLE = "${table}"\n`;
+  const { repo, piRepo, content, done } = world({ "apps/crawler-v3/src/events/ledger.py": ddl("usage.events") }, { "apps/crawler-v3/src/events/ledger.py": ddl("product.usage_events") });
+  try {
+    mkdirSync(join(content, "apps/search"), { recursive: true });
+    writeFileSync(join(content, "apps/search/billing.html"), '<!--wiki {"title":"t","kind":"reference","updated":"2026-11-03"}-->\n<p>Charges land in <code>usage.events</code>.</p>\n');
+    writeFileSync(join(content, "apps/search/traces.html"), '<!--wiki {"title":"t","kind":"reference","updated":"2026-11-03"}-->\n<p>Spans land in <code>otel.otel_traces</code>.</p>\n');
+    const result = await measureFacts({ run: runNoShell, repo, piRepo, content, readText: path => Promise.resolve(readFileSync(path, "utf8")),
+      listPages: async () => ["apps/search/billing.html", "apps/search/traces.html"] });
+    assert.equal(result.metrics.source_errors, 0, JSON.stringify(result.flagged));
+    assert.equal(result.metrics.pages_with_stale_facts, 1, "otel.otel_traces was never in the code");
+    assert.equal(result.info.pages_with_stale_clickhouse_tables, 1);
+    const page = result.flagged!.find(slice => slice.kind === "stale_page")!;
+    assert.equal(page.item, "apps/search/billing.html");
+    assert.match(page.excerpt, /ClickHouse table usage\.events is in no code at HEAD, now product\.usage_events/);
+    assert.deepEqual(result.n, { docs_with_stale_facts: 5, pages_with_stale_facts: 2, skills_with_stale_facts: 3, source_errors: result.n.source_errors });
+    assert.ok((result.n.source_errors ?? 0) > 0, "every git, rg and file read the run tried");
   } finally { done(); }
 });

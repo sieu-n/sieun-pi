@@ -7,6 +7,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { isSettledStatus } from "../../../../../apps/wiki/scripts/read-cap.mjs";
 import { wikiContentDir } from "../../src/chat-wiki.ts";
 import { piCheckout } from "./wiki-dream.ts";
+import { blobDefs, currentFromDiff, DATA_HISTORY, dataRoots, SECTION_HISTORY, defines, kindLabel, revDefs, ROUTES_DIR, sameTableElsewhere, spanTokens, unionDefs, usesAsData, wantsBlob,
+  type DataKind, type Defs, type TreeEntry } from "./wiki-data-facts.ts";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 
 /**
@@ -22,6 +24,8 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * `skills_with_stale_facts`, which keeps the duty at one headline and three more metrics, and info splits it into `repo_skills_with_stale_facts`,
  * `rules_with_stale_facts` and `prime_skills_with_stale_facts`. A sentence that says a thing was removed, renamed or replaced is history and is not read, and so are
  * experiment, incident and postmortem pages and the skills a vendor wrote (`vendorSkillDirs`).
+ * A page also counts for a data fact (wiki-data-facts.ts): a ClickHouse table, Postgres table, Convex table or route it cites that a sampled
+ * commit defined and HEAD no longer has, and info splits those pages by kind with the current name where the move gave one.
  * The Wiki dream duty (wiki-dream.ts) already counts a page whose `<code>` path under apps, convex, packages, scripts or ops is missing, and every
  * `source_refs` change, so a page's path facts under those folders are left to it. A file that only changed counts in info `docs_with_changed_files`
  * and not in the headline: a changed file is a doc to reread, and its facts that broke are what the headline counts.
@@ -30,6 +34,7 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
 
 export const UNMEASURED = 999_999;
 const KST_DAY_START = "T00:00:00+09:00";
+const DAY_MS = 86_400_000;
 /** The code paths the Wiki dream's stale check reads in a page's `<code>` spans (wiki-health.mjs CODE_REF). */
 const DREAM_PREFIX = /^(?:apps|convex|packages|scripts|ops)\//;
 /** A sentence that tells history, where an old name is the point (wiki-health.mjs REMOVAL, widened to renames and replacements). */
@@ -44,8 +49,9 @@ export type Fact =
   | { kind: "symbol"; ref: string; file: string; name: string }
   | { kind: "name"; ref: string }
   | { kind: "script"; ref: string; dir: string; name: string }
-  | { kind: "flag"; ref: string; file: string; flag: string };
-export interface Doc { kind: DocKind; path: string; at: number; apps: string[]; facts: Fact[] }
+  | { kind: "flag"; ref: string; file: string; flag: string }
+  | { kind: "data"; ref: string; data: DataKind; current?: string };
+export interface Doc { kind: DocKind; path: string; at: number; apps: string[]; facts: Fact[]; data?: [DataKind, string][] }
 export interface Drift { fact: Fact; detail: string }
 
 /** Runs a program with no shell, feeding `input` on stdin, and gives its stdout as bytes; throws on a nonzero exit (rg and git grep exit 1 on no match, which gives ""). */
@@ -90,14 +96,14 @@ export function pageText(html: string): string {
 
 /**
  * The code spans of markdown text that a reader takes as current: each line of a fence, and each backtick span outside a history sentence.
- * With `history`, the backtick spans inside history sentences instead.
+ * With `history`, the backtick spans inside history sentences instead; `told` is the regex that marks a history sentence.
  */
-export function codeSpans(text: string, history = false): string[] {
+export function codeSpans(text: string, history = false, told: RegExp = HISTORY): string[] {
   const spans: string[] = [];
   text.split(/^```[^\n]*$/m).forEach((part, index) => {
     if (index % 2) { if (!history) spans.push(...part.split("\n").filter(line => line.trim())); return; }
     for (const sentence of part.split(/(?<=[.!?])\s+|\n\s*\n/)) {
-      if (HISTORY.test(sentence.replace(/`[^`\n]*`/g, "")) !== history) continue;
+      if (told.test(sentence.replace(/`[^`\n]*`/g, "")) !== history) continue;
       for (const match of sentence.matchAll(/`([^`\n]+)`/g)) spans.push(match[1]!);
     }
   });
@@ -274,6 +280,30 @@ export async function judgeDocs(docs: readonly Doc[], revOf: (doc: Doc) => strin
   return { drifts, changed };
 }
 
+/**
+ * The data tokens a page cites as current (wiki-data-facts.ts spanTokens). A token it also names in a sentence that tells a move, drop or
+ * rename is left out, as readFacts leaves out a told name, and so is every token of a table or diagram whose section tells one, and every
+ * token of a page whose title or description records a removal. On 2026-11-26 the first run counted domains/platform-apis/kick.html for the
+ * tables under "Tables the build wrote" after "0060_m3_subapp_door dropped them", and its description says the adapter was removed.
+ */
+export function dataTokens(html: string): [DataKind, string][] {
+  const header = pageHeader(html);
+  if (HISTORY.test([header.title, header.description].filter(text => typeof text === "string").join(" "))) return [];
+  const told = new Set<string>();
+  const current = html.replace(/<(table|pre)\b[^>]*>[\s\S]*?<\/\1>/g, (block: string, _tag: string, at: number) => {
+    const before = html.slice(0, at);
+    const heading = Math.max(0, ...[...before.matchAll(/<h[1-6]\b/g)].map(match => match.index));
+    if (!SECTION_HISTORY.test(pageText(before.slice(heading)).replace(/`[^`\n]*`/g, "")) && !(block.startsWith("<pre") && SECTION_HISTORY.test(pageText(block).replace(/`[^`\n]*`/g, "")))) return block;
+    for (const span of codeSpans(pageText(block))) for (const [, token] of spanTokens(span)) told.add(token);
+    return "";
+  });
+  const markdown = pageText(current);
+  for (const span of codeSpans(markdown, true, DATA_HISTORY)) for (const [, token] of spanTokens(span)) told.add(token);
+  const out = new Map<string, [DataKind, string]>();
+  for (const span of codeSpans(markdown, false, DATA_HISTORY)) for (const [kind, token] of spanTokens(span)) if (!told.has(token)) out.set(`${kind}\x1f${token}`, [kind, token]);
+  return [...out.values()];
+}
+
 /** Whether a page fact is the Wiki dream's to count: a path under the folders its stale check reads. */
 export const dreamOwns = (doc: Pick<Doc, "kind">, fact: Fact): boolean => doc.kind === "page" && fact.kind === "path" && DREAM_PREFIX.test(fact.ref);
 
@@ -318,8 +348,12 @@ export const isPrimeSkillFile = (path: string): boolean =>
   path.endsWith(".md") && /^(?:skills|legacy\/prime\/skills|packages\/[^/]+\/skills)\/[^/]+\//.test(path) && !/\/(?:tests?|fixtures)\//.test(path);
 
 /** Measures every page, repo skill and Prime skill and builds the precheck output; an input that fails adds a source_error item and 999999 for the headline. */
-export async function measureFacts(deps: FactsDeps): Promise<PrecheckOutput & { info: Record<string, number> }> {
+export async function measureFacts(deps: FactsDeps): Promise<PrecheckOutput & { info: Record<string, number>; n: Record<string, number> }> {
   const errors: FlaggedSlice[] = [];
+  let inputsTried = 0;
+  const given = deps;
+  deps = { ...given, run: (file, args, options) => { inputsTried += 1; return given.run(file, args, options); },
+    readText: path => { inputsTried += 1; return given.readText(path); }, listPages: () => { inputsTried += 1; return given.listPages(); } };
   const fail = (source: string, error: unknown): undefined => {
     errors.push({ kind: "source_error", item: source, excerpt: clip(`${source}: ${error instanceof Error ? error.message : String(error)}`) });
     return undefined;
@@ -374,7 +408,7 @@ export async function measureFacts(deps: FactsDeps): Promise<PrecheckOutput & { 
     const rev = commits && Number.isFinite(at) ? commitAt(commits, at) : undefined;
     if (!rev) { skipped += 1; continue; }
     const apps = docApps("page", path, header);
-    const doc: Doc = { kind: "page", path, at, apps, facts: readFacts("page", html).filter(fact => !dreamOwns({ kind: "page" }, fact)) };
+    const doc: Doc = { kind: "page", path, at, apps, facts: readFacts("page", html).filter(fact => !dreamOwns({ kind: "page" }, fact)), data: dataTokens(html) };
     auto.docs.push(doc); auto.revs.set(doc, rev);
   }
 
@@ -432,20 +466,101 @@ export async function measureFacts(deps: FactsDeps): Promise<PrecheckOutput & { 
       namesAt: asks => namesAtRevs(from, asks),
     }).catch(error => fail(`${from.label} judge`, error));
   };
+  /**
+   * The pages' data facts against auto-sns-agent: every page's day start and end commit is a sample, each sample's definitions come from the
+   * blobs of DATA_ROOTS read once, and a token a sample defines that HEAD neither defines nor uses as data counts for its page, with the
+   * current name the diff after its last sample gives.
+   */
+  const judgeData = async (from: Source, commits: readonly { sha: string; at: number }[]): Promise<{ drifts: Map<Doc, Drift[]>; sampled: number; checked: number }> => {
+    const pages = from.docs.filter(doc => doc.kind === "page" && doc.data?.length);
+    const timeOf = new Map(commits.map(commit => [commit.sha, commit.at]));
+    const samples = [...new Set(pages.flatMap(doc => [commitAt(commits, doc.at), commitAt(commits, doc.at + DAY_MS)]).filter((sha): sha is string => !!sha))]
+      .sort((a, b) => timeOf.get(a)! - timeOf.get(b)!);
+    const headDirs = (await from.git(["ls-tree", "-d", "-r", "--name-only", "HEAD", "--", "apps"])).toString("utf8").split("\n");
+    const roots = dataRoots(headDirs);
+    const treeOf = async (rev: string): Promise<TreeEntry[]> => (await from.git(["ls-tree", "-r", "-z", rev, "--", ...roots])).toString("utf8").split("\0")
+      .flatMap(entry => { const match = /^(?:100644|100755) blob ([0-9a-f]+)\t(.*)$/s.exec(entry); return match ? [{ blob: match[1]!, path: match[2]! }] : []; });
+    const revs = [...samples, "HEAD"]; const trees = new Map<string, TreeEntry[]>();
+    // measured: 40 sample ls-trees took 4.6 s one at a time and 0.9 s eight at a time on us-metal02 at load 135 on 2026-11-26.
+    for (let index = 0; index < revs.length; index += 8) {
+      const batch = revs.slice(index, index + 8);
+      (await Promise.all(batch.map(treeOf))).forEach((entries, at) => trees.set(batch[at]!, entries));
+    }
+    const pathOf = new Map<string, string>();
+    for (const entries of trees.values()) for (const { blob, path } of entries) if (wantsBlob(path) && !pathOf.has(blob)) pathOf.set(blob, path);
+    const blobs = new Map<string, ReturnType<typeof blobDefs>>(); const ids = [...pathOf.keys()];
+    // measured: the 19,878 blobs under the data roots of 242 samples held 395 MB on 2026-11-26, so 2,000 at a time keeps each answer near 40 MB.
+    for (let index = 0; index < ids.length; index += 2000) {
+      const batch = ids.slice(index, index + 2000);
+      const texts = await from.catFile(batch, "--batch");
+      for (const id of batch) { const text = texts.get(id); if (text) blobs.set(id, blobDefs(pathOf.get(id)!, text)); }
+    }
+    const defsAt = new Map(revs.map(rev => [rev, revDefs(trees.get(rev)!, blobs)]));
+    const head = defsAt.get("HEAD")!;
+    const history = unionDefs(samples.map(rev => defsAt.get(rev)!));
+    const tokens = new Map<string, [DataKind, string]>();
+    for (const doc of pages) for (const [kind, token] of doc.data!) tokens.set(`${kind}\x1f${token}`, [kind, token]);
+    const gone = [...tokens.values()].filter(([kind, token]) => defines(history, kind, token) && !defines(head, kind, token));
+    const words = [...new Set(gone.filter(([kind]) => kind !== "route").map(([, token]) => token))];
+    const routes = [...new Set(gone.filter(([kind]) => kind === "route").map(([, token]) => token.split(/\/(?:\{|\[|<|:|\$\{)/)[0]!))];
+    const grep = async (args: string[], patterns: string[]): Promise<string[]> => patterns.length
+      ? (await from.git(["grep", "-I", ...args, ...patterns.flatMap(pattern => ["-e", pattern]), "HEAD", "--", ".", ":!*.md", ":!apps/llm-wiki/content"], undefined, [1]))
+        .toString("utf8").split("\n") : [];
+    const lines = [...await grep(["-w", "-F"], words), ...await grep(["-F"], routes)].map(line => line.replace(/^HEAD:[^:]*:/, ""));
+    const stale = new Map<string, { kind: DataKind; name: string; current?: string }>(); const diffs = new Map<string, string>();
+    for (const [kind, token] of gone) {
+      if (lines.some(line => line.includes(kind === "route" ? token.split(/\/(?:\{|\[|<|:|\$\{)/)[0]! : token) && usesAsData(line, kind, token))) continue;
+      const last = samples.findLastIndex(rev => defines(defsAt.get(rev)!, kind, token));
+      const a = samples[last]!, b = samples[last + 1] ?? "HEAD", pair = `${a} ${b}`;
+      let diff = diffs.get(pair);
+      if (diff === undefined) {
+        const body = (await from.git(["diff", "-U0", "--no-renames", a, b, "--", ...roots])).toString("utf8");
+        const moved = (await from.git(["diff", "-U0", "-M", "--diff-filter=R", a, b, "--", ...roots.filter(root => ROUTES_DIR.test(root))])).toString("utf8");
+        diff = body + moved;
+        diffs.set(pair, diff);
+      }
+      const current = currentFromDiff(diff, kind, token, head) ?? (kind === "clickhouse" ? sameTableElsewhere(head, token) : undefined);
+      stale.set(`${kind}\x1f${token}`, { kind, name: token, ...current ? { current } : {} });
+    }
+    const drifts = new Map<Doc, Drift[]>();
+    for (const doc of pages) {
+      const found = doc.data!.flatMap(([kind, token]): Drift[] => {
+        const hit = stale.get(`${kind}\x1f${token}`);
+        return hit ? [{ fact: { kind: "data", ref: token, data: kind, ...hit.current ? { current: hit.current } : {} },
+          detail: `${kindLabel[kind]} ${token} is in no code at HEAD${hit.current ? `, now ${hit.current}` : ""}` }] : [];
+      });
+      if (found.length) drifts.set(doc, found);
+    }
+    return { drifts, sampled: samples.length, checked: tokens.size };
+  };
   const autoJudged = await judgeSource(auto);
   const piJudged = await judgeSource(pi);
+  const dataRead = auto.broken || !commits ? undefined : await judgeData(auto, commits).catch(error => fail("auto-sns-agent data facts", error));
+  if (autoJudged && dataRead) for (const [doc, list] of dataRead.drifts) autoJudged.drifts.set(doc, [...autoJudged.drifts.get(doc) ?? [], ...list]);
+  const dataStale = [...dataRead?.drifts ?? []];
 
   const docs = [...auto.docs, ...pi.docs];
   const stale = [...autoJudged?.drifts ?? [], ...piJudged?.drifts ?? []];
   const count = (kind: DocKind): number => stale.filter(([doc]) => doc.kind === kind).length;
-  const measured = autoJudged !== undefined && piJudged !== undefined;
+  const pagesOk = autoJudged !== undefined && dataRead !== undefined;
+  const measured = pagesOk && piJudged !== undefined;
   const metrics: Record<string, number> = {
     docs_with_stale_facts: measured ? stale.length : UNMEASURED,
-    pages_with_stale_facts: autoJudged ? count("page") : UNMEASURED,
+    pages_with_stale_facts: pagesOk ? count("page") : UNMEASURED,
     skills_with_stale_facts: measured ? count("skill") + count("rule") + count("prime_skill") : UNMEASURED,
     source_errors: errors.length,
   };
+  const read = (kind: DocKind): number => docs.filter(doc => doc.kind === kind).length;
+  /** What each metric measured, so a run that read nothing never reads as met: docs, pages, skill and rule files, and inputs tried. */
+  const n: Record<string, number> = {
+    docs_with_stale_facts: docs.length, pages_with_stale_facts: read("page"), skills_with_stale_facts: read("skill") + read("rule") + read("prime_skill"),
+    source_errors: inputsTried,
+  };
+  const byKind = (kind: DataKind): number => dataRead ? dataStale.filter(([, list]) => list.some(drift => drift.fact.kind === "data" && drift.fact.data === kind)).length : UNMEASURED;
   const info: Record<string, number> = {
+    pages_with_stale_clickhouse_tables: byKind("clickhouse"), pages_with_stale_postgres_tables: byKind("postgres"),
+    pages_with_stale_convex_tables: byKind("convex"), pages_with_stale_routes: byKind("route"),
+    data_commits_sampled: dataRead?.sampled ?? UNMEASURED, data_names_checked: dataRead?.checked ?? UNMEASURED,
     repo_skills_with_stale_facts: autoJudged ? count("skill") : UNMEASURED, rules_with_stale_facts: autoJudged ? count("rule") : UNMEASURED,
     prime_skills_with_stale_facts: piJudged ? count("prime_skill") : UNMEASURED,
     pages_read: docs.filter(doc => doc.kind === "page").length, skills_read: docs.filter(doc => doc.kind === "skill").length,
@@ -460,7 +575,7 @@ export async function measureFacts(deps: FactsDeps): Promise<PrecheckOutput & { 
     kind: `stale_${doc.kind}`, item: doc.kind === "prime_skill" ? `sieun-pi:${doc.path}` : doc.path, handOff: true, sig: String(doc.at),
     excerpt: clip(`${label[doc.kind]} dated ${day(doc.at)}: ${list.map(drift => drift.detail).join("; ")}`, 600),
   }))];
-  return { metrics, flagged, info };
+  return { metrics, flagged, info, n };
 }
 
 export const runNoShell: Run = (file, args, options) => new Promise((done, failed) => {
