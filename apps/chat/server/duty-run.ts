@@ -339,7 +339,8 @@ export async function measure(input: {
   }
   // A hand-off with a sig that an earlier run of this duty already gave a job is not handed again: on 11-26 VP of GTM's Area review started
   // three jobs for the one daily sig ag_vp-of-gtm:2026-11-25. The run keeps its hand-offs with a sig in `flagged` for the next run to read.
-  const handed = new Set(previous.filter(run => run.job).flatMap(run => (run.flagged ?? []).flatMap(slice => slice.handOff && slice.sig ? [slice.sig] : [])));
+  // Only a job of the last day counts, so a finding that is still open a day later, such as a page Wiki tidiness flags each day, goes out again.
+  const handed = new Set(previous.filter(run => run.job && started - run.at < 86_400_000).flatMap(run => (run.flagged ?? []).flatMap(slice => slice.handOff && slice.sig ? [slice.sig] : [])));
   const handOffs = flagged.filter(slice => slice.handOff && slice.sig);
   if (handOffs.length) record.flagged = handOffs;
   const acts = flagged.some(slice => slice.item !== undefined || (slice.handOff && !(slice.sig && handed.has(slice.sig))));

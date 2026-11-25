@@ -136,7 +136,7 @@ export interface AgentRead {
   /** Per duty id, the sample size its newest measured run's detail file names (`sampleSize`), or null when the file names none. */
   samples?: Readonly<Record<string, number | null>>;
   /** Per duty id, the hand-off sigs of each of its runs that started a job, one list per run (`duplicateJobs`). */
-  handOffJobs?: Readonly<Record<string, readonly (readonly string[])[]>>;
+  handOffJobs?: Readonly<Record<string, readonly { at: number; sigs: readonly string[] }[]>>;
   /** Per duty id, whether its newest measured run's detail file holds the precheck's JSON output; absent when that was not read. */
   outputs?: Readonly<Record<string, boolean>>;
 }
@@ -147,9 +147,17 @@ export interface Ask { ref: string; ids: readonly string[]; at: number; text: st
  * The hand-off sigs that more than one job of a duty got, with how many: the duty runner's bug, not the agent's, so it nudges nobody. Before
  * 11-26 a run handed the same daily sig to a new job on every rerun (server/duty-run.ts `measure`).
  */
-export function duplicateJobs(runs: readonly (readonly string[])[]): [string, number][] {
+export function duplicateJobs(runs: readonly { at: number; sigs: readonly string[] }[]): [string, number][] {
+  // A job counts twice only within a day of the last job for its sig: a page Wiki tidiness still flags the next day is a new day's work.
+  const last = new Map<string, number>();
   const counts = new Map<string, number>();
-  for (const sigs of runs) for (const sig of new Set(sigs)) counts.set(sig, (counts.get(sig) ?? 0) + 1);
+  for (const run of [...runs].sort((a, b) => a.at - b.at)) {
+    for (const sig of new Set(run.sigs)) {
+      const before = last.get(sig);
+      counts.set(sig, before !== undefined && run.at - before < DAY_MS ? (counts.get(sig) ?? 1) + 1 : counts.get(sig) ?? 1);
+      last.set(sig, run.at);
+    }
+  }
   return [...counts].filter(([, jobs]) => jobs > 1);
 }
 
@@ -253,10 +261,13 @@ export function agentPattern(agents: readonly AgentRead[], areas: readonly Agent
   const everyDuty = agents.flatMap(({ agent, duties }) => duties.map(row => ({ ...row, agent })));
   for (const { agent, duties, checkIn, stuck = 0, boardAt, asks = [], pauses = {}, samples = {}, outputs = {}, handOffJobs = {} } of agents) {
     for (const row of duties) {
-      for (const [sig, jobs] of duplicateJobs(handOffJobs[row.duty.id] ?? [])) {
-        duplicates += jobs - 1;
-        flagged.push({ kind: "duplicate_job", sig: `${agent.id}/${row.duty.id}/${sig}`, item: agent.id, excerpt: `${agent.name}: ${row.duty.id} "${row.duty.name}" started ${jobs} jobs for the one hand-off ${sig}` });
-      }
+      const repeats = duplicateJobs(handOffJobs[row.duty.id] ?? []);
+      if (!repeats.length) continue;
+      const extra = repeats.reduce((sum, [, jobs]) => sum + jobs - 1, 0);
+      duplicates += extra;
+      const [sig, jobs] = repeats[0]!;
+      flagged.push({ kind: "duplicate_job", sig: `${agent.id}/${row.duty.id}/duplicates`, item: agent.id,
+        excerpt: `${agent.name}: ${row.duty.id} "${row.duty.name}" started ${extra} extra jobs for ${repeats.length} hand-off${repeats.length === 1 ? "" : "s"} within a day, such as ${jobs} jobs for ${sig.slice(0, 80)}` });
     }
     if (noArea.has(agent.id)) continue;
     const flag = (kind: string, key: string, excerpt: string) => flagged.push({ kind, sig: `${agent.id}/${key}`, item: agent.id, excerpt: `${agent.name}: ${excerpt}` });
@@ -538,7 +549,8 @@ if (isMain(import.meta.url)) {
         const [board, duties, folder, checkIn, steps, jobs] = await Promise.all([
           get<{ board?: BoardRead }>(server, `/api/agents/${agent.id}/board`).then(answer => answer.board),
           get<{ duties: DutyRow[] }>(server, `/api/agents/${agent.id}/duties`).then(answer => answer.duties),
-          get<{ brief?: { text?: string; modifiedAt?: number | null } }>(server, `/api/agents/${agent.id}/folder`),
+          // A folder on a box that is away answers 503 (5180 designer's Mac at 06:33 KST 11-26, right after a chat release): read it as unknown.
+          get<{ brief?: { text?: string; modifiedAt?: number | null } }>(server, `/api/agents/${agent.id}/folder`).catch(() => null),
           get<PushRead>(server, `/api/agents/${agent.id}/check-in`),
           get<Steps>(server, `/api/agents/${agent.id}/steps`),
           get<{ agents: { lastActivityAt?: string }[] }>(server, `/api/agents/${agent.id}/agents`).then(answer => answer.agents),
@@ -550,7 +562,7 @@ if (isMain(import.meta.url)) {
         // Each run that started a job, with the hand-off sigs it gave: from the record since 11-26, else from its precheck output.
         const handOffJobs = Object.fromEntries(duties.map(row => [row.duty.id, row.runs.filter(run => run.job).map(run => {
           const slices = run.flagged ?? (run.detail?.endsWith(".json") && existsSync(run.detail) ? readJson<{ flagged?: { handOff?: true; sig?: string }[] }>(run.detail)?.flagged : undefined) ?? [];
-          return slices.flatMap(slice => slice.handOff && slice.sig ? [slice.sig] : []);
+          return { at: run.at ?? 0, sigs: slices.flatMap(slice => slice.handOff && slice.sig ? [slice.sig] : []) };
         })]));
         const samples: Record<string, number | null> = {};
         const outputs: Record<string, boolean> = {};
@@ -567,8 +579,9 @@ if (isMain(import.meta.url)) {
         const jobsAt = [...jobs.flatMap(job => job.lastActivityAt ? [Date.parse(job.lastActivityAt)] : []), ...duties.flatMap(row => row.runs.flatMap(run => run.job && run.at ? [run.at] : []))];
         return {
           read: {
-            agent, duties, brief: folder.brief?.text ?? "", checkIn, stuck: steps.stuck.length, boardAt: board?.updatedAt ? Date.parse(board.updatedAt) : null,
-            asks: asksTo(store, agent, folder.brief?.text?.trim() ? folder.brief.modifiedAt ?? 0 : 0), pauses, samples, outputs, handOffJobs,
+            agent, duties, checkIn, stuck: steps.stuck.length, boardAt: board?.updatedAt ? Date.parse(board.updatedAt) : null, pauses, samples, outputs, handOffJobs,
+            // An unread folder leaves its brief unknown: the agent keeps its area and its asks wait for a run that reads the brief.
+            ...folder ? { brief: folder.brief?.text ?? "", asks: asksTo(store, agent, folder.brief?.text?.trim() ? folder.brief.modifiedAt ?? 0 : 0) } : { brief: "(its folder did not answer)", asks: [] },
           } satisfies AgentRead,
           jobsAt,
         };
@@ -576,7 +589,9 @@ if (isMain(import.meta.url)) {
       const pattern = agentPattern(reads.map(entry => entry.read), readAreas(areasFile), now);
       // Every agent that is not archived keeps its folder, an away one too; GET /api/agents lists no test agent.
       const live = realAgents(await get<Agent[]>(server, "/api/agents"));
-      const slugs = new Set(await Promise.all(live.map(async agent => basename((await get<{ dir?: string }>(server, `/api/agents/${agent.id}/folder`)).dir ?? agent.id.replace(/^ag_/, "")))));
+      // A test agent at work now, such as d3's memory-recall agents during its run, is no leftover; one idle for a day is.
+      const working = (await get<(Agent & { updatedAt?: number })[]>(server, "/api/agents?test=1")).filter(agent => agent.test && !agent.archived && now - (agent.updatedAt ?? 0) < DAY_MS);
+      const slugs = new Set(await Promise.all([...live, ...working].map(async agent => basename((await get<{ dir?: string }>(server, `/api/agents/${agent.id}/folder`).catch(() => null))?.dir ?? agent.id.replace(/^ag_/, "")))));
       const wiki = readWiki(values.wiki ?? process.env.WIKI_CONFIG ?? join(homedir(), ".config/sieun-pi/wiki.json"));
       const clutter = wikiClutter(wiki.agentFolders, slugs, wiki.pages);
       // This duty's own earlier runs, read back from their detail files, for the misses no job took up in a day.

@@ -34,6 +34,8 @@ test("a hand-off sig an earlier run gave a job starts no second job; a new sig o
     // A run whose earlier job never started (no job on the record) still hands off.
     assert.notEqual((await run(duty("ag_vp-of-gtm:2026-11-25"), [first.record])).brief, null);
     assert.notEqual((await run(duty("ag_vp-of-gtm:2026-11-26"), [withJob])).brief, null, "the next day's sig is new");
+    // A finding whose job ran over a day ago, such as a page still off shape, goes out again.
+    assert.notEqual((await run(duty("ag_vp-of-gtm:2026-11-25"), [{ ...withJob, at: at - 25 * 3_600_000 }])).brief, null);
     assert.notEqual((await run(duty("ag_vp-of-gtm:2026-11-25", 2), [withJob])).brief, null, "a missed metric still starts a job");
   } finally {
     rmSync(dir, { recursive: true, force: true });

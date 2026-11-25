@@ -330,13 +330,17 @@ test("no brief, no area and no owner ask is no area whatever duties another job 
 });
 
 test("d7 counts more than one job for the same duty and hand-off sig as duplicate jobs, and nudges nobody for it", () => {
-  assert.deepEqual(duplicateJobs([["ag_vp-of-gtm:2026-11-25"], ["ag_vp-of-gtm:2026-11-25"], [], ["ag_vp-of-gtm:2026-11-25"], ["ag_vp-of-gtm:2026-11-24"]]), [["ag_vp-of-gtm:2026-11-25", 3]]);
+  const sigs = (at: number, ...list: string[]) => ({ at, sigs: list });
+  assert.deepEqual(duplicateJobs([sigs(NOW, "ag_vp-of-gtm:2026-11-25"), sigs(NOW + 600_000, "ag_vp-of-gtm:2026-11-25"), sigs(NOW + 700_000), sigs(NOW + 900_000, "ag_vp-of-gtm:2026-11-25"),
+    sigs(NOW, "ag_vp-of-gtm:2026-11-24")]), [["ag_vp-of-gtm:2026-11-25", 3]]);
+  // The same page sig handed once a day for three days is no duplicate.
+  assert.deepEqual(duplicateJobs([sigs(NOW, "off_shape:20"), sigs(NOW + 25 * HOUR, "off_shape:20"), sigs(NOW + 50 * HOUR, "off_shape:20")]), []);
   const out = agentPattern([{
     agent: { id: "ag_vp-of-gtm", name: "VP of GTM" }, brief: "GTM", duties: [duty("d3", "Area review", ["met"])],
-    handOffJobs: { d3: [["ag_vp-of-gtm:2026-11-25"], ["ag_vp-of-gtm:2026-11-25"]] },
+    handOffJobs: { d3: [sigs(NOW - HOUR, "ag_vp-of-gtm:2026-11-25"), sigs(NOW - 2 * HOUR, "ag_vp-of-gtm:2026-11-25")] },
   }], [], NOW);
   assert.equal(out.metrics.duplicate_jobs, 1);
-  assert.deepEqual(out.flagged.filter(flag => flag.kind === "duplicate_job").map(flag => flag.sig), ["ag_vp-of-gtm/d3/ag_vp-of-gtm:2026-11-25"]);
+  assert.deepEqual(out.flagged.filter(flag => flag.kind === "duplicate_job").map(flag => flag.excerpt), ['VP of GTM: d3 "Area review" started 1 extra jobs for 1 hand-off within a day, such as 2 jobs for ag_vp-of-gtm:2026-11-25']);
   assert.equal(out.metrics.agents_off_pattern, 0);
 });
 
