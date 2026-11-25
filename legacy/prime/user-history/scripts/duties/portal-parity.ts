@@ -248,14 +248,16 @@ export interface JobState { status?: unknown; error?: unknown }
 
 /**
  * Reads GET /v1/jobs/{job_id} every JOB_POLL_MS until the job is ready or failed, an answer is not 2xx, or `deadline` passes, and gives the
- * last answer and the number of reads.
+ * last answer and the number of reads. A read that got no HTTP answer (status 0, a fetch error call() sorts as unprobed) is read again,
+ * because on 2026-11-26 at 06:03 KST one such error ended the watch of 4 prod jobs that all ended ready 61 to 70 s after a rerun.
  */
-export async function untilJobEnds(read: () => Promise<{ status: number; body: unknown }>, deadline: number, now: () => number = Date.now,
-  sleep: (ms: number) => Promise<unknown> = ms => new Promise(resolve => setTimeout(resolve, ms))): Promise<{ reads: number; last: { status: number; body: unknown } }> {
+export async function untilJobEnds<A extends { status: number; body: unknown; verdict?: Verdict }>(read: () => Promise<A>, deadline: number, now: () => number = Date.now,
+  sleep: (ms: number) => Promise<unknown> = ms => new Promise(resolve => setTimeout(resolve, ms))): Promise<{ reads: number; last: A }> {
   for (let reads = 1; ; reads++) {
     const last = await read();
     const status = (last.body as { data?: JobState } | null)?.data?.status;
-    if (last.status < 200 || last.status >= 300 || JOB_ENDED.has(String(status)) || now() >= deadline) return { reads, last };
+    const noAnswer = last.status === 0 && last.verdict === "unprobed";
+    if (now() >= deadline || JOB_ENDED.has(String(status)) || (!noAnswer && (last.status < 200 || last.status >= 300))) return { reads, last };
     await sleep(JOB_POLL_MS);
   }
 }
@@ -266,11 +268,12 @@ export async function untilJobEnds(read: () => Promise<{ status: number; body: u
  * deadline was never taken by the crawler, and one still running did not end its 2 pages, so both are the crawler's, or held under a supply
  * hold. A status read that is not 2xx is sorted as any other answer.
  */
-export function jobVerdict(last: { status: number; body: unknown }, waitedMs: number, hold: string | null | undefined): { verdict: Verdict; code?: string | undefined; note: string; ended: boolean } {
+export function jobVerdict(last: { status: number; body: unknown; note?: string }, waitedMs: number, hold: string | null | undefined): { verdict: Verdict; code?: string | undefined; note: string; ended: boolean } {
   const after = `${Math.round(waitedMs / 1000)} s after its submit`;
   if (last.status < 200 || last.status >= 300) {
     const { verdict, code } = classify(last.status, last.body);
-    return { verdict: verdict === "ok" ? "unprobed" : verdict, code, note: `the job's status read answered ${last.status} ${code ?? ""}`.trim(), ended: false };
+    const answered = `the job's status read answered ${last.status} ${code ?? ""}`.trim();
+    return { verdict: verdict === "ok" ? "unprobed" : verdict, code, note: last.note ? `${answered} ${after} (${last.note})` : answered, ended: false };
   }
   const job = (last.body as { data?: JobState } | null)?.data;
   const status = String(job?.status);
@@ -816,7 +819,8 @@ export async function probe(base: string, org: Org, op: string, request: ProbeRe
     const cause = (error as { cause?: { code?: unknown } } | null)?.cause?.code;
     if (typeof cause === "string" && NO_ANSWER.has(cause))
       return { op, verdict: "portal", status: 0, ms, code: "no_answer", note: `${note}: the portal sent no answer in ${Math.round(ms / 1000)} s (${cause})`, body: null };
-    return { op, verdict: "unprobed", status: 0, ms, note: `${note}: ${error instanceof Error ? error.message : String(error)}`, body: null };
+    const why = (error as { cause?: { message?: unknown } } | null)?.cause?.message;
+    return { op, verdict: "unprobed", status: 0, ms, note: `${note}: ${error instanceof Error ? error.message : String(error)}${typeof why === "string" ? ` (${typeof cause === "string" ? `${cause} ` : ""}${why})` : ""}`, body: null };
   }
 }
 

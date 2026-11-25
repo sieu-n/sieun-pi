@@ -52,6 +52,24 @@ test("the job watch reads until the job ends or the deadline passes", async () =
   assert.deepEqual([late.reads, late.last], [4, read("queued")]);
 });
 
+test("a status read with no HTTP answer is read again, and the fetch error stays in the note when no read answers", async () => {
+  // 2026-11-26 06:03 KST: one fetch error on GET /v1/jobs/{job_id} ended the watch of 4 prod jobs that ended ready 61 to 70 s after a rerun.
+  let clock = 0;
+  const sleep = async (ms: number) => { clock += ms; };
+  const dropped = { status: 0, body: null, verdict: "unprobed" as const, note: "job status read: fetch failed (ECONNRESET read ECONNRESET)" };
+  const answers = [read("running"), dropped, read("ready")];
+  const ended = await untilJobEnds(async () => answers.shift()!, 100_000, () => clock, sleep);
+  assert.deepEqual([ended.reads, ended.last], [3, read("ready")]);
+  assert.equal(jobVerdict(ended.last, clock, null).verdict, "ok");
+  clock = 0;
+  const never = await untilJobEnds(async () => dropped, 3 * JOB_POLL_MS, () => clock, sleep);
+  assert.equal(never.reads, 4);
+  assert.deepEqual(jobVerdict(never.last, clock, null), { verdict: "unprobed", code: undefined, note: "the job's status read answered 0 30 s after its submit (job status read: fetch failed (ECONNRESET read ECONNRESET))", ended: false });
+  clock = 0;
+  const cut = await untilJobEnds(async () => ({ status: 0, body: null, verdict: "portal" as const }), 100_000, () => clock, sleep);
+  assert.equal(cut.reads, 1);
+});
+
 test("a route whose job-mode call got no job does not work on its page-mode call alone", () => {
   // 11-24 06:11Z: four prod job calls answered 429 while another run held the org's job slots, and their routes scored working.
   const route: Route = { crawler: "GET /api/live/youtube/channel_videos", group: "youtube", portal: ["GET /v1/youtube/channel_videos", "GET /v1/youtube/channel_videos job"] };
