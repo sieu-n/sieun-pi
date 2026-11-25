@@ -16,6 +16,14 @@ test("a key staging has and prod lacks on main counts once and names the key, an
   assert.match(output.flagged!.find(flag => flag.kind === "env_staging_only")!.excerpt, /at main has BATCH_WORKER_SECRET/);
 });
 
+// On 11-26 v2's API_V2_ENABLED and API_FREE_TRY_KEY were on staging only until the owner approves v2 (mwwloz23), and d1 counted them.
+test("a staging key that prod's .env parks in a commented row does not count", () => {
+  const parked = `${PROD}# BATCH_WORKER_SECRET= (staging only until the owner approves v2)\n`;
+  const output = uptimeMetrics(ANSWERS, DIRECT, 0, { main: { prod: parked, staging: STAGING }, "dev/sieun": { prod: parked, staging: STAGING } });
+  assert.equal(output.metrics.env_keys_staging_only, 0);
+  assert.equal(output.flagged!.filter(flag => flag.kind === "env_staging_only").length, 0);
+});
+
 test("an env file GitHub did not give reads as unmeasured, never as 0", () => {
   const output = uptimeMetrics(ANSWERS, DIRECT, 0, { main: { error: "HTTP 404" } });
   assert.equal(output.metrics.env_keys_staging_only, 999999);

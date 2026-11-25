@@ -221,6 +221,11 @@ const round = (value: number, places = 1) => Math.round(value * 10 ** places) / 
 export const envKeys = (text: string): Set<string> =>
   new Set([...text.matchAll(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/gm)].map(match => match[1]!).filter(name => !name.startsWith("DOTENV_")));
 
+/** Key names a commented row such as `# API_V2_ENABLED= (staging only until the owner approves v2)` parks in one env file: the
+ *  key is left out of that tier on purpose, as .env.staging's `# VIREV_API_KEY_PROD= (prod)` rows do the other way. */
+export const parkedKeys = (text: string): Set<string> =>
+  new Set([...text.matchAll(/^\s*#\s*([A-Za-z_][A-Za-z0-9_]*)\s*=/gm)].map(match => match[1]!));
+
 /** The api-portal env files at one ref, or the error text when GitHub gave none. */
 export type EnvFiles = Record<string, { prod: string; staging: string } | { error: string }>;
 /** The api-portal .env the live prod Vercel blob was pushed from, the .env.staging at the same commit, and that commit, or why none was found. */
@@ -316,12 +321,14 @@ export function uptimeMetrics(answers: Answers, direct: { status: number; ms: nu
     }
     const liveText = ref === "main" && live && "text" in live ? live : undefined;
     if (ref === "main" && live && "error" in live) flagged.push({ at, kind: "env_live_unread", excerpt: `the live prod blob's source was not found (${live.error}), so apps/api-portal/.env at main stands in for prod`.slice(0, 300) });
-    const prod = envKeys(liveText ? liveText.text : files.prod);
+    const prodText = liveText ? liveText.text : files.prod;
+    const prod = envKeys(prodText);
+    const parked = parkedKeys(prodText);
     const prodName = liveText ? `the live prod blob (apps/api-portal/.env at ${liveText.ref})` : `apps/api-portal/.env at ${ref}`;
     const stagingRef = liveText ? liveText.ref : ref;
     const stagingKeys = [...envKeys(liveText ? liveText.staging : files.staging)];
     keysCompared += stagingKeys.length;
-    const missing = stagingKeys.filter(name => !prod.has(name));
+    const missing = stagingKeys.filter(name => !prod.has(name) && !parked.has(name));
     for (const name of missing) stagingOnly.add(name);
     if (missing.length) flagged.push({ at, kind: "env_staging_only", excerpt: `apps/api-portal/.env.staging at ${stagingRef} has ${missing.join(", ")}, which ${prodName} lacks, so prod runs without ${missing.length > 1 ? "them" : "it"}` });
   }
