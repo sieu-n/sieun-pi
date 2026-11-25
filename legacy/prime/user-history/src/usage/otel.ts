@@ -1,14 +1,14 @@
 import { readFileSync } from "node:fs";
 import type { TokenRate } from "../shared/types.ts";
 import { waitedOnHost } from "../chat-latency.ts";
-import { grafanaReader } from "./store-sums.ts";
 
 /**
  * Prime's own counters in prod otel, for the Agents card's tok/s per session and the duties that read them. Every box sends its OTLP metrics
  * to the prod collector (AGENTS rule 10), which writes Prime's counters to otel.otel_metrics_sum under their OTLP names with ServiceName
  * prime-agent, the box in ResourceAttributes['host.name'] and the tier 'shared'. This module reads them as SQL through Grafana's /api/ds/query
- * on the ClickHouse datasource with the Viewer token in `<data dir>/grafana-alerts.json` (store-sums.ts grafanaReader). Settings > Usage reads
- * the store of every client's model calls instead (src/usage/store.ts).
+ * on the ClickHouse datasource with the Viewer token in `<data dir>/grafana-alerts.json`. It imports nothing outside src/, because harness-feed's
+ * release holds only src/ (components/harness-feed/install.mjs). Settings > Usage reads the store of every client's model calls instead
+ * (src/usage/store.ts).
  */
 
 export const DATASOURCE = "grafana_clickhouse";
@@ -37,23 +37,36 @@ export function reason(error: unknown): string {
   return cause ? `${error.message} (${[code, cause.message].filter(Boolean).join(": ")})` : error.message;
 }
 
+type Frame = { schema?: { fields?: { name: string }[] }; data?: { values?: unknown[][] } };
+
+/** One SQL query through Grafana's /api/ds/query, as rows; throws on an HTTP or query error. The SQL names its own time bounds. */
+async function dsQuery(url: string, token: string, sql: string): Promise<Row[]> {
+  const response = await fetch(`${url.replace(/\/+$/, "")}/api/ds/query`, {
+    method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify({ queries: [{ refId: "A", datasource: { uid: DATASOURCE }, rawSql: sql, format: 1 }], from: "now-1h", to: "now" }),
+  });
+  const answer = await response.json().catch(() => ({})) as { results?: Record<string, { error?: string; frames?: Frame[] }> };
+  const result = answer.results?.A;
+  if (!response.ok || result?.error) throw new Error(`grafana ${response.status}: ${(result?.error ?? JSON.stringify(answer)).slice(0, 400)}`);
+  const frame = result?.frames?.[0];
+  const names = frame?.schema?.fields?.map(field => field.name) ?? [];
+  return Array.from({ length: frame?.data?.values?.[0]?.length ?? 0 }, (_, i) => Object.fromEntries(names.map((name, column) => [name, frame?.data?.values?.[column]?.[i]])));
+}
+
 /** prod otel through Grafana. `config` names a JSON file with `url` and `token` (a Viewer service account token), read on each query so a new token needs no restart. */
 export function grafanaOtel(config: string): Otel {
   return {
     async rows(sql) {
-      let reader: ReturnType<typeof grafanaReader>;
-      try {
-        const { url } = JSON.parse(readFileSync(config, "utf8")) as { url?: unknown };
-        if (typeof url !== "string") throw new Error("it needs url and token");
-        reader = grafanaReader({ url, datasource: DATASOURCE, tokenFile: config, tokenKey: "token" });
-      } catch (error) { throw new UsageError(503, `No Grafana token: ${config}: ${error instanceof Error ? error.message : String(error)}`); }
+      let url: unknown, token: unknown;
+      try { ({ url, token } = JSON.parse(readFileSync(config, "utf8")) as Record<string, unknown>); }
+      catch (error) { throw new UsageError(503, `No Grafana token: ${config}: ${error instanceof Error ? error.message : String(error)}`); }
+      if (typeof url !== "string" || typeof token !== "string" || !token) throw new UsageError(503, `No Grafana token: ${config} needs url and token.`);
       // The query runs on the obs box, so a slow answer is its time, not this box's (chat-latency.ts waitedOnHost).
       waitedOnHost();
       // A second try covers a connection that dropped between two queries. Every query here is a read.
-      const columns = await reader.query(sql).catch(error => error instanceof TypeError ? reader.query(sql) : Promise.reject(error))
+      const ask = () => dsQuery(url as string, token as string, sql);
+      return ask().catch(error => error instanceof TypeError ? ask() : Promise.reject(error))
         .catch((error: unknown) => { throw new UsageError(502, `otel query failed: ${reason(error)}`); });
-      const names = Object.keys(columns);
-      return Array.from({ length: columns[names[0] ?? ""]?.length ?? 0 }, (_, i) => Object.fromEntries(names.map(name => [name, columns[name]![i]])));
     },
   };
 }
