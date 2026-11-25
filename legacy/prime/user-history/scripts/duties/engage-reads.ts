@@ -610,7 +610,9 @@ const CONFIG_SQL = "select key, value from config where key like 'engage.canary%
  * any last run time, and retrying when it started inside one cadence and its last chunk ran in the window. The cadence is _interval in
  * apps/crawler-v3/src/watch_targets/cadence.py: cadence_days, else daily for a monitor row or a row active within 30 days, else weekly.
  * An open walk's walk_end is no end ('since' there marks the 30-day first pass), so it goes under last_error_code. On 10-17, 18 open
- * walks that kept reading counted as stops named "since", which hid their code permanent_error.
+ * walks that kept reading counted as stops named "since", which hid their code permanent_error. A done walk whose target the crawler settled
+ * gone counts under profile_not_found, whatever its walk_end: on 11-24 prod myfipn_official and teeheehee_official ended walk_end hidden
+ * with last_outcome gone and last_error_code profile_not_found, and read as 2 pagination stops (deep_walk_ok_pct 88.9 for 16 reached).
  */
 export const DEEP_WALKS_SQL = `with walks as (
   select walk_done_at, walk_end, walk_since, last_error_code, last_outcome, last_run_at,
@@ -620,7 +622,8 @@ export const DEEP_WALKS_SQL = `with walks as (
 )
 select case when walk_done_at is null then case when past_cadence then 'stuck' else 'retrying' end
     when walk_end in ('since', 'exhausted') then 'reached' else 'error' end as state,
-  case when walk_done_at is null then coalesce(last_error_code, 'error') when walk_end in ('since', 'exhausted') then '' else coalesce(nullif(walk_end, ''), 'error') end as code,
+  case when walk_done_at is null then coalesce(last_error_code, 'error') when walk_end in ('since', 'exhausted') then ''
+    when last_outcome = 'gone' then 'profile_not_found' else coalesce(nullif(walk_end, ''), 'error') end as code,
   count(*) as walks
 from walks
 where walk_done_at > now() - interval '24 hours'
