@@ -1,4 +1,4 @@
-import type { DrawStyle, Swatch } from "../agent-picture";
+import type { DrawStyle, Swatch } from "../agent-picture.ts";
 
 /** One role symbol: the marks inside the 32 by 32 viewBox, drawn in `ink` with `bg` for cut-outs. */
 type Draw = (c: Swatch) => string;

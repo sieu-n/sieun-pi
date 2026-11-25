@@ -3,10 +3,10 @@
  * draw the same picture. The owner picks one of three styles in Preferences (picture-style.svelte.ts); Avatar, AgentPicture, the agent
  * card and the create dialog all draw through `pictureSvg` or `pictureNode`.
  */
-import { hashString } from "./hash";
-import { glyph } from "./agent-pictures/glyph";
-import { monogram } from "./agent-pictures/monogram";
-import { symbol } from "./agent-pictures/symbol";
+import { hashString } from "./hash.ts";
+import { glyph } from "./agent-pictures/glyph.ts";
+import { monogram } from "./agent-pictures/monogram.ts";
+import { symbol } from "./agent-pictures/symbol.ts";
 
 export type PictureStyle = "glyph" | "monogram" | "symbol";
 

@@ -1,4 +1,4 @@
-import type { DrawStyle } from "../agent-picture";
+import type { DrawStyle } from "../agent-picture.ts";
 
 /** Words that name the kind of agent rather than the agent, so they never give a letter. */
 const FILLER = new Set(["guy", "bot", "the", "and", "a", "an", "of", "for", "to", "my", "misc"]);

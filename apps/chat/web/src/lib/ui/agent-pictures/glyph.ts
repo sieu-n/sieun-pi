@@ -1,4 +1,4 @@
-import type { DrawStyle } from "../agent-picture";
+import type { DrawStyle } from "../agent-picture.ts";
 
 /**
  * A bold geometric glyph in the swatch ink, like a transit-line badge. Each mark is built from one to three simple shapes inside
