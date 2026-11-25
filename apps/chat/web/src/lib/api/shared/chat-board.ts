@@ -150,6 +150,31 @@ function reclose(plan: readonly PlanItem[]): { plan: PlanItem[]; ids: string[] }
   return { plan: ids.length ? next : [...plan], ids };
 }
 
+/** A step's own fields, in key order, with no `children` and no `updatedAt`: two equal strings mean the step did not change. */
+function ownFields(item: PlanItem): string {
+  const { children: _children, updatedAt: _updatedAt, ...rest } = item;
+  const fields = rest as Record<string, unknown>;
+  return Object.keys(fields).sort().map(key => `${key}=${JSON.stringify(fields[key])}`).join("\n");
+}
+/**
+ * The plan after an op with `updatedAt: now` on each step the op added or changed, and the time kept before on every other step, so a reader
+ * can count how long a step sat unchanged. Only a step's own fields count: a change to a step under it leaves its time. The board kept no time
+ * per step before this, so a step last changed before then carries none until its next change.
+ */
+export function stampSteps(before: readonly PlanItem[], after: readonly PlanItem[], now: string): PlanItem[] {
+  const old = new Map<string, { fields: string; updatedAt?: string }>();
+  walk(before, item => old.set(item.id, { fields: ownFields(item), ...(item.updatedAt ? { updatedAt: item.updatedAt } : {}) }));
+  const visit = (items: readonly PlanItem[]): PlanItem[] => items.map(item => {
+    const children = item.children.length ? visit(item.children) : item.children;
+    const kept = old.get(item.id);
+    const updatedAt = kept && kept.fields === ownFields(item) ? kept.updatedAt : now;
+    if (updatedAt === item.updatedAt && children === item.children) return item;
+    const { updatedAt: _updatedAt, ...rest } = item;
+    return { ...rest, ...(updatedAt ? { updatedAt } : {}), children };
+  });
+  return visit(after);
+}
+
 /** The client's board views share the walk and the find: the mention index, the plan view's collapse-all and focus path. */
 export { walk as walkItems, find as findItem };
 /** The tree with the item `id` replaced by `change(item)` (null removes it with its children). */
@@ -573,6 +598,7 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
         flags.push(`The todo list has ${next.todos.length} items, over the ${BOARD_LIMITS.todos} target; remove done ones.`);
       }
     }
+    if (next.plan) next = { ...next, plan: stampSteps(board.plan, next.plan, now) };
     return { board: { ...board, ...next, rev: board.rev + 1, updatedAt: now }, summary: [voice(summary), ...flags].join("\n") };
   };
   const unknown = (what: string, missing: string): never => { throw new BoardError("unknown", `No ${what} ${missing} on the board. Read it again with no ops.`); };

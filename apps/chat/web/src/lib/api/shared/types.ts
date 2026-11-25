@@ -138,6 +138,8 @@ export interface PlanItem {
    * closes, the board marks it done again; a status the agent sets clears the mark.
    */
   reopened?: true;
+  /** When an op last changed this step's own fields (ISO), set by the board reducer (`stampSteps`); a step unchanged since 2026-11-26 has none. */
+  updatedAt?: string;
   children: PlanItem[];
 }
 /**
