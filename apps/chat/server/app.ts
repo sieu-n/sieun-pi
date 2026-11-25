@@ -526,13 +526,26 @@ export class App {
         else writeJson(file, { v: SEARCH_DOC_VERSION, cursors: memory });
       },
     };
+    // The hidden threads Meilisearch holds flagged, kept for the next start; with the cursors, only for the Meilisearch that outlives the server.
+    const flaggedFile = join(config.dataDir, "search", "flagged.json");
+    type Flagged = { v?: number; threads?: string[] };
+    const flaggedSaved = !config.meili ? {} : caches ? ((caches.read("search/flagged.json") ?? {}) as Flagged) : readJson<Flagged>(flaggedFile, {});
+    const flagged = {
+      get: () => (flaggedSaved.v === SEARCH_DOC_VERSION ? flaggedSaved.threads ?? [] : []),
+      set: (threads: readonly string[]) => {
+        if (!config.meili) return;
+        const next = { v: SEARCH_DOC_VERSION, threads: [...threads] };
+        if (caches) void caches.write("search/flagged.json", next);
+        else writeJson(flaggedFile, next);
+      },
+    };
     const engine = new SearchEngine({
       connect: async () => {
         if (config.meili) return new Meili(config.meili.url, readFileSync(config.meili.keyFile, "utf8").trim());
         own = await startOwnMeili();
         return own.meili;
       },
-      sources: [ownSource, ...others], cursors, channelCopy: likeRegex(CHANNEL_COPY_LIKE), log: this.log,
+      sources: [ownSource, ...others], cursors, flagged, channelCopy: likeRegex(CHANNEL_COPY_LIKE), log: this.log,
       allPosts: () => [...this.groups.rows().map(row => row.id), ...this.agents.list().map(record => record.room)]
         .flatMap(room => this.agentStore.postsOf(room).flatMap(post => this.postDoc(room, post) ?? [])),
     });

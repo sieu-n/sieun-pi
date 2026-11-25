@@ -237,6 +237,8 @@ export interface EngineDeps {
   allPosts: () => SearchDoc[];
   /** Each box's entry cursor whose rows Meilisearch has been sent, and its store; none for this box's own source means an empty index. */
   cursors: { get(box: string): string | undefined; set(box: string, cursor: string): void };
+  /** `SearchEngine.flagged` as the last server left it, and its store, so a start does not name every hidden thread in its filter. */
+  flagged?: { get(): readonly string[]; set(threads: readonly string[]): void };
   channelCopy: RegExp;
   log: (line: string) => void;
 }
@@ -279,16 +281,28 @@ export class SearchEngine {
    * it, so each entry carries `hidden` and the filter names only the threads `flagHidden` has not marked yet.
    */
   hiddenThreads: () => readonly string[] = () => [];
-  /** The hidden threads whose every document in Meilisearch has `hidden` set; empty at each start until `flagHidden` checked them. */
-  private readonly flagged = new Set<string>();
+  /**
+   * The hidden threads whose every document in Meilisearch has `hidden` set. A start reads the ones the last server kept (`deps.flagged`),
+   * since a document sent while its thread is hidden carries `hidden`. Until p279 a start began with none, and every search before
+   * `flagHidden` checked them all named all 3,000 hidden threads, 125 KB of filter that held his search at 11:27:53Z on 11-25 91 ms in
+   * Meilisearch, 6 s after a start (~/work/p279-search/held).
+   */
+  private readonly flagged: Set<string>;
   /** Counts the changes to `flagged`, which `hiddenFilter`'s kept answer reads. */
   private flags = 0;
   /** `hiddenThreads` as a set, and `hiddenFilter`'s answer for it and `flags`, kept until the app hands another list or `flagged` changes. */
   private hidden?: HiddenKept;
   private flagging?: Promise<void>;
-  /** The newest task a send got, and the sends still on their way, so `flagHidden` reads the index only after every earlier send. */
+  /** The newest task a send got, and the sends still on their way with the hidden threads their documents were flagged by. */
   private lastTask?: number;
-  private readonly sending = new Set<Promise<unknown>>();
+  private readonly sending = new Map<Promise<unknown>, HiddenKept | undefined>();
+  /**
+   * The newest task whose documents may carry `hidden` from another list of hidden threads than the current one: a task Meilisearch held
+   * when this server started, or a send flagged before the list changed. `flagHidden` reads the index after it, and not after the sends
+   * flagged by the current list, which carry `hidden` right. It waited for those too until p279, while Meilisearch took 7 to 11 s per task
+   * on 11-25 and a new send came every 5 s.
+   */
+  private staleTask?: number;
 
   /** `MEILI_WAIT_MS`, which a test shortens. */
   meiliWaitMs = MEILI_WAIT_MS;
@@ -299,7 +313,14 @@ export class SearchEngine {
    */
   private readonly sinces = new Map<string, readonly string[]>();
 
-  constructor(private readonly deps: EngineDeps) {}
+  constructor(private readonly deps: EngineDeps) {
+    this.flagged = new Set(deps.flagged?.get());
+  }
+
+  /** Stores the flagged threads that are still hidden: a thread that left the list may get documents without `hidden` from here on. */
+  private keepFlagged(hidden: ReadonlySet<string>): void {
+    this.deps.flagged?.set([...this.flagged].filter(thread => hidden.has(thread)));
+  }
 
   private get own(): EntrySource[] {
     return this.deps.sources.filter(source => source.atSearch);
@@ -330,6 +351,8 @@ export class SearchEngine {
       if (first) for (const doc of [...first, ...posts]) this.pending.set(doc.id, { doc });
       this.meili = await this.deps.connect();
       const stats = await this.openIndex();
+      const [held] = (await this.meili.call<{ results: { uid: number }[] }>("GET", "/tasks?limit=1")).results;
+      if (held) this.staleTask = held.uid;
       if (!first) {
         if (stats.numberOfDocuments > 0) {
           await this.putDocs(await this.changedPosts(posts));
@@ -358,6 +381,7 @@ export class SearchEngine {
         this.pullTimer.unref?.();
         void this.pullOthers();
       }
+      void this.flagHidden();
     })();
     this.ready.catch(error => {
       this.ready = undefined;
@@ -609,7 +633,8 @@ export class SearchEngine {
         copies.push(doc.id);
       }
     }
-    const hidden = this.hiddenKept().set;
+    const kept = this.hiddenKept();
+    const hidden = kept.set;
     const merged = docs.map(doc => {
       const was = doc.source === "entry" ? known.get(doc.id) : undefined;
       const one = was && doc.source === "entry" ? mergeCopies(was, doc) : doc;
@@ -634,7 +659,7 @@ export class SearchEngine {
         parts.push(part);
         batch.push(merged[at++]!);
       }
-      const { taskUid } = await this.sent(this.meili.put(SEARCH_INDEX, `[${parts.join(",")}]`));
+      const { taskUid } = await this.sent(this.meili.put(SEARCH_INDEX, `[${parts.join(",")}]`), kept);
       for (const doc of batch) if (this.pending.get(doc.id)?.doc === doc) this.pending.set(doc.id, { doc, task: taskUid });
       tasks.push(taskUid);
     }
@@ -643,11 +668,12 @@ export class SearchEngine {
   }
 
   /** A send to Meilisearch, kept until it answered, with its task as the newest. */
-  private async sent<T extends { taskUid: number }>(send: Promise<T>): Promise<T> {
-    this.sending.add(send);
+  private async sent<T extends { taskUid: number }>(send: Promise<T>, kept?: HiddenKept): Promise<T> {
+    this.sending.set(send, kept);
     try {
       const task = await send;
       this.lastTask = Math.max(this.lastTask ?? 0, task.taskUid);
+      if (kept !== this.hidden) this.staleTask = Math.max(this.staleTask ?? 0, task.taskUid);
       return task;
     } finally {
       this.sending.delete(send);
@@ -674,8 +700,19 @@ export class SearchEngine {
 
   private hiddenKept(): HiddenKept {
     const threads = this.hiddenThreads();
-    if (this.hidden?.threads !== threads) this.hidden = { threads, set: new Set(threads) };
-    return this.hidden;
+    const was = this.hidden;
+    if (was?.threads === threads) return was;
+    // The store hands a new array at each change of its records, mostly with the same threads; those keep the sends flagged by them right.
+    if (was && threads.length === was.set.size && threads.every(thread => was.set.has(thread))) {
+      was.threads = threads;
+      return was;
+    }
+    if (was && this.lastTask !== undefined) this.staleTask = Math.max(this.staleTask ?? 0, this.lastTask);
+    const set = new Set(threads);
+    if ([...this.flagged].some(thread => !set.has(thread))) this.keepFlagged(set);
+    const kept: HiddenKept = { threads, set };
+    this.hidden = kept;
+    return kept;
   }
 
   /**
@@ -688,9 +725,15 @@ export class SearchEngine {
       if (!this.ready) return;
       await this.ready;
       if (this.filling) return;
-      await Promise.all(this.sending);
-      if (this.lastTask !== undefined) await this.meili.waitTask({ taskUid: this.lastTask });
-      const hidden = this.hiddenKept().set;
+      const kept = this.hiddenKept();
+      await Promise.all([...this.sending].flatMap(([send, by]) => (by === kept ? [] : [send])));
+      const stale = this.staleTask;
+      if (stale !== undefined) {
+        await this.meili.waitTask({ taskUid: stale });
+        // Waited once is enough: `sweepTasks` deletes a task a day after it finished, and a wait on a deleted task fails.
+        if (this.staleTask === stale) this.staleTask = undefined;
+      }
+      const hidden = kept.set;
       const BATCH = 200;
       const PAGE = 5_000;
       const mark = async (threads: string[], filter: string, flag: (doc: Pick<EntryDoc, "id" | "threads">) => boolean | undefined) => {
@@ -712,6 +755,7 @@ export class SearchEngine {
             else this.flagged.delete(thread);
           }
           this.flags += 1;
+          this.keepFlagged(hidden);
         }
       };
       await mark([...this.flagged].filter(thread => !hidden.has(thread)), `source = "entry" AND hidden = true`, doc => (doc.threads.some(thread => hidden.has(thread)) ? undefined : false));
