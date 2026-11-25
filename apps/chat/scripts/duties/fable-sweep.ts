@@ -57,6 +57,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { isMain } from "./main-module.ts";
+import { realAgents } from "./real-agents.ts";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -99,7 +100,7 @@ export interface Post {
   reactions?: { emoji: string; by: Author[] }[]; done?: { at: number }; thread?: { authors?: Author[]; lastAt?: number } | null;
 }
 export interface Job { id: string; name: string; status: string; thread: string; conversation: number; createdAt: number; agent?: { id: string; name: string }; retrying?: string }
-interface Agent { id: string; name: string; status: string; thread: string; room?: string; model?: { id: string; label?: string }; comm?: { room: string; thread: string; status: string }[] }
+interface Agent { id: string; name: string; status: string; thread: string; room?: string; archived?: boolean; test?: boolean; model?: { id: string; label?: string }; comm?: { room: string; thread: string; status: string }[] }
 export interface PlanItem { id: string; text: string; status: string; note?: string; job?: string; duty?: string; waitUntil?: string | number; waitFor?: unknown; children?: PlanItem[] }
 export interface DutyRunView {
   at: number; verdict: string; summary?: string; error?: string; metrics?: Record<string, { met: boolean }>;
@@ -430,7 +431,7 @@ if (isMain(import.meta.url)) {
     ? JSON.parse(readFileSync(process.env.STATE_FILE, "utf8") || "{}") : {};
 
   const [agents, jobs, recent, wakes] = await Promise.all([
-    get<Agent[]>(server, "/api/agents"), get<Job[]>(server, "/api/jobs"), get<{ hits: Hit[] }>(server, `/api/search/recent?after=${now - POST_WINDOW_MS}`),
+    get<Agent[]>(server, "/api/agents").then(realAgents), get<Job[]>(server, "/api/jobs"), get<{ hits: Hit[] }>(server, `/api/search/recent?after=${now - POST_WINDOW_MS}`),
     owedWakesOf(values["data-dir"] ?? process.env.APPS_CHAT_DATA_DIR ?? join(homedir(), ".pi/agent/chat"), now),
   ]);
   const agentIds = new Set(agents.map(agent => agent.id));

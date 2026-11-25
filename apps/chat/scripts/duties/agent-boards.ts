@@ -26,18 +26,19 @@
  */
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { isMain } from "./main-module.ts";
+import { realAgents } from "./real-agents.ts";
 import { homedir } from "node:os";
 import { basename, join, relative } from "node:path";
 import { parseArgs } from "node:util";
 
-interface Agent { id: string; name: string; archived?: boolean; hostState?: string; thread?: string }
+interface Agent { id: string; name: string; archived?: boolean; test?: boolean; hostState?: string; thread?: string }
 interface Step { id: string; text: string; status: string; job?: string; waitFor?: string; waitUntil?: string }
 interface Steps { open: number; stuck: Step[]; gaps: { id: string; text: string }[] }
 interface CheckIn { everyMs: number; paused: boolean; lastAt: number | null; runs?: { at: number; verdict: string; summary: string }[] }
 /** A row of `GET /api/agents/:id/duties`, the fields this check reads. */
 export interface DutyRow {
   duty: { id: string; name: string; status?: string; ownerWords?: string; goal?: string }; paused: boolean;
-  runs: { verdict: string; at?: number; job?: { id: string }; readings?: Record<string, number>; metrics?: Record<string, { value?: number }>; detail?: string }[];
+  runs: { verdict: string; at?: number; job?: { id: string }; readings?: Record<string, number>; metrics?: Record<string, { value?: number }>; detail?: string; hostAway?: string }[];
   schedule?: { kind: string; at?: string; minutes?: number }; nextAt?: number | null;
 }
 /** One entry of the areas file: the areas the owner made an agent responsible for, each with the duty that watches it, if any. */
@@ -268,6 +269,7 @@ export function agentPattern(agents: readonly AgentRead[], areas: readonly Agent
     if (pausedDuty(review) || overdueDuty(review, now)) continue; // flagged as duty_paused or duty_overdue
     const run = review.runs.find(item => item.verdict !== "skipped");
     if (!run) continue; // a review that never ran is new, and turns overdue after 2 days
+    if (run.hostAway) continue; // the agent's box was away, so the run measured nothing and reruns once the box is back
     // A run that wrote no output measured nothing, even when the run started a job to fix it: on 11-26 every agent's first Area review
     // failed with "no valid JSON in OUTPUT_FILE" (the precheck's main guard missed the current symlink) and still showed a job.
     if (run.verdict === "error" || !Object.keys(run.metrics ?? {}).length || outputs[review.duty.id] === false) {
@@ -475,7 +477,7 @@ if (isMain(import.meta.url)) {
   if (part !== "boards" && part !== "duties") throw new Error(`--part ${part} is neither boards nor duties`);
   const server = values.server ?? process.env.APPS_CHAT_URL ?? "http://127.0.0.1:5184";
   const areasFile = values.areas ?? process.env.AREAS_FILE ?? join(homedir(), "work/agent-duties/areas.json");
-  const agents = (await get<Agent[]>(server, "/api/agents")).filter(agent => !agent.archived && agent.hostState !== "away");
+  const agents = realAgents(await get<Agent[]>(server, "/api/agents")).filter(agent => agent.hostState !== "away");
   const json = part === "boards"
     ? JSON.stringify(agentBoards(await Promise.all(agents.map(async agent => ({
       agent, steps: await get<Steps>(server, `/api/agents/${agent.id}/steps`), checkIn: await get<CheckIn>(server, `/api/agents/${agent.id}/check-in`),
@@ -501,9 +503,12 @@ if (isMain(import.meta.url)) {
         const samples: Record<string, number | null> = {};
         const outputs: Record<string, boolean> = {};
         for (const row of duties) {
-          const detail = row.runs.find(run => run.verdict !== "skipped")?.detail;
+          const newest = row.runs.find(run => run.verdict !== "skipped");
+          const detail = newest?.detail;
           if (!detail) continue;
-          const output = existsSync(detail) ? readJson<{ metrics?: unknown }>(detail) : undefined;
+          const output = existsSync(detail) ? readJson<{ metrics?: unknown; flagged?: { kind?: string }[] }>(detail) : undefined;
+          // A run whose box was away measured nothing on purpose; it is neither empty nor met on no input.
+          if (newest.hostAway || output?.flagged?.some(item => item?.kind === "host_away")) continue;
           outputs[row.duty.id] = !!output && typeof output.metrics === "object";
           if (outputs[row.duty.id]) samples[row.duty.id] = sampleSize(output);
         }
@@ -518,7 +523,7 @@ if (isMain(import.meta.url)) {
       }));
       const pattern = agentPattern(reads.map(entry => entry.read), readAreas(areasFile), now);
       // Every agent that is not archived keeps its folder, an away one too; GET /api/agents lists no test agent.
-      const live = (await get<Agent[]>(server, "/api/agents")).filter(agent => !agent.archived);
+      const live = realAgents(await get<Agent[]>(server, "/api/agents"));
       const slugs = new Set(await Promise.all(live.map(async agent => basename((await get<{ dir?: string }>(server, `/api/agents/${agent.id}/folder`)).dir ?? agent.id.replace(/^ag_/, "")))));
       const wiki = readWiki(values.wiki ?? process.env.WIKI_CONFIG ?? join(homedir(), ".config/sieun-pi/wiki.json"));
       const clutter = wikiClutter(wiki.agentFolders, slugs, wiki.pages);

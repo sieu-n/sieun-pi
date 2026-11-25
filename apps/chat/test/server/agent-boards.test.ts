@@ -149,6 +149,22 @@ test("c249: each agent with an area keeps a 3-hourly board push and a daily Area
   assert.match(out.messages[1]!.text, /3\. its d9 "Area review" ran with no job, no wiki page and no memory change/);
 });
 
+test("an Area review counts by its name whatever script its precheck runs, and a run whose box was away is skipped", () => {
+  const push = { everyMs: 180 * 60_000, planEveryMs: 180 * 60_000, paused: false, lastAt: NOW - HOUR, runs: [{ at: NOW - HOUR }] };
+  // API portal's own precheck (portal-area-review.ts) adds readings of its own next to the shared ones.
+  const portal: DutyRow = {
+    duty: { id: "d7", name: "Area review", status: "active" }, paused: false, schedule: { kind: "daily", at: "06:10" }, nextAt: NOW + 20 * HOUR,
+    runs: [{ verdict: "missed", at: NOW - 3 * HOUR, metrics: { issues_not_acted_on: { value: 12 } }, readings: { corrections_unsaved: 0, stale_pages: 12 }, job: { id: "j" } }],
+  };
+  const away: DutyRow = { ...portal, duty: { ...portal.duty, id: "d2" }, runs: [{ verdict: "error", at: NOW - 3 * HOUR, metrics: {}, hostAway: "mac" }] };
+  const out = agentPattern([
+    { agent: { id: "ag_api-portal", name: "API portal" }, brief: "Portal", duties: [portal], checkIn: push, outputs: { d7: true }, samples: { d7: 13 } },
+    { agent: { id: "ag_5180-designer", name: "5180 designer" }, brief: "5180", duties: [away], checkIn: push },
+  ], [], NOW);
+  assert.deepEqual(out.flagged.filter(flag => ["common_missing", "empty_run", "met_on_zero"].includes(flag.kind)), []);
+  assert.equal(out.metrics.common_duties_missing, 0);
+});
+
 test("an Area review run that wrote no output is empty, even when the failed run started a job", () => {
   const failed: DutyRow = {
     duty: { id: "d3", name: "Area review", status: "active" }, paused: false, schedule: { kind: "daily", at: "07:00" }, nextAt: NOW + 20 * HOUR,

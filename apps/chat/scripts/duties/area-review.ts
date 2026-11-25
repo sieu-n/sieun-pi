@@ -13,22 +13,23 @@
  *     changed in the last 24 h, so agent factory's d7 can read whether yesterday's review left work behind.
  *
  * Usage: OUTPUT_FILE=<file> node <apps/chat>/scripts/duties/area-review.ts --agent <agent id> [--db <chat.sqlite>] [--agents-dir <dir>]
- *   [--ledger <corrections.json>]
+ *   [--ledger <corrections.json>] [--server http://127.0.0.1:5184] [--box <this box>]
+ * An agent on another box (its `host`) has its folder read through the chat server's folder route (`remoteFolder`).
  * It runs with plain node (type stripping) and imports only node: modules, so its cwd can be the agent's own project, where the duty job
  * then works. Without OUTPUT_FILE the result prints to stdout.
  */
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { isMain } from "./main-module.ts";
-import { homedir } from "node:os";
+import { homedir, hostname } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { parseArgs } from "node:util";
 
 const DAY_MS = 86_400_000;
 
-interface Flag { kind: string; at?: number; sig?: string; excerpt: string; handOff?: true }
+interface Flag { kind: string; at?: number; sig?: string; excerpt: string; handOff?: true; host?: string }
 interface Correction { id: string; status?: string; rule: string; at?: string; chat?: { name?: string } }
-interface AgentRow { id: string; slug: string; name: string; room?: string; comm?: Record<string, string> }
+interface AgentRow { id: string; slug: string; name: string; room?: string; comm?: Record<string, string>; host?: string }
 interface MemoryEntry { title?: string; content?: string; updated_at?: string }
 interface Post { author?: string; text?: string; at?: number; mentions?: string[]; id?: string }
 export interface AreaReview { metrics: Record<string, number>; flagged: Flag[] }
@@ -85,18 +86,84 @@ function folderTimes(dir: string): { path: string; mtimeMs: number }[] {
   return out;
 }
 
-// The chat server runs this through the current symlink, and node resolves the main module to the release folder, so compare real paths:
-// on 11-26 every agent's first Area review run wrote nothing and failed with "no valid JSON in OUTPUT_FILE".
-if (isMain(import.meta.url)) {
-  const { values } = parseArgs({ options: { agent: { type: "string" }, db: { type: "string" }, "agents-dir": { type: "string" }, ledger: { type: "string" } } });
-  if (!values.agent) throw new Error("--agent <agent id> names the agent whose area this reviews");
-  const dbPath = values.db ?? join(process.env.APPS_CHAT_DATA_DIR ?? join(homedir(), ".pi/agent/chat"), "chat.sqlite");
+/** The duty system's value for a metric a run could not measure (legacy/prime/user-history/src/shared/chat-duties.ts PLACEHOLDER). */
+export const PLACEHOLDER = 999_999;
+
+/** What the review reads from the agent's folder: its memory store and file times, or the box that did not answer. */
+export type FolderRead = { memory: Record<string, MemoryEntry>; folderTimes: { path: string; mtimeMs: number }[] } | { away: string };
+
+/** The folder on this box: the store and every file's change time. */
+export function localFolder(dir: string): FolderRead {
+  const harness = join(dir, "harness/harness_state.json");
+  const memory = existsSync(harness) ? ((JSON.parse(readFileSync(harness, "utf8")) as { entries?: { memory?: Record<string, MemoryEntry> } }).entries?.memory ?? {}) : {};
+  return { memory, folderTimes: folderTimes(dir) };
+}
+
+interface FolderAnswer {
+  brief?: { path: string; modifiedAt: number | null }; workingMemory?: { path: string; modifiedAt: number | null };
+  memory?: { entries?: { id: string; kind: string; title?: string; content?: string; updatedAt?: string }[] };
+}
+
+/**
+ * The folder of an agent on another box, through the chat server's GET /api/agents/:id/folder, which reads that box's files through its
+ * relay (server/agent-folder.ts `AgentFolders`). 5180 designer's folder is on the Mac, so the 11-26 review read metal's empty
+ * ~/.pi/agent/agents/5180-designer and found no memory. The route gives the brief's and working memory's change times only, so those two
+ * stand in for the folder's pages. A box that does not answer is away.
+ */
+export async function remoteFolder(server: string, agent: { id: string; host?: string }, get: typeof fetch = fetch): Promise<FolderRead> {
+  const away = { away: agent.host ?? "its box" };
+  let answer: FolderAnswer;
+  try {
+    // Half the Area review precheck's 60 s timeout (server/common-duties.ts), so a box that hangs still leaves time to write the output.
+    const res = await get(`${server}/api/agents/${encodeURIComponent(agent.id)}/folder`, { signal: AbortSignal.timeout(30_000) });
+    if (!res.ok) return away;
+    answer = await res.json() as FolderAnswer;
+  } catch {
+    return away;
+  }
+  const memory = Object.fromEntries((answer.memory?.entries ?? []).filter(entry => entry.kind === "memory")
+    .map(entry => [entry.id, { title: entry.title, content: entry.content, ...entry.updatedAt ? { updated_at: entry.updatedAt } : {} }]));
+  const folderTimes = [answer.brief, answer.workingMemory].flatMap(file => file?.modifiedAt ? [{ path: file.path, mtimeMs: file.modifiedAt }] : []);
+  return { memory, folderTimes };
+}
+
+/**
+ * The review with its folder read: the measure, with `n`, the memory entries and folder files it read. When the agent's box is away, the
+ * folder counts are not measured (`PLACEHOLDER`), n is 0 and a `host_away` item names the box, so the duty system reruns the duty once the
+ * box is back and agent factory's d7 skips the run instead of reading it as met on no input.
+ */
+export function reviewOf(input: Omit<Parameters<typeof areaReview>[0], "memory" | "folderTimes"> & { folder: FolderRead }): AreaReview & { n: number } {
+  const { folder, ...rest } = input;
+  if ("away" in folder) {
+    const posts = areaReview({ ...rest, memory: {}, folderTimes: [] });
+    return {
+      metrics: { ...posts.metrics, corrections_unsaved: PLACEHOLDER, wiki_pages_touched_24h: PLACEHOLDER, memory_changed_24h: PLACEHOLDER }, n: 0,
+      flagged: [
+        ...posts.flagged.filter(flag => flag.kind === "owner_post"),
+        { kind: "host_away", host: folder.away, sig: `${rest.agent.id}:host_away`, excerpt: `${rest.agent.name}'s box ${folder.away} did not answer, so its folder and memory were not read` },
+      ],
+    };
+  }
+  return { ...areaReview({ ...rest, memory: folder.memory, folderTimes: folder.folderTimes }), n: Object.keys(folder.memory).length + folder.folderTimes.length };
+}
+
+/**
+ * The whole review of one agent, as the script runs it: reads the agent and its rooms' posts from chat.sqlite, its folder on its own box
+ * and the corrections ledger. Another precheck, such as API portal's legacy/prime/user-history/scripts/duties/portal-area-review.ts, can
+ * import and call this; importing the file runs nothing (`isMain`).
+ */
+export async function runAreaReview(options: { agent: string; db?: string; agentsDir?: string; ledger?: string; server?: string; box?: string; now?: number }): Promise<AreaReview & { n: number }> {
+  const now = options.now ?? Date.now();
+  const dbPath = options.db ?? join(process.env.APPS_CHAT_DATA_DIR ?? join(homedir(), ".pi/agent/chat"), "chat.sqlite");
   const db = new DatabaseSync(dbPath, { readOnly: true });
-  const row = db.prepare("SELECT body FROM agents_agents WHERE id = ?").get(values.agent) as { body: string } | undefined;
-  if (!row) throw new Error(`no agent ${values.agent} in ${dbPath}`);
+  const row = db.prepare("SELECT body FROM agents_agents WHERE id = ?").get(options.agent) as { body: string } | undefined;
+  if (!row) {
+    db.close();
+    throw new Error(`no agent ${options.agent} in ${dbPath}`);
+  }
   const agent = JSON.parse(row.body) as AgentRow;
   const rooms = [...new Set([agent.room, ...Object.keys(agent.comm ?? {})].filter((r): r is string => !!r))];
-  const since = Date.now() - DAY_MS;
+  const since = now - DAY_MS;
   const posts: (Post & { room: string })[] = [];
   const read = db.prepare("SELECT body FROM posts WHERE room = ? ORDER BY ord DESC LIMIT 400");
   for (const room of rooms) {
@@ -106,12 +173,23 @@ if (isMain(import.meta.url)) {
     }
   }
   db.close();
-  const agentDir = join(values["agents-dir"] ?? join(homedir(), ".pi/agent/agents"), agent.slug);
-  const harness = join(agentDir, "harness/harness_state.json");
-  const memory = existsSync(harness) ? ((JSON.parse(readFileSync(harness, "utf8")) as { entries?: { memory?: Record<string, MemoryEntry> } }).entries?.memory ?? {}) : {};
-  const ledgerPath = values.ledger ?? join(homedir(), ".prime/agent/browser-chat/corrections.json");
+  // An agent on another box keeps its folder there; the chat server's box is APPS_CHAT_BOX or the hostname, as server/config.ts reads it.
+  const box = options.box ?? process.env.APPS_CHAT_BOX ?? hostname();
+  const server = options.server ?? process.env.APPS_CHAT_URL ?? "http://127.0.0.1:5184";
+  const folder = agent.host && agent.host !== box ? await remoteFolder(server, agent) : localFolder(join(options.agentsDir ?? join(homedir(), ".pi/agent/agents"), agent.slug));
+  const ledgerPath = options.ledger ?? join(homedir(), ".prime/agent/browser-chat/corrections.json");
   const corrections = existsSync(ledgerPath) ? ((JSON.parse(readFileSync(ledgerPath, "utf8")) as { corrections?: Correction[] }).corrections ?? []) : [];
-  const result = areaReview({ agent, corrections, memory, posts, folderTimes: folderTimes(agentDir), now: Date.now() });
+  return reviewOf({ agent, corrections, posts, folder, now });
+}
+
+// The chat server runs this through the current symlink, and node resolves the main module to the release folder, so `isMain` compares real
+// paths: on 11-26 every agent's first Area review run wrote nothing and failed with "no valid JSON in OUTPUT_FILE".
+if (isMain(import.meta.url)) {
+  const { values } = parseArgs({ options: {
+    agent: { type: "string" }, db: { type: "string" }, "agents-dir": { type: "string" }, ledger: { type: "string" }, server: { type: "string" }, box: { type: "string" },
+  } });
+  if (!values.agent) throw new Error("--agent <agent id> names the agent whose area this reviews");
+  const result = await runAreaReview({ agent: values.agent, db: values.db, agentsDir: values["agents-dir"], ledger: values.ledger, server: values.server, box: values.box });
   const json = JSON.stringify(result, null, 1);
   if (process.env.OUTPUT_FILE) writeFileSync(process.env.OUTPUT_FILE, json);
   else process.stdout.write(`${json}\n`);
