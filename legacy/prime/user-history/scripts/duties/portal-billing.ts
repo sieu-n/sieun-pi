@@ -30,8 +30,8 @@ import { DAY, type DsQuery, MINUTE, REPO, SOURCE_DEADLINE_MS, frameRows, grafana
  *    must cost $0, and to Hacker News user pg, which must cost the price its openapi x-dashboard-cost names when it answers 2xx and $0 when it
  *    does not, on staging-api.virev.ai (a seeded test org) and api.virev.ai (VIREV_API_KEY_PROD). The charge is the sum of that env's
  *    ledger rows for the answer's request_id, so it reads the ledger, never the answer's own meta.cost.
- * The ledger is the ClickHouse table usage.events on prod until the promote that moves it into the product database, and
- * product.usage_events on staging and on prod after it (estate_ch_prod, estate_ch_stg). LEDGER_TABLE reads whichever exists.
+ * The ledger is the ClickHouse table product.usage_events on both tiers (estate_ch_prod, estate_ch_stg), since promote 74 moved prod's
+ * usage database into product on 2026-11-25.
  * Convex writes a Data API charge there through its ledgerOutbox (convex/ledger/outbox.ts) and stopped writing apiPortalUsage on 11-07.
  *
  * Targets in portal-billing.duty.json (the JSON cannot hold comments): all three are <= 0, because a mismatch is money the customer should
@@ -257,8 +257,7 @@ export type SqlRead = (sql: string) => Promise<Record<string, unknown>[]>;
 /** A read on one tier's ClickHouse, which holds the ledger table. */
 export const ledgerOf = (env: Env, query: DsQuery): SqlRead => sql => sqlRows(query, LEDGER_DS[env], sql);
 
-/** usage.events or product.usage_events, whichever the tier has; name product.usage_events once prod has moved. */
-const LEDGER_TABLE = "merge(REGEXP('^(usage|product)$'), '^(events|usage_events)$')";
+const LEDGER_TABLE = "product.usage_events";
 const CALLS = "producer = 'convex' AND action = 'data_api_call'";
 const quote = (value: string) => `'${value.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`;
 /** Data API charges at or after `since`, one row per charge_id and row kind (a multi-part charge has event ids `<requestId>|<unitKind>`). */
