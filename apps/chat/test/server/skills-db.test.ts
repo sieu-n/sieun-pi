@@ -260,6 +260,54 @@ test("a dead link in an old worktree keeps its install's skill and goes as broke
   assert.equal(await db.autoAct(), null, "the next scan finds nothing left to remove");
 });
 
+test("a row seeded as a local folder takes the git key once the scan reads that folder as git, and its install moves with it", t => {
+  const dir = mkdtempSync(join(tmpdir(), "skills-db-rekey-"));
+  const file = join(dir, "chat.sqlite");
+  const db = new SkillsDb({ file, box: BOX, home: "/home/x", piHostPrompt: null }, { run: async () => [], undo: async () => [] });
+  t.after(() => {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const checkout = (root: string) => ({ root, remote: "git@github.com:o/app.git", branch: "main", headAt: "2026-11-24T00:00:00Z", tracked: true, dirty: 0, unpushed: 0 });
+  const folder = (path: string, name: string, root: string | null) =>
+    ({ box: "mac", path, realPath: path, linkTarget: null, exists: true, name, source: "user-dir", root: dirname(path), runtimes: [], hash: `h-${name}`, text: name, ...(root ? { checkout: checkout(root) } : {}) });
+  const link = (path: string, target: string, realPath: string, name: string) =>
+    ({ box: "mac", path, realPath, linkTarget: target, exists: true, name, source: "user-dir", root: dirname(path), runtimes: ["claude"], hash: `h-${name}`, text: null });
+  const scan = (at: string, git: boolean) => macScan(at, [
+    folder("/Users/o/app/.claude/skills-native/cic", "cic", "/Users/o/app"),
+    folder("/Users/o/wt/.claude/skills-native/cic", "cic", git ? "/Users/o/wt" : null),
+    link("/Users/o/wt/.claude/skills/cic", "../skills-native/cic", "/Users/o/wt/.claude/skills-native/cic", "cic"),
+    folder("/Users/o/wt/.claude/skills-native/solo", "solo", git ? "/Users/o/wt" : null),
+    link("/Users/o/wt/.claude/skills/solo", "../skills-native/solo", "/Users/o/wt/.claude/skills-native/solo", "solo"),
+  ]);
+  const rows = () => {
+    const raw = new DatabaseSync(file, { readOnly: true });
+    try {
+      return {
+        skills: (raw.prepare("SELECT id, json_extract(source, '$.kind') AS kind FROM skills ORDER BY id").all() as { id: string; kind: string }[]).map(r => `${r.id} ${r.kind}`),
+        installs: (raw.prepare("SELECT path, skill_id FROM skill_installs ORDER BY path").all() as { path: string; skill_id: string }[]).map(r => `${r.path} ${r.skill_id}`),
+      };
+    } finally {
+      raw.close();
+    }
+  };
+  db.ingest(scan("2026-11-21T00:00:00Z", false));
+  assert.deepEqual(rows().skills, [
+    "git:app/.claude/skills-native/cic git",
+    "local:mac:/Users/o/wt/.claude/skills-native/cic local",
+    "local:mac:/Users/o/wt/.claude/skills-native/solo local",
+  ]);
+  db.ingest(scan("2026-11-25T00:00:00Z", true));
+  const after = {
+    skills: ["git:app/.claude/skills-native/cic git", "git:app/.claude/skills-native/solo git"],
+    installs: ["/Users/o/wt/.claude/skills/cic git:app/.claude/skills-native/cic", "/Users/o/wt/.claude/skills/solo git:app/.claude/skills-native/solo"],
+  };
+  assert.deepEqual(rows(), after);
+  assert.deepEqual(db.check().items, []);
+  db.ingest(scan("2026-11-25T01:00:00Z", true));
+  assert.deepEqual(rows(), after, "a second scan changes nothing");
+});
+
 test("merge of a skill whose every line the target says removes it, and an unclear merge still goes to agent factory", async t => {
   const { fixture, db, scan, present, review } = rig(t);
   scan();

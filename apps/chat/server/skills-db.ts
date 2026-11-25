@@ -540,6 +540,7 @@ export class SkillsDb {
         }
       }
       this.derive();
+      this.rekey();
       for (const box of facts.boxes.filter(b => b.ok && !this.meta(`seeded:${b.box}`))) {
         this.seed(box.box);
         this.setMeta(`seeded:${box.box}`, now());
@@ -636,6 +637,30 @@ export class SkillsDb {
         }
       }
       update.run(c.key, changed, c.stale ? 1 : 0, c.box, c.path);
+    }
+  }
+
+  /**
+   * Moves a row seeded as a local folder to the key the scan gives that folder now, with its installs. On 11-21 the seed saw three
+   * auto-sns-agent worktrees' .claude/skills-native/codex-in-claude as local folders, and once the scan read them as git their rows
+   * kept no source while their installs' links carried the git key.
+   */
+  private rekey(): void {
+    const realAt = new Map(this.storedCopies().filter(c => c.fact.linkTarget === null && c.key).map(c => [`${c.box}:${c.fact.realPath}`, c]));
+    const skills = this.skills();
+    const ids = new Set(skills.map(s => s.id));
+    for (const skill of skills) {
+      if (skill.source.kind !== "local") continue;
+      const copy = realAt.get(`${skill.source.box}:${skill.source.path}`);
+      const key = copy?.key;
+      if (!copy || !key || key === skill.id) continue;
+      if (!ids.has(key)) {
+        const source = identifyFolder(copy.fact).source;
+        this.insertSkill({ id: key, name: skill.name, owner: seedOwner(source), source, createdAt: skill.createdAt });
+        ids.add(key);
+      }
+      this.db.prepare("UPDATE skill_installs SET skill_id = ? WHERE skill_id = ?").run(key, skill.id);
+      this.db.prepare("DELETE FROM skills WHERE id = ?").run(skill.id);
     }
   }
 
