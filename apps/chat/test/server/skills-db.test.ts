@@ -689,3 +689,29 @@ test("a skills change answers busy only once the lock stayed held for its whole 
   assert.ok(performance.now() - began >= 4500, "it waited about 5 s first");
   other.exec("ROLLBACK");
 });
+
+test("an agent's own harness skills and subagents are skills of their own, owned by that agent, beside a global entry of the same id", async t => {
+  const { db } = fakeDisk(t, { run: () => [], undo: () => [] });
+  const entry = (kind: string, at: string, name: string) => ({
+    box: BOX, path: `harness:${kind}:${at}`, realPath: `harness:${kind}:${at}`, linkTarget: null, exists: true, name, source: `harness-${kind}`,
+    root: "/home/x/.pi/agent/agents/tester/harness/harness_state.json", runtimes: ["pi-host"], hash: `h-${at}`, text: null, skillMd: `harness:${kind}:${at}`, harnessKind: kind,
+  });
+  const scan = (at: string, copies: unknown[]) => ({ generatedAt: at, coverage: 2, boxes: [{ box: BOX, scannedAt: at, ok: true }], copies, usage: {} });
+  const first = [entry("skill", "release_notes", "release_notes"), entry("skill", "tester/release_notes", "release_notes"), entry("subagent", "tester/pr_reviewer", "pr_reviewer")];
+  db.ingest(scan("2026-11-25T01:00:00Z", first));
+  const harness = db.view(IDLE).skills.filter(s => s.source.kind === "harness").map(s => [s.id, s.owner.kind === "agent" ? s.owner.id : "owner"]).sort();
+  assert.deepEqual(harness, [
+    ["harness:skill/release_notes", "owner"],
+    ["harness:skill/tester/release_notes", "ag_tester"],
+    ["harness:subagent/tester/pr_reviewer", "ag_tester"],
+  ]);
+  assert.equal(db.check().items.length, 0, JSON.stringify(db.check().items));
+  db.ingest(scan("2026-11-25T02:00:00Z", [...first, entry("skill", "tester/triage", "triage")]));
+  const items = db.check().items;
+  assert.deepEqual(items.map(i => i.kind), ["unowned"]);
+  const item = items[0]!;
+  if (item.kind === "unowned") await db.adopt({ copyId: item.copyId });
+  const triage = db.view(IDLE).skills.find(s => s.id === "harness:skill/tester/triage");
+  assert.deepEqual(triage?.owner, { kind: "agent", id: "ag_tester" });
+  assert.equal(db.check().items.length, 0);
+});

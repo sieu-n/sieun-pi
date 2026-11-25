@@ -210,8 +210,12 @@ export function identifyFolder(copy: Pick<FactCopy, "box" | "path" | "realPath" 
   return { ...id, key: sourceKey(id.source, name) };
 }
 
-/** Who a new skill row belongs to: agent factory for sieun-pi's own skills, which it maintains, and the owner for the rest. */
+/**
+ * Who a new skill row belongs to: agent factory for sieun-pi's own skills, which it maintains, the agent whose own harness store holds an
+ * entry (`<slug>/<id>`, from ~/.pi/agent/agents/<slug>/harness), and the owner for the rest.
+ */
 export function seedOwner(source: SkillSource): SkillOwner {
+  if (source.kind === "harness" && source.entryId.includes("/")) return { kind: "agent", id: `ag_${source.entryId.split("/")[0]}` };
   return source.kind === "git" && source.repo === "sieun-pi" ? { kind: "agent", id: "ag_agent-factory" } : { kind: "owner" };
 }
 

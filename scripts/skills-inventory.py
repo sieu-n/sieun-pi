@@ -35,6 +35,8 @@ SOURCE_REPO = "sieun-pi"
 SOURCE_SKILL_DIRS = ("skills", "legacy/prime/skills")
 # Which folders the scan walks, raised each time it walks more: the skills DB owns the copies a new walk finds once, instead of listing every
 # one as unowned. 2 added ~/code's symphony workspaces, .claude/skills-native, repo skills folders and the DB's install paths on 11-22.
+# The agent harness stores (~/.pi/agent/agents/*/harness) came on 11-25 with no raise: they held no skill or subagent on either box, and a
+# raise seeds the whole box again, which would have owned 250 unrelated unowned copies, 238 of them in the Mac's old clones.
 COVERAGE = 2
 REPO_SKILL_DIRS = (".agents/skills", ".claude/skills", ".claude/skills-native", ".codex/skills", ".cursor/skills", ".pi/skills")
 USER_SKILL_DIRS = (
@@ -264,20 +266,10 @@ def discover(box: str, installs: list[str] | None = None) -> list[dict]:
         add(rules, sorted(rules.glob("*.md")), "~/.claude/rules", ["claude"], "user-rules")
     state = HOME / ".prime/agent/harness/harness_state.json"
     if box == "us-metal02" and state.is_file():
-        entries = json.loads(state.read_text()).get("entries", {})
-        for kind, group in entries.items():
-            for entry_id, entry in (group or {}).items():
-                text = entry.get("content") or json.dumps(entry.get("reference") or {})
-                rows.append({
-                    "box": box, "path": f"harness:{kind}:{entry_id}", "realPath": f"harness:{kind}:{entry_id}", "linkTarget": None,
-                    "how": "Prime continual harness (global)", "runtimes": ["prime", "pi-host"], "source": f"harness-{kind}", "exists": True,
-                    "root": str(state), "checkout": None, "disableModelInvocation": False,
-                    "name": entry_id, "dirName": entry_id, "description": entry.get("title", ""), "pythonImport": None,
-                    "skillMd": f"harness:{kind}:{entry_id}", "hash": hashlib.sha256(text.encode()).hexdigest(), "sizeBytes": len(text.encode()),
-                    "files": 1, "lines": text.count("\n") + 1, "mtime": entry.get("updated_at"),
-                    "lastChange": {"repo": "sieu-n/prime-shared-state", "sha": None, "at": entry.get("updated_at"), "author": entry.get("source"), "subject": f"{kind} v{entry.get('version')}"},
-                    "deadRefs": [], "text": None, "harnessKind": kind,
-                })
+        rows.extend(harness_rows(box, state, None, "Prime continual harness (global)", ["prime", "pi-host"], "sieu-n/prime-shared-state"))
+    agents = HOME / ".pi/agent/agents"
+    for store in sorted(agents.glob("*/harness/harness_state.json")) if agents.is_dir() else []:
+        rows.extend(harness_rows(box, store, store.parent.parent.name, f"pi-host agent memory ({store.parent.parent.name})", ["pi-host"], None, AGENT_HARNESS_KINDS))
     seen_repos = set()
     for parent in REPO_PARENTS:
         base = HOME / parent
@@ -304,6 +296,37 @@ def discover(box: str, installs: list[str] | None = None) -> list[dict]:
             add(path.parent, [path], "sw skills install", [], "sw-install")
     with ThreadPoolExecutor(8) as pool:
         rows.extend(pool.map(lambda job: scan_entry(*job), jobs))
+    return rows
+
+
+# An agent's own store holds hundreds of memories, which only that agent's threads read, so only its skills and subagents become copies.
+AGENT_HARNESS_KINDS = ("skill", "subagent")
+
+
+def harness_rows(box: str, state: Path, agent: str | None, how: str, runtimes: list[str], repo: str | None, kinds: tuple[str, ...] | None = None) -> list[dict]:
+    """The entries of one harness store as copies at `harness:<kind>:<id>`, or `harness:<kind>:<agent>/<id>` for an agent's own store
+    (~/.pi/agent/agents/<slug>/harness), so each agent's entry is its own skill in the DB beside a global entry of the same id."""
+    try:
+        entries = json.loads(state.read_text()).get("entries") or {}
+    except (OSError, ValueError):
+        return []
+    rows = []
+    for kind, group in entries.items():
+        if kinds is not None and kind not in kinds:
+            continue
+        for entry_id, entry in (group or {}).items():
+            text = entry.get("content") or json.dumps(entry.get("reference") or {})
+            at = f"harness:{kind}:{agent}/{entry_id}" if agent else f"harness:{kind}:{entry_id}"
+            rows.append({
+                "box": box, "path": at, "realPath": at, "linkTarget": None,
+                "how": how, "runtimes": runtimes, "source": f"harness-{kind}", "exists": True,
+                "root": str(state), "checkout": None, "disableModelInvocation": False,
+                "name": entry_id, "dirName": entry_id, "description": entry.get("title", ""), "pythonImport": None,
+                "skillMd": at, "hash": hashlib.sha256(text.encode()).hexdigest(), "sizeBytes": len(text.encode()),
+                "files": 1, "lines": text.count("\n") + 1, "mtime": entry.get("updated_at"),
+                "lastChange": {"repo": repo, "sha": None, "at": entry.get("updated_at"), "author": entry.get("source"), "subject": f"{kind} v{entry.get('version')}"},
+                "deadRefs": [], "text": None, "harnessKind": kind,
+            })
     return rows
 
 
