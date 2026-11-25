@@ -108,16 +108,25 @@ function ftsHasKind(db: DatabaseSync): boolean {
   return has;
 }
 
+/**
+ * The docs column a file filter tests. When fts drives the query, `+d.file` keeps the file list out of the docs_meta seek, so each hit takes
+ * one seek on its id and a test against the list. Plain `d.file IN (...)` made SQLite seek docs_meta (id=? AND file=?) once for every file in
+ * the list: on 11-25 at 21:05 to 21:14Z a job's `chat=<ops guy>` searches on :5182 matched 4,444 docs against that chat's 1,682 files, and
+ * the exact count took 24.6 s against 0.86 s with `+d.file` on the live index.
+ */
+const fileColumn = (idColumn: string): string => idColumn === "fts.rowid" ? "+d.file" : "d.file";
+
 /** The WHERE terms every prime query shares: kinds, error flag, time, chat, author and the scope's roots. */
 function primeFilters(filters: Filters, thinking: boolean, roots: string[] | null, idColumn: string, kindsInMatch: boolean): Clause {
   const out = clause();
+  const file = fileColumn(idColumn);
   if (filters.kinds && !kindsInMatch) { out.sql.push(`d.kind IN (SELECT value FROM json_each(?))`); out.values.push(JSON.stringify(filters.kinds)); }
   if (!thinking && !kindsInMatch) out.sql.push(`d.kind != 'thinking'`);
   if (filters.isError) out.sql.push("d.is_error = 1");
   if (filters.since !== undefined) { out.sql.push(`${idColumn} >= ?`); out.values.push(filters.since * 1024); }
   if (filters.until !== undefined) { out.sql.push(`${idColumn} < ?`); out.values.push(filters.until * 1024); }
   if (filters.in.length) {
-    out.sql.push(`d.file IN (SELECT id FROM files WHERE ${filters.in.map(() => `(session LIKE ? ESCAPE '\\' OR root LIKE ? ESCAPE '\\' OR name LIKE ? ESCAPE '\\'
+    out.sql.push(`${file} IN (SELECT id FROM files WHERE ${filters.in.map(() => `(session LIKE ? ESCAPE '\\' OR root LIKE ? ESCAPE '\\' OR name LIKE ? ESCAPE '\\'
       OR root IN (SELECT session FROM files WHERE depth = 0 AND name LIKE ? ESCAPE '\\'))`).join(" OR ")})`);
     for (const value of filters.in) out.values.push(like(value) + "%", like(value) + "%", "%" + like(value) + "%", "%" + like(value) + "%");
   }
@@ -130,8 +139,8 @@ function primeFilters(filters: Filters, thinking: boolean, roots: string[] | nul
       return "d.author LIKE ? ESCAPE '\\'";
     }).join(" OR ") + ")");
   }
-  if (roots) { out.sql.push("d.file IN (SELECT id FROM files WHERE root IN (SELECT value FROM json_each(?)))"); out.values.push(JSON.stringify(roots)); }
-  out.rows = out.sql.some(term => term.startsWith("d.") || term.startsWith("(d."));
+  if (roots) { out.sql.push(`${file} IN (SELECT id FROM files WHERE root IN (SELECT value FROM json_each(?)))`); out.values.push(JSON.stringify(roots)); }
+  out.rows = out.sql.some(term => /^\(?\+?d\./.test(term));
   return out;
 }
 
@@ -186,7 +195,7 @@ function branchWhere(branch: Branch, query: Query, roots: string[] | null, match
   if (fts) { where.sql.push("fts MATCH ?"); where.values.push(match); }
   else if (query.exclude) { where.sql.push("d.id NOT IN (SELECT rowid FROM fts WHERE fts MATCH ?)"); where.values.push(query.exclude); where.rows = true; }
   if (branch.sessions.length) {
-    where.sql.push(`d.file IN (SELECT id FROM files WHERE ${branch.sessions.map(() => "session LIKE ?").join(" OR ")})`);
+    where.sql.push(`${fileColumn(id)} IN (SELECT id FROM files WHERE ${branch.sessions.map(() => "session LIKE ?").join(" OR ")})`);
     where.values.push(...branch.sessions.map(sessionId => sessionId + "%"));
     where.rows = true;
   }
