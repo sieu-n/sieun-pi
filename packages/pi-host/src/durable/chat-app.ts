@@ -154,6 +154,11 @@ export class ChatApp {
     return this.call<{ item: ForMeItem; pending: number }>("POST", `/api/agents/${encodeURIComponent(thread)}/for-me`, change, signal);
   }
 
+  /** Marks several items of this thread's agent's For list the same way in one call; the answer lists the ids it changed and those off the list. */
+  markManyForMe(thread: string, change: { messageIds: string[]; completed: boolean }, signal?: AbortSignal): Promise<{ changed: string[]; missing: string[]; pending: number }> {
+    return this.call<{ changed: string[]; missing: string[]; pending: number }>("POST", `/api/agents/${encodeURIComponent(thread)}/for-me`, change, signal);
+  }
+
   /**
    * The thread's check-in as Prime's setting store, so Prime's own `chatCheckIn` and `checkInLine` judge and word it. apps/chat keeps no
    * `pausedBy`, so every pause reads as the owner's, which an agent may not lift (Prime's rule for a pause with no author).

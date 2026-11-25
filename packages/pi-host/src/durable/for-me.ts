@@ -30,7 +30,7 @@ export const LIST_FOR_ME_DESCRIPTION =
 
 export const MARK_MESSAGE_DESCRIPTION =
   "Mark an item of your For list completed once you answered or handled it, or pending again, as Slack's Mark unread brings a message back. " +
-  "Marking it the same way twice changes nothing.";
+  "Marking it the same way twice changes nothing. To mark several items the same way, pass them all in message_ids in one call.";
 
 /** The owner as an agent reads him, as in a post's reactions (apps/chat/server/reactions.ts). */
 const OWNER_FOR_AGENTS = "Sieun (owner)";
@@ -78,6 +78,14 @@ export function listText(list: ForMeList, status: ForMeFilter): string {
 /** The answer to mark_message: the mark and how many items stay pending. */
 export function markedText(item: Pick<ForMeItem, "id" | "status">, pending: number): string {
   return `Marked ${item.id} ${item.status}. ${pending} pending.`;
+}
+
+/** The answer to mark_message with several ids: what changed, what was marked that way already or is not on the list, and the pending count. */
+export function markedManyText(answer: { changed: readonly string[]; missing: readonly string[]; pending: number }, completed: boolean): string {
+  const status = completed ? "completed" : "pending";
+  const changed = answer.changed.length ? `Marked ${answer.changed.join(", ")} ${status}.` : `Nothing changed; each was ${status} already.`;
+  const missing = answer.missing.length ? ` Not on your For list: ${answer.missing.join(", ")}.` : "";
+  return `${changed}${missing} ${answer.pending} pending.`;
 }
 
 /** Whether the tool runs in a comm thread; a registry with no chat.doc (a test's) reads as no comm thread. */
@@ -148,17 +156,25 @@ export function forMeTools(app: ChatApp, thread: string) {
       name: MARK_MESSAGE_TOOL,
       description: MARK_MESSAGE_DESCRIPTION,
       parameters: Type.Object({
-        message_id: MESSAGE_ID,
+        message_id: Type.Optional(MESSAGE_ID),
+        message_ids: Type.Optional(Type.Array(MESSAGE_ID, { description: "Several items to mark the same way in one call, each id as message_id takes it, such as [\"p12\", \"ch_1a2b3c4d/p14\"]." })),
         completed: Type.Boolean({ description: "true marks it completed, false marks it pending again." }),
       }),
       // The server's mark is idempotent, so a rerun after a crash leaves the same mark.
       replay: "safe",
       execute: async (args, api, context) => {
         if (api.conversationId !== ROOT_CONVERSATION_ID) return { output: ROOT_ONLY(MARK_MESSAGE_TOOL), isError: true };
+        const ids = [...(args.message_id ? [args.message_id] : []), ...(args.message_ids ?? [])];
+        if (!ids.length) return { output: text("Pass message_id for one item or message_ids for several."), isError: true };
         try {
-          const answer = await app.markForMe(thread, { messageId: args.message_id, completed: args.completed }, context.abortSignal);
-          const closing = answer.item.status === "completed" && answer.pending === 0;
-          return { output: text(markedText(answer.item, answer.pending)), ...await closingControl(closing, api, context) };
+          if (ids.length === 1) {
+            const answer = await app.markForMe(thread, { messageId: ids[0]!, completed: args.completed }, context.abortSignal);
+            const closing = answer.item.status === "completed" && answer.pending === 0;
+            return { output: text(markedText(answer.item, answer.pending)), ...await closingControl(closing, api, context) };
+          }
+          const answer = await app.markManyForMe(thread, { messageIds: ids, completed: args.completed }, context.abortSignal);
+          const closing = args.completed && answer.pending === 0;
+          return { output: text(markedManyText(answer, args.completed)), ...await closingControl(closing, api, context) };
         } catch (error) {
           if (context.abortSignal?.aborted) throw error;
           return { output: text(error instanceof Error ? error.message : String(error)), isError: true };

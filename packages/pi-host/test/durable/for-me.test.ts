@@ -70,7 +70,11 @@ before(async () => {
       const list: ForMeList = { agent: "ag_vent" as ForMeList["agent"], items: items.filter(item => status === "all" || item.status === status), pending: 1, completed: 1 };
       return answer(200, list);
     }
-    const { messageId, completed } = body as { messageId: string; completed: boolean };
+    const { messageId, messageIds, completed } = body as { messageId: string; messageIds?: string[]; completed: boolean };
+    if (messageIds) {
+      const known = messageIds.filter(id => items.some(i => i.id === id));
+      return answer(200, { changed: known.filter(id => id !== "dm_vent/p41"), missing: messageIds.filter(id => !known.includes(id)), pending: 0 });
+    }
     const item = items.find(i => i.id === messageId);
     if (!item) return answer(404, { error: `${messageId} is not on vent's For list. Pass an id from list_for_me_messages, such as dm_vent/p41.` });
     return answer(200, { item: { ...item, status: completed ? "completed" : "pending" }, pending: completed ? 0 : 1 });
@@ -144,6 +148,19 @@ test("mark_message posts the mark as the thread and answers one line, and an err
     ["Marked ch_1a2b3c4d/p12 completed. 0 pending.", false],
     ["Marked ch_1a2b3c4d/p12 pending. 1 pending.", false],
     ["dm_vent/p404 is not on vent's For list. Pass an id from list_for_me_messages, such as dm_vent/p41.", true],
+  ]);
+});
+
+test("mark_message with message_ids marks several items in one call and answers what changed, and no id at all is the call's error", async () => {
+  const out = await run("th_many", [
+    { name: MARK_MESSAGE_TOOL, args: { message_ids: ["ch_1a2b3c4d/p12", "dm_vent/p41", "p404"], completed: true } as unknown as Record<string, boolean> },
+    { name: MARK_MESSAGE_TOOL, args: { completed: true } },
+  ]);
+  const posts = calls.filter(call => call.method === "POST" && call.path === "/api/agents/th_many/for-me").map(call => call.body);
+  assert.deepEqual(posts, [{ messageIds: ["ch_1a2b3c4d/p12", "dm_vent/p41", "p404"], completed: true }], "one POST carries every id");
+  assert.deepEqual(out.map(r => [r.text, r.isError]), [
+    ["Marked ch_1a2b3c4d/p12 completed. Not on your For list: p404. 0 pending.", false],
+    ["Pass message_id for one item or message_ids for several.", true],
   ]);
 });
 
