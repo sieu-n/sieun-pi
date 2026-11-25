@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { homedir, hostname } from "node:os";
@@ -217,6 +218,18 @@ async function routeOf(found: readonly Route[], thread: string): Promise<Route> 
 /** The alert bridge's message to a thread that owns a firing rule (src/alert-bridge.ts `threadAlertText`), as an agent message from "alert-bridge". */
 export async function sendAlert(found: readonly Route[], thread: string, message: string, requestId: string): Promise<void> {
   await submit(await routeOf(found, thread), thread, `${header("alert bridge", undefined)}\n\n${message}`, requestId, { from: "alert-bridge", via: "alert-bridge" });
+}
+
+/**
+ * Sends one of the alert bridge's own notices (an escalation, a tell, a watchdog line or an uptime page) to `session` when it is a live pi-host
+ * thread, and answers false when no route lists it, so the caller hands the notice to the agent outbox. Since 11-26 these go to devops guy, a
+ * pi-host thread, which Prime's agent outbox cannot reach. Each notice is one send, so its request id is new each time.
+ */
+export async function sendNotice(found: readonly Route[], session: string, message: string): Promise<boolean> {
+  const row = (await listThreads(found)).find(row => row.thread.id === session);
+  if (!row) return false;
+  await submit(row.route, session, `${header("alert bridge", undefined)}\n\n${message}`, `notice:${randomUUID()}`, { from: "alert-bridge", via: "alert-bridge" });
+  return true;
 }
 
 /**

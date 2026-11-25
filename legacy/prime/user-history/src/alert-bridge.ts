@@ -72,7 +72,7 @@ export interface Tracked { chat: string; rule: string; alertname: string; starts
   wokeAt: number;
   /** When this entry first fired; the boardless tells count from it (`dueTells`). */
   firstWokeAt: number;
-  /** When the bridge last escalated the rule to ops guy, or first told a boardless owner past ESCALATE_MS. */
+  /** When the bridge last escalated the rule to OPS_ROUTE (devops guy), or first told a boardless owner past ESCALATE_MS. */
   escalatedAt?: number;
   resolvedAt?: number; instances: Record<string, Instance>;
   /** When the bridge last told the rule's owner, a session with no board, that it fires (`dueTells`). */
@@ -253,11 +253,14 @@ const newFault = (rule: Tracked, alert: FiringAlert): boolean => {
  * 5. A rule whose label `incident_by` names one of its labels, such as `spec`, holds one fault per value of that label: a new label set whose
  *    value no open instance of the rule has fires the rule again, so its job owes it. On 10-30 at 17:06Z hosted-app-chat.spec.ts went red on
  *    ci-staging-proof-spec-red while hosted-inbox-whatsapp-dm.spec.ts, held red on Meta's name approval, kept the rule open, and no job got it.
+ * 6. An open rule whose firing label sets the routes now give to another chat moves to that chat with no job, and fires there, so the new
+ *    owner gets it in its next batch (`rehome`). On 11-26 ops guy and the VP of CI handed every alert to devops guy, and the rules open then
+ *    would have gone on to the old chats.
  */
 export function advance(alerts: readonly FiringAlert[], state: BridgeState, route: Router, now: number): { state: BridgeState; fired: Set<string> } {
-  const rules: Record<string, Tracked> = structuredClone(state.rules);
-  const firing = new Map(alerts.map(alert => [alertKey(alert), alert]));
   const fired = new Set<string>();
+  const rules = rehome(structuredClone(state.rules), alerts, route, now, fired);
+  const firing = new Map(alerts.map(alert => [alertKey(alert), alert]));
   const blips = new Set<string>();
   const owner = new Map<string, string>();
   for (const [key, rule] of Object.entries(rules)) for (const instance of Object.keys(rule.instances)) owner.set(instance, key);
@@ -317,6 +320,28 @@ export function advance(alerts: readonly FiringAlert[], state: BridgeState, rout
   return { state: { ...state, rules }, fired: new Set([...fired].filter(key => rules[key] && !isResolved(rules[key]!))) };
 }
 
+/** `advance` step 6: each open rule moves to the chat the routes give its newest firing alert, when that is another chat with no open entry of the rule. */
+function rehome(rules: Record<string, Tracked>, alerts: readonly FiringAlert[], route: Router, now: number, fired: Set<string>): Record<string, Tracked> {
+  const newest = new Map<string, FiringAlert>();
+  for (const [key, rule] of Object.entries(rules)) {
+    if (isResolved(rule)) continue;
+    const listed = alerts.filter(alert => rule.instances[alertKey(alert)]?.resolvedAt === undefined && rule.instances[alertKey(alert)] !== undefined);
+    const last = listed.sort((a, b) => a.startsAt.localeCompare(b.startsAt)).at(-1);
+    if (last) newest.set(key, last);
+  }
+  for (const [key, alert] of newest) {
+    const rule = rules[key]!;
+    const chat = route(alert);
+    const target = ruleKey(chat, rule.rule);
+    if (chat === rule.chat || (rules[target] && !isResolved(rules[target]!))) continue;
+    const { job: _job, escalatedAt: _escalated, toldAt: _told, ...kept } = rule;
+    delete rules[key];
+    rules[target] = { ...kept, chat, wokeAt: now };
+    fired.add(target);
+  }
+  return rules;
+}
+
 /**
  * The firing rules whose owner has no board (`boardless`) that the bridge tells that session now: once when it first sees the rule, again at
  * ESCALATE_MS, and every REOPEN_MS after while the rule still fires. A tell that failed left `toldAt` as it was, so it goes again next tick.
@@ -349,8 +374,8 @@ export const dueReopens = (state: BridgeState, now: number): string[] => Object.
 /**
  * The rules of chats with a board whose fire nobody holds (`held`) ESCALATE_MS after it, once per fire: it was not sent, or the session that
  * took it has had no model turn. A fire that resolved before a turn escalates too, since nobody looked at it: metal-prod-crawler-netns-ports
- * fired at 12:14:30Z on 10-19, resolved at 12:28:42Z, and its job had no turn by 14:46Z. ops guy's own rules never escalate, since the
- * escalation goes to ops guy. A chat or session in `parked` waits for a pi-pool slot, and its fires escalate only once it no longer does: on
+ * fired at 12:14:30Z on 10-19, resolved at 12:28:42Z, and its job had no turn by 14:46Z. OPS_ROUTE's own rules never escalate, since the
+ * escalation goes to OPS_ROUTE. A chat or session in `parked` waits for a pi-pool slot, and its fires escalate only once it no longer does: on
  * 10-20 three escalations (04:56Z, 05:17Z, 05:27Z) named two jobs whose slots at 05:06Z and 06:06Z were still ahead, and both ran at 05:40Z.
  */
 export function dueEscalations(state: BridgeState, boarded: ReadonlySet<string>, now: number, parked: ReadonlySet<string> = new Set()): string[] {
@@ -429,7 +454,7 @@ export const threadAlertText = (lines: readonly AlertLine[], call?: { at: number
   alertRulesText(lines),
   TRIAGE_WORK,
   "Start the triage with rlm.spawn, or send the fire with agent_message.send to the triage job you already run on the same cause. The bridge " +
-    `sends a rule again when it fires again after it resolved, or when it still fires ${REOPEN_MS / 3_600_000} h later. It escalates the fire to ops guy ` +
+    `sends a rule again when it fires again after it resolved, or when it still fires ${REOPEN_MS / 3_600_000} h later. It escalates the fire to ${OPS_ROUTE.chat} ` +
     `when no turn of this thread ends within ${ESCALATE_MS / 60_000} min of it.`,
   call ? firingCallText(lines, call.at, call.call) : "",
 ].filter(Boolean).join("\n\n");
@@ -455,7 +480,7 @@ const TOKEN_HOOK_PREFIX = /^Failed to resolve API key for provider "[^"]+" from 
 /** One rule to escalate: `job` names the session that took its fire and has had no model turn, `error` its last failed call, and `sendError` why the last send of the chat's fires failed. */
 export type EscalationLine = AlertLine & { chat: string; job?: string; error?: string; sendError?: string };
 
-/** The escalation to ops guy, with the rules grouped by chat and by the session that has them. */
+/** The escalation to OPS_ROUTE, with the rules grouped by chat and by the session that has them. */
 export function escalationText(lines: readonly EscalationLine[]): string {
   const failed = (error: string): string => error.replace(TOKEN_HOOK_PREFIX, "").slice(0, 200);
   const groups = new Map<string, EscalationLine[]>();
@@ -709,7 +734,7 @@ export class AlertBridge {
       })), OPS_ROUTE.session);
       const rules = { ...state.rules };
       for (const key of due) rules[key] = { ...rules[key]!, escalatedAt: now };
-      this.deps.log(`alerts: escalated ${due.length} rules nobody works to ops guy`);
+      this.deps.log(`alerts: escalated ${due.length} rules nobody works to ${OPS_ROUTE.chat}`);
       return { ...state, rules };
     } catch (error) {
       this.deps.log(`alerts: escalation: ${message(error)}; tried again next tick`);

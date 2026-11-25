@@ -7,13 +7,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { AlertBridge, ESCALATE_MS, REOPEN_MS, errorText, firingRules, parseAlerts, parseOwners, parseSetStates, parseState, readFiringRules, ruleKey, startAlertBridge, type FiringAlert, type FiringCall } from "../src/alert-bridge.ts";
-import { ALERT_ROUTES } from "../src/alert-routes.ts";
+import { ALERT_ROUTES, OPS_ROUTE } from "../src/alert-routes.ts";
 import type { TurnSince } from "../src/held-turns.ts";
 
 const NOW = Date.parse("2026-11-07T08:00:00Z");
 const session = (chat: string) => ALERT_ROUTES.find(route => route.chat === chat)!.session;
-const CI = session("VP of CI");
-const OPS = session("ops guy");
+const CI = "01a0cc5e-0000-7000-8000-0000000000c1";
+const OPS = OPS_ROUTE.session;
 const CRAWLER = session("Crawler VP");
 const METAL = "01a11d24-ac9b-757d-ac51-9b2b7598782f";
 
@@ -24,8 +24,8 @@ const alert = (n: number, rule: string, project: string, startsAt = new Date(NOW
 const ciAlert = (fingerprint = "aaaa000000000001", startsAt = "2026-11-07T07:58:00.000Z") =>
   raw(fingerprint, { alertname: "CI history ingest has not read GitHub for 15 min", __alert_rule_uid__: "ci-history-stale" }, startsAt);
 const backup = raw("34a8c0c62d402cb1", { alertname: "ClickHouse or Redis backup older than 9h", __alert_rule_uid__: "metal-backup-ch-redis-age" }, "2026-11-06T06:19:30.000Z");
-const OWNERS = parseOwners({ owners: { "metal box owner": METAL, "ops guy": OPS }, fallback: "ops guy",
-  routes: [{ name: "box backups", match: { __alert_rule_uid__: "^metal-backup-" }, owner: "metal box owner" }] });
+const OWNERS = parseOwners({ owners: { "metal box owner": METAL, "CI keeper": CI, "devops guy": OPS }, fallback: "devops guy",
+  routes: [{ name: "box backups", match: { __alert_rule_uid__: "^metal-backup-" }, owner: "metal box owner" }, { name: "ci", match: { __alert_rule_uid__: "^ci-" }, owner: "CI keeper" }] });
 
 async function fixture(options: { state?: unknown; firingCall?: (chat: string) => Promise<FiringCall | null>; deliver?: (session: string, text: string) => Promise<void>;
   setStates?: (alert: FiringAlert) => Promise<ReadonlyMap<string, { state: string; since: number }>> } = {}) {
@@ -140,7 +140,7 @@ test("a firing alert counts for its chat until it resolves, and a rule of metal 
   assert.equal(firingRules(await f.state(), CI).length, 0);
 });
 
-test("a thread with no turn 30 min after a fire escalates it to ops guy once, and one the pool holds does not", async () => {
+test("a thread with no turn 30 min after a fire escalates it to devops guy once, and one the pool holds does not", async () => {
   const f = await fixture();
   f.set([ciAlert()]);
   await f.bridge.tick();
@@ -156,7 +156,7 @@ test("a thread with no turn 30 min after a fire escalates it to ops guy once, an
   f.at(NOW + ESCALATE_MS + 60_000);
   await f.bridge.tick();
   assert.equal(f.escalations().length, 1);
-  assert.match(f.escalations()[0]!.text, /On VP of CI, its thread has had no model turn since it took the fire \(its last call failed: pi-pool: this run waits/);
+  assert.match(f.escalations()[0]!.text, new RegExp(`On ${CI}, its thread has had no model turn since it took the fire \\(its last call failed: pi-pool: this run waits`));
   f.at(NOW + ESCALATE_MS + 90_000);
   await f.bridge.tick();
   assert.equal(f.escalations().length, 1, "once per fire");
@@ -249,6 +249,21 @@ test("a version 2 state loses its steps and keeps the job a step carried", async
   const rule = (await f.state()).rules[key]! as unknown as Record<string, unknown>;
   assert.ok(!("step" in rule) && !("closedAt" in rule));
   assert.equal(f.alerts().length, 0, "the old job ran, so it holds the fire");
+});
+
+test("11-26: an open rule ops guy's thread held moves to devops guy, which gets it once in its next batch, and ops guy gets nothing", async () => {
+  const OLD = "01a11af8-962e-773d-a19a-ee4104011987";
+  const [one] = parseAlerts([alert(0, "devbox-github-quota-low", "search")]);
+  const key = ruleKey(OLD, "devbox-github-quota-low");
+  const f = await fixture({ state: { v: 4, chats: { [OLD]: OLD }, jobs: { [OLD]: { id: OLD, name: "ops guy", chat: OLD, at: NOW - 60_000, ranAt: NOW - 30_000 } },
+    rules: { [key]: { chat: OLD, rule: "devbox-github-quota-low", alertname: one!.alertname, startsAt: one!.startsAt, wokeAt: NOW - 60_000, firstWokeAt: NOW - 60_000,
+      instances: { [`${one!.fingerprint}@${one!.startsAt}`]: { startsAt: one!.startsAt, labels: one!.labels, seenAt: NOW - 60_000 } }, job: { id: OLD, name: "ops guy", at: NOW - 60_000 } } } } });
+  f.set([alert(0, "devbox-github-quota-low", "search")]);
+  for (const tick of [0, 1, 2]) { f.at(NOW + tick * 30_000); await f.bridge.tick(); }
+  assert.deepEqual(f.sent.map(({ session: id }) => id), [OPS]);
+  assert.match(f.alerts()[0]!.text, /^\[alert\] A Grafana rule this thread owns fired\.[^]*- devbox-github-quota-low \(/);
+  const state = await f.state();
+  assert.deepEqual([firingRules(state, OLD).length, firingRules(state, OPS).length], [0, 1]);
 });
 
 test("a fetch failure names its cause code", () => {

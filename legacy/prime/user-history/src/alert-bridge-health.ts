@@ -153,7 +153,7 @@ export class BridgeWatch {
       try {
         await this.deps.deliver(OPS_ROUTE.session, step.send, OPS_ROUTE.session);
         this.alerting = step.alerting;
-        this.deps.log(`alerts: watchdog told ops guy the bridge is ${step.alerting ? healthOf(record, now, wokeAt) : "polling again"}`);
+        this.deps.log(`alerts: watchdog told ${OPS_ROUTE.chat} the bridge is ${step.alerting ? healthOf(record, now, wokeAt) : "polling again"}`);
       } catch (error) { this.deps.log(`alerts: watchdog: ${error instanceof Error ? error.message : String(error)}; tried again next tick`); }
     }
     this.deps.alerting(this.alerting);

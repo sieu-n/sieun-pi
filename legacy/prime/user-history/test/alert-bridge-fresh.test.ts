@@ -9,7 +9,7 @@ import { test } from "node:test";
 import { AlertBridge, alertLine, alertRulesText, advance, emptyState, parseAlerts, ruleKey, type FiringAlert } from "../src/alert-bridge.ts";
 import { ALERT_ROUTES } from "../src/alert-routes.ts";
 
-const CI = ALERT_ROUTES.find(route => route.chat === "VP of CI")!.session;
+const CI = ALERT_ROUTES.find(route => route.words.includes("ci"))!.session;
 const RULE = "ci-staging-proof-spec-red";
 const HELD_AT = Date.parse("2026-10-31T15:41:51Z");
 const NOW = Date.parse("2026-10-31T18:31:56Z");

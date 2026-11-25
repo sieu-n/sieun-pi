@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { BridgeWatch, PollHealth } from "../src/alert-bridge-health.ts";
 
-test("the watchdog tells ops guy once that the bridge polls again, and not on every tick after", async () => {
+test("the watchdog tells devops guy once that the bridge polls again, and not on every tick after", async () => {
   const dir = await mkdtemp(join(tmpdir(), "bridge-watch-once-"));
   const statusFile = join(dir, "alert-bridge-status.json");
   const now = Date.parse("2026-10-19T15:46:44Z");

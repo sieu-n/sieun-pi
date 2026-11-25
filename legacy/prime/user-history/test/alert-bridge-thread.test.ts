@@ -6,16 +6,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { AlertBridge, ESCALATE_MS, REFIRE_MS, REOPEN_MS, TRIAGE_WORK, firingRules, parseAlerts, parseOwners, parseState, ruleKey } from "../src/alert-bridge.ts";
-import { ALERT_ROUTES } from "../src/alert-routes.ts";
+import { OPS_ROUTE } from "../src/alert-routes.ts";
 import { entriesTurnSince, threadTurnSince, type TurnSince } from "../src/held-turns.ts";
 import { TICK_MS } from "../src/wakes.ts";
 
 const NOW = Date.parse("2026-10-29T03:00:00Z");
 const VENT = "230bbdbf-4d84-475f-95d2-63db2f90ca34";
-const OPS = ALERT_ROUTES.find(route => route.chat === "ops guy")!.session;
+const OPS = OPS_ROUTE.session;
 const RULE = "vent-health-failure-rate-prod";
 const KEY = ruleKey(VENT, RULE);
-const OWNERS = parseOwners({ owners: { Vent: VENT, "ops guy": OPS }, fallback: "ops guy", routes: [{ name: "vent", match: { __alert_rule_uid__: "^vent-" }, owner: "Vent" }] });
+const OWNERS = parseOwners({ owners: { Vent: VENT, "devops guy": OPS }, fallback: "devops guy", routes: [{ name: "vent", match: { __alert_rule_uid__: "^vent-" }, owner: "Vent" }] });
 
 const alert = (fingerprint = "cccc000000000001", startsAt = "2026-10-29T02:58:00.000Z", rule = RULE) => ({ fingerprint, startsAt,
   labels: { alertname: "Vent health checks fail on prod", __alert_rule_uid__: rule }, annotations: { summary: "Vent failure rate is 12%.", __values__: '{"B":0.12}' },
@@ -95,7 +95,7 @@ test("a thread's rule dedupes a dropped alert, keeps a refire within REFIRE_MS a
   assert.deepEqual(f.started, []);
 });
 
-test("a thread with no turn after a fire escalates it to ops guy once at ESCALATE_MS, and one whose turn ended holds it", async () => {
+test("a thread with no turn after a fire escalates it to devops guy once at ESCALATE_MS, and one whose turn ended holds it", async () => {
   const f = await fixture();
   f.turns.set(VENT, { ran: false });
   f.set([alert()]);

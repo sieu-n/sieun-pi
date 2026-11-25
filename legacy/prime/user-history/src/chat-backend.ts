@@ -43,7 +43,7 @@ import { cellHold, messageHold, parkedUntil, readRowSlotPark } from "./slot-park
 import { handOff, handoffSend, handsOffRow, systemPorts } from "./detached-handoff.ts";
 import { unfinishedHandoffs } from "./orphan-services.ts";
 import { readHeldTurns, readTurnSince, threadTurnSince, writeResumePending } from "./held-turns.ts";
-import { routes as piHostRoutes, sendAlert, threadEntries, threadNames } from "./pi-thread-message.ts";
+import { routes as piHostRoutes, sendAlert, sendNotice, threadEntries, threadNames } from "./pi-thread-message.ts";
 import { recordUnloaded, writeReceipt } from "./unloaded.ts";
 import { quietMinutes } from "./quiet-minutes.ts";
 import { startTmpSweep } from "./tmp-sweep.ts";
@@ -458,6 +458,11 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       if (!chat) throw new Error(`no chat ${record.root.slice(0, 8)}`);
       return (await dutyJobs.start(chat, record.name || record.id, text(chat.name), undefined, recordModel(record))).id;
     } });
+  // The bridge's escalations, tells, watchdog lines and uptime pages go to a pi-host thread through pi-host and to a Prime session through the
+  // agent outbox: OPS_ROUTE has been devops guy's pi-host thread since 11-26.
+  const notice = { deliver: async (session: string, text: string, root?: string) => {
+    if (!await sendNotice(await piHostRoutes(), session, text)) await agentOutbox.deliver(session, text, root);
+  } };
   const grafanaConfig = join(sharedDataDir(dataDir), "grafana-alerts.json");
   const statusFile = join(homedir(), ".cache/virev/alert-bridge-status.json");
   const alertPoll = ownChatsOnly ? null : startAlertPoll({ grafanaConfig, sessionsDir: join(agentDir, "sessions"), statusFile }, dutyLog);
@@ -476,12 +481,12 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     },
     held: async session => messageHold((await readRowSlotPark(await catalog.summary(session))).park, session, Date.now(), await queued()) !== null,
     setStates: alert => readSetStates(grafanaConfig, alert),
-    log: dutyLog, ...agentMessage });
+    log: dutyLog, ...notice });
   const stopBridgeWatch = !alertPoll ? () => {} : startBridgeWatch({ health: alertPoll.health, statusFile, configFile: grafanaConfig,
-    alerting: alerting => alertPoll.alerting(alerting), log: dutyLog, ...agentMessage });
+    alerting: alerting => alertPoll.alerting(alerting), log: dutyLog, ...notice });
   // The off-box page for crawler.virev.ai and api.virev.ai, which needs neither us-metal01 nor obs.virev.ai (src/uptime-watch.ts).
   const stopUptime = ownChatsOnly ? () => {} : startUptimeWatch({ stateFile: join(dataDir, "uptime-watch.json"), overrideFile: join(dataDir, "uptime-targets.json"),
-    log: dutyLog, ...agentMessage });
+    log: dutyLog, ...notice });
   // An idle root job, dormant chat or subagent stops after the quiet window, a session that ended its task after ENDED_MS, a job or chat
   // asleep in Prime's provider retry once pi-pool holds its tree past POOL_LEAD_MS, and a job or chat in Prime's quota park at once,
   // since Prime's own sweeps fail under load and count a retry as work. A quiet worker that grew past RECYCLE_OWN_BYTES is recycled. Each sweep starts its stops at once and does not wait for a slow kill

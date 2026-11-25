@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
 import { messageCheckPrelude } from "../src/message-limit-check.ts";
-import { chatUrl, pickThread, type Route, routes, sendAlert, sendToThread, threadText } from "../src/pi-thread-message.ts";
+import { chatUrl, pickThread, type Route, routes, sendAlert, sendNotice, sendToThread, threadText } from "../src/pi-thread-message.ts";
 
 const VENT = "230bbdbf-4d84-475f-95d2-63db2f90ca34";
 const FACTORY = "72ba1ed2-e04e-4284-a4da-3547edb6a3d9";
@@ -110,6 +110,24 @@ test("the alert bridge's send to a thread is one durable_submit from alert-bridg
       { kind: "agent.message", data: { from: "alert-bridge", via: "alert-bridge" } }]);
     assert.equal(submit.text, "[agent-message from alert bridge]\n\n[alert] A Grafana rule this thread owns fired.");
     await assert.rejects(sendAlert([{ box: "us-metal02", socket: host.socket }], "5a1c0d2e", "x", "alert:x@1"), /No live pi-host thread has the id 5a1c0d2e/);
+  } finally {
+    host.server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("11-26: an alert bridge notice to a pi-host thread is one durable_submit with a new request id each time, and one to another id answers false", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-thread-message-"));
+  const host = await fakeHost(dir);
+  try {
+    const found = [{ box: "us-metal02", socket: host.socket }];
+    assert.equal(await sendNotice(found, VENT, "[alert-escalation] A rule has nobody working its fire."), true);
+    assert.equal(await sendNotice(found, VENT, "[alert-escalation] A rule has nobody working its fire."), true);
+    assert.equal(host.submits.length, 2);
+    assert.equal(host.submits[0]!.text, "[agent-message from alert bridge]\n\n[alert-escalation] A rule has nobody working its fire.");
+    assert.notEqual(host.submits[0]!.requestId, host.submits[1]!.requestId);
+    assert.equal(await sendNotice(found, "01a11d24-ac9b-757d-ac51-9b2b7598782f", "[alert] x"), false);
+    assert.equal(host.submits.length, 2);
   } finally {
     host.server.close();
     await rm(dir, { recursive: true, force: true });

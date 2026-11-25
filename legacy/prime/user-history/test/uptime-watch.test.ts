@@ -6,17 +6,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { type Metal01Path, metal01PathOf } from "../src/metal01-path.ts";
+import { OPS_ROUTE } from "../src/alert-routes.ts";
 import { DOWN_MS, networkError, probeOnce, UPTIME_TARGETS, type TargetState, UptimeWatch, uptimeStep } from "../src/uptime-watch.ts";
 
 const at = (time: string) => Date.parse(`2026-10-29T${time}Z`);
 const crawler = UPTIME_TARGETS.find(target => target.name === "crawler")!;
 
-test("every target pages a chat the routes know, and ops guy", () => {
+test("every target pages a chat the routes know, and devops guy", () => {
   for (const target of UPTIME_TARGETS) {
     assert.ok(target.routes.every(route => route?.session), target.name);
-    assert.ok(target.routes.some(route => route.chat === "ops guy"), target.name);
+    assert.ok(target.routes.some(route => route.chat === "devops guy"), target.name);
   }
-  assert.deepEqual(crawler.routes.map(route => route.chat), ["Crawler VP", "api portal vp", "ops guy"]);
+  assert.deepEqual(crawler.routes.map(route => route.chat), ["Crawler VP", "api portal vp", "devops guy"]);
 });
 
 test("the 10-28 blip of 3 min 7 s does not page, and 5 min with no good answer pages once", () => {
@@ -51,7 +52,7 @@ async function rig() {
   return { dir, sent, deps, setNow: (ms: number) => { now = ms; }, fail: (urls: string[]) => { failing = new Set(urls); } };
 }
 
-test("a forced URL pages the owning chats and ops guy within the window, says it is a test, and clears", async () => {
+test("a forced URL pages the owning chats and devops guy within the window, says it is a test, and clears", async () => {
   const { sent, deps, setNow, fail } = await rig();
   const forcedUrl = "https://crawler.virev.ai/__uptime-forced-failure";
   await writeFile(deps.overrideFile, JSON.stringify({ crawler: forcedUrl }));
@@ -104,7 +105,7 @@ test("probeOnce passes a good crawler body and names each kind of failure", asyn
   assert.match((await probeOnce(crawler, `http://127.0.0.1:${port}/health`))!, /^fetch failed \(ECONNREFUSED\)$/);
 });
 
-test("11-06: us-metal02's own network loss sends ops guy one box line and no customer outage page", async () => {
+test("11-06: us-metal02's own network loss sends devops guy one box line and no customer outage page", async () => {
   const { sent, deps, setNow } = await rig();
   const dns = new Set<string>();
   const watch = new UptimeWatch({ ...deps, host: "us-metal02", probe: async (target: { name: string }) => dns.has(target.name) ? "fetch failed (EAI_AGAIN)" : null });
@@ -116,7 +117,7 @@ test("11-06: us-metal02's own network loss sends ops guy one box line and no cus
     await watch.tick();
   }
   assert.equal(sent.length, 1, sent.map(send => send.text).join("\n"));
-  assert.equal(sent[0]!.session, "01a11af8-962e-773d-a19a-ee4104011987");
+  assert.equal(sent[0]!.session, OPS_ROUTE.session);
   assert.match(sent[0]!.text, /^\[uptime-box-network\] us-metal02 lost its network: all 2 uptime targets failed DNS or connect at once since 22:02Z \(5 min; crawler: fetch failed \(EAI_AGAIN\), api: fetch failed \(EAI_AGAIN\)\)/);
 
   // A second loss 25 min later sends one more box line; one target that went dark a round before the other changes nothing.
@@ -154,7 +155,7 @@ test("both targets down with HTTP errors in one tick both page, and the state fi
   assert.ok(kept.crawler.pagedAt && kept.api.pagedAt);
 });
 
-test("11-16: crawler.virev.ai timing out only from us-metal02 while us-metal01 answers through a relay sends ops guy one path line, not an outage page", async () => {
+test("11-16: crawler.virev.ai timing out only from us-metal02 while us-metal01 answers through a relay sends devops guy one path line, not an outage page", async () => {
   assert.deepEqual(metal01PathOf("pong from us-metal01 (100.113.142.90) via DERP(lax) in 75ms\n"), { kind: "relay", via: "DERP(lax)" });
   const { sent, deps, setNow } = await rig();
   const day = (time: string) => Date.parse(`2026-11-16T${time}Z`);
@@ -164,7 +165,7 @@ test("11-16: crawler.virev.ai timing out only from us-metal02 while us-metal01 a
     probe: async (target: { name: string }) => target.name === "crawler" && dark(now) ? "fetch failed (UND_ERR_CONNECT_TIMEOUT)" : null });
   let now = day("07:10:00");
   for (; now <= day("07:30:00"); now += 30_000) { setNow(now); await watch.tick(); }
-  assert.deepEqual(sent.map(send => send.session), ["01a11af8-962e-773d-a19a-ee4104011987", "01a11af8-962e-773d-a19a-ee4104011987"], sent.map(send => send.text).join("\n"));
+  assert.deepEqual(sent.map(send => send.session), [OPS_ROUTE.session, OPS_ROUTE.session], sent.map(send => send.text).join("\n"));
   assert.match(sent[0]!.text, /^\[uptime-path\] us-metal02 has had no good answer from https:\/\/crawler\.virev\.ai\/health since 07:10Z .*through DERP\(lax\), so the box is up and the network path from this box/);
   assert.match(sent[1]!.text, /^\[uptime-path-up\] https:\/\/crawler\.virev\.ai\/health answers this box again at 07:26Z/);
 

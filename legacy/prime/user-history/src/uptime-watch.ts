@@ -10,17 +10,17 @@ import { TICK_MS } from "./wakes.ts";
  * An off-box uptime check of crawler.virev.ai and api.virev.ai from the chat service on us-metal02. Every Grafana rule runs on us-metal01, so
  * when that box was down from 02:55Z to 05:01Z on 10-29 (p197's Docker move) the crawler and every customer crawl call through api.virev.ai
  * failed for about 2 h and nothing paged. This check needs neither us-metal01 nor obs.virev.ai: it probes each URL every TICK_MS and, once a
- * target has had no good answer for DOWN_MS, sends one agent message to the owning chats and ops guy, and one more when it answers again.
+ * target has had no good answer for DOWN_MS, sends one agent message to the owning chats and OPS_ROUTE (devops guy), and one more when it answers again.
  * `<dataDir>/uptime-targets.json` may map a target name to another URL, which a forced-failure test uses; the page then says so.
  *
  * From 22:42Z on 11-05 us-metal02's uplink failover moved the box to a dark address block about every 25 min. Each time both targets failed
  * with "fetch failed (EAI_AGAIN)" for about 15 min, and each paged its chats that customers could not reach prod, which answered fine from
  * outside. api.virev.ai runs on Vercel and crawler.virev.ai on us-metal01, so both failing DNS or connect at once is this box's own network:
- * the watch then sends ops guy one line about the box once it lasted DOWN_MS, and no target pages while it lasts.
+ * the watch then sends OPS_ROUTE one line about the box once it lasted DOWN_MS, and no target pages while it lasts.
  *
  * From 07:10:54Z to 07:26:35Z on 11-16 only the path from us-metal02 to us-metal01's addresses failed: crawler.virev.ai timed out from here
  * while it served every other caller, and the old watch told Crawler VP and api portal vp that customer crawls failed. A target on us-metal01
- * whose page is due with a network error now asks Tailscale first, and when the box answers only through a relay, ops guy gets one path line
+ * whose page is due with a network error now asks Tailscale first, and when the box answers only through a relay, OPS_ROUTE gets one path line
  * and the target's chats get nothing; its clock starts again, so a fault that outlives the path fault still pages.
  */
 
@@ -225,7 +225,7 @@ export class UptimeWatch {
 
   /**
    * Every target's newest probe failed on the network, so no target's clock runs: each one that has not paged starts fresh at `at`, as at a
-   * restart, and one that paged keeps its page. The box line goes to ops guy once, after DOWN_MS of it.
+   * restart, and one that paged keeps its page. The box line goes to OPS_ROUTE once, after DOWN_MS of it.
    */
   private async boxDark(states: Record<string, TargetState>, at: number): Promise<void> {
     for (const target of this.targets) if (states[target.name]!.pagedAt === null) states[target.name] = fresh(at);
