@@ -19,6 +19,7 @@ import { AgentFolders, type BoxFiles } from "./agent-folder.ts";
 import { AgentStore, type AgentRecord, type MemberChange, type RoomDelivery, type RoomId, type RoomPost, type WakeOn } from "./agent-store.ts";
 import { Agents, isGroupRoomId, isRoomId } from "./agents.ts";
 import { Boards } from "./boards.ts";
+import { AREA_REVIEW_NAME, areaReviewDuty } from "./common-duties.ts";
 import { MIN_BYTES } from "./compress.ts";
 import { CHANNEL_COPY_LIKE, GroupRooms, roomLabel } from "./group-rooms.ts";
 import { assertEditable, deleteNotice, deliveriesOf, editNotice } from "./post-edits.ts";
@@ -1469,8 +1470,23 @@ export class App {
     // event loop before the answer went out.
     if (!record) return this.threads.agent(created.id)!;
     if (input.brief?.trim()) await this.folders.writeBrief(record, input.brief.trim());
+    await this.commonDuties(record.id, cwd, input.test === true);
     this.roomsChanged(record);
     return this.threads.agent(record.id)!;
+  }
+
+  /**
+   * Sets the common daily duty "Area review" on a new agent (common-duties.ts, c249); the 3-hourly board push is its check-in. A walk's test
+   * agent gets it paused, so a throwaway agent shows the duty and starts no daily job. A failure is logged and leaves the agent made.
+   */
+  private async commonDuties(agent: string, cwd: string, test: boolean): Promise<void> {
+    try {
+      const { duties } = await this.boards.dutyAction(agent, { action: "set", duty: areaReviewDuty(agent, cwd) });
+      const review = duties.find(row => row.duty.name === AREA_REVIEW_NAME);
+      if (test && review) await this.boards.dutyAction(agent, { action: "pause", duty: review.duty.id });
+    } catch (error) {
+      this.log(`agent ${agent}: setting its common duties failed: ${String(error)}`);
+    }
   }
 
   /** The agent's For list (for-me.ts); `id` is its agent id or one of its thread ids, so a pi-host tool passes its own thread. */

@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import type { AgentSummary, ChatBoard, CheckInView, PlanItem } from "../../web/src/lib/api/types.ts";
 import { FixtureHost } from "../../server/host/fixture.ts";
+import { AREA_REVIEW_NAME } from "../../server/common-duties.ts";
 import {
   CHECK_IN_REPORT, CHECK_IN_WORDS, checkInIdle, checkInJobBrief, checkInJobName, checkInMeasure, checkInPrecheck, checkInPrompt, datedName, IDLE_CHECK_IN_MS,
 } from "../../server/check-in-job.ts";
@@ -101,6 +102,11 @@ before(async () => {
   };
   for (const agent of [busy, idle]) await until(async () => s.app.threads.thread(agent.thread)?.status, status => status !== "running");
   await s.app.boards.apply(busy.id, [{ op: "plan_add", text: "Ship the relay" }], "agent");
+  // Each new agent's common daily Area review (common-duties.ts) would start its own duty job on the far ticks here; these tests are about the check-in.
+  for (const agent of [busy, idle]) {
+    const review = s.app.boards.dutyFile(agent.id).duties.find(d => d.name === AREA_REVIEW_NAME)!;
+    assert.equal((await s.send("POST", `/api/agents/${agent.id}/duties`, { action: "pause", duty: review.id })).status, 200);
+  }
 });
 after(async () => {
   await s.close();
@@ -159,7 +165,7 @@ test("a board with no open step checks in daily, and with no brief starts no job
   await s.app.boards.board(idle.id);
   const view = await s.get<CheckInView>(`/api/agents/${idle.id}/check-in`);
   assert.equal(view.everyMs, IDLE_CHECK_IN_MS);
-  assert.equal(view.planEveryMs, 120 * 60_000);
+  assert.equal(view.planEveryMs, 180 * 60_000);
   assert.equal(view.nextAt, s.app.agents.record(idle.id)!.createdAt + IDLE_CHECK_IN_MS);
   // The tick a day on is due for the busy agent too, and the job it would start there landed during the next test under load (11-23).
   assert.equal((await s.send("POST", `/api/agents/${busy.id}/check-in`, { pause: "forever" })).status, 200);
@@ -175,7 +181,7 @@ test("a board with no open step checks in daily, and with no brief starts no job
     assert.deepEqual([quiet!.at, quiet!.verdict, quiet!.job], [view.nextAt, "met", undefined]);
     assert.ok(quiet!.summary.endsWith("; nothing due, so no job"));
     assert.deepEqual(jobsOf(idle), []);
-    assert.equal(workInputs.some(input => input.thread === idle.thread), false);
+    assert.deepEqual(workInputs.filter(input => input.thread === idle.thread), []);
   } finally {
     await s.send("POST", `/api/agents/${busy.id}/check-in`, { pause: null });
   }

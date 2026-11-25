@@ -1,0 +1,80 @@
+/**
+ * Every new agent gets the two common duties of c249 (#sw-factory-build p234): the check-in every 3 hours as its board push, and the daily
+ * "Area review" duty, whose precheck (scripts/duties/area-review.ts) hands the review to a duty job each day. A walk's test agent gets the
+ * review paused, so a throwaway agent starts no daily job.
+ * Run: cd apps/chat && node --import tsx --test --test-force-exit --test-isolation=none test/server/common-duties.test.ts
+ */
+import assert from "node:assert/strict";
+import { after, before, test } from "node:test";
+import type { AgentSummary, CheckInView, DutyRow } from "../../web/src/lib/api/types.ts";
+import { AREA_REVIEW_NAME, areaReviewDuty, BOARD_PUSH_EVERY_MS, liveAppDir } from "../../server/common-duties.ts";
+import { areaReview } from "../../scripts/duties/area-review.ts";
+import { start, type Running } from "./helpers.ts";
+
+let s: Running;
+let fresh: AgentSummary;
+let throwaway: AgentSummary;
+
+before(async () => {
+  s = await start({ wordMs: 0 });
+  fresh = (await s.send("POST", "/api/agents", { name: "fresh agent" })).body;
+  throwaway = (await s.send("POST", "/api/agents", { name: "walk throwaway", test: true })).body;
+});
+after(async () => {
+  await s.close();
+});
+
+const duties = async (agent: AgentSummary) => (await s.get<{ duties: DutyRow[] }>(`/api/agents/${agent.id}/duties`)).duties;
+
+test("a new agent has the daily Area review duty and a check-in every 3 hours from its start", async () => {
+  const review = (await duties(fresh)).filter(row => row.duty.name === AREA_REVIEW_NAME);
+  assert.equal(review.length, 1);
+  assert.equal(review[0]!.paused, false);
+  assert.match(review[0]!.duty.ownerWords, /every 3 hour push completing tasks in the TODO board[\s\S]*p234/);
+  const stored = s.app.boards.dutyFile(fresh.id).duties.find(d => d.name === AREA_REVIEW_NAME)!;
+  assert.equal(stored.schedule.kind, "daily");
+  assert.deepEqual(stored.precheck.command, ["node", `${liveAppDir()}/scripts/duties/area-review.ts`, "--agent", fresh.id]);
+  assert.equal((await s.get<CheckInView>(`/api/agents/${fresh.id}/check-in`)).everyMs, BOARD_PUSH_EVERY_MS);
+  assert.equal(BOARD_PUSH_EVERY_MS, 180 * 60_000);
+});
+
+test("a walk's test agent shows the Area review duty paused", async () => {
+  const review = (await duties(throwaway)).filter(row => row.duty.name === AREA_REVIEW_NAME);
+  assert.equal(review.length, 1);
+  assert.equal(review[0]!.paused, true);
+});
+
+test("the duty runs its precheck in the agent's own folder, and in the apps/chat folder when this box lacks it", () => {
+  const here = areaReviewDuty("ag_x", "/tmp", "/app") as { precheck: { cwd: string; command: string[] } };
+  assert.equal(here.precheck.cwd, "/tmp");
+  assert.deepEqual(here.precheck.command, ["node", "/app/scripts/duties/area-review.ts", "--agent", "ag_x"]);
+  const away = areaReviewDuty("ag_x", "/Users/nobody/project", "/app") as { precheck: { cwd: string } };
+  assert.equal(away.precheck.cwd, "/app");
+});
+
+test("the area review always hands off the review, counts corrections its memory misses, and the owner's posts of the day to it", () => {
+  const now = Date.parse("2026-11-26T00:00:00Z");
+  const review = areaReview({
+    agent: { id: "ag_seo", slug: "seo", name: "seo", room: "dm_seo" },
+    corrections: [
+      { id: "c10", rule: "Saved rule.", chat: { name: "seo · dm_seo" } },
+      { id: "c11", rule: "Unsaved rule.", chat: { name: "seo · #seo" } },
+      { id: "c12", rule: "Another agent's rule.", chat: { name: "seo guy · #x" } },
+      { id: "c13", rule: "Retired rule.", status: "retired", chat: { name: "seo · #seo" } },
+    ],
+    memory: { a: { title: "Rule", content: "Owner rule c10: keep titles short.", updated_at: "2026-11-25T12:00:00Z" }, b: { content: "old", updated_at: "2026-11-01T00:00:00Z" } },
+    posts: [
+      { room: "dm_seo", id: "p1", author: "owner", text: "why is this broken again", at: now - 3600_000 },
+      { room: "ch_1", id: "p2", author: "owner", text: "@seo check this", at: now - 3600_000, mentions: ["ag_seo"] },
+      { room: "ch_1", id: "p3", author: "owner", text: "for someone else", at: now - 3600_000, mentions: ["ag_vent"] },
+      { room: "dm_seo", id: "p4", author: "owner", text: "yesterday's", at: now - 2 * 86_400_000 },
+      { room: "dm_seo", id: "p5", author: "ag_seo", text: "an agent post", at: now - 60_000 },
+    ],
+    folderTimes: [{ path: "/a/seo/notes.html", mtimeMs: now - 60_000 }, { path: "/a/seo/old.md", mtimeMs: now - 3 * 86_400_000 }, { path: "/a/seo/x.json", mtimeMs: now }],
+    now,
+  });
+  assert.deepEqual(review.metrics, { corrections_unsaved: 1, owner_posts_24h: 2, wiki_pages_touched_24h: 1, memory_changed_24h: 1 });
+  assert.equal(review.flagged[0]!.kind, "area_review");
+  assert.equal(review.flagged[0]!.handOff, true);
+  assert.deepEqual(review.flagged.slice(1).map(f => f.sig), ["c11", "dm_seo/p1", "ch_1/p2"]);
+});

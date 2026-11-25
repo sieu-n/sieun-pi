@@ -1,6 +1,6 @@
 /**
  * An agent made with `POST /api/agents` and no check-in setting gets the default check-in the view shows: its first one at its createdAt plus
- * 2 hours, and the next 2 hours after that, each one a check-in job of its own (server/check-in-job.ts). The work thread's own turn holds no
+ * 3 hours, and the next 3 hours after that, each one a check-in job of its own (server/check-in-job.ts). The work thread's own turn holds no
  * check-in back, since the check-in no longer runs there. A walk's test agent gets none.
  * Run: cd apps/chat && node --import tsx --test --test-force-exit --test-isolation=none test/server/check-in-default.test.ts
  */
@@ -10,7 +10,8 @@ import type { AgentSummary, CheckInView } from "../../web/src/lib/api/types.ts";
 import { FixtureHost } from "../../server/host/fixture.ts";
 import { start, until, type Running } from "./helpers.ts";
 
-const EVERY = 120 * 60_000;
+/** The common 3-hourly board push every agent has (c249, server/common-duties.ts). */
+const EVERY = 180 * 60_000;
 let s: Running;
 let fresh: AgentSummary;
 let throwaway: AgentSummary;

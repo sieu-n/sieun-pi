@@ -31,6 +31,8 @@ const set = (duty: unknown) => s.send<{ duties: DutyRow[]; result: string; error
 before(async () => {
   s = await start();
   agent = (await s.send<{ id: string }>("POST", "/api/agents", { name: "duty set probe" })).body.id;
+  // A new agent comes with the common Area review duty (server/common-duties.ts, c249, common-duties.test.ts); these tests start from none.
+  for (const row of await duties()) assert.equal((await s.send("POST", `/api/agents/${agent}/duties`, { action: "remove", duty: row.duty.id })).status, 200);
 });
 after(async () => {
   await s.close();
@@ -40,7 +42,7 @@ test("a set adds the duty to a fresh agent, daily at a free minute of the high m
   assert.deepEqual(await duties(), []);
   const added = await set(definition);
   assert.equal(added.status, 200, JSON.stringify(added.body));
-  assert.equal(added.body.result, "added d1");
+  assert.equal(added.body.result, "added d2");
   const [row] = await duties();
   assert.equal(row!.duty.name, "Probe system");
   assert.equal(row!.duty.metrics[0]!.headline, true);
@@ -51,19 +53,19 @@ test("a set adds the duty to a fresh agent, daily at a free minute of the high m
 });
 
 test("a second set with the same name updates the duty and keeps its id, runs and run count", async () => {
-  const ran = await s.send("POST", `/api/agents/${agent}/duties`, { action: "run", duty: "d1" });
+  const ran = await s.send("POST", `/api/agents/${agent}/duties`, { action: "run", duty: "d2" });
   assert.equal(ran.status, 200);
   const [measured] = await until(() => duties(), rows => !rows[0]!.running && rows[0]!.runs.length === 1);
   assert.equal(measured!.runs[0]!.verdict, "met");
   const updated = await set({ ...definition, goal: "the probe answers fast", schedule: { kind: "every", minutes: 60 } });
-  assert.equal(updated.body.result, "updated d1");
+  assert.equal(updated.body.result, "updated d2");
   const rows = await duties();
   assert.equal(rows.length, 1);
   assert.equal(rows[0]!.duty.goal, "the probe answers fast");
   assert.deepEqual(rows[0]!.schedule, { kind: "every", minutes: 60 });
   assert.deepEqual(rows[0]!.runs.map(run => run.at), measured!.runs.map(run => run.at));
   assert.equal((await s.get(`/api/agents/${agent}/config`)).swarm.duties[0].runs, 1);
-  assert.equal((await set({ ...definition, goal: "the probe answers fast" })).body.result, "unchanged d1", "a set with no schedule keeps the duty's schedule");
+  assert.equal((await set({ ...definition, goal: "the probe answers fast" })).body.result, "unchanged d2", "a set with no schedule keeps the duty's schedule");
 });
 
 test("the tick runs the set duty when its schedule comes due, and not before", async () => {
@@ -80,31 +82,31 @@ test("the tick runs the set duty when its schedule comes due, and not before", a
 
 test("the owner's goal and schedule actions rewrite the duty and keep its runs, and a blank goal is refused", async () => {
   const before = (await duties())[0]!;
-  const goal = await s.send<{ duties: DutyRow[] }>("POST", `/api/agents/${agent}/duties`, { action: "goal", duty: "d1", goal: "  the probe answers in 1 s  " });
+  const goal = await s.send<{ duties: DutyRow[] }>("POST", `/api/agents/${agent}/duties`, { action: "goal", duty: "d2", goal: "  the probe answers in 1 s  " });
   assert.equal(goal.status, 200, JSON.stringify(goal.body));
   assert.equal(goal.body.duties[0]!.duty.goal, "the probe answers in 1 s");
-  const schedule = await s.send<{ duties: DutyRow[] }>("POST", `/api/agents/${agent}/duties`, { action: "schedule", duty: "d1", schedule: { kind: "daily", at: "06:30" } });
+  const schedule = await s.send<{ duties: DutyRow[] }>("POST", `/api/agents/${agent}/duties`, { action: "schedule", duty: "d2", schedule: { kind: "daily", at: "06:30" } });
   assert.deepEqual(schedule.body.duties[0]!.schedule, { kind: "daily", at: "06:30" });
   assert.deepEqual(schedule.body.duties[0]!.runs.map(run => run.at), before.runs.map(run => run.at));
-  assert.equal((await s.send("POST", `/api/agents/${agent}/duties`, { action: "goal", duty: "d1", goal: " " })).status, 400);
+  assert.equal((await s.send("POST", `/api/agents/${agent}/duties`, { action: "goal", duty: "d2", goal: " " })).status, 400);
   assert.equal((await s.send("POST", `/api/agents/${agent}/duties`, { action: "goal", duty: "d9", goal: "x" })).status, 400);
 });
 
 test("a remove deletes the duty with its runs and precheck state, and a second remove changes nothing", async () => {
   const stateDir = join(s.app.boards.dir(agent), "duties");
-  assert.ok(readdirSync(stateDir).some(name => name.startsWith("d1")));
-  const removed = await s.send<{ duties: DutyRow[]; result: string }>("POST", `/api/agents/${agent}/duties`, { action: "remove", duty: "d1" });
-  assert.equal(removed.body.result, "removed d1");
+  assert.ok(readdirSync(stateDir).some(name => name.startsWith("d2")));
+  const removed = await s.send<{ duties: DutyRow[]; result: string }>("POST", `/api/agents/${agent}/duties`, { action: "remove", duty: "d2" });
+  assert.equal(removed.body.result, "removed d2");
   assert.deepEqual(removed.body.duties, []);
-  assert.ok(!readdirSync(stateDir).some(name => name.startsWith("d1")));
-  assert.equal((await s.send<{ result: string }>("POST", `/api/agents/${agent}/duties`, { action: "remove", duty: "d1" })).body.result, "no duty d1");
+  assert.ok(!readdirSync(stateDir).some(name => name.startsWith("d2")));
+  assert.equal((await s.send<{ result: string }>("POST", `/api/agents/${agent}/duties`, { action: "remove", duty: "d2" })).body.result, "no duty d2");
 });
 
 test("a set after a remove of the highest duty takes a new id, never the removed one's", async () => {
   assert.deepEqual(await duties(), []);
-  assert.equal((await set(definition)).body.result, "added d2");
-  assert.equal((await s.send<{ result: string }>("POST", `/api/agents/${agent}/duties`, { action: "remove", duty: "d2" })).body.result, "removed d2");
-  assert.equal(s.app.boards.dutyFile(agent).lastId, 2);
+  assert.equal((await set(definition)).body.result, "added d3");
+  assert.equal((await s.send<{ result: string }>("POST", `/api/agents/${agent}/duties`, { action: "remove", duty: "d3" })).body.result, "removed d3");
+  assert.equal(s.app.boards.dutyFile(agent).lastId, 3);
 });
 
 test("a relative precheck cwd, a bad definition and an unknown agent are refused", async () => {

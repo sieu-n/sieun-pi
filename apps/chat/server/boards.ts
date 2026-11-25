@@ -22,6 +22,7 @@ import { dutyCard, judgedRun, missStreak } from "../web/src/lib/api/shared/duty-
 import type { ChatAgent } from "../web/src/lib/api/shared/types.ts";
 import { threadModel, type Agents } from "./agents.ts";
 import { agentFolderDir } from "./agent-folder.ts";
+import { BOARD_PUSH_EVERY_MS } from "./common-duties.ts";
 import { checkInDetail, checkInIdle, checkInJobBrief, checkInMeasure, checkInJobName, checkInPrecheck, checkInPrompt, datedName, planEveryMs, planHasOpenStep } from "./check-in-job.ts";
 import type { Host } from "./host/types.ts";
 import { readJson, type Store } from "./store.ts";
@@ -69,8 +70,11 @@ export function workingJobs(summaries: readonly AgentSummary[], waking: Readonly
   return names;
 }
 
-/** Prime's CHECK_IN_MS (legacy/prime/user-history/src/checkin-settings.ts). */
-const DEFAULT_CHECK_IN_MS = 120 * 60_000;
+/**
+ * The check-in is the common 3-hourly board push every agent has (c249, common-duties.ts): the owner, #sw-factory-build p234, "every 3 hour
+ * push completing tasks in the TODO board". Prime's own chats keep their CHECK_IN_MS of 120 min (legacy/prime/user-history/src/checkin-settings.ts).
+ */
+const DEFAULT_CHECK_IN_MS = BOARD_PUSH_EVERY_MS;
 /** Prime's CHECK_IN_RETRY_MS (chats.ts): a check-in whose job did not start tries again this soon, not a whole interval later. */
 const CHECK_IN_RETRY_MS = 5 * 60_000;
 
