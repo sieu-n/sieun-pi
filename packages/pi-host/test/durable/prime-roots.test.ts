@@ -121,7 +121,8 @@ before(async () => {
   const hostsFile = join(dir, "hosts.json");
   writeFileSync(hostsFile, JSON.stringify({ version: 1, hosts: [host("box-a", hostname(), socket, { chat: { port } }), host("mac", "not-this-box", "/tmp/no-such.sock", {})] }));
   process.env.SIEUN_PI_HOSTS = hostsFile;
-  rlm = await DurableRlm.load(rlmOptions(dir));
+  // A name no root matches asks apps/chat for the other boxes' threads (rlm.ts `sendAcross`), so this fake answers it, not a live :5184.
+  rlm = await DurableRlm.load({ ...rlmOptions(dir), chatUrl: `http://127.0.0.1:${port}` });
   primeRoots = new PrimeRoots({ hostsFile, chatDataDir: chatDir });
 });
 

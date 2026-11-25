@@ -34,7 +34,7 @@ export class ChatApp {
     try { parsed = text ? JSON.parse(text) : null; } catch { parsed = null; }
     if (!response.ok) {
       const error = (parsed as { error?: unknown } | null)?.error;
-      throw new Error(typeof error === "string" && error ? error : `The chat server answered ${response.status}.`);
+      throw Object.assign(new Error(typeof error === "string" && error ? error : `The chat server answered ${response.status}.`), { status: response.status });
     }
     return parsed as T;
   }
@@ -86,6 +86,20 @@ export class ChatApp {
       if (typeof found?.thread === "string" && found.thread) return found.thread;
     }
     return undefined;
+  }
+
+  /**
+   * A root's agent message to a thread on another box (`POST /api/threads/:id/agent-message`), which apps/chat submits on that box through
+   * its relay: the target thread, its box and the submission, or `{ missing }` with apps/chat's 404 text when no thread has that id or name.
+   */
+  async agentMessage(thread: string, input: { to: string; text: string; requestId: string; whenBusy: "steer" | "followUp" }, signal?: AbortSignal):
+    Promise<{ thread: string; name: string; box: string; submission: number } | { missing: string }> {
+    try {
+      return await this.call<{ thread: string; name: string; box: string; submission: number }>("POST", this.thread(thread, "agent-message"), input, signal);
+    } catch (error) {
+      if ((error as { status?: unknown }).status === 404) return { missing: (error as Error).message };
+      throw error;
+    }
   }
 
   /** Puts this thread's agent's reaction on a room post or takes it off; the answer's `text` is one line that names the post and its reactions. */

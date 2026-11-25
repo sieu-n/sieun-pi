@@ -37,7 +37,7 @@ import type { ConversationPrefs, PrefsPatch } from "../web/src/lib/api/types.ts"
 import type { SavedLayout } from "../web/src/lib/api/types.ts";
 import { DEFAULT_MODEL, DEFAULT_THINKING, type Config } from "./config.ts";
 import { MultiHost } from "./host/multi-host.ts";
-import type { Host } from "./host/types.ts";
+import { isHostAway, type Host } from "./host/types.ts";
 import { Outbox, type OutboxRow } from "./outbox.ts";
 import { DbOutboxLog, JsonOutboxLog, OUTBOX } from "./outbox-db.ts";
 import { boxCwd, projectCwd, projectList } from "./projects.ts";
@@ -1002,6 +1002,34 @@ export class App {
     const comm = this.agents.ofComm(thread);
     if (!comm) return { kind: "unknown" };
     return this.groups.row(comm.room) ? this.groups.speak(thread, input.call) : this.rooms.speak(comm.record, thread, input.call);
+  }
+
+  /**
+   * A pi-host root's agent_message.send to a thread its own pi-host does not run (pi-host rlm.ts `sendAcross`): `to` is the thread's id or
+   * its exact name, and the submit goes to the box that runs it, through that box's relay as a room post does. NotFound when no thread has
+   * that id or name, so pi-host answers "No sibling matches"; HostAway (503) when the box is away, and nothing is queued then.
+   */
+  async agentMessageAsAgent(from: string, input: { to?: unknown; text?: unknown; requestId?: unknown; whenBusy?: unknown }): Promise<{ thread: string; name: string; box: string; submission: number }> {
+    const to = typeof input.to === "string" ? input.to.trim() : "";
+    if (!to || typeof input.text !== "string" || !input.text.trim()) throw new ReactionError(400, "An agent message is { to: <thread id or name>, text }.");
+    const rows = this.threads.threadsList().filter(row => !row.archived && row.id !== from);
+    const byId = rows.find(row => row.id === to);
+    const found = byId ? [byId] : rows.filter(row => row.name === to);
+    if (!found.length) throw new NotFound(`No thread on any box has the id or name ${JSON.stringify(to)}.`);
+    const where = (row: (typeof rows)[number]) => `${row.name} (${row.id}) on ${row.box ?? this.config.box}`;
+    if (found.length > 1) throw new ReactionError(400, `${JSON.stringify(to)} names ${found.length} threads: ${found.map(where).join(", ")}; send to one full id.`);
+    const target = found[0]!;
+    const box = target.box ?? this.config.box;
+    try {
+      const { submission } = await this.host.submit(target.id, {
+        text: input.text, whenBusy: input.whenBusy === "followUp" ? "followUp" : "steer", ...(typeof input.requestId === "string" && input.requestId ? { requestId: input.requestId } : {}),
+        entry: { kind: "agent.message", data: { from, via: "agent_message" } },
+      });
+      return { thread: target.id, name: target.name, box, submission };
+    } catch (error) {
+      if (isHostAway(error)) error.message = `${where(target)} is away now, so the message was not sent; send it again once ${box} is back.`;
+      throw error;
+    }
   }
 
   /** An agent's save_message or remind_me (later-agents.ts `set`); the answer's `text` is the tool's result. */

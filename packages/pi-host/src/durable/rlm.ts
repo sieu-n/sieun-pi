@@ -1102,11 +1102,40 @@ export class DurableRlm {
     const matches = members.filter(m => m.relationship === role && (role === "parent" || (m.item.member.name === wanted && !unlisted(m.item)) || m.item.member.id === wanted
       || (m.item.root?.kind === "prime" && m.item.root.activeId === wanted)));
     if (matches.length === 0) {
-      const why = role === "sibling" && listed.missing ? ` (${listed.missing})` : "";
+      let why = role === "sibling" && listed.missing ? ` (${listed.missing})` : "";
+      if (role === "sibling" && wanted && slot.conversation === ROOT_CONVERSATION_ID) {
+        const across = await this.sendAcross(slot, self, wanted, text, mode);
+        if (!("missing" in across)) return across;
+        why += ` (${across.missing})`;
+      }
       throw new Error(`No ${role} matches ${role === "parent" ? "the current agent" : JSON.stringify(name)}${why}`);
     }
     if (matches.length > 1) throw new Error(`${role} selector ${JSON.stringify(name)} is ambiguous: it names ${matches.map(m => described(m.item)).join(" and ")}; send to one full id`);
     return this.deliver(slot, self, matches[0]!.relationship, matches[0]!.item, text, mode);
+  }
+
+  /**
+   * A root's sibling send to a thread root this pi-host does not run, such as an agent on the Mac from metal: apps/chat knows every box's
+   * threads and submits it on the target's box through that box's relay (`POST /api/threads/:id/agent-message`). On 11-25 a send from metal
+   * to 5180 designer's work thread on the Mac failed with "No sibling matches", because the roots listed here are this box's only.
+   */
+  private async sendAcross(slot: Slot, self: Member, wanted: string, text: string, mode: ReturnType<typeof parseMode>) {
+    const id = newMessageId();
+    const chat = new ChatApp(this.options.chatUrl ?? process.env[CHAT_URL_ENV] ?? DEFAULT_CHAT_URL);
+    let sent: Awaited<ReturnType<ChatApp["agentMessage"]>>;
+    try {
+      sent = await chat.agentMessage(slot.thread.id, {
+        to: wanted, text: `${piThreadHeader(self.name, self.id)}\n\n${text}`, requestId: `agentmsg:${id}`, whenBusy: mode === "follow_up" ? "followUp" : "steer",
+      });
+    } catch (error) {
+      // An answer from apps/chat, such as a 503 for a box that is away or a 400 for an ambiguous name, is the send's error.
+      if ((error as { status?: unknown }).status !== undefined) throw error;
+      return { missing: `apps/chat at ${chat.base} did not answer for the other boxes' threads: ${error instanceof Error ? error.message : String(error)}` };
+    }
+    if ("missing" in sent) return sent;
+    const from = endpoint(self.id, self.name, self.role, "agent");
+    const to = endpoint(sent.thread, sent.name, "root");
+    return { ...receipt({ id, from: { id: self.id, name: self.name, role: self.role }, text, mode, sentAt: Date.now() }, from, to, "started", []), host: sent.box, crossHost: true };
   }
 
   private async deliver(slot: Slot, self: Member, rel: Relationship, target: Known, text: string, mode: ReturnType<typeof parseMode>) {
