@@ -26,7 +26,7 @@ import tokenize
 
 DAY_MS = 86400000
 # Bump when the matcher or an event changes shape, so old cached events are dropped.
-CACHE_VERSION = 8
+CACHE_VERSION = 9
 HOW_READ = "read SKILL.md"
 HOW_PY = "python call"
 HOW_CLI = "cli"
@@ -41,7 +41,8 @@ DEFAULT_IMPORTS = {
 SKILL_MD = re.compile(r"skills/(?:[\w.-]+/)*?([A-Za-z0-9][\w.-]*)/SKILL\.md")
 # The whole path a SKILL.md read names, so the DB credits the use to the copy at that path (apps/chat creditUse).
 PATH_MD = re.compile(r"[\w./~-]*?skills/(?:[\w.-]+/)*?([A-Za-z0-9][\w.-]*)/SKILL\.md")
-READ_SKILL = re.compile(r"read-skill\.mjs\s+['\"]?([\w./-]+)")
+# A flag such as `--help` or an argument that runs into `>`, a redirect such as `2>&1`, names no skill.
+READ_SKILL = re.compile(r"read-skill\.mjs\s+['\"]?([\w./][\w./-]*)(?![\w./>-])")
 BASH_CALL = re.compile(r"""\bbash\(\s*[rRfFbBuU]{0,2}('''|\"\"\"|'|")(.*?)\1""", re.S)
 SEGMENT_SPLIT = re.compile(r"\n|;|&&|\|\||\||\$\(|`|\(|\)")
 WRAPPERS = {"sudo", "env", "nice", "ionice", "time", "command", "exec", "nohup", "stdbuf", "uv", "run", "uvx", "heavy", "timeout"}
@@ -120,7 +121,34 @@ def opened(text, name):
 
 
 # read-skill.mjs reads `.agents/skills/<arg>` under the repo it sits in (auto-sns-agent's scripts/skills/read-skill.mjs).
-READ_SKILL_AT = re.compile(r"([\w./~-]*?)scripts/skills/read-skill\.mjs\s+['\"]?([\w./-]+)")
+READ_SKILL_AT = re.compile(r"([\w./~-]*?)scripts/skills/read-skill\.mjs\s+['\"]?([\w./@-]+)(?![\w./@>-])")
+CD = re.compile(r"(?:^|[\s;&|(])cd\s+['\"]?([\w./~-]+)")
+SKILL_ROOT = ".agents/skills/"
+
+
+def read_skill_target(arg, repo):
+    """The skill and SKILL.md path a read-skill.mjs argument names, as its resolveSkill reads it, or None for a flag or no skill.
+
+    `apps/llm-wiki/references/writing.md` names llm-wiki, `.agents/skills/repo/verify` and `@code/.agents/skills/...` drop the root they
+    repeat, and an absolute path keeps its own repo. On 11-25 the old split counted 2,041 uses for a skill named `references`, 48 for
+    `--help` and 32 for `2`.
+    """
+    if arg.startswith("@code/"):
+        arg = arg[len("@code/"):]
+    if SKILL_ROOT in arg:
+        head, _, arg = arg.partition(SKILL_ROOT)
+        if head.startswith("/"):
+            repo = head
+    elif arg.startswith("/"):
+        return None
+    parts = []
+    for part in arg.strip("/").split("/"):
+        if part in ("SKILL.md", "references", "scripts", "assets") or "." in part:
+            break
+        parts.append(part)
+    if not parts or not re.match(r"^[A-Za-z0-9][\w-]*$", parts[-1]):
+        return None
+    return parts[-1], f"{repo}{SKILL_ROOT}{'/'.join(parts)}/SKILL.md"
 
 
 def rooted(how, cwd):
@@ -194,12 +222,20 @@ class Matcher:
                 out.add((self.imports[word], HOW_PY))
 
     def read_skill_paths(self, text, out):
-        """Adds the copy path to each read-skill.mjs read: `.agents/skills/<arg>` under the folder the script sits two levels below."""
+        """Adds the copy path to each read-skill.mjs read: `.agents/skills/<arg>` under the folder the script sits two levels below.
+
+        A script path relative to the thread's folder is joined to the last `cd` before it, as in `cd ~/x/auto-sns-agent && node
+        scripts/skills/read-skill.mjs repo/verify`, which named ~/.agents/skills/... for 330 uses before 11-25.
+        """
         for m in READ_SKILL_AT.finditer(text):
-            folder = "/".join(p for p in m.group(2).split("/") if p and p != "SKILL.md" and "." not in p)
-            name = folder.split("/")[-1] if folder else ""
-            if name:
-                out.add((name, f"{HOW_READ}|{m.group(1)}.agents/skills/{folder}/SKILL.md"))
+            repo = m.group(1)
+            if not repo.startswith(("/", "~")):
+                cds = CD.findall(text, 0, m.start())
+                if cds:
+                    repo = cds[-1].rstrip("/") + "/" + repo
+            found = read_skill_target(m.group(2), repo)
+            if found:
+                out.add((found[0], f"{HOW_READ}|{found[1]}"))
 
     def python(self, code, out):
         self.python_calls(code, out)
