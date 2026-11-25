@@ -35,6 +35,16 @@ test("archiving a test agent removes its folder from the agents dir", async () =
   assert.equal(existsSync(dir), false);
 });
 
+test("a test agent's folder written again after its archive is removed on the next thread list read", async () => {
+  const dir = await archived("late write probe", true);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "working-memory.md"), "late turn");
+  await until(async () => {
+    await s.app.threads.poll();
+    return existsSync(dir);
+  }, gone => !gone);
+});
+
 test("archiving a real agent keeps its folder", async () => {
   const dir = await archived("real folder probe", false);
   assert.equal(existsSync(join(dir, "work", "notes.html")), true);

@@ -9,7 +9,7 @@
  * (`App.ensureComms`), and a delivery that comes first makes it then, a DM's as a channel's or a Solo room's (phase 5, group-rooms.ts).
  */
 import { createHash } from "node:crypto";
-import { rmSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { AgentHostState, AgentId, AgentSummary, RunStatus, ThinkingLevel } from "../web/src/lib/api/types.ts";
 import { AGENT_REF_DOC, agentRef, commRef, sameRef, type AgentRef } from "./agent-folder.ts";
@@ -442,7 +442,7 @@ export class Agents {
       const row = rows.get(record.workThread);
       if (!row) continue;
       if ((row.name && row.name !== record.name) || row.archived !== record.archived) {
-        if (record.test && row.archived && !record.archived) this.dropTestFolder(record);
+        if (record.test && row.archived && !record.archived) this.archivedTests.add(record);
         record.name = row.name || record.name;
         record.archived = row.archived;
         const room = this.store.rooms.rooms.find(r => r.id === record.room);
@@ -450,6 +450,7 @@ export class Agents {
         changed = true;
       }
     }
+    for (const record of this.archivedTests) this.dropTestFolder(record);
     if (changed) {
       this.store.saveAgents();
       this.store.saveRooms();
@@ -457,10 +458,17 @@ export class Agents {
     return changed;
   }
 
+  /**
+   * Test agents archived since this server started. Their folders are removed again on every thread list read, because a turn that ends
+   * after the archive still writes working-memory.md, as three duty-check agents' folders showed on 11-25. Agents archived before the start
+   * keep their folders, which a cleanup job handles.
+   */
+  private readonly archivedTests = new Set<AgentRecord>();
+
   /** Removes a test agent's folder under this box's agents dir, where the wiki mount reads it. */
   private dropTestFolder(record: AgentRecord): void {
     const dir = join(this.config.agentsDir, record.slug);
-    if (!record.slug || dirname(dir) !== this.config.agentsDir) return;
+    if (!record.slug || dirname(dir) !== this.config.agentsDir || !existsSync(dir)) return;
     try {
       rmSync(dir, { recursive: true, force: true });
     } catch (error) {
