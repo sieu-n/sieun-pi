@@ -1,9 +1,9 @@
 import { groupReading, MEMORY_GROUPS, type MemoryGroupId } from "./host-stats.ts";
 
 /**
- * Pushes the box's CPU and memory split by group (host-stats.ts `groupReading`) as OTLP gauges to the box's Alloy, which remote-writes them to
- * staging Prometheus with its own box label (auto-sns-agent ops/dev-boxes/config.alloy, otelcol.receiver.otlp "local"). Asked by the owner on
- * 10-28 for the Dev boxes board on obs.virev.ai, which reads host_cpu_group_cores{box,group} and host_mem_group_bytes{box,group} there.
+ * Pushes the box's CPU and memory split by group (host-stats.ts `groupReading`) as OTLP gauges to the box's Alloy, which sends them to prod otel
+ * at otlp.virev.ai with tier shared and the box's host.name (auto-sns-agent ops/dev-boxes/config.alloy, otelcol.receiver.otlp "local"). Asked by
+ * the owner on 10-28 for the Dev boxes board on obs.virev.ai, which reads host_cpu_group_cores and host_mem_group_bytes from otel_metrics_gauge.
  */
 export const OTLP_METRICS_URL = "http://127.0.0.1:14318/v1/metrics";
 // measured: Alloy scrapes node_exporter every 60 s on each dev box (devbox.alloy scrape_interval), so the split shares the boards' 60 s step.
@@ -26,7 +26,7 @@ const gauge = (name: string, unit: string, points: Point[], timeUnixNano: string
   name, unit, gauge: { dataPoints: points.map(point => ({ timeUnixNano, asDouble: point.value, attributes: [{ key: "group", value: { stringValue: point.group } }] })) },
 });
 
-/** The OTLP/HTTP JSON body of one reading, service.name prime-relay (job in Prometheus); null when the reading has neither side. */
+/** The OTLP/HTTP JSON body of one reading, service.name prime-relay (ServiceName in otel); null when the reading has neither side. */
 export function otlpBody(reading: Reading, now = Date.now()): string | null {
   const time = `${BigInt(now) * 1_000_000n}`;
   const metrics = [

@@ -21,7 +21,7 @@ Every request needs `Authorization: Bearer <token>`, and a request without it ge
 Once a minute the relay posts the box's CPU and memory split by group to the box's Alloy at `http://127.0.0.1:14318/v1/metrics` as OTLP gauges (`metrics-push.ts`).
 They are `host_cpu_group_cores{group}`, the cores each group used over that minute, and `host_mem_group_bytes{group}`, each group's RAM.
 The groups are the Settings > Hosts card's ids, and every group goes out each minute, at 0 when it used nothing.
-Alloy remote-writes them to staging Prometheus with its own `box` label and `job="prime-relay"`, and obs.virev.ai reads them on datasource `estate_prometheus_stg`.
+Alloy sends them by OTLP to `https://otlp.virev.ai/v1/metrics`, and prod otel stores them in `otel_metrics_gauge` with ServiceName `prime-relay`, tier `shared` and `host.name` set to the box's name, where obs.virev.ai reads them.
 On macOS the CPU split comes from the pressure feed's `cpu_pct` per owner over its 10 s window.
 A failed push logs one line to `relay.log` when it starts failing and one when it works again.
 
