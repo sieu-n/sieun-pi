@@ -20,12 +20,13 @@
  * Usage: OUTPUT_FILE=<file> node --import tsx scripts/duties/agent-boards.ts [--part boards|duties] [--server http://127.0.0.1:5184] [--areas <file>]
  * `--part duties` is the precheck of agent factory's duty "Agents keep their duties" (agent-duties.duty.json, d7); the default is d5's. Since
  * c249 (#sw-factory-build p234, msg mwwklmfk, 11-26) d7 also checks each agent's two common duties (`agentPattern`) and its output carries
- * `messages`, one nudge per agent off the pattern in the shape of ~/work/agent-duties/messages.json, which the work thread relays.
+ * `messages`, one nudge per agent off the pattern in the shape of ~/work/agent-duties/messages.json, which the work thread relays. Since
+ * the owner's p237 (msg mwwksq7v) it also counts wiki clutter (`wikiClutter`), read from the wiki config's content root and agents mount.
  * Without OUTPUT_FILE the result prints to stdout.
  */
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join, relative } from "node:path";
 import { parseArgs } from "node:util";
 
 interface Agent { id: string; name: string; archived?: boolean; hostState?: string; thread?: string }
@@ -181,9 +182,70 @@ export function agentPattern(agents: readonly AgentRead[], areas: readonly Agent
     });
   }
   return {
-    metrics: { agents_off_pattern: messages.length, common_duties_missing: missing, common_duties_late: late, empty_runs: empty, ...coverage.metrics },
+    metrics: {
+      agents_off_pattern: messages.length, common_duties_missing: missing, common_duties_late: late, empty_runs: empty, ...coverage.metrics,
+      duties_stopped: coverage.metrics.duties_paused! + coverage.metrics.duties_overdue!,
+    },
     flagged, messages,
   };
+}
+
+/** A path segment that carries a date or a session, job or run stamp, such as `queue-waits-2026-10-15.html` or `d7-261126-052811`. */
+export const DATED = /20\d\d-\d\d-\d\d|^20\d\d[-_]?\d\d[-_]?\d\d|\d{6}[-_]\d{4,6}|(?:session|job|run)[-_]?\d{3,}/i;
+/** Folders under the wiki's agents/ mount that belong to no agent and are no clutter: the template new agents copy. */
+export const AGENT_FOLDERS_KEPT = new Set(["TEMPLATE"]);
+/** The curated wiki folders read for dated pages; experiments/ is left out, because its folders start with a date by design. */
+export const CURATED_FOLDERS = ["apps", "domains", "projects"] as const;
+
+/**
+ * Wiki clutter by the owner's #sw-factory-build p237 (msg mwwksq7v, 11-26): "agents folder full of slop clean up". It counts the folders
+ * under agents/ that belong to no live agent (test, deleted and throwaway blind agents), and the dated one-off pages in the curated folders
+ * that no curated page links to. A dated unit is a page path cut after its first dated segment, so a dated folder counts once; it is linked
+ * when a page that is not itself dated and lies outside the unit names the unit's last segment, as an href or a wiki: link does.
+ */
+export function wikiClutter(agentFolders: readonly string[], liveSlugs: ReadonlySet<string>, pages: readonly { path: string; text: string }[]): { metrics: Record<string, number>; flagged: Flag[] } {
+  const flagged: Flag[] = [];
+  const orphans = agentFolders.filter(name => !name.startsWith(".") && !AGENT_FOLDERS_KEPT.has(name) && !liveSlugs.has(name)).sort();
+  for (const name of orphans) flagged.push({ kind: "orphan_agent_folder", sig: `agents/${name}`, item: `agents/${name}`, excerpt: `agents/${name}/ belongs to no live agent` });
+  const unitOf = (path: string): string | null => {
+    const parts = path.split("/");
+    const at = parts.findIndex((part, index) => index > 0 && DATED.test(part));
+    return at < 0 ? null : parts.slice(0, at + 1).join("/");
+  };
+  const units = new Map<string, string[]>();
+  for (const page of pages) {
+    const unit = unitOf(page.path);
+    if (unit) units.set(unit, [...units.get(unit) ?? [], page.path]);
+  }
+  const curated = pages.filter(page => !unitOf(page.path));
+  let dated = 0;
+  for (const [unit, inside] of [...units].sort(([a], [b]) => a.localeCompare(b))) {
+    const name = unit.split("/").at(-1)!.replace(/\.(html|md)$/, "");
+    const named = new RegExp(`${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`);
+    if (curated.some(page => named.test(page.text))) continue;
+    dated += 1;
+    flagged.push({ kind: "dated_page", sig: unit, item: unit, excerpt: `${unit}${inside.length > 1 ? ` (${inside.length} pages)` : ""} is a dated one-off page that no curated page links to` });
+  }
+  return { metrics: { wiki_clutter: orphans.length + dated, orphan_agent_folders: orphans.length, dated_pages: dated }, flagged };
+}
+
+/** The wiki on this box from ~/.config/sieun-pi/wiki.json: its agents/ folders and the curated pages (html and md) under `CURATED_FOLDERS`. */
+export function readWiki(configFile: string): { agentFolders: string[]; pages: { path: string; text: string }[] } {
+  const config = JSON.parse(readFileSync(configFile, "utf8")) as { contentRoot: string; mounts?: { agents?: string } };
+  const agentsDir = config.mounts?.agents ?? join(config.contentRoot, "agents");
+  const agentFolders = readdirSync(agentsDir, { withFileTypes: true }).filter(entry => entry.isDirectory()).map(entry => entry.name);
+  const pages: { path: string; text: string }[] = [];
+  for (const folder of CURATED_FOLDERS) {
+    const dir = join(config.contentRoot, folder);
+    if (!existsSync(dir)) continue;
+    for (const entry of readdirSync(dir, { recursive: true, withFileTypes: true })) {
+      if (!entry.isFile() || !/\.(html|md)$/.test(entry.name)) continue;
+      const file = join(entry.parentPath, entry.name);
+      pages.push({ path: relative(config.contentRoot, file), text: readFileSync(file, "utf8") });
+    }
+  }
+  pages.push(...["index.html", "index.md"].filter(name => existsSync(join(config.contentRoot, name))).map(name => ({ path: name, text: readFileSync(join(config.contentRoot, name), "utf8") })));
+  return { agentFolders, pages };
 }
 
 /**
@@ -248,7 +310,7 @@ async function get<T>(server: string, path: string): Promise<T> {
 if (import.meta.url === `file://${process.argv[1]}`) {
   // `--part boards` (the default, d5 "Agent boards") reads steps and check-ins; `--part duties` (agent factory's "Agents keep their duties")
   // reads each agent's duties, brief and areas.
-  const { values } = parseArgs({ options: { server: { type: "string" }, areas: { type: "string" }, part: { type: "string" } } });
+  const { values } = parseArgs({ options: { server: { type: "string" }, areas: { type: "string" }, part: { type: "string" }, wiki: { type: "string" } } });
   const part = values.part ?? "boards";
   if (part !== "boards" && part !== "duties") throw new Error(`--part ${part} is neither boards nor duties`);
   const server = values.server ?? process.env.APPS_CHAT_URL ?? "http://127.0.0.1:5184";
@@ -258,8 +320,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     ? JSON.stringify(agentBoards(await Promise.all(agents.map(async agent => ({
       agent, steps: await get<Steps>(server, `/api/agents/${agent.id}/steps`), checkIn: await get<CheckIn>(server, `/api/agents/${agent.id}/check-in`),
     }))), Date.now()), null, 1)
-    : JSON.stringify({
-      ...agentPattern(await Promise.all(agents.map(async agent => {
+    : JSON.stringify(await (async () => {
+      const pattern = agentPattern(await Promise.all(agents.map(async agent => {
         const board = (await get<{ board?: { updatedAt?: string } }>(server, `/api/agents/${agent.id}/board`)).board;
         return {
           agent, duties: (await get<{ duties: DutyRow[] }>(server, `/api/agents/${agent.id}/duties`)).duties,
@@ -268,9 +330,14 @@ if (import.meta.url === `file://${process.argv[1]}`) {
           stuck: (await get<Steps>(server, `/api/agents/${agent.id}/steps`)).stuck.length,
           boardAt: board?.updatedAt ? Date.parse(board.updatedAt) : null,
         };
-      })), readAreas(areasFile), Date.now()),
-      areasFile: existsSync(areasFile) ? areasFile : null,
-    }, null, 1);
+      })), readAreas(areasFile), Date.now());
+      // Every agent that is not archived keeps its folder, an away one too; GET /api/agents lists no test agent.
+      const live = (await get<Agent[]>(server, "/api/agents")).filter(agent => !agent.archived);
+      const slugs = new Set(await Promise.all(live.map(async agent => basename((await get<{ dir?: string }>(server, `/api/agents/${agent.id}/folder`)).dir ?? agent.id.replace(/^ag_/, "")))));
+      const wiki = readWiki(values.wiki ?? process.env.WIKI_CONFIG ?? join(homedir(), ".config/sieun-pi/wiki.json"));
+      const clutter = wikiClutter(wiki.agentFolders, slugs, wiki.pages);
+      return { metrics: { ...pattern.metrics, ...clutter.metrics }, flagged: [...pattern.flagged, ...clutter.flagged], messages: pattern.messages, areasFile: existsSync(areasFile) ? areasFile : null };
+    })(), null, 1);
   if (process.env.OUTPUT_FILE) writeFileSync(process.env.OUTPUT_FILE, json);
   else console.log(json);
 }

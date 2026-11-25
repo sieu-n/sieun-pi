@@ -5,8 +5,8 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { agentBoards, agentPattern, dutyCoverage, liveDuty, overdueDuty, readAreas, type DutyRow } from "../../scripts/duties/agent-boards.ts";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { agentBoards, agentPattern, dutyCoverage, liveDuty, overdueDuty, readAreas, readWiki, wikiClutter, type DutyRow } from "../../scripts/duties/agent-boards.ts";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -134,7 +134,7 @@ test("c249: each agent with an area keeps a 3-hourly board push and a daily Area
   ], [], NOW);
   assert.deepEqual(out.metrics, {
     agents_off_pattern: 2, common_duties_missing: 2, common_duties_late: 1, empty_runs: 2,
-    agents_uncovered: 0, areas_uncovered: 0, agents_without_area: 1, duties_paused: 0, duties_overdue: 0,
+    agents_uncovered: 0, areas_uncovered: 0, agents_without_area: 1, duties_paused: 0, duties_overdue: 0, duties_stopped: 0,
   });
   assert.deepEqual(out.flagged.filter(flag => flag.kind !== "no_area").map(flag => [flag.kind, flag.sig]), [
     ["common_missing", "ag_mcp/push"], ["common_missing", "ag_mcp/review"],
@@ -143,4 +143,41 @@ test("c249: each agent with an area keeps a 3-hourly board push and a daily Area
   assert.deepEqual(out.messages.map(message => [message.agent, message.workThreadId]), [["ag_mcp", "t-mcp"], ["ag_crawler-guy", "t-crawler"]]);
   assert.match(out.messages[0]!.text, /c249[\s\S]*1\. its check-in, the board push, runs every 360 min[\s\S]*2\. it has no daily "Area review" duty/);
   assert.match(out.messages[1]!.text, /3\. its d9 "Area review" ran with no job, no wiki page and no memory change/);
+});
+
+
+test("wiki clutter: agent folders of no live agent, and dated one-off pages no curated page links to, each listed by path", () => {
+  const out = wikiClutter(["seo", "vent", "TEMPLATE", ".git", "blind-replies-1121214520pe", "blind-moved-112512080674", "old-agent"], new Set(["seo", "vent"]), [
+    { path: "domains/devops/index.html", text: '<a href="duty-failures-2026-10-18.html">Duty failures</a> <a href="railway-breach-2026-10-21/index.html">breach</a>' },
+    { path: "domains/devops/duty-failures-2026-10-18.html", text: '<a href="queue-waits-2026-10-15.html">waits</a>' },
+    { path: "domains/devops/queue-waits-2026-10-15.html", text: "" },
+    { path: "domains/devops/railway-breach-2026-10-21/index.html", text: "" },
+    { path: "domains/devops/railway-breach-2026-10-21/service-checks/index.html", text: "" },
+    { path: "domains/devops/root-free-space-2026-10-25-0156/index.html", text: "" },
+    { path: "domains/devops/root-free-space-2026-10-25-0156/data.md", text: "" },
+    { path: "apps/chat/d7-261126-052811.html", text: "" },
+    { path: "apps/chat/index.html", text: '<a href="wiki:apps/chat/push-jobs.html">jobs</a>' },
+    { path: "apps/chat/push-jobs.html", text: "" },
+  ]);
+  assert.deepEqual(out.metrics, { wiki_clutter: 6, orphan_agent_folders: 3, dated_pages: 3 });
+  assert.deepEqual(out.flagged.map(flag => [flag.kind, flag.item]), [
+    ["orphan_agent_folder", "agents/blind-moved-112512080674"], ["orphan_agent_folder", "agents/blind-replies-1121214520pe"], ["orphan_agent_folder", "agents/old-agent"],
+    ["dated_page", "apps/chat/d7-261126-052811.html"], ["dated_page", "domains/devops/queue-waits-2026-10-15.html"], ["dated_page", "domains/devops/root-free-space-2026-10-25-0156"],
+  ]);
+  assert.match(out.flagged[5]!.excerpt, /root-free-space-2026-10-25-0156 \(2 pages\) is a dated one-off page/);
+});
+
+test("readWiki reads the agents mount and the curated folders named in wiki.json", () => {
+  const dir = mkdtempSync(join(tmpdir(), "wiki-"));
+  const content = join(dir, "content");
+  const agents = join(dir, "agents");
+  for (const folder of [join(content, "domains/devops/x-2026-10-15"), join(content, "experiments/2026-08-16-a"), join(agents, "seo"), join(agents, "blind-x")]) mkdirSync(folder, { recursive: true });
+  writeFileSync(join(content, "domains/devops/x-2026-10-15/index.html"), "x");
+  writeFileSync(join(content, "experiments/2026-08-16-a/index.html"), "e");
+  writeFileSync(join(content, "index.html"), "home");
+  writeFileSync(join(agents, "README.md"), "r");
+  writeFileSync(join(dir, "wiki.json"), JSON.stringify({ contentRoot: content, mounts: { agents } }));
+  const wiki = readWiki(join(dir, "wiki.json"));
+  assert.deepEqual(wiki.agentFolders.sort(), ["blind-x", "seo"]);
+  assert.deepEqual(wiki.pages.map(page => page.path).sort(), ["domains/devops/x-2026-10-15/index.html", "index.html"]);
 });
