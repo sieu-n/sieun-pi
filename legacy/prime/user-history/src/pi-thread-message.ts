@@ -13,9 +13,12 @@ import { isMain } from "./main-module.ts";
  * file's CLI: `siblings` lists the threads as sibling rows for agent_observe.list_agents and the send's target lookup, and `send` hands the
  * message to the thread as a durable_submit with an agent.message entry, so pi's turn wrappers read it as an agent's and not the owner's.
  *
- * pi-host answers on this box's socket (PI_HOST_SOCKET, else $XDG_RUNTIME_DIR/pi-host/host.sock), and on a box without one through the
- * pi-host relays in pi-rlm's boxes file (PI_AGENT_BUS_BOXES, else ~/.config/pi-host-relay/boxes.json), which tunnel GET /v1/daemon to the
- * socket. The line request below follows pi-rlm's lineRequest (core/bus/host-socket.ts), which the Mac runtime cannot import: it has no
+ * pi-host answers on this box's socket (PI_HOST_SOCKET, else the agent relay's relay.json piHostSocket, else
+ * $XDG_RUNTIME_DIR/pi-host/host.sock), and through the pi-host relays in pi-rlm's boxes file (PI_AGENT_BUS_BOXES, else
+ * ~/.config/pi-host-relay/boxes.json), which tunnel GET /v1/daemon to the socket. A thread no route lists goes through apps/chat, which knows
+ * every box's threads (`sendThroughChat`). On 11-26 a send from frontend bro on the Mac to agent factory on us-metal02 read 'No sibling
+ * matches ... on any box either': the Mac has no XDG_RUNTIME_DIR, its pi-host socket sits at ~/.local/state/pi-host/host.sock, and the boxes
+ * file lists no box on either box, so no route listed a thread. The line request below follows pi-rlm's lineRequest (core/bus/host-socket.ts), which the Mac runtime cannot import: it has no
  * @sieun-pi/pi-family package (10-29: "Cannot find package '@sieun-pi/pi-family' imported from .../host-socket.ts").
  */
 
@@ -31,10 +34,27 @@ async function ownBox(): Promise<string> {
   try { return selfHost(await loadHosts())?.name ?? hostname().split(".")[0]!; } catch { return hostname().split(".")[0]!; }
 }
 
+/** This box's agent relay config (components/prime-relay/agents/config.ts): pi-host's socket and the chat proxy port; empty when unread. */
+function relayConfig(env: NodeJS.ProcessEnv): { piHostSocket?: unknown; chatProxyPort?: unknown } {
+  try {
+    const raw: unknown = JSON.parse(readFileSync(env.PI_HOST_RELAY_CONFIG || join(homedir(), ".config/pi-host-relay/relay.json"), "utf8"));
+    return isRecord(raw) ? raw : {};
+  } catch { return {}; }
+}
+
+/** The chat server as this box reaches it: PI_HOST_CHAT_URL, else the agent relay's chat proxy on 127.0.0.1 (7792 when relay.json names none). */
+export function chatUrl(env: NodeJS.ProcessEnv = process.env): string {
+  if (env.PI_HOST_CHAT_URL) return env.PI_HOST_CHAT_URL;
+  const port = relayConfig(env).chatProxyPort;
+  return `http://127.0.0.1:${typeof port === "number" ? port : 7792}`;
+}
+
 /** This box's pi-host socket when one is there, then every other box in the boxes file. */
 export async function routes(env: NodeJS.ProcessEnv = process.env): Promise<Route[]> {
   const found: Route[] = [];
-  const socket = env.PI_HOST_SOCKET || (env.XDG_RUNTIME_DIR ? join(env.XDG_RUNTIME_DIR, "pi-host", "host.sock") : "");
+  const relaySocket = relayConfig(env).piHostSocket;
+  const socket = env.PI_HOST_SOCKET || (typeof relaySocket === "string" ? relaySocket : "") ||
+    (env.XDG_RUNTIME_DIR ? join(env.XDG_RUNTIME_DIR, "pi-host", "host.sock") : "");
   if (socket && existsSync(socket)) found.push({ box: await ownBox(), socket });
   const file = env.PI_AGENT_BUS_BOXES || join(homedir(), ".config/pi-host-relay/boxes.json");
   if (!existsSync(file)) return found;
@@ -147,17 +167,39 @@ export function threadText(from: { id: string; name: string }, box: string, mess
  * Submits `message` from Prime root `from` to the thread `to` names. The request id comes from the sender's message id, so a send the wrapper
  * repeats after pi-host did not answer lands once.
  */
-export async function sendToThread(found: readonly Route[], input: { from: { id: string; name: string }; to: string; message: string; id: string }): Promise<Record<string, unknown>> {
+export async function sendToThread(found: readonly Route[], input: { from: { id: string; name: string }; to: string; message: string; id: string },
+  chat = chatUrl()): Promise<Record<string, unknown>> {
   const rows = await listThreads(found);
   const target = pickThread(rows, input.to);
-  if ("error" in target) throw new Error(target.error);
   const box = await ownBox();
   const text = threadText(input.from, box, input.message, rows.map(row => row.thread));
+  if ("error" in target) {
+    if (rows.some(row => row.thread.name.trim() === input.to.trim())) throw new Error(target.error);
+    return await sendThroughChat(chat, input, text, target.error);
+  }
   const data = await submit(target.route, target.thread.id, text, `agentmsg:${input.id}`, { from: input.from.id, via: "agent_message" });
-  const endpoint = (id: string, name: string) => ({ activeSessionId: id, sessionId: id, sessionName: name, runtimeKind: "top-level" });
   return { id: `agentmsg_${input.id}`, source: "agent_message", target: endpoint(target.thread.id, target.thread.name), from: endpoint(input.from.id, input.from.name),
     message: input.message, deliveryStatus: data.status === "queued" ? "queued" : "delivered", deliveryMode: "steer", host: target.thread.box, piThread: true,
     requestId: data.requestId, submission: data.submission, status: data.status };
+}
+
+const endpoint = (id: string, name: string) => ({ activeSessionId: id, sessionId: id, sessionName: name, runtimeKind: "top-level" });
+
+/**
+ * A send to a thread no route here lists, through apps/chat's POST /api/threads/:id/agent-message, which finds the thread by its full id or
+ * exact name on any box and submits it there through that box's relay. A 404 keeps `missing`, the reason no route here matched, with apps/chat's.
+ */
+export async function sendThroughChat(chat: string, input: { from: { id: string; name: string }; to: string; message: string; id: string }, text: string,
+  missing: string): Promise<Record<string, unknown>> {
+  const requestId = `agentmsg:${input.id}`;
+  const response = await fetch(new URL(`api/threads/${encodeURIComponent(input.from.id)}/agent-message`, chat.endsWith("/") ? chat : `${chat}/`), {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ to: input.to, text, requestId, whenBusy: "steer" }) });
+  const body: unknown = await response.json().catch(() => ({}));
+  const error = isRecord(body) && typeof body.error === "string" ? body.error : `apps/chat at ${chat} answered ${response.status}`;
+  if (response.status === 404) throw new Error(`${missing} ${error}`);
+  if (!response.ok || !isRecord(body) || typeof body.thread !== "string") throw new Error(`apps/chat at ${chat} did not send it: ${error}`);
+  return { id: `agentmsg_${input.id}`, source: "agent_message", target: endpoint(body.thread, String(body.name ?? "")), from: endpoint(input.from.id, input.from.name),
+    message: input.message, deliveryStatus: "delivered", deliveryMode: "steer", host: String(body.box ?? ""), piThread: true, requestId, submission: body.submission };
 }
 
 /** One durable_submit of an agent.message input to the thread, which steers a turn that runs. */

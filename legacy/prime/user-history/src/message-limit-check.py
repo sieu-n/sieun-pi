@@ -49,6 +49,8 @@ its own reference. It does three things.
 10. pi-host threads. Prime's daemon knows no pi-host thread (c93), so a root's agent_observe.list_agents lists pi-host's threads as
    siblings too, and a sibling send to a thread's full id, or to its exact name when no Prime root here or on another box has that name,
    goes to the thread as an agent.message input (src/pi-thread-message.ts). A name that names a Prime root and a thread raises with both ids.
+   A thread no pi-host route on this box lists, such as agent factory on us-metal02 from the Mac, goes through apps/chat once the daemon and
+   the chat service found no sibling of that id or name.
 11. A report names its touched tests. In auto-sns-agent's shared checkout commit.mjs queues the unit tests a commit touches for a
    detached runner, which hands a red back at the session's next tool call, but a job commits, reports and ends its turn first: in the 7 d
    to 11-09, 251 of 418 touched-test reds were never read, and 30 of the 79 culprit commits a d4 call named had a red touched-tests run. So
@@ -73,7 +75,7 @@ import uuid
 
 CHECK = os.path.join(os.path.dirname(os.path.realpath(__file__)), "message-limit-check.ts")
 SEND_ONCE = os.path.join(os.path.dirname(os.path.realpath(__file__)), "send-once.ts")
-VERSION = 29
+VERSION = 30
 BRIEFS = "spawn-briefs"
 SAFE_ID = re.compile(r"^[\w-]{1,128}$")
 SEND_TIMEOUT = 'waiting for the Prime Agent daemon response to "send_message"'
@@ -479,10 +481,10 @@ async def send_pi_thread(real, payload, target):
                                      "id": str(uuid.uuid4())}, PI_THREAD)
 
 
-async def send_other_box(payload, error, resend):
-    """A sibling send the local daemon found no sibling for, delivered by the chat service to a root on another box; a sibling send the local
-    daemon refused because the root's worker died or was dropped, sent once more after the chat service opened that root from its file
-    (resend); else the daemon's error."""
+async def send_other_box(real, payload, error, resend):
+    """A sibling send the local daemon found no sibling for, delivered by the chat service to a root on another box, else by apps/chat to the
+    pi-host thread it names on any box (send_pi_thread); a sibling send the local daemon refused because the root's worker died or was
+    dropped, sent once more after the chat service opened that root from its file (resend); else the daemon's error."""
     root = own_root()
     if not root or payload.get("receiver_role") != "sibling":
         raise error
@@ -501,7 +503,13 @@ async def send_other_box(payload, error, resend):
     except RuntimeError as other:
         if SEND_TIMEOUT in str(other) or CLIENT_CLOSED in str(other):
             raise
-        raise RuntimeError(f"{error}; {other}") from None
+        if NO_SIBLING not in str(other):
+            raise RuntimeError(f"{error}; {other}") from None
+        # On 11-26 frontend bro on the Mac could not reach agent factory, a pi-host thread on us-metal02: no pi-host route on the Mac listed it.
+        try:
+            return await send_pi_thread(real, payload, {"sessionId": payload.get("receiver_name")})
+        except RuntimeError as thread:
+            raise RuntimeError(f"{error}; {other}; {thread}") from None
     return reply
 
 
@@ -799,7 +807,7 @@ async def request(request_type, payload=None, *args, **kwargs):
                     if FULL.search(str(error)):
                         reply = await queued(real, payload, error)
                     else:
-                        reply = await send_other_box(payload, error, lambda: real(request_type, payload, *args, **kwargs))
+                        reply = await send_other_box(real, payload, error, lambda: real(request_type, payload, *args, **kwargs))
         if request_type == "agent_observe.list":
             reply = await with_other_boxes(reply)
         if direct:

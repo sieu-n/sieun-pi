@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
 import { messageCheckPrelude } from "../src/message-limit-check.ts";
-import { pickThread, type Route, sendAlert, sendToThread, threadText } from "../src/pi-thread-message.ts";
+import { chatUrl, pickThread, type Route, routes, sendAlert, sendToThread, threadText } from "../src/pi-thread-message.ts";
 
 const VENT = "230bbdbf-4d84-475f-95d2-63db2f90ca34";
 const FACTORY = "72ba1ed2-e04e-4284-a4da-3547edb6a3d9";
@@ -184,6 +184,94 @@ test("a Prime root's kernel lists pi-host threads as siblings, sends to one by i
   } finally {
     host.server.close();
     chat.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("on the Mac the pi-host socket and the chat proxy come from relay.json, since macOS sets no XDG_RUNTIME_DIR", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-thread-relay-"));
+  const host = await fakeHost(dir);
+  try {
+    const relay = join(dir, "relay.json");
+    await writeFile(relay, JSON.stringify({ piHostSocket: host.socket, chatProxyPort: 7799 }));
+    const env = { PI_HOST_RELAY_CONFIG: relay, PI_AGENT_BUS_BOXES: join(dir, "no-boxes.json") };
+    assert.deepEqual((await routes(env)).map(route => "socket" in route && route.socket), [host.socket]);
+    assert.equal(chatUrl(env), "http://127.0.0.1:7799");
+    assert.equal(chatUrl({ PI_HOST_RELAY_CONFIG: join(dir, "none.json") }), "http://127.0.0.1:7792");
+  } finally {
+    host.server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a Mac root's send to a pi-host thread on another box goes through apps/chat once the daemon and the chat service find no sibling", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-thread-across-"));
+  // The Mac chat service lists no other root and refuses the send, as :5182 answered frontend bro on 11-26.
+  const chat = createHttpServer((req, res) => {
+    let body = "";
+    req.on("data", chunk => { body += chunk; });
+    req.on("end", () => {
+      const to = body ? (JSON.parse(body) as { to?: string }).to : "";
+      const siblings = req.url!.includes("api/agent/siblings");
+      res.writeHead(siblings ? 200 : 409, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(siblings ? { agents: [] } : { error: `No sibling matches "${to}" on any box either.` }));
+    });
+  });
+  // apps/chat knows agent factory on us-metal02 and no "nobody".
+  const posts: { url: string; body: Record<string, unknown> }[] = [];
+  const app = createHttpServer((req, res) => {
+    let body = "";
+    req.on("data", chunk => { body += chunk; });
+    req.on("end", () => {
+      const parsed = JSON.parse(body) as Record<string, unknown>;
+      posts.push({ url: req.url!, body: parsed });
+      const found = parsed.to === FACTORY;
+      res.writeHead(found ? 200 : 404, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(found ? { thread: FACTORY, name: "agent factory", box: "us-metal02", submission: 7 }
+        : { error: `No thread on any box has the id or name ${JSON.stringify(parsed.to)}.` }));
+    });
+  });
+  for (const server of [chat, app]) { server.listen(0, "127.0.0.1"); await once(server, "listening"); }
+  const port = (server: typeof chat) => (server.address() as { port: number }).port;
+  await writeFile(join(dir, "instance.json"), JSON.stringify({ url: `http://127.0.0.1:${port(chat)}/cap/` }));
+  await writeFile(join(dir, "configuration.json"), JSON.stringify({ csrfToken: "t" }));
+  await writeFile(join(dir, "rlm.py"), [
+    "async def host_request(request_type, payload=None):",
+    "    if request_type == 'agent_message.send':",
+    "        raise RuntimeError('No sibling matches ' + payload['receiver_name'])",
+    `    return {'current': {'sessionId': '${MAC_ROOT}', 'sessionName': 'frontend bro'}, 'agents': []}`,
+  ].join("\n") + "\n");
+  await writeFile(join(dir, "agent_message.py"), "from rlm import host_request\n");
+  await writeFile(join(dir, "agent_observe.py"), "from rlm import host_request\n");
+  const script = messageCheckPrelude(dir) + [
+    "import asyncio, json, agent_message",
+    "async def send(to):",
+    "    try:",
+    "        return await agent_message.host_request('agent_message.send', {'message': 'delivery test', 'receiver_role': 'sibling', 'receiver_name': to})",
+    "    except Exception as error:",
+    "        return {'error': str(error)}",
+    "async def main():",
+    `    print(json.dumps({'factory': await send('${FACTORY}'), 'nobody': await send('nobody')}))`,
+    "asyncio.run(main())",
+  ].join("\n");
+  try {
+    const sessionDir = join(dir, "session-artifacts", MAC_ROOT);
+    await mkdir(sessionDir, { recursive: true });
+    const env: NodeJS.ProcessEnv = { ...process.env, PYTHONPATH: dir, RLM_SESSION_DIR: sessionDir, SIEUN_PI_HOSTS: join(dir, "no-hosts.json"),
+      PI_HOST_RELAY_CONFIG: join(dir, "no-relay.json"), PI_AGENT_BUS_BOXES: join(dir, "no-boxes.json"), PI_HOST_CHAT_URL: `http://127.0.0.1:${port(app)}` };
+    delete env.PI_HOST_SOCKET;
+    delete env.XDG_RUNTIME_DIR;
+    const run = await promisify(execFile)("python3", ["-c", script], { cwd: dir, encoding: "utf8", env });
+    const out = JSON.parse(run.stdout.trim().split("\n").at(-1)!);
+    assert.deepEqual([out.factory.deliveryStatus, out.factory.target?.sessionId, out.factory.host, out.factory.piThread], ["delivered", FACTORY, "us-metal02", true]);
+    assert.equal(posts[0]!.url, `/api/threads/${MAC_ROOT}/agent-message`);
+    assert.deepEqual([posts[0]!.body.to, posts[0]!.body.whenBusy], [FACTORY, "steer"]);
+    assert.match(String(posts[0]!.body.requestId), /^agentmsg:/);
+    assert.match(String(posts[0]!.body.text), new RegExp(`^\\[agent-message from sibling:frontend bro \\(${MAC_ROOT}, a Prime session on [\\w.-]+\\); answer with .*\\]\\n\\ndelivery test$`));
+    assert.match(out.nobody.error, /No sibling matches nobody; .*No sibling matches "nobody" on any box either.*No thread on any box has the id or name "nobody"/);
+  } finally {
+    chat.close();
+    app.close();
     await rm(dir, { recursive: true, force: true });
   }
 });
