@@ -41,7 +41,7 @@ Tests alone are not sufficient verification. A PR is verified only when its unit
   - [ ] `cat "<absolute control skill SKILL.md path from Prime's skill listing>"`
   - [ ] `cat "$POTETO_MODE_DIR/playbooks/opening-a-pr.md"`
   - [ ] `cat "$POTETO_SKILLS_DIR/<each other bundled leaf skill>/SKILL.md"`
-- [ ] Arm the 30-minute audit tick as an `rlm-heartbeat` entry.
+- [ ] Take the 30-minute audit tick from the board: in a chat with a board, its check-in is the tick, and a wait for a set time or event is a `board.wake(at=...)` or `board.wake(check=..., at=...)` (config/AGENTS.md rule 6). Only a session with no board arms the tick as an `rlm-heartbeat` entry.
 - [ ] Use this tick prompt, verbatim. "Re-read the execution playbook from its active skill source and the armed /goal. Audit the operation against both and fix drift in this tick. Probe every active lane and judge progress by side effects only. Stand down a stuck lane and dispatch its replacement now. Then send the operator a status message, whether or not anything changed, with the queue table of PR, owner, state, and head SHA, the verdicts since the last tick, what merged, open operator gates, and blockers."
 - [ ] On the operator's hold or stand-down, send every owner a zero-writes order at once.
 
