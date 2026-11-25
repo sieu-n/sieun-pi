@@ -43,14 +43,14 @@ const UNREAD_AT_STOP = "unread: the chat service stopped before the relay answer
 const UNNAMED_HOST = "mac";
 /** host-stats.ts CPU_SIDES. */
 const CPU_SIDES = ["harness", "apps", "owner", "ci", "system"] as const;
-/** mac-usable-watch.ts USABLE and LINUX_USABLE. */
+/** mac-usable-watch.ts USABLE and LINUX_USABLE, with its swapouts pass at pressure level 1 while swap shrinks. */
 const USABLE = { pressureLevel: 4, swapoutsPerS: 6000, kernelTaskPct: 100 } as const;
 const LINUX_USABLE = { memFullAvg10: 70, runnablePerCore: 1 } as const;
 
 type Hold = { what: string; from: number; to: number };
 type PoolHold = { session: string; from: number; to: number; room: readonly string[]; cell: boolean };
 type HostView = { name: string; usable: HostUsable | null; workers: number; workerGb: number; top: readonly WorkerLine[]; serviceGb?: number; agents?: AgentLine;
-  error?: string; offline?: true; testBrowsers?: readonly TestBrowserLine[] };
+  error?: string; offline?: true; testBrowsers?: readonly TestBrowserLine[]; swapGb?: number };
 type MinuteSide = "harness" | "ci" | "other" | "unknown";
 type Tail = { offset: number; rest: Buffer };
 type Stamped<T> = { at: number; value: T };
@@ -143,7 +143,7 @@ function cleanLinux(reading: LinuxUsable): LinuxUsable {
 }
 
 /** mac-usable-watch.ts `unusable`. */
-export function unusable(reading: HostUsable): string[] {
+export function unusable(reading: HostUsable, swapFell = false): string[] {
   const missed: string[] = [];
   if (isLinuxReading(reading)) {
     if (reading.memFullAvg10 >= LINUX_USABLE.memFullAvg10) missed.push("pressure");
@@ -151,7 +151,7 @@ export function unusable(reading: HostUsable): string[] {
     return missed;
   }
   if (reading.pressureLevel >= USABLE.pressureLevel) missed.push("pressure");
-  if (reading.swapoutsPerS >= USABLE.swapoutsPerS) missed.push("swapouts");
+  if (reading.swapoutsPerS >= USABLE.swapoutsPerS && !(swapFell && reading.pressureLevel === 1)) missed.push("swapouts");
   if (reading.kernelTaskPct >= USABLE.kernelTaskPct) missed.push("kernel_task");
   return missed;
 }
@@ -171,9 +171,21 @@ export function hostViews(line: WatchLine): HostView[] {
       const read = checked(host.usable);
       const error = host.error ?? read.error;
       return { name: host.name, usable: read.usable, workers: host.workers, workerGb: host.workerGb, top: host.top,
-        ...host.agents ? { agents: host.agents } : {}, ...error ? { error } : {}, ...host.offline ? { offline: true as const } : {}, ...host.testBrowsers ? { testBrowsers: host.testBrowsers } : {} };
+        ...host.agents ? { agents: host.agents } : {}, ...error ? { error } : {}, ...host.offline ? { offline: true as const } : {}, ...host.testBrowsers ? { testBrowsers: host.testBrowsers } : {},
+        ...typeof host.swapGb === "number" ? { swapGb: host.swapGb } : {} };
     }),
   ];
+}
+
+/** whole-system.ts `swapFellAt`. */
+function swapFellAt(lines: readonly WatchLine[]): (line: WatchLine, view: HostView) => boolean {
+  return (line, view) => {
+    const at = Date.parse(line.at);
+    const before = lines.findLast(candidate => Date.parse(candidate.at) < at);
+    if (view.swapGb === undefined || !before || at - Date.parse(before.at) > 2 * MINUTE) return false;
+    const then = hostViews(before).find(candidate => candidate.name === view.name)?.swapGb;
+    return then !== undefined && view.swapGb < then;
+  };
 }
 
 /** whole-system.ts `usableAround`. */
@@ -522,6 +534,7 @@ export function judgeMinutes(input: { now: number; watch: readonly WatchLine[]; 
   const poolAt = (from: number, to: number, cell: boolean) => poolHeld.find(hold => hold.cell === cell && hold.from + HOLD_MS < to && hold.to >= from);
   const heldAt = (at: number) => queueHolds.some(hold => hold.from + HOLD_MS <= at && hold.to >= at - MINUTE);
   const side = sideOf(input.watch);
+  const swapFell = swapFellAt(input.watch);
   const out: Minutes = { clean: 0, unknown: 0, unwatched: 0, held: 0, freeSlot: 0, cellWait: 0, daemonFail: 0, cpuBusy: 0, harness: 0, ci: 0, other: 0, unattributed: 0,
     offline: 0, usable: 0, perHost: new Map(), queueHolds: queueHolds.length + poolHeld.filter(hold => !hold.cell).length, cellHolds: poolHeld.filter(hold => hold.cell).length };
   const hostCount = (name: string) => { const known = out.perHost.get(name) ?? { usable: 0, unusable: 0, unknown: 0, offline: 0 }; out.perHost.set(name, known); return known; };
@@ -537,7 +550,7 @@ export function judgeMinutes(input: { now: number; watch: readonly WatchLine[]; 
       if (view.offline) { tally.offline++; offline.add(view.name); continue; }
       if (!view.usable && view.error === UNREAD_AT_STOP && usableAround(input.watch, view.name, from, to)) { tally.usable++; continue; }
       if (!view.usable) { tally.unknown++; unknown = true; continue; }
-      const found = unusable(view.usable);
+      const found = unusable(view.usable, swapFell(line, view));
       const own = view.name === (line.host ?? UNNAMED_HOST);
       const slow = found.includes("cpu") ? harnessSlow({ box: view.name, own, latency: line.chat, from, to, misses: input.misses, faults: input.faults }) : [];
       const miss = found.filter(kind => kind !== "cpu" || slow.length > 0);
@@ -1040,9 +1053,10 @@ const gauge = (name: string, help: string, value: number, labels?: Record<string
   ({ name, kind: "gauge", help, value, ...unit ? { unit } : {}, ...labels ? { labels } : {} });
 
 /** The newest watch line's numbers for each box: Settings > Hosts' Agent sessions and their states, the usable reading and the worker footprint. */
-export function boxSamples(line: WatchLine): Sample[] {
+export function boxSamples(line: WatchLine, lines: readonly WatchLine[]): Sample[] {
   const out: Sample[] = [];
   const views = hostViews(line);
+  const swapFell = swapFellAt(lines);
   const sessions = [{ name: line.host ?? UNNAMED_HOST, live: line.live, working: line.working }, ...(line.hosts ?? []).filter(host => !host.error).map(host => ({ name: host.name, live: host.live, working: host.working }))];
   for (const view of views) {
     const host = { host: view.name };
@@ -1061,7 +1075,7 @@ export function boxSamples(line: WatchLine): Sample[] {
     if (view.offline) out.push(gauge("harness.chat.box_offline", "1 when Tailscale read the box offline in the watch's last minute.", 1, host));
     const usable = view.usable;
     if (usable) {
-      out.push(gauge("harness.chat.box_usable", "1 when the box read usable in the watch's last minute by d7's rule, 0 when it did not.", unusable(usable).length ? 0 : 1, host));
+      out.push(gauge("harness.chat.box_usable", "1 when the box read usable in the watch's last minute by d7's rule, 0 when it did not.", unusable(usable, swapFell(line, view)).length ? 0 : 1, host));
       const kinds: [string, number | null | undefined][] = isLinuxReading(usable)
         ? [["mem_full_avg10", usable.memFullAvg10], ["mem_some_avg10", usable.memSomeAvg10], ["cpu_some_avg10", usable.cpuSomeAvg10], ["runnable_per_core", usable.runnablePerCore], ["swapouts_per_s", usable.swapoutsPerS]]
         : [["pressure_level", usable.pressureLevel], ["swapouts_per_s", usable.swapoutsPerS], ["kernel_task_pct", usable.kernelTaskPct]];
@@ -1138,7 +1152,7 @@ export async function read(ctx: Context): Promise<Sample[]> {
   }
   out.push(gauge("harness.chat.quiet_window", "The quiet window after which Agent sessions should drop under 5 GB (quiet-minutes.ts).", quietMs / 1000, undefined, "s"));
   if (latest) {
-    out.push(gauge("harness.chat.watch_age", "Seconds since the usable watch's newest line.", (now - Date.parse(latest.at)) / 1000, undefined, "s"), ...boxSamples(latest));
+    out.push(gauge("harness.chat.watch_age", "Seconds since the usable watch's newest line.", (now - Date.parse(latest.at)) / 1000, undefined, "s"), ...boxSamples(latest, state.lines));
     const judged = state.lines.findLast(line => Date.parse(line.at) >= start && line.agents?.hung !== undefined);
     if (judged) out.push(gauge("harness.chat.hung_calls", "Tool calls that wrote nothing for an hour with no progress, or a kernel burning CPU, in the newest judged watch line (d7 hung_calls).", judged.hung?.length ?? 0));
     const window = state.lines.filter(line => Date.parse(line.at) >= start);

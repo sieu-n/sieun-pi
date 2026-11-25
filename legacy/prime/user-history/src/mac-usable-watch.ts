@@ -35,6 +35,10 @@ const MINUTE = 60_000;
  * A kernel_task minute at 0 swapouts is the memory compressor (r 0.93 with compressions a second, 02:56-02:59Z on 10-18), and the owner feels it:
  * across 539 probes at 02:45-03:10Z on 10-18, a /usr/bin/true spawn took a median 10.6 ms (p90 52 ms) at kernel_task 100% or more against
  * 3.6 ms (p90 18 ms) under it.
+ * A swapouts minute at pressure level 1 (normal) whose swap shrank since the box's line before it is macOS writing pages out while it frees
+ * an app's memory, and `unusable` lets it pass (`swapFell`): at 10:27Z on 11-25 the Mac read 7,690 swapouts a second, kernel_task at 31% and
+ * swap 12.3 to 9.2 GB a minute after Helium went from 15.0 to 5.8 GB, and at 05:57Z on 11-20 it read 6,433 a second, kernel_task at 52% and
+ * swap 15.5 to 10.5 GB while Helium quit. The other 5 Mac minutes over 6,000 from 11-19 to 11-25 read warn with swap growing 1.1 to 2.1 GB.
  */
 export const USABLE = { pressureLevel: 4, swapoutsPerS: 6000, kernelTaskPct: 100 } as const;
 /** One feed reading: the kernel's pressure level (1 normal, 2 warn, 4 critical), swapouts a second, and kernel_task CPU in % of a core. */
@@ -81,8 +85,11 @@ export const LINUX_USABLE = { memFullAvg10: 70, runnablePerCore: 1 } as const;
 export type HostUsable = UsableReading | LinuxUsable;
 export const isLinuxReading = (reading: HostUsable): reading is LinuxUsable => (reading as { kind?: unknown }).kind === "linux";
 
-/** What makes a reading's minute unusable, in USABLE's (or LINUX_USABLE's) order; empty when the box is usable. */
-export function unusable(reading: HostUsable): UsableMiss[] {
+/**
+ * What makes a reading's minute unusable, in USABLE's (or LINUX_USABLE's) order; empty when the box is usable. `swapFell` says the box's swap
+ * shrank since its line before, which clears a Mac swapouts miss at pressure level 1 (USABLE).
+ */
+export function unusable(reading: HostUsable, swapFell = false): UsableMiss[] {
   const missed: UsableMiss[] = [];
   if (isLinuxReading(reading)) {
     if (reading.memFullAvg10 >= LINUX_USABLE.memFullAvg10) missed.push("pressure");
@@ -90,7 +97,7 @@ export function unusable(reading: HostUsable): UsableMiss[] {
     return missed;
   }
   if (reading.pressureLevel >= USABLE.pressureLevel) missed.push("pressure");
-  if (reading.swapoutsPerS >= USABLE.swapoutsPerS) missed.push("swapouts");
+  if (reading.swapoutsPerS >= USABLE.swapoutsPerS && !(swapFell && reading.pressureLevel === 1)) missed.push("swapouts");
   if (reading.kernelTaskPct >= USABLE.kernelTaskPct) missed.push("kernel_task");
   return missed;
 }

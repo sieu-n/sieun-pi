@@ -92,6 +92,20 @@ export function usableAround(watch: readonly WatchLine[], box: string, from: num
 }
 
 /**
+ * Whether `view`'s swap shrank since the box's view in the last watch line before `line`, read within 2 minutes (mac-usable-watch.ts
+ * `unusable`'s `swapFell`): at 10:27Z on 11-25 the Mac's swap went from 12.3 to 9.2 GB in a 7,690 swapouts a second minute at pressure 1.
+ */
+export function swapFellAt(lines: readonly WatchLine[]): (line: WatchLine, view: HostView) => boolean {
+  return (line, view) => {
+    const at = Date.parse(line.at);
+    const before = lines.findLast(candidate => Date.parse(candidate.at) < at);
+    if (view.swapGb === undefined || !before || at - Date.parse(before.at) > 2 * MINUTE) return false;
+    const then = hostViews(before).find(candidate => candidate.name === view.name)?.swapGb;
+    return then !== undefined && view.swapGb < then;
+  };
+}
+
+/**
  * A relay read that failed on the network, with no answer from the box at all. A relay that answered, even with a 500, says the box was up.
  */
 export const UNREACHED = /^(?:fetch failed|The operation was aborted due to timeout)/;
@@ -1852,6 +1866,7 @@ export function measure(input: Inputs): PrecheckOutput {
   const side = sideOf(input.watch);
   const ciAt = ciWords(input.watch);
   const jumpAt = jumpWords(input.watch, rigOwner);
+  const swapFell = swapFellAt(input.watch);
   const holdersAt = holderWords(input.day ?? input.watch, rigOwner);
   const dirty: string[] = [];
   const busy: string[] = [];
@@ -1883,7 +1898,7 @@ export function measure(input: Inputs): PrecheckOutput {
       }
       if (!view.usable && view.error === UNREAD_AT_STOP && usableAround(input.watch, view.name, from, to)) { count.usable++; continue; }
       if (!view.usable) { count.unknown++; unknown.push(view.error ? `${view.name} unread (${view.error.slice(0, 80)})` : `${view.name} no reading`); continue; }
-      const found = unusable(view.usable);
+      const found = unusable(view.usable, swapFell(line, view));
       const own = view.name === lineHost(line);
       const slow = found.includes("cpu")
         ? harnessSlow({ box: view.name, own, latency: line.chat, from, to, misses: input.workerMisses ?? [], faults: daemonFaults }) : [];
