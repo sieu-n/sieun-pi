@@ -35,7 +35,7 @@ test("the post the owner called a model goes out on the first try in a room, and
   const turn = { owner: true, ownerIds: new Set<string>() };
   const held = tellOwner({ text: MODEL_POST }, turn);
   assert.equal(held.kind, "refused", "a Prime chat's 80 words hold it");
-  assert.match(held.kind === "refused" ? held.text : "", /^Not sent, it runs long, with 92 words in all\. Text him like a Slack DM/);
+  assert.match(held.kind === "refused" ? held.text : "", /^Not sent, it runs long, with 81 words in all\. Text him like a Slack DM/);
   assert.notEqual(tellOwner({ text: MODEL_POST }, { ...turn, long: ROOM_LONG }).kind, "refused");
   const longer = `${MODEL_POST}\n${"- one more point the post did not need to carry at all\n".repeat(4)}`;
   const note = tellOwner({ text: longer }, { ...turn, long: ROOM_LONG });

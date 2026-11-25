@@ -6,6 +6,8 @@
  * line (msg mwqtp2l1: "정말 훌륭한 메시지였어"), which natural-checks.test.mjs keeps as the target shape.
  */
 
+import { relayWords } from "../../../packages/pi-host/src/durable/relay-line.ts";
+
 /** A text's words as tell_owner's long check counts them (reply-lint.ts `longReply`), with no list or task marker counted. */
 export const words = text => text.replace(/\]\([^)]*\)/g, "]").replace(/^[ \t]*(?:[-*+]|\d+[.)])[ \t]+(?:\[[ xX]\][ \t]+)?/gm, "").split(/\s+/).filter(Boolean).length;
 const BULLET = /^\s*[-*+] /;
@@ -84,11 +86,16 @@ const OPEN = /^\s*[-*+] \[ \] /m;
 /**
  * A first reply that narrates the agent's own plan, such as #sw-factory-build p158 "I'll map how it really works first, then write one
  * proposal with options and my pick. It will cover these:", which the owner answered in p159 (msg mwqwjznm, c234): "이런건 내부적으론 알아서
- * 하고, 밖에서 보낼땐 slop slop slop fucking disgusting try again". Saying what he will get, such as "I'll come back with a before and after",
- * stays fine.
+ * 하고, 밖에서 보낼땐 slop slop slop fucking disgusting try again". A line that promises a result is `promises` below.
  */
 const NARRATION = /\b(?:i'll\b[^.\n]*\bfirst\b|first,? i(?:'ll| will)\b|(?:then|next|after that),? i(?:'ll| will)\b|here's what i(?:'m| am|'ll| will)\b|what i'm (?:checking|doing|looking at)|it will cover|will cover these|i'm going to|i(?:'ll| will) (?:check|look|read|dig|map|trace|go through|start|confirm|verify|research|run|investigate|explore)\b|let me (?:check|look|start|first)|my plan is)/i;
 
+/**
+ * Whether a post promises a result to come or reports a hand-over, by tell_owner's own hand-over words (`relay-line.ts` `HANDOFF`), such as
+ * #1124-cost-management p17's "Calls per customer per day, with the success rate, are coming here next.", which the owner called slop on
+ * 11-25 (p21, msg mww1eid8, c104).
+ */
+export const promises = text => relayWords(text.replace(/```[\s\S]*?```|`[^`\n]*`/g, " "))?.kind === "handoff";
 /** Whether a first reply narrates the agent's own plan, with code spans left out. */
 export const narrates = text => NARRATION.test(text.replace(/```[\s\S]*?```|`[^`\n]*`/g, " "));
 /** Whether a text holds an open `- [ ]` item, a process step with no result yet. */
@@ -108,6 +115,7 @@ export function naturalChecks(postVersions) {
   return [
     ["the first post opens with a natural sentence", naturalLine(firstLine)],
     ["the first version narrates no plan of the agent's own", !narrates(first[0] ?? "")],
+    ["no version promises a result to come", all.every(text => !promises(text))],
     ["the first version holds no open - [ ] item", !hasOpenItem(first[0] ?? "")],
     ["no version holds a bare topic label bullet", all.every(text => !text.split("\n").some(bareLabel))],
     ["every question comes with the agent's pick", all.every(pickFirst)],

@@ -16,8 +16,9 @@ import { AgentDoc, ROOT_CONVERSATION_ID, type AgentState, type EntryRecord } fro
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { PRIME_BASE_PROMPT } from "@sieun-pi/pi-family/preamble";
 import { CHAT_BRIEF } from "../../../../legacy/prime/user-history/src/chat-brief.ts";
-import { agentHarnessDir, AgentRoleDoc, briefFile, commInstructions, conversationHarnessDir, parseAgentRef, roleFields, ROOM_EXAMPLES, SHARED_STYLE_TEXT, workInstructions, type AppliedRole } from "../../src/durable/agent-profile.ts";
+import { agentHarnessDir, AgentRoleDoc, briefFile, commInstructions, conversationHarnessDir, MODEL_POST, parseAgentRef, roleFields, ROOM_EXAMPLES, SHARED_STYLE_TEXT, workInstructions, type AppliedRole } from "../../src/durable/agent-profile.ts";
 import { threadHarnessDir } from "../../src/durable/prime-harness.ts";
+import { relayWords } from "../../src/durable/relay-line.ts";
 import { EDIT_MESSAGE_DESCRIPTION } from "../../src/durable/room-tools.ts";
 import { primeModules, primePromptParts, primeResources } from "../../src/durable/prime-prompt.ts";
 import { DurableThreads } from "../../src/durable/threads.ts";
@@ -181,13 +182,13 @@ test("a room post answers first, breaks into lines and keeps the agent's process
     assert.match(text, /The answer holds for every result under it: when one result is not clean, the answer names it, as in "two of the three deploys are live, but staging fails its health check", never "all clear" over a bullet that says otherwise\./);
     assert.doesNotMatch(text, /three of the four are clear/);
     assert.match(text, /Put the answer on its own line and each further point on its own line or `- ` bullet, never in one paragraph\. A bullet stops at two sentences, also one that opens with yes or no: the yes or no and one fact that backs it are the two, and a further fact, such as one part of a count split by kind, goes in a nested `  - ` bullet or is left out\./);
-    assert.match(text, /Keep your working plan and process to yourself \(c234\)\. A first reply gives the answer or one plain line on what he will get, never "I'll do X first, then Y" and never a checklist of your own steps\./);
+    assert.match(text, /Keep your working plan and process to yourself \(c234\)\. A first reply gives the answer or a fact you know now, never "I'll do X first, then Y" and never a checklist of your own steps\./);
     assert.match(text, /A checklist lists only results he cares about, each with its result, and you fill them in by editing that post with `edit_message`\./);
     assert.match(text, /A question to him leads with your own pick\./);
-    assert.match(text, /Within about a minute \(c224\), reply with what you already know or one plain line on what he will get/);
-    assert.match(text, /last edit of your post[\s\S]*carries the answer, that an edit only fills in results and the answer, never a status of its jobs or plans, and that it posts nothing new/);
+    assert.match(text, /Within about a minute \(c224\), take a first look and reply with what it found, a fact you know now/);
+    assert.match(text, /last edit of your post[\s\S]*carries the answer, or, when you posted none, that its report to you leads with the answer, that an edit only fills in results and the answer, never a status of its jobs or plans, and that it posts nothing new/);
     assert.match(text, /a question the work needs goes at its end, after your pick, never as a post of its own/);
-    assert.match(text, /never what you are doing, such as "running the tests now" or "I'll run the tests"/);
+    assert.match(text, /none says what you are doing, such as "on it" or "running the tests now"/);
     assert.match(text, /A question whether a setup or skill is set up right gets one answer line and one table of each piece[\s\S]*\(c225\)/);
     assert.match(text, /A yes or no question gets the fact he asked for and stops there: leave out what you are unsure of, or ask it as a question with your pick\./);
     assert.match(text, /A standing ask, such as "keep advising X", "always do Y" or "from now on Z", is such a rule, so save it the same way; a one-off task or answer is not memory\./);
@@ -238,6 +239,29 @@ test("a bullet stops at two sentences, shown by a real pair from no blind ask (o
   // On 11-23 all 5 checklist reruns opened on a rule example taken from their own ask, so this pair answers none of the list and checklist
   // asks of blind-replies.mjs: the checkout's uncommitted files and pi-host's comm-guard tests.
   assert.doesNotMatch(`${pair.bad.text}\n${pair.good.text}`, /uncommitted|untracked|comm[- ]guard|origin\/main|in sync/i);
+});
+
+test("no post promises a result: a first reply holds a fact or does not exist, and every good example ends on a fact (owner, #1124-cost-management p21, msg mww1eid8, c104)", () => {
+  const skill = readFileSync(new URL("../../../../skills/sw-factory/SKILL.md", import.meta.url), "utf8");
+  for (const room of ["dm_vent", "ch_1a2b3c4d"]) {
+    const text = commInstructions({ agent: "ag_vent", room, work: "w1" });
+    assert.match(text, /When the first look finds nothing to tell him yet, post nothing: your 👀 shows the work, and the answer is your first post\./);
+    assert.match(text, /No post promises a result, such as "build times per page are coming here next", "a fresh count is coming in this post", "details to follow" or "I'll report back"[\s\S]*\(#1124-cost-management p21, c104\)/);
+    assert.match(text, /When you posted none, post the answer from the report as your one post, with `reply_to` set to his post\. Then take 👀 off\./);
+    assert.match(text, /A post ends on the last fact you hold, with no line on what comes later or what a later edit will fill in \(c104\)\./);
+    assert.match(text, /Write "since" or "because" only before a real cause, never to tie a second fact to the first/);
+    assert.doesNotMatch(text, /what he will get|coming here"|proposal coming/);
+  }
+  assert.doesNotMatch(skill, /such as "proposal coming|proposal coming as one page\n/);
+  const model = /```markdown\nyes, all three are running\.[\s\S]*?```/.exec(skill)?.[0];
+  assert.ok(model && relayWords(model) === undefined, "the skill's model post ends on its bullets");
+  for (const pair of ROOM_EXAMPLES) assert.equal(relayWords(pair.good.text), undefined, `${pair.case}: the good post promises nothing`);
+  assert.equal(relayWords(MODEL_POST), undefined, "the model post ends on its bullets");
+  const pair = ROOM_EXAMPLES.find(example => example.case === "A first reply while the work runs");
+  assert.ok(pair, "the promise pair is in the examples");
+  assert.equal(relayWords(pair.bad.text)?.kind, "handoff", "the bad post's promise line is hand-over words, which tell_owner refuses");
+  // The pair answers no blind ask and comes from neither the cost thread nor crawler data, so a pass shows the rule and not a copied line.
+  assert.doesNotMatch(`${pair.bad.text}\n${pair.good.text}`, /GeoNode|crawl|customer|cost|symphony|uncommitted|comm[- ]guard|test/i);
 });
 
 test("a post to him says what he would see, names no metric key or job name, and lets its own board's id follow the thing as a chip (owner, dm_fable-auditor p15 and p16, 11-24; c145)", () => {

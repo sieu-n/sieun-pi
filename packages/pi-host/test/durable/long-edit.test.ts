@@ -32,7 +32,7 @@ test("list and task markers are no words, so a checklist of 74 words that is 96 
   assert.equal(held.size, 0);
 });
 
-test("the post the owner called a model, 92 words, edits on the first try (msg mwqtp2l1)", () => {
+test("the post the owner called a model, 81 words with its promise line cut, edits on the first try (msg mwqtp2l1)", () => {
   const held = new Set<string>();
   assert.equal(editHold(MODEL_POST, held), undefined);
 });

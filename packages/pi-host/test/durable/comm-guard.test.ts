@@ -24,6 +24,14 @@ const RELAYS: [string, "handoff" | "progress"][] = [
   ["On it.", "handoff"],
   ["The catch is Chrome shares one Instagram login, so your open Instagram tabs would flip accounts for those seconds. A job is testing whether that can be avoided.", "progress"],
   ["지금 konti domain finish가 그 로그인으로 직접 들어가서 konti.bot 리다이렉트 걸고, 끝나면 결과만 알려드릴게요.", "handoff"],
+  // #1124-cost-management p17 and p22 as first posted on 11-25, which the owner called slop (p21, msg mww1eid8, c104).
+  ["Calls per customer per day, with the success rate, are coming here next.", "handoff"],
+  ["A fresh read of GeoNode's meter and the crawl's daily size is coming in this post.", "handoff"],
+  ["The per-page numbers will be added here.", "handoff"],
+  ["Details to follow.", "handoff"],
+  ["I'll report back with the slowest pages.", "handoff"],
+  ["I'll come back with a before and after once it's live.", "handoff"],
+  ["I'll update this post with the counts.", "handoff"],
 ];
 
 /** Results and answers from the same logs, which no check may mark. */
@@ -40,6 +48,9 @@ const RESULTS = [
   "Release 21 fixed the frozen Vercel and Railway panels, so the small prod Vent update on t15 isn't needed.",
   "Removed 120 committed leftovers plus 1,546 local junk files from the checkout.",
   "Stopped. The Railway job and its helpers are shut down, and I sent the Railway Breach thread where things stand.",
+  "The fix is coming in Thursday's release, and staging has it now.",
+  "Dark mode is coming soon in the app store build, per the vendor's notes.",
+  "The next step is yours: pick a plan, and the crawl resumes.",
 ];
 
 /** On 11-03, an answer to the owner's status question (ch_14ad7a70 p39 and p40), which may go out. */
@@ -52,7 +63,8 @@ test("the relay lines of the room logs read as hand-over or progress, and the re
 
 test("a comm thread's post after its hand-over in the turn goes out unless it relays the hand-over (owner, #sw-factory-build p159, c234)", () => {
   const handed = { owner: true, asked: false, handed: true };
-  assert.equal(commPostRefusal("proposal coming as one page, with my pick for where the data lives and the few calls only you can make", handed), undefined, "one plain line on what he gets goes out");
+  assert.equal(commPostRefusal("The docs site builds again, and the last 3 deploys went green.", handed), undefined, "a fact known now goes out");
+  assert.match(commPostRefusal("The docs site builds again.\nBuild times per page are coming here next.", handed)!, /Post only a fact you already know, or nothing, since 👀 shows the work/, "a promise line is refused (c104)");
   assert.equal(commPostRefusal("Makes sense, Accounts moves into a tab under Settings and leaves the top bar.", handed), undefined);
   assert.equal(commPostRefusal("Which repo should the panel list cover, auto-sns-agent only or every repo?", handed), undefined);
   assert.match(commPostRefusal(RELAYS[0]![0], handed)!, /reports the hand-over you made in this turn/);

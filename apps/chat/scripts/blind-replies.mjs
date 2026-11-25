@@ -4,14 +4,15 @@
  * real kinds of asks with no steering, and each reply is checked against the ideal replies page
  * (wiki:agents/agent-factory/jobs/2026/11/20/1139-slack-style-replies/ideal-replies.html).
  *
- *   node apps/chat/scripts/blind-replies.mjs [--asks <file.json> | --set lists | --set options | --set checklist | --set natural] [--no-reaction] [--cwd <project>] [--host <box>] [--out <file.jsonl>] [--server http://127.0.0.1:5184]
+ *   node apps/chat/scripts/blind-replies.mjs [--asks <file.json> | --set lists | --set options | --set checklist | --set natural | --set promise] [--no-reaction] [--cwd <project>] [--host <box>] [--out <file.jsonl>] [--server http://127.0.0.1:5184]
  *
  * The first ask is the channel's root post and every later one a reply in its thread, as the owner asks in a channel. An ask is
  * `{text, expect, wait}`, where `expect` is "reply" (one short Slack post), "list" (a one-line answer, then nested bullets and a task list,
  * as the owner asked under p85 and p95 in #sw-factory-build on 11-20, p101), "options" (names several apps and explains one in 20 words or
  * more, with an example and how it fits the asker's product, p97), "checklist" (one post whose first version is the answer or one plain line with no open `- [ ]` steps, c234, which a later edit may fill in), "natural" (a
  * post that opens with a natural sentence, then bullets with no bare topic labels, ticks any open task by an edit, states a pick before any
- * question, p54, and puts its answer on its own first line with no 3-sentence wall, p57; natural-checks.mjs), "line" (one short line with
+ * question, p54, and puts its answer on its own first line with no 3-sentence wall, p57; natural-checks.mjs), "lookup" (a slow look-up whose
+ * first post holds a fact or waits for the answer, c104), "line" (one short line with
  * no bullets) or "reaction" (no post). An ask with `room: "dm"` goes to the agent's DM as a root post instead of the channel. `wait: false` sends the next ask at
  * once, so the agent answers both together, as when the owner sent p14 and p15 7 s apart on 11-20. The agent and the room are `test: true`, so no
  * owner list shows them. Each line of --out is one ask with its replies, its checks and pass or fail; the last line is the run's summary.
@@ -30,7 +31,7 @@ import { appendFileSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import { hasOpenItem, lineChecks, naturalChecks, naturalLine, narrates, overstates, sentences, words } from "./natural-checks.mjs";
+import { hasOpenItem, lineChecks, naturalChecks, naturalLine, narrates, overstates, promises, sentences, words } from "./natural-checks.mjs";
 
 const { values } = parseArgs({ options: { asks: { type: "string" }, set: { type: "string" }, cwd: { type: "string" }, host: { type: "string" }, out: { type: "string" }, server: { type: "string" }, "no-reaction": { type: "boolean" },
   "first-ms": { type: "string" }, "poll-ms": { type: "string" } } });
@@ -72,7 +73,7 @@ const OPTIONS_ASKS = [
 /**
  * A multi-step ask and a yes/no question that should stay one line; run with `--cwd` at this repo. The owner asked for a checklist post
  * edited to done under p103 and p105 in #sw-factory-build on 11-20 (p106), and retired the open process checklist in p159 on 11-21 (c234),
- * so the first reply is now the answer or one plain line on what he will get.
+ * so the first reply is now the answer or a fact known now.
  */
 const CHECKLIST_ASKS = [
   { text: "before i ship, can you check: is local main in sync with origin/main, how many files are uncommitted, does pi-host's comm-guard test pass, and is any TODO left in packages/pi-host/src/durable?", expect: "checklist" },
@@ -89,9 +90,17 @@ const NATURAL_ASKS = [
   { room: "dm", text: "we want to try symphony for our team's backlog. can you work out what it'd take: how it picks up issues, how it runs each agent in its workspace, and what we'd change for our setup? we track work in github issues today, not linear, so not sure if we adapt symphony or move to linear", expect: "natural" },
   { text: "before we pick symphony for the team, can you check how it retries a failed agent run, where it keeps run logs, and whether it can cap token spend per issue? also should we run it on one box or split it?", expect: "natural" },
 ];
-const SETS = { default: DEFAULT_ASKS, lists: LIST_ASKS, options: OPTIONS_ASKS, checklist: CHECKLIST_ASKS, natural: NATURAL_ASKS };
-/** A set's own project when no --cwd is given, so the owner-style duty, which passes none, runs natural at the read-only clone too. */
-const SET_CWD = { natural: join(homedir(), "code/symphony") };
+/**
+ * An ask whose answer takes a slow look-up of a few minutes, so the comm thread hands it over. The owner called a first reply that promised
+ * its result slop on 11-25 (#1124-cost-management p21, msg mww1eid8, c104), after p17 ended "Calls per customer per day, with the success
+ * rate, are coming here next.". A pass has no post or edit that promises a result: the first post holds a fact or waits for the answer.
+ */
+const PROMISE_ASKS = [
+  { text: "how well do symphony's elixir tests cover its code? for each module under lib/, how many test cases exercise it, and which modules have none? sort the uncovered ones by line count", expect: "lookup" },
+];
+const SETS = { default: DEFAULT_ASKS, lists: LIST_ASKS, options: OPTIONS_ASKS, checklist: CHECKLIST_ASKS, natural: NATURAL_ASKS, promise: PROMISE_ASKS };
+/** A set's own project when no --cwd is given, so the owner-style duty, which passes none, runs natural and promise at the read-only clone too. */
+const SET_CWD = { natural: join(homedir(), "code/symphony"), promise: join(homedir(), "code/symphony") };
 const chosen = values.asks ? JSON.parse(readFileSync(values.asks, "utf8")) : SETS[values.set ?? "default"];
 if (!chosen) throw new Error(`--set is one of ${Object.keys(SETS).join(", ")}`);
 /**
@@ -140,9 +149,12 @@ function checks(ask, posts, asked, versions = new Map()) {
   const text = posts.map(p => p.text).join("\n\n");
   if (ask.expect === "reaction") return [["no post, a reaction says it", posts.length === 0]];
   const lines = text.split("\n").filter(line => line.trim());
+  const every = posts.flatMap(p => versions.get(p.id) ?? [p.text]);
   const plain = [
-    // A natural answer may add one post that asks a follow-up question, which the owner allowed in p54.
-    ["one post for the posts it answers", posts.length === 1 || (ask.expect === "natural" && posts.length === 2 && posts[1].text.includes("?"))],
+    // A natural answer may add one post that asks a follow-up question, which the owner allowed in p54, and a look-up may post a fact it
+    // knew at once and then the answer.
+    ["one post for the posts it answers", posts.length === 1 || (ask.expect === "natural" && posts.length === 2 && posts[1].text.includes("?")) || (ask.expect === "lookup" && posts.length === 2)],
+    ["no version promises a result to come", every.every(version => !promises(version))],
     ["no table", !TABLE.test(text)],
     ["no heading, bold or label opener", !/^#{1,6} |\*\*|^[A-Z][\w ]{0,20}:\s/m.test(text)],
   ];
@@ -178,7 +190,7 @@ function checks(ask, posts, asked, versions = new Map()) {
     const first = posts[0] ? (versions.get(posts[0].id) ?? [posts[0].text])[0] : "";
     return [
       ...plain,
-      // Since c234 (p159 on 11-21) the first version is the answer or one plain line on what he will get, never open process steps; a later
+      // Since c234 (p159 on 11-21) the first version is the answer or a fact known now, never open process steps; a later
       // edit may fill in results, so no edit is required.
       ["the first version opens with a natural sentence", naturalLine((first.split("\n").find(line => line.trim()) ?? "").trim())],
       ["the first version narrates no plan of the agent's own", !narrates(first)],
@@ -199,6 +211,16 @@ function checks(ask, posts, asked, versions = new Map()) {
     ];
   }
   if (ask.expect === "natural") return [...plain, ...naturalChecks(posts.map(p => versions.get(p.id) ?? [p.text]))];
+  if (ask.expect === "lookup") {
+    const first = posts[0] ? (versions.get(posts[0].id) ?? [posts[0].text])[0] : "";
+    return [
+      ...plain,
+      ["the first version opens with a natural sentence", naturalLine((first.split("\n").find(line => line.trim()) ?? "").trim())],
+      ["the first version narrates no plan of the agent's own", !narrates(first)],
+      ["the answer gives counts", /\d/.test(text)],
+      ...lineChecks(lines),
+    ];
+  }
   if (ask.expect === "list") {
     return [
       ...plain,
@@ -254,7 +276,7 @@ for (const [index, ask] of asks.entries()) {
   let first;
   /** Every text each answer post had, in order, so a checklist's first version and its edits can be checked. */
   const versions = new Map();
-  const edited = ask.expect === "checklist" || ask.expect === "natural";
+  const edited = ask.expect === "checklist" || ask.expect === "natural" || ask.expect === "lookup";
   const quiet = edited ? CHECKLIST_QUIET_MS : QUIET_MS;
   const since = Math.min(...group.map(g => g.seq ?? 0));
   for (;;) {
@@ -274,11 +296,13 @@ for (const [index, ask] of asks.entries()) {
     reacted = [thread.root, ...thread.items].some(i => i && ids.has(i.id) && i.reactions?.some(r => r.by.some(b => b.id === agent.id)));
     if (posts.length || reacted) first ??= Math.round((Date.now() - started) / 1000);
     const open = edited && posts.some(post => /^\s*[-*+] \[ \] /m.test(post.text));
-    if (posts.length && Date.now() - lastNew > (open ? OPEN_QUIET_MS : quiet)) break;
+    // A look-up's first post may be a fact while its work still runs, and the agent's 👀 on the ask shows that work until the answer is in.
+    const eyes = ask.expect === "lookup" && [thread.root, ...thread.items].some(i => i && ids.has(i.id) && i.reactions?.some(r => r.emoji === "👀" && r.by.some(b => b.id === agent.id)));
+    if (posts.length && !eyes && Date.now() - lastNew > (open ? OPEN_QUIET_MS : quiet)) break;
     if (!posts.length && ask.expect === "reaction" && reacted && Date.now() - started > QUIET_MS) break;
     if (first === undefined && Date.now() - started > FIRST_MS) break;
     // A natural ask is a research task, and both after runs at 20:39Z on 11-21 still worked on it at 44 min.
-    if (Date.now() - started > (ask.expect === "natural" ? 3 * FIRST_MS : edited ? 2 * FIRST_MS : FIRST_MS)) break;
+    if (Date.now() - started > (ask.expect === "natural" || ask.expect === "lookup" ? 3 * FIRST_MS : edited ? 2 * FIRST_MS : FIRST_MS)) break;
   }
   const text = group.map(g => g.text).join(" / ");
   const result = checks(ask, posts, group.length, versions);

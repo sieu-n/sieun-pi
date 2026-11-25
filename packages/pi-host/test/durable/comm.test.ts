@@ -169,13 +169,13 @@ test("an agent.ref sets the root's tools and instructions for its role in its co
       assert.doesNotMatch(commInstructions({ ...comm, room }), /also when more work goes on after the reply/, room);
       assert.match(commInstructions({ ...comm, room }), /A follow-up in a thread you already worked on[\s\S]*within a minute from what you already hold[\s\S]*```mermaid block[\s\S]*Keep 👀 on[\s\S]*steer the job that did it if that job still runs, else to start one job that starts from its findings, never a fresh round of research jobs/, room);
       assert.match(commInstructions({ ...comm, room }), /a job that writes a page or report from other jobs' findings starts only after those jobs report, never beside them/, room);
-      assert.match(commInstructions({ ...comm, room }), /one plain line on what he will get, such as "pass and fail per test file coming here", with tell_owner's `reply_to` set to his post, never an ack such as "on it"/, room);
+      assert.match(commInstructions({ ...comm, room }), /take a first look and reply with what it found, a fact you know now, with tell_owner's `reply_to` set to his post\. When the first look finds nothing to tell him yet, post nothing/, room);
       assert.match(commInstructions({ ...comm, room }), /put no ✅ on a post you replied to\. Put ✅ on a post only for a quick ask you did where a reply would add nothing, such as "pin that", and take 👀 off then too\./, room);
-      assert.match(commInstructions({ ...comm, room }), /then take 👀 off\./, room);
+      assert.match(commInstructions({ ...comm, room }), /Then take 👀 off\./, room);
       assert.doesNotMatch(commInstructions({ ...comm, room }), /white_check_mark|swap 👀 for ✅/, room);
       assert.match(commInstructions({ ...comm, room }), /Keep ✅ and 👀 out of your post text too/, room);
       assert.match(commInstructions({ ...comm, room }), /End on the words, with no sign-off emoji[\s\S]*Data from a file or log\. Bad/, room);
-      assert.match(commInstructions({ ...comm, room }), /edit it yourself only if the answer is missing, and post again only for a new question to him; then take 👀 off/, room);
+      assert.match(commInstructions({ ...comm, room }), /edit it yourself only if the answer is missing, and post again only for a new question to him\. When you posted none, post the answer from the report as your one post/, room);
       assert.match(commInstructions({ ...comm, room }), /React to posts with fitting emoji[\s\S]*👍 to acknowledge[\s\S]*When a reaction says it all[\s\S]*react and post nothing\./, room);
       assert.match(commInstructions({ ...comm, room }), /post nothing that only reports the hand-over: your 👀 already shows it\./, room);
       assert.doesNotMatch(commInstructions({ ...comm, room }), /in progress/, room);
@@ -185,8 +185,8 @@ test("an agent.ref sets the root's tools and instructions for its role in its co
       assert.doesNotMatch(commInstructions({ ...comm, room }), /tables, links|diagram, table or link/, room);
       assert.match(commInstructions({ ...comm, room }), /Put the answer on its own line and each further point on its own line or `- ` bullet, never in one paragraph/, room);
       assert.doesNotMatch(commInstructions({ ...comm, room }), /bullet reports/, room);
-      assert.match(commInstructions({ ...comm, room }), /A first reply gives the answer or one plain line on what he will get[\s\S]*A checklist lists only results he cares about/, room);
-      assert.match(commInstructions({ ...comm, room }), new RegExp(`last edit of your post, \`edit_message\\("reply:${room}/<his post's \\[message id\\]>"[\\s\\S]*carries the answer, that an edit only fills in results and the answer, never a status of its jobs or plans`), room);
+      assert.match(commInstructions({ ...comm, room }), /A first reply gives the answer or a fact you know now[\s\S]*A checklist lists only results he cares about/, room);
+      assert.match(commInstructions({ ...comm, room }), new RegExp(`last edit of your post, \`edit_message\\("reply:${room}/<his post's \\[message id\\]>"[\\s\\S]*carries the answer, or, when you posted none, that its report to you leads with the answer, that an edit only fills in results and the answer, never a status of its jobs or plans`), room);
     }
     for (const room of ["so_1a2b3c4d", "ch_1a2b3c4d"]) {
       const group = commInstructions({ ...comm, room });

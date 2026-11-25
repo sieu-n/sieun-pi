@@ -12,8 +12,18 @@
  * (a status question he asks gets its answer), and apps/chat's duty precheck `scripts/duties/relay-posts.ts` counts both in real rooms.
  */
 
-/** Announces a hand-over, or a result that comes later. Never an answer, on any turn. */
+/**
+ * Announces a hand-over, or a result that comes later. Never an answer, on any turn. The promise lines came from #1124-cost-management on
+ * 11-25: Search product, misc.'s p17 ended "Calls per customer per day, with the success rate, are coming here next." and fable auditor's
+ * p22 "A fresh read of GeoNode's meter and the crawl's daily size is coming in this post.", and the owner wrote under them (p21, msg
+ * mww1eid8, c104) "slop처럼 말하는 버릇좀 고쳐보라니까".
+ */
 const HANDOFF: readonly RegExp[] = [
+  /\bcoming (?:here|in this (?:post|thread)|(?:up )?next|shortly)\b/i,
+  /\b(?:will|['’]ll) be (?:added|posted|filled in|edited in|shared) (?:here|below|shortly|(?:in|to) this (?:post|thread))\b/i,
+  /\b(?:results?|details?|numbers?|the rest|more|an update|a breakdown) (?:to follow|will follow)\b/i,
+  /\b(?:I|we)(?:['’]ll| will) (?:report|come|circle|get) back\b/i,
+  /\b(?:I|we)(?:['’]ll| will) (?:update|edit|fill in) (?:this|the|my) (?:post|thread|message|reply)\b/i,
   /\b(?:I|we)(?:['’]ve| have)? (?:just |now )?(?:asked|handed|passed|gave|forwarded|delegated|routed|kicked off|started|spun up|sent\b[^.?!\n]*?\bto)\b[^.?!\n]*\b(?:work thread|thread|jobs?)\b/i,
   /\b(?:I|we|it|they|the (?:\w+ )?(?:thread|job))(?:['’]ll| will) (?:post|send|share|report|tell you|let you know|confirm|update you|ping you|drop|reply)\b[^.?!\n]*\b(?:when|once|after|as soon as)\b/i,
   /^(?:on it|taken|working on it)\b/i,

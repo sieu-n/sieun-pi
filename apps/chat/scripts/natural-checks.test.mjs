@@ -1,7 +1,7 @@
 // node --test --test-force-exit --test-isolation=none apps/chat/scripts/natural-checks.test.mjs
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { lineChecks, naturalChecks, naturalLine, overstates } from "./natural-checks.mjs";
+import { lineChecks, naturalChecks, naturalLine, overstates, promises } from "./natural-checks.mjs";
 
 const failed = versions => naturalChecks(versions).filter(([, ok]) => !ok).map(([name]) => name);
 
@@ -13,9 +13,7 @@ The way I read your intent, sw factory should feel like Slack with coworkers. Yo
 Here's what's moving toward that:
 - why replies here feel stiffer than Prime's, compared with the real prompts
 - replies that read like a normal message, with line breaks and a pick before any question
-- unslop loading the way it does in Prime
-
-I'll come back with a before and after once it's live.`;
+- unslop loading the way it does in Prime`;
 
 /** dm_agent-factory p51, the checklist the owner showed in p54: a label opener over one-word topics with empty boxes. */
 const P51 = "one table: Prime chat vs sw factory, file by file.\n- instructions\n  - [ ] \n- skills\n  - [ ] \n- tools\n  - [ ]\n- feel\n  - [ ]";
@@ -28,6 +26,19 @@ const P55 = "Probably the comm thread lost the reply_to. The round closed on the
 
 test("the praised DM reply passes every natural check", () => {
   assert.deepEqual(failed([[PRAISED]]), []);
+});
+
+test("a post that promises a result to come fails, also in its own post's later edit (owner, #1124-cost-management p21, msg mww1eid8, c104)", () => {
+  // p17 and p22 of #1124-cost-management as first posted on 11-25.
+  const p17 = "Yes, API reads are going through again, since they've used 1.3 GB of GeoNode this month.\nCalls per customer per day, with the success rate, are coming here next.";
+  const p22 = "I wouldn't resume it on this plan unless it's sized down to a few GB a day.\n\nA fresh read of GeoNode's meter and the crawl's daily size is coming in this post.";
+  for (const text of [p17, p22, `${PRAISED}\n\nI'll come back with a before and after once it's live.`]) {
+    assert.ok(promises(text), text);
+    assert.ok(failed([[text]]).includes("no version promises a result to come"), text);
+  }
+  assert.ok(failed([["The docs site builds again.", p17.split("\n")[0]]]).includes("no version promises a result to come") === false);
+  assert.ok(failed([["The docs site builds again.\nMore numbers to follow.", "The docs site builds again, and 3 deploys went green."]]).includes("no version promises a result to come"), "a promise in the first version fails though the edit dropped it");
+  assert.equal(promises("The fix is coming in Thursday's release, and staging has it now."), false);
 });
 
 test("p51 fails on its opening line and its bare topic labels", () => {

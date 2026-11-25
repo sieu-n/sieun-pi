@@ -9,7 +9,7 @@
  *    factory comm thread answered the owner's complaint about that line with "Got it, ..." and "The agent factory work thread is building
  *    all five now, ...", both after its hand-over in the same turn. Until 11-21 the rule also refused any such post with no question and
  *    no open `- [ ]` item, which pushed agents to post a checklist of their own steps, and the owner called one (#sw-factory-build p158)
- *    "slop slop slop" (p159, c234). Now a plain line on what he will get goes out.
+ *    "slop slop slop" (p159, c234). Now a plain line goes out, and since 11-25 a line that promises a result is hand-over words (c104).
  * 2. A post with hand-over words (`relay-line.ts`) is refused on any turn.
  * 3. A post with progress words is refused unless the owner started the turn with a question (`asks`), which the progress may answer. On
  *    11-03 chrome extension answered the owner's "proxy가 아니라 근데 Client browser에서" with "... A job is testing whether that can be
@@ -74,7 +74,7 @@ export function commPostRefusal(text: string, turn: CommPostTurn): string | unde
   const relay = relayWords(text);
   if (turn.handed && relay) {
     return `Not sent: "${relay.words}" reports the hand-over you made in this turn, and your 👀 on the post already shows that you are on it. ` +
-      "Post what you already know or one plain line on what he will get, and the result once the work thread's report or the [work-done ...] notice brings it.";
+      "Post only a fact you already know, or nothing, since 👀 shows the work, and post the result once the work thread's report or the [work-done ...] notice brings it.";
   }
   if (relay?.kind === "handoff") {
     return `Not sent: "${relay.words}" announces a hand-over or a result to come. Your 👀 on the post already shows that the work runs, so post ` +

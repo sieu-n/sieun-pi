@@ -46,7 +46,7 @@ The owner said so on 11-20: "no this is not Chat. this is Slack."
    On 11-23 a blind checklist run opened "All clear to ship." over a bullet that counted 7 uncommitted files and 8 untracked paths, while the 6 runs before it named the files in the answer.
 2. One answer is one post, and each waiting post of his that asks its own thing gets its own answer, a tell_owner call with `reply_to` set to that post, so in a channel it lands in that post's thread.
    Two posts merge into one answer only when the second adds to or corrects the first, since on 11-21 a blind-reactions run's DM agent merged two posts into one that answered only the first.
-   One ask also gets one post: the first reply holds any question at its end after the pick, and the work thread's last edit of that post carries the answer, with no new post for the result.
+   One ask also gets one post: a first reply holds any question at its end after the pick, and the work thread's last edit of that post carries the answer, with no new post for the result. When no first reply went out, the answer is that one post.
    On 11-21 a blind natural run's DM agent sent its question as its own post, then a first read, then the result as a third post, while the work thread also edited the question post into the answer.
 3. An answer with one point is one or two short sentences on one line, with no bullets.
 4. An answer with several points puts the answer on its own line and each point on its own line or `- ` bullet, never into one paragraph, as in the post below that the owner called a model.
@@ -57,8 +57,12 @@ The owner said so on 11-20: "no this is not Chat. this is Slack."
    On 11-20 Search product, misc. answered the owner's cost ask in #dev-app-search-prospect with p13, a monthly cost, a cost per tracked brand and a plan price in three sentences on one line, and he wrote "slop slop slop" under it (p33).
    On 11-21 agent factory answered him in four sentences on one line (dm_agent-factory p56), and he wrote "이런것도 엔터, bullet point 똑바로 쓰고." (p57, msg mwqtjlth, c233).
    tell_owner holds once a post with a line outside its list of 3 or more sentences or 3 or more clauses with a number (`crammedLine` in `packages/pi-host/src/durable/comm-guard.ts`), and the same text sent again goes out.
-5. An agent keeps its working plan and process to itself, and a first reply gives the answer or one plain line on what he will get, such as "proposal coming as one page, with my pick for where the data lives and the few calls only you can make".
+5. An agent keeps its working plan and process to itself, and a first reply gives the answer or a fact it knows now from a first look within about a minute (c224). When that look finds nothing to tell him yet, it posts nothing, its 👀 shows the work, and the answer is its first post.
    It never says "I'll do X first, then Y" and never posts a checklist of its own steps, since the owner wrote under #sw-factory-build p158, a plan of five process boxes: "이런건 내부적으론 알아서 하고, 밖에서 보낼땐 slop slop slop fucking disgusting try again" (p159, msg mwqwjznm, c234).
+   No post promises a result to come, such as "coming here next", "coming in this post", "will be added here", "details to follow" or "I'll report back", and a post ends on the last fact it holds.
+   On 11-25 Search product, misc.'s #1124-cost-management p17 ended "Calls per customer per day, with the success rate, are coming here next.", fable auditor's p22 ended "A fresh read of GeoNode's meter and the crawl's daily size is coming in this post.", and the owner wrote "slop처럼 말하는 버릇좀 고쳐보라니까" (p21, msg mww1eid8, c104).
+   This text had taught that line until then with "one plain line on what he will get", so every agent copied it. tell_owner and `edit_message` now refuse such a line as hand-over words (`HANDOFF` in `packages/pi-host/src/durable/relay-line.ts`).
+   p17 also opened "API reads are going through again, since ... have used 1.3 GB", proof given as a cause, so "since" and "because" go only before a real cause: "The nightly backup runs again. It wrote 12 GB last night." replaces "The nightly backup runs again, since it wrote 12 GB last night."
    A checklist lists only results he cares about, such as findings or items he asked for, each item with its result, filled in by editing that post with `edit_message`, and an edit never adds a status of jobs or plans.
    Such a list opens with a natural sentence that fits the place (conversational in a DM, a natural channel post in a channel), and its items are short plain sentences with no bare one-word topic labels (p54).
    A follow-up question is fine but always carries the agent's primary suggestion.
@@ -96,12 +100,12 @@ Here's what's moving toward that:
 - why replies here feel stiffer than Prime's, compared with the real prompts
 - replies that read like a normal message, with line breaks and a pick before any question
 - unslop loading the way it does in Prime
-
-I'll come back with a before and after once it's live.
 ```
 
+The post as he praised it ended "I'll come back with a before and after once it's live.", and that promise line is cut since his p21 of 11-25 (c104).
+
 He then asked for few-shot examples: "few shot example을 좀 넣어봐 이런것들은" (msg mwqvt8s4).
-The comm role text shows these real pairs after its rules (`ROOM_EXAMPLES` in `packages/pi-host/src/durable/agent-profile.ts`), a bad post and then a good one for each case, each cut to its first lines, and the model post above last. The good post for a channel's first reply is the owner's own wording from c234, since no real post fit.
+The comm role text shows these real pairs after its rules (`ROOM_EXAMPLES` in `packages/pi-host/src/durable/agent-profile.ts`), a bad post and then a good one for each case, each cut to its first lines, and the model post above last. The good post for a channel's first reply is no post at all until the result exists, since c104's repeat of 11-25 retired the line on what he will get.
 
 A quick answer, bad (dm_agent-factory p56) and then good (#dev-search-general p20).
 
@@ -125,7 +129,7 @@ one table, Prime chat vs this DM's talk thread and work thread, file by file.
 got it, a Fable advisor that reviews and talks to you, while Opus keeps doing the work.
 ```
 
-The first reply in a channel thread, bad (#sw-factory-build p158) and then good (the owner's wording, c234).
+The first reply in a channel thread, bad (#sw-factory-build p158) and then good (the shape since #1124-cost-management p21, c104).
 
 ```markdown
 I'll map how it really works first, then write one proposal with options and my pick. It will cover these:
@@ -134,7 +138,18 @@ I'll map how it really works first, then write one proposal with options and my 
 ```
 
 ```markdown
-proposal coming as one page, with my pick for where the data lives and the few calls only you can make
+(no post: 👀 on his post until the proposal is written, then the proposal as one post)
+```
+
+A first reply while the work runs, bad (written for this case on 11-25, in the shape of #1124-cost-management p17 that the owner called slop in p21) and then good (that post with the promise and the made-up cause cut).
+
+```markdown
+The docs site builds again, since the last 3 deploys went green.
+Build times per page, with the slowest pages, are coming here next.
+```
+
+```markdown
+The docs site builds again, and the last 3 deploys went green.
 ```
 
 A question back, bad (dm_agent-factory p59) and then good (dm_agent-factory p71).

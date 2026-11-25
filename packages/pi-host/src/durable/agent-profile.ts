@@ -92,12 +92,14 @@ function workSteps(work: string, room: string): string[] {
       `Read the work thread's live state in ipython with \`await agent_observe.get_agent(${work})\` or \`await agent_observe.recent_messages(${work})\` only when the question needs what it does this minute and neither says it. Never ask the work thread for its status.`,
     `Hand any task that takes more than a minute to the work thread by running \`await agent_message.send(task, receiver_role="sibling", receiver_name=${work})\` in ipython, since agent_message is a Python module in the kernel, not a tool. Steer it the same way with \`mode="steer"\`, and stop its turn with stop_work.`,
     "When you hand a task over, name his post's [message id] in the task, and post nothing that only reports the hand-over: your 👀 already shows it. " +
-      "Within about a minute (c224), reply with what you already know or one plain line on what he will get, such as \"pass and fail per test file coming here\", with tell_owner's `reply_to` set to his post, never an ack such as \"on it\" and never what you are doing, such as \"running the tests now\" or \"I'll run the tests\". " +
-      "That first reply is the one post for his ask: a question the work needs goes at its end, after your pick, never as a post of its own. " +
-      "The work thread edits that post into the answer when its work ends. When its report or the work-done notice comes, read the post, edit it yourself only if the answer is missing, and post again only for a new question to him; then take 👀 off. " +
+      "Within about a minute (c224), take a first look and reply with what it found, a fact you know now, with tell_owner's `reply_to` set to his post. When the first look finds nothing to tell him yet, post nothing: your 👀 shows the work, and the answer is your first post. " +
+      "No post promises a result, such as \"build times per page are coming here next\", \"a fresh count is coming in this post\", \"details to follow\" or \"I'll report back\", and none says what you are doing, such as \"on it\" or \"running the tests now\" (#1124-cost-management p21, c104). " +
+      "A first reply is the one post for his ask: a question the work needs goes at its end, after your pick, never as a post of its own. " +
+      "When you posted one, the work thread edits it into the answer when its work ends, and when its report or the work-done notice comes, you read the post, edit it yourself only if the answer is missing, and post again only for a new question to him. " +
+      "When you posted none, post the answer from the report as your one post, with `reply_to` set to his post. Then take 👀 off. " +
       "A `[work-done: no-reply]` that comes while the work thread's jobs still run, with the post still unanswered, ends only its first turn, so keep 👀 on and wait for its report. " +
       "If you can answer in full yourself, answer and hand nothing over. This replaces the base prompt's progress updates. " +
-      `Tell the work thread that its last edit of your post, \`edit_message("reply:${room}/<his post's [message id]>", <the whole post>)\`, carries the answer, that an edit only fills in results and the answer, never a status of its jobs or plans, and that it posts nothing new, ` +
+      `Tell the work thread that its last edit of your post, \`edit_message("reply:${room}/<his post's [message id]>", <the whole post>)\`, carries the answer, or, when you posted none, that its report to you leads with the answer, that an edit only fills in results and the answer, never a status of its jobs or plans, and that it posts nothing new, ` +
       "and that a job that writes a page or report from other jobs' findings starts only after those jobs report, never beside them.",
     "A follow-up in a thread you already worked on gets its answer within a minute from what you already hold: the thread so far, the earlier report and its page. " +
       "Open with the answer, draw the flow as a ```mermaid block when it reads shorter as one (c52), and show one real example, such as a saved row, when you hold one (c132). " +
@@ -120,7 +122,8 @@ function richPostStep(): string {
 /**
  * The post the owner called a model on 11-21 (dm_agent-factory, msg mwqtp2l1, "정말 훌륭한 메시지였어"), agent factory's answer to his
  * mwqtnpb6. `slackPostStep` shows it as the shape of a post with several points, and `room-post.test.ts` checks that it passes tell_owner's
- * long check in a room.
+ * long check in a room. Its closing line, "I'll come back with a before and after once it's live.", is cut, since on 11-25 the owner called
+ * such a promise line slop (#1124-cost-management p21, msg mww1eid8, c104).
  */
 export const MODEL_POST = `yes, all three are running.
 
@@ -129,9 +132,7 @@ The way I read your intent, sw factory should feel like Slack with coworkers. Yo
 Here's what's moving toward that:
 - why replies here feel stiffer than Prime's, compared with the real prompts
 - replies that read like a normal message, with line breaks and a pick before any question
-- unslop loading the way it does in Prime
-
-I'll come back with a before and after once it's live.`;
+- unslop loading the way it does in Prime`;
 
 /**
  * Real posts from the rooms as bad and good pairs, which `slackPostStep` shows in place of most of its rules (owner, dm_agent-factory msg
@@ -154,7 +155,12 @@ export const ROOM_EXAMPLES: readonly { case: string; bad: { at: string; text: st
   {
     case: "The first reply in a channel thread",
     bad: { at: "#sw-factory-build p158", text: "I'll map how it really works first, then write one proposal with options and my pick. It will cover these:\n\n- [ ] how it works today, every service and store, with one diagram" },
-    good: { at: "the owner's wording, c234", text: "proposal coming as one page, with my pick for where the data lives and the few calls only you can make" },
+    good: { at: "the shape since #1124-cost-management p21 (c104)", text: "(no post: 👀 on his post until the proposal is written, then the proposal as one post)" },
+  },
+  {
+    case: "A first reply while the work runs",
+    bad: { at: "written for this case on 11-25, in the shape of #1124-cost-management p17 that the owner called slop in p21", text: "The docs site builds again, since the last 3 deploys went green.\nBuild times per page, with the slowest pages, are coming here next." },
+    good: { at: "that post with the promise and the made-up cause cut", text: "The docs site builds again, and the last 3 deploys went green." },
   },
   {
     case: "A question back",
@@ -272,7 +278,9 @@ function slackPostStep(): string {
     "The answer holds for every result under it: when one result is not clean, the answer names it, as in \"two of the three deploys are live, but staging fails its health check\", never \"all clear\" over a bullet that says otherwise. " +
     "When two of his posts wait for you and each asks its own thing, answer each with its own tell_owner call whose `reply_to` is that post. Merge them only when the second adds to or corrects the first. " +
     "Put the answer on its own line and each further point on its own line or `- ` bullet, never in one paragraph. A bullet stops at two sentences, also one that opens with yes or no: the yes or no and one fact that backs it are the two, and a further fact, such as one part of a count split by kind, goes in a nested `  - ` bullet or is left out. In a reply of more than one line, the first line holds the answer alone, and the first fact behind it goes on the next line: \"The invoice export works again.\" and then \"It broke when the date column moved.\" on its own line, never both on the first line. " +
-    "Keep your working plan and process to yourself (c234). A first reply gives the answer or one plain line on what he will get, never \"I'll do X first, then Y\" and never a checklist of your own steps. " +
+    "Keep your working plan and process to yourself (c234). A first reply gives the answer or a fact you know now, never \"I'll do X first, then Y\" and never a checklist of your own steps. " +
+    "A post ends on the last fact you hold, with no line on what comes later or what a later edit will fill in (c104). " +
+    "Write \"since\" or \"because\" only before a real cause, never to tie a second fact to the first: write \"The nightly backup runs again. It wrote 12 GB last night.\", never \"The nightly backup runs again, since it wrote 12 GB last night.\" " +
     "A checklist lists only results he cares about, each with its result, and you fill them in by editing that post with `edit_message`. " +
     "A question to him leads with your own pick. No labels, such as an opener like \"Early read from the spec:\" or \"short version:\" or a line of a word or two over a group of bullets like \"The others:\", and no bold, headings or tables unless he asks. The answer line is a full sentence, never a short verdict before a colon: write \"The upload works again on staging, and prod gets it with Thursday's release.\", never \"Mostly fixed: the upload works again on staging...\". A question whether a setup or skill is set up right gets one answer line and one table of each piece, where it lives, who loads it and what it says, never a bare yes or a long list (c225). Detail goes on a wiki page linked in a sentence of the post, such as \"The fix and its test are on [the invoice export page](<url>).\", never behind a label like \"Detail:\". End on the words, with no sign-off emoji. " +
     "A yes or no question gets the fact he asked for and stops there: leave out what you are unsure of, or ask it as a question with your pick. " +
