@@ -10,7 +10,8 @@
  *
  * `run` writes <to>/<UTC minute stamp>/. Each SQLite file goes through node:sqlite's online backup, so a live server's WAL is read
  * consistently. Every other file is copied, or hard-linked to the previous backup when its size and mtime are unchanged, so a night costs
- * only what changed. The backup is built in a .partial folder, manifest.json is written last and the folder is renamed only then, so a
+ * only what changed. A file or folder the server removes after the listing, such as a wake file, is left out and named in the manifest's
+ * vanished list. The backup is built in a .partial folder, manifest.json is written last and the folder is renamed only then, so a
  * crash leaves no folder that `check`, `restore` or the prune would count. The newest KEEP backups stay.
  *
  * With --b2 it also uploads the newest backup to Backblaze B2 under sw-factory-chat-backups/<stamp>/, encrypted with AES-256-GCM. The key id,
@@ -71,11 +72,22 @@ export function completeBackups(to) {
   return readdirSync(to).filter(name => STAMP.test(name) && existsSync(join(to, name, "manifest.json"))).sort();
 }
 
-function walk(root, rel = "", out = []) {
-  for (const entry of readdirSync(join(root, rel), { withFileTypes: true })) {
+/** A file or folder the server removed after it was listed, such as a wake file on 11-26 at 04:30 KST, is gone from the data dir, not an error. */
+const removedSince = (error, path) => error?.code === "ENOENT" && error.path === path;
+
+function walk(root, rel = "", out = [], vanished = []) {
+  let entries;
+  try {
+    entries = readdirSync(join(root, rel), { withFileTypes: true });
+  } catch (error) {
+    if (!rel || !removedSince(error, join(root, rel))) throw error;
+    vanished.push(rel);
+    return out;
+  }
+  for (const entry of entries) {
     const path = rel ? `${rel}/${entry.name}` : entry.name;
     if (skipped(path)) continue;
-    if (entry.isDirectory()) walk(root, path, out);
+    if (entry.isDirectory()) walk(root, path, out, vanished);
     else if (entry.isFile() || entry.isSymbolicLink()) out.push(path);
   }
   return out;
@@ -158,45 +170,52 @@ export async function runBackup({ dataDir = DEFAULTS.dataDir, to = DEFAULTS.to, 
 
     let files = 0, bytes = 0, copiedBytes = 0, linked = 0, newest = 0;
     const sqlite = {};
-    for (const rel of walk(dataDir)) {
+    const vanished = [];
+    for (const rel of walk(dataDir, "", [], vanished)) {
       const source = join(dataDir, rel);
       const target = join(work, rel);
       mkdirSync(dirname(target), { recursive: true });
-      const st = lstatSync(source);
-      if (st.isSymbolicLink()) {
-        symlinkSync(readlinkSync(source), target);
-        files += 1;
-        continue;
+      try {
+        const st = lstatSync(source);
+        if (st.isSymbolicLink()) {
+          symlinkSync(readlinkSync(source), target);
+          files += 1;
+          continue;
+        }
+        if (SQLITE.test(rel)) {
+          await backupSqlite(source, target);
+          const size = statSync(target).size;
+          sqlite[rel] = { sha256: await hashFile(target), bytes: size, tables: tableCounts(target) };
+          chmodSync(target, 0o444);
+          files += 1, bytes += size, copiedBytes += size, newest = Math.max(newest, st.mtimeMs);
+          continue;
+        }
+        const old = prev ? join(prev, rel) : null;
+        const oldSt = old && existsSync(old) ? lstatSync(old) : null;
+        // utimes takes seconds as a double, so a copy's mtime can land a fraction of a millisecond below the source's.
+        if (oldSt?.isFile() && oldSt.size === st.size && Math.abs(oldSt.mtimeMs - st.mtimeMs) < 1) {
+          linkSync(old, target);
+          linked += 1;
+        } else {
+          copyFileSync(source, target);
+          utimesSync(target, st.atime, st.mtime);
+          chmodSync(target, 0o444);
+          copiedBytes += st.size;
+        }
+        files += 1, bytes += st.size, newest = Math.max(newest, st.mtimeMs);
+      } catch (error) {
+        if (!removedSince(error, source)) throw error;
+        vanished.push(rel);
       }
-      if (SQLITE.test(rel)) {
-        await backupSqlite(source, target);
-        const size = statSync(target).size;
-        sqlite[rel] = { sha256: await hashFile(target), bytes: size, tables: tableCounts(target) };
-        chmodSync(target, 0o444);
-        files += 1, bytes += size, copiedBytes += size, newest = Math.max(newest, st.mtimeMs);
-        continue;
-      }
-      const old = prev ? join(prev, rel) : null;
-      const oldSt = old && existsSync(old) ? lstatSync(old) : null;
-      // utimes takes seconds as a double, so a copy's mtime can land a fraction of a millisecond below the source's.
-      if (oldSt?.isFile() && oldSt.size === st.size && Math.abs(oldSt.mtimeMs - st.mtimeMs) < 1) {
-        linkSync(old, target);
-        linked += 1;
-      } else {
-        copyFileSync(source, target);
-        utimesSync(target, st.atime, st.mtime);
-        chmodSync(target, 0o444);
-        copiedBytes += st.size;
-      }
-      files += 1, bytes += st.size, newest = Math.max(newest, st.mtimeMs);
     }
     const manifest = {
       stamp, dataDir, createdAt: new Date().toISOString(), files, bytes, copiedBytes, linked, linkedFrom: previous ?? null,
-      newestMtime: newest ? new Date(newest).toISOString() : null, sqlite,
+      newestMtime: newest ? new Date(newest).toISOString() : null, sqlite, vanished,
     };
     writeFileSync(join(work, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
     renameSync(work, done);
-    log(`Backup ${done}: ${files} files, ${mb(bytes)}, ${mb(copiedBytes)} copied, ${linked} hard-linked to ${previous ?? "nothing"}.`);
+    log(`Backup ${done}: ${files} files, ${mb(bytes)}, ${mb(copiedBytes)} copied, ${linked} hard-linked to ${previous ?? "nothing"}` +
+      `, ${vanished.length} removed from the data dir while the backup ran.`);
     return { stamp, skipped: false, manifest, pruned: prune(to, keep, log) };
   } finally {
     release();

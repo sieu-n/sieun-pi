@@ -5,7 +5,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { createReadStream } from "node:fs";
+import fs, { createReadStream } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -58,6 +59,33 @@ test("a run copies the live DB with its WAL rows, leaves out caches, and a secon
     assert.equal(next.manifest.linked, 2);
     assert.equal(statSync(join(to, next.stamp, "images", "a.png")).ino, statSync(join(done, "images", "a.png")).ino);
   } finally {
+    db.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a file the server removes after the listing is counted as removed and the backup still completes (m02-chat-backup, 11-26 04:30 KST)", async () => {
+  const root = mkdtempSync(join(tmpdir(), "chat-backup-"));
+  const { dir, db } = dataDir(root);
+  const gone = join(dir, "wakes", "w1-check.json");
+  mkdirSync(dirname(gone));
+  writeFileSync(gone, "{}");
+  const lstat = fs.lstatSync;
+  fs.lstatSync = ((path: fs.PathLike, ...rest: never[]) => {
+    if (path === gone && existsSync(gone)) fs.unlinkSync(gone);
+    return lstat(path, ...rest);
+  }) as typeof fs.lstatSync;
+  syncBuiltinESMExports();
+  try {
+    const lines: string[] = [];
+    const result = await runBackup({ dataDir: dir, to: join(root, "backups"), now: at(0), log: (line: string) => lines.push(line) });
+    assert.deepEqual(result.manifest.vanished, ["wakes/w1-check.json"]);
+    assert.equal(result.manifest.files, 3);
+    assert.deepEqual(completeBackups(join(root, "backups")), [result.stamp]);
+    assert.match(lines.join("\n"), /1 removed from the data dir while the backup ran/);
+  } finally {
+    fs.lstatSync = lstat;
+    syncBuiltinESMExports();
     db.close();
     rmSync(root, { recursive: true, force: true });
   }
