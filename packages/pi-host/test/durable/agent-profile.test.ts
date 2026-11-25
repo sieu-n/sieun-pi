@@ -198,6 +198,8 @@ test("a room post answers first, breaks into lines and keeps the agent's process
     // d4 blind runs on 11-23 and 11-25 opened "Not clean yet: ...", "Yes on this box: ..." and "Not quite in sync: ...", a verdict as a label.
     // d4's natural set put the answer and a second fact on one first line of 37 to 40 words in 4 of 6 runs on 11-24 and 11-25.
     assert.match(text, /In a reply of more than one line, the first line holds the answer alone, and the first fact behind it goes on the next line: "The invoice export works again\." and then "It broke when the date column moved\." on its own line/);
+    // A natural blind run on 11-25 ended its post with "Detail and flow: https://...", a label in front of the link.
+    assert.match(text, /Detail goes on a wiki page linked in a sentence of the post, such as "The fix and its test are on \[the invoice export page\]\(<url>\)\.", never behind a label like "Detail:"\./);
     assert.match(text, /The answer line is a full sentence, never a short verdict before a colon: write "The upload works again on staging, and prod gets it with Thursday's release\.", never "Mostly fixed: /);
     assert.match(text, /give each other option one line on what it would mean for him, as more bullets of the same list\./);
     assert.match(text, /Keep ✅ and 👀 out of your post text too\./);
