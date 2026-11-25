@@ -656,13 +656,12 @@ export interface WikiPages { query: string; favorites: WikiPageRow[]; pages: Wik
 /** A post that links a wiki page, as GET /api/pages/shared lists it (server/wiki/shared.ts), newest first. */
 export interface WikiShare { room: string; post: string; threadRoot?: string; author: string; at: number; snippet: string }
 /**
- * `from` takes many values, each `owner`, `agents` (anyone but the owner), an agent id or an agent name; `where` takes many of `root`,
- * `thread` and `tool`, all three when absent, and `place` many of the six SearchPlace values, all six when absent. Many values of one filter
- * are OR-ed, and filters are AND-ed. `in` is a conversation id, a channel or Solo room name (with or without `#`) or an agent name for its
- * DM; `after` and `before` are YYYY-MM-DD in KST.
+ * `from` takes many values, each `owner`, `agents` (anyone but the owner), an agent id or an agent name, and `place` many of the six
+ * SearchPlace values, all six when absent. Many values of one filter are OR-ed, and filters are AND-ed. `in` is a conversation id, a
+ * channel or Solo room name (with or without `#`) or an agent name for its DM; `after` and `before` are YYYY-MM-DD in KST.
  */
 export interface SearchQuery {
-  q: string; from?: string | string[]; in?: string; where?: SearchWhere | SearchWhere[]; place?: SearchPlace | readonly SearchPlace[]; after?: string; before?: string; sort?: "relevance" | "recent";
+  q: string; from?: string | string[]; in?: string; place?: SearchPlace | readonly SearchPlace[]; after?: string; before?: string; sort?: "relevance" | "recent";
   limit?: number; cursor?: string;
   /** Room posts with a link, a reaction, the owner's pin or an open save in Later, AND-ed; a search with no words but a filter lists newest first. */
   has?: readonly SearchHas[];

@@ -23,12 +23,11 @@ import { and, eq, isIn, not, or, type BoxIndexState, type Cond, type EngineAnswe
 export const OWNER_ZONE_OFFSET_MS = 9 * 3600_000;
 
 /**
- * `from` holds `owner`, `agents`, agent ids and agent names, `where` holds `root`, `thread` and `tool` (all three when empty), and `place`
- * the six places of SEARCH_PLACES (all six when empty); many values of one filter are OR-ed, and filters are AND-ed. `in` is a conversation
- * id, a channel or Solo room name, or an agent name for its DM.
+ * `from` holds `owner`, `agents`, agent ids and agent names, and `place` the six places of SEARCH_PLACES (all six when empty); many values
+ * of one filter are OR-ed, and filters are AND-ed. `in` is a conversation id, a channel or Solo room name, or an agent name for its DM.
  */
 export interface SearchParams {
-  q: string; from?: readonly string[]; in?: string; where?: readonly string[]; place?: readonly string[]; after?: string; before?: string; sort?: "relevance" | "recent"; limit?: number; cursor?: string;
+  q: string; from?: readonly string[]; in?: string; place?: readonly string[]; after?: string; before?: string; sort?: "relevance" | "recent"; limit?: number; cursor?: string;
   /** `link`, `reaction`, `pin` and `saved`, AND-ed as Slack's `has:` and `is:saved` are; each keeps room posts only. */
   has?: readonly string[];
   /** Leaves each hit's longer `text` out: the Cmd K rows show only the snippet, and the 20 hits of "kimchi" were 52.0 KB with it on 11-19. */
@@ -58,8 +57,6 @@ const TOOL_KINDS = ["pi.tool-result"];
 /** A post's `kind` in the index (app.ts `postDoc`): a thread reply, or a top-level post. */
 export const POST_KINDS = { root: "room.post", reply: "room.reply" } as const;
 
-export const SEARCH_WHERE: readonly SearchWhere[] = ["root", "thread", "tool"];
-
 /**
  * The places every hit sits in exactly one of, in the order the search page's pills show them (owner, #sw-factory-build p126: "Where하고 이
  * 카테고리하고 합쳐서,dropdown 말고 그냥 아이템들 list되어있는 pill들로"). `channels`, `dms` and `solo` are top-level posts of their rooms, and
@@ -73,9 +70,6 @@ const PLACE_NAMES: Readonly<Record<string, SearchPlace>> = {
   channels: "channels", channel: "channels", dms: "dms", dm: "dms", solo: "solo", threads: "threads", thread: "threads",
   jobs: "jobs", job: "jobs", tools: "tools", tool: "tools", "tool calls": "tools", toolcalls: "tools",
 };
-
-/** The places each `where` value covers, so `where` and `place` together keep the places both name. */
-const WHERE_PLACES: Readonly<Record<SearchWhere, readonly SearchPlace[]>> = { root: ["channels", "dms", "solo"], thread: ["threads"], tool: ["jobs", "tools"] };
 
 /** What `has` reads: a post's marks in the index (app.ts `postDoc`), and `saved` for the owner's open Later items. */
 export type SearchHas = PostHas | "saved";
@@ -155,31 +149,15 @@ export function wholeNames(values: readonly string[], resolves: (value: string) 
   return out;
 }
 
-/** The `where` values, all three when none is given; an unknown value is refused by name. */
-export function parseWhere(values: readonly string[] | undefined): Set<SearchWhere> {
-  if (!values?.length) return new Set(SEARCH_WHERE);
-  const out = new Set<SearchWhere>();
-  for (const value of values) {
-    const where = SEARCH_WHERE.find(w => w === value.toLowerCase());
-    if (!where) throw new SearchFilterError(`No where value "${value}"; use root, thread or tool.`);
-    out.add(where);
-  }
-  return out;
-}
-
-/**
- * The places a search keeps: the `place` values, all six when none is given, less those `where` leaves out. An unknown value is refused by
- * name.
- */
-export function parsePlace(values: readonly string[] | undefined, where: ReadonlySet<SearchWhere> = new Set(SEARCH_WHERE)): Set<SearchPlace> {
+/** The places a search keeps: the `place` values, all six when none is given. An unknown value is refused by name. */
+export function parsePlace(values: readonly string[] | undefined): Set<SearchPlace> {
   const named = new Set<SearchPlace>();
   for (const value of values ?? []) {
     const place = PLACE_NAMES[value.trim().toLowerCase().replace(/\s+/g, " ")];
     if (!place) throw new SearchFilterError(`No place "${value}"; use ${SEARCH_PLACES.join(", ")}.`);
     named.add(place);
   }
-  const kept = new Set([...where].flatMap(w => WHERE_PLACES[w]));
-  return new Set(SEARCH_PLACES.filter(place => kept.has(place) && (!named.size || named.has(place))));
+  return new Set(SEARCH_PLACES.filter(place => !named.size || named.has(place)));
 }
 
 /**
@@ -292,7 +270,7 @@ export class Search {
     const words = terms(query.q);
     const has = parseHas(query.has);
     // A filter with no words lists every message it keeps, newest first, as Slack's `from:@vent` alone does.
-    const filtered = !!(query.from?.length || query.in || query.where?.length || query.place?.length || query.after || query.before || has.size);
+    const filtered = !!(query.from?.length || query.in || query.place?.length || query.after || query.before || has.size);
     if (!words.length && !filtered) return { hits: [], total: 0 };
     const marks = searchTerms(query.q);
     const after = query.after ? dayStart(query.after) : undefined;
@@ -308,7 +286,7 @@ export class Search {
     ];
     const parts: Cond[] = [];
 
-    const places = parsePlace(query.place, parseWhere(query.where));
+    const places = parsePlace(query.place);
     const inId = query.in ? this.resolveIn(query.in) : undefined;
     const inChannel = inId ? this.groups.row(inId) : undefined;
     const inRoom = inId && (isRoomId(inId) || isAgentId(inId)) ? this.threads.agentRecords?.record(inId) : undefined;

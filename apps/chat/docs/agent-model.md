@@ -225,7 +225,7 @@ Phase 4 built these calls from Prime's own tools, and the table at the end of ph
 | `chat_board` and `board.*` | read, and owner-asked edits | yes | yes | Prime's chat tool and the kernel's `board` module, through the chat server's board API |
 | `set_emoji`, `list_for_me_messages`, `mark_message` | yes | yes | yes | the room tools (`durable/room-tools.ts`) and Prime's chat tools |
 | `save_message`, `remind_me`, `list_saved_messages` | yes | yes | yes | `durable/later.ts`, listed in the room tools |
-| `search_messages` | yes | yes | no | `durable/search-messages.ts`, listed in the room tools; the owner's Cmd K search through `GET /api/search`, with his filters `from`, `in`, `where`, `after` and `before` |
+| `search_messages` | yes | yes | no | `durable/search-messages.ts`, listed in the room tools; the owner's Cmd K search through `GET /api/search`, with his filters `from`, `place`, `in`, `after` and `before` |
 | `rlm.harness` and `refine.run()` | yes | yes | yes | Prime's kernel, with `RLM_HARNESS_STATE_DIR` at the agent's store (section 3) |
 | `rlm.spawn`, `rlm.create_session`, `board.wake` | no | yes | yes | pi-host `durable/rlm.ts` and the chat server's wakes (`server/wakes.ts`) |
 | `subagent`, `write`, `edit`, `bash` | no | yes | yes | pi-host `durable/subagent.ts` and pi-durable `CodingTools`; a comm thread loses them (`COMM_REMOVED_TOOLS` in `durable/agent-profile.ts`) |

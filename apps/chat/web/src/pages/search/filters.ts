@@ -51,8 +51,6 @@ export function toggleMark(filters: Filters, mark: SearchHas): Filters {
 
 const PLACE_ORDER: readonly SearchPlace[] = PLACES.map(place => place.id);
 const isPlace = (value: string): value is SearchPlace => (PLACE_ORDER as readonly string[]).includes(value);
-/** The places an old `where=` address covers (server/search.ts `WHERE_PLACES`), so links made before the pills still filter. */
-const WHERE_PLACES: Readonly<Record<string, readonly SearchPlace[]>> = { root: ["channels", "dms", "solo"], thread: ["threads"], tool: ["jobs", "tools"] };
 
 export function toggleFrom(filters: Filters, id: string): Filters {
   return { ...filters, from: filters.from.includes(id) ? filters.from.filter(one => one !== id) : [...filters.from, id] };
@@ -85,11 +83,10 @@ const list = (value: string | undefined): string[] => [...new Set((value ?? "").
 
 /**
  * The filters an address holds, `from=owner,ag_vent&place=jobs,threads&in=&after=&before=&has=link,saved`; an unknown place or mark or a
- * malformed day is dropped. An old `where=` address reads as the places it covers.
+ * malformed day is dropped.
  */
 export function readFilters(params: Readonly<Record<string, string | undefined>>): Filters {
-  const covered = list(params.where).flatMap(one => WHERE_PLACES[one] ?? []);
-  const named = params.place !== undefined ? list(params.place).filter(isPlace) : covered.length === PLACE_ORDER.length ? [] : covered;
+  const named = list(params.place).filter(isPlace);
   return {
     from: list(params.from),
     place: PLACE_ORDER.filter(one => named.includes(one)),

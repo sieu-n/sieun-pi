@@ -1,7 +1,7 @@
 /**
  * Search filters for people and agents alike (owner, #sw-factory-build p115: "search에서 filter 직관적으로 할수 있어야됨 (especially for
  * humans, and allow the same filter feature for Agents too) . 일단 큰 소스 (by which agent/user), in root message, in thread, diggen in
- * some internal tool call"). `from` and `where` take many values, names stand in for ids, and every hit says where it sits and links there.
+ * some internal tool call"). `from` and `place` take many values, names stand in for ids, and every hit says where it sits and links there.
  */
 import assert from "node:assert/strict";
 import { after, before, describe as suite, test } from "node:test";
@@ -20,32 +20,30 @@ suite("search filters", () => {
   after(() => s.close());
   const search = (query: string) => s.get<SearchResult>(`/api/search?q=relay&limit=100&${query}`);
 
-  test("where splits every hit into root, thread and tool, and many values add up", async () => {
+  test("each hit's where is root, thread or tool, and the places of each add up", async () => {
     const all = await search("");
-    const [root, thread, tool] = await Promise.all([search("where=root"), search("where=thread"), search("where=tool")]);
+    const [root, thread, tool] = await Promise.all([search("place=channels,dms,solo"), search("place=threads"), search("place=jobs,tools")]);
     assert.ok(root.total > 0 && thread.total > 0 && tool.total > 0);
     assert.equal(root.total + thread.total + tool.total, all.total);
     for (const [where, result] of [["root", root], ["thread", thread], ["tool", tool]] as const) assert.ok(result.hits.every(hit => hit.where === where), where);
     assert.ok(all.hits.filter(hit => hit.kind === "tool").every(hit => hit.where === "tool"));
-    const people = await search("where=root,thread");
+    const people = await search("place=channels,dms,solo,threads");
     assert.equal(people.total, root.total + thread.total);
-    assert.deepEqual(ids_(await search("where=root&where=thread")), ids_(people));
-    assert.deepEqual(ids_(await search("where=root,thread,tool")), ids_(all));
   });
 
   test("a root chat's own words are root, and its jobs and every work thread are tool", async () => {
-    const words = await s.get<SearchResult>("/api/search?q=clock&where=root&limit=100");
+    const words = await s.get<SearchResult>("/api/search?q=clock&place=channels,dms,solo&limit=100");
     assert.ok(words.total > 0 && words.hits.every(hit => hit.conversation.id === ids.solo), "the root chat's own words are root");
-    const job = await s.get<SearchResult>("/api/search?q=clock&where=tool&limit=100");
+    const job = await s.get<SearchResult>("/api/search?q=clock&place=jobs,tools&limit=100");
     assert.ok(job.total > 0 && job.hits.every(hit => hit.conversation.id.startsWith(`${ids.solo}:`)), "its job's words are inside the work");
-    const root = await search("where=root");
-    const tool = await search("where=tool");
+    const root = await search("place=channels,dms,solo");
+    const tool = await search("place=jobs,tools");
     assert.ok(tool.hits.some(hit => hit.conversation.id === ids.vent && hit.role !== "tool"), "a work thread's answer is inside the work");
     assert.ok(tool.hits.some(hit => hit.conversation.id === `${ids.vent}:14`), "a job's entries are inside the work");
     assert.ok(!root.hits.some(hit => hit.conversation.kind === "job"));
   });
 
-  test("place splits every hit into six places, OR-ed within, AND-ed with where, in and from", async () => {
+  test("place splits every hit into six places, OR-ed within, AND-ed with in and from", async () => {
     // "quiet" keeps Vent from answering: its two answers landed 260 to 700 ms after the send, in the middle of this test on a loaded box.
     const dm = await s.send("POST", "/api/c/dm_vent/send", { text: "quiet: is the relay up in the DM too", requestId: "filters-place-dm" });
     assert.equal(dm.status, 200, JSON.stringify(dm.body));
@@ -66,7 +64,7 @@ suite("search filters", () => {
     assert.equal(SEARCH_PLACES.reduce((sum, place) => sum + by[place]!.total, 0), all.total);
     assert.ok(by.solo!.hits.some(hit => hit.conversation.id === ids.soloRoom), "a Solo room's posts");
     const words = await s.get<SearchResult>("/api/search?q=clock&place=solo&limit=100");
-    assert.deepEqual(ids_(words), ids_(await s.get<SearchResult>("/api/search?q=clock&where=root&limit=100")), "a root chat's words");
+    assert.deepEqual(ids_(words), ids_(await s.get<SearchResult>("/api/search?q=clock&place=channels,dms,solo&limit=100")), "a root chat's words");
     const mix = await search("place=jobs,threads");
     assert.equal(mix.total, by.jobs!.total + by.threads!.total);
     assert.deepEqual(ids_(await search("place=jobs&place=threads")), ids_(mix));
@@ -74,9 +72,6 @@ suite("search filters", () => {
     assert.deepEqual(ids_(await s.get<SearchResult>("/api/search?q=relay%20place:jobs%20place:threads&limit=100")), ids_(mix));
     assert.deepEqual(ids_(await search("place=tool%20calls")), ids_(by.tools!));
     assert.deepEqual(ids_(await search("place=channels,dms,solo,threads,jobs,tools")), ids_(all));
-    assert.equal((await search("where=root&place=threads")).total, 0);
-    assert.deepEqual(ids_(await search("where=tool&place=jobs,channels")), ids_(by.jobs!));
-    assert.deepEqual(ids_(await search(`in=${ids.cutoverChannel}&place=threads`)), ids_(await search(`in=${ids.cutoverChannel}&where=thread`)));
     assert.equal((await search(`in=${ids.cutoverChannel}&place=solo,dms`)).total, 0);
     const ownerJobs = await search("from=owner&place=jobs");
     assert.ok(ownerJobs.hits.every(hit => fits.jobs(hit) && hit.author.id === "owner"));
@@ -113,14 +108,14 @@ suite("search filters", () => {
     assert.ok(vent.hits.some(hit => hit.conversation.id === ids.generalChannel && hit.where === "thread"), "its channel reply");
   });
 
-  test("filters combine: from, where and in narrow each other", async () => {
-    const agentsReplies = await search("from=agents&where=thread");
+  test("filters combine: from, place and in narrow each other", async () => {
+    const agentsReplies = await search("from=agents&place=threads");
     assert.ok(agentsReplies.total > 0 && agentsReplies.hits.every(hit => hit.where === "thread" && hit.author.id !== "owner"));
-    const ownerTool = await search("from=owner&where=tool");
+    const ownerTool = await search("from=owner&place=jobs,tools");
     assert.ok(ownerTool.hits.every(hit => hit.where === "tool" && hit.author.id === "owner"));
-    const inChannel = await search(`in=${ids.cutoverChannel}&where=thread`);
+    const inChannel = await search(`in=${ids.cutoverChannel}&place=threads`);
     assert.ok(inChannel.total > 0 && inChannel.hits.every(hit => hit.conversation.id === ids.cutoverChannel && hit.where === "thread"));
-    assert.equal((await search(`in=${ids.cutoverChannel}&where=tool`)).total, 0);
+    assert.equal((await search(`in=${ids.cutoverChannel}&place=jobs,tools`)).total, 0);
   });
 
   test("in takes a channel or Solo room name, with or without #, and an agent name for its DM", async () => {
@@ -143,20 +138,20 @@ suite("search filters", () => {
   });
 
   test("an unknown value is a 400 that names it", async () => {
-    for (const [query, word] of [["where=replies", "replies"], ["place=inbox", "inbox"], ["place=jobs,nowhere", "nowhere"], ["from=nobody", "nobody"], ["from=owner,nobody", "nobody"], ["in=nowhere", "nowhere"]] as const) {
+    for (const [query, word] of [["place=inbox", "inbox"], ["place=jobs,nowhere", "nowhere"], ["from=nobody", "nobody"], ["from=owner,nobody", "nobody"], ["in=nowhere", "nowhere"]] as const) {
       const answer = await s.send("GET", `/api/search?q=relay&${query}`);
       assert.equal(answer.status, 400, query);
       assert.match((answer.body as { error: string }).error, new RegExp(`"${word}"`), query);
     }
   });
 
-  test("a reply that just landed is found by where before Meilisearch has it", async () => {
+  test("a reply that just landed is found by place before Meilisearch has it", async () => {
     const sent = await s.send("POST", `/api/c/${ids.cutoverChannel}/send`, { text: "zanzibar relay reply", requestId: "filters-reply", threadRoot: "p1" });
     assert.equal(sent.status, 200, JSON.stringify(sent.body));
-    const thread = await s.get<SearchResult>("/api/search?q=zanzibar&where=thread");
+    const thread = await s.get<SearchResult>("/api/search?q=zanzibar&place=threads");
     assert.equal(thread.total, 1);
     assert.deepEqual([thread.hits[0]!.where, thread.hits[0]!.thread?.root], ["thread", "p1"]);
-    assert.equal((await s.get<SearchResult>("/api/search?q=zanzibar&where=root")).total, 0);
+    assert.equal((await s.get<SearchResult>("/api/search?q=zanzibar&place=channels,dms,solo")).total, 0);
   });
 
   test("a filter with no words lists every message it keeps, newest first, and no filter and no words list nothing", async () => {

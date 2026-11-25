@@ -239,7 +239,7 @@ const EXPECTED: Record<string, SearchResult> = {
       {"id": "ch_general/p2", "where": "thread", "thread": {"root": "p1", "title": "Morning. The canary relay is back after the Mac woke up."}, "link": "#/c/ch_general?thread=p1&m=p2", "conversation": {"id": "ch_general", "kind": "channel", "name": "general"}, "messageId": "p2", "author": {"id": "ag_vent", "name": "Vent", "kind": "agent"}, "at": 1794971520000, "kind": "post", "role": "agent", "threadRoot": "p1", "snippet": "Confirmed, the <mark>relay</mark> log is clean since 02:11."},
     ],
   },
-  "q=relay&where=tool&brief=1&limit=8": {
+  "q=relay&place=jobs,tools&brief=1&limit=8": {
     ...{"total": 21, "nextCursor": "8"},
     hits: [
       {"id": "0f1e0000-0000-4000-8000-000000000001:14/e18", "where": "tool", "link": "#/c/0f1e0000-0000-4000-8000-000000000001%3A14?m=e18", "conversation": {"id": "0f1e0000-0000-4000-8000-000000000001:14", "kind": "job", "name": "Read the canary logs from the last day and list every relay error", "parent": {"id": "ag_vent", "name": "Vent"}}, "messageId": "e18", "author": {"id": "0f1e0000-0000-4000-8000-000000000001:14", "name": "Read the canary logs from the last day and list every relay error", "kind": "agent"}, "at": 1795068180000, "kind": "turn", "role": "agent", "snippet": "Two <mark>relay</mark> errors in the last day, both ECONNREFUSED to the Mac <mark>relay</mark> while it slept."},

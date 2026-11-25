@@ -16,7 +16,7 @@
  *   #/settings/<section>                    Settings, one section: preferences, notifications, keyboard, usage, hosts, accounts or skills;
  *                                           the Settings button opens usage
  *   #/settings/accounts/<provider>?thread=<id>   Settings > Accounts, the pi-pool accounts of claude or codex, optionally for one thread
- *   #/search?q=&from=&in=&after=&before=&sort=&where=   Full search results, opened with Enter in the Cmd K search
+ *   #/search?q=&from=&in=&after=&before=&sort=&place=   Full search results, opened with Enter in the Cmd K search
  *   #/ui                                    The lib/ui gallery, not in the top bar
  *
  * Messages, Agents and Board are the roots in the top bar; each picks its own left sidebar in lib/shell/Shell.svelte.

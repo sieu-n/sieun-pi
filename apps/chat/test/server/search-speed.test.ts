@@ -95,12 +95,12 @@ test("each keystroke answers in under 150 ms at the 90th percentile with the exa
   assert.equal((await s.get<SearchResult>("/api/search?q=zephyr%20relay")).total, ENTRIES);
 });
 
-test("so does each keystroke with filters on: many from values and where", async () => {
+test("so does each keystroke with filters on: many from values and places", async () => {
   // "Big" is a root chat no agent holds: the owner's inputs are its root words, and the tool output is inside the work.
-  await keystrokes("&where=tool&from=owner,agents", ENTRIES - ENTRIES / 50);
-  await keystrokes("&where=root,thread&from=owner", ENTRIES / 50);
-  assert.equal((await s.get<SearchResult>("/api/search?q=zephyr&where=tool")).total, ENTRIES - ENTRIES / 50);
-  assert.equal((await s.get<SearchResult>("/api/search?q=zephyr&where=root")).total, ENTRIES / 50);
+  await keystrokes("&place=jobs,tools&from=owner,agents", ENTRIES - ENTRIES / 50);
+  await keystrokes("&place=channels,dms,solo,threads&from=owner", ENTRIES / 50);
+  assert.equal((await s.get<SearchResult>("/api/search?q=zephyr&place=jobs,tools")).total, ENTRIES - ENTRIES / 50);
+  assert.equal((await s.get<SearchResult>("/api/search?q=zephyr&place=channels,dms,solo")).total, ENTRIES / 50);
 });
 
 test("a search's request log line says where its handler time went", async () => {

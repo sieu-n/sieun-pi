@@ -37,8 +37,6 @@ test("the address holds the filters as comma lists and reads back the same filte
   assert.deepEqual(params, { from: "owner,ag_vent", place: "threads,jobs", in: "ch_cut", after: "2026-11-01", before: "2026-11-20", has: "link,saved" });
   assert.deepEqual(readFilters(params), filters);
   assert.deepEqual(readFilters({ place: "jobs,nowhere,channels", after: "yesterday", from: "a,,a", has: "saved,file,link" }), { from: ["a"], place: ["channels", "jobs"], has: ["link", "saved"] });
-  assert.deepEqual(readFilters({ where: "tool" }).place, ["jobs", "tools"], "an old where= link");
-  assert.deepEqual(readFilters({ where: "tool,root,thread" }).place, []);
   assert.deepEqual(filterParams(NO_FILTERS), {});
 });
 
