@@ -36,6 +36,7 @@
  * ~/.prime/agent/browser-chat/corrections.json, APPS_CHAT_URL else http://127.0.0.1:5184. Without OUTPUT_FILE the result prints to stdout.
  */
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { isMain } from "./main-module.ts";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -392,7 +393,7 @@ async function skillsDrift(server: string): Promise<{ items: { kind: string; whe
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   const { values } = parseArgs({ options: {
     "data-dir": { type: "string" }, "agents-dir": { type: "string" }, ideal: { type: "string" }, corrections: { type: "string" },
     server: { type: "string" }, "no-recall": { type: "boolean" }, only: { type: "string" },

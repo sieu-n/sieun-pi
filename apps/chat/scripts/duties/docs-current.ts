@@ -14,6 +14,7 @@
  * Without OUTPUT_FILE the result prints to stdout.
  */
 import { execFileSync } from "node:child_process";
+import { isMain } from "./main-module.ts";
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { parseArgs } from "node:util";
@@ -169,7 +170,7 @@ export function codeToolArgs(repo: string, env: NodeJS.ProcessEnv = process.env)
   return JSON.parse(execFileSync("node", ["--import", "tsx", script], { cwd: join(repo, "packages/pi-host"), env, encoding: "utf8" })) as ToolArgs;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   const { values } = parseArgs({ options: { server: { type: "string" }, repo: { type: "string" } } });
   const server = values.server ?? process.env.APPS_CHAT_URL ?? "http://127.0.0.1:5184";
   const repo = values.repo ?? process.env.SIEUN_PI_REPO ?? join(process.env.HOME ?? "", "src/sieun-pi");

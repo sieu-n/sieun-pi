@@ -30,6 +30,7 @@
  * agent-profile.ts, APPS_CHAT_DATA_DIR else ~/.pi/agent/chat, APPS_CHAT_URL else http://127.0.0.1:5184, ~/work/owner-style/runs.
  */
 import { spawn } from "node:child_process";
+import { isMain } from "./main-module.ts";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -182,7 +183,7 @@ async function archiveAgent(server: string, id: string): Promise<void> {
   if (thread) await fetch(`${server}/api/c/${thread}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ archived: true }) });
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   const { values } = parseArgs({ options: {
     notes: { type: "string" }, skill: { type: "string" }, profile: { type: "string" }, "data-dir": { type: "string" }, server: { type: "string" },
     runs: { type: "string" }, "no-blind": { type: "boolean" },

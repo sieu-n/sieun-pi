@@ -56,6 +56,7 @@
  * `.items.md` in place of `.json`, else ~/work/fable-sweep/<stamp>.items.md, and the summary goes to OUTPUT_FILE, else stdout.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { isMain } from "./main-module.ts";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -416,7 +417,7 @@ async function get<T>(server: string, path: string): Promise<T> {
 
 interface Hit { conversation: { id: string; kind: string; name: string }; messageId: string; threadRoot?: string; kind: string; role: string; at: number; link: string }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   const { values } = parseArgs({ options: { agent: { type: "string" }, server: { type: "string" }, "threads-dir": { type: "string" }, "data-dir": { type: "string" } } });
   // peek reads like run and writes no state: the judging turn runs it when it starts late, so it judges fresh data (PRECHECK_MODE=peek).
   const { mode, confirm, mark } = sweepMode(process.env.PRECHECK_MODE, process.env.PRECHECK_TRIGGER);

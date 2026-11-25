@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { isMain } from "./main-module.ts";
 import { createHash, createHmac, randomBytes } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
@@ -222,4 +223,4 @@ async function main(): Promise<void> {
   process.stdout.write(`crawler-api-mcp: ${Object.entries(out.metrics).map(([k, v]) => `${k}=${v}`).join(" ")}\n`);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) await main();
+if (isMain(import.meta.url)) await main();

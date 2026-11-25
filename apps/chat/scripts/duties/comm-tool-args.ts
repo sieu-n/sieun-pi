@@ -7,6 +7,7 @@
  * It prints `{"<tool>": {"<arg>": true when required}}` as JSON.
  */
 import { ChatApp } from "../../../../packages/pi-host/src/durable/chat-app.ts";
+import { isMain } from "./main-module.ts";
 import { commExtension, type CommHost } from "../../../../packages/pi-host/src/durable/comm.ts";
 import { forMeTools } from "../../../../packages/pi-host/src/durable/for-me.ts";
 import { laterTools } from "../../../../packages/pi-host/src/durable/later.ts";
@@ -49,7 +50,7 @@ export async function commToolArgs(): Promise<ToolArgs> {
   return Object.fromEntries(tools.map(tool => [tool.name, argsOf(tool.parameters)]));
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   console.log(JSON.stringify(await commToolArgs()));
   process.exit(0);
 }

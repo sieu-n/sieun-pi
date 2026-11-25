@@ -1,4 +1,5 @@
 import { runMacPrecheck } from "./mac-reach.ts";
+import { isMain } from "./main-module.ts";
 
 /**
  * The box side of the Demo sandbox works duty (demo-sandbox.ts). The demo and its walk live on the owner's MacBook Pro, so this runs
@@ -7,6 +8,6 @@ import { runMacPrecheck } from "./mac-reach.ts";
  * 10-27 frontend bro's d1 ran its bare `ssh mac` at 06:25 KST four days in a row, timed out on the sleeping Mac each time, read "the
  * precheck failed" and started a duty job that could do nothing.
  */
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   await runMacPrecheck("scripts/duties/demo-sandbox.ts", "the demo walk, page times, restarts and SSR timeouts are");
 }

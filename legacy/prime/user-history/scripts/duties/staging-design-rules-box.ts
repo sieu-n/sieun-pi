@@ -1,4 +1,5 @@
 import { runMacPrecheck } from "./mac-reach.ts";
+import { isMain } from "./main-module.ts";
 
 /**
  * The box side of the Staging design rules duty (staging-design-rules.ts). The chat log and the virev-demo tests it reads live on the owner's
@@ -7,6 +8,6 @@ import { runMacPrecheck } from "./mac-reach.ts";
  * bro's d6 ran a bare `ssh mac`, timed out on the sleeping Mac ("ssh: connect to host 100.66.173.18 port 22: Connection timed out") and read
  * error, so it measured nothing those days.
  */
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   await runMacPrecheck("scripts/duties/staging-design-rules.ts", "repeated_design_notes_24h and design_rule_test_failures are");
 }

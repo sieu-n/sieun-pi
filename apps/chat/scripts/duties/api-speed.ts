@@ -21,6 +21,7 @@
  * Without OUTPUT_FILE the result prints to stdout.
  */
 import { spawnSync } from "node:child_process";
+import { isMain } from "./main-module.ts";
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -444,7 +445,7 @@ export function apiSpeed(dir: string, now: number, windowMs: number, probes: rea
   };
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   const { values } = parseArgs({ options: { "data-dir": { type: "string" }, hours: { type: "string" }, server: { type: "string" }, now: { type: "string" } } });
   const dir = resolve(values["data-dir"] ?? process.env.APPS_CHAT_DATA_DIR ?? join(homedir(), ".pi/agent/chat"));
   const base = values.server ?? process.env.APPS_CHAT_URL ?? "http://127.0.0.1:5184";

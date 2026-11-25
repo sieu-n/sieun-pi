@@ -16,6 +16,7 @@
  * Without OUTPUT_FILE the result prints to stdout.
  */
 import { execFileSync, spawnSync } from "node:child_process";
+import { isMain } from "./main-module.ts";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
@@ -84,7 +85,7 @@ function primeCheck(repo: string): PrimeCheck {
   return { behind: run.status !== 0, line };
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   const { values } = parseArgs({ options: { repo: { type: "string" } } });
   const repo = values.repo ?? process.env.SIEUN_PI_REPO ?? join(process.env.HOME ?? "", "src/sieun-pi");
   // prime-sync fetches origin/main in the checkout each minute.

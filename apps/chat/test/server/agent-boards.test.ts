@@ -120,7 +120,7 @@ test("the areas file is optional and a malformed one throws", () => {
 test("c249: each agent with an area keeps a 3-hourly board push and a daily Area review that run on time and produce work, and gets one nudge", () => {
   const review = (lastAt: number | null, extra: Partial<DutyRow["runs"][number]> = {}): DutyRow => ({
     duty: { id: "d9", name: "Area review", status: "active" }, paused: false,
-    runs: lastAt === null ? [] : [{ verdict: "met", at: lastAt, ...extra }], schedule: { kind: "daily", at: "07:00" }, nextAt: (lastAt ?? NOW - HOUR) + 24 * HOUR,
+    runs: lastAt === null ? [] : [{ verdict: "met", at: lastAt, metrics: { corrections_unsaved: { value: 0 } }, ...extra }], schedule: { kind: "daily", at: "07:00" }, nextAt: (lastAt ?? NOW - HOUR) + 24 * HOUR,
   });
   const push = (everyMin: number, lastAt: number | null, paused = false) => ({ everyMs: everyMin * 60_000, planEveryMs: everyMin * 60_000, paused, lastAt, runs: lastAt === null ? [] : [{ at: lastAt }] });
   const out = agentPattern([
@@ -147,6 +147,25 @@ test("c249: each agent with an area keeps a 3-hourly board push and a daily Area
   assert.deepEqual(out.messages.map(message => [message.agent, message.workThreadId]), [["ag_mcp", "t-mcp"], ["ag_crawler-guy", "t-crawler"]]);
   assert.match(out.messages[0]!.text, /c249[\s\S]*1\. its check-in, the board push, runs every 360 min[\s\S]*2\. it has no daily "Area review" duty/);
   assert.match(out.messages[1]!.text, /3\. its d9 "Area review" ran with no job, no wiki page and no memory change/);
+});
+
+test("an Area review run that wrote no output is empty, even when the failed run started a job", () => {
+  const failed: DutyRow = {
+    duty: { id: "d3", name: "Area review", status: "active" }, paused: false, schedule: { kind: "daily", at: "07:00" }, nextAt: NOW + 20 * HOUR,
+    runs: [{ verdict: "error", at: NOW - 4 * HOUR, metrics: {}, job: { id: "j1" }, detail: "/x/d3-261126-053949.stderr.log" }],
+  };
+  const met: DutyRow = { ...failed, runs: [{ verdict: "met", at: NOW - 4 * HOUR, metrics: { corrections_unsaved: { value: 0 } }, job: { id: "j2" } }] };
+  const push = { everyMs: 180 * 60_000, planEveryMs: 180 * 60_000, paused: false, lastAt: NOW - HOUR, runs: [{ at: NOW - HOUR }] };
+  const out = agentPattern([
+    { agent: { id: "ag_vp-of-gtm", name: "VP of GTM" }, brief: "GTM", duties: [failed], checkIn: push },
+    { agent: { id: "ag_seo", name: "seo" }, brief: "SEO", duties: [met], checkIn: push, outputs: { d3: false } },
+    { agent: { id: "ag_vent", name: "vent" }, brief: "Vent", duties: [met], checkIn: push, outputs: { d3: true } },
+  ], [], NOW);
+  assert.deepEqual(out.flagged.filter(flag => flag.kind === "empty_run").map(flag => flag.excerpt), [
+    'VP of GTM: its d3 "Area review" wrote no output (the precheck failed), so it reviewed nothing',
+    'seo: its d3 "Area review" wrote no output, so it reviewed nothing',
+  ]);
+  assert.equal(out.metrics.empty_runs, 2);
 });
 
 

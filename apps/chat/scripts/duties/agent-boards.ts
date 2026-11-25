@@ -25,6 +25,7 @@
  * Without OUTPUT_FILE the result prints to stdout.
  */
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { isMain } from "./main-module.ts";
 import { homedir } from "node:os";
 import { basename, join, relative } from "node:path";
 import { parseArgs } from "node:util";
@@ -126,6 +127,8 @@ export interface AgentRead {
   pauses?: Readonly<Record<string, { since: number; reason?: string }>>;
   /** Per duty id, the sample size its newest measured run's detail file names (`sampleSize`), or null when the file names none. */
   samples?: Readonly<Record<string, number | null>>;
+  /** Per duty id, whether its newest measured run's detail file holds the precheck's JSON output; absent when that was not read. */
+  outputs?: Readonly<Record<string, boolean>>;
 }
 /** An owner post to an agent: `ref` is "#room pN", `ids` the Prime message ids its inputs carried, which an agent quotes as "msg <id>". */
 export interface Ask { ref: string; ids: readonly string[]; at: number; text: string }
@@ -216,7 +219,7 @@ export function agentPattern(agents: readonly AgentRead[], areas: readonly Agent
   let stale = 0;
   let zero = 0;
   let noN = 0;
-  for (const { agent, duties, checkIn, stuck = 0, boardAt, asks = [], pauses = {}, samples = {} } of agents) {
+  for (const { agent, duties, checkIn, stuck = 0, boardAt, asks = [], pauses = {}, samples = {}, outputs = {} } of agents) {
     if (noArea.has(agent.id)) continue;
     const flag = (kind: string, key: string, excerpt: string) => flagged.push({ kind, sig: `${agent.id}/${key}`, item: agent.id, excerpt: `${agent.name}: ${excerpt}` });
     for (const ask of asks) {
@@ -265,6 +268,13 @@ export function agentPattern(agents: readonly AgentRead[], areas: readonly Agent
     if (pausedDuty(review) || overdueDuty(review, now)) continue; // flagged as duty_paused or duty_overdue
     const run = review.runs.find(item => item.verdict !== "skipped");
     if (!run) continue; // a review that never ran is new, and turns overdue after 2 days
+    // A run that wrote no output measured nothing, even when the run started a job to fix it: on 11-26 every agent's first Area review
+    // failed with "no valid JSON in OUTPUT_FILE" (the precheck's main guard missed the current symlink) and still showed a job.
+    if (run.verdict === "error" || !Object.keys(run.metrics ?? {}).length || outputs[review.duty.id] === false) {
+      empty += 1;
+      flag("empty_run", `review/${review.duty.id}/empty`, `its ${review.duty.id} "${review.duty.name}" wrote no output${run.verdict === "error" ? " (the precheck failed)" : ""}, so it reviewed nothing`);
+      continue;
+    }
     const readings = REVIEW_READINGS.reduce((sum, key) => sum + (run.readings?.[key] ?? run.metrics?.[key]?.value ?? 0), 0);
     if (!run.job && readings === 0) {
       empty += 1;
@@ -457,7 +467,7 @@ async function get<T>(server: string, path: string): Promise<T> {
   return await res.json() as T;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   // `--part boards` (the default, d5 "Agent boards") reads steps and check-ins; `--part duties` (agent factory's "Agents keep their duties")
   // reads each agent's duties, brief and areas.
   const { values } = parseArgs({ options: { server: { type: "string" }, areas: { type: "string" }, part: { type: "string" }, wiki: { type: "string" }, "data-dir": { type: "string" } } });
@@ -489,15 +499,19 @@ if (import.meta.url === `file://${process.argv[1]}`) {
           since: stored.find(duty => duty.id === row.duty.id)?.updatedAt ?? now, ...pauseReason(row, board) ? { reason: pauseReason(row, board)! } : {},
         }]));
         const samples: Record<string, number | null> = {};
+        const outputs: Record<string, boolean> = {};
         for (const row of duties) {
           const detail = row.runs.find(run => run.verdict !== "skipped")?.detail;
-          if (detail && existsSync(detail)) samples[row.duty.id] = sampleSize(readJson(detail));
+          if (!detail) continue;
+          const output = existsSync(detail) ? readJson<{ metrics?: unknown }>(detail) : undefined;
+          outputs[row.duty.id] = !!output && typeof output.metrics === "object";
+          if (outputs[row.duty.id]) samples[row.duty.id] = sampleSize(output);
         }
         const jobsAt = [...jobs.flatMap(job => job.lastActivityAt ? [Date.parse(job.lastActivityAt)] : []), ...duties.flatMap(row => row.runs.flatMap(run => run.job && run.at ? [run.at] : []))];
         return {
           read: {
             agent, duties, brief: folder.brief?.text ?? "", checkIn, stuck: steps.stuck.length, boardAt: board?.updatedAt ? Date.parse(board.updatedAt) : null,
-            asks: asksTo(store, agent, folder.brief?.text?.trim() ? folder.brief.modifiedAt ?? 0 : 0), pauses, samples,
+            asks: asksTo(store, agent, folder.brief?.text?.trim() ? folder.brief.modifiedAt ?? 0 : 0), pauses, samples, outputs,
           } satisfies AgentRead,
           jobsAt,
         };

@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { isMain } from "./main-module.ts";
 import { readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -124,7 +125,7 @@ async function readWalk(): Promise<ParityWalk | null> {
   return exists ? parseWalk(JSON.parse(await readFile(WALK_FILE, "utf8"))) : null;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   const now = Date.now();
   const live = await livePin(now);
   const lag = await pinLag(live.pin, now);

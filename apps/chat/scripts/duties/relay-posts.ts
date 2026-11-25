@@ -10,6 +10,7 @@
  * The data dir defaults to APPS_CHAT_DATA_DIR, else ~/.pi/agent/chat. Without OUTPUT_FILE the result prints to stdout.
  */
 import { writeFileSync } from "node:fs";
+import { isMain } from "./main-module.ts";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -44,7 +45,7 @@ export function relayPosts(dir: string, now: number, windowMs: number): { findin
   return { findings: findings.sort((a, b) => a.at - b.at), agentPosts };
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   const { values } = parseArgs({ options: { "data-dir": { type: "string" }, hours: { type: "string" } } });
   const dir = resolve(values["data-dir"] ?? process.env.APPS_CHAT_DATA_DIR ?? join(homedir(), ".pi/agent/chat"));
   const windowMs = Number(values.hours ?? 24) * 3600_000;

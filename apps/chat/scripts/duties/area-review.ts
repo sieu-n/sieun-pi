@@ -17,7 +17,8 @@
  * It runs with plain node (type stripping) and imports only node: modules, so its cwd can be the agent's own project, where the duty job
  * then works. Without OUTPUT_FILE the result prints to stdout.
  */
-import { existsSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { isMain } from "./main-module.ts";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -86,7 +87,7 @@ function folderTimes(dir: string): { path: string; mtimeMs: number }[] {
 
 // The chat server runs this through the current symlink, and node resolves the main module to the release folder, so compare real paths:
 // on 11-26 every agent's first Area review run wrote nothing and failed with "no valid JSON in OUTPUT_FILE".
-if (process.argv[1] && import.meta.url === `file://${realpathSync(process.argv[1])}`) {
+if (isMain(import.meta.url)) {
   const { values } = parseArgs({ options: { agent: { type: "string" }, db: { type: "string" }, "agents-dir": { type: "string" }, ledger: { type: "string" } } });
   if (!values.agent) throw new Error("--agent <agent id> names the agent whose area this reviews");
   const dbPath = values.db ?? join(process.env.APPS_CHAT_DATA_DIR ?? join(homedir(), ".pi/agent/chat"), "chat.sqlite");
