@@ -36,6 +36,8 @@ export type FactCopy = {
   skillMd: string | null;
   checkout: {
     root: string; remote: string | null; branch: string | null; headAt: string | null; upstreamAt: string | null; behind: number; fetchedAt: string | null; tracked: boolean;
+    /** `git status` entries other than a deleted tracked file, and commits on HEAD no remote holds; null when the scanner did not say. */
+    dirty: number | null; unpushed: number | null;
   } | null;
   dmi: boolean;
   pythonImport: string | null;
@@ -98,6 +100,7 @@ function parseCopy(raw: Json): FactCopy | null {
     ? {
       root: String(raw.checkout.root), remote: str(raw.checkout.remote), branch: str(raw.checkout.branch), headAt: str(raw.checkout.headAt),
       upstreamAt: str(raw.checkout.upstreamAt), behind: num(raw.checkout.behind) ?? 0, fetchedAt: str(raw.checkout.fetchedAt), tracked: raw.checkout.tracked === true,
+      dirty: num(raw.checkout.dirty), unpushed: num(raw.checkout.unpushed),
     }
     : null;
   return {
@@ -273,6 +276,9 @@ export function lineOverlap(a: ReadonlySet<string>, b: ReadonlySet<string>): num
 }
 
 export const lineSet = (text: string): Set<string> => new Set(linesOf(text).map(line => line.trim()).filter(line => line.length > 2));
+
+/** A SKILL.md without its frontmatter and its title line, the part a merge folds; each skill keeps its own name and description. */
+export const skillBody = (text: string): string => text.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, "").replace(/^\s*# .*\n/, "");
 
 // Thresholds
 
@@ -464,27 +470,62 @@ export type VerdictInput = {
   usage: ReadonlyMap<string, FactUse>;
   usageCounted: boolean;
   limits: SkillThresholds;
+  /** The skills with an install row, which some runtime reads. */
+  installed: ReadonlySet<string>;
 };
 
 /** Package copies the owner installed stay untouched (c226), so a rule only notes them and never proposes a removal or a merge. */
 const isUpstream = (source: SkillSource): boolean => source.kind === "upstream";
 
 /**
- * The rule verdicts of every skill, by skill id. A byte-identical second folder of the same source on the same box is a duplicate to
- * remove, keeping the canonical copy, which matches the owner-approved cleanup of 11-21 (skills review moves.jsonl). The same text under
- * another source, or near-same text over `NEAR_DUPLICATE`, is a merge proposal an agent checks first. A copy behind its source or in an old
- * clone is outdated. A source over the bloat bytes is bloated. A skill no session used in 30 days gets "weak description, review", never a
- * removal, since the owner said on 11-22 a skill may go unused because its description is weak (msg mwqw0mfo).
+ * Whether the server can take a copy away by moving it into the review's trash, which `sw skills undo` puts back. A folder git tracks in a
+ * live checkout is part of that repo: on the server's box its removal is a commit and push, and on the Mac it would leave the checkout
+ * dirty, so only a person or an agent removes it. A copy in a stale checkout goes to the trash, since nobody pushes from that clone.
+ */
+export function trashable(c: CopyFact): boolean {
+  return !c.checkout?.tracked || c.stale;
+}
+
+/**
+ * Why a stale checkout keeps its copies, or null when it holds nothing uncommitted and no commit that a remote lacks, so taking a copy out
+ * of it loses no work. A deleted tracked file is no work, since git still holds it. The owner asked on 11-25 that no Mac clone loses
+ * unpushed work, read from `git status` and `git rev-list HEAD --not --remotes` (scripts/skills-inventory.py `local_work`).
+ */
+export function heldWork(c: CopyFact): string | null {
+  const k = c.checkout;
+  if (!k || k.dirty === null || k.unpushed === null) return "the scan did not say whether it holds uncommitted or unpushed work";
+  const parts = [k.dirty ? `${k.dirty} uncommitted changes` : "", k.unpushed ? `${k.unpushed} unpushed commits` : ""].filter(Boolean);
+  return parts.length ? `it holds ${parts.join(" and ")}` : null;
+}
+
+/**
+ * The rule verdicts of every skill, by skill id. A verdict with `auto` is one the server carries out itself after each scan
+ * (`SkillsDb.autoAct`) through the `sw skills remove` path, since the owner approved removing obvious slop and duplicates without asking
+ * (ch_5d452546 p6, msg mwqw0mfo). Those are:
+ * - a dead link,
+ * - a byte-identical second folder of the same source on the same box, keeping the canonical copy,
+ * - a copy in a stale checkout that holds no uncommitted or unpushed work (`heldWork`),
+ * - a skill under another source whose text adds no line to the skill it matches (a clear merge), and
+ * - a skill no session used in 30 days that no runtime reads.
+ * Each also needs every folder it removes to be `trashable`. Package skills the owner installed are never removed (c226).
+ *
+ * An unclear merge, near-same text where each side has lines the other lacks, stays a `merge` proposal for the skills review, with the skill
+ * the rule keeps as its pick. A copy behind its source or in an old clone is outdated, and a source over the bloat bytes is bloated, both
+ * notes. A skill no session used in 30 days that some runtime reads gets "weak description, review", never a removal, since the owner said
+ * on 11-22 a skill may go unused because its description is weak (msg mwqw0mfo).
  */
 export function verdicts(input: VerdictInput): Map<string, SkillVerdictRow[]> {
   const out = new Map<string, SkillVerdictRow[]>();
-  const add = (skill: string, row: SkillVerdictRow) => out.set(skill, [...(out.get(skill) ?? []), row]);
+  const add = (skill: string, row: SkillVerdictRow, auto = false) => out.set(skill, [...(out.get(skill) ?? []), auto ? { ...row, auto: true } : row]);
   const byId = new Map(input.skills.map(s => [s.id, s]));
   const real = input.copies.filter(c => c.linkTarget === null && byId.has(c.key));
+  const copiesOf = new Map<string, CopyFact[]>();
+  for (const c of input.copies) copiesOf.set(c.key, [...(copiesOf.get(c.key) ?? []), c]);
+  const canTrash = (c: CopyFact) => trashable(c);
   for (const c of input.copies) {
     if (c.linkTarget !== null && !c.exists) {
       const skill = byId.has(c.key) ? c.key : null;
-      if (skill) add(skill, { rule: "broken", action: "remove", detail: `The link points at ${c.linkTarget}, which is gone.`, copyId: copyId(c), other: null });
+      if (skill) add(skill, { rule: "broken", action: "remove", detail: `The link points at ${c.linkTarget}, which is gone.`, copyId: copyId(c), other: null }, canTrash(c));
     }
     if (c.deadRefs.length && byId.has(c.key) && input.canon.get(c.key) === c) {
       add(c.key, { rule: "broken", action: "note", detail: `Names ${c.deadRefs.length} missing paths, such as ${c.deadRefs[0]}.`, copyId: copyId(c), other: null });
@@ -496,7 +537,11 @@ export function verdicts(input: VerdictInput): Map<string, SkillVerdictRow[]> {
     for (const c of copies) {
       if (c.stale) {
         const behind = c.checkout?.behind ? `, ${c.checkout.behind} commits behind its upstream` : "";
-        add(skill.id, { rule: "stale-clone", action: "note", detail: `Sits in a stale checkout at ${c.checkout?.root ?? c.root}, last commit ${c.checkout?.headAt?.slice(0, 10) ?? "unknown"}${behind}.`, copyId: copyId(c), other: c === canon ? null : canon ? copyId(canon) : null });
+        const where = `Sits in a stale checkout at ${c.checkout?.root ?? c.root}, last commit ${c.checkout?.headAt?.slice(0, 10) ?? "unknown"}${behind}`;
+        const held = isUpstream(skill.source) ? "it is a package's copy" : heldWork(c);
+        const other = c === canon ? null : canon ? copyId(canon) : null;
+        if (held === null) add(skill.id, { rule: "stale-clone", action: "remove", detail: `${where}. Nothing there is uncommitted or unpushed, so the server removes it.`, copyId: copyId(c), other }, true);
+        else add(skill.id, { rule: "stale-clone", action: "note", detail: `${where}. It stays, because ${held}.`, copyId: copyId(c), other });
       } else if (c !== canon && canon && c.hash && canon.hash && c.hash !== canon.hash) {
         add(skill.id, { rule: "outdated", action: "note", detail: `${c.changedLines ?? "Some"} lines differ from the source ${copyId(canon)}.`, copyId: copyId(c), other: copyId(canon) });
       }
@@ -507,7 +552,7 @@ export function verdicts(input: VerdictInput): Map<string, SkillVerdictRow[]> {
         add(skill.id, { rule: "upstream-match", action: "note", detail: `The package keeps a second folder of ${skill.name} with the same text in its own cache on ${x.copy.box}; it is not ours to remove.`, copyId: copyId(x.copy), other: copyId(x.kept) });
         continue;
       }
-      add(skill.id, { rule: "duplicate", action: "remove", detail: `A second folder of ${skill.name} on ${x.copy.box} with the same text; ${copyId(x.kept)} stays.`, copyId: copyId(x.copy), other: copyId(x.kept) });
+      add(skill.id, { rule: "duplicate", action: "remove", detail: `A second folder of ${skill.name} on ${x.copy.box} with the same text; ${copyId(x.kept)} stays.`, copyId: copyId(x.copy), other: copyId(x.kept) }, canTrash(x.copy));
     }
     if (canon?.bytes != null && canon.bytes > input.limits.bloatBytes && !isUpstream(skill.source)) {
       const ratio = input.limits.medianBytes ? canon.bytes / input.limits.medianBytes : 0;
@@ -515,9 +560,12 @@ export function verdicts(input: VerdictInput): Map<string, SkillVerdictRow[]> {
     }
     const use = input.usage.get(skill.name);
     if (input.usageCounted && !(use && use.uses30d > 0) && skill.source.kind !== "harness") {
-      add(skill.id, isUpstream(skill.source)
-        ? { rule: "unused", action: "note", detail: "No session opened or called it in 30 days.", copyId: null, other: null }
-        : { rule: "unused", action: "review-description", detail: "No session opened or called it in 30 days; its description may be too weak for agents to pick it, so review it before any removal.", copyId: null, other: null });
+      const mine = copiesOf.get(skill.id) ?? [];
+      const read = input.installed.has(skill.id) || mine.some(c => c.runtimes.length > 0);
+      if (isUpstream(skill.source)) add(skill.id, { rule: "unused", action: "note", detail: "No session opened or called it in 30 days.", copyId: null, other: null });
+      else if (!read && mine.length && mine.every(canTrash)) {
+        add(skill.id, { rule: "unused", action: "remove", detail: "No session opened or called it in 30 days, and no runtime reads any folder of it, so the server removes it.", copyId: null, other: null }, true);
+      } else add(skill.id, { rule: "unused", action: "review-description", detail: "No session opened or called it in 30 days; its description may be too weak for agents to pick it, so review it before any removal.", copyId: null, other: null });
     }
   }
   const canons = input.skills.flatMap(s => {
@@ -541,9 +589,32 @@ export function verdicts(input: VerdictInput): Map<string, SkillVerdictRow[]> {
           add(extra.skill.id, { rule: "upstream-match", action: "note", detail: `Two upstream packages ship it: ${match}. Neither is ours to merge or remove.`, copyId: copyId(extra.copy), other: keep.skill.id });
           continue;
         }
-        const action = isUpstream(keep.skill.source) ? "note" : "merge";
+        const rule = same ? "duplicate" : "near-duplicate";
         const detail = `${match[0]!.toUpperCase()}${match.slice(1)}.`;
-        add(extra.skill.id, { rule: same ? "duplicate" : "near-duplicate", action, detail: action === "merge" ? `${detail} An agent checks the merge before it applies.` : detail, copyId: copyId(extra.copy), other: keep.skill.id });
+        if (isUpstream(keep.skill.source)) {
+          add(extra.skill.id, { rule, action: "note", detail, copyId: copyId(extra.copy), other: keep.skill.id });
+          continue;
+        }
+        const keepBody = lineSet(skillBody(keep.text));
+        const adds = same ? [] : [...lineSet(skillBody(extra.text))].filter(line => !keepBody.has(line));
+        if (!adds.length) {
+          // A clear merge: the kept skill already says every line, so the merge is removing this one. The server does it when each runtime
+          // that reads this one outside a repo also reads the kept one on that box, under the same name, so no thread loses the skill.
+          const folders = copiesOf.get(extra.skill.id) ?? [];
+          const unread = !input.installed.has(extra.skill.id) && folders.every(c => !c.runtimes.length);
+          const keptReads = new Set((copiesOf.get(keep.skill.id) ?? []).filter(c => c.exists && !c.checkout).flatMap(c => c.runtimes.map(r => `${c.box}:${r}`)));
+          const covered = folders.filter(c => !c.checkout).every(c => c.runtimes.every(r => keptReads.has(`${c.box}:${r}`)));
+          const auto = !isUpstream(extra.skill.source) && folders.every(canTrash) && (unread || (sameName && covered));
+          add(extra.skill.id, {
+            rule, action: "remove", copyId: copyId(extra.copy), other: keep.skill.id,
+            detail: `${detail} It adds no line ${keep.skill.id} lacks, so ${auto ? "the server removes it" : "removing it leaves one skill; it needs a commit or an install move, so remove it with sw skills remove"}.`,
+          }, auto);
+          continue;
+        }
+        add(extra.skill.id, {
+          rule, action: "merge", copyId: copyId(extra.copy), other: keep.skill.id,
+          detail: `${detail} Pick: keep ${keep.skill.id} and fold in the ${adds.length} ${adds.length === 1 ? "line" : "lines"} only this one has, such as "${adds[0]!.slice(0, 80)}".`,
+        });
       } else if (sameName) {
         for (const [x, y] of pair) add(x.skill.id, { rule: "name-clash", action: "note", detail: `${y.skill.id} has the same name and different text (${Math.round(score * 100)}% of lines match).`, copyId: null, other: y.skill.id });
       }

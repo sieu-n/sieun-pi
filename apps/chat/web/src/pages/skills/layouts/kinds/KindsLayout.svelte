@@ -63,7 +63,7 @@
   const groups = families();
   const rows = $derived(rowsFor(view, filter, text));
   const folding = $derived(filter === "all" && !text.trim() && !showUnused);
-  const used = $derived(folding ? rows.filter(r => !r.problems.includes("unused")) : rows);
+  const used = $derived(folding ? rows.filter(r => !r.problems.includes("unused") && !r.problems.includes("oldClone")) : rows);
   const hiddenUnused = $derived(rows.length - used.length);
   const notices = $derived(boxNotices(view.boxes));
   const liveAgents = $derived(agents.list.filter(a => a.kind === "chat" && !a.archived && !a.test));
@@ -205,14 +205,15 @@
 <section class="kinds" data-testid="skills-kinds">
   <div class="counts" role="group" aria-label="Problems">
     {#each PROBLEMS as problem (problem.id)}
-      <button type="button" class="count" class:quiet={problem.id === "unused"} aria-pressed={filter === problem.id} onclick={() => setFilter(problem.id)} use:tooltip={problem.hint} data-problem={problem.id}>
+      <button type="button" class="count" class:quiet={problem.id === "unused" || problem.id === "oldClone"} aria-pressed={filter === problem.id} onclick={() => setFilter(problem.id)} use:tooltip={problem.hint} data-problem={problem.id}>
         <span class="value">{problemCount(view, problem.id).toLocaleString("en-US")}</span>
         <span class="label">{problem.label}</span>
       </button>
     {/each}
   </div>
   <p class="summary">
-    {view.counts.skills.toLocaleString("en-US")} skills in {view.counts.copies.toLocaleString("en-US")} folders on {view.boxes.length === 1 ? "1 box" : `${view.boxes.length} boxes`}.
+    {view.counts.skills.toLocaleString("en-US")} skills in {view.counts.copies.toLocaleString("en-US")} folders on {view.boxes.length === 1 ? "1 box" : `${view.boxes.length} boxes`}, {view.counts.useful.toLocaleString("en-US")} of them useful.
+    {view.usefulDefinition}
     {scanLine(view) ?? ""}
   </p>
   {#each notices as notice (notice.box)}
@@ -264,7 +265,7 @@
                   {#if (names.get(entry.name) ?? 0) > 1}<span class="src" use:tooltip={sourceLabel(entry)}>{sourceShort(entry)}</span>{/if}
                 </button>
                 {#if row.problems.some(p => p !== "unused")}
-                  <span class="flags">{#each row.problems.filter(p => p !== "unused") as problem (problem)}<Badge tone={problem === "bloated" ? "danger" : "warning"}>{problem}</Badge>{/each}</span>
+                  <span class="flags">{#each row.problems.filter(p => p !== "unused") as problem (problem)}<Badge tone={problem === "bloated" ? "danger" : problem === "oldClone" ? "outline" : "warning"}>{problem === "oldClone" ? "old clone" : problem}</Badge>{/each}</span>
                 {/if}
               </th>
               <td class="num" class:muted={entry.use.uses === 0} use:tooltip={usesTitle(entry)}>{row.problems.includes("unused") ? "never" : entry.use.uses.toLocaleString("en-US")}</td>
@@ -389,7 +390,7 @@
           {#if folding && hiddenUnused > 0}
             <tr class="fold">
               <td colspan={span}>
-                <div class="detail-body"><Button size="sm" variant="ghost" icon="chevron-down" onclick={() => (showUnused = true)}>Show {hiddenUnused.toLocaleString("en-US")} skills no thread used in 30 days</Button></div>
+                <div class="detail-body"><Button size="sm" variant="ghost" icon="chevron-down" onclick={() => (showUnused = true)}>Show {hiddenUnused.toLocaleString("en-US")} skills no thread used in 30 days or only in old clones</Button></div>
               </td>
             </tr>
           {/if}

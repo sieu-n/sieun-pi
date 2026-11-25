@@ -1,11 +1,11 @@
 <script lang="ts">
   import { api } from "$lib/api";
-  import { SKILL_RUNTIMES, type SkillCopy, type SkillEntry, type SkillRuntime, type SkillsChange, type SkillsView } from "$lib/api/shared/skills";
+  import { SKILL_RUNTIMES, isNeverUsed, type SkillCopy, type SkillEntry, type SkillRuntime, type SkillsChange, type SkillsView } from "$lib/api/shared/skills";
   import { Button, Dialog, EmptyState, Field, Input, SearchField, Select, toast, tooltip } from "$lib/ui";
   import { SvelteSet } from "svelte/reactivity";
   import SkillRow from "./SkillRow.svelte";
   import { boxStateLine, scanLine } from "../../box-line";
-  import { GROUP_TEXT, PROBLEMS, count, healthy, names, problemGroups, sourceBox, tilde, type Problem, type RowActions } from "./model";
+  import { GROUP_TEXT, PROBLEMS, count, healthy, names, oldClones, problemGroups, sourceBox, tilde, type Problem, type RowActions } from "./model";
 
   /**
    * Settings > Skills, by problem: the duplicated, outdated and bloated counts, each a filter, then the skills grouped by problem worst
@@ -36,8 +36,9 @@
 
   const groups = $derived(problemGroups(view.skills, only, text));
   const rest = $derived(only === null ? healthy(view.skills, text) : []);
-  const used = $derived(rest.filter(skill => skill.use.uses > 0));
-  const unused = $derived(rest.filter(skill => skill.use.uses === 0));
+  const used = $derived(rest.filter(skill => !isNeverUsed(skill)));
+  const unused = $derived(rest.filter(isNeverUsed));
+  const old = $derived(only === null ? oldClones(view.skills, text) : []);
   const labels = $derived(names(view.skills));
   const nameOf = (id: string): string => labels.get(id) ?? id;
   const now = Date.now();
@@ -177,9 +178,11 @@
     </div>
     <div class="side">
       <p class="totals">
-        {count(view.counts.skills, "skill")} in {count(view.counts.copies, "folder")}, {view.counts.neverUsed.toLocaleString("en-US")} never used in 30 days.
+        {count(view.counts.skills, "skill")} in {count(view.counts.copies, "folder")}: <span data-testid="problem-useful">{view.counts.useful.toLocaleString("en-US")} useful</span>,
+        {view.counts.neverUsed.toLocaleString("en-US")} never used in 30 days, and <span data-testid="problem-old-clones">{count(view.counts.oldClones, "more skill", "more skills")} only in old clones</span>, which count in none of these.
         {scanLine(view, now) ?? ""}
       </p>
+      <p class="totals" data-testid="problem-useful-definition">{view.usefulDefinition}</p>
       <div class="tools">
         <div class="search"><SearchField bind:value={text} placeholder="Filter by name or folder" label="Filter skills" clearable /></div>
         <Button variant="primary" size="sm" icon="plus" onclick={() => openInstall()} data-testid="add-skill">Add skill</Button>
@@ -229,7 +232,20 @@
     </section>
   {/if}
 
-  {#if groups.length === 0 && rest.length === 0}
+  {#if old.length}
+    <section class="group" aria-labelledby="problem-old-clones" data-testid="problem-group-old-clones">
+      <header>
+        <h2 id="problem-old-clones">Only in old clones <span class="k">{old.length}</span></h2>
+        <p>Every folder of these sits in a checkout that fell behind its repo by more than {count(view.thresholds.staleCheckoutDays, "day")}, so they count in no number above.</p>
+      </header>
+      <div class="list">
+        {#each firstOf("old-clones", old) as skill (skill.id)}<SkillRow {skill} kind={null} limits={view.thresholds} {nameOf} {busy} {act} open={opened.has(`old:${skill.id}`)} ontoggle={toggler(`old:${skill.id}`)} />{/each}
+        {@render more("old-clones", old.length)}
+      </div>
+    </section>
+  {/if}
+
+  {#if groups.length === 0 && rest.length === 0 && old.length === 0}
     <EmptyState icon="filter" title={text ? "No skill matches" : "No skill has this problem"} description={text ? "Clear the filter to see every skill." : "Pick another count to see its skills."} />
   {/if}
 </div>

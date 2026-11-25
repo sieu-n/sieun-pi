@@ -1,4 +1,4 @@
-import { COUNT_RULES, THREAD_KINDS, type CopyRole, type SkillCopy, type SkillEntry, type SkillSight, type SkillSource, type SkillThresholds, type SkillVerdictRow, type ThreadKind, type VerdictRule } from "../../../../lib/api/shared/skills.ts";
+import { COUNT_RULES, THREAD_KINDS, countsAs, isOldClone, type CopyRole, type SkillCopy, type SkillEntry, type SkillSight, type SkillSource, type SkillThresholds, type SkillVerdictRow, type ThreadKind, type VerdictRule } from "../../../../lib/api/shared/skills.ts";
 
 export type Problem = keyof typeof COUNT_RULES;
 export const count = (n: number, one: string, many = `${one}s`): string => `${n.toLocaleString("en-US")} ${n === 1 ? one : many}`;
@@ -16,7 +16,7 @@ const RULES = {
 
 export const GROUP_TEXT: Record<GroupKind, { title: string; description: string }> = {
   duplicated: { title: "Duplicated", description: "A second folder with the same or nearly the same text. Most extra copies first." },
-  outdated: { title: "Outdated", description: "A copy that differs from its source or sits in an old clone. Most changed lines first." },
+  outdated: { title: "Outdated", description: "A copy that differs from its source. Most changed lines first." },
   bloated: { title: "Bloated", description: "A SKILL.md over 3 times the median size of our skills. Largest first." },
   broken: { title: "Broken", description: "A link whose target is gone, or a SKILL.md that names missing paths." },
   "name-clash": { title: "Same name, different skill", description: "Two skills share a name but less than half their lines match." },
@@ -27,7 +27,11 @@ const ORDER: readonly GroupKind[] = [...PROBLEMS, "broken", "name-clash"];
 export const verdictsOf = (skill: SkillEntry, kind: GroupKind): SkillVerdictRow[] =>
   skill.verdicts.filter(v => (RULES[kind] as readonly VerdictRule[]).includes(v.rule));
 
-export const has = (skill: SkillEntry, kind: GroupKind): boolean => verdictsOf(skill, kind).length > 0;
+const isProblem = (kind: GroupKind): kind is Problem => kind in COUNT_RULES;
+
+/** Whether a skill shows in a group: a headline problem as `countsAs` counts it, and no group for a skill only old clones hold. */
+export const has = (skill: SkillEntry, kind: GroupKind): boolean =>
+  isProblem(kind) ? countsAs(skill, kind) : !isOldClone(skill) && verdictsOf(skill, kind).length > 0;
 
 export const problemsOf = (skill: SkillEntry): GroupKind[] => ORDER.filter(kind => has(skill, kind));
 
@@ -85,8 +89,14 @@ export function problemGroups(skills: readonly SkillEntry[], only: Problem | nul
 export function healthy(skills: readonly SkillEntry[], text: string): SkillEntry[] {
   const words = wordsOf(text);
   return skills
-    .filter(skill => problemsOf(skill).length === 0 && matches(skill, words))
+    .filter(skill => !isOldClone(skill) && problemsOf(skill).length === 0 && matches(skill, words))
     .sort((a, b) => b.use.uses - a.use.uses || a.name.localeCompare(b.name));
+}
+
+/** The skills only old clones hold, which count in no group and list last, by name. */
+export function oldClones(skills: readonly SkillEntry[], text: string): SkillEntry[] {
+  const words = wordsOf(text);
+  return skills.filter(skill => isOldClone(skill) && matches(skill, words)).sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export const weakDescription = (skill: SkillEntry): boolean => skill.verdicts.some(v => v.rule === "unused" && v.action === "review-description");

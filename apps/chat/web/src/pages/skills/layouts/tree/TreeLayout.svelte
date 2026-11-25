@@ -151,7 +151,9 @@
     </div>
     <p class="summary">
       {view.counts.skills.toLocaleString("en-US")} skills in {view.counts.copies.toLocaleString("en-US")} copies on {view.boxes.length === 1 ? "1 box" : `${view.boxes.length} boxes`},
-      and {view.counts.neverUsed.toLocaleString("en-US")} never used in 30 days.
+      {view.counts.useful.toLocaleString("en-US")} useful and {view.counts.neverUsed.toLocaleString("en-US")} never used in 30 days.
+      {view.counts.oldClones.toLocaleString("en-US")} more {view.counts.oldClones === 1 ? "skill sits" : "skills sit"} only in old clones and {view.counts.oldClones === 1 ? "counts" : "count"} in none of these.
+      {view.usefulDefinition}
       The median SKILL.md is {kb(view.thresholds.medianBytes)}, and over {kb(view.thresholds.bloatBytes)} counts as bloated.
       {scanLine(view) ?? ""}
     </p>

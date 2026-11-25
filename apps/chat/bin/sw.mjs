@@ -67,7 +67,9 @@ function printApply(result) {
 
 function printView(view) {
   const c = view.counts;
-  console.log(`${c.skills} skills, ${c.copies} copies, ${c.installs} installs. Duplicated ${c.duplicated}, outdated ${c.outdated}, bloated ${c.bloated}, never used ${c.neverUsed}, drift ${c.drift}.`);
+  console.log(`${c.skills} skills, ${c.copies} copies, ${c.installs} installs. Useful ${c.useful}, duplicated ${c.duplicated}, outdated ${c.outdated}, bloated ${c.bloated}, never used ${c.neverUsed}, drift ${c.drift}.`);
+  console.log(`${plural(c.oldClones, "more skill sits", "more skills sit")} only in old clones and count in none of these.`);
+  if (view.usefulDefinition) console.log(view.usefulDefinition);
   const local = iso => new Date(iso).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
   for (const box of view.boxes) {
     const line = box.state === "ok" ? `scanned ${local(box.scannedAt)}` : box.lastOkAt ? `asleep or offline since ${local(box.since ?? box.scannedAt)}, showing its scan from ${local(box.lastOkAt)}` : "has not answered a scan yet";

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { THREAD_KINDS, type SkillCopy, type SkillEntry, type SkillThresholds, type SkillVerdictRow } from "../../../../lib/api/shared/skills.ts";
-import { count, drift, headline, healthy, kindsText, openedByPath, problemGroups, problemsOf, sight, sizeText, splitPath, weakDescription } from "./model.ts";
+import { THREAD_KINDS, usefulOf, type SkillCopy, type SkillEntry, type SkillThresholds, type SkillVerdictRow } from "../../../../lib/api/shared/skills.ts";
+import { count, drift, headline, healthy, kindsText, oldClones, openedByPath, problemGroups, problemsOf, sight, sizeText, splitPath, weakDescription } from "./model.ts";
 
 const limits: SkillThresholds = { medianBytes: 4000, medianLines: 75, bloatBytes: 12000, nearDuplicate: 0.8, staleCheckoutDays: 30, source: "test" };
 
@@ -12,11 +12,15 @@ const copy = (over: Partial<SkillCopy>): SkillCopy => ({
 
 const verdict = (over: Partial<SkillVerdictRow>): SkillVerdictRow => ({ rule: "duplicate", action: "remove", detail: "", copyId: null, other: null, ...over });
 
-const skill = (name: string, over: Partial<SkillEntry> = {}): SkillEntry => ({
+const skill = (name: string, over: Partial<SkillEntry> = {}): SkillEntry => withUseful({
   id: `git:sieun-pi/skills/${name}`, name, description: `${name} skill`, owner: { kind: "owner" }, source: { kind: "git", repo: "sieun-pi", path: `skills/${name}` },
   installs: [], copies: [copy({ id: `m:/${name}`, path: `/${name}` })], size: { lines: 10, bytes: 400, ratio: 0.1 }, verdicts: [],
-  use: { uses: 0, sessions: 0, lastUse: null, byKind: {} }, preimported: false, sees: [], extraCopies: [], ...over,
+  use: { uses: 0, sessions: 0, lastUse: null, nameUses: 0, byKind: {} }, preimported: false, sees: [], extraCopies: [], ...over,
 });
+
+function withUseful(e: Omit<SkillEntry, "useful"> & Partial<Pick<SkillEntry, "useful">>): SkillEntry {
+  return { ...e, useful: usefulOf(e) };
+}
 
 test("a skill with two problems sits in both groups, each worst first", () => {
   const twoCopies = skill("two", {
@@ -37,13 +41,26 @@ test("a skill with two problems sits in both groups, each worst first", () => {
 
 test("outdated skills order by the changed lines of their outdated copies", () => {
   const small = skill("small", { copies: [copy({ id: "a", changedLines: 3, role: "checkout" })], verdicts: [verdict({ rule: "outdated", action: "note", copyId: "a" })] });
-  const large = skill("large", { copies: [copy({ id: "b", changedLines: 300, role: "checkout" })], verdicts: [verdict({ rule: "stale-clone", action: "note", copyId: "b" })] });
+  const large = skill("large", { copies: [copy({ id: "b", changedLines: 300, role: "checkout" })], verdicts: [verdict({ rule: "outdated", action: "note", copyId: "b" })] });
   assert.deepEqual(problemGroups([small, large], "outdated", "")[0]?.skills.map(s => s.name), ["large", "small"]);
 });
 
+test("a skill only old clones hold sits in no group and lists apart, and a verdict on an old-clone copy of a live skill counts in no group", () => {
+  const stale = { root: "/Users/o/code/old", branch: "main", headAt: "2026-09-01T00:00:00Z", stale: true };
+  const old = skill("old", { copies: [copy({ id: "mac:/old", path: "/old", checkout: stale })], verdicts: [verdict({ rule: "stale-clone", action: "note", copyId: "mac:/old" }), verdict({ rule: "bloated", action: "note" })] });
+  const live = skill("live", {
+    copies: [copy({ id: "m:/live" }), copy({ id: "mac:/old/live", role: "checkout", checkout: stale })],
+    verdicts: [verdict({ rule: "stale-clone", action: "note", copyId: "mac:/old/live" }), verdict({ rule: "duplicate", copyId: "mac:/old/live", other: "m:/live" })],
+  });
+  assert.deepEqual(problemGroups([old, live], null, ""), []);
+  assert.deepEqual(healthy([old, live], "").map(s => s.name), ["live"]);
+  assert.deepEqual(oldClones([old, live], "").map(s => s.name), ["old"]);
+  assert.deepEqual(old.useful, { yes: false, why: "Only old clones hold it." });
+});
+
 test("healthy skills list most used first and never used last, and only our unused ones ask for a description review", () => {
-  const busy = skill("busy", { use: { uses: 900, sessions: 40, lastUse: null, byKind: {} } });
-  const quiet = skill("quiet", { use: { uses: 3, sessions: 1, lastUse: null, byKind: {} } });
+  const busy = skill("busy", { use: { uses: 900, sessions: 40, lastUse: null, nameUses: 900, byKind: {} } });
+  const quiet = skill("quiet", { use: { uses: 3, sessions: 1, lastUse: null, nameUses: 3, byKind: {} } });
   const never = skill("never", { verdicts: [verdict({ rule: "unused", action: "review-description" })] });
   const plugin = skill("plugin", { verdicts: [verdict({ rule: "unused", action: "note" })] });
   assert.deepEqual(healthy([never, quiet, busy, plugin], "").map(s => s.name), ["busy", "quiet", "never", "plugin"]);
@@ -69,7 +86,7 @@ test("a copy row says its drift, its size against the median and keeps the folde
 test("thread kinds that used a skill their prompt does not list read as opened by path", () => {
   const s = skill("gw", {
     sees: [{ kind: "claude", how: "listed", copyId: "x" }, { kind: "prime-subagent", how: "hidden", why: "settings hide it" }],
-    use: { uses: 10, sessions: 5, lastUse: null, byKind: { "prime-subagent": { uses: 8, sessions: 4 }, claude: { uses: 2, sessions: 1 } } },
+    use: { uses: 10, sessions: 5, lastUse: null, nameUses: 10, byKind: { "prime-subagent": { uses: 8, sessions: 4 }, claude: { uses: 2, sessions: 1 } } },
   });
   assert.deepEqual(openedByPath(s), ["prime-subagent"]);
 });

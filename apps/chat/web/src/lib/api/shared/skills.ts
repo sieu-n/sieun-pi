@@ -231,8 +231,9 @@ export type SkillCopy = {
 };
 
 /**
- * The rule verdicts, recomputed on every scan (server/skills-rules.ts). Only `merge` needs an agent, which checks the proposal before it
- * applies, and nothing here removes a skill by itself: removal happens when a person or an agent calls remove.
+ * The rule verdicts, recomputed on every scan (server/skills-model.ts `verdicts`). A verdict with `auto` is one the server carries out
+ * itself after the scan through the `sw skills remove` path, such as a dead link or a copy in a stale clone with no unpushed work. An
+ * unclear `merge` waits in the skills review for a person, with the skill to keep as its pick.
  */
 export const VERDICT_RULES = ["duplicate", "near-duplicate", "upstream-match", "name-clash", "outdated", "stale-clone", "bloated", "unused", "broken"] as const;
 export type VerdictRule = (typeof VERDICT_RULES)[number];
@@ -248,6 +249,8 @@ export type SkillVerdictRow = {
   copyId: string | null;
   /** The skill or copy a duplicate or merge points at. */
   other: string | null;
+  /** Set when the server removes it after the scan without asking (`SkillsDb.autoAct`). */
+  auto?: true;
 };
 
 /** The thread kinds whose prompt can list a skill. */
@@ -273,7 +276,15 @@ export type SkillUse30d = {
   sessions: number;
   lastUse: string | null;
   byKind: Partial<Record<ThreadKind, { uses: number; sessions: number }>>;
+  /**
+   * The uses of the skill's name over every copy and box, before `uses` splits them between the skills that share the name. On 11-25
+   * sieun-pi's pi-rlm edit had 0 `uses` while Prime's bundled edit had 12,467, so a skill reads never used only when this is 0.
+   */
+  nameUses: number;
 };
+
+/** Whether a skill earns its place under `USEFUL_DEFINITION`, and the first reason it does not. */
+export type SkillUseful = { yes: boolean; why: string };
 
 export type SkillEntry = {
   /** Stable id: the source key plus the name, such as `git:sieun-pi/skills/board`. */
@@ -297,6 +308,8 @@ export type SkillEntry = {
    * list and its length, so the extra-copy number matches the copies column.
    */
   extraCopies: { copyId: string; keptId: string; why: "same-text" | "other-text" | "stale-clone" }[];
+  /** `usefulOf` of this entry. The wire leaves it out and `fromWire` computes it again. */
+  useful: SkillUseful;
 };
 
 /** A folder in a box's tree, with the skill folders under it. */
@@ -329,15 +342,52 @@ export type SkillThresholds = {
 
 /**
  * Which verdict rules each headline count and layout group takes: a skill counts in a group when any of its verdicts has one of the rules,
- * however many of its copies match. name-clash and broken are groups of their own with no headline count.
+ * however many of its copies match (`countsAs`). name-clash and broken are groups of their own with no headline count. A copy in an old
+ * clone is not outdated: on 11-25 stale-clone made 135 of the 146 outdated skills, and old clones have their own count.
  */
 export const COUNT_RULES = {
   duplicated: ["duplicate", "near-duplicate"],
-  outdated: ["outdated", "stale-clone"],
+  outdated: ["outdated"],
   bloated: ["bloated"],
 } as const satisfies Record<string, readonly VerdictRule[]>;
 
-/** The headline counts over every skill. A skill counts once per rule however many of its copies match. */
+export type CountedProblem = keyof typeof COUNT_RULES;
+
+type Judged = Pick<SkillEntry, "copies" | "installs" | "verdicts" | "use">;
+
+/**
+ * A skill whose every real folder (not a link) sits in a stale checkout, such as the Mac's old ~/code clones. On 11-25 96 of 578 skills
+ * were only there. It counts as an old clone and in no other headline count.
+ */
+export function isOldClone(skill: Pick<SkillEntry, "copies">): boolean {
+  const real = skill.copies.filter(c => c.link === null);
+  return real.length > 0 && real.every(c => c.checkout?.stale === true);
+}
+
+/** Whether a skill counts toward a headline problem: it is no old clone, and a verdict of the problem's rules names no copy in a stale checkout. */
+export function countsAs(skill: Judged, problem: CountedProblem): boolean {
+  if (isOldClone(skill)) return false;
+  const rules: readonly VerdictRule[] = COUNT_RULES[problem];
+  const stale = new Set(skill.copies.filter(c => c.checkout?.stale).map(c => c.id));
+  return skill.verdicts.some(v => rules.includes(v.rule) && !(v.copyId !== null && stale.has(v.copyId)));
+}
+
+/** No old clone, and carries the `unused` verdict: no session used its name in 30 days on any copy or box. Harness entries never do. */
+export const isNeverUsed = (skill: Judged): boolean => !isOldClone(skill) && skill.verdicts.some(v => v.rule === "unused");
+
+/** The owner's words for a useful skill (ch_5d452546 p3), as the page shows them. */
+export const USEFUL_DEFINITION = "A useful skill is loaded, used and has no second copy: a runtime reads a folder that holds it, its name was used in the last 30 days, and it has no duplicate or near-duplicate verdict.";
+
+export function usefulOf(skill: Judged): SkillUseful {
+  if (isOldClone(skill)) return { yes: false, why: "Only old clones hold it." };
+  const loaded = skill.copies.some(c => c.exists && c.loadedBy.length > 0 && !c.checkout?.stale) || skill.installs.some(i => i.runtimes.length > 0);
+  if (!loaded) return { yes: false, why: "No runtime reads a folder that holds it." };
+  if (skill.use.nameUses === 0) return { yes: false, why: "No session used its name in 30 days." };
+  if (countsAs(skill, "duplicated")) return { yes: false, why: "It has a second copy." };
+  return { yes: true, why: "Loaded, used in 30 days, no second copy." };
+}
+
+/** The headline counts. Every count but `copies`, `installs`, `drift` and `oldClones` leaves old-clone skills out. */
 export type SkillCounts = {
   skills: number;
   copies: number;
@@ -346,6 +396,9 @@ export type SkillCounts = {
   outdated: number;
   bloated: number;
   neverUsed: number;
+  /** Skills only old clones hold (`isOldClone`). */
+  oldClones: number;
+  useful: number;
   drift: number;
 };
 
@@ -354,6 +407,8 @@ export type SkillsView = {
   generatedAt: string | null;
   seededAt: string | null;
   counts: SkillCounts;
+  /** `USEFUL_DEFINITION`, the line the page shows over the useful count. */
+  usefulDefinition: string;
   thresholds: SkillThresholds;
   boxes: SkillBoxState[];
   skills: SkillEntry[];
@@ -375,7 +430,7 @@ export type SkillsView = {
  * the kept answers' quality 9 on release-885d7bd, and the texts 70 KB.
  */
 export type WireCopy = Omit<SkillCopy, "checkout" | "id" | "hash" | "mtime" | "realPath"> & { checkout: SkillCopy["checkout"] | string; realPath?: string };
-export type WireSkill = Omit<SkillEntry, "copies" | "description"> & { copies: WireCopy[] };
+export type WireSkill = Omit<SkillEntry, "copies" | "description" | "useful"> & { copies: WireCopy[] };
 export type WireView = Omit<SkillsView, "skills"> & { skills: WireSkill[]; checkouts: Record<string, NonNullable<SkillCopy["checkout"]>> };
 
 /** A skill's description as GET /api/skills/text sends it, apart from the view. */
@@ -384,7 +439,7 @@ export type SkillText = { id: string; description: string };
 export function toWire<V extends Omit<SkillsView, "scan">>({ skills, ...rest }: V): Omit<V, "skills"> & { skills: WireSkill[]; checkouts: WireView["checkouts"] } {
   const checkouts: WireView["checkouts"] = {};
   const same = (a: SkillCopy["checkout"], b: SkillCopy["checkout"]) => JSON.stringify(a) === JSON.stringify(b);
-  const wire = skills.map(({ description: _description, ...skill }) => ({
+  const wire = skills.map(({ description: _description, useful: _useful, ...skill }) => ({
     ...skill,
     copies: skill.copies.map(({ id: _id, hash: _hash, mtime: _mtime, realPath, checkout, ...copy }): WireCopy => {
       const real = realPath === copy.path ? {} : { realPath };
@@ -405,7 +460,13 @@ export function fromWire({ checkouts, skills, ...rest }: WireView): SkillsView {
     id: `${copy.box}:${copy.path}`, ...copy, realPath: realPath ?? copy.path, hash: null, mtime: null,
     checkout: typeof checkout === "string" ? (checkouts[checkout] ?? null) : checkout,
   });
-  return { ...rest, skills: skills.map(skill => ({ ...skill, description: "", copies: skill.copies.map(copyOf) })) };
+  return {
+    ...rest,
+    skills: skills.map(skill => {
+      const entry = { ...skill, description: "", copies: skill.copies.map(copyOf) };
+      return { ...entry, useful: usefulOf(entry) };
+    }),
+  };
 }
 
 /** The view with each skill's description from GET /api/skills/text; a skill the texts lack, such as one a scan just added, keeps none. */

@@ -1,7 +1,7 @@
 import type {
   BoxName, CopyRole, SkillBoxState, SkillCopy, SkillEntry, SkillRuntime, SkillThresholds, SkillTreeNode, SkillVerdictRow, SkillsView,
 } from "$lib/api/shared/skills";
-import { COUNT_RULES } from "../../../../lib/api/shared/skills.ts";
+import { COUNT_RULES, isNeverUsed } from "../../../../lib/api/shared/skills.ts";
 
 export type Problem = keyof typeof COUNT_RULES;
 export const PROBLEM_IDS = Object.keys(COUNT_RULES) as Problem[];
@@ -165,7 +165,7 @@ export function folderSkills(refs: readonly CopyRef[], folder: string): { used: 
     else bySkill.set(ref.skill.id, { skill: ref.skill, copies: [ref.copy] });
   }
   const rows = [...bySkill.values()].sort((a, b) => b.skill.use.uses - a.skill.use.uses || a.skill.name.localeCompare(b.skill.name));
-  return { used: rows.filter(r => r.skill.use.uses > 0), never: rows.filter(r => r.skill.use.uses === 0) };
+  return { used: rows.filter(r => !isNeverUsed(r.skill)), never: rows.filter(r => isNeverUsed(r.skill)) };
 }
 
 export const skillProblems = (skill: SkillEntry, copyId: string | null = null): Problem[] => PROBLEM_IDS.filter(p => hasProblem(skill, p, copyId));

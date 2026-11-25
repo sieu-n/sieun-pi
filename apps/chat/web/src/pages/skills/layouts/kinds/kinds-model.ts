@@ -1,29 +1,26 @@
 import {
-  COUNT_RULES, THREAD_KINDS, type InstallState, type SkillBoxState, type SkillCopy, type SkillEntry, type SkillInstall, type SkillSight, type SkillThresholds,
-  type SkillsView, type ThreadKind, type VerdictRule,
+  THREAD_KINDS, countsAs, isNeverUsed, isOldClone, type InstallState, type SkillBoxState, type SkillCopy, type SkillEntry, type SkillInstall, type SkillSight, type SkillThresholds,
+  type SkillsView, type ThreadKind,
 } from "../../../../lib/api/shared/skills.ts";
 import { boxStateLine } from "../../box-line.ts";
 
 
-export type Problem = "duplicated" | "outdated" | "bloated" | "unused";
+export type Problem = "duplicated" | "outdated" | "bloated" | "unused" | "oldClone";
 export type Filter = "all" | Problem;
 
 
 export const PROBLEMS: readonly { id: Problem; label: string; hint: string }[] = [
   { id: "duplicated", label: "Duplicated", hint: "A copy with the same text as its source, or 0.5 line similarity or more" },
-  { id: "outdated", label: "Outdated", hint: "A copy that differs from its git source, or sits in an old clone nothing loads" },
+  { id: "outdated", label: "Outdated", hint: "A copy that differs from its git source" },
   { id: "bloated", label: "Bloated", hint: "A SKILL.md over 3 times the median bytes of our skills" },
-  { id: "unused", label: "Never used", hint: "No thread opened the SKILL.md or called its module in 30 days" },
+  { id: "unused", label: "Never used", hint: "No thread opened the SKILL.md or called its module in 30 days, under any copy of its name" },
+  { id: "oldClone", label: "Only in old clones", hint: "Every folder sits in a stale checkout, so it counts in none of the other numbers" },
 ];
 
-export function problemsOf(entry: SkillEntry, usageCounted: boolean): Problem[] {
-  const rules = new Set(entry.verdicts.map(v => v.rule));
-  const out: Problem[] = [];
-  for (const problem of ["duplicated", "outdated", "bloated"] as const) {
-    const list: readonly VerdictRule[] = COUNT_RULES[problem];
-    if (list.some(rule => rules.has(rule))) out.push(problem);
-  }
-  if (usageCounted && entry.source.kind !== "harness" && entry.use.uses === 0) out.push("unused");
+export function problemsOf(entry: SkillEntry): Problem[] {
+  if (isOldClone(entry)) return ["oldClone"];
+  const out: Problem[] = (["duplicated", "outdated", "bloated"] as const).filter(problem => countsAs(entry, problem));
+  if (isNeverUsed(entry)) out.push("unused");
   return out;
 }
 
@@ -33,6 +30,7 @@ export function problemCount(view: SkillsView, problem: Problem): number {
     case "outdated": return view.counts.outdated;
     case "bloated": return view.counts.bloated;
     case "unused": return view.counts.neverUsed;
+    case "oldClone": return view.counts.oldClones;
     default: {
       const _exhaustive: never = problem;
       return _exhaustive;
@@ -165,9 +163,8 @@ export type Row = { entry: SkillEntry; problems: Problem[] };
 
 export function rowsFor(view: SkillsView, filter: Filter, text: string): Row[] {
   const q = text.trim().toLowerCase();
-  const usageCounted = view.counts.neverUsed > 0;
   return view.skills
-    .map(entry => ({ entry, problems: problemsOf(entry, usageCounted) }))
+    .map(entry => ({ entry, problems: problemsOf(entry) }))
     .filter(row => filter === "all" || row.problems.includes(filter))
     .filter(row => !q || matches(row.entry, q))
     .sort((a, b) => b.entry.use.uses - a.entry.use.uses || b.entry.use.sessions - a.entry.use.sessions || a.entry.name.localeCompare(b.entry.name));
@@ -180,7 +177,9 @@ function matches(entry: SkillEntry, q: string): boolean {
 
 export function usesLabel(entry: SkillEntry, unused: boolean): string {
   const { uses, sessions } = entry.use;
-  if (uses === 0) return unused ? "No thread used it in 30 days" : "No use counted";
+  if (uses === 0 && unused) return "No thread used it in 30 days";
+  if (uses === 0 && entry.use.nameUses > 0) return `${entry.use.nameUses.toLocaleString("en-US")} ${entry.use.nameUses === 1 ? "use" : "uses"} of its name went to another skill of the same name over 30 days`;
+  if (uses === 0) return "No use counted";
   return `${uses.toLocaleString("en-US")} ${uses === 1 ? "use" : "uses"} in ${sessions.toLocaleString("en-US")} ${sessions === 1 ? "session" : "sessions"} over 30 days`;
 }
 

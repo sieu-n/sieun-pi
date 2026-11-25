@@ -10,7 +10,7 @@ import { fixtureScanner, writeSkillsDbFixture, type SkillsDbFixture } from "../.
 import { changedLines, similarity, staleCheckouts, type FactCopy } from "../../server/skills-model.ts";
 import { SkillsReview } from "../../server/skills-review.ts";
 import { Skills } from "../../server/skills.ts";
-import type { SkillScan } from "../../web/src/lib/api/shared/skills.ts";
+import { USEFUL_DEFINITION, fromWire, toWire, type SkillScan } from "../../web/src/lib/api/shared/skills.ts";
 
 const REPO = resolve(import.meta.dirname, "../../../..");
 const BOX = "us-metal02";
@@ -45,7 +45,8 @@ function rig(t: { after: (fn: () => void) => void }): Rig {
     log: () => {}, broadcast: () => {}, fold: async () => {},
   });
   const db = new SkillsDb({ file: join(dir, "chat.sqlite"), box: BOX, home: fixture.home, piHostPrompt: null }, review.diskSteps(fixture.setName));
-  const scanner = fixtureScanner(fixture, REPO);
+  // Under spec-clean the release folder holds the scanner of the release's commit; the checkout's is the one this run tests.
+  const scanner = fixtureScanner(fixture, process.env.SPEC_CLEAN_REPO ?? REPO);
   const scan = () => {
     const paths = join(dir, "install-paths.json");
     writeFileSync(paths, JSON.stringify(db.installPaths()));
@@ -95,9 +96,13 @@ test("rules: an old clone is stale, a same-text copy under another source merges
   const rules = (id: string) => view.skills.find(s => s.id === id)?.verdicts.map(v => `${v.rule}:${v.action}`) ?? [];
   assert.ok(rules("git:tools/.agents/skills/deploy-notes").includes("stale-clone:note"));
   const copy = view.skills.find(s => s.source.kind === "local" && s.name === "deploy-notes")!;
-  assert.ok(rules(copy.id).includes("duplicate:merge"), rules(copy.id).join(", "));
+  assert.ok(rules(copy.id).includes("duplicate:remove"), rules(copy.id).join(", "));
+  assert.ok(!copy.verdicts.find(v => v.rule === "duplicate")!.auto, "Claude Code reads the copy and no kept folder, so the server leaves it");
   const near = view.skills.find(s => s.name === "notes-helper")!;
   assert.ok(rules(near.id).includes("near-duplicate:merge"), rules(near.id).join(", "));
+  assert.match(near.verdicts.find(v => v.rule === "near-duplicate")!.detail, /Pick: keep git:tools\/\.agents\/skills\/deploy-notes and fold in the 1 line only this one has/);
+  const old = view.skills.find(s => s.id === "git:tools/.agents/skills/deploy-notes")!.verdicts.find(v => v.rule === "stale-clone")!;
+  assert.match(old.detail, /It stays, because it holds 1 unpushed commits/);
   assert.ok(rules("git:tools/.agents/skills/big-guide").includes("bloated:note"));
   const gone = view.skills.find(s => s.verdicts.some(v => v.rule === "broken"))!;
   assert.equal(gone.verdicts.find(v => v.rule === "broken")!.action, "remove");
@@ -169,6 +174,99 @@ test("remove moves a copy into the review's trash with a moves.jsonl line, and u
   scan();
   assert.equal(db.check().items.length, 0);
   assert.ok(db.moves().some(m => m.id === change.move.id && m.undoneAt));
+});
+
+test("after a scan the server removes a dead link and a pushed old clone's copy into the trash, keeps a clone with uncommitted work, and acts once per scan", async t => {
+  const { fixture, db, scan, present } = rig(t);
+  const old = join(fixture.home, "code/tools-old");
+  execFileSync("git", ["-C", old, "update-ref", "refs/remotes/origin/main", "HEAD"]);
+  const wip = join(fixture.home, "code/tools-wip");
+  execFileSync("git", ["clone", "-q", old, wip]);
+  execFileSync("git", ["-C", wip, "remote", "set-url", "origin", "https://example.com/fixture/tools.git"]);
+  writeFileSync(join(wip, "notes.txt"), "work in progress\n");
+  scan();
+  const facts = JSON.parse(readFileSync(fixture.inventory, "utf8")) as { copies: { path: string; checkout?: { dirty: number; unpushed: number } }[] };
+  const checkoutAt = (root: string) => facts.copies.find(c => c.path.startsWith(`${root}/`))!.checkout!;
+  assert.deepEqual([checkoutAt(old).dirty, checkoutAt(old).unpushed], [0, 0]);
+  assert.deepEqual([checkoutAt(wip).dirty, checkoutAt(wip).unpushed], [1, 0]);
+  const verdictsAt = (path: string) => db.view(IDLE).skills.flatMap(s => s.verdicts).filter(v => v.copyId === `${BOX}:${path}`);
+  const oldCopy = join(old, ".agents/skills/deploy-notes");
+  const wipCopy = join(wip, ".agents/skills/deploy-notes");
+  const deadLink = join(fixture.home, ".claude/skills/gone");
+  assert.deepEqual(verdictsAt(oldCopy).map(v => [v.rule, v.action, v.auto ?? false]), [["stale-clone", "remove", true]]);
+  assert.deepEqual(verdictsAt(wipCopy).map(v => [v.rule, v.action, v.auto ?? false]), [["stale-clone", "note", false]]);
+  assert.match(verdictsAt(wipCopy)[0]!.detail, /It stays, because it holds 1 uncommitted changes/);
+  assert.deepEqual(verdictsAt(deadLink).map(v => [v.rule, v.auto ?? false]), [["broken", true]]);
+  const raw = JSON.parse(readFileSync(fixture.inventory, "utf8")) as { skills: Record<string, unknown>[] };
+  const asked = db.overlay(raw.skills).filter(row => (row.useful as { action: boolean }).action).map(row => String(row.name));
+  assert.ok(!asked.includes("gone") && asked.includes("notes-helper"), `the review asks only what the server leaves: ${asked.join(", ")}`);
+
+  const change = await db.autoAct();
+  assert.ok(change, "the scan had auto verdicts");
+  assert.match(change.move.summary, /^auto: remove 2 \(.*1 stale-clone.*\)|^auto: remove 2 \(.*1 broken.*\)/);
+  assert.equal(present(oldCopy), false);
+  assert.equal(present(deadLink), false);
+  assert.ok(present(wipCopy), "the clone with uncommitted work keeps its copy");
+  assert.equal(execFileSync("git", ["-C", old, "rev-list", "--count", "HEAD"], { encoding: "utf8" }).trim(), "1", "the old clone gets no commit");
+  assert.match(execFileSync("git", ["-C", old, "status", "--porcelain"], { encoding: "utf8" }), /^ D \.agents\/skills\/deploy-notes\/SKILL\.md/);
+  assert.equal(await db.autoAct(), null, "a second call for the same scan does nothing");
+  scan();
+  assert.equal(await db.autoAct(), null, "the next scan finds nothing left to remove");
+  await db.undo({ moveId: change.move.id });
+  assert.ok(existsSync(join(oldCopy, "SKILL.md")));
+  assert.ok(present(deadLink));
+});
+
+test("merge of a skill whose every line the target says removes it, and an unclear merge still goes to agent factory", async t => {
+  const { fixture, db, scan, present, review } = rig(t);
+  scan();
+  const view = db.view(IDLE);
+  const copy = view.skills.find(s => s.source.kind === "local" && s.name === "deploy-notes")!;
+  const change = await db.merge({ skillId: copy.id, into: "git:tools/.agents/skills/deploy-notes" });
+  assert.equal(change.move.kind, "remove");
+  assert.equal(present(join(fixture.home, ".claude/skills/deploy-notes-copy")), false);
+  assert.ok(!db.view(IDLE).skills.some(s => s.id === copy.id), "one skill is left");
+  const near = view.skills.find(s => s.name === "notes-helper")!;
+  const fold = await db.merge({ skillId: near.id, into: "git:tools/.agents/skills/deploy-notes" });
+  assert.equal(fold.move.kind, "merge");
+  assert.ok(present(join(fixture.home, ".claude/skills/notes-helper")), "the fold waits for agent factory, so the copy stays until it moves the line");
+  void review;
+});
+
+test("rules: a clear merge read by the kept skill's runtimes and an unused skill no runtime reads are auto; a read one only asks for a description review", t => {
+  const dir = mkdtempSync(join(tmpdir(), "skills-db-auto-"));
+  const db = new SkillsDb({ file: join(dir, "chat.sqlite"), box: BOX, home: "/home/x", piHostPrompt: null }, { run: async () => [], undo: async () => [] });
+  t.after(() => {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const at = "2026-11-25T04:00:00Z";
+  const body = (topic: string) => Array.from({ length: 30 }, (_, i) => `${i + 1}. ${topic} step ${i + 1} of ${topic}.`).join("\n");
+  const copy = (path: string, name: string, text: string, runtimes: string[], extra: Record<string, unknown> = {}) => ({
+    box: BOX, path, realPath: path, linkTarget: null, exists: true, name, source: "user-dir", root: dirname(path), runtimes, hash: `h-${name}-${text.length}`, text, mtime: at, ...extra,
+  });
+  const src = "/home/x/src/kit/.agents/skills/ship";
+  const checkout = { root: "/home/x/src/kit", remote: "git@github.com:o/kit.git", branch: "main", headAt: at, upstreamAt: at, behind: 0, fetchedAt: at, tracked: true, dirty: 0, unpushed: 0 };
+  db.ingest({
+    generatedAt: at, usageCounted: true, usage: { ship: { uses30d: 4, sessions30d: 2, lastUse: at, byKind: {} } },
+    boxes: [{ box: BOX, scannedAt: at, ok: true }],
+    copies: [
+      copy(src, "ship", body("ship"), ["claude", "codex"], { source: "repo:kit", checkout }),
+      { ...copy("/home/x/.claude/skills/ship", "ship", body("ship"), ["claude"]), realPath: src, linkTarget: src, hash: `h-ship-${body("ship").length}` },
+      copy("/home/x/.codex/skills/ship-old", "ship", body("ship"), ["codex"]),
+      copy("/home/x/.claude/skills/ship-again", "ship", body("ship"), ["claude"]),
+      copy("/home/x/notes/skills/lonely", "lonely", body("lonely"), []),
+      copy("/home/x/.claude/skills/weak", "weak", body("weak"), ["claude"]),
+    ],
+  });
+  const view = db.view(IDLE);
+  const at_ = (path: string) => view.skills.find(s => s.copies.some(c => c.path === path))!;
+  const shown = (path: string, rule: string) => at_(path).verdicts.filter(v => v.rule === rule).map(v => `${v.action}${v.auto ? ":auto" : ""}`);
+  assert.ok(shown("/home/x/.claude/skills/ship-again", "duplicate").includes("remove:auto"), "Claude Code reads the kept ship through its link");
+  assert.ok(shown("/home/x/.codex/skills/ship-old", "duplicate").every(a => a === "remove"), "no kept folder outside the repo is one Codex reads");
+  assert.deepEqual(shown("/home/x/notes/skills/lonely", "unused"), ["remove:auto"]);
+  assert.deepEqual(shown("/home/x/.claude/skills/weak", "unused"), ["review-description"]);
+  assert.deepEqual(shown(src, "unused"), [], "a used skill carries no unused verdict");
 });
 
 test("a new folder after the seed is unowned until adopted, and adopt changes no file", async t => {
@@ -532,6 +630,67 @@ test("duplicates: a pair is flagged once on the copy that is not canonical, two 
   assert.deepEqual(notes.extraCopies.map(x => x.why), ["same-text"]);
   assert.ok(notes.verdicts.some(v => v.rule === "duplicate" && v.copyId === notes.extraCopies[0]!.copyId));
   assert.equal(view.counts.duplicated, 2, "the vendored edit and the second notes folder, not the bundle or the two plugins");
+});
+
+test("headline counts leave skills only old clones hold out and count them apart, count never used by name, and mark a skill useful when loaded, used and single", t => {
+  const dir = mkdtempSync(join(tmpdir(), "skills-db-counts-"));
+  const db = new SkillsDb({ file: join(dir, "chat.sqlite"), box: BOX, home: "/home/x", piHostPrompt: null }, { run: async () => [], undo: async () => [] });
+  t.after(() => {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const at = new Date().toISOString();
+  const body = (topic: string) => Array.from({ length: 20 }, (_, i) => `${i + 1}. ${topic} step ${i + 1}.`).join("\n");
+  const copy = (box: string, path: string, name: string, source: string, text: string, runtimes: string[], checkout?: Record<string, unknown>) => ({
+    box, path, realPath: path, linkTarget: null, exists: true, name, source, root: dirname(path), runtimes, hash: `h-${text.length}-${text.slice(0, 12)}-${name}`, text, mtime: at,
+    ...(checkout ? { checkout: { remote: "git@github.com:o/tools.git", branch: "main", behind: 0, tracked: true, ...checkout } } : {}),
+  });
+  const fresh = { root: "/home/x/src/tools", headAt: at, upstreamAt: at, fetchedAt: at };
+  const old = { root: "/Users/o/code/tools", headAt: "2026-09-01T00:00:00Z", upstreamAt: null, fetchedAt: null };
+  const bundle = "/home/x/.local/share/prime-agent/releases/0.9.8/skills/edit";
+  const vendored = "/home/x/src/sieun-pi/packages/pi-rlm/skills/edit";
+  const use = (uses: number, kind: string) => ({ uses30d: uses, sessions30d: uses, lastUse: at, byKind: { [kind]: { uses, sessions: uses } }, byPath: [] });
+  db.ingest({
+    generatedAt: at, usageCounted: true,
+    boxes: [{ box: BOX, scannedAt: at, ok: true }, { box: "mac", scannedAt: at, ok: true }],
+    copies: [
+      copy(BOX, bundle, "edit", "prime-release", body("edit"), ["prime", "pi-host"]),
+      copy(BOX, vendored, "edit", "sieun-pi-package", body("edit"), ["pi"]),
+      copy(BOX, "/home/x/src/tools/.agents/skills/live-skill", "live-skill", "repo:tools", body("live"), ["claude", "codex"], fresh),
+      copy("mac", "/Users/o/code/tools/.agents/skills/live-skill", "live-skill", "repo:tools", body("live, older"), ["claude", "codex"], old),
+      copy("mac", "/Users/o/code/tools/.agents/skills/old-only", "old-only", "repo:tools", body("old"), ["claude", "codex"], old),
+      copy(BOX, "/home/x/.claude/skills/lonely", "lonely", "user-dir", body("lonely"), ["claude"]),
+      copy(BOX, "/home/x/notes/unloaded", "unloaded", "user-dir", body("unloaded"), []),
+    ],
+    usage: { edit: use(100, "prime-job"), "live-skill": use(5, "claude"), unloaded: use(3, "claude") },
+  });
+  const view = db.view(IDLE);
+  const by = (pred: (path: string) => boolean) => view.skills.find(k => k.copies.some(c => pred(c.path)))!;
+  const oldOnly = by(p => p.endsWith("/old-only"));
+  const live = by(p => p === "/home/x/src/tools/.agents/skills/live-skill");
+  assert.ok(oldOnly.verdicts.some(v => v.rule === "stale-clone") && oldOnly.verdicts.some(v => v.rule === "unused"), oldOnly.verdicts.map(v => v.rule).join(", "));
+  assert.ok(live.verdicts.some(v => v.rule === "stale-clone"), "the live skill's Mac copy sits in the old clone");
+  assert.equal(view.counts.oldClones, 1, "old-only has every folder in the stale checkout");
+  assert.equal(view.counts.skills, 5, "edit twice, live-skill, lonely and unloaded");
+  assert.equal(view.counts.outdated, 0, "a copy in an old clone is not outdated");
+  assert.equal(view.counts.duplicated, 1, "the vendored edit");
+  const vendoredRow = by(p => p === vendored);
+  assert.equal(vendoredRow.use.uses, 0, "the bundled edit gets the use");
+  assert.equal(vendoredRow.use.nameUses, 100);
+  assert.ok(!vendoredRow.verdicts.some(v => v.rule === "unused"));
+  assert.equal(view.counts.neverUsed, 1, "only lonely: the vendored edit's name was used, and old-only is an old clone");
+  const useful = (pred: (path: string) => boolean) => by(pred).useful;
+  assert.deepEqual(useful(p => p === bundle), { yes: true, why: "Loaded, used in 30 days, no second copy." });
+  assert.equal(useful(p => p === "/home/x/src/tools/.agents/skills/live-skill").yes, true);
+  assert.deepEqual(useful(p => p === vendored), { yes: false, why: "It has a second copy." });
+  assert.deepEqual(useful(p => p.endsWith("/lonely")), { yes: false, why: "No session used its name in 30 days." });
+  assert.deepEqual(useful(p => p.endsWith("/unloaded")), { yes: false, why: "No runtime reads a folder that holds it." });
+  assert.deepEqual(oldOnly.useful, { yes: false, why: "Only old clones hold it." });
+  assert.equal(view.counts.useful, 2);
+  assert.equal(view.usefulDefinition, USEFUL_DEFINITION);
+  const round = fromWire({ ...toWire(view), scan: IDLE });
+  assert.deepEqual(round.skills.map(k => k.useful), view.skills.map(k => k.useful), "the wire leaves useful out and the page computes the same");
+  assert.ok(!JSON.stringify(toWire(view).skills).includes('"useful"'));
 });
 
 test("the review runs a skills DB delete of a path that is gone as a no-op, and undoes a step that failed as nothing to put back", async t => {

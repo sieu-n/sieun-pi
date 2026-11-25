@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { SkillBoxState, SkillCopy, SkillEntry, SkillThresholds, SkillTreeNode, SkillVerdictRow } from "../../web/src/lib/api/shared/skills.ts";
+import { usefulOf, type SkillBoxState, type SkillCopy, type SkillEntry, type SkillThresholds, type SkillTreeNode, type SkillVerdictRow } from "../../web/src/lib/api/shared/skills.ts";
 import {
   ancestors, clutterKey, copiesByBox, findFolder, folderKey, folderLine, folderSkills, folders, roots, sizeText, skillProblems, tilde, visibleRows, withProblem,
 } from "../../web/src/pages/skills/layouts/tree/model.ts";
@@ -12,10 +12,13 @@ const copy = (path: string, over: Partial<SkillCopy> = {}): SkillCopy => ({
   bytes: 1000, folderBytes: 1000, files: 1, mtime: null, loadedBy: ["prime"], changedLines: 0, checkout: null, ...over,
 });
 
-const skill = (name: string, copies: SkillCopy[], uses: number, verdicts: SkillVerdictRow[] = []): SkillEntry => ({
-  id: `git:x/${name}`, name, description: "", owner: { kind: "owner" }, source: { kind: "git", repo: "x", path: `skills/${name}` }, installs: [], copies,
-  size: { lines: 10, bytes: 1000, ratio: 0.25 }, verdicts, extraCopies: [], use: { uses, sessions: uses, lastUse: null, byKind: {} }, preimported: false, sees: [],
-});
+const skill = (name: string, copies: SkillCopy[], uses: number, verdicts: SkillVerdictRow[] = []): SkillEntry => {
+  const entry = {
+    id: `git:x/${name}`, name, description: "", owner: { kind: "owner" } as const, source: { kind: "git", repo: "x", path: `skills/${name}` } as const, installs: [], copies,
+    size: { lines: 10, bytes: 1000, ratio: 0.25 }, verdicts, extraCopies: [], use: { uses, sessions: uses, lastUse: null, nameUses: uses, byKind: {} }, preimported: false, sees: [],
+  };
+  return { ...entry, useful: usefulOf(entry) };
+};
 
 const node = (name: string, path: string, copies: number, links: number, children: SkillTreeNode[] = []): SkillTreeNode => ({ name, path, copies, links, loadedBy: ["prime"], children });
 
@@ -23,7 +26,7 @@ const stale = { root: "/home/u/code/old", branch: "main", headAt: "2026-04-01T00
 const board = skill("board", [copy("/home/u/.prime/agent/skills/board", { link: "/home/u/src/x/skills/board" }), copy("/home/u/code/old/skills/board", { role: "checkout", checkout: stale, changedLines: 12 })], 40, [
   { rule: "stale-clone", action: "remove", detail: "old clone", copyId: "metal:/home/u/code/old/skills/board", other: null },
 ]);
-const wiki = skill("wiki", [copy("/home/u/.prime/agent/skills/wiki", { link: "/home/u/gone", exists: false })], 0);
+const wiki = skill("wiki", [copy("/home/u/.prime/agent/skills/wiki", { link: "/home/u/gone", exists: false })], 0, [{ rule: "unused", action: "review-description", detail: "", copyId: null, other: null }]);
 const big = skill("big", [copy("/home/u/.prime/agent/skills/big", { bytes: 20000 })], 3, [{ rule: "bloated", action: "note", detail: "5x", copyId: null, other: null }]);
 
 const source = skill("tool", [copy("/home/u/src/x/skills/tool", { loadedBy: [] }), copy("/home/u/.prime/agent/skills/tool", { link: "/home/u/src/x/skills/tool" })], 1);
@@ -47,7 +50,7 @@ test("old clones fold into the clutter group, and live roots stay children", () 
   assert.deepEqual(top.children.map(f => f.name), [".prime/agent/skills"]);
   assert.deepEqual(top.clutter.map(f => f.name), ["code/old/skills"]);
   assert.equal(top.children[0]!.broken, 1);
-  assert.equal(top.problems.outdated, 1);
+  assert.equal(top.problems.outdated, 0, "a copy in an old clone is not outdated");
   assert.equal(top.problems.bloated, 1);
   assert.deepEqual(roots(list).map(f => f.node.path), ["/home/u/.prime/agent/skills"]);
   assert.equal(findFolder(list, "/home/u/code/old/skills")?.stale, true);
@@ -74,11 +77,12 @@ test("a folder lists its most used skills first and the never used apart", () =>
 
 test("the problem filter keeps only folders with that problem", () => {
   const list = folders(box, copiesByBox(view).get("metal") ?? []);
-  const only = withProblem(list, "outdated");
-  assert.deepEqual(only[0]!.children.map(f => f.name), []);
-  assert.deepEqual(only[0]!.clutter.map(f => f.name), ["code/old/skills"]);
-  assert.deepEqual(skillProblems(board), ["outdated"]);
-  assert.deepEqual(skillProblems(board, "metal:/home/u/.prime/agent/skills/board"), []);
+  const only = withProblem(list, "bloated");
+  assert.deepEqual(only[0]!.children.map(f => f.name), [".prime/agent/skills"]);
+  assert.deepEqual(only[0]!.clutter.map(f => f.name), []);
+  assert.deepEqual(skillProblems(big), ["bloated"]);
+  assert.deepEqual(skillProblems(board), [], "stale-clone is no outdated verdict");
+  assert.deepEqual(withProblem(list, "outdated"), []);
 });
 
 test("the visible rows follow what is open, with the clutter group after the live folders", () => {

@@ -16,12 +16,12 @@ import { DatabaseSync, type SQLInputValue, type StatementSync } from "node:sqlit
 import { Worker } from "node:worker_threads";
 import { listedEntries, type ListedEntry } from "./compress.ts";
 import {
-  COUNT_RULES, SKILL_RUNTIMES, type VerdictRule, type AdoptBody, type ApplyResult, type ApplyStep, type CopyRole, type InstallBody, type InstallState, type MergeBody, type MoveBody,
+  SKILL_RUNTIMES, USEFUL_DEFINITION, countsAs, isNeverUsed, isOldClone, usefulOf, type AdoptBody, type ApplyResult, type ApplyStep, type CopyRole, type InstallBody, type InstallState, type MergeBody, type MoveBody,
   type OwnBody, type RemoveBody, type SkillBoxState, type SkillCopy, type SkillCounts, type SkillEntry, type SkillMove, type SkillSight, type SkillOwner, type SkillRuntime,
   type SkillScan, type SkillSource, type SkillsChange, type SkillsCheck, type SkillsView, type SkillThresholds, type ThreadKind, type SkillVerdictRow, type UndoBody, skillTexts, toWire,
 } from "../web/src/lib/api/shared/skills.ts";
 import {
-  canonical, changedLines, copyId, drift, extraCopies, goneSkills, identifyFolder, installState, ownerText, parseFacts, parseOwner, plan, roleOf, sameLink, seedOwner, sees, staleCheckouts, sumUse,
+  canonical, changedLines, copyId, drift, extraCopies, goneSkills, identifyFolder, installState, lineSet, skillBody, ownerText, parseFacts, parseOwner, plan, roleOf, sameLink, seedOwner, sees, staleCheckouts, sumUse,
   thresholds, tree, verdicts, type BoxScan, type CopyFact, type FactCopy, type Facts, type FactUse, type InstallRecord, type PathUse, type SkillRecord,
 } from "./skills-model.ts";
 
@@ -37,9 +37,13 @@ export type SkillsDbConfig = {
 
 /** One disk step the skills review runs with a backup: delete a copy, place a link or copy, or hand a merge to agent factory. */
 export type DiskStep =
-  | { kind: "delete"; box: string; path: string; name: string }
+  /** `trash` moves the folder into the review's trash even where git tracks it, for a copy in a stale clone, which nobody pushes from. */
+  | { kind: "delete"; box: string; path: string; name: string; trash?: true }
   | { kind: "place"; box: string; path: string; name: string; mode: "link" | "copy"; from: string }
   | { kind: "fold"; box: string; path: string; name: string; into: string; reason: string };
+
+/** One target's part of a `remove` change (`SkillsDb.removal`). */
+type Removal = { steps: { box: string; path: string; name: string }[]; installs: InstallRecord[]; dropSkills: string[]; summary: string };
 
 export type DiskResult = { box: string; path: string; state: "applied" | "queued" | "failed" | "undone" | "pending"; note: string | null };
 
@@ -199,18 +203,21 @@ const SIGHT_RANK: Record<SkillSight["how"], number> = { inlined: 0, imported: 1,
  * On 11-22 agent-message, edit and agent-observe showed their full count twice, on Prime's bundled copy and on sieun-pi's pi-rlm copy,
  * and frontend-implementation credited auto-sns-agent's copy 0 though Prime threads open it by its path.
  */
-export function creditUse(entries: SkillEntry[], byPath: ReadonlyMap<string, readonly PathUse[]> = new Map(), homeOf: (box: string) => string | null = () => null): void {
-  const byName = new Map<string, SkillEntry[]>();
+/** A view entry before `usefulOf`, which reads the use `creditUse` splits. */
+type Credited = Omit<SkillEntry, "useful">;
+
+export function creditUse(entries: Credited[], byPath: ReadonlyMap<string, readonly PathUse[]> = new Map(), homeOf: (box: string) => string | null = () => null): void {
+  const byName = new Map<string, Credited[]>();
   for (const e of entries) byName.set(e.name, [...(byName.get(e.name) ?? []), e]);
   for (const [name, same] of byName) {
     if (same.length < 2) continue;
     const total = same[0]!.use;
-    const seen = (e: SkillEntry, kind: string) => e.sees.find(x => x.kind === kind)?.how ?? "hidden";
-    const reach = (e: SkillEntry) => e.sees.filter(x => x.how !== "hidden").length;
-    const best = (from: SkillEntry[], kind: string) => [...from].sort((a, b) => SIGHT_RANK[seen(a, kind)] - SIGHT_RANK[seen(b, kind)])[0]!;
+    const seen = (e: Credited, kind: string) => e.sees.find(x => x.kind === kind)?.how ?? "hidden";
+    const reach = (e: Credited) => e.sees.filter(x => x.how !== "hidden").length;
+    const best = (from: Credited[], kind: string) => [...from].sort((a, b) => SIGHT_RANK[seen(a, kind)] - SIGHT_RANK[seen(b, kind)])[0]!;
     const fallback = same.reduce((top, e) => (reach(e) > reach(top) ? e : top));
     const credit = new Map(same.map(e => [e, { uses: 0, sessions: 0, byKind: {} as typeof total.byKind }]));
-    const give = (e: SkillEntry, kind: ThreadKind, uses: number, sessions: number) => {
+    const give = (e: Credited, kind: ThreadKind, uses: number, sessions: number) => {
       const to = credit.get(e)!;
       to.uses += uses;
       to.sessions += sessions;
@@ -237,13 +244,13 @@ export function creditUse(entries: SkillEntry[], byPath: ReadonlyMap<string, rea
     credit.get(fallback)!.uses += Math.max(0, total.uses - counted);
     for (const e of same) {
       const c = credit.get(e)!;
-      e.use = { uses: c.uses, sessions: e === fallback && counted === 0 ? total.sessions : c.sessions, lastUse: c.uses ? total.lastUse : null, byKind: c.byKind };
+      e.use = { uses: c.uses, sessions: e === fallback && counted === 0 ? total.sessions : c.sessions, lastUse: c.uses ? total.lastUse : null, byKind: c.byKind, nameUses: total.nameUses };
     }
   }
 }
 
 /** The skills of one name whose copy sits at the path a use opened, on the use's box first. */
-function holder(same: readonly SkillEntry[], use: PathUse, home: string | null): SkillEntry[] {
+function holder<E extends Credited>(same: readonly E[], use: PathUse, home: string | null): E[] {
   let path = use.path.replace(/\/SKILL\.md$/, "");
   if (path.startsWith("~/") && home) path = `${home}${path.slice(1)}`;
   const rel = path.replace(/^(\.\/)+/, "");
@@ -291,6 +298,8 @@ export class SkillsDb {
     this.db.exec(SCHEMA);
     const useColumns = (this.db.prepare("PRAGMA table_info(skill_use)").all() as Row[]).map(r => s(r.name));
     if (!useColumns.includes("by_path")) this.db.exec("ALTER TABLE skill_use ADD COLUMN by_path TEXT NOT NULL DEFAULT '[]'");
+    const verdictColumns = (this.db.prepare("PRAGMA table_info(skill_verdicts)").all() as Row[]).map(r => s(r.name));
+    if (!verdictColumns.includes("auto")) this.db.exec("ALTER TABLE skill_verdicts ADD COLUMN auto INTEGER NOT NULL DEFAULT 0");
     if (!this.db.prepare("SELECT 1 FROM skill_rev").get()) this.db.exec("INSERT OR IGNORE INTO skill_rev (id, n) VALUES (1, 0)");
     this.db.exec(`PRAGMA busy_timeout = ${busyMs};`);
   }
@@ -712,10 +721,11 @@ export class SkillsDb {
       return c && !c.stale && (skill.source.kind === "git" || skill.source.kind === "local") && c.skillMd?.endsWith("SKILL.md") ? [c] : [];
     });
     const limits = thresholds(ours);
-    const found = verdicts({ skills, copies, canon, texts: this.texts([...canon.values()]), usage, usageCounted, limits });
+    const installed = new Set(this.installs().map(i => i.skillId));
+    const found = verdicts({ skills, copies, canon, texts: this.texts([...canon.values()]), usage, usageCounted, limits, installed });
     this.db.exec("DELETE FROM skill_verdicts");
-    const add = this.db.prepare("INSERT INTO skill_verdicts (skill_id, rule, action, detail, copy_id, other) VALUES (?, ?, ?, ?, ?, ?)");
-    for (const [skill, rows] of found) for (const v of rows) add.run(skill, v.rule, v.action, v.detail, v.copyId, v.other);
+    const add = this.db.prepare("INSERT INTO skill_verdicts (skill_id, rule, action, detail, copy_id, other, auto) VALUES (?, ?, ?, ?, ?, ?, ?)");
+    for (const [skill, rows] of found) for (const v of rows) add.run(skill, v.rule, v.action, v.detail, v.copyId, v.other, v.auto ? 1 : 0);
     if (usageCounted) {
       this.db.exec("DELETE FROM skill_use");
       const use = this.db.prepare("INSERT INTO skill_use (name, uses, sessions, last_use, by_kind, by_path) VALUES (?, ?, ?, ?, ?, ?)");
@@ -730,7 +740,7 @@ export class SkillsDb {
   private verdictRows(): Map<string, SkillVerdictRow[]> {
     const out = new Map<string, SkillVerdictRow[]>();
     for (const r of this.db.prepare("SELECT * FROM skill_verdicts").all() as Row[]) {
-      const row = { rule: s(r.rule), action: s(r.action), detail: s(r.detail), copyId: sn(r.copy_id), other: sn(r.other) } as SkillVerdictRow;
+      const row = { rule: s(r.rule), action: s(r.action), detail: s(r.detail), copyId: sn(r.copy_id), other: sn(r.other), ...(nn(r.auto) ? { auto: true } : {}) } as SkillVerdictRow;
       out.set(s(r.skill_id), [...(out.get(s(r.skill_id)) ?? []), row]);
     }
     return out;
@@ -738,7 +748,7 @@ export class SkillsDb {
 
   private useRows(): Map<string, SkillEntry["use"] & { byPath: PathUse[] }> {
     return new Map((this.db.prepare("SELECT * FROM skill_use").all() as Row[]).map(r => [s(r.name), {
-      uses: nn(r.uses) ?? 0, sessions: nn(r.sessions) ?? 0, lastUse: sn(r.last_use), byKind: JSON.parse(s(r.by_kind)), byPath: JSON.parse(sn(r.by_path) ?? "[]") as PathUse[],
+      uses: nn(r.uses) ?? 0, nameUses: nn(r.uses) ?? 0, sessions: nn(r.sessions) ?? 0, lastUse: sn(r.last_use), byKind: JSON.parse(s(r.by_kind)), byPath: JSON.parse(sn(r.by_path) ?? "[]") as PathUse[],
     }]));
   }
 
@@ -822,7 +832,6 @@ export class SkillsDb {
     const st = this.state();
     const verdictRows = this.verdictRows();
     const use = this.useRows();
-    const usageCounted = this.meta("usageCounted") === "1";
     const limits = JSON.parse(this.meta("thresholds") ?? "null") as SkillThresholds | null ?? thresholds([]);
     const settings = st.scans.find(x => x.box === this.config.box)?.settings ?? null;
     const inlined = this.inlined();
@@ -835,7 +844,7 @@ export class SkillsDb {
     for (const c of st.copies) byKey.set(c.key, [...(byKey.get(c.key) ?? []), c]);
     const installsOf = new Map<string, InstallRecord[]>();
     for (const i of st.installs) installsOf.set(i.skillId, [...(installsOf.get(i.skillId) ?? []), i]);
-    const entries: SkillEntry[] = st.skills.map(skill => {
+    const entries: Credited[] = st.skills.map(skill => {
       const canon = st.canon.get(skill.id);
       const own = [...(byKey.get(skill.id) ?? [])];
       for (const i of installsOf.get(skill.id) ?? []) {
@@ -843,7 +852,7 @@ export class SkillsDb {
         if (at && !own.includes(at)) own.push(at);
       }
       const found = use.get(skill.name);
-      const u = found ? { uses: found.uses, sessions: found.sessions, lastUse: found.lastUse, byKind: found.byKind } : { uses: 0, sessions: 0, lastUse: null, byKind: {} };
+      const u = found ? { uses: found.uses, sessions: found.sessions, lastUse: found.lastUse, byKind: found.byKind, nameUses: found.nameUses } : { uses: 0, sessions: 0, lastUse: null, byKind: {}, nameUses: 0 };
       return {
         id: skill.id, name: skill.name, description: canon?.description ?? own[0]?.description ?? "", owner: skill.owner, source: skill.source,
         installs: (installsOf.get(skill.id) ?? []).map(i => ({ id: i.id, box: i.box, path: i.path, mode: i.mode, runtimes: i.runtimes, agent: i.agent, state: st.states.get(i.id)! })),
@@ -865,19 +874,22 @@ export class SkillsDb {
     };
     const homes = new Map(st.scans.map(scan => [scan.box, home(scan.box)]));
     creditUse(entries, new Map([...use].map(([name, u]) => [name, u.byPath])), box => homes.get(box) ?? null);
+    const skills: SkillEntry[] = entries.map(e => ({ ...e, useful: usefulOf(e) }));
+    const live = skills.filter(e => !isOldClone(e));
     const unowned = st.copies.filter(c => st.roles.get(copyId(c)) === "unowned").map(copyView);
     const items = drift(st.copies, st.roles, st.installs, st.states, st.skills);
-    const has = (e: SkillEntry, rules: readonly VerdictRule[]) => e.verdicts.some(v => rules.includes(v.rule));
     const counts: SkillCounts = {
-      skills: entries.length, copies: st.copies.length, installs: st.installs.length,
-      duplicated: entries.filter(e => has(e, COUNT_RULES.duplicated)).length,
-      outdated: entries.filter(e => has(e, COUNT_RULES.outdated)).length,
-      bloated: entries.filter(e => has(e, COUNT_RULES.bloated)).length,
-      neverUsed: usageCounted ? entries.filter(e => e.source.kind !== "harness" && e.use.uses === 0).length : 0,
+      skills: live.length, copies: st.copies.length, installs: st.installs.length,
+      duplicated: live.filter(e => countsAs(e, "duplicated")).length,
+      outdated: live.filter(e => countsAs(e, "outdated")).length,
+      bloated: live.filter(e => countsAs(e, "bloated")).length,
+      neverUsed: live.filter(isNeverUsed).length,
+      oldClones: skills.length - live.length,
+      useful: live.filter(e => e.useful.yes).length,
       drift: items.length,
     };
     const boxes: SkillBoxState[] = st.scans.map(scan => this.boxState(scan, st.copies.filter(c => c.box === scan.box)));
-    return { generatedAt: this.meta("ingested"), seededAt: this.meta("seeded"), counts, thresholds: limits, boxes, skills: entries, unowned };
+    return { generatedAt: this.meta("ingested"), seededAt: this.meta("seeded"), counts, usefulDefinition: USEFUL_DEFINITION, thresholds: limits, boxes, skills, unowned };
   }
 
   private boxState(scan: BoxScan, copies: CopyFact[]): SkillBoxState {
@@ -899,7 +911,8 @@ export class SkillsDb {
   /** The review's rows with the rule verdicts as their `useful` field, so the review app proposes what the rules propose. */
   overlay(rows: Record<string, unknown>[]): Record<string, unknown>[] {
     const acting = new Map<string, SkillVerdictRow>();
-    for (const list of this.verdictRows().values()) for (const v of list) if (v.copyId && (v.action === "remove" || v.action === "merge")) acting.set(v.copyId, v);
+    // A verdict the server carries out itself (`autoAct`) asks nobody, so only the rest reach the review.
+    for (const list of this.verdictRows().values()) for (const v of list) if (v.copyId && !v.auto && (v.action === "remove" || v.action === "merge")) acting.set(v.copyId, v);
     const names = new Map(this.skills().map(k => [k.id, k.name]));
     return rows.map(row => {
       const box = String(row.box ?? "");
@@ -1084,52 +1097,114 @@ export class SkillsDb {
 
   async remove(body: RemoveBody): Promise<SkillsChange> {
     const st = this.state();
-    const target = body.target;
+    const plan = this.removal(st, body.target, new Set());
+    return this.runRemoval(st, [plan], plan.summary);
+  }
+
+  /**
+   * What removing one target takes: its disk steps, the installs and skill rows it drops, and its summary. `batch` holds the copy ids every
+   * target of the same change removes, so a skill whose last copies go in one batch loses its row too.
+   */
+  private removal(st: ReturnType<SkillsDb["state"]>, target: string, batch: ReadonlySet<string>): Removal {
     const install = st.installs.find(i => i.id === target) ?? st.installAt.get(target);
     const skill = st.skillMap.get(target);
     const copy = st.copyAt.get(target);
-    let steps: { box: string; path: string; name: string }[];
-    let installs: InstallRecord[];
-    let dropSkills: string[] = [];
-    let summary: string;
     if (install) {
-      installs = [install];
-      steps = [{ box: install.box, path: install.path, name: st.skillMap.get(install.skillId)?.name ?? "" }];
-      summary = `remove install ${install.id} at ${install.box}:${install.path}`;
-    } else if (skill) {
-      installs = st.installs.filter(i => i.skillId === skill.id);
+      return { steps: [{ box: install.box, path: install.path, name: st.skillMap.get(install.skillId)?.name ?? "" }], installs: [install], dropSkills: [], summary: `remove install ${install.id} at ${install.box}:${install.path}` };
+    }
+    if (skill) {
+      const installs = st.installs.filter(i => i.skillId === skill.id);
       const canon = st.canon.get(skill.id);
       const rel = skill.source.kind === "git" ? skill.source.path : null;
       const mirrors = st.copies.filter(c => c.key === skill.id && c.linkTarget === null && c !== canon && rel !== null && c.box !== canon?.box && c.path.endsWith(`/${rel}`) && !c.stale);
       // A source in a stale checkout is an old clone or worktree of a skill its repo dropped; removing the row leaves that checkout alone.
       const source = canon && !canon.stale ? [canon] : [];
-      steps = [...installs.map(i => ({ box: i.box, path: i.path, name: skill.name })), ...source.map(c => ({ box: c.box, path: c.path, name: skill.name })), ...mirrors.map(c => ({ box: c.box, path: c.path, name: skill.name }))];
-      dropSkills = [skill.id];
-      summary = `remove skill ${skill.id}: ${installs.length} installs and its source`;
-    } else if (copy) {
-      installs = [];
-      steps = [{ box: copy.box, path: copy.path, name: copy.name }];
-      const left = st.copies.filter(c => c.key === copy.key && c.linkTarget === null && c !== copy);
-      if (copy.linkTarget === null && !left.length && st.skillMap.has(copy.key)) dropSkills = [copy.key];
-      summary = `remove ${copyId(copy)}`;
-    } else throw new SkillsRefused(`No skill, install or copy ${target}; a copy id is <box>:<path> as GET /api/skills lists it.`);
+      const steps = [...installs.map(i => ({ box: i.box, path: i.path, name: skill.name })), ...source.map(c => ({ box: c.box, path: c.path, name: skill.name })), ...mirrors.map(c => ({ box: c.box, path: c.path, name: skill.name }))];
+      return { steps, installs, dropSkills: [skill.id], summary: `remove skill ${skill.id}: ${installs.length} installs and its source` };
+    }
+    if (copy) {
+      const left = st.copies.filter(c => c.key === copy.key && c.linkTarget === null && c !== copy && !batch.has(copyId(c)));
+      const drop = copy.linkTarget === null && !left.length && st.skillMap.has(copy.key);
+      return { steps: [{ box: copy.box, path: copy.path, name: copy.name }], installs: [], dropSkills: drop ? [copy.key] : [], summary: `remove ${copyId(copy)}` };
+    }
+    throw new SkillsRefused(`No skill, install or copy ${target}; a copy id is <box>:<path> as GET /api/skills lists it.`);
+  }
+
+  /**
+   * Runs removals as one change, one move that `sw skills undo` reverses whole. A folder in a stale checkout goes to the review's trash, never
+   * by a commit of that clone. A removal whose steps all took effect drops its installs and skill rows; one with a failed step keeps them.
+   */
+  private async runRemoval(st: ReturnType<SkillsDb["state"]>, plans: readonly Removal[], summary: string): Promise<SkillsChange> {
+    const seen = new Set<string>();
+    const steps: DiskStep[] = [];
+    for (const plan of plans) {
+      for (const x of plan.steps) {
+        const key = `${x.box}:${x.path}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        steps.push({ kind: "delete", ...x, ...(st.copyAt.get(key)?.stale ? { trash: true as const } : {}) });
+      }
+    }
+    const installs = [...new Map(plans.flatMap(p => p.installs).map(i => [i.id, i])).values()];
+    const dropSkills = [...new Set(plans.flatMap(p => p.dropSkills))];
     const moveId = newMove();
     const item = `sw:${moveId}`;
-    const copyKeys = steps.map(x => `${x.box}:${x.path}`);
+    const copyKeys = [...seen];
     const before = this.snapshot({ skills: dropSkills, installs: [...installs.map(i => i.id), ...(dropSkills.length ? st.installs.filter(i => dropSkills.includes(i.skillId)).map(i => i.id) : [])], copies: copyKeys });
-    const results = await this.disk.run(item, steps.map(x => ({ kind: "delete" as const, ...x })));
-    const failed = results.filter(r => r.state === "failed");
+    const results = await this.disk.run(item, steps);
+    const failedAt = new Set(results.filter(r => r.state === "failed").map(r => `${r.box}:${r.path}`));
     await this.write(() => {
       for (const r of results) if (r.state === "applied") this.db.prepare("DELETE FROM skill_copies WHERE box = ? AND path = ?").run(r.box, r.path);
-      if (!failed.length) {
-        for (const i of before.installs) this.db.prepare("DELETE FROM skill_installs WHERE id = ?").run(i.id);
-        for (const id of dropSkills) this.db.prepare("DELETE FROM skills WHERE id = ?").run(id);
+      for (const plan of plans) {
+        if (plan.steps.some(x => failedAt.has(`${x.box}:${x.path}`))) continue;
+        const dropped = new Set(plan.dropSkills);
+        for (const i of [...plan.installs, ...before.installs.filter(i => dropped.has(i.skillId))]) this.db.prepare("DELETE FROM skill_installs WHERE id = ?").run(i.id);
+        for (const id of plan.dropSkills) this.db.prepare("DELETE FROM skills WHERE id = ?").run(id);
       }
-      this.record("remove", failed.length ? `${summary} (${failed.length} steps failed)` : summary, item, before, { skills: dropSkills, installs: before.installs.map(i => i.id), copies: copyKeys }, moveId);
+      this.record("remove", failedAt.size ? `${summary} (${failedAt.size} steps failed)` : summary, item, before, { skills: dropSkills, installs: before.installs.map(i => i.id), copies: copyKeys }, moveId);
     });
     const error = failure("remove", moveId, results);
     if (error) throw error;
     return { move: this.moveById(moveId)!, apply: diskResult(moveId, results, () => "delete") };
+  }
+
+  /**
+   * Carries out the verdicts the rules mark `auto` (skills-model.ts `verdicts`) once per ingested scan, as one `remove` move that `sw skills
+   * undo` reverses whole: dead links, same-text second folders, copies in stale clones with no unpushed work, clear merges and unused skills
+   * no runtime reads. A target on a box whose last scan failed waits for its next good scan. Answers null when nothing was due.
+   */
+  async autoAct(): Promise<SkillsChange | null> {
+    const scanned = this.meta("ingested");
+    if (!scanned || this.meta("autoActed") === scanned) return null;
+    const st = this.state();
+    const offline = new Set(st.scans.filter(x => !x.ok).map(x => x.box));
+    const targets = new Map<string, string>();
+    for (const [skillId, rows] of this.verdictRows()) {
+      for (const v of rows) {
+        if (!v.auto) continue;
+        const target = v.copyId === null || st.skillMap.has(v.other ?? "") ? skillId : v.copyId;
+        const boxes = target === skillId ? st.copies.filter(c => c.key === skillId).map(c => c.box) : [st.copyAt.get(target)?.box ?? ""];
+        if (!boxes.some(box => offline.has(box))) targets.set(target, v.rule);
+      }
+    }
+    const done = () => this.write(() => this.setMeta("autoActed", scanned));
+    if (!targets.size) {
+      await done();
+      return null;
+    }
+    const batch = new Set([...targets.keys()].filter(t => st.copyAt.has(t)));
+    const plans = [...targets.keys()].map(t => this.removal(st, t, batch));
+    const byRule = new Map<string, number>();
+    for (const rule of targets.values()) byRule.set(rule, (byRule.get(rule) ?? 0) + 1);
+    const summary = `auto: remove ${targets.size} (${[...byRule].map(([rule, n]) => `${n} ${rule}`).join(", ")}) after the scan of ${scanned}`;
+    try {
+      return await this.runRemoval(st, plans, summary);
+    } catch (error) {
+      this.log(`skills: ${summary} did not finish: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    } finally {
+      await done();
+    }
   }
 
   async adopt(body: AdoptBody): Promise<SkillsChange> {
@@ -1201,7 +1276,11 @@ export class SkillsDb {
     return { move: this.moveById(moveId)!, apply: diskResult(moveId, results, i => shownStep(steps[i]!)) };
   }
 
-  /** Hands agent factory the merge of one skill into another; the agent checks it, moves the lines, then removes the first with sw skills remove. */
+  /**
+   * Merges one skill into another so one skill is left. When `into` already says every line of `skillId`, the merge is the removal of
+   * `skillId`, done here as `sw skills remove` does it. Otherwise agent factory gets the fold: it moves the lines `into` lacks into `into`'s
+   * text, then removes `skillId` with sw skills remove.
+   */
   async merge(body: MergeBody): Promise<SkillsChange> {
     const st = this.state();
     const from = st.skillMap.get(body.skillId);
@@ -1209,6 +1288,15 @@ export class SkillsDb {
     if (!from || !into) throw new SkillsRefused(`No skill ${from ? body.into : body.skillId}.`);
     const canon = st.canon.get(from.id);
     if (!canon) throw new SkillsRefused(`${from.id} has no copy on disk to merge.`);
+    const intoCanon = st.canon.get(into.id);
+    const [fromText, intoText] = [this.texts([canon]).get(canon.hash ?? ""), intoCanon ? this.texts([intoCanon]).get(intoCanon.hash ?? "") : undefined];
+    if (fromText !== undefined && intoText !== undefined) {
+      const has = lineSet(skillBody(intoText));
+      if ([...lineSet(skillBody(fromText))].every(line => has.has(line))) {
+        const plan = this.removal(st, from.id, new Set());
+        return this.runRemoval(st, [plan], `merge ${from.id} into ${into.id}: ${into.id} already says every line, so ${plan.summary}`);
+      }
+    }
     const reason = st.canon.get(into.id) ? `Merge ${from.id} into ${into.id}, whose source is ${copyId(st.canon.get(into.id)!)}.` : `Merge ${from.id} into ${into.id}.`;
     const moveId = newMove();
     const item = `sw:${moveId}`;

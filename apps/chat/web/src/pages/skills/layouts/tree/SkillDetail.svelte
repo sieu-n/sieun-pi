@@ -1,6 +1,6 @@
 <script lang="ts">
   import { api } from "$lib/api";
-  import type { BoxName, SkillCopy, SkillEntry, SkillsView } from "$lib/api/shared/skills";
+  import { isNeverUsed, type BoxName, type SkillCopy, type SkillEntry, type SkillsView } from "$lib/api/shared/skills";
   import { ageLabel, Badge, Button, Picker, type PickerItem } from "$lib/ui";
   import { act, type ChangeWords } from "./actions";
   import InstallDialog from "./InstallDialog.svelte";
@@ -46,6 +46,7 @@
 
   function useLine(): string {
     const u = skill.use;
+    if (u.uses === 0 && u.nameUses > 0) return `${usesText(u.nameUses)} of its name went to another skill of the same name in 30 days.`;
     if (u.uses === 0) return "Never used in 30 days.";
     const last = u.lastUse ? `, last ${ageLabel(Date.parse(u.lastUse), now)} ago` : "";
     return `${usesText(u.uses)} in 30 days from ${u.sessions.toLocaleString("en-US")} ${u.sessions === 1 ? "session" : "sessions"}${last}.`;
@@ -74,7 +75,7 @@
     <div class="title">
       <h2>{skill.name}</h2>
       {#each problems as p (p)}<Badge tone={p === "bloated" ? "warning" : "danger"}>{p}</Badge>{/each}
-      {#if skill.use.uses === 0}<Badge tone="outline" title="A weak description may be why no thread picks it.">never used</Badge>{/if}
+      {#if isNeverUsed(skill)}<Badge tone="outline" title="A weak description may be why no thread picks it.">never used</Badge>{/if}
     </div>
     {#if skill.description}<p class="description">{skill.description}</p>{/if}
     <p class="meta">

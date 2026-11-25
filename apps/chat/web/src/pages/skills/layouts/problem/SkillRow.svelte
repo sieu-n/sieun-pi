@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { SkillEntry, SkillThresholds } from "$lib/api/shared/skills";
+  import { isNeverUsed, type SkillEntry, type SkillThresholds } from "$lib/api/shared/skills";
   import { Badge, Button, Icon, ageLabel, tooltip } from "$lib/ui";
   import {
     GROUP_TEXT, ROLE_TEXT, count, extraNote, drift, headline, mergeInto, copyNotes, orderedCopies, problemsOf, kindsText, openedByPath, shape, sight, sizeText, sourceText, splitPath, tilde, topKinds,
@@ -30,6 +30,8 @@
   const now = Date.now();
   const lead = $derived(kind ? headline(skill, kind, limits, nameOf) : skill.description);
   const ownerText = $derived(skill.owner.kind === "owner" ? "you" : skill.owner.id);
+  const never = $derived(isNeverUsed(skill));
+  const elsewhere = $derived(skill.use.uses === 0 && skill.use.nameUses > 0 ? `${count(skill.use.nameUses, "use")} of its name went to another skill of the same name in 30 days.` : null);
   const merges = $derived([...new Set(skill.verdicts.flatMap(v => (v.action === "merge" && v.copyId === null && v.other ? [v.other] : [])))]);
 </script>
 
@@ -45,7 +47,8 @@
       {#if weak}<Badge tone="warning" title="No session opened or called it in 30 days, so its description may be too weak for agents to pick it.">weak description, review</Badge>{/if}
       <span class="num" use:tooltip={"Folders and links that hold it"}>{count(skill.copies.length, "copy", "copies")}</span>
       <span class="num" class:bad={size?.bloated}>{size ? size.text : "size unknown"}</span>
-      <span class="num use">{skill.use.uses ? count(skill.use.uses, "use") : "never used"}</span>
+      <span class="num use" use:tooltip={elsewhere ?? ""}>{skill.use.uses ? count(skill.use.uses, "use") : never ? "never used" : "used by name"}</span>
+      <span class="num useful" class:yes={skill.useful.yes} use:tooltip={skill.useful.why} data-testid="problem-skill-useful">{skill.useful.yes ? "useful" : "not useful"}</span>
     </span>
   </button>
 
@@ -59,12 +62,15 @@
         <dd>
           {#if skill.use.uses}
             {count(skill.use.uses, "use")} in {count(skill.use.sessions, "session")}{#if skill.use.lastUse}, last {ageLabel(Date.parse(skill.use.lastUse), now)} ago{/if}{#if kinds.length}, most from {kinds.map(k => `${k.kind} (${k.uses.toLocaleString("en-US")})`).join(", ")}{/if}.
+          {:else if elsewhere}
+            {elsewhere}
           {:else}
             No session opened or called it.{#if weak} Its description may be why, so review it before removing.{/if}
           {/if}
           {#if byPath.length}<span class="hidden">{capital(kindsText(byPath))} opened it by path, since their prompt does not list it.</span>{/if}
           {#if skill.preimported}<span class="aside"> Pre-imported as a Python module, so every call counts.</span>{/if}
         </dd>
+        <dt>Useful</dt><dd>{skill.useful.yes ? "Yes." : `No. ${skill.useful.why}`}</dd>
         <dt>Seen by</dt>
         <dd>
           {#each seen as line (line)}<span class="line">{line}</span>{:else}No thread kind lists it.{/each}
@@ -128,6 +134,8 @@
   .num { color: var(--text-subtle); font: var(--text-body-sm); font-variant-numeric: tabular-nums; white-space: nowrap; }
   .facts .num { min-width: 5.5em; text-align: right; }
   .facts .use { min-width: 7em; }
+  .facts .useful { min-width: 6em; }
+  .useful.yes { color: var(--text-standard); }
   .bad { color: var(--text-danger); }
   .body { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-1) var(--space-3) var(--space-4) calc(var(--space-3) + 16px + var(--space-2)); }
   .desc { margin: 0; color: var(--text-subtle); font: var(--text-body-sm); max-width: 60rem; }

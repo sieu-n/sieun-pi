@@ -391,12 +391,13 @@ export class SkillsReview {
       const record = (state.items[item] ??= { status: "approved", decision: { at: now(), action: "approve", overrides: {} }, stamp: now().replace(/[:.]/g, "-"), ops: {} });
       const rows = steps.map((step, index) => stepRow(item, step, index));
       const want = new Map(rows.map((row, i) => [row.id, { action: (steps[i]!.kind === "fold" ? "fold" : "delete") as ReviewAction }]));
-      const plans = await this.plan(loaded.set, rows.filter((_, i) => steps[i]!.kind === "delete"), want, record);
+      const trash = (step: DiskStep) => step.kind === "delete" && step.trash === true;
+      const plans = await this.plan(loaded.set, rows.filter((_, i) => steps[i]!.kind === "delete" && !trash(steps[i]!)), want, record);
       const results: DiskResult[] = [];
       for (const [i, step] of steps.entries()) {
         const row = rows[i]!;
         const plan = plans.get(row.id);
-        const how: OpHow = step.kind === "place" ? "place" : step.kind === "fold" ? "fold-job" : plan?.how ?? "trash";
+        const how: OpHow = step.kind === "place" ? "place" : step.kind === "fold" ? "fold-job" : trash(step) ? "trash" : plan?.how ?? "trash";
         const op: Op = {
           row, how, action: step.kind === "fold" ? "fold" : "delete", foldInto: step.kind === "fold" ? step.into : null, state: "pending", note: null, at: now(),
           backup: null, repo: plan?.repo ?? null, rel: plan?.rel ?? null, commit: null, ...(step.kind === "place" ? { place: { mode: step.mode, from: step.from } } : {}),

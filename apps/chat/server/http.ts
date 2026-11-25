@@ -177,7 +177,8 @@ function skillsDb(config: Config, log: (line: string) => void, broadcast: Broadc
     const db = new SkillsDb({ file, box: config.box, home: config.home, piHostPrompt: piHost }, review.diskSteps("live"), log);
     db.viewsOffThread = true;
     // The live inventory's ingest runs in a worker thread (SkillsDb.ingestOffThread); the fixture's small one stays inline for the specs.
-    const ingest = (json: unknown) => void db.ingestOffThread(json).catch(error => log(`skills: the ingest failed: ${error instanceof Error ? error.message : String(error)}`));
+    // After each ingest the server carries out the verdicts the rules mark auto (SkillsDb.autoAct), once per scan.
+    const ingest = (json: unknown) => void db.ingestOffThread(json).then(() => db.autoAct()).catch(error => log(`skills: the ingest failed: ${error instanceof Error ? error.message : String(error)}`));
     skills.attach({ ingest: once(ingest), overlay: rows => db.overlay(rows), lastAttempt: () => db.lastAttempt(), installPaths: () => db.installPaths() }, true);
     return { db, skills };
   }
@@ -189,7 +190,7 @@ function skillsDb(config: Config, log: (line: string) => void, broadcast: Broadc
   const repo = join(import.meta.dirname, "../../..");
   const own = new Skills({ inventory: fixture.inventory, scanner: fixtureScanner(fixture, repo) }, config.box, log, scan => broadcast({ type: "skills", scan }));
   const db = new SkillsDb({ file, box: config.box, home: fixture.home, piHostPrompt: existsSync(piHost) ? piHost : null }, review.diskSteps(fixture.setName), log);
-  own.attach({ ingest: once(json => db.ingest(json)), overlay: rows => db.overlay(rows), lastAttempt: () => db.lastAttempt(), installPaths: () => db.installPaths() }, true);
+  own.attach({ ingest: once(json => (db.ingest(json), void db.autoAct().catch(error => log(`skills: the auto removal failed: ${error instanceof Error ? error.message : String(error)}`)))), overlay: rows => db.overlay(rows), lastAttempt: () => db.lastAttempt(), installPaths: () => db.installPaths() }, true);
   return { db, skills: own };
 }
 

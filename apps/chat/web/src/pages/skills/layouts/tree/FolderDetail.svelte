@@ -73,7 +73,7 @@
               <span class:warn={drift !== null}>{drift ?? "same as source"}</span>
               {#if sizeText(s.size.bytes, t)}<span class:warn={isBloated(s.size.bytes, t)}>{sizeText(s.size.bytes, t)}</span>{/if}
             </span>
-            <span class="uses">{s.use.uses ? usesText(s.use.uses) : "never"}</span>
+            <span class="uses">{s.use.uses ? usesText(s.use.uses) : s.use.nameUses ? "by name" : "never"}</span>
           </button>
         </li>
       {/each}

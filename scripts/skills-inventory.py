@@ -127,6 +127,19 @@ def fetched_at(top: str, common: str | None) -> str | None:
         return None
 
 
+def local_work(top: str) -> dict:
+    """What a checkout holds that no remote has: `dirty` counts `git status` entries other than a deleted tracked file, which git keeps, and
+    `unpushed` counts the commits on HEAD that no remote ref holds. Either is None when git did not answer, which the skills DB reads as
+    unknown and so never removes a copy from that checkout."""
+    status = subprocess.run(["git", "-C", top, "status", "--porcelain=v1", "-z"], capture_output=True)
+    ahead = subprocess.run(["git", "-C", top, "rev-list", "--count", "HEAD", "--not", "--remotes"], capture_output=True, text=True)
+    entries = [e for e in status.stdout.decode(errors="replace").split("\0") if len(e) > 3] if status.returncode == 0 else None
+    return {
+        "dirty": None if entries is None else sum(1 for e in entries if e[:2] not in (" D", "D ")),
+        "unpushed": int(ahead.stdout.strip()) if ahead.returncode == 0 and ahead.stdout.strip().isdigit() else None,
+    }
+
+
 def checkout_of(path: Path) -> dict | None:
     """The git checkout a folder or link sits in, with its remote, branch, last commit time and whether git tracks the path."""
     top = toplevel(path.parent) if path.parent.is_dir() else None
@@ -140,7 +153,7 @@ def checkout_of(path: Path) -> dict | None:
         _checkouts[top] = {
             "info": {"root": top, "remote": out("remote", "get-url", "origin"), "branch": out("branch", "--show-current"), "headAt": out("log", "-1", "--format=%cI"),
                      "upstreamAt": out("log", "-1", "--format=%cI", origin_head(out)), "behind": int(out("rev-list", "--count", f"HEAD..{origin_head(out)}") or 0),
-                     "fetchedAt": fetched_at(top, out("rev-parse", "--git-common-dir"))},
+                     "fetchedAt": fetched_at(top, out("rev-parse", "--git-common-dir")), **local_work(top)},
             "files": set(files.stdout.decode(errors="replace").split("\0")) if files.returncode == 0 else set(),
         }
     known = _checkouts[top]
