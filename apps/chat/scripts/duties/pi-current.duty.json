@@ -1,0 +1,17 @@
+{
+ "name": "pi-host runs the newest Pi",
+ "ownerWords": "did we fork Pi? is it auto updated?\n(#sw-factory-build p242, 11-26)\n\nyeah weekly duty sound good.\n(#sw-factory-build p245, 11-26, msg mwwkxdqq, answering \"I'd add a weekly duty that tries the newest Pi on a test host and bumps the pin when our tests pass. Sound right?\")",
+ "goal": "pi-host pins the upstream @earendil-works/* packages (chord, pi-agent-core, pi-ai, pi-coding-agent, pi-durable) in packages/pi-host/package.json, and each week the pins move to npm latest once pi-host's tests and a fresh-agent walk pass. The precheck (apps/chat/scripts/duties/pi-current.ts) reads the pins on origin/main, asks npm for each package's latest and published versions, and counts the stable releases after each pin up to latest; on 11-26 every pin was 1.4.0 and latest 1.6.1, 5 releases behind. It also runs node scripts/vendor-prime-harness.mjs --check in the checkout, the check that packages/pi-host test/durable/prime-harness.test.ts runs, which fails when the Prime release the daemon runs no longer matches pi-host's vendored copy of Prime's harness. The schedule is weekly because the owner picked weekly in p245.",
+ "metrics": [
+  { "key": "pi_releases_behind", "label": "npm releases between the pinned Pi and npm latest, for the @earendil-works package furthest behind", "op": "<=", "target": 0, "unit": " releases", "headline": true },
+  { "key": "packages_behind", "label": "@earendil-works packages pinned below npm latest", "op": "<=", "target": 0, "unit": " packages" },
+  { "key": "prime_vendor_behind", "label": "vendored Prime harness behind the Prime release the daemon runs (1 when vendor-prime-harness.mjs --check fails)", "op": "<=", "target": 0 }
+ ],
+ "schedule": { "kind": "every", "minutes": 10080 },
+ "precheck": {
+  "command": ["node", "--import", "tsx", "scripts/duties/pi-current.ts"],
+  "cwd": "../..",
+  "timeoutMs": 120000
+ },
+ "onMiss": "Work in the checkout /home/sieun/src/sieun-pi on main, editing by exact hunk and committing only your own files. Each pi_behind flag names a package, its pin and the releases after it. 1. Bump every @earendil-works pin in packages/pi-host/package.json to npm latest and update the lockfile with npm install in packages/pi-host. 2. Read each upstream changelog between the old pin and latest (npm view <pkg> repository, then the CHANGELOG or releases there) for breaking changes, and fix packages/pi-host for each one. 3. Run pi-host's tests with `heavy 8G -- npm test` in packages/pi-host in a detached systemd-run unit and wake on its end. 4. Start a test pi-host with its own port and data dir, never the live one, and walk a fresh throwaway agent there: a room post it answers, a job run, agent_message, set_emoji and edit_message. 5. When the prime_vendor_behind flag is set, run node scripts/vendor-prime-harness.mjs and commit the vendored file and fixture with the bump. 6. Push to main and send the sha and what changed to the agent factory work thread, since only that thread installs pi-host on metal and the Mac. If something breaks that you cannot fix, keep the old pin and write what broke and where in one line on the duty's board step."
+}
