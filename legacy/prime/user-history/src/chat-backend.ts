@@ -465,11 +465,12 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     } });
   // The bridge's escalations, tells, watchdog lines and uptime pages go to a pi-host thread through pi-host and to a Prime session through the
   // agent outbox: OPS_ROUTE has been devops guy's pi-host thread since 11-26.
-  const notice = { deliver: async (session: string, text: string, root?: string): Promise<"delivered" | "queued"> => {
+  const noticeTo = async (session: string, text: string, root?: string): Promise<"delivered" | "queued"> => {
     if (await sendNotice(await piHostRoutes(), session, text)) return "delivered";
     await agentOutbox.deliver(session, text, root);
     return "queued";
-  } };
+  };
+  const notice = { deliver: async (session: string, text: string, root?: string): Promise<void> => { await noticeTo(session, text, root); } };
   const grafanaConfig = join(sharedDataDir(dataDir), "grafana-alerts.json");
   const statusFile = join(homedir(), ".cache/virev/alert-bridge-status.json");
   const alertPoll = ownChatsOnly ? null : startAlertPoll({ grafanaConfig, sessionsDir: join(agentDir, "sessions"), statusFile }, dutyLog);
@@ -644,7 +645,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       const remote = await capture;
       return sessionFile ? promptView(id, { sessionFile, dataDir, agentDir, chat: (await chats.ids()).has(id), ...(title ? { title } : {}), ...(remote ? { readCapture: () => remote.read } : {}) }) : null;
     },
-    outbox, messages: agentOutbox, notice: notice.deliver,
+    outbox, messages: agentOutbox, notice: noticeTo,
     async close() {
       if (closed) return;
       closed = true;
