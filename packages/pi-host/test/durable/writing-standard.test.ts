@@ -128,9 +128,11 @@ test("on the wire the section is in the system block before its cache breakpoint
   const bodies: Body[] = [];
   for (const messages of turns) bodies.push(await wire(provider, messages));
   const [first, second] = bodies as [Body, Body];
-  assert.equal(first.system.length, 1);
-  assert.ok(first.system[0]!.text.endsWith(section(f.skill)), "the section closes the system block");
-  assert.ok(first.system[0]!.cache_control, "the system block, and so the section, ends at a cache breakpoint");
+  // Since 970765a2 the sections that differ per conversation (guidance, harness, working) go in a second block after the shared one
+  // (cache-shape.ts `splitSystem`), so the section closes the first block.
+  assert.equal(first.system.length, 2);
+  assert.ok(first.system[0]!.text.endsWith(section(f.skill)), "the section closes the shared system block");
+  assert.ok(first.system[0]!.cache_control, "the shared system block, and so the section, ends at a cache breakpoint");
   const [a, b] = [bare(first), bare(second)];
   assert.deepEqual(b.system, a.system);
   assert.deepEqual(b.tools, a.tools);
