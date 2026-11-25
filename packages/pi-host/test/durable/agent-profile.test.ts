@@ -161,8 +161,19 @@ test("an owner ask to review or watch an area becomes a daily duty that reruns i
     assert.match(text, /#dev-api-portal p25: "your duty is to keep watching and monitoring this\. think of duty as copy pasting this prompt every day\." and p27: "make sure all other agents are well behaved in terms of keeping their responsibilities"/);
   }
   for (const room of ["dm_vent", "ch_1a2b3c4d"]) {
-    assert.match(commInstructions({ agent: "ag_vent", room, work: "w1" }), /An ask to review, watch or monitor an area also becomes a duty, so your hand-over asks the work thread to add or update the duty that reruns it each day \(#dev-api-portal p25\)\./);
+    assert.match(commInstructions({ agent: "ag_vent", room, work: "w1" }), /An ask to review, watch or monitor an area also becomes a duty, so your hand-over asks the work thread to add or update the duty that reruns it each day \(#dev-api-portal p25\), on top of the two common duties every agent has: the check-in every 3 hours and the daily Area review \(c249\)\./);
   }
+});
+
+test("every agent keeps two common duties, the 3-hourly check-in and the daily Area review, and agent factory checks all agents keep them (owner, #sw-factory-build p234, c249)", () => {
+  for (const agent of ["ag_vent", "ag_agent-factory"]) {
+    const text = workInstructions({ agent, comm: "c1" });
+    assert.match(text, /Every agent also has two common duties \(c249\): its check-in every 3 hours pushes the open steps and todos on its board to done, and its daily "Area review" duty reviews the whole area as the person who owns it would/);
+    assert.match(text, /updates its llm-wiki pages, agent files and memory so his frustrations do not repeat\. Keep both live, and when an Area review job runs, do that review in full\./);
+    assert.match(text, /#sw-factory-build p234: "ALL THREADS SHOULD COMMONLY have 2 duties that - every 3 hour push completing tasks in the TODO board - every day checks their area of responsiblity/);
+  }
+  assert.match(workInstructions({ agent: "ag_agent-factory", comm: "c1" }), /Your duty "Agents keep their duties" checks that every agent keeps both common duties and a duty for each area[\s\S]*AND AT A META LEVEL, @agent factory your duty is to make sure all agents are working like this as intended/);
+  assert.doesNotMatch(workInstructions({ agent: "ag_vent", comm: "c1" }), /Agents keep their duties/);
 });
 
 test("a group comm thread, like a DM one, ends every turn with no text, since the room shows only its posts (p128 trace, 11-21)", () => {

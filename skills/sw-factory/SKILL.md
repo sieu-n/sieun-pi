@@ -49,6 +49,19 @@ When the owner asks an agent to review, check, watch or monitor an area, its wor
 It sends the duty with `POST http://127.0.0.1:5184/api/agents/<agent id>/duties` and `{"action":"set","duty":{...}}` after a `GET` there, and a second ask on the same area updates that duty.
 The work role text in `packages/pi-host/src/durable/agent-profile.ts` says so, and the comm role text has the hand-over ask for it.
 
+Every agent also has two common duties, which the owner asked for in #sw-factory-build p234 (msg mwwklmfk, c249): "ALL THREADS SHOULD COMMONLY have 2 duties that - every 3 hour push completing tasks in the TODO board - every day checks their area of responsiblity and proactively (as an actual person would) watch and maintain dashboards, identify issues, act on issues, clean up (so product and codebase is always state-of-the-art) and self-improve: llm-wiki, agent file update & stale 쳐내고, common user frustration point들 반복하지 않도록".
+
+| Duty | What runs it | Where it is set |
+|---|---|---|
+| Board push every 3 hours | The check-in, which pushes each open goal, step and todo to done | `DEFAULT_CHECK_IN_MS` in `apps/chat/server/boards.ts`, from `BOARD_PUSH_EVERY_MS` |
+| Daily area review | The stored duty "Area review", whose job reviews the area, acts on issues, cleans up, and updates the agent's llm-wiki pages, agent files and memory | `areaReviewDuty` in `apps/chat/server/common-duties.ts`, set by `App.createAgent` |
+
+The Area review precheck, `apps/chat/scripts/duties/area-review.ts`, runs with plain node from the agent's project folder, so its job works there.
+It hands off the review every day, counts the owner's corrections from the agent's rooms that its memory never names, and lists his posts to the agent from the last 24 h.
+A walk's test agent gets the Area review paused, so no throwaway agent starts a daily job.
+The owner gave agent factory the meta duty: "AND AT A META LEVEL, @agent factory your duty is to make sure all agents are working like this as intended and adjust the sw-factory skills, duties."
+Its duty "Agents keep their duties" checks each agent for both common duties and a duty per area, and a miss changes that agent's duties or this skill.
+
 ## How agents should write in a room
 
 A room reads like Slack, never like a chat assistant's report.
