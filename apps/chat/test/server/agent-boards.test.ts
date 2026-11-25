@@ -171,6 +171,15 @@ test("wiki clutter: agent folders of no live agent, and dated one-off pages no c
   assert.match(out.flagged[5]!.excerpt, /root-free-space-2026-10-25-0156 \(2 pages\) is a dated one-off page/);
 });
 
+test("wiki clutter skips a dated page that moved away, which leaves only a redirect stub, and the kept harness-keeper folder", () => {
+  const stub = (to: string) => `<!--wiki\n${JSON.stringify({ title: "Root free space", moved_to: to, superseded_by: to })}\n-->\n<h1>Root free space</h1>\n`;
+  const out = wikiClutter(["harness-keeper", "seo"], new Set(["seo"]), [
+    { path: "domains/devops/root-free-space-2026-10-25/index.html", text: stub("archive/domains/devops/root-free-space-2026-10-25/index.html") },
+    { path: "domains/devops/queue-waits-2026-10-15.html", text: "<h1>Queue waits</h1>" },
+  ]);
+  assert.deepEqual(out.flagged.map(flag => [flag.kind, flag.item]), [["dated_page", "domains/devops/queue-waits-2026-10-15.html"]]);
+});
+
 test("readWiki reads the agents mount and the curated folders named in wiki.json", () => {
   const dir = mkdtempSync(join(tmpdir(), "wiki-"));
   const content = join(dir, "content");

@@ -293,8 +293,13 @@ export function agentPattern(agents: readonly AgentRead[], areas: readonly Agent
 
 /** A path segment that carries a date or a session, job or run stamp, such as `queue-waits-2026-10-15.html` or `d7-261126-052811`. */
 export const DATED = /20\d\d-\d\d-\d\d|^20\d\d[-_]?\d\d[-_]?\d\d|\d{6}[-_]\d{4,6}|(?:session|job|run)[-_]?\d{3,}/i;
-/** Folders under the wiki's agents/ mount that belong to no agent and are no clutter: the template new agents copy. */
-export const AGENT_FOLDERS_KEPT = new Set(["TEMPLATE"]);
+/**
+ * Folders under the wiki's agents/ mount that belong to no sw factory agent and are no clutter: the template new agents copy, and
+ * harness-keeper, a Prime standing agent that keeps its folder here and is not in GET /api/agents.
+ */
+export const AGENT_FOLDERS_KEPT = new Set(["TEMPLATE", "harness-keeper"]);
+/** A moved page's redirect stub (apps/wiki movePage): the page left, and the tree shows no row for it. */
+const REDIRECT_STUB = /^<!--wiki\s*\{[^\n]*"moved_to"\s*:/;
 /** The curated wiki folders read for dated pages; experiments/ is left out, because its folders start with a date by design. */
 export const CURATED_FOLDERS = ["apps", "domains", "projects"] as const;
 
@@ -316,7 +321,7 @@ export function wikiClutter(agentFolders: readonly string[], liveSlugs: Readonly
   const units = new Map<string, string[]>();
   for (const page of pages) {
     const unit = unitOf(page.path);
-    if (unit) units.set(unit, [...units.get(unit) ?? [], page.path]);
+    if (unit && !REDIRECT_STUB.test(page.text)) units.set(unit, [...units.get(unit) ?? [], page.path]);
   }
   const curated = pages.filter(page => !unitOf(page.path));
   let dated = 0;
