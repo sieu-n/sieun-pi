@@ -199,9 +199,38 @@
     return { id: "read-all", label: "Mark all as read", icon: "check", disabled: !unread.length, onselect: () => void markAllRead(unread) };
   }
 
+  /** The section whose Add channel list is open, where every channel shows checked when it sits in that section, as in Slack's. */
+  let addTo = $state<SectionId | null>(null);
+  let addOpen = $state(false);
+  let addAnchor = $state<Anchor | null>(null);
+  const addItems = $derived<PickerItem[]>(
+    rooms.channels.map((row) => {
+      const at = sidebarSections.sectionOf(row.id);
+      const name = at && at !== addTo ? sidebarSections.section(at)?.name : undefined;
+      return { id: row.id, label: row.name, icon: "hash", ...(name ? { detail: `In ${name}` } : {}) };
+    }),
+  );
+  const addValue = $derived(addTo ? rooms.channels.filter((row) => sidebarSections.sectionOf(row.id) === addTo).map((row) => row.id) : []);
+
+  /** A section menu's Add channel, as Slack's: a new channel made in the section, or existing channels checked in and out of it. */
+  function addChannelMenu(id: SectionId): MenuEntry {
+    return {
+      type: "submenu",
+      id: "add-channel",
+      label: "Add channel",
+      icon: "plus",
+      items: [
+        { id: "new-channel", label: "New channel…", icon: "hash", onselect: () => router.navigate(hrefFor("messages", ["new"], { kind: "channel", section: id })) },
+        { id: "existing-channels", label: "Existing channels…", icon: "folder", onselect: () => ((addTo = id), (addAnchor = menu?.anchor ?? null), (addOpen = true)) },
+      ],
+    };
+  }
+
   function sectionMenu(id: SectionId): MenuEntry[] {
     const section = sidebarSections.section(id);
     return [
+      addChannelMenu(id),
+      { type: "separator" },
       readAllItem(rowsOf(id)),
       { type: "separator" },
       sortMenu(id),
@@ -409,6 +438,20 @@
   emptyText={archivedRooms.loading ? "Loading archived channels" : "No archived channels"}
   width={320}
   onselect={(id) => router.openConversation(id)}
+/>
+<Picker
+  bind:open={addOpen}
+  anchor={addAnchor}
+  items={addItems}
+  value={addValue}
+  multiple
+  searchable
+  label="Add channels to {(addTo && sidebarSections.section(addTo)?.name) || 'section'}"
+  placeholder="Find a channel"
+  emptyText="No channels"
+  width={320}
+  onselect={(id) => addTo && sidebarSections.move(id, sidebarSections.sectionOf(id) === addTo ? null : addTo)}
+  onsubmit={() => (addOpen = false)}
 />
 
 <style>

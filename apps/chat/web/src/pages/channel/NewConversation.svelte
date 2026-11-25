@@ -2,6 +2,8 @@
   import { api, keepOpened, type AgentSummary } from "$lib/api";
   import { router } from "$lib/router.svelte";
   import { sidebar } from "$lib/shell/sidebar.svelte";
+  import { sidebarSections } from "$lib/shell/sidebar-sections.svelte";
+  import { isSectionId } from "$lib/api/shared/sidebar-layout";
   import Button from "$lib/ui/Button.svelte";
   import Chip from "$lib/ui/Chip.svelte";
   import Field from "$lib/ui/Field.svelte";
@@ -20,8 +22,10 @@
    * agents as Slack's does: one agent opens its DM, and two or more, or any number from New Solo room (`solo`), start a Solo room whose
    * first message is its agenda.
    */
-  type Props = { kind: string };
-  let { kind }: Props = $props();
+  type Props = { kind: string; section?: string };
+  let { kind, section }: Props = $props();
+  /** The sidebar section a channel made from that section's Add channel lands in. */
+  const into = $derived(section && isSectionId(section) ? sidebarSections.section(section) : undefined);
 
   /** Registered agents only: a job works inside its agent and is never a member or a DM of its own. */
   const live = $derived(directory.agents.filter((a) => a.id.startsWith("ag_") && !a.archived));
@@ -46,6 +50,7 @@
     try {
       const channel = await api.createRoom({ kind: "channel", name: slug, agenda: purpose.trim(), members });
       keepOpened(channel.id, channel.opened);
+      if (into) sidebarSections.move(channel.id, into.id);
       router.openConversation(channel.id);
     } catch (error) {
       fail(error);
@@ -102,7 +107,7 @@
 </script>
 
 {#if kind === "channel"}
-  <PanelHeader title="New channel" icon="hash" level={1} divider />
+  <PanelHeader title={into ? `New channel in ${into.name}` : "New channel"} icon="hash" level={1} divider />
   <form class="form" onsubmit={createChannel}>
     <Field label="Name" id="channel-name" hint={slug ? `#${slug}` : "Lowercase words joined by dashes"} error={taken ? `That name is already taken by a channel.` : null}>
       <Input id="channel-name" bind:value={name} placeholder="pi-cutover" autocomplete="off" invalid={taken} aria-describedby={taken ? "channel-name-error" : "channel-name-hint"} />

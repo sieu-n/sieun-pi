@@ -295,3 +295,37 @@ test("every row's menu copies its link and offers Mark as read only when unread,
   await expect(page.getByRole("menuitem", { name: "Channels", exact: true })).toHaveCount(0);
   await expect(page.getByRole("menuitem", { name: "New section…" })).toBeVisible();
 });
+
+test("a section's Add channel checks existing channels in and out of it and makes a new channel in it that stays there after a reload", async ({ page }) => {
+  await block(page, "channels").getByRole("heading", { name: "Channels" }).hover();
+  await sidebar(page).getByRole("button", { name: "Channels options" }).click();
+  await page.getByRole("menuitem", { name: "New section" }).click();
+  await nameSection(page, "New section", "Work");
+
+  await sectionMenu(page, "Work", "Add channel");
+  await page.getByRole("menuitem", { name: "Existing channels…" }).click();
+  const picker = page.getByRole("dialog", { name: "Add channels to Work" });
+  await picker.getByRole("option", { name: "general", exact: true }).click();
+  await picker.getByRole("option", { name: "pi-cutover", exact: true }).click();
+  await expect(picker.getByRole("option", { name: "general", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect.poll(() => order(page, "Work")).toEqual([`#/c/ch_general`, `#/c/ch_cutover`]);
+  await picker.getByRole("option", { name: "general", exact: true }).click();
+  await expect.poll(() => order(page, "Work")).toEqual([`#/c/ch_cutover`]);
+  await expect(block(page, "channels").locator(link("general"))).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(picker).toHaveCount(0);
+
+  const name = `added-${tag()}`;
+  await sectionMenu(page, "Work", "Add channel");
+  await page.getByRole("menuitem", { name: "New channel…" }).click();
+  await expect(page.getByRole("heading", { name: "New channel in Work" })).toBeVisible();
+  await page.getByLabel("Name", { exact: true }).fill(name);
+  await page.getByRole("button", { name: "Create channel", exact: true }).last().click();
+  const row = section(page, "Work").locator("a[data-sidebar-row]").filter({ hasText: name });
+  await expect(row).toBeVisible({ timeout: 15_000 });
+  await expect(row).toHaveAttribute("aria-current", "page");
+  const room = (await row.getAttribute("href"))!.slice("#/c/".length);
+  await page.reload();
+  await expect(section(page, "Work").locator(`a[href="#/c/${room}"]`)).toBeVisible({ timeout: 15_000 });
+  await archive(page, room);
+});
