@@ -126,7 +126,8 @@ export class WikiIndexStore {
 				if (next) this.logs.add(pagePath);
 				else this.logs.delete(pagePath);
 			}
-			if (!old || !next || old.title !== next.title || old.kind !== next.kind) treePaths.push(pagePath);
+			if (!old || !next || old.title !== next.title || old.kind !== next.kind || old.meta?.moved_to !== next.meta?.moved_to)
+				treePaths.push(pagePath);
 		}
 		if (removed.length === 0 && fresh.size === 0) return;
 

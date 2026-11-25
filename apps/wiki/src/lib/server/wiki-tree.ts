@@ -124,6 +124,7 @@ function buildTree(byPath: Map<string, WikiPageSummary>, log: TreeLog): TreeStat
 		sections: new Map(),
 	};
 	for (const page of byPath.values()) {
+		if (!listed(page)) continue;
 		folderAt(tree, folderOf(page.path)).children.push(fileNode(page));
 		countSection(tree, page.path, 1);
 	}
@@ -138,7 +139,7 @@ function buildTree(byPath: Map<string, WikiPageSummary>, log: TreeLog): TreeStat
 function placePage(tree: TreeState, byPath: Map<string, WikiPageSummary>, pagePath: string): void {
 	const folderPath = folderOf(pagePath);
 	const name = pagePath.slice(pagePath.lastIndexOf('/') + 1);
-	const page = byPath.get(pagePath);
+	const page = listed(byPath.get(pagePath));
 	const folder = page ? folderAt(tree, folderPath) : tree.folders.get(folderPath);
 	if (!folder) return;
 	countSection(tree, pagePath, (page ? 1 : 0) - (hasRow(folder, pagePath, name) ? 1 : 0));
@@ -163,6 +164,11 @@ function countSection(tree: TreeState, pagePath: string, delta: number): void {
 	if (slash < 0 || delta === 0) return;
 	const section = pagePath.slice(0, slash);
 	tree.sections.set(section, (tree.sections.get(section) ?? 0) + delta);
+}
+
+/** The page when the tree shows it. A moved page's redirect stub gets no row: the page it sends readers to has its own. */
+function listed(page: WikiPageSummary | undefined): WikiPageSummary | undefined {
+	return page && typeof page.meta?.moved_to !== 'string' ? page : undefined;
 }
 
 function folderOf(pagePath: string): string {
@@ -201,7 +207,7 @@ function fold(folder: WikiTreeNode, byPath: Map<string, WikiPageSummary>): void 
 	}
 	for (const name of FOLDED_PAGES) {
 		removeNode(folder.children, 'file', name);
-		const page = byPath.get(`${folder.path}/${name}`);
+		const page = listed(byPath.get(`${folder.path}/${name}`));
 		if (!page) continue;
 		if (folder.pagePath === undefined) {
 			folder.pagePath = page.path;
