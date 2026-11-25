@@ -786,6 +786,27 @@ export type RunCounts = Record<RunStatus, number>;
 export type HostThreadFilter = RunStatus | "all";
 export interface HostsReport { checkedAt: Ms; registryError: string | null; hosts: HostView[] }
 
+/** A sieun-pi release folder on a box: its folder name and the commit it was built from. */
+export interface ReleaseView { release: string; sha: string; builtAt: string | null }
+
+/** What one box runs, read through its agent relay. Each value is null when the box does not have it, such as apps/chat on the Mac. */
+export interface BoxVersions {
+  /** The @earendil-works/pi-* version pi-host loads. */
+  pi: string | null;
+  piHost: ReleaseView | null;
+  appsChat: ReleaseView | null;
+  /** The Prime release vendor/prime-harness.ts was copied from, and that release's commit. */
+  primeVendored: { version: string; sha: string } | null;
+  /** The version `prime-agent status --json` reports for the default daemon. */
+  primeDaemon: string | null;
+}
+
+/** One box on the About page. An away box keeps the values of its last good read, and `readAt` says when that was. */
+export interface AboutHost { box: string; state: "up" | "away"; readAt: Ms | null; versions: BoxVersions | null; error: string | null }
+
+/** GET /api/about: each box's versions, and the newest Pi release on npm, read at most once an hour. */
+export interface AboutReport { checkedAt: Ms; piLatest: { version: string; checkedAt: Ms } | null; hosts: AboutHost[] }
+
 /** A file the config names: where it is, whether it is there, and a short look inside. `loaded` says whether the agent's model sees it. */
 export interface ConfigFile {
   label: string;
