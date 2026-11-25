@@ -127,6 +127,16 @@ class SidebarSections {
     });
   }
 
+  /** Sets the emoji before a section's name, or takes it off with null. */
+  setEmoji(id: SectionId, emoji: string | null): void {
+    this.change((l) => {
+      const section = l.sections.find((s) => s.id === id);
+      if (!section) return;
+      if (emoji) section.emoji = emoji;
+      else delete section.emoji;
+    });
+  }
+
   /** Deletes a section, sending its rooms back to Channels and Direct messages, with Undo in the toast. */
   remove(id: SectionId): void {
     const before = copy(this.model);

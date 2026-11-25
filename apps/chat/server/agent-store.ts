@@ -165,8 +165,8 @@ interface RoomBase { id: RoomId; createdAt: Ms; archived: boolean; test?: true }
  */
 export type RoomRow =
   | (RoomBase & { kind: "dm"; agent: AgentId })
-  | (RoomBase & { kind: "channel"; name: string; purpose: string; homeChat?: string; members: RoomMember[]; memberLog?: MemberChange[] })
-  | (RoomBase & { kind: "solo"; name: string; agenda: string; members: RoomMember[]; memberLog?: MemberChange[]; closedAt?: Ms });
+  | (RoomBase & { kind: "channel"; name: string; purpose: string; homeChat?: string; members: RoomMember[]; memberLog?: MemberChange[]; emoji?: string })
+  | (RoomBase & { kind: "solo"; name: string; agenda: string; members: RoomMember[]; memberLog?: MemberChange[]; closedAt?: Ms; emoji?: string });
 export type GroupRoom = Exclude<RoomRow, { kind: "dm" }>;
 export const isGroupRoom = (row: RoomRow): row is GroupRoom => row.kind !== "dm";
 

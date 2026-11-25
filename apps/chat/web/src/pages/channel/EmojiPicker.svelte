@@ -1,5 +1,6 @@
 <script lang="ts">
   import { EMOJI, EMOJI_CATEGORIES, emojiName, emojiOf, searchEmoji, type EmojiInfo } from "$lib/api/shared/emoji";
+  import Button from "$lib/ui/Button.svelte";
   import SearchField from "$lib/ui/SearchField.svelte";
   import Tabs from "$lib/ui/Tabs.svelte";
   import type { IconName } from "$lib/ui/icons";
@@ -11,8 +12,10 @@
     onpick: (emoji: string, keepOpen: boolean) => void;
     /** The owner's own reactions on the post, drawn selected. */
     selected?: (emoji: string) => boolean;
+    /** Shows Remove beside the search, as Notion's icon picker does, for a picker that sets one emoji such as a channel's icon. */
+    onremove?: () => void;
   };
-  let { onpick, selected = () => false }: Props = $props();
+  let { onpick, selected = () => false, onremove }: Props = $props();
 
   const COLUMNS = 9;
   const FREQUENT = "Frequently used";
@@ -117,6 +120,7 @@
       aria-activedescendant={focused ? cellId(active.row, active.col) : undefined}
       {onkeydown}
     />
+    {#if onremove}<Button variant="ghost" size="sm" onclick={onremove}>Remove</Button>{/if}
   </div>
   <div class="tabs">
     <Tabs
@@ -176,7 +180,14 @@
     max-height: var(--popover-available-height, 432px);
   }
   .search {
+    display: flex;
+    align-items: center;
+    gap: 6px;
     margin: 12px 12px 4px;
+  }
+  .search > :global(:first-child) {
+    flex: 1;
+    min-width: 0;
   }
   .tabs {
     padding: 0 8px;

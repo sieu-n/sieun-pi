@@ -31,8 +31,19 @@
     draft?: boolean;
     /** Shown right after the label and always, such as the host badge of a DM whose agent runs on another box. */
     tag?: Snippet;
+    /** The emoji the owner picked for the row, drawn in place of `icon`. */
+    emoji?: string;
+    /** Makes the icon spot a button that opens the emoji picker, as Notion's page icon does; the row's menu is the keyboard path. */
+    onicon?: (anchor: HTMLElement) => void;
   };
-  let { href, label, icon, leading, selected = false, unread = 0, fresh = false, muted = false, working = [], title, oncontextmenu, actions, ondragstart, trailing, tag, draft = false }: Props = $props();
+  let { href, label, icon, leading, selected = false, unread = 0, fresh = false, muted = false, working = [], title, oncontextmenu, actions, ondragstart, trailing, tag, draft = false, emoji, onicon }: Props = $props();
+
+  function pickIcon(e: MouseEvent): void {
+    if (!onicon) return;
+    e.preventDefault();
+    e.stopPropagation();
+    onicon(e.currentTarget as HTMLElement);
+  }
   const workingLabel = $derived(working.length ? `${working.join(", ")} working in ${label}` : "");
 </script>
 
@@ -52,8 +63,9 @@
     {ondragstart}
     draggable={ondragstart ? "true" : undefined}
   >
-    <span class="lead">
-      {#if leading}{@render leading()}{:else if icon}<Icon name={icon} size={16} />{/if}
+    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions: the row's menu has Add emoji and Change emoji for the keyboard. -->
+    <span class="lead" class:pick={!!onicon} title={onicon ? (emoji ? "Change emoji" : "Add emoji") : undefined} data-row-icon={onicon ? "" : undefined} onclick={pickIcon}>
+      {#if leading}{@render leading()}{:else if emoji}<span class="emoji" aria-hidden="true">{emoji}</span>{:else if icon}<Icon name={icon} size={16} />{/if}
     </span>
     <span class="label">{label}</span>
     {#if tag}{@render tag()}{/if}
@@ -117,6 +129,16 @@
     width: 20px;
     height: 20px;
     flex: none;
+    border-radius: var(--radius-icon-button);
+  }
+  .lead.pick:hover {
+    background: var(--affordance-sidebar-hover);
+    box-shadow: inset 0 0 0 1px var(--border-standard);
+  }
+  .emoji {
+    font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
+    font-size: 15px;
+    line-height: 1;
   }
   .label {
     flex: 1;

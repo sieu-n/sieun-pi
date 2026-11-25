@@ -1,4 +1,5 @@
 import type { BuiltinSection, CustomSection, SectionId, SectionSort, SidebarLayout } from "../types.ts";
+import { emojiOf } from "./emoji.ts";
 
 /** The layout before the owner sets anything: no sections, nothing folded, channels by name and DMs newest first, as the server sends them. */
 export const emptyLayout = (): SidebarLayout => ({
@@ -33,7 +34,8 @@ export function parseLayout(data: unknown): SidebarLayout {
       if (!s || !isSectionId(s.id) || typeof s.name !== "string" || !s.name.trim()) continue;
       const { id, name } = s;
       if (layout.sections.some((x) => x.id === id || sameSectionName(x.name, name))) continue;
-      const section: CustomSection = { id, name: name.trim(), collapsed: s.collapsed === true, sort: isSort(s.sort) ? s.sort : "name" };
+      const emoji = typeof s.emoji === "string" ? emojiOf(s.emoji)?.char : undefined;
+      const section: CustomSection = { id, name: name.trim(), collapsed: s.collapsed === true, sort: isSort(s.sort) ? s.sort : "name", ...(emoji ? { emoji } : {}) };
       layout.sections.push(section);
     }
   }

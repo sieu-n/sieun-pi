@@ -22,10 +22,28 @@
     isEmpty?: boolean;
     /** The one action under `empty`, drawn as a "+" row, as Slack's empty section shows "Add channels". */
     emptyAction?: { label: string; onclick: () => void };
+    /** The emoji the owner picked, before the label. */
+    emoji?: string;
+    /** Makes the emoji a button that opens the emoji picker again; the section's menu is the keyboard path. */
+    onicon?: (anchor: HTMLElement) => void;
     children?: Snippet;
   };
-  let { id, label, count, folded = false, ontoggle, actions, empty, isEmpty = false, emptyAction, children }: Props = $props();
+  let { id, label, count, folded = false, ontoggle, actions, empty, isEmpty = false, emptyAction, emoji, onicon, children }: Props = $props();
+
+  function pickIcon(e: MouseEvent): void {
+    if (!onicon) return;
+    e.preventDefault();
+    e.stopPropagation();
+    onicon(e.currentTarget as HTMLElement);
+  }
 </script>
+
+{#snippet icon()}
+  {#if emoji}
+    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions: the section's menu has Change emoji for the keyboard. -->
+    <span class="emoji" class:pick={!!onicon} title={onicon ? "Change emoji" : undefined} data-section-icon aria-hidden="true" onclick={pickIcon}>{emoji}</span>
+  {/if}
+{/snippet}
 
 <section class="section" data-section={id} aria-label={label}>
   <div class="heading">
@@ -33,11 +51,12 @@
       {#if ontoggle}
         <button type="button" class="fold" aria-expanded={!folded} data-fold={id} onclick={ontoggle}>
           <Icon name="chevron-right" size={14} />
+          {@render icon()}
           <span class="label">{label}</span>
           {#if count !== undefined}<span class="count">{count}</span>{/if}
         </button>
       {:else}
-        <span class="plain"><span class="label">{label}</span>{#if count !== undefined}<span class="count">{count}</span>{/if}</span>
+        <span class="plain">{@render icon()}<span class="label">{label}</span>{#if count !== undefined}<span class="count">{count}</span>{/if}</span>
       {/if}
     </h2>
     {#if actions}<span class="actions">{@render actions()}</span>{/if}
@@ -103,6 +122,21 @@
   }
   .fold[aria-expanded="true"] :global(.icon) {
     transform: rotate(90deg);
+  }
+  .emoji {
+    display: inline-grid;
+    place-items: center;
+    flex: none;
+    width: 20px;
+    height: 20px;
+    margin-right: 4px;
+    border-radius: var(--radius-icon-button);
+    font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
+    font-size: 14px;
+    line-height: 1;
+  }
+  .emoji.pick:hover {
+    box-shadow: inset 0 0 0 1px var(--border-standard);
   }
   .label {
     overflow: hidden;

@@ -35,6 +35,7 @@ import { refusedForGood, retryWait } from "./outbox.ts";
 import { postState } from "./post-edits.ts";
 import { laterLine, reminderPost } from "./later-agents.ts";
 import { namedPost, reactionsLine, reactionsOf, repliedPost } from "./reactions.ts";
+import { emojiOf } from "../web/src/lib/api/shared/emoji.ts";
 import { doneOf, reopens } from "./thread-done.ts";
 import { pinnedSection, pinOf } from "./pins.ts";
 import { forwardPart, withForward } from "./forward.ts";
@@ -205,7 +206,7 @@ export class GroupRooms {
     return {
       id: row.id, kind: row.kind, name: row.name, agenda: row.kind === "solo" ? row.agenda : row.purpose, ...(row.kind === "channel" && row.homeChat ? { homeChat: row.homeChat } : {}),
       createdAt: row.createdAt, archived: row.archived, ...(row.kind === "solo" && row.closedAt !== undefined ? { closedAt: row.closedAt } : {}),
-      members: this.members(row), lastSeq: this.store.postsOf(row.id).at(-1)?.seq ?? 0, ...(row.test ? { test: true as const } : {}),
+      ...(row.emoji ? { emoji: row.emoji } : {}), members: this.members(row), lastSeq: this.store.postsOf(row.id).at(-1)?.seq ?? 0, ...(row.test ? { test: true as const } : {}),
     };
   }
 
@@ -261,7 +262,7 @@ export class GroupRooms {
     // In a Solo room every post is about the owner's agenda; in a channel only a post that names him counts as unread.
     const unread = row.kind === "solo" ? unseen.length : unseen.filter(p => p.mentions?.includes("owner")).length;
     return {
-      id: row.id, kind: row.kind, name: row.name, status: this.status(row), archived: row.archived,
+      id: row.id, kind: row.kind, name: row.name, status: this.status(row), archived: row.archived, ...(row.emoji ? { emoji: row.emoji } : {}),
       lastActivityAt: last?.at ?? row.createdAt,
       preview: last ? `${this.deps.threads.principal(last.author).name}: ${last.text}`.slice(0, 200) : (row.kind === "solo" ? row.agenda : row.purpose).slice(0, 200),
       unread, hasNew: unseen.length > 0, ...(read?.from && unseen.some(p => p.id === read.from) ? { unreadFrom: read.from } : {}), working,
@@ -320,6 +321,12 @@ export class GroupRooms {
         if (!patch.agenda.trim()) throw new Error("A Solo room's agenda is not blank.");
         row.agenda = patch.agenda.trim();
       } else row.purpose = patch.agenda;
+    }
+    if (patch.emoji !== undefined) {
+      const emoji = typeof patch.emoji === "string" ? emojiOf(patch.emoji)?.char : undefined;
+      if (patch.emoji !== null && !emoji) throw new Error(`No emoji is named ${JSON.stringify(patch.emoji)}; pass one the emoji picker offers, or null to remove it.`);
+      if (emoji) row.emoji = emoji;
+      else delete row.emoji;
     }
     if (patch.closed !== undefined) {
       if (row.kind !== "solo") throw new Error("A channel is not closed; archive it instead.");

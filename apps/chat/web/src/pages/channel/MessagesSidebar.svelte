@@ -4,6 +4,8 @@
   import Avatar from "$lib/ui/Avatar.svelte";
   import Menu from "$lib/ui/Menu.svelte";
   import Picker from "$lib/ui/Picker.svelte";
+  import Popover from "$lib/ui/Popover.svelte";
+  import EmojiPicker from "./EmojiPicker.svelte";
   import type { PickerItem } from "$lib/ui/types";
   import type { Anchor } from "$lib/ui/floating";
   import type { MenuAction, MenuEntry } from "$lib/ui/menu";
@@ -26,6 +28,7 @@
     sidebarSections,
     visibleRows,
     type BuiltinSection,
+    type CustomSection,
     type SectionId,
     type SectionKey,
     type SectionSort,
@@ -73,6 +76,23 @@
   const archivedItems = $derived<PickerItem[]>(
     (archivedRooms.value ?? []).filter((room) => room.kind === "channel").map((room) => ({ id: room.id, label: room.name, icon: "hash", ...(room.agenda ? { detail: room.agenda } : {}) })),
   );
+
+  /** The open emoji picker for a channel's or a section's icon, as Notion's page icon has: `set` saves a pick, and null removes it. */
+  let iconPick = $state<{ anchor: Anchor; label: string; emoji?: string; set: (emoji: string | null) => void } | null>(null);
+
+  function pickChannelEmoji(row: ConversationSummary, anchor: Anchor): void {
+    const set = (emoji: string | null) => void api.updateRoom(row.id, { emoji }).catch(() => toast.error(`Could not change the emoji of #${row.name}`));
+    iconPick = { anchor, label: `Emoji for #${row.name}`, ...(row.emoji ? { emoji: row.emoji } : {}), set };
+  }
+
+  function pickSectionEmoji(section: CustomSection, anchor: Anchor): void {
+    iconPick = { anchor, label: `Emoji for ${section.name}`, ...(section.emoji ? { emoji: section.emoji } : {}), set: (emoji) => sidebarSections.setEmoji(section.id, emoji) };
+  }
+
+  /** A menu's Add emoji or Change emoji, which opens the picker where the menu was. */
+  function emojiItem(emoji: string | undefined, open: (anchor: Anchor) => void): MenuEntry {
+    return { id: "emoji", label: emoji ? "Change emoji" : "Add emoji", icon: "smile", onselect: () => menu && open(menu.anchor) };
+  }
 
   function openMenu(key: string, anchor: Anchor, items: MenuEntry[]): void {
     menu = { key, anchor, items };
@@ -166,6 +186,7 @@
       ...rowMenu(row),
       { type: "separator" },
       { id: "rename", label: "Rename channel", icon: "edit", onselect: () => renameDialog.open(row.id, row.name) },
+      emojiItem(row.emoji, (anchor) => pickChannelEmoji(row, anchor)),
       moveMenu(row, "Channels"),
       { type: "separator" },
       ...roomActions(row.id),
@@ -179,11 +200,13 @@
   }
 
   function sectionMenu(id: SectionId): MenuEntry[] {
+    const section = sidebarSections.section(id);
     return [
       readAllItem(rowsOf(id)),
       { type: "separator" },
       sortMenu(id),
       { id: "rename", label: "Rename section", icon: "edit", onselect: () => (sidebarSections.dialog = { kind: "rename", id }) },
+      ...(section ? [emojiItem(section.emoji, (anchor) => pickSectionEmoji(section, anchor))] : []),
       {
         id: "delete",
         label: "Delete section",
@@ -204,6 +227,8 @@
     href={conversationHref(row.id)}
     label={row.name}
     icon="hash"
+    emoji={row.emoji}
+    onicon={(anchor) => pickChannelEmoji(row, anchor)}
     selected={current === row.id}
     unread={rowUnread(row).unread}
     fresh={rowUnread(row).fresh}
@@ -323,7 +348,7 @@
         ondrop: (d) => (d.type === SECTION_DRAG_TYPE ? dropSection(d.id, section.id, d.after) : sidebarSections.move(d.id, section.id)),
       }}
     >
-      <SidebarSection id={section.id} label={section.name} folded={folded(section.id)} ontoggle={() => sidebarSections.toggle(section.id)} empty="Drag a channel or DM here." isEmpty={!rows.length}>
+      <SidebarSection id={section.id} label={section.name} emoji={section.emoji} onicon={(anchor) => pickSectionEmoji(section, anchor)} folded={folded(section.id)} ontoggle={() => sidebarSections.toggle(section.id)} empty="Drag a channel or DM here." isEmpty={!rows.length}>
         {#snippet actions()}{@render more(section.id, `${section.name} options`, () => sectionMenu(section.id))}{/snippet}
         {#each shown(rows, section.id) as row (row.id)}{@render slot(row, section.id, rows)}{/each}
       </SidebarSection>
@@ -364,6 +389,16 @@
 
 <Menu open={menu !== null} anchor={menu?.anchor} items={menu?.items ?? []} onclose={() => (menu = null)} />
 <SectionDialog {rowsOf} />
+<Popover bind:open={() => iconPick !== null, (on) => !on && (iconPick = null)} anchor={iconPick?.anchor} placement="bottom-start" label={iconPick?.label} padding={0} radius="row">
+  {#if iconPick}
+    {@const pick = iconPick}
+    <EmojiPicker
+      selected={(e) => e === pick.emoji}
+      onpick={(emoji) => (pick.set(emoji), (iconPick = null))}
+      onremove={pick.emoji ? () => (pick.set(null), (iconPick = null)) : undefined}
+    />
+  {/if}
+</Popover>
 <Picker
   bind:open={archivedOpen}
   anchor={archivedAnchor}

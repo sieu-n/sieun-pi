@@ -135,6 +135,8 @@ export interface ConversationSummary {
   agenda?: string;
   /** For a closed Solo room: when the owner closed it; the sidebar folds it under "Done". */
   closedAt?: Ms;
+  /** For a channel or Solo room: the emoji the owner picked as its icon. */
+  emoji?: string;
   /** The owner starred it, so the sidebar lists it under Starred (server/sidebar-prefs.ts). */
   starred?: true;
   /** The owner muted it: new posts make no bold and a DM shows no count, while a mention in a channel still counts. */
@@ -191,6 +193,8 @@ export interface CustomSection {
   name: string;
   collapsed: boolean;
   sort: SectionSort;
+  /** The emoji the owner picked, shown before the name. */
+  emoji?: string;
 }
 
 /** Everything the owner set about sidebar sections, which the server keeps in state.json under `sidebarLayout`. */
@@ -552,6 +556,8 @@ export interface PinRequest { pinned: boolean }
 export interface Room {
   id: RoomId; kind: "channel" | "solo"; name: string; agenda: string; homeChat?: string; createdAt: Ms; archived: boolean; closedAt?: Ms;
   members: Member[]; lastSeq: number;
+  /** The emoji the owner picked as the room's icon, which the sidebar and header show in place of its `#`. */
+  emoji?: string;
   /** A walk's throwaway room, which only `GET /api/rooms?test=1` lists. */
   test?: true;
 }
@@ -567,7 +573,11 @@ export interface RoomInput {
   test?: boolean;
 }
 /** `PATCH /api/rooms/:id`. `closed` closes or reopens a Solo room, and `test: true` makes a walk's room a test room for good, out of every owner list. */
-export interface RoomPatch { name?: string; agenda?: string; closed?: boolean; archived?: boolean; homeChat?: string | null; test?: true }
+export interface RoomPatch {
+  name?: string; agenda?: string; closed?: boolean; archived?: boolean; homeChat?: string | null; test?: true;
+  /** The room's icon: an emoji or its Slack name, or null to go back to `#`. */
+  emoji?: string | null;
+}
 
 /** `cwd` moves a root thread to another project folder; its next request runs there. */
 export interface ConversationPatch { name?: string; archived?: boolean; model?: string; thinkingLevel?: ThinkingLevel; cwd?: string }

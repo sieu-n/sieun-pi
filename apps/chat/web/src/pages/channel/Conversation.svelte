@@ -81,6 +81,8 @@
   /** A DM's agent works in its work thread, which `Open work thread` shows as today's transcript. */
   const workThread = $derived(header?.workThread ?? null);
   const name = $derived(summary?.name ?? "");
+  /** A channel's icon from the live row first, so a pick in the sidebar shows here at once. */
+  const emoji = $derived(listed ? listed.emoji : summary?.emoji);
   const agent = $derived(header?.agent ?? null);
   const dmAgent = $derived(agent?.id ?? listed?.agent ?? (id.startsWith("dm_") ? `ag_${id.slice(3)}` : undefined));
   const items = $derived(store.items);
@@ -527,7 +529,7 @@
   {#if isChannel && header}
     <h1 class="title t-label-sm" data-testid="conversation-title">
       <button type="button" class="title-button" aria-haspopup="dialog" title="Channel details" onclick={() => channelDetails.open(id)} data-testid="channel-title-button">
-        <span class="title-name">{name}</span><Icon name="chevron-down" size={12} />
+        {#if emoji}<span class="title-emoji" aria-hidden="true">{emoji}</span>{/if}<span class="title-name">{name}</span><Icon name="chevron-down" size={12} />
       </button>
     </h1>
   {:else if isDm && agent}
@@ -588,7 +590,7 @@
 {/snippet}
 
 <section class="conversation" class:slack={layout === "slack"} data-conversation={id} data-kind={kind}>
-  <PanelHeader icon={isChannel ? "hash" : isSolo ? "users" : kind === "solo" ? "chat" : isDm && agent ? undefined : "robot"} {titleContent} {actions} />
+  <PanelHeader icon={isChannel ? (emoji ? undefined : "hash") : isSolo ? "users" : kind === "solo" ? "chat" : isDm && agent ? undefined : "robot"} {titleContent} {actions} />
   {#if isSolo && header}
     <div class="solo-bar" data-testid="solo-agenda">
       <div class="agenda">
@@ -815,6 +817,12 @@
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  .title-emoji {
+    margin-right: 6px;
+    font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
+    font-size: 16px;
+    line-height: 1;
   }
   .host {
     display: inline-flex;
