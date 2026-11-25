@@ -213,12 +213,24 @@ export function errorCounts(rows: { messages: DmRow[]; devices: DeviceRow[] }, n
   const recent = rows.messages.filter(row => row.queue?.transport === "extension" && lastTouch(row) >= now - DAY);
   const maybeSent = recent.filter(row => row.status === "delivery_unknown");
   const restricted = recent.filter(row => row.errorCode === "send_restricted");
-  const unknown = rows.devices.filter(device => (device.updatedAt ?? 0) >= now - DAY)
+  const devices = rows.devices.filter(device => (device.updatedAt ?? 0) >= now - DAY);
+  const unknown = devices
     .flatMap(device => (device.unregistered ?? []).filter(entry => entry.reason === "unknown_username").map(entry => ({ device: device._id, org: device.orgId, ...entry })));
-  return { maybeSent, restricted, unknown };
+  return { recent, devices, maybeSent, restricted, unknown };
 }
 
-export function report(data: DutyData, dutyMetrics: readonly DutyMetric[]): PrecheckOutput {
+/**
+ * The sample size behind each metric (c249, #sw-factory-build p234): the test DM rows the run read back from staging for e2e_pass, 0 when
+ * no browser opened, the staging extension DM rows of 24 h for the two send counts, and the paired Chromes that reported in 24 h for
+ * unknown_username_24h. A met run on n 0 measured nothing (agent factory's sampleSize, apps/chat/scripts/duties/agent-boards.ts).
+ */
+export function sampleSizes(data: DutyData): Record<string, number> {
+  const counts = data.rows ? errorCounts(data.rows, data.now) : undefined;
+  const sent = data.e2e?.firstOutreach ? 1 : 0;
+  return { e2e_pass: sent, maybe_sent_24h: counts?.recent.length ?? 0, send_restricted_24h: counts?.recent.length ?? 0, unknown_username_24h: counts?.devices.length ?? 0 };
+}
+
+export function report(data: DutyData, dutyMetrics: readonly DutyMetric[]): PrecheckOutput & { n: Record<string, number> } {
   const at = data.now;
   const flagged: FlaggedSlice[] = [];
   const metrics: Record<string, number> = {};
@@ -275,7 +287,7 @@ export function report(data: DutyData, dutyMetrics: readonly DutyMetric[]): Prec
   }
   const replaced = settle(dutyMetrics, metrics, unmeasured);
   if (replaced.length) flagged.push(unmeasuredFlag(replaced, at, data.boxed?.length ? `${data.errors.length ? "Fix the source_error first. " : ""}${NO_PROXY}` : undefined));
-  return { metrics, flagged };
+  return { metrics, flagged, n: sampleSizes(data) };
 }
 
 // ---- I/O ----
@@ -569,7 +581,7 @@ async function main(): Promise<void> {
   const duty = JSON.parse(await readFile(DUTY_FILE, "utf8")) as { metrics: DutyMetric[]; precheck: { timeoutMs: number } };
   const result = report(await measure(Date.now(), duty.precheck.timeoutMs), duty.metrics);
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");
-  process.stdout.write(`dm-extension: ${Object.entries(result.metrics).map(([key, value]) => `${key}=${value}`).join(" ")}\n`);
+  process.stdout.write(`dm-extension: ${Object.entries(result.metrics).map(([key, value]) => `${key}=${value} (n ${result.n[key] ?? 0})`).join(" ")}\n`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) await main();

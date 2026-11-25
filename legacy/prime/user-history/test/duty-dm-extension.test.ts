@@ -108,6 +108,15 @@ test("24 h counts take extension rows of the last day by their last attempt", ()
   assert.deepEqual(counts.unknown.map(u => u.platformUserId), ["1"]);
 });
 
+test("n counts each metric's sample, and a run whose world never came up reads n 0 for e2e_pass (c249, 11-26)", () => {
+  const boxed = ["sender @temariyunori: the crawler holds its jar, browser-jar answered 409 proxy_required"];
+  const row: DmRow = { _id: "a", _creationTime: NOW - HOUR, status: "sent", orgId: "org", queue: { transport: "extension", lastAttemptAt: NOW - HOUR } };
+  const rows = { messages: [row], devices: [{ _id: "d1", orgId: "org", updatedAt: NOW - HOUR }], truncated: false };
+  assert.deepEqual(report({ now: NOW, boxed, rows, errors: [] }, METRICS).n, { e2e_pass: 0, maybe_sent_24h: 1, send_restricted_24h: 1, unknown_username_24h: 1 });
+  assert.deepEqual(report({ now: NOW, errors: [{ source: "staging rows", message: "convex data exited 1" }] }, METRICS).n, { e2e_pass: 0, maybe_sent_24h: 0, send_restricted_24h: 0, unknown_username_24h: 0 });
+  assert.equal(report({ now: NOW, autopair: AUTOPAIR, e2e: E2E, rows, errors: [] }, METRICS).n.e2e_pass, 1);
+});
+
 test("a jar with a null ig_user_id is named by its ds_user_id cookie, as on 10-31 for 206", () => {
   const jar = (ig_user_id: string | null, cookies: BrowserJar["cookies"]): BrowserJar => ({ world: "prod", username: "temariyunori", ig_user_id, cookies, user_agent: "ua", valid: true, proxy_url: "http://exit:1" });
   assert.equal(jarIgUserId(jar(null, [{ name: "csrftoken", value: "x" }, { name: "ds_user_id", value: "29063885913" }])), "29063885913");
