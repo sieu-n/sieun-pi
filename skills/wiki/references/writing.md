@@ -81,6 +81,8 @@ Every documentation page has these parts.
 | `explanation` | wants to know how parts fit and why    | intro, prose sections with a diagram per flow, links to tutorials and reference    |
 | `design`      | the owner, deciding                    | short prose that answers his questions in order, as "Plan, spec and status pages" says |
 
+A `reference` page that documents a tool, command, function or API shows for each entry one real call with its actual arguments and the output it returned on this box, trimmed with `...`, and never a description alone. On 2026-11-25 the owner asked this of the sw factory tool docs (#sw-factory-build p223, msg mww1x0do, c245): "actual args, examples 실제로 뽑아봐 how does it look like and whether there is inefficiencies. in documentation it's super important".
+
 A tutorial or how-to step works like this.
 
 1. Each step is one `<li>` in an `<ol>`, with a sentence or two on what to do and why, then the real command in `<pre><code>`, then what it printed or a screenshot.
