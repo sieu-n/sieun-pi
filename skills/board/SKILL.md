@@ -104,7 +104,7 @@ The chat brief keeps one line per rule and points here for the detail of one kin
 ## Plan and duties
 
 1. A plan step is a task that finishes. It comes from an owner request, has a "Done when" line, a live owner and a next action, and ends done or dropped.
-2. A duty is standing upkeep of something that breaks easily, runs on a heartbeat, and acts like the engineer who owns that system.
+2. A duty is standing upkeep of something that breaks easily, runs on a heartbeat, and acts like the engineer who owns that system. An owner ask to review, check, watch or monitor an area becomes a duty that reruns his ask daily (c66), and every agent with an area keeps at least one live duty on it (#dev-api-portal p25, p27).
 3. A title that says keep, stays, always, every ... is green, every ... reads clean or keeps working is upkeep, so it becomes a duty metric and never a plan step.
 4. A request with both parts gets one plan step for the fix and one duty metric for the keeping.
 5. A goal that reaches its done line closes, and its upkeep becomes a duty metric that puts a fix step back on the plan when it misses.

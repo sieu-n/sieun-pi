@@ -151,6 +151,20 @@ test("a work thread keeps its agent's llm-wiki pages current with its code in th
   }
 });
 
+test("an owner ask to review or watch an area becomes a daily duty that reruns it, and every area keeps a live duty (owner, #dev-api-portal p25, p27)", () => {
+  for (const agent of ["ag_vent", "ag_agent-factory"]) {
+    const text = workInstructions({ agent, comm: "c1" });
+    assert.match(text, /Your agent owns its area through duties, so every area the owner gave it has at least one live duty that keeps it\./);
+    assert.match(text, /When he asks you to review, check, watch or monitor an area, add a duty in that turn that reruns his ask each day[\s\S]*no `schedule`, so it runs daily \(c66\)/);
+    assert.ok(text.includes(`POST http://127.0.0.1:5184/api/agents/${agent}/duties`), "the duty route names the agent's own id");
+    assert.match(text, /update the duty that already covers the area instead of adding a second one/);
+    assert.match(text, /#dev-api-portal p25: "your duty is to keep watching and monitoring this\. think of duty as copy pasting this prompt every day\." and p27: "make sure all other agents are well behaved in terms of keeping their responsibilities"/);
+  }
+  for (const room of ["dm_vent", "ch_1a2b3c4d"]) {
+    assert.match(commInstructions({ agent: "ag_vent", room, work: "w1" }), /An ask to review, watch or monitor an area also becomes a duty, so your hand-over asks the work thread to add or update the duty that reruns it each day \(#dev-api-portal p25\)\./);
+  }
+});
+
 test("a group comm thread, like a DM one, ends every turn with no text, since the room shows only its posts (p128 trace, 11-21)", () => {
   const group = commInstructions({ agent: "ag_search-product-misc", room: "ch_4c388a00", work: "w1" });
   assert.match(group, /The room shows nothing else you write, so end every turn with no text, also after a post, a reaction or a hand-over, and never sum up[\s\S]*replaces the base prompt's "state your final answer": in this room your last message after your tool calls is empty/);

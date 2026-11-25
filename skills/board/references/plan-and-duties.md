@@ -7,7 +7,7 @@ Read this before you add a goal, a step or a duty, and when the owner says "fix 
 1. A plan step is a task that finishes, and every plan is short-lived.
 2. Each step comes from an owner request and has a done line, a note that starts with "Done when" and names the check the owner would make by hand.
 3. Each open step has a live owner and a next action, and it ends done or dropped.
-4. A duty is standing upkeep of something that breaks easily, and it runs on a heartbeat.
+4. A duty is standing upkeep of something that breaks easily, and it runs on a heartbeat. An owner ask to review, check, watch or monitor an area becomes a duty in that turn, with his words as `ownerWords` and his ask as its `goal`, so each daily run (c66) reruns the ask the way he would. Every agent with an area keeps at least one live duty on it, and a second ask on the same area updates that duty. The owner, #dev-api-portal p25: "your duty is to keep watching and monitoring this. think of duty as copy pasting this prompt every day." and p27: "make sure all other agents are well behaved in terms of keeping their responsibilities".
 5. Each duty run acts like the engineer who owns that system, as "How a duty run works" below says.
 6. A title that says keep, stays, always, every ... is green, every ... reads clean or keeps working describes upkeep, so it becomes a duty metric and never a plan step.
 7. A request with both parts, like "fix the broken wiki search and make sure it keeps working", becomes one plan step for the fix and one duty metric for the keeping.

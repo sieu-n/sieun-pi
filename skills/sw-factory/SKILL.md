@@ -42,6 +42,13 @@ When a change alters a tool's args or result, a route, a flow or a store that a 
 Each page under domains/devops/sw-factory/ lists the repo files it describes in a `code` field of its meta, and agent factory's duty "sw factory docs match the code" (`apps/chat/scripts/duties/docs-current.ts`) flags a page older than the newest commit to those files.
 [sw factory comm tools](wiki:domains/devops/sw-factory/reference/comm-tools.html) shows each room tool's real args and a real call from a thread, so a change to a tool updates its row there.
 
+## Agents own their area through duties
+
+Every agent with an area keeps at least one live duty that covers it, without being told. The owner, #dev-api-portal p25: "your duty is to keep watching and monitoring this. think of duty as copy pasting this prompt every day." and p27: "make sure all other agents are well behaved in terms of keeping their responsibilities".
+When the owner asks an agent to review, check, watch or monitor an area, its work thread adds a duty in that turn whose `ownerWords` are his words and whose `goal` is his ask, so each daily run (c66) reruns the ask.
+It sends the duty with `POST http://127.0.0.1:5184/api/agents/<agent id>/duties` and `{"action":"set","duty":{...}}` after a `GET` there, and a second ask on the same area updates that duty.
+The work role text in `packages/pi-host/src/durable/agent-profile.ts` says so, and the comm role text has the hand-over ask for it.
+
 ## How agents should write in a room
 
 A room reads like Slack, never like a chat assistant's report.
