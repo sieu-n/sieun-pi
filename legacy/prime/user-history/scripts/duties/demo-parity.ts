@@ -19,6 +19,8 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * The walk is a headful aside-browser walk that the duty's job runs and saves to WALK_FILE. This script never opens a browser. It hands the
  * job a `walk_due` item whenever the walk is older than WALK_DUE_MS or was taken on another pin, so each daily run reruns the owner's ask.
  * Run detail, not judged: commits_behind (apps/search and convex/ staging commits the pin lacks) and walk_age_h.
+ * The output's `n` names what each metric measured: pin_behind_h the staging lands on PIN_PATHS it read, and each walk metric the screens of
+ * the walk it read, 0 while the walk is missing or stale, so a met run on no walk does not read green (agent factory's d7, #sw-factory-build p234).
  */
 
 const run = promisify(execFile);
@@ -37,8 +39,8 @@ const ANSWER_TIMEOUT_MS = 30_000;
 
 export interface WalkProblem { env: string; step: string; what: string; shot?: string }
 export interface WalkDifference { screen: string; what: string; shot5180?: string; shotStaging?: string }
-/** What the duty job writes to WALK_FILE after each walk. */
-export interface ParityWalk { at: string; pin: string; staging: string; onboardingProblems: WalkProblem[]; shippedDifferences: WalkDifference[] }
+/** What the duty job writes to WALK_FILE after each walk; `screens` lists each screen it opened, one entry per env and screen. */
+export interface ParityWalk { at: string; pin: string; staging: string; screens: string[]; onboardingProblems: WalkProblem[]; shippedDifferences: WalkDifference[] }
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const text = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0;
@@ -46,26 +48,28 @@ const text = (value: unknown): value is string => typeof value === "string" && v
 /** The walk file's contents, or an error naming the first field that is wrong. */
 export function parseWalk(value: unknown): ParityWalk {
   if (!isRecord(value)) throw new Error("the walk file is not a JSON object");
-  const { at, pin, staging, onboardingProblems, shippedDifferences } = value;
+  const { at, pin, staging, screens, onboardingProblems, shippedDifferences } = value;
   if (!text(at) || Number.isNaN(Date.parse(at))) throw new Error("at: an ISO time");
   if (!text(pin) || !text(staging)) throw new Error("pin and staging: the shas 5180 and staging.virev.ai ran");
+  if (!Array.isArray(screens) || !screens.every(text)) throw new Error("screens: a list of the screens the walk opened, such as '5180-shipped onboarding/about-you'");
   if (!Array.isArray(onboardingProblems) || !onboardingProblems.every(item => isRecord(item) && text(item.env) && text(item.step) && text(item.what)))
     throw new Error("onboardingProblems: a list of { env, step, what, shot? }");
   if (!Array.isArray(shippedDifferences) || !shippedDifferences.every(item => isRecord(item) && text(item.screen) && text(item.what)))
     throw new Error("shippedDifferences: a list of { screen, what, shot5180?, shotStaging? }");
-  return { at, pin, staging, onboardingProblems: onboardingProblems as WalkProblem[], shippedDifferences: shippedDifferences as WalkDifference[] };
+  return { at, pin, staging, screens, onboardingProblems: onboardingProblems as WalkProblem[], shippedDifferences: shippedDifferences as WalkDifference[] };
 }
 
 /** The walk metrics and items for a walk read at `now` against the pin 5180 runs (`livePin`, a full sha). */
-export function walkReading(walk: ParityWalk | null, livePin: string, now: number): { metrics: Record<string, number>; flagged: FlaggedSlice[] } {
+export function walkReading(walk: ParityWalk | null, livePin: string, now: number): { metrics: Record<string, number>; n: Record<string, number>; flagged: FlaggedSlice[] } {
   if (!walk) {
-    return { metrics: { onboarding_problems: 1, shipped_differences: 1 }, flagged: [{ at: now, kind: "walk_due", handOff: true,
+    return { metrics: { onboarding_problems: 1, shipped_differences: 1 }, n: { onboarding_problems: 0, shipped_differences: 0 }, flagged: [{ at: now, kind: "walk_due", handOff: true,
       excerpt: `no parity walk saved at ${WALK_FILE} yet, so each walk metric reads 1; run the walk this duty's onMiss names and save it there` }] };
   }
   const age = now - Date.parse(walk.at);
   const stale = age > WALK_STALE_MS ? 1 : 0;
   const metrics = { onboarding_problems: walk.onboardingProblems.length + stale, shipped_differences: walk.shippedDifferences.length + stale,
     walk_age_h: Math.round(age / 360_000) / 10 };
+  const screens = stale ? 0 : walk.screens.length;
   const flagged: FlaggedSlice[] = [
     ...walk.onboardingProblems.map(item => ({ at: Date.parse(walk.at), kind: "onboarding_problem", excerpt: `${item.env}, ${item.step}: ${item.what}${item.shot ? ` (${item.shot})` : ""}` })),
     ...walk.shippedDifferences.map(item => ({ at: Date.parse(walk.at), kind: "shipped_difference", excerpt: `${item.screen}: ${item.what}` })),
@@ -76,7 +80,7 @@ export function walkReading(walk: ParityWalk | null, livePin: string, now: numbe
       .filter(Boolean).join(" and ");
     flagged.push({ at: now, kind: "walk_due", handOff: true, excerpt: `the last parity walk is ${why}; walk again and save it to ${WALK_FILE}` });
   }
-  return { metrics, flagged };
+  return { metrics, n: { onboarding_problems: screens, shipped_differences: screens }, flagged };
 }
 
 async function git(...args: string[]): Promise<string> {
@@ -101,7 +105,7 @@ async function livePin(now: number): Promise<{ pin: string; flagged: FlaggedSlic
 }
 
 /** How far the pin trails origin/staging on PIN_PATHS, from the Mac checkout's origin/staging, which its take-in fetches every 5 minutes. */
-async function pinLag(pin: string, now: number): Promise<{ metrics: Record<string, number>; flagged: FlaggedSlice[] }> {
+async function pinLag(pin: string, now: number): Promise<{ metrics: Record<string, number>; n: Record<string, number>; flagged: FlaggedSlice[] }> {
   const local = await git("rev-parse", "origin/staging");
   const remote = (await run("git", ["-C", REPO, "ls-remote", "origin", "refs/heads/staging"], { encoding: "utf8" })).stdout.split(/\s/)[0] ?? "";
   const flagged: FlaggedSlice[] = [];
@@ -117,7 +121,7 @@ async function pinLag(pin: string, now: number): Promise<{ metrics: Record<strin
     flagged.push({ at: now, kind: "pin_behind", excerpt: `5180's pin ${pin.slice(0, 10)} lacks ${missing.length} apps/search and convex staging ` +
       `commits up to ${local.slice(0, 10)}, the oldest landed ${hours} h ago` });
   }
-  return { metrics: { pin_behind_h: hours, commits_behind: missing.length }, flagged };
+  return { metrics: { pin_behind_h: hours, commits_behind: missing.length }, n: { pin_behind_h: missing.length }, flagged };
 }
 
 async function readWalk(): Promise<ParityWalk | null> {
@@ -130,7 +134,7 @@ if (isMain(import.meta.url)) {
   const live = await livePin(now);
   const lag = await pinLag(live.pin, now);
   const walk = walkReading(await readWalk(), live.pin, now);
-  const output: PrecheckOutput = { metrics: { ...lag.metrics, ...walk.metrics }, flagged: [...live.flagged, ...lag.flagged, ...walk.flagged] };
+  const output: PrecheckOutput = { metrics: { ...lag.metrics, ...walk.metrics }, n: { ...lag.n, ...walk.n }, flagged: [...live.flagged, ...lag.flagged, ...walk.flagged] };
   const json = JSON.stringify(output);
   if (process.env.OUTPUT_FILE) await writeFile(process.env.OUTPUT_FILE, json);
   else process.stdout.write(`${json}\n`);

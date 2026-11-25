@@ -73,6 +73,11 @@ export const overrunWords = (overrun: PrecheckOverrun): string =>
  */
 export interface PrecheckOutput { metrics: Record<string, number>; flagged?: FlaggedSlice[]; lastEventAt?: Record<string, number>;
   /**
+   * The count of things the run measured, or one count per metric key. A met run on n = 0 measured nothing, and agent factory's d7 flags a run
+   * whose output names no n (`sampleSize` in apps/chat/scripts/duties/agent-boards.ts, #sw-factory-build p234).
+   */
+  n?: number | Record<string, number>;
+  /**
    * The trailing window of each windowed count whose key names none (`countWindowMs`), in ms. Crawler VP's d9 throughput_goals_missed counts
    * the census writer's worst slot of 24 h, so without it d9 printed no clear time for the aging miss and no push read it when the slot left.
    */
