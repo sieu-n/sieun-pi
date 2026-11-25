@@ -4,7 +4,7 @@
  */
 import type {
   AgentConfig, AgentFolder, AgentHostList, AgentPrompt, AgentPromptOutline, AgentId, AgentSummary, BoardOp, BoardRow, BoardView, BoardWrite, CheckInPatch, CheckInView, ChatAgent, ConversationHeader, ConversationId,
-  ConversationPatch, ConversationSummary, DutyAction, DutyRow, ForMeItem, ForMeList, ForMeStatus, ForYouItem, HarnessEntryView, HostsReport, HostThreadFilter, ImageRef, Item, JobNode, Me, Member, MemoryInput, ModelCatalog, OpenedPage, ProjectList, SearchQuery, SearchResult, SendRequest, WikiPages,
+  AboutReport, ConversationPatch, ConversationSummary, DutyAction, DutyRow, ForMeItem, ForMeList, ForMeStatus, ForYouItem, HarnessEntryView, HostsReport, HostThreadFilter, ImageRef, Item, JobNode, Me, Member, MemoryInput, ModelCatalog, OpenedPage, ProjectList, SearchQuery, SearchResult, SendRequest, WikiPages,
   LaterItem, LaterList, LaterPatch, LaterRequest, LaterState, ReactionRequest, ReadAllRequest, ReadPoint, Room, RoomAfterRemove, RoomInput, RoomPatch, SendResult, Sidebar, StepOutputRef, ThinkingLevel, ThreadDoneRequest, TimelinePage, UsageBucket, UsageRange, UsageReport, UsageSplit, AccountsView,
 } from "./types.ts";
 import type {
@@ -714,6 +714,8 @@ export const reads = {
    */
   hosts: (opts: { box?: string; threads?: HostThreadFilter; tests?: boolean } = {}) =>
     read<HostsReport>(`/api/hosts${query({ box: opts.box, threads: opts.threads === "working" ? undefined : opts.threads, tests: opts.tests ? 1 : undefined })}`),
+  /** The About page: what each box runs (Pi, pi-host, apps/chat, Prime) and the newest Pi on npm. Kept, so a visit draws the last one at once. */
+  about: () => read<AboutReport>("/api/about"),
   /**
    * The account pool under the Usage page's chart, 3.8 KB with br. Kept, so a visit draws the last one at once and reads it again behind.
    * Read as his call on each visit and each minute's poll, it shared TCP's first window with the 26 KB usage report sent before it and

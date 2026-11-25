@@ -9,7 +9,7 @@ const settingsNav = (page: Page) => page.getByRole("navigation", { name: "Settin
 test("the Settings sidebar lists this browser's pages first and each opens at #/settings/<id>", async ({ page }) => {
   await page.goto("/#/settings/usage");
   const links = settingsNav(page).getByRole("link");
-  await expect(links).toHaveText(["Preferences", "Notifications", "Keyboard", "Usage", "Hosts", "Accounts", "Skills", "Consoles"]);
+  await expect(links).toHaveText(["Preferences", "Notifications", "Keyboard", "Usage", "Hosts", "Accounts", "Skills", "Consoles", "About"]);
   for (const [name, id] of [["Preferences", "preferences"], ["Notifications", "notifications"], ["Keyboard", "keyboard"]] as const) {
     await settingsNav(page).getByRole("link", { name }).click();
     await expect(page).toHaveURL(new RegExp(`#/settings/${id}$`));

@@ -8,6 +8,7 @@
   import NotificationsPage from "$pages/notifications/NotificationsPage.svelte";
   import KeyboardPage from "$pages/keyboard/KeyboardPage.svelte";
   import ConsolesPage from "$pages/consoles/ConsolesPage.svelte";
+  import AboutPage from "$pages/about/AboutPage.svelte";
   import { untrack } from "svelte";
   import { router } from "$lib/router.svelte";
   import { readSkillsAhead } from "$pages/skills/kept.svelte";
@@ -30,6 +31,8 @@
     <KeyboardPage />
   {:else if section === "consoles"}
     <ConsolesPage />
+  {:else if section === "about"}
+    <AboutPage />
   {:else if section === "accounts"}
     <AccountsPage />
   {:else if section === "skills" && router.route.rest[1] === "review"}
