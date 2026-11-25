@@ -109,7 +109,7 @@ test("24 h counts take extension rows of the last day by their last attempt", ()
 });
 
 test("n counts each metric's sample, and a run whose world never came up reads n 0 for e2e_pass (c249, 11-26)", () => {
-  const boxed = ["sender @temariyunori: the crawler holds its jar, browser-jar answered 409 proxy_required"];
+  const boxed = ["sender @temariyunori: the crawler serves no jar of it, browser-jar answered 404 not_found"];
   const row: DmRow = { _id: "a", _creationTime: NOW - HOUR, status: "sent", orgId: "org", queue: { transport: "extension", lastAttemptAt: NOW - HOUR } };
   const rows = { messages: [row], devices: [{ _id: "d1", orgId: "org", updatedAt: NOW - HOUR }], truncated: false };
   assert.deepEqual(report({ now: NOW, boxed, rows, errors: [] }, METRICS).n, { e2e_pass: 0, maybe_sent_24h: 1, send_restricted_24h: 1, unknown_username_24h: 1 });
@@ -169,14 +169,13 @@ test("jars writes each account as the crawler answers it, names its world and ex
   }
 });
 
-// Crawler 698493e50d (11-20): browser-jar answers 409 proxy_required (503 before 11-24) for an account on a box route instead of a box proxy.
-test("a 409 proxy_required from browser-jar reads as no residential exit with no jar file, and any other non-200 throws", async () => {
+// The crawler parks an account and browser-jar answers 404 not_found for it.
+test("a 404 not_found from browser-jar reads as no residential exit with no jar file, and any other non-200 throws", async () => {
   const tmp = await mkdtemp(join(tmpdir(), "dm-ext-held-"));
   const answers: Record<string, Response> = {
-    temariyunori: new Response(JSON.stringify({ error: "c229: engage route on server address 64.34.205.244 refused; it waits for a proxy", error_type: "proxy_required" }), { status: 409 }),
+    temariyunori: new Response(JSON.stringify({ ok: false, error: { code: "not_found", message: "neither world holds a serving jar of @temariyunori" } }), { status: 404 }),
     "kokomi.yua": new Response(JSON.stringify({ ok: true, data: { world: "prod", username: "kokomi.yua", ig_user_id: "2", cookies: [], user_agent: "ua", valid: true, proxy_url: "http://u:p@gw.example:12001" } })),
     down: new Response(JSON.stringify({ error: "supply down", error_type: "provider_down" }), { status: 503 }),
-    parked: new Response(JSON.stringify({ ok: false, error: { code: "not_found", message: "neither world holds a serving jar of @parked" } }), { status: 404 }),
     broken: new Response("oops", { status: 500 }),
   };
   const holds: Record<string, string | null> = {};
@@ -189,12 +188,11 @@ test("a 409 proxy_required from browser-jar reads as no residential exit with no
     const out = await jars(tmp, read);
     assert.deepEqual(holds, { temariyunori: "dm-extension-sender", "kokomi.yua": "dm-extension-replier" });
     assert.equal(out.files, undefined);
-    assert.deepEqual(out.boxed, ["sender @temariyunori: the crawler holds its jar, browser-jar answered 409 proxy_required (c229: engage route on server address 64.34.205.244 refused; it waits for a proxy)"]);
+    assert.equal(out.boxed.length, 1);
+    assert.match(out.boxed[0]!, /^sender @temariyunori: the crawler serves no jar of it, browser-jar answered 404 not_found/);
     const slices = report({ now: NOW, accounts: out.accounts, boxed: out.boxed, errors: [] }, METRICS).flagged ?? [];
-    assert.ok(slices.some(s => s.kind === "exit_down" && s.excerpt.startsWith("no residential exit: sender @temariyunori: the crawler holds its jar")));
+    assert.ok(slices.some(s => s.kind === "exit_down" && s.excerpt.startsWith("no residential exit: sender @temariyunori: the crawler serves no jar")));
     assert.ok(!slices.some(s => s.kind === "source_error"));
-    const parked = await read("parked");
-    assert.ok("held" in parked && /404 not_found \(parked/.test(parked.held));
     await assert.rejects(read("down"), /browser-jar @down answered 503/);
     await assert.rejects(read("broken"), /browser-jar @broken answered 500/);
   } finally {
@@ -252,7 +250,7 @@ test("a test account on a box exit reads exit_down with no residential exit and 
 });
 
 test("with no residential exit the unmeasured slice says the run waits on a paid proxy, not on a source_error (d1, 11-22)", () => {
-  const boxed = ["sender @temariyunori: the crawler holds its jar, browser-jar answered 409 proxy_required"];
+  const boxed = ["sender @temariyunori: the crawler serves no jar of it, browser-jar answered 404 not_found"];
   const rows = { messages: [], devices: [], truncated: false };
   const alone = report({ now: NOW, boxed, rows, errors: [] }, METRICS).flagged?.find(s => s.kind === "unmeasured")?.excerpt ?? "";
   assert.match(alone, /e2e_pass waits on a paid proxy/);
