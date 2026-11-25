@@ -35,8 +35,8 @@ interface Steps { open: number; stuck: Step[]; gaps: { id: string; text: string 
 interface CheckIn { everyMs: number; paused: boolean; lastAt: number | null; runs?: { at: number; verdict: string; summary: string }[] }
 /** A row of `GET /api/agents/:id/duties`, the fields this check reads. */
 export interface DutyRow {
-  duty: { id: string; name: string; status?: string }; paused: boolean;
-  runs: { verdict: string; at?: number; job?: { id: string }; readings?: Record<string, number>; metrics?: Record<string, { value?: number }> }[];
+  duty: { id: string; name: string; status?: string; ownerWords?: string; goal?: string }; paused: boolean;
+  runs: { verdict: string; at?: number; job?: { id: string }; readings?: Record<string, number>; metrics?: Record<string, { value?: number }>; detail?: string }[];
   schedule?: { kind: string; at?: string; minutes?: number }; nextAt?: number | null;
 }
 /** One entry of the areas file: the areas the owner made an agent responsible for, each with the duty that watches it, if any. */
@@ -68,14 +68,14 @@ export function liveDuty(row: DutyRow, now = Date.now()): boolean {
  * The agents that keep no live duty over their responsibilities: an agent with no live duty, and each area of the areas file whose duty is
  * missing or not live. Each uncovered agent gets one `uncovered_agent` flag that names it and its uncovered areas, so the duty job can tell it.
  */
-export function dutyCoverage(agents: readonly { agent: Agent; duties: readonly DutyRow[]; brief?: string }[], areas: readonly AgentAreas[] = [], now = Date.now()): { metrics: Record<string, number>; flagged: Flag[] } {
+export function dutyCoverage(agents: readonly { agent: Agent; duties: readonly DutyRow[]; brief?: string; asks?: readonly Ask[] }[], areas: readonly AgentAreas[] = [], now = Date.now()): { metrics: Record<string, number>; flagged: Flag[] } {
   const flagged: Flag[] = [];
   let uncoveredAgents = 0;
   let uncoveredAreas = 0;
   let noArea = 0;
   let paused = 0;
   let overdue = 0;
-  for (const { agent, duties, brief } of agents) {
+  for (const { agent, duties, brief, asks = [] } of agents) {
     for (const row of duties) {
       if (pausedDuty(row)) {
         paused += 1;
@@ -90,7 +90,7 @@ export function dutyCoverage(agents: readonly { agent: Agent; duties: readonly D
     const live = duties.filter(row => liveDuty(row, now));
     // An area whose source is "none found" is the file's placeholder for an agent no owner post gave an area, not an ask of his.
     const given = areas.filter(entry => entry.agent === agent.id || entry.agent === agent.name).flatMap(entry => entry.areas).filter(area => area.source?.trim().toLowerCase() !== "none found");
-    if (live.length === 0 && given.length === 0 && !brief?.trim()) {
+    if (live.length === 0 && given.length === 0 && !brief?.trim() && asks.length === 0) {
       noArea += 1;
       flagged.push({ kind: "no_area", sig: `${agent.id}/no-area`, item: agent.id, excerpt: `${agent.name} (${agent.id}) has no brief and no area from the owner, so it owns nothing to watch` });
       continue;
@@ -118,12 +118,86 @@ export const REVIEW_READINGS = ["wiki_pages_touched_24h", "memory_changed_24h"] 
 
 /** An agent's check-in: `everyMs` is its interval now (daily while its plan is empty), `planEveryMs` the interval it keeps for a plan. */
 export interface PushRead { everyMs: number; planEveryMs?: number; paused: boolean; lastAt: number | null; runs?: { at: number }[] }
-export interface AgentRead { agent: Agent; duties: readonly DutyRow[]; brief?: string; checkIn?: PushRead; stuck?: number; boardAt?: number | null }
+export interface AgentRead {
+  agent: Agent; duties: readonly DutyRow[]; brief?: string; checkIn?: PushRead; stuck?: number; boardAt?: number | null;
+  /** The owner's ongoing asks to the agent since its brief (`ongoingAsk`). */
+  asks?: readonly Ask[];
+  /** Per paused duty id, since when it is paused (the duty's `updatedAt` in its duties file) and the sentence that gives its reason, if any. */
+  pauses?: Readonly<Record<string, { since: number; reason?: string }>>;
+  /** Per duty id, the sample size its newest measured run's detail file names (`sampleSize`), or null when the file names none. */
+  samples?: Readonly<Record<string, number | null>>;
+}
+/** An owner post to an agent: `ref` is "#room pN", `ids` the Prime message ids its inputs carried, which an agent quotes as "msg <id>". */
+export interface Ask { ref: string; ids: readonly string[]; at: number; text: string }
+
+/**
+ * Words of an owner post that ask for ongoing care rather than one task (fable auditor's 11-26 audit; the owner's p25 "keep watching").
+ * A bare "keep" or "monitor" read 18 asks on 11-26, among them "keep it this way" and "cosmetics monitor 가 200$/m", so each word needs
+ * the verb form around it.
+ */
+export const ONGOING = new RegExp([
+  "\\bkeep (watching|monitoring|checking|tracking|advising|reviewing|an eye)\\b", "\\b(daily|every ?day|each day|every morning|every week|weekly)\\b",
+  "\\b(watch|monitor|review|track)(ing)? (this|it|that|the|them|our|all|every|each|for|over)\\b", "\\b(should|must) always\\b|\\balways be\\b",
+  "계속 ?(확인|관찰|감시|모니터|봐|지켜)", "매일", "관찰", "감시", "항상",
+].join("|"), "i");
+export const ongoingAsk = (text: string): boolean => ONGOING.test(text);
+const squash = (text: string): string => text.toLowerCase().replace(/\s+/g, " ").trim();
+
+/** Whether a duty names the ask: its message id, its "#room pN" ref or its first 40 characters, in the duty's name, owner words or goal. */
+export function askHeld(ask: Ask, duties: readonly DutyRow[]): boolean {
+  const [room, post] = ask.ref.replace(/^#/, "").split(" ");
+  const ref = new RegExp(`${room!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\W+${post}\\b`, "i");
+  const quote = squash(ask.text).slice(0, 40);
+  return duties.some(row => {
+    const text = [row.duty.name, row.duty.ownerWords ?? "", row.duty.goal ?? ""].join("\n");
+    return ask.ids.some(id => text.includes(id)) || ref.test(text) || (quote.length >= 20 && squash(text).includes(quote));
+  });
+}
+
+/** A pause reason that names a condition a run can recheck, such as "until the paid proxy is back". */
+export const PAUSE_CONDITION = /\b(until|till|while|once|when|after|unless)\b|까지/i;
+/**
+ * A pause to recheck: one older than a day whose reason names a condition, since the condition may hold by now (Crawler guy's d6, d8 and
+ * d9 stayed paused about 45 h after the paid proxy came back, fable auditor 11-26), else one older than 7 days.
+ */
+export function stalePause(pause: { since: number; reason?: string }, now: number): boolean {
+  return now - pause.since > (pause.reason && PAUSE_CONDITION.test(pause.reason) ? DAY_MS : 7 * DAY_MS);
+}
+
+/**
+ * The sample size a run's detail file names: its `n`, or the smallest value of an `n` object per metric. A met run on 0 samples measured
+ * nothing, as mcp's d1 read 100% success on 6 of 7 days with no customer call (fable auditor 11-26). Null when the detail names no `n`.
+ */
+export function sampleSize(detail: unknown): number | null {
+  const n = (detail as { n?: unknown } | null)?.n;
+  if (typeof n === "number" && Number.isFinite(n)) return n;
+  if (n && typeof n === "object") {
+    const values = Object.values(n).filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+    if (values.length) return Math.min(...values);
+  }
+  return null;
+}
+
+/**
+ * The misses of earlier d7 runs at least a day old that the current run still flags, with no job of their agent at work since: the sig of
+ * each, so a miss counts once however many runs flagged it. `jobsAt` holds, per agent, the times its jobs and duty jobs last worked.
+ */
+export function unfixedMisses(earlier: readonly { at: number; flagged: readonly Flag[] }[], current: readonly Flag[], jobsAt: ReadonlyMap<string, readonly number[]>, now: number): Flag[] {
+  const firstSeen = new Map<string, number>();
+  for (const run of earlier) {
+    if (now - run.at < DAY_MS) continue;
+    for (const flag of run.flagged) if (flag.item?.startsWith("ag_") && (firstSeen.get(flag.sig) ?? Infinity) > run.at) firstSeen.set(flag.sig, run.at);
+  }
+  return current.filter(flag => {
+    const since = firstSeen.get(flag.sig);
+    return since !== undefined && !(jobsAt.get(flag.item!) ?? []).some(at => at > since);
+  });
+}
 /** A nudge for the work thread's relay, in the shape of ~/work/agent-duties/messages.json. */
 export interface Nudge { agent: string; name: string; workThreadId: string | null; text: string }
 
 /** Flag kinds that mean the agent itself has to act, each named in its nudge. */
-const NUDGE_KINDS = new Set(["uncovered_agent", "duty_paused", "duty_overdue", "common_missing", "common_late", "empty_run"]);
+const NUDGE_KINDS = new Set(["uncovered_agent", "duty_paused", "duty_overdue", "common_missing", "common_late", "empty_run", "ask_unheld", "pause_stale", "met_on_zero", "no_sample_size"]);
 
 /**
  * Agent factory's meta check of c249: every live agent with an area keeps a 3-hourly board push (its check-in) and a daily "Area review"
@@ -138,9 +212,35 @@ export function agentPattern(agents: readonly AgentRead[], areas: readonly Agent
   let missing = 0;
   let late = 0;
   let empty = 0;
-  for (const { agent, duties, checkIn, stuck = 0, boardAt } of agents) {
-    if (noArea.has(agent.id) || !checkIn) continue;
+  let unheld = 0;
+  let stale = 0;
+  let zero = 0;
+  let noN = 0;
+  for (const { agent, duties, checkIn, stuck = 0, boardAt, asks = [], pauses = {}, samples = {} } of agents) {
+    if (noArea.has(agent.id)) continue;
     const flag = (kind: string, key: string, excerpt: string) => flagged.push({ kind, sig: `${agent.id}/${key}`, item: agent.id, excerpt: `${agent.name}: ${excerpt}` });
+    for (const ask of asks) {
+      if (askHeld(ask, duties)) continue;
+      unheld += 1;
+      flag("ask_unheld", `ask/${ask.ref}`, `the owner's ongoing ask ${ask.ref}${ask.ids[0] ? ` (msg ${ask.ids.at(-1)})` : ""}, "${squash(ask.text).slice(0, 140)}", is named by no duty`);
+    }
+    for (const row of duties) {
+      const pause = pauses[row.duty.id];
+      if (pausedDuty(row) && pause && stalePause(pause, now)) {
+        stale += 1;
+        flag("pause_stale", `${row.duty.id}/pause`, `${row.duty.id} "${row.duty.name}" has been paused ${Math.round((now - pause.since) / 3_600_000)} h${pause.reason ? ` for "${pause.reason.slice(0, 120)}"; check whether that still holds` : " with no reason on record; recheck it"}`);
+      }
+      if (pausedDuty(row) || !(row.duty.id in samples)) continue;
+      const n = samples[row.duty.id];
+      if (n === null) {
+        noN += 1;
+        flag("no_sample_size", `${row.duty.id}/n`, `${row.duty.id} "${row.duty.name}" writes no sample size n in its precheck output, so a met run on no input looks green`);
+      } else if (n === 0 && row.runs.find(run => run.verdict !== "skipped")?.verdict === "met") {
+        zero += 1;
+        flag("met_on_zero", `${row.duty.id}/n0`, `${row.duty.id} "${row.duty.name}" read met on n = 0, so it measured nothing`);
+      }
+    }
+    if (!checkIn) continue;
     const pushMs = checkIn.planEveryMs ?? checkIn.everyMs;
     if (checkIn.paused || pushMs > PUSH_MAX_MS) {
       missing += 1;
@@ -184,6 +284,7 @@ export function agentPattern(agents: readonly AgentRead[], areas: readonly Agent
   return {
     metrics: {
       agents_off_pattern: messages.length, common_duties_missing: missing, common_duties_late: late, empty_runs: empty, ...coverage.metrics,
+      asks_unheld: unheld, pauses_stale: stale, met_on_zero: zero, runs_without_n: noN,
       duties_stopped: coverage.metrics.duties_paused! + coverage.metrics.duties_overdue!,
     },
     flagged, messages,
@@ -301,6 +402,50 @@ export function agentBoards(agents: readonly { agent: Agent; steps: Steps; check
   return { metrics: { stuck_steps_all: stuck, goal_gaps_all: gaps, checkins_late: late, open_steps_all: open }, flagged };
 }
 
+/** An agent's board as GET /board returns it, the fields `pauseReason` reads. */
+interface BoardRead { updatedAt?: string; plan?: { text?: string; note?: string; children?: unknown[] }[]; todos?: { text?: string; note?: string }[] }
+
+/** A JSON file, or undefined when it is absent or not JSON. */
+function readJson<T = unknown>(file: string): T | undefined {
+  try { return JSON.parse(readFileSync(file, "utf8")) as T; } catch { return undefined; }
+}
+
+/** The first sentence of the agent's board or the duty's goal that names the pause and the duty, by its id or name. */
+export function pauseReason(row: DutyRow, board: BoardRead | undefined): string | undefined {
+  const texts: string[] = [];
+  const walk = (steps: readonly { text?: string; note?: string; children?: unknown[] }[] = []) => {
+    for (const step of steps) {
+      texts.push(step.text ?? "", step.note ?? "");
+      walk(step.children as typeof steps | undefined);
+    }
+  };
+  walk(board?.plan);
+  for (const todo of board?.todos ?? []) texts.push(todo.text ?? "", todo.note ?? "");
+  texts.push(row.duty.goal ?? "");
+  const id = new RegExp(`\\b${row.duty.id}\\b`);
+  for (const sentence of texts.flatMap(text => text.split(/(?<=[.!?])\s+/))) {
+    if (/paus/i.test(sentence) && (id.test(sentence) || sentence.includes(row.duty.name))) return sentence.trim();
+  }
+  return undefined;
+}
+
+/** The owner's ongoing asks to an agent since `since`: his DM posts and the group posts that tag it, or reach it untagged as a member. */
+export function asksTo(store: { rooms: { rooms: readonly unknown[] }; postsOf(room: string): readonly unknown[] }, agent: Agent, since: number): Ask[] {
+  const asks: Ask[] = [];
+  for (const room of store.rooms.rooms as { id: string; kind: string; agent?: string; name?: string; test?: true; archived: boolean; members?: { agent: string; wakeOn: string }[] }[]) {
+    if (room.test || room.archived) continue;
+    const dm = room.kind === "dm";
+    if (dm ? room.agent !== agent.id : !room.members?.some(member => member.agent === agent.id)) continue;
+    for (const post of store.postsOf(room.id) as { id: string; author: string; text?: string; at: number; deletedAt?: number; mentions?: string[]; inputs?: { at: number }[] }[]) {
+      if (post.author !== "owner" || post.deletedAt !== undefined || post.at <= since || !ongoingAsk(post.text ?? "")) continue;
+      const tagged = (post.mentions ?? []).filter(id => id !== "owner");
+      if (!dm && tagged.length && !tagged.includes(agent.id)) continue;
+      asks.push({ ref: `${dm ? room.id : `#${room.name ?? room.id}`} ${post.id}`, ids: (post.inputs ?? []).map(input => input.at.toString(36)), at: post.at, text: post.text ?? "" });
+    }
+  }
+  return asks;
+}
+
 async function get<T>(server: string, path: string): Promise<T> {
   const res = await fetch(`${server}${path}`);
   if (!res.ok) throw new Error(`GET ${path} answered ${res.status}`);
@@ -310,7 +455,7 @@ async function get<T>(server: string, path: string): Promise<T> {
 if (import.meta.url === `file://${process.argv[1]}`) {
   // `--part boards` (the default, d5 "Agent boards") reads steps and check-ins; `--part duties` (agent factory's "Agents keep their duties")
   // reads each agent's duties, brief and areas.
-  const { values } = parseArgs({ options: { server: { type: "string" }, areas: { type: "string" }, part: { type: "string" }, wiki: { type: "string" } } });
+  const { values } = parseArgs({ options: { server: { type: "string" }, areas: { type: "string" }, part: { type: "string" }, wiki: { type: "string" }, "data-dir": { type: "string" } } });
   const part = values.part ?? "boards";
   if (part !== "boards" && part !== "duties") throw new Error(`--part ${part} is neither boards nor duties`);
   const server = values.server ?? process.env.APPS_CHAT_URL ?? "http://127.0.0.1:5184";
@@ -321,22 +466,52 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       agent, steps: await get<Steps>(server, `/api/agents/${agent.id}/steps`), checkIn: await get<CheckIn>(server, `/api/agents/${agent.id}/check-in`),
     }))), Date.now()), null, 1)
     : JSON.stringify(await (async () => {
-      const pattern = agentPattern(await Promise.all(agents.map(async agent => {
-        const board = (await get<{ board?: { updatedAt?: string } }>(server, `/api/agents/${agent.id}/board`)).board;
+      const now = Date.now();
+      const dataDir = values["data-dir"] ?? process.env.APPS_CHAT_DATA_DIR ?? join(homedir(), ".pi/agent/chat");
+      const { AgentStore } = await import("../../server/agent-store.ts");
+      const store = new AgentStore(dataDir);
+      const reads = await Promise.all(agents.map(async agent => {
+        const [board, duties, folder, checkIn, steps, jobs] = await Promise.all([
+          get<{ board?: BoardRead }>(server, `/api/agents/${agent.id}/board`).then(answer => answer.board),
+          get<{ duties: DutyRow[] }>(server, `/api/agents/${agent.id}/duties`).then(answer => answer.duties),
+          get<{ brief?: { text?: string; modifiedAt?: number | null } }>(server, `/api/agents/${agent.id}/folder`),
+          get<PushRead>(server, `/api/agents/${agent.id}/check-in`),
+          get<Steps>(server, `/api/agents/${agent.id}/steps`),
+          get<{ agents: { lastActivityAt?: string }[] }>(server, `/api/agents/${agent.id}/agents`).then(answer => answer.agents),
+        ]);
+        const stored = readJson<{ duties?: { id: string; updatedAt?: number }[] }>(join(dataDir, "agents", agent.id, "duties.json"))?.duties ?? [];
+        const pauses = Object.fromEntries(duties.filter(pausedDuty).map(row => [row.duty.id, {
+          since: stored.find(duty => duty.id === row.duty.id)?.updatedAt ?? now, ...pauseReason(row, board) ? { reason: pauseReason(row, board)! } : {},
+        }]));
+        const samples: Record<string, number | null> = {};
+        for (const row of duties) {
+          const detail = row.runs.find(run => run.verdict !== "skipped")?.detail;
+          if (detail && existsSync(detail)) samples[row.duty.id] = sampleSize(readJson(detail));
+        }
+        const jobsAt = [...jobs.flatMap(job => job.lastActivityAt ? [Date.parse(job.lastActivityAt)] : []), ...duties.flatMap(row => row.runs.flatMap(run => run.job && run.at ? [run.at] : []))];
         return {
-          agent, duties: (await get<{ duties: DutyRow[] }>(server, `/api/agents/${agent.id}/duties`)).duties,
-          brief: (await get<{ brief?: { text?: string } }>(server, `/api/agents/${agent.id}/folder`)).brief?.text ?? "",
-          checkIn: await get<PushRead>(server, `/api/agents/${agent.id}/check-in`),
-          stuck: (await get<Steps>(server, `/api/agents/${agent.id}/steps`)).stuck.length,
-          boardAt: board?.updatedAt ? Date.parse(board.updatedAt) : null,
+          read: {
+            agent, duties, brief: folder.brief?.text ?? "", checkIn, stuck: steps.stuck.length, boardAt: board?.updatedAt ? Date.parse(board.updatedAt) : null,
+            asks: asksTo(store, agent, folder.brief?.text?.trim() ? folder.brief.modifiedAt ?? 0 : 0), pauses, samples,
+          } satisfies AgentRead,
+          jobsAt,
         };
-      })), readAreas(areasFile), Date.now());
+      }));
+      const pattern = agentPattern(reads.map(entry => entry.read), readAreas(areasFile), now);
       // Every agent that is not archived keeps its folder, an away one too; GET /api/agents lists no test agent.
       const live = (await get<Agent[]>(server, "/api/agents")).filter(agent => !agent.archived);
       const slugs = new Set(await Promise.all(live.map(async agent => basename((await get<{ dir?: string }>(server, `/api/agents/${agent.id}/folder`)).dir ?? agent.id.replace(/^ag_/, "")))));
       const wiki = readWiki(values.wiki ?? process.env.WIKI_CONFIG ?? join(homedir(), ".config/sieun-pi/wiki.json"));
       const clutter = wikiClutter(wiki.agentFolders, slugs, wiki.pages);
-      return { metrics: { ...pattern.metrics, ...clutter.metrics }, flagged: [...pattern.flagged, ...clutter.flagged], messages: pattern.messages, areasFile: existsSync(areasFile) ? areasFile : null };
+      // This duty's own earlier runs, read back from their detail files, for the misses no job took up in a day.
+      const own = (await get<{ duties: DutyRow[] }>(server, "/api/agents/ag_agent-factory/duties")).duties.find(row => row.duty.name === "Agents keep their duties");
+      const earlier = (own?.runs ?? []).flatMap(run => run.detail && run.at && existsSync(run.detail) ? [{ at: run.at, flagged: readJson<{ flagged?: Flag[] }>(run.detail)?.flagged ?? [] }] : []);
+      const unfixed = unfixedMisses(earlier, pattern.flagged, new Map(reads.map(entry => [entry.read.agent.id, entry.jobsAt])), now);
+      const flagged = [...pattern.flagged, ...clutter.flagged, ...unfixed.map(flag => ({ ...flag, kind: "miss_unfixed_24h", sig: `unfixed/${flag.sig}`, excerpt: `${flag.excerpt} (flagged over a day ago, and no job of the agent worked since)` }))];
+      return {
+        metrics: { ...pattern.metrics, ...clutter.metrics, misses_unfixed_24h: unfixed.length }, n: agents.length, flagged, messages: pattern.messages,
+        areasFile: existsSync(areasFile) ? areasFile : null,
+      };
     })(), null, 1);
   if (process.env.OUTPUT_FILE) writeFileSync(process.env.OUTPUT_FILE, json);
   else console.log(json);
