@@ -16,6 +16,7 @@ import type { ForMeItem, ForMeList, ForMeStatus, Principal } from "../../../../a
 import { threadAgent } from "./agent-profile.ts";
 import { roundEndsTurn } from "./turn-end.ts";
 import type { ChatApp } from "./chat-app.ts";
+import { MESSAGE_ID } from "./later.ts";
 
 export const LIST_FOR_ME_TOOL = "list_for_me_messages";
 export const MARK_MESSAGE_TOOL = "mark_message";
@@ -147,7 +148,7 @@ export function forMeTools(app: ChatApp, thread: string) {
       name: MARK_MESSAGE_TOOL,
       description: MARK_MESSAGE_DESCRIPTION,
       parameters: Type.Object({
-        message_id: Type.String({ description: "The item's message id from list_for_me_messages, such as ch_1a2b3c4d/p12 or dm_vent/p41." }),
+        message_id: MESSAGE_ID,
         completed: Type.Boolean({ description: "true marks it completed, false marks it pending again." }),
       }),
       // The server's mark is idempotent, so a rerun after a crash leaves the same mark.

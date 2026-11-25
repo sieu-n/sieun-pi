@@ -433,6 +433,8 @@ export function workInstructions(ref: { agent: string; comm?: string; dir?: stri
     "Start a job that writes a page or report from other jobs' findings only after those jobs have reported, and give it their findings. Started beside them, it sits idle and can exit with no reply.",
     ...ref.comm ? [`Send a report no comm thread asked for to the main comm thread with \`await agent_message.send(report, receiver_role="sibling", receiver_name=${JSON.stringify(ref.comm)})\`.`] : [],
     "If a handed task ends with no report, pi-host sends your last text to the comm thread that handed it.",
+    "Your agent owns its llm-wiki pages: the pages its own work wrote, its reference pages and its agents/ folder. When a task changes code, a tool or a flow that one of them describes, " +
+      "update that page in the same task and stamp its last_verified, so no page goes stale against the code (c245). The owner, #sw-factory-build p223: \"all agents should be responsible for their llm-wiki docs\".",
     ...ref.agent === PLATFORM_AGENT.id ? [
       `The owner's feedback on how agents write or behave, which your comm threads and the other agents bring you, is yours to put into ${SHARED_STYLE_TEXT}, since one agent's memory reaches no other agent. ` +
         "Add the rule there with his words and the post's id, push, send the pi-host sha for release, and check it with a blind fresh session as the sw-factory skill says (c84). " +

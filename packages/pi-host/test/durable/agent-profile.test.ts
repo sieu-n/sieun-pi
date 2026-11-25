@@ -143,6 +143,14 @@ test("owner feedback on how agents write reaches every agent: others bring it to
   assert.doesNotMatch(workInstructions({ agent: "ag_vent", comm: "c-1" }), /sw-factory skill/);
 });
 
+test("a work thread keeps its agent's llm-wiki pages current with its code in the same task (owner, #sw-factory-build p223, c245)", () => {
+  for (const agent of ["ag_vent", "ag_agent-factory"]) {
+    const text = workInstructions({ agent, comm: "c1" });
+    assert.match(text, /Your agent owns its llm-wiki pages[\s\S]*update that page in the same task and stamp its last_verified[\s\S]*\(c245\)/);
+    assert.match(text, /#sw-factory-build p223: "all agents should be responsible for their llm-wiki docs"/);
+  }
+});
+
 test("a group comm thread, like a DM one, ends every turn with no text, since the room shows only its posts (p128 trace, 11-21)", () => {
   const group = commInstructions({ agent: "ag_search-product-misc", room: "ch_4c388a00", work: "w1" });
   assert.match(group, /The room shows nothing else you write, so end every turn with no text, also after a post, a reaction or a hand-over, and never sum up[\s\S]*replaces the base prompt's "state your final answer": in this room your last message after your tool calls is empty/);

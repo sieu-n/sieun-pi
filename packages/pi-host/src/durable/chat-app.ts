@@ -110,6 +110,12 @@ export class ChatApp {
     return { text: typeof body?.text === "string" ? body.text : `Saved ${change.message}.` };
   }
 
+  /** One post and its thread as this thread's agent reads it (`GET /api/threads/:id/post`), for the read_post tool. */
+  async readPost(thread: string, message: string, signal?: AbortSignal): Promise<{ text: string }> {
+    const body = await this.call<{ text?: unknown }>("GET", this.thread(thread, `post?message=${encodeURIComponent(message)}`), undefined, signal);
+    return { text: typeof body?.text === "string" ? body.text : `No text came back for ${message}.` };
+  }
+
   /** This thread's agent's Later list with `state`, written as the agent reads it (`GET /api/threads/:id/later`). */
   async laterList(thread: string, state: "open" | "done", signal?: AbortSignal): Promise<{ text: string }> {
     const body = await this.call<{ text?: unknown }>("GET", this.thread(thread, `later?state=${state}`), undefined, signal);

@@ -33,9 +33,10 @@ export const LIST_SAVED_DESCRIPTION =
   "List the messages on your Saved list, with each one's room, author, when you saved it, its reminder, your memo and its text. Open lists what is " +
   "still to do, the default, and done lists what you marked done.";
 
-const MESSAGE_ID = Type.String({
-  description: "The message: a room-qualified id such as dm_vent/p7 or ch_1a2b3c4d/p12, a post id such as p12 from a room post's header, " +
-    "or the [message id: ...] value after an owner message.",
+/** The one message id every room tool that names a post takes: set_emoji, mark_message, save_message, remind_me and read_post (c245). */
+export const MESSAGE_ID = Type.String({
+  description: "The message: a room-qualified id such as dm_vent/p7 or ch_1a2b3c4d/p12, a post id such as p12 from a room post's header " +
+    "in this room, or the [message id: ...] value after an owner message.",
 });
 
 /** The body `POST /api/threads/:thread/later` takes: the post, and what to set on the item for it. */

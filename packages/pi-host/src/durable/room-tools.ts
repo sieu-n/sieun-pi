@@ -18,14 +18,16 @@
  * An edit with hand-over words is refused and one with progress words is held once (comm-guard.ts `relayEdit`).
  *
  * `list_for_me_messages` and `mark_message` (`for-me.ts`) read the agent's For list and mark its items, and `save_message`, `remind_me` and
- * `list_saved_messages` (`later.ts`) keep its Later list, and `search_messages` (`search-messages.ts`) runs the owner's Cmd K search with his filters.
+ * `list_saved_messages` (`later.ts`) keep its Later list, `read_post` (`read-post.ts`) reads one post and its thread by id, and
+ * `search_messages` (`search-messages.ts`) runs the owner's Cmd K search with his filters. Every tool that names a post takes later.ts's `MESSAGE_ID`.
  */
 import { Type } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool, ROOT_CONVERSATION_ID, type Extension } from "@earendil-works/pi-durable";
 import type { ChatApp } from "./chat-app.ts";
 import { crammedEdit, relayEdit } from "./comm-guard.ts";
 import { closingControl, forMeTools } from "./for-me.ts";
-import { laterTools } from "./later.ts";
+import { laterTools, MESSAGE_ID } from "./later.ts";
+import { readPostTools } from "./read-post.ts";
 import { searchTools } from "./search-messages.ts";
 import { roomMemberTools } from "./room-members.ts";
 
@@ -66,10 +68,7 @@ export function roomTools(app: ChatApp, thread: string): Extension {
         name: SET_EMOJI_TOOL,
         description: SET_EMOJI_DESCRIPTION,
         parameters: Type.Object({
-          message_id: Type.String({
-            description: "The message: a room-qualified id such as dm_vent/p7 or ch_1a2b3c4d/p12, a post id such as p12 from a room post's header " +
-              "or a room read, or the [message id: ...] value after an owner message.",
-          }),
+          message_id: MESSAGE_ID,
           emoji: Type.String({ description: "The emoji's Slack name, such as eyes, +1 or pray, or the emoji itself." }),
           on: Type.Boolean({ description: "true adds your reaction, false removes it." }),
         }),
@@ -118,6 +117,7 @@ export function roomTools(app: ChatApp, thread: string): Extension {
       ...roomMemberTools(app, thread),
       ...forMeTools(app, thread),
       ...laterTools(app, thread),
+      ...readPostTools(app, thread),
       ...searchTools(app),
     ],
   });
