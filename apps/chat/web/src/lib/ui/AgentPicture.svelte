@@ -12,7 +12,7 @@
     class?: string;
   };
   let { seed, name, size = 64, label, class: className = "" }: Props = $props();
-  const svg = $derived(pictureSvg(pictureStyle.value, seed, name ?? seed));
+  const svg = $derived(pictureSvg(pictureStyle.value, seed, name ?? seed, pictureStyle.assigned.get(seed)));
 </script>
 
 <span class="picture {className}" style:width="{size}px" style:height="{size}px" role={label ? "img" : undefined} aria-label={label}>

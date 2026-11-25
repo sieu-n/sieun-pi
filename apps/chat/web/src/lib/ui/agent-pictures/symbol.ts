@@ -58,13 +58,33 @@ const SYMBOLS = {
     `<path d="M16 5 L26 10.5 V21.5 L16 27 L6 21.5 V10.5 Z" fill="${ink}"/>`
     + line(bg, "M6.5 10.8 L16 16 L25.5 10.8 M16 16 V26.5", 1.8),
   bolt: ({ ink }) => `<path d="M18.5 5 L8.5 18 H15 L13 27 L23.5 13.5 H17 Z" fill="${ink}"/>`,
+  megaphone: ({ ink }) =>
+    `<path d="M6 13 H11 L23 6.5 V25.5 L11 19 H6 Z" fill="${ink}"/>`
+    + `<path d="M10 19 H15 L16.5 26 H12.5 Z" fill="${ink}"/>` + line(ink, "M26.5 13 V19", 2.6),
+  database: ({ ink, bg }) =>
+    `<path d="M7 9.5 Q7 5.5 16 5.5 Q25 5.5 25 9.5 V22.5 Q25 26.5 16 26.5 Q7 26.5 7 22.5 Z" fill="${ink}"/>`
+    + line(bg, "M7.5 11 Q16 15.5 24.5 11 M7.5 16.5 Q16 21 24.5 16.5", 1.8),
+  target: ({ ink, bg }) =>
+    `<circle cx="16" cy="16" r="10.5" fill="${ink}"/><circle cx="16" cy="16" r="7" fill="${bg}"/><circle cx="16" cy="16" r="3.6" fill="${ink}"/>`,
+  globe: ({ ink, bg }) =>
+    `<circle cx="16" cy="16" r="10.5" fill="${ink}"/>`
+    + `<ellipse cx="16" cy="16" rx="4.4" ry="10" fill="none" stroke="${bg}" stroke-width="1.8"/>` + line(bg, "M6 16 H26", 1.8),
+  key: ({ ink, bg }) =>
+    `<circle cx="11" cy="16" r="6" fill="${ink}"/><circle cx="9.8" cy="16" r="2.2" fill="${bg}"/>`
+    + line(ink, "M15 16 H26.5", 3.4) + line(ink, "M22 16 V21 M26 16 V20", 3),
+  gear: ({ ink, bg }) =>
+    [0, 45, 90, 135].map((turn) => `<rect x="13.6" y="5" width="4.8" height="22" rx="1.2" fill="${ink}" transform="rotate(${turn} 16 16)"/>`).join("")
+    + `<circle cx="16" cy="16" r="7.8" fill="${ink}"/><circle cx="16" cy="16" r="3.2" fill="${bg}"/>`,
+  compass: ({ ink, bg }) =>
+    `<circle cx="16" cy="16" r="10.5" fill="${ink}"/>`
+    + `<path d="M21.5 10.5 L17.8 17.8 L10.5 21.5 L14.2 14.2 Z" fill="${bg}"/><circle cx="16" cy="16" r="1.6" fill="${ink}"/>`,
   rocket: ({ ink, bg }) =>
     `<path d="M16 5 Q22 9.5 21 19 H11 Q10 9.5 16 5 Z" fill="${ink}"/>`
     + `<path d="M11 14 L7 20 V23 L11.5 20.5 Z M21 14 L25 20 V23 L20.5 20.5 Z" fill="${ink}"/>`
     + `<circle cx="16" cy="12.5" r="2.2" fill="${bg}"/>` + line(ink, "M16 21.5 V26.5", 3),
 } satisfies Record<string, Draw>;
 
-type SymbolName = keyof typeof SYMBOLS;
+export type SymbolName = keyof typeof SYMBOLS;
 
 /** Role keywords in priority order; the first that appears as a whole word in the name wins, so "product analytics bot" draws bars. */
 const ROLES: readonly [RegExp, SymbolName][] = [
@@ -85,14 +105,29 @@ const ROLES: readonly [RegExp, SymbolName][] = [
   [/\b(probe|experiments?|lab|tests?)\b/i, "flask"],
   [/\b(designer|design|ui|icons?|iconic|avatars?)\b/i, "nib"],
   [/\b(products?|package|shop)\b/i, "box"],
+  [/\b(gtm|sales|marketing|outreach|ads?)\b/i, "megaphone"],
+  [/\b(crm|data|database|db|sql)\b/i, "database"],
+  [/\b(goals?|strategy|plans?|okrs?)\b/i, "target"],
+  [/\b(web|global|i18n|sites?)\b/i, "globe"],
+  [/\b(auth|security|secrets?|keys?)\b/i, "key"],
+  [/\b(build|config|settings|harness|automation)\b/i, "gear"],
+  [/\b(explore|research|guide|scout)\b/i, "compass"],
   [/\b(launch|growth|ship)\b/i, "rocket"],
   [/\b(fast|speed|perf|quick)\b/i, "bolt"],
 ];
 
 const NAMES = Object.keys(SYMBOLS) as SymbolName[];
 
-/** A bold flat symbol for the agent's role, read from its name; a name with no role word gets a seeded symbol from the same set. */
-export const symbol: DrawStyle = ({ name, swatch, pick }) => {
-  const role = ROLES.find(([pattern]) => pattern.test(name))?.[1] ?? NAMES[pick(NAMES.length)]!;
-  return SYMBOLS[role](swatch);
-};
+/**
+ * Every symbol in the order an agent would take it: the role words its name matches, in ROLES order, then the rest of the set from a
+ * point the seed picks. assignPictures gives each agent the first one no older agent holds.
+ */
+export function symbolChoices(name: string, seed: number): SymbolName[] {
+  const roles = ROLES.filter(([pattern]) => pattern.test(name)).map(([, role]) => role);
+  const start = seed % NAMES.length;
+  const rest = NAMES.map((_, i) => NAMES[(start + i) % NAMES.length]!);
+  return [...new Set([...roles, ...rest])];
+}
+
+/** A bold flat symbol for the agent's role, read from its name, or the one assignPictures gave it so no two agents share one. */
+export const symbol: DrawStyle = ({ name, swatch, seedHash, assigned }) => SYMBOLS[assigned?.symbol ?? symbolChoices(name, seedHash)[0]!](swatch);

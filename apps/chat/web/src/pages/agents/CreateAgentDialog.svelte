@@ -75,7 +75,7 @@
     }
   });
   const options = $derived(modelOptions(catalog));
-  const preview = $derived(pictureSvg(pictureStyle.value, name.trim() || "New agent"));
+  const preview = $derived(pictureSvg(pictureStyle.value, name.trim() || "New agent", name.trim() || "New agent", pictureStyle.preview(name.trim() || "New agent")));
 
   function reset() {
     name = "";

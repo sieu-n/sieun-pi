@@ -1,10 +1,18 @@
-import { DEFAULT_PICTURE_STYLE, isPictureStyle, type PictureStyle } from "./agent-picture";
+import { agents } from "$lib/api";
+import { DEFAULT_PICTURE_STYLE, assignPictures, isPictureStyle, type Assignment, type PictureStyle } from "./agent-picture";
 
 /** The agent picture style this browser shows. `?avatars=<style>` in the page URL shows a style for one load without saving it. */
 const KEY = "chat.agentPicture";
 
 class PictureStyleSetting {
   value = $state<PictureStyle>(read());
+  /** Each registered agent's own color and symbol, keyed by agent id. */
+  readonly assigned = $derived(assignPictures(agents.list));
+
+  /** The color and symbol a new agent with this name would get, for the create dialog's preview. */
+  preview(name: string): Assignment | undefined {
+    return assignPictures([...agents.list, { id: "new", name, createdAt: Number.MAX_SAFE_INTEGER }]).get("new");
+  }
 
   set(style: PictureStyle): void {
     this.value = style;

@@ -4,7 +4,7 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { PICTURE_STYLES, SWATCHES, pictureSvg } from "../../web/src/lib/ui/agent-picture.ts";
+import { PICTURE_STYLES, SWATCHES, assignPictures, pictureSvg } from "../../web/src/lib/ui/agent-picture.ts";
 
 const AGENTS = [
   ["ag_devops-guy", "devops guy"],
@@ -56,4 +56,53 @@ test("agents get different pictures in every style", () => {
     const drawn = new Set(AGENTS.map(([id, name]) => pictureSvg(style, id, name)));
     assert.equal(drawn.size, AGENTS.length, style);
   }
+});
+
+/** The registered agents on 11-25, oldest first, from GET :5184/api/agents. */
+const LIVE = [
+  { id: "ag_vent", name: "vent", createdAt: 1793149210493 },
+  { id: "ag_agent-factory", name: "agent factory", createdAt: 1793201124976 },
+  { id: "ag_feature-probe", name: "feature probe", createdAt: 1793277669909 },
+  { id: "ag_gpt-guy", name: "gpt guy", createdAt: 1793279904347 },
+  { id: "ag_chrome-extension", name: "chrome extension", createdAt: 1793288872046 },
+  { id: "ag_mcp", name: "mcp", createdAt: 1793288873681 },
+  { id: "ag_seo", name: "seo", createdAt: 1793288874479 },
+  { id: "ag_search-product-misc", name: "Search product, misc.", createdAt: 1793290499285 },
+  { id: "ag_knowledge-manager-make-llm-wiki-info-and", name: "knowledge manager (make llm-wiki info and, skills always up to date)", createdAt: 1795157087065 },
+  { id: "ag_api-portal", name: "API portal", createdAt: 1795289557572 },
+  { id: "ag_fable-auditor", name: "fable auditor", createdAt: 1795299242161 },
+  { id: "ag_contact-finder", name: "contact finder", createdAt: 1795303337684 },
+  { id: "ag_crawler-guy", name: "Crawler guy", createdAt: 1795463138204 },
+  { id: "ag_devops-guy", name: "devops guy", createdAt: 1795475262748 },
+  { id: "ag_product-analytics-bot", name: "product analytics bot", createdAt: 1795475620675 },
+  { id: "ag_5180-designer", name: "5180 designer", createdAt: 1795605425464 },
+  { id: "ag_crm-developer-vp", name: "CRM developer VP", createdAt: 1795605761967 },
+  { id: "ag_vp-of-gtm", name: "VP of GTM", createdAt: 1795605884180 },
+];
+
+test("every current agent gets its own color and its own symbol", () => {
+  const assigned = assignPictures(LIVE);
+  assert.equal(assigned.size, LIVE.length);
+  const colors = new Set([...assigned.values()].map((a) => a.swatch.bg));
+  const symbols = new Set([...assigned.values()].map((a) => a.symbol));
+  assert.equal(colors.size, LIVE.length);
+  assert.equal(symbols.size, LIVE.length);
+  assert.equal(assigned.get("ag_vp-of-gtm")?.symbol, "megaphone");
+  assert.equal(assigned.get("ag_crm-developer-vp")?.symbol, "database");
+  assert.equal(assigned.get("ag_crawler-guy")?.symbol, "spider");
+});
+
+test("a new agent leaves every older agent's color and symbol as they were", () => {
+  const before = assignPictures(LIVE);
+  const after = assignPictures([...LIVE, { id: "ag_new-crawler", name: "crawler two", createdAt: Date.now() }]);
+  for (const agent of LIVE) assert.deepEqual(after.get(agent.id), before.get(agent.id), agent.name);
+  const added = after.get("ag_new-crawler")!;
+  assert.ok(![...before.values()].some((a) => a.swatch.bg === added.swatch.bg || a.symbol === added.symbol));
+});
+
+test("the symbol style draws the assigned symbol and color", () => {
+  const assigned = assignPictures(LIVE).get("ag_vp-of-gtm")!;
+  const svg = pictureSvg("symbol", "ag_vp-of-gtm", "VP of GTM", assigned);
+  assert.ok(svg.includes(`fill="${assigned.swatch.bg}"`));
+  assert.notEqual(svg, pictureSvg("symbol", "ag_vp-of-gtm", "VP of GTM"));
 });

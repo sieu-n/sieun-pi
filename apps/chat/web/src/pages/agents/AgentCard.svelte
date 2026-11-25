@@ -22,7 +22,7 @@
   };
   let { agent, catalog, focusable, selected = false, now, onopen, onmenu, onmodel, onfocus, element = $bindable(), jobs = null }: Props = $props();
 
-  const art = $derived(pictureSvg(pictureStyle.value, agent.id, agent.name));
+  const art = $derived(pictureSvg(pictureStyle.value, agent.id, agent.name, pictureStyle.assigned.get(agent.id)));
   const backdrop = $derived(`url("data:image/svg+xml;utf8,${encodeURIComponent(art)}")`);
   const current = $derived(agent.model ? modelKey(agent.model) : "");
   const options = $derived.by(() => {

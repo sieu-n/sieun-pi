@@ -24,7 +24,8 @@
 
   const key = $derived(seed ?? name);
   const hue = $derived(hueFor(key));
-  const tint = $derived(pictureSwatch(key).bg);
+  const assigned = $derived(pictureStyle.assigned.get(key));
+  const tint = $derived((assigned?.swatch ?? pictureSwatch(key)).bg);
   const radius = $derived(kind === "person" ? "50%" : `${Math.round(size * 0.32)}px`);
   const dot = $derived(Math.max(6, Math.round(size * 0.28)));
 </script>
@@ -46,7 +47,7 @@
   {:else if kind === "person"}
     <span class="initials" style:font-size="{Math.max(9, Math.round(size * 0.4))}px">{initials(name)}</span>
   {:else}
-    <span class="figure" {@attach (figure) => figure.replaceChildren(pictureNode(pictureStyle.value, key, name))}></span>
+    <span class="figure" {@attach (figure) => figure.replaceChildren(pictureNode(pictureStyle.value, key, name, assigned))}></span>
     {#if !decorative}<span class="sr-only">{name}</span>{/if}
   {/if}
   {#if status}
