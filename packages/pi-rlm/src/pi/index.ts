@@ -295,7 +295,7 @@ class RlmSession {
     if (!path || !kernel?.alive || kernel.busy) return;
     let timer: NodeJS.Timeout | undefined;
     await Promise.race([
-      kernel.snapshot(path, join(this.artifactDir, "kernel-state.json"), SNAPSHOT_LIMITS).catch(() => undefined),
+      kernel.snapshot(path, join(this.artifactDir, "kernel-state.json"), { ...SNAPSHOT_LIMITS, maxSeconds: timeoutMs / 1000 }).catch(() => undefined),
       new Promise(r => (timer = setTimeout(r, timeoutMs))),
     ]);
     clearTimeout(timer);

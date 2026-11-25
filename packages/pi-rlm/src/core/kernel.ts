@@ -467,7 +467,12 @@ export class Kernel {
     return out;
   }
 
-  async snapshot(path: string, manifestPath: string, limits: { maxBytes?: number; maxVariableBytes?: number; pruneOversized?: boolean } = {}): Promise<SnapshotResult> {
+  /** `maxSeconds` is the caller's wait: the kernel skips the names it has not pickled by then, with a note, instead of saving on after it. */
+  async snapshot(
+    path: string,
+    manifestPath: string,
+    limits: { maxBytes?: number; maxVariableBytes?: number; pruneOversized?: boolean; maxSeconds?: number } = {},
+  ): Promise<SnapshotResult> {
     await this.ready;
     mkdirSync(dirname(path), { recursive: true });
     const done = await this.request({
@@ -477,6 +482,7 @@ export class Kernel {
       ...(limits.maxBytes !== undefined ? { max_bytes: limits.maxBytes } : {}),
       ...(limits.maxVariableBytes !== undefined ? { max_variable_bytes: limits.maxVariableBytes } : {}),
       ...(limits.pruneOversized ? { prune_oversized: true } : {}),
+      ...(limits.maxSeconds !== undefined ? { max_seconds: limits.maxSeconds } : {}),
     });
     return {
       status: done.status,

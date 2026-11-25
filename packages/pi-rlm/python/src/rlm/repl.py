@@ -676,12 +676,14 @@ class _SnapshotSizeLimitExceeded(Exception):
 
 
 class _CappedWriter:
-    def __init__(self, sink: Any, limit: int) -> None:
+    def __init__(self, sink: Any, limit: int, deadline: float | None = None) -> None:
         self._sink = sink
         self._limit = limit
+        self._deadline = deadline
         self.written = 0
 
     def write(self, chunk: Any) -> int:
+        _check_deadline(self._deadline)
         size = len(chunk)
         if self.written + size > self._limit:
             raise _SnapshotSizeLimitExceeded()
@@ -864,6 +866,75 @@ def _defuse_unsafe_handle_loads(dill: Any, defused: list[str]) -> Callable[[], N
     return undo
 
 
+class _SnapshotTimeExceeded(Exception):
+    pass
+
+
+def _check_deadline(deadline: float | None) -> None:
+    if deadline is not None and time.monotonic() > deadline:
+        raise _SnapshotTimeExceeded()
+
+
+def _walk_globals_once(dill: Any, deadline: float | None) -> Callable[[], None]:
+    """Swap dill.detect.globalvars, which save_function calls under recurse, for a walk that visits each function once
+    and never enters a function dill pickles by reference; returns the undo.
+
+    dill's own walk re-enters every function a global names, imported ones included, with no visited set. A user helper
+    that calls `bash` walked all of rlm.bash's mutually calling functions until RecursionError, about 12 to 18 s of CPU
+    per helper, and pi-host sent one snapshot per settled input, so 2 devops guy kernels sat at 100% CPU for 20 min
+    on 11-25 (kernel-save-loop). An imported function's globals never go into the pickle, so its walk found nothing
+    the save needs."""
+    detect = dill.detect
+    locate = dill._dill._locate_function
+    original = detect.globalvars
+
+    def walk(func: Any, recurse: bool = True, builtin: bool = False, seen: set[int] | None = None) -> dict[str, Any]:
+        if not recurse:
+            return original(func, recurse, builtin)
+        _check_deadline(deadline)
+        seen = set() if seen is None else seen
+        if detect.ismethod(func):
+            func = func.__func__
+        if detect.isfunction(func):
+            seen.add(id(func))
+            globs = vars(detect.getmodule(sum)).copy() if builtin else {}
+            names: set[str] = set()
+            for cell in func.__closure__ or ():
+                try:
+                    contents = cell.cell_contents
+                except ValueError:  # an empty cell
+                    continue
+                found = nested(contents, builtin, seen)
+                names.update(found)
+                globs.update(found)
+            globs.update(func.__globals__ or {})
+            names.update(detect.nestedglobals(func.__code__))
+        elif detect.iscode(func):
+            seen.add(id(func))
+            globs = vars(detect.getmodule(sum)).copy() if builtin else {}
+            names = set(detect.nestedglobals(func))
+        else:
+            return {}
+        for key in list(names):
+            names.update(nested(globs.get(key), builtin, seen))
+        return {name: globs[name] for name in names if name in globs}
+
+    def nested(value: Any, builtin: bool, seen: set[int]) -> dict[str, Any]:
+        if value is None or id(value) in seen:
+            return {}
+        target = value.__func__ if detect.ismethod(value) else value
+        if detect.isfunction(target) and locate(target):
+            return {}
+        return walk(value, True, builtin, seen)
+
+    detect.globalvars = walk
+
+    def undo() -> None:
+        detect.globalvars = original
+
+    return undo
+
+
 def _seek_lazy_blob(src: Any, offset: int) -> None:
     if _file_identity(os.fstat(src.fileno())) != _lazy_source["identity"]:
         raise ValueError("the snapshot file changed since it was restored")
@@ -930,6 +1001,7 @@ def _snapshot_state(
     max_variable_bytes: int,
     prune_oversized: bool,
     committed: list[dict[str, Any]] | None = None,
+    max_seconds: float | None = None,
 ) -> dict[str, Any]:
     import datetime
     import tempfile
@@ -976,7 +1048,10 @@ def _snapshot_state(
     parked: list[int] = []
     handler_installed = False
     previous = None
+    # The caller's wait: past it nobody reads the result, so the names still left are skipped, never pickled late.
+    deadline = None if max_seconds is None else time.monotonic() + max_seconds
     undo_handle_guard = _refuse_unsafe_handle_dumps(dill)
+    undo_walk = _walk_globals_once(dill, deadline)
     try:
         try:
             if max_bytes < len(_SNAPSHOT_MAGIC):
@@ -1007,10 +1082,17 @@ def _snapshot_state(
                         # A revived handle reopens its target, and a write mode truncates it (prime-agent#3447).
                         skipped.append({"name": name, "reason": "open file handle"})
                         continue
+                    timed_out = {"name": name, "reason": f"the save passed its {max_seconds} s bound"}
+                    if deadline is not None and time.monotonic() > deadline:
+                        skipped.append(timed_out)
+                        continue
                     buffer = io.BytesIO()
                     try:
-                        dill.dump(value, _CappedWriter(buffer, limit))
+                        dill.dump(value, _CappedWriter(buffer, limit, deadline))
                         blob = buffer.getvalue()
+                    except _SnapshotTimeExceeded:
+                        skipped.append(timed_out)
+                        continue
                     except _UnsafeFileHandle as err:
                         skipped.append({"name": name, "reason": f"open file handle: {err}"})
                         continue
@@ -1126,6 +1208,7 @@ def _snapshot_state(
         if committed is not None:
             committed.append(result)
     finally:
+        undo_walk()
         undo_handle_guard()
         # The one guaranteed cleanup point (unique owned names: after a successful
         # commit the renamed temps no longer exist, so this is a no-op). It runs with
@@ -1152,6 +1235,7 @@ def _revive_with_live_globals(
     """Rebind restored __main__ callables onto the live namespace, collecting
     names their saved globals carry but ns lacks as backfill for the caller
     to apply at commit (live ns values always win)."""
+    import builtins
     import functools
 
     if memo is None:
@@ -1211,6 +1295,10 @@ def _revive_with_live_globals(
         for name, dep in value.__globals__.items():
             # Snapshots never save _-prefixed or skip-listed names; backfill must not smuggle them past that policy.
             if name in ns or name.startswith("_") or name in _ALWAYS_SKIP or name in _RESTORE_SKIP:
+                continue
+            # dill saves the builtins a function reads among its globals; written into ns, every later save and
+            # revive carried print, str and len as user names (devops guy's kernels on 11-25).
+            if getattr(builtins, name, _NOT_LAZY) is dep:
                 continue
             backfill.append((name, revive(dep)))
     if value.__defaults__:
@@ -1323,6 +1411,17 @@ def _restore_state(
     return result
 
 
+# (payload, manifest) realpaths -> (_cell_counter, file identities, result) of the last snapshot written there.
+_last_save: dict[tuple[str, str], tuple[int, Any, dict[str, Any]]] = {}
+
+
+def _save_identity(key: tuple[str, str]) -> Any:
+    try:
+        return tuple(_file_identity(os.stat(path)) for path in key)
+    except OSError:
+        return None
+
+
 async def _handle_state(req: dict[str, Any], ns: dict[str, Any]) -> None:
     """Run snapshot/restore as an interruptible task and reply in the done event."""
     import asyncio
@@ -1342,10 +1441,18 @@ async def _handle_state(req: dict[str, Any], ns: dict[str, Any]) -> None:
                     isinstance(req[field], bool) or not isinstance(req[field], int) or req[field] < 0
                 ):
                     return {"error": f"{field} must be a non-negative integer"}
+            max_seconds = req.get("max_seconds")
+            if max_seconds is not None and (isinstance(max_seconds, bool) or not isinstance(max_seconds, (int, float)) or max_seconds <= 0):
+                return {"error": "max_seconds must be a positive number"}
             # realpath resolves symlinks, so aliased paths cannot silently clobber the payload.
             if os.path.realpath(req["path"]) == os.path.realpath(req["manifest_path"]):
                 return {"error": "path and manifest_path must differ"}
-            return _snapshot_state(
+            key = (os.path.realpath(req["path"]), os.path.realpath(req["manifest_path"]))
+            last = _last_save.get(key)
+            if last is not None and last[0] == _cell_counter and last[1] == _save_identity(key):
+                # No cell ran since this pair was written, so the namespace is what it holds: say so, never save again.
+                return {**last[2], "unchanged": True}
+            result = _snapshot_state(
                 ns,
                 req["path"],
                 req["manifest_path"],
@@ -1353,7 +1460,12 @@ async def _handle_state(req: dict[str, Any], ns: dict[str, Any]) -> None:
                 req.get("max_variable_bytes", DEFAULT_SNAPSHOT_MAX_VARIABLE_BYTES),
                 prune,
                 committed,
+                max_seconds,
             )
+            if "error" not in result:
+                _last_save[key] = (_cell_counter, _save_identity(key), result)
+            return result
+        _last_save.clear()
         return _restore_state(ns, req["path"], committed)
 
     assert _loop is not None

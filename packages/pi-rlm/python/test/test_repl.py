@@ -1760,6 +1760,109 @@ class ReplTest(unittest.TestCase):
             self.assertEqual(done["reason"], "snapshot not found")
 
 
+class SnapshotSaveLoopTest(unittest.TestCase):
+    """11-25: devops guy's kernels spent 12 to 34 s of CPU per helper that called bash, on every save."""
+
+    def setUp(self) -> None:
+        self.repl = ReplProcess()
+        self.addCleanup(self.repl.close)
+        self.repl.ready()
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.tmp, ignore_errors=True))
+        self.path = os.path.join(self.tmp, "kernel-state.dill")
+        self.manifest = os.path.join(self.tmp, "kernel-state.json")
+
+    def snapshot(self, repl: ReplProcess, rid: str, **extra) -> dict:
+        repl.send({"type": "snapshot", "id": rid, "path": self.path, "manifest_path": self.manifest, **extra})
+        return one(repl.until_done(rid), "done")
+
+    def run_ok(self, repl: ReplProcess, rid: str, code: str) -> list[dict]:
+        events = repl.execute(rid, code)
+        self.assertEqual(one(events, "done")["status"], "ok", events)
+        return events
+
+    def test_a_helper_that_calls_bash_saves_at_once(self):
+        # The old walk entered every rlm.bash function bash() reaches and ended in RecursionError after seconds of CPU.
+        self.run_ok(self.repl, "c1", "\n".join([
+            "from rlm import bash",
+            "import shlex",
+            "async def ch(sql):",
+            "    r = await bash('echo ' + shlex.quote(sql))",
+            "    return r.output",
+            "def show(x):",
+            "    print(len(str(x)))",
+        ]))
+        started = time.monotonic()
+        done = self.snapshot(self.repl, "s1")
+        elapsed = time.monotonic() - started
+        self.assertEqual(done["status"], "ok", done)
+        self.assertEqual(done["skipped"], [])
+        self.assertEqual(sorted(done["saved"]), ["ch", "shlex", "show"])
+        self.assertLess(elapsed, 5)
+
+    def test_a_helper_that_reaches_mutually_calling_guard_functions_saves(self):
+        # pi-host's kernel guard wraps subprocess and os with functions from an exec'd namespace, which no import finds,
+        # so dill walks them, and they call each other: the old walk never stopped and every save ended in RecursionError.
+        self.run_ok(self.repl, "c1", "\n".join([
+            "guard = {'__name__': 'kernel_guard_like'}",
+            "exec('def check(n):\\n    return n and wrap(n - 1)\\ndef wrap(n):\\n    return check(n)', guard)",
+            "wrap = guard['wrap']",
+            "def ch(n):",
+            "    return wrap(n)",
+        ]))
+        done = self.snapshot(self.repl, "s1")
+        self.assertEqual(done["status"], "ok", done)
+        self.assertEqual([s["name"] for s in done["skipped"]], [])
+        self.assertIn("ch", done["saved"])
+
+    def test_revive_writes_no_builtins_into_globals(self):
+        self.run_ok(self.repl, "c1", "def show(x):\n    print(len(str(x)))\n    return sorted([x])")
+        self.assertEqual(self.snapshot(self.repl, "s1")["status"], "ok")
+        fresh = ReplProcess()
+        self.addCleanup(fresh.close)
+        fresh.ready()
+        fresh.send({"type": "restore", "id": "r1", "path": self.path})
+        self.assertEqual(one(fresh.until_done("r1"), "done")["status"], "ok")
+        events = self.run_ok(fresh, "c2", "show(3)\nsorted(n for n in globals() if not n.startswith('_'))")
+        self.assertEqual(one(events, "result")["text"], "['show']")
+        done = self.snapshot(fresh, "s2")
+        self.assertEqual(done["saved"], ["show"])
+
+    def test_a_second_save_with_no_cell_between_is_unchanged(self):
+        self.run_ok(self.repl, "c1", "x = 1")
+        first = self.snapshot(self.repl, "s1")
+        self.assertNotIn("unchanged", first)
+        stamp = os.stat(self.path).st_mtime_ns
+        second = self.snapshot(self.repl, "s2")
+        self.assertTrue(second["unchanged"])
+        self.assertEqual(second["saved"], ["x"])
+        self.assertEqual(os.stat(self.path).st_mtime_ns, stamp)
+        self.run_ok(self.repl, "c2", "y = 2")
+        third = self.snapshot(self.repl, "s3")
+        self.assertNotIn("unchanged", third)
+        self.assertEqual(third["saved"], ["x", "y"])
+
+    def test_names_past_max_seconds_are_skipped_with_a_note(self):
+        self.run_ok(self.repl, "c1", "\n".join([
+            "import time",
+            "class Slow:",
+            "    def __reduce__(self):",
+            "        time.sleep(1.5)",
+            "        return (int, ())",
+            "a = Slow()",
+            "b = Slow()",
+            "c = 3",
+        ]))
+        started = time.monotonic()
+        done = self.snapshot(self.repl, "s1", max_seconds=1)
+        self.assertLess(time.monotonic() - started, 3)
+        self.assertEqual(done["status"], "ok", done)
+        self.assertEqual({s["name"]: s["reason"] for s in done["skipped"]},
+                         {"a": "the save passed its 1 s bound", "b": "the save passed its 1 s bound",
+                          "c": "the save passed its 1 s bound"})
+        self.assertEqual(self.snapshot(self.repl, "s2", max_seconds=0)["status"], "error")
+
+
 class FinishRequestTest(unittest.TestCase):
     """In-process checks of the parked-interrupt bookkeeping on request finish."""
 

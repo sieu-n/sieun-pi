@@ -544,7 +544,8 @@ export class DurableRlm {
     if (!kernel?.alive || kernel.busy || slot.call) return;
     let timer: NodeJS.Timeout | undefined;
     await Promise.race([
-      kernel.snapshot(slot.snapshotPath, join(slot.artifactDir, "kernel-state.json"), SNAPSHOT_LIMITS).catch(() => undefined),
+      // The kernel stops pickling at this wait too, so a slow save never runs on behind the next cell (11-25, kernel-save-loop).
+      kernel.snapshot(slot.snapshotPath, join(slot.artifactDir, "kernel-state.json"), { ...SNAPSHOT_LIMITS, maxSeconds: timeoutMs / 1000 }).catch(() => undefined),
       new Promise(resolve => (timer = setTimeout(resolve, timeoutMs))),
     ]);
     clearTimeout(timer);
