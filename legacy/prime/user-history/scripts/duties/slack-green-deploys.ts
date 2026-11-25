@@ -194,14 +194,16 @@ export const KOMODO_CORE = "https://us-metal01.tail0c093d.ts.net:12443";
 export const WORKER_STACK = { stack: "slack-green", service: "slack-green-worker" } as const;
 const AUTO_SNS = join(homedir(), "Documents/Github/auto-sns-agent");
 
-/** The slack-green-ci key, decrypted from auto-sns-agent's prod infra tier apps/infra/.env, which variables.mjs also reads. */
+/** One value of auto-sns-agent's prod infra tier apps/infra/.env, which variables.mjs reads to set the Komodo Variables of Stack slack-green. */
+export async function infraSecret(name: string, run: Exec = exec): Promise<string> {
+  const value = (await run(join(AUTO_SNS, "node_modules/.bin/dotenvx"), ["get", name, "-f", join(AUTO_SNS, "apps/infra/.env")], { cwd: AUTO_SNS })).trim();
+  if (!value || value.startsWith("encrypted:")) throw new Error(`${name} did not decrypt from auto-sns-agent apps/infra/.env`);
+  return value;
+}
+
+/** The slack-green-ci key. */
 export async function komodoLogin(run: Exec = exec): Promise<KomodoLogin> {
-  const get = async (name: string) => {
-    const value = (await run(join(AUTO_SNS, "node_modules/.bin/dotenvx"), ["get", name, "-f", join(AUTO_SNS, "apps/infra/.env")], { cwd: AUTO_SNS })).trim();
-    if (!value || value.startsWith("encrypted:")) throw new Error(`${name} did not decrypt from auto-sns-agent apps/infra/.env`);
-    return value;
-  };
-  return { key: await get("SLACK_GREEN_KOMODO_API_KEY"), secret: await get("SLACK_GREEN_KOMODO_API_SECRET") };
+  return { key: await infraSecret("SLACK_GREEN_KOMODO_API_KEY", run), secret: await infraSecret("SLACK_GREEN_KOMODO_API_SECRET", run) };
 }
 
 export interface KomodoDeps { fetch: typeof fetch; komodo: () => Promise<KomodoLogin> }

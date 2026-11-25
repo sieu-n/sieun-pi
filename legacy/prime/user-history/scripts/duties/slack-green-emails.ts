@@ -1,20 +1,21 @@
 import { realpathSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { readFile, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { type FlaggedSlice, type PrecheckOutput, PRECHECK_TARGET_MS } from "../../src/shared/chat-duties.ts";
 import { parseEnv } from "./local-dev-uptime.ts";
+import { infraSecret } from "./slack-green-deploys.ts";
 
 /**
  * The slack green guy's Slack green emails duty's precheck (`node --import tsx scripts/duties/slack-green-emails.ts`). No model call.
  * It reads every email Slack Green sent through Resend (the team's whole send log, GET /emails, slack.green senders only; the same Resend team
  * also sends Virev mail) and matches each recipient to prod Supabase: the account, its soft delete (profiles.email "DELETED_<iso>_..."), its
  * first Slack workspace and its marketing opt-out. All reads; it sends nothing and writes no row.
- * The Resend key is RESEND_API_KEY when set, else the Railway variable of slack-green-backend production (the repo's .env*.secret files are
- * git-secret encrypted). The same Railway link lists the backend deploys, to say whether the #233 token email removal is live.
+ * The Resend key is RESEND_API_KEY when set, else SLACK_GREEN_RESEND_API_KEY from auto-sns-agent's prod infra tier apps/infra/.env, the value the
+ * Komodo secret Variable gives the worker of Stack slack-green on us-metal01, which sends every scheduled email since it left Railway on 11-25.
  * The Supabase SQL goes through the Management API with read_only true and SUPABASE_ACCESS_TOKEN from slack-green's scripts/seo-agent/.env.
  */
 
@@ -102,9 +103,8 @@ export const templateOf = (subject: string): Template => SUBJECTS.find(([, patte
 export interface Send { id: string; at: number; to: string; template: Template; subject: string; lastEvent: string }
 /** The account behind an address: user id, when it was soft-deleted, and when its first Slack workspace still on file was added. */
 export interface Recipient { userId: string; deletedAt?: number; firstWorkspaceAt?: number }
-export interface Deploys { live?: { at: number; commit: string }; sinceRemoval: string[] }
 export interface EmailState { at: number; optedOut: string[] }
-export interface Sources { sends?: Send[] | undefined; recipients?: Record<string, Recipient> | undefined; optedOut?: string[] | undefined; deploys?: Deploys; errors: string[] }
+export interface Sources { sends?: Send[] | undefined; recipients?: Record<string, Recipient> | undefined; optedOut?: string[] | undefined; errors: string[] }
 
 const iso = (at: number) => new Date(at).toISOString().replace(/\.\d{3}Z$/, "Z");
 /** Who got it, never the address: the user id, or a short hash when no account has the address. */
@@ -196,18 +196,12 @@ export function emailMetrics(sources: Sources, now: number, previous: EmailState
       if (fresh.length) flagged.push({ at: now, kind: "unsubscribe", item: "p68", excerpt: `turned marketing email off since ${iso(previous.at)}: users ${fresh.join(", ")}` });
     }
   }
-  // Once the live backend deploy is newer than #233 the removal is live, and a later token_expired send already counts as a wrong send above.
-  if (sources.deploys && !(sources.deploys.live && sources.deploys.live.at > TOKEN_EMAIL_REMOVED_AT)) {
-    const { live, sinceRemoval } = sources.deploys;
-    flagged.push({ at: now, kind: "token_email_removal", item: "p68", excerpt: `#233 merged ${iso(TOKEN_EMAIL_REMOVED_AT)}; Railway deploys of main since then: ` +
-      `${sinceRemoval.length ? sinceRemoval.join("; ") : "none"}; the live backend deploy is ${live ? `${live.commit.slice(0, 7)} from ${iso(live.at)}` : "unknown"}` });
-  }
   return { metrics, flagged, lastEventAt };
 }
 
 /** Runs a program with no shell and gives its stdout. */
 export type Exec = (file: string, args: readonly string[], options?: { cwd?: string }) => Promise<string>;
-export interface EmailDeps { exec: Exec; fetch: typeof fetch; now: () => number; env: Record<string, string>; resendKey?: string; sleep?: (ms: number) => Promise<void> }
+export interface EmailDeps { exec: Exec; fetch: typeof fetch; now: () => number; env: Record<string, string>; resendKey?: string }
 
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error)).replace(/re_[A-Za-z0-9_]+|sbp_[A-Za-z0-9]+/g, "***");
 const resendTime = (value: string): number => Date.parse(value.replace(" ", "T").replace(/\+00$/, "Z"));
@@ -294,53 +288,12 @@ export async function readRecipients(deps: EmailDeps, addresses: string[]): Prom
   return recipients;
 }
 
-interface RailwayDeploy { status: string; createdAt: string; meta?: { branch?: string; commitHash?: string; skippedReason?: string } }
-
-/**
- * A Railway CLI failure that a later try can pass: the d3 runs of 2026-10-22 06:59Z ("You are being ratelimited") and 2026-10-24 01:00Z
- * (dns error, "failed to lookup address information: Try again") each lost the Resend key this way, and a rerun 20 min later read it.
- */
-const RAILWAY_TRANSIENT = /ratelimited|dns error|failed to lookup address|client error \(Connect\)/i;
-/** A whole run took 10 s on 2026-10-24 against the runner's PRECHECK_TARGET_MS of 120 s, so two 20 s waits keep a failing run inside it. */
-export const RAILWAY_RETRY_WAITS_MS = [20_000, 20_000];
-
-async function railway(deps: EmailDeps, args: readonly string[], cwd: string): Promise<string> {
-  for (const wait of [...RAILWAY_RETRY_WAITS_MS, undefined]) {
-    try { return await deps.exec("railway", args, { cwd }); } catch (error) {
-      if (wait === undefined || !RAILWAY_TRANSIENT.test(message(error))) throw error;
-      await (deps.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))))(wait);
-    }
-  }
-  throw new Error("unreachable");
-}
-
-/** The Resend key and the backend deploys from Railway, linked in a temp folder and unlinked after. */
-export async function readRailway(deps: EmailDeps): Promise<{ key: string | undefined; deploys: Deploys }> {
-  const dir = await mkdtemp(join(tmpdir(), "sg-emails-"));
-  try {
-    await railway(deps, ["link", "--project", "slack-green-backend", "--environment", "production", "--service", "slack-green-backend"], dir);
-    const key = deps.resendKey || parseEnv(await railway(deps, ["variable", "list", "--kv"], dir)).RESEND_API_KEY;
-    const list = await railway(deps, ["deployment", "list", "--json", "--limit", "30"], dir);
-    const deploys = JSON.parse(list.slice(list.indexOf("["))) as RailwayDeploy[];
-    const live = deploys.find(deploy => deploy.status === "SUCCESS");
-    return { key, deploys: { ...(live ? { live: { at: Date.parse(live.createdAt), commit: live.meta?.commitHash ?? "?" } } : {}),
-      sinceRemoval: deploys.filter(deploy => Date.parse(deploy.createdAt) >= TOKEN_EMAIL_REMOVED_AT && deploy.meta?.branch === "main")
-        .map(deploy => `${(deploy.meta?.commitHash ?? "?").slice(0, 7)} ${deploy.status}${deploy.meta?.skippedReason ? ` (${deploy.meta.skippedReason})` : ""}`) } };
-  } finally {
-    await deps.exec("railway", ["unlink", "-y"], { cwd: dir }).catch(() => "");
-    await rm(dir, { recursive: true, force: true });
-  }
-}
-
 export async function measureEmails(deps: EmailDeps, previous: EmailState | undefined): Promise<{ output: PrecheckOutput; state?: EmailState }> {
   const at = deps.now();
   const sources: Sources = { errors: [] };
   const fail = (what: string) => (error: unknown) => { sources.errors.push(`${what}: ${message(error)}`); return undefined; };
-  const railway = await readRailway(deps).catch(fail("Railway (Resend key and deploys)"));
-  if (railway) sources.deploys = railway.deploys;
-  const key = deps.resendKey || railway?.key;
-  if (!key) { if (railway) sources.errors.push("Railway has no RESEND_API_KEY for slack-green-backend production"); }
-  else sources.sends = await readSends(deps, key).catch(fail("Resend send log"));
+  const key = deps.resendKey || await infraSecret("SLACK_GREEN_RESEND_API_KEY", deps.exec).catch(fail("Resend key"));
+  if (key) sources.sends = await readSends(deps, key).catch(fail("Resend send log"));
   if (sources.sends && key) {
     const day = sources.sends.filter(send => send.at > at - DAY_MS);
     await markSoftBounces(deps, key, day).catch(fail("Resend bounce details"));
@@ -355,7 +308,7 @@ export async function measureEmails(deps: EmailDeps, previous: EmailState | unde
   return { output: { metrics, flagged, ...Object.keys(lastEventAt).length ? { lastEventAt } : {} }, ...(sources.optedOut ? { state: { at, optedOut: sources.optedOut } } : {}) };
 }
 
-/** Each command stops 10 s before the runner's PRECHECK_TARGET_MS, so a hung Railway call still ends as a source error with every metric written. */
+/** Each command stops 10 s before the runner's PRECHECK_TARGET_MS, so a hung call still ends as a source error with every metric written. */
 const COMMAND_TIMEOUT_MS = PRECHECK_TARGET_MS - 10_000;
 const exec: Exec = (file, args, options) => new Promise((resolve, reject) => {
   execFile(file, [...args], { encoding: "utf8", timeout: COMMAND_TIMEOUT_MS, cwd: options?.cwd },
