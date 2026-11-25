@@ -238,6 +238,7 @@ test("the precheck reads each metric from the owner's lines, falls back to the s
     slowest_api_p90_ms: 2500, search_p90_ms: 25, thread_open_p90_ms_messages: 190, thread_open_p90_ms_replies: 2500, thread_open_p90_ms: 2500, send_p90_ms: 60,
     failed_sends_24h: 0,
   });
+  assert.equal(out.n, rows.length - 1, "n is the request log lines of the window: every row but the 80 h old one and the torn line");
   assert.equal(out.metricSources.messages, "GET /api/c/:id/items: the owner's devices, 10 requests");
   assert.equal(out.metricSources.send, "POST /api/c/:id/send: an estimate, since the owner made no request of this route in the request log's last 72 h: the server's handler p90 40 ms over 1 requests plus his network p50 20 ms over 30 tailnet requests");
   // The headline reads only routes he called in the window, so the send estimate sets none of it.

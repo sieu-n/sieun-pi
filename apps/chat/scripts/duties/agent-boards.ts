@@ -452,8 +452,8 @@ export const LATE_INTERVALS = 1.5;
 
 export interface Flag { kind: string; sig: string; item?: string; excerpt: string }
 
-/** The precheck output for the agents' steps and check-ins read at `now`. */
-export function agentBoards(agents: readonly { agent: Agent; steps: Steps; checkIn: CheckIn }[], now: number): { metrics: Record<string, number>; flagged: Flag[] } {
+/** The precheck output for the agents' steps and check-ins read at `now`; `n` is the count of agents it read. */
+export function agentBoards(agents: readonly { agent: Agent; steps: Steps; checkIn: CheckIn }[], now: number): { n: number; metrics: Record<string, number>; flagged: Flag[] } {
   const flagged: Flag[] = [];
   let open = 0;
   let stuck = 0;
@@ -474,7 +474,7 @@ export function agentBoards(agents: readonly { agent: Agent; steps: Steps; check
       flagged.push({ kind: "checkin_late", sig: `${agent.id}/checkin/${newest}`, excerpt: `${agent.name}'s check-in last ran ${Math.round((now - newest) / 60_000)} min ago on a ${Math.round(checkIn.everyMs / 60_000)} min interval` });
     }
   }
-  return { metrics: { stuck_steps_all: stuck, goal_gaps_all: gaps, checkins_late: late, open_steps_all: open }, flagged };
+  return { n: agents.length, metrics: { stuck_steps_all: stuck, goal_gaps_all: gaps, checkins_late: late, open_steps_all: open }, flagged };
 }
 
 /** An agent's board as GET /board returns it, the fields `pauseReason` reads. */

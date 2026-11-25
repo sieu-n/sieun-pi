@@ -31,6 +31,7 @@ test("stuck steps and gaps sum over agents, each flagged with why, and only an u
     { agent: { id: "ag_mcp", name: "mcp" }, steps: { open: 0, stuck: [], gaps: [] }, checkIn: { everyMs: 2 * HOUR, paused: true, lastAt: NOW - 30 * HOUR } },
   ], NOW);
   assert.deepEqual(out.metrics, { stuck_steps_all: 2, goal_gaps_all: 1, checkins_late: 1, open_steps_all: 5 });
+  assert.equal(out.n, 3, "n is the agents read");
   assert.deepEqual(out.flagged.map(flag => [flag.kind, flag.sig]), [
     ["stuck_step", "ag_seo/p143"], ["goal_gap", "ag_seo/p2"], ["checkin_late", `ag_seo/checkin/${NOW - 4 * HOUR}`], ["stuck_step", "ag_vent/p9"],
   ]);

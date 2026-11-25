@@ -375,6 +375,7 @@ export function slowCalls(timings: readonly RequestTiming[], p90Of: (route: stri
  * they leave the lookback. An estimate or a probe has no `lastEventAt` and pushes as before. On 11-24 he made no call after 19:30 KST, and the push runs of 19:32 and 20:03 KST each started a duty job on
  * slowest_api_p90_ms 3,631 ms from his GET /api/usage waits of 23:27 KST on 11-23. failed_sends_24h dates its newest counted failure.
  */
+/** The precheck output; `n` is the count of request log lines it read in the window. */
 export function apiSpeed(dir: string, now: number, windowMs: number, probes: readonly Probe[] = [], restarts: readonly number[] = []) {
   const all = readTimings(dir, now, Math.max(windowMs, LOOKBACK_MS));
   const timings = all.filter(t => t.at >= now - windowMs);
@@ -417,6 +418,7 @@ export function apiSpeed(dir: string, now: number, windowMs: number, probes: rea
   const failures = [...owners, ...hits.map(hit => hit.line)];
   if (failures.length) dated("failed_sends_24h", Math.max(...failures.map(t => t.at)), windowMs);
   return {
+    n: timings.length,
     metrics,
     lastEventAt,
     windowMs: eventWindowMs,
