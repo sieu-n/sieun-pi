@@ -70,8 +70,9 @@ test("a file the server removes after the listing is counted as removed and the 
   const gone = join(dir, "wakes", "w1-check.json");
   mkdirSync(dirname(gone));
   writeFileSync(gone, "{}");
+  const nodeFs = fs as { lstatSync: typeof fs.lstatSync };
   const lstat = fs.lstatSync;
-  fs.lstatSync = ((path: fs.PathLike, ...rest: never[]) => {
+  nodeFs.lstatSync = ((path: fs.PathLike, ...rest: never[]) => {
     if (path === gone && existsSync(gone)) fs.unlinkSync(gone);
     return lstat(path, ...rest);
   }) as typeof fs.lstatSync;
@@ -84,7 +85,7 @@ test("a file the server removes after the listing is counted as removed and the 
     assert.deepEqual(completeBackups(join(root, "backups")), [result.stamp]);
     assert.match(lines.join("\n"), /1 removed from the data dir while the backup ran/);
   } finally {
-    fs.lstatSync = lstat;
+    nodeFs.lstatSync = lstat;
     syncBuiltinESMExports();
     db.close();
     rmSync(root, { recursive: true, force: true });
