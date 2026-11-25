@@ -28,6 +28,31 @@ const report = {
   ],
 };
 
+test("the fixture's boxes show their versions, metal up and the Mac away", async ({ page }) => {
+  await page.goto("/#/settings/about");
+  const metal = page.getByTestId("about-host-us-metal02");
+  await expect(metal.getByText("Up", { exact: true })).toBeVisible();
+  await expect(metal.getByTestId("pi-version")).toHaveText("1.4.0");
+  await expect(metal.getByText("1.6.1 out")).toBeVisible();
+  await expect(metal.getByRole("link", { name: "8ceff51" })).toHaveAttribute("href", "https://github.com/sieu-n/sieun-pi/commit/8ceff51020b9667bdf0361adeb19a80083ed0f33");
+  await expect(metal.getByRole("link", { name: "37a7d69" })).toHaveAttribute("href", "https://github.com/sieu-n/sieun-pi/commit/37a7d69023c2a5e01f17cd6e6938edd791de38a1");
+  await expect(metal.getByText("d5d28f6", { exact: true })).toBeVisible();
+  const mac = page.getByTestId("about-host-mac");
+  await expect(mac.getByText(/Away, last read \d\d:\d\d/)).toBeVisible();
+  await expect(mac.getByRole("link", { name: "05d8665" })).toBeVisible();
+  await expect(mac.getByText("Not installed")).toBeVisible();
+  await expect(metal.getByText("Same as vendored")).toBeVisible();
+  await expect(mac.getByText("0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-load.2.1-upd.3-load.3.9-darwin-test.51", { exact: true })).toBeVisible();
+  await expect(mac.getByText("Same as vendored")).toHaveCount(0);
+});
+
+test("an up box whose last read failed says so", async ({ page }) => {
+  const [metal] = report.hosts;
+  await withAbout(page, { ...report, hosts: [{ ...metal, error: "check timed out" }] });
+  await page.goto("/#/settings/about");
+  await expect(page.getByTestId("about-host-us-metal02").getByText("Up, read failed")).toBeVisible();
+});
+
 /** Keeps the live socket shut, so the page reads /api/about over HTTP, where the route below answers it. */
 async function withAbout(page: Page, body: unknown): Promise<void> {
   await page.routeWebSocket(/\/api\/live/, () => {});
@@ -52,6 +77,7 @@ test("About opens from the Settings sidebar and shows each box's versions with c
   await expect(metal.getByText("release-05d8665, built ")).toBeVisible();
   await expect(metal.getByText("release-8ceff51", { exact: true })).toBeVisible();
   await expect(metal.getByText("0.9.8-test.51", { exact: true })).toHaveCount(2);
+  await expect(metal.getByText("Same as vendored")).toBeVisible();
   await expect(metal.getByText("3e5c341", { exact: true })).toBeVisible();
   await expect(metal.getByRole("link", { name: "3e5c341" })).toHaveCount(0);
 });

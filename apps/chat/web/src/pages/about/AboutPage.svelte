@@ -40,7 +40,7 @@
             {#snippet actions()}
               <span class="state" use:tooltip={host.error}>
                 <StatusDot status={host.state === "up" ? "online" : "away"} />
-                {host.state === "up" ? "Up" : host.readAt ? `Away, last read ${hhmm(host.readAt)}` : "Away, never read"}
+                {host.state === "away" ? (host.readAt ? `Away, last read ${hhmm(host.readAt)}` : "Away, never read") : host.error ? "Up, read failed" : "Up"}
               </span>
             {/snippet}
             {#if !v}
@@ -61,8 +61,8 @@
               <SettingRow label="Prime vendored from" detail={v.primeVendored?.version}>
                 {#if v.primeVendored}<span class="value mono" use:tooltip={v.primeVendored.sha}>{short(v.primeVendored.sha)}</span>{:else}<span class="none">Not found</span>{/if}
               </SettingRow>
-              <SettingRow label="Prime daemon">
-                {#if v.primeDaemon}<span class="value daemon" use:tooltip={v.primeDaemon}>{v.primeDaemon}</span>{:else}<span class="none">Not running</span>{/if}
+              <SettingRow label="Prime daemon" detail={v.primeDaemon ?? undefined}>
+                {#if !v.primeDaemon}<span class="none">Not running</span>{:else if v.primeDaemon === v.primeVendored?.version}<span class="value">Same as vendored</span>{/if}
               </SettingRow>
             {/if}
           </CardGroup>
@@ -97,12 +97,6 @@
   .sha {
     font-size: 13px;
     color: var(--text-message-link);
-  }
-  .daemon {
-    max-width: 260px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
   .none {
     font: var(--text-body-sm);
