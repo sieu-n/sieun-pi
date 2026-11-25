@@ -125,6 +125,39 @@ export class AgentLater {
     const where = this.deps.label(record, room);
     const head = `[reminder] It is ${clock(this.now())}, the time you set with remind_me on ${room}/${postId} in ${where}.`;
     if (!post || post.deletedAt !== undefined) return `${head} That post is gone now.`;
+    const { line, replies, shown, skipped } = this.thread(record, room, post);
+    if (shown.length <= 1) return `${head} The post now:\n${line(post)}`;
+    return `${head} Its thread now, ${replies.length} ${replies.length === 1 ? "reply" : "replies"}${skipped ? `, ${skipped} older ones left out` : ""}:\n` +
+      shown.map(line).join("\n");
+  }
+
+  /**
+   * `read_post`: the post an agent named, whole, under a line with its `<room>/<post>` id, author and time, then its thread in the lines
+   * a reminder and a delivery's "(thread so far)" use. On 11-25 fable auditor read its own reply with a keyword search_messages, because
+   * no tool read a post by its id (ch_14ad7a70/p224).
+   */
+  read(record: AgentRecord, room: RoomId, post: RoomPost): string {
+    const reactions = reactionsLine(id => this.deps.principal(id), post);
+    const saved = laterLine(this.deps.later.mark(record.id, room, post.id));
+    const head = [
+      `${room}/${post.id} in ${this.deps.label(record, room)}${post.threadRoot ? `, a reply in the thread of ${post.threadRoot}` : ""}`,
+      `from ${this.who(post.author)}`,
+      clock(post.at),
+      ...(post.editedAt !== undefined ? [`edited ${clock(post.editedAt)}`] : []),
+    ].join(" · ");
+    const marks = [reactions, saved].filter(Boolean).join(" ");
+    const images = post.images.length ? `\n[${post.images.length} image${post.images.length > 1 ? "s" : ""} attached]` : "";
+    const body = post.deletedAt !== undefined ? "(the post was deleted)" : `${post.text}${images}`;
+    const { line, replies, shown, skipped } = this.thread(record, room, post);
+    const thread = shown.length > 1
+      ? [`\nIts thread, ${replies.length} ${replies.length === 1 ? "reply" : "replies"}${skipped ? `, ${skipped} older ones left out` : ""}:`, ...shown.map(line)]
+      : [];
+    return [head, ...(marks ? [marks] : []), body, ...thread].join("\n");
+  }
+
+  /** The thread `post` sits in, as a reminder and read_post show it: the root and its live replies, the newest THREAD_POSTS of a long one. */
+  private thread(record: AgentRecord, room: RoomId, post: RoomPost) {
+    const posts = this.deps.postsOf(room);
     const rootId = post.threadRoot ?? post.id;
     const replies = posts.filter(p => p.threadRoot === rootId && p.deletedAt === undefined);
     const root = posts.find(p => p.id === rootId);
@@ -134,11 +167,8 @@ export class AgentLater {
       return `${p.seq} ${this.who(p.author)}: ${clip(p.text)}${p.images.length ? ` [${p.images.length} image${p.images.length > 1 ? "s" : ""} attached]` : ""}${reactions ? ` ${reactions}` : ""}${saved ? ` ${saved}` : ""}`;
     };
     const thread = [...(root && root.deletedAt === undefined ? [root] : []), ...replies];
-    if (thread.length <= 1) return `${head} The post now:\n${line(post)}`;
     const shown = thread.length > THREAD_POSTS ? [thread[0]!, ...thread.slice(-(THREAD_POSTS - 1))] : thread;
-    const skipped = thread.length - shown.length;
-    return `${head} Its thread now, ${replies.length} ${replies.length === 1 ? "reply" : "replies"}${skipped ? `, ${skipped} older ones left out` : ""}:\n` +
-      shown.map(line).join("\n");
+    return { line, replies, shown, skipped: thread.length - shown.length };
   }
 
   /** One item as `list_saved_messages` shows it: a header line, the agent's memo when it wrote one, then the post's text. */

@@ -151,6 +151,23 @@ describe("an agent's For list", () => {
     assert.equal((await find(`${GENERAL}/${target.id}`))!.status, "completed");
   });
 
+  test("from the agent's own thread, mark_message takes the ids set_emoji takes: a bare post id in the thread's room and a room-qualified one", async () => {
+    const sent = await s.send("POST", "/api/c/dm_vent/send", { text: "quiet: a DM post marked by its bare id", requestId: "for-me-bare" });
+    assert.equal(sent.status, 200);
+    const dm = s.app.agentStore.byRequestId("dm_vent", "for-me-bare")!;
+    const bare = await mark(dm.id, true, ids.vent);
+    assert.equal(bare.status, 200, JSON.stringify(bare.body));
+    assert.equal(bare.body.item.id, `dm_vent/${dm.id}`, "the work thread's bare id names a post in the agent's DM");
+    assert.equal(bare.body.item.status, "completed");
+    const crawlerComm = s.app.agents.record(agents.crawler)!.comm![ids.cutoverChannel]!;
+    const inChannel = await mark("p5", true, crawlerComm);
+    assert.equal(inChannel.status, 200, JSON.stringify(inChannel.body));
+    assert.equal(inChannel.body.item.id, `${ids.cutoverChannel}/p5`, "a comm thread's bare id names a post in its channel");
+    const missing = await mark("p9999", true, ids.vent);
+    assert.equal(missing.status, 404);
+    assert.match((missing.body as { error: string }).error, /^No post p9999 in dm_vent/);
+  });
+
   test("Mark all completed marks several items in one write, answers only the changed ids, and its Undo makes them pending again", async () => {
     const a = post(GENERAL, "owner", { mentions: [VENT] });
     const b = post(GENERAL, "owner", { mentions: [VENT] });

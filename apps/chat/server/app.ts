@@ -23,7 +23,7 @@ import { MIN_BYTES } from "./compress.ts";
 import { CHANNEL_COPY_LIKE, GroupRooms, roomLabel } from "./group-rooms.ts";
 import { assertEditable, deleteNotice, deliveriesOf, editNotice } from "./post-edits.ts";
 import { editHold } from "../../../packages/pi-host/src/durable/long-edit.ts";
-import { ForMe } from "./for-me.ts";
+import { ForMe, parseItemId } from "./for-me.ts";
 import { Later } from "./later.ts";
 import { LATER, LaterFiles, LaterRows } from "./later-db.ts";
 import { FolderWakes, WAKES, WakeRows } from "./wakes-db.ts";
@@ -978,6 +978,14 @@ export class App {
     return { text: this.agentLater.set(record, room, post, input) };
   }
 
+  /** An agent's read_post (later-agents.ts `read`): the post `message` names, as set_emoji names it, and its thread. The feed is read first, so a post its turn made a moment ago is there. */
+  async readAsAgent(thread: string, message: unknown): Promise<{ room: string; post: string; text: string }> {
+    const { record, room } = this.agentTarget(thread, message, "read_post");
+    await (this.groups.row(room) ? this.groups.feed(record.comm?.[room] ?? "") : this.rooms.feed(record));
+    const { post } = this.agentMessage(thread, message, "read_post");
+    return { room, post: post.id, text: this.agentLater.read(record, room, post) };
+  }
+
   /** An agent's list_saved_messages (later-agents.ts `listText`). */
   laterListAsAgent(thread: string, state: string | null): { text: string } {
     const record = this.agents.ofComm(thread)?.record ?? this.agents.ofWorkThread(thread);
@@ -1408,9 +1416,17 @@ export class App {
     };
   }
 
-  /** Marks an item on the agent's For list completed or pending; a page that watches the list hears of a change at once. */
-  markForMe(id: string, messageId: string, completed: boolean): { item: ForMeItem; pending: number } {
+  /**
+   * Marks an item on the agent's For list completed or pending; a page that watches the list hears of a change at once. `messageId` is the
+   * item's `<room>/<post>` id, or, when `id` is one of the agent's threads, any id its other room tools take (`agentPost`), such as p12 or
+   * the [message id: ...] value: on 11-21 mark_message refused the raw message id that set_emoji had just taken for the same post.
+   */
+  markForMe(id: string, message: unknown, completed: boolean): { item: ForMeItem; pending: number } {
     const record = this.forMeAgent(id);
+    const named = parseItemId(message);
+    const thread = this.agents.ofComm(id) ?? this.agents.ofWorkThread(id);
+    if (!named && !thread) throw new ReactionError(400, `${JSON.stringify(message ?? "")} is no For item id; pass messageId as <room id>/<post id>, such as dm_vent/p41 or ch_1a2b3c4d/p12.`);
+    const messageId = named ? `${named.room}/${named.post}` : (({ room, post }) => `${room}/${post.id}`)(this.agentMessage(id, message, "mark_message"));
     const marked = this.forMe.mark(record, messageId, completed);
     if (!marked) throw new NotFound(`${messageId} is not on ${record.name}'s For list; pass an id that GET /api/agents/${record.id}/for-me?status=all lists.`);
     if (marked.changed) this.forMeChanged(record.id);

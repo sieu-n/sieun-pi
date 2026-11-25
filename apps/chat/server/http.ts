@@ -320,10 +320,8 @@ export function routes(app: App, parts: SkillsParts, wikiPages = new WikiPageLis
         if (typeof completed !== "boolean") throw new BadRequest("A mark's completed is true to mark the items completed or false to make them pending again.");
         return app.markManyForMe(p.id!, items.map(i => `${i!.room}/${i!.post}`), completed);
       }
-      const item = parseItemId(messageId);
-      if (!item) throw new BadRequest(`${JSON.stringify(messageId ?? "")} is no For item id; pass messageId as <room id>/<post id>, such as dm_vent/p41 or ch_1a2b3c4d/p12.`);
       if (typeof completed !== "boolean") throw new BadRequest("A mark's completed is true to mark the item completed or false to make it pending again.");
-      return app.markForMe(p.id!, `${item.room}/${item.post}`, completed);
+      return app.markForMe(p.id!, messageId, completed);
     }),
     route("GET", "/api/agents/:id/folder", async (_r, p) => app.folders.read(folderAgent(p.id!))),
     route("PUT", "/api/agents/:id/brief", async (_r, p, _q, body) => {
@@ -410,6 +408,8 @@ export function routes(app: App, parts: SkillsParts, wikiPages = new WikiPageLis
     route("POST", "/api/threads/:id/edits", async (_r, p, _q, body) => {
       return app.editAsAgent(p.id!, ((await body()) ?? {}) as { message?: unknown; text?: unknown });
     }),
+    // An agent's read_post (later-agents.ts `read`), as its thread; the message id goes in the query, since a room-qualified one holds a slash.
+    route("GET", "/api/threads/:id/post", async (_r, p, q) => app.readAsAgent(p.id!, q.get("message") ?? undefined)),
     // An agent's save_message, remind_me and list_saved_messages (later-agents.ts), as its thread.
     route("GET", "/api/threads/:id/later", async (_r, p, q) => app.laterListAsAgent(p.id!, q.get("state"))),
     route("POST", "/api/threads/:id/later", async (_r, p, _q, body) => {
