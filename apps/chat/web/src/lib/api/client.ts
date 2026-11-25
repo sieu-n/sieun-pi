@@ -49,7 +49,7 @@ const boardBase = (chat: string): string => (chat.startsWith("ag_") ? `/api/agen
  * busy before it could send the call or read the answer: on 11-03 a thread open in the box Chrome waited 2,135 ms for /api/rooms, of which
  * the network and the server took 29 ms.
  */
-type Timing = { m: string; p: string; s: number; ms: number; net?: number; enc?: number; stored?: number; err?: string; shown?: true; page?: PageState; hid?: number; wait?: Wait };
+type Timing = { id: string; m: string; p: string; s: number; ms: number; net?: number; enc?: number; stored?: number; err?: string; shown?: true; page?: PageState; hid?: number; wait?: Wait };
 
 /**
  * The page's hidden spells as [start, end) in `performance.now()`, the one going on with end Infinity. A call's line names in `hid` the ms
@@ -117,6 +117,14 @@ export type Wait = {
 const recentNet: number[] = [];
 const roundTripMs = (): number | undefined => (recentNet.length ? Math.min(...recentNet) : undefined);
 const timings: Timing[] = [];
+/**
+ * Each line's `id` is this page's name and the line's number, so the server stores a line it already took no second time. A batch whose
+ * fetch fails goes back in the queue (`sendTimings`), and a fetch can fail after the server stored its batch: on 11-25 at 21:24Z and 21:35Z
+ * the owner's Safari lost the answer to a stored batch ("Load failed") and posted the same 11 and 5 lines again in its next batch, which
+ * the speed duty counted twice (requests/2026-11-25.jsonl).
+ */
+const pageName = Math.random().toString(36).slice(2, 10);
+let timingCount = 0;
 let timingsTimer: ReturnType<typeof setTimeout> | undefined;
 
 /**
@@ -162,7 +170,7 @@ function recordTiming(m: string, path: string, s: number, started: number, err?:
   const from = wait?.since ?? (wait?.background === "ahead" ? first : asked ?? first);
   const hid = wait?.shownMs === undefined ? Math.round(hiddenWithin(from, now)) : 0;
   timings.push({
-    m, p: path.split("?")[0]!, s, ms: Math.round(wait?.shownMs ?? now - from), ...(net === undefined ? {} : { net }), ...(hid > 0 ? { hid } : {}),
+    id: `${pageName}.${++timingCount}`, m, p: path.split("?")[0]!, s, ms: Math.round(wait?.shownMs ?? now - from), ...(net === undefined ? {} : { net }), ...(hid > 0 ? { hid } : {}),
     ...(wait?.encodeMs === undefined ? {} : { enc: wait.encodeMs }), ...(wait?.since === undefined ? {} : { stored: Math.round(now - wait.since) }),
     ...(err ? { err, page: pageState() } : {}), ...(wait ? { wait } : {}),
   });
@@ -181,7 +189,7 @@ if (typeof window !== "undefined") addEventListener("pagehide", () => {
  */
 export function reportNotDelivered(conversation: ConversationId, status: number, err: string): void {
   if (typeof window === "undefined") return;
-  timings.push({ m: "POST", p: `/api/c/${enc(conversation)}/send`, s: status, ms: 0, err, shown: true });
+  timings.push({ id: `${pageName}.${++timingCount}`, m: "POST", p: `/api/c/${enc(conversation)}/send`, s: status, ms: 0, err, shown: true });
   sendTimings();
 }
 

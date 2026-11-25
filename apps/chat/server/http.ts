@@ -963,14 +963,15 @@ const uaOf = (req: IncomingMessage): { ua?: string } => {
 async function takeTimings(table: Route[], requests: RequestLog, log: (line: string) => void, req: IncomingMessage, res: ServerResponse): Promise<void> {
   try {
     const at = Date.now();
-    const samples = clientTimings(await readBody(req));
+    const sent = clientTimings(await readBody(req));
+    const samples = sent.filter(sample => sample.id === undefined || requests.firstTake(sample.id, at));
     const via = viaOf(req);
     for (const sample of samples) {
       const r = routeLabel(table, sample.m, sample.p);
       requests.write({ at, src: "client", ...sample, r, via });
       if (sample.err !== undefined) log(`client ${sample.m} ${r} ${sample.p} ${sample.shown ? "Not delivered" : sample.s || "unreached"} (${via}): ${sample.err}`);
     }
-    json(res, 200, { taken: samples.length });
+    json(res, 200, { taken: samples.length, again: sent.length - samples.length });
   } catch (error) {
     json(res, 400, { error: error instanceof Error ? error.message : String(error) });
   }

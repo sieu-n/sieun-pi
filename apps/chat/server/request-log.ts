@@ -147,8 +147,15 @@ export interface StallPart { stall: number; stallCpu?: number; stallGc?: number;
 
 /** A client sample as POST /api/timings takes it; the server names its route. */
 export interface ClientTiming {
-  m: string; p: string; s: number; ms: number; net?: number; enc?: number; stored?: number; err?: string; shown?: true; bg?: "ahead" | "shown"; page?: "visible" | "hidden" | "leaving"; hid?: number;
+  id?: string; m: string; p: string; s: number; ms: number; net?: number; enc?: number; stored?: number; err?: string; shown?: true; bg?: "ahead" | "shown"; page?: "visible" | "hidden" | "leaving"; hid?: number;
 }
+
+/**
+ * How long the server remembers a client line id. A page posts a failed batch again 10 s later and keeps trying while the server is away,
+ * and a restart takes the port about 20 s after the reload (journal, 11-25 21:21Z); the longest gap seen between a stored batch and its
+ * second post is 45 s.
+ */
+const SEEN_MS = 3_600_000;
 
 /** Today's file and the 2 UTC days before it stay: the duty's whole 24 h window and 48 to 72 h of its 72 h lookback (`LOOKBACK_MS`). */
 const KEEP_DAYS = 2;
@@ -158,6 +165,8 @@ export const dayOf = (at: number): string => new Date(at).toISOString().slice(0,
 export class RequestLog {
   private day = "";
   private pending = Promise.resolve();
+  /** The client line ids taken in the last `SEEN_MS`, with when, oldest first. */
+  private readonly seen = new Map<string, number>();
 
   constructor(readonly dir: string, private readonly log: (line: string) => void = () => {}) {}
 
@@ -174,6 +183,21 @@ export class RequestLog {
       }
       await appendFile(join(this.dir, `${day}.jsonl`), line);
     }).catch(error => this.log(`request log: ${error instanceof Error ? error.message : String(error)}`));
+  }
+
+  /**
+   * Whether the client line `id` (the page's name and the line's number, client.ts `recordTiming`) is new, which also marks it taken. A page
+   * posts a batch again when its fetch fails, and a fetch can fail after the batch was stored: on 11-25 at 21:24Z and 21:35Z the owner's page
+   * posted the same 11 and 5 lines a second time 45 s and 13 s after the first (requests/2026-11-25.jsonl).
+   */
+  firstTake(id: string, at: number): boolean {
+    for (const [old, when] of this.seen) {
+      if (when > at - SEEN_MS) break;
+      this.seen.delete(old);
+    }
+    if (this.seen.has(id)) return false;
+    this.seen.set(id, at);
+    return true;
   }
 
   /** Resolves once every line written so far is on disk. */
@@ -196,8 +220,8 @@ export function clientTimings(body: unknown): ClientTiming[] {
   return samples.filter((sample): sample is ClientTiming => {
     const { m, p, s, ms } = (sample ?? {}) as Record<string, unknown>;
     return typeof m === "string" && typeof p === "string" && p.startsWith("/api/") && typeof s === "number" && typeof ms === "number" && Number.isFinite(ms) && ms >= 0;
-  }).map(({ m, p, s, ms, net, enc, stored, err, shown, bg, page, hid }) => ({
-    m, p: p.split("?")[0]!, s, ms, ...(typeof net === "number" && Number.isFinite(net) && net >= 0 ? { net } : {}),
+  }).map(({ id, m, p, s, ms, net, enc, stored, err, shown, bg, page, hid }) => ({
+    ...(typeof id === "string" && id && id.length <= 40 ? { id } : {}), m, p: p.split("?")[0]!, s, ms, ...(typeof net === "number" && Number.isFinite(net) && net >= 0 ? { net } : {}),
     ...(typeof enc === "number" && Number.isFinite(enc) && enc >= 0 ? { enc } : {}),
     ...(typeof stored === "number" && Number.isFinite(stored) && stored >= 0 ? { stored } : {}),
     ...(typeof err === "string" && err ? { err: err.slice(0, 500) } : {}), ...(shown === true ? { shown } : {}),
