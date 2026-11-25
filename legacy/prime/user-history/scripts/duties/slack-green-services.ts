@@ -1,11 +1,12 @@
 import { randomBytes } from "node:crypto";
 import { realpathSync } from "node:fs";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { readFile, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { type FlaggedSlice, type PrecheckOutput } from "../../src/shared/chat-duties.ts";
-import { CHECKS_WINDOW_MS, type DeployDeps, type Exec, exec, measureDeploys } from "./slack-green-deploys.ts";
+import { CHECKS_WINDOW_MS, type DeployDeps, type Exec, type KomodoDeps, type KomodoLogin, WORKER_STACK, exec, komodoLogin, komodoRead, measureDeploys,
+  readWorkerContainer } from "./slack-green-deploys.ts";
 import { parseEnv } from "./local-dev-uptime.ts";
 import { vercelToken } from "./vercel-login.ts";
 import { BoxBrowser } from "./box-browser.ts";
@@ -16,7 +17,7 @@ import { CONNECTION_FAILURE, RETRY_PAUSE_MS, retryUnreached, retryingFetch } fro
  * On 10-30 slack.green prod served HTML 200 for hours while every page threw "Missing Supabase environment variables" in the browser, because
  * the us-metal02 prebuilt build had no NEXT_PUBLIC_SUPABASE_* values, and no duty saw it until the owner sent a screenshot (msg mvux3bjx). He then
  * asked for one duty every 3 hours that checks every service works, Vercel and Railway included, and that his own Slack account shows green
- * (msg mvux7mnh).
+ * (msg mvux7mnh). The worker left Railway for Komodo Stack slack-green on us-metal01 on 11-25, so the worker reads go to Komodo.
  * new_user_checks_failing, the headline, asks whether slack.green works for a new user. It counts each of five pages that fails in a
  * headful Chrome on this box through the aside-browser box runner (c177, c205), plus 1 while the connect check is red. A page fails when its
  * document answers non-200, it throws an uncaught error (pageerror), or it shows an error screen. /dashboard is read signed in as
@@ -24,8 +25,8 @@ import { CONNECTION_FAILURE, RETRY_PAUSE_MS, retryUnreached, retryingFetch } fro
  * check is red while its newest run on main failed or a connect-check issue is open (readConnectCheck), so a red connect check of the
  * add-account path starts a fix job on the next run (owner rule c231). The two counts share one number because the owner checks both the same
  * way, by signing up and connecting; the page_failing and connect_check_red slices say which part is red.
- * deploy_problems folds in the old Slack green deploys duty (d4): main commits not live on the Railway worker after 20 min, failed main CI
- * runs of 24 h, a deploy source that did not read, and the worker crashed or silent. Nothing here redeploys the worker. Main commits that Vercel prod lacks are flagged and not
+ * deploy_problems folds in the old Slack green deploys duty (d4): main commits with a published worker image that the Komodo worker does not
+ * run after 20 min, failed main CI runs of 24 h, a deploy source that did not read, and the worker container down or silent. Nothing here redeploys the worker. Main commits that Vercel prod lacks are flagged and not
  * counted, because since 10-30 slack.green builds on us-metal02 (c200) and each prod deploy waits for the release owner (c154). owner_slack_green reads the owner's presence with Slack's users.getPresence
  * through the session tokens Slack Green stores for his ppwc workspace, read only. api_routes_failing calls the add-on's and the CLI's routes
  * with a bogus login and expects their JSON 401, and counts each /api/ route that answered 500 or more during the page walk.
@@ -69,7 +70,8 @@ export function pageFailure(read: PageRead): string | null {
   return null;
 }
 
-export interface WorkerRead { status: string; deployAt: number; lastActiveAt?: number; activeLines: number }
+/** The worker container's docker state and its presence check lines. `running` is false while docker restarts it. */
+export interface WorkerRead { status: string; running: boolean; startedAt: number; restarts: number; revision?: string; lastActiveAt?: number; activeLines: number }
 export interface Presence { presence: string; online: boolean; connectionCount: number; lastActivity?: number }
 export interface RouteRead { route: string; status?: number; body?: string; error?: string; ok: boolean }
 export interface ConnectCheckRun { id: number; conclusion: string; event: string; url: string; createdAt: string }
@@ -96,17 +98,16 @@ export function servicesOutput(read: Readings, now: number): PrecheckOutput {
   let workerProblems = 0;
   if (!read.worker) workerProblems++;
   else {
-    const { status, lastActiveAt, activeLines } = read.worker;
-    const crashed = !["SUCCESS", "SLEEPING"].includes(status);
+    const { status, running, startedAt, restarts, revision, lastActiveAt, activeLines } = read.worker;
     const silent = lastActiveAt === undefined || now - lastActiveAt > WORKER_SILENT_MS;
-    workerProblems += Number(crashed) + Number(silent);
-    flagged.push({ at: now, kind: crashed || silent ? "worker_problem" : "worker_ok", excerpt: `the Railway worker's newest deployment is ${status} (${when(read.worker.deployAt)}), and its last presence check log line is ${lastActiveAt ? `${Math.round((now - lastActiveAt) / 60_000)} min old, ${activeLines} active lines in the logs read` : "missing from the logs read"}` });
+    workerProblems += Number(!running) + Number(silent);
+    flagged.push({ at: now, kind: !running || silent ? "worker_problem" : "worker_up", excerpt: `the Komodo worker (Stack ${WORKER_STACK.stack} on us-metal01) is ${status}, started ${when(startedAt)} with ${restarts} restart(s) and runs ${revision?.slice(0, 7) ?? "no revision label"}, and its last presence check log line is ${lastActiveAt ? `${Math.round((now - lastActiveAt) / 60_000)} min old, ${activeLines} active lines in the logs read` : "missing from the logs read"}` });
   }
   const deploys = read.deploys;
   if (deploys) flagged.push(...(deploys.flagged ?? []).map(slice => slice.kind === "vercel_not_live"
     ? { ...slice, kind: "vercel_behind_main", excerpt: `${slice.excerpt}; not counted, because each slack.green prod deploy waits for the release owner (c154, c200)` } : slice));
-  const { railway_not_live: railwayLate = 0, main_checks_failed_24h: checksFailed = 0, source_errors: deployErrors = 0 } = deploys?.metrics ?? {};
-  const deployProblems = workerProblems + (deploys ? railwayLate + checksFailed + deployErrors : 1);
+  const { worker_not_live: workerLate = 0, main_checks_failed_24h: checksFailed = 0, source_errors: deployErrors = 0 } = deploys?.metrics ?? {};
+  const deployProblems = workerProblems + (deploys ? workerLate + checksFailed + deployErrors : 1);
 
   const green = read.presence?.presence === "active" ? 1 : 0;
   if (read.presence) flagged.push({ at: now, kind: green ? "owner_green" : "owner_not_green", excerpt: `the owner's Slack (ppwc, ${OWNER.slackUser}) reads ${read.presence.presence}, online ${read.presence.online}, ${read.presence.connectionCount} connection(s)${read.presence.lastActivity ? `, last activity ${when(read.presence.lastActivity * 1000)}` : ""}` });
@@ -256,29 +257,24 @@ export async function readConnectCheck(run: Exec): Promise<ConnectCheckRead> {
     issues: open.map(issue => ({ number: issue.number, title: issue.title, url: issue.url, latest: issue.comments.at(-1)?.body ?? issue.body })) };
 }
 
-interface RailwayRow { status: string; createdAt: string }
-/**
- * The worker's newest deployment that is not skipped, removed, waiting or failed, and its newest presence check log line, from a temp-linked
- * folder. A FAILED build leaves the deployment before it running, as the 03:15Z redeploy on 11-04 did after slack-green #422 deleted the Dockerfile.
- * It reads the CLI's maximum of 1000 rows, because main commits outside the worker's watch paths each add a SKIPPED row: on 11-05 the newest 20
- * were all SKIPPED while the worker ran an 11-04 08:44Z deployment, and the whole history was 342 rows read in 0.7 s.
- */
-export async function readWorker(run: Exec): Promise<WorkerRead> {
-  const dir = await mkdtemp(join(tmpdir(), "sg-services-"));
-  try {
-    await run("railway", ["link", "--project", "slack-green-backend", "--environment", "production", "--service", "slack-green-backend"], { cwd: dir });
-    const list = await run("railway", ["deployment", "list", "--json", "--limit", "1000"], { cwd: dir });
-    const newest = (JSON.parse(list.slice(list.indexOf("["))) as RailwayRow[]).filter(row => !["SKIPPED", "REMOVED", "WAITING", "FAILED"].includes(row.status))
-      .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
-    if (!newest) throw new Error("the worker has no deployment that is not skipped, removed, waiting or failed");
-    const logs = await run("railway", ["logs", "--lines", "300", "--json"], { cwd: dir });
-    const active = logs.split("\n").flatMap(line => { try { return [JSON.parse(line) as { timestamp?: string; message?: string }]; } catch { return []; } })
-      .filter(row => row.message?.includes("🟢 active") && row.timestamp).map(row => Date.parse(row.timestamp!));
-    return { status: newest.status, deployAt: Date.parse(newest.createdAt), activeLines: active.length, ...active.length ? { lastActiveAt: Math.max(...active) } : {} };
-  } finally {
-    await run("railway", ["unlink", "-y"], { cwd: dir }).catch(() => "");
-    await rm(dir, { recursive: true, force: true });
-  }
+/** The tail the worker read asks for, as the Railway read did: the worker writes one presence check line per workspace each minute. */
+const WORKER_LOG_LINES = 300;
+/** A Python logging time, "2026-11-25 05:37:11,406", which the worker writes in UTC. */
+const LOG_TIME = /^(?:\S+\s+\|\s+)?(\d{4}-\d\d-\d\d) (\d\d:\d\d:\d\d),(\d{3})/;
+
+/** The worker container's state and revision, and its newest presence check log line, through Komodo's read API. */
+export async function readWorker(deps: KomodoDeps): Promise<WorkerRead> {
+  const [container, log] = await Promise.all([readWorkerContainer(deps),
+    komodoRead<{ stdout?: string; stderr?: string; success?: boolean }>(deps, "GetStackLog", { stack: WORKER_STACK.stack, services: [WORKER_STACK.service], tail: WORKER_LOG_LINES })]);
+  if (log.success === false) throw new Error(`Komodo GetStackLog failed: ${(log.stderr ?? "").slice(0, 200)}`);
+  const active = (log.stdout ?? "").split("\n").filter(line => line.includes("🟢 active")).flatMap(line => {
+    const match = LOG_TIME.exec(line);
+    return match ? [Date.parse(`${match[1]}T${match[2]}.${match[3]}Z`)] : [];
+  });
+  const state = container.State ?? {};
+  const revision = container.Config?.Labels?.["org.opencontainers.image.revision"];
+  return { status: state.Status ?? "unknown", running: state.Running === true && state.Restarting !== true, startedAt: Date.parse(state.StartedAt ?? ""),
+    restarts: container.RestartCount ?? 0, activeLines: active.length, ...revision ? { revision } : {}, ...active.length ? { lastActiveAt: Math.max(...active) } : {} };
 }
 
 async function supabaseEnv(): Promise<Supabase> {
@@ -297,7 +293,8 @@ async function main(): Promise<void> {
   const fail = (what: string) => (error: unknown): undefined => { errors.push(`${what}: ${message(error)}`); return undefined; };
   const sb = await supabaseEnv().catch(fail("Supabase key"));
   const net = retryingFetch(fetch);
-  const deps: DeployDeps = { exec, fetch: net, now: Date.now, vercelToken };
+  let login: Promise<KomodoLogin> | undefined;
+  const deps: DeployDeps = { exec, fetch: net, now: Date.now, vercelToken, komodo: () => (login ??= komodoLogin()) };
   const pages = (async () => {
     const login = sb ? await qaLogin(net, sb).catch((error: unknown) => new Error(message(error))) : new Error("no Supabase key");
     const browser = BoxBrowser.start();
@@ -305,7 +302,7 @@ async function main(): Promise<void> {
   })().catch((error: unknown) => { fail("box browser")(error); return [] as PageRead[]; });
   const backend = (async () => {
     const deploys = await measureDeploys(deps);
-    const worker = await readWorker(exec).catch(fail("Railway worker status and logs"));
+    const worker = await readWorker(deps).catch(fail("Komodo worker state and logs"));
     return { deploys, worker };
   })();
   const [pageReads, { deploys, worker }, presence, routes, connectCheck] = await Promise.all([pages, backend,

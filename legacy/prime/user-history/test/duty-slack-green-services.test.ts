@@ -2,9 +2,11 @@
 // variables" in the browser, because the us-metal02 prebuilt build had no NEXT_PUBLIC_SUPABASE_* values, and no duty saw it.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type PageRead, PAGES, pageFailure, readConnectCheck, readWorker, servicesOutput } from "../scripts/duties/slack-green-services.ts";
+import { DEPLOY_MINUTES, type DeployDeps, measureDeploys } from "../scripts/duties/slack-green-deploys.ts";
+import { type PageRead, PAGES, pageFailure, readConnectCheck, readWorker, servicesOutput, type WorkerRead } from "../scripts/duties/slack-green-services.ts";
 
 const NOW = Date.parse("2026-10-30T12:10:00Z");
+const WORKER: WorkerRead = { status: "running", running: true, startedAt: NOW - 3_600_000, restarts: 0, lastActiveAt: NOW - 30_000, activeLines: 200 };
 const page = (key: string, extra: Partial<PageRead> = {}): PageRead =>
   ({ key, url: `https://slack.green/${key}`, status: 200, pageErrors: [], consoleErrors: [], api5xx: [], ...extra });
 
@@ -17,8 +19,8 @@ test("a page that answers 200 and throws the missing Supabase env error in the b
 test("the 10-30 outage reads every page failing while the worker and the owner's Slack read fine", () => {
   const pages = PAGES.map(spec => page(spec.key, { pageErrors: ["Missing Supabase environment variables. Please check your .env file."] }));
   const output = servicesOutput({ pages, routes: [], errors: [], connectCheck: { issues: [] }, presence: { presence: "active", online: true, connectionCount: 1 },
-    worker: { status: "SUCCESS", deployAt: NOW - 3_600_000, lastActiveAt: NOW - 30_000, activeLines: 200 },
-    deploys: { metrics: { commits_not_live: 3, main_checks_failed_24h: 0, railway_not_live: 0, vercel_not_live: 3, source_errors: 0 }, flagged: [] } }, NOW);
+    worker: WORKER,
+    deploys: { metrics: { commits_not_live: 3, main_checks_failed_24h: 0, worker_not_live: 0, vercel_not_live: 3, source_errors: 0 }, flagged: [] } }, NOW);
   assert.equal(output.metrics.new_user_checks_failing, PAGES.length);
   assert.equal(output.metrics.deploy_problems, 0);
   assert.equal(output.metrics.owner_slack_green, 1);
@@ -26,44 +28,54 @@ test("the 10-30 outage reads every page failing while the worker and the owner's
 
 test("failed main runs alone make deploy_problems a day's window that ages out, and a live problem does not", () => {
   const base = { pages: PAGES.map(spec => page(spec.key)), routes: [], errors: [], presence: { presence: "active", online: true, connectionCount: 1 },
-    worker: { status: "SUCCESS", deployAt: NOW - 3_600_000, lastActiveAt: NOW - 30_000, activeLines: 200 } };
+    worker: WORKER };
   const failedAt = NOW - 2 * 3_600_000;
-  const checks = servicesOutput({ ...base, deploys: { metrics: { commits_not_live: 0, main_checks_failed_24h: 4, railway_not_live: 0, vercel_not_live: 0, source_errors: 0 },
+  const checks = servicesOutput({ ...base, deploys: { metrics: { commits_not_live: 0, main_checks_failed_24h: 4, worker_not_live: 0, vercel_not_live: 0, source_errors: 0 },
     flagged: [], lastEventAt: { main_checks_failed_24h: failedAt } } }, NOW);
   assert.equal(checks.metrics.deploy_problems, 4);
   assert.deepEqual(checks.lastEventAt, { deploy_problems: failedAt });
   assert.deepEqual(checks.windowMs, { deploy_problems: 24 * 3_600_000 });
-  const late = servicesOutput({ ...base, deploys: { metrics: { commits_not_live: 1, main_checks_failed_24h: 4, railway_not_live: 1, vercel_not_live: 0, source_errors: 0 },
+  const late = servicesOutput({ ...base, deploys: { metrics: { commits_not_live: 1, main_checks_failed_24h: 4, worker_not_live: 1, vercel_not_live: 0, source_errors: 0 },
     flagged: [], lastEventAt: { main_checks_failed_24h: failedAt } } }, NOW);
   assert.equal(late.metrics.deploy_problems, 5);
   assert.equal(late.windowMs, undefined);
 });
 
-// 11-04: a Railway build that failed (slack-green #422 deleted the Dockerfile) leaves the deployment before it running.
-test("the worker read skips a FAILED deployment and reads the one still running", async () => {
-  const exec = async (_file: string, args: readonly string[]): Promise<string> =>
-    args[0] === "deployment" ? JSON.stringify([{ status: "FAILED", createdAt: new Date(NOW - 60_000).toISOString() }, { status: "SUCCESS", createdAt: new Date(NOW - 3_600_000).toISOString() }])
-      : args[0] === "logs" ? JSON.stringify({ timestamp: new Date(NOW - 30_000).toISOString(), message: "[ppwc] 🟢 active" }) : "";
-  const worker = await readWorker(exec);
-  assert.equal(worker.status, "SUCCESS");
-  assert.equal(worker.lastActiveAt, NOW - 30_000);
+const komodo = (container: unknown, stdout: string) => ({ komodo: async () => ({ key: "k", secret: "s" }),
+  fetch: (async (url: string | URL | Request) => new Response(JSON.stringify(String(url).endsWith("/read/GetStackLog") ? { stdout, stderr: "", success: true } : container))) as typeof fetch });
+
+// 11-25: the worker left Railway for Komodo Stack slack-green, whose log lines carry the compose service prefix and a UTC logging time.
+test("the worker read takes the container state and revision from Komodo and the newest presence check from its Stack log", async () => {
+  const stdout = "slack-green-worker  | 2026-10-30 12:09:20,100 - app.lib.slack.session - INFO - [ppwc] 🟢 active\n" +
+    "slack-green-worker  | 2026-10-30 12:09:30,406 - app.lib.slack.session - INFO - [closer] 🟢 active\nslack-green-worker  | Running in PRODUCTION mode\n";
+  const container = { RestartCount: 2, Config: { Labels: { "org.opencontainers.image.revision": "618867bad0e8475e208d6e958e13ede93578097a" } },
+    State: { Status: "running", Running: true, Restarting: false, StartedAt: "2026-10-30T11:10:00Z" } };
+  const worker = await readWorker(komodo(container, stdout));
+  assert.deepEqual(worker, { status: "running", running: true, startedAt: NOW - 3_600_000, restarts: 2, revision: "618867bad0e8475e208d6e958e13ede93578097a",
+    activeLines: 2, lastActiveAt: NOW - 29_594 });
+  const restarting = await readWorker(komodo({ State: { Status: "restarting", Running: true, Restarting: true, StartedAt: "2026-10-30T12:09:00Z" } }, ""));
+  const output = servicesOutput({ pages: PAGES.map(spec => page(spec.key)), routes: [], errors: [], connectCheck: { issues: [] }, worker: restarting,
+    deploys: { metrics: { worker_not_live: 0, main_checks_failed_24h: 0, source_errors: 0 }, flagged: [] } }, NOW);
+  assert.equal(output.metrics.deploy_problems, 2);
 });
 
-// 11-05: 20 main commits outside the worker's watch paths left 20 SKIPPED rows above the running deployment.
-test("the worker read asks for the CLI's full deployment list, so skipped rows never hide the running one", async () => {
-  const seen: string[][] = [];
-  const exec = async (_file: string, args: readonly string[]): Promise<string> => {
-    seen.push([...args]);
-    if (args[0] !== "deployment") return args[0] === "logs" ? JSON.stringify({ timestamp: new Date(NOW - 30_000).toISOString(), message: "🟢 active" }) : "";
-    const limit = Number(args[args.indexOf("--limit") + 1]);
-    const rows = [...Array.from({ length: 25 }, (_, i) => ({ status: "SKIPPED", createdAt: new Date(NOW - i * 60_000).toISOString() })),
-      { status: "SUCCESS", createdAt: new Date(NOW - 7_200_000).toISOString() }];
-    return JSON.stringify(rows.slice(0, limit));
-  };
-  const worker = await readWorker(exec);
-  assert.equal(worker.status, "SUCCESS");
-  assert.equal(worker.deployAt, NOW - 7_200_000);
-  assert.ok(seen.some(args => args[0] === "deployment" && args.includes("1000")));
+// 11-25: the box ran 618867b while CI had published d418d8b (#635) and moved :main to it 7 h before.
+test("a main commit with a published worker image that the worker does not run counts after DEPLOY_MINUTES, and a commit with no image does not", async () => {
+  const LIVE = "618867bad0e8475e208d6e958e13ede93578097a";
+  const IMAGED = "d418d8bead2790410bcda00592a8c20262c30b94";
+  const FRONTEND = "53127052aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const at = NOW - (DEPLOY_MINUTES + 5) * 60_000;
+  const worker = komodo({ Config: { Labels: { "org.opencontainers.image.revision": LIVE } } }, "");
+  const deps: DeployDeps = { komodo: worker.komodo, now: () => NOW, vercelToken: async () => "t",
+    fetch: (async (url: string | URL | Request) => String(url).includes("vercel.com")
+      ? new Response(JSON.stringify({ targets: { production: { meta: { githubCommitSha: LIVE } } }, deployments: [] })) : worker.fetch(url)) as typeof fetch,
+    exec: async (_file: string, args: readonly string[]) => String(args[1]).includes(`/compare/${LIVE}...main`)
+      ? JSON.stringify([{ sha: IMAGED, at: new Date(at).toISOString() }, { sha: FRONTEND, at: new Date(at).toISOString() }])
+      : String(args[1]).includes("/packages/container/") ? JSON.stringify([{ at: new Date(at + 600_000).toISOString(), tags: [IMAGED, "main"] }]) : "[]" };
+  const output = await measureDeploys(deps);
+  assert.equal(output.metrics.worker_not_live, 1);
+  assert.match((output.flagged ?? []).find(slice => slice.kind === "worker_not_live")?.excerpt ?? "",
+    /the Komodo worker \(Stack slack-green\) runs 618867b, which lacks d418d8b \(25 min after its push, worker image published\)/);
 });
 
 // 11-21: a customer's Slack connect failed on prod after add-on 1.6 shipped; the connect check now runs after every main deploy.

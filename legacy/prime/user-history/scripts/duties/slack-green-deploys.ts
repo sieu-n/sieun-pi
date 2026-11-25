@@ -1,22 +1,21 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { type FlaggedSlice, type PrecheckOutput, PRECHECK_TARGET_MS } from "../../src/shared/chat-duties.ts";
 import { retryingExec } from "./connection-retry.ts";
 
 /**
  * The deploy reader of slack green guy's Slack Green services work duty (slack-green-services.ts), which folded in the Slack green deploys
- * duty (d4) on 10-30. No model call. commits_not_live counts slack-green main commits pushed over DEPLOY_MINUTES ago that are not live on the Railway worker
- * (when the commit changes a railway.toml watch path) or on Vercel production. A commit is live on a side when the commit that side runs
- * contains it, so the count reads the real state whoever deployed: Railway's GitHub trigger, the CI Backend job's deploy_worker.py
- * (slack-green #253), or this precheck. GitHub's compare API lists the main commits the live commit lacks, which also covers a live commit
- * that is not on main. A source that fails makes the headline at least 1, because an unmeasured state is not a good one.
- * This precheck deploys nothing. Until 11-04 it redeployed main's head to the Railway worker when the worker missed a commit, but after
- * slack-green #422 deleted the Dockerfile each of those builds failed (c942da20 at 03:09Z). The worker ran on us-metal01 from 06:40Z to
- * 08:36Z on 11-04 and went back to Railway, which builds main again once the Dockerfile returns; the us-metal01 read is in sieun-pi 1ea9c0a7. slack-green's CI Vercel deploy job (slack-green #299) calls the project's deploy hook when Vercel starts nothing for a main push that
- * ran CI, as for 9db2437 (#298) on 2026-10-19. A commit still missing here past DEPLOY_MINUTES most likely got no push event (9ad6c68,
- * 2026-09-29), which the duty job fixes with an empty commit through a PR.
+ * duty (d4) on 10-30. No model call. commits_not_live counts slack-green main commits pushed over DEPLOY_MINUTES ago that are not live on the
+ * worker or on Vercel production. Since 11-25 the worker runs as Komodo Stack slack-green on us-metal01 instead of Railway. slack-green's CI
+ * publishes ghcr.io/sieu-n/slack-green/worker:<commit> for each main commit that changes the backend and moves :main to it when it is still
+ * main's tip, and Komodo redeploys the Stack on a new :main digest within about 3 min. So the worker owes a commit once a worker image is
+ * published for it, and the commit it runs is its container's org.opencontainers.image.revision label. A commit is live on a side when the
+ * commit that side runs contains it; GitHub's compare API lists the main commits the live commit lacks, which also covers a live commit that
+ * is not on main. A source that fails makes the headline at least 1, because an unmeasured state is not a good one.
+ * This precheck deploys nothing. slack-green's CI Vercel deploy job (slack-green #299) calls the project's deploy hook when Vercel starts
+ * nothing for a main push that ran CI, as for 9db2437 (#298) on 2026-10-19. A commit still missing here past DEPLOY_MINUTES most likely got
+ * no push event (9ad6c68, 2026-09-29), which the duty job fixes with an empty commit through a PR.
  * Its one supporting metric, main_checks_failed_24h, counts the slack-green main commits whose push CI run (ci.yml) started in the last 24 h
  * and ended failed, cancelled or timed out, because main's checks broke four times from Oct 9 to Oct 18 (board step p180). Each one is
  * flagged with its failed job, step and link, and the step says whose fix it is: the runner's setup or its job-started hook (the M1 Air's disk
@@ -28,21 +27,20 @@ const VERCEL_TEAM = "team_HkFeqFbbJa5UAIjN0IYINUS0";
 const VERCEL_PROJECT = "prj_Fg9XulbXkvMu6jmDIeGK8tb2DsvG";
 /**
  * How long a push may take to reach production before it counts as not live. The owner's brief asked for 20 minutes (2026-10-14). Measured:
- * the main CI run on the M1 Air took 9.4 and 10.2 min (runs 38287317331, 38289995168), and Railway waits for it before it builds; 40 Vercel
+ * the main CI run on the M1 Air took 9.4 and 10.2 min (runs 38287317331, 38289995168), and the worker image is published at its end; 40 Vercel
  * production builds took 1.3 min median and 1.8 min at most.
  */
 export const DEPLOY_MINUTES = 20;
-const RAILWAY_LIVE = ["SUCCESS", "SLEEPING"];
 const MINUTE = 60_000;
-/** GitHub lists at most 300 files per commit; a commit at the cap counts as changing a watched path. */
-const COMMIT_FILE_LIMIT = 300;
+export const WORKER_IMAGE_PUBLISHED = "worker image published";
 
-/** A slack-green main commit with its committer time (the merge time for a squash merge). `watched`: it changes a railway.toml watch path. */
-export interface Commit { sha: string; at: number; watched?: boolean | undefined }
-/** One deployment as the platform lists it; `reason` is Railway's skippedReason. */
-export interface Deploy { status: string; at: number; sha?: string | undefined; reason?: string | undefined }
-/** One side of production: the commit it runs, its recent deployments, and the main commits that commit lacks, oldest first. */
+/** A slack-green main commit with its committer time (the merge time for a squash merge). */
+export interface Commit { sha: string; at: number }
+/** One deployment as Vercel lists it, or one worker image as ghcr lists it (status WORKER_IMAGE_PUBLISHED, `at` its push time). */
+export interface Deploy { status: string; at: number; sha?: string | undefined }
+/** One side of production: the commit it runs, its recent deployments or images, and the main commits that commit lacks, oldest first. */
 export interface Side { live: string; deploys: Deploy[]; behind: Commit[] }
+export type SideName = "worker" | "vercel";
 /** One slack-green main push CI run (ci.yml) as `gh run list` gives it: `at` its start, `end` its last update. `conclusion` is empty while the run is not done. */
 export interface CiRun { id: number; sha: string; at: number; end: number; conclusion: string; url: string }
 /** One job of a run as `gh run view --json jobs` gives it, with each step's conclusion. */
@@ -52,31 +50,29 @@ export interface CiJob { name: string; conclusion: string; url?: string | undefi
  * holds the disk floor, or a job that never got steps), which VP of CI fixes. `repo`: a repo step failed. `unknown`: its jobs did not read.
  */
 export interface CheckFailure { run: CiRun; side: "runner" | "repo" | "unknown"; job?: string | undefined; step?: string | undefined; url: string; error?: string | undefined }
-export interface Sources { railway?: Side; vercel?: Side; checks?: CheckFailure[]; checkRuns?: number; errors: string[] }
+export interface Sources { worker?: Side; vercel?: Side; checks?: CheckFailure[]; checkRuns?: number; errors: string[] }
 
 const short = (sha: string | undefined) => sha ? sha.slice(0, 7) : "none";
 const age = (commit: Commit, now: number) => Math.floor((now - commit.at) / MINUTE);
 const latestFor = (deploys: readonly Deploy[], sha: string) => deploys.filter(deploy => deploy.sha === sha).sort((a, b) => b.at - a.at)[0];
 
-/** The commits a side should run: all for Vercel, only those that change a watch path for the worker. Unknown counts as watched. */
-const owed = (side: "railway" | "vercel", behind: readonly Commit[]) => side === "vercel" ? [...behind] : behind.filter(commit => commit.watched !== false);
+/** The commits a side should run: all for Vercel, only those CI published a worker image for on the worker. */
+const owed = (side: SideName, state: Side) => side === "vercel" ? [...state.behind]
+  : state.behind.filter(commit => state.deploys.some(image => image.sha === commit.sha));
 
 /** The owed commits split by age: `late` are past DEPLOY_MINUTES and count against the headline, `pending` are still on their way. */
-export function standing(side: "railway" | "vercel", behind: readonly Commit[], now: number): { late: Commit[]; pending: Commit[] } {
-  const commits = owed(side, behind);
+export function standing(side: SideName, state: Side, now: number): { late: Commit[]; pending: Commit[] } {
+  const commits = owed(side, state);
   return { late: commits.filter(commit => age(commit, now) >= DEPLOY_MINUTES), pending: commits.filter(commit => age(commit, now) < DEPLOY_MINUTES) };
 }
 
-/** What the platform did with one commit: its newest deployment's status and Railway's skip reason, or that it has none. */
-const fate = (deploys: readonly Deploy[], sha: string): string => {
-  const deploy = latestFor(deploys, sha);
-  return !deploy ? "no deployment" : deploy.reason ? `${deploy.status}: ${deploy.reason}` : deploy.status;
-};
+/** What the platform did with one commit: its newest deployment's or image's status, or that it has none. */
+const fate = (deploys: readonly Deploy[], sha: string): string => latestFor(deploys, sha)?.status ?? "no deployment";
 
-const PLATFORM = { railway: "the Railway worker", vercel: "Vercel production" } as const;
+const PLATFORM = { worker: "the Komodo worker (Stack slack-green)", vercel: "Vercel production" } as const;
 const LISTED = 8;
 
-export function describe(side: "railway" | "vercel", state: Side, commits: readonly Commit[], now: number): string {
+export function describe(side: SideName, state: Side, commits: readonly Commit[], now: number): string {
   const listed = commits.slice(0, LISTED).map(commit => `${short(commit.sha)} (${age(commit, now)} min after its push, ${fate(state.deploys, commit.sha)})`);
   const more = commits.length > LISTED ? ` and ${commits.length - LISTED} more` : "";
   return `${PLATFORM[side]} runs ${short(state.live)}, which lacks ${listed.join(", ")}${more}`;
@@ -90,11 +86,11 @@ export function deployMetrics(sources: Sources, now: number): { metrics: Record<
   const flagged: FlaggedSlice[] = sources.errors.map(error => ({ at: now, kind: "source_error",
     excerpt: `${error}. The headline counts this run as a miss until the precheck or its login is fixed.` }));
   const notLive = new Set<string>();
-  const counts = { railway: 0, vercel: 0 };
-  for (const side of ["railway", "vercel"] as const) {
+  const counts = { worker: 0, vercel: 0 };
+  for (const side of ["worker", "vercel"] as const) {
     const state = sources[side];
     if (!state) continue;
-    const { late, pending } = standing(side, state.behind, now);
+    const { late, pending } = standing(side, state, now);
     counts[side] = late.length;
     for (const commit of late) notLive.add(commit.sha);
     flagged.push(late.length
@@ -109,7 +105,7 @@ export function deployMetrics(sources: Sources, now: number): { metrics: Record<
   const failedCommits = sources.checks ? new Set(sources.checks.map(failure => failure.run.sha)).size : 1;
   const failedAt = !sources.checks ? now : sources.checks.length ? Math.max(...sources.checks.map(failure => failure.run.end)) : undefined;
   return { metrics: { commits_not_live: errors ? Math.max(notLive.size, 1) : notLive.size, main_checks_failed_24h: failedCommits,
-    railway_not_live: counts.railway, vercel_not_live: counts.vercel, source_errors: errors }, flagged,
+    worker_not_live: counts.worker, vercel_not_live: counts.vercel, source_errors: errors }, flagged,
     ...failedAt === undefined ? {} : { lastEventAt: { main_checks_failed_24h: failedAt } } };
 }
 
@@ -145,7 +141,7 @@ export function describeFailure(failure: CheckFailure): string {
 
 /** Runs a program with no shell and gives its stdout. */
 export type Exec = (file: string, args: readonly string[], options?: { cwd?: string }) => Promise<string>;
-export interface DeployDeps { exec: Exec; fetch: typeof fetch; now: () => number; vercelToken: () => Promise<string> }
+export interface DeployDeps extends KomodoDeps { exec: Exec; now: () => number; vercelToken: () => Promise<string> }
 
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error)).replace(/(Bearer\s+)\S+/g, "$1***");
 
@@ -153,17 +149,6 @@ const message = (error: unknown): string => (error instanceof Error ? error.mess
 export async function readBehind(deps: DeployDeps, live: string): Promise<Commit[]> {
   const out = await deps.exec("gh", ["api", `repos/${REPO}/compare/${live}...main`, "--jq", "[.commits[] | {sha, at: .commit.committer.date}]"]);
   return (JSON.parse(out) as { sha: string; at: string }[]).map(commit => ({ sha: commit.sha, at: Date.parse(commit.at) }));
-}
-
-const globRegex = (glob: string): RegExp => new RegExp(`^${glob.split("**").map(part =>
-  part.replace(/[.+^$|()[\]{}\\]/g, "\\$&").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]")).join(".*")}$`);
-
-/** railway.toml's watchPatterns on main as path regexes; `**` crosses folders, `*` and `?` do not. */
-export async function readWatchPatterns(deps: DeployDeps): Promise<RegExp[]> {
-  const toml = await deps.exec("gh", ["api", `repos/${REPO}/contents/packages/backend/railway.toml?ref=main`, "-H", "Accept: application/vnd.github.raw"]);
-  const list = /watchPatterns\s*=\s*\[([^\]]*)\]/.exec(toml)?.[1];
-  if (!list) throw new Error("packages/backend/railway.toml on main has no watchPatterns");
-  return [...list.matchAll(/"([^"]+)"/g)].map(([, pattern]) => globRegex(pattern!.replace(/^\//, "")));
 }
 
 /** slack-green's main push runs of ci.yml, newest 100, which covers far more than a day of pushes. */
@@ -203,34 +188,51 @@ export async function dropFixed(deps: DeployDeps, runs: readonly CiRun[], failur
   return failures.filter(failure => failure.job === undefined || (newestPass.get(failure.job) ?? 0) <= failure.run.at);
 }
 
-export async function readFiles(deps: DeployDeps, sha: string): Promise<string[]> {
-  return JSON.parse(await deps.exec("gh", ["api", `repos/${REPO}/commits/${sha}`, "--jq", "[.files[].filename]"])) as string[];
+/** The Komodo service user slack-green-ci, which may read, inspect and read logs of Stack slack-green and nothing else. */
+export interface KomodoLogin { key: string; secret: string }
+export const KOMODO_CORE = "https://us-metal01.tail0c093d.ts.net:12443";
+export const WORKER_STACK = { stack: "slack-green", service: "slack-green-worker" } as const;
+const AUTO_SNS = join(homedir(), "Documents/Github/auto-sns-agent");
+
+/** The slack-green-ci key, decrypted from auto-sns-agent's prod infra tier apps/infra/.env, which variables.mjs also reads. */
+export async function komodoLogin(run: Exec = exec): Promise<KomodoLogin> {
+  const get = async (name: string) => {
+    const value = (await run(join(AUTO_SNS, "node_modules/.bin/dotenvx"), ["get", name, "-f", join(AUTO_SNS, "apps/infra/.env")], { cwd: AUTO_SNS })).trim();
+    if (!value || value.startsWith("encrypted:")) throw new Error(`${name} did not decrypt from auto-sns-agent apps/infra/.env`);
+    return value;
+  };
+  return { key: await get("SLACK_GREEN_KOMODO_API_KEY"), secret: await get("SLACK_GREEN_KOMODO_API_SECRET") };
 }
 
-export const touchesWatched = (files: readonly string[], patterns: readonly RegExp[]): boolean =>
-  files.length >= COMMIT_FILE_LIMIT || files.some(file => patterns.some(pattern => pattern.test(file)));
-
-interface RailwayRow { status: string; createdAt: string; meta?: { branch?: string; commitHash?: string; skippedReason?: string } }
-
-/** The worker's deployments, linked in a temp folder and unlinked after, as the Slack green emails precheck does. */
-export async function readRailway(deps: DeployDeps): Promise<Deploy[]> {
-  const dir = await mkdtemp(join(tmpdir(), "sg-deploys-"));
-  try {
-    await deps.exec("railway", ["link", "--project", "slack-green-backend", "--environment", "production", "--service", "slack-green-backend"], { cwd: dir });
-    const list = await deps.exec("railway", ["deployment", "list", "--json", "--limit", "100"], { cwd: dir });
-    return (JSON.parse(list.slice(list.indexOf("["))) as RailwayRow[]).map(row => ({ status: row.status, at: Date.parse(row.createdAt), sha: row.meta?.commitHash,
-      reason: row.meta?.skippedReason }));
-  } finally {
-    await deps.exec("railway", ["unlink", "-y"], { cwd: dir }).catch(() => "");
-    await rm(dir, { recursive: true, force: true });
-  }
+export interface KomodoDeps { fetch: typeof fetch; komodo: () => Promise<KomodoLogin> }
+/** One Komodo read API call: POST {core}/read/<op> with the key pair in its headers. */
+export async function komodoRead<T>(deps: KomodoDeps, op: string, body: unknown): Promise<T> {
+  const login = await deps.komodo();
+  const response = await deps.fetch(`${KOMODO_CORE}/read/${op}`, { method: "POST", body: JSON.stringify(body),
+    headers: { "content-type": "application/json", "x-api-key": login.key, "x-api-secret": login.secret }, signal: AbortSignal.timeout(20_000) });
+  const text = await response.text();
+  if (!response.ok) throw new Error(`Komodo ${op} answered HTTP ${response.status}: ${text.slice(0, 200)}`);
+  return JSON.parse(text) as T;
 }
 
-/** The commit the worker runs: its newest SUCCESS or SLEEPING deployment. */
-export function railwayLive(deploys: readonly Deploy[]): string {
-  const live = [...deploys].sort((a, b) => b.at - a.at).find(deploy => RAILWAY_LIVE.includes(deploy.status) && deploy.sha);
-  if (!live?.sha) throw new Error(`no SUCCESS or SLEEPING deployment with a commit among the worker's newest ${deploys.length}`);
-  return live.sha;
+/** The worker container as docker inspect gives it, through Komodo. */
+export interface WorkerContainer { RestartCount?: number; Config?: { Labels?: Record<string, string> };
+  State?: { Status?: string; Running?: boolean; Restarting?: boolean; StartedAt?: string } }
+export const readWorkerContainer = (deps: KomodoDeps) => komodoRead<WorkerContainer>(deps, "InspectStackContainer", WORKER_STACK);
+
+/** The commit the worker runs: the revision label build_worker_image.py writes into each worker image. */
+export function workerRevision(container: WorkerContainer): string {
+  const revision = container.Config?.Labels?.["org.opencontainers.image.revision"];
+  if (!revision) throw new Error(`the ${WORKER_STACK.service} container has no org.opencontainers.image.revision label`);
+  return revision;
+}
+
+/** The worker images CI published, one per commit tag, from the newest 100 package versions, which cover weeks of backend merges. */
+export async function readWorkerImages(deps: DeployDeps): Promise<Deploy[]> {
+  const out = await deps.exec("gh", ["api", "/users/sieu-n/packages/container/slack-green%2Fworker/versions?per_page=100",
+    "--jq", "[.[] | {at: .created_at, tags: .metadata.container.tags}]"]);
+  return (JSON.parse(out) as { at: string; tags: string[] }[]).flatMap(version => version.tags.filter(tag => /^[0-9a-f]{40}$/.test(tag))
+    .map(sha => ({ status: WORKER_IMAGE_PUBLISHED, at: Date.parse(version.at), sha })));
 }
 
 async function vercelGet<T>(deps: DeployDeps, path: string): Promise<T> {
@@ -250,18 +252,6 @@ export async function readVercel(deps: DeployDeps): Promise<{ live: string; depl
   return { live, deploys: list.deployments.map(row => ({ status: row.state ?? row.readyState ?? "?", at: row.created, sha: row.meta?.githubCommitSha })) };
 }
 
-/** Marks each worker commit past DEPLOY_MINUTES with whether it changes a watch path; a failed read leaves it unknown, which counts as watched. */
-async function markWatched(deps: DeployDeps, behind: Commit[], now: number, fail: (what: string) => (error: unknown) => undefined): Promise<void> {
-  const due = behind.filter(commit => age(commit, now) >= DEPLOY_MINUTES);
-  if (!due.length) return;
-  const patterns = await readWatchPatterns(deps).catch(fail("railway.toml watchPatterns on main"));
-  if (!patterns) return;
-  await Promise.all(due.map(async commit => {
-    const files = await readFiles(deps, commit.sha).catch(fail(`GitHub files of ${short(commit.sha)}`));
-    if (files) commit.watched = touchesWatched(files, patterns);
-  }));
-}
-
 export async function measureDeploys(deps: DeployDeps): Promise<PrecheckOutput> {
   const now = deps.now();
   const sources: Sources = { errors: [] };
@@ -271,12 +261,12 @@ export async function measureDeploys(deps: DeployDeps): Promise<PrecheckOutput> 
     const behind = platform && await readBehind(deps, platform.live).catch(fail(`GitHub main commits missing from ${name}'s ${short(platform.live)}`));
     return platform && behind ? { ...platform, behind } : undefined;
   };
-  const [railway, vercel, checks] = await Promise.all([
-    side("Railway deployments", async () => { const deploys = await readRailway(deps); return { live: railwayLive(deploys), deploys }; }),
+  const [worker, vercel, checks] = await Promise.all([
+    side("Komodo worker", async () => ({ live: workerRevision(await readWorkerContainer(deps)), deploys: await readWorkerImages(deps) })),
     side("Vercel production", () => readVercel(deps)),
     readCheckFailures(deps, now).catch(fail("GitHub main CI runs")),
   ]);
-  if (railway) { await markWatched(deps, railway.behind, now, fail); sources.railway = railway; }
+  if (worker) sources.worker = worker;
   if (vercel) sources.vercel = vercel;
   if (checks) { sources.checks = checks.failures; sources.checkRuns = checks.finished; }
   return deployMetrics(sources, now);
@@ -288,5 +278,5 @@ const execOnce: Exec = (file, args, options) => new Promise((resolve, reject) =>
   execFile(file, [...args], { encoding: "utf8", timeout: COMMAND_TIMEOUT_MS, cwd: options?.cwd },
     (error, stdout, stderr) => error ? reject(new Error(`${file} ${args[0] ?? ""}: ${error.message} ${stderr}`.trim())) : resolve(stdout));
 });
-/** A gh or railway call that could not connect, such as gh's "error connecting to api.github.com" on 11-09, runs once more. */
+/** A gh call that could not connect, such as gh's "error connecting to api.github.com" on 11-09, runs once more. */
 export const exec: Exec = retryingExec(execOnce);

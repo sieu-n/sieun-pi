@@ -15,20 +15,19 @@ function deps(now: number): DeployDeps {
       return JSON.stringify([{ sha: MISSED, at: new Date(PUSHED).toISOString() }]);
     if (file === "gh" && args[0] === "api" && String(args[1]).includes("/compare/")) return "[]";
     if (file === "gh" && args[0] === "run") return "[]";
-    if (file === "railway" && args[0] === "deployment")
-      return JSON.stringify([{ status: "SUCCESS", createdAt: new Date(PUSHED + MINUTE).toISOString(), meta: { commitHash: MISSED } }]);
-    return "";
+    return "[]";
   };
-  const fetch = (async () => new Response(JSON.stringify({ targets: { production: { meta: { githubCommitSha: LIVE } } },
-    deployments: [{ state: "READY", created: PUSHED - 36 * MINUTE, meta: { githubCommitSha: LIVE } }] }))) as typeof globalThis.fetch;
-  return { exec, fetch, now: () => now, vercelToken: async () => "t" };
+  const fetch = (async (url: string | URL | Request) => new Response(JSON.stringify(String(url).includes("/read/InspectStackContainer")
+    ? { Config: { Labels: { "org.opencontainers.image.revision": MISSED } } }
+    : { targets: { production: { meta: { githubCommitSha: LIVE } } }, deployments: [{ state: "READY", created: PUSHED - 36 * MINUTE, meta: { githubCommitSha: LIVE } }] }))) as typeof globalThis.fetch;
+  return { exec, fetch, now: () => now, vercelToken: async () => "t", komodo: async () => ({ key: "k", secret: "s" }) };
 }
 
 test("a main commit with no Vercel production deployment counts as not live once it is DEPLOY_MINUTES old", async () => {
   const output = await measureDeploys(deps(PUSHED + (DEPLOY_MINUTES + 2) * MINUTE));
   assert.equal(output.metrics.commits_not_live, 1);
   assert.equal(output.metrics.vercel_not_live, 1);
-  assert.equal(output.metrics.railway_not_live, 0);
+  assert.equal(output.metrics.worker_not_live, 0);
   const slice = (output.flagged ?? []).find(item => item.kind === "vercel_not_live");
   assert.match(slice?.excerpt ?? "", new RegExp(`Vercel production runs c805b4a, which lacks 9db2437 \\(${DEPLOY_MINUTES + 2} min after its push, no deployment\\)`));
 });

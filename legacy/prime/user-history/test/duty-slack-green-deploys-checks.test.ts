@@ -33,11 +33,12 @@ function deps(runs: CiRun[], failRunList = false): DeployDeps {
     }
     if (file === "gh" && args[0] === "run" && args[1] === "view") return JSON.stringify({ jobs: JOBS[Number(args[2])] ?? [] });
     if (file === "gh" && args[0] === "api" && String(args[1]).includes("/compare/")) return "[]";
-    if (file === "railway" && args[0] === "deployment") return JSON.stringify([{ status: "SUCCESS", createdAt: new Date(NOW - HOUR).toISOString(), meta: { commitHash: "live" } }]);
-    return "";
+    return "[]";
   };
-  const fetch = (async () => new Response(JSON.stringify({ targets: { production: { meta: { githubCommitSha: "live" } } }, deployments: [] }))) as typeof globalThis.fetch;
-  return { exec, fetch, now: () => NOW, vercelToken: async () => "t" };
+  const fetch = (async (url: string | URL | Request) => new Response(JSON.stringify(String(url).includes("/read/InspectStackContainer")
+    ? { Config: { Labels: { "org.opencontainers.image.revision": "live" } } }
+    : { targets: { production: { meta: { githubCommitSha: "live" } } }, deployments: [] }))) as typeof globalThis.fetch;
+  return { exec, fetch, now: () => NOW, vercelToken: async () => "t", komodo: async () => ({ key: "k", secret: "s" }) };
 }
 
 test("a failed main run of the last 24 h counts once per commit, with the runner or the repo named as the fix's owner", async () => {
