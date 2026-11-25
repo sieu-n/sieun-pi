@@ -348,7 +348,7 @@ export type VentGatewayOutput = PrecheckOutput & { n: Record<string, number> };
 export function ventMetrics(reads: VentReads, at: number): VentGatewayOutput {
   const flagged: FlaggedSlice[] = [];
   const metrics: Record<string, number> = {};
-  const n: Record<string, number> = { through_vent_pct: 0, provider_keys_outside_vent: 0, removed_provider_refs: 0, test_calls_real_24h: 0 };
+  const n = { through_vent_pct: 0, provider_keys_outside_vent: 0, removed_provider_refs: 0, test_calls_real_24h: 0 };
   let sourceErrors = 0;
   const sourceError = (excerpt: string) => { sourceErrors++; flagged.push({ at, kind: "source_error", excerpt: excerpt.slice(0, 300) }); };
 
