@@ -1,11 +1,12 @@
 /**
  * Duty precheck: sw factory stays snappy (owner's words, #sw-factory-build, 11-03, msg mw0et67o: "Thread > load messages 이것도 진짜 너무
  * 느리거든? 이거 계속 느린 api 뭔지 꾸준히 (daily) monitoring 하는걸 add to duty and keep it snappy"). It reads the request log
- * (server/request-log.ts) of the last 24 h and gives each route's p90 as the owner waits for it: his own devices' lines (via tailnet), with
- * his newest MIN_OWN_CALLS on the route from the log's older lines when the window holds fewer, else, for a route he made no request of
- * in the log's last 72 h, an estimate from the server's handler time plus his network p50 from his other tailnet lines (the handler time
- * alone when fewer than MIN_NETWORK_LINES of them carry a network time), and each metric says which in `metricSources`. A wait of his over
- * 1 s that his route's p90 does not show is a slow_call row. A box
+ * (server/request-log.ts) of the last 24 h and gives each route's p90 as the owner waits for it: his own devices' lines (via tailnet) of
+ * the window. The headline reads only routes he called in the window. A search, thread open or send metric he made no call of in the
+ * window reads his newest FILL_CALLS on it from the log's older lines, else, with none in the log's last 72 h, an estimate from the
+ * server's handler time plus his network p50 from his other tailnet lines (the handler time alone when fewer than MIN_NETWORK_LINES of
+ * them carry a network time), and each metric says which in `metricSources`. A wait of his over 1 s that his route's p90 does not show is
+ * a slow_call row. A box
  * browser's line, such as a job's walk, never sets a metric; its slowest routes are walk_slow_api rows apart. A call the screen did not
  * wait on says so in `bg` (request-log.ts): a read ahead of any view counts nowhere, and a refresh behind a page already on the screen
  * counts as a 0 ms wait. A client line's `net` is the
@@ -140,12 +141,14 @@ function withNetwork(p90: number, head: string, net: OwnerNetwork | undefined): 
 }
 
 /**
- * The fewest of the owner's own requests a route's p90 reads over. On a day he uses the page little, a route with fewer of his requests in
- * the window reads over his newest MIN_OWN_CALLS on it from the LOOKBACK_MS before, the window's all among them, since a p90 over 3 requests
- * is their slowest one. At 16:00 KST 11-23 thread open read 270 ms from 3 opens of his, 2 of them at 0 ms, and replies read 251.6 ms from
- * the server's 1.6 ms plus his 250 ms network with no reply open of his in the window.
+ * How many of the owner's newest requests from the LOOKBACK_MS before the window stand in for a search, thread open or send metric he made
+ * no call of in the window, rather than the server's handler time plus a network time: at 16:00 KST 11-23 replies read 251.6 ms from the
+ * server's 1.6 ms plus his 250 ms network with no reply open of his in the window, while his reply opens draw from the page at once.
+ * A route with any call of his in the window reads over the window's calls alone. Until 11-26 his older lines also filled a window with
+ * fewer than 10 of his calls, and on 11-25 the headline read 4,385 ms from his GET /api/usage waits of 23:27 KST 11-23, from before the
+ * Usage fix of 00:07 KST 11-24, while his 3 Usage opens in the window waited 0 ms.
  */
-export const MIN_OWN_CALLS = 10;
+export const FILL_CALLS = 10;
 
 /**
  * How far back from now the owner's own requests fill a quiet window. The request log keeps today and the 2 UTC days before, so it holds
@@ -157,7 +160,7 @@ const iso = (at: number): string => new Date(at).toISOString().slice(0, 16).repl
 
 /**
  * A route's p90 as the owner waits for it, and the text that says where it came from. His own devices' lines set it: the window's, and
- * when the window holds fewer than MIN_OWN_CALLS, his newest MIN_OWN_CALLS on the route from the LOOKBACK_MS before the window too. Only a
+ * when the window holds none, his newest FILL_CALLS on the route from the LOOKBACK_MS before the window. Only a
  * route he made no request of in all that time reads an estimate, the server's handler p90 plus his network p50 from his other calls when
  * at least MIN_NETWORK_LINES of them carry one, and its source says it is an estimate. A box browser's line never sets it. On 11-05 the
  * send metric read 288 ms from 255 job walks in the box Chrome, which waits for the box's CPU, while the server answered sends at 15 ms p90
@@ -167,6 +170,8 @@ export interface OwnerSpeed {
   route: string; p90: number; source: string; speed: RouteSpeed;
   /** The newest of the owner's lines that set `p90`; an estimate or a probe has none. */
   lastAt?: number;
+  /** Set when his lines from before the window set `p90`, since he made no call of the route in it. */
+  filled?: true;
 }
 
 export function ownerSpeed(speeds: readonly RouteSpeed[], route: string, net: OwnerNetwork | undefined, window: readonly RequestTiming[] = [], before: readonly RequestTiming[] = []): OwnerSpeed | undefined {
@@ -174,13 +179,11 @@ export function ownerSpeed(speeds: readonly RouteSpeed[], route: string, net: Ow
   const shownNote = (s: RouteSpeed): string => (s.shown ? `, ${s.shown} of them behind a page the screen already showed (0 ms)` : "");
   const count = own?.count ?? 0;
   const mine = window.filter(t => sourceOf(t) === "tailnet" && counted(t) && `${t.m} ${t.r}` === route);
-  const older = count >= MIN_OWN_CALLS ? [] : before.filter(t => `${t.m} ${t.r}` === route).sort((a, b) => a.at - b.at).slice(-(MIN_OWN_CALLS - count));
+  const older = count ? [] : before.filter(t => `${t.m} ${t.r}` === route).sort((a, b) => a.at - b.at).slice(-FILL_CALLS);
   if (older.length) {
-    const lines = [...older, ...mine];
-    const speed = summarize(lines);
-    const lastAt = Math.max(...lines.map(t => t.at));
-    const why = count ? `only ${count} of his requests in the window reached it` : "he made none in the window";
-    return { route, p90: speed.p90, source: `the owner's devices, his newest ${speed.count} requests, from ${iso(lines[0]!.at)} to ${iso(lastAt)}, since ${why}${shownNote(speed)}`, speed, lastAt };
+    const speed = summarize(older);
+    const lastAt = older.at(-1)!.at;
+    return { route, p90: speed.p90, source: `the owner's devices, his newest ${speed.count} requests, from ${iso(older[0]!.at)} to ${iso(lastAt)}, since he made none in the window${shownNote(speed)}`, speed, lastAt, filled: true };
   }
   if (own) return { route, p90: own.p90, source: `the owner's devices, ${own.count} requests${shownNote(own)}`, speed: own, ...(mine.length ? { lastAt: Math.max(...mine.map(t => t.at)) } : {}) };
   const server = speeds.find(s => s.src === "server" && s.route === route);
@@ -346,8 +349,8 @@ const SLOW_CALL_ROWS = 5;
 
 /**
  * The owner's own waits of SLOW_CALL_MS or more in the window that the p90 of their route does not show: the slowest of each route, with
- * how many of that route's waits passed SLOW_CALL_MS, slowest first. A p90 over his newest MIN_OWN_CALLS requests is the second slowest of
- * 10, so one slow call of a quiet day would show in no metric.
+ * how many of that route's waits passed SLOW_CALL_MS, slowest first. A p90 over 20 or more requests is not their slowest, so one slow call
+ * of a busy route would show in no metric.
  */
 export function slowCalls(timings: readonly RequestTiming[], p90Of: (route: string) => number | undefined): { line: RequestTiming; count: number }[] {
   const byRoute = new Map<string, { line: RequestTiming; count: number }>();
@@ -366,9 +369,9 @@ export function slowCalls(timings: readonly RequestTiming[], p90Of: (route: stri
  * restart, across 32 of 94 restarts, mostly GET /api/later ('TypeError: Load failed'), and no metric counted them.
  *
  * `lastEventAt` names, per metric the owner's own lines set, the newest of those lines (`PrecheckOutput.lastEventAt`), so a red reading with
- * no call of his since the run before reads as quiet and the duty's push skips it (`pushMisses`). Its `windowMs` is LOOKBACK_MS, since his
- * newest line sets the route's p90 among his newest MIN_OWN_CALLS until it leaves the lookback. An estimate or a probe has no `lastEventAt`
- * and pushes as before. On 11-24 he made no call after 19:30 KST, and the push runs of 19:32 and 20:03 KST each started a duty job on
+ * no call of his since the run before reads as quiet and the duty's push skips it (`pushMisses`). Its `windowMs` is the window for a
+ * reading of the window's lines, and LOOKBACK_MS for one his older lines filled (OwnerSpeed `filled`), since those set the route's p90 until
+ * they leave the lookback. An estimate or a probe has no `lastEventAt` and pushes as before. On 11-24 he made no call after 19:30 KST, and the push runs of 19:32 and 20:03 KST each started a duty job on
  * slowest_api_p90_ms 3,631 ms from his GET /api/usage waits of 23:27 KST on 11-23. failed_sends_24h dates its newest counted failure.
  */
 export function apiSpeed(dir: string, now: number, windowMs: number, probes: readonly Probe[] = [], restarts: readonly number[] = []) {
@@ -387,8 +390,8 @@ export function apiSpeed(dir: string, now: number, windowMs: number, probes: rea
   const walks = failed.filter(fromBox);
   const counted = new Set(owners);
   const hits = restartHits(restarts, timings).filter(hit => !counted.has(hit.line));
-  const pageRoutes = new Set<string>([...Object.values(ROUTES), ...speeds.filter(s => s.src !== "server").map(s => s.route)]);
-  const slowest = [...pageRoutes].flatMap(route => speedOf(route) ?? []).sort((a, b) => b.p90 - a.p90).slice(0, 3);
+  // The headline reads the routes he called in the window, so a wait leaves it 24 h after he made it.
+  const slowest = speeds.filter(s => s.src === "tailnet").flatMap(s => speedOf(s.route) ?? []).sort((a, b) => b.p90 - a.p90).slice(0, 3);
   const walkSlowest = speeds.filter(s => s.src === "client").slice(0, 3);
   const [search, messages, replies, send] = [ROUTES.search, ROUTES.messages, ROUTES.replies, ROUTES.send].map(speedOf);
   const metrics: Record<string, number> = {};
@@ -409,7 +412,7 @@ export function apiSpeed(dir: string, now: number, windowMs: number, probes: rea
   const ownerLookback = Math.max(windowMs, LOOKBACK_MS);
   const threadOpen = [messages, replies].filter(o => o !== undefined).sort((a, b) => b.p90 - a.p90)[0];
   for (const [key, o] of [["slowest_api_p90_ms", slowest[0]], ["search_p90_ms", search], ["thread_open_p90_ms_messages", messages],
-    ["thread_open_p90_ms_replies", replies], ["thread_open_p90_ms", threadOpen], ["send_p90_ms", send]] as const) dated(key, o?.lastAt, ownerLookback);
+    ["thread_open_p90_ms_replies", replies], ["thread_open_p90_ms", threadOpen], ["send_p90_ms", send]] as const) dated(key, o?.lastAt, o?.filled ? ownerLookback : windowMs);
   const failures = [...owners, ...hits.map(hit => hit.line)];
   if (failures.length) dated("failed_sends_24h", Math.max(...failures.map(t => t.at)), windowMs);
   return {

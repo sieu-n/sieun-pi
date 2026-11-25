@@ -13,7 +13,7 @@ import { after, test } from "node:test";
 import { agedOut, agingSince, overdueWindow, pushMisses } from "../../../../legacy/prime/user-history/src/duty-push.ts";
 import { metricStreaks } from "../../../../legacy/prime/user-history/src/shared/duty-streak.ts";
 import { judge, type DutyMetric, type DutyRunRecord } from "../../web/src/lib/api/shared/chat-duties.ts";
-import { apiSpeed, finding, LOOKBACK_MS, MIN_NETWORK_LINES, MIN_OWN_CALLS, ownBefore, probeRoutes, probeSpeed, readTimings, routeSpeeds, unmeasured } from "../../scripts/duties/api-speed.ts";
+import { apiSpeed, FILL_CALLS, finding, LOOKBACK_MS, MIN_NETWORK_LINES, ownBefore, probeRoutes, probeSpeed, readTimings, routeSpeeds, unmeasured } from "../../scripts/duties/api-speed.ts";
 import { parseStarts } from "../../scripts/restart-walk-hits.ts";
 import { dayOf, LoopStalls, RequestLog, type RequestTiming } from "../../server/request-log.ts";
 import { StallProfiler } from "../../../../packages/pi-host/src/stall-profile.ts";
@@ -240,13 +240,14 @@ test("the precheck reads each metric from the owner's lines, falls back to the s
   });
   assert.equal(out.metricSources.messages, "GET /api/c/:id/items: the owner's devices, 10 requests");
   assert.equal(out.metricSources.send, "POST /api/c/:id/send: an estimate, since the owner made no request of this route in the request log's last 72 h: the server's handler p90 40 ms over 1 requests plus his network p50 20 ms over 30 tailnet requests");
-  assert.deepEqual(out.slowest.map(s => s.route), ["GET /api/c/:id/replies/:root", "GET /api/c/:id/items", "POST /api/c/:id/send"]);
+  // The headline reads only routes he called in the window, so the send estimate sets none of it.
+  assert.deepEqual(out.slowest.map(s => s.route), ["GET /api/c/:id/replies/:root", "GET /api/c/:id/items", "GET /api/rooms"]);
   assert.deepEqual(out.flagged.map(row => `${row.kind} ${row.sig}`), [
-    "slow_api tailnet:GET /api/c/:id/replies/:root", "slow_api tailnet:GET /api/c/:id/items", "slow_api server:POST /api/c/:id/send",
+    "slow_api tailnet:GET /api/c/:id/replies/:root", "slow_api tailnet:GET /api/c/:id/items", "slow_api tailnet:GET /api/rooms",
     "slow_call slow_call:GET /api/c/:id/items", "walk_slow_api client:GET /api/search", "walk_slow_api client:POST /api/c/:id/send", "walk_slow_api client:GET /api/me",
   ]);
   assert.equal(out.flagged[0]!.excerpt, "GET /api/c/:id/replies/:root p90 2500 ms, p50 10 ms, max 2500 ms over 2 requests from the owner's devices; on the 2 lines that carry the network time, the network and the server took p90 30 ms, p50 8 ms, so the page's main thread held the rest in long tasks; trace a page load in the box Chrome to find them; the slowest was /api/c/dm_x/replies/p1");
-  assert.match(out.flagged[2]!.excerpt, /^POST \/api\/c\/:id\/send p90 about 60 ms for the owner: an estimate, since the owner made no request/);
+  assert.match(out.flagged[2]!.excerpt, /^GET \/api\/rooms p90 20 ms, p50 20 ms, max 20 ms over 18 requests from the owner's devices/);
   assert.equal(out.flagged[3]!.excerpt, "2026-11-03T08:00:00.000Z GET /api/c/dm_x/items waited 2000 ms on the owner's page, 20 ms of it on the network, above the p90 of 190 ms its route reads");
   assert.match(out.flagged[4]!.excerpt, /from browsers on the box, such as job walks.*no line carries the network time yet/);
 });
@@ -307,7 +308,7 @@ test("a walk never sets a metric, and with no tailnet line the server's handler 
   writeFileSync(file, `${[row("client", 2000, "local"), row("client", 1500), row("server", 5)].join("\n")}\n`);
   const alone = apiSpeed(dir, now, 24 * 3600_000);
   assert.equal(alone.metrics.thread_open_p90_ms_messages, 5);
-  assert.equal(alone.metrics.slowest_api_p90_ms, 5);
+  assert.equal(alone.metrics.slowest_api_p90_ms, undefined, "no call of his in the window, so no headline");
   assert.equal(alone.network, undefined);
   assert.match(alone.metricSources.messages!, /handler p90 5 ms over 1 requests alone, since no tailnet request in the window carries the network time$/);
   writeFileSync(file, `${row("client", 80, "tailnet", 60)}\n`, { flag: "a" });
@@ -486,7 +487,7 @@ test("the ms a page was hidden count in no wait, and an old line without them co
   }
 });
 
-test("a route the owner used little in the window reads over his newest 10 requests on it, his window's among them", () => {
+test("a route the owner called in the window reads over the window's calls alone, and a metric route he did not call reads his newest 10 before it", () => {
   const dir = tempDir();
   mkdirSync(join(dir, "requests"));
   // 11-24 06:30 KST, the first run after a day he used the page little (requests/2026-11-22.jsonl and 2026-11-23.jsonl).
@@ -518,11 +519,10 @@ test("a route the owner used little in the window reads over his newest 10 reque
     if (rows.length) writeFileSync(join(dir, "requests", `${name}.jsonl`), `${rows.join("\n")}\n`);
   }
   const out = apiSpeed(dir, now, 24 * 3600_000);
-  assert.equal(MIN_OWN_CALLS, 10);
-  // Messages: his 3 opens of the window and his newest 7 before it (230, 240 and 5 shown); the 900 ms open is older than those 10, and a
-  // box walk's and a read ahead's lines count nowhere.
-  assert.equal(out.metrics.thread_open_p90_ms_messages, 240);
-  assert.equal(out.metricSources.messages, "GET /api/c/:id/items: the owner's devices, his newest 10 requests, from 2026-11-22 05:30Z to 2026-11-23 18:30Z, since only 3 of his requests in the window reached it, 7 of them behind a page the screen already showed (0 ms)");
+  assert.equal(FILL_CALLS, 10);
+  // Messages: his 3 opens of the window alone; his older opens, a box walk's and a read ahead's lines count nowhere.
+  assert.equal(out.metrics.thread_open_p90_ms_messages, 270);
+  assert.equal(out.metricSources.messages, "GET /api/c/:id/items: the owner's devices, 3 requests, 2 of them behind a page the screen already showed (0 ms)");
   // Replies: no open of his in the window, so his 4 of the log's days, never the server's 2 ms plus a network time.
   assert.equal(out.metrics.thread_open_p90_ms_replies, 350);
   assert.equal(out.metricSources.replies, "GET /api/c/:id/replies/:root: the owner's devices, his newest 4 requests, from 2026-11-22 05:30Z to 2026-11-22 08:30Z, since he made none in the window, 2 of them behind a page the screen already showed (0 ms)");
@@ -531,14 +531,12 @@ test("a route the owner used little in the window reads over his newest 10 reque
   assert.equal(out.metricSources.search, "GET /api/search: the owner's devices, 10 requests");
   // Send: no send of his in the log's days, so an estimate that says so.
   assert.match(out.metricSources.send!, /^POST \/api\/c\/:id\/send: an estimate, since the owner made no request of this route in the request log's last 72 h: /);
-  // A route out of every metric that he called in the window reads the same way, and /api/later, which he did not call in it, sets nothing.
-  assert.equal(out.slowest[0]!.route, "GET /api/agents/:id/board");
-  assert.equal(out.slowest[0]!.p90, 1200, "his newest 10 board reads: 8 shown at 0 ms, 1,200 and 1,500 ms");
-  assert.ok(!out.slowest.some(s => s.route === "GET /api/later"));
-  // His 1,500 ms wait, above the 1,200 ms p90 of its route, shows as a slow_call row.
-  assert.deepEqual(out.flagged.filter(row => row.kind === "slow_call").map(row => row.excerpt), [
-    `${new Date(hours(2)).toISOString()} GET /api/agents/dm_x/board waited 1500 ms on the owner's page, 212 ms of it on the network, above the p90 of 1200 ms its route reads`,
-  ]);
+  // The headline reads the routes he called in the window, each over the window's calls alone: his 8 shown board reads before it no longer
+  // hide his 1,200 and 1,500 ms waits in it. Replies and /api/later, which he did not call in it, set no headline.
+  assert.deepEqual(out.slowest.map(s => [s.route, s.p90]), [["GET /api/agents/:id/board", 1500], ["GET /api/c/:id/items", 270], ["GET /api/search", 108]]);
+  assert.equal(out.slowest[0]!.source, "the owner's devices, 2 requests");
+  // His 1,500 ms wait is the p90 of its route, so no slow_call row repeats it.
+  assert.deepEqual(out.flagged.filter(row => row.kind === "slow_call"), []);
   // A route with a line of his in the log's days gets no probe of the live server.
   const all = readTimings(dir, now, 72 * 3600_000);
   const before = ownBefore(all, hours(24));
@@ -565,7 +563,7 @@ test("a wait of the owner's over 1 s that his route's p90 hides is one slow_call
   ]]);
 });
 
-test("a red reading with no call of the owner's since the run before gets no push until his newest line leaves the 72 h lookback", () => {
+test("a red reading with no call of the owner's since the run before gets no push until his newest line leaves the 24 h window", () => {
   const dir = tempDir();
   mkdirSync(join(dir, "requests"));
   const metrics: DutyMetric[] = [
@@ -595,7 +593,8 @@ test("a red reading with no call of the owner's since the run before gets no pus
   const first = runAt(Date.UTC(2026, 10, 24, 10, 32));
   const out = apiSpeed(dir, first.at, 24 * 3600_000);
   assert.deepEqual(out.lastEventAt, { slowest_api_p90_ms: usageAt + 2000, search_p90_ms: usageAt - minute });
-  assert.deepEqual(out.windowMs, { slowest_api_p90_ms: LOOKBACK_MS, search_p90_ms: LOOKBACK_MS });
+  const day = 24 * 3600_000;
+  assert.deepEqual(out.windowMs, { slowest_api_p90_ms: day, search_p90_ms: day });
   const second = runAt(first.at + 31 * minute);
   assert.equal(second.verdict, "missed");
   const quiet = [second, first];
@@ -604,18 +603,20 @@ test("a red reading with no call of the owner's since the run before gets no pus
   assert.equal(agingSince(quiet), usageAt + 2000, "the duty owes no fix job while it ages");
   const streak = metricStreaks(quiet)[0]!;
   assert.equal(overdueWindow(streak, second.at), false);
-  assert.equal(overdueWindow(streak, usageAt + 2000 + LOOKBACK_MS), true, "a quiet miss still red past its window owes a fix job");
+  assert.equal(overdueWindow(streak, usageAt + 2000 + day), true, "a quiet miss still red past its window owes a fix job");
   assert.equal(agedOut(quiet, counted, second.at + 30 * minute), undefined);
-  assert.equal(agedOut(quiet, counted, usageAt + 2000 + LOOKBACK_MS), usageAt + 2000 + LOOKBACK_MS, "once his newest line left the lookback, the duty gets a push");
+  assert.equal(agedOut(quiet, counted, usageAt + 2000 + day), usageAt + 2000 + day, "once his newest line left the window, the duty gets a push");
 
-  // Past the lookback his lines set nothing: the server's handler time is an estimate with no lastEventAt, and its red reading pushes.
+  // Past the lookback his lines set nothing: with no call of his in the window there is no headline, the server's handler time is an
+  // estimate for search with no lastEventAt, and its red reading pushes.
   const later = usageAt + LOOKBACK_MS + 2 * 3600_000;
   rows.push({ at: later - 3600_000, src: "server", m: "GET", r: "/api/search", p: "/api/search", s: 200, ms: 1500 } as ReturnType<typeof row>);
   write();
   const estimate = runAt(later);
-  assert.equal(estimate.metrics.slowest_api_p90_ms?.value, 1500);
-  assert.equal(estimate.metrics.slowest_api_p90_ms?.lastEventAt, undefined);
-  assert.deepEqual(pushMisses([estimate, second, first], counted, 30 * minute, later + 30 * minute), ["slowest_api_p90_ms", "search_p90_ms"]);
+  assert.equal(estimate.metrics.slowest_api_p90_ms, undefined);
+  assert.equal(estimate.metrics.search_p90_ms?.value, 1500);
+  assert.equal(estimate.metrics.search_p90_ms?.lastEventAt, undefined);
+  assert.deepEqual(pushMisses([estimate, second, first], counted, 30 * minute, later + 30 * minute), ["search_p90_ms"]);
   rows.pop();
 
   // A new call of his on the route that sets the number makes the next run push again.
