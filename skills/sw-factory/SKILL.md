@@ -57,6 +57,7 @@ Every agent also has two common duties, which the owner asked for in #sw-factory
 | Daily area review | The stored duty "Area review", whose job reviews the area, acts on issues, cleans up, and updates the agent's llm-wiki pages, agent files and memory | `areaReviewDuty` in `apps/chat/server/common-duties.ts`, set by `App.createAgent` |
 
 The Area review precheck, `apps/chat/scripts/duties/area-review.ts`, runs with plain node from the agent's project folder, so its job works there.
+A precheck the server starts by an absolute path through the `sieun-pi-apps-chat/current` symlink checks its main module as `import.meta.url === file://${realpathSync(process.argv[1])}`, because node resolves the module to the release folder. With a plain `process.argv[1]` the script exits 0 with no output, as every agent's first Area review run did on 11-26 (fixed in 42651e578).
 It hands off the review every day, counts the owner's corrections from the agent's rooms that its memory never names, and lists his posts to the agent from the last 24 h.
 A walk's test agent gets the Area review paused, so no throwaway agent starts a daily job.
 The owner gave agent factory the meta duty: "AND AT A META LEVEL, @agent factory your duty is to make sure all agents are working like this as intended and adjust the sw-factory skills, duties."
