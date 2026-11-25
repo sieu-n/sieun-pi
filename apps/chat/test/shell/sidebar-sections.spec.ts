@@ -329,3 +329,46 @@ test("a section's Add channel checks existing channels in and out of it and make
   await expect(section(page, "Work").locator(`a[href="#/c/${room}"]`)).toBeVisible({ timeout: 15_000 });
   await archive(page, room);
 });
+
+test("rows and sections drag where the page never gets an HTML5 drop, as in the Mac app, without opening the row, Escape cancels and the moves stay after a reload", async ({ page }) => {
+  test.slow();
+  // Tauri's file-drop handler takes every native drag over the Mac app's window, so its page gets dragstart and never dragover or drop.
+  await page.addInitScript(() => {
+    for (const type of ["dragenter", "dragover", "dragleave", "drop"]) window.addEventListener(type, (e) => e.stopImmediatePropagation(), true);
+  });
+  await page.goto("/#/c/dm_vent");
+  await page.reload();
+  await expect(channel(page, "vent")).toHaveAttribute("aria-current", "page", { timeout: 15_000 });
+  for (const name of ["Work", "Ops"]) {
+    await block(page, "channels").getByRole("heading", { name: "Channels" }).hover();
+    await sidebar(page).getByRole("button", { name: "Channels options" }).click();
+    await page.getByRole("menuitem", { name: "New section" }).click();
+    await nameSection(page, "New section", name);
+  }
+  await expect.poll(() => sectionNames(page, ["Work", "Ops"])).toEqual(["Work", "Ops"]);
+
+  await drag(page, channel(page, "general"), section(page, "Work").getByRole("heading", { name: "Work" }));
+  await expect(section(page, "Work").locator(link("general"))).toBeVisible();
+  await expect(block(page, "channels").locator(link("general"))).toHaveCount(0);
+  await expect(page).toHaveURL(/#\/c\/dm_vent/);
+  await drag(page, channel(page, "pi-cutover"), section(page, "Work").locator(link("general")), { x: 30, y: 3 });
+  await expect.poll(() => order(page, "Work")).toEqual([`#/c/ch_cutover`, `#/c/ch_general`]);
+  await drag(page, section(page, "Ops").getByRole("heading", { name: "Ops" }), section(page, "Work").getByRole("heading", { name: "Work" }), { x: 30, y: 2 });
+  await expect.poll(() => sectionNames(page, ["Work", "Ops"])).toEqual(["Ops", "Work"]);
+
+  const from = (await channel(page, "vent").boundingBox())!;
+  await page.mouse.move(from.x + 30, from.y + from.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(from.x + 30, from.y + from.height / 2 - 8, { steps: 2 });
+  const to = (await section(page, "Ops").getByRole("heading", { name: "Ops" }).boundingBox())!;
+  await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, { steps: 5 });
+  await expect(section(page, "Ops")).toHaveAttribute("data-drop", "");
+  await page.keyboard.press("Escape");
+  await page.mouse.up();
+  await expect(block(page, "dms").locator(link("vent"))).toBeVisible();
+  await expect(sidebar(page).locator("[data-drop]")).toHaveCount(0);
+
+  await page.reload();
+  await expect.poll(() => sectionNames(page, ["Work", "Ops"]), { timeout: 15_000 }).toEqual(["Ops", "Work"]);
+  await expect.poll(() => order(page, "Work")).toEqual([`#/c/ch_cutover`, `#/c/ch_general`]);
+});

@@ -247,93 +247,175 @@ function read(): string | null {
   }
 }
 
-const ROOM_TYPES = { channel: "application/x-chat-channel", dm: "application/x-chat-dm" } as const;
-export const SECTION_DRAG_TYPE = "application/x-chat-section";
+/** What a sidebar drag holds: a channel row, a DM row or a custom section by its heading. */
+export type DragType = "channel" | "dm" | "section";
+export const SECTION_DRAG_TYPE: DragType = "section";
 /** The drag types a section takes: a custom section takes channels and DMs, Channels only channels and Direct messages only DMs. */
-export const roomTypes = (key: SectionKey): string[] => (key === "channels" ? [ROOM_TYPES.channel] : key === "dms" ? [ROOM_TYPES.dm] : Object.values(ROOM_TYPES));
-
-/** Starts dragging a channel or DM row, for moving it between sections or within one. */
-export function dragRoom(e: DragEvent, row: ConversationSummary): void {
-  if (!e.dataTransfer || (row.kind !== "channel" && row.kind !== "dm")) return;
-  e.dataTransfer.setData(ROOM_TYPES[row.kind], row.id);
-  e.dataTransfer.effectAllowed = "move";
-}
-
-/** Starts dragging a custom section by its heading; a drag that starts on one of its rows is the row's. */
-export function dragSection(e: DragEvent, id: SectionId): void {
-  if (!e.dataTransfer || e.target !== e.currentTarget) return;
-  e.dataTransfer.setData(SECTION_DRAG_TYPE, id);
-  e.dataTransfer.effectAllowed = "move";
-}
+export const roomTypes = (key: SectionKey): DragType[] => (key === "channels" ? ["channel"] : key === "dms" ? ["dm"] : ["channel", "dm"]);
 
 /** What a drop zone takes and does: `types` it accepts, the ones dropped `before` or after it by pointer height, and the handler. */
 export interface DropOptions {
-  types: readonly string[];
+  types: readonly DragType[];
   /** Types that land before or after this element, marked `data-drop="before"` or `"after"`; the rest mark plain `data-drop`. */
-  edges?: readonly string[];
-  /** A zone inside another one keeps its drags from reaching the outer zone, as a row inside its section does. */
-  inner?: boolean;
-  ondrop: (drop: { type: string; id: string; after: boolean }) => void;
+  edges?: readonly DragType[];
+  ondrop: (drop: { type: DragType; id: string; after: boolean }) => void;
 }
 
-/** Makes an element a drop target for dragged rows or sections, marking it while one is over it. */
-export function dropZone(node: HTMLElement, options: DropOptions) {
-  let opts = options;
-  let depth = 0;
-  const typeOf = (e: DragEvent) => opts.types.find((t) => e.dataTransfer?.types.includes(t));
-  const after = (e: DragEvent) => {
-    const box = node.getBoundingClientRect();
-    return e.clientY > box.top + box.height / 2;
-  };
-  const mark = (e: DragEvent | null, type?: string) => {
-    if (!e || !type) delete node.dataset.drop;
-    else node.dataset.drop = opts.edges?.includes(type) ? (after(e) ? "after" : "before") : "";
-  };
-  const claim = (e: DragEvent) => {
-    const type = typeOf(e);
-    if (type && opts.inner) e.stopPropagation();
-    return type;
-  };
-  const enter = (e: DragEvent) => {
-    const type = claim(e);
-    if (!type) return;
-    depth += 1;
-    mark(e, type);
-  };
-  const over = (e: DragEvent) => {
-    const type = claim(e);
-    if (!type) return;
+/** What a drag source holds; `handle` is the part a drag must start on, such as a section's heading, so its rows keep their own drags. */
+export interface DragSource {
+  type: DragType;
+  id: string;
+  handle?: string;
+}
+
+const zones = new Map<HTMLElement, DropOptions>();
+/** Pixels a press moves before it turns into a drag, so a click still opens the row. */
+const SLOP = 4;
+/** The band at the top and bottom of the sidebar's scroll box where a held drag scrolls it, and its fastest step per frame. */
+const EDGE = 48;
+const STEP = 16;
+
+/** The innermost zone under the point that takes `type`, so a row's slot wins over its section. */
+function zoneAt(x: number, y: number, type: DragType): HTMLElement | null {
+  for (let n = document.elementFromPoint(x, y); n; n = n.parentElement) if (n instanceof HTMLElement && zones.get(n)?.types.includes(type)) return n;
+  return null;
+}
+
+const below = (zone: HTMLElement, y: number): boolean => {
+  const box = zone.getBoundingClientRect();
+  return y > box.top + box.height / 2;
+};
+
+function scrollBox(node: HTMLElement): HTMLElement | null {
+  for (let n = node.parentElement; n; n = n.parentElement) {
+    const { overflowY } = getComputedStyle(n);
+    if ((overflowY === "auto" || overflowY === "scroll") && n.scrollHeight > n.clientHeight) return n;
+  }
+  return null;
+}
+
+/** Eats the click a released drag sends to the row it started on, so dropping a channel does not also open it. */
+function swallowClick(): void {
+  const stop = (e: MouseEvent) => {
     e.preventDefault();
-    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
-    mark(e, type);
+    e.stopPropagation();
   };
-  const leave = (e: DragEvent) => {
-    if (!claim(e)) return;
-    depth = Math.max(0, depth - 1);
-    if (!depth) mark(null);
+  window.addEventListener("click", stop, { capture: true, once: true });
+  setTimeout(() => window.removeEventListener("click", stop, true), 0);
+}
+
+/** Follows one press on `node`: past SLOP it lifts the node under the pointer, marks the zone it would land in and drops there on release. */
+function follow(node: HTMLElement, source: DragSource, down: PointerEvent): void {
+  const root = document.documentElement;
+  const box = scrollBox(node);
+  const top0 = box?.scrollTop ?? 0;
+  const [x0, y0] = [down.clientX, down.clientY];
+  let [x, y] = [x0, y0];
+  let live = false;
+  let zone: HTMLElement | null = null;
+  let frame = 0;
+  let restore = "";
+  const lift = () => {
+    node.style.translate = `${x - x0}px ${y - y0 + (box ? box.scrollTop - top0 : 0)}px`;
   };
-  const drop = (e: DragEvent) => {
-    const type = claim(e);
-    depth = 0;
-    mark(null);
-    const id = type ? e.dataTransfer?.getData(type) : "";
-    if (!type || !id) return;
+  const aim = () => {
+    const next = zoneAt(x, y, source.type);
+    if (zone && zone !== next) delete zone.dataset.drop;
+    zone = next;
+    if (zone) zone.dataset.drop = zones.get(zone)?.edges?.includes(source.type) ? (below(zone, y) ? "after" : "before") : "";
+  };
+  const scroll = () => {
+    frame = requestAnimationFrame(scroll);
+    if (!box) return;
+    const { top, bottom } = box.getBoundingClientRect();
+    const into = y < top + EDGE ? y - (top + EDGE) : y > bottom - EDGE ? y - (bottom - EDGE) : 0;
+    if (!into) return;
+    box.scrollTop += Math.max(-STEP, Math.min(STEP, into / 3));
+    lift();
+    aim();
+  };
+  const move = (e: PointerEvent) => {
+    if (e.pointerId !== down.pointerId) return;
+    [x, y] = [e.clientX, e.clientY];
+    if (!live) {
+      if (Math.hypot(x - x0, y - y0) < SLOP) return;
+      live = true;
+      restore = node.style.cssText;
+      Object.assign(node.style, { position: "relative", zIndex: "10", pointerEvents: "none", opacity: "0.92", boxShadow: "var(--shadow-float)", borderRadius: "var(--radius-row)", background: "var(--surface-panel)" });
+      root.style.cursor = "grabbing";
+      root.style.userSelect = "none";
+      root.style.webkitUserSelect = "none";
+      getSelection()?.removeAllRanges();
+      try {
+        node.setPointerCapture(down.pointerId);
+      } catch {}
+      frame = requestAnimationFrame(scroll);
+    }
+    lift();
+    aim();
+  };
+  const end = (drop: boolean) => {
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", up);
+    window.removeEventListener("pointercancel", cancel);
+    window.removeEventListener("keydown", key, true);
+    if (!live) return;
+    cancelAnimationFrame(frame);
+    node.style.cssText = restore;
+    root.style.cursor = root.style.userSelect = root.style.webkitUserSelect = "";
+    swallowClick();
+    const at = zone;
+    if (at) delete at.dataset.drop;
+    if (drop && at) zones.get(at)?.ondrop({ type: source.type, id: source.id, after: below(at, y) });
+  };
+  const up = (e: PointerEvent) => e.pointerId === down.pointerId && end(true);
+  const cancel = (e: PointerEvent) => e.pointerId === down.pointerId && end(false);
+  const key = (e: KeyboardEvent) => {
+    if (e.key !== "Escape" || !live) return;
     e.preventDefault();
-    opts.ondrop({ type, id, after: after(e) });
+    e.stopPropagation();
+    end(false);
   };
-  node.addEventListener("dragenter", enter);
-  node.addEventListener("dragover", over);
-  node.addEventListener("dragleave", leave);
-  node.addEventListener("drop", drop);
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", up);
+  window.addEventListener("pointercancel", cancel);
+  window.addEventListener("keydown", key, true);
+}
+
+/**
+ * Lets a channel or DM row, or a section by its heading, be dragged onto a `dropZone`. The sidebar moves its own drags with pointer events,
+ * because HTML5 drag and drop never reaches the page in the Mac app: Tauri's file-drop handler takes every native drag over the window.
+ */
+export function dragSource(node: HTMLElement, source: DragSource) {
+  let src = source;
+  const press = (e: PointerEvent) => {
+    if (e.button !== 0 || !e.isPrimary || e.pointerType === "touch") return;
+    if (src.handle && !(e.target instanceof Element && e.target.closest(src.handle))) return;
+    follow(node, src, e);
+  };
+  const native = (e: DragEvent) => e.preventDefault();
+  node.addEventListener("pointerdown", press);
+  node.addEventListener("dragstart", native);
   return {
-    update(next: DropOptions) {
-      opts = next;
+    update(next: DragSource) {
+      src = next;
     },
     destroy() {
-      node.removeEventListener("dragenter", enter);
-      node.removeEventListener("dragover", over);
-      node.removeEventListener("dragleave", leave);
-      node.removeEventListener("drop", drop);
+      node.removeEventListener("pointerdown", press);
+      node.removeEventListener("dragstart", native);
+    },
+  };
+}
+
+/** Makes an element a drop target for dragged rows or sections; it carries `data-drop` while a drag would land in it. */
+export function dropZone(node: HTMLElement, options: DropOptions) {
+  zones.set(node, options);
+  return {
+    update(next: DropOptions) {
+      zones.set(node, next);
+    },
+    destroy() {
+      zones.delete(node);
     },
   };
 }

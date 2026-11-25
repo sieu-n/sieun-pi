@@ -20,8 +20,7 @@
   import { renameDialog } from "$lib/shell/rename-dialog.svelte";
   import {
     SECTION_DRAG_TYPE,
-    dragRoom,
-    dragSection,
+    dragSource,
     dropZone,
     groupRows,
     roomTypes,
@@ -264,7 +263,6 @@
     muted={row.muted}
     working={names(row)}
     draft={hasDraft(row)}
-    ondragstart={(e) => dragRoom(e, row)}
     oncontextmenu={(e) => contextMenu(e, row.id, channelMenu(row))}
   >
     {#snippet actions()}{@render more(row.id, `${row.name} options`, () => channelMenu(row))}{/snippet}
@@ -300,7 +298,6 @@
     muted={row.muted}
     working={names(row)}
     draft={hasDraft(row)}
-    ondragstart={(e) => dragRoom(e, row)}
     oncontextmenu={(e) => contextMenu(e, row.id, dmMenu(row))}
   >
     {#snippet actions()}{@render more(row.id, `${row.name} options`, () => dmMenu(row))}{/snippet}
@@ -315,7 +312,11 @@
 {/snippet}
 
 {#snippet slot(row: ConversationSummary, key: SectionKey, rows: readonly ConversationSummary[])}
-  <div class="slot" use:dropZone={{ types: roomTypes(key), edges: roomTypes(key), inner: true, ondrop: (d) => dropRow(d.id, key, rows, row.id, d.after) }}>
+  <div
+    class="slot"
+    use:dragSource={{ type: row.kind === "dm" ? "dm" : "channel", id: row.id }}
+    use:dropZone={{ types: roomTypes(key), edges: roomTypes(key), ondrop: (d) => dropRow(d.id, key, rows, row.id, d.after) }}
+  >
     {#if row.kind === "dm"}{@render dmRow(row)}{:else}{@render channelRow(row)}{/if}
   </div>
 {/snippet}
@@ -369,8 +370,7 @@
       class="drop"
       data-section-id={section.id}
       role="group"
-      draggable="true"
-      ondragstart={(e) => dragSection(e, section.id)}
+      use:dragSource={{ type: SECTION_DRAG_TYPE, id: section.id, handle: "[data-fold]" }}
       use:dropZone={{
         types: [...roomTypes(section.id), SECTION_DRAG_TYPE],
         edges: [SECTION_DRAG_TYPE],

@@ -23,8 +23,6 @@
     oncontextmenu?: (e: MouseEvent) => void;
     /** A hover button at the right end, such as the row's "..." menu; it takes the place of the badge or typing dots while it shows. */
     actions?: Snippet;
-    /** Makes the row draggable, for moving a channel between sidebar sections. */
-    ondragstart?: (e: DragEvent) => void;
     /** Shown at the right end when the row has no typing dots, count or dot, such as a light count or a danger badge. */
     trailing?: Snippet;
     /** The room holds an unsent draft: a pencil shows at the right end, as in Slack. */
@@ -36,7 +34,7 @@
     /** Makes the icon spot a button that opens the emoji picker, as Notion's page icon does; the row's menu is the keyboard path. */
     onicon?: (anchor: HTMLElement) => void;
   };
-  let { href, label, icon, leading, selected = false, unread = 0, fresh = false, muted = false, working = [], title, oncontextmenu, actions, ondragstart, trailing, tag, draft = false, emoji, onicon }: Props = $props();
+  let { href, label, icon, leading, selected = false, unread = 0, fresh = false, muted = false, working = [], title, oncontextmenu, actions, trailing, tag, draft = false, emoji, onicon }: Props = $props();
 
   function pickIcon(e: MouseEvent): void {
     if (!onicon) return;
@@ -60,8 +58,6 @@
     data-unread={fresh || unread > 0 || undefined}
     data-working={working.length > 0 || undefined}
     {oncontextmenu}
-    {ondragstart}
-    draggable={ondragstart ? "true" : undefined}
   >
     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions: the row's menu has Add emoji and Change emoji for the keyboard. -->
     <span class="lead" class:pick={!!onicon} title={onicon ? (emoji ? "Change emoji" : "Add emoji") : undefined} data-row-icon={onicon ? "" : undefined} onclick={pickIcon}>
