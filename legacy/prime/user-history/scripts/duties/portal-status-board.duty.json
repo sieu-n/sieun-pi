@@ -1,0 +1,37 @@
+{
+  "name": "API status board",
+  "ownerWords": "p13 [2026-11-21]: 이 api portal도 status 쉽게 확인하면 좋겠는데, grafana setup이면 충분할까? 어떤거 같아?\np15: stack + what should we actuallycheck? for example shit has been broken recently right? these tests/checks/metrics should be human-understandable, …\np19 [mww214m1, 2026-11-25]: something like this is good, i also want insight on per-platform, and especially endpoints/.. with high latency, error rate",
+  "goal": "The Grafana board https://obs.virev.ai/d/virev-api-portal answers at a glance whether paying customers get data now, per platform, with the slow and failing endpoints worst first. Every panel reads real numbers and asks a plain question, with no slop panels (fable auditor's p20). The duty reads real customers' calls, keyed crawl_read rows of ClickHouse product.usage_events from orgs outside auto-sns-agent convex/org/houseOrgs.json, over the last 24 h. slow_endpoints_24h counts endpoints with 20 or more calls whose p90 is over 15 s; on 2026-11-25 that was youtube/channel_shorts at 26.24 s over 323 calls, held by step p26. failing_endpoints_24h counts endpoints where over 5% of calls failed on our side (a 5xx, or a 4xx that is our refusal such as scrape_blocked or rate_limited). broken_panels_24h counts panels of the live board whose query errors or answers nothing over 24 h, unless the panel's noValue text says nothing happened.",
+  "metrics": [
+    {
+      "key": "slow_endpoints_24h",
+      "label": "Endpoints whose p90 for real customers in 24 h is over 15 s",
+      "op": "<=",
+      "target": 0,
+      "headline": true
+    },
+    {
+      "key": "failing_endpoints_24h",
+      "label": "Endpoints where over 5% of real customers' calls in 24 h failed on our side",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "broken_panels_24h",
+      "label": "Panels on the API portal Grafana board that error or show no data over 24 h",
+      "op": "<=",
+      "target": 0
+    }
+  ],
+  "precheck": {
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "scripts/duties/portal-status-board.ts"
+    ],
+    "cwd": "../..",
+    "timeoutMs": 120000
+  },
+  "onMiss": "Do the owner's status ask again as if he asked today: open https://obs.virev.ai/d/virev-api-portal and check that it answers at a glance whether paying customers get data now, per platform, with slow and failing endpoints worst first. 1. A slow_endpoint or failing_endpoint finding names the endpoint, its calls, p90 and top error. Read its slowest or failed calls in product.usage_events (ops/bin/ch-ro prod in auto-sns-agent) and name the cause in one line. When a plan step already covers that endpoint, such as p26 for youtube/channel_shorts, note the new reading on it and start no second job. Otherwise add a plan step on ag_api-portal's board with duty \"<this duty id>/<metricKey>\" and start one fix job that lands on dev/sieun with a test and proves it on staging (c50). A crawler cause goes to the Crawler VP with the endpoint and the numbers, and the step waits on that. 2. A panel_error or panel_no_data finding is a board that drifted: fix the panel in auto-sns-agent apps/infra/grafana/dashboards/estate/52-api-portal.json so it reads real numbers again, prove its query on prod ClickHouse, and land it (observability dashboards ship to prod without the owner). 3. Look at the board the way he would. Each panel must ask a plain question and read real numbers. Cut or fix a panel that does neither, and add a panel only for a question he asked, such as per-platform health or slow and failing endpoints. 4. A source_error is this precheck or the Grafana read through prod Vent: fix it. 5. Tell the owner nothing unless customers cannot get data now, money is lost, or a call needs his decision (c241); send nothing outside (c37). Everything on target: end the turn with no message."
+}
