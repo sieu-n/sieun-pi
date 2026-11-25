@@ -29,7 +29,7 @@ const REL = 'apps/infra/big.html';
 
 /** A page of exactly `bytes` bytes, padded with one paragraph of plain sentences. */
 function sized(bytes, meta = {}) {
-	const head = `<!--wiki ${JSON.stringify({ title: 'Big', description: 'Big fixture', last_verified: '2026-11-16T14:00Z', ...meta })}-->\n<h1>Big</h1>\n<p>`;
+	const head = `<!--wiki ${JSON.stringify({ title: 'Big', description: 'Big fixture', last_verified: '2026-11-16T14:00Z', updated: '2026-11-16T14:00Z', ...meta })}-->\n<h1>Big</h1>\n<p>`;
 	const tail = '</p>\n';
 	const sentence = 'The page holds one plain sentence. ';
 	const room = bytes - Buffer.byteLength(head + tail);

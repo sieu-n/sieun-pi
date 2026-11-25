@@ -54,7 +54,7 @@ process.exit(0);
 `;
 
 const page = (title, body) =>
-	`<!--wiki ${JSON.stringify({ title, description: `${title} fixture`, last_verified: '2026-11-13T15:00Z' })}-->\n<h1>${title}</h1>\n${body}\n`;
+	`<!--wiki ${JSON.stringify({ title, description: `${title} fixture`, last_verified: '2026-11-13T15:00Z', updated: '2026-11-13T15:00Z' })}-->\n<h1>${title}</h1>\n${body}\n`;
 
 test('a page write waits out another process\'s write lock and logs its revision, and a failed revision insert leaves the file as it was', (t) => {
 	const root = mkdtempSync(path.join(tmpdir(), 'revision-atomic-'));
