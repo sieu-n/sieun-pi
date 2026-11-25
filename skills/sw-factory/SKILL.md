@@ -35,6 +35,10 @@ About 20 jobs edit `/home/sieun/src/sieun-pi` at once, so run apps/chat server t
 When the owner removes a feature, delete its tool, route, code, prompt lines, skill lines, docs and tests, so the code reads as if the feature never existed and was never discussed (#sw-factory-build p187, p188).
 Add no refusal path, stub route, guard or "never do X" line for a caller that might still reach for it, and write no history comment about it, because a route that is gone already answers the server's normal 404.
 
+## Adding no rules nobody asked for
+
+Add no priority lane, ordering rule or special case for one kind of caller that the owner did not ask for, and fix the cause that made it look needed. When test agents queued for model accounts, the cause was unpaid and paused accounts, and his answer to a lane for them was "t11; NEVER INTRODUCE UNECESSARY SLOP COMPLEXITY" (dm_agent-factory, mwwlqgml, c250).
+
 ## Keeping llm-wiki docs current
 
 Every agent owns its llm-wiki pages and keeps them current with its code, because the owner wrote in #sw-factory-build p223 (msg mww1x0do, c245): "keep this (and all related docs, and all agents should be responsible for their llm-wiki docs btw)".
