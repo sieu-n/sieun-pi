@@ -725,9 +725,12 @@ export class GroupRooms {
       ? `#${row.name}`
       : `Solo "${row.name}" (${row.id}): ${row.agenda.length > AGENDA_CLIP ? `${row.agenda.slice(0, AGENDA_CLIP)}…` : row.agenda} · with ${row.members.map(m => this.deps.threads.principal(m.agent).name).join(", ")}`;
     const root = post.threadRoot ? this.store.postsOf(row.id).find(p => p.id === post.threadRoot) : undefined;
+    const named = (post.mentions ?? []).filter((m): m is AgentId => m !== "owner" && m !== post.author);
+    const others = reader && named.length && !named.includes(reader) ? named : [];
     const lines = [
       `[${label.replace(/\n+/g, " ")} · post ${post.seq} from ${author.name}${author.kind === "owner" ? " (owner)" : ""} · hops ${post.hops ?? 0}]`,
       ...(post.threadRoot ? [`(a reply in the thread of post ${root?.seq ?? post.threadRoot}; your answer goes in that thread)`] : []),
+      ...(others.length ? [`(this post names ${others.map(id => this.deps.threads.principal(id).name).join(" and ")}, not you)`] : []),
       "", this.deps.fileNotes(withForward(post.text, post.forward), post.images),
     ];
     const context = (p: RoomPost) => {

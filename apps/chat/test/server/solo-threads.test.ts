@@ -86,6 +86,20 @@ describe("threads in a Solo room", () => {
     assert.ok(reply.body.item.threadRoot === a.id);
   });
 
+  test("a reply that names other members tells each member it does not name, and only that member", async () => {
+    // #dev-crawler p45 (mww0ks1y): the owner asked "@Search product, misc. and @fable auditor agree right? agree on the details, then go
+    // implement", and devops guy, in the thread but not named, answered for them and started its own build.
+    const room: Room = (await s.send("POST", "/api/rooms", { kind: "solo", agenda: "named: who picks the port", members: [agents.vent, agents.frontend] })).body;
+    const root = await s.send("POST", `/api/c/${room.id}/send`, { text: "named, which port?", requestId: "sot-named-root" });
+    const text = `@Frontend agree right? then go ${Date.now()}`;
+    await s.send("POST", `/api/c/${room.id}/send`, { text, requestId: "sot-named", threadRoot: root.body.item.id, mentions: [agents.frontend] });
+    const got = await until(async () => submits.filter(x => x.input.text?.includes(text)), found => found.length === 2);
+    const of = (agent: typeof agents.vent) => got.find(x => x.thread === s.app.agents.record(agent)!.comm?.[room.id])!.input.text!;
+    const name = s.app.agents.record(agents.frontend)!.name;
+    assert.ok(of(agents.vent).includes(`your answer goes in that thread)\n(this post names ${name}, not you)\n\n${text}`), of(agents.vent));
+    assert.doesNotMatch(of(agents.frontend), /not you\)/);
+  });
+
   test("a thread starts only on a root post of the room", async () => {
     const root = (await roots(s)).find(m => m.thread)!;
     const reply = (await thread(s, root.id)).items[0]!;
