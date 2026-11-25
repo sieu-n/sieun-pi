@@ -1,0 +1,16 @@
+{
+ "name": "sw factory docs match the code",
+ "ownerWords": "actual args, examples 실제로 뽑아봐 how does it look like and whether there is inefficiencies. in documentation it's super important. keep this (and all related docs, and all agents should be responsible for their llm-wiki docs btw)\n(#sw-factory-build p223, 11-25, msg mww1x0do, c245)",
+ "goal": "Every sw factory wiki page under domains/devops/sw-factory/ says what the code does today. A page is current when its last_verified is at or after the newest origin/main commit to the repo files its meta lists in \"code\". The precheck (apps/chat/scripts/duties/docs-current.ts) reads every current page of that space, skips archive/, evidence/ and assets/, and asks git for each page's newest commit. A page with no \"code\" list is counted apart, because on 11-25 every page judged by the files its text cites read stale: a hub file such as apps/chat/server/app.ts changes many times a day.",
+ "metrics": [
+  { "key": "reference_current_pct", "label": "sw factory reference pages verified after the last change to the code they list", "op": ">=", "target": 100, "unit": "%", "headline": true },
+  { "key": "stale_pages", "label": "sw factory pages older than a commit to the code they list", "op": "<=", "target": 0, "unit": " pages" },
+  { "key": "pages_without_code", "label": "sw factory pages with no code list in their meta", "op": "<=", "target": 0, "unit": " pages" }
+ ],
+ "precheck": {
+  "command": ["node", "--import", "tsx", "scripts/duties/docs-current.ts"],
+  "cwd": "../..",
+  "timeoutMs": 120000
+ },
+ "onMiss": "Each stale_page flag names the page, its last_verified and the commit that changed its code. Read that commit's diff with git show, read the page, and fix every sentence, table row, args list and example the commit made untrue, then stamp last_verified from date -u and publish with wiki.edit or wiki.publish. When the commit changed nothing the page says, stamp last_verified with a note in the page's summary of what you checked. Each no_code flag lists the files the page's text cites: add a \"code\" list to its meta with only the files the page describes, never a hub file it only mentions. The agent whose work wrote a page owns it (c245), so when another agent's commit made its page stale, send that agent the flag with send_message instead of rewriting its page."
+}
