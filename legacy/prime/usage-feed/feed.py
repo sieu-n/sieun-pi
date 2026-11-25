@@ -315,7 +315,7 @@ def main() -> int:
         return 0
     started = time.time()
     instance = f"usage-feed-{socket.gethostname()}-{int(started)}"
-    resource = {"service.name": "prime-agent", "service.instance.id": instance, "host.name": socket.gethostname()}
+    resource = {"service.name": "prime-agent", "service.instance.id": instance}
     usage, tail = Usage(), Tail(lambda: transcripts(PRIME))
     tail.read(usage)
     print(f"{time.strftime('%FT%TZ', time.gmtime())} started as {instance}; {len(tail.offsets)} transcripts", flush=True)

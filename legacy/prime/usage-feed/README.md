@@ -13,7 +13,7 @@ Prime's exporter (prime-agent 973cf9c) writes those counters, but on 10-19 no bo
 3. It adds each assistant message's usage to the five counters of Prime's exporter, with the same names and labels plus `feed="transcripts"`.
    It also writes `prime_agent.generation.output_tokens` and `prime_agent.generation.seconds` per provider and model with no session label, which the speed column of Settings > Usage reads.
    A session's two counters stop going out 2 min after its last call and come back with its total on its next call, because on 10-23 one feed process sent 4,280 session series every 10 s and the per-model speed query over them took 15 s for 24h.
-4. It sends them as cumulative OTLP sums to the box's Alloy on 127.0.0.1:14318, which sends them to the prod collector, so they land in `otel.otel_metrics_sum` with ServiceName `prime-agent`, the tier `shared` and the box in `host.name`.
+4. It sends them as cumulative OTLP sums to the box's Alloy on 127.0.0.1:14318, which sends them to the prod collector, so they land in `otel.otel_metrics_sum` with ServiceName `prime-agent`, the tier `shared` and the box in `host.name`, which the Alloy intake sets on every row because the feed sends no `host.name` of its own.
 5. Every minute it asks prod otel, through Grafana's `grafana_clickhouse` datasource, whether `prime_agent.calls` on its box has a series without `feed="transcripts"`, and when one shows up it writes `handed-off`, exits 0 and does not start again.
 
 A restart of the feed starts new series and skips the calls made while it was down.
