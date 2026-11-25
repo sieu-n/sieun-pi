@@ -161,12 +161,12 @@ async function readMcp(): Promise<Record<string, CallResult[]>> {
 }
 
 /** crawler-api.mjs's own output for this run: its three counts, its flagged lines and the time of each count's newest down minute. */
-async function readCrawlerApi(): Promise<PrecheckOutput> {
+async function readCrawlerApi(): Promise<CrawlerApiOutput> {
   const dir = await mkdtemp(join(tmpdir(), "crawler-api-mcp-"));
   try {
     const file = join(dir, "crawler-api.json");
     await promisify(execFile)("node", ["scripts/duties/crawler/crawler-api.mjs"], { cwd: REPO, env: { ...process.env, OUTPUT_FILE: file }, timeout: 100_000 });
-    return JSON.parse(await readFile(file, "utf8")) as PrecheckOutput;
+    return JSON.parse(await readFile(file, "utf8")) as CrawlerApiOutput;
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -176,7 +176,12 @@ async function readCrawlerApi(): Promise<PrecheckOutput> {
  * The precheck output from the crawler-api.mjs output (or why it failed) and the MCP calls per tier (or why they failed). A count that
  * crawler-api.mjs could not read already holds UNMEASURED, and the headline holds UNMEASURED when either half could not be read.
  */
-export function report(api: PrecheckOutput | Error, mcp: Record<string, CallResult[]> | Error, now: number): PrecheckOutput {
+/** crawler-api.mjs's output, with `n`, the count each of its metrics read, since auto-sns-agent's c249 change on 11-26. */
+export type CrawlerApiOutput = PrecheckOutput & { n?: Record<string, number> };
+/** The precheck output with `n`, each metric's sample size (board skill plan-and-duties.md, duties rule 9). */
+export type CrawlerApiMcpOutput = PrecheckOutput & { n: Record<string, number> };
+
+export function report(api: CrawlerApiOutput | Error, mcp: Record<string, CallResult[]> | Error, now: number): CrawlerApiMcpOutput {
   const flagged: FlaggedSlice[] = [];
   const read = (key: string, missing = UNMEASURED) => (api instanceof Error ? missing : api.metrics[key] ?? missing);
   if (api instanceof Error) flagged.push({ at: now, kind: "source_error", excerpt: `crawler-api.mjs failed: ${api.message}`.slice(0, 299) });
@@ -207,10 +212,18 @@ export function report(api: PrecheckOutput | Error, mcp: Record<string, CallResu
     health_snapshot_down_minutes_24h: read("health_snapshot_down_minutes_24h"),
     ig_few_post_stats_pct: read("ig_few_post_stats_pct", -UNMEASURED),
   };
+  // n: the prod routes the d2 run scored plus the MCP calls sent, and crawler-api.mjs's own counts; a read that failed counts 0.
+  const counted = (key: string) => (api instanceof Error ? 0 : api.n?.[key] ?? 0);
+  const n = {
+    [HEADLINE]: counted("prod_routes_failing_crawler") + (mcp instanceof Error ? 0 : Object.values(mcp).flat().length),
+    api_down_minutes_24h: counted("api_down_minutes_24h"),
+    health_snapshot_down_minutes_24h: counted("health_snapshot_down_minutes_24h"),
+    ig_few_post_stats_pct: counted("ig_few_post_stats_pct"),
+  };
   const unmeasured = Object.entries(metrics).filter(([, value]) => Math.abs(value) === UNMEASURED).map(([key]) => key);
   if (unmeasured.length) flagged.push({ at: now, kind: "unmeasured", excerpt: `Not measured this run, so the value is ${UNMEASURED} or -${UNMEASURED} and counts as a miss: ${unmeasured.join(", ")}. Fix the source error first.` });
   const lastEventAt = api instanceof Error ? undefined : api.lastEventAt;
-  return { metrics, flagged, ...(lastEventAt && Object.keys(lastEventAt).length ? { lastEventAt } : {}) };
+  return { metrics, n, flagged, ...(lastEventAt && Object.keys(lastEventAt).length ? { lastEventAt } : {}) };
 }
 
 async function main(): Promise<void> {

@@ -29,3 +29,9 @@ test("the full org's token names the /mcp/insight endpoint, since the search app
   assert.equal(claims("full").resource, MCP_URLS.full);
   assert.equal(claims("standard").aud, "https://virev.ai/mcp");
 });
+
+test("n is the routes scored plus the MCP calls sent, and crawler-api.mjs's counts for the rest (c249, 11-26)", () => {
+  const counts = { prod_routes_failing_crawler: 167, api_down_minutes_24h: 1441, health_snapshot_down_minutes_24h: 1441, ig_few_post_stats_pct: 412 };
+  assert.deepEqual(report({ ...api(1), n: counts }, mcp, 1).n, { [HEADLINE]: 171, api_down_minutes_24h: 1441, health_snapshot_down_minutes_24h: 1441, ig_few_post_stats_pct: 412 });
+  assert.equal(report(new Error("x"), mcp, 1).n[HEADLINE], 4);
+});
