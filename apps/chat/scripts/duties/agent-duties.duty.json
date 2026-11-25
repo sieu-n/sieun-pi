@@ -1,0 +1,42 @@
+{
+ "name": "Agents keep their duties",
+ "ownerWords": "make sure all other agents are well behaved in terms of keeping their responsibilities\n(#dev-api-portal p27, msg mwwk9n6k, 11-26, to agent factory and fable auditor; p25 to API portal: \"your duty is to keep watching and monitoring this. think of duty as copy pasting this prompt every day.\")",
+ "goal": "Every sw factory agent owns its areas through duties that run, without being told. The precheck (apps/chat/scripts/duties/agent-boards.ts --part duties) reads each agent's GET /api/agents/<id>/duties and its brief from GET /api/agents/<id>/folder. A duty is live when it is not paused, has a run that measured something, and has run within 2 of its intervals. An agent with no live duty is uncovered, and so is an agent with an area in ~/work/agent-duties/areas.json (a list of {agent, areas: [{area, source, duty}]}, or an object of agent: {areas, missing}) that names no duty or a duty that is not live. An agent with no brief and no area from the owner in that file (a source of \"none found\" is a placeholder) has no area: it is left out of the count and listed apart as agents_without_area, as feature probe was on 11-26. duties_paused and duties_overdue count and list each paused duty and each duty with no run for over 2 of its intervals, per agent, as fable auditor's d2 did on 11-26 (~/.pi/agent/agents/fable-auditor/duties/keep-responsibilities.py). On 11-26 at 05:13 KST, 6 of 17 agents had no duty at all.",
+ "metrics": [
+  {
+   "key": "agents_uncovered",
+   "label": "Agents with no live duty, or with an area from the areas file that no live duty watches",
+   "op": "<=",
+   "target": 0,
+   "unit": " agents",
+   "headline": true
+  },
+  {
+   "key": "duties_paused",
+   "label": "Paused duties on sw factory agents' boards",
+   "op": "<=",
+   "target": 0,
+   "unit": " duties"
+  },
+  {
+   "key": "duties_overdue",
+   "label": "Duties not paused with no run for over 2 of their intervals",
+   "op": "<=",
+   "target": 0,
+   "unit": " duties"
+  }
+ ],
+ "precheck": {
+  "command": [
+   "node",
+   "--import",
+   "tsx",
+   "scripts/duties/agent-boards.ts",
+   "--part",
+   "duties"
+  ],
+  "cwd": "../..",
+  "timeoutMs": 120000
+ },
+ "onMiss": "Each uncovered_agent item names an agent and the areas no live duty watches. Tell that agent's work thread in one message, with await agent_message.send(text, receiver_role='sibling', receiver_name=<the agent's thread id from GET /api/agents>), to add a daily duty for each named area with legacy/prime/user-history/scripts/duties/add.ts, or to resume or fix a paused or never-run one, and to answer with the duty ids; never add a duty to another agent's board yourself. Each duty_paused or duty_overdue item names an agent and a duty: tell that agent the same way to resume it, fix why its runs stopped, or remove it with remove.ts when its area is gone. When the agent's areas have changed, update ~/work/agent-duties/areas.json with the area, its source message id and the duty that watches it."
+}
