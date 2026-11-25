@@ -1,0 +1,38 @@
+{
+  "name": "Portal architecture",
+  "ownerWords": "api portal 관련 테이블이랑 아케텍쳐 쭉 정리해봐 is it clean and follows our standard in general? (#dev-api-portal p23, mwwhn4a3, 2026-11-25) / look, your duty is to keep watching and monitoring this. think of duty as copy pasting this prompt every day. (p25, mwwk8mcw, 2026-11-25)",
+  "goal": "Every day, lay out the API portal's tables and architecture again and judge whether they are clean and follow our standards, as the owner asked in #dev-api-portal p23. The first review on 2026-11-25 is wiki agents/api-portal/architecture.html, backed by ~/work/api-portal/arch-review/inventory.md and standards.md. It found 18 open problems, 6 of them high, meaning they hurt customers, lose money or hide failures, and p36 was fixing 4 of those. Each run redoes the review, rewrites the page and ~/work/api-portal/arch-review/status.json, and starts a fix for each high problem no step covers. high_problems_open counts high rows of status.json not yet fixed on prod. review_age_h is the hours since the older of status.json checkedAt and the page's last_verified. problems_open counts every open row and must never grow past the 18 of 2026-11-25.",
+  "metrics": [
+    {
+      "key": "high_problems_open",
+      "label": "Open standards problems that hurt customers, lose money or hide failures (status.json, not fixed on prod)",
+      "op": "<=",
+      "target": 0,
+      "headline": true
+    },
+    {
+      "key": "review_age_h",
+      "label": "Hours since the review was last redone (older of status.json checkedAt and the page's last_verified)",
+      "op": "<=",
+      "target": 26,
+      "unit": "h"
+    },
+    {
+      "key": "problems_open",
+      "label": "Open standards problems of every severity (never more than on 2026-11-25)",
+      "op": "<=",
+      "target": 18
+    }
+  ],
+  "precheck": {
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "scripts/duties/portal-architecture.ts"
+    ],
+    "cwd": "../..",
+    "timeoutMs": 60000
+  },
+  "onMiss": "Do the owner's ask again in full, as if he pasted it today: lay out the API portal's tables and architecture and judge whether it is clean and follows our standards. 1. Re-inventory the tables in auto-sns-agent at the newest dev/sieun: every table in convex/apiPortal/tables.ts, the org and ledger tables the portal uses (convex/org, convex/ledger), and ClickHouse product.* tables the portal writes or reads, with prod row counts (node scripts/repo/convex/call.mjs, ops/bin/ch-ro prod), writers, readers and indexes. 2. Trace the /v1 request path from apps/api-portal/src/lib/server/gateway.ts through Convex admit, Vent, crawler-v3 and the charge. 3. Judge it against our standards: auto-sns-agent AGENTS.md, .claude/rules (code-quality.md, app-api-portal.md), .agents/skills and the owner's corrections in force (~/.prime/agent/browser-chat/corrections.json). Use subagents for the read-only areas, as the 11-25 review did with four reviewers whose notes sit in ~/work/api-portal/arch-review/parts/. 4. Diff the result against wiki agents/api-portal/architecture.html and ~/work/api-portal/arch-review/status.json. Mark a problem fixed only once its fix serves on prod (landed.mjs <sha> --on <prod revision>), add each new problem with severity high (hurts customers, loses money or hides failures), medium or low, and drop a problem that no longer holds. 5. Update the page through the wiki skill and keep the shape the owner asked for after he called it blocks of text (mwwkczio, c247): a one-line verdict, the mermaid of the request path, a table of tables, a problems table worst first, and a short list of clean parts. Change rows in those tables and add none of your own prose. Every row names the thing in plain words first and says what it does (mwwkdff2, c248). File paths go only in a last where column or a fold, never as a bare file:line in a sentence or cell, and no paragraph runs over 2 short sentences. Stamp a fresh last_verified, and write status.json with checkedAt now and the code sha read. 6. For each open high problem with no step, add a plan step on ag_api-portal's board with duty \"<this duty id>/high_problems_open\" and start one fix job for it that lands on dev/sieun with a test and proves it on staging (c50); prod follows the release owner's promote (c154). A problem a step already covers, such as p36, gets a note on that step and no second job. A problems_open rise gets one cleanup job for the new medium and low rows unless one is live. A review_age_h miss means the last run did not finish the review: finish it now. A source_error is this precheck or the page: fix it. 7. Tell the owner nothing unless a problem hurts a customer now, loses money now, or needs his call, such as picking landing A or B (c241); send nothing outside (c37). Everything on target and the review redone: end the turn with no message."
+}
