@@ -5,7 +5,8 @@
  * It opens chat.sqlite read-only and reads four numbers:
  * - scan_age_h, hours since the oldest box's last good skill scan (the server scans each box every 60 min, SCAN_EVERY_MS in server/skills.ts);
  * - orphan_rows, installs or verdicts whose skill row is gone, and verdicts whose copy (box:path) is gone from skill_copies;
- * - hash_mismatch, installs whose applied_hash differs from source_hash, a NULL source_hash counted as a mismatch;
+ * - dead_installs, installs whose path on the box is a dead link or has no skill_copies row (source_hash is NULL by design for a link,
+ *   since linkInstall in server/skills-db.ts never sets it, so a hash comparison says nothing; on 11-25 79 Mac links into trashed clones were dead);
  * - problem_verdicts, broken verdicts plus verdicts whose action is remove.
  * It also keeps the last run's counts per table and per verdict rule in a state file and flags each one that changed.
  *
@@ -49,9 +50,16 @@ export function readSkillsTables(db: DatabaseSync, now = Date.now()): { metrics:
     if (n > 0) flagged.push({ kind: "orphan_rows", sig: `orphan:${what}`, excerpt: `${n} ${what}.` });
   }
 
-  const nullSource = one("SELECT count(*) AS n FROM skill_installs WHERE source_hash IS NULL");
-  const mismatch = one("SELECT count(*) AS n FROM skill_installs WHERE source_hash IS NULL OR applied_hash IS NULL OR applied_hash <> source_hash");
-  if (mismatch > 0) flagged.push({ kind: "hash_mismatch", sig: "hash_mismatch", excerpt: `${mismatch} installs have an applied_hash that differs from source_hash, ${nullSource} of them with no source_hash.` });
+  const dead = db
+    .prepare(
+      "SELECT i.box AS box, count(*) AS n FROM skill_installs i LEFT JOIN skill_copies c ON c.box = i.box AND c.path = i.path WHERE c.path IS NULL OR json_extract(c.fact, '$.exists') = 0 GROUP BY i.box",
+    )
+    .all() as { box: string; n: unknown }[];
+  let deadInstalls = 0;
+  for (const d of dead) {
+    deadInstalls += num(d.n);
+    flagged.push({ kind: "dead_installs", sig: `dead_installs:${d.box}`, excerpt: `${num(d.n)} installs on ${d.box} point at a dead link or a path the scan did not see.` });
+  }
 
   const broken = one("SELECT count(*) AS n FROM skill_verdicts WHERE rule = 'broken'");
   const remove = one("SELECT count(*) AS n FROM skill_verdicts WHERE action = 'remove'");
@@ -65,7 +73,7 @@ export function readSkillsTables(db: DatabaseSync, now = Date.now()): { metrics:
     metrics: {
       scan_age_h: Number.isFinite(scanAge) ? Math.round(scanAge * 10) / 10 : 9999,
       orphan_rows: orphanInstalls + orphanVerdicts + orphanCopyVerdicts,
-      hash_mismatch: mismatch,
+      dead_installs: deadInstalls,
       problem_verdicts: broken + remove,
     },
     counts,
