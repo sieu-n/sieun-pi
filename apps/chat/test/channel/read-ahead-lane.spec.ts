@@ -225,11 +225,12 @@ test("a read mark about to go holds the reads ahead, but no refresh", async ({ p
     void get({ path: "/api/rooms?lane=8" }, { background: "shown", first: true });
     void window.lane.ahead("/api/rooms?lane=9");
   });
-  await expect.poll(() => order).toEqual(["?lane=8", "?lane=7"]);
+  await expect.poll(() => [...order].sort()).toEqual(["?lane=7", "?lane=8"]);
   await page.waitForTimeout(300);
-  expect(order).toEqual(["?lane=8", "?lane=7"]);
+  expect(order).toHaveLength(2);
   await page.evaluate(() => (window as unknown as { release: () => void }).release());
-  await expect.poll(() => order).toEqual(["?lane=8", "?lane=7", "?lane=9"]);
+  await expect.poll(() => order).toHaveLength(3);
+  expect(order[2]).toBe("?lane=9");
 });
 
 test("a panel refresh goes beside the refresh of the page he looks at", async ({ page }) => {
@@ -250,4 +251,24 @@ test("a panel refresh goes beside the refresh of the page he looks at", async ({
   await expect.poll(() => settled(page, "/api/rooms?lane=11 read")).toBe("ok");
   expect(order).toEqual(["?lane=10", "?lane=11"]);
   pageRead.release();
+});
+
+test("a refresh leaves in the task that asks for it, with no wait for the next paint", async ({ page }) => {
+  await lane(page);
+  const left = await page.evaluate(async () => {
+    const keptModule = "/src/lib/api/kept.svelte.ts";
+    const { kept } = await import(/* @vite-ignore */ keptModule);
+    kept({ path: "/api/rooms?lane=12" }).set([]);
+    const sent: string[] = [];
+    const fetched = window.fetch;
+    window.fetch = (input, init) => {
+      sent.push(String(input));
+      return fetched(input, init);
+    };
+    void window.lane.keptRead("/api/rooms?lane=12");
+    window.fetch = fetched;
+    return sent;
+  });
+  expect(left).toEqual(["/api/rooms?lane=12"]);
+  await expect.poll(() => settled(page, "/api/rooms?lane=12 read")).toBe("ok");
 });

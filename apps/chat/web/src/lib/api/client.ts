@@ -284,15 +284,17 @@ function pump(): void {
   else setTimeout(run);
 }
 
+/** Sends a call the lane lets go; a refresh stops the reads ahead on their way. */
+function launch(ticket: Ticket): void {
+  if (refresh(ticket)) stop(ticket => !refresh(ticket));
+  const controller = new AbortController();
+  ticket.state = { kind: "flying", controller };
+  flying.add(ticket);
+  ticket.send(controller.signal);
+}
+
 function drain(): void {
-  for (let at = next(); at >= 0; at = next()) {
-    const [ticket] = queued.splice(at, 1);
-    if (refresh(ticket!)) stop(ticket => !refresh(ticket));
-    const controller = new AbortController();
-    ticket!.state = { kind: "flying", controller };
-    flying.add(ticket!);
-    ticket!.send(controller.signal);
-  }
+  for (let at = next(); at >= 0; at = next()) launch(queued.splice(at, 1)[0]!);
   if (!busy && !expected && ![...queued, ...flying].some(pageRefresh)) for (const show of afterHis.splice(0)) show();
 }
 
@@ -394,8 +396,13 @@ function laned<T>(wait: Wait, attempt: (signal: AbortSignal | undefined, asked: 
         reject(new DOMException("The read ahead was dropped before it was sent", "AbortError"));
       },
     };
-    queued.push(ticket);
-    pump();
+    // A refresh that waits for no call of his goes at once: after the next paint, on a reload whose first frame came after the app's
+    // mount, it left 50 to 81 ms after it was asked (~/work/p300-channel-open/trace-summary.md, "After the mount cut").
+    if (pageRefresh(ticket) || (ownConnection && refresh(ticket))) launch(ticket);
+    else {
+      queued.push(ticket);
+      pump();
+    }
   });
 }
 
