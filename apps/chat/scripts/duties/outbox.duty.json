@@ -1,0 +1,16 @@
+{
+ "name": "Chat outbox",
+ "ownerWords": "can you look at how the outbox tables in chat.sqlite are doing? i want you monitoring them going forward\n(DM with duty check 1125201916d2 3, 11-26 05:19 KST, msg mwwkh7ua)",
+ "goal": "Every send in the sw factory chat's outbox reaches pi-host within seconds, and its tables in chat.sqlite on us-metal02 stay small. outbox_rows holds the owner's sends that pi-host has not shown as an input yet (sending, sent or failed), outbox_kept holds the other sends (an @mention, a [board] line, an edit or delete notice) until pi-host takes them, and outbox_done holds the finished request ids for a day so a repeated send does not show twice (apps/chat/server/outbox.ts and outbox-db.ts). The precheck (apps/chat/scripts/duties/outbox.ts) reads the three tables read-only and the server's 'outbox:' log lines of the last day. On 11-26 at 05:20 KST rows and kept were empty and done held 57 ids, the oldest 21.8 h old, with no retry or refused line in 24 h. The Mac has no chat.sqlite, since the sw factory chat runs only on us-metal02.",
+ "metrics": [
+  { "key": "outbox_stuck", "label": "Owner sends and kept sends that sat in the outbox over 15 minutes", "op": "<=", "target": 0, "unit": " sends", "headline": true },
+  { "key": "outbox_refused_24h", "label": "Sends pi-host refused for good in the last 24 h, so they never reached their thread", "op": "<=", "target": 0, "unit": " sends" },
+  { "key": "outbox_done_rows", "label": "Finished request ids the outbox keeps; the server drops them after a day, at start or past 500", "op": "<=", "target": 600, "unit": " ids" }
+ ],
+ "precheck": {
+  "command": ["node", "--import", "tsx", "scripts/duties/outbox.ts"],
+  "cwd": "../..",
+  "timeoutMs": 60000
+ },
+ "onMiss": "Each flagged item names its request id, its conversation or thread, its state, tries and error. For row_sending_stuck or kept_stuck, check that pi-host answers (systemctl --user status pi-host, its host.sock) and read the apps/chat log for 'outbox: <id>' lines: a send pi-host keeps refusing with a retry is a pi-host fault to fix there. For row_sent_stuck, the sweep never matched the input: compare the row's text with the thread's newest owner input, since a text pi-host changed never matches and the row lingers 6 h; fix the match in outbox.ts land(). A row_failed is a send pi-host refused, which waits on the owner's Retry or Discard on his page: find why it was refused (an archived or missing thread) and fix the cause that sent it there. For refused lines, find the caller that sent to a thread that no longer exists. For done_not_compacted, the outbox stopped dropping finished ids: make compaction run on a timer in outbox.ts, add a test, push and release apps/chat. Never delete outbox rows by hand to turn the number green, since each is a real send."
+}
