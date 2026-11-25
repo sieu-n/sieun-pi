@@ -140,6 +140,21 @@ export function listValues(values: readonly string[]): string[] {
   return values.flatMap(value => value.split(",")).map(value => value.trim()).filter(Boolean);
 }
 
+/**
+ * The `from` values with the comma pieces of one agent name joined back, as `listValues` splits "Search product, misc." in two: the longest
+ * run of neighbouring pieces that `resolves` as a name, joined with ", ", wins. In the 7 days to 11-25 search_messages with that from failed.
+ */
+export function wholeNames(values: readonly string[], resolves: (value: string) => unknown): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < values.length;) {
+    let end = values.length;
+    while (end > i + 1 && !resolves(values.slice(i, end).join(", "))) end -= 1;
+    out.push(values.slice(i, end).join(", "));
+    i = end;
+  }
+  return out;
+}
+
 /** The `where` values, all three when none is given; an unknown value is refused by name. */
 export function parseWhere(values: readonly string[] | undefined): Set<SearchWhere> {
   if (!values?.length) return new Set(SEARCH_WHERE);
@@ -297,7 +312,13 @@ export class Search {
     const inId = query.in ? this.resolveIn(query.in) : undefined;
     const inChannel = inId ? this.groups.row(inId) : undefined;
     const inRoom = inId && (isRoomId(inId) || isAgentId(inId)) ? this.threads.agentRecords?.record(inId) : undefined;
-    const from = (query.from ?? []).map(value => this.resolveFrom(value));
+    const from = wholeNames(query.from ?? [], value => {
+      try {
+        return this.resolveFrom(value);
+      } catch {
+        return undefined;
+      }
+    }).map(value => this.resolveFrom(value));
     const tests = this.testSends();
     const testOf = new Map(tests.map(t => [`${t.thread}:${t.entry}`, t]));
     const scope = !inChannel && inId ? parseConversationId(this.threads.conversationOf(inId)) : undefined;

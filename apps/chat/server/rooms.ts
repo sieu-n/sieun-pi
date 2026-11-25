@@ -146,7 +146,10 @@ const EYES = ["eyes", ":eyes:", "👀"];
 function closedPost(block: ContentBlock): string | undefined {
   if (block.type !== "toolCall") return undefined;
   const args = block.arguments ?? {};
-  const id = typeof args.message_id === "string" ? args.message_id.trim() : "";
+  // set_emoji and mark_message also take message_ids, a list; a list of one names its post as message_id does.
+  const list = Array.isArray(args.message_ids) && args.message_ids.length === 1 ? args.message_ids[0] : undefined;
+  const named = typeof args.message_id === "string" ? args.message_id : list;
+  const id = typeof named === "string" ? named.trim() : "";
   if (!id) return undefined;
   if (block.name === "mark_message" && args.completed === true) return id;
   if (block.name === "set_emoji" && args.on === false && EYES.includes(String(args.emoji).trim())) return id;
