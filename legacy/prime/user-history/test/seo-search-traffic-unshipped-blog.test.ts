@@ -12,8 +12,9 @@ const fresh: TipCommit[] = Array.from({ length: 5 }, (_, index) => ({
 
 test("unshipped_blog_changes counts the apps/blog commits on the tip that GitHub lacks after 24 h, and reads the local dev/sieun tip, never the retired sieun/dev or the stale Mac ref", async () => {
   assert.equal(unshippedBlogChanges([...fresh, ...pages], NOW).length, 35);
-  const output = visitsOutput({ ship: { tipRef: "dev/sieun", commits: [...fresh, ...pages] } }, NOW);
+  const output = visitsOutput({ ship: { tipRef: "dev/sieun", commits: [...fresh, ...pages], checked: 52 } }, NOW);
   assert.equal(output.metrics.unshipped_blog_changes, 35);
+  assert.equal(output.n.unshipped_blog_changes, 52);
   assert.match(output.flagged!.find(slice => slice.kind === "unshipped_blog_changes")!.excerpt, /^35 of 40 apps\/blog commits on dev\/sieun .* not on origin\/dev\/sieun .* c0{9} 25 h/);
   assert.equal(visitsOutput({ ship: { error: "git fetch: timeout" } }, NOW).metrics.unshipped_blog_changes, 999_999);
 
@@ -21,10 +22,11 @@ test("unshipped_blog_changes counts the apps/blog commits on the tip that GitHub
   const read = await readShip(async args => {
     calls.push(args);
     if (args[0] === "log") return `${pages[0]!.sha}\t${pages[0]!.committedAt / 1000}\tfeat(blog): creator page 0\n`;
+    if (args[0] === "rev-list") return "12\n";
     return "";
   });
   assert.deepEqual(calls[0], ["fetch", "--quiet", "--no-tags", "origin", "+refs/heads/dev/sieun:refs/remotes/origin/dev/sieun"]);
-  assert.deepEqual(read, { tipRef: "dev/sieun", commits: [pages[0]] });
+  assert.deepEqual(read, { tipRef: "dev/sieun", commits: [pages[0]], checked: 12 });
   assert.ok(calls.every(args => !args.some(arg => arg.includes("mac/") || arg.includes("sieun/dev"))));
-  assert.deepEqual(calls.at(-1)!.slice(1), ["--format=%H%x09%ct%x09%s", "refs/heads/dev/sieun", "^refs/remotes/origin/dev/sieun", "--", "apps/blog"]);
+  assert.deepEqual(calls.at(-2)!.slice(1), ["--format=%H%x09%ct%x09%s", "refs/heads/dev/sieun", "^refs/remotes/origin/dev/sieun", "--", "apps/blog"]);
 });

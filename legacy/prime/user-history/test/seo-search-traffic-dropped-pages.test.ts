@@ -31,6 +31,7 @@ test("dropped_pages flags both 10-13 drops by the 10-16 final day and leaves a s
     d7: { start: "2026-10-10", end: "2026-10-16", clicks: 70, impressions: 9000, position: 9 } };
   const output = visitsOutput({ gsc }, Date.parse("2026-10-18T00:00:00Z"));
   assert.equal(output.metrics.dropped_pages, 2);
+  assert.equal(output.n.dropped_pages, 4);
   assert.equal(output.metrics.google_clicks_d7, 10);
   assert.match(output.flagged!.find(slice => slice.kind === "dropped_pages")!.excerpt,
     /2026-09-30\.\.2026-10-13 against 2026-10-14\.\.2026-10-16.*how-much-does-youtube-pay-per-view 147\.8 to 1\.3, .*instagram-algorithm 23\.8 to 3/);

@@ -84,8 +84,16 @@ export function lastSerpCheck(text: string): SerpCheck | undefined {
   return last;
 }
 
-export async function measureApiSite(deps: ApiSiteDeps, previous: ApiSiteState | undefined): Promise<{ output: PrecheckOutput; state: ApiSiteState }> {
+/**
+ * The precheck output with `n`, the sample size of each duty metric (agent-boards.ts `sampleSize`), so a met run on no input reads as such:
+ * the sitemap URLs live INDEX_AFTER_DAYS or more days whose index state was judged, the api blog posts read, the keywords of the newest
+ * competitor check and the sources read.
+ */
+export type ApiSiteOutput = PrecheckOutput & { n: Record<string, number> };
+
+export async function measureApiSite(deps: ApiSiteDeps, previous: ApiSiteState | undefined): Promise<{ output: ApiSiteOutput; state: ApiSiteState }> {
   const at = deps.now();
+  const n: Record<string, number> = { api_unindexed_7d: 0, days_since_new_api_article: 0, days_since_competitor_check: 0, source_errors: 0 };
   const today = seoulDay(at);
   const flagged: FlaggedSlice[] = [];
   const metrics: Record<string, number> = { api_unindexed_7d: UNMEASURED, days_since_new_api_article: UNMEASURED, days_since_competitor_check: UNMEASURED, source_errors: 0 };
@@ -94,9 +102,11 @@ export async function measureApiSite(deps: ApiSiteDeps, previous: ApiSiteState |
     metrics.source_errors! += 1;
     flagged.push({ at, kind: "source_error", excerpt: `${source}: ${why}. Not measured this run, so ${keys.length ? `${keys.join(", ")} read the miss value ${UNMEASURED}` : "its readings are left out"}.` });
   };
+  n.source_errors! += 1;
   const apiRead = deps.readApi().then(value => ({ value }), (error: unknown) => ({ error: message(error) }));
 
   let sitemap: Map<string, string> | undefined;
+  n.source_errors! += 1;
   try {
     const response = await deps.fetch(SITEMAP);
     if (response.status !== 200) throw new Error(`HTTP ${response.status}`);
@@ -129,6 +139,7 @@ export async function measureApiSite(deps: ApiSiteDeps, previous: ApiSiteState |
     if (fresh.length) flagged.push(...listSlice("new_urls", `New in the sitemap since the last run (${fresh.length}):`, fresh.map(path), at));
 
     const articles = live.filter(url => isArticle(url) && state.pages[url]!.published);
+    n.days_since_new_api_article = articles.length;
     const newest = articles.reduce((max, url) => state.pages[url]!.firstSeen > max ? state.pages[url]!.firstSeen : max, "");
     if (newest) {
       metrics.days_since_new_api_article = Math.max(0, daysBetween(newest, today));
@@ -136,6 +147,7 @@ export async function measureApiSite(deps: ApiSiteDeps, previous: ApiSiteState |
     } else fail("api.virev.ai blog", "no /blog/<slug> page answered 200 with an article date", ["days_since_new_api_article"]);
 
     const files = new Map<string, unknown>();
+    n.source_errors! += 1;
     for (const name of (await deps.listMetrics().catch(() => [] as string[])).filter(file => /^\d{4}-\d{2}-\d{2}\.json$/.test(file))) {
       files.set(name, await deps.readProgram(`metrics/${name}`).then(text => JSON.parse(text) as unknown, () => undefined));
     }
@@ -153,7 +165,9 @@ export async function measureApiSite(deps: ApiSiteDeps, previous: ApiSiteState |
     };
     const counted = live.filter(url => age(url) >= INDEX_AFTER_DAYS);
     const younger = live.length - counted.length;
+    n.api_unindexed_7d = counted.length;
     try {
+      n.source_errors! += 1;
       const requested = await deps.readProgram(REQUESTS_LOG).then(requestedUrls, () => new Set<string>());
       const ask = counted.filter(url => {
         const last = known(url);
@@ -161,6 +175,7 @@ export async function measureApiSite(deps: ApiSiteDeps, previous: ApiSiteState |
         if (last.indexed) return at - last.at >= INDEXED_REASK_MS;
         return requested.has(url) || at - last.at >= REASK_AFTER_MS;
       });
+      if (ask.length) n.source_errors! += 1;
       const { rows, not_asked: skipped }: InspectRead = ask.length ? await deps.inspect(ask) : { rows: [], not_asked: [] };
       const good = (row: InspectRow): boolean => row.http === 200 && !row.error;
       const refused = rows.some(row => row.http === 429);
@@ -200,9 +215,11 @@ export async function measureApiSite(deps: ApiSiteDeps, previous: ApiSiteState |
       (gsc.top_queries.length ? ` Top queries: ${gsc.top_queries.slice(0, 5).map(row => `${row.query} (${row.impressions} impr, pos ${row.position.toFixed(1)})`).join(", ")}.` : "") });
   } else fail("api.virev.ai goal read (seo-sources.py api: PostHog, Convex, Clerk, Search Console)", api.error, []);
 
+  n.source_errors! += 1;
   try {
     const check = lastSerpCheck(await deps.readSerpChecks());
     if (check) {
+      n.days_since_competitor_check = check.keywords.length;
       metrics.days_since_competitor_check = Math.max(0, daysBetween(seoulDay(Date.parse(check.at)), today));
       const ours = check.keywords.filter(row => row.ours_top3);
       flagged.push({ at, kind: "competitors", excerpt: `Detail: the competitor check of ${seoulDay(Date.parse(check.at))} found api.virev.ai in the top 3 for ${ours.length} of ${check.keywords.length} write-first keywords` +
@@ -211,7 +228,7 @@ export async function measureApiSite(deps: ApiSiteDeps, previous: ApiSiteState |
     } else flagged.push({ at, kind: "competitors", excerpt: `Detail: no competitor check has run yet (${SERP_CHECKS} is empty or missing).` });
   } catch (error) { flagged.push({ at, kind: "detail_error", excerpt: `${SERP_CHECKS} could not be read (${message(error)})` }); }
 
-  return { output: { metrics, flagged, ...(metrics.api_unindexed_7d! > 0 ? { lastEventAt: { api_unindexed_7d: at } } : {}) }, state };
+  return { output: { metrics, flagged, n, ...(metrics.api_unindexed_7d! > 0 ? { lastEventAt: { api_unindexed_7d: at } } : {}) }, state };
 }
 
 /** seo-sources.py api in auto-sns-agent's SEO CLI project: one JSON object on stdout. */

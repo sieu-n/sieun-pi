@@ -216,8 +216,15 @@ export async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (it
   return out;
 }
 
-export async function measureArticles(deps: ArticlesDeps, previous: ArticlesState | undefined): Promise<{ output: PrecheckOutput; state: ArticlesState }> {
+/**
+ * The precheck output with `n`, the sample size of each duty metric (agent-boards.ts `sampleSize`), so a met run on no input reads as such:
+ * the live articles read, the articles live INDEX_AFTER_DAYS to NEW_WINDOW_DAYS days whose index state was judged, and the sources read.
+ */
+export type ArticlesOutput = PrecheckOutput & { n: Record<string, number> };
+
+export async function measureArticles(deps: ArticlesDeps, previous: ArticlesState | undefined): Promise<{ output: ArticlesOutput; state: ArticlesState }> {
   const at = deps.now();
+  const n: Record<string, number> = { days_since_new_article: 0, new_unindexed_3d: 0, source_errors: 0 };
   const today = seoulDay(at);
   const flagged: FlaggedSlice[] = [];
   const metrics: Record<string, number> = { days_since_new_article: UNMEASURED, new_unindexed_3d: UNMEASURED, source_errors: 0 };
@@ -232,6 +239,7 @@ export async function measureArticles(deps: ArticlesDeps, previous: ArticlesStat
   const message = (error: unknown): string => error instanceof Error ? error.message : String(error);
 
   let sitemap: Map<string, string> | undefined;
+  n.source_errors! += 1;
   try {
     const response = await deps.fetch(SITEMAP);
     if (response.status !== 200) throw new Error(`HTTP ${response.status}`);
@@ -281,12 +289,14 @@ export async function measureArticles(deps: ArticlesDeps, previous: ArticlesStat
     const listings = articles.filter(url => state.articles[url]!.kind === "listing").length;
     if (listings) flagged.push({ at, kind: "listings", excerpt: `Detail: ${listings} sitemap URLs are listing pages (pagination, tags, category hubs) with no article:published_time, left out of every metric.` });
     const newest = live.reduce((max, url) => state.articles[url]!.firstSeen > max ? state.articles[url]!.firstSeen : max, "");
+    n.days_since_new_article = live.length;
     if (newest) {
       metrics.days_since_new_article = Math.max(0, daysBetween(newest, today));
       const newestUrls = live.filter(url => state.articles[url]!.firstSeen === newest).map(path);
       flagged.push(...listSlice("newest", `${live.length} articles answer 200. The newest went live ${newest}:`, newestUrls, at));
     } else fail("Blog articles", "no article page answered 200", ["days_since_new_article"]);
 
+    n.source_errors! += 1;
     try {
       const sent = JSON.parse(await deps.readProgram("metrics/indexnow-sent.json")) as Record<string, { lastmod?: string }>;
       const pending = indexNowPending(sitemap, sent);
@@ -295,6 +305,7 @@ export async function measureArticles(deps: ArticlesDeps, previous: ArticlesStat
     } catch (error) { flagged.push({ at, kind: "detail_error", excerpt: `metrics/indexnow-sent.json could not be read (${message(error)}), so the IndexNow detail line is missing` }); }
 
     const files = new Map<string, unknown>();
+    n.source_errors! += 1;
     for (const name of (await deps.listMetrics().catch(() => [] as string[])).filter(file => /^\d{4}-\d{2}-\d{2}\.json$/.test(file))) {
       files.set(name, await deps.readProgram(`metrics/${name}`).then(text => JSON.parse(text) as unknown, () => undefined));
     }
@@ -303,15 +314,18 @@ export async function measureArticles(deps: ArticlesDeps, previous: ArticlesStat
     const unseen = live.filter(url => age(url) >= INDEX_AFTER_DAYS && !state.indexed[url]);
     const due = unseen.filter(url => age(url) <= NEW_WINDOW_DAYS);
     const backlog = unseen.filter(url => age(url) > NEW_WINDOW_DAYS);
+    n.new_unindexed_3d = live.filter(url => age(url) >= INDEX_AFTER_DAYS && age(url) <= NEW_WINDOW_DAYS).length;
     try {
       for (const url of Object.keys(state.inspected)) if (!due.includes(url)) delete state.inspected[url];
       for (const [url, last] of Object.entries(lastVerdictsFromMetrics(files))) {
         if (due.includes(url) && last.at > (state.inspected[url]?.at ?? -1)) state.inspected[url] = last;
       }
+      n.source_errors! += 1;
       const requested = await deps.readProgram(REQUESTS_LOG).then(requestedUrls, () => new Set<string>());
       const ask = due.filter(url => requested.has(url) || !(at - (state.inspected[url]?.at ?? -Infinity) < REASK_AFTER_MS));
       const reasked = ask.filter(url => requested.has(url) && at - (state.inspected[url]?.at ?? -Infinity) < REASK_AFTER_MS).length;
       // seo-sources.py inspect asks a failed URL once more itself, but never after a 429, and after a 429 any caller saw it asks one URL first.
+      if (ask.length) n.source_errors! += 1;
       const { rows, not_asked: skipped, quota_left_before: quotaLeft }: InspectRead = ask.length ? await deps.inspect(ask) : { rows: [], not_asked: [] };
       const good = (row: InspectRow): boolean => row.http === 200 && !row.error;
       const refused = rows.some(row => row.http === 429);
@@ -342,6 +356,7 @@ export async function measureArticles(deps: ArticlesDeps, previous: ArticlesStat
     flagged.push(...listSlice("backlog", `Detail: older articles (live over ${NEW_WINDOW_DAYS} days) no inspection has seen indexed (${backlog.length}), the crawl demand fix job's work, not re-inspected here:`, backlog.map(path), at));
   }
 
+  n.source_errors! += 1;
   try {
     const lines = (await deps.readProgram("ledger.jsonl")).split("\n").filter(line => line.trim());
     const entries: LedgerEntry[] = [];
@@ -354,7 +369,7 @@ export async function measureArticles(deps: ArticlesDeps, previous: ArticlesStat
     for (const entry of stats.overdue) flagged.push({ at, kind: "ledger_overdue", excerpt: `${entry.worker ?? "?"}: ${entry.url ?? "?"} was due ${entry.check_date} and has no result` });
   } catch (error) { flagged.push({ at, kind: "detail_error", excerpt: `ledger.jsonl could not be read (${message(error)}), so the ledger detail line is missing` }); }
 
-  return { output: { metrics, flagged, ...(metrics.new_unindexed_3d! > 0 ? { lastEventAt: { new_unindexed_3d: at } } : {}) }, state };
+  return { output: { metrics, flagged, n, ...(metrics.new_unindexed_3d! > 0 ? { lastEventAt: { new_unindexed_3d: at } } : {}) }, state };
 }
 
 /** URL Inspection through auto-sns-agent's SEO CLI project: the URLs go on stdin, one JSON object comes back. */

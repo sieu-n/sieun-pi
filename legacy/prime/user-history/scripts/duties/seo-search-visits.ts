@@ -61,6 +61,8 @@ export const MOVED_SIBLING_SHARE = 0.8;
  * time. On 10-16 and 10-17 35 creator pages waited about 25 h unpushed, and on 10-18 five blog changes waited 7 h.
  */
 export const UNSHIPPED_AFTER_MS = 24 * 3_600_000;
+/** The days of apps/blog commits on the tip that n.unshipped_blog_changes counts as checked: the window the 10-16..10-18 waits fell in. */
+export const SHIP_SAMPLE_DAYS = 7;
 export const BLOG_PATH = "apps/blog";
 /**
  * us-metal02's dev branch (c119). The checkout moved from sieun/dev to dev/sieun on 2026-10-27 08:17Z, so origin/sieun/dev stopped moving. The tip
@@ -116,7 +118,8 @@ export interface QueriesDaily { start: string; end: string; rows: QueryDay[] }
 export interface GscRead { today: string; last_final: string | null; d7?: Totals; d7_prior?: Totals; pages?: PagesDaily; queries?: QueriesDaily }
 export interface SignupsRead { clerk_users: number; d28: number; attribution: string; attribution_error?: string; matched?: number; by_section?: Record<string, number> }
 export interface TipCommit { sha: string; committedAt: number; subject: string }
-export interface ShipRead { tipRef: string; commits: TipCommit[] }
+/** `checked`: the apps/blog commits on the tip from the last SHIP_SAMPLE_DAYS, each one checked against GitHub's branch (the run's sample size). */
+export interface ShipRead { tipRef: string; commits: TipCommit[]; checked: number }
 export interface CopyRead { pages: number; banned: BannedPage[] }
 /** The daily Request indexing window: `down_since` is the epoch second from which a due window has found no signed-in browser, else null. */
 export interface WindowRead { down_since: number | null; last_accepted: string; pinned_left: number }
@@ -126,6 +129,11 @@ export interface VisitsRead { traffic?: TrafficRead | Err; gsc?: GscRead | Err; 
  * for 40 h before anyone looked. A window starts 24 h after the last one, so 24 h down is one day of requests lost. */
 export const WINDOW_DOWN_MS = 24 * 3_600_000;
 export interface DroppedPage { page: string; baseDaily: number; recentDaily: number }
+/**
+ * The precheck output with `n`, the sample size of each duty metric (agent-boards.ts `sampleSize`), so a met run on no input reads as such:
+ * the pages compared, the apps/blog commits checked, the content pages scanned and the sources read.
+ */
+export type VisitsOutput = PrecheckOutput & { n: Record<string, number> };
 
 const isErr = (value: unknown): value is Err => typeof value === "object" && value !== null && "error" in value;
 const daysBetween = (from: string, to: string): number => Math.round((Date.parse(to) - Date.parse(from)) / 86_400_000);
@@ -151,6 +159,12 @@ function baseFrom(first: string, base: Span): string {
  * A #fragment URL is a jump link into its page, so its rows count toward that page: on 11-09, 9 of 21 dropped pages were
  * fragments of /blog/average-instagram-followers. */
 export function droppedPages(daily: PagesDaily, noindex: ReadonlySet<string> = new Set()): DroppedPage[] {
+  return comparedPages(daily, noindex).filter(page => page.baseDaily >= DROP_MIN_DAILY && page.recentDaily < DROP_SHARE * page.baseDaily)
+    .map(page => ({ ...page, baseDaily: round(page.baseDaily, 1), recentDaily: round(page.recentDaily, 1) })).sort((a, b) => b.baseDaily - a.baseDaily);
+}
+
+/** Every page with DROP_MIN_BASE_DAYS or more base days that is not noindex, with its unrounded base and recent impressions a day: the pages dropped_pages compares. */
+export function comparedPages(daily: PagesDaily, noindex: ReadonlySet<string> = new Set()): DroppedPage[] {
   const { base, recent } = dropWindows(daily.end);
   const pages = new Map<string, { date: string; impressions: number }[]>();
   for (const row of daily.rows) {
@@ -165,8 +179,8 @@ export function droppedPages(daily: PagesDaily, noindex: ReadonlySet<string> = n
     const sum = (start: string, end: string): number => rows.reduce((total, row) => (row.date >= start && row.date <= end ? total + row.impressions : total), 0);
     const baseDaily = sum(from, base.end) / (daysBetween(from, base.end) + 1);
     const recentDaily = sum(recent.start, recent.end) / DROP_RECENT_DAYS;
-    return baseDaily >= DROP_MIN_DAILY && recentDaily < DROP_SHARE * baseDaily ? [{ page, baseDaily: round(baseDaily, 1), recentDaily: round(recentDaily, 1) }] : [];
-  }).sort((a, b) => b.baseDaily - a.baseDaily);
+    return [{ page, baseDaily, recentDaily }];
+  });
 }
 
 export interface MovedPage { page: string; lostDaily: number; takenDaily: number; sibling?: string }
@@ -223,8 +237,10 @@ export function unshippedBlogChanges(commits: readonly TipCommit[], now: number)
 const hoursAgo = (at: number, now: number): number => Math.round((now - at) / 3_600_000);
 
 /** The metrics and flagged slices of one read. `at` is the run time for the slices and the age of unshipped commits. */
-export function visitsOutput(read: VisitsRead, at: number): PrecheckOutput {
+export function visitsOutput(read: VisitsRead, at: number): VisitsOutput {
   const flagged: FlaggedSlice[] = [];
+  const sources = [read.traffic, read.gsc, read.signups, read.window, read.ship, read.copy].filter(source => source !== undefined).length;
+  const n: Record<string, number> = { dropped_pages: 0, unshipped_blog_changes: 0, banned_copy: 0, source_errors: sources };
   const metrics: Record<string, number> = { dropped_pages: UNMEASURED, unshipped_blog_changes: UNMEASURED, banned_copy: UNMEASURED, source_errors: 0,
     goal_visits_d7: -UNMEASURED, google_clicks_d7: -UNMEASURED, signups_goal_d28: -UNMEASURED };
   const fail = (source: string, why: string, keys: string[]): void => {
@@ -262,6 +278,7 @@ export function visitsOutput(read: VisitsRead, at: number): PrecheckOutput {
     const left = (skipped.length ? ` Left out, since they answer robots noindex: ${skipped.map(page => `${page.page} ${page.baseDaily} to ${page.recentDaily}`).join(", ")}.` : "") +
       (moved.length ? ` Left out, since other virev.ai pages took the searches they lost: ${moved.map(move => `${move.page} lost ${move.lostDaily} a day, ${move.sibling ?? "others"} took ${move.takenDaily}`).join(", ")}.` : "");
     metrics.dropped_pages = dropped.length;
+    n.dropped_pages = comparedPages(gsc.pages, noindex).length;
     flagged.push({ at, kind: "dropped_pages", excerpt: (dropped.length
       ? `Pages whose Google impressions a day fell under ${DROP_SHARE * 100}% (${base.start}..${base.end} against ${recent.start}..${recent.end}): ${dropped.map(page => `${page.page} ${page.baseDaily} to ${page.recentDaily}`).join(", ")}.`
       : `No page with ${DROP_MIN_DAILY}+ Google impressions a day over ${base.start}..${base.end} fell under ${DROP_SHARE * 100}% of that over ${recent.start}..${recent.end}.`) + left });
@@ -295,6 +312,7 @@ export function visitsOutput(read: VisitsRead, at: number): PrecheckOutput {
   else {
     const late = unshippedBlogChanges(ship.commits, at);
     metrics.unshipped_blog_changes = late.length;
+    n.unshipped_blog_changes = ship.checked;
     flagged.push({ at, kind: "unshipped_blog_changes", excerpt: late.length
       ? `${late.length} of ${ship.commits.length} ${BLOG_PATH} commits on ${ship.tipRef} are not on origin/${BRANCH} after 24 h: ${late.slice(0, 10).map(commit => `${commit.sha.slice(0, 10)} ${hoursAgo(commit.committedAt, at)} h "${commit.subject.slice(0, 80)}"`).join(", ")}${late.length > 10 ? ", and more" : ""}.`
       : `${ship.commits.length} ${BLOG_PATH} commits on ${ship.tipRef} are not on origin/${BRANCH} yet, none older than 24 h.` });
@@ -303,11 +321,12 @@ export function visitsOutput(read: VisitsRead, at: number): PrecheckOutput {
   if (!copy || isErr(copy)) fail(`Git (${BLOG_CONTENT} on ${BRANCH})`, copy?.error ?? "no answer", ["banned_copy"]);
   else {
     metrics.banned_copy = copy.banned.length;
+    n.banned_copy = copy.pages;
     flagged.push({ at, kind: "banned_copy", excerpt: copy.banned.length
       ? `${copy.banned.length} of ${copy.pages} ${BLOG_CONTENT} pages on ${BRANCH} carry copy brief.md rules 4 and 5 ban: ${copy.banned.slice(0, 20).map(page => `${page.path.slice(BLOG_CONTENT.length + 1)} (${page.phrases.join(", ")})`).join(", ")}${copy.banned.length > 20 ? ", and more" : ""}.`
       : `None of ${copy.pages} ${BLOG_CONTENT} pages on ${BRANCH} carries copy brief.md rules 4 and 5 ban.` });
   }
-  return { metrics, flagged };
+  return { metrics, flagged, n };
 }
 
 type Git = (args: string[]) => Promise<string>;
@@ -324,7 +343,8 @@ export async function readShip(git: Git): Promise<ShipRead> {
     const [sha, seconds, ...subject] = line.split("\t");
     return { sha: sha!, committedAt: Number(seconds) * 1000, subject: subject.join("\t") };
   });
-  return { tipRef: BRANCH, commits };
+  const checked = Number((await git(["rev-list", "--count", `--since=${SHIP_SAMPLE_DAYS}.days`, TIP_REF, "--", BLOG_PATH])).trim());
+  return { tipRef: BRANCH, commits, checked };
 }
 
 /** Reads every Markdown page under BLOG_CONTENT on the dev/sieun tip (`TIP_REF`) and finds its banned copy. Run after readShip's fetch or alone. */
