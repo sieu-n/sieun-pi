@@ -154,7 +154,7 @@ export interface AccountHour { day: string; hour: number; accountId: number; pag
  * A dead-outcome event: Instagram's verdict when causeOf() says so. `pages24h` is what the account read in the 24 h before it. `transition` is false
  * for the re-login worker's verdicts, which leave the account parked, and crawler_v3_engage_deaths_24h counts only transitions.
  */
-export interface Death { accountId: number; at: number; status: string; code: string | null; readBefore: boolean; pages24h: number; transition: boolean }
+export interface Death { accountId: number; at: number; status: string; code: string | null; readBefore: boolean; pages24h: number; transition: boolean; lastReadAt?: number | null }
 export interface Account { id: number; status: string; reason?: string }
 /** Staging's collab reads as its crawler counts them on /ops/watch-targets/health: tagged rows overdue past 24 h and tagged rows due now. */
 export interface StagingOverdue { overdue: number; due: number }
@@ -177,7 +177,7 @@ export type StuckKind = "frozen_shared_exit" | "active_302s" | "parked_dead_jar"
 export interface StuckAccount { kind: StuckKind; accountId: number; since: number }
 export interface EngageData {
   now: number;
-  days?: DayPages[]; hours?: AccountHour[]; heldHours?: Set<string>; stagingLastReadAt?: number | null; stagingOverdue?: StagingOverdue; stagingPauses?: StagingPause[]; accounts?: Account[]; deaths?: Death[]; config?: Record<string, string>;
+  days?: DayPages[]; hours?: AccountHour[]; heldHours?: Set<string>; stagingLastReadAt?: number | null; stagingOverdue?: StagingOverdue; stagingPauses?: StagingPause[]; accounts?: Account[]; deaths?: Death[]; config?: Record<string, string>; rosterChanges?: RosterChange[];
   healthy?: number; lapsed?: Lapsed; deepWalks?: DeepWalks; stuck?: StuckAccount[]; paced?: Paced;
   /** crawler_v3_engage_deaths_24h by cause. */
   deathGauge?: Record<string, number>;
@@ -186,6 +186,24 @@ export interface EngageData {
 
 /** Prod's canary: its accounts (dead ones too, so their deaths count as canary deaths) and why it is empty. */
 export interface Canary { ids: Set<number>; empty?: string }
+
+/** One write of engage.canary_accounts (config_audit): when, and the roster ids before and after it. */
+export interface RosterChange { at: number; before: Set<number>; after: Set<number> }
+const rosterIds = (value: string): Set<number> => new Set(value.split(",").map(text => text.trim()).filter(Boolean).map(Number).filter(Number.isInteger));
+/**
+ * Whether a death fell on a canary member: the roster as it stood at the account's last page in the 24 h before the death (or at the death
+ * when it read none), from the roster's config_audit writes, else the current roster. The roster keeper drops a member once it leaves active,
+ * which a park for a re-login does before the death: on 11-25 prod 242 read its last canary page at 14:06:28Z, parked at 14:07:29Z, left the
+ * roster by audit 49190 at 14:07:42Z and went relogin_gone at 14:08:25Z, so the current roster counted it as a fleet kill.
+ */
+export function canaryAt(roster: Canary, changes: readonly RosterChange[]): (death: Pick<Death, "accountId" | "at" | "lastReadAt">) => boolean {
+  return death => {
+    const when = death.lastReadAt ?? death.at;
+    const next = changes.find(change => change.at > when);
+    const ids = next ? next.before : roster.ids;
+    return ids.has(death.accountId);
+  };
+}
 
 /** The key the crawler's canary roster keeper (apps/crawler-v3/src/platforms/instagram/engage/canary_roster.py) sizes the roster by. */
 export const CANARY_SHARE_KEY = "engage.canary_roster_pct";
@@ -473,18 +491,19 @@ export function report(data: EngageData, dutyMetrics: readonly DutyMetric[]): Pr
     const want = canaryWant(active.length);
     const have = active.filter(account => roster.ids.has(account.id)).length;
     metrics.canary_accounts_short = Math.max(0, want - have);
+    const inCanary = canaryAt(roster, data.rosterChanges ?? []);
     const day = data.deaths.filter(death => now - death.at <= DAY);
     const killed = (deaths: readonly Death[]): number => new Set(deaths.filter(death => causeOf(death) === "instagram").map(death => death.accountId)).size;
-    const fleetKilled = killed(day.filter(death => !roster.ids.has(death.accountId)));
+    const fleetKilled = killed(day.filter(death => !inCanary(death)));
     metrics.fleet_ig_killed_pct = active.length ? round1(100 * fleetKilled / active.length) : fleetKilled ? 100 : 0;
-    const canaryDay = day.filter(death => roster.ids.has(death.accountId));
+    const canaryDay = day.filter(inCanary);
     metrics.canary_ig_deaths_1h = Math.max(0, ...canaryDay.map(start => killed(canaryDay.filter(death => death.at >= start.at && death.at - start.at < HOUR))));
     const lastDay = data.days?.reduce<string | null>((latest, row) => latest && latest > row.day ? latest : row.day, null) ?? null;
     const canaryPages = data.days?.filter(row => row.day === lastDay && roster.ids.has(row.accountId)).map(row => row.pages) ?? [];
     const pagesText = !data.days ? "their pages are not measured" : lastDay
       ? `they read ${fmt(canaryPages.reduce((sum, pages) => sum + pages, 0))} pages on ${lastDay}, the busiest ${fmt(Math.max(0, ...canaryPages))}` : "no prod account read a page on a full UTC day";
     const startAt = Date.parse((data.config["engage.canary_started_at"] ?? "").trim());
-    const sinceStart = Number.isFinite(startAt) ? killed(data.deaths.filter(death => death.at >= startAt && roster.ids.has(death.accountId))) : 0;
+    const sinceStart = Number.isFinite(startAt) ? killed(data.deaths.filter(death => death.at >= startAt && inCanary(death))) : 0;
     const stop = data.config["engage.canary_stop_deaths"]?.trim();
     flagged.push({ at, kind: metrics.canary_accounts_short ? "canary_short" : "canary", excerpt: (roster.empty
       ? `no canary runs: ${roster.empty}; 0 of ${active.length} active prod accounts are in it, and ~10% is ${want}`
@@ -495,7 +514,7 @@ export function report(data: EngageData, dutyMetrics: readonly DutyMetric[]): Pr
     if (oversize) flagged.push(oversize);
     const reasonOf = (id: number): string => { const reason = data.accounts!.find(account => account.id === id)?.reason; return reason ? `; status_reason: ${reason}` : ""; };
     for (const death of day) flagged.push({ at: death.at, kind: "death",
-      excerpt: `account ${death.accountId} went ${death.status} at ${utc(death.at)}, code ${death.code ?? "none"}, cause ${causeOf(death)}${roster.ids.has(death.accountId) ? ", canary" : ""}, ${fmt(death.pages24h)} pages in its last 24 h${death.readBefore ? "" : ", never read a page"}${reasonOf(death.accountId)}`.slice(0, 600) });
+      excerpt: `account ${death.accountId} went ${death.status} at ${utc(death.at)}, code ${death.code ?? "none"}, cause ${causeOf(death)}${inCanary(death) ? ", canary" : ""}, ${fmt(death.pages24h)} pages in its last 24 h${death.readBefore ? "" : ", never read a page"}${reasonOf(death.accountId)}`.slice(0, 600) });
     const instagram = killed(day.filter(death => death.transition));
     if (data.deathGauge && Object.keys(data.deathGauge).length && (data.deathGauge.instagram ?? 0) !== instagram)
       flagged.push({ at, kind: "death_gauge", excerpt: `crawler_v3_engage_deaths_24h{cause="instagram"} reads ${data.deathGauge.instagram ?? "none"} while this precheck counts ${instagram}; the gauge sees the actor and from_status columns grafana_ro cannot, so trust the gauge and fix this precheck` });
@@ -605,7 +624,8 @@ where c.key like 'pause.%' and c.value = 'true' order by c.key`;
 const ACCOUNTS_SQL = "select id, status, status_reason as reason from ig_engage_accounts where world = 'prod' order by id";
 export const DEATHS_SQL = `select e.account_id, extract(epoch from e.at) * 1000 as at, e.outcome, e.error_code, e.transition,
   exists (select 1 from ig_engage_read_log l where l.account_id = e.account_id and l.pages > 0 and l.at < e.at) as read_before,
-  (select coalesce(sum(l.pages), 0) from ig_engage_read_log l where l.account_id = e.account_id and l.at <= e.at and l.at > e.at - interval '24 hours') as pages_24h
+  (select coalesce(sum(l.pages), 0) from ig_engage_read_log l where l.account_id = e.account_id and l.at <= e.at and l.at > e.at - interval '24 hours') as pages_24h,
+  (select extract(epoch from max(l.at)) * 1000 from ig_engage_read_log l where l.account_id = e.account_id and l.pages > 0 and l.at <= e.at and l.at > e.at - interval '24 hours') as last_read_at
 from ig_engage_account_events e join ig_engage_accounts a on a.id = e.account_id where a.world = 'prod' and (e.outcome in ${DEAD_SQL} or (e.outcome = 'active' and e.transition)) order by e.at, e.id`;
 /** The lapsed session bindings, as lapsedOf parses them; the 60 s is READ_PAGE_TIMEOUT_SECONDS, the margin the egress admission keeps. */
 export const LAPSED_SQL = `select count(*) filter (where r.status is distinct from 'blocked') as waiting, count(*) filter (where r.status = 'blocked') as blocked,
@@ -622,6 +642,16 @@ export function lapsedOf(tsv: string): Lapsed {
 }
 
 const CONFIG_SQL = "select key, value from config where key like 'engage.canary%' or key like 'pause.engage%'";
+/** The roster's writes over the window deaths are judged in and the canary's life, oldest first, as rosterChangesOf parses them. */
+export const ROSTER_SQL = `select extract(epoch from ts) * 1000 as at, old_value, new_value from config_audit
+where key = 'engage.canary_accounts' and ts > now() - interval '30 days' order by ts, id`;
+export function rosterChangesOf(rows: Record<string, unknown>[]): RosterChange[] {
+  return rows.map(row => {
+    const at = num(row.at);
+    if (at === null || !Number.isFinite(at)) throw new Error(`canary roster history: unexpected row ${JSON.stringify(row).slice(0, 80)}`);
+    return { at, before: rosterIds(String(row.old_value ?? "")), after: rosterIds(String(row.new_value ?? "")) };
+  });
+}
 /**
  * The deep collab walks on prod: watch_targets kind tagged (the logged-in usertags route) at depth 365. A walk done in the duty's 24 h window
  * is reached when it ended since or exhausted, and an error stop under its walk_end otherwise. An open walk whose last chunk errored is
@@ -786,7 +816,7 @@ export const deathsOf = (rows: Record<string, unknown>[]): Death[] => {
     if (row.outcome === "active") { killed.delete(accountId); continue; }
     if (killed.has(accountId)) continue;
     const death: Death = { accountId, at: Number(row.at), status: String(row.outcome), code: row.error_code == null ? null : String(row.error_code),
-      readBefore: row.read_before === true, pages24h: Number(row.pages_24h ?? 0), transition: row.transition === true };
+      readBefore: row.read_before === true, pages24h: Number(row.pages_24h ?? 0), transition: row.transition === true, lastReadAt: num(row.last_read_at) };
     if (causeOf(death) === "instagram" || causeOf(death) === "found_idle") killed.add(accountId);
     deaths.push(death);
   }
@@ -831,7 +861,7 @@ export async function measure(query: DsQuery | null, authError: string | null, n
   const daysRead = step("prod read log", async () => daysOf(await sqlRows(query, PG.prod, DAYS_SQL)));
   // The holds cover every day provenRates() may prove on, from the read log's first day.
   const firstDay = daysRead.then(rows => rows?.map(row => row.day).sort()[0]);
-  const [days, hours, heldHours, staging, stagingPauses, accounts, deaths, config, healthy, gauge, walks, due, lapsed, stuck] = await Promise.all([
+  const [days, hours, heldHours, staging, stagingPauses, accounts, deaths, config, rosterChanges, healthy, gauge, walks, due, lapsed, stuck] = await Promise.all([
     daysRead,
     step("prod read log", async () => hoursOf(await sqlRows(query, PG.prod, HOURS_SQL))),
     step("prod supply holds", async () => {
@@ -844,6 +874,7 @@ export async function measure(query: DsQuery | null, authError: string | null, n
     step("prod accounts", async () => accountsOf(await sqlRows(query, PG.prod, ACCOUNTS_SQL))),
     step("prod accounts", async () => deathsOf(await sqlRows(query, PG.prod, DEATHS_SQL))),
     step("prod config", async () => Object.fromEntries((await sqlRows(query, PG.prod, CONFIG_SQL)).map(row => [String(row.key), String(row.value ?? "")]))),
+    step("prod config", async () => rosterChangesOf(await sqlRows(query, PG.prod, ROSTER_SQL))),
     step("prod healthy gauge", async () => {
       const series = await promInstant(query, PROM.prod, 'max(crawler_v3_engage_admissible_now{world="prod"})');
       if (!series.length || !Number.isFinite(series[0]!.value)) throw new Error("crawler_v3_engage_admissible_now has no prod sample");
@@ -855,7 +886,7 @@ export async function measure(query: DsQuery | null, authError: string | null, n
     lapsedBindings,
     stuckAccounts,
   ]);
-  Object.assign(data, days && { days }, hours && { hours }, heldHours && { heldHours }, staging !== undefined && { stagingLastReadAt: staging }, stagingPauses && { stagingPauses }, accounts && { accounts }, deaths && { deaths }, config && { config },
+  Object.assign(data, days && { days }, hours && { hours }, heldHours && { heldHours }, staging !== undefined && { stagingLastReadAt: staging }, stagingPauses && { stagingPauses }, accounts && { accounts }, deaths && { deaths }, config && { config }, rosterChanges && { rosterChanges },
     healthy !== undefined && { healthy }, lapsed && { lapsed }, gauge && { deathGauge: gauge }, walks && { deepWalks: walks }, due && { stagingOverdue: due }, stuck && { stuck },
     hours && heldHours && { paced: pacedOf(hours, new Date(today - DAY).toISOString().slice(0, 10), heldHours) });
   return data;

@@ -4,7 +4,7 @@
 // the crawler's roster keeper sizes by engage.canary_roster_pct, so d1 reads only the roster since 11-24.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type Account, type EngageData, canaryOf, report, stagingOverdueOf } from "../scripts/duties/engage-reads.ts";
+import { type Account, type EngageData, canaryOf, report, rosterChangesOf, stagingOverdueOf } from "../scripts/duties/engage-reads.ts";
 
 /** Prod's 200 accounts on 10-18 05:40Z; the ones not listed in NOT_ACTIVE are active. */
 const IDS = "11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,115,116,117,118,119,120,121,122,123,124,125,126,127,128,129,130,131,132,133,134,135,136,137,138,139,140,141,142,143,144,145,146,147,148,149,150,151,152,153,154,155,156,157,158,159,160,161,162,163,164,165,166,167,168,169,170,171,172,173,174,175,176,177,178,179,180,181,182,183,184,185,196,197,198,199,200,201,202,203,204,205,206,207,208,209,210,211,212,213,214,215,216,217,219,220,221,222,223,224,225,226,227,228,230,231,232,237,241,242,243,244,245,246,249,251,252,253,254,255,257,260,261,262,264,265,267,268,269,270,271,272,273,274,275,277".split(",").map(Number);
@@ -74,4 +74,20 @@ test("the staging stall counts the collab reads staging's crawler counts overdue
   assert.equal(stall(0).metrics.staging_tagged_overdue_24h, 0);
   assert.match(stall(5).flagged!.find(flag => flag.kind === "staging_stall")!.excerpt, /^staging's crawler counts 5 collab reads overdue past 24 h \(target 0, 413 due now\)/);
   assert.throws(() => stagingOverdueOf({ ok: false }), /staging watch health: unexpected answer/);
+});
+
+test("a canary member the roster keeper drops between its last page and its death counts as a canary death, not a fleet kill", () => {
+  // 11-25: prod 242 read its last canary page at 14:06:28Z, left the roster by audit 49190 at 14:07:42Z, and went relogin_gone at 14:08:25Z.
+  const now = Date.parse("2026-11-25T14:20:00Z");
+  const accounts: Account[] = [{ id: 242, status: "disabled" }, ...Array.from({ length: 49 }, (_, i) => ({ id: 600 + i, status: "active" }))];
+  const config = { "engage.canary_accounts": "18,279,15,245,232,270,227,249,261", "engage.canary_started_at": "2026-11-20T00:17:33Z" };
+  const rosterChanges = rosterChangesOf([{ at: Date.parse("2026-11-25T14:07:42Z"), old_value: "18,279,15,245,242,232,270,227,249", new_value: config["engage.canary_accounts"] }]);
+  const death = { accountId: 242, at: Date.parse("2026-11-25T14:08:25Z"), status: "disabled", code: "relogin_gone", readBefore: true, pages24h: 1106, transition: true };
+  const run = (lastReadAt: number | null) => report({ now, accounts, config, errors: [], days: [], rosterChanges,
+    deaths: [{ ...death, lastReadAt }] } satisfies EngageData, []);
+  const kept = run(Date.parse("2026-11-25T14:06:28Z"));
+  assert.equal(kept.metrics.fleet_ig_killed_pct, 0);
+  assert.equal(kept.metrics.canary_ig_deaths_1h, 1);
+  assert.match(kept.flagged!.find(flag => flag.kind === "death")!.excerpt, /cause instagram, canary,/);
+  assert.equal(run(null).metrics.fleet_ig_killed_pct, 2);
 });
