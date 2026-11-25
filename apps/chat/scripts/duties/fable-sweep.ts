@@ -307,24 +307,43 @@ export function dutyContext(runs: readonly DutyRunView[]): string[] {
   return [...lines, ...fixes];
 }
 
+type DutyMissInput = {
+  agent: Agent; dutyId: string; runs: readonly DutyRunView[]; plan: readonly PlanItem[]; jobs: readonly Job[]; now: number; wakes?: readonly Wake[];
+};
+
 /**
  * Why a duty's miss is with its owner already, or undefined: the duty's first measured run, whose own duty job got its brief, or for each
  * metric the newest run missed an open fix step that names that duty and metric (`duty` is `<dutyId>/<metric>`) whose job works or sleeps
- * or that a board.wake or a working subagent moves (`wokenStep`). A step for another metric of the duty covers nothing: agent factory d2
- * read passed on through p235 while its slowest_api_p90_ms step p155 had no job. On 11-24 Crawler guy's d1 and d2 missed on their first
- * runs at 15:00 KST, each with fix steps (p48, p50, p42) whose jobs worked, and the auditor's 15:32 KST verify run still counted both as
- * findings nobody had passed on.
+ * or that a board.wake or a working subagent moves (`wokenStep`), or a closed fix step for it that a board.wake of the agent's work thread
+ * still names. A step for another metric of the duty covers nothing: agent factory d2 read passed on through p235 while its
+ * slowest_api_p90_ms step p155 had no job. On 11-24 Crawler guy's d1 and d2 missed on their first runs at 15:00 KST, each with fix steps
+ * (p48, p50, p42) whose jobs worked, and the auditor's 15:32 KST verify run still counted both as findings nobody had passed on. At 10:24 KST
+ * on 11-25 agent factory d2 read not passed on: p155 was moved by its wake, but search_p90_ms and thread_open_p90_ms had only p279 and p278,
+ * closed once their fixes were live, while the work thread's wake "p278 and p279: ..." waited to read his new lines.
  */
-export function passedOn(input: {
-  agent: Agent; dutyId: string; runs: readonly DutyRunView[]; plan: readonly PlanItem[]; jobs: readonly Job[]; now: number; wakes?: readonly Wake[];
-}): string | undefined {
+export function passedOn(input: DutyMissInput): string | undefined {
+  const fixes = dutyFixes(input);
+  if (typeof fixes === "string") return fixes;
+  const { missed, moved } = fixes;
+  return missed.length && missed.every(key => moved.has(key)) ? missed.map(key => moved.get(key)!).join("; ") : undefined;
+}
+
+/** The missed metrics of a duty's newest run that no fix step moves (`passedOn`), as the line its item shows; undefined when none. */
+export function unmovedMetrics(input: DutyMissInput): string | undefined {
+  const fixes = dutyFixes(input);
+  if (typeof fixes === "string") return undefined;
+  const left = fixes.missed.filter(key => !fixes.moved.has(key));
+  return left.length ? `not passed on: no fix step a job, board.wake or subagent moves for ${left.join(", ")}` : undefined;
+}
+
+function dutyFixes(input: DutyMissInput): string | { missed: string[]; moved: Map<string, string> } {
   const { agent, dutyId, now } = input;
   const measured = input.runs.filter(run => run.verdict !== "skipped");
   if (measured.length === 1 && measured[0]!.job) return `first run of the duty, its job ${measured[0]!.job.name} has it`;
   const newest = measured[0];
   const metrics = newest?.after?.metrics ?? newest?.metrics ?? {};
   const missed = Object.entries(metrics).filter(([, result]) => !result.met).map(([key]) => key);
-  if (!missed.length) return undefined;
+  if (!missed.length) return { missed, moved: new Map() };
   const mine = input.jobs.filter(job => job.agent?.id === agent.id);
   const chat: AppsChat = { id: agent.id, name: agent.name, board: null, duties: [], thread: agent.thread, jobs: mine.map(job => ({ name: job.name, state: job.status, sessionId: job.id })) };
   const reads = appsOwnerReads(chat, [], input.wakes ?? [], now);
@@ -332,16 +351,21 @@ export function passedOn(input: {
   const visit = (list: readonly PlanItem[]): void => {
     for (const step of list) {
       visit(step.children ?? []);
-      if (step.status === "done" || step.status === "dropped" || !step.duty) continue;
+      if (!step.duty) continue;
       const [id, key] = step.duty.split("/");
       if (id !== dutyId || !key || !missed.includes(key) || moved.has(key)) continue;
+      if (step.status === "done" || step.status === "dropped") {
+        // Only a wake the work thread owes moves a closed step, never its job, which may sleep on other work.
+        if (wokenStep({ id: step.id }, reads)) moved.set(key, `${key} fix step ${step.id} (closed), a board.wake of the work thread still names it`);
+        continue;
+      }
       const live = step.job ? mine.find(job => job.name === step.job && (job.status === "working" || job.status === "sleeping")) : undefined;
       if (live) moved.set(key, `${key} fix step ${step.id}, job ${live.name} ${live.status}`);
       else if (wokenStep({ id: step.id, job: step.job, waitUntil: typeof step.waitUntil === "string" ? step.waitUntil : undefined }, reads)) moved.set(key, `${key} fix step ${step.id}, a board.wake or subagent moves it`);
     }
   };
   visit(input.plan);
-  return missed.every(key => moved.has(key)) ? missed.map(key => moved.get(key)!).join("; ") : undefined;
+  return { missed, moved };
 }
 
 /**
@@ -478,9 +502,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       if (agent.id === values.agent || row.paused || !row.last || (row.last.verdict !== "missed" && row.last.verdict !== "error")) continue;
       const run = row.runs[0];
       const why = oneLine(run?.after?.summary ?? run?.error ?? run?.summary ?? "", 110);
-      const has = passedOn({ agent, dutyId: row.duty.id, runs: row.runs, plan: board.board?.plan ?? [], jobs: liveJobs, now, wakes });
+      const miss = { agent, dutyId: row.duty.id, runs: row.runs, plan: board.board?.plan ?? [], jobs: liveJobs, now, wakes };
+      const has = passedOn(miss);
+      const left = has ? undefined : unmovedMetrics(miss);
       items.push({ kind: "duty_off", sig: `duty:${agent.id}/${row.duty.id}`, agent: agent.name, text: `${agent.name} ${row.duty.id} "${row.duty.name}" ${row.last.verdict}${row.last.streak > 1 ? `, ${row.last.streak} runs in a row` : ""}: ${why}`, link: `#/agents/${agent.id}`, at: row.last.at,
-        context: [...dutyContext(row.runs), ...(has ? [`passed on: ${has}`] : [])], ...(has ? { passedOn: has } : {}) });
+        context: [...dutyContext(row.runs), ...(has ? [`passed on: ${has}`] : []), ...(left ? [left] : [])], ...(has ? { passedOn: has } : {}) });
     }
   }));
 

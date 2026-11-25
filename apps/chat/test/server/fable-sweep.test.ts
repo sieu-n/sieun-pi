@@ -23,7 +23,7 @@ import { fileURLToPath } from "node:url";
 import { after, test } from "node:test";
 import { measure } from "../../server/duty-run.ts";
 import {
-  answerOf, dutyContext, jobFindings, lastEntries, noModelTurn, passedOn, poolWaits, postFindings, reportState, stalledSteps, sweepMode, worthALook, type DutyRunView, type Item, type Job,
+  answerOf, dutyContext, jobFindings, lastEntries, noModelTurn, passedOn, poolWaits, unmovedMetrics, postFindings, reportState, stalledSteps, sweepMode, worthALook, type DutyRunView, type Item, type Job,
   type PlanItem, type Post,
 } from "../../scripts/duties/fable-sweep.ts";
 import { judge, type Duty, type DutyMetric, type DutyRunRecord } from "../../web/src/lib/api/shared/chat-duties.ts";
@@ -263,6 +263,26 @@ test("a duty miss is passed on when each missed metric has its own fix step that
   const factoryRuns = [missedRun(30, "s", ["slowest_api_p90_ms"]), missedRun(200, "s", ["slowest_api_p90_ms"])];
   const stalls: Job = { ...crawlerJob("pi-host loop stalls", "sleeping"), agent: { id: factory.id, name: factory.name } };
   assert.equal(passedOn({ agent: factory, dutyId: "d2", runs: factoryRuns, plan: factoryPlan, jobs: [stalls], now }), undefined, "a step for another metric covers nothing");
+
+  // agent factory d2 at 10:24 KST 11-25: p155 slept on the work thread's wake, and the closed p278 and p279 waited on its wake for his new lines.
+  const threeRuns = [missedRun(30, "s", ["slowest_api_p90_ms", "search_p90_ms", "thread_open_p90_ms"]), missedRun(200, "s", ["slowest_api_p90_ms"])];
+  const closedPlan: PlanItem[] = [
+    { id: "p155", text: "slowest call under 1 s", status: "doing", duty: "d2/slowest_api_p90_ms", job: "sw factory stays snappy duty 261124-200357" },
+    { id: "p278", text: "room opens at once", status: "done", duty: "d2/thread_open_p90_ms" },
+    { id: "p279", text: "fast search", status: "done", duty: "d2/search_p90_ms", job: "search speed" },
+  ];
+  const workWake = (note: string) => ({ session: "tf--1", note, since: now - 90 * MIN, on: check });
+  const both155 = [workWake("p155: a stored speed check reads the slowest call at or under 1,000 ms"), workWake("p278 and p279: their fixes are live")];
+  const d2 = (wakes: Parameters<typeof passedOn>[0]["wakes"], jobs: Job[] = []) => ({ agent: factory, dutyId: "d2", runs: threeRuns, plan: closedPlan, jobs, now, wakes });
+  assert.equal(passedOn(d2(both155)), "slowest_api_p90_ms fix step p155, a board.wake or subagent moves it; " +
+    "search_p90_ms fix step p279 (closed), a board.wake of the work thread still names it; thread_open_p90_ms fix step p278 (closed), a board.wake of the work thread still names it");
+  assert.equal(unmovedMetrics(d2(both155)), undefined);
+  assert.equal(passedOn(d2(both155.slice(0, 1))), undefined, "a closed step with no wake naming it moves nothing");
+  assert.equal(unmovedMetrics(d2(both155.slice(0, 1))), "not passed on: no fix step a job, board.wake or subagent moves for search_p90_ms, thread_open_p90_ms");
+  const searchJob: Job = { ...crawlerJob("search speed", "sleeping"), agent: { id: factory.id, name: factory.name } };
+  assert.equal(unmovedMetrics(d2(both155.slice(0, 1), [searchJob])), "not passed on: no fix step a job, board.wake or subagent moves for search_p90_ms, thread_open_p90_ms",
+    "a closed step's sleeping job does not move it");
+  assert.equal(passedOn(d2([workWake("p155: x"), { ...workWake("p278 and p279: x"), session: "tc--1" }])), undefined, "another thread's wake names nothing of this agent");
 
   const items: Item[] = [
     { kind: "duty_off", sig: "duty:ag_crawler-guy/d1", agent: "Crawler guy", text: "d1", link: "#", passedOn: "fix step p48" },
