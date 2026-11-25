@@ -67,6 +67,16 @@ test("two watch lines in one clock minute count as one minute, as at 20:16:10Z a
     { read: 2, unusable: 1, by: { swapouts: 1, kernel_task: 1 }, lastAt: Date.parse("2026-10-27T20:16:30.013Z") });
 });
 
+// 11-25 10:27:30Z: the Mac swapped out 7,690 pages a second at pressure 1 while the owner's closed tabs took swap from 12.3 to 9.2 GB. d7 read
+// that minute usable and d12 counted it unusable until both judged it with swapFellAt.
+test("a pressure 1 swapouts minute whose swap fell counts 0, and one at warn pressure still counts 1", () => {
+  const swapped = (at: string, pressureLevel: number, swapoutsPerS: number, swapGb: number): WatchLine => ({ host: "us-metal02", at, usable: null, workers: 0, workerGb: 0, top: [],
+    hosts: [{ name: "mac", usable: { pressureLevel, swapoutsPerS, kernelTaskPct: 20 }, workers: 0, workerGb: 0, top: [], swapGb }] } as unknown as WatchLine);
+  assert.equal(macUnusableMinutes([swapped("2026-11-25T10:26:30.000Z", 1, 0, 12.3), swapped("2026-11-25T10:27:30.000Z", 1, 7690, 9.2)]).unusable, 0);
+  assert.deepEqual(macUnusableMinutes([swapped("2026-11-25T10:26:30.000Z", 2, 0, 12.3), swapped("2026-11-25T10:27:30.000Z", 2, 7690, 9.2)]).by, { swapouts: 1 });
+  assert.equal(macUnusableMinutes([swapped("2026-11-25T10:26:30.000Z", 1, 0, 9.2), swapped("2026-11-25T10:27:30.000Z", 1, 7690, 12.3)]).unusable, 1);
+});
+
 test("the unusable excerpt names each red minute's largest owner and the newest one's groups, so the owner's own Chrome reads apart from agent load (p754)", async () => {
   const held = (at: string, label: string, swapoutsPerS: number): WatchLine => ({ host: "us-metal02", at, usable: null, workers: 0, workerGb: 0, top: [], hosts: [{ name: "mac",
     usable: { pressureLevel: 2, swapoutsPerS, kernelTaskPct: 20, owners: [{ owner: "x", label, gb: 21.5 }], groups: { browsers: 28.38, agents: 3.27 } }, workers: 0, workerGb: 0, top: [] }] } as unknown as WatchLine);
@@ -204,6 +214,16 @@ test("a Mac ssh and tailscale ping both miss is flagged host_away, so d1's error
   const judged = judge(metrics, { metrics: { servers_not_answering: 0, ...result.metrics }, flagged: result.flagged });
   assert.equal(judged.verdict, "error");
   assert.ok(Object.values(judged.metrics).every(item => item.met), "every number it read is on target, so the runner reads the run as waiting");
+});
+
+// 5 of ops guy's 154 d1 runs read mac_read when exec's 30 s timeout killed an ssh to the sleeping Mac, which left mac_servers_not_answering unmeasured.
+test("an ssh that exec's timeout killed counts as an unreachable Mac", async () => {
+  const killed = Object.assign(new Error("Command failed: ssh mac"), { code: null, killed: true, signal: "SIGTERM" });
+  const result = await measureMac({ platform: "linux", exec: async () => { throw killed; }, watch: async () => [minute(25)], wait: async () => {} }, 0);
+  assert.deepEqual(result.metrics, { mac_unusable_min: 0, mac_unreachable: 1 });
+  assert.deepEqual(result.flagged.map(item => item.kind), ["mac_usable", "mac_unreachable"]);
+  const refused = await measureMac({ platform: "linux", exec: async () => { throw Object.assign(new Error("Command failed: ssh mac"), { code: 1 }); }, watch: async () => [], wait: async () => {} }, 0);
+  assert.deepEqual(refused.flagged.map(item => item.kind), ["mac_read", "mac_read"]);
 });
 
 test("a Mac that answers a tailscale ping but not ssh gets no host_away, so its failed read stays a source error", async () => {

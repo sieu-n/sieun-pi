@@ -12,7 +12,7 @@ import type { MemoryGroupId } from "../../src/shared/types.ts";
 import { isLinuxReading, readWatch, type UsableMiss, unusable, type WatchLine } from "../../src/mac-usable-watch.ts";
 import { chatDataDir } from "../../src/owner-ok.ts";
 import { groupOf } from "../../../../../components/prime-relay/host-stats.ts";
-import { hostViews, RIG_GROUPS } from "./whole-system.ts";
+import { hostViews, RIG_GROUPS, swapFellAt } from "./whole-system.ts";
 import { macSilent } from "./mac-reach.ts";
 
 /**
@@ -255,7 +255,8 @@ export function macDown(reading: MacReading, crawler?: CrawlerState): string[] {
 /**
  * The distinct clock minutes of `lines` that carry a Mac reading, how many of them read unusable, and in how many each miss showed. The
  * watch writes more than one line in some minutes: on 10-27 it wrote 20:16:10Z and 20:16:30Z, both unusable, and counting lines read
- * 13 unusable minutes as 14.
+ * 13 unusable minutes as 14. A minute is judged as d7 judges it, with whole-system.ts `swapFellAt`, so the 10:27Z minute of 11-25 that swapped
+ * out 7,690 pages a second at pressure 1 while swap fell from 12.3 to 9.2 GB reads usable here too.
  */
 export function macUnusableMinutes(lines: readonly WatchLine[]): { read: number; unusable: number; by: Partial<Record<UsableMiss, number>>; lastAt?: number;
   ledBy?: Record<string, number>; lastGroups?: Partial<Record<MemoryGroupId, number>> } {
@@ -264,14 +265,15 @@ export function macUnusableMinutes(lines: readonly WatchLine[]): { read: number;
   let lastGroups: Partial<Record<MemoryGroupId, number>> | undefined;
   const missedIn = new Map<number, Set<UsableMiss>>();
   const leader = new Map<number, string>();
+  const swapFell = swapFellAt(lines);
   for (const line of lines) {
     const view = hostViews(line).find(candidate => candidate.name === MAC_HOST);
     const usable = view?.usable;
     // The Mac writes no Linux reading, so a Linux one named the Mac is another box's (whole-system.ts UNNAMED_LINUX_HOST).
-    if (!usable || isLinuxReading(usable)) continue;
+    if (!view || !usable || isLinuxReading(usable)) continue;
     const minute = Math.floor(Date.parse(line.at) / 60_000);
     read.add(minute);
-    const missed = unusable(usable);
+    const missed = unusable(usable, swapFell(line, view));
     if (!missed.length) continue;
     missedIn.set(minute, new Set([...missedIn.get(minute) ?? [], ...missed]));
     const top = usable.owners?.[0];
@@ -309,7 +311,8 @@ export interface MacResult extends Pick<PrecheckOutput, "lastEventAt" | "windowM
 
 /**
  * Reads the Mac over ssh (or in place when this run is on the Mac). ssh exits 255 when it cannot reach the host, which is a sleeping or
- * offline Mac: that sets mac_unreachable and leaves mac_servers_not_answering unmeasured. mac_unusable_min comes from the watch lines either way.
+ * offline Mac: that sets mac_unreachable and leaves mac_servers_not_answering unmeasured. An ssh that exec's 30 s timeout killed counts the
+ * same, because 5 of ops guy's 154 d1 runs read mac_read that way while the Mac slept. mac_unusable_min comes from the watch lines either way.
  * When the Mac also answers no tailscale ping, the run flags it `host_away`, so the runner holds the run and reruns it once the Mac is back. Since
  * c97f586c (11-02) a run that leaves a counted metric unmeasured reads error, and ops guy's d1 left mac_servers_not_answering unmeasured on
  * every run the Mac slept through with no host_away item, so those runs read error with no host-back rerun.
@@ -336,7 +339,8 @@ export async function measureMac(deps: Pick<UptimeDeps, "exec" | "platform" | "w
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if ((error as { code?: unknown }).code === 255) {
+    const failed = error as { code?: unknown; killed?: unknown; signal?: unknown };
+    if (failed.code === 255 || failed.killed === true || typeof failed.signal === "string") {
       const away = await deps.macAway?.("its dev servers were", at).catch(() => undefined);
       return { ...windows, metrics: { ...watched, mac_unreachable: 1 }, flagged: [usable, { at, kind: "mac_unreachable", excerpt: `Mac: ssh ${MAC_HOST} could not reach it (asleep or offline), so its dev servers were not read: ${message}`.slice(0, 300) },
         ...away ? [away] : []] };
