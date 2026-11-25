@@ -740,7 +740,8 @@ export class Boards {
     return file.duties.map(duty => {
       const runs = [...(file.runs[duty.id] ?? [])].sort((a, b) => b.at - a.at).slice(0, 20);
       const view: DutyView = {
-        duty: { id: duty.id, name: duty.name, ownerWords: duty.ownerWords, goal: duty.goal, metrics: duty.metrics, status: duty.status, ...(duty.boardGoal ? { boardGoal: duty.boardGoal } : {}) },
+        duty: { id: duty.id, name: duty.name, ownerWords: duty.ownerWords, goal: duty.goal, metrics: duty.metrics, status: duty.status, ...(duty.boardGoal ? { boardGoal: duty.boardGoal } : {}),
+          ...(duty.firingCall ? { faultCall: { command: duty.firingCall, cwd: duty.precheck.cwd } } : {}) },
         schedule: duty.schedule, paused: duty.status === "paused", nextAt: duty.status === "paused" ? null : nextRun(duty.schedule, duty.lastRunAt ?? duty.createdAt),
         running: this.dutyRuns.has(`${chat}/${duty.id}`), runs, priority: "normal",
       };

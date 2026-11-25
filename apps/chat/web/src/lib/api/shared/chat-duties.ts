@@ -207,8 +207,11 @@ export interface FixLink { step: string; job?: string; live: boolean; hold?: str
 /** A run's re-measure after its own job ended. */
 export interface AfterMeasure { at: number; verdict: "met" | "missed" | "error"; metrics: Record<string, MetricResult>; summary: string; parts?: Record<string, MetricResult>;
   readings?: Record<string, number>; items?: Record<string, MetricResult>; hostAway?: string }
-/** The part of a duty the card shows; the check-in duty has the same fields. */
-export type DutyCard = Pick<Duty, "id" | "name" | "ownerWords" | "goal" | "metrics" | "status"> & { boardGoal?: string };
+/**
+ * The part of a duty the card shows; the check-in duty has the same fields. `faultCall`: an agent duty's `firingCall` with the folder it runs in, which apps/chat's duty list gives so the alert bridge names it in a
+ * pi-host thread's alert message, as it does for a Prime chat from the chat's own duty store (11-26: d8 CI monitoring moved to devops guy).
+ */
+export type DutyCard = Pick<Duty, "id" | "name" | "ownerWords" | "goal" | "metrics" | "status"> & { boardGoal?: string; faultCall?: { command: string; cwd: string } };
 /**
  * What the Duties card shows per duty: the duty, `builtin` for the check-in, its schedule (the check-in's is the chat's check-in setting) and
  * whether it is paused, when it runs next, whether a run is going now, and its last runs, newest first.

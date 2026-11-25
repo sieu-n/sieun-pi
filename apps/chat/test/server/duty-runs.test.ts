@@ -27,16 +27,17 @@ const imported = (at: number, value: number, afterValue?: number): DutyRunRecord
 
 let s: Running;
 let prime: string;
+let work: string;
 const now = Date.now();
 const chatDir = () => s.app.boards.dir(agents.vent);
 const duties = async (): Promise<DutyRow[]> => (await s.get<{ duties: DutyRow[] }>(`/api/threads/${ids.vent}/duties`)).duties;
 
 before(async () => {
   s = await start();
-  const work = mkdtempSync(join(tmpdir(), "duty-runs-"));
+  work = mkdtempSync(join(tmpdir(), "duty-runs-"));
   const script = `require("fs").writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { up: 100 }, flagged: [] }))`;
   const duty = { id: "d1", name: "Vent gateway", ownerWords: "keep it up", goal: "it stays up", metrics: [metric], schedule: { kind: "daily", at: "07:04" },
-    precheck: { command: ["node", "-e", script], cwd: work, timeoutMs: 30_000 }, onMiss: "fix it", status: "active", createdAt: now - 10 * 24 * HOUR, updatedAt: now,
+    precheck: { command: ["node", "-e", script], cwd: work, timeoutMs: 30_000 }, onMiss: "fix it", firingCall: "node verdict.mjs '<key>'", status: "active", createdAt: now - 10 * 24 * HOUR, updatedAt: now,
     lastRunAt: now - HOUR, runCount: 3 };
   // The Prime export: two runs from 10 and 6 days ago, the newer one missed before its job and met after it.
   prime = mkdtempSync(join(tmpdir(), "prime-chat-"));
@@ -61,6 +62,8 @@ test("GET /duties lists imported and recorded runs newest first, with the judged
   assert.equal(row!.nextAt, nextRun({ kind: "daily", at: "07:04" }, now - HOUR));
   assert.ok(row!.nextAt! > now);
   assert.equal(row!.card.job?.name, "Vent gateway duty recorded");
+  // 11-26: the alert bridge names this command and folder in the alert message of an agent whose duty keeps fault calls.
+  assert.deepEqual(row!.duty.faultCall, { command: "node verdict.mjs '<key>'", cwd: work });
 });
 
 test("a run shows as running, and its start and end reach the page as duties events", async () => {

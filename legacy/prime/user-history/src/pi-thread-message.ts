@@ -233,6 +233,23 @@ export async function sendNotice(found: readonly Route[], session: string, messa
 }
 
 /**
+ * The fault call command of a pi-host thread's active duty that keeps fault calls, with its folder, from apps/chat's duty list (`faultCall`);
+ * null when none does. On 11-26 d8 CI monitoring moved from the VP of CI's Prime duty store to devops guy's agent, whose duties apps/chat keeps.
+ */
+export async function threadFaultCall(thread: string, chat = chatUrl()): Promise<{ command: string; cwd: string } | null> {
+  const response = await fetch(new URL(`api/threads/${encodeURIComponent(thread)}/duties`, chat.endsWith("/") ? chat : `${chat}/`));
+  if (!response.ok) throw new Error(`apps/chat at ${chat} answered ${response.status} for the duties of ${thread}`);
+  const body: unknown = await response.json();
+  const rows = isRecord(body) && Array.isArray(body.duties) ? body.duties : [];
+  for (const row of rows) {
+    const duty = isRecord(row) && isRecord(row.duty) ? row.duty : null;
+    const call = duty && duty.status === "active" && isRecord(duty.faultCall) ? duty.faultCall : null;
+    if (call && typeof call.command === "string" && typeof call.cwd === "string") return { command: call.command, cwd: call.cwd };
+  }
+  return null;
+}
+
+/**
  * The thread's newest `limit` root entries, newest first, as durable_entries gives them. A root turn that ended after the alert bridge sent a
  * fire ends in this page, unless the thread wrote more than `limit` entries after it, which leaves newer turns in the page anyway.
  */

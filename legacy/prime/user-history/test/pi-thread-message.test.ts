@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
 import { messageCheckPrelude } from "../src/message-limit-check.ts";
-import { chatUrl, pickThread, type Route, routes, sendAlert, sendNotice, sendToThread, threadText } from "../src/pi-thread-message.ts";
+import { chatUrl, pickThread, type Route, routes, sendAlert, sendNotice, sendToThread, threadFaultCall, threadText } from "../src/pi-thread-message.ts";
 
 const VENT = "230bbdbf-4d84-475f-95d2-63db2f90ca34";
 const FACTORY = "72ba1ed2-e04e-4284-a4da-3547edb6a3d9";
@@ -132,6 +132,24 @@ test("11-26: an alert bridge notice to a pi-host thread is one durable_submit wi
     host.server.close();
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("11-26: a pi-host thread's fault call comes from its active duty in apps/chat's duty list, and a thread whose duties keep none has none", async () => {
+  const call = { command: "node scripts/duties/ci/ci-monitoring.mjs verdict '<key>'", cwd: "/home/sieun/Documents/Github/auto-sns-agent" };
+  const lists: Record<string, unknown[]> = {
+    [`/api/threads/${VENT}/duties`]: [{ duty: { id: "d1", status: "paused", faultCall: { command: "old '<key>'", cwd: "/" } } }, { duty: { id: "d8", status: "active", faultCall: call } }],
+    "/api/threads/other/duties": [{ duty: { id: "d1", status: "active" } }],
+  };
+  const chat = createHttpServer((req, res) => {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ duties: lists[req.url!] ?? [] }));
+  });
+  chat.listen(0, "127.0.0.1"); await once(chat, "listening");
+  try {
+    const url = `http://127.0.0.1:${(chat.address() as { port: number }).port}`;
+    assert.deepEqual(await threadFaultCall(VENT, url), call);
+    assert.equal(await threadFaultCall("other", url), null);
+  } finally { chat.close(); }
 });
 
 test("a thread is named by its full id or exact name only: a prefix names none, and a shared name names both", () => {

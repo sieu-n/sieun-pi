@@ -43,7 +43,7 @@ import { cellHold, messageHold, parkedUntil, readRowSlotPark } from "./slot-park
 import { handOff, handoffSend, handsOffRow, systemPorts } from "./detached-handoff.ts";
 import { unfinishedHandoffs } from "./orphan-services.ts";
 import { readHeldTurns, readTurnSince, threadTurnSince, writeResumePending } from "./held-turns.ts";
-import { routes as piHostRoutes, sendAlert, sendNotice, threadEntries, threadNames } from "./pi-thread-message.ts";
+import { routes as piHostRoutes, sendAlert, sendNotice, threadEntries, threadFaultCall, threadNames } from "./pi-thread-message.ts";
 import { recordUnloaded, writeReceipt } from "./unloaded.ts";
 import { quietMinutes } from "./quiet-minutes.ts";
 import { startTmpSweep } from "./tmp-sweep.ts";
@@ -469,8 +469,11 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const stopAlerts = !alertPoll ? () => {} : startAlertBridge({ file: join(dataDir, "alert-bridge.json"),
     alerts: () => alertPoll.alerts(),
     owners: () => readOwnersFor(grafanaConfig, homedir()), hasBoard: async session => (await boards.read(session)) !== null,
+    // A pi-host thread's duties are its agent's in apps/chat, which Prime's duty store does not hold.
     firingCall: async chatId => {
-      const duty = (await duties.store.list(chatId)).find(duty => duty.status === "active" && duty.firingCall);
+      const own = await duties.store.list(chatId);
+      if (!own.length) return (await threadNames(await piHostRoutes())).has(chatId) ? threadFaultCall(chatId) : null;
+      const duty = own.find(duty => duty.status === "active" && duty.firingCall);
       return duty?.firingCall ? { command: duty.firingCall, cwd: liveFolder(duty.precheck.cwd) } : null;
     },
     threads: { list: async () => threadNames(await piHostRoutes()), send: async (thread, text, requestId) => sendAlert(await piHostRoutes(), thread, text, requestId),
