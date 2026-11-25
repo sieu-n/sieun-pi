@@ -265,6 +265,8 @@ export const KEPT_GUARDS: readonly { path: string; reason: string }[] = [
   { path: "apps/infra/ci-server/controller/tests/data/", reason: "frozen copies of a past checks.yml the ci-server patcher tests against, pinned in SHA256SUMS" },
   { path: "apps/llm-wiki/tests/fixtures/prose-lint/", reason: "copies of old wiki pages the prose lint tests on" },
   { path: "ops/health/requests.yaml", reason: "the log of past health requests" },
+  { path: "apps/crawler-v3/src/companies/stack_data/technologies.json", reason: "webappanalyzer's pinned fingerprint set, which names ElevenLabs among 7,000 vendors it detects on a company's site" },
+  { path: "packages/ui/tests/fixtures/adblock-rules.txt", reason: "a copy of uBO and Brave filter rules the PostHog adblock test parses, one of which names heygen.com" },
 ];
 /**
  * Tip folders of article copy that names a removed provider to readers and calls nothing: api-portal's SEO blog and its endpoint docs link
