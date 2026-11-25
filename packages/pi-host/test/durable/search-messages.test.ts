@@ -17,7 +17,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import type { SearchHit, SearchResult } from "../../../../apps/chat/web/src/lib/api/types.ts";
 import { ChatApp } from "../../src/durable/chat-app.ts";
 import { roomTools } from "../../src/durable/room-tools.ts";
-import { SEARCH_MESSAGES_TOOL, searchHitLine, searchQuery } from "../../src/durable/search-messages.ts";
+import { SEARCH_MESSAGES_TOOL, searchHitLine, searchQuery, searchTools } from "../../src/durable/search-messages.ts";
 import { MODEL, textOf } from "./crash-scenario.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -47,7 +47,7 @@ before(async () => {
     const answer = (status: number, value: unknown) => { res.writeHead(status, { "Content-Type": "application/json" }); res.end(JSON.stringify(value)); };
     if (url.pathname !== "/api/search") return answer(404, { error: "No such route." });
     if (url.searchParams.get("in") === "#nowhere") return answer(400, { error: "No room named #nowhere." });
-    const body: SearchResult = url.searchParams.get("where") === "tool" ? { hits: [tool], total: 1 } : { hits: [reply], total: 7, nextCursor: "1" };
+    const body: SearchResult = url.searchParams.get("place") === "jobs,tools" ? { hits: [tool], total: 1 } : { hits: [reply], total: 7, nextCursor: "1" };
     return answer(200, body);
   });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
@@ -78,17 +78,22 @@ async function run(plan: Record<string, string | string[]>[]) {
 }
 
 test("the filters go to /api/search as comma lists, with brief on and nothing for a filter left out", () => {
-  const q = searchQuery({ query: "kimchi", from: ["vent", "owner"], in: "#sw-factory-build", where: ["thread", "tool"], after: "2026-11-19", before: "2026-11-21", sort: "recent", limit: 5 });
-  assert.equal(q.toString(), "q=kimchi&brief=1&from=vent%2Cowner&where=thread%2Ctool&in=%23sw-factory-build&after=2026-11-19&before=2026-11-21&sort=recent&limit=5");
-  assert.equal(searchQuery({ query: "x", from: "vent", where: "tool" }).toString(), "q=x&brief=1&from=vent&where=tool");
+  const q = searchQuery({ query: "kimchi", from: ["vent", "owner"], in: "#sw-factory-build", place: ["threads", "tools"], after: "2026-11-19", before: "2026-11-21", sort: "recent", limit: 5 });
+  assert.equal(q.toString(), "q=kimchi&brief=1&from=vent%2Cowner&place=threads%2Ctools&in=%23sw-factory-build&after=2026-11-19&before=2026-11-21&sort=recent&limit=5");
+  assert.equal(searchQuery({ query: "x", from: "vent", place: "tools" }).toString(), "q=x&brief=1&from=vent&place=tools");
   assert.equal(searchQuery({ query: "x" }).toString(), "q=x&brief=1");
   assert.equal(searchQuery({ query: "x", in: "th_9:3", full: true }).toString(), "q=x&in=th_9%3A3");
 });
 
-test("place goes to /api/search as one comma list, from an array or a comma string, beside where and in", () => {
+test("place goes to /api/search as one comma list, from an array or a comma string, beside in", () => {
   assert.equal(searchQuery({ query: "x", place: ["jobs", "tools"] }).toString(), "q=x&brief=1&place=jobs%2Ctools");
   assert.equal(searchQuery({ query: "x", place: " jobs, tools ", in: "#sw-factory-build" }).toString(), "q=x&brief=1&place=jobs%2Ctools&in=%23sw-factory-build");
-  assert.equal(searchQuery({ query: "x", place: "threads", where: "thread" }).toString(), "q=x&brief=1&place=threads&where=thread");
+});
+
+test("the tool's args are the owner's Cmd K filters and the paging and output args", () => {
+  const [tool] = searchTools(app);
+  assert.deepEqual(Object.keys((tool!.parameters as { properties: object }).properties),
+    ["query", "from", "place", "in", "after", "before", "sort", "limit", "cursor", "full"]);
 });
 
 test("a hit line says where it sits, who wrote it, its plain words, its id and its link", () => {
@@ -100,10 +105,9 @@ test("a hit line says where it sits, who wrote it, its plain words, its id and i
 });
 
 test("the tool returns the count, the hits and the next page, and the server's refusal as the call's error", async () => {
-  const out = await run([{ query: "kimchi", from: "vent", where: ["thread"] }, { query: "4812", where: "tool" }, { query: "x", in: "#nowhere" }, { query: "4812", place: ["jobs", "tools"] }]);
-  assert.deepEqual(asked.map(q => [q.get("from"), q.get("where"), q.get("in"), q.get("place")]),
-    [["vent", "thread", null, null], [null, "tool", null, null], [null, null, "#nowhere", null], [null, null, null, "jobs,tools"]]);
-  assert.deepEqual(out.map(r => r.isError), [false, false, true, false]);
+  const out = await run([{ query: "kimchi", from: "vent", place: ["threads"] }, { query: "4812", place: ["jobs", "tools"] }, { query: "x", in: "#nowhere" }]);
+  assert.deepEqual(asked.map(q => [q.get("from"), q.get("place"), q.get("in")]), [["vent", "threads", null], [null, "jobs,tools", null], [null, null, "#nowhere"]]);
+  assert.deepEqual(out.map(r => r.isError), [false, false, true]);
   assert.match(out[0]!.text, /^1 of 7 hits\.\n- .*reply in thread p85.*\nMore: pass cursor=1\.$/);
   assert.match(out[1]!.text, /^1 of 1 hits\.\n- .*tool output bash · vent: rows 4812/);
   assert.equal(out[2]!.text, "search_messages failed: No room named #nowhere.");

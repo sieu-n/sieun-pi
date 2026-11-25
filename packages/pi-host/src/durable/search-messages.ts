@@ -3,14 +3,14 @@
  * (apps/chat/server/search.ts). It finds room, Solo and DM posts, the replies in their threads, and what agents did inside their work
  * threads and jobs, with the owner's filters and their meaning: `from` (who wrote it), `place` (the Cmd K pills: channels, DMs, Solo, threads,
  * jobs, tool calls; owner p125 and p126, contract ~/work/search-in-category/contract.md), `in` (which room), `after` and `before` (owner p115,
- * msg mwomrz5y). `where` (root, thread, tool) is the older form of `place` and keeps working.
+ * msg mwomrz5y).
  *
  * Each hit prints as one line that says where it sits, who wrote it, its words and the id other room tools take, with the link that opens it.
  * The room-tools extension lists it beside `set_emoji` (`room-tools.ts`). Searching only reads, so a rerun after a crash is safe.
  */
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool } from "@earendil-works/pi-durable";
-import type { SearchHit, SearchResult, SearchWhere } from "../../../../apps/chat/web/src/lib/api/types.ts";
+import type { SearchHit, SearchResult } from "../../../../apps/chat/web/src/lib/api/types.ts";
 import type { ChatApp } from "./chat-app.ts";
 
 export const SEARCH_MESSAGES_TOOL = "search_messages";
@@ -25,14 +25,12 @@ export const SEARCH_MESSAGES_DESCRIPTION =
   "bash in job <name>, and ends with its id and link; a post's id works in set_emoji, edit_message and save_message. To read more of a " +
   "hit, such as a tool's whole output, search again narrowly with full: true. For a Prime chat on :5182 or thinking, use search_history.";
 
-const WHERE = ["root", "thread", "tool"] as const satisfies readonly SearchWhere[];
-
 /** The Cmd K place pills, in their row order; `GET /api/search` takes them as `place` (contract ~/work/search-in-category/contract.md). */
 export const SEARCH_PLACES = ["channels", "dms", "solo", "threads", "jobs", "tools"] as const;
 export type SearchPlace = typeof SEARCH_PLACES[number];
 
 export interface SearchMessagesArgs {
-  query: string; from?: string[] | string; place?: SearchPlace[] | string; in?: string; where?: SearchWhere[] | SearchWhere; after?: string; before?: string;
+  query: string; from?: string[] | string; place?: SearchPlace[] | string; in?: string; after?: string; before?: string;
   sort?: "relevance" | "recent"; limit?: number; cursor?: string; full?: boolean;
 }
 
@@ -42,10 +40,8 @@ export function searchQuery(args: SearchMessagesArgs): URLSearchParams {
   const list = (value: string[] | string | undefined) => (Array.isArray(value) ? value : value ? value.split(",") : []).map(v => v.trim()).filter(Boolean);
   const from = list(args.from);
   const place = list(args.place);
-  const where = list(args.where);
   if (from.length) params.set("from", from.join(","));
   if (place.length) params.set("place", place.join(","));
-  if (where.length) params.set("where", where.join(","));
   for (const key of ["in", "after", "before", "sort", "cursor"] as const) if (args[key]) params.set(key, String(args[key]));
   if (args.limit) params.set("limit", String(args.limit));
   return params;
@@ -101,10 +97,6 @@ export function searchTools(app: ChatApp) {
       })),
       in: Type.Optional(Type.String({ description: "Which one room or job: a channel name such as #sw-factory-build, a Solo room's name, an " +
         "agent's name for its DM, a job's name as a hit shows it, or a room or job id. Use it when you know where it was said or which job did it." })),
-      where: Type.Optional(Type.Union([Type.Array(Type.Union(WHERE.map(w => Type.Literal(w)))), Type.Union(WHERE.map(w => Type.Literal(w)))], {
-        description: "The older form of place, kept for old calls: root is a top-level post, thread is a reply in a thread, tool is " +
-          "anything inside an agent's work. Prefer place.",
-      })),
       after: Type.Optional(Type.String({ description: "YYYY-MM-DD in KST, that day included: only what came then or later." })),
       before: Type.Optional(Type.String({ description: "YYYY-MM-DD in KST, that day left out: only what came earlier." })),
       sort: Type.Optional(Type.Union([Type.Literal("relevance"), Type.Literal("recent")], { description: "relevance by default; recent puts the newest first." })),
