@@ -5,7 +5,10 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { agentBoards } from "../../scripts/duties/agent-boards.ts";
+import { agentBoards, dutyCoverage, liveDuty, readAreas, type DutyRow } from "../../scripts/duties/agent-boards.ts";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const NOW = Date.parse("2026-11-24T00:00:00Z");
 const HOUR = 3_600_000;
@@ -30,4 +33,45 @@ test("stuck steps and gaps sum over agents, each flagged with why, and only an u
   ]);
   assert.match(out.flagged[0]!.excerpt, /no job, waits until 2026-12-01/);
   assert.match(out.flagged[3]!.excerpt, /job key rotation not at work/);
+});
+
+
+const duty = (id: string, name: string, runs: string[], paused = false): DutyRow => ({ duty: { id, name, status: paused ? "paused" : "active" }, paused, runs: runs.map(verdict => ({ verdict })) });
+
+test("a duty is live only when it is not paused and has a run that measured something", () => {
+  assert.equal(liveDuty(duty("d1", "Prod MCP", ["met"])), true);
+  assert.equal(liveDuty(duty("d1", "Prod MCP", ["missed"], true)), false);
+  assert.equal(liveDuty(duty("d1", "Prod MCP", [])), false);
+  assert.equal(liveDuty(duty("d1", "Prod MCP", ["skipped"])), false);
+});
+
+test("agents with no live duty, or with an area no live duty watches, are uncovered and each is named once", () => {
+  const out = dutyCoverage([
+    { agent: { id: "ag_mcp", name: "mcp" }, duties: [duty("d1", "Prod MCP", ["met"])] },
+    { agent: { id: "ag_api-portal", name: "API portal" }, duties: [] },
+    { agent: { id: "ag_crawler-guy", name: "Crawler guy" }, duties: [duty("d1", "Crawler read cost", ["met"]), duty("d6", "Meta Ads crawl", ["missed"], true)] },
+    { agent: { id: "ag_gpt-guy", name: "gpt guy" }, duties: [duty("d1", "New duty", [])] },
+    { agent: { id: "ag_seo", name: "seo" }, duties: [duty("d1", "Search traffic", ["met"])] },
+  ], [
+    { agent: "ag_crawler-guy", areas: [{ area: "Read cost", duty: "d1" }, { area: "Meta Ads", source: "msg mw1", duty: "d6" }, { area: "TikTok parity", source: "msg mw2" }] },
+    { agent: "seo", areas: [{ area: "Search traffic", duty: "Search traffic" }] },
+  ]);
+  assert.deepEqual(out.metrics, { agents_uncovered: 3, areas_uncovered: 2 });
+  assert.deepEqual(out.flagged.map(flag => flag.item), ["ag_api-portal", "ag_crawler-guy", "ag_gpt-guy"]);
+  assert.match(out.flagged[0]!.excerpt, /API portal \(ag_api-portal\): no duty/);
+  assert.match(out.flagged[1]!.excerpt, /area "Meta Ads" \(msg mw1\) has duty d6, not live; area "TikTok parity" \(msg mw2\) has no duty/);
+  assert.match(out.flagged[2]!.excerpt, /no live duty \(d1 never ran\)/);
+});
+
+test("the areas file is optional and a malformed one throws", () => {
+  const dir = mkdtempSync(join(tmpdir(), "areas-"));
+  assert.deepEqual(readAreas(join(dir, "none.json")), []);
+  writeFileSync(join(dir, "bad.json"), JSON.stringify({ agent: "seo" }));
+  assert.throws(() => readAreas(join(dir, "bad.json")), /not a list/);
+  writeFileSync(join(dir, "ok.json"), JSON.stringify([{ agent: "seo", areas: [{ area: "Search traffic", source: "brief", duty: "d1" }] }]));
+  assert.equal(readAreas(join(dir, "ok.json"))[0]!.areas[0]!.duty, "d1");
+  writeFileSync(join(dir, "keyed.json"), JSON.stringify({ _note: "light read", "ag_gpt-guy": { missing: [{ area: "repo free of slop", source: "dm_gpt-guy p1" }], note: "x" } }));
+  assert.deepEqual(readAreas(join(dir, "keyed.json")), [{ agent: "ag_gpt-guy", areas: [{ area: "repo free of slop", source: "dm_gpt-guy p1" }] }]);
+  writeFileSync(join(dir, "keyed-bad.json"), JSON.stringify({ "ag_gpt-guy": { missing: [{ what: "x" }] } }));
+  assert.throws(() => readAreas(join(dir, "keyed-bad.json")), /not a list/);
 });

@@ -8,16 +8,82 @@
  * nothing counted this for sw factory: d9 leaves sw factory boards off `stuck_steps_all`, and by the owner's rule 7 of 44 open steps had
  * neither a live owner nor an open For you todo (~/work/duty-and-nudge/part3-lazy.md).
  *
- * Usage: OUTPUT_FILE=<file> node --import tsx scripts/duties/agent-boards.ts [--server http://127.0.0.1:5184]
+ * It also counts the agents that keep no live duty over their areas, by the owner's ask (#dev-api-portal p27, msg mwwk9n6k, 11-26: "make sure
+ * all other agents are well behaved in terms of keeping their responsibilities"; p25: "think of duty as copy pasting this prompt every day").
+ * A duty is live when it is not paused and has at least one run that measured something; a paused or never-run duty counts as none. An agent
+ * with no live duty is uncovered. An areas file (AREAS_FILE, default ~/work/agent-duties/areas.json, `[{agent, areas: [{area, source, duty?}]}]`,
+ * agent by id or name, duty by id or name) lists the areas the owner gave each agent, and an area is uncovered while it names no duty or its
+ * duty is not live. On 11-26 at 05:13 KST, 6 of 17 agents had no duty at all.
+ *
+ * Usage: OUTPUT_FILE=<file> node --import tsx scripts/duties/agent-boards.ts [--server http://127.0.0.1:5184] [--areas <file>]
  * Without OUTPUT_FILE the result prints to stdout.
  */
-import { writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { parseArgs } from "node:util";
 
 interface Agent { id: string; name: string; archived?: boolean; hostState?: string }
 interface Step { id: string; text: string; status: string; job?: string; waitFor?: string; waitUntil?: string }
 interface Steps { open: number; stuck: Step[]; gaps: { id: string; text: string }[] }
 interface CheckIn { everyMs: number; paused: boolean; lastAt: number | null; runs?: { at: number; verdict: string; summary: string }[] }
+/** A row of `GET /api/agents/:id/duties`, the fields this check reads. */
+export interface DutyRow { duty: { id: string; name: string; status?: string }; paused: boolean; runs: { verdict: string }[] }
+/** One entry of the areas file: the areas the owner made an agent responsible for, each with the duty that watches it, if any. */
+export interface AgentAreas { agent: string; areas: { area: string; source?: string; duty?: string | null }[] }
+
+/** A duty watches its area only while it is not paused and has a run that measured something; a skipped run measured nothing. */
+export function liveDuty(row: DutyRow): boolean {
+  return !row.paused && row.duty.status !== "paused" && row.runs.some(run => run.verdict !== "skipped");
+}
+
+/**
+ * The agents that keep no live duty over their responsibilities: an agent with no live duty, and each area of the areas file whose duty is
+ * missing or not live. Each uncovered agent gets one `uncovered_agent` flag that names it and its uncovered areas, so the duty job can tell it.
+ */
+export function dutyCoverage(agents: readonly { agent: Agent; duties: readonly DutyRow[] }[], areas: readonly AgentAreas[] = []): { metrics: Record<string, number>; flagged: Flag[] } {
+  const flagged: Flag[] = [];
+  let uncoveredAgents = 0;
+  let uncoveredAreas = 0;
+  for (const { agent, duties } of agents) {
+    const live = duties.filter(liveDuty);
+    const given = areas.filter(entry => entry.agent === agent.id || entry.agent === agent.name).flatMap(entry => entry.areas);
+    const missed = given.filter(area => !area.duty || !live.some(row => row.duty.id === area.duty || row.duty.name === area.duty));
+    uncoveredAreas += missed.length;
+    if (live.length > 0 && missed.length === 0) continue;
+    uncoveredAgents += 1;
+    const notLive = duties.filter(row => !liveDuty(row)).map(row => `${row.duty.id} ${row.paused || row.duty.status === "paused" ? "paused" : "never ran"}`);
+    const why = [
+      ...live.length === 0 ? [duties.length === 0 ? "no duty" : `no live duty (${notLive.join(", ")})`] : [],
+      ...missed.map(area => `area "${area.area.slice(0, 100)}"${area.source ? ` (${area.source})` : ""} ${area.duty ? `has duty ${area.duty}, not live` : "has no duty"}`),
+    ];
+    flagged.push({ kind: "uncovered_agent", sig: `${agent.id}/duties`, item: agent.id, excerpt: `${agent.name} (${agent.id}): ${why.join("; ")}` });
+  }
+  return { metrics: { agents_uncovered: uncoveredAgents, areas_uncovered: uncoveredAreas }, flagged };
+}
+
+/**
+ * The areas file, or none when it is absent. It is a list of `{agent, areas}`, or an object keyed by agent id or name whose value holds
+ * `areas` and `missing` lists of `{area, source, duty?}` (the duty gaps job's 11-26 file); keys that start with "_" are notes. Any other
+ * shape throws, so a typo never reads as covered.
+ */
+export function readAreas(file: string): AgentAreas[] {
+  if (!existsSync(file)) return [];
+  const data: unknown = JSON.parse(readFileSync(file, "utf8"));
+  const entries: unknown[] = Array.isArray(data) ? data : data && typeof data === "object"
+    ? Object.entries(data).filter(([key]) => !key.startsWith("_")).map(([agent, value]) => {
+      const { areas, missing } = (value ?? {}) as { areas?: unknown; missing?: unknown };
+      if (!Array.isArray(areas) && !Array.isArray(missing)) return null;
+      return { agent, areas: [...Array.isArray(areas) ? areas : [], ...Array.isArray(missing) ? missing : []] };
+    })
+    : [];
+  const valid = (entry: unknown): entry is AgentAreas => typeof (entry as AgentAreas)?.agent === "string" && Array.isArray((entry as AgentAreas).areas)
+    && (entry as AgentAreas).areas.every(area => typeof area?.area === "string");
+  if ((!Array.isArray(data) && (!data || typeof data !== "object")) || !entries.every(valid)) {
+    throw new Error(`${file} is not a list of {agent, areas: [{area, source, duty}]} or an object of agent: {areas, missing}`);
+  }
+  return entries as AgentAreas[];
+}
 
 /** Prime's late rule (checkin-schedule.ts): a check-in with no run in 1.5 intervals is late. */
 export const LATE_INTERVALS = 1.5;
@@ -56,13 +122,17 @@ async function get<T>(server: string, path: string): Promise<T> {
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const { values } = parseArgs({ options: { server: { type: "string" } } });
+  const { values } = parseArgs({ options: { server: { type: "string" }, areas: { type: "string" } } });
   const server = values.server ?? process.env.APPS_CHAT_URL ?? "http://127.0.0.1:5184";
+  const areasFile = values.areas ?? process.env.AREAS_FILE ?? join(homedir(), "work/agent-duties/areas.json");
   const agents = (await get<Agent[]>(server, "/api/agents")).filter(agent => !agent.archived && agent.hostState !== "away");
   const read = await Promise.all(agents.map(async agent => ({
     agent, steps: await get<Steps>(server, `/api/agents/${agent.id}/steps`), checkIn: await get<CheckIn>(server, `/api/agents/${agent.id}/check-in`),
+    duties: (await get<{ duties: DutyRow[] }>(server, `/api/agents/${agent.id}/duties`)).duties,
   })));
-  const json = JSON.stringify(agentBoards(read, Date.now()), null, 1);
+  const boards = agentBoards(read, Date.now());
+  const coverage = dutyCoverage(read, readAreas(areasFile));
+  const json = JSON.stringify({ metrics: { ...boards.metrics, ...coverage.metrics }, flagged: [...boards.flagged, ...coverage.flagged], areasFile: existsSync(areasFile) ? areasFile : null }, null, 1);
   if (process.env.OUTPUT_FILE) writeFileSync(process.env.OUTPUT_FILE, json);
   else console.log(json);
 }
