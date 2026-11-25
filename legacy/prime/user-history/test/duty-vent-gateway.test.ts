@@ -499,3 +499,11 @@ test("the prod Convex env names come from the backend the prod VITE_CONVEX_URL r
   assert.deepEqual(calls, [{ url: "https://convex.virev.ai/instance_name", authorization: undefined },
     { url: "https://convex.virev.ai/api/query", authorization: "Convex convex-prod|new" }]);
 });
+
+test("n names each metric's sample size, and a failed read counts 0, so a met run on no input reads as unmeasured (owner c249, 11-26)", () => {
+  const { n } = ventMetrics(reads({ removed: { grep: "", tables: TABLES, files: 9120 }, testSends: [], testSendsRead: 41 }), 0);
+  assert.deepEqual(n, { through_vent_pct: 6, provider_keys_outside_vent: 2, removed_provider_refs: 9120, test_calls_real_24h: 41 });
+  const unread = ventMetrics(reads({ share: { error: "exit 1" }, testSends: { error: "HTTP 502" } }), 0).n;
+  assert.equal(unread.through_vent_pct, 0);
+  assert.equal(unread.test_calls_real_24h, 0);
+});

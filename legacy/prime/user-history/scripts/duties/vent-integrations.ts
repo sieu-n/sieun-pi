@@ -89,6 +89,8 @@ export interface IntegrationReads {
   hosts: { production: HostRead; staging: HostRead };
   spans: VersionSpan[] | Failed | null;
   refusals: KeyRefusal[] | Failed;
+  /** The prod Vent call rows of 24 h the refusal read searched, its sample size. */
+  refusalsRead?: number;
   models: ModelReads | Failed;
   consoleReads: ConsoleRead[] | Failed;
 }
@@ -141,9 +143,16 @@ export function allowedModels(tables: string): string[] {
   return models;
 }
 
-export function integrationMetrics(reads: IntegrationReads, at: number): PrecheckOutput {
+/**
+ * `n`, the sample size of each metric (board skill plan-and-duties.md, duties rule 9): counted prod calls, prod call rows searched for refused
+ * keys, LLM calls read by model and console reads timed. A read that failed counts 0.
+ */
+export type VentIntegrationsOutput = PrecheckOutput & { n: Record<string, number> };
+
+export function integrationMetrics(reads: IntegrationReads, at: number): VentIntegrationsOutput {
   const flagged: FlaggedSlice[] = [];
   const metrics: Record<string, number> = {};
+  const n: Record<string, number> = { vent_success_24h_pct: 0, vent_key_refused_sources: 0, vent_console_slow_reads_24h: 0, old_model_calls_24h: 0 };
   const lastEventAt: Record<string, number> = {};
   let sourceErrors = 0;
   const sourceError = (excerpt: string) => { sourceErrors++; flagged.push({ at, kind: "source_error", excerpt: excerpt.slice(0, 300) }); };
@@ -157,6 +166,7 @@ export function integrationMetrics(reads: IntegrationReads, at: number): Prechec
     const ok = lights.reduce((sum, light) => sum + light.windows["24h"].success, 0);
     const total = lights.reduce((sum, light) => sum + counted(light), 0);
     metrics.vent_counted_calls_24h = total;
+    n.vent_success_24h_pct = total;
     metrics.vent_failed_calls_24h = total - ok;
     if (total) metrics.vent_success_24h_pct = round(100 * ok / total, 2);
     else flagged.push({ at, kind: "gap", excerpt: "prod Vent logged no counted outbound call in 24 h, so there is no success rate to read" });
@@ -182,6 +192,7 @@ export function integrationMetrics(reads: IntegrationReads, at: number): Prechec
   } else {
     const refusals = [...reads.refusals].sort((a, b) => b.calls - a.calls);
     metrics.vent_key_refused_sources = refusals.length;
+    n.vent_key_refused_sources = reads.refusalsRead ?? 0;
     if (refusals.length) lastEventAt.vent_key_refused_sources = Math.max(...refusals.map(refusal => refusal.last));
     for (const refusal of refusals.slice(0, ITEMS)) {
       const named = refusal.integrations.length ? ` for ${refusal.integrations.join(", ")}` : "";
@@ -195,6 +206,7 @@ export function integrationMetrics(reads: IntegrationReads, at: number): Prechec
   } else {
     const old = oldModelCalls(reads.models).sort((a, b) => b.calls - a.calls);
     metrics.old_model_calls_24h = old.reduce((sum, row) => sum + row.calls, 0);
+    n.old_model_calls_24h = reads.models.rows.reduce((sum, row) => sum + row.calls, 0);
     for (const env of ["production", "staging"]) metrics[`old_model_calls_${env === "production" ? "prod" : env}_24h`] = old.filter(row => row.env === env).reduce((sum, row) => sum + row.calls, 0);
     if (old.length) lastEventAt.old_model_calls_24h = Math.max(...old.map(row => row.last));
     for (const row of old.slice(0, ITEMS)) {
@@ -213,6 +225,7 @@ export function integrationMetrics(reads: IntegrationReads, at: number): Prechec
   } else {
     const slow = reads.consoleReads.filter(read => (read.cpu_s ?? 0) >= SLOW_READ_S).sort((a, b) => (b.cpu_s ?? 0) - (a.cpu_s ?? 0));
     metrics.vent_console_slow_reads_24h = slow.length;
+    n.vent_console_slow_reads_24h = reads.consoleReads.length;
     for (const read of slow.slice(0, ITEMS)) {
       flagged.push({ at, kind: "slow_console_read", item: read.name, excerpt: `prod Vent console read ${read.name} took ${read.cpu_s} core-s on prod ClickHouse for ${read.read_rows} rows` });
     }
@@ -231,7 +244,7 @@ export function integrationMetrics(reads: IntegrationReads, at: number): Prechec
     }
   }
   metrics.source_errors = sourceErrors;
-  return { metrics, flagged, ...Object.keys(lastEventAt).length ? { lastEventAt } : {} };
+  return { metrics, flagged, n, ...Object.keys(lastEventAt).length ? { lastEventAt } : {} };
 }
 
 const run = (file: string, args: string[], options: { env?: NodeJS.ProcessEnv } = {}) => new Promise<string>((resolve, reject) => {
@@ -312,6 +325,13 @@ async function spans(token: string, version: string): Promise<VersionSpan[]> {
   return Array.from({ length: rows }, (_, index) => ({ env: String(column("env")[index]), first: Number(column("first")[index]), last: Number(column("last")[index]) }));
 }
 
+/** How many prod Vent call rows of 24 h the refusal read searches. */
+async function prodCallRows(token: string): Promise<number> {
+  const { column } = await clickhouse(token, "SELECT toFloat64(count()) AS rows FROM otel.vent_calls " +
+    "WHERE ResourceAttributes['deployment.environment.name'] = 'production' AND Timestamp > now() - INTERVAL 24 HOUR");
+  return Number(column("rows")[0] ?? 0);
+}
+
 /** Prod calls Vent refused as vent_unauthorized in 24 h that carried a key, per source address, from the columns telemetry.py writes on a refusal. */
 async function keyRefusals(token: string): Promise<KeyRefusal[]> {
   const sql = "SELECT `client.address` AS source, toFloat64(sum(greatest(toUInt64OrZero(`vent.count`), 1))) AS calls, " +
@@ -359,15 +379,16 @@ async function main(): Promise<void> {
       if (!production.version || !staging.version || production.version === staging.version) return null;
       return spans(token, production.version).catch((error: unknown) => ({ error: errorText(error) }));
     });
-    const [lightsRead, hosts, history, refusals, models, consoleCost] = await Promise.all([
+    const [lightsRead, hosts, history, refusals, refusalsRead, models, consoleCost] = await Promise.all([
       typeof token === "string" ? lights(token, dir).catch((error: unknown) => ({ error: errorText(error) })) : Promise.resolve(token),
       hostsRead,
       spansRead,
       typeof token === "string" ? keyRefusals(token).catch((error: unknown) => ({ error: errorText(error) })) : Promise.resolve(token),
+      typeof token === "string" ? prodCallRows(token).catch(() => 0) : Promise.resolve(0),
       typeof token === "string" ? modelCalls(token).catch((error: unknown) => ({ error: errorText(error) })) : Promise.resolve(token),
       typeof token === "string" ? consoleReads(token, dir).catch((error: unknown) => ({ error: errorText(error) })) : Promise.resolve(token),
     ]);
-    await writeFile(output, JSON.stringify(integrationMetrics({ lights: lightsRead, hosts, spans: history, refusals, models, consoleReads: consoleCost }, at), null, 2) + "\n");
+    await writeFile(output, JSON.stringify(integrationMetrics({ lights: lightsRead, hosts, spans: history, refusals, refusalsRead, models, consoleReads: consoleCost }, at), null, 2) + "\n");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

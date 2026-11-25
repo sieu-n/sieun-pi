@@ -191,3 +191,11 @@ test("the duty keeps one headline and at most 3 metrics, and the precheck writes
   const { metrics } = integrationMetrics({ lights: [light("b2", "green", 10, 0)], hosts: hosts(), spans: null, refusals: [], models: NO_MODELS, consoleReads: CHEAP }, 0);
   for (const metric of duty.metrics) assert.equal(typeof metrics[metric.key], "number", metric.key);
 });
+
+test("n names each metric's sample size, and a failed read counts 0, so a met run on no input reads as unmeasured (owner c249, 11-26)", () => {
+  const models: ModelReads = { allowed: ALLOWED, rows: [{ env: "production", caller: "convex", operation: "chat", model: "claude-opus-5-5", calls: 310, refused: 0, last: 0 }] };
+  const { n } = integrationMetrics({ lights: [light("b2", "green", 4257, 3)], hosts: hosts(), spans: null, refusals: [], refusalsRead: 52000, models, consoleReads: CHEAP }, 0);
+  assert.deepEqual(n, { vent_success_24h_pct: 4260, vent_key_refused_sources: 52000, vent_console_slow_reads_24h: 2, old_model_calls_24h: 310 });
+  const unread = integrationMetrics({ lights: { error: "HTTP 401" }, hosts: hosts(), spans: null, refusals: { error: "HTTP 502" }, models: { error: "HTTP 502" }, consoleReads: { error: "HTTP 502" } }, 0).n;
+  assert.deepEqual(unread, { vent_success_24h_pct: 0, vent_key_refused_sources: 0, vent_console_slow_reads_24h: 0, old_model_calls_24h: 0 });
+});

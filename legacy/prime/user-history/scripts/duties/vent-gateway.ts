@@ -173,13 +173,15 @@ export interface ShareResult { refs: Record<string, { sha: string; sites: ShareS
 export const GONE = new Set(["removed", "gone"]);
 export interface WebhookVerdict { source: string; direct: boolean; vent: boolean }
 export interface KeyListing { locations: Record<string, string[]>; unreadable: Record<string, string>; classOf?: ClassOf }
-/** The tip's text lines that name a removed provider (`git grep -z -n` output) and apps/vent/src/vent/tables.py at the tip. */
-export interface RemovedReads { grep: string; tables: string }
+/** The tip's text lines that name a removed provider (`git grep -z -n` output), apps/vent/src/vent/tables.py at the tip and how many tip files the grep searched. */
+export interface RemovedReads { grep: string; tables: string; files?: number }
 /** One group of test sends that reached a real provider in 24 h (TEST_SENDS_SQL). */
 export interface TestSendRow { integration: string; caller: string; method: string; calls: number; last: number }
 export interface VentReads {
   share: ShareResult | { error: string }; webhooks: WebhookVerdict[] | { error: string }; keys: KeyListing; removed: RemovedReads | { error: string };
   testSends?: TestSendRow[] | { error: string };
+  /** The off-production sends of TEST_SENDS_READ_SQL, faked or real, that test_calls_real_24h judged. */
+  testSendsRead?: number;
 }
 
 /**
@@ -207,6 +209,15 @@ WHERE Timestamp > now() - INTERVAL 24 HOUR AND ServiceName = 'vent' AND Body = '
     AND arrayAll(d -> d IN (${SINK_DOMAINS.map(domain => `'${domain}'`).join(", ")}), splitByChar(',', LogAttributes['vent.recipient_domains'])))
 GROUP BY integration, caller, method
 ORDER BY calls DESC`;
+/** The sends TEST_SENDS_SQL judges, faked or real: the sample size of test_calls_real_24h. */
+export const TEST_SENDS_READ_SQL = `SELECT toFloat64(sum(greatest(toUInt64OrZero(\`vent.count\`), 1))) AS calls
+FROM otel.vent_calls
+WHERE Timestamp > now() - INTERVAL 24 HOUR AND ServiceName = 'vent' AND Body = 'vent.call'
+  AND ResourceAttributes['deployment.environment.name'] != 'production'
+  AND \`vent.route\` != 'webhook' AND \`vent.outcome\` != 'refused'
+  AND ((\`vent.integration\` = 'resend' AND \`vent.method\` IN ('POST /emails', 'POST /emails/batch'))
+    OR (\`vent.integration\` = 'gmail' AND \`vent.method\` = 'POST /gmail/v1/users/me/messages/send')
+    OR \`vent.integration\` = 'slack-sales')`;
 
 /**
  * The providers goal p22 removed to the root on 2026-10-19 to 10-21 (the owner: "not just from vent but 뿌리째 쭉쭉 지워. 원천 코드, 관련된
@@ -328,9 +339,16 @@ export function webhookVerdicts({ http, ventRoute, registry }: WebhookFiles): We
 export const envNames = (text: string): string[] =>
   [...text.matchAll(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/gm)].map(match => match[1]!).filter(name => !name.startsWith("DOTENV_"));
 
-export function ventMetrics(reads: VentReads, at: number): PrecheckOutput {
+/**
+ * `n`, the sample size of each metric (board skill plan-and-duties.md, duties rule 9): in-scope call sites and webhooks, key names listed in
+ * in-scope places, tip files grepped, and off-production sends judged. A read that failed counts 0.
+ */
+export type VentGatewayOutput = PrecheckOutput & { n: Record<string, number> };
+
+export function ventMetrics(reads: VentReads, at: number): VentGatewayOutput {
   const flagged: FlaggedSlice[] = [];
   const metrics: Record<string, number> = {};
+  const n: Record<string, number> = { through_vent_pct: 0, provider_keys_outside_vent: 0, removed_provider_refs: 0, test_calls_real_24h: 0 };
   let sourceErrors = 0;
   const sourceError = (excerpt: string) => { sourceErrors++; flagged.push({ at, kind: "source_error", excerpt: excerpt.slice(0, 300) }); };
 
@@ -371,6 +389,7 @@ export function ventMetrics(reads: VentReads, at: number): PrecheckOutput {
       flagged.push({ at, kind: "webhook_direct", item: `webhook ${hook.source}`, excerpt: `${hook.source} webhook: ${hook.direct ? `convex/http.ts at main still routes the provider's own path` : "no direct route"}${hook.vent ? "" : ", and convex/webhooks/vent.ts at main does not take it"}` });
     }
     const total = sites.length + newSites.length + reads.webhooks.length;
+    if (main && tip) n.through_vent_pct = total;
     if (main && tip && total) metrics.through_vent_pct = round(100 * through / total);
     else if (main && tip) sourceError(`vent share script found no in-scope call site or webhook at ${TIP}, so there is no share to read`);
     metrics.through_vent_count = through;
@@ -399,6 +418,7 @@ export function ventMetrics(reads: VentReads, at: number): PrecheckOutput {
   const leaks: string[] = [];
   for (const [location, names] of Object.entries(reads.keys.locations)) {
     if (!inScope(location)) continue;
+    n.provider_keys_outside_vent += names.length;
     const here = names.filter(name => (providerKey(name, reads.keys.classOf) || (BOX_PLATFORM.test(name) && onBox(location))) && !(ALARM_SLACK.test(name) && ALARM_FALLBACK.test(location)) && !CI_VENT_INPUT(location, name)
       && !OTHER_PROJECT_KEY.test(name) && !CLIPROXY_SERVER(location, name));
     for (const name of here) leaks.push(`${location} ${name}`);
@@ -411,7 +431,10 @@ export function ventMetrics(reads: VentReads, at: number): PrecheckOutput {
 
   const removed = failed(reads.removed) ? reads.removed : removedProviderRefs(reads.removed, at);
   if (failed(removed)) sourceError(`removed provider refs at ${TIP} could not be read: ${removed.error}`);
-  else flagged.push(...removed.flagged);
+  else {
+    flagged.push(...removed.flagged);
+    if (!failed(reads.removed)) n.removed_provider_refs = reads.removed.files ?? 0;
+  }
   metrics.removed_provider_refs = failed(removed) ? UNMEASURED : removed.refs;
 
   if (reads.testSends !== undefined) {
@@ -420,6 +443,7 @@ export function ventMetrics(reads: VentReads, at: number): PrecheckOutput {
       metrics.test_calls_real_24h = UNMEASURED;
     } else {
       metrics.test_calls_real_24h = reads.testSends.reduce((sum, row) => sum + row.calls, 0);
+      n.test_calls_real_24h = reads.testSendsRead ?? 0;
       for (const row of reads.testSends) {
         flagged.push({ at, kind: "test_send_real", item: `${row.integration} ${row.method}`, excerpt: `${row.calls} ${row.integration} ${row.method} calls from caller ${row.caller} off production reached the real provider in 24 h, the last at ${new Date(row.last).toISOString()}`.slice(0, 300) });
       }
@@ -427,7 +451,7 @@ export function ventMetrics(reads: VentReads, at: number): PrecheckOutput {
   }
 
   metrics.source_errors = sourceErrors;
-  return { metrics, flagged };
+  return { metrics, flagged, n };
 }
 
 const run = (file: string, args: string[], options: { cwd?: string; env?: NodeJS.ProcessEnv; input?: string } = {}) => new Promise<string>((resolve, reject) => {
@@ -448,13 +472,16 @@ async function grafanaToken(): Promise<string> {
   return token;
 }
 
-/** The test sends of TEST_SENDS_SQL, read from prod ClickHouse through prod Vent and the obs Grafana. */
-async function testSends(token: string): Promise<TestSendRow[]> {
-  const { rows, column } = await clickhouse(token, TEST_SENDS_SQL);
+/** The test sends of TEST_SENDS_SQL and the count of TEST_SENDS_READ_SQL, read from prod ClickHouse through prod Vent and the obs Grafana. */
+async function testSends(token: string): Promise<{ rows: TestSendRow[]; read: number }> {
+  const [{ rows, column }, judged] = await Promise.all([clickhouse(token, TEST_SENDS_SQL), clickhouse(token, TEST_SENDS_READ_SQL)]);
   const [integration, caller, method, calls, last] = ["integration", "caller", "method", "calls", "last"].map(column);
-  return Array.from({ length: rows }, (_, i) => ({
-    integration: String(integration![i]), caller: String(caller![i]), method: String(method![i]), calls: Number(calls![i]), last: Number(last![i]),
-  }));
+  return {
+    rows: Array.from({ length: rows }, (_, i) => ({
+      integration: String(integration![i]), caller: String(caller![i]), method: String(method![i]), calls: Number(calls![i]), last: Number(last![i]),
+    })),
+    read: Number(judged.column("calls")[0] ?? 0),
+  };
 }
 
 async function share(token: string | undefined, dir: string): Promise<ShareResult> {
@@ -542,7 +569,8 @@ async function removedReads(): Promise<RemovedReads> {
     execFile("git", ["grep", "-I", "-n", "-z", "-i", "-E", "-e", pattern, TIP, "--", ".", ":!apps/llm-wiki/content"], { cwd: REPO, encoding: "utf8", maxBuffer: 64 << 20 },
       (error, stdout, stderr) => error && !(error.code === 1 && !stderr) ? reject(new Error(`git grep: ${String(stderr).trim().slice(-200) || error.message}`)) : resolve(stdout));
   });
-  return { grep, tables: await run("git", ["show", `${TIP}:apps/vent/src/vent/tables.py`]) };
+  const files = (await run("git", ["ls-tree", "-r", "--name-only", TIP])).split("\n").filter(path => path && !path.startsWith("apps/llm-wiki/content/")).length;
+  return { grep, tables: await run("git", ["show", `${TIP}:apps/vent/src/vent/tables.py`]), files };
 }
 
 async function main(): Promise<void> {
@@ -561,7 +589,7 @@ async function main(): Promise<void> {
       removedReads().catch((error: unknown) => ({ error: errorText(error) })),
       tokenText ? testSends(tokenText).catch((error: unknown) => ({ error: errorText(error) })) : Promise.resolve({ error: `no Grafana token: ${(token as { error: string }).error}` }),
     ]);
-    const result = ventMetrics({ share: shareResult, webhooks: hooks, keys, removed, testSends: sends }, at);
+    const result = ventMetrics({ share: shareResult, webhooks: hooks, keys, removed, ...failed(sends) ? { testSends: sends } : { testSends: sends.rows, testSendsRead: sends.read } }, at);
     if (fetched) result.flagged!.push({ at, kind: "stale_ref", excerpt: `git fetch origin main ${TIP_BRANCH} failed, so ${REF} and ${TIP} may be old: ${fetched}`.slice(0, 300) });
     await writeFile(output, JSON.stringify(result, null, 2) + "\n");
   } finally {
