@@ -164,6 +164,19 @@ test("mark_message with message_ids marks several items in one call and answers 
   ]);
 });
 
+test("set_emoji with message_ids changes the reaction on each post in one call, one line per post, and no id at all is the call's error", async () => {
+  const out = await run("th_emoji_many", [
+    { name: "set_emoji", args: { message_ids: ["ch_1a2b3c4d/p12", "dm_vent/p41"], emoji: "eyes", on: false } as unknown as Record<string, boolean> },
+    { name: "set_emoji", args: { emoji: "eyes", on: false } },
+  ]);
+  const posts = calls.filter(call => call.method === "POST" && call.path === "/api/threads/th_emoji_many/reactions").map(call => call.body);
+  assert.deepEqual(posts, [{ message: "ch_1a2b3c4d/p12", emoji: "eyes", on: false }, { message: "dm_vent/p41", emoji: "eyes", on: false }]);
+  assert.deepEqual(out.map(r => [r.text, r.isError]), [
+    ["eyes is off p12 in ch_1a2b3c4d.\neyes is off p12 in ch_1a2b3c4d.", false],
+    ["Pass message_id for one message or message_ids for several.", true],
+  ]);
+});
+
 test("in a comm thread, a closing call after the turn's post ends the turn with no further model request, and elsewhere the turn runs on", async () => {
   const comm = { agent: "ag_vent", dir: dir, role: "comm", room: "ch_1a2b3c4d", work: "w1" };
   const post = { name: "tell_owner", args: { text: "yes, it works" } };

@@ -41,7 +41,8 @@ export const RoomToolsName: Extension = defineExtension({ name: ROOM_TOOLS_EXTEN
 
 export const SET_EMOJI_DESCRIPTION =
   "Add your emoji reaction to a message, or remove it. Adding a reaction that is already there, or removing one that is not, changes nothing. " +
-  "The result names the post and lists its reactions now.";
+  "The result names the post and lists its reactions now. To change the same reaction on several posts, such as taking 👀 off each post " +
+  "you answered, pass them all in message_ids in one call.";
 
 export const EDIT_MESSAGE_DESCRIPTION =
   "Replace the text of one of your own posts, as Slack's edit does. The post keeps its place, its thread and its reactions, and the room shows " +
@@ -70,7 +71,10 @@ export function roomTools(app: ChatApp, thread: string): Extension {
         name: SET_EMOJI_TOOL,
         description: SET_EMOJI_DESCRIPTION,
         parameters: Type.Object({
-          message_id: MESSAGE_ID,
+          message_id: Type.Optional(MESSAGE_ID),
+          message_ids: Type.Optional(Type.Array(MESSAGE_ID, {
+            description: "Several messages to put the same reaction on or take it off in one call, such as every post you answered this turn, each id as message_id takes it.",
+          })),
           emoji: Type.String({ description: "The emoji's Slack name, such as eyes, +1 or pray, or the emoji itself." }),
           on: Type.Boolean({ description: "true adds your reaction, false removes it." }),
         }),
@@ -79,13 +83,23 @@ export function roomTools(app: ChatApp, thread: string): Extension {
         execute: async (args, api, context) => {
           // A job made before its conversation dropped this extension still lists it, so the call refuses there.
           if (api.conversationId !== ROOT_CONVERSATION_ID) return { output: text("set_emoji works only in your agent's own thread, not in a job."), isError: true };
-          try {
-            const answer = await app.react(thread, { message: args.message_id, emoji: args.emoji, on: args.on }, context.abortSignal);
-            return { output: text(answer.text), ...await closingControl(args.on !== isEyes(args.emoji), api, context) };
-          } catch (error) {
-            if (context.abortSignal?.aborted) throw error;
-            return { output: text(error instanceof Error ? error.message : String(error)), isError: true };
+          const ids = [...(args.message_id ? [args.message_id] : []), ...(args.message_ids ?? [])];
+          if (!ids.length) return { output: text("Pass message_id for one message or message_ids for several."), isError: true };
+          // One request per post: in the 7 days to 11-25 taking 👀 off cost 640 set_emoji calls, one per handled post (c245 scan).
+          const lines: string[] = [];
+          let failed = 0;
+          for (const id of ids) {
+            try {
+              lines.push((await app.react(thread, { message: id, emoji: args.emoji, on: args.on }, context.abortSignal)).text);
+            } catch (error) {
+              if (context.abortSignal?.aborted) throw error;
+              failed += 1;
+              const said = error instanceof Error ? error.message : String(error);
+              lines.push(ids.length > 1 ? `${id}: ${said}` : said);
+            }
           }
+          if (failed === ids.length) return { output: text(lines.join("\n")), isError: true };
+          return { output: text(lines.join("\n")), ...await closingControl(args.on !== isEyes(args.emoji), api, context) };
         },
       }),
       defineTool({

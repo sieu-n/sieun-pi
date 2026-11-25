@@ -17,6 +17,7 @@ import { primePrompt, type PrimePromptOptions } from "./prime-prompt.ts";
 import { roomTools } from "./room-tools.ts";
 import { SendMessage, sendMessageAlias } from "./send-message.ts";
 import { ChildTasks } from "./children.ts";
+import { KernelToolHint } from "./kernel-tool-hint.ts";
 import { subagentExtension } from "./subagent.ts";
 import { workingMemory } from "./working-memory.ts";
 
@@ -47,6 +48,8 @@ export function threadRegistry(prompt?: PrimePromptOptions, chat?: { chat: Prime
   if (chat) registry.install(roomTools(chat.chat.app, chat.thread.id));
   registry.install(ChildTasks);
   if (extras.rlm) registry.install(extras.rlm);
+  // A call of a kernel module as a tool, such as agent_message.send, reads how to make it in ipython (`kernel-tool-hint.ts`).
+  registry.install(KernelToolHint);
   if (extras.comm) registry.install(extras.comm);
   if (extras.rules) registry.install(extras.rules);
   if (extras.gate) registry.install(extras.gate);

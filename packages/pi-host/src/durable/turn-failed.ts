@@ -170,7 +170,8 @@ function names(message: Message | undefined, post: string): boolean {
   const id = post.slice(post.indexOf("/") + 1);
   const pattern = new RegExp(`(^|[^\\w])${id}($|[^\\w])`);
   return message.content.some(part => part.type === "toolCall" && POST_CALLS.has(part.name) && !part.id.startsWith(LINE_CALL) &&
-    [part.arguments.reply_to, part.arguments.message_id].some(value => typeof value === "string" && pattern.test(value)));
+    [part.arguments.reply_to, part.arguments.message_id, ...(Array.isArray(part.arguments.message_ids) ? part.arguments.message_ids : [])]
+      .some(value => typeof value === "string" && pattern.test(value)));
 }
 
 /** The input to submit again: the owner post's own content under its retry request id. */
