@@ -107,6 +107,15 @@ test("a Komodo variable reference after a secret word is a name, not a secret", 
   assert.equal(secretReason(entry("Prod key", "secret=[[9F3A2C71E0AB]]")), "secret written out");
 });
 
+test("a file path after a secret word is where the value lives, not a secret", () => {
+  assert.equal(secretReason(entry("Staging crawler API key: apps/infra/.env's CRAWLER_API_KEY answers 401 on staging-crawler; use the Vent staging key", "")), null);
+  assert.equal(secretReason(entry("Config", "token: ~/.config/x.json holds it")), null);
+  assert.equal(secretReason(entry("Config", "secret = ./deploy/keys.env")), null);
+  assert.equal(secretReason(entry("Prod key", "api_key: prod-9f3a2c71e0")), "api_key written out");
+  assert.equal(secretReason(entry("Prod key", "secret = q9F3a/2c71+e0AbXz==")), "secret written out");
+  assert.equal(secretReason(entry("Prod key", "secret = 9f3a2c71/Xe0ab")), "secret written out");
+});
+
 // 11-24: the duty showed 5 metrics against the shape of one headline and 3 more; scratch is a must-not of the ideal, so the headline carries it.
 test("a store with a scratch entry is off its ideal even when it holds every expected entry", () => {
   const want = { expected: [{ title: "Release command", match: ["release-apps-chat.mjs"] }] };
