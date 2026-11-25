@@ -25,20 +25,22 @@ const plist = join(home, "Library/LaunchAgents", `${label}.plist`);
 const gitEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
 export const PATHS = ["package.json", "components/harness-feed", "components/prime-relay", "legacy/prime/user-history/package.json", "legacy/prime/user-history/src"];
 
-// The loader the service runs feed.ts with: the Komodo container runs `node --import tsx` from the checkout (compose.sieun-pi.yml),
-// launchd runs plain node (launchdPlist below).
-const LOADER = platform() === "linux" ? ["--import", "tsx"] : [];
+// How the service runs feed.ts on both boxes: `node --import tsx` with the sieun-pi checkout as its working directory, where tsx resolves
+// from its node_modules. The user-history files the readers import use TypeScript parameter properties, which plain node refuses
+// (ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX in chat-handoff.ts). The Komodo container sets the same in compose.sieun-pi.yml, and on the Mac
+// launchdPlist writes it, so loadCheck runs the node, loader and directory the service will run.
+export const SERVICE = { node: process.execPath, loader: ["--import", "tsx"], cwd: repo };
 
 /**
- * Imports the release's feed.ts module graph with the service's loader, from the checkout as the container does, plus the app modules the
+ * Imports the release's feed.ts module graph with the service's node, loader and working directory, plus the app modules the
  * duties reader loads lazily (its `loadApp`, which a release before this check does not export). feed.ts starts its loop only when it is
  * node's entry script, so the import runs no round. Returns null when every module loads, else node's error.
  */
-export function loadCheck(release, { cwd = repo, loader = LOADER } = {}) {
+export function loadCheck(release, service = SERVICE) {
   const feed = pathToFileURL(join(release, "components/harness-feed/feed.ts")).href;
   const duties = pathToFileURL(join(release, "components/harness-feed/readers/duties.ts")).href;
   const code = `await import(${JSON.stringify(feed)}); const duties = await import(${JSON.stringify(duties)}); await duties.loadApp?.();`;
-  const result = spawnSync(process.execPath, [...loader, "--input-type=module", "-e", code], { cwd, encoding: "utf8" });
+  const result = spawnSync(service.node, [...service.loader, "--input-type=module", "-e", code], { cwd: service.cwd, encoding: "utf8" });
   if (result.status === 0) return null;
   const output = `${result.stderr ?? ""}${result.stdout ?? ""}`.trim();
   const reason = output.split("\n").find(line => /^\w*Error\b/.test(line));
@@ -63,12 +65,16 @@ function write(path, text, mode = 0o644) {
   renameSync(path + ".tmp", path);
 }
 
-const launchdPlist = script => `<?xml version="1.0" encoding="UTF-8"?>
+const xml = text => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+/** The launchd job for feed.ts: SERVICE's node, loader and working directory, the same command line loadCheck imports the release with. */
+export const launchdPlist = (script, service = SERVICE) => `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
   <key>Label</key><string>${label}</string>
-  <key>ProgramArguments</key><array><string>${process.execPath}</string><string>${script}</string></array>
+  <key>ProgramArguments</key><array>${[service.node, ...service.loader, script].map(arg => `<string>${xml(arg)}</string>`).join("")}</array>
+  <key>WorkingDirectory</key><string>${xml(service.cwd)}</string>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>10</integer>

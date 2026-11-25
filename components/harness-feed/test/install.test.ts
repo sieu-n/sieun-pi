@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readlinkSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
-import { activate } from "../install.mjs";
+import { activate, launchdPlist, loadCheck, SERVICE } from "../install.mjs";
 
 const share = mkdtempSync(join(tmpdir(), "harness-feed-install-"));
 after(() => rmSync(share, { recursive: true, force: true }));
@@ -55,3 +55,15 @@ for (const [file, why] of [
     assert.equal(readlinkSync(join(share, "current")), before);
   });
 }
+
+test("the Mac plist runs feed.ts with the node, loader and directory the load check imports it with (11-25 plain-node plist)", () => {
+  const script = join(share, "current/components/harness-feed/feed.ts");
+  const plist = launchdPlist(script);
+  const args = [...plist.match(/<key>ProgramArguments<\/key><array>(.*?)<\/array>/)![1].matchAll(/<string>(.*?)<\/string>/g)].map(m => m[1]);
+  assert.deepEqual(args, [SERVICE.node, ...SERVICE.loader, script]);
+  assert.equal(plist.match(/<key>WorkingDirectory<\/key><string>(.*?)<\/string>/)![1], SERVICE.cwd);
+  const props = release("release-parameter-properties");
+  writeFileSync(join(props, "components/harness-feed/otlp.ts"), "class Feed { constructor(private n: number) {} get = (): number => this.n; }\nexport const payload = (): number => new Feed(1).get();\n");
+  assert.equal(loadCheck(props), null);
+  assert.match(loadCheck(props, { ...SERVICE, loader: [] }) ?? "", /ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX/);
+});
