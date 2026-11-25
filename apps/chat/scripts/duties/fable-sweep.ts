@@ -314,12 +314,11 @@ type DutyMissInput = {
 /**
  * Why a duty's miss is with its owner already, or undefined: the duty's first measured run, whose own duty job got its brief, or for each
  * metric the newest run missed an open fix step that names that duty and metric (`duty` is `<dutyId>/<metric>`) whose job works or sleeps
- * or that a board.wake or a working subagent moves (`wokenStep`), or a closed fix step for it that a board.wake of the agent's work thread
- * still names. A step for another metric of the duty covers nothing: agent factory d2 read passed on through p235 while its
- * slowest_api_p90_ms step p155 had no job. On 11-24 Crawler guy's d1 and d2 missed on their first runs at 15:00 KST, each with fix steps
- * (p48, p50, p42) whose jobs worked, and the auditor's 15:32 KST verify run still counted both as findings nobody had passed on. At 10:24 KST
- * on 11-25 agent factory d2 read not passed on: p155 was moved by its wake, but search_p90_ms and thread_open_p90_ms had only p279 and p278,
- * closed once their fixes were live, while the work thread's wake "p278 and p279: ..." waited to read his new lines.
+ * or that a board.wake or a working subagent moves (`wokenStep`). A closed step covers nothing, and neither does a step for another metric of
+ * the duty: agent factory d2 read passed on through p235 while its slowest_api_p90_ms step p155 had no job. On 11-24 Crawler guy's d1 and d2
+ * missed on their first runs at 15:00 KST, each with fix steps (p48, p50, p42) whose jobs worked, and the auditor's 15:32 KST verify run still
+ * counted both as findings nobody had passed on. At 10:24 KST on 11-25 agent factory d2 read not passed on because its search_p90_ms and
+ * thread_open_p90_ms steps p279 and p278 were closed, and the item named only p155, which its wake moved (`unmovedMetrics` now names them).
  */
 export function passedOn(input: DutyMissInput): string | undefined {
   const fixes = dutyFixes(input);
@@ -351,14 +350,9 @@ function dutyFixes(input: DutyMissInput): string | { missed: string[]; moved: Ma
   const visit = (list: readonly PlanItem[]): void => {
     for (const step of list) {
       visit(step.children ?? []);
-      if (!step.duty) continue;
+      if (step.status === "done" || step.status === "dropped" || !step.duty) continue;
       const [id, key] = step.duty.split("/");
       if (id !== dutyId || !key || !missed.includes(key) || moved.has(key)) continue;
-      if (step.status === "done" || step.status === "dropped") {
-        // Only a wake the work thread owes moves a closed step, never its job, which may sleep on other work.
-        if (wokenStep({ id: step.id }, reads)) moved.set(key, `${key} fix step ${step.id} (closed), a board.wake of the work thread still names it`);
-        continue;
-      }
       const live = step.job ? mine.find(job => job.name === step.job && (job.status === "working" || job.status === "sleeping")) : undefined;
       if (live) moved.set(key, `${key} fix step ${step.id}, job ${live.name} ${live.status}`);
       else if (wokenStep({ id: step.id, job: step.job, waitUntil: typeof step.waitUntil === "string" ? step.waitUntil : undefined }, reads)) moved.set(key, `${key} fix step ${step.id}, a board.wake or subagent moves it`);
