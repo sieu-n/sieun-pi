@@ -224,8 +224,11 @@ def scan_entry(path: Path, box: str, how: str, runtimes: list[str], source: str,
     fm = frontmatter(text)
     size, files = dir_size(real) if real.is_dir() else (skill_md.stat().st_size, 1)
     last = git_last_change(skill_md)
-    roots = [real] + ([Path(last["repo"])] if last else [])
-    dead = sorted({ref for ref in REF_RE.findall(text) if real.is_dir() and not any((r / ref).exists() for r in roots)})
+    # A path counts when it sits in the skill, the folder over its skills folder (a plugin's own scripts/), a sibling skill or the repo root:
+    # on 11-25, 26 of 45 broken notes named a path in a sibling, as posthog's skills cite another skill's references/governance.md.
+    refs = set(REF_RE.findall(text)) if real.is_dir() else set()
+    roots = [real, real.parent.parent, *(p for p in real.parent.iterdir() if p.is_dir()), *([Path(last["repo"])] if last else [])] if refs else []
+    dead = sorted(ref for ref in refs if not any((r / ref).exists() for r in roots))
     row.update({
         "name": fm.get("name") or (path.name if real.is_dir() else path.stem),
         "dirName": path.name,

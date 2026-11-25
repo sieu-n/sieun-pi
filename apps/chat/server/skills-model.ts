@@ -571,9 +571,12 @@ export function verdicts(input: VerdictInput): Map<string, SkillVerdictRow[]> {
       } else add(skill.id, { rule: "unused", action: "review-description", detail: "No session opened or called it in 30 days; its description may be too weak for agents to pick it, so review it before any removal.", copyId: null, other: null });
     }
   }
+  // A skill whose best folder sits in a stale clone is a skill its repo dropped, and the stale-clone rule already speaks for each folder.
+  // Paired, it asked to merge or remove one dead copy against another: on 11-25 the 13 duplicate and near-duplicate removes and merges
+  // all paired old auto-sns-agent clones with slack-green's stale checkout, whose main had dropped those skills too.
   const canons = input.skills.flatMap(s => {
     const c = input.canon.get(s.id);
-    const text = c ? input.texts.get(c.hash ?? "") : undefined;
+    const text = c && !c.stale ? input.texts.get(c.hash ?? "") : undefined;
     return c && text !== undefined && c.hash ? [{ skill: s, copy: c, text, lines: lineSet(text) }] : [];
   });
   for (let i = 0; i < canons.length; i++) {
@@ -628,10 +631,10 @@ export function verdicts(input: VerdictInput): Map<string, SkillVerdictRow[]> {
 
 /**
  * Of two skills with the same or near-same text, the canonical one, which carries no verdict: an upstream package the owner installed
- * (c226), then a git source over a loose folder, a fresh checkout, the newer SKILL.md, then the shorter path.
+ * (c226), then a git source over a loose folder, the newer SKILL.md, then the shorter path.
  */
 function keepFirst<T extends { skill: SkillRecord; copy: CopyFact }>(a: T, b: T): [T, T] {
-  const rank = (x: T) => [isUpstream(x.skill.source) ? 1 : 0, x.skill.source.kind === "git" ? 1 : 0, x.copy.stale ? 0 : 1, Date.parse(x.copy.mtime ?? "") || 0, -x.copy.path.length];
+  const rank = (x: T) => [isUpstream(x.skill.source) ? 1 : 0, x.skill.source.kind === "git" ? 1 : 0, Date.parse(x.copy.mtime ?? "") || 0, -x.copy.path.length];
   const [ra, rb] = [rank(a), rank(b)];
   for (let i = 0; i < ra.length; i++) if (ra[i] !== rb[i]) return ra[i]! > rb[i]! ? [a, b] : [b, a];
   return a.skill.id < b.skill.id ? [a, b] : [b, a];

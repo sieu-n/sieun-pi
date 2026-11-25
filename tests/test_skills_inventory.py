@@ -45,5 +45,24 @@ class HarnessCopies(unittest.TestCase):
             ])
 
 
+class DeadRefs(unittest.TestCase):
+    def test_a_path_in_a_sibling_skill_or_the_plugin_root_is_no_dead_ref(self):
+        with tempfile.TemporaryDirectory() as home:
+            plugin = Path(home, ".claude/plugins/cache/market/kit/1.0.0")
+            (plugin / "scripts").mkdir(parents=True)
+            (plugin / "scripts/client.mjs").write_text("")
+            (plugin / "skills/other/references").mkdir(parents=True)
+            (plugin / "skills/other/references/governance.md").write_text("")
+            (plugin / "skills/main").mkdir(parents=True)
+            (plugin / "skills/main/SKILL.md").write_text(
+                "---\nname: main\ndescription: A test.\n---\n\nSee references/governance.md in other, run scripts/client.mjs, and read references/missing.md.\n")
+            Path(home, ".claude/settings.json").write_text(json.dumps({"enabledPlugins": {"kit@market": True}}))
+            out = Path(home, "inventory.json")
+            subprocess.run([sys.executable, "-B", str(SCANNER), "--no-mac", "--no-usage", "--out", str(out)], env={**os.environ, "HOME": home},
+                           check=True, capture_output=True)
+            main = [c for c in json.loads(out.read_text())["copies"] if c["path"].endswith("/skills/main")]
+            self.assertEqual([c["deadRefs"] for c in main], [["references/missing.md"]])
+
+
 if __name__ == "__main__":
     unittest.main()
