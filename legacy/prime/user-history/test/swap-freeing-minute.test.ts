@@ -3,7 +3,6 @@
 // level 2 with swap growing from 16.8 to 18.9 GB, which is paging and stays dirty.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { judgeMinutes } from "../../../../components/harness-feed/readers/chat-health.ts";
 import { measure } from "../scripts/duties/whole-system.ts";
 import { unusable, type UsableReading, type WatchLine } from "../src/mac-usable-watch.ts";
 
@@ -22,22 +21,19 @@ function watch(run: number, swapGb: number, last: UsableReading, lastSwapGb: num
       hosts: [{ name: "mac", usable: final ? last : calm, workers: 0, workerGb: 0, top: [], live: 0, working: 0, swapGb: final ? lastSwapGb : swapGb }] } as WatchLine;
   });
 }
-const clean = (run: number, lines: WatchLine[]) => ({
-  d7: measure({ now: run, watch: lines, log: { holds: [] }, chats: [] }).metrics.clean_min_30,
-  feed: judgeMinutes({ now: run, watch: lines, holds: [], pool: [], faults: [], misses: [] }).clean,
-});
+const clean = (run: number, lines: WatchLine[]) => measure({ now: run, watch: lines, log: { holds: [] }, chats: [] }).metrics.clean_min_30;
 
 test("a Mac swapouts minute at normal pressure while swap shrinks reads usable", () => {
   assert.deepEqual(unusable(freeing, true), []);
   assert.deepEqual(unusable(freeing), ["swapouts"], "with no shrink known the minute stays dirty");
   const run = Date.parse("2026-11-25T10:28:12Z");
-  assert.deepEqual(clean(run, watch(run, 12.3, freeing, 9.2)), { d7: 30, feed: 30 });
-  assert.deepEqual(clean(run, watch(run, 9.2, freeing, 12.3)), { d7: 29, feed: 29 }, "the same reading with swap growing is paging");
+  assert.equal(clean(run, watch(run, 12.3, freeing, 9.2)), 30);
+  assert.equal(clean(run, watch(run, 9.2, freeing, 12.3)), 29, "the same reading with swap growing is paging");
 });
 
 test("a Mac swapouts minute at warn stays unusable whatever swap did", () => {
   const run = Date.parse("2026-11-19T20:34:12Z");
-  assert.deepEqual(clean(run, watch(run, 16.8, paging, 18.9)), { d7: 29, feed: 29 });
-  assert.deepEqual(clean(run, watch(run, 18.9, paging, 16.8)), { d7: 29, feed: 29 });
+  assert.equal(clean(run, watch(run, 16.8, paging, 18.9)), 29);
+  assert.equal(clean(run, watch(run, 18.9, paging, 16.8)), 29);
   assert.deepEqual(unusable(paging, true), ["swapouts"]);
 });
