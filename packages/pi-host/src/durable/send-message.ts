@@ -1,7 +1,8 @@
 /**
  * The `send_message` tool: the one way a thread's agent speaks to people. The chat shows each call's text as its own message bubble in a
  * DM and posts it into the channel thread a channel turn came from; everything else the agent writes in its turn is a private working note
- * the chat folds away. The tool itself does nothing outside the thread: its arguments are the message, and its result is "Sent.".
+ * the chat folds away. Its arguments are the message, and its result is "Sent.". Beside tell_owner, in a thread whose chat posts it while it
+ * runs (`speak.ts`), the result names the post, or the call fails with the posts that held it.
  *
  * Adapted from prime-agent-chat's `tell_owner` (legacy/prime/user-history/src/chat-guard.ts, chat-brief.ts), without its checks: one point
  * per message, no recap on a turn the owner did not start (c117), never "nothing needs you".
@@ -13,6 +14,8 @@
  */
 import { Type } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool, type Extension } from "@earendil-works/pi-durable";
+import type { ChatApp } from "./chat-app.ts";
+import { speak } from "./speak.ts";
 
 export const SEND_MESSAGE_TOOL = "send_message";
 export const SEND_MESSAGE_RESULT = "Sent.";
@@ -29,11 +32,12 @@ export const SEND_MESSAGE_DESCRIPTION =
 export const SEND_MESSAGE_ALIAS_DESCRIPTION =
   "Post one chat message into the channel thread a channel post started, or send the report a duty job's brief asks for with this tool. " +
   "To speak to the owner in your own chat, call tell_owner instead. Everything else you write is a private working note. " +
-  "Write like a person in a Slack thread, in the owner's language: the answer first, short, one point per message. Two points are two calls.";
+  "Write like a person in a Slack thread, in the owner's language: the answer first, short, one point per message. Two points are two calls. " +
+  "If the thread got new posts since you last read it, the call posts nothing and returns them; read them, then send again or rewrite.";
 
 export interface SendMessageArgs { text: string; to?: string }
 
-const sendMessage = (description: string): Extension => defineExtension({
+const sendMessage = (description: string, chat?: { app: ChatApp; thread: string }): Extension => defineExtension({
   name: "send-message",
   tools: [
     defineTool({
@@ -43,9 +47,13 @@ const sendMessage = (description: string): Extension => defineExtension({
         text: Type.String({ description: "The message, as the person reads it." }),
         to: Type.Optional(Type.String({ description: "Only on a turn a channel post started: the channel's name, like #general. Leave it out otherwise." })),
       }),
-      // Nothing leaves the thread: the call's arguments are the message, so a rerun after a crash sends nothing twice.
+      // A rerun after a crash sends nothing twice: the feed and apps/chat's speak both key the post by the call's id.
       replay: "safe",
-      execute: async () => ({ output: [{ type: "text", text: SEND_MESSAGE_RESULT }] }),
+      execute: async (_args, api, context) => {
+        const spoke = chat ? await speak(chat.app, chat.thread, api.conversationId, api.callId, context.abortSignal) : undefined;
+        if (spoke && "held" in spoke) return { output: [{ type: "text", text: spoke.held }], isError: true };
+        return { output: [{ type: "text", text: spoke ? `Sent as ${spoke.posted}.` : SEND_MESSAGE_RESULT }] };
+      },
     }),
   ],
 });
@@ -53,3 +61,5 @@ const sendMessage = (description: string): Extension => defineExtension({
 export const SendMessage: Extension = sendMessage(SEND_MESSAGE_DESCRIPTION);
 /** The same extension name, so a subagent's child drops either. */
 export const SendMessageAlias: Extension = sendMessage(SEND_MESSAGE_ALIAS_DESCRIPTION);
+/** The alias in a thread of the chat at `app`, which posts each call while it runs (`speak.ts`). */
+export const sendMessageAlias = (app: ChatApp, thread: string): Extension => sendMessage(SEND_MESSAGE_ALIAS_DESCRIPTION, { app, thread });

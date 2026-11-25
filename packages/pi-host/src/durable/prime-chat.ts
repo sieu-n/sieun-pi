@@ -58,7 +58,8 @@ import type { ChatBoard, PlanItem, ThreadMessage } from "../../../../legacy/prim
 import { SEARCH_HISTORY_TOOL } from "../../../pi-history/src/pi/index.ts";
 import { threadAgent } from "./agent-profile.ts";
 import { leanHistory } from "./cache-shape.ts";
-import { roundEndsTurn, TOLD } from "./turn-end.ts";
+import { roundEndsTurn, TOLD, toldText } from "./turn-end.ts";
+import { speak } from "./speak.ts";
 import { ChatApp } from "./chat-app.ts";
 import { CommHandedDoc } from "./comm.ts";
 import { commPostRefusal, crammedResent, tableResent, turnAsked, turnAskedTable, turnStartedAt, type CommPostTurn } from "./comm-guard.ts";
@@ -185,13 +186,23 @@ function roomIds(message: Message): Message {
   return { ...message, content: message.content.map(part => part.type === "text" ? { ...part, text: roomIdNote(part.text) } : part) };
 }
 
+/**
+ * A tell_owner result as Prime's guard reads it: a post that went out answers `told the owner` alone, as Prime's own tell_owner does, so
+ * its scans for posts that went out (chat-guard.ts `tellTurn`) still find one whose answer names the post (`speak.ts`).
+ */
+function toldAsPrime<M extends Message>(message: M): M {
+  if (message.role !== "toolResult" || message.toolName !== TELL_OWNER_TOOL || message.isError) return message;
+  const said = message.content.map(part => (part.type === "text" ? part.text : "")).join("");
+  return said !== TOLD && toldText(said) ? { ...message, content: [{ type: "text", text: TOLD }] } : message;
+}
+
 /** The conversation as Prime's session branch reads to tell_owner's guard, up to and with the assistant message that made `callId`. */
 export function threadMessages(view: ContextView, callId?: string): ThreadMessage[] {
   const out: ThreadMessage[] = [];
   for (const [index, entry] of view.entries.entries()) {
     for (const message of view.contributions[index] ?? []) {
       if (message.role === "system") continue;
-      const shaped: { role: string } = toPrime(message, message.role === "user" ? originOf(entry) : undefined);
+      const shaped: { role: string } = toPrime(toldAsPrime(message), message.role === "user" ? originOf(entry) : undefined);
       if (shaped.role === OTHER_ROLE) continue;
       out.push(shaped as unknown as ThreadMessage);
       if (callId && message.role === "assistant" && message.content.some(part => part.type === "toolCall" && part.id === callId)) return out;
@@ -325,7 +336,10 @@ async function tellOwner(chat: PrimeChat, thread: ChatThread, params: unknown, a
   // A room post's cap and note on length (`room-post.ts`), which a guard from before them leaves at a Prime chat's.
   const result = guard.tellOwner(params as TellInput, { ...turn, long: ROOM_LONG });
   if (result.kind === "refused") throw new Error(result.text);
-  return text([result.text]);
+  // A post that goes out is posted now, after the read-before-send check, so the answer names it (`speak.ts`).
+  const spoke = result.text === TOLD ? await speak(chat.app, thread.id, api.conversationId, api.callId, context.abortSignal) : undefined;
+  if (spoke && "held" in spoke) throw new Error(spoke.held);
+  return text([spoke ? `${TOLD}, posted as ${spoke.posted}.` : result.text]);
 }
 
 const REPLAY: Record<string, "safe" | "unsafe"> = {
@@ -362,7 +376,7 @@ export function primeChat(chat: PrimeChat, thread: ChatThread): Extension {
       // A comm thread's post that went out in a round of posts and closing calls ends the turn with the round (`turn-end.ts`).
       afterTool: async (call, result, api, context) => {
         if (call.name !== TELL_OWNER_TOOL || result.isError || api.conversationId !== ROOT_CONVERSATION_ID) return undefined;
-        if (!(result.output ?? []).some(part => part.type === "text" && part.text.trim() === TOLD)) return undefined;
+        if (!(result.output ?? []).some(part => part.type === "text" && toldText(part.text))) return undefined;
         if ((await threadAgent(api, context))?.role !== "comm") return undefined;
         const view = await contextOf(thread, api.conversationId, context).catch(() => undefined);
         return view && roundEndsTurn(view.messages, call.id) ? { ...result, control: { terminate: true } } : undefined;

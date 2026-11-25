@@ -408,6 +408,8 @@ export function routes(app: App, parts: SkillsParts, wikiPages = new WikiPageLis
     route("POST", "/api/threads/:id/edits", async (_r, p, _q, body) => {
       return app.editAsAgent(p.id!, ((await body()) ?? {}) as { message?: unknown; text?: unknown });
     }),
+    // A comm thread's tell_owner or send_message, posted while its execute runs after the read-before-send check (rooms.ts `speakNow`).
+    route("POST", "/api/threads/:id/speak", async (_r, p, _q, body) => app.speakAsAgent(p.id!, ((await body()) ?? {}) as { call?: unknown })),
     // An agent's read_post (later-agents.ts `read`), as its thread; the message id goes in the query, since a room-qualified one holds a slash.
     route("GET", "/api/threads/:id/post", async (_r, p, q) => app.readAsAgent(p.id!, q.get("message") ?? undefined)),
     // An agent's save_message, remind_me and list_saved_messages (later-agents.ts), as its thread.

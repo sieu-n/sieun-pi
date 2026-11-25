@@ -17,7 +17,7 @@ test("tell_owner in a room keeps Prime's rules for when to post and leaves how a
   assert.match(TELL_OWNER_DESCRIPTION, SHAPE);
   assert.doesNotMatch(ROOM_TELL_OWNER_DESCRIPTION, SHAPE);
   assert.match(ROOM_TELL_OWNER_DESCRIPTION, /^Post one message to the owner in the room, as a coworker posts in Slack\. On a turn he started, answer him\./);
-  assert.match(ROOM_TELL_OWNER_DESCRIPTION, /the default is no call[\s\S]*is kept as a note \(c117\)\. Use the plain words he would use[\s\S]*\(c145\)\. How a post reads[\s\S]*is in your role steps\.$/);
+  assert.match(ROOM_TELL_OWNER_DESCRIPTION, /the default is no call[\s\S]*is kept as a note \(c117\)\. Use the plain words he would use[\s\S]*\(c145\)\. How a post reads[\s\S]*is in your role steps\. If the thread got new posts since you last read it, the call posts nothing[\s\S]*which edit_message takes\.$/);
   assert.deepEqual(ROOM_TELL_OWNER_PARAMETERS.required, TELL_OWNER_PARAMETERS.required);
   assert.deepEqual(ROOM_TELL_OWNER_PARAMETERS.properties.why, TELL_OWNER_PARAMETERS.properties.why);
   assert.match(ROOM_TELL_OWNER_PARAMETERS.properties.reply_to.description, /lands in that post's thread[\s\S]*set it when you answer an older post/);

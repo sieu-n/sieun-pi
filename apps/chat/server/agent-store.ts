@@ -183,6 +183,11 @@ export interface FeedCursor {
    * it had a post, which go on its next one, and the post a refused post of the turn was for, which its resend answers.
    */
   turn?: { input: number; channel: boolean; lastPost?: string; jobs?: string[]; post?: string; hops?: number; named?: string[] };
+  /**
+   * What the thread's agent read in its current run (moved.ts): when the run started, whether it ended, and each post its inputs or a hold
+   * showed as `<post>@<time read>`.
+   */
+  read?: { at: number; ended?: boolean; seen: string[] };
 }
 
 /**

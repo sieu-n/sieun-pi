@@ -14,6 +14,8 @@ import type { Message } from "@earendil-works/pi-ai";
 
 /** tell_owner's answer when the post went out (`TELL_OWNER_DONE` in legacy/prime/user-history/src/chat-guard.ts); a held post answers otherwise. */
 export const TOLD = "told the owner";
+/** Whether a tell_owner answer says the post went out: `told the owner` alone, or with the post it made (`speak.ts`). */
+export const toldText = (text: string): boolean => text.trim() === TOLD || text.trim().startsWith(`${TOLD}, posted as `);
 
 type Call = { id: string; name: string; arguments: Record<string, unknown> };
 const EYES = ["eyes", ":eyes:", "👀"];
@@ -35,7 +37,7 @@ const callsOf = (message: Message): Call[] =>
 function wentOut(result: Message, call: Call): boolean {
   if (result.role !== "toolResult" || result.isError) return false;
   if (call.name !== "tell_owner") return true;
-  return result.content.some(part => part.type === "text" && part.text.trim() === TOLD);
+  return result.content.some(part => part.type === "text" && toldText(part.text));
 }
 
 /**

@@ -26,7 +26,7 @@ after(async () => {
 
 const side = (room: string): FeedSide => ({
   room, turn: entry => ({ input: entry.id, channel: false }), speaks: () => false, aimedHere: () => false,
-  post: () => { throw new Error("this side posts nothing"); },
+  post: () => { throw new Error("this side posts nothing"); }, target: () => undefined,
 });
 
 test("a feed read with no new entry saves no rooms file, and one with new entries saves it", async () => {

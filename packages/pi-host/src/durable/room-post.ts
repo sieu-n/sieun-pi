@@ -26,13 +26,20 @@ function cut(text: string, from: string, to: string, by = ""): string {
 /** Where a comm thread reads how a post looks. */
 const SHAPE_LINE = "How a post reads, from one short line to a short list or a checklist you edit, is in your role steps.";
 
+/**
+ * What a post call does when the thread moved (`speak.ts`, apps/chat moved.ts), and the id its answer names; edit_message and the
+ * send_message alias say the same.
+ */
+export const MOVED_LINE = "If the thread got new posts since you last read it, the call posts nothing and returns them; read them, then send " +
+  "the same text again or a rewrite. A post that goes out comes back by its id, like ch_1a2b3c4d/p12, which edit_message takes.";
+
 /** tell_owner's description in a room: Prime's rules for when to post and why, with its shape rules left to the role text. */
 export const ROOM_TELL_OWNER_DESCRIPTION = [
   (text: string) => cut(text, "Send the owner one chat message, its own bubble, like a VP's Slack DM to his CTO. ", "On a turn he started",
     "Post one message to the owner in the room, as a coworker posts in Slack. "),
   (text: string) => cut(text, "A question is its own call", "Any other call there"),
   (text: string) => cut(text, "Write one point, best as one dry", "Use the plain words he would use"),
-  (text: string) => cut(text, "Count its sentences and words", "", SHAPE_LINE),
+  (text: string) => cut(text, "Count its sentences and words", "", `${SHAPE_LINE} ${MOVED_LINE}`),
 ].reduce((text, step) => step(text), TELL_OWNER_DESCRIPTION);
 
 /** tell_owner's parameters in a room: `reply_to` names the post the message answers, which puts it in that post's thread. */

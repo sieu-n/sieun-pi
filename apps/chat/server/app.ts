@@ -46,7 +46,8 @@ import { doneInput, markDone, threadRootOf } from "./thread-done.ts";
 import { markPin, pinInput, pinnedPosts } from "./pins.ts";
 import { forwardInput, forwardOf } from "./forward.ts";
 import type { ForwardedPost } from "../web/src/lib/api/types.ts";
-import { Rooms } from "./rooms.ts";
+import { Rooms, type SpeakAnswer } from "./rooms.ts";
+import { movedNote, movedPosts, readMoved } from "./moved.ts";
 import { applyPrefs, withPrefs } from "./sidebar-prefs.ts";
 import { parseLayout } from "../web/src/lib/api/shared/sidebar-layout.ts";
 import { bucketOf, changedBuckets, digests, PARTIAL_LISTS, threadTimes, timed, type PartialList, type ThreadTimes, type Timed } from "../web/src/lib/api/shared/hello-buckets.ts";
@@ -967,9 +968,40 @@ export class App {
       this.heldEdits.set(thread, held);
       const note = editHold(input.text.trim(), held);
       if (note) throw new ReactionError(400, note);
+      const moved = this.movedSinceRead(record, room, post);
+      if (moved) throw new ReactionError(400, moved);
     }
     const changed = this.rewrite(room, post, record.id, input.text, thread) !== undefined;
     return { room, post: post.id, text: changed ? `Edited ${post.id} in ${room}; the room shows the new text with (edited).` : `${post.id} in ${room} already reads that way; nothing changed.` };
+  }
+
+  /**
+   * The read-before-send check on an agent's edit (moved.ts): the note that holds it once when the thread of `post` moved since the agent's
+   * comm thread for the room last read it, else undefined. The posts it shows count as read, so the same edit again goes through.
+   */
+  private movedSinceRead(record: AgentRecord, room: RoomId, post: RoomPost): string | undefined {
+    const group = this.groups.row(room);
+    const thread = group ? record.comm?.[room] : this.agents.roomThread(record);
+    const cursor = group ? this.agentStore.rooms.commFeed?.[thread ?? ""] : this.agentStore.rooms.feed[record.id];
+    if (!thread || !cursor?.read) return undefined;
+    const moved = movedPosts(this.agentStore.postsOf(room), record.id, thread, cursor.read, post.threadRoot ?? (group?.kind === "channel" ? post.id : undefined));
+    if (!moved.length) return undefined;
+    const now = Date.now();
+    cursor.read = readMoved(cursor.read, moved, now);
+    this.agentStore.saveRooms();
+    return movedNote(moved, id => this.threads.principal(id).name, "edit");
+  }
+
+  /**
+   * A speaking call's post, made while the call's execute runs so the tool answers with its id, after the read-before-send check (rooms.ts
+   * `speakNow`): `held` carries the new posts that held it, and `unknown` means the thread is no agent's comm thread or the feed has no such
+   * call, so the feed posts it as before once the result lands.
+   */
+  async speakAsAgent(thread: string, input: { call?: unknown }): Promise<SpeakAnswer> {
+    if (typeof input.call !== "string" || !input.call) throw new ReactionError(400, "A speak names its tool call as call.");
+    const comm = this.agents.ofComm(thread);
+    if (!comm) return { kind: "unknown" };
+    return this.groups.row(comm.room) ? this.groups.speak(thread, input.call) : this.rooms.speak(comm.record, thread, input.call);
   }
 
   /** An agent's save_message or remind_me (later-agents.ts `set`); the answer's `text` is the tool's result. */

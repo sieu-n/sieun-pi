@@ -15,6 +15,8 @@ export const DEFAULT_CHAT_URL = "http://127.0.0.1:5184";
 /** apps/chat's CheckInView (web/src/lib/api/types.ts): `everyMs` is the interval it runs at, and `planEveryMs` the setting while a board with no open step runs daily. */
 export interface CheckInView { everyMs: number; planEveryMs?: number; paused: boolean; pausedUntil: number | "forever" | null; nextAt: number | null; lastAt: number | null }
 export interface OtherAsk { chat: string; id: string; text: string; at: string }
+/** apps/chat's answer to a speak (rooms.ts `SpeakAnswer`). */
+export type SpeakAnswer = { kind: "posted"; room: string; id: string } | { kind: "held"; text: string } | { kind: "unknown" };
 
 export class ChatApp {
   constructor(readonly base: string = process.env[CHAT_URL_ENV] || DEFAULT_CHAT_URL, private readonly timeoutMs = 15_000) {}
@@ -96,6 +98,14 @@ export class ChatApp {
   async editPost(thread: string, change: { message: string; text: string }, signal?: AbortSignal): Promise<{ text: string }> {
     const body = await this.call<{ text?: unknown }>("POST", this.thread(thread, "edits"), change, signal);
     return { text: typeof body?.text === "string" ? body.text : `Edited ${change.message}.` };
+  }
+
+  /**
+   * Posts a speaking call of this thread while the call runs, after apps/chat's read-before-send check (`POST /api/threads/:id/speak`,
+   * apps/chat rooms.ts `speakNow`): the post's room and id, the note that held it, or `unknown` when apps/chat's feed has no such call.
+   */
+  speak(thread: string, call: string, signal?: AbortSignal): Promise<SpeakAnswer> {
+    return this.call<SpeakAnswer>("POST", this.thread(thread, "speak"), { call }, signal);
   }
 
   /** Adds an agent to a channel or Solo room or removes it (`POST /api/threads/:id/members`); the answer's `text` is the tool's result line. */

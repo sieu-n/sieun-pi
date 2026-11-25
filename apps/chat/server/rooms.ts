@@ -31,6 +31,7 @@ import { readMark, type Store } from "./store.ts";
 import { OWNER, type Threads } from "./threads.ts";
 import type { TestSendEntry } from "./search.ts";
 import { isInput, sentMessage } from "./timeline.ts";
+import { movedPosts, movedNote, readAnswer, readInput, readMoved } from "./moved.ts";
 
 const PAGE = 40;
 /** How many posts behind a page that comes back on the socket may be and get only what it missed (`since`). */
@@ -189,6 +190,8 @@ export interface FeedSide {
   /** Whether a send_message `to` names this room; a call with any other `to` speaks elsewhere and posts nothing here. */
   aimedHere(to: string): boolean;
   post(spoken: Spoken, turn: FeedCursor["turn"]): RoomPost;
+  /** The root of the thread `post` would put this call's post in, or undefined for a root post; the read-before-send check reads that thread. */
+  target(spoken: Spoken, turn: FeedCursor["turn"]): string | undefined;
 }
 
 /**
@@ -217,8 +220,10 @@ function readFeedEntry(store: AgentStore, side: FeedSide, thread: string, cursor
   const message = entry.model?.[0];
   if (isInput(entry)) {
     cursor.turn = side.turn(entry, cursor.turn);
+    cursor.read = readInput(cursor.read, entry);
     return;
   }
+  cursor.read = readAnswer(cursor.read, message);
   if (!side.speaks(cursor.turn)) return;
   if (message?.role === "assistant") {
     // A speaking call with no reply_to answers the post its own round closes, else the post a refused post of the turn was for. A round
@@ -246,11 +251,10 @@ function readFeedEntry(store: AgentStore, side: FeedSide, thread: string, cursor
       if (cursor.turn && named?.length) cursor.turn.named = named;
     } else {
       const pending = cursor.turn?.jobs;
-      const post = side.post({
-        text: call.text, at: message.timestamp ?? Date.now(), requestId: `m:${thread}:${message.toolCallId}`, ...(call.why ? { why: call.why } : {}),
-        ...(call.replyTo ? { replyTo: call.replyTo } : call.named?.length ? { named: call.named } : {}), source: { thread, conversation: 1, entry: call.entry },
-        ...(pending?.length ? { jobs: pending } : {}),
-      }, cursor.turn);
+      const post = side.post({ ...spokenOf(thread, message.toolCallId, call, message.timestamp ?? Date.now()), ...(pending?.length ? { jobs: pending } : {}) }, cursor.turn);
+      // The call's own execute may have posted it already (`speakNow`), before the turn's waiting jobs were known.
+      const missing = (pending ?? []).filter(job => !post.jobs?.includes(job));
+      if (missing.length) store.set(post, { jobs: [...(post.jobs ?? []), ...missing] });
       touched.set(post.id, post);
       if (cursor.turn) {
         cursor.turn.lastPost = post.id;
@@ -270,6 +274,41 @@ function readFeedEntry(store: AgentStore, side: FeedSide, thread: string, cursor
       touched.set(last.id, last);
     }
   } else cursor.turn.jobs = [...new Set([...(cursor.turn.jobs ?? []), ...jobs])];
+}
+
+/** A speaking call as the feed posts it: its dedup key from the call's id, so a post its execute made and the feed's read land once. */
+function spokenOf(thread: string, callId: string, call: FeedCursor["open"][string], at: number): Spoken {
+  return {
+    text: call.text, at, requestId: `m:${thread}:${callId}`, ...(call.why ? { why: call.why } : {}),
+    ...(call.replyTo ? { replyTo: call.replyTo } : call.named?.length ? { named: call.named } : {}), source: { thread, conversation: 1, entry: call.entry },
+  };
+}
+
+/** What a speaking call's execute gets from `speakNow`: the post it made, the posts that held it, or nothing when the feed has no such call. */
+export type SpeakAnswer = { kind: "posted"; room: RoomId; id: string } | { kind: "held"; text: string } | { kind: "unknown" };
+
+/**
+ * A speaking call's post, made while its execute runs so the tool can answer with the post's id, after the read-before-send check
+ * (moved.ts): when the thread the post goes in moved since the agent last read it, nothing posts and the answer holds the new posts, which
+ * then count as read. The feed must have read the call's entry; the result the feed reads later answers the same post by its dedup key.
+ */
+export function speakNow(store: AgentStore, side: FeedSide, thread: string, cursor: FeedCursor, callId: string, agent: string, name: (author: string) => string, changed: (posts: RoomPost[]) => void): SpeakAnswer {
+  const call = cursor.open[callId];
+  if (!call) return { kind: "unknown" };
+  const now = Date.now();
+  const spoken = spokenOf(thread, callId, call, now);
+  // A call pi-durable runs again after a crash answers the post its first run made.
+  const made = store.byRequestId(side.room, spoken.requestId);
+  if (made) return { kind: "posted", room: side.room, id: made.id };
+  const moved = movedPosts(store.postsOf(side.room), agent, thread, cursor.read, side.target(spoken, cursor.turn));
+  if (moved.length) {
+    cursor.read = readMoved(cursor.read!, moved, now);
+    store.saveRooms();
+    return { kind: "held", text: movedNote(moved, name, "post") };
+  }
+  const post = side.post(spoken, cursor.turn);
+  changed([post]);
+  return { kind: "posted", room: side.room, id: post.id };
 }
 
 /** An agent post's why, its "Show work" link to the turn that holds its call, and its job pills. */
@@ -796,6 +835,13 @@ export class Rooms {
     const sentHere = (d: RoomDelivery | undefined): boolean => d !== undefined && (d.thread ?? (d.state === "delivered" ? record.workThread : thread)) === thread;
     const open = (all: readonly RoomPost[]): RoomPost | undefined =>
       all.findLast(p => p.author === "owner" && sentHere(p.delivery) && !all.some(q => q.author === record.id && q.answers === p.id));
+    const aim = (replyTo: string | undefined, named: string[] | undefined, turn: FeedCursor["turn"]) => {
+      const all = posts();
+      const asked = turn?.post ? all.find(p => p.id === turn.post) : undefined;
+      const answered = repliedPost(all, record, thread, record.room, replyTo) ?? namedPost(all, record, thread, record.room, named) ??
+        (turn?.post ? asked : replyTo?.trim() ? undefined : open(all));
+      return { answered, threadRoot: answerThread(answered, asked) };
+    };
     return {
       room: record.room,
       turn: entry => {
@@ -816,16 +862,21 @@ export class Rooms {
       speaks: turn => !turn?.channel,
       aimedHere: () => false,
       post: ({ replyTo, named, ...spoken }, turn) => {
-        const all = posts();
-        const asked = turn?.post ? all.find(p => p.id === turn.post) : undefined;
-        const answered = repliedPost(all, record, thread, record.room, replyTo) ?? namedPost(all, record, thread, record.room, named) ??
-          (turn?.post ? asked : replyTo?.trim() ? undefined : open(all));
-        const threadRoot = answerThread(answered, asked);
+        const { answered, threadRoot } = aim(replyTo, named, turn);
         return this.store.append({
           room: record.room, author: record.id, images: [], ...spoken, ...(threadRoot ? { threadRoot } : {}), ...(answered?.author === "owner" ? { answers: answered.id } : {}),
         }).post;
       },
+      target: ({ replyTo, named }, turn) => aim(replyTo, named, turn).threadRoot,
     };
+  }
+
+  /** A speaking call's post made while its execute runs, after the read-before-send check (rooms.ts `speakNow`). */
+  async speak(record: AgentRecord, thread: string, callId: string): Promise<SpeakAnswer> {
+    await this.feed(record);
+    const cursor = this.store.rooms.feed[record.id];
+    if (!cursor || (cursor.thread ?? record.workThread) !== thread) return { kind: "unknown" };
+    return speakNow(this.store, this.dmSide(record, thread), thread, cursor, callId, record.id, id => this.deps.threads.principal(id).name, posts => this.changed(record, posts));
   }
 
   // Reading

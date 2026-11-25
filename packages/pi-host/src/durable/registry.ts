@@ -15,7 +15,7 @@ import { ownerTag } from "./owner-tag.ts";
 import { primeChat, type ChatThread, type PrimeChat } from "./prime-chat.ts";
 import { primePrompt, type PrimePromptOptions } from "./prime-prompt.ts";
 import { roomTools } from "./room-tools.ts";
-import { SendMessage, SendMessageAlias } from "./send-message.ts";
+import { SendMessage, sendMessageAlias } from "./send-message.ts";
 import { ChildTasks } from "./children.ts";
 import { subagentExtension } from "./subagent.ts";
 import { workingMemory } from "./working-memory.ts";
@@ -42,7 +42,7 @@ export function threadRegistry(prompt?: PrimePromptOptions, chat?: { chat: Prime
   registry.install(CodingTools);
   registry.install(subagentExtension(extras.thread ?? { id: "" }));
   // With Prime's chat extension, tell_owner is how the agent speaks to the owner, and send_message stays as an alias (send-message.ts).
-  registry.install(chat ? SendMessageAlias : SendMessage);
+  registry.install(chat ? sendMessageAlias(chat.chat.app, chat.thread.id) : SendMessage);
   if (chat) registry.install(primeChat(chat.chat, chat.thread));
   if (chat) registry.install(roomTools(chat.chat.app, chat.thread.id));
   registry.install(ChildTasks);

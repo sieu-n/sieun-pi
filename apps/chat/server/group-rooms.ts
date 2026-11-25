@@ -41,7 +41,7 @@ import { pinnedSection, pinOf } from "./pins.ts";
 import { forwardPart, withForward } from "./forward.ts";
 import type { ForwardedPost } from "../web/src/lib/api/types.ts";
 import { localImageSizes } from "./image-size.ts";
-import { agedPost, agentPostParts, answerThread, CONTEXT_CLIP, CONTEXT_POSTS, queuedNote, keepSeen, readFeedThread, readSeen, type FeedSide, type Spoken } from "./rooms.ts";
+import { agedPost, agentPostParts, answerThread, CONTEXT_CLIP, CONTEXT_POSTS, queuedNote, keepSeen, readFeedThread, readSeen, speakNow, type FeedSide, type SpeakAnswer, type Spoken } from "./rooms.ts";
 import { readMark, type Store } from "./store.ts";
 import { OWNER, type Threads } from "./threads.ts";
 
@@ -752,7 +752,10 @@ export class GroupRooms {
     if (missed.length) lines.push("", "(channel before this post)", ...missed.map(context));
     if (row.kind === "channel" || post.threadRoot) {
       const rootId = post.threadRoot ?? post.id;
-      const thread = this.store.postsOf(row.id).filter(p => (p.id === rootId || p.threadRoot === rootId) && p.seq < post.seq && p.deletedAt === undefined).slice(-CONTEXT_POSTS);
+      // The root and the last few posts: on 11-25 a long thread's lines lost its root post, which held the ask (fable auditor's findings).
+      const all = this.store.postsOf(row.id).filter(p => (p.id === rootId || p.threadRoot === rootId) && p.seq < post.seq && p.deletedAt === undefined);
+      const tail = all.slice(-CONTEXT_POSTS);
+      const thread = all[0]?.id === rootId && tail[0]?.id !== rootId ? [all[0], ...tail] : tail;
       if (thread.length) lines.push("", "(thread so far)", ...thread.map(context));
     }
     lines.push(...pinnedSection(this.store.postsOf(row.id), context));
@@ -832,6 +835,14 @@ export class GroupRooms {
    * turn's post, since a work thread's report keeps the post of the owner's newest input, which may be a newer ask than the one it answers.
    */
   private side(row: GroupRoom, record: AgentRecord, thread: string): FeedSide {
+    const aim = (replyTo: string | undefined, named: string[] | undefined, turn: FeedCursor["turn"]) => {
+      const posts = this.store.postsOf(row.id);
+      const started = repliedPost(posts, record, thread, row.id, replyTo) ?? namedPost(posts, record, thread, row.id, named) ??
+        (turn?.post ? posts.find(p => p.id === turn.post) : undefined);
+      // A channel answer always goes in a thread; a Solo room answers a root post at the root and a thread reply in its thread, as a DM does.
+      const asked = turn?.post ? posts.find(p => p.id === turn.post) : undefined;
+      return { started, threadRoot: row.kind === "channel" ? (started ? started.threadRoot ?? started.id : undefined) : answerThread(started, asked) };
+    };
     return {
       room: row.id,
       turn: (entry, previous) => {
@@ -859,18 +870,24 @@ export class GroupRooms {
         return name === row.id.toLowerCase() || name === row.name.toLowerCase();
       },
       post: ({ replyTo, named, ...spoken }: Spoken, turn: FeedCursor["turn"]) => {
-        const posts = this.store.postsOf(row.id);
-        const started = repliedPost(posts, record, thread, row.id, replyTo) ?? namedPost(posts, record, thread, row.id, named) ??
-          (turn?.post ? posts.find(p => p.id === turn.post) : undefined);
-        // A channel answer always goes in a thread; a Solo room answers a root post at the root and a thread reply in its thread, as a DM does.
-        const asked = turn?.post ? posts.find(p => p.id === turn.post) : undefined;
-        const threadRoot = row.kind === "channel" ? (started ? started.threadRoot ?? started.id : undefined) : answerThread(started, asked);
+        const { started, threadRoot } = aim(replyTo, named, turn);
         return this.write(row, {
           author: record.id, images: [], ...spoken, hops: (turn?.hops ?? 0) + 1, mentions: this.mentionsIn(row, spoken.text, record.id),
           ...(threadRoot ? { threadRoot } : {}), ...(started?.author === "owner" ? { answers: started.id } : {}),
         });
       },
+      target: ({ replyTo, named }, turn) => aim(replyTo, named, turn).threadRoot,
     };
+  }
+
+  /** A comm thread's speaking call posted while its execute runs, after the read-before-send check (rooms.ts `speakNow`). */
+  async speak(thread: string, callId: string): Promise<SpeakAnswer> {
+    await this.feed(thread);
+    const owner = this.deps.agents.ofComm(thread);
+    const row = owner && this.rows().find(r => r.id === owner.room);
+    const cursor = this.store.rooms.commFeed?.[thread];
+    if (!owner || !row || !cursor) return { kind: "unknown" };
+    return speakNow(this.store, this.side(row, owner.record, thread), thread, cursor, callId, owner.record.id, id => this.deps.threads.principal(id).name, posts => this.emit(row, posts));
   }
 
   /**
