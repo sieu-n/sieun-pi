@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -31,7 +31,14 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
 
 const REPO = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto-sns-agent");
 const POSTHOG_QUERY = "https://us.posthog.com/api/projects/354457/query/";
-const CUSTOMER_ORGS = "select org_id from api_portal_orgs where is_internal = 0";
+/** Our own orgs by auto-sns-agent convex/org/houseOrgs.json, the list Convex bills by and the API portal board, alert and
+ *  PostHog dashboard leave out: a named org with a non-staff member passes is_internal = 0 and still is ours. */
+function houseOrgSql(column: string): string {
+  const house = JSON.parse(readFileSync(join(REPO, "convex/org/houseOrgs.json"), "utf8")) as { ids: Record<string, string>; prefixes: Record<string, string> };
+  const ids = Object.keys(house.ids).map((id) => `'${id}'`).join(", ");
+  return `(${column} in (${ids}) or ${Object.keys(house.prefixes).map((prefix) => `startsWith(${column}, '${prefix}')`).join(" or ")})`;
+}
+const CUSTOMER_ORGS = `select org_id from api_portal_orgs where is_internal = 0 and not ${houseOrgSql("org_id")}`;
 /** The "could not measure" value, the same one portal-uptime.ts prints, so a missing source can never look on target. */
 export const UNMEASURED = 999999;
 const DAY_MS = 86_400_000;
