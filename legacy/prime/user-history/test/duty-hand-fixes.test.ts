@@ -696,6 +696,10 @@ test("a write that cites the owner's room message by its id is exempt, and one t
   const cleared = classifyConfig({ actor: "api-key", writer: "ops-api", keys: ["crawl_gate.monthly_gb"], cleared: true,
     text: "owner mwttk8y6 (11-24): no byte cap in code" }, reg);
   assert.equal(cleared.kind, "exempt");
+  // Prod audit 49180 (11-25) cites the room and message with no step id between them.
+  const roomOnly = classifyConfig({ actor: "api-key", writer: "ops-api", keys: ["instagram_census.backlog_front_per_minute"],
+    text: "GeoNode pace cut p120 (owner #1124-cost-management mwtt7orl; c239: a dial, no coded cap)" }, reg);
+  assert.equal(roomOnly.kind, "exempt");
   // The census and TikTok Shop sizing rows 49054 to 49062 name the room and step only.
   const bare = classifyConfig({ actor: "api-key", writer: "ops-api", keys: ["tiktok_shop.search_per_minute"],
     text: "owner #1124-cost-management p1; sized to 1.6 TikTok Shop product rows/min on the 250 GB GeoNode plan" }, reg);
@@ -723,4 +727,19 @@ test("a paid-read sizing write is design when it writes the committed tier defau
   await markDeclared(data, new RegExp(reg.exempt.declared_cap_regex!), gitDeclaredCaps(git));
   const verdicts = groupAudit("prod", data.audit.prod!).map(fix => { const verdict = classifyConfig(fix, reg); return verdict.kind === "fault" ? verdict.fault.id : verdict.kind; });
   assert.deepEqual(verdicts, ["exempt", "F1", "exempt"]);
+});
+
+test("an engage.daily_pages write is design at prod's committed default and an F41 hand step at any other value", async () => {
+  // Prod audit 49177 (11-24 14:51Z) stepped the fleet pace 288 to 360 by hand and read as an F41 repeat.
+  const reg = await registry();
+  const settings = `_PROD_CONTROL_DEFAULTS: tuple[tuple[str, int], ...] = (
+    ("engage.daily_pages", 360),
+)
+`;
+  const git = async (args: string[]) => args[0] === "log" ? `a1 ${AT / 1000 - 60}\n` : args[1] === "a1:apps/crawler-v3/src/settings.py" ? settings : "";
+  const write = (id: number, value: string): AuditRow => ({ id, ts: AT + id * 120_000, actor: "api-key", source: "ops-api", key: "engage.daily_pages", reason: "Watchlist tagged pace", value });
+  const data: HandData = { now: AT, audit: { prod: [write(1, "360"), write(2, "288")], staging: [] }, events: {}, errors: [] };
+  await markDeclared(data, new RegExp(reg.exempt.declared_cap_regex!), gitDeclaredCaps(git));
+  const verdicts = groupAudit("prod", data.audit.prod!).map(fix => { const verdict = classifyConfig(fix, reg); return verdict.kind === "fault" ? verdict.fault.id : verdict.kind; });
+  assert.deepEqual(verdicts, ["exempt", "F41"]);
 });
