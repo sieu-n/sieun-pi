@@ -45,13 +45,15 @@ const GRAFANA_CONFIG = join(DATA_DIR, "grafana-alerts.json");
 const CLICKHOUSE = { uid: "grafana_clickhouse", type: "grafana-clickhouse-datasource" };
 const BOXES = ["us-metal01", "us-metal02"] as const;
 const BOX = "ResourceAttributes['host.name']";
+/** OTel staleness points carry Flags 1 and Value 0; on 11-25 at 21:07:48Z one on us-metal02 made its 15 since-boot kills read as 24 h kills. */
+const RECORDED = "bitAnd(Flags, 1) = 0";
 /** The rows of one series of `metric` on `boxes`, a node_exporter gauge such as node_vmstat_oom_kill, from `seconds` ago to now, sorted by time. */
 const series = (metric: string, boxes: readonly string[], seconds: number): string => `SELECT ${BOX} AS box,
     arraySort(p -> p.1, groupArray((toUnixTimestamp(TimeUnix) * 1000, Value))) AS points,
     arrayDifference(arrayMap(p -> p.2, points)) AS steps
   FROM otel.otel_metrics_gauge
   WHERE ServiceName = 'node-exporter' AND ResourceAttributes['deployment.environment.name'] = 'shared' AND MetricName = '${metric}'
-    AND ${BOX} IN (${boxes.map(box => `'${box}'`).join(", ")}) AND TimeUnix > now() - INTERVAL ${seconds} SECOND
+    AND ${BOX} IN (${boxes.map(box => `'${box}'`).join(", ")}) AND TimeUnix > now() - INTERVAL ${seconds} SECOND AND ${RECORDED}
   GROUP BY ResourceAttributes, Attributes`;
 /** Each box's kills over the last `seconds`, the counter's steps up summed, where a step down is a reboot that counts the new value. */
 const oomRiseQuery = (boxes: readonly string[], seconds: number): string => `SELECT box, round(sum(arraySum(arrayMap((d, p) -> if(d < 0, p.2, d), steps, points)))) AS value
@@ -72,7 +74,7 @@ export const DUTY_FILE = join(dirname(fileURLToPath(import.meta.url)), "vps-boxe
 export const AIR_RUNNERS_QUERY = `SELECT toFloat64(sum(up)) AS value FROM (
   SELECT argMax(Value, TimeUnix) AS up FROM otel.otel_metrics_gauge
   WHERE ServiceName = 'node-exporter' AND ResourceAttributes['deployment.environment.name'] = 'shared' AND ${BOX} = 'm1-air'
-    AND MetricName = 'devbox_runner_up' AND TimeUnix > now() - INTERVAL 5 MINUTE
+    AND MetricName = 'devbox_runner_up' AND TimeUnix > now() - INTERVAL 5 MINUTE AND ${RECORDED}
   GROUP BY Attributes) HAVING count() > 0`;
 
 /** match narrows a shared rule to this risk: each key the alert carries must match its pattern, and an alert without the key still counts.

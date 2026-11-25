@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { FiringAlert } from "../src/alert-bridge.ts";
 import { readFile } from "node:fs/promises";
-import { DUTY_FILE, OOM_WINDOW_MS, countRisks, oomKills24h, parseAlertingSets, parseExplained, parseRisks, splitByRuleState, splitOomLines } from "../scripts/duties/vps-boxes.ts";
+import { claudeUsableSql } from "../scripts/duties/cache-ratio.ts";
+import { AIR_RUNNERS_QUERY, DUTY_FILE, OOM_KILLS_QUERY, OOM_LAST_QUERY, OOM_WINDOW_MS, countRisks, oomSinceQuery, oomKills24h, parseAlertingSets, parseExplained, parseRisks, splitByRuleState, splitOomLines } from "../scripts/duties/vps-boxes.ts";
 
 const alert = (uid: string, startsAt: string): FiringAlert =>
   ({ fingerprint: `${uid}-${startsAt}`, startsAt, alertname: uid, labels: { __alert_rule_uid__: uid }, summary: "", url: "" });
@@ -159,4 +160,11 @@ test("oom_kills_24h's lastEventAt is its newest counted kill: the journal's outs
   const explained = oomKills24h([{ box: "us-metal01", kills: 1, explained: 1, lastAt: otelKill, by: { box: "us-metal01", until: otelKill, step: "p490" } },
     { box: "us-metal02", kills: 0 }], at);
   assert.equal(explained.lastEventAt, undefined);
+});
+
+// Guards 11-25 21:07:48Z: an OTel staleness point (Flags 1, Value 0) on us-metal02 made 15 since-boot OOM kills read as 24 h kills.
+test("every gauge read skips OTel staleness points", () => {
+  for (const sql of [OOM_KILLS_QUERY, OOM_LAST_QUERY, oomSinceQuery("us-metal02", 3600), AIR_RUNNERS_QUERY, claudeUsableSql(0, 60_000)]) {
+    assert.match(sql, /bitAnd\(Flags, 1\) = 0/);
+  }
 });

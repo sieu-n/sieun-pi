@@ -37,11 +37,12 @@ export const heardSql = (start: number, end: number): string => `SELECT DISTINCT
 /**
  * The Claude accounts pi-pool could use in each minute, each box's last reading in it summed. Claude calls carry the share: 24,234M of the
  * 24,353M cache read tokens in the 24 h to 10-29 20:05Z. From 10-29 17:50Z to 19:30Z none of the 40 accounts was usable, no Claude call ended
- * on either box, and the 19:30Z run read 8 calls as a 0 share.
+ * on either box, and the 19:30Z run read 8 calls as a 0 share. An OTel staleness point (Flags 1) carries Value 0, so it is no reading.
  */
 export const claudeUsableSql = (start: number, end: number): string => `SELECT minute, toFloat64(sum(last)) AS value FROM (
   SELECT ResourceAttributes AS resource, ${minuteOf(start)} AS minute, argMax(Value, TimeUnix) AS last FROM otel.otel_metrics_gauge
   WHERE ServiceName = 'harness' AND MetricName = 'harness.pool.provider_usable_accounts' AND Attributes['provider'] = 'anthropic' AND ${TIER} AND ${within(start, end)}
+    AND bitAnd(Flags, 1) = 0
   GROUP BY resource, minute) GROUP BY minute`;
 /** Prime's tokens by box, provider, model and kind over the `spanMs` before `end`. */
 export const tokensSql = (spanMs: number, end: number): string => `SELECT resource['host.name'] AS box, attributes['provider'] AS provider,
