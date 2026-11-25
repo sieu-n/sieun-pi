@@ -92,8 +92,8 @@ const OUT = join(REPO, ".cache/duties/dm-extension/latest");
 /** Every real-Instagram rig in apps/dm-extension/tests drives the two test accounts on their exits. On 11-03 13:43Z this run
  *  started while multi-account-real-ig.mjs drove @caiyiting8674 through the same exit, and A's sign-in failed ERR_TUNNEL_CONNECTION_FAILED. */
 const RIG = /tests\/[a-z-]+-real-ig\.mjs/;
-/** Another copy of this precheck, such as a fix job's own run of it (10-31 06:33Z to 06:54Z). */
-const DUTY_RUN = /scripts\/duties\/dm-extension\.ts/;
+/** Another copy of this precheck or of d3's dm-store-prod.ts, such as a fix job's own run of it (10-31 06:33Z to 06:54Z). */
+const DUTY_RUN = /scripts\/duties\/dm-(extension|store-prod)\.ts/;
 
 export type Part = "pair" | "found" | "sent" | "reply";
 export const PARTS: Readonly<Record<Part, string>> = {
@@ -355,7 +355,7 @@ export function jarIgUserId(jar: BrowserJar): string {
 export interface HeldJar { username: string; held: string }
 /** The role a rig's browser drives an account in. A read with hold=<role> makes the crawler keep that account from outreach,
  *  pool keeper loans and canary refills, and frees the account the role held before (crawler-v3 engage/browser_jar.py). */
-export type HoldRole = "dm-extension-sender" | "dm-extension-replier";
+export type HoldRole = "dm-extension-sender" | "dm-extension-replier" | "dm-extension-store-a" | "dm-extension-store-b";
 /** Reads the BrowserJar of one handle, or the crawler's hold on it; `hold` names the role a rig drives it in. */
 export type ReadJar = (username: string, hold?: HoldRole) => Promise<BrowserJar | HeldJar>;
 
@@ -470,10 +470,10 @@ async function ownPids(): Promise<Set<number>> {
 }
 
 /**
- * Waits while another copy of this precheck or a real-Instagram rig runs on this box, so two browsers never drive one account at once and
- * two runs never share OUT and the dm-ext-duty world. Resolves the ms it waited and what it waited on.
+ * Waits while another copy of this precheck, d3's dm-store-prod.ts or a real-Instagram rig runs on this box, so two browsers never drive
+ * one account at once and two runs never share OUT and the dm-ext-duty world. Resolves the ms it waited and what it waited on.
  */
-async function waitForOtherRuns(): Promise<{ ms: number; on: string[] }> {
+export async function waitForOtherRuns(): Promise<{ ms: number; on: string[] }> {
   const start = Date.now();
   const own = await ownPids();
   const on = new Set<string>();

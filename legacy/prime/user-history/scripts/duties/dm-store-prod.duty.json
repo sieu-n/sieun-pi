@@ -1,0 +1,37 @@
+{
+  "name": "DM extension on prod",
+  "ownerWords": "can you work on the DM extension? ... - 실제 왔다갔다 conversation render되는지 잘 확인해 - streamline it, make it reliable, publish it to chrome webstore.\n\nalso 동일 클라이언트 부계정 usecase도 돼야됨\n\nㅇㅇ. 계속 일 똑바로 하는지 관찰하고\n\nmake sure all other agents are well behaved in terms of keeping their responsibilities (#dev-api-portal p27, 11-26)",
+  "goal": "On virev.ai, the extension a member installs from the Chrome Web Store, loaded from the store's own CRX under the store id, pairs from a signed-in tab with no click, a Link press joins the Instagram account, a DM enqueued from Connections settles sent and the other account's reply lands in the same Inbox thread. A second Instagram account in the same Chrome is found, linked, sends as itself while the first stays in front, and its reply lands in its own thread. No prod extension DM of any org failed in the last 24 h. All read from prod rows and screenshots.",
+  "metrics": [
+    {
+      "key": "prod_store_e2e_pass",
+      "label": "Prod with the store's CRX: no-click pair, Link press, app enqueue sent, reply in the same Inbox thread (1 yes, 0 no)",
+      "op": ">=",
+      "target": 1,
+      "headline": true
+    },
+    {
+      "key": "two_accounts_pass",
+      "label": "A second Instagram account in the same Chrome is linked, sends as itself and gets its reply in its own Inbox thread (1 yes, 0 no)",
+      "op": ">=",
+      "target": 1
+    },
+    {
+      "key": "prod_send_failures_24h",
+      "label": "Prod extension DMs of every org settled failed, delivery_unknown or send_restricted, last 24 h",
+      "op": "<=",
+      "target": 0
+    }
+  ],
+  "precheck": {
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "scripts/duties/dm-store-prod.ts"
+    ],
+    "cwd": "../..",
+    "timeoutMs": 3600000
+  },
+  "onMiss": "Read the flagged slices and the evidence in ~/Documents/Github/auto-sns-agent/.cache/duties/dm-store-prod/latest (rig.log, run.log, evidence.json and the numbered screenshots), and name the cause in one line. Each miss gets one fix job in this chat (chrome extension, 39ca7bbb-37a8-47e5-a06a-d6cea515b3cc) unless one is live: start it with rlm.spawn, or steer the live one. The fix job works in the us-metal02 checkout on dev/sieun, commits with scripts/repo/agent/commit.mjs, and proves the fix with this duty's next run; a fix to the extension itself reaches members only through the store, after the prod release the release owner walks with the owner (c154) and apps/dm-extension/scripts/store-api.mjs release. An e2e_part slice is account A's part (pair, Link, sent, reply) and a second_account_part slice account B's (found, Link, sent, reply, front): read which part failed first, then the extension (apps/dm-extension/src), its server routes (apps/search/src/routes/api/dm/extension, convex/search/dmDevices.ts and dmOutreach.ts) or the Connections and Inbox pages. A part that says 'The rig stopped' names where apps/dm-extension/tests/multi-account-real-ig.mjs threw: an Instagram sign-in that fails or a checkpoint means Instagram refused the account, so pick another clean reserved test account from Crawler guy and set ACCOUNT_A or ACCOUNT_B in scripts/duties/dm-store-prod.ts, never one d1 uses (279, 33). A send_failure slice names prod rows of any org, real customers included: read each row's errorCode and lastError and find why the extension or the server settled it that way. A source_error slice is the measure itself (the store CRX download, a crawler browser-jar read, the prod Convex CLI, Clerk, a rig bug): fix this precheck or the rig. A cleanup slice that says the rig wrote no end sweep means its device or unsent DMs may be left in org_3LYsD8y8wCIQoX4xDO1dF7Klfvp: revoke the e2e user's connected devices with search/dmDevices:removeDevice and cancel its scheduled rig DMs (apps/dm-extension/tests/lib/rig-cleanup.mjs). An exit_down slice that says no residential exit means the crawler holds a test account's jar or puts it on a box address of our own servers: owner rule c229 keeps logged-in accounts off our own server IPs, so never bind a test account to a box address; tell Crawler guy the account needs a GeoNode exit, and start no fix job. Test DMs go only between our own test accounts, one DM per account per day; never DM a real person and never get around an Instagram checkpoint. All on target: end the turn with no message."
+}
