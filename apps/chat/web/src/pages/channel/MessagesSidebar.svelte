@@ -80,7 +80,11 @@
   let iconPick = $state<{ anchor: Anchor; label: string; emoji?: string; set: (emoji: string | null) => void } | null>(null);
 
   function pickChannelEmoji(row: ConversationSummary, anchor: Anchor): void {
-    const set = (emoji: string | null) => void api.updateRoom(row.id, { emoji }).catch(() => toast.error(`Could not change the emoji of #${row.name}`));
+    const set = (emoji: string | null) =>
+      void api
+        .updateRoom(row.id, { emoji })
+        .then(() => openTestRoom.row?.id === row.id && openTestRoom.load(row.id, true))
+        .catch(() => toast.error(`Could not change the emoji of #${row.name}`));
     iconPick = { anchor, label: `Emoji for #${row.name}`, ...(row.emoji ? { emoji: row.emoji } : {}), set };
   }
 

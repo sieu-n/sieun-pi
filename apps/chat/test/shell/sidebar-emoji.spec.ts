@@ -54,6 +54,23 @@ test("a channel's emoji replaces its # in the sidebar and the header, stays afte
   }
 });
 
+test("a walk's open test room shows its picked emoji at once in the row and the header, with no live event", async ({ page }) => {
+  const name = `emoji-test-${tag()}`;
+  const room = ((await (await page.request.post("/api/rooms", { data: { kind: "channel", name, members: [], test: true } })).json()) as { id: string }).id;
+  try {
+    await page.goto(`/#/c/${room}`);
+    const channel = row(page, room);
+    await expect(channel).toBeVisible({ timeout: 15_000 });
+    await channel.hover();
+    await channel.locator("[data-row-icon]").click();
+    await pick(page, `Emoji for #${name}`, "rocket", "🚀");
+    await expect(channel.locator(".lead")).toHaveText("🚀");
+    await expect(page.getByTestId("channel-title-button")).toContainText("🚀");
+  } finally {
+    await page.request.patch(`/api/rooms/${room}`, { data: { archived: true } });
+  }
+});
+
 test("a section's emoji shows before its name, stays after a reload, and Remove takes it off", async ({ page }) => {
   const name = `Emoji ${tag()}`;
   await page.goto("/#/c/ch_general");

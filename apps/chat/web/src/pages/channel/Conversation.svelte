@@ -5,7 +5,7 @@
   import { boardHref, boardTitles, rememberTitles } from "$pages/board/chips";
   import { conversationHref, hrefFor, router } from "$lib/router.svelte";
   import { profileCard } from "$lib/shell/profile-card.svelte";
-  import { roomActions } from "$lib/shell/room-actions.svelte";
+  import { roomActions, roomRow } from "$lib/shell/room-actions.svelte";
   import { renameDialog } from "$lib/shell/rename-dialog.svelte";
   import { channelDetails } from "$lib/shell/channel-details.svelte";
   import { archiveChannel as archiveRoom, setSoloClosed, unarchiveChannel as unarchiveRoom } from "$lib/shell/room-actions.svelte";
@@ -81,8 +81,9 @@
   /** A DM's agent works in its work thread, which `Open work thread` shows as today's transcript. */
   const workThread = $derived(header?.workThread ?? null);
   const name = $derived(summary?.name ?? "");
-  /** A channel's icon from the live row first, so a pick in the sidebar shows here at once. */
-  const emoji = $derived(listed ? listed.emoji : summary?.emoji);
+  /** A channel's icon from its sidebar row first, so a pick in the sidebar shows here at once, a walk's open test room too. */
+  const iconRow = $derived(roomRow(id) ?? listed);
+  const emoji = $derived(iconRow ? iconRow.emoji : summary?.emoji);
   const agent = $derived(header?.agent ?? null);
   const dmAgent = $derived(agent?.id ?? listed?.agent ?? (id.startsWith("dm_") ? `ag_${id.slice(3)}` : undefined));
   const items = $derived(store.items);
