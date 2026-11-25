@@ -140,3 +140,15 @@ test("hours under a supply hold and hours whose reads failed on transport serve 
   const served = servedDays([{ day: "2026-11-09", accountId: 1, pages: 280 }], hours, held);
   assert.equal(served.find(row => row.day === "2026-11-09")!.pages, 280, "7 good hours at 40, nothing for the transport and held hours");
 });
+
+test("a day a supply hold covered is no proof day, so one hour after a stop does not prove the rate (prod 11-23)", () => {
+  const days = [
+    ...fleet("2026-11-07", [[11, 900], [100, 200]]), ...fleet("2026-11-08", [[11, 888], [100, 200]]),
+    ...fleet("2026-11-23", [[11, 41], [100, 10]]), ...fleet("2026-11-24", [[11, 800], [100, 250]]),
+  ];
+  const held = heldHoursOf(Array.from({ length: 24 }, (_, i) => [Date.parse("2026-11-23T01:00:00Z") + i * 3_600_000, 1] as [number, number]));
+  assert.deepEqual(provenRates(days, [], 11).newest?.days, ["2026-11-23", "2026-11-24"], "without the holds the stop day proves 41");
+  const rates = provenRates(days, [], 11, days, held);
+  assert.equal(rates.newest?.rate, 888);
+  assert.deepEqual(rates.newest?.days, ["2026-11-07", "2026-11-08"]);
+});

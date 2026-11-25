@@ -269,6 +269,11 @@ export interface Proof { rate: number; days: string[]; hiDays: number; hiDeaths:
  * `newest` is the proof of the newest window, the last PROOF_DAYS full UTC days with reads, and it is the headline: the launch VP, 10-30, "the
  * headline must be today's capacity, not a two-week-old window", because the fleet, its seller lots and the pace changed after the 10-15 and
  * 10-16 pair proved 1,459. `best` is the highest rate any window proved, a later window winning ties, kept as run detail.
+ *
+ * A day a supply hold (`held`) left with fewer than PACED_HOURS_FLOOR hours is no proof day, read or served, because what its accounts read
+ * there is the hold, not a rate: the hold covered 11-09 16Z through all of 11-23, the fleet read only in 23Z on 11-23, and the 11-25 run proved
+ * 41 pages a day from that hour on the 11-23 and 11-24 window. A stop still shows in the headline through `healthy`, since
+ * crawler_v3_engage_admissible_now read 0 through the hold until 23:00Z on 11-23.
  */
 export interface ProvenRates { newestDays: string[] | null; newest: Proof | null; best: Proof | null; massActions: Death[][] }
 
@@ -360,7 +365,7 @@ export function massActions(verdicts: readonly Death[]): Death[][] {
  * evidence, and so do its victims' account-days on the day of their verdict and the day before, read and served alike, the days its pages24h
  * covers, so those pages count neither as a death nor as a survival. ProvenRates.massActions lists the actions for the capacity line.
  */
-export function provenRates(days: readonly DayPages[], deaths: readonly Death[], cohort: number, served: readonly DayPages[] = days): ProvenRates {
+export function provenRates(days: readonly DayPages[], deaths: readonly Death[], cohort: number, served: readonly DayPages[] = days, held: ReadonlySet<string> = new Set()): ProvenRates {
   if (cohort < 1) return { newestDays: null, newest: null, best: null, massActions: [] };
   const firstVerdicts = new Map<number, Death>();
   for (const death of [...deaths].sort((a, b) => a.at - b.at))
@@ -369,9 +374,12 @@ export function provenRates(days: readonly DayPages[], deaths: readonly Death[],
   const acted = new Set(actions.flat());
   const dayOf = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
   const actedDays = new Set(actions.flat().flatMap(death => [`${dayOf(death.at - DAY)} ${death.accountId}`, `${dayOf(death.at)} ${death.accountId}`]));
+  const heldCount = new Map<string, number>();
+  for (const key of held) { const day = key.split(" ")[0]!; heldCount.set(day, (heldCount.get(day) ?? 0) + 1); }
+  const heldDays = new Set([...heldCount].filter(([, count]) => 24 - count < PACED_HOURS_FLOOR).map(([day]) => day));
   const dayPages = (rows: readonly DayPages[]): Map<string, number[]> => {
     const byDay = new Map<string, number[]>();
-    for (const row of rows) if (row.pages > 0 && !actedDays.has(`${row.day} ${row.accountId}`)) byDay.set(row.day, [...byDay.get(row.day) ?? [], row.pages]);
+    for (const row of rows) if (row.pages > 0 && !heldDays.has(row.day) && !actedDays.has(`${row.day} ${row.accountId}`)) byDay.set(row.day, [...byDay.get(row.day) ?? [], row.pages]);
     for (const pages of byDay.values()) pages.sort((a, b) => b - a);
     return byDay;
   };
@@ -485,7 +493,7 @@ export function report(data: EngageData, dutyMetrics: readonly DutyMetric[]): Pr
     const pauses = Object.entries(data.config).filter(([key, value]) => key.startsWith("pause.engage") && value === "true").map(([key]) => key);
     if (pauses.length) flagged.push({ at, kind: "pause", excerpt: `prod pause keys on: ${pauses.join(", ")}` });
     if (data.days && data.healthy !== undefined && data.lapsed) {
-      const { newestDays, newest: proof, best, massActions: actions } = provenRates(data.days, data.deaths, want, data.hours ? servedDays(data.days, data.hours, data.heldHours) : data.days);
+      const { newestDays, newest: proof, best, massActions: actions } = provenRates(data.days, data.deaths, want, data.hours ? servedDays(data.days, data.hours, data.heldHours) : data.days, data.heldHours);
       const rate = proof?.rate ?? 0;
       const healthy = data.healthy;
       const counted = `${healthy} prod accounts that can read now (admissible: active, bound and passing egress admission)`;
@@ -496,7 +504,9 @@ export function report(data: EngageData, dutyMetrics: readonly DutyMetric[]): Pr
       metrics.best_proven_rate = best?.rate ?? 0;
       const onHand = onHandOf(data.accounts).length;
       const need = rate ? Math.ceil(PAGES_A_DAY_GOAL / rate) : null;
-      const lag = windowEnd !== undefined ? ` This reads the window ${newestDays!.join(" and ")}, and each day leaves it ${PROOF_DAYS} days after it ends: the newest window day leaves at ${utc(windowEnd + CAPACITY_WINDOW_MS)}.` : "";
+      const lag = windowEnd === undefined ? ""
+        : windowEnd + CAPACITY_WINDOW_MS > at ? ` This reads the window ${newestDays!.join(" and ")}, and each day leaves it ${PROOF_DAYS} days after it ends: the newest window day leaves at ${utc(windowEnd + CAPACITY_WINDOW_MS)}.`
+        : ` This reads the window ${newestDays!.join(" and ")}, the newest ${PROOF_DAYS} days in a row that a supply hold left at least ${PACED_HOURS_FLOOR} hours, and it stays until ${PROOF_DAYS} such days follow it.`;
       const older = best && best !== proof ? ` The best older window, ${best.days.join(" and ")}, proved ${fmt(best.rate)} (run detail only, not the headline).` : "";
       const action = actions.at(-1);
       const mass = action ? ` Left out as a mass action, not a rate: ${action.length} Instagram verdicts from ${utc(action[0]!.at)} to ${utc(action.at(-1)!.at)} and their accounts' days.` : "";
@@ -809,10 +819,17 @@ export async function measure(query: DsQuery | null, authError: string | null, n
     return data;
   }
   const today = Date.parse(`${new Date(now).toISOString().slice(0, 10)}T00:00:00Z`);
+  const daysRead = step("prod read log", async () => daysOf(await sqlRows(query, PG.prod, DAYS_SQL)));
+  // The holds cover every day provenRates() may prove on, from the read log's first day.
+  const firstDay = daysRead.then(rows => rows?.map(row => row.day).sort()[0]);
   const [days, hours, heldHours, staging, stagingPauses, accounts, deaths, config, healthy, gauge, walks, due, lapsed, stuck] = await Promise.all([
-    step("prod read log", async () => daysOf(await sqlRows(query, PG.prod, DAYS_SQL))),
+    daysRead,
     step("prod read log", async () => hoursOf(await sqlRows(query, PG.prod, HOURS_SQL))),
-    step("prod supply holds", async () => heldHoursOf((await promRange(query, PROM.prod, SUPPLY_HOLD_EXPR, today - PROOF_DAYS * DAY + HOUR, today, HOUR)).flatMap(series => series.points))),
+    step("prod supply holds", async () => {
+      const first = await firstDay;
+      const from = first ? Date.parse(`${first}T00:00:00Z`) : today - PROOF_DAYS * DAY;
+      return heldHoursOf((await promRange(query, PROM.prod, SUPPLY_HOLD_EXPR, from + HOUR, today, HOUR)).flatMap(series => series.points));
+    }),
     step("staging read log", async () => num((await sqlRows(query, PG.staging, STAGING_SQL))[0]?.last_read_at)),
     step("staging config", async () => stagingPausesOf(await sqlRows(query, PG.staging, STAGING_PAUSES_SQL))),
     step("prod accounts", async () => accountsOf(await sqlRows(query, PG.prod, ACCOUNTS_SQL))),
