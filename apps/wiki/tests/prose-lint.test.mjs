@@ -25,32 +25,130 @@ test('the rejected gateway-v2 draft fails on structure rules', () => {
 	assert.ok(counts.errors >= 20, `only ${counts.errors} errors`);
 });
 
-// The owner rejected this prose rewrite on 2026-10-10, and on 2026-11-24 called the numbered-line form unreadable
-// (#dev-crawler p19, c235, c243), so its paragraphs of up to 4 sentences now pass and only its missing diagram fails.
-test('the prose-paragraph gateway-v2 rewrite passes the paragraph rules and still wants a diagram', () => {
+// The owner rejected this prose rewrite on 2026-10-10, called the numbered-line form unreadable on 2026-11-24
+// (#dev-crawler p19, c235, c243), and called paragraphs of 3 to 5 sentences "blocks of text" on 2026-11-25 (c247), so
+// its paragraphs of 3 and 4 sentences fail too, as does its prose before any diagram.
+test('the prose-paragraph gateway-v2 rewrite fails on its paragraphs, its lead and its missing diagram', () => {
 	const { counts } = lintHtml(fixture('bad-gateway-v2-prose.html'));
-	const ids = Object.keys(counts.byRule).filter((id) => counts.byRule[id].errors > 0);
-	assert.deepEqual(ids, ['visuals'], JSON.stringify(counts.byRule));
+	const ids = Object.keys(counts.byRule).filter((id) => counts.byRule[id].errors > 0).sort();
+	assert.deepEqual(ids, ['doc-paragraph', 'lead-visual', 'visuals'], JSON.stringify(counts.byRule));
 });
 
-test('a prose wall with no diagram fails on visuals, and no rule asks for numbered lines', () => {
-	const ids = errors(fixture('bad-prose-wall-no-diagram.html'));
-	assert.deepEqual(ids, ['visuals']);
+test('a prose wall with no diagram fails on visuals, paragraphs and lead, and no rule asks for numbered lines', () => {
+	const ids = [...new Set(errors(fixture('bad-prose-wall-no-diagram.html')))].sort();
+	assert.deepEqual(ids, ['doc-paragraph', 'lead-visual', 'visuals']);
 	assert.ok(!ids.includes('paragraph-share'));
 });
 
-test('the accepted 메르-style gateway-v2 page passes with zero findings', () => {
+// The 2026-10 메르-style pages open with numbered lines before their first diagram, which lead-visual refuses (c247),
+// and every other rule passes them.
+test('the 메르-style gateway-v2 page fails only on its lead, which holds numbered lines before any diagram', () => {
 	const html = fixture('good-gateway-v2-mer.html');
 	const page = parsePage(html);
 	assert.ok(page.units.filter((u) => u.numbered).length >= 100, 'about 112 numbered lines');
 	assert.ok(page.visuals.length >= 10, 'about 13 diagrams and images');
 	const { findings, counts } = lintHtml(html);
-	assert.equal(counts.errors + counts.warns, 0, JSON.stringify(findings, null, 2));
+	assert.deepEqual(Object.keys(counts.byRule), ['lead-visual'], JSON.stringify(findings, null, 2));
+	assert.equal(counts.errors + counts.warns, 1);
 });
 
-test('the good numbered-line fixture has zero findings', () => {
+test('the numbered-line fixture fails only on its lead', () => {
 	const { findings, counts } = lintHtml(fixture('good-mer.html'));
-	assert.equal(counts.errors + counts.warns, 0, JSON.stringify(findings, null, 2));
+	assert.deepEqual(Object.keys(counts.byRule), ['lead-visual'], JSON.stringify(findings, null, 2));
+	assert.equal(counts.errors + counts.warns, 1);
+});
+
+// Owner, 2026-11-25 (#dev-api-portal p33, msg mwwkczkq, c247; p35, msg mwwkdhwy, c248), on this page as it stood:
+// "slop slop slop slop blocks of text" and "api-portal.yaml:141 이따구로 쓰면 아무것도 모른다니까?????".
+test('the API portal page the owner called blocks of text fails on paragraphs, path:line refs and its lead', () => {
+	const { findings, counts } = lintHtml(fixture('bad-api-portal-blocks.html'), { now: Date.UTC(2026, 10, 25, 20) });
+	const by = (rule) => counts.byRule[rule] ?? { errors: 0, warns: 0 };
+	assert.equal(by('doc-paragraph').errors, 10, JSON.stringify(counts.byRule));
+	assert.equal(by('line-ref-in-prose').errors, 14);
+	assert.equal(by('ref-in-prose').warns, 5);
+	assert.equal(by('lead-visual').errors, 1);
+	assert.ok(findings.some((f) => f.rule === 'line-ref-in-prose' && f.excerpt.startsWith('"api-portal.yaml:141"')));
+	assert.ok(
+		findings.some((f) => f.rule === 'line-ref-in-prose' && f.excerpt.startsWith('"apps/api-portal/src/routes/(marketing)/+page.svelte:29-33"')),
+		'a path with parentheses stays whole',
+	);
+});
+
+test('the onboarding fixture, diagram first with short paragraphs and refs in a table, has zero findings', () => {
+	const html = fixture('good-onboarding.html');
+	for (const path of [undefined, 'domains/bakery/kitchen-tickets.html']) {
+		const { findings } = lintHtml(html, { path, now: Date.UTC(2026, 10, 25, 20) });
+		assert.deepEqual(findings, [], path);
+	}
+});
+
+const doc = (body) => `<!--wiki {"title":"Tickets","description":"tickets"} -->\n<h1>Tickets</h1>\n${body}`;
+const DIAGRAM = '<pre class="mermaid">flowchart LR\n  a("relay") --> b("printer")</pre>\n';
+const rules = (html, severity) =>
+	lintHtml(html)
+		.findings.filter((f) => f.severity === severity)
+		.map((f) => f.rule);
+
+test('doc-paragraph allows 2 short sentences and refuses a third or a paragraph over 50 words', () => {
+	const two = 'The relay prints each ticket. A failed ticket tries again after 30 s.';
+	assert.deepEqual(rules(doc(`${DIAGRAM}<p>${two}</p>`), 'error'), []);
+	assert.deepEqual(rules(doc(`${DIAGRAM}<p>${two} The shop sees a stuck ticket in red.</p>`), 'error'), ['doc-paragraph']);
+	const long = `The relay prints ${Array.from({ length: 50 }, (_, i) => `t${i}`).join(' ')}.`;
+	assert.deepEqual(rules(doc(`${DIAGRAM}<p>${long}</p>`), 'error'), ['doc-paragraph']);
+});
+
+test('a path:line in running prose is an error, and in a table cell or a details fold it passes (c248)', () => {
+	const line = '<code>relay/retry.py:40</code>';
+	assert.deepEqual(rules(doc(`${DIAGRAM}<p>The retry rule waits 30 s (${line}).</p>`), 'error'), ['line-ref-in-prose']);
+	assert.deepEqual(rules(doc(`${DIAGRAM}<ul><li>The retry rule waits 30 s (${line}).</li></ul>`), 'error'), ['line-ref-in-prose']);
+	assert.deepEqual(rules(doc(`${DIAGRAM}<p>The retry rule waits 30 s at relay/retry.py:40-52 today.</p>`), 'error'), ['line-ref-in-prose']);
+	assert.deepEqual(rules(doc(`${DIAGRAM}<table><tr><td>the retry rule</td><td>${line}</td></tr></table>`), 'error'), []);
+	assert.deepEqual(rules(doc(`${DIAGRAM}<details><summary>Refs</summary><p>The retry rule is ${line}.</p></details>`), 'error'), []);
+	assert.deepEqual(
+		rules(doc(`${DIAGRAM}<p>The site answers on <code>https://orders.example:8443/api</code> and <code>orders.example:8443</code>.</p>`), 'error'),
+		[],
+		'a URL or a host and port is no line ref',
+	);
+});
+
+test('a file path, commit id or message id in a paragraph is a warning, and Node.js or a bare number is not', () => {
+	const warned = (p) => rules(doc(`${DIAGRAM}<p>${p}</p>`), 'warn').filter((r) => r === 'ref-in-prose').length;
+	assert.equal(warned('The relay lives in <code>relay/main.py</code>.'), 1);
+	assert.equal(warned('The fix landed in <code>4c6056652f</code>.'), 1);
+	assert.equal(warned('The owner asked for it (msg mwwkczkq).'), 1);
+	assert.equal(warned('The relay runs on Node.js and prints 1234567 tickets a year.'), 0);
+	assert.equal(warned('The relay reads <code>tickets</code> in order.'), 0);
+	const refsList = doc(`${DIAGRAM}<ul><li>The relay lives in <code>relay/main.py</code>.</li></ul>`);
+	assert.deepEqual(rules(refsList, 'warn'), [], 'a refs list may hold paths');
+});
+
+test('lead-visual wants the first diagram or table right after the title and one lead paragraph', () => {
+	const lead = '<p>This page is for a new teammate on the bakery orders.</p>\n';
+	const point = '<p>Each shop runs its own relay.</p>\n';
+	const err = (body) => rules(doc(body), 'error');
+	assert.deepEqual(err(`${lead}${DIAGRAM}`), []);
+	assert.deepEqual(err(`<wiki-tldr><ul><li>The relay prints each ticket.</li></ul></wiki-tldr>\n${DIAGRAM}`), []);
+	assert.deepEqual(err(`${lead}<h2>Where it runs</h2>\n${point}${DIAGRAM}`), [], 'one short paragraph may state the point');
+	assert.deepEqual(err(`${lead}${point}${point}${DIAGRAM}`), ['lead-visual']);
+	assert.deepEqual(err(`${lead}<h2>Where it runs</h2>\n<ul><li>The relay prints each ticket.</li></ul>\n${DIAGRAM}`), ['lead-visual']);
+	assert.deepEqual(err(`${lead}${point}`), [], 'a short page with no diagram or table passes');
+	const words = Array.from({ length: 25 }, () => point.replace('.', ' and prints every ticket from its own queue.')).join('');
+	assert.deepEqual(err(`${lead}${words}`).filter((r) => r === 'lead-visual'), ['lead-visual']);
+	const hub = `<ul>${Array.from({ length: 4 }, (_, i) => `<li><a href="p${i}.html">Page ${i}</a></li>`).join('')}</ul>${DIAGRAM}`;
+	assert.deepEqual(err(`${lead}${hub}`), [], 'a hub of links is exempt');
+});
+
+test('the ratchet keeps an old page with blocks of text editable, refuses a new one, and passes a write that fixes it', () => {
+	const block = '<p>The relay prints each ticket. It tries again after 30 s. The shop sees a stuck ticket in red.</p>\n';
+	const old = doc(`<p>This page is for a new teammate.</p>\n${block}${block}${DIAGRAM}`);
+	assert.equal(ratchet(null, old).ok, false, 'a new page with blocks of text is refused');
+	assert.equal(ratchet(old, old.replace('new teammate', 'new baker')).ok, true, 'an edit that adds no error saves');
+	const fixed = doc(`<p>This page is for a new teammate.</p>\n${DIAGRAM}<p>The relay prints each ticket. It tries again after 30 s.</p>\n`);
+	const write = ratchet(old, fixed);
+	assert.equal(write.ok, true, JSON.stringify(write.grown));
+	assert.equal(write.after.errors, 0);
+	const worse = old.replace('It tries again after 30 s.', 'It tries again after 30 s (<code>relay/retry.py:40</code>).');
+	assert.deepEqual(Object.keys(ratchet(old, worse).grown), ['line-ref-in-prose']);
 });
 
 // A page written at 15:30Z with the owner's KST day as its date sat out of git for 7 batch runs (2026-10-28).
@@ -184,7 +282,7 @@ test('the lint skips API-managed session and job logs but judges other pages in 
 
 test('a write the ratchet lets through answers with the warnings it kept, so the writer fixes them without a lint run', () => {
 	// On 2026-11-04 wiki-dream writers made 10 extra revisions in 7 days by linting after a 201 that named no warning.
-	const long = Array.from({ length: 40 }, (_, i) => `word${i}`).join(' ');
+	const long = Array.from({ length: 31 }, (_, i) => `word${i}`).join(' ');
 	const html = `<!--wiki {"title":"Lint answer fixture","description":"lint answer fixture"} -->\n<h1>Lint answer fixture</h1>\n<p>The engine saves the page. It then answers with ${long} at the end.</p>\n`;
 	const result = ratchet(null, html);
 	assert.equal(result.ok, true, JSON.stringify(result.grown));

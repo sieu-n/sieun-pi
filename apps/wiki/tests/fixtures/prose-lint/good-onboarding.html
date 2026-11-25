@@ -1,0 +1,63 @@
+<!--wiki
+{ "title": "Kitchen ticket printing", "kind": "explanation", "doc_kind": "explanation", "date": "2026-11-25", "updated": "2026-11-25",
+  "description": "Onboarding page for a new teammate on the bakery order system: how a paid order becomes a printed kitchen ticket, the tables it touches, and how to check it.",
+  "tags": ["fixture", "onboarding"], "status": "living", "summary": "How a paid order prints in each shop's kitchen." }
+-->
+<h1>Kitchen ticket printing</h1>
+<p>This page is for a new teammate on the bakery order system. You will know how a paid order becomes a printed kitchen ticket and where to look when one does not print.</p>
+<pre class="mermaid">
+flowchart TD
+  buyer(["customer"]) --> site
+  subgraph cloud["cloud box"]
+    site("order site") --> db[("orders table")]
+    db --> q@{ shape: h-cyl, label: "ticket queue" }
+  end
+  subgraph shop1["north shop"]
+    r1("print relay") --> p1("kitchen printer")
+  end
+  subgraph shop2["south shop"]
+    r2("print relay") --> p2("kitchen printer")
+  end
+  q --> r1
+  q --> r2
+</pre>
+<p>Each shop runs its own print relay, so one shop's broken printer never stops the other shop's tickets.</p>
+
+<h2>What happens to one order</h2>
+<table>
+<thead><tr><th>Step</th><th>Who acts</th><th>What changes</th></tr></thead>
+<tbody>
+<tr><td>1. pay</td><td>order site</td><td>the order row turns <code>paid</code></td></tr>
+<tr><td>2. queue</td><td>order site</td><td>one ticket joins the shop's queue</td></tr>
+<tr><td>3. print</td><td>print relay</td><td>the printer prints and the ticket turns <code>printed</code></td></tr>
+<tr><td>4. retry</td><td>print relay</td><td>a failed ticket tries again after 30 s</td></tr>
+</tbody>
+</table>
+<p>A ticket that fails three times stays in the queue as <code>stuck</code>. The shop sees it in red on the order screen.</p>
+
+<h2>The tables</h2>
+<table>
+<thead><tr><th>Table</th><th>Key fields</th><th>Written by</th><th>Read by</th></tr></thead>
+<tbody>
+<tr><td><code>orders</code></td><td>order_id, shop_id, status</td><td>order site</td><td>order screen</td></tr>
+<tr><td><code>tickets</code></td><td>ticket_id, order_id, tries</td><td>order site, print relay</td><td>print relay</td></tr>
+</tbody>
+</table>
+<p>The queue is the <code>tickets</code> table read in order of <code>ticket_id</code>, so no second store exists.</p>
+
+<h2>Check it on the live system</h2>
+<p>Ask the order site for the stuck tickets of one shop. An empty list means every ticket printed.</p>
+<pre><code>curl -s https://orders.example/api/tickets?shop=north&amp;status=stuck
+[]</code></pre>
+
+<h2>Where the code lives</h2>
+<table>
+<thead><tr><th>Part</th><th>File</th></tr></thead>
+<tbody>
+<tr><td>the retry rule</td><td><code>relay/retry.py:40</code></td></tr>
+<tr><td>the stuck-ticket count</td><td><code>site/screens/orders.ts:118</code></td></tr>
+</tbody>
+</table>
+<details><summary>Why the relay runs in each shop</summary>
+<p>A relay in the cloud box would lose every shop's tickets during one network drop. A relay in each shop keeps printing from its own copy of the queue.</p>
+</details>

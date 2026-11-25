@@ -33,10 +33,14 @@ export const LIMITS = Object.freeze({
 	TABLE_SHARE_MIN_WORDS: 150,
 	/** Excerpt length in characters. */
 	EXCERPT_CHARS: 90,
-	/** A paragraph, or a step of a numbered list, holds at most this many sentences... */
-	DOC_PARAGRAPH_MAX_SENTENCES: 4,
-	/** ...and at most this many words, 4 sentences of about 25. */
-	DOC_PARAGRAPH_MAX_WORDS: 100,
+	/**
+	 * A paragraph, or a step of a numbered list, holds at most this many sentences...
+	 * Owner, 2026-11-25 (#dev-api-portal p33, msg mwwkczkq, c247): "slop slop slop slop blocks of text", on a page whose
+	 * paragraphs ran 3 to 5 sentences under the older 4-sentence, 100-word allowance.
+	 */
+	DOC_PARAGRAPH_MAX_SENTENCES: 2,
+	/** ...and at most this many words, 2 short sentences of about 25. */
+	DOC_PARAGRAPH_MAX_WORDS: 50,
 	/** An explanation page over VISUAL_MIN_WORDS needs one diagram or image per this many words. */
 	DOC_WORDS_PER_VISUAL: 800,
 	/** An owner design page (doc_kind design) stays under this many words, per owner rules c83 and c201. */
@@ -339,17 +343,18 @@ export function decodeEntities(s) {
  *   kind: UnitKind, tag: string, line: number, raw: string, text: string, words: number,
  *   pieces: Piece[], firstBold: boolean, linkOnly: boolean, codeOnly: boolean,
  *   hasNestedList: boolean, inTldr: boolean, isHead: boolean, ko: boolean, numbered: boolean, start: number,
+ *   codes: string[], inDetails: boolean,
  * }} Unit
- * @typedef {{ raw: string, pieces: Piece[], first: null | 'bold' | 'other', inLinkLetters: number, outLetters: number, code: number, nested: boolean }} Acc
- * @typedef {{ inTldr: boolean, isHead: boolean, ko: boolean }} Ctx
+ * @typedef {{ raw: string, pieces: Piece[], first: null | 'bold' | 'other', inLinkLetters: number, outLetters: number, code: number, codes: string[], nested: boolean }} Acc
+ * @typedef {{ inTldr: boolean, isHead: boolean, ko: boolean, inDetails: boolean }} Ctx
  * @typedef {{ text: string, line: number }} Span
- * @typedef {{ columns: number, words: number, line: number }} TableInfo
+ * @typedef {{ columns: number, words: number, line: number, start: number }} TableInfo
  * @typedef {{
  *   path: string, units: Unit[], bold: Span[], italics: Span[], tables: TableInfo[],
  *   visuals: number[], words: number, lineOf: (offset: number) => number, ko: boolean,
  *   links: { href: string, line: number }[], now: number, meta: Record<string, unknown>,
  *   docKind: string | null, steps: { line: number, text: string, proof: boolean }[], proofs: number[],
- *   diagrams: { src: string, line: number }[], hasDl: boolean,
+ *   diagrams: { src: string, line: number }[], hasDl: boolean, leads: number[],
  * }} Page
  */
 
@@ -389,7 +394,7 @@ const INLINE =
 const OWN_UNITS = new Set(['ul', 'ol', 'menu', 'table', 'dl', 'wiki-table']);
 
 /** @returns {Acc} */
-const newAcc = () => ({ raw: '', pieces: [], first: null, inLinkLetters: 0, outLetters: 0, code: 0, nested: false });
+const newAcc = () => ({ raw: '', pieces: [], first: null, inLinkLetters: 0, outLetters: 0, code: 0, codes: [], nested: false });
 
 /**
  * Source offsets of every diagram and image, in document order.
@@ -465,6 +470,21 @@ function readFlowchart(src) {
 }
 
 /**
+ * Source offsets of every table, `<wiki-table>` included, outside code blocks and diagrams.
+ * @param {El} el
+ * @param {number[]} out
+ * @returns {number[]}
+ */
+function findTables(el, out = []) {
+	for (const node of el.children) {
+		if (node.type !== 'el' || isSkipped(node)) continue;
+		if (node.tag === 'table' || node.tag === 'wiki-table') out.push(node.start);
+		else findTables(node, out);
+	}
+	return out;
+}
+
+/**
  * Source offsets of every code block, diagram and image, in document order: what shows a step's command, output or screen.
  * @param {El} el
  * @param {number[]} out
@@ -527,6 +547,9 @@ export function countWords(s) {
 /** @param {string} s */
 const squash = (s) => s.replace(/\s+/g, ' ').trim();
 
+/** The text of a subtree, tags dropped. @param {Node} n @returns {string} */
+const textOf = (n) => (n.type === 'text' ? n.text : n.children.map(textOf).join(''));
+
 /**
  * Replace text inside straight or curly double quotes with one token. Quoted words are
  * verbatim (the owner's words, a log line), not ours to lint. A closing . ! ? inside the
@@ -580,6 +603,7 @@ function gather(el, inLink, inBold, acc, deferred) {
 		if (CODE.has(node.tag)) {
 			if (acc.first === null) acc.first = inBold ? 'bold' : 'other';
 			acc.code += 1;
+			acc.codes.push(squash(decodeEntities(textOf(node))));
 			acc.raw += CODE_TOKEN;
 			continue;
 		}
@@ -669,12 +693,14 @@ export function parsePage(html, opts = {}) {
 		proofs: [],
 		diagrams: [],
 		hasDl: false,
+		leads: [],
 	};
 	page.docKind = typeof page.meta.doc_kind === 'string' ? page.meta.doc_kind : null;
 	const root = parseHtml(html);
 	page.visuals = findVisuals(root);
 	page.proofs = findProofs(root);
 	page.diagrams = mermaidSources(html, lineOf);
+	page.leads = [...page.visuals, ...findTables(root)].sort((a, b) => a - b);
 	page.hasDl = /<dl\b/i.test(html.replace(/<!--[\s\S]*?-->/g, ''));
 	if (isProse(page.docKind)) page.steps = findSteps(root, lineOf);
 
@@ -727,6 +753,8 @@ export function parsePage(html, opts = {}) {
 			linkOnly: acc.outLetters === 0 && acc.inLinkLetters > 0 && acc.code === 0,
 			codeOnly: acc.outLetters === 0 && acc.inLinkLetters === 0 && acc.code > 0,
 			hasNestedList: acc.nested,
+			codes: acc.codes,
+			inDetails: ctx.inDetails,
 			inTldr: ctx.inTldr,
 			isHead: ctx.isHead,
 			ko: ctx.ko,
@@ -745,7 +773,8 @@ export function parsePage(html, opts = {}) {
 		const inTldr = ctx.inTldr || el.tag === 'wiki-tldr';
 		const isHead = ctx.isHead || el.tag === 'thead';
 		const ko = ctx.ko || isKo(el);
-		const here = { inTldr, isHead, ko };
+		const inDetails = ctx.inDetails || el.tag === 'details';
+		const here = { inTldr, isHead, ko, inDetails };
 		if (el.tag === 'table') {
 			/** @type {El[]} */
 			const rows = [];
@@ -768,12 +797,12 @@ export function parsePage(html, opts = {}) {
 				.slice(before)
 				.filter((u) => u.kind === 'cell')
 				.reduce((n, u) => n + u.words, 0);
-			page.tables.push({ columns, words, line: lineOf(el.start) });
+			page.tables.push({ columns, words, line: lineOf(el.start), start: el.start });
 			return;
 		}
 		const kind = UNIT_KIND[el.tag];
 		if (kind) {
-			addUnit(el, kind, { inTldr, isHead: isHead || el.tag === 'th', ko });
+			addUnit(el, kind, { inTldr, isHead: isHead || el.tag === 'th', ko, inDetails });
 			return;
 		}
 		if (el.tag === 'wiki-figure' || el.tag === 'wiki-image' || el.tag === 'img') {
@@ -790,6 +819,7 @@ export function parsePage(html, opts = {}) {
 						inLinkLetters: 0,
 						outLetters: 1,
 						code: 0,
+						codes: [],
 						nested: false,
 					},
 					here,
@@ -821,7 +851,7 @@ export function parsePage(html, opts = {}) {
 		flush();
 	};
 
-	walk(root, { inTldr: false, isHead: false, ko: false });
+	walk(root, { inTldr: false, isHead: false, ko: false, inDetails: false });
 	collectSpans(root, page, false);
 	page.words = page.units.reduce((n, u) => n + u.words, 0);
 	return page;
@@ -1244,6 +1274,51 @@ function sessionLinkHits(page, pick) {
 	});
 }
 
+/** File extensions that make a code name a file path. */
+const FILE_EXT =
+	'mjs|cjs|mts|cts|js|jsx|ts|tsx|py|md|json|jsonl|sh|svelte|toml|yaml|yml|sql|csv|html|css|go|rs|rb|java|kt|swift|vue|astro|tf|proto|xml|txt|conf|ini|lock|service|timer';
+const NOT_URL = '(?![a-z][a-z0-9+.-]*://)';
+/** A path with a line or range, such as `api-portal.yaml:141` or `gateway.ts:202-205` (c248). */
+const PATH_LINE = new RegExp(`^${NOT_URL}(?:[^\\s:]*\\.(?:${FILE_EXT})|[^\\s:]*/[^\\s:]+):\\d+(?:[-\\u2013]\\d+)?$`, 'i');
+/** A file name or path in code, such as `compat.ts` or `convex/apiPortal/tables.ts`. */
+const CODE_PATH = new RegExp(`^${NOT_URL}[^\\s]*\\.(?:${FILE_EXT})$`, 'i');
+/** The same outside code, where only a name with a folder counts, so "Node.js" in a sentence passes. */
+const TEXT_PATH = new RegExp(`^${NOT_URL}[^\\s]*/[^\\s]*\\.(?:${FILE_EXT})$`, 'i');
+/** A git commit id: 7 to 40 hex characters with a digit and a letter. */
+const COMMIT_ID = /^(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}$/;
+/** A chat message id, such as mwwkczkq. */
+const MESSAGE_ID = /^mw[0-9a-z]{6}$/;
+
+/** @param {string} s */
+const refTokens = (s) =>
+	s
+		.split(/[\s,;()]+/)
+		.map((t) => t.replace(/^["'\u201c\u2018]+/, '').replace(/["'\u201d\u2019.:!?]+$/, ''))
+		.filter(Boolean);
+
+/**
+ * The code refs in a prose unit's own text: paths with a line, and file paths, commit ids and message ids.
+ * @param {Unit} u
+ * @returns {{ lines: string[], refs: string[] }}
+ */
+function proseRefs(u) {
+	/** @type {string[]} */
+	const lines = [];
+	/** @type {string[]} */
+	const refs = [];
+	const take = (/** @type {string} */ t, /** @type {RegExp} */ path) => {
+		if (PATH_LINE.test(t)) lines.push(t);
+		else if (path.test(t) || COMMIT_ID.test(t) || MESSAGE_ID.test(t)) refs.push(t);
+	};
+	for (const code of u.codes) for (const t of code.split(/[\s,;]+/).filter(Boolean)) take(t, CODE_PATH);
+	for (const t of refTokens(u.text)) if (t !== CODE_TOKEN) take(t, TEXT_PATH);
+	return { lines, refs };
+}
+
+/** A unit of running prose a reader reads straight through: not a table cell, a heading, a caption or a <details> fold. */
+const isRunningProse = (/** @type {Unit} */ u) =>
+	!u.inDetails && (u.kind === 'paragraph' || u.kind === 'loose' || u.kind === 'step' || u.kind === 'bullet');
+
 /** @type {Rule[]} */
 export const RULES = [
 	{
@@ -1521,19 +1596,87 @@ export const RULES = [
 	},
 	{
 		// Owner, 2026-11-23 (#sw-factory-build p174, msg mwtd0iuy): "think of writing an actual confluence tutorial page
-		// like as to onboard me", and 2026-11-24 (#dev-crawler p19): "the llm-wiki is unreadable". Every page reads as
-		// paragraphs of two to four sentences, and a numbered step holds the same.
+		// like as to onboard me"; 2026-11-24 (#dev-crawler p19): "the llm-wiki is unreadable"; and 2026-11-25
+		// (#dev-api-portal p33, msg mwwkczkq, c247): "slop slop slop slop blocks of text". A paragraph or step is 1 or 2
+		// short sentences.
 		id: 'doc-paragraph',
 		unslop: '20',
 		severity: 'error',
 		scope: 'paragraph',
-		fix: `Keep a paragraph or step to ${LIMITS.DOC_PARAGRAPH_MAX_SENTENCES} sentences and ${LIMITS.DOC_PARAGRAPH_MAX_WORDS} words; start a new paragraph for the next idea.`,
+		fix: `Keep a paragraph or step to ${LIMITS.DOC_PARAGRAPH_MAX_SENTENCES} short sentences and ${LIMITS.DOC_PARAGRAPH_MAX_WORDS} words; put the rest in a table or diagram, or cut it.`,
 		check: (/** @type {Unit} */ u) => {
 			if (u.inTldr) return [];
 			const n = sentencesOf(u).length;
 			if (n > LIMITS.DOC_PARAGRAPH_MAX_SENTENCES || u.words > LIMITS.DOC_PARAGRAPH_MAX_WORDS)
 				return [{ excerpt: `${n} sentences, ${u.words} words: ${excerpt(u.text)}` }];
 			return [];
+		},
+	},
+	{
+		// Owner, 2026-11-25 (#dev-api-portal p35, msg mwwkdhwy, c248): "api-portal.yaml:141 이따구로 쓰면 아무것도
+		// 모른다니까?????". A code spot is named in plain words, and its path:line sits only in a table column or a
+		// <details> fold. The page he read had 13 such refs in its paragraphs and bullets.
+		id: 'line-ref-in-prose',
+		unslop: 'wiki',
+		severity: 'error',
+		scope: 'prose',
+		fix: 'Name the code spot in plain words, such as "the customer-failure alert rule", and move its path:line to a refs table or a <details> fold at the end.',
+		check: (/** @type {Unit} */ u, page) =>
+			isRunningProse(u)
+				? proseRefs(u).lines.map((t) => ({ excerpt: `"${t}" in: ${excerpt(u.raw)}`, line: lineFor(u, t, page) }))
+				: [],
+	},
+	{
+		// Owner, 2026-11-25 (#dev-api-portal p33 and p35, c247, c248). File paths, commit ids and message ids stay out of a
+		// paragraph and go in a refs table or list at the end, or a <details> fold. A warning, because 1 such ref in a
+		// paragraph reads fine and older pages cite the owner's message ids in their lines.
+		id: 'ref-in-prose',
+		unslop: 'wiki',
+		severity: 'warn',
+		scope: 'paragraph',
+		fix: 'Say what the file, commit or message is in plain words, and list its path, id or message id in a refs table or list at the end of the page.',
+		check: (/** @type {Unit} */ u) => {
+			if (u.inDetails || u.kind === 'step') return [];
+			return proseRefs(u).refs.map((t) => ({ excerpt: `"${t}" in: ${excerpt(u.raw)}` }));
+		},
+	},
+	{
+		// Owner, 2026-11-25 (#dev-api-portal p33, msg mwwkczkq, c247): a page is diagrams and tables first, then short
+		// lines. The page opens with its <h1> and at most one lead paragraph or <wiki-tldr>, then its first diagram, image or
+		// table, with headings and at most one short paragraph that states the diagram's point between. One finding per
+		// page at most, so an old page that breaks it stays editable under the ratchet.
+		id: 'lead-visual',
+		unslop: 'wiki',
+		severity: 'error',
+		scope: 'page',
+		// A start, tutorial or how-to page has its own section and step rules, as core-length skips it.
+		when: (k) => k !== 'start' && k !== 'tutorial' && k !== 'how-to',
+		fix: 'Put the page\'s main diagram or table right after the title and its one lead paragraph, and move the prose under it.',
+		check: (_u, page) => {
+			const linkOnly = page.units.filter((u) => u.linkOnly).length;
+			if (page.units.length === 0 || linkOnly * 2 >= page.units.length) return [];
+			const first = page.leads[0] ?? Infinity;
+			if (first === Infinity && page.words <= LIMITS.VISUAL_MIN_WORDS) return [];
+			const h1 = page.units.find((u) => u.tag === 'h1');
+			let before = page.units.filter(
+				(u) => u.start > (h1 ? h1.start : -1) && u.start < first && u.kind !== 'heading' && u.kind !== 'caption',
+			);
+			if (before[0]?.inTldr) before = before.filter((u) => !u.inTldr);
+			else if (before[0]?.tag === 'p') before = before.slice(1);
+			// One short paragraph may state the point of the diagram under it, as "Diagrams drawn for a person" asks.
+			const point = before[0];
+			if (
+				before.length === 1 &&
+				point.tag === 'p' &&
+				sentencesOf(point).length <= LIMITS.DOC_PARAGRAPH_MAX_SENTENCES &&
+				point.words <= LIMITS.DOC_PARAGRAPH_MAX_WORDS &&
+				first !== Infinity
+			)
+				return [];
+			if (!before.length) return [];
+			const words = before.reduce((n, u) => n + u.words, 0);
+			const what = first === Infinity ? 'the page has no diagram, image or table' : 'before the first diagram, image or table';
+			return [{ excerpt: `${before.length} prose blocks (${words} words) after the lead, ${what}`, line: before[0].line }];
 		},
 	},
 	{

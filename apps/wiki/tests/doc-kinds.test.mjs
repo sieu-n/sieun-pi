@@ -49,8 +49,8 @@ test('a documentation page opens with an intro paragraph, never a wiki-tldr', ()
 
 test('a documentation page still gets the unslop rules', () => {
 	const body = (p) => page('explanation', `<p>${p}</p>\n`);
-	assert.deepEqual(errors(body(para(5))), ['doc-paragraph']);
-	assert.deepEqual(errors(body(para(4))), []);
+	assert.deepEqual(errors(body(para(3))), ['doc-paragraph']);
+	assert.deepEqual(errors(body(para(2))), []);
 	assert.deepEqual(errors(body('The engine writes the page \u2014 then commits it.')), ['em-dash']);
 	assert.deepEqual(errors(body('Owner: the wiki team runs the engine.')), ['label-opener']);
 	assert.deepEqual(errors(body('The engine will leverage the content root.')).length, 1);
@@ -60,9 +60,9 @@ test('a documentation page still gets the unslop rules', () => {
 });
 
 test('an explanation over 300 words needs a diagram, and prose paragraphs pass there', () => {
-	const body = Array.from({ length: 8 }, () => `<p>${para(4)}</p>`).join('\n');
-	assert.deepEqual(errors(page('explanation', body)), ['doc-diagram']);
-	const drawn = `${body}\n<pre class="mermaid">flowchart LR\n  a --> b</pre>\n`;
+	const body = Array.from({ length: 16 }, () => `<p>${para(2)}</p>`).join('\n');
+	assert.deepEqual(errors(page('explanation', body)), ['doc-diagram', 'lead-visual']);
+	const drawn = `<pre class="mermaid">flowchart LR\n  a --> b</pre>\n${body}\n`;
 	assert.deepEqual(errors(page('explanation', drawn)), []);
 	assert.deepEqual(errors(page(null, drawn)), [], 'the same prose passes with no doc_kind');
 });
@@ -83,22 +83,22 @@ test('a start page needs a Start here section', () => {
 test('an unknown doc_kind is refused, and a design page stays short', () => {
 	assert.deepEqual(errors(page('howto', '<p>One line.</p>')), ['doc-kind']);
 	const lines = (n) =>
-		`<ol>${Array.from({ length: n }, (_, i) => `<li>The design keeps option ${i + 1} on the table.</li>`).join('')}</ol>\n<pre class="mermaid">flowchart LR\n  a --> b</pre>\n<pre class="mermaid">flowchart LR\n  c --> d</pre>\n`;
+		`<pre class="mermaid">flowchart LR\n  a --> b</pre>\n<pre class="mermaid">flowchart LR\n  c --> d</pre>\n<ol>${Array.from({ length: n }, (_, i) => `<li>The design keeps option ${i + 1} on the table.</li>`).join('')}</ol>\n`;
 	assert.deepEqual(errors(page('design', lines(18))), []);
 	const oneDiagram = (n) =>
-		`<ol>${Array.from({ length: n }, (_, i) => `<li>The design keeps option ${i + 1} of the plan on the table for now.</li>`).join('')}</ol>\n<pre class="mermaid">flowchart LR\n  a --> b</pre>\n`;
+		`<pre class="mermaid">flowchart LR\n  a --> b</pre>\n<ol>${Array.from({ length: n }, (_, i) => `<li>The design keeps option ${i + 1} of the plan on the table for now.</li>`).join('')}</ol>\n`;
 	assert.deepEqual(errors(page('design', oneDiagram(20))), [], 'one diagram is enough at the design-length limit');
 	assert.deepEqual(errors(page('design', oneDiagram(20).replace(/<pre[^]*<\/pre>/, ''))), ['visuals']);
 	assert.deepEqual(errors(page(null, oneDiagram(20))), [], 'numbered lines no longer set the diagram count');
 	assert.deepEqual(errors(page('design', lines(22))), [], 'a design page is cut by words, not by numbered lines');
-	const long = Array.from({ length: 20 }, () => `<p>${para(4)}</p>`).join('\n');
-	assert.deepEqual(errors(page('design', `${long}\n<pre class="mermaid">flowchart LR\n  a --> b</pre>\n`)), ['design-length']);
+	const long = Array.from({ length: 45 }, () => `<p>${para(2)}</p>`).join('\n');
+	assert.deepEqual(errors(page('design', `<pre class="mermaid">flowchart LR\n  a --> b</pre>\n${long}\n`)), ['design-length']);
 	assert.ok(errors(page('design', `<p>${para(4)} ${para(2)}</p>`)).includes('doc-paragraph'));
 });
 
 test('a page with no doc_kind gets the same paragraph rule as a documentation page', () => {
-	assert.deepEqual(errors(page(null, `<p>${para(5)}</p>`)), ['doc-paragraph']);
-	assert.deepEqual(errors(page(null, `<p>${para(4)}</p>`)), []);
+	assert.deepEqual(errors(page(null, `<p>${para(3)}</p>`)), ['doc-paragraph']);
+	assert.deepEqual(errors(page(null, `<p>${para(2)}</p>`)), []);
 });
 
 /** Warning rule ids of a page at a wiki path. */
@@ -129,7 +129,7 @@ test('an apps/ or domains/ page over the size target gets a core-length warning,
 // core-length warning, and the 05:38Z wiki dream precheck counted it in wiki_problems.
 test('the page API ratchet refuses a write that first takes an apps/ or domains/ page past 800 words, and keeps a page already past it editable', () => {
 	const table = '<table><tr><th>Key</th><th>Value</th></tr><tr><td>root</td><td>content</td></tr></table>\n';
-	const sized = (n) => page('reference', `${Array.from({ length: n }, () => `<p>${para(4)}</p>`).join('\n')}\n${table}`);
+	const sized = (n) => page('reference', `${table}${Array.from({ length: 2 * n }, () => `<p>${para(2)}</p>`).join('\n')}\n`);
 	const at = 'apps/crawler-v3/workers/thing.html';
 	const under = sized(19);
 	const over = sized(21);

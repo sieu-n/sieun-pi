@@ -1,0 +1,81 @@
+<!--wiki
+{ "title": "API portal architecture", "kind": "explanation", "doc_kind": "explanation", "date": "2026-11-25", "updated": "2026-11-25",
+  "description": "How api.virev.ai is built, every table it reads or writes with prod row counts, and whether it is clean and follows our standards, with the problems ranked worst first.",
+  "apps": ["api-portal"], "tags": ["api-portal", "architecture", "review"], "status": "live", "owner": "api-portal",
+  "summary": "The api.virev.ai architecture, its tables and a ranked standards review.",
+  "source_refs": ["apps/api-portal/src/lib/server/gateway.ts", "convex/apiPortal/tables.ts", "convex/apiPortal/balances.ts", "apps/infra/metal/config/obs/grafana/alerting/api-portal.yaml", "convex/org/customerWorkspaces.ts", "convex/apiPortal/portalHttp.ts"],
+  "last_verified": "2026-11-25T19:18:05Z" }
+-->
+<h1>API portal architecture</h1>
+<p>The core of api.virev.ai is clean and follows our standards. The edges carry about <wiki-cite note="standards review 2026-11-25, problems 6, 7, 8, 9, 12 and 14 summed, if landing B goes; about 8,000 if landing A goes">6,000 lines</wiki-cite> of leftovers and second copies, and two monitoring gaps hid failed customer calls. This page answers the owner's question in #dev-api-portal p23 (mwwhn4a3), with code read at <code>dev/sieun</code> <code>0361cb16a4</code> and prod counts read on 2026-11-25.</p>
+
+<h2 id="is-it-clean">What is clean and what is not</h2>
+<p>The clean core is one gateway path that admits, reads and charges every <code>/v1</code> call (<code>apps/api-portal/src/lib/server/gateway.ts:752</code>). Each charge and each admitted call inserts its own Convex row, so parallel calls never write the same document. The <code>/v1</code> routes come from the operation catalog, every hot query reads through an index, and money is integer micro-dollars.</p>
+<p>For example, when one org fires 30 calls at once, each charge inserts one move row in <code>apiPortalBalances</code> (<code>convex/apiPortal/balances.ts:122-135</code>), and a fold sums the moves about once a second. The catch-all route file holds one line (<code>apps/api-portal/src/routes/v1/[...path=v1get]/+server.ts:1</code>). Around that core sit old compat code, copies of the gateway and of the org lists, and alert rules that miss quiet hours.</p>
+
+<h2 id="request-flow">How one call moves</h2>
+<p>A customer call takes two Convex asks on the request path, one to admit and one to charge, and everything we count lands in one ClickHouse table.</p>
+<pre class="mermaid">
+flowchart TD
+  cust(["customer"]) --> gw("gateway on Vercel")
+  gw -- "1 admit" --> cx[("Convex apiPortal")]
+  gw -- "2 read" --> vent("Vent /crawler")
+  vent --> cr("crawler-v3")
+  gw -- "3 charge" --> cx
+  cx -- "outbox" --> cr
+  cr --> ch[("product.usage_events")]
+  gw -- "events" --> ph("PostHog 354457")
+  ch -- "hourly sync" --> ph
+  ch --> gf("Grafana and alerts")
+</pre>
+<p>For example, a <code>GET /v1/youtube/channel_shorts</code> call spends a median <wiki-cite note="PostHog 354457, api_request_completed for youtube.channel_shorts, 1,024 events in the 7 days to 2026-11-25, admitMs p50">100 ms</wiki-cite> in the admit ask, about 6 s in the crawler and <wiki-cite note="same PostHog events, chargeMs p50">81 ms</wiki-cite> in the charge ask. The charge puts a <code>data_api_call</code> row in the Convex outbox, which crawler-v3 writes to ClickHouse, and the crawler writes its own <code>crawl_read</code> row for the same call.</p>
+
+<h2 id="tables">The tables</h2>
+<p>The portal owns 17 Convex tables in <code>convex/apiPortal/tables.ts</code> and uses 4 more from the org and ledger code, plus 4 ClickHouse tables. The table lists the ones that matter, with prod rows read on 2026-11-25.</p>
+<table>
+<tr><th>Table</th><th>Holds</th><th>Prod rows</th><th>Writer</th><th>Reader</th></tr>
+<tr><td><code>tokens</code></td><td>API keys, hashed</td><td><wiki-cite note="Convex _system/cli/tableSize on prod, 2026-11-25; 66 are api_key rows, 42 active">253</wiki-cite></td><td>keys page</td><td>admit</td></tr>
+<tr><td><code>apiPortalBalances</code></td><td>main balance plus charge moves</td><td><wiki-cite note="Convex tableSize, prod, 2026-11-25: 33 main rows, 16 legacy shard rows">49</wiki-cite></td><td><code>deductAndLog</code>, <code>foldMoves</code></td><td>admit, billing page</td></tr>
+<tr><td><code>apiPortalRateSlots</code></td><td>one row per call this minute</td><td><wiki-cite note="Convex tableSize, prod, 2026-11-25">90</wiki-cite></td><td>admit</td><td>admit</td></tr>
+<tr><td><code>apiPortalCredits</code></td><td>top-ups, grants, refunds</td><td><wiki-cite note="Convex tableSize, prod, 2026-11-25">50</wiki-cite></td><td>Stripe sync, admin</td><td>billing page</td></tr>
+<tr><td><code>apiPortalCrawlJobs</code></td><td>durable <code>/v1/jobs</code></td><td><wiki-cite note="Convex tableSize, prod, 2026-11-25; 8,584 in the demo org, 8,019 of those cancelled">9,220</wiki-cite></td><td>job routes</td><td>job routes</td></tr>
+<tr><td><code>apiPortalBatchJobs</code></td><td><code>/v1/batch</code> jobs</td><td><wiki-cite note="Convex tableSize, prod, 2026-11-25; items 890 and parts 110 sit in two more tables">903</wiki-cite></td><td>batch routes</td><td>batch routes</td></tr>
+<tr><td><code>apiPortalHealthProbes</code></td><td>one row per probe per minute</td><td><wiki-cite note="Convex tableSize, prod, 2026-11-25; pruned after 7 days">43,818</wiki-cite></td><td>probe cron</td><td>Prometheus</td></tr>
+<tr><td><code>ledgerOutbox</code></td><td>charge rows until sent</td><td><wiki-cite note="Convex tableSize, prod, 2026-11-25">0</wiki-cite></td><td><code>deductAndLog</code></td><td>outbox drain</td></tr>
+<tr><td><code>product.usage_events</code></td><td>charges, reads, refusals</td><td><wiki-cite note="ops/bin/ch-ro prod, count() at 2026-11-25 19:05Z; 265,920 in the last 7 days">790,669</wiki-cite></td><td>crawler-v3</td><td>usage page, board, alert</td></tr>
+<tr><td><code>otel.otel_logs</code></td><td>Vercel request log</td><td><wiki-cite note="ops/bin/ch-ro prod, ServiceName api-portal since 10-26, 30-day TTL, 2026-11-25">722,268</wiki-cite></td><td>log drain</td><td>per-path counts</td></tr>
+</table>
+<p>For example, the billing page shows a balance from <code>apiPortalBalances</code> and its 30-day spend from <code>data_api_call</code> rows in <code>product.usage_events</code> (<code>apps/api-portal/src/lib/usage-ledger.ts:18-25</code>).</p>
+<details><summary>The other tables</summary>
+<p>Small Convex tables hold settings and state, such as <code>apiPortalCards</code> (12 rows), <code>apiPortalAutoReplenish</code> (2), <code>apiPortalCoupons</code> (11) and <code>apiPortalOrgFunnel</code> (4). The rest are <code>apiPortalPlaygroundRuns</code> (16), <code>apiPortalFoldChain</code> (1), <code>apiPortalCronCursors</code> (1), <code>chargeKeys</code> (255), <code>ledgerOrgDrains</code> (151) and the batch item and part tables. <code>apiPortalRateQuotas</code> and <code>apiPortalRateRequests</code> hold 0 rows on prod, so nobody has used raised rate limits. In ClickHouse, <code>product.usage_daily</code> (3,126 rows) and <code>product.mcp_calls</code> (2,379) are rollups that materialized views fill from <code>usage_events</code>, and no portal code reads them.</p>
+<p>One call is counted three ways that disagree. Over 7 days on prod there were 30,861 keyed <code>crawl_read</code> rows, 25,274 <code>data_api_call</code> charges and 24,829 PostHog <code>api_request_completed</code> events. The board and the alert count the crawl rows, while the usage page and the PostHog warehouse count the charges.</p>
+</details>
+
+<h2 id="problems">Problems, worst first</h2>
+<ul>
+<li>The calls-failing alert skips any hour under 20 customer calls (<code>apps/infra/metal/config/obs/grafana/alerting/api-portal.yaml:144</code>), so it was blind <wiki-cite note="ops/bin/ch-ro prod at 2026-11-25 19:16Z, the rule's own WHERE clause per hour over 7 days: 134 quiet hours, 1,073 calls, 479 failed, 89 hours with a failure">134 of 169 hours</wiki-cite> holding 479 failed calls.</li>
+<li>Six places decide which orgs are ours, with four definitions, so a funnel proof org on 11-25 paid real balance and fired <code>api_first_call</code> (<code>convex/org/customerWorkspaces.ts:43</code>).</li>
+<li>Prod answers <code>/api/test/seed</code> and <code>/api/test/cleanup</code> behind one shared secret (<code>convex/apiPortal/portalHttp.ts:466-500</code>), and cleanup can delete any named org's keys and balance.</li>
+<li>The <code>/v1/intelligence/profile</code> route copies the gateway by hand, so a crawler <code>crawl_unpaid_paused</code> reaches the customer as a plain 502 (<code>apps/api-portal/src/routes/v1/intelligence/profile/+server.ts:185</code>).</li>
+<li>A <code>CONVEX_WEBHOOK_SECRET</code> mismatch would tell every customer 401 <code>invalid_api_key</code>, because the gateway reads any Convex 401 as a revoked key (<code>apps/api-portal/src/lib/server/gateway.ts:202-205</code>).</li>
+<li>Live reads set no timeout and drop the client's abort signal (<code>apps/api-portal/src/lib/server/live-reads.ts:115-121</code>), so a client that hangs up is still charged.</li>
+<li>The board and the alert read only <code>crawl_read</code> rows (<code>api-portal.yaml:141</code>), so they miss the <wiki-cite note="ops/bin/ch-ro prod at 2026-11-25 19:18Z, data_api_request rows over 7 days: 617 rate_limit_exceeded, 290 invalid_api_key, 2 insufficient_balance">909 refused calls</wiki-cite> of the last 7 days.</li>
+<li>Nothing ages out of <code>product.usage_events</code> (<code>apps/crawler-v3/src/events/ledger.py:78-120</code>) or <code>apiPortalCrawlJobs</code>, and staging already holds <wiki-cite note="ops/bin/ch-ro staging, count() at 2026-11-25 19:05Z, 333 MiB">7.5M rows</wiki-cite>.</li>
+<li>The schema reference says every portal table is per-workspace and lists <code>apiPortalUsage</code> (<code>.agents/skills/stack/convex/references/schema.md:13</code>), though 6 tables are system tables and <code>apiPortalUsage</code> is gone.</li>
+</ul>
+<p>The cost of the first problem is concrete. The 479 failed calls were mostly <code>proxy_provider_down</code> answers before 2026-11-23 22:58Z, and no alert fired for any of them. The test route problem left <wiki-cite note="Convex prod, house org …MWrpfO: $228 deposited against $202 of completed credit rows, standards review 2026-11-25">$26</wiki-cite> of deposits on one house org with no credit row, because seeding adds balance without one.</p>
+
+<h2 id="cuts">Cuts on offer</h2>
+<p>About 1,500 lines of compat and 410 code serve no customer and can go without an owner call. <code>compat.ts</code> (221 lines) and <code>compat-paths.ts</code> (630) rebuild old answers for 11 paths, and the 410 routes add about 440 more. The Vercel log drain shows the last call from a known customer org on 10-28, and every 410 since 11-02 went to us-metal02 or a bot.</p>
+<p>Landing A and landing B both ship (<code>apps/api-portal/src/routes/(marketing)/+page.svelte:29-33</code>), and only the owner can pick one. Keeping A removes about 4,700 lines, and keeping B removes about 2,600. Hand-typed price copies, two job systems and legacy fields make up the rest of the 6,000 lines.</p>
+
+<h2 id="fixing-now">Being fixed now</h2>
+<p>The api-portal agent started three fixes on 2026-11-25. The alert will count failed customer calls over a longer window. One Convex definition of our orgs will feed the board, the alert and the duties, and the test routes will register off prod only.</p>
+
+<h2 id="related-pages">Related pages</h2>
+<ul>
+<li><a href="identity.html">API portal identity</a> says what the api-portal agent owns.</li>
+<li><a href="checks.html">API portal checks</a> lists the health checks and the Grafana board.</li>
+<li><a href="../../apps/api-portal/index.html">The API portal hub</a> explains the code.</li>
+<li><a href="jobs/2026/11/26/0418-portal-architecture-page/index.html">This job's log</a> keeps the request.</li>
+</ul>
