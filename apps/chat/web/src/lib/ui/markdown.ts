@@ -741,20 +741,17 @@ const WARM_TEXT = [
 ].join("\n\n");
 
 /**
- * Renders `WARM_TEXT` once in each mode and keeps nothing, so the page's first posts find marked's rules and DOMPurify set up. main.ts runs
- * it in a task of its own while IndexedDB reads the kept pages: on 11-25 the first render of a reload's 3 posts took 30 ms of the 164 to
- * 196 ms task that mounted #1124-cost-management at CPU rate 1, and 40 ms of 800 ms at rate 4 (~/work/p300-channel-open/trace-summary.md).
+ * Renders `WARM_TEXT` once as a chat post and keeps nothing, so the page's first posts find marked's rules and DOMPurify set up. main.ts
+ * runs it in a task of its own while IndexedDB reads the kept pages: on 11-25 the first render of a reload's 3 posts took 30 ms of the 164
+ * to 196 ms task that mounted #1124-cost-management at CPU rate 1, and 40 ms of 800 ms at rate 4 (~/work/p300-channel-open/trace-summary.md).
+ * One render is enough, since both modes and inline text share the rules: four renders took 52 to 70 ms at rate 1 and 177 ms at rate 4.
  */
 export function warmMarkdown(): void {
-  const modes: MarkdownContext[] = [{}, { plain: true }];
-  for (const context of modes) {
-    ctx = context;
-    try {
-      sanitize(marked.parse(WARM_TEXT, { async: false, breaks: !!context.plain }));
-      sanitize(marked.parseInline(WARM_TEXT, { async: false, breaks: true }));
-    } finally {
-      ctx = {};
-    }
+  ctx = { plain: true };
+  try {
+    sanitize(marked.parse(WARM_TEXT, { async: false, breaks: true }));
+  } finally {
+    ctx = {};
   }
 }
 
