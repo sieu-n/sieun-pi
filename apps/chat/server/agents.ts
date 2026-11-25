@@ -9,6 +9,8 @@
  * (`App.ensureComms`), and a delivery that comes first makes it then, a DM's as a channel's or a Solo room's (phase 5, group-rooms.ts).
  */
 import { createHash } from "node:crypto";
+import { rmSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { AgentHostState, AgentId, AgentSummary, RunStatus, ThinkingLevel } from "../web/src/lib/api/types.ts";
 import { AGENT_REF_DOC, agentRef, commRef, sameRef, type AgentRef } from "./agent-folder.ts";
 import { freeSlug, isUntitled, type AgentRecord, type AgentStore, type RoomId } from "./agent-store.ts";
@@ -429,13 +431,18 @@ export class Agents {
     this.log(`agent.ref writes on ${box} work again`);
   }
 
-  /** Names and archived flags follow the work threads; answers whether a record changed. */
+  /**
+   * Names and archived flags follow the work threads; answers whether a record changed. A walk's test agent that gets archived loses its
+   * folder in this box's agents dir, which the wiki shows as `agents/<slug>/`: by 11-25, 511 of the 536 folders there belonged to test
+   * agents, and the owner called the tree "full of slop" (#sw-factory-build p237). A real agent keeps its folder on archive.
+   */
   follow(rows: ReadonlyMap<string, DurableThread>): boolean {
     let changed = false;
     for (const record of this.store.agents.agents) {
       const row = rows.get(record.workThread);
       if (!row) continue;
       if ((row.name && row.name !== record.name) || row.archived !== record.archived) {
+        if (record.test && row.archived && !record.archived) this.dropTestFolder(record);
         record.name = row.name || record.name;
         record.archived = row.archived;
         const room = this.store.rooms.rooms.find(r => r.id === record.room);
@@ -448,6 +455,17 @@ export class Agents {
       this.store.saveRooms();
     }
     return changed;
+  }
+
+  /** Removes a test agent's folder under this box's agents dir, where the wiki mount reads it. */
+  private dropTestFolder(record: AgentRecord): void {
+    const dir = join(this.config.agentsDir, record.slug);
+    if (!record.slug || dirname(dir) !== this.config.agentsDir) return;
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch (error) {
+      this.log(`could not remove test agent ${record.id}'s folder ${dir}: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   /**

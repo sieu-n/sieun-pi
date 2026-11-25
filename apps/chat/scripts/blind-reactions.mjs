@@ -125,6 +125,7 @@ function names(call, room, post, posts) {
 
 async function runRoom(kind) {
   const room = kind === "dm" ? agent.room : (await call("POST", "/api/rooms", { kind: "channel", name: `blind-reactions-${stamp}`, agenda: "", members: [agent.id], test: true })).id;
+  if (kind !== "dm") channels.push(room);
   console.log(`\n${kind} ${room}`);
   const seen = new Map();
   const send = async (text, key, threadRoot) => (await call("POST", `/api/c/${room}/send`, { text, requestId: `blind-rx-${stamp}-${kind}-${key}`, ...(threadRoot ? { threadRoot } : {}) })).item;
@@ -212,7 +213,15 @@ function emojiName(value) {
   return v === EYES ? "eyes" : v === CHECK ? "white_check_mark" : v;
 }
 
-const lines = await Promise.all(kinds.map(runRoom));
+/** The test channels made, archived at the end with the agent, whose archive removes its folder from the wiki's agents/ tree. */
+const channels = [];
+let lines;
+try {
+  lines = await Promise.all(kinds.map(runRoom));
+} finally {
+  await call("PATCH", `/api/c/${agent.thread}`, { archived: true }).catch(e => console.error(`archive agent: ${e}`));
+  for (const room of channels) await call("PATCH", `/api/rooms/${room}`, { archived: true }).catch(e => console.error(`archive room: ${e}`));
+}
 const summary = { agent: agent.id, rooms: lines.map(l => ({ room: l.room, kind: l.kind, pass: l.pass })), pass: lines.every(l => l.pass) };
 if (values.out) appendFileSync(values.out, `${JSON.stringify(summary)}\n`);
 console.log(`\n${summary.pass ? "PASS" : "FAIL"} ${lines.filter(l => l.pass).length}/${lines.length}`);

@@ -318,4 +318,6 @@ const answered = results.filter(r => !r.unanswered);
 const summary = { room: room.id, root, agent: agent.id, passed: answered.filter(r => r.pass).length, of: answered.length, unmeasured: results.length - answered.length, pass: answered.length > 0 && answered.every(r => r.pass) };
 if (values.out) appendFileSync(values.out, `${JSON.stringify(summary)}\n`);
 console.log(`\n${!summary.of ? "NOT MEASURED" : summary.pass ? "PASS" : "FAIL"} ${summary.passed}/${summary.of}${summary.unmeasured ? `, ${summary.unmeasured} not measured` : ""}, thread ${server}/#/c/${room.id}?thread=${root}`);
+// Archiving the test agent removes its folder from the wiki's agents/ tree; the room stays for reading the thread link above.
+await call("PATCH", `/api/c/${agent.thread}`, { archived: true }).catch(e => console.error(`archive agent: ${e}`));
 process.exit(!summary.of ? 2 : summary.pass ? 0 : 1);
