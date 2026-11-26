@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { judge, type DutyMetric } from "../src/shared/chat-duties.ts";
-import { measureSandbox, runningWalks, WALK_COMMAND, WALK_FILE, WALK_REFRESH_MS, WALK_STALE_MS, type WalkReport } from "../scripts/duties/demo-sandbox.ts";
+import { measureSandbox, runningWalks, WALK_COMMAND, WALK_ERR_FILE, WALK_FILE, WALK_REFRESH_MS, WALK_STALE_MS, type WalkReport } from "../scripts/duties/demo-sandbox.ts";
 
 const HOUR = 3_600_000;
 const NOW = Date.parse("2026-10-22T02:56:10Z");
@@ -16,7 +16,7 @@ const walk = (startedAgoMs: number): WalkReport => ({
     { type: "page-timing", description: JSON.stringify({ scenario: "kbeauty-brand", path: "/app/analytics/home", switches: [{ ms: 2083, long_ms: 0 }], loads: [{ ms: 4000, long_ms: 255 }] }) },
   ] }] }] }] }],
 });
-const run = async (report: WalkReport | null, ps = "") => {
+const run = async (report: WalkReport | null, ps = "", mtimes: Record<string, number> = {}) => {
   const started: number[] = [];
   const output = await measureSandbox({
     fetch: (async () => new Response("ok")) as unknown as typeof fetch,
@@ -27,7 +27,7 @@ const run = async (report: WalkReport | null, ps = "") => {
       if (path.endsWith(".log")) return "";
       throw Object.assign(new Error(`ENOENT ${path}`), { code: "ENOENT" });
     },
-    mtime: async () => 0,
+    mtime: async path => mtimes[path] ?? 0,
     repo: "/repo",
     platform: "darwin",
     pm2: { bin: "pm2", home: "/pm2", zone: "UTC" },
@@ -38,8 +38,11 @@ const run = async (report: WalkReport | null, ps = "") => {
 };
 const duty = JSON.parse(readFileSync(new URL("../scripts/duties/demo-sandbox.duty.json", import.meta.url), "utf8")) as { metrics: DutyMetric[]; onMiss: string };
 
+const REPORT_AT = NOW - WALK_STALE_MS;
+const RETRIED = { [`/repo/${WALK_FILE}`]: REPORT_AT, [`/repo/${WALK_ERR_FILE}`]: NOW - 20 * HOUR };
+
 test("a stale walk is its own state: walk_stale counts in walk_problems and slowest_page_ms has no reading, not 30000", async () => {
-  const { output, kinds } = await run(walk(WALK_STALE_MS + HOUR));
+  const { output, kinds } = await run(walk(WALK_STALE_MS + HOUR), "", RETRIED);
   assert.equal(output.metrics.walk_problems, 1);
   assert.ok(!("slowest_page_ms" in output.metrics), `slowest_page_ms read ${output.metrics.slowest_page_ms}`);
   assert.equal(kinds("walk_stale").length, 1);
@@ -47,6 +50,20 @@ test("a stale walk is its own state: walk_stale counts in walk_problems and slow
   const judged = judge(duty.metrics, output);
   assert.equal(judged.metrics.slowest_page_ms, undefined, "the duty shows it as not measured");
   assert.match(judged.summary, /^walk_problems 1 \(target at most 0\); not measured: the precheck gave no value for slowest_page_ms \(slowest_page_ms has no reading/);
+});
+
+// Guards d1's runs of 11-21 20:30, 11-23 23:04 and 11-26 14:18 KST: the Mac was away at 06:25, so no walk started, and the rerun after it came
+// back read walk_problems 1 from a 33 h old walk while 5180 answered /configure 200 in 145 ms.
+test("a stale walk with no walk started after it is a gap, not a problem, and this run starts one", async () => {
+  const { output, kinds, started } = await run(walk(33 * HOUR), "", { [`/repo/${WALK_FILE}`]: REPORT_AT - 8 * HOUR, [`/repo/${WALK_ERR_FILE}`]: REPORT_AT - 8 * HOUR - 60_000 });
+  assert.equal(output.metrics.walk_problems, 0);
+  assert.ok(!("slowest_page_ms" in output.metrics));
+  assert.deepEqual(kinds("walk_stale"), []);
+  assert.match(kinds("gap")[0]!, /over 25 h ago, and no walk started after it, as when the Mac was away at the daily run, so walk_problems does not count it$/);
+  assert.equal(started, 1);
+  const running = await run(walk(33 * HOUR), WALK_PS, RETRIED);
+  assert.equal(running.output.metrics.walk_problems, 0, "a walk started after the report that still runs is not a problem yet");
+  assert.match(running.kinds("gap")[0]!, /the walk started after it still runs \(pids 75411\)/);
 });
 
 test("a missing walk gives no slowest_page_ms reading either", async () => {
