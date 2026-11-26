@@ -112,8 +112,14 @@ export function review(input: AreaInput): { output: PrecheckOutput; state: State
     ...input.shared ? [] : [{ kind: "shared_review_missing", excerpt: `No shared Area review precheck at ${SHARED_REVIEW}, so corrections_unsaved reads 0.` }],
   ];
   const parts = { red_duties_unowned: redDuties.length, steps_unmoved_2d: unmoved.length, wiki_pages_off: pages.length, corrections_unsaved: corrections };
+  /** What each count looked at: the other duties checked, the open steps, the wiki pages and the shared review's own n. */
+  const checkedDuties = input.duties.filter(row => !row.paused && row.duty.name !== OWN_NAME).length;
+  const sharedN = input.shared?.n;
+  const correctionsN = typeof sharedN === "number" ? sharedN : sharedN?.corrections_unsaved ?? (input.shared ? 1 : 0);
+  const n = { red_duties_unowned: checkedDuties, steps_unmoved_2d: open.length, wiki_pages_off: input.pages.length, corrections_unsaved: correctionsN,
+    issues_not_acted_on: checkedDuties + open.length + input.pages.length + correctionsN };
   return {
-    output: { metrics: { issues_not_acted_on: redDuties.length + unmoved.length + pages.length + corrections, ...parts }, flagged },
+    output: { metrics: { issues_not_acted_on: redDuties.length + unmoved.length + pages.length + corrections, ...parts }, n, flagged },
     state: { steps },
   };
 }
@@ -164,6 +170,7 @@ export async function measure(state: State, now: number, send: typeof fetch = fe
   } catch (error) {
     return { state, output: { metrics: { issues_not_acted_on: UNMEASURED, red_duties_unowned: UNMEASURED, steps_unmoved_2d: UNMEASURED, wiki_pages_off: UNMEASURED,
       corrections_unsaved: UNMEASURED },
+      n: { issues_not_acted_on: 0, red_duties_unowned: 0, steps_unmoved_2d: 0, wiki_pages_off: 0, corrections_unsaved: 0 },
       flagged: [{ kind: "source_error", excerpt: error instanceof Error ? error.message : String(error) }] } };
   }
 }

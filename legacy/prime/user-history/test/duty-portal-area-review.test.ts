@@ -24,6 +24,8 @@ test("a red duty counts only when no live job and no moving step links it, and t
     stuck: ["p46"],
   });
   assert.equal(out.output.metrics.red_duties_unowned, 2);
+  // n counts what was looked at: d2, d4 and d5 (d6 is paused and d7 is this review), and the 2 open steps.
+  assert.deepEqual(out.output.n, { red_duties_unowned: 3, steps_unmoved_2d: 2, wiki_pages_off: 0, corrections_unsaved: 1, issues_not_acted_on: 6 });
   assert.deepEqual(out.output.flagged!.filter(slice => slice.kind === "red_duty_unowned").map(slice => slice.item), ["d2/staging_working_pct", "d5/error"]);
 });
 
@@ -57,6 +59,7 @@ test("a wiki page counts once when its check is over 7 days old or it fails the 
   assert.equal(out.output.metrics.issues_not_acted_on, 3);
   assert.deepEqual(out.output.flagged!.map(slice => slice.kind), ["area_review", "wiki_page_off", "wiki_page_off", "correction_unsaved"]);
   assert.equal(out.output.flagged![0]!.handOff, true);
+  assert.deepEqual(out.output.n, { red_duties_unowned: 0, steps_unmoved_2d: 0, wiki_pages_off: 3, corrections_unsaved: 1, issues_not_acted_on: 4 });
 });
 
 test("with no shared review script the corrections read 0 and a flag says why", () => {
