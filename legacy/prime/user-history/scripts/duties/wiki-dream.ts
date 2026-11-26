@@ -36,10 +36,11 @@ export const FLAGGED_MAX = 80;
 /**
  * wiki-health.mjs took 96 s alone and timed out at the old 100 s twice inside the precheck at 02:4xZ on 2026-10-24, with us-metal02 at load 220
  * on 80 cores; the d4 prechecks before it took 66 to 88 s in all. On 2026-10-28 at 20:17Z it timed out at the old 240 s inside the precheck with
- * us-metal02 at load 283, and alone at 20:18Z it took 228 s at load 224 to 283, so the limit is twice that. The duty's precheck limit
- * (wiki-dream.duty.json) is 600 s to match.
+ * us-metal02 at load 283, and alone at 20:18Z it took 228 s at load 224 to 283, so the limit was twice that. On 2026-11-26 at 04:55Z it timed
+ * out at 480 s inside the precheck with us-metal02 at load 274 to 298 from CI VMs, and the whole precheck alone at 05:04Z took 253 s at load
+ * 212 to 274, so the limit is 900 s. The duty's soft precheck target (wiki-dream.duty.json) is 1,020 s to cover it and the git logs.
  */
-const HEALTH_TIMEOUT_MS = 480_000;
+const HEALTH_TIMEOUT_MS = 900_000;
 /**
  * The 7-day (wiki-dream) git log of auto-sns-agent timed out at the old 20 s inside the prechecks at 23:33Z and 23:52Z on 2026-11-02, which put
  * 999999 on dream_reverts and pages_retouched, and alone at 23:53Z it took 16.8 s for 7,225 lines with us-metal02 at load 244 to 285 on 80 cores.
