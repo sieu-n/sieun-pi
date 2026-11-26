@@ -13,21 +13,16 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { after, before, test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { AgentConfig, AgentFolder, AgentSummary, ConversationSummary } from "../../web/src/lib/api/types.ts";
+import { getMemory } from "../../../../packages/pi-harness/src/core/memory-store.ts";
+import { readState } from "../../../../packages/pi-harness/src/core/store.ts";
 import { AGENT_REF_DOC, harnessSlug } from "../../server/agent-folder.ts";
 import { drained } from "../../server/disk.ts";
 import type { FixtureHost } from "../../server/host/fixture.ts";
 import { FIXTURE_AGENTS as agents, FIXTURE_IDS as ids } from "../../server/fixture/seed.ts";
 import { start, until, type Running } from "./helpers.ts";
 
-type LoadedEntry = { id: string; kind: string; title: string; content: string; path: string; scope?: string; source: string; reference: object; created_at: string; updated_at: string; version: number };
-// pi-host's verbatim copy of Prime's reader. It is imported by a path tsc does not follow, because Prime's code does not pass this package's
-// noUncheckedIndexedAccess.
-const vendor = "../../../../packages/pi-host/src/durable/vendor/prime-harness.ts";
-let loadHarnessState: (dir: string, scope: "local" | "global") => { entries: Record<"memory", Record<string, LoadedEntry | undefined>> };
-
 let s: Running;
 before(async () => {
-  ({ loadHarnessState } = await import(vendor));
   s = await start({ wordMs: 0 });
 });
 after(async () => {
@@ -272,22 +267,18 @@ test("memory create, update and delete write Prime's harness format, which Prime
   assert.equal(created.body.memory.entries[0]?.id, id, "the newest entry comes first");
   assert.equal(created.body.memory.count, 2);
 
-  const raw = readFileSync(storeFile(), "utf8");
-  const parsed = JSON.parse(raw) as { schema: number; entries: Record<string, Record<string, Record<string, unknown>>>; refinements: unknown[] };
-  assert.equal(raw, JSON.stringify(parsed, null, 2) + "\n", "indent 2 and one trailing newline, as pi-harness's writeState writes");
-  assert.deepEqual(Object.keys(parsed), ["schema", "entries", "refinements"]);
-  assert.deepEqual(Object.keys(parsed.entries), ["prompt", "memory", "skill", "subagent"]);
-  const stored = parsed.entries.memory![id]!;
-  assert.deepEqual(Object.keys(stored), ["id", "kind", "title", "content", "path", "scope", "reference", "arguments", "metadata", "source", "created_at", "updated_at", "version"]);
+  // Memory entries live in memory.sqlite beside the file (pi-harness memory-store.ts); the file keeps prompt notes, skills and subagents.
+  const harness = join(ventDir(), "harness");
+  assert.deepEqual(JSON.parse(readFileSync(storeFile(), "utf8")).entries.memory, {}, "the file keeps no memory entry once the store moved");
+  const stored = getMemory(harness, id)!;
   assert.match(String(stored.created_at), /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}\+00:00$/);
-  assert.equal(statSync(storeFile()).mode & 0o777, 0o600);
 
-  const loaded = loadHarnessState(join(ventDir(), "harness"), "local").entries.memory[id]!;
+  const loaded = readState(harness, "local").entries.memory[id]!;
   assert.deepEqual(
     { id: loaded.id, kind: loaded.kind, title: loaded.title, path: loaded.path, scope: loaded.scope, source: loaded.source, version: loaded.version, reference: loaded.reference },
     { id, kind: "memory", title, path: "general", scope: "local", source: "owner", version: 1, reference: {} },
   );
-  assert.ok(loadHarnessState(join(ventDir(), "harness"), "local").entries.memory.the_mac_sleeps_from_01_00_to_07_00_kst, "the seeded entry stays");
+  assert.ok(readState(harness, "local").entries.memory.the_mac_sleeps_from_01_00_to_07_00_kst, "the seeded entry stays");
 
   const again = await s.send("POST", `/api/agents/${agents.vent}/memory`, { title, content: "Another text." });
   assert.equal(again.status, 409);
@@ -295,14 +286,14 @@ test("memory create, update and delete write Prime's harness format, which Prime
   await new Promise(resolve => setTimeout(resolve, 5));
   const updated = await s.send<AgentFolder>("PUT", `/api/agents/dm_vent/memory/${id}?kind=memory`, { title, content: "The relay listens on 7791." });
   assert.equal(updated.status, 200);
-  const after1 = loadHarnessState(join(ventDir(), "harness"), "local").entries.memory[id]!;
+  const after1 = readState(join(ventDir(), "harness"), "local").entries.memory[id]!;
   assert.equal(after1.content, "The relay listens on 7791.");
   assert.equal(after1.version, 2);
   assert.equal(after1.created_at, loaded.created_at);
   assert.ok(after1.updated_at > loaded.updated_at);
   assert.equal(after1.path, "general", "an update with no path keeps it");
   await s.send("PUT", `/api/agents/${agents.vent}/memory/${id}`, { title, content: "The relay listens on 7791.", path: "relay" });
-  assert.equal(loadHarnessState(join(ventDir(), "harness"), "local").entries.memory[id]!.path, "relay");
+  assert.equal(readState(join(ventDir(), "harness"), "local").entries.memory[id]!.path, "relay");
 
   assert.equal((await s.send("POST", `/api/agents/${agents.vent}/memory`, { title: " ", content: "x" })).status, 400);
   assert.equal((await s.send("POST", `/api/agents/${agents.vent}/memory`, { title: "x", content: "x", path: "" })).status, 400);
@@ -312,11 +303,11 @@ test("memory create, update and delete write Prime's harness format, which Prime
   const deleted = await s.send<AgentFolder>("DELETE", `/api/agents/${agents.vent}/memory/${id}?kind=memory`);
   assert.equal(deleted.status, 200);
   assert.equal(deleted.body.memory.entries.some(e => e.id === id), false);
-  assert.equal(loadHarnessState(join(ventDir(), "harness"), "local").entries.memory[id], undefined);
+  assert.equal(readState(join(ventDir(), "harness"), "local").entries.memory[id], undefined);
   assert.equal((await s.send("DELETE", `/api/agents/${agents.vent}/memory/${id}`)).status, 404);
 });
 
-test("a memory write waits while a pi-harness writer in another process holds the store's lock, so both writers' entries stay", async () => {
+test("a memory write and a pi-harness writer in another process that holds the store's lock both keep their entries", async () => {
   const dir = join(ventDir(), "harness");
   const go = join(dir, "race.go");
   // The other writer, as a kernel or refine is: it takes the lock, adds its entry, and keeps the lock until the test writes `go`.
@@ -338,7 +329,7 @@ test("a memory write waits while a pi-harness writer in another process holds th
     const [created, [exitCode]] = await Promise.all([post, once(child, "exit")]);
     assert.equal(created.status, 200);
     assert.equal(exitCode, 0);
-    const memory = loadHarnessState(dir, "local").entries.memory;
+    const memory = readState(dir, "local").entries.memory;
     assert.ok(memory.kernel_side, "the other writer's entry stays");
     assert.ok(memory.route_side, "the route's entry stays");
   } finally {
@@ -351,9 +342,9 @@ test("a memory write waits while a pi-harness writer in another process holds th
 test("an agent's config carries its folder and memory kind agent, and a job of the agent shares them", async () => {
   const c = await s.get<AgentConfig>(`/api/agents/${agents.vent}/config`);
   assert.equal(c.folder?.agent, agents.vent);
-  assert.equal(c.folder?.memory.path, storeFile());
+  assert.equal(c.folder?.memory.path, join(ventDir(), "harness", "memory.sqlite"));
   assert.equal(c.memory.kind, "agent");
-  assert.ok(c.memory.related.some(f => f.label.includes("global") && f.loaded === true));
+  assert.ok(c.memory.related.some(f => f.label === "Memory every agent shares" && f.loaded === true));
   const job = (await s.get<ConversationSummary[]>("/api/conversations")).find(conv => conv.id.startsWith(`${ids.vent}:`))!;
   const jc = await s.get<AgentConfig>(`/api/agents/${encodeURIComponent(job.id)}/config`);
   assert.equal(jc.folder?.dir, ventDir());

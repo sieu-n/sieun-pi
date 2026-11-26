@@ -402,8 +402,9 @@ export async function agentConfig(app: App, id: AgentId, wait = false): Promise<
   const read = record ? await app.folders.read(record).catch(() => null) : null;
   let folder: AgentFolderSummary | null = null;
   if (read) {
-    const { entries, ...memory } = read.memory;
-    folder = { ...read, memory: { ...memory, count: entries.length } };
+    // The folder's memory count covers the whole store; its entries are only the newest page (agent-folder.ts MEMORY_PAGE).
+    const { entries: _page, ...memory } = read.memory;
+    folder = { ...read, memory };
   }
   const box = app.routing?.boxOf(thread);
   const scripts = box && box !== app.config.box && app.routing?.relay(box) ? null
@@ -454,8 +455,8 @@ export async function agentConfig(app: App, id: AgentId, wait = false): Promise<
     folder,
     memory: record ? {
       kind: "agent",
-      note: `Its memory is the harness store in its agent's folder, which ${record.name}'s work thread, its jobs and every root job filed under it share. `
-        + "pi-host gives each of them Prime's harness digest of Prime's global store merged with this one, and their kernels' rlm.harness and refine.run() write it.",
+      note: `Its memory is the store in its agent's folder (memory.sqlite, which holds tens of thousands of entries), which ${record.name}'s work thread, its jobs and every root job filed under it share. `
+        + "pi-host gives each turn the 40 entries that best match it, beside Prime's digest of the global store, and their kernels' rlm.harness and refine.run() write it.",
       related,
     } : {
       kind: "none",

@@ -8,6 +8,7 @@ import { mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/
 import { homedir, hostname, platform } from "node:os";
 import { basename, dirname, isAbsolute, join, sep } from "node:path";
 import { instructionFiles } from "../../../apps/chat/server/agent-folder.ts";
+import { memoryRequest, type MemoryAnswer, type MemoryRequest } from "../../../packages/pi-harness/src/core/memory-store.ts";
 import { defaultProjects, type BoxInfo, type InstructionsAnswer } from "./protocol.ts";
 
 /** How much of a check's output comes back; the same tail as legacy wakes.ts CHECK_TAIL. */
@@ -84,6 +85,17 @@ export async function filePut(args: Record<string, unknown>, agentsDir: string):
   await writeFile(temp, text);
   await rename(temp, path);
   return {};
+}
+
+/**
+ * One request on an agent's memory store (`memory.sqlite` in `dir`, an agent's `harness` folder), which the chat server's Agents tab sends
+ * because a store of tens of thousands of entries is read by page and search, not as one file (pi-harness `memory-store.ts`).
+ */
+export async function memoryOp(args: Record<string, unknown>, agentsDir: string): Promise<MemoryAnswer> {
+  const dir = await underAgents(args.dir, agentsDir);
+  const request = args.request as MemoryRequest | undefined;
+  if (!request || typeof request !== "object" || typeof request.action !== "string") throw new Error("memory needs a request with an action");
+  return memoryRequest(dir, request);
 }
 
 /** The AGENTS.md chain for `cwd` on this box and Prime's global AGENTS.md in `<home>/.prime/agent`, the agent dir pi-host runs with here. */

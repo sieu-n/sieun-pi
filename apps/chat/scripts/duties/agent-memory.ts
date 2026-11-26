@@ -40,8 +40,10 @@
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { isMain } from "./main-module.ts";
 import { homedir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { listMemory, memoryDbPath, putMemory } from "../../../../packages/pi-harness/src/core/memory-store.ts";
+import { readState } from "../../../../packages/pi-harness/src/core/store.ts";
 import { ChatRecords } from "../../server/chat-records.ts";
 import { AGENTS } from "../../server/record-kinds.ts";
 
@@ -95,9 +97,10 @@ export function holds(text: string, words: readonly string[]): boolean {
 
 /** The entries of a store, every kind; a store that is missing or does not parse is empty. */
 export function storeEntries(file: string): StoreEntry[] {
-  if (!existsSync(file)) return [];
+  if (!existsSync(file) && !existsSync(memoryDbPath(dirname(file)))) return [];
   try {
-    const state = JSON.parse(readFileSync(file, "utf8")) as { entries?: Record<string, Record<string, Partial<StoreEntry>>> };
+    // readState adds the memory entries of memory.sqlite beside the file (pi-harness memory-store.ts).
+    const state = readState(dirname(file), "local") as unknown as { entries?: Record<string, Record<string, Partial<StoreEntry>>> };
     return Object.entries(state.entries ?? {}).flatMap(([kind, entries]) => Object.entries(entries ?? {}).map(([id, entry]) => ({
       id, kind, title: String(entry.title ?? ""), content: String(entry.content ?? ""), ...(entry.path ? { path: String(entry.path) } : {}),
       ...(entry.created_at ? { created_at: String(entry.created_at) } : {}),
@@ -354,6 +357,8 @@ export async function recall(server: string, agentsDir: string, record: AgentRec
     const source = join(agentsDir, record.slug);
     if (existsSync(join(source, "brief.md"))) cpSync(join(source, "brief.md"), join(dir, "brief.md"));
     if (existsSync(join(source, "harness", "harness_state.json"))) cpSync(join(source, "harness", "harness_state.json"), join(dir, "harness", "harness_state.json"));
+    // The memory entries live in memory.sqlite (pi-harness memory-store.ts); the copy goes in row by row, never as a file a writer holds open.
+    putMemory(join(dir, "harness"), listMemory(join(source, "harness")));
     const text = ["Quick questions, answer each from what you remember, without searching the repo, wiki or web. Number your answers 1 to " +
       `${questions.length}, one or two sentences each, and say "don't know" when you don't.`, ...questions.map((q, i) => `${i + 1}. ${q.q}`)].join("\n");
     await call(server, "POST", `/api/c/${made.thread}/send`, { text, requestId: `memory-recall-${record.slug}-${stamp}` });

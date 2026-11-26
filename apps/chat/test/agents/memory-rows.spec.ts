@@ -1,12 +1,13 @@
 import { expect, test } from "@playwright/test";
 
 /**
- * A long memory shows its first 10 rows and a "Show all N memories" control (owner rule c123, ShowAllList.svelte), which draws every entry;
- * the count and search read every entry, not the rows shown.
+ * The Memory tab, apart from skills (owner, t8 answer msg mwwlxbdo: memory "should scale to 10,000s of entries"). It draws the newest 50
+ * entries as 10 rows and a "Show all" control (owner rule c123, ShowAllList.svelte), "Show older" reads the next page from the server, and a
+ * search runs on the server over the whole store, best match first.
  */
 const ENTRIES = 150;
 
-test("a long memory shows 10 rows, Show all draws every entry, and search counts every entry", async ({ page }) => {
+test("the Memory tab shows the newest page in 10 rows, reads older pages, and searches the whole store on the server", async ({ page }) => {
   test.setTimeout(180_000);
   const tag = Math.random().toString(36).slice(2, 8);
   const agent = (await (await page.request.post("/api/agents", { data: { name: `memory rows ${tag}`, test: true } })).json()) as { id: string; name: string };
@@ -16,25 +17,25 @@ test("a long memory shows 10 rows, Show all draws every entry, and search counts
     });
     expect(res.ok()).toBeTruthy();
   }
-  await page.goto(`/#/agents/${agent.id}?section=knowledge`);
+  await page.goto(`/#/agents/${agent.id}?section=memory`);
   const memory = page.getByTestId("agent-memory");
   const rows = memory.locator("[data-entry-id]");
   await expect(rows.first()).toBeVisible();
   await expect(rows).toHaveCount(10);
   await expect(memory.getByTestId("memory-search")).toHaveAttribute("placeholder", `Search ${ENTRIES} memories`);
-  await memory.getByRole("button", { name: `Show all ${ENTRIES} memories` }).click();
+  await memory.getByRole("button", { name: "Show all 50 memories" }).click();
+  await expect(rows).toHaveCount(50);
+  await memory.getByTestId("memory-older").click();
+  await expect(rows).toHaveCount(100);
+  await memory.getByTestId("memory-older").click();
   await expect(rows).toHaveCount(ENTRIES);
-  const last = rows.last();
-  await last.scrollIntoViewIfNeeded();
-  await expect(last).toBeInViewport();
-  await memory.getByRole("button", { name: "Show fewer memories" }).click();
-  await expect(rows).toHaveCount(10);
+  await expect(memory.getByTestId("memory-older")).toHaveCount(0);
 
   await memory.getByTestId("memory-search").fill("tenth");
-  await expect(memory.getByTestId("memory-count")).toHaveText(`${ENTRIES / 10} of ${ENTRIES} memories match`);
-  await expect(rows).toHaveCount(10);
-  await memory.getByRole("button", { name: `Show all ${ENTRIES / 10} memories` }).click();
-  await expect(rows).toHaveCount(ENTRIES / 10);
+  await expect(memory.getByTestId("memory-count")).toHaveText(`The ${ENTRIES / 10} best matches in ${ENTRIES} memories`);
+  await memory.getByTestId("memory-search").fill("row 007");
+  await expect(rows.first()).toHaveAttribute("data-entry-id", "row_007_plain");
   await memory.getByTestId("memory-search").fill("");
   await expect(rows).toHaveCount(ENTRIES);
+  await expect(page.getByTestId("knowledge-skills")).toHaveCount(0);
 });

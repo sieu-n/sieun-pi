@@ -30,12 +30,63 @@
   const keyOf = (entry: HarnessEntryView) => `${entry.kind}:${entry.id}`;
   const long = (content: string) => content.length > 160 || content.includes("\n");
   const ready = (form: Form) => !!form.title.trim() && !!form.content.trim();
-  const total = $derived(folder.memory.entries.length);
+  /** Every entry of the store; the folder carries only the newest memory page (server agent-folder.ts MEMORY_PAGE). */
+  const total = $derived(folder.memory.count ?? folder.memory.entries.length);
+  const memoryCount = $derived(folder.memory.memoryCount ?? folder.memory.entries.filter((entry) => entry.kind === "memory").length);
+  /** Older memory pages read by Show older, kept while the folder they continue stays the one shown. */
+  let older = $state<{ folder: AgentFolder | null; entries: HarnessEntryView[] }>({ folder: null, entries: [] });
+  let loadingOlder = $state(false);
+  const listed = $derived.by(() => {
+    const seen = new Set(folder.memory.entries.map(keyOf));
+    return [...folder.memory.entries, ...(older.folder === folder ? older.entries.filter((entry) => !seen.has(keyOf(entry))) : [])];
+  });
+  const loadedMemory = $derived(listed.filter((entry) => entry.kind === "memory").length);
+  /** A search runs on the server over the whole store, best match first (GET /api/agents/:id/memory?q=). */
+  let found = $state<{ q: string; entries: HarnessEntryView[] } | null>(null);
+  const searching = $derived(query.trim() !== "");
   /**
-   * The matches, of which ShowAllList draws 10 and the rest on Show all. Drawing all of agent factory's 479 entries took 3 to 5.5 s from the
-   * tab's click to its first row in WebKit at box load 130 to 200 on 11-22 (~/work/p155-config). The count and search read every entry.
+   * The rows, of which ShowAllList draws 10 and the rest on Show all. Drawing all of agent factory's 479 entries took 3 to 5.5 s from the
+   * tab's click to its first row in WebKit at box load 130 to 200 on 11-22 (~/work/p155-config).
    */
-  const shown = $derived(sortMemories(folder.memory.entries.filter((entry) => memoryMatches(entry, query)), sort));
+  const shown = $derived(
+    searching
+      ? [
+          ...listed.filter((entry) => entry.kind !== "memory" && memoryMatches(entry, query)),
+          ...(found?.q === query.trim() ? found.entries : listed.filter((entry) => entry.kind === "memory" && memoryMatches(entry, query))),
+        ]
+      : sortMemories(listed, sort),
+  );
+  $effect(() => {
+    const q = query.trim();
+    // A save gives a new folder, which runs the search again so an edited or deleted entry shows as it is now.
+    const agent = folder.agent;
+    void folder.memory;
+    if (!q) {
+      found = null;
+      return;
+    }
+    const timer = setTimeout(async () => {
+      try {
+        const page = await api.memoryPage(agent, { q, limit: 50 });
+        if (query.trim() === q) found = { q, entries: page.entries };
+      } catch (reason) {
+        error = { key: "search", text: reason instanceof Error ? reason.message : String(reason) };
+      }
+    }, 200);
+    return () => clearTimeout(timer);
+  });
+  async function showOlder() {
+    if (loadingOlder) return;
+    loadingOlder = true;
+    try {
+      const page = await api.memoryPage(folder.agent, { offset: loadedMemory, limit: 50 });
+      older = { folder, entries: [...(older.folder === folder ? older.entries : []), ...page.entries] };
+    } catch (reason) {
+      error = { key: "older", text: reason instanceof Error ? reason.message : String(reason) };
+    } finally {
+      loadingOlder = false;
+    }
+  }
   const dialogKey = $derived(editing?.entry ? keyOf(editing.entry) : "new");
   const plural = (n: number) => `${n} ${n === 1 ? "memory" : "memories"}`;
 
@@ -84,14 +135,14 @@
     {#if !readonly && total}<Button size="sm" variant="ghost" icon="plus" onclick={() => open(null)}>Add memory</Button>{/if}
   </div>
   <span class="t-caption meta" data-path={folder.memory.path}>
-    Loaded into every thread of {name} from <code class="t-mono" title={folder.memory.path}>{shortPath(folder.memory.path)}</code>
+    Each turn of every thread of {name} gets the 40 entries that best match it, from <code class="t-mono" title={folder.memory.path}>{shortPath(folder.memory.path)}</code>
   </span>
   {#if total > 1}
     <div class="tools-row">
       <div class="search"><SearchField bind:value={query} placeholder="Search {plural(total)}" label="Search memories" data-testid="memory-search" /></div>
-      <Select label="Sort memories" size="sm" bind:value={sort} options={MEMORY_SORTS} />
+      <Select label="Sort memories" size="sm" bind:value={sort} options={MEMORY_SORTS} disabled={searching} />
     </div>
-    {#if query.trim()}<span class="t-caption meta" role="status" data-testid="memory-count">{shown.length} of {plural(total)} match</span>{/if}
+    {#if searching}<span class="t-caption meta" role="status" data-testid="memory-count">{shown.length === 1 ? `The best match in ${plural(total)}` : shown.length ? `The ${shown.length} best matches in ${plural(total)}` : `No match in ${plural(total)}`}</span>{/if}
   {/if}
   {#if !total}
     <EmptyState icon="bulb" title="No memories yet" description="What you add here, every thread of {name} reads." size="sm">
@@ -134,6 +185,13 @@
       </li>
     {/snippet}
   </ShowAllList>
+  {#if !searching && loadedMemory < memoryCount}
+    <div class="older">
+      <span class="t-caption meta">Showing the newest {loadedMemory} of {plural(memoryCount)}. Search reads all of them.</span>
+      <Button size="sm" variant="ghost" onclick={showOlder} loading={loadingOlder} data-testid="memory-older">Show older</Button>
+    </div>
+  {/if}
+  {#if error && (error.key === "search" || error.key === "older")}<p class="t-caption warn" role="alert">{error.text}</p>{/if}
 </section>
 
 {#if editing}
@@ -198,6 +256,12 @@
   .search {
     flex: 1;
     min-width: 0;
+  }
+  .older {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
   }
   .entry-head {
     align-self: stretch;

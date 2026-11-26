@@ -12,6 +12,7 @@
  * 5. A thread on the box reaches this server's HTTP API through the relay as a `chat_http` call, which this client forwards to 127.0.0.1.
  */
 import type { IndexRead } from "../../../../packages/pi-host/src/durable/index-db.ts";
+import type { MemoryAnswer, MemoryRequest } from "../../../../packages/pi-harness/src/core/memory-store.ts";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import WebSocket from "ws";
@@ -528,6 +529,10 @@ export class RelayHost implements Host {
   /** Writes the file on the box, or removes it with `text` null. */
   async filePut(path: string, text: string | null): Promise<void> {
     await this.call("file_put", text === null ? { path, delete: true } : { path, text });
+  }
+  /** A request on an agent's memory store on the box (prime-relay `memory` op). */
+  async memory(dir: string, request: MemoryRequest): Promise<MemoryAnswer> {
+    return (await this.call("memory", { dir, request })) as MemoryAnswer;
   }
   /** The instruction files a thread with this cwd loads on the box, read there. */
   async instructions(cwd: string): Promise<InstructionsAnswer> {

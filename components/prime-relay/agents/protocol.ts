@@ -77,7 +77,7 @@ export function defaultProjects(home: string): string[] {
 export interface InstructionsArgs { cwd: string }
 export interface InstructionsAnswer { cwdExists: boolean; files: ConfigFile[] }
 
-export type ServerOp = DurableOp | "watch" | "unwatch" | "check" | "box_info" | "file_get" | "file_put" | "instructions";
+export type ServerOp = DurableOp | "watch" | "unwatch" | "check" | "box_info" | "file_get" | "file_put" | "memory" | "instructions";
 export type RelayOp = "chat_http";
 
 export type RelayFrame =

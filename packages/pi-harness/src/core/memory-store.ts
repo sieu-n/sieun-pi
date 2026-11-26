@@ -94,6 +94,7 @@ interface Db {
   get: StatementSync;
   all: StatementSync;
   recent: StatementSync;
+  page: StatementSync;
   changed: StatementSync;
   upsert: StatementSync;
   rowid: StatementSync;
@@ -124,6 +125,7 @@ function db(dir: string, create = true): Db | undefined {
     get: handle.prepare("SELECT * FROM memory WHERE id = ?"),
     all: handle.prepare("SELECT * FROM memory ORDER BY updated_at DESC, id"),
     recent: handle.prepare("SELECT * FROM memory ORDER BY updated_at DESC, id LIMIT ?"),
+    page: handle.prepare("SELECT * FROM memory ORDER BY updated_at DESC, id LIMIT ? OFFSET ?"),
     changed: handle.prepare("SELECT * FROM memory WHERE updated_at > ? ORDER BY updated_at DESC, id"),
     upsert: handle.prepare(`INSERT INTO memory (id, title, content, path, source, metadata, created_at, updated_at, version, extra) VALUES (?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(id) DO UPDATE SET title = excluded.title, content = excluded.content, path = excluded.path, source = excluded.source,
@@ -204,6 +206,44 @@ export function listMemory(dir: string): HarnessEntry[] {
 /** The `limit` newest entries. */
 export function recentMemory(dir: string, limit: number): HarnessEntry[] {
   return ((db(dir, false)?.recent.all(limit) ?? []) as Row[]).map(entryOf);
+}
+
+/** The `limit` newest entries after the first `offset`. */
+export function pageMemory(dir: string, limit: number, offset = 0): HarnessEntry[] {
+  return ((db(dir, false)?.page.all(limit, offset) ?? []) as Row[]).map(entryOf);
+}
+
+/** One request on a store, as the chat server sends it here or through a box's relay (prime-relay `memory` op). */
+export type MemoryRequest =
+  | { action: "page"; limit: number; offset?: number }
+  | { action: "search"; query: string; limit: number }
+  | { action: "get"; id: string }
+  | { action: "put"; entries: HarnessEntry[] }
+  | { action: "delete"; ids: string[] };
+/** The store's entry count after the request, and the entries a read asked for. */
+export type MemoryAnswer = { count: number; entries: HarnessEntry[] };
+
+export function memoryRequest(dir: string, request: MemoryRequest): MemoryAnswer {
+  switch (request.action) {
+    case "page":
+      return { count: countMemory(dir), entries: pageMemory(dir, request.limit, request.offset ?? 0) };
+    case "search":
+      return { count: countMemory(dir), entries: searchMemory(dir, request.query, request.limit).map(hit => hit.entry) };
+    case "get": {
+      const entry = getMemory(dir, request.id);
+      return { count: countMemory(dir), entries: entry ? [entry] : [] };
+    }
+    case "put":
+      putMemory(dir, request.entries);
+      return { count: countMemory(dir), entries: [] };
+    case "delete":
+      deleteMemory(dir, request.ids);
+      return { count: countMemory(dir), entries: [] };
+    default: {
+      const never: never = request;
+      throw new Error(`unknown memory request ${JSON.stringify(never)}`);
+    }
+  }
 }
 
 /** Entries whose `updated_at` is after `since` (ISO time), newest first. */

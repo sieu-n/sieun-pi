@@ -60,11 +60,12 @@ test("the agent's page shows its host, home directory, board and memory, and eac
   await expect(panel(page).getByRole("tabpanel")).toContainText(config.runs.thread);
   for (const room of config.swarm.rooms) await expect(panel(page).getByRole("button", { name: room.name, exact: true })).toBeVisible();
 
-  await section(page, "Knowledge").click();
+  await section(page, "Memory").click();
   if (config.folder) await expect(panel(page).getByTestId("agent-memory")).toBeVisible();
   else await expect(panel(page).locator('[data-memory="none"]')).toContainText("No memory of its own");
   for (const file of config.memory.related) await expect(panel(page).locator(`li[data-path="${file.path}"]`)).toBeVisible();
 
+  await section(page, "Skills and files").click();
   for (const file of config.instructions.files) await expect(panel(page).locator(`li[data-path="${file.path}"]`)).toContainText(tail(file.path));
 
   await section(page, "Threads").click();
@@ -106,21 +107,21 @@ test("a page link opens on its own tab, back returns to the grid and forward ope
   const chat = (await listAgents(request)).find((agent) => agent.kind === "chat");
   test.skip(!chat, "no chats on this server");
   await openAgents(page);
-  await page.goto(`/#/agents/${chat!.id}?section=knowledge`);
+  await page.goto(`/#/agents/${chat!.id}?section=memory`);
   await expect(panel(page)).toBeVisible();
-  await expect(section(page, "Knowledge")).toHaveAttribute("aria-selected", "true");
+  await expect(section(page, "Memory")).toHaveAttribute("aria-selected", "true");
   await page.goto("/#/agents");
   await expect(panel(page)).toHaveCount(0);
   await expect(grid(page)).toBeVisible();
   await page.goBack();
   await expect(panel(page)).toBeVisible();
-  await expect(section(page, "Knowledge")).toHaveAttribute("aria-selected", "true");
+  await expect(section(page, "Memory")).toHaveAttribute("aria-selected", "true");
 });
 
 test("old section links from the side panel land on the tab that replaced them", async ({ page, request }) => {
   const chat = (await listAgents(request)).find((agent) => agent.kind === "chat");
   test.skip(!chat, "no chats on this server");
-  for (const [old, next, tab] of [["runs", "threads", "Threads"], ["swarm", "threads", "Threads"], ["overview", "brief", "Brief"], ["memory", "knowledge", "Knowledge"], ["instructions", "knowledge", "Knowledge"], ["work", "threads", "Threads"], ["jobs", "threads", "Threads"]] as const) {
+  for (const [old, next, tab] of [["runs", "threads", "Threads"], ["swarm", "threads", "Threads"], ["overview", "brief", "Brief"], ["instructions", "knowledge", "Skills and files"], ["work", "threads", "Threads"], ["jobs", "threads", "Threads"]] as const) {
     await page.goto(`/#/agents/${chat!.id}?section=${old}`);
     await expect(section(page, tab)).toHaveAttribute("aria-selected", "true", { timeout: 20_000 });
     await expect(page).toHaveURL(new RegExp(`#/agents/${chat!.id}\\?section=${next}$`));

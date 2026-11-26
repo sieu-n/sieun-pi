@@ -18,6 +18,8 @@ export class FakeRelay {
   readonly welcomes: number[] = [];
   readonly acks: number[] = [];
   readonly files = new Map<string, string>();
+  /** The memory stores the `memory` op keeps, by harness folder. */
+  readonly memories = new Map<string, Map<string, { id: string; updated_at: string }>>();
   readonly info: BoxInfo;
   /** While true every link is closed as soon as it opens, as when the box is offline. */
   down = false;
@@ -128,6 +130,20 @@ export class FakeRelay {
         if (rest.delete) this.files.delete(rest.path as string);
         else this.files.set(rest.path as string, rest.text as string);
         return {};
+      }
+      case "memory": {
+        // The relay's memory op on a box (prime-relay ops.ts memoryOp): one map of entries per harness folder, newest first.
+        const dir = rest.dir as string;
+        const request = rest.request as { action: string; limit?: number; offset?: number; query?: string; id?: string; entries?: { id: string; updated_at: string }[]; ids?: string[] };
+        const store = this.memories.get(dir) ?? new Map<string, { id: string; updated_at: string }>();
+        this.memories.set(dir, store);
+        if (request.action === "put") for (const entry of request.entries ?? []) store.set(entry.id, entry);
+        if (request.action === "delete") for (const id of request.ids ?? []) store.delete(id);
+        const all = [...store.values()].sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+        const entries = request.action === "page" ? all.slice(request.offset ?? 0, (request.offset ?? 0) + (request.limit ?? 50))
+          : request.action === "search" ? all.filter(entry => JSON.stringify(entry).toLowerCase().includes((request.query ?? "").toLowerCase())).slice(0, request.limit)
+          : request.action === "get" ? all.filter(entry => entry.id === request.id) : [];
+        return { count: store.size, entries };
       }
       case "instructions": {
         const cwd = rest.cwd as string;

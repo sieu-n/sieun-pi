@@ -62,6 +62,7 @@ test("models are keyed provider/id with family labels and their levels", () => {
 });
 
 test("#/agents/<id> names the agent or job whose page is open, and old section ids move to Brief, Knowledge and Threads", () => {
+  assert.equal(sectionFromParams({ section: "memory" }), "memory");
   assert.equal(agentFromRoute([]), null);
   assert.equal(agentFromRoute(["ag_vent"]), "ag_vent");
   assert.equal(agentFromRoute(["t1:4"]), "t1:4");
@@ -70,7 +71,7 @@ test("#/agents/<id> names the agent or job whose page is open, and old section i
   assert.equal(sectionFromParams({ section: "for" }), "for");
   assert.equal(sectionFromParams({ section: "nope" }), "brief");
   assert.equal(sectionFromParams({}), "brief");
-  assert.equal(sectionFromParams({ section: "memory" }), "knowledge");
+  assert.equal(sectionFromParams({ section: "memory" }), "memory", "memory is its own tab, apart from skills (owner, t8 answer msg mwwlxbdo)");
   assert.equal(sectionFromParams({ section: "instructions" }), "knowledge");
   assert.equal(sectionFromParams({ section: "overview" }), "brief");
   assert.equal(sectionFromParams({ section: "runs" }), "threads");

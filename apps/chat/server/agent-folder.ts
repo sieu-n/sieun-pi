@@ -14,7 +14,8 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, r
 import { basename, dirname, join, resolve } from "node:path";
 import type { AgentFolder, AgentId, ConfigFile, HarnessEntryView, MemoryInput } from "../web/src/lib/api/types.ts";
 import { folderContextFiles } from "../../../packages/pi-host/src/durable/context-files.ts";
-import { parseState, updateState, type HarnessState } from "../../../packages/pi-harness/src/core/store.ts";
+import { memoryDbPath, memoryRequest, type MemoryAnswer, type MemoryRequest } from "../../../packages/pi-harness/src/core/memory-store.ts";
+import { migrateMemory, parseState, updateState, type HarnessEntry, type HarnessState } from "../../../packages/pi-harness/src/core/store.ts";
 import type { AgentRecord, RoomId } from "./agent-store.ts";
 
 const PREVIEW_CAP = 400;
@@ -218,15 +219,34 @@ function remoteInfo(label: string, path: string, file: FolderFile, opts: { previ
 
 const BRIEF_NOTE = "Its responsibility in the owner's words. pi-host adds it after the AGENTS.md files as one more Prime context file in every thread of the agent.";
 const WORKING_NOTE = "What the agent knows now across rooms. Its work thread rewrites it after each turn, and every comm thread and job of the agent reads it in full.";
-const MEMORY_NOTE = "Its memory. Every thread of the agent gets Prime's harness digest of Prime's global store merged with this one, and its kernel's rlm.harness writes here.";
+const MEMORY_NOTE = "Its memory, which holds tens of thousands of entries. Each turn of every thread of the agent gets the 40 entries that best match it, and its kernel's rlm.harness reads and writes here.";
 
-/** The folder view from its three files; `info` builds the file rows from this box's disk or from the files another box read. */
-function folderView(agent: AgentRecord, dir: string, brief: FolderFile, working: FolderFile, store: StoreFile, info: (label: string, path: string, opts: { preview?: boolean; loaded: boolean; note: string }) => ConfigFile): AgentFolder {
+/**
+ * The newest memory entries the folder view carries. An agent's memory can hold tens of thousands of entries in `memory.sqlite`, so the
+ * Memory tab reads the rest by page and search (GET /api/agents/:id/memory, `AgentFolders.memory`).
+ */
+export const MEMORY_PAGE = 50;
+
+const memoryViews = (entries: readonly HarnessEntry[]): HarnessEntryView[] => entries.flatMap(entry => entryView("memory", entry.id, entry as unknown as RawEntry) ?? []);
+
+/**
+ * The folder view from its three files and a page of the memory store; `info` builds the file rows from this box's disk or from the files
+ * another box read. Memory entries the file still holds, from a writer that predates `memory.sqlite`, come with the page.
+ */
+function folderView(agent: AgentRecord, dir: string, brief: FolderFile, working: FolderFile, store: StoreFile, page: MemoryAnswer, info: (label: string, path: string, opts: { preview?: boolean; loaded: boolean; note: string }) => ConfigFile): AgentFolder {
   const text = brief.text ?? "";
   const now = working.text ?? "";
-  const entries = HARNESS_KINDS.flatMap(kind => Object.entries(store.entries[kind]).flatMap(([id, raw]) => entryView(kind, id, raw) ?? []))
-    .sort((a, b) => timeOf(b.updatedAt) - timeOf(a.updatedAt) || b.updatedAt.localeCompare(a.updatedAt));
-  const memory = { ...info("the agent's harness store", harnessPath(dir), { loaded: true, note: MEMORY_NOTE }), count: entries.length, entries };
+  const paged = new Set(page.entries.map(entry => entry.id));
+  const legacy = Object.keys(store.entries.memory).filter(id => !paged.has(id));
+  const entries = [
+    ...HARNESS_KINDS.flatMap(kind => Object.entries(store.entries[kind]).flatMap(([id, raw]) => (kind === "memory" && paged.has(id) ? [] : entryView(kind, id, raw) ?? []))),
+    ...memoryViews(page.entries),
+  ].sort((a, b) => timeOf(b.updatedAt) - timeOf(a.updatedAt) || b.updatedAt.localeCompare(a.updatedAt));
+  const others = HARNESS_KINDS.filter(kind => kind !== "memory").reduce((sum, kind) => sum + Object.keys(store.entries[kind]).length, 0);
+  const memory = {
+    ...info("the agent's memory store", memoryDbPath(dirname(harnessPath(dir))), { loaded: true, note: MEMORY_NOTE }),
+    count: page.count + legacy.length + others, memoryCount: page.count + legacy.length, entries,
+  };
   if (entries.length) memory.preview = entries.slice(0, 3).map(e => `- ${e.title}`).join("\n");
   return {
     agent: agent.id, dir, brief: { ...info("brief.md", briefPath(dir), { preview: true, loaded: text.trim() !== "", note: BRIEF_NOTE }), text },
@@ -237,7 +257,16 @@ function folderView(agent: AgentRecord, dir: string, brief: FolderFile, working:
 /** The agent's brief and memory store, entries of every kind with the newest `updatedAt` first. */
 export function readAgentFolder(agentsDir: string, agent: AgentRecord): AgentFolder {
   const dir = agentFolderDir(agentsDir, agent);
-  return folderView(agent, dir, readLocalFile(briefPath(dir)), readLocalFile(workingPath(dir)), readStore(harnessPath(dir)), (label, path, opts) => fileInfo(label, path, opts));
+  const page = memoryRequest(dirname(harnessPath(dir)), { action: "page", limit: MEMORY_PAGE });
+  return folderView(agent, dir, readLocalFile(briefPath(dir)), readLocalFile(workingPath(dir)), readStore(harnessPath(dir)), page, (label, path, opts) => fileInfo(label, path, opts));
+}
+
+/** Memory entries of the agent's store on this box: the `limit` best matches of `query`, or the newest after `offset` when it is blank. */
+export function readAgentMemory(agentsDir: string, agent: AgentRecord, query: string, limit: number, offset: number): MemoryAnswer {
+  const harness = dirname(harnessPath(agentFolderDir(agentsDir, agent)));
+  if (!query.trim()) return memoryRequest(harness, { action: "page", limit, offset });
+  const found = memoryRequest(harness, { action: "search", query, limit: limit + offset });
+  return { count: found.count, entries: found.entries.slice(offset) };
 }
 
 /** File access on an agent's box: its relay's `file_get` and `file_put`. */
@@ -245,6 +274,16 @@ export interface BoxFiles {
   get(path: string): Promise<FolderFile>;
   /** Writes the file, or removes it with `text` null. */
   put(path: string, text: string | null): Promise<void>;
+  /** A request on the memory store in an agent's harness folder there (prime-relay `memory` op). */
+  memory(dir: string, request: MemoryRequest): Promise<MemoryAnswer>;
+}
+
+/** A memory entry as Prime's writer makes it, with the owner or an agent as its source. */
+function memoryEntry(id: string, input: MemoryInput, source: string, kept?: HarnessEntry): HarnessEntry {
+  const now = harnessNow();
+  return kept
+    ? { ...kept, title: input.title, content: input.content, path: input.path ?? kept.path, source, updated_at: now, version: kept.version + 1 }
+    : { id, kind: "memory", title: input.title, content: input.content, path: input.path ?? "general", scope: "local", reference: {}, arguments: {}, metadata: {}, source, created_at: now, updated_at: now, version: 1 };
 }
 
 /**
@@ -263,9 +302,37 @@ export class AgentFolders {
     const { agentsDir, files } = this.where(agent);
     if (!files) return readAgentFolder(agentsDir, agent);
     const dir = agentFolderDir(agentsDir, agent);
-    const [brief, working, store] = await Promise.all([files.get(briefPath(dir)), files.get(workingPath(dir)), files.get(harnessPath(dir))]);
+    const [brief, working, store, page] = await Promise.all([
+      files.get(briefPath(dir)), files.get(workingPath(dir)), files.get(harnessPath(dir)),
+      // A relay older than the memory op answers an error; its pi-host has not moved memory out of the file yet either.
+      files.memory(dirname(harnessPath(dir)), { action: "page", limit: MEMORY_PAGE }).catch(() => ({ count: 0, entries: [] })),
+    ]);
     const byPath = new Map([[briefPath(dir), brief], [workingPath(dir), working]]);
-    return folderView(agent, dir, brief, working, parseStore(store.text), (label, path, opts) => remoteInfo(label, path, byPath.get(path) ?? store, opts));
+    return folderView(agent, dir, brief, working, parseStore(store.text), page, (label, path, opts) => remoteInfo(label, path, byPath.get(path) ?? store, opts));
+  }
+
+  /** Memory entries: the `limit` best matches of `query` after `offset`, or the newest after `offset` when it is blank. */
+  async memory(agent: AgentRecord, query: string, limit: number, offset: number): Promise<{ count: number; entries: HarnessEntryView[] }> {
+    const { agentsDir, files } = this.where(agent);
+    if (!files) {
+      await migrateMemory(dirname(harnessPath(agentFolderDir(agentsDir, agent))));
+      const found = readAgentMemory(agentsDir, agent, query, limit, offset);
+      return { count: found.count, entries: memoryViews(found.entries) };
+    }
+    const dir = dirname(harnessPath(agentFolderDir(agentsDir, agent)));
+    const found = query.trim()
+      ? await files.memory(dir, { action: "search", query, limit: limit + offset }).then(answer => ({ ...answer, entries: answer.entries.slice(offset) }))
+      : await files.memory(dir, { action: "page", limit, offset });
+    return { count: found.count, entries: memoryViews(found.entries) };
+  }
+
+  /** A memory entry's current copy on the agent's box, from `memory.sqlite` or, before the move, from the file. */
+  private async keptMemory(files: BoxFiles, dir: string, id: string): Promise<{ entry?: HarnessEntry; inFile: boolean; state: HarnessState }> {
+    const path = harnessPath(dir);
+    const state = stateOf((await files.get(path)).text);
+    const stored = (await files.memory(dirname(path), { action: "get", id })).entries[0];
+    const filed = state.entries.memory[id];
+    return { entry: stored && (!filed || stored.updated_at >= filed.updated_at) ? stored : filed, inFile: !!filed, state };
   }
 
   async writeBrief(agent: AgentRecord, text: string): Promise<void> {
@@ -284,6 +351,12 @@ export class AgentFolders {
     const { agentsDir, files } = this.where(agent);
     if (!files) return createEntry(agentsDir, agent, kind, input, source);
     const path = harnessPath(agentFolderDir(agentsDir, agent));
+    if (kind === "memory") {
+      const id = harnessSlug(input.title, kind);
+      if ((await this.keptMemory(files, dirname(path), id)).entry) throw new EntryExists(`${kind} entry '${id}' already exists`);
+      await files.memory(dirname(path), { action: "put", entries: [memoryEntry(id, input, source)] });
+      return id;
+    }
     const state = stateOf((await files.get(path)).text);
     const id = addEntry(state, kind, input, source);
     await files.put(path, stateText(state));
@@ -294,6 +367,12 @@ export class AgentFolders {
     const { agentsDir, files } = this.where(agent);
     if (!files) return updateEntry(agentsDir, agent, kind, id, input, source);
     const path = harnessPath(agentFolderDir(agentsDir, agent));
+    if (kind === "memory") {
+      const { entry } = await this.keptMemory(files, dirname(path), id);
+      if (!entry) throw new EntryMissing(`${kind} entry '${id}' does not exist`);
+      await files.memory(dirname(path), { action: "put", entries: [memoryEntry(id, input, source, entry)] });
+      return;
+    }
     const state = stateOf((await files.get(path)).text);
     changeEntry(state, kind, id, input, source);
     await files.put(path, stateText(state));
@@ -303,6 +382,16 @@ export class AgentFolders {
     const { agentsDir, files } = this.where(agent);
     if (!files) return deleteEntry(agentsDir, agent, kind, id);
     const path = harnessPath(agentFolderDir(agentsDir, agent));
+    if (kind === "memory") {
+      const { entry, inFile, state } = await this.keptMemory(files, dirname(path), id);
+      if (!entry) throw new EntryMissing(`${kind} entry '${id}' does not exist`);
+      await files.memory(dirname(path), { action: "delete", ids: [id] });
+      if (inFile) {
+        delete state.entries.memory[id];
+        await files.put(path, stateText(state));
+      }
+      return;
+    }
     const state = stateOf((await files.get(path)).text);
     dropEntry(state, kind, id);
     await files.put(path, stateText(state));
@@ -374,17 +463,36 @@ function dropEntry(state: HarnessState, kind: HarnessKind, id: string): void {
 const changeStore = <R>(agentsDir: string, agent: AgentRecord, change: (state: HarnessState) => R): Promise<R> =>
   updateState(dirname(harnessPath(agentFolderDir(agentsDir, agent))), "local", change);
 
-/** Prime's `create`. */
-export function createEntry(agentsDir: string, agent: AgentRecord, kind: HarnessKind, input: MemoryInput, source = "owner"): Promise<string> {
-  return changeStore(agentsDir, agent, state => addEntry(state, kind, input, source));
+/** The agent's memory store folder on this box, with any entries the file still held moved into `memory.sqlite` first. */
+async function memoryDir(agentsDir: string, agent: AgentRecord): Promise<string> {
+  const dir = dirname(harnessPath(agentFolderDir(agentsDir, agent)));
+  await migrateMemory(dir);
+  return dir;
+}
+
+/** Prime's `create`. A memory entry goes straight into `memory.sqlite`, one row, however large the store. */
+export async function createEntry(agentsDir: string, agent: AgentRecord, kind: HarnessKind, input: MemoryInput, source = "owner"): Promise<string> {
+  if (kind !== "memory") return changeStore(agentsDir, agent, state => addEntry(state, kind, input, source));
+  const dir = await memoryDir(agentsDir, agent);
+  const id = harnessSlug(input.title, kind);
+  if (memoryRequest(dir, { action: "get", id }).entries.length) throw new EntryExists(`${kind} entry '${id}' already exists`);
+  memoryRequest(dir, { action: "put", entries: [memoryEntry(id, input, source)] });
+  return id;
 }
 
 /** Prime's `update`. */
 export async function updateEntry(agentsDir: string, agent: AgentRecord, kind: HarnessKind, id: string, input: MemoryInput, source = "owner"): Promise<void> {
-  await changeStore(agentsDir, agent, state => changeEntry(state, kind, id, input, source));
+  if (kind !== "memory") return void (await changeStore(agentsDir, agent, state => changeEntry(state, kind, id, input, source)));
+  const dir = await memoryDir(agentsDir, agent);
+  const [kept] = memoryRequest(dir, { action: "get", id }).entries;
+  if (!kept) throw new EntryMissing(`${kind} entry '${id}' does not exist`);
+  memoryRequest(dir, { action: "put", entries: [memoryEntry(id, input, source, kept)] });
 }
 
 /** Prime's `delete`. */
 export async function deleteEntry(agentsDir: string, agent: AgentRecord, kind: HarnessKind, id: string): Promise<void> {
-  await changeStore(agentsDir, agent, state => dropEntry(state, kind, id));
+  if (kind !== "memory") return void (await changeStore(agentsDir, agent, state => dropEntry(state, kind, id)));
+  const dir = await memoryDir(agentsDir, agent);
+  if (!memoryRequest(dir, { action: "get", id }).entries.length) throw new EntryMissing(`${kind} entry '${id}' does not exist`);
+  memoryRequest(dir, { action: "delete", ids: [id] });
 }

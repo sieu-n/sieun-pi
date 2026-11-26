@@ -98,8 +98,8 @@ test("the owner adds a memory to Vent, sees it listed and deletes it", async ({ 
   const title = uniqueName("Relay gaps");
   const content = "The Mac sleeps every night, so a relay gap under an hour is normal.";
   await openCard(page, agent);
-  await panel(page).getByRole("tab", { name: /^Knowledge/ }).click();
-  await expect(memory(page)).toContainText(`Loaded into every thread of ${agent.name}`);
+  await panel(page).getByRole("tab", { name: /^Memory/ }).click();
+  await expect(memory(page)).toContainText(`Each turn of every thread of ${agent.name} gets the 40 entries that best match it`);
 
   await memory(page).getByRole("button", { name: "Add memory" }).click();
   const dialog = page.getByRole("dialog", { name: "Add memory" });
@@ -115,7 +115,7 @@ test("the owner adds a memory to Vent, sees it listed and deletes it", async ({ 
   if (await search.count()) {
     await search.fill(title.split(" ").at(-1)!);
     await expect(memory(page).locator("li[data-entry-id]")).toHaveCount(1);
-    await expect(memory(page).getByTestId("memory-count")).toContainText("1 of");
+    await expect(memory(page).getByTestId("memory-count")).toContainText("The best match in");
     await search.fill("zz-no-memory-holds-this");
     await expect(memory(page)).toContainText("No memory matches");
     await memory(page).getByRole("button", { name: "Clear search" }).click();
@@ -149,7 +149,7 @@ test("a job of Vent shows Vent's folder read-only and links back to Vent", async
   await expect(brief(page)).toBeVisible();
   await expect(brief(page).getByRole("button")).toHaveCount(0);
 
-  await panel(page).getByRole("tab", { name: /^Knowledge/ }).click();
+  await panel(page).getByRole("tab", { name: /^Memory/ }).click();
   await expect(memory(page)).toBeVisible();
   await expect(memory(page).getByRole("button", { name: "Add memory" })).toHaveCount(0);
   await panel(page).getByTestId("folder-owner").getByRole("link", { name: agent.name }).click();

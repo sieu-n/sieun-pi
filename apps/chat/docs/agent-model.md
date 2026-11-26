@@ -123,7 +123,7 @@ Rules that keep it simple:
 | Channels | Channels the owner is in. | The room |
 | Direct messages | One row per Agent, never per thread. The status dot is the agent's: working while any of its work threads runs. | The DM room with that agent |
 
-Work threads, comm threads and jobs are reached from the Agents page (tabs Brief, Knowledge, Board, Duties, Threads, For <agent name>, Prompt, where the For tab shows only for a registered agent) and from job pills under a message. A root chat becomes an agent with a DM only when the owner makes it one (`POST /api/agents`) or the migrate CLI does. A root thread that an agent's thread started with `rlm.create_session` is filed as a job of that agent, because its first input is an agent message from the thread that started it (`fileSpawned` in `server/agents.ts`). The Solo group lists Solo rooms only, and with none it stays in the sidebar with a one-line note and a New Solo room button. A root chat no agent holds is in no sidebar group, and search still finds it. To start talking, ⌘N and the + menu's New DM open the DM picker, and nothing makes a bare root chat.
+Work threads, comm threads and jobs are reached from the Agents page (tabs Brief, Memory, Skills and files, Board, Duties, Threads, For <agent name>, Prompt, where the For tab shows only for a registered agent) and from job pills under a message. A root chat becomes an agent with a DM only when the owner makes it one (`POST /api/agents`) or the migrate CLI does. A root thread that an agent's thread started with `rlm.create_session` is filed as a job of that agent, because its first input is an agent message from the thread that started it (`fileSpawned` in `server/agents.ts`). The Solo group lists Solo rooms only, and with none it stays in the sidebar with a one-line note and a New Solo room button. A root chat no agent holds is in no sidebar group, and search still finds it. To start talking, ⌘N and the + menu's New DM open the DM picker, and nothing makes a bare root chat.
 
 ### (a) The owner asks for work in a DM
 
@@ -242,7 +242,8 @@ Phase 3 is built this way. The agent folder lives on the agent's host, at `~/.pi
 | Path | Holds | Written by | Loaded into |
 |---|---|---|---|
 | `brief.md` | The responsibility, in the owner's words, with what done looks like. Missing or blank means no brief. | the owner in the Create agent dialog (`POST /api/agents {brief}`) or on the Agents card (`PUT /api/agents/:id/brief`) | every thread of the agent, as one more Prime context file |
-| `harness/harness_state.json` | The agent's memory: a Prime harness store in Prime's own format, with memories, prompt notes, skills and subagent specs | the agent's kernels through `rlm.harness` and `refine.run()`, and the owner on the Agents card (`/api/agents/:id/memory`) | every thread of the agent, through Prime's harness digest |
+| `harness/memory.sqlite` | The agent's memory: up to tens of thousands of entries with an FTS5 index (pi-harness `memory-store.ts`, pi-rlm `memory_store.py`) | the agent's kernels through `rlm.harness` and `refine.run()`, and the owner on the Memory tab (`/api/agents/:id/memory`) | every turn of every thread of the agent gets the 40 entries that best match it, and each later input up to 8 more |
+| `harness/harness_state.json` | The agent's prompt notes, skills and subagent specs, and its refinement log, in Prime's harness format | the agent's kernels through `rlm.harness` and `refine.run()` | every thread of the agent, through Prime's harness digest |
 | `working-memory.md` | What the agent knows now across its rooms: what it works on and for which post, what waits on whom, the owner's latest asks and decisions, and what comes next. Step status stays on the board. | the agent's work thread, after each turn that changed it, and the owner on the Brief tab (`PUT /api/agents/:id/working-memory`) | every thread of the agent and every job inside one, in full, as the `working` section |
 
 The agent record stays in the chat server's `agents.json`. An `agent.json` on the box waits for phase 6, when the relay needs it there.
@@ -257,7 +258,7 @@ So `rlm.harness.create_memory(...)` in any of them writes the agent's memory, an
 
 A thread no agent holds keeps its own store. No per-thread local store existed on us-metal02 when this shipped, so nothing moved.
 
-Each entry keeps its `version` and `updated_at`, and the store keeps Prime's refinement log, so the card shows who wrote each entry and when. The owner removes an entry from the card. The folder is not a git repo.
+Memory entries live in `memory.sqlite` beside the file since 58c2a8f3 (owner, t8 answer msg mwwlxbdo: memory "should scale to 10,000s of entries"). A write touches one row, a search ranks the whole store in milliseconds, and pi-host moves the memory entries an older writer left in the file into it on the agent's first digest. Each entry keeps its `version` and `updated_at`, and the store keeps Prime's refinement log, so the card shows who wrote each entry and when. The owner removes an entry from the card. The folder is not a git repo.
 
 ### How pi-host loads them
 

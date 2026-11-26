@@ -1,63 +1,26 @@
 <script lang="ts">
-  import { reads, view, type AgentFolder, type ConfigFile } from "$lib/api";
-  import { Button, EmptyState, LoadingText, ShowAllList } from "$lib/ui";
-  import { folderOwner, withFolder, type AgentTabProps } from "./agent-tab";
-  import AgentMemory from "./AgentMemory.svelte";
+  import { reads, view } from "$lib/api";
+  import { Button, LoadingText, ShowAllList } from "$lib/ui";
+  import { folderOwner, type AgentTabProps } from "./agent-tab";
   import ConfigFileRow from "./ConfigFileRow.svelte";
-  import FolderNote from "./FolderNote.svelte";
   import PathRow from "./PathRow.svelte";
   import { fileName, loadOrder, scriptSource } from "./knowledge";
 
   /**
-   * The Knowledge tab: what every thread of the agent knows and can use. Its memory, the skills its prompt lists (from the Prompt tab's read,
-   * which pi-host's own loader builds), the instruction files it loads, and its scripts.
+   * The Skills and files tab: the skills the agent's prompt lists (from the Prompt tab's read, which pi-host's own loader builds), the
+   * instruction files it loads, and its scripts. Its memory has a tab of its own (AgentMemoryTab.svelte).
    */
-  let { agentId, agent, config, onconfig }: AgentTabProps = $props();
+  let { agentId, agent, config }: AgentTabProps = $props();
 
   const folder = $derived(config.folder);
-  const owner = $derived(folderOwner(config, agent, agentId));
-  const ownFolder = $derived(owner.own);
-  const folderName = $derived(owner.name);
-  const name = $derived(folder ? folderName : (agent?.name ?? "this thread"));
-  /** The entries, which the config counts but does not send, read while the tab shows and kept for its next open. */
-  const memoryFolder = view(() => (folder ? reads.agentFolder(folder.agent) : null));
+  const name = $derived(folder ? folderOwner(config, agent, agentId).name : (agent?.name ?? "this thread"));
   /** The skills come with its prompts, which take pi-host a few seconds to build, so they read while the rest of the tab shows. */
   const prompt = view(() => reads.agentPromptOutline(agentId));
   const skills = $derived(prompt.value?.skills ?? []);
-  /** Prime's global store, and a thread's own store when no agent holds it, which load into every thread; the Duties tab lists precheck state. */
-  const stores = $derived(config.memory.related.filter((file) => file.loaded !== false));
   const files = $derived(loadOrder(config.instructions.files));
   const scripts = $derived(config.scripts ?? []);
-  const fileKey = (file: ConfigFile) => file.path;
-
-  function setFolder(next: AgentFolder) {
-    onconfig(withFolder(config, next));
-    if (memoryFolder.value?.agent === next.agent) memoryFolder.set(next);
-  }
+  const fileKey = (file: (typeof files)[number]) => file.path;
 </script>
-
-<section class="block" aria-label="Memory">
-  {#if folder}
-    {#if !ownFolder}<FolderNote agent={folder.agent} name={folderName} />{/if}
-    {#if memoryFolder.value}
-      <AgentMemory folder={memoryFolder.value} name={folderName} readonly={!ownFolder} onsaved={setFolder} />
-    {:else if memoryFolder.error}
-      <EmptyState icon="warning" title="The memory could not load" description={memoryFolder.error} size="sm">
-        {#snippet action()}<Button size="sm" icon="refresh" onclick={() => memoryFolder.refresh()}>Retry</Button>{/snippet}
-      </EmptyState>
-    {:else}
-      <div class="loading"><LoadingText text="Reading its memory…" /></div>
-    {/if}
-  {:else}
-    <div class="callout" data-memory="none">
-      <h3 class="t-label-sm">No memory of its own</h3>
-      <p class="t-body-sm">{config.memory.note}</p>
-    </div>
-  {/if}
-  {#if stores.length}
-    <ul class="files" aria-label="Shared stores">{#each stores as item (item.path)}<ConfigFileRow {item} />{/each}</ul>
-  {/if}
-</section>
 
 <section class="block" aria-label="Skills" data-testid="knowledge-skills">
   <h3 class="t-caption heading">Skills{skills.length ? ` · ${skills.length}` : ""}</h3>

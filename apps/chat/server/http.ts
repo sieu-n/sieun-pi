@@ -337,6 +337,13 @@ export function routes(app: App, parts: SkillsParts, wikiPages = new WikiPageLis
       await app.folders.writeWorkingMemory(agent, text);
       return app.folders.read(agent);
     }),
+    // ?q= searches the whole store (best match first); without it, the newest entries after ?offset=. ?limit= defaults to 50.
+    route("GET", "/api/agents/:id/memory", async (_r, p, q) => {
+      const limit = Number(q.get("limit") ?? 50);
+      const offset = Number(q.get("offset") ?? 0);
+      if (!Number.isInteger(limit) || limit < 1 || !Number.isInteger(offset) || offset < 0) throw new BadRequest("limit is a whole number above 0 and offset a whole number from 0.");
+      return app.folders.memory(folderAgent(p.id!), q.get("q") ?? "", limit, offset);
+    }),
     route("POST", "/api/agents/:id/memory", async (_r, p, _q, body) => {
       const agent = folderAgent(p.id!);
       await app.folders.create(agent, "memory", memoryInput(await body()));

@@ -18,8 +18,8 @@ export type AgentTabProps = {
 /** The config with a saved folder in place, its memory sent as a count as the config sends it. */
 export function withFolder(config: AgentConfig, next: AgentFolder): AgentConfig {
   if (next.agent !== config.folder?.agent) return config;
-  const { entries, ...memory } = next.memory;
-  return { ...config, folder: { ...next, memory: { ...memory, count: entries.length } } };
+  const { entries: _page, ...memory } = next.memory;
+  return { ...config, folder: { ...next, memory } };
 }
 
 /** Whether the folder is the agent's own, and the name of the agent whose folder it loads, which may sit above a job that started it. */

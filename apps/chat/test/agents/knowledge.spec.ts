@@ -4,10 +4,10 @@ import { join } from "node:path";
 import { expect, test } from "@playwright/test";
 
 /**
- * The Knowledge tab of an agent's page: its memory, the skills its prompt lists, the instruction files it loads and its scripts. A script
- * kept in its folder and one its brief names both show, each with where it comes from and its path.
+ * The Skills and files tab of an agent's page: the skills its prompt lists, the instruction files it loads and its scripts, with its memory
+ * on a tab of its own. A script kept in its folder and one its brief names both show, each with where it comes from and its path.
  */
-test("the Knowledge tab lists the agent's skills, instruction files and the scripts in its folder and brief", async ({ page, request }) => {
+test("the Skills and files tab lists the agent's skills, instruction files and the scripts in its folder and brief, and no memory", async ({ page, request }) => {
   test.setTimeout(90_000);
   const tag = Math.random().toString(36).slice(2, 8);
   const outside = mkdtempSync(join(tmpdir(), "knowledge-spec-"));
@@ -22,8 +22,10 @@ test("the Knowledge tab lists the agent's skills, instruction files and the scri
     writeFileSync(kept, "console.log('sweep');\n");
 
     await page.goto(`/#/agents/${agent.id}?section=knowledge`);
+    await expect(page.getByRole("tab", { name: /^Skills and files/ })).toHaveAttribute("aria-selected", "true");
     const panel = page.getByTestId("agent-config");
-    await expect(panel.getByTestId("agent-memory")).toBeVisible();
+    await expect(panel.getByTestId("knowledge-files")).toBeVisible();
+    await expect(panel.getByTestId("agent-memory")).toHaveCount(0);
 
     const scripts = panel.getByTestId("knowledge-scripts");
     await expect(scripts.getByRole("heading")).toHaveText("Scripts · 2");

@@ -71,7 +71,7 @@ test("an agent on another box has its folder read through the chat server's fold
     urls.push(url);
     return new Response(JSON.stringify(answer));
   }) as typeof fetch);
-  assert.deepEqual(urls, ["http://chat/api/agents/ag_5180-designer/folder"]);
+  assert.deepEqual(urls, ["http://chat/api/agents/ag_5180-designer/folder", "http://chat/api/agents/ag_5180-designer/memory?limit=1000000"]);
   const agent = { id: "ag_5180-designer", slug: "5180-designer", name: "5180 designer", room: "dm_5180-designer", host: "mac" };
   const ledger = [{ id: "c249", rule: "two common duties", chat: { name: "5180 designer · #search-design" } }, { id: "c250", rule: "other", chat: { name: "5180 designer" } }];
   const review = reviewOf({ agent, corrections: ledger, posts: [], folder: mac, now });

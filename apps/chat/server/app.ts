@@ -1415,7 +1415,7 @@ export class App {
       if (!found) throw new Error(`No relay for box ${box}, so its agent folders cannot be read here.`);
       return found;
     };
-    return { get: async path => relay().fileGet(path), put: async (path, text) => relay().filePut(path, text) };
+    return { get: async path => relay().fileGet(path), put: async (path, text) => relay().filePut(path, text), memory: async (dir, request) => relay().memory(dir, request) };
   }
 
   /** The boxes a new agent can run on, with their link state and project folders. */

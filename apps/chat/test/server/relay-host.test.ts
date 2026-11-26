@@ -238,8 +238,11 @@ describe("agents on another box", () => {
     const memory = await s.call("POST", `/api/agents/${agent.id}/memory`, { title: "Mac sleeps", content: "The Mac sleeps at night." });
     assert.equal(memory.status, 200);
     assert.equal(memory.body.memory.count, 1);
-    const store = JSON.parse(s.relay.files.get("/Users/test/.pi/agent/agents/mac-agent/harness/harness_state.json")!);
-    assert.equal(store.entries.memory.mac_sleeps.title, "Mac sleeps");
+    // The entry goes into the Mac's memory.sqlite through the relay's memory op, one row, never as a rewrite of a file.
+    const store = s.relay.memories.get("/Users/test/.pi/agent/agents/mac-agent/harness")!;
+    assert.equal((store.get("mac_sleeps") as { title?: string } | undefined)?.title, "Mac sleeps");
+    const found = await s.call("GET", `/api/agents/${agent.id}/memory?q=sleeps`);
+    assert.deepEqual(found.body.entries.map((e: { id: string }) => e.id), ["mac_sleeps"]);
   });
 
   test("its instruction files on the Agents page are read on the Mac through its relay", async () => {

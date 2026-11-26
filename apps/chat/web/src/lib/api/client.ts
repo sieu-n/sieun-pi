@@ -4,7 +4,7 @@
  */
 import type {
   AgentConfig, AgentFolder, AgentHostList, AgentPrompt, AgentPromptOutline, AgentId, AgentSummary, BoardOp, BoardRow, BoardView, BoardWrite, CheckInPatch, CheckInView, ChatAgent, ConversationHeader, ConversationId,
-  AboutReport, ConversationPatch, ConversationSummary, DutyAction, DutyRow, ForMeItem, ForMeList, ForMeStatus, ForYouItem, HarnessEntryView, HostsReport, HostThreadFilter, ImageRef, Item, JobNode, Me, Member, MemoryInput, ModelCatalog, OpenedPage, ProjectList, SearchQuery, SearchResult, SendRequest, WikiPages,
+  AboutReport, ConversationPatch, ConversationSummary, DutyAction, DutyRow, ForMeItem, ForMeList, ForMeStatus, ForYouItem, HarnessEntryView, HostsReport, HostThreadFilter, ImageRef, Item, JobNode, Me, Member, MemoryInput, MemoryPage, ModelCatalog, OpenedPage, ProjectList, SearchQuery, SearchResult, SendRequest, WikiPages,
   LaterItem, LaterList, LaterPatch, LaterRequest, LaterState, ReactionRequest, ReadAllRequest, ReadPoint, Room, RoomAfterRemove, RoomInput, RoomPatch, SendResult, Sidebar, StepOutputRef, ThinkingLevel, ThreadDoneRequest, TimelinePage, UsageBucket, UsageRange, UsageReport, UsageSplit, AccountsView,
 } from "./types.ts";
 import type {
@@ -757,6 +757,9 @@ export const api = {
   agentFolder: (id: AgentId) => call<AgentFolder>("GET", `/api/agents/${enc(id)}/folder`),
   setBrief: (id: AgentId, text: string) => twice<AgentFolder>("PUT", `/api/agents/${enc(id)}/brief`, { text }),
   setWorkingMemory: (id: AgentId, text: string) => twice<AgentFolder>("PUT", `/api/agents/${enc(id)}/working-memory`, { text }),
+  /** Memory entries of the agent's whole store: the best matches of `q`, or the newest after `offset` when `q` is blank. */
+  memoryPage: (id: AgentId, opts: { q?: string; offset?: number; limit?: number } = {}) =>
+    call<MemoryPage>("GET", `/api/agents/${enc(id)}/memory${query({ q: opts.q?.trim() || undefined, offset: opts.offset || undefined, limit: opts.limit })}`),
   addMemory: (id: AgentId, input: MemoryInput) => call<AgentFolder>("POST", `/api/agents/${enc(id)}/memory`, input),
   updateMemory: (id: AgentId, entry: string, input: MemoryInput, kind: HarnessEntryView["kind"] = "memory") =>
     twice<AgentFolder>("PUT", `/api/agents/${enc(id)}/memory/${enc(entry)}${query({ kind })}`, input),

@@ -127,11 +127,13 @@ export function levelsFor(catalog: ModelCatalog | null, key: string): string[] {
 export const canRename = (agent: Pick<AgentSummary, "conversation">): boolean => agent.conversation === 1;
 
 /** The tabs of an agent's page, as apps/chat/docs/agent-model.md names them; each tab is its own component file (agent-tab.ts). */
-export type ConfigSection = "brief" | "knowledge" | "board" | "duties" | "threads" | "for" | "prompt";
+export type ConfigSection = "brief" | "memory" | "knowledge" | "board" | "duties" | "threads" | "for" | "prompt";
 /** `for` is the agent's For list; its tab reads "For <agent name>" (forLabel) and shows only for a registered agent (hasForList). */
 export const SECTIONS: readonly { id: ConfigSection; label: string }[] = [
   { id: "brief", label: "Brief" },
-  { id: "knowledge", label: "Knowledge" },
+  // Memory is its own tab, apart from skills: a store of tens of thousands of entries read by search (owner, t8 answer msg mwwlxbdo).
+  { id: "memory", label: "Memory" },
+  { id: "knowledge", label: "Skills and files" },
   { id: "board", label: "Board" },
   { id: "duties", label: "Duties" },
   { id: "threads", label: "Threads" },
@@ -175,9 +177,9 @@ export function previewText(text: string): string {
     .trim();
 }
 
-/** Old `?section=` ids: Overview became Brief, Memory and Instructions became Knowledge, and Work, Jobs, Host and Swarm became Threads. */
+/** Old `?section=` ids: Overview became Brief, Instructions became Knowledge, and Work, Jobs, Host and Swarm became Threads. Memory is its own tab again. */
 const RENAMED: Record<string, ConfigSection> = {
-  overview: "brief", memory: "knowledge", instructions: "knowledge", work: "threads", jobs: "threads", runs: "threads", swarm: "threads",
+  overview: "brief", instructions: "knowledge", work: "threads", jobs: "threads", runs: "threads", swarm: "threads",
 };
 /** The new id an old `?section=` link names, so the page rewrites the address once; null when the link is current. */
 export const renamedSection = (params: Record<string, string>): ConfigSection | null => (params.section ? (RENAMED[params.section] ?? null) : null);

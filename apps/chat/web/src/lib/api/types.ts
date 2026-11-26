@@ -850,15 +850,22 @@ export interface AgentFolder {
    * thread and job of the agent its whole text. `text` is "" when the file is missing.
    */
   workingMemory: ConfigFile & { text: string };
-  /** `harness/harness_state.json`: the agent's local harness store; `count` is its entries, newest `updatedAt` first in `entries`. */
-  memory: ConfigFile & { entries: HarnessEntryView[] };
+  /**
+   * The agent's memory store, `harness/memory.sqlite`, with the prompt notes, skills and subagents of `harness/harness_state.json`. `count`
+   * is every entry and `memoryCount` the memory entries alone; `entries` holds the other kinds and the newest memory page, newest
+   * `updatedAt` first. GET /api/agents/:id/memory reads the rest by page and search (`MemoryPage`).
+   */
+  memory: ConfigFile & { count: number; memoryCount: number; entries: HarnessEntryView[] };
 }
+
+/** GET /api/agents/:id/memory: memory entries by page (newest first) or by search (best match first), and the store's memory count. */
+export interface MemoryPage { count: number; entries: HarnessEntryView[] }
 
 /**
  * An agent's folder as its config sends it: the brief whole, and the memory store's file with its entry count but no entries. agent factory's
  * store was 432 KB of its 533 KB config on 11-22, sent on every open of its card.
  */
-export type AgentFolderSummary = Omit<AgentFolder, "memory"> & { memory: ConfigFile & { count: number } };
+export type AgentFolderSummary = Omit<AgentFolder, "memory"> & { memory: ConfigFile & { count: number; memoryCount: number } };
 
 export interface MemoryInput { title: string; content: string; path?: string }
 

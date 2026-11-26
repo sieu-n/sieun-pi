@@ -58,7 +58,7 @@ test("a chat's config names its purpose, host, cwd, board, memory, instructions 
   assert.equal(c.folder?.memory.count, whole.memory.entries.length, "the config counts the entries the folder route lists");
   assert.equal("entries" in (c.folder?.memory ?? {}), false, "the config sends no memory entries");
   assert.equal(c.memory.kind, "agent");
-  assert.ok(c.memory.kind === "agent" && /harness store in its agent's folder/.test(c.memory.note));
+  assert.ok(c.memory.kind === "agent" && /store in its agent's folder \(memory\.sqlite/.test(c.memory.note));
   const harness = c.memory.related.find(f => f.path.endsWith("harness_state.json"));
   assert.equal(harness?.path, join(s.app.config.dataDir, "prime-agent", "harness", "harness_state.json"));
   assert.equal(harness?.count, 2);

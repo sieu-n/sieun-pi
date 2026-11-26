@@ -17,8 +17,8 @@
  * Usage: OUTPUT_FILE=<file> node <apps/chat>/scripts/duties/area-review.ts --agent <agent id> [--db <chat.sqlite>] [--agents-dir <dir>]
  *   [--ledger <corrections.json>] [--server http://127.0.0.1:5184] [--box <this box>]
  * An agent on another box (its `host`) has its folder read through the chat server's folder route (`remoteFolder`).
- * It runs with plain node (type stripping) and imports only node: modules, so its cwd can be the agent's own project, where the duty job
- * then works. Without OUTPUT_FILE the result prints to stdout.
+ * It runs with plain node (type stripping) and imports only node: modules and repo files by relative path, so its cwd can be the agent's own
+ * project, where the duty job then works. Without OUTPUT_FILE the result prints to stdout.
  */
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { isMain } from "./main-module.ts";
@@ -26,6 +26,7 @@ import { homedir, hostname } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { parseArgs } from "node:util";
+import { listMemory } from "../../../../packages/pi-harness/src/core/memory-store.ts";
 
 const DAY_MS = 86_400_000;
 
@@ -118,7 +119,9 @@ export type FolderRead = { memory: Record<string, MemoryEntry>; folderTimes: { p
 /** The folder on this box: the store and every file's change time. */
 export function localFolder(dir: string): FolderRead {
   const harness = join(dir, "harness/harness_state.json");
-  const memory = existsSync(harness) ? ((JSON.parse(readFileSync(harness, "utf8")) as { entries?: { memory?: Record<string, MemoryEntry> } }).entries?.memory ?? {}) : {};
+  const memory: Record<string, MemoryEntry> = existsSync(harness) ? ((JSON.parse(readFileSync(harness, "utf8")) as { entries?: { memory?: Record<string, MemoryEntry> } }).entries?.memory ?? {}) : {};
+  // Memory entries live in memory.sqlite beside the file (pi-harness memory-store.ts); the file holds only ones an older writer left.
+  for (const entry of listMemory(join(dir, "harness"))) memory[entry.id] = entry;
   return { memory, folderTimes: folderTimes(dir) };
 }
 
@@ -141,6 +144,12 @@ export async function remoteFolder(server: string, agent: { id: string; host?: s
     const res = await get(`${server}/api/agents/${encodeURIComponent(agent.id)}/folder`, { signal: AbortSignal.timeout(30_000) });
     if (!res.ok) return away;
     answer = await res.json() as FolderAnswer;
+    // The folder carries only the newest memory page; the memory route reads the whole store.
+    const all = await get(`${server}/api/agents/${encodeURIComponent(agent.id)}/memory?limit=1000000`, { signal: AbortSignal.timeout(30_000) });
+    const page = all.ok ? (await all.json()) as { entries?: unknown } : {};
+    if (Array.isArray(page.entries)) {
+      answer.memory = { entries: [...(answer.memory?.entries ?? []).filter(entry => entry.kind !== "memory"), ...(page.entries as NonNullable<NonNullable<FolderAnswer["memory"]>["entries"]>)] };
+    }
   } catch {
     return away;
   }

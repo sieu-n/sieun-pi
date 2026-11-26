@@ -10,6 +10,7 @@
   import AgentDutiesTab from "./AgentDutiesTab.svelte";
   import AgentForMe from "./AgentForMe.svelte";
   import AgentKnowledgeTab from "./AgentKnowledgeTab.svelte";
+  import AgentMemoryTab from "./AgentMemoryTab.svelte";
   import AgentPromptTab from "./AgentPromptTab.svelte";
   import AgentThreadsTab from "./AgentThreadsTab.svelte";
   import { agentMenu, changeModel, onAgentsChanged, renameAgent, unarchiveAgent } from "./agent-actions.svelte";
@@ -182,6 +183,8 @@
           {#snippet action()}{#if agent && !agent.archived}<Button size="sm" icon="chat" onclick={() => onmessage(agent)}>Message {agent.name}</Button>{/if}{/snippet}
         </EmptyState>
       {/if}
+    {:else if section === "memory" && tabProps}
+      <AgentMemoryTab {...tabProps} />
     {:else if section === "knowledge" && tabProps}
       <AgentKnowledgeTab {...tabProps} />
     {:else if section === "duties" && tabProps}
