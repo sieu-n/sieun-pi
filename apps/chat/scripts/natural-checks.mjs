@@ -33,7 +33,7 @@ export const lineChecks = lines => [
   ["no sentence over 35 words", lines.every(line => lineParts(line).every(sentence => words(sentence) <= 35))],
 ];
 /** A word that makes a line a sentence: a pronoun, an auxiliary, a common verb, or a word ending in -ed or -ing. */
-const VERB = /\b(i|i'll|i'm|i've|i'd|we|we'll|we're|we'd|you|you'd|it|it's|they|here's|there's|let's|let me|is|are|was|were|be|been|has|have|had|do|does|did|can|can't|could|will|won't|would|should|need|needs|check|look|pull|read|reads|diff|compare|run|runs|ran|find|found|work|works|go|goes|start|dig|see|map|trace|test|write|pass|passes|fail|fails|pick|picks|keep|keeps|use|uses|handle|handles|get|gets|got|show|shows|take|takes|make|makes|stay|stays|lives|sits|holds|\w+ed|\w+ing)\b/i;
+const VERB = /\b(isn't|aren't|wasn't|weren't|doesn't|don't|didn't|hasn't|haven't|hadn't|couldn't|shouldn't|wouldn't|i|i'll|i'm|i've|i'd|we|we'll|we're|we'd|you|you'd|it|it's|they|here's|there's|let's|let me|is|are|was|were|be|been|has|have|had|do|does|did|can|can't|could|will|won't|would|should|need|needs|check|look|pull|read|reads|diff|compare|run|runs|ran|find|found|work|works|go|goes|start|dig|see|map|trace|test|write|pass|passes|fail|fails|pick|picks|keep|keeps|use|uses|handle|handles|get|gets|got|show|shows|take|takes|make|makes|stay|stays|lives|sits|holds|\w+ed|\w+ing)\b/i;
 /** A bullet's text with no list or task marker. */
 const item = line => line.replace(/^[ \t]*[-*+][ \t]+(?:\[[ xX]\][ \t]*)?/, "").trim();
 /** A bullet that is a bare topic label, such as `- git` or `- instructions`: one to three words, no verb; an empty task box counts too. */
