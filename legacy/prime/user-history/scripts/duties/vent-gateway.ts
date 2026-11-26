@@ -249,8 +249,9 @@ export const REMOVED_PROVIDERS: readonly RemovedProvider[] = [
   },
   { name: "ZeroBounce", grep: "zerobounce", code: /zerobounce/i, integrations: ["zerobounce"] },
   // The owner dropped Smartlead for our own cold mail (#dev-crm p8), and auto-sns-agent 17657f95dc cut its Vent integration. Its host or
-  // key counts; the webhook source literal and the drop migrations that clear its old Convex rows name it and call nothing.
-  { name: "Smartlead", grep: "smartlead", code: /\bsmartlead\.ai\b|\bSMARTLEAD_(API_KEY|WEBHOOK_SECRET)\b/i, integrations: ["smartlead"] },
+  // key counts; the webhook source literal, the drop migrations that clear its old Convex rows and a link to its guides at
+  // api.smartlead.ai/guides, such as the warm-up ramp cite in convex/search/senders/warmup.ts, name it and call nothing.
+  { name: "Smartlead", grep: "smartlead", code: /\bsmartlead\.ai\b(?!\/guides\/)|\bSMARTLEAD_(API_KEY|WEBHOOK_SECRET)\b/i, integrations: ["smartlead"] },
 ];
 
 /** Tip paths that may name a removed provider: the guards that keep it out, and frozen copies that never run. A path ending in / covers its folder. */

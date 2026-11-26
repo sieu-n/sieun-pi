@@ -477,11 +477,12 @@ test("removed_provider_refs skips the crawler's pinned tech fingerprints and the
   assert.deepEqual(result.flagged.map(flag => flag.item), ["apps/crawler-v3/src/companies/voice.py"]);
 });
 
-test("removed_provider_refs counts a Smartlead host, key or Vent row and skips the webhook source literal and drop migrations (17657f95dc, 11-26)", () => {
+test("removed_provider_refs counts a Smartlead host, key or Vent row and skips the webhook source literal, drop migrations and a guides link (17657f95dc, 11-26)", () => {
   const line = (path: string, text: string) => `origin/dev/sieun:${path}\0${1}\0${text}`;
   const grep = [
     line("convex/lib/validators.ts", "export const WEBHOOK_SOURCES = ['stripe', 'clerk', 'zernio', 'resend', 'smartlead'] as const;"),
     line("convex/webhooks/ledger.ts", "\t\tif (row.source === 'smartlead') await ctx.db.delete(row._id);"),
+    line("convex/search/senders/warmup.ts", "\t// measured: vendor advice, Smartlead recommends a daily_rampup of 2 to 3, https://api.smartlead.ai/guides/email-warmup"),
     line("convex/gtm/send.ts", "await fetch('https://server.smartlead.ai/api/v1/campaigns/create', { method: 'POST' })"),
     line("apps/vent/.env.staging", "SMARTLEAD_API_KEY=encrypted:abc"),
   ].join("\n");
