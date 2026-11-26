@@ -172,6 +172,8 @@ async function archive(repo, sha, into) {
     "packages/pi-host/src/stall-profile.ts",
     // server/skills-review.ts deletes and restores harness notes through pi-harness's store, under the lock every harness writer takes.
     "packages/pi-harness/src/core/store.ts", "packages/pi-harness/src/core/lock.ts",
+    // The agent memory store (memory.sqlite), which store.ts, the Memory tab's routes and duties d3 and area-review read.
+    "packages/pi-harness/src/core/memory-store.ts",
     // The fixture server's skills DB scans its throwaway tree with the real scanner (server/skills-db-fixture.ts).
     "scripts/skills-inventory.py", "scripts/skills_usage.py",
     // server/host/relay-host.ts speaks the agent relay's frames as agents/protocol.ts defines them, and the legacy shared types the step rules
