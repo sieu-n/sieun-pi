@@ -9,7 +9,7 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
 /**
  * The Vent chat's "Vent integrations" precheck (`node --import tsx scripts/duties/vent-integrations.ts`). No model call, no browser, no key value.
  * - vent_success_24h_pct, the headline, and red_integrations_prod come from the prod lights as the Vent console builds them: vent-health.py
- *   beside this file runs vent.telemetry.health.read_health, the function behind GET /_vent/admin/health, from apps/vent/src at origin/staging against
+ *   beside this file runs vent.console.health.read_health, the function behind GET /_vent/admin/health, from apps/vent/src at origin/staging against
  *   prod ClickHouse through Grafana. So a call counts the way the console and the vent-integration-health alert rules count it: success and
  *   failure only, without the caller's own 4xx, the Claude account cap, refused and cancelled calls.
  * - prod_vent_behind_staging_h: hours since staging Vent first ran another build than prod Vent. Both builds come from /healthz `version`, and
@@ -37,7 +37,7 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  *   A name built from an allowed model with more words after it, such as the gpt-6-luna-nope of a knob test on 11-08, names no model and
  *   does not count.
  * - vent_console_slow_reads_24h: how many of the 17 reads the prod Vent console runs cost 1 core-second or more on prod ClickHouse. vent-console-cost.py
- *   beside this file builds them with vent.telemetry.read and vent.telemetry.health from apps/vent/src at origin/main, the build prod runs, runs each once
+ *   beside this file builds them with vent.telemetry.read and vent.console.health from apps/vent/src at origin/main, the build prod runs, runs each once
  *   through Grafana with a log_comment tag and reads its CPU from otel.query_cost. Until release 21 (10-25) prod's console decoded the whole
  *   LogAttributes map of each call row, and its 24 h usage reads took 1.07 to 1.50 core-s on prod; on the columns of otel.vent_calls they take
  *   0.29 to 0.51. Goal p44, owner: "Make the Vent Grafana panels and alert rules cheap so they stop loading prod's database".
@@ -283,7 +283,7 @@ async function host(url: string): Promise<HostRead> {
   } catch (error) { return { url, status: 0, error: errorText(error) }; }
 }
 
-/** The prod lights, built by vent.telemetry.health from apps/vent/src at HEALTH_REF with the checkout's apps/vent python. */
+/** The prod lights, built by vent.console.health from apps/vent/src at HEALTH_REF with the checkout's apps/vent python. */
 async function lights(token: string, dir: string): Promise<IntegrationLight[]> {
   const tar = join(dir, "vent-src.tar");
   await run("git", ["fetch", "--quiet", "origin", "staging"]);

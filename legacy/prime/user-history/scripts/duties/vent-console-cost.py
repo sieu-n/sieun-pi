@@ -19,10 +19,10 @@ import httpx
 
 import vent
 
-# apps/vent keeps health and the telemetry reads in vent.telemetry since 2026-11-26, and at the top of the
-# package before, so a tree from either side of that move runs.
-if (Path(vent.__file__).parent / "telemetry" / "health.py").exists():
-    from vent.telemetry import health
+# apps/vent keeps health in vent.console and the telemetry reads in vent.telemetry since 2026-11-26, and
+# at the top of the package before then, so this reads either layout until every tier runs the new one.
+if (Path(vent.__file__).parent / "console" / "health.py").exists():
+    from vent.console import health
     from vent.telemetry import read as tr
 else:
     from vent import health  # type: ignore[no-redef]

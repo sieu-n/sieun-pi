@@ -184,8 +184,8 @@ export function linesTouch(lines, { tokens, paths }) {
  * such as `{ table: 'searchCampaignPoolCarry', largeRows: true },` in `CASCADE_TABLES` of convex/search/orgCascade.ts,
  * because apps/search/onboarding-orgs.html was retouched by 39 wiki-dream commits in the 7 days to 2026-10-30, and the
  * recheck after 506e664d4f dropped two rows the page never names changed only `last_verified`.
- * A route the table holds behind its HTTP method, such as `"POST /api/watch-targets/monitor-range"` in `_CRAWLER_CONVEX` of
- * apps/vent/src/vent/tables.py, keys those rows, and by method and route when the page writes both (`methodRows`), because
+ * A route the table holds behind its HTTP method, such as `"POST /api/watch-targets/monitor-range"` in `CRAWLER_CONVEX` of
+ * apps/vent/src/vent/tables/allow_lists.py, keys those rows, and by method and route when the page writes both (`methodRows`), because
  * auto-sns-agent 256d507bac dropped only `"GET /api/enrich/columns/runs/*"` there and flagged
  * apps/search/brand-tracking-watches.html, which names only the monitor-range row. On a replay of the 1,989 dream rechecks
  * in the 7 days to 2026-11-21 18:08Z this drops 3 flags of that page, all `last_verified` only, and none of the body changes,
@@ -229,7 +229,7 @@ export function entryKeys(source, definition) {
 /** A count of two or more routes in page text, such as `104 HTTP routes` or `108 more /api routes`, a fact about every row of a table. */
 const ROUTE_COUNT = /\b(?:[2-9]|\d[\d,]+)\s+(?:[\w/-]+\s+){0,3}routes\b/;
 
-/** A route behind its HTTP method, as the row `"POST /api/watch-targets/monitor-range",` of `_CRAWLER_CONVEX` in apps/vent/src/vent/tables.py holds it. */
+/** A route behind its HTTP method, as the row `"POST /api/watch-targets/monitor-range",` of `CRAWLER_CONVEX` in apps/vent/src/vent/tables/allow_lists.py holds it. */
 const METHOD_ROUTE = /^(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS) \/[^\s/]/;
 
 /** The lines of a table that hold a method route such as `POST /api/x` quoted whole, or for a bare route `/api/x` the lines that hold it quoted behind any method, or null when none does.
