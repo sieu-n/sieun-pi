@@ -23,6 +23,7 @@ import { poolProvider, TurnQueue } from "@sieun-pi/pi-pool/durable";
 import { testPython } from "@sieun-pi/pi-rlm/test-helpers";
 import type { HostCall } from "../../src/durable/host-modules.ts";
 import { openIndexReadOnly, readUsageRows } from "../../src/durable/index-db.ts";
+import { readState } from "../../../pi-harness/src/core/store.ts";
 import { threadHarnessDir } from "../../src/durable/prime-harness.ts";
 import { NO_ACTIVE_TURN, refineModule } from "../../src/durable/refine.ts";
 import { DurableRlm } from "../../src/durable/rlm.ts";
@@ -119,7 +120,8 @@ test("refine.run schedules, the settle plans and applies, and the notice arrives
 
     const stores = (readdirSync(dir, { recursive: true }) as string[]).filter(p => p.endsWith("harness_state.json") && !p.startsWith("agent"));
     assert.deepEqual(stores, [join(relative(dir, threadHarnessDir(join(dir, "threads", id, `${id}.sqlite`), id)), "harness_state.json")]);
-    const local = JSON.parse(readFileSync(join(dir, stores[0]!), "utf8"));
+    // A local store keeps its memory in memory.sqlite beside the file (pi-harness memory-store.ts); readState reads both.
+    const local = readState(join(dir, stores[0]!, ".."), "local");
     assert.equal(local.entries.memory.deploy_rule.content, "Staging deploys need no ok.");
     assert.equal(local.entries.memory.deploy_rule.scope, "local");
     assert.deepEqual(local.refinements.at(-1).changes, ["create memory:deploy_rule"]);
@@ -165,7 +167,7 @@ test("in an agent's thread, auto-refine reviews after the turn interval and writ
       assert.equal((await threads.wait(id, sent.submission)).status, "done");
     }
     const store = join(folder, "harness", "harness_state.json");
-    const saved = await until("the agent's store", async () => (existsSync(store) ? JSON.parse(readFileSync(store, "utf8")) : undefined), 30_000);
+    const saved = await until("the agent's store", async () => (existsSync(store) ? readState(join(store, ".."), "local") : undefined), 30_000);
     assert.equal(saved.entries.memory.release_rule.content, "Release apps/chat with scripts/release-apps-chat.mjs.");
     assert.match(reviewed[0]!, /a fact agent vent will need again in a later thread/);
     assert.match(planned.at(-1)!, /Requested refinement scope: agent vent's memory/);
@@ -210,7 +212,7 @@ test("in an agent's thread, a general standard goes to a skill route that starts
     assert.match(route!.text, /refine-harness skill/);
     assert.match(route!.text, /\n- skills\/sw-factory\/SKILL\.md: Never paste raw JSON in a post \(p9\)\. \(the owner's second message\)$/);
     assert.equal(route!.text.split("\n- ").length, 2, "a route with no target is dropped");
-    const store = JSON.parse(readFileSync(join(folder, "harness", "harness_state.json"), "utf8"));
+    const store = readState(join(folder, "harness"), "local");
     assert.equal(store.entries.memory.keyword_list.content, "seo targets the 40 keywords in keywords.csv.");
     assert.deepEqual(store.refinements.at(-1).changes, ["create memory:keyword_list", "route skills/sw-factory/SKILL.md"]);
     const plan = planned.findLast(p => p.includes("agent seo's memory"))!;
@@ -247,7 +249,7 @@ test("a test agent's refine sends no skill route and writes only its own store, 
     assert.equal(notice!.data?.via, "refine-notice", "the only refine input is the notice");
     const plan = planned.findLast(p => p.includes("agent blind's memory"))!;
     assert.doesNotMatch(plan, /skillRoutes/, "the planner is not offered routes");
-    const store = JSON.parse(readFileSync(join(folder, "harness", "harness_state.json"), "utf8"));
+    const store = readState(join(folder, "harness"), "local");
     assert.equal(store.entries.memory.file_rule.scope, "local");
     const global = join(dir, "agent", "harness", "harness_state.json");
     assert.equal(existsSync(global) && JSON.parse(readFileSync(global, "utf8")).entries.memory.file_rule, undefined);

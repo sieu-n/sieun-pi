@@ -25,6 +25,15 @@ from pathlib import Path
 from uuid import uuid4
 from typing import Any, Literal
 
+if __package__:
+    from .memory_store import MemoryStore
+else:
+    # Loaded as a lone file (spec_from_file_location, as pi-harness's sync test does): memory_store.py sits beside it.
+    import sys as _sys
+
+    _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from memory_store import MemoryStore  # type: ignore[no-redef]
+
 HarnessKind = Literal["prompt", "memory", "skill", "subagent"]
 HarnessScope = Literal["local", "global"]
 
@@ -203,6 +212,58 @@ class RefinementEvent:
 
 _ENTRY_FIELDS = {field.name for field in fields(HarnessEntry)}
 _REFINEMENT_FIELDS = {field.name for field in fields(RefinementEvent)}
+
+
+class _MemoryEntries:
+    """A local store's memory entries as the mapping ``HarnessState.entries["memory"]``, read from and written to ``memory.sqlite``
+    (``memory_store.py``), so an agent's memory holds tens of thousands of entries and a write touches one row."""
+
+    def __init__(self, store: MemoryStore, kept: dict[str, HarnessEntry] | None = None):
+        self.store = store
+        # Global entries of a file that the global store shares with this local one, which stay in the file.
+        self.kept = kept or {}
+
+    @staticmethod
+    def _entry(data: dict[str, Any]) -> HarnessEntry:
+        return HarnessEntry(**{key: value for key, value in data.items() if key in _ENTRY_FIELDS})
+
+    def get(self, entry_id: str, default: Any = None) -> HarnessEntry | Any:
+        data = self.store.get(entry_id)
+        return self._entry(data) if data else self.kept.get(entry_id, default)
+
+    def __getitem__(self, entry_id: str) -> HarnessEntry:
+        entry = self.get(entry_id)
+        if entry is None:
+            raise KeyError(entry_id)
+        return entry
+
+    def __contains__(self, entry_id: object) -> bool:
+        return isinstance(entry_id, str) and (entry_id in self.kept or self.store.get(entry_id) is not None)
+
+    def __setitem__(self, entry_id: str, entry: HarnessEntry) -> None:
+        self.store.put([{**asdict(entry), "id": entry_id}])
+
+    def __delitem__(self, entry_id: str) -> None:
+        if self.kept.pop(entry_id, None) is None and not self.store.delete(entry_id):
+            raise KeyError(entry_id)
+
+    def __len__(self) -> int:
+        return self.store.count() + len(self.kept)
+
+    def __iter__(self):
+        return iter(self.keys())
+
+    def keys(self) -> list[str]:
+        return [*self.kept, *self.store.ids()]
+
+    def values(self) -> list[HarnessEntry]:
+        return [*self.kept.values(), *(self._entry(data) for data in self.store.all())]
+
+    def items(self) -> list[tuple[str, HarnessEntry]]:
+        return [(entry.id, entry) for entry in self.values()]
+
+    def search(self, query: str, limit: int) -> list[HarnessEntry]:
+        return [self._entry(data) for data in self.store.search(query, limit)]
 
 
 def _validate_python_skill_reference(reference: dict[str, Any] | None, entry_name: str = "") -> dict[str, Any]:
@@ -507,6 +568,8 @@ class HarnessState:
     def load(self) -> "HarnessState":
         if self.file_path is None or not self.file_path.exists():
             self._loaded_mtime = None
+            if self.scope == "local" and self.file_path is not None and not isinstance(self.entries.get("memory"), _MemoryEntries):
+                self.entries = {**self.entries, "memory": _MemoryEntries(MemoryStore.at(self.file_path.parent))}  # type: ignore[dict-item]
             return self
         mtime = self._disk_mtime()
         try:
@@ -564,6 +627,18 @@ class HarnessState:
                         if not isinstance(entry_data.get("metadata"), dict):
                             entry_data["metadata"] = {}
                         entries[kind][str(entry_id)] = HarnessEntry(**entry_data)
+        if self.scope == "local" and self.file_path is not None:
+            # A local store keeps its memory in memory.sqlite. Entries the file still holds, from a writer that predates the move, go there
+            # unless the store has a newer copy; the next save writes the file without them. Global entries of a file both stores share
+            # stay in the file.
+            kept = {key: entry for key, entry in entries["memory"].items() if entry.scope == "global"}
+            memory = _MemoryEntries(MemoryStore.at(self.file_path.parent), kept)
+            legacy = [
+                entry for entry in entries["memory"].values()
+                if entry.scope != "global" and entry.updated_at > ((memory.store.get(entry.id) or {}).get("updated_at") or "")
+            ]
+            memory.store.put([asdict(entry) for entry in legacy])
+            entries["memory"] = memory  # type: ignore[assignment]
         self.entries = entries
 
         self.refinements = []
@@ -603,7 +678,7 @@ class HarnessState:
         data = {
             "schema": 1,
             "entries": {
-                kind: {entry_id: asdict(entry) for entry_id, entry in records.items()}
+                kind: {entry_id: asdict(entry) for entry_id, entry in (records.kept if isinstance(records, _MemoryEntries) else records).items()}
                 for kind, records in self.entries.items()
             },
             "refinements": [asdict(event) for event in self.refinements],
@@ -731,6 +806,8 @@ class HarnessState:
             existing.updated_at = _now()
             existing.version += 1
             entry = existing
+            # A memory.sqlite entry is a copy, so the change goes back by id.
+            self.entries[kind][entry_id] = entry
         else:
             entry = HarnessEntry(
                 id=entry_id,
@@ -1155,7 +1232,15 @@ class HarnessState:
         if not terms:
             return []
 
-        entries = self.list(kind, **kwargs) if kind is not None else self.list(None, **kwargs)
+        memory = self.entries.get("memory")
+        if isinstance(memory, _MemoryEntries) and kind in (None, "memory"):
+            # memory.sqlite ranks the whole store with FTS5's BM25; the other kinds stay few and rank below as before.
+            hits = memory.search(query, max(limit, 50))
+            if kind == "memory":
+                return hits[:limit]
+            entries = [entry for other in _KINDS if other != "memory" for entry in self.entries[other].values()] + hits
+        else:
+            entries = self.list(kind, **kwargs) if kind is not None else self.list(None, **kwargs)
 
         # Document frequency per term over the ranked corpus: a term in
         # every entry weighs log(2), a term in one entry of N weighs

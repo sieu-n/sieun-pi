@@ -13,6 +13,7 @@ import { fauxAssistantMessage, fauxProvider, type Message } from "@earendil-work
 import { createModels } from "@earendil-works/pi-ai/models";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import type { HostCall } from "../../src/durable/host-modules.ts";
+import { migrateMemory } from "../../../pi-harness/src/core/store.ts";
 import { refineModule, type PlannerCall } from "../../src/durable/refine.ts";
 import type { RlmThread } from "../../src/durable/rlm.ts";
 import { DurableThreads } from "../../src/durable/threads.ts";
@@ -93,6 +94,9 @@ test("six overlapping reviews read each store and the log once, and a store writ
       });
     }
 
+    // The agent store's memory moves into memory.sqlite once (pi-harness `migrateMemory`), as pi-host does at an agent's first digest;
+    // the reviews then read the store that a live agent has.
+    await migrateMemory(localDir);
     const before = bytesRead();
     await Promise.all(calls.slice(0, 6).map(call => module.settled!(call)));
     await until("six reviews at the planner", () => prompts.length === 6);

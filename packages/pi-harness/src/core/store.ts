@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { withFileLock } from "./lock.ts";
+import { deleteMemory, listMemory, memoryRevision, putMemory } from "./memory-store.ts";
 
 /**
  * The continual harness store: `harness_state.json` in the format and at the paths of Prime's `harness.py`.
@@ -124,8 +125,8 @@ export function parseState(raw: unknown, scope: Scope): HarnessState {
   return state;
 }
 
-/** Reads one store. A missing or unreadable file reads as an empty store. */
-export function readState(dir: string, scope: Scope): HarnessState {
+/** Reads one store's file. A missing or unreadable file reads as an empty store. */
+function readFile(dir: string, scope: Scope): HarnessState {
   const file = stateFile(dir);
   if (!existsSync(file)) return emptyState();
   try {
@@ -133,6 +134,22 @@ export function readState(dir: string, scope: Scope): HarnessState {
   } catch {
     return emptyState();
   }
+}
+
+/**
+ * Reads one store. A local store's memory entries live in `memory.sqlite` (`memory-store.ts`); they come back in `entries.memory`, with
+ * any entry the file still holds from a writer that predates the move, the newer copy winning.
+ */
+export function readState(dir: string, scope: Scope): HarnessState {
+  const state = readFile(dir, scope);
+  if (scope !== "local") return state;
+  const kept = state.entries.memory;
+  state.entries.memory = {};
+  for (const entry of listMemory(dir)) state.entries.memory[entry.id] = entry;
+  for (const [id, entry] of Object.entries(kept)) {
+    if ((entry.updated_at ?? "") >= (state.entries.memory[id]?.updated_at ?? "")) state.entries.memory[id] = entry;
+  }
+  return state;
 }
 
 /** The file's real path, as Python's `os.path.realpath` gives it, so both languages lock the same `<file>.lock`. */
@@ -180,10 +197,30 @@ function writeState(dir: string, state: HarnessState): void {
 export async function updateState<R>(dir: string, scope: Scope, change: (state: HarnessState) => R): Promise<R> {
   return withFileLock(realTarget(stateFile(dir)), () => {
     const state = readState(dir, scope);
+    const before = new Map(Object.entries(state.entries.memory).map(([id, entry]) => [id, JSON.stringify(entry)]));
+    const moved = scope === "local" && Object.keys(readFile(dir, scope).entries.memory).length > 0;
     const result = change(state);
-    if (result !== false) writeState(dir, state);
+    if (result === false && !moved) return result;
+    if (scope === "local") {
+      const after = state.entries.memory;
+      putMemory(dir, Object.entries(after).filter(([id, entry]) => moved || before.get(id) !== JSON.stringify(entry)).map(([id, entry]) => ({ ...entry, id })));
+      deleteMemory(dir, [...before.keys()].filter(id => !(id in after)));
+      writeState(dir, { ...state, entries: { ...state.entries, memory: {} } });
+      state.entries.memory = after;
+    } else {
+      writeState(dir, state);
+    }
     return result;
   });
+}
+
+/**
+ * Moves the memory entries a local `harness_state.json` still holds into `memory.sqlite`. It runs again safely after a crash at any point,
+ * and it picks up entries an older kernel wrote to the file after the first move. Returns how many entries the file held.
+ */
+export async function migrateMemory(dir: string): Promise<number> {
+  if (!Object.keys(readFile(dir, "local").entries.memory).length) return 0;
+  return updateState(dir, "local", state => Object.keys(state.entries.memory).length);
 }
 
 /** Prime's merged view for the digest and the planner: global entries, then local ones, with a clashing local id shown as `local:<id>`. */
@@ -205,11 +242,12 @@ export function mergeStates(global: HarnessState, local?: HarnessState): Harness
 export function filesIdentity(dirs: string[]): string {
   return dirs
     .map(dir => {
+      const memory = memoryRevision(dir);
       try {
         const s = statSync(stateFile(dir));
-        return `${s.ino}:${s.size}:${s.mtimeMs}:${s.ctimeMs}`;
+        return `${s.ino}:${s.size}:${s.mtimeMs}:${s.ctimeMs}:${memory}`;
       } catch {
-        return "none";
+        return `none:${memory}`;
       }
     })
     .join("|");

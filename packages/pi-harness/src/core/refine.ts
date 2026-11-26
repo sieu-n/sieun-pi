@@ -441,10 +441,14 @@ export const ROUTE_POLICY =
   "Keep memory for facts and decisions about this session's or agent's own products and systems, and route a one-off request or a task nowhere.";
 
 /** The planner's user prompt for one conversation text; `agent` names the sw factory agent whose memory the local store is, and `routes` adds `ROUTE_POLICY`. */
-export function plannerPrompt(state: HarnessState, history: RefineResult[], conversation: string, args: { global: boolean; instructions?: string; agent?: string; routes?: boolean }): string {
+export function plannerPrompt(
+  state: HarnessState, history: RefineResult[], conversation: string,
+  args: { global: boolean; instructions?: string; agent?: string; routes?: boolean; localShown?: readonly string[] },
+): string {
   const policy = args.global ? GLOBAL_POLICY : args.agent ? agentPolicy(args.agent) : LOCAL_POLICY;
+  const shown = args.localShown ? { localShown: args.localShown } : {};
   return [
-    `<current_harness_state>\n${plannerOverview(state, { localFirst: !args.global && args.agent !== undefined })}\n</current_harness_state>`,
+    `<current_harness_state>\n${plannerOverview(state, { localFirst: !args.global && args.agent !== undefined, ...shown })}\n</current_harness_state>`,
     `<refinement_history>\n${historyText(history)}\n</refinement_history>`,
     `<conversation>\n${conversation}\n</conversation>`,
     `<scope_policy>\n${args.routes ? `${policy}\n${ROUTE_POLICY}` : policy}\n</scope_policy>`,

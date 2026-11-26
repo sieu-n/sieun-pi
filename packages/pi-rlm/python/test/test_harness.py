@@ -137,7 +137,7 @@ class HarnessStateTest(unittest.TestCase):
     def test_save_failure_preserves_previous_state_on_disk(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             state = HarnessState(Path(temp_dir) / "harness_state.json")
-            state.create_memory("Durable fact", "Written before the crash.")
+            state.create_prompt_note("Durable fact", "Written before the crash.")
 
             crashing = HarnessState(state.file_path)
             original_dump = json.dump
@@ -149,13 +149,14 @@ class HarnessStateTest(unittest.TestCase):
             json.dump = torn_dump  # type: ignore[assignment]
             try:
                 with self.assertRaises(OSError):
-                    crashing.create_memory("Doomed fact", "Interrupted mid-write.")
+                    crashing.create_prompt_note("Doomed fact", "Interrupted mid-write.")
             finally:
                 json.dump = original_dump
 
-            # The interrupted save must not have truncated the durable state.
+            # The interrupted save must not have truncated the durable state. Memory entries live in memory.sqlite, which commits
+            # each write on its own, so a prompt note shows the file's guarantee.
             reloaded = HarnessState(state.file_path)
-            titles = [entry.title for entry in reloaded.entries["memory"].values()]
+            titles = [entry.title for entry in reloaded.entries["prompt"].values()]
             self.assertEqual(titles, ["Durable fact"])
 
     @unittest.skipIf(os.name == "nt", "POSIX mode bits and umask")
@@ -515,11 +516,12 @@ class HarnessStateTest(unittest.TestCase):
             state = HarnessState(state_path)
 
             self.assertEqual(state.get("memory", "topic_entry").path, "window/era")
-            # The migration is read-only: a save writes the grouping under "path" only.
+            # The entry moves into memory.sqlite with its grouping under "path", and a save writes the file without it.
             state.save()
             persisted = state_path.read_text()
-            self.assertIn('"path": "window/era"', persisted)
             self.assertNotIn('"topic"', persisted)
+            self.assertNotIn("topic_entry", persisted)
+            self.assertEqual(HarnessState(state_path).get("memory", "topic_entry").path, "window/era")
 
     def test_in_memory_state_never_touches_disk(self) -> None:
         previous = os.environ.get("RLM_HARNESS_STATE_DIR")

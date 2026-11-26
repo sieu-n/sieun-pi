@@ -344,7 +344,7 @@ test("an agent thread gets Prime's preamble first, the brief after the AGENTS.md
 
     const [digest, input] = userTexts(roots[0]!);
     assert.match(digest!, /^\[harness-digest\]\n/);
-    assert.match(digest!, /## Agent vent's memory \(1 entries\)\n\n- \[agent:vent_quota\] memory: Vent quota: The vent crawler stops at 500 reads a day\./, "the agent's store is its own block");
+    assert.match(digest!, /## Agent vent's memory \(1 entries; the 1 that best match this turn\)\n\n- \[agent:vent_quota\] memory: Vent quota: The vent crawler stops at 500 reads a day\./, "the agent's store is its own block");
     assert.match(digest!, /Local entries are agent vent's own memory/, "the scope lines name the agent's memory in place of Prime's session lines");
     assert.doesNotMatch(digest!, /belong to this Prime Agent session/);
     assert.match(digest!, /- \[global:fixture_memory\] /, "the global store still merges under the agent's");

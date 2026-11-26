@@ -32,7 +32,7 @@ import {
   applyProposal, autoRefineInstructions, mergeHistory, newRefineId, noticeContent, outcomeContent, parseProposal, parseReview, plannerPrompt, PLANNER_PROMPT,
   REVIEW_PROMPT, reviewPrompt, skillRouteContent, type AutoReason, type RefineResult,
 } from "../../../pi-harness/src/core/refine.ts";
-import { appendRefinementLog, mergeStates, readRefinementLog, readState, REFINEMENT_LOG, stateFile, updateState, type HarnessState, type Scope } from "../../../pi-harness/src/core/store.ts";
+import { appendRefinementLog, filesIdentity, mergeStates, readRefinementLog, readState, REFINEMENT_LOG, stateFile, updateState, type HarnessState, type Scope } from "../../../pi-harness/src/core/store.ts";
 import { assistantsAfter, contextSummary } from "./context-summary.ts";
 import type { HostCall, HostModule, HostModuleOptions } from "./host-modules.ts";
 import { track } from "../loop-stall.ts";
@@ -173,8 +173,7 @@ export function refineModule(options: RefineModuleOptions): HostModule {
    */
   const parsed = new Map<string, { identity: string; value: unknown }>();
   // Cleared when no refine runs (`serve`), so an idle pi-host keeps no store in memory.
-  const cached = <T>(key: string, file: string, read: () => T): T => {
-    const identity = identityOf(file);
+  const cached = <T>(key: string, file: string, read: () => T, identity = identityOf(file)): T => {
     const hit = parsed.get(key);
     if (hit?.identity === identity) return hit.value as T;
     const value = read();
@@ -183,7 +182,8 @@ export function refineModule(options: RefineModuleOptions): HostModule {
   };
   const stateOf = (dir: string, scope: Scope): HarnessState => {
     const file = resolve(stateFile(dir));
-    return cached(`${scope}:${file}`, file, () => readState(dir, scope));
+    // A local store's memory entries live in memory.sqlite, whose revision `filesIdentity` adds to the file's identity.
+    return cached(`${scope}:${file}`, file, () => readState(dir, scope), filesIdentity([dir]));
   };
   const logOf = (): RefineResult[] => {
     const file = resolve(join(globalDir, REFINEMENT_LOG));
@@ -212,8 +212,16 @@ export function refineModule(options: RefineModuleOptions): HostModule {
       const records = mergeHistory(logOf(), ((await read(call))?.records ?? []) as unknown as RefineResult[]);
       const global = stateOf(globalDir, "global");
       const local = stateOf(call.harnessDir, "local");
-      const text = await track("refine context", call.session, async () => conversationText(await contextMessages(call) as never).slice(-PLANNER_CONVERSATION));
-      const args = { global: scope === "global", routes: !call.test, ...(ask.instructions ? { instructions: ask.instructions } : {}), ...(scope === "local" && call.agent ? { agent: call.agent } : {}) };
+      const messages = await contextMessages(call);
+      const text = await track("refine context", call.session, async () => conversationText(messages as never).slice(-PLANNER_CONVERSATION));
+      // An agent's memory can hold tens of thousands of entries, so the planner sees the ones nearest the conversation, as the review does.
+      const localShown = scope === "local" && call.agent
+        ? await harnessNearest({ agentDir: options.agentDir, localDir: call.harnessDir, agent: call.agent, flags: NO_DIGEST_FLAGS, recent: [...messages.slice(-4).map(textOfMessage), ask.instructions ?? ""], limit: REVIEW_LOCAL_ENTRIES }, call.log)
+        : undefined;
+      const args = {
+        global: scope === "global", routes: !call.test, ...(ask.instructions ? { instructions: ask.instructions } : {}), ...(scope === "local" && call.agent ? { agent: call.agent } : {}),
+        ...(localShown ? { localShown } : {}),
+      };
       const reply = await planner(call, PLANNER_PROMPT, text, c => plannerPrompt(scope === "global" ? global : mergeStates(global, local), records, c, args), signal);
       const proposal = parseProposal(reply);
       if (signal.aborted) throw new Error("Refinement cancelled.");
@@ -256,7 +264,7 @@ export function refineModule(options: RefineModuleOptions): HostModule {
     const text = await track("auto-refine context", call.session, async () => conversationText(messages as never).slice(-REVIEW_CONVERSATION));
     // An agent's review sees its 40 local entries nearest the conversation, as Prime's VFn shows 40 per kind; the store keeps every entry.
     const localShown = call.agent
-      ? await harnessNearest({ agentDir: options.agentDir, localDir: call.harnessDir, flags: NO_DIGEST_FLAGS, recent: messages.slice(-4).map(textOfMessage), limit: REVIEW_LOCAL_ENTRIES }, call.log)
+      ? await harnessNearest({ agentDir: options.agentDir, localDir: call.harnessDir, agent: call.agent, flags: NO_DIGEST_FLAGS, recent: messages.slice(-4).map(textOfMessage), limit: REVIEW_LOCAL_ENTRIES }, call.log)
       : undefined;
     const trigger = { reason: due.reason, turnsSinceLastReview: due.turns, ...(call.agent ? { agent: call.agent } : {}), ...(localShown ? { localShown } : {}) };
     return parseReview(await planner(call, REVIEW_PROMPT, text, c => reviewPrompt(state, records, c, trigger), signal, NO_THINKING_REVIEW_TOKENS));

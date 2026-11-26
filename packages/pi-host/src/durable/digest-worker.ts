@@ -12,7 +12,8 @@
  * process, started at the first job; if it fails, the jobs in it and later ones run on the loop as before.
  */
 import { isMainThread, parentPort, Worker, workerData } from "node:worker_threads";
-import { digestQueryTerms, formatDigest, mergedHarnessState, nearestLocal, nextDelivery, type DigestDelivery, type DigestFlags } from "./prime-harness.ts";
+import { migrateMemory } from "../../../pi-harness/src/core/store.ts";
+import { digestQueryTerms, formatDigest, memoryQuery, mergedHarnessState, nearestLocal, nextDelivery, type DigestDelivery, type DigestFlags } from "./prime-harness.ts";
 
 interface StoreJob {
   agentDir: string;
@@ -35,14 +36,18 @@ type Answer = { kind: "delivery"; delivery: DigestDelivery | undefined } | { kin
 type Reply = { id: number; answer: Answer } | { id: number; error: string };
 
 function run(job: Job): Answer {
-  const state = mergedHarnessState(job.agentDir, job.localDir);
+  const state = mergedHarnessState(job.agentDir, job.localDir, !job.agent);
+  // An agent's memory entries live in memory.sqlite in its harness folder (pi-harness `memory-store.ts`).
+  const memoryDir = job.agent ? job.localDir : undefined;
   switch (job.kind) {
     case "delivery":
-      return { kind: "delivery", delivery: nextDelivery({ ...job, state, recent: job.recent.filter(Boolean).slice(-4) }) };
-    case "digest":
-      return { kind: "digest", text: formatDigest(state, { ...job.flags, ...(job.query ? { queryTerms: digestQueryTerms([job.query], []) } : {}) }, job.agent) };
+      return { kind: "delivery", delivery: nextDelivery({ ...job, state, recent: job.recent.filter(Boolean).slice(-4), ...(memoryDir ? { memoryDir } : {}) }) };
+    case "digest": {
+      const memory = memoryDir ? { dir: memoryDir, query: memoryQuery(job.query ? [job.query] : [], []) } : undefined;
+      return { kind: "digest", text: formatDigest(state, { ...job.flags, ...(job.query ? { queryTerms: digestQueryTerms([job.query], []) } : {}) }, job.agent, memory) };
+    }
     case "nearest":
-      return { kind: "nearest", keys: nearestLocal(state, job.recent, job.limit) };
+      return { kind: "nearest", keys: nearestLocal(state, job.recent, job.limit, memoryDir) };
     default: {
       const _exhaustive: never = job;
       return _exhaustive;
@@ -99,8 +104,16 @@ function started(): Worker {
   return fresh;
 }
 
+/** The agent stores whose file entries this process moved into memory.sqlite (`migrateMemory`), so each moves once per process. */
+const migrated = new Set<string>();
+
 /** Runs a job on the worker; when the worker fails, runs it here and says so through `log`. */
 async function offLoop(job: Job, log?: (line: string) => void): Promise<Answer> {
+  if (job.agent && job.localDir && !migrated.has(job.localDir)) {
+    migrated.add(job.localDir);
+    const moved = await migrateMemory(job.localDir).catch(error => { log?.(`agent memory move failed: ${error instanceof Error ? error.message : String(error)}`); return 0; });
+    if (moved) log?.(`moved ${moved} memory entries of ${job.agent} into ${job.localDir}/memory.sqlite`);
+  }
   try {
     return await new Promise<Answer>((resolve, reject) => {
       const id = nextId++;
