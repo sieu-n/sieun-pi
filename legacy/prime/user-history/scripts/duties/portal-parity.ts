@@ -167,6 +167,11 @@ export const QUERY_CHAINS: Readonly<Record<string, { from: string; what: string;
     const id = firstItemId(body);
     return id ? { note_id: id } : undefined;
   } },
+  /** The v2 note runs note_detail, so its docs example id answered 400 invalid_request on staging on 11-26 at 06:58Z, as note_detail's did. */
+  "GET /v2/xiaohongshu/note": { from: "GET /v1/xiaohongshu/explore", what: "note_id", query: body => {
+    const id = firstItemId(body);
+    return id ? { note_id: id } : undefined;
+  } },
   /**
    * A Facebook expansion_token stops working 7 days after post_comments issues it: the docs example token of 10-27 20:35Z read its
    * replies on prod at 6.88 days and got field_exception on staging at 7.2 days (d2, 11-04 01:53Z), while a token from a fresh
@@ -559,7 +564,7 @@ export function parseScope(args: readonly string[]): { only: ReadonlySet<string>
   const only = new Set<string>();
   for (const raw of values.only) {
     const op = raw.trim().replace(/^(\S+)\s+/, (_, method: string) => `${method.toUpperCase()} `);
-    if (!/^(GET|POST|PUT|PATCH|DELETE) \/v1\/\S+$/.test(op)) throw new Error(`--only takes "METHOD /v1/path", such as "GET /v1/search/google", not ${JSON.stringify(raw)}`);
+    if (!/^(GET|POST|PUT|PATCH|DELETE) \/v[12]\/\S+$/.test(op)) throw new Error(`--only takes "METHOD /v1/path" or "METHOD /v2/path", such as "GET /v1/search/google", not ${JSON.stringify(raw)}`);
     only.add(op);
     const feeder = QUERY_CHAINS[op]?.from;
     if (feeder) only.add(feeder);
