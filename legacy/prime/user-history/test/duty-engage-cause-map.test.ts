@@ -38,3 +38,9 @@ test("an operator's freeze is operator and an operator-written Instagram verdict
   assert.equal(causeOf({ code: "challenged", readBefore: true, pages24h: 50, actor: "operator:engage_freeze" }), "instagram");
   assert.equal(causeOf({ code: "transport", readBefore: true, pages24h: 50, actor: "fleet" }), "ours");
 });
+
+test("a login redirect with no re-login and a scraping warning are Instagram verdicts, found_idle after no page in 24 h (prod 116, 162, 142 on 11-26)", () => {
+  assert.equal(causeOf({ code: "scraping_warning", readBefore: true, pages24h: 40 }), "instagram");
+  assert.equal(causeOf({ code: "scraping_warning", readBefore: true, pages24h: 0 }), "found_idle");
+  assert.equal(causeOf({ code: "jar_login_redirect", readBefore: true, pages24h: 12 }), "instagram");
+});

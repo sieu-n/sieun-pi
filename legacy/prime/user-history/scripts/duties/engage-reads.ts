@@ -123,6 +123,9 @@ export const CODE_CAUSES: Readonly<Record<string, Cause>> = {
   account_suspended: "instagram", action_blocked: "instagram", challenge: "instagram", challenge_required: "instagram", challenged: "instagram",
   checkpoint_required: "instagram", instagram_session_killed: "instagram", login_redirect: "instagram", sentry_block: "instagram", suspended_on_first_contact: "instagram",
   consent_required: "instagram", contact_point_required: "instagram", jar_check_checkpoint: "instagram",
+  // auto-sns-agent 04d5e0489 (prod 11-26 04:39Z) ends an account at a login redirect with no re-login and freezes it at a scraping warning; prod
+  // 116, 162 and 142 froze on scraping_warning at 06:30Z 11-26, and engage_deaths.py at d9010f1cc2 maps both codes to instagram.
+  jar_login_redirect: "instagram", scraping_warning: "instagram",
   bad_password: "bad_password",
   budget_meter_failed: "ours", exit_pinned: "ours", exit_unusable: "ours", geo_blocked: "ours", proxy_blocked: "ours", transport: "ours",
   relogin_account_not_found: "instagram", relogin_challenge: "instagram", relogin_disabled: "instagram", relogin_gone: "instagram", relogin_suspended: "instagram",
