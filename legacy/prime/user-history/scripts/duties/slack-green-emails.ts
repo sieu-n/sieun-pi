@@ -82,6 +82,15 @@ const SUBJECTS: [Template, RegExp][] = [
   ["trial_day1_card", /^Add a card now to get \d+ more trial days$/],
   // _charge_draft: the d2 reminder of the first charge for a Pro plan in its Stripe trial. It ignores the marketing opt-out by design.
   ["trial_charge", /^Your Slack Green trial ends on .+$/],
+  // PR #657 (v1.16.491, 2026-11-26): ja and ko copies of the emails to someone who has not connected Slack, picked by app_metadata.setup_locale.
+  ["setup_link", /^ノートパソコンでこれを開いて、.+を接続しましょう$|^ノートパソコンでこれを開いて、Slackに接続しましょう$/],
+  ["setup_link", /^Slackに接続して、.+をグリーンに保ちましょう$/],
+  ["setup_link", /^노트북에서 이 메일을 열어 .+ 연결하세요$/],
+  ["setup_link", /^Slack을 연결해 .+ 초록불로 유지하세요$/],
+  ["trial_d7", /^トライアルの残りは7日、Slackはまだ接続されていません$|^체험 기간이 7일 남았는데 Slack이 아직 연결되지 않았습니다$/],
+  ["trial_last_day", /^トライアルの残りは1日未満、Slackはまだ接続されていません$|^체험 기간이 하루 미만 남았는데 Slack이 아직 연결되지 않았습니다$/],
+  ["trial_d0", /^Slackに接続する前にSlack Greenのトライアルが終了しました$|^Slack을 연결하기 전에 Slack Green 체험이 끝났습니다$/],
+  ["trial_d0", /^今月はSlack Green Proが.+$|^이번 달 Slack Green Pro를 .+에$/],
   ["signup_confirm", /^Confirm Your Signup$/],
   ["password_reset", /^Reset Your Password$/],
 ];
@@ -91,14 +100,15 @@ const ASKED: readonly Template[] = ["signup_confirm", "password_reset"];
 /** Sends that should_send_marketing gates in packages/backend/app/lib/email.py: off for a user who turned marketing email off. */
 const MARKETING: readonly Template[] = ["connect_reminder", "trial_d7", "trial_d2", "trial_last_day", "trial_d0", "trial_idle", "trial_after_d3", "trial_day1_card", "trial_followup"];
 /** The v2 trial copy for someone who never connected Slack (_not_connected_draft): wrong once the user has a workspace. */
-const NOT_CONNECTED_SUBJECT = /Slack isn't connected yet$|^Your Slack Green trial ended before Slack was connected$|^Your 7 free days of Slack Green are still waiting$/;
+const NOT_CONNECTED_SUBJECT = /Slack isn't connected yet$|^Your Slack Green trial ended before Slack was connected$|^Your 7 free days of Slack Green are still waiting$|Slackはまだ接続されていません$|^Slackに接続する前に|Slack이 아직 연결되지 않았습니다$|^Slack을 연결하기 전에/;
 const BAD_EVENTS = ["bounced", "complained"];
 /**
  * QA sign-in accounts, the same pattern as QA_EMAIL in PR #225's packages/backend/app/lib/email.py, and Resend's test inboxes (delivered@,
  * bounced@ and the rest at resend.dev, https://resend.com/docs/dashboard/emails/send-test-emails); our own test sends are left out. On 10-22
  * the "sg-qa key check" and "slack-green breach check" mails to delivered@resend.dev read as 4 bad sends.
+ * QA walks also sign up throwaway mail.tm inboxes named sgqa-*; on 11-26 one to sgqa-00323376@euploading.com read as a bad send.
  */
-const QA_EMAIL = /^(sg-qa-[^@]*@slack\.green|qa\+[^@]*@example\.com|[^@]*\+sgqa[^@]*@.*|[^@]*@resend\.dev)$/;
+const QA_EMAIL = /^(sg-qa-[^@]*@slack\.green|sgqa-[^@]*@.*|qa\+[^@]*@example\.com|[^@]*\+sgqa[^@]*@.*|[^@]*@resend\.dev)$/;
 
 export const templateOf = (subject: string): Template => SUBJECTS.find(([, pattern]) => pattern.test(subject))?.[0] ?? "other";
 

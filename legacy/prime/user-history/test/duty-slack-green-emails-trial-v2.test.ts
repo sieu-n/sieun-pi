@@ -25,6 +25,25 @@ test("every v2 trial subject maps to a trial template", () => {
   assert.equal(templateOf("Add a card now to get 7 more trial days"), "trial_day1_card");
 });
 
+test("the ja and ko copies from slack-green #657 map to their templates, and the never-connected ones count as wrong after a connect", () => {
+  assert.equal(templateOf("Slackに接続して、ステータスをグリーンに保ちましょう"), "setup_link");
+  assert.equal(templateOf("Slackに接続して、QA Acmeをグリーンに保ちましょう"), "setup_link");
+  assert.equal(templateOf("ノートパソコンでこれを開いて、Slackに接続しましょう"), "setup_link");
+  assert.equal(templateOf("노트북에서 이 메일을 열어 Slack을 연결하세요"), "setup_link");
+  assert.equal(templateOf("Slack을 연결해 Acme을(를) 초록불로 유지하세요"), "setup_link");
+  assert.equal(templateOf("トライアルの残りは7日、Slackはまだ接続されていません"), "trial_d7");
+  assert.equal(templateOf("체험 기간이 하루 미만 남았는데 Slack이 아직 연결되지 않았습니다"), "trial_last_day");
+  assert.equal(templateOf("Slackに接続する前にSlack Greenのトライアルが終了しました"), "trial_d0");
+  assert.equal(templateOf("이번 달 Slack Green Pro를 $4.99에"), "trial_d0");
+  const NOW = Date.parse("2026-11-26T10:00:00Z");
+  const HOUR = 3_600_000;
+  const subject = "Slack을 연결하기 전에 Slack Green 체험이 끝났습니다";
+  const sends: Send[] = [{ id: "1", at: NOW - HOUR, to: "a@x.com", template: templateOf(subject), subject, lastEvent: "delivered" },
+    { id: "2", at: NOW - HOUR, to: "sgqa-1@euploading.com", template: "setup_link", subject: "s", lastEvent: "delivered" }];
+  const result = emailMetrics({ sends, recipients: { "a@x.com": { userId: "ua", firstWorkspaceAt: NOW - 5 * HOUR } }, errors: [] }, NOW, undefined);
+  assert.equal(result.metrics.false_positive_sends, 1);
+});
+
 test("the never-connected trial email is wrong after the user connected Slack, and marketing after an opt-out", () => {
   const NOW = Date.parse("2026-10-23T01:00:00Z");
   const HOUR = 3_600_000;
