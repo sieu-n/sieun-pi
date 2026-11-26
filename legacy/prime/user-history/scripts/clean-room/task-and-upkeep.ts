@@ -14,7 +14,7 @@ import { readSession, type RunState, type Scenario, type SessionEvent, sessionFi
  */
 export const TASK = "which of our crawler-v3 platforms have no unit tests? put the list on a wiki page and make sure it keeps matching the code as platforms get added";
 const DATA = process.env.AGENT_CHAT_DATA_DIR ?? join(homedir(), ".prime/agent/browser-chat");
-const WIKI = process.env.WIKI_CONTENT_DIR ?? join(homedir(), "Documents/Github/auto-sns-agent/apps/llm-wiki/content");
+const WIKI = process.env.WIKI_CONTENT_DIR ?? join(homedir(), ".pi/wiki/content");
 const OPEN = new Set(["todo", "doing", "blocked"]);
 
 /**

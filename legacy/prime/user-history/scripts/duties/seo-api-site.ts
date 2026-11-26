@@ -26,7 +26,7 @@ import {
  */
 
 const REPO = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto-sns-agent");
-const PROGRAM = process.env.SEO_PROGRAM_DIR || join(REPO, "apps/llm-wiki/content/sessions/2026/10/02/0040-virev-seo-agent/program");
+const PROGRAM = process.env.SEO_PROGRAM_DIR || join(homedir(), ".pi/wiki/content/sessions/2026/10/02/0040-virev-seo-agent/program");
 const SOURCES_PY = join(import.meta.dirname, "seo-sources.py");
 const SERP_CHECKS = process.env.SEO_API_SERP_CHECKS || join(homedir(), "work/api-seo/serp-checks.jsonl");
 export const SITEMAP = "https://api.virev.ai/sitemap.xml";

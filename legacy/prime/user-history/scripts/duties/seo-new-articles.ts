@@ -21,7 +21,7 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  */
 
 const REPO = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto-sns-agent");
-const PROGRAM = process.env.SEO_PROGRAM_DIR || join(REPO, "apps/llm-wiki/content/sessions/2026/10/02/0040-virev-seo-agent/program");
+const PROGRAM = process.env.SEO_PROGRAM_DIR || join(homedir(), ".pi/wiki/content/sessions/2026/10/02/0040-virev-seo-agent/program");
 const SOURCES_PY = join(import.meta.dirname, "seo-sources.py");
 export const SITEMAP = "https://virev.ai/blog/sitemap.xml";
 /** The miss value of a metric whose source failed, the convention of auto-sns-agent scripts/duties/ci/duty-sources.mjs (UNMEASURED). */

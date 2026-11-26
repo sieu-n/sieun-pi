@@ -33,7 +33,7 @@ test("a dm-replies collect ends the run at its first pass, long before its windo
   const root = mkdtempSync(join(tmpdir(), "clean-room-verdict-"));
   const run = join(root, "clean-room", "c104-long-reply", "run-1");
   try {
-    const data = join(root, "data"), sessions = join(root, ".prime/agent/sessions"), wiki = join(root, "Documents/Github/auto-sns-agent/apps/llm-wiki/content/notes");
+    const data = join(root, "data"), sessions = join(root, ".prime/agent/sessions"), wiki = join(root, ".pi/wiki/content/notes");
     for (const dir of [run, join(data, "boards"), sessions, wiki]) mkdirSync(dir, { recursive: true });
     writeFileSync(join(data, "configuration.json"), JSON.stringify({ csrfToken: "abc123", port: (srv.address() as AddressInfo).port, capability: "cap" }));
     writeFileSync(join(data, "check-in-settings.json"), "{}");

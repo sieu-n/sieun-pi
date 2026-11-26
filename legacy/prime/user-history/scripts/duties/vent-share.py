@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-INVENTORY = Path("apps/llm-wiki/content/sessions/2026/10/18/1610-vent-cutover-all-callers/data/inventory-calls.md")
+INVENTORY = Path.home() / ".pi/wiki/content/sessions/2026/10/18/1610-vent-cutover-all-callers/data/inventory-calls.md"
 INVENTORY_REF = "8bc0fa3615"
 
 # The coordinator's in-scope rule (cutover thread 2026-10-18T07:30Z): a row is out of scope

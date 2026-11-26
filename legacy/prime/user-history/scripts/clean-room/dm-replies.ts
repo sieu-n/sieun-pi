@@ -26,7 +26,7 @@ export const TASK = "few things i want to know, no rush. which sieun-pi duties f
 export const FOLLOW_UP = "also can you explain how a sieun-pi commit gets from a job to the live chat app here, in a diagram? i think the job " +
   "commits on main and then release-chat restarts the service right away... is this correct?";
 const SESSIONS = join(homedir(), ".prime/agent/sessions");
-const WIKI_CONTENT = join(homedir(), "Documents/Github/auto-sns-agent/apps/llm-wiki/content");
+const WIKI_CONTENT = join(homedir(), ".pi/wiki/content");
 const WIKI_LINK = /(?:wiki:|:5176\/page\/|apps\/llm-wiki\/content\/)([^\s`"'<>()[\]]+?\.(?:html?|md))/g;
 
 /** Who started the turn a call belongs to: the owner (with his message's id), a job or another agent, or a server note such as a check-in. */
