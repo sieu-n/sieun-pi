@@ -25,6 +25,9 @@ import { checkCleanup } from "./test-org-cleanup.ts";
  *    call works only when its job ends ready, never on its 202 receipt alone (jobVerdict).
  * 4. It maps answers to crawler routes through portal-parity.routes.json: an env scores a route its own crawler lists, the route works there
  *    when one of its /v1 operations works there, and a route with no /v1 operation in that env's openapi is missing there.
+ * 5. On staging it also scores every v2 endpoint of auto-sns-agent apps/api-portal/src/lib/v2/catalog.ts (V2_CATALOG), read at run time, so
+ *    staging_working_pct drops when one breaks (v2Routes). Prod answers /v2 with 404 while API_V2_ENABLED is off there (owner, #dev-api-portal
+ *    p47: "NEVER deploy anything to prod before approval. make in dev."), so prod scores no v2 endpoint.
  * A source it cannot read, an env's crawler openapi included, gives -1 for that env's share, a source_errors count and a flagged slice.
  *
  * Sources for the targets in portal-parity.duty.json (the JSON cannot hold comments):
@@ -37,7 +40,8 @@ import { checkCleanup } from "./test-org-cleanup.ts";
  * To check one or two operations after a fix, run a scoped run (parseScope), never the whole precheck:
  * `node --import tsx scripts/duties/portal-parity.ts --only "GET /v1/search/google" [--only "<METHOD /path>"] [--env prod|staging]`.
  * It calls only the named operations, their page 2 and the calls that feed them, prints each answer and the /v1 call count to stdout, and
- * writes no OUTPUT_FILE or STATE_FILE, so it never stands in for a d2 reading.
+ * writes no OUTPUT_FILE or STATE_FILE, so it never stands in for a d2 reading. `--env staging` with no --only is a whole run of staging alone,
+ * which writes OUTPUT_FILE with prod at -1.
  */
 
 const REPO = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto-sns-agent");
@@ -113,7 +117,21 @@ export type OpenApi = { paths?: Record<string, Record<string, Operation>> };
  * One crawler route and the /v1 operations that reach it. `envs` limits the entry to those envs, for a route whose crawler path stayed while
  * the portal side changed on one env only, such as the Douyin stored reads that prod still pauses by design and staging serves.
  */
-export interface Route { crawler: string; group: string; portal: string[]; aliases?: string[]; byDesign?: string; envs?: Env[] }
+export interface Route { crawler: string; group: string; portal: string[]; aliases?: string[]; byDesign?: string; envs?: Env[]; v2?: true }
+
+/** The v2 catalog every /v2 route, the v2 docs and the sidebar read (auto-sns-agent apps/api-portal), one copy this run imports. */
+export const V2_CATALOG = "apps/api-portal/src/lib/v2/catalog.ts";
+/** The fields of a V2_PLATFORMS entry this run reads. */
+export interface V2PlatformRow { id: string; endpoints: readonly { path: string }[] }
+/**
+ * One staging-only route entry per v2 endpoint. No crawler route sits behind it, so `crawler` holds its own operation and `v2` lets it score
+ * with no crawler openapi listing; it is missing on staging when staging's openapi does not document it.
+ */
+export function v2Routes(platforms: readonly V2PlatformRow[]): Route[] {
+  return platforms.flatMap(platform => platform.endpoints.map(endpoint => ({
+    crawler: `GET ${endpoint.path}`, group: `v2 ${platform.id}`, portal: [`GET ${endpoint.path}`], envs: ["staging" as Env], v2: true as const,
+  })));
+}
 export interface ProbeRequest { method: string; path: string; query: Record<string, string>; body?: unknown }
 export type Verdict = "ok" | "crawler" | "portal" | "held" | "unprobed" | "skipped";
 export interface ProbeResult { op: string; verdict: Verdict; status: number; ms: number; code?: string | undefined; note: string; costUsd?: number }
@@ -555,12 +573,11 @@ export type Env = typeof ENVS[number];
  * whole precheck 11 times besides the daily run, 9 of them to check one or two routes, and each rerun made about 1,300 /v1 calls per env,
  * which took keys:authorize and rateLimits:windowCount to 101 and 107 MB a day of prod Convex reads.
  */
-export function parseScope(args: readonly string[]): { only: ReadonlySet<string>; envs: readonly Env[] } | null {
+export function parseScope(args: readonly string[]): { only: ReadonlySet<string> | undefined; envs: readonly Env[] } | null {
   const { values } = parseArgs({ args: [...args], options: { only: { type: "string", multiple: true }, env: { type: "string" } }, strict: true });
-  if (!values.only?.length) {
-    if (values.env) throw new Error("--env needs at least one --only operation");
-    return null;
-  }
+  if (values.env !== undefined && !(ENVS as readonly string[]).includes(values.env)) throw new Error(`--env takes ${ENVS.join(" or ")}, not ${values.env}`);
+  // --env alone is a whole run of that one env, which writes OUTPUT_FILE as a duty run does and reads -1 for the other env.
+  if (!values.only?.length) return values.env ? { only: undefined, envs: [values.env as Env] } : null;
   const only = new Set<string>();
   for (const raw of values.only) {
     const op = raw.trim().replace(/^(\S+)\s+/, (_, method: string) => `${method.toUpperCase()} `);
@@ -569,7 +586,6 @@ export function parseScope(args: readonly string[]): { only: ReadonlySet<string>
     const feeder = QUERY_CHAINS[op]?.from;
     if (feeder) only.add(feeder);
   }
-  if (values.env !== undefined && !(ENVS as readonly string[]).includes(values.env)) throw new Error(`--env takes ${ENVS.join(" or ")}, not ${values.env}`);
   return { only, envs: values.env ? [values.env as Env] : ENVS };
 }
 
@@ -588,7 +604,7 @@ export const appliesTo = (route: Route, env: Env) => !route.envs || route.envs.i
  * (`crawlerOps` null) every applying route counts, and the env's share is unmeasured.
  */
 export function scoredRoutes(routes: readonly Route[], env: Env, crawlerOps: Map<string, Operation> | null): Route[] {
-  return routes.filter(route => !route.byDesign && appliesTo(route, env) && (!crawlerOps || listedBy(route, crawlerOps)));
+  return routes.filter(route => !route.byDesign && appliesTo(route, env) && (route.v2 || !crawlerOps || listedBy(route, crawlerOps)));
 }
 
 /**
@@ -658,7 +674,7 @@ export function routeVerdict(route: Route, ops: Map<string, Operation> | null, b
 
 /**
  * The duty's metrics. The headline is the share of customer crawler routes whose /v1 route works on prod; staging_working_pct is the same on
- * staging. Each env scores the routes its own crawler openapi lists (scoredRoutes), and an env whose crawler openapi is unread has an
+ * staging with every v2 catalog endpoint counted in too (v2Routes). Each env scores the routes its own crawler openapi lists (scoredRoutes), and an env whose crawler openapi is unread has an
  * unmeasured share. routes_failing_portal counts routes that fail on either env for a portal cause (no /v1 route there, or a portal error), and
  * routes_failing_crawler those that fail with an upstream crawler error or a held answer and no portal cause, because a proxy supply hold
  * stops the crawler's reads. A held route counts as not working, and `<env>_routes_held` and `routes_held` count it apart. Every other count
@@ -667,13 +683,13 @@ export function routeVerdict(route: Route, ops: Map<string, Operation> | null, b
 export function parityMetrics(input: {
   routes: readonly Route[]; crawler: Record<Env, OpenApi | null>; docs: Record<Env, OpenApi | null>; probes: Record<Env, readonly ProbeResult[]>;
   sourceErrors: readonly string[]; previous?: ParityState | undefined; at: number; prodCostUsd?: number; paid?: ReadonlySet<string>;
-  cleanupErrors?: readonly string[];
+  cleanupErrors?: readonly string[]; v2Unread?: boolean;
 }): { output: ParityOutput; state: ParityState } {
   const { routes, at } = input;
   const cleanupErrors = input.cleanupErrors ?? [];
   const flagged: FlaggedSlice[] = [...input.sourceErrors, ...cleanupErrors].map(excerpt => ({ at, kind: "source_error", excerpt: excerpt.slice(0, 300) }));
   const crawlerOps = Object.fromEntries(ENVS.map(env => [env, input.crawler[env] && operations(input.crawler[env]!)])) as Record<Env, Map<string, Operation> | null>;
-  const listedSomewhere = (route: Route) => ENVS.some(env => appliesTo(route, env) && (!crawlerOps[env] || listedBy(route, crawlerOps[env]!)));
+  const listedSomewhere = (route: Route) => ENVS.some(env => appliesTo(route, env) && (route.v2 || !crawlerOps[env] || listedBy(route, crawlerOps[env]!)));
   for (const route of routes) if (!listedSomewhere(route)) flagged.push({ at, kind: "crawler_route_gone", excerpt: `${route.crawler} is in neither crawler openapi it applies to; drop it from portal-parity.routes.json if that is meant` });
   for (const route of routes) if (route.byDesign && listedSomewhere(route)) flagged.push({ at, kind: "by_design", excerpt: `${route.crawler}${route.envs ? ` on ${route.envs.join(", ")}` : ""}: ${route.byDesign}` });
   const scoredBy = Object.fromEntries(ENVS.map(env => [env, scoredRoutes(routes, env, crawlerOps[env])])) as Record<Env, Route[]>;
@@ -692,6 +708,11 @@ export function parityMetrics(input: {
     metrics[`${env}_working_pct`] = ops && crawlerOps[env] && input.probes[env].length && judged ? Math.round(1000 * count("works") / judged) / 10 : UNMEASURED_PCT;
     n[`${env}_working_pct`] = metrics[`${env}_working_pct`] === UNMEASURED_PCT ? 0 : judged;
     for (const verdict of ["works", "missing", "portal", "crawler", "held", "unprobed", "skipped"] as const) metrics[`${env}_routes_${verdict}`] = count(verdict);
+    const v2 = scoredBy[env].filter(route => route.v2);
+    if (v2.length) {
+      metrics[`${env}_v2_scored`] = v2.length;
+      metrics[`${env}_v2_works`] = v2.filter(route => verdicts[env].get(route) === "works").length;
+    }
     const notSent = (probe: ProbeResult) => probe.verdict === "skipped" || (probe.verdict === "held" && probe.status === 0);
     metrics[`${env}_v1_ops_called`] = input.probes[env].filter(probe => !notSent(probe)).length;
     const held = input.probes[env].filter(probe => probe.verdict === "held");
@@ -706,7 +727,9 @@ export function parityMetrics(input: {
     const missing = scoredBy[env].filter(route => verdicts[env].get(route) === "missing");
     const byGroup = new Map<string, string[]>();
     for (const route of missing) byGroup.set(route.group, [...(byGroup.get(route.group) ?? []), route.crawler]);
-    for (const [group, list] of byGroup) flagged.push({ at, kind: `missing_${env}`, item: group, excerpt: `${group}: ${list.length} crawler routes with no /v1 route on ${env}: ${list.join(", ")}`.slice(0, 600) });
+    for (const [group, list] of byGroup) flagged.push({ at, kind: `missing_${env}`, item: group, excerpt: (group.startsWith("v2 ")
+      ? `${group}: ${list.length} v2 catalog endpoints that ${env}'s openapi does not document: ${list.join(", ")}`
+      : `${group}: ${list.length} crawler routes with no /v1 route on ${env}: ${list.join(", ")}`).slice(0, 600) });
     for (const probe of input.probes[env]) {
       if (probe.verdict === "ok" || probe.verdict === "held") continue;
       flagged.push({ at, kind: probe.verdict === "unprobed" || probe.verdict === "skipped" ? `${probe.verdict}_${env}` : `broken_${probe.verdict}_${env}`,
@@ -727,7 +750,8 @@ export function parityMetrics(input: {
   if (!n.routes_failing_portal) flagged.push({ at, kind: "no_routes", excerpt: "routes_failing_portal and routes_failing_crawler read 0 judged routes: no route got a verdict on either env, so their 0 measured nothing" });
   metrics.source_errors = input.sourceErrors.length + cleanupErrors.length;
   // A run whose staging test orgs were not deleted never passes: its staging share is unmeasured (test-org-cleanup.ts).
-  if (cleanupErrors.length) { metrics.staging_working_pct = UNMEASURED_PCT; n.staging_working_pct = 0; }
+  // So does a run that could not read the v2 catalog, because staging's share counts every v2 endpoint.
+  if (cleanupErrors.length || input.v2Unread) { metrics.staging_working_pct = UNMEASURED_PCT; n.staging_working_pct = 0; }
   if (input.prodCostUsd !== undefined) metrics.prod_cost_usd = Math.round(input.prodCostUsd * 10_000) / 10_000;
   const paid = input.probes.prod.filter(probe => probe.costUsd).sort((a, b) => b.costUsd! - a.costUsd!);
   if (paid.length) flagged.push({ at, kind: "prod_cost", excerpt: `Prod cost per call, highest first: ${paid.map(probe => `${probe.op} $${probe.costUsd}`).join(", ")}`.slice(0, 600) });
@@ -1172,20 +1196,23 @@ async function prodSkips(): Promise<{ skip: Map<string, string>; paid: Set<strin
 
 async function main(): Promise<void> {
   const scope = parseScope(process.argv.slice(2));
+  const only = scope?.only;
   const output = process.env.OUTPUT_FILE;
   const stateFile = process.env.STATE_FILE;
   // A scoped run's partial answers must never read as a d2 run, so it prints them and refuses the duty runner's files.
-  if (scope && (output || stateFile)) { process.stderr.write("portal-parity: a --only run prints its answers to stdout; unset OUTPUT_FILE and STATE_FILE\n"); process.exit(2); }
-  if (!scope && !output) { process.stderr.write("portal-parity: OUTPUT_FILE is not set\n"); process.exit(2); }
+  if (only && (output || stateFile)) { process.stderr.write("portal-parity: a --only run prints its answers to stdout; unset OUTPUT_FILE and STATE_FILE\n"); process.exit(2); }
+  if (!only && !output) { process.stderr.write("portal-parity: OUTPUT_FILE is not set\n"); process.exit(2); }
   const runs = (env: Env) => !scope || scope.envs.includes(env);
   const start = Date.now();
   const previous = stateFile ? await readFile(stateFile, "utf8").then(parseState).catch(() => undefined) : undefined;
-  const routes = (JSON.parse(await readFile(join(HERE, "portal-parity.routes.json"), "utf8")) as { routes: Route[] }).routes;
   const sourceErrors: string[] = [];
   const cleanupErrors: string[] = [];
   const attempt = async <T>(what: string, run: () => Promise<T>): Promise<T | null> => {
     try { return await run(); } catch (error) { sourceErrors.push(`${what}: ${errorText(error)}`); return null; }
   };
+  const v2 = only ? [] : await attempt(`auto-sns-agent ${V2_CATALOG}`, async () =>
+    v2Routes((await import(pathToFileURL(join(REPO, V2_CATALOG)).href) as { V2_PLATFORMS: readonly V2PlatformRow[] }).V2_PLATFORMS));
+  const routes = [...(JSON.parse(await readFile(join(HERE, "portal-parity.routes.json"), "utf8")) as { routes: Route[] }).routes, ...v2 ?? []];
   type EnvFile = { urls: Record<string, string>; keySources: Record<string, { cmd: string }> };
   // A supply hold the run cannot read counts as held, so a batch whose rows all failed under an unread /ops/status reads held.
   const supplyHold = async (name: Env, file: EnvFile | null): Promise<string | null> => {
@@ -1202,8 +1229,8 @@ async function main(): Promise<void> {
     JSON.parse(await readFile(join(REPO, `apps/specs/envs/${name}.json`), "utf8")) as EnvFile);
   const [env, prodEnv] = await Promise.all([readEnv("staging"), readEnv("prod")]);
   const [crawlerProd, crawlerStaging, prod, secret, prodKey, skips] = await Promise.all([
-    scope ? null : attempt(CRAWLER_OPENAPI.prod, () => getJson(CRAWLER_OPENAPI.prod)),
-    scope ? null : attempt(CRAWLER_OPENAPI.staging, () => getJson(CRAWLER_OPENAPI.staging)),
+    only ? null : attempt(CRAWLER_OPENAPI.prod, () => getJson(CRAWLER_OPENAPI.prod)),
+    only ? null : attempt(CRAWLER_OPENAPI.staging, () => getJson(CRAWLER_OPENAPI.staging)),
     runs("prod") ? attempt(PROD_OPENAPI, () => getJson(PROD_OPENAPI)) : null,
     env && runs("staging") ? attempt("CONVEX_WEBHOOK_SECRET key source", () => sh(env.keySources.CONVEX_WEBHOOK_SECRET!.cmd, REPO)) : null,
     !runs("prod") ? null : process.env.VIREV_API_KEY_PROD_MONITOR || attempt("VIREV_API_KEY_PROD_MONITOR from apps/api-portal/.env", () => sh(PROD_KEY_CMD, REPO)),
@@ -1222,25 +1249,25 @@ async function main(): Promise<void> {
   try {
     if (env && staging && secret) {
       // A scoped run makes a few calls, so one test org stays far under its limits.
-      const seeded = await attempt("staging test org seed", () => Promise.all(Array.from({ length: scope ? 1 : ORGS }, (_, index) => seedOrg(env.urls.convex!, secret, index, start))));
+      const seeded = await attempt("staging test org seed", () => Promise.all(Array.from({ length: only ? 1 : ORGS }, (_, index) => seedOrg(env.urls.convex!, secret, index, start))));
       if (seeded) orgs.push(...seeded);
     }
     await Promise.all([
-      orgs.length && staging ? probeEnv({ env: "staging", base, doc: staging, orgs, skip: new Map(), hold: stagingHold, perMinute: perMinute(orgs), lastMs: previous?.ms, only: scope?.only, calls: calls.staging }, routes)
+      orgs.length && staging ? probeEnv({ env: "staging", base, doc: staging, orgs, skip: new Map(), hold: stagingHold, perMinute: perMinute(orgs), lastMs: previous?.ms, only, calls: calls.staging }, routes)
         .then(results => { probes.staging = results; }) : null,
-      prod && prodOrg && skips && prodEnv ? probeEnv({ env: "prod", base: prodEnv.urls.apiPortal!, doc: prod, orgs: [prodOrg], skip: skips.skip, held, hold: prodHold, perMinute: perMinute([prodOrg]), spend, lastMs: previous?.ms, ledger: jobLedger(JOBS_DIR), only: scope?.only, calls: calls.prod }, routes)
+      prod && prodOrg && skips && prodEnv ? probeEnv({ env: "prod", base: prodEnv.urls.apiPortal!, doc: prod, orgs: [prodOrg], skip: skips.skip, held, hold: prodHold, perMinute: perMinute([prodOrg]), spend, lastMs: previous?.ms, ledger: jobLedger(JOBS_DIR), only, calls: calls.prod }, routes)
         .then(results => { probes.prod = results; }) : null,
     ]);
   } finally {
     if (env && secret) await Promise.all(orgs.map(org => cleanupOrg(env.urls.convex!, secret, org).catch((error: unknown) =>
       cleanupErrors.push(error instanceof Error ? error.message : `cleanup of test org ${org.id} failed: ${String(error)}`))));
   }
-  if (scope) {
+  if (scope && only) {
     const envs = Object.fromEntries(scope.envs.map(name => [name, { v1_calls: calls[name].n, results: probes[name] }]));
-    process.stdout.write(JSON.stringify({ only: [...scope.only], envs, sourceErrors, cleanupErrors, ...(probes.prod.length ? { prodCostUsd: spend.usd } : {}) }, null, 2) + "\n");
+    process.stdout.write(JSON.stringify({ only: [...only], envs, sourceErrors, cleanupErrors, ...(probes.prod.length ? { prodCostUsd: spend.usd } : {}) }, null, 2) + "\n");
     return;
   }
-  const result = parityMetrics({ routes, cleanupErrors, crawler: { prod: crawlerProd, staging: crawlerStaging }, docs: { prod, staging }, probes, sourceErrors, previous, at: start, ...(skips ? { paid: skips.paid } : {}), ...(probes.prod.length ? { prodCostUsd: spend.usd } : {}) });
+  const result = parityMetrics({ routes, cleanupErrors, v2Unread: v2 === null, crawler: { prod: crawlerProd, staging: crawlerStaging }, docs: { prod, staging }, probes, sourceErrors, previous, at: start, ...(skips ? { paid: skips.paid } : {}), ...(probes.prod.length ? { prodCostUsd: spend.usd } : {}) });
   await writeFile(output!, JSON.stringify(result.output, null, 2) + "\n");
   if (stateFile && (probes.prod.length || probes.staging.length)) await writeFile(stateFile, JSON.stringify(result.state) + "\n");
 }

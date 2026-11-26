@@ -78,7 +78,7 @@ test("a scoped run calls only the named operations, their job mode and the call 
   // 11-25: 9 of 11 whole reruns in a day wanted one or two routes and made about 1,300 /v1 calls per env each.
   assert.equal(parseScope([]), null);
   const google = parseScope(["--only", "get /v1/search/google", "--env", "prod"])!;
-  assert.deepEqual([...google.only], ["GET /v1/search/google"]);
+  assert.deepEqual([...google.only!], ["GET /v1/search/google"]);
   assert.deepEqual(google.envs, ["prod"]);
   assert.ok(inScope("GET /v1/search/google", google.only));
   assert.ok(!inScope("GET /v1/search/bing", google.only));
@@ -89,8 +89,8 @@ test("a scoped run calls only the named operations, their job mode and the call 
   assert.ok(inScope("GET /v1/instagram/user_feed job", note.only));
   // 11-26: the /v2 wrapped routes needed a rerun of their own, and the v2 note reads its id from an explore answer too.
   const v2Note = parseScope(["--only", "GET /v2/xiaohongshu/note"])!;
-  assert.deepEqual([...v2Note.only], ["GET /v2/xiaohongshu/note", "GET /v1/xiaohongshu/explore"]);
+  assert.deepEqual([...v2Note.only!], ["GET /v2/xiaohongshu/note", "GET /v1/xiaohongshu/explore"]);
   assert.throws(() => parseScope(["--only", "/v1/search/google"]), /METHOD \/v1\/path/);
   assert.throws(() => parseScope(["--only", "GET /v1/search/google", "--env", "local"]), /--env takes prod or staging/);
-  assert.throws(() => parseScope(["--env", "prod"]), /needs at least one --only/);
+  assert.deepEqual(parseScope(["--env", "staging"]), { only: undefined, envs: ["staging"] });
 });

@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
-import { MEDIA_OP, UNMEASURED_PCT, classify, firstMediaUrl, heldInput, heldMedia, heldPaidReads, parityMetrics, probeMedia, scoredRoutes, snapshotRowsVerdict, supplyHoldOf, type OpenApi, type ProbeResult, type Route } from "../scripts/duties/portal-parity.ts";
+import { MEDIA_OP, UNMEASURED_PCT, classify, firstMediaUrl, heldInput, heldMedia, heldPaidReads, parityMetrics, probeMedia, scoredRoutes, v2Routes, snapshotRowsVerdict, supplyHoldOf, type OpenApi, type ProbeResult, type Route } from "../scripts/duties/portal-parity.ts";
 
 const doc = (...ops: string[]): OpenApi => {
   const paths: NonNullable<OpenApi["paths"]> = {};
@@ -237,4 +237,30 @@ test("n is the routes each env judged and the routes judged on either env, and a
   const empty = parityMetrics({ routes: ROUTES, crawler, docs, probes: { prod: [], staging: [] }, sourceErrors: [], at: 1 }).output;
   assert.deepEqual(empty.n, { prod_working_pct: 0, staging_working_pct: 0, routes_failing_portal: 0, routes_failing_crawler: 0 });
   assert.match(empty.flagged!.find(slice => slice.kind === "no_routes")!.excerpt, /read 0 judged routes/);
+});
+
+// 11-27: the v2 build sat behind API_V2_ENABLED on staging, and d2 called its endpoints there but scored none, so a broken v2 read left
+// staging_working_pct at 100.
+test("v2 catalog endpoints score on staging only, with no crawler route behind them", () => {
+  const v2 = v2Routes([{ id: "instagram", endpoints: [{ path: "/v2/instagram/profile" }, { path: "/v2/instagram/timeline" }] }, { id: "meta_ads", endpoints: [{ path: "/v2/meta_ads/ad" }] }]);
+  assert.equal(v2.length, 3);
+  const stagingDoc = doc("GET /v1/tiktok/user_detail", "GET /v1/youtube/channel", "GET /v1/douyin/stored/profile", "GET /v2/instagram/profile", "GET /v2/instagram/timeline");
+  const stagingProbes = [...probes.staging, ok("GET /v2/instagram/profile"), { op: "GET /v2/instagram/timeline", verdict: "portal" as const, status: 500, ms: 5, note: "docs example" }];
+  const { metrics, flagged } = run({ routes: [...ROUTES, ...v2], docs: { ...docs, staging: stagingDoc }, probes: { ...probes, staging: stagingProbes } });
+  assert.equal(metrics.prod_working_pct, 100);
+  assert.equal(metrics.prod_routes_scored, 2);
+  assert.equal(metrics.prod_v2_scored, undefined);
+  assert.equal(metrics.staging_routes_scored, 6);
+  assert.equal(metrics.staging_v2_scored, 3);
+  assert.equal(metrics.staging_v2_works, 1);
+  assert.equal(metrics.staging_working_pct, 66.7);
+  assert.equal(metrics.routes_failing_portal, 2);
+  assert.equal(flagged.filter(slice => slice.kind === "crawler_route_gone").length, 0);
+  assert.match(flagged.find(slice => slice.kind === "missing_staging")!.excerpt, /v2 meta_ads: 1 v2 catalog endpoints that staging's openapi does not document: GET \/v2\/meta_ads\/ad/);
+});
+
+test("a run that cannot read the v2 catalog leaves staging unmeasured", () => {
+  const { metrics } = run({ v2Unread: true });
+  assert.equal(metrics.staging_working_pct, UNMEASURED_PCT);
+  assert.equal(metrics.prod_working_pct, 100);
 });
