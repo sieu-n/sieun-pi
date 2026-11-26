@@ -154,9 +154,10 @@ export interface HandOffRun { at: number; job?: string; sigs: readonly string[] 
 /**
  * The hand-off sigs that more than one job of a duty got, with how many distinct jobs: the duty runner's bug, not the agent's, so it nudges
  * nobody. Before 11-26 a run handed the same daily sig to a new job on every rerun (server/duty-run.ts `measure`). A verify or busy run
- * names the job still at work, so runs are counted by job id: counting runs read 179 on 11-26 against 57 real repeats.
+ * names the job still at work, so runs are counted by job id: counting runs read 179 on 11-26 against 57 real repeats. Only a repeat in the
+ * day before `now` counts: the runner fix of 11-26 (f5da1af2) left 63 old repeats in stored history, which kept the reading from falling.
  */
-export function duplicateJobs(runs: readonly HandOffRun[]): [string, number][] {
+export function duplicateJobs(runs: readonly HandOffRun[], now: number): [string, number][] {
   // A job counts twice only within a day of the last run for its sig: a page Wiki tidiness still flags the next day is a new day's work.
   const last = new Map<string, number>();
   const jobs = new Map<string, Set<string>>();
@@ -167,7 +168,7 @@ export function duplicateJobs(runs: readonly HandOffRun[]): [string, number][] {
       const ids = before !== undefined && run.at - before < DAY_MS ? jobs.get(sig)! : new Set<string>();
       ids.add(run.job ?? `run@${run.at}`);
       jobs.set(sig, ids);
-      counts.set(sig, Math.max(counts.get(sig) ?? 0, ids.size));
+      if (ids.size > 1 && now - run.at < DAY_MS) counts.set(sig, Math.max(counts.get(sig) ?? 0, ids.size));
       last.set(sig, run.at);
     }
   }
@@ -276,7 +277,7 @@ export function agentPattern(agents: readonly AgentRead[], areas: readonly Agent
   const everyDuty = agents.flatMap(({ agent, duties }) => duties.map(row => ({ ...row, agent })));
   for (const { agent, duties, checkIn, stuck = 0, boardAt, asks = [], pauses = {}, samples = {}, waitsOutside = [], outputs = {}, handOffJobs = {} } of agents) {
     for (const row of duties) {
-      const repeats = duplicateJobs(handOffJobs[row.duty.id] ?? []);
+      const repeats = duplicateJobs(handOffJobs[row.duty.id] ?? [], now);
       if (!repeats.length) continue;
       const extra = repeats.reduce((sum, [, jobs]) => sum + jobs - 1, 0);
       duplicates += extra;
