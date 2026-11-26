@@ -3,8 +3,10 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { wikiConfig } from '../src/lib/wiki-config.mjs';
 
-const ARCH_DIR = 'apps/llm-wiki/content/domains/architecture';
+/** The architecture pages, under the wiki content root that ~/.config/sieun-pi/wiki.json names. */
+const archDir = () => join(wikiConfig().contentRoot, 'domains/architecture');
 const COMPOSE_FILE = /(^|\/)[\w.-]*compose[\w.-]*\.ya?ml$/;
 
 export function composeNames(text) {
@@ -181,8 +183,8 @@ export function checkPage(html, known) {
 	return { checked, findings };
 }
 
-export function archPages(repo, dir = ARCH_DIR) {
-	const root = join(repo, dir);
+export function archPages(dir = archDir()) {
+	const root = dir;
 	if (!existsSync(root)) return [];
 	const pages = [];
 	const walk = (folder) => {
@@ -196,13 +198,13 @@ export function archPages(repo, dir = ARCH_DIR) {
 	return pages.sort();
 }
 
-export function checkRepo(repo, { dir = ARCH_DIR, composeFiles } = {}) {
+export function checkRepo(repo, { dir = archDir(), composeFiles } = {}) {
 	const known = knownNames(repo, composeFiles);
-	const pages = archPages(repo, dir).map((path) => {
+	const pages = archPages(dir).map((path) => {
 		const html = readFileSync(path, 'utf8');
 		const isHub = path.endsWith(`${dir}/index.html`);
 		const result = mermaidBlocks(html).length || !isHub ? checkPage(html, known) : { checked: 0, findings: [] };
-		return { page: relative(repo, path), ...result };
+		return { page: relative(join(dir, '../..'), path), ...result };
 	});
 	return { known: known.size, pages, checked: pages.reduce((n, p) => n + p.checked, 0) };
 }
