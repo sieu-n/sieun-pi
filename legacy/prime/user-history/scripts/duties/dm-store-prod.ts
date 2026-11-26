@@ -5,8 +5,8 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { type DutyMetric, type FlaggedSlice, OUTSIDE_WAIT, type PrecheckOutput } from "../../src/shared/chat-duties.ts";
-import { boxExit, type BrowserJar, crawlerJars, type HeldJar, type ReadJar, waitForOtherRuns } from "./dm-extension.ts";
+import { type DutyMetric, type FlaggedSlice, type PrecheckOutput } from "../../src/shared/chat-duties.ts";
+import { type BrowserJar, crawlerJars, type ReadJar, waitForOtherRuns } from "./dm-extension.ts";
 import { DAY, REPO, settle, SOURCE_DEADLINE_MS, unmeasuredFlag, utc } from "./estate-reads.ts";
 
 /**
@@ -16,7 +16,7 @@ import { DAY, REPO, settle, SOURCE_DEADLINE_MS, unmeasuredFlag, utc } from "./es
  * 1. It downloads the Chrome Web Store's current CRX of the extension and unpacks it with the store's public key as the manifest key, so
  *    Chromium loads it under the store id STORE_ID, the same files and id a member's install has.
  * 2. It reads both test accounts' saved sessions and exits from the crawler (BROWSER_JAR, dm-extension.ts jarReader), holding them in the
- *    roles dm-extension-store-a and -b. A held jar or a box exit opens no browser (owner rule c229) and the run waits on the proxy.
+ *    roles dm-extension-store-a and -b. A jar whose exit is not GeoNode opens no browser (owner rule c229).
  * 3. It runs auto-sns-agent apps/dm-extension/tests/multi-account-real-ig.mjs on virev.ai in the kept prod workspace ORG as the e2e user:
  *    one Chrome with the store build, A signed in. The rig unlinks both accounts in the org first, waits for the signed-in tab to pair the
  *    extension with no click, presses Link for A, switches the Chrome to B on instagram.com and presses Link for B, switches back to A,
@@ -111,8 +111,6 @@ export interface DutyData {
   now: number;
   store?: Store;
   accounts?: string;
-  /** The accounts the crawler holds or whose exit is on our own servers, so no rig ran. */
-  boxed?: string[];
   rig?: RigEvidence;
   rigExit?: number;
   waited?: { ms: number; on: string[] };
@@ -156,10 +154,6 @@ export function sendFailures(messages: readonly DmRow[], now: number): DmRow[] {
     && (row.status === "failed" || row.status === "delivery_unknown" || row.errorCode === "send_restricted"));
 }
 
-/** What the unmeasured slice says when a test account has no residential exit: the run waits on the proxy, not on the extension. */
-const NO_PROXY = "prod_store_e2e_pass and two_accounts_pass wait on a residential exit for a test account. The extension has nothing to fix, so start no fix job.";
-const PROXY_WAIT = "a residential exit for a test account (c229): the crawler holds its jar or puts it on our own servers, so the prod checks are not measured and the extension has nothing to fix.";
-
 /** The rows each metric read (agent factory, 11-26): for each account the DM it sent and the other account's DM read back into its thread,
  *  and the prod searchDmMessages rows read for the failure count, so a met run on n = 0 reads as measuring nothing. */
 export function counts(data: DutyData): Record<string, number> {
@@ -182,12 +176,6 @@ export function report(data: DutyData, dutyMetrics: readonly DutyMetric[]): Prec
   }
   if (data.store) flagged.push({ at, kind: "build", excerpt: `the store's CRX ${data.store.version} (sha256 ${data.store.sha256.slice(0, 12)}), loaded under the store id ${STORE_ID}` });
   if (data.accounts) flagged.push({ at, kind: "accounts", excerpt: data.accounts.slice(0, 300) });
-  if (data.boxed?.length) {
-    unmeasured.add("prod_store_e2e_pass");
-    unmeasured.add("two_accounts_pass");
-    flagged.push({ at, kind: "exit_down", excerpt: `no residential exit: ${data.boxed.join("; ")}, so the run opened no browser, because owner rule c229 keeps logged-in test accounts off our own server IPs`.slice(0, 300) });
-    if (!data.errors.length) flagged.push({ at, kind: OUTSIDE_WAIT, excerpt: PROXY_WAIT });
-  }
   if (data.waited) flagged.push({ at, kind: "waited", excerpt: `waited ${Math.round(data.waited.ms / 1000)} s for another run on this box before its own work: ${data.waited.on.join("; ")}`.slice(0, 300) });
   if (data.rig) {
     const first = parts(data.rig);
@@ -210,7 +198,7 @@ export function report(data: DutyData, dutyMetrics: readonly DutyMetric[]): Prec
     if (data.rows.truncated) flagged.push({ at, kind: "rows_truncated", excerpt: `searchDmMessages returned the ${ROWS_LIMIT} newest rows, the CLI's most; older rows attempted in 24 h are not counted. Read by index instead.` });
   }
   const replaced = settle(dutyMetrics, metrics, unmeasured);
-  if (replaced.length) flagged.push(unmeasuredFlag(replaced, at, data.boxed?.length ? `${data.errors.length ? "Fix the source_error first. " : ""}${NO_PROXY}` : undefined));
+  if (replaced.length) flagged.push(unmeasuredFlag(replaced, at));
   return { metrics, flagged, n: counts(data) };
 }
 
@@ -281,21 +269,18 @@ export async function storeBuild(tmp: string): Promise<{ store: Store; dir: stri
 
 // ---- I/O ----
 
-/** The two accounts as the crawler answers them, held in the roles this duty drives them in. `files` is set only when neither is held or boxed. */
-export async function jars(tmp: string, read: ReadJar): Promise<{ accounts: string; boxed: string[]; files?: { a: string; b: string } }> {
+/** The two accounts as the crawler answers them, held in the roles this duty drives them in, and the rig's jar files (mode 600). */
+export async function jars(tmp: string, read: ReadJar): Promise<{ accounts: string; files: { a: string; b: string } }> {
   const a = await read(ACCOUNT_A, "dm-extension-store-a");
   const b = await read(ACCOUNT_B, "dm-extension-store-b");
-  const describe = (role: string, jar: BrowserJar | HeldJar) =>
-    "held" in jar ? `${role} @${jar.username}: ${jar.held}` : `${role} @${jar.username} is ${jar.world} on exit ${new URL(jar.proxy_url).host}${jar.valid ? "" : " with a jar the crawler marked invalid"}`;
-  const accounts = `${describe("A", a)}; ${describe("B", b)}`;
-  const boxed = ([["A", a], ["B", b]] as const).filter(([, jar]) => "held" in jar || boxExit(jar.proxy_url)).map(([role, jar]) => describe(role, jar));
-  if ("held" in a || "held" in b || boxed.length) return { accounts, boxed };
+  const describe = (role: string, jar: BrowserJar) =>
+    `${role} @${jar.username} is ${jar.world} on exit ${new URL(jar.proxy_url).host}${jar.valid ? "" : " with a jar the crawler marked invalid"}`;
   const file = async (jar: BrowserJar) => {
     const path = join(tmp, `jar-${jar.username}.json`);
     await writeFile(path, JSON.stringify(jar), { mode: 0o600 });
     return path;
   };
-  return { accounts, boxed, files: { a: await file(a), b: await file(b) } };
+  return { accounts: `${describe("A", a)}; ${describe("B", b)}`, files: { a: await file(a), b: await file(b) } };
 }
 
 /** The convex CLI env file for prod, from call.mjs's own table and admin key, in the run's mode 700 folder. */
@@ -384,7 +369,6 @@ async function measure(now: number): Promise<DutyData> {
     if (built) data.store = built.store;
     const jarFiles = await step("jars", async () => jars(tmp, await crawlerJars()));
     if (jarFiles) data.accounts = jarFiles.accounts;
-    if (jarFiles?.boxed.length) data.boxed = jarFiles.boxed;
     if (built && jarFiles?.files) {
       const again = await waitForOtherRuns();
       if (again.ms >= 1_000) data.waited = { ms: (data.waited?.ms ?? 0) + again.ms, on: [...new Set([...(data.waited?.on ?? []), ...again.on])] };

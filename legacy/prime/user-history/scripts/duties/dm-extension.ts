@@ -4,7 +4,7 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { type DutyMetric, type FlaggedSlice, OUTSIDE_WAIT, type PrecheckOutput } from "../../src/shared/chat-duties.ts";
+import { type DutyMetric, type FlaggedSlice, type PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { DAY, REPO, settle, SOURCE_DEADLINE_MS, unmeasuredFlag, utc } from "./estate-reads.ts";
 
 /**
@@ -16,9 +16,9 @@ import { DAY, REPO, settle, SOURCE_DEADLINE_MS, unmeasuredFlag, utc } from "./es
  *    staging.virev.ai from host_permissions, externally_connectable and the page bridge, so it cannot pair with staging; the run then loads
  *    the dev zip of the same tree, which holds the same files with the repo manifest, and a `build` slice says so.
  * 2. It reads the sender's and the replier's saved Instagram sessions and current exits from the crawler (BROWSER_JAR), which answers
- *    from the world that holds each account and gives a box route as its address's CONNECT proxy on us-metal01. They go into a mode 700
- *    temp folder it deletes, and an `accounts` slice names each account's world and exit host. When either exit is on our own servers
- *    (boxExit), it starts no world and opens no browser, and an exit_down slice says "no residential exit" (owner rule c229, 11-20).
+ *    from the world that holds each account. They go into a mode 700 temp folder it deletes, and an `accounts` slice names each
+ *    account's world and exit host. When either exit is not GeoNode, it starts no world and opens no browser, and a source_error slice
+ *    says so (owner rule c229, 11-20).
  * 3. It starts a staging clean world (scripts/dev/search-clean-world.mjs up --target staging --allow-features instagramDm), a fresh
  *    Clerk user and org approved on staging with the instagramDm allow, and runs the two real-Instagram rigs in it as that user and org
  *    (the world's `run` hands them E2E_USER_EMAIL and E2E_ORG_ID) with DM_EXTENSION_DIR set to the unpacked zip:
@@ -144,8 +144,6 @@ export interface DutyData {
   build?: Build;
   /** Which crawler world and endpoint each test account came from. */
   accounts?: string;
-  /** The test accounts the crawler serves no jar of (404 not_found) or whose exit is on our own servers (boxExit), so no rig ran. */
-  boxed?: string[];
   autopair?: AutopairEvidence;
   sender?: Sender;
   e2e?: E2eEvidence;
@@ -184,11 +182,6 @@ export function parts(autopair: AutopairEvidence | undefined, e2e: E2eEvidence |
     },
   };
 }
-
-/** What the unmeasured slice says when a test account has no residential exit: the run waits on a paid proxy only the owner picks (c230, t112). */
-const NO_PROXY = "e2e_pass waits on a paid proxy, since a test account has no residential exit. The extension has nothing to fix, so start no fix job.";
-/** The run's outside wait when the paid proxy is its one cause: the runner then counts it toward no error streak (`OUTSIDE_WAIT`). */
-const PROXY_WAIT = "a paid proxy only the owner picks (c230): a test account has no residential exit, so e2e_pass is not measured and the extension has nothing to fix.";
 
 const STOP_WORDS: Readonly<Record<Exclude<Stop["kind"], "other">, string>> = {
   slow_exit: "a slow Instagram exit", exit_down: "a proxy gateway that opened no tunnel", instagram_refused: "an Instagram refusal",
@@ -244,11 +237,6 @@ export function report(data: DutyData, dutyMetrics: readonly DutyMetric[]): Prec
     flagged.push({ at, kind: "build", excerpt: `${version} from auto-sns-agent ${sha.slice(0, 10)}: ${loaded === "dev" ? "the store zip lists no staging host, so the run loaded the dev zip of the same tree" : "the run loaded the store zip"}${sameFiles ? ", same files in both zips" : "; the store and dev zips hold DIFFERENT files"}${dirty.length ? `; uncommitted in apps/dm-extension: ${dirty.join(", ")}` : ""}`.slice(0, 300) });
   }
   if (data.accounts) flagged.push({ at, kind: "accounts", excerpt: data.accounts.slice(0, 300) });
-  if (data.boxed?.length) {
-    unmeasured.add("e2e_pass");
-    flagged.push({ at, kind: "exit_down", excerpt: `no residential exit: ${data.boxed.join("; ")}, so the run opened no browser, because owner rule c229 keeps logged-in test accounts off our own server IPs`.slice(0, 300) });
-    if (!data.errors.length) flagged.push({ at, kind: OUTSIDE_WAIT, excerpt: PROXY_WAIT });
-  }
   if (data.waited) flagged.push({ at, kind: "waited", excerpt: `waited ${Math.round(data.waited.ms / 1000)} s for another run on this box before its own work: ${data.waited.on.join("; ")}`.slice(0, 300) });
   const blocked = data.sender !== undefined && !senderFits(data.sender);
   if (data.sender && blocked) {
@@ -286,7 +274,7 @@ export function report(data: DutyData, dutyMetrics: readonly DutyMetric[]): Prec
     if (data.rows.truncated) flagged.push({ at, kind: "rows_truncated", excerpt: `searchDmMessages returned the ${ROWS_LIMIT} newest rows, the CLI's most; older rows attempted in 24 h are not counted. Read by index instead.` });
   }
   const replaced = settle(dutyMetrics, metrics, unmeasured);
-  if (replaced.length) flagged.push(unmeasuredFlag(replaced, at, data.boxed?.length ? `${data.errors.length ? "Fix the source_error first. " : ""}${NO_PROXY}` : undefined));
+  if (replaced.length) flagged.push(unmeasuredFlag(replaced, at));
   return { metrics, flagged, n: sampleSizes(data) };
 }
 
@@ -329,15 +317,8 @@ export async function build(tmp: string): Promise<{ build: Build; dir: string }>
   return { build: { sha, loaded, dirty, sameFiles: store.files.join() === dev.files.join(), version: manifest.version }, dir };
 }
 
-/**
- * Whether a jar's exit leaves from our own servers: a `box://` route, or the box CONNECT proxy on us-metal01 that BROWSER_JAR answers for
- * one (crawler-v3 fleet/box_proxy.py, user `box`). Owner rule c229 (11-20) keeps logged-in test accounts off our own server IPs, after
- * all 24 box accounts were suspended on 11-19, so the run opens no browser on such a jar (apps/dm-extension/tests/lib/real-world.mjs boxExit).
- */
-export function boxExit(proxyUrl: string): boolean {
-  const url = new URL(proxyUrl);
-  return url.protocol === "box:" || decodeURIComponent(url.username) === "box" || /^us-metal01(\.|$)/.test(url.hostname);
-}
+/** The one exit a logged-in test account may leave from: GeoNode's gateway, never our own servers (owner rule c229, 11-20). */
+const GEONODE_HOST = "proxy.geonode.io";
 
 /** One account's saved session and the exit a browser drives it through now, as the crawler answers it (BROWSER_JAR). */
 export interface BrowserJar { world: string; username: string; ig_user_id: string | null; cookies: { name: string; value: string }[] | null; user_agent: string; valid: boolean; proxy_url: string }
@@ -350,30 +331,23 @@ export function jarIgUserId(jar: BrowserJar): string {
   return String(id);
 }
 
-/** The crawler's 404 not_found for an account it parked: it hands out no jar, so the run reads it as no residential exit and waits on the
- *  proxy (t112). */
-export interface HeldJar { username: string; held: string }
 /** The role a rig's browser drives an account in. A read with hold=<role> makes the crawler keep that account from outreach,
  *  pool keeper loans and canary refills, and frees the account the role held before (crawler-v3 engage/browser_jar.py). */
 export type HoldRole = "dm-extension-sender" | "dm-extension-replier" | "dm-extension-store-a" | "dm-extension-store-b";
-/** Reads the BrowserJar of one handle, or the crawler's hold on it; `hold` names the role a rig drives it in. */
-export type ReadJar = (username: string, hold?: HoldRole) => Promise<BrowserJar | HeldJar>;
+/** Reads the BrowserJar of one handle; `hold` names the role a rig drives it in. */
+export type ReadJar = (username: string, hold?: HoldRole) => Promise<BrowserJar>;
 
-/** The BROWSER_JAR reader with `key`. A 404 not_found is a HeldJar, and any other non-200 throws. */
+/** The BROWSER_JAR reader with `key`. A non-200, or a jar whose exit is not GeoNode, throws before any browser opens. */
 export function jarReader(key: string, fetcher: typeof fetch = fetch): ReadJar {
   return async (username, hold) => {
     const query = new URLSearchParams({ username, ...(hold ? { hold } : {}) });
     const response = await fetcher(`${BROWSER_JAR}?${query}`, { headers: { "X-API-Key": key }, signal: AbortSignal.timeout(SOURCE_DEADLINE_MS) });
     const body = await response.text();
-    // Since 11-20 the crawler parks box-bound accounts under c229 (status_reason "c229: box-bound account parked") and then
-    // serves no jar at all, so browser-jar answers 404 not_found. That is the same wait for a paid proxy, not a broken measure.
-    if (response.status === 404) {
-      const error = (() => { try { return (JSON.parse(body) as { error?: { code?: string; message?: string } }).error ?? {}; } catch { return {}; } })();
-      if (error.code === "not_found") return { username, held: `the crawler serves no jar of it, browser-jar answered 404 not_found (parked, as c229 parks box-bound accounts until a paid proxy)` };
-    }
     if (!response.ok) throw new Error(`browser-jar @${username} answered ${response.status}: ${body.slice(0, 300)}`);
     const jar = (JSON.parse(body) as { data: BrowserJar | null }).data;
     if (!jar) throw new Error(`no crawler world holds @${username}`);
+    const host = new URL(jar.proxy_url).hostname;
+    if (host !== GEONODE_HOST) throw new Error(`@${username} exit ${host} is not GeoNode`);
     return jar;
   };
 }
@@ -384,9 +358,8 @@ export async function crawlerJars(): Promise<ReadJar> {
   return jarReader((await sh("npx", ["dotenvx", "get", "CRAWLER_API_KEY", "-f", "apps/ci/specs/.env.staging"])).trim());
 }
 
-/** The two accounts as the crawler answers them. `boxed` names each one held or on a box exit, and only when none is do the
- *  rigs' jar files (mode 600) get written, in `files`. Prints no cookie or exit credential. */
-export async function jars(tmp: string, read: ReadJar): Promise<{ accounts: string; notes: string[]; boxed: string[]; files?: { sender: string; senderIgId: string; replier: string } }> {
+/** The two accounts as the crawler answers them and the rigs' jar files (mode 600). Prints no cookie or exit credential. */
+export async function jars(tmp: string, read: ReadJar): Promise<{ accounts: string; notes: string[]; files: { sender: string; senderIgId: string; replier: string } }> {
   const notes: string[] = [];
   const file = async (jar: BrowserJar) => {
     const path = join(tmp, `jar-${jar.username}.json`);
@@ -396,12 +369,9 @@ export async function jars(tmp: string, read: ReadJar): Promise<{ accounts: stri
   };
   const sender = await read(SENDER, "dm-extension-sender");
   const replier = await read(REPLIER, "dm-extension-replier");
-  const describe = (role: string, jar: BrowserJar | HeldJar) =>
-    "held" in jar ? `${role} @${jar.username}: ${jar.held}` : `${role} @${jar.username} is ${jar.world} on exit ${new URL(jar.proxy_url).host}`;
+  const describe = (role: string, jar: BrowserJar) => `${role} @${jar.username} is ${jar.world} on exit ${new URL(jar.proxy_url).host}`;
   const accounts = `${describe("sender", sender)}; ${describe("replier", replier)}`;
-  const boxed = ([["sender", sender], ["replier", replier]] as const).filter(([, jar]) => "held" in jar || boxExit(jar.proxy_url)).map(([role, jar]) => describe(role, jar));
-  if ("held" in sender || "held" in replier || boxed.length) return { accounts, notes, boxed };
-  return { accounts, notes, boxed, files: { sender: await file(sender), senderIgId: jarIgUserId(sender), replier: await file(replier) } };
+  return { accounts, notes, files: { sender: await file(sender), senderIgId: jarIgUserId(sender), replier: await file(replier) } };
 }
 
 type OutreachAccount = { platformUserId: string | null; username: string; sentToday: number; dailyLimit: number };
@@ -529,7 +499,6 @@ async function measure(now: number, budgetMs: number): Promise<DutyData> {
     const jarFiles = await step("jars", async () => jars(tmp, await crawlerJars()));
     if (jarFiles) data.accounts = jarFiles.accounts;
     if (jarFiles?.notes.length) data.errors.push({ source: "jars", message: jarFiles.notes.join("; ") });
-    if (jarFiles?.boxed.length) data.boxed = jarFiles.boxed;
     const files = jarFiles?.files;
     if (built && files) {
       // A rig a job started while this run built and fetched the jars.

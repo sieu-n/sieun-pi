@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { type DutyMetric, outsideWaitOf } from "../src/shared/chat-duties.ts";
+import type { DutyMetric } from "../src/shared/chat-duties.ts";
 import { type DmRow, extensionIdOf, report, type RigEvidence, sendFailures, splitCrx, STORE_ID } from "../scripts/duties/dm-store-prod.ts";
 
 const METRICS = (JSON.parse(readFileSync(new URL("../scripts/duties/dm-store-prod.duty.json", import.meta.url), "utf8")) as { metrics: DutyMetric[] }).metrics;
@@ -64,13 +64,6 @@ test("prod send failures count every org's extension failures of 24 h and leave 
   const out = report({ now: NOW, rows: { messages: rows, read: 1545, truncated: false }, errors: [] }, METRICS);
   assert.equal(out.metrics.prod_send_failures_24h, 3);
   assert.equal(out.n.prod_send_failures_24h, 1545);
-});
-
-test("a held or boxed test account waits on a residential exit, counts toward no error streak, and still reads the failure count", () => {
-  const out = report({ now: NOW, boxed: ["B @rinayui37: the crawler holds its jar"], rows: { messages: [], read: 0, truncated: false }, errors: [] }, METRICS);
-  assert.equal(out.metrics.prod_send_failures_24h, 0);
-  assert.match(outsideWaitOf(out) ?? "", /residential exit/);
-  assert.match(out.flagged?.find(slice => slice.kind === "unmeasured")?.excerpt ?? "", /start no fix job/);
 });
 
 test("splitCrx returns the zip and the key whose id is the asked one, out of the publisher's and the store's keys", () => {

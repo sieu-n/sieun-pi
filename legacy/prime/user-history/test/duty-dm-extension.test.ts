@@ -6,8 +6,8 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { type DutyMetric, type DutyRunRecord, errorStreak, outsideWaitOf } from "../src/shared/chat-duties.ts";
-import { boxExit, type BrowserJar, errorCounts, jarIgUserId, jarReader, jars, otherRuns, outreachAccounts, parts, report, rigDeadline, senderFits, TAIL_MS, type AutopairEvidence, type DmRow, type E2eEvidence } from "../scripts/duties/dm-extension.ts";
+import type { DutyMetric } from "../src/shared/chat-duties.ts";
+import { type BrowserJar, errorCounts, jarIgUserId, jarReader, jars, otherRuns, outreachAccounts, parts, report, rigDeadline, senderFits, TAIL_MS, type AutopairEvidence, type DmRow, type E2eEvidence } from "../scripts/duties/dm-extension.ts";
 
 const METRICS = (JSON.parse(readFileSync(new URL("../scripts/duties/dm-extension.duty.json", import.meta.url), "utf8")) as { metrics: DutyMetric[] }).metrics;
 const NOW = Date.parse("2026-10-30T12:00:00Z");
@@ -109,10 +109,9 @@ test("24 h counts take extension rows of the last day by their last attempt", ()
 });
 
 test("n counts each metric's sample, and a run whose world never came up reads n 0 for e2e_pass (c249, 11-26)", () => {
-  const boxed = ["sender @temariyunori: the crawler serves no jar of it, browser-jar answered 404 not_found"];
   const row: DmRow = { _id: "a", _creationTime: NOW - HOUR, status: "sent", orgId: "org", queue: { transport: "extension", lastAttemptAt: NOW - HOUR } };
   const rows = { messages: [row], devices: [{ _id: "d1", orgId: "org", updatedAt: NOW - HOUR }], truncated: false };
-  assert.deepEqual(report({ now: NOW, boxed, rows, errors: [] }, METRICS).n, { e2e_pass: 0, maybe_sent_24h: 1, send_restricted_24h: 1, unknown_username_24h: 1 });
+  assert.deepEqual(report({ now: NOW, rows, errors: [] }, METRICS).n, { e2e_pass: 0, maybe_sent_24h: 1, send_restricted_24h: 1, unknown_username_24h: 1 });
   assert.deepEqual(report({ now: NOW, errors: [{ source: "staging rows", message: "convex data exited 1" }] }, METRICS).n, { e2e_pass: 0, maybe_sent_24h: 0, send_restricted_24h: 0, unknown_username_24h: 0 });
   assert.equal(report({ now: NOW, autopair: AUTOPAIR, e2e: E2E, rows, errors: [] }, METRICS).n.e2e_pass, 1);
 });
@@ -144,60 +143,47 @@ test("the precheck waits on another copy of itself or a rig, never on itself or 
   assert.ok(out.flagged?.some(slice => slice.kind === "waited" && slice.excerpt.startsWith("waited 332 s")));
 });
 
-test("jars writes each account as the crawler answers it, names its world and exit host, and writes no jar file when one sits on a box exit (c229, 11-20)", async () => {
+test("jars writes each account as the crawler answers it and names its world and exit host", async () => {
   const tmp = await mkdtemp(join(tmpdir(), "dm-ext-jars-"));
-  const answer = (username: string, proxy_url: string, valid = true): BrowserJar =>
-    ({ world: "prod", username, ig_user_id: null, cookies: [{ name: "ds_user_id", value: `${username}-id` }], user_agent: "ua", valid, proxy_url });
+  const answer = (username: string, valid = true): BrowserJar =>
+    ({ world: "prod", username, ig_user_id: null, cookies: [{ name: "ds_user_id", value: `${username}-id` }], user_agent: "ua", valid, proxy_url: `http://${username}:p@proxy.geonode.io:10000` });
   const asked: string[] = [];
-  const read = (replierExit: string) => async (username: string) => {
+  const read = async (username: string) => {
     asked.push(username);
-    return username === "temariyunori" ? answer(username, "http://u:p@gw.example:12001") : answer(username, replierExit, false);
+    return answer(username, username === "temariyunori");
   };
   try {
-    const boxed = await jars(tmp, read("http://box:pw@us-metal01.example:7244"));
+    const out = await jars(tmp, read);
     assert.deepEqual(asked, ["temariyunori", "kokomi.yua"]);
-    assert.equal(boxed.accounts, "sender @temariyunori is prod on exit gw.example:12001; replier @kokomi.yua is prod on exit us-metal01.example:7244");
-    assert.deepEqual(boxed.boxed, ["replier @kokomi.yua is prod on exit us-metal01.example:7244"]);
-    assert.equal(boxed.files, undefined);
-    const out = await jars(tmp, read("http://u:p@gw.example:12002"));
-    assert.equal(out.files?.senderIgId, "temariyunori-id");
-    assert.equal(JSON.parse(await readFile(out.files?.replier ?? "", "utf8")).proxy_url, "http://u:p@gw.example:12002");
+    assert.equal(out.accounts, "sender @temariyunori is prod on exit proxy.geonode.io:10000; replier @kokomi.yua is prod on exit proxy.geonode.io:10000");
+    assert.equal(out.files.senderIgId, "temariyunori-id");
+    assert.equal(JSON.parse(await readFile(out.files.replier, "utf8")).proxy_url, "http://kokomi.yua:p@proxy.geonode.io:10000");
     assert.deepEqual(out.notes, ["prod @kokomi.yua has a jar the crawler marked invalid"]);
-    assert.deepEqual(out.boxed, []);
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }
 });
 
-// The crawler parks an account and browser-jar answers 404 not_found for it.
-test("a 404 not_found from browser-jar reads as no residential exit with no jar file, and any other non-200 throws", async () => {
-  const tmp = await mkdtemp(join(tmpdir(), "dm-ext-held-"));
-  const answers: Record<string, Response> = {
-    temariyunori: new Response(JSON.stringify({ ok: false, error: { code: "not_found", message: "neither world holds a serving jar of @temariyunori" } }), { status: 404 }),
-    "kokomi.yua": new Response(JSON.stringify({ ok: true, data: { world: "prod", username: "kokomi.yua", ig_user_id: "2", cookies: [], user_agent: "ua", valid: true, proxy_url: "http://u:p@gw.example:12001" } })),
-    down: new Response(JSON.stringify({ error: "supply down", error_type: "provider_down" }), { status: 503 }),
-    broken: new Response("oops", { status: 500 }),
+// c229 (11-20): the d1 test jars sat on the box address .244 after all 24 box accounts were suspended on 11-19.
+test("browser-jar reads hold each account in its role, and a jar whose exit is not GeoNode or any non-200 throws before a browser opens", async () => {
+  const jar = (username: string, proxy_url: string) => new Response(JSON.stringify({ ok: true, data: { world: "prod", username, ig_user_id: "2", cookies: [], user_agent: "ua", valid: true, proxy_url } }));
+  const answers: Record<string, () => Response> = {
+    "kokomi.yua": () => jar("kokomi.yua", "http://u:p@proxy.geonode.io:10000"),
+    server: () => jar("server", "http://u:p@us-metal01.tail0c093d.ts.net:7244"),
+    parked: () => new Response(JSON.stringify({ ok: false, error: { code: "not_found", message: "neither world holds a serving jar of @parked" } }), { status: 404 }),
+    broken: () => new Response("oops", { status: 500 }),
   };
   const holds: Record<string, string | null> = {};
   const read = jarReader("key", (async (url: string) => {
     const params = new URL(url).searchParams;
     holds[params.get("username") ?? ""] = params.get("hold");
-    return answers[params.get("username") ?? ""];
+    return answers[params.get("username") ?? ""]!();
   }) as typeof fetch);
-  try {
-    const out = await jars(tmp, read);
-    assert.deepEqual(holds, { temariyunori: "dm-extension-sender", "kokomi.yua": "dm-extension-replier" });
-    assert.equal(out.files, undefined);
-    assert.equal(out.boxed.length, 1);
-    assert.match(out.boxed[0]!, /^sender @temariyunori: the crawler serves no jar of it, browser-jar answered 404 not_found/);
-    const slices = report({ now: NOW, accounts: out.accounts, boxed: out.boxed, errors: [] }, METRICS).flagged ?? [];
-    assert.ok(slices.some(s => s.kind === "exit_down" && s.excerpt.startsWith("no residential exit: sender @temariyunori: the crawler serves no jar")));
-    assert.ok(!slices.some(s => s.kind === "source_error"));
-    await assert.rejects(read("down"), /browser-jar @down answered 503/);
-    await assert.rejects(read("broken"), /browser-jar @broken answered 500/);
-  } finally {
-    await rm(tmp, { recursive: true, force: true });
-  }
+  assert.equal((await read("kokomi.yua", "dm-extension-replier")).proxy_url, "http://u:p@proxy.geonode.io:10000");
+  assert.deepEqual(holds, { "kokomi.yua": "dm-extension-replier" });
+  await assert.rejects(read("server"), { message: "@server exit us-metal01.tail0c093d.ts.net is not GeoNode" });
+  await assert.rejects(read("parked"), /browser-jar @parked answered 404/);
+  await assert.rejects(read("broken"), /browser-jar @broken answered 500/);
 });
 
 test("a run stopped by a slow exit names it in a slow_exit slice and in each failed part, and a refusal in an instagram_refused slice", () => {
@@ -236,40 +222,4 @@ test("listOutreach's answer gives its accounts, and an error answer throws with 
   assert.deepEqual(outreachAccounts(JSON.stringify({ status: "success", value: { accounts: [account], devices: [] } })), [account]);
   assert.throws(() => outreachAccounts(JSON.stringify({ status: "error", errorMessage: "Uncaught ConvexError: unauthenticated" })), /search\/dmSenders:listOutreach answered error: Uncaught ConvexError: unauthenticated/);
   assert.throws(() => outreachAccounts(JSON.stringify({ status: "success", value: null })), /answered success/);
-});
-
-test("a test account on a box exit reads exit_down with no residential exit and an unmeasured e2e_pass, with no rig run (c229, 11-20)", () => {
-  assert.equal(boxExit("box://64.34.205.244/206"), true);
-  assert.equal(boxExit("http://box:pw@us-metal01.tail0c093d.ts.net:7244"), true);
-  assert.equal(boxExit("http://user:pw@residential-unlimited-us-08-proxy.geonode.io:12001"), false);
-  const out = report({ now: NOW, boxed: ["sender @temariyunori is prod on exit us-metal01.tail0c093d.ts.net:7244"], errors: [] }, METRICS);
-  assert.notEqual(out.metrics.e2e_pass, 1);
-  const slice = out.flagged?.find(s => s.kind === "exit_down");
-  assert.ok(slice?.excerpt.startsWith("no residential exit: sender @temariyunori is prod on exit us-metal01"));
-  assert.ok(!out.flagged?.some(s => s.kind === "e2e_part"));
-});
-
-test("with no residential exit the unmeasured slice says the run waits on a paid proxy, not on a source_error (d1, 11-22)", () => {
-  const boxed = ["sender @temariyunori: the crawler serves no jar of it, browser-jar answered 404 not_found"];
-  const rows = { messages: [], devices: [], truncated: false };
-  const alone = report({ now: NOW, boxed, rows, errors: [] }, METRICS).flagged?.find(s => s.kind === "unmeasured")?.excerpt ?? "";
-  assert.match(alone, /e2e_pass waits on a paid proxy/);
-  assert.match(alone, /start no fix job/);
-  assert.doesNotMatch(alone, /source_error/);
-  const both = report({ now: NOW, boxed, rows, errors: [{ source: "staging rows", message: "convex data exited 1" }] }, METRICS).flagged?.find(s => s.kind === "unmeasured")?.excerpt ?? "";
-  assert.match(both, /Fix the source_error first\. e2e_pass waits on a paid proxy/);
-  const other = report({ now: NOW, errors: [{ source: "world", message: "up exited 1" }] }, METRICS).flagged?.find(s => s.kind === "unmeasured")?.excerpt ?? "";
-  assert.match(other, /Fix the source_error first\.$/);
-});
-
-test("a paid-proxy wait alone counts toward no error streak, and a source_error beside it still does (d1, 11-23)", () => {
-  const boxed = ["sender @temariyunori: the crawler serves no jar of it, browser-jar answered 404 not_found"];
-  const rows = { messages: [], devices: [], truncated: false };
-  const run = (errors: { source: "staging rows"; message: string }[]): DutyRunRecord => {
-    const waitsOn = outsideWaitOf(report({ now: NOW, boxed, rows, errors }, METRICS));
-    return { duty: "d1", at: NOW, trigger: "schedule", ms: 1, verdict: "error", metrics: {}, summary: "", ...waitsOn ? { waitsOn } : {} };
-  };
-  assert.match(run([]).waitsOn ?? "", /paid proxy/);
-  assert.equal(errorStreak([run([]), run([]), run([])]), 0);
-  assert.equal(errorStreak([run([{ source: "staging rows", message: "convex data exited 1" }]), run([]), run([{ source: "staging rows", message: "x" }])]), 2);
 });
