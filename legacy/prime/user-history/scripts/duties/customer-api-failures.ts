@@ -1,45 +1,40 @@
-import { execFile } from "node:child_process";
-import { readFileSync, realpathSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
+import { type DsQuery, SOURCE_DEADLINE_MS, grafanaClient, readGrafanaAuth, sqlRows } from "./estate-reads.ts";
 
 /**
  * The api portal vp chat's "Customer API failures" precheck (`node --import tsx scripts/duties/customer-api-failures.ts`). No model call,
  * reads only. It keeps board goal p80 met: from 10-13 to 10-26 about 31% of real customers' calls on api.virev.ai failed, and p80 drove the
  * customer prod 5xx share of the day to 0.67% on 10-31 and 0.32% on 11-01. The headline, customer_5xx_share_pct, is the 5xx answers out of
- * every answered call (PostHog api_request_completed plus api_request_failed) of the last full UTC day, for the orgs PostHog's api_portal_orgs
- * marks is_internal = 0. Each 5xx comes back as a flagged slice with its operation, error code, handle and request id, so a miss starts with
- * the calls themselves. The key is apps/vent's POSTHOG_PERSONAL_API_KEY (query:read only), read through dotenvx in the auto-sns-agent checkout.
- * PostHog missed every event from 03:48 to 06:19Z on 11-01 while prod Vent was down (p1257), so the run also names the day's longest stretch
- * with no api_request event at all as detail; it judges nothing, and a reader checks Vercel's request logs for that stretch.
- * Each count and each 5xx row is by event uuid, because PostHog stored one event twice on 11-09 (req_cd46890275732bd3e299db679e4774ee at
- * 07:45:13Z and 07:46:53Z), 25 such rows in 14 days of 147,178 api_request events.
- * Only answered calls count in a route's p90, so a route that fails fast never reads fast.
+ * every customer call of the last full UTC day.
+ * It reads prod ClickHouse through Grafana (estate_ch_prod, the grafana-read key in estate-reads.ts), the same rows the API portal alert,
+ * board 52 and billing read. Until 11-26 it read PostHog's api_request events, and that HogQL query hit PostHog's max execution time on every
+ * run from 11-21, so each metric read UNMEASURED.
+ * A customer call is a keyed crawl_read row (the crawler's answer) or a keyed data_api_request row (a call the portal refused before the
+ * crawler, or cut when its caller hung up or it timed out) in product.customer_usage_events, the view that leaves out every org of
+ * auto-sns-agent convex/org/houseOrgs.json, less the org_test_ orgs a prod proof makes as paying customers. That is the alert's
+ * api-portal-customer-calls-failing definition (apps/infra/metal/config/obs/grafana/alerting/api-portal.yaml).
+ * One call is one request id (charge_id): a cut call has the crawler's row and the portal's, and the portal's row wins, because the crawler's
+ * reads as its crawl went. Each 5xx comes back as a flagged slice with its operation, error code and request id.
+ * The day line names the day's longest stretch with no keyed call row at all, from any org, as detail; PostHog missed 03:48 to 06:19Z on
+ * 11-01 while prod Vent was down (p1257), and the same stretch in the ledger means rows went missing. It judges nothing.
+ * slow_route_over_target_s keeps board goal p111 met (owner 10-30: "이거 왜 20초 30초나 걸리냐"): the most seconds any route's p90 gateway
+ * duration of the day sits over that route's own target in ROUTE_P90_TARGET_S, so 0 or less is on target. Its answered calls are the
+ * data_api_call charge rows Convex writes for each answered call, whose route is the operation id and whose duration_ms is the gateway's
+ * own time. The crawler's crawl_read rows cannot tell Google Play from Google News, because both run through /api/crawl/fetch. It counts
+ * every org, internal ones included, because no is_internal = 0 org called these routes from 10-20 to 11-02 and the owner's own calls come
+ * from internal orgs. Only answered calls count in a route's p90, so a route that fails fast never reads fast.
  * A route with under MIN_ROUTE_CALLS answered calls in the day reads the p90 of its newest MIN_ROUTE_CALLS answered calls up to the day's
  * end instead (`RouteLatency.pool`): from 11-14 to 11-16 the three routes got 1 to 11 answered calls a day, so d4 wrote the placeholder for
  * three runs in a row and read error, while the newest 20 calls up to 11-16 00:00Z read Bing 9.20 s (back to 11-09), Play 1.03 s and News 0.96 s.
- * slow_route_over_target_s keeps board goal p111 met (owner 10-30: "이거 왜 20초 30초나 걸리냐"): the most seconds any route's p90 durationMs of
- * the day sits over that route's own target in ROUTE_P90_TARGET_S, so 0 or less is on target. It counts every org, internal ones included,
- * because no is_internal = 0 org called these routes from 10-20 to 11-02 and the owner's own calls come from internal orgs.
  * Both day metrics name the next UTC midnight as their rollsAt, so the runner starts no push or verify run that would read the same day again.
  * Each day metric's lastEventAt is the newest call it counts, so a rerun of a day that closed before its fix went live reads quiet
  * (`MetricStreak.quietSince`) and owes no fix job: on 11-05 d4 read Bing's p90 22.59 s for 11-04, while Bing after the 01:53Z fix read p90 2.76 s.
  */
 
-const REPO = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto-sns-agent");
-const POSTHOG_QUERY = "https://us.posthog.com/api/projects/354457/query/";
-/** Our own orgs by auto-sns-agent convex/org/houseOrgs.json, the list Convex bills by and the API portal board, alert and
- *  PostHog dashboard leave out: a named org with a non-staff member passes is_internal = 0 and still is ours. */
-function houseOrgSql(column: string): string {
-  const house = JSON.parse(readFileSync(join(REPO, "convex/org/houseOrgs.json"), "utf8")) as { ids: Record<string, string>; prefixes: Record<string, string> };
-  const ids = Object.keys(house.ids).map((id) => `'${id}'`).join(", ");
-  return `(${column} in (${ids}) or ${Object.keys(house.prefixes).map((prefix) => `startsWith(${column}, '${prefix}')`).join(" or ")})`;
-}
-/** Read at query time, so a release check, whose fresh HOME holds no auto-sns-agent checkout, can import this module. */
-const customerOrgs = (): string => `select org_id from api_portal_orgs where is_internal = 0 and not ${houseOrgSql("org_id")}`;
+const CLICKHOUSE = "estate_ch_prod";
 /** The "could not measure" value, the same one portal-uptime.ts prints, so a missing source can never look on target. */
 export const UNMEASURED = 999999;
 const DAY_MS = 86_400_000;
@@ -56,24 +51,20 @@ export const SLOW_ROUTES = Object.keys(ROUTE_P90_TARGET_S) as SlowRoute[];
 export const MIN_ROUTE_CALLS = 20;
 
 /** The day's customer calls; `lastAt` is the newest one's epoch ms, absent with no call. */
-export interface DayCounts { completed: number; failed: number; failed5xx: number; lastAt?: number }
-/** One operation's answered calls of the day (api_request_completed), their p90 durationMs (null with none), the newest one's epoch ms,
- *  and the day's 5xx answers, which count in no p90: on 11-10 to 11-12 every Bing call answered 503 in about 0.35 s while GeoNode was down. */
+export interface DayCounts { calls: number; failed5xx: number; lastAt?: number }
+/** One operation's answered calls of the day, their p90 duration in ms (null with none), the newest one's epoch ms, and the day's 5xx
+ *  answers, which count in no p90: on 11-10 to 11-12 every Bing call answered 503 in about 0.35 s while GeoNode was down. */
 export interface RouteLatency { endpoint: string; calls: number; p90Ms: number | null; lastAt?: number; failed5xx?: number; pool?: RoutePool }
 /** A route's newest MIN_ROUTE_CALLS answered calls up to the day's end, from whatever days they fall in; `since` is the oldest one's epoch ms. */
 export interface RoutePool { calls: number; p90Ms: number | null; since: number }
-export interface FailedCall { at: string; endpoint: string; status: number; errorCode: string; handle: string | null; requestId: string; orgId: string }
+export interface FailedCall { at: number; endpoint: string; status: number; errorCode: string; requestId: string; orgId: string }
 
-/** The last full UTC day before `now`, as [start, end) ISO strings without the zone, the form HogQL's toDateTime reads. */
+/** The last full UTC day before `now`, as [start, end) "YYYY-MM-DD hh:mm:ss" UTC strings. */
 export function lastFullDay(now: number): { start: string; end: string } {
   const end = Math.floor(now / DAY_MS) * DAY_MS;
   const iso = (ms: number) => new Date(ms).toISOString().slice(0, 19).replace("T", " ");
   return { start: iso(end - DAY_MS), end: iso(end) };
 }
-
-/** The handle a crawler path names, or null. */
-export const handleOf = (crawlerPath: string | null | undefined): string | null =>
-  /[?&]handle=([^&]+)/.exec(crawlerPath ?? "")?.[1] ?? null;
 
 /** The answered calls a route's p90 rests on: the day's when it has MIN_ROUTE_CALLS of them, else its pool when that has. */
 const basis = (row: RouteLatency | undefined): { calls: number; p90Ms: number | null; since?: number } | undefined =>
@@ -96,21 +87,20 @@ const latencyLine = (rows: RouteLatency[]): string => SLOW_ROUTES.map(endpoint =
   return `${endpoint} ${row?.calls ?? 0} calls p90 ${p90}${pooled} against ${ROUTE_P90_TARGET_S[endpoint]} s${row?.failed5xx ? `, ${row.failed5xx} answered 5xx` : ""}`;
 }).join(", ");
 
-/** The day's metrics and one flagged slice per 5xx, grouped in the excerpt by operation and error code. */
 /** The precheck output with `n`, the calls each duty metric read (agent factory's sampleSize in apps/chat/scripts/duties/agent-boards.ts). */
 export type FailuresOutput = PrecheckOutput & { n: Record<string, number> };
 
+/** The day's metrics and one flagged slice per 5xx, grouped in the excerpt by operation and error code. */
 export function report(counts: DayCounts, failed: FailedCall[], day: { start: string }, gapMin: number | null,
   latency: RouteLatency[]): FailuresOutput {
-  const attempts = counts.completed + counts.failed;
-  const share = attempts > 0 ? Math.round((counts.failed5xx / attempts) * 10_000) / 100 : 0;
+  const share = counts.calls > 0 ? Math.round((counts.failed5xx / counts.calls) * 10_000) / 100 : 0;
   const flagged: FlaggedSlice[] = failed.map(call => ({
-    at: Date.parse(call.at),
+    at: call.at,
     kind: `customer_5xx ${call.endpoint} ${call.status} ${call.errorCode}`,
-    excerpt: `${call.endpoint} ${call.status} ${call.errorCode}${call.handle ? ` @${call.handle}` : ""} ${call.requestId} (org ${call.orgId})`,
+    excerpt: `${call.endpoint} ${call.status} ${call.errorCode} ${call.requestId} (org ${call.orgId})`,
   }));
-  flagged.unshift({ kind: "day", excerpt: `${day.start.slice(0, 10)} UTC: ${counts.failed5xx} customer 5xx of ${attempts} attempts (${share}%${attempts ? "" : ", so the share read 0 calls and measured nothing"}); ` +
-    `longest stretch with no api_request event: ${gapMin === null ? "not read" : `${gapMin} min`}` });
+  flagged.unshift({ kind: "day", excerpt: `${day.start.slice(0, 10)} UTC: ${counts.failed5xx} customer 5xx of ${counts.calls} calls (${share}%${counts.calls ? "" : ", so the share read 0 calls and measured nothing"}); ` +
+    `longest stretch with no keyed call row: ${gapMin === null ? "not read" : `${gapMin} min`}` });
   const slow = slowRouteOverTarget(latency);
   flagged.splice(1, 0, { kind: "slow_routes", excerpt: `most over its own p90 target, all orgs: ${slow === UNMEASURED ? `unknown, a route has under ${MIN_ROUTE_CALLS} answered calls` : `${slow} s`}; ` +
     latencyLine(latency) });
@@ -122,80 +112,77 @@ export function report(counts: DayCounts, failed: FailedCall[], day: { start: st
   const windowMs = Object.fromEntries(Object.entries(lastEventAt).map(([key, at]) => [key, rollsAt - at]));
   const routeCalls = slow === UNMEASURED ? 0 : SLOW_ROUTES.reduce((sum, endpoint) => sum + (basis(latency.find(row => row.endpoint === endpoint))?.calls ?? 0), 0);
   return { metrics: { customer_5xx_share_pct: share, slow_route_over_target_s: slow, source_errors: 0 }, flagged,
-    n: { customer_5xx_share_pct: attempts, slow_route_over_target_s: routeCalls, source_errors: 1 },
+    n: { customer_5xx_share_pct: counts.calls, slow_route_over_target_s: routeCalls, source_errors: 1 },
     rollsAt: { customer_5xx_share_pct: rollsAt, slow_route_over_target_s: rollsAt }, ...Object.keys(lastEventAt).length ? { lastEventAt, windowMs } : {} };
 }
 
+// ---- SQL ----
+
+const at = (time: string) => `toDateTime64('${time}', 3, 'UTC')`;
+const routeList = SLOW_ROUTES.map(endpoint => `'${endpoint}'`).join(", ");
+/** One row per keyed call (crawl_read or data_api_request) in [start, end): its operation, final status, error code, org and time. The
+ *  portal's own row wins over the crawler's, and a crawl_read row before the crawler names its operation reads its route as one
+ *  (/api/live/search/bing as search.bing). */
+const callsSql = (table: string, start: string, end: string, where = "") => `SELECT if(charge_id = '', event_id, charge_id) AS call,
+ argMax(if(operation != '', operation, replaceAll(replaceRegexpOne(route, '^/api/(live/)?', ''), '/', '.')), (action = 'data_api_request', ts)) AS endpoint,
+ argMax(http_status, (action = 'data_api_request', ts)) AS status, argMax(error_code, (action = 'data_api_request', ts)) AS error_code,
+ any(org_id) AS org, max(ts) AS at
+FROM ${table} WHERE ts >= ${at(start)} AND ts < ${at(end)} AND action IN ('crawl_read', 'data_api_request') AND api_key_id != ''${where}
+GROUP BY call`;
+const CUSTOMER = "product.customer_usage_events";
+const NOT_PROOF = " AND NOT startsWith(org_id, 'org_test_')";
+
+export const daySql = (day: { start: string; end: string }) => `SELECT count() AS calls, countIf(status >= 500) AS failed5xx,
+ toUnixTimestamp64Milli(max(at)) AS last_ms FROM (${callsSql(CUSTOMER, day.start, day.end, NOT_PROOF)})`;
+export const failedSql = (day: { start: string; end: string }) => `SELECT toUnixTimestamp64Milli(at) AS at_ms, endpoint, status, error_code, call, org
+FROM (${callsSql(CUSTOMER, day.start, day.end, NOT_PROOF)}) WHERE status >= 500 ORDER BY at`;
+export const gapSql = (day: { start: string; end: string }) => `SELECT max(gap) AS gap_min FROM (SELECT dateDiff('minute',
+ lagInFrame(ts, 1, ts) OVER (ORDER BY ts ROWS BETWEEN 1 PRECEDING AND CURRENT ROW), ts) AS gap FROM product.usage_events
+ WHERE ts >= ${at(day.start)} AND ts < ${at(day.end)} AND action IN ('crawl_read', 'data_api_request') AND api_key_id != '')`;
+/** Answered calls of the slow routes, every org: one Convex charge per request id (a multi-part charge has one row per unit kind). */
+const answered = (where: string) => `SELECT charge_id, any(route) AS endpoint, max(duration_ms) AS ms, max(ts) AS at FROM product.usage_events
+ WHERE action = 'data_api_call' AND kind = 'charge' AND http_status BETWEEN 200 AND 399 AND duration_ms > 0 AND route IN (${routeList}) AND ${where}
+ GROUP BY charge_id`;
+export const routesSql = (day: { start: string; end: string }) => `SELECT endpoint, count() AS calls, quantileExact(0.9)(ms) AS p90_ms,
+ toUnixTimestamp64Milli(max(at)) AS last_ms FROM (${answered(`ts >= ${at(day.start)} AND ts < ${at(day.end)}`)}) GROUP BY endpoint`;
+export const route5xxSql = (day: { start: string; end: string }) => `SELECT endpoint, count() AS failed5xx
+ FROM (${callsSql("product.usage_events", day.start, day.end)}) WHERE status >= 500 AND endpoint IN (${routeList}) GROUP BY endpoint`;
+export const poolSql = (day: { end: string }) => `SELECT endpoint, count() AS calls, quantileExact(0.9)(ms) AS p90_ms,
+ toUnixTimestamp64Milli(min(at)) AS since_ms FROM (SELECT * FROM (${answered(`ts < ${at(day.end)}`)}) ORDER BY at DESC LIMIT ${MIN_ROUTE_CALLS} BY endpoint)
+ GROUP BY endpoint`;
+
 // ---- I/O ----
 
-const sh = (command: string, cwd: string) => new Promise<string>((resolve, reject) => {
-  execFile("/bin/sh", ["-c", command], { cwd, encoding: "utf8" }, (error, stdout, stderr) =>
-    error ? reject(new Error(`${error.message.split("\n")[0]} ${String(stderr).trim().slice(-200)}`)) : resolve(stdout));
-});
+const p90 = (value: unknown): number | null => value === null || value === undefined ? null : Number(value);
 
-// measured: PostHog answered 503 clickhouse_at_capacity on 11-13 00:00Z and 504 max execution time on 11-21 00:33Z, and a rerun at 00:5xZ read the day in 6.4 s.
-const HOG_SENDS = 2;
-const HOG_BUSY = new Set([503, 504]);
-
-export async function hog(key: string, query: string, send: typeof fetch = fetch): Promise<unknown[][]> {
-  for (let sent = 1; ; sent++) {
-    const response = await send(POSTHOG_QUERY, {
-      method: "POST",
-      headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
-      body: JSON.stringify({ query: { kind: "HogQLQuery", query }, refresh: "blocking" }),
-    });
-    if (HOG_BUSY.has(response.status) && sent < HOG_SENDS) continue;
-    if (!response.ok) throw new Error(`PostHog query answered ${response.status}: ${(await response.text()).slice(0, 200)}`);
-    return ((await response.json()) as { results: unknown[][] }).results;
-  }
+/** The day's report from one prod ClickHouse read per question. */
+export async function read(query: DsQuery, now: number): Promise<FailuresOutput> {
+  const day = lastFullDay(now);
+  const sql = (text: string) => sqlRows(query, CLICKHOUSE, text);
+  const [[totals], failedRows, gapRows, routeRows, fiveRows, poolRows] = await Promise.all([
+    sql(daySql(day)), sql(failedSql(day)), sql(gapSql(day)), sql(routesSql(day)), sql(route5xxSql(day)), sql(poolSql(day))]);
+  const calls = Number(totals?.calls ?? 0);
+  const failed: FailedCall[] = failedRows.map(row => ({ at: Number(row.at_ms), endpoint: String(row.endpoint), status: Number(row.status),
+    errorCode: String(row.error_code ?? ""), requestId: String(row.call), orgId: String(row.org) }));
+  const fives = new Map(fiveRows.map(row => [String(row.endpoint), Number(row.failed5xx)]));
+  const pools = new Map(poolRows.map(row => [String(row.endpoint), { calls: Number(row.calls), p90Ms: p90(row.p90_ms), since: Number(row.since_ms) }]));
+  const latency = SLOW_ROUTES.map((endpoint): RouteLatency => {
+    const row = routeRows.find(candidate => String(candidate.endpoint) === endpoint);
+    return { endpoint, calls: Number(row?.calls ?? 0), p90Ms: p90(row?.p90_ms), ...row ? { lastAt: Number(row.last_ms) } : {},
+      ...fives.has(endpoint) ? { failed5xx: fives.get(endpoint)! } : {}, ...pools.has(endpoint) ? { pool: pools.get(endpoint)! } : {} };
+  });
+  const gap = gapRows[0]?.gap_min;
+  return report({ calls, failed5xx: Number(totals?.failed5xx ?? 0), ...calls ? { lastAt: Number(totals!.last_ms) } : {} }, failed, day,
+    gap === null || gap === undefined ? null : Number(gap), latency);
 }
 
 export async function measure(now: number): Promise<FailuresOutput> {
-  const day = lastFullDay(now);
-  const window = `timestamp >= toDateTime('${day.start}') and timestamp < toDateTime('${day.end}')`;
-  const calls = "event in ('api_request_completed', 'api_request_failed')";
   try {
-    const key = (await sh("node_modules/.bin/dotenvx get POSTHOG_PERSONAL_API_KEY -f apps/vent/.env", REPO)).trim().split("\n").at(-1)!.trim();
-    const [[completed, failed, failed5xx, lastCall]] = (await hog(key, `select uniqIf(uuid, event = 'api_request_completed'), uniqIf(uuid, event = 'api_request_failed'), ` +
-      `uniqIf(uuid, event = 'api_request_failed' and toInt(properties.status) >= 500), max(timestamp) from events where ${calls} and ${window} ` +
-      `and properties.orgId in (${customerOrgs()})`)) as [[number, number, number, unknown]];
-    // HogQL's max over no rows is the epoch, so a time before the day reads as no call.
-    const inDay = (at: unknown): { lastAt?: number } => {
-      const ms = Date.parse(String(at));
-      return ms >= Date.parse(`${day.start.replace(" ", "T")}Z`) ? { lastAt: ms } : {};
-    };
-    const rows = await hog(key, `select timestamp, properties.endpoint, toInt(properties.status), properties.errorCode, properties.crawlerPath, ` +
-      `properties.requestId, properties.orgId from events where event = 'api_request_failed' and toInt(properties.status) >= 500 and ${window} ` +
-      `and properties.orgId in (${customerOrgs()}) order by timestamp limit 1 by uuid`);
-    const gap = await hog(key, `select max(gap) from (select dateDiff('minute', lagInFrame(timestamp, 1, timestamp) over (order by timestamp rows between 1 preceding and current row), timestamp) as gap ` +
-      `from events where ${calls} and ${window})`).catch(() => [[null]]);
-    const failedCalls = rows.map(([at, endpoint, status, errorCode, path, requestId, orgId]) => ({
-      at: String(at), endpoint: String(endpoint), status: Number(status), errorCode: String(errorCode ?? ""), handle: handleOf(path as string | null),
-      requestId: String(requestId ?? ""), orgId: String(orgId ?? ""),
-    }));
-    // HogQL has no quantileExactIf, and quantileExact skips nulls.
-    const answered = "event = 'api_request_completed'";
-    const durations = `select properties.endpoint, countIf(${answered}), quantileExact(0.9)(if(${answered}, toFloat(properties.durationMs), null)), ` +
-      `maxIf(timestamp, ${answered}), countIf(event = 'api_request_failed' and toInt(properties.status) >= 500) from events where ${calls} and ${window} ` +
-      `and properties.endpoint in (${SLOW_ROUTES.map(endpoint => `'${endpoint}'`).join(", ")}) and properties.durationMs is not null`;
-    const latencyRows = (rows: unknown[][]): RouteLatency[] => rows.map(([endpoint, count, p90, last, failed5xx]) =>
-      ({ endpoint: String(endpoint), calls: Number(count), p90Ms: p90 === null || p90 === undefined ? null : Number(p90), ...inDay(last),
-        failed5xx: Number(failed5xx ?? 0) }));
-    // The newest MIN_ROUTE_CALLS answered calls of each route up to the day's end; 2.9 s over all of PostHog's history on 11-16.
-    const pools = new Map((await hog(key, `select endpoint, count(), quantileExact(0.9)(ms), min(at) from (select properties.endpoint as endpoint, ` +
-      `toFloat(properties.durationMs) as ms, timestamp as at from (select * from events where event = 'api_request_completed' and timestamp < toDateTime('${day.end}') ` +
-      `and properties.endpoint in (${SLOW_ROUTES.map(endpoint => `'${endpoint}'`).join(", ")}) and properties.durationMs is not null order by timestamp desc limit 1 by uuid) ` +
-      `order by timestamp desc limit ${MIN_ROUTE_CALLS} by properties.endpoint) group by endpoint`)).map(([endpoint, count, p90, since]) =>
-      [String(endpoint), { calls: Number(count), p90Ms: p90 === null || p90 === undefined ? null : Number(p90), since: Date.parse(String(since)) }] as const));
-    const dayRows = latencyRows(await hog(key, `${durations} group by 1`));
-    const latency = [...dayRows, ...SLOW_ROUTES.filter(endpoint => !dayRows.some(row => row.endpoint === endpoint))
-      .map(endpoint => ({ endpoint, calls: 0, p90Ms: null }))].map(row => pools.has(row.endpoint) ? { ...row, pool: pools.get(row.endpoint)! } : row);
-    const gapMin = gap[0]?.[0] === null || gap[0]?.[0] === undefined ? null : Number(gap[0][0]);
-    return report({ completed: Number(completed), failed: Number(failed), failed5xx: Number(failed5xx), ...inDay(lastCall) }, failedCalls, day, gapMin, latency);
+    return await read(grafanaClient(fetch, await readGrafanaAuth(), now, AbortSignal.timeout(SOURCE_DEADLINE_MS)), now);
   } catch (error) {
     return { metrics: { customer_5xx_share_pct: UNMEASURED, slow_route_over_target_s: UNMEASURED, source_errors: 1 },
       n: { customer_5xx_share_pct: 0, slow_route_over_target_s: 0, source_errors: 0 },
-      flagged: [{ kind: "source_error", excerpt: `PostHog read failed: ${error instanceof Error ? error.message : String(error)}` }] };
+      flagged: [{ kind: "source_error", excerpt: `prod ClickHouse read failed: ${error instanceof Error ? error.message : String(error)}` }] };
   }
 }
 
