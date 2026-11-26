@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { adminQuery, convexBackend, CONVEX_ROWS, type ConvexTier, type EnvRead, readEnvRow } from "./convex-admin.ts";
-import { clickhouse } from "./vent-integrations.ts";
+import { clickhouse, ventTablesAt } from "./vent-integrations.ts";
 
 /**
  * The Vent chat's "Vent gateway" precheck (`node --import tsx scripts/duties/vent-gateway.ts`). No model call, no browser, names only for keys.
@@ -27,7 +27,7 @@ import { clickhouse } from "./vent-integrations.ts";
  *   the tip, so the cutover's code progress reads before prod runs it; new_direct_sites and tip_removed_sites count the sites the tip added
  *   and dropped.
  * - removed_provider_refs: (provider, file) pairs at the tip that name a provider goal p22 removed (REMOVED_PROVIDERS) outside the guards
- *   that keep it out (KEPT_GUARDS) and the article copy that names it to readers (ARTICLE_COPY), plus each removed integration tables.py lists again, so removed code or a removed Vent row that comes back misses.
+ *   that keep it out (KEPT_GUARDS) and the article copy that names it to readers (ARTICLE_COPY), plus each removed integration Vent's tables list again, so removed code or a removed Vent row that comes back misses.
  * - test_calls_real_24h: test sends off production that reached a real provider in 24 h (TEST_SENDS_SQL, goal p85), one test_send_real row
  *   per integration, caller and method.
  * A source it cannot read gives a source_error flagged slice with its reason, counted in source_errors, and leaves each metric it feeds out of
@@ -78,7 +78,7 @@ export const PROVIDER_KEYS = new Set([
   "RESEND_WEBHOOK_SECRET", "ZERNIO_WEBHOOK_SECRET",
   // Found by the p61 env key audit (10-22): the CLIProxy management key.
   "CLIPROXY_MANAGEMENT_KEY",
-  // Vent's openrouter integration secret (apps/vent/src/vent/tables.py).
+  // Vent's openrouter integration secret (apps/vent/src/vent/tables/integrations.py).
   "OPENROUTER_API_KEY",
 ]);
 
@@ -91,7 +91,7 @@ export const PROVIDER_KEYS = new Set([
 const PROVIDER_VENDORS = new Set([...PROVIDER_KEYS].map(name => name.split("_")[0]!));
 const NOT_PROVIDER = /_VENT_KEY$|_PUBLISHABLE_KEY$|^CLERK_JWT_KEY$|_OAUTH_STATE_SECRET$|^GOOGLE_PICKER_API_KEY$/;
 /**
- * The class auto-sns-agent's scripts/ci/vent-key-scan.mjs gives a name (classifyName, with Vent's secret names from tables.py at the tip):
+ * The class auto-sns-agent's scripts/ci/vent-key-scan.mjs gives a name (classifyName, with Vent's secret names from its tables at the tip):
  * every Vent integration secret and every secret-shaped name with a vendor word of scripts/ci/providers.mjs. The hand list above alone
  * missed names Vent holds that it never listed (GSC_SERVICE_ACCOUNT_JSON, LOGODEV_TOKEN, GITHUB_APP_PRIVATE_KEY) and vendors it never
  * named: on 2026-11-03 the env audit found CLOUDFLARE_USAGE_TOKEN, CONVEX_USAGE_TOKEN, TAILSCALE_API_KEY and the two
@@ -153,7 +153,7 @@ export const OTHER_PROJECT_KEY = /^(TOKSCALE_[A-Z0-9_]+|SLACK_GREEN_[A-Z0-9_]+|C
 
 /**
  * The CLIProxy gateway's server keys where compose.yml's cliproxy service takes them: each tier's infra tier, its release.env copy on
- * the box, the komodo.env that a Komodo deploy writes from the Stack's Variables in release.env's place, and the container. Staging's moved to metal on 11-04 and prod's on 11-22 (6b087534ff). They stay counted anywhere else, because Vent (tables.py) and the virev-demo record scripts
+ * the box, the komodo.env that a Komodo deploy writes from the Stack's Variables in release.env's place, and the container. Staging's moved to metal on 11-04 and prod's on 11-22 (6b087534ff). They stay counted anywhere else, because Vent (its tables) and the virev-demo record scripts
  * read CLIPROXY_API_KEY to call the gateway, so a copy in another app's store is a way around Vent.
  */
 export const CLIPROXY_SERVER = (location: string, name: string) => /^CLIPROXY_(API_KEY|MANAGEMENT_PASSWORD)$/.test(name)
@@ -178,7 +178,7 @@ export interface ShareResult { refs: Record<string, { sha: string; sites: ShareS
 export const GONE = new Set(["removed", "gone"]);
 export interface WebhookVerdict { source: string; direct: boolean; vent: boolean }
 export interface KeyListing { locations: Record<string, string[]>; unreadable: Record<string, string>; classOf?: ClassOf }
-/** The tip's text lines that name a removed provider (`git grep -z -n` output), apps/vent/src/vent/tables.py at the tip and how many tip files the grep searched. */
+/** The tip's text lines that name a removed provider (`git grep -z -n` output), Vent's tables at the tip and how many tip files the grep searched. */
 export interface RemovedReads { grep: string; tables: string; files?: number }
 /** One group of test sends that reached a real provider in 24 h (TEST_SENDS_SQL). */
 export interface TestSendRow { integration: string; caller: string; method: string; calls: number; last: number }
@@ -228,7 +228,7 @@ WHERE Timestamp > now() - INTERVAL 24 HOUR AND ServiceName = 'vent' AND Body = '
  * The providers goal p22 removed to the root on 2026-10-19 to 10-21 (the owner: "not just from vent but 뿌리째 쭉쭉 지워. 원천 코드, 관련된
  * 서비스, 테스트 전부 다"): the old konti.bot media stack and its research app, our own Meta Graph app, and ZeroBounce with the Vent
  * integrations no live code called. `grep` is the coarse ERE git grep reads the tip with, `code` the exact match on each line, and
- * `integrations` the tables.py INTEGRATIONS rows that left Vent with it (37305513d4, 4c48f09ef1, 038400632a).
+ * `integrations` the INTEGRATIONS rows that left Vent with it (37305513d4, 4c48f09ef1, 038400632a).
  */
 export interface RemovedProvider { name: string; grep: string; code: RegExp; integrations: readonly string[] }
 export const REMOVED_PROVIDERS: readonly RemovedProvider[] = [
@@ -295,7 +295,7 @@ export const BILLING_LEDGERS: readonly { path: string; line: RegExp; reason: str
 ];
 const ledger = (path: string, text: string) => BILLING_LEDGERS.some(entry => entry.path === path && entry.line.test(text));
 
-/** The row names of the INTEGRATIONS block in tables.py, or null when the block is missing. */
+/** The row names of the INTEGRATIONS block in Vent's tables, or null when the block is missing. */
 export function integrationNames(tablesPy: string): string[] | null {
   const start = tablesPy.indexOf("INTEGRATIONS: dict[str, Integration] = {");
   const end = tablesPy.indexOf("\n}\n", start);
@@ -303,10 +303,10 @@ export function integrationNames(tablesPy: string): string[] | null {
   return [...tablesPy.slice(start, end).matchAll(/^\s*"([a-z0-9_-]+)"\s*:\s*Integration\(/gm)].map(match => match[1]!);
 }
 
-/** Lines at the tip that name a removed provider outside KEPT_GUARDS, one ref per (provider, file), plus each removed integration tables.py lists again. */
+/** Lines at the tip that name a removed provider outside KEPT_GUARDS, one ref per (provider, file), plus each removed integration Vent's tables list again. */
 export function removedProviderRefs({ grep, tables }: RemovedReads, at: number): { refs: number; flagged: FlaggedSlice[] } | { error: string } {
   const names = integrationNames(tables);
-  if (!names) return { error: `apps/vent/src/vent/tables.py at ${TIP} has no INTEGRATIONS block` };
+  if (!names) return { error: `Vent's tables at ${TIP} have no INTEGRATIONS block` };
   const found = new Map<string, FlaggedSlice>();
   for (const line of grep.split("\n")) {
     const [ref, num, text] = line.split("\0");
@@ -321,7 +321,7 @@ export function removedProviderRefs({ grep, tables }: RemovedReads, at: number):
   }
   for (const provider of REMOVED_PROVIDERS) {
     for (const integration of provider.integrations.filter(name => names.includes(name))) {
-      found.set(`${provider.name}\0integration ${integration}`, { at, kind: "removed_provider_ref", item: `integration ${integration}`, excerpt: `${provider.name}: apps/vent/src/vent/tables.py at ${TIP} lists the removed integration ${integration} again` });
+      found.set(`${provider.name}\0integration ${integration}`, { at, kind: "removed_provider_ref", item: `integration ${integration}`, excerpt: `${provider.name}: Vent's INTEGRATIONS at ${TIP} lists the removed integration ${integration} again` });
     }
   }
   return { refs: found.size, flagged: [...found.values()] };
@@ -568,7 +568,7 @@ async function keyListing(): Promise<KeyListing> {
     const scan = await import(pathToFileURL(join(REPO, "scripts/ci/vent-key-scan.mjs")).href) as {
       classifyName: (name: string, ventNames: Set<string>) => { class: string }; ventSecretNames: (tablesPy: string) => Set<string>;
     };
-    const ventNames = scan.ventSecretNames(await run("git", ["show", `${TIP}:apps/vent/src/vent/tables.py`]));
+    const ventNames = scan.ventSecretNames(await ventTablesAt(TIP));
     classOf = name => scan.classifyName(name, ventNames).class;
   })().catch((error: unknown) => { unreadable["vent-key-scan.mjs key classes"] = errorText(error); }));
   tasks.push(run("node", ["--input-type=module", "-e", `import(${JSON.stringify(join(REPO, "scripts/ci/vent-key-scan.mjs"))}).then(m => process.stdout.write(m.BOX_READER))`])
@@ -579,7 +579,7 @@ async function keyListing(): Promise<KeyListing> {
   return { locations, unreadable, ...classOf ? { classOf } : {} };
 }
 
-/** The tip's lines that name a removed provider, read with git grep (wiki content and binaries skipped), and tables.py at the tip. Exit 1 is no match. */
+/** The tip's lines that name a removed provider, read with git grep (wiki content and binaries skipped), and Vent's tables at the tip. Exit 1 is no match. */
 async function removedReads(): Promise<RemovedReads> {
   const pattern = REMOVED_PROVIDERS.map(provider => provider.grep).join("|");
   const grep = await new Promise<string>((resolve, reject) => {
@@ -587,7 +587,7 @@ async function removedReads(): Promise<RemovedReads> {
       (error, stdout, stderr) => error && !(error.code === 1 && !stderr) ? reject(new Error(`git grep: ${String(stderr).trim().slice(-200) || error.message}`)) : resolve(stdout));
   });
   const files = (await run("git", ["ls-tree", "-r", "--name-only", TIP])).split("\n").filter(path => path && !path.startsWith("apps/llm-wiki/content/")).length;
-  return { grep, tables: await run("git", ["show", `${TIP}:apps/vent/src/vent/tables.py`]), files };
+  return { grep, tables: await ventTablesAt(TIP), files };
 }
 
 async function main(): Promise<void> {

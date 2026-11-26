@@ -9,7 +9,7 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
 /**
  * The Vent chat's "Vent integrations" precheck (`node --import tsx scripts/duties/vent-integrations.ts`). No model call, no browser, no key value.
  * - vent_success_24h_pct, the headline, and red_integrations_prod come from the prod lights as the Vent console builds them: vent-health.py
- *   beside this file runs vent.health.read_health, the function behind GET /_vent/admin/health, from apps/vent/src at origin/staging against
+ *   beside this file runs vent.telemetry.health.read_health, the function behind GET /_vent/admin/health, from apps/vent/src at origin/staging against
  *   prod ClickHouse through Grafana. So a call counts the way the console and the vent-integration-health alert rules count it: success and
  *   failure only, without the caller's own 4xx, the Claude account cap, refused and cancelled calls.
  * - prod_vent_behind_staging_h: hours since staging Vent first ran another build than prod Vent. Both builds come from /healthz `version`, and
@@ -30,14 +30,14 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  *   session's vent_models_query.py counts them: Body 'vent.call', the cliproxy integrations but cliproxy-management, gemini, any row that names
  *   gen_ai.request.model and any vent_model_not_allowed refusal, with the "(effort)" suffix stripped. Owner rule c185 (10-28): "vent should
  *   constrain models (cliproxy, API) to use ONLY THE LATEST MODEL of each tier ... nothing else should be allowed. period." The allowed set is
- *   ALLOWED_MODELS in apps/vent/src/vent/tables.py at origin/staging, so a tier bump there moves the duty with it. A call Vent let through
+ *   ALLOWED_MODELS in apps/vent/src/vent/tables/operations.py at origin/staging, so a tier bump there moves the duty with it. A call Vent let through
  *   counts as much as a refused one, so an older model that comes back on a path Vent does not check still misses: on 10-28 at 06:18Z the
  *   24 h before the allowlist shipped held 1,335 such prod calls and 13,453 on staging, claude-opus-5 and gpt-6-sol most of them. Until 10-28
  *   this slot was vent_model_refused_callers, which counted only callers Vent refused, so a refused call reads here as one of these calls.
  *   A name built from an allowed model with more words after it, such as the gpt-6-luna-nope of a knob test on 11-08, names no model and
  *   does not count.
  * - vent_console_slow_reads_24h: how many of the 17 reads the prod Vent console runs cost 1 core-second or more on prod ClickHouse. vent-console-cost.py
- *   beside this file builds them with vent.telemetry_read and vent.health from apps/vent/src at origin/main, the build prod runs, runs each once
+ *   beside this file builds them with vent.telemetry.read and vent.telemetry.health from apps/vent/src at origin/main, the build prod runs, runs each once
  *   through Grafana with a log_comment tag and reads its CPU from otel.query_cost. Until release 21 (10-25) prod's console decoded the whole
  *   LogAttributes map of each call row, and its 24 h usage reads took 1.07 to 1.50 core-s on prod; on the columns of otel.vent_calls they take
  *   0.29 to 0.51. Goal p44, owner: "Make the Vent Grafana panels and alert rules cheap so they stop loading prod's database".
@@ -79,7 +79,7 @@ export interface VersionSpan { env: string; first: number; last: number }
 export interface KeyRefusal { source: string; calls: number; last: number; integrations: string[] }
 /** LLM calls on one Vent tier in 24 h for one caller, operation and model, and how many of them Vent refused as vent_model_not_allowed. */
 export interface ModelCalls { env: string; caller: string; operation: string; model: string; calls: number; refused: number; last: number }
-/** The models Vent allows (ALLOWED_MODELS in tables.py) and the LLM calls of both tiers in 24 h. */
+/** The models Vent allows (ALLOWED_MODELS in Vent's tables) and the LLM calls of both tiers in 24 h. */
 export interface ModelReads { allowed: readonly string[]; rows: ModelCalls[] }
 /** One read the prod Vent console runs and what one run of it cost on prod ClickHouse, null when otel.query_cost had no row for it. */
 export interface ConsoleRead { name: string; cpu_s: number | null; read_rows: number | null }
@@ -135,12 +135,22 @@ export function oldModelCalls(reads: ModelReads): ModelCalls[] {
     .filter(row => row.calls > 0);
 }
 
-/** ALLOWED_MODELS from the text of apps/vent/src/vent/tables.py. */
+/** ALLOWED_MODELS from the text of Vent's tables (apps/vent/src/vent/tables). */
 export function allowedModels(tables: string): string[] {
   const set = /^ALLOWED_MODELS\b[^=]*=\s*frozenset\(\s*\{([^}]*)\}/m.exec(tables)?.[1];
   const models = set ? [...set.matchAll(/"([^"]+)"/g)].map(match => match[1]!) : [];
-  if (!models.length) throw new Error("no ALLOWED_MODELS set in apps/vent/src/vent/tables.py");
+  if (!models.length) throw new Error("no ALLOWED_MODELS set in apps/vent/src/vent/tables");
   return models;
+}
+
+/** Vent's tables are the files of apps/vent/src/vent/tables since auto-sns-agent's 2026-11-26 split and one tables.py before. */
+const VENT_TABLE_FILE = /^apps\/vent\/src\/vent\/tables(\.py|\/[a-z_]+\.py)$/;
+
+/** Vent's tables at `ref` as one text, whichever layout the ref holds. Throws when it holds neither. */
+export async function ventTablesAt(ref: string): Promise<string> {
+  const paths = (await run("git", ["ls-tree", "-r", "--name-only", ref, "--", "apps/vent/src/vent/"])).split("\n").filter(path => VENT_TABLE_FILE.test(path)).sort();
+  if (!paths.length) throw new Error(`${ref} has no apps/vent/src/vent/tables`);
+  return (await Promise.all(paths.map(path => run("git", ["show", `${ref}:${path}`])))).join("\n");
 }
 
 /**
@@ -273,7 +283,7 @@ async function host(url: string): Promise<HostRead> {
   } catch (error) { return { url, status: 0, error: errorText(error) }; }
 }
 
-/** The prod lights, built by vent.health from apps/vent/src at HEALTH_REF with the checkout's apps/vent python. */
+/** The prod lights, built by vent.telemetry.health from apps/vent/src at HEALTH_REF with the checkout's apps/vent python. */
 async function lights(token: string, dir: string): Promise<IntegrationLight[]> {
   const tar = join(dir, "vent-src.tar");
   await run("git", ["fetch", "--quiet", "origin", "staging"]);
@@ -348,7 +358,7 @@ async function keyRefusals(token: string): Promise<KeyRefusal[]> {
 
 /** LLM calls on prod and staging Vent in 24 h per tier, caller, operation and model, as vent_models_query.py reads them, and the allowed set at HEALTH_REF. */
 async function modelCalls(token: string): Promise<ModelReads> {
-  const allowed = allowedModels(await run("git", ["show", `${HEALTH_REF}:apps/vent/src/vent/tables.py`]));
+  const allowed = allowedModels(await ventTablesAt(HEALTH_REF));
   const sql = "SELECT ResourceAttributes['deployment.environment.name'] AS env, `vent.caller` AS caller, `vent.operation` AS operation, " +
     "`gen_ai.request.model` AS model, toFloat64(sum(greatest(toUInt64OrZero(`vent.count`), 1))) AS calls, " +
     "toFloat64(sumIf(greatest(toUInt64OrZero(`vent.count`), 1), `vent.outcome` = 'refused' AND `vent.error_code` = 'vent_model_not_allowed')) AS refused, " +

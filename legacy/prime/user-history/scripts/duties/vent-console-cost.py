@@ -2,7 +2,7 @@
 """Print what each Vent console read costs on prod ClickHouse, as JSON, built by the console's own code.
 
 Run with apps/vent's python and PYTHONPATH at an apps/vent/src tree, the one prod runs. It builds the
-17 reads the console runs (vent.telemetry_read usage and calls over 1 h and 24 h, vent.health's summary,
+17 reads the console runs (vent.telemetry.read usage and calls over 1 h and 24 h, vent.telemetry.health's summary,
 trend and top), runs each once through Grafana as the console does, tagged with a log_comment, and reads
 each run's CPU from otel.query_cost. Usage: vent-console-cost.py <env> <grafana url>, where
 the url is prod Vent's grafana-agents integration, with GRAFANA_READ_VENT_KEY set. It prints no secret.
@@ -13,11 +13,20 @@ import json
 import os
 import secrets
 import sys
+from pathlib import Path
 
 import httpx
 
-from vent import health
-from vent import telemetry_read as tr
+import vent
+
+# apps/vent keeps health and the telemetry reads in vent.telemetry since 2026-11-26, and at the top of the
+# package before, so a tree from either side of that move runs.
+if (Path(vent.__file__).parent / "telemetry" / "health.py").exists():
+    from vent.telemetry import health
+    from vent.telemetry import read as tr
+else:
+    from vent import health  # type: ignore[no-redef]
+    from vent import telemetry_read as tr  # type: ignore[no-redef]
 
 # measured: on prod from 10-22 to 10-25, every tagged read showed in otel.query_cost 9 s after it ended
 # (system.query_log flushes every 7.5 s by default), across 6 runs of these 17 reads.
