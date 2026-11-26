@@ -274,7 +274,8 @@ test("a design commit that no prod release holds yet makes no repeat and is flag
   const data = await f18({ designs: ["01a11bd7-072f-7591-ad1d-f123c276cde5/p146", "commit:e0d09f5a42", "commit:0123456789"] }, { deploys: DEPLOYS, held: HELD });
   const output = report(data, await metrics(data.now));
   assert.equal(output.metrics.repeats_after_design, 0);
-  assert.match(output.flagged!.find(slice => slice.kind === "design_not_on_prod")!.excerpt, /F18 commit:e0d09f5a42 commit:0123456789/);
+  const line = output.flagged!.find(slice => slice.kind === "design_not_on_prod")!.excerpt;
+  assert.match(line, /F18 commit:0123456789(;|$)/, "names only the commit the release lacks, so a long design list leaves room for the next fault (11-26, F15)");
 });
 
 test("with no deploy read a commit design falls back to done_at, and with no done_at either repeats_after_design is a miss", async () => {

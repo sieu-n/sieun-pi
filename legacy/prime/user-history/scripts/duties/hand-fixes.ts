@@ -256,6 +256,14 @@ export function designOnProd(fault: Fault, at: number, deploys: readonly Deploy[
   return commits.every(ref => holds.has(ref)) ? "live" : "not_live";
 }
 
+/** The commit designs of `fault` that the prod release at `at` does not hold, so the design_not_on_prod line names only those: on 11-26 F15 listed
+ * all 9 of its commits, 8 of them live, and the line's 600 characters ended before the next fault's. */
+export function missingOnProd(fault: Fault, at: number, deploys: readonly Deploy[] | undefined, held: ReadonlyMap<string, ReadonlySet<string>>): string[] {
+  const release = deploys && releaseAt(deploys, at);
+  const holds = release ? held.get(release.release) : undefined;
+  return fault.designs.filter(ref => ref.startsWith("commit:") && !holds?.has(ref)).map(ref => ref.slice(0, "commit:".length + 10));
+}
+
 /** Whether a hand fix at `at` came after the fault's design shipped: its steps done, its commits on prod, and not before its done_at. */
 export function afterDesign(fault: Fault, at: number, refs: ReadonlyMap<string, RefState>, deploys: readonly Deploy[] | undefined,
   held: ReadonlyMap<string, ReadonlySet<string>>, seenDone: number): boolean | "unknown" {
@@ -502,7 +510,7 @@ export function report(data: HandData, dutyMetrics: readonly DutyMetric[]): Prec
       flagged.push({ at, kind: "source_error", excerpt: `prod deploys: ${unknown.join(", ")} name a commit: design and no done_at, and which commits prod ran at their hand fixes could not be read (the box's deploy.log or the auto-sns-agent checkout)`.slice(0, 400) });
     }
     const pending = registry.faults.filter(fault => stepState(fault, refs) === "done" && designOnProd(fault, at, data.deploys, held) === "not_live");
-    if (pending.length) flagged.push({ at, kind: "design_not_on_prod", excerpt: `Design steps done, but a commit is in no prod release yet, so their hand fixes are not repeats: ${pending.map(fault => `${fault.id} ${fault.designs.filter(ref => ref.startsWith("commit:")).join(" ")}`).join("; ")}`.slice(0, 600) });
+    if (pending.length) flagged.push({ at, kind: "design_not_on_prod", excerpt: `Design steps done, but a commit is in no prod release yet, so their hand fixes are not repeats: ${pending.map(fault => `${fault.id} ${missingOnProd(fault, at, data.deploys, held).join(" ")}`).join("; ")}`.slice(0, 600) });
     metrics.undesigned_hand_fixes = undesigned.length;
     metrics.repeats_after_design = repeats.length;
     if (undesigned.length) lastEventAt.undesigned_hand_fixes = Math.max(...undesigned.map(item => item.fix.at));
