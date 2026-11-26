@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { join } from "node:path";
 import { WIKI_CONTENT_HOME, wikiLinkPath } from "./shared/artifact-link.ts";
+import { mountRootOf, type WikiRoots } from "../../../../apps/wiki/src/lib/server/mount-root.ts";
 import { chatLines, CHECK_IN_PREFIX, messageIdNote, ownerMessageId, ownerTyped, serverNote, TELL_OWNER_HELD, TELL_OWNER_TOOL, TELL_WHY, type TellWhy, turnStarter } from "./shared/chat-feed.ts";
 import { messageText } from "./shared/turns.ts";
 import type { PlanItem, ThreadMessage } from "./shared/types.ts";
@@ -499,17 +500,35 @@ const WIKI_TOKEN = /(?<![\w-])wiki:[^\s<>()[\]`"'*]+/g;
 export const wikiLinks = (text: string): string[] =>
   [...text.matchAll(WIKI_TOKEN)].map(match => "wiki:" + match[0].slice(5).replace(/[.,;:!?]+$/, "")).filter(link => link !== "wiki:");
 /**
- * Whether a wiki page exists, read from the wiki's content folder when this box holds the wiki role in hosts.json, the folder the wiki serves
- * pages from. Null on any other box, where the folder can lag the wiki's, so no link is checked there.
+ * Whether a wiki page exists, read from disk when this box holds the wiki role in hosts.json. A path maps to its file as the wiki engine maps
+ * it (mount-root.ts `mountRootOf`), with the content root and the mounts of the engine's config file, so `agents/<slug>/jobs/...` resolves
+ * under the agent's home (~/.pi/agent/agents/<slug>/) as the page the wiki serves. On 11-26 tell_owner refused a link to a page in fable
+ * auditor's job folder twice, because this read only the content root. Null on any other box, where the folders can lag the wiki's, so no
+ * link is checked there.
  */
-export function localWikiPages(file = process.env.SIEUN_PI_HOSTS ?? join(homedir(), ".config/sieun-pi/hosts.json")): ((path: string) => boolean) | null {
+export function localWikiPages(
+  file = process.env.SIEUN_PI_HOSTS ?? join(homedir(), ".config/sieun-pi/hosts.json"),
+  wikiFile = process.env.WIKI_CONFIG || join(homedir(), ".config/sieun-pi/wiki.json"),
+): ((path: string) => boolean) | null {
   const short = (name: string) => name.split(".")[0]!.toLowerCase();
   try {
     const hosts = (JSON.parse(readFileSync(file, "utf8")) as { hosts?: { hostname?: string; roles?: { wiki?: unknown } }[] }).hosts ?? [];
     if (!hosts.some(host => host.roles?.wiki && typeof host.hostname === "string" && short(host.hostname) === short(hostname()))) return null;
   } catch { return null; }
-  const content = join(homedir(), WIKI_CONTENT_HOME.slice(2));
-  return path => existsSync(join(content, path));
+  const roots = wikiRoots(wikiFile);
+  return path => {
+    const { root, relative } = mountRootOf(roots, path);
+    return existsSync(join(root, relative));
+  };
+}
+/** The wiki engine's content root and mounts from its config file (apps/wiki/src/lib/wiki-config.mjs reads the same file), else the default root. */
+function wikiRoots(file: string): WikiRoots {
+  const expand = (dir: unknown): string | null => typeof dir === "string" && dir ? dir.replace(/^~(?=$|\/)/, homedir()) : null;
+  let json: { contentRoot?: unknown; mounts?: unknown } = {};
+  try { json = JSON.parse(readFileSync(file, "utf8")) as typeof json; } catch { /* no config: the default root and no mounts */ }
+  const mounts = Object.fromEntries(Object.entries(json.mounts && typeof json.mounts === "object" ? json.mounts : {})
+    .flatMap(([name, dir]) => { const full = expand(dir); return full ? [[name, full]] : []; }));
+  return { contentRoot: expand(json.contentRoot) ?? join(homedir(), WIKI_CONTENT_HOME.slice(2)), mounts };
 }
 /** Each `wiki:` link in the text that opens no page, with why: no page path in it, or no such page on the wiki. */
 export function brokenWikiLinks(text: string, pageExists: ((path: string) => boolean) | null): string[] {

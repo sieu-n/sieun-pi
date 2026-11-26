@@ -3,7 +3,10 @@
 // chat writes a wiki link in now opens the one page, and tell_owner refuses once a wiki: link that opens no page.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { brokenWikiLinks, TELL_OWNER_DONE, tellOwner, tellTurn, wikiLinks } from "../src/chat-guard.ts";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { hostname, tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { brokenWikiLinks, localWikiPages, TELL_OWNER_DONE, tellOwner, tellTurn, wikiLinks } from "../src/chat-guard.ts";
 import { normalizeArtifactTarget, parseArtifactTarget } from "../src/shared/artifact-link.ts";
 import { renderMarkdown } from "../src/client/markdown.ts";
 import { wikiPages } from "../src/client/reader.ts";
@@ -90,4 +93,26 @@ test("tell_owner sends a link to a page that is there in any form, and checks no
   const turn = tellTurn([owner("where is the load page?", "03:20:00")]);
   for (const form of [...FORMS, SENT[0]!]) assert.deepEqual(tellOwner({ text: `It is here, ${form}` }, turn, Date.now(), exists), { kind: "sent", text: TELL_OWNER_DONE }, form);
   assert.deepEqual(tellOwner({ text: "It is here, wiki:nope/missing.html" }, turn, Date.now(), null), { kind: "sent", text: TELL_OWNER_DONE });
+});
+
+// 11-26: tell_owner refused twice a link to agents/fable-auditor/jobs/.../monorepo-first-look.html, a page the wiki served from fable
+// auditor's home (~/.pi/agent/agents/fable-auditor/), because the check read only the content root.
+test("tell_owner finds a page in an agent's job folder where the wiki serves it, under the agents mount", t => {
+  const root = mkdtempSync(join(tmpdir(), "wiki-mount-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const put = (file: string): void => { mkdirSync(dirname(join(root, file)), { recursive: true }); writeFileSync(join(root, file), "<h1>page</h1>"); };
+  const job = "agents/fable-auditor/jobs/2026/11/26/1623-monorepo-first-look/monorepo-first-look.html";
+  put(`homes/${job.slice("agents/".length)}`);
+  put("content/agents/old-agent/notes.html");
+  put(`content/${PAGE}`);
+  writeFileSync(join(root, "hosts.json"), JSON.stringify({ hosts: [{ hostname: hostname(), roles: { wiki: {} } }] }));
+  writeFileSync(join(root, "wiki.json"), JSON.stringify({ contentRoot: join(root, "content"), mounts: { agents: join(root, "homes") } }));
+  const pageExists = localWikiPages(join(root, "hosts.json"), join(root, "wiki.json"));
+  assert.ok(pageExists);
+  assert.equal(pageExists(job), true, "a page under the agent's home");
+  assert.equal(pageExists("agents/old-agent/notes.html"), true, "an agents/<x> folder the content root still holds");
+  assert.equal(pageExists(PAGE), true, "a page in the content root");
+  assert.equal(pageExists("agents/fable-auditor/jobs/2026/11/26/1623-monorepo-first-look/missing.html"), false);
+  const turn = tellTurn([owner("where is the monorepo look?", "03:20:00")]);
+  assert.deepEqual(tellOwner({ text: `It is here, [the first look](wiki:${job})` }, turn, Date.now(), pageExists), { kind: "sent", text: TELL_OWNER_DONE });
 });
