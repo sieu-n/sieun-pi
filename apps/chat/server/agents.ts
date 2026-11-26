@@ -155,6 +155,9 @@ export class Agents {
   ) {
     const kept = store.dir ? state.cache<{ v?: number; refs?: Record<string, CachedRef> }>(REFS_CACHE, {}) : {};
     this.refs = new Map(kept.v === 2 && kept.refs ? Object.entries(kept.refs) : []);
+    for (const record of store.agents.agents) {
+      if (record.test && record.archived && record.slug && existsSync(join(config.agentsDir, record.slug))) this.archivedTests.add(record);
+    }
   }
 
   /** The box whose pi-host holds the agent's threads. */
@@ -460,8 +463,9 @@ export class Agents {
 
   /**
    * Test agents archived since this server started. Their folders are removed again on every thread list read, because a turn that ends
-   * after the archive still writes working-memory.md, as three duty-check agents' folders showed on 11-25. Agents archived before the start
-   * keep their folders, which a cleanup job handles.
+   * after the archive still writes working-memory.md, as three duty-check agents' folders showed on 11-25. The start adds each archived test
+   * agent whose folder is on disk, because a late write before a restart outlived the set: blind-replies-112521573720 wrote its folder again
+   * at 22:28Z on 11-25 and d7 counted it as wiki clutter after the 04:18Z restart on 11-26.
    */
   private readonly archivedTests = new Set<AgentRecord>();
 

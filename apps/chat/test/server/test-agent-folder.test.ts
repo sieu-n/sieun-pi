@@ -45,6 +45,16 @@ test("a test agent's folder written again after its archive is removed on the ne
   }, gone => !gone);
 });
 
+test("a server start removes the folder an archived test agent wrote again before the start", async () => {
+  const dir = await archived("restart probe", true);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "working-memory.md"), "late turn before a restart");
+  const { store, state, host, config } = s.app.agents;
+  const restarted = new (s.app.agents.constructor as new (...args: unknown[]) => typeof s.app.agents)(store, state, host, config);
+  restarted.follow(new Map());
+  assert.equal(existsSync(dir), false);
+});
+
 test("archiving a real agent keeps its folder", async () => {
   const dir = await archived("real folder probe", false);
   assert.equal(existsSync(join(dir, "work", "notes.html")), true);
