@@ -55,14 +55,16 @@ def gsc_read() -> dict[str, Any]:
     wins = {w.name: w for w in gsc.windows(datetime.fromisoformat(last_final).date())}
     for name in ("d7", "d7_prior"):
         out[name] = {"start": wins[name].start.isoformat(), "end": wins[name].end.isoformat(), **gsc._totals(sess, wins[name])}
-    # Impressions per page and day over the 17 final days that end on the last one (DROP_BASE_DAYS + DROP_RECENT_DAYS), for dropped_pages
-    # in seo-search-visits.ts, which splits them into its base and recent windows.
+    # Impressions per page and day over the 31 final days that end on the last one (DROP_BEFORE_DAYS + DROP_BASE_DAYS + DROP_RECENT_DAYS),
+    # for dropped_pages in seo-search-visits.ts, which splits them into its before, base and recent windows.
     end = datetime.fromisoformat(last_final).date()
-    start = end - timedelta(days=16)
+    start = end - timedelta(days=30)
     rows = gsc.query(sess, start, end, ["page", "date"])
     out["pages"] = {"start": start.isoformat(), "end": end.isoformat(),
                     "rows": [{"page": r["page"], "date": r["date"], "impressions": r["impressions"]} for r in rows]}
-    # The same days per search and page, so movedPages can tell a page whose searches went to another virev.ai page from one that lost them.
+    # Per search, page and day over the last 17 of those days (base and recent), so movedPages can tell a page whose searches went to another
+    # virev.ai page from one that lost them.
+    start = end - timedelta(days=16)
     rows = gsc.query(sess, start, end, ["query", "page", "date"])
     out["queries"] = {"start": start.isoformat(), "end": end.isoformat(),
                       "rows": [{"query": r["query"], "page": r["page"], "date": r["date"], "impressions": r["impressions"]} for r in rows]}

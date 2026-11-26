@@ -5,7 +5,7 @@
   "metrics": [
     {
       "key": "dropped_pages",
-      "label": "Pages that had 5+ Google impressions a day in the 14 days before the last 3 final days and fell under 20% of that in those 3 days, counting a new page from its first day (Search Console)",
+      "label": "Pages whose Google impressions a day in the last 3 final days fell under 20% of their level, the lower of their averages over the 14 days before and the 14 days before those, at 5+ a day, counting a new page from its first day (Search Console)",
       "op": "<=",
       "target": 0,
       "unit": " pages",

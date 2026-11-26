@@ -36,6 +36,16 @@ export const GSC_STALE_DAYS = 5;
  */
 export const DROP_RECENT_DAYS = 3;
 export const DROP_BASE_DAYS = 14;
+/**
+ * A page's level is the lower of its average over the base and its average over the DROP_BEFORE_DAYS before the base, when it has
+ * DROP_MIN_BASE_DAYS or more days there, so a burst of a week or two inside the base does not read as the level a page fell from.
+ * Google's core update of 11-10..11-24 gave many pages such a burst: on the 11-23 final day /blog/evaluate-a-youtube-channel-s-back-catalog-before-sponsoring-it
+ * read 12.8 to 1.7 against 11-07..11-20 (10, 36, 51 on 11-12..11-14) while it averaged 3.2 over 10-24..11-06, and /blog/london-travel-influencers
+ * read 6.3 to 1 on 11-21 against 1.9 before. Replayed on final data for the last final days 11-01..11-23, the rule left out 25 of 237 flags on 14
+ * pages, each back near its average before a burst, and kept every day of the real drops of /ko/blog/best-time-to-post-on-instagram-and-tiktok
+ * and /ko/tools/tiktok-viewer.
+ */
+export const DROP_BEFORE_DAYS = 14;
 export const DROP_MIN_DAILY = 5;
 export const DROP_SHARE = 0.2;
 /**
@@ -109,11 +119,11 @@ interface Window { start: string; end: string; per_day: Record<string, number>; 
 export interface TrafficRead { windows: Record<string, Window>; last_day: Record<string, unknown> & { date: string }; sessions_read: number; top_goal_entries_d28?: { path: string; visits: number }[] }
 interface Totals { start: string; end: string; clicks: number; impressions: number; position: number | null }
 export interface PageDay { page: string; date: string; impressions: number }
-/** Search Console impressions per page and day over the DROP_BASE_DAYS + DROP_RECENT_DAYS days that end on the last final day. */
+/** Search Console impressions per page and day over the DROP_BEFORE_DAYS + DROP_BASE_DAYS + DROP_RECENT_DAYS days that end on the last final day. */
 export interface PagesDaily { start: string; end: string; rows: PageDay[] }
 export interface Span { start: string; end: string }
 export interface QueryDay { query: string; page: string; date: string; impressions: number }
-/** Search Console impressions per search, page and day over the same days as PagesDaily. Google leaves out searches it keeps anonymous. */
+/** Search Console impressions per search, page and day over the DROP_BASE_DAYS + DROP_RECENT_DAYS days that end on the last final day. Google leaves out searches it keeps anonymous. */
 export interface QueriesDaily { start: string; end: string; rows: QueryDay[] }
 export interface GscRead { today: string; last_final: string | null; d7?: Totals; d7_prior?: Totals; pages?: PagesDaily; queries?: QueriesDaily }
 export interface SignupsRead { clerk_users: number; d28: number; attribution: string; attribution_error?: string; matched?: number; by_section?: Record<string, number> }
@@ -140,17 +150,19 @@ const daysBetween = (from: string, to: string): number => Math.round((Date.parse
 const round = (value: number, places = 2): number => Math.round(value * 10 ** places) / 10 ** places;
 const addDays = (day: string, days: number): string => new Date(Date.parse(day) + days * 86_400_000).toISOString().slice(0, 10);
 
-/** The base and recent windows of dropped_pages for a last final day. */
-export function dropWindows(lastFinal: string): { base: Span; recent: Span } {
+/** The before, base and recent windows of dropped_pages for a last final day. */
+export function dropWindows(lastFinal: string): { before: Span; base: Span; recent: Span } {
   const recentStart = addDays(lastFinal, 1 - DROP_RECENT_DAYS);
-  return { base: { start: addDays(recentStart, -DROP_BASE_DAYS), end: addDays(recentStart, -1) }, recent: { start: recentStart, end: lastFinal } };
+  const baseStart = addDays(recentStart, -DROP_BASE_DAYS);
+  return { before: { start: addDays(baseStart, -DROP_BEFORE_DAYS), end: addDays(baseStart, -1) }, base: { start: baseStart, end: addDays(recentStart, -1) },
+    recent: { start: recentStart, end: lastFinal } };
 }
 
 const pageOf = (url: string): string => url.split("#")[0]!;
 
-/** The first day of a page's base: the base start, or two days after its first day with impressions when that falls inside the base. */
+/** The first day of a page's days in a window: the window start, or two days after its first day with impressions when that falls inside or after the window. */
 function baseFrom(first: string, base: Span): string {
-  return first > base.start ? addDays(first, DROP_LAUNCH_DAYS) : first;
+  return first > base.start ? addDays(first, DROP_LAUNCH_DAYS) : base.start;
 }
 
 /** The pages that fell, from Search Console impressions per page and day in the windows that end on `daily.end`, biggest base first.
@@ -163,23 +175,28 @@ export function droppedPages(daily: PagesDaily, noindex: ReadonlySet<string> = n
     .map(page => ({ ...page, baseDaily: round(page.baseDaily, 1), recentDaily: round(page.recentDaily, 1) })).sort((a, b) => b.baseDaily - a.baseDaily);
 }
 
-/** Every page with DROP_MIN_BASE_DAYS or more base days that is not noindex, with its unrounded base and recent impressions a day: the pages dropped_pages compares. */
+/** Every page with DROP_MIN_BASE_DAYS or more base days that is not noindex, with its unrounded level (the lower of its base and before
+ * averages, see DROP_BEFORE_DAYS) and recent impressions a day: the pages dropped_pages compares. */
 export function comparedPages(daily: PagesDaily, noindex: ReadonlySet<string> = new Set()): DroppedPage[] {
-  const { base, recent } = dropWindows(daily.end);
+  const { before, base, recent } = dropWindows(daily.end);
   const pages = new Map<string, { date: string; impressions: number }[]>();
   for (const row of daily.rows) {
-    if (row.date < base.start || row.date > recent.end) continue;
+    if (row.date < before.start || row.date > recent.end) continue;
     const page = pageOf(row.page);
     pages.set(page, [...pages.get(page) ?? [], row]);
   }
   return [...pages].flatMap(([page, rows]) => {
     if (noindex.has(page)) return [];
-    const from = baseFrom(rows.reduce((min, row) => (row.date < min ? row.date : min), recent.end), base);
-    if (daysBetween(from, base.end) + 1 < DROP_MIN_BASE_DAYS) return [];
-    const sum = (start: string, end: string): number => rows.reduce((total, row) => (row.date >= start && row.date <= end ? total + row.impressions : total), 0);
-    const baseDaily = sum(from, base.end) / (daysBetween(from, base.end) + 1);
-    const recentDaily = sum(recent.start, recent.end) / DROP_RECENT_DAYS;
-    return [{ page, baseDaily, recentDaily }];
+    const first = rows.reduce((min, row) => (row.date < min ? row.date : min), recent.end);
+    const daily = (span: Span): number | undefined => {
+      const from = baseFrom(first, span);
+      const days = daysBetween(from, span.end) + 1;
+      return days < DROP_MIN_BASE_DAYS ? undefined : rows.reduce((total, row) => (row.date >= from && row.date <= span.end ? total + row.impressions : total), 0) / days;
+    };
+    const baseDaily = daily(base);
+    if (baseDaily === undefined) return [];
+    const recentDaily = rows.reduce((total, row) => (row.date >= recent.start ? total + row.impressions : total), 0) / DROP_RECENT_DAYS;
+    return [{ page, baseDaily: Math.min(baseDaily, daily(before) ?? baseDaily), recentDaily }];
   });
 }
 
@@ -269,7 +286,7 @@ export function visitsOutput(read: VisitsRead, at: number): VisitsOutput {
   else if (!gsc.last_final || !gsc.d7 || !gsc.pages) fail("Search Console (virev_seo.gsc)", `no final day in the 10 days before ${gsc.today}`, gscKeys);
   else if (daysBetween(gsc.last_final, gsc.today) > GSC_STALE_DAYS) fail("Search Console (virev_seo.gsc)", `the last final day is ${gsc.last_final}, ${daysBetween(gsc.last_final, gsc.today)} days before ${gsc.today}`, gscKeys);
   else {
-    const { base, recent } = dropWindows(gsc.pages.end);
+    const { before, base, recent } = dropWindows(gsc.pages.end);
     const noindex = new Set(read.noindex ?? []);
     const fell = droppedPages(gsc.pages, noindex);
     const moved = gsc.queries ? movedPages(fell, gsc.pages, gsc.queries) : [];
@@ -280,8 +297,8 @@ export function visitsOutput(read: VisitsRead, at: number): VisitsOutput {
     metrics.dropped_pages = dropped.length;
     n.dropped_pages = comparedPages(gsc.pages, noindex).length;
     flagged.push({ at, kind: "dropped_pages", excerpt: (dropped.length
-      ? `Pages whose Google impressions a day fell under ${DROP_SHARE * 100}% (${base.start}..${base.end} against ${recent.start}..${recent.end}): ${dropped.map(page => `${page.page} ${page.baseDaily} to ${page.recentDaily}`).join(", ")}.`
-      : `No page with ${DROP_MIN_DAILY}+ Google impressions a day over ${base.start}..${base.end} fell under ${DROP_SHARE * 100}% of that over ${recent.start}..${recent.end}.`) + left });
+      ? `Pages whose Google impressions a day fell under ${DROP_SHARE * 100}% (the lower of ${before.start}..${before.end} and ${base.start}..${base.end} against ${recent.start}..${recent.end}): ${dropped.map(page => `${page.page} ${page.baseDaily} to ${page.recentDaily}`).join(", ")}.`
+      : `No page with a level of ${DROP_MIN_DAILY}+ Google impressions a day (the lower of ${before.start}..${before.end} and ${base.start}..${base.end}) fell under ${DROP_SHARE * 100}% of it over ${recent.start}..${recent.end}.`) + left });
     metrics.google_clicks_d7 = round(gsc.d7.clicks / 7, 1);
     const prior = gsc.d7_prior;
     flagged.push({ at, kind: "google", excerpt: `Google clicks ${gsc.d7.clicks} and impressions ${gsc.d7.impressions} over ${gsc.d7.start}..${gsc.d7.end}, average position ${gsc.d7.position}` +

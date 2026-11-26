@@ -34,7 +34,7 @@ test("dropped_pages flags both 10-13 drops by the 10-16 final day and leaves a s
   assert.equal(output.n.dropped_pages, 4);
   assert.equal(output.metrics.google_clicks_d7, 10);
   assert.match(output.flagged!.find(slice => slice.kind === "dropped_pages")!.excerpt,
-    /2026-09-30\.\.2026-10-13 against 2026-10-14\.\.2026-10-16.*how-much-does-youtube-pay-per-view 147\.8 to 1\.3, .*instagram-algorithm 23\.8 to 3/);
+    /the lower of 2026-09-16\.\.2026-09-29 and 2026-09-30\.\.2026-10-13 against 2026-10-14\.\.2026-10-16.*how-much-does-youtube-pay-per-view 147\.8 to 1\.3, .*instagram-algorithm 23\.8 to 3/);
   assert.equal(visitsOutput({ gsc: { error: "HTTP 500" } }, 0).metrics.dropped_pages, 999_999);
 });
 
@@ -129,4 +129,24 @@ test("a dropped page whose sibling slug took most of its impressions is left out
   const fell = droppedPages(pages);
   assert.deepEqual(fell.map(page => page.page), [BRAZIL, STUDY]);
   assert.deepEqual(movedPages(fell, pages, queries), [{ page: STUDY, lostDaily: 4.8, takenDaily: 5, sibling: JAPAN }]);
+});
+
+// Final Search Console impressions a day over 10-24..11-23, read 11-26.
+const month = (page: string, list: number[]): { page: string; date: string; impressions: number }[] => list.flatMap((impressions, i) =>
+  impressions ? [{ page, date: new Date(Date.parse("2026-10-24") + i * 86_400_000).toISOString().slice(0, 10), impressions }] : []);
+
+test("a page back at its level after a burst in the base is not a drop (11-26 d1: the core update burst of 11-12..11-20)", () => {
+  const CATALOG = "https://virev.ai/blog/evaluate-a-youtube-channel-s-back-catalog-before-sponsoring-it";
+  const rows = month(CATALOG, [3, 3, 0, 2, 3, 3, 5, 0, 4, 6, 7, 4, 2, 3, 1, 3, 1, 1, 2, 4, 10, 36, 51, 15, 18, 20, 8, 9, 3, 1, 1]);
+  assert.deepEqual(droppedPages({ start: "2026-10-24", end: "2026-11-23", rows }), []);
+});
+
+test("a page that fell from a level it held before the base is still a drop (11-26 d1: beauty influencers in India, ko best time to post)", () => {
+  const INDIA = "https://virev.ai/en/top-beauty-influencers-in-india", KO_TIME = "https://virev.ai/ko/blog/best-time-to-post-on-instagram-and-tiktok";
+  const rows = [
+    ...month(INDIA, [0, 0, 8, 11, 20, 28, 19, 22, 31, 4, 31, 20, 2, 24, 20, 26, 17, 14, 23, 21, 25, 21, 18, 15, 12, 12, 6, 6, 3, 3, 3]),
+    ...month(KO_TIME, [14, 1, 3, 2, 2, 5, 6, 14, 18, 8, 10, 0, 6, 4, 1, 0, 2, 0, 0, 13, 42, 50, 28, 9, 4, 1, 0, 0, 0, 0, 0]),
+  ];
+  assert.deepEqual(droppedPages({ start: "2026-10-24", end: "2026-11-23", rows }),
+    [{ page: INDIA, baseDaily: 16.9, recentDaily: 3 }, { page: KO_TIME, baseDaily: 6.6, recentDaily: 0 }]);
 });
