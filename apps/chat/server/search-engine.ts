@@ -33,10 +33,15 @@ export const SEARCH_SETTINGS = {
 };
 
 /**
- * Sends to Meilisearch are this far apart. A batch costs about the same for 1 or 9 documents (word fst 0.6 s, facet search 0.8 s a batch on
- * 11-03), and a send on each pi-host write kept it indexing 48 batches a minute, all of the time; documents in between are read from memory.
+ * Sends to Meilisearch are this far apart, posts included. A batch costs about the same for 1 or 9 documents (word fst 0.6 s, facet search
+ * 0.8 s a batch on 11-03), and a send on each pi-host write kept it indexing 48 batches a minute, all of the time. At 5 s apart it still
+ * indexed about 99% of the time on 11-26: a batch cost about 6.9 s plus 0.10 s a document, mostly post processing words, and wrote 84 MB/s
+ * (~/work/meili-shrink on us-metal02). Documents in between are read from memory and left out of Meilisearch's answer by id, so counts stay
+ * exact (c191); they match by prefix, with no typo tolerance, until they are sent.
  */
-const SEND_SPACING_MS = 5_000;
+const SEND_SPACING_MS = 60_000;
+/** Another box's index is read this often; its rows wait in memory for the next send. */
+const PULL_SPACING_MS = 5_000;
 
 /** Meilisearch's default http-payload-size-limit is 100 MB, so one request of documents stays under it. */
 const PAYLOAD_BYTES = 100_000_000;
@@ -64,7 +69,7 @@ export type EntryRow = IndexRow;
  */
 export interface EntrySource {
   box: string;
-  /** Read at each search as well, since it answers in about 0.1 ms: this box's own index. Another box is read every `SEND_SPACING_MS`. */
+  /** Read at each search as well, since it answers in about 0.1 ms: this box's own index. Another box is read every `PULL_SPACING_MS`. */
   atSearch: boolean;
   /** False while the box is away; its rows read so far stay searchable. */
   up(): boolean;
@@ -274,6 +279,8 @@ export class SearchEngine {
   /** The Meilisearch tasks of each box's first read, until they are done. */
   private readonly firstTasks = new Map<string, number[]>();
   private readonly unsent = new Map<string, SearchDoc>();
+  /** The posts that left search since the last send, deleted from Meilisearch with the next one. */
+  private readonly unsentGone = new Set<string>();
   private draining?: Promise<void>;
   /**
    * The threads whose entries search leaves out unless it is scoped to one: every comm thread and every thread of a walk's test agent. Set
@@ -335,7 +342,7 @@ export class SearchEngine {
   /**
    * Opens the index. An empty index gets this box's entries and every post, which search reads in memory until Meilisearch has them all;
    * an index that has documents gets the entries after the saved cursors and every post that changed since Meilisearch got it
-   * (`changedPosts`), so a change made while this server was down is found. Every other box is read after it, and again every `SEND_SPACING_MS`.
+   * (`changedPosts`), so a change made while this server was down is found. Every other box is read after it, and again every `PULL_SPACING_MS`.
    */
   start(): Promise<void> {
     if (this.ready) return this.ready;
@@ -377,7 +384,7 @@ export class SearchEngine {
       this.sweepTimer = setInterval(() => void this.sweepTasks(), TASK_SWEEP_MS);
       this.sweepTimer.unref?.();
       if (this.deps.sources.some(source => !source.atSearch)) {
-        this.pullTimer = setInterval(() => void this.pullOthers(), SEND_SPACING_MS);
+        this.pullTimer = setInterval(() => void this.pullOthers(), PULL_SPACING_MS);
         this.pullTimer.unref?.();
         void this.pullOthers();
       }
@@ -524,7 +531,7 @@ export class SearchEngine {
         this.pullErrors.set(source.box, text);
       },
     )));
-    if (this.unsent.size) this.scheduleRefresh();
+    if (this.unsent.size || this.unsentGone.size) this.scheduleRefresh();
   }
 
   /** A `refresh` at most once per `SEND_SPACING_MS`, for a write that landed or a search; `settled` and the first start send at once. */
@@ -553,10 +560,17 @@ export class SearchEngine {
           // The cursors and the documents they cover are taken together, with no wait between.
           const cursors = new Map(this.readCursors);
           const docs = [...this.unsent.values()];
+          const gone = [...this.unsentGone];
           this.unsent.clear();
+          this.unsentGone.clear();
           // A send Meilisearch refused, as while it restarts, goes again with the next refresh; until then search reads the documents in memory.
           if (docs.length) await this.putDocs(docs).catch((error: unknown) => {
-            for (const doc of docs) if (!this.unsent.has(doc.id)) this.unsent.set(doc.id, doc);
+            for (const doc of docs) if (!this.unsent.has(doc.id) && !this.unsentGone.has(doc.id)) this.unsent.set(doc.id, doc);
+            for (const id of gone) if (!this.unsent.has(id)) this.unsentGone.add(id);
+            throw error;
+          });
+          if (gone.length) await this.deleteDocs(gone).catch((error: unknown) => {
+            for (const id of gone) if (!this.unsent.has(id)) this.unsentGone.add(id);
             throw error;
           });
           for (const [box, cursor] of cursors) if (cursor !== this.deps.cursors.get(box)) this.deps.cursors.set(box, cursor);
@@ -568,12 +582,23 @@ export class SearchEngine {
     return this.sync;
   }
 
-  /** A post that was added or changed, or `null` with its id when it left search. Before search starts, `start` reads every post. */
+  /**
+   * A post that was added or changed, or `null` with its id when it left search. Search reads it from memory at once, and it goes to
+   * Meilisearch with the next spaced send: on 11-26 these sends came about 437 times a day, each a batch of its own. Before search starts,
+   * `start` reads every post.
+   */
   postChanged(id: string, doc: PostDoc | null): void {
     if (!this.ready) return;
     this.pending.set(id, { doc });
-    if (!doc) this.inIndex.delete(id);
-    void this.ready.then(async () => void (doc ? await this.putDocs([doc]) : await this.deleteDocs([id]))).catch(error => this.deps.log(`search: post ${id} not indexed: ${String(error)}`));
+    if (doc) {
+      this.unsentGone.delete(id);
+      this.unsent.set(id, doc);
+    } else {
+      this.inIndex.delete(id);
+      this.unsent.delete(id);
+      this.unsentGone.add(id);
+    }
+    this.scheduleRefresh();
   }
 
   /** Waits until Meilisearch holds every document search has read or sent it, from every box that is up; a test reads the index after it. */
@@ -847,11 +872,11 @@ export class SearchEngine {
     if (!this.ready) void this.start().catch(() => undefined);
     const words = queryWords(q);
     const work = (async () => {
-      // This box's rows written since the last read are found at once; other boxes' rows come with their read every `SEND_SPACING_MS`.
+      // This box's rows written since the last read are found at once; other boxes' rows come with their read every `PULL_SPACING_MS`.
       await Promise.all(this.own.filter(source => this.readCursors.has(source.box)).map(source => this.readBox(source)))
         .catch(error => this.deps.log(`search: ${String(error)}`));
       took("read");
-      if (this.unsent.size) this.scheduleRefresh();
+      if (this.unsent.size || this.unsentGone.size) this.scheduleRefresh();
       // A first fill is waited for, so every answer comes from Meilisearch's matching, typo tolerance included; memory answers only while
       // Meilisearch cannot start, as on a box without its binary.
       if (this.filling) {
