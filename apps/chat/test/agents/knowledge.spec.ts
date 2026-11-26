@@ -28,7 +28,10 @@ test("the Skills and files tab lists the agent's skills, instruction files and t
     await expect(panel.getByTestId("agent-memory")).toHaveCount(0);
 
     const scripts = panel.getByTestId("knowledge-scripts");
-    await expect(scripts.getByRole("heading")).toHaveText("Scripts · 2");
+    // The two scripts above, and the precheck of each duty a new agent gets (c249: the check-in and the daily Area review).
+    const listed = ((await (await request.get(`/api/agents/${agent.id}/config`)).json()) as { scripts: { path: string }[] }).scripts;
+    expect(listed.map((script) => script.path)).toEqual(expect.arrayContaining([kept, named]));
+    await expect(scripts.getByRole("heading")).toHaveText(`Scripts · ${listed.length}`);
     await expect(scripts.locator(`li[data-path="${kept}"]`)).toContainText("sweep.mjs");
     await expect(scripts.locator(`li[data-path="${kept}"]`)).toContainText("Kept in its folder");
     await expect(scripts.locator(`li[data-path="${named}"]`)).toContainText("Named in its brief");

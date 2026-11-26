@@ -34,7 +34,8 @@
   const total = $derived(folder.memory.count ?? folder.memory.entries.length);
   const memoryCount = $derived(folder.memory.memoryCount ?? folder.memory.entries.filter((entry) => entry.kind === "memory").length);
   /** Older memory pages read by Show older, kept while the folder they continue stays the one shown. */
-  let older = $state<{ folder: AgentFolder | null; entries: HarnessEntryView[] }>({ folder: null, entries: [] });
+  // Raw, so `older.folder` stays the very folder object the prop holds and `older.folder === folder` compares them.
+  let older = $state.raw<{ folder: AgentFolder | null; entries: HarnessEntryView[] }>({ folder: null, entries: [] });
   let loadingOlder = $state(false);
   const listed = $derived.by(() => {
     const seen = new Set(folder.memory.entries.map(keyOf));
