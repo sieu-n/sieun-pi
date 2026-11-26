@@ -31,3 +31,10 @@ test("a contact point challenge after a served page is an Instagram kill, as in 
   assert.equal(causeOf({ code: "consent_required", readBefore: true, pages24h: 10 }), "instagram");
   assert.equal(causeOf({ code: "jar_check_checkpoint", readBefore: true, pages24h: 10 }), "instagram");
 });
+
+test("an operator's freeze is operator and an operator-written Instagram verdict stays instagram, as cause_of in engage_deaths.py", () => {
+  assert.equal(causeOf({ code: "transport", readBefore: true, pages24h: 50, actor: "operator:engage_freeze" }), "operator");
+  assert.equal(causeOf({ code: null, readBefore: true, pages24h: 50, actor: "operator:engage_freeze" }), "operator");
+  assert.equal(causeOf({ code: "challenged", readBefore: true, pages24h: 50, actor: "operator:engage_freeze" }), "instagram");
+  assert.equal(causeOf({ code: "transport", readBefore: true, pages24h: 50, actor: "fleet" }), "ours");
+});

@@ -21,8 +21,10 @@ import { readCrawlerKey } from "./watchlist-green.ts";
  *   active accounts whose proxy session binding ran out and that the renewal loop retries (LAPSED_SQL below);
  * - prod watch_targets the same way, for the deep collab walks, and staging watch_targets through estate_pg_stg, for the oldest due staging
  *   collab read.
- * grafana_ro cannot read the actor and from_status columns of ig_engage_account_events, so a death here is a dead-outcome event, and
- * its cause is that event's error_code through CODE_CAUSES below.
+ * A death here is a dead-outcome event, read as DEATHS_7D in apps/crawler-v3/src/control/metrics/engage_deaths.py reads it for
+ * crawler_v3_engage_deaths_24h: a transition from a dead status is no new death, a death out of parked dates from the park, and an operator's
+ * write is operator. grafana_ro reads the actor and from_status columns (it read 'fleet' and 'active' on prod at 07:30Z 11-26). Until then d1 dated a re-login
+ * worker's verdict at its own event, hours after the read that found the account logged out.
  */
 
 const DUTY_FILE = join(dirname(fileURLToPath(import.meta.url)), "engage-reads.duty.json");
@@ -100,7 +102,7 @@ export const PASSWORD_REFUSED = /^(relogin_)?bad_password\b/;
 export const onHandOf = (accounts: readonly Account[]): Account[] =>
   accounts.filter(account => !(DEAD as readonly string[]).includes(account.status) && !(account.reason ?? "").startsWith(MOVED_PREFIX)
     && !(account.status === "parked" && PASSWORD_REFUSED.test(account.reason ?? "")));
-export type Cause = "instagram" | "first_login" | "found_idle" | "bad_password" | "ours" | "unknown";
+export type Cause = "instagram" | "first_login" | "found_idle" | "bad_password" | "ours" | "operator" | "unknown";
 /**
  * A copy of CODE_CAUSES in apps/crawler-v3/src/control/metrics/engage_deaths.py (auto-sns-agent dev/sieun, 2026-10-28), which also holds the two codes
  * prod accounts 55 and 74 died with on 10-12: login_redirect (every usertags read answered 302 to the login page after both had served pages) and
@@ -162,7 +164,7 @@ export interface AccountHour { day: string; hour: number; accountId: number; pag
  * A dead-outcome event: Instagram's verdict when causeOf() says so. `pages24h` is what the account read in the 24 h before it. `transition` is false
  * for the re-login worker's verdicts, which leave the account parked, and crawler_v3_engage_deaths_24h counts only transitions.
  */
-export interface Death { accountId: number; at: number; status: string; code: string | null; readBefore: boolean; pages24h: number; transition: boolean; lastReadAt?: number | null }
+export interface Death { accountId: number; at: number; status: string; code: string | null; readBefore: boolean; pages24h: number; transition: boolean; lastReadAt?: number | null; actor?: string | null }
 export interface Account { id: number; status: string; reason?: string }
 /** Staging's collab reads as its crawler counts them on /ops/watch-targets/health: tagged rows overdue past 24 h and tagged rows due now. */
 export interface StagingOverdue { overdue: number; due: number }
@@ -237,17 +239,21 @@ export function canaryOf(config: Readonly<Record<string, string>>): Canary {
 }
 
 /**
- * The cause of one death, as cause_of in engage_deaths.py. grafana_ro cannot see the actor, so a death with no mapped code is unknown. An
- * Instagram verdict on an account that read no page in the 24 h before it is found_idle, as auto-sns-agent 429d03dc15: prod 158, 176 and 181
- * read their last pages at 07:25Z 11-09, sat idle 7 days with no proxy, and the re-login worker found them gone (relogin_gone) on 11-16, which
- * d1 counted as 3 read kills (2.1% of 140) while their 11 box peers with the same idle week read 482 to 496 pages each.
+ * The cause of one death, as cause_of in engage_deaths.py. An Instagram verdict on an account that read no page in the 24 h before it is
+ * found_idle, as auto-sns-agent 429d03dc15: prod 158, 176 and 181 read their last pages at 07:25Z 11-09, sat idle 7 days with no proxy, and the
+ * re-login worker found them gone (relogin_gone) on 11-16, which d1 counted as 3 read kills (2.1% of 140) while their 11 box peers with the
+ * same idle week read 482 to 496 pages each. A death an operator wrote (actor operator:<tool>) is operator unless its code is an Instagram
+ * verdict or a bad password, as OPERATOR_ACTOR there.
  */
-export function causeOf(death: Pick<Death, "code" | "readBefore" | "pages24h">): Cause {
+export function causeOf(death: Pick<Death, "code" | "readBefore" | "pages24h" | "actor">): Cause {
   const cause = CODE_CAUSES[death.code ?? ""];
-  if (!cause) return "unknown";
-  if (cause !== "instagram") return cause;
-  if (!death.readBefore) return "first_login";
-  return death.pages24h > 0 ? cause : "found_idle";
+  if (cause === "instagram") {
+    if (!death.readBefore) return "first_login";
+    return death.pages24h > 0 ? cause : "found_idle";
+  }
+  if (cause === "bad_password") return cause;
+  if ((death.actor ?? "").split(":")[0] === "operator") return "operator";
+  return cause ?? "unknown";
 }
 
 /** The canary size the owner's ~10% asks for, rounded up as the crawler's roster keeper rounds it: at least one account once any is active. */
@@ -531,7 +537,7 @@ export function report(data: EngageData, dutyMetrics: readonly DutyMetric[]): Pr
       excerpt: `account ${death.accountId} went ${death.status} at ${utc(death.at)}, code ${death.code ?? "none"}, cause ${causeOf(death)}${inCanary(death) ? ", canary" : ""}, ${fmt(death.pages24h)} pages in its last 24 h${death.readBefore ? "" : ", never read a page"}${reasonOf(death.accountId)}`.slice(0, 600) });
     const instagram = killed(day.filter(death => death.transition));
     if (data.deathGauge && Object.keys(data.deathGauge).length && (data.deathGauge.instagram ?? 0) !== instagram)
-      flagged.push({ at, kind: "death_gauge", excerpt: `crawler_v3_engage_deaths_24h{cause="instagram"} reads ${data.deathGauge.instagram ?? "none"} while this precheck counts ${instagram}; the gauge sees the actor and from_status columns grafana_ro cannot, so trust the gauge and fix this precheck` });
+      flagged.push({ at, kind: "death_gauge", excerpt: `crawler_v3_engage_deaths_24h{cause="instagram"} reads ${data.deathGauge.instagram ?? "none"} while this precheck counts ${instagram}; DEATHS_SQL copies the gauge's DEATHS_7D, so read which death the two disagree on and fix this precheck` });
     const pauses = Object.entries(data.config).filter(([key, value]) => key.startsWith("pause.engage") && value === "true").map(([key]) => key);
     if (pauses.length) flagged.push({ at, kind: "pause", excerpt: `prod pause keys on: ${pauses.join(", ")}` });
     if (data.days && data.healthy !== undefined && data.lapsed) {
@@ -636,11 +642,14 @@ const STAGING_PAUSES_SQL = `select c.key, w.id, extract(epoch from w.ts) * 1000 
 left join lateral (select id, ts, actor, reason from config_audit a where a.key = c.key and a.old_value is distinct from a.new_value order by a.id desc limit 1) w on true
 where c.key like 'pause.%' and c.value = 'true' order by c.key`;
 const ACCOUNTS_SQL = "select id, status, status_reason as reason from ig_engage_accounts where world = 'prod' order by id";
-export const DEATHS_SQL = `select e.account_id, extract(epoch from e.at) * 1000 as at, e.outcome, e.error_code, e.transition,
-  exists (select 1 from ig_engage_read_log l where l.account_id = e.account_id and l.pages > 0 and l.at < e.at) as read_before,
-  (select coalesce(sum(l.pages), 0) from ig_engage_read_log l where l.account_id = e.account_id and l.at <= e.at and l.at > e.at - interval '24 hours') as pages_24h,
-  (select extract(epoch from max(l.at)) * 1000 from ig_engage_read_log l where l.account_id = e.account_id and l.pages > 0 and l.at <= e.at and l.at > e.at - interval '24 hours') as last_read_at
-from ig_engage_account_events e join ig_engage_accounts a on a.id = e.account_id where a.world = 'prod' and (e.outcome in ${DEAD_SQL} or (e.outcome = 'active' and e.transition)) order by e.at, e.id`;
+export const DEATHS_SQL = `select e.account_id, extract(epoch from d.died_at) * 1000 as at, e.outcome, e.error_code, e.transition, e.actor,
+  exists (select 1 from ig_engage_read_log l where l.account_id = e.account_id and l.pages > 0 and l.at < d.died_at) as read_before,
+  (select coalesce(sum(l.pages), 0) from ig_engage_read_log l where l.account_id = e.account_id and l.at <= d.died_at and l.at > d.died_at - interval '24 hours') as pages_24h,
+  (select extract(epoch from max(l.at)) * 1000 from ig_engage_read_log l where l.account_id = e.account_id and l.pages > 0 and l.at <= d.died_at and l.at > d.died_at - interval '24 hours') as last_read_at
+from ig_engage_account_events e join ig_engage_accounts a on a.id = e.account_id
+cross join lateral (select case when e.transition and e.from_status = 'parked' then coalesce((select max(p.at) from ig_engage_account_events p
+  where p.account_id = e.account_id and p.transition and p.outcome = 'parked' and p.at < e.at), e.at) else e.at end as died_at) d
+where a.world = 'prod' and ((e.outcome in ${DEAD_SQL} and not (e.transition and e.from_status in ${DEAD_SQL})) or (e.outcome = 'active' and e.transition)) order by d.died_at, e.id`;
 /** The lapsed session bindings, as lapsedOf parses them; the 60 s is READ_PAGE_TIMEOUT_SECONDS, the margin the egress admission keeps. */
 export const LAPSED_SQL = `select count(*) filter (where r.status is distinct from 'blocked') as waiting, count(*) filter (where r.status = 'blocked') as blocked,
   coalesce(round(extract(epoch from min(b.expires_at)) * 1000), 0) as oldest_ms
@@ -830,7 +839,8 @@ export const deathsOf = (rows: Record<string, unknown>[]): Death[] => {
     if (row.outcome === "active") { killed.delete(accountId); continue; }
     if (killed.has(accountId)) continue;
     const death: Death = { accountId, at: Number(row.at), status: String(row.outcome), code: row.error_code == null ? null : String(row.error_code),
-      readBefore: row.read_before === true, pages24h: Number(row.pages_24h ?? 0), transition: row.transition === true, lastReadAt: num(row.last_read_at) };
+      readBefore: row.read_before === true, pages24h: Number(row.pages_24h ?? 0), transition: row.transition === true, lastReadAt: num(row.last_read_at),
+      actor: row.actor == null ? null : String(row.actor) };
     if (causeOf(death) === "instagram" || causeOf(death) === "found_idle") killed.add(accountId);
     deaths.push(death);
   }
