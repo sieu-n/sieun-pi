@@ -27,10 +27,17 @@ export function anchorImportMeta(source, file, outDir = SRC) {
     .replaceAll("import.meta.dirname", `decodeURIComponent(new URL(".", ${url}).pathname).replace(/\\/$/, "")`);
 }
 
+/**
+ * One tsconfig for every bundled file. Without it esbuild reads the nearest tsconfig of each file, and apps/wiki's extends
+ * ./.svelte-kit/tsconfig.json, which svelte-kit sync makes and a git archive release folder lacks, so its warning failed every release
+ * after 61445ddf8 (11-26) bundled apps/wiki/src/lib/server/mount-root.ts. The bundles come out byte-identical with it in the checkout.
+ */
+const TSCONFIG = join(SRC, "..", "tsconfig.json");
+
 export async function bundleChatService({ entry = join(SRC, "chat-service.ts"), outfile = join(SRC, BUNDLE) } = {}) {
   const outDir = dirname(outfile);
   const result = await build({ entryPoints: [entry], outfile, bundle: true, platform: "node", format: "esm", target: "node22",
-    packages: "external", logLevel: "warning", plugins: [{ name: "anchor-import-meta", setup(input) {
+    packages: "external", logLevel: "warning", tsconfig: TSCONFIG, plugins: [{ name: "anchor-import-meta", setup(input) {
       input.onLoad({ filter: /\.ts$/ }, async args => ({ contents: anchorImportMeta(await readFile(args.path, "utf8"), args.path, outDir), loader: "ts" }));
     } }] });
   if (result.warnings.length) throw new Error(`chat service bundle: ${result.warnings.length} warnings`);
