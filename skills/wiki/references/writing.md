@@ -10,7 +10,7 @@ The older lessons still hold: a bullet is one normal sentence (c20), and a line 
 
 ## Diagrams and tables first, short lines after
 
-On 2026-11-25 the owner read the API portal architecture page, whose paragraphs ran 3 to 5 sentences with paths such as `apps/api-portal/src/lib/server/gateway.ts:752` inside them, and wrote "slop slop slop slop blocks of text" (#dev-api-portal p33, msg mwwkczkq, c247).
+On 2026-11-25 the owner read the API portal architecture page, whose paragraphs ran 3 to 5 sentences with paths such as auto-sns-agent's `apps/api-portal/src/lib/server/gateway.ts:752` inside them, and wrote "slop slop slop slop blocks of text" (#dev-api-portal p33, msg mwwkczkq, c247).
 Of a bullet that ended in `(api-portal.yaml:141)` he wrote "api-portal.yaml:141 이따구로 쓰면 아무것도 모른다니까?????" (p35, msg mwwkdhwy, c248).
 Then he named the page to copy: "onboarding document를 쓴다고 생각해봐^^ https://us-metal02-dev.tail0c093d.ts.net:5184/wiki/page/domains/devops/clickhouse-layout.html 얼마나 좋니" (p37, msg mwwkfhz9).
 These rules hold on every page, not only under `apps/` and `domains/`.
