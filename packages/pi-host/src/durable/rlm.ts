@@ -67,6 +67,7 @@ import { heartbeatModule } from "./heartbeat.ts";
 import { mcpModule, primeMcp } from "./mcp.ts";
 import { primeDefaults } from "./models.ts";
 import { refineModule } from "./refine.ts";
+import { stablePath } from "./release-path.ts";
 import { ownerTag } from "./owner-tag.ts";
 import { track } from "../loop-stall.ts";
 import { hostApi } from "../api.ts";
@@ -401,7 +402,7 @@ export class DurableRlm {
     const env = baseEnv();
     const agent = await threadAgent(slot.thread.harness(), context);
     Object.assign(env, {
-      PYTHONPATH: [RUNTIME_SRC, ...skills.map(s => s.src), env.PYTHONPATH].filter(Boolean).join(sep),
+      PYTHONPATH: [...[RUNTIME_SRC, ...skills.map(s => s.src)].map(stablePath), env.PYTHONPATH].filter(Boolean).join(sep),
       PYTHONUNBUFFERED: "1",
       ...ownerTag(slot.thread.id, [binDir, env.PATH].filter(Boolean).join(sep), sep),
       RLM_SESSION_DIR: slot.artifactDir,

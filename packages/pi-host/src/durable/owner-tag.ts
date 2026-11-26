@@ -4,6 +4,7 @@
  */
 import { hostname } from "node:os";
 import { fileURLToPath } from "node:url";
+import { stablePath } from "./release-path.ts";
 
 /** The folder of the tag-only systemd-run shim (`unit-tag/systemd-run`), first on the PATH of each kernel and each `bash` tool call. */
 export const UNIT_TAG_DIR = fileURLToPath(new URL("./unit-tag", import.meta.url));
@@ -14,6 +15,6 @@ export const UNIT_TAG_DIR = fileURLToPath(new URL("./unit-tag", import.meta.url)
  * orphan reaper stops a process once its thread is archived; on 10-31 the units vent-lat-cold and dmext-slow-b of pi threads named no owner.
  */
 export function ownerTag(threadId: string, path: string, sep: string, host = hostname()): { LC_PRIME_SESSION: string; PATH: string } {
-  return { LC_PRIME_SESSION: `${threadId}@${host.split(".")[0]}`, PATH: [UNIT_TAG_DIR, path].filter(Boolean).join(sep) };
+  return { LC_PRIME_SESSION: `${threadId}@${host.split(".")[0]}`, PATH: [stablePath(UNIT_TAG_DIR), path].filter(Boolean).join(sep) };
 }
 
