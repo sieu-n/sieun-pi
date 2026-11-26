@@ -12,7 +12,7 @@ import { defineExtension, GenerationTask, hook, type Extension } from "@earendil
 export const KERNEL_CALLS: Readonly<Record<string, string>> = {
   agent_message: 'await agent_message.send(text, receiver_role="parent")',
   agent_observe: "await agent_observe.list_agents()",
-  attach_image: 'attach_image.attach_image("/absolute/path.png")',
+  attach_image: 'await attach_image("/absolute/path.png")',
   board: "board.wake(check=..., at=..., every=...)",
   wiki: "wiki.read(path)",
   websearch: "await websearch.search(query)",

@@ -24,7 +24,7 @@ const result = (toolName: string, text: string, isError = true): Message =>
 
 test("an unavailable kernel module reads as its ipython call, and other tools and errors keep their answer", () => {
   assert.match(kernelHint("agent_message.send")!, /^agent_message\.send is a Python module in your ipython kernel, not a tool, so nothing ran\. .*`await agent_message\.send\(text, receiver_role="parent"\)`\.$/);
-  assert.match(kernelHint("attach_image")!, /attach_image\.attach_image\("\/absolute\/path\.png"\)/);
+  assert.match(kernelHint("attach_image")!, /`await attach_image\("\/absolute\/path\.png"\)`/);
   assert.equal(kernelHint("frobnicate"), undefined);
   const hinted = withKernelHints([result("agent_message.send", "<harness>\n[error] Tool agent_message.send is not available\n</harness>")])!;
   assert.equal(textOf((hinted[0] as Extract<Message, { role: "toolResult" }>).content), kernelHint("agent_message.send"));

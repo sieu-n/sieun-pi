@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { before, test } from "node:test";
@@ -207,6 +207,23 @@ test("a relayed kernel that has run no cell reads as fresh to the next client, w
     assert.equal((await third.execute("callable(bash) and rlm is not None")).result, "True");
     await third.shutdown();
   } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a skill package whose run lives in a submodule of its own name answers both skill(...) and skill.skill(...) (attach_image, 11-26)", async () => {
+  const { kernel, dir } = open();
+  try {
+    mkdirSync(join(dir, "pkgs", "shot"), { recursive: true });
+    writeFileSync(join(dir, "pkgs", "shot", "__init__.py"), "from .shot import run\n");
+    writeFileSync(join(dir, "pkgs", "shot", "shot.py"), "async def run(path):\n    return 'saw ' + path\n");
+    await kernel.execute(`import sys\nsys.path.insert(0, ${JSON.stringify(join(dir, "pkgs"))})`);
+    assert.equal((await kernel.execute(bootstrapCode(["shot"]))).status, "ok");
+    assert.equal((await kernel.execute("await shot('a.png')")).result, "'saw a.png'");
+    assert.equal((await kernel.execute("await shot.shot('b.png')")).result, "'saw b.png'");
+    assert.equal((await kernel.execute("import shot.shot as m\nm.run.__name__")).result, "'run'");
+  } finally {
+    await kernel.shutdown();
     rmSync(dir, { recursive: true, force: true });
   }
 });

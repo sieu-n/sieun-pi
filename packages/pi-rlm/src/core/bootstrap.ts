@@ -96,6 +96,9 @@ def _prime_agent_wrap_skill_module(module):
         return module
     wrapped = _PrimeAgentCallableSkillModule(module.__name__)
     wrapped.__dict__.update(module.__dict__)
+    # attach_image's package holds a submodule attach_image, and agents called attach_image.attach_image(path) 26 times on 11-25 and 11-26 and got "'module' object is not callable".
+    if isinstance(wrapped.__dict__.get(module.__name__), _prime_agent_types.ModuleType):
+        wrapped.__dict__[module.__name__] = wrapped
     try:
         wrapped.__signature__ = _prime_agent_inspect.signature(run)
     except Exception:
