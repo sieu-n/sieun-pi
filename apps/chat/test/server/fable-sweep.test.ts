@@ -183,7 +183,7 @@ test("a sweep while the last sweep's job has had no model turn reads not measure
     { key: "sweep_age_min", label: "age", op: "<=", target: 195 },
   ];
   const judged = judge(metrics, { metrics: { sweep_age_min: 180 }, flagged: [{ kind: "outside_wait", excerpt: "the sweep job of 01:23Z has had no model turn" }] });
-  assert.equal(judged.verdict, "met", "not red");
+  assert.equal(judged.verdict, "error", "unmeasured, never met; the outside_wait gives the run waitsOn, so it starts no job and adds to no error streak");
   assert.equal(judged.metrics.findings_unposted, undefined);
   assert.match(judged.summary, /not measured: the precheck gave no value for findings_unposted \(the sweep job of 01:23Z has had no model turn\)/);
 });

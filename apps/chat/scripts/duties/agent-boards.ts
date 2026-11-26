@@ -39,7 +39,7 @@ interface CheckIn { everyMs: number; paused: boolean; lastAt: number | null; run
 export interface DutyRow {
   duty: { id: string; name: string; status?: string; ownerWords?: string; goal?: string }; paused: boolean;
   runs: {
-    verdict: string; at?: number; job?: { id: string }; readings?: Record<string, number>; metrics?: Record<string, { value?: number }>; detail?: string; hostAway?: string;
+    verdict: string; at?: number; job?: { id: string }; readings?: Record<string, number>; metrics?: Record<string, { value?: number }>; detail?: string; hostAway?: string; waitsOn?: string;
     flagged?: { handOff?: true; sig?: string }[];
   }[];
   schedule?: { kind: string; at?: string; minutes?: number }; nextAt?: number | null;
@@ -135,6 +135,11 @@ export interface AgentRead {
   pauses?: Readonly<Record<string, { since: number; reason?: string }>>;
   /** Per duty id, the sample size its newest measured run's detail file names (`sampleSize`), or null when the file names none. */
   samples?: Readonly<Record<string, number | null>>;
+  /**
+   * The duty ids whose newest measured run's detail file flags an `outside_wait` item: the agent named a wait on the owner, so its n = 0 is
+   * nothing for it to fix. On 11-26 VP of GTM's d1 waited on his For you todos t2, t3 and t4, and d7 flagged it met_on_zero.
+   */
+  waitsOutside?: readonly string[];
   /** Per duty id, the hand-off sigs of each of its runs that named a job, with that job's id, one list per run (`duplicateJobs`). */
   handOffJobs?: Readonly<Record<string, readonly HandOffRun[]>>;
   /** Per duty id, whether its newest measured run's detail file holds the precheck's JSON output; absent when that was not read. */
@@ -269,7 +274,7 @@ export function agentPattern(agents: readonly AgentRead[], areas: readonly Agent
   let noN = 0;
   let duplicates = 0;
   const everyDuty = agents.flatMap(({ agent, duties }) => duties.map(row => ({ ...row, agent })));
-  for (const { agent, duties, checkIn, stuck = 0, boardAt, asks = [], pauses = {}, samples = {}, outputs = {}, handOffJobs = {} } of agents) {
+  for (const { agent, duties, checkIn, stuck = 0, boardAt, asks = [], pauses = {}, samples = {}, waitsOutside = [], outputs = {}, handOffJobs = {} } of agents) {
     for (const row of duties) {
       const repeats = duplicateJobs(handOffJobs[row.duty.id] ?? []);
       if (!repeats.length) continue;
@@ -307,7 +312,7 @@ export function agentPattern(agents: readonly AgentRead[], areas: readonly Agent
       if (n === null) {
         noN += 1;
         flag("no_sample_size", `${row.duty.id}/n`, `${row.duty.id} "${row.duty.name}" writes no sample size n in its precheck output, so a met run on no input looks green`);
-      } else if (n === 0 && row.runs.find(run => run.verdict !== "skipped")?.verdict === "met") {
+      } else if (n === 0 && !waitsOutside.includes(row.duty.id) && row.runs.find(run => run.verdict !== "skipped")?.verdict === "met") {
         zero += 1;
         flag("met_on_zero", `${row.duty.id}/n0`, `${row.duty.id} "${row.duty.name}" read met on n = 0, so it measured nothing`);
       }
@@ -576,6 +581,7 @@ if (isMain(import.meta.url)) {
         })]));
         const samples: Record<string, number | null> = {};
         const outputs: Record<string, boolean> = {};
+        const waitsOutside: string[] = [];
         for (const row of duties) {
           const newest = row.runs.find(run => run.verdict !== "skipped");
           const detail = newest?.detail;
@@ -585,11 +591,12 @@ if (isMain(import.meta.url)) {
           if (newest.hostAway || output?.flagged?.some(item => item?.kind === "host_away")) continue;
           outputs[row.duty.id] = !!output && typeof output.metrics === "object";
           if (outputs[row.duty.id]) samples[row.duty.id] = sampleSize(output);
+          if (newest.waitsOn || output?.flagged?.some(item => item?.kind === "outside_wait")) waitsOutside.push(row.duty.id);
         }
         const jobsAt = [...jobs.flatMap(job => job.lastActivityAt ? [Date.parse(job.lastActivityAt)] : []), ...duties.flatMap(row => row.runs.flatMap(run => run.job && run.at ? [run.at] : []))];
         return {
           read: {
-            agent, duties, checkIn, stuck: steps.stuck.length, boardAt: board?.updatedAt ? Date.parse(board.updatedAt) : null, pauses, samples, outputs, handOffJobs,
+            agent, duties, checkIn, stuck: steps.stuck.length, boardAt: board?.updatedAt ? Date.parse(board.updatedAt) : null, pauses, samples, waitsOutside, outputs, handOffJobs,
             // An unread folder leaves its brief unknown: the agent keeps its area and its asks wait for a run that reads the brief.
             ...folder ? { brief: folder.brief?.text ?? "", asks: asksTo(store, agent, folder.brief?.text?.trim() ? folder.brief.modifiedAt ?? 0 : 0) } : { brief: "(its folder did not answer)", asks: [] },
           } satisfies AgentRead,

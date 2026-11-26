@@ -359,8 +359,9 @@ export async function measure(input: {
   const handOffs = [...flagged.filter(slice => slice.handOff && slice.sig), ...nSlice];
   if (handOffs.length) record.flagged = handOffs;
   const acts = [...flagged, ...nSlice].some(slice => slice.item !== undefined || (slice.handOff && !(slice.sig && handed.has(slice.sig))));
-  // A run that reads error only because its headline waits outside the precheck, with every number it read on target, has nothing a job can do.
-  const waits = record.verdict === "error" && record.waitsOn !== undefined && Object.values(record.metrics).every(result => result.met);
+  // A run that reads error only because a metric waits outside the precheck or on a box that is away, with every number it read on target,
+  // has nothing a job can do.
+  const waits = record.verdict === "error" && (record.waitsOn !== undefined || record.hostAway !== undefined) && Object.values(record.metrics).every(result => result.met);
   const idle = (record.verdict === "met" || waits) && !misses.length && !record.overrun && !acts;
   return { record, brief: idle ? null : dutyJobBrief({ duty, chat: input.chat, at: started, measure: record.verdict === "error" ? `no measure (${record.summary})` : record.summary, findings, misses, record, boardApi: input.boardApi }) };
 }

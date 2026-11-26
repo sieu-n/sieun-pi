@@ -266,6 +266,14 @@ test("fable auditor's misses: an ongoing ask after the brief no duty names, a st
   assert.deepEqual(out.flagged.filter(flag => ["ask_unheld", "pause_stale", "met_on_zero", "no_sample_size"].includes(flag.kind)).map(flag => flag.sig),
     ["ag_mcp/ask/dm_mcp p4", "ag_mcp/d1/n0", "ag_mcp/d2/n", "ag_crawler-guy/d6/pause"]);
   assert.match(out.messages.find(message => message.agent === "ag_mcp")!.text, /ongoing ask dm_mcp p4 \(msg mwaaaaaa\)/);
+  // A run on n = 0 whose detail flags an outside_wait named a wait on the owner, so it is not met_on_zero: VP of GTM's d1 on 11-26.
+  const gtm = agentPattern([{
+    agent: { id: "ag_vp-of-gtm", name: "VP of GTM", thread: "t-gtm" }, brief: "GTM",
+    duties: [{ duty: { id: "d1", name: "Outreach campaigns", status: "active" }, paused: false, runs: [{ verdict: "met", at: NOW - HOUR }] }],
+    samples: { d1: 0 }, waitsOutside: ["d1"],
+  }], [], NOW);
+  assert.equal(gtm.metrics.met_on_zero, 0);
+  assert.deepEqual(gtm.flagged.filter(flag => flag.kind === "met_on_zero"), []);
   // 4. A miss first flagged over a day ago and still flagged, with no job of the agent at work since, is unfixed; one a job took up is not.
   const old = [{ at: NOW - 30 * HOUR, flagged: [
     { kind: "common_missing", sig: "ag_mcp/review", item: "ag_mcp", excerpt: "" },
