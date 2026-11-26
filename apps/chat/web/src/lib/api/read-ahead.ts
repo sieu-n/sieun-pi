@@ -13,17 +13,29 @@ export type Ahead = { id: string; at: number; status: RunStatus };
 const atRest = (status: RunStatus): boolean => status === "idle" || status === "failed";
 
 /**
+ * The least time between two reads ahead of one item. An agent at rest still moves its `updatedAt` at every step of its jobs and every turn
+ * of its comm threads: on 11-26 between 05:00 and 09:14 UTC the owner's page read ag_seo's check-in 21 times in 3 min, and a box page read
+ * VP of GTM's check-in, jobs and work thread 7 times each in 3 min while its jobs ran (requests/2026-11-26.jsonl). Agent factory asked for
+ * at most 2 reads of a path in 3 min (p324). The open of a panel or a room reads it again behind what it shows, so a kept answer up to
+ * 90 s old costs no wait unless it changed meanwhile.
+ */
+export const READ_AGAIN_MS = 90_000;
+
+/**
  * Reads conversations and panels before the owner opens them, as many at once as the lane sends (client.ts `AHEAD_LANE`), so a first open
  * shows from the page's cache with no call in front of it. Each is read once, and again only when it shows activity newer than that read
- * once its run is at rest: a working or sleeping one changes with every step, and its open view reads it live. A hidden page reads nothing
+ * once its run is at rest, and `READ_AGAIN_MS` after its last read: a working or sleeping one changes with every step, and its open view
+ * reads it live. A hidden page reads nothing
  * until it shows again; those first reads also open the connection again after a sleep, where on 11-19 a lone replies call 29 min after
  * the last one took 3 round trips. A socket that comes back reads again only the ones its hello shows newer, and each open panel its own
  * (kept.svelte.ts `missed`): on 11-22 a reconnect that read all 12 agents' four board reads again sent 48 calls, and in walks of 5 restarts
  * two WebKit board reads in that burst took 2.1 s.
  */
 export class ReadAhead<Wanted extends Ahead = Ahead> {
-  /** Each one's `at` when its kept answer was read. */
-  private readonly readAt = new Map<string, number>();
+  /** Each one's `at` when its kept answer was read, and the page's clock then. */
+  private readonly readAt = new Map<string, { at: number; when: number }>();
+  /** The timer that runs the queue again when the next held one may be read. */
+  private timer: ReturnType<typeof setTimeout> | undefined;
   private wanted: Wanted[] = [];
   private reading = 0;
 
@@ -41,22 +53,36 @@ export class ReadAhead<Wanted extends Ahead = Ahead> {
   /** A view of the conversation closed with its page current as of its newest activity. */
   seen(id: string): void {
     const found = this.wanted.find(c => c.id === id);
-    if (found) this.readAt.set(id, found.at);
+    if (found) this.readAt.set(id, { at: found.at, when: Date.now() });
   }
 
-  private next(): Wanted | undefined {
-    return this.wanted.find(c => {
-      const readAt = this.readAt.get(c.id);
-      return !this.viewing(c.id) && (readAt === undefined || (atRest(c.status) && c.at > readAt));
-    });
+  /** The first one to read now, or else when the first changed one held by `READ_AGAIN_MS` may be read. */
+  private next(): Wanted | number | undefined {
+    const now = Date.now();
+    let due: number | undefined;
+    for (const c of this.wanted) {
+      if (this.viewing(c.id)) continue;
+      const read = this.readAt.get(c.id);
+      if (!read) return c;
+      if (!atRest(c.status) || c.at <= read.at) continue;
+      const when = read.when + READ_AGAIN_MS;
+      if (when <= now) return c;
+      due = Math.min(due ?? when, when);
+    }
+    return due;
   }
 
   private run(): void {
     if (typeof document === "undefined") return;
     while (this.reading < AHEAD_LANE && document.visibilityState === "visible") {
       const c = this.next();
-      if (!c) return;
-      this.readAt.set(c.id, c.at);
+      if (c === undefined) return;
+      if (typeof c === "number") {
+        clearTimeout(this.timer);
+        this.timer = setTimeout(() => this.run(), c - Date.now());
+        return;
+      }
+      this.readAt.set(c.id, { at: c.at, when: Date.now() });
       this.reading += 1;
       void this.warm(c).catch(() => undefined).finally(() => {
         this.reading -= 1;

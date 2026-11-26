@@ -13,9 +13,7 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * - walk_problems, the headline: problems in the last offline walk of the 8 app pages (demo-sandbox-walk.ts walks /app, search, dashboards,
  *   campaigns, watchlist, outreach, inbox and connections in two scenarios, plus the marketing pages, in a box Chrome on us-metal02 that loads the
  *   Mac's 5180 through an ssh tunnel, box-repl.ts). Each outside request counts 1, each test that
- *   failed for another reason counts 1, a missing walk counts 1, and so does a /configure probe without a 200. A walk over WALK_STALE_MS old
- *   counts 1 only when a walk started after it and ended with no newer report. When no walk started after it, as when the Mac was away at
- *   the 06:25 KST run (11-21, 11-23 and 11-26), it is a gap with no reading, and this run starts the next walk. The owner: "no external connection should work
+ *   failed for another reason counts 1, a missing walk or one over a day old counts 1, and so does a /configure probe without a 200. The owner: "no external connection should work
  *   off of internal fake database". This script reads the walk's Playwright-shaped JSON report from WALK_FILE and its stderr from WALK_ERR_FILE,
  *   and starts the next walk itself, detached (WALK_COMMAND), when the last one started over WALK_REFRESH_MS ago and none is running, so the
  *   next run reads a fresh walk. Until 10-22 only a missed run's duty job ran the walk, so a run on target never refreshed it: the 21:25Z run on
@@ -407,20 +405,12 @@ export function slowestPage(pages: readonly PageTiming[], untimed: readonly stri
   return { ms: perPage[0]!.ms, name: `${perPage[0]!.path} (${perPage[0]!.scenario})`, perPage };
 }
 
-/**
- * WALK_ERR_FILE's modification time when it is newer than WALK_FILE, else null. WALK_COMMAND truncates the file at each start and the walk
- * adds a line per step, so a newer file means a walk started after the last report was written.
- */
-export async function startedAfterReport(deps: Pick<SandboxDeps, "mtime" | "repo">): Promise<number | null> {
-  const [errAt, walkAt] = await Promise.all([deps.mtime(join(deps.repo, WALK_ERR_FILE)).catch(() => NaN), deps.mtime(join(deps.repo, WALK_FILE)).catch(() => 0)]);
-  return errAt > walkAt ? errAt : null;
-}
-
 /** The first WALK_COMMAND_BROKE line of WALK_ERR_FILE when that file is newer than WALK_FILE (or WALK_FILE is missing), else null. */
 export async function walkCommandBroke(deps: Pick<SandboxDeps, "read" | "mtime" | "repo">): Promise<{ at: number; line: string } | null> {
-  const [text, errAt] = await Promise.all([deps.read(join(deps.repo, WALK_ERR_FILE)).catch(() => ""), startedAfterReport(deps)]);
+  const errPath = join(deps.repo, WALK_ERR_FILE);
+  const [text, errAt, walkAt] = await Promise.all([deps.read(errPath).catch(() => ""), deps.mtime(errPath).catch(() => NaN), deps.mtime(join(deps.repo, WALK_FILE)).catch(() => 0)]);
   const line = text.split("\n").find(entry => WALK_COMMAND_BROKE.test(entry))?.trim();
-  return line && errAt !== null ? { at: errAt, line } : null;
+  return line && errAt > walkAt ? { at: errAt, line } : null;
 }
 
 export async function measureSandbox(deps: SandboxDeps): Promise<PrecheckOutput> {
@@ -528,14 +518,10 @@ export async function measureSandbox(deps: SandboxDeps): Promise<PrecheckOutput>
       flagged.push({ at, kind: "walk_missing", excerpt: `${WALK_FILE} has no ${WALK_SOURCE} result` });
       noReading(`the walk report has no ${WALK_SOURCE} result`);
     } else if (!Number.isFinite(walk.at) || at - walk.at > WALK_STALE_MS) {
+      metrics.walk_problems++;
       const started = `the last offline walk in ${WALK_FILE} started ${Number.isFinite(walk.at) ? iso(walk.at) : "at an unknown time"}, over ${WALK_STALE_MS / 3_600_000} h ago`;
-      const retried = await startedAfterReport(deps);
-      const running = psArgs instanceof Error ? [] : runningWalks(psArgs);
-      if (retried !== null && !running.length) {
-        metrics.walk_problems++;
-        flagged.push({ at, kind: "walk_stale", excerpt: `${started}, and the walk started after it (${WALK_ERR_FILE} written ${iso(retried)}) ended with no newer report` });
-        noReading(started);
-      } else noReading(`${started}, and ${running.length ? `the walk started after it still runs (pids ${running.join(", ")})` : "no walk started after it, as when the Mac was away at the daily run"}, so walk_problems does not count it`);
+      flagged.push({ at, kind: "walk_stale", excerpt: started });
+      noReading(started);
     } else {
       flagged.push({ at, kind: "walk", excerpt: `offline walk started ${iso(walk.at)}: ${walk.tests} tests, ${walk.outside.length} outside requests, ${walk.otherFailures.length} other failures` });
       const slowest = slowestPage(walk.pages, walk.untimed);
