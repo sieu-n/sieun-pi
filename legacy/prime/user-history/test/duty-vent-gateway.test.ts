@@ -183,6 +183,7 @@ test("a provider key copied under another name counts in tier files and box env 
   boxLocations({ files: { "/srv/obs/secrets/vendor-usage.env": usage }, docker: {}, units: { "virev-vendor-usage.service": usage } }, locations);
   locations["tier apps/infra/.env"] = [...usage, "STRIPE_READ_VENT_KEY"];
   locations["tier apps/ci/e2e/.env.staging"] = ["CLERK_CI_SECRET_KEY"];
+  locations["tier apps/ci-e2e/.env.staging"] = ["CLERK_CI_SECRET_KEY"];
   locations["convex staging tremendous-eel-825"] = ["GOOGLE_PICKER_API_KEY", "CLERK_JWT_KEY", "PUBLIC_CLERK_PUBLISHABLE_KEY", "GMAIL_OAUTH_STATE_SECRET"];
   const output = ventMetrics(reads({ keys: { locations, unreadable: {} } }), 0);
   assert.deepEqual(output.flagged!.filter(flag => flag.kind === "key_outside_vent").map(flag => flag.excerpt), [
