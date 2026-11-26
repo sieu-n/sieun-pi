@@ -10,28 +10,19 @@ on 11-06. An existing NODE_OPTIONS keeps its options, and a command that sets it
 import os
 
 
-def stable(path: str) -> str:
-    """A release path as the same file under its install's `current` link, when that file exists. A Node process the kernel starts keeps
-    its NODE_OPTIONS for life, and a release prune deletes the old folder: on the Mac pm2's Vent, started from a kernel, died at preload
-    with MODULE_NOT_FOUND from 11-21 to 11-26 after its sieun-pi-runtime release was pruned. On 11-26 every pi-host kernel's send-check
-    judge on the Mac and us-metal02 named pi-host/release-e7e0a88's epipe.cjs. Both installs swap current by rename, so the path stays valid.
-
-    <runtime>/sieun-pi-runtime/releases/<sha>/<rest> maps to <runtime>/sieun-pi-runtime/current/<rest>, and
-    <share>/pi-host/release-<sha>/<rest> maps to <share>/pi-host/current/<rest>."""
-    parts = path.split(os.sep)
-    for i in range(len(parts) - 1):
-        if parts[i] == "sieun-pi-runtime" and parts[i + 1] == "releases":
-            root, rest = parts[: i + 1], parts[i + 3 :]
-        elif parts[i] == "pi-host" and parts[i + 1].startswith("release-"):
-            root, rest = parts[: i + 1], parts[i + 2 :]
-        else:
-            continue
-        moved = os.sep.join(root + ["current"] + rest)
-        return moved if rest and os.path.isfile(moved) else path
-    return path
+def _stable_path():
+    """stable_path() from release-path.py next to this file."""
+    path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "release-path.py")
+    scope = {"__name__": "global_rules_release_path", "__file__": path}
+    with open(path, encoding="utf-8") as handle:
+        exec(compile(handle.read(), path, "exec"), scope)
+    return scope["stable_path"]
 
 
-PRELOAD = stable(os.path.join(os.path.dirname(os.path.realpath(__file__)), "node-child", "epipe.cjs"))
+stable_path = _stable_path()
+
+
+PRELOAD = stable_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "node-child", "epipe.cjs"))
 
 
 def install() -> None:

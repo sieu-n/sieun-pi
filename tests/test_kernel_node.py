@@ -15,6 +15,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 NODE_FILE = REPO / "packages" / "sieun-rules" / "src" / "kernel-node.py"
+RELEASE_PATH = REPO / "packages" / "sieun-rules" / "src" / "release-path.py"
 PRELUDE = REPO / "packages" / "sieun-rules" / "src" / "kernel-guard.ts"
 WRITER = """
 process.on("uncaughtException", () => {});
@@ -88,6 +89,7 @@ class KernelNode(unittest.TestCase):
         runtime = Path(self.tmp) / "sieun-pi-runtime"
         (runtime / "releases/abc" / src / "node-child").mkdir(parents=True)
         (runtime / "releases/abc" / src / "node-child/epipe.cjs").write_text("")
+        shutil.copy(RELEASE_PATH, runtime / "releases/abc" / src)
         (runtime / "current").symlink_to("releases/abc")
         options = loaded({}, runtime / "current" / src / "kernel-node.py")["NODE_OPTIONS"]
         self.assertEqual(options, f'--require "{runtime / "current" / src / "node-child/epipe.cjs"}"')
@@ -98,6 +100,7 @@ class KernelNode(unittest.TestCase):
         host = Path(self.tmp) / "pi-host"
         (host / "release-e7e0a88" / src / "node-child").mkdir(parents=True)
         (host / "release-e7e0a88" / src / "node-child/epipe.cjs").write_text("")
+        shutil.copy(RELEASE_PATH, host / "release-e7e0a88" / src)
         (host / "current").symlink_to("release-e7e0a88")
         options = loaded({}, host / "release-e7e0a88" / src / "kernel-node.py")["NODE_OPTIONS"]
         self.assertEqual(options, f'--require "{host / "current" / src / "node-child/epipe.cjs"}"')
@@ -107,6 +110,7 @@ class KernelNode(unittest.TestCase):
         host = Path(self.tmp) / "pi-host"
         (host / "release-old" / src / "node-child").mkdir(parents=True)
         (host / "release-old" / src / "node-child/epipe.cjs").write_text("")
+        shutil.copy(RELEASE_PATH, host / "release-old" / src)
         (host / "release-new").mkdir()
         (host / "current").symlink_to("release-new")
         options = loaded({}, host / "release-old" / src / "kernel-node.py")["NODE_OPTIONS"]

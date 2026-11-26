@@ -16,9 +16,23 @@ import sys
 import threading
 import weakref
 
+
+def _stable_path():
+    """stable_path() from release-path.py next to this file."""
+    path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "release-path.py")
+    scope = {"__name__": "global_rules_release_path", "__file__": path}
+    with open(path, encoding="utf-8") as handle:
+        exec(compile(handle.read(), path, "exec"), scope)
+    return scope["stable_path"]
+
+
+stable_path = _stable_path()
+
+
 HERE = os.path.dirname(os.path.realpath(__file__))
-CHECK = os.path.join(HERE, "send-check.ts")
-CHILD_DIR = os.path.join(HERE, "python-child")
+# The judge and the PYTHONPATH entry name the release through current, so a kernel and its children keep the guard after a prune of its release.
+CHECK = stable_path(os.path.join(HERE, "send-check.ts"))
+CHILD_DIR = stable_path(os.path.join(HERE, "python-child"))
 SMTP_PORTS = frozenset({25, 465, 587, 2525})
 LOCAL = re.compile(r"^(?:localhost|127\.\d+\.\d+\.\d+|::1|0\.0\.0\.0)$")
 SHELL_HINT = re.compile(
@@ -212,7 +226,7 @@ class Judge:
         """The rule files a fresh run would load: every .ts and .json file next to send-check.ts."""
         return tuple(sorted(
             (entry.name, entry.stat().st_mtime_ns, entry.stat().st_size)
-            for entry in os.scandir(HERE)
+            for entry in os.scandir(os.path.dirname(CHECK))
             if entry.name.endswith((".ts", ".json"))
         ))
 

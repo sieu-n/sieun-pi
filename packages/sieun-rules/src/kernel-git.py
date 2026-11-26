@@ -11,13 +11,26 @@ import os
 import shutil
 import sys
 
-GIT_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), "git-child")
+
+def _stable_path():
+    """stable_path() from release-path.py next to this file."""
+    path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "release-path.py")
+    scope = {"__name__": "global_rules_release_path", "__file__": path}
+    with open(path, encoding="utf-8") as handle:
+        exec(compile(handle.read(), path, "exec"), scope)
+    return scope["stable_path"]
+
+
+stable_path = _stable_path()
+
+
+GIT_DIR = stable_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "git-child"))
 
 
 def install() -> None:
     if sys.platform != "darwin" or not os.path.isfile(os.path.join(GIT_DIR, "git")):
         return
-    parts = [p for p in os.environ.get("PATH", "").split(os.pathsep) if p and os.path.realpath(p) != GIT_DIR]
+    parts = [p for p in os.environ.get("PATH", "").split(os.pathsep) if p and p != GIT_DIR and os.path.realpath(p) != os.path.realpath(GIT_DIR)]
     real = os.environ.get("SIEUN_RULES_REAL_GIT") or shutil.which("git", path=os.pathsep.join(parts)) or "/usr/bin/git"
     os.environ["SIEUN_RULES_REAL_GIT"] = real
     os.environ["PATH"] = os.pathsep.join([GIT_DIR, *parts])
