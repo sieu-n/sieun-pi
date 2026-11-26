@@ -1,19 +1,21 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
-import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
-import { DAY, GRAFANA, REPO, UNMEASURED, readGrafanaAuth } from "./estate-reads.ts";
+import { ROUTE_P90_TARGET_S } from "./customer-api-failures.ts";
+import { DAY, GRAFANA, UNMEASURED, readGrafanaAuth } from "./estate-reads.ts";
 
 /**
  * The api-portal agent's "API status board" precheck (`node --import tsx scripts/duties/portal-status-board.ts`). No model call, reads only.
  * The owner asked in #dev-api-portal for an easy status check of the portal (p13, p15, 2026-11-21) and then for "insight on per-platform, and
  * especially endpoints/.. with high latency, error rate" (p19, mww214m1, 2026-11-25). The answer is the Grafana board
  * https://obs.virev.ai/d/virev-api-portal, and this precheck reads what it should show:
- * - slow_endpoints_24h, the endpoints whose p90 over real customers' calls in 24 h is over SLOW_P90_S,
+ * - slow_endpoints_24h, the endpoints whose p90 over real customers' calls in 24 h is over their own target (p90TargetS),
  * - failing_endpoints_24h, the endpoints where over FAILED_PCT of those calls failed on our side,
  * - broken_panels_24h, the live board's panels whose query errors or answers nothing over 24 h.
- * Customer calls are keyed `crawl_read` rows of product.usage_events from orgs outside auto-sns-agent convex/org/houseOrgs.json. The board and
+ * Customer calls are keyed `crawl_read` rows of product.customer_usage_events, the view that leaves out every org of auto-sns-agent
+ * convex/org/houseOrgs.json, less the org_test_ orgs a prod proof makes as paying customers: the filter of the alert
+ * api-portal-customer-calls-failing and board 52 (auto-sns-agent b046150074). On 11-25 one proof org ran 20 of the day's 21 Bing calls. The board and
  * this file read Grafana through prod Vent with the grafana-read key: grafana-viewer (Main Org, where the board lives) for the board and its queries.
  */
 
@@ -22,36 +24,33 @@ const VIEWER = GRAFANA.replace(/grafana-agents$/, "grafana-viewer");
 const CLICKHOUSE = { uid: "estate_ch_prod", type: "grafana-clickhouse-datasource" };
 /** The owner's latency bar for an endpoint, from p26 (11-25): youtube/channel_shorts answered p90 25 s and its fix targets 15 s. */
 export const SLOW_P90_S = 15;
+/** The org prefix of a prod proof job's throwaway orgs, which are not in houseOrgs.json because they pay like customers. */
+export const PROOF_ORG_PREFIX = "org_test_";
+/**
+ * An endpoint's p90 target: d4's ROUTE_P90_TARGET_S entry for its operation id (search/bing is search.bing, 22 s, because the crawler gives
+ * up on a Bing decoy at 20 s), else SLOW_P90_S. d4 owns the table, so both duties hold a route to one number.
+ */
+export const p90TargetS = (endpoint: string): number =>
+  (ROUTE_P90_TARGET_S as Record<string, number>)[endpoint.replaceAll("/", ".")] ?? SLOW_P90_S;
 export const FAILED_PCT = 5;
 /** The board's endpoint table skips an endpoint with fewer calls in its range, because a p90 of a few calls is its slowest call. */
 export const MIN_CALLS = 20;
 /** The 4xx codes that are our refusal, not the caller's mistake: the list of board panel 20 "Which endpoints fail or answer slowly?". */
 export const OUR_4XX = ["rate_limited", "crawl_unpaid_paused", "not_cached", "target_refused", "acquisition_credential_unavailable", "scrape_blocked", "login_required"];
 
-export interface HouseOrgs { ids: string[]; prefixes: string[] }
 export interface EndpointRow { endpoint: string; calls: number; oursFailed: number; p90S: number; topError: string; lastMs: number }
 export interface PanelCheck { id: number; title: string; problem?: "error" | "no_data"; detail?: string }
-
-export function parseHouseOrgs(text: string): HouseOrgs {
-  const raw = JSON.parse(text) as { ids?: unknown; prefixes?: unknown };
-  const keys = (value: unknown, name: string): string[] => {
-    if (!value || typeof value !== "object") throw new Error(`houseOrgs.json has no ${name} map`);
-    return Object.keys(value);
-  };
-  return { ids: keys(raw.ids, "ids"), prefixes: keys(raw.prefixes, "prefixes") };
-}
 
 const quote = (value: string): string => `'${value.replaceAll("\\", "\\\\").replaceAll("'", "\\'")}'`;
 const ourFailure = `http_status >= 500 OR (http_status >= 400 AND error_code IN (${OUR_4XX.map(quote).join(", ")}))`;
 
-export const endpointSql = (house: HouseOrgs): string => [
+export const endpointSql = (): string => [
   "SELECT replaceRegexpOne(route, '^/api/(live/)?', '') AS endpoint, count() AS calls,",
   `countIf(${ourFailure}) AS ours_failed, round(quantile(0.9)(duration_ms) / 1000, 2) AS p90_s,`,
   `topKIf(1)(concat(toString(http_status), ' ', if(error_code = '', 'no code', error_code)), ${ourFailure})[1] AS top_error,`,
   "toUnixTimestamp64Milli(max(ts)) AS last_ms",
-  "FROM product.usage_events",
-  `WHERE $__timeFilter(ts) AND action = 'crawl_read' AND api_key_id != '' AND org_id NOT IN (${house.ids.map(quote).join(", ")})`,
-  ...house.prefixes.map(prefix => `AND NOT startsWith(org_id, ${quote(prefix)})`),
+  "FROM product.customer_usage_events",
+  `WHERE $__timeFilter(ts) AND action = 'crawl_read' AND api_key_id != '' AND NOT startsWith(org_id, ${quote(PROOF_ORG_PREFIX)})`,
   `GROUP BY endpoint HAVING calls >= ${MIN_CALLS} ORDER BY p90_s DESC`,
 ].join("\n");
 
@@ -62,11 +61,11 @@ export const endpointSql = (house: HouseOrgs): string => [
 export type StatusBoardOutput = PrecheckOutput & { n: Record<string, number> };
 
 export function report(rows: EndpointRow[], panels: PanelCheck[], errors: string[]): StatusBoardOutput {
-  const slow = rows.filter(row => row.p90S > SLOW_P90_S);
+  const slow = rows.filter(row => row.p90S > p90TargetS(row.endpoint));
   const failing = rows.filter(row => (100 * row.oursFailed) / row.calls > FAILED_PCT);
   const broken = panels.filter(panel => panel.problem);
   const failedPct = (row: EndpointRow): number => Math.round((1000 * row.oursFailed) / row.calls) / 10;
-  const line = (row: EndpointRow): string => `${row.endpoint}: ${row.calls} customer calls in 24 h, p90 ${row.p90S} s, ${failedPct(row)}% failed on our side` +
+  const line = (row: EndpointRow): string => `${row.endpoint}: ${row.calls} customer calls in 24 h, p90 ${row.p90S} s against ${p90TargetS(row.endpoint)} s, ${failedPct(row)}% failed on our side` +
     `${row.topError ? ` (most often ${row.topError})` : ""}.`;
   const newest = (list: EndpointRow[]): number | undefined => list.length ? Math.max(...list.map(row => row.lastMs)) : undefined;
   const sourceDown = (name: string): boolean => errors.some(error => error.startsWith(name));
@@ -172,8 +171,7 @@ export async function measure(now: number): Promise<StatusBoardOutput> {
     return !response.ok || !result || result.error ? { error: `Grafana HTTP ${response.status}: ${String(result?.error ?? body?.message ?? "no result").slice(0, 200)}` } : { frames: result.frames ?? [] };
   };
   try {
-    const house = parseHouseOrgs(await readFile(join(REPO, "convex/org/houseOrgs.json"), "utf8"));
-    const answer = await query({ datasource: CLICKHOUSE, rawSql: endpointSql(house), format: 1 }, now - DAY, now);
+    const answer = await query({ datasource: CLICKHOUSE, rawSql: endpointSql(), format: 1 }, now - DAY, now);
     if ("error" in answer) throw new Error(answer.error);
     rows = frameRows(answer.frames).map(row => ({ endpoint: String(row.endpoint), calls: Number(row.calls), oursFailed: Number(row.ours_failed),
       p90S: Number(row.p90_s), topError: String(row.top_error ?? ""), lastMs: Number(row.last_ms) }));
