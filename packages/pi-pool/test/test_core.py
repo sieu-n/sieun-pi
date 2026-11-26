@@ -673,6 +673,17 @@ class SessionArchive(unittest.TestCase):
         self.assertNotIn("never-seen", later)
         self.assertIsNone(later.get("never-seen"))
 
+    def test_a_quiet_pi_durable_record_leaves_state_json_and_comes_back_by_key(self):
+        quiet = NOW - CFG["active_session_sec"] - 1
+        key = "pi-durable:245d5c7b-c772-4f46-a61c-7a0381840adc"
+        rec = {"uuid": key, "active_id": key, "last_seen": quiet, "priority": "low", "pins": {},
+               "vends": {"anthropic": vend_record("b", quiet)}}
+        state = state_v2()
+        state["sessions"] = self.sessions({key: json.loads(json.dumps(rec))})
+        self.assertTrue(vending.HookWriter(state).prune(CFG, NOW))
+        self.assertEqual(list(dict.keys(state["sessions"])), [])
+        self.assertEqual(self.sessions({})[key], rec)
+
     def test_a_record_quiet_past_pin_ttl_is_gone_from_the_archive_too(self):
         stale = NOW - CFG["pin_ttl_sec"] - 1
         registry.archive_record("stale", {"uuid": "stale", "last_seen": stale, "pins": {}})
@@ -715,7 +726,8 @@ class SessionArchive(unittest.TestCase):
 
         with unittest.mock.patch.object(base, "load_json", counted):
             self.assertIsNone(registry.resolve_session_arg("pi-durable:never-seen", {"sessions": self.sessions({})}))
-            self.assertEqual(read, [], "a miss reads no archived record")
+            self.assertEqual(read, ["pi-durable:never-seen.json"], "a miss reads only the file its own key names")
+            read.clear()
             registry.archive_record("01a0-new", {"uuid": "01a0-new", "active_id": "actnew", "last_seen": NOW - 7200, "pins": {}})
             registry.archive_record("01a0-3", {"uuid": "01a0-3", "active_id": "act3b", "last_seen": NOW - 3600, "pins": {}})
             self.assertEqual(registry.resolve_session_arg("actnew", {"sessions": self.sessions({})}).key, "01a0-new")

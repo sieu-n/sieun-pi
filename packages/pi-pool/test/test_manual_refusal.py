@@ -9,7 +9,7 @@ import urllib.request
 from unittest.mock import patch
 
 from fixture_isolation import isolate_test_module
-from test_core import B, CFG, KEY, NOW, TERMS_BODY, state_v2
+from test_core import A, B, CFG, KEY, NOW, TERMS_BODY, state_v2
 from test_scheduler import P, acct
 from vend.pool import base, registry, vending
 
@@ -276,6 +276,33 @@ class ProbeEvidence(unittest.TestCase):
                     stack.enter_context(patch.object(base, "save_json"))
                     self.assertEqual(vending.probe_accounts([B], {"b": reason}, CFG, NOW), [])
                     self.assertEqual(state, before)
+
+    def test_a_busy_pool_lock_skips_the_account_and_probes_the_next(self):
+        state = state_v2(cooldowns={"b": NOW + 600, "a": NOW + 600})
+        state["providers"][P]["cooldown_reasons"] = {"b": base.OAUTH_OFF, "a": base.OAUTH_OFF}
+        locks, logged = [], []
+
+        @contextlib.contextmanager
+        def lock(*args, **kwargs):
+            locks.append(True)
+            if len(locks) == 1:
+                raise TimeoutError("could not lock pool")
+            yield
+
+        def urlopen(req, timeout=None):
+            raise urllib.error.HTTPError(req.full_url, 401, "fixture", {}, io.BytesIO(b"{}"))
+
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(patch.object(registry, "load_state", return_value=state))
+            stack.enter_context(patch.object(base.KeychainAdapter, "read", return_value={
+                "accessToken": "fixture", "expiresAt": (NOW + 3600) * 1000}))
+            stack.enter_context(patch.object(urllib.request, "urlopen", side_effect=urlopen))
+            stack.enter_context(patch.object(base, "Flock", lock))
+            stack.enter_context(patch.object(base, "save_json"))
+            stack.enter_context(patch.object(base, "log", side_effect=lambda e, **kw: logged.append((e, kw))))
+            lines = vending.probe_accounts([B, A], {"b": base.OAUTH_OFF, "a": base.OAUTH_OFF}, CFG, NOW)
+        self.assertEqual(lines, ["a@x: token rejected (401)"])
+        self.assertIn(("probe_lock_busy", {"account": "b@x"}), logged)
 
 
 if __name__ == "__main__":

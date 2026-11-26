@@ -506,11 +506,17 @@ def probe_accounts(accounts, reasons, cfg, now):
         result = base.anthropic_probe(creds["accessToken"], infer=expected[0] == base.NEEDS_TERMS)
         if isinstance(result, base.ProbeUnavailable):
             continue
-        with limited.pool_lock():
-            state = registry.load_state()
-            changed = record_probe(state, a.id, result, expected, cfg, now)
-            if changed:
-                base.save_json(base.STATE, state)
+        try:
+            with limited.pool_lock():
+                state = registry.load_state()
+                changed = record_probe(state, a.id, result, expected, cfg, now)
+                if changed:
+                    base.save_json(base.STATE, state)
+        except TimeoutError:
+            # The next probe reads the account again. Uncaught, a busy flock failed 96 of 1,500 runs of Komodo's
+            # m02-pi-pool-sample job from 11-25 04Z to 11-26 and dropped every probe after the busy account.
+            base.log("probe_lock_busy", account=a.label)
+            continue
         if changed:
             message = result.reason if isinstance(result, base.ProbeRefused) else "accepted again"
             lines.append(f"{a.label}: {message}")

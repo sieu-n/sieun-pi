@@ -439,8 +439,10 @@ def load_state():
 # hook reads and writes all of state.json under the pool flock. On us-metal02 on 10-18 it held 7,718 records,
 # 5,886 of them quiet for over a day, the 2.7 MB file cost about 80 ms a hold, and the flock was held 91% of
 # the time. A record looked up by key comes back from the archive whole, so pins, models, moves and priority
-# work as before.
-SAFE_KEY = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._-]{0,127}$")
+# work as before. A pi-durable tree's key has a colon ("pi-durable:<uuid>"), which the pattern once refused, so on
+# 11-26 2,015 quiet records, 1.3 MB of the 1.7 MB file, never left, a hold read and wrote 1.7 MB (about 110 ms),
+# and hooks met a flock busy past STATE_LOCK_TIMEOUT 1,766 times in 7 days.
+SAFE_KEY = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._:-]{0,127}$")
 
 
 def archive_dir():
