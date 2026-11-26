@@ -8,7 +8,7 @@ calls the provider. The call sites at a ref are the rows whose call is still in 
 (removed) or no longer name the provider (gone) has no caller left, plus every direct provider call the call scan finds in deployed
 code that no live row covers, so a new direct call counts as a site of its own. With --traffic
 it also counts Vent's vent.call log rows per caller and integration in the shared otel ClickHouse, and matches them to sites through
-the integrations in apps/vent/src/vent/tables.py, so a new Vent integration needs no edit here. A failed traffic read lands in the result
+the integrations in apps/vent/src/vent/tables/integrations.py, so a new Vent integration needs no edit here. A failed traffic read lands in the result
 as traffic.error and the code verdicts still write, since the gateway duty's headline counts code paths, not traffic (owner rule c67).
 
 Run from the auto-sns-agent repo root:
@@ -523,16 +523,26 @@ def traffic_day(token: str, day: int) -> list[dict]:
     return [dict(zip(names, r)) for r in zip(*frames[0]["data"]["values"])]
 
 
-TABLES = "apps/vent/src/vent/tables.py"
+# INTEGRATIONS sits in the tables package since auto-sns-agent 74c6429447 (2026-11-26) and in one tables.py before, so a
+# ref on either side of that split reads.
+TABLES = ("apps/vent/src/vent/tables/integrations.py", "apps/vent/src/vent/tables.py")
 # us-metal02's dev branch (c119), where work lands before main.
 TIP_REF = "origin/dev/sieun"
 
 
+def tables_path(ref: str) -> str | None:
+    """The file of TABLES that holds INTEGRATIONS at ref, or None when it holds neither."""
+    for path in TABLES:
+        if subprocess.run(["git", "cat-file", "-e", f"{ref}:{path}"], capture_output=True).returncode == 0:
+            return path
+    return None
+
+
 def tables_ref() -> str | None:
-    """The ref whose tables.py says what Vent serves: main, then dev/sieun, then the newest ci/ branch that has the file."""
+    """The ref whose tables say what Vent serves: main, then dev/sieun, then the newest ci/ branch that has them."""
     newest_ci = git("for-each-ref", "--sort=-committerdate", "--format=%(refname:short)", "refs/remotes/origin/ci").split()
     for ref in ["origin/main", TIP_REF, *newest_ci]:
-        if subprocess.run(["git", "cat-file", "-e", f"{ref}:{TABLES}"], capture_output=True).returncode == 0:
+        if tables_path(ref):
             return ref
     return None
 
@@ -622,7 +632,7 @@ def main() -> None:
             print(f"\n== traffic not read: {result['traffic']['error']}", file=sys.stderr)
     if a.traffic and rows is not None:
         ref = tables_ref()
-        integrations = vent_integrations(git("show", f"{ref}:{TABLES}")) if ref else {}
+        integrations = vent_integrations(git("show", f"{ref}:{tables_path(ref)}")) if ref else {}
         result["traffic"] = {"days": a.days, "rows": rows, "tables_ref": ref, "integrations": sorted(integrations),
                              "providers_without_integration": sorted({p for p in P if not integrations_for(p, integrations)})}
         print(f"\n== Vent integrations from {ref or 'no ref'}: {len(integrations)}; providers with none: {', '.join(result['traffic']['providers_without_integration'])}")
