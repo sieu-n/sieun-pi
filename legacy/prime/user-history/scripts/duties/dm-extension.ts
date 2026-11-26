@@ -381,7 +381,7 @@ export function jarReader(key: string, fetcher: typeof fetch = fetch): ReadJar {
 /** jarReader with the staging crawler key, which the repo's staging-proof spec reads the same way
  *  (auto-sns-agent apps/search/scripts/ig-peer-jar.mjs). */
 export async function crawlerJars(): Promise<ReadJar> {
-  return jarReader((await sh("npx", ["dotenvx", "get", "CRAWLER_API_KEY", "-f", "apps/ci-specs/.env.staging"])).trim());
+  return jarReader((await sh("npx", ["dotenvx", "get", "CRAWLER_API_KEY", "-f", "apps/ci/specs/.env.staging"])).trim());
 }
 
 /** The two accounts as the crawler answers them. `boxed` names each one held or on a box exit, and only when none is do the

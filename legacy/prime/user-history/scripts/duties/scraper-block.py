@@ -5,7 +5,7 @@ publish it with `node scripts/repo/vercel/firewall.mjs apply`, and commit the fi
 It first runs `firewall.mjs diff` on the unedited file and refuses when the file differs from the live config (drift below), so it never
 publishes a file older than what is live. On 11-15 dev/sieun's file predated staging 6df678ce83, and an apply would have sent 9 groups
 back to deny and brought back scraper-blocklist-2. The token for our own browser comes from FIREWALL_OWN_UA, read from
-apps/ci-specs/.env.staging with dotenvx when the env lacks it.
+apps/ci/specs/.env.staging with dotenvx when the env lacks it.
 
 Usage, from any directory:
   python3 legacy/prime/user-history/scripts/duties/scraper-block.py --label "<who, date, who found it>" \
@@ -57,13 +57,13 @@ def drift(diff_out: str) -> list[str]:
 
 
 def own_ua() -> str:
-    """FIREWALL_OWN_UA from the env, or from apps/ci-specs/.env.staging through dotenvx; never printed."""
+    """FIREWALL_OWN_UA from the env, or from apps/ci/specs/.env.staging through dotenvx; never printed."""
     if os.environ.get("FIREWALL_OWN_UA"):
         return os.environ["FIREWALL_OWN_UA"]
-    out = subprocess.run(["npx", "dotenvx", "get", "FIREWALL_OWN_UA", "-f", "apps/ci-specs/.env.staging"], cwd=REPO, capture_output=True, text=True)
+    out = subprocess.run(["npx", "dotenvx", "get", "FIREWALL_OWN_UA", "-f", "apps/ci/specs/.env.staging"], cwd=REPO, capture_output=True, text=True)
     lines = out.stdout.strip().splitlines()
     if out.returncode != 0 or not lines:
-        sys.exit("could not read FIREWALL_OWN_UA from apps/ci-specs/.env.staging")
+        sys.exit("could not read FIREWALL_OWN_UA from apps/ci/specs/.env.staging")
     return lines[-1]
 
 
