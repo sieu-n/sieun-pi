@@ -307,7 +307,7 @@ export function macRedHolders(day: ReturnType<typeof macUnusableMinutes>): strin
  * What measureMac read: the Mac's metrics and flagged lines, and for mac_unusable_min its 24 h window and the time of its newest unusable
  * minute, so d9 reads red minutes that only wait to leave the window as a lagging count (`PrecheckOutput.lastEventAt`).
  */
-export interface MacResult extends Pick<PrecheckOutput, "lastEventAt" | "windowMs"> { metrics: Record<string, number>; flagged: FlaggedSlice[] }
+export interface MacResult extends Pick<PrecheckOutput, "lastEventAt" | "windowMs"> { metrics: Record<string, number>; flagged: FlaggedSlice[]; n: Record<string, number> }
 
 /**
  * Reads the Mac over ssh (or in place when this run is on the Mac). ssh exits 255 when it cannot reach the host, which is a sleeping or
@@ -327,6 +327,7 @@ export async function measureMac(deps: Pick<UptimeDeps, "exec" | "platform" | "w
     ? { at, kind: day.unusable ? "mac_unusable" : "mac_usable", excerpt: `Mac: ${day.unusable} of ${day.read} watched minutes in the last 24 h read unusable${day.unusable ? ` (${Object.entries(day.by).map(([miss, n]) => `${miss} ${n}`).join(", ")}${macRedHolders(day) ? `; ${macRedHolders(day)}` : ""})` : ""}` }
     : { at, kind: "mac_read", excerpt: "Mac: the usable watch holds no Mac minute in the last 24 h" };
   const watched = day.read ? { mac_unusable_min: day.unusable } : {};
+  const n = (ports: number) => ({ mac_unusable_min: day.read, mac_servers_not_answering: ports });
   const read = () => deps.platform === "darwin" ? deps.exec("sh", ["-c", MAC_COMMAND]) : deps.exec("ssh", [MAC_HOST, MAC_COMMAND]);
   let text: string;
   let held: CrawlerState | undefined;
@@ -342,10 +343,10 @@ export async function measureMac(deps: Pick<UptimeDeps, "exec" | "platform" | "w
     const failed = error as { code?: unknown; killed?: unknown; signal?: unknown };
     if (failed.code === 255 || failed.killed === true || typeof failed.signal === "string") {
       const away = await deps.macAway?.("its dev servers were", at).catch(() => undefined);
-      return { ...windows, metrics: { ...watched, mac_unreachable: 1 }, flagged: [usable, { at, kind: "mac_unreachable", excerpt: `Mac: ssh ${MAC_HOST} could not reach it (asleep or offline), so its dev servers were not read: ${message}`.slice(0, 300) },
+      return { ...windows, n: n(0), metrics: { ...watched, mac_unreachable: 1 }, flagged: [usable, { at, kind: "mac_unreachable", excerpt: `Mac: ssh ${MAC_HOST} could not reach it (asleep or offline), so its dev servers were not read: ${message}`.slice(0, 300) },
         ...away ? [away] : []] };
     }
-    return { ...windows, metrics: watched, flagged: [usable, { at, kind: "mac_read", excerpt: `Mac: read failed: ${message}`.slice(0, 300) }] };
+    return { ...windows, n: n(0), metrics: watched, flagged: [usable, { at, kind: "mac_read", excerpt: `Mac: read failed: ${message}`.slice(0, 300) }] };
   }
   const reading = parseMacReading(text);
   const down = macDown(reading, held);
@@ -356,7 +357,7 @@ export async function measureMac(deps: Pick<UptimeDeps, "exec" | "platform" | "w
   const convexFlag: FlaggedSlice = convex
     ? { at, kind: convex.stale ? "mac_convex_stale" : "mac_convex", excerpt: convex.detail.slice(0, 300) }
     : { at, kind: "mac_read", excerpt: `Mac: no Convex watcher push state or convex/ mtime in the read: ${(/^convex-(push|src).*$/gm.exec(text)?.[0] ?? "no convex lines").slice(0, 200)}` };
-  return { ...windows, metrics: { ...watched, mac_servers_not_answering: down.length, mac_unreachable: 0, ...(convex ? { mac_convex_push_stale: convex.stale ? 1 : 0 } : {}) },
+  return { ...windows, n: n(MAC_PORTS.length), metrics: { ...watched, mac_servers_not_answering: down.length, mac_unreachable: 0, ...(convex ? { mac_convex_push_stale: convex.stale ? 1 : 0 } : {}) },
     flagged: [usable, { at, kind: down.length ? "mac_down" : "mac_answer", excerpt: (down.length ? `Mac dev servers not answering 200: ${down.join(", ")} (${summary})` : `Mac dev servers answer: ${summary}`).slice(0, 300) }, ...stopped, convexFlag] };
 }
 
@@ -518,7 +519,7 @@ export async function measureUptime(deps: UptimeDeps, previous: UptimeState | un
   const at = deps.now();
   const store = measureStoreBox(deps, at);
   const mac = measureMac(deps, at, store.then(result => result.crawler, () => undefined)).catch((error: unknown): Awaited<ReturnType<typeof measureMac>> =>
-    ({ metrics: {}, flagged: [{ at, kind: "mac_read", excerpt: `Mac: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300) }] }));
+    ({ metrics: {}, n: { mac_unusable_min: 0, mac_servers_not_answering: 0 }, flagged: [{ at, kind: "mac_read", excerpt: `Mac: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300) }] }));
   const localConvex = measureLocalConvex(deps, at);
   const answers = await Promise.all([{ key: "wiki", url: deps.wiki + "/" }, ...SERVICES].map(async (service): Promise<FlaggedSlice> => {
     const where = target(service, deps.env);
@@ -540,7 +541,7 @@ export async function measureUptime(deps: UptimeDeps, previous: UptimeState | un
     const cause = await devServerCause(deps, app).catch((error: unknown) => `pm2 error log read failed: ${error instanceof Error ? error.message : String(error)}`);
     if (cause) flagged.push({ at, kind: "dev_error", excerpt: `${app}: ${cause}` });
   }
-  const { metrics: macMetrics, flagged: macFlagged, ...windows } = await mac;
+  const { metrics: macMetrics, flagged: macFlagged, n: macN, ...windows } = await mac;
   Object.assign(metrics, macMetrics);
   flagged.push(...macFlagged);
   const storeResult = await store;
@@ -554,6 +555,9 @@ export async function measureUptime(deps: UptimeDeps, previous: UptimeState | un
     flagged.push({ at, kind: "mac", excerpt: `${deps.platform === "darwin" ? "Mac" : "Host"} at the probe: load ${load}`.slice(0, 300) });
   }
 
+  // One count per metric, so a met run on a source that failed reads n = 0 (agent factory's d7 `no_sample_size`, 11-26).
+  const n: Record<string, number> & { restarts: number } = { servers_not_answering: answers.filter(answer => answer.kind !== "by_design").length, ...macN,
+    store_box_swap_used_mb: "store_box_swap_used_mb" in metrics ? 1 : 0, convex_push_stale: "convex_push_stale" in metrics ? 1 : 0, restarts: 0 };
   const state: UptimeState = { restarts: {} };
   const memory = (where: string, pids: readonly number[], mb: number, extra = "") => {
     metrics.wiki_footprint_mb = mb;
@@ -561,6 +565,7 @@ export async function measureUptime(deps: UptimeDeps, previous: UptimeState | un
   };
   const count = (name: string, restarts: number, before: { restartTime: number; at: number } | undefined, restartTime: number, what: string) => {
     metrics.restarts += restarts;
+    n.restarts += 1;
     if (!before) flagged.push({ at, kind: "baseline", excerpt: `first run: ${what} restart count ${restartTime} of ${name} saved as the baseline` });
     else if (restarts > 0) flagged.push({ at, kind: "restarts", excerpt: `${what} restarted ${name} ${restarts} times since ${new Date(before.at).toISOString()} (count ${before.restartTime} to ${restartTime})` });
   };
@@ -591,14 +596,14 @@ export async function measureUptime(deps: UptimeDeps, previous: UptimeState | un
 
   // A pm2 call where no pm2 daemon runs starts an empty one: on 11-22 at 05:07Z this precheck's jlist started one on us-metal02.
   const pm2Names = PM2_NAMES.filter(name => !(name === "llm-wiki" && unit) && !(name === "search" && searchUnit));
-  if (!pm2Names.length) return { output: { metrics, flagged, ...windows }, state };
+  if (!pm2Names.length) return { output: { metrics, n, flagged, ...windows }, state };
   let list: Pm2Process[];
   try {
     const text = await deps.exec(deps.pm2.bin, ["jlist"], { PM2_HOME: deps.pm2.home });
     list = JSON.parse(text.trim().split("\n").at(-1) ?? "") as Pm2Process[];
   } catch (error) {
     flagged.push({ at, kind: "pm2", excerpt: `pm2 (PM2_HOME ${deps.pm2.home}): pm2 jlist failed: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300) });
-    return { output: { metrics, flagged, ...windows }, state };
+    return { output: { metrics, n, flagged, ...windows }, state };
   }
   for (const name of pm2Names) {
     const proc = list.find(candidate => candidate.name === name);
@@ -615,7 +620,7 @@ export async function measureUptime(deps: UptimeDeps, previous: UptimeState | un
       flagged.push({ at, kind: "wiki_memory", excerpt: `pm2 ${name}: memory read failed: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300) });
     }
   }
-  return { output: { metrics, flagged, ...windows }, state };
+  return { output: { metrics, n, flagged, ...windows }, state };
 }
 
 const exec: Exec = (file, args, env) => new Promise((resolve, reject) => {

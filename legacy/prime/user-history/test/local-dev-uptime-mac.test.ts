@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { WatchLine } from "../src/mac-usable-watch.ts";
 import { hostAwayOf, judge, type DutyMetric, type FlaggedSlice } from "../src/shared/chat-duties.ts";
-import { convexCommand, convexPushStale, crawlerHeld, LOCAL_CONVEX_COMMAND, MAC_COMMAND, measureLocalConvex, MAC_RETRY_MS, MAC_WINDOW_MS, macDown, macUnusableMinutes, measureMac, measureStoreBox, parseConvexReading, parseMacReading, parseStoreBox, STORE_BOX, STORE_COMMAND, STORE_VM_IO_FULL_PCT } from "../scripts/duties/local-dev-uptime.ts";
+import { convexCommand, convexPushStale, crawlerHeld, LOCAL_CONVEX_COMMAND, MAC_COMMAND, measureLocalConvex, MAC_RETRY_MS, MAC_WINDOW_MS, MAC_PORTS, macDown, macUnusableMinutes, measureMac, measureStoreBox, parseConvexReading, parseMacReading, parseStoreBox, STORE_BOX, STORE_COMMAND, STORE_VM_IO_FULL_PCT } from "../scripts/duties/local-dev-uptime.ts";
 
 const push = (outcome: string, at: string, lastGoodAt: string | null) =>
   `convex-push {  "count": 1,  "watchers": [],  "push": {    "outcome": "${outcome}",    "at": "${at}",    "reason": ${outcome === "failed" ? '"schema eval timed out (1s)"' : "null"},    "lastGoodAt": ${lastGoodAt ? `"${lastGoodAt}"` : "null"}  }}\n`;
@@ -107,8 +107,11 @@ test("a Mac ssh cannot reach is unreachable, and its watched minutes still count
   const asleep = Object.assign(new Error("Command failed: ssh mac"), { code: 255 });
   const result = await measureMac({ platform: "linux", exec: async () => { throw asleep; }, watch: async () => [minute(25)], wait: async () => {} }, 0);
   assert.deepEqual(result.metrics, { mac_unusable_min: 0, mac_unreachable: 1 });
+  // d12 wrote no n until 11-26, so agent factory's d7 flagged it no_sample_size; an asleep Mac reads its servers on n = 0.
+  assert.deepEqual(result.n, { mac_unusable_min: 1, mac_servers_not_answering: 0 });
   const awake = await measureMac({ platform: "linux", exec: async () => reading("38.59", 43, ["200", "000"]), watch: async () => [minute(25), minute(140)], wait: async () => {} }, 0);
   assert.deepEqual(awake.metrics, { mac_unusable_min: 1, mac_servers_not_answering: 1, mac_unreachable: 0, mac_convex_push_stale: 0 });
+  assert.deepEqual(awake.n, { mac_unusable_min: 1, mac_servers_not_answering: MAC_PORTS.length });
   const failing = await measureMac({ platform: "linux", exec: async () => reading("7.26", 37, ["200", "200"], push("failed", "2026-10-27T09:00:00", "2026-10-23T02:49:00") + "convex-src 2026-10-27T08:59:58\n"), watch: async () => [], wait: async () => {} }, 0);
   assert.deepEqual(failing.metrics, { mac_servers_not_answering: 0, mac_unreachable: 0, mac_convex_push_stale: 1 });
   assert.match(failing.flagged.find(item => item.kind === "mac_convex_stale")!.excerpt, /newest push failed at 2026-10-27T09:00:00: schema eval timed out \(1s\), last good push 2026-10-23T02:49:00/);
