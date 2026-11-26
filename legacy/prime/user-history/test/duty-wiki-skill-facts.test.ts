@@ -87,6 +87,14 @@ test("a name the doc also names in a history sentence is history in every senten
   assert.deepEqual(readFacts("rule", text).map(fact => fact.ref).sort(), ["OTHER_NAME", "convex/x/viewRead.ts"]);
 });
 
+test("a path the text marks as a wiki page is no repo fact, and a repo path beside it still is", () => {
+  // p19 (2026-11-27): root CLAUDE.md counted for "Deep docs: wiki `apps/convex` hub" after a8df0b4a0a moved the repo's apps/convex folder away.
+  const rule = "Deep docs: wiki `apps/convex` hub. See [`apps/search`](wiki:apps/search/index.html) and [the `apps/admin` hub](https://h.ts.net:5184/wiki/apps/admin/). Run `apps/convex/x.mjs`.\n";
+  assert.deepEqual(readFacts("rule", rule).map(fact => fact.ref), ["apps/convex/x.mjs"]);
+  const page = '<p>See <a href="/wiki/apps/vent/"><code>apps/vent</code></a>, and run <a href="https://github.com/o/r/blob/main/apps/wiki/a.ts"><code>apps/wiki/a.ts</code></a>.</p>';
+  assert.deepEqual(readFacts("page", page).map(fact => fact.ref), ["apps/wiki/a.ts"]);
+});
+
 test("a Prime skill counts when a sieun-pi fact it names is gone at sieun-pi's HEAD, and a test fixture or an auto-sns-agent path does not", async () => {
   // p6 (2026-11-21): the knowledge manager's d1 read only auto-sns-agent's skills, so the Prime skills another job fixed could drift again unseen.
   const { repo, piRepo, content, done } = world();

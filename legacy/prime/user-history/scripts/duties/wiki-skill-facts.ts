@@ -42,6 +42,8 @@ const HISTORY = /\b(?:removed|removal|deleted|no longer|renamed|retired|replaced
 const NAME = /^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/;
 const SCRIPT_FILE = /\.(?:mjs|cjs|js|ts|py|sh)$/;
 const PNPM = /\bpnpm\s+(?:(?:-C|--dir|--filter|-F)\s+(\S+)\s+)?(?:run\s+)?([a-z][\w:.-]*)/g;
+/** A link target that is a wiki page: a `wiki:` link or a URL whose path starts at `/wiki/`, as `https://<host>:5184/wiki/apps/convex/`. */
+const WIKI_TARGET = String.raw`(?:wiki:|(?:https?:\/\/[^\/)\s"]+)?\/wiki\/)`;
 
 export type DocKind = "page" | "skill" | "rule" | "prime_skill";
 export type Fact =
@@ -89,7 +91,8 @@ const unescape = (text: string): string => text.replace(/&lt;/g, "<").replace(/&
 
 /** A page's HTML as markdown-like text: `<pre>` blocks become fences, `<code>` spans backtick spans, every other tag goes. */
 export function pageText(html: string): string {
-  const fenced = html.replace(/<pre[^>]*>([\s\S]*?)<\/pre>/g, (_, body: string) => `\n\`\`\`\n${unescape(body.replace(/<[^>]+>/g, ""))}\n\`\`\`\n`);
+  const linked = html.replace(new RegExp(String.raw`<a\b[^>]*\bhref="(${WIKI_TARGET}[^"]*)"[^>]*>([\s\S]*?)<\/a>`, "g"), (_, href: string, body: string) => `[${body}](${href})`);
+  const fenced = linked.replace(/<pre[^>]*>([\s\S]*?)<\/pre>/g, (_, body: string) => `\n\`\`\`\n${unescape(body.replace(/<[^>]+>/g, ""))}\n\`\`\`\n`);
   const coded = fenced.replace(/<code[^>]*>([\s\S]*?)<\/code>/g, (_, body: string) => `\`${unescape(body.replace(/<[^>]+>/g, "")).replace(/[`\n]/g, " ")}\``);
   return coded.split("```").map((part, index) => index % 2 ? part : unescape(part.replace(/<[^>]+>/g, " "))).join("```");
 }
@@ -104,10 +107,18 @@ export function codeSpans(text: string, history = false, told: RegExp = HISTORY)
     if (index % 2) { if (!history) spans.push(...part.split("\n").filter(line => line.trim())); return; }
     for (const sentence of part.split(/(?<=[.!?])\s+|\n\s*\n/)) {
       if (told.test(sentence.replace(/`[^`\n]*`/g, "")) !== history) continue;
-      for (const match of sentence.matchAll(/`([^`\n]+)`/g)) spans.push(match[1]!);
+      for (const match of sentence.matchAll(/`([^`\n]+)`/g)) if (!namesWikiPage(sentence, match.index, match.index + match[0].length)) spans.push(match[1]!);
     }
   });
   return spans;
+}
+
+/**
+ * True when the backtick span at `start`..`end` of `sentence` names a wiki page: it follows the word "wiki" or sits in the text of a link to a
+ * wiki page. On 2026-11-27 d1 counted root CLAUDE.md for "wiki `apps/convex` hub" after a8df0b4a0a moved the repo's apps/convex folder away.
+ */
+function namesWikiPage(sentence: string, start: number, end: number): boolean {
+  return /\bwiki\s+$/i.test(sentence.slice(0, start)) || new RegExp(String.raw`^[^\]\n]*\]\(${WIKI_TARGET}`).test(sentence.slice(end));
 }
 
 /** A span token as a concrete repo path, with its `::name` split off; null for a glob, placeholder, URL, flag, wiki page or bare word. */
