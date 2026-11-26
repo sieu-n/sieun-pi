@@ -534,6 +534,23 @@ def iso(epoch):
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(epoch))
 
 
+def booked_wait(state, key, provider, accounts):
+    """Raise the tree's booked slot wait when its caller sleeps on exit 75. With the pool flock busy the hook cannot
+    decide, and a tree that waits for an account keeps its booked slot until a locked hold moves it, so this is the
+    answer the locked path would most likely give. Raised as lock_wait_timeout instead, the wait was an error: from
+    11-25 22:35Z to 11-26 03:22Z gpt guy's pi-durable tree 245d5c7b waited for an account on 1 usable Anthropic account
+    of 42, and each of its 19 error entries read lock_wait_timeout, so the turn looked stuck on a lock for 5 hours."""
+    if not waits_on_exit_75(key) or state.get("version") != 2:
+        return
+    tree = sched.tree_for(state, key, provider)
+    if not tree.wait:
+        return
+    account_id, slot_at, _ = tree.wait
+    label = next((a.label for a in accounts if a.id == account_id), account_id or "no account yet")
+    base.log("vend_lock_busy_wait", provider=provider, account=label, slot_at=iso(slot_at), session=key.key)
+    raise base.SlotWait(f"pi-pool: this session waits for a slot on {label} at {iso(slot_at)}", slot_at)
+
+
 def last_vend_account(state, key, provider, accounts, now):
     """The last vended account when it still serves and matches manual selection.
     An Off account serves only an explicit manual selection."""
@@ -1002,6 +1019,7 @@ def vend(provider):
         note_model(unlocked, key, provider, os.environ.get(base.MODEL_ENV), cfg, time.time())
         account = last_vend_account(unlocked, key, provider, accounts, time.time())
         if account is None:
+            booked_wait(unlocked, key, provider, accounts)
             raise
         token, source = credential_for(account, cfg)
         base.log("vend_lock_busy", provider=provider, account=account.label, source=source, session=key.key)

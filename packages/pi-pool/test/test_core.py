@@ -505,6 +505,18 @@ class BusyPoolLock(unittest.TestCase):
         with self.assertRaises(TimeoutError):
             self.run_vend(self.vended_state(), busy_calls={1}, key=None)
 
+    def test_a_busy_lock_gives_a_waiting_durable_tree_its_booked_slot_wait(self):
+        durable = registry.SessionKey("pi-durable:245d5c7b", "pi-durable:245d5c7b", "35abe469e594")
+        state = self.vended_state()
+        state["sessions"][durable.key] = state["sessions"].pop(KEY.key)
+        state["sessions"][durable.key]["wait"] = {"anthropic": {"account": "b", "slot_at": NOW + 600, "since": NOW - 3600}}
+        with self.assertRaises(base.SlotWait) as raised:
+            self.run_vend(state, busy_calls={1}, key=durable)
+        self.assertEqual(raised.exception.slot_at, NOW + 600)
+        state["sessions"][KEY.key] = state["sessions"][durable.key]
+        with self.assertRaises(TimeoutError):
+            self.run_vend(state, busy_calls={1}, key=KEY)
+
     def test_an_expired_limit_does_not_stop_the_busy_lock_path(self):
         out, _, _ = self.run_vend(self.vended_state(limits={"b": {"until": NOW - 1, "at": NOW - 600}}), busy_calls={1})
         self.assertEqual(out, "fixture-token")
