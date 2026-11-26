@@ -225,6 +225,23 @@ export function liveLintRows(rows, pages) {
 	return rows.filter((r) => !settled.has(r.path));
 }
 
+/**
+ * One row per linted page with its error count by rule. prose-lint returns a file it was handed by name (the home page, `index.html`) as
+ * that relative name, so the path is read against the lint root `root`, never the caller's cwd: on 2026-11-27 a run from the sieun-pi
+ * checkout listed the home page as `../../../../../home/sieun/src/sieun-pi/index.html`, a page no writer can open.
+ */
+export function lintPageRows(results, root) {
+	return results
+		.filter((r) => !r.skipped)
+		.map((r) => {
+			const errs = r.findings.filter((f) => f.severity === 'error');
+			const byRule = {};
+			for (const f of errs) byRule[f.rule] = (byRule[f.rule] ?? 0) + 1;
+			const rel = path.relative(root, path.resolve(root, r.file));
+			return { path: rel.split(path.sep).join('/'), errors: errs.length, byRule };
+		});
+}
+
 /** Worst first: pages people read most, then the most errors. */
 export function rankLintPages(rows, views30) {
 	return [...rows].sort((a, b) => (views30.get(b.path) ?? 0) - (views30.get(a.path) ?? 0) || b.errors - a.errors);
@@ -988,17 +1005,7 @@ async function measure(args, root, rel) {
 	let lintRows = [];
 	let lintErrors = null;
 	if (prose) {
-		lintRows = liveLintRows(
-			prose.results
-				.filter((r) => !r.skipped)
-				.map((r) => {
-					const errs = r.findings.filter((f) => f.severity === 'error');
-					const byRule = {};
-					for (const f of errs) byRule[f.rule] = (byRule[f.rule] ?? 0) + 1;
-					return { path: path.relative(committed, r.file).split(path.sep).join('/'), errors: errs.length, byRule };
-				}),
-			curated,
-		);
+		lintRows = liveLintRows(lintPageRows(prose.results, committed), curated);
 		lintErrors = lintRows.reduce((sum, r) => sum + r.errors, 0);
 		lintRows = rankLintPages(
 			lintRows.filter((r) => r.errors > 0),
