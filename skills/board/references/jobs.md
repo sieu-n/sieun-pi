@@ -47,7 +47,7 @@ Everything you send another agent (briefs, relays, answers) is in English. After
 2. To change or finish a live job, steer it with a follow-up message, and never start a "-2" or "finish" copy of it.
 3. `[job] <name> ended at <time> with no report` or `[job] <name> stopped ... and sent no report` means the job stopped without a report. Read its last messages with `await agent_observe.recent_messages(name)` and decide what to do.
 4. `[job] <name> is waiting for you since <time>` means the job waits on you or on something you can get it, such as a slot, a go or an answer. Answer it or get it, and do not replace the job.
-5. Never start a second job on a step whose job may still run. `rlm.list_subagents()` can say completed for a job that a reply woke again, so check its activity first.
+5. Never start a second job on a step whose job may still run. `rlm.list_subagents()` can say completed for a job that a reply woke again, so check its activity first. It returns `RLMSubagent` dataclasses, so read their fields as attributes, such as `s.session_name` for the job name, `s.status`, `s.rlm_child_id` and `s.answer_preview`, because `s.get(...)` and `s.name` raise AttributeError.
 6. Replace a stuck owner whose last turn ended in an error with a job.
 7. When a job reports, add the decision or next step to your message if one is needed, because the report itself stays folded in the feed.
 8. After you read a job's final report and record it on the board, delete the job with `await rlm.delete_subagent(name)` unless a step keeps it waiting on purpose, because finished jobs hold memory.
