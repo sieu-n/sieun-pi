@@ -329,7 +329,10 @@ export async function decryptFile(file, target, key) {
   await pipeline(createReadStream(file, { start: head.length, end: size - 17 }), decipher, createWriteStream(target));
 }
 
-class B2 {
+// measured: vendor, b2sdk's MAX_UPLOAD_ATTEMPTS is 5 tries of one file, each on a new upload URL.
+const B2_UPLOAD_ATTEMPTS = 5;
+
+export class B2 {
   constructor(env) {
     for (const name of ["B2_KEY_ID", "B2_APP_KEY"]) if (!env[name]) throw new Error(`${name} is missing from ${DEFAULTS.envFile}.`);
     this.env = env;
@@ -365,20 +368,38 @@ class B2 {
     } while (startFileName);
     return out;
   }
+  /**
+   * B2 answers an upload 503 "no tomes available" when the pod behind an upload URL is full, and its upload docs say to get a new
+   * upload URL and send again on a 408, a 5xx or a dropped connection, and to wait out a 429. On 11-27 at 04:30 KST one such 503 on
+   * the manifest failed m02-chat-backup after every other part had gone up.
+   */
   async upload(file, name) {
-    const { uploadUrl, authorizationToken } = await this.call("b2_get_upload_url", { bucketId: this.bucketId });
     const sha1 = await hashFile(file, "sha1");
-    // Streamed, so a 100 MB part never sits in memory: the first run read each part whole and peaked at 900 MB.
-    const res = await fetch(uploadUrl, {
-      method: "POST",
-      headers: {
-        authorization: authorizationToken, "content-type": "application/octet-stream", "x-bz-file-name": encodeURIComponent(name),
-        "content-length": String(statSync(file).size), "x-bz-content-sha1": sha1,
-      },
-      body: Readable.toWeb(createReadStream(file)),
-      duplex: "half",
-    });
-    if (!res.ok) throw new Error(`b2_upload_file ${name} answered ${res.status}: ${await res.text()}`);
+    let last = "";
+    for (let attempt = 1; attempt <= B2_UPLOAD_ATTEMPTS; attempt++) {
+      const { uploadUrl, authorizationToken } = await this.call("b2_get_upload_url", { bucketId: this.bucketId });
+      let res;
+      try {
+        // Streamed, so a 100 MB part never sits in memory: the first run read each part whole and peaked at 900 MB.
+        res = await fetch(uploadUrl, {
+          method: "POST",
+          headers: {
+            authorization: authorizationToken, "content-type": "application/octet-stream", "x-bz-file-name": encodeURIComponent(name),
+            "content-length": String(statSync(file).size), "x-bz-content-sha1": sha1,
+          },
+          body: Readable.toWeb(createReadStream(file)),
+          duplex: "half",
+        });
+      } catch (error) {
+        last = `failed to connect: ${error.message}`;
+        continue;
+      }
+      if (res.ok) return;
+      last = `answered ${res.status}: ${await res.text()}`;
+      if (res.status === 429) await new Promise(ok => setTimeout(ok, Number(res.headers.get("retry-after") ?? 0) * 1000));
+      else if (res.status !== 408 && res.status < 500) break;
+    }
+    throw new Error(`b2_upload_file ${name} ${last}`);
   }
   async download(name, file) {
     const res = await fetch(`${this.downloadUrl}/file/${this.bucketName}/${name.split("/").map(encodeURIComponent).join("/")}`, { headers: { authorization: this.token } });

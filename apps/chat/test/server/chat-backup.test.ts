@@ -13,7 +13,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 // @ts-expect-error The script is plain ESM with no types.
-import { checkBackups, completeBackups, decryptFile, encryptTo, restoreBackup, runBackup } from "../../scripts/chat-backup.mjs";
+import { B2, checkBackups, completeBackups, decryptFile, encryptTo, restoreBackup, runBackup } from "../../scripts/chat-backup.mjs";
 
 const quiet = () => undefined;
 const at = (minute: number) => new Date(Date.UTC(2026, 10, 23, 19, 30 + minute));
@@ -147,6 +147,32 @@ test("a B2 file decrypts back to the bytes it was made from, and a changed byte 
     writeFileSync(join(root, "bad.enc"), bytes);
     await assert.rejects(decryptFile(join(root, "bad.enc"), join(root, "bad"), key));
   } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a B2 upload that answers 503 no tomes available goes again on a new upload URL (m02-chat-backup, 11-27)", async () => {
+  const root = mkdtempSync(join(tmpdir(), "chat-backup-"));
+  const real = globalThis.fetch;
+  try {
+    const file = join(root, "manifest.json.enc");
+    writeFileSync(file, "bytes");
+    const urls: string[] = [];
+    const sent: string[] = [];
+    globalThis.fetch = (async (url: string, init: RequestInit) => {
+      if (url.endsWith("/b2_get_upload_url")) {
+        urls.push(`https://pod-${urls.length}.example/upload`);
+        return Response.json({ uploadUrl: urls.at(-1), authorizationToken: "t" });
+      }
+      sent.push(url);
+      await new Response(init.body).arrayBuffer();
+      return sent.length === 1 ? Response.json({ code: "service_unavailable", message: "no tomes available" }, { status: 503 }) : Response.json({});
+    }) as typeof fetch;
+    const b2 = Object.assign(new B2({ B2_KEY_ID: "k", B2_APP_KEY: "a" }), { apiUrl: "https://api.example", token: "t", bucketId: "b" });
+    await b2.upload(file, "chat/x/manifest.json.enc");
+    assert.deepEqual(sent, ["https://pod-0.example/upload", "https://pod-1.example/upload"]);
+  } finally {
+    globalThis.fetch = real;
     rmSync(root, { recursive: true, force: true });
   }
 });
