@@ -244,6 +244,8 @@ type RunStatus = "working" | "idle" | "sleeping" | "failed";
  * A thread that is working or sleeping is not over either. A pi-pool slot wait parks the run as sleeping, which reads as not live, and ends
  * with a model call that fails with "the account slot is open" and is sent again a few seconds later. On 11-22 the vent session was graded
  * on that error at 877 s and its answer landed at 898 s.
+ * A turn with no answer whose error comes from pi-pool is not over in any status: pi-host sends that model call again. On 11-26 at 07:31 KST
+ * 8 sessions read "pi-pool: the token hook gave no token (lock_wait_timeout)" at 6 s outside a sleep and were graded 0 of 22 wrong.
  */
 export function finishedReply(items: readonly TurnItem[], status?: RunStatus): { reply: string; cost?: number; error?: string } | null {
   if (status === "working" || status === "sleeping") return null;
@@ -251,6 +253,7 @@ export function finishedReply(items: readonly TurnItem[], status?: RunStatus): {
   if (!turn || turn.live !== false) return null;
   const reply = [turn.text ?? "", ...(turn.sent ?? []).filter(post => post !== turn.text)].join("\n");
   if (!reply.trim() && !turn.stop && !turn.error) return null;
+  if (!reply.trim() && turn.error?.startsWith(POOL_ERROR)) return null;
   const failed = reply.trim() ? undefined : turn.error ?? `turn ${turn.stop}`;
   return { reply, ...(turn.usage?.cost !== undefined ? { cost: turn.usage.cost } : {}), ...(failed ? { error: failed } : {}) };
 }
@@ -264,6 +267,8 @@ export function emptyTurn(items: readonly TurnItem[], status?: RunStatus): boole
 
 /** How the error of a recall whose wait ran out starts. */
 const NO_ANSWER = "no answer within";
+/** How the error of a model call that pi-pool gave no account starts. */
+const POOL_ERROR = "pi-pool:";
 
 /** One agent's recall as a run's detail file stores it under `agents[].recall`. */
 export interface RecallRow { error?: string; unanswered?: boolean; graded?: { right: boolean }[] }

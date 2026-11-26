@@ -57,6 +57,13 @@ test("a turn whose run sleeps on a pool slot or works is not over, even on the s
   assert.deepEqual(finishedReply([ask, { kind: "turn", live: false, text: "1. No." }], "idle"), { reply: "1. No." });
 });
 
+test("a turn with no answer and a pi-pool error is not over in any status, since pi-host sends the call again", () => {
+  const noToken = { kind: "turn", live: false, text: "", stop: "error", error: "pi-pool: the token hook gave no token (lock_wait_timeout); the service is temporarily unavailable and the retry runs the hook again." };
+  assert.equal(finishedReply([ask, noToken]), null);
+  assert.equal(finishedReply([ask, noToken], "idle"), null);
+  assert.equal(finishedReply([ask, noToken], "failed"), null);
+});
+
 test("a turn that answered before it stopped keeps its answer", () => {
   assert.deepEqual(finishedReply([ask, { kind: "turn", live: false, text: "1. No.", stop: "aborted" }]), { reply: "1. No." });
 });
