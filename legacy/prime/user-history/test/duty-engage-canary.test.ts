@@ -61,7 +61,7 @@ test("a daily run sees the worst canary hour of its day, and a canary holding ev
   assert.equal(output.metrics.fleet_ig_killed_pct, 0);
   const oversize = (output.flagged ?? []).find(flag => flag.kind === "canary_oversize");
   assert.equal(oversize?.handOff, true);
-  assert.match(oversize!.excerpt, /^the canary holds 24 of the 24 prod accounts that read on 2026-11-18 UTC, and ~10% is 2/);
+  assert.match(oversize!.excerpt, /^the canary holds 24 of the 24 prod accounts that read on 2026-11-18 UTC, and the roster keeper may hold 8: ~10% is 3, plus 2 slack and 3 members/);
 });
 
 test("the staging stall counts the collab reads staging's crawler counts overdue, not the rows paid_only refuses", () => {
@@ -90,4 +90,19 @@ test("a canary member the roster keeper drops between its last page and its deat
   assert.equal(kept.metrics.canary_ig_deaths_1h, 1);
   assert.match(kept.flagged!.find(flag => flag.kind === "death")!.excerpt, /cause instagram, canary,/);
   assert.equal(run(null).metrics.fleet_ig_killed_pct, 2);
+});
+
+test("a canary the roster keeper sized by its own rule is not oversize, counting members that died that day up to the stop", () => {
+  // 11-25: prod's roster held 9 of the 57 accounts that read, 245 and 270 among them dead that day; d1 had flagged it against round(5.7) = 6.
+  const now = Date.parse("2026-11-26T09:00:00Z");
+  const roster = [15, 18, 227, 245, 255, 264, 270, 273, 279];
+  const readers = [...roster, ...Array.from({ length: 48 }, (_, i) => 700 + i)];
+  const accounts: Account[] = readers.map(id => ({ id, status: [245, 270].includes(id) ? "challenged" : "active" }));
+  const deaths = [245, 270].map(accountId => ({ accountId, at: Date.parse("2026-11-25T14:09:00Z"), status: "challenged", code: "challenged", readBefore: true, pages24h: 600, transition: true }));
+  const run = (members: number[]) => report({ now, accounts, deaths, errors: [], days: readers.map(accountId => ({ day: "2026-11-25", accountId, pages: 300 })),
+    config: { "engage.canary_accounts": members.join(","), "engage.canary_started_at": "2026-11-20T00:17:33Z" } } satisfies EngageData, []);
+  assert.equal(run(roster).flagged?.some(flag => flag.kind === "canary_oversize"), false);
+  const over = run([...roster, 700, 701]).flagged!.find(flag => flag.kind === "canary_oversize")!;
+  assert.match(over.excerpt, /^the canary holds 11 of the 57 prod accounts that read on 2026-11-25 UTC, and the roster keeper may hold 10: ~10% is 6, plus 2 slack and 2 members/);
+  assert.match(over.excerpt, /a hand write of engage.canary_accounts is d3 fault F15/);
 });

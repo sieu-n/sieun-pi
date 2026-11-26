@@ -67,8 +67,13 @@ const DUTY_FILE = join(dirname(fileURLToPath(import.meta.url)), "engage-reads.du
  */
 
 export const PAGES_A_DAY_GOAL = 100_000;
-/** The owner's "~10%" (10-12 13:33Z): the canary is this share of active prod accounts, rounded to the nearest whole account. */
+/** The owner's "~10%" (10-12 13:33Z): the canary is this share of active prod accounts, rounded up as the crawler's roster keeper rounds it
+ * (auto-sns-agent apps/crawler-v3 canary_roster.want, engage.canary_roster_pct default CANARY_ROSTER_PCT 10 on every tier since 11-26). */
 export const CANARY_SHARE = 0.1;
+/** The roster keeper's members past its share: CANARY_SPARE_MEMBERS, and one more it never trims for (canary_roster.refill, 090ea90cf2). */
+export const CANARY_ROSTER_SLACK = 2;
+/** The roster keeper keeps a member that died until the stop rule stops the canary at engage.canary_stop_deaths, its default 3 (b60d50913a). */
+export const CANARY_STOP_DEATHS = 3;
 /** The owner's "over at least 2 full UTC days" rule for a proven rate (10-14). */
 export const PROOF_DAYS = 2;
 /**
@@ -245,8 +250,8 @@ export function causeOf(death: Pick<Death, "code" | "readBefore" | "pages24h">):
   return death.pages24h > 0 ? cause : "found_idle";
 }
 
-/** The canary size the owner's ~10% asks for: at least one account once any is active. */
-export const canaryWant = (active: number): number => active ? Math.max(1, Math.round(CANARY_SHARE * active)) : 0;
+/** The canary size the owner's ~10% asks for, rounded up as the crawler's roster keeper rounds it: at least one account once any is active. */
+export const canaryWant = (active: number): number => Math.ceil(CANARY_SHARE * active);
 
 const nextDay = (day: string): string => new Date(Date.parse(`${day}T00:00:00Z`) + DAY).toISOString().slice(0, 10);
 
@@ -464,17 +469,23 @@ export function stagingStallFlag(data: EngageData): FlaggedSlice | null {
 }
 
 /**
- * The canary_oversize flag when the canary holds more than its ~10% of the prod accounts that read on the newest full day, a handOff so a met run
- * acts on it; null otherwise. fleet_ig_killed_pct leaves the canary out, so an oversize canary hides the fleet's deaths: on 11-18 every one of the
- * accounts that read was on engage.canary_accounts, Instagram suspended 23 of them from 23:13Z to 00:02Z, and the 11-19 run read 0%.
+ * The canary_oversize flag when the canary holds more of the prod accounts that read on the newest full day than the crawler's roster keeper may
+ * hold: its ~10% share rounded up plus CANARY_ROSTER_SLACK, plus the members that died that day up to CANARY_STOP_DEATHS, which it keeps until the
+ * stop. A handOff so a met run acts on it, by a change to the roster keeper and never a hand write of engage.canary_accounts (d3 fault F15); null
+ * otherwise. fleet_ig_killed_pct leaves the canary out, so an oversize canary hides the fleet's deaths: on 11-18 every one of the accounts that read
+ * was on engage.canary_accounts, Instagram suspended 23 of them from 23:13Z to 00:02Z, and the 11-19 run read 0%. On 11-25 the roster held 9 of 57
+ * readers against round(5.7) = 6 under prod's 12% default, 2 of them members that died that day.
  */
-export function canaryOversizeFlag(roster: ReadonlySet<number>, days: readonly DayPages[], day: string, at: number): FlaggedSlice | null {
+export function canaryOversizeFlag(roster: ReadonlySet<number>, days: readonly DayPages[], deaths: readonly Death[], day: string, at: number): FlaggedSlice | null {
   const readers = new Set(days.filter(row => row.day === day && row.pages > 0).map(row => row.accountId));
-  const inCanary = [...readers].filter(id => roster.has(id)).length;
-  const want = canaryWant(readers.size);
-  if (inCanary <= want) return null;
-  return { at, kind: "canary_oversize", handOff: true, sig: day, excerpt: (`the canary holds ${inCanary} of the ${readers.size} prod accounts that read on ${day} UTC, `
-    + `and ~10% is ${want}, so fleet_ig_killed_pct leaves out ${inCanary - want} accounts that belong to the fleet. Cut engage.canary_accounts to ${want} of them.`).slice(0, 600) };
+  const inCanary = [...readers].filter(id => roster.has(id));
+  const died = new Set(deaths.filter(death => new Date(death.at).toISOString().slice(0, 10) === day && inCanary.includes(death.accountId)).map(death => death.accountId)).size;
+  const share = canaryWant(readers.size);
+  const allowed = share + CANARY_ROSTER_SLACK + Math.min(died, CANARY_STOP_DEATHS);
+  if (inCanary.length <= allowed) return null;
+  return { at, kind: "canary_oversize", handOff: true, sig: day, excerpt: (`the canary holds ${inCanary.length} of the ${readers.size} prod accounts that read on ${day} UTC, `
+    + `and the roster keeper may hold ${allowed}: ~10% is ${share}, plus ${CANARY_ROSTER_SLACK} slack and ${Math.min(died, CANARY_STOP_DEATHS)} members that died that day. `
+    + `fleet_ig_killed_pct leaves out ${inCanary.length - allowed} accounts that belong to the fleet. Fix the roster keeper (canary_roster.py) or engage.canary_roster_pct's default; a hand write of engage.canary_accounts is d3 fault F15.`).slice(0, 600) };
 }
 
 /** The precheck output from measured data. */
@@ -513,7 +524,7 @@ export function report(data: EngageData, dutyMetrics: readonly DutyMetric[]): Pr
       : `canary from engage.canary_accounts, started ${utc(startAt)}: ${have} of ${active.length} active prod accounts (${roster.ids.size} in it with the dead), ~10% is ${want}; ${pagesText}; `
         + `Instagram killed ${killed(canaryDay)} of them in 24 h, at most ${metrics.canary_ig_deaths_1h} in any 60 minutes, and ${sinceStart} since the start${stop ? ` (the canary stops at ${stop})` : ""}`)
       + (metrics.canary_accounts_short ? `: add ${metrics.canary_accounts_short} active accounts through ${CANARY_SHARE_KEY}` : "") });
-    const oversize = data.days && lastDay ? canaryOversizeFlag(roster.ids, data.days, lastDay, at) : null;
+    const oversize = data.days && lastDay ? canaryOversizeFlag(roster.ids, data.days, data.deaths, lastDay, at) : null;
     if (oversize) flagged.push(oversize);
     const reasonOf = (id: number): string => { const reason = data.accounts!.find(account => account.id === id)?.reason; return reason ? `; status_reason: ${reason}` : ""; };
     for (const death of day) flagged.push({ at: death.at, kind: "death",
