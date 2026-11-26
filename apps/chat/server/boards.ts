@@ -350,7 +350,10 @@ export class Boards {
   async apply(id: string, raw: unknown, actor: "owner" | "agent" = "owner", base?: unknown, split?: SearchSplit): Promise<BoardWrite & { summaries: string[] }> {
     const chat = this.chatId(id);
     const thread = this.threadOf(chat);
-    const ops: BoardOp[] = parseBoardOps(raw);
+    // A step a job thread adds with no owner is that job's: on 11-26 and 11-27 gpt guy's Area review duty jobs added goals p11 and p17 with no
+    // job, and d9 counted them stuck while their child jobs worked, until gpt guy named the duty threads on them by hand.
+    const job = actor === "agent" ? this.jobThread(id, chat) : undefined;
+    const ops: BoardOp[] = parseBoardOps(raw).map(op => job && op.op === "plan_add" && !op.job?.trim() && !op.sessionId ? { ...op, job: job.name, sessionId: job.id } : op);
     const now = new Date().toISOString();
     let mark = performance.now();
     const read = await this.board(chat);
@@ -390,6 +393,13 @@ export class Boards {
     if (split) split.journal = performance.now() - mark;
     const step = before && typeof base === "string" && base === boardKey(before) ? boardStep(before, board) : null;
     return step ? { delta: boardDelta(base as string, board, [step]), awaitingGo: awaitingGo(board), summaries } : { board, awaitingGo: awaitingGo(board), summaries };
+  }
+
+  /** The root job thread aliased to the agent whose board `chat` is, when `id` names one: not the work thread, a comm thread or the agent. */
+  private jobThread(id: string, chat: string): { id: string; name: string } | undefined {
+    const record = this.agents.record(chat);
+    if (!record || !this.agents.jobThreads(record).includes(id)) return undefined;
+    return { id, name: this.threads.thread(id)?.name || id };
   }
 
   /**
