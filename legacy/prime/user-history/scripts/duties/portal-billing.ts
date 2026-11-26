@@ -1,7 +1,7 @@
 import { realpathSync } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -236,7 +236,11 @@ export function report(data: BillingData, dutyMetrics: readonly DutyMetric[]): P
   const replaced = settle(dutyMetrics, metrics, unmeasured);
   if (replaced.length) flagged.push(unmeasuredFlag(replaced, at));
   for (const key of unmeasured) delete lastEventAt[key];
-  return { metrics, flagged, ...Object.keys(lastEventAt).length ? { lastEventAt } : {} };
+  const n: Record<string, number> = {};
+  if ("billing_mismatches_24h" in metrics) n.billing_mismatches_24h = data.requests?.length ?? 0;
+  if ("uncounted_calls_24h" in metrics) n.uncounted_calls_24h = data.requests?.length ?? data.uncounted?.length ?? 0;
+  if ("empty_charged_probe" in metrics) n.empty_charged_probe = judged.length;
+  return { metrics, flagged, n, ...Object.keys(lastEventAt).length ? { lastEventAt } : {} };
 }
 
 // ---- I/O ----
@@ -304,13 +308,27 @@ async function prodSha(): Promise<string> {
   return commit;
 }
 
+/** `source` with each `@convex/<path>` import pointed at a temp copy of that convex file at `sha` (operations.ts reads its prices from convex/apiPortal/operationPrices.ts since f5adac8742). */
+export async function inlineConvexImports(source: string, sha: string, dir: string, signal: AbortSignal): Promise<string> {
+  let out = source;
+  for (const spec of new Set([...source.matchAll(/from\s+['"](@convex\/[^'"]+)['"]/g)].map(match => match[1]!))) {
+    const rel = spec.slice("@convex/".length);
+    const path = /\.(ts|json)$/.test(rel) ? rel : `${rel}.ts`;
+    const copy = join(dir, "convex", path.replaceAll("/", "__"));
+    await writeFile(copy, await inlineConvexImports(await sh(`git show ${sha}:convex/${path}`, REPO, signal), sha, dir, signal));
+    out = out.replaceAll(spec, pathToFileURL(copy).href);
+  }
+  return out;
+}
+
 /** API_OPERATIONS from operations.ts at `sha`, imported from a temp copy. */
 async function catalogAt(sha: string, signal: AbortSignal): Promise<Operation[]> {
   const source = await sh(`git cat-file -e ${sha}^{commit} 2>/dev/null || git fetch --quiet origin main; git show ${sha}:${OPERATIONS}`, REPO, signal);
   const dir = await mkdtemp(join(tmpdir(), "portal-billing-"));
   try {
     const file = join(dir, "operations.ts");
-    await writeFile(file, source);
+    await mkdir(join(dir, "convex"));
+    await writeFile(file, await inlineConvexImports(source, sha, dir, signal));
     const mod = await import(pathToFileURL(file).href) as { API_OPERATIONS?: Record<string, Operation> };
     const operations = Object.values(mod.API_OPERATIONS ?? {});
     if (!operations.length) throw new Error(`${OPERATIONS} at ${sha.slice(0, 10)} has no API_OPERATIONS`);
