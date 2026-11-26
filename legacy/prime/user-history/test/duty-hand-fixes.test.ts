@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { type DutyRunRecord, judge, parseDutyInput } from "../src/shared/chat-duties.ts";
 import { metricStreaks } from "../src/shared/duty-streak.ts";
-import { type AuditRow, type Deploy, type Fault, type HandData, type RefState, auditSql, classifyConfig, classifyEvent, designOnProd, gitDeclaredCaps, gitReleaseHolds, markDeclared, parseControlDefaults, groupAudit, handExecs, experimentExecs, filedAfter, isSessionProcess, nextState, startedByTest, hostWriters, oneOffs, parseBox, parseRegistry, releaseAt, report, WRITES, HOST_WRITES } from "../scripts/duties/hand-fixes.ts";
+import { type AuditRow, type Deploy, type Fault, type HandData, type RefState, auditSql, classifyConfig, classifyEvent, groupEvents, designOnProd, gitDeclaredCaps, gitReleaseHolds, markDeclared, parseControlDefaults, groupAudit, handExecs, experimentExecs, filedAfter, isSessionProcess, nextState, startedByTest, hostWriters, oneOffs, parseBox, parseRegistry, releaseAt, report, WRITES, HOST_WRITES } from "../scripts/duties/hand-fixes.ts";
 
 const DIR = join(import.meta.dirname, "..", "scripts", "duties");
 const AT = Date.parse("2026-10-16T05:08:27Z");
@@ -654,6 +654,20 @@ test("an account the world-move or intake tool sets active is the product's own,
   const hand = classifyEvent({ accountId: 16, at, outcome: "active", errorCode: "", actor: "operator:engage-frozen-thaw" }, reg);
   assert.equal(hand?.kind === "fault" && hand.fault.id, "F5");
   assert.equal(classifyEvent({ accountId: 16, at, outcome: "parked", errorCode: "", actor: "world_move" }, reg), null);
+});
+
+test("status events one transaction wrote count as one hand fix, and a second writer in the same minute counts again", async () => {
+  // At 23:34Z on 11-25 one psql per tier retired 24 prod and 6 staging accounts (actor box-route-retire), and d3 read 30 F5 repeats.
+  const reg = await registry();
+  const at = Date.parse("2026-11-25T23:34:05Z");
+  const detail = "c229 p88: dead since 11-19, unbound from its retired 64.34.205.x box route";
+  const retired = [101, 102, 103].map(accountId => ({ accountId, at, outcome: "disabled", errorCode: "", actor: "box-route-retire", detail }));
+  const thaw = { accountId: 16, at: at + 20_000, outcome: "active", errorCode: "", actor: "operator:engage-frozen-thaw", detail: "jar checks out" };
+  const fixes = groupEvents("prod", [...retired, thaw], reg);
+  assert.deepEqual(fixes.map(({ fix, verdict }) => [fix.what, verdict.kind === "fault" && verdict.fault.id]), [["accounts 101,102,103", "F5"], ["account 16", "F5"]]);
+  assert.equal(fixes[0]!.fix.text, `set disabled: ${detail}`);
+  const migration = retired.map(event => ({ ...event, actor: "alembic:0355_retire_dead_routes" }));
+  assert.deepEqual(groupEvents("prod", migration, reg).map(({ verdict }) => verdict.kind), ["automatic"]);
 });
 
 test("an import the crawler's relogin INTAKE lane sets active is the product's own", async () => {

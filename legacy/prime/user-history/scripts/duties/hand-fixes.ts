@@ -70,8 +70,9 @@ export interface FaultMatch {
  */
 export interface Fault { id: string; title: string; designs: string[]; owner: string; match: FaultMatch; done_at?: string }
 /** config_sources names a supervised writer by config_audit.source, for an actor such as metal that also writes by hand. */
+/** engage_actor_prefixes names engage writers by the start of the actor, such as `alembic:` for a data migration's `alembic:<revision>`. */
 export interface Registry {
-  automatic_writers: { config_actors: string[]; config_sources?: string[]; engage_actors?: string[] };
+  automatic_writers: { config_actors: string[]; config_sources?: string[]; engage_actors?: string[]; engage_actor_prefixes?: string[] };
   exempt: { config_reason_regex: string; config_key_regex?: string; declared_cap_regex?: string; box_exec_regex?: string };
   faults: Fault[];
 }
@@ -83,7 +84,8 @@ export type World = "prod" | "staging";
  * default committed in crawler-v3 settings at the write (declaredCaps), so the write only applies a committed lane cap.
  */
 export interface AuditRow { id: number; ts: number; actor: string; key: string; reason: string; source: string; cleared?: boolean; value?: string; declared?: boolean }
-export interface StatusEvent { accountId: number; at: number; outcome: string; errorCode: string; actor: string }
+/** `detail` is the reason the writer's status context named (ig_engage_account_events.detail). */
+export interface StatusEvent { accountId: number; at: number; outcome: string; errorCode: string; actor: string; detail: string }
 export interface BoardStep { id: string; status: string; job?: string }
 /** What a design ref resolves to: a board step's status, or whether a branch or commit exists. */
 export type RefState = { kind: "step"; status: string | null } | { kind: "git"; exists: boolean };
@@ -113,7 +115,7 @@ export interface Deploy { at: number; release: string }
 /** Whether a fault's `commit:` designs ran on prod at a time: `none` when it names no commit. */
 export type OnProd = "none" | "live" | "not_live" | "unknown";
 
-/** One hand fix: config rows written together (same world, actor and reason in one minute) count once. */
+/** One hand fix: config rows or engage status events written together (same world, actor and reason in one minute) count once. */
 export interface HandFix { source: string; at: number; what: string; text: string }
 export type Verdict = { kind: "automatic" } | { kind: "exempt" } | { kind: "fault"; fault: Fault } | { kind: "undesigned" };
 export type StepState = "none" | "live" | "done";
@@ -147,6 +149,9 @@ export function parseRegistry(value: unknown): Registry {
   const engage = registry.automatic_writers.engage_actors;
   if (engage !== undefined && !(Array.isArray(engage) && engage.every(actor => typeof actor === "string" && actor.trim())))
     throw new Error("automatic_writers.engage_actors is not a list of actor names");
+  const prefixes = registry.automatic_writers.engage_actor_prefixes;
+  if (prefixes !== undefined && !(Array.isArray(prefixes) && prefixes.every(prefix => typeof prefix === "string" && prefix.trim())))
+    throw new Error("automatic_writers.engage_actor_prefixes is not a list of actor prefixes");
   for (const fault of registry.faults) {
     if (!/^F\d+$/.test(fault.id) || !fault.title || !fault.match || !Array.isArray(fault.designs)) throw new Error(`fault ${String(fault.id)}: id F<n>, title, designs and match`);
     if (fault.done_at !== undefined && Number.isNaN(Date.parse(fault.done_at))) throw new Error(`fault ${fault.id}: done_at ${fault.done_at} is not a time`);
@@ -211,12 +216,14 @@ export function classifyConfig(fix: { actor: string; writer?: string; keys: read
 /**
  * A status event is a hand fix only when a fault names its kind and outcome; other status writes (imports, parks) are the product's own, and so
  * is any write whose actor automatic_writers.engage_actors lists: on 11-07 18:44Z engage_world_move.py's `world_move` set 18 accounts moved
- * back to prod active, and d3 read them as F5 repeats.
+ * back to prod active, and d3 read them as F5 repeats. An actor that starts with an engage_actor_prefixes entry is the product's own too, such as
+ * `alembic:<revision>`, a data migration that ships with a deploy.
  */
-export function classifyEvent(event: StatusEvent, registry: Registry): Verdict | null {
+export function classifyEvent(event: Omit<StatusEvent, "detail">, registry: Registry): Verdict | null {
   const fault = registry.faults.find(item => item.match.engage_event?.kind === "status" && item.match.engage_event.outcomes.includes(event.outcome));
   if (!fault) return null;
-  return registry.automatic_writers.engage_actors?.includes(event.actor) ? { kind: "automatic" } : { kind: "fault", fault };
+  const automatic = registry.automatic_writers;
+  return automatic.engage_actors?.includes(event.actor) || automatic.engage_actor_prefixes?.some(prefix => event.actor.startsWith(prefix)) ? { kind: "automatic" } : { kind: "fault", fault };
 }
 
 /**
@@ -460,12 +467,27 @@ export function handFixes(data: HandData, registry: Registry): Fix[] {
   const fixes: Fix[] = [];
   for (const world of WORLDS) {
     for (const fix of groupAudit(world, data.audit[world] ?? [])) fixes.push({ fix, verdict: classifyConfig(fix, registry) });
-    for (const event of data.events[world] ?? []) {
-      const verdict = classifyEvent(event, registry);
-      if (verdict) fixes.push({ verdict, fix: { source: `${world} engage`, at: event.at, what: `account ${event.accountId}`, text: `set ${event.outcome}${event.errorCode ? ` (${event.errorCode})` : ""}` } });
-    }
+    fixes.push(...groupEvents(world, data.events[world] ?? [], registry));
   }
   return fixes;
+}
+
+/**
+ * Fault-named status events grouped into hand fixes: events of one world, actor, detail, outcome and error code in the same minute are one
+ * change, as groupAudit does for config rows. At 23:34Z on 11-25 one psql transaction per tier retired 30 accounts (actor box-route-retire,
+ * prod 24, staging 6), and d3 read 30 F5 repeats.
+ */
+export function groupEvents(world: World, events: readonly StatusEvent[], registry: Registry): Fix[] {
+  const groups = new Map<string, Fix & { accounts: number[] }>();
+  for (const event of events) {
+    const verdict = classifyEvent(event, registry);
+    if (!verdict) continue;
+    const id = `${event.actor}\u0000${event.detail}\u0000${event.outcome}\u0000${event.errorCode}\u0000${Math.floor(event.at / 60_000)}`;
+    const group = groups.get(id);
+    if (group) { group.accounts.push(event.accountId); continue; }
+    groups.set(id, { verdict, accounts: [event.accountId], fix: { source: `${world} engage`, at: event.at, what: "", text: `set ${event.outcome}${event.errorCode ? ` (${event.errorCode})` : ""}${event.detail ? `: ${event.detail}` : ""}` } });
+  }
+  return [...groups.values()].map(({ verdict, fix, accounts }) => ({ verdict, fix: { ...fix, what: `${accounts.length > 1 ? "accounts" : "account"} ${accounts.join(",")}`.slice(0, 160) } }));
 }
 
 const filedFor = (filed: readonly Filed[], fix: { keys?: readonly string[] }): Filed | undefined =>
@@ -583,7 +605,7 @@ export const auditSql = (lastId: number | undefined, now: number): string =>
   `case when coalesce(new_value, '') = '' then 1 else 0 end as cleared from config_audit where ` +
   (lastId ? `(id > ${Math.floor(lastId)} or ` : "(") + `ts >= to_timestamp(${Math.floor((now - DAY) / 1000)})) order by id`;
 export const eventsSql = (after: number): string =>
-  `select account_id, at, outcome, coalesce(error_code, '') as error_code, coalesce(actor, '') as actor from ig_engage_account_events where kind = 'status' and at > to_timestamp(${(after / 1000).toFixed(3)}) order by at`;
+  `select account_id, at, outcome, coalesce(error_code, '') as error_code, coalesce(actor, '') as actor, coalesce(detail, '') as detail from ig_engage_account_events where kind = 'status' and at > to_timestamp(${(after / 1000).toFixed(3)}) order by at`;
 
 /** The one read-only box read: every container's status, compose service and running exec sessions, each exec's command, and the ok prod deploys. */
 /**
@@ -843,7 +865,7 @@ export async function measure(deps: HandDeps): Promise<HandData> {
     id: num(row.id) ?? 0, ts: num(row.ts) ?? 0, actor: String(row.actor ?? ""), key: String(row.key ?? ""), reason: String(row.reason ?? ""), source: String(row.source ?? ""),
     cleared: num(row.cleared) === 1, value: String(row.new_value ?? "") })));
   const events = (world: World) => step(`${world} engage`, async () => (await sqlRows(query!, PG[world], eventsSql(Math.min(deps.state.events?.[world] ?? deps.now, deps.now - DAY)))).map(row => ({
-    accountId: num(row.account_id) ?? 0, at: num(row.at) ?? 0, outcome: String(row.outcome ?? ""), errorCode: String(row.error_code ?? ""), actor: String(row.actor ?? "") })));
+    accountId: num(row.account_id) ?? 0, at: num(row.at) ?? 0, outcome: String(row.outcome ?? ""), errorCode: String(row.error_code ?? ""), actor: String(row.actor ?? ""), detail: String(row.detail ?? "") })));
   const [registry, board, box, mac, prodAudit, stagingAudit, prodEvents, stagingEvents] = await Promise.all([
     step("registry", async () => parseRegistry(await deps.registry())),
     step("board", async () => { const board = await deps.board(CHAT); if (!board) throw new Error(`no board for chat ${CHAT}`); return board; }),
