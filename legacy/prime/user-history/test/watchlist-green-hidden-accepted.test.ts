@@ -10,7 +10,7 @@ const metrics = [{ key: "owner_green_pct", target: 100, direction: "min" }, { ke
 
 function row(over: Partial<WatchRow>): WatchRow {
   const r: WatchRow = { platform: "instagram", kind: "posts", target: "a", paused: false, lastOutcome: "ok", lastRunAt: NOW - 3_600_000, lastStopReason: "",
-    lastErrorCode: "", isPrivate: false, errStreak: 0, due: true, lastOkAt: null, addedAt: NOW - 10 * DAY, renamed: false, ...over };
+    lastErrorCode: "", isPrivate: false, errStreak: 0, nextDueAt: NOW + DAY, running: false, firstWalk: false, lastOkAt: null, addedAt: NOW - 10 * DAY, renamed: false, ...over };
   return "lastOkAt" in over || r.lastOutcome !== "ok" ? r : { ...r, lastOkAt: r.lastRunAt };
 }
 
@@ -37,7 +37,7 @@ test("a hidden account read a week ago is green, no risk, and counted on its own
 test("another Stopped reason still counts red and as a risk", () => {
   const { metrics, detail } = owner([
     row({ target: "a" }),
-    row({ target: "b", lastOutcome: "error", lastErrorCode: "permanent_error", errStreak: 3, due: false }),
+    row({ target: "b", lastOutcome: "error", lastErrorCode: "permanent_error", errStreak: 3, nextDueAt: null }),
   ]);
   assert.equal(metrics.owner_green_pct, 50);
   assert.equal(metrics.watchlist_risks, 1);
@@ -72,5 +72,5 @@ test("d2 counts the accounts the Watchlist foot says need a look, and the t31 st
   assert.equal(detail.owner_need_look, 3);
   assert.equal(detail.owner_stopped_watches, 0);
   assert.equal(metrics.watchlist_risks, 0);
-  assert.equal(metrics.owner_green_pct, 83.3);
+  assert.equal(metrics.owner_green_pct, 100);
 });

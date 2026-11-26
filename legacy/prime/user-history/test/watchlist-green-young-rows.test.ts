@@ -10,7 +10,7 @@ const metrics = [{ key: "staging_green_pct", target: 100, direction: "min" }] as
 
 function row(over: Partial<WatchRow>): WatchRow {
   const r: WatchRow = { platform: "instagram", kind: "tagged", target: "a", paused: false, lastOutcome: "ok", lastRunAt: NOW - 3_600_000, lastStopReason: "",
-    lastErrorCode: "", isPrivate: false, errStreak: 0, due: true, lastOkAt: null, addedAt: NOW - 10 * DAY, renamed: false, ...over };
+    lastErrorCode: "", isPrivate: false, errStreak: 0, nextDueAt: NOW + DAY, running: false, firstWalk: false, lastOkAt: null, addedAt: NOW - 10 * DAY, renamed: false, ...over };
   return "lastOkAt" in over || r.lastOutcome !== "ok" ? r : { ...r, lastOkAt: r.lastRunAt };
 }
 
@@ -33,18 +33,18 @@ test("a row added more than 24 h ago that never ran stays red", () => {
 });
 
 test("a young row the Watchlist reads Stopped stays red", () => {
-  const { pct } = staging([row({ lastOutcome: "error", lastErrorCode: "permanent_error", errStreak: 3, due: false, addedAt: NOW - 60_000 })]);
+  const { pct } = staging([row({ lastOutcome: "error", lastErrorCode: "permanent_error", errStreak: 3, nextDueAt: null, addedAt: NOW - 60_000 })]);
   assert.equal(pct, 0);
 });
 
 test("parseRows reads created_at as addedAt from the 13th column", () => {
-  const [parsed] = parseRows(["instagram", "tagged", "glossier", "f", "", "", "", "", "f", "0", "t", "", String(NOW - 40_000), "", "f"].join("\t"));
+  const [parsed] = parseRows(["instagram", "tagged", "glossier", "f", "", "", "", "", "f", "0", String(NOW + DAY), "", String(NOW - 40_000), "f", "f", "", "f"].join("\t"));
   assert.equal(parsed!.addedAt, NOW - 40_000);
   assert.equal(parsed!.lastRunAt, null);
 });
 
 test("a hidden row whose last run named a newer handle reads closed, as the screen's Removed on Instagram, and a plain hidden row stays Stopped", () => {
-  const renamed = parseRows(["instagram", "posts", "haruna_kr", "f", "ok", String(NOW - 60_000), "hidden", "", "f", "0", "t", "", String(NOW - 10 * DAY), "", "t"].join("\t"))[0]!;
+  const renamed = parseRows(["instagram", "posts", "haruna_kr", "f", "ok", String(NOW - 60_000), "hidden", "", "f", "0", String(NOW + DAY), "", String(NOW - 10 * DAY), "f", "f", "", "t"].join("\t"))[0]!;
   assert.equal(renamed.renamed, true);
   assert.equal(isClosed(renamed), true);
   assert.equal(stopReason(renamed, NOW), null);
@@ -54,7 +54,7 @@ test("a hidden row whose last run named a newer handle reads closed, as the scre
 
 test("staging_green_pct scores only the owner org's keys and lists another org's unpaused rows unscored", () => {
   const owner = row({ kind: "posts", target: "adapt_owned" });
-  const leak = row({ kind: "posts", target: "ship_leak", lastOutcome: "ok", lastRunAt: NOW - 3 * DAY });
+  const leak = row({ kind: "posts", target: "ship_leak", lastOutcome: "error", lastErrorCode: "schema", errStreak: 3, lastRunAt: NOW - 3 * DAY });
   const out = report({ now: NOW, errors: [], staging: [owner, leak], stagingKeys: ["instagram:account:adapt_owned"] }, metrics);
   assert.equal(out.metrics.staging_green_pct, 100);
   assert.equal(out.metrics.staging_other_org_unpaused, 1);

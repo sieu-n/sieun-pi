@@ -12,7 +12,7 @@ const metrics = [{ key: "staging_green_pct", target: 100, direction: "min" }] as
 
 function row(over: Partial<WatchRow>): WatchRow {
   return { platform: "instagram", kind: "tagged", target: "a", paused: false, lastOutcome: "ok", lastRunAt: NOW - HOUR, lastStopReason: "",
-    lastErrorCode: "", isPrivate: false, errStreak: 0, due: true, lastOkAt: NOW - HOUR, addedAt: NOW - 10 * DAY, renamed: false, ...over };
+    lastErrorCode: "", isPrivate: false, errStreak: 0, nextDueAt: NOW + DAY, running: false, firstWalk: false, lastOkAt: NOW - HOUR, addedAt: NOW - 10 * DAY, renamed: false, ...over };
 }
 
 function staging(rows: WatchRow[]) {
@@ -22,15 +22,25 @@ function staging(rows: WatchRow[]) {
 
 const starved = { lastOutcome: "starved", lastRunAt: NOW - 38 * 60_000, lastErrorCode: "fleet_exhausted" } as const;
 
-test("a row whose last run starved is green while its last ok read is inside 24 h", () => {
-  const { pct } = staging([row({ target: "dr.altheaglobal", ...starved, lastOkAt: NOW - (23 * HOUR + 11 * 60_000) })]);
+test("a posts row whose last run starved is green while its last ok read is inside 24 h", () => {
+  const { pct } = staging([row({ kind: "posts", target: "dr.altheaglobal", ...starved, lastOkAt: NOW - (23 * HOUR + 11 * 60_000) })]);
   assert.equal(pct, 100);
 });
 
-test("a row whose last run starved and whose last ok read is past 24 h is not green, and the flag says why", () => {
-  const { pct, excerpt } = staging([row({ target: "b" }), row({ ...starved, lastOkAt: NOW - 25 * HOUR })]);
-  assert.equal(pct, 50);
-  assert.match(excerpt, /1 tagged last starved, no ok read in 24 h/);
+test("a posts row whose last run starved and whose last ok read is past 24 h is not green, and a starved collab row reads Waiting", () => {
+  const { pct, excerpt } = staging([row({ target: "b" }), row({ kind: "posts", ...starved, lastOkAt: NOW - 25 * HOUR }), row({ target: "c", ...starved })]);
+  assert.equal(pct, 33.3);
+  assert.match(excerpt, /1 posts last starved, no ok read in 24 h/);
+  assert.match(excerpt, /1 tagged Waiting, last starved/);
+});
+
+test("a collab row reads green until its own next_due_at passes, not at a fixed 24 h (11-26, cadence_days 2 on 9,382 owner rows)", () => {
+  const read30hAgo = row({ lastRunAt: NOW - 30 * HOUR, lastOkAt: NOW - 30 * HOUR, nextDueAt: NOW + 18 * HOUR });
+  const pastDue = row({ target: "b", lastRunAt: NOW - 10 * HOUR, lastOkAt: NOW - 10 * HOUR, nextDueAt: NOW - 2 * HOUR });
+  assert.equal(staging([read30hAgo]).pct, 100);
+  assert.equal(staging([pastDue]).pct, 0);
+  assert.match(staging([pastDue]).excerpt, /1 tagged Waiting, past its due time/);
+  assert.equal(staging([{ ...pastDue, running: true }]).pct, 100);
 });
 
 test("a row with no account for 2 days reads Stopped and is not green", () => {
@@ -48,7 +58,7 @@ test("an error row with its retry due is green on a fresh ok read, and a failed 
 });
 
 test("parseRows reads last_ok_at from the 12th column", () => {
-  const [parsed] = parseRows(["instagram", "tagged", "a", "f", "starved", String(NOW - HOUR), "", "fleet_exhausted", "f", "0", "t", String(NOW - 23 * HOUR), String(NOW - 10 * DAY), "", "f"].join("\t"));
+  const [parsed] = parseRows(["instagram", "tagged", "a", "f", "starved", String(NOW - HOUR), "", "fleet_exhausted", "f", "0", String(NOW + DAY), String(NOW - 23 * HOUR), String(NOW - 10 * DAY), "f", "f", "", "f"].join("\t"));
   assert.equal(parsed!.lastOkAt, NOW - 23 * HOUR);
-  assert.equal(parseRows(["instagram", "tagged", "a", "f", "", "", "", "", "f", "0", "t", "", String(NOW), "", "f"].join("\t"))[0]!.lastOkAt, null);
+  assert.equal(parseRows(["instagram", "tagged", "a", "f", "", "", "", "", "f", "0", String(NOW + DAY), "", String(NOW), "f", "f", "", "f"].join("\t"))[0]!.lastOkAt, null);
 });

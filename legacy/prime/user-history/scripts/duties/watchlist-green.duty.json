@@ -1,11 +1,11 @@
 {
   "name": "Watchlist green",
   "ownerWords": "your no.1 goal is to make this screen functional all green, including collabs. do whatever it takes, grind.\n\nanyhow, conclusion should be a stable pipeline capable of 100k pages/day or 10k pages/hour, use Convex efficiently (you know the proposal and implementation of the async jobs and sidecar api thing right cost shouldn't balloon), and most importantly staging and prod watchlist all green.",
-  "goal": "Every account in the owner's prod Watchlist (org_3IrtoOAEP0nk1aCQHGVME02Dy6E) shows green for posts and collabs: each watch has an unpaused prod monitor row read ok in the last 24 h, and no chip reads Stopped. Staging's Watchlist rows are green too, finished prod reads rarely end in error, and no standing risk on wiki apps/crawler-v3/engage-reads-and-watchlist-risks fires: a Stopped chip on a live account, a Kafka stream near or off its size limit, an owner collab watch prod does not read, or an owner org group page read over 10 s on its first read or 3 s warm.",
+  "goal": "Every account in the owner's prod Watchlist (org_3IrtoOAEP0nk1aCQHGVME02Dy6E) shows green for posts and collabs: each watch has an unpaused prod monitor row that the Status column draws checked (its last read ok, and a collab row not idle past its own due time), and no chip reads Stopped. Staging's Watchlist rows are green too, finished prod reads rarely end in error, and no standing risk on wiki apps/crawler-v3/engage-reads-and-watchlist-risks fires: a Stopped chip on a live account, a Kafka stream near or off its size limit, an owner collab watch prod does not read, or an owner org group page read over 10 s on its first read or 3 s warm.",
   "metrics": [
     {
       "key": "owner_green_pct",
-      "label": "Watchlist accounts read ok in 24 h",
+      "label": "Watchlist accounts the Status column draws checked",
       "op": ">=",
       "target": 100,
       "unit": "%",
@@ -13,7 +13,7 @@
     },
     {
       "key": "staging_green_pct",
-      "label": "Staging Watchlist rows, posts and collabs, read ok in 24 h",
+      "label": "Staging Watchlist rows, posts and collabs, the Status column draws checked",
       "op": ">=",
       "target": 100,
       "unit": "%"

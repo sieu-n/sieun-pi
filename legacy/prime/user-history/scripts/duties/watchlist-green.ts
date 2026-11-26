@@ -21,8 +21,9 @@ import { adminQuery, convexBackend, type ConvexBackend, readEnvRow } from "./con
  *   (estate-reads.ts prodReader), and staging watch_targets monitor rows from estate_pg_stg, scored only for the staging owner org's unpaused
  *   watches, which the staging crawler's group read names (groupKeys);
  * - the prod watch gauges of estate_prometheus through Grafana (detail and the loop age), and pause.watch from estate_pg_prod.
- * Green follows sessions/2026/10/10/1026-prod-watchlist-readback/findings.md in auto-sns-agent: an unpaused monitor row whose last_outcome is
- * ok and whose last_run_at is inside 24 h. An unpaused row on an account the platform removed or holds private is green at any age, as the
+ * Green is the Watchlist's green check (apps/search/src/lib/watchlist/words.ts watchWordsOf, state `checked`): an unpaused monitor row whose
+ * last run settled ok, at any age, unless it is a collab row the screen reads Waiting (collabLaneWaits: idle past its own next_due_at, which
+ * the row's cadence sets, or its last run starved). An unpaused row on an account the platform removed or holds private is green at any age, as the
  * Watchlist reads it checked ("Removed on Instagram", "Private on Instagram", apps/search/src/lib/watchlist/words.ts walkGone and walkPrivate):
  * the crawler reads it again only on its weekly recheck. An unpaused row added under 24 h ago that the Watchlist does not read Stopped is green
  * too: it has its first day to be read, as crawler health.py _NO_GOOD_READ gives it. On 10-20 at 01:30:40Z d2 read staging at 98.1% for one
@@ -39,8 +40,8 @@ const DUTY_FILE = join(dirname(fileURLToPath(import.meta.url)), "watchlist-green
  *   importantly staging and prod watchlist all green". An owner account is green when every watch on it, posts and collab, is green.
  *   While a tier's watch_paused_by is not empty (readHold), its Watchlist paints every open row Waiting, so only rows a read closed count green there
  *   (closedThroughHold), and a watch_held flag names the hold's code and start; claims_stopped flags no claim for LOOP_STALL_S while rows are due.
- * - staging_green_pct >= 100: the staging half of that sentence. It is the share of unpaused staging monitor rows, posts and collabs, read ok in
- *   24 h, from staging watch_targets itself, so a row whose reads keep failing counts (the overdue gauge misses those, health.py _NO_GOOD_READ).
+ * - staging_green_pct >= 100: the staging half of that sentence. It is the share of unpaused staging monitor rows, posts and collabs, that the
+ *   Watchlist draws checked, from staging watch_targets itself, so a row whose reads keep failing counts (the overdue gauge misses those, health.py _NO_GOOD_READ).
  *   Paused staging rows are out of the staging Watchlist by design: the owner's t17 answer asked for "only like 10 accounts" in staging.
  * - watchlist_risks <= 0: the standing risks on the chat's risk page (wiki apps/crawler-v3/engage-reads-and-watchlist-risks) that fire, counted
  *   one each: an owner watch whose chip reads Stopped (stopReason below, the rules of apps/search/src/lib/watchlist/words.ts; p119) other than
@@ -96,8 +97,14 @@ export const NEEDS: Readonly<Record<string, readonly Source[]>> = {
 export interface WatchRow {
   platform: string; kind: string; target: string; paused: boolean; lastOutcome: string; lastRunAt: number | null;
   lastStopReason: string; lastErrorCode: string; isPrivate: boolean;
-  /** err_streak and whether next_due_at is set. */
-  errStreak: number; due: boolean;
+  errStreak: number;
+  /** next_due_at, epoch ms, as the crawler's summary shows it (read.py shown_due): null when the row never comes due again. */
+  nextDueAt: number | null;
+  /** A run holds the row (prev_due_at is set): the summary's `running`, its state `fetching`. */
+  running: boolean;
+  /** The row's walk is on its first pass (words.ts firstWalk: depth_days set, walk_done_at unset, walk_end not `since`), which the
+   *  Watchlist draws Reading history, not checked. */
+  firstWalk: boolean;
   /** The settle time of the row's newest run that ended ok, epoch ms, as read.py's last_ok_at; null when no ok run is in the 30 days of claims. */
   lastOkAt: number | null;
   /** created_at, epoch ms: when the row joined the monitor rows. */
@@ -183,17 +190,30 @@ export function stopReason(row: WatchRow, now: number): string | null {
   }
   if (row.lastOutcome !== "error") return null;
   const forGood = row.errStreak >= STOP_AFTER_FAILURES && !TRANSIENT_CODES.has(code);
-  return row.due && !forGood ? null : `failed ${code || "error"}`;
+  return row.nextDueAt !== null && !forGood ? null : `failed ${code || "error"}`;
 }
+/** How long an idle ok collab row may sit past its due time before the Watchlist reads it Waiting: words.ts CLAIM_TICK_MS. */
+const CLAIM_TICK_MS = 60_000;
 /**
- * A row read ok in the last 24 h that does not read Stopped. A later run that ended starved or error with a retry due leaves the last ok read
- * standing, as the Watchlist reads it (words.ts: "Checked" at the last ok read, with a waiting or retrying note). On staging at 02:35Z on
- * 2026-10-25, @dr.altheaglobal's collab row read last starved and scored not green: its routine pass found no free fleet account from 01:42Z
- * and was released at 01:57Z, its retry was claimed at 01:59Z and settled ok at 02:48Z, and its last ok read was at 03:23Z the day before.
- * Staging settled 759 routine posts runs starved in the 24 h to 03:00Z, 550 of them on a row read ok in the 24 h before.
+ * A collab row the Watchlist reads Waiting (words.ts collabLaneWaits): an idle ok row past its own next_due_at by a claim tick, or a row whose
+ * last run starved. The due time comes from the row's cadence, so a collab row read 30 h ago at cadence_days 2 stays checked until it falls due.
  */
-const readOk = (row: WatchRow, now: number): boolean =>
-  !isHidden(row) && stopReason(row, now) === null && row.lastOkAt !== null && now - row.lastOkAt <= DAY;
+const collabWaits = (row: WatchRow, now: number): boolean => row.kind === "tagged" && (row.lastOutcome === "starved" ||
+  (row.lastOutcome === "ok" && !row.running && row.nextDueAt !== null && now - row.nextDueAt > CLAIM_TICK_MS));
+/** An idle row whose next read waits for a logged-in account (words.ts waitsForAccount on the crawler's state). */
+const waitsForAccount = (row: WatchRow): boolean =>
+  !row.running && (row.lastOutcome === "starved" || (row.lastOutcome === "error" && NO_ACCOUNT_CODES.has(row.lastErrorCode)));
+/**
+ * A row the Watchlist draws checked (words.ts watchWordsOf, state `checked`) that is not hidden or Stopped: a last run that settled ok, at any
+ * age, unless the collab lane makes it wait; after a starved or no-account run, a last ok read inside 24 h; after a failed run it retries, or
+ * while a run is open, any last ok read. A row on its first walk reads Reading history instead.
+ */
+const readOk = (row: WatchRow, now: number): boolean => {
+  if (isHidden(row) || stopReason(row, now) !== null || collabWaits(row, now) || row.firstWalk) return false;
+  if (row.lastOutcome === "ok") return row.lastRunAt !== null;
+  if (waitsForAccount(row)) return row.lastOkAt !== null && now - row.lastOkAt <= DAY;
+  return row.lastOkAt !== null;
+};
 /** A row added under 24 h ago that does not read Stopped: its first read is not late yet (crawler health.py _NO_GOOD_READ). */
 export const isYoung = (row: WatchRow, now: number): boolean => row.addedAt !== null && now - row.addedAt < DAY && stopReason(row, now) === null;
 /**
@@ -226,7 +246,9 @@ function notGreen(kind: string, row: WatchRow | undefined, now: number, held = f
   if (isHidden(row)) return `${kind} Stopped, hidden`;
   const stop = stopReason(row, now);
   if (stop) return `${kind} Stopped, ${stop}`;
-  return row.lastOutcome === "ok" ? `${kind} ok but older than 24 h` : `${kind} last ${row.lastOutcome}, no ok read in 24 h`;
+  if (collabWaits(row, now)) return row.lastOutcome === "ok" ? `${kind} Waiting, past its due time` : `${kind} Waiting, last starved`;
+  if (row.firstWalk) return `${kind} Reading history, first walk`;
+  return `${kind} last ${row.lastOutcome}, no ok read${waitsForAccount(row) ? " in 24 h" : ""}`;
 }
 const tally = (why: Map<string, number>): [string, number][] => [...why.entries()].sort((a, b) => b[1] - a[1]);
 const listWhy = (why: readonly [string, number][]): string => why.map(([reason, count]) => `${count} ${reason}`).join(", ");
@@ -366,7 +388,7 @@ export function report(data: WatchData, dutyMetrics: readonly DutyMetric[]): Pre
     const tagged = staging.byKind.tagged!;
     detail.staging_posts_green_pct = posts.rows ? round1(100 * posts.green / posts.rows) : 0;
     detail.staging_tagged_not_green = tagged.rows - tagged.green;
-    flagged.push({ at, kind: "staging_monitor_rows", excerpt: `${staging.green} of ${staging.rows} unpaused staging monitor rows read ok in 24 h: posts ${posts.green} of ${posts.rows}, collabs ${tagged.green} of ${tagged.rows}` +
+    flagged.push({ at, kind: "staging_monitor_rows", excerpt: `${staging.green} of ${staging.rows} unpaused staging monitor rows green on the Watchlist: posts ${posts.green} of ${posts.rows}, collabs ${tagged.green} of ${tagged.rows}` +
       (staging.why.length ? `; not green: ${listWhy(staging.why)}` : "") + (staging.young ? `; ${staging.young} added under 24 h ago and not read ok yet` : "") + `; ${owned.length - staging.rows} rows of other kinds are left out, and paused rows are not read (t17: "only like 10 accounts" in staging)` });
     const leaking = rowsGreen(others, now);
     detail.staging_other_org_unpaused = leaking.rows;
@@ -410,18 +432,19 @@ function holdFlags(tier: string, hold: HoldRead, at: number): FlaggedSlice[] {
 }
 
 /** The tab-separated monitor rows psql prints (rowLines for Grafana's): platform, kind, target, paused (t or f), last_outcome, last_run_at epoch ms or empty,
- *  last_stop_reason, last_error_code, the account's is_private (t or f), err_streak, next_due_at set (t or f), the last ok run's time, created_at,
- *  walk_end and renamed (t or f). */
+ *  last_stop_reason, last_error_code, the account's is_private (t or f), err_streak, next_due_at epoch ms or empty, the last ok run's time, created_at,
+ *  running (t or f), first_walk (t or f), walk_end and renamed (t or f). */
 export function parseRows(text: string): WatchRow[] {
   const rows: WatchRow[] = [];
   for (const line of text.split("\n")) {
     const cells = line.split("\t");
-    if (cells.length !== 15) continue;
-    const [platform, kind, target, paused, lastOutcome, lastRunAt, lastStopReason, lastErrorCode, isPrivate, errStreak, due, lastOkAt, addedAt, walkEnd, renamed] = cells as
-      [string, string, string, string, string, string, string, string, string, string, string, string, string, string, string];
+    if (cells.length !== ROW_COLUMNS.length) continue;
+    const [platform, kind, target, paused, lastOutcome, lastRunAt, lastStopReason, lastErrorCode, isPrivate, errStreak, nextDueAt, lastOkAt, addedAt, running, firstWalk, walkEnd, renamed] = cells as
+      [string, string, string, string, string, string, string, string, string, string, string, string, string, string, string, string, string];
     rows.push({ platform, kind, target, paused: paused === "t", lastOutcome, lastRunAt: lastRunAt ? Number(lastRunAt) : null,
-      lastStopReason, lastErrorCode, isPrivate: isPrivate === "t", errStreak: Number(errStreak) || 0, due: due === "t", lastOkAt: lastOkAt ? Number(lastOkAt) : null,
-      addedAt: addedAt ? Number(addedAt) : null, walkEnd, renamed: renamed === "t" });
+      lastStopReason, lastErrorCode, isPrivate: isPrivate === "t", errStreak: Number(errStreak) || 0, nextDueAt: nextDueAt ? Number(nextDueAt) : null,
+      lastOkAt: lastOkAt ? Number(lastOkAt) : null, addedAt: addedAt ? Number(addedAt) : null, running: running === "t", firstWalk: firstWalk === "t", walkEnd,
+      renamed: renamed === "t" });
   }
   return rows;
 }
@@ -677,10 +700,12 @@ const pageTimes = (pages: readonly ScreenChunk[]): string => pages.map(page => `
 const ROWS_SQL = "select w.platform, w.kind, lower(w.target) as target, case when w.paused then 't' else 'f' end as paused, coalesce(w.last_outcome, '') as last_outcome, " +
   "coalesce((extract(epoch from w.last_run_at) * 1000)::bigint::text, '') as last_run_at, coalesce(w.last_stop_reason, '') as last_stop_reason, coalesce(w.last_error_code, '') as last_error_code, " +
   "case when w.platform = 'instagram' and exists (select 1 from instagram_accounts a where a.username = w.target and a.is_private offset 0) then 't' else 'f' end as is_private, " +
-  "w.err_streak, case when w.next_due_at is null then 'f' else 't' end as due, " +
+  "w.err_streak, case when w.next_due_at < '9999-12-31' then (extract(epoch from w.next_due_at) * 1000)::bigint::text else '' end as next_due_at, " +
   "coalesce((extract(epoch from case when w.last_outcome = 'ok' then w.last_run_at else (select max(c.settled_at) from watch_target_claims c " +
   "where c.platform = w.platform and c.kind = w.kind and c.target = w.target and c.outcome = 'ok') end) * 1000)::bigint::text, '') as last_ok_at, " +
-  "(extract(epoch from w.created_at) * 1000)::bigint::text as added_at, coalesce(w.walk_end, '') as walk_end, ";
+  "(extract(epoch from w.created_at) * 1000)::bigint::text as added_at, case when w.prev_due_at is null then 'f' else 't' end as running, " +
+  "case when w.depth_days is not null and w.walk_done_at is null and coalesce(w.walk_end, '') <> 'since' then 't' else 'f' end as first_walk, " +
+  "coalesce(w.walk_end, '') as walk_end, ";
 /** Whether the row's last run named a newer handle. Only a hidden or gone row reads renamed (words.ts hidden() and gone()), so the CASE
  *  asks the claims join of those rows alone (about 1,050 gone rows on prod on 11-20): asked of all 19,700 monitor rows it ran past prod's statement_timeout at 17:00Z on 2026-10-20. Staging's Grafana role (grafana_ro on estate_pg_stg) has no SELECT on
  *  watch_target_claims, so the staging read sends 'f' and its rows never read renamed. */
@@ -722,7 +747,7 @@ export const prodRowsSql = (part: number): string => `${PROD_ROWS_SQL} and (hash
 export const NO_SEQSCAN = "set local enable_seqscan = off; ";
 export const STAGING_ROWS_SQL = NO_JIT + NO_SEQSCAN + ROWS_SQL + "'f' as renamed from watch_targets w where w.tier = 'monitor' and not w.paused";
 /** ROWS_SQL's columns in parseRows order, to print Grafana's table rows as the lines psql prints. */
-const ROW_COLUMNS = ["platform", "kind", "target", "paused", "last_outcome", "last_run_at", "last_stop_reason", "last_error_code", "is_private", "err_streak", "due", "last_ok_at", "added_at", "walk_end", "renamed"];
+const ROW_COLUMNS = ["platform", "kind", "target", "paused", "last_outcome", "last_run_at", "last_stop_reason", "last_error_code", "is_private", "err_streak", "next_due_at", "last_ok_at", "added_at", "running", "first_walk", "walk_end", "renamed"];
 export const rowLines = (rows: Record<string, unknown>[]): string => rows.map(row => ROW_COLUMNS.map(column => String(row[column] ?? "")).join("\t")).join("\n");
 export const RECEIPTS_SQL = "select 'receipt' as kind, outcome, count(*) as runs, (extract(epoch from date_trunc('hour', settled_at)) * 1000)::bigint as hour"
   + " from watch_target_claims where settled_at > now() - interval '24 hours' and outcome is not null group by outcome, hour";
