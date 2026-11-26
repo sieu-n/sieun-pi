@@ -477,6 +477,20 @@ test("removed_provider_refs skips the crawler's pinned tech fingerprints and the
   assert.deepEqual(result.flagged.map(flag => flag.item), ["apps/crawler-v3/src/companies/voice.py"]);
 });
 
+test("removed_provider_refs counts a Smartlead host, key or Vent row and skips the webhook source literal and drop migrations (17657f95dc, 11-26)", () => {
+  const line = (path: string, text: string) => `origin/dev/sieun:${path}\0${1}\0${text}`;
+  const grep = [
+    line("convex/lib/validators.ts", "export const WEBHOOK_SOURCES = ['stripe', 'clerk', 'zernio', 'resend', 'smartlead'] as const;"),
+    line("convex/webhooks/ledger.ts", "\t\tif (row.source === 'smartlead') await ctx.db.delete(row._id);"),
+    line("convex/gtm/send.ts", "await fetch('https://server.smartlead.ai/api/v1/campaigns/create', { method: 'POST' })"),
+    line("apps/vent/.env.staging", "SMARTLEAD_API_KEY=encrypted:abc"),
+  ].join("\n");
+  const tables = TABLES.replace('    "zernio"', '    "smartlead": Integration(SMARTLEAD, None),\n    "zernio"');
+  const result = removedProviderRefs({ grep, tables }, 0);
+  assert.ok(!("error" in result));
+  assert.deepEqual(result.flagged.map(flag => flag.item).sort(), ["apps/vent/.env.staging", "convex/gtm/send.ts", "integration smartlead"]);
+});
+
 test("the store lister ships beside the duty, because the wiki session copy stopped resolving its repo imports on 11-04", () => {
   assert.ok(existsSync(STORE_NAMES));
   assert.doesNotMatch(STORE_NAMES, /llm-wiki/);
