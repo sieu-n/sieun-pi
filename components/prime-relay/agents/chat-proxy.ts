@@ -6,8 +6,10 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AgentLink } from "./link.ts";
 import type { ChatHttpResult } from "./protocol.ts";
 
-/** Headers that describe one hop, which the proxy sets itself on each side. */
-const HOP = new Set(["host", "connection", "content-length", "transfer-encoding", "keep-alive", "upgrade"]);
+/** Headers that describe one hop (RFC 9110 section 7.6.1, plus host and content-length), which the proxy sets itself on each side. */
+const HOP = new Set(["host", "connection", "content-length", "transfer-encoding", "keep-alive", "upgrade", "proxy-connection", "te", "trailer", "proxy-authenticate", "proxy-authorization"]);
+/** The server's fetch already decoded the body to text (relay-host.ts `chatHttp`), so its content-encoding no longer describes it. */
+const RESPONSE_DROP = new Set([...HOP, "content-encoding"]);
 
 function readBody(request: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -36,7 +38,7 @@ export function createChatProxy(liveLink: () => AgentLink | undefined, log: (lin
       if (!answer.ok) return json(response, answer.unsent ? 503 : 502, { error: answer.error });
       const result = answer.data as ChatHttpResult;
       const out: Record<string, string> = {};
-      for (const [name, value] of Object.entries(result.headers ?? {})) if (!HOP.has(name.toLowerCase())) out[name] = value;
+      for (const [name, value] of Object.entries(result.headers ?? {})) if (!RESPONSE_DROP.has(name.toLowerCase())) out[name] = value;
       response.writeHead(result.status, out);
       response.end(result.body ?? "");
     } catch (error) {

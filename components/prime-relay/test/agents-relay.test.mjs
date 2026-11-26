@@ -70,7 +70,7 @@ class FakeServer {
     this.ws.on("message", data => {
       const frame = JSON.parse(String(data));
       this.frames.push(frame);
-      if (frame.type === "call" && frame.op === "chat_http") this.ws.send(JSON.stringify({ type: "result", id: frame.id, ok: true, data: { status: 201, headers: { "content-type": "application/json", "x-seen": `${frame.args.method} ${frame.args.path} ${frame.args.body ?? ""}` }, body: "{\"posted\":true}" } }));
+      if (frame.type === "call" && frame.op === "chat_http") this.ws.send(JSON.stringify({ type: "result", id: frame.id, ok: true, data: { status: 201, headers: { "content-type": "application/json", "content-encoding": "gzip", "content-length": "9999", "x-seen": `${frame.args.method} ${frame.args.path} ${frame.args.body ?? ""}` }, body: "{\"posted\":true}" } }));
       for (const waiter of [...this.waiters]) if (waiter.match(frame)) { this.waiters.splice(this.waiters.indexOf(waiter), 1); waiter.resolve(frame); }
     });
     this.ws.on("close", (code, reason) => this.onClosed({ code, reason: String(reason) }));
@@ -182,6 +182,10 @@ test("hello, welcome, a delivery with its watch events and its feed row, then th
   assert.equal(proxied.status, 201);
   assert.equal(proxied.body, "{\"posted\":true}");
   assert.equal(proxied.headers["x-seen"], "POST /api/rooms/dm_x/posts {\"text\":\"hi\"}");
+  // relay-host's fetch hands up a decoded body with apps/chat's gzip header, so a gzip-accepting client must get no content-encoding.
+  const gzipRead = await fetch(`${proxyBase}/api/rooms/dm_x/posts`, { method: "POST", headers: { "content-type": "application/json", "accept-encoding": "gzip" }, body: "{}" });
+  assert.equal(gzipRead.headers.get("content-encoding"), null);
+  assert.deepEqual(await gzipRead.json(), { posted: true });
   await server.close();
   assert.equal((await http(`${proxyBase}/api/rooms`)).status, 503);
 });

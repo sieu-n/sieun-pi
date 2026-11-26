@@ -43,7 +43,7 @@ The sieun-pi side lives in `legacy/prime/user-history/src/hosts.ts`. It reads `~
 6. `instructions {cwd}` answers `{cwdExists, files}`, the AGENTS.md and CLAUDE.md files Prime loads for that cwd on this box and `~/.prime/agent/AGENTS.md`, each with its first lines, so the Agents page shows a Mac agent's files as the Mac reads them.
 7. When pi-host's socket closes, the relay closes the link with code 1011, so the server dials again and sets up its watches after the next `hello`.
 
-The relay also listens on `127.0.0.1:<chatProxyPort>` (7792 by default). Each request there goes up the newest live link as a `chat_http` call, and the server's result becomes the answer. With no live link, it answers 503 with a JSON error.
+The relay also listens on `127.0.0.1:<chatProxyPort>` (7792 by default). Each request there goes up the newest live link as a `chat_http` call, and the server's result becomes the answer. With no live link, it answers 503 with a JSON error. The server's fetch has already decoded the body, so the proxy drops `Content-Encoding` and the hop-by-hop headers and lets Node set the length.
 
 On macOS the agent relay keeps the Mac awake while pi-host runs a turn (`agents/awake.ts`). Every 30 s, and right after each `durable_submit`, it reads pi-host's `durable_threads` on its own connection. While a thread reads `running`, and for 2 min after the last one, it holds one `caffeinate -i -s -w <relay pid>`. `-i` stops idle sleep, and `-s` keeps a Mac on AC power in dark wake when its lid closes, while on battery a closed lid still sleeps it. `-w` ends caffeinate with the relay, so a crashed or stopped relay leaves no hold behind. On Linux the relay does none of this.
 
