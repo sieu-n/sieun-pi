@@ -154,21 +154,23 @@ export interface Inputs { rows: readonly Row[] | Error; shed: readonly { minute:
 export function scrapers(input: Inputs): PrecheckOutput {
   const at = input.end;
   const metrics: Record<string, number> = {};
+  const n: Record<string, number> = { scraper_share_pct: 0, real_user_image_ok_pct: 0, crawler_shed_min: 0 };
   const flagged: FlaggedSlice[] = input.errors.map(excerpt => ({ at, kind: "source_error", excerpt: excerpt.slice(0, 600) }));
   if (input.rows instanceof Error) flagged.push({ at, kind: "source_error", excerpt: `search requests: ${input.rows.message}`.slice(0, 600) });
-  else summarize(input.rows, input.verify, input.asns ?? new Map(), at, metrics, flagged);
+  else summarize(input.rows, input.verify, input.asns ?? new Map(), at, metrics, flagged, n);
   if (input.shed instanceof Error) flagged.push({ at, kind: "source_error", excerpt: `crawler 503s: ${input.shed.message}`.slice(0, 600) });
   else {
     const minutes = input.shed.filter(minute => minute.s503 >= SHED_MIN_503).sort((a, b) => a.minute - b.minute);
     metrics.crawler_shed_min = minutes.length;
+    n.crawler_shed_min = DAY / 60_000;
     const worst = [...minutes].sort((a, b) => b.s503 - a.s503).slice(0, 5).map(minute => `${utcMin(minute.minute)} ${minute.s503}`);
     flagged.push({ at, kind: "reading", item: "crawler_shed_min", excerpt: `The prod crawler answered ${SHED_MIN_503}+ anonymous /api/media calls with 503 in ${minutes.length} minutes ` +
       `of the 24 h${minutes.length ? `, first ${utcMin(minutes[0]!.minute)}, last ${utcMin(minutes.at(-1)!.minute)}, worst ${worst.join(", ")}` : ""} (caddy access log on us-metal01).` });
   }
-  return { metrics, flagged, windowMs: { scraper_share_pct: DAY, crawler_shed_min: DAY, real_user_image_ok_pct: DAY } };
+  return { metrics, n, flagged, windowMs: { scraper_share_pct: DAY, crawler_shed_min: DAY, real_user_image_ok_pct: DAY } };
 }
 
-function summarize(rows: readonly Row[], verify: Verify, asns: ReadonlyMap<string, Asn>, at: number, metrics: Record<string, number>, flagged: FlaggedSlice[]): void {
+function summarize(rows: readonly Row[], verify: Verify, asns: ReadonlyMap<string, Asn>, at: number, metrics: Record<string, number>, flagged: FlaggedSlice[], n: Record<string, number>): void {
   const typical = typicalChrome(rows);
   let origin = 0, automated = 0, wanted = 0, humanImg = 0, humanImgOk = 0, denied = 0;
   const patterns = new Map<string, { calls: number; ips: Set<string>; routes: Map<string, number>; refs: Map<string, number>; majors: Set<number>; ua: string; last: number; e5xx: number }>();
@@ -196,6 +198,8 @@ function summarize(rows: readonly Row[], verify: Verify, asns: ReadonlyMap<strin
     if (row.status >= 500) pattern.e5xx += row.calls;
     patterns.set(key, pattern);
   }
+  n.scraper_share_pct = origin;
+  n.real_user_image_ok_pct = humanImg;
   if (origin) {
     metrics.scraper_share_pct = pct(automated, origin);
     flagged.push({ at, kind: "reading", item: "scraper_share_pct", excerpt: `${automated} of ${origin} origin calls to the public database pages and their images were automated ` +
@@ -332,7 +336,7 @@ async function main(): Promise<void> {
     const signal = AbortSignal.timeout(SOURCE_DEADLINE_MS);
     output = await measure(grafanaClient(fetch, await readGrafanaAuth(), end, signal), end, signal);
   } catch (error) {
-    output = { metrics: {}, flagged: [{ at: Date.now(), kind: "source_error", excerpt: `prod ClickHouse: ${error instanceof Error ? error.message : String(error)}`.slice(0, 600) }] };
+    output = { metrics: {}, n: 0, flagged: [{ at: Date.now(), kind: "source_error", excerpt: `prod ClickHouse: ${error instanceof Error ? error.message : String(error)}`.slice(0, 600) }] };
   }
   const text = JSON.stringify(output, null, 2) + "\n";
   if (process.env.OUTPUT_FILE) await writeFile(process.env.OUTPUT_FILE, text);

@@ -85,6 +85,7 @@ test("the 10-29 readings miss every target and a 10-27 day meets them", () => {
       row({ refk: "bare_self", ref: "https://virev.ai/", ua: WIN(133), calls: 50, origin: false, status: 403 })],
     shed: [{ minute: 60_000, s503: 1062 }, { minute: 120_000, s503: 2 }, ...Array.from({ length: 4 }, (_, index) => ({ minute: (index + 3) * 60_000, s503: SHED_MIN_503 }))] });
   assert.deepEqual(scraped.metrics, { scraper_share_pct: 75, real_user_image_ok_pct: 90, crawler_shed_min: 5 });
+  assert.deepEqual(scraped.n, { scraper_share_pct: 400, real_user_image_ok_pct: 100, crawler_shed_min: 1440 });
   assert.match(scraped.flagged!.find(slice => slice.item === "scraper_share_pct" && slice.kind === "reading")!.excerpt, /denied 50 more before origin \(img 50\)/);
   assert.match(scraped.flagged!.find(slice => slice.kind === "scraper_pattern")!.excerpt, /bare origin .*: 300 origin calls from 1 IPs/);
   assert.equal(judge(duty.metrics, scraped).verdict, "missed");
@@ -96,6 +97,7 @@ test("the 10-29 readings miss every target and a 10-27 day meets them", () => {
 test("a source that fails leaves its numbers out with a source error", () => {
   const output = scrapers({ end: 1, errors: ["Bing IP ranges: fetch failed"], verify: googleOnly, rows: new Error("Grafana HTTP 502"), shed: [] });
   assert.deepEqual(output.metrics, { crawler_shed_min: 0 });
+  assert.deepEqual(output.n, { scraper_share_pct: 0, real_user_image_ok_pct: 0, crawler_shed_min: 1440 });
   assert.deepEqual(output.flagged!.filter(slice => slice.kind === "source_error").map(slice => slice.excerpt), ["Bing IP ranges: fetch failed", "search requests: Grafana HTTP 502"]);
 });
 
