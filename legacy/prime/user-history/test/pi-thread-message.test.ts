@@ -140,8 +140,9 @@ test("11-26: a pi-host thread's fault call comes from its active duty in apps/ch
     [`/api/threads/${VENT}/duties`]: [{ duty: { id: "d1", status: "paused", faultCall: { command: "old '<key>'", cwd: "/" } } }, { duty: { id: "d8", status: "active", faultCall: call } }],
     "/api/threads/other/duties": [{ duty: { id: "d1", status: "active" } }],
   };
+  // As the relay's chat proxy answered on 11-25: a gzip header on a body it already unpacked, unless the client asks for identity.
   const chat = createHttpServer((req, res) => {
-    res.writeHead(200, { "Content-Type": "application/json" });
+    res.writeHead(200, { "Content-Type": "application/json", ...req.headers["accept-encoding"] === "identity" ? {} : { "Content-Encoding": "gzip" } });
     res.end(JSON.stringify({ duties: lists[req.url!] ?? [] }));
   });
   chat.listen(0, "127.0.0.1"); await once(chat, "listening");

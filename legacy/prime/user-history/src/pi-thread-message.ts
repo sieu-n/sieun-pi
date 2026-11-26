@@ -237,7 +237,10 @@ export async function sendNotice(found: readonly Route[], session: string, messa
  * null when none does. On 11-26 d8 CI monitoring moved from the VP of CI's Prime duty store to devops guy's agent, whose duties apps/chat keeps.
  */
 export async function threadFaultCall(thread: string, chat = chatUrl()): Promise<{ command: string; cwd: string } | null> {
-  const response = await fetch(new URL(`api/threads/${encodeURIComponent(thread)}/duties`, chat.endsWith("/") ? chat : `${chat}/`));
+  // identity: the relay's chat proxy on :7792 passes apps/chat's gzip header with the body already unpacked, so fetch's gunzip threw
+  // "incorrect header check" on the first fire after release-481df4b (11-25 23:48Z).
+  const response = await fetch(new URL(`api/threads/${encodeURIComponent(thread)}/duties`, chat.endsWith("/") ? chat : `${chat}/`),
+    { headers: { "accept-encoding": "identity" } });
   if (!response.ok) throw new Error(`apps/chat at ${chat} answered ${response.status} for the duties of ${thread}`);
   const body: unknown = await response.json();
   const rows = isRecord(body) && Array.isArray(body.duties) ? body.duties : [];
