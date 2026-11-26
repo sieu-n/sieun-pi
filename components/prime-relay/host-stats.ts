@@ -271,6 +271,28 @@ export function transientUnits(now = Date.now()): ReadonlySet<string> {
 export const KERNEL_SCOPE = "pi-rlm-kernel-";
 
 /**
+ * The cores the KERNEL_SCOPE units used between two rig snapshots, summed by the thread id prefix each unit name carries
+ * (pi-rlm kernel.ts names it `pi-rlm-kernel-<first 8 of the session id>-<time>`), with each thread that used none left out. A scope holds a
+ * kernel and the commands its bash() runs, so this is the sw factory thread's own CPU, which no Prime row reports. From 16:45Z to 17:01Z on
+ * 11-26 thread 7850f13e's scopes ran tsc and vitest on 10 to 18 cores while no Prime session worked, and d7 read us-metal02 as quiet.
+ */
+export function kernelCores(before: RigSnapshot, after: RigSnapshot): Record<string, number> {
+  const ms = after.at - before.at;
+  const usec = new Map<string, number>();
+  if (!(ms > 0)) return {};
+  for (const [unit, { usec: end }] of after.units) {
+    if (!unit.startsWith(KERNEL_SCOPE)) continue;
+    const start = before.units.get(unit)?.usec ?? 0;
+    const thread = unit.slice(KERNEL_SCOPE.length).split("-")[0]!;
+    usec.set(thread, (usec.get(thread) ?? 0) + (end >= start ? end - start : end));
+  }
+  return Object.fromEntries([...usec].flatMap(([thread, used]) => {
+    const cores = Math.round(100 * used / (ms * 1000)) / 100;
+    return cores > 0 ? [[thread, cores] as const] : [];
+  }));
+}
+
+/**
  * Who holds a memory leaf (`memoryLeaves`), or "by-process" for a leaf whose processes split between groups: prime-agent-daemon.service runs
  * the supervisor and workers, prime-agent-tools.scope the kernels beside the tests, builds, servers and browsers jobs start (all of them ran in
  * the daemon unit until 11-02), and an ssh login's session scope runs Prime itself on some days (12:56Z to 16:46Z on 10-27) and Mac jobs' box
@@ -619,7 +641,9 @@ export interface LinuxUsable { kind: "linux"; memSomeAvg10: number; memFullAvg10
   /** Each side's CPU time over the same window, in cores (`cpuSides`); absent on readings before 10-18 06:5xZ and where the cgroups cannot be read. */
   cpuCores?: CpuSides;
   /** The harness side's cores split into its own work and the rigs jobs started, with the owners of the most (rig-cpu.ts); absent on readings written before it. */
-  harnessSplit?: HarnessSplit }
+  harnessSplit?: HarnessSplit;
+  /** The cores each sw factory thread's kernel scopes used over the window (`kernelCores`); absent when none used any and on readings before 11-27. */
+  kernelCores?: Record<string, number> }
 /** Who CPU time on a Linux box belongs to: the harness (agents and the services that run them), the apps' servers, the owner, CI and the OS. */
 export type CpuSide = "harness" | "apps" | "owner" | "ci" | "system";
 export type CpuSides = Record<CpuSide, number>;
@@ -837,10 +861,11 @@ export async function linuxUsable(now = Date.now(), cut?: Promise<unknown>, unre
   const sides = ownSlice && cgroups && before?.cgroups ? cpuSides(before.cgroups, cgroups, ownSlice, now - (before.cgroupsAt ?? before.at)) : null;
   const rigs = await bounded("rigs", () => readRigs(now), cut, unread) ?? null;
   const split = sides && lastRigs && rigs ? harnessSplit(lastRigs, rigs, sides.harness) : null;
+  const threads = lastRigs && rigs ? kernelCores(lastRigs, rigs) : {};
   if (rigs) lastRigs = rigs;
   return { kind: "linux", memSomeAvg10: memSome, memFullAvg10: memFull, cpuSomeAvg10: psiAvg10(cpu!, "some") ?? 0,
     swapoutsPerS: swapoutsPerS === null ? null : Math.round(swapoutsPerS), runnablePerCore: Math.round(100 * runnable) / 100, allowedCpus: cores.length,
-    ...sides ? { cpuCores: sides } : {}, ...split ? { harnessSplit: split } : {} };
+    ...sides ? { cpuCores: sides } : {}, ...split ? { harnessSplit: split } : {}, ...Object.keys(threads).length ? { kernelCores: threads } : {} };
 }
 
 /** A laptop's battery: its charge in percent and whether it draws from AC. */

@@ -128,8 +128,9 @@ export function parseLinuxReading(reading: unknown): LinuxUsable | null {
   const sides = reading.cpuCores;
   const cpuCores = isRecord(sides) && CPU_SIDES.every(side => count(sides[side])) ? Object.fromEntries(CPU_SIDES.map(side => [side, sides[side]])) as CpuSides : undefined;
   const split = parseHarnessSplit(reading.harnessSplit);
+  const threads = isRecord(reading.kernelCores) ? Object.entries(reading.kernelCores).filter((entry): entry is [string, number] => count(entry[1]) && entry[1] > 0) : [];
   return { kind: "linux", memSomeAvg10, memFullAvg10, cpuSomeAvg10, swapoutsPerS, runnablePerCore, allowedCpus: allowedCpus as number, ...cpuCores ? { cpuCores } : {},
-    ...split ? { harnessSplit: split } : {} };
+    ...split ? { harnessSplit: split } : {}, ...threads.length ? { kernelCores: Object.fromEntries(threads) } : {} };
 }
 
 /** A harnessSplit (rig-cpu.ts) whose own and rigs cores are counts and whose top lines each name an owner, a count and a command; else undefined. */
@@ -332,15 +333,19 @@ export interface AgentLine extends AgentCounts { gb: number | null; swapGb?: num
   threadsWorking?: number }
 
 /**
- * How many of the feed's busy `chat:` owners (`UsableReading.busyChats`) no Prime row names: sw factory (pi-host) threads, whose kernels the
- * feed folds into `chat:<thread>` by their RLM_SESSION_DIR and Settings > Hosts counts as Agent sessions, while the Prime daemon has no row
- * for them. At 20:56:30Z on 11-25 thread 4f9dad47 ("5180 designer") held 5.32 GB of the Mac's 5.83 GB while its jobs ran commit.mjs and
- * Aside reads, the Mac read 0 sessions working, and d7's quiet_agent_gb_mac read 5.83 GB against its 5 GB target.
+ * How many sw factory (pi-host) threads worked this minute, which the Prime daemon has no row for while Settings > Hosts counts their kernels as
+ * Agent sessions. On the Mac they are the feed's busy `chat:` owners (`UsableReading.busyChats`, kernels folded by RLM_SESSION_DIR) no Prime
+ * row names: at 20:56:30Z on 11-25 thread 4f9dad47 ("5180 designer") held 5.32 GB of the Mac's 5.83 GB while its jobs ran commit.mjs and
+ * Aside reads, the Mac read 0 sessions working, and d7's quiet_agent_gb_mac read 5.83 GB against its 5 GB target. On Linux they are the
+ * threads whose kernel scopes used PROGRESS_CORES or more (`LinuxUsable.kernelCores`, keyed by the id's first 8 characters) and that no Prime
+ * row's id starts with: at 17:01Z on 11-26 d7 read us-metal02's 18.68 GB as 16 min quiet while thread 7850f13e's scopes ran tsc and vitest.
  */
 export function threadsAtWork(usable: HostUsable | null | undefined, rows: readonly unknown[]): number {
-  if (!usable || isLinuxReading(usable) || !usable.busyChats) return 0;
+  if (!usable) return 0;
   const prime = new Set(rows.map(parseRow).flatMap(row => row ? [row.id] : []));
-  return usable.busyChats.filter(id => !prime.has(id)).length;
+  if (!isLinuxReading(usable)) return (usable.busyChats ?? []).filter(id => !prime.has(id)).length;
+  const primeHeads = new Set([...prime].map(id => id.slice(0, 8)));
+  return Object.entries(usable.kernelCores ?? {}).filter(([thread, cores]) => cores >= PROGRESS_CORES && !primeHeads.has(thread)).length;
 }
 /** `agents` with `threadsWorking` when a sw factory thread works. */
 const withThreads = (agents: AgentLine, usable: HostUsable | null | undefined, rows: readonly unknown[]): AgentLine => {
