@@ -118,10 +118,10 @@ const onBox = (location: string) => /^(box|container|unit) /.test(location);
 /** The repo secret CLERK_SECRET_KEY reaches only the CI job-local Vent: auto-sns-agent scripts/ci/tasks/search-e2e.sh unsets it
  *  and passes it to `vent-mock up` alone (26a36a614f; search / e2e green in verify run 39284928208), as vent-key-scan.mjs exempts it
  *  (2d058da12). Only that name, only as a repo secret. CLERK_CI_SECRET_KEY, the key of the CI-only Clerk instance, takes the same path
- *  from apps/ci-e2e/.env.staging, which vent-key-scan.mjs exempts too. */
+ *  from apps/ci/e2e/.env.staging, which vent-key-scan.mjs exempts too. */
 export const CI_VENT_INPUT = (location: string, name: string) =>
   (location === "github secrets repo" && name === "CLERK_SECRET_KEY")
-  || (name === "CLERK_CI_SECRET_KEY" && (location === "github secrets repo" || location === "tier apps/ci-e2e/.env.staging"));
+  || (name === "CLERK_CI_SECRET_KEY" && (location === "github secrets repo" || location === "tier apps/ci/e2e/.env.staging"));
 /** CLOUDFLARE_COLD_SITE_TOKEN is the cold domains' ops token (85f40944ff, 11-25). Two by-hand commands in auto-sns-agent read it as
  *  CLOUDFLARE_API_TOKEN: the cold-site Worker's `wrangler deploy -c apps/cold-site/wrangler.json` and the DNS record script
  *  `apps/infra/mail/dns.mjs --apply` (36910a1598). No service reads it, so it stays in the infra tier. */
