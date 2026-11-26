@@ -109,10 +109,13 @@ export type Cause = "instagram" | "first_login" | "found_idle" | "bad_password" 
  * account_suspended on read did. relogin_bad_password is a password Instagram no longer takes: prod 24 and 280 lost their sessions on 10-28 and
  * Instagram refused the stored password, while 281 of the same batch re-logged in that day, and of the 11 T8KX accounts refused on 10-28 none
  * logged in on its own exit 2 h later and 1 on a fresh exit 6 h later. A seedless two-factor screen is our missing seed, so ours.
+ * contact_point_required, consent_required and jar_check_checkpoint are in the crawler map too: on 11-25 from 23:07Z to 00:00Z Instagram asked 8 prod
+ * accounts for a contact point, and this map left them unknown while crawler_v3_engage_deaths_24h{cause="instagram"} read 15 against 11 here.
  */
 export const CODE_CAUSES: Readonly<Record<string, Cause>> = {
   account_suspended: "instagram", action_blocked: "instagram", challenge: "instagram", challenge_required: "instagram", challenged: "instagram",
   checkpoint_required: "instagram", instagram_session_killed: "instagram", login_redirect: "instagram", sentry_block: "instagram", suspended_on_first_contact: "instagram",
+  consent_required: "instagram", contact_point_required: "instagram", jar_check_checkpoint: "instagram",
   bad_password: "bad_password",
   budget_meter_failed: "ours", exit_pinned: "ours", exit_unusable: "ours", geo_blocked: "ours", proxy_blocked: "ours", transport: "ours",
   relogin_account_not_found: "instagram", relogin_challenge: "instagram", relogin_disabled: "instagram", relogin_gone: "instagram", relogin_suspended: "instagram",

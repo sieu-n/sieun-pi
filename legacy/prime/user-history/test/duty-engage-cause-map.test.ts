@@ -25,3 +25,9 @@ test("an Instagram verdict on an account that read no page in the 24 h before it
   assert.equal(causeOf({ code: "relogin_gone", readBefore: true, pages24h: 0 }), "found_idle");
   assert.equal(causeOf({ code: "account_suspended", readBefore: true, pages24h: 1 }), "instagram");
 });
+
+test("a contact point challenge after a served page is an Instagram kill, as in the crawler's map (prod 273 and 255, 11-25 23:07Z to 00:00Z)", () => {
+  assert.equal(causeOf({ code: "contact_point_required", readBefore: true, pages24h: 219 }), "instagram");
+  assert.equal(causeOf({ code: "consent_required", readBefore: true, pages24h: 10 }), "instagram");
+  assert.equal(causeOf({ code: "jar_check_checkpoint", readBefore: true, pages24h: 10 }), "instagram");
+});
