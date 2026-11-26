@@ -259,10 +259,12 @@ export function macDown(reading: MacReading, crawler?: CrawlerState): string[] {
  * out 7,690 pages a second at pressure 1 while swap fell from 12.3 to 9.2 GB reads usable here too.
  */
 export function macUnusableMinutes(lines: readonly WatchLine[]): { read: number; unusable: number; by: Partial<Record<UsableMiss, number>>; lastAt?: number;
-  ledBy?: Record<string, number>; lastGroups?: Partial<Record<MemoryGroupId, number>> } {
+  ledBy?: Record<string, number>; lastGroups?: Partial<Record<MemoryGroupId, number>>; lastRise?: { label: string; gb: number } } {
   const read = new Set<number>();
   let lastAt: number | undefined;
   let lastGroups: Partial<Record<MemoryGroupId, number>> | undefined;
+  let lastRise: { label: string; gb: number } | undefined;
+  let before: ReadonlyMap<string, number> = new Map();
   const missedIn = new Map<number, Set<UsableMiss>>();
   const leader = new Map<number, string>();
   const swapFell = swapFellAt(lines);
@@ -273,20 +275,24 @@ export function macUnusableMinutes(lines: readonly WatchLine[]): { read: number;
     if (!view || !usable || isLinuxReading(usable)) continue;
     const minute = Math.floor(Date.parse(line.at) / 60_000);
     read.add(minute);
+    const previous = before;
+    before = new Map((usable.owners ?? []).map(owner => [owner.label, owner.gb]));
     const missed = unusable(usable, swapFell(line, view));
     if (!missed.length) continue;
+    const rise = (usable.owners ?? []).map(owner => ({ label: owner.label, gb: Math.round((owner.gb - (previous.get(owner.label) ?? 0)) * 100) / 100 }))
+      .sort((a, b) => b.gb - a.gb)[0];
     missedIn.set(minute, new Set([...missedIn.get(minute) ?? [], ...missed]));
     const top = usable.owners?.[0];
     const rig = view?.jobRigs?.[0];
     if (top) leader.set(minute, rig && RIG_GROUPS.includes(groupOf(top.owner)) ? `${top.label} (job rig ~/${rig.dir.slice(0, 50)})` : top.label);
-    if (Date.parse(line.at) >= (lastAt ?? 0)) lastGroups = usable.groups;
+    if (Date.parse(line.at) >= (lastAt ?? 0)) { lastGroups = usable.groups; lastRise = previous.size && rise && rise.gb > 0 ? rise : undefined; }
     lastAt = Math.max(lastAt ?? 0, Date.parse(line.at));
   }
   const by: Partial<Record<UsableMiss, number>> = {};
   for (const misses of missedIn.values()) for (const miss of misses) by[miss] = (by[miss] ?? 0) + 1;
   const ledBy: Record<string, number> = {};
   for (const label of leader.values()) ledBy[label] = (ledBy[label] ?? 0) + 1;
-  return { read: read.size, unusable: missedIn.size, by, ...lastAt === undefined ? {} : { lastAt }, ...leader.size ? { ledBy } : {}, ...lastGroups ? { lastGroups } : {} };
+  return { read: read.size, unusable: missedIn.size, by, ...lastAt === undefined ? {} : { lastAt }, ...leader.size ? { ledBy } : {}, ...lastGroups ? { lastGroups } : {}, ...lastRise ? { lastRise } : {} };
 }
 
 /**
@@ -294,12 +300,15 @@ export function macUnusableMinutes(lines: readonly WatchLine[]): { read: number;
  * largest feed owner, and the groups of the newest one. On 11-04 the one new red minute (03:54:30Z, 8,014 swapouts a second) had browsers at
  * 28.4 GB with his own Google Chrome at 21.5 GB and agents at 3.3 GB, while the 43 minutes before it were MPS runs a job started (board step p754).
  * A largest owner the feed names by its script or app (RIG_GROUPS) carries the minute's largest job rig, whose dir names the job's session:
- * at 11:12:30Z on 11-08 a us-metal02 job's check over ssh read only as "bash".
+ * at 11:12:30Z on 11-08 a us-metal02 job's check over ssh read only as "bash". The newest red minute also names the owner that rose most since
+ * the line before: at 06:16:30Z on 11-26 Google Chrome stayed at 16.75 GB while a 5180 designer job's vitest over ssh rose to 7.47 GB as
+ * sshd-session, and the excerpt named only Chrome.
  */
 export function macRedHolders(day: ReturnType<typeof macUnusableMinutes>): string {
   const led = Object.entries(day.ledBy ?? {}).sort((a, b) => b[1] - a[1]).map(([label, n]) => `${label} in ${n}`).join(", ");
   const groups = Object.entries(day.lastGroups ?? {}).sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0)).map(([group, gb]) => `${group} ${gb} GB`).join(", ");
-  const newest = day.lastAt === undefined ? "" : `the newest at ${new Date(day.lastAt).toISOString().slice(11, 19)}Z${groups ? ` with ${groups}` : ""}`;
+  const rise = day.lastRise ? `, where ${day.lastRise.label} rose most since the line before, by ${day.lastRise.gb} GB` : "";
+  const newest = day.lastAt === undefined ? "" : `the newest at ${new Date(day.lastAt).toISOString().slice(11, 19)}Z${groups ? ` with ${groups}` : ""}${rise}`;
   return [led && `largest owner ${led}`, newest].filter(Boolean).join("; ");
 }
 

@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { WatchLine } from "../src/mac-usable-watch.ts";
 import { hostAwayOf, judge, type DutyMetric, type FlaggedSlice } from "../src/shared/chat-duties.ts";
-import { convexCommand, convexPushStale, crawlerHeld, LOCAL_CONVEX_COMMAND, MAC_COMMAND, measureLocalConvex, MAC_RETRY_MS, MAC_WINDOW_MS, MAC_PORTS, macDown, macUnusableMinutes, measureMac, measureStoreBox, parseConvexReading, parseMacReading, parseStoreBox, STORE_BOX, STORE_COMMAND, STORE_VM_IO_FULL_PCT } from "../scripts/duties/local-dev-uptime.ts";
+import { convexCommand, convexPushStale, crawlerHeld, LOCAL_CONVEX_COMMAND, MAC_COMMAND, measureLocalConvex, MAC_RETRY_MS, MAC_WINDOW_MS, MAC_PORTS, macDown, macRedHolders, macUnusableMinutes, measureMac, measureStoreBox, parseConvexReading, parseMacReading, parseStoreBox, STORE_BOX, STORE_COMMAND, STORE_VM_IO_FULL_PCT } from "../scripts/duties/local-dev-uptime.ts";
 
 const push = (outcome: string, at: string, lastGoodAt: string | null) =>
   `convex-push {  "count": 1,  "watchers": [],  "push": {    "outcome": "${outcome}",    "at": "${at}",    "reason": ${outcome === "failed" ? '"schema eval timed out (1s)"' : "null"},    "lastGoodAt": ${lastGoodAt ? `"${lastGoodAt}"` : "null"}  }}\n`;
@@ -83,6 +83,16 @@ test("the unusable excerpt names each red minute's largest owner and the newest 
   const result = await measureMac({ platform: "linux", exec: async () => reading("4.5", 44, ["200", "200"]), wait: async () => {},
     watch: async () => [held("2026-11-03T14:10:30.000Z", "run_mps_bench.sh", 9000), held("2026-11-04T03:53:30.000Z", "Google Chrome", 0), held("2026-11-04T03:54:30.014Z", "Google Chrome", 8014)] }, 0);
   assert.equal(result.flagged[0]!.excerpt, "Mac: 2 of 3 watched minutes in the last 24 h read unusable (swapouts 2; largest owner run_mps_bench.sh in 1, Google Chrome in 1; the newest at 03:54:30Z with browsers 28.38 GB, agents 3.27 GB)");
+});
+
+// 11-26 06:16:30Z: d12 named only Google Chrome, which held 16.75 GB all hour, while a job's vitest over ssh rose to 7.47 GB that minute.
+test("the newest red minute names the owner that rose most since the line before", () => {
+  const line = (at: string, swapoutsPerS: number, owners: { label: string; gb: number }[]): WatchLine => ({ host: "us-metal02", at, usable: null, workers: 0, workerGb: 0, top: [],
+    hosts: [{ name: "mac", usable: { pressureLevel: swapoutsPerS ? 2 : 1, swapoutsPerS, kernelTaskPct: 20, owners: owners.map(owner => ({ owner: `x:${owner.label}`, ...owner })) },
+      workers: 0, workerGb: 0, top: [] }] } as unknown as WatchLine);
+  const day = macUnusableMinutes([line("2026-11-26T06:15:30.000Z", 0, [{ label: "Google Chrome", gb: 16.74 }]),
+    line("2026-11-26T06:16:30.021Z", 9313, [{ label: "Google Chrome", gb: 16.75 }, { label: "sshd-session", gb: 7.47 }])]);
+  assert.match(macRedHolders(day), /largest owner Google Chrome in 1; .*sshd-session rose most since the line before, by 7.47 GB/);
 });
 
 // 11-08 11:12:30Z: a us-metal02 job's check, run on the Mac over ssh, read as other:bash at 5.17 GB, and d1 named no job.
