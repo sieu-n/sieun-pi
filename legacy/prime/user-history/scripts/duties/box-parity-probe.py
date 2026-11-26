@@ -450,6 +450,18 @@ def at_tip(paths, host):
     return [path for path in paths if os.path.dirname(path) in set(listed) | {""}]
 
 
+def off_tip(have, mac_paths, host):
+    """A box listing as "pruned:<json>", with the Mac paths whose folder branch(host)'s tip lacks: `gone` when the tip deleted the folder, so
+    the Mac is behind, and `later` when it never held it, so the folder reaches the box at its next take-in. On 11-26 auto-sns-agent 00ed8cfccf
+    moved apps/ci-e2e and 4 more into apps/ci/<scope>, and the Mac, before that land, still had the old folders."""
+    tip = set(os.path.dirname(path) for path in at_tip(mac_paths, host))
+    off = set(os.path.dirname(path) for path in mac_paths) - tip
+    deleted = set(folder for folder in off if git_bytes(["log", "-1", "--diff-filter=D", "--no-renames", "--format=%h", branch(host), "--", folder]).strip())
+    gone = [path for path in mac_paths if os.path.dirname(path) in deleted]
+    later = [path for path in mac_paths if os.path.dirname(path) in off - deleted]
+    return "pruned:" + json.dumps({"have": sorted(have), "gone": gone, "later": later})
+
+
 def blobs(path, host):
     """A file's git blob hash, then on the box every blob its real path held at a commit its checkout's HEAD descends from, as "blobs:<json list>".
 
@@ -517,7 +529,7 @@ def probe_text(spec, host):
 
 
 def probe_value(spec, host):
-    kind = next(k for k in spec if k not in ("expect", "cwd", "pattern", "at", "depth", "key", "names", "atTip", "intended", "shared", "follow", "synced", "gone", "held", "down"))
+    kind = next(k for k in spec if k not in ("expect", "cwd", "pattern", "at", "depth", "key", "names", "atTip", "macPaths", "intended", "shared", "follow", "synced", "gone", "held", "down"))
     if host == "mac" and kind not in READS:
         return "fail: %s is not a read, so the Mac side never runs it" % kind
     if kind == "const":
@@ -534,6 +546,8 @@ def probe_value(spec, host):
         found = sorted(glob.glob(expand(spec["glob"])))
         if spec.get("names"):
             paths = [os.path.relpath(f, REPO) for f in found]
+            if host == "box" and spec.get("atTip") and "macPaths" in spec:
+                return off_tip(at_tip(paths, host), spec["macPaths"], host)
             return names(at_tip(paths, host) if spec.get("atTip") else paths)
         return "ok" if found else "absent"
     if kind == "ls":

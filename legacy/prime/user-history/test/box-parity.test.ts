@@ -548,7 +548,7 @@ test("the box reads the checkout tip row only after the Mac read settles, so a c
   const rows: Row[] = [{ id: "node", tool: "node", probes: [{ version: "node" }] }, { id: "tip", tool: "checkout tip", probes: [{ tip: true }] }];
   const events: string[] = [];
   let finishMac!: () => void;
-  const mac = new Promise<void>(resolve => { finishMac = resolve; });
+  const mac = new Promise<ProbeOutput>(resolve => { finishMac = () => resolve(output("mac", {})); });
   const probe = async (part: readonly Row[]) => {
     events.push(`box ${part.map(row => row.id).join(",")}`);
     return output("box", Object.fromEntries(part.map(row => [row.id, [`read ${row.id}`]])));
@@ -574,6 +574,31 @@ const runProbe = (host: "mac" | "box", rows: readonly Row[], home: string): Prob
   const arg = Buffer.from(JSON.stringify({ host, rows, known: {} })).toString("base64");
   return JSON.parse(execFileSync("python3", [PROBE, arg], { env: { ...process.env, HOME: home }, encoding: "utf8" })) as ProbeOutput;
 };
+
+test("an env file in a folder the box's tip moved or has not landed is no box gap, and a moved one is listed as mac_stale (11-26, 00ed8cfccf)", async () => {
+  const home = mkdtempSync(join(tmpdir(), "box-parity-moved-"));
+  const repo = join(home, "Documents/Github/auto-sns-agent");
+  const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8",
+    env: { ...process.env, HOME: home, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } }).trim();
+  mkdirSync(join(repo, "apps/ci-e2e"), { recursive: true });
+  git("init", "-q", "-b", "dev/sieun");
+  writeFileSync(join(repo, "apps/ci-e2e/.env.staging"), "x");
+  git("add", "apps/ci-e2e/.env.staging");
+  git("commit", "-q", "-m", "ci-e2e");
+  mkdirSync(join(repo, "apps/ci/e2e"), { recursive: true });
+  git("mv", "apps/ci-e2e/.env.staging", "apps/ci/e2e/.env.staging");
+  git("commit", "-q", "-m", "fold into apps/ci");
+  writeFileSync(join(repo, "apps/ci/e2e/.env.keys"), "k");
+  const row = realRows().find(entry => entry.id === "auto-sns-agent-env-files")!;
+  const macPaths = ["apps/ci-e2e/.env.keys", "apps/ci-e2e/.env.staging", "apps/fresh/.env"];
+  const mac = output("mac", { [row.id]: row.mac!.map(spec => spec.glob === "~/Documents/Github/auto-sns-agent/apps/*/.env*" ? `set:${JSON.stringify(macPaths)}` : "set:[]") });
+  const box = await probeBoxAfterMac([row], Promise.resolve(mac), async rows => runProbe("box", rows, home));
+  const result = judgeRows([row], mac, box, new Map());
+  assert.deepEqual(result.off, []);
+  assert.equal(result.stale.length, 1);
+  assert.match(result.stale[0]!.why, /apps\/ci-e2e\/\.env\.keys, apps\/ci-e2e\/\.env\.staging$/);
+  assert.ok(box.values[row.id]!.some(value => value.includes("apps/ci/e2e/.env.keys")), "the box reads the new apps/ci/<scope> folders");
+});
 
 test("the Aside rows read aside account status on the Mac, so a Mac whose Aside app is down asks nothing of the box", () => {
   const ids = ["skill-aside-browser-python", "cli-aside", "tools-panel-check-aside-tabs", "tools-panel-check-aside-account"];

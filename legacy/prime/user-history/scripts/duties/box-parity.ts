@@ -16,7 +16,8 @@ import { CHECKS, type Outcome, realDeps, runChecks } from "./skills-and-tools.ts
  *   both sides, the Mac over one `ssh mac` that only reads (see the probe's docstring). The Mac is the standard, so a Mac value that is absent or
  *   failing asks nothing of the box, a set on the box may hold more than the Mac's, and a CLI version on the box may be newer. The global
  *   harness entries count only a Mac entry the shared state still holds, so a deletion the Mac has not synced yet is no box gap (syncedShortfall), and the
- *   skills folder skips a Mac entry sieun-pi's origin/main deleted (prunedShortfall), listed as `mac_stale`. The Aside rows read `aside account status` on the
+ *   skills folder skips a Mac entry sieun-pi's origin/main deleted (prunedShortfall), listed as `mac_stale`. An atTip glob skips a Mac path whose
+ *   folder the box's dev/sieun tip lacks: listed as `mac_stale` when the tip deleted the folder, and compared after the box's next take-in otherwise. The Aside rows read `aside account status` on the
  *   Mac too, so a Mac whose Aside app is down asks nothing of the box, whose `aside` runs the Mac's CLI over ssh. A probe with `intended` (Poppler), a row with `byDesign`
  *   and a Mac commit the Mac never pushed to origin (`mac_unpushed`) are listed and never counted. Rows with a `panel` probe run that Skills and tools check (skills-and-tools.ts) here, without its fixes; a fail
  *   whose detail the probe's `shared` regex matches comes from a service both hosts use, such as Google on Virev or an account in the box's
@@ -95,16 +96,17 @@ export function syncedShortfall(macSet: readonly string[], box: string): string 
   return missing.length ? `box lacks ${missing.length} of the Mac's ${macSet.length} that the shared state holds: ${listed(missing)}` : null;
 }
 
-interface Pruned { have: string[]; gone: string[] }
+interface Pruned { have: string[]; gone: string[]; later?: string[] }
 const prunedParts = (macSet: readonly string[], box: string) => {
-  const { have, gone } = JSON.parse(box.slice(7)) as Pruned;
-  const absent = macSet.filter(entry => !have.includes(entry));
+  const { have, gone, later = [] } = JSON.parse(box.slice(7)) as Pruned;
+  const absent = macSet.filter(entry => !have.includes(entry) && !later.includes(entry));
   return { missing: absent.filter(entry => !gone.includes(entry)), stale: absent.filter(entry => gone.includes(entry)) };
 };
 
 /**
  * The entries the box lacks, from a box `pruned:` value: a Mac entry the box's repo deleted at its ref and holds no longer is no box gap. The Mac
  * links its skills into a runtime release that can lag sieun-pi's origin/main, and on 11-18 it still linked spec-report, which 2801a053 deleted.
+ * An atTip glob also lists in `later` the Mac paths in a folder the box's tip never held, which reach the box at its next take-in.
  */
 export function prunedShortfall(macSet: readonly string[], box: string): string | null {
   const { missing } = prunedParts(macSet, box);
@@ -492,16 +494,30 @@ async function probeBox(rows: readonly Row[]): Promise<ProbeOutput> {
 }
 
 /**
+ * The rows with each box atTip glob given the Mac's paths at the same index as `macPaths`, so the box probe can tell a Mac path in a folder
+ * its tip deleted (the Mac is behind) or never held (it lands later) from a file the box lacks.
+ */
+export function withMacPaths(rows: readonly Row[], mac: ProbeOutput): Row[] {
+  return rows.map(row => {
+    const macPaths = (mac.values[row.id] ?? []).map(value => setOf(value));
+    const box = probesOf(row, "box").map((spec, index) => spec.atTip === true && macPaths[index] ? { ...spec, macPaths: macPaths[index] } : spec);
+    return { ...row, box };
+  });
+}
+
+/**
  * The box read, with the rows whose probe reads the checkout tip started only once the Mac read has settled: the box probe fetches origin's dev
  * branches before it lists them, so a commit the Mac pushed just before its read is on origin by then. On 10-28 a parallel read listed 9, then 2
- * Mac commits pushed since the box's last fetch as box gaps. Every other row reads at once, alongside the Mac.
+ * Mac commits pushed since the box's last fetch as box gaps. The rows with an atTip glob wait too and get the Mac's paths (withMacPaths). Every
+ * other row reads at once, alongside the Mac.
  */
-export async function probeBoxAfterMac(rows: readonly Row[], mac: Promise<unknown>, probe: (rows: readonly Row[]) => Promise<ProbeOutput> = probeBox):
+export async function probeBoxAfterMac(rows: readonly Row[], mac: Promise<ProbeOutput | Error>, probe: (rows: readonly Row[]) => Promise<ProbeOutput> = probeBox):
   Promise<ProbeOutput> {
-  const readsTip = (row: Row) => probesOf(row, "box").some(spec => spec.tip === true);
+  const readsTip = (row: Row) => probesOf(row, "box").some(spec => spec.tip === true || spec.atTip === true);
   const later = rows.filter(readsTip);
   const read = (part: readonly Row[]) => part.length ? probe(part) : Promise.resolve(undefined);
-  const [first, second] = await Promise.all([read(rows.filter(row => !readsTip(row))), mac.then(() => read(later), () => read(later))]);
+  const [first, second] = await Promise.all([read(rows.filter(row => !readsTip(row))),
+    mac.then(out => read(out instanceof Error ? later : withMacPaths(later, out)), () => read(later))]);
   const parts = [first, second].filter((part): part is ProbeOutput => part !== undefined);
   return { host: "box", values: Object.assign({}, ...parts.map(part => part.values)) as Record<string, string[]>,
     versions: Object.assign({}, ...parts.map(part => part.versions)) as Record<string, unknown>, ms: parts.reduce((sum, part) => sum + part.ms, 0) };

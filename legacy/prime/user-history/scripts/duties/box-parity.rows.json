@@ -1513,6 +1513,11 @@
     "atTip": true
    },
    {
+    "glob": "~/Documents/Github/auto-sns-agent/apps/*/*/.env*",
+    "names": true,
+    "atTip": true
+   },
+   {
     "glob": "~/Documents/Github/auto-sns-agent/packages/*/.env*",
     "names": true,
     "atTip": true
@@ -1526,6 +1531,11 @@
   "box": [
    {
     "glob": "~/Documents/Github/auto-sns-agent/apps/*/.env*",
+    "names": true,
+    "atTip": true
+   },
+   {
+    "glob": "~/Documents/Github/auto-sns-agent/apps/*/*/.env*",
     "names": true,
     "atTip": true
    },
