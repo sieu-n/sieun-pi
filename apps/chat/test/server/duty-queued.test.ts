@@ -75,11 +75,23 @@ before(async () => {
   host.append(d5job, 1, answer("error"));
   d5job.running.set(1, { stop: () => aborted.push("job-d5") });
   writeFileSync(join(work, "d5.up"), "90");
+  // d6: its job answered once and its root turn ended, and pi-pool parks the call of a subagent under its tree for an account, as it parked
+  // five duty jobs on 11-26. The fake pool's tree record says the wait; its state.json record says since when.
+  const parked = host.addThread({ id: "job-parked", name: "Duty d6 job", status: "sleeping", createdAt: now - 3 * HOUR });
+  host.append(parked, 1, answer("stop"));
+  parked.running.set(1, { stop: () => aborted.push("job-parked") });
+  const pool = process.env.PI_POOL_DIR!;
+  const fake = JSON.parse(readFileSync(join(pool, "fake-pi-pool.json"), "utf8"));
+  fake.trees["pi-durable:job-parked"] = { priority: "low", pins: {}, current: {}, wait: { anthropic: { account: "claude-limited", slot_at: now / 1000 + 600 } } };
+  writeFileSync(join(pool, "fake-pi-pool.json"), JSON.stringify(fake));
+  const state = JSON.parse(readFileSync(join(pool, "state.json"), "utf8"));
+  state.sessions["pi-durable:job-parked"] = { vends: {}, wait: { anthropic: { account: "claude-limited", slot_at: now / 1000 + 600, since: (now - 2 * HOUR) / 1000 } } };
+  writeFileSync(join(pool, "state.json"), JSON.stringify(state));
   await s.app.threads.refresh();
   await s.app.boards.saveDuties(ids.vent, {
-    duties: [duty("d1"), duty("d2"), duty("d3"), duty("d4", 100), fixable("d5")].map(entry => ({ ...entry, precheck: { ...entry.precheck, cwd: work } })),
+    duties: [duty("d1"), duty("d2"), duty("d3"), duty("d4", 100), fixable("d5"), duty("d6")].map(entry => ({ ...entry, precheck: { ...entry.precheck, cwd: work } })),
     runs: { d1: [missed("d1", now - HOUR, "job-asleep")], d2: [missed("d2", now - HOUR, "job-queued")], d3: [missed("d3", now - HOUR, "job-done")], d4: [missed("d4", now - HOUR, "job-held")],
-      d5: [missed("d5", now - HOUR, "job-d5")] },
+      d5: [missed("d5", now - HOUR, "job-d5")], d6: [missed("d6", now - 3 * HOUR, "job-parked")] },
   } as DutyFile);
 });
 after(async () => {
@@ -142,6 +154,19 @@ test("a duty whose job ended runs its precheck and starts a job", async () => {
   await until(() => Promise.resolve(runsOf("d3")), runs => runs.length === 2 && !!runs[0]!.job);
   assert.equal(runsOf("d3")[0]!.verdict, "missed");
   assert.equal(modes("d3")[0], "run");
+});
+
+test("a job that answered once and whose subagent pi-pool parks for an account reads as waiting since the pool's wait began", async () => {
+  const clock = new Date(now - 2 * HOUR + 9 * HOUR).toISOString().slice(11, 16);
+  await run("d6");
+  await until(() => Promise.resolve(runsOf("d6")), runs => runs.length === 2);
+  const [measured] = runsOf("d6");
+  assert.deepEqual(measured!.job, { id: "job-parked", name: "Duty d6 job" });
+  assert.match(measured!.summary, new RegExp(`its job Duty d6 job is waiting for a model account since ${clock} KST, so this run started none`));
+  assert.deepEqual(said("job-parked"), [], "a job that answered gets no steer");
+  assert.ok(!aborted.includes("job-parked"));
+  await s.app.boards.tick();
+  await until(async () => (await row("d6")).waitingForAccountSince, since => since === now - 2 * HOUR);
 });
 
 test("the card says since when the duty's job waits for a model account, and drops it once the job runs", async () => {

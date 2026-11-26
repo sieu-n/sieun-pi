@@ -8,6 +8,7 @@
  * reaches the thread that set it. Check-in jobs are server/check-in-job.ts, wakes server/wakes.ts.
  */
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { isAbsolute, join, relative } from "node:path";
 import type { AgentSummary, BoardOp, BoardRow, BoardView, BoardWrite, ChatBoard, CheckInPatch, CheckInView, DutyAction, DutyRow, DutyView, ForYouItem, PlanItem } from "../web/src/lib/api/types.ts";
 import { applyBoardOp, BOARD_PREFIX, emptyBoard, idsTop, needsGo, nextIds, parseBoard, parseBoardOps, stepGo } from "../web/src/lib/api/shared/chat-board.ts";
@@ -18,6 +19,7 @@ import { CHECK_IN_DUTY_ID, morningTime, upsertDuty, verdictMetrics, type AfterMe
 import { asAfter, clearPrecheck, fixesOn, measure, measureAfter, runStamp, type PrecheckLaunch } from "./duty-run.ts";
 import { closedFixes } from "../web/src/lib/api/shared/duty-fixes.ts";
 import { closedUntil, pushMisses } from "../../../legacy/prime/user-history/src/duty-push.ts";
+import { accountSlot, poolDir, pooledProviders, readPoolStatus, threadKey } from "../../../legacy/prime/user-history/src/chat-pool.ts";
 import { dutyCard, judgedRun, missStreak } from "../web/src/lib/api/shared/duty-card.ts";
 import type { ChatAgent } from "../web/src/lib/api/shared/types.ts";
 import { threadModel, type Agents } from "./agents.ts";
@@ -833,6 +835,8 @@ export class Boards {
   private readonly waitReads = new Set<string>();
   /** Duty jobs that got a model answer, whose entries `readAccountWait` reads no more. */
   private readonly answered = new Set<string>();
+  /** Per duty job, since when pi-pool holds its tree in an account wait (`poolWaitSince`), kept while the wait lasts. */
+  private readonly poolWaits = new Map<string, number>();
 
   /**
    * Whether a duty's or check-in's job still works: it or a subagent under it works or waits on a wake (`workingJobs`), this server still waits
@@ -1101,11 +1105,16 @@ export class Boards {
   /**
    * What a run does beside the duty's last job that still works, and the words it adds to the run's summary. A job with no model answer yet
    * waits for an account and has read nothing, so it keeps its place in pi-pool's line: a due run steers this run's brief into it, which it
-   * reads after its first answer, and a run with nothing due stops it. A job that answered works its brief, and the run leaves it alone.
+   * reads after its first answer, and a run with nothing due stops it. A job that answered works its brief, and the run leaves it alone; its
+   * summary says since when it waits when pi-pool parks its tree (`poolWaitSince`).
    */
   private async besideBusyJob(chat: string, duty: Duty, job: { id: string; name: string }, record: DutyRunRecord, brief: string | null): Promise<string> {
     const waits = !(await this.answeredOnce(job.id).catch(() => true));
-    if (!waits) return `; its job ${job.name} still works, so this run started none`;
+    if (!waits) {
+      const since = await this.poolWaitSince(job.id).catch(() => null);
+      return since === null ? `; its job ${job.name} still works, so this run started none`
+        : `; its job ${job.name} is waiting for a model account since ${new Date(since + OWNER_ZONE_OFFSET_MS).toISOString().slice(11, 16)} KST, so this run started none`;
+    }
     try {
       if (!brief) {
         await this.host.abort(job.id);
@@ -1524,7 +1533,8 @@ export class Boards {
    * Reads whether a duty's newest job waits for a model account and keeps since when in `accountWaits`, with a `duties` event on a change, so
    * the card says "waiting for a model account since 12:01". The job waits while pi-host reads it running or sleeping and either its place in
    * pi-pool's turn queue is `queued` or it has no model answer yet. A job pi-pool holds for an account slot reads `none` in the turn queue, and
-   * its only answers are errors such as "the token hook gave no token" (the fable auditor's sweep jobs, 11-22), so an error is no answer.
+   * its only answers are errors such as "the token hook gave no token" (the fable auditor's sweep jobs, 11-22), so an error is no answer. A
+   * job that answered and still works waits too while pi-pool parks its tree, since the pool's wait began (`poolWaitSince`).
    */
   private async readAccountWait(chat: string, dutyId: string, runs: readonly DutyRunRecord[]): Promise<void> {
     const key = `${chat}/${dutyId}`;
@@ -1541,6 +1551,10 @@ export class Boards {
         // The job waits since the run that started it, the oldest run that names it.
         if (ticket?.place.state === "queued" || !(await this.answeredOnce(job))) since = runsOfJob(sorted, job).at(-1)!.at;
       }
+      // A job that answered once still waits while pi-pool parks its tree, as it parks a subagent's call (`poolWaitSince`).
+      if (since === undefined && run?.job && this.jobBusy(run.job, workingJobs(this.threads.allSummaries(), new Set(this.pendingWakes().map(wake => wake.session))))) {
+        since = (await this.poolWaitSince(run.job.id)) ?? undefined;
+      }
       if (since === this.accountWaits.get(key)) return;
       if (since === undefined) this.accountWaits.delete(key);
       else this.accountWaits.set(key, since);
@@ -1550,6 +1564,33 @@ export class Boards {
     } finally {
       this.waitReads.delete(key);
     }
+  }
+
+  /**
+   * Since when pi-pool holds a duty job's tree `pi-durable:<job>` in an account wait, in epoch ms, or null when it holds none. The job's
+   * subagents ask pi-pool under the same tree, so this reads a parked subagent too: on 11-26 five duty jobs whose root turns had ended read
+   * "still works" for up to 6 h while a subagent sat parked for a Claude account (~/work/stale-duty-jobs/findings.md). `pi-pool who` says
+   * whether the tree waits; pi-pool's state.json says since when, which `who` does not print, so it is read once per wait.
+   */
+  private async poolWaitSince(job: string): Promise<number | null> {
+    const thread = { session: `pi-durable:${job}`, model: null };
+    const parts = (await readPoolStatus([thread])).threads.get(threadKey(thread));
+    const now = Date.now();
+    const provider = parts && pooledProviders.find(name => (accountSlot(parts, name) ?? 0) > now);
+    if (!provider) {
+      this.poolWaits.delete(job);
+      return null;
+    }
+    const kept = this.poolWaits.get(job);
+    if (kept !== undefined) return kept;
+    let since = now;
+    try {
+      const state = JSON.parse(await readFile(join(poolDir(), "state.json"), "utf8")) as { sessions?: Record<string, { wait?: Record<string, { since?: unknown }> }> };
+      const said = state.sessions?.[thread.session]?.wait?.[provider]?.since;
+      if (typeof said === "number") since = said * 1000;
+    } catch {}
+    this.poolWaits.set(job, since);
+    return since;
   }
 
   /**
