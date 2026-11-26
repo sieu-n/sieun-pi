@@ -23,6 +23,8 @@ import { roomIdNote } from "../../src/durable/room-post.ts";
 import { DurableThreads } from "../../src/durable/threads.ts";
 import { HARNESS_DIGEST_DELTA_PREFIX, HARNESS_DIGEST_DELTA_SUFFIX, HARNESS_DIGEST_PREFIX, HARNESS_DIGEST_SUFFIX } from "../../src/durable/vendor/prime-harness.ts";
 import { MODEL, textOf } from "./crash-scenario.ts";
+import { countMemory, deleteMemory, getMemory } from "../../../pi-harness/src/core/memory-store.ts";
+import { migrateMemory } from "../../../pi-harness/src/core/store.ts";
 
 const fixture = join(import.meta.dirname, "../fixtures/prime-harness");
 const expected = JSON.parse(readFileSync(join(fixture, "expected.json"), "utf8"));
@@ -66,6 +68,38 @@ test("an agent's auto-refine review gets its local entries nearest the conversat
   assert.deepEqual(nearestLocal(state, ["how do I release apps chat?"], 2)[0], "memory:deploy_rule");
   assert.equal(nearestLocal(state, ["how do I release apps chat?"], 2).length, 2);
   assert.ok(!nearestLocal(state, ["release"], 10).includes("memory:release_global"));
+});
+
+test("after an agent's memory moves into memory.sqlite, an update lists no moved entry as removed and its totals count the store", async () => {
+  const s = stores("moved");
+  const flags = digestFlags(PRIME_TOOLS, [{ name: "refine" }]);
+  // The digest an older pi-host sent, with the agent's memory still in its harness_state.json.
+  const first = nextDelivery({ state: mergedHarnessState(s.agentDir, s.local), flags, input: testCase.input, recent: testCase.recent, delivered: [], after: 0, now: Date.parse(testCase.since) });
+  assert.ok(first);
+  const shown = [...first.text.matchAll(/^- \[local:([^\]]+)\] /gm)].map(match => match[1]);
+  assert.ok(shown.length >= 1, "the first digest shows local entries");
+  // A changed local entry, a removed global one and a new refinement, as in Prime's update below, and then the move.
+  s.put(join(fixture, "changed"));
+  await migrateMemory(s.local);
+  assert.equal(countMemory(s.local), 2);
+  const globals = Object.values(mergedHarnessState(s.agentDir, s.local).entries.memory).filter(entry => entry.scope === "global").length;
+  const update = nextDelivery({
+    state: mergedHarnessState(s.agentDir, s.local), flags, input: testCase.input, recent: testCase.recent, delivered: [first], after: 5, now: Date.parse(testCase.since) + 1,
+    agent: "test agent", memoryDir: s.local,
+  });
+  assert.ok(update);
+  assert.doesNotMatch(update.text, /removed \[local:/, "a moved entry is not removed");
+  assert.ok(update.text.startsWith(HARNESS_DIGEST_DELTA_PREFIX), update.text);
+  assert.match(update.text, /- removed \[global:staging_deploys\]/, "a global entry that went is still removed");
+  assert.equal(/Totals now: .*\bmemory (\d+)/.exec(update.text)?.[1], String(globals + 2), "the global memories and the store's two");
+
+  // An entry deleted from the store after the move is still reported removed.
+  deleteMemory(s.local, [shown.find(id => getMemory(s.local, id!))!]);
+  const after2 = nextDelivery({
+    state: mergedHarnessState(s.agentDir, s.local), flags, input: testCase.input, recent: testCase.recent, delivered: [first], after: 6, now: Date.parse(testCase.since) + 2,
+    agent: "test agent", memoryDir: s.local,
+  });
+  assert.match(after2?.text ?? "", /removed \[local:/);
 });
 
 test("the digest and its update are Prime's own bytes for the same global and local entries", () => {

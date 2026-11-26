@@ -14,7 +14,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, r
 import { basename, dirname, join, resolve } from "node:path";
 import type { AgentFolder, AgentId, ConfigFile, HarnessEntryView, MemoryInput } from "../web/src/lib/api/types.ts";
 import { folderContextFiles } from "../../../packages/pi-host/src/durable/context-files.ts";
-import { memoryDbPath, memoryRequest, type MemoryAnswer, type MemoryRequest } from "../../../packages/pi-harness/src/core/memory-store.ts";
+import { memoryDbPath, memoryRequest, memoryTerms, type MemoryAnswer, type MemoryRequest } from "../../../packages/pi-harness/src/core/memory-store.ts";
 import { migrateMemory, parseState, updateState, type HarnessEntry, type HarnessState } from "../../../packages/pi-harness/src/core/store.ts";
 import type { AgentRecord, RoomId } from "./agent-store.ts";
 
@@ -304,8 +304,8 @@ export class AgentFolders {
     const dir = agentFolderDir(agentsDir, agent);
     const [brief, working, store, page] = await Promise.all([
       files.get(briefPath(dir)), files.get(workingPath(dir)), files.get(harnessPath(dir)),
-      // A relay older than the memory op answers an error; its pi-host has not moved memory out of the file yet either.
-      files.memory(dirname(harnessPath(dir)), { action: "page", limit: MEMORY_PAGE }).catch(() => ({ count: 0, entries: [] })),
+      // A relay older than the memory op keeps memory in the file, which folderView lists whole; an away box reads as an empty page.
+      this.boxMemory(files, dirname(harnessPath(dir)), { action: "page", limit: MEMORY_PAGE }, true).catch(() => ({ count: 0, entries: [] })),
     ]);
     const byPath = new Map([[briefPath(dir), brief], [workingPath(dir), working]]);
     return folderView(agent, dir, brief, working, parseStore(store.text), page, (label, path, opts) => remoteInfo(label, path, byPath.get(path) ?? store, opts));
@@ -321,16 +321,55 @@ export class AgentFolders {
     }
     const dir = dirname(harnessPath(agentFolderDir(agentsDir, agent)));
     const found = query.trim()
-      ? await files.memory(dir, { action: "search", query, limit: limit + offset }).then(answer => ({ ...answer, entries: answer.entries.slice(offset) }))
-      : await files.memory(dir, { action: "page", limit, offset });
+      ? await this.boxMemory(files, dir, { action: "search", query, limit: limit + offset }).then(answer => ({ ...answer, entries: answer.entries.slice(offset) }))
+      : await this.boxMemory(files, dir, { action: "page", limit, offset });
     return { count: found.count, entries: memoryViews(found.entries) };
+  }
+
+  /**
+   * A memory request on another box. A box whose relay and pi-host predate `memory.sqlite` (the Mac on release-8ceff51, 11-26) answers
+   * "unknown op memory", and its memory stays in `harness_state.json`, so the request runs on that file through `file_get` and `file_put`
+   * and nothing moves out of it. `pageOnly` answers such a box with an empty page, because folderView lists the file's entries itself.
+   */
+  private async boxMemory(files: BoxFiles, dir: string, request: MemoryRequest, pageOnly = false): Promise<MemoryAnswer> {
+    try {
+      return await files.memory(dir, request);
+    } catch (error) {
+      if (!/unknown op memory/.test(error instanceof Error ? error.message : String(error))) throw error;
+    }
+    if (pageOnly) return { count: 0, entries: [] };
+    const path = join(dir, "harness_state.json");
+    const state = stateOf((await files.get(path)).text);
+    const all = Object.values(state.entries.memory).sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)));
+    const count = () => Object.keys(state.entries.memory).length;
+    switch (request.action) {
+      case "page": return { count: all.length, entries: all.slice(request.offset ?? 0, (request.offset ?? 0) + request.limit) };
+      case "get": return { count: all.length, entries: all.filter(entry => entry.id === request.id) };
+      case "search": {
+        const terms = memoryTerms(request.query);
+        const score = (entry: HarnessEntry) => {
+          const own = new Set(memoryTerms(`${entry.id} ${entry.title} ${entry.content}`));
+          return terms.filter(term => own.has(term)).length;
+        };
+        const hits = all.map(entry => ({ entry, score: score(entry) })).filter(hit => hit.score > 0).sort((a, b) => b.score - a.score);
+        return { count: all.length, entries: hits.slice(0, request.limit).map(hit => hit.entry) };
+      }
+      case "put":
+        for (const entry of request.entries) state.entries.memory[entry.id] = entry;
+        await files.put(path, stateText(state));
+        return { count: count(), entries: [] };
+      case "delete":
+        for (const id of request.ids) delete state.entries.memory[id];
+        await files.put(path, stateText(state));
+        return { count: count(), entries: [] };
+    }
   }
 
   /** A memory entry's current copy on the agent's box, from `memory.sqlite` or, before the move, from the file. */
   private async keptMemory(files: BoxFiles, dir: string, id: string): Promise<{ entry?: HarnessEntry; inFile: boolean; state: HarnessState }> {
-    const path = harnessPath(dir);
+    const path = join(dir, "harness_state.json");
     const state = stateOf((await files.get(path)).text);
-    const stored = (await files.memory(dirname(path), { action: "get", id })).entries[0];
+    const stored = (await this.boxMemory(files, dir, { action: "get", id })).entries[0];
     const filed = state.entries.memory[id];
     return { entry: stored && (!filed || stored.updated_at >= filed.updated_at) ? stored : filed, inFile: !!filed, state };
   }
@@ -354,7 +393,7 @@ export class AgentFolders {
     if (kind === "memory") {
       const id = harnessSlug(input.title, kind);
       if ((await this.keptMemory(files, dirname(path), id)).entry) throw new EntryExists(`${kind} entry '${id}' already exists`);
-      await files.memory(dirname(path), { action: "put", entries: [memoryEntry(id, input, source)] });
+      await this.boxMemory(files, dirname(path), { action: "put", entries: [memoryEntry(id, input, source)] });
       return id;
     }
     const state = stateOf((await files.get(path)).text);
@@ -370,7 +409,7 @@ export class AgentFolders {
     if (kind === "memory") {
       const { entry } = await this.keptMemory(files, dirname(path), id);
       if (!entry) throw new EntryMissing(`${kind} entry '${id}' does not exist`);
-      await files.memory(dirname(path), { action: "put", entries: [memoryEntry(id, input, source, entry)] });
+      await this.boxMemory(files, dirname(path), { action: "put", entries: [memoryEntry(id, input, source, entry)] });
       return;
     }
     const state = stateOf((await files.get(path)).text);
@@ -385,7 +424,7 @@ export class AgentFolders {
     if (kind === "memory") {
       const { entry, inFile, state } = await this.keptMemory(files, dirname(path), id);
       if (!entry) throw new EntryMissing(`${kind} entry '${id}' does not exist`);
-      await files.memory(dirname(path), { action: "delete", ids: [id] });
+      await this.boxMemory(files, dirname(path), { action: "delete", ids: [id] });
       if (inFile) {
         delete state.entries.memory[id];
         await files.put(path, stateText(state));

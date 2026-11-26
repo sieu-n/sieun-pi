@@ -147,7 +147,9 @@ export function nextDelivery(input: {
   const digest = formatDigest(input.state, { ...input.flags, queryTerms: digestQueryTerms(input.input, input.recent, input.goal) }, input.agent, memory);
   const full = HARNESS_DIGEST_PREFIX + digest + HARNESS_DIGEST_SUFFIX;
   if (!latest) return { after: input.after, at: input.now, text: full, digest, stateFingerprint };
-  const delta = latest.stateFingerprint === stateFingerprint ? undefined : formatHarnessDigestDelta(input.state, input.delivered.map(delivery => delivery.text), latest.at);
+  const deliveredTexts = input.delivered.map(delivery => delivery.text);
+  const delta = latest.stateFingerprint === stateFingerprint ? undefined
+    : memory ? storeDelta(input.state, deliveredTexts, latest.at, memory.dir) : formatHarnessDigestDelta(input.state, deliveredTexts, latest.at);
   if (delta === undefined && latest.stateFingerprint !== stateFingerprint) return { after: input.after, at: input.now, text: full, digest, stateFingerprint, stacked: true };
   const recallText = recall.length ? [`Agent ${input.agent}'s memory entries that match this input:`, ...recall.map(agentLine)].join("\n") : "";
   const text = HARNESS_DIGEST_DELTA_PREFIX + [recallText, delta ?? ""].filter(Boolean).join("\n\n") + HARNESS_DIGEST_DELTA_SUFFIX;
@@ -155,6 +157,26 @@ export function nextDelivery(input: {
 }
 
 const AGENT_LINE_ID = /^- \[agent:([^\]]+)\] /gm;
+const LOCAL_LINE_ID = /^- \[local:([^\]]+)\] /gm;
+
+/**
+ * Prime's delta for an agent's thread, whose local memory lives in `memory.sqlite` and not in the state. A `[local:<id>]` line an earlier
+ * digest showed, from before the store moved, reads its entry from the store, so a moved entry is not listed as removed, and the totals
+ * count the store's memory. On 11-26 the move on metal listed about 50 moved entries as "removed ... Stop following it" and read memory 751
+ * where agent factory's store held 926 more.
+ */
+function storeDelta(state: HarnessState, delivered: readonly string[], since: number, dir: string): string | undefined {
+  const memory = { ...state.entries.memory };
+  for (const id of new Set(delivered.flatMap(text => [...text.matchAll(LOCAL_LINE_ID)].map(match => match[1]!)))) {
+    // mergeHarnessStates keys a local entry `local:<id>` when a global entry holds its id.
+    if (memory[id]?.scope === "local" || memory[`local:${id}`]) continue;
+    const entry = getMemory(dir, id);
+    if (entry) memory[memory[id] ? `local:${id}` : id] = { ...entry, scope: "local" } as unknown as HarnessEntry;
+  }
+  const delta = formatHarnessDigestDelta({ ...state, entries: { ...state.entries, memory } }, delivered, since);
+  const total = Object.values(state.entries.memory).filter(entry => entry.scope !== "local").length + countMemory(dir);
+  return delta?.replace(/^(Totals now: .*\bmemory )\d+/m, `$1${total}`);
+}
 
 /** The memory entries the next input should bring: the best matches no delivery shows yet, then shown entries changed since the last one. */
 function turnRecall(memory: AgentMemory, delivered: readonly DigestDelivery[]): HarnessEntry[] {

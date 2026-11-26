@@ -9,6 +9,7 @@ import { homedir, hostname, platform } from "node:os";
 import { basename, dirname, isAbsolute, join, sep } from "node:path";
 import { instructionFiles } from "../../../apps/chat/server/agent-folder.ts";
 import { memoryRequest, type MemoryAnswer, type MemoryRequest } from "../../../packages/pi-harness/src/core/memory-store.ts";
+import { migrateMemory } from "../../../packages/pi-harness/src/core/store.ts";
 import { defaultProjects, type BoxInfo, type InstructionsAnswer } from "./protocol.ts";
 
 /** How much of a check's output comes back; the same tail as legacy wakes.ts CHECK_TAIL. */
@@ -95,6 +96,8 @@ export async function memoryOp(args: Record<string, unknown>, agentsDir: string)
   const dir = await underAgents(args.dir, agentsDir);
   const request = args.request as MemoryRequest | undefined;
   if (!request || typeof request !== "object" || typeof request.action !== "string") throw new Error("memory needs a request with an action");
+  // This relay runs from the same release as the box's pi-host, which reads memory.sqlite, so entries an older writer left in the file move now.
+  await migrateMemory(dir);
   return memoryRequest(dir, request);
 }
 

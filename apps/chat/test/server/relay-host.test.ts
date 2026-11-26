@@ -245,6 +245,34 @@ describe("agents on another box", () => {
     assert.deepEqual(found.body.entries.map((e: { id: string }) => e.id), ["mac_sleeps"]);
   });
 
+  test("on a box whose relay predates the memory op, memory is read and written in its harness_state.json, and nothing moves out", async () => {
+    const file = "/Users/test/.pi/agent/agents/mac-agent/harness/harness_state.json";
+    const kept = s.relay.files.get(file);
+    const old = { id: "old_rule", kind: "memory", title: "Old rule", content: "Written by the old pi-host.", path: "general", scope: "local", reference: {}, arguments: {}, metadata: {}, source: "agent", created_at: "2026-11-20T00:00:00.000000+00:00", updated_at: "2026-11-20T00:00:00.000000+00:00", version: 1 };
+    s.relay.files.set(file, JSON.stringify({ schema: 1, entries: { prompt: {}, memory: { old_rule: old }, skill: {}, subagent: {} }, refinements: [] }));
+    s.relay.noMemoryOp = true;
+    try {
+      const folder = await s.call("GET", `/api/agents/${agent.id}/folder`);
+      assert.equal(folder.status, 200, JSON.stringify(folder.body));
+      assert.equal(folder.body.memory.memoryCount, 1);
+      assert.ok(folder.body.memory.entries.some((e: { id: string }) => e.id === "old_rule"), "the Memory tab lists the file's entry");
+      const made = await s.call("POST", `/api/agents/${agent.id}/memory`, { title: "Mac wakes", content: "The Mac wakes at 07:00." });
+      assert.equal(made.status, 200);
+      const store = JSON.parse(s.relay.files.get(file)!);
+      assert.deepEqual(Object.keys(store.entries.memory).sort(), ["mac_wakes", "old_rule"]);
+      const found = await s.call("GET", `/api/agents/${agent.id}/memory?q=wakes`);
+      assert.deepEqual(found.body.entries.map((e: { id: string }) => e.id), ["mac_wakes"]);
+      const page = await s.call("GET", `/api/agents/${agent.id}/memory`);
+      assert.deepEqual([page.body.count, page.body.entries.length], [2, 2]);
+      assert.equal((await s.call("DELETE", `/api/agents/${agent.id}/memory/mac_wakes`)).status, 200);
+      assert.deepEqual(Object.keys(JSON.parse(s.relay.files.get(file)!).entries.memory), ["old_rule"]);
+    } finally {
+      s.relay.noMemoryOp = false;
+      if (kept === undefined) s.relay.files.delete(file);
+      else s.relay.files.set(file, kept);
+    }
+  });
+
   test("its instruction files on the Agents page are read on the Mac through its relay", async () => {
     s.relay.files.set("/Users/test/src/sieun-pi/AGENTS.md", "Mac-only rule");
     const config = (await s.call("GET", `/api/agents/${agent.id}/config`)).body;

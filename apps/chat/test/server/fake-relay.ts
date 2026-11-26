@@ -20,6 +20,8 @@ export class FakeRelay {
   readonly files = new Map<string, string>();
   /** The memory stores the `memory` op keeps, by harness folder. */
   readonly memories = new Map<string, Map<string, { id: string; updated_at: string }>>();
+  /** While true the relay answers the `memory` op as one older than it does, as the Mac's release-8ceff51 did on 11-26. */
+  noMemoryOp = false;
   readonly info: BoxInfo;
   /** While true every link is closed as soon as it opens, as when the box is offline. */
   down = false;
@@ -132,6 +134,7 @@ export class FakeRelay {
         return {};
       }
       case "memory": {
+        if (this.noMemoryOp) throw new Error("unknown op memory");
         // The relay's memory op on a box (prime-relay ops.ts memoryOp): one map of entries per harness folder, newest first.
         const dir = rest.dir as string;
         const request = rest.request as { action: string; limit?: number; offset?: number; query?: string; id?: string; entries?: { id: string; updated_at: string }[]; ids?: string[] };
