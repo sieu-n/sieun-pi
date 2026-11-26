@@ -1268,6 +1268,8 @@ export function stoppedSince(lines: readonly WatchLine[], from: number): { at: n
 
 export interface Inputs {
   now: number;
+  /** Where the window ends (`windowEnd`); absent, at the start of now's minute. */
+  windowEnd?: number;
   /** The quiet window (src/quiet-minutes.ts) in ms; absent, QUIET_MINUTES. */
   quietMs?: number;
   /** Each box's daemon supervisor starts (`readDaemonStarts`); quiet readings within RESTART_SETTLE_MS after one are void. */
@@ -1763,6 +1765,28 @@ export function failedAsleep(watch: readonly WatchLine[], fault: DaemonFault, ca
   return LOST_LINK.test(fault.what) && !!viewIn(watch, fault.host, from)?.view.usable && offlineIn(watch, fault.host, from + MINUTE, calls);
 }
 
+/** Whether a watch read of a box is final on its own, with no later line to wait for: `flapped` and `droppedLink` judge only the others. */
+const settled = (view: HostView): boolean => !!view.offline || !!view.usable || (!!view.error && !UNREACHED.test(view.error) && view.error !== UNREAD_AT_STOP);
+
+/** How far back `windowEnd` may end measure's window: a minute's read can wait on the next line and OFFLINE_LAG_READS unreached lines past it. */
+export const WINDOW_LAG_MIN = 1 + OFFLINE_LAG_READS;
+
+/**
+ * Where measure's window ends: the latest minute start, at most WINDOW_LAG_MIN before now's, whose watch line reads every box `settled`, so
+ * the window's last minute is judged on the lines after it; else WINDOW_LAG_MIN back. The watch writes a minute's line at its middle, up to a
+ * minute late. d7's run at 18:26:29Z on 11-26 had no 18:26Z line yet, a detach and a list to the Mac lost their link at 18:25:57Z after it
+ * read usable at 18:25:30Z, and `failedAsleep` found no next minute and counted 18:25Z dirty, 29 of 30; the watch read the Mac unreached at
+ * 18:26:30Z and offline at 18:27:30Z, and a rerun at 18:28Z read 30 of 30.
+ */
+export function windowEnd(watch: readonly WatchLine[], now: number): number {
+  const latest = Math.floor(now / MINUTE) * MINUTE;
+  for (let end = latest; end > latest - WINDOW_LAG_MIN * MINUTE; end -= MINUTE) {
+    const line = watch.findLast(entry => { const at = Date.parse(entry.at); return at >= end && at < end + MINUTE; });
+    if (line && (line.uplinkDark || hostViews(line).every(settled))) return end;
+  }
+  return latest - WINDOW_LAG_MIN * MINUTE;
+}
+
 /**
  * Whether the call began in a minute its box counted offline and ended within SLOW_MS after the last such minute, so it waited for the box
  * to come back. The service stamps a worker start when it begins and logs it when it ends: at 00:51:31Z on 11-04 a resume of 01a11b0b went
@@ -1821,8 +1845,9 @@ export function measure(input: Inputs): PrecheckOutput {
   const primeEvents = (input.prime?.events ?? []).filter(event => !updates.some(update => update.host === primeHost && event.from <= update.to && event.to >= update.from));
   const daemonFaults = allFaults.filter(fault => !updateOf(fault));
   const updateFaults = allFaults.filter(fault => updateOf(fault));
-  // The 30 whole wall-clock minutes before `now`'s, each read by the watch line in it; the watch samples at each minute's middle (`nextSampleAt`).
-  const start = Math.floor(now / MINUTE) * MINUTE - WINDOW_MS;
+  // The 30 whole wall-clock minutes before `windowEnd` (main's `windowEnd`, else now's minute), each read by the watch line in it; the watch
+  // samples at each minute's middle (`nextSampleAt`).
+  const start = (input.windowEnd ?? Math.floor(now / MINUTE) * MINUTE) - WINDOW_MS;
   const flagged: FlaggedSlice[] = [];
   // A cut job whose continue pi-pool holds waits for its tree's accounts to serve again, the cell wait below: at 00:44Z on 10-20 dead-ts of CI
   // and RepoOps, cut on a provider error at 23:31Z with pi-pool holding its tree to 01:16Z, made all 30 minutes dirty while every box read usable.
@@ -2218,8 +2243,8 @@ export function measure(input: Inputs): PrecheckOutput {
 export async function findCutJobs(artifacts: string, chats: readonly string[], deleted: Readonly<Record<string, Readonly<Record<string, number>>>>, now: number,
   stops: DaemonStops = { restarts: [], sigterms: [] }): Promise<CutJob[]> {
   const candidates: { chat: string; chain: readonly Folder[]; path: string; end: CutSpan }[] = [];
-  // Cuts that some input ended at or after this still held minutes of measure's window, which starts at most WINDOW_MS + 1 min before now.
-  const since = now - WINDOW_MS - MINUTE;
+  // Cuts that some input ended at or after this still held minutes of measure's window, which starts at most WINDOW_MS + WINDOW_LAG_MIN + 1 min before now.
+  const since = now - WINDOW_MS - (WINDOW_LAG_MIN + 1) * MINUTE;
   /** Per chat, each job name read in the look-back with the latest session that carries it, for `replacedBy`. */
   const latest = new Map<string, Map<string, string>>();
   const gone = new Set(Object.values(deleted).flatMap(chat => Object.keys(chat ?? {})));
@@ -2575,6 +2600,8 @@ async function main(): Promise<void> {
   const day = await readWatch(dataDir, now - DAY_MS, now);
   const quietMs = quietMinutes(dataDir) * MINUTE;
   const watch = day.filter(line => Date.parse(line.at) >= now - Math.max(2 * WINDOW_MS, WINDOW_MS + quietMs + 2 * MINUTE));
+  const end = windowEnd(watch, now);
+  const since = end - WINDOW_MS - 2 * MINUTE;
   const names = new Map<string, string>();
   for (const line of watch) for (const tree of [...line.top, ...line.trees ?? []]) if (tree.root && tree.tree) names.set(tree.root, tree.tree);
   const plan = await planInputs(dataDir, now, names);
@@ -2584,11 +2611,11 @@ async function main(): Promise<void> {
     (await readJson(join(dataDir, "deleted-jobs.json")) ?? {}) as Record<string, Record<string, number>>, now, daemonStops(supervisorLogs));
   const serviceLines = await tailLines(join(dataDir, "service.log"), LOG_TAIL_BYTES);
   const box = watch.at(-1)?.host ?? hostname();
-  const workerPolls = supervisorLogs.flatMap(workerMisses).filter(at => at >= now - WINDOW_MS - 2 * MINUTE);
+  const workerPolls = supervisorLogs.flatMap(workerMisses).filter(at => at >= since);
   const reopened = readReopenedSends(serviceLines);
   const allFaults = blameSupervisorStalls([...readServiceFaults(serviceLines, box), ...supervisorLogs.flatMap(lines => readSupervisorFaults(lines, box, reopened))]
-    .filter(fault => fault.at >= now - WINDOW_MS - 2 * MINUTE), supervisorLogs.flatMap(readSupervisorStalls), box);
-  const queueOverruns = readQueueOverruns(serviceLines, box).filter(entry => entry.at >= now - WINDOW_MS - 2 * MINUTE);
+    .filter(fault => fault.at >= since), supervisorLogs.flatMap(readSupervisorStalls), box);
+  const queueOverruns = readQueueOverruns(serviceLines, box).filter(entry => entry.at >= since);
   const listed = listedSessions(await catalogCopies(dataDir), [...allFaults.flatMap(fault => fault.session ? [fault.session.slice(0, 8)] : []), ...queueOverruns.map(entry => entry.session),
     ...watch.flatMap(line => hostViews(line).flatMap(view => (view.jobRigs ?? []).flatMap(rig => rig.dir.startsWith("scratch/") ? [rig.dir.split("/")[1]!] : [])))]);
   const marks = await readSessionMarks(deliveryCandidates(allFaults), short => listed.get(short)?.file, box, now);
@@ -2596,7 +2623,7 @@ async function main(): Promise<void> {
   const poolLines = await tailLines(POOL_LOG, POOL_LOG_TAIL_BYTES);
   const result = measure({
     ...plan,
-    watch, day, quietMs,
+    windowEnd: end, watch, day, quietMs,
     daemonStarts: supervisorLogs.flatMap(readDaemonStarts).map(at => ({ host: box, at })),
     log: readServiceLog(serviceLines),
     pool: readPoolLog(poolLines, now),
@@ -2606,9 +2633,9 @@ async function main(): Promise<void> {
     // the 10:21Z run.
     smooth: readSmoothness(poolLines, new Set(live), now - WINDOW_MS, now, treeOffline(day, await sessionHosts(dataDir, box))),
     daemonFaults,
-    primeUpdates: [...(await readUpdateSpans(join(dataDir, ".."))).map(update => ({ ...update, host: box })), ...await otherBoxUpdates(box, now - WINDOW_MS - 2 * MINUTE)],
-    prime: { host: box, events: readPrimeEvents(await readCallLogs(join(dataDir, "..", "logs"), now - WINDOW_MS - 2 * MINUTE), now - WINDOW_MS - 2 * MINUTE, now) },
-    hostCalls: readHostCalls(await tailLines(join(dataDir, "prime-calls.jsonl"), PRIME_CALLS_TAIL_BYTES), now - WINDOW_MS - 2 * MINUTE),
+    primeUpdates: [...(await readUpdateSpans(join(dataDir, ".."))).map(update => ({ ...update, host: box })), ...await otherBoxUpdates(box, since)],
+    prime: { host: box, events: readPrimeEvents(await readCallLogs(join(dataDir, "..", "logs"), since), since, now) },
+    hostCalls: readHostCalls(await tailLines(join(dataDir, "prime-calls.jsonl"), PRIME_CALLS_TAIL_BYTES), since),
     workerMisses: workerPolls,
     chatStarts: readChatStarts(serviceLines),
     queueOverruns,

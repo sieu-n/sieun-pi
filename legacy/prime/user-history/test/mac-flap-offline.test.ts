@@ -2,7 +2,7 @@
 // and d7 counted 13:56Z unknown and 14:29Z dirty from 2 handshake timeouts to the Mac, which read 28 and 29 of 30 clean minutes.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { measure } from "../scripts/duties/whole-system.ts";
+import { measure, windowEnd } from "../scripts/duties/whole-system.ts";
 import type { DaemonFault } from "../src/daemon-faults.ts";
 import { UNREAD_AT_STOP, type WatchLine } from "../src/mac-usable-watch.ts";
 
@@ -134,4 +134,30 @@ test("an unreached Mac minute two lines before an offline read counts offline wh
   const out = run(watch, []);
   assert.equal(out.metrics.unknown_min_30, 0);
   assert.equal(out.metrics.clean_min_30, 30);
+});
+
+// Guards d7's 18:25Z minute on 11-26: Tailscale read the Mac offline to 18:24Z, the watch read it usable at 18:25:30Z, a detach and a list to it
+// lost their link at 18:25:57Z, and the run at 18:26:29Z, before the 18:26Z line, counted 18:25Z dirty, 29 of 30; the watch read the Mac
+// unreached at 18:26:30Z and offline at 18:27:30Z.
+test("a run before the next watch line ends its window a minute early, and the next run leaves the lost link to a box falling asleep out", () => {
+  const read = (minute: number): MacRead => minute < 29 ? "offline" : minute === 29 ? "usable" : minute === 30 ? "The operation was aborted due to timeout" : "offline";
+  const watchTo = (last: number) => Array.from({ length: last + 6 }, (_, index) => line(index - 5, read(index - 5)));
+  const lost = [closed(29, "a detach failed, Prime Agent daemon is not connected"), { ...closed(29), at: minuteAt(29) + 57_975 }];
+  const at = (now: number, watch: WatchLine[], end?: number) =>
+    measure({ now, ...end === undefined ? {} : { windowEnd: end }, watch, log: { holds: [] }, chats: [], daemonFaults: lost });
+  const early = minuteAt(30) + 29_000;
+  assert.equal(at(early, watchTo(29)).metrics.clean_min_30, 29, "with the window ending at now's minute, the lost link has no next minute");
+  assert.equal(windowEnd(watchTo(29), early), minuteAt(29));
+  const first = at(early, watchTo(29), windowEnd(watchTo(29), early));
+  assert.equal(first.metrics.clean_min_30, 30);
+  assert.equal(first.metrics.daemon_fail_min_30, 0);
+  const unreachedLast = minuteAt(31) + 29_000;
+  assert.equal(windowEnd(watchTo(30), unreachedLast), minuteAt(29), "an unreached last line waits for the line after it");
+  const next = minuteAt(32) + 29_000;
+  assert.equal(windowEnd(watchTo(31), next), minuteAt(31));
+  const later = at(next, watchTo(31), windowEnd(watchTo(31), next));
+  assert.equal(later.metrics.clean_min_30, 30);
+  assert.equal(later.metrics.daemon_fail_min_30, 0);
+  const awake = Array.from({ length: 37 }, (_, index) => line(index - 5, index - 5 < 29 ? "offline" : "usable"));
+  assert.equal(at(next, awake, windowEnd(awake, next)).metrics.daemon_fail_min_30, 1, "a lost link to a box that reads online the next minute stays a fault");
 });
