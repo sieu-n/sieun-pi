@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import time
 from pathlib import Path
 
 import httpx
@@ -169,6 +171,55 @@ def _friendly_http_error(status: int, body_text: str) -> str:
     return f"Virev search error ({status}): {message}"
 
 
+#: Seconds between job status reads. measured: a served Google search took p50 32 s on prod (crawler, 11-26) and a
+#: status read 0.23 s on staging (11-26 02:43Z), so a read every 3 s keeps the polls under a tenth of the wait.
+_POLL_SECONDS = 3.0
+
+
+def _job_envelope(body: dict) -> dict | None:
+    """The DataForSEO envelope a finished search job holds: results[0].items[0] of /v1/jobs/{id}/results."""
+    results = (body.get("data") or {}).get("results") or []
+    items = (results[0].get("items") or []) if results else []
+    return items[0] if items else None
+
+
+async def _search_job(
+    base_url: str, api_key: str, params: dict[str, str], query: str, num_results: int, timeout: float
+) -> str:
+    """Submit the search as a job, read its status until it ends or `timeout` passes, then read its result."""
+    headers = {"Authorization": f"Bearer {api_key}"}
+    deadline = time.monotonic() + timeout
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        submitted = await client.get(f"{base_url}/v1/search/google", params=params, headers=headers)
+        if submitted.status_code != 202:
+            return _friendly_http_error(submitted.status_code, submitted.text)
+        job = submitted.json()["data"]
+        status_url = f"{base_url}{job['status_url']}"
+        while job["status"] in ("queued", "running"):
+            if time.monotonic() >= deadline:
+                return (
+                    f"The search job {job['batch_id']} did not finish within {timeout} s. "
+                    "It is still running and bills only if it finishes."
+                )
+            await asyncio.sleep(_POLL_SECONDS)
+            read = await client.get(status_url, headers=headers)
+            if read.status_code != 200:
+                return _friendly_http_error(read.status_code, read.text)
+            job = read.json()["data"]
+        if job["status"] != "ready":
+            return (
+                f"Google is unavailable on the Virev search backend right now (job {job['status']}: "
+                f"{job.get('error')}). No charge was taken."
+            )
+        results = await client.get(f"{base_url}{job['results_url']}", headers=headers)
+        if results.status_code != 200:
+            return _friendly_http_error(results.status_code, results.text)
+        envelope = _job_envelope(results.json())
+        if envelope is None:
+            return f"No results returned for query: {query}"
+        return _format_results({"data": envelope, "meta": {"cost": job.get("cost")}}, query, num_results)
+
+
 async def run(
     query: str,
     *,
@@ -186,7 +237,7 @@ async def run(
         gl: Optional 2-letter country code for localized results.
         language: Optional ISO-639-1 language code.
         max_output: Truncate output to this many chars.
-        timeout: HTTP timeout in seconds.
+        timeout: Seconds to wait for the whole search job, submit to result.
 
     Returns:
         Formatted search results, or a setup/error explanation.
@@ -209,23 +260,16 @@ async def run(
         gl = os.environ.get("PRIME_AGENT_WEBSEARCH_GL", "us")
 
     base_url = os.environ.get(_BASE_URL_ENV, "").strip() or _DEFAULT_BASE_URL
-    params: dict[str, str] = {"q": query, "depth": str(max(1, min(100, num_results)))}
+    # mode=job: the API answers 202 with a job at once and the search runs in the crawler, so no Vercel function
+    # waits out the crawl. On 11-25 the sync path held prod functions 54.2 h for this skill's key alone.
+    params: dict[str, str] = {"q": query, "depth": str(max(1, min(100, num_results))), "mode": "job"}
     if gl:
         params["gl"] = gl
     if language:
         params["language_code"] = language
 
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.get(
-                f"{base_url}/v1/search/google",
-                params=params,
-                headers={"Authorization": f"Bearer {api_key}"},
-            )
-        if resp.status_code != 200:
-            result = _friendly_http_error(resp.status_code, resp.text)
-        else:
-            result = _format_results(resp.json(), query, max(1, min(100, num_results)))
+        result = await _search_job(base_url, api_key, params, query, max(1, min(100, num_results)), timeout)
     except Exception as e:  # noqa: BLE001 — a search tool must not raise into the agent loop
         result = f"Error searching for '{query}': {type(e).__name__}: {e}"
 

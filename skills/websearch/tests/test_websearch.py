@@ -31,7 +31,30 @@ GOOGLE_BODY = {
 }
 
 
+def job_api(envelope, status="ready", error=None):
+    """The portal's mode=job flow: a 202 submit, one status read, then the results read."""
+
+    def handle(request):
+        path = request.url.path
+        if path == "/v1/search/google":
+            job = {"batch_id": "job_1", "status": "queued", "status_url": "/v1/jobs/job_1", "results_url": "/v1/jobs/job_1/results"}
+            return httpx.Response(202, json={"data": job})
+        if path == "/v1/jobs/job_1":
+            job = {"batch_id": "job_1", "status": status, "error": error, "cost": "$0.0030", "results_url": "/v1/jobs/job_1/results"}
+            return httpx.Response(200, json={"data": job})
+        if path == "/v1/jobs/job_1/results":
+            return httpx.Response(200, json={"data": {"results": [{"index": 0, "operation": "serp.google", "items": [envelope]}]}})
+        return httpx.Response(404)
+
+    return handle
+
+
 class RunTests(unittest.TestCase):
+    def setUp(self):
+        patcher = mock.patch.object(websearch, "_POLL_SECONDS", 0)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def run_with(self, handler, **kwargs):
         seen = []
 
@@ -48,14 +71,22 @@ class RunTests(unittest.TestCase):
             out = asyncio.run(websearch.run("prime intellect", **kwargs))
         return out, seen
 
-    def test_searches_google_only_and_formats_results(self):
-        out, seen = self.run_with(lambda request: httpx.Response(200, json=GOOGLE_BODY), num_results=3, gl="kr", language="ko")
-        self.assertEqual(len(seen), 1)
-        self.assertEqual(seen[0].url.path, "/v1/search/google")
-        self.assertEqual(dict(seen[0].url.params), {"q": "prime intellect", "depth": "3", "gl": "kr", "language_code": "ko"})
-        self.assertEqual(seen[0].headers["authorization"], "Bearer kb_test")
+    def test_searches_google_as_a_job_and_formats_its_result(self):
+        """11-25: sync searches on this skill's key held prod Vercel functions 54.2 h, so the skill submits jobs."""
+        out, seen = self.run_with(job_api(GOOGLE_BODY["data"]), num_results=3, gl="kr", language="ko")
+        self.assertEqual([r.url.path for r in seen], ["/v1/search/google", "/v1/jobs/job_1", "/v1/jobs/job_1/results"])
+        self.assertEqual(
+            dict(seen[0].url.params), {"q": "prime intellect", "depth": "3", "mode": "job", "gl": "kr", "language_code": "ko"}
+        )
+        self.assertTrue(all(r.headers["authorization"] == "Bearer kb_test" for r in seen))
         self.assertIn("Result 1: Prime Intellect\nURL: https://www.primeintellect.ai/", out)
-        self.assertIn("cost: 0.003 | balance left: 12.5", out)
+        self.assertIn("cost: $0.0030", out)
+
+    def test_a_failed_job_reads_as_google_down(self):
+        out, seen = self.run_with(job_api(None, status="failed", error="scrape_blocked"))
+        self.assertEqual(len(seen), 2)
+        self.assertIn("Google is unavailable on the Virev search backend right now (job failed: scrape_blocked).", out)
+        self.assertIn("No charge was taken.", out)
 
     def test_keeps_only_organic_items_with_a_url_up_to_num_results(self):
         items = [
@@ -65,8 +96,7 @@ class RunTests(unittest.TestCase):
             {"type": "organic", "rank_absolute": 4, "title": "B", "url": "https://b.example/"},
             {"type": "organic", "rank_absolute": 5, "title": "C", "url": "https://c.example/"},
         ]
-        body = {"data": {"tasks": [{"result": [{"items": items}]}]}, "meta": {}}
-        out, _ = self.run_with(lambda request: httpx.Response(200, json=body), num_results=2)
+        out, _ = self.run_with(job_api({"tasks": [{"result": [{"items": items}]}]}), num_results=2)
         self.assertIn("Result 1: A\nURL: https://a.example/", out)
         self.assertIn("Result 4: B\nURL: https://b.example/", out)
         self.assertNotIn("Untitled", out)
