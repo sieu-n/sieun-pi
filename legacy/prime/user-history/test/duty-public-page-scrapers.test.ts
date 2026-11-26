@@ -127,6 +127,7 @@ test("the weekly list names every crawler whatever its size, and never a person,
   assert.deepEqual(listed(output), [["scraper_client", `browser UA from a hosting network | ${SAFARI}`], ["scraper_client_stopped", "bot, AI or HTTP library UA | other OS python-requests/2.32"],
     ["scraper_client", "bot, AI or HTTP library UA | ChatGPT-User"]]);
   assert.equal(output.metrics.unblocked_crawlers, 2);
+  assert.equal((output.n as Record<string, number>).unblocked_crawlers, 3, "n counts every crawler client classified, stopped ones too");
   assert.match(output.flagged!.find(slice => slice.kind === "scraper_client")!.excerpt, /from 30 IPs.*AS14061.*--ua-sub '.*Version\/26\.0\.1 Safari\/605\.1\.15' --asn 14061/);
   const blocked = weekly([...rows, week({ ua: SAFARI, ip: "64.227.101.3", refk: "none", state: "denied", calls: 5, last: 10 * DAY + 1 })], asns, 10 * DAY + 2);
   assert.equal(listed(blocked)[0]![0], "scraper_client_stopped", "a client the firewall denies after its last passed call reads as blocked the same day");
@@ -212,6 +213,9 @@ test("a signed-in account over the daily profile line is listed for a ban check"
   const output = weeklyClients({ rows: [week({ calls: 5 })], asns: new Map(), judge: { verify: googleOnly, firewall: FIREWALL }, errors: [], end: 10 * DAY,
     accounts: [{ user: "user_heavy", day: "2026-11-02", views: ACCOUNT_VIEWS_MAX + 1, ips: 3 }, { user: "user_normal", day: "2026-11-02", views: 7, ips: 1 }] });
   assert.equal(output.metrics.heavy_view_accounts, 1);
+  assert.equal((output.n as Record<string, number>).heavy_view_accounts, 2, "n counts every signed-in account read");
+  const failed = weeklyClients({ rows: new Error("Grafana 502"), asns: new Map(), judge: { verify: googleOnly, firewall: FIREWALL }, errors: [], end: 10 * DAY, accounts: [] });
+  assert.deepEqual(failed.n, { unblocked_crawlers: 0, heavy_view_accounts: 0 }, "a failed source counts 0");
   assert.deepEqual(output.flagged!.filter(slice => slice.kind === "heavy_view_account").map(slice => slice.sig), ["account user_heavy"]);
   assert.match(accountsSql(10 * DAY), /startsWith\(Body, 'profile_view '\)/);
 });

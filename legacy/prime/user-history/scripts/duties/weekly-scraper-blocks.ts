@@ -222,13 +222,20 @@ function blockCommand(key: string, client: Client, at: number, nets: [number, { 
     `${key.startsWith("forged-referer") && !hosting.length ? ` --client-ips ${[...client.ips].join(" ")}` : ""}${tail}`;
 }
 
+/**
+ * The sample size per metric (`n`, read by sampleSize in apps/chat/scripts/duties/agent-boards.ts): the crawler clients classified, the signed-in
+ * accounts read and the Google pageviews the ratio divides by. A source that failed counts 0.
+ */
+const NOTHING_READ: Readonly<Record<string, number>> = { unblocked_crawlers: 0, heavy_view_accounts: 0 };
+const sampleOf = (output: PrecheckOutput): Record<string, number> => typeof output.n === "object" ? output.n : { ...NOTHING_READ };
+
 /** The headline (crawler clients still getting through), one flagged item per crawler client with a block command, and the accounts over the line. */
 export function weeklyClients(input: WeekInputs): PrecheckOutput {
   const at = input.end;
   const flagged: FlaggedSlice[] = input.errors.map(excerpt => ({ at, kind: "source_error", excerpt: excerpt.slice(0, 600) }));
   if (input.rows instanceof Error) {
     flagged.push({ at, kind: "source_error", excerpt: `search requests: ${input.rows.message}`.slice(0, 600) });
-    return { metrics: {}, flagged };
+    return { metrics: {}, flagged, n: NOTHING_READ };
   }
   if (input.asns instanceof Error) flagged.push({ at, kind: "source_error", excerpt: `whois.cymru.com: ${input.asns.message}, so no browser UA counts as hosting`.slice(0, 600) });
   const asns = input.asns instanceof Error ? new Map<string, Asn>() : input.asns;
@@ -240,7 +247,7 @@ export function weeklyClients(input: WeekInputs): PrecheckOutput {
   const total = rows.reduce((sum, row) => sum + (row.state === "denied" ? 0 : row.calls), 0);
   if (!total) {
     flagged.push({ at, kind: "source_error", excerpt: "otel.otel_logs holds no prod call to the public database routes in the 7 days, so the Vercel drain or the query is broken" });
-    return { metrics: {}, flagged };
+    return { metrics: {}, flagged, n: NOTHING_READ };
   }
   const keyed = rows.flatMap(row => {
     const asn = asns.get(row.ip);
@@ -291,10 +298,12 @@ export function weeklyClients(input: WeekInputs): PrecheckOutput {
         `${key.slice(0, 200)}; networks ${netText}; IPs ${[...client.ips].slice(0, 3).join(" ")}; start from: ${blockCommand(key, client, at, nets)}`.slice(0, 900) });
   }
   const metrics: Record<string, number> = { unblocked_crawlers: open.length };
+  const n: Record<string, number> = { unblocked_crawlers: crawlers.length, heavy_view_accounts: 0 };
   if (input.accounts instanceof Error) flagged.push({ at, kind: "source_error", excerpt: `profile_view lines: ${input.accounts.message}`.slice(0, 600) });
   else {
     const over = input.accounts.filter(account => account.views > ACCOUNT_VIEWS_MAX).sort((a, b) => b.views - a.views);
     metrics.heavy_view_accounts = new Set(over.map(account => account.user)).size;
+    n.heavy_view_accounts = new Set(input.accounts.map(account => account.user)).size;
     flagged.push({ at, kind: "reading", item: "heavy_view_accounts", excerpt: `${input.accounts.length} signed-in account days viewed profiles in the 7 days; ` +
       `${metrics.heavy_view_accounts} accounts passed ${ACCOUNT_VIEWS_MAX} profiles in one UTC day.` });
     for (const account of over) flagged.push({ at, kind: "heavy_view_account", item: "heavy_view_accounts", sig: `account ${account.user}`,
@@ -302,7 +311,7 @@ export function weeklyClients(input: WeekInputs): PrecheckOutput {
   }
   /** The newest passed call of a client still getting through, so a count whose crawlers made no new call reads quiet and a fresh one live. */
   const newestOpen = Math.max(0, ...open.map(([, client]) => client.last));
-  return { metrics, flagged, windowMs: { unblocked_crawlers: WEEK, heavy_view_accounts: WEEK },
+  return { metrics, flagged, n, windowMs: { unblocked_crawlers: WEEK, heavy_view_accounts: WEEK },
     ...newestOpen > 0 ? { lastEventAt: { unblocked_crawlers: newestOpen } } : {} };
 }
 
@@ -410,12 +419,13 @@ export async function withDirectRatio(output: PrecheckOutput, at: number): Promi
     const ratio = await import(pathToFileURL(join(REPO, "scripts/duties/search/direct-to-google.mjs")).href);
     const read = ratio.measure(await ratio.readDays(7));
     return { ...output, metrics: { ...output.metrics, direct_to_google_ratio: read.metrics.direct_to_google_ratio },
+      n: { ...sampleOf(output), direct_to_google_ratio: Number(read.google) || 0 },
       ...read.lastEventAt ? { lastEventAt: { ...output.lastEventAt, ...read.lastEventAt } } : {},
       flagged: [...(output.flagged ?? []), { at, kind: "reading", item: "direct_to_google_ratio",
         excerpt: `PostHog virev.ai pageviews in the last 7 full UTC days: ${read.direct} $direct, ${read.google} from Google, ratio ${read.metrics.direct_to_google_ratio}.` }],
       windowMs: { ...output.windowMs, direct_to_google_ratio: WEEK } };
   } catch (error) {
-    return { ...output, flagged: [...(output.flagged ?? []), { at, kind: "source_error", item: "direct_to_google_ratio",
+    return { ...output, n: { ...sampleOf(output), direct_to_google_ratio: 0 }, flagged: [...(output.flagged ?? []), { at, kind: "source_error", item: "direct_to_google_ratio",
       excerpt: `PostHog direct_to_google_ratio: ${error instanceof Error ? error.message : String(error)}`.slice(0, 600) }] };
   }
 }
@@ -428,7 +438,7 @@ async function main(): Promise<void> {
     const signal = AbortSignal.timeout(WEEK_DEADLINE_MS);
     output = await measure(grafanaClient(fetch, await readGrafanaAuth(), end, signal), end, signal);
   } catch (error) {
-    output = { metrics: {}, flagged: [{ at: Date.now(), kind: "source_error", excerpt: `prod ClickHouse: ${error instanceof Error ? error.message : String(error)}`.slice(0, 600) }] };
+    output = { metrics: {}, n: NOTHING_READ, flagged: [{ at: Date.now(), kind: "source_error", excerpt: `prod ClickHouse: ${error instanceof Error ? error.message : String(error)}`.slice(0, 600) }] };
   }
   output = await withDirectRatio(output, Date.now());
   const text = JSON.stringify(output, null, 2) + "\n";
