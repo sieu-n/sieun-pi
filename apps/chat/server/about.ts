@@ -1,13 +1,15 @@
 /**
  * GET /api/about: which versions each agent box runs, read through the box's agent relay `check` op, so pi-host needs no new op. The last good
  * read of each box stays in `<data dir>/about.json`, so an away box shows its last values across a server restart, and the newest Pi on npm
- * is read at most once an hour.
+ * is read at most once an hour. `watchAbout` also reads each relay box when its link comes up and every hour while it stays up, so a box that
+ * goes away keeps a read from its last hour up rather than from the last time someone opened About (the Mac showed an 11-25 read on 11-27).
  */
 import { join } from "node:path";
 import type { AboutHost, AboutReport, BoxVersions, ReleaseView } from "../web/src/lib/api/types.ts";
 import { runCheck } from "../../../legacy/prime/user-history/src/wakes.ts";
 import { FixtureHost } from "./host/fixture.ts";
 import { MultiHost } from "./host/multi-host.ts";
+import type { LinkState } from "./host/relay-host.ts";
 import type { Host } from "./host/types.ts";
 import { readJson, writeJson } from "./store.ts";
 
@@ -17,6 +19,8 @@ const NPM_LATEST = "https://registry.npmjs.org/@earendil-works/pi-coding-agent/l
 const NPM_EVERY_MS = 3_600_000;
 /** The relay's `check` op needs a positive timeout; the read took under 1 s on us-metal02 and the Mac on 11-25. */
 const READ_MS = 30_000;
+/** The parent's ask on 11-27 (d8 Area review): an up relay box is read at most once an hour beside its read on each link up. */
+const BOX_EVERY_MS = 3_600_000;
 
 /**
  * Prints one line per value, `key<TAB>payload`, with plain sh tools only, because the Mac's relay runs under launchd with no node on PATH. The
@@ -32,6 +36,14 @@ printf 'prime\\t'; "$HOME/.local/share/prime-agent/bin/prime-agent" status --jso
 
 /** A box the About page reads: whether its link is up, and how to run a shell command there. */
 export interface AboutBox { box: string; up: boolean; check: (command: string, timeoutMs: number) => Promise<{ ok: boolean; output: string }> }
+
+/** A relay link `About.watch` follows: its box name, its link state and changes, and its `check` op. */
+export interface AboutRelay {
+  name: string;
+  state: () => LinkState;
+  onLink: (listener: (link: LinkState) => void) => () => void;
+  check: (command: string, timeoutMs: number) => Promise<{ ok: boolean; output: string }>;
+}
 
 interface Saved {
   boxes: Record<string, { readAt: number; versions: BoxVersions }>;
@@ -94,6 +106,22 @@ export class About {
     return { checkedAt: this.now(), piLatest: this.saved.piLatest, hosts };
   }
 
+  /** Reads each relay that is up now, each one again when its link comes up, and every up one each `everyMs`; returns the stop. */
+  watch(relays: AboutRelay[], everyMs = BOX_EVERY_MS): () => void {
+    const readRelay = (relay: AboutRelay): void => {
+      void this.read({ box: relay.name, up: relay.state().state === "up", check: (command, timeoutMs) => relay.check(command, timeoutMs) });
+    };
+    const readUp = (): void => { for (const relay of relays) if (relay.state().state === "up") readRelay(relay); };
+    const offs = relays.map(relay => relay.onLink(link => { if (link.state === "up") readRelay(relay); }));
+    const timer = setInterval(readUp, everyMs);
+    timer.unref?.();
+    readUp();
+    return () => {
+      clearInterval(timer);
+      for (const off of offs) off();
+    };
+  }
+
   private async read(box: AboutBox): Promise<AboutHost> {
     let error: string | null = null;
     if (box.up) {
@@ -137,8 +165,17 @@ export function aboutBoxes(host: Host, self: string): AboutBox[] {
 
 const abouts = new WeakMap<Host, About>();
 
-export function aboutReport(host: Host, self: string, dataDir: string): Promise<AboutReport> {
+function aboutOf(host: Host, dataDir: string): About {
   let about = abouts.get(host);
   if (!about) abouts.set(host, about = new About(join(dataDir, ABOUT_FILE), host instanceof FixtureHost ? host.piLatest : npmLatest));
-  return about.report(aboutBoxes(host, self));
+  return about;
+}
+
+export function aboutReport(host: Host, self: string, dataDir: string): Promise<AboutReport> {
+  return aboutOf(host, dataDir).report(aboutBoxes(host, self));
+}
+
+/** Starts `About.watch` over every relay box of the server's host, with the same About as GET /api/about; returns the stop. */
+export function watchAbout(host: MultiHost, dataDir: string): () => void {
+  return aboutOf(host, dataDir).watch(host.relays());
 }

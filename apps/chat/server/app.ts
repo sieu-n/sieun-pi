@@ -9,6 +9,7 @@ import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
+import { watchAbout } from "./about.ts";
 import type {
   AgentHostList, AgentId, AgentSummary, ConversationHeader, ConversationId, Delivery, ConversationPatch, ConversationSummary, ImageRef, Item, LiveCommand, LiveEvent, Me, ModelCatalog, ModelInfo, OpenedPage, ProjectList, Reaction, ReadPoint, Room, RunStatus, SendRequest, SendResult, Sidebar, ThinkingLevel,
   TimelinePage,
@@ -161,6 +162,8 @@ export class App {
   readonly ownerSettings: OwnerSettingsStore;
   private readonly clients = new Set<Client>();
   private sidebarTimer?: NodeJS.Timeout;
+  /** Stops About's reads of each relay box on its link up and each hour (about.ts `watchAbout`). */
+  private aboutStop?: () => void;
   private lastSidebar = "";
   /** Each DM room's summary as last sent, so a room event goes out only when its row changed. */
   private roomCache = new Map<string, string>();
@@ -446,6 +449,7 @@ export class App {
     this.laterDue.arm();
     this.storeUsage?.start();
     this.usageAnswers.start();
+    if (this.routing) this.aboutStop ??= watchAbout(this.routing, this.config.dataDir);
     if (this.config.meili) void this.searchEngine.refresh().catch(error => this.log(`search: ${String(error)}`));
     return Math.round(performance.now() - began);
   }
@@ -474,6 +478,8 @@ export class App {
     this.laterDue.stop();
     this.queues.stop();
     clearTimeout(this.sidebarTimer);
+    this.aboutStop?.();
+    this.aboutStop = undefined;
     // The stop leaves a board put at work running. Its board stays in board-writes.json or chat.sqlite, which `drained` and `chatDb.written`
     // below write, and the next process puts it again, and its newerOnly keeps a later board when it lands after that put (boards.ts `putBoards`). On 11-23 a stop that waited
     // for it held a hand-over's calls up to 28.6 s behind puts held 35 s (~/work/pi-host-stalls/d-put-wait).

@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
-import { About, ABOUT_FILE, aboutReport, parseVersions, type AboutBox } from "../../server/about.ts";
+import { mock, test } from "node:test";
+import { About, ABOUT_FILE, aboutReport, parseVersions, type AboutBox, type AboutRelay } from "../../server/about.ts";
+import type { LinkState } from "../../server/host/relay-host.ts";
+import { readAtLabel } from "../../web/src/pages/about/about.ts";
 import { FIXTURE_ABOUT, FixtureHost } from "../../server/host/fixture.ts";
 import { seedFixture } from "../../server/fixture/seed.ts";
 
@@ -123,4 +125,65 @@ test("the fixture answers with us-metal02 up and the Mac away with its seeded la
   assert.deepEqual(report.hosts[1]!.versions, FIXTURE_ABOUT.macVersions);
   assert.equal(report.hosts[1]!.readAt, 50_000_000 - 3 * 3_600_000);
   assert.equal(report.piLatest?.version, "1.6.1");
+});
+
+/** A relay link the test flips between up and away, counting its version reads. */
+function relay(name: string, up: boolean): AboutRelay & { reads: number; set: (up: boolean) => void } {
+  const listeners = new Set<(link: LinkState) => void>();
+  let link: LinkState = { state: up ? "up" : "away", since: 0 };
+  const entry = {
+    name, reads: 0,
+    state: () => link,
+    onLink: (listener: (link: LinkState) => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    check: async () => {
+      entry.reads += 1;
+      return { ok: true, output: MAC_OUTPUT };
+    },
+    set: (next: boolean) => {
+      link = { state: next ? "up" : "away", since: 0 };
+      for (const listener of listeners) listener(link);
+    },
+  };
+  return entry;
+}
+
+test("watch reads an up relay at once, again when its link comes up and each hour while up, and an away box keeps that read", async t => {
+  mock.timers.enable({ apis: ["setInterval"] });
+  t.after(() => mock.timers.reset());
+  const file = join(dir(t), ABOUT_FILE);
+  let now = 10_000;
+  const about = new About(file, async () => "1.6.1", () => now);
+  const mac = relay("mac", true);
+  const metal = relay("us-metal02", false);
+  const stop = about.watch([mac, metal]);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual([mac.reads, metal.reads], [1, 0]);
+  metal.set(true);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(metal.reads, 1);
+  mac.set(false);
+  now = 20_000;
+  mock.timers.tick(3_599_999);
+  assert.deepEqual([mac.reads, metal.reads], [1, 1]);
+  mock.timers.tick(1);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual([mac.reads, metal.reads], [1, 2]);
+  const [away] = (await new About(file, async () => "1.6.1", () => now).report([{ box: "mac", up: false, check: mac.check }])).hosts;
+  assert.deepEqual({ state: away!.state, readAt: away!.readAt, pi: away!.versions?.pi }, { state: "away", readAt: 10_000, pi: "1.4.0" });
+  stop();
+  metal.set(false);
+  metal.set(true);
+  mock.timers.tick(3_600_000);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(metal.reads, 2);
+});
+
+test("the away line names the date only when the read is not from today", () => {
+  const now = new Date(2026, 10, 27, 6, 32).getTime();
+  assert.equal(readAtLabel(new Date(2026, 10, 27, 0, 5).getTime(), now), "00:05");
+  assert.equal(readAtLabel(new Date(2026, 10, 26, 6, 0).getTime(), now), "11-26 06:00");
+  assert.equal(readAtLabel(new Date(2025, 10, 27, 6, 0).getTime(), now), "11-27 06:00");
 });

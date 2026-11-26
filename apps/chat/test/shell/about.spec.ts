@@ -5,7 +5,7 @@ import { expect, test, type Page } from "@playwright/test";
 const PI_HOST_SHA = "05d8665a1b2c3d4e5f60718293a4b5c6d7e8f901";
 const APPS_CHAT_SHA = "8ceff5102aabbccddeeff00112233445566778899";
 const PRIME_SHA = "3e5c3415ab65d4ff8312b54be46c702d80e2c4d3";
-const READ_AT = new Date(2026, 10, 26, 4, 7).getTime();
+const READ_AT = new Date(2026, 10, 20, 4, 7).getTime();
 
 const report = {
   checkedAt: Date.now(),
@@ -38,7 +38,7 @@ test("the fixture's boxes show their versions, metal up and the Mac away", async
   await expect(metal.getByRole("link", { name: "37a7d69" })).toHaveAttribute("href", "https://github.com/sieu-n/sieun-pi/commit/37a7d69023c2a5e01f17cd6e6938edd791de38a1");
   await expect(metal.getByText("d5d28f6", { exact: true })).toBeVisible();
   const mac = page.getByTestId("about-host-mac");
-  await expect(mac.getByText(/Away, last read \d\d:\d\d/)).toBeVisible();
+  await expect(mac.getByText(/Away, last read (\d\d-\d\d )?\d\d:\d\d/)).toBeVisible();
   await expect(mac.getByRole("link", { name: "05d8665" })).toBeVisible();
   await expect(mac.getByText("Not installed")).toBeVisible();
   await expect(metal.getByText("Same as vendored")).toBeVisible();
@@ -87,13 +87,22 @@ test("an away box says when it was last read and keeps its last values, with wha
   await page.goto("/#/settings/about");
   const mac = page.getByTestId("about-host-sieun-mac");
   await expect(mac).toHaveAttribute("data-state", "away");
-  await expect(mac.getByText("Away, last read 04:07")).toBeVisible();
+  await expect(mac.getByText("Away, last read 11-20 04:07")).toBeVisible();
   await expect(mac.getByTestId("pi-version")).toHaveText("1.6.1");
   await expect(mac.getByText("1.6.1 out")).toHaveCount(0);
   await expect(mac.getByRole("link", { name: "05d8665" })).toBeVisible();
   await expect(mac.getByText("Not installed")).toBeVisible();
   await expect(mac.getByText("Not found")).toBeVisible();
   await expect(mac.getByText("Not running")).toBeVisible();
+});
+
+test("an away box read today shows only the time", async ({ page }) => {
+  const today = new Date();
+  today.setHours(0, 3, 0, 0);
+  const [metal, mac] = report.hosts;
+  await withAbout(page, { ...report, hosts: [metal, { ...mac, readAt: today.getTime() }] });
+  await page.goto("/#/settings/about");
+  await expect(page.getByTestId("about-host-sieun-mac").getByText("Away, last read 00:03", { exact: true })).toBeVisible();
 });
 
 test("a box never read shows that with the error of its read", async ({ page }) => {

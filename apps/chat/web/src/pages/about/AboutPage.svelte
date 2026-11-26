@@ -2,7 +2,7 @@
   import { reads, view, type ReleaseView } from "$lib/api";
   import { Badge, Button, CardGroup, EmptyState, IconButton, LoadingText, Page, PanelHeader, StatusDot, stampLabel, tooltip } from "$lib/ui";
   import SettingRow from "$pages/settings/SettingRow.svelte";
-  import { commitUrl, newer, short } from "./about";
+  import { commitUrl, newer, readAtLabel, short } from "./about";
 
   /**
    * About: what each box runs, read from GET /api/about. One card per box with its Pi, pi-host and apps/chat releases and the Prime release
@@ -10,7 +10,6 @@
    */
   const about = view(() => reads.about());
   const report = $derived(about.value);
-  const hhmm = (at: number): string => new Date(at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
   const built = (release: ReleaseView): string => (release.builtAt ? `${release.release}, built ${stampLabel(Date.parse(release.builtAt))}` : release.release);
 </script>
 
@@ -40,7 +39,7 @@
             {#snippet actions()}
               <span class="state" use:tooltip={host.error}>
                 <StatusDot status={host.state === "up" ? "online" : "away"} />
-                {host.state === "away" ? (host.readAt ? `Away, last read ${hhmm(host.readAt)}` : "Away, never read") : host.error ? "Up, read failed" : "Up"}
+                {host.state === "away" ? (host.readAt ? `Away, last read ${readAtLabel(host.readAt)}` : "Away, never read") : host.error ? "Up, read failed" : "Up"}
               </span>
             {/snippet}
             {#if !v}
