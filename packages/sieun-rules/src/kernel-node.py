@@ -11,14 +11,23 @@ import os
 
 
 def stable(path: str) -> str:
-    """<runtime>/releases/<sha>/<rest> as <runtime>/current/<rest> when that file exists. prime-sync prunes a retired release, and a Node
-    process a kernel started keeps its NODE_OPTIONS for life: on the Mac pm2's Vent, started from a kernel, died at preload with
-    MODULE_NOT_FOUND from 11-21 to 11-26 after its release was pruned. install-runtime swaps current by rename, so the path stays valid."""
+    """A release path as the same file under its install's `current` link, when that file exists. A Node process the kernel starts keeps
+    its NODE_OPTIONS for life, and a release prune deletes the old folder: on the Mac pm2's Vent, started from a kernel, died at preload
+    with MODULE_NOT_FOUND from 11-21 to 11-26 after its sieun-pi-runtime release was pruned. On 11-26 every pi-host kernel's send-check
+    judge on the Mac and us-metal02 named pi-host/release-e7e0a88's epipe.cjs. Both installs swap current by rename, so the path stays valid.
+
+    <runtime>/sieun-pi-runtime/releases/<sha>/<rest> maps to <runtime>/sieun-pi-runtime/current/<rest>, and
+    <share>/pi-host/release-<sha>/<rest> maps to <share>/pi-host/current/<rest>."""
     parts = path.split(os.sep)
-    for i in range(len(parts) - 2):
+    for i in range(len(parts) - 1):
         if parts[i] == "sieun-pi-runtime" and parts[i + 1] == "releases":
-            moved = os.sep.join(parts[: i + 1] + ["current"] + parts[i + 3 :])
-            return moved if os.path.isfile(moved) else path
+            root, rest = parts[: i + 1], parts[i + 3 :]
+        elif parts[i] == "pi-host" and parts[i + 1].startswith("release-"):
+            root, rest = parts[: i + 1], parts[i + 2 :]
+        else:
+            continue
+        moved = os.sep.join(root + ["current"] + rest)
+        return moved if rest and os.path.isfile(moved) else path
     return path
 
 

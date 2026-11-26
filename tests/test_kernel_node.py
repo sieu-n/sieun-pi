@@ -92,6 +92,26 @@ class KernelNode(unittest.TestCase):
         options = loaded({}, runtime / "current" / src / "kernel-node.py")["NODE_OPTIONS"]
         self.assertEqual(options, f'--require "{runtime / "current" / src / "node-child/epipe.cjs"}"')
 
+    def test_a_pi_host_kernel_names_the_preload_through_current(self) -> None:
+        """11-26: pi-host kernels on the Mac and us-metal02 put pi-host/release-e7e0a88's epipe.cjs in their send-check judges' NODE_OPTIONS."""
+        src = Path("packages/sieun-rules/src")
+        host = Path(self.tmp) / "pi-host"
+        (host / "release-e7e0a88" / src / "node-child").mkdir(parents=True)
+        (host / "release-e7e0a88" / src / "node-child/epipe.cjs").write_text("")
+        (host / "current").symlink_to("release-e7e0a88")
+        options = loaded({}, host / "release-e7e0a88" / src / "kernel-node.py")["NODE_OPTIONS"]
+        self.assertEqual(options, f'--require "{host / "current" / src / "node-child/epipe.cjs"}"')
+
+    def test_a_release_whose_current_lacks_the_preload_keeps_its_own_path(self) -> None:
+        src = Path("packages/sieun-rules/src")
+        host = Path(self.tmp) / "pi-host"
+        (host / "release-old" / src / "node-child").mkdir(parents=True)
+        (host / "release-old" / src / "node-child/epipe.cjs").write_text("")
+        (host / "release-new").mkdir()
+        (host / "current").symlink_to("release-new")
+        options = loaded({}, host / "release-old" / src / "kernel-node.py")["NODE_OPTIONS"]
+        self.assertEqual(options, f'--require "{host / "release-old" / src / "node-child/epipe.cjs"}"')
+
     def test_the_kernel_prelude_loads_kernel_node(self) -> None:
         self.assertTrue("kernel-node.py" in PRELUDE.read_text(), "kernel-guard.ts does not load kernel-node.py")
 
