@@ -22,7 +22,8 @@ import { checkCleanup } from "./test-org-cleanup.ts";
  * 3. It sorts each answer: 2xx works, an answer that names a proxy supply hold or a paused source is held, an `upstream_*` or `capacity_exhausted`
  *    code is a crawler cause (the portal passes crawler errors on that way), anything else is a portal cause, and a call it could not make or
  *    judge is unprobed. A page-1 answer with a cursor gets one page-2 call. A held route counts as not working in its env's share. A job-mode
- *    call works only when its job ends ready, never on its 202 receipt alone (jobVerdict).
+ *    call works only when its job ends ready, never on its 202 receipt alone (jobVerdict). A failure whose message tells the caller to retry,
+ *    such as 502 scrape_blocked, goes out once more with the same input and scores on that second answer (againOnRetry).
  * 4. It maps answers to crawler routes through portal-parity.routes.json: an env scores a route its own crawler lists, the route works there
  *    when one of its /v1 operations works there, and a route with no /v1 operation in that env's openapi is missing there.
  * 5. On staging it also scores every v2 endpoint of auto-sns-agent apps/api-portal/src/lib/v2/catalog.ts (V2_CATALOG), read at run time, so
@@ -134,7 +135,8 @@ export function v2Routes(platforms: readonly V2PlatformRow[]): Route[] {
 }
 export interface ProbeRequest { method: string; path: string; query: Record<string, string>; body?: unknown }
 export type Verdict = "ok" | "crawler" | "portal" | "held" | "unprobed" | "skipped";
-export interface ProbeResult { op: string; verdict: Verdict; status: number; ms: number; code?: string | undefined; note: string; costUsd?: number }
+/** `firstTry` is the refusal of a call that went out a second time because its answer told the caller to retry (againOnRetry). */
+export interface ProbeResult { op: string; verdict: Verdict; status: number; ms: number; code?: string | undefined; note: string; costUsd?: number; firstTry?: { status: number; code?: string | undefined; ms: number } }
 /**
  * `ms` holds each "<env> <op>" call's last answer time, which orders the next run's page-1 calls slowest first. `paidAt` holds when each
  * paid prod read last got a working answer, so the run calls it once a UTC day while it works.
@@ -455,6 +457,26 @@ const CRAWLER_PAUSED = "source_paused";
 /** The portal's 429 when the org's calls this clock minute reached its limit; it answers with Retry-After (apps/api-portal/src/lib/server/gateway.ts). */
 const RATE_LIMITED = "rate_limit_exceeded";
 
+/**
+ * The words of a portal refusal that tell the caller to call again, such as scrape_blocked's "The platform blocked this read. Retry it. You
+ * are not charged." Bing serves a decoy page to a share of fresh sessions that swings by hour and query (crawler guy, ~/work/crawler-guy/bing-1125),
+ * so on 11-27 one Bing 502 after 20.2 s read staging_working_pct 99.5% while a customer's retry gets the page.
+ */
+const SAYS_RETRY = /\bRetry\b/;
+
+/**
+ * Runs `once` and, when its answer is a failure (crawler or portal) whose error message tells the caller to retry, runs it once more and
+ * gives that second answer with the first one in `firstTry` and its note. A held answer, an unprobed one and a 429 go out once here.
+ */
+export async function againOnRetry<A extends ProbeResult & { body: unknown }>(once: () => Promise<A>): Promise<A> {
+  const first = await once();
+  const message = (first.body as { error?: { message?: unknown } } | null)?.error?.message;
+  if ((first.verdict !== "crawler" && first.verdict !== "portal") || first.status === 429 || typeof message !== "string" || !SAYS_RETRY.test(message)) return first;
+  const second = await once();
+  const firstTry = { status: first.status, code: first.code, ms: first.ms };
+  return { ...second, firstTry, note: `${second.note}, on a second try after ${first.status} ${first.code ?? ""} in ${first.ms} ms`.replace(/ {2}/g, " ") };
+}
+
 /** The error code of a portal error body, if any. */
 export function errorCode(body: unknown): string | undefined {
   const code = (body as { error?: { code?: unknown } } | null)?.error?.code;
@@ -731,6 +753,8 @@ export function parityMetrics(input: {
       ? `${group}: ${list.length} v2 catalog endpoints that ${env}'s openapi does not document: ${list.join(", ")}`
       : `${group}: ${list.length} crawler routes with no /v1 route on ${env}: ${list.join(", ")}`).slice(0, 600) });
     for (const probe of input.probes[env]) {
+      if (probe.firstTry && probe.verdict === "ok") flagged.push({ at, kind: `retried_${env}`,
+        excerpt: `${probe.op} on ${env}: first try ${probe.firstTry.status} ${probe.firstTry.code ?? ""} after ${probe.firstTry.ms} ms, second try ${probe.status} after ${probe.ms} ms`.slice(0, 400) });
       if (probe.verdict === "ok" || probe.verdict === "held") continue;
       flagged.push({ at, kind: probe.verdict === "unprobed" || probe.verdict === "skipped" ? `${probe.verdict}_${env}` : `broken_${probe.verdict}_${env}`,
         excerpt: `${probe.op} on ${env}: ${probe.status || "no answer"}${probe.code ? ` ${probe.code}` : ""} after ${probe.ms} ms, ${probe.note}`.slice(0, 400) });
@@ -1003,7 +1027,7 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[]): Promise<
   // and a hand run together got 52 prod answers of 429 rate_limit_exceeded. So a 429 rate_limit_exceeded waits its Retry-After and calls again.
   // A call whose connection dropped goes out again through the same start gate (retryDropped), so the run's new tries keep its pace.
   const send = async () => { await slot(); if (target.calls) target.calls.n++; };
-  const call = async (org: Org, op: string, request: ProbeRequest, note: string): Promise<Answer> => {
+  const once = async (org: Org, op: string, request: ProbeRequest, note: string): Promise<Answer> => {
     await send();
     let result = await probe(base, org, op, request, note, PROBE_DEADLINE_MS, DROP_WAITS_MS, send);
     for (let waits = 1; result.status === 429 && result.code === RATE_LIMITED; waits++) {
@@ -1012,6 +1036,10 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[]): Promise<
       const again = await probe(base, org, op, request, note, PROBE_DEADLINE_MS, DROP_WAITS_MS, send);
       result = { ...again, note: `${again.note}, after ${waits} rate limit wait${waits === 1 ? "" : "s"}` };
     }
+    return result;
+  };
+  const call = async (org: Org, op: string, request: ProbeRequest, note: string): Promise<Answer> => {
+    const result = await againOnRetry(() => once(org, op, request, note));
     if (!target.spend) return result;
     const costUsd = money((result.body as { meta?: { cost?: unknown } } | null)?.meta?.cost);
     target.spend.usd += costUsd;
@@ -1150,7 +1178,8 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[]): Promise<
   for (const result of [...phase1, ...jobs, ...phase2, ...fed]) {
     const second = pageTwo.get(result.op);
     const failed = second && (second.verdict === "portal" || second.verdict === "crawler" || second.verdict === "held" || (second.verdict === "unprobed" && second.status === 0 && second.ms > 0));
-    const { body: _body, ...plain } = failed ? { ...second, op: result.op, note: `page 1 worked, ${second.note}` } : result;
+    const { body: _body, ...plain } = failed ? { ...second, op: result.op, note: `page 1 worked, ${second.note}` }
+      : second?.firstTry && !result.firstTry ? { ...result, firstTry: second.firstTry, note: `${result.note}, page 2 ${second.note}` } : result;
     out.push(plain);
   }
   if (media) out.push(await media);
