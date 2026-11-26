@@ -1,6 +1,7 @@
 import { base } from '$app/paths';
 import { getWikiIndex, type WikiPageSummary } from './wiki';
 import type { TreeLog } from './wiki-index';
+import { isRedirectStub } from './wiki-frontmatter';
 
 export type WikiTreeNode = {
 	name: string;
@@ -168,7 +169,7 @@ function countSection(tree: TreeState, pagePath: string, delta: number): void {
 
 /** The page when the tree shows it. A moved page's redirect stub gets no row: the page it sends readers to has its own. */
 function listed(page: WikiPageSummary | undefined): WikiPageSummary | undefined {
-	return page && typeof page.meta?.moved_to !== 'string' ? page : undefined;
+	return page && !isRedirectStub(page.meta) ? page : undefined;
 }
 
 function folderOf(pagePath: string): string {

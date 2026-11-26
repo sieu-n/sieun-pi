@@ -68,6 +68,11 @@ export function metaDescription(meta: WikiMeta): string | null {
 	return meta.description ?? meta.summary ?? null;
 }
 
+/** A moved page's redirect stub (wiki-write.ts movePage): the page it sends readers to is the one the tree and lint count. */
+export function isRedirectStub(meta: Pick<WikiMeta, 'moved_to'> | undefined): boolean {
+	return typeof meta?.moved_to === 'string';
+}
+
 export function metaCreated(meta: WikiMeta): string | null {
 	return meta.created ?? meta.date ?? null;
 }

@@ -82,6 +82,61 @@ test('a hub edit that keeps the index updated stamp clears the hub orphan on the
 	assert.deepEqual(after, []);
 });
 
+// The child lints once and prints the findings of every rule by path.
+const LINT_ONCE = `
+const engine = process.argv[1];
+const { getLintReport } = await import(engine + '/wiki-lint.ts');
+const report = await getLintReport();
+const rules = ['brokenLinks', 'orphans', 'hubOrphans', 'underLinked', 'missingDescription', 'missingSummary'];
+process.stdout.write(JSON.stringify(Object.fromEntries(rules.map((rule) => [rule, report[rule].map((f) => f.path)]))));
+process.exit(0);
+`;
+
+async function lintFixture(t, pages) {
+	const root = mkdtempSync(path.join(tmpdir(), 'lint-rules-'));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	for (const [rel, text] of Object.entries(pages)) {
+		const file = path.join(root, 'content', rel);
+		mkdirSync(path.dirname(file), { recursive: true });
+		writeFileSync(file, text);
+	}
+	const child = spawn(process.execPath, ['--import', TSX, '--input-type=module', '-e', LINT_ONCE, ENGINE], {
+		cwd: root,
+		env: {
+			...process.env,
+			WIKI_CONFIG: path.join(root, 'no-config.json'),
+			WIKI_CONTENT_ROOT: path.join(root, 'content'),
+			WIKI_MIRROR_ROOT: root,
+			WIKI_AGENTS_ROOT: path.join(root, '.no-mounts'),
+		},
+	});
+	let stdout = '';
+	let stderr = '';
+	child.stdout.on('data', (chunk) => (stdout += chunk));
+	child.stderr.on('data', (chunk) => (stderr += chunk));
+	assert.equal(await new Promise((resolve) => child.once('exit', resolve)), 0, stderr);
+	return JSON.parse(stdout);
+}
+
+const hubs = {
+	'index.html': page('Home', '<a href="apps/index.html">Apps</a>'),
+	'apps/index.html': page('Apps', '<wiki-children></wiki-children><a href="infra/index.html">Infra</a>'),
+	'apps/infra/index.html': page('Infra', '<wiki-children></wiki-children><a href="boards.html">Boards</a>'),
+	'apps/infra/boards.html': page('Boards', '<a href="index.html">Infra</a>'),
+};
+
+test('a moved page redirect stub counts in no page rule', async (t) => {
+	const stub = `<!--wiki ${JSON.stringify({ title: 'Panels', moved_to: 'apps/infra/boards.html', superseded_by: 'apps/infra/boards.html' })}-->\n<h1>Panels</h1>\n<p>This page moved to <a href="/page/apps/infra/boards.html">Boards</a>.</p>\n`;
+	const found = await lintFixture(t, { ...hubs, 'apps/infra/panels.html': stub });
+	for (const [rule, paths] of Object.entries(found)) assert.ok(!paths.includes('apps/infra/panels.html'), `${rule} counts the stub`);
+});
+
+test('a data file wiki-link-like text is no broken link', async (t) => {
+	const data = '{"contact_points": [["email", "-", "61", "61"]]}\n';
+	const found = await lintFixture(t, { ...hubs, 'apps/infra/data/gaps.json': data });
+	assert.deepEqual(found.brokenLinks, []);
+});
+
 function statSyncOrNull(file) {
 	try {
 		return statSync(file);

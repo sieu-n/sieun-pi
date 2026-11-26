@@ -4,7 +4,7 @@ import { inspectWikiFile } from './wiki-mirror';
 import { resolveLink } from './wiki-index';
 import { deriveTitleFromPath, isSessionPath } from './session-artifact-index';
 import { extractHtmlHrefs } from './wiki-html';
-import { metaDescription } from './wiki-frontmatter';
+import { isRedirectStub, metaDescription } from './wiki-frontmatter';
 import { sessionFolderLink } from '../session-links.mjs';
 
 /** The lint rules, in report order. Style rules stay WARN tier, so `healthy` reads only broken links and orphans. */
@@ -62,9 +62,15 @@ export async function getLintReport(): Promise<LintReport> {
 		// The @code/ tier mirrors repo source docs read-only, which is not wiki content to lint.
 		if (page.path.startsWith('@code/')) continue;
 
+		// Orphanhood applies to page documents; .txt/.json/.yaml files are co-located attachments reached through their page.
+		const isPageKind = page.kind === 'html' || page.kind === 'md' || page.kind === 'mdx';
+		// A moved page's redirect stub is no page a reader lands on, so the page rules count the page it points to instead.
+		const stub = isRedirectStub(page.meta);
+
 		// Frozen evidence trees (sessions/, archive/) 403 on edit, so a broken link from there is unfixable noise once
-		// its target moves. Links from curated pages into archive/ and sessions/ are still checked.
-		if (!isArchival(page)) {
+		// its target moves. Links from curated pages into archive/ and sessions/ are still checked. A data file has no
+		// links: on 2026-11-27 index-gaps.json read as one to 'data/"email",'.
+		if (isPageKind && !isArchival(page)) {
 			for (const target of page.links) {
 				if (!index.byPath.has(target) && isInternalTarget(target))
 					add('brokenLinks', page, `links to missing "${target}"`, { target });
@@ -81,16 +87,14 @@ export async function getLintReport(): Promise<LintReport> {
 			}
 		}
 
-		// Orphanhood applies to page documents; .txt/.json/.yaml files are co-located attachments reached through their page.
-		const isPageKind = page.kind === 'html' || page.kind === 'md' || page.kind === 'mdx';
 		const inbound = index.backlinks.get(page.path);
-		if ((!inbound || inbound.size === 0) && isPageKind && !isEntryFile(page) && !isArchival(page))
+		if ((!inbound || inbound.size === 0) && isPageKind && !stub && !isEntryFile(page) && !isArchival(page))
 			add('orphans', page, 'no inbound links');
 		if (!isArchival(page) && Date.parse(page.updated) < staleThreshold)
 			add('stale', page, `last modified ${page.updated.slice(0, 10)}`);
 		if (isUntitled(page)) add('untitled', page, 'no H1 heading — title derived from filename');
 
-		if (!isPageKind || isArchival(page)) continue;
+		if (!isPageKind || isArchival(page) || stub) continue;
 		if (!metaDescription(page.meta))
 			add(
 				'missingDescription',
@@ -133,14 +137,14 @@ export async function getLintReport(): Promise<LintReport> {
 /**
  * Hub listing checks. A hub lists a page when it links it or when its `<wiki-children>` tag covers it.
  * hubOrphans: a curated page no ancestor hub lists. A retired page is left out, because its fix is to
- * drop it from the hub. missingSummary: a page a `<wiki-children>` tag lists with no frontmatter
+ * drop it from the hub, and so is a redirect stub, whose target is the listed page. missingSummary: a page a `<wiki-children>` tag lists with no frontmatter
  * `summary`, so its row renders empty.
  */
 function checkHubListing(index: WikiIndex, curated: Map<string, CuratedFile>, add: Add): void {
 	const hasIndex = (folder: string) =>
 		index.byPath.has(`${folder}/index.html`) || index.byPath.has(`${folder}/README.html`);
 	for (const page of index.pages) {
-		if (!isCuratedPage(page) || isRetired(page)) continue;
+		if (!isCuratedPage(page) || isRetired(page) || isRedirectStub(page.meta)) continue;
 		const hubs = ancestorHubs(page.path, (candidate) => index.byPath.has(candidate));
 		const byTag = hubs.some((hub) =>
 			(curated.get(hub)?.tags ?? []).some((tag) => childrenTagCovers(tag, page.path, hasIndex)),
