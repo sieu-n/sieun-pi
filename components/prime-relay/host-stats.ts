@@ -263,6 +263,14 @@ export function transientUnits(now = Date.now()): ReadonlySet<string> {
 }
 
 /**
+ * The scope pi-rlm starts each relayed kernel in, the kernel of every sw factory (pi-host) conversation. It holds the kernel and the commands
+ * its `bash()` runs, so it splits by process as Prime's tools scope does: the kernel is an agent session's and a build or test it runs is its
+ * job's. Until 11-26 the whole scope read Prime kernels, and from 07:41Z to 09:08Z on 11-26 one pi-host job's admin build grew in its
+ * kernel's scope to about 6 GB of the 8.7 GB d7's quiet_agent_gb read on us-metal02 with no session working, and fell to 2.7 GB at its end.
+ */
+export const KERNEL_SCOPE = "pi-rlm-kernel-";
+
+/**
  * Who holds a memory leaf (`memoryLeaves`), or "by-process" for a leaf whose processes split between groups: prime-agent-daemon.service runs
  * the supervisor and workers, prime-agent-tools.scope the kernels beside the tests, builds, servers and browsers jobs start (all of them ran in
  * the daemon unit until 11-02), and an ssh login's session scope runs Prime itself on some days (12:56Z to 16:46Z on 10-27) and Mac jobs' box
@@ -270,7 +278,7 @@ export function transientUnits(now = Date.now()): ReadonlySet<string> {
  *
  * In agents.slice the Prime core scope (supervisor and workers, sieun-pi cpu-protect.py) is by-process, and each other core scope, which holds
  * a chat service's main process, is an agent service. Under app.slice an installed unit is an agent service unless INSTALLED_UNITS gives it
- * another group, a kernel's own pi-rlm-kernel scope is an agent session, and every other transient unit is a job's (`transient`,
+ * another group, a kernel's own scope (KERNEL_SCOPE) is by-process, and every other transient unit is a job's (`transient`,
  * `transientUnits`). Until 10-28 a path matched only CGROUP_RULES, so jobs' transient units and the ssh scopes read Other: 43.1 GB of the
  * 69.7 GB the groups summed at 17:15Z on 10-27.
  */
@@ -278,8 +286,7 @@ export function leafHolder(path: string, transient: ReadonlySet<string> = transi
   const label = cgroupLabel(path);
   const unit = APP_UNIT.exec(path)?.[1];
   if (unit !== undefined) {
-    if (unit === DAEMON_UNIT || unit === TOOLS_UNIT) return "by-process";
-    if (unit.startsWith("pi-rlm-kernel-")) return { id: "agents", label: "Prime kernels" };
+    if (unit === DAEMON_UNIT || unit === TOOLS_UNIT || unit.startsWith(KERNEL_SCOPE)) return "by-process";
     if (transient.has(unit)) return { id: "jobs", label };
     return { id: INSTALLED_UNITS.find(([, rule]) => rule.test(unit))?.[0] ?? "services", label };
   }
@@ -437,8 +444,9 @@ export async function leafCgroups(root = "/sys/fs/cgroup", transient: ReadonlySe
     if (!held || !(held.bytes > 0 || held.cacheBytes > 0 || held.fileBytes > 0)) return null;
     const holder = leafHolder(path, transient);
     if (holder === "by-process") {
-      const fallback: Holder = LOGIN_SCOPE.test(path) ? { id: "jobs", label: SSH_OWNER } : APP_UNIT.exec(path)?.[1] === TOOLS_UNIT ? { id: "jobs", label: NO_OWNER }
-        : { id: "agents", label: "Prime workers" };
+      const unit = APP_UNIT.exec(path)?.[1];
+      const fallback: Holder = LOGIN_SCOPE.test(path) ? { id: "jobs", label: SSH_OWNER } : unit === TOOLS_UNIT ? { id: "jobs", label: NO_OWNER }
+        : { id: "agents", label: unit?.startsWith(KERNEL_SCOPE) ? "Prime kernels" : "Prime workers" };
       return { path, ...held, holders: processShares(held, held.bytes > 0 && procs !== null ? await processesOf(path, procs) : [], fallback) };
     }
     const owner = holder.id === "jobs" && procs !== null ? await unitOwner(procs) : undefined;

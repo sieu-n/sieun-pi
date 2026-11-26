@@ -4,7 +4,9 @@
 // reads, with each leaf's pids replaced by ones that do not exist, and the processes of the daemon's unit and the ssh login scopes (command,
 // RLM_SESSION_DIR, RssAnon, VmSwap) at the same moment.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { cgroupGroups, kernelItems, leafCgroups, leafHolder, type MemoryGroup, memoryLeaves, parseMeminfo, processHeld, processHolder, processShares } from "../../../../components/prime-relay/host-stats.ts";
@@ -49,7 +51,7 @@ test("leafHolder names jobs' transient units, installed services and the units t
   assert.deepEqual(leafHolder(app + "ph-ab-r2.service", transient), { id: "jobs", label: "ph-ab-r2" });
   assert.deepEqual(leafHolder(app + "app-org.chromium.Chromium-104531.scope", transient), { id: "jobs", label: "app-org.chromium.Chromium-104531" });
   assert.deepEqual(leafHolder(app + "run-p1097888-i900400.scope", new Set(["run-p1097888-i900400.scope"])), { id: "jobs", label: "run-p1097888-i900400" });
-  assert.deepEqual(leafHolder(app + "pi-rlm-kernel-01a17e5d-mvqy8a55.scope", transient), { id: "agents", label: "Prime kernels" });
+  assert.equal(leafHolder(app + "pi-rlm-kernel-01a17e5d-mvqy8a55.scope", transient), "by-process", "a kernel's scope holds its bash() commands too");
   assert.deepEqual(leafHolder(app + "sieun-pi-chat.service", transient), { id: "services", label: "sieun-pi-chat" });
   const scope = "docker-c285685a37f00ee84b6298ce28b1099a6d82d5c20b298e8b6e7497b3e9b5b05e.scope";
   assert.deepEqual(leafHolder(`user.slice/user-serve.slice/${scope}`, transient), { id: "services", label: "docker-c285685a37f0" }, "the wiki's container since 11-21");
@@ -83,6 +85,37 @@ test("the daemon's unit splits into the supervisor, workers and kernels, and the
     { id: "jobs", label: "01a17b28/rig" }, "a job's test daemon carries its job's session");
   assert.deepEqual(processHolder("user.slice/user-1001.slice/session-c922.scope", { command: "node svelte-check" }), { id: "jobs", label: "ssh logins" });
   assert.deepEqual(processHolder(DAEMON, { command: "node server.js" }), { id: "jobs", label: "no live owner" });
+});
+
+test("a kernel's scope reads its kernel and relay as Prime kernels and the build its bash() runs as that job's", async () => {
+  // 11-26 07:41Z to 09:08Z on us-metal02: a pi-host job's admin build grew in its kernel's scope, and the whole scope read Agent sessions.
+  const root = mkdtempSync(join(tmpdir(), "kernel-scope-"));
+  const app = "user.slice/user-1001.slice/user@1001.service/app.slice";
+  const scope = `${app}/pi-rlm-kernel-7850f13e-mwx7i7aw.scope`;
+  const session = join(root, "durable/session-artifacts/7850f13e-172b-4511-9be9-f1703d52f015-9869");
+  const env = { ...process.env, RLM_SESSION_DIR: session };
+  const kernel = spawn("sh", ["-c", "sleep 60; true", "python", "-m", "rlm.repl"], { env, stdio: "ignore" });
+  const build = spawn("sh", ["-c", "sleep 60; true", "vite", "build"], { env, stdio: "ignore" });
+  try {
+    let path = "";
+    for (const part of scope.split("/")) {
+      path = path ? `${path}/${part}` : part;
+      mkdirSync(join(root, "cgroup", path), { recursive: true });
+      writeFileSync(join(root, "cgroup", path, "cgroup.subtree_control"), path === scope ? "" : "memory");
+    }
+    writeFileSync(join(root, "cgroup", "cgroup.subtree_control"), "memory");
+    writeFileSync(join(root, "cgroup", scope, "memory.stat"), `anon ${4 * GB}\nfile 0\nshmem 0\n`);
+    writeFileSync(join(root, "cgroup", scope, "memory.swap.current"), "0\n");
+    writeFileSync(join(root, "cgroup", scope, "cgroup.procs"), `${kernel.pid}\n${build.pid}\n`);
+    const [leaf] = await leafCgroups(join(root, "cgroup"), new Set([`pi-rlm-kernel-7850f13e-mwx7i7aw.scope`]));
+    const holders = new Map(leaf!.holders.map(part => [`${part.holder.id}:${part.holder.label}`, part.bytes]));
+    assert.deepEqual([...holders.keys()].sort(), ["agents:Prime kernels", "jobs:7850f13e"]);
+    assert.ok(Math.abs([...holders.values()].reduce((sum, bytes) => sum + bytes, 0) - 4 * GB) < 100, "the parts add up to the leaf, to rounding");
+  } finally {
+    kernel.kill();
+    build.kill();
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("a by-process leaf whose processes hold nothing goes to its fallback whole", () => {

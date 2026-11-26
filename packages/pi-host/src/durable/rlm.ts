@@ -5,8 +5,8 @@
  * conversation's local harness store, which is the agent's for a thread that belongs to one (`agent-profile.ts`).
  *
  * One kernel per conversation, started at its first `ipython` call and kept across turns while pi-host runs. A kernel is snapshotted
- * (`kernel-state.dill`, pi-rlm's format) after each settled run and freed once its conversation has had no cell and no run for
- * `idleMs` and no `bash()` handle is live (owner rule c92); the next call starts a fresh kernel and revives what the snapshot holds with
+ * (`kernel-state.dill`, pi-rlm's format) after each settled run and freed once its conversation has had no cell for `idleMs`, no run
+ * that can send one (`runHoldsKernel`) and no live `bash()` handle (owner rule c92); the next call starts a fresh kernel and revives what the snapshot holds with
  * Prime's `[python-state-restored]` line alone. pi-host's stop frees every kernel the same way. Only a kernel that ended any other way
  * (it died, or was stopped mid-cell) brings pi-rlm's `<ipython_kernel_reset>` note. A kill of pi-host leaves the relay
  * running with no client: the next process kills it before it starts that conversation's kernel, and the relay ends itself after
@@ -35,7 +35,8 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Message, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { Models } from "@earendil-works/pi-ai/models";
 import {
-  configure, defineExtension, LiveDoc, ROOT_CONVERSATION_ID, type ConversationId, type ConversationRecord, type Extension, type Harness, type ModelRef, type ToolExecutionApi,
+  configure, defineExtension, LiveDoc, ROOT_CONVERSATION_ID, type ConversationId, type ConversationRecord, type Extension, type Harness, type LiveState, type ModelRef,
+  type ToolExecutionApi,
 } from "@earendil-works/pi-durable";
 import { header, endpoint, receipt, parseMode, newMessageId } from "../../../pi-rlm/src/core/bus/message.ts";
 import { family, relationship, type Member, type Relationship } from "../../../pi-rlm/src/core/bus/family.ts";
@@ -79,6 +80,18 @@ export const IPYTHON_TOOL = "ipython";
 /** The display record `rlm.bash` emits when a `bash()` handle starts, ends or turns out to be a detached service. */
 const BASH_ACTIVITY = "application/vnd.prime-agent.bash-activity+json";
 const MARKER = "kernel-started";
+/**
+ * Whether a conversation's run keeps its idle kernel. A run whose generation sleeps out a retry backoff or polls a deferred response, as
+ * pi-pool's account and working slot waits do (pi-pool `pool-provider.ts`), sends no request and runs no tool, so no cell can come until it
+ * gets an answer, and its kernel is freed like an idle one. From 07:56Z to 09:10Z on 11-26 pi-pool had no account slot on us-metal02, and
+ * every pi-host run on the box slept in that wait with its kernel, while d7's quiet_agent_gb read 4.2 to 8.7 GB with no session working.
+ */
+export function runHoldsKernel(live: LiveState | undefined): boolean {
+  if (!live?.run) return false;
+  if (live.tools?.some(tool => tool.status === "pending" || tool.status === "running")) return true;
+  return !live.generation?.retry && !live.generation?.deferred;
+}
+
 /** The marker's text for a kernel stopped mid-cell, which the next pi-host reports with the reset note. */
 const LOST = "lost";
 
@@ -512,7 +525,7 @@ export class DurableRlm {
     }
   }
 
-  /** Frees a kernel that stayed unused for `idleMs`: no cell, no run of its conversation and no live `bash()` handle. */
+  /** Frees a kernel that stayed unused for `idleMs`: no cell, no run that can send one (`runHoldsKernel`) and no live `bash()` handle. */
   private armIdle(slot: Slot): void {
     if (slot.idleTimer) clearTimeout(slot.idleTimer);
     slot.idleTimer = setTimeout(() => void this.idleCheck(slot), this.idleMs);
@@ -532,7 +545,7 @@ export class DurableRlm {
 
   private async running(slot: Slot): Promise<boolean> {
     const harness = slot.thread.harness();
-    return Boolean(harness && (await harness.snapshot(LiveDoc, slot.conversation as ConversationId, context))?.run);
+    return Boolean(harness && runHoldsKernel(await harness.snapshot(LiveDoc, slot.conversation as ConversationId, context)));
   }
 
   private async liveHandles(kernel: Kernel): Promise<number> {

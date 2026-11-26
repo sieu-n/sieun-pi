@@ -10,7 +10,8 @@
  * 5. A pi-host kill mid-cell gives that call pi-durable's `interrupted`; the next call starts a fresh kernel with pi-rlm's reset note, and
  *    the old kernel is gone.
  * 6. A thread whose cwd changed moves its live kernel to the new folder before the next cell.
- * 7. A kernel freed when idle comes back on the next call with Prime's restore line and no reset note, and a cell that comes while
+ * 7. A kernel freed when idle comes back on the next call with Prime's restore line and no reset note, also one whose run slept out a
+ *    retry, as a pi-pool slot wait does, and a cell that comes while
  *    the free stops it waits for a new kernel instead of attaching to the relay that is ending. A marker an older pi-host left after
  *    such a free brings no reset note either, and a marker of a kernel stopped mid-cell does.
  * 8. The kernel's harness store is the agent's in a thread with an `agent.ref`, and the thread's own otherwise.
@@ -22,14 +23,15 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, write
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import type { Message } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, type Message } from "@earendil-works/pi-ai";
 import { getCurrentTools, toToolDeclaration } from "@earendil-works/pi-ai/utils/transcript";
 import { LiveDoc, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { testPython } from "@sieun-pi/pi-rlm/test-helpers";
 import { KERNEL_RESET } from "../../../pi-rlm/src/pi/index.ts";
 import { ChatDoc } from "../../src/durable/chat-doc.ts";
 import { artifactDirOf } from "../../src/durable/children.ts";
-import { DurableRlm, IPYTHON_TOOL, loadIpythonTool } from "../../src/durable/rlm.ts";
+import { DurableRlm, IPYTHON_TOOL, loadIpythonTool, runHoldsKernel } from "../../src/durable/rlm.ts";
+import { SLOT_OPEN_TEXT } from "../../../pi-pool/src/durable/pool-provider.ts";
 import { SUBAGENT_STARTED } from "../../src/durable/subagent.ts";
 import { MODEL } from "./crash-scenario.ts";
 import { call, cell, context, entriesOf, firstUser, inputs, lastText, openThread, results, rlmOptions, say, until } from "./rlm-rig.ts";
@@ -182,6 +184,44 @@ test("a kernel freed when idle comes back on the next call with Prime's restore 
   const read = out[1]!.text;
   assert.ok(!read.includes("ipython_kernel_reset"), read);
   assert.match(read, /^\[python-state-restored\]\nYour Python kernel state was revived from your previous session\. These names are available again: [^\n]*\bx\b[^\n]*\n\n42\n$/);
+});
+
+test("a kernel whose run sleeps out a retry is freed, and the cell after the retry revives its state", async () => {
+  // 11-26 07:56Z to 09:10Z on us-metal02: every pi-host run slept in pi-pool's account slot wait, and each kept its kernel the whole time.
+  const idle = await DurableRlm.load({ ...rlmOptions(dir), idleMs: 300 });
+  let failed = false;
+  const { harness, root } = await openThread(join(dir, "threads", "retry.sqlite"), "retry", idle, ({ messages }) => {
+    const last = lastText(messages);
+    if (last === "set x") return cell("import os\nx = 41\nprint(os.getpid())");
+    if (/^\d+$/.test(last.trim()) && !failed) {
+      failed = true;
+      return fauxAssistantMessage([], { stopReason: "error", errorMessage: SLOT_OPEN_TEXT });
+    }
+    if (/^\d+$/.test(last.trim())) return cell("print(x + 1)");
+    if (last.trim().endsWith("42")) return say("42");
+    return say(`unexpected: ${last.slice(0, 120)}`);
+  }, dir);
+  const run = await root.submit({ type: "input", content: "set x" }, context);
+  const live = () => harness.snapshot(LiveDoc, ROOT_CONVERSATION_ID, context);
+  await until("the run's retry backoff", async () => (await live())?.generation?.retry);
+  const kernel = Number(results(await entriesOf(harness))[0]!.text.trim());
+  await until("the kernel to end while the run sleeps", async () => !alive(kernel), 1_800);
+  assert.ok((await live())?.run, "the run still waits for its retry");
+  await run.wait(context);
+  const out = results(await entriesOf(harness));
+  await harness.close(context);
+  await idle.shutdown();
+  assert.match(out[1]!.text, /^\[python-state-restored\]\n[^\n]*\bx\b[^\n]*\n\n42\n$/);
+});
+
+test("runHoldsKernel keeps the kernel of a run that sends or runs a tool, and frees one that sleeps in a retry or a deferred poll", () => {
+  const run = { taskId: 1 as never, inputs: [], turns: 1 };
+  assert.equal(runHoldsKernel(undefined), false);
+  assert.equal(runHoldsKernel({}), false);
+  assert.equal(runHoldsKernel({ run, generation: { attempt: 1 } }), true);
+  assert.equal(runHoldsKernel({ run, generation: { attempt: 2, retry: { at: 1, error: SLOT_OPEN_TEXT } } }), false);
+  assert.equal(runHoldsKernel({ run, generation: { attempt: 1, deferred: { pollAt: 1 } } }), false);
+  assert.equal(runHoldsKernel({ run, generation: { attempt: 1, deferred: { pollAt: 1 } }, tools: [{ callId: "a", name: "subagent", status: "running" }] }), true);
 });
 
 test("a cell that comes while the idle free stops the kernel gets a new kernel, and its rlm.spawn returns", async () => {
