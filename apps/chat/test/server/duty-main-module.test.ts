@@ -14,7 +14,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { answeredBy, areaReview, PLACEHOLDER, remoteFolder, reviewOf, runAreaReview } from "../../scripts/duties/area-review.ts";
+import { answeredBy, areaReview, remoteFolder, reviewOf, runAreaReview } from "../../scripts/duties/area-review.ts";
 import { realAgents } from "../../scripts/duties/real-agents.ts";
 
 const duties = fileURLToPath(new URL("../../scripts/duties/", import.meta.url));
@@ -81,7 +81,7 @@ test("an agent on another box has its folder read through the chat server's fold
   assert.deepEqual(away, { away: "mac" });
   const skipped = reviewOf({ agent, corrections: ledger, posts: [], folder: away, now });
   assert.equal(skipped.n, 0);
-  assert.equal(skipped.metrics.corrections_unsaved, PLACEHOLDER);
+  assert.equal(skipped.metrics.corrections_unsaved, undefined, "an away box leaves the count out");
   assert.deepEqual(skipped.flagged.map(flag => [flag.kind, flag.host]), [["host_away", "mac"]]);
 });
 
