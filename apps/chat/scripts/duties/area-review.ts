@@ -110,9 +110,6 @@ function folderTimes(dir: string): { path: string; mtimeMs: number }[] {
   return out;
 }
 
-/** The duty system's value for a metric a run could not measure (legacy/prime/user-history/src/shared/chat-duties.ts PLACEHOLDER). */
-export const PLACEHOLDER = 999_999;
-
 /** What the review reads from the agent's folder: its memory store and file times, or the box that did not answer. */
 export type FolderRead = { memory: Record<string, MemoryEntry>; folderTimes: { path: string; mtimeMs: number }[] } | { away: string };
 
@@ -161,15 +158,17 @@ export async function remoteFolder(server: string, agent: { id: string; host?: s
 
 /**
  * The review with its folder read: the measure, with `n`, the memory entries and folder files it read. When the agent's box is away, the
- * folder counts are not measured (`PLACEHOLDER`), n is 0 and a `host_away` item names the box, so the duty system reruns the duty once the
- * box is back and agent factory's d7 skips the run instead of reading it as met on no input.
+ * output leaves the folder counts out, so they read not measured, n is 0 and a `host_away` item names the box. The duty system reruns the
+ * duty once the box is back, and agent factory's d7 and fable auditor's sweep skip the run. From 11-26 to 11-28 5180 designer's runs wrote
+ * 999999 for corrections_unsaved while the Mac slept, and each one read as an error with that number.
  */
 export function reviewOf(input: Omit<Parameters<typeof areaReview>[0], "memory" | "folderTimes"> & { folder: FolderRead }): AreaReview & { n: number } {
   const { folder, ...rest } = input;
   if ("away" in folder) {
     const posts = areaReview({ ...rest, memory: {}, folderTimes: [] });
+    const { owner_posts_24h, owner_posts_answered_24h } = posts.metrics;
     return {
-      metrics: { ...posts.metrics, corrections_unsaved: PLACEHOLDER, wiki_pages_touched_24h: PLACEHOLDER, memory_changed_24h: PLACEHOLDER }, n: 0,
+      metrics: { owner_posts_24h: owner_posts_24h!, owner_posts_answered_24h: owner_posts_answered_24h! }, n: 0,
       flagged: [
         ...posts.flagged.filter(flag => flag.kind === "owner_post"),
         { kind: "host_away", host: folder.away, sig: `${rest.agent.id}:host_away`, excerpt: `${rest.agent.name}'s box ${folder.away} did not answer, so its folder and memory were not read` },

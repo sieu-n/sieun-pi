@@ -23,7 +23,7 @@ import { fileURLToPath } from "node:url";
 import { after, test } from "node:test";
 import { measure } from "../../server/duty-run.ts";
 import {
-  answerOf, dutyContext, jobFindings, lastEntries, noModelTurn, parkedJobs, passedOn, unmovedMetrics, postFindings, reportState, stalledSteps, sweepMode, worthALook, type DutyRunView, type Item, type Job,
+  answerOf, dutyContext, jobFindings, lastEntries, noModelTurn, notMeasured, parkedJobs, passedOn, unmovedMetrics, postFindings, reportState, stalledSteps, sweepMode, worthALook, type DutyRunView, type Item, type Job,
   type PlanItem, type Post,
 } from "../../scripts/duties/fable-sweep.ts";
 import { judge, type Duty, type DutyMetric, type DutyRunRecord } from "../../web/src/lib/api/shared/chat-duties.ts";
@@ -203,6 +203,14 @@ test("a later empty turn does not hide the job's report", () => {
   assert.deepEqual(answerOf([{ kind: "turn", text: "nothing to report", live: true }]), []);
 });
 
+test("a duty whose newest run read error on an away box or an outside wait is not measured, so the sweep lists no item for it (5180 designer, 11-28)", () => {
+  const at = now - 60 * MIN;
+  assert.equal(notMeasured([{ at, verdict: "error", summary: "no value", hostAway: "mac" }, { at: at - 1, verdict: "missed" }]), "its box mac is away");
+  assert.equal(notMeasured([{ at: at + 1, verdict: "skipped" }, { at, verdict: "error", waitsOn: "a paid proxy" }]), "it waits on a paid proxy");
+  assert.equal(notMeasured([{ at, verdict: "error", summary: "the precheck failed" }]), undefined, "a broken precheck is still a finding");
+  assert.equal(notMeasured([{ at, verdict: "missed", hostAway: "mac" }]), undefined, "a miss it measured is still a finding");
+});
+
 test("a duty's context is its last three measured runs, after-job measures first, and its fix steps", () => {
   const at = Date.parse("2026-11-22T00:00:00Z");
   const lines = dutyContext([
@@ -353,6 +361,8 @@ test("a verify run after a posted sweep reads met with no job, and passed-on mis
     "/api/agents/ag_seo/board": { board: { todos: [], plan: [] } },
     "/api/agents/ag_seo/duties": { duties: [
       { duty: { id: "d1", name: "Search traffic" }, paused: false, last: { verdict: "missed", at: live - 60 * MIN, streak: 2 }, runs: [run("seo", 60, "t1"), run("seo", 1500, "t0")] },
+      { duty: { id: "d2", name: "Area review" }, paused: false, last: { verdict: "error", at: live - 60 * MIN, streak: 0 },
+        runs: [{ at: live - 60 * MIN, verdict: "error", summary: "the precheck gave no value for corrections_unsaved", metrics: {}, hostAway: "mac" }, run("seo", 1500, "t0")] },
     ] },
     "/api/agents/ag_fable-auditor/board": { board: null },
     "/api/agents/ag_fable-auditor/duties": { duties: [] },
@@ -386,7 +396,7 @@ test("a verify run after a posted sweep reads met with no job, and passed-on mis
     const scheduled = await measureAs("schedule");
     assert.equal(scheduled.record.metrics.findings_unposted?.value, 1, "only seo d1, which nobody has; Crawler guy's d1 and d2 are passed on");
     const detail = JSON.parse(readFileSync(scheduled.record.detail!, "utf8")) as { n: Record<string, number>; items: (Item & { fresh: boolean })[] };
-    assert.deepEqual(detail.n, { agents: 3, posts: 0, jobs: 1, duties: 3, steps: 1, poolWaits: 0 }, "n counts each kind the sweep read");
+    assert.deepEqual(detail.n, { agents: 3, posts: 0, jobs: 1, duties: 4, dutiesNotMeasured: 1, steps: 1, poolWaits: 0 }, "n counts each kind the sweep read");
     const items = detail.items;
     assert.deepEqual(items.map(i => [i.sig, i.fresh, i.passedOn]).sort(), [
       ["duty:ag_crawler-guy/d1", false, "proxy_kb_per_read fix step p48, job crawler ops train working"],

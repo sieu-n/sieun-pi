@@ -18,7 +18,8 @@
  *   job_retrying: a job whose run pi-host flags "retrying since HH:MM: <error kind>", a transient error it has retried past 5 minutes and
  *     keeps retrying, which is no stall (packages/pi-host/src/durable/retrying.ts).
  *   job_failed: a job whose last turn failed, with an entry in the last 24 h, and an agent's work or comm thread that failed.
- *   duty_off: a duty, not paused, whose last run missed its target or errored.
+ *   duty_off: a duty, not paused, whose last run missed its target or errored, except a run that read not measured because its box was
+ *     away or it waited outside its precheck (`notMeasured`).
  *   step_stalled: an open board step with no live job on it, no wait still running, no board.wake the app owes its job or that names it, and
  *     no open owner todo that holds it. A step whose job wrote in the last 45 min still moves, since its parent often closes the step right
  *     after the job reports (the 45 min of rule 6).
@@ -53,7 +54,7 @@
  * thread shares one `updatedAt` in the :5184 lists. A step's age is the start of the job on it, else the first run that saw it open.
  *
  * Its output's `n` counts what it read, one count per kind: agents, owner posts of the window, live jobs, duties and board steps, and the
- * quiet working jobs that wait for a model account (`poolWaits`).
+ * quiet working jobs that wait for a model account (`poolWaits`), and the duties left out as not measured (`dutiesNotMeasured`).
  *
  * Usage: OUTPUT_FILE=<file> [STATE_FILE=<file>] [LAST_RUNS_FILE=<file>] [PRECHECK_MODE=run|after|peek] [PRECHECK_TRIGGER=<trigger>] node --import tsx scripts/duties/fable-sweep.ts
  *   --agent <agent id> [--server http://127.0.0.1:5184] [--threads-dir <dir>] [--data-dir <dir>]
@@ -113,7 +114,7 @@ export interface Job { id: string; name: string; status: string; thread: string;
 interface Agent { id: string; name: string; status: string; thread: string; room?: string; archived?: boolean; test?: boolean; model?: { id: string; label?: string }; comm?: { room: string; thread: string; status: string }[] }
 export interface PlanItem { id: string; text: string; status: string; note?: string; job?: string; duty?: string; waitUntil?: string | number; waitFor?: unknown; children?: PlanItem[] }
 export interface DutyRunView {
-  at: number; verdict: string; summary?: string; error?: string; metrics?: Record<string, { met: boolean }>;
+  at: number; verdict: string; summary?: string; error?: string; metrics?: Record<string, { met: boolean }>; hostAway?: string; waitsOn?: string;
   after?: { verdict?: string; summary?: string; metrics?: Record<string, { met: boolean }> }; fixes?: Record<string, { step: string; job?: string; live: boolean }> | null;
   job?: { id: string; name: string };
 }
@@ -322,6 +323,17 @@ export function jobFindings(jobs: readonly Job[], last: (job: Job) => number | u
   return items;
 }
 
+/**
+ * Why a duty's newest run measured nothing it could miss, or undefined: it read error because its box was away (`hostAway`) or it waited on
+ * something outside its precheck (`waitsOn`). Such a run reads not measured, so it is no finding. From 11-26 to 11-28 the sweep listed 5180
+ * designer's d1 and d2 as errors while the owner's Mac slept.
+ */
+export function notMeasured(runs: readonly DutyRunView[]): string | undefined {
+  const newest = runs.find(run => run.verdict !== "skipped");
+  if (newest?.verdict !== "error") return undefined;
+  return newest.hostAway ? `its box ${newest.hostAway} is away` : newest.waitsOn ? `it waits on ${newest.waitsOn}` : undefined;
+}
+
 /** A duty's last three measured runs and the fix step of its newest, one line each, for the reviewer to judge a miss without opening it. */
 export function dutyContext(runs: readonly DutyRunView[]): string[] {
   const kst = (at: number): string => new Date(at + 9 * HOUR).toISOString().slice(5, 16).replace("T", " ");
@@ -513,7 +525,7 @@ if (isMain(import.meta.url)) {
 
   // Boards and duties, per agent.
   const seen: Record<string, number> = {};
-  const read = { agents: agents.length, posts: ownerHits.length, jobs: liveJobs.length, duties: 0, steps: 0, poolWaits };
+  const read = { agents: agents.length, posts: ownerHits.length, jobs: liveJobs.length, duties: 0, dutiesNotMeasured: 0, steps: 0, poolWaits };
   await Promise.all(agents.map(async agent => {
     const [board, duties] = await Promise.all([
       get<{ board: { plan: PlanItem[]; todos: Todo[] } | null }>(server, `/api/agents/${agent.id}/board`).catch(() => ({ board: null })),
@@ -529,6 +541,7 @@ if (isMain(import.meta.url)) {
     for (const row of duties.duties) {
       // This agent's own sweep duty is the one judging, so its misses are never a finding of it.
       if (agent.id === values.agent || row.paused || !row.last || (row.last.verdict !== "missed" && row.last.verdict !== "error")) continue;
+      if (notMeasured(row.runs)) { read.dutiesNotMeasured += 1; continue; }
       const run = row.runs[0];
       const why = oneLine(run?.after?.summary ?? run?.error ?? run?.summary ?? "", 110);
       const miss = { agent, dutyId: row.duty.id, runs: row.runs, plan: board.board?.plan ?? [], todos: board.board?.todos ?? [], jobs: liveJobs, now, wakes };

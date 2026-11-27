@@ -11,7 +11,8 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AREA_REVIEW_NAME, areaReviewDuty, areaReviewUpdate, BOARD_PUSH_EVERY_MS, hostCwd, liveAppDir } from "../../server/common-duties.ts";
-import { areaReview } from "../../scripts/duties/area-review.ts";
+import { areaReview, reviewOf } from "../../scripts/duties/area-review.ts";
+import { hostAwayOf, judge } from "../../web/src/lib/api/shared/chat-duties.ts";
 import { start, type Running } from "./helpers.ts";
 
 let s: Running;
@@ -112,4 +113,22 @@ test("the area review always hands off the review, counts corrections its memory
   assert.equal(review.flagged[0]!.kind, "area_review");
   assert.equal(review.flagged[0]!.handOff, true);
   assert.deepEqual(review.flagged.slice(1).map(f => f.sig), ["c11", "dm_seo/p1", "ch_1/p2"]);
+});
+
+test("an Area review whose box is away writes no number for what it could not read, so the run reads not measured (5180 designer d2, 11-26 to 11-28)", () => {
+  const now = Date.parse("2026-11-28T00:00:00Z");
+  const review = reviewOf({
+    agent: { id: "ag_5180-designer", slug: "5180-designer", name: "5180 designer", room: "dm_5180-designer", host: "mac" },
+    corrections: [{ id: "c10", rule: "A rule.", chat: { name: "5180 designer · #search-design" } }],
+    posts: [], folder: { away: "mac" }, now,
+  });
+  assert.deepEqual(review.metrics, { owner_posts_24h: 0, owner_posts_answered_24h: 0 }, "the folder counts are left out, never 999999");
+  assert.equal(review.n, 0);
+  const output = { metrics: review.metrics, flagged: review.flagged.map(f => ({ ...f, excerpt: f.excerpt })) };
+  const judged = judge([{ key: "corrections_unsaved", label: "Corrections not in memory", op: "<=", target: 0 }], output);
+  assert.equal(judged.verdict, "error");
+  assert.deepEqual(judged.metrics, {});
+  assert.doesNotMatch(judged.summary, /999999|placeholder/, judged.summary);
+  assert.match(judged.summary, /gave no value for corrections_unsaved .*mac did not answer/);
+  assert.equal(hostAwayOf(output), "mac");
 });
