@@ -43,23 +43,32 @@ export function hostCwd(cwd: string | undefined, appDir: string, home = homedir(
   return existsSync(cwd) ? realpathSync(cwd) : appDir;
 }
 
+/**
+ * The review's line on memory cleanup. On 11-27 and 11-28 seo's review merged and shortened its Google cookies rule and dropped why (Google
+ * revokes copied cookies and signs the owner out), and search product, misc. lost a fact the same way; d3 flagged each loss.
+ */
+export const MEMORY_KEEP = "When you merge, rewrite or shorten a memory entry, keep each rule's reason and its source (the owner's post or message id), " +
+  "and delete an entry only when its fact is wrong or no longer true.";
+
 /** A stored duty as far as `areaReviewUpdate` reads it. */
-export interface StoredDuty { name: string; precheck: { command: string[]; cwd: string; timeoutMs?: number } }
+export interface StoredDuty { name: string; onMiss?: string; precheck: { command: string[]; cwd: string; timeoutMs?: number } }
 const DEFINITION_FIELDS = ["name", "ownerWords", "goal", "metrics", "readings", "precheck", "onMiss", "boardGoal", "firingCall"] as const;
 
 /**
  * What a create, backfill or rerun sets for an agent's "Area review": the default when the agent has none, and for one it has, matched by
- * name, the same definition with only its precheck cwd moved to the folder `hostCwd` picks, or null when that cwd is already right. An
+ * name, the same definition with its precheck cwd moved to the folder `hostCwd` picks and `MEMORY_KEEP` added to its onMiss if missing,
+ * or null when both are already right. An
  * agent's own review keeps its precheck, prompt and schedule: on 11-26 API portal gave its d7 its own precheck,
  * scripts/duties/portal-area-review.ts, which runs the shared one and adds the portal's readings (sieun-pi 42b2a65e9).
  */
 export function areaReviewUpdate(existing: StoredDuty | undefined, agentId: string, cwd: string | undefined, appDir = liveAppDir(), home = homedir()): Record<string, unknown> | null {
   if (!existing) return areaReviewDuty(agentId, cwd, appDir, home);
   const want = hostCwd(existing.precheck.cwd, appDir, home);
-  if (want === existing.precheck.cwd) return null;
+  const onMiss = existing.onMiss?.includes(MEMORY_KEEP) ? existing.onMiss : [existing.onMiss, MEMORY_KEEP].filter(Boolean).join(" ");
+  if (want === existing.precheck.cwd && onMiss === existing.onMiss) return null;
   const fields = existing as unknown as Record<string, unknown>;
   const definition = Object.fromEntries(DEFINITION_FIELDS.filter(field => fields[field] !== undefined).map(field => [field, fields[field]]));
-  return { ...definition, precheck: { ...existing.precheck, cwd: want } };
+  return { ...definition, precheck: { ...existing.precheck, cwd: want }, onMiss };
 }
 
 /** The "Area review" duty of agent `agentId`, whose project folder is `cwd` on the agent's own box (`hostCwd` picks the folder here). */
@@ -85,6 +94,6 @@ export function areaReviewDuty(agentId: string, cwd: string | undefined, appDir 
     },
     onMiss: "Do the review in the area_review item first, in this order: read the brief, memory and working memory for the area, open its dashboards and live product, " +
       "fix or file each issue you find, and clean up stale code, pages and memory. For each correction_unsaved, save the rule to memory with its id and change what let it happen. " +
-      "Read each owner_post for a frustration or an ask that is still open, and act on it.",
+      `Read each owner_post for a frustration or an ask that is still open, and act on it. ${MEMORY_KEEP}`,
   };
 }

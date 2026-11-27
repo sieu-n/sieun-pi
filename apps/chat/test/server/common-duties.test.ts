@@ -10,7 +10,7 @@ import type { AgentSummary, CheckInView, DutyRow } from "../../web/src/lib/api/t
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AREA_REVIEW_NAME, areaReviewDuty, areaReviewUpdate, BOARD_PUSH_EVERY_MS, hostCwd, liveAppDir } from "../../server/common-duties.ts";
+import { AREA_REVIEW_NAME, areaReviewDuty, areaReviewUpdate, BOARD_PUSH_EVERY_MS, hostCwd, liveAppDir, MEMORY_KEEP } from "../../server/common-duties.ts";
 import { areaReview, reviewOf } from "../../scripts/duties/area-review.ts";
 import { hostAwayOf, judge } from "../../web/src/lib/api/shared/chat-duties.ts";
 import { start, type Running } from "./helpers.ts";
@@ -74,11 +74,14 @@ test("a backfill or rerun keeps an agent's own Area review whole and moves only 
   const repo = join(home, "src/sieun-pi");
   mkdirSync(repo, { recursive: true });
   try {
-    const own = { name: AREA_REVIEW_NAME, ownerWords: "his words", goal: "the portal's own review", onMiss: "act",
+    const own = { name: AREA_REVIEW_NAME, ownerWords: "his words", goal: "the portal's own review", onMiss: `act ${MEMORY_KEEP}`,
       metrics: [{ key: "portal_errors", label: "Errors", op: "<=", target: 0 }], precheck: { command: ["node", "--import", "tsx", "scripts/duties/portal-area-review.ts"], cwd: repo, timeoutMs: 120_000 } };
     assert.equal(areaReviewUpdate(own, "ag_api-portal", repo, "/app", home), null, "a review whose cwd this box has stays as it is");
     const moved = areaReviewUpdate({ ...own, precheck: { ...own.precheck, cwd: "/Users/sieunpark/src/sieun-pi" } }, "ag_api-portal", repo, "/app", home) as typeof own;
     assert.deepEqual(moved, { ...own, precheck: { ...own.precheck, cwd: repo } });
+    // A review stored before the memory cleanup line gains it at the end of its onMiss and keeps the rest (seo's cookies rule, 11-28).
+    assert.deepEqual(areaReviewUpdate({ ...own, onMiss: "act" }, "ag_api-portal", repo, "/app", home), own);
+    assert.ok((areaReviewDuty("ag_new", repo, "/app", home).onMiss as string).endsWith(MEMORY_KEEP));
     const fresh = areaReviewUpdate(undefined, "ag_new", repo, "/app", home) as { name: string; precheck: { command: string[] } };
     assert.equal(fresh.name, AREA_REVIEW_NAME);
     assert.deepEqual(fresh.precheck.command, ["node", "/app/scripts/duties/area-review.ts", "--agent", "ag_new"]);
@@ -111,6 +114,7 @@ test("the area review always hands off the review, counts corrections its memory
   // p5, the agent's DM post after p1, answers p1, so only p2 counts (owner_posts_answered_24h).
   assert.deepEqual(review.metrics, { corrections_unsaved: 1, owner_posts_24h: 1, owner_posts_answered_24h: 1, wiki_pages_touched_24h: 1, memory_changed_24h: 1 });
   assert.equal(review.flagged[0]!.kind, "area_review");
+  assert.ok(review.flagged[0]!.excerpt.includes(MEMORY_KEEP), "the hand-off asks the job to keep each rule's reason and source");
   assert.equal(review.flagged[0]!.handOff, true);
   assert.deepEqual(review.flagged.slice(1).map(f => f.sig), ["c11", "dm_seo/p1", "ch_1/p2"]);
 });

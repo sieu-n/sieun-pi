@@ -1,7 +1,7 @@
 /**
  * Gives every live agent with an area the two common duties of c249 (server/common-duties.ts), as `App.createAgent` gives a new one, and
- * reruns safely: an agent's own "Area review" keeps its precheck, prompt and schedule, and only a precheck cwd the chat host lacks moves
- * (`areaReviewUpdate`). A check-in still on the old 120 min default goes to the 3-hourly board push; any other interval stays.
+ * reruns safely: an agent's own "Area review" keeps its precheck, prompt and schedule, only a precheck cwd the chat host lacks moves, and an
+ * onMiss without the memory cleanup line `MEMORY_KEEP` gains it (`areaReviewUpdate`). A check-in still on the old 120 min default goes to the 3-hourly board push; any other interval stays.
  * An agent with no brief and no duty has no area and gets nothing, as feature probe on 11-26.
  *
  * Usage: node scripts/common-duties-backfill.ts [--server http://127.0.0.1:5184] [--db <chat.sqlite>] [--agents-dir <dir>] [--dry-run]
@@ -48,7 +48,7 @@ for (const agent of agents.filter(a => !a.archived && !a.test)) {
   }
   const existing = duties.find(duty => duty.name === AREA_REVIEW_NAME);
   const duty = areaReviewUpdate(existing, agent.id, agent.home);
-  const review = !duty ? "kept" : values["dry-run"] ? (existing ? "would move its cwd" : "would add") : String((await post(`/api/agents/${agent.id}/duties`, { action: "set", duty })).result);
+  const review = !duty ? "kept" : values["dry-run"] ? (existing ? "would update" : "would add") : String((await post(`/api/agents/${agent.id}/duties`, { action: "set", duty })).result);
   const everyMs = file.checkIn?.everyMs;
   const checkIn = everyMs !== OLD_CHECK_IN_MS ? `kept ${everyMs ?? "default"}` : values["dry-run"] ? "would set 180 min"
     : (await post(`/api/agents/${agent.id}/check-in`, { everyMs: BOARD_PUSH_EVERY_MS }), "set 180 min");

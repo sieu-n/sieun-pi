@@ -27,6 +27,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { parseArgs } from "node:util";
 import { listMemory } from "../../../../packages/pi-harness/src/core/memory-store.ts";
+import { MEMORY_KEEP } from "../../server/common-duties.ts";
 
 const DAY_MS = 86_400_000;
 
@@ -72,7 +73,7 @@ export function areaReview(input: {
     {
       kind: "area_review", sig: `${agent.id}:${day}`, handOff: true,
       excerpt: `The daily review of ${agent.name}'s area: watch its dashboards and live product, find issues and act on them, clean up product and code, ` +
-        "and self-improve: update its llm-wiki pages, agent files and memory, prune stale entries, and keep the owner's corrections and frustrations below from repeating.",
+        `and self-improve: update its llm-wiki pages, agent files and memory, prune stale entries, and keep the owner's corrections and frustrations below from repeating. ${MEMORY_KEEP}`,
     },
     ...unsaved.map((c): Flag => ({ kind: "correction_unsaved", sig: c.id, ...(c.at ? { at: Date.parse(c.at) } : {}), excerpt: `${c.id}: ${c.rule}`.slice(0, 400) })),
     ...ownerPosts.map((p): Flag => {
