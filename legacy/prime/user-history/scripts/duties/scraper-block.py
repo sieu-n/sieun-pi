@@ -136,13 +136,21 @@ def tor_exits() -> frozenset[str]:
         return frozenset(body.read().decode().split())
 
 
+def own_referer(c: dict) -> bool:
+    """A referer condition that matches virev.ai's own pages, the forged-referer fleet's sign: a person who opens one of our links in a new tab
+    sends it too, so such a group is challenged as a no-referer one. measured: in the 7 days to 11-27 22Z, 10,721 IPs loaded a public page with a
+    virev.ai referer and a desktop UA more than 2 majors old and made no asset, __data.json or API call, against 66 that did (alert
+    crawling-unique-ips-rise, 11-27 21Z)."""
+    return c.get("op") == "re" and not c.get("neg") and "virev\\.ai" in str(c.get("value"))
+
+
 def verdict(group: list[dict]) -> str:
-    """challenge for a no-referer group with no network, no Google UA and a UA regex or substring (a home-proxy fleet a person's direct visit
+    """challenge for a no-referer or virev.ai-referer group with no network, no Google UA and a UA regex or substring (a home-proxy fleet a person's direct visit
     can also match, 11-15), deny for the rest: a hosting ASN or IP list, a fake Googlebot from outside Google's network, a bare Google referer
     (the X11 fleet), an exact UA list copied from one fleet's requests (of the 11-03 group's 32,764 denied IP and UA pairs from 11-08 to 11-15,
     0 opened a page with a virev.ai referer), a UA. forged_groups decides a forged-referer client's groups instead."""
     network = any(c.get("type") in ("geo_as_number", "ip_address") and not c.get("neg") for c in group)
-    no_referer = any(c.get("type") == "header" and c.get("key") == "referer" and c.get("op") == "nex" for c in group)
+    no_referer = any(c.get("type") == "header" and c.get("key") == "referer" and (c.get("op") == "nex" or own_referer(c)) for c in group)
     google = any(c.get("type") == "user_agent" and not c.get("neg") and "google" in str(c.get("value")).lower() for c in group)
     exact_uas = any(c.get("type") == "user_agent" and c.get("op") == "inc" and not c.get("neg") for c in group)
     return "challenge" if no_referer and not network and not google and not exact_uas else "deny"

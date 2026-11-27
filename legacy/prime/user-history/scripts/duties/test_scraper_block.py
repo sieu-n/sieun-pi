@@ -66,6 +66,13 @@ class Placement(unittest.TestCase):
         self.assertEqual(sb.verdict(EXACT_UA_FLEET), "deny")
         self.assertEqual(sb.verdict(HOME_FLEET), "challenge")
 
+    def test_a_virev_referer_fleet_is_challenged_and_stays_deny_on_a_network(self):
+        """11-27: the forged virev.ai-referer fleet of stale desktop UAs goes to challenge, since a person opening our link in a new tab matches it."""
+        own_ref = {"type": "header", "key": "referer", "op": "re", "value": "^https?://(?:www\\.)?virev\\.ai/"}
+        stale = {"type": "user_agent", "op": "re", "value": "Windows NT[^)]*\\) AppleWebKit/537\\.36 \\(KHTML, like Gecko\\) Chrome/15[0-4]\\.0\\.0\\.0 "}
+        self.assertEqual(sb.verdict([PUBLIC, stale, own_ref, OWN]), "challenge")
+        self.assertEqual(sb.verdict([PUBLIC, stale, own_ref, {"type": "geo_as_number", "op": "eq", "value": "14061"}, OWN]), "deny")
+
 
 CHROME_152 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36"
 CHROME_154 = CHROME_152.replace("152.0.0.0", "154.0.0.0")
