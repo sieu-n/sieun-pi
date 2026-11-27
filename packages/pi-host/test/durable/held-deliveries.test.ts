@@ -1,6 +1,6 @@
 /**
  * Several deliveries to one child that is held for a pending `board.wake` read the chat's wakes once per interval between them, not once each
- * (children.ts `hold`): the newer deliveries wait for the oldest one to end. On 11-22, 160 held deliveries on us-metal02 were for 14 children,
+ * (children.ts `hold`): each newer delivery waits for the next older one to end, so an end wakes one delivery, not all the rest. On 11-22, 160 held deliveries on us-metal02 were for 14 children,
  * one child had 36, and the 123 that slept read :5184's wakes every 30 s each, about 4 reads a second, each a run of the task on pi-host's loop.
  * Every delivery still sends its own notice once the wake's run is over.
  */
@@ -10,6 +10,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { after, before, test } from "node:test";
 import { fauxProvider, type Message } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
@@ -125,6 +126,12 @@ test("four deliveries to one child held for a wake read its wakes once per inter
     assert.ok(read > 0, "the child is still held, so its wakes are read");
     assert.ok(read <= (windowMs / POLL_MS) * 1.5, `four held deliveries read the wakes ${read} times in ${windowMs} ms at one read per ${POLL_MS} ms`);
     assert.deepEqual((await rootInputs()).filter(t => t.startsWith("[child-exited")), [], "the parent hears nothing while the wake is pending");
+    const file = new DatabaseSync(threads.fileOf(id), { readOnly: true });
+    const held = file.prepare(`SELECT record FROM tasks WHERE kind = '"rlm.deliver"' AND status = 'waiting'`).all()
+      .map(row => (JSON.parse(row.record as string) as { state: { on: number[] } }).state.on);
+    file.close();
+    assert.equal(held.length, 3, "three deliveries wait while the oldest holds the child");
+    assert.equal(new Set(held.flat()).size, 3, `each waiting delivery waits on its own older one, so an end wakes one: ${JSON.stringify(held)}`);
 
     wakes.splice(wakes.indexOf(wake), 1);
     await threads.submit(id, { conversation: wake.conversation, text: `[wake] It is now. Your note: ${wake.note}`, whenBusy: "followUp", entry: { kind: "agent.message", data: { from: "board", via: "wake" } } });

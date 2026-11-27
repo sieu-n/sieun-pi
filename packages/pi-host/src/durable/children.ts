@@ -189,7 +189,7 @@ export const DeliverTask = defineTask<DeliverInput, DeliverState, null>({
               for (const t of page.items) {
                 if (t.kind !== DELIVER) continue;
                 if (t.conversationId === s.child && (t.input as DeliverInput).parent === s.child) live.push(t.id);
-                if (t.conversationId === task.input.parent && t.id < runtime.taskId && (holder === undefined || t.id < holder) && heldChild(t.state) === s.child) holder = t.id;
+                if (t.conversationId === task.input.parent && t.id < runtime.taskId && (holder === undefined || t.id > holder) && heldChild(t.state) === s.child) holder = t.id;
               }
               cursor = page.next;
             } while (cursor !== undefined);
@@ -203,7 +203,10 @@ export const DeliverTask = defineTask<DeliverInput, DeliverState, null>({
         }
         // An older delivery to the same child holds it for the same handles, subagents and wakes, so this one waits for that one to end
         // instead of reading the wakes too. On 11-22, 160 held deliveries were for 14 children, one child had 36, and the
-        // 123 that slept read :5184's wakes every 30 s each, about 4 reads a second.
+        // 123 that slept read :5184's wakes every 30 s each, about 4 reads a second. Each one waits on the newest older one, so an end
+        // wakes one delivery and the held ones end in a chain. When all of them waited on the oldest, every end woke all the rest and
+        // each scanned the live tasks again: on 11-26 at 22:07Z the 187 deliveries to one child of crm developer VP's work thread
+        // ended that way and held pi-host's loop in 137 stalls of up to 2.6 s over 3.5 min.
         if (holder !== undefined) {
           await runtime.commit(() => ({ status: "waiting", checkpoint: s, on: [holder], policy: "allSettled" }), ctx);
           return;
