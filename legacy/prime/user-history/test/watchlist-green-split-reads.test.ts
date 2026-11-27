@@ -3,7 +3,7 @@
 // its own source.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { PROD_ROW_PARTS, READ_WINDOW_MS, RECEIPTS_SQL, measure, prodRowsSql, report } from "../scripts/duties/watchlist-green.ts";
+import { PROD_ROW_PARTS, READ_WINDOW_MS, RECEIPTS_SQL, measure, prodRowsSql, report, type WatchData } from "../scripts/duties/watchlist-green.ts";
 
 test("the prod rows slices cover every hash value once", () => {
   const slices = Array.from({ length: PROD_ROW_PARTS }, (_, part) => / and \(hashtext\(w\.target\) & (\d+)\) = (\d+)$/.exec(prodRowsSql(part))!);
@@ -55,4 +55,20 @@ test("prod_read_error_pct reports its window: lastEventAt is the end of the newe
   assert.equal(out.lastEventAt?.prod_read_error_pct, hour("2026-11-04T04:00:00Z"));
   assert.equal(out.windowMs?.prod_read_error_pct, READ_WINDOW_MS);
   assert.match(out.flagged!.find(flag => flag.kind === "prod_reads")!.excerpt, /newest hour over 5% ended 11-04 04:00Z and leaves the 24 h window at 11-05 04:00Z/);
+});
+
+test("claims_stopped skips due rows only the crawl gate or a hold keeps, and flags a claimable row due past the stall line (p398, prod 11-27)", () => {
+  const metrics = [{ key: "prod_read_error_pct", op: "<=", target: 5 }] as never;
+  const now = Date.parse("2026-11-27T02:30:00Z");
+  const data = (monitorDueAge: number): WatchData => ({
+    now, errors: [], receipts: { ok: 95, error: 5 }, receiptHours: {},
+    claims: { lastClaimAt: now - 600_000, dueNow: 364 },
+    prod: { rows: {}, overdue: {}, loopAge: 30, monitorDueAge },
+  });
+  const held = report(data(0), metrics);
+  assert.equal(held.metrics.prod_read_error_pct, 5);
+  assert.ok(!held.flagged!.some(flag => flag.kind === "claims_stopped"));
+  const stalled = report(data(900), metrics);
+  assert.equal(stalled.metrics.prod_read_error_pct, 999_999);
+  assert.ok(stalled.flagged!.some(flag => flag.kind === "claims_stopped"));
 });

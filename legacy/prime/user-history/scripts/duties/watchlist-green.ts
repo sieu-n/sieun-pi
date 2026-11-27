@@ -39,7 +39,7 @@ const DUTY_FILE = join(dirname(fileURLToPath(import.meta.url)), "watchlist-green
  * - owner_green_pct >= 100 is the headline: the owner, 10-09, "make this screen functional all green, including collabs", and 10-10, "most
  *   importantly staging and prod watchlist all green". An owner account is green when every watch on it, posts and collab, is green.
  *   While a tier's watch_paused_by is not empty (readHold), its Watchlist paints every open row Waiting, so only rows a read closed count green there
- *   (closedThroughHold), and a watch_held flag names the hold's code and start; claims_stopped flags no claim for LOOP_STALL_S while rows are due.
+ *   (closedThroughHold), and a watch_held flag names the hold's code and start; claims_stopped flags no claim for LOOP_STALL_S while a row a claim could take has been due that long (monitorDueAge).
  * - staging_green_pct >= 100: the staging half of that sentence. It is the share of unpaused staging monitor rows, posts and collabs, that the
  *   Watchlist draws checked, from staging watch_targets itself, so a row whose reads keep failing counts (the overdue gauge misses those, health.py _NO_GOOD_READ).
  *   Paused staging rows are out of the staging Watchlist by design: the owner's t17 answer asked for "only like 10 accounts" in staging.
@@ -116,7 +116,9 @@ export interface WatchRow {
 }
 /** One prod Kafka stream fault watchlist_risks counts: a fill over BUS_FILL_LIMIT, a retention.bytes changed by hand, or missing byte gauges. */
 export interface StreamFault { topic: string; why: string }
-export interface Gauges { rows: Record<string, number>; overdue: Record<string, number>; loopAge?: number }
+/** `monitorDueAge`: seconds the oldest unpaused monitor row a claim could take has been due (crawler_v3_watch_targets_oldest_overdue_age_seconds_by_tier
+ *  tier monitor), which leaves out every row a supply hold or the crawl gate keeps unclaimed (fair.held_rows_sql), so claims_stopped reads it. */
+export interface Gauges { rows: Record<string, number>; overdue: Record<string, number>; loopAge?: number; monitorDueAge?: number }
 /** One live proxy supply hold of a tier's GET /ops/status supply_holds, `since` in epoch ms. */
 export interface SupplyHold { code: string; provider: string; gateway: string; since: number }
 /** What holds a tier's watch claims, as its Watchlist reads it: watch_paused_by of the summary answer, which the screen puts on every row
@@ -352,7 +354,9 @@ export function report(data: WatchData, dutyMetrics: readonly DutyMetric[]): Pre
   if (data.stagingHold) flagged.push(...holdFlags("staging", data.stagingHold, at));
   if (data.claims) {
     const age = data.claims.lastClaimAt === null ? null : now - data.claims.lastClaimAt;
-    if (data.claims.dueNow > 0 && (age === null || age > LOOP_STALL_S * 1000)) {
+    // A due row only a hold or the crawl gate keeps is no stall: on prod from 11-20 to 11-27, 364 rows of three unpaid groups stayed due (p398).
+    const claimable = data.prod?.monitorDueAge === undefined || data.prod.monitorDueAge > LOOP_STALL_S;
+    if (data.claims.dueNow > 0 && claimable && (age === null || age > LOOP_STALL_S * 1000)) {
       unmeasured.add("prod_read_error_pct");
       flagged.push({ at, kind: "claims_stopped", excerpt: `prod claimed no watch target ${data.claims.lastClaimAt === null ? "in 24 h" : `since ${utc(data.claims.lastClaimAt)}`} while ${data.claims.dueNow} unpaused monitor rows are due, past the ${LOOP_STALL_S} s loop alert line, so prod_read_error_pct misses${prodHeld ? "" : "; no hold names a cause"}` });
     }
@@ -486,13 +490,14 @@ export const byKindTier = (series: { labels: Record<string, string>; value: numb
 
 async function gauges(query: DsQuery): Promise<Gauges> {
   const uid = PROM.prod;
-  const [rows, overdue, loop] = await Promise.all([
+  const [rows, overdue, loop, due] = await Promise.all([
     promInstant(query, uid, `max by (kind, tier)(crawler_v3_watch_targets_rows{world="prod"})`),
     promInstant(query, uid, `max by (kind, tier)(crawler_v3_watch_targets_overdue_24h_by_tier{world="prod"})`),
     promInstant(query, uid, `max(crawler_v3_watch_targets_loop_age_seconds{world="prod"})`),
+    promInstant(query, uid, `max(crawler_v3_watch_targets_oldest_overdue_age_seconds_by_tier{world="prod",tier="monitor"})`),
   ]);
   if (!rows.length || !overdue.length) throw new Error("no crawler_v3_watch_targets_rows or overdue_24h_by_tier series for world prod");
-  return { rows: byKindTier(rows), overdue: byKindTier(overdue), ...(loop[0] ? { loopAge: loop[0].value } : {}) };
+  return { rows: byKindTier(rows), overdue: byKindTier(overdue), ...(loop[0] ? { loopAge: loop[0].value } : {}), ...(due[0] ? { monitorDueAge: due[0].value } : {}) };
 }
 
 /**
