@@ -4,7 +4,7 @@ import { test } from "node:test";
 import type { FiringAlert } from "../src/alert-bridge.ts";
 import { readFile } from "node:fs/promises";
 import { claudeUsableSql } from "../scripts/duties/cache-ratio.ts";
-import { AIR_RUNNERS_QUERY, DUTY_FILE, SAMPLE_KEYS, airRunners, OOM_KILLS_QUERY, OOM_LAST_QUERY, OOM_WINDOW_MS, countRisks, oomSinceQuery, oomKills24h, parseAlertingSets, parseExplained, parseRisks, splitByRuleState, splitOomLines } from "../scripts/duties/vps-boxes.ts";
+import { AIR_RUNNERS_QUERY, DUTY_FILE, SAMPLE_KEYS, airRunners, OOM_KILLS_QUERY, OOM_LAST_QUERY, OOM_WINDOW_MS, cliproxyForwards, countRisks, oomSinceQuery, oomKills24h, parseAlertingSets, parseExplained, parseRisks, splitByRuleState, splitOomLines } from "../scripts/duties/vps-boxes.ts";
 
 const alert = (uid: string, startsAt: string): FiringAlert =>
   ({ fingerprint: `${uid}-${startsAt}`, startsAt, alertname: uid, labels: { __alert_rule_uid__: uid }, summary: "", url: "" });
@@ -176,4 +176,18 @@ test("n has one sample size per duty metric, and the runner read counts its seri
   assert.match(AIR_RUNNERS_QUERY, /count\(\)\) AS series/);
   assert.deepEqual(airRunners({ value: 8, series: 9 }), { online: 8, series: 9 });
   assert.throws(() => airRunners(undefined), /no sample/);
+});
+
+// Guards 11-27: cu-clf-tunnel forwarded us-metal02's 127.0.0.1:18317 to prod CLIProxy, and a classifier spent about 1,340 ChatGPT credits in an hour past Vent.
+test("a local ssh or socat forward to a prod or staging CLIProxy is flagged with its pid, and other forwards are not", () => {
+  const ps = [
+    "3099902 /usr/bin/ssh -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -L 18317:10.81.0.19:8317 us-metal01",
+    "4100 ssh -fN -L127.0.0.1:28317:staging-cliproxy:8317 us-metal01",
+    "4200 socat TCP-LISTEN:18318,fork TCP:10.82.0.7:8317",
+    "4300 /usr/bin/ssh -N -L 6793:127.0.0.1:6793 us-metal01",
+    "4400 python clf/country_judge.py --model gpt-6.1-sol",
+  ].join("\n");
+  const lines = cliproxyForwards(ps, "us-metal02", 0);
+  assert.deepEqual(lines.map(line => line.excerpt.split(":")[0]), ["us-metal02 pid 3099902", "us-metal02 pid 4100", "us-metal02 pid 4200"]);
+  assert.ok(lines.every(line => line.kind === "cliproxy_forward"));
 });

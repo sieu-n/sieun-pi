@@ -35,6 +35,7 @@ import { type Reading, defaultContext, describe, hostMatcher, liveStopSource, mi
  * so the number says that reaper missed a group: on 11-23 the 09:23Z run counted a unit 71 min after its owner ended, 3.5 min before that reaper.
  * orphan_processes_unknown in the run detail counts the processes left by their parent that name no owner, which the run lists, one orphan_unknown
  * line per group, and never stops (p664).
+ * cliproxy_forwards counts the processes on us-metal02 and the Mac that forward a local port to a prod or staging CLIProxy (cliproxyForwards).
  * The owner, 10-18: standing risks live on a risk page that a duty checks, not on the plan.
  */
 
@@ -220,6 +221,40 @@ export function oomKills24h(boxes: readonly OomKills[], at: number): { kills: nu
     ...newest.length ? { lastEventAt: Math.max(...newest) } : {} };
 }
 
+/**
+ * A local forward to a prod or staging CLIProxy: `ssh -L <port>:<host>:8317` or a socat `TCP:<host>:8317`, where <host> is an address of the
+ * prod or staging Docker bridge (10.81.0.x, 10.82.0.x), us-metal01 or a <tier>-cliproxy name. Such a forward lets a script call CLIProxy with the
+ * tier's key past Vent, so no call is recorded and the tier's Claude reserve and ChatGPT credits pay for it. measured: on 11-27 the user unit
+ * cu-clf-tunnel (`ssh -N -L 18317:10.81.0.19:8317 us-metal01`, up since 11-25 21:30Z) carried a company-universe classifier's calls, and
+ * prod CLIProxy logged 2,313 calls from 10.81.0.1 from 14:41Z to 15:13Z while the ChatGPT credits fell about 1,340 in an hour.
+ */
+const CLIPROXY_HOST = String.raw`(?:10\.8[12]\.0\.\d{1,3}|us-metal01|100\.113\.142\.90|(?:prod|staging)-cliproxy)`;
+const CLIPROXY_FORWARD = new RegExp(String.raw`(?:\bssh\b.*\s-L\s*(?:\S+:)?\d+:${CLIPROXY_HOST}:8317\b|\bsocat\b.*\bTCP\d?:${CLIPROXY_HOST}:8317\b)`);
+
+/** One flagged line per process in `ps` output (`pid=,args=` lines) on `box` that forwards a local port to a prod or staging CLIProxy. */
+export function cliproxyForwards(ps: string, box: string, at: number): FlaggedSlice[] {
+  return ps.split("\n").flatMap(line => {
+    const match = /^\s*(\d+)\s+(.*)$/.exec(line);
+    return match && CLIPROXY_FORWARD.test(match[2]!) ? [{ at, kind: "cliproxy_forward", excerpt: `${box} pid ${match[1]}: ${match[2]!.trim()}; a script behind this forward calls CLIProxy with a tier's key past Vent, unrecorded. Ask its owner to route through Vent and stop the forward`.slice(0, 600) }] : [];
+  });
+}
+
+/** The process list of us-metal02 (this box) and the Mac (`ssh mac`); a box that cannot be read gets a gap line instead of a count. */
+async function forwardReads(at: number): Promise<{ boxes: number; flagged: FlaggedSlice[] }> {
+  const reads = await Promise.all([
+    run("ps", ["-eo", "pid=,args="]).then(ps => ({ box: hostname().split(".")[0]!, ps })),
+    run("ssh", ["-o", "BatchMode=yes", "mac", "ps -axo pid=,args="]).then(ps => ({ box: "mac", ps }), (error: unknown) => ({ box: "mac", error })),
+  ]);
+  const flagged: FlaggedSlice[] = [];
+  let boxes = 0;
+  for (const read of reads) {
+    if ("error" in read) { flagged.push({ at, kind: "gap", excerpt: `cliproxy_forwards: the ${read.box} process list did not read (${String(read.error).split("\n")[0]})`.slice(0, 600) }); continue; }
+    boxes++;
+    flagged.push(...cliproxyForwards(read.ps, read.box, at));
+  }
+  return { boxes, flagged };
+}
+
 type Frame = { schema?: { fields?: { name: string }[] }; data?: { values?: unknown[][] } };
 
 /** The rows of one SQL query on prod otel, by column name. */
@@ -242,7 +277,7 @@ export function airRunners(row: Record<string, unknown> | undefined): { online: 
 }
 
 /** n, the sample size of each duty metric: risks read, runner series seen, boxes with an OOM reading, process groups scanned. A failed read stays 0. */
-export const SAMPLE_KEYS = ["risks_firing", "air_runners_online", "oom_kills_24h", "orphan_processes"] as const;
+export const SAMPLE_KEYS = ["risks_firing", "air_runners_online", "oom_kills_24h", "orphan_processes", "cliproxy_forwards"] as const;
 
 async function byBox(rawSql: string): Promise<Map<string, number>> {
   return new Map((await rows(rawSql)).flatMap((row): [string, number][] => typeof row.box === "string" && typeof row.value === "number" ? [[row.box, row.value]] : []));
@@ -318,7 +353,7 @@ async function main(): Promise<void> {
   const owner = process.argv[2];
   if (!output || !owner) { process.stderr.write("vps-boxes: needs OUTPUT_FILE and the owner's name in owners.json\n"); process.exit(2); }
   const at = Date.now();
-  const n: Record<(typeof SAMPLE_KEYS)[number], number> = { risks_firing: 0, air_runners_online: 0, oom_kills_24h: 0, orphan_processes: 0 };
+  const n: Record<(typeof SAMPLE_KEYS)[number], number> = { risks_firing: 0, air_runners_online: 0, oom_kills_24h: 0, orphan_processes: 0, cliproxy_forwards: 0 };
   const result: PrecheckOutput = { metrics: {}, flagged: [], n };
   const section = async (name: string, read: (flagged: FlaggedSlice[]) => Promise<void>): Promise<FlaggedSlice[]> => {
     const flagged: FlaggedSlice[] = [];
@@ -366,6 +401,12 @@ async function main(): Promise<void> {
       result.metrics.orphan_processes_unknown = found.reading.orphan_unknown;
       flagged.push(...found.lines);
       n.orphan_processes = found.reading.groups;
+    }),
+    section("cliproxy_forwards", async flagged => {
+      const read = await forwardReads(at);
+      result.metrics.cliproxy_forwards = read.flagged.filter(line => line.kind === "cliproxy_forward").length;
+      flagged.push(...read.flagged);
+      n.cliproxy_forwards = read.boxes;
     }),
     section("air_runners_online", async () => {
       const runners = airRunners((await rows(AIR_RUNNERS_QUERY))[0]);
