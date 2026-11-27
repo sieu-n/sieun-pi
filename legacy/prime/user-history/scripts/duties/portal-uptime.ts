@@ -14,8 +14,8 @@ import { GRAFANA as GRAFANA_VENT, readGrafanaAuth } from "./estate-reads.ts";
  * It reads the prod api probe gauges from Prometheus through prod Vent to Grafana's ds/query on obs.virev.ai (uid estate_prometheus, estate-reads.ts GRAFANA), the way
  * auto-sns-agent scripts/duties/crawler/crawler-pipeline.mjs does. The Convex cron "api health probe" (apps/virev-demo/convex/apiPortal/healthProbe.ts)
  * probes crawler /health, crawler /health/schema and the portal's /openapi.json every minute (every 5 min before auto-sns-agent 2e687fa79) and its
- * live reads, portal_instagram_profile included, every 5th minute (p243, 2026-11-27). The uptime, skipped rounds and row age read only TARGETS, so
- * the 4 minutes a live read skips never count as down or stale. Prometheus scrapes the result every 60 s
+ * live reads, portal_instagram_profile every 5th minute and the other networks every 15th (p243, 2026-11-27). The uptime, skipped rounds and row
+ * age read only TARGETS, so the minutes a live read skips never count as down or stale. Prometheus scrapes the result every 60 s
  * from job api-portal-health with the label env="production" (labels checked on 2026-10-12: env, instance, job, target).
  * The 24 h uptime and its newest failed round come from the probe rows in prod Convex instead, on the backend VITE_CONVEX_URL of
  * apps/api-portal/.env names (convex-admin.ts), so a gap in the Prometheus scrapes cannot hide a failed round.
@@ -189,7 +189,7 @@ export function rowUptime(rows: readonly ProbeRow[], now: number): { uptime: Ser
  * Sources for the targets in portal-uptime.duty.json (the JSON cannot hold comments):
  * - probes_down_now <= 0 and probe_uptime_24h_pct >= 100: the Grafana rule api-portal-probe-down (auto-sns-agent apps/infra/grafana/alerts.yaml)
  *   treats any api_probe_up below 1 as a failing target. No measurement or vendor limit allows a lower share; the portal's Terms give no uptime figure.
- * - probe_age_min <= 15: the rule api-portal-probe-stale fires when api_probe_age_seconds is over 900 s (TARGETS are probed every 60 s, the live reads every 300 s).
+ * - probe_age_min <= 15: the rule api-portal-probe-stale fires when api_probe_age_seconds is over 900 s (TARGETS are probed every 60 s; the rule allows the 15-minute network reads 1200 s).
  * - env_keys_staging_only <= 0: a key the staging blob has and the prod blob lacks is a prod setting that is missing, so none is allowed.
  * source_errors goes to the run detail: a query with no answer already fails the metric that needed it.
  * probe_uptime_24h_pct gives `lastEventAt`, the epoch ms of the newest minute with a failed probe round it counts (QUERIES.lastDown, to the
