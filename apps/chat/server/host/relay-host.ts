@@ -38,8 +38,13 @@ const MAX_REDIAL_MS = 10_000;
  * that missed a whole interval's pong, and a dial that has not upgraded in one interval gives up, so a sleep reads as away within 30 s.
  */
 const LIVENESS_MS = 15_000;
+/** How often an up link saves its last contact, so a server that crashes keeps it to within this much. */
+const CONTACT_SAVE_MS = 60_000;
 
+/** `since` is when the link came up, or for an away link the last time the box answered, kept across restarts in `relay/<box>.json`. */
 export type LinkState = { state: "up" | "away"; since: number };
+/** What `relay/<box>.json` keeps: the feed cursor and the last time the box answered. */
+type Saved = { feedAfter: number; lastContactAt?: number };
 /** A shell check's result on the box, legacy wakes.ts `CheckResult` with the exit code the relay adds. */
 export interface BoxCheck { ok: boolean; output: string; code?: number | null }
 /** A file on the box, as the relay's `file_get` reads it. */
@@ -144,7 +149,11 @@ export class RelayHost implements Host {
   readonly name: string;
   private socket?: WebSocket;
   private ready = false;
-  private link: LinkState = { state: "away", since: Date.now() };
+  /** `since` is unset until the link first changes, and `state()` then reads the saved last contact. */
+  private link: { state: LinkState["state"]; since?: number } = { state: "away" };
+  private readonly started = Date.now();
+  /** The last time the box answered: any frame or pong. */
+  private contactAt?: number;
   private readonly pending = new Map<string, Pending>();
   private readonly watches = new Map<string, Watch>();
   private readonly listeners = new Set<(link: LinkState) => void>();
@@ -165,7 +174,7 @@ export class RelayHost implements Host {
   onFeed?: (row: FeedRow) => Promise<void>;
   /** chat.sqlite's cache rows, which the App sets when APPS_CHAT_DB_KINDS names the cache kind; the cursor is then kept there as `relay/<box>.json`. */
   kept?: Kept;
-  private feedAfter?: number;
+  private saved?: Saved;
   private readonly log: (line: string) => void;
   private readonly cursorFile: string;
   private readonly cursorName: string;
@@ -185,7 +194,7 @@ export class RelayHost implements Host {
   }
 
   state(): LinkState {
-    return { ...this.link };
+    return { state: this.link.state, since: this.link.since ?? this.load().lastContactAt ?? this.started };
   }
 
   /** Resolves true once the link is up, or false after `timeoutMs`. */
@@ -213,21 +222,34 @@ export class RelayHost implements Host {
 
   /** The seq of the newest feed row this server acked for the box. */
   cursor(): number {
-    if (this.kept) return (this.feedAfter ??= Number((this.kept.read(this.cursorName) as { feedAfter?: unknown } | undefined)?.feedAfter) || 0);
-    try {
-      return Number((JSON.parse(readLatest(this.cursorFile) ?? "") as { feedAfter?: number }).feedAfter) || 0;
-    } catch {
-      return 0;
-    }
+    return this.load().feedAfter;
   }
 
-  private saveCursor(seq: number): void {
-    if (this.kept) {
-      this.feedAfter = seq;
-      void this.kept.write(this.cursorName, { feedAfter: seq });
-      return;
+  private load(): Saved {
+    if (this.saved) return this.saved;
+    let value: { feedAfter?: unknown; lastContactAt?: unknown } | undefined;
+    if (this.kept) value = this.kept.read(this.cursorName) as typeof value;
+    else {
+      try {
+        value = JSON.parse(readLatest(this.cursorFile) ?? "") as typeof value;
+      } catch {
+        value = undefined;
+      }
     }
-    writeJsonLater(this.cursorFile, { feedAfter: seq });
+    const contact = Number(value?.lastContactAt);
+    return (this.saved = { feedAfter: Number(value?.feedAfter) || 0, ...(contact > 0 ? { lastContactAt: contact } : {}) });
+  }
+
+  private save(next: Partial<Saved>): void {
+    const saved = (this.saved = { ...this.load(), ...next });
+    if (this.kept) void this.kept.write(this.cursorName, saved);
+    else writeJsonLater(this.cursorFile, saved);
+  }
+
+  /** Notes that the box answered, and saves it once a CONTACT_SAVE_MS. */
+  private heard(): void {
+    const at = (this.contactAt = Date.now());
+    if (at - (this.load().lastContactAt ?? 0) >= CONTACT_SAVE_MS) this.save({ lastContactAt: at });
   }
 
   /** Starts dialing; the client redials with backoff until `close`. */
@@ -244,6 +266,7 @@ export class RelayHost implements Host {
     socket.on("pong", () => {
       alive = true;
       this.lastPongAt = Date.now();
+      this.heard();
     });
     socket.once("open", () => {
       clearInterval(this.livenessTimer);
@@ -268,7 +291,9 @@ export class RelayHost implements Host {
 
   private setLink(state: LinkState["state"]): void {
     if (this.link.state === state) return;
-    this.link = { state, since: Date.now() };
+    // An away link reads as away since the box last answered, which a sleeping Mac's dropped link learns up to two pings later.
+    if (state === "away" && this.contactAt) this.save({ lastContactAt: this.contactAt });
+    this.link = { state, since: state === "away" ? this.contactAt ?? this.state().since : Date.now() };
     this.log(`relay ${this.name}: link ${state}`);
     for (const listener of this.listeners) {
       try {
@@ -289,6 +314,7 @@ export class RelayHost implements Host {
 
   private onMessage(socket: WebSocket, text: string): void {
     if (socket !== this.socket) return;
+    this.heard();
     const frame = parseFrame<RelayFrame>(text);
     if (!frame) return;
     switch (frame.type) {
@@ -366,7 +392,7 @@ export class RelayHost implements Host {
       return;
     }
     if (socket !== this.socket) return;
-    this.saveCursor(row.seq);
+    this.save({ feedAfter: row.seq });
     this.send({ type: "ack", seq: row.seq });
   }
 
@@ -399,8 +425,8 @@ export class RelayHost implements Host {
       if (pending.repeatable && !this.closed) {
         // It goes again after the next hello, or fails as away when the link stays down.
         pending.sent = false;
-        pending.waitTimer = setTimeout(() => this.fail(id, new HostAway(this.name, this.link.since)), RECONNECT_WAIT_MS);
-      } else this.fail(id, new HostAway(this.name, this.link.since));
+        pending.waitTimer = setTimeout(() => this.fail(id, new HostAway(this.name, this.state().since)), RECONNECT_WAIT_MS);
+      } else this.fail(id, new HostAway(this.name, this.state().since));
     }
     if (this.closed) return;
     this.attempt += 1;
@@ -434,13 +460,13 @@ export class RelayHost implements Host {
   /** One call to the box; fails at once with `HostAway` while the link is down. `timeoutMs` 0 waits as long as the link lives. */
   call(op: ServerOp, args: Record<string, unknown> = {}, timeoutMs = COMMAND_TIMEOUT_MS): Promise<unknown> {
     if (this.closed) return Promise.reject(new Error(`relay client for ${this.name} is closed; ${op} not sent`));
-    if (!this.ready) return Promise.reject(new HostAway(this.name, this.link.since));
+    if (!this.ready) return Promise.reject(new HostAway(this.name, this.state().since));
     return new Promise((resolve, reject) => {
       const id = randomUUID();
       const pending: Pending = { op, args, timeoutMs, repeatable: repeatable(op, args), sent: false, resolve, reject };
       this.pending.set(id, pending);
       this.write(id, pending);
-      if (!pending.sent) this.fail(id, new HostAway(this.name, this.link.since));
+      if (!pending.sent) this.fail(id, new HostAway(this.name, this.state().since));
     });
   }
 
@@ -539,12 +565,13 @@ export class RelayHost implements Host {
     return (await this.call("instructions", { cwd })) as InstructionsAnswer;
   }
   async ping(): Promise<Ping> {
-    if (!this.ready) return { ok: false, error: `${this.name} is offline since ${new Date(this.link.since).toISOString()}` };
+    if (!this.ready) return { ok: false, error: `${this.name} is offline since ${new Date(this.state().since).toISOString()}` };
     const piHost = this.hello?.piHost;
     if (piHost && !piHost.up) return { ok: false, error: `${this.name}'s pi-host is down${piHost.error ? `: ${piHost.error}` : ""}` };
     return { ok: true, version: piHost?.version ?? this.hello?.version ?? "unknown" };
   }
   async close(): Promise<void> {
+    if (this.ready && this.contactAt) this.save({ lastContactAt: this.contactAt });
     this.closed = true;
     clearTimeout(this.redialTimer);
     clearInterval(this.livenessTimer);

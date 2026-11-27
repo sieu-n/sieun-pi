@@ -364,6 +364,13 @@ export class App {
         return relay ? (command, timeoutMs, owner) => relay.check(command, timeoutMs, owner) : undefined;
       };
       for (const relay of routing.relays()) relay.onFeed = row => this.feedRow(row);
+      this.boards.whenBoxUp = box => {
+        const relay = routing.relay(box);
+        if (!relay || relay.state().state === "up") return Promise.resolve();
+        return new Promise(resolve => {
+          const off = relay.onLink(link => link.state === "up" && (off(), resolve()));
+        });
+      };
       routing.onLink((box, link) => {
         // The agents' hostState follows on the thread list read; deliveries that waited for the box go once it is back.
         // The box's thread list is read first, so an agent archived there meanwhile reads as archived before its waiting posts go.

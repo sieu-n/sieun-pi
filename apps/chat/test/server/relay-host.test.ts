@@ -89,6 +89,37 @@ describe("RelayHost", () => {
     }
   });
 
+  test("an away link reads as away since the box last answered, and a new client on the same data dir keeps that time", async () => {
+    const quiet = new FakeRelay("quiet", TOKEN);
+    await quiet.listening;
+    const first = new RelayHost({ box: "quiet", url: quiet.url, token: TOKEN, dataDir: dir, redialWait: fast, livenessMs: 100 });
+    try {
+      first.start();
+      await until(async () => first.state().state, state => state === "up");
+      await new Promise(resolve => setTimeout(resolve, 250));
+      quiet.down = true;
+      quiet.freeze();
+      const froze = Date.now();
+      await until(async () => first.state().state, state => state === "away");
+      const since = first.state().since;
+      assert.ok(since <= froze && since > froze - 150, `away since the last pong (${froze - since} ms before the freeze), not since the drop was seen`);
+      assert.equal(first.lastPongAt !== undefined && first.lastPongAt <= since, true);
+      await first.close();
+      await drained();
+      assert.equal(JSON.parse(readFileSync(join(dir, "relay", "quiet.json"), "utf8")).lastContactAt, since);
+      const second = new RelayHost({ box: "quiet", url: quiet.url, token: TOKEN, dataDir: dir, redialWait: fast, livenessMs: 100 });
+      second.start();
+      await new Promise(resolve => setTimeout(resolve, 150));
+      assert.deepEqual(second.state(), { state: "away", since }, "a restarted server reads the box as away since its last contact, not since its own start");
+      await assert.rejects(second.threads(), (error: unknown) => error instanceof HostAway && error.since === since);
+      assert.match((await second.ping() as { error: string }).error, new RegExp(`offline since ${new Date(since).toISOString()}`));
+      await second.close();
+    } finally {
+      await first.close();
+      await quiet.close();
+    }
+  });
+
   test("a watch gets its events, and after a reconnect it opens again from the newest entry it saw", async () => {
     const thread = (await client.create({ name: "watched" })).id;
     const seen: number[] = [];
@@ -378,6 +409,25 @@ describe("agents on another box", () => {
     for (const post of stored) {
       assert.deepEqual(post.deliveries![0]!.bundle, { requestId: `b:${room}:${first.id}:${agent.id}`, members: stored.map(p => p.id) });
       assert.equal(post.deliveries![0]!.state, "delivered");
+    }
+  });
+
+  test("a board put to the Mac while it is away waits for its link with no retries, and lands at once when it is back", async () => {
+    s.relay.drop(true);
+    await until(async () => s.remote.state().state, state => state === "away");
+    const puts = mock.method(s.remote, "docPut");
+    try {
+      const written = await s.call("POST", `/api/agents/${agent.id}/board`, { actor: "agent", ops: [{ op: "plan_add", text: "Put while the Mac is away." }] });
+      assert.equal(written.status, 200, JSON.stringify(written.body));
+      await new Promise(resolve => setTimeout(resolve, 1_500));
+      assert.equal(puts.mock.callCount(), 1, "one failed put, then a wait for the link instead of a retry each backoff");
+      s.relay.down = false;
+      const back = Date.now();
+      await until(async () => JSON.stringify(await s.relay.host.docGet(agent.thread, "chat.board")), board => board.includes("Put while the Mac is away."));
+      assert.ok(Date.now() - back < 1_000, `the put went when the link came back, ${Date.now() - back} ms later`);
+      assert.equal(puts.mock.callCount(), 2);
+    } finally {
+      puts.mock.restore();
     }
   });
 

@@ -26,7 +26,7 @@ import { threadModel, type Agents } from "./agents.ts";
 import { agentFolderDir } from "./agent-folder.ts";
 import { BOARD_PUSH_EVERY_MS } from "./common-duties.ts";
 import { checkInDetail, checkInIdle, checkInJobBrief, checkInMeasure, checkInJobName, checkInPrecheck, checkInPrompt, datedName, planEveryMs, planHasOpenStep } from "./check-in-job.ts";
-import type { Host } from "./host/types.ts";
+import { isHostAway, type Host } from "./host/types.ts";
 import { readJson, type Store } from "./store.ts";
 import type { BoardWriteStore } from "./board-writes-db.ts";
 import type { DutyStore } from "./duties-db.ts";
@@ -213,6 +213,11 @@ export class Boards {
   selfUrl = "http://127.0.0.1:5184";
   /** The check of a thread's check wake when the thread runs on another box: that box's relay runs it. Undefined runs it here. */
   checkOn: (thread: string) => BoxCheckRun | undefined = () => undefined;
+  /**
+   * Settles once the box's link is up, at once if it is up now. A board put that found its box away waits on it instead of a retry each 30 s:
+   * on 11-27 the put for ag_5180-designer failed 2,087 times while the Mac was off the tailnet. Unset, the put retries on `retryWait`.
+   */
+  whenBoxUp?: (box: string) => Promise<void>;
   /** What a due wake's text becomes before it goes out, and what runs once it went out: Remind me's agent reminders (later-agents.ts). */
   wakeHooks?: Pick<ThreadWakeOptions, "expand" | "delivered">;
   /** Where the owner's `[board]` line goes: the app's outbox, which keeps it on disk until pi-host takes it. */
@@ -439,6 +444,16 @@ export class Boards {
         await this.host.docPut(this.threadOf(chat), BOARD_DOC, board, { newerOnly: true });
       } catch (error) {
         if (this.putsStopped) return;
+        const whenUp = this.whenBoxUp;
+        if (isHostAway(error) && whenUp) {
+          this.log(`board put for ${chat} waits for ${error.box}, offline since ${new Date(error.since).toISOString()}`);
+          await new Promise<void>(resolve => {
+            const stop = (): void => resolve();
+            this.stopping.signal.addEventListener("abort", stop, { once: true });
+            void whenUp(error.box).then(() => (this.stopping.signal.removeEventListener("abort", stop), resolve()));
+          });
+          continue;
+        }
         failures += 1;
         const wait = retryWait(failures);
         this.log(`board put for ${chat} failed ${failures} times, retry in ${wait} ms: ${String(error)}`);
