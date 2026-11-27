@@ -98,11 +98,13 @@ test("the probe rows come from the backend the prod VITE_CONVEX_URL row names, w
 });
 
 // 11-23: the probe wrote 6 targets a round since 11-22, the read of 4320 rows reached back 12 h, and d1 read 50% uptime with no failed row.
+// Since p243 (11-27) portal_instagram_profile writes a row only every 5th minute, and its 4 skipped minutes must not lower the uptime.
 test("the probe read pages back to the first row older than 24 h however many targets a round writes", async () => {
   const minute = 60_000;
   const now = 24 * 60 * minute;
   const targets = ["crawler_health", "crawler_schema", "portal_openapi", "portal_auth", "portal_instagram_profile", "portal_docs_inline"];
-  const table = Array.from({ length: 48 * 60 }, (_, index) => targets.map(target => ({ target, ok: true, createdAt: now - index * minute }))).flat();
+  const live = (target: string, index: number) => target !== "portal_instagram_profile" || index % 5 === 0;
+  const table = Array.from({ length: 48 * 60 }, (_, index) => targets.filter(target => live(target, index)).map(target => ({ target, ok: true, createdAt: now - index * minute }))).flat();
   const asked: number[] = [];
   const query = (async (_path: string, args: { paginationOpts: { cursor: string | null; numItems: number } }) => {
     const from = Number(args.paginationOpts.cursor ?? 0);
