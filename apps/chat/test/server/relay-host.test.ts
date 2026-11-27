@@ -431,6 +431,32 @@ describe("agents on another box", () => {
     }
   });
 
+  test("a check-in job's report to the Mac while it is away waits for its link with no retry each tick, and goes when it is back", async () => {
+    const host = s.app.boards.host;
+    const job = await host.create({ name: "check-in Mac agent", box: "mac" });
+    const first = await host.submit(job.id, { text: "check in", requestId: "ci-mac-1" });
+    await host.wait(job.id, first.submission);
+    s.relay.drop(true);
+    await until(async () => s.remote.state().state, state => state === "away");
+    const boards = s.app.boards as unknown as { dutyFile(chat: string): { checkIn?: Record<string, unknown> }; save(chat: string, file: unknown): void };
+    const file = boards.dutyFile(agent.id);
+    file.checkIn = { everyMs: 3 * 3600_000, pausedUntil: null, ...file.checkIn, lastAt: Date.now(), job: { id: job.id, name: "check-in Mac agent", submission: first.submission } };
+    boards.save(agent.id, file);
+    const waits = mock.method(s.remote, "wait");
+    try {
+      for (let i = 0; i < 4; i++) {
+        await s.app.boards.tick();
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      assert.equal(waits.mock.callCount(), 1, "one failed try, then a wait for the link instead of a try each tick");
+      s.relay.down = false;
+      await until(async () => inputs(s.relay.host, agent.thread).filter(e => textOf(e).includes("[check-in] ")).length, n => n === 1);
+      assert.equal((boards.dutyFile(agent.id).checkIn!.job as { reported?: boolean }).reported, true);
+    } finally {
+      waits.mock.restore();
+    }
+  });
+
   test("a waiting post to an agent archived meanwhile is dropped with a note", async () => {
     const room = agent.room!;
     s.relay.drop(true);

@@ -444,14 +444,9 @@ export class Boards {
         await this.host.docPut(this.threadOf(chat), BOARD_DOC, board, { newerOnly: true });
       } catch (error) {
         if (this.putsStopped) return;
-        const whenUp = this.whenBoxUp;
-        if (isHostAway(error) && whenUp) {
+        if (isHostAway(error) && this.whenBoxUp) {
           this.log(`board put for ${chat} waits for ${error.box}, offline since ${new Date(error.since).toISOString()}`);
-          await new Promise<void>(resolve => {
-            const stop = (): void => resolve();
-            this.stopping.signal.addEventListener("abort", stop, { once: true });
-            void whenUp(error.box).then(() => (this.stopping.signal.removeEventListener("abort", stop), resolve()));
-          });
+          await this.untilBoxUp(error.box);
           continue;
         }
         failures += 1;
@@ -1441,21 +1436,45 @@ export class Boards {
   private async reportCheckIn(chat: string, job: { id: string; submission: number }): Promise<void> {
     this.waiting.add(job.id);
     try {
-      const settled = await this.host.wait(job.id, job.submission);
-      const text = (await this.threads.sent(job.id, 1, settled)).map(m => m.text).join("\n\n");
-      if (text.trim() && !/^nothing to report\.?$/i.test(text.trim())) {
-        await this.host.submit(this.threadOf(chat), { text: `[check-in] ${text}`, whenBusy: "followUp", requestId: `checkin-report:${job.id}`, entry: { kind: "agent.message", data: { from: job.id, via: "check-in" } } });
-      }
-      const file = this.file(chat);
-      if (file.checkIn?.job?.id === job.id) {
-        file.checkIn.job.reported = true;
-        this.save(chat, file);
+      for (;;) {
+        try {
+          await this.sendCheckInReport(chat, job);
+          return;
+        } catch (error) {
+          // A job on a box that is away reports once its link is back, instead of a failed try on each 30 s tick (2 a minute for ag_5180-designer on 11-27).
+          if (!isHostAway(error) || !this.whenBoxUp || this.stopping.signal.aborted) throw error;
+          this.log(`check-in ${chat.slice(0, 8)}: its job's report waits for ${error.box}, offline since ${new Date(error.since).toISOString()}`);
+          if (!(await this.untilBoxUp(error.box))) return;
+        }
       }
     } catch (error) {
       this.log(`check-in ${chat.slice(0, 8)}: its job's report did not reach the work thread: ${String(error)}`);
     } finally {
       this.waiting.delete(job.id);
       await this.threads.refresh().catch(() => undefined);
+    }
+  }
+
+  /** Settles true once the box's link is up (`whenBoxUp`), or false when this server stops first. */
+  private untilBoxUp(box: string): Promise<boolean> {
+    const signal = this.stopping.signal;
+    return new Promise<boolean>(resolve => {
+      const stop = (): void => resolve(false);
+      signal.addEventListener("abort", stop, { once: true });
+      void this.whenBoxUp!(box).then(() => (signal.removeEventListener("abort", stop), resolve(true)));
+    });
+  }
+
+  private async sendCheckInReport(chat: string, job: { id: string; submission: number }): Promise<void> {
+    const settled = await this.host.wait(job.id, job.submission);
+    const text = (await this.threads.sent(job.id, 1, settled)).map(m => m.text).join("\n\n");
+    if (text.trim() && !/^nothing to report\.?$/i.test(text.trim())) {
+      await this.host.submit(this.threadOf(chat), { text: `[check-in] ${text}`, whenBusy: "followUp", requestId: `checkin-report:${job.id}`, entry: { kind: "agent.message", data: { from: job.id, via: "check-in" } } });
+    }
+    const file = this.file(chat);
+    if (file.checkIn?.job?.id === job.id) {
+      file.checkIn.job.reported = true;
+      this.save(chat, file);
     }
   }
 
