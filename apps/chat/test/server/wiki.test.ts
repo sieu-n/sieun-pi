@@ -116,3 +116,18 @@ test("a conversation opens its workspace, writes, edits and closes it, and every
   assert.equal(frozen.status, 403);
   assert.match(refused.error, /closed/);
 });
+
+test("a test agent writes only under its own agents/<slug>/ folder, so no curated page outlives its archive", { skip }, async () => {
+  // Blind test agents wrote 15 curated pages under projects/symphony-orchestration/ from 11-21 to 11-25 (knowledge manager d2, 11-28).
+  const made = await server.send<{ id: string; thread: string }>("POST", "/api/agents", { name: "wiki test agent walk", test: true });
+  const slug = server.app.agents.store.agents.agents.find(record => record.id === made.body.id)!.slug;
+  const as = { "x-pi-conversation": made.body.thread, "content-type": "application/json" };
+  const miss = JSON.stringify({ edits: [{ old_string: "no such text in this page", new_string: "x" }] });
+  const curated = await fetch(`${server.base}/wiki/${HUB}`, { method: "PATCH", headers: as, body: miss });
+  assert.equal(curated.status, 403, await curated.clone().text());
+  assert.match((await curated.json() as { error: string }).error, /test agent/);
+  const engineWrite = await fetch(`${server.base}/wiki/api/agent/supersede`, { method: "POST", headers: as, body: JSON.stringify({ path: HUB, by: HUB }) });
+  assert.equal(engineWrite.status, 403);
+  const own = await fetch(`${server.base}/wiki/agents/${slug}/no-page.html`, { method: "PATCH", headers: as, body: miss });
+  assert.notEqual(own.status, 403, "a write in its own folder reaches the engine, which finds no page there");
+});

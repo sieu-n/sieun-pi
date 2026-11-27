@@ -12,7 +12,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { App } from "../app.ts";
 import { WikiEngine, encodePath } from "./engine.ts";
-import { callerOf } from "./identity.ts";
+import { callerOf, type Caller } from "./identity.ts";
 import { fromMarkdown, splitPage, toMarkdown } from "./markdown.ts";
 import { answer, readJsonBody, readText, send, WikiBodyError } from "./reply.ts";
 import { serveWorkspace, WORKSPACE_ROUTE } from "./workspaces.ts";
@@ -32,6 +32,13 @@ export async function serveWiki(app: App, req: IncomingMessage, res: ServerRespo
     if (path !== "/wiki" && !path.startsWith("/wiki/")) return false;
     const rest = decodeURIComponent(path.slice("/wiki/".length));
     if (!engine.isContent(rest)) {
+      if (req.method !== "GET" && req.method !== "HEAD" && rest.startsWith("api/agent/")) {
+        const refused = testAgentRefusal(await callerOf(app, req), rest);
+        if (refused) {
+          send(res, 403, { error: refused });
+          return true;
+        }
+      }
       await engine.proxy(req, res, `${path.slice("/wiki".length) || "/"}${url.search}`);
       return true;
     }
@@ -86,6 +93,18 @@ async function read(engine: WikiEngine, req: IncomingMessage, res: ServerRespons
   res.end(markdown);
 }
 
+/**
+ * A test agent (`test: true`, as the sw-factory blind checks make) writes pages only in its own `agents/<slug>/` folder, which its archive
+ * removes, and makes no other engine write. From 11-21 to 11-25 blind test agents wrote 15 curated pages under projects/symphony-orchestration/
+ * and edited its hub, and every one outlived the archive (knowledge manager d2, 11-28).
+ */
+function testAgentRefusal(caller: Caller, path: string): string | undefined {
+  if (caller.known !== true || !caller.agent.test) return undefined;
+  const own = `agents/${caller.agent.slug}/`;
+  if (path.startsWith(own)) return undefined;
+  return `${caller.agent.slug} is a test agent, so its wiki writes go only to pages under ${own}, which its archive removes; ${path} would outlive the test.`;
+}
+
 const num = (value: unknown): number | undefined => (value === undefined || value === null || value === "" ? undefined : Number(value));
 
 async function write(app: App, engine: WikiEngine, req: IncomingMessage, res: ServerResponse, path: string, query: URLSearchParams, method: "PUT" | "POST"): Promise<void> {
@@ -102,6 +121,8 @@ async function write(app: App, engine: WikiEngine, req: IncomingMessage, res: Se
     baseVersion ??= converted.baseVersion;
   }
   const caller = await callerOf(app, req);
+  const refused = testAgentRefusal(caller, path);
+  if (refused) return send(res, 403, { error: refused });
   if (method === "POST" && await engine.exists(path)) {
     return send(res, 409, { error: `${path} exists; PUT replaces it, PATCH edits it.`, path });
   }
@@ -119,6 +140,8 @@ async function patch(app: App, engine: WikiEngine, req: IncomingMessage, res: Se
   const body = readJsonBody(await readText(req));
   if (!Array.isArray(body.edits)) throw new WikiBodyError("A PATCH sends JSON {edits: [{old_string, new_string, replace_all?}], summary?, baseVersion?}.");
   const caller = await callerOf(app, req);
+  const refused = testAgentRefusal(caller, path);
+  if (refused) return send(res, 403, { error: refused });
   const baseVersion = num(body.baseVersion ?? query.get("baseVersion"));
   const got = await engine.call("PATCH", "/api/agent/page", {
     path, edits: body.edits, author: caller.author,
