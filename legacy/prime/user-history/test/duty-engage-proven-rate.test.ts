@@ -152,3 +152,11 @@ test("a day a supply hold covered is no proof day, so one hour after a stop does
   assert.equal(rates.newest?.rate, 888);
   assert.deepEqual(rates.newest?.days, ["2026-11-07", "2026-11-08"]);
 });
+
+test("a served rate no cohort of account-days really read proves nothing, so the proof falls to the real reads (launch VP, 00:00Z 11-28)", () => {
+  const days: DayPages[] = [...fleet("2026-11-26", [[3, 700], [20, 200]]), ...fleet("2026-11-27", [[3, 700], [20, 200]])];
+  const served: DayPages[] = days.map(row => ({ ...row, pages: row.pages === 700 ? 924 : row.pages }));
+  const proof = provenRates(days, [], 3, served).newest;
+  assert.equal(proof?.rate, 700);
+  assert.ok((proof?.hiDays ?? 0) >= 3);
+});

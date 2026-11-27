@@ -405,7 +405,9 @@ export function massActions(verdicts: readonly Death[]): Death[][] {
 
 /**
  * The newest window's proof and the best one, as ProvenRates says. `served` (servedDays) sets the rates tried and the cohort ceiling, and the
- * death evidence stays the pages each account read. A mass action (massActions) proves nothing about one account's rate, so its verdicts leave the
+ * death evidence stays the pages each account read: a rate is proven only when at least `cohort` account-days from the run's first day on read
+ * that many pages, because on the 00:00Z 11-28 run served days proved 924 with hiDays 0, so the death test passed with no evidence at all. The
+ * rates tried are the run's served and read pages under the served ceiling, so a run whose real reads fall short proves the highest real rate. A mass action (massActions) proves nothing about one account's rate, so its verdicts leave the
  * evidence, and so do its victims' account-days on the day of their verdict and the day before, read and served alike, the days its pages24h
  * covers, so those pages count neither as a death nor as a survival. ProvenRates.massActions lists the actions for the capacity line.
  */
@@ -435,9 +437,11 @@ export function provenRates(days: readonly DayPages[], deaths: readonly Death[],
     const verdicts = [...firstVerdicts.values()].filter(death => death.at >= start && !acted.has(death)).map(death => death.pages24h);
     const accountDays = [...readByDay].filter(([day]) => day >= first).flatMap(([, pages]) => pages);
     const ceiling = Math.min(...run.map(day => byDay.get(day)![cohort - 1] ?? 0));
-    const rates = [...new Set(run.flatMap(day => byDay.get(day)!))].filter(rate => rate <= ceiling).sort((a, b) => b - a);
+    const rates = [...new Set(run.flatMap(day => [...byDay.get(day)!, ...readByDay.get(day) ?? []]))].filter(rate => rate <= ceiling).sort((a, b) => b - a);
     for (const rate of rates) {
       const hiDays = accountDays.filter(pages => pages >= rate).length;
+      // A rate no cohort of real account-days reached has no death evidence for it: on 11-28 00:00Z served days proved 924 with hiDays 0.
+      if (hiDays < cohort) continue;
       const hiDeaths = verdicts.filter(pages => pages >= rate).length;
       const evidence = { hiDays, hiDeaths, loDays: accountDays.length - hiDays, loDeaths: verdicts.length - hiDeaths };
       const p = deathExcessP(evidence.hiDays, evidence.hiDeaths, evidence.loDays, evidence.loDeaths);
