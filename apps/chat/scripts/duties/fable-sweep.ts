@@ -11,7 +11,10 @@
  *     earlier reply by one of the thread's agents. A thread reply is owed by the agents its root names or that replied in it, not by every
  *     member the room delivered it to. The 10 min are ten times the about one minute a comm thread takes to ack (c224).
  *   delivery_error: an owner post of the last 3 h whose delivery to an agent failed, still queued after 10 min, or that reached no agent.
- *   job_stuck: a job that reads working whose newest entry is 45 min old or more (sieun-pi AGENTS.md rule 6 reads that as stalled).
+ *   job_stuck: a job that reads working whose newest entry is 45 min old or more (sieun-pi AGENTS.md rule 6 reads that as stalled), unless
+ *     it waits for a model account: pi-pool holds its thread's tree `pi-durable:<thread>` in an account wait, which covers a parked subagent
+ *     (`parkedJobs`), or its root task polls for an account slot. Such a job is alive, and `n.poolWaits` counts it. On 11-27 the 07:27, 10:28
+ *     and 12:07 KST sweeps listed two such jobs as stuck while `pi-pool who` showed each waiting for account 7bec9951 with a reserved slot.
  *   job_retrying: a job whose run pi-host flags "retrying since HH:MM: <error kind>", a transient error it has retried past 5 minutes and
  *     keeps retrying, which is no stall (packages/pi-host/src/durable/retrying.ts).
  *   job_failed: a job whose last turn failed, with an entry in the last 24 h, and an agent's work or comm thread that failed.
@@ -23,7 +26,7 @@
  *     worker들은 opus가 되면 좋겠거든? 워낙 비용이 비싸니까").
  *
  * Each item carries the context a reviewer would look up to judge it, in the detail file under its line: a duty's last three runs and its fix
- * step, a step's note, a stuck job's pi-host task state, such as waiting for an account slot. The first Fable sweep on 11-22 spent 40 turns
+ * step, a step's note, a stuck job's pi-host task state. The first Fable sweep on 11-22 spent 40 turns
  * and $3.07 reading boards, duty runs, jobs and thread files for exactly this, so the judging turn now reads one file and posts.
  *
  * An item is fresh when it is new since the last run or was last raised 24 h ago or more, so a problem that stays shows once a day (the
@@ -49,7 +52,8 @@
  * Job entry times come from the job's pi-host thread file, read only (`<threads dir>/<thread>.sqlite`), because every conversation of a
  * thread shares one `updatedAt` in the :5184 lists. A step's age is the start of the job on it, else the first run that saw it open.
  *
- * Its output's `n` counts what it read, one count per kind: agents, owner posts of the window, live jobs, duties and board steps.
+ * Its output's `n` counts what it read, one count per kind: agents, owner posts of the window, live jobs, duties and board steps, and the
+ * quiet working jobs that wait for a model account (`poolWaits`).
  *
  * Usage: OUTPUT_FILE=<file> [STATE_FILE=<file>] [LAST_RUNS_FILE=<file>] [PRECHECK_MODE=run|after|peek] [PRECHECK_TRIGGER=<trigger>] node --import tsx scripts/duties/fable-sweep.ts
  *   --agent <agent id> [--server http://127.0.0.1:5184] [--threads-dir <dir>] [--data-dir <dir>]
@@ -65,6 +69,7 @@ import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { parseArgs } from "node:util";
 import { appsOwnerReads, wokenStep, type AppsChat } from "../../../../legacy/prime/user-history/src/apps-step-owners.ts";
+import { accountSlot, pooledProviders, readPoolStatus, threadKey } from "../../../../legacy/prime/user-history/src/chat-pool.ts";
 import type { Wake } from "../../../../legacy/prime/user-history/src/wakes.ts";
 import { owedWakesOf } from "../../server/wakes-db.ts";
 
@@ -263,10 +268,31 @@ export function noModelTurn(file: string): boolean {
 }
 
 /**
- * The jobs pi-host flags as retrying, the working jobs with no entry for 45 min and the jobs that failed in the last 24 h; `task` gives a
- * stuck job's pi-host task state. A retrying job reads as retrying, never as stuck, since its run still tries.
+ * The ids of `jobs` whose thread's pool tree `pi-durable:<thread>` pi-pool holds in an account wait past `now`, as the duty card reads it
+ * (boards.ts `poolWaitSince`). Every conversation of a thread asks pi-pool under that tree, so a parked subagent counts. Empty when the pool
+ * cannot be read.
  */
-export function jobFindings(jobs: readonly Job[], last: (job: Job) => number | undefined, now: number, task?: (job: Job) => string | undefined): Item[] {
+export async function parkedJobs(jobs: readonly Job[], now: number, read: typeof readPoolStatus = readPoolStatus): Promise<Set<string>> {
+  const trees = [...new Set(jobs.map(job => job.thread))].map(thread => ({ session: `pi-durable:${thread}`, model: null }));
+  if (!trees.length) return new Set();
+  try {
+    const status = await read(trees, { maxAgeMs: 0 });
+    return new Set(jobs.filter(job => {
+      const parts = status.threads.get(threadKey({ session: `pi-durable:${job.thread}`, model: null }));
+      return !!parts && pooledProviders.some(provider => (accountSlot(parts, provider) ?? 0) > now);
+    }).map(job => job.id));
+  } catch {
+    return new Set();
+  }
+}
+
+/**
+ * The jobs pi-host flags as retrying, the working jobs with no entry for 45 min and the jobs that failed in the last 24 h; `task` gives a
+ * stuck job's pi-host task state. A retrying job reads as retrying, never as stuck, since its run still tries. A quiet job that waits for a
+ * model account, as `parked` says or its task state's account slot poll, is alive and is no item.
+ */
+export function jobFindings(jobs: readonly Job[], last: (job: Job) => number | undefined, now: number, task?: (job: Job) => string | undefined,
+  parked: ReadonlySet<string> = new Set()): Item[] {
   const items: Item[] = [];
   for (const job of jobs) {
     const at = last(job);
@@ -278,8 +304,9 @@ export function jobFindings(jobs: readonly Job[], last: (job: Job) => number | u
       });
     } else if (job.status === "working" && at !== undefined && now - at >= STUCK_MS) {
       const state = task?.(job);
+      if (parked.has(job.id) || state?.includes("account slot")) continue;
       items.push({
-        kind: "job_stuck", sig: `stuck:${job.id}`, agent, text: `${agent} job "${job.name}" reads working with no new entry for ${ago(now - at)}${state?.includes("account slot") ? ", waiting for a model account" : ""}`,
+        kind: "job_stuck", sig: `stuck:${job.id}`, agent, text: `${agent} job "${job.name}" reads working with no new entry for ${ago(now - at)}`,
         link: `#/c/${job.id}`, at, ...(state ? { context: [`started ${ago(now - job.createdAt)} ago, ${state}`] } : {}),
       });
     } else if (job.status === "failed" && at !== undefined && now - at < FAILED_WINDOW_MS) {
@@ -287,19 +314,6 @@ export function jobFindings(jobs: readonly Job[], last: (job: Job) => number | u
     }
   }
   return items;
-}
-
-/** Stuck jobs that wait for a model account fold into one item when there are 3 or more, since they share one cause: the pool. */
-export function poolWaits(items: readonly Item[], now: number): Item[] {
-  const waiting = items.filter(item => item.kind === "job_stuck" && item.text.endsWith("waiting for a model account"));
-  if (waiting.length < 3) return [...items];
-  const oldest = Math.min(...waiting.map(item => item.at ?? now));
-  const folded: Item = {
-    kind: "job_stuck", sig: "stuck:pool", agent: [...new Set(waiting.map(item => item.agent).filter(Boolean))].join(", "),
-    text: `${waiting.length} jobs wait for a model account, the oldest with no new entry for ${ago(now - oldest)}`, link: waiting[0]!.link, at: oldest,
-    context: [...waiting.slice(0, 5).map(item => `${item.text.replace(/, waiting for a model account$/, "")} (${item.link})`), ...(waiting.length > 5 ? [`and ${waiting.length - 5} more`] : [])],
-  };
-  return [...items.filter(item => !waiting.includes(item)), folded];
 }
 
 /** A duty's last three measured runs and the fix step of its newest, one line each, for the reviewer to judge a miss without opening it. */
@@ -471,7 +485,10 @@ if (isMain(import.meta.url)) {
     return times.get(job.id);
   };
   const taskOf = (job: Job): string | undefined => taskState(join(threadsDir, `${job.thread}.sqlite`), job.conversation);
-  items.push(...poolWaits(jobFindings(liveJobs.filter(job => job.status === "working" || job.status === "failed"), lastOf, now, taskOf), now));
+  const quiet = liveJobs.filter(job => job.status === "working" && !job.retrying && now - (lastOf(job) ?? now) >= STUCK_MS);
+  const parked = await parkedJobs(quiet, now);
+  const poolWaits = quiet.filter(job => parked.has(job.id) || taskOf(job)?.includes("account slot")).length;
+  items.push(...jobFindings(liveJobs.filter(job => job.status === "working" || job.status === "failed"), lastOf, now, taskOf, parked));
   for (const agent of agents) {
     if (agent.id === values.agent || !/fable/i.test(agent.model?.id ?? "")) continue;
     items.push({ kind: "model_off", sig: `model:${agent.id}/${agent.model!.id}`, agent: agent.name, text: `${agent.name}'s work thread runs ${agent.model!.label ?? agent.model!.id}, so its comm threads and duty jobs do too`, link: `#/agents/${agent.id}` });
@@ -485,7 +502,7 @@ if (isMain(import.meta.url)) {
 
   // Boards and duties, per agent.
   const seen: Record<string, number> = {};
-  const read = { agents: agents.length, posts: ownerHits.length, jobs: liveJobs.length, duties: 0, steps: 0 };
+  const read = { agents: agents.length, posts: ownerHits.length, jobs: liveJobs.length, duties: 0, steps: 0, poolWaits };
   await Promise.all(agents.map(async agent => {
     const [board, duties] = await Promise.all([
       get<{ board: { plan: PlanItem[]; todos: Todo[] } | null }>(server, `/api/agents/${agent.id}/board`).catch(() => ({ board: null })),

@@ -23,7 +23,7 @@ import { fileURLToPath } from "node:url";
 import { after, test } from "node:test";
 import { measure } from "../../server/duty-run.ts";
 import {
-  answerOf, dutyContext, jobFindings, lastEntries, noModelTurn, passedOn, poolWaits, unmovedMetrics, postFindings, reportState, stalledSteps, sweepMode, worthALook, type DutyRunView, type Item, type Job,
+  answerOf, dutyContext, jobFindings, lastEntries, noModelTurn, parkedJobs, passedOn, unmovedMetrics, postFindings, reportState, stalledSteps, sweepMode, worthALook, type DutyRunView, type Item, type Job,
   type PlanItem, type Post,
 } from "../../scripts/duties/fable-sweep.ts";
 import { judge, type Duty, type DutyMetric, type DutyRunRecord } from "../../web/src/lib/api/shared/chat-duties.ts";
@@ -215,14 +215,21 @@ test("a duty's context is its last three measured runs, after-job measures first
   assert.deepEqual(lines, ["11-22 09:00 KST met: x 0", "11-22 08:59 KST error: Command failed", "11-22 08:59 KST missed: x 2", "x fix step p9, job fix x live"]);
 });
 
-test("three or more jobs that wait for a model account fold into one item, and fewer stay apart", () => {
-  const waiting = (n: number): Item => ({ kind: "job_stuck", sig: `stuck:j${n}`, agent: `a${n % 2}`, text: `a job "j${n}" reads working with no new entry for 1 h, waiting for a model account`, link: `#/c/j${n}`, at: now - n * MIN });
-  const other: Item = { kind: "job_stuck", sig: "stuck:k", agent: "b", text: `b job "k" reads working with no new entry for 2 h`, link: "#/c/k", at: now };
-  assert.equal(poolWaits([waiting(1), waiting(2), other], now).length, 3);
-  const folded = poolWaits([waiting(1), waiting(2), waiting(3), other], now);
-  assert.deepEqual(folded.map(item => item.sig), ["stuck:k", "stuck:pool"]);
-  assert.equal(folded[1]!.text, "3 jobs wait for a model account, the oldest with no new entry for 3 min");
-  assert.equal(folded[1]!.context?.length, 3);
+test("a quiet job whose tree pi-pool parks for a model account is alive, not stuck, while its root task is terminal (11-27, 07:27 to 12:07 KST)", async () => {
+  const jobs = [job("geonode", "working"), job("leftovers", "working"), job("polls", "working"), job("quiet", "working")].map(j => ({ ...j, thread: j.name }));
+  const who = (slotAt: number | null) => ({ code: 0, err: "", out: JSON.stringify({ providers: { anthropic: { wait: slotAt === null ? null : { account: "7bec9951", slot_at: slotAt / 1000, reserved: true } } } }) });
+  const slots: Record<string, number | null> = { geonode: now + 20 * MIN, leftovers: now + 10 * MIN, polls: null, quiet: now - MIN };
+  const asked: string[][] = [];
+  const read = (async (threads: readonly { session: string | null; model: string | null }[]) => {
+    asked.push(threads.map(t => t.session ?? ""));
+    return { at: now, queue: who(null), config: who(null), threads: new Map(threads.map(t => [`${t.session}|`, { who: who(slots[t.session!.replace("pi-durable:", "")]!), ls: {}, at: now }])) };
+  }) as unknown as Parameters<typeof parkedJobs>[2];
+  const parked = await parkedJobs(jobs, now, read);
+  assert.deepEqual([...parked].sort(), ["t:geonode", "t:leftovers"]);
+  assert.deepEqual(asked, [["pi-durable:geonode", "pi-durable:leftovers", "pi-durable:polls", "pi-durable:quiet"]], "one pool read, one tree per thread");
+  const task = (j: Job) => j.name === "polls" ? "pi-host task sleeping: waiting for an account slot" : "pi-host task terminal";
+  assert.deepEqual(jobFindings(jobs, () => now - 5 * 60 * MIN, now, task, parked).map(i => i.sig), ["stuck:t:quiet"]);
+  assert.equal((await parkedJobs(jobs, now, (async () => { throw new Error("pi-pool failed"); }) as unknown as Parameters<typeof parkedJobs>[2])).size, 0);
 });
 
 const crawler = { id: "ag_crawler-guy", name: "Crawler guy", status: "idle", thread: "tc" };
@@ -358,7 +365,7 @@ test("a verify run after a posted sweep reads met with no job, and passed-on mis
     const scheduled = await measureAs("schedule");
     assert.equal(scheduled.record.metrics.findings_unposted?.value, 1, "only seo d1, which nobody has; Crawler guy's d1 and d2 are passed on");
     const detail = JSON.parse(readFileSync(scheduled.record.detail!, "utf8")) as { n: Record<string, number>; items: (Item & { fresh: boolean })[] };
-    assert.deepEqual(detail.n, { agents: 3, posts: 0, jobs: 1, duties: 3, steps: 1 }, "n counts each kind the sweep read");
+    assert.deepEqual(detail.n, { agents: 3, posts: 0, jobs: 1, duties: 3, steps: 1, poolWaits: 0 }, "n counts each kind the sweep read");
     const items = detail.items;
     assert.deepEqual(items.map(i => [i.sig, i.fresh, i.passedOn]).sort(), [
       ["duty:ag_crawler-guy/d1", false, "proxy_kb_per_read fix step p48, job crawler ops train working"],
