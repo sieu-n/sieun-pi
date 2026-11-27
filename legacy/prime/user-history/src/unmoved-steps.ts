@@ -2,7 +2,7 @@ import { clockTime } from "./checkin-settings.ts";
 import { byIdPrefix, liveWindowMs, OPEN, quote, walk } from "./checkin-steps.ts";
 import { BRIEF_ITEMS } from "./shared/brief-cap.ts";
 import { jobSession } from "./shared/chat-board.ts";
-import { handedStep, type NamedChat, ownerHold } from "./shared/todo-hold.ts";
+import { handedStep, type HoldingTodo, type NamedChat, ownerHold, todoName } from "./shared/todo-hold.ts";
 import type { ChatBoard, PlanItem, SessionRow } from "./shared/types.ts";
 
 /**
@@ -59,17 +59,26 @@ export interface WaitLinks { self: string; others: ReadonlyMap<string, ChatBoard
 export function unmovedSteps(board: ChatBoard | null | undefined, now: number, everyMs: number | undefined, { activity, live, named }: OwnerReads,
   links?: WaitLinks): PlanItem[] {
   const todos = board?.todos ?? [];
-  const asked = new Set(todos.filter(todo => !todo.done && todo.step).map(todo => todo.step));
   const window = liveWindowMs(everyMs ?? Infinity);
   const out: PlanItem[] = [];
   walk(board?.plan ?? [], item => {
     if (!OPEN.has(item.status) || item.children.some(child => OPEN.has(child.status))) return;
-    if (asked.has(item.id) || ownerHold(item, todos) !== undefined) return;
+    if (boardHold(item, todos) !== undefined) return;
     if (links && handedStep(item, new Set([links.self]), links.others, links.chats)) return;
     if (stepSessions(item, named).some(session => live.has(session) || now - (activity.get(session) ?? -Infinity) <= window)) return;
     out.push(item);
   });
   return out;
+}
+
+/**
+ * What holds a step for the owner on its board, as `unmovedSteps` reads it: an open todo whose step field links it, else `ownerHold`. The fable
+ * auditor's sweep (apps/chat scripts/duties/fable-sweep.ts) reads its fix steps with it: at 07:30 KST on 11-28 it listed CRM developer VP's d4
+ * as not passed on while its fix steps p17 and p25 both waited on the owner's open t8.
+ */
+export function boardHold(item: Pick<PlanItem, "id" | "text" | "waitFor" | "note" | "status">, todos: readonly HoldingTodo[]): string | undefined {
+  const asked = todos.find(todo => !todo.done && todo.step === item.id);
+  return asked ? todoName(asked) : ownerHold(item, todos);
 }
 
 /**

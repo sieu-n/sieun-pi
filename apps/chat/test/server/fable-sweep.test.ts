@@ -97,7 +97,7 @@ test("a step is stalled only when nothing moves it", () => {
   ];
   const jobs = [job("a", "working"), job("b", "idle"), job("c", "idle")];
   const last = (j: Job) => (j.name === "c" ? now - 5 * MIN : now - 120 * MIN);
-  const items = stalledSteps({ agent: theAgent, plan, todos: [{ id: "t1", step: "p4" }], jobs, now, seen: { "ag_x/p7": now - 600 * MIN }, last });
+  const items = stalledSteps({ agent: theAgent, plan, todos: [{ id: "t1", text: "go?", done: false, from: "agent", step: "p4" }], jobs, now, seen: { "ag_x/p7": now - 600 * MIN }, last });
   assert.deepEqual(items.map(i => [i.sig, (now - i.at!) / MIN]), [["step:ag_x/p2", 300], ["step:ag_x/p7", 600]], "a step with a job is as old as its job");
 });
 
@@ -298,6 +298,27 @@ test("a duty miss is passed on when each missed metric has its own fix step that
   const looked = worthALook(items, {}, now);
   assert.deepEqual(looked.fresh.map(i => i.sig), ["duty:ag_seo/d1"], "a passed-on item is never fresh");
   assert.deepEqual(Object.keys(looked.next.raised ?? {}), ["duty:ag_seo/d1"], "nor raised, so it shows once its step closes with the miss still there");
+});
+
+test("a duty miss whose fix steps wait on an open For you todo is passed on, as d9 reads it, and a step it holds is not stalled (CRM developer VP d4, 11-28 07:30 KST)", () => {
+  const crm = { id: "ag_crm-developer-vp", name: "CRM developer VP", status: "idle", thread: "tcrm" };
+  const plan: PlanItem[] = [
+    { id: "p17", text: "Answer the 17 customer live chats that got no reply", status: "blocked", job: "support inbox", duty: "d4/unanswered_chats_24h" },
+    { id: "p25", text: "Bring the oldest unanswered customer chat under a day", status: "blocked", duty: "d4/oldest_unanswered_chat_hours", waitFor: "t8" },
+  ];
+  const runs = [missedRun(30, "inbox", ["unanswered_chats_24h", "oldest_unanswered_chat_hours"]), missedRun(200, "inbox")];
+  const t8 = { id: "t8", text: "Send these 17 replies to customers?", done: false, from: "agent" as const, step: "p17" };
+  const idle: Job = { id: "tcrm:5", name: "support inbox", status: "idle", thread: "tcrm", conversation: 5, createdAt: now - 2000 * MIN, agent: { id: crm.id, name: crm.name } };
+  type Todos = NonNullable<Parameters<typeof passedOn>[0]["todos"]>;
+  const miss = (todos: Todos) => ({ agent: crm, dutyId: "d4", runs, plan, todos, jobs: [idle], now });
+  assert.equal(passedOn(miss([t8])), "unanswered_chats_24h fix step p17, held for the owner by t8; oldest_unanswered_chat_hours fix step p25, held for the owner by t8");
+  assert.equal(unmovedMetrics(miss([t8])), undefined);
+  assert.equal(passedOn(miss([{ ...t8, done: true }])), undefined, "an answered todo holds nothing");
+  assert.equal(unmovedMetrics(miss([{ ...t8, done: true }])), "not passed on: no fix step a job, board.wake or subagent moves for unanswered_chats_24h, oldest_unanswered_chat_hours");
+  const steps = (todos: Todos) => stalledSteps({ agent: crm, plan: [plan[0]!], todos, jobs: [idle], now, seen: {}, last: () => now - 2000 * MIN });
+  assert.deepEqual(steps([t8]), [], "a step an open todo links is the owner's");
+  assert.deepEqual(steps([{ id: "t8", text: "Send the p17 replies?", done: false, from: "agent" }]), [], "a todo that names the step's id links it too, as d9 reads it");
+  assert.deepEqual(steps([{ ...t8, done: true }]).map(i => i.sig), ["step:ag_crm-developer-vp/p17"]);
 });
 
 test("a verify run confirms the last sweep and raises nothing; scheduled runs mark, after and peek runs do not", () => {

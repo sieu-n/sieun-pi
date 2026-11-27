@@ -71,6 +71,9 @@ import { parseArgs } from "node:util";
 import { appsOwnerReads, wokenStep, type AppsChat } from "../../../../legacy/prime/user-history/src/apps-step-owners.ts";
 import { accountSlot, pooledProviders, readPoolStatus, threadKey } from "../../../../legacy/prime/user-history/src/chat-pool.ts";
 import type { Wake } from "../../../../legacy/prime/user-history/src/wakes.ts";
+import { boardHold } from "../../../../legacy/prime/user-history/src/unmoved-steps.ts";
+import type { HoldingTodo } from "../../../../legacy/prime/user-history/src/shared/todo-hold.ts";
+import type { PlanItem as BoardItem } from "../../../../legacy/prime/user-history/src/shared/types.ts";
 import { owedWakesOf } from "../../server/wakes-db.ts";
 
 const MIN = 60_000;
@@ -114,7 +117,11 @@ export interface DutyRunView {
   after?: { verdict?: string; summary?: string; metrics?: Record<string, { met: boolean }> }; fixes?: Record<string, { step: string; job?: string; live: boolean }> | null;
   job?: { id: string; name: string };
 }
-interface Todo { id: string; done?: boolean; step?: string }
+type Todo = HoldingTodo;
+
+/** What holds a step for the owner, read by the board's own rule (`boardHold`, which d9's stuck steps read): an open For you todo that links it. */
+const ownerHeld = (step: PlanItem, todos: readonly Todo[]): string | undefined => boardHold({ id: step.id, text: step.text, status: step.status as BoardItem["status"],
+  ...(step.note !== undefined ? { note: step.note } : {}), ...(typeof step.waitFor === "string" ? { waitFor: step.waitFor } : {}) }, todos);
 
 const isAgent = (author: Author): boolean => author.kind !== "owner";
 const ago = (ms: number): string => {
@@ -179,7 +186,6 @@ export function stalledSteps(input: {
   wakes?: readonly Wake[];
 }): Item[] {
   const { agent, todos, jobs, now, seen } = input;
-  const held = new Set(todos.filter(t => !t.done && t.step).map(t => t.step!));
   const mine = jobs.filter(job => job.agent?.id === agent.id);
   const chat: AppsChat = { id: agent.id, name: agent.name, board: null, duties: [], thread: agent.thread, jobs: mine.map(job => ({ name: job.name, state: job.status, sessionId: job.id })) };
   const reads = appsOwnerReads(chat, [], input.wakes ?? [], now);
@@ -190,7 +196,7 @@ export function stalledSteps(input: {
       if (step.status === "done" || step.status === "dropped") continue;
       if ((step.children ?? []).some(child => child.status !== "done" && child.status !== "dropped")) continue;
       const until = typeof step.waitUntil === "string" ? Date.parse(step.waitUntil) : step.waitUntil;
-      if ((until && until > now) || step.waitFor || held.has(step.id)) continue;
+      if ((until && until > now) || step.waitFor || ownerHeld(step, todos)) continue;
       if (wokenStep({ id: step.id, job: step.job, waitUntil: typeof step.waitUntil === "string" ? step.waitUntil : undefined }, reads)) continue;
       const named = step.job ? mine.filter(job => job.name === step.job) : [];
       if (named.some(job => job.status === "working" || job.status === "sleeping" || now - (input.last?.(job) ?? 0) < STUCK_MS)) continue;
@@ -326,14 +332,15 @@ export function dutyContext(runs: readonly DutyRunView[]): string[] {
 }
 
 type DutyMissInput = {
-  agent: Agent; dutyId: string; runs: readonly DutyRunView[]; plan: readonly PlanItem[]; jobs: readonly Job[]; now: number; wakes?: readonly Wake[];
+  agent: Agent; dutyId: string; runs: readonly DutyRunView[]; plan: readonly PlanItem[]; todos?: readonly Todo[]; jobs: readonly Job[]; now: number; wakes?: readonly Wake[];
 };
 
 /**
  * Why a duty's miss is with its owner already, or undefined: the duty's first measured run, whose own duty job got its brief, or for each
  * metric the newest run missed an open fix step that names that duty and metric (`duty` is `<dutyId>/<metric>`) whose job works or sleeps
- * or that a board.wake or a working subagent moves (`wokenStep`). A closed step covers nothing, and neither does a step for another metric of
- * the duty: agent factory d2 read passed on through p235 while its slowest_api_p90_ms step p155 had no job. On 11-24 Crawler guy's d1 and d2
+ * or that a board.wake or a working subagent moves (`wokenStep`), or that an open For you todo holds (`boardHold`, as d9 reads it). A closed
+ * step covers nothing, and neither does a step for another metric of the duty: agent factory d2 read passed on through p235 while its
+ * slowest_api_p90_ms step p155 had no job. On 11-24 Crawler guy's d1 and d2
  * missed on their first runs at 15:00 KST, each with fix steps (p48, p50, p42) whose jobs worked, and the auditor's 15:32 KST verify run still
  * counted both as findings nobody had passed on. At 10:24 KST on 11-25 agent factory d2 read not passed on because its search_p90_ms and
  * thread_open_p90_ms steps p279 and p278 were closed, and the item named only p155, which its wake moved (`unmovedMetrics` now names them).
@@ -374,6 +381,10 @@ function dutyFixes(input: DutyMissInput): string | { missed: string[]; moved: Ma
       const live = step.job ? mine.find(job => job.name === step.job && (job.status === "working" || job.status === "sleeping")) : undefined;
       if (live) moved.set(key, `${key} fix step ${step.id}, job ${live.name} ${live.status}`);
       else if (wokenStep({ id: step.id, job: step.job, waitUntil: typeof step.waitUntil === "string" ? step.waitUntil : undefined }, reads)) moved.set(key, `${key} fix step ${step.id}, a board.wake or subagent moves it`);
+      else {
+        const hold = ownerHeld(step, input.todos ?? []);
+        if (hold) moved.set(key, `${key} fix step ${step.id}, held for the owner by ${hold}`);
+      }
     }
   };
   visit(input.plan);
@@ -520,7 +531,7 @@ if (isMain(import.meta.url)) {
       if (agent.id === values.agent || row.paused || !row.last || (row.last.verdict !== "missed" && row.last.verdict !== "error")) continue;
       const run = row.runs[0];
       const why = oneLine(run?.after?.summary ?? run?.error ?? run?.summary ?? "", 110);
-      const miss = { agent, dutyId: row.duty.id, runs: row.runs, plan: board.board?.plan ?? [], jobs: liveJobs, now, wakes };
+      const miss = { agent, dutyId: row.duty.id, runs: row.runs, plan: board.board?.plan ?? [], todos: board.board?.todos ?? [], jobs: liveJobs, now, wakes };
       const has = passedOn(miss);
       const left = has ? undefined : unmovedMetrics(miss);
       items.push({ kind: "duty_off", sig: `duty:${agent.id}/${row.duty.id}`, agent: agent.name, text: `${agent.name} ${row.duty.id} "${row.duty.name}" ${row.last.verdict}${row.last.streak > 1 ? `, ${row.last.streak} runs in a row` : ""}: ${why}`, link: `#/agents/${agent.id}`, at: row.last.at,
