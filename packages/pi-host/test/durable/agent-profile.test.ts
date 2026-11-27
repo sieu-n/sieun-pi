@@ -229,6 +229,8 @@ test("a room post answers first, breaks into lines and keeps the agent's process
     assert.match(text, /No labels, such as an opener like "Early read from the spec:"/);
     // A d4 blind run on 11-23 (ch_7c688239's set, 16:40 KST) put "The others:" over its other options, a label by the owner's "no labels".
     assert.match(text, /or a line of a word or two over a group of bullets like "The others:"/);
+    // A d4 promise run on 11-28 put "Other findings:" and "Notes:" over the second group of bullets in a coverage answer.
+    assert.match(text, /A second group of bullets opens with a full sentence too, such as "The run also turned up four smaller things\.", never a label like "Other findings:" or "Notes:"/);
     // d4 blind runs on 11-23 and 11-25 opened "Not clean yet: ...", "Yes on this box: ..." and "Not quite in sync: ...", a verdict as a label.
     // d4's natural set put the answer and a second fact on one first line of 37 to 40 words in 4 of 6 runs on 11-24 and 11-25.
     assert.match(text, /In a reply of more than one line, the first line holds the answer alone, and the first fact behind it goes on the next line: "The invoice export works again\." and then "It broke when the date column moved\." on its own line/);
