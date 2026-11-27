@@ -402,7 +402,7 @@ test("a down chat opens the flagged slices with its chat_down line, and gets no 
   assert.equal(out.metrics!.stuck_steps_all, 1);
 });
 
-test("the spot audit picks a chat not audited this cycle, so the chat audited longest ago wins and a chat gone from the list is ignored", () => {
+test("the spot audit picks a chat not audited this cycle, never the last run's chat when a cycle opens, and ignores a chat gone from the list", () => {
   const first = () => 0;
   const last = () => 0.999;
   assert.equal(spotPick(["a", "b", "c"], [{ at: 1, chat: "a" }, { at: 2, chat: "b" }], last), "c");
@@ -411,7 +411,8 @@ test("the spot audit picks a chat not audited this cycle, so the chat audited lo
   assert.equal(spotPick(["a", "b", "c"], cycles, first), "b");
   assert.equal(spotPick(["a", "b", "c"], cycles, last), "b");
   assert.equal(spotPick(["a", "b"], [{ at: 1, chat: "a" }, { at: 2, chat: "gone" }, { at: 3, chat: "gone" }], last), "b");
-  assert.deepEqual(new Set([0, 0.5, 0.999].map(n => spotPick(["a", "b", "c"], [{ at: 1, chat: "a" }, { at: 2, chat: "b" }, { at: 3, chat: "c" }], () => n))), new Set(["a", "b", "c"]));
+  assert.deepEqual(new Set([0, 0.5, 0.999].map(n => spotPick(["a", "b", "c"], [{ at: 1, chat: "a" }, { at: 2, chat: "b" }, { at: 3, chat: "c" }], () => n))), new Set(["a", "b"]));
+  assert.equal(spotPick(["a"], [{ at: 1, chat: "a" }], last), "a");
   assert.equal(spotPick(["a", "b"], [], first), "a");
 });
 

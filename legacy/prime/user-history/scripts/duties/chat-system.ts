@@ -855,8 +855,9 @@ const SPOT_PICKS_FILE = join(homedir(), "work/plan-audit/spot-picks.jsonl");
  */
 /**
  * The chats the spot audit picks from: `ids` without the moved Prime copies and without a dormant chat, one whose check-in the owner paused
- * and whose plan holds no open step. SEO guy (goals handed to :5184 seo on 10-30, both duties and the check-in paused) drew 5 of the audits
- * from 10-30 to 11-21 and each found nothing; designer bro, metal-management and spec and monitoring system read the same way on 11-21.
+ * or that holds no duty, and whose plan holds no open step. ops guy (+observability) handed all its work to :5184 devops guy on 11-25, kept no
+ * duty and an unpaused daily check-in, and drew the 05:27Z and 06:27Z audits on 11-27, both finding nothing. SEO guy (goals handed to :5184
+ * seo on 10-30, both duties and the check-in paused) drew 5 of the audits from 10-30 to 11-21 and each found nothing; designer bro, metal-management and spec and monitoring system read the same way on 11-21.
  * Falls back to every unmoved chat when all are dormant.
  */
 export function spotCandidates(ids: readonly string[], moved: ReadonlySet<string>, paused: ReadonlySet<string>, boards: ReadonlyMap<string, ChatBoard | null>): string[] {
@@ -872,8 +873,11 @@ export function spotPick(ids: readonly string[], picks: readonly { at: number; c
     open.add(pick.chat);
     if (open.size === new Set(ids).size) open.clear();
   }
+  // A new cycle skips the chat the last run audited: ops guy drew both the 05:27Z and 06:27Z audits on 11-27, the first closing a cycle.
+  const newest = [...picks].sort((a, b) => b.at - a.at).find(pick => ids.includes(pick.chat))?.chat;
   const due = ids.filter(id => !open.has(id));
-  return due[Math.floor(random() * due.length)]!;
+  const fresh = due.length > 1 ? due.filter(id => id !== newest) : due;
+  return fresh[Math.floor(random() * fresh.length)]!;
 }
 
 /** The held steps and duties grouped by box, with the detail section's title: "41 steps and 1 red duty wait on mac". */
@@ -1162,7 +1166,8 @@ async function main(): Promise<void> {
   const picks = (await readFile(SPOT_PICKS_FILE, "utf8").catch(() => "")).split("\n").flatMap(line => {
     try { const pick = JSON.parse(line) as { at: number; chat: string }; return typeof pick.at === "number" && typeof pick.chat === "string" ? [pick] : []; } catch { return []; }
   });
-  const dormant = new Set(standings.filter(standing => standing.state === "paused").map(standing => standing.chat));
+  const withDuty = new Set(fleet.duties.map(duty => duty.chat));
+  const dormant = new Set([...standings.filter(standing => standing.state === "paused").map(standing => standing.chat), ...ids.filter(id => !withDuty.has(id))]);
   const spot = spotPick(spotCandidates(ids, moved, dormant, plan.boards), picks);
   const session = localCopy(listed.get(spot)?.file);
   const asks = session ? ownerMessages(await tail(session.file, TRANSCRIPT_TAIL_BYTES), OWNER_MESSAGES) : [];
