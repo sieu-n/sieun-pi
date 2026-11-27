@@ -317,8 +317,11 @@ export async function build(tmp: string): Promise<{ build: Build; dir: string }>
   return { build: { sha, loaded, dirty, sameFiles: store.files.join() === dev.files.join(), version: manifest.version }, dir };
 }
 
-/** The one exit a logged-in test account may leave from: GeoNode's gateway, never our own servers (owner rule c229, 11-20). */
-const GEONODE_HOST = "proxy.geonode.io";
+/** A logged-in test account leaves only through a GeoNode host, never our own servers (owner rule c229, 11-20). The crawler
+ *  hands out proxy.geonode.io and, when that is dark, premium-residential.geonode.com (crawler-v3 331bf62222). */
+export function isGeoNodeHost(host: string): boolean {
+  return ["geonode.io", "geonode.com"].some(domain => host === domain || host.endsWith(`.${domain}`));
+}
 
 /** One account's saved session and the exit a browser drives it through now, as the crawler answers it (BROWSER_JAR). */
 export interface BrowserJar { world: string; username: string; ig_user_id: string | null; cookies: { name: string; value: string }[] | null; user_agent: string; valid: boolean; proxy_url: string }
@@ -347,7 +350,7 @@ export function jarReader(key: string, fetcher: typeof fetch = fetch): ReadJar {
     const jar = (JSON.parse(body) as { data: BrowserJar | null }).data;
     if (!jar) throw new Error(`no crawler world holds @${username}`);
     const host = new URL(jar.proxy_url).hostname;
-    if (host !== GEONODE_HOST) throw new Error(`@${username} exit ${host} is not GeoNode`);
+    if (!isGeoNodeHost(host)) throw new Error(`@${username} exit ${host} is not GeoNode`);
     return jar;
   };
 }

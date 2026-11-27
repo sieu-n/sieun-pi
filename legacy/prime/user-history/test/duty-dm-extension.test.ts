@@ -169,6 +169,8 @@ test("browser-jar reads hold each account in its role, and a jar whose exit is n
   const jar = (username: string, proxy_url: string) => new Response(JSON.stringify({ ok: true, data: { world: "prod", username, ig_user_id: "2", cookies: [], user_agent: "ua", valid: true, proxy_url } }));
   const answers: Record<string, () => Response> = {
     "kokomi.yua": () => jar("kokomi.yua", "http://u:p@proxy.geonode.io:10000"),
+    "aoi.otoha": () => jar("aoi.otoha", "http://u:p@premium-residential.geonode.com:9000"),
+    lookalike: () => jar("lookalike", "http://u:p@proxy.geonode.io.example.net:10000"),
     server: () => jar("server", "http://u:p@us-metal01.tail0c093d.ts.net:7244"),
     parked: () => new Response(JSON.stringify({ ok: false, error: { code: "not_found", message: "neither world holds a serving jar of @parked" } }), { status: 404 }),
     broken: () => new Response("oops", { status: 500 }),
@@ -181,6 +183,8 @@ test("browser-jar reads hold each account in its role, and a jar whose exit is n
   }) as typeof fetch);
   assert.equal((await read("kokomi.yua", "dm-extension-replier")).proxy_url, "http://u:p@proxy.geonode.io:10000");
   assert.deepEqual(holds, { "kokomi.yua": "dm-extension-replier" });
+  assert.equal((await read("aoi.otoha")).proxy_url, "http://u:p@premium-residential.geonode.com:9000");
+  await assert.rejects(read("lookalike"), { message: "@lookalike exit proxy.geonode.io.example.net is not GeoNode" });
   await assert.rejects(read("server"), { message: "@server exit us-metal01.tail0c093d.ts.net is not GeoNode" });
   await assert.rejects(read("parked"), /browser-jar @parked answered 404/);
   await assert.rejects(read("broken"), /browser-jar @broken answered 500/);
