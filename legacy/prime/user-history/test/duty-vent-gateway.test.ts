@@ -175,11 +175,11 @@ test("the infra tier copy virev-services loads counts its Vercel and Railway tok
   assert.equal(output.metrics.key_locations_with_leaks, 2);
 });
 
-// On 10-30 e1e4a1114b copied the prod Clerk, Resend, Stripe, Zernio, OpenRouter, Railway and Vercel keys under *_USAGE_* names into the
+// On 10-30 e1e4a1114b copied the prod Clerk, Resend, Stripe, Zernio, Railway and Vercel keys under *_USAGE_* names into the
 // infra tier and /srv/obs/secrets/vendor-usage.env on us-metal01, and d1 read provider_keys_outside_vent 0 on 10-31.
 test("a provider key copied under another name counts in tier files and box env files", () => {
   const locations: Record<string, string[]> = {};
-  const usage = ["CLERK_USAGE_KEY", "OPENROUTER_USAGE_KEY", "RESEND_USAGE_KEY", "STRIPE_USAGE_KEY", "ZERNIO_USAGE_KEY", "RAILWAY_USAGE_TOKEN", "VERCEL_USAGE_TOKEN", "CONVEX_USAGE_TOKEN", "VENDOR_USAGE_B2_APP_KEY", "VENDOR_USAGE_VENT_KEY"];
+  const usage = ["CLERK_USAGE_KEY", "RESEND_USAGE_KEY", "STRIPE_USAGE_KEY", "ZERNIO_USAGE_KEY", "RAILWAY_USAGE_TOKEN", "VERCEL_USAGE_TOKEN", "CONVEX_USAGE_TOKEN", "VENDOR_USAGE_B2_APP_KEY", "VENDOR_USAGE_VENT_KEY"];
   boxLocations({ files: { "/srv/obs/secrets/vendor-usage.env": usage }, docker: {}, units: { "virev-vendor-usage.service": usage } }, locations);
   locations["tier apps/infra/.env"] = [...usage, "STRIPE_READ_VENT_KEY"];
   locations["tier apps/ci/e2e/.env.staging"] = ["CLERK_CI_SECRET_KEY"];
@@ -187,11 +187,11 @@ test("a provider key copied under another name counts in tier files and box env 
   locations["convex staging tremendous-eel-825"] = ["GOOGLE_PICKER_API_KEY", "CLERK_JWT_KEY", "PUBLIC_CLERK_PUBLISHABLE_KEY", "GMAIL_OAUTH_STATE_SECRET"];
   const output = ventMetrics(reads({ keys: { locations, unreadable: {} } }), 0);
   assert.deepEqual(output.flagged!.filter(flag => flag.kind === "key_outside_vent").map(flag => flag.excerpt), [
-    "box /srv/obs/secrets/vendor-usage.env still holds CLERK_USAGE_KEY, OPENROUTER_USAGE_KEY, RESEND_USAGE_KEY, STRIPE_USAGE_KEY, ZERNIO_USAGE_KEY, RAILWAY_USAGE_TOKEN, VERCEL_USAGE_TOKEN",
-    "unit virev-vendor-usage.service still holds CLERK_USAGE_KEY, OPENROUTER_USAGE_KEY, RESEND_USAGE_KEY, STRIPE_USAGE_KEY, ZERNIO_USAGE_KEY, RAILWAY_USAGE_TOKEN, VERCEL_USAGE_TOKEN",
-    "tier apps/infra/.env still holds CLERK_USAGE_KEY, OPENROUTER_USAGE_KEY, RESEND_USAGE_KEY, STRIPE_USAGE_KEY, ZERNIO_USAGE_KEY",
+    "box /srv/obs/secrets/vendor-usage.env still holds CLERK_USAGE_KEY, RESEND_USAGE_KEY, STRIPE_USAGE_KEY, ZERNIO_USAGE_KEY, RAILWAY_USAGE_TOKEN, VERCEL_USAGE_TOKEN",
+    "unit virev-vendor-usage.service still holds CLERK_USAGE_KEY, RESEND_USAGE_KEY, STRIPE_USAGE_KEY, ZERNIO_USAGE_KEY, RAILWAY_USAGE_TOKEN, VERCEL_USAGE_TOKEN",
+    "tier apps/infra/.env still holds CLERK_USAGE_KEY, RESEND_USAGE_KEY, STRIPE_USAGE_KEY, ZERNIO_USAGE_KEY",
   ]);
-  assert.equal(output.metrics.provider_keys_outside_vent, 19);
+  assert.equal(output.metrics.provider_keys_outside_vent, 16);
   assert.equal(providerKey("STRIPE_USAGE_KEY"), true);
   assert.equal(providerKey("STRIPE_READ_VENT_KEY"), false);
 });
@@ -491,6 +491,21 @@ test("removed_provider_refs counts a Smartlead host, key or Vent row and skips t
   const result = removedProviderRefs({ grep, tables }, 0);
   assert.ok(!("error" in result));
   assert.deepEqual(result.flagged.map(flag => flag.item).sort(), ["apps/vent/.env.staging", "convex/gtm/send.ts", "integration smartlead"]);
+});
+
+test("removed_provider_refs counts an OpenRouter host, key or Vent row (11-28)", () => {
+  const line = (path: string, text: string) => `origin/dev/sieun:${path}\0${1}\0${text}`;
+  const grep = [
+    line("apps/infra/metal/config/host/vendor-usage/openrouter.py", 'key = ctx.vent("openrouter", "/api/v1/key")["data"]'),
+    line("apps/research-agent-be/src/research/llm.py", 'BASE = "https://openrouter.ai/api/v1"'),
+    line("apps/vent/.env", "OPENROUTER_API_KEY=encrypted:abc"),
+  ].join("\n");
+  const tables = TABLES.replace('    "zernio"', '    "openrouter": Integration(OPENROUTER, "OPENROUTER_API_KEY"),\n    "zernio"');
+  const result = removedProviderRefs({ grep, tables }, 0);
+  assert.ok(!("error" in result));
+  assert.deepEqual(result.flagged.map(flag => flag.item).sort(), [
+    "apps/infra/metal/config/host/vendor-usage/openrouter.py", "apps/research-agent-be/src/research/llm.py", "apps/vent/.env", "integration openrouter",
+  ]);
 });
 
 test("the store lister ships beside the duty, because the wiki session copy stopped resolving its repo imports on 11-04", () => {

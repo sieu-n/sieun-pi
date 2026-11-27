@@ -78,13 +78,11 @@ export const PROVIDER_KEYS = new Set([
   "RESEND_WEBHOOK_SECRET", "ZERNIO_WEBHOOK_SECRET",
   // Found by the p61 env key audit (10-22): the CLIProxy management key.
   "CLIPROXY_MANAGEMENT_KEY",
-  // Vent's openrouter integration secret (apps/vent/src/vent/tables/integrations.py).
-  "OPENROUTER_API_KEY",
 ]);
 
 /**
  * A provider key copied under another name: a KEY, TOKEN or SECRET name whose first word is the vendor of a PROVIDER_KEYS name, such as
- * STRIPE_USAGE_KEY. On 10-30 e1e4a1114b put copies of the prod Clerk, Resend, Stripe, Zernio and OpenRouter keys under *_USAGE_KEY names
+ * STRIPE_USAGE_KEY. On 10-30 e1e4a1114b put copies of the prod Clerk, Resend, Stripe and Zernio keys under *_USAGE_KEY names
  * in the infra tier and /srv/obs/secrets/vendor-usage.env on us-metal01, and d1 read provider_keys_outside_vent 0. Vent caller keys,
  * browser-public keys, the Clerk JWT public key and our own OAuth state secrets are not provider keys.
  */
@@ -253,6 +251,8 @@ export const REMOVED_PROVIDERS: readonly RemovedProvider[] = [
   // key counts; the webhook source literal, the drop migrations that clear its old Convex rows and a link to its guides at
   // api.smartlead.ai/guides, such as the warm-up ramp cite in convex/search/senders/warmup.ts, name it and call nothing.
   { name: "Smartlead", grep: "smartlead", code: /\bsmartlead\.ai\b(?!\/guides\/)|\bSMARTLEAD_(API_KEY|WEBHOOK_SECRET)\b/i, integrations: ["smartlead"] },
+  // Vent's openrouter integration only read its own key's spend for vendor-usage, and that key expired on 11-27.
+  { name: "OpenRouter", grep: "openrouter", code: /openrouter/i, integrations: ["openrouter"] },
 ];
 
 /** Tip paths that may name a removed provider: the guards that keep it out, and frozen copies that never run. A path ending in / covers its folder. */
