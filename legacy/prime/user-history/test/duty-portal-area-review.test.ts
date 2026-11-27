@@ -2,7 +2,8 @@
 // nobody acts on, red duties with no fix, steps nobody moved for 2 days, wiki pages stale or failing the prose lint, and unsaved corrections.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { review, STEP_UNMOVED_MS, type AreaInput } from "../scripts/duties/portal-area-review.ts";
+import { measure, review, STEP_UNMOVED_MS, type AreaInput } from "../scripts/duties/portal-area-review.ts";
+import { hostAwayOf, judge, type DutyMetric } from "../src/shared/chat-duties.ts";
 
 const now = Date.parse("2026-11-26T00:00:00Z");
 const base: AreaInput = { duties: [], plan: [], stuck: [], pages: [], state: { steps: {} }, now, shared: { metrics: { corrections_unsaved: 0 }, flagged: [] } };
@@ -66,4 +67,27 @@ test("with no shared review script the corrections read 0 and a flag says why", 
   const out = review({ ...base, shared: null });
   assert.equal(out.output.metrics.corrections_unsaved, 0);
   assert.ok(out.output.flagged!.some(slice => slice.kind === "shared_review_missing"));
+});
+
+const headline: DutyMetric[] = [{ key: "issues_not_acted_on", label: "Issues nobody acts on", op: "<=", target: 0 }];
+
+test("a failed source writes no number for any count, so the run reads not measured with its reason and no 999999", async () => {
+  const down = (async () => { throw new Error("connect ECONNREFUSED 127.0.0.1:5184"); }) as typeof fetch;
+  const { output } = await measure({ steps: {} }, now, down, () => ({ findings: [] }), async () => null);
+  assert.deepEqual(output.metrics, {});
+  assert.deepEqual(output.n, { issues_not_acted_on: 0, red_duties_unowned: 0, steps_unmoved_2d: 0, wiki_pages_off: 0, corrections_unsaved: 0 });
+  const judged = judge(headline, output);
+  assert.equal(judged.verdict, "error");
+  assert.doesNotMatch(judged.summary, /999999|placeholder/, judged.summary);
+  assert.match(judged.summary, /gave no value for issues_not_acted_on \(connect ECONNREFUSED/);
+});
+
+test("when the shared review's box is away, corrections_unsaved and the headline are left out and its host_away item comes along", () => {
+  const out = review({ ...base, shared: { metrics: { owner_posts_24h: 0, owner_posts_answered_24h: 0 }, n: 0,
+    flagged: [{ kind: "host_away", host: "us-metal02", excerpt: "API portal's box us-metal02 did not answer, so its folder and memory were not read" }] } });
+  assert.deepEqual(out.output.metrics, { red_duties_unowned: 0, steps_unmoved_2d: 0, wiki_pages_off: 0 });
+  assert.equal(hostAwayOf(out.output), "us-metal02");
+  const judged = judge(headline, out.output);
+  assert.equal(judged.verdict, "error");
+  assert.doesNotMatch(judged.summary, /999999|placeholder/, judged.summary);
 });

@@ -20,13 +20,12 @@ import { BASE } from "./apps-chat.ts";
  *     old, or that fail the wiki prose lint of this checkout (apps/wiki/src/lib/prose-lint.mjs).
  *   corrections_unsaved: the shared Area review precheck's count (apps/chat/scripts/duties/area-review.ts) of the owner's corrections from the
  *     agent's rooms that its memory names nowhere, with its owner_post items, when that script is in this checkout.
- * The headline issues_not_acted_on is their sum, target 0.
+ * The headline issues_not_acted_on is their sum, target 0. A count the run could not read is left out, so the run reads not measured: every
+ * count when a source fails, and corrections_unsaved with the headline when the shared review's box is away (its `host_away` item comes along).
  */
 
 export const AGENT = process.env.AREA_REVIEW_AGENT || "ag_api-portal";
 export const WIKI_GLOBS = ["agents/api-portal/**", "apps/api-portal/**"];
-/** The "could not measure" value the other api-portal prechecks print, so a missing source never reads on target. */
-export const UNMEASURED = 999999;
 const DAY_MS = 86_400_000;
 export const STEP_UNMOVED_MS = 2 * DAY_MS;
 export const PAGE_STALE_MS = 7 * DAY_MS;
@@ -101,8 +100,8 @@ export function review(input: AreaInput): { output: PrecheckOutput; state: State
     if (reasons.length) pages.push({ kind: "wiki_page_off", item: page.path, sig: reasons.join("; "), excerpt: `${page.path}: ${reasons.join("; ")}.` });
   }
 
-  const corrections = input.shared?.metrics.corrections_unsaved ?? 0;
-  const sharedItems = (input.shared?.flagged ?? []).filter(slice => slice.kind === "correction_unsaved" || slice.kind === "owner_post");
+  const corrections = input.shared ? input.shared.metrics.corrections_unsaved : 0;
+  const sharedItems = (input.shared?.flagged ?? []).filter(slice => ["correction_unsaved", "owner_post", "host_away"].includes(slice.kind));
 
   const flagged: FlaggedSlice[] = [
     { kind: "area_review", sig: day(now), handOff: true,
@@ -111,7 +110,9 @@ export function review(input: AreaInput): { output: PrecheckOutput; state: State
     ...redDuties, ...unmoved, ...pages, ...sharedItems,
     ...input.shared ? [] : [{ kind: "shared_review_missing", excerpt: `No shared Area review precheck at ${SHARED_REVIEW}, so corrections_unsaved reads 0.` }],
   ];
-  const parts = { red_duties_unowned: redDuties.length, steps_unmoved_2d: unmoved.length, wiki_pages_off: pages.length, corrections_unsaved: corrections };
+  const counts = { red_duties_unowned: redDuties.length, steps_unmoved_2d: unmoved.length, wiki_pages_off: pages.length };
+  const metrics = typeof corrections === "number"
+    ? { issues_not_acted_on: redDuties.length + unmoved.length + pages.length + corrections, ...counts, corrections_unsaved: corrections } : counts;
   /** What each count looked at: the other duties checked, the open steps, the wiki pages and the shared review's own n. */
   const checkedDuties = input.duties.filter(row => !row.paused && row.duty.name !== OWN_NAME).length;
   const sharedN = input.shared?.n;
@@ -119,7 +120,7 @@ export function review(input: AreaInput): { output: PrecheckOutput; state: State
   const n = { red_duties_unowned: checkedDuties, steps_unmoved_2d: open.length, wiki_pages_off: input.pages.length, corrections_unsaved: correctionsN,
     issues_not_acted_on: checkedDuties + open.length + input.pages.length + correctionsN };
   return {
-    output: { metrics: { issues_not_acted_on: redDuties.length + unmoved.length + pages.length + corrections, ...parts }, n, flagged },
+    output: { metrics, n, flagged },
     state: { steps },
   };
 }
@@ -168,9 +169,7 @@ export async function measure(state: State, now: number, send: typeof fetch = fe
     }));
     return review({ duties, plan: board.plan, stuck: stuck.map(step => step.id), pages, state, now, shared: await shared() });
   } catch (error) {
-    return { state, output: { metrics: { issues_not_acted_on: UNMEASURED, red_duties_unowned: UNMEASURED, steps_unmoved_2d: UNMEASURED, wiki_pages_off: UNMEASURED,
-      corrections_unsaved: UNMEASURED },
-      n: { issues_not_acted_on: 0, red_duties_unowned: 0, steps_unmoved_2d: 0, wiki_pages_off: 0, corrections_unsaved: 0 },
+    return { state, output: { metrics: {}, n: { issues_not_acted_on: 0, red_duties_unowned: 0, steps_unmoved_2d: 0, wiki_pages_off: 0, corrections_unsaved: 0 },
       flagged: [{ kind: "source_error", excerpt: error instanceof Error ? error.message : String(error) }] } };
   }
 }
