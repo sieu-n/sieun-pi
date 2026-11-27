@@ -44,6 +44,11 @@ const fixable = (id: string) => {
 fs.appendFileSync(path.join(process.cwd(), "${id}.modes"), process.env.PRECHECK_MODE + "\\n");
 fs.writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ n: 1, metrics: { up: Number(fs.readFileSync(path.join(process.cwd(), "${id}.up"), "utf8")) } }));`] } };
 };
+/** A duty like `duty` that reads met and whose precheck output names no n. */
+const noN = (id: string) => {
+  const base = duty(id, 100);
+  return { ...base, precheck: { ...base.precheck, command: base.precheck.command.map(part => part.replace("{ n: 1, ", "{ ")) } };
+};
 const missed = (id: string, at: number, job: string): DutyRunRecord => ({
   duty: id, at, slot: at, trigger: "schedule", ms: 900, verdict: "missed", metrics: { up: { value: 90, target: 99, op: ">=", met: false } }, summary: "up 90",
   job: { id: job, name: `Duty ${id} job` },
@@ -75,6 +80,9 @@ before(async () => {
   host.append(d5job, 1, answer("error"));
   d5job.running.set(1, { stop: () => aborted.push("job-d5") });
   writeFileSync(join(work, "d5.up"), "90");
+  // d7: pi-pool holds its job, which an earlier run handed the sig d7/n, and its precheck still writes no n.
+  const holds = host.addThread({ id: "job-holds", name: "Duty d7 job", status: "sleeping", createdAt: now - HOUR });
+  holds.running.set(1, { stop: () => aborted.push("job-holds") });
   // d6: its job answered once and its root turn ended, and pi-pool parks the call of a subagent under its tree for an account, as it parked
   // five duty jobs on 11-26. The fake pool's tree record says the wait; its state.json record says since when.
   const parked = host.addThread({ id: "job-parked", name: "Duty d6 job", status: "sleeping", createdAt: now - 3 * HOUR });
@@ -89,9 +97,10 @@ before(async () => {
   writeFileSync(join(pool, "state.json"), JSON.stringify(state));
   await s.app.threads.refresh();
   await s.app.boards.saveDuties(ids.vent, {
-    duties: [duty("d1"), duty("d2"), duty("d3"), duty("d4", 100), fixable("d5"), duty("d6")].map(entry => ({ ...entry, precheck: { ...entry.precheck, cwd: work } })),
+    duties: [duty("d1"), duty("d2"), duty("d3"), duty("d4", 100), fixable("d5"), duty("d6"), noN("d7")].map(entry => ({ ...entry, precheck: { ...entry.precheck, cwd: work } })),
     runs: { d1: [missed("d1", now - HOUR, "job-asleep")], d2: [missed("d2", now - HOUR, "job-queued")], d3: [missed("d3", now - HOUR, "job-done")], d4: [missed("d4", now - HOUR, "job-held")],
-      d5: [missed("d5", now - HOUR, "job-d5")], d6: [missed("d6", now - 3 * HOUR, "job-parked")] },
+      d5: [missed("d5", now - HOUR, "job-d5")], d6: [missed("d6", now - 3 * HOUR, "job-parked")],
+      d7: [{ ...missed("d7", now - HOUR, "job-holds"), flagged: [{ kind: "no_sample_size", excerpt: "add n", handOff: true, sig: "d7/n" }] }] },
   } as DutyFile);
 });
 after(async () => {
@@ -147,6 +156,19 @@ test("a run with nothing due stops the job that still waits for an account", asy
   assert.match(measured!.summary, /stopped its job Duty d4 job, which still waited for a model account, since nothing is due/);
   assert.deepEqual(aborted, ["job-held"]);
   assert.deepEqual(said("job-held"), []);
+});
+
+test("a run with nothing new due leaves a waiting job that holds a hand-off sig the run flags again", async () => {
+  // On 11-26 Crawler guy's d7 verify run stopped the waiting job that held d7/n, and the sig then read as handed, so nobody added the n.
+  await run("d7");
+  await until(() => Promise.resolve(runsOf("d7")), runs => runs.length === 2);
+  const [measured] = runsOf("d7");
+  assert.equal(measured!.verdict, "met");
+  assert.deepEqual(measured!.job, { id: "job-holds", name: "Duty d7 job" });
+  assert.match(measured!.summary, /its job Duty d7 job still waits for a model account and holds this run's hand-offs, so this run left it/);
+  assert.deepEqual(measured!.flagged, [], "the run hands the job no sig it already holds");
+  assert.ok(!aborted.includes("job-holds"));
+  assert.deepEqual(said("job-holds"), []);
 });
 
 test("a duty whose job ended runs its precheck and starts a job", async () => {

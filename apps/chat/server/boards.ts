@@ -910,14 +910,17 @@ export class Boards {
     const busy = lastJob && !resume?.job && this.jobBusy(lastJob, working) ? lastJob : undefined;
     const dir = join(this.dir(chat), "duties");
     const thread = this.threadOf(chat);
-    const { record, brief } = await measure({
+    const { record, brief, heldBy } = await measure({
       duty, chat: { id: chat, name: this.nameOf(chat) }, dir, trigger, previous: before.runs[dutyId] ?? [], board: await this.board(chat),
       liveJob: job => working.has(job), boardApi: `${this.selfUrl}/api/threads/${thread}/board`, now: at, log: this.log, signal: this.stopping.signal,
       ...(resume ? { resume: resume.launch } : {}),
       launched: launch => this.save(chat, Boards.pend(this.file(chat), dutyId, { mode: "run", at, trigger, launch })),
     });
     if (busy) {
-      record.summary += await this.besideBusyJob(chat, duty, busy, record, brief);
+      const beside = await this.besideBusyJob(chat, duty, busy, record, brief, heldBy.includes(busy.id));
+      record.summary += beside.words;
+      // A job that never read this run's brief was handed none of its sigs, so the next run hands them out again.
+      if (!beside.steered && record.flagged) record.flagged = [];
       // The run names the job it measured beside, so the job's after-job measure lands on it too (`afterJob`) and the card reads the state
       // after the job's work. On 11-23 the fable auditor's 10:06 and 13:06 KST sweeps handed their briefs to the 07:06 job, which ended at
       // 15:07 with findings_unposted 0, and d1 still read missed 10, 2 runs in a row, until the next sweep.
@@ -1115,27 +1118,30 @@ export class Boards {
   /**
    * What a run does beside the duty's last job that still works, and the words it adds to the run's summary. A job with no model answer yet
    * waits for an account and has read nothing, so it keeps its place in pi-pool's line: a due run steers this run's brief into it, which it
-   * reads after its first answer, and a run with nothing due stops it. A job that answered works its brief, and the run leaves it alone; its
-   * summary says since when it waits when pi-pool parks its tree (`poolWaitSince`).
+   * reads after its first answer, and a run with nothing due stops it, unless the job holds a hand-off sig this run flags again (`holds`): on
+   * 11-26 Crawler guy's d7 verify run stopped the waiting job that held d7/n, and since the sig read as handed, no job ever added the n. A job
+   * that answered works its brief, and the run leaves it alone; its summary says since when it waits when pi-pool parks its tree
+   * (`poolWaitSince`). `steered` says whether the job got this run's brief.
    */
-  private async besideBusyJob(chat: string, duty: Duty, job: { id: string; name: string }, record: DutyRunRecord, brief: string | null): Promise<string> {
+  private async besideBusyJob(chat: string, duty: Duty, job: { id: string; name: string }, record: DutyRunRecord, brief: string | null, holds: boolean): Promise<{ words: string; steered: boolean }> {
     const waits = !(await this.answeredOnce(job.id).catch(() => true));
     if (!waits) {
       const since = await this.poolWaitSince(job.id).catch(() => null);
-      return since === null ? `; its job ${job.name} still works, so this run started none`
-        : `; its job ${job.name} is waiting for a model account since ${new Date(since + OWNER_ZONE_OFFSET_MS).toISOString().slice(11, 16)} KST, so this run started none`;
+      return { steered: false, words: since === null ? `; its job ${job.name} still works, so this run started none`
+        : `; its job ${job.name} is waiting for a model account since ${new Date(since + OWNER_ZONE_OFFSET_MS).toISOString().slice(11, 16)} KST, so this run started none` };
     }
     try {
+      if (!brief && holds) return { steered: false, words: `; its job ${job.name} still waits for a model account and holds this run's hand-offs, so this run left it` };
       if (!brief) {
         await this.host.abort(job.id);
-        return `; stopped its job ${job.name}, which still waited for a model account, since nothing is due`;
+        return { steered: false, words: `; stopped its job ${job.name}, which still waited for a model account, since nothing is due` };
       }
       const text = `A newer ${duty.name} run measured while you waited for a model account: ${record.summary}. Work from the brief below instead of your first brief, since its precheck is newer.\n\n${brief}`;
       await this.host.submit(job.id, { text, whenBusy: "steer", requestId: `duty-handoff:${job.id}:${record.at}`, entry: { kind: "agent.message", data: { from: chat, via: `duty ${duty.id}` } } });
-      return `; its job ${job.name} still waits for a model account and got this run's brief`;
+      return { steered: true, words: `; its job ${job.name} still waits for a model account and got this run's brief` };
     } catch (error) {
       this.log(`duty ${chat.slice(0, 8)}/${duty.id}: reaching its waiting job ${job.name} failed: ${String(error)}`);
-      return `; its job ${job.name} still waits for a model account, and reaching it failed`;
+      return { steered: false, words: `; its job ${job.name} still waits for a model account, and reaching it failed` };
     }
   }
 

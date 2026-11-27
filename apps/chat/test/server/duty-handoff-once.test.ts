@@ -31,12 +31,20 @@ test("a hand-off sig an earlier run gave a job starts no second job; a new sig o
     const withJob = { ...first.record, job: { id: "j1", name: "Area review duty 261126-054934" } };
     const again = await run(duty("ag_vp-of-gtm:2026-11-25"), [withJob]);
     assert.equal(again.brief, null, "a rerun the same day starts no job for the same sig");
+    assert.deepEqual(again.record.flagged, [], "the rerun records no sig it did not hand out");
+    assert.deepEqual(again.heldBy, ["j1"], "the rerun names the job that holds the sig");
     // A run whose earlier job never started (no job on the record) still hands off.
     assert.notEqual((await run(duty("ag_vp-of-gtm:2026-11-25"), [first.record])).brief, null);
     assert.notEqual((await run(duty("ag_vp-of-gtm:2026-11-26"), [withJob])).brief, null, "the next day's sig is new");
     // A finding whose job ran over a day ago, such as a page still off shape, goes out again.
     assert.notEqual((await run(duty("ag_vp-of-gtm:2026-11-25"), [{ ...withJob, at: at - 25 * 3_600_000 }])).brief, null);
-    assert.notEqual((await run(duty("ag_vp-of-gtm:2026-11-25", 2), [withJob])).brief, null, "a missed metric still starts a job");
+    const miss = await run(duty("ag_vp-of-gtm:2026-11-25", 2), [withJob]);
+    assert.notEqual(miss.brief, null, "a missed metric still starts a job");
+    // On 11-26 devops guy's d12 verify job, started for a missed metric, stored the d12/n sig an earlier job held, and d7 read a duplicate.
+    assert.deepEqual(miss.record.flagged, [], "a job a missed metric starts is handed no sig an earlier job holds");
+    const next = await run(duty("ag_vp-of-gtm:2026-11-26", 2), [withJob]);
+    assert.deepEqual(next.record.flagged?.map(slice => slice.sig), ["ag_vp-of-gtm:2026-11-26"], "a new sig beside the miss is handed");
+    assert.deepEqual(next.heldBy, []);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

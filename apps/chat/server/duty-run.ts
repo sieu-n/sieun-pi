@@ -274,6 +274,8 @@ export interface DutyRunResult {
   record: DutyRunRecord;
   /** The duty job's brief when something is due, else null (a met run with nothing flagged ends with no job). */
   brief: string | null;
+  /** The jobs of earlier runs that hold a hand-off sig this run flags again, so a waiting one among them still has work (`Boards.besideBusyJob`). */
+  heldBy: readonly string[];
 }
 
 /**
@@ -351,19 +353,27 @@ export async function measure(input: {
       flagged, ...(headline ? { headlineKey: headline.key } : {}), detail: findingsFile }), runNotes].filter(Boolean).join("\n\n");
   }
   // A hand-off with a sig that an earlier run of this duty already gave a job is not handed again: on 11-26 VP of GTM's Area review started
-  // three jobs for the one daily sig ag_vp-of-gtm:2026-11-25. The run keeps its hand-offs with a sig in `flagged` for the next run to read.
+  // three jobs for the one daily sig ag_vp-of-gtm:2026-11-25. The run keeps the hand-offs it gives in `flagged` for the next run to read.
   // Only a job of the last day counts, so a finding that is still open a day later, such as a page Wiki tidiness flags each day, goes out again.
-  const handed = new Set(previous.filter(run => run.job && started - run.at < 86_400_000).flatMap(run => (run.flagged ?? []).flatMap(slice => slice.handOff && slice.sig ? [slice.sig] : [])));
+  // Each handed sig maps to the job that holds it, the newest run's first.
+  const handed = new Map<string, string>();
+  for (const run of previous) {
+    if (!run.job || started - run.at >= 86_400_000) continue;
+    for (const slice of run.flagged ?? []) if (slice.handOff && slice.sig && !handed.has(slice.sig)) handed.set(slice.sig, run.job.id);
+  }
   // A precheck output with no n hands its fix to one job a day, as a hand-off sig does.
   const nSlice: FlaggedSlice[] = noN ? [{ kind: "no_sample_size", excerpt: NO_N_LINE, handOff: true, sig: `${duty.id}/n` }] : [];
   const handOffs = [...flagged.filter(slice => slice.handOff && slice.sig), ...nSlice];
-  if (handOffs.length) record.flagged = handOffs;
+  // The record keeps only the sigs this run hands to its job, so d7's `duplicateJobs` reads a job that a missed metric started as no second
+  // owner of a sig an earlier job holds: on 11-26 devops guy's d12 verify job read as a duplicate of d12/n.
+  if (handOffs.length) record.flagged = handOffs.filter(slice => !handed.has(slice.sig!));
+  const heldBy = [...new Set(handOffs.flatMap(slice => handed.get(slice.sig!) ?? []))];
   const acts = [...flagged, ...nSlice].some(slice => slice.item !== undefined || (slice.handOff && !(slice.sig && handed.has(slice.sig))));
   // A run that reads error only because a metric waits outside the precheck or on a box that is away, with every number it read on target,
   // has nothing a job can do.
   const waits = record.verdict === "error" && (record.waitsOn !== undefined || record.hostAway !== undefined) && Object.values(record.metrics).every(result => result.met);
   const idle = (record.verdict === "met" || waits) && !misses.length && !record.overrun && !acts;
-  return { record, brief: idle ? null : dutyJobBrief({ duty, chat: input.chat, at: started, measure: record.verdict === "error" ? `no measure (${record.summary})` : record.summary, findings, misses, record, boardApi: input.boardApi }) };
+  return { record, heldBy, brief: idle ? null : dutyJobBrief({ duty, chat: input.chat, at: started, measure: record.verdict === "error" ? `no measure (${record.summary})` : record.summary, findings, misses, record, boardApi: input.boardApi }) };
 }
 
 /** The duty job's brief, after today's `dutyJobBrief`, with the board and the report through the chat server instead of Prime's tools. */
