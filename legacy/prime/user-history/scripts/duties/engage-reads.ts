@@ -64,7 +64,9 @@ const DUTY_FILE = join(dirname(fileURLToPath(import.meta.url)), "engage-reads.du
  *   staging's /ops/watch-targets/health, the crawler's own count, which leaves out the rows the crawler refuses by design. Until 11-24 this read
  *   its own SQL over watch_targets, which counted 369 house-group tagged rows that paid_only refuses (crawl_unpaid_paused) and flagged a 5,547 min
  *   stall while the route read overdue_24h tagged 0.
- * - A source that failed fails the run: every metric it feeds (FEEDS below) reads unmeasured() and a source_error flag names it.
+ * - A source that failed fails the run: every metric it feeds (FEEDS below) reads missValue(), the runner's PLACEHOLDER, so the verdict calls it
+ *   not measured, and a source_error flag names it. Until 11-27 an at-least metric read 0 instead: at 00:00Z 11-27 every prod Postgres read
+ *   waited out SOURCE_DEADLINE_MS behind estate_pg_prod's 2 Grafana connections, and the run reported a capacity of 0 pages, which was no reading.
  * The schedule is daily (owner rule c66). The duty's timeoutMs 120000 is the runner's soft target, PRECHECK_TARGET_MS in src/shared/chat-duties.ts.
  */
 
@@ -140,7 +142,7 @@ export const STUCK_HOURS = 6;
 /** An active account answering at least this many lost-session redirects (lostSession) and no page in STUCK_HOURS is stuck on 302s; account 16 answered 10 in 24 h on 10-18. */
 export const STUCK_302S = 3;
 /**
- * The judged metrics each source feeds; a failed source makes each of them read unmeasured(). The staging sources feed only detail lines, so
+ * The judged metrics each source feeds; a failed source makes each of them read missValue(). The staging sources feed only detail lines, so
  * they fail the headline, the number a run is judged on, and an unread source never leaves the run green.
  */
 export const FEEDS: Readonly<Record<Source, readonly string[]>> = {
@@ -153,8 +155,6 @@ export const FEEDS: Readonly<Record<Source, readonly string[]>> = {
   "prod deep walks": ["deep_walk_ok_pct"],
   "prod stuck accounts": ["engage_accounts_stuck"],
 };
-/** The value of a metric a failed source feeds: 0 for an at-least metric (no pages counted, no walk reached), missValue() for an at-most one. */
-export const unmeasured = (metric: Pick<DutyMetric, "op" | "target">): number => metric.op === ">=" ? Math.min(0, metric.target - 1) : missValue(metric);
 
 /** Pages one prod account read on one full UTC day (YYYY-MM-DD). */
 export interface DayPages { day: string; accountId: number; pages: number }
@@ -609,10 +609,10 @@ export function report(data: EngageData, dutyMetrics: readonly DutyMetric[]): Pr
   const replaced: string[] = [];
   for (const metric of dutyMetrics) {
     if (!failed.has(metric.key) && Number.isFinite(metrics[metric.key])) continue;
-    metrics[metric.key] = unmeasured(metric);
+    metrics[metric.key] = missValue(metric);
     replaced.push(metric.key);
   }
-  if (replaced.length) flagged.push({ at, kind: "unmeasured", excerpt: `A source failed, so these read 0 (at least) or ${UNMEASURED} (at most) and miss: ${replaced.join(", ")}. Fix the read each source_error line names.`.slice(0, 300) });
+  if (replaced.length) flagged.push({ at, kind: "unmeasured", excerpt: `A source failed, so these read the placeholder ${UNMEASURED} (negative for an at-least target), not a measure: ${replaced.join(", ")}. Fix the read each source_error line names.`.slice(0, 300) });
   return { metrics, flagged, ...Object.keys(lastEventAt).length ? { lastEventAt, windowMs: { prod_capacity_pages_day: CAPACITY_WINDOW_MS } } : {} };
 }
 
