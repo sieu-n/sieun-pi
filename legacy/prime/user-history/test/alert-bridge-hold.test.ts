@@ -6,6 +6,7 @@
 // an obs deploy that changed crawler-prod-kafka-writer-lag reset its firing sets, they fired again an hour later, and the bridge paged again.
 // 11-19 22:23:41Z: Grafana's restart showed ci-jobs-waiting's 21:51:10Z fire, which its alertmanager had listed as the 17:16:10Z one, and the
 // bridge sent nothing. A new startsAt from before the bridge last listed the old one is a new fire, and one from after it is a reset's.
+// 11-27: polls 0.3 s after each tick of ci-history read every evaluation as older than the poll before, and three Normal rules stayed open.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -93,12 +94,12 @@ test("11-03: a deploy that resets a changed rule's firing sets holds them throug
   // 22:44:20Z the reload resets both sets to "Normal (Updated)" with no evaluation, so the next list lacks them.
   let list = await holdStillFiring([os, pg], [], states({ [uid]: ruleState(false, 0, { evaluatedAt: at("22:43:30") }) }),
     { since: at("22:43:45"), pending: pending(ruleList()) });
-  assert.deepEqual(list, [os, pg].map(alert => ({ ...alert, held: true })));
+  assert.deepEqual(list, [os, pg].map(alert => ({ ...alert, held: true, heldSince: at("22:43:45") })));
   state = advance(list, state, () => "crawler", at("22:44:25")).state;
   // 22:44:30Z the first evaluation after the reset puts both sets into Pending, where they wait out the rule's hour.
   list = await holdStillFiring(list, [], states({ [uid]: ruleState(false, 0, { pending: 2, evaluatedAt: at("22:44:30") }) }),
     { since: at("22:44:25"), pending: pending(ruleList(instances("instagram-census-os", "Pending"), instances("instagram-census-pg", "Pending"))) });
-  assert.deepEqual(list, [os, pg].map(alert => ({ ...alert, held: true })));
+  assert.deepEqual(list, [os, pg].map(alert => ({ ...alert, held: true, heldSince: at("22:43:45") })));
   state = advance(list, state, () => "crawler", at("22:44:55")).state;
   assert.equal(state.rules[key]!.resolvedAt, undefined);
   // 23:44:30Z both fire again with a new startsAt: the same incident, and the job that held it owes nothing.
@@ -125,10 +126,24 @@ test("a held set resolves at the first evaluation that leaves it Normal, and a h
   const set = (startsAt: string): FiringAlert => ({ ...alert("lag", startsAt, "f-a"), labels: { __alert_rule_uid__: "lag", alertname: "lag", group: "a" } });
   const old = set("2026-11-05T08:00:00.000Z");
   const none = { since: NOW - 30_000, pending: async () => new Set<string>() };
-  assert.deepEqual(await holdStillFiring([old], [], states({ lag: ruleState(false, 0, { evaluatedAt: NOW - 45_000 }) }), none), [{ ...old, held: true }]);
+  assert.deepEqual(await holdStillFiring([old], [], states({ lag: ruleState(false, 0, { evaluatedAt: NOW - 45_000 }) }), none), [{ ...old, held: true, heldSince: NOW - 30_000 }]);
   assert.deepEqual(await holdStillFiring([old], [], states({ lag: ruleState(false, 0, { evaluatedAt: NOW - 10_000 }) }), none), []);
   const again = set("2026-11-05T09:00:00.000Z");
   assert.deepEqual(await holdStillFiring([old], [again], states({ lag: ruleState(false, 1, { evaluatedAt: NOW - 45_000 }) }), none), [again]);
+});
+
+test("11-27: a held set resolves at the next tick although each poll starts just after the group's tick, as lastEvaluation reads the tick", async () => {
+  const at = (time: string) => Date.parse(`2026-11-27T${time}Z`);
+  const red = { ...alert("ci-dev-branch-warn-red", "2026-11-27T08:28:10.000Z"), labels: { __alert_rule_uid__: "ci-dev-branch-warn-red", alertname: "warn red", job: "linux (rest)" } };
+  // The 60 s group ticks at :10 and its evaluation ends about 2.4 s later, so a poll 0.3 s after a tick still reads the tick before.
+  const polls: [string, string][] = [["12:47:40.300", "12:47:10"], ["12:48:10.300", "12:47:10"], ["12:48:40.300", "12:48:10"], ["12:49:10.300", "12:48:10"], ["12:49:40.300", "12:49:10"]];
+  let list: FiringAlert[] = [red];
+  let since = at("12:47:10.300");
+  for (const [time, tick] of polls) {
+    list = await holdStillFiring(list, [], states({ "ci-dev-branch-warn-red": ruleState(false, 0, { evaluatedAt: at(tick) }) }), { since, pending: async () => new Set<string>() });
+    since = at(time);
+  }
+  assert.deepEqual(list, []);
 });
 
 test("11-05: a set the rule list writes with an empty label matches the alert list's set, which leaves the empty label out", () => {

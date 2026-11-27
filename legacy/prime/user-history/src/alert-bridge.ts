@@ -37,8 +37,11 @@ export const GRAFANA_ALERTS_PATH = "/api/alertmanager/grafana/api/v2/alerts?acti
 /** Every rule with its last evaluation and no alert instances: 527 KB for 309 rules on 10-19, against 1.3 MB with the instances. */
 export const GRAFANA_RULES_PATH = "/api/prometheus/grafana/api/v1/rules?limit_alerts=0";
 
-/** `held`: this poll's Grafana list lacked the alert, and `holdStillFiring` kept it because its rule still fires. */
-export interface FiringAlert { fingerprint: string; startsAt: string; alertname: string; labels: Record<string, string>; summary: string; url: string; values?: string; held?: true }
+/**
+ * `held`: this poll's Grafana list lacked the alert, and `holdStillFiring` kept it because its rule still fires. `heldSince`: when the bridge
+ * asked for the last list that held it, which stays the same through every poll that holds it.
+ */
+export interface FiringAlert { fingerprint: string; startsAt: string; alertname: string; labels: Record<string, string>; summary: string; url: string; values?: string; held?: true; heldSince?: number }
 /**
  * One firing label set of a rule, keyed in `Tracked.instances` by alertKey (fingerprint@startsAt). `seenAt` is when the bridge first listed
  * it, so a fire names the label sets it saw at or after the rule's `wokeAt` (`alertLine`). A state saved before 10-31 has none. `values` are
@@ -935,7 +938,9 @@ export async function readRuleStates(configFile: string): Promise<Map<string, Ru
  * 11-03 at 22:44:20Z the obs deploy of 63a4f6d6f2 changed crawler-prod-kafka-writer-lag, Grafana reset its 3 firing sets to "Normal
  * (Updated)", two went Pending at 22:44:30Z and fired again at 23:44:30Z at the same values, and the bridge paged the Crawler VP's triage job
  * at 23:45Z for a fault it already held, as it had on 11-02 at 17:53Z after the 16:49Z deploy of 195e3b808c. A missing alert whose fingerprint
- * the list holds with a new startsAt has ended, so it never stays beside the instance that replaced it.
+ * the list holds with a new startsAt has ended, so it never stays beside the instance that replaced it. A held alert waits for an evaluation
+ * since the last list that held it, not since the last list: Grafana's lastEvaluation is the group's tick, so on 11-27 a poll that started
+ * 0.3 s after each 60 s tick of ci-history read every evaluation as older than the poll before, and three Normal rules stayed open for 4 h.
  */
 export async function holdStillFiring(previous: readonly FiringAlert[] | null, current: FiringAlert[], states: () => Promise<ReadonlyMap<string, RuleState>>, reset?: ResetCheck): Promise<FiringAlert[]> {
   const listed = new Set(current.map(alertKey));
@@ -955,11 +960,11 @@ export async function holdStillFiring(previous: readonly FiringAlert[] | null, c
     if (rule === undefined) return false;
     if (rule.unevaluated || rule.alerting > (shown.get(ruleOf(alert)) ?? 0)) return true;
     if (!reset) return false;
-    if (rule.evaluatedAt < reset.since) return true;
+    if (rule.evaluatedAt < (alert.heldSince ?? reset.since)) return true;
     return rule.pending > 0 && (await pendingOf(alert)).has(setKey(alert.labels));
   };
   const held = await Promise.all(gone.map(fires));
-  return [...current, ...gone.flatMap((alert, index): FiringAlert[] => held[index] ? [{ ...alert, held: true }] : [])];
+  return [...current, ...gone.flatMap((alert, index): FiringAlert[] => held[index] ? [{ ...alert, held: true, ...reset ? { heldSince: alert.heldSince ?? reset.since } : {} }] : [])];
 }
 
 export async function readOwnersFor(configFile: string, home: string): Promise<OwnerMap | null> {
