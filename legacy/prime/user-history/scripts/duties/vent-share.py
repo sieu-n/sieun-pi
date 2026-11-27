@@ -54,7 +54,7 @@ GONE = ("removed", "gone")
 # Provider signatures. "strong" is a host or key name, which proves a direct call wherever it
 # sits. "sdk" is a client import, which proves a direct call only in a file with no Vent sign,
 # because stripe-node or openai over Vent keeps the import. The Vent integration each provider's
-# traffic lands under comes from tables.py (vent_integrations), not from this table.
+# traffic lands under comes from TABLES (vent_integrations), not from this table.
 P = {
     "zernio": dict(strong=r"zernio\.com|ZERNIO_API_KEY", sdk=r"(?!)"),
     "resend": dict(strong=r"api\.resend\.com|RESEND_API_KEY", sdk=r"@convex-dev/resend|from ['\"]resend['\"]"),
@@ -523,32 +523,28 @@ def traffic_day(token: str, day: int) -> list[dict]:
     return [dict(zip(names, r)) for r in zip(*frames[0]["data"]["values"])]
 
 
-# INTEGRATIONS sits in the tables package since auto-sns-agent 74c6429447 (2026-11-26) and in one tables.py before, so a
-# ref on either side of that split reads.
-TABLES = ("apps/vent/src/vent/tables/integrations.py", "apps/vent/src/vent/tables.py")
+# Vent's INTEGRATIONS table (auto-sns-agent 74c6429447 split tables.py into the tables package on 2026-11-26).
+TABLES = "apps/vent/src/vent/tables/integrations.py"
 # us-metal02's dev branch (c119), where work lands before main.
 TIP_REF = "origin/dev/sieun"
 
 
-def tables_path(ref: str) -> str | None:
-    """The file of TABLES that holds INTEGRATIONS at ref, or None when it holds neither."""
-    for path in TABLES:
-        if subprocess.run(["git", "cat-file", "-e", f"{ref}:{path}"], capture_output=True).returncode == 0:
-            return path
-    return None
+def has_tables(ref: str) -> bool:
+    """Whether ref holds TABLES."""
+    return subprocess.run(["git", "cat-file", "-e", f"{ref}:{TABLES}"], capture_output=True).returncode == 0
 
 
 def tables_ref() -> str | None:
     """The ref whose tables say what Vent serves: main, then dev/sieun, then the newest ci/ branch that has them."""
     newest_ci = git("for-each-ref", "--sort=-committerdate", "--format=%(refname:short)", "refs/remotes/origin/ci").split()
     for ref in ["origin/main", TIP_REF, *newest_ci]:
-        if tables_path(ref):
+        if has_tables(ref):
             return ref
     return None
 
 
 def vent_integrations(source: str) -> dict[str, str]:
-    """INTEGRATIONS in tables.py: each integration name and the secret env name Vent reads for it."""
+    """INTEGRATIONS in TABLES: each integration name and the secret env name Vent reads for it."""
     out: dict[str, str] = {}
     for node in ast.walk(ast.parse(source)):
         target = node.target if isinstance(node, ast.AnnAssign) else (node.targets[0] if isinstance(node, ast.Assign) else None)
@@ -632,7 +628,7 @@ def main() -> None:
             print(f"\n== traffic not read: {result['traffic']['error']}", file=sys.stderr)
     if a.traffic and rows is not None:
         ref = tables_ref()
-        integrations = vent_integrations(git("show", f"{ref}:{tables_path(ref)}")) if ref else {}
+        integrations = vent_integrations(git("show", f"{ref}:{TABLES}")) if ref else {}
         result["traffic"] = {"days": a.days, "rows": rows, "tables_ref": ref, "integrations": sorted(integrations),
                              "providers_without_integration": sorted({p for p in P if not integrations_for(p, integrations)})}
         print(f"\n== Vent integrations from {ref or 'no ref'}: {len(integrations)}; providers with none: {', '.join(result['traffic']['providers_without_integration'])}")
