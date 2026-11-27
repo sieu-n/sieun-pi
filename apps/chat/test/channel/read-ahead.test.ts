@@ -62,6 +62,20 @@ test("an agent at rest whose jobs step every 2 s is read at most twice in 3 min,
   assert.equal(at.length, reads);
 });
 
+test("reads of one item stay 2 in 3 min even when the timing log's 10 s batches pull them closer", async (t) => {
+  t.after(() => mock.timers.reset());
+  const { at, want, tick } = queue();
+  let updated = 1;
+  for (let step = 0; step < 150; step += 1) {
+    await want([{ id: "ag_seo", at: updated, status: "idle" }]);
+    updated += 1;
+    await tick(2_000);
+  }
+  // A line reaches the log up to 10 s after its read, so the log sees the reads as if 10 s closer.
+  const windows = at.map(start => at.filter(when => when >= start && when <= start + 180_000 + 10_000).length);
+  assert.ok(Math.max(...windows) <= 2, `reads at ${at.join(", ")} ms`);
+});
+
 test("an idle or failed one is read again only when its activity is newer than the last read", async (t) => {
   t.after(() => mock.timers.reset());
   const { read, want, tick } = queue();

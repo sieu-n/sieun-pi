@@ -16,10 +16,12 @@ const atRest = (status: RunStatus): boolean => status === "idle" || status === "
  * The least time between two reads ahead of one item. An agent at rest still moves its `updatedAt` at every step of its jobs and every turn
  * of its comm threads: on 11-26 between 05:00 and 09:14 UTC the owner's page read ag_seo's check-in 21 times in 3 min, and a box page read
  * VP of GTM's check-in, jobs and work thread 7 times each in 3 min while its jobs ran (requests/2026-11-26.jsonl). Agent factory asked for
- * at most 2 reads of a path in 3 min (p324). The open of a panel or a room reads it again behind what it shows, so a kept answer up to
- * 90 s old costs no wait unless it changed meanwhile.
+ * at most 2 reads of a path in 3 min (p324). A 90 s gap still let 3 reads into 3 min: a walk on 11-27 saw ag_seo's check-in read at 2.1,
+ * 91.8 and 181.8 s (~/work/p354-reread-walk), and the page posts its timing lines in 10 s batches, which can log 3 such reads closer still.
+ * At 100 s, 3 reads span 200 s, which stays over 3 min after that batching.
+ * The open of a panel or a room reads it again behind what it shows, so a kept answer up to 100 s old costs no wait unless it changed.
  */
-export const READ_AGAIN_MS = 90_000;
+export const READ_AGAIN_MS = 100_000;
 
 /**
  * Reads conversations and panels before the owner opens them, as many at once as the lane sends (client.ts `AHEAD_LANE`), so a first open

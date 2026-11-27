@@ -8,6 +8,7 @@
   import { toast } from "$lib/ui/toast.svelte";
   import { tooltip } from "$lib/ui/tooltip";
   import AccountPicker from "./AccountPicker.svelte";
+  import { READ_AGAIN_MS } from "$lib/api/read-ahead";
   import { accountsApi } from "./api";
   import { PROVIDER_LABEL, resetText, resolutionSentence, resolvedAccount, shownWindows, threadProvider, windowLabel } from "./model";
   import UsageMeters from "./UsageMeters.svelte";
@@ -78,22 +79,31 @@
   async function load(id: string | null, forModel: string | null): Promise<void> {
     try {
       const next = await accountsApi.view({ thread: id, model: forModel });
-      if (id === thread && forModel === modelId) {
+      if (id === threadId && forModel === modelId) {
         view = next;
         failed = false;
       }
     } catch {
-      if (id === thread && forModel === modelId) failed = true;
+      if (id === threadId && forModel === modelId) failed = true;
     }
   }
 
+  /**
+   * The thread by value. A parent passes `thread={agent.id}`, a getter that reads the whole live card, so an effect that read `thread` ran
+   * again at every new card: on 11-27 a walk of the live page read ag_devops-guy's accounts 25 times in 3 min (~/work/p354-reread-walk).
+   */
+  const threadId = $derived(thread);
+
+  /** The pool has no live event, so the chip reads it again every `READ_AGAIN_MS` while the page shows. */
   $effect(() => {
-    const id = thread;
+    const id = threadId;
     const forModel = modelId;
     view = null;
     failed = false;
     void load(id, forModel);
-    const timer = setInterval(() => void load(id, forModel), 60_000);
+    const timer = setInterval(() => {
+      if (document.visibilityState === "visible") void load(id, forModel);
+    }, READ_AGAIN_MS);
     return () => clearInterval(timer);
   });
 

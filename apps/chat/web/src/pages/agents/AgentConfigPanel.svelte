@@ -51,10 +51,11 @@
   const load = () => answer.refresh();
   /** A rename, archive or unarchive reads the page again, since an archived agent's card is not in the live list that updates the header. */
   $effect(() => onAgentsChanged(() => void load()));
-  // A new status or model on the live card reads the config again, so jobs, board and usage follow the run.
+  // A new status or model on the live card reads the config again, so jobs, board and usage follow the run. Sleeping counts as working,
+  // since a busy run flips between the two at every model call (read-ahead.ts `atRest`).
   let seen = "";
   $effect(() => {
-    const key = liveAgent ? `${liveAgent.status}|${liveAgent.model?.id ?? ""}|${liveAgent.thinkingLevel ?? ""}` : "";
+    const key = liveAgent ? `${liveAgent.status === "sleeping" ? "working" : liveAgent.status}|${liveAgent.model?.id ?? ""}|${liveAgent.thinkingLevel ?? ""}` : "";
     if (seen && key && key !== seen) void load();
     seen = key;
   });
