@@ -1,13 +1,13 @@
 /**
  * board.wake for pi threads. The wake files, the 30 s ticker, the CI reads and the `[wake]` texts are today's chat's own
  * (legacy/prime/user-history/src/wakes.ts), imported as they are, and the wakes live where a `WakeStore` keeps them (wakes-db.ts). This file
- * only names a thread's conversation as a wake "session", arms a wake from the board skill's request, and hands a due wake to pi-host as an
- * agent message from "board", which the turn wrappers mark as not the owner's.
+ * only names a thread's conversation as a wake "session", arms a wake from the board skill's request, hands a due wake to pi-host as an
+ * agent message from "board", which the turn wrappers mark as not the owner's, and holds that wake until the thread answered the message.
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  cacheWatch, type CheckResult, parseWake, readRunState, runCheck, runStamp, startWakes, type Wake, type WakeDeps,
+  cacheWatch, type CheckResult, parseWake, readRunState, runCheck, runStamp, startWakes, TICK_MS, type Wake, type WakeDeps,
 } from "../../../legacy/prime/user-history/src/wakes.ts";
 import type { Host } from "./host/types.ts";
 import { writeJson } from "./store.ts";
@@ -61,7 +61,7 @@ export type BoxCheckRun = (command: string, timeoutMs: number, thread: string) =
 
 export interface ThreadWakeOptions {
   wakes: WakeStore;
-  host: Pick<Host, "submit">;
+  host: Pick<Host, "submit" | "wait">;
   log: (line: string) => void;
   now?: () => number;
   everyMs?: number;
@@ -108,23 +108,62 @@ export function adoptOldWakes(dir: string, log: (line: string) => void): void {
   }
 }
 
-/** Starts the legacy ticker on the store's wakes, delivering to pi-host threads; returns its stop. */
+/** pi-host's answer that it holds no such thread or submission, so no answer to wait for will come. */
+const UNKNOWN = /\bno submission\b|\bNo (durable )?thread\b/i;
+
+/**
+ * Starts the legacy ticker on the store's wakes, delivering to pi-host threads; returns its stop.
+ *
+ * A wake that went out is held in the store until its thread answered the message that carries it (`WakeStore.hold`), so the step its note
+ * names keeps its owner while the message waits behind a busy thread's queue and while the thread reads it. The held wakes are watched
+ * again after a restart, at every beat while pi-host or its box is away, and let go when pi-host no longer knows the submission.
+ */
 export function startThreadWakes(options: ThreadWakeOptions): () => void {
-  options.wakes.adopt(options.log);
-  const stale = cacheWatch(options.log);
-  const files = options.wakes.files;
-  return startWakes({
-    dir: options.wakes.dir, ...(files ? { files } : {}), log: options.log, ...(options.now ? { now: options.now } : {}),
+  const { wakes, host, log } = options;
+  wakes.adopt(log);
+  const stale = cacheWatch(log);
+  const watching = new Set<string>();
+  const watch = (): void => {
+    for (const { id, wake, sent } of wakes.held()) {
+      const key = `${id}:${sent.submission}`;
+      if (watching.has(key)) continue;
+      watching.add(key);
+      void host.wait(wakeTarget(wake.session).thread, sent.submission).then(() => true, (error: unknown) => {
+        const unknown = UNKNOWN.test(error instanceof Error ? error.message : String(error));
+        if (unknown) log(`wakes: ${id} let go, ${String(error)}`);
+        return unknown;
+      }).then(async over => {
+        // A wake set again under the same id while this one was held is another wake, and stays.
+        if (over && wakes.held().some(held => held.id === id && held.sent.submission === sent.submission)) await wakes.remove(id);
+      }).catch((error: unknown) => log(`wakes: ${id} not let go: ${String(error)}`)).finally(() => watching.delete(key));
+    }
+  };
+  const stopWakes = startWakes({
+    dir: wakes.dir, log, ...(options.now ? { now: options.now } : {}),
+    files: {
+      ...wakes.files,
+      sent: async (id, submission) => {
+        // A wake to a removed job has no submission (pi-host answers `{dropped}`), so nothing holds it.
+        if (typeof submission !== "number") return wakes.remove(id);
+        await wakes.hold(id, { submission, at: (options.now ?? Date.now)() });
+        watch();
+      },
+    },
     check: options.check ?? boxCheck(options.checkOn ?? (() => undefined)),
     runState: options.runState ?? (on => readRunState(on, undefined, stale)),
     stamp: options.stamp ?? runStamp,
     deliver: async (session, text, _root, _kind, setAt) => {
       const { thread, conversation } = wakeTarget(session);
-      await options.host.submit(thread, {
+      const sent = await host.submit(thread, {
         ...(conversation !== 1 ? { conversation } : {}), text: options.expand?.(text) ?? text, whenBusy: "followUp", requestId: `wake:${session}:${setAt ?? 0}`,
         entry: { kind: "agent.message", data: { from: "board", via: "wake" } },
       });
       options.delivered?.(text);
+      return sent.submission;
     },
   }, options.everyMs);
+  watch();
+  const timer = setInterval(watch, options.everyMs ?? TICK_MS);
+  timer.unref();
+  return () => { stopWakes(); clearInterval(timer); };
 }

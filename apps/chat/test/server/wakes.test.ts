@@ -14,7 +14,7 @@ import type { SubmitInput } from "../../server/host/types.ts";
 import { ChatDb } from "../../server/chat-db.ts";
 import { JsonMove } from "../../server/json-move.ts";
 import { armWake, startThreadWakes, wakeSession, wakeTarget } from "../../server/wakes.ts";
-import { FolderWakes, WAKES, WakeRows, type WakeStore } from "../../server/wakes-db.ts";
+import { FolderWakes, owedWakesOf, WAKES, WakeRows, type WakeStore } from "../../server/wakes-db.ts";
 import { readConfig } from "../../server/config.ts";
 import { start } from "./helpers.ts";
 
@@ -22,29 +22,39 @@ const THREAD = "0f3c2a51-7d1e-4b8a-9c55-1d2e3f4a5b6c";
 const MIN = 60_000;
 
 /**
- * A temp data dir with its wakes, in the folder or, when APPS_CHAT_DB_KINDS names wakes, in its chat.sqlite, a host that records each
- * submit, and a waiter for the next one.
+ * A temp data dir with its wakes, in the folder or, when APPS_CHAT_DB_KINDS names wakes or `inDb` says so, in its chat.sqlite, a host that
+ * records each submit, and a waiter for the next one. The host answers each message at once, or with `busy` set only when `answer` is
+ * called, as a thread that works through its queue. `reopen` reads the wakes again as the next server process does.
  */
-function rig(t: { after(fn: () => Promise<void> | void): void }) {
+function rig(t: { after(fn: () => Promise<void> | void): void }, inDb = (readConfig([]).dbKinds ?? []).includes(WAKES.kind)) {
   const dir = mkdtempSync(join(tmpdir(), "apps-chat-wakes-"));
-  const inDb = (readConfig([]).dbKinds ?? []).includes(WAKES.kind);
   const chat = inDb ? new ChatDb(join(dir, "chat.sqlite"), { offThread: false }) : undefined;
   const move = chat ? new JsonMove(chat, dir, WAKES) : undefined;
   move?.open();
-  const wakes: WakeStore = chat && move ? new WakeRows(chat, move, join(dir, "wakes")) : new FolderWakes(join(dir, "wakes"));
+  const reopen = (): WakeStore => (chat && move ? new WakeRows(chat, move, join(dir, "wakes")) : new FolderWakes(join(dir, "wakes")));
+  const wakes = reopen();
   t.after(async () => {
     await move?.flushExports();
     await chat?.close();
     rmSync(dir, { recursive: true, force: true });
   });
   const sent: { thread: string; input: SubmitInput }[] = [];
-  const host = { submit: async (thread: string, input: SubmitInput) => { sent.push({ thread, input }); return { submission: sent.length, status: "placed" as const, ticket: { session: "", tree: "", place: { state: "none" as const } } }; } };
+  const answers: (() => void)[] = [];
+  const host = {
+    busy: false,
+    submit: async (thread: string, input: SubmitInput) => { sent.push({ thread, input }); return { submission: sent.length, status: "placed" as const, ticket: { session: "", tree: "", place: { state: "none" as const } } }; },
+    wait: async (_thread: string, submission: number) => {
+      if (host.busy) await new Promise<void>(done => answers.push(done));
+      return { id: submission, conversationId: 1, type: "input", status: "done" };
+    },
+  };
+  const answer = () => { host.busy = false; for (const done of answers.splice(0)) done(); };
   const until = async (count: number, ms = 10_000) => {
     const end = Date.now() + ms;
     while (sent.length < count && Date.now() < end) await new Promise(done => setTimeout(done, 20));
     assert.equal(sent.length, count, `expected ${count} wake sends, got ${sent.length}`);
   };
-  return { dir, wakes, sent, host, until };
+  return { dir, wakes, sent, host, until, answer, reopen };
 }
 
 test("a session key names the thread and its conversation", () => {
@@ -212,6 +222,57 @@ test("wakes set through the route survive a restart of the chat server", async t
   const gone = Date.now() + 10_000;
   while (left() > 1 && Date.now() < gone) await new Promise(done => setTimeout(done, 50));
   assert.equal(left(), 1, "the check wake waits on");
+});
+
+for (const store of ["folder", "chat.sqlite"] as const) {
+  test(`a wake that went out stays owed until its thread answered the message, across a restart too (${store})`, async t => {
+    // Devops guy on 11-28: the check wake whose note named p150 passed at 11:55:57Z, and its message waited in the busy thread's queue until
+    // 14:01:37Z. The wake was deleted at the send, so p150 read as a step nobody owned for 126 min, through a release at 13:12:07Z too.
+    const { dir, wakes, sent, host, until, answer, reopen } = rig(t, store === "chat.sqlite");
+    const note = "p150: linux (demo-unit) passed on dev/sieun-mac";
+    const notes = async (from: WakeStore) => (await from.owed(Date.now())).map(wake => wake.note);
+    const settled = async (read: () => boolean | Promise<boolean>) => {
+      const end = Date.now() + 10_000;
+      while (!(await read()) && Date.now() < end) await new Promise(done => setTimeout(done, 20));
+      assert.ok(await read());
+    };
+    host.busy = true;
+    await armWake(wakes, THREAD, { id: "p150-wake", on: { kind: "time", at: Date.now() - 1000 }, note });
+    const stop = startThreadWakes({ wakes, host, log: () => {}, everyMs: 50 });
+    await until(1);
+    await new Promise(done => setTimeout(done, 200));
+    assert.deepEqual(await notes(wakes), [note], "the step's wake is owed while its message waits in the thread");
+    if (store === "chat.sqlite") assert.deepEqual((await owedWakesOf(dir, Date.now(), [WAKES.kind])).map(wake => wake.note), [note], "a duty that reads the rows beside the server reads it owed");
+    assert.deepEqual(wakes.list(), [], "the ticker, the board and Remind me read it as gone");
+    assert.equal(wakes.get("p150-wake"), undefined);
+    stop();
+
+    const next = reopen();
+    const stopNext = startThreadWakes({ wakes: next, host, log: () => {}, everyMs: 50 });
+    t.after(stopNext);
+    await new Promise(done => setTimeout(done, 300));
+    assert.equal(sent.length, 1, "the message goes out once");
+    assert.deepEqual(await notes(next), [note], "the next server process still owes it");
+    answer();
+    await settled(async () => (await notes(next)).length === 0);
+    assert.deepEqual(next.held(), [], "the wake is gone once the thread answered");
+    assert.deepEqual(reopen().held(), []);
+  });
+}
+
+test("a wake set again under the id of a held one stays when the held one's message is answered", async t => {
+  const { wakes, host, until, answer } = rig(t);
+  host.busy = true;
+  await armWake(wakes, THREAD, { id: "remind", on: { kind: "time", at: Date.now() - 1000 }, note: "first" });
+  const stop = startThreadWakes({ wakes, host, log: () => {}, everyMs: 50 });
+  t.after(stop);
+  await until(1);
+  const end = Date.now() + 10_000;
+  while (!wakes.held().length && Date.now() < end) await new Promise(done => setTimeout(done, 20));
+  await armWake(wakes, THREAD, { id: "remind", on: { kind: "time", at: Date.now() + 60 * MIN }, note: "second" });
+  answer();
+  await new Promise(done => setTimeout(done, 300));
+  assert.deepEqual(wakes.list().map(({ wake }) => wake.note), ["second"]);
 });
 
 test("a job thread aliased to an agent gets its wakes itself, not the agent's work thread, and the route lists a conversation's pending wakes", async t => {

@@ -10,6 +10,7 @@ import { after, before, test } from "node:test";
 import type { AgentSummary, ChatBoard } from "../../web/src/lib/api/types.ts";
 import { FixtureHost } from "../../server/host/fixture.ts";
 import { StepOwners } from "../../server/step-owners.ts";
+import { startThreadWakes } from "../../server/wakes.ts";
 import type { DutyFile } from "../../server/boards.ts";
 import { start, until, type Running } from "./helpers.ts";
 
@@ -116,6 +117,38 @@ test("a chat whose run waits for its slot gets no notice into its queue", async 
   await until(async () => { await s.app.boards.owners.tick(now + 60_000); return mine().length; }, count => count === before + 1);
   assert.match(mine().at(-1)!.text, new RegExp(`${step} "Rotate the staging deploy key"`));
   await idle();
+});
+
+test("a step whose wake went off while its chat's turn ran keeps its owner until the chat answered the wake's message", async t => {
+  // Devops guy on 11-28: the check wake whose note named p150 passed at 11:55:57Z, and its message waited behind the thread's queue until
+  // 14:01:37Z. The wake was deleted at the send, so for 126 min p150 read as a step nobody owned to this app's notice, GET /steps, the
+  // check-in, d9 and the fable sweep, and the notice built at 11:56:24Z named it.
+  assert.ok(s.host instanceof FixtureHost);
+  const added = await s.send<{ board: ChatBoard }>("POST", `/api/agents/${vent.id}/board`, { actor: "agent", ops: [
+    { op: "plan_add", text: "The demo's store-country test passes again on the dev branch", status: "doing", waitFor: "a passing linux (demo-unit) run (check wake)" }] });
+  const step = added.body.board.plan.at(-1)!.id;
+  const stuck = async () => (await s.get<{ stuck: { id: string }[] }>(`/api/agents/${vent.id}/steps`)).stuck.map(item => item.id);
+  const wakeMessages = () => s.host instanceof FixtureHost ? s.host.threadsById.get(vent.thread)!.entries
+    .filter(entry => (entry.data as { via?: string } | undefined)?.via === "wake" && JSON.stringify(entry.model).includes(`${step}: linux`)).length : 0;
+  await idle();
+  s.host.wordMs = 50;
+  await s.host.submit(vent.thread, { text: "slow turn that works through its inbox" });
+  await until(async () => s.app.boards.rootRunning(vent.thread), running => running);
+  await s.app.boards.addWake(vent.id, { on: { kind: "time", at: Date.now() + 100 }, note: `${step}: linux (demo-unit) passed` });
+  assert.ok(!(await stuck()).includes(step), "a wake that has not gone off owns the step");
+  // The app's own ticker beats every 30 s; this one sends the due wake at once, through the same store and host.
+  const stop = startThreadWakes({ wakes: s.app.boards.db.wakes, host: s.host, log: () => {}, everyMs: 50 });
+  t.after(stop);
+  await until(async () => wakeMessages(), count => count === 1);
+  await new Promise(done => setTimeout(done, 200));
+  assert.ok(s.app.boards.rootRunning(vent.thread), "the turn still runs, so the wake's message waits behind it");
+  assert.ok(!(await stuck()).includes(step), "the step is not stuck while its wake's message waits in the chat's queue");
+  s.host.wordMs = 0;
+  await s.host.abort(vent.thread);
+  await until(async () => s.app.boards.db.wakes.held().length, count => count === 0);
+  await idle();
+  assert.ok((await stuck()).includes(step), "once the chat answered the wake and gave the step no owner, the step is stuck");
+  await s.send("POST", `/api/agents/${vent.id}/board`, { actor: "agent", ops: [{ op: "plan_update", id: step, status: "done" }] });
 });
 
 test("a chat is told while a duty run of it works", async () => {

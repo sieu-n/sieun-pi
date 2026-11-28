@@ -139,6 +139,11 @@ function endedLine(done: Extract<RunState, { done: true }>, setAt: number): stri
 export interface WakeFiles {
   list(): Promise<{ file: string; wake: Wake | null }[]>;
   remove(file: string): Promise<void>;
+  /**
+   * Takes a wake whose message went out, with what `deliver` answered, in place of `remove`. apps/chat keeps such a wake until its thread
+   * answered the message (apps/chat/server/wakes.ts), since the message can wait hours behind a busy thread's queue.
+   */
+  sent?(file: string, delivery: unknown): Promise<void>;
 }
 
 /** The `.json` wake files of `dir`, in name order. */
@@ -172,9 +177,10 @@ export interface WakeDeps {
    * Hands the session the text on disk (src/agent-outbox.ts), which delivers it in the background: through a stopped subagent's parent, and
    * after starting the tree `root` when the daemon does not find the session. The daemon finds a child only while its tree's worker runs
    * (10-14 13:37Z: the idle sweep evicted this job's tree and wake-probe-2's wake at 13:39Z was dropped). `kind` is outbox.ts's AgentKind
-   * "wake", written as a literal so this file imports nothing but spawn-host.ts, and apps/chat/server/wakes.ts imports it as it is.
+   * "wake", written as a literal so this file imports nothing but spawn-host.ts, and apps/chat/server/wakes.ts imports it as it is. Its
+   * answer goes to `files.sent` with each wake it carried.
    */
-  deliver: (session: string, text: string, root?: string, kind?: "wake", setAt?: number) => Promise<void>;
+  deliver: (session: string, text: string, root?: string, kind?: "wake", setAt?: number) => Promise<unknown>;
   /**
    * Called after each run read and each send, so TICKED shows a tick that is still moving. 10-15 12:16 to 12:35Z each send timed out after
    * 30 s and a tick with 5 sessions due took over 2.5 min, so TICKED aged past WAKE_LATE_MS while the tick ran and board.wake refused everywhere.
@@ -280,8 +286,8 @@ export class Wakes {
     try {
       const text = wakes.map(({ wake, state, check }) => wakeText(wake, state, now, check)).join("\n");
       const root = wakes.find(({ wake }) => wake.root)?.wake.root;
-      await this.deps.deliver(session, text, root, "wake", Math.max(...wakes.map(({ wake }) => wake.since)));
-      for (const { file } of wakes) await this.files.remove(file);
+      const delivery = await this.deps.deliver(session, text, root, "wake", Math.max(...wakes.map(({ wake }) => wake.since)));
+      for (const { file } of wakes) await (this.files.sent ? this.files.sent(file, delivery) : this.files.remove(file));
       this.deps.log(`wakes: woke ${session} for ${what}, waited ${Math.round((now - Math.min(...wakes.map(({ wake }) => wake.since))) / 60_000)} min, queued ${Math.round((this.now() - now) / 1000)} s after the tick began`);
       return true;
     } catch (error) {
