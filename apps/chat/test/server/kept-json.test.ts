@@ -181,6 +181,7 @@ test("a relay's feed cursor kept in chat.sqlite answers its welcome and moves wi
   const client = new RelayHost({ box: "mac", url: relay.url, token: "token", dataDir: data, redialWait: () => 20 });
   client.kept = kept;
   client.onFeed = async () => {};
+  const began = Date.now();
   try {
     client.start();
     await until(async () => client.state().state, state => state === "up");
@@ -188,7 +189,11 @@ test("a relay's feed cursor kept in chat.sqlite answers its welcome and moves wi
     relay.feed({ seq: 8, thread: "t", conversation: 1, entry: 8, toolCallId: "c8", toolName: "send_message", requestId: "m:t:c8", text: "x", at: 1 });
     await until(async () => relay.acks, acks => acks.includes(8));
     await chat.written();
-    assert.deepEqual(new KeptJson(chat, CACHE_KIND).read("relay/mac.json"), { feedAfter: 8 });
+    // The doc holds the box's last contact beside the cursor since 328ee263c, which this test read as a whole doc of the cursor alone.
+    const saved = new KeptJson(chat, CACHE_KIND).read("relay/mac.json") as { feedAfter: number; lastContactAt?: number };
+    assert.equal(saved.feedAfter, 8);
+    assert.ok(saved.lastContactAt !== undefined && saved.lastContactAt >= began, `the box's last contact is kept with the cursor: ${JSON.stringify(saved)}`);
+    assert.deepEqual(Object.keys(saved).sort(), ["feedAfter", "lastContactAt"]);
   } finally {
     await client.close();
     await relay.close();
