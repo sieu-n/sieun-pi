@@ -557,9 +557,12 @@ test("19b a row whose refresh Anthropic refuses leads with that answer and its t
   await expect(page.getByRole("button", { name: "Refresh all" })).toBeEnabled({ timeout: 15_000 });
   const refusedLine = await refresh(refused);
   await expect(refusedLine.getByTestId("account-read-failed")).toHaveText(new RegExp(`^403 at ${clock}$`));
-  const cell = (await refusedLine.getByTestId("account-status").boundingBox())!;
-  const badge = (await refusedLine.getByTestId("account-status").getByText("Refused", { exact: true }).boundingBox())!;
-  expect(badge.x + badge.width, "the Refused badge fits in the status cell beside the failed read's tag").toBeLessThanOrEqual(cell.x + cell.width);
+  for (const line of [staleLine, refusedLine]) {
+    const cut = await line.evaluate(row => [...row.querySelectorAll<HTMLElement>(".plan, [data-testid=account-status], .tag")]
+      .filter(el => el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1 || el.getBoundingClientRect().right > el.closest<HTMLElement>("[data-testid=account-status], .plan")!.getBoundingClientRect().right + 1)
+      .map(el => el.textContent));
+    expect(cut, "the plan, the failed read's tag and the Refused badge each show whole").toEqual([]);
+  }
   await refusedLine.getByTestId("account-status").hover();
   await expect(tip).toContainText(new RegExp(`^Usage read at ${clock} failed\\. Anthropic answered 403: OAuth authentication is currently not allowed for this organization\\.`));
 });

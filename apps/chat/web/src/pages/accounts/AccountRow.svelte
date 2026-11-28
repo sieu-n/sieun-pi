@@ -143,7 +143,7 @@
   .nums { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-2); }
   .pct { color: var(--text-standard); font: var(--text-caption); font-weight: 500; }
   .reset { overflow: hidden; color: var(--text-subtle); font: var(--text-caption); text-overflow: ellipsis; white-space: nowrap; }
-  .status { display: flex; align-self: stretch; align-items: center; gap: var(--space-1-5); min-width: 0; overflow: hidden; white-space: nowrap; font: var(--text-caption); }
+  .status { display: flex; flex-wrap: wrap; align-self: stretch; align-content: center; align-items: center; gap: 0 var(--space-1-5); min-width: 0; overflow: hidden; white-space: nowrap; font: var(--text-caption); }
   .tag { display: inline-flex; align-items: center; gap: 5px; color: var(--text-standard); }
   .tag::before { content: ""; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--text-subtle); }
   .tag.accent::before { background: var(--affordance-accent-prominent); }
