@@ -9,6 +9,8 @@ import { HARNESS_AGENT, expect, resetFixture, test } from "./helpers";
 const AGENT = `/api/agents/${HARNESS_AGENT}`;
 const panelReads = ["board", "duties", "check-in", "agents", "config"].map((name) => `${AGENT}/${name}`);
 const held = /\/api\/(agents|threads)\/[^/]+\/(board|duties|check-in|agents|config|for-me)(\?.*)?$/;
+/** The reads the socket keeps current with its board and duties events, whose open reads nothing while it stays open. */
+const live = ["board", "duties"].map((name) => `${AGENT}/${name}`);
 const settle = (page: import("@playwright/test").Page) => page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 50)));
 
 // Other board specs on this worker's server answer t1 and pause duties, so each test starts from the seed.
@@ -34,8 +36,12 @@ test("an agent's page and its board with duties and check-in show with no call i
   await expect(page.getByRole("region", { name: "For you" })).toContainText("Pick the day for the production cutover.");
   await expect(page.getByRole("region", { name: "Duties" })).toContainText("Relay uptime");
   await expect(page.getByRole("region", { name: "Check-in" })).toContainText("Check-in every");
-  // Each open asked for a refresh, and the screen filled while those calls hung.
-  for (const path of panelReads) expect(asked).toContain(path);
+  // Each open asked for a refresh, and the screen filled while those calls hung. The socket kept the board and duties current since their
+  // reads ahead, so their opens asked for nothing.
+  for (const path of panelReads) {
+    if (live.includes(path)) expect(asked).not.toContain(path);
+    else expect(asked).toContain(path);
+  }
 });
 
 test("a panel read ahead and its unchanged refresh are logged as background", async ({ page }) => {
@@ -54,7 +60,7 @@ test("a panel read ahead and its unchanged refresh are logged as background", as
   await page.goto("/#/agents");
   const before = await ahead;
   await settle(page);
-  const refreshed = Promise.all(reads.map(answer));
+  const refreshed = Promise.all(reads.map((path) => (live.includes(path) ? Promise.resolve(before[reads.indexOf(path)]!) : answer(path))));
   await page.evaluate((hash) => { location.hash = hash; }, `#/board/${HARNESS_AGENT}`);
   await expect(page.getByRole("region", { name: "Check-in" })).toContainText("Check-in every");
   const after = await refreshed;
@@ -67,8 +73,8 @@ test("a panel read ahead and its unchanged refresh are logged as background", as
   // A running job's time moves with its work thread (threads.ts jobTime), and a turn an earlier spec on this server started there, such as
   // duties.spec's Add duty DM, may still answer, so the jobs answer may change between the two reads; such a refresh is one he waited for.
   reads.forEach((path, i) => {
-    const refresh = before[i] === after[i] ? "shown" : "waited";
-    expect(samples.filter((s) => s.p === path).map((s) => s.bg ?? "waited"), path).toEqual(["ahead", refresh]);
+    const refresh = live.includes(path) ? [] : [before[i] === after[i] ? "shown" : "waited"];
+    expect(samples.filter((s) => s.p === path).map((s) => s.bg ?? "waited"), path).toEqual(["ahead", ...refresh]);
   });
   expect(before[0], "the board answer stays the same").toBe(after[0]);
 });
@@ -92,4 +98,27 @@ test("a reload shows the board, its duties and check-in from the answers the las
   await expect(page.getByRole("region", { name: "Duties" })).toContainText("Relay uptime");
   await expect(page.getByRole("region", { name: "Check-in" })).toContainText("Check-in every");
   await expect.poll(() => asked).toContain(`${AGENT}/board`);
+});
+
+test("a board the socket kept current opens again with no read of it or its duties, and shows a step added while it was closed", async ({ page, request, chatServer }) => {
+  // On 11-28 each open of #sw-factory-build read agent factory's board (122 KB with br) and duties again, all unchanged, and his read mark
+  // waited 1.5 to 1.9 s behind their bytes (~/work/p155-own-waits/summary.md).
+  const read = Promise.all(live.map((path) => page.waitForResponse((r) => new URL(r.url()).pathname === path, { timeout: 20_000 })));
+  await page.goto(`/#/board/${HARNESS_AGENT}`);
+  await read;
+  await expect(page.getByRole("region", { name: "Duties" })).toContainText("Relay uptime");
+  await page.evaluate(() => { location.hash = "#/agents"; });
+  await expect(page.getByRole("region", { name: "Duties" })).toBeHidden();
+
+  const asked: string[] = [];
+  page.on("request", (r) => {
+    if (r.method() === "GET") asked.push(new URL(r.url()).pathname);
+  });
+  const step = "Move the night alerts to the pager channel.";
+  expect((await request.post(`${chatServer}${AGENT}/board`, { data: { actor: "agent", ops: [{ op: "plan_add", text: step }] } })).ok()).toBe(true);
+  await page.evaluate((hash) => { location.hash = hash; }, `#/board/${HARNESS_AGENT}`);
+  await expect(page.getByText(step).first()).toBeVisible();
+  await expect(page.getByRole("region", { name: "Duties" })).toContainText("Relay uptime");
+  await page.waitForTimeout(500);
+  expect(asked.filter((path) => live.includes(path))).toEqual([]);
 });

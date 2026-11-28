@@ -138,10 +138,14 @@ export class Kept<T> {
    * looks at the kept answer, which must not make the derived or effect that opens it follow it: a board store made in a derived was made
    * again by each board event and each write's answer, and each new store read the board. On 11-23 at 14:23 UTC such a read waited in the
    * lane behind the owner's board write and then counted as 1,644 ms of his wait (~/work/p231-slow-calls/summary.md).
+   *
+   * A `live` read the socket kept current since its last answer reads nothing: its events brought every change. On 11-28 each open of
+   * #sw-factory-build read agent factory's board again, 122 KB with br, and its duties, 21 KB; 50 board and duties refreshes that day
+   * came back unchanged, and his read mark waited 1.5 to 1.9 s behind their bytes on 5 of 5 opens (~/work/p155-own-waits/summary.md).
    */
   open(): () => void {
     this.views += 1;
-    untrack(() => void this.read());
+    if (!(this.of.live && this.current)) untrack(() => void this.read());
     return () => void (this.views -= 1);
   }
 
