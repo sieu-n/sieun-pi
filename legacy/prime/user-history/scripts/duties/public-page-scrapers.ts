@@ -16,6 +16,8 @@ import { type Asn, asnOf, isHosting } from "./ip-asn.ts";
  *   ranges or passes a forward-confirmed reverse DNS check.
  * - `crawler_shed_min`: minutes in which the prod crawler answered SHED_MIN_503 or more public (anonymous) /api/media calls with 503.
  * - `real_user_image_ok_pct`: the share of real users' /api/img origin calls answered without a 5xx.
+ * - `route_jump_groups`: route groups whose origin calls in the 24 h, every client included, passed JUMP_RATIO times their median of the 7 days
+ *   before, each flagged with its top callers. The drain rows carry no response size, so bytes per group are not measured.
  * On 10-28 and 10-29 a scraper on about 11,000 IPs loaded /profile pages and then pulled every post image through /api/img with the referer
  * https://virev.ai/ and old Windows Chrome UAs, 78% of /api/img origin calls on 10-29, so the crawler shed and real users lost images
  * (~/work/img-scraper/traffic/NOTES.md). The routes come from ~/work/public-page-scrapers/scope.md.
@@ -60,6 +62,14 @@ export const SHED_MIN_503 = 10;
  * major seen was a poor anchor, because one fake UA said Chrome 157; 10 below the most used major puts the line at 139 or 140, inside that gap.
  */
 export const CHROME_LAG = 10;
+/**
+ * measured: replay of the prod drain from 10-30 to 11-27 (22 days judged against the 7 before each): across route groups whose 7-day median
+ * was 300+ origin calls, a day over its median read 3.1x at p90, and the 11 group days over 3x were real surges, such as virev-sitemap-warm on
+ * us-metal02 with 8,623 creator_list calls on 11-17 and bingbot plus OAI-SearchBot with 7,800 tool_result calls on 11-26 against 751.
+ */
+export const JUMP_RATIO = 3;
+/** measured: in the same replay the biggest excess of a small group over its median was 113 calls (public_tools_api 11-08) and the smallest of a real surge 443 (tool_result 11-15). */
+export const JUMP_FLOOR = 300;
 
 /** The search engines we want, with where each publishes its crawler IPs, the prefixes it lists only on a help page, or the reverse DNS names its crawler IPs resolve to. */
 export interface Engine { name: string; ua: RegExp; ranges?: readonly string[]; cidrs?: readonly string[]; rdns?: RegExp }
@@ -146,7 +156,11 @@ export function hostingBrowser(verdict: Verdict, asn: Asn | undefined): Verdict 
 const pct = (part: number, whole: number): number => Math.round((part / whole) * 1000) / 10;
 const utcMin = (ms: number): string => `${new Date(ms).toISOString().slice(5, 16).replace("T", " ")}Z`;
 
+/** Origin calls of one route group in the 24 h window `day` days before the run's window (0 is the run's own 24 h), every client included. */
+export interface DayCalls { route: string; day: number; calls: number }
 export interface Inputs { rows: readonly Row[] | Error; shed: readonly { minute: number; s503: number }[] | Error; verify: Verify; errors: readonly string[]; end: number;
+  /** The last 8 days of origin calls per route group, for `route_jump_groups`; absent leaves that metric unmeasured. */
+  days?: readonly DayCalls[] | Error;
   /** The network of each IP whose calls classify() reads as human; a browser UA from a hosting network counts as automated. */
   asns?: ReadonlyMap<string, Asn> }
 
@@ -158,6 +172,11 @@ export function scrapers(input: Inputs): PrecheckOutput {
   const flagged: FlaggedSlice[] = input.errors.map(excerpt => ({ at, kind: "source_error", excerpt: excerpt.slice(0, 600) }));
   if (input.rows instanceof Error) flagged.push({ at, kind: "source_error", excerpt: `search requests: ${input.rows.message}`.slice(0, 600) });
   else summarize(input.rows, input.verify, input.asns ?? new Map(), at, metrics, flagged, n);
+  if (input.days instanceof Error) {
+    n.route_jump_groups = 0;
+    flagged.push({ at, kind: "source_error", excerpt: `route group days: ${input.days.message}`.slice(0, 600) });
+  }
+  else if (input.days) routeJumps(input.days, input.rows instanceof Error ? [] : input.rows, input.verify, input.asns ?? new Map(), at, metrics, flagged, n);
   if (input.shed instanceof Error) flagged.push({ at, kind: "source_error", excerpt: `crawler 503s: ${input.shed.message}`.slice(0, 600) });
   else {
     const minutes = input.shed.filter(minute => minute.s503 >= SHED_MIN_503).sort((a, b) => a.minute - b.minute);
@@ -167,7 +186,7 @@ export function scrapers(input: Inputs): PrecheckOutput {
     flagged.push({ at, kind: "reading", item: "crawler_shed_min", excerpt: `The prod crawler answered ${SHED_MIN_503}+ anonymous /api/media calls with 503 in ${minutes.length} minutes ` +
       `of the 24 h${minutes.length ? `, first ${utcMin(minutes[0]!.minute)}, last ${utcMin(minutes.at(-1)!.minute)}, worst ${worst.join(", ")}` : ""} (caddy access log on us-metal01).` });
   }
-  return { metrics, n, flagged, windowMs: { scraper_share_pct: DAY, crawler_shed_min: DAY, real_user_image_ok_pct: DAY } };
+  return { metrics, n, flagged, windowMs: { scraper_share_pct: DAY, crawler_shed_min: DAY, real_user_image_ok_pct: DAY, route_jump_groups: DAY } };
 }
 
 function summarize(rows: readonly Row[], verify: Verify, asns: ReadonlyMap<string, Asn>, at: number, metrics: Record<string, number>, flagged: FlaggedSlice[], n: Record<string, number>): void {
@@ -220,6 +239,59 @@ function summarize(rows: readonly Row[], verify: Verify, asns: ReadonlyMap<strin
   }
 }
 
+const median = (values: readonly number[]): number => {
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = sorted.length >> 1;
+  return sorted.length % 2 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
+};
+
+/** Who made a route group's origin calls in the 24 h, by verdict and UA family, so a jump names its caller whether it is a scraper, an engine or our own box. */
+function callers(rows: readonly Row[], route: string, verify: Verify, asns: ReadonlyMap<string, Asn>): string {
+  const typical = typicalChrome(rows);
+  const groups = new Map<string, { calls: number; ips: Map<string, number>; refs: Map<string, number> }>();
+  for (const row of rows) {
+    if (!row.origin || row.route !== route) continue;
+    const verdict = hostingBrowser(classify(row, typical, verify), asns.get(row.ip));
+    const key = verdict.kind === "human" ? `people ${uaFamily(row.ua)}` : `${verdict.kind === "wanted" ? verdict.who : "automated"} UA ${row.ua.slice(0, 100) || "(empty)"}`;
+    const group = groups.get(key) ?? { calls: 0, ips: new Map(), refs: new Map() };
+    group.calls += row.calls;
+    group.ips.set(row.ip, (group.ips.get(row.ip) ?? 0) + row.calls);
+    const ref = row.refk === "page" ? "a virev.ai page" : row.refk === "none" ? "none" : row.ref;
+    group.refs.set(ref, (group.refs.get(ref) ?? 0) + row.calls);
+    groups.set(key, group);
+  }
+  const top = (counts: Map<string, number>): string => [...counts].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "";
+  return [...groups].sort((a, b) => b[1].calls - a[1].calls).slice(0, 3)
+    .map(([key, group]) => `${key} ${group.calls} calls from ${group.ips.size} IPs (most ${top(group.ips)}), referer mostly ${top(group.refs).slice(0, 80)}`).join("; ");
+}
+
+/** `route_jump_groups`: route groups whose origin calls in the 24 h passed JUMP_RATIO times their median of the 7 days before and JUMP_FLOOR more calls. */
+export function routeJumps(days: readonly DayCalls[], rows: readonly Row[], verify: Verify, asns: ReadonlyMap<string, Asn>, at: number, metrics: Record<string, number>,
+  flagged: FlaggedSlice[], n: Record<string, number>): void {
+  if (!days.some(day => day.day > 0 && day.calls > 0)) {
+    n.route_jump_groups = 0;
+    flagged.push({ at, kind: "source_error", excerpt: "otel.otel_logs holds no origin call to the public routes in the 7 days before the 24 h, so route_jump_groups has no median to read against" });
+    return;
+  }
+  const lines: string[] = [];
+  let jumps = 0;
+  n.route_jump_groups = 0;
+  for (const [route] of ROUTES) {
+    const calls = (day: number): number => days.filter(row => row.route === route && row.day === day).reduce((sum, row) => sum + row.calls, 0);
+    const today = calls(0), base = median([1, 2, 3, 4, 5, 6, 7].map(calls));
+    n.route_jump_groups! += today;
+    const ratio = base ? Math.round((today / base) * 10) / 10 : null;
+    lines.push(`${route} ${today}/${base}`);
+    if (today <= JUMP_RATIO * base || today - base < JUMP_FLOOR) continue;
+    jumps++;
+    flagged.push({ at, kind: "route_jump", item: "route_jump_groups", sig: `route_jump ${route}`, excerpt: (`${route}: ${today} origin calls in the 24 h against a median of ${base} a day ` +
+      `over the 7 days before (${ratio === null ? "none before" : `${ratio}x`}); callers ${callers(rows, route, verify, asns) || "not in the 24 h rows"}`).slice(0, 600) });
+  }
+  metrics.route_jump_groups = jumps;
+  flagged.push({ at, kind: "reading", item: "route_jump_groups", excerpt: (`Origin calls per route group, the 24 h against its 7-day median, every client included: ${lines.join(", ")}. ` +
+    "Bytes per route group are not measured, because the Vercel drain rows carry no response size.").slice(0, 600) });
+}
+
 const sqlText = (text: string): string => `'${text.replaceAll("\\", "\\\\").replaceAll("'", "\\'")}'`;
 const window = (end: number): string => `Timestamp > fromUnixTimestamp64Milli(${end - DAY}) AND Timestamp <= fromUnixTimestamp64Milli(${end})`;
 
@@ -241,6 +313,21 @@ export function requestsSql(end: number): string {
       AND LogAttributes['vercel.proxy.path'] != '' AND match(LogAttributes['vercel.proxy.path'], ${sqlText(any)})
     GROUP BY rid))
 WHERE route != '' GROUP BY route, refk, ua, ip, status, origin`;
+}
+
+/** Origin calls per route group in each of the 8 24 h windows before `end` (day 0 is the newest), each request counted once by its Vercel request id. */
+export function daysSql(end: number): string {
+  const any = ROUTES.map(([, pattern]) => `(?:${pattern})`).join("|");
+  const route = `multiIf(${ROUTES.map(([name, pattern]) => `match(path, ${sqlText(pattern)}), '${name}'`).join(", ")}, '')`;
+  return `SELECT route, intDiv(${end} - ts, ${DAY}) AS day, count() AS calls FROM (
+  SELECT ${route} AS route, ts FROM (SELECT LogAttributes['vercel.requestId'] AS rid, any(LogAttributes['vercel.proxy.path']) AS path, max(toUnixTimestamp64Milli(Timestamp)) AS ts,
+      anyIf(LogAttributes['vercel.proxy.vercelCache'], LogAttributes['vercel.proxy.vercelCache'] != '') AS cache,
+      anyIf(LogAttributes['vercel.proxy.wafAction'], LogAttributes['vercel.proxy.wafAction'] != '') AS waf
+    FROM otel.otel_logs WHERE ServiceName = 'search' AND ResourceAttributes['deployment.environment.name'] = 'production'
+      AND Timestamp > fromUnixTimestamp64Milli(${end - 8 * DAY}) AND Timestamp <= fromUnixTimestamp64Milli(${end})
+      AND LogAttributes['vercel.proxy.path'] != '' AND match(LogAttributes['vercel.proxy.path'], ${sqlText(any)})
+    GROUP BY rid HAVING cache != 'HIT' AND waf NOT IN ('deny', 'challenge')))
+WHERE route != '' AND ts <= ${end} GROUP BY route, day`;
 }
 
 /** The prod crawler's 503s to anonymous /api/media calls per minute, from its caddy access log. */
@@ -313,9 +400,10 @@ export function humanIps(rows: readonly Row[], verify: Verify): Set<string> {
 
 export async function measure(query: DsQuery, end: number, signal: AbortSignal): Promise<PrecheckOutput> {
   const asError = (error: unknown): Error => error instanceof Error ? error : new Error(String(error));
-  const [raw, shed] = await Promise.all([
+  const [raw, shed, days] = await Promise.all([
     sqlRows(query, CLICKHOUSE, requestsSql(end)).then(found => found, asError),
     sqlRows(query, CLICKHOUSE, shedSql(end)).then(found => found.map(row => ({ minute: Number(row.minute), s503: Number(row.s503) })), asError),
+    sqlRows(query, CLICKHOUSE, daysSql(end)).then(found => found.map((row): DayCalls => ({ route: String(row.route), day: Number(row.day), calls: Number(row.calls) })), asError),
   ]);
   const rows = raw instanceof Error ? raw : raw.map((row): Row => ({ route: String(row.route), refk: String(row.refk), ref: String(row.ref ?? ""), ua: String(row.ua ?? ""),
     ip: String(row.ip ?? ""), status: Number(row.status), origin: Boolean(Number(row.origin)), calls: Number(row.calls), last: Number(row.last) }));
@@ -325,7 +413,7 @@ export async function measure(query: DsQuery, end: number, signal: AbortSignal):
     errors.push(`whois.cymru.com: ${asError(error).message}, so no browser UA counts as hosting`);
     return new Map<string, Asn>();
   });
-  return scrapers({ rows, shed, verify, errors, end, asns });
+  return scrapers({ rows, shed, verify, errors, end, asns, days });
 }
 
 async function main(): Promise<void> {

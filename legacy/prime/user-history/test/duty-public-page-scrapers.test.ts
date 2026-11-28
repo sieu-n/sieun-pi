@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { classify, ENGINES, humanIps, inRanges, rangeList, requestsSql, ROUTES, routeOf, type Row, scrapers, SHED_MIN_503, typicalChrome, type Verify, verifier } from "../scripts/duties/public-page-scrapers.ts";
+import { classify, daysSql, ENGINES, humanIps, JUMP_FLOOR, JUMP_RATIO, inRanges, rangeList, requestsSql, ROUTES, routeOf, type Row, scrapers, SHED_MIN_503, typicalChrome, type Verify, verifier } from "../scripts/duties/public-page-scrapers.ts";
 import { type DutyMetric, judge } from "../src/shared/chat-duties.ts";
 import { DAY } from "../scripts/duties/estate-reads.ts";
 import { type Asn, isHosting, parseCymru } from "../scripts/duties/ip-asn.ts";
@@ -89,7 +89,7 @@ test("the 10-29 readings miss every target and a 10-27 day meets them", () => {
   assert.match(scraped.flagged!.find(slice => slice.item === "scraper_share_pct" && slice.kind === "reading")!.excerpt, /denied 50 more before origin \(img 50\)/);
   assert.match(scraped.flagged!.find(slice => slice.kind === "scraper_pattern")!.excerpt, /bare origin .*: 300 origin calls from 1 IPs/);
   assert.equal(judge(duty.metrics, scraped).verdict, "missed");
-  const quiet = scrapers({ end: 1, errors: [], verify: googleOnly, shed: [{ minute: 60_000, s503: 37 }],
+  const quiet = scrapers({ end: 1, errors: [], verify: googleOnly, shed: [{ minute: 60_000, s503: 37 }], days: [0, 1, 2, 3, 4, 5, 6, 7].map(day => ({ route: "img", day, calls: 1000 })),
     rows: [row({ calls: 996 }), row({ calls: 4, status: 503 }), row({ refk: "bare_self", ref: "https://virev.ai/", ua: WIN(133), calls: 100 })] });
   assert.equal(judge(duty.metrics, quiet).verdict, "met");
 });
@@ -237,4 +237,19 @@ test("the daily share counts a browser UA from a hosting network as automated, a
   assert.equal(output.metrics.scraper_share_pct, 30);
   assert.match(output.flagged!.find(slice => slice.kind === "scraper_pattern")!.excerpt, /browser UA from a hosting network \(AS14061\).*30 origin calls from 1 IPs/);
   assert.equal(scrapers({ end: 1, errors: [], verify: googleOnly, shed: [], rows }).metrics.scraper_share_pct, 0, "with no network lookup the calls stay a person's");
+});
+
+test("a route group whose origin calls jump past its 7-day median is flagged with its caller, our own box included (11-17 sitemap warm)", () => {
+  const week = [1, 2, 3, 4, 5, 6, 7].flatMap(day => [{ route: "creator_list", day, calls: 2000 }, { route: "use_cases", day, calls: 3 }]);
+  const warm = row({ route: "creator_list", refk: "none", ref: "", ua: "virev-sitemap-warm (+https://virev.ai)", ip: "155.254.27.166", calls: 8600 });
+  const days = [...week, { route: "creator_list", day: 0, calls: 2000 * JUMP_RATIO + 2600 }, { route: "use_cases", day: 0, calls: 18 }];
+  const output = scrapers({ end: 8 * DAY, errors: [], verify: googleOnly, shed: [], rows: [warm, row({ route: "creator_list", calls: 2000 })], days });
+  assert.equal(output.metrics.route_jump_groups, 1, "use_cases at 6x stays under the floor");
+  assert.ok(18 - 3 < JUMP_FLOOR);
+  assert.match(output.flagged!.find(slice => slice.kind === "route_jump")!.excerpt, /^creator_list: 8600 origin calls .* median of 2000 .*our own box UA virev-sitemap-warm \(\+https:\/\/virev\.ai\) 8600 calls from 1 IPs \(most 155\.254\.27\.166\)/);
+  assert.match(output.flagged!.find(slice => slice.item === "route_jump_groups" && slice.kind === "reading")!.excerpt, /Bytes per route group are not measured/);
+  assert.equal(judge(duty.metrics, output).verdict, "missed");
+  assert.equal(scrapers({ end: 8 * DAY, errors: [], verify: googleOnly, shed: [], rows: [], days: [{ route: "img", day: 0, calls: 900 }] }).metrics.route_jump_groups, undefined,
+    "with no day before the 24 h there is no median, so the metric stays unmeasured");
+  assert.match(daysSql(8 * DAY), /intDiv\(691200000 - ts, 86400000\) AS day/);
 });
