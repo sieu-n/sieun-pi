@@ -12,7 +12,9 @@ import { DAY, GRAFANA, UNMEASURED, readGrafanaAuth } from "./estate-reads.ts";
  * https://obs.virev.ai/d/virev-api-portal, and this precheck reads what it should show:
  * - slow_endpoints_24h, the endpoints whose p90 over real customers' calls in 24 h is over their own target (p90TargetS),
  * - failing_endpoints_24h, the endpoints where over FAILED_PCT of those calls failed on our side,
- * - broken_panels_24h, the live board's panels whose query errors or answers nothing over 24 h.
+ * - broken_panels_24h, the live board's panels whose query errors or answers nothing over 24 h,
+ * - function_hours_day, prod api-portal's Vercel function time over the last full UTC day: the sum of the Billed Duration of the drain's REPORT
+ *   lines in otel.otel_logs. It ran 64 to 77 h a day before 11-27 and 12.83 h over the 24 h to 06:42Z on 11-28 (auto-sns-agent p243).
  * Customer calls are keyed `crawl_read` rows of product.customer_usage_events, the view that leaves out every org of auto-sns-agent
  * convex/org/houseOrgs.json, less the org_test_ orgs a prod proof makes as paying customers: the filter of the alert
  * api-portal-customer-calls-failing and board 52 (auto-sns-agent b046150074). On 11-25 one proof org ran 20 of the day's 21 Bing calls. The board and
@@ -38,6 +40,11 @@ export const MIN_CALLS = 20;
 /** The 4xx codes that are our refusal, not the caller's mistake: the list of board panel 20 "Which endpoints fail or answer slowly?". */
 export const OUR_4XX = ["rate_limited", "crawl_unpaid_paused", "not_cached", "target_refused", "acquisition_credential_unavailable", "scrape_blocked", "login_required"];
 
+/** The function hours a day prod api-portal may bill: auto-sns-agent step p243's target, set by the API portal chat on 11-26. */
+export const FUNCTION_HOURS_TARGET = 8;
+/** The function hours and calls of prod api-portal over one full UTC day, from the Vercel drain's REPORT lines. */
+export interface FunctionTime { hours: number; calls: number; day: string }
+
 export interface EndpointRow { endpoint: string; calls: number; oursFailed: number; p90S: number; topError: string; lastMs: number }
 export interface PanelCheck { id: number; title: string; problem?: "error" | "no_data"; detail?: string }
 
@@ -54,13 +61,27 @@ export const endpointSql = (): string => [
   `GROUP BY endpoint HAVING calls >= ${MIN_CALLS} ORDER BY p90_s DESC`,
 ].join("\n");
 
+/** Prod api-portal's billed function time over Grafana's range, one REPORT line per invocation. */
+export const functionHoursSql = (): string => [
+  "SELECT round(sum(toFloat64OrZero(extract(Body, 'Billed Duration: ([0-9]+) ms'))) / 3600000, 3) AS hours, count() AS calls",
+  "FROM otel.otel_logs",
+  "WHERE $__timeFilter(Timestamp) AND ServiceName = 'api-portal' AND LogAttributes['vercel.environment'] = 'production'",
+  "AND Body LIKE '%REPORT RequestId%'",
+].join("\n");
+
+/** The last full UTC day before `now`, as [from, to) epoch ms. */
+export const lastUtcDay = (now: number): [number, number] => {
+  const to = Math.floor(now / DAY) * DAY;
+  return [to - DAY, to];
+};
+
 /**
  * The precheck output with `n`, what each duty metric read (agent factory's sampleSize in apps/chat/scripts/duties/agent-boards.ts): the
  * customer calls of the endpoints with MIN_CALLS or more for the two endpoint counts, and the panels checked for broken_panels_24h.
  */
 export type StatusBoardOutput = PrecheckOutput & { n: Record<string, number> };
 
-export function report(rows: EndpointRow[], panels: PanelCheck[], errors: string[]): StatusBoardOutput {
+export function report(rows: EndpointRow[], panels: PanelCheck[], errors: string[], fn: FunctionTime | null = null): StatusBoardOutput {
   const slow = rows.filter(row => row.p90S > p90TargetS(row.endpoint));
   const failing = rows.filter(row => (100 * row.oursFailed) / row.calls > FAILED_PCT);
   const broken = panels.filter(panel => panel.problem);
@@ -73,6 +94,7 @@ export function report(rows: EndpointRow[], panels: PanelCheck[], errors: string
     slow_endpoints_24h: sourceDown("endpoints") ? UNMEASURED : slow.length,
     failing_endpoints_24h: sourceDown("endpoints") ? UNMEASURED : failing.length,
     broken_panels_24h: sourceDown("board") ? UNMEASURED : broken.length,
+    function_hours_day: sourceDown("function") || !fn ? UNMEASURED : fn.hours,
   };
   const flagged: FlaggedSlice[] = [
     ...slow.map(row => ({ kind: "slow_endpoint", excerpt: line(row) })),
@@ -80,16 +102,19 @@ export function report(rows: EndpointRow[], panels: PanelCheck[], errors: string
     ...broken.map(panel => ({ kind: `panel_${panel.problem}`, excerpt: `Panel ${panel.id} "${panel.title}" on https://obs.virev.ai/d/${BOARD_UID}: ${panel.detail ?? panel.problem}`.slice(0, 300) })),
     ...errors.map(error => ({ kind: "source_error", excerpt: error.slice(0, 300) })),
   ];
+  if (fn && !sourceDown("function") && fn.hours > FUNCTION_HOURS_TARGET)
+    flagged.push({ kind: "function_time", excerpt: `Prod api-portal billed ${fn.hours} function hours on ${fn.day} over ${fn.calls} calls, against ${FUNCTION_HOURS_TARGET} h.` });
   const calls = sourceDown("endpoints") ? 0 : rows.reduce((sum, row) => sum + row.calls, 0);
   if (!sourceDown("endpoints") && !calls) flagged.push({ kind: "no_calls", excerpt: `No endpoint had ${MIN_CALLS} or more customer calls in 24 h, so slow_endpoints_24h and failing_endpoints_24h read 0 calls and measured nothing.` });
   if (!sourceDown("board") && !panels.length) flagged.push({ kind: "no_panels", excerpt: `The board ${BOARD_UID} has no panel with a query, so broken_panels_24h read 0 panels and measured nothing.` });
-  const n = { slow_endpoints_24h: calls, failing_endpoints_24h: calls, broken_panels_24h: sourceDown("board") ? 0 : panels.length };
+  const n = { slow_endpoints_24h: calls, failing_endpoints_24h: calls, broken_panels_24h: sourceDown("board") ? 0 : panels.length,
+    function_hours_day: fn && !sourceDown("function") ? fn.calls : 0 };
   const lastEventAt: Record<string, number> = {};
   const slowAt = newest(slow);
   const failingAt = newest(failing);
   if (slowAt) lastEventAt.slow_endpoints_24h = slowAt;
   if (failingAt) lastEventAt.failing_endpoints_24h = failingAt;
-  return { metrics, flagged, lastEventAt, windowMs: { slow_endpoints_24h: DAY, failing_endpoints_24h: DAY }, n };
+  return { metrics, flagged, lastEventAt, windowMs: { slow_endpoints_24h: DAY, failing_endpoints_24h: DAY, function_hours_day: DAY }, n };
 }
 
 interface Frame { schema: { fields: { name: string }[] }; data: { values: unknown[][] } }
@@ -160,7 +185,7 @@ export async function measure(now: number): Promise<StatusBoardOutput> {
   let rows: EndpointRow[] = [];
   let panels: PanelCheck[] = [];
   const auth = await readGrafanaAuth().catch((error: unknown) => { errors.push(`endpoints and board: grafana-read key: ${String(error)}`); return null; });
-  if (!auth) return report([], [], ["endpoints: no grafana-read key", "board: no grafana-read key", ...errors]);
+  if (!auth) return report([], [], ["endpoints: no grafana-read key", "board: no grafana-read key", "function: no grafana-read key", ...errors]);
   const query: Query = async (target, from, to) => {
     const response = await fetch(`${VIEWER}/api/ds/query`, {
       method: "POST", signal: AbortSignal.timeout(60_000), headers: { authorization: auth, "content-type": "application/json" },
@@ -176,12 +201,20 @@ export async function measure(now: number): Promise<StatusBoardOutput> {
     rows = frameRows(answer.frames).map(row => ({ endpoint: String(row.endpoint), calls: Number(row.calls), oursFailed: Number(row.ours_failed),
       p90S: Number(row.p90_s), topError: String(row.top_error ?? ""), lastMs: Number(row.last_ms) }));
   } catch (error) { errors.push(`endpoints: ${error instanceof Error ? error.message : String(error)}`); }
+  let fn: FunctionTime | null = null;
+  try {
+    const [from, to] = lastUtcDay(now);
+    const answer = await query({ datasource: CLICKHOUSE, rawSql: functionHoursSql(), format: 1 }, from, to);
+    if ("error" in answer) throw new Error(answer.error);
+    const row = frameRows(answer.frames)[0];
+    fn = { hours: Number(row?.hours ?? 0), calls: Number(row?.calls ?? 0), day: new Date(from).toISOString().slice(0, 10) };
+  } catch (error) { errors.push(`function: ${error instanceof Error ? error.message : String(error)}`); }
   try {
     const response = await fetch(`${VIEWER}/api/dashboards/uid/${BOARD_UID}`, { headers: { authorization: auth }, signal: AbortSignal.timeout(30_000) });
     if (!response.ok) throw new Error(`GET dashboard ${BOARD_UID} answered ${response.status}`);
     panels = await checkPanels(((await response.json()) as { dashboard: Parameters<typeof checkPanels>[0] }).dashboard, query, now);
   } catch (error) { errors.push(`board: ${error instanceof Error ? error.message : String(error)}`); }
-  return report(rows, panels, errors);
+  return report(rows, panels, errors, fn);
 }
 
 async function main(): Promise<void> {

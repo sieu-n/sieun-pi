@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { UNMEASURED } from "../scripts/duties/estate-reads.ts";
 import { ROUTE_P90_TARGET_S } from "../scripts/duties/customer-api-failures.ts";
-import { checkPanels, endpointSql, p90TargetS, panelSpanMs, report } from "../scripts/duties/portal-status-board.ts";
+import { checkPanels, endpointSql, functionHoursSql, lastUtcDay, p90TargetS, panelSpanMs, report } from "../scripts/duties/portal-status-board.ts";
 
 test("an endpoint counts as slow over 15 s p90 and as failing over 5% of its calls failed on our side", () => {
   const out = report([
@@ -12,7 +12,7 @@ test("an endpoint counts as slow over 15 s p90 and as failing over 5% of its cal
     { endpoint: "instagram/user_feed", calls: 100, oursFailed: 6, p90S: 8.44, topError: "503 no code", lastMs: 1 },
     { endpoint: "search/languages", calls: 25, oursFailed: 0, p90S: 0, topError: "", lastMs: 1 },
   ], [{ id: 13, title: "Which customer calls failed, and why?" }], []);
-  assert.deepEqual(out.metrics, { slow_endpoints_24h: 1, failing_endpoints_24h: 1, broken_panels_24h: 0 });
+  assert.deepEqual(out.metrics, { slow_endpoints_24h: 1, failing_endpoints_24h: 1, broken_panels_24h: 0, function_hours_day: UNMEASURED });
   assert.match(out.flagged![0]!.excerpt, /youtube\/channel_shorts: 323 customer calls in 24 h, p90 26.24 s against 15 s, 0.9% failed/);
 });
 
@@ -54,8 +54,22 @@ test("a panel that errors or answers nothing is broken, unless its noValue text 
 
 test("n is the customer calls behind the endpoint rows and the panels checked, and no rows read n 0 and say so (c249)", () => {
   const out = report([{ endpoint: "youtube/channel_shorts", calls: 323, oursFailed: 3, p90S: 26.24, topError: "", lastMs: 2 }], [{ id: 13, title: "x" }], []);
-  assert.deepEqual(out.n, { slow_endpoints_24h: 323, failing_endpoints_24h: 323, broken_panels_24h: 1 });
+  assert.deepEqual(out.n, { slow_endpoints_24h: 323, failing_endpoints_24h: 323, broken_panels_24h: 1, function_hours_day: 0 });
   const empty = report([], [], []);
-  assert.deepEqual(empty.n, { slow_endpoints_24h: 0, failing_endpoints_24h: 0, broken_panels_24h: 0 });
+  assert.deepEqual(empty.n, { slow_endpoints_24h: 0, failing_endpoints_24h: 0, broken_panels_24h: 0, function_hours_day: 0 });
   assert.deepEqual(empty.flagged!.map(slice => slice.kind), ["no_calls", "no_panels"]);
+});
+
+// auto-sns-agent p243: prod api-portal billed 64 to 77 function hours a day before 11-27 and 12.83 h over the 24 h to 06:42Z on 11-28.
+test("function_hours_day reads the last full UTC day's billed hours, flags a day over 8 h, and reads unmeasured when the read failed", () => {
+  const over = report([], [], [], { hours: 12.83, calls: 111_155, day: "2026-11-27" });
+  assert.equal(over.metrics.function_hours_day, 12.83);
+  assert.equal(over.n.function_hours_day, 111_155);
+  assert.match(over.flagged!.find(slice => slice.kind === "function_time")!.excerpt, /billed 12.83 function hours on 2026-11-27 over 111155 calls, against 8 h/);
+  const under = report([], [], [], { hours: 5.1, calls: 40_000, day: "2026-11-29" });
+  assert.equal(under.flagged!.some(slice => slice.kind === "function_time"), false);
+  assert.equal(report([], [], ["function: Grafana HTTP 500"], null).metrics.function_hours_day, UNMEASURED);
+  assert.deepEqual(lastUtcDay(Date.parse("2026-11-28T06:42:00Z")), [Date.parse("2026-11-27T00:00:00Z"), Date.parse("2026-11-28T00:00:00Z")]);
+  assert.match(functionHoursSql(), /ServiceName = 'api-portal' AND LogAttributes\['vercel.environment'\] = 'production'/);
+  assert.match(functionHoursSql(), /Billed Duration/);
 });
