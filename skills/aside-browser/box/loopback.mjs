@@ -93,18 +93,25 @@ const hostPort = (authority, fallback) => {
 // at box load 190, 1 to 3 of the 1,399 module fetches of 5180's /app/dashboards answered 502 after a single resend hit a second closed
 // socket, while the Mac served all 1,399 with 200 three times. One failed module fetch stops SvelteKit's navigation, which then
 // loads the whole document again. Each closed socket leaves the pool when it fails, and a new socket is never a reused one.
+// Only a reset or broken pipe means a closed socket. Any other error, such as a header the parser refused, comes from the answer
+// itself, and on 11-28 one such answer was sent again 11 times, once per idle socket in the pool, with the same error each time.
+const CLOSED = new Set(["ECONNRESET", "EPIPE"]);
+// Node's HTTP parser refuses an answer whose headers pass 16 KB, while Chrome takes 256 KB (kMaxHeaderBufSize in
+// net/http/http_stream_parser.cc). On 11-28 the virev-demo production image's /app/inbox sent 17,295 bytes of headers, mostly its
+// modulepreload link header, and answered 502 here, which Chrome shows as ERR_HTTP_RESPONSE_CODE_FAILURE.
+const MAX_HEADER_BYTES = 256 * 1024;
 function forward(stream, headers, agent, body) {
   const authority = headers[":authority"];
   const { host, port } = hostPort(authority, 80);
   const method = headers[":method"];
-  const req = http.request({ host, port, method, path: headers[":path"], headers: { ...plain(headers), host: authority }, agent }, (res) => {
+  const req = http.request({ host, port, method, path: headers[":path"], headers: { ...plain(headers), host: authority }, agent, maxHeaderSize: MAX_HEADER_BYTES }, (res) => {
     if (stream.destroyed) { res.destroy(); return; }
     stream.respond({ ":status": res.statusCode, ...plain(res.headers) });
     res.pipe(stream);
   });
-  req.on("error", () => {
+  req.on("error", (err) => {
     if (stream.destroyed) return;
-    if (req.reusedSocket && !stream.headersSent) { forward(stream, headers, agent, body); return; }
+    if (req.reusedSocket && CLOSED.has(err.code) && !stream.headersSent) { forward(stream, headers, agent, body); return; }
     if (!stream.headersSent) stream.respond({ ":status": 502 });
     stream.end();
   });
@@ -136,7 +143,7 @@ function open(socksPort, host, port, callback) {
   sock.once("connect", () => { connected = true; callback(null, sock); });
 }
 
-function startProxy(socksPort) {
+export function startProxy(socksPort) {
   const agent = new http.Agent({ keepAlive: true });
   agent.createConnection = (options, callback) => { open(socksPort, options.host, options.port, callback); };
   const { key, cert, spkiHash } = selfSigned();
@@ -144,7 +151,9 @@ function startProxy(socksPort) {
   // rapid-reset bucket allows (burst 1000, then 33/s). measured: on 11-03 one box Chrome sent 2,010 RST_STREAM frames in 5 reloads of
   // 5180's /app/inbox, nghttp2 ended the session, and every module fetch in flight failed, so the page never hydrated. This proxy
   // listens on 127.0.0.1 for its own Chrome only, so the bucket is set to the largest value Node takes, which turns it off.
-  const server = http2.createSecureServer({ key, cert, streamResetBurst: 2 ** 32 - 1, streamResetRate: 2 ** 32 - 1 });
+  // Node sends at most 64 KB of compressed headers per answer and destroys a stream past that, which Chrome reports as
+  // ERR_HTTP2_PROTOCOL_ERROR, so the cap goes to Chrome's own 256 KB, the most it takes from a server.
+  const server = http2.createSecureServer({ key, cert, streamResetBurst: 2 ** 32 - 1, streamResetRate: 2 ** 32 - 1, maxSendHeaderBlockLength: MAX_HEADER_BYTES });
   server.on("sessionError", () => {});
   server.on("stream", (stream, headers) => {
     stream.on("error", () => {});
