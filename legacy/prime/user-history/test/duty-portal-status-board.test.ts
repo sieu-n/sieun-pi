@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { UNMEASURED } from "../scripts/duties/estate-reads.ts";
 import { ROUTE_P90_TARGET_S } from "../scripts/duties/customer-api-failures.ts";
-import { billedDay, checkPanels, endpointSql, p90TargetS, panelSpanMs, report, type Charge } from "../scripts/duties/portal-status-board.ts";
+import { billedDay, billedDays, checkPanels, endpointSql, functionJump, p90TargetS, panelSpanMs, report, type Charge } from "../scripts/duties/portal-status-board.ts";
 
 test("an endpoint counts as slow over 15 s p90 and as failing over 5% of its calls failed on our side", () => {
   const out = report([
@@ -12,7 +12,7 @@ test("an endpoint counts as slow over 15 s p90 and as failing over 5% of its cal
     { endpoint: "instagram/user_feed", calls: 100, oursFailed: 6, p90S: 8.44, topError: "503 no code", lastMs: 1 },
     { endpoint: "search/languages", calls: 25, oursFailed: 0, p90S: 0, topError: "", lastMs: 1 },
   ], [{ id: 13, title: "Which customer calls failed, and why?" }], []);
-  assert.deepEqual(out.metrics, { slow_endpoints_24h: 1, failing_endpoints_24h: 1, broken_panels_24h: 0, function_hours_day: UNMEASURED });
+  assert.deepEqual(out.metrics, { slow_endpoints_24h: 1, failing_endpoints_24h: 1, broken_panels_24h: 0, function_hours_day: UNMEASURED, function_time_jump: UNMEASURED });
   assert.match(out.flagged![0]!.excerpt, /youtube\/channel_shorts: 323 customer calls in 24 h, p90 26.24 s against 15 s, 0.9% failed/);
 });
 
@@ -54,9 +54,9 @@ test("a panel that errors or answers nothing is broken, unless its noValue text 
 
 test("n is the customer calls behind the endpoint rows and the panels checked, and no rows read n 0 and say so (c249)", () => {
   const out = report([{ endpoint: "youtube/channel_shorts", calls: 323, oursFailed: 3, p90S: 26.24, topError: "", lastMs: 2 }], [{ id: 13, title: "x" }], []);
-  assert.deepEqual(out.n, { slow_endpoints_24h: 323, failing_endpoints_24h: 323, broken_panels_24h: 1, function_hours_day: 0 });
+  assert.deepEqual(out.n, { slow_endpoints_24h: 323, failing_endpoints_24h: 323, broken_panels_24h: 1, function_hours_day: 0, function_time_jump: 0 });
   const empty = report([], [], []);
-  assert.deepEqual(empty.n, { slow_endpoints_24h: 0, failing_endpoints_24h: 0, broken_panels_24h: 0, function_hours_day: 0 });
+  assert.deepEqual(empty.n, { slow_endpoints_24h: 0, failing_endpoints_24h: 0, broken_panels_24h: 0, function_hours_day: 0, function_time_jump: 0 });
   assert.deepEqual(empty.flagged!.map(slice => slice.kind), ["no_calls", "no_panels"]);
 });
 
@@ -82,4 +82,29 @@ test("function_hours_day reads Vercel's billed Fluid GB-hours of auto-sns-api ov
   assert.equal(over.metrics.function_hours_day, 18.577);
   assert.match(over.flagged!.find(slice => slice.kind === "function_time")!.excerpt, /Vercel billed auto-sns-api 18.577 instance hours \(37.15 GB-h/);
   assert.equal(report([], [], ["function: Vercel billing charges answered 403"], null).metrics.function_hours_day, UNMEASURED);
+});
+
+// Owner, #1124-cost-management p52 and p54 (11-28): a PostHog sync cost up to $80 a day for 11 days because its duty judged only a fixed line.
+// Vercel billed auto-sns-api 2.91, 5.69 and 17.30 instance hours on the days from 08:00Z 11-23, 11-24 and 11-25, all but one under 8 h.
+test("function_time_jump flags a billing day over 2 times the median of the 7 before it, also under 8 h, and needs 8 days", () => {
+  const hours = [4.219, 1.938, 0.822, 1.178, 3.258, 1.229, 0.364, 1.947, 0.79, 0.311, 0.85, 2.908, 5.69, 17.298];
+  const charges: Charge[] = hours.map((value, index) => {
+    const start = Date.parse("2026-11-12T08:00:00Z") + index * 86_400_000;
+    return { ServiceName: "Fluid Provisioned Memory", ConsumedQuantity: 2 * value, ChargePeriodStart: new Date(start).toISOString(),
+      ChargePeriodEnd: new Date(start + 86_400_000).toISOString(), Tags: { ProjectName: "auto-sns-api" } };
+  });
+  const until = (day: string) => functionJump(billedDays(charges, Date.parse(`${day}T09:00:00Z`)));
+  const quiet = until("2026-11-23")!;
+  assert.deepEqual([quiet.hours, quiet.medianHours], [0.85, 1.178]);
+  assert.equal(report([], [], [], null, quiet).metrics.function_time_jump, 0);
+  const jump = until("2026-11-25")!;
+  assert.equal(jump.day.start, "2026-11-24T08:00:00.000Z");
+  const out = report([], [], [], billedDays(charges, Date.parse("2026-11-25T09:00:00Z")).at(-1)!, jump);
+  assert.equal(out.metrics.function_hours_day, 5.69);
+  assert.equal(out.metrics.function_time_jump, 1);
+  assert.equal(out.n.function_time_jump, 8);
+  assert.match(out.flagged!.find(slice => slice.kind === "function_time_jump")!.excerpt,
+    /billed auto-sns-api 5.69 instance hours on the billing day from 2026-11-24T08:00:00.000Z, 6.7 times the median of 0.85 h over the 7 days from 2026-11-17 to 2026-11-23/);
+  assert.equal(functionJump(billedDays(charges, Date.parse("2026-11-25T09:00:00Z")).slice(-7)), null, "7 days are too few");
+  assert.equal(report([], [], [], null, null).metrics.function_time_jump, UNMEASURED);
 });

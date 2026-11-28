@@ -15,7 +15,9 @@ import { vercelToken } from "./vercel-login.ts";
  * - failing_endpoints_24h, the endpoints where over FAILED_PCT of those calls failed on our side,
  * - broken_panels_24h, the live board's panels whose query errors or answers nothing over 24 h,
  * - function_hours_day, the Fluid instance hours Vercel billed prod api-portal (project auto-sns-api) over its newest ended billing day:
- *   provisioned memory GB-hours from Vercel's charges API over the 2 GB function size, held to 8 h (auto-sns-agent p243).
+ *   provisioned memory GB-hours from Vercel's charges API over the 2 GB function size, held to 8 h (auto-sns-agent p243),
+ * - function_time_jump, 1 when that day's instance hours are over FUNCTION_JUMP_TIMES times the median of the 7 billing days before it, also
+ *   under 8 h, because a fixed line let a PostHog sync cost up to $80 a day for 11 days unseen (owner, #1124-cost-management p52 and p54, 11-28).
  * Customer calls are keyed `crawl_read` rows of product.customer_usage_events, the view that leaves out every org of auto-sns-agent
  * convex/org/houseOrgs.json, less the org_test_ orgs a prod proof makes as paying customers: the filter of the alert
  * api-portal-customer-calls-failing and board 52 (auto-sns-agent b046150074). On 11-25 one proof org ran 20 of the day's 21 Bing calls. The board and
@@ -43,6 +45,14 @@ export const OUR_4XX = ["rate_limited", "crawl_unpaid_paused", "not_cached", "ta
 
 /** The function hours a day prod api-portal may bill: auto-sns-agent step p243's target, set by the API portal chat on 11-26. */
 export const FUNCTION_HOURS_TARGET = 8;
+/**
+ * How many times the median of the 7 billing days before it a day's instance hours may reach before function_time_jump flags it. Replayed
+ * over the 32 billing days from 10-27 to 11-27 (portal-jumps.replay.md): 2 flags the six real jumps (11-08 at 3.89 times, the 11-23 to
+ * 11-27 probe and CRM web-scraping days at 3.42, 6.70, 20.36, 9.54 and 2.73 times) and none of the 26 other days, whose highest was 1.59.
+ */
+export const FUNCTION_JUMP_TIMES = 2;
+/** The billing days function_time_jump reads: the newest ended day and the 7 before it. */
+export const JUMP_DAYS = 8;
 /** Vercel's project for api.virev.ai and its team; the functions run at 2048 MB (the REPORT lines' Memory Size). */
 export const VERCEL_PROJECT = "auto-sns-api";
 export const VERCEL_TEAM = "team_HkFeqFbbJa5UAIjN0IYINUS0";
@@ -59,13 +69,36 @@ export interface Charge { ServiceName: string; ConsumedQuantity: number; ChargeP
  * against 37.15 GB-h.
  */
 export function billedDay(charges: readonly Charge[], now: number): FunctionTime | null {
-  const mine = charges.filter(row => row.Tags?.ProjectName === VERCEL_PROJECT && Date.parse(row.ChargePeriodEnd) <= now);
-  const start = mine.map(row => row.ChargePeriodStart).sort().at(-1);
-  if (!start) return null;
-  const sum = (service: string): number => mine.filter(row => row.ChargePeriodStart === start && row.ServiceName === service)
-    .reduce((total, row) => total + row.ConsumedQuantity, 0);
-  return { start, gbHours: sum("Fluid Provisioned Memory"), cpuHours: sum("Fluid Active CPU"), invocations: Math.round(sum("Function Invocations")) };
+  return billedDays(charges, now).at(-1) ?? null;
 }
+
+/** Every billing day of the project that ended by `now`, oldest first. */
+export function billedDays(charges: readonly Charge[], now: number): FunctionTime[] {
+  const mine = charges.filter(row => row.Tags?.ProjectName === VERCEL_PROJECT && Date.parse(row.ChargePeriodEnd) <= now);
+  const sum = (start: string, service: string): number => mine.filter(row => row.ChargePeriodStart === start && row.ServiceName === service)
+    .reduce((total, row) => total + row.ConsumedQuantity, 0);
+  return [...new Set(mine.map(row => row.ChargePeriodStart))].sort().map(start => ({ start, gbHours: sum(start, "Fluid Provisioned Memory"),
+    cpuHours: sum(start, "Fluid Active CPU"), invocations: Math.round(sum(start, "Function Invocations")) }));
+}
+
+export const median = (values: readonly number[]): number => {
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle]! : (sorted[middle - 1]! + sorted[middle]!) / 2;
+};
+
+/** The newest of the last JUMP_DAYS billing days against the median of the days before it. */
+export interface FunctionJump { day: FunctionTime; hours: number; medianHours: number; from: string; to: string }
+/** The jump reading of the newest JUMP_DAYS days; null with fewer days than that. */
+export function functionJump(days: readonly FunctionTime[]): FunctionJump | null {
+  if (days.length < JUMP_DAYS) return null;
+  const last = days.slice(-JUMP_DAYS);
+  const before = last.slice(0, -1);
+  return { day: last.at(-1)!, hours: instanceHours(last.at(-1)!), medianHours: Math.round(1000 * median(before.map(instanceHours))) / 1000,
+    from: before[0]!.start, to: before.at(-1)!.start };
+}
+
+export const isJump = (jump: FunctionJump): boolean => jump.hours > FUNCTION_JUMP_TIMES * jump.medianHours;
 
 /** The billed instance hours of a billing day: its provisioned memory GB-hours over the functions' memory size. */
 export const instanceHours = (day: FunctionTime): number => Math.round((1000 * day.gbHours) / FUNCTION_MEMORY_GB) / 1000;
@@ -92,7 +125,8 @@ export const endpointSql = (): string => [
  */
 export type StatusBoardOutput = PrecheckOutput & { n: Record<string, number> };
 
-export function report(rows: EndpointRow[], panels: PanelCheck[], errors: string[], fn: FunctionTime | null = null): StatusBoardOutput {
+export function report(rows: EndpointRow[], panels: PanelCheck[], errors: string[], fn: FunctionTime | null = null,
+  jump: FunctionJump | null = null): StatusBoardOutput {
   const slow = rows.filter(row => row.p90S > p90TargetS(row.endpoint));
   const failing = rows.filter(row => (100 * row.oursFailed) / row.calls > FAILED_PCT);
   const broken = panels.filter(panel => panel.problem);
@@ -106,6 +140,7 @@ export function report(rows: EndpointRow[], panels: PanelCheck[], errors: string
     failing_endpoints_24h: sourceDown("endpoints") ? UNMEASURED : failing.length,
     broken_panels_24h: sourceDown("board") ? UNMEASURED : broken.length,
     function_hours_day: sourceDown("function") || !fn ? UNMEASURED : instanceHours(fn),
+    function_time_jump: sourceDown("function") || !jump ? UNMEASURED : Number(isJump(jump)),
   };
   const flagged: FlaggedSlice[] = [
     ...slow.map(row => ({ kind: "slow_endpoint", excerpt: line(row) })),
@@ -116,17 +151,21 @@ export function report(rows: EndpointRow[], panels: PanelCheck[], errors: string
   if (fn && !sourceDown("function") && instanceHours(fn) > FUNCTION_HOURS_TARGET)
     flagged.push({ kind: "function_time", excerpt: `Vercel billed ${VERCEL_PROJECT} ${instanceHours(fn)} instance hours (${Math.round(fn.gbHours * 100) / 100} GB-h, ` +
       `${Math.round(fn.cpuHours * 100) / 100} h active CPU) over ${fn.invocations} invocations on the billing day from ${fn.start}, against ${FUNCTION_HOURS_TARGET} h.` });
+  if (jump && !sourceDown("function") && isJump(jump))
+    flagged.push({ kind: "function_time_jump", excerpt: `Vercel billed ${VERCEL_PROJECT} ${jump.hours} instance hours on the billing day from ${jump.day.start}, ` +
+      `${jump.medianHours ? `${Math.round((10 * jump.hours) / jump.medianHours) / 10} times` : "over 0 h,"} the median of ${jump.medianHours} h over the 7 days ` +
+      `from ${jump.from.slice(0, 10)} to ${jump.to.slice(0, 10)}, against ${FUNCTION_JUMP_TIMES} times.` });
   const calls = sourceDown("endpoints") ? 0 : rows.reduce((sum, row) => sum + row.calls, 0);
   if (!sourceDown("endpoints") && !calls) flagged.push({ kind: "no_calls", excerpt: `No endpoint had ${MIN_CALLS} or more customer calls in 24 h, so slow_endpoints_24h and failing_endpoints_24h read 0 calls and measured nothing.` });
   if (!sourceDown("board") && !panels.length) flagged.push({ kind: "no_panels", excerpt: `The board ${BOARD_UID} has no panel with a query, so broken_panels_24h read 0 panels and measured nothing.` });
   const n = { slow_endpoints_24h: calls, failing_endpoints_24h: calls, broken_panels_24h: sourceDown("board") ? 0 : panels.length,
-    function_hours_day: fn && !sourceDown("function") ? fn.invocations : 0 };
+    function_hours_day: fn && !sourceDown("function") ? fn.invocations : 0, function_time_jump: jump && !sourceDown("function") ? JUMP_DAYS : 0 };
   const lastEventAt: Record<string, number> = {};
   const slowAt = newest(slow);
   const failingAt = newest(failing);
   if (slowAt) lastEventAt.slow_endpoints_24h = slowAt;
   if (failingAt) lastEventAt.failing_endpoints_24h = failingAt;
-  return { metrics, flagged, lastEventAt, windowMs: { slow_endpoints_24h: DAY, failing_endpoints_24h: DAY, function_hours_day: DAY }, n };
+  return { metrics, flagged, lastEventAt, windowMs: { slow_endpoints_24h: DAY, failing_endpoints_24h: DAY, function_hours_day: DAY, function_time_jump: DAY }, n };
 }
 
 interface Frame { schema: { fields: { name: string }[] }; data: { values: unknown[][] } }
@@ -214,21 +253,26 @@ export async function measure(now: number): Promise<StatusBoardOutput> {
       p90S: Number(row.p90_s), topError: String(row.top_error ?? ""), lastMs: Number(row.last_ms) }));
   } catch (error) { errors.push(`endpoints: ${error instanceof Error ? error.message : String(error)}`); }
   let fn: FunctionTime | null = null;
+  let jump: FunctionJump | null = null;
   try {
-    const from = new Date(now - 3 * DAY).toISOString();
+    // Two days more than JUMP_DAYS, and the oldest day is dropped, because the window's start may cut it.
+    const from = new Date(now - (JUMP_DAYS + 2) * DAY).toISOString();
     const response = await fetch(`https://api.vercel.com/v1/billing/charges?teamId=${VERCEL_TEAM}&from=${from}&to=${new Date(now).toISOString()}`,
       { headers: { Authorization: `Bearer ${await vercelToken()}` }, signal: AbortSignal.timeout(60_000) });
     if (!response.ok) throw new Error(`Vercel billing charges answered ${response.status}`);
     const charges = (await response.text()).split("\n").filter(line => line.trim()).map(line => JSON.parse(line) as Charge);
-    fn = billedDay(charges, now);
+    const days = billedDays(charges, now);
+    fn = days.at(-1) ?? null;
     if (!fn) throw new Error(`Vercel billing charges hold no ended day for ${VERCEL_PROJECT}`);
+    jump = functionJump(days.slice(1));
+    if (!jump) errors.push(`jump: Vercel billing charges hold ${days.length} ended days for ${VERCEL_PROJECT}, under the ${JUMP_DAYS + 1} function_time_jump reads`);
   } catch (error) { errors.push(`function: ${error instanceof Error ? error.message : String(error)}`); }
   try {
     const response = await fetch(`${VIEWER}/api/dashboards/uid/${BOARD_UID}`, { headers: { authorization: auth }, signal: AbortSignal.timeout(30_000) });
     if (!response.ok) throw new Error(`GET dashboard ${BOARD_UID} answered ${response.status}`);
     panels = await checkPanels(((await response.json()) as { dashboard: Parameters<typeof checkPanels>[0] }).dashboard, query, now);
   } catch (error) { errors.push(`board: ${error instanceof Error ? error.message : String(error)}`); }
-  return report(rows, panels, errors, fn);
+  return report(rows, panels, errors, fn, jump);
 }
 
 async function main(): Promise<void> {

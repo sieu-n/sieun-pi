@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { agingUntil } from "../scripts/duties/chat-system.ts";
-import { daySql, lastFullDay, poolSql, report, ROUTE_P90_TARGET_S, routesSql, UNMEASURED } from "../scripts/duties/customer-api-failures.ts";
+import { daySql, lastFullDay, pairJumps, pairsSql, poolSql, report, ROUTE_P90_TARGET_S, routesSql, UNMEASURED } from "../scripts/duties/customer-api-failures.ts";
 import { judge, type DutyMetric, type DutyRunRecord } from "../src/shared/chat-duties.ts";
 import { metricStreaks } from "../src/shared/duty-streak.ts";
 
@@ -21,7 +21,7 @@ test("the share is 5xx over every customer call, and each 5xx is flagged with it
   assert.match(out.flagged![0]!.excerpt, /5 customer 5xx of 1576 calls \(0\.32%\).*151 min/);
   assert.match(out.flagged![2]!.excerpt, /instagram\.web_profile_info 502 upstream_error req_a/);
   const rollsAt = Date.parse("2026-11-03T00:00:00Z");
-  assert.deepEqual(out.rollsAt, { customer_5xx_share_pct: rollsAt, slow_route_over_target_s: rollsAt }, "the 11-01 reading holds until 11-02 rolls over");
+  assert.deepEqual(out.rollsAt, { customer_5xx_share_pct: rollsAt, slow_route_over_target_s: rollsAt, org_operation_jumps: rollsAt }, "the 11-01 reading holds until 11-02 rolls over");
 });
 
 test("a day with no calls reads 0, not a miss", () => {
@@ -109,8 +109,42 @@ test("a rerun of a closed day reads quiet until the next UTC midnight, while the
 
 test("n is the day's attempts and the calls behind the route p90s, and a day with no calls reads n 0 and says so (c249)", () => {
   const out = report({ calls: 1_576, failed5xx: 5 }, [], { start: "2026-11-01 00:00:00" }, 151, []);
-  assert.deepEqual(out.n, { customer_5xx_share_pct: 1_576, slow_route_over_target_s: 0, source_errors: 1 });
+  assert.deepEqual(out.n, { customer_5xx_share_pct: 1_576, slow_route_over_target_s: 0, org_operation_jumps: 0, source_errors: 1 });
   const empty = report({ calls: 0, failed5xx: 0 }, [], { start: "2026-11-03 00:00:00" }, null, []);
   assert.equal(empty.n.customer_5xx_share_pct, 0);
   assert.match(empty.flagged![0]!.excerpt, /read 0 calls and measured nothing/);
+});
+
+// Owner, #1124-cost-management p52 and p54 (11-28): a PostHog sync cost up to $80 a day for 11 days because its duty judged only a total.
+// org_virev_gtm_outreach ran 6,804 crawl.web_scraping_api calls on 11-26 UTC from none, which no total or share in d4 showed.
+test("org_operation_jumps counts pairs whose calls or 5xx are over 3 times their own 7-day median and over the floor (11-26 UTC)", () => {
+  const rows = [
+    { day: "2026-11-26", org: "org_virev_gtm_outreach", endpoint: "crawl.web_scraping_api", calls: 6_804, failed5xx: 114 },
+    ...["2026-11-19", "2026-11-20", "2026-11-21", "2026-11-22", "2026-11-23", "2026-11-24", "2026-11-25", "2026-11-26"].flatMap(day => [
+      { day, org: "org_3Ez44ZRW3ZQrMW6a8PHoM9Oa0uY", endpoint: "search.google", calls: 900, failed5xx: day === "2026-11-26" ? 59 : 24 },
+      { day, org: "org_3KGSzGiH5JHPkMcDcrlaHTG0BUz", endpoint: "instagram.web_profile_info", calls: day === "2026-11-26" ? 1_200 : 500, failed5xx: 0 }]),
+    { day: "2026-11-26", org: "org_3K6CrZ5L593T4KcvfGBdvMWrpfO", endpoint: "instagram.user_feed", calls: 1, failed5xx: 1 },
+    { day: "2026-11-10", org: "org_old", endpoint: "youtube.video", calls: 5_000, failed5xx: 0 },
+  ];
+  const { jumps, pairs } = pairJumps(rows, "2026-11-26");
+  assert.equal(pairs, 4, "a pair with no call in the 8 days is not read");
+  assert.deepEqual(jumps, [
+    { org: "org_virev_gtm_outreach", endpoint: "crawl.web_scraping_api", kind: "calls", value: 6_804, median: 0 },
+    { org: "org_virev_gtm_outreach", endpoint: "crawl.web_scraping_api", kind: "failed5xx", value: 114, median: 0 },
+  ], "2.4 times its median, a 0 to 1 pair and 59 5xx at 2.5 times stay quiet");
+  const out = report({ calls: 0, failed5xx: 0 }, [], { start: "2026-11-26 00:00:00" }, null, [], rows);
+  assert.equal(out.metrics.org_operation_jumps, 2);
+  assert.equal(out.n.org_operation_jumps, 4);
+  assert.match(out.flagged!.find(slice => slice.kind.startsWith("jump_calls"))!.excerpt,
+    /org_virev_gtm_outreach crawl\.web_scraping_api: 6804 calls on 2026-11-26 UTC against a median of 0 a day over the 7 days before/);
+  const empty = report({ calls: 0, failed5xx: 0 }, [], { start: "2026-11-26 00:00:00" }, null, []);
+  assert.equal(empty.n.org_operation_jumps, 0);
+  assert.ok(empty.flagged!.some(slice => slice.kind === "no_pairs"));
+});
+
+test("the pairs read every org's keyed calls over the day and the 7 before, less org_test_ and one-run proof orgs", () => {
+  const sql = pairsSql(lastFullDay(Date.parse("2026-11-27T02:40:00Z")));
+  assert.match(sql, /FROM product\.usage_events WHERE ts >= toDateTime64\('2026-11-19 00:00:00', 3, 'UTC'\) AND ts < toDateTime64\('2026-11-27 00:00:00', 3, 'UTC'\)/);
+  assert.match(sql, /NOT startsWith\(org_id, 'org_test_'\) AND NOT match\(org_id, '_\[0-9\]\{13\}\$'\)/);
+  assert.match(sql, /GROUP BY day, org, endpoint/);
 });
