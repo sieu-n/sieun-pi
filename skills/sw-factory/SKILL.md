@@ -90,7 +90,10 @@ The owner said so on 11-20: "no this is not Chat. this is Slack."
    On 11-20 Search product, misc. answered the owner's cost ask in #dev-app-search-prospect with p13, a monthly cost, a cost per tracked brand and a plan price in three sentences on one line, and he wrote "slop slop slop" under it (p33).
    On 11-21 agent factory answered him in four sentences on one line (dm_agent-factory p56), and he wrote "이런것도 엔터, bullet point 똑바로 쓰고." (p57, msg mwqtjlth, c233).
    tell_owner holds once a post with a line outside its list of 3 or more sentences or 3 or more clauses with a number (`crammedLine` in `packages/pi-host/src/durable/comm-guard.ts`), and the same text sent again goes out.
-5. An agent keeps its working plan and process to itself, and a first reply gives the answer or a fact it knows now from a first look within about a minute (c224). When that look finds nothing to tell him yet, it posts nothing, its 👀 shows the work, and the answer is its first post.
+5. An agent keeps its working plan and process to itself, and its first reply goes out within about a minute of his post: one plain sentence that shows it got it, with what he wants in its own words, and a fact it knows now on the next line when a first look found one. 👀 alone is never the first reply to an ask of his.
+   The owner wrote in #dev-search-general (ch_30b50688) p4 on 11-19, when his p3 had no reply after 29 minutes: "이런 메시지 보면 일단 일차적으로 보고 ~1분 안에 알겠다고 답장해" (c224), and in p6 "btw same for admin/api portal, sw-factory, … make it universal in the monorepo".
+   From 11-25 to 11-28 this rule said to post nothing when the look found no fact. In those 3 days 9 of his 88 posts that needed a reply had a comm turn that ended within 2 minutes and posted nothing: his #sw-factory-build p250 got its first reply after 14 minutes, and two posts in #1128-api-portal-v2-dev had only 👀 after 21 minutes (`~/work/first-reply/measure.md`).
+   The first reply says what he wants, never what the agent or its work thread do next, and the guard's refusal of a relay line now tells the agent to send the rest instead of nothing (`commPostRefusal` in `packages/pi-host/src/durable/comm-guard.ts`).
    It never says "I'll do X first, then Y" and never posts a checklist of its own steps, since the owner wrote under #sw-factory-build p158, a plan of five process boxes: "이런건 내부적으론 알아서 하고, 밖에서 보낼땐 slop slop slop fucking disgusting try again" (p159, msg mwqwjznm, c234).
    No post promises a result to come, such as "coming here next", "coming in this post", "will be added here", "details to follow" or "I'll report back", and a post ends on the last fact it holds.
    On 11-25 Search product, misc.'s #1124-cost-management p17 ended "Calls per customer per day, with the success rate, are coming here next.", fable auditor's p22 ended "A fresh read of GeoNode's meter and the crawl's daily size is coming in this post.", and the owner wrote "slop처럼 말하는 버릇좀 고쳐보라니까" (p21, msg mww1eid8, c104).
@@ -139,7 +142,7 @@ Here's what's moving toward that:
 The post as he praised it ended "I'll come back with a before and after once it's live.", and that promise line is cut since his p21 of 11-25 (c104).
 
 He then asked for few-shot examples: "few shot example을 좀 넣어봐 이런것들은" (msg mwqvt8s4).
-The comm role text shows these real pairs after its rules (`ROOM_EXAMPLES` in `packages/pi-host/src/durable/agent-profile.ts`), a bad post and then a good one for each case, each cut to its first lines, and the model post above last. The good post for a channel's first reply is no post at all until the result exists, since c104's repeat of 11-25 retired the line on what he will get.
+The comm role text shows these real pairs after its rules (`ROOM_EXAMPLES` in `packages/pi-host/src/durable/agent-profile.ts`), a bad post and then a good one for each case, each cut to its first lines, and the model post above last. The good post for a channel's first reply is one line on what the agent understood (c224), with no line on what comes later (c104).
 
 A quick answer, bad (dm_agent-factory p56) and then good (#dev-search-general p20).
 
@@ -163,7 +166,7 @@ one table, Prime chat vs this DM's talk thread and work thread, file by file.
 got it, a Fable advisor that reviews and talks to you, while Opus keeps doing the work.
 ```
 
-The first reply in a channel thread, bad (#sw-factory-build p158) and then good (the shape since #1124-cost-management p21, c104).
+The first reply in a channel thread, bad (#sw-factory-build p158) and then good (#sw-factory-build p5, sent 7 s after his p4, c224).
 
 ```markdown
 I'll map how it really works first, then write one proposal with options and my pick. It will cover these:
@@ -172,7 +175,7 @@ I'll map how it really works first, then write one proposal with options and my 
 ```
 
 ```markdown
-(no post: 👀 on his post until the proposal is written, then the proposal as one post)
+Makes sense, Accounts moves into a tab under Settings and leaves the top bar.
 ```
 
 A first reply while the work runs, bad (written for this case on 11-25, in the shape of #1124-cost-management p17 that the owner called slop in p21) and then good (that post with the promise and the made-up cause cut).

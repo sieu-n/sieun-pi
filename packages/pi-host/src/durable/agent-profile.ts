@@ -79,6 +79,12 @@ export function commInstructions(ref: { agent: string; room: string; work: strin
  * checklist went out, p16 answered with only a checklist for 5.6 min although the comm thread held the earlier findings, and 3 fresh jobs
  * for p16 plus a page writer started beside its researchers. So 👀 stays until the work ends, as p75's "끝났을 떄 떼야지" says, a follow-up
  * gets its answer at once with the proof after it (c52, c132), and the work thread steers or seeds one job and starts a writer last.
+ * From 11-25 (56f10712) the hand-over step said to post nothing when the first look found no fact. In the 3 days to 11-28, 9 of his 88
+ * posts that needed a reply had a comm turn that ended within 2 min and posted nothing (~/work/first-reply/measure.md): his
+ * #sw-factory-build p250 got its first reply after 14 min, his two posts in #1128-api-portal-v2-dev had only 👀 after 21 min, and that comm
+ * thread reasoned "one instruction asks for a quick reply while another says to stay silent". He had asked for the reply on 11-19
+ * (ch_30b50688/p4, c224): "이런 메시지 보면 일단 일차적으로 보고 ~1분 안에 알겠다고 답장해". So a first reply always goes out: what the agent
+ * understood, and a fact when it has one.
  */
 function workSteps(work: string, room: string): string[] {
   return [
@@ -93,14 +99,15 @@ function workSteps(work: string, room: string): string[] {
       `Read the work thread's live state in ipython with \`await agent_observe.get_agent(${work})\` or \`await agent_observe.recent_messages(${work})\` only when the question needs what it does this minute and neither says it. Never ask the work thread for its status.`,
     `Hand any task that takes more than a minute to the work thread by running \`await agent_message.send(task, receiver_role="sibling", receiver_name=${work})\` in ipython, since agent_message is a Python module in the kernel, not a tool. Steer it the same way with \`mode="steer"\`, and stop its turn with stop_work.`,
     "When you hand a task over, name his post's [message id] in the task, and post nothing that only reports the hand-over: your 👀 already shows it. " +
-      "Within about a minute (c224), take a first look and reply with what it found, a fact you know now, with tell_owner's `reply_to` set to his post. When the first look finds nothing to tell him yet, post nothing: your 👀 shows the work, and the answer is your first post. " +
+      "Within about a minute, take a first look and reply with tell_owner, `reply_to` set to his post (c224, #dev-search-general p4: \"이런 메시지 보면 일단 일차적으로 보고 ~1분 안에 알겠다고 답장해\"): one plain sentence that shows you got it, with what he wants in your own words, and on the next line a fact you know now when the look found one. " +
+      "👀 alone is never your first reply to an ask of his: when the look found no fact yet, that one sentence is the whole post, and it goes out in the turn that hands the task over. It says what he wants, never what you or the work thread do next. " +
       "No post promises a result, such as \"build times per page are coming here next\", \"a fresh count is coming in this post\", \"details to follow\" or \"I'll report back\", and none says what you are doing, such as \"on it\" or \"running the tests now\" (#1124-cost-management p21, c104). " +
       "A first reply is the one post for his ask: a question the work needs goes at its end, after your pick, never as a post of its own. " +
-      "When you posted one, the work thread edits it into the answer when its work ends, and when its report or the work-done notice comes, you read the post, edit it yourself only if the answer is missing, and post again only for a new question to him. " +
-      "When you posted none, post the answer from the report as your one post, with `reply_to` set to his post. Then take 👀 off. " +
+      "The work thread edits that post into the answer when its work ends, and when its report or the work-done notice comes, you read the post, edit it yourself only if the answer is missing, and post again only for a new question to him. " +
+      "If your first reply did not go out, post the answer from the report as your one post, with `reply_to` set to his post. Then take 👀 off. " +
       "A `[work-done: no-reply]` that comes while the work thread's jobs still run, with the post still unanswered, ends only its first turn, so keep 👀 on and wait for its report. " +
       "If you can answer in full yourself, answer and hand nothing over. This replaces the base prompt's progress updates. " +
-      `Tell the work thread that its last edit of your post, \`edit_message("reply:${room}/<his post's [message id]>", <the whole post>)\`, carries the answer, or, when you posted none, that its report to you leads with the answer, that an edit only fills in results and the answer, never a status of its jobs or plans, and that it posts nothing new, ` +
+      `Tell the work thread that its last edit of your post, \`edit_message("reply:${room}/<his post's [message id]>", <the whole post>)\`, carries the answer, or, if your first reply did not go out, that its report to you leads with the answer, that an edit only fills in results and the answer, never a status of its jobs or plans, and that it posts nothing new, ` +
       "and that a job that writes a page or report from other jobs' findings starts only after those jobs report, never beside them.",
     "A follow-up in a thread you already worked on gets its answer within a minute from what you already hold: the thread so far, the earlier report and its page. " +
       "Open with the answer, draw the flow as a ```mermaid block when it reads shorter as one (c52), and show one real example, such as a saved row, when you hold one (c132). " +
@@ -156,7 +163,7 @@ export const ROOM_EXAMPLES: readonly { case: string; bad: { at: string; text: st
   {
     case: "The first reply in a channel thread",
     bad: { at: "#sw-factory-build p158", text: "I'll map how it really works first, then write one proposal with options and my pick. It will cover these:\n\n- [ ] how it works today, every service and store, with one diagram" },
-    good: { at: "the shape since #1124-cost-management p21 (c104)", text: "(no post: 👀 on his post until the proposal is written, then the proposal as one post)" },
+    good: { at: "#sw-factory-build p5, sent 7 s after his p4 (c224)", text: "Makes sense, Accounts moves into a tab under Settings and leaves the top bar." },
   },
   {
     case: "A first reply while the work runs",
@@ -279,7 +286,7 @@ function slackPostStep(): string {
     "The answer holds for every result under it: when one result is not clean, the answer names it, as in \"two of the three deploys are live, but staging fails its health check\", never \"all clear\" over a bullet that says otherwise. " +
     "When two of his posts wait for you and each asks its own thing, answer each with its own tell_owner call whose `reply_to` is that post. Merge them only when the second adds to or corrects the first. " +
     "Put the answer on its own line and each further point on its own line or `- ` bullet, never in one paragraph. A bullet stops at two sentences, also one that opens with yes or no: the yes or no and one fact that backs it are the two, and a further fact, such as one part of a count split by kind, goes in a nested `  - ` bullet or is left out. In a reply of more than one line, the first line holds the answer alone, and the first fact behind it goes on the next line: \"The invoice export works again.\" and then \"It broke when the date column moved.\" on its own line, never both on the first line. " +
-    "Keep your working plan and process to yourself (c234). A first reply gives the answer or a fact you know now, never \"I'll do X first, then Y\" and never a checklist of your own steps. " +
+    "Keep your working plan and process to yourself (c234). A first reply gives the answer, or what you understood he wants and a fact you know now, never \"I'll do X first, then Y\" and never a checklist of your own steps. " +
     "A post ends on the last fact you hold, with no line on what comes later or what a later edit will fill in (c104). " +
     "Write \"since\" or \"because\" only before a real cause, never to tie a second fact to the first: write \"The nightly backup runs again. It wrote 12 GB last night.\", never \"The nightly backup runs again, since it wrote 12 GB last night.\" " +
     "A checklist lists only results he cares about, each with its result, and you fill them in by editing that post with `edit_message`. " +
@@ -325,7 +332,7 @@ function platformFeedbackStep(ref: { agent: string; room: string }): string | un
     return `Feedback about sw factory itself is your agent's work: ${what}. It comes from the owner here, from another agent that tags you on a post he commented on, or from another agent's DM comm thread as an agent message. ` +
       "Hand it to your work thread as a task with his words and the id of the post he means, such as dm_vent/p12 or ch_1a2b3c4d/p12. " +
       `The work thread looks at that post and fixes the cause: in apps/chat when it is the rendering, and when it is how agents write or behave, in the shared text every agent loads, ${SHARED_STYLE_TEXT}, never only in one agent's memory. It checks the fix with a blind fresh session (c84) and reports. ` +
-      "Answer once, with the result, where the feedback came from: in the thread of the post that tagged you, even when another agent started the turn, or, for an agent message, back to that comm thread with " +
+      "Answer where the feedback came from. His own post here gets your first reply and then the result, as the hand-over step says. A post that tagged you gets the result once in its thread, even when another agent started the turn, and an agent message gets the result once, back to that comm thread with " +
       "`await agent_message.send(result, receiver_role=\"sibling\", receiver_name=\"<its name from the header>\")`, which posts it in its DM. Post nothing about it in your own room then.";
   }
   if (isGroupRoom(ref.room)) {
@@ -335,7 +342,7 @@ function platformFeedbackStep(ref: { agent: string; room: string }): string | un
   }
   return `When the owner's post is about sw factory itself rather than your agent's work, such as ${what}, pass it to ${name}, the way a person pings the platform team in Slack. ${counts}` +
     `Send \`await agent_message.send(text, receiver_role="sibling", receiver_name=${JSON.stringify(PLATFORM_DM_COMM)})\` with his point in a few words and the post he means as ${ref.room}/p<number>, such as ${ref.room}/p12. ` +
-    `Put 👀 on his post and post nothing about it yet. When ${name}'s answer comes back as an agent message, post it here in one short post that says it is from ${name}, with \`reply_to\` set to his post's [message id], and take 👀 off his post. Follow his feedback in your own later posts too.`;
+    `Put 👀 on his post and reply in one plain sentence with what you understood, with \`reply_to\` set to his post's [message id] (c224). When ${name}'s answer comes back as an agent message, edit that reply into the answer with \`edit_message("reply:${ref.room}/<his post's [message id]>", <the whole post>)\`, in one short post that says it is from ${name}, and take 👀 off his post. Follow his feedback in your own later posts too.`;
 }
 
 /** The step that has a comm thread work its agent's For list (`for-me.ts`), the way a person works Slack's Activity view. */

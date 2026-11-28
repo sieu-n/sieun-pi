@@ -74,15 +74,17 @@ export function commPostRefusal(text: string, turn: CommPostTurn): string | unde
   const relay = relayWords(text);
   if (turn.handed && relay) {
     return `Not sent: "${relay.words}" reports the hand-over you made in this turn, and your 👀 on the post already shows that you are on it. ` +
-      "Post only a fact you already know, or nothing, since 👀 shows the work, and post the result once the work thread's report or the [work-done ...] notice brings it.";
+      "Take that line out and send the rest now: what you understood he wants and any fact you already know (c224). Post the result once the work thread's report or the [work-done ...] notice brings it.";
   }
   if (relay?.kind === "handoff") {
-    return `Not sent: "${relay.words}" announces a hand-over or a result to come. Your 👀 on the post already shows that the work runs, so post ` +
-      "nothing until the result is in, then post the result once.";
+    return `Not sent: "${relay.words}" announces a hand-over or a result to come. Your 👀 on the post already shows that the work runs, so take ` +
+      "that line out. In a first reply to his ask, send what is left: what you understood he wants and any fact you know now (c224). Otherwise post the result once it is in.";
   }
   if (relay && !(turn.owner && turn.asked)) {
-    return `Not sent: "${relay.words}" is progress on work still going, and nobody asked for it on this turn. End the turn with no ` +
-      "message, and post once when the result is in.";
+    return `Not sent: "${relay.words}" is progress on work still going, and nobody asked for it on this turn. ` +
+      (turn.owner
+        ? "Take that line out and send what is left: what you understood he wants and any fact you know now (c224). Post once more when the result is in."
+        : "End the turn with no message, and post once when the result is in.");
   }
   if (hasTable(text) && !turn.tableAsked && !turn.tableResent) {
     return `${TABLE_MARK}, and a room reads like Slack: a table gets cut off in its narrow thread pane. Answer in one or two casual sentences, ` +

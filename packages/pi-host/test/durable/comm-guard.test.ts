@@ -64,7 +64,7 @@ test("the relay lines of the room logs read as hand-over or progress, and the re
 test("a comm thread's post after its hand-over in the turn goes out unless it relays the hand-over (owner, #sw-factory-build p159, c234)", () => {
   const handed = { owner: true, asked: false, handed: true };
   assert.equal(commPostRefusal("The docs site builds again, and the last 3 deploys went green.", handed), undefined, "a fact known now goes out");
-  assert.match(commPostRefusal("The docs site builds again.\nBuild times per page are coming here next.", handed)!, /Post only a fact you already know, or nothing, since 👀 shows the work/, "a promise line is refused (c104)");
+  assert.match(commPostRefusal("The docs site builds again.\nBuild times per page are coming here next.", handed)!, /Take that line out and send the rest now: what you understood he wants and any fact you already know \(c224\)/, "a promise line is refused (c104), and the rest still goes out");
   assert.equal(commPostRefusal("Makes sense, Accounts moves into a tab under Settings and leaves the top bar.", handed), undefined);
   assert.equal(commPostRefusal("Which repo should the panel list cover, auto-sns-agent only or every repo?", handed), undefined);
   assert.match(commPostRefusal(RELAYS[0]![0], handed)!, /reports the hand-over you made in this turn/);
@@ -80,8 +80,15 @@ test("hand-over words are refused on any turn, and progress words unless the own
   assert.equal(commPostRefusal("summaries.md isn't written yet. The work thread is reading threads.ts, the last of the 20 files.", asked), undefined);
   assert.equal(commPostRefusal(ANSWERED[1], { ...owner, asked: asks(ANSWERED[0]) }), undefined);
   assert.match(commPostRefusal(RELAYS.find(([text]) => text.startsWith("The catch is Chrome"))![0], { ...owner, asked: asks("proxy가 아니라 근데 Client browser에서") })!,
-    /^Not sent: "job is testing" is progress on work still going/);
-  assert.match(commPostRefusal("The work thread is reading threads.ts, the last of the 20 files.", notice)!, /is progress on work still going/);
+    /^Not sent: "job is testing" is progress on work still going[\s\S]*Take that line out and send what is left: what you understood he wants/);
+  assert.match(commPostRefusal("The work thread is reading threads.ts, the last of the 20 files.", notice)!, /is progress on work still going[\s\S]*End the turn with no message/);
+  // No refusal on his own ask tells the agent to post nothing: on 11-28 two comm threads read such lines as a reason to stay silent (c224).
+  for (const turn of [owner, asked, { ...owner, handed: true }]) {
+    for (const text of ["On it.", "Got it, a job is removing the banner now.", "Got it, I'll report back with the cause."]) {
+      const refusal = commPostRefusal(text, turn);
+      if (refusal) assert.doesNotMatch(refusal, /or nothing|post nothing|with no message/, `${text}: ${refusal}`);
+    }
+  }
   assert.equal(commPostRefusal("summaries.md is done, with one line for each of the 20 files.", notice), undefined);
 });
 
