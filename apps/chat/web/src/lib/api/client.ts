@@ -200,9 +200,15 @@ export function reportNotDelivered(conversation: ConversationId, status: number,
  * The lane that every read ahead (`Wait.background` "ahead") and every refresh behind a shown page ("shown") goes through, so neither
  * delays a call the owner waits on. On 11-21 at 06:30 KST his page fired about 90 reads ahead at each load, and his POST /read, a 4 ms
  * handler, waited 1.1 to 4.7 s behind them, his GET /api/later up to 1.2 s (d2 findings, requests/2026-11-20.jsonl). While a call he
- * waits on is on its way, the lane starts no read ahead, and it stops the reads ahead on their way and sends them again once his calls
- * end. Refreshes go before reads ahead and stop the reads ahead on their way; a read ahead goes only when no refresh is on its way, what
- * he looks at now (`Wait.first`) before the rest, and at most `AHEAD_LANE` at once. Every call in the lane goes at fetch priority low.
+ * waits on is on its way, the lane starts no read ahead; a read ahead already on its way ends as it is. Refreshes go before reads ahead;
+ * a read ahead goes only when no refresh is on its way, what he looks at now (`Wait.first`) before the rest, and at most `AHEAD_LANE` at
+ * once. Every call in the lane goes at fetch priority low.
+ *
+ * Stopping a read ahead on its way saved him no time and read its path again later. In a walk on 11-28 at a 200 ms round trip
+ * (~/work/p155-own-waits/abort-*.log, 8 tries each), his small call 150 ms after two reads ahead took 205 ms in Chromium on his own
+ * connection for any answer size, stopped or not; WebKit sends his calls on the same connection, and there it took 257 ms behind two
+ * 10 KB answers, 460 ms behind two 31 KB ones and 670 ms behind two 121 KB ones, stopped or not. Each Cmd K keystroke stopped the page
+ * reads of the hits on their way, so a picked hit's page went out 3 times (p324).
  *
  * A refresh waits for none of his calls once they go on a connection of their own (`ownConnection`); before that it waits for them as a
  * read ahead does. On 11-25 at 20:28 KST each reload of his page held the rooms, board and duties refreshes about 940 ms behind the open's
@@ -210,7 +216,7 @@ export function reportNotDelivered(conversation: ConversationId, status: number,
  * main thread was idle for all of it (~/work/p300-channel-open). In a walk at a 200 ms round trip they then waited about 450 ms more for
  * the room's own refresh; sent beside it, they ended 43 to 94 ms after their network time, and the room's items did not slow (rig/out2).
  *
- * A stopped read ahead's bytes already in the pipe still arrive before his answer, so fewer at once serve him better. In a walk of live
+ * A read ahead's bytes already in the pipe arrive before his answer, so fewer at once serve him better. In a walk of live
  * data over HTTP/2 and TLS at a 200 ms round trip, MTU 1280 and TCP slow start after idle (~/work/p155-readahead/lane-summary.md, 12 page
  * loads each, box load 31 to 238), his read mark took p50 207 / p90 216 ms with 2 at once, 280 / 306 with 4 and 211 / 284 with 8,
  * against 369 / 387 before the lane. With 2 the page's reads ahead settle 11.5 s after a load, as before the lane (11.2 s).
@@ -224,8 +230,13 @@ type Ticket = {
   state: TicketState;
   /** When a view asked for the answer, from which a refresh that changed the screen counts his wait; unset for a read ahead. */
   asked: number | undefined;
+  /** The GET's path with its query, and when the lane last stopped it on its way (`stop`). */
+  readonly path: string;
+  stopped?: number;
   readonly send: (signal: AbortSignal | undefined) => void;
   readonly drop: () => void;
+  /** Ends the call with the answer of another read of its path. */
+  readonly take: (value: unknown) => void;
 };
 
 const queued: Ticket[] = [];
@@ -236,8 +247,8 @@ let busy = 0;
 const refresh = (ticket: Ticket): boolean => ticket.wait.background === "shown";
 /** The refresh of the room or thread he opened (`Wait.first`), which is as much his as the calls he waits on. */
 const pageRefresh = (ticket: Ticket): boolean => refresh(ticket) && !!ticket.wait.first;
-/** A call on its way that his call stops: a read ahead, and a refresh while his calls share its connection. */
-const yields = (ticket: Ticket): boolean => !pageRefresh(ticket) && !(ownConnection && refresh(ticket));
+/** A call on its way that his call stops: a refresh but the page's, while his calls share its connection. A read ahead goes on. */
+const yields = (ticket: Ticket): boolean => refresh(ticket) && !pageRefresh(ticket) && !ownConnection;
 
 /**
  * The queued call to send next, or -1. The refresh of the page he looks at goes first, also while one of his calls is on its way. Once his
@@ -295,9 +306,8 @@ function pump(): void {
   else setTimeout(run);
 }
 
-/** Sends a call the lane lets go; a refresh stops the reads ahead on their way. */
+/** Sends a call the lane lets go. */
 function launch(ticket: Ticket): void {
-  if (refresh(ticket)) stop(ticket => !refresh(ticket));
   const controller = new AbortController();
   ticket.state = { kind: "flying", controller };
   flying.add(ticket);
@@ -328,8 +338,14 @@ function stop(which: (ticket: Ticket) => boolean): void {
     flying.delete(ticket);
     if (ticket.state.kind === "flying") ticket.state.controller.abort();
     ticket.state = { kind: "queued" };
+    ticket.stopped = performance.now();
   }
   queued.unshift(...stopped);
+}
+
+/** A GET of `path` answered: a call of that path the lane stopped and holds ends with this answer instead of going out again. */
+function answered(path: string, value: unknown): void {
+  for (const ticket of queued.filter(ticket => ticket.path === path && ticket.stopped !== undefined)) ticket.take(value);
 }
 
 function settle(ticket: Ticket): void {
@@ -386,11 +402,15 @@ const refetch = (): boolean => wroteNow && address() === wroteOn;
 /** Whether a read asked now must leave after his last write answered, and so may not take the answer of a read on its way since before. */
 export const afterWrite = (wait: Wait): boolean => refetch() && (wait.sent ?? Infinity) < wroteAt;
 
-/** A call sent when the lane lets it; one the lane stopped is sent again from the start, and its stop is no error. */
-function laned<T>(wait: Wait, attempt: (signal: AbortSignal | undefined, asked: number | undefined) => Promise<T>): Promise<T> {
+/**
+ * A call sent when the lane lets it; one the lane stopped is sent again from the start, and its stop is no error, unless a read of its
+ * path answered since (`answered`).
+ */
+function laned<T>(wait: Wait, path: string, attempt: (signal: AbortSignal | undefined, asked: number | undefined) => Promise<T>): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const ticket: Ticket = {
       wait,
+      path,
       state: { kind: "queued" },
       asked: wait.background === "shown" ? performance.now() : undefined,
       send: signal => void attempt(signal, ticket.asked).then(value => {
@@ -405,6 +425,10 @@ function laned<T>(wait: Wait, attempt: (signal: AbortSignal | undefined, asked: 
       drop: () => {
         settle(ticket);
         reject(new DOMException("The read ahead was dropped before it was sent", "AbortError"));
+      },
+      take: value => {
+        settle(ticket);
+        resolve(value as T);
       },
     };
     // A refresh that waits for no call of his goes at once: after the next paint, on a reload whose first frame came after the app's
@@ -460,7 +484,7 @@ export function dropAhead(wait: Wait): void {
 function call<T>(method: string, path: string, body?: unknown, signal?: AbortSignal, wait?: Wait, safeTwice = false): Promise<T> {
   if (refetch() && wait?.background === "shown") wait.background = undefined;
   const repeat = method === "GET" || safeTwice || deduped(body);
-  if (wait?.background && method === "GET") return laned(wait, (own, asked) => send<T>(method, path, body, either(own, signal), wait, repeat, asked));
+  if (wait?.background && method === "GET") return laned(wait, path, (own, asked) => send<T>(method, path, body, either(own, signal), wait, repeat, asked));
   return waited(() => send<T>(method, path, body, signal, wait, repeat), method !== "GET");
 }
 
@@ -598,6 +622,7 @@ async function send<T>(method: string, path: string, body: unknown, signal: Abor
     const failure = response.ok ? error : said ?? error ?? `${method} ${path} failed with ${response.status}`;
     recordTiming(method, path, response.status, started, failure, wait, asked, first);
     if (failure !== undefined) throw response.ok ? new Error(failure) : new ApiError(response.status, failure);
+    if (method === "GET") answered(path, value);
     return value as T;
   }
 }

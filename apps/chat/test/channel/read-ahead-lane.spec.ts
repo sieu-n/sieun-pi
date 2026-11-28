@@ -79,7 +79,9 @@ test("no read ahead starts while a call the owner waits on is on its way", async
   expect(rooms).toHaveLength(1);
 });
 
-test("a read ahead on its way stops when the owner's call starts, goes again after it, and logs no failure", async ({ page }) => {
+// Stopping a read ahead on its way saved his call no time at a 200 ms round trip and read its path again later: a Cmd K hit's page went
+// out 3 times in a typing burst (client.ts AHEAD_LANE, ~/work/p155-own-waits/abort-*.log).
+test("a read ahead on its way goes on when the owner's call starts, goes out once, and logs no failure", async ({ page }) => {
   await page.addInitScript(() => {
     navigator.sendBeacon = () => false;
   });
@@ -93,16 +95,16 @@ test("a read ahead on its way stops when the owner's call starts, goes again aft
   await expect.poll(() => aheadHeld.sent.length).toBe(1);
   const later = await hold(page, HIS);
   await page.evaluate(() => void window.lane.later());
-  await expect.poll(() => failed.length).toBe(1);
-  expect(failed[0]).toContain("ABORTED");
+  await expect.poll(() => later.sent.length).toBe(1);
   await page.waitForTimeout(300);
-  // While his call is held, the stopped read ahead waits.
-  expect(aheadHeld.sent).toHaveLength(1);
-  later.release();
-  await expect.poll(() => settled(page, "later")).toBe("ok");
-  await expect.poll(() => aheadHeld.sent.length).toBe(2);
+  expect(failed).toEqual([]);
   aheadHeld.release();
   await expect.poll(() => settled(page, "/api/rooms?lane=2")).toBe("ok");
+  later.release();
+  await expect.poll(() => settled(page, "later")).toBe("ok");
+  await page.waitForTimeout(300);
+  expect(aheadHeld.sent).toHaveLength(1);
+  expect(failed).toEqual([]);
 
   // The page posts its timing lines every 10 s and the rest on pagehide, so the read's line may be in either batch.
   await page.evaluate(() => dispatchEvent(new Event("pagehide")));
@@ -333,4 +335,34 @@ test("a refresh leaves in the task that asks for it, with no wait for the next p
   });
   expect(left).toEqual(["/api/rooms?lane=12"]);
   await expect.poll(() => settled(page, "/api/rooms?lane=12 read")).toBe("ok");
+});
+
+// Each Cmd K keystroke is his call. A search that stopped the hits' page reads on their way sent each again after it, so in a typing burst
+// a hit's page went out 2 or 3 times (p324, work/p324-dup-reads).
+test("a Cmd K typing burst reads each hit's page at most once", async ({ page }) => {
+  await noSocket(page);
+  await open(page, "#/c/ch_general");
+  await page.waitForLoadState("networkidle");
+  const around = new Map<string, number>();
+  // Each page read takes 600 ms, so the next keystroke's search starts while it is on its way.
+  await page.route((url) => url.searchParams.has("around"), async (route) => {
+    const url = new URL(route.request().url());
+    const key = `${url.pathname}|${url.searchParams.get("around")}`;
+    around.set(key, (around.get(key) ?? 0) + 1);
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    await route.fallback().catch(() => undefined);
+  });
+  await page.keyboard.press("Control+k");
+  const input = page.locator("[data-search-palette]").getByRole("combobox");
+  await input.fill("b");
+  await expect(page.locator("[data-search-palette]").locator('[data-key^="hit:"]').first()).toBeVisible();
+  for (const letter of "oard") {
+    await page.waitForTimeout(250);
+    await input.press(letter);
+  }
+  await page.waitForTimeout(500);
+  await page.waitForLoadState("networkidle");
+  await page.waitForTimeout(1_500);
+  expect(around.size).toBeGreaterThan(0);
+  expect([...around].filter(([, n]) => n > 1)).toEqual([]);
 });
