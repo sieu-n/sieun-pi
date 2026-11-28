@@ -189,11 +189,12 @@ def read_grant_status(token):
     except Exception as e:
         raise ResetError(f"the usage endpoint did not answer ({type(e).__name__})")
     if code == 429:
-        raise ResetError("the usage endpoint rate limited this account; try again later")
-    if code in (401, 403):
-        raise ResetError(f"Anthropic refused the account's token ({code})")
+        raise ResetError("Anthropic rate limited the reset check (429)")
+    if code == 401:
+        raise ResetError("signed out: Anthropic refused the token (401)")
     if code != 200 or body is None:
-        raise ResetError(f"the usage endpoint answered {code}")
+        message = ((body or {}).get("error") or {}).get("message") if isinstance((body or {}).get("error"), dict) else None
+        raise ResetError(f"Anthropic answered {code}" + (f": {' '.join(message.split())[:160]}" if isinstance(message, str) and message.strip() else ""))
     status = parse_grant_status(body.get("cedar_ember"))
     if status is None:
         raise ResetError("the reset block is missing or changed shape")

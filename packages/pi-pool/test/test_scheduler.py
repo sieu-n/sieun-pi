@@ -1224,9 +1224,11 @@ class StaleUsage(unittest.TestCase):
                 self.assertEqual((d.slot_account.id, d.slot_at), ("seat", slot))
 
     def test_an_index_record_names_its_failed_read_and_the_usage_retry_time(self):
-        self.assertEqual(registry.read_state({"lastProbeAt": 2000, "lastUsageAt": 1000, "usageRetryAt": 9000}),
-                         {"usage_retry_at": 9, "read_failed_at": 2})
-        self.assertEqual(registry.read_state({"lastProbeAt": 2000, "lastUsageAt": 2000}), {"usage_retry_at": 0, "read_failed_at": 0})
+        self.assertEqual(registry.read_state({"lastProbeAt": 2000, "lastUsageAt": 1000, "usageRetryAt": 9000,
+                                              "lastReadError": "Anthropic rate limited usage reads (429)"}),
+                         {"usage_retry_at": 9, "read_failed_at": 2, "read_error": "Anthropic rate limited usage reads (429)"})
+        self.assertEqual(registry.read_state({"lastProbeAt": 2000, "lastUsageAt": 2000, "lastReadError": "old"}),
+                         {"usage_retry_at": 0, "read_failed_at": 0, "read_error": None})
 
     def run_vend(self, state, accounts, now):
         started, logged = [], []

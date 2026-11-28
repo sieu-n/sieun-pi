@@ -20,6 +20,9 @@ SAMPLE_MIN_SEC = 90
 READERS = 4
 
 
+PROVIDER_NAME = {"anthropic": "Anthropic", "openai-codex": "OpenAI"}
+
+
 class TokenRejected(RuntimeError):
     """The usage endpoint answered 401: the provider no longer takes this access token."""
 
@@ -42,7 +45,23 @@ def instant_ms(value):
         return None
 
 
+def error_message(raw):
+    """The provider's own message in an error body, on one line, else None. Anthropic sends
+    {"error": {"message"}}, and on 11-28 its probe answer for a seat whose organization turned
+    OAuth off read "OAuth authentication is currently not allowed for this organization"."""
+    try:
+        body = json.loads(raw)
+    except ValueError:
+        return None
+    err = body.get("error") if isinstance(body, dict) else None
+    msg = err.get("message") if isinstance(err, dict) else err
+    return re.sub(r"\s+", " ", msg).strip()[:160] or None if isinstance(msg, str) else None
+
+
 def get_json(url, headers):
+    """The JSON body of one GET. A failure raises with the provider's status code and its
+    own message, which the Accounts page shows as the row's last read."""
+    name = "Anthropic" if "anthropic.com" in url else "OpenAI"
     req = urllib.request.Request(url, headers={"Content-Type": "application/json", **headers})
     try:
         with urllib.request.urlopen(req, timeout=READ_TIMEOUT) as resp:
@@ -52,10 +71,14 @@ def get_json(url, headers):
             after = (e.headers.get("Retry-After") or "").strip()
             raise RateLimited(time.time() + int(after) if after.isdigit() and int(after) > 0 else None) from None
         if e.code == 401:
-            raise TokenRejected("usage read failed (HTTP 401)") from None
-        raise RuntimeError(f"usage read failed (HTTP {e.code})") from None
+            raise TokenRejected(f"signed out: {name} refused the token (401)") from None
+        try:
+            msg = error_message(e.read())
+        except OSError:
+            msg = None
+        raise RuntimeError(f"{name} answered {e.code}" + (f": {msg}" if msg else "")) from None
     except (OSError, ValueError) as e:
-        raise RuntimeError(f"usage read failed ({type(e).__name__})") from None
+        raise RuntimeError(f"{name} did not answer ({type(e).__name__})") from None
 
 
 def claude_windows(body, at_ms):
@@ -178,23 +201,31 @@ def read_account(provider, account, cfg, manual=False):
             rec["windows"] = merge_named(windows, rec.get("windows") or []) if provider == "anthropic" else windows
             rec["lastUsageAt"] = started
             rec.pop("usageRetryAt", None)
+            rec.pop("lastReadError", None)
             rec.update(extra)
             return True
         outcome = {"ok": True, "usage_at": round(started / 1000)}
     except RateLimited as e:
         until = e.retry_at
+        reason = f"{PROVIDER_NAME[provider]} rate limited usage reads (429)"
 
         def change(rec):
             rec["lastProbeAt"] = started
+            rec["lastReadError"] = reason
             if until:
                 rec["usageRetryAt"] = int(until * 1000)
             return True
-        outcome = {"ok": False, "reason": "the usage endpoint rate limited this account", "retry_at": round(until) if until else None}
+        outcome = {"ok": False, "reason": reason, "retry_at": round(until) if until else None}
     except Exception as e:
+        # A dead grant is a sign-out: base.GrantDead names the token endpoint's code first ("invalid_grant: ...").
+        reason = (f"signed out: {PROVIDER_NAME[provider]} refused the sign-in ({str(e).split(':')[0]})"
+                  if isinstance(e, base.GrantDead) else str(e)[:200])
+
         def change(rec):
             rec["lastProbeAt"] = started
+            rec["lastReadError"] = reason
             return True
-        outcome = {"ok": False, "reason": str(e)[:200], "retry_at": None}
+        outcome = {"ok": False, "reason": reason, "retry_at": None}
     if manual:
         base.log("usage_manual_read", provider=provider, account=account.label, sent_at=round(started / 1000, 1),
                  ok=outcome["ok"], reason=outcome.get("reason"), retry_at=outcome.get("retry_at"))

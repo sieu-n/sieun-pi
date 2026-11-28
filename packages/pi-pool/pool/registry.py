@@ -197,6 +197,8 @@ class Account:
     usage_retry_at: float = 0
     # Epoch seconds of the last usage read when it failed, the latest read being a failure; 0 otherwise.
     read_failed_at: float = 0
+    # What the provider answered that last failed read, in plain words (usage.read_account); None after a good read.
+    read_error: "str | None" = None
     disabled: bool = False
     # True when every model the session runs is outside the gated families, so
     # a spent per-model cap (Fable) does not stop this account serving it.
@@ -326,10 +328,12 @@ def record_labels(records):
 
 
 def read_state(record):
-    """The Account fields an index record's last usage read sets: the usage endpoint's retry time, and when the last
-    read failed. A read writes lastProbeAt each time and lastUsageAt only when it lands."""
+    """The Account fields an index record's last usage read sets: the usage endpoint's retry time, when the last
+    read failed and what the provider answered it. A read writes lastProbeAt each time and lastUsageAt only when it lands."""
     probe, landed = (record.get("lastProbeAt") or 0) / 1000, (record.get("lastUsageAt") or 0) / 1000
-    return {"usage_retry_at": (record.get("usageRetryAt") or 0) / 1000, "read_failed_at": probe if probe > landed else 0}
+    failed = probe > landed
+    return {"usage_retry_at": (record.get("usageRetryAt") or 0) / 1000, "read_failed_at": probe if failed else 0,
+            "read_error": record.get("lastReadError") if failed else None}
 
 
 def next_read_at(a, now):
