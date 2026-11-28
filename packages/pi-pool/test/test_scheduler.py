@@ -1253,7 +1253,7 @@ class StaleUsage(unittest.TestCase):
                                 windows=(fresh_window(20, FIVE, VIREV_BACK + 3600, VIREV_BACK - 60),))
         started, logged = self.run_vend(state, [virev_seat(), b], VIREV_BACK)
         [(argv, kw)] = started
-        self.assertEqual(argv[-5:], ["refresh", VIREV, "--provider", P, "--json"])
+        self.assertEqual(argv[-6:], ["refresh", VIREV, "--provider", P, "--json", "--background"])
         self.assertTrue(kw["start_new_session"])
         self.assertEqual(kw["stdout"], vending.subprocess.DEVNULL)
         self.assertEqual([kw["accounts"] for e, kw in logged if e == "usage_read"], [["sieun@virev.ai"]])
@@ -1470,10 +1470,10 @@ class BookOnRead(unittest.TestCase):
         return dataclasses.replace(acct("x", five=10, tier="team 5x"), windows=windows)
 
     def refresh(self, state, accounts, fresh_accounts, now):
-        """`pi-pool refresh x`: the read lands, and the index holds the fresh figure from then on."""
+        """`pi-pool refresh x --background`, as the hook starts it: the read lands, and the index holds the fresh figure from then on."""
         index = {"accounts": accounts}
 
-        def read_many(selection, emit):
+        def read_many(selection, emit, manual):
             index["accounts"] = fresh_accounts
             for a in fresh_accounts:
                 if a.id in (selection.get(P) or ()):
@@ -1491,7 +1491,7 @@ class BookOnRead(unittest.TestCase):
             stack.enter_context(unittest.mock.patch.object(commands.usage, "read_many", side_effect=read_many))
             stack.enter_context(unittest.mock.patch.object(time, "time", return_value=now))
             stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
-            commands.cmd_refresh(["x", "--provider", P, "--json"])
+            commands.cmd_refresh(["x", "--provider", P, "--json", "--background"])
 
     def test_a_read_that_shows_room_books_the_trees_in_line_before_the_tree_that_started_it(self):
         stale, fresh = self.seat(NOW - registry.STALE_USAGE_SEC - 60), self.seat(NOW)
