@@ -5,6 +5,7 @@
   import Icon from "$lib/ui/Icon.svelte";
   import { dayLabel, timeLabel } from "$lib/ui/datetime";
   import type { StackMember } from "$lib/ui/types";
+  import { seen } from "$lib/ui/seen";
 
   type Props = {
     /** Reply authors, or the job itself. */
@@ -20,15 +21,17 @@
     /** bubble hangs the pill off its bubble with a curved line; slack is the left-aligned thread summary under a channel post. */
     layout?: "bubble" | "slack";
     onclick: () => void;
+    /** Told when the pill comes onto the screen and leaves it, as a job pill reads its job ahead only while it shows. */
+    onshown?: (shown: boolean) => void;
   };
-  let { members, label, replies, lastAt = null, working = false, failed = false, open = false, own = false, layout = "bubble", onclick }: Props = $props();
+  let { members, label, replies, lastAt = null, working = false, failed = false, open = false, own = false, layout = "bubble", onclick, onshown }: Props = $props();
   const count = $derived(replies === 0 ? "View thread" : `${replies} ${replies === 1 ? "reply" : "replies"}`);
   const lastDay = $derived(lastAt ? dayLabel(lastAt) : "");
   const lastReply = $derived(lastAt ? `Last reply ${lastDay === "Today" || lastDay === "Yesterday" ? lastDay.toLowerCase() : lastDay} at ${timeLabel(lastAt)}` : null);
 </script>
 
 {#if layout === "slack"}
-  <button type="button" class="summary" class:open data-thread-pill aria-label="{label ? `${label}, ` : ""}{count}" {onclick}>
+  <button type="button" class="summary" class:open data-thread-pill aria-label="{label ? `${label}, ` : ""}{count}" {onclick} use:seen={onshown}>
     <span class="faces">
       {#each members.slice(0, 3) as m (m.id)}
         <Avatar name={m.name} kind={m.kind ?? "agent"} src={m.src ?? null} seed={m.id} size={24} />
@@ -47,7 +50,7 @@
     <span class="chevron"><Icon name="chevron-right" size={14} /></span>
   </button>
 {:else}
-  <button type="button" class="pill" class:own class:open data-thread-pill aria-label="{label}, {count}" {onclick}>
+  <button type="button" class="pill" class:own class:open data-thread-pill aria-label="{label}, {count}" {onclick} use:seen={onshown}>
     <AvatarStack {members} size={18} max={3} />
     {#if label}<span class="label">{label}</span>{/if}
     <span class="count">{count}</span>

@@ -42,7 +42,8 @@ test("an agent's work thread opens from the page's read ahead with no call in fr
   const asked = await hang(page, held);
   await page.evaluate((id) => (location.hash = `#/c/${id}`), work);
   await expect(conversation(page).locator("[data-message-id]").first()).toBeVisible();
-  expect(asked).toContain(`/api/c/${work}/items`);
+  // The socket kept the work thread current since its read ahead, so the open asks for none of its posts (stores.svelte.ts `current`).
+  expect(asked).not.toContain(`/api/c/${work}/items`);
 });
 
 test("Reply in thread on a post with no replies shows the post in the pane with no call in front of it", async ({ page, request }) => {

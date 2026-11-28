@@ -49,9 +49,10 @@ test("a channel thread and a room the owner has not opened yet show their messag
   await page.locator(`a[href="#/c/${dm}"]`).first().click();
   await expect(page).toHaveURL(new RegExp(`#/c/${dm}`));
   await expect(conversation(page).locator("[data-message-id]").first()).toBeVisible();
-  // Both opens asked for a refresh, and the screen filled while those calls hung.
+  // The thread's open asked for a refresh, and the screen filled while that call hung. The room the socket kept current since its read
+  // ahead asks for none of its posts (stores.svelte.ts `current`).
   expect(asked).toContain("/api/c/ch_cutover/replies/p1");
-  expect(asked).toContain(`/api/c/${dm}/items`);
+  expect(asked).not.toContain(`/api/c/${dm}/items`);
 });
 
 test("a read ahead and an unchanged refresh are logged as background, and a first open as a wait", async ({ page, request }) => {
@@ -65,10 +66,8 @@ test("a read ahead and an unchanged refresh are logged as background, and a firs
   await open(page, "#/c/ch_cutover");
   await warmed;
   await expect.poll(() => keptPage(page, "timeline", dm)).toBe(true);
-  const refreshed = page.waitForResponse((r) => r.url().includes(`/api/c/${dm}/items`));
   await page.locator(`a[href="#/c/${dm}"]`).first().click();
   await expect(conversation(page).locator("[data-message-id]").first()).toBeVisible();
-  await refreshed;
 
   // The page posts its last batch of waits as it goes away. The refresh's line is kept once its body is read, after the answer's headers
   // came, so each pagehide posts what the page holds by then until that line is among them.
@@ -80,9 +79,10 @@ test("a read ahead and an unchanged refresh are logged as background, and a firs
   await expect.poll(async () => {
     await page.evaluate(() => dispatchEvent(new Event("pagehide")));
     return of(`/api/c/${dm}/items`).length;
-  }).toBeGreaterThanOrEqual(2);
+  }).toBeGreaterThanOrEqual(1);
   expect(of("/api/c/ch_cutover/items")).toEqual(["waited"]);
-  expect(of(`/api/c/${dm}/items`)).toEqual(["ahead", "shown"]);
+  // The socket kept the room current since its read ahead, so its open read no posts (stores.svelte.ts `current`).
+  expect(of(`/api/c/${dm}/items`)).toEqual(["ahead"]);
   expect(of("/api/c/ch_cutover/replies/p1")).toEqual(["ahead"]);
 });
 

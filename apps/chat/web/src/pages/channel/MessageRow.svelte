@@ -10,7 +10,7 @@
   import Menu from "$lib/ui/Menu.svelte";
   import type { MenuEntry } from "$lib/ui/menu";
   import { toast } from "$lib/ui/toast.svelte";
-  import { api, markUnread } from "$lib/api";
+  import { api, jobShown, markUnread } from "$lib/api";
   import { later, laterHref } from "$lib/later.svelte";
   import RemindDialog from "$lib/RemindDialog.svelte";
   import { dueLabel, remindedText, remindMenu } from "$lib/remind";
@@ -410,6 +410,7 @@
         failed={job.status === "failed"}
         open={openThread === job.conversation}
         onclick={() => onthread(job.conversation)}
+        onshown={(shown) => jobShown(job, shown)}
       />
     {/each}
   {/if}

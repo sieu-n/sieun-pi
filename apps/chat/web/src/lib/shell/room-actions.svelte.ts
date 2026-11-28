@@ -11,6 +11,9 @@ import { sidebar } from "./sidebar.svelte";
 
 const label = (row: Pick<ConversationSummary, "kind" | "name">): string => (row.kind === "channel" ? `#${row.name}` : row.name);
 
+/** Whether `id` names a channel, a DM or a Solo room, the kinds the sidebar lists. */
+const sidebarKind = (id: ConversationId): boolean => id.startsWith("ch_") || id.startsWith("dm_") || isSoloRoom(id);
+
 const inSidebar = (id: ConversationId): boolean => {
   const { solo, channels, dms } = sidebar.data;
   return [...channels, ...dms, ...solo].some((row) => row.id === id);
@@ -28,7 +31,9 @@ class OpenTestRoom {
     // Until the sidebar's first answer every room looks missing from it. On 11-25 each reload of his page read the open channel's header
     // here beside the room's own read of it, and Chrome held the room's read until this one ended (~/work/p300-channel-open/report.md).
     if (sidebar.state === "loading") return;
-    if (!id || inSidebar(id)) {
+    // A work thread or a job is never a sidebar row, and on 11-28 each open of agent factory's work thread from Cmd K read its header here
+    // a second time beside the timeline's own read (work/p324-dup-reads/live/r3).
+    if (!id || inSidebar(id) || !sidebarKind(id)) {
       this.asked = null;
       this.row = null;
       return;

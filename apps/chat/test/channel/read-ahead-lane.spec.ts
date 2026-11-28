@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { open } from "./helpers";
+import { open, VENT } from "./helpers";
 
 /**
  * The lane in client.ts that every read ahead goes through. On 11-21 the owner's POST /read, a 4 ms handler, waited 1.1 to 4.7 s behind
@@ -250,6 +250,79 @@ test("a picked Cmd K hit reads only its own page", async ({ page }) => {
   await page.waitForTimeout(500);
   expect(around.length).toBeLessThanOrEqual(1);
   expect(around.every((hit) => hits.includes(hit))).toBe(true);
+});
+
+// In a live walk on 11-28 each open of agent factory's work thread from Cmd K read its header twice at once: the timeline's read and the
+// sidebar's test room check, which a work thread never needs (work/p324-dup-reads/live/r3).
+test("a work thread's open reads its header once", async ({ page }) => {
+  const thread = "0f1e0000-0000-4000-8000-000000000001";
+  await open(page, "#/c/ch_general");
+  await page.waitForLoadState("networkidle");
+  const headers: string[] = [];
+  page.on("request", (r) => (r.method() === "GET" && new URL(r.url()).pathname === `/api/c/${thread}` ? headers.push(r.url()) : undefined));
+  await page.evaluate((id) => { location.hash = `#/c/${id}`; }, thread);
+  await expect(page.getByTestId("conversation-title")).toBeVisible();
+  await page.waitForLoadState("networkidle");
+  await page.waitForTimeout(500);
+  // One read, or none over HTTP when the socket kept the thread current and the open read its header over the socket.
+  expect(headers.length).toBeLessThanOrEqual(1);
+});
+
+// In a live walk on 11-28 the page read each room it opened again, items and header, though the socket had brought every post since its
+// last read (work/p324-dup-reads/live/r3).
+test("a room the socket kept current opens with no read of its posts or header over HTTP", async ({ page }) => {
+  const room = "ch_general";
+  await open(page, `#/c/${room}`);
+  await page.waitForLoadState("networkidle");
+  const away = async () => {
+    await page.evaluate(() => { location.hash = "#/c/ch_cutover"; });
+    await expect(page.getByTestId("conversation-title")).toContainText("pi-cutover");
+    await page.waitForLoadState("networkidle");
+  };
+  const back = async () => {
+    await page.evaluate((id) => { location.hash = `#/c/${id}`; }, room);
+    await expect(page.getByTestId("conversation-title")).toContainText("general");
+    await page.waitForLoadState("networkidle");
+    await page.waitForTimeout(300);
+  };
+  // The first open may read before the socket opened, so the second read marks the page current. networkidle returns at once after the
+  // load, so the spec waits for that read's answer.
+  await away();
+  const read = page.waitForResponse((r) => new URL(r.url()).pathname === `/api/c/${room}/items`);
+  await back();
+  await read;
+  await page.waitForTimeout(300);
+  await away();
+  const reads: string[] = [];
+  page.on("request", (r) => {
+    const path = new URL(r.url()).pathname;
+    if (r.method() === "GET" && (path === `/api/c/${room}` || path === `/api/c/${room}/items`)) reads.push(path);
+  });
+  await back();
+  expect(reads).toEqual([]);
+});
+
+// On 11-28 a pick into agent factory's work thread read the short pages of its 20 newest job pills and 3 more jobs ahead, 23 pages in
+// 10 s, while the screen showed a few of those pills (work/p324-dup-reads/live/r3).
+test("a work thread reads ahead the jobs of the pills on the screen, not of every pill", async ({ page }) => {
+  const fake = (n: number) => `${VENT}:${9000 + n}`;
+  await page.route((url) => url.pathname === `/api/c/${encodeURIComponent(VENT)}/items` && !url.search, async (route) => {
+    const answer = await route.fetch();
+    const body = (await answer.json()) as { items: { kind: string; id: string; at: number; jobs?: { conversation: string; name: string }[] }[] };
+    const withJobs = body.items.find((item) => item.jobs?.length)!;
+    const oldest = body.items[0]!.at;
+    const extra = Array.from({ length: 30 }, (_, n) => ({ ...withJobs, id: `fake-${n}`, at: oldest - (30 - n) * 60_000, jobs: [{ ...withJobs.jobs![0]!, conversation: fake(n), name: `fake job ${n}` }] }));
+    await route.fulfill({ response: answer, json: { ...body, items: [...extra, ...body.items] } });
+  });
+  const asked: string[] = [];
+  page.on("request", (r) => {
+    const path = decodeURIComponent(new URL(r.url()).pathname);
+    if (path.startsWith(`/api/c/${VENT}:9`)) asked.push(path);
+  });
+  await open(page, `#/c/${VENT}`);
+  await page.waitForTimeout(4000);
+  // The fake turns sit above the newest posts, out of the screen, so none of their jobs is read.
+  expect(asked).toEqual([]);
 });
 
 test("a refresh behind a shown panel goes beside the owner's call on its own connection, and the read ahead waits", async ({ page }) => {

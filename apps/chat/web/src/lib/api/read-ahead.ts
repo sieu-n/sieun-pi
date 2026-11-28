@@ -41,8 +41,15 @@ export class ReadAhead<Wanted extends Ahead = Ahead> {
   private wanted: Wanted[] = [];
   private reading = 0;
 
-  /** `warm` reads one and keeps the answer; one that `viewing` names has an open view, which keeps it current itself. */
-  constructor(private readonly warm: (wanted: Wanted) => Promise<unknown>, private readonly viewing: (id: string) => boolean = () => false) {
+  /**
+   * `warm` reads one and keeps the answer; one that `viewing` names has an open view, which keeps it current itself, and one that `kept`
+   * names the socket has kept current since its last read, so it is read again only once that stops.
+   */
+  constructor(
+    private readonly warm: (wanted: Wanted) => Promise<unknown>,
+    private readonly viewing: (id: string) => boolean = () => false,
+    private readonly kept: (id: string) => boolean = () => false,
+  ) {
     if (typeof document !== "undefined") document.addEventListener("visibilitychange", () => this.run());
   }
 
@@ -66,7 +73,7 @@ export class ReadAhead<Wanted extends Ahead = Ahead> {
       if (this.viewing(c.id)) continue;
       const read = this.readAt.get(c.id);
       if (!read) return c;
-      if (!atRest(c.status) || c.at <= read.at) continue;
+      if (this.kept(c.id) || !atRest(c.status) || c.at <= read.at) continue;
       const when = read.when + READ_AGAIN_MS;
       if (when <= now) return c;
       due = Math.min(due ?? when, when);

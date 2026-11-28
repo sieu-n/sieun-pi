@@ -12,7 +12,8 @@ import { heldImages } from "./held-images.ts";
 import { pageDb, type KeptPage } from "./page-db.ts";
 import { heldSends, type HeldSend } from "./held-sends.ts";
 import { holdReload, releaseReload } from "./reload.ts";
-import { live } from "./live.svelte.ts";
+import { live, UNCHANGED } from "./live.svelte.ts";
+import { answerTag } from "./shared/answer-tag.ts";
 import { ReadAhead, type Ahead } from "./read-ahead.ts";
 import { HELLO_BUCKET_CACHE, HeldList, keepBuckets, keptLists, OLD_RECORD } from "./hello-keep.ts";
 import { mergeBuckets, untimed, type Timed } from "./shared/hello-buckets.ts";
@@ -742,8 +743,10 @@ const JOBS_AHEAD = 20;
 /**
  * How many jobs of the open work thread or job are read ahead beside its pills, the newest first (`jobsAhead`). On 11-22 a reload walk
  * opened three jobs no pill on the page named: two of the agent factory's 374 at ranks 1 and 2 by age, and one of API portal's 15 at 14.
+ * With 20, a Cmd K pick into agent factory's work thread on 11-28 read 23 job pages ahead in 10 s (work/p324-dup-reads/live/r3), so the
+ * newest 3 go, and one like API portal's 14th waits one round trip.
  */
-const THREAD_JOBS_AHEAD = 20;
+const THREAD_JOBS_AHEAD = 3;
 /** How many of the jobs that work now are read ahead and followed (`liveJobsAhead`): on 11-22 at 05:40 UTC 14 worked and 5 slept (GET /api/jobs). */
 const LIVE_JOBS_AHEAD = 20;
 /**
@@ -819,7 +822,10 @@ export function prefetchThread(channel: ConversationId | null, key: string, root
  * `opts` say whether the owner looks at it now (`PageCache.warm`).
  */
 const warmTimeline = (limit?: number, opts: { first?: boolean; listed?: boolean } = {}) => ({ id }: Ahead): Promise<void> =>
-  timelinePages.warm(id, wait => readTimeline(id, undefined, wait, limit),
+  timelinePages.warm(id, wait => {
+    const left = performance.now();
+    return readTimeline(id, undefined, wait, limit).then(read => (readWhileFollowed(id, left), read));
+  },
     ({ page, header }) => {
       sawHeader(header);
       return { items: shownItems(id, page.items), older: page.older, header, ...(limit ? { limit } : {}) };
@@ -873,7 +879,7 @@ function boardsAhead(agents: readonly AgentSummary[] = global.agents): void {
  * one that worked last first. No list read a work thread ahead, so on 11-21 each of his 5 opens of one waited 267 to 516 ms
  * (requests/2026-11-21.jsonl); the agent factory's, at 7.7 KB as brotli the largest of 11, works nearly all day.
  */
-const rooms = new ReadAhead(warmTimeline(), viewingTimeline);
+const rooms = new ReadAhead(warmTimeline(), viewingTimeline, id => current.has(id));
 function roomsAhead(sidebar: Sidebar | null = global.sidebar): void {
   if (!sidebar) return;
   const unread = (room: ConversationSummary) => Number(room.unread > 0 || room.hasNew);
@@ -897,6 +903,17 @@ function roomsAhead(sidebar: Sidebar | null = global.sidebar): void {
  */
 const followed = new Map<ConversationId, () => void>();
 let following = false;
+/**
+ * The followed rooms and jobs whose kept page the socket has kept current since its last read: the read left while the room was followed
+ * and the socket open, and the socket has not opened again since. Such a page is not read ahead again, and its open reads only its header,
+ * over the socket. In a live walk at a 200 ms round trip on 11-28 the page read agent factory's work thread every 100 s and each room it
+ * opened again, 4 to 6 times in 3 min, while the socket brought every post (work/p324-dup-reads/live/r3).
+ */
+const current = new Set<ConversationId>();
+/** Marks `id` current when its read, which left at `left` (`performance.now()`), answered. */
+function readWhileFollowed(id: ConversationId, left: number): void {
+  if (followed.has(id) && live.openedAt <= left && live.connected) current.add(id);
+}
 /** What each list wants followed, by list name; a new list of one name replaces its last one. */
 const followLists = new Map<string, readonly ConversationId[]>();
 
@@ -905,12 +922,15 @@ function follow(list: string, ids: readonly ConversationId[]): void {
   if (!following) {
     following = true;
     live.on(event => (event.type === "items" && followed.has(event.conversation) ? keepArrived(event.conversation, event.items, event.removed ?? []) : undefined));
+    // Events sent while the socket was down are lost, so a page kept before a reopen is read again.
+    live.onOpen(() => current.clear());
   }
   const wanted = new Set([...followLists.values()].flat());
   for (const [id, stop] of followed) {
     if (wanted.has(id)) continue;
     stop();
     followed.delete(id);
+    current.delete(id);
   }
   for (const id of wanted) if (!followed.has(id)) followed.set(id, live.watch(id, () => timelinePages.last(id)?.items.findLast(item => !isPending(item))?.id));
 }
@@ -967,15 +987,32 @@ export function listedAhead(listed: readonly { conversation: ConversationId; mes
  */
 const JOB_PAGE = 10;
 const jobPills = new ReadAhead(warmTimeline(JOB_PAGE, { first: true }), viewingTimeline);
+/**
+ * The job pills on the screen now (`jobShown`), and the open thread's newest jobs, which `jobsAhead` reads ahead. Only a pill he can see is
+ * one he can click next: on 11-28 a pick into agent factory's work thread read the pages of all its 20 newest pills (work/p324-dup-reads).
+ */
+const shownJobs = new Map<ConversationId, Ahead>();
+let threadJobs: Ahead[] = [];
+const jobsWanted = () => {
+  const pills = [...shownJobs.values()].sort((a, b) => b.at - a.at).slice(0, JOBS_AHEAD);
+  jobPills.want([...pills, ...threadJobs.filter(job => !shownJobs.has(job.id))]);
+};
+/** A job pill came onto the screen or left it (ThreadPill.svelte `onshown`). */
+export function jobShown(job: { conversation: ConversationId; lastAt: number; status: RunStatus }, shown: boolean): void {
+  if (shown) shownJobs.set(job.conversation, { id: job.conversation, at: job.lastAt, status: job.status });
+  else shownJobs.delete(job.conversation);
+  jobsWanted();
+}
 function jobsAhead(id: ConversationId, items: readonly Item[]): void {
-  const refs = items.flatMap(item => (item.kind === "turn" ? item.jobs : item.kind === "message" ? item.jobs ?? [] : []));
-  const pills = refs.reverse().slice(0, JOBS_AHEAD).map(job => ({ id: job.conversation, at: job.lastAt, status: job.status }));
+  // A pill on the screen takes its job's newest activity from the page's items.
+  for (const item of items) for (const job of item.kind === "turn" ? item.jobs : item.kind === "message" ? item.jobs ?? [] : []) {
+    if (shownJobs.has(job.conversation)) shownJobs.set(job.conversation, { id: job.conversation, at: job.lastAt, status: job.status });
+  }
   // A work thread's jobs at every depth, or a job's own subagents, which the page's jobs list names before any pill does.
-  const mine = global.jobs.filter(job => !job.archived && (id.includes(":") ? job.parent?.id === id : job.thread === id))
+  threadJobs = global.jobs.filter(job => !job.archived && (id.includes(":") ? job.parent?.id === id : job.thread === id))
     .sort((a, b) => b.createdAt - a.createdAt).slice(0, THREAD_JOBS_AHEAD)
-    .filter(job => !pills.some(pill => pill.id === job.id))
     .map(job => ({ id: job.id, at: job.updatedAt, status: job.status }));
-  jobPills.want([...pills, ...mine]);
+  jobsWanted();
 }
 
 /**
@@ -983,7 +1020,7 @@ function jobsAhead(id: ConversationId, items: readonly Item[]): void {
  * rooms, so a job opened after a reload, from a pill or by its link, draws its kept page with its newest steps. On 11-22 a reload walk at a
  * 200 ms round trip waited 408 to 825 ms for 3 of its 6 job opens, each a job no list had read (work/p157-opens/reload-walks).
  */
-const liveJobs = new ReadAhead(warmTimeline(JOB_PAGE), viewingTimeline);
+const liveJobs = new ReadAhead(warmTimeline(JOB_PAGE), viewingTimeline, id => current.has(id));
 function liveJobsAhead(list: readonly AgentSummary[]): void {
   const wanted = list.filter(job => !job.archived && (job.status === "working" || job.status === "sleeping"))
     .sort((a, b) => b.createdAt - a.createdAt).slice(0, LIVE_JOBS_AHEAD)
@@ -1142,6 +1179,9 @@ export class Timeline {
       const asked: Wait = last ? { background: "shown", first: true } : {};
       this.limit = last?.limit;
       this.headerAt = performance.now();
+      // A followed page the socket kept current reads only its header, over the socket, named by the tag of the kept one.
+      if (last && !around && current.has(this.id) && (await this.openKept(last))) return;
+      const left = performance.now();
       const taken = pages.take(key, asked, () => readTimeline(this.id, around, asked, last?.limit));
       // The threads and jobs of the kept page queue now, behind this read, not one round trip later when its refresh lands.
       if (last && threaded(this.id)) warmReplies(this.id, last.items);
@@ -1172,12 +1212,34 @@ export class Timeline {
       this.upsert(page.items);
       this.older = older;
       this.focus = held ?? page.focus;
+      if (!around) readWhileFollowed(this.id, left);
       this.stopWatch = live.watch(this.id, () => this.items.findLast(i => !isPending(i))?.id);
     } catch (error) {
       this.error = message(error);
     } finally {
       this.loading = false;
     }
+  }
+
+  /**
+   * Opens a kept page the socket kept current: its posts are all there, so only the header is read, over the socket, which answers no body
+   * when the kept header is the server's (shared/answer-tag.ts). False when no socket answers, and the open reads as before.
+   */
+  private async openKept(last: TimelineShown): Promise<boolean> {
+    const answer = await live.read(`/api/c/${encodeURIComponent(this.id)}`, answerTag(last.header)).catch(() => undefined);
+    if (answer === undefined) return false;
+    const header = answer === UNCHANGED ? last.header : (answer as ConversationHeader);
+    const readSeq = header.readSeq;
+    if (readSeq !== undefined) this.openedUnread = this.items.find(i => i.kind === "message" && !i.threadRoot && (i.seq ?? 0) > readSeq)?.id;
+    this.header = header;
+    syncMark(header.summary);
+    sawHeader(header);
+    this.status = header.summary.status;
+    this.queue = header.queue ?? null;
+    if (threaded(this.id)) warmReplies(this.id, this.items);
+    if (!this.isChannel) jobsAhead(this.id, this.items);
+    this.stopWatch = live.watch(this.id, () => this.items.findLast(i => !isPending(i))?.id);
+    return true;
   }
 
   /** When the view last read its header (`performance.now()`), so a hello after that read finds nothing missed. */

@@ -85,3 +85,24 @@ test("an idle or failed one is read again only when its activity is newer than t
   await want([{ id: "a", at: 6, status: "idle" }, { id: "b", at: 6, status: "failed" }]);
   assert.deepEqual(read, ["a", "b", "a", "b"]);
 });
+
+test("one the socket keeps current is not read again, and is once the socket stops keeping it", async (t) => {
+  t.after(() => mock.timers.reset());
+  mock.timers.enable({ apis: ["setTimeout", "Date"], now: 0 });
+  const read: string[] = [];
+  let kept = false;
+  const ahead = new ReadAhead(async wanted => void read.push(wanted.id), () => false, () => kept);
+  ahead.want([{ id: "ch_general", at: 1, status: "idle" }]);
+  await settle();
+  kept = true;
+  for (let at = 2; at < 20; at += 1) {
+    ahead.want([{ id: "ch_general", at, status: "idle" }]);
+    mock.timers.tick(READ_AGAIN_MS);
+    await settle();
+  }
+  assert.deepEqual(read, ["ch_general"]);
+  kept = false;
+  ahead.want([{ id: "ch_general", at: 21, status: "idle" }]);
+  await settle();
+  assert.deepEqual(read, ["ch_general", "ch_general"]);
+});
