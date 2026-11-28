@@ -13,7 +13,7 @@
  *    never fresh, and a verify run (a closed fix step) confirms the last sweep's items and starts no new sweep (11-24, 15:32 KST).
  * 8. A Fable work thread is an item unless it is the advisor's own or the owner set that model himself from his page (11-28, 19:19 KST).
  * 9. One rule says who waits for a model account, and a step or duty fix step that waits is no finding: its job's subagents wait while the
- *    job reads idle, or the agent's work thread waits in its own turn and has not answered since the step changed (11-28, 22:31 KST).
+ *    job reads idle, or none of its jobs moves it and the agent's work thread waits in its own turn (11-28, 22:31 KST).
  */
 import { strict as assert } from "node:assert";
 import { execFile } from "node:child_process";
@@ -28,7 +28,7 @@ import { promisify } from "node:util";
 import { after, test } from "node:test";
 import { measure } from "../../server/duty-run.ts";
 import {
-  answerOf, dutyContext, jobFindings, lastAnswer, lastEntries, noModelTurn, notMeasured, parkedTrees, passedOn, unmovedMetrics, postFindings, reportState, stalledSteps, sweepMode, turnOf,
+  answerOf, dutyContext, jobFindings, lastEntries, noModelTurn, notMeasured, parkedTrees, passedOn, unmovedMetrics, postFindings, reportState, stalledSteps, sweepMode, turnOf,
   waitsForAccount, worthALook, type AgentWait, type DutyRunView, type Item, type Job, type PlanItem, type Post,
 } from "../../scripts/duties/fable-sweep.ts";
 import { judge, type Duty, type DutyMetric, type DutyRunRecord } from "../../web/src/lib/api/shared/chat-duties.ts";
@@ -292,7 +292,7 @@ test("a step whose job read idle while its subagents waited for a model account 
     const read = stalledSteps({ agent: auditor, plan, todos: [], jobs, now, seen: {}, last, ...(wait ? { wait } : {}) });
     return [read.stalled.map(i => i.text), read.waiting];
   };
-  assert.deepEqual(steps([outreach, ...subs], { job: each => waiting.has(each.id) }), [[], 1], "counted as waiting for an account, not listed");
+  assert.deepEqual(steps([outreach, ...subs], { job: each => waiting.has(each.id), thread: false }), [[], 1], "counted as waiting for an account, not listed");
   assert.deepEqual(steps([outreach, ...subs]), [[], 0], "a subagent that works moves its job's step");
   assert.deepEqual(steps([outreach, ...ended, of("deep", 37500, "sleeping", 37429)]), [[], 0], "at any depth below the job");
   assert.deepEqual(steps([outreach, ...ended]),
@@ -309,7 +309,7 @@ test("a duty miss whose fix step's job read idle while its subagents waited for 
   const subs = [of("burst-reads", 310777, "working", 310641), of("own-waits", 310793, "working", 310641)];
   const plan: PlanItem[] = [
     { id: "p155", text: "Stop page-load read-ahead from delaying the owner's own calls", status: "doing", duty: "d2/slowest_api_p90_ms", job: burst.name },
-    { id: "p279", text: "Cut the slow Meilisearch answers behind search", status: "doing", duty: "d2/search_p90_ms", job: burst.name, updatedAt: new Date(now - 26 * MIN).toISOString() },
+    { id: "p279", text: "Cut the slow Meilisearch answers behind search", status: "doing", duty: "d2/search_p90_ms", job: burst.name },
   ];
   // The 22:04:23 KST run stored p279 with no job, 84 s before the board put the job on it.
   const runs: DutyRunView[] = [
@@ -321,8 +321,8 @@ test("a duty miss whose fix step's job read idle while its subagents waited for 
   const waiting = new Set(subs.map(sub => sub.id));
   const miss = (jobs: Job[], wait?: AgentWait) => ({ agent: factory, dutyId: "d2", runs, plan, jobs, now, ...(wait ? { wait } : {}) });
   const waits = "subagent burst-reads of job his calls behind a read burst waits for a model account";
-  assert.equal(passedOn(miss([burst, ...subs], { job: each => waiting.has(each.id) })), `slowest_api_p90_ms fix step p155, ${waits}; search_p90_ms fix step p279, ${waits}`);
-  assert.equal(unmovedMetrics(miss([burst, ...subs], { job: each => waiting.has(each.id) })), undefined);
+  assert.equal(passedOn(miss([burst, ...subs], { job: each => waiting.has(each.id), thread: false })), `slowest_api_p90_ms fix step p155, ${waits}; search_p90_ms fix step p279, ${waits}`);
+  assert.equal(unmovedMetrics(miss([burst, ...subs], { job: each => waiting.has(each.id), thread: false })), undefined);
   assert.equal(passedOn(miss([burst, ...subs])), "slowest_api_p90_ms fix step p155, subagent burst-reads of job his calls behind a read burst working; " +
     "search_p90_ms fix step p279, subagent burst-reads of job his calls behind a read burst working", "a subagent that works moves its job's fix step");
   const ended = subs.map(sub => ({ ...sub, status: "idle" }));
@@ -330,36 +330,33 @@ test("a duty miss whose fix step's job read idle while its subagents waited for 
   assert.equal(unmovedMetrics(miss([burst, ...ended])), "not passed on: no fix step a job, board.wake or subagent moves for slowest_api_p90_ms, search_p90_ms");
 });
 
-test("a new agent's first step is no item while its first turn waits for a model account, and a step its work thread answered after still is (enrichment researcher p1, 11-28 22:31 KST)", () => {
-  const made = now - 24 * MIN;
+test("a step is no item while the agent's work thread waits for a model account in its own turn (enrichment researcher p1, 11-28 22:31 KST; vent p220, 11-29 00:50 KST)", () => {
   const researcher = { id: "ag_enrichment-researcher", name: "enrichment researcher", status: "working", thread: "te" };
-  const step = (changed: number | undefined, extra: Partial<PlanItem> = {}): PlanItem =>
-    ({ id: "p1", text: "Recommend what to do with the AI enrichment pipeline", status: "todo", ...(changed === undefined ? {} : { updatedAt: new Date(changed).toISOString() }), ...extra });
-  const steps = (plan: PlanItem[], wait?: AgentWait) => {
-    const read = stalledSteps({ agent: researcher, plan, todos: [], jobs: [], now, seen: {}, ...(wait ? { wait } : {}) });
+  const first: PlanItem = { id: "p1", text: "Recommend what to do with the AI enrichment pipeline", status: "todo" };
+  const steps = (agent: typeof researcher, plan: PlanItem[], jobs: Job[], wait?: AgentWait) => {
+    const read = stalledSteps({ agent, plan, todos: [], jobs, now, seen: {}, last: () => now - 60 * MIN, ...(wait ? { wait } : {}) });
     return [read.stalled.map(i => i.sig), read.waiting];
   };
   const noJob = () => false;
   // Made at 22:07:13 KST; pi-pool parked its first turn at 22:07:51 KST, and a message from Crawler guy reached it while it waited.
-  const first = threadFile(dir, "te", [[1, "sleeping", "pi-pool-slot"], [1, "waiting", undefined, 1]], [[1, "agent.message", made]]);
-  assert.equal(turnOf(first, 1), "slot");
-  assert.equal(lastAnswer(first, 1), undefined);
-  assert.equal(lastAnswer(join(dir, "missing.sqlite"), 1), undefined);
-  assert.deepEqual(steps([step(made)], { job: noJob, thread: { answered: lastAnswer(first, 1) } }), [[], 1], "the work thread has had no turn in which to give it a job");
-  assert.deepEqual(steps([step(undefined)], { job: noJob, thread: { answered: undefined } }), [[], 1], "nor has a step with no change time");
-  assert.deepEqual(steps([step(made)]), [["step:ag_enrichment-researcher/p1"], 0], "a step with no job on a thread that does not wait is nobody's");
+  const file = threadFile(dir, "te", [[1, "sleeping", "pi-pool-slot"], [1, "waiting", undefined, 1]], [[1, "agent.message", now - 24 * MIN]]);
+  const wait: AgentWait = { job: noJob, thread: waitsForAccount(turnOf(file, 1), false) };
+  assert.equal(wait.thread, true);
+  assert.deepEqual(steps(researcher, [first], [], wait), [[], 1], "the thread that would give the step a job has had no turn");
+  assert.deepEqual(steps(researcher, [first], [], { job: noJob, thread: false }), [["step:ag_enrichment-researcher/p1"], 0], "a step with no job on a thread that does not wait is nobody's");
 
-  const later = threadFile(dir, "te-answered", [[1, "sleeping", "pi-pool-slot"]], [[1, "pi.assistant", made + 5 * MIN], [1, "pi.assistant", made + 20 * MIN, "error"], [3, "pi.assistant", made + 22 * MIN]]);
-  assert.equal(lastAnswer(later, 1), made + 5 * MIN, "an answer that ended in an error is none, and a job's answer is not the work thread's");
-  const wait: AgentWait = { job: noJob, thread: { answered: lastAnswer(later, 1) } };
-  assert.deepEqual(steps([step(made)], wait), [["step:ag_enrichment-researcher/p1"], 0], "the thread answered after the step was made and gave it no job, so it stays an item");
-  assert.deepEqual(steps([step(undefined)], wait), [["step:ag_enrichment-researcher/p1"], 0]);
-  assert.deepEqual(steps([step(made + 10 * MIN)], wait), [[], 1], "a step changed after the thread's last answer waits with it");
+  // vent's p220: its wake went out at 00:45 KST, and the work thread's turn on that wake slept on the account slot at 00:50 KST.
+  const vent = { id: "ag_vent", name: "vent", status: "working", thread: "tv" };
+  const drop: Job = { id: "tv:45530", name: "drop vent count weight", status: "idle", thread: "tv", conversation: 45530, createdAt: now - 720 * MIN, agent: { id: vent.id, name: vent.name } };
+  const p220: PlanItem = { id: "p220", text: "Remove the old vent.count weight once its rows age out", status: "blocked", job: drop.name };
+  assert.deepEqual(steps(vent, [p220], [drop], { job: noJob, thread: true }), [[], 1]);
+  assert.deepEqual(steps(vent, [p220], [drop], { job: noJob, thread: false }), [["step:ag_vent/p220"], 0]);
+  assert.deepEqual(steps(vent, [p220], [{ ...drop, status: "working" }], { job: noJob, thread: true }), [[], 0], "a step its job moves is not counted as waiting");
 
-  const fix = step(made + 10 * MIN, { duty: "d1/cost_per_1000" });
+  const fix: PlanItem = { ...first, duty: "d1/cost_per_1000" };
   const miss = { agent: researcher, dutyId: "d1", runs: [missedRun(5, "cost", ["cost_per_1000"]), missedRun(200, "cost", ["cost_per_1000"])], plan: [fix], jobs: [], now };
   assert.equal(passedOn({ ...miss, wait }), "cost_per_1000 fix step p1, the work thread waits for a model account");
-  assert.equal(passedOn(miss), undefined);
+  assert.equal(passedOn({ ...miss, wait: { job: noJob, thread: false } }), undefined);
 });
 
 /**
@@ -390,7 +387,7 @@ test("a sweep lists no step, duty or job that waits for a model account and coun
       { at: live - 27 * MIN, verdict: "missed", summary: "search_p90_ms 1305 ms", metrics: { search_p90_ms: { met: false } }, fixes: { search_p90_ms: { step: "p279", live: false } }, job: { id: "j1", name: "snappy duty 1" } },
       { at: live - 960 * MIN, verdict: "missed", summary: "search_p90_ms 338 ms", metrics: { search_p90_ms: { met: false } }, job: { id: "j0", name: "snappy duty 0" } },
     ] }] },
-    "/api/agents/ag_enrichment-researcher/board": { board: { todos: [], plan: [{ id: "p1", text: "Recommend what to do with the AI enrichment pipeline", status: "todo", updatedAt: new Date(made).toISOString() }] } },
+    "/api/agents/ag_enrichment-researcher/board": { board: { todos: [], plan: [{ id: "p1", text: "Recommend what to do with the AI enrichment pipeline", status: "todo" }] } },
     "/api/agents/ag_enrichment-researcher/duties": { duties: [] },
   };
   const server = createServer((req, res) => {

@@ -25,10 +25,12 @@
  *     no open owner todo that holds it. A step whose job wrote in the last 45 min still moves, since its parent often closes the step right
  *     after the job reports (the 45 min of rule 6). A step's jobs are the job it names and every subagent under it, since a job that hands
  *     its work to subagents ends its own turn and reads idle. A step that waits for a model account is no item and `n.stepPoolWaits` counts
- *     it: one of its jobs waits, or the agent's work thread waits in its own turn and has not answered since the step last changed
- *     (`threadWaits`). The 22:31 KST sweep on 11-28 listed five such steps while 1 of 42 Claude accounts took new work: four whose jobs read
- *     idle with every subagent parked since 20:53 to 22:22 KST, and the first step of an agent made at 22:07 KST whose first turn pi-pool
- *     had parked since 22:07:51 KST.
+ *     it: one of its jobs waits, or none of them moves it and the agent's work thread waits in its own turn, since that thread is the one
+ *     that would give the step a job or close it. The 22:31 KST sweep on 11-28 listed five such steps while 1 of 42 Claude accounts took
+ *     new work: four whose jobs read idle with every subagent parked since 20:53 to 22:22 KST, and the first step of an agent made at
+ *     22:07 KST whose first turn pi-pool had parked since 22:07:51 KST. At 00:50 KST on 11-29 vent's p220 read stalled 5 min after its wake
+ *     went out, while the turn that wake started slept on the account slot. A step nobody owned before the wait is left out too and shows
+ *     at the first sweep after the work thread gets an account.
  *   model_off: an agent other than this one whose work thread runs on Fable, which the owner keeps for this advisor (msg mwqwsgx9: "main
  *     worker들은 opus가 되면 좋겠거든? 워낙 비용이 비싸니까"), except an agent whose model he set himself from his page (`modelFindings`).
  *
@@ -124,7 +126,7 @@ export interface Agent {
   modelSet?: { by: string; at: number };
   comm?: { room: string; thread: string; status: string }[];
 }
-export interface PlanItem { id: string; text: string; status: string; note?: string; job?: string; duty?: string; waitUntil?: string | number; waitFor?: unknown; updatedAt?: string; children?: PlanItem[] }
+export interface PlanItem { id: string; text: string; status: string; note?: string; job?: string; duty?: string; waitUntil?: string | number; waitFor?: unknown; children?: PlanItem[] }
 export interface DutyRunView {
   at: number; verdict: string; summary?: string; error?: string; metrics?: Record<string, { met: boolean }>; hostAway?: string; waitsOn?: string;
   after?: { verdict?: string; summary?: string; metrics?: Record<string, { met: boolean }> }; fixes?: Record<string, { step: string; job?: string; live: boolean }> | null;
@@ -189,11 +191,8 @@ export function postFindings(input: {
   return items;
 }
 
-/**
- * What of an agent waits for a model account (`waitsForAccount`): `job` says whether a job does, and `thread` is set while the work thread's
- * own turn does, with when that thread last answered (undefined before its first answer).
- */
-export interface AgentWait { job: (job: Job) => boolean; thread?: { answered: number | undefined } }
+/** What of an agent waits for a model account (`waitsForAccount`): `job` says whether a job does, and `thread` whether the work thread's own turn does. */
+export interface AgentWait { job: (job: Job) => boolean; thread: boolean }
 
 /**
  * A step's jobs and the jobs under them, their subagents at any depth, by the `parent` each job names. A job that hands its work to
@@ -209,22 +208,11 @@ function withSubagents(named: readonly Job[], all: readonly Job[]): Job[] {
 }
 
 /**
- * Whether an open step waits on the agent's work thread's wait for a model account: that thread waits in its own turn and has not answered
- * since the step last changed or one of its jobs last wrote, so it has had no turn in which to give the step an owner or to close it. A
- * step that was unowned before the thread's last answer stays an item.
- */
-function threadWaits(step: PlanItem, family: readonly Job[], wait: AgentWait | undefined, last?: (job: Job) => number | undefined): boolean {
-  if (!wait?.thread) return false;
-  const since = Math.max(Date.parse(step.updatedAt ?? "") || 0, ...family.map(job => last?.(job) ?? 0));
-  return wait.thread.answered === undefined || since > wait.thread.answered;
-}
-
-/**
  * The open steps of a plan with no live job, no running wait, no board.wake the app still owes for it and no open owner todo (`stalled`),
  * and how many more are left out because they wait for a model account (`waiting`): one of the step's jobs or their subagents waits
- * (`wait.job`), or the work thread does (`threadWaits`). A step moves while one of its jobs or their subagents works, sleeps or wrote in
- * the last 45 min; `last` gives a job's newest entry time when known. A step's wakes are read as the board tells a chat its unowned steps
- * (`wokenStep` in legacy/prime/user-history/src/apps-step-owners.ts), from the wakes in `wakes`.
+ * (`wait.job`), or none of them moves it and the work thread does (`wait.thread`). A step moves while one of its jobs or their subagents
+ * works, sleeps or wrote in the last 45 min; `last` gives a job's newest entry time when known. A step's wakes are read as the board tells
+ * a chat its unowned steps (`wokenStep` in legacy/prime/user-history/src/apps-step-owners.ts), from the wakes in `wakes`.
  */
 export function stalledSteps(input: {
   agent: Agent; plan: readonly PlanItem[]; todos: readonly Todo[]; jobs: readonly Job[]; now: number; seen: Record<string, number>; last?: (job: Job) => number | undefined;
@@ -248,7 +236,7 @@ export function stalledSteps(input: {
       const family = withSubagents(named, mine);
       if (family.some(job => input.wait?.job(job))) { waiting += 1; continue; }
       if (family.some(job => job.status === "working" || job.status === "sleeping" || now - (input.last?.(job) ?? 0) < STUCK_MS)) continue;
-      if (threadWaits(step, family, input.wait, input.last)) { waiting += 1; continue; }
+      if (input.wait?.thread) { waiting += 1; continue; }
       const key = `${agent.id}/${step.id}`;
       const since = Math.min(seen[key] ?? now, ...named.map(job => job.createdAt));
       const job = named.find(j => j.status === "failed") ?? named[0];
@@ -374,24 +362,6 @@ export function turnOf(file: string, conversation: number): "slot" | "live" | un
 export const waitsForAccount = (turn: ReturnType<typeof turnOf>, parked: boolean): boolean => turn === "slot" || (turn === "live" && parked);
 
 /**
- * When a conversation last got a model answer, read only from its thread file, or undefined when it has none. An answer that ended in an
- * error is none, as pi-pool's "the account slot is open" retry text is written as one.
- */
-export function lastAnswer(file: string, conversation: number): number | undefined {
-  if (!existsSync(file)) return undefined;
-  const db = new DatabaseSync(file, { readOnly: true });
-  try {
-    const row = db.prepare("SELECT json_extract(record, '$.model[0].timestamp') AS at FROM entries WHERE conversation_id = ? AND json_extract(record, '$.kind') = 'pi.assistant' " +
-      "AND coalesce(json_extract(record, '$.model[0].stopReason'), '') != 'error' ORDER BY id DESC LIMIT 1").get(conversation) as { at: number | null } | undefined;
-    return typeof row?.at === "number" ? row.at : undefined;
-  } catch {
-    return undefined;
-  } finally {
-    db.close();
-  }
-}
-
-/**
  * The agents other than `self`, the advisor, whose work thread runs on Fable. An agent whose model the owner set himself is his choice and
  * no item: on 11-28 the sweep flagged agent factory for the Fable 5.2 he had set from his page at 19:19 KST. A Fable model an agent, a job
  * or a script set is still listed.
@@ -459,7 +429,7 @@ export function dutyContext(runs: readonly DutyRunView[]): string[] {
 
 type DutyMissInput = {
   agent: Agent; dutyId: string; runs: readonly DutyRunView[]; plan: readonly PlanItem[]; todos?: readonly Todo[]; jobs: readonly Job[]; now: number; wakes?: readonly Wake[];
-  wait?: AgentWait; last?: (job: Job) => number | undefined;
+  wait?: AgentWait;
 };
 
 /**
@@ -519,7 +489,7 @@ function dutyFixes(input: DutyMissInput): string | { missed: string[]; moved: Ma
       else {
         const hold = ownerHeld(step, input.todos ?? []);
         if (hold) moved.set(key, `${key} fix step ${step.id}, held for the owner by ${hold}`);
-        else if (threadWaits(step, family, input.wait, input.last)) moved.set(key, `${key} fix step ${step.id}, the work thread waits for a model account`);
+        else if (input.wait?.thread) moved.set(key, `${key} fix step ${step.id}, the work thread waits for a model account`);
       }
     }
   };
@@ -644,8 +614,7 @@ if (isMain(import.meta.url)) {
   const parked = await parkedTrees([...judged.values()].filter(each => each.turn === "live").map(each => each.thread), now);
   const waitingTurns = new Set([...judged].filter(([, each]) => waitsForAccount(each.turn, parked.has(each.thread))).map(([key]) => key));
   const waitingJobs = new Set(quiet.filter(job => families.get(job.id)!.some(each => waitingTurns.has(turnKey(each.thread, each.conversation)))).map(job => job.id));
-  const agentWait = (agent: Agent): AgentWait =>
-    ({ job: job => waitingJobs.has(job.id), ...(waitingTurns.has(turnKey(agent.thread, 1)) ? { thread: { answered: lastAnswer(fileOf(agent.thread), 1) } } : {}) });
+  const agentWait = (agent: Agent): AgentWait => ({ job: job => waitingJobs.has(job.id), thread: waitingTurns.has(turnKey(agent.thread, 1)) });
   items.push(...jobFindings(liveJobs.filter(job => job.status === "working" || job.status === "failed"), lastOf, now, taskOf, waitingJobs));
   items.push(...modelFindings(agents, values.agent));
   for (const agent of agents) {
@@ -678,7 +647,7 @@ if (isMain(import.meta.url)) {
       if (notMeasured(row.runs)) { read.dutiesNotMeasured += 1; continue; }
       const run = row.runs[0];
       const why = oneLine(run?.after?.summary ?? run?.error ?? run?.summary ?? "", 110);
-      const miss = { agent, dutyId: row.duty.id, runs: row.runs, plan: board.board?.plan ?? [], todos: board.board?.todos ?? [], jobs: liveJobs, now, wakes, wait, last: lastOf };
+      const miss = { agent, dutyId: row.duty.id, runs: row.runs, plan: board.board?.plan ?? [], todos: board.board?.todos ?? [], jobs: liveJobs, now, wakes, wait };
       const has = passedOn(miss);
       const left = has ? undefined : unmovedMetrics(miss);
       items.push({ kind: "duty_off", sig: `duty:${agent.id}/${row.duty.id}`, agent: agent.name, text: `${agent.name} ${row.duty.id} "${row.duty.name}" ${row.last.verdict}${row.last.streak > 1 ? `, ${row.last.streak} runs in a row` : ""}: ${why}`, link: `#/agents/${agent.id}`, at: row.last.at,
