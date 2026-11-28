@@ -10,7 +10,12 @@ import {
   unfixedMisses, wikiClutter,
   type Ask, type DutyRow,
 } from "../../scripts/duties/agent-boards.ts";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import {
+  JOB_WAITS_ACCOUNT, NOT_MEASURED, PRECHECK_FAILED, blindChecks, dutySystemFaults, fixCloses, readPastProblems, readReturns, readsOf, replay, returningProblems, returnsOf, runFile,
+  type PastProblem,
+} from "../../scripts/duties/duty-health.ts";
+import { judge, type DutyMetric } from "../../web/src/lib/api/shared/chat-duties.ts";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -509,4 +514,168 @@ test("a missing n on an Area review run from before release-11e4c28 is not flagg
   ], [], AREA_REVIEW_N_SINCE + 2 * HOUR);
   assert.deepEqual(out.flagged.filter(flag => flag.kind === "no_sample_size").map(flag => flag.sig), ["ag_mcp/d1/n", "ag_seo/d2/n"]);
   assert.equal(out.metrics.runs_without_n, 2);
+});
+
+// The three readings of the owner's #1124-cost-management p60 (msg mx0bgshc, 11-28), in scripts/duties/duty-health.ts.
+// An apps/chat file as this run loads it: a spec-clean run (scripts/spec-clean.mjs) names the files it takes from the checkout in SPEC_CLEAN_OVERLAY.
+const appFile = (path: string): string => readFileSync((JSON.parse(process.env.SPEC_CLEAN_OVERLAY ?? "{}") as Record<string, string>)[path] ?? join(import.meta.dirname, "../..", path), "utf8");
+const D7 = JSON.parse(appFile("scripts/duties/agent-duties.duty.json")) as { metrics: DutyMetric[]; readings: { key: string }[]; ownerWords: string };
+const past = (id: string, command: string | null): PastProblem => ({ id, agent: "ag_devops-guy", duty: "d17", what: "A PostHog sync cost up to $80 a day and the bill check named no PostHog line", when: "2026-11-15", source: "#1124-cost-management p56 (msg mx0b5pkg)", replay: command });
+
+test("a past problem whose replay exits 1 is a check that would still miss it, and a replay runs without the run's own OUTPUT_FILE", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "replay-"));
+  assert.deepEqual(await replay("exit 0", dir), { result: "flagged" });
+  assert.deepEqual(await replay("exit 1", dir), { result: "missed" });
+  assert.equal((await replay("echo broken >&2; exit 3", dir)).result, "not_measured", "another exit proves neither");
+  assert.match((await replay("exit 3", dir) as { why: string }).why, /exit 3/);
+  assert.match((await replay("sleep 5", dir, 200) as { why: string }).why, /did not end in 0 s/);
+  // d7's own run sets OUTPUT_FILE; a replayed precheck that inherited it would write its output over d7's.
+  process.env.OUTPUT_FILE = join(dir, "d7.json");
+  try { assert.deepEqual(await replay('test -z "$OUTPUT_FILE" && test "$(pwd -P)" = "$(cd "$PWD" && pwd -P)"', dir), { result: "flagged" }); } finally { delete process.env.OUTPUT_FILE; }
+  const out = blindChecks([
+    { ...past("posthog-sync", "exit 1"), replayed: await replay("exit 1", dir) },
+    { ...past("first-reply-gap", "exit 0"), agent: "agent factory", duty: "d1", replayed: await replay("exit 0", dir) },
+  ], [{ id: "ag_devops-guy", name: "devops guy" }, { id: "ag_agent-factory", name: "agent factory" }]);
+  assert.deepEqual(out.metrics, { checks_blind: 1, past_problems: 2, past_problems_not_measured: 0 });
+  assert.equal(out.n, 2, "n is the past problems a replay answered");
+  assert.deepEqual(out.flagged.map(flag => [flag.kind, flag.sig, flag.handOff, flag.item]), [["check_blind", "past/posthog-sync", true, undefined]], "the duty job gets it, and no agent goes off the pattern");
+  assert.match(out.flagged[0]!.excerpt, /devops guy d17, 2026-11-15: A PostHog sync cost .* \(#1124-cost-management p56 \(msg mx0b5pkg\)\)\. Replay: exit 1/);
+});
+
+test("a past problem with replay null reads not measured, never met", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "replay-"));
+  const unmeasured = { ...past("posthog-sync", null), replayed: await replay(null, dir) };
+  assert.deepEqual(unmeasured.replayed, { result: "not_measured", why: "it has no replay command yet" });
+  const caught = { ...past("first-reply-gap", "exit 0"), replayed: { result: "flagged" } as const };
+  const out = blindChecks([unmeasured, caught], [{ id: "ag_devops-guy", name: "devops guy" }]);
+  assert.deepEqual(out.metrics, { past_problems: 2, past_problems_not_measured: 1 }, "checks_blind has no value");
+  assert.deepEqual(out.flagged.map(flag => [flag.kind, flag.sig, flag.handOff]), [["gap", "past/posthog-sync/replay", true]]);
+  // The duty's own judge reads the run as error and names the metric and the reason, whatever the other three metrics read.
+  const judged = judge(D7.metrics, { metrics: { agents_off_pattern: 0, problems_returned: 0, duty_system_faults: 0, ...out.metrics }, flagged: out.flagged });
+  assert.equal(judged.verdict, "error");
+  assert.match(judged.summary, /not measured: the precheck gave no value for checks_blind \(past problem posthog-sync is not measured, because it has no replay command yet/);
+  assert.equal(judged.metrics.checks_blind, undefined);
+  // A miss among the others is known whatever the unmeasured one would read, so the count keeps its value and the run reads missed.
+  const missed = blindChecks([unmeasured, { ...past("vp-gtm", "exit 1"), replayed: { result: "missed" } as const }], []);
+  assert.equal(missed.metrics.checks_blind, 1);
+  assert.equal(judge(D7.metrics, { metrics: { agents_off_pattern: 0, problems_returned: 0, duty_system_faults: 0, ...missed.metrics } }).verdict, "missed");
+  // With every past problem replayed and flagged the count is 0 and the run reads met.
+  const met = blindChecks([caught], []);
+  assert.equal(judge(D7.metrics, { metrics: { agents_off_pattern: 0, problems_returned: 0, duty_system_faults: 0, ...met.metrics } }).verdict, "met");
+});
+
+test("the past-problems and sorted-returns files read as lists or throw on another shape", () => {
+  const dir = mkdtempSync(join(tmpdir(), "past-"));
+  const write = (name: string, value: unknown) => { writeFileSync(join(dir, name), JSON.stringify(value)); return join(dir, name); };
+  assert.deepEqual(readPastProblems(join(dir, "none.json")), []);
+  assert.deepEqual(readPastProblems(write("ok.json", [past("a", null), past("b", "exit 0")])).map(entry => entry.replay), [null, "exit 0"]);
+  assert.throws(() => readPastProblems(write("no-replay.json", [{ ...past("a", null), replay: undefined }])), /replay is a command or null/);
+  assert.throws(() => readPastProblems(write("twice.json", [past("a", null), past("a", null)])), /one entry per id/);
+  assert.throws(() => readPastProblems(write("object.json", { a: past("a", null) })), /is not a list/);
+  assert.deepEqual(readReturns(join(dir, "none.json")), { lasting: [], new_work: [] });
+  assert.throws(() => readReturns(write("bad.json", { lasting: [{ agent: "seo", duty: "d1", metric: "m", why: "no time" }], new_work: [] })), /is not \{lasting/);
+});
+
+test("a metric that went red again twice after a closed fix is a returning problem; one that never left, a settled one and new work are not", () => {
+  const read = (hoursAgo: number, met: boolean) => ({ at: NOW - hoursAgo * HOUR, met });
+  const close = (step: string, hoursAgo: number) => ({ step, at: NOW - hoursAgo * HOUR, text: `Bring agents back onto their ideal memory (${step})` });
+  // agent factory's d3 from 11-26 to 11-28: red, fix closed, green on the verify run, red at the next 07:31 run, twice.
+  const flapping = { reads: [read(72, false), read(70, true), read(48, false), read(46, true), read(24, false)], closes: [close("p330", 71), close("p349", 47)] };
+  assert.deepEqual(returnsOf(flapping.reads, flapping.closes, NOW), [NOW - 48 * HOUR, NOW - 24 * HOUR]);
+  // agent factory's d2 never met once in a week while 26 fix steps closed: it never came back, because it never left.
+  const stuck = { reads: [read(72, false), read(48, false), read(24, false)], closes: [close("p1", 60), close("p2", 40), close("p3", 30)] };
+  assert.deepEqual(returnsOf(stuck.reads, stuck.closes, NOW), []);
+  assert.deepEqual(returnsOf(flapping.reads, [], NOW), [], "a red again with no closed fix before it is a new miss, not a return");
+  assert.deepEqual(returnsOf(flapping.reads, [close("old", 15 * 24 + 48)], NOW), [], "the fix closed over 14 days before the miss");
+  assert.deepEqual(returnsOf([read(20 * 24, true), read(19 * 24, false)], [close("p1", 21 * 24)], NOW), [], "a return over 14 days ago has left the window");
+  const history = (agent: string, duty: string, metric: string, data: typeof flapping) => ({ agent: { id: `ag_${agent}`, name: agent }, duty: { id: duty, name: "Agent memory" }, metric, ...data });
+  const histories = [
+    history("agent-factory", "d3", "agents_on_ideal_pct", flapping), history("agent-factory", "d2", "slowest_api_p90_ms", stuck),
+    history("fable-auditor", "d1", "findings_unposted", flapping), history("seo", "d1", "visits", flapping),
+    history("mcp", "d1", "calls", { reads: [read(48, true), read(24, false)], closes: [close("p9", 30)] }),
+  ];
+  const out = returningProblems(histories, {
+    lasting: [{ agent: "seo", duty: "d1", metric: "visits", at: new Date(NOW - 30 * HOUR).toISOString(), why: "the sitemap job now runs before the check" }],
+    new_work: [{ agent: "ag_fable-auditor", duty: "d1", metric: "findings_unposted", why: "each sweep finds new items to judge" }],
+  }, NOW);
+  assert.deepEqual(out.metrics, { problems_returned: 1, returns_new_work: 1 });
+  assert.equal(out.n, 5, "n is the metrics with a closed fix step");
+  assert.deepEqual(out.flagged.map(flag => [flag.kind, flag.sig, flag.handOff, flag.item]), [["problem_returned", "returned/ag_agent-factory/d3/agents_on_ideal_pct", true, undefined]]);
+  assert.match(out.flagged[0]!.excerpt, /agents_on_ideal_pct went red again 2 times in 14 days after a closed fix, at 11-22 09:00, 11-23 09:00 KST\. Closed fix steps: p330 \(11-21 10:00, "Bring agents back onto their ideal memory \(p330\)"\); p349 \(11-22 10:00/);
+  assert.equal(returningProblems(histories, undefined, NOW).metrics.problems_returned, 3, "with no sorted file each of the three counts");
+  // The inputs: a closed fix step needs its duty link, done and a time; a run file's stamp is KST; a placeholder is no reading.
+  assert.deepEqual(fixCloses([
+    { id: "p1", status: "done", duty: "d3/agents_on_ideal_pct", updatedAt: "2026-11-23T00:00:00Z", text: "Fix" }, { id: "p2", status: "done", duty: "d3/agents_on_ideal_pct" },
+    { id: "p3", status: "doing", duty: "d3/agents_on_ideal_pct", updatedAt: "2026-11-23T00:00:00Z" }, { id: "p4", status: "done", duty: "d3/recall_right_pct", updatedAt: "2026-11-23T00:00:00Z" },
+  ], "d3", "agents_on_ideal_pct"), [{ step: "p1", at: Date.parse("2026-11-23T00:00:00Z"), text: "Fix" }]);
+  assert.deepEqual(runFile("d17-261128-151759.json"), { duty: "d17", at: Date.parse("2026-11-28T06:17:59Z") });
+  assert.equal(runFile("d8-manual-now.json"), null);
+  assert.equal(runFile("d8.after.json"), null);
+  assert.deepEqual(readsOf({ metrics: { a: 3, b: 999_999, c: 90 } }, 5, [{ key: "a", op: "<=", target: 0 }, { key: "b", op: "<=", target: 0 }, { key: "c", op: ">=", target: 80 }, { key: "d", op: ">=", target: 1 }]),
+    { a: { at: 5, met: false }, c: { at: 5, met: true } });
+});
+
+test("a failed precheck, an unmeasured run, a red duty with no job and a lost job report are the duty system's faults; waits and readings are not", () => {
+  const metrics: DutyMetric[] = [{ key: "lines_over_pace", label: "Lines over pace", op: "<=", target: 0, headline: true }, { key: "reads_failing", label: "Reads failing", op: "<=", target: 0 }];
+  // The summaries are the server's own: judge() for an unmeasured metric, duty-run.ts for a failed precheck, boards.ts for an account wait.
+  const unmeasured = judge(metrics, { metrics: { lines_over_pace: 0 } });
+  assert.match(unmeasured.summary, NOT_MEASURED);
+  assert.match(judge(metrics, { metrics: { lines_over_pace: 0, reads_failing: 999_999 } }).summary, NOT_MEASURED);
+  assert.doesNotMatch(judge(metrics, { metrics: { lines_over_pace: 0, reads_failing: 0 } }).summary, NOT_MEASURED);
+  const server = (file: string) => appFile(`server/${file}`);
+  assert.ok(server("duty-run.ts").includes(`summary: "${PRECHECK_FAILED}"`));
+  const waits = [...server("boards.ts").matchAll(/`; ([^`]*model account[^`]*)`/g)].map(match => match[1]!);
+  assert.equal(waits.length, 5, "the five endings besideBusyJob gives a run whose job waits for a model account");
+  for (const words of waits) assert.match(words, JOB_WAITS_ACCOUNT);
+  const row = (id: string, runs: DutyRow["runs"], more: Partial<DutyRow> = {}): DutyRow => ({ duty: { id, name: `Duty ${id}`, status: "active", metrics }, paused: false, runs, ...more });
+  const at = NOW - HOUR;
+  const out = dutySystemFaults([{
+    agent: { id: "ag_devops-guy", name: "devops guy" },
+    steps: [
+      { id: "p91", status: "done", duty: "d2/unmanaged_dev", updatedAt: new Date(NOW - 2 * HOUR).toISOString(), text: "Stop d2 counting its own precheck unit as unmanaged" },
+      { id: "p92", status: "done", duty: "d2/unmanaged_dev", updatedAt: new Date(NOW - 30 * HOUR).toISOString(), text: "Stop d2 counting a removed container" },
+      { id: "p93", status: "done", duty: "d2/unmanaged_dev", updatedAt: new Date(NOW - 2 * HOUR).toISOString(), text: "Move the chat backup under Komodo" },
+    ],
+    leftOut: { d9: "line_left_out: vercel spend: 91.5 USD a cycle" },
+    duties: [
+      row("d1", [{ verdict: "error", at, summary: PRECHECK_FAILED, error: "exit 1: TypeError: fetch failed" }, { verdict: "error", at: at - HOUR, summary: PRECHECK_FAILED }, { verdict: "error", at: at - 30 * HOUR, summary: PRECHECK_FAILED }]),
+      row("d2", [{ verdict: "met", at, summary: "all 2 on target", overrun: { ms: 400_000, targetMs: 120_000 } }]),
+      row("d3", [{ verdict: "error", at, summary: unmeasured.summary }]),
+      row("d4", [{ verdict: "error", at, summary: unmeasured.summary, hostAway: "mac" }]),
+      row("d5", [{ verdict: "error", at, summary: unmeasured.summary, waitsOn: "the owner's buy of the sending setup" }]),
+      // The after-job measure read the metric, so the run's own gap is closed.
+      row("d6", [{ verdict: "error", at, summary: unmeasured.summary, job: { id: "j6", name: "Duty d6 duty", submission: 1, reported: true }, after: { at, verdict: "met", summary: "all 2 on target" } }]),
+      row("d7", [{ verdict: "missed", at, summary: "lines_over_pace 2 (target at most 0)" }]),
+      row("d8", [{ verdict: "missed", at, summary: "lines_over_pace 2 (target at most 0)", fixes: { lines_over_pace: { step: "p46", job: "vercel spend cut", live: true } } }]),
+      row("d9", [{ verdict: "met", at, summary: "all 2 on target" }]),
+      row("d10", [{ verdict: "missed", at, summary: "lines_over_pace 2 (target at most 0); its job Duty d10 duty still waits for a model account and got this run's brief", job: { id: "j10", name: "Duty d10 duty" } },
+        { verdict: "missed", at: at - 50 * HOUR, summary: "lines_over_pace 2 (target at most 0)", job: { id: "j10", name: "Duty d10 duty", submission: 1 } }]),
+      row("d11", [{ verdict: "missed", at, summary: "lines_over_pace 2 (target at most 0)", job: { id: "j11", name: "Duty d11 duty", submission: 1 }, after: { at, verdict: "missed", summary: "lines_over_pace 2 (target at most 0)" } }]),
+      row("d12", [{ verdict: "error", at, summary: PRECHECK_FAILED }], { paused: true }),
+      row("d13", [{ verdict: "skipped", at }]),
+      { ...row("d14", [{ verdict: "met", at, summary: "all 2 on target" }]), duty: { id: "d14", name: "Duty d14", status: "active", metrics, goal: "Every line stays inside plan. PostHog is left out because its rows carry no price." } },
+    ],
+  }], NOW);
+  assert.deepEqual(out.flagged.filter(flag => flag.handOff).map(flag => flag.sig), [
+    "ag_devops-guy/d1/system/precheck_failed", "ag_devops-guy/d2/system/precheck_failed", "ag_devops-guy/d3/system/not_measured", "ag_devops-guy/d7/system/red_no_job", "ag_devops-guy/d11/system/job_unreported",
+  ]);
+  assert.ok(out.flagged.every(flag => flag.item === undefined), "the duty job owns them, and no agent goes off the pattern");
+  assert.deepEqual(out.metrics, {
+    duty_system_faults: 5, prechecks_failed: 2, duties_not_measured: 1, red_duties_no_job: 1, duty_jobs_unreported: 1,
+    precheck_failed_runs_24h: 3, unmeasured_runs_24h: 1, duty_jobs_waiting_account: 1, fixes_blaming_check_24h: 1, duties_met_leaving_out: 2,
+  });
+  assert.equal(out.n, 12, "n is the duties that are not paused and have a measured run");
+  const excerpt = (kind: string) => out.flagged.filter(flag => flag.kind === kind).map(flag => flag.excerpt);
+  assert.match(excerpt("system_precheck_failed")[0]!, /devops guy d1 "Duty d1": its newest run's precheck failed: exit 1: TypeError: fetch failed/);
+  assert.match(excerpt("system_precheck_failed")[1]!, /precheck ran 400 s against a target of 120 s/);
+  assert.match(excerpt("job_waits_account")[0]!, /d10 "Duty d10": its job Duty d10 duty waits for a model account, started 11-22 06:00 KST/);
+  assert.deepEqual(excerpt("fix_blames_check").map(text => text.slice(0, 20)), ["devops guy p91 (d2/u"]);
+  assert.deepEqual(out.flagged.filter(flag => flag.kind === "met_leaving_out").map(flag => flag.sig), ["ag_devops-guy/d9/leaves-out", "ag_devops-guy/d14/leaves-out"]);
+});
+
+test("d7's definition counts the three readings of p60 and quotes the owner's posts with their message ids", () => {
+  assert.deepEqual(D7.metrics.map(metric => [metric.key, metric.headline ?? false]), [["agents_off_pattern", true], ["checks_blind", false], ["problems_returned", false], ["duty_system_faults", false]]);
+  for (const key of ["wiki_clutter", "misses_unfixed_24h", "runs_without_n", "past_problems_not_measured", "duty_jobs_waiting_account", "duties_met_leaving_out"]) assert.ok(D7.readings.some(reading => reading.key === key), key);
+  assert.match(D7.ownerWords, /daily monitor yourself of whether children agents are doing fine and fixing recurring issues, duties not being kept due to poor Duty system implementation\?\n\(#1124-cost-management p60, msg mx0bgshc/);
+  assert.match(D7.ownerWords, /@agent factory fix devops guy, its partly YOUR responsibility if something like this happens\n\(#1124-cost-management p56, msg mx0b5pkg/);
 });

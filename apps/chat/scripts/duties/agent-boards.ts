@@ -25,13 +25,17 @@
  * Since 11-28 a post the `ONGOING` words match is a candidate, and the sorted-asks file (ASKS_FILE, default ~/work/agent-duties/asks.json,
  * `--asks <file>`) decides it: `standing` gives an ask to one agent, `one_time` drops a post, and a post in neither list is handed to the duty
  * job as `ask_unsorted` (`SortedAsks`).
+ * Since the owner's #1124-cost-management p60 (msg mx0bgshc, 11-28) d7 also reads whether each agent's checks and fixes work (duty-health.ts):
+ * past problems a check would still miss (PAST_FILE, default ~/work/agent-duties/past-problems.json, `--past <file>`), metrics that went red
+ * again after a closed fix (RETURNS_FILE, default ~/work/agent-duties/returns.json, `--returns <file>`) and duties the duty system did not keep.
  * Without OUTPUT_FILE the result prints to stdout.
  */
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { blindChecks, dutySystemFaults, fixCloses, LEFT_OUT_KIND, readPastProblems, readReturns, readsOf, replay, returningProblems, runFile, type FixStep, type MetricHistory, type MetricRead } from "./duty-health.ts";
 import { isMain } from "./main-module.ts";
 import { realAgents } from "./real-agents.ts";
 import { homedir } from "node:os";
-import { basename, join, relative } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import { parseArgs } from "node:util";
 
 interface Agent { id: string; name: string; archived?: boolean; test?: boolean; hostState?: string; thread?: string }
@@ -40,9 +44,16 @@ interface Steps { open: number; stuck: Step[]; gaps: { id: string; text: string 
 interface CheckIn { everyMs: number; paused: boolean; lastAt: number | null; runs?: { at: number; verdict: string; summary: string }[] }
 /** A row of `GET /api/agents/:id/duties`, the fields this check reads. */
 export interface DutyRow {
-  duty: { id: string; name: string; status?: string; ownerWords?: string; goal?: string }; paused: boolean;
+  duty: { id: string; name: string; status?: string; ownerWords?: string; goal?: string; metrics?: { key: string; op: "<=" | ">="; target: number }[] }; paused: boolean;
   runs: {
-    verdict: string; at?: number; job?: { id: string }; readings?: Record<string, number>; metrics?: Record<string, { value?: number }>; detail?: string; hostAway?: string; waitsOn?: string;
+    verdict: string; at?: number; readings?: Record<string, number>; metrics?: Record<string, { value?: number }>; detail?: string; hostAway?: string; waitsOn?: string;
+    /** `submission` is on the run that started the job, and `reported` once its report reached the work thread (server/boards.ts deliverReport). */
+    job?: { id: string; name?: string; submission?: number; reported?: boolean };
+    summary?: string; error?: string; overrun?: { ms: number; targetMs: number };
+    /** Per missed metric, its fix step and whether that step's job is at work (server/duty-run.ts fixesOn). */
+    fixes?: Record<string, { step: string; job?: string; live?: boolean }>;
+    /** The measure taken again once the run's job ended. */
+    after?: { at?: number; verdict?: string; summary?: string; metrics?: Record<string, { value?: number }> };
     flagged?: { handOff?: true; sig?: string }[];
   }[];
   schedule?: { kind: string; at?: string; minutes?: number }; nextAt?: number | null;
@@ -550,7 +561,20 @@ export function agentBoards(agents: readonly { agent: Agent; steps: Steps; check
 }
 
 /** An agent's board as GET /board returns it, the fields `pauseReason` reads. */
-interface BoardRead { updatedAt?: string; plan?: { text?: string; note?: string; status?: string; updatedAt?: string; children?: unknown[] }[]; todos?: { text?: string; note?: string }[] }
+interface BoardRead { updatedAt?: string; plan?: (Partial<FixStep> & { children?: unknown[] })[]; todos?: { text?: string; note?: string }[] }
+
+/** Every step of a plan, parents and children, in one list. */
+export function planSteps(board: BoardRead | undefined): FixStep[] {
+  const steps: FixStep[] = [];
+  const walk = (items: NonNullable<BoardRead["plan"]> = []) => {
+    for (const item of items) {
+      if (item.id) steps.push({ ...item, id: item.id });
+      walk(item.children as typeof items | undefined);
+    }
+  };
+  walk(board?.plan);
+  return steps;
+}
 
 /** The step statuses that keep a plan open (server/check-in-job.ts `planHasOpenStep`). */
 const OPEN_STEP = new Set(["todo", "doing", "blocked"]);
@@ -623,6 +647,27 @@ export function asksTo(store: { rooms: { rooms: readonly unknown[] }; postsOf(ro
   return asks;
 }
 
+/**
+ * Each metric of an agent's duties with its readings of the last 15 days, from the duty run files in `dir`, and its closed fix steps. 15
+ * days hold the reading before a return at the edge of the 14-day window (duty-health.ts `returnsOf`).
+ */
+export function metricHistories(agent: Agent, duties: readonly DutyRow[], steps: readonly FixStep[], dir: string, now: number): MetricHistory[] {
+  const reads = new Map<string, MetricRead[]>();
+  const defs = new Map(duties.map(row => [row.duty.id, row.duty.metrics ?? []]));
+  for (const name of existsSync(dir) ? readdirSync(dir) : []) {
+    const file = runFile(name);
+    const metrics = file && defs.get(file.duty);
+    if (!file || !metrics?.length || now - file.at > 15 * DAY_MS) continue;
+    for (const [key, read] of Object.entries(readsOf(readJson(join(dir, name)), file.at, metrics))) {
+      const id = `${file.duty}/${key}`;
+      reads.set(id, [...reads.get(id) ?? [], read]);
+    }
+  }
+  return duties.flatMap(row => (row.duty.metrics ?? []).map(metric => ({
+    agent, duty: { id: row.duty.id, name: row.duty.name }, metric: metric.key, reads: reads.get(`${row.duty.id}/${metric.key}`) ?? [], closes: fixCloses(steps, row.duty.id, metric.key),
+  })));
+}
+
 async function get<T>(server: string, path: string): Promise<T> {
   const res = await fetch(`${server}${path}`);
   if (!res.ok) throw new Error(`GET ${path} answered ${res.status}`);
@@ -632,12 +677,14 @@ async function get<T>(server: string, path: string): Promise<T> {
 if (isMain(import.meta.url)) {
   // `--part boards` (the default, d5 "Agent boards") reads steps and check-ins; `--part duties` (agent factory's "Agents keep their duties")
   // reads each agent's duties, brief and areas.
-  const { values } = parseArgs({ options: { server: { type: "string" }, areas: { type: "string" }, asks: { type: "string" }, part: { type: "string" }, wiki: { type: "string" }, "data-dir": { type: "string" } } });
+  const { values } = parseArgs({ options: { server: { type: "string" }, areas: { type: "string" }, asks: { type: "string" }, past: { type: "string" }, returns: { type: "string" }, part: { type: "string" }, wiki: { type: "string" }, "data-dir": { type: "string" } } });
   const part = values.part ?? "boards";
   if (part !== "boards" && part !== "duties") throw new Error(`--part ${part} is neither boards nor duties`);
   const server = values.server ?? process.env.APPS_CHAT_URL ?? "http://127.0.0.1:5184";
   const areasFile = values.areas ?? process.env.AREAS_FILE ?? join(homedir(), "work/agent-duties/areas.json");
   const asksFile = values.asks ?? process.env.ASKS_FILE ?? join(homedir(), "work/agent-duties/asks.json");
+  const pastFile = values.past ?? process.env.PAST_FILE ?? join(homedir(), "work/agent-duties/past-problems.json");
+  const returnsFile = values.returns ?? process.env.RETURNS_FILE ?? join(homedir(), "work/agent-duties/returns.json");
   const agents = realAgents(await get<Agent[]>(server, "/api/agents")).filter(agent => agent.hostState !== "away");
   const json = part === "boards"
     ? JSON.stringify(agentBoards(await Promise.all(agents.map(async agent => ({
@@ -673,6 +720,7 @@ if (isMain(import.meta.url)) {
           const slices = run.flagged ?? (run.detail?.endsWith(".json") && existsSync(run.detail) ? readJson<{ flagged?: { handOff?: true; sig?: string }[] }>(run.detail)?.flagged : undefined) ?? [];
           return { at: run.at ?? 0, ...(run.job?.id ? { job: run.job.id } : {}), sigs: slices.flatMap(slice => slice.handOff && slice.sig ? [slice.sig] : []) };
         })]));
+        const leftOut: Record<string, string> = {};
         const samples: Record<string, number | null> = {};
         const outputs: Record<string, boolean> = {};
         const waitsOutside: string[] = [];
@@ -680,7 +728,9 @@ if (isMain(import.meta.url)) {
           const newest = row.runs.find(run => run.verdict !== "skipped");
           const detail = newest?.detail;
           if (!detail) continue;
-          const output = existsSync(detail) ? readJson<{ metrics?: unknown; flagged?: { kind?: string }[] }>(detail) : undefined;
+          const output = existsSync(detail) ? readJson<{ metrics?: unknown; flagged?: { kind?: string; excerpt?: string }[] }>(detail) : undefined;
+          const left = output?.flagged?.find(item => LEFT_OUT_KIND.test(item?.kind ?? ""));
+          if (left) leftOut[row.duty.id] = `${left.kind}: ${left.excerpt}`;
           // A run whose box was away measured nothing on purpose; it is neither empty nor met on no input.
           if (newest.hostAway || output?.flagged?.some(item => item?.kind === "host_away")) continue;
           outputs[row.duty.id] = !!output && typeof output.metrics === "object";
@@ -694,7 +744,8 @@ if (isMain(import.meta.url)) {
             // An unread folder leaves its brief unknown: the agent keeps its area and its asks wait for a run that reads the brief.
             ...folder ? { brief: folder.brief?.text ?? "", asks: asksTo(store, agent, folder.brief?.text?.trim() ? folder.brief.modifiedAt ?? 0 : 0, sorted.standing.filter(entry => entry.agent === agent.id || entry.agent === agent.name)) } : { brief: "(its folder did not answer)", asks: [] },
           } satisfies AgentRead,
-          jobsAt,
+          jobsAt, health: { agent, duties, steps: planSteps(board), leftOut },
+          histories: metricHistories(agent, duties, planSteps(board), join(dataDir, "agents", agent.id, "duties"), now),
         };
       }));
       const pattern = agentPattern(reads.map(entry => entry.read), readAreas(areasFile), now, sorted);
@@ -709,10 +760,19 @@ if (isMain(import.meta.url)) {
       const own = (await get<{ duties: DutyRow[] }>(server, "/api/agents/ag_agent-factory/duties")).duties.find(row => row.duty.name === "Agents keep their duties");
       const earlier = (own?.runs ?? []).flatMap(run => run.detail && run.at && existsSync(run.detail) ? [{ at: run.at, flagged: readJson<{ flagged?: Flag[] }>(run.detail)?.flagged ?? [] }] : []);
       const unfixed = unfixedMisses(earlier, pattern.flagged, new Map(reads.map(entry => [entry.read.agent.id, entry.jobsAt])), now);
-      const flagged = [...pattern.flagged, ...clutter.flagged, ...unfixed.map(flag => ({ ...flag, kind: "miss_unfixed_24h", sig: `unfixed/${flag.sig}`, excerpt: `${flag.excerpt} (flagged over a day ago, and no job of the agent worked since)` }))];
+      // Whether the agents' checks and fixes work (duty-health.ts): each past problem replayed, the metrics that came back, the duty system's faults.
+      const past = readPastProblems(pastFile);
+      const strayPast = past.filter(problem => !known.has(problem.agent));
+      if (strayPast.length) throw new Error(`${pastFile} names ${strayPast.map(problem => `"${problem.agent}" (${problem.id})`).join(", ")}, which is no agent: use an id or name from GET /api/agents`);
+      const blind = blindChecks(await Promise.all(past.map(async problem => ({ ...problem, replayed: await replay(problem.replay, dirname(pastFile)) }))), agents);
+      const returned = returningProblems(reads.flatMap(entry => entry.histories), readReturns(returnsFile), now);
+      const system = dutySystemFaults(reads.map(entry => entry.health), now);
+      const flagged = [...pattern.flagged, ...blind.flagged, ...returned.flagged, ...system.flagged, ...clutter.flagged, ...unfixed.map(flag => ({ ...flag, kind: "miss_unfixed_24h", sig: `unfixed/${flag.sig}`, excerpt: `${flag.excerpt} (flagged over a day ago, and no job of the agent worked since)` }))];
       return {
-        metrics: { ...pattern.metrics, ...clutter.metrics, misses_unfixed_24h: unfixed.length }, n: agents.length, flagged, messages: pattern.messages,
-        areasFile: existsSync(areasFile) ? areasFile : null, asksFile: existsSync(asksFile) ? asksFile : null,
+        metrics: { ...pattern.metrics, ...blind.metrics, ...returned.metrics, ...system.metrics, ...clutter.metrics, misses_unfixed_24h: unfixed.length },
+        // What each counted metric measured: agents, past problems with a replay that ran, metrics with a closed fix step, duties with a run.
+        n: { agents_off_pattern: agents.length, checks_blind: blind.n, problems_returned: returned.n, duty_system_faults: system.n }, flagged, messages: pattern.messages,
+        areasFile: existsSync(areasFile) ? areasFile : null, asksFile: existsSync(asksFile) ? asksFile : null, pastFile: existsSync(pastFile) ? pastFile : null, returnsFile: existsSync(returnsFile) ? returnsFile : null,
       };
     })(), null, 1);
   if (process.env.OUTPUT_FILE) writeFileSync(process.env.OUTPUT_FILE, json);
