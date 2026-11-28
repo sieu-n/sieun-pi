@@ -52,6 +52,7 @@ import { Rooms, type SpeakAnswer } from "./rooms.ts";
 import { movedNote, movedPosts, readMoved } from "./moved.ts";
 import { applyPrefs, withPrefs } from "./sidebar-prefs.ts";
 import { parseLayout } from "../web/src/lib/api/shared/sidebar-layout.ts";
+import { answerTag } from "../web/src/lib/api/shared/answer-tag.ts";
 import { bucketOf, changedBuckets, digests, PARTIAL_LISTS, threadTimes, timed, type PartialList, type ThreadTimes, type Timed } from "../web/src/lib/api/shared/hello-buckets.ts";
 import { boardDelta, boardKey, boardStep, parseBoardsParam } from "../web/src/lib/api/shared/board-delta.ts";
 import type { ChatBoard } from "../web/src/lib/api/shared/types.ts";
@@ -1700,8 +1701,9 @@ export class App {
       return;
     }
     if (command.type === "read") {
-      const answer = await (this.socketRead?.(command.path, client.req) ?? Promise.resolve({ status: 503, error: "This server reads no route over the socket." }));
-      return this.send1(client, { type: "answer", id: command.id, ...answer });
+      const answer: { status: number; value?: unknown; error?: string } = await (this.socketRead?.(command.path, client.req) ?? Promise.resolve({ status: 503, error: "This server reads no route over the socket." }));
+      const same = command.tag !== undefined && answer.status === 200 && answer.value !== undefined && answerTag(answer.value) === command.tag;
+      return this.send1(client, same ? { type: "answer", id: command.id, status: 200, same: true } : { type: "answer", id: command.id, ...answer });
     }
     if (command.type === "watch") {
       if (client.watching.has(command.conversation)) return;

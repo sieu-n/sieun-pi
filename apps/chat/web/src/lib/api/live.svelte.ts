@@ -52,6 +52,9 @@ const PONG_WITHIN_MS = 1_500;
 const TICK_MS = 500;
 
 type Listener = (event: LiveEvent) => void;
+
+/** What `Live.read` resolves when the server's answer is the one the page keeps. */
+export const UNCHANGED: unique symbol = Symbol("unchanged");
 type Opener = () => void;
 
 class Live {
@@ -200,11 +203,11 @@ class Live {
     this.lost(0);
   }
 
-  private answered({ id, status, value, error }: Extract<LiveEvent, { type: "answer" }>): void {
+  private answered({ id, status, value, error, same }: Extract<LiveEvent, { type: "answer" }>): void {
     const read = this.reads.get(id);
     if (!read) return;
     this.reads.delete(id);
-    if (error === undefined && status < 400) read.resolve(value);
+    if (error === undefined && status < 400) read.resolve(same ? UNCHANGED : value);
     else read.reject(new ApiError(status, error ?? `The socket read answered ${status}`));
   }
 
@@ -256,14 +259,15 @@ class Live {
   /**
    * Reads a GET route over the open socket, which the server answers in order with its events. A page reads its open panels this way at
    * the open: the socket is a new connection, while its HTTP connection may still wait in TCP's retries after a cut, as a panel's read at
-   * the open took 4.7 s in the wake walk on 11-22 (~/work/p209-wake/after4). It fails at once when no socket is open.
+   * the open took 4.7 s in the wake walk on 11-22 (~/work/p209-wake/after4). It fails at once when no socket is open. With the `tag` of
+   * the answer the page keeps (shared/answer-tag.ts), it resolves `UNCHANGED` when the server's answer has that tag.
    */
-  read(path: string): Promise<unknown> {
+  read(path: string, tag?: string): Promise<unknown> {
     if (this.socket?.readyState !== WebSocket.OPEN) return Promise.reject(new Error("No live socket is open"));
     const id = ++this.readId;
     return new Promise((resolve, reject) => {
       this.reads.set(id, { resolve, reject });
-      this.send({ type: "read", id, path });
+      this.send({ type: "read", id, path, ...(tag === undefined ? {} : { tag }) });
     });
   }
 

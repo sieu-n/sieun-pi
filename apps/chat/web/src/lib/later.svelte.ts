@@ -4,7 +4,7 @@
  * covers the moment between his click and the post the server sends back, so the bookmark fills at once.
  */
 import { SvelteMap } from "svelte/reactivity";
-import { api, type Item, type LaterItem, type LaterList, type LaterMark, type LaterRow, type LaterState, type Wait } from "$lib/api";
+import { api, type Item, type LaterItem, type LaterList, type LaterMark, type LaterRow, type LaterState } from "$lib/api";
 import { live } from "$lib/api/live.svelte";
 import { hrefFor, router } from "$lib/router.svelte";
 import { isOverdue, remindedText } from "$lib/remind";
@@ -68,30 +68,33 @@ class LaterStore {
   }
 
   /**
-   * Reads every tab; only the newest read writes. A walk opens `#/c/saved?test=1` to see the posts it saved in its test rooms, which the
-   * owner's Saved list leaves out. `behind` reads behind what the page shows, after a reconnect, in the lane behind his calls (client.ts).
+   * Reads every tab in one call, whose rows carry their state; only the newest read writes. A walk opens `#/c/saved?test=1` to see the posts
+   * it saved in its test rooms, which the owner's Saved list leaves out. `behind` reads behind what the page shows, after a reconnect, in
+   * the lane behind his calls (client.ts). On 11-28 each of his socket reopens read GET /api/later 3 times, once per tab
+   * (~/work/p155-own-waits/summary.md).
    */
   async refresh(behind = false): Promise<void> {
     const mine = ++this.latest;
     const test = router.route.params.test === "1";
     this.withTest = test;
-    const wait = (): Wait | undefined => (behind ? { background: "shown" } : undefined);
     try {
-      const [open, archived, done] = await Promise.all([api.later("open", test, wait()), api.later("archived", test, wait()), api.later("done", test, wait())]);
+      const all = await api.later(undefined, test, behind ? { background: "shown" } : undefined);
       if (mine !== this.latest) return;
-      this.set(open, archived, done);
+      this.set(all);
       this.error = null;
     } catch (error) {
       if (mine === this.latest) this.error = error instanceof Error ? error.message : "Could not read your saved items.";
     }
   }
 
-  private set(open: LaterList, archived: LaterList, done: LaterList): void {
-    this.lists = { open: open.items, archived: archived.items, done: done.items };
-    this.open = open.open;
-    this.archived = open.archived;
-    this.done = open.done;
-    this.settleDue(open.items);
+  /** Each tab's rows from the whole list, in the server's order, which within a tab is its tab's order (server/later.ts `list`). */
+  private set(all: LaterList): void {
+    const tab = (state: LaterState) => all.items.filter((row) => row.state === state);
+    this.lists = { open: tab("open"), archived: tab("archived"), done: tab("done") };
+    this.open = all.open;
+    this.archived = all.archived;
+    this.done = all.done;
+    this.settleDue(this.lists.open!);
   }
 
   /** Keeps a due reminder's toast (lib/remind-live.ts) until the reminder is handled, here or in another tab. */

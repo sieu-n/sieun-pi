@@ -12,7 +12,8 @@
  */
 import { untrack } from "svelte";
 import { afterWrite, get, reads, takeOver, type Read, type Wait } from "./client.ts";
-import { live } from "./live.svelte.ts";
+import { live, UNCHANGED } from "./live.svelte.ts";
+import { answerTag } from "./shared/answer-tag.ts";
 import { pageDb, type KeptPage } from "./page-db.ts";
 import { READ_AGAIN_MS } from "./read-ahead.ts";
 import { withAsks, withRow } from "./shared/board-lists.ts";
@@ -175,14 +176,17 @@ export class Kept<T> {
   /**
    * An open panel's read at the socket's open goes over the socket, whose connection is new: in the wake walk on 11-22 the panels' HTTP
    * reads at the open took 4.7 s behind a read ahead that the cut caught on the HTTP connection (~/work/p209-wake/after4). It reads over
-   * HTTP when the socket read fails.
+   * HTTP when the socket read fails. It names the tag of the answer it keeps, unless the page keeps a part of the answer (`pick`), and the
+   * server then sends no answer that equals it: on 11-28 each of the owner's 6 reopens in 30 minutes read agent factory's board, 122 KB
+   * with br, again unchanged (~/work/p155-own-waits/summary.md).
    */
   private readOverSocket(): void {
     const sent = performance.now();
-    live.read(this.of.path).then(answer => {
-      const next = (this.of.pick ? this.of.pick(answer as never) : answer) as T;
+    live.read(this.of.path, this.value === null || this.of.pick ? undefined : answerTag(this.value)).then(answer => {
       this.sent = Math.max(this.sent, sent);
       this.current = true;
+      if (answer === UNCHANGED) return void (this.error = null);
+      const next = (this.of.pick ? this.of.pick(answer as never) : answer) as T;
       if (same(this.value, next)) this.error = null;
       else {
         this.set(next);

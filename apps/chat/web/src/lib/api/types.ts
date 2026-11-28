@@ -1086,8 +1086,8 @@ export type LiveEvent =
   | { type: "for_me"; agent: AgentId; pending: number }
   /** The answer to the page's `ping`, which tells it the socket still reaches the server (live.svelte.ts). */
   | { type: "pong" }
-  /** The answer to the page's `read` with its `id`: the route's status and its body, or its error. */
-  | { type: "answer"; id: number; status: number; value?: unknown; error?: string }
+  /** The answer to the page's `read` with its `id`: the route's status and its body, or its error, or `same` when the body has the read's `tag`. */
+  | { type: "answer"; id: number; status: number; value?: unknown; error?: string; same?: true }
   | { type: "error"; message: string };
 
 /** Page to server. `after` is the newest item id the page holds, so a reconnect sends only what it missed. */
@@ -1097,7 +1097,10 @@ export type LiveCommand =
   | { type: "unwatch"; conversation: ConversationId }
   /** Asks for a `pong`. A page that has heard nothing for a while sends it, and drops the socket when no answer comes (live.svelte.ts). */
   | { type: "ping" }
-  /** Reads a GET route over the socket; the server answers with `answer` and the same `id` (live.svelte.ts `read`). */
-  | { type: "read"; id: number; path: string }
+  /**
+   * Reads a GET route over the socket; the server answers with `answer` and the same `id` (live.svelte.ts `read`). `tag` is the answer the
+   * page keeps (shared/answer-tag.ts), which the server answers with `same` when its body has it.
+   */
+  | { type: "read"; id: number; path: string; tag?: string }
   /** Boards the page read since its socket opened, in the `boards=` form (shared/board-delta.ts `boardsParam`), so their next change is a delta. */
   | { type: "boards"; held: string };
