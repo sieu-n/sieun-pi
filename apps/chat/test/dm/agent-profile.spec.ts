@@ -69,3 +69,24 @@ test("an agent post's name and avatar open its profile card, and Message opens i
   await expect(card(page)).toHaveCount(0);
   await expect(page).toHaveURL(/#\/c\/dm_vent$/);
 });
+
+// On 11-28 between 10:18 and 10:20 UTC his page read agent factory's config, 370 KB, 7 times in 3 min; the profile card reads it ahead at
+// each pointer move onto an agent's name or avatar, and read it again at each move once the last answer had come (work/p324-dup-reads).
+test("moving over an agent's name and avatar again reads its config once", async ({ page }) => {
+  await open(page, "#/c/dm_vent?m=p10");
+  const post = row(page, "p10");
+  await post.evaluate((el) => el.scrollIntoView({ block: "center" }));
+  await page.waitForLoadState("networkidle");
+  const configs: string[] = [];
+  page.on("request", (r) => (new URL(r.url()).pathname === "/api/agents/ag_vent/config" ? configs.push(r.url()) : undefined));
+  const answered = page.waitForResponse((r) => new URL(r.url()).pathname === "/api/agents/ag_vent/config");
+  await post.locator("[data-author-button]").hover();
+  await answered;
+  for (const target of ["[data-author-avatar]", "[data-author-button]", "[data-author-avatar]"]) {
+    await page.mouse.move(0, 0);
+    await post.locator(target).hover();
+    await page.waitForTimeout(400);
+  }
+  await page.waitForLoadState("networkidle");
+  expect(configs).toHaveLength(1);
+});

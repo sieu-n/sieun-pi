@@ -14,6 +14,7 @@ import { untrack } from "svelte";
 import { afterWrite, get, reads, takeOver, type Read, type Wait } from "./client.ts";
 import { live } from "./live.svelte.ts";
 import { pageDb, type KeptPage } from "./page-db.ts";
+import { READ_AGAIN_MS } from "./read-ahead.ts";
 import { withAsks, withRow } from "./shared/board-lists.ts";
 import { boardAfterDelta, boardKey, boardsParam } from "./shared/board-delta.ts";
 import type { BoardView, LiveEvent } from "./types.ts";
@@ -69,9 +70,14 @@ export class Kept<T> {
     return this.fetch(this.value === null ? undefined : "shown");
   }
 
-  /** Reads the answer before any panel shows it, unless a panel has it open or the socket keeps it current. */
+  /**
+   * Reads the answer before any panel shows it, unless a panel has it open, the socket keeps it current, or its read left under
+   * `READ_AGAIN_MS` ago. The profile card reads an agent's config ahead at each pointer move onto its name or avatar: on 11-28 between
+   * 10:18 and 10:20 UTC his page read agent factory's config, 370 KB, 7 times in 3 min, 3 of them ahead (requests/2026-11-28.jsonl).
+   */
   ahead(): Promise<void> {
-    return this.views || (this.of.live && this.current) ? Promise.resolve() : this.fetch("ahead");
+    const recent = performance.now() - this.sent < READ_AGAIN_MS;
+    return this.views || (this.of.live && this.current) || recent ? Promise.resolve() : this.fetch("ahead");
   }
 
   private fetch(background: Wait["background"]): Promise<void> {
@@ -162,6 +168,7 @@ export class Kept<T> {
     const waiting = live.opens > 1 ? -Infinity : Infinity;
     if ((this.flight ? this.flight.wait.sent ?? waiting : this.sent) >= live.openedAt) return;
     this.current = false;
+    this.sent = -Infinity;
     if (this.views) this.readOverSocket();
   }
 
