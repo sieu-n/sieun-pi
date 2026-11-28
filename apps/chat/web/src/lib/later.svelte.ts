@@ -5,7 +5,8 @@
  */
 import { SvelteMap } from "svelte/reactivity";
 import { api, type Item, type LaterItem, type LaterList, type LaterMark, type LaterRow, type LaterState } from "$lib/api";
-import { live } from "$lib/api/live.svelte";
+import { live, UNCHANGED } from "$lib/api/live.svelte";
+import { answerTag } from "$lib/api/shared/answer-tag";
 import { hrefFor, router } from "$lib/router.svelte";
 import { isOverdue, remindedText } from "$lib/remind";
 import { askNotifyPermission } from "$lib/remind-notify";
@@ -58,11 +59,10 @@ class LaterStore {
     this.started = true;
     live.on((event) => {
       if (event.type === "later" && event.by === "owner") this.open = event.open;
-      if ((event.type === "later" && event.by === "owner") || event.type === "hello") {
+      if (event.type === "later" && event.by === "owner") {
         clearTimeout(this.timer);
-        const behind = event.type === "hello";
-        this.timer = setTimeout(() => void this.refresh(behind), 80);
-      }
+        this.timer = setTimeout(() => void this.refresh(), 80);
+      } else if (event.type === "hello") this.recheck();
     });
     void this.refresh();
   }
@@ -77,14 +77,41 @@ class LaterStore {
     const mine = ++this.latest;
     const test = router.route.params.test === "1";
     this.withTest = test;
+    this.leftAt = performance.now();
     try {
       const all = await api.later(undefined, test, behind ? { background: "shown" } : undefined);
       if (mine !== this.latest) return;
+      this.held = { all, test };
       this.set(all);
       this.error = null;
     } catch (error) {
       if (mine === this.latest) this.error = error instanceof Error ? error.message : "Could not read your saved items.";
     }
+  }
+
+  /** When the last read of the list left (`performance.now()`), and the last answer with whether it held test-room posts. */
+  private leftAt = -Infinity;
+  private held: { all: LaterList; test: boolean } | undefined;
+
+  /**
+   * A reconnect may have missed an event, so each hello reads the list again, unless a read left after the socket opened. It goes over the
+   * socket with the held answer's tag, so an unchanged list comes back with no body, and over HTTP behind his calls when the socket read
+   * fails. Each load at a 200 ms round trip on 11-28 read GET /api/later twice over HTTP, the second time at the socket's open about 2 s
+   * after the first (work/p324-dup-reads/live/r4).
+   */
+  private recheck(): void {
+    if (this.leftAt >= live.openedAt) return;
+    const test = router.route.params.test === "1";
+    const held = this.held?.test === test ? this.held.all : undefined;
+    const mine = ++this.latest;
+    this.leftAt = performance.now();
+    live.read(`/api/later${test ? "?test=1" : ""}`, held ? answerTag(held) : undefined).then((answer) => {
+      if (mine !== this.latest || answer === UNCHANGED) return;
+      this.held = { all: answer as LaterList, test };
+      this.withTest = test;
+      this.set(answer as LaterList);
+      this.error = null;
+    }, () => void (mine === this.latest && this.refresh(true)));
   }
 
   /** Each tab's rows from the whole list, in the server's order, which within a tab is its tab's order (server/later.ts `list`). */
@@ -290,3 +317,4 @@ export function laterMenuItem(room: string, message: Pick<Message, "id" | "later
     onselect: () => void later.toggle(room, message),
   };
 }
+

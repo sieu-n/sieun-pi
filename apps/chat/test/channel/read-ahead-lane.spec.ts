@@ -272,7 +272,10 @@ test("a work thread's open reads its header once", async ({ page }) => {
 // last read (work/p324-dup-reads/live/r3).
 test("a room the socket kept current opens with no read of its posts or header over HTTP", async ({ page }) => {
   const room = "ch_general";
+  // A room opens over the socket only once the socket's hello came (live.svelte.ts `greeted`).
+  const hello = page.waitForEvent("websocket").then((ws) => ws.waitForEvent("framereceived", { predicate: (f) => String(f.payload).includes('"type":"hello"') }));
   await open(page, `#/c/${room}`);
+  await hello;
   await page.waitForLoadState("networkidle");
   const away = async () => {
     await page.evaluate(() => { location.hash = "#/c/ch_cutover"; });

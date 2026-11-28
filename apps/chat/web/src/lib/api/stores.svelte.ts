@@ -728,8 +728,22 @@ class PageCache<Raw, Shown> {
 type TimelineRead = { page: Awaited<ReturnType<typeof api.items>>; header: ConversationHeader };
 /** `limit` is set on a short page read ahead (`JOB_PAGE`), so its open refreshes it at that size. */
 type TimelineShown = { items: Item[]; older: string | undefined; header: ConversationHeader; limit?: number; focus?: string };
+/**
+ * The header reads on their way, by conversation, which a second reader joins (`headerInFlight`). On 11-28 each open of a walk's test room
+ * read its header twice in the same millisecond, the timeline's read and the sidebar's test room check (work/p324-dup-reads/live/r4).
+ */
+const headerFlights = new Map<ConversationId, Promise<ConversationHeader>>();
+function readHeader(id: ConversationId, wait?: Wait): Promise<ConversationHeader> {
+  const read = api.header(id, wait);
+  headerFlights.set(id, read);
+  const done = () => void (headerFlights.get(id) === read && headerFlights.delete(id));
+  read.then(done, done);
+  return read;
+}
+/** The page's read of `id`'s header on its way, if one is. */
+export const headerInFlight = (id: ConversationId): Promise<ConversationHeader> | undefined => headerFlights.get(id);
 const readTimeline = async (id: ConversationId, around?: string, wait?: Wait, limit?: number): Promise<TimelineRead> => {
-  const [page, header] = await Promise.all([api.items(id, around ? { around } : limit ? { limit } : {}, wait), api.header(id, wait)]);
+  const [page, header] = await Promise.all([api.items(id, around ? { around } : limit ? { limit } : {}, wait), readHeader(id, wait)]);
   return { page, header };
 };
 /**
@@ -1180,7 +1194,8 @@ export class Timeline {
       this.limit = last?.limit;
       this.headerAt = performance.now();
       // A followed page the socket kept current reads only its header, over the socket, named by the tag of the kept one.
-      if (last && !around && current.has(this.id) && (await this.openKept(last))) return;
+      // Before the socket's hello the socket answers behind it, so the open reads over HTTP at once (live.svelte.ts `greeted`).
+      if (last && !around && current.has(this.id) && live.greeted && (await this.openKept(last))) return;
       const left = performance.now();
       const taken = pages.take(key, asked, () => readTimeline(this.id, around, asked, last?.limit));
       // The threads and jobs of the kept page queue now, behind this read, not one round trip later when its refresh lands.
@@ -1255,7 +1270,13 @@ export class Timeline {
     if (this.loading || this.headerAt >= live.openedAt) return;
     this.headerAt = performance.now();
     const path = `/api/c/${encodeURIComponent(this.id)}`;
-    live.read(path).then(header => this.showHeader(header as ConversationHeader), () => this.refreshHeader({ background: "shown" }));
+    // With the kept header's tag an unchanged header comes back with no body: each load at a 200 ms round trip on 11-28 read the open room's
+    // header again when the socket opened (work/p324-dup-reads/live/r4).
+    const kept = this.header;
+    live.read(path, kept ? answerTag(kept) : undefined).then(
+      header => (header === UNCHANGED ? undefined : this.showHeader(header as ConversationHeader)),
+      () => this.refreshHeader({ background: "shown" }),
+    );
     if (this.around || this.items.some(item => !isPending(item))) return;
     const items = () => api.items(this.id, {}, { background: "shown" });
     live.read(`${path}/items`).then(page => page as Awaited<ReturnType<typeof api.items>>, items).then(page => this.upsert(page.items), () => undefined);
@@ -1270,7 +1291,7 @@ export class Timeline {
   async refreshHeader(wait?: Wait): Promise<void> {
     this.headerAt = performance.now();
     try {
-      this.showHeader(await api.header(this.id, wait));
+      this.showHeader(await readHeader(this.id, wait));
     } catch (error) {
       this.error = message(error);
     }

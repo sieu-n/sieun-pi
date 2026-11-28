@@ -7,7 +7,8 @@
  * server once, which merges them, and then removes them.
  */
 import { api, type Wait } from "$lib/api";
-import { live } from "$lib/api/live.svelte";
+import { live, UNCHANGED } from "$lib/api/live.svelte";
+import { answerTag } from "$lib/api/shared/answer-tag";
 import { defaultSettings, parseNotify, parsePresence, parseRecent, type OwnerSettings, type SavedSettings } from "$lib/api/shared/owner-settings";
 import { toast } from "$lib/ui/toast.svelte";
 
@@ -57,8 +58,7 @@ class OwnerSettingsSync {
     this.started = true;
     live.on(event => {
       if (event.type === "owner_settings") this.take(event.settings);
-      // A reconnect may have missed an event, so each hello reads the settings again, behind his calls (client.ts lane).
-      else if (event.type === "hello") void this.refresh({ background: "shown" });
+      else if (event.type === "hello") this.recheck();
     });
     void this.refresh();
   }
@@ -86,7 +86,26 @@ class OwnerSettingsSync {
     if (saved.rev >= this.server.rev) this.server = saved;
   }
 
+  /**
+   * A reconnect may have missed an event, so each hello reads the settings again, unless a read left after the socket opened. It goes over
+   * the socket with the held copy's tag, so an unchanged copy comes back with no body, and over HTTP behind his calls when the socket read
+   * fails (client.ts lane). Each load at a 200 ms round trip on 11-28 read them twice over HTTP, the second time at the socket's open about
+   * 2 s after the first (work/p324-dup-reads/live/r4).
+   */
+  private recheck(): void {
+    if (this.leftAt >= live.openedAt) return;
+    this.leftAt = performance.now();
+    live.read("/api/owner-settings", answerTag(this.server)).then(
+      answer => (answer === UNCHANGED ? undefined : this.take(answer as SavedSettings)),
+      () => void this.refresh({ background: "shown" }),
+    );
+  }
+
+  /** When the last read of the settings left (`performance.now()`). */
+  private leftAt = -Infinity;
+
   private async refresh(wait?: Wait): Promise<void> {
+    this.leftAt = performance.now();
     try {
       this.take(await api.ownerSettings(wait));
     } catch {

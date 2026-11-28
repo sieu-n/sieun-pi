@@ -64,6 +64,12 @@ class Live {
   openedAt = Infinity;
   /** How many times the socket has opened since the page loaded. */
   opens = 0;
+  /**
+   * Whether the open socket's hello has come. The server sends its hello first and answers each `read` in order after it, so a read before
+   * the hello waits on it: after a release's hand-over on 11-28 the new server's first hellos and answers came seconds late, and 4 room
+   * opens waited 1.3 to 6.6 s on a header read over the socket before reading over HTTP (work/p324-dup-reads/live/r4).
+   */
+  greeted = false;
 
   /** Whether a socket is open now, so a `read` over it can go. */
   get open(): boolean {
@@ -158,6 +164,7 @@ class Live {
       this.socket = socket;
       this.tries = 0;
       this.opens += 1;
+      this.greeted = false;
       this.openedAt = performance.now();
       this.heardAt = Date.now();
       this.askedAt = undefined;
@@ -178,6 +185,7 @@ class Live {
         return;
       }
       if (event.type === "answer") return this.answered(event);
+      if (event.type === "hello") this.greeted = true;
       for (const listener of this.listeners) listener(event);
     };
     socket.onclose = () => {
@@ -218,6 +226,7 @@ class Live {
 
   private lost(wait: number): void {
     this.socket = null;
+    this.greeted = false;
     this.askedAt = undefined;
     for (const read of this.reads.values()) read.reject(new Error("The live socket closed before the answer came"));
     this.reads.clear();

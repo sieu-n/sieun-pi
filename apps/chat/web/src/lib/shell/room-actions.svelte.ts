@@ -3,7 +3,7 @@
  * conversation for a DM, Leave channel and Archive channel. The server keeps the choices (`PUT /api/c/:id/prefs`, server/sidebar-prefs.ts)
  * and sends the sidebar again; an action that takes a room out of the sidebar shows a toast with Undo.
  */
-import { api, isSoloRoom, type ConversationId, type ConversationSummary, type PrefsPatch, type Sidebar } from "$lib/api";
+import { api, headerInFlight, isSoloRoom, type ConversationId, type ConversationSummary, type PrefsPatch, type Sidebar } from "$lib/api";
 import type { MenuEntry } from "$lib/ui/menu";
 import { toast } from "$lib/ui/toast.svelte";
 import { hrefFor, router } from "$lib/router.svelte";
@@ -40,7 +40,11 @@ class OpenTestRoom {
     }
     if (this.asked === id && !again) return;
     this.asked = id;
-    const header = await api.header(id).catch(() => null);
+    // The room's view starts its own read of the header in the same update; this check takes that read when one is on its way, since on
+    // 11-28 each open of a walk's test room read its header twice in the same millisecond (work/p324-dup-reads/live/r4).
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    if (this.asked !== id) return;
+    const header = await (headerInFlight(id) ?? api.header(id)).catch(() => null);
     if (this.asked === id) this.row = header?.test && !header.summary.archived ? header.summary : null;
   }
 }
