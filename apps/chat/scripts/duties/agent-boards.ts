@@ -178,10 +178,15 @@ export function duplicateJobs(runs: readonly HandOffRun[], now: number): [string
 /**
  * Words of an owner post that ask for ongoing care rather than one task (fable auditor's 11-26 audit; the owner's p25 "keep watching").
  * A bare "keep" or "monitor" read 18 asks on 11-26, among them "keep it this way" and "cosmetics monitor 가 200$/m", so each word needs
- * the verb form around it.
+ * the verb form around it. A time word that only names a duty or the review asks for nothing: on 11-28 "ideal shape for daily duties?"
+ * (#sw-factory-build p250, a design question) read as an ask. It still counts when the post approves the duty ("weekly duty sound good",
+ * p245) or asks to set one up ("make this a daily duty").
  */
+const EVERY = "(daily|every ?day|each day|every morning|every week|weekly)";
 export const ONGOING = new RegExp([
-  "\\bkeep (watching|monitoring|checking|tracking|advising|reviewing|an eye)\\b", "\\b(daily|every ?day|each day|every morning|every week|weekly)\\b",
+  "\\bkeep (watching|monitoring|checking|tracking|advising|reviewing|an eye)\\b",
+  `\\b${EVERY}\\b(?! (dut(y|ies)|reviews?)\\b)`, `(?<!\\b(the|your|their|its) )\\b${EVERY} reviews?\\b`,
+  `\\b${EVERY} duty (sounds?|looks?|seems?|would be|works) (good|great|fine|ok|okay)\\b`, `\\b(add|make|set ?up|create|start|need|want)\\b[^.?!\\n]{0,24}\\ba ${EVERY} duty\\b`,
   "\\b(watch|monitor|review|track)(ing)? (this|it|that|the|them|our|all|every|each|for|over)\\b", "\\b(should|must) always\\b|\\balways be\\b",
   "계속 ?(확인|관찰|감시|모니터|봐|지켜)", "매일", "관찰", "감시", "항상",
 ].join("|"), "i");

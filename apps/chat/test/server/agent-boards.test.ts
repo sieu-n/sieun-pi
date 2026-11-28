@@ -295,6 +295,16 @@ test("ongoingAsk needs the verb form, so a noun or a one-off keep reads no ask",
   }
 });
 
+test("ongoingAsk reads a time word that only names a duty or the review as no ask, unless the post approves the duty or asks to set one up", () => {
+  // #sw-factory-build p250 (msg mx09gu0o), a design question that made d7 flag ask_unheld on 11-28; p245 beside it approved a weekly duty.
+  const p250 = "what’s the the principle, motivation, actual logic that applies to them, and thus practical ideal shape for daily duties? \n- is it best to list it all like this? \n"
+    + "- present a role model example (and i’ll comment on it). \n- compare the current duty code, duty-making related skill instructions compared to the prime-agent chat era to see if they are 100% identical or where it differs (personally i like how it behaved previously)";
+  for (const text of [p250, "is it configured as a daily duty?", "weekly duty", "why does the daily review take 20 min?", "why did you make 9 daily duties?"]) assert.equal(ongoingAsk(text), false, text);
+  for (const text of ["yeah weekly duty sound good.", "check this daily", "make this a daily duty", "set up a weekly duty for the cost report", "do a daily review of the costs"]) {
+    assert.equal(ongoingAsk(text), true, text);
+  }
+});
+
 test("asksTo reads the owner's ongoing asks after the brief: DM posts, and group posts that tag the agent or reach it untagged", () => {
   const store = {
     rooms: { rooms: [
