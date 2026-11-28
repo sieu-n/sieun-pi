@@ -30,6 +30,11 @@ import { DAY, type DsQuery, MINUTE, REPO, SOURCE_DEADLINE_MS, frameRows, grafana
  *    must cost $0, and to Hacker News user pg, which must cost the price its openapi x-dashboard-cost names when it answers 2xx and $0 when it
  *    does not, on staging-api.virev.ai (a seeded test org) and api.virev.ai (VIREV_API_KEY_PROD). The charge is the sum of that env's
  *    ledger rows for the answer's request_id, so it reads the ledger, never the answer's own meta.cost.
+ * 4. balance_mismatch_orgs: prod orgs whose Convex API balance is not their completed credits minus the net Data API charges in the ledger,
+ *    to the micro. Convex keeps no charge rows (chargeKeys lives 31 min), so a charge the outbox lost or sent twice shows only here. House
+ *    orgs (convex/org/houseOrgs.json) and orgs with no balance row are left out. The balances are read first, then the ledger once the outbox sent every row written
+ *    before the read; a charge that lands during the read can still split across it, so an org counts only when a second read agrees.
+ *    On 11-28 all 11 such orgs matched over 74,817 charges and 6 refunds (p60, reconcile.py).
  * The ledger is the ClickHouse table product.usage_events on both tiers (estate_ch_prod, estate_ch_stg), since promote 74 moved prod's
  * usage database into product on 2026-11-25.
  * Convex writes a Data API charge there through its ledgerOutbox (convex/ledger/outbox.ts) and stopped writing apiPortalUsage on 11-07.
@@ -90,7 +95,7 @@ export const PROBES: readonly Probe[] = [
   { name: "hn user pg", path: "/v1/crawl/hackernews/profile", query: { id: "pg" }, empty: false },
 ];
 
-export type Source = "prod catalog" | "prod requests" | "prod ledger" | "gateway failures" | "staging probes" | "prod probes";
+export type Source = "prod catalog" | "prod requests" | "prod ledger" | "gateway failures" | "staging probes" | "prod probes" | "prod balances";
 export const FEEDS: Readonly<Record<Source, readonly string[]>> = {
   "prod catalog": ["billing_mismatches_24h"],
   "prod requests": ["billing_mismatches_24h"],
@@ -98,6 +103,7 @@ export const FEEDS: Readonly<Record<Source, readonly string[]>> = {
   "gateway failures": ["uncounted_calls_24h"],
   "staging probes": ["empty_charged_probe"],
   "prod probes": ["empty_charged_probe"],
+  "prod balances": ["balance_mismatch_orgs"],
 };
 
 /** One gateway failure group: `lastAt` is the epoch ms of its newest failure line. */
@@ -110,8 +116,15 @@ export interface BillingData {
   ledger?: UsageRow[];
   uncounted?: Uncounted[];
   probes: ProbeResult[];
+  balances?: BalanceCheck;
   errors: { source: Source; message: string }[];
 }
+
+/** One org whose balance is not its credits minus its ledger charges, all in micros. */
+export interface BalanceMiss { orgId: string; balance: number; credits: number; charged: number; diff: number }
+/** The paying orgs checked and the ones off in every read. */
+export interface BalanceCheck { orgs: number; off: BalanceMiss[] }
+export interface HouseOrgs { ids: Record<string, string>; prefixes: Record<string, string> }
 
 // ---- pure ----
 
@@ -175,6 +188,35 @@ export function reconcile(operations: readonly Operation[], requests: readonly R
   return result;
 }
 
+/** A ClickHouse Decimal sum such as "-12.345678000" as integer micros, exact. */
+export const usdMicros = (usd: string): number => {
+  const match = /^(-?)(\d+)(?:\.(\d*))?$/.exec(usd.trim());
+  if (!match) throw new Error(`unreadable charge_usd sum ${usd}`);
+  const micros = Number(match[2]) * 1_000_000 + Number((match[3] ?? "").padEnd(9, "0").slice(0, 6));
+  return match[1] ? -micros : micros;
+};
+
+/** Each non-house org's balance against its completed credits minus its net ledger charges (reconcile.py of p60). An org with
+ *  no balance row is left out: a test org's cleanup deletes its Convex rows and the ledger keeps its charges, as for
+ *  org_test_promote77_1795649166874 and org_test_funnel_proof_11251507 on 11-28. */
+export function reconcileBalances(balances: readonly { orgId: string; balanceMicros: number }[], credits: readonly { orgId: string; status: string; amountMicros: number }[],
+  charged: ReadonlyMap<string, number>, house: HouseOrgs): BalanceCheck {
+  const isHouse = (orgId: string) => orgId in house.ids || Object.keys(house.prefixes).some(prefix => orgId.startsWith(prefix));
+  const balance = new Map<string, number>(), credit = new Map<string, number>();
+  for (const row of balances) balance.set(row.orgId, (balance.get(row.orgId) ?? 0) + row.balanceMicros);
+  for (const row of credits) if (row.status === "completed") credit.set(row.orgId, (credit.get(row.orgId) ?? 0) + row.amountMicros);
+  const orgs = [...balance.keys()].filter(orgId => !isHouse(orgId)).sort();
+  const off = orgs.map(orgId => {
+    const row = { orgId, balance: balance.get(orgId)!, credits: credit.get(orgId) ?? 0, charged: charged.get(orgId) ?? 0 };
+    return { ...row, diff: row.balance - (row.credits - row.charged) };
+  }).filter(row => row.diff !== 0);
+  return { orgs: orgs.length, off };
+}
+
+/** The orgs off in both reads, with the second read's numbers. */
+export const offInBoth = (first: BalanceCheck, second: BalanceCheck): BalanceCheck =>
+  ({ orgs: second.orgs, off: second.off.filter(miss => first.off.some(entry => entry.orgId === miss.orgId)) });
+
 /** "$0.0005" as micros, the unit the duty counts in. */
 export const micros = (cost: string): number => {
   const match = /^\$(\d+(?:\.\d+)?)$/.exec(cost.trim());
@@ -233,6 +275,12 @@ export function report(data: BillingData, dutyMetrics: readonly DutyMetric[]): P
   for (const result of data.probes.filter(entry => entry.charged === undefined))
     flagged.push({ at, kind: "probe_unjudged", excerpt: `${result.env} ${result.probe}: ${result.error ?? "no request id or ledger row read"}`.slice(0, 300) });
 
+  if (data.balances) {
+    metrics.balance_mismatch_orgs = data.balances.off.length;
+    for (const miss of data.balances.off)
+      flagged.push({ at, kind: "balance_mismatch", excerpt: `${miss.orgId} holds ${miss.balance} micros where completed credits ${miss.credits} minus ledger charges ${miss.charged} leave ${miss.credits - miss.charged}, off by ${miss.diff}` });
+  }
+
   const replaced = settle(dutyMetrics, metrics, unmeasured);
   if (replaced.length) flagged.push(unmeasuredFlag(replaced, at));
   for (const key of unmeasured) delete lastEventAt[key];
@@ -240,6 +288,7 @@ export function report(data: BillingData, dutyMetrics: readonly DutyMetric[]): P
   if ("billing_mismatches_24h" in metrics) n.billing_mismatches_24h = data.requests?.length ?? 0;
   if ("uncounted_calls_24h" in metrics) n.uncounted_calls_24h = data.requests?.length ?? data.uncounted?.length ?? 0;
   if ("empty_charged_probe" in metrics) n.empty_charged_probe = judged.length;
+  if ("balance_mismatch_orgs" in metrics) n.balance_mismatch_orgs = data.balances?.orgs ?? 0;
   return { metrics, flagged, n, ...Object.keys(lastEventAt).length ? { lastEventAt } : {} };
 }
 
@@ -294,6 +343,40 @@ async function outboxSent(query: (path: string, args: unknown) => Promise<unknow
     if (!page.page.length || page.page[0]!._creationTime >= before) return;
     await sleep(OUTBOX_POLL_MS, undefined, { signal });
   }
+}
+
+/** Net Data API charges per prod org written before `before`, as ClickHouse Decimal strings. */
+export const NET_BY_ORG_SQL = (before: number) => `SELECT org_id, toString(sum(charge_usd)) AS net FROM ${LEDGER_TABLE}
+WHERE ${CALLS} AND env = 'production' AND ts < fromUnixTimestamp64Milli(${before}) GROUP BY org_id`;
+
+type AdminRead = (path: string, args: unknown) => Promise<unknown>;
+async function tableRows<T>(query: AdminRead, table: string): Promise<T[]> {
+  const rows: T[] = [];
+  for (let cursor: string | null = null; ;) {
+    const page = await query("_system/cli/tableData", { table, order: "asc", paginationOpts: { numItems: 1000, cursor } }) as { page: T[]; isDone: boolean; continueCursor: string };
+    rows.push(...page.page);
+    if (page.isDone) return rows;
+    cursor = page.continueCursor;
+  }
+}
+
+/** One read of prod balances and credits, then the ledger's charges written before the read ended, once the outbox sent them. */
+async function balanceRead(query: AdminRead, ledger: SqlRead, house: HouseOrgs, signal: AbortSignal): Promise<BalanceCheck> {
+  const [balances, credits] = await Promise.all([
+    tableRows<{ orgId: string; balanceMicros: number }>(query, "apiPortalBalances"),
+    tableRows<{ orgId: string; status: string; amountMicros: number }>(query, "apiPortalCredits"),
+  ]);
+  const readAt = Date.now();
+  await outboxSent(query, readAt, signal);
+  const charged = new Map((await ledger(NET_BY_ORG_SQL(readAt))).map(row => [String(row.org_id), usdMicros(String(row.net))]));
+  return reconcileBalances(balances, credits, charged, house);
+}
+
+async function prodBalances(ledger: SqlRead, signal: AbortSignal): Promise<BalanceCheck> {
+  const query = await convexAdmin("prod", signal);
+  const house = JSON.parse(await readFile(join(REPO, "convex/org/houseOrgs.json"), "utf8")) as HouseOrgs;
+  const first = await balanceRead(query, ledger, house, signal);
+  return first.off.length ? offInBoth(first, await balanceRead(query, ledger, house, signal)) : first;
 }
 
 /** The commit of the newest READY api-portal production deployment (vercelApi in auto-sns-agent scripts/repo/env/vercel-blobs.mjs). */
@@ -426,7 +509,7 @@ async function measure(now: number, signal: AbortSignal): Promise<BillingData> {
     return async (rawSql: string) => frameRows(await query({ datasource: CLICKHOUSE, rawSql, format: 1, queryType: "sql" }));
   });
   const prodLedger = grafana.then(query => ledgerOf("prod", query));
-  const [operations, requests, ledger, uncounted, staging, prod] = await Promise.all([
+  const [operations, requests, ledger, uncounted, staging, prod, balances] = await Promise.all([
     step("prod catalog", async () => { const sha = await prodSha(); data.sha = sha; return catalogAt(sha, signal); }),
     clickhouse.then(read => read && step("prod requests", async () => (await read(REQUESTS_SQL(now))).map((row): RequestLine => ({
       rid: String(row.rid), method: String(row.method), path: String(row.path), status: Number(row.status), start: Number(row.start), durationMs: Number(row.duration) || 0,
@@ -437,7 +520,9 @@ async function measure(now: number, signal: AbortSignal): Promise<BillingData> {
     }))) : (data.errors.push({ source: "gateway failures", message: "no ClickHouse read" }), undefined)),
     step("staging probes", async () => stagingProbes(ledgerOf("staging", await grafana), signal)),
     step("prod probes", async () => prodProbes(await prodLedger, signal)),
+    step("prod balances", async () => prodBalances(await prodLedger, signal)),
   ]);
+  if (balances) data.balances = balances;
   if (operations) data.operations = operations;
   if (requests) {
     if (!requests.length) data.errors.push({ source: "prod requests", message: "otel_logs holds no api-portal /v1 request line for the last 24 h" });

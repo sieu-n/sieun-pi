@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { DutyMetric } from "../src/shared/chat-duties.ts";
-import { type BillingData, convexAdmin, type Operation, type RequestLine, type UsageRow, expectedCharge, micros, PAIR_LEAD_MS, PROBES, reconcile, report } from "../scripts/duties/portal-billing.ts";
+import { type BillingData, convexAdmin, type Operation, type RequestLine, type UsageRow, expectedCharge, micros, offInBoth, PAIR_LEAD_MS, PROBES, reconcile, reconcileBalances, report, usdMicros } from "../scripts/duties/portal-billing.ts";
 
 const NOW = Date.parse("2026-10-19T16:00:00Z");
 const AT = NOW - 6 * 3_600_000;
@@ -116,4 +116,28 @@ test("the prod Convex admin client reads the backend the prod VITE_CONVEX_URL ro
   await query("apiPortal/usage:any", {});
   assert.deepEqual(calls, [{ url: "https://convex.virev.ai/instance_name", authorization: undefined },
     { url: "https://convex.virev.ai/api/query", authorization: "Convex convex-prod|new" }]);
+});
+
+test("balance_mismatch_orgs counts orgs whose balance is not credits minus ledger charges in both reads, and skips house orgs and orgs with no balance row (p60, 11-28)", () => {
+  const house = { ids: { org_house: "house" }, prefixes: { org_duty_: "duty" } };
+  assert.equal(usdMicros("12.345678000"), 12_345_678);
+  assert.equal(usdMicros("-0.03"), -30_000);
+  const balances = [{ orgId: "org_a", balanceMicros: 700_000 }, { orgId: "org_b", balanceMicros: 500_000 }, { orgId: "org_house", balanceMicros: 9 }, { orgId: "org_duty_1", balanceMicros: 9 }];
+  const credits = [{ orgId: "org_a", status: "completed", amountMicros: 1_000_000 }, { orgId: "org_a", status: "pending", amountMicros: 5_000_000 },
+    { orgId: "org_b", status: "completed", amountMicros: 1_000_000 }];
+  const charged = new Map([["org_a", 300_000], ["org_b", 400_000], ["org_c", 1]]);
+  const first = reconcileBalances(balances, credits, charged, house);
+  assert.equal(first.orgs, 2);
+  assert.deepEqual(first.off.map(miss => [miss.orgId, miss.diff]), [["org_b", -100_000]]);
+  const second = reconcileBalances(balances, credits, new Map([["org_a", 300_000], ["org_b", 500_000]]), house);
+  assert.deepEqual(second.off, []);
+  assert.deepEqual(offInBoth(first, second).off, []);
+  const data: BillingData = { now: NOW, probes: [], errors: [], balances: offInBoth(first, first) };
+  const metrics = [...METRICS, { key: "balance_mismatch_orgs", label: "", op: "<=" as const, target: 0 }];
+  const out = report(data, metrics);
+  assert.equal(out.metrics.balance_mismatch_orgs, 1);
+  assert.equal((out.n as Record<string, number>).balance_mismatch_orgs, 2);
+  assert.ok(out.flagged!.some(slice => slice.kind === "balance_mismatch" && slice.excerpt.includes("org_b")));
+  const broken = report({ now: NOW, probes: [], errors: [{ source: "prod balances", message: "HTTP 500" }] }, metrics);
+  assert.ok(broken.metrics.balance_mismatch_orgs! > 0);
 });
