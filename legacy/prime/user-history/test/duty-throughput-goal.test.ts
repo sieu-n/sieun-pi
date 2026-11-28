@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { type BoardItem, COUNTED_BYTES, IG_HOUSE_READS_PER_MIN, laneMonthGb, META_WALKS_PER_MIN, MONTH_MINUTES, PLAN_MONTH_GB, planRate, PROD_PAID_MONTH_GB, STAGING_MONTH_GB, WATCHLIST_MONTH_GB, WATCHLIST_WALKS_IN_PAID_GB, TTS_PRODUCTS_PER_MIN, sampledMetaDue, paidPerMinute, slotsOfRows, HOLD_MS, META_FINISHED_EXPR, META_SAMPLE_PCT, META_SAMPLE_RUNS, REFRESH_SAMPLE_PCT, REFRESH_SAMPLE_RUNS, type ThroughputData, backlogged, blankPanels, boardGoal, deploySlots, goalLine, goalRows, grew, interpolate, lastHalfHour,
-  type Dashboard, folderBoards, folderFiles, lagSlots, metaDueSql, PROVIDERS, QUEUES, missed, readPanels, pageRuns, panelQueries, panelState, refreshShares, refreshSql, report, scaleDue, slowestHour, writerLagAtRate } from "../scripts/duties/throughput-goal.ts";
+  type Dashboard, folderBoards, type GroupDay, gbGroups, jumped, folderFiles, lagSlots, metaDueSql, PROVIDERS, QUEUES, missed, readPanels, pageRuns, panelQueries, panelState, refreshShares, refreshSql, report, scaleDue, slowestHour, writerLagAtRate } from "../scripts/duties/throughput-goal.ts";
 import type { DutyMetric } from "../src/shared/chat-duties.ts";
 
 const METRICS: DutyMetric[] = [
@@ -122,8 +122,8 @@ test("the output names its sample size n per metric: goal rows read, queues read
   const queues = [{ family: "census", name: "a", now: 1, ago6h: 1, slope6h: 0 }, { family: "census", name: "b", now: 1, ago6h: 1, slope6h: 0 }];
   const panels = [{ dashboard: "d", title: "t", state: "ok" }] as unknown as NonNullable<ThroughputData["panels"]>;
   const out = report(base({ board: BOARD, igSlowest: 10_400, ttsSlowest: 2_100, meta: { due: 300_000, finished24h: 53_570 }, refresh: [HALF], queues, panels, ...LAG_OK }), METRICS);
-  assert.deepEqual(out.n, { throughput_goals_missed: 6, ig_queues_growing_6h: 2, crawler_panels_blank: 1 });
-  assert.deepEqual(report(base({}), METRICS).n, { throughput_goals_missed: 0, ig_queues_growing_6h: 0, crawler_panels_blank: 0 });
+  assert.deepEqual(out.n, { throughput_goals_missed: 6, ig_queues_growing_6h: 2, crawler_panels_blank: 1, lane_gb_jumps: 0 });
+  assert.deepEqual(report(base({}), METRICS).n, { throughput_goals_missed: 0, ig_queues_growing_6h: 0, crawler_panels_blank: 0, lane_gb_jumps: 0 });
 });
 
 test("an item with two rows reports its missed row, so the 10k+ slip is not hidden by the met under-10k row (11-05 d9: items.p683 read 0)", () => {
@@ -409,4 +409,29 @@ test("a Meta Ads due sample that prod cancels on its statement timeout is read a
   assert.ok(Math.abs(sizes[1]! * 2 - sizes[0]!) <= 64, `half sample ${sizes[1]} of ${sizes[0]}`);
   assert.equal(due, Math.round((15_000 * pages) / sizes[1]!));
   await assert.rejects(sampledMetaDue(pages, async () => { throw new Error("Grafana HTTP 502"); }, () => 0.5), /502/);
+});
+
+test("lane_gb_jumps flags a lane or caller past 2x its 7-day median of read days, skips stopped days, and goes unmeasured without the read (11-28 p52)", () => {
+  const GB = 1e9;
+  const days = (source: "lane" | "caller", group: string, gb: readonly number[], op = "site"): GroupDay[] =>
+    gb.map((value, day) => ({ source, group, op, day, bytes: value * GB }));
+  const groupDays = [
+    // The api lane in CRM's 11-28 pace: 3.65 GB against reads of 0.6 to 2.9 GB, with the lapse's empty days skipped.
+    ...days("lane", "api", [3.65, 2.1, 1.5, 2.9, 0.9, 0.6, 0, 0]),
+    // The census lane at its normal pace, under its median.
+    ...days("lane", "instagram_census", [1.05, 1.1, 1.13, 1.2, 1.3, 8.7, 0, 0]),
+    // A new caller with no read before: the 11-25 websearch duty's 1.2 GB.
+    ...days("caller", "org_duty_parity_websearch crawl_read", [1.2], "google"),
+    // A small probe that tripled but adds under JUMP_FLOOR_GB.
+    ...days("caller", "org_virev_health_probe crawl_read", [0.24, 0.05, 0.05, 0.05]),
+  ];
+  const groups = gbGroups(groupDays);
+  assert.deepEqual(groups.filter(jumped).map(g => g.group), ["api", "org_duty_parity_websearch crawl_read"]);
+  assert.equal(groups.find(g => g.group === "api")!.median, 1.5);
+  const metrics: DutyMetric[] = [...METRICS, { key: "lane_gb_jumps", label: "jumps", op: "<=", target: 0 } as DutyMetric];
+  const read = report({ now: NOW, errors: [], censusFrom: CENSUS_FROM, censusTo: CENSUS_TO, groupDays }, metrics);
+  assert.equal(read.metrics.lane_gb_jumps, 2);
+  assert.equal(read.n.lane_gb_jumps, 4);
+  assert.match(read.flagged!.find(slice => slice.kind === "gb_jump")!.excerpt, /^Lane api: 3\.65 GB of wire in 24 h, 2\.4x its median of 1\.5 GB over the 5 of 7 days before with reads; top operations site 3\.65 GB\.$/);
+  assert.equal(report({ now: NOW, errors: [], censusFrom: CENSUS_FROM, censusTo: CENSUS_TO }, metrics).metrics.lane_gb_jumps, 999_999);
 });

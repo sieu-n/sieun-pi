@@ -6,7 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import type { DutyMetric, FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { BASE } from "./apps-chat.ts";
-import { type DsQuery, GRAFANA, HOUR, MINUTE, PG, PROM, REPO, grafanaClient, num, promInstant, promRange, readGrafanaAuth, round1, settle, sqlRows, unmeasuredFlag, utc } from "./estate-reads.ts";
+import { DAY, type DsQuery, GRAFANA, HOUR, MINUTE, PG, PROM, REPO, grafanaClient, num, promInstant, promRange, readGrafanaAuth, round1, settle, sqlRows, unmeasuredFlag, utc } from "./estate-reads.ts";
 
 /**
  * The Throughput goal achieved duty's precheck for Crawler guy (`node --import tsx scripts/duties/throughput-goal.ts`). Code only, reads only.
@@ -32,7 +32,8 @@ import { type DsQuery, GRAFANA, HOUR, MINUTE, PG, PROM, REPO, grafanaClient, num
  * are each lane's share of the 250 GB GeoNode month (PLAN_MONTH_GB), and the census writer keeps its own line (WRITER_LAG_LINE). Platforms
  * Observability and Metrics", every panel of the crawler dashboards run the way Grafana draws it. His "Geonode mbps >=100mbps always" left on
  * 11-24: 100 Mbps every hour is about 32 TB a month, against the 250 GB GeoNode plan he bought that day ("i got 250GB plan. hook it up, and keep
- * monitoring"), whose use Search product, misc.'s d4 watches.
+ * monitoring"), whose use Search product, misc.'s d4 watches. The lines are floors, so lane_gb_jumps reads the upper side: a lane or product-read
+ * caller whose wire GB in 24 h jumped past JUMP_RATIO times its 7-day median (owner, #1124-cost-management p52 and p54, 11-28).
  */
 
 const DUTY_FILE = join(dirname(fileURLToPath(import.meta.url)), "throughput-goal.duty.json");
@@ -161,6 +162,27 @@ const cappedTopic = (q: Queue): string | undefined => {
 export const WRITER_LAG_MS = 24 * HOUR;
 export const WRITER_LAG_LINE = 5_000;
 export const WRITER_LAG_EXPR = 'max(max_over_time(crawler_v3_bus_group_lag_records{world="prod",group="instagram-census-pg"}[5m]))';
+
+/**
+ * The upper side, which the floors above never read (owner, #1124-cost-management p52 and p54 on 11-28: "this is precisely why we define these
+ * monitoring & alerts: 이런 문제를 surface하고 고치기"). A group is a prod crawl lane of crawler.proxy_wire_reads or a product-read caller of
+ * product.usage_events (an org and its action, every action that booked wire bytes), and it jumps when its wire GB in the 24 h passes
+ * JUMP_RATIO times its median over the 7 windows of 24 h before and adds JUMP_FLOOR_GB or more. A window with no read is a stop, such as the
+ * GeoNode lapse of 11-09 to 11-23, not a baseline, so the median skips it, and a group with no read in the 7 days reads against 0.
+ * measured: replay of the 21 d8 run times from 11-24 22:47Z to 11-28 10:31Z (19 stored runs and the 2 daily runs before them), and of every
+ * hour from 11-25 23:00Z with baselines from after the 11-23 23:00Z restart. A group of 0.3 GB or more in a normal 24 h read at most 1.18x its
+ * median (org_3KGSzGiH5JHPkMcDcrlaHTG0BUz crawl_read, 11-27 03:00Z), while the jumps read 2.41x and up on the api lane in the 11-25 21:00 to
+ * 23:00Z websearch burst, and new callers against 0 for org_duty_parity_websearch (1.2 GB) and CRM's org_virev_gtm_outreach job reads from
+ * 11-27 (1.0 to 2.9 GB). The 11-24 07:00 to 09:00Z census burst (7.4 GB) came on a lane with no read before it, and the demo Watchlist's first
+ * sweep after the lapse read 5.8 GB on 11-25 against 1 MB.
+ */
+export const JUMP_RATIO = 2;
+/**
+ * measured: the 11-26 split of the GeoNode month (steady reads 205 to 272 MB an hour) left 0.7 to 1.5 GB a day for one-off reads, so a jump
+ * that adds under 0.7 GB fits inside it. In the replay it keeps out the health probe org (0.24 GB) and the render-engine lane (0.13 GB).
+ */
+export const JUMP_FLOOR_GB = 0.7;
+export const JUMP_DAYS = 7;
 
 /**
  * `runs` disjoint [first, past) page runs that together hold `percent` of `pages`: the table split into `runs` equal stretches with one run at a
@@ -393,6 +415,8 @@ export interface ThroughputData {
   censusFrom: number; censusTo: number; census?: CensusWindow; queues?: Queue[]; panels?: PanelRead[]; others?: OtherRate[];
   /** Prod's deploy lock in seconds, its most in the 5 minutes up to this run, the slot the panel read falls in. */
   panelDeployLock?: number;
+  /** Wire bytes per lane and product-read caller over the JUMP_DAYS + 1 windows of 24 h, for lane_gb_jumps; absent when either read failed. */
+  groupDays?: GroupDay[];
 }
 
 /** Where a goal number came from: the board item's target, the number in its title when it has no target, or this duty's own line. */
@@ -513,7 +537,8 @@ const when = (t: number): string => `${utc(t).slice(6)} ${utc(t).slice(0, 5)}`;
  */
 export function sampleSizes(d: ThroughputData): Record<string, number> {
   return { throughput_goals_missed: goalRows(d).filter(row => row.value !== null && row.goal !== null).length,
-    ig_queues_growing_6h: d.queues?.length ?? 0, crawler_panels_blank: d.panels?.length ?? 0 };
+    ig_queues_growing_6h: d.queues?.length ?? 0, crawler_panels_blank: d.panels?.length ?? 0,
+    lane_gb_jumps: d.groupDays ? gbGroups(d.groupDays).length : 0 };
 }
 
 /** The metrics and flagged lines from what measure() read. A source that failed leaves its metric unmeasured, which misses. */
@@ -559,10 +584,19 @@ export function report(d: ThroughputData, dutyMetrics: readonly DutyMetric[]): P
     flagged.push({ at: d.now, kind: "dashboards", excerpt: `${blank.length} of ${d.panels.length} panels on ${dashboards} crawler dashboards show an error or No data${locked}${blank.length ? ", each in a blank_panel line" : ""}.` });
     for (const panel of blank) flagged.push({ at: d.now, kind: "blank_panel", excerpt: `${panel.dashboard} / ${panel.title} (${panel.state}${panel.detail ? `: ${panel.detail}` : ""})`.slice(0, 300) });
   }
+  if (d.groupDays) {
+    const groups = gbGroups(d.groupDays);
+    const jumps = groups.filter(jumped).sort((a, b) => b.gb - a.gb);
+    metrics.lane_gb_jumps = jumps.length;
+    const largest = [...groups].sort((a, b) => b.gb - a.gb).slice(0, 5).map(g => `${g.group} ${gbText(g.gb)} (median ${gbText(g.median)})`);
+    flagged.push({ at: d.now, kind: "gb_jumps", excerpt: `${jumps.length} of ${groups.length} prod crawl lanes and product-read callers passed ${JUMP_RATIO}x their ${JUMP_DAYS}-day median of wire GB in 24 h and added ${JUMP_FLOOR_GB} GB or more${jumps.length ? ", each in a gb_jump line" : ""}. Largest: ${largest.join("; ")}.`.slice(0, 300) });
+    for (const jump of jumps) flagged.push({ at: d.now, kind: "gb_jump", excerpt: jumpLine(jump).slice(0, 300) });
+  } else unmeasured.add("lane_gb_jumps");
   for (const error of d.errors) flagged.push({ at: d.now, kind: "source_error", excerpt: `${error.source}: ${error.message}`.slice(0, 300) });
   const replaced = settle(dutyMetrics, metrics, unmeasured);
   if (replaced.length) flagged.unshift(unmeasuredFlag(replaced, d.now));
   if (metrics.ig_queues_growing_6h! > 0) lastEventAt.ig_queues_growing_6h = d.now;
+  if (metrics.lane_gb_jumps! > 0) { lastEventAt.lane_gb_jumps = d.now; windowMs.lane_gb_jumps = DAY; }
   return { metrics, flagged, n: sampleSizes(d), ...Object.keys(items).length ? { items } : {}, ...Object.keys(lastEventAt).length ? { lastEventAt } : {},
     ...Object.keys(windowMs).length ? { windowMs } : {} };
 }
@@ -700,6 +734,51 @@ FROM (
   WHERE observed_at >= toStartOfHour(now()) - INTERVAL 24 HOUR AND observed_at < toStartOfHour(now()) GROUP BY hr
 ) GROUP BY kind ORDER BY average24h DESC`;
 
+/** Wire bytes of one group and operation in the 24 h window `day` windows before the run's own (day 0). */
+export interface GroupDay { source: "lane" | "caller"; group: string; op: string; day: number; bytes: number }
+export interface GbJump { source: GroupDay["source"]; group: string; gb: number; median: number; readDays: number; top: string }
+
+const median = (values: readonly number[]): number => {
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = sorted.length >> 1;
+  return sorted.length % 2 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
+};
+
+/** Every group's 24 h GB against its median of the JUMP_DAYS windows before that hold a read, with its top 3 operations in the 24 h. */
+export function gbGroups(rows: readonly GroupDay[]): GbJump[] {
+  const groups = new Map<string, { source: GroupDay["source"]; group: string; days: number[]; ops: Map<string, number> }>();
+  for (const row of rows) {
+    if (row.day < 0 || row.day > JUMP_DAYS) continue;
+    const key = `${row.source} ${row.group}`;
+    const entry = groups.get(key) ?? { source: row.source, group: row.group, days: Array<number>(JUMP_DAYS + 1).fill(0), ops: new Map<string, number>() };
+    entry.days[row.day]! += row.bytes / 1e9;
+    if (row.day === 0) entry.ops.set(row.op || "(none)", (entry.ops.get(row.op || "(none)") ?? 0) + row.bytes / 1e9);
+    groups.set(key, entry);
+  }
+  return [...groups.values()].map(({ source, group, days, ops }) => {
+    const read = days.slice(1).filter(gb => gb > 0);
+    const top = [...ops].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([op, gb]) => `${op} ${gbText(gb)}`).join(", ");
+    return { source, group, gb: days[0]!, median: read.length ? median(read) : 0, readDays: read.length, top };
+  });
+}
+export const jumped = (g: GbJump): boolean => g.gb > JUMP_RATIO * g.median && g.gb - g.median >= JUMP_FLOOR_GB;
+const gbText = (gb: number): string => `${gb >= 10 ? Math.round(gb) : Math.round(gb * 100) / 100} GB`;
+export function jumpLine(g: GbJump): string {
+  const against = g.readDays ? `${round1(g.gb / g.median)}x its median of ${gbText(g.median)} over the ${g.readDays} of ${JUMP_DAYS} days before with reads`
+    : `no read in the ${JUMP_DAYS} days before`;
+  return `${g.source === "lane" ? "Lane" : "Caller"} ${g.group}: ${gbText(g.gb)} of wire in 24 h, ${against}; top operations ${g.top || "none"}.`;
+}
+
+/** Wire bytes per group, operation and 24 h window over the JUMP_DAYS + 1 windows before `to`: prod crawl lanes, and product-read callers. */
+export const groupDaysSql = (to: number): { lanes: string; callers: string } => {
+  const day = (column: string): string => `intDiv(toInt64(${Math.round(to)}) - toUnixTimestamp64Milli(${column}), ${DAY})`;
+  const span = (column: string): string => `${column} >= ${ms(to - (JUMP_DAYS + 1) * DAY)} AND ${column} < ${ms(to)}`;
+  return {
+    lanes: `SELECT lane AS grp, operation AS op, ${day("observed_at")} AS day, sum(wire_bytes) AS bytes FROM crawler.proxy_wire_reads WHERE world = 'prod' AND ${span("observed_at")} GROUP BY grp, op, day`,
+    callers: `SELECT concat(org_id, ' ', action) AS grp, operation AS op, ${day("ts")} AS day, sum(wire_bytes) AS bytes FROM product.usage_events WHERE env = 'production' AND wire_bytes > 0 AND ${span("ts")} GROUP BY grp, op, day`,
+  };
+};
+
 export async function measure(query: DsQuery | null, api: GrafanaApi | null, authError: string | null, now: number, readBoard: () => Promise<BoardItem[]>): Promise<ThroughputData> {
   const censusTo = Math.floor((now - SETTLE_MS) / HOUR) * HOUR;
   const censusFrom = censusTo - CENSUS_HOURS * HOUR;
@@ -787,13 +866,21 @@ export async function measure(query: DsQuery | null, api: GrafanaApi | null, aut
       return samples;
     }),
   ]);
-  const [panels, panelDeployLock] = await Promise.all([step("dashboards", async () => readPanels(await folderBoards(await repoAt(await servedObsRev(query)), DASHBOARD_FOLDER), api)),
-    step("prod deploy lock now", async () => (await promInstant(query, PROM.prod, DEPLOY_EXPR))[0]?.value ?? 0)]);
+  const toGroupDays = (source: GroupDay["source"], rows: readonly Record<string, unknown>[]): GroupDay[] =>
+    rows.map(row => ({ source, group: String(row.grp ?? ""), op: String(row.op ?? ""), day: num(row.day) ?? -1, bytes: num(row.bytes) ?? 0 }));
+  const [panels, panelDeployLock, groupDays] = await Promise.all([step("dashboards", async () => readPanels(await folderBoards(await repoAt(await servedObsRev(query)), DASHBOARD_FOLDER), api)),
+    step("prod deploy lock now", async () => (await promInstant(query, PROM.prod, DEPLOY_EXPR))[0]?.value ?? 0),
+    step("lane and caller GB", async () => {
+      const sql = groupDaysSql(holdTo);
+      const [lanes, callers] = await Promise.all([sqlRows(query, CH, sql.lanes), sqlRows(query, CH, sql.callers)]);
+      if (!lanes.length) throw new Error(`crawler.proxy_wire_reads holds no prod row in the ${JUMP_DAYS + 1} days to ${utc(holdTo)}`);
+      return [...toGroupDays("lane", lanes), ...toGroupDays("caller", callers)];
+    })]);
   const deploys = deploySlots(deployPoints ?? []);
   d.deployMinutes = [...deploys].filter(slot => slot >= holdFrom && slot < holdTo).length * SLOT_MS / MINUTE;
   const holding = igSlots?.filter(s => s.slot >= holdFrom);
   Object.assign(d, igSlots && writerLag && deployPoints && { igSlots24h: igSlots, writerLag, deploys24h: [...deploys] },
-    panels && { panels }, panelDeployLock !== undefined && { panelDeployLock }, holding && { igSlowest: slowestHour(holding, holdFrom, holdTo, deploys), igLast30: lastHalfHour(holding, holdTo), igPaid: paidPerMinute(holding) },
+    panels && { panels }, panelDeployLock !== undefined && { panelDeployLock }, groupDays && { groupDays }, holding && { igSlowest: slowestHour(holding, holdFrom, holdTo, deploys), igLast30: lastHalfHour(holding, holdTo), igPaid: paidPerMinute(holding) },
     ttsSlots && { ttsSlowest: slowestHour(ttsSlots, holdFrom, holdTo, deploys) }, ttsWeekly && { ttsWeekly }, meta && { meta }, others && { others },
     census && { census }, queues && { queues }, refresh && { refresh });
   return d;
