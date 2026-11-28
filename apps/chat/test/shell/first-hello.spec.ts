@@ -22,6 +22,7 @@ const firstHello = (url: string): Promise<string> => new Promise((resolve, rejec
 test("a hello that comes the moment the socket opens fills the sidebar and reads the boards ahead", async ({ page, baseURL }) => {
   const live = `${baseURL!.replace(/^http/, "ws")}/api/live`;
   const hello = await firstHello(live);
+  let boardOverSocket = false;
   await page.routeWebSocket(/\/api\/live/, (route) => {
     route.send(hello);
     // The server's own hello is the one above, so only the events after it pass.
@@ -34,12 +35,18 @@ test("a hello that comes the moment the socket opens fills the sidebar and reads
       }
       route.send(String(data));
     });
-    route.onMessage((message) => (upstream.readyState === WebSocket.OPEN ? upstream.send(message) : upstream.once("open", () => upstream.send(message))));
+    route.onMessage((message) => {
+      const command = JSON.parse(String(message)) as { type: string; path?: string };
+      if (command.type === "read" && command.path === `/api/agents/${AGENT}/board`) boardOverSocket = true;
+      return upstream.readyState === WebSocket.OPEN ? upstream.send(message) : upstream.once("open", () => upstream.send(message));
+    });
     route.onClose(() => upstream.close());
   });
-  const board = page.waitForResponse((r) => new URL(r.url()).pathname === `/api/agents/${AGENT}/board`, { timeout: 10_000 });
+  // A board read ahead goes over the socket while one is open (kept.svelte.ts), else over HTTP.
+  let boardOverHttp = false;
+  page.on("request", (r) => { if (new URL(r.url()).pathname === `/api/agents/${AGENT}/board`) boardOverHttp = true; });
   await page.goto("/#/agents");
-  await board;
+  await expect.poll(() => boardOverSocket || boardOverHttp, { timeout: 10_000 }).toBe(true);
   await page.evaluate(() => { location.hash = "#/"; });
   await expect(page.getByRole("navigation", { name: "Conversations" }).locator('[data-section="solo"]')).toContainText("relay protocol");
 });
