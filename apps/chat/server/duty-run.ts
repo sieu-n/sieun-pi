@@ -376,6 +376,14 @@ export async function measure(input: {
   return { record, heldBy, brief: idle ? null : dutyJobBrief({ duty, chat: input.chat, at: started, measure: record.verdict === "error" ? `no measure (${record.summary})` : record.summary, findings, misses, record, boardApi: input.boardApi }) };
 }
 
+/**
+ * The brief's line on a number's cause and on what a precheck skips. From 11-15 to 11-24 PostHog's warehouse copy billed $555 while
+ * devops guy's bill check listed PostHog as left out, because its source wrote no price, and its onMiss gave a left-out item no step
+ * (owner, #1124-cost-management p52: "이런거 있으면 알아서 고쳐야될거 아냐 proactive하게").
+ */
+const TRACE_LINE = "Trace each missed or flagged number to the workload that makes it, such as a job, cron, sync or caller, and fix that cause today; " +
+  "a report of the number is no fix. An item the precheck leaves out or cannot read is not measured, never fine: make the precheck read it and count it.";
+
 /** The duty job's brief, after today's `dutyJobBrief`, with the board and the report through the chat server instead of Prime's tools. */
 export function dutyJobBrief(input: { duty: Duty; chat: { id: string; name: string }; at: number; measure: string; findings: string; misses: readonly MetricStreak[]; record: DutyRunRecord; boardApi: string }): string {
   const { duty, chat, at, measure, findings, misses, record, boardApi } = input;
@@ -406,6 +414,7 @@ export function dutyJobBrief(input: { duty: Duty; chat: { id: string; name: stri
     `The chat's board is GET ${boardApi} (JSON with the plan and the owner's todos). Change it with POST ${boardApi} and the body {"actor": "agent", "ops": [...]}, ` +
       "where the ops are the board's plan_add, plan_update, todo_add and the rest; read it first, then check the real state behind it.",
     "Fix what you find, script what can be scripted, and skip nitpicks. Use the subagent tool for each separate part of the work.",
+    TRACE_LINE,
     "## Report",
     "End with one plain report of at most 3 lines: the headline number and its gap, what you changed, and what is left. Send it with send_message " +
       "(with no such tool, make it your final answer), and the chat server posts it to the chat; when nothing needs the chat, send nothing.",

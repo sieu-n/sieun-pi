@@ -18,3 +18,10 @@ test("a duty brief calls an agent id an agent and a root chat's id a thread", ()
   assert.doesNotMatch(brief("ag_agent-factory"), /thread ag_/);
   assert.match(brief("01a14210-4e7d-72c3-aa67-e3d476f4e728"), /\(thread 01a14210-4e7d-72c3-aa67-e3d476f4e728\)/);
 });
+
+test("a duty brief tells the job to fix a number at its cause and to count what the precheck skips", () => {
+  // 11-28: devops guy's bill check listed PostHog as left out for 26 days, and no job read that as a miss.
+  const text = brief("ag_devops-guy");
+  assert.match(text, /Trace each missed or flagged number to the workload that makes it[^\n]*fix that cause today; a report of the number is no fix\./);
+  assert.match(text, /An item the precheck leaves out or cannot read is not measured, never fine: make the precheck read it and count it\./);
+});
