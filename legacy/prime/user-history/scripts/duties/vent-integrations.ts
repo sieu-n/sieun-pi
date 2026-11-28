@@ -41,6 +41,11 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  *   through Grafana with a log_comment tag and reads its CPU from otel.query_cost. Until release 21 (10-25) prod's console decoded the whole
  *   LogAttributes map of each call row, and its 24 h usage reads took 1.07 to 1.50 core-s on prod; on the columns of otel.vent_calls they take
  *   0.29 to 0.51. Goal p44, owner: "Make the Vent Grafana panels and alert rules cheap so they stop loading prod's database".
+ * - vent_call_jumps: how many prod caller and integration pairs made at least JUMP_RATIO times their median daily calls of the 7 days before,
+ *   and at least JUMP_FLOOR calls, in the last 24 h. A pair new in the window has median 0, so any new pair over the floor counts. Owner, 11-28
+ *   (#1124-cost-management p52, p54), after a PostHog warehouse sync re-copied the whole API call log every hour for 11 days unseen: "this is
+ *   precisely why we define these monitoring & alerts: 이런 문제를 surface하고 고치기." Each flagged row names the caller, the integration, its
+ *   24 h calls and the median, so the reader finds the caller and fixes or hands off the waste.
  * A source it cannot read gives a source_error flagged slice with its reason, counted in source_errors, and leaves each metric it feeds out of
  * the output (the 999999 placeholder for a count to drive down), so the duty runner reads it as not measured. A day with no counted call has no
  * success rate either, so vent_success_24h_pct is left out with a gap slice. Until 10-24 both wrote -1, which the runner judged as a miss.
@@ -62,6 +67,13 @@ export const SLOW_READ_S = 1;
 /** The duty report carries at most 3 items per metric (board skill check-ins.md, rule 4, owner 10-15). */
 const ITEMS = 3;
 const REVOKE_PROOF_AGENTS = "%breach-check/%";
+/**
+ * measured: replayed on prod otel.vent_calls for the 8 days to 11-28 11:00Z, 5x and 1,000 calls flagged 0 to 5 pairs a day, 14 in all, each a
+ * real jump to look at (convex crawler 146,102 against a median of 14,220, crawler-v3 typesafe 12,666 against 188). A 100-call floor flagged 26,
+ * the extra ones small bursts such as 118 golden ops-gateway calls; 3x flagged 24.
+ */
+export const JUMP_RATIO = 5;
+export const JUMP_FLOOR = 1000;
 const HOUR_MS = 3_600_000;
 
 type LightName = "red" | "yellow" | "green" | "grey";
@@ -83,6 +95,8 @@ export interface ModelCalls { env: string; caller: string; operation: string; mo
 export interface ModelReads { allowed: readonly string[]; rows: ModelCalls[] }
 /** One read the prod Vent console runs and what one run of it cost on prod ClickHouse, null when otel.query_cost had no row for it. */
 export interface ConsoleRead { name: string; cpu_s: number | null; read_rows: number | null }
+/** One prod caller and integration pair: its calls in the last 24 h and in each of the 7 windows of 24 h before it, newest first. */
+export interface PairVolume { caller: string; integration: string; last24h: number; before: number[] }
 type Failed = { error: string };
 export interface IntegrationReads {
   lights: IntegrationLight[] | Failed;
@@ -93,6 +107,7 @@ export interface IntegrationReads {
   refusalsRead?: number;
   models: ModelReads | Failed;
   consoleReads: ConsoleRead[] | Failed;
+  volumes: PairVolume[] | Failed;
 }
 
 const failed = <T extends object>(value: T | Failed): value is Failed => "error" in value && typeof (value as Failed).error === "string";
@@ -135,6 +150,20 @@ export function oldModelCalls(reads: ModelReads): ModelCalls[] {
     .filter(row => row.calls > 0);
 }
 
+const median = (values: number[]) => {
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
+};
+
+/** The pairs whose last 24 h reached JUMP_RATIO times the median of the 7 days before and JUMP_FLOOR calls, largest first, with that median. */
+export function callJumps(volumes: PairVolume[]): (PairVolume & { median: number })[] {
+  return volumes
+    .map(pair => ({ ...pair, median: median(pair.before) }))
+    .filter(pair => pair.last24h >= JUMP_FLOOR && pair.last24h >= JUMP_RATIO * pair.median)
+    .sort((a, b) => b.last24h - a.last24h);
+}
+
 /** ALLOWED_MODELS from the text of Vent's tables (apps/vent/src/vent/tables). */
 export function allowedModels(tables: string): string[] {
   const set = /^ALLOWED_MODELS\b[^=]*=\s*frozenset\(\s*\{([^}]*)\}/m.exec(tables)?.[1];
@@ -155,14 +184,14 @@ export async function ventTablesAt(ref: string): Promise<string> {
 
 /**
  * `n`, the sample size of each metric (board skill plan-and-duties.md, duties rule 9): counted prod calls, prod call rows searched for refused
- * keys, LLM calls read by model and console reads timed. A read that failed counts 0.
+ * keys, LLM calls read by model, console reads timed and prod calls read per caller and integration over 8 days. A read that failed counts 0.
  */
 export type VentIntegrationsOutput = PrecheckOutput & { n: Record<string, number> };
 
 export function integrationMetrics(reads: IntegrationReads, at: number): VentIntegrationsOutput {
   const flagged: FlaggedSlice[] = [];
   const metrics: Record<string, number> = {};
-  const n: Record<string, number> = { vent_success_24h_pct: 0, vent_key_refused_sources: 0, vent_console_slow_reads_24h: 0, old_model_calls_24h: 0 };
+  const n: Record<string, number> = { vent_success_24h_pct: 0, vent_key_refused_sources: 0, vent_console_slow_reads_24h: 0, old_model_calls_24h: 0, vent_call_jumps: 0 };
   const lastEventAt: Record<string, number> = {};
   let sourceErrors = 0;
   const sourceError = (excerpt: string) => { sourceErrors++; flagged.push({ at, kind: "source_error", excerpt: excerpt.slice(0, 300) }); };
@@ -238,6 +267,19 @@ export function integrationMetrics(reads: IntegrationReads, at: number): VentInt
     n.vent_console_slow_reads_24h = reads.consoleReads.length;
     for (const read of slow.slice(0, ITEMS)) {
       flagged.push({ at, kind: "slow_console_read", item: read.name, excerpt: `prod Vent console read ${read.name} took ${read.cpu_s} core-s on prod ClickHouse for ${read.read_rows} rows` });
+    }
+  }
+
+  if (failed(reads.volumes)) {
+    sourceError(`prod Vent calls per caller and integration could not be read: ${reads.volumes.error}`);
+    metrics.vent_call_jumps = UNMEASURED;
+  } else {
+    const jumps = callJumps(reads.volumes);
+    metrics.vent_call_jumps = jumps.length;
+    n.vent_call_jumps = reads.volumes.reduce((sum, pair) => sum + pair.last24h + pair.before.reduce((a, b) => a + b, 0), 0);
+    for (const pair of jumps.slice(0, ITEMS)) {
+      const item = `${pair.caller || "no caller"} ${pair.integration || "no integration"}`;
+      flagged.push({ at, kind: "call_jump", item, excerpt: `${item}: ${pair.last24h} prod Vent calls in 24 h against a median of ${pair.median} a day over the 7 days before` });
     }
   }
 
@@ -356,6 +398,20 @@ async function keyRefusals(token: string): Promise<KeyRefusal[]> {
   }));
 }
 
+/** Prod Vent calls per caller and integration in the last 24 h and in each of the 7 windows of 24 h before it. */
+async function pairVolumes(token: string): Promise<PairVolume[]> {
+  const windows = Array.from({ length: 8 }, (_, day) =>
+    `toFloat64(countIf(Timestamp > now() - INTERVAL ${24 * (day + 1)} HOUR AND Timestamp <= now() - INTERVAL ${24 * day} HOUR)) AS d${day}`).join(", ");
+  const sql = `SELECT \`vent.caller\` AS caller, \`vent.integration\` AS integration, ${windows} FROM otel.vent_calls ` +
+    "WHERE ResourceAttributes['deployment.environment.name'] = 'production' AND Body = 'vent.call' AND Timestamp > now() - INTERVAL 192 HOUR " +
+    "GROUP BY caller, integration";
+  const { rows, column } = await clickhouse(token, sql);
+  return Array.from({ length: rows }, (_, index) => ({
+    caller: String(column("caller")[index] ?? ""), integration: String(column("integration")[index] ?? ""),
+    last24h: Number(column("d0")[index]), before: Array.from({ length: 7 }, (_, day) => Number(column(`d${day + 1}`)[index])),
+  }));
+}
+
 /** LLM calls on prod and staging Vent in 24 h per tier, caller, operation and model, as vent_models_query.py reads them, and the allowed set at HEALTH_REF. */
 async function modelCalls(token: string): Promise<ModelReads> {
   const allowed = allowedModels(await ventTablesAt(HEALTH_REF));
@@ -389,7 +445,7 @@ async function main(): Promise<void> {
       if (!production.version || !staging.version || production.version === staging.version) return null;
       return spans(token, production.version).catch((error: unknown) => ({ error: errorText(error) }));
     });
-    const [lightsRead, hosts, history, refusals, refusalsRead, models, consoleCost] = await Promise.all([
+    const [lightsRead, hosts, history, refusals, refusalsRead, models, consoleCost, volumes] = await Promise.all([
       typeof token === "string" ? lights(token, dir).catch((error: unknown) => ({ error: errorText(error) })) : Promise.resolve(token),
       hostsRead,
       spansRead,
@@ -397,8 +453,9 @@ async function main(): Promise<void> {
       typeof token === "string" ? prodCallRows(token).catch(() => 0) : Promise.resolve(0),
       typeof token === "string" ? modelCalls(token).catch((error: unknown) => ({ error: errorText(error) })) : Promise.resolve(token),
       typeof token === "string" ? consoleReads(token, dir).catch((error: unknown) => ({ error: errorText(error) })) : Promise.resolve(token),
+      typeof token === "string" ? pairVolumes(token).catch((error: unknown) => ({ error: errorText(error) })) : Promise.resolve(token),
     ]);
-    await writeFile(output, JSON.stringify(integrationMetrics({ lights: lightsRead, hosts, spans: history, refusals, refusalsRead, models, consoleReads: consoleCost }, at), null, 2) + "\n");
+    await writeFile(output, JSON.stringify(integrationMetrics({ lights: lightsRead, hosts, spans: history, refusals, refusalsRead, models, consoleReads: consoleCost, volumes }, at), null, 2) + "\n");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
