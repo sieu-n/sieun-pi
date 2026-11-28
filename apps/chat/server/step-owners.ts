@@ -1,22 +1,22 @@
 /**
  * Tells each chat what nobody owns on its board: its open steps nobody moves and its red duties with no live fix, by the rules the Chat system
  * duty (d9) counts them with (legacy/prime/user-history/src/apps-step-owners.ts), as today's chat service tells a Prime chat its unmoved steps
- * (`Chats.unmoved`). A chat is told when a gap appears and again each live window while the same gaps stay, and holds at most one notice it
- * has not answered yet. Until 11-03 the :5184 check-in only said "move each open step", and d9 found vent's p126 and chrome extension's p20
- * each waiting with no wake and no job, which no part of the app had named to its chat.
+ * (`Chats.unmoved`). A chat is told when a gap appears and again each live window while the same gaps stay. A notice is built at the tick
+ * that starts its turn and never waits in the chat's queue, so it names only what nobody owns when the chat reads it. Until 11-03 the :5184
+ * check-in only said "move each open step", and d9 found vent's p126 and chrome extension's p20 each waiting with no wake and no job, which
+ * no part of the app had named to its chat.
  */
 import { appsGapsKey, appsOwnerGaps, appsOwnerNotice, appsOwnerReads, appsStuckSteps, type AppsChat } from "../../../legacy/prime/user-history/src/apps-step-owners.ts";
 import type { PlanItem } from "../web/src/lib/api/shared/types.ts";
 import { liveWindowMs } from "../../../legacy/prime/user-history/src/checkin-steps.ts";
 import type { Boards } from "./boards.ts";
+import { isBusy } from "./host/types.ts";
 
 const TOLD_CACHE = "step-owners";
 
 export class StepOwners {
   /** What each chat was last told and when, kept across restarts, so a release does not tell the same gaps again inside their window. */
   private readonly told: Map<string, { key: string; at: number }>;
-  /** The chats holding a notice they have not answered yet (`Host.wait`), which get no second one. */
-  private readonly unanswered = new Set<string>();
   private running = false;
 
   constructor(private readonly boards: Boards, private readonly log: (line: string) => void = () => {}) {
@@ -66,6 +66,17 @@ export class StepOwners {
     };
   }
 
+  /**
+   * Whether the chat's own conversation runs a turn or waits for its slot, by the app's last thread list read (2 s apart). pi-host has the
+   * last word (`whenBusy: "reject"`); this read keeps the app from asking it at every tick of a long turn, since pi-host ranks a harness
+   * digest for each input before it refuses one.
+   */
+  private busy(thread: string): boolean {
+    if (this.boards.rootRunning(thread)) return true;
+    const row = this.boards.threads.thread(thread);
+    return row?.status === "sleeping" && row.children === 0;
+  }
+
   async tick(now = Date.now()): Promise<void> {
     if (this.running) return;
     this.running = true;
@@ -74,28 +85,31 @@ export class StepOwners {
       const sessions = this.boards.threads.conversations();
       const wakes = await this.boards.owedWakes(now);
       const links = { others: new Map(chats.map(chat => [chat.id, chat.board] as const)), chats: chats.map(chat => ({ id: chat.id, name: chat.name })) };
-      for (const chat of chats) {
-        // A busy chat is told too, as one follow-up its next turn reads, and gets no second notice until it has answered that one. Until
-        // 11-26 a chat was told only while its thread and every duty run of it were idle: devops guy's 18 duties and its own turns left 22 of
-        // the 168 ticks from 20:45Z to 22:08Z on 11-25 idle, none after 21:06Z, so it was never told about p30, p53, p56 or p61. The one-notice
-        // rule keeps 11-07 from repeating, when vent's run waited for a pi-pool slot for 3 h 47 min and 10 queued notices reached it at once.
-        if (!chat.thread || this.unanswered.has(chat.id)) continue;
+      for (const listed of chats) {
+        if (!listed.thread) continue;
+        // The board as it is now: telling the chats before this one can take seconds each while pi-host is slow.
+        const chat = { ...listed, thread: listed.thread, board: await this.boards.board(listed.id) };
         const gaps = appsOwnerGaps(chat, sessions, wakes, now, { self: chat.id, ...links });
         const key = appsGapsKey(gaps);
         if (!key) { this.remember(chat.id, null); continue; }
         const window = liveWindowMs(chat.everyMs ?? Infinity);
         const last = this.told.get(chat.id);
         if (last?.key === key && now - last.at < window) continue;
-        const thread = chat.thread;
-        await this.boards.host.submit(thread, {
-          text: appsOwnerNotice(gaps, window), whenBusy: "followUp", requestId: `owners:${chat.id}:${now}`,
+        // A chat is told at the first tick that finds its own conversation idle, and the notice starts that turn. A turn in progress takes
+        // none (`reject`), so no notice waits in a queue and a chat never holds two. A duty run of the chat does not hold a notice back.
+        // From 11-26 a notice went to a busy chat as a follow-up: on 11-28 one built at 11:56:24Z and a second built at 13:12:46Z, after a
+        // release at 13:12:07Z emptied the in-memory list of unanswered notices, waited 127 and 51 min in devops guy's queue and named p150,
+        // which it had closed at 14:01:43Z, 2 min before they were placed. Of its 41 notices from 11-26 to 11-28, the first idle tick came
+        // at most 1.7 min after the follow-up was placed. Until 11-26 a chat was told only while its thread and every duty run of it were
+        // idle: on 11-25 that left devops guy none of the 124 ticks from 21:06Z to 22:08Z, while its thread alone was idle at 33 of them.
+        if (this.busy(chat.thread)) continue;
+        await this.boards.host.submit(chat.thread, {
+          text: appsOwnerNotice(gaps, window), whenBusy: "reject", requestId: `owners:${chat.id}:${now}`,
           entry: { kind: "agent.message", data: { from: "board", via: "owners" } },
-        }).then(sent => {
+        }).then(() => {
           this.remember(chat.id, { key, at: now });
           this.log(`owners: told ${chat.name} nobody owns ${key}`);
-          this.unanswered.add(chat.id);
-          void this.boards.host.wait(thread, sent.submission).catch(() => undefined).finally(() => this.unanswered.delete(chat.id));
-        }, error => this.log(`owners: telling ${chat.name} failed: ${String(error)}`));
+        }, error => { if (!isBusy(error)) this.log(`owners: telling ${chat.name} failed: ${String(error)}`); });
       }
     } finally {
       this.running = false;

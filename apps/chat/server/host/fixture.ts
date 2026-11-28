@@ -183,6 +183,8 @@ export class FixtureHost implements Host, UsageSums {
     if (input.requestId && thread.byRequest.has(input.requestId)) return { submission: thread.byRequest.get(input.requestId)!, status: "placed", ticket: this.ticketOf(thread, input.conversation ?? 1) };
     const conversation = input.conversation ?? 1;
     if (!thread.nodes.some(n => n.id === conversation)) throw new Error(`No conversation ${conversation} in ${id}`);
+    // pi-durable's `ConversationBusy`: a busy conversation takes no `whenBusy: "reject"` input and writes nothing for it.
+    if (input.whenBusy === "reject" && thread.running.has(conversation)) throw new Error(`Conversation ${conversation} is busy`);
     const content: ContentBlock[] = [{ type: "text", text: input.text ?? "" }, ...(input.images ?? []).map(i => ({ type: "image" as const, data: i.data, mimeType: i.mimeType }))];
     const user: Message = { role: "user", content, timestamp: this.now() };
     const entry = this.append(thread, conversation, input.entry ? { kind: "agent.message", model: [user], data: agentMessageData(input.entry.data) } : { kind: "pi.user", model: [user] });

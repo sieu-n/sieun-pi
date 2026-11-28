@@ -80,6 +80,12 @@ export interface SubmitInput {
   ownerTurn?: boolean;
 }
 
+/**
+ * pi-host's answer to a `whenBusy: "reject"` input while the conversation runs a turn or waits for its slot (pi-durable's `ConversationBusy`,
+ * "Conversation 1 is busy"): nothing was written and nothing waits in the queue (packages/pi-host test/durable/busy-reject.test.ts).
+ */
+export const isBusy = (error: unknown): boolean => error instanceof Error && /\bConversation \d+ is busy\b/.test(error.message);
+
 /** `thread` is the new thread's uuid: a create sent again with it answers the thread the first one made instead of making another. */
 export interface CreateOptions { thread?: string; name?: string; model?: string; thinkingLevel?: string; cwd?: string; box?: string }
 

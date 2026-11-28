@@ -15,22 +15,23 @@ import { start, until, type Running } from "./helpers.ts";
 
 let s: Running;
 let vent: AgentSummary;
-const told: { thread: string; text: string }[] = [];
 
 before(async () => {
   s = await start({ wordMs: 0 });
   vent = (await s.send("POST", "/api/agents", { name: "owners vent" })).body;
   assert.ok(s.host instanceof FixtureHost);
-  s.host.beforeSubmit = (thread, input) => {
-    if (input.requestId?.startsWith("owners:")) told.push({ thread, text: input.text ?? "" });
-  };
   await until(async () => s.app.threads.thread(vent.thread)?.status, status => status !== "running");
 });
 after(async () => {
   await s.close();
 });
 
-const mine = () => told.filter(entry => entry.thread === vent.thread);
+/** The notices vent's thread holds, read from its entries, so one the host refused or one still in its queue is told apart from one it got. */
+const mine = (): { text: string }[] => {
+  assert.ok(s.host instanceof FixtureHost);
+  return s.host.threadsById.get(vent.thread)!.entries.filter(entry => (entry.data as { via?: string } | undefined)?.via === "owners")
+    .map(entry => ({ text: (entry.model?.[0]?.content as { text?: string }[])[0]?.text ?? "" }));
+};
 const idle = () => until(async () => s.app.threads.thread(vent.thread)?.status, status => status !== "running");
 
 test("a step that waits with no job and no wake is told to its chat once a window, and a wake whose note names it ends that", async () => {
@@ -56,37 +57,65 @@ test("a step that waits with no job and no wake is told to its chat once a windo
   assert.equal(mine().length, 2, "a wake of the chat's thread that names the step owns it");
 });
 
-test("a chat whose turn runs or waits for a slot gets one notice as a follow-up, and no second until it answers that one", async () => {
-  // vent on 11-07: its run waited for a pi-pool slot from 14:13Z to 18:00Z, and the app queued a notice each window for p143, p144 and p152,
-  // so 10 notices reached it at 18:00Z. Devops guy on 11-25: its own turns and 18 duties left no idle tick after 21:06Z, and a rule that told
-  // only an idle chat never told it about p30, p53, p56 or p61.
+test("a chat whose turn runs is told when that turn ends, and the notice names only the steps nobody owns then", async () => {
+  // Devops guy on 11-28: its thread worked through a queue from 11:56Z to 14:01Z. A notice built at 11:56:24Z waited there as a follow-up, and
+  // so did a second one built at 13:12:46Z, after a release at 13:12:07Z emptied the app's list of chats with a notice not yet answered. It
+  // closed p150 at 14:01:43Z, and both notices reached it at 14:03:44Z and 14:03:47Z and named p150. vent on 11-07: its run waited for a
+  // pi-pool slot from 14:13Z to 18:00Z, and the 10 notices queued in that time reached it at once.
   const added = await s.send<{ board: ChatBoard }>("POST", `/api/agents/${vent.id}/board`, { actor: "agent", ops: [
     { op: "plan_add", text: "Remove the Convex and Cloudflare usage keys from the infra settings", status: "doing", waitFor: "Release owner's p147. A wake checks main every 30 min" },
     { op: "plan_add", text: "Move the billing mail reader onto Vent", status: "doing", waitFor: "Release owner's p147 deploys the obs tier" },
+    { op: "plan_add", text: "The demo's store-country test passes again on the Mac branch", status: "doing", waitFor: "a passing linux (demo-unit) run on dev/sieun-mac" },
   ] });
   assert.equal(added.status, 200);
-  const [keys, mail] = added.body.board.plan.slice(-2).map(item => item.id);
+  const [keys, mail, demo] = added.body.board.plan.slice(-3).map(item => item.id);
   const before = mine().length;
   assert.ok(s.host instanceof FixtureHost);
   s.host.wordMs = 50;
-  await s.host.submit(vent.thread, { text: "slow turn that waits for a slot" });
+  await s.host.submit(vent.thread, { text: "slow turn that works through its inbox" });
   await until(async () => s.app.boards.rootRunning(vent.thread), running => running);
   const now = Date.now() + 24 * 3600_000;
-  for (const step of [0, 6, 13, 43, 73]) await s.app.boards.owners.tick(now + step * 60_000);
-  assert.equal(mine().length, before + 1, "one notice waits behind the running turn, and the later windows queue none");
-  assert.match(mine().at(-1)!.text, new RegExp(`${keys} "Remove the Convex`));
+  for (const step of [0, 6, 13]) await s.app.boards.owners.tick(now + step * 60_000);
+  // A release in the middle of the turn: the next server process knows only what the last one saved.
+  await new StepOwners(s.app.boards).tick(now + 43 * 60_000);
+  await s.app.boards.owners.tick(now + 73 * 60_000);
   await s.app.boards.addWake(vent.id, { on: { kind: "check", command: "false", every: 300_000, at: now + 86_400_000 }, note: `${keys}: post promote 24 vent checks` });
-  await s.send("POST", `/api/agents/${vent.id}/board`, { actor: "agent", ops: [{ op: "plan_update", id: keys, waitFor: null }] });
+  await s.send("POST", `/api/agents/${vent.id}/board`, { actor: "agent", ops: [{ op: "plan_update", id: keys, waitFor: null }, { op: "plan_update", id: demo, status: "done", waitFor: null }] });
   s.host.wordMs = 0;
   await s.host.abort(vent.thread);
   await idle();
-  await until(async () => { await s.app.boards.owners.tick(now + 74 * 60_000); return mine().length; }, count => count === before + 2);
-  const notice = mine().at(-1)!.text;
-  assert.match(notice, new RegExp(`${mail} "Move the billing mail reader onto Vent" waits for`));
-  assert.doesNotMatch(notice, new RegExp(`${keys}\\b`), "a step its turn gave an owner is not in the notice");
+  await until(async () => { await s.app.boards.owners.tick(now + 74 * 60_000); return mine().length; }, count => count > before);
   await idle();
   await s.app.boards.owners.tick(now + 75 * 60_000);
-  assert.equal(mine().length, before + 2, "the same gaps are not told again inside the window");
+  const got = mine().slice(before).map(notice => notice.text);
+  assert.equal(got.length, 1, "the chat gets one notice for the whole turn, and the same gaps are not told again inside the window");
+  assert.match(got[0]!, new RegExp(`${mail} "Move the billing mail reader onto Vent" waits for`));
+  assert.doesNotMatch(got[0]!, new RegExp(`${demo}\\b`), "a step closed while the turn ran is not in the notice");
+  assert.doesNotMatch(got[0]!, new RegExp(`${keys}\\b`), "a step its turn gave an owner is not in the notice");
+});
+
+test("a chat whose run waits for its slot gets no notice into its queue", async () => {
+  assert.ok(s.host instanceof FixtureHost);
+  const refused: string[] = [];
+  s.host.beforeSubmit = (thread, input) => { if (thread === vent.thread && input.requestId?.startsWith("owners:")) refused.push(input.requestId); };
+  const added = await s.send<{ board: ChatBoard }>("POST", `/api/agents/${vent.id}/board`, { actor: "agent", ops: [
+    { op: "plan_add", text: "Rotate the staging deploy key", status: "doing", waitFor: "Release owner's p147 lands" }] });
+  const step = added.body.board.plan.at(-1)!.id;
+  const before = mine().length;
+  s.host.wordMs = 50;
+  await s.host.submit(vent.thread, { text: "queue long behind six other runs" });
+  await until(async () => s.app.threads.thread(vent.thread)?.status, status => status === "sleeping");
+  const now = Date.now() + 36 * 3600_000;
+  await s.app.boards.owners.tick(now);
+  assert.equal(mine().length, before, "nothing is queued behind the waiting run");
+  assert.deepEqual(refused, [], "and the host is not asked while the app reads the run as waiting");
+  s.host.beforeSubmit = undefined;
+  s.host.wordMs = 0;
+  await s.host.abort(vent.thread);
+  await idle();
+  await until(async () => { await s.app.boards.owners.tick(now + 60_000); return mine().length; }, count => count === before + 1);
+  assert.match(mine().at(-1)!.text, new RegExp(`${step} "Rotate the staging deploy key"`));
+  await idle();
 });
 
 test("a chat is told while a duty run of it works", async () => {
