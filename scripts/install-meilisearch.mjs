@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 /**
  * Installs Meilisearch for apps/chat search on this Linux box (us-metal02), whose Komodo Stack box-sieun-pi runs it as the container
- * box-sieun-pi-meilisearch-1 and keeps its index file in the page cache with the Procedure m02-meilisearch-warm (auto-sns-agent
- * apps/infra/box/compose.sieun-pi.yml):
+ * box-sieun-pi-meilisearch-1 (auto-sns-agent apps/infra/box/compose.sieun-pi.yml):
  * 1. The pinned release binary, checked against its sha256, under ~/.local/opt/meilisearch/v<version>, with `current` pointing at it.
  * 2. A master key, made once, in ~/.config/meilisearch/master.key, which the chat reads. The container takes the same key from the
  *    Komodo Variable PROD__MEILI_MASTER_KEY (auto-sns-agent apps/infra/.env row MEILI_MASTER_KEY, set by

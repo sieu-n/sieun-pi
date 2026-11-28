@@ -2062,18 +2062,6 @@
   ]
  },
  {
-  "id": "dev-service-idc-convex-3320-3321",
-  "tool": "dev service idc-convex (3320/3321)",
-  "probes": [
-   {
-    "port": 3320
-   },
-   {
-    "port": 3321
-   }
-  ]
- },
- {
   "id": "dev-service-supabase-local-54321-54322-54324",
   "tool": "dev service supabase local (54321/54322/54324)",
   "mac": [
@@ -2265,17 +2253,14 @@
   "byDesign": "Mac self-care duties; agents do not call them (gap-table.md)."
  },
  {
-  "id": "ci-monitor-code-health-tiktok-index-gaps",
-  "tool": "ci-monitor / code-health / tiktok-index-gaps",
+  "id": "ci-monitor-code-health",
+  "tool": "ci-monitor / code-health",
   "mac": [
    {
     "launchd": "ai.virev.ci-monitor"
    },
    {
     "launchd": "ai.virev.code-health"
-   },
-   {
-    "launchd": "ai.virev.tiktok-index-gaps"
    }
   ],
   "box": [
@@ -2284,9 +2269,6 @@
    },
    {
     "path": "~/.cache/box-jobs/code-health.last"
-   },
-   {
-    "path": "~/.cache/box-jobs/tiktok-index-gaps.last"
    }
   ]
  },
