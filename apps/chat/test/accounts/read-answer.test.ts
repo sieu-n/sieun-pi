@@ -29,7 +29,7 @@ test("the server parses the pool's last failed read, and a row with none reads n
 
 test("a 429 leads the row with the provider's retry time, and the old numbers' age comes second", () => {
   const r = row({ read_failed_at: S(NOW - 60_000), read_error: "Anthropic rate limited usage reads (429)", usage_retry_at: S(NOW + 8 * 60_000) });
-  assert.deepEqual(failedReadTag(r, NOW), { label: `Rate limited until ${clockText(NOW + 8 * 60_000, NOW)}`, tone: "warning" });
+  assert.deepEqual(failedReadTag(r, NOW), { label: `429 until ${clockText(NOW + 8 * 60_000, NOW)}`, tone: "warning" });
   const notes = rowNotes(r, NOW, "Anthropic rate limited usage reads (429)");
   assert.equal(notes[0], `Usage read at ${clockText(NOW - 60_000, NOW)} failed. Anthropic rate limited usage reads (429) until ${clockText(NOW + 8 * 60_000, NOW)}.`);
   assert.equal(notes[1], "Usage from 6d ago.");
@@ -41,7 +41,7 @@ test("a refused token reads as signed out and a 403 keeps Anthropic's own messag
   assert.deepEqual(failedReadTag(out, NOW), { label: `Signed out ${clockText(NOW - 60_000, NOW)}`, tone: "danger" });
   assert.equal(failedReadNote(out, NOW), `Usage read at ${clockText(NOW - 60_000, NOW)} failed. Signed out: Anthropic refused the token (401).`);
   const org = row({ read_failed_at: S(NOW - 60_000), read_error: OAUTH });
-  assert.deepEqual(failedReadTag(org, NOW), { label: `Refused 403 ${clockText(NOW - 60_000, NOW)}`, tone: "danger" });
+  assert.deepEqual(failedReadTag(org, NOW), { label: `403 at ${clockText(NOW - 60_000, NOW)}`, tone: "danger" });
   assert.match(failedReadNote(org, NOW)!, /OAuth authentication is currently not allowed for this organization\.$/);
 });
 

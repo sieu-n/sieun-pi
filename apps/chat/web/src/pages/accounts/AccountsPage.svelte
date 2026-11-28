@@ -564,10 +564,11 @@
   .problem { margin: var(--space-4) 0; font: var(--text-body-sm); }
   .frame { container-type: inline-size; }
   .table {
-    --cols: minmax(11rem, 3fr) auto auto repeat(var(--windows), minmax(6.5rem, 1fr)) minmax(6rem, auto) auto;
+    /* The status column fits a failed read's tag ("429 until 20:05") beside a state badge such as Refused. */
+    --cols: minmax(11rem, 3fr) auto auto repeat(var(--windows), minmax(6.5rem, 1fr)) minmax(10rem, auto) auto;
     display: grid; grid-template-columns: var(--cols); column-gap: var(--space-4);
   }
-  .table.no-threads { --cols: minmax(11rem, 3fr) auto repeat(var(--windows), minmax(6.5rem, 1fr)) minmax(6rem, auto) auto; }
+  .table.no-threads { --cols: minmax(11rem, 3fr) auto repeat(var(--windows), minmax(6.5rem, 1fr)) minmax(10rem, auto) auto; }
   .table.no-threads .threads, .table.no-threads :global(.row > .threads) { display: none; }
   .table.busy { opacity: 0.7; }
   .head {

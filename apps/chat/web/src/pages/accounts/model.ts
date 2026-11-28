@@ -145,16 +145,19 @@ export function failedReadNote(row: PoolAccount, now = Date.now()): string | nul
   return `Usage read at ${clockText(failed.at, now)} failed. ${sentence(failed.reason)}${until}.`;
 }
 
-/** The short status-cell tag for a row whose last read failed: "Signed out 19:17", "Rate limited until 19:25", "Refused 403 19:17". */
+/**
+ * The short status-cell tag for a row whose last read failed, which fits beside a state badge: "429 until 19:25", "Signed out 19:17",
+ * "403 at 19:17". The tooltip leads with the full sentence.
+ */
 export function failedReadTag(row: PoolAccount, now = Date.now()): { label: string; tone: Tone } | null {
   const failed = failedRead(row);
   if (!failed) return null;
   const at = clockText(failed.at, now);
   if (/^signed out/i.test(failed.reason)) return { label: `Signed out ${at}`, tone: "danger" };
   if (/rate limited/i.test(failed.reason))
-    return { label: failed.retryAt && failed.retryAt > now ? `Rate limited until ${clockText(failed.retryAt, now)}` : `Rate limited ${at}`, tone: "warning" };
+    return { label: failed.retryAt && failed.retryAt > now ? `429 until ${clockText(failed.retryAt, now)}` : `429 at ${at}`, tone: "warning" };
   const code = /answered (\d{3})/.exec(failed.reason)?.[1];
-  if (code) return { label: `${code.startsWith("4") ? "Refused" : "Error"} ${code} ${at}`, tone: code.startsWith("4") ? "danger" : "warning" };
+  if (code) return { label: `${code} at ${at}`, tone: code.startsWith("4") ? "danger" : "warning" };
   return { label: `Not read ${at}`, tone: "warning" };
 }
 

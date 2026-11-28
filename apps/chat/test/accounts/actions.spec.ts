@@ -548,7 +548,7 @@ test("19b a row whose refresh Anthropic refuses leads with that answer and its t
   await expect(staleLine.getByTestId("account-read-failed")).toHaveCount(0);
 
   await refresh(stale);
-  await expect(staleLine.getByTestId("account-read-failed")).toHaveText(new RegExp(`^Rate limited until ${clock}$`));
+  await expect(staleLine.getByTestId("account-read-failed")).toHaveText(new RegExp(`^429 until ${clock}$`));
   await expect(staleLine.getByTestId("account-status")).not.toContainText("old");
   await staleLine.getByTestId("account-status").hover();
   const tip = page.getByRole("tooltip");
@@ -556,7 +556,10 @@ test("19b a row whose refresh Anthropic refuses leads with that answer and its t
 
   await expect(page.getByRole("button", { name: "Refresh all" })).toBeEnabled({ timeout: 15_000 });
   const refusedLine = await refresh(refused);
-  await expect(refusedLine.getByTestId("account-read-failed")).toHaveText(new RegExp(`^Refused 403 ${clock}$`));
+  await expect(refusedLine.getByTestId("account-read-failed")).toHaveText(new RegExp(`^403 at ${clock}$`));
+  const cell = (await refusedLine.getByTestId("account-status").boundingBox())!;
+  const badge = (await refusedLine.getByTestId("account-status").getByText("Refused", { exact: true }).boundingBox())!;
+  expect(badge.x + badge.width, "the Refused badge fits in the status cell beside the failed read's tag").toBeLessThanOrEqual(cell.x + cell.width);
   await refusedLine.getByTestId("account-status").hover();
   await expect(tip).toContainText(new RegExp(`^Usage read at ${clock} failed\\. Anthropic answered 403: OAuth authentication is currently not allowed for this organization\\.`));
 });
