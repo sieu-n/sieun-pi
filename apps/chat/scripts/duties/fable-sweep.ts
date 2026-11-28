@@ -430,10 +430,14 @@ export function dutyContext(runs: readonly DutyRunView[]): string[] {
 type DutyMissInput = {
   agent: Agent; dutyId: string; runs: readonly DutyRunView[]; plan: readonly PlanItem[]; todos?: readonly Todo[]; jobs: readonly Job[]; now: number; wakes?: readonly Wake[];
   wait?: AgentWait;
+  /** Since when the duty's newest job waits for a model account, as the duty card reads it (the server's `waitingForAccountSince`, boards.ts `readAccountWait`). */
+  jobWaitsSince?: number;
 };
 
 /**
- * Why a duty's miss is with its owner already, or undefined: the duty's first measured run, whose own duty job got its brief, or for each
+ * Why a duty's miss is with its owner already, or undefined: the duty's first measured run, whose own duty job got its brief, or a duty job
+ * that still waits for a model account with the run's brief (`jobWaitsSince`; at 00:51 KST on 11-29 Search product, misc.'s d4 read not
+ * passed on 30 min after its miss, while its duty job had waited for an account since 00:21 KST), or for each
  * metric the newest run missed an open fix step that names that duty and metric (`duty` is `<dutyId>/<metric>`) whose job works or sleeps
  * or that a board.wake or a working subagent moves (`wokenStep`), or that an open For you todo holds (`boardHold`, as d9 reads it), or that
  * waits for a model account as a stalled step does (`stalledSteps`): at 22:31 KST on 11-28 agent factory d2 read not passed on for
@@ -464,6 +468,10 @@ function dutyFixes(input: DutyMissInput): string | { missed: string[]; moved: Ma
   const measured = input.runs.filter(run => run.verdict !== "skipped");
   if (measured.length === 1 && measured[0]!.job) return `first run of the duty, its job ${measured[0]!.job.name} has it`;
   const newest = measured[0];
+  const dutyJob = input.runs.find(run => run.job)?.job;
+  if (input.jobWaitsSince !== undefined && dutyJob) {
+    return `its job ${dutyJob.name} waits for a model account since ${new Date(input.jobWaitsSince + 9 * HOUR).toISOString().slice(5, 16).replace("T", " ")} KST`;
+  }
   const metrics = newest?.after?.metrics ?? newest?.metrics ?? {};
   const missed = Object.entries(metrics).filter(([, result]) => !result.met).map(([key]) => key);
   if (!missed.length) return { missed, moved: new Map() };
@@ -630,7 +638,7 @@ if (isMain(import.meta.url)) {
   await Promise.all(agents.map(async agent => {
     const [board, duties] = await Promise.all([
       get<{ board: { plan: PlanItem[]; todos: Todo[] } | null }>(server, `/api/agents/${agent.id}/board`).catch(() => ({ board: null })),
-      get<{ duties: { duty: { id: string; name: string }; paused: boolean; last: { verdict: string; at: number; streak: number } | null; runs: DutyRunView[] }[] }>(server, `/api/agents/${agent.id}/duties`).catch(() => ({ duties: [] })),
+      get<{ duties: { duty: { id: string; name: string }; paused: boolean; last: { verdict: string; at: number; streak: number } | null; runs: DutyRunView[]; waitingForAccountSince?: number }[] }>(server, `/api/agents/${agent.id}/duties`).catch(() => ({ duties: [] })),
     ]);
     read.duties += duties.duties.length;
     read.steps += board.board?.plan.length ?? 0;
@@ -647,7 +655,7 @@ if (isMain(import.meta.url)) {
       if (notMeasured(row.runs)) { read.dutiesNotMeasured += 1; continue; }
       const run = row.runs[0];
       const why = oneLine(run?.after?.summary ?? run?.error ?? run?.summary ?? "", 110);
-      const miss = { agent, dutyId: row.duty.id, runs: row.runs, plan: board.board?.plan ?? [], todos: board.board?.todos ?? [], jobs: liveJobs, now, wakes, wait };
+      const miss = { agent, dutyId: row.duty.id, runs: row.runs, plan: board.board?.plan ?? [], todos: board.board?.todos ?? [], jobs: liveJobs, now, wakes, wait, ...(row.waitingForAccountSince !== undefined ? { jobWaitsSince: row.waitingForAccountSince } : {}) };
       const has = passedOn(miss);
       const left = has ? undefined : unmovedMetrics(miss);
       items.push({ kind: "duty_off", sig: `duty:${agent.id}/${row.duty.id}`, agent: agent.name, text: `${agent.name} ${row.duty.id} "${row.duty.name}" ${row.last.verdict}${row.last.streak > 1 ? `, ${row.last.streak} runs in a row` : ""}: ${why}`, link: `#/agents/${agent.id}`, at: row.last.at,

@@ -359,6 +359,18 @@ test("a step is no item while the agent's work thread waits for a model account 
   assert.equal(passedOn({ ...miss, wait: { job: noJob, thread: false } }), undefined);
 });
 
+test("a duty miss whose own duty job still waits for a model account is passed on, as the duty card reads it (Search product, misc. d4, 11-29 00:51 KST)", () => {
+  const misc = { id: "ag_search-product-misc", name: "Search product, misc.", status: "working", thread: "tm" };
+  const name = "GeoNode month stays under 250 GB duty 261129-002119";
+  const runs: DutyRunView[] = [missedRun(29, name, ["jumped_parts"]), missedRun(30, name, ["jumped_parts"]), { at: now - 1080 * MIN, verdict: "met", summary: "all 2 on target" }];
+  const miss = { agent: misc, dutyId: "d4", runs, plan: [], jobs: [], now };
+  assert.equal(passedOn(miss), undefined);
+  assert.equal(unmovedMetrics(miss), "not passed on: no fix step a job, board.wake or subagent moves for jumped_parts");
+  const since = Date.parse("2026-11-28T15:21:19Z");
+  assert.equal(passedOn({ ...miss, jobWaitsSince: since }), `its job ${name} waits for a model account since 11-29 00:21 KST`);
+  assert.equal(unmovedMetrics({ ...miss, jobWaitsSince: since }), undefined);
+});
+
 /**
  * The 22:31 KST sweep of 11-28 through the real precheck in peek mode, while 1 of 42 Claude accounts took new work. It listed fable auditor's
  * p70 as "its job is idle" and enrichment researcher's p1 as "no job", and read agent factory's d2 as not passed on for p279. In each, the
@@ -386,6 +398,9 @@ test("a sweep lists no step, duty or job that waits for a model account and coun
     "/api/agents/ag_agent-factory/duties": { duties: [{ duty: { id: "d2", name: "sw factory stays snappy" }, paused: false, last: { verdict: "missed", at: live - 27 * MIN, streak: 20 }, runs: [
       { at: live - 27 * MIN, verdict: "missed", summary: "search_p90_ms 1305 ms", metrics: { search_p90_ms: { met: false } }, fixes: { search_p90_ms: { step: "p279", live: false } }, job: { id: "j1", name: "snappy duty 1" } },
       { at: live - 960 * MIN, verdict: "missed", summary: "search_p90_ms 338 ms", metrics: { search_p90_ms: { met: false } }, job: { id: "j0", name: "snappy duty 0" } },
+    ] }, { duty: { id: "d4", name: "GeoNode month" }, paused: false, last: { verdict: "missed", at: live - 29 * MIN, streak: 2 }, waitingForAccountSince: Date.parse("2026-11-28T15:21:19Z"), runs: [
+      { at: live - 29 * MIN, verdict: "missed", summary: "jumped_parts 1", metrics: { jumped_parts: { met: false } }, job: { id: "j4", name: "GeoNode duty 1" } },
+      { at: live - 1080 * MIN, verdict: "met", summary: "all on target", metrics: { jumped_parts: { met: true } } },
     ] }] },
     "/api/agents/ag_enrichment-researcher/board": { board: { todos: [], plan: [{ id: "p1", text: "Recommend what to do with the AI enrichment pipeline", status: "todo" }] } },
     "/api/agents/ag_enrichment-researcher/duties": { duties: [] },
@@ -409,6 +424,7 @@ test("a sweep lists no step, duty or job that waits for a model account and coun
     const { n, items } = JSON.parse(readFileSync(out, "utf8")) as { n: Record<string, number>; items: (Item & { fresh: boolean })[] };
     assert.deepEqual(items.map(i => [i.sig, i.fresh, i.passedOn]).sort(), [
       ["duty:ag_agent-factory/d2", false, "search_p90_ms fix step p279, subagent burst-reads of job his calls behind a read burst waits for a model account"],
+      ["duty:ag_agent-factory/d4", false, "its job GeoNode duty 1 waits for a model account since 11-29 00:21 KST"],
       ["stuck:tf:400", true, undefined],
     ], "the three steps and the waiting jobs are no items; a quiet working job with no turn in flight still is");
     assert.deepEqual([n.poolWaits, n.stepPoolWaits], [4, 3], "two waiting subagents, the duty job above its waiting subagent and that subagent; p70, p279 and p1");
